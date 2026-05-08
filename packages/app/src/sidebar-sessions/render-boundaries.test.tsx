@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-import { act, fireEvent, render, renderHook } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook } from "@testing-library/react";
 import React from "react";
 import { useCallback, useMemo } from "react";
 import { Pressable, View } from "react-native";
@@ -55,6 +55,10 @@ vi.hoisted(() => {
   Object.assign(globalThis, { __DEV__: false });
 });
 
+const { routerNavigateMock } = vi.hoisted(() => ({
+  routerNavigateMock: vi.fn(),
+}));
+
 vi.mock("@/hooks/use-project-icon-query", () => ({
   useProjectIconQuery: () => ({ icon: null, isLoading: false, isError: false }),
 }));
@@ -67,6 +71,7 @@ vi.mock("lucide-react-native", () => {
     ChevronRight: createIcon("ChevronRight"),
     FolderPlus: createIcon("FolderPlus"),
     MoreVertical: createIcon("MoreVertical"),
+    Plus: createIcon("Plus"),
     Settings: createIcon("Settings"),
     Trash2: createIcon("Trash2"),
   };
@@ -74,7 +79,7 @@ vi.mock("lucide-react-native", () => {
 
 vi.mock("expo-router", () => ({
   router: {
-    navigate: vi.fn(),
+    navigate: routerNavigateMock,
   },
 }));
 
@@ -234,7 +239,9 @@ function useGroupedBoundaryHarness(input?: { collapsedProjectKeys?: ReadonlySet<
 }
 
 afterEach(() => {
+  cleanup();
   useSessionStore.setState({ sessions: {}, agentLastActivity: new Map() });
+  routerNavigateMock.mockClear();
 });
 
 describe("sidebar session render boundaries", () => {
@@ -386,8 +393,8 @@ describe("sidebar session render boundaries", () => {
     expect(onPress).toHaveBeenCalledWith("project-a");
   });
 
-  it("renders the project kebab in the grouped header", () => {
-    const { getByTestId, queryByTestId } = render(
+  it("renders the project kebab and new-session button in the grouped header", () => {
+    const { getByTestId } = render(
       <SidebarSessionGroupHeader
         serverId="server-1"
         projectKey="project-a"
@@ -400,6 +407,26 @@ describe("sidebar session render boundaries", () => {
     );
 
     expect(getByTestId("sidebar-project-kebab-project-a")).toBeTruthy();
-    expect(queryByTestId("sidebar-project-new-worktree-project-a")).toBeNull();
+    expect(getByTestId("sidebar-project-project-a-new-session-button")).toBeTruthy();
+  });
+
+  it("opens a new session scoped to the grouped project root", () => {
+    const { getByTestId } = render(
+      <SidebarSessionGroupHeader
+        serverId="server-1"
+        projectKey="project-a"
+        projectName="Project A"
+        projectIconKey="/repo/a"
+        workspaces={HARNESS_PROJECTS[0].workspaces}
+        isCollapsed={false}
+        onToggleCollapsed={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(getByTestId("sidebar-project-project-a-new-session-button"));
+
+    expect(routerNavigateMock).toHaveBeenCalledWith(
+      "/h/server-1/new?dir=%2Frepo%2Fa&title=New+session",
+    );
   });
 });

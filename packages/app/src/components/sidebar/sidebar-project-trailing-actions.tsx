@@ -7,8 +7,8 @@ import {
   type GestureResponderEvent,
   type PressableStateCallbackType,
 } from "react-native";
-import { router, type Href } from "expo-router";
-import { FolderPlus, MoreVertical, Settings, Trash2 } from "lucide-react-native";
+import { router } from "expo-router";
+import { FolderPlus, MoreVertical, Plus, Settings, Trash2 } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import {
   DropdownMenu,
@@ -31,26 +31,33 @@ import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { useSessionStore, type WorkspaceDescriptor } from "@/stores/session-store";
 import type { Theme } from "@/styles/theme";
 import { confirmDialog } from "@/utils/confirm-dialog";
-import { buildHostNewWorkspaceRoute, buildProjectSettingsRoute } from "@/utils/host-routes";
+import { buildProjectSettingsRoute } from "@/utils/host-routes";
 import { resolveWorkspaceMapKeyByIdentity } from "@/utils/workspace-execution";
+
+export interface SidebarProjectCreateButtonConfig {
+  onPress: () => void;
+  accessibilityLabel: string;
+  testID: string;
+  tooltipLabel: string;
+  icon: "folder-plus" | "plus";
+  showShortcutHint?: boolean;
+}
 
 export interface SidebarProjectTrailingActionsProps {
   projectKey: string;
   serverId: string | null;
   isHovered: boolean;
-  showNewWorktreeButton?: boolean;
   projectName?: string;
-  sourceDirectory?: string;
-  isProjectActive?: boolean;
-  onWorkspacePress?: () => void;
   onRemoveProject?: () => void;
   removeProjectStatus?: "idle" | "pending" | "success";
   workspaces?: readonly SidebarWorkspaceEntry[];
+  createButton: SidebarProjectCreateButtonConfig | null;
 }
 
 const ThemedActivityIndicator = withUnistyles(ActivityIndicator);
 const ThemedFolderPlus = withUnistyles(FolderPlus);
 const ThemedMoreVertical = withUnistyles(MoreVertical);
+const ThemedPlus = withUnistyles(Plus);
 const ThemedSettings = withUnistyles(Settings);
 const ThemedTrash2 = withUnistyles(Trash2);
 
@@ -66,14 +73,11 @@ export function SidebarProjectTrailingActions({
   projectKey,
   serverId,
   isHovered,
-  showNewWorktreeButton = false,
   projectName,
-  sourceDirectory,
-  isProjectActive = false,
-  onWorkspacePress,
   onRemoveProject,
   removeProjectStatus,
   workspaces = [],
+  createButton,
 }: SidebarProjectTrailingActionsProps): ReactElement {
   const isMobileBreakpoint = useIsCompactFormFactor();
   const actionsVisible = isHovered || platformIsNative || isMobileBreakpoint;
@@ -86,26 +90,10 @@ export function SidebarProjectTrailingActions({
   const resolvedRemoveProject = onRemoveProject ?? fallbackRemoval.onRemoveProject;
   const resolvedRemoveProjectStatus = removeProjectStatus ?? fallbackRemoval.removeProjectStatus;
 
-  const handleBeginWorkspaceSetup = useCallback(() => {
-    if (!serverId || !sourceDirectory) {
-      return;
-    }
-    router.navigate(
-      buildHostNewWorkspaceRoute(serverId, sourceDirectory, { displayName: projectName }) as Href,
-    );
-    onWorkspacePress?.();
-  }, [onWorkspacePress, projectName, serverId, sourceDirectory]);
-
   return (
     <View style={styles.projectTrailingActions}>
-      {showNewWorktreeButton && serverId && sourceDirectory ? (
-        <NewWorktreeButton
-          displayName={projectName ?? projectKey}
-          onPress={handleBeginWorkspaceSetup}
-          visible={actionsVisible}
-          showShortcutHint={isProjectActive}
-          testID={`sidebar-project-new-worktree-${projectKey}`}
-        />
+      {createButton ? (
+        <ProjectCreateButton actionsVisible={actionsVisible} createButton={createButton} />
       ) : null}
       <View
         style={!actionsVisible && styles.projectKebabButtonHidden}
@@ -118,6 +106,26 @@ export function SidebarProjectTrailingActions({
         />
       </View>
     </View>
+  );
+}
+
+function ProjectCreateButton({
+  actionsVisible,
+  createButton,
+}: {
+  actionsVisible: boolean;
+  createButton: SidebarProjectCreateButtonConfig;
+}): ReactElement {
+  return (
+    <NewWorktreeButton
+      accessibilityLabel={createButton.accessibilityLabel}
+      icon={createButton.icon}
+      onPress={createButton.onPress}
+      visible={actionsVisible}
+      showShortcutHint={createButton.showShortcutHint ?? false}
+      testID={createButton.testID}
+      tooltipLabel={createButton.tooltipLabel}
+    />
   );
 }
 
@@ -299,19 +307,23 @@ function ProjectKebabMenu({
 }
 
 function NewWorktreeButton({
-  displayName,
+  accessibilityLabel,
+  icon,
   onPress,
   visible,
   loading = false,
   testID,
   showShortcutHint = false,
+  tooltipLabel,
 }: {
-  displayName: string;
+  accessibilityLabel: string;
+  icon: "folder-plus" | "plus";
   onPress: () => void;
   visible: boolean;
   loading?: boolean;
   testID: string;
   showShortcutHint?: boolean;
+  tooltipLabel: string;
 }) {
   const newWorktreeKeys = useShortcutKeys("new-worktree");
 
@@ -332,6 +344,20 @@ function NewWorktreeButton({
     [onPress],
   );
 
+  const renderIcon = useCallback(
+    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => {
+      if (loading) {
+        return <ThemedActivityIndicator size={14} uniProps={foregroundMutedColorMapping} />;
+      }
+      const uniProps = hovered || pressed ? foregroundColorMapping : foregroundMutedColorMapping;
+      if (icon === "plus") {
+        return <ThemedPlus size={15} uniProps={uniProps} />;
+      }
+      return <ThemedFolderPlus size={15} uniProps={uniProps} />;
+    },
+    [icon, loading],
+  );
+
   return (
     <View style={styles.projectTrailingControlSlot} pointerEvents={visible ? "auto" : "none"}>
       <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
@@ -341,26 +367,15 @@ function NewWorktreeButton({
             onPress={handlePress}
             disabled={loading}
             accessibilityRole="button"
-            accessibilityLabel={`Create a new workspace for ${displayName}`}
+            accessibilityLabel={accessibilityLabel}
             testID={testID}
           >
-            {({ hovered, pressed }) =>
-              loading ? (
-                <ThemedActivityIndicator size={14} uniProps={foregroundMutedColorMapping} />
-              ) : (
-                <ThemedFolderPlus
-                  size={15}
-                  uniProps={
-                    hovered || pressed ? foregroundColorMapping : foregroundMutedColorMapping
-                  }
-                />
-              )
-            }
+            {renderIcon}
           </Pressable>
         </TooltipTrigger>
         <TooltipContent side="bottom" align="center" offset={8}>
           <View style={styles.projectActionTooltipRow}>
-            <Text style={styles.projectActionTooltipText}>New workspace</Text>
+            <Text style={styles.projectActionTooltipText}>{tooltipLabel}</Text>
             {showShortcutHint && newWorktreeKeys ? (
               <Shortcut chord={newWorktreeKeys} style={styles.projectActionTooltipShortcut} />
             ) : null}

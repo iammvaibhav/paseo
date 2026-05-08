@@ -264,7 +264,6 @@ describe("deriveGroupedSidebarSessions", () => {
         hiddenCount: 0,
         isExpanded: false,
         isCollapsed: false,
-        isFlattened: false,
         totalCount: 3,
       },
     ]);
@@ -389,7 +388,7 @@ describe("deriveGroupedSidebarSessions", () => {
     expect(groups.map((group) => group.projectKey)).toEqual(["project-a"]);
   });
 
-  it("flattens a single non-git workspace project (no header, ignores collapse)", () => {
+  it("keeps a single-workspace non-git project grouped and collapsible", () => {
     const projectA = testProject("project-a", { projectKind: "directory", workspaceCount: 1 });
     const groups = deriveGroupedSidebarSessions({
       agentsWithProjects: agentProjects(["a1", "a2"], projectA),
@@ -399,13 +398,29 @@ describe("deriveGroupedSidebarSessions", () => {
     });
 
     expect(groups[0]).toMatchObject({
-      isFlattened: true,
+      projectKey: "project-a",
+      isCollapsed: true,
+      visibleIds: [],
+    });
+  });
+
+  it("renders a single-workspace non-git project group when expanded", () => {
+    const projectA = testProject("project-a", { projectKind: "directory", workspaceCount: 1 });
+    const groups = deriveGroupedSidebarSessions({
+      agentsWithProjects: agentProjects(["a1", "a2"], projectA),
+      projects: [projectA],
+      previewExpandedProjects: new Set(),
+    });
+
+    expect(groups[0]).toMatchObject({
+      projectKey: "project-a",
+      projectName: "project-a",
       isCollapsed: false,
       visibleIds: ["a1", "a2"],
     });
   });
 
-  it("keeps multi-workspace non-git projects collapsible", () => {
+  it("renders multi-workspace non-git project groups too", () => {
     const projectA = testProject("project-a", { projectKind: "directory", workspaceCount: 2 });
     const groups = deriveGroupedSidebarSessions({
       agentsWithProjects: agentProjects(["a1", "a2"], projectA),
@@ -415,12 +430,12 @@ describe("deriveGroupedSidebarSessions", () => {
     });
 
     expect(groups[0]).toMatchObject({
-      isFlattened: false,
       isCollapsed: true,
+      visibleIds: [],
     });
   });
 
-  it("keeps single-workspace git projects collapsible (not flattened)", () => {
+  it("keeps single-workspace git projects collapsible", () => {
     const projectA = testProject("project-a", { projectKind: "git", workspaceCount: 1 });
     const groups = deriveGroupedSidebarSessions({
       agentsWithProjects: agentProjects(["a1", "a2"], projectA),
@@ -430,7 +445,6 @@ describe("deriveGroupedSidebarSessions", () => {
     });
 
     expect(groups[0]).toMatchObject({
-      isFlattened: false,
       isCollapsed: true,
     });
   });

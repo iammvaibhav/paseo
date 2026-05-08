@@ -1,7 +1,6 @@
 import type { SidebarSessionAgent, SidebarSessionFilter, SidebarSessionWorkspace } from "./types";
 import type { SidebarProjectEntry } from "@/hooks/use-sidebar-workspaces-list";
 import type { WorkspaceDescriptor } from "@/stores/session-store";
-import { isSidebarProjectFlattened } from "@/utils/sidebar-project-row-model";
 import { normalizeWorkspacePath } from "@/utils/workspace-identity";
 
 export interface SidebarSessionWorkspaceLookup {
@@ -20,7 +19,6 @@ export interface SidebarSessionGroup {
   hiddenCount: number;
   isExpanded: boolean;
   isCollapsed: boolean;
-  isFlattened: boolean;
   totalCount: number;
 }
 
@@ -167,8 +165,7 @@ export function deriveGroupedSidebarSessions(input: {
     if (!ids || ids.length === 0) {
       continue;
     }
-    const isFlattened = isSidebarProjectFlattened(project);
-    const isCollapsed = !isFlattened && collapsedProjectKeys.has(project.projectKey);
+    const isCollapsed = collapsedProjectKeys.has(project.projectKey);
     const isExpanded = !isCollapsed && previewExpandedProjects.has(project.projectKey);
     groups.push({
       projectKey: project.projectKey,
@@ -178,7 +175,6 @@ export function deriveGroupedSidebarSessions(input: {
       hiddenCount: hiddenCountFor({ totalCount: ids.length, isCollapsed, isExpanded, limit }),
       isExpanded,
       isCollapsed,
-      isFlattened,
       totalCount: ids.length,
     });
   }

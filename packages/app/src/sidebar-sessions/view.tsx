@@ -287,35 +287,45 @@ const SidebarSessionGroupSection = memo(function SidebarSessionGroupSection({
   onProjectPreviewExpandedToggle: (projectKey: string) => void;
 }): ReactElement {
   const showFooter = !group.isCollapsed && group.totalCount > GROUPED_SESSION_LIMIT;
-  return (
-    <View>
-      {!group.isFlattened ? (
-        <SidebarSessionGroupHeader
-          serverId={serverId}
-          projectKey={group.projectKey}
-          projectName={group.projectName}
-          projectIconKey={group.projectIconKey}
-          workspaces={project.workspaces}
-          isCollapsed={group.isCollapsed}
-          isDragging={isDragging}
-          drag={drag}
-          dragHandleProps={dragHandleProps}
-          onToggleCollapsed={onProjectCollapsedToggle}
-        />
-      ) : null}
-      {serverId
-        ? group.visibleIds.map((id) => (
-            <SidebarSessionRow key={id} id={id} serverId={serverId} indented={!group.isFlattened} />
-          ))
-        : null}
-      {showFooter ? (
+  const footer = useMemo(
+    () =>
+      showFooter ? (
         <SidebarSessionGroupFooter
           projectKey={group.projectKey}
           hiddenCount={group.hiddenCount}
           isExpanded={group.isExpanded}
           onPress={onProjectPreviewExpandedToggle}
         />
-      ) : null}
+      ) : null,
+    [
+      group.hiddenCount,
+      group.isExpanded,
+      group.projectKey,
+      onProjectPreviewExpandedToggle,
+      showFooter,
+    ],
+  );
+  return (
+    <View>
+      <SidebarSessionGroupHeader
+        serverId={serverId}
+        projectKey={group.projectKey}
+        projectName={group.projectName}
+        projectIconKey={group.projectIconKey}
+        workspaces={project.workspaces}
+        isCollapsed={group.isCollapsed}
+        isDragging={isDragging}
+        drag={drag}
+        dragHandleProps={dragHandleProps}
+        onToggleCollapsed={onProjectCollapsedToggle}
+        footer={footer}
+      >
+        {serverId
+          ? group.visibleIds.map((id) => (
+              <SidebarSessionRow key={id} id={id} serverId={serverId} indented />
+            ))
+          : null}
+      </SidebarSessionGroupHeader>
     </View>
   );
 });

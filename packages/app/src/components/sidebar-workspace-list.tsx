@@ -18,10 +18,11 @@ import {
   useRef,
   type ComponentType,
   type ReactElement,
+  type ReactNode,
   type MutableRefObject,
   type Ref,
 } from "react";
-import { usePathname } from "expo-router";
+import { router, usePathname, type Href } from "expo-router";
 import { navigateToWorkspace } from "@/hooks/use-workspace-navigation";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { Theme } from "@/styles/theme";
@@ -47,7 +48,10 @@ import type { DraggableListDragHandleProps } from "./draggable-list.types";
 import { getHostRuntimeStore, isHostRuntimeConnected } from "@/runtime/host-runtime";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { projectIconQueryKey } from "@/hooks/use-project-icon-query";
-import { parseHostWorkspaceRouteFromPathname } from "@/utils/host-routes";
+import {
+  buildHostNewWorkspaceRoute,
+  parseHostWorkspaceRouteFromPathname,
+} from "@/utils/host-routes";
 import {
   createSidebarWorkspaceEntry,
   type SidebarProjectEntry,
@@ -106,8 +110,11 @@ import { WorkspaceHoverCard } from "@/components/workspace-hover-card";
 import { GitHubIcon } from "@/components/icons/github-icon";
 import { isNative as platformIsNative } from "@/constants/platform";
 import { SidebarProjectIcon } from "@/components/sidebar/sidebar-project-row-visual";
-import { SidebarProjectHeaderRow } from "@/components/sidebar/sidebar-collapsible-project-section";
-import { SidebarProjectTrailingActions } from "@/components/sidebar/sidebar-project-trailing-actions";
+import { SidebarProjectSection } from "@/components/sidebar/sidebar-collapsible-project-section";
+import {
+  SidebarProjectTrailingActions,
+  type SidebarProjectCreateButtonConfig,
+} from "@/components/sidebar/sidebar-project-trailing-actions";
 
 function toProjectIconDataUri(icon: { mimeType: string; data: string } | null): string | null {
   if (!icon) {
@@ -230,6 +237,8 @@ interface ProjectHeaderRowProps {
   onRemoveProject?: () => void;
   removeProjectStatus?: "idle" | "pending";
   dragHandleProps?: DraggableListDragHandleProps;
+  isCollapsed?: boolean;
+  children?: ReactNode;
 }
 
 interface WorkspaceRowInnerProps {
@@ -708,6 +717,8 @@ function ProjectHeaderRow({
   onRemoveProject,
   removeProjectStatus = "idle",
   dragHandleProps,
+  isCollapsed = true,
+  children,
 }: ProjectHeaderRowProps) {
   const [isHovered, setIsHovered] = useState(false);
   const _mergeWorkspaces = useSessionStore((state) => state.mergeWorkspaces);
@@ -728,6 +739,36 @@ function ProjectHeaderRow({
 
   const handlePointerEnter = useCallback(() => setIsHovered(true), []);
   const handlePointerLeave = useCallback(() => setIsHovered(false), []);
+  const handleBeginWorkspaceSetup = useCallback(() => {
+    if (!serverId || !project.iconWorkingDir) {
+      return;
+    }
+    router.navigate(
+      buildHostNewWorkspaceRoute(serverId, project.iconWorkingDir, {
+        displayName,
+      }) as Href,
+    );
+    onWorkspacePress?.();
+  }, [displayName, onWorkspacePress, project.iconWorkingDir, serverId]);
+  const createButton = useMemo<SidebarProjectCreateButtonConfig | null>(() => {
+    if (!canCreateWorktree) {
+      return null;
+    }
+    return {
+      onPress: handleBeginWorkspaceSetup,
+      accessibilityLabel: `Create a new workspace for ${displayName}`,
+      testID: `sidebar-project-new-worktree-${project.projectKey}`,
+      tooltipLabel: "New workspace",
+      icon: "folder-plus",
+      showShortcutHint: isProjectActive,
+    };
+  }, [
+    canCreateWorktree,
+    displayName,
+    handleBeginWorkspaceSetup,
+    isProjectActive,
+    project.projectKey,
+  ]);
 
   const showsWorkspaceStatus =
     workspace !== null && (isArchiving || workspace.statusBucket !== "done");
@@ -755,13 +796,10 @@ function ProjectHeaderRow({
         projectName={displayName}
         serverId={serverId}
         isHovered={isHovered}
-        showNewWorktreeButton={canCreateWorktree}
-        sourceDirectory={project.iconWorkingDir}
-        isProjectActive={isProjectActive}
-        onWorkspacePress={onWorkspacePress}
         onRemoveProject={onRemoveProject}
         removeProjectStatus={removeProjectStatus}
         workspaces={project.workspaces}
+        createButton={createButton}
       />
       {showShortcutBadge && shortcutNumber !== null ? (
         <View style={styles.shortcutBadge}>
@@ -774,6 +812,22 @@ function ProjectHeaderRow({
   const PressableComponent = menuController
     ? (ProjectHeaderContextMenuTrigger as unknown as ComponentType<PressableProps>)
     : undefined;
+  const headerProps = useMemo(
+    () => ({
+      leadingVisualOverride,
+      onPressIn: interaction.handlePressIn,
+      onTouchMove: interaction.handleTouchMove,
+      onPressOut: interaction.handlePressOut,
+      PressableComponent,
+    }),
+    [
+      interaction.handlePressIn,
+      interaction.handlePressOut,
+      interaction.handleTouchMove,
+      leadingVisualOverride,
+      PressableComponent,
+    ],
+  );
 
   return (
     <View
@@ -783,22 +837,22 @@ function ProjectHeaderRow({
       onPointerEnter={handlePointerEnter}
       onPointerLeave={handlePointerLeave}
     >
-      <SidebarProjectHeaderRow
+      <SidebarProjectSection
+        projectKey={project.projectKey}
         projectName={displayName}
         iconDataUri={iconDataUri}
         chevron={chevron}
         isHovered={isHovered}
         isDragging={isDragging}
         selected={selected}
-        leadingVisualOverride={leadingVisualOverride}
         trailingSlot={trailingSlot}
         onPress={handlePress}
-        onPressIn={interaction.handlePressIn}
-        onTouchMove={interaction.handleTouchMove}
-        onPressOut={interaction.handlePressOut}
         testID={`sidebar-project-row-${project.projectKey}`}
-        PressableComponent={PressableComponent}
-      />
+        isCollapsed={isCollapsed}
+        headerProps={headerProps}
+      >
+        {children}
+      </SidebarProjectSection>
     </View>
   );
 }
@@ -1707,44 +1761,41 @@ function ProjectBlock({
           selectionEnabled={selectionEnabled}
         />
       ) : (
-        <>
-          <ProjectHeaderRow
-            project={project}
-            displayName={displayName}
-            iconDataUri={iconDataUri}
-            workspace={null}
-            selected={false}
-            chevron={rowModel.chevron}
-            onPress={handleToggleCollapsed}
-            serverId={serverId}
-            canCreateWorktree={rowModel.trailingAction === "new_worktree"}
-            isProjectActive={isProjectActive}
-            onWorkspacePress={onWorkspacePress}
-            onWorktreeCreated={onWorktreeCreated}
-            drag={drag}
-            isDragging={isDragging}
-            isArchiving={isRemovingProject}
-            menuController={null}
-            onRemoveProject={handleRemoveProject}
-            removeProjectStatus={isRemovingProject ? "pending" : "idle"}
-            dragHandleProps={dragHandleProps}
+        <ProjectHeaderRow
+          project={project}
+          displayName={displayName}
+          iconDataUri={iconDataUri}
+          workspace={null}
+          selected={false}
+          chevron={rowModel.chevron}
+          onPress={handleToggleCollapsed}
+          serverId={serverId}
+          canCreateWorktree={rowModel.trailingAction === "new_worktree"}
+          isProjectActive={isProjectActive}
+          onWorkspacePress={onWorkspacePress}
+          onWorktreeCreated={onWorktreeCreated}
+          drag={drag}
+          isDragging={isDragging}
+          isArchiving={isRemovingProject}
+          menuController={null}
+          onRemoveProject={handleRemoveProject}
+          removeProjectStatus={isRemovingProject ? "pending" : "idle"}
+          dragHandleProps={dragHandleProps}
+          isCollapsed={collapsed}
+        >
+          <DraggableList
+            testID={`sidebar-workspace-list-${project.projectKey}`}
+            data={project.workspaces}
+            keyExtractor={workspaceKeyExtractor}
+            renderItem={renderWorkspace}
+            onDragEnd={handleWorkspaceDragEnd}
+            scrollEnabled={false}
+            useDragHandle
+            nestable={useNestable}
+            simultaneousGestureRef={parentGestureRef}
+            containerStyle={styles.workspaceListContainer}
           />
-
-          {!collapsed ? (
-            <DraggableList
-              testID={`sidebar-workspace-list-${project.projectKey}`}
-              data={project.workspaces}
-              keyExtractor={workspaceKeyExtractor}
-              renderItem={renderWorkspace}
-              onDragEnd={handleWorkspaceDragEnd}
-              scrollEnabled={false}
-              useDragHandle
-              nestable={useNestable}
-              simultaneousGestureRef={parentGestureRef}
-              containerStyle={styles.workspaceListContainer}
-            />
-          ) : null}
-        </>
+        </ProjectHeaderRow>
       )}
     </View>
   );

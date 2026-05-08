@@ -55,6 +55,70 @@ export interface SidebarProjectHeaderRowProps {
   PressableComponent?: ComponentType<PressableProps & { ref?: Ref<View> }>;
 }
 
+export interface SidebarProjectSectionProps {
+  projectKey: string;
+  projectName: string;
+  iconDataUri: string | null;
+  onPress: () => void;
+  isHovered: boolean;
+  chevron: "expand" | "collapse" | null;
+  selected?: boolean;
+  isDragging?: boolean;
+  trailingSlot?: ReactNode;
+  testID?: string;
+  children?: ReactNode;
+  footer?: ReactNode;
+  isCollapsed: boolean;
+  headerProps?: Pick<
+    SidebarProjectHeaderRowProps,
+    | "accessibilityLabel"
+    | "leadingVisualOverride"
+    | "onPressIn"
+    | "onTouchMove"
+    | "onPressOut"
+    | "PressableComponent"
+  >;
+}
+
+export const SidebarProjectSection = memo(function SidebarProjectSection({
+  projectName,
+  iconDataUri,
+  onPress,
+  isHovered,
+  chevron,
+  selected = false,
+  isDragging = false,
+  trailingSlot = null,
+  testID,
+  children = null,
+  footer = null,
+  isCollapsed,
+  headerProps,
+}: SidebarProjectSectionProps): ReactElement {
+  return (
+    <>
+      <SidebarProjectHeaderRow
+        projectName={projectName}
+        iconDataUri={iconDataUri}
+        chevron={chevron}
+        isHovered={isHovered}
+        isDragging={isDragging}
+        selected={selected}
+        trailingSlot={trailingSlot}
+        onPress={onPress}
+        testID={testID}
+        {...headerProps}
+      />
+      {!isCollapsed ? (
+        <>
+          {children}
+          {footer}
+        </>
+      ) : null}
+    </>
+  );
+});
+
 /**
  * Shared chrome for a project row that names a section: pressable, hover/press/selected
  * styles, on-hover chevron leading visual, and a trailing actions slot.
