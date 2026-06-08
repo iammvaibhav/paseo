@@ -7,7 +7,7 @@ import {
 } from "@getpaseo/protocol/agent-lifecycle";
 import { isDelegatedAgent, PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import type { Logger } from "pino";
-import { z } from "zod3";
+import { z } from "zod";
 import type { TerminalManager } from "../../terminal/terminal-manager.js";
 
 import {

@@ -1,4 +1,4 @@
-import { z } from "zod3";
+import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import Ajv, { type ErrorObject, type Options as AjvOptions } from "ajv";
 import type { AgentProvider, AgentSessionConfig } from "./agent-sdk-types.js";

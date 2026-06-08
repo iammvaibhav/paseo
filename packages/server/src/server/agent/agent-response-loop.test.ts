@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { z } from "zod3";
+import { z } from "zod";
 import {
   getStructuredAgentResponse,
   generateStructuredAgentResponseWithFallback,

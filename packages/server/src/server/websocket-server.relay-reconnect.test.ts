@@ -98,7 +98,7 @@ vi.mock("./push/push-service.js", () => ({
   },
 }));
 
-import { z } from "zod3";
+import { z } from "zod";
 import { VoiceAssistantWebSocketServer } from "./websocket-server";
 import { parseServerInfoStatusPayload } from "./messages.js";
 import type { SpeechReadinessSnapshot } from "./speech/speech-runtime.js";

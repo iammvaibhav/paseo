@@ -1,4 +1,4 @@
-import { z } from "zod3";
+import { z } from "zod";
 
 import type { ToolCallTimelineItem } from "../../agent-sdk-types.js";
 import { isSpeakToolName } from "@getpaseo/protocol/tool-name-normalization";

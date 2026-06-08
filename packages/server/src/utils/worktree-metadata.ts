@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { isAbsolute, join, resolve } from "path";
-import { z } from "zod3";
+import { z } from "zod";
 
 const PaseoWorktreeMetadataV1Schema = z.object({
   version: z.literal(1),

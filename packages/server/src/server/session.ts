@@ -4,7 +4,7 @@ import { realpathSync } from "node:fs";
 import type { FSWatcher } from "node:fs";
 import { basename, resolve, sep } from "path";
 import { homedir } from "node:os";
-import { z } from "zod3";
+import { z } from "zod";
 import type { ToolSet } from "ai";
 import { CLIENT_CAPS, type ClientCapability } from "@getpaseo/protocol/client-capabilities";
 import {

@@ -1,4 +1,4 @@
-import { z } from "zod3";
+import { z } from "zod";
 
 import type { ToolCallDetail } from "../../agent-sdk-types.js";
 

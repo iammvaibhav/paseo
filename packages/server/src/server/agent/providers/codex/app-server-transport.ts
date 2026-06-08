@@ -1,7 +1,7 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import readline from "node:readline";
 import type { Logger } from "pino";
-import { z } from "zod3";
+import { z } from "zod";
 
 import { terminateWithTreeKill } from "../../../../utils/tree-kill.js";
 

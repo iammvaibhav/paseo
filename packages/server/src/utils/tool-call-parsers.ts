@@ -1,4 +1,4 @@
-import { z } from "zod3";
+import { z } from "zod";
 import { stripCwdPrefix } from "@getpaseo/protocol/path-utils";
 
 const SHELL_WRAPPER_PREFIX_PATTERN = /^\/bin\/(?:zsh|bash|sh)\s+(?:-[a-zA-Z]+\s+)?/;

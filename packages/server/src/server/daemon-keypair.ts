@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { z } from "zod3";
+import { z } from "zod";
 import type pino from "pino";
 
 import {

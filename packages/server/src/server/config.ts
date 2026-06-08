@@ -1,6 +1,6 @@
 import path from "node:path";
 import { resolvePaseoNodeEnv } from "./paseo-env.js";
-import { z } from "zod3";
+import { z } from "zod";
 import { expandTilde } from "../utils/path.js";
 
 import type { PaseoDaemonConfig } from "./bootstrap.js";

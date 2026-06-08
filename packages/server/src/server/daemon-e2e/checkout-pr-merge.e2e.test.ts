@@ -3,7 +3,7 @@ import { execSync } from "child_process";
 import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import path from "path";
-import { z } from "zod3";
+import { z } from "zod";
 
 import {
   createDaemonTestContext,

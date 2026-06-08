@@ -1,4 +1,4 @@
-import { z } from "zod3";
+import { z } from "zod";
 import type { GitHubSearchKind } from "@getpaseo/protocol/messages";
 import { findExecutable } from "../utils/executable.js";
 import { resolveGitHubRemote } from "../utils/github-remote.js";

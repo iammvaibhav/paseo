@@ -1,4 +1,4 @@
-import { z } from "zod3";
+import { z } from "zod";
 
 import type { PersistedConfig } from "../persisted-config.js";
 import type { PaseoOpenAIConfig, PaseoSpeechConfig } from "../bootstrap.js";

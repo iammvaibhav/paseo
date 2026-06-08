@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { z } from "zod3";
+import { z } from "zod";
 
 interface ResolvePackageVersionParams {
   moduleUrl?: string;

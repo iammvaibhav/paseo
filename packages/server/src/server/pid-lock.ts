@@ -2,7 +2,7 @@ import { open, readFile, unlink, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { hostname } from "node:os";
-import { z } from "zod3";
+import { z } from "zod";
 
 export const pidLockInfoSchema = z.object({
   pid: z.number(),

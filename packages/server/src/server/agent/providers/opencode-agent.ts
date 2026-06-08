@@ -13,7 +13,7 @@ import {
 import { createPathEquivalenceMatcher } from "../../../utils/path.js";
 import pLimit from "p-limit";
 import type { Logger } from "pino";
-import { z } from "zod3";
+import { z } from "zod";
 
 import {
   getAgentStreamEventTurnId,

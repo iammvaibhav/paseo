@@ -1,4 +1,4 @@
-import { z } from "zod3";
+import { z } from "zod";
 import type { FirstAgentContext } from "@getpaseo/protocol/messages";
 import type { AgentManager } from "./agent/agent-manager.js";
 import {

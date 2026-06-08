@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { z } from "zod3";
+import { z } from "zod";
 
 import type { AgentTimelineItem } from "../../agent-sdk-types.js";
 
