@@ -14,6 +14,7 @@ import {
   PaseoAgentConfigSchema,
   type PaseoAgentConfig,
   type PaseoAgentProviderType,
+  resolvePaseoAgentProviderTypeDefaults,
 } from "./config.js";
 import { hasStoredOAuthCredential, storeCodexOAuthCredential } from "./oauth-store.js";
 import { isRefreshTokenExpressionConfigured } from "./oauth-credentials.js";
@@ -44,40 +45,6 @@ interface SetProviderInput {
     }>;
   };
 }
-
-const PROVIDER_DEFAULTS: Record<
-  PaseoAgentProviderType | "openai-codex",
-  { baseUrl?: string; api?: string; envVar?: string }
-> = {
-  openrouter: {
-    baseUrl: "https://openrouter.ai/api/v1",
-    api: "openai-completions",
-    envVar: "OPENROUTER_API_KEY",
-  },
-  openai: {
-    baseUrl: "https://api.openai.com/v1",
-    api: "openai-responses",
-    envVar: "OPENAI_API_KEY",
-  },
-  anthropic: {
-    baseUrl: "https://api.anthropic.com",
-    api: "anthropic-messages",
-    envVar: "ANTHROPIC_API_KEY",
-  },
-  opencode: {
-    baseUrl: "https://opencode.ai/zen/v1",
-    api: "openai-completions",
-    envVar: "OPENCODE_API_KEY",
-  },
-  "openai-compatible": {
-    api: "openai-completions",
-  },
-  custom: {},
-  "openai-codex": {
-    baseUrl: "https://chatgpt.com/backend-api",
-    api: "openai-codex-responses",
-  },
-};
 
 const ENV_REFERENCE_PATTERN = /\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g;
 
@@ -125,7 +92,7 @@ function redactedProviders(
   env: NodeJS.ProcessEnv,
 ): RedactedPaseoAgentProviderConfig[] {
   return Object.entries(config.providers ?? {}).map(([name, entry]) => {
-    const defaults = PROVIDER_DEFAULTS[entry.type];
+    const defaults = resolvePaseoAgentProviderTypeDefaults(entry.type);
     let auth: PaseoAgentProviderAuthState;
     if (entry.type === "openai-codex") {
       const hasRefreshToken =

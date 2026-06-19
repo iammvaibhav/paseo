@@ -11,6 +11,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { isWeb } from "@/constants/platform";
 import { usePaseoAgentProviders } from "@/hooks/use-paseo-agent-providers";
+import {
+  createOpenRouterProviderInput,
+  parsePaseoAgentModelIds,
+  paseoAgentAuthLabel,
+} from "./paseo-agent-settings-sheet-model";
 
 interface PaseoAgentSettingsSheetProps {
   serverId: string;
@@ -24,33 +29,10 @@ const HEADER: SheetHeader = { title: "Paseo Agent" };
 const ADD_HEADER: SheetHeader = { title: "Add OpenRouter provider" };
 const DEFAULT_PROVIDER_NAME = "openrouter";
 
-function authLabel(auth: RedactedPaseoAgentProviderConfig["auth"]): string {
-  if (auth.kind === "oauth") {
-    return auth.configured ? "ChatGPT login stored" : "Login required";
-  }
-  if (auth.kind === "none") {
-    return "No auth";
-  }
-  return auth.configured ? "API key configured" : "API key required";
-}
-
-function parseModelIds(raw: string): string[] {
-  const seen = new Set<string>();
-  const ids: string[] = [];
-  for (const part of raw.split(/[\n,]/)) {
-    const id = part.trim();
-    if (id.length > 0 && !seen.has(id)) {
-      seen.add(id);
-      ids.push(id);
-    }
-  }
-  return ids;
-}
-
 function ProviderRow({ provider }: { provider: RedactedPaseoAgentProviderConfig }) {
   const modelCount = provider.models.length;
   const modelLabel = modelCount === 1 ? "1 model" : `${modelCount} models`;
-  const auth = authLabel(provider.auth);
+  const auth = paseoAgentAuthLabel(provider.auth);
   return (
     <View
       style={styles.providerRow}
@@ -100,22 +82,14 @@ function AddOpenRouterSubSheet({
   }, [visible]);
 
   const trimmedName = name.trim();
-  const modelIds = useMemo(() => parseModelIds(models), [models]);
+  const modelIds = useMemo(() => parsePaseoAgentModelIds(models), [models]);
   const canSubmit = trimmedName.length > 0 && modelIds.length > 0 && !saving;
 
   const handleSubmit = useCallback(() => {
     if (!canSubmit) return;
     setError(null);
     setSaving(true);
-    const trimmedKey = apiKey.trim();
-    void setProvider({
-      name: trimmedName,
-      providerType: "openrouter",
-      options: {
-        models: modelIds.map((id) => ({ id })),
-        ...(trimmedKey.length > 0 ? { apiKey: trimmedKey } : {}),
-      },
-    })
+    void setProvider(createOpenRouterProviderInput({ name: trimmedName, apiKey, modelIds }))
       .then(() => {
         setApiKey("");
         onClose();

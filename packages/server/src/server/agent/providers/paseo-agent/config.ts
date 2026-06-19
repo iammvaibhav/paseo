@@ -43,7 +43,7 @@ const PROVIDER_TYPES = [
 
 export type PaseoAgentProviderType = (typeof PROVIDER_TYPES)[number];
 
-interface ProviderTypeDefault {
+export interface PaseoAgentProviderTypeDefault {
   /** Pi wire protocol. `undefined` for `custom`, where the user must pick one. */
   api?: string;
   /** Default base URL. `undefined` means the user must supply `options.baseUrl`. */
@@ -55,7 +55,7 @@ interface ProviderTypeDefault {
 // Defaults mirror Pi's built-in provider definitions (packages/ai models). Pi adds
 // its own attribution headers for openrouter/opencode based on the base URL, so we
 // deliberately do not inject provider headers here.
-const PROVIDER_TYPE_DEFAULTS: Record<PaseoAgentProviderType, ProviderTypeDefault> = {
+const PROVIDER_TYPE_DEFAULTS: Record<PaseoAgentProviderType, PaseoAgentProviderTypeDefault> = {
   openrouter: {
     api: "openai-completions",
     baseUrl: "https://openrouter.ai/api/v1",
@@ -98,6 +98,12 @@ const PROVIDER_TYPE_DEFAULTS: Record<PaseoAgentProviderType, ProviderTypeDefault
   },
 };
 
+export function resolvePaseoAgentProviderTypeDefaults(
+  type: PaseoAgentProviderType,
+): PaseoAgentProviderTypeDefault {
+  return PROVIDER_TYPE_DEFAULTS[type];
+}
+
 const PaseoAgentModelSchema = z
   .object({
     id: z.string().min(1),
@@ -139,7 +145,7 @@ const PaseoAgentInferenceProviderSchema = z
   })
   .strict()
   .superRefine((entry, ctx) => {
-    const defaults = PROVIDER_TYPE_DEFAULTS[entry.type];
+    const defaults = resolvePaseoAgentProviderTypeDefaults(entry.type);
     if (!defaults.baseUrl && !entry.options.baseUrl) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -195,7 +201,7 @@ function entries(config: PaseoAgentConfig): [string, PaseoAgentInferenceProvider
 function resolveProviderSettings(
   entry: PaseoAgentInferenceProviderEntry,
 ): ResolvedProviderSettings {
-  const defaults = PROVIDER_TYPE_DEFAULTS[entry.type];
+  const defaults = resolvePaseoAgentProviderTypeDefaults(entry.type);
   const apiKey = entry.options.apiKey ?? (defaults.envVar ? `$${defaults.envVar}` : undefined);
   return {
     baseUrl: entry.options.baseUrl ?? defaults.baseUrl,
