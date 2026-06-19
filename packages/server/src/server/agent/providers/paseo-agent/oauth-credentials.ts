@@ -1,4 +1,5 @@
 import { execSync } from "node:child_process";
+import { hasEnvReference, substituteEnvReferences } from "./env-references.js";
 
 // Resolution of a *self-supplied* OAuth refresh token expression — a literal, an env
 // reference (`$VAR` / `${VAR}`), or a `!command` that prints the token. This is an
@@ -8,23 +9,6 @@ import { execSync } from "node:child_process";
 //
 // This module deliberately does NOT read any other tool's auth files (Codex CLI,
 // OpenCode, Pi, etc.) and imports no Pi runtime code. Token values are never logged.
-
-const ENV_REFERENCE_PATTERN = /\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g;
-const ENV_REFERENCE_DETECT = /\$\{?[A-Za-z_][A-Za-z0-9_]*\}?/;
-
-/** Substitute `$VAR` / `${VAR}` references. Returns undefined if any var is unset. */
-function substituteEnv(value: string, env: NodeJS.ProcessEnv): string | undefined {
-  let missing = false;
-  const result = value.replace(ENV_REFERENCE_PATTERN, (_match, name: string) => {
-    const resolved = env[name];
-    if (resolved === undefined) {
-      missing = true;
-      return "";
-    }
-    return resolved;
-  });
-  return missing ? undefined : result;
-}
 
 /**
  * Resolve a refresh-token expression to its literal value (may run a `!command`).
@@ -46,8 +30,8 @@ export function resolveRefreshTokenExpression(
       return undefined;
     }
   }
-  if (ENV_REFERENCE_DETECT.test(value)) {
-    const substituted = substituteEnv(value, env);
+  if (hasEnvReference(value)) {
+    const substituted = substituteEnvReferences(value, env);
     return substituted && substituted.length > 0 ? substituted : undefined;
   }
   return value.length > 0 ? value : undefined;
@@ -64,8 +48,8 @@ export function isRefreshTokenExpressionConfigured(
   if (value.startsWith("!")) {
     return true;
   }
-  if (ENV_REFERENCE_DETECT.test(value)) {
-    return substituteEnv(value, env) !== undefined;
+  if (hasEnvReference(value)) {
+    return substituteEnvReferences(value, env) !== undefined;
   }
   return value.length > 0;
 }

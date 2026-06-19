@@ -6,6 +6,7 @@ import {
   resolveRefreshTokenExpression,
 } from "./oauth-credentials.js";
 import type { PaseoAgentInferenceProvider, PaseoAgentModelReference } from "./pi-services.js";
+import { findEnvReferences } from "./env-references.js";
 
 export const PASEO_AGENT_PROVIDER = "paseo";
 
@@ -212,8 +213,6 @@ function resolveProviderSettings(
   };
 }
 
-const ENV_REFERENCE_PATTERN = /\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g;
-
 /**
  * Whether a resolved API-key value is actually configured. Mirrors Pi's config-value
  * semantics without importing Pi: literals and `!command` values count as present;
@@ -226,7 +225,7 @@ function isAuthConfigured(value: string | undefined, env: NodeJS.ProcessEnv): bo
   if (value.startsWith("!")) {
     return true;
   }
-  const referencedVars = Array.from(value.matchAll(ENV_REFERENCE_PATTERN), (match) => match[1]);
+  const referencedVars = findEnvReferences(value);
   if (referencedVars.length === 0) {
     return true;
   }

@@ -18,6 +18,7 @@ import {
 } from "./config.js";
 import { hasStoredOAuthCredential, storeCodexOAuthCredential } from "./oauth-store.js";
 import { isRefreshTokenExpressionConfigured } from "./oauth-credentials.js";
+import { findEnvReferences } from "./env-references.js";
 
 interface PaseoAgentConfigServiceOptions {
   paseoHome: string;
@@ -46,8 +47,6 @@ interface SetProviderInput {
   };
 }
 
-const ENV_REFERENCE_PATTERN = /\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g;
-
 function resolveEnv(paseoHome: string, env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return env ?? { ...process.env, PASEO_HOME: paseoHome };
 }
@@ -71,7 +70,7 @@ function authStateForApiKey(
   if (value.startsWith("!")) {
     return { kind: "api_key", configured: true, source: "command" };
   }
-  const referencedVars = Array.from(value.matchAll(ENV_REFERENCE_PATTERN), (match) => match[1]);
+  const referencedVars = findEnvReferences(value);
   if (referencedVars.length > 0) {
     return {
       kind: "api_key",
