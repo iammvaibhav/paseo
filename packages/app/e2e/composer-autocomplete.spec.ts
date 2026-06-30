@@ -1,3 +1,5 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { expect, test, type Page } from "./fixtures";
 import { composerLocator, expectComposerVisible } from "./helpers/composer";
 import {
@@ -516,6 +518,41 @@ test.describe("Composer autocomplete", () => {
       expectPopoverDoesNotDisappearAfterFirstVisible(frames);
     } finally {
       await agent.cleanup();
+    }
+  });
+
+  test("suggests dot-prefixed workspace entries for file mentions", async ({ page }) => {
+    const session = await seedMockAgentWorkspace({
+      repoPrefix: "autocomplete-dot-entries-",
+      title: "Dot file mention autocomplete",
+    });
+
+    try {
+      await writeFile(path.join(session.cwd, ".env.local"), "PASEO_E2E=1\n");
+      await mkdir(path.join(session.cwd, ".opencode"), { recursive: true });
+      await writeFile(path.join(session.cwd, ".opencode", "settings.json"), "{}\n");
+
+      await openAgentRoute(page, session);
+      await expectWorkspaceTabVisible(page, session.agentId);
+      await expectComposerVisible(page);
+
+      const input = composerLocator(page);
+      await expect(input).toBeEditable({ timeout: 30_000 });
+
+      await input.fill("@.env");
+      const popover = page.getByTestId("composer-autocomplete-popover");
+      await expect(popover.getByText(".env.local", { exact: true }).first()).toBeVisible({
+        timeout: 30_000,
+      });
+
+      await input.fill("@.opencode");
+      await expect(
+        popover.getByText(".opencode/settings.json", { exact: true }).first(),
+      ).toBeVisible({
+        timeout: 30_000,
+      });
+    } finally {
+      await session.cleanup();
     }
   });
 
