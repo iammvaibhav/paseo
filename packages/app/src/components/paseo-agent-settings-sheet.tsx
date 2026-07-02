@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useReducer, useState } from "react";
-import { Text, View, type StyleProp, type TextStyle } from "react-native";
+import { Text, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { Bot, Plus } from "lucide-react-native";
 import type {
@@ -46,45 +46,26 @@ interface DynamicProviderIconProps {
   color?: string;
 }
 
-interface AddSheetClosedState {
-  kind: "closed";
-}
+type AddSheetState =
+  | { kind: "closed" }
+  | { kind: "picker" }
+  | {
+      kind: "form";
+      entry: PaseoAgentCatalogEntry;
+      initialName?: string;
+      lockName: boolean;
+      returnToPicker: boolean;
+    };
 
-interface AddSheetPickerState {
-  kind: "picker";
-}
-
-interface AddSheetFormState {
-  kind: "form";
-  entry: PaseoAgentCatalogEntry;
-  initialName?: string;
-  lockName: boolean;
-  returnToPicker: boolean;
-}
-
-type AddSheetState = AddSheetClosedState | AddSheetPickerState | AddSheetFormState;
-
-interface OAuthIdleState {
-  status: "idle";
-}
-
-interface OAuthAuthorizingState {
-  status: "authorizing";
-  authorization: PaseoAgentOAuthStartResult["authorization"];
-}
-
-interface OAuthCompletingState {
-  status: "completing";
-  authorization: PaseoAgentOAuthStartResult["authorization"];
-}
-
-interface OAuthErrorState {
-  status: "error";
-  message: string;
-  authorization: PaseoAgentOAuthStartResult["authorization"];
-}
-
-type OAuthState = OAuthIdleState | OAuthAuthorizingState | OAuthCompletingState | OAuthErrorState;
+type OAuthState =
+  | { status: "idle" }
+  | { status: "authorizing"; authorization: PaseoAgentOAuthStartResult["authorization"] }
+  | { status: "completing"; authorization: PaseoAgentOAuthStartResult["authorization"] }
+  | {
+      status: "error";
+      message: string;
+      authorization: PaseoAgentOAuthStartResult["authorization"];
+    };
 
 interface ProviderNameAndModelsFieldsProps {
   entry: PaseoAgentCatalogEntry;
@@ -93,7 +74,6 @@ interface ProviderNameAndModelsFieldsProps {
   resetKey: number;
   lockName: boolean;
   hasCatalogModels: boolean;
-  modelInputStyle: StyleProp<TextStyle>;
   onNameChange: (value: string) => void;
   onModelsChange: (value: string) => void;
 }
@@ -103,11 +83,6 @@ interface ApiKeyFieldsProps {
   apiKey: string;
   resetKey: number;
   onApiKeyChange: (value: string) => void;
-}
-
-interface OAuthFieldsProps {
-  oauthState: OAuthState;
-  activeAuthorization: PaseoAgentOAuthStartResult["authorization"];
 }
 
 interface ProviderFormActionsProps {
@@ -130,6 +105,14 @@ const HEADER: SheetHeader = { title: "Paseo Agent" };
 const PICKER_HEADER: SheetHeader = { title: "Add model provider" };
 const CATALOG_UPDATE_MESSAGE = "Update the Paseo daemon to use this.";
 const APP_UPDATE_PROVIDER_MESSAGE = "Update the app to use this provider";
+
+function StateBox({ children, testID }: { children: React.ReactNode; testID?: string }) {
+  return (
+    <View style={styles.stateBox} testID={testID}>
+      <Text style={styles.stateText}>{children}</Text>
+    </View>
+  );
+}
 
 function DynamicProviderIcon({ iconKey, size, color = "" }: DynamicProviderIconProps) {
   const Icon = getProviderIcon(iconKey);
@@ -335,23 +318,11 @@ function CatalogPickerSubSheet({
 }) {
   let body: React.ReactNode;
   if (error) {
-    body = (
-      <View style={styles.stateBox}>
-        <Text style={styles.stateText}>{error}</Text>
-      </View>
-    );
+    body = <StateBox>{error}</StateBox>;
   } else if (isLoading) {
-    body = (
-      <View style={styles.stateBox}>
-        <Text style={styles.stateText}>Loading...</Text>
-      </View>
-    );
+    body = <StateBox>Loading...</StateBox>;
   } else if (catalog.length === 0) {
-    body = (
-      <View style={styles.stateBox}>
-        <Text style={styles.stateText}>No providers available.</Text>
-      </View>
-    );
+    body = <StateBox>No providers available.</StateBox>;
   } else {
     body = (
       <View style={styles.list} accessibilityRole="list">
@@ -460,10 +431,11 @@ function ProviderNameAndModelsFields({
   resetKey,
   lockName,
   hasCatalogModels,
-  modelInputStyle,
   onNameChange,
   onModelsChange,
 }: ProviderNameAndModelsFieldsProps) {
+  const modelInputStyle = useMemo(() => [styles.formInput, styles.modelsInput], []);
+
   return (
     <>
       <Text style={styles.formLabel}>Provider name</Text>
@@ -533,23 +505,6 @@ function ApiKeyFields({ auth, apiKey, resetKey, onApiKeyChange }: ApiKeyFieldsPr
       <Text style={styles.formHint}>
         {apiKeyHint} {envHint}
       </Text>
-    </>
-  );
-}
-
-function OAuthFields({ oauthState, activeAuthorization }: OAuthFieldsProps) {
-  return (
-    <>
-      {activeAuthorization ? (
-        <OAuthAuthorizationPanel authorization={activeAuthorization} />
-      ) : (
-        <Text style={styles.formHint}>Sign in to connect this provider.</Text>
-      )}
-      {oauthState.status === "error" ? (
-        <Text style={styles.errorText} testID="paseo-agent-oauth-error">
-          {oauthState.message}
-        </Text>
-      ) : null}
     </>
   );
 }
@@ -659,8 +614,6 @@ function PaseoAgentProviderFormSheet({
   const [oauthState, setOAuthState] = useState<OAuthState>({ status: "idle" });
   const [resetKey, bumpResetKey] = useReducer((key: number) => key + 1, 0);
 
-  const entryId = entry?.id;
-
   useEffect(() => {
     if (visible && entry) {
       setName(initialName ?? entry.id);
@@ -671,7 +624,7 @@ function PaseoAgentProviderFormSheet({
       setOAuthState({ status: "idle" });
       bumpResetKey();
     }
-  }, [entry, entryId, initialName, visible]);
+  }, [entry, initialName, visible]);
 
   const header = useMemo<SheetHeader>(
     () => ({
@@ -680,8 +633,6 @@ function PaseoAgentProviderFormSheet({
     }),
     [entry, onBack],
   );
-  const modelInputStyle = useMemo(() => [styles.formInput, styles.modelsInput], []);
-
   const apiKeyAuth = entry ? getPaseoAgentApiKeyAuth(entry) : null;
   const oauthAuth = entry ? getPaseoAgentOAuthAuth(entry) : null;
   const trimmedName = name.trim();
@@ -789,7 +740,6 @@ function PaseoAgentProviderFormSheet({
           resetKey={resetKey}
           lockName={lockName}
           hasCatalogModels={hasCatalogModels}
-          modelInputStyle={modelInputStyle}
           onNameChange={setName}
           onModelsChange={setModels}
         />
@@ -804,7 +754,18 @@ function PaseoAgentProviderFormSheet({
         ) : null}
 
         {oauthAuth ? (
-          <OAuthFields oauthState={oauthState} activeAuthorization={activeAuthorization} />
+          <>
+            {activeAuthorization ? (
+              <OAuthAuthorizationPanel authorization={activeAuthorization} />
+            ) : (
+              <Text style={styles.formHint}>Sign in to connect this provider.</Text>
+            )}
+            {oauthState.status === "error" ? (
+              <Text style={styles.errorText} testID="paseo-agent-oauth-error">
+                {oauthState.message}
+              </Text>
+            ) : null}
+          </>
         ) : null}
 
         {!apiKeyAuth && !oauthAuth ? (
@@ -922,28 +883,16 @@ export function PaseoAgentSettingsSheet({
   let body: React.ReactNode;
   if (!supported) {
     body = (
-      <View style={styles.stateBox} testID="paseo-agent-unsupported">
-        <Text style={styles.stateText}>Update the host to configure Paseo Agent.</Text>
-      </View>
+      <StateBox testID="paseo-agent-unsupported">
+        Update the host to configure Paseo Agent.
+      </StateBox>
     );
   } else if (error) {
-    body = (
-      <View style={styles.stateBox}>
-        <Text style={styles.stateText}>{error}</Text>
-      </View>
-    );
+    body = <StateBox>{error}</StateBox>;
   } else if (isLoading) {
-    body = (
-      <View style={styles.stateBox}>
-        <Text style={styles.stateText}>Loading...</Text>
-      </View>
-    );
+    body = <StateBox>Loading...</StateBox>;
   } else if (providers.length === 0) {
-    body = (
-      <View style={styles.stateBox}>
-        <Text style={styles.stateText}>No providers configured yet.</Text>
-      </View>
-    );
+    body = <StateBox>No providers configured yet.</StateBox>;
   } else {
     body = (
       <View style={styles.list} accessibilityRole="list">

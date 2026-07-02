@@ -1,80 +1,56 @@
-export interface PaseoAgentCatalogModel {
-  [key: string]: unknown;
-  id: string;
-  label?: string;
-  api?: string;
-  reasoning?: boolean;
-  contextWindow?: number;
-  maxTokens?: number;
-}
+import type { KnownProvider } from "@earendil-works/pi-ai";
 
-export interface PaseoAgentApiKeyAuth {
-  [key: string]: unknown;
+export interface PaseoAgentKeyAuthHint {
   kind: "api_key";
-  envVar: string;
+  envVar?: string;
   keyUrl?: string;
   placeholder?: string;
   hint?: string;
 }
 
-export interface PaseoAgentOAuthAuth {
-  [key: string]: unknown;
+export interface PaseoAgentOAuthAuthHint {
   kind: "oauth";
-  flow: string;
+  flow?: string;
 }
 
-export type PaseoAgentCatalogAuth = PaseoAgentApiKeyAuth | PaseoAgentOAuthAuth;
+export type PaseoAgentCatalogAuthHint = PaseoAgentKeyAuthHint | PaseoAgentOAuthAuthHint;
 
-export interface PaseoAgentCatalogEntry {
-  [key: string]: unknown;
+export interface PaseoAgentCatalogRef {
   id: string;
+  piProvider: KnownProvider;
   label: string;
   iconName?: string;
   docsUrl?: string;
-  api: string;
-  baseUrl: string;
-  headers?: Record<string, string>;
-  compat?: Record<string, unknown>;
-  auth: PaseoAgentCatalogAuth;
-  models: PaseoAgentCatalogModel[];
+  auth?: PaseoAgentCatalogAuthHint;
+  defaultModels?: boolean;
 }
 
 export const PASEO_AGENT_PROVIDER_CATALOG = [
   {
     id: "openrouter",
+    piProvider: "openrouter",
     label: "OpenRouter",
-    api: "openai-completions",
-    baseUrl: "https://openrouter.ai/api/v1",
-    auth: { kind: "api_key", envVar: "OPENROUTER_API_KEY" },
-    models: [],
+    defaultModels: false,
   },
   {
     id: "chatgpt",
+    piProvider: "openai-codex",
     label: "ChatGPT",
     iconName: "openai",
-    api: "openai-codex-responses",
-    baseUrl: "https://chatgpt.com/backend-api",
-    auth: { kind: "oauth", flow: "openai-codex" },
-    models: [{ id: "gpt-5.4-mini", reasoning: true }],
   },
   {
     id: "kimi",
+    piProvider: "kimi-coding",
     label: "Kimi Coding Plan",
-    api: "anthropic-messages",
-    baseUrl: "https://api.kimi.com/coding",
-    headers: { "User-Agent": "KimiCLI/1.5" },
     auth: { kind: "api_key", envVar: "KIMI_API_KEY" },
-    models: [],
   },
   {
     id: "opencode-go",
+    piProvider: "opencode-go",
     label: "OpenCode Go",
-    api: "openai-completions",
-    baseUrl: "https://opencode.ai/zen/go/v1",
     auth: { kind: "api_key", envVar: "OPENCODE_API_KEY" },
-    models: [],
   },
-] as const satisfies readonly PaseoAgentCatalogEntry[];
+] as const satisfies readonly PaseoAgentCatalogRef[];
 
 const PASEO_AGENT_PROVIDER_ALIASES: Record<string, string> = {
   "openai-codex": "chatgpt",
@@ -82,7 +58,7 @@ const PASEO_AGENT_PROVIDER_ALIASES: Record<string, string> = {
 
 export function resolvePaseoAgentCatalogEntry(
   providerType: string,
-): PaseoAgentCatalogEntry | undefined {
+): PaseoAgentCatalogRef | undefined {
   const canonicalId = PASEO_AGENT_PROVIDER_ALIASES[providerType] ?? providerType;
   return PASEO_AGENT_PROVIDER_CATALOG.find((entry) => entry.id === canonicalId);
 }
@@ -95,7 +71,7 @@ export function unknownPaseoAgentProviderTypeMessage(providerType: string): stri
   return `Unknown model provider type "${providerType}". Known provider ids: ${knownPaseoAgentCatalogIds().join(", ")}. Update the host if this provider is newer than it.`;
 }
 
-export function requirePaseoAgentCatalogEntry(providerType: string): PaseoAgentCatalogEntry {
+export function requirePaseoAgentCatalogEntry(providerType: string): PaseoAgentCatalogRef {
   const entry = resolvePaseoAgentCatalogEntry(providerType);
   if (!entry) {
     throw new Error(unknownPaseoAgentProviderTypeMessage(providerType));

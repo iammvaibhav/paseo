@@ -1,6 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { getModels } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { createTestLogger } from "../../../../test-utils/test-logger.js";
@@ -8,6 +9,17 @@ import { loadPersistedConfig, savePersistedConfig } from "../../../persisted-con
 import { PaseoAgentConfigService } from "./config-service.js";
 import { PaseoAgentConfigSchema } from "./config.js";
 import { paseoAgentAuthStoragePath, storeOAuthCredential } from "./oauth-store.js";
+
+function piCatalogModels(provider: Parameters<typeof getModels>[0]) {
+  return getModels(provider).map((model) => ({
+    id: model.id,
+    label: model.name,
+    api: model.api,
+    reasoning: model.reasoning,
+    contextWindow: model.contextWindow,
+    maxTokens: model.maxTokens,
+  }));
+}
 
 describe("PaseoAgentConfigService", () => {
   let home: string;
@@ -156,6 +168,27 @@ describe("PaseoAgentConfigService", () => {
     expect(loadPersistedConfig(home).agents?.paseo?.providers?.chatgpt?.type).toBe("chatgpt");
   });
 
+  test("does not persist Pi catalog defaults as instance model overrides", () => {
+    const service = new PaseoAgentConfigService({
+      paseoHome: home,
+      logger: createTestLogger(),
+    });
+    const chatgptCatalog = service.getCatalog().find((entry) => entry.id === "chatgpt");
+    if (!chatgptCatalog) {
+      throw new Error("missing chatgpt catalog entry");
+    }
+
+    service.setProvider({
+      name: "chatgpt",
+      providerType: "chatgpt",
+      options: { models: chatgptCatalog.models },
+    });
+
+    expect(loadPersistedConfig(home).agents?.paseo?.providers?.chatgpt?.options.models).toBe(
+      undefined,
+    );
+  });
+
   test("preserves shared config fields when writing agents.paseo", () => {
     const logger = createTestLogger();
     savePersistedConfig(
@@ -258,7 +291,7 @@ describe("PaseoAgentConfigService", () => {
       expect.objectContaining({
         name: "chatgpt",
         providerType: "chatgpt",
-        models: [{ id: "gpt-5.4-mini", reasoning: true }],
+        models: piCatalogModels("openai-codex"),
         auth: { kind: "oauth", configured: true, source: "stored" },
         available: true,
       }),

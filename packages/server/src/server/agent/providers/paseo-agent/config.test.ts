@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { getModels } from "@earendil-works/pi-ai";
 
 import {
   PaseoAgentConfigSchema,
@@ -10,6 +11,10 @@ import {
   resolvePaseoAgentModel,
   type PaseoAgentConfig,
 } from "./config.js";
+
+function piModelIds(provider: Parameters<typeof getModels>[0]): string[] {
+  return getModels(provider).map((model) => model.id);
+}
 
 function configWith(overrides?: Partial<PaseoAgentConfig>): PaseoAgentConfig {
   return PaseoAgentConfigSchema.parse({
@@ -107,7 +112,9 @@ describe("listPaseoAgentModels", () => {
     const models = listPaseoAgentModels(
       PaseoAgentConfigSchema.parse({ providers: { chatgpt: { type: "chatgpt" } } }),
     );
-    expect(models.map((m) => m.id)).toEqual(["chatgpt/gpt-5.4-mini"]);
+    expect(models.map((m) => m.id)).toEqual(
+      piModelIds("openai-codex").map((modelId) => `chatgpt/${modelId}`),
+    );
   });
 
   it("marks the configured default model", () => {
@@ -153,7 +160,7 @@ describe("paseoAgentModelProviders", () => {
     expect(provider.config.baseUrl).toBe("https://api.kimi.com/coding");
     expect(provider.config.apiKey).toBe("$KIMI_API_KEY");
     expect(provider.config.api).toBe("anthropic-messages");
-    expect(provider.config.headers).toEqual({ "User-Agent": "KimiCLI/1.5" });
+    expect(provider.config.models?.[0]?.headers).toEqual({ "User-Agent": "KimiCLI/1.5" });
     expect(provider.config.models?.[0]?.api).toBe("anthropic-messages");
   });
 
@@ -179,7 +186,7 @@ describe("paseoAgentModelProviders", () => {
     expect(provider.config.apiKey).toBeUndefined();
     expect(provider.config.api).toBe("openai-codex-responses");
     expect(provider.config.baseUrl).toBe("https://chatgpt.com/backend-api");
-    expect(provider.config.models?.[0]?.id).toBe("gpt-5.4-mini");
+    expect(provider.config.models?.map((model) => model.id)).toEqual(piModelIds("openai-codex"));
   });
 
   it("lets instance models override catalog default models", async () => {
@@ -205,7 +212,7 @@ describe("paseoAgentModelProviders", () => {
       }),
     );
     expect(provider.oauth).toEqual({ flow: "openai-codex" });
-    expect(provider.config.models?.[0]?.id).toBe("gpt-5.4-mini");
+    expect(provider.config.models?.map((model) => model.id)).toEqual(piModelIds("openai-codex"));
   });
 
   it("rejects unknown provider types at runtime with known ids", async () => {
@@ -295,7 +302,7 @@ describe("resolvePaseoAgentModel", () => {
         PaseoAgentConfigSchema.parse({ providers: { chatgpt: { type: "chatgpt" } } }),
         null,
       ),
-    ).toEqual({ provider: "chatgpt", id: "gpt-5.4-mini" });
+    ).toEqual({ provider: "chatgpt", id: piModelIds("openai-codex")[0] });
   });
 
   it("ignores an implicit default whose provider is not registered", () => {

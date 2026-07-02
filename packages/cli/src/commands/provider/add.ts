@@ -139,31 +139,32 @@ function requirePaseoAgentCatalogFeature(
   } satisfies CommandError;
 }
 
-function authField(auth: Record<string, unknown>, field: string): string | undefined {
+function authField(entry: PaseoAgentCatalogEntry, field: string): string | undefined {
+  const auth = entry.auth;
   const value = auth[field];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-function apiKeyEnvVar(entry: PaseoAgentCatalogEntry): string {
-  const envVar = authField(entry.auth, "envVar");
-  if (envVar) {
-    return envVar;
-  }
+function requireAuthField(
+  entry: PaseoAgentCatalogEntry,
+  field: string,
+  description: string,
+): string {
+  const value = authField(entry, field);
+  if (value) return value;
+
   throw {
     code: "UNSUPPORTED_PROVIDER_AUTH",
-    message: `Provider ${entry.id} is missing an API key environment variable. Update the Paseo daemon to use this command.`,
+    message: `Provider ${entry.id} is missing ${description}. Update the Paseo daemon to use this command.`,
   } satisfies CommandError;
 }
 
+function apiKeyEnvVar(entry: PaseoAgentCatalogEntry): string {
+  return requireAuthField(entry, "envVar", "an API key environment variable");
+}
+
 function oauthFlow(entry: PaseoAgentCatalogEntry): string {
-  const flow = authField(entry.auth, "flow");
-  if (flow) {
-    return flow;
-  }
-  throw {
-    code: "UNSUPPORTED_PROVIDER_AUTH",
-    message: `Provider ${entry.id} is missing an OAuth flow. Update the Paseo daemon to use this command.`,
-  } satisfies CommandError;
+  return requireAuthField(entry, "flow", "an OAuth flow");
 }
 
 function normalizeModels(rawModels: string[] | undefined): string[] {
@@ -184,7 +185,7 @@ function catalogModels(entry: PaseoAgentCatalogEntry): ProviderModelInput[] {
   }));
 }
 
-function selectedModels(
+function requireModels(
   entry: PaseoAgentCatalogEntry,
   options: ProviderAddOptions,
 ): ProviderModelInput[] {
@@ -192,14 +193,8 @@ function selectedModels(
   if (modelIds.length > 0) {
     return modelIds.map((id) => ({ id }));
   }
-  return catalogModels(entry);
-}
 
-function requireModels(
-  entry: PaseoAgentCatalogEntry,
-  options: ProviderAddOptions,
-): ProviderModelInput[] {
-  const models = selectedModels(entry, options);
+  const models = catalogModels(entry);
   if (models.length > 0) {
     return models;
   }
@@ -243,7 +238,6 @@ async function selectCatalogEntry(
 async function resolveEntry(
   id: string | undefined,
   catalog: PaseoAgentCatalogEntry[],
-  client: ProviderAddClient,
   dependencies: ProviderAddDependencies,
 ): Promise<PaseoAgentCatalogEntry> {
   if (!id) {
@@ -255,14 +249,9 @@ async function resolveEntry(
     return entry;
   }
 
-  const result = await client.setPaseoAgentProvider({
-    name: id,
-    providerType: id,
-    options: { models: [{ id: "placeholder" }] },
-  });
   throw {
     code: "UNKNOWN_PROVIDER",
-    message: result.error ?? `Unknown model provider type "${id}".`,
+    message: `Unknown model provider type "${id}".`,
   } satisfies CommandError;
 }
 
@@ -320,26 +309,19 @@ async function resolveApiKey(
     } satisfies CommandError;
   }
 
-  const hint = authField(entry.auth, "hint");
-  const keyUrl = authField(entry.auth, "keyUrl");
+  const hint = authField(entry, "hint");
+  const keyUrl = authField(entry, "keyUrl");
   if (hint) {
     dependencies.write(hint);
   }
   if (keyUrl) {
     dependencies.write(`API key URL: ${keyUrl}`);
   }
-  const placeholder = authField(entry.auth, "placeholder") ?? "API key";
+  const placeholder = authField(entry, "placeholder") ?? "API key";
   const value = await dependencies.promptSecret(
     `Enter ${placeholder} (leave empty to use $${envVar}):`,
   );
   return value || `$${envVar}`;
-}
-
-function browserOpenError(): CommandError {
-  return {
-    code: "BROWSER_OPEN_FAILED",
-    message: "Browser could not be opened.",
-  };
 }
 
 function isBrowserOpenError(error: unknown): boolean {
@@ -415,7 +397,10 @@ async function runBrowserOAuth(
     onAuthUrl: (url, instructions) => {
       const opened = dependencies.openBrowser(url);
       if (!opened) {
-        throw browserOpenError();
+        throw {
+          code: "BROWSER_OPEN_FAILED",
+          message: "Browser could not be opened.",
+        } satisfies CommandError;
       }
       dependencies.write(instructions ?? "Opening your browser to authorize Paseo.");
       dependencies.write(`  ${url}`);
@@ -500,23 +485,23 @@ export async function runAddCommand(
         message: catalogResult.error,
       } satisfies CommandError;
     }
-    const entry = await resolveEntry(id, catalogResult.catalog, client, deps);
+    const entry = await resolveEntry(id, catalogResult.catalog, deps);
     const name = options.name?.trim() || entry.id;
     const provider = await configureProvider(client, entry, name, options, deps);
-    let outputProvider = provider;
-    if (entry.auth.kind === "oauth") {
-      const auth = await authenticateOAuthProvider(client, entry, name, options, deps);
-      outputProvider = auth ? { ...provider, auth } : provider;
-    } else if (entry.auth.kind !== "api_key") {
+    if (entry.auth.kind !== "api_key" && entry.auth.kind !== "oauth") {
       throw {
         code: "UNSUPPORTED_PROVIDER_AUTH",
         message: `Provider ${entry.label} uses an auth type this CLI does not understand. Update the Paseo daemon to use this command.`,
       } satisfies CommandError;
     }
+    const auth =
+      entry.auth.kind === "oauth"
+        ? await authenticateOAuthProvider(client, entry, name, options, deps)
+        : provider.auth;
 
     return {
       type: "single",
-      data: toConfiguredItem(outputProvider, entry),
+      data: toConfiguredItem(auth ? { ...provider, auth } : provider, entry),
       schema: providerConfiguredSchema,
     };
   } finally {

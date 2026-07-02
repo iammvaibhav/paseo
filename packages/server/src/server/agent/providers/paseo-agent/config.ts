@@ -1,3 +1,6 @@
+import { findEnvKeys, getModels, type Api, type Model } from "@earendil-works/pi-ai";
+import { getOAuthProvider } from "@earendil-works/pi-ai/oauth";
+import type { PaseoAgentCatalogEntry as PaseoAgentCatalogManifestEntry } from "@getpaseo/protocol/messages";
 import { z } from "zod";
 
 import type { AgentModelDefinition } from "../../agent-sdk-types.js";
@@ -8,9 +11,9 @@ import {
 import type { OAuthCredentialBinding } from "./oauth-store.js";
 import type { PaseoAgentModelProvider, PaseoAgentModelReference } from "./pi-services.js";
 import {
+  PASEO_AGENT_PROVIDER_CATALOG,
   requirePaseoAgentCatalogEntry,
-  type PaseoAgentCatalogEntry,
-  type PaseoAgentCatalogModel,
+  type PaseoAgentCatalogRef,
 } from "./catalog.js";
 import { findEnvReferences } from "./env-references.js";
 
@@ -57,14 +60,33 @@ export const PaseoAgentConfigSchema = z
 
 export type PaseoAgentConfig = z.infer<typeof PaseoAgentConfigSchema>;
 export type PaseoAgentModelProviderEntry = z.infer<typeof PaseoAgentModelProviderSchema>;
-type PiModelConfig = NonNullable<PaseoAgentModelProvider["config"]["models"]>[number];
+export type PaseoAgentProviderModelConfig = z.infer<typeof PaseoAgentModelSchema>;
+export type { PaseoAgentCatalogManifestEntry };
 
+type PiModel = Model<Api>;
+type PiModelConfig = NonNullable<PaseoAgentModelProvider["config"]["models"]>[number];
+type ProviderOptions = PaseoAgentModelProviderEntry["options"];
+
+const DEFAULT_INPUT: PiModelConfig["input"] = ["text"];
+const ZERO_COST: PiModelConfig["cost"] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 16_384;
+const DEFAULT_MODEL_FIELDS = [
+  "id",
+  "label",
+  "api",
+  "reasoning",
+  "contextWindow",
+  "maxTokens",
+] as const;
+
+type ResolvedCatalogAuth =
+  | { kind: "api_key"; envVar: string; keyUrl?: string; placeholder?: string; hint?: string }
+  | { kind: "oauth"; flow: string };
 
 export interface ResolvedProviderSettings {
   baseUrl: string;
-  api: string;
+  api: Api;
   apiKey?: string;
   headers?: Record<string, string>;
   authHeader?: boolean;
@@ -74,37 +96,131 @@ function entries(config: PaseoAgentConfig): [string, PaseoAgentModelProviderEntr
   return Object.entries(config.providers ?? {});
 }
 
-function mergeHeaders(
-  catalogHeaders: Record<string, string> | undefined,
-  optionHeaders: Record<string, string> | undefined,
-): Record<string, string> | undefined {
-  const headers = { ...catalogHeaders, ...optionHeaders };
-  return Object.keys(headers).length > 0 ? headers : undefined;
+function getPaseoAgentPiModels(catalogEntry: PaseoAgentCatalogRef): PiModel[] {
+  return getModels(catalogEntry.piProvider);
+}
+
+function requirePaseoAgentPrimaryModel(catalogEntry: PaseoAgentCatalogRef): PiModel {
+  const first = getPaseoAgentPiModels(catalogEntry)[0];
+  if (!first) {
+    throw new Error(`Paseo Agent provider "${catalogEntry.id}" has no Pi models.`);
+  }
+  return first;
+}
+
+function defaultPaseoAgentPiModels(catalogEntry: PaseoAgentCatalogRef): PiModel[] {
+  return catalogEntry.defaultModels === false ? [] : getPaseoAgentPiModels(catalogEntry);
+}
+
+export function resolvePaseoAgentCatalogAuth(
+  catalogEntry: PaseoAgentCatalogRef,
+): ResolvedCatalogAuth {
+  if (catalogEntry.auth?.kind === "oauth") {
+    return { kind: "oauth", flow: catalogEntry.auth.flow ?? catalogEntry.piProvider };
+  }
+
+  if (!catalogEntry.auth && getOAuthProvider(catalogEntry.piProvider)) {
+    return { kind: "oauth", flow: catalogEntry.piProvider };
+  }
+
+  const envVar =
+    catalogEntry.auth?.kind === "api_key"
+      ? catalogEntry.auth.envVar
+      : findEnvKeys(catalogEntry.piProvider)?.[0];
+  if (!envVar) {
+    throw new Error(`Paseo Agent provider "${catalogEntry.id}" has no auth source.`);
+  }
+
+  return {
+    kind: "api_key",
+    envVar,
+    ...(catalogEntry.auth?.kind === "api_key" && catalogEntry.auth.keyUrl
+      ? { keyUrl: catalogEntry.auth.keyUrl }
+      : {}),
+    ...(catalogEntry.auth?.kind === "api_key" && catalogEntry.auth.placeholder
+      ? { placeholder: catalogEntry.auth.placeholder }
+      : {}),
+    ...(catalogEntry.auth?.kind === "api_key" && catalogEntry.auth.hint
+      ? { hint: catalogEntry.auth.hint }
+      : {}),
+  };
 }
 
 export function resolvePaseoAgentProviderSettings(
   entry: PaseoAgentModelProviderEntry,
-  catalogEntry: PaseoAgentCatalogEntry = requirePaseoAgentCatalogEntry(entry.type),
+  catalogEntry: PaseoAgentCatalogRef = requirePaseoAgentCatalogEntry(entry.type),
 ): ResolvedProviderSettings {
-  const apiKey =
-    catalogEntry.auth.kind === "api_key"
-      ? (entry.options.apiKey ?? `$${catalogEntry.auth.envVar}`)
-      : undefined;
-  const headers = mergeHeaders(catalogEntry.headers, entry.options.headers);
+  const primaryModel = requirePaseoAgentPrimaryModel(catalogEntry);
+  const auth = resolvePaseoAgentCatalogAuth(catalogEntry);
+  const apiKey = auth.kind === "api_key" ? (entry.options.apiKey ?? `$${auth.envVar}`) : undefined;
   return {
-    baseUrl: entry.options.baseUrl ?? catalogEntry.baseUrl,
-    api: entry.options.api ?? catalogEntry.api,
+    baseUrl: entry.options.baseUrl ?? primaryModel.baseUrl,
+    api: entry.options.api ?? primaryModel.api,
     ...(apiKey ? { apiKey } : {}),
-    ...(headers ? { headers } : {}),
+    ...(entry.options.headers ? { headers: entry.options.headers } : {}),
     ...(entry.options.authHeader ? { authHeader: entry.options.authHeader } : {}),
+  };
+}
+
+function toCatalogModel(model: PiModel): PaseoAgentProviderModelConfig {
+  return {
+    id: model.id,
+    label: model.name,
+    api: model.api,
+    reasoning: model.reasoning,
+    contextWindow: model.contextWindow,
+    maxTokens: model.maxTokens,
   };
 }
 
 export function resolvePaseoAgentProviderModels(
   entry: PaseoAgentModelProviderEntry,
-  catalogEntry: PaseoAgentCatalogEntry = requirePaseoAgentCatalogEntry(entry.type),
-): PaseoAgentCatalogModel[] {
-  return entry.options.models ?? catalogEntry.models;
+  catalogEntry: PaseoAgentCatalogRef = requirePaseoAgentCatalogEntry(entry.type),
+): PaseoAgentProviderModelConfig[] {
+  return entry.options.models ?? defaultPaseoAgentPiModels(catalogEntry).map(toCatalogModel);
+}
+
+export function isPaseoAgentDefaultModelSelection(
+  models: PaseoAgentProviderModelConfig[] | undefined,
+  catalogEntry: PaseoAgentCatalogRef,
+): boolean {
+  if (!models) {
+    return false;
+  }
+
+  const defaults = defaultPaseoAgentPiModels(catalogEntry).map(toCatalogModel);
+  if (models.length !== defaults.length || defaults.length === 0) {
+    return false;
+  }
+
+  return models.every((model, index) => {
+    const defaultModel = defaults[index];
+    return DEFAULT_MODEL_FIELDS.every((field) => model[field] === defaultModel?.[field]);
+  });
+}
+
+export function paseoAgentCatalogManifests(): PaseoAgentCatalogManifestEntry[] {
+  return PASEO_AGENT_PROVIDER_CATALOG.map((catalogEntry: PaseoAgentCatalogRef) => {
+    const primaryModel = requirePaseoAgentPrimaryModel(catalogEntry);
+    const manifest: PaseoAgentCatalogManifestEntry = {
+      id: catalogEntry.id,
+      label: catalogEntry.label,
+      api: primaryModel.api,
+      baseUrl: primaryModel.baseUrl,
+      auth: resolvePaseoAgentCatalogAuth(catalogEntry),
+      models: defaultPaseoAgentPiModels(catalogEntry).map(toCatalogModel),
+    };
+    if (catalogEntry.iconName) {
+      manifest.iconName = catalogEntry.iconName;
+    }
+    if (catalogEntry.docsUrl) {
+      manifest.docsUrl = catalogEntry.docsUrl;
+    }
+    if (primaryModel.headers) {
+      manifest.headers = { ...primaryModel.headers };
+    }
+    return manifest;
+  });
 }
 
 /**
@@ -138,26 +254,65 @@ export function parsePaseoAgentModelId(modelId: string): PaseoAgentModelReferenc
   return { provider: modelId.slice(0, slash), id: modelId.slice(slash + 1) };
 }
 
+function applyModelOverrides(
+  model: PiModel,
+  options: ProviderOptions,
+  override?: PaseoAgentProviderModelConfig,
+): PiModelConfig {
+  return {
+    id: override?.id ?? model.id,
+    name: override?.label ?? model.name,
+    api: override?.api ?? options.api ?? model.api,
+    baseUrl: options.baseUrl ?? model.baseUrl,
+    reasoning: override?.reasoning ?? model.reasoning,
+    ...(model.thinkingLevelMap ? { thinkingLevelMap: model.thinkingLevelMap } : {}),
+    input: model.input,
+    cost: model.cost,
+    contextWindow: override?.contextWindow ?? model.contextWindow,
+    maxTokens: override?.maxTokens ?? model.maxTokens,
+    ...(model.headers ? { headers: { ...model.headers } } : {}),
+    ...(model.compat ? { compat: model.compat } : {}),
+  };
+}
+
+function customModelFromOptions(
+  model: PaseoAgentProviderModelConfig,
+  options: ProviderOptions,
+  fallback: PiModel,
+): PiModelConfig {
+  return {
+    id: model.id,
+    name: model.label ?? model.id,
+    api: model.api ?? options.api ?? fallback.api,
+    baseUrl: options.baseUrl ?? fallback.baseUrl,
+    reasoning: model.reasoning ?? false,
+    input: fallback.input ?? DEFAULT_INPUT,
+    cost: ZERO_COST,
+    contextWindow: model.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+    maxTokens: model.maxTokens ?? DEFAULT_MAX_TOKENS,
+    ...(fallback.headers ? { headers: { ...fallback.headers } } : {}),
+  };
+}
+
 function toPiModels(
   entry: PaseoAgentModelProviderEntry,
-  settings: ResolvedProviderSettings,
+  catalogEntry: PaseoAgentCatalogRef,
 ): PiModelConfig[] {
-  const catalogEntry = requirePaseoAgentCatalogEntry(entry.type);
-  return resolvePaseoAgentProviderModels(entry, catalogEntry).map((model) => {
-    const api = model.api ?? settings.api;
-    const piModel: PiModelConfig = {
-      id: model.id,
-      name: model.label ?? model.id,
-      reasoning: model.reasoning ?? false,
-      input: ["text"] as ("text" | "image")[],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: model.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
-      maxTokens: model.maxTokens ?? DEFAULT_MAX_TOKENS,
-    };
-    if (api) {
-      piModel.api = api;
-    }
-    return piModel;
+  const piModels = getPaseoAgentPiModels(catalogEntry);
+  const piModelsById = new Map(piModels.map((model) => [model.id, model]));
+  const selectedModels = entry.options.models;
+  if (!selectedModels) {
+    return defaultPaseoAgentPiModels(catalogEntry).map((model) =>
+      applyModelOverrides(model, entry.options),
+    );
+  }
+
+  const fallback = requirePaseoAgentPrimaryModel(catalogEntry);
+  return selectedModels.map((model) => {
+    const piModel = piModelsById.get(model.id);
+    return piModel
+      ? applyModelOverrides(piModel, entry.options, model)
+      : customModelFromOptions(model, entry.options, fallback);
   });
 }
 
@@ -169,22 +324,24 @@ export async function paseoAgentModelProviders(
 
   for (const [name, entry] of entries(config)) {
     const catalogEntry = requirePaseoAgentCatalogEntry(entry.type);
+    const auth = resolvePaseoAgentCatalogAuth(catalogEntry);
     const settings = resolvePaseoAgentProviderSettings(entry, catalogEntry);
-    const models = toPiModels(entry, settings);
+    const models = toPiModels(entry, catalogEntry);
+    const providerConfig = {
+      baseUrl: settings.baseUrl,
+      api: settings.api,
+      ...(settings.headers ? { headers: settings.headers } : {}),
+      models,
+    };
 
-    if (catalogEntry.auth.kind === "oauth") {
+    if (auth.kind === "oauth") {
       const refreshToken = entry.options.refreshToken
         ? await resolveRefreshTokenExpression(entry.options.refreshToken, env)
         : undefined;
       providers.push({
         name,
-        config: {
-          baseUrl: settings.baseUrl,
-          api: settings.api,
-          ...(settings.headers ? { headers: settings.headers } : {}),
-          models,
-        },
-        oauth: { flow: catalogEntry.auth.flow, ...(refreshToken ? { refreshToken } : {}) },
+        config: providerConfig,
+        oauth: { flow: auth.flow, ...(refreshToken ? { refreshToken } : {}) },
       });
       continue;
     }
@@ -192,12 +349,9 @@ export async function paseoAgentModelProviders(
     providers.push({
       name,
       config: {
-        baseUrl: settings.baseUrl,
+        ...providerConfig,
         ...(settings.apiKey ? { apiKey: settings.apiKey } : {}),
-        api: settings.api,
-        ...(settings.headers ? { headers: settings.headers } : {}),
         ...(settings.authHeader ? { authHeader: settings.authHeader } : {}),
-        models,
       },
     });
   }
@@ -231,10 +385,13 @@ export function paseoAgentHasUsableModel(
 ): boolean {
   return entries(config).some(([name, entry]) => {
     const catalogEntry = requirePaseoAgentCatalogEntry(entry.type);
-    if (resolvePaseoAgentProviderModels(entry, catalogEntry).length === 0) {
+    const models = resolvePaseoAgentProviderModels(entry, catalogEntry);
+    if (models.length === 0) {
       return false;
     }
-    if (catalogEntry.auth.kind === "oauth") {
+
+    const auth = resolvePaseoAgentCatalogAuth(catalogEntry);
+    if (auth.kind === "oauth") {
       if (
         entry.options.refreshToken &&
         isRefreshTokenExpressionConfigured(entry.options.refreshToken, env)
@@ -242,7 +399,7 @@ export function paseoAgentHasUsableModel(
         return true;
       }
       return isOAuthAuthed(name, {
-        flow: catalogEntry.auth.flow,
+        flow: auth.flow,
         baseUrl: resolvePaseoAgentProviderSettings(entry, catalogEntry).baseUrl,
       });
     }
@@ -275,8 +432,8 @@ export function resolvePaseoAgentModel(
 
 function paseoAgentModelInventory(config: PaseoAgentConfig): PaseoAgentModelProvider[] {
   return entries(config).map(([name, entry]) => {
-    const settings = resolvePaseoAgentProviderSettings(entry);
-    return { name, config: { models: toPiModels(entry, settings) } };
+    const catalogEntry = requirePaseoAgentCatalogEntry(entry.type);
+    return { name, config: { models: toPiModels(entry, catalogEntry) } };
   });
 }
 

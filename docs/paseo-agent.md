@@ -21,30 +21,31 @@ instance and the `openai/gpt-4o-mini` model exposed by that instance.
 
 ## Provider catalog
 
-Paseo Agent model providers are catalog-driven. `catalog.ts` is the source of truth for
-which provider types the daemon knows how to configure. A catalog entry is data only:
-id, label, wire API, base URL, optional headers, auth metadata, and optional default
-models. The app picker, CLI setup, config RPCs, runtime provider resolution, and auth
-state all use that same data.
+Paseo Agent model providers are catalog-driven, but Paseo does not copy Pi's provider
+registry. `catalog.ts` is only the curated Paseo surface: catalog id, Pi provider id,
+label, icon, default-model policy, and auth hints Pi cannot infer. Pi supplies the wire
+API, base URL, headers, model ids, context windows, token limits, costs, reasoning flags,
+thinking maps, and OAuth registry data at runtime.
 
 The current catalog contains four entries:
 
-| id            | label            | api                      | base URL                          | auth                          |
-| ------------- | ---------------- | ------------------------ | --------------------------------- | ----------------------------- |
-| `openrouter`  | OpenRouter       | `openai-completions`     | `https://openrouter.ai/api/v1`    | API key, `OPENROUTER_API_KEY` |
-| `chatgpt`     | ChatGPT          | `openai-codex-responses` | `https://chatgpt.com/backend-api` | OAuth, `openai-codex` flow    |
-| `kimi`        | Kimi Coding Plan | `anthropic-messages`     | `https://api.kimi.com/coding`     | API key, `KIMI_API_KEY`       |
-| `opencode-go` | OpenCode Go      | `openai-completions`     | `https://opencode.ai/zen/go/v1`   | API key, `OPENCODE_API_KEY`   |
+| id            | Pi provider    | default models | auth source                                   |
+| ------------- | -------------- | -------------- | --------------------------------------------- |
+| `openrouter`  | `openrouter`   | none           | Pi env key `OPENROUTER_API_KEY`               |
+| `chatgpt`     | `openai-codex` | Pi full list   | Pi OAuth registry (`openai-codex`)            |
+| `kimi`        | `kimi-coding`  | Pi full list   | Paseo hint `KIMI_API_KEY` (Pi has no env key) |
+| `opencode-go` | `opencode-go`  | Pi full list   | Paseo hint `OPENCODE_API_KEY`                 |
 
-Only `chatgpt` ships with a default model (`gpt-5.4-mini`). API-key providers currently
-require at least one explicit `--model` or `options.models[]` entry.
+OpenRouter intentionally has no default model because Pi's OpenRouter registry is large;
+users must choose explicit model ids. The other catalog entries expose Pi's bundled model
+list unless an instance sets `options.models`.
 
 ## Config shape
 
 `agents.paseo.providers` is structurally generic. Provider instance names are free-form
-keys; provider types are catalog ids. That means you can use the catalog id as the
-default instance name, or create several instances of the same type with different
-models, keys, or base URLs.
+keys; provider types are catalog ids. Use the catalog id as the default instance name,
+or create several instances of the same type with different models, keys, or endpoint
+overrides.
 
 ```jsonc
 {
@@ -65,9 +66,6 @@ models, keys, or base URLs.
         },
         "chatgpt": {
           "type": "chatgpt",
-          "options": {
-            "models": [{ "id": "gpt-5.4-mini", "reasoning": true }],
-          },
         },
         "kimi": {
           "type": "kimi",
@@ -82,42 +80,18 @@ models, keys, or base URLs.
 }
 ```
 
-The provider entry shape is:
+Most options are overrides over Pi-derived provider data:
 
-```jsonc
-{
-  "type": "openrouter",
-  "options": {
-    "apiKey": "$OPENROUTER_API_KEY",
-    "baseUrl": "https://...",
-    "api": "openai-completions",
-    "headers": { "X-Example": "value" },
-    "authHeader": true,
-    "refreshToken": "$CHATGPT_REFRESH_TOKEN",
-    "models": [
-      {
-        "id": "provider/model-id",
-        "label": "Readable label",
-        "api": "anthropic-messages",
-        "reasoning": true,
-        "contextWindow": 128000,
-        "maxTokens": 16384,
-      },
-    ],
-  },
-}
-```
-
-Most options are overrides for the catalog entry:
-
-- `apiKey` may be omitted for API-key providers. Omitted means "use the catalog env var"
-  such as `OPENROUTER_API_KEY`.
+- `apiKey` may be omitted for API-key providers. Omitted means "use the derived or hinted
+  env var", such as `OPENROUTER_API_KEY` or `KIMI_API_KEY`.
 - `apiKey` may also be a literal key, `$ENV`, `${ENV}`, or `!command` expression. Paseo
   mirrors Pi's config-value semantics: literals and commands count as configured; env
   references count only when every referenced env var is set in the daemon environment.
-- `baseUrl`, `api`, `headers`, and `authHeader` override or extend catalog defaults.
-- `models[]` exposes the model ids usable as `<providerInstance>/<modelId>`. A model may
-  override `api` when a single backend serves mixed protocols.
+- `baseUrl`, `api`, `headers`, and `authHeader` override or extend the Pi-derived request
+  config.
+- `models[]` is an instance override. Omit it to use that entry's default policy. A model
+  may override `api` when a single backend serves mixed protocols or when Pi has no data
+  for a custom id.
 - `refreshToken` is an advanced OAuth seed path. Prefer the OAuth store described below.
 
 Env references make config portable: `config.json` can be copied between machines while
@@ -169,58 +143,14 @@ The current catalog only uses `openai-codex` for `chatgpt`.
 The provider CLI talks to the selected daemon. Always pass `--host` when smoking an
 isolated daemon.
 
-Actual help text:
+Commands:
 
-```text
-Usage: paseo provider add [options] [id]
-
-Configure a Paseo Agent model provider
-
-Arguments:
-  id                     Catalog provider id; omit to choose interactively
-
-Options:
-  --name <instanceName>  Provider instance name (default: provider id)
-  --model <id>           Model ID to expose (repeatable, comma-separated;
-                         defaults to catalog models) (default: [])
-  --api-key-stdin        Read API key from stdin
-  --device-code          Use daemon-run device-code OAuth instead of browser
-                         OAuth
-  --json                 Output in JSON format
-  --host <host>          Daemon host target: host:port or
-                         tcp://host:port?ssl=true&password=secret (default:
-                         local socket/pipe, then localhost:6767)
-  -h, --help             display help for command
-```
-
-```text
-Usage: paseo provider ls [options]
-
-List configured Paseo Agent model providers
-
-Options:
-  --json         Output in JSON format
-  --host <host>  Daemon host target: host:port or
-                 tcp://host:port?ssl=true&password=secret (default: local
-                 socket/pipe, then localhost:6767)
-  -h, --help     display help for command
-```
-
-```text
-Usage: paseo provider rm [options] <name>
-
-Remove a Paseo Agent model provider
-
-Arguments:
-  name           Provider instance name
-
-Options:
-  --json         Output in JSON format
-  --host <host>  Daemon host target: host:port or
-                 tcp://host:port?ssl=true&password=secret (default: local
-                 socket/pipe, then localhost:6767)
-  -h, --help     display help for command
-```
+- `paseo provider add [id]` configures a catalog provider. Omit `id` to choose from the
+  daemon catalog. Use `--name`, repeated/comma-separated `--model`, `--api-key-stdin`,
+  `--device-code`, `--json`, and `--host` as needed.
+- `paseo provider ls` lists configured instances and redacted auth state.
+- `paseo provider rm <name>` removes one provider instance and clears `defaultModel` if
+  it pointed at that instance.
 
 Examples:
 
@@ -295,13 +225,11 @@ Adding a new model-provider type should be a data change:
 
 1. Add one entry to `PASEO_AGENT_PROVIDER_CATALOG` in
    `packages/server/src/server/agent/providers/paseo-agent/catalog.ts`.
-2. Set `id`, `label`, `api`, `baseUrl`, `auth`, and any provider-level `headers`.
-3. Add default `models[]` only when there is a safe, broadly usable default. Otherwise
-   leave it empty so CLI/app users must choose a model id.
-4. Use `auth: { kind: "api_key", envVar: "..." }` for key-backed providers.
-5. Use `auth: { kind: "oauth", flow: "..." }` only for flows supported by Pi's OAuth
-   registry (`openai-codex`, `anthropic`, `github-copilot`).
-6. Add or update focused tests around catalog copying, provider resolution, auth state,
+2. Set `id`, `piProvider`, `label`, and `defaultModels: false` only when the Pi provider
+   should not expose its full model list by default.
+3. Add `auth` only when Pi cannot infer the auth source or when an explicit flow hint keeps
+   resolution simple.
+4. Add or update focused tests around catalog assembly, provider resolution, auth state,
    and CLI/app rendering if the new entry exercises a new shape.
 
 Do not add provider-specific branches in the runtime, CLI, or app. The catalog entry is
