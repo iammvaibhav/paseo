@@ -21,7 +21,7 @@ interface ProviderRemoveItem {
 
 interface ProviderRmClient extends Pick<
   DaemonClient,
-  "getLastServerInfoMessage" | "removePaseoAgentProvider" | "close"
+  "waitForServerInfo" | "removePaseoAgentProvider" | "close"
 > {}
 
 export interface ProviderRmDependencies {
@@ -49,7 +49,7 @@ export async function runRmCommand(
   const deps = { ...defaultDependencies, ...dependencies };
   const client = await deps.connectDaemon({ host: options.host });
   try {
-    requirePaseoAgentCatalogFeature(client);
+    await requirePaseoAgentCatalogFeature(client);
     const result = await client.removePaseoAgentProvider(name);
     if (!result.success) {
       throw {

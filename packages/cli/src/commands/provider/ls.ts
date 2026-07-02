@@ -25,7 +25,7 @@ export interface ProviderListItem {
 
 interface ProviderLsClient extends Pick<
   DaemonClient,
-  "getLastServerInfoMessage" | "getPaseoAgentCatalog" | "getPaseoAgentProviders" | "close"
+  "waitForServerInfo" | "getPaseoAgentCatalog" | "getPaseoAgentProviders" | "close"
 > {}
 
 export interface ProviderLsDependencies {
@@ -80,7 +80,7 @@ export async function runLsCommand(
   const client = await deps.connectDaemon({ host: options.host });
 
   try {
-    requirePaseoAgentCatalogFeature(client);
+    await requirePaseoAgentCatalogFeature(client);
     const catalogResult = await client.getPaseoAgentCatalog();
     if (catalogResult.error) {
       throw {

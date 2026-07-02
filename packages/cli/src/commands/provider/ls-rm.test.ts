@@ -16,7 +16,7 @@ describe("provider ls", () => {
   it("renders an empty configured-provider table with headers", async () => {
     const result = await runLsCommand({ host: "localhost:7777" }, {} as never, {
       connectDaemon: async () => ({
-        getLastServerInfoMessage: createServerInfo,
+        waitForServerInfo: async () => createServerInfo(),
         getPaseoAgentCatalog: async () => ({
           requestId: "catalog-1",
           catalog: [],
@@ -42,7 +42,7 @@ describe("provider ls", () => {
       connectDaemon: async (options) => {
         expect(options.host).toBe("localhost:7777");
         return {
-          getLastServerInfoMessage: createServerInfo,
+          waitForServerInfo: async () => createServerInfo(),
           getPaseoAgentCatalog: async () => ({
             requestId: "catalog-1",
             catalog: [
@@ -142,7 +142,7 @@ describe("provider rm", () => {
       connectDaemon: async (options) => {
         expect(options.host).toBe("localhost:7777");
         return {
-          getLastServerInfoMessage: createServerInfo,
+          waitForServerInfo: async () => createServerInfo(),
           removePaseoAgentProvider: async (name: string) => {
             removedNames.push(name);
             return {

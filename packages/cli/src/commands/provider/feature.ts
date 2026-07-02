@@ -1,13 +1,13 @@
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { CommandError } from "../../output/index.js";
 
-export interface PaseoAgentCatalogFeatureClient extends Pick<
-  DaemonClient,
-  "getLastServerInfoMessage"
-> {}
+export interface PaseoAgentCatalogFeatureClient extends Pick<DaemonClient, "waitForServerInfo"> {}
 
-export function requirePaseoAgentCatalogFeature(client: PaseoAgentCatalogFeatureClient): void {
-  if (client.getLastServerInfoMessage()?.features?.paseoAgentCatalog === true) {
+export async function requirePaseoAgentCatalogFeature(
+  client: PaseoAgentCatalogFeatureClient,
+): Promise<void> {
+  const serverInfo = await client.waitForServerInfo();
+  if (serverInfo.features?.paseoAgentCatalog === true) {
     return;
   }
   throw {

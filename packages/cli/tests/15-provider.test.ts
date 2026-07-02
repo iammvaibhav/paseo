@@ -42,6 +42,20 @@ interface ProviderListRow {
   models: string;
 }
 
+interface CliResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+function assertExitCode(result: CliResult, expected: number, message: string): void {
+  assert.strictEqual(result.exitCode, expected, `${message}\nstderr:\n${result.stderr}`);
+}
+
+function assertNonZeroExitCode(result: CliResult, message: string): void {
+  assert.notStrictEqual(result.exitCode, 0, `${message}\nstderr:\n${result.stderr}`);
+}
+
 const EXPECTED_CLAUDE_MODELS = [
   {
     id: "claude-fable-5",
@@ -137,7 +151,7 @@ function parseProviderListJson(stdout: string): ProviderListRow[] {
 
 async function getProviderRows(): Promise<ProviderListRow[]> {
   const result = await ctx.paseo(["provider", "ls", "--json"]);
-  assert.strictEqual(result.exitCode, 0, "provider ls --json should exit 0");
+  assertExitCode(result, 0, "provider ls --json should exit 0");
   return parseProviderListJson(result.stdout);
 }
 
@@ -181,7 +195,7 @@ try {
   {
     console.log("Test 1: provider --help shows subcommands");
     const result = await ctx.paseo(["provider", "--help"]);
-    assert.strictEqual(result.exitCode, 0, "provider --help should exit 0");
+    assertExitCode(result, 0, "provider --help should exit 0");
     assert(result.stdout.includes("ls"), "help should mention ls");
     assert(result.stdout.includes("add"), "help should mention add");
     assert(result.stdout.includes("rm"), "help should mention rm");
@@ -193,12 +207,12 @@ try {
   {
     console.log("Test 2: provider ls on a fresh daemon shows no configured providers");
     const result = await ctx.paseo(["provider", "ls"]);
-    assert.strictEqual(result.exitCode, 0, "provider ls should exit 0");
+    assertExitCode(result, 0, "provider ls should exit 0");
     assertProviderTableHeader(result.stdout);
     assert(!result.stdout.includes("OpenRouter"), "fresh output should have no provider rows");
 
     const jsonResult = await ctx.paseo(["provider", "ls", "--json"]);
-    assert.strictEqual(jsonResult.exitCode, 0, "provider ls --json should exit 0");
+    assertExitCode(jsonResult, 0, "provider ls --json should exit 0");
     assert.deepStrictEqual(parseProviderListJson(jsonResult.stdout), []);
     console.log("✓ provider ls on a fresh daemon shows no configured providers\n");
   }
@@ -209,7 +223,7 @@ try {
     const result = await ctx.paseo(["provider", "add", "openrouter", "--api-key-stdin"], {
       stdin: "dummy-openrouter-key\n",
     });
-    assert.strictEqual(result.exitCode, 0, `provider add should exit 0\n${result.stderr}`);
+    assertExitCode(result, 0, "provider add should exit 0");
     assert(result.stdout.includes("openrouter"), "add output should include the instance name");
     assert(result.stdout.includes("OpenRouter"), "add output should include the catalog label");
     assert(result.stdout.includes("Connected"), "add output should show connected auth state");
@@ -234,7 +248,7 @@ try {
     const result = await ctx.paseo(["provider", "add", "openrouter", "--api-key-stdin"], {
       stdin: "dummy-openrouter-key-2\n",
     });
-    assert.strictEqual(result.exitCode, 0, `provider add should exit 0\n${result.stderr}`);
+    assertExitCode(result, 0, "provider add should exit 0");
 
     const rows = await getProviderRows();
     assert.strictEqual(rows.length, 1, "re-running add should not create another instance");
@@ -249,7 +263,7 @@ try {
     const result = await ctx.paseo(["provider", "add", "nonsense-id", "--api-key-stdin"], {
       stdin: "dummy-key\n",
     });
-    assert.notStrictEqual(result.exitCode, 0, "provider add should fail for unknown ids");
+    assertNonZeroExitCode(result, "provider add should fail for unknown ids");
     const output = result.stdout + result.stderr;
     assert(output.includes("nonsense-id"), "error should mention the requested id");
     assert(output.includes("Known provider ids"), "error should mention known provider ids");
@@ -262,14 +276,14 @@ try {
   {
     console.log("Test 6: provider rm removes a configured provider");
     const result = await ctx.paseo(["provider", "rm", "openrouter"]);
-    assert.strictEqual(result.exitCode, 0, `provider rm should exit 0\n${result.stderr}`);
+    assertExitCode(result, 0, "provider rm should exit 0");
     assert(result.stdout.includes("openrouter"), "rm output should include the instance name");
     assert(result.stdout.includes("yes"), "rm output should report removal");
 
     const rows = await getProviderRows();
     assert.deepStrictEqual(rows, [], "provider ls should be empty after removing openrouter");
     const table = await ctx.paseo(["provider", "ls"]);
-    assert.strictEqual(table.exitCode, 0, "provider ls should stay successful after removal");
+    assertExitCode(table, 0, "provider ls should stay successful after removal");
     assertProviderTableHeader(table.stdout);
     console.log("✓ provider rm removes a configured provider\n");
   }
@@ -280,7 +294,7 @@ try {
     const result = await ctx.paseo(["provider", "add", "kimi", "--api-key-stdin"], {
       stdin: "dummy-kimi-key\n",
     });
-    assert.strictEqual(result.exitCode, 0, `provider add kimi should exit 0\n${result.stderr}`);
+    assertExitCode(result, 0, "provider add kimi should exit 0");
     assert(result.stdout.includes("kimi"), "add output should include the instance name");
     assert(result.stdout.includes("Kimi Coding Plan"), "add output should include the label");
 
@@ -356,7 +370,7 @@ try {
   {
     console.log("Test 11: provider models unknown fails with error");
     const result = await ctx.paseo(["provider", "models", "unknown"]);
-    assert.notStrictEqual(result.exitCode, 0, "should fail for unknown provider");
+    assertNonZeroExitCode(result, "should fail for unknown provider");
     const output = result.stdout + result.stderr;
     assert(
       output.toLowerCase().includes("unknown") || output.toLowerCase().includes("provider"),
@@ -388,7 +402,7 @@ try {
       "claude model IDs should be captured from --json output",
     );
     const result = await ctx.paseo(["provider", "models", "claude", "--quiet"]);
-    assert.strictEqual(result.exitCode, 0, "should exit 0");
+    assertExitCode(result, 0, "provider models claude --quiet should exit 0");
     const lines = result.stdout.trim().split("\n").filter(Boolean);
     assert.strictEqual(
       lines.length,

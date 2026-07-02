@@ -27,7 +27,7 @@ interface RecordingClientInput {
 
 function createClient(input: RecordingClientInput) {
   return {
-    getLastServerInfoMessage: () => ({
+    waitForServerInfo: async () => ({
       status: "server_info",
       serverId: "test-daemon",
       features: input.features ?? { paseoAgentCatalog: true },
@@ -619,7 +619,7 @@ describe("provider add", () => {
         },
         write: () => {},
         connectDaemon: async () => ({
-          getLastServerInfoMessage: () => ({
+          waitForServerInfo: async () => ({
             status: "server_info",
             serverId: "test-daemon",
             features: {},

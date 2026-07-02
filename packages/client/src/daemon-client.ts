@@ -840,6 +840,7 @@ const DEFAULT_RECONNECT_BASE_DELAY_MS = 1500;
 const DEFAULT_RECONNECT_MAX_DELAY_MS = 30000;
 const DEFAULT_SESSION_RPC_TIMEOUT_MS = 60_000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
+const DEFAULT_SERVER_INFO_TIMEOUT_MS = 10_000;
 const DEFAULT_LIVENESS_TIMEOUT_MS = 5000;
 const LIVENESS_HEARTBEAT_INTERVAL_MS = 10_000;
 const LIVENESS_HEARTBEAT_TIMEOUT_MS = 15_000;
@@ -4741,6 +4742,29 @@ export class DaemonClient {
     return this.lastServerInfoMessage;
   }
 
+  async waitForServerInfo(
+    timeoutMs = DEFAULT_SERVER_INFO_TIMEOUT_MS,
+  ): Promise<ServerInfoStatusPayload> {
+    if (this.lastServerInfoMessage) {
+      return this.lastServerInfoMessage;
+    }
+
+    const { promise } = this.waitForWithCancel<ServerInfoStatusPayload>(
+      (msg) => {
+        if (msg.type !== "status") {
+          return null;
+        }
+        return parseServerInfoStatusPayload(msg.payload);
+      },
+      timeoutMs,
+      {
+        timeoutMessage: `Timed out waiting for server_info status message (${timeoutMs}ms)`,
+      },
+    );
+
+    return promise;
+  }
+
   private resolveTransportUrlForAttempt(): string {
     return this.config.url;
   }
@@ -5258,10 +5282,12 @@ export class DaemonClient {
   private waitForWithCancel<T>(
     predicate: (msg: SessionOutboundMessage) => T | null,
     timeout = 30000,
-    _options?: { skipQueue?: boolean },
+    options?: { skipQueue?: boolean; timeoutMessage?: string },
   ): WaitHandle<T> {
     // Capture stack trace at call site, not inside setTimeout
-    const timeoutError = new Error(`Timeout waiting for message (${timeout}ms)`);
+    const timeoutError = new Error(
+      options?.timeoutMessage ?? `Timeout waiting for message (${timeout}ms)`,
+    );
 
     let waiter: Waiter<T> | null = null;
     let settled = false;

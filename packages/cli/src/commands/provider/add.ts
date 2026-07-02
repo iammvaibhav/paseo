@@ -48,7 +48,7 @@ interface ProviderConfiguredItem {
 
 interface ProviderAddClient extends Pick<
   DaemonClient,
-  | "getLastServerInfoMessage"
+  | "waitForServerInfo"
   | "getPaseoAgentCatalog"
   | "setPaseoAgentProvider"
   | "startPaseoAgentOAuth"
@@ -462,7 +462,7 @@ export async function runAddCommand(
   const deps = { ...defaultDependencies, ...dependencies };
   const client = await deps.connectDaemon({ host: options.host });
   try {
-    requirePaseoAgentCatalogFeature(client);
+    await requirePaseoAgentCatalogFeature(client);
     const catalogResult = await client.getPaseoAgentCatalog();
     if (catalogResult.error) {
       throw {
