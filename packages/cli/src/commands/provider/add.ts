@@ -351,7 +351,7 @@ async function runDaemonOAuth(
   name: string,
   dependencies: ProviderAddDependencies,
 ): Promise<PaseoAgentProviderAuthState | undefined> {
-  const started = await client.startPaseoAgentOAuth(name);
+  const started = await client.startPaseoAgentOAuth(name, { mode: "device_code" });
   if (!started.success) {
     throw {
       code: "OAUTH_START_FAILED",

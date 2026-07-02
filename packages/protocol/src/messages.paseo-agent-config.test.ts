@@ -127,6 +127,7 @@ describe("Paseo Agent config RPC schemas", () => {
       type: "config.paseo_agent.oauth.start.request",
       requestId: "req-oauth-start",
       name: "subscription",
+      mode: "device_code",
     });
     const response = SessionOutboundMessageSchema.parse({
       type: "config.paseo_agent.oauth.start.response",
@@ -147,6 +148,7 @@ describe("Paseo Agent config RPC schemas", () => {
     });
 
     expect(request.name).toBe("subscription");
+    expect(request.mode).toBe("device_code");
     expect(response.payload.authorization?.kind).toBe("device_code");
     expect(response.payload.authorization?.futureField).toBe("kept");
   });

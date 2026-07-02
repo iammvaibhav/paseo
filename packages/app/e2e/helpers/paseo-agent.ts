@@ -75,7 +75,7 @@ export async function startOAuthProviderSignIn(
   await expect(page.getByTestId("paseo-agent-provider-form")).toBeVisible();
 
   await page.getByLabel("Provider name").fill(provider.name);
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.getByRole("button", { name: "Use a code instead", exact: true }).click();
   await expect(page.getByTestId("paseo-agent-oauth-user-code")).toBeVisible();
   await expect(page.getByTestId("paseo-agent-oauth-verification-link")).toBeVisible();
 }

@@ -12,6 +12,7 @@ import {
   parsePaseoAgentModelIds,
   paseoAgentAuthBadge,
   paseoAgentProviderLabel,
+  preferredPaseoAgentOAuthMode,
 } from "./paseo-agent-settings-sheet-model";
 
 function catalogEntry(overrides: Partial<PaseoAgentCatalogEntry>): PaseoAgentCatalogEntry {
@@ -74,6 +75,14 @@ describe("paseo-agent-settings-sheet-model", () => {
     expect(getPaseoAgentApiKeyAuth(entry)).toBeNull();
     expect(getPaseoAgentOAuthAuth(entry)).toBeNull();
     expect(isPaseoAgentCatalogEntrySupported(entry)).toBe(false);
+  });
+
+  it("prefers device-code OAuth only for a relay connection", () => {
+    expect(preferredPaseoAgentOAuthMode({ type: "relay" })).toBe("device_code");
+    expect(preferredPaseoAgentOAuthMode({ type: "directSocket" })).toBe("browser");
+    expect(preferredPaseoAgentOAuthMode({ type: "directPipe" })).toBe("browser");
+    expect(preferredPaseoAgentOAuthMode({ type: "directTcp" })).toBe("browser");
+    expect(preferredPaseoAgentOAuthMode(null)).toBe("browser");
   });
 
   it("parses model ids from comma and newline separated input", () => {

@@ -44,7 +44,7 @@ interface UsePaseoAgentProvidersResult {
   setProvider: (
     input: PaseoAgentSetProviderInput,
   ) => Promise<RedactedPaseoAgentProviderConfig | null>;
-  startOAuth: (name: string) => Promise<PaseoAgentOAuthStartResult>;
+  startOAuth: (name: string, mode?: string) => Promise<PaseoAgentOAuthStartResult>;
   completeOAuth: (name: string) => Promise<PaseoAgentOAuthCompleteResult>;
 }
 
@@ -121,11 +121,11 @@ export function usePaseoAgentProviders(serverId: string | null): UsePaseoAgentPr
   );
 
   const startOAuthMutation = useMutation({
-    mutationFn: async (name: string) => {
+    mutationFn: async (input: { name: string; mode?: string }) => {
       if (!client) {
         throw new Error(hostDisconnectedMessage);
       }
-      const result = await client.startPaseoAgentOAuth(name);
+      const result = await client.startPaseoAgentOAuth(input.name, { mode: input.mode });
       if (!result.success) {
         throw new Error(result.error ?? saveProviderFailedMessage);
       }
@@ -134,7 +134,10 @@ export function usePaseoAgentProviders(serverId: string | null): UsePaseoAgentPr
   });
   const { mutateAsync: startOAuthAsync } = startOAuthMutation;
 
-  const startOAuth = useCallback((name: string) => startOAuthAsync(name), [startOAuthAsync]);
+  const startOAuth = useCallback(
+    (name: string, mode?: string) => startOAuthAsync(mode ? { name, mode } : { name }),
+    [startOAuthAsync],
+  );
 
   const completeOAuthMutation = useMutation({
     mutationFn: async (name: string) => {

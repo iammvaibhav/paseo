@@ -3927,13 +3927,16 @@ export class DaemonClient {
 
   async startPaseoAgentOAuth(
     name: string,
-    requestId?: string,
+    options?: string | { mode?: string; requestId?: string },
   ): Promise<PaseoAgentOAuthStartResponse["payload"]> {
+    const requestId = typeof options === "string" ? options : options?.requestId;
+    const mode = typeof options === "string" ? undefined : options?.mode;
     return this.sendNamespacedCorrelatedSessionRequest({
       requestId,
       message: {
         type: "config.paseo_agent.oauth.start.request",
         name,
+        ...(mode ? { mode } : {}),
       },
       timeout: 30000,
     });

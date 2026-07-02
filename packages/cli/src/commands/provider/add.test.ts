@@ -20,7 +20,10 @@ interface RecordingClientInput {
     providerType: string;
     options: { apiKey?: string; models?: Array<{ id: string }> };
   }) => Promise<unknown>;
-  startOAuth?: (name: string) => Promise<unknown>;
+  startOAuth?: (
+    name: string,
+    options?: { mode?: string; requestId?: string } | string,
+  ) => Promise<unknown>;
   completeOAuth?: (name: string) => Promise<unknown>;
   storeCredential?: (input: { name: string; credential: unknown }) => Promise<unknown>;
 }
@@ -59,8 +62,11 @@ function createClient(input: RecordingClientInput) {
         error: null,
       };
     },
-    startPaseoAgentOAuth: async (name: string) =>
-      input.startOAuth?.(name) ?? {
+    startPaseoAgentOAuth: async (
+      name: string,
+      options?: { mode?: string; requestId?: string } | string,
+    ) =>
+      input.startOAuth?.(name, options) ?? {
         requestId: "oauth-start-1",
         success: true,
         name,
@@ -443,8 +449,10 @@ describe("provider add", () => {
       connectDaemon: async () =>
         createClient({
           catalog: [oauthEntry()],
-          startOAuth: async (name) => {
-            oauthCalls.push(`start:${name}`);
+          startOAuth: async (name, options) => {
+            oauthCalls.push(
+              `start:${name}:${typeof options === "string" ? options : options?.mode}`,
+            );
             return {
               requestId: "start-1",
               success: true,
@@ -471,7 +479,7 @@ describe("provider add", () => {
         }),
     });
 
-    expect(oauthCalls).toEqual(["start:beta-oauth", "complete:beta-oauth"]);
+    expect(oauthCalls).toEqual(["start:beta-oauth:device_code", "complete:beta-oauth"]);
     expect(output.join("\n")).toContain("ABCD-EFGH");
     expect(output.join("\n")).toContain("https://auth.example.test/device");
     expect(result.data.auth).toBe("Connected");
@@ -500,8 +508,10 @@ describe("provider add", () => {
       connectDaemon: async () =>
         createClient({
           catalog: [oauthEntry()],
-          startOAuth: async (name) => {
-            oauthCalls.push(`start:${name}`);
+          startOAuth: async (name, options) => {
+            oauthCalls.push(
+              `start:${name}:${typeof options === "string" ? options : options?.mode}`,
+            );
             return {
               requestId: "start-1",
               success: true,
@@ -527,7 +537,7 @@ describe("provider add", () => {
         }),
     });
 
-    expect(oauthCalls).toEqual(["start:beta-oauth", "complete:beta-oauth"]);
+    expect(oauthCalls).toEqual(["start:beta-oauth:device_code", "complete:beta-oauth"]);
     expect(output.join("\n")).toContain("Browser could not be opened");
     expect(output.join("\n")).toContain("WXYZ-1234");
   });

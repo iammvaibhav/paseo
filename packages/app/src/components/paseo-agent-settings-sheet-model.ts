@@ -22,6 +22,18 @@ export interface PaseoAgentAuthBadge {
   variant: "success" | "error" | "muted";
 }
 
+export type PaseoAgentOAuthMode = "browser" | "device_code";
+
+export interface PaseoAgentOAuthConnectionSignal {
+  type: string;
+}
+
+export function preferredPaseoAgentOAuthMode(
+  activeConnection: PaseoAgentOAuthConnectionSignal | null,
+): PaseoAgentOAuthMode {
+  return activeConnection?.type === "relay" ? "device_code" : "browser";
+}
+
 export function getPaseoAgentApiKeyAuth(
   entry: PaseoAgentCatalogEntry,
 ): PaseoAgentApiKeyAuthManifest | null {

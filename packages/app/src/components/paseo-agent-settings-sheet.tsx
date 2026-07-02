@@ -17,14 +17,17 @@ import { ExternalLink } from "@/components/ui/external-link";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { usePaseoAgentProviders } from "@/hooks/use-paseo-agent-providers";
+import { useHostRuntimeSnapshot } from "@/runtime/host-runtime";
 import type {
   PaseoAgentOAuthCompleteResult,
   PaseoAgentOAuthStartResult,
   PaseoAgentSetProviderInput,
 } from "@/hooks/use-paseo-agent-providers";
 import type { Theme } from "@/styles/theme";
+import { openExternalUrl } from "@/utils/open-external-url";
 import {
   type PaseoAgentApiKeyAuthManifest,
+  type PaseoAgentOAuthMode,
   createPaseoAgentProviderInput,
   getPaseoAgentApiKeyAuth,
   getPaseoAgentOAuthAuth,
@@ -32,6 +35,7 @@ import {
   parsePaseoAgentModelIds,
   paseoAgentAuthBadge,
   paseoAgentProviderLabel,
+  preferredPaseoAgentOAuthMode,
 } from "./paseo-agent-settings-sheet-model";
 
 interface PaseoAgentSettingsSheetProps {
@@ -59,10 +63,19 @@ type AddSheetState =
 
 type OAuthState =
   | { status: "idle" }
-  | { status: "authorizing"; authorization: PaseoAgentOAuthStartResult["authorization"] }
-  | { status: "completing"; authorization: PaseoAgentOAuthStartResult["authorization"] }
+  | {
+      status: "authorizing";
+      mode: PaseoAgentOAuthMode;
+      authorization: PaseoAgentOAuthStartResult["authorization"];
+    }
+  | {
+      status: "completing";
+      mode: PaseoAgentOAuthMode;
+      authorization: PaseoAgentOAuthStartResult["authorization"];
+    }
   | {
       status: "error";
+      mode: PaseoAgentOAuthMode;
       message: string;
       authorization: PaseoAgentOAuthStartResult["authorization"];
     };
@@ -91,10 +104,11 @@ interface ProviderFormActionsProps {
   canComplete: boolean;
   hasApiKeyAuth: boolean;
   hasOAuthAuth: boolean;
+  preferredOAuthMode: PaseoAgentOAuthMode;
   oauthStatus: OAuthState["status"];
   onClose: () => void;
   onSubmitApiKey: () => void;
-  onStartOAuth: () => void;
+  onStartOAuth: (mode: PaseoAgentOAuthMode) => void;
   onCompleteOAuth: () => void;
 }
 
@@ -515,6 +529,7 @@ function ProviderFormActions({
   canComplete,
   hasApiKeyAuth,
   hasOAuthAuth,
+  preferredOAuthMode,
   oauthStatus,
   onClose,
   onSubmitApiKey,
@@ -525,6 +540,54 @@ function ProviderFormActions({
   const isOAuthError = oauthStatus === "error";
   const isOAuthCompleting = oauthStatus === "completing";
   const showOAuthComplete = hasOAuthAuth && !isOAuthIdle && !isOAuthError;
+  const handleStartBrowserOAuth = useCallback(() => {
+    onStartOAuth("browser");
+  }, [onStartOAuth]);
+  const handleStartDeviceCodeOAuth = useCallback(() => {
+    onStartOAuth("device_code");
+  }, [onStartOAuth]);
+  const handleRetryOAuth = useCallback(() => {
+    onStartOAuth(preferredOAuthMode);
+  }, [onStartOAuth, preferredOAuthMode]);
+  const browserButton = (
+    <Button
+      variant={preferredOAuthMode === "browser" ? "default" : "outline"}
+      size="sm"
+      onPress={handleStartBrowserOAuth}
+      disabled={!canSubmit}
+      loading={saving}
+      testID="paseo-agent-oauth-start-browser"
+    >
+      {saving ? "Starting..." : "Sign in with browser"}
+    </Button>
+  );
+  const deviceCodeButton = (
+    <Button
+      variant={preferredOAuthMode === "device_code" ? "default" : "outline"}
+      size="sm"
+      onPress={handleStartDeviceCodeOAuth}
+      disabled={!canSubmit}
+      loading={saving}
+      testID="paseo-agent-oauth-start-device-code"
+    >
+      {saving ? "Starting..." : "Use a code instead"}
+    </Button>
+  );
+  let oauthStartActions: React.ReactNode = null;
+  if (hasOAuthAuth && isOAuthIdle) {
+    oauthStartActions =
+      preferredOAuthMode === "device_code" ? (
+        <>
+          {deviceCodeButton}
+          {browserButton}
+        </>
+      ) : (
+        <>
+          {browserButton}
+          {deviceCodeButton}
+        </>
+      );
+  }
 
   return (
     <View style={styles.formActions}>
@@ -543,23 +606,12 @@ function ProviderFormActions({
           {saving ? "Saving..." : "Save provider"}
         </Button>
       ) : null}
-      {hasOAuthAuth && isOAuthIdle ? (
-        <Button
-          variant="default"
-          size="sm"
-          onPress={onStartOAuth}
-          disabled={!canSubmit}
-          loading={saving}
-          testID="paseo-agent-oauth-start"
-        >
-          {saving ? "Starting..." : "Sign in"}
-        </Button>
-      ) : null}
+      {oauthStartActions}
       {hasOAuthAuth && isOAuthError ? (
         <Button
           variant="outline"
           size="sm"
-          onPress={onStartOAuth}
+          onPress={handleRetryOAuth}
           disabled={!canSubmit}
           loading={saving}
           testID="paseo-agent-oauth-retry"
@@ -593,6 +645,7 @@ function PaseoAgentProviderFormSheet({
   setProvider,
   startOAuth,
   completeOAuth,
+  preferredOAuthMode,
 }: {
   entry: PaseoAgentCatalogEntry | null;
   visible: boolean;
@@ -603,8 +656,9 @@ function PaseoAgentProviderFormSheet({
   setProvider: (
     input: PaseoAgentSetProviderInput,
   ) => Promise<RedactedPaseoAgentProviderConfig | null>;
-  startOAuth: (name: string) => Promise<PaseoAgentOAuthStartResult>;
+  startOAuth: (name: string, mode?: string) => Promise<PaseoAgentOAuthStartResult>;
   completeOAuth: (name: string) => Promise<PaseoAgentOAuthCompleteResult>;
+  preferredOAuthMode: PaseoAgentOAuthMode;
 }) {
   const [name, setName] = useState("");
   const [apiKey, setApiKey] = useState("");
@@ -672,38 +726,51 @@ function PaseoAgentProviderFormSheet({
       .finally(() => setSaving(false));
   }, [apiKey, canSubmit, entry, hasCatalogModels, modelIds, onClose, setProvider, trimmedName]);
 
-  const handleStartOAuth = useCallback(() => {
-    if (!entry || !canSubmit) return;
-    setError(null);
-    setSaving(true);
-    setOAuthState({ status: "idle" });
-    void setProvider(
-      createPaseoAgentProviderInput({
-        entry,
-        name: trimmedName,
-        modelIds: hasCatalogModels ? undefined : modelIds,
-      }),
-    )
-      .then(() => startOAuth(trimmedName))
-      .then((result) => {
-        setOAuthState({ status: "authorizing", authorization: result.authorization });
-        return undefined;
-      })
-      .catch((err: unknown) => {
-        setOAuthState({
-          status: "error",
-          message: describeError(err, "Failed to start sign in"),
-          authorization: null,
-        });
-      })
-      .finally(() => setSaving(false));
-  }, [canSubmit, entry, hasCatalogModels, modelIds, setProvider, startOAuth, trimmedName]);
+  const handleStartOAuth = useCallback(
+    (mode: PaseoAgentOAuthMode) => {
+      if (!entry || !canSubmit) return;
+      setError(null);
+      setSaving(true);
+      setOAuthState({ status: "idle" });
+      let authorization: PaseoAgentOAuthStartResult["authorization"] = null;
+      void setProvider(
+        createPaseoAgentProviderInput({
+          entry,
+          name: trimmedName,
+          modelIds: hasCatalogModels ? undefined : modelIds,
+        }),
+      )
+        .then(() => startOAuth(trimmedName, mode))
+        .then(async (result) => {
+          authorization = result.authorization;
+          setOAuthState({ status: "authorizing", mode, authorization });
+          if (mode === "browser" && authorization?.kind === "auth_url") {
+            const url = getAuthorizationUrl(authorization);
+            if (url) {
+              await openExternalUrl(url);
+            }
+          }
+          return undefined;
+        })
+        .catch((err: unknown) => {
+          setOAuthState({
+            status: "error",
+            mode,
+            message: describeError(err, "Failed to start sign in"),
+            authorization,
+          });
+        })
+        .finally(() => setSaving(false));
+    },
+    [canSubmit, entry, hasCatalogModels, modelIds, setProvider, startOAuth, trimmedName],
+  );
 
   const handleCompleteOAuth = useCallback(() => {
     if (!canSubmit || !canComplete) return;
     setError(null);
     setSaving(true);
-    setOAuthState({ status: "completing", authorization: activeAuthorization });
+    const mode = oauthState.status === "authorizing" ? oauthState.mode : preferredOAuthMode;
+    setOAuthState({ status: "completing", mode, authorization: activeAuthorization });
     void completeOAuth(trimmedName)
       .then(() => {
         onClose();
@@ -712,12 +779,22 @@ function PaseoAgentProviderFormSheet({
       .catch((err: unknown) => {
         setOAuthState({
           status: "error",
+          mode,
           message: describeError(err, "Failed to complete sign in"),
           authorization: activeAuthorization,
         });
       })
       .finally(() => setSaving(false));
-  }, [activeAuthorization, canComplete, canSubmit, completeOAuth, onClose, trimmedName]);
+  }, [
+    activeAuthorization,
+    canComplete,
+    canSubmit,
+    completeOAuth,
+    oauthState,
+    onClose,
+    preferredOAuthMode,
+    trimmedName,
+  ]);
 
   if (!entry) {
     return null;
@@ -784,6 +861,7 @@ function PaseoAgentProviderFormSheet({
           canComplete={canComplete}
           hasApiKeyAuth={Boolean(apiKeyAuth)}
           hasOAuthAuth={Boolean(oauthAuth)}
+          preferredOAuthMode={preferredOAuthMode}
           oauthStatus={oauthState.status}
           onClose={onClose}
           onSubmitApiKey={handleSubmitApiKey}
@@ -813,6 +891,8 @@ export function PaseoAgentSettingsSheet({
     startOAuth,
     completeOAuth,
   } = usePaseoAgentProviders(serverId);
+  const activeConnection = useHostRuntimeSnapshot(serverId)?.activeConnection ?? null;
+  const preferredOAuthMode = preferredPaseoAgentOAuthMode(activeConnection);
   const [addSheet, setAddSheet] = useState<AddSheetState>({ kind: "closed" });
 
   useEffect(() => {
@@ -942,6 +1022,7 @@ export function PaseoAgentSettingsSheet({
           setProvider={setProvider}
           startOAuth={startOAuth}
           completeOAuth={completeOAuth}
+          preferredOAuthMode={preferredOAuthMode}
         />
       ) : null}
     </>

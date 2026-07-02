@@ -202,7 +202,10 @@ provider instance and clears `defaultModel` if it pointed at the removed instanc
 The app uses the same catalog and config RPCs as the CLI. In Settings, open the host
 settings, then the Paseo Agent provider section. The app fetches the catalog from the
 connected daemon, shows catalog entries in the picker, and renders either an API-key
-form or an OAuth sign-in flow from the entry's `auth.kind`.
+form or an OAuth sign-in flow from the entry's `auth.kind`. OAuth providers offer two
+daemon-run starts: browser redirect for the local fast path and device code for
+remote-safe authorization. Relay connections present device code first; direct TCP does
+not prove same-machine by itself, so both options remain available.
 
 Configured rows show the redacted provider state from the daemon: label, provider type,
 models, availability, and auth state. The app gates this UI on
@@ -229,9 +232,20 @@ RPC names use dotted namespaces:
 | `config.paseo_agent.oauth.complete.request`         | `config.paseo_agent.oauth.complete.response`         |
 | `config.paseo_agent.oauth.store_credential.request` | `config.paseo_agent.oauth.store_credential.response` |
 
-Protocol strings are intentionally open. Provider ids, auth kinds, OAuth flow names, and
-wire API names are strings, not closed enums. Old clients can parse new catalog entries,
-and new clients can show "update host" only when the daemon lacks the catalog feature.
+`oauth.start` accepts `mode?: string`; the daemon currently supports `"browser"` and
+`"device_code"`, defaulting to `"browser"` because the common app/daemon desktop path can
+complete the localhost redirect on the daemon host. Browser mode returns
+`authorization: { kind: "auth_url", url, instructions? }` as soon as the daemon callback
+listener is ready. `oauth.complete` then waits for the pending redirect flow to resolve,
+stores the credential, and returns the redacted `auth` state. Device-code mode returns
+`authorization: { kind: "device_code", userCode?, verificationUri?, intervalSeconds?,
+expiresInSeconds?, instructions? }` and uses the same `oauth.complete` response after the
+provider authorizes.
+
+Protocol strings are intentionally open. Provider ids, auth kinds, OAuth flow names,
+OAuth start modes, and wire API names are strings, not closed enums. Old clients can parse
+new catalog entries, and new clients can show "update host" only when the daemon lacks the
+catalog feature.
 
 ## Adding a catalog entry
 

@@ -22,7 +22,7 @@ import type { PaseoAgentOAuthCredential } from "@getpaseo/protocol/messages";
 // Pi's OAuth registry; Paseo does not reimplement OAuth protocols.
 
 export type OAuthDeviceCodeInfo = PiOAuthDeviceCodeInfo;
-type OAuthLogin = (callbacks: OAuthLoginCallbacks) => Promise<OAuthCredentials>;
+export type OAuthLogin = (callbacks: OAuthLoginCallbacks) => Promise<OAuthCredentials>;
 type OAuthLoginPreference = "browser" | "device";
 
 export interface OAuthCredentialBinding {
@@ -133,6 +133,26 @@ export async function loginAndStoreOAuth(options: {
   signal?: AbortSignal;
   login?: OAuthLogin;
 }): Promise<{ path: string }> {
+  const credential = await loginOAuthDevice({
+    flow: options.flow,
+    onDeviceCode: options.onDeviceCode,
+    signal: options.signal,
+    login: options.login,
+  });
+  return storeOAuthCredential({
+    providerInstance: options.providerInstance,
+    credential,
+    binding: { flow: options.flow, baseUrl: options.baseUrl },
+    env: options.env,
+  });
+}
+
+export async function loginOAuthDevice(options: {
+  flow: string;
+  onDeviceCode: (info: OAuthDeviceCodeInfo) => void;
+  signal?: AbortSignal;
+  login?: OAuthLogin;
+}): Promise<PaseoAgentOAuthCredential> {
   const login = resolveOAuthLogin(options.flow, options.login);
   const credentials = await login({
     onAuth: () => {},
@@ -143,12 +163,7 @@ export async function loginAndStoreOAuth(options: {
     onSelect: (prompt) => selectOAuthOption(prompt, "device"),
     signal: options.signal,
   });
-  return storeOAuthCredential({
-    providerInstance: options.providerInstance,
-    credential: { type: "oauth", ...credentials },
-    binding: { flow: options.flow, baseUrl: options.baseUrl },
-    env: options.env,
-  });
+  return { type: "oauth", ...credentials };
 }
 
 export async function loginOAuthBrowser(options: {
@@ -156,6 +171,7 @@ export async function loginOAuthBrowser(options: {
   onAuthUrl: (url: string, instructions?: string) => void;
   promptForCode?: (message: string) => Promise<string>;
   onProgress?: (message: string) => void;
+  signal?: AbortSignal;
   login?: OAuthLogin;
 }): Promise<PaseoAgentOAuthCredential> {
   const login = resolveOAuthLogin(options.flow, options.login);
@@ -170,6 +186,7 @@ export async function loginOAuthBrowser(options: {
       return options.promptForCode(prompt.message);
     },
     onSelect: (prompt) => selectOAuthOption(prompt, "browser"),
+    signal: options.signal,
   });
   return { type: "oauth", ...credentials };
 }

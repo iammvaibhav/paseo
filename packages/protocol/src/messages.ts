@@ -2042,6 +2042,7 @@ export const PaseoAgentOAuthStartRequestSchema = z.object({
   type: z.literal("config.paseo_agent.oauth.start.request"),
   requestId: z.string(),
   name: z.string().trim().min(1),
+  mode: z.string().min(1).optional(),
 });
 
 export const PaseoAgentOAuthCompleteRequestSchema = z.object({

@@ -28,11 +28,11 @@ interface PaseoAgentProvidersHookMock {
   setProvider: (
     input: PaseoAgentSetProviderInput,
   ) => Promise<RedactedPaseoAgentProviderConfig | null>;
-  startOAuth: (name: string) => Promise<PaseoAgentOAuthStartResult>;
+  startOAuth: (name: string, mode?: string) => Promise<PaseoAgentOAuthStartResult>;
   completeOAuth: (name: string) => Promise<PaseoAgentOAuthCompleteResult>;
 }
 
-const { hookState, theme } = vi.hoisted(() => {
+const { hookState, hostRuntimeSnapshot, openExternalUrls, theme } = vi.hoisted(() => {
   const initialHookState: { current: PaseoAgentProvidersHookMock } = {
     current: {
       supported: true,
@@ -69,6 +69,14 @@ const { hookState, theme } = vi.hoisted(() => {
 
   return {
     hookState: initialHookState,
+    hostRuntimeSnapshot: {
+      current: {
+        activeConnection: { type: "directSocket", endpoint: "socket", display: "socket" },
+      } as {
+        activeConnection: { type: string; endpoint: string; display: string } | null;
+      } | null,
+    },
+    openExternalUrls: [] as string[],
     theme: {
       spacing: { 1: 4, 2: 8, 3: 12, 4: 16 },
       borderRadius: { md: 6, lg: 8 },
@@ -268,6 +276,16 @@ vi.mock("@/hooks/use-paseo-agent-providers", () => ({
   usePaseoAgentProviders: () => hookState.current,
 }));
 
+vi.mock("@/runtime/host-runtime", () => ({
+  useHostRuntimeSnapshot: () => hostRuntimeSnapshot.current,
+}));
+
+vi.mock("@/utils/open-external-url", () => ({
+  openExternalUrl: async (url: string) => {
+    openExternalUrls.push(url);
+  },
+}));
+
 import { PaseoAgentSettingsSheet } from "./paseo-agent-settings-sheet";
 
 function catalogEntry(overrides: Partial<PaseoAgentCatalogEntry>): PaseoAgentCatalogEntry {
@@ -327,6 +345,10 @@ function resetHookState() {
     auth: { kind: "oauth", configured: true },
     error: null,
   }));
+  hostRuntimeSnapshot.current = {
+    activeConnection: { type: "directSocket", endpoint: "socket", display: "socket" },
+  };
+  openExternalUrls.splice(0);
 }
 
 describe("PaseoAgentSettingsSheet", () => {
@@ -421,6 +443,41 @@ describe("PaseoAgentSettingsSheet", () => {
     });
   });
 
+  it("starts browser oauth, opens the returned auth URL, and renders it by authorization kind", async () => {
+    hookState.current.catalog = [
+      catalogEntry({
+        id: "catalog-login",
+        label: "Catalog Login",
+        auth: { kind: "oauth", flow: "login-flow" },
+      }),
+    ];
+    hookState.current.startOAuth = vi.fn(async () => ({
+      requestId: "oauth-start",
+      success: true,
+      name: "catalog-login",
+      authorization: {
+        kind: "auth_url",
+        url: "https://login.example.test/oauth/authorize?state=abc",
+        instructions: "Open the sign-in page",
+      },
+      error: null,
+    }));
+
+    renderSheet();
+    fireEvent.click(screen.getByRole("button", { name: "Add model provider" }));
+    fireEvent.click(screen.getByTestId("paseo-agent-catalog-select-catalog-login"));
+    fireEvent.click(screen.getByRole("button", { name: "Sign in with browser" }));
+
+    await waitFor(() => {
+      expect(openExternalUrls).toEqual(["https://login.example.test/oauth/authorize?state=abc"]);
+      expect(hookState.current.startOAuth).toHaveBeenCalledWith("catalog-login", "browser");
+    });
+    expect(screen.getByText("https://login.example.test/oauth/authorize?state=abc")).toBeTruthy();
+    expect(screen.getByTestId("paseo-agent-oauth-url").getAttribute("href")).toBe(
+      "https://login.example.test/oauth/authorize?state=abc",
+    );
+  });
+
   it("renders a device-code oauth authorization and completes it", async () => {
     hookState.current.catalog = [
       catalogEntry({
@@ -447,7 +504,7 @@ describe("PaseoAgentSettingsSheet", () => {
     renderSheet();
     fireEvent.click(screen.getByRole("button", { name: "Add model provider" }));
     fireEvent.click(screen.getByTestId("paseo-agent-catalog-select-catalog-login"));
-    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    fireEvent.click(screen.getByRole("button", { name: "Use a code instead" }));
 
     expect((await screen.findByTestId("paseo-agent-oauth-user-code")).textContent).toBe("CODE-123");
     expect(screen.getByText("https://login.example.test/device")).toBeTruthy();
@@ -461,9 +518,36 @@ describe("PaseoAgentSettingsSheet", () => {
           models: [{ id: "alpha-fast", label: "Alpha Fast" }],
         },
       } satisfies PaseoAgentSetProviderInput);
-      expect(hookState.current.startOAuth).toHaveBeenCalledWith("catalog-login");
+      expect(hookState.current.startOAuth).toHaveBeenCalledWith("catalog-login", "device_code");
       expect(hookState.current.completeOAuth).toHaveBeenCalledWith("catalog-login");
     });
+  });
+
+  it("offers device-code first over relay while keeping browser available", () => {
+    hostRuntimeSnapshot.current = {
+      activeConnection: { type: "relay", endpoint: "relay.example.test:443", display: "relay" },
+    };
+    hookState.current.catalog = [
+      catalogEntry({
+        id: "catalog-login",
+        label: "Catalog Login",
+        auth: { kind: "oauth", flow: "login-flow" },
+      }),
+    ];
+
+    renderSheet();
+    fireEvent.click(screen.getByRole("button", { name: "Add model provider" }));
+    fireEvent.click(screen.getByTestId("paseo-agent-catalog-select-catalog-login"));
+
+    const actionButtons = screen
+      .getByTestId("paseo-agent-provider-form")
+      .querySelectorAll("button");
+    expect(Array.from(actionButtons).map((button) => button.textContent)).toEqual([
+      "Providers",
+      "Cancel",
+      "Use a code instead",
+      "Sign in with browser",
+    ]);
   });
 
   it("shows auth-state badges from configured instances", () => {
