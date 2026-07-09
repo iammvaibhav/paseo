@@ -102,9 +102,36 @@ build_server() {
   (cd "$ROOT_DIR" && npm run build:server)
 }
 
+install_cli_wrapper() {
+  local repo_dir="$1"
+  local bin_dir="${HOME}/.local/bin"
+  local wrapper_path="${bin_dir}/paseo"
+
+  mkdir -p "$bin_dir"
+  cat >"$wrapper_path" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export NVM_DIR="\${NVM_DIR:-\$HOME/.nvm}"
+# shellcheck disable=SC1091
+[ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
+exec node --disable-warning=DEP0040 "$repo_dir/packages/cli/dist/index.js" "\$@"
+EOF
+  chmod +x "$wrapper_path"
+  log "Installed CLI wrapper at $wrapper_path -> $repo_dir/packages/cli/dist/index.js"
+}
+
+daemon_path_env() {
+  # Agent CLIs (claude, grok, codex, etc.) commonly live in ~/.local/bin.
+  # Non-interactive sync shells often omit it, but the daemon inherits PATH at start.
+  printf '%s' "${HOME}/.local/bin:${PATH}"
+}
+
 restart_local_daemon() {
   log "Restarting local daemon ($LOCAL_PASEO_HOME)"
-  (cd "$ROOT_DIR" && npx tsx packages/cli/src/index.js daemon restart --home "$LOCAL_PASEO_HOME")
+  (
+    cd "$ROOT_DIR"
+    PATH="$(daemon_path_env)" npx tsx packages/cli/src/index.js daemon restart --home "$LOCAL_PASEO_HOME"
+  )
 }
 
 remote_sync_body() {
@@ -187,12 +214,35 @@ maybe_install_deps() {
   echo "\$cur" > "\$sync_ref_file"
 }
 
+install_cli_wrapper() {
+  local repo_dir="\$HOME/\$REMOTE_REPO_DIR"
+  local bin_dir="\$HOME/.local/bin"
+  local wrapper_path="\$bin_dir/paseo"
+
+  mkdir -p "\$bin_dir"
+  cat >"\$wrapper_path" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export NVM_DIR="\${NVM_DIR:-\$HOME/.nvm}"
+# shellcheck disable=SC1091
+[ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
+exec node --disable-warning=DEP0040 "\$repo_dir/packages/cli/dist/index.js" "\$@"
+EOF
+  chmod +x "\$wrapper_path"
+  log "Installed CLI wrapper at \$wrapper_path"
+}
+
+daemon_path_env() {
+  printf '%s' "\$HOME/.local/bin:\$PATH"
+}
+
 build_and_restart() {
   cd "\$HOME/\$REMOTE_REPO_DIR"
   log "Building server"
   npm run build:server
+  install_cli_wrapper
   log "Restarting daemon (\$PASEO_HOME)"
-  npx tsx packages/cli/src/index.js daemon restart --home "\$PASEO_HOME"
+  PATH="\$(daemon_path_env)" npx tsx packages/cli/src/index.js daemon restart --home "\$PASEO_HOME"
 }
 
 ensure_node
@@ -229,6 +279,7 @@ main() {
     ensure_node
     sync_local_git
     build_server
+    install_cli_wrapper "$ROOT_DIR"
     restart_local_daemon
   fi
 
