@@ -618,6 +618,17 @@ Example: relabel a discovered model without replacing the full list:
 
 When an `additionalModels` entry has the same `id` as a discovered model, it updates that model in place.
 
+### Allow All mode (auto-approved permissions)
+
+Generic ACP providers (including Cursor, Kiro, and Trae) get a daemon-provided **Allow All** mode appended to the modes the agent advertises. Most ACP agents have no native unattended mode, so every tool call raises a permission prompt. While Allow All is active, the daemon answers each incoming `session/request_permission` with the agent's preferred allow option instead of surfacing it — the ACP equivalent of Claude's Bypass mode.
+
+Details worth knowing:
+
+- The mode id is `paseo-allow-all`. It lives only in the daemon; the agent's native mode is left untouched, and switching to a native mode goes back to normal prompting.
+- It is only offered when the agent advertises at least one native mode (otherwise there would be nothing to switch back to).
+- It is flagged unattended, so unattended agent creation (e.g. subagents spawned by an unattended parent) resolves to it automatically.
+- Copilot is unaffected — it has a native `allow_all` config that Paseo already maps to its own Allow All mode.
+
 ---
 
 ## Provider override reference

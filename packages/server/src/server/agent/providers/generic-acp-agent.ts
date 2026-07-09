@@ -73,6 +73,10 @@ export class GenericACPAgentClient extends ACPAgentClient {
       clientCapabilityMeta: options.clientCapabilityMeta,
       configFeatureOptions: options.configFeatureOptions,
       extensionCommandsParser: options.extensionCommandsParser,
+      // Generic ACP agents (Cursor included) have no native unattended mode,
+      // so the daemon offers its own Allow All mode that auto-approves
+      // permission requests (see getpaseo/paseo#1926).
+      syntheticAllowAllMode: true,
     });
 
     this.command = options.command;

@@ -16,10 +16,13 @@ import {
 } from "@agentclientprotocol/sdk";
 
 import {
+  ACP_ALLOW_ALL_MODE,
+  ACP_ALLOW_ALL_MODE_ID,
   ACPAgentClient,
   ACPAgentSession,
   type SpawnedACPProcess,
   type SessionStateResponse,
+  appendSyntheticAllowAllMode,
   buildACPClientCapabilities,
   createLoggedNdJsonStream,
   deriveModelDefinitionsFromACP,
@@ -2900,5 +2903,223 @@ describe("ACP session/load invariant — cwd and mcpServers always passed", () =
       cwd: "/tmp/paseo-acp-test",
       mcpServers: [],
     });
+  });
+});
+
+describe("ACP daemon Allow All mode", () => {
+  const nativeModes = [
+    { id: "default", label: "Default" },
+    { id: "plan", label: "Plan" },
+  ];
+
+  interface ACPSessionStateInternals {
+    applySessionState(response: SessionStateResponse): void;
+  }
+
+  function createAllowAllSession(config: { modeId?: string | null } = {}): ACPAgentSession {
+    return new ACPAgentSession(
+      {
+        provider: "cursor",
+        cwd: "/tmp/paseo-acp-test",
+        modeId: config.modeId ?? undefined,
+      },
+      {
+        provider: "cursor",
+        logger: createTestLogger(),
+        defaultCommand: ["cursor-agent", "acp"],
+        defaultModes: [],
+        capabilities: {
+          supportsStreaming: true,
+          supportsSessionPersistence: true,
+          supportsDynamicModes: true,
+          supportsMcpServers: true,
+          supportsReasoningStream: true,
+          supportsToolInvocations: true,
+        },
+        syntheticAllowAllMode: true,
+      },
+    );
+  }
+
+  test("appendSyntheticAllowAllMode appends only when the agent advertises modes", () => {
+    expect(appendSyntheticAllowAllMode([])).toEqual([]);
+    expect(appendSyntheticAllowAllMode(nativeModes)).toEqual([...nativeModes, ACP_ALLOW_ALL_MODE]);
+    expect(appendSyntheticAllowAllMode([ACP_ALLOW_ALL_MODE])).toEqual([ACP_ALLOW_ALL_MODE]);
+  });
+
+  test("appends Allow All to agent-reported modes on session start", async () => {
+    const session = createAllowAllSession();
+    asInternals<ACPSessionStateInternals>(session).applySessionState({
+      sessionId: "session-1",
+      modes: {
+        currentModeId: "default",
+        availableModes: [
+          { id: "default", name: "Default", description: null },
+          { id: "plan", name: "Plan", description: null },
+        ],
+      },
+    });
+
+    await expect(session.getAvailableModes()).resolves.toEqual([
+      { id: "default", label: "Default", description: undefined },
+      { id: "plan", label: "Plan", description: undefined },
+      ACP_ALLOW_ALL_MODE,
+    ]);
+    await expect(session.getCurrentMode()).resolves.toBe("default");
+  });
+
+  test("selecting Allow All activates daemon-side without provider RPC and auto-approves permissions", async () => {
+    const session = createAllowAllSession();
+    const { setSessionMode, setSessionConfigOption } = prepareConfiguredOverrideSession(session, {
+      currentMode: "default",
+      availableModes: [...nativeModes, ACP_ALLOW_ALL_MODE],
+    });
+    const events: AgentStreamEvent[] = [];
+    const unsubscribe = session.subscribe((event) => events.push(event));
+
+    await session.setMode(ACP_ALLOW_ALL_MODE_ID);
+
+    expect(setSessionMode).not.toHaveBeenCalled();
+    expect(setSessionConfigOption).not.toHaveBeenCalled();
+    await expect(session.getCurrentMode()).resolves.toBe(ACP_ALLOW_ALL_MODE_ID);
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: "mode_changed", currentModeId: ACP_ALLOW_ALL_MODE_ID }),
+    );
+
+    const response = await session.requestPermission({
+      sessionId: "session-1",
+      toolCall: {
+        toolCallId: "tool-1",
+        title: "Run command",
+        kind: "execute",
+        status: "pending",
+      },
+      options: [
+        { optionId: "allow-once", name: "Allow", kind: "allow_once" },
+        { optionId: "allow-always", name: "Always Allow", kind: "allow_always" },
+        { optionId: "reject-once", name: "Reject", kind: "reject_once" },
+      ],
+    } satisfies RequestPermissionRequest);
+    unsubscribe();
+
+    expect(response).toEqual({ outcome: { outcome: "selected", optionId: "allow-once" } });
+    expect(events.some((event) => event.type === "permission_requested")).toBe(false);
+  });
+
+  test("switching away from Allow All writes the native mode and surfaces permissions again", async () => {
+    const session = createAllowAllSession();
+    const { setSessionMode } = prepareConfiguredOverrideSession(session, {
+      currentMode: "default",
+      availableModes: [...nativeModes, ACP_ALLOW_ALL_MODE],
+    });
+
+    await session.setMode(ACP_ALLOW_ALL_MODE_ID);
+    await session.setMode("plan");
+
+    expect(setSessionMode).toHaveBeenCalledWith({ sessionId: "session-1", modeId: "plan" });
+    await expect(session.getCurrentMode()).resolves.toBe("plan");
+
+    const events: Array<{ type: string; request?: { id: string } }> = [];
+    session.subscribe((event) => {
+      events.push(event as { type: string; request?: { id: string } });
+    });
+    const permission = session.requestPermission({
+      sessionId: "session-1",
+      toolCall: {
+        toolCallId: "tool-1",
+        title: "Run command",
+        kind: "execute",
+        status: "pending",
+      },
+      options: [
+        { optionId: "allow-once", name: "Allow", kind: "allow_once" },
+        { optionId: "reject-once", name: "Reject", kind: "reject_once" },
+      ],
+    } satisfies RequestPermissionRequest);
+    await Promise.resolve();
+
+    const requested = events.find((event) => event.type === "permission_requested");
+    expect(requested?.request?.id).toEqual(expect.any(String));
+
+    await session.respondToPermission(requested!.request!.id, { behavior: "allow" });
+    await expect(permission).resolves.toEqual({
+      outcome: { outcome: "selected", optionId: "allow-once" },
+    });
+  });
+
+  test("agent current_mode_update echoes do not deactivate Allow All", async () => {
+    const session = createAllowAllSession();
+    prepareConfiguredOverrideSession(session, {
+      currentMode: "default",
+      availableModes: [...nativeModes, ACP_ALLOW_ALL_MODE],
+    });
+    await session.setMode(ACP_ALLOW_ALL_MODE_ID);
+
+    const events = asInternals<ACPSessionInternals>(session).translateSessionUpdate({
+      sessionUpdate: "current_mode_update",
+      currentModeId: "default",
+    });
+
+    expect(events).toMatchObject([{ type: "mode_changed", currentModeId: ACP_ALLOW_ALL_MODE_ID }]);
+    await expect(session.getCurrentMode()).resolves.toBe(ACP_ALLOW_ALL_MODE_ID);
+  });
+
+  test("applies persisted Allow All mode on session start without provider RPC", async () => {
+    const session = createAllowAllSession({ modeId: ACP_ALLOW_ALL_MODE_ID });
+    const { internals, setSessionMode, setSessionConfigOption } = prepareConfiguredOverrideSession(
+      session,
+      {
+        currentMode: "default",
+        availableModes: [...nativeModes, ACP_ALLOW_ALL_MODE],
+      },
+    );
+
+    await internals.applyConfiguredOverrides();
+
+    expect(setSessionMode).not.toHaveBeenCalled();
+    expect(setSessionConfigOption).not.toHaveBeenCalled();
+    await expect(session.getCurrentMode()).resolves.toBe(ACP_ALLOW_ALL_MODE_ID);
+  });
+
+  test("surfaces the request when Allow All has no allow option to select", async () => {
+    const session = createAllowAllSession();
+    prepareConfiguredOverrideSession(session, {
+      currentMode: "default",
+      availableModes: [...nativeModes, ACP_ALLOW_ALL_MODE],
+    });
+    await session.setMode(ACP_ALLOW_ALL_MODE_ID);
+
+    const events: Array<{ type: string; request?: { id: string } }> = [];
+    session.subscribe((event) => {
+      events.push(event as { type: string; request?: { id: string } });
+    });
+    void session.requestPermission({
+      sessionId: "session-1",
+      toolCall: {
+        toolCallId: "tool-1",
+        title: "Run command",
+        kind: "execute",
+        status: "pending",
+      },
+      options: [{ optionId: "reject-once", name: "Reject", kind: "reject_once" }],
+    } satisfies RequestPermissionRequest);
+    await Promise.resolve();
+
+    expect(events.some((event) => event.type === "permission_requested")).toBe(true);
+  });
+
+  test("sessions without syntheticAllowAllMode do not expose or honor Allow All", async () => {
+    const session = createSessionWithConfig({ provider: "cursor" });
+    asInternals<ACPSessionStateInternals>(session).applySessionState({
+      sessionId: "session-1",
+      modes: {
+        currentModeId: "default",
+        availableModes: [{ id: "default", name: "Default", description: null }],
+      },
+    });
+
+    await expect(session.getAvailableModes()).resolves.toEqual([
+      { id: "default", label: "Default", description: undefined },
+    ]);
   });
 });

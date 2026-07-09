@@ -355,6 +355,21 @@ export function createLoggedNdJsonStream(
   return { readable, writable };
 }
 
+// Daemon-side "Allow All" mode for ACP providers that expose no native
+// unattended mode (e.g. Cursor). While active, the daemon resolves incoming
+// session/request_permission calls with the preferred allow option instead of
+// surfacing them to the user. The id is Paseo-namespaced so it can never
+// collide with a mode the underlying agent advertises.
+export const ACP_ALLOW_ALL_MODE_ID = "paseo-allow-all";
+export const ACP_ALLOW_ALL_MODE: AgentMode = {
+  id: ACP_ALLOW_ALL_MODE_ID,
+  label: "Allow All",
+  description: "Automatically approves all permission requests without prompting.",
+  icon: "ShieldOff",
+  colorTier: "dangerous",
+  isUnattended: true,
+};
+
 // Lets a provider that publishes its slash commands through a vendor-specific
 // ACP extension notification (rather than the standard
 // `available_commands_update` session update) translate that payload into Paseo
@@ -394,6 +409,10 @@ interface ACPAgentClientOptions {
   waitForInitialCommands?: boolean;
   initialCommandsWaitTimeoutMs?: number;
   terminateProcess?: ProcessTerminator;
+  // Appends the daemon-side "Allow All" mode (ACP_ALLOW_ALL_MODE) to the modes
+  // the agent advertises. Leave off for providers with a native unattended
+  // mode (e.g. Copilot's allow_all config).
+  syntheticAllowAllMode?: boolean;
 }
 
 interface ACPAgentSessionOptions {
@@ -427,6 +446,7 @@ interface ACPAgentSessionOptions {
   waitForInitialCommands?: boolean;
   initialCommandsWaitTimeoutMs?: number;
   terminateProcess?: ProcessTerminator;
+  syntheticAllowAllMode?: boolean;
 }
 
 export interface SpawnedACPProcess {
@@ -641,6 +661,15 @@ export function deriveModesFromACP(
   };
 }
 
+// Skips agents that advertise no modes at all: without a native mode there is
+// nothing to switch back to after leaving Allow All.
+export function appendSyntheticAllowAllMode(modes: AgentMode[]): AgentMode[] {
+  if (modes.length === 0 || modes.some((mode) => mode.id === ACP_ALLOW_ALL_MODE_ID)) {
+    return modes;
+  }
+  return [...modes, ACP_ALLOW_ALL_MODE];
+}
+
 export function deriveModelDefinitionsFromACP(
   provider: string,
   models: SessionModelState | null | undefined,
@@ -733,6 +762,7 @@ export class ACPAgentClient implements AgentClient {
   private readonly waitForInitialCommands: boolean;
   private readonly initialCommandsWaitTimeoutMs: number;
   private readonly extensionCommandsParser?: ACPExtensionCommandsParser;
+  private readonly syntheticAllowAllMode: boolean;
   protected readonly terminateProcess: ProcessTerminator;
 
   constructor(options: ACPAgentClientOptions) {
@@ -760,6 +790,7 @@ export class ACPAgentClient implements AgentClient {
     this.waitForInitialCommands = options.waitForInitialCommands ?? false;
     this.initialCommandsWaitTimeoutMs = options.initialCommandsWaitTimeoutMs ?? 1500;
     this.extensionCommandsParser = options.extensionCommandsParser;
+    this.syntheticAllowAllMode = options.syntheticAllowAllMode ?? false;
   }
 
   async createSession(
@@ -792,6 +823,7 @@ export class ACPAgentClient implements AgentClient {
         extensionCommandsParser: this.extensionCommandsParser,
         waitForInitialCommands: this.waitForInitialCommands,
         initialCommandsWaitTimeoutMs: this.initialCommandsWaitTimeoutMs,
+        syntheticAllowAllMode: this.syntheticAllowAllMode,
       },
     );
     await session.initializeNewSession();
@@ -843,6 +875,7 @@ export class ACPAgentClient implements AgentClient {
       extensionCommandsParser: this.extensionCommandsParser,
       waitForInitialCommands: this.waitForInitialCommands,
       initialCommandsWaitTimeoutMs: this.initialCommandsWaitTimeoutMs,
+      syntheticAllowAllMode: this.syntheticAllowAllMode,
     });
     await session.initializeResumedSession();
     return session;
@@ -880,7 +913,9 @@ export class ACPAgentClient implements AgentClient {
         );
         return {
           models: this.modelTransformer ? this.modelTransformer(models) : models,
-          modes: modeInfo.modes,
+          modes: this.syntheticAllowAllMode
+            ? appendSyntheticAllowAllMode(modeInfo.modes)
+            : modeInfo.modes,
         };
       })();
 
@@ -1329,6 +1364,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
   private waitForInitialCommands: boolean;
   private initialCommandsWaitTimeoutMs: number;
   private readonly extensionCommandsParser?: ACPExtensionCommandsParser;
+  private readonly syntheticAllowAllMode: boolean;
   private currentTurnUsage: AgentUsage | undefined;
   private activeForegroundTurnId: string | null = null;
   private fallbackAssistantMessageId: string | null = null;
@@ -1357,7 +1393,8 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     this.providerModeWriter = options.providerModeWriter;
     this.beforeModeWriter = options.beforeModeWriter;
     this.thinkingOptionWriter = options.thinkingOptionWriter;
-    this.availableModes = options.defaultModes;
+    this.syntheticAllowAllMode = options.syntheticAllowAllMode ?? false;
+    this.availableModes = this.withSyntheticModes(options.defaultModes);
     this.agentId = options.agentId;
     this.launchEnv = options.launchEnv;
     this.initialHandle = options.handle;
@@ -1545,6 +1582,14 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     return this.currentMode;
   }
 
+  private withSyntheticModes(modes: AgentMode[]): AgentMode[] {
+    return this.syntheticAllowAllMode ? appendSyntheticAllowAllMode(modes) : modes;
+  }
+
+  private isAllowAllModeActive(): boolean {
+    return this.syntheticAllowAllMode && this.currentMode === ACP_ALLOW_ALL_MODE_ID;
+  }
+
   get features(): AgentFeature[] {
     return deriveFeaturesFromACP(this.configOptions, this.configFeatureOptions);
   }
@@ -1630,6 +1675,29 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       throw new Error("ACP session not initialized");
     }
 
+    // The Allow All mode exists only in the daemon: activate it without any
+    // provider RPC, leaving the agent's native mode untouched. Switching away
+    // takes the normal path below and writes the requested native mode.
+    if (this.syntheticAllowAllMode && modeId === ACP_ALLOW_ALL_MODE_ID) {
+      if (selection.availableMode?.id !== ACP_ALLOW_ALL_MODE_ID) {
+        this.warnInvalidSelection(
+          modeId,
+          `is not valid ${this.provider} mode. Available options: ${this.availableModes
+            .map((mode) => mode.id)
+            .join(", ")}`,
+        );
+        return;
+      }
+      this.currentMode = modeId;
+      this.pushEvent({
+        type: "mode_changed",
+        provider: this.provider,
+        currentModeId: this.currentMode,
+        availableModes: [...this.availableModes],
+      });
+      return;
+    }
+
     const context = this.createProviderModeWriterContext(modeId, selection);
     const providerResult = this.providerModeWriter
       ? await this.providerModeWriter(context)
@@ -1639,7 +1707,9 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       if (providerResult.configOptions) {
         this.configOptions = this.transformConfigOptions(providerResult.configOptions);
       }
-      this.availableModes = deriveModesFromACP(this.defaultModes, null, this.configOptions).modes;
+      this.availableModes = this.withSyntheticModes(
+        deriveModesFromACP(this.defaultModes, null, this.configOptions).modes,
+      );
       this.pushEvent({
         type: "mode_changed",
         provider: this.provider,
@@ -1713,7 +1783,9 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       requestedValue: modeId,
       label: "mode",
     });
-    this.availableModes = deriveModesFromACP(this.defaultModes, null, this.configOptions).modes;
+    this.availableModes = this.withSyntheticModes(
+      deriveModesFromACP(this.defaultModes, null, this.configOptions).modes,
+    );
     this.pushEvent({
       type: "mode_changed",
       provider: this.provider,
@@ -2066,6 +2138,18 @@ export class ACPAgentSession implements AgentSession, ACPClient {
   }
 
   async requestPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
+    if (this.isAllowAllModeActive()) {
+      const selected = selectPermissionOption(params.options, { behavior: "allow" });
+      if (selected) {
+        this.logger.debug(
+          { toolCallId: params.toolCall.toolCallId, optionId: selected.optionId },
+          "Auto-approved ACP permission request (Allow All mode)",
+        );
+        return { outcome: { outcome: "selected", optionId: selected.optionId } };
+      }
+      // No allow option to pick — fall through and surface the request.
+    }
+
     // Match Zed acp.rs:3189-3220: generic ACP permission requests stay pure pass-through.
     const requestId = randomUUID();
     let toolSnapshot =
@@ -2369,7 +2453,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     this.configOptions = this.transformConfigOptions(transformed.configOptions ?? []);
 
     const modeInfo = deriveModesFromACP(this.defaultModes, transformed.modes, this.configOptions);
-    this.availableModes = modeInfo.modes;
+    this.availableModes = this.withSyntheticModes(modeInfo.modes);
     this.currentMode = modeInfo.currentModeId ?? this.currentMode;
 
     this.availableModels = transformed.models?.availableModels ?? null;
@@ -2576,6 +2660,11 @@ export class ACPAgentSession implements AgentSession, ACPClient {
   }
 
   private handleCurrentModeUpdate(update: CurrentModeUpdate): void {
+    // Allow All is daemon-owned and never written to the agent, so the agent's
+    // native mode echoes must not deactivate it.
+    if (this.isAllowAllModeActive()) {
+      return;
+    }
     this.currentMode = this.transformModeId(update.currentModeId);
   }
 
@@ -2586,8 +2675,10 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     const nextModel = deriveCurrentConfigValue(this.configOptions, "model");
     const nextThinkingOptionId = deriveCurrentConfigValue(this.configOptions, "thought_level");
 
-    this.availableModes = modeInfo.modes;
-    this.currentMode = nextMode ?? this.currentMode;
+    this.availableModes = this.withSyntheticModes(modeInfo.modes);
+    if (!this.isAllowAllModeActive()) {
+      this.currentMode = nextMode ?? this.currentMode;
+    }
     this.currentModel = nextModel ?? this.currentModel;
     this.thinkingOptionId = nextThinkingOptionId ?? this.thinkingOptionId;
 
