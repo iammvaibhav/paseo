@@ -398,6 +398,8 @@ function wrapClientProvider(
 ): AgentClient {
   const listImportableSessions = inner.listImportableSessions?.bind(inner);
   const importSession = inner.importSession?.bind(inner);
+  const listCommands = inner.listCommands?.bind(inner);
+  const listFeatures = inner.listFeatures?.bind(inner);
 
   return {
     provider,
@@ -441,6 +443,12 @@ function wrapClientProvider(
     },
     resolveCreateConfig: inner.resolveCreateConfig?.bind(inner),
     isCreateConfigUnattended: inner.isCreateConfigUnattended?.bind(inner),
+    listCommands: listCommands
+      ? async (config) => await listCommands({ ...config, provider: inner.provider })
+      : undefined,
+    listFeatures: listFeatures
+      ? async (config) => await listFeatures({ ...config, provider: inner.provider })
+      : undefined,
     listImportableSessions: listImportableSessions
       ? async (options) => await listImportableSessions(options)
       : undefined,
