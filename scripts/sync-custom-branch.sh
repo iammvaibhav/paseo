@@ -14,7 +14,7 @@
 #   ./scripts/sync-custom-branch.sh
 #
 # Overrides:
-#   PASEO_CUSTOM_BRANCH=vaibhav/acp-customizations
+#   PASEO_CUSTOM_BRANCH=vaibhav/customizations
 #   PASEO_NODE_VERSION=22
 #   PASEO_LOCAL_HOME=$HOME/.paseo
 #   PASEO_SKIP_REMOTES=1          # local only
@@ -23,7 +23,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BRANCH="${PASEO_CUSTOM_BRANCH:-vaibhav/acp-customizations}"
+BRANCH="${PASEO_CUSTOM_BRANCH:-vaibhav/customizations}"
 UPSTREAM_REMOTE="${PASEO_UPSTREAM_REMOTE:-upstream}"
 ORIGIN_REMOTE="${PASEO_ORIGIN_REMOTE:-origin}"
 FORK_REPO="${PASEO_FORK_REPO:-git@github.com:iammvaibhav/paseo.git}"

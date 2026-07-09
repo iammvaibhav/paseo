@@ -176,7 +176,7 @@ This checkout is maintained as a **personal fork** of the official repo, not as 
 
 ### Custom branch
 
-All local customizations live on **`vaibhav/acp-customizations`**, branched from `upstream/main`. Current additions include:
+All local customizations live on **`vaibhav/customizations`**, branched from `upstream/main`. Current additions include:
 
 - ACP **Allow All** mode for generic ACP providers (Cursor, Grok, etc.)
 - Durable assistant `messageId` on ACP timeline items so the **fork chat** UI works for agents like Grok that omit protocol message ids
@@ -186,13 +186,13 @@ Do day-to-day work on this branch, not on `main`.
 
 ### Day-to-day flow
 
-1. Commit changes on `vaibhav/acp-customizations`.
+1. Commit changes on `vaibhav/customizations`.
 2. Run `./scripts/sync-custom-branch.sh` from the repo root.
 
 The script:
 
 1. **Local Mac** — fetches `upstream`, rebases the custom branch onto `upstream/main`, pushes to `origin`, runs `npm run build:server` with the Node version from `.tool-versions` (via nvm), and restarts the production-style daemon at `~/.paseo`.
-2. **`blrofc3`** and **`iammvaibhav`** — repoints `origin` to the fork if still on `getpaseo/paseo`, checks out `vaibhav/acp-customizations` from `origin`, installs deps when `package.json` / lockfile changed, builds, and restarts each host's `~/.paseo` daemon.
+2. **`blrofc3`** and **`iammvaibhav`** — repoints `origin` to the fork if still on `getpaseo/paseo`, checks out `vaibhav/customizations` from `origin`, installs deps when `package.json` / lockfile changed, builds, and restarts each host's `~/.paseo` daemon.
 
 Requires a **clean working tree** before running. The script exits if there are uncommitted changes.
 
@@ -200,9 +200,9 @@ Requires a **clean working tree** before running. The script exits if there are 
 
 ```bash
 git fetch upstream
-git checkout vaibhav/acp-customizations
+git checkout vaibhav/customizations
 git rebase upstream/main
-git push origin vaibhav/acp-customizations
+git push origin vaibhav/customizations
 
 npm run build:server
 npx tsx packages/cli/src/index.js daemon restart --home ~/.paseo
