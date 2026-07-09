@@ -12,6 +12,7 @@ import {
   CURSOR_FAST_FEATURE_OPTION,
   CursorACPAgentClient,
   normalizeCursorACPConfig,
+  resolveCursorModelFeatureValues,
 } from "./cursor-acp-agent.js";
 import { GenericACPAgentClient } from "./generic-acp-agent.js";
 import type { AgentSessionConfig } from "../agent-sdk-types.js";
@@ -91,6 +92,7 @@ describe("CursorACPAgentClient model discovery", () => {
           supportsToolInvocations: true,
         },
         configFeatureOptions: [CURSOR_FAST_FEATURE_OPTION, CURSOR_CONTEXT_FEATURE_OPTION],
+        modelFeatureValuesResolver: resolveCursorModelFeatureValues,
       },
     );
   }
@@ -411,6 +413,34 @@ describe("CursorACPAgentClient model discovery", () => {
 
     await internals.applyConfiguredOverrides();
 
+    expect(setSessionConfigOption).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      configId: "fast",
+      value: "false",
+    });
+  });
+
+  test("applies Cursor non-fast feature value after active base model switches", async () => {
+    const setSessionConfigOption = vi.fn().mockResolvedValue({
+      configOptions: [fastConfigOption("false")],
+    });
+    const unstableSetSessionModel = vi.fn().mockResolvedValue(undefined);
+    const session = createCursorSession({});
+    const internals = asInternals<ModelOverrideInternals>(session);
+    internals.sessionId = "session-1";
+    internals.connection = {
+      unstable_setSessionModel: unstableSetSessionModel,
+      setSessionConfigOption,
+    };
+    internals.availableModels = [{ modelId: "gpt-5.4", name: "GPT-5.4", description: null }];
+    internals.configOptions = [fastConfigOption("true")];
+
+    await session.setModel("gpt-5.4");
+
+    expect(unstableSetSessionModel).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      modelId: "gpt-5.4",
+    });
     expect(setSessionConfigOption).toHaveBeenCalledWith({
       sessionId: "session-1",
       configId: "fast",

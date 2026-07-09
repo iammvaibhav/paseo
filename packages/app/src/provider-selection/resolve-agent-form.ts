@@ -463,7 +463,7 @@ function pickNextModelForProvider(input: {
   providerPrefs: ProviderPrefs | undefined;
 }): string {
   const { providerModels, providerPrefs } = input;
-  const isValidModel = (m: string) => providerModels?.some((am) => am.id === m) ?? false;
+  const isValidModel = (m: string) => isSelectableModelId(providerModels, m);
   const preferredModel = normalizeSelectedModelId(providerPrefs?.model);
   const defaultModelId = resolveDefaultModelId(providerModels);
   if (preferredModel && (!providerModels || isValidModel(preferredModel))) {
@@ -510,7 +510,8 @@ function pickNextThinkingOptionForProvider(input: {
   return resolveThinkingOptionId({
     availableModels: providerModels,
     modelId,
-    requestedThinkingOptionId: preferredThinking,
+    requestedThinkingOptionId:
+      preferredThinking || resolveParameterizedModelThinkingOptionId(modelId),
   });
 }
 

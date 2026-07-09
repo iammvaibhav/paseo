@@ -238,6 +238,7 @@ const BASE_ACP_CLIENT_CAPABILITIES: ACPClientCapabilities = {
 };
 
 export type ACPClientCapabilityMeta = Record<string, unknown>;
+export type ACPModelFeatureValuesResolver = (modelId: string) => Record<string, unknown>;
 
 export function buildACPClientCapabilities(meta?: ACPClientCapabilityMeta): ACPClientCapabilities {
   if (!meta || Object.keys(meta).length === 0) {
@@ -371,6 +372,7 @@ interface ACPAgentClientOptions {
   sessionResponseTransformer?: (response: SessionStateResponse) => SessionStateResponse;
   configOptionsTransformer?: (configOptions: SessionConfigOption[]) => SessionConfigOption[];
   configFeatureOptions?: ACPConfigFeatureOption[];
+  modelFeatureValuesResolver?: ACPModelFeatureValuesResolver;
   clientCapabilityMeta?: ACPClientCapabilityMeta;
   modeIdTransformer?: (modeId: string) => string | null;
   toolSnapshotTransformer?: (snapshot: ACPToolSnapshot) => ACPToolSnapshot;
@@ -400,6 +402,7 @@ interface ACPAgentSessionOptions {
   sessionResponseTransformer?: (response: SessionStateResponse) => SessionStateResponse;
   configOptionsTransformer?: (configOptions: SessionConfigOption[]) => SessionConfigOption[];
   configFeatureOptions?: ACPConfigFeatureOption[];
+  modelFeatureValuesResolver?: ACPModelFeatureValuesResolver;
   clientCapabilityMeta?: ACPClientCapabilityMeta;
   modeIdTransformer?: (modeId: string) => string | null;
   toolSnapshotTransformer?: (snapshot: ACPToolSnapshot) => ACPToolSnapshot;
@@ -735,6 +738,7 @@ export class ACPAgentClient implements AgentClient {
     configOptions: SessionConfigOption[],
   ) => SessionConfigOption[];
   private readonly configFeatureOptions: ACPConfigFeatureOption[];
+  private readonly modelFeatureValuesResolver?: ACPModelFeatureValuesResolver;
   private readonly clientCapabilityMeta?: ACPClientCapabilityMeta;
   private readonly modeIdTransformer?: (modeId: string) => string | null;
   private readonly toolSnapshotTransformer?: (snapshot: ACPToolSnapshot) => ACPToolSnapshot;
@@ -769,6 +773,7 @@ export class ACPAgentClient implements AgentClient {
     this.sessionResponseTransformer = options.sessionResponseTransformer;
     this.configOptionsTransformer = options.configOptionsTransformer;
     this.configFeatureOptions = options.configFeatureOptions ?? [];
+    this.modelFeatureValuesResolver = options.modelFeatureValuesResolver;
     this.clientCapabilityMeta = options.clientCapabilityMeta;
     this.modeIdTransformer = options.modeIdTransformer;
     this.toolSnapshotTransformer = options.toolSnapshotTransformer;
@@ -797,6 +802,7 @@ export class ACPAgentClient implements AgentClient {
         sessionResponseTransformer: this.sessionResponseTransformer,
         configOptionsTransformer: this.configOptionsTransformer,
         configFeatureOptions: this.configFeatureOptions,
+        modelFeatureValuesResolver: this.modelFeatureValuesResolver,
         clientCapabilityMeta: this.clientCapabilityMeta,
         modeIdTransformer: this.modeIdTransformer,
         toolSnapshotTransformer: this.toolSnapshotTransformer,
@@ -846,6 +852,7 @@ export class ACPAgentClient implements AgentClient {
       sessionResponseTransformer: this.sessionResponseTransformer,
       configOptionsTransformer: this.configOptionsTransformer,
       configFeatureOptions: this.configFeatureOptions,
+      modelFeatureValuesResolver: this.modelFeatureValuesResolver,
       clientCapabilityMeta: this.clientCapabilityMeta,
       modeIdTransformer: this.modeIdTransformer,
       toolSnapshotTransformer: this.toolSnapshotTransformer,
@@ -1296,6 +1303,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     configOptions: SessionConfigOption[],
   ) => SessionConfigOption[];
   private readonly configFeatureOptions: ACPConfigFeatureOption[];
+  private readonly modelFeatureValuesResolver?: ACPModelFeatureValuesResolver;
   private readonly clientCapabilityMeta?: ACPClientCapabilityMeta;
   private readonly modeIdTransformer?: (modeId: string) => string | null;
   private readonly toolSnapshotTransformer?: (snapshot: ACPToolSnapshot) => ACPToolSnapshot;
@@ -1362,6 +1370,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     this.sessionResponseTransformer = options.sessionResponseTransformer;
     this.configOptionsTransformer = options.configOptionsTransformer;
     this.configFeatureOptions = options.configFeatureOptions ?? [];
+    this.modelFeatureValuesResolver = options.modelFeatureValuesResolver;
     this.clientCapabilityMeta = options.clientCapabilityMeta;
     this.modeIdTransformer = options.modeIdTransformer;
     this.toolSnapshotTransformer = options.toolSnapshotTransformer;
@@ -1769,7 +1778,10 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       availableModels: this.availableModels,
       configOptions: this.configOptions,
     });
-    await this.setModelWithSelection({ modelId, selection });
+    const applied = await this.setModelWithSelection({ modelId, selection });
+    if (applied) {
+      await this.applyModelFeatureValues(modelId);
+    }
   }
 
   private async setModelWithSelection({
@@ -1778,7 +1790,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
   }: {
     modelId: string;
     selection: ACPModelSelection;
-  }): Promise<void> {
+  }): Promise<boolean> {
     if (!this.connection || !this.sessionId) {
       throw new Error("ACP session not initialized");
     }
@@ -1791,7 +1803,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
             ?.map((model) => model.modelId)
             .join(", ")}`,
         );
-        return;
+        return false;
       }
 
       if (typeof this.connection.unstable_setSessionModel !== "function") {
@@ -1810,7 +1822,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
           provider: this.provider,
           runtimeInfo: this.runtimeInfo(),
         });
-        return;
+        return true;
       } catch {
         // Fall through to config option path.
       }
@@ -1829,7 +1841,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
           .map((option) => option.value)
           .join(", ")}`,
       );
-      return;
+      return false;
     }
 
     const response = await this.connection.setSessionConfigOption({
@@ -1850,6 +1862,34 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       provider: this.provider,
       runtimeInfo: this.runtimeInfo(),
     });
+    return true;
+  }
+
+  private async applyModelFeatureValues(modelId: string): Promise<void> {
+    const featureValues = this.modelFeatureValuesResolver?.(modelId);
+    if (!featureValues || Object.keys(featureValues).length === 0) {
+      return;
+    }
+
+    for (const [featureId, value] of Object.entries(featureValues)) {
+      const featureOption = this.configFeatureOptions.find((option) => option.id === featureId);
+      if (!featureOption) {
+        this.logger.warn(
+          { featureId, value },
+          `${this.provider} model feature default references an unknown feature; using provider default`,
+        );
+        continue;
+      }
+      const option = findSelectConfigFeatureOption(this.configOptions, featureOption);
+      if (!option) {
+        this.logger.warn(
+          { featureId, value },
+          `${this.provider} does not expose ACP feature '${featureId}'; using provider default`,
+        );
+        continue;
+      }
+      await this.setFeature(featureId, value);
+    }
   }
 
   async setThinkingOption(thinkingOptionId: string | null): Promise<void> {

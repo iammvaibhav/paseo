@@ -956,6 +956,35 @@ describe("resolveAgentForm", () => {
       expect(next.userModified.model).toBe(false);
     });
 
+    it("preserves parameterized preferred model ids when switching providers", () => {
+      const models: AgentModelDefinition[] = [
+        {
+          provider: "codex",
+          id: "gpt-5.4",
+          label: "GPT-5.4",
+          isDefault: true,
+          defaultThinkingOptionId: "high",
+          thinkingOptions: [
+            { id: "medium", label: "Medium" },
+            { id: "high", label: "High", isDefault: true },
+          ],
+        },
+      ];
+      const state = makeState({ provider: "claude", model: "claude-sonnet-4-6" });
+
+      const next = resolveAgentForm(state, {
+        type: "SET_PROVIDER_FROM_USER",
+        provider: "codex",
+        providerModels: models,
+        providerDef: TEST_CODEX_DEFINITION,
+        providerPrefs: { model: "gpt-5.4[reasoning=medium,fast=false]" },
+      });
+
+      expect(next.form.provider).toBe("codex");
+      expect(next.form.model).toBe("gpt-5.4[reasoning=medium,fast=false]");
+      expect(next.form.thinkingOptionId).toBe("medium");
+    });
+
     it("falls back to provider defaults when no prefs", () => {
       const state = makeState();
       const next = resolveAgentForm(state, {

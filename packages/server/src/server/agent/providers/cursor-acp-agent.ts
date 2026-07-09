@@ -60,6 +60,7 @@ export class CursorACPAgentClient extends GenericACPAgentClient {
       initialCommandsWaitTimeoutMs: CURSOR_INITIAL_COMMANDS_WAIT_TIMEOUT_MS,
       clientCapabilityMeta: CURSOR_CLIENT_CAPABILITY_META,
       configFeatureOptions: [CURSOR_FAST_FEATURE_OPTION, CURSOR_CONTEXT_FEATURE_OPTION],
+      modelFeatureValuesResolver: resolveCursorModelFeatureValues,
     });
   }
 
@@ -91,12 +92,9 @@ export function normalizeCursorACPConfig<T extends Partial<AgentSessionConfig>>(
   const modelSelectionCandidates =
     parsed && config.model ? [parsed.model, config.model] : undefined;
   const featureValues = {
-    ...parsed?.featureValues,
+    ...resolveCursorModelFeatureValues(config.model),
     ...config.featureValues,
   };
-  if (!Object.prototype.hasOwnProperty.call(featureValues, CURSOR_FAST_FEATURE_OPTION.id)) {
-    featureValues[CURSOR_FAST_FEATURE_OPTION.id] = "false";
-  }
 
   return {
     ...config,
@@ -111,6 +109,19 @@ export function normalizeCursorACPConfig<T extends Partial<AgentSessionConfig>>(
       : {}),
     ...(Object.keys(featureValues).length > 0 ? { featureValues } : {}),
   };
+}
+
+export function resolveCursorModelFeatureValues(
+  model: string | null | undefined,
+): Record<string, string> {
+  const featureValues = { ...parseCursorParameterizedModel(model ?? undefined)?.featureValues };
+  if (
+    model &&
+    !Object.prototype.hasOwnProperty.call(featureValues, CURSOR_FAST_FEATURE_OPTION.id)
+  ) {
+    featureValues[CURSOR_FAST_FEATURE_OPTION.id] = "false";
+  }
+  return featureValues;
 }
 
 function normalizeCursorPersistenceHandle(handle: AgentPersistenceHandle): AgentPersistenceHandle {

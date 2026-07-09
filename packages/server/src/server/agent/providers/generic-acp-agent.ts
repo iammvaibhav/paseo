@@ -7,6 +7,7 @@ import {
   ACPAgentClient,
   type ACPClientCapabilityMeta,
   type ACPConfigFeatureOption,
+  type ACPModelFeatureValuesResolver,
   DEFAULT_ACP_CAPABILITIES,
   type ACPExtensionCommandsParser,
 } from "./acp-agent.js";
@@ -37,6 +38,7 @@ interface GenericACPAgentClientOptions {
   diagnosticPhaseTimeoutMs?: number;
   clientCapabilityMeta?: ACPClientCapabilityMeta;
   configFeatureOptions?: ACPConfigFeatureOption[];
+  modelFeatureValuesResolver?: ACPModelFeatureValuesResolver;
   extensionCommandsParser?: ACPExtensionCommandsParser;
 }
 
@@ -59,6 +61,7 @@ export class GenericACPAgentClient extends ACPAgentClient {
       initialCommandsWaitTimeoutMs: options.initialCommandsWaitTimeoutMs,
       clientCapabilityMeta: options.clientCapabilityMeta,
       configFeatureOptions: options.configFeatureOptions,
+      modelFeatureValuesResolver: options.modelFeatureValuesResolver,
       extensionCommandsParser: options.extensionCommandsParser,
     });
 
