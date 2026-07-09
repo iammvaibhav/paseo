@@ -53,6 +53,10 @@ export function resolveFeatureValues(args: {
     }
     if (Object.prototype.hasOwnProperty.call(args.persistedFeatureValues, feature.id)) {
       next[feature.id] = args.persistedFeatureValues[feature.id];
+      continue;
+    }
+    if (feature.value !== null && feature.value !== undefined) {
+      next[feature.id] = feature.value;
     }
   }
 

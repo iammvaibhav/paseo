@@ -30,6 +30,7 @@ describe("feature-preferences", () => {
       }),
     ).toEqual({
       fast_mode: true,
+      plan_mode: false,
     });
   });
 
@@ -49,5 +50,36 @@ describe("feature-preferences", () => {
       fast_mode: false,
       plan_mode: false,
     });
+  });
+
+  it("uses provider feature values when nothing is persisted or local", () => {
+    expect(
+      resolveFeatureValues({
+        features,
+        persistedFeatureValues: {},
+        localFeatureValues: {},
+      }),
+    ).toEqual({
+      fast_mode: false,
+      plan_mode: false,
+    });
+  });
+
+  it("omits null select values from defaults", () => {
+    expect(
+      resolveFeatureValues({
+        features: [
+          {
+            type: "select" as const,
+            id: "profile",
+            label: "Profile",
+            value: null,
+            options: [],
+          },
+        ],
+        persistedFeatureValues: {},
+        localFeatureValues: {},
+      }),
+    ).toEqual({});
   });
 });

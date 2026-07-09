@@ -6,7 +6,11 @@ import {
   type SpawnedACPProcess,
   type SessionStateResponse,
 } from "./acp-agent.js";
-import { CURSOR_FAST_FEATURE_OPTION, CursorACPAgentClient } from "./cursor-acp-agent.js";
+import {
+  CURSOR_FAST_FEATURE_OPTION,
+  CursorACPAgentClient,
+  normalizeCursorACPConfig,
+} from "./cursor-acp-agent.js";
 import { GenericACPAgentClient } from "./generic-acp-agent.js";
 import { asInternals } from "../../test-utils/class-mocks.js";
 import { createTestLogger } from "../../../test-utils/test-logger.js";
@@ -133,6 +137,64 @@ describe("CursorACPAgentClient model discovery", () => {
         writeTextFile: true,
       },
       terminal: true,
+    });
+  });
+
+  test("normalizes legacy parameterized Cursor model ids", () => {
+    expect(
+      normalizeCursorACPConfig({
+        provider: "acp",
+        cwd: "/tmp/cursor",
+        model: "gpt-5.4[context=272k,reasoning=medium,fast=false]",
+      }),
+    ).toEqual({
+      provider: "acp",
+      cwd: "/tmp/cursor",
+      model: "gpt-5.4",
+      thinkingOptionId: "medium",
+      featureValues: {
+        context: "272k",
+        fast: "false",
+      },
+    });
+  });
+
+  test("normalizes legacy parameterized Cursor model ids without overriding explicit values", () => {
+    expect(
+      normalizeCursorACPConfig({
+        provider: "acp",
+        cwd: "/tmp/cursor",
+        model: "gpt-5.4[reasoning=medium,fast=false]",
+        thinkingOptionId: "high",
+        featureValues: {
+          fast: "true",
+        },
+      }),
+    ).toEqual({
+      provider: "acp",
+      cwd: "/tmp/cursor",
+      model: "gpt-5.4",
+      thinkingOptionId: "high",
+      featureValues: {
+        fast: "true",
+      },
+    });
+  });
+
+  test("defaults explicit Cursor base model selections to non-fast", () => {
+    expect(
+      normalizeCursorACPConfig({
+        provider: "acp",
+        cwd: "/tmp/cursor",
+        model: "composer-2.5",
+      }),
+    ).toEqual({
+      provider: "acp",
+      cwd: "/tmp/cursor",
+      model: "composer-2.5",
+      featureValues: {
+        fast: "false",
+      },
     });
   });
 
