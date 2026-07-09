@@ -65,6 +65,40 @@ describe("feature-preferences", () => {
     });
   });
 
+  it("uses model parameter feature values before provider defaults", () => {
+    expect(
+      resolveFeatureValues({
+        features,
+        persistedFeatureValues: {},
+        localFeatureValues: {},
+        modelFeatureValues: {
+          fast_mode: true,
+        },
+      }),
+    ).toEqual({
+      fast_mode: true,
+      plan_mode: false,
+    });
+  });
+
+  it("prefers persisted feature values over model parameter feature values", () => {
+    expect(
+      resolveFeatureValues({
+        features,
+        persistedFeatureValues: {
+          fast_mode: false,
+        },
+        localFeatureValues: {},
+        modelFeatureValues: {
+          fast_mode: true,
+        },
+      }),
+    ).toEqual({
+      fast_mode: false,
+      plan_mode: false,
+    });
+  });
+
   it("omits null select values from defaults", () => {
     expect(
       resolveFeatureValues({

@@ -9,6 +9,7 @@ import {
   pruneFeatureValues,
   resolveFeatureValues,
 } from "./feature-preferences";
+import { resolveParameterizedModelFeatureValues } from "@/provider-selection/parameterized-model";
 
 type DraftFeatureConfig = Pick<
   AgentSessionConfig,
@@ -39,6 +40,10 @@ export function useDraftAgentFeatures(input: {
   const persistedFeatureValues = useMemo(
     () => (provider ? (preferences.providerPreferences?.[provider]?.featureValues ?? {}) : {}),
     [preferences.providerPreferences, provider],
+  );
+  const modelFeatureValues = useMemo(
+    () => resolveParameterizedModelFeatureValues(modelId),
+    [modelId],
   );
 
   const draftConfig = useMemo<DraftFeatureConfig | null>(() => {
@@ -86,8 +91,9 @@ export function useDraftAgentFeatures(input: {
         features: availableFeatures,
         persistedFeatureValues,
         localFeatureValues,
+        modelFeatureValues,
       }),
-    [availableFeatures, localFeatureValues, persistedFeatureValues],
+    [availableFeatures, localFeatureValues, modelFeatureValues, persistedFeatureValues],
   );
 
   const features = useMemo(() => {

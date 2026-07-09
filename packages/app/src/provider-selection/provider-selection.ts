@@ -9,6 +9,7 @@ import type { DraftCommandConfig } from "@/hooks/use-agent-commands-query";
 import { buildFavoriteModelKey, type FavoriteModelRow } from "@/hooks/use-form-preferences";
 import { i18n } from "@/i18n/i18next";
 import { compareMatchScores, scoreTextFields } from "@/utils/score-match";
+import { resolveModelDefinitionById } from "./parameterized-model";
 
 export type ProviderSelectionModelRow = FavoriteModelRow & { isDefault?: boolean };
 
@@ -253,8 +254,10 @@ export function resolveEffectiveComposerThinkingOptionId(
     return selectedThinkingOptionId;
   }
 
-  const selectedModelDefinition =
-    selection.availableModels.find((model) => model.id === effectiveModelId) ?? null;
+  const selectedModelDefinition = resolveModelDefinitionById(
+    selection.availableModels,
+    effectiveModelId,
+  );
   return selectedModelDefinition?.defaultThinkingOptionId ?? "";
 }
 

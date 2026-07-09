@@ -35,6 +35,7 @@ import {
   type FormState,
   type ProviderModelsByProvider,
 } from "@/provider-selection/resolve-agent-form";
+import { isSelectableModelId } from "@/provider-selection/parameterized-model";
 
 export type { FormInitialValues } from "@/provider-selection/resolve-agent-form";
 
@@ -181,7 +182,11 @@ async function persistProviderPreferences(input: {
 }): Promise<void> {
   const { provider, formState, availableModels, updatePreferences } = input;
   const resolvedModel = resolveEffectiveModel(availableModels, formState.model);
-  const modelId = resolvedModel?.id ?? formState.model;
+  const selectedModelId = normalizeSelectedModelId(formState.model);
+  const modelId =
+    selectedModelId && (!availableModels || isSelectableModelId(availableModels, selectedModelId))
+      ? selectedModelId
+      : (resolvedModel?.id ?? selectedModelId);
   await updatePreferences((current) =>
     mergeProviderPreferences({
       preferences: current,

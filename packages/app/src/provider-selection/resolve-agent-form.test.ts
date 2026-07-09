@@ -408,6 +408,69 @@ describe("resolveFormState", () => {
     expect(resolved.model).toBe("gpt-5.3-codex");
   });
 
+  it("preserves parameterized initial model ids when their base model is available", () => {
+    const models: AgentModelDefinition[] = [
+      {
+        provider: "codex",
+        id: "gpt-5.4",
+        label: "GPT-5.4",
+        isDefault: true,
+        defaultThinkingOptionId: "high",
+        thinkingOptions: [
+          { id: "medium", label: "Medium" },
+          { id: "high", label: "High", isDefault: true },
+        ],
+      },
+    ];
+
+    const resolved = resolveFormState(
+      { model: "gpt-5.4[reasoning=medium,fast=true]" },
+      { provider: "codex" },
+      models,
+      INITIAL_USER_MODIFIED,
+      makeState({ provider: "codex" }).form,
+
+      codexProviderMap,
+    );
+
+    expect(resolved.model).toBe("gpt-5.4[reasoning=medium,fast=true]");
+    expect(resolved.thinkingOptionId).toBe("medium");
+  });
+
+  it("preserves parameterized preferred model ids when their base model is available", () => {
+    const models: AgentModelDefinition[] = [
+      {
+        provider: "codex",
+        id: "gpt-5.4",
+        label: "GPT-5.4",
+        isDefault: true,
+        defaultThinkingOptionId: "high",
+        thinkingOptions: [
+          { id: "medium", label: "Medium" },
+          { id: "high", label: "High", isDefault: true },
+        ],
+      },
+    ];
+
+    const resolved = resolveFormState(
+      undefined,
+      {
+        provider: "codex",
+        providerPreferences: {
+          codex: { model: "gpt-5.4[reasoning=medium,fast=true]" },
+        },
+      },
+      models,
+      INITIAL_USER_MODIFIED,
+      makeState({ provider: "codex" }).form,
+
+      codexProviderMap,
+    );
+
+    expect(resolved.model).toBe("gpt-5.4[reasoning=medium,fast=true]");
+    expect(resolved.thinkingOptionId).toBe("medium");
+  });
+
   it("keeps an explicit initial thinking option when it is valid", () => {
     const resolved = resolveFormState(
       { model: "gpt-5.3-codex", thinkingOptionId: "low" },
