@@ -162,3 +162,56 @@ The app runs on iOS, Android, web (browser), and web (Electron desktop). Code is
 ## Debugging
 
 Find the complete daemon logs and traces in the $PASEO_HOME/daemon.log
+
+## Custom fork workflow (iammvaibhav)
+
+This checkout is maintained as a **personal fork** of the official repo, not as a direct clone of `getpaseo/paseo`. `AGENTS.md` and `agents.md` are symlinks to this file (`CLAUDE.md`).
+
+### Git remotes
+
+| Remote     | Repository          | Purpose                                           |
+| ---------- | ------------------- | ------------------------------------------------- |
+| `upstream` | `getpaseo/paseo`    | Official mainline — rebase source only            |
+| `origin`   | `iammvaibhav/paseo` | Personal fork — where the custom branch is pushed |
+
+### Custom branch
+
+All local customizations live on **`vaibhav/acp-customizations`**, branched from `upstream/main`. Current additions include:
+
+- ACP **Allow All** mode for generic ACP providers (Cursor, Grok, etc.)
+- Durable assistant `messageId` on ACP timeline items so the **fork chat** UI works for agents like Grok that omit protocol message ids
+- `scripts/sync-custom-branch.sh` for multi-host deploy
+
+Do day-to-day work on this branch, not on `main`.
+
+### Day-to-day flow
+
+1. Commit changes on `vaibhav/acp-customizations`.
+2. Run `./scripts/sync-custom-branch.sh` from the repo root.
+
+The script:
+
+1. **Local Mac** — fetches `upstream`, rebases the custom branch onto `upstream/main`, pushes to `origin`, runs `npm run build:server` with the Node version from `.tool-versions` (via nvm), and restarts the production-style daemon at `~/.paseo`.
+2. **`blrofc3`** and **`iammvaibhav`** — repoints `origin` to the fork if still on `getpaseo/paseo`, checks out `vaibhav/acp-customizations` from `origin`, installs deps when `package.json` / lockfile changed, builds, and restarts each host's `~/.paseo` daemon.
+
+Requires a **clean working tree** before running. The script exits if there are uncommitted changes.
+
+### Manual equivalents
+
+```bash
+git fetch upstream
+git checkout vaibhav/acp-customizations
+git rebase upstream/main
+git push origin vaibhav/acp-customizations
+
+npm run build:server
+npx tsx packages/cli/src/index.js daemon restart --home ~/.paseo
+```
+
+### Useful overrides
+
+```bash
+PASEO_SKIP_REMOTES=1 ./scripts/sync-custom-branch.sh   # local only
+PASEO_SKIP_LOCAL=1 ./scripts/sync-custom-branch.sh     # remotes only
+PASEO_NODE_VERSION=22 ./scripts/sync-custom-branch.sh
+```
