@@ -108,6 +108,11 @@ install_cli_wrapper() {
   local wrapper_path="${bin_dir}/paseo"
 
   mkdir -p "$bin_dir"
+  # Drop any existing entry first. If paseo is a symlink (e.g. the desktop app
+  # points ~/.local/bin/paseo into /Applications/Paseo.app), `cat >` would
+  # follow it and overwrite the link target, and `sed -i` refuses to edit a
+  # symlink in place. Removing it guarantees we write a fresh regular file.
+  rm -f "$wrapper_path"
   cat >"$wrapper_path" <<'WRAPPER_EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -222,6 +227,9 @@ install_cli_wrapper() {
   local wrapper_path="\$bin_dir/paseo"
 
   mkdir -p "\$bin_dir"
+  # See the local install_cli_wrapper: remove any symlink/file first so we never
+  # write through a symlink or trip sed -i on one.
+  rm -f "\$wrapper_path"
   cat >"\$wrapper_path" <<'WRAPPER_EOF'
 #!/usr/bin/env bash
 set -euo pipefail
