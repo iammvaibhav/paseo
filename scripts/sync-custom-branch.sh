@@ -108,14 +108,16 @@ install_cli_wrapper() {
   local wrapper_path="${bin_dir}/paseo"
 
   mkdir -p "$bin_dir"
-  cat >"$wrapper_path" <<WRAPPER_EOF
+  cat >"$wrapper_path" <<'WRAPPER_EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-export NVM_DIR="\${NVM_DIR:-\$HOME/.nvm}"
+export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 # shellcheck disable=SC1091
-[ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
-exec node --disable-warning=DEP0040 "$repo_dir/packages/cli/dist/index.js" "\$@"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+exec node --disable-warning=DEP0040 "__REPO_DIR__/packages/cli/dist/index.js" "$@"
 WRAPPER_EOF
+  sed -i.bak "s|__REPO_DIR__|${repo_dir}|g" "$wrapper_path"
+  rm -f "${wrapper_path}.bak"
   chmod +x "$wrapper_path"
   log "Installed CLI wrapper at $wrapper_path -> $repo_dir/packages/cli/dist/index.js"
 }
@@ -220,14 +222,16 @@ install_cli_wrapper() {
   local wrapper_path="\$bin_dir/paseo"
 
   mkdir -p "\$bin_dir"
-  cat >"\$wrapper_path" <<WRAPPER_EOF
+  cat >"\$wrapper_path" <<'WRAPPER_EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 export NVM_DIR="\${NVM_DIR:-\$HOME/.nvm}"
 # shellcheck disable=SC1091
 [ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
-exec node --disable-warning=DEP0040 "\$repo_dir/packages/cli/dist/index.js" "\$@"
+exec node --disable-warning=DEP0040 "__REPO_DIR__/packages/cli/dist/index.js" "\$@"
 WRAPPER_EOF
+  sed -i.bak "s|__REPO_DIR__|\${repo_dir}|g" "\$wrapper_path"
+  rm -f "\${wrapper_path}.bak"
   chmod +x "\$wrapper_path"
   log "Installed CLI wrapper at \$wrapper_path"
 }
