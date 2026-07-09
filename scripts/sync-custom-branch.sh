@@ -168,7 +168,7 @@ sync_git() {
     echo "Branch origin/\$BRANCH not found on $host" >&2
     exit 1
   fi
-  git checkout -B "\$BRANCH" "origin/\$BRANCH"
+  git checkout -f -B "\$BRANCH" "origin/\$BRANCH"
   log "Checked out \$BRANCH at \$(git rev-parse --short HEAD)"
 }
 
