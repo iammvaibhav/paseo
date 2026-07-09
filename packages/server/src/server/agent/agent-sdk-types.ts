@@ -558,6 +558,11 @@ export interface AgentSessionConfig {
   daemonAppendSystemPrompt?: string;
   modeId?: string;
   model?: string;
+  /**
+   * Runtime-only model ids to try when a provider normalizes the configured
+   * model before it can inspect the runtime catalog.
+   */
+  modelSelectionCandidates?: string[];
   thinkingOptionId?: string;
   featureValues?: Record<string, unknown>;
   title?: string | null;

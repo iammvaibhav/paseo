@@ -88,6 +88,8 @@ export function normalizeCursorACPConfig<T extends Partial<AgentSessionConfig>>(
   if (!parsed && !config.model) {
     return config;
   }
+  const modelSelectionCandidates =
+    parsed && config.model ? [parsed.model, config.model] : undefined;
   const featureValues = {
     ...parsed?.featureValues,
     ...config.featureValues,
@@ -98,7 +100,12 @@ export function normalizeCursorACPConfig<T extends Partial<AgentSessionConfig>>(
 
   return {
     ...config,
-    ...(parsed ? { model: parsed.model } : {}),
+    ...(parsed
+      ? {
+          model: parsed.model,
+          modelSelectionCandidates,
+        }
+      : {}),
     ...(parsed?.thinkingOptionId && !config.thinkingOptionId
       ? { thinkingOptionId: parsed.thinkingOptionId }
       : {}),

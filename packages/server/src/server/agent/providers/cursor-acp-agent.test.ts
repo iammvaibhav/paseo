@@ -14,6 +14,7 @@ import {
   normalizeCursorACPConfig,
 } from "./cursor-acp-agent.js";
 import { GenericACPAgentClient } from "./generic-acp-agent.js";
+import type { AgentSessionConfig } from "../agent-sdk-types.js";
 import { asInternals } from "../../test-utils/class-mocks.js";
 import { createTestLogger } from "../../../test-utils/test-logger.js";
 
@@ -28,6 +29,18 @@ describe("CursorACPAgentClient model discovery", () => {
       setSessionConfigOption: ReturnType<typeof vi.fn>;
     };
     configOptions: SessionConfigOption[];
+    applyConfiguredOverrides(): Promise<void>;
+  }
+
+  interface ModelOverrideInternals {
+    sessionId: string | null;
+    connection: {
+      unstable_setSessionModel: ReturnType<typeof vi.fn>;
+      setSessionConfigOption: ReturnType<typeof vi.fn>;
+    };
+    configOptions: SessionConfigOption[];
+    availableModels: Array<{ modelId: string; name: string; description?: string | null }>;
+    currentModel: string | null;
     applyConfiguredOverrides(): Promise<void>;
   }
 
@@ -57,14 +70,12 @@ describe("CursorACPAgentClient model discovery", () => {
     };
   }
 
-  function createCursorSessionWithFeatureValues(
-    featureValues: Record<string, unknown>,
-  ): ACPAgentSession {
+  function createCursorSession(config: Partial<AgentSessionConfig>): ACPAgentSession {
     return new ACPAgentSession(
       {
         provider: "acp",
         cwd: "/tmp/cursor",
-        featureValues,
+        ...config,
       },
       {
         provider: "acp",
@@ -82,6 +93,12 @@ describe("CursorACPAgentClient model discovery", () => {
         configFeatureOptions: [CURSOR_FAST_FEATURE_OPTION, CURSOR_CONTEXT_FEATURE_OPTION],
       },
     );
+  }
+
+  function createCursorSessionWithFeatureValues(
+    featureValues: Record<string, unknown>,
+  ): ACPAgentSession {
+    return createCursorSession({ featureValues });
   }
 
   class TestCursorACPAgentClient extends CursorACPAgentClient {
@@ -168,6 +185,7 @@ describe("CursorACPAgentClient model discovery", () => {
       provider: "acp",
       cwd: "/tmp/cursor",
       model: "gpt-5.4",
+      modelSelectionCandidates: ["gpt-5.4", "gpt-5.4[context=272k,reasoning=medium,fast=false]"],
       thinkingOptionId: "medium",
       featureValues: {
         context: "272k",
@@ -191,6 +209,7 @@ describe("CursorACPAgentClient model discovery", () => {
       provider: "acp",
       cwd: "/tmp/cursor",
       model: "gpt-5.4",
+      modelSelectionCandidates: ["gpt-5.4", "gpt-5.4[reasoning=medium,fast=false]"],
       thinkingOptionId: "high",
       featureValues: {
         fast: "true",
@@ -416,6 +435,37 @@ describe("CursorACPAgentClient model discovery", () => {
       configId: "context",
       value: "272k",
     });
+  });
+
+  test("uses original Cursor model id when the runtime only exposes legacy models", async () => {
+    const setSessionConfigOption = vi.fn();
+    const unstableSetSessionModel = vi.fn().mockResolvedValue(undefined);
+    const legacyModelId = "gpt-5.4[context=272k,fast=false]";
+    const session = createCursorSession(
+      normalizeCursorACPConfig({
+        provider: "acp",
+        cwd: "/tmp/cursor",
+        model: legacyModelId,
+      }),
+    );
+    const internals = asInternals<ModelOverrideInternals>(session);
+    internals.sessionId = "session-1";
+    internals.connection = {
+      unstable_setSessionModel: unstableSetSessionModel,
+      setSessionConfigOption,
+    };
+    internals.currentModel = "default";
+    internals.availableModels = [{ modelId: legacyModelId, name: "GPT-5.4", description: null }];
+    internals.configOptions = [];
+
+    await internals.applyConfiguredOverrides();
+
+    expect(unstableSetSessionModel).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      modelId: legacyModelId,
+    });
+    expect(session.describePersistence()?.metadata?.model).toBe(legacyModelId);
+    expect(setSessionConfigOption).not.toHaveBeenCalled();
   });
 
   test("skips Cursor configured feature values omitted by the ACP runtime", async () => {

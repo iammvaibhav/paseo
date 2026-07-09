@@ -30,7 +30,6 @@ describe("feature-preferences", () => {
       }),
     ).toEqual({
       fast_mode: true,
-      plan_mode: false,
     });
   });
 
@@ -52,17 +51,14 @@ describe("feature-preferences", () => {
     });
   });
 
-  it("uses provider feature values when nothing is persisted or local", () => {
+  it("omits provider current values when nothing is persisted or local", () => {
     expect(
       resolveFeatureValues({
         features,
         persistedFeatureValues: {},
         localFeatureValues: {},
       }),
-    ).toEqual({
-      fast_mode: false,
-      plan_mode: false,
-    });
+    ).toEqual({});
   });
 
   it("uses model parameter feature values before provider defaults", () => {
@@ -77,7 +73,6 @@ describe("feature-preferences", () => {
       }),
     ).toEqual({
       fast_mode: true,
-      plan_mode: false,
     });
   });
 
@@ -95,7 +90,6 @@ describe("feature-preferences", () => {
       }),
     ).toEqual({
       fast_mode: false,
-      plan_mode: false,
     });
   });
 

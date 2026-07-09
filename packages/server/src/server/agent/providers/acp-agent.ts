@@ -599,6 +599,33 @@ export function resolveACPModelSelection({
   };
 }
 
+function normalizeModelSelectionCandidates(
+  modelId: string | undefined,
+  candidates: string[] | undefined,
+): string[] {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const candidate of [...(candidates ?? []), ...(modelId ? [modelId] : [])]) {
+    const value = candidate.trim();
+    if (!value || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    normalized.push(value);
+  }
+  return normalized;
+}
+
+function isSelectableACPModelSelection(selection: ACPModelSelection): boolean {
+  if (selection.hasAvailableModels) {
+    return Boolean(selection.availableModel);
+  }
+  if (selection.configOption) {
+    return Boolean(selection.configChoice);
+  }
+  return true;
+}
+
 export function deriveModesFromACP(
   fallbackModes: AgentMode[],
   modeState?: { availableModes?: SessionMode[] | null; currentModeId?: string | null } | null,
@@ -1294,6 +1321,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
   private readonly terminalEntries = new Map<string, TerminalEntry>();
   private readonly persistedHistory: AgentTimelineItem[] = [];
   private readonly initialHandle?: AgentPersistenceHandle;
+  private readonly modelSelectionCandidates: string[];
 
   private readonly config: AgentSessionConfig;
   private child: ChildProcessWithoutNullStreams | null = null;
@@ -1343,8 +1371,13 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     this.availableModes = options.defaultModes;
     this.agentId = options.agentId;
     this.launchEnv = options.launchEnv;
+    const { modelSelectionCandidates, ...sessionConfig } = config;
+    this.modelSelectionCandidates = normalizeModelSelectionCandidates(
+      config.model,
+      modelSelectionCandidates,
+    );
     this.initialHandle = options.handle;
-    this.config = { ...config, provider: options.provider };
+    this.config = { ...sessionConfig, provider: options.provider };
     this.currentMode = config.modeId ?? null;
     this.currentModel = config.model ?? null;
     this.thinkingOptionId = config.thinkingOptionId ?? null;
@@ -1771,6 +1804,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
           modelId,
         });
         this.currentModel = modelId;
+        this.config.model = modelId;
         this.pushEvent({
           type: "model_changed",
           provider: this.provider,
@@ -1810,6 +1844,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       requestedValue: modelId,
       label: "model",
     });
+    this.config.model = this.currentModel;
     this.pushEvent({
       type: "model_changed",
       provider: this.provider,
@@ -2379,22 +2414,20 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       await this.setModeWithSelection({ modeId: configuredModeId, selection });
     }
     const configuredModelId = this.config.model;
-    if (configuredModelId && configuredModelId !== this.currentModel) {
-      const selection = resolveACPModelSelection({
-        modelId: configuredModelId,
-        availableModels: this.availableModels,
-        configOptions: this.configOptions,
-      });
-      try {
-        await this.setModelWithSelection({ modelId: configuredModelId, selection });
-      } catch (error) {
-        if (!this.isModelSelectionUnavailableError(error)) {
-          throw error;
+    if (configuredModelId) {
+      const modelOverride = this.resolveConfiguredModelOverride(configuredModelId);
+      if (modelOverride.modelId !== this.currentModel) {
+        try {
+          await this.setModelWithSelection(modelOverride);
+        } catch (error) {
+          if (!this.isModelSelectionUnavailableError(error)) {
+            throw error;
+          }
+          this.logger.warn(
+            { value: modelOverride.modelId },
+            `${this.provider} does not expose ACP model selection; using provider default model`,
+          );
         }
-        this.logger.warn(
-          { value: configuredModelId },
-          `${this.provider} does not expose ACP model selection; using provider default model`,
-        );
       }
     }
     if (this.config.thinkingOptionId && this.config.thinkingOptionId !== this.thinkingOptionId) {
@@ -2415,6 +2448,34 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       }
       await this.setFeature(featureOption.id, configuredFeatureValues[featureOption.id]);
     }
+  }
+
+  private resolveConfiguredModelOverride(modelId: string): {
+    modelId: string;
+    selection: ACPModelSelection;
+  } {
+    const candidates = normalizeModelSelectionCandidates(modelId, this.modelSelectionCandidates);
+    const firstCandidate = {
+      modelId: candidates[0] ?? modelId,
+      selection: resolveACPModelSelection({
+        modelId: candidates[0] ?? modelId,
+        availableModels: this.availableModels,
+        configOptions: this.configOptions,
+      }),
+    };
+
+    for (const candidate of candidates) {
+      const selection = resolveACPModelSelection({
+        modelId: candidate,
+        availableModels: this.availableModels,
+        configOptions: this.configOptions,
+      });
+      if (isSelectableACPModelSelection(selection)) {
+        return { modelId: candidate, selection };
+      }
+    }
+
+    return firstCandidate;
   }
 
   private warnInvalidSelection(value: string, message: string): void {

@@ -61,9 +61,6 @@ export function resolveFeatureValues(args: {
       next[feature.id] = modelFeatureValues[feature.id];
       continue;
     }
-    if (feature.value !== null && feature.value !== undefined) {
-      next[feature.id] = feature.value;
-    }
   }
 
   return next;
