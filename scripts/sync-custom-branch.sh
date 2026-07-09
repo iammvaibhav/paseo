@@ -65,7 +65,7 @@ ensure_node() {
 }
 
 require_clean_tree() {
-  if [[ -n "$(git -C "$ROOT_DIR" status --porcelain)" ]]; then
+  if [[ -n "$(git -C "$ROOT_DIR" status --porcelain --untracked-files=no)" ]]; then
     die "Working tree is not clean. Commit or stash changes before syncing."
   fi
 }
@@ -93,8 +93,8 @@ sync_local_git() {
   git -C "$ROOT_DIR" checkout "$BRANCH"
   log "Rebasing $BRANCH onto $UPSTREAM_REMOTE/main"
   git -C "$ROOT_DIR" rebase "$UPSTREAM_REMOTE/main"
-  log "Pushing $BRANCH to $ORIGIN_REMOTE"
-  git -C "$ROOT_DIR" push "$ORIGIN_REMOTE" "$BRANCH"
+  log "Pushing $BRANCH to $ORIGIN_REMOTE (force-with-lease after rebase)"
+  git -C "$ROOT_DIR" push --force-with-lease "$ORIGIN_REMOTE" "$BRANCH"
 }
 
 build_server() {
