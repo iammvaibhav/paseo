@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
+import type { SessionConfigOption } from "@agentclientprotocol/sdk";
 
 import {
   ACPAgentSession,
@@ -7,6 +8,7 @@ import {
   type SessionStateResponse,
 } from "./acp-agent.js";
 import {
+  CURSOR_CONTEXT_FEATURE_OPTION,
   CURSOR_FAST_FEATURE_OPTION,
   CursorACPAgentClient,
   normalizeCursorACPConfig,
@@ -25,7 +27,7 @@ describe("CursorACPAgentClient model discovery", () => {
     connection: {
       setSessionConfigOption: ReturnType<typeof vi.fn>;
     };
-    configOptions: ReturnType<typeof fastConfigOption>[];
+    configOptions: SessionConfigOption[];
     applyConfiguredOverrides(): Promise<void>;
   }
 
@@ -42,12 +44,27 @@ describe("CursorACPAgentClient model discovery", () => {
     };
   }
 
-  function createCursorSessionWithFeatureValue(value: string): ACPAgentSession {
+  function contextConfigOption(currentValue: "200k" | "272k") {
+    return {
+      id: "context",
+      name: "Context",
+      type: "select" as const,
+      currentValue,
+      options: [
+        { value: "200k", name: "200k" },
+        { value: "272k", name: "272k" },
+      ],
+    };
+  }
+
+  function createCursorSessionWithFeatureValues(
+    featureValues: Record<string, unknown>,
+  ): ACPAgentSession {
     return new ACPAgentSession(
       {
         provider: "acp",
         cwd: "/tmp/cursor",
-        featureValues: { fast: value },
+        featureValues,
       },
       {
         provider: "acp",
@@ -62,7 +79,7 @@ describe("CursorACPAgentClient model discovery", () => {
           supportsReasoningStream: true,
           supportsToolInvocations: true,
         },
-        configFeatureOptions: [CURSOR_FAST_FEATURE_OPTION],
+        configFeatureOptions: [CURSOR_FAST_FEATURE_OPTION, CURSOR_CONTEXT_FEATURE_OPTION],
       },
     );
   }
@@ -322,11 +339,52 @@ describe("CursorACPAgentClient model discovery", () => {
     ]);
   });
 
+  test("exposes Cursor context as a provider feature", async () => {
+    const client = new TestCursorACPAgentClient({
+      sessionId: "session-1",
+      models: null,
+      configOptions: [contextConfigOption("272k")],
+    });
+
+    await expect(
+      client.listFeatures({
+        provider: "acp",
+        cwd: "/tmp/cursor",
+      }),
+    ).resolves.toEqual([
+      {
+        type: "select",
+        id: CURSOR_CONTEXT_FEATURE_OPTION.id,
+        label: "Context",
+        description: "Cursor context window",
+        tooltip: "Select Cursor context window",
+        icon: undefined,
+        value: "272k",
+        options: [
+          {
+            id: "200k",
+            label: "200k",
+            isDefault: false,
+            description: undefined,
+            metadata: undefined,
+          },
+          {
+            id: "272k",
+            label: "272k",
+            isDefault: true,
+            description: undefined,
+            metadata: undefined,
+          },
+        ],
+      },
+    ]);
+  });
+
   test("applies Cursor non-fast configured feature value", async () => {
     const setSessionConfigOption = vi.fn().mockResolvedValue({
       configOptions: [fastConfigOption("false")],
     });
-    const session = createCursorSessionWithFeatureValue("false");
+    const session = createCursorSessionWithFeatureValues({ fast: "false" });
     const internals = asInternals<FeatureOverrideInternals>(session);
     internals.sessionId = "session-1";
     internals.connection = { setSessionConfigOption };
@@ -339,5 +397,37 @@ describe("CursorACPAgentClient model discovery", () => {
       configId: "fast",
       value: "false",
     });
+  });
+
+  test("applies Cursor context configured feature value", async () => {
+    const setSessionConfigOption = vi.fn().mockResolvedValue({
+      configOptions: [contextConfigOption("272k")],
+    });
+    const session = createCursorSessionWithFeatureValues({ context: "272k" });
+    const internals = asInternals<FeatureOverrideInternals>(session);
+    internals.sessionId = "session-1";
+    internals.connection = { setSessionConfigOption };
+    internals.configOptions = [contextConfigOption("200k")];
+
+    await internals.applyConfiguredOverrides();
+
+    expect(setSessionConfigOption).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      configId: "context",
+      value: "272k",
+    });
+  });
+
+  test("skips Cursor configured feature values omitted by the ACP runtime", async () => {
+    const setSessionConfigOption = vi.fn();
+    const session = createCursorSessionWithFeatureValues({ fast: "false" });
+    const internals = asInternals<FeatureOverrideInternals>(session);
+    internals.sessionId = "session-1";
+    internals.connection = { setSessionConfigOption };
+    internals.configOptions = [];
+
+    await expect(internals.applyConfiguredOverrides()).resolves.toBeUndefined();
+
+    expect(setSessionConfigOption).not.toHaveBeenCalled();
   });
 });

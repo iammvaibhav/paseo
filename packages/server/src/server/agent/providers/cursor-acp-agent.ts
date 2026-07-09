@@ -32,6 +32,14 @@ export const CURSOR_FAST_FEATURE_OPTION: ACPConfigFeatureOption = {
   icon: "zap",
 };
 
+export const CURSOR_CONTEXT_FEATURE_OPTION: ACPConfigFeatureOption = {
+  id: "context",
+  configId: "context",
+  label: "Context",
+  description: "Cursor context window",
+  tooltip: "Select Cursor context window",
+};
+
 interface CursorParameterizedModel {
   model: string;
   featureValues: Record<string, string>;
@@ -51,7 +59,7 @@ export class CursorACPAgentClient extends GenericACPAgentClient {
       waitForInitialCommands: true,
       initialCommandsWaitTimeoutMs: CURSOR_INITIAL_COMMANDS_WAIT_TIMEOUT_MS,
       clientCapabilityMeta: CURSOR_CLIENT_CAPABILITY_META,
-      configFeatureOptions: [CURSOR_FAST_FEATURE_OPTION],
+      configFeatureOptions: [CURSOR_FAST_FEATURE_OPTION, CURSOR_CONTEXT_FEATURE_OPTION],
     });
   }
 
