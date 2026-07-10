@@ -1833,6 +1833,16 @@ export const fr: TranslationResources = {
           placeholder: "user@hostname ou alias de configuration SSH",
           submit: "Enregistrer",
         },
+        browserEditorUrl: {
+          title: "URL VS Code Web",
+          hint: "Permet à « Ouvrir → VS Code Web » d’ouvrir les workspaces de cet hôte dans un onglet navigateur (code-server)",
+          notConfigured: "Non configuré",
+          edit: "Modifier",
+          configure: "Configurer",
+          modalTitle: "URL VS Code Web",
+          placeholder: "http://hostname:8765",
+          submit: "Enregistrer",
+        },
         restart: {
           title: "Redémarrer le démon",
           hint: "Redémarre le processus démon. L'application se reconnectera automatiquement",

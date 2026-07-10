@@ -1,5 +1,6 @@
 import { buildGitHubBlobUrl, buildGitHubBranchTreeUrl } from "@/git/github-url";
 import type { DesktopOpenTarget, OpenDesktopTargetInput } from "@/workspace/desktop-open-targets";
+import { buildBrowserEditorUrl } from "@/workspace/browser-editor-url";
 import {
   type ResolvedWorkspaceFilePaths,
   resolveWorkspaceFilePaths,
@@ -27,7 +28,17 @@ export interface PlannedGitHubOpenTarget {
   url: string;
 }
 
-export type PlannedWorkspaceOpenTarget = PlannedDesktopOpenTarget | PlannedGitHubOpenTarget;
+export interface PlannedBrowserEditorOpenTarget {
+  source: "browser-editor";
+  id: "vscode-web";
+  label: "VS Code Web";
+  url: string;
+}
+
+export type PlannedWorkspaceOpenTarget =
+  | PlannedDesktopOpenTarget
+  | PlannedGitHubOpenTarget
+  | PlannedBrowserEditorOpenTarget;
 
 export interface PlanWorkspaceOpenTargetsInput {
   workspaceDirectory: string;
@@ -37,6 +48,7 @@ export interface PlanWorkspaceOpenTargetsInput {
   canUseDesktopBridge: boolean;
   isLocalExecution: boolean;
   remoteSshHost?: string | null;
+  browserEditorUrl?: string | null;
   checkoutStatus?: CheckoutStatusForOpenTarget | null;
 }
 
@@ -170,11 +182,35 @@ function planGitHubOpenTarget(input: {
   };
 }
 
+function planBrowserEditorOpenTarget(input: {
+  workspaceDirectory: string;
+  browserEditorUrl?: string | null;
+}): PlannedBrowserEditorOpenTarget | null {
+  const url = buildBrowserEditorUrl({
+    baseUrl: input.browserEditorUrl ?? "",
+    folderPath: input.workspaceDirectory,
+  });
+  if (!url) {
+    return null;
+  }
+  return {
+    source: "browser-editor",
+    id: "vscode-web",
+    label: "VS Code Web",
+    url,
+  };
+}
+
 export function planWorkspaceOpenTargets(
   input: PlanWorkspaceOpenTargetsInput,
 ): PlannedWorkspaceOpenTarget[] {
   const resolvedFile = resolveActiveFileForOpenTargets(input);
   const desktopTargets = planDesktopOpenTargets({ ...input, resolvedFile });
+  const browserEditorTarget = planBrowserEditorOpenTarget(input);
   const githubTarget = planGitHubOpenTarget({ ...input, resolvedFile });
-  return githubTarget ? [...desktopTargets, githubTarget] : desktopTargets;
+  return [
+    ...desktopTargets,
+    ...(browserEditorTarget ? [browserEditorTarget] : []),
+    ...(githubTarget ? [githubTarget] : []),
+  ];
 }

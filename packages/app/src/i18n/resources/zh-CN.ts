@@ -1768,6 +1768,16 @@ export const zhCN: TranslationResources = {
           placeholder: "user@hostname 或 SSH 配置别名",
           submit: "保存",
         },
+        browserEditorUrl: {
+          title: "VS Code Web URL",
+          hint: "让“打开 → VS Code Web”在应用内浏览器标签页中打开此主机的工作区（code-server）",
+          notConfigured: "未配置",
+          edit: "编辑",
+          configure: "配置",
+          modalTitle: "VS Code Web URL",
+          placeholder: "http://hostname:8765",
+          submit: "保存",
+        },
         restart: {
           title: "重启 Daemon",
           hint: "重启 Daemon 进程。应用会自动重新连接",

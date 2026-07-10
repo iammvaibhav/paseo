@@ -365,6 +365,8 @@ export function HostSettingsPage({
 
       {isLocalDaemon ? <LocalDaemonSection /> : null}
 
+      <BrowserEditorUrlCard host={host} />
+
       {!isLocalDaemon ? <SshHostCard host={host} /> : null}
 
       {!isLocalDaemon ? <UpdateDaemonCard host={host} /> : null}
@@ -416,6 +418,76 @@ export function HostRenameButton({ host }: { host: HostProfile }) {
         testID="host-page-rename-modal"
       />
     </>
+  );
+}
+
+function BrowserEditorUrlCard({ host }: { host: HostProfile }) {
+  const { t } = useTranslation();
+  const { theme } = useUnistyles();
+  const { setHostBrowserEditorUrl } = useHostMutations();
+  const [isEditing, setIsEditing] = useState(false);
+
+  const browserEditorUrl = host.browserEditorUrl ?? "";
+
+  const handleSubmit = useCallback(
+    async (value: string) => {
+      await setHostBrowserEditorUrl(host.serverId, value);
+    },
+    [host.serverId, setHostBrowserEditorUrl],
+  );
+
+  const handleClear = useCallback(() => {
+    void setHostBrowserEditorUrl(host.serverId, null);
+  }, [host.serverId, setHostBrowserEditorUrl]);
+
+  const openEditor = useCallback(() => setIsEditing(true), []);
+  const closeEditor = useCallback(() => setIsEditing(false), []);
+
+  return (
+    <View style={settingsStyles.card} testID="host-page-browser-editor-url-card">
+      <View style={settingsStyles.row}>
+        <View style={settingsStyles.rowContent}>
+          <Text style={settingsStyles.rowTitle}>
+            {t("settings.host.daemon.browserEditorUrl.title")}
+          </Text>
+          <Text style={settingsStyles.rowHint}>
+            {browserEditorUrl || t("settings.host.daemon.browserEditorUrl.hint")}
+          </Text>
+        </View>
+        {browserEditorUrl ? (
+          <Pressable
+            onPress={handleClear}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={t("settings.host.daemon.browserEditorUrl.notConfigured")}
+            testID="host-page-browser-editor-url-clear-button"
+          >
+            <Trash2 size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />
+          </Pressable>
+        ) : null}
+        <Button
+          variant="outline"
+          size="sm"
+          onPress={openEditor}
+          testID="host-page-browser-editor-url-edit-button"
+        >
+          {browserEditorUrl
+            ? t("settings.host.daemon.browserEditorUrl.edit")
+            : t("settings.host.daemon.browserEditorUrl.configure")}
+        </Button>
+      </View>
+
+      <AdaptiveRenameModal
+        visible={isEditing}
+        title={t("settings.host.daemon.browserEditorUrl.modalTitle")}
+        initialValue={browserEditorUrl}
+        placeholder={t("settings.host.daemon.browserEditorUrl.placeholder")}
+        submitLabel={t("settings.host.daemon.browserEditorUrl.submit")}
+        onClose={closeEditor}
+        onSubmit={handleSubmit}
+        testID="host-page-browser-editor-url-modal"
+      />
+    </View>
   );
 }
 

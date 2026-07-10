@@ -1821,6 +1821,16 @@ export const ru: TranslationResources = {
           placeholder: "user@hostname или псевдоним из конфигурации SSH",
           submit: "Сохранить",
         },
+        browserEditorUrl: {
+          title: "URL VS Code Web",
+          hint: "Позволяет «Открыть → VS Code Web» открывать workspace этого хоста во вкладке браузера (code-server)",
+          notConfigured: "Не настроено",
+          edit: "Изменить",
+          configure: "Настроить",
+          modalTitle: "URL VS Code Web",
+          placeholder: "http://hostname:8765",
+          submit: "Сохранить",
+        },
         restart: {
           title: "Перезапустить демон",
           hint: "Перезапускает процесс демона. Приложение автоматически переподключится",

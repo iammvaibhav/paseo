@@ -1815,6 +1815,16 @@ export const ptBR: TranslationResources = {
           placeholder: "user@hostname ou alias da configuração SSH",
           submit: "Salvar",
         },
+        browserEditorUrl: {
+          title: "URL do VS Code Web",
+          hint: "Permite que “Abrir → VS Code Web” abra os workspaces deste host em uma aba do navegador (code-server)",
+          notConfigured: "Não configurado",
+          edit: "Editar",
+          configure: "Configurar",
+          modalTitle: "URL do VS Code Web",
+          placeholder: "http://hostname:8765",
+          submit: "Salvar",
+        },
         restart: {
           title: "Reiniciar daemon",
           hint: "Reinicia o processo do daemon. O app reconectará automaticamente",

@@ -36,6 +36,7 @@ interface WorkspaceOpenInEditorButtonProps {
   cwd: string;
   activeFile?: WorkspaceFileLocation | null;
   hideLabels?: boolean;
+  onOpenUrlInBrowserTab?: (url: string) => void;
 }
 
 interface OpenTarget {
@@ -83,15 +84,16 @@ export function WorkspaceOpenInEditorButton({
   cwd,
   activeFile,
   hideLabels,
+  onOpenUrlInBrowserTab,
 }: WorkspaceOpenInEditorButtonProps) {
   const { t } = useTranslation();
   const toast = useToast();
   const isConnected = useHostRuntimeIsConnected(serverId);
   const isLocalDaemon = useIsLocalDaemon(serverId);
   const hosts = useHosts();
-  const remoteSshHost = isLocalDaemon
-    ? null
-    : (hosts.find((host) => host.serverId === serverId)?.sshHost ?? null);
+  const hostProfile = hosts.find((host) => host.serverId === serverId);
+  const remoteSshHost = isLocalDaemon ? null : (hostProfile?.sshHost ?? null);
+  const browserEditorUrl = hostProfile?.browserEditorUrl ?? null;
   const { preferredEditorId, updatePreferredEditor } = usePreferredEditor();
   const { targets: desktopOpenTargets, isAvailable: isDesktopOpenAvailable } =
     useDesktopOpenTargets({
@@ -127,6 +129,7 @@ export function WorkspaceOpenInEditorButton({
         canUseDesktopBridge: isDesktopOpenAvailable,
         isLocalExecution: isLocalDaemon,
         remoteSshHost,
+        browserEditorUrl,
         checkoutStatus,
       }).map((target) => {
         if (target.source === "github") {
@@ -135,6 +138,22 @@ export function WorkspaceOpenInEditorButton({
             label: target.label,
             icon: <ThemedGitHubIcon size={16} uniProps={mutedColorMapping} />,
             onOpen: () => openExternalUrl(target.url),
+          };
+        }
+        if (target.source === "browser-editor") {
+          return {
+            id: target.id,
+            label: target.label,
+            icon: (
+              <ThemedEditorAppIcon editorId="vscode-web" size={16} uniProps={mutedColorMapping} />
+            ),
+            onOpen: () => {
+              if (onOpenUrlInBrowserTab) {
+                onOpenUrlInBrowserTab(target.url);
+                return;
+              }
+              return openExternalUrl(target.url);
+            },
           };
         }
         return {
@@ -146,11 +165,13 @@ export function WorkspaceOpenInEditorButton({
       }),
     [
       activeFile,
+      browserEditorUrl,
       checkoutStatus,
       cwd,
       desktopOpenTargets,
       isDesktopOpenAvailable,
       isLocalDaemon,
+      onOpenUrlInBrowserTab,
       remoteSshHost,
       resolvedFile,
     ],

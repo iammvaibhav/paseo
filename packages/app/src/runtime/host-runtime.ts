@@ -38,6 +38,7 @@ import {
   createDesktopLocalDaemonTransportFactory,
 } from "@/desktop/daemon/desktop-daemon-transport";
 import { getDesktopHost } from "@/desktop/host";
+import { collectBrowserEditorOrigins } from "@/workspace/browser-editor-url";
 import { CLIENT_CAPS } from "@getpaseo/protocol/client-capabilities";
 import { BROWSER_AUTOMATION_COMMAND_NAMES } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import { replaceFetchedAgentDirectory } from "@/utils/agent-directory-sync";
@@ -58,6 +59,18 @@ import { schedulesQueryBaseKey } from "@/schedules/aggregated-schedules";
 export type HostRuntimeConnectionStatus = "idle" | "connecting" | "online" | "offline" | "error";
 export type HostRegistryStatus = "loading" | "ready";
 
+async function syncBrowserEditorInsecureOrigins(hosts: readonly HostProfile[]): Promise<void> {
+  const setOrigins = getDesktopHost()?.browserEditor?.setInsecureOrigins;
+  if (typeof setOrigins !== "function") {
+    return;
+  }
+  const origins = collectBrowserEditorOrigins(hosts.map((host) => host.browserEditorUrl));
+  try {
+    await setOrigins(origins);
+  } catch (error) {
+    console.warn("[HostRuntime] Failed to sync browser-editor insecure origins", error);
+  }
+}
 export type ActiveConnection =
   | { type: "directTcp"; endpoint: string; display: string }
   | { type: "directSocket"; endpoint: string; display: "socket" }
@@ -1501,6 +1514,7 @@ export class HostRuntimeStore {
       const profiles = normalizedProfiles.filter((entry) => !isPlaceholderServerId(entry.serverId));
       this.hosts = profiles;
       this.syncHosts(profiles);
+      void syncBrowserEditorInsecureOrigins(profiles);
       if (profiles.length !== normalizedProfiles.length) {
         shouldPersistHosts = true;
       }
@@ -1833,6 +1847,24 @@ export class HostRuntimeStore {
     });
     this.setHostsAndSync(next);
     await this.persistHosts();
+  }
+
+  async setHostBrowserEditorUrl(serverId: string, browserEditorUrl: string | null): Promise<void> {
+    const trimmed = browserEditorUrl?.trim() ?? "";
+    const next = this.hosts.map((h) => {
+      if (h.serverId !== serverId) {
+        return h;
+      }
+      const { browserEditorUrl: _previous, ...rest } = h;
+      return {
+        ...rest,
+        ...(trimmed ? { browserEditorUrl: trimmed } : {}),
+        updatedAt: new Date().toISOString(),
+      } satisfies HostProfile;
+    });
+    this.setHostsAndSync(next);
+    await this.persistHosts();
+    await syncBrowserEditorInsecureOrigins(next);
   }
 
   async removeHost(serverId: string): Promise<void> {
@@ -2382,6 +2414,7 @@ export interface HostMutations {
   ) => Promise<HostProfile>;
   renameHost: (serverId: string, label: string) => Promise<void>;
   setHostSshHost: (serverId: string, sshHost: string | null) => Promise<void>;
+  setHostBrowserEditorUrl: (serverId: string, browserEditorUrl: string | null) => Promise<void>;
   removeHost: (serverId: string) => Promise<void>;
   removeConnection: (serverId: string, connectionId: string) => Promise<void>;
 }
@@ -2397,6 +2430,8 @@ export function useHostMutations(): HostMutations {
       upsertConnectionFromOfferUrl: (url, label) => store.upsertConnectionFromOfferUrl(url, label),
       renameHost: (serverId, label) => store.renameHost(serverId, label),
       setHostSshHost: (serverId, sshHost) => store.setHostSshHost(serverId, sshHost),
+      setHostBrowserEditorUrl: (serverId, browserEditorUrl) =>
+        store.setHostBrowserEditorUrl(serverId, browserEditorUrl),
       removeHost: (serverId) => store.removeHost(serverId),
       removeConnection: (serverId, connectionId) => store.removeConnection(serverId, connectionId),
     }),

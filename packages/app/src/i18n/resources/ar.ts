@@ -1786,6 +1786,16 @@ export const ar: TranslationResources = {
           placeholder: "user@hostname أو اسم مستعار في إعدادات SSH",
           submit: "حفظ",
         },
+        browserEditorUrl: {
+          title: "VS Code Web URL",
+          hint: "Lets “Open → VS Code Web” open this host's workspaces in an in-app browser tab (code-server)",
+          notConfigured: "Not configured",
+          edit: "Edit",
+          configure: "Configure",
+          modalTitle: "VS Code Web URL",
+          placeholder: "http://hostname:8765",
+          submit: "Save",
+        },
         restart: {
           title: "إعادة تشغيل البرنامج الخفي",
           hint: "إعادة تشغيل عملية البرنامج الخفي. سيتم إعادة الاتصال بالتطبيق تلقائيًا",

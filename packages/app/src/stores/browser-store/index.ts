@@ -16,10 +16,18 @@ import {
 
 export type { BrowserRecord } from "./state";
 
+export interface BrowserNavigationRequest {
+  url: string;
+  requestId: number;
+}
+
 interface BrowserStoreState extends BrowserIndexState {
+  navigationRequestByBrowserId: Record<string, BrowserNavigationRequest>;
   createBrowser: (input?: { initialUrl?: string }) => string;
   updateBrowser: (browserId: string, patch: BrowserRecordPatch) => void;
   removeBrowser: (browserId: string) => void;
+  requestNavigation: (browserId: string, url: string) => void;
+  clearNavigationRequest: (browserId: string, requestId: number) => void;
 }
 
 function createBrowserId(): string {
@@ -37,6 +45,7 @@ export const useBrowserStore = create<BrowserStoreState>()(
   persist(
     (set) => ({
       browsersById: {},
+      navigationRequestByBrowserId: {},
       createBrowser: (input) => {
         const browserId = createBrowserId();
         const record = createBrowserRecord({
@@ -58,7 +67,48 @@ export const useBrowserStore = create<BrowserStoreState>()(
         set((state) => applyBrowserPatch(state, browserId, patch));
       },
       removeBrowser: (browserId) => {
-        set((state) => removeBrowserFromIndex(state, browserId));
+        set((state) => {
+          const nextRequests = { ...state.navigationRequestByBrowserId };
+          delete nextRequests[browserId];
+          return {
+            ...removeBrowserFromIndex(state, browserId),
+            navigationRequestByBrowserId: nextRequests,
+          };
+        });
+      },
+      requestNavigation: (browserId, url) => {
+        const normalizedBrowserId = trimNonEmpty(browserId);
+        const normalizedUrl = normalizeBrowserUrl(url);
+        if (!normalizedBrowserId) {
+          return;
+        }
+        set((state) => {
+          const previous = state.navigationRequestByBrowserId[normalizedBrowserId];
+          return {
+            navigationRequestByBrowserId: {
+              ...state.navigationRequestByBrowserId,
+              [normalizedBrowserId]: {
+                url: normalizedUrl,
+                requestId: (previous?.requestId ?? 0) + 1,
+              },
+            },
+          };
+        });
+      },
+      clearNavigationRequest: (browserId, requestId) => {
+        const normalizedBrowserId = trimNonEmpty(browserId);
+        if (!normalizedBrowserId) {
+          return;
+        }
+        set((state) => {
+          const current = state.navigationRequestByBrowserId[normalizedBrowserId];
+          if (!current || current.requestId !== requestId) {
+            return state;
+          }
+          const nextRequests = { ...state.navigationRequestByBrowserId };
+          delete nextRequests[normalizedBrowserId];
+          return { navigationRequestByBrowserId: nextRequests };
+        });
       },
     }),
     {

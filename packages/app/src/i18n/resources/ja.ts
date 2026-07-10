@@ -1806,6 +1806,16 @@ export const ja: TranslationResources = {
           placeholder: "user@hostname または SSH 設定のエイリアス",
           submit: "保存",
         },
+        browserEditorUrl: {
+          title: "VS Code Web URL",
+          hint: "「開く → VS Code Web」でこのホストのワークスペースをアプリ内ブラウザタブ（code-server）で開きます",
+          notConfigured: "未設定",
+          edit: "編集",
+          configure: "設定",
+          modalTitle: "VS Code Web URL",
+          placeholder: "http://hostname:8765",
+          submit: "保存",
+        },
         restart: {
           title: "デーモンを再起動",
           hint: "デーモンプロセスを再起動します。アプリは自動的に再接続します",

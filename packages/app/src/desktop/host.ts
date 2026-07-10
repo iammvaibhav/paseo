@@ -149,6 +149,15 @@ export interface DesktopBrowserBridge {
   copyElement?: (payload: { text?: string; imageDataUrl?: string }) => Promise<boolean>;
 }
 
+export interface DesktopBrowserEditorBridge {
+  /**
+   * Persist Chromium insecure-origin allowlist entries for VS Code Web hosts.
+   * Applied on next app launch via --unsafely-treat-insecure-origin-as-secure.
+   */
+  setInsecureOrigins?: (origins: string[]) => Promise<{ restartRequired: boolean }>;
+  getInsecureOrigins?: () => Promise<string[]>;
+}
+
 export interface DesktopInvokeBridge {
   invoke?: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
 }
@@ -166,6 +175,7 @@ export interface DesktopHostBridge {
   webUtils?: DesktopWebUtilsBridge;
   menu?: DesktopMenuBridge;
   browser?: DesktopBrowserBridge;
+  browserEditor?: DesktopBrowserEditorBridge;
 }
 
 declare global {

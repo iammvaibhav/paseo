@@ -19,6 +19,7 @@ const EDITOR_APP_IMAGES: Record<string, ImageSourcePropType> = {
   finder: require("../../../assets/images/editor-apps/finder.png"),
   explorer: require("../../../assets/images/editor-apps/file-explorer.png"),
   "file-manager": require("../../../assets/images/editor-apps/file-explorer.png"),
+  "vscode-web": require("../../../assets/images/editor-apps/vscode.png"),
 };
 /* eslint-enable @typescript-eslint/no-require-imports */
 

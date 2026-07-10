@@ -44,6 +44,10 @@ import {
   ensureNotificationCenterRegistration,
 } from "./features/notifications.js";
 import { registerOpenerHandlers } from "./features/opener.js";
+import {
+  applyBrowserEditorInsecureOriginsAtStartup,
+  registerBrowserEditorOriginIpc,
+} from "./features/browser-editor-origins.js";
 import { registerEditorTargetHandlers } from "./features/editor-targets.js";
 import { setupApplicationMenu } from "./features/menu.js";
 import {
@@ -259,6 +263,11 @@ if (electronFlags) {
   }
   log.info("[electron-flags]", electronFlags);
 }
+
+// VS Code Web over http://VPN-IP needs Chromium to treat those origins as
+// secure (service workers / webviews). Origins are written by the renderer
+// from each host's browserEditorUrl setting.
+applyBrowserEditorInsecureOriginsAtStartup();
 
 let pendingOpenProjectPath = parseOpenProjectPathFromArgv({
   argv: process.argv,
@@ -851,6 +860,7 @@ async function bootstrap(): Promise<void> {
   registerDialogHandlers();
   registerNotificationHandlers();
   registerOpenerHandlers();
+  registerBrowserEditorOriginIpc();
   registerEditorTargetHandlers();
   registerBrowserAutomationIpc();
 

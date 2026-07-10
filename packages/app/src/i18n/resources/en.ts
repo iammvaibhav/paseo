@@ -1794,6 +1794,16 @@ export const en = {
           placeholder: "user@hostname or SSH config alias",
           submit: "Save",
         },
+        browserEditorUrl: {
+          title: "VS Code Web URL",
+          hint: "Lets “Open → VS Code Web” open this host's workspaces in an in-app browser tab (code-server)",
+          notConfigured: "Not configured",
+          edit: "Edit",
+          configure: "Configure",
+          modalTitle: "VS Code Web URL",
+          placeholder: "http://hostname:8765",
+          submit: "Save",
+        },
         restart: {
           title: "Restart daemon",
           hint: "Restarts the daemon process. The app will reconnect automatically",

@@ -214,4 +214,40 @@ describe("planWorkspaceOpenTargets", () => {
     if (first?.source !== "desktop") throw new Error("expected desktop target");
     expect(first.openInput.sshHost).toBeUndefined();
   });
+
+  it("plans VS Code Web when a browserEditorUrl is configured", () => {
+    const targets = planWorkspaceOpenTargets({
+      workspaceDirectory: "/home/vaibhav/paseo",
+      desktopTargets: [],
+      canUseDesktopBridge: false,
+      isLocalExecution: false,
+      browserEditorUrl: "http://blrofc3:8765",
+    });
+
+    expect(targets).toEqual([
+      {
+        source: "browser-editor",
+        id: "vscode-web",
+        label: "VS Code Web",
+        url: "http://blrofc3:8765/?folder=%2Fhome%2Fvaibhav%2Fpaseo",
+      },
+    ]);
+  });
+
+  it("keeps VS Code Web alongside remote desktop editors", () => {
+    const targets = planWorkspaceOpenTargets({
+      workspaceDirectory: "/repo",
+      desktopTargets: [
+        { id: "cursor", label: "Cursor", kind: "editor", supportsRemote: true },
+        { id: "vscode", label: "VS Code", kind: "editor", supportsRemote: true },
+        { id: "finder", label: "Finder", kind: "file-manager" },
+      ],
+      canUseDesktopBridge: true,
+      isLocalExecution: false,
+      remoteSshHost: "blrofc3",
+      browserEditorUrl: "http://blrofc3:8765",
+    });
+
+    expect(targets.map((target) => target.id)).toEqual(["cursor", "vscode", "vscode-web"]);
+  });
 });

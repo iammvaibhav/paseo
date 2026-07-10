@@ -1,0 +1,12 @@
+{
+  "security.workspace.trust.enabled": false,
+  "security.workspace.trust.startupPrompt": "never",
+  "security.workspace.trust.banner": "never",
+  "security.workspace.trust.untrustedFiles": "open",
+  "workbench.startupEditor": "none",
+  "workbench.welcomePage.walkthroughs.openOnInstall": false,
+  "workbench.editor.empty.hint": "hidden",
+  "workbench.activityBar.location": "hidden",
+  "workbench.secondarySideBar.defaultVisibility": "hidden",
+  "workbench.tips.enabled": false
+}

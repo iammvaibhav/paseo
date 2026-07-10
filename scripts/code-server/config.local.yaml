@@ -1,0 +1,7 @@
+# code-server — always-on VS Code Web for Paseo “Open → VS Code Web”
+#
+# Port 8765 is intentional (avoids colliding with common :8080 services).
+# Auth is disabled because access is limited to VPN / loopback.
+bind-addr: 127.0.0.1:8765
+auth: none
+cert: false

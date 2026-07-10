@@ -45,6 +45,12 @@ export interface HostProfile {
   preferredConnectionId: string | null;
   /** SSH destination (`user@host` or ssh-config alias) used to open this host's workspaces in a local editor via Remote SSH. */
   sshHost?: string;
+  /**
+   * Base URL of a VS Code Web / code-server instance on this host
+   * (e.g. `http://blrofc3:8765`). Used by “Open → VS Code Web” to open the
+   * workspace folder in an in-app browser tab.
+   */
+  browserEditorUrl?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -349,6 +355,8 @@ export function normalizeStoredHostProfile(entry: unknown): HostProfile | null {
       : (connections[0]?.id ?? null);
 
   const sshHost = typeof record.sshHost === "string" ? record.sshHost.trim() : "";
+  const browserEditorUrl =
+    typeof record.browserEditorUrl === "string" ? record.browserEditorUrl.trim() : "";
 
   return {
     serverId,
@@ -357,6 +365,7 @@ export function normalizeStoredHostProfile(entry: unknown): HostProfile | null {
     connections,
     preferredConnectionId,
     ...(sshHost ? { sshHost } : {}),
+    ...(browserEditorUrl ? { browserEditorUrl } : {}),
     createdAt: typeof record.createdAt === "string" ? record.createdAt : now,
     updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : now,
   };

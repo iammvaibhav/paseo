@@ -39,6 +39,7 @@ At the start of non-trivial work, list `docs/` and skim anything relevant to the
 | [docs/providers.md](docs/providers.md)                             | Adding a new agent provider end-to-end                                                                                         |
 | [docs/custom-providers.md](docs/custom-providers.md)               | Custom provider config: Z.AI, Alibaba/Qwen, ACP agents, profiles, custom binaries                                              |
 | [docs/service-proxy.md](docs/service-proxy.md)                     | Service proxy: exposing workspace scripts at public URLs, DNS setup, reverse proxy config                                      |
+| [docs/code-server.md](docs/code-server.md)                         | Always-on VS Code Web (code-server) for Open → VS Code Web; install, VPN bind, settings sync                                   |
 | [docs/development.md](docs/development.md)                         | Dev server, build sync gotchas, CLI reference, agent state, Playwright MCP                                                     |
 | [docs/rpc-namespacing.md](docs/rpc-namespacing.md)                 | WebSocket RPC naming convention — dotted namespaces and `.request`/`.response` pairs                                           |
 | [docs/protocol-validation.md](docs/protocol-validation.md)         | zod-aot generated inbound WebSocket validation, patched compiler regressions, schema-purity rules                              |
@@ -180,6 +181,8 @@ All local customizations live on **`vaibhav/customizations`**, branched from `up
 
 - ACP **Allow All** mode for generic ACP providers (Cursor, Grok, etc.)
 - Durable assistant `messageId` on ACP timeline items so the **fork chat** UI works for agents like Grok that omit protocol message ids
+- **Open in editor over SSH** for remote workspaces (`HostProfile.sshHost`)
+- **Open → VS Code Web** via always-on code-server on each host (`HostProfile.browserEditorUrl`) — see [docs/code-server.md](docs/code-server.md)
 - `scripts/sync-custom-branch.sh` for multi-host deploy
 
 Do day-to-day work on this branch, not on `main`.

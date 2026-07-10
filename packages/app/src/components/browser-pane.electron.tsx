@@ -610,6 +610,10 @@ export function BrowserPane({
   const { t } = useTranslation();
   const browser = useBrowserStore((state) => state.browsersById[browserId] ?? null);
   const updateBrowser = useBrowserStore((state) => state.updateBrowser);
+  const navigationRequest = useBrowserStore(
+    (state) => state.navigationRequestByBrowserId[browserId] ?? null,
+  );
+  const clearNavigationRequest = useBrowserStore((state) => state.clearNavigationRequest);
   const webviewRef = useRef<ElectronWebview | null>(null);
   const webviewHostRef = useRef<HTMLDivElement | null>(null);
   const urlInputRef = useRef<WebTextInput | null>(null);
@@ -924,6 +928,14 @@ export function BrowserPane({
     },
     [browserErrorLabels],
   );
+
+  useEffect(() => {
+    if (!navigationRequest) {
+      return;
+    }
+    navigate(navigationRequest.url);
+    clearNavigationRequest(browserId, navigationRequest.requestId);
+  }, [browserId, clearNavigationRequest, navigate, navigationRequest]);
 
   const handleBack = useCallback(() => {
     webviewRef.current?.goBack?.();

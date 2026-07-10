@@ -94,4 +94,12 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
     copyElement: (payload: { text?: string; imageDataUrl?: string }) =>
       ipcRenderer.invoke("paseo:browser:copy-element", payload),
   },
+  browserEditor: {
+    setInsecureOrigins: (origins: string[]) =>
+      ipcRenderer.invoke("paseo:browser-editor:setInsecureOrigins", origins) as Promise<{
+        restartRequired: boolean;
+      }>,
+    getInsecureOrigins: () =>
+      ipcRenderer.invoke("paseo:browser-editor:getInsecureOrigins") as Promise<string[]>,
+  },
 });

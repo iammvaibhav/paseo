@@ -191,6 +191,7 @@ import {
   type WorkspaceFileLocation,
   type WorkspaceFileOpenRequest,
 } from "@/workspace/file-open";
+import { tryOpenFileInBrowserEditor } from "@/workspace/open-file-in-browser-editor";
 import { RenderProfile } from "@/utils/render-profiler";
 import { useWorkspaceCheckoutStatus } from "@/screens/workspace/use-workspace-checkout-status";
 
@@ -1677,6 +1678,11 @@ function WorkspaceScreenContent({
 
   const client = useHostRuntimeClient(normalizedServerId);
   const isConnected = useHostRuntimeIsConnected(normalizedServerId);
+  const hosts = useHosts();
+  const browserEditorUrl = useMemo(
+    () => hosts.find((entry) => entry.serverId === normalizedServerId)?.browserEditorUrl ?? null,
+    [hosts, normalizedServerId],
+  );
   const workspaceDirectory = workspaceDescriptor?.workspaceDirectory || null;
   const isMissingWorkspaceDirectory = Boolean(workspaceDescriptor) && !workspaceDirectory;
   const [isImportSheetVisible, setIsImportSheetVisible] = useState(false);
@@ -2207,12 +2213,33 @@ function WorkspaceScreenContent({
       if (!location) {
         return;
       }
+      if (
+        browserEditorUrl &&
+        workspaceDirectory &&
+        tryOpenFileInBrowserEditor({
+          browserEditorUrl,
+          workspaceDirectory,
+          location,
+          workspaceTabs: uiTabs,
+          openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
+          navigateToTabId,
+        })
+      ) {
+        return;
+      }
       const tabId = openWorkspaceTabFocused(persistenceKey, createWorkspaceFileTabTarget(location));
       if (tabId) {
         navigateToTabId(tabId);
       }
     },
-    [navigateToTabId, openWorkspaceTabFocused, persistenceKey],
+    [
+      browserEditorUrl,
+      navigateToTabId,
+      openWorkspaceTabFocused,
+      persistenceKey,
+      uiTabs,
+      workspaceDirectory,
+    ],
   );
 
   const handleOpenFileFromChat = useCallback(
@@ -2227,6 +2254,20 @@ function WorkspaceScreenContent({
       if (!persistenceKey) {
         return;
       }
+      if (
+        browserEditorUrl &&
+        workspaceDirectory &&
+        tryOpenFileInBrowserEditor({
+          browserEditorUrl,
+          workspaceDirectory,
+          location: normalizedLocation,
+          workspaceTabs: uiTabs,
+          openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
+          navigateToTabId,
+        })
+      ) {
+        return;
+      }
       const target = createWorkspaceFileTabTarget(normalizedLocation);
       const tabId = options?.parentTabId
         ? openWorkspaceChildTabFocused(persistenceKey, target, options.parentTabId)
@@ -2236,12 +2277,15 @@ function WorkspaceScreenContent({
       }
     },
     [
+      browserEditorUrl,
       isMobile,
       navigateToTabId,
       openWorkspaceChildTabFocused,
       openWorkspaceTabFocused,
       persistenceKey,
       showMobileAgent,
+      uiTabs,
+      workspaceDirectory,
     ],
   );
 
@@ -2253,6 +2297,22 @@ function WorkspaceScreenContent({
     }) => {
       const location = normalizeWorkspaceFileLocation(input.location);
       if (!location) {
+        return;
+      }
+      // Prefer VS Code Web when configured — skip the in-app side file pane.
+      if (
+        browserEditorUrl &&
+        workspaceDirectory &&
+        persistenceKey &&
+        tryOpenFileInBrowserEditor({
+          browserEditorUrl,
+          workspaceDirectory,
+          location,
+          workspaceTabs: uiTabs,
+          openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
+          navigateToTabId,
+        })
+      ) {
         return;
       }
       if (!persistenceKey || isMobile || !input.sourcePaneId) {
@@ -2284,6 +2344,7 @@ function WorkspaceScreenContent({
       }
     },
     [
+      browserEditorUrl,
       handleOpenFileFromChat,
       isMobile,
       focusWorkspacePane,
@@ -2293,6 +2354,7 @@ function WorkspaceScreenContent({
       persistenceKey,
       splitWorkspacePaneEmpty,
       uiTabs,
+      workspaceDirectory,
       workspaceLayout,
     ],
   );
@@ -3277,6 +3339,7 @@ function WorkspaceScreenContent({
             cwd={workspaceDirectory}
             activeFile={activeFileLocation}
             hideLabels
+            onOpenUrlInBrowserTab={handleOpenUrlInBrowserTab}
           />
         ) : null}
         {!isMobile && workspaceDirectory ? (
