@@ -1819,6 +1819,16 @@ export const es: TranslationResources = {
           placeholder: "MiHost",
           submit: "Cambiar nombre",
         },
+        sshHost: {
+          title: "Host SSH",
+          hint: "Permite que «Abrir en el editor» abra los espacios de trabajo de este host en Cursor o VS Code mediante Remote SSH",
+          notConfigured: "Sin configurar",
+          edit: "Editar",
+          configure: "Configurar",
+          modalTitle: "Host SSH",
+          placeholder: "user@hostname o alias de configuración SSH",
+          submit: "Guardar",
+        },
         restart: {
           title: "Reiniciar demonio",
           hint: "Reinicia el proceso del demonio. La aplicación se volverá a conectar automáticamente",

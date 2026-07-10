@@ -15,12 +15,15 @@ interface EditorTargetDefinition {
   command: string;
   platforms?: readonly NodeJS.Platform[];
   excludedPlatforms?: readonly NodeJS.Platform[];
+  /** Editor CLI accepts `--remote ssh-remote+<host>` to open paths on a remote machine. */
+  supportsRemote?: boolean;
 }
 
 export interface DesktopEditorTargetDescriptor {
   id: string;
   label: string;
   kind: EditorTargetKind;
+  supportsRemote?: boolean;
 }
 
 export interface OpenEditorTargetInput {
@@ -28,6 +31,7 @@ export interface OpenEditorTargetInput {
   path: string;
   cwd?: string;
   mode?: OpenEditorMode;
+  sshHost?: string;
 }
 
 interface ListEditorTargetsDependencies {
@@ -69,8 +73,8 @@ const RUNTIME_CONTROL_ENV_KEYS = [
 ] as const;
 
 const BUILT_IN_EDITOR_TARGETS: readonly EditorTargetDefinition[] = [
-  { id: "cursor", label: "Cursor", kind: "editor", command: "cursor" },
-  { id: "vscode", label: "VS Code", kind: "editor", command: "code" },
+  { id: "cursor", label: "Cursor", kind: "editor", command: "cursor", supportsRemote: true },
+  { id: "vscode", label: "VS Code", kind: "editor", command: "code", supportsRemote: true },
   { id: "webstorm", label: "WebStorm", kind: "editor", command: "webstorm" },
   { id: "zed", label: "Zed", kind: "editor", command: "zed" },
   { id: "antigravity", label: "Antigravity", kind: "editor", command: "antigravity" },
@@ -102,6 +106,7 @@ const OpenEditorTargetInputSchema = z.object({
   path: z.string().trim().min(1),
   cwd: z.string().trim().min(1).optional(),
   mode: z.enum(["open", "reveal"]).optional(),
+  sshHost: z.string().trim().min(1).optional(),
 });
 
 function isTargetSupportedOnPlatform(
@@ -284,7 +289,85 @@ export function listAvailableEditorTargets(
   return targetDefinitions
     .filter((target) => isTargetSupportedOnPlatform(target, platform))
     .filter((target) => resolveExecutable(target.command, { platform, env, existsSync }))
-    .map((target) => ({ id: target.id, label: target.label, kind: target.kind }));
+    .map((target) => {
+      const descriptor: DesktopEditorTargetDescriptor = {
+        id: target.id,
+        label: target.label,
+        kind: target.kind,
+      };
+      if (target.supportsRemote) {
+        descriptor.supportsRemote = true;
+      }
+      return descriptor;
+    });
+}
+
+async function spawnDetachedLaunch(input: {
+  launch: SpawnLaunch;
+  env: NodeJS.ProcessEnv;
+  spawn: NonNullable<OpenEditorTargetDependencies["spawn"]>;
+}): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    let child: SpawnedProcess;
+    try {
+      child = input.spawn(input.launch.command, input.launch.args, {
+        detached: true,
+        env: createExternalProcessEnv(input.env),
+        shell: input.launch.shell,
+        stdio: "ignore",
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+
+    child.once("error", reject);
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+  });
+}
+
+// Remote paths live on the SSH host, so they are always POSIX and cannot be
+// checked with the local filesystem — the editor's Remote SSH layer resolves
+// them after connecting.
+async function openRemoteEditorTarget(
+  input: OpenEditorTargetInput & { sshHost: string },
+  dependencies: {
+    platform: NodeJS.Platform;
+    env: NodeJS.ProcessEnv;
+    existsSync: (path: string) => boolean;
+    spawn: NonNullable<OpenEditorTargetDependencies["spawn"]>;
+    targetDefinitions: readonly EditorTargetDefinition[];
+  },
+): Promise<void> {
+  const { platform, env, existsSync, spawn } = dependencies;
+  const target = findTarget(input.editorId, dependencies.targetDefinitions);
+  if (
+    target.kind !== "editor" ||
+    !target.supportsRemote ||
+    !isTargetSupportedOnPlatform(target, platform)
+  ) {
+    throw new Error(`Editor target does not support remote hosts: ${target.label}`);
+  }
+  if (!posix.isAbsolute(input.path)) {
+    throw new Error("Remote editor target path must be an absolute POSIX path");
+  }
+
+  const executable = resolveExecutable(target.command, { platform, env, existsSync });
+  if (!executable) {
+    throw new Error(`Editor target unavailable: ${target.label}`);
+  }
+
+  const remoteArgs = ["--remote", `ssh-remote+${input.sshHost}`];
+  const workspaceCwd =
+    input.cwd && posix.isAbsolute(input.cwd) && input.cwd !== input.path ? input.cwd : undefined;
+  const launch: Launch = {
+    command: executable,
+    args: workspaceCwd ? [...remoteArgs, workspaceCwd, input.path] : [...remoteArgs, input.path],
+  };
+  await spawnDetachedLaunch({ launch: createSpawnLaunch(launch, platform), env, spawn });
 }
 
 export async function openEditorTarget(
@@ -297,6 +380,20 @@ export async function openEditorTarget(
   const env = dependencies.env ?? process.env;
   const spawn = dependencies.spawn ?? spawnDetachedProcess;
   const pathToOpen = parsedInput.path;
+
+  if (parsedInput.sshHost) {
+    await openRemoteEditorTarget(
+      { ...parsedInput, sshHost: parsedInput.sshHost },
+      {
+        platform,
+        env,
+        existsSync,
+        spawn,
+        targetDefinitions: resolveTargetDefinitions(dependencies),
+      },
+    );
+    return;
+  }
 
   if (!isAbsolutePath(pathToOpen, platform)) {
     throw new Error("Editor target path must be an absolute local path");
@@ -330,28 +427,7 @@ export async function openEditorTarget(
     platform,
     executable,
   });
-  const spawnLaunch = createSpawnLaunch(launch, platform);
-
-  await new Promise<void>((resolve, reject) => {
-    let child: SpawnedProcess;
-    try {
-      child = spawn(spawnLaunch.command, spawnLaunch.args, {
-        detached: true,
-        env: createExternalProcessEnv(env),
-        shell: spawnLaunch.shell,
-        stdio: "ignore",
-      });
-    } catch (error) {
-      reject(error);
-      return;
-    }
-
-    child.once("error", reject);
-    child.once("spawn", () => {
-      child.unref();
-      resolve();
-    });
-  });
+  await spawnDetachedLaunch({ launch: createSpawnLaunch(launch, platform), env, spawn });
 }
 
 export function registerEditorTargetHandlers(

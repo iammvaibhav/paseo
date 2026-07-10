@@ -21,7 +21,7 @@ import {
 import { useToast } from "@/contexts/toast-context";
 import { useCheckoutStatusQuery } from "@/git/use-status-query";
 import { useIsLocalDaemon } from "@/hooks/use-is-local-daemon";
-import { useHostRuntimeIsConnected } from "@/runtime/host-runtime";
+import { useHostRuntimeIsConnected, useHosts } from "@/runtime/host-runtime";
 import { resolvePreferredEditorId, usePreferredEditor } from "@/hooks/use-preferred-editor";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { isAbsolutePath } from "@/utils/path";
@@ -88,10 +88,15 @@ export function WorkspaceOpenInEditorButton({
   const toast = useToast();
   const isConnected = useHostRuntimeIsConnected(serverId);
   const isLocalDaemon = useIsLocalDaemon(serverId);
+  const hosts = useHosts();
+  const remoteSshHost = isLocalDaemon
+    ? null
+    : (hosts.find((host) => host.serverId === serverId)?.sshHost ?? null);
   const { preferredEditorId, updatePreferredEditor } = usePreferredEditor();
   const { targets: desktopOpenTargets, isAvailable: isDesktopOpenAvailable } =
     useDesktopOpenTargets({
       isLocalExecution: isLocalDaemon,
+      remoteSshHost,
     });
 
   const resolvedFile = useMemo(
@@ -121,6 +126,7 @@ export function WorkspaceOpenInEditorButton({
         desktopTargets: desktopOpenTargets,
         canUseDesktopBridge: isDesktopOpenAvailable,
         isLocalExecution: isLocalDaemon,
+        remoteSshHost,
         checkoutStatus,
       }).map((target) => {
         if (target.source === "github") {
@@ -145,6 +151,7 @@ export function WorkspaceOpenInEditorButton({
       desktopOpenTargets,
       isDesktopOpenAvailable,
       isLocalDaemon,
+      remoteSshHost,
       resolvedFile,
     ],
   );

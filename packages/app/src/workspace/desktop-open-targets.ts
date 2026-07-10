@@ -8,6 +8,7 @@ export interface DesktopOpenTarget {
   id: string;
   label: string;
   kind: DesktopOpenTargetKind;
+  supportsRemote?: boolean;
 }
 
 export interface OpenDesktopTargetInput {
@@ -15,6 +16,8 @@ export interface OpenDesktopTargetInput {
   path: string;
   cwd?: string;
   mode?: DesktopOpenMode;
+  /** SSH destination for opening the path on a remote host via the editor's Remote SSH support. */
+  sshHost?: string;
 }
 
 interface AvailableDesktopEditorBridge {
@@ -53,9 +56,12 @@ export async function openDesktopTarget(input: OpenDesktopTargetInput): Promise<
   await bridge.openTarget(input);
 }
 
-export function useDesktopOpenTargets(input: { isLocalExecution: boolean }) {
+export function useDesktopOpenTargets(input: {
+  isLocalExecution: boolean;
+  remoteSshHost?: string | null;
+}) {
   const hasBridge = hasDesktopOpenTargetsBridge();
-  const canListTargets = hasBridge && input.isLocalExecution;
+  const canListTargets = hasBridge && (input.isLocalExecution || Boolean(input.remoteSshHost));
   const query = useQuery({
     queryKey: ["desktop-open-targets"],
     enabled: canListTargets,

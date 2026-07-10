@@ -1823,6 +1823,16 @@ export const fr: TranslationResources = {
           placeholder: "MonHost",
           submit: "Renommer",
         },
+        sshHost: {
+          title: "Hôte SSH",
+          hint: "Permet à « Ouvrir dans l'éditeur » d'ouvrir les espaces de travail de cet hôte dans Cursor ou VS Code via Remote SSH",
+          notConfigured: "Non configuré",
+          edit: "Modifier",
+          configure: "Configurer",
+          modalTitle: "Hôte SSH",
+          placeholder: "user@hostname ou alias de configuration SSH",
+          submit: "Enregistrer",
+        },
         restart: {
           title: "Redémarrer le démon",
           hint: "Redémarre le processus démon. L'application se reconnectera automatiquement",

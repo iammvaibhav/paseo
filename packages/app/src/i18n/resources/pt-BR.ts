@@ -1805,6 +1805,16 @@ export const ptBR: TranslationResources = {
           placeholder: "Meu Host",
           submit: "Renomear",
         },
+        sshHost: {
+          title: "Host SSH",
+          hint: "Permite que “Abrir no editor” abra os espaços de trabalho deste host no Cursor ou VS Code via Remote SSH",
+          notConfigured: "Não configurado",
+          edit: "Editar",
+          configure: "Configurar",
+          modalTitle: "Host SSH",
+          placeholder: "user@hostname ou alias da configuração SSH",
+          submit: "Salvar",
+        },
         restart: {
           title: "Reiniciar daemon",
           hint: "Reinicia o processo do daemon. O app reconectará automaticamente",

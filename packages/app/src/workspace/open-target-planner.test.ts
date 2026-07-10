@@ -147,4 +147,71 @@ describe("planWorkspaceOpenTargets", () => {
 
     expect(targets.map((target) => target.id)).toEqual(["github"]);
   });
+
+  it("plans remote-capable editors with sshHost when the host has one configured", () => {
+    const targets = planWorkspaceOpenTargets({
+      workspaceDirectory: "/repo",
+      activeFile: { path: "src/app.ts" },
+      desktopTargets: [
+        { id: "cursor", label: "Cursor", kind: "editor", supportsRemote: true },
+        { id: "vscode", label: "VS Code", kind: "editor", supportsRemote: true },
+        { id: "webstorm", label: "WebStorm", kind: "editor" },
+        { id: "finder", label: "Finder", kind: "file-manager" },
+      ],
+      canUseDesktopBridge: true,
+      isLocalExecution: false,
+      remoteSshHost: "vaibhav@dev-box",
+      checkoutStatus,
+    });
+
+    expect(targets.map((target) => target.id)).toEqual(["cursor", "vscode", "github"]);
+    expect(targets[0]).toMatchObject({
+      source: "desktop",
+      id: "cursor",
+      openInput: {
+        editorId: "cursor",
+        path: "/repo/src/app.ts",
+        cwd: "/repo",
+        sshHost: "vaibhav@dev-box",
+      },
+    });
+  });
+
+  it("plans remote workspace folder open without an active file", () => {
+    const targets = planWorkspaceOpenTargets({
+      workspaceDirectory: "/repo",
+      desktopTargets: [{ id: "cursor", label: "Cursor", kind: "editor", supportsRemote: true }],
+      canUseDesktopBridge: true,
+      isLocalExecution: false,
+      remoteSshHost: "dev-box",
+    });
+
+    expect(targets).toEqual([
+      {
+        source: "desktop",
+        id: "cursor",
+        label: "Cursor",
+        editorId: "cursor",
+        openInput: { editorId: "cursor", path: "/repo", sshHost: "dev-box" },
+      },
+    ]);
+  });
+
+  it("does not attach sshHost to local execution targets", () => {
+    const targets = planWorkspaceOpenTargets({
+      workspaceDirectory: "/repo",
+      desktopTargets,
+      canUseDesktopBridge: true,
+      isLocalExecution: true,
+      remoteSshHost: "dev-box",
+    });
+
+    const first = targets[0];
+    expect(first).toMatchObject({
+      source: "desktop",
+      openInput: { editorId: "vscode", path: "/repo" },
+    });
+    if (first?.source !== "desktop") throw new Error("expected desktop target");
+    expect(first.openInput.sshHost).toBeUndefined();
+  });
 });

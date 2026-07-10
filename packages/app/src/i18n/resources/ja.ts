@@ -1796,6 +1796,16 @@ export const ja: TranslationResources = {
           placeholder: "マイホスト",
           submit: "名前を変更",
         },
+        sshHost: {
+          title: "SSH ホスト",
+          hint: "「エディタで開く」でこのホストのワークスペースを Remote SSH 経由で Cursor や VS Code で開けるようにします",
+          notConfigured: "未設定",
+          edit: "編集",
+          configure: "設定",
+          modalTitle: "SSH ホスト",
+          placeholder: "user@hostname または SSH 設定のエイリアス",
+          submit: "保存",
+        },
         restart: {
           title: "デーモンを再起動",
           hint: "デーモンプロセスを再起動します。アプリは自動的に再接続します",

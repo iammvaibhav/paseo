@@ -1818,6 +1818,23 @@ export class HostRuntimeStore {
     await this.persistHosts();
   }
 
+  async setHostSshHost(serverId: string, sshHost: string | null): Promise<void> {
+    const trimmed = sshHost?.trim() ?? "";
+    const next = this.hosts.map((h) => {
+      if (h.serverId !== serverId) {
+        return h;
+      }
+      const { sshHost: _previous, ...rest } = h;
+      return {
+        ...rest,
+        ...(trimmed ? { sshHost: trimmed } : {}),
+        updatedAt: new Date().toISOString(),
+      } satisfies HostProfile;
+    });
+    this.setHostsAndSync(next);
+    await this.persistHosts();
+  }
+
   async removeHost(serverId: string): Promise<void> {
     const remaining = this.hosts.filter((daemon) => daemon.serverId !== serverId);
     this.setHostsAndSync(remaining);
@@ -2364,6 +2381,7 @@ export interface HostMutations {
     label?: string,
   ) => Promise<HostProfile>;
   renameHost: (serverId: string, label: string) => Promise<void>;
+  setHostSshHost: (serverId: string, sshHost: string | null) => Promise<void>;
   removeHost: (serverId: string) => Promise<void>;
   removeConnection: (serverId: string, connectionId: string) => Promise<void>;
 }
@@ -2378,6 +2396,7 @@ export function useHostMutations(): HostMutations {
       upsertConnectionFromOffer: (offer, label) => store.upsertConnectionFromOffer(offer, label),
       upsertConnectionFromOfferUrl: (url, label) => store.upsertConnectionFromOfferUrl(url, label),
       renameHost: (serverId, label) => store.renameHost(serverId, label),
+      setHostSshHost: (serverId, sshHost) => store.setHostSshHost(serverId, sshHost),
       removeHost: (serverId) => store.removeHost(serverId),
       removeConnection: (serverId, connectionId) => store.removeConnection(serverId, connectionId),
     }),

@@ -65,6 +65,7 @@ export interface DesktopEditorTargetDescriptor {
   id: string;
   label: string;
   kind: "editor" | "file-manager";
+  supportsRemote?: boolean;
 }
 
 export interface DesktopEditorOpenTargetInput {
@@ -72,6 +73,7 @@ export interface DesktopEditorOpenTargetInput {
   path: string;
   cwd?: string;
   mode?: "open" | "reveal";
+  sshHost?: string;
 }
 
 export interface DesktopEditorBridge {

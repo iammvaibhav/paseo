@@ -67,8 +67,8 @@ describe("desktop editor targets", () => {
     });
 
     expect(targets).toEqual([
-      { id: "cursor", label: "Cursor", kind: "editor" },
-      { id: "vscode", label: "VS Code", kind: "editor" },
+      { id: "cursor", label: "Cursor", kind: "editor", supportsRemote: true },
+      { id: "vscode", label: "VS Code", kind: "editor", supportsRemote: true },
       { id: "webstorm", label: "WebStorm", kind: "editor" },
       { id: "zed", label: "Zed", kind: "editor" },
       { id: "explorer", label: "Explorer", kind: "file-manager" },
@@ -143,6 +143,92 @@ describe("desktop editor targets", () => {
         unrefed: true,
       },
     ]);
+  });
+
+  it("launches remote-capable editors with --remote ssh-remote and skips local path checks", async () => {
+    const recorder = createSpawnRecorder();
+
+    await openEditorTarget(
+      {
+        editorId: "cursor",
+        path: "/home/vaibhav/repo/src/app.ts",
+        cwd: "/home/vaibhav/repo",
+        sshHost: "vaibhav@dev-box",
+      },
+      {
+        platform: "darwin",
+        env: { PATH: "/usr/local/bin", ELECTRON_RUN_AS_NODE: "1" },
+        // Only the editor CLI exists locally — the remote paths do not.
+        existsSync: createExistsSync(["/usr/local/bin/cursor"]),
+        spawn: recorder.spawn,
+      },
+    );
+
+    expect(recorder.calls).toEqual([
+      {
+        command: "/usr/local/bin/cursor",
+        args: [
+          "--remote",
+          "ssh-remote+vaibhav@dev-box",
+          "/home/vaibhav/repo",
+          "/home/vaibhav/repo/src/app.ts",
+        ],
+        options: {
+          detached: true,
+          env: { PATH: "/usr/local/bin" },
+          shell: false,
+          stdio: "ignore",
+        },
+        listenedForError: true,
+        listenedForSpawn: true,
+        unrefed: true,
+      },
+    ]);
+  });
+
+  it("launches remote workspace folder opens without a cwd", async () => {
+    const recorder = createSpawnRecorder();
+
+    await openEditorTarget(
+      { editorId: "vscode", path: "/home/vaibhav/repo", sshHost: "dev-box" },
+      {
+        platform: "darwin",
+        env: { PATH: "/usr/local/bin" },
+        existsSync: createExistsSync(["/usr/local/bin/code"]),
+        spawn: recorder.spawn,
+      },
+    );
+
+    expect(recorder.calls[0]?.args).toEqual([
+      "--remote",
+      "ssh-remote+dev-box",
+      "/home/vaibhav/repo",
+    ]);
+  });
+
+  it("rejects remote opens for targets without remote support and relative remote paths", async () => {
+    const recorder = createSpawnRecorder();
+    const dependencies = {
+      platform: "darwin" as const,
+      env: { PATH: "/usr/local/bin" },
+      existsSync: createExistsSync([
+        "/usr/local/bin/webstorm",
+        "/usr/local/bin/open",
+        "/usr/local/bin/cursor",
+      ]),
+      spawn: recorder.spawn,
+    };
+
+    await expect(
+      openEditorTarget({ editorId: "webstorm", path: "/repo", sshHost: "dev-box" }, dependencies),
+    ).rejects.toThrow("does not support remote hosts");
+    await expect(
+      openEditorTarget({ editorId: "finder", path: "/repo", sshHost: "dev-box" }, dependencies),
+    ).rejects.toThrow("does not support remote hosts");
+    await expect(
+      openEditorTarget({ editorId: "cursor", path: "repo", sshHost: "dev-box" }, dependencies),
+    ).rejects.toThrow("absolute POSIX path");
+    expect(recorder.calls).toEqual([]);
   });
 
   it("reveals files in Finder on macOS", async () => {
@@ -555,7 +641,7 @@ describe("desktop editor targets", () => {
     }
 
     expect(listHandler({})).toEqual([
-      { id: "vscode", label: "VS Code", kind: "editor" },
+      { id: "vscode", label: "VS Code", kind: "editor", supportsRemote: true },
       { id: "finder", label: "Finder", kind: "file-manager" },
     ]);
     await openHandler({}, { editorId: "vscode", path: "/tmp/repo" });

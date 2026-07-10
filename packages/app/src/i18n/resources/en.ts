@@ -1784,6 +1784,16 @@ export const en = {
           placeholder: "My Host",
           submit: "Rename",
         },
+        sshHost: {
+          title: "SSH host",
+          hint: "Lets “Open in editor” open this host's workspaces in Cursor or VS Code over Remote SSH",
+          notConfigured: "Not configured",
+          edit: "Edit",
+          configure: "Configure",
+          modalTitle: "SSH host",
+          placeholder: "user@hostname or SSH config alias",
+          submit: "Save",
+        },
         restart: {
           title: "Restart daemon",
           hint: "Restarts the daemon process. The app will reconnect automatically",

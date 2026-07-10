@@ -64,6 +64,7 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
       path: string;
       cwd?: string;
       mode?: "open" | "reveal";
+      sshHost?: string;
     }) => ipcRenderer.invoke("paseo:editor:openTarget", input),
   },
   webUtils: {

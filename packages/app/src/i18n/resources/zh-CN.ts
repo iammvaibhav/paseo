@@ -1758,6 +1758,16 @@ export const zhCN: TranslationResources = {
           placeholder: "我的 Host",
           submit: "重命名",
         },
+        sshHost: {
+          title: "SSH 主机",
+          hint: "允许“在编辑器中打开”通过 Remote SSH 在 Cursor 或 VS Code 中打开此主机的工作区",
+          notConfigured: "未配置",
+          edit: "编辑",
+          configure: "配置",
+          modalTitle: "SSH 主机",
+          placeholder: "user@hostname 或 SSH 配置别名",
+          submit: "保存",
+        },
         restart: {
           title: "重启 Daemon",
           hint: "重启 Daemon 进程。应用会自动重新连接",

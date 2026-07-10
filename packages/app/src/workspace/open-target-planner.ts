@@ -36,6 +36,7 @@ export interface PlanWorkspaceOpenTargetsInput {
   desktopTargets: readonly DesktopOpenTarget[];
   canUseDesktopBridge: boolean;
   isLocalExecution: boolean;
+  remoteSshHost?: string | null;
   checkoutStatus?: CheckoutStatusForOpenTarget | null;
 }
 
@@ -56,15 +57,48 @@ function resolveActiveFileForOpenTargets(
     : null;
 }
 
+function planRemoteDesktopOpenTargets(input: {
+  workspaceDirectory: string;
+  resolvedFile: ResolvedWorkspaceFilePaths | null;
+  desktopTargets: readonly DesktopOpenTarget[];
+  sshHost: string;
+}): PlannedDesktopOpenTarget[] {
+  return input.desktopTargets
+    .filter((target) => target.kind === "editor" && target.supportsRemote)
+    .map((target) => ({
+      source: "desktop",
+      id: target.id,
+      label: target.label,
+      editorId: target.id,
+      openInput: input.resolvedFile
+        ? {
+            editorId: target.id,
+            path: input.resolvedFile.absolutePath,
+            cwd: input.workspaceDirectory,
+            sshHost: input.sshHost,
+          }
+        : {
+            editorId: target.id,
+            path: input.workspaceDirectory,
+            sshHost: input.sshHost,
+          },
+    }));
+}
+
 function planDesktopOpenTargets(input: {
   workspaceDirectory: string;
   resolvedFile: ResolvedWorkspaceFilePaths | null;
   desktopTargets: readonly DesktopOpenTarget[];
   canUseDesktopBridge: boolean;
   isLocalExecution: boolean;
+  remoteSshHost?: string | null;
 }): PlannedDesktopOpenTarget[] {
-  if (!input.canUseDesktopBridge || !input.isLocalExecution) {
+  if (!input.canUseDesktopBridge) {
     return [];
+  }
+  if (!input.isLocalExecution) {
+    const sshHost = input.remoteSshHost?.trim();
+    return sshHost ? planRemoteDesktopOpenTargets({ ...input, sshHost }) : [];
   }
 
   return input.desktopTargets.map((target) => {

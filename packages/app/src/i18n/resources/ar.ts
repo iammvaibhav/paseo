@@ -1776,6 +1776,16 @@ export const ar: TranslationResources = {
           placeholder: "بلدي Host",
           submit: "إعادة تسمية",
         },
+        sshHost: {
+          title: "مضيف SSH",
+          hint: "يتيح لـ «فتح في المحرر» فتح مساحات عمل هذا المضيف في Cursor أو VS Code عبر Remote SSH",
+          notConfigured: "غير مُكوَّن",
+          edit: "تحرير",
+          configure: "تكوين",
+          modalTitle: "مضيف SSH",
+          placeholder: "user@hostname أو اسم مستعار في إعدادات SSH",
+          submit: "حفظ",
+        },
         restart: {
           title: "إعادة تشغيل البرنامج الخفي",
           hint: "إعادة تشغيل عملية البرنامج الخفي. سيتم إعادة الاتصال بالتطبيق تلقائيًا",

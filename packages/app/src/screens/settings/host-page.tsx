@@ -365,6 +365,8 @@ export function HostSettingsPage({
 
       {isLocalDaemon ? <LocalDaemonSection /> : null}
 
+      {!isLocalDaemon ? <SshHostCard host={host} /> : null}
+
       {!isLocalDaemon ? <UpdateDaemonCard host={host} /> : null}
 
       <RemoveHostSection host={host} isLocalDaemon={isLocalDaemon} onRemoved={onHostRemoved} />
@@ -414,6 +416,74 @@ export function HostRenameButton({ host }: { host: HostProfile }) {
         testID="host-page-rename-modal"
       />
     </>
+  );
+}
+
+function SshHostCard({ host }: { host: HostProfile }) {
+  const { t } = useTranslation();
+  const { theme } = useUnistyles();
+  const { setHostSshHost } = useHostMutations();
+  const [isEditing, setIsEditing] = useState(false);
+
+  const sshHost = host.sshHost ?? "";
+
+  const handleSubmit = useCallback(
+    async (value: string) => {
+      await setHostSshHost(host.serverId, value);
+    },
+    [host.serverId, setHostSshHost],
+  );
+
+  const handleClear = useCallback(() => {
+    void setHostSshHost(host.serverId, null);
+  }, [host.serverId, setHostSshHost]);
+
+  const openEditor = useCallback(() => setIsEditing(true), []);
+  const closeEditor = useCallback(() => setIsEditing(false), []);
+
+  return (
+    <View style={settingsStyles.card} testID="host-page-ssh-host-card">
+      <View style={settingsStyles.row}>
+        <View style={settingsStyles.rowContent}>
+          <Text style={settingsStyles.rowTitle}>{t("settings.host.daemon.sshHost.title")}</Text>
+          <Text style={settingsStyles.rowHint}>
+            {sshHost || t("settings.host.daemon.sshHost.hint")}
+          </Text>
+        </View>
+        {sshHost ? (
+          <Pressable
+            onPress={handleClear}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={t("settings.host.daemon.sshHost.notConfigured")}
+            testID="host-page-ssh-host-clear-button"
+          >
+            <Trash2 size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />
+          </Pressable>
+        ) : null}
+        <Button
+          variant="outline"
+          size="sm"
+          onPress={openEditor}
+          testID="host-page-ssh-host-edit-button"
+        >
+          {sshHost
+            ? t("settings.host.daemon.sshHost.edit")
+            : t("settings.host.daemon.sshHost.configure")}
+        </Button>
+      </View>
+
+      <AdaptiveRenameModal
+        visible={isEditing}
+        title={t("settings.host.daemon.sshHost.modalTitle")}
+        initialValue={sshHost}
+        placeholder={t("settings.host.daemon.sshHost.placeholder")}
+        submitLabel={t("settings.host.daemon.sshHost.submit")}
+        onClose={closeEditor}
+        onSubmit={handleSubmit}
+        testID="host-page-ssh-host-modal"
+      />
+    </View>
   );
 }
 

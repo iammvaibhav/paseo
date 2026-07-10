@@ -43,6 +43,8 @@ export interface HostProfile {
   lifecycle: HostLifecycle;
   connections: HostConnection[];
   preferredConnectionId: string | null;
+  /** SSH destination (`user@host` or ssh-config alias) used to open this host's workspaces in a local editor via Remote SSH. */
+  sshHost?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -346,12 +348,15 @@ export function normalizeStoredHostProfile(entry: unknown): HostProfile | null {
       ? record.preferredConnectionId
       : (connections[0]?.id ?? null);
 
+  const sshHost = typeof record.sshHost === "string" ? record.sshHost.trim() : "";
+
   return {
     serverId,
     label,
     lifecycle: defaultLifecycle(),
     connections,
     preferredConnectionId,
+    ...(sshHost ? { sshHost } : {}),
     createdAt: typeof record.createdAt === "string" ? record.createdAt : now,
     updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : now,
   };

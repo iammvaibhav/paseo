@@ -1811,6 +1811,16 @@ export const ru: TranslationResources = {
           placeholder: "Мой Host",
           submit: "Переименовать",
         },
+        sshHost: {
+          title: "SSH-хост",
+          hint: "Позволяет «Открыть в редакторе» открывать рабочие пространства этого хоста в Cursor или VS Code через Remote SSH",
+          notConfigured: "Не настроено",
+          edit: "Изменить",
+          configure: "Настроить",
+          modalTitle: "SSH-хост",
+          placeholder: "user@hostname или псевдоним из конфигурации SSH",
+          submit: "Сохранить",
+        },
         restart: {
           title: "Перезапустить демон",
           hint: "Перезапускает процесс демона. Приложение автоматически переподключится",
