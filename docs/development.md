@@ -311,6 +311,28 @@ For tighter loops, you can rebuild a single workspace:
 - Changed `packages/server/src/*`, `packages/cli/src/*`, `packages/relay/src/*`, or `packages/highlight/src/*`: `npm run build:server`.
 - Changed app build dependencies: `npm run build:app-deps`.
 
+## Local desktop builds (unsigned)
+
+`npm run build:desktop` is wired for CI, where release signing credentials exist. Run it bare on a dev Mac and two things go wrong:
+
+1. **Signing hangs or fails.** electron-builder auto-discovers whatever Apple identity is in the keychain (e.g. a personal "Apple Development" cert) and, because `electron-builder.yml` sets `notarize: true`, then stalls on notarization credentials that aren't set.
+2. **An ad-hoc build with hardened runtime crashes at launch.** `hardenedRuntime: true` survives into ad-hoc-signed builds. Hardened runtime enforces library validation — every loaded framework must share the process's Team ID — and ad-hoc signatures have no Team ID, so dyld aborts loading `Electron Framework` with `mapping process and mapped file (non-platform) have different Team IDs` (SIGABRT at launch). Signed release builds never hit this because everything shares the real team.
+
+For a personal, run-on-this-machine-only build, disable all three:
+
+```bash
+CSC_IDENTITY_AUTO_DISCOVERY=false npm run build:desktop -- -c.mac.notarize=false -c.mac.hardenedRuntime=false
+```
+
+Output lands in `packages/desktop/release/` (DMG, zip, and the raw `mac-arm64/Paseo.app`). If the web app hasn't changed since a previous export, you can skip the Expo export and rebuild only the packaging step: `CSC_IDENTITY_AUTO_DISCOVERY=false npm run build --workspace=@getpaseo/desktop -- <same flags>` (it reuses `packages/app/dist`).
+
+Rescuing an already-built app that has the hardened-runtime flag: `codesign --force --deep --sign - <path to .app>` re-signs everything ad-hoc without the flag.
+
+Two install gotchas:
+
+- **Never copy an unsigned build over the installed signed Paseo.app** (or vice versa). A file-level merge (`cp -R`, `ditto` onto an existing bundle, or replacing while running) leaves a bundle with mixed signatures, which crashes at launch with the same different-Team-IDs dyld abort. Install under a different name (e.g. `Paseo Test.app`) or delete the old bundle first.
+- **Don't run two builds into the same `release/` directory concurrently.** electron-builder runs race on the output files and cross-contaminate artifacts.
+
 ## ACP provider catalog versions
 
 The in-app ACP provider catalog pins package-runner entries (`npx`, `npm exec`,

@@ -215,3 +215,13 @@ PASEO_SKIP_REMOTES=1 ./scripts/sync-custom-branch.sh   # local only
 PASEO_SKIP_LOCAL=1 ./scripts/sync-custom-branch.sh     # remotes only
 PASEO_NODE_VERSION=22 ./scripts/sync-custom-branch.sh
 ```
+
+### Local desktop test builds
+
+Never run bare `npm run build:desktop` locally — it hangs on notarization, and an ad-hoc build with hardened runtime crashes at launch (dyld "different Team IDs"). Use:
+
+```bash
+CSC_IDENTITY_AUTO_DISCOVERY=false npm run build:desktop -- -c.mac.notarize=false -c.mac.hardenedRuntime=false
+```
+
+Install the result under a different name (e.g. `Paseo Test.app`) — never over the signed `/Applications/Paseo.app`. Full details and rescue steps in [docs/development.md](docs/development.md) § Local desktop builds (unsigned).
