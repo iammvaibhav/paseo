@@ -7,6 +7,8 @@ vi.mock("@/constants/platform", () => ({
 vi.mock("@/stores/browser-store", () => ({
   createWorkspaceBrowser: vi.fn(() => ({ browserId: "new-browser", url: "http://x" })),
   getBrowserRecord: vi.fn(),
+  resolveBrowserChromeMode: (value: "full" | "embedded" | null | undefined) =>
+    value === "embedded" ? "embedded" : "full",
   useBrowserStore: {
     getState: vi.fn(() => ({
       requestNavigation: vi.fn(),
@@ -16,7 +18,7 @@ vi.mock("@/stores/browser-store", () => ({
 
 import { getIsElectron } from "@/constants/platform";
 import { createWorkspaceBrowser, getBrowserRecord, useBrowserStore } from "@/stores/browser-store";
-import { tryOpenFileInBrowserEditor } from "./open-file-in-browser-editor";
+import { openBrowserEditorTab, tryOpenFileInBrowserEditor } from "./open-file-in-browser-editor";
 
 describe("tryOpenFileInBrowserEditor", () => {
   beforeEach(() => {
@@ -42,7 +44,7 @@ describe("tryOpenFileInBrowserEditor", () => {
     ).toBe(false);
   });
 
-  it("creates a browser tab when none exists for the editor origin", () => {
+  it("creates an embedded browser tab when none exists for the editor origin", () => {
     const openWorkspaceTabFocused = vi.fn(() => "tab-1");
     const navigateToTabId = vi.fn();
     expect(
@@ -55,9 +57,11 @@ describe("tryOpenFileInBrowserEditor", () => {
         navigateToTabId,
       }),
     ).toBe(true);
-    expect(createWorkspaceBrowser).toHaveBeenCalled();
+    expect(createWorkspaceBrowser).toHaveBeenCalledWith({
+      initialUrl: expect.stringContaining("folder=%2Frepo"),
+      chrome: "embedded",
+    });
     const initialUrl = vi.mocked(createWorkspaceBrowser).mock.calls[0]?.[0]?.initialUrl ?? "";
-    expect(initialUrl).toContain("folder=%2Frepo");
     expect(initialUrl).toContain("payload=");
     expect(openWorkspaceTabFocused).toHaveBeenCalledWith({
       kind: "browser",
@@ -66,11 +70,12 @@ describe("tryOpenFileInBrowserEditor", () => {
     expect(navigateToTabId).toHaveBeenCalledWith("tab-1");
   });
 
-  it("reuses an existing browser tab for the same origin", () => {
+  it("reuses an existing embedded browser tab for the same origin", () => {
     vi.mocked(getBrowserRecord).mockReturnValue({
       browserId: "existing",
       url: "http://blrofc3:8765/?folder=%2Frepo",
       title: "",
+      chrome: "embedded",
       isLoading: false,
       canGoBack: false,
       canGoForward: false,
@@ -98,5 +103,40 @@ describe("tryOpenFileInBrowserEditor", () => {
     expect(createWorkspaceBrowser).not.toHaveBeenCalled();
     expect(requestNavigation).toHaveBeenCalled();
     expect(navigateToTabId).toHaveBeenCalledWith("tab-existing");
+  });
+
+  it("does not reuse a full-chrome browser tab on the same origin", () => {
+    vi.mocked(getBrowserRecord).mockReturnValue({
+      browserId: "full-chrome",
+      url: "http://blrofc3:8765/?folder=%2Frepo",
+      title: "",
+      chrome: "full",
+      isLoading: false,
+      canGoBack: false,
+      canGoForward: false,
+      faviconUrl: null,
+      lastError: null,
+      createdAt: 0,
+    });
+    const openWorkspaceTabFocused = vi.fn(() => "tab-new");
+    const navigateToTabId = vi.fn();
+
+    expect(
+      openBrowserEditorTab({
+        url: "http://blrofc3:8765/?folder=%2Frepo",
+        browserEditorUrl: "http://blrofc3:8765",
+        workspaceTabs: [
+          { tabId: "tab-full", target: { kind: "browser", browserId: "full-chrome" } },
+        ],
+        openWorkspaceTabFocused,
+        navigateToTabId,
+      }),
+    ).toBe(true);
+
+    expect(createWorkspaceBrowser).toHaveBeenCalledWith({
+      initialUrl: "http://blrofc3:8765/?folder=%2Frepo",
+      chrome: "embedded",
+    });
+    expect(navigateToTabId).toHaveBeenCalledWith("tab-new");
   });
 });

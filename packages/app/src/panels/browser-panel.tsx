@@ -5,13 +5,20 @@ import invariant from "tiny-invariant";
 import { BrowserPane } from "@/components/browser-pane";
 import { usePaneContext, usePaneFocus } from "@/panels/pane-context";
 import type { PanelDescriptor, PanelIconProps, PanelRegistration } from "@/panels/panel-registry";
-import { useBrowserStore } from "@/stores/browser-store";
+import { resolveBrowserChromeMode, useBrowserStore } from "@/stores/browser-store";
 import { useWorkspaceDirectory } from "@/stores/session-store-hooks";
 
-function getBrowserLabel(input: { title: string; url: string }): string {
+function getBrowserLabel(input: {
+  title: string;
+  url: string;
+  chrome: "full" | "embedded";
+}): string {
   const title = input.title.trim();
   if (title) {
     return title;
+  }
+  if (input.chrome === "embedded") {
+    return "VS Code Web";
   }
 
   try {
@@ -20,6 +27,17 @@ function getBrowserLabel(input: { title: string; url: string }): string {
   } catch {
     return input.url;
   }
+}
+
+function getBrowserSubtitle(input: { url: string; chrome: "full" | "embedded" }): string {
+  if (input.chrome === "embedded") {
+    try {
+      return new URL(input.url).hostname || "";
+    } catch {
+      return "";
+    }
+  }
+  return input.url;
 }
 
 function createBrowserTabIcon(faviconUrl: string | null) {
@@ -41,11 +59,12 @@ function useBrowserPanelDescriptor(target: {
 }): PanelDescriptor {
   const browser = useBrowserStore((state) => state.browsersById[target.browserId] ?? null);
   const url = browser?.url ?? "https://example.com";
+  const chrome = resolveBrowserChromeMode(browser?.chrome);
   const icon = createBrowserTabIcon(browser?.faviconUrl ?? null);
 
   return {
-    label: getBrowserLabel({ title: browser?.title ?? "", url }),
-    subtitle: url,
+    label: getBrowserLabel({ title: browser?.title ?? "", url, chrome }),
+    subtitle: getBrowserSubtitle({ url, chrome }),
     titleState: "ready",
     icon,
     statusBucket: browser?.isLoading ? "running" : null,

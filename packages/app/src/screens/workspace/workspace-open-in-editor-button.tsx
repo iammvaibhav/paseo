@@ -36,7 +36,7 @@ interface WorkspaceOpenInEditorButtonProps {
   cwd: string;
   activeFile?: WorkspaceFileLocation | null;
   hideLabels?: boolean;
-  onOpenUrlInBrowserTab?: (url: string) => void;
+  onOpenBrowserEditorUrl?: (url: string) => void;
 }
 
 interface OpenTarget {
@@ -84,7 +84,7 @@ export function WorkspaceOpenInEditorButton({
   cwd,
   activeFile,
   hideLabels,
-  onOpenUrlInBrowserTab,
+  onOpenBrowserEditorUrl,
 }: WorkspaceOpenInEditorButtonProps) {
   const { t } = useTranslation();
   const toast = useToast();
@@ -148,8 +148,8 @@ export function WorkspaceOpenInEditorButton({
               <ThemedEditorAppIcon editorId="vscode-web" size={16} uniProps={mutedColorMapping} />
             ),
             onOpen: () => {
-              if (onOpenUrlInBrowserTab) {
-                onOpenUrlInBrowserTab(target.url);
+              if (onOpenBrowserEditorUrl) {
+                onOpenBrowserEditorUrl(target.url);
                 return;
               }
               return openExternalUrl(target.url);
@@ -171,7 +171,7 @@ export function WorkspaceOpenInEditorButton({
       desktopOpenTargets,
       isDesktopOpenAvailable,
       isLocalDaemon,
-      onOpenUrlInBrowserTab,
+      onOpenBrowserEditorUrl,
       remoteSshHost,
       resolvedFile,
     ],

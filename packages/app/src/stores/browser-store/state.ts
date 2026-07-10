@@ -1,13 +1,26 @@
+export type BrowserChromeMode = "full" | "embedded";
+
 export interface BrowserRecord {
   browserId: string;
   url: string;
   title: string;
+  /**
+   * `full` shows the in-pane toolbar + URL bar. `embedded` is a chrome-less
+   * surface (VS Code Web / code-server) that reuses the same webview.
+   */
+  chrome: BrowserChromeMode;
   isLoading: boolean;
   canGoBack: boolean;
   canGoForward: boolean;
   faviconUrl: string | null;
   lastError: string | null;
   createdAt: number;
+}
+
+export function resolveBrowserChromeMode(
+  value: BrowserChromeMode | null | undefined,
+): BrowserChromeMode {
+  return value === "embedded" ? "embedded" : "full";
 }
 
 export type BrowserRecordPatch = Partial<Omit<BrowserRecord, "browserId" | "createdAt">>;
@@ -45,11 +58,13 @@ export function createBrowserRecord(input: {
   browserId: string;
   initialUrl: string | null | undefined;
   now: number;
+  chrome?: BrowserChromeMode | null;
 }): BrowserRecord {
   return {
     browserId: input.browserId,
     url: normalizeBrowserUrl(input.initialUrl),
     title: "",
+    chrome: resolveBrowserChromeMode(input.chrome),
     isLoading: false,
     canGoBack: false,
     canGoForward: false,
@@ -77,11 +92,13 @@ export function applyBrowserPatch<S extends BrowserIndexState>(
     ...existing,
     ...patch,
     url: normalizeBrowserUrl(patch.url ?? existing.url),
+    chrome: resolveBrowserChromeMode(patch.chrome ?? existing.chrome),
   };
 
   if (
     nextRecord.url === existing.url &&
     nextRecord.title === existing.title &&
+    nextRecord.chrome === resolveBrowserChromeMode(existing.chrome) &&
     nextRecord.isLoading === existing.isLoading &&
     nextRecord.canGoBack === existing.canGoBack &&
     nextRecord.canGoForward === existing.canGoForward &&
@@ -123,7 +140,12 @@ export function sanitizeBrowsersForPersist(state: BrowserIndexState): {
     browsersById: Object.fromEntries(
       Object.entries(state.browsersById).map(([browserId, browser]) => [
         browserId,
-        { ...browser, isLoading: false, lastError: null },
+        {
+          ...browser,
+          chrome: resolveBrowserChromeMode(browser.chrome),
+          isLoading: false,
+          lastError: null,
+        },
       ]),
     ),
   };

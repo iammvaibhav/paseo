@@ -191,7 +191,10 @@ import {
   type WorkspaceFileLocation,
   type WorkspaceFileOpenRequest,
 } from "@/workspace/file-open";
-import { tryOpenFileInBrowserEditor } from "@/workspace/open-file-in-browser-editor";
+import {
+  openBrowserEditorTab,
+  tryOpenFileInBrowserEditor,
+} from "@/workspace/open-file-in-browser-editor";
 import { RenderProfile } from "@/utils/render-profiler";
 import { useWorkspaceCheckoutStatus } from "@/screens/workspace/use-workspace-checkout-status";
 
@@ -2512,6 +2515,22 @@ function WorkspaceScreenContent({
     [openWorkspaceTabFocused, persistenceKey],
   );
 
+  const handleOpenBrowserEditorUrl = useCallback(
+    (url: string) => {
+      if (!persistenceKey || !browserEditorUrl) {
+        return;
+      }
+      openBrowserEditorTab({
+        url,
+        browserEditorUrl,
+        workspaceTabs: uiTabs,
+        openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
+        navigateToTabId,
+      });
+    },
+    [browserEditorUrl, navigateToTabId, openWorkspaceTabFocused, persistenceKey, uiTabs],
+  );
+
   useDesktopBrowserNewTabRequests({
     enabled: Boolean(persistenceKey),
     workspaceLayout,
@@ -3339,7 +3358,7 @@ function WorkspaceScreenContent({
             cwd={workspaceDirectory}
             activeFile={activeFileLocation}
             hideLabels
-            onOpenUrlInBrowserTab={handleOpenUrlInBrowserTab}
+            onOpenBrowserEditorUrl={handleOpenBrowserEditorUrl}
           />
         ) : null}
         {!isMobile && workspaceDirectory ? (
@@ -3455,6 +3474,7 @@ function WorkspaceScreenContent({
       handleScriptTerminalStarted,
       handleViewScriptTerminal,
       handleOpenUrlInBrowserTab,
+      handleOpenBrowserEditorUrl,
       showCompactButtonLabels,
       isGitCheckout,
       handleToggleExplorer,

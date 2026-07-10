@@ -609,6 +609,7 @@ export function BrowserPane({
   const { theme } = useUnistyles();
   const { t } = useTranslation();
   const browser = useBrowserStore((state) => state.browsersById[browserId] ?? null);
+  const showChrome = (browser?.chrome ?? "full") !== "embedded";
   const updateBrowser = useBrowserStore((state) => state.updateBrowser);
   const navigationRequest = useBrowserStore(
     (state) => state.navigationRequestByBrowserId[browserId] ?? null,
@@ -1589,100 +1590,102 @@ export function BrowserPane({
 
   return (
     <View style={styles.container}>
-      <View style={styles.chromeRow}>
-        <View style={styles.chromeLeft}>
-          <ToolbarButton
-            label={t("workspace.browser.controls.back")}
-            disabled={!browser?.canGoBack}
-            onPress={handleBack}
-            style={backIconButtonStyle}
-          >
-            <ArrowLeft size={16} color={theme.colors.foregroundMuted} />
-          </ToolbarButton>
-          <ToolbarButton
-            label={t("workspace.browser.controls.forward")}
-            disabled={!browser?.canGoForward}
-            onPress={handleForward}
-            style={forwardIconButtonStyle}
-          >
-            <ArrowRight size={16} color={theme.colors.foregroundMuted} />
-          </ToolbarButton>
-          <ToolbarButton
-            label={
-              browser?.isLoading
-                ? t("workspace.browser.controls.stopLoading")
-                : t("workspace.browser.controls.refresh")
-            }
-            onPress={handleRefresh}
-            style={baseIconButtonStyle}
-          >
-            <RotateCw size={16} color={theme.colors.foregroundMuted} />
-          </ToolbarButton>
-        </View>
-        <View style={styles.urlBarWrap}>
-          <TextInput
-            accessibilityLabel={t("workspace.browser.controls.browserUrl")}
-            autoCapitalize="none"
-            autoCorrect={false}
-            onChangeText={setDraftUrl}
-            onFocus={handleUrlBarFocus}
-            onSubmitEditing={handleNavigateDraftUrl}
-            placeholder={t("workspace.browser.controls.enterUrl")}
-            placeholderTextColor={theme.colors.foregroundMuted}
-            ref={urlInputRef}
-            style={urlInputStyle}
-            value={draftUrl}
-          />
-        </View>
-        <View style={styles.chromeRight}>
-          <DeviceSizeMenu
-            selectedId={deviceSizeId}
-            onSelect={setDeviceSizeId}
-            triggerStyle={baseIconButtonStyle}
-          />
-          <ToolbarButton
-            label={t("workspace.browser.controls.openDevTools")}
-            onPress={handleOpenDevTools}
-            style={baseIconButtonStyle}
-          >
-            <Wrench size={16} color={theme.colors.foregroundMuted} />
-          </ToolbarButton>
-          <ToolbarButton
-            label={
-              selectorMode === "annotate"
-                ? t("workspace.browser.controls.cancelSelector")
-                : t("workspace.browser.controls.annotateElement")
-            }
-            active={selectorMode === "annotate"}
-            onPress={handleToggleElementSelector}
-            style={annotateIconButtonStyle}
-          >
-            <MousePointer2
-              size={16}
-              color={
-                selectorMode === "annotate" ? theme.colors.accent : theme.colors.foregroundMuted
+      {showChrome ? (
+        <View style={styles.chromeRow}>
+          <View style={styles.chromeLeft}>
+            <ToolbarButton
+              label={t("workspace.browser.controls.back")}
+              disabled={!browser?.canGoBack}
+              onPress={handleBack}
+              style={backIconButtonStyle}
+            >
+              <ArrowLeft size={16} color={theme.colors.foregroundMuted} />
+            </ToolbarButton>
+            <ToolbarButton
+              label={t("workspace.browser.controls.forward")}
+              disabled={!browser?.canGoForward}
+              onPress={handleForward}
+              style={forwardIconButtonStyle}
+            >
+              <ArrowRight size={16} color={theme.colors.foregroundMuted} />
+            </ToolbarButton>
+            <ToolbarButton
+              label={
+                browser?.isLoading
+                  ? t("workspace.browser.controls.stopLoading")
+                  : t("workspace.browser.controls.refresh")
               }
+              onPress={handleRefresh}
+              style={baseIconButtonStyle}
+            >
+              <RotateCw size={16} color={theme.colors.foregroundMuted} />
+            </ToolbarButton>
+          </View>
+          <View style={styles.urlBarWrap}>
+            <TextInput
+              accessibilityLabel={t("workspace.browser.controls.browserUrl")}
+              autoCapitalize="none"
+              autoCorrect={false}
+              onChangeText={setDraftUrl}
+              onFocus={handleUrlBarFocus}
+              onSubmitEditing={handleNavigateDraftUrl}
+              placeholder={t("workspace.browser.controls.enterUrl")}
+              placeholderTextColor={theme.colors.foregroundMuted}
+              ref={urlInputRef}
+              style={urlInputStyle}
+              value={draftUrl}
             />
-          </ToolbarButton>
-          <ToolbarButton
-            label={
-              selectorMode === "screenshot"
-                ? t("workspace.browser.controls.cancelSelector")
-                : t("workspace.browser.controls.screenshotElement")
-            }
-            active={selectorMode === "screenshot"}
-            onPress={handleToggleScreenshot}
-            style={screenshotIconButtonStyle}
-          >
-            <Camera
-              size={16}
-              color={
-                selectorMode === "screenshot" ? theme.colors.accent : theme.colors.foregroundMuted
+          </View>
+          <View style={styles.chromeRight}>
+            <DeviceSizeMenu
+              selectedId={deviceSizeId}
+              onSelect={setDeviceSizeId}
+              triggerStyle={baseIconButtonStyle}
+            />
+            <ToolbarButton
+              label={t("workspace.browser.controls.openDevTools")}
+              onPress={handleOpenDevTools}
+              style={baseIconButtonStyle}
+            >
+              <Wrench size={16} color={theme.colors.foregroundMuted} />
+            </ToolbarButton>
+            <ToolbarButton
+              label={
+                selectorMode === "annotate"
+                  ? t("workspace.browser.controls.cancelSelector")
+                  : t("workspace.browser.controls.annotateElement")
               }
-            />
-          </ToolbarButton>
+              active={selectorMode === "annotate"}
+              onPress={handleToggleElementSelector}
+              style={annotateIconButtonStyle}
+            >
+              <MousePointer2
+                size={16}
+                color={
+                  selectorMode === "annotate" ? theme.colors.accent : theme.colors.foregroundMuted
+                }
+              />
+            </ToolbarButton>
+            <ToolbarButton
+              label={
+                selectorMode === "screenshot"
+                  ? t("workspace.browser.controls.cancelSelector")
+                  : t("workspace.browser.controls.screenshotElement")
+              }
+              active={selectorMode === "screenshot"}
+              onPress={handleToggleScreenshot}
+              style={screenshotIconButtonStyle}
+            >
+              <Camera
+                size={16}
+                color={
+                  selectorMode === "screenshot" ? theme.colors.accent : theme.colors.foregroundMuted
+                }
+              />
+            </ToolbarButton>
+          </View>
         </View>
-      </View>
+      ) : null}
       {browser?.lastError ? (
         <View style={styles.errorRow}>
           <Text numberOfLines={1} style={errorTextStyle}>

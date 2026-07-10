@@ -1,6 +1,6 @@
 # Always-on VS Code Web (code-server)
 
-Paseo's desktop **Open → VS Code Web** entry opens the current workspace folder in an in-app browser tab against a per-host code-server URL (`HostProfile.browserEditorUrl`).
+Paseo's desktop **Open → VS Code Web** entry opens the current workspace folder in an in-app tab against a per-host code-server URL (`HostProfile.browserEditorUrl`). That tab reuses the browser webview with no address bar / toolbar (`BrowserRecord.chrome = "embedded"`).
 
 ## URLs used in this fork
 
@@ -62,7 +62,7 @@ sudo loginctl enable-linger "$USER"   # keep running after SSH logout
 
 1. Settings → each host → **VS Code Web URL** (values in the table above).
 2. Restart Paseo once after setting URLs so Chromium picks up `--unsafely-treat-insecure-origin-as-secure` for those origins (needed for VS Code webviews/service workers over plain HTTP on VPN IPs). Origins are persisted under the app `userData` dir as `browser-editor-insecure-origins.json` and applied in `packages/desktop/src/features/browser-editor-origins.ts` before `app.whenReady()`.
-3. Open a workspace → **Open** dropdown → **VS Code Web** → in-app browser tab at `http://…:8765/?folder=<workspacePath>`.
+3. Open a workspace → **Open** dropdown → **VS Code Web** → in-app tab at `http://…:8765/?folder=<workspacePath>` (chrome-less; not a normal browser tab).
 
 ### File opens from Paseo
 
@@ -71,7 +71,7 @@ When a host has **VS Code Web URL** set, desktop file opens (chat links, tool pa
 Implementation notes (easy to forget later):
 
 - URL builder: `packages/app/src/workspace/browser-editor-url.ts`
-- Open routing: `packages/app/src/workspace/open-file-in-browser-editor.ts` (called from `workspace-screen.tsx`)
+- Open routing: `packages/app/src/workspace/open-file-in-browser-editor.ts` (`openBrowserEditorTab` / `tryOpenFileInBrowserEditor`, called from `workspace-screen.tsx`). Creates/reuses tabs with `chrome: "embedded"` so `BrowserPane` hides the toolbar.
 - code-server has no `?file=` query. Opening a file uses VS Code Web's `payload` map:
 
   ```

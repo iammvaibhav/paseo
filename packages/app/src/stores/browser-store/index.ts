@@ -5,6 +5,7 @@ import { createJSONStorage, persist } from "zustand/middleware";
 import {
   applyBrowserPatch,
   type BrowserIndexState,
+  type BrowserChromeMode,
   type BrowserRecord,
   type BrowserRecordPatch,
   createBrowserRecord,
@@ -14,7 +15,8 @@ import {
   trimNonEmpty,
 } from "./state";
 
-export type { BrowserRecord } from "./state";
+export type { BrowserChromeMode, BrowserRecord } from "./state";
+export { resolveBrowserChromeMode } from "./state";
 
 export interface BrowserNavigationRequest {
   url: string;
@@ -23,7 +25,7 @@ export interface BrowserNavigationRequest {
 
 interface BrowserStoreState extends BrowserIndexState {
   navigationRequestByBrowserId: Record<string, BrowserNavigationRequest>;
-  createBrowser: (input?: { initialUrl?: string }) => string;
+  createBrowser: (input?: { initialUrl?: string; chrome?: BrowserChromeMode }) => string;
   updateBrowser: (browserId: string, patch: BrowserRecordPatch) => void;
   removeBrowser: (browserId: string) => void;
   requestNavigation: (browserId: string, url: string) => void;
@@ -51,6 +53,7 @@ export const useBrowserStore = create<BrowserStoreState>()(
         const record = createBrowserRecord({
           browserId,
           initialUrl: input?.initialUrl,
+          chrome: input?.chrome,
           now: Date.now(),
         });
 
@@ -127,7 +130,10 @@ export function getBrowserRecord(browserId: string): BrowserRecord | null {
   return useBrowserStore.getState().browsersById[normalizedBrowserId] ?? null;
 }
 
-export function createWorkspaceBrowser(input?: { initialUrl?: string }): {
+export function createWorkspaceBrowser(input?: {
+  initialUrl?: string;
+  chrome?: BrowserChromeMode;
+}): {
   browserId: string;
   url: string;
 } {
