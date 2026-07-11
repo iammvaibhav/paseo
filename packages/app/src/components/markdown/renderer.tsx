@@ -21,9 +21,11 @@ import Markdown, {
   type ASTNode,
   type RenderRules,
 } from "react-native-markdown-display";
+import texmath from "markdown-it-texmath";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { AppearanceStyleBoundary } from "@/components/appearance-style-boundary";
 import { HighlightedCodeBlock } from "@/components/highlighted-code-block";
+import { MathView } from "@/components/math-view";
 import { MarkdownParagraphView, MarkdownTextSpan } from "@/components/markdown-text";
 import { MarkdownTableCellText } from "@/components/markdown-text-selection";
 import { getMarkdownListMarker, getMarkdownListSpacing } from "@/utils/markdown-list";
@@ -62,7 +64,33 @@ function compactMarkdownStyleMapping(theme: Theme): Partial<MarkdownWithStableRe
   return { style: createCompactMarkdownStyles(theme) };
 }
 
-const defaultMarkdownParser = MarkdownIt({ typographer: true, linkify: true });
+const TEXMATH_OPTIONS = {
+  engine: { renderToString: (tex: string) => tex },
+  delimiters: ["dollars", "brackets"],
+};
+
+// Some agents (Grok) emit bare `[...\]` without the leading backslash.
+const BARE_BRACKET_BLOCK_RULE = {
+  name: "math_block",
+  rex: /^\[([^\S\n]*\n[\s\S]+?)\]\s*$/gmy,
+  tmpl: "<section><eqn>$1</eqn></section>",
+  tag: "[",
+  pre: (str: string, _outerSpace: boolean, pos: number) => {
+    const nextNonWs = str.slice(pos + 1).search(/\S/);
+    if (nextNonWs === -1) return false;
+    const firstContent = str.slice(pos + 1 + nextNonWs);
+    return /^\\[a-zA-Z{]/.test(firstContent);
+  },
+};
+
+export function addMathPlugin(parser: ReturnType<typeof MarkdownIt>) {
+  parser.use(texmath, TEXMATH_OPTIONS);
+  parser.block.ruler.before("fence", "math_block_bare", texmath.block(BARE_BRACKET_BLOCK_RULE));
+  parser.renderer.rules.math_block_bare = () => "";
+  return parser;
+}
+
+const defaultMarkdownParser = addMathPlugin(MarkdownIt({ typographer: true, linkify: true }));
 const EMPTY_TEXT_STYLE: TextStyle = {};
 const MARKDOWN_LIST_ITEM_CONTENT_FLEX: ViewStyle = { flex: 1, flexShrink: 1, minWidth: 0 };
 export interface MarkdownRendererProps {
@@ -500,6 +528,21 @@ function getMarkdownLinkHref(node: ASTNode): string {
   return typeof href === "string" ? href : "";
 }
 
+export function createMathRenderRules(): RenderRules {
+  const inlineRule = (node: ASTNode, _c: ReactNode[], _p: ASTNode[], styles: MarkdownStyles) => (
+    <MathView key={node.key} tex={node.content} color={styles.text?.color as string} />
+  );
+  const blockRule = (node: ASTNode, _c: ReactNode[], _p: ASTNode[], styles: MarkdownStyles) => (
+    <MathView key={node.key} tex={node.content} display color={styles.text?.color as string} />
+  );
+  return {
+    math_inline: inlineRule,
+    math_inline_double: blockRule,
+    math_block: blockRule,
+    math_block_eqno: blockRule,
+  };
+}
+
 export function createSharedMarkdownRules(): RenderRules {
   return {
     text: (
@@ -703,6 +746,7 @@ export function createSharedMarkdownRules(): RenderRules {
         {children}
       </SharedMarkdownLink>
     ),
+    ...createMathRenderRules(),
   };
 }
 

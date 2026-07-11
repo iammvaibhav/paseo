@@ -333,6 +333,29 @@ Two install gotchas:
 - **Never copy an unsigned build over the installed signed Paseo.app** (or vice versa). A file-level merge (`cp -R`, `ditto` onto an existing bundle, or replacing while running) leaves a bundle with mixed signatures, which crashes at launch with the same different-Team-IDs dyld abort. Install under a different name (e.g. `Paseo Test.app`) or delete the old bundle first.
 - **Don't run two builds into the same `release/` directory concurrently.** electron-builder runs race on the output files and cross-contaminate artifacts.
 
+### App-only changes (no daemon rebuild)
+
+When a change only touches `packages/app` (UI components, styles, markdown rendering, etc.) and does not change any server/daemon/CLI/protocol code, skip the sync script entirely — the daemon doesn't need rebuilding or restarting.
+
+Build and install the test app:
+
+```bash
+# Full build (Expo web export + Electron packaging):
+CSC_IDENTITY_AUTO_DISCOVERY=false npm run build:desktop -- -c.mac.notarize=false -c.mac.hardenedRuntime=false
+
+# Install as "Paseo Test" alongside the signed production app:
+cp -R packages/desktop/release/mac-arm64/Paseo.app "/Applications/Paseo Test.app"
+```
+
+If only Electron/desktop-wrapper code changed (not the web app), skip the Expo export and repackage from the existing `packages/app/dist`:
+
+```bash
+CSC_IDENTITY_AUTO_DISCOVERY=false npm run build --workspace=@getpaseo/desktop -- -c.mac.notarize=false -c.mac.hardenedRuntime=false
+cp -R packages/desktop/release/mac-arm64/Paseo.app "/Applications/Paseo Test.app"
+```
+
+**How to tell:** if `git diff` only shows files under `packages/app/src`, `packages/app/package.json`, or root `package-lock.json` (new app deps), it's app-only. If any file under `packages/server`, `packages/cli`, `packages/protocol`, `packages/relay`, or `packages/highlight` changed, use the full sync script instead.
+
 ## ACP provider catalog versions
 
 The in-app ACP provider catalog pins package-runner entries (`npx`, `npm exec`,

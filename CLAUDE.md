@@ -228,3 +228,5 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npm run build:desktop -- -c.mac.notarize=false
 ```
 
 Install the result under a different name (e.g. `Paseo Test.app`) — never over the signed `/Applications/Paseo.app`. Full details and rescue steps in [docs/development.md](docs/development.md) § Local desktop builds (unsigned).
+
+**App-only changes** (UI, components, styles — nothing under `packages/server`/`cli`/`protocol`/`relay`/`highlight`): skip the sync script, just build the desktop app and install as `Paseo Test.app`. See [docs/development.md](docs/development.md) § App-only changes.
