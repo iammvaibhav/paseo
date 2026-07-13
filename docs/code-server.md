@@ -20,9 +20,28 @@ Artifacts live in `scripts/code-server/`:
 - `sh.paseo.code-server.plist` — macOS LaunchAgent
 - `paseo-code-server.service` — Linux user systemd unit
 - `user-settings.json` — shared defaults (trust off, no welcome, hidden activity bar)
+- `deploy.sh` — install/update the standalone binary, write config + settings, restart the service
 - `sync-user-data.sh` — rsync User/ + extensions/ from this machine to the remotes
 
-Binary: standalone install under `~/.local/bin/code-server` (v4.127.x).
+Binary: standalone install under `~/.local/bin/code-server` (latest, or pin with `CODE_SERVER_VERSION`).
+
+### Deploy / update (preferred)
+
+`./scripts/sync-custom-branch.sh` deploys code-server on local + remotes after the daemon sync (binary update, config, service restart). Overrides:
+
+```bash
+PASEO_SKIP_CODE_SERVER=1 ./scripts/sync-custom-branch.sh              # daemon only
+PASEO_SYNC_CODE_SERVER_USER_DATA=1 ./scripts/sync-custom-branch.sh    # also rsync User/ + extensions/
+CODE_SERVER_VERSION=4.127.0 ./scripts/sync-custom-branch.sh           # pin binary version
+```
+
+Or deploy one host directly:
+
+```bash
+./scripts/code-server/deploy.sh local
+./scripts/code-server/deploy.sh blrofc3      # run on that host (or via sync script)
+./scripts/code-server/deploy.sh iammvaibhav
+```
 
 Workspace trust / Restricted Mode is disabled by default (`--disable-workspace-trust` on the service, plus `security.workspace.trust.enabled: false` in `User/settings.json`) so folders open in full mode.
 

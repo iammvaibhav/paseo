@@ -214,8 +214,10 @@ npx tsx packages/cli/src/index.js daemon restart --home ~/.paseo
 ### Useful overrides
 
 ```bash
-PASEO_SKIP_REMOTES=1 ./scripts/sync-custom-branch.sh   # local only
-PASEO_SKIP_LOCAL=1 ./scripts/sync-custom-branch.sh     # remotes only
+PASEO_SKIP_REMOTES=1 ./scripts/sync-custom-branch.sh          # local only
+PASEO_SKIP_LOCAL=1 ./scripts/sync-custom-branch.sh            # remotes only
+PASEO_SKIP_CODE_SERVER=1 ./scripts/sync-custom-branch.sh      # skip VS Code Web deploy
+PASEO_SYNC_CODE_SERVER_USER_DATA=1 ./scripts/sync-custom-branch.sh  # also rsync code-server User/ + extensions/
 PASEO_NODE_VERSION=22 ./scripts/sync-custom-branch.sh
 ```
 

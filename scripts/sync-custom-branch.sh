@@ -5,10 +5,12 @@
 #   1. Rebase the custom branch onto upstream/main (official getpaseo/paseo)
 #   2. Push the branch to origin (iammvaibhav/paseo fork)
 #   3. Build server + restart the production-style daemon (~/.paseo)
+#   4. Update local code-server (binary + config + LaunchAgent)
 #
 # Remote workflow (blrofc3, iammvaibhav):
 #   1. Ensure origin points at the fork and tracks the custom branch
 #   2. Pull the branch from origin, install deps if needed, build, restart daemon
+#   3. Update code-server (binary + config + systemd user unit)
 #
 # Usage:
 #   ./scripts/sync-custom-branch.sh
@@ -17,8 +19,11 @@
 #   PASEO_CUSTOM_BRANCH=vaibhav/customizations
 #   PASEO_NODE_VERSION=22
 #   PASEO_LOCAL_HOME=$HOME/.paseo
-#   PASEO_SKIP_REMOTES=1          # local only
-#   PASEO_SKIP_LOCAL=1            # remotes only
+#   PASEO_SKIP_REMOTES=1              # local only
+#   PASEO_SKIP_LOCAL=1                # remotes only
+#   PASEO_SKIP_CODE_SERVER=1          # skip code-server deploy everywhere
+#   PASEO_SYNC_CODE_SERVER_USER_DATA=1  # also rsync User/ + extensions/ local → remotes
+#   CODE_SERVER_VERSION=4.127.0       # pin code-server; omit for latest
 
 set -euo pipefail
 
@@ -141,6 +146,30 @@ restart_local_daemon() {
   )
 }
 
+deploy_local_code_server() {
+  if [[ "${PASEO_SKIP_CODE_SERVER:-0}" == "1" ]]; then
+    log "Skipping local code-server deploy (PASEO_SKIP_CODE_SERVER=1)"
+    return
+  fi
+  log "Deploying local code-server"
+  bash "$ROOT_DIR/scripts/code-server/deploy.sh" local
+}
+
+sync_code_server_user_data() {
+  if [[ "${PASEO_SYNC_CODE_SERVER_USER_DATA:-0}" != "1" ]]; then
+    return
+  fi
+  if [[ "${PASEO_SKIP_CODE_SERVER:-0}" == "1" ]]; then
+    return
+  fi
+  if [[ "${PASEO_SKIP_REMOTES:-0}" == "1" ]]; then
+    log "Skipping code-server user-data sync (no remotes)"
+    return
+  fi
+  log "Syncing code-server User/ + extensions/ to remotes"
+  bash "$ROOT_DIR/scripts/code-server/sync-user-data.sh"
+}
+
 remote_sync_body() {
   local host="$1"
   local remote_home="$2"
@@ -257,11 +286,22 @@ build_and_restart() {
   PATH="\$(daemon_path_env)" npx tsx packages/cli/src/index.js daemon restart --home "\$PASEO_HOME"
 }
 
+deploy_code_server() {
+  if [[ '${PASEO_SKIP_CODE_SERVER:-0}' == "1" ]]; then
+    log "Skipping code-server deploy (PASEO_SKIP_CODE_SERVER=1)"
+    return
+  fi
+  cd "\$HOME/\$REMOTE_REPO_DIR"
+  log "Deploying code-server"
+  CODE_SERVER_VERSION='${CODE_SERVER_VERSION:-}' bash scripts/code-server/deploy.sh '$host'
+}
+
 ensure_node
 ensure_fork_remotes
 sync_git
 maybe_install_deps
 build_and_restart
+deploy_code_server
 log "Done"
 EOF
 }
@@ -293,6 +333,7 @@ main() {
     build_server
     install_cli_wrapper "$ROOT_DIR"
     restart_local_daemon
+    deploy_local_code_server
   fi
 
   if [[ "${PASEO_SKIP_REMOTES:-0}" != "1" ]]; then
@@ -301,6 +342,8 @@ main() {
       sync_remote_host "$host" "$(remote_paseo_home "$host")"
     done
   fi
+
+  sync_code_server_user_data
 
   log "Sync complete"
 }
