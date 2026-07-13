@@ -85,18 +85,44 @@ deploy_files() {
 deploy_macos_service() {
   local plist_src="${SCRIPTS_DIR}/sh.paseo.code-server.plist"
   local plist_dst="${HOME}/Library/LaunchAgents/sh.paseo.code-server.plist"
-  local label="gui/$(id -u)/sh.paseo.code-server"
+  local uid domain service
+  uid="$(id -u)"
+  domain="gui/${uid}"
+  service="sh.paseo.code-server"
 
   [[ -f "$plist_src" ]] || die "Missing LaunchAgent: $plist_src"
   mkdir -p "${HOME}/Library/LaunchAgents" "${HOME}/Library/Logs"
   cp "$plist_src" "$plist_dst"
 
-  # bootout is best-effort when the service was never loaded
-  launchctl bootout "$label" >/dev/null 2>&1 || true
-  launchctl bootstrap "gui/$(id -u)" "$plist_dst"
-  launchctl enable "$label" >/dev/null 2>&1 || true
-  launchctl kickstart -k "$label"
-  log "Restarted LaunchAgent $label"
+  # Prefer label-form bootout. The "bootout domain plist" form often returns
+  # EIO (errno 5) on modern macOS even when nothing is loaded, and can leave
+  # the next bootstrap failing with the same error.
+  if launchctl print "${domain}/${service}" >/dev/null 2>&1; then
+    log "Stopping existing LaunchAgent ${domain}/${service}"
+    launchctl bootout "${domain}/${service}" >/dev/null 2>&1 || true
+    local i
+    for i in 1 2 3 4 5 6 7 8; do
+      if ! launchctl print "${domain}/${service}" >/dev/null 2>&1; then
+        break
+      fi
+      sleep 0.25
+    done
+  fi
+
+  if launchctl print "${domain}/${service}" >/dev/null 2>&1; then
+    # Still registered (bootout raced with KeepAlive). Restart in place — the
+    # ProgramArguments path is a symlink, so kickstart picks up a new binary.
+    log "LaunchAgent still loaded; kickstarting in place"
+    launchctl kickstart -k "${domain}/${service}"
+  else
+    if ! launchctl bootstrap "$domain" "$plist_dst"; then
+      die "launchctl bootstrap failed for ${plist_dst}"
+    fi
+    launchctl enable "${domain}/${service}" >/dev/null 2>&1 || true
+    launchctl kickstart -k "${domain}/${service}" >/dev/null 2>&1 || true
+  fi
+
+  log "Restarted LaunchAgent ${domain}/${service}"
 }
 
 deploy_linux_service() {
@@ -129,17 +155,29 @@ verify_listening() {
   # Give the process a moment to bind before probing.
   sleep 1
   local bind
-  bind="$(awk -F': *' '/^bind-addr:/ { print $2; exit }' "${CONFIG_DIR}/config.yaml" | tr -d '[:space:]')"
+  # Don't split on ':' — bind-addr is host:port (e.g. 127.0.0.1:8765).
+  bind="$(
+    awk '/^bind-addr:/ {
+      sub(/^bind-addr:[[:space:]]*/, "")
+      gsub(/[[:space:]]/, "")
+      print
+      exit
+    }' "${CONFIG_DIR}/config.yaml"
+  )"
   if [[ -z "$bind" ]]; then
     log "Skipping health check (no bind-addr in config)"
     return
   fi
   if command -v curl >/dev/null 2>&1; then
-    if curl -fsS -o /dev/null --max-time 5 "http://${bind}/"; then
-      log "Healthy at http://${bind}/"
-    else
-      log "Warning: could not reach http://${bind}/ yet (service may still be starting)"
-    fi
+    local i
+    for i in 1 2 3 4 5 6; do
+      if curl -fsS -o /dev/null --max-time 3 "http://${bind}/"; then
+        log "Healthy at http://${bind}/"
+        return
+      fi
+      sleep 0.5
+    done
+    log "Warning: could not reach http://${bind}/ yet (service may still be starting)"
   fi
 }
 
