@@ -180,9 +180,9 @@ This checkout is maintained as a **personal fork** of the official repo, not as 
 All local customizations live on **`vaibhav/customizations`**, branched from `upstream/main`. Current additions include:
 
 - ACP **Allow All** mode for generic ACP providers (Cursor, Grok, etc.)
-- Durable assistant `messageId` on ACP timeline items so the **fork chat** UI works for agents like Grok that omit protocol message ids
 - **Open in editor over SSH** for remote workspaces (`HostProfile.sshHost`)
 - **Open → VS Code Web** via always-on code-server on each host (`HostProfile.browserEditorUrl`) — see [docs/code-server.md](docs/code-server.md)
+- LaTeX math rendering for agent messages
 - `scripts/sync-custom-branch.sh` for multi-host deploy
 
 Do day-to-day work on this branch, not on `main`.

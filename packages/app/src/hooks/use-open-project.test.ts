@@ -105,8 +105,9 @@ function createFakeNavigator() {
   const navigations: RecordedNavigate[] = [];
   return {
     navigations,
-    navigateToWorkspace: (serverId: string, workspaceId: string) => {
-      navigations.push({ serverId, workspaceId });
+    navigateToWorkspace: (input: { serverId: string; workspaceId: string }) => {
+      navigations.push({ serverId: input.serverId, workspaceId: input.workspaceId });
+      return "";
     },
   };
 }
