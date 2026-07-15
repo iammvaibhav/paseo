@@ -569,11 +569,7 @@ interface AssistantTurnFooterProps {
   getContent: () => string;
   completedAt?: Date;
   durationMs?: number;
-  forkBoundaryMessageId?: string;
-  onFork?: (input: {
-    target: AssistantForkTarget;
-    boundaryMessageId?: string;
-  }) => Promise<void> | void;
+  onFork?: (target: AssistantForkTarget) => Promise<void> | void;
 }
 
 const assistantTurnFooterStylesheet = StyleSheet.create((theme) => ({
@@ -618,7 +614,6 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
   getContent,
   completedAt,
   durationMs,
-  forkBoundaryMessageId,
   onFork,
 }: AssistantTurnFooterProps) {
   const [hovered, setHovered] = useState(false);
@@ -661,11 +656,11 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
   }, [canSwap]);
   const handleFork = useCallback(
     (target: AssistantForkTarget) => {
-      return onFork?.({ target, boundaryMessageId: forkBoundaryMessageId });
+      return onFork?.(target);
     },
-    [forkBoundaryMessageId, onFork],
+    [onFork],
   );
-  const canFork = Boolean(onFork && forkBoundaryMessageId);
+  const canFork = Boolean(onFork);
 
   return (
     <View style={assistantTurnFooterStylesheet.container}>
