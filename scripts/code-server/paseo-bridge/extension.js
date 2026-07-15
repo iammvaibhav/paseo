@@ -20,6 +20,11 @@ const nodePath = require("path");
 // Keep in sync with CODE_SERVER_BRIDGE_PORT in packages/app/src/workspace/browser-editor-url.ts.
 const DEFAULT_PORT = 8766;
 
+// If showTextDocument doesn't resolve in this long, assume the window holding the
+// port is backgrounded/hidden (can't render an editor) and fail so the app falls
+// back to a reload — the file still opens, just not in place.
+const OPEN_TIMEOUT_MS = 2500;
+
 // Debug log the app author can read (host-local): ~/.paseo-bridge.log
 const LOG_FILE = nodePath.join(os.homedir(), ".paseo-bridge.log");
 
@@ -86,6 +91,39 @@ function sendJson(res, status, body) {
   res.end(payload);
 }
 
+async function handleOpen(req, res, openFile, log) {
+  const parsed = parseOpenPayload(await readBody(req));
+  if (parsed.error) {
+    log(`open bad-request: ${parsed.error}`);
+    sendJson(res, 400, { ok: false, error: parsed.error });
+    return;
+  }
+  log(`open path=${parsed.path} line=${parsed.line ?? "-"} col=${parsed.column ?? "-"}`);
+  // Wait for showTextDocument, but bounded: it hangs forever when the window
+  // holding this port is backgrounded/hidden. On timeout, respond 500 so the app
+  // falls back to a reload (the file still opens). On success, 200 (fast, in
+  // place). Either way we never hang the app.
+  let timer;
+  try {
+    await Promise.race([
+      Promise.resolve(openFile(parsed.path, parsed.line, parsed.column)),
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("showTextDocument timed out")), OPEN_TIMEOUT_MS);
+        if (typeof timer.unref === "function") {
+          timer.unref();
+        }
+      }),
+    ]);
+    clearTimeout(timer);
+    log(`open OK path=${parsed.path}`);
+    sendJson(res, 200, { ok: true });
+  } catch (error) {
+    clearTimeout(timer);
+    log(`open FAILED path=${parsed.path}: ${String(error?.message ?? error)}`);
+    sendJson(res, 500, { ok: false, error: String(error?.message ?? error) });
+  }
+}
+
 /**
  * Builds the HTTP request handler. `openFile(path, line, column)` is injected so
  * the routing/parsing can be tested without the vscode module. `log` is optional
@@ -122,26 +160,7 @@ function createRequestHandler({ openFile, log = () => {} }) {
       }
 
       if (req.method === "POST" && url.pathname === "/open") {
-        const parsed = parseOpenPayload(await readBody(req));
-        if (parsed.error) {
-          log(`open bad-request: ${parsed.error}`);
-          sendJson(res, 400, { ok: false, error: parsed.error });
-          return;
-        }
-        log(`open path=${parsed.path} line=${parsed.line ?? "-"} col=${parsed.column ?? "-"}`);
-        // Fire-and-forget: showTextDocument can hang for a long time (or forever)
-        // in a backgrounded code-server window. Awaiting it stalls this response,
-        // which makes the app's fetch hang and pile up. Kick it off, log the
-        // outcome asynchronously, and ack immediately.
-        void (async () => {
-          try {
-            await openFile(parsed.path, parsed.line, parsed.column);
-            log(`open OK path=${parsed.path}`);
-          } catch (error) {
-            log(`open FAILED path=${parsed.path}: ${String(error?.message ?? error)}`);
-          }
-        })();
-        sendJson(res, 200, { ok: true });
+        await handleOpen(req, res, openFile, log);
         return;
       }
 
