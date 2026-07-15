@@ -196,7 +196,7 @@ Do day-to-day work on this branch, not on `main`.
 
 The script:
 
-1. **Local Mac** — auto-commits any uncommitted changes (commit message written by the `claude` CLI, falling back to a timestamp), fetches `upstream`, fast-forwards `origin/main` to `upstream/main`, rebases the custom branch onto `upstream/main` (resolving any conflicts with an agent and continuing automatically), pushes to `origin`, runs `npm run build:server` with the Node version from `.tool-versions` (via nvm), and restarts the production-style daemon at `~/.paseo`.
+1. **Local Mac** — auto-commits any uncommitted changes (commit message written by the `claude` CLI on **Haiku 4.5**, falling back to a timestamp), fetches `upstream`, fast-forwards `origin/main` to `upstream/main`, rebases the custom branch onto `upstream/main` (resolving any conflicts with the `claude` CLI on **Opus 4.8 at `xhigh` effort** and continuing automatically), pushes to `origin`, runs `npm run build:server` with the Node version from `.tool-versions` (via nvm), and restarts the production-style daemon at `~/.paseo`. Models are overridable via `PASEO_COMMIT_MSG_MODEL` / `PASEO_CONFLICT_MODEL` / `PASEO_CONFLICT_EFFORT`.
 2. **`blrofc3`** and **`iammvaibhav`** — repoints `origin` to the fork if still on `getpaseo/paseo`, checks out `vaibhav/customizations` from `origin`, installs deps when `package.json` / lockfile changed, builds, and restarts each host's `~/.paseo` daemon.
 
 No longer requires a clean working tree — uncommitted changes are auto-committed first. The auto-commit runs the pre-commit hook (lint/format/typecheck), so a quality failure aborts the sync before anything is pushed.
