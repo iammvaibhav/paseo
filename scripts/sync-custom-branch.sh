@@ -2,10 +2,13 @@
 # Sync the custom Paseo branch across local + remote dev hosts.
 #
 # Local workflow (fork-based):
-#   1. Rebase the custom branch onto upstream/main (official getpaseo/paseo)
-#   2. Push the branch to origin (iammvaibhav/paseo fork)
-#   3. Build server + restart the production-style daemon (~/.paseo)
-#   4. Update local code-server (binary + config + LaunchAgent)
+#   1. Auto-commit any uncommitted changes (claude-written message, else timestamp)
+#   2. Fetch upstream, mirror origin/main ← upstream/main (fast-forward)
+#   3. Rebase the custom branch onto upstream/main; on conflict, an agent (claude)
+#      resolves them and the rebase continues automatically
+#   4. Push the branch to origin (iammvaibhav/paseo fork)
+#   5. Build server + restart the production-style daemon (~/.paseo)
+#   6. Update local code-server (binary + config + LaunchAgent + bridge extension)
 #
 # Remote workflow (blrofc3, iammvaibhav):
 #   1. Ensure origin points at the fork and tracks the custom branch
@@ -76,10 +79,45 @@ ensure_node() {
   log "Using Node $(node -v) (npm $(npm -v))"
 }
 
-require_clean_tree() {
-  if [[ -n "$(git -C "$ROOT_DIR" status --porcelain --untracked-files=no)" ]]; then
-    die "Working tree is not clean. Commit or stash changes before syncing."
+generate_commit_message() {
+  # A claude-written subject line from the staged diff, falling back to a
+  # timestamped message when the claude CLI is unavailable or errors.
+  local fallback
+  fallback="chore: sync $(date '+%Y-%m-%d %H:%M:%S')"
+  if ! command -v claude >/dev/null 2>&1; then
+    printf '%s\n' "$fallback"
+    return
   fi
+  local msg
+  msg="$(
+    {
+      git -C "$ROOT_DIR" diff --cached --stat
+      echo
+      git -C "$ROOT_DIR" diff --cached | head -c 12000
+    } | claude -p 'Write a single concise git commit subject line (imperative mood, under 72 chars, no body, no surrounding quotes or backticks) summarizing this staged diff. Output only the subject line.' 2>/dev/null | head -n1)"
+  msg="${msg#\"}"
+  msg="${msg%\"}"
+  msg="${msg#\`}"
+  msg="${msg%\`}"
+  if [[ -n "$msg" ]]; then
+    printf '%s\n' "$msg"
+  else
+    printf '%s\n' "$fallback"
+  fi
+}
+
+autocommit_local_changes() {
+  if [[ -z "$(git -C "$ROOT_DIR" status --porcelain)" ]]; then
+    return
+  fi
+  log "Uncommitted changes found; committing before sync"
+  git -C "$ROOT_DIR" add -A
+  local msg
+  msg="$(generate_commit_message)"
+  log "Commit message: $msg"
+  # Runs the pre-commit hook (lint/format/typecheck); a failure aborts the sync
+  # so we never push broken code.
+  git -C "$ROOT_DIR" commit -m "$msg"
 }
 
 ensure_fork_remotes() {
@@ -93,6 +131,59 @@ ensure_fork_remotes() {
   fi
 }
 
+update_origin_main() {
+  # Mirror the fork's main to the freshly-fetched upstream/main (fast-forward
+  # only; if the fork's main diverged we warn and carry on).
+  log "Updating $ORIGIN_REMOTE/main from $UPSTREAM_REMOTE/main"
+  if ! git -C "$ROOT_DIR" push "$ORIGIN_REMOTE" \
+    "refs/remotes/$UPSTREAM_REMOTE/main:refs/heads/main"; then
+    log "Warning: could not fast-forward $ORIGIN_REMOTE/main (diverged?); continuing"
+  fi
+}
+
+resolve_conflicts_with_agent() {
+  if ! command -v claude >/dev/null 2>&1; then
+    die "Rebase conflict but the claude CLI was not found; resolve manually (git rebase --abort to bail)."
+  fi
+  local files
+  files="$(git -C "$ROOT_DIR" diff --name-only --diff-filter=U)"
+  log "Resolving conflicts with claude:$(printf ' %s' $files)"
+  if ! (
+    cd "$ROOT_DIR" && claude -p "You are resolving Git rebase conflicts while rebasing the custom fork branch '$BRANCH' onto '$UPSTREAM_REMOTE/main'. Edit each conflicted file to remove ALL conflict markers (<<<<<<<, =======, >>>>>>>) and produce a correct merge that keeps upstream's changes while preserving this fork's customizations. Do not run any git commands. Conflicted files:$(printf ' %s' $files)" --dangerously-skip-permissions >/dev/null 2>&1
+  ); then
+    die "claude conflict resolution failed; resolve manually (git rebase --abort to bail)."
+  fi
+}
+
+rebase_onto_upstream() {
+  log "Rebasing $BRANCH onto $UPSTREAM_REMOTE/main"
+  if git -C "$ROOT_DIR" rebase "$UPSTREAM_REMOTE/main"; then
+    return
+  fi
+  # Conflicts: let the agent resolve, stage, and continue — repeating for each
+  # conflicting commit — then auto-push happens back in sync_local_git.
+  local step=0
+  while [[ -d "$ROOT_DIR/.git/rebase-merge" || -d "$ROOT_DIR/.git/rebase-apply" ]]; do
+    step=$((step + 1))
+    if [[ $step -gt 30 ]]; then
+      die "Rebase still unresolved after $step steps; bail with: git -C '$ROOT_DIR' rebase --abort"
+    fi
+    if [[ -n "$(git -C "$ROOT_DIR" diff --name-only --diff-filter=U)" ]]; then
+      resolve_conflicts_with_agent
+      git -C "$ROOT_DIR" add -A
+      # Never proceed with leftover markers.
+      if git -C "$ROOT_DIR" diff --cached --check 2>/dev/null | grep -q "conflict marker"; then
+        die "Conflict markers remain after agent resolution; resolve manually (git rebase --abort to bail)."
+      fi
+    fi
+    if ! GIT_EDITOR=true git -C "$ROOT_DIR" rebase --continue >/tmp/paseo-rebase.log 2>&1; then
+      if grep -qi "no changes" /tmp/paseo-rebase.log; then
+        GIT_EDITOR=true git -C "$ROOT_DIR" rebase --skip >/dev/null 2>&1 || true
+      fi
+    fi
+  done
+}
+
 sync_local_git() {
   log "Fetching $UPSTREAM_REMOTE and $ORIGIN_REMOTE"
   git -C "$ROOT_DIR" fetch "$UPSTREAM_REMOTE" --prune
@@ -103,8 +194,8 @@ sync_local_git() {
   fi
 
   git -C "$ROOT_DIR" checkout "$BRANCH"
-  log "Rebasing $BRANCH onto $UPSTREAM_REMOTE/main"
-  git -C "$ROOT_DIR" rebase "$UPSTREAM_REMOTE/main"
+  update_origin_main
+  rebase_onto_upstream
   log "Pushing $BRANCH to $ORIGIN_REMOTE (force-with-lease after rebase)"
   git -C "$ROOT_DIR" push --force-with-lease "$ORIGIN_REMOTE" "$BRANCH"
 }
@@ -361,9 +452,9 @@ main() {
   cd "$ROOT_DIR"
 
   if [[ "${PASEO_SKIP_LOCAL:-0}" != "1" ]]; then
-    require_clean_tree
     ensure_fork_remotes
     ensure_node
+    autocommit_local_changes
     sync_local_git
     if [[ "${PASEO_SKIP_DAEMON:-0}" != "1" ]]; then
       build_server
