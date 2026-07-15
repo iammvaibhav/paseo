@@ -15,13 +15,13 @@
 const http = require("http");
 const fs = require("fs");
 const os = require("os");
-const path = require("path");
+const nodePath = require("path");
 
 // Keep in sync with CODE_SERVER_BRIDGE_PORT in packages/app/src/workspace/browser-editor-url.ts.
 const DEFAULT_PORT = 8766;
 
 // Debug log the app author can read (host-local): ~/.paseo-bridge.log
-const LOG_FILE = path.join(os.homedir(), ".paseo-bridge.log");
+const LOG_FILE = nodePath.join(os.homedir(), ".paseo-bridge.log");
 
 function logLine(msg) {
   try {
@@ -129,13 +129,18 @@ function createRequestHandler({ openFile, log = () => {} }) {
           return;
         }
         log(`open path=${parsed.path} line=${parsed.line ?? "-"} col=${parsed.column ?? "-"}`);
-        try {
-          await openFile(parsed.path, parsed.line, parsed.column);
-        } catch (error) {
-          log(`open FAILED path=${parsed.path}: ${String(error?.message ?? error)}`);
-          throw error;
-        }
-        log(`open OK path=${parsed.path}`);
+        // Fire-and-forget: showTextDocument can hang for a long time (or forever)
+        // in a backgrounded code-server window. Awaiting it stalls this response,
+        // which makes the app's fetch hang and pile up. Kick it off, log the
+        // outcome asynchronously, and ack immediately.
+        void (async () => {
+          try {
+            await openFile(parsed.path, parsed.line, parsed.column);
+            log(`open OK path=${parsed.path}`);
+          } catch (error) {
+            log(`open FAILED path=${parsed.path}: ${String(error?.message ?? error)}`);
+          }
+        })();
         sendJson(res, 200, { ok: true });
         return;
       }
@@ -157,11 +162,7 @@ function activate() {
 
   const openFile = async (filePath, line, column) => {
     const uri = vscode.Uri.file(filePath);
-    const options = {
-      preview: false,
-      preserveFocus: false,
-      viewColumn: vscode.ViewColumn.Active,
-    };
+    const options = { preview: false };
     if (line) {
       const position = new vscode.Position(line - 1, (column ?? 1) - 1);
       options.selection = new vscode.Range(position, position);
