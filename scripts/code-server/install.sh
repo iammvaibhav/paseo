@@ -134,37 +134,35 @@ deploy_extension() {
   # Remove any stale hand-copied folder from the old (broken) approach.
   rm -rf "${HOME}/.local/share/code-server/extensions/paseo-bridge"
 
-  local vsix="${TMPDIR:-/tmp}/paseo-bridge.vsix"
-  log "Packaging paseo-bridge extension (vsce)"
-  if ! (cd "$ext_src" && npx --yes @vscode/vsce package \
+  # Package from a temp copy with a unique, increasing version. code-server
+  # refuses to reinstall the SAME version while a window has it loaded ("Please
+  # restart VS Code before reinstalling") — even with the service stopped it's
+  # racy across platforms. A fresh version always installs cleanly (while running
+  # too); the service restart below activates it.
+  local build_dir vsix ver
+  build_dir="$(mktemp -d)"
+  cp -R "$ext_src/." "$build_dir/"
+  ver="0.1.$(date +%s)"
+  sed 's/"version": *"[^"]*"/"version": "'"$ver"'"/' "$ext_src/package.json" \
+    > "$build_dir/package.json"
+
+  vsix="${TMPDIR:-/tmp}/paseo-bridge.vsix"
+  log "Packaging paseo-bridge extension ($ver)"
+  if ! (cd "$build_dir" && npx --yes @vscode/vsce package \
     --skip-license --no-dependencies --allow-missing-repository --out "$vsix" >/dev/null 2>&1); then
     log "Warning: vsce packaging failed; skipping paseo-bridge extension"
+    rm -rf "$build_dir"
     rm -f "$vsix"
     return
   fi
-
-  # Stop code-server first: it refuses to reinstall an extension that's active in
-  # a running window ("Please restart VS Code before reinstalling"). The service
-  # (re)start below brings it back up with the new extension.
-  stop_service
 
   log "Installing paseo-bridge into code-server"
   if ! "$BIN" --install-extension "$vsix" --force; then
     log "Warning: code-server extension install failed; VS Code Web opens will fall back to reload"
   fi
+  rm -rf "$build_dir"
   rm -f "$vsix"
   log "Installed paseo-bridge extension (restart below activates it)"
-}
-
-stop_service() {
-  case "$(uname -s)" in
-    Darwin)
-      launchctl bootout "gui/$(id -u)/sh.paseo.code-server" >/dev/null 2>&1 || true
-      ;;
-    Linux)
-      systemctl --user stop paseo-code-server.service >/dev/null 2>&1 || true
-      ;;
-  esac
 }
 
 deploy_macos_service() {
