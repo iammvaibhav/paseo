@@ -4,8 +4,8 @@
 # Local workflow (fork-based):
 #   1. Auto-commit any uncommitted changes (claude-written message, else timestamp)
 #   2. Fetch upstream, mirror origin/main ← upstream/main (fast-forward)
-#   3. Rebase the custom branch onto upstream/main; on conflict, an agent (claude)
-#      resolves them and the rebase continues automatically
+#   3. Merge upstream/main into the custom branch; on conflict, an agent (claude)
+#      resolves ALL conflicts in one pass and the script creates one merge commit
 #   4. Push the branch to origin (iammvaibhav/paseo fork)
 #   5. Build server + restart the production-style daemon (~/.paseo)
 #   6. Update local code-server (binary + config + LaunchAgent + bridge extension)
@@ -31,8 +31,8 @@
 #   PASEO_SYNC_CODE_SERVER_USER_DATA=1  # also rsync User/ + extensions/ local → remotes
 #   CODE_SERVER_VERSION=4.127.0       # pin code-server; omit for latest
 #   PASEO_COMMIT_MSG_MODEL=...        # claude model for auto-commit messages (default Haiku 4.5)
-#   PASEO_CONFLICT_MODEL=...          # claude model for conflict resolution (default Opus 4.8)
-#   PASEO_CONFLICT_EFFORT=xhigh       # effort for conflict resolution (low|medium|high|xhigh|max)
+#   PASEO_CONFLICT_MODEL=...          # claude model for merge conflict resolution (default Opus 4.8)
+#   PASEO_CONFLICT_EFFORT=xhigh       # effort for merge conflict resolution (low|medium|high|xhigh|max)
 #
 # code-server User settings: sync always pushes this Mac's live
 # ~/.local/share/code-server/User/settings.json to remotes (not the repo template).
@@ -153,45 +153,42 @@ update_origin_main() {
 
 resolve_conflicts_with_agent() {
   if ! command -v claude >/dev/null 2>&1; then
-    die "Rebase conflict but the claude CLI was not found; resolve manually (git rebase --abort to bail)."
+    die "Merge conflict but the claude CLI was not found; resolve manually (git merge --abort to bail)."
   fi
   local files
   files="$(git -C "$ROOT_DIR" diff --name-only --diff-filter=U)"
-  log "Resolving conflicts with claude:$(printf ' %s' $files)"
+  local count
+  count="$(printf '%s\n' "$files" | grep -c . || true)"
+  log "Resolving $count conflicted file(s) with $CONFLICT_MODEL in one pass:"
+  printf '  - %s\n' $files
+  log "Streaming agent output (also saved to /tmp/paseo-merge-resolve.log):"
+  # --verbose (not >/dev/null) so the agent's work is visible as it goes; tee keeps a copy.
+  # The agent resolves ALL conflicts; the SCRIPT (not the agent) verifies + commits.
   if ! (
-    cd "$ROOT_DIR" && claude -p --model "$CONFLICT_MODEL" --effort "$CONFLICT_EFFORT" "You are resolving Git rebase conflicts while rebasing the custom fork branch '$BRANCH' onto '$UPSTREAM_REMOTE/main'. Edit each conflicted file to remove ALL conflict markers (<<<<<<<, =======, >>>>>>>) and produce a correct merge that keeps upstream's changes while preserving this fork's customizations. Do not run any git commands. Conflicted files:$(printf ' %s' $files)" --dangerously-skip-permissions >/dev/null 2>&1
+    cd "$ROOT_DIR" && claude -p --verbose --model "$CONFLICT_MODEL" --effort "$CONFLICT_EFFORT" --dangerously-skip-permissions "You are resolving the conflicts from 'git merge $UPSTREAM_REMOTE/main' into the custom fork branch '$BRANCH'. Edit EVERY conflicted file to remove ALL conflict markers (<<<<<<<, =======, >>>>>>>) and produce a correct merge that keeps upstream's changes while preserving this fork's customizations. Resolve every conflict — leave no markers behind. Do not run any git commands. Conflicted files:$(printf ' %s' $files)" 2>&1 | tee /tmp/paseo-merge-resolve.log
   ); then
-    die "claude conflict resolution failed; resolve manually (git rebase --abort to bail)."
+    die "claude conflict resolution failed; resolve manually (git merge --abort to bail)."
   fi
 }
 
-rebase_onto_upstream() {
-  log "Rebasing $BRANCH onto $UPSTREAM_REMOTE/main"
-  if git -C "$ROOT_DIR" rebase "$UPSTREAM_REMOTE/main"; then
+merge_upstream() {
+  log "Merging $UPSTREAM_REMOTE/main into $BRANCH"
+  if git -C "$ROOT_DIR" merge --no-edit "$UPSTREAM_REMOTE/main"; then
+    log "Clean merge (or already up to date)"
     return
   fi
-  # Conflicts: let the agent resolve, stage, and continue — repeating for each
-  # conflicting commit — then auto-push happens back in sync_local_git.
-  local step=0
-  while [[ -d "$ROOT_DIR/.git/rebase-merge" || -d "$ROOT_DIR/.git/rebase-apply" ]]; do
-    step=$((step + 1))
-    if [[ $step -gt 30 ]]; then
-      die "Rebase still unresolved after $step steps; bail with: git -C '$ROOT_DIR' rebase --abort"
-    fi
-    if [[ -n "$(git -C "$ROOT_DIR" diff --name-only --diff-filter=U)" ]]; then
-      resolve_conflicts_with_agent
-      git -C "$ROOT_DIR" add -A
-      # Never proceed with leftover markers.
-      if git -C "$ROOT_DIR" diff --cached --check 2>/dev/null | grep -q "conflict marker"; then
-        die "Conflict markers remain after agent resolution; resolve manually (git rebase --abort to bail)."
-      fi
-    fi
-    if ! GIT_EDITOR=true git -C "$ROOT_DIR" rebase --continue >/tmp/paseo-rebase.log 2>&1; then
-      if grep -qi "no changes" /tmp/paseo-rebase.log; then
-        GIT_EDITOR=true git -C "$ROOT_DIR" rebase --skip >/dev/null 2>&1 || true
-      fi
-    fi
-  done
+  # Conflicts: resolve them ALL in a single agent pass, then WE (not the agent)
+  # verify nothing is left unresolved and create the one merge commit.
+  resolve_conflicts_with_agent
+  git -C "$ROOT_DIR" add -A
+  if git -C "$ROOT_DIR" diff --cached --check 2>/dev/null | grep -qi "conflict marker"; then
+    die "Conflict markers still present after agent resolution; resolve manually (git merge --abort to bail)."
+  fi
+  if [[ -n "$(git -C "$ROOT_DIR" diff --name-only --diff-filter=U)" ]]; then
+    die "Unmerged paths remain after agent resolution; resolve manually (git merge --abort to bail)."
+  fi
+  git -C "$ROOT_DIR" commit --no-edit
+  log "Merge commit created"
 }
 
 sync_local_git() {
@@ -205,8 +202,8 @@ sync_local_git() {
 
   git -C "$ROOT_DIR" checkout "$BRANCH"
   update_origin_main
-  rebase_onto_upstream
-  log "Pushing $BRANCH to $ORIGIN_REMOTE (force-with-lease after rebase)"
+  merge_upstream
+  log "Pushing $BRANCH to $ORIGIN_REMOTE (force-with-lease)"
   git -C "$ROOT_DIR" push --force-with-lease "$ORIGIN_REMOTE" "$BRANCH"
 }
 
@@ -463,7 +460,7 @@ print_help() {
 Paseo deploy — sync the custom fork branch and deploy across local + remote hosts.
 
 Usage:
-  ./scripts/deploy.sh                 Full run: auto-commit, rebase onto upstream,
+  ./scripts/deploy.sh                 Full run: auto-commit, merge upstream,
                                       push, build + restart daemon, deploy code-server.
   ./scripts/deploy.sh -h | --help     Show this help.
 
@@ -472,7 +469,8 @@ Takes no positional arguments; behavior is controlled by env variables.
 What a full run does (local Mac):
   1. Auto-commit uncommitted changes (message via claude, else timestamp)
   2. Fetch upstream, fast-forward origin/main to upstream/main
-  3. Rebase '$BRANCH' onto $UPSTREAM_REMOTE/main (agent resolves conflicts)
+  3. Merge $UPSTREAM_REMOTE/main into '$BRANCH' (agent resolves all conflicts in one
+     pass, streaming its output; the script makes one merge commit)
   4. Push branch to $ORIGIN_REMOTE, build server, restart daemon ($LOCAL_PASEO_HOME)
   5. Deploy code-server (binary + config + paseo-bridge extension)
 Then repeats git sync + code-server deploy on: ${REMOTE_HOSTS[*]}.
@@ -487,8 +485,8 @@ Scope flags (set to 1):
 
 Model selection (claude-driven steps):
   PASEO_COMMIT_MSG_MODEL          Model for auto-commit messages (default: $COMMIT_MSG_MODEL)
-  PASEO_CONFLICT_MODEL           Model for rebase conflict resolution (default: $CONFLICT_MODEL)
-  PASEO_CONFLICT_EFFORT          Effort for conflict resolution (default: $CONFLICT_EFFORT)
+  PASEO_CONFLICT_MODEL           Model for merge conflict resolution (default: $CONFLICT_MODEL)
+  PASEO_CONFLICT_EFFORT          Effort for merge conflict resolution (default: $CONFLICT_EFFORT)
 
 Other:
   CODE_SERVER_VERSION            Pin code-server version (omit for latest)
