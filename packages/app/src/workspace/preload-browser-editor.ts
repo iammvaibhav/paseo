@@ -38,18 +38,24 @@ export function preloadBrowserEditor(input: {
   if (!origin) {
     return;
   }
-  // One warm window per origin. If it's already warm we keep it as-is; switching
-  // between workspaces on the same host reuses the single window (files still
-  // open in place by absolute path, so a "stale" folder root is only cosmetic).
-  if (preloadedByOrigin.has(origin)) {
-    return;
-  }
   const folderUrl = buildBrowserEditorUrl({
     baseUrl: input.browserEditorUrl,
     folderPath: input.folderPath,
   });
   if (!folderUrl) {
     return;
+  }
+  // Keep exactly one warm window per origin, rooted at the ACTIVE workspace's
+  // folder. If the active workspace changed (same host, different folder), tear
+  // the stale warm window down and re-warm for the new folder — otherwise "Open"
+  // would adopt a window rooted elsewhere and have to reload to the right folder.
+  const existing = preloadedByOrigin.get(origin);
+  if (existing) {
+    if (existing.folderUrl === folderUrl) {
+      return;
+    }
+    removeResidentBrowserWebview(existing.browserId);
+    preloadedByOrigin.delete(origin);
   }
   const browserId = createBrowserId();
   preloadedByOrigin.set(origin, { browserId, origin, folderUrl });
