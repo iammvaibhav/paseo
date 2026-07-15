@@ -3,6 +3,7 @@ import {
   type ReactElement,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -18,8 +19,9 @@ import {
   type NativeSyntheticEvent,
 } from "react-native";
 import type { StreamItem } from "@/types/stream";
+import { useRetainedPanelActive } from "@/components/retained-panel";
 import { useStableEvent } from "@/hooks/use-stable-event";
-import { useBottomAnchorController } from "./bottom-anchor-controller";
+import { type BottomAnchorMode, useBottomAnchorController } from "./bottom-anchor-controller";
 import type { StreamRenderInput, StreamStrategy, StreamViewportHandle } from "./strategy";
 import {
   createStreamStrategy,
@@ -32,6 +34,11 @@ const DEFAULT_MAINTAIN_VISIBLE_CONTENT_POSITION = Object.freeze({
   autoscrollToTopThreshold: 0,
 });
 const HISTORY_START_THRESHOLD_PX = 96;
+
+interface SavedNativeScrollPosition {
+  offsetY: number;
+  mode: BottomAnchorMode;
+}
 
 function keyExtractor(item: { id: string }): string {
   return item.id;
@@ -57,6 +64,9 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
     strategy,
   } = props;
   const { renderHistoryMountedRow, renderLiveHeadRow, renderLiveAuxiliary } = renderers;
+  const isActive = useRetainedPanelActive();
+  const isActiveRef = useRef(isActive);
+  isActiveRef.current = isActive;
   const flatListRef = useRef<FlatList<StreamItem>>(null);
   const streamViewportMetricsRef = useRef({
     containerKey: "native-virtualized",
@@ -72,6 +82,10 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
   const [isNativeViewportSettling, setIsNativeViewportSettling] = useState(false);
   const nativeViewportSettlingFrameIdRef = useRef<number | null>(null);
   const historyStartReadyRef = useRef(false);
+  const wasActiveRef = useRef(isActive);
+  const savedScrollPositionRef = useRef<SavedNativeScrollPosition | null>(null);
+  const suppressStickyRestickRef = useRef(false);
+  const pendingRestoreFrameRef = useRef<number | null>(null);
 
   const historyRows = useMemo(() => {
     if (segments.historyVirtualized.length === 0) {
@@ -149,6 +163,87 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
     scrollToBottom,
   });
 
+  const cancelPendingScrollRestore = useCallback(() => {
+    const pendingFrame = pendingRestoreFrameRef.current;
+    if (pendingFrame !== null) {
+      pendingRestoreFrameRef.current = null;
+      cancelAnimationFrame(pendingFrame);
+    }
+  }, []);
+
+  const restoreDetachedScrollPosition = useCallback(
+    (offsetY: number) => {
+      programmaticScrollEventBudgetRef.current = 3;
+      flatListRef.current?.scrollToOffset({
+        offset: offsetY,
+        animated: false,
+      });
+      scrollOffsetYRef.current = offsetY;
+      streamViewportMetricsRef.current = {
+        ...streamViewportMetricsRef.current,
+        offsetY,
+      };
+      const nearBottom = isNearBottomForStreamRenderStrategy({
+        strategy,
+        offsetY,
+        threshold: 32,
+        contentHeight: streamViewportMetricsRef.current.contentHeight,
+        viewportHeight: streamViewportMetricsRef.current.viewportHeight,
+      });
+      onNearBottomChange(nearBottom);
+    },
+    [onNearBottomChange, strategy],
+  );
+
+  const bottomAnchorModeRef = useRef(bottomAnchorController.mode);
+  bottomAnchorModeRef.current = bottomAnchorController.mode;
+
+  useLayoutEffect(() => {
+    const wasActive = wasActiveRef.current;
+    wasActiveRef.current = isActive;
+
+    if (wasActive && !isActive) {
+      cancelPendingScrollRestore();
+      suppressStickyRestickRef.current = true;
+      savedScrollPositionRef.current = {
+        offsetY: scrollOffsetYRef.current,
+        mode: bottomAnchorModeRef.current,
+      };
+      return;
+    }
+
+    if (wasActive || !isActive) {
+      return;
+    }
+
+    const saved = savedScrollPositionRef.current;
+    savedScrollPositionRef.current = null;
+    if (!saved || saved.mode === "sticky-bottom") {
+      suppressStickyRestickRef.current = false;
+      return;
+    }
+
+    suppressStickyRestickRef.current = true;
+    cancelPendingScrollRestore();
+    const restore = () => {
+      pendingRestoreFrameRef.current = null;
+      restoreDetachedScrollPosition(saved.offsetY);
+      pendingRestoreFrameRef.current = requestAnimationFrame(() => {
+        pendingRestoreFrameRef.current = null;
+        suppressStickyRestickRef.current = false;
+      });
+    };
+    pendingRestoreFrameRef.current = requestAnimationFrame(() => {
+      pendingRestoreFrameRef.current = requestAnimationFrame(restore);
+    });
+  }, [cancelPendingScrollRestore, isActive, restoreDetachedScrollPosition]);
+
+  useEffect(() => {
+    return () => {
+      cancelPendingScrollRestore();
+    };
+  }, [cancelPendingScrollRestore]);
+
   useEffect(() => {
     streamViewportMetricsRef.current = {
       containerKey: "native-virtualized",
@@ -194,18 +289,25 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
   }, [clearNativeViewportSettling, markNativeViewportSettling]);
 
   useEffect(() => {
+    if (!isActive || suppressStickyRestickRef.current) {
+      return;
+    }
     bottomAnchorController.prepareForStickyContentChange();
-  }, [bottomAnchorController, historyRows, segments.liveHead]);
+  }, [bottomAnchorController, historyRows, isActive, segments.liveHead]);
 
   useEffect(() => {
     const handle: StreamViewportHandle = {
       scrollToBottom: (reason = "jump-to-bottom") => {
+        suppressStickyRestickRef.current = false;
         bottomAnchorController.requestLocalAnchor({
           agentId,
           reason,
         });
       },
       prepareForViewportChange: () => {
+        if (suppressStickyRestickRef.current) {
+          return;
+        }
         bottomAnchorController.prepareForStickyViewportChange();
         markNativeViewportSettling();
       },
@@ -219,6 +321,9 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
   }, [agentId, bottomAnchorController, markNativeViewportSettling, viewportRef]);
 
   const handleScroll = useStableEvent((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    if (!isActiveRef.current) {
+      return;
+    }
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
     const previousOffsetY = scrollOffsetYRef.current;
     scrollOffsetYRef.current = contentOffset.y;
@@ -265,6 +370,18 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
   });
 
   const handleListLayout = useStableEvent((event: LayoutChangeEvent) => {
+    if (!isActive || suppressStickyRestickRef.current) {
+      const viewportWidth = Math.max(0, event.nativeEvent.layout.width);
+      const viewportHeight = Math.max(0, event.nativeEvent.layout.height);
+      streamViewportMetricsRef.current = {
+        ...streamViewportMetricsRef.current,
+        containerKey: "native-virtualized",
+        viewportWidth,
+        viewportHeight,
+        viewportMeasuredForKey: "native-virtualized",
+      };
+      return;
+    }
     const previousViewportWidth = streamViewportMetricsRef.current.viewportWidth;
     const previousViewportHeight = streamViewportMetricsRef.current.viewportHeight;
     const viewportWidth = Math.max(0, event.nativeEvent.layout.width);
@@ -299,6 +416,9 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
       contentHeight: nextContentHeight,
       contentMeasuredForKey: "native-virtualized",
     };
+    if (!isActive || suppressStickyRestickRef.current) {
+      return;
+    }
     bottomAnchorController.handleContentSizeChange({
       previousContentHeight,
       contentHeight: nextContentHeight,

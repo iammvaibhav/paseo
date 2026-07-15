@@ -27,6 +27,14 @@ vi.hoisted(() => {
 
 vi.mock("@/components/use-web-scrollbar", () => ({ useWebElementScrollbar: () => null }));
 
+const retainedPanelState = vi.hoisted(() => ({ active: true }));
+
+vi.mock("@/components/retained-panel", () => ({
+  useRetainedPanelActive: () => retainedPanelState.active,
+  RetainedPanelActivity: ({ children }: { children: unknown }) => children,
+  RetainedPanel: ({ children }: { children: unknown }) => children,
+}));
+
 function userMessage(index: number): StreamItem {
   return {
     kind: "user_message",
@@ -57,6 +65,7 @@ describe("createWebStreamStrategy", () => {
   let originalOffsetHeight: PropertyDescriptor | undefined;
 
   beforeEach(() => {
+    retainedPanelState.active = true;
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
       value: true,
       configurable: true,
@@ -610,5 +619,100 @@ describe("createWebStreamStrategy", () => {
     });
 
     expect(scrollTo).toHaveBeenCalled();
+  });
+
+  it("restores detached scroll after retained-panel deactivate/activate without resticking", async () => {
+    retainedPanelState.active = true;
+    const scrollTo = vi.fn(function (
+      this: HTMLElement,
+      options?: ScrollToOptions | number,
+      y?: number,
+    ) {
+      const top = typeof options === "object" ? (options.top ?? 0) : (y ?? 0);
+      Object.defineProperty(this, "scrollTop", {
+        configurable: true,
+        value: top,
+      });
+    });
+    HTMLElement.prototype.scrollTo = scrollTo;
+
+    const strategy = createWebStreamStrategy({ isMobileBreakpoint: true });
+    const viewportRef = React.createRef<StreamViewportHandle>();
+    const renderInput = {
+      agentId: "agent",
+      segments: {
+        historyVirtualized: [],
+        historyMounted: [userMessage(1), userMessage(2), userMessage(3)],
+        liveHead: [],
+      },
+      boundary: {
+        hasVirtualizedHistory: false,
+        hasMountedHistory: true,
+        hasLiveHead: false,
+      },
+      renderers: createRenderers(vi.fn()),
+      listEmptyComponent: null,
+      viewportRef,
+      routeBottomAnchorRequest: null,
+      isAuthoritativeHistoryReady: true,
+      onNearBottomChange: vi.fn(),
+      onNearHistoryStart: vi.fn(),
+      isLoadingOlderHistory: false,
+      hasOlderHistory: false,
+      scrollEnabled: true,
+      listStyle: null,
+      baseListContentContainerStyle: null,
+      forwardListContentContainerStyle: null,
+    };
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    act(() => {
+      root?.render(strategy.render(renderInput));
+    });
+
+    const scrollContainer = container.querySelector('[data-testid="agent-chat-scroll"]');
+    if (!(scrollContainer instanceof HTMLElement)) {
+      throw new Error("Expected agent chat scroll container");
+    }
+    Object.defineProperty(scrollContainer, "clientHeight", { configurable: true, value: 400 });
+    Object.defineProperty(scrollContainer, "scrollHeight", { configurable: true, value: 1200 });
+    Object.defineProperty(scrollContainer, "scrollTop", {
+      configurable: true,
+      writable: true,
+      value: 240,
+    });
+
+    act(() => {
+      scrollContainer.dispatchEvent(new WheelEvent("wheel", { deltaY: -40 }));
+      scrollContainer.dispatchEvent(new Event("scroll"));
+    });
+    scrollTo.mockClear();
+
+    act(() => {
+      retainedPanelState.active = false;
+      root?.render(strategy.render(renderInput));
+    });
+    // Simulate browsers zeroing scrollTop under display:none.
+    Object.defineProperty(scrollContainer, "scrollTop", {
+      configurable: true,
+      writable: true,
+      value: 0,
+    });
+
+    act(() => {
+      retainedPanelState.active = true;
+      root?.render(strategy.render(renderInput));
+    });
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
+
+    expect(scrollContainer.scrollTop).toBe(240);
+    expect(scrollTo).not.toHaveBeenCalled();
   });
 });

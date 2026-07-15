@@ -85,6 +85,10 @@ definition, no longer eligible to begin.
 - Panels whose gesture wrapper already owns visibility use `RetainedPanelActivity` to provide the
   same active signal without adding another layout root. Persistent animations, timers, polling, and
   shared clocks must subscribe to that signal and stop when their final visible consumer leaves.
+- Agent stream viewports (`strategy-web` / `strategy-native`) save scroll + stick/detached mode when
+  `useRetainedPanelActive()` flips false, restore on reactivate, and suppress stick-to-bottom while
+  restoring. Without that, hide→show + stream thaw re-anchors to the bottom. Save from last-known
+  scroll refs — `display: none` often reports `scrollTop === 0`.
 - Synchronized step animations use one wall-clock-aligned source. Register a local shared value only
   while its retained panel is active so hidden animated styles remain mounted without receiving clock
   updates. Do not give every instance its own loop or leave hidden styles subscribed to the source.
