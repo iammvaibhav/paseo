@@ -939,18 +939,26 @@ export function BrowserPane({
         });
         return;
       }
-      if (webview?.loadURL) {
-        void webview.loadURL(normalizedUrl).catch((error: unknown) => {
-          const message = getLoadUrlRejectionMessage(error, browserErrorLabels.failedToLoad);
-          if (!message) {
-            return;
-          }
-          updateBrowserRef.current(browserIdRef.current, {
-            isLoading: false,
-            lastError: message,
+      // loadURL throws synchronously ("WebView must be attached to the DOM and
+      // the dom-ready event emitted") if the webview isn't ready yet. Only use it
+      // when dom-ready; otherwise (or if it still throws) fall back to `src`,
+      // which the webview loads once it attaches.
+      if (webview?.loadURL && domReadyRef.current) {
+        try {
+          void webview.loadURL(normalizedUrl).catch((error: unknown) => {
+            const message = getLoadUrlRejectionMessage(error, browserErrorLabels.failedToLoad);
+            if (!message) {
+              return;
+            }
+            updateBrowserRef.current(browserIdRef.current, {
+              isLoading: false,
+              lastError: message,
+            });
           });
-        });
-        return;
+          return;
+        } catch {
+          // Webview exposes loadURL but isn't attached/ready — fall through to src.
+        }
       }
       if (webview) {
         webview.setAttribute("src", normalizedUrl);
@@ -972,18 +980,40 @@ export function BrowserPane({
       return;
     }
     const { path, line, column, fallbackUrl, requestId } = bridgeOpenRequest;
-    const webview = webviewRef.current;
-    // Cold window / not yet loaded: the bridge extension isn't up, so load the
-    // file the classic way (this also boots the workbench on first open).
-    if (!webview || !domReadyRef.current) {
+    let cancelled = false;
+
+    const runFallback = () => {
       if (fallbackUrl) {
         navigate(fallbackUrl);
       }
       clearBridgeOpenRequest(browserId, requestId);
-      return;
-    }
-    let cancelled = false;
+    };
+
     void (async () => {
+      // Wait for the webview to attach + emit dom-ready before asking the guest
+      // to fetch the bridge — a freshly opened/adopted tab or a cold code-server
+      // boot isn't ready immediately. Falling back too early causes a reload.
+      const deadline = Date.now() + 20000;
+      while (Date.now() < deadline) {
+        if (cancelled) {
+          return;
+        }
+        if (webviewRef.current && domReadyRef.current) {
+          break;
+        }
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 150);
+        });
+      }
+      if (cancelled) {
+        return;
+      }
+      const webview = webviewRef.current;
+      if (!webview || !domReadyRef.current) {
+        // Never became ready — load the file the classic way (may reload).
+        runFallback();
+        return;
+      }
       let handled = false;
       try {
         handled =
@@ -997,11 +1027,14 @@ export function BrowserPane({
       if (cancelled) {
         return;
       }
-      if (!handled && fallbackUrl) {
-        navigate(fallbackUrl);
+      if (handled) {
+        clearBridgeOpenRequest(browserId, requestId);
+      } else {
+        // Bridge unreachable (extension not running) — fall back to a reload.
+        runFallback();
       }
-      clearBridgeOpenRequest(browserId, requestId);
     })();
+
     return () => {
       cancelled = true;
     };

@@ -120,17 +120,33 @@ deploy_extension() {
     return
   fi
   local ext_src="${SCRIPTS_DIR}/paseo-bridge"
-  local ext_dst="${HOME}/.local/share/code-server/extensions/paseo-bridge"
-
   if [[ ! -f "${ext_src}/package.json" ]]; then
     log "Warning: paseo-bridge extension missing at ${ext_src}; skipping"
     return
   fi
+  if ! command -v npx >/dev/null 2>&1; then
+    log "Warning: npx not found; cannot package paseo-bridge extension; skipping"
+    return
+  fi
 
-  mkdir -p "$(dirname "$ext_dst")"
-  rm -rf "$ext_dst"
-  cp -R "$ext_src" "$ext_dst"
-  log "Installed paseo-bridge extension to ${ext_dst}"
+  # code-server only loads extensions registered in extensions.json — a plain
+  # folder copy is ignored. Package a .vsix and install it so it's registered.
+  # Remove any stale hand-copied folder from the old (broken) approach.
+  rm -rf "${HOME}/.local/share/code-server/extensions/paseo-bridge"
+
+  local vsix="${TMPDIR:-/tmp}/paseo-bridge.vsix"
+  log "Packaging paseo-bridge extension (vsce)"
+  if ! (cd "$ext_src" && npx --yes @vscode/vsce package \
+    --skip-license --no-dependencies --allow-missing-repository --out "$vsix" >/dev/null 2>&1); then
+    log "Warning: vsce packaging failed; skipping paseo-bridge extension"
+    rm -f "$vsix"
+    return
+  fi
+
+  log "Installing paseo-bridge into code-server"
+  "$BIN" --install-extension "$vsix" --force
+  rm -f "$vsix"
+  log "Installed paseo-bridge extension (restart below activates it)"
 }
 
 deploy_macos_service() {
