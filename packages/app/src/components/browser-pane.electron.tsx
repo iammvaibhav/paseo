@@ -304,11 +304,18 @@ function executeWebviewJavaScript(webview: ElectronWebview, code: string): Promi
 
 function ignoreWebviewJavaScriptError() {}
 
+interface BridgeOpenResult {
+  ok?: boolean;
+  status?: number;
+  error?: string;
+}
+
 /**
  * Builds a guest-page script that asks the paseo-bridge code-server extension to
  * open a file in place (no reload). The fetch is same-origin (reached through
- * code-server's `/proxy/<port>/` reverse proxy). Resolves to `true` on success
- * so the caller can fall back to a normal navigation when the bridge is absent.
+ * code-server's `/proxy/<port>/` reverse proxy). Resolves to a small status object
+ * — `{ ok, status }` on a response, `{ ok: false, error }` on a network failure —
+ * so the caller can log why it failed and fall back when the bridge is absent.
  * Every value is JSON-encoded, so paths cannot break out of the script.
  */
 function buildBridgeOpenScript(input: {
@@ -325,7 +332,7 @@ function buildBridgeOpenScript(input: {
     buildBridgeOpenPath(),
   )}, { method: "POST", headers: { "content-type": "application/json" }, body: ${JSON.stringify(
     body,
-  )} }); return r.ok === true; } catch (e) { return false; } })()`;
+  )} }); return { ok: r.ok === true, status: r.status }; } catch (e) { return { ok: false, error: String(e && e.message ? e.message : e) }; } })()`;
 }
 
 function destroyWebviewSelector(webview: ElectronWebview): void {
@@ -981,8 +988,14 @@ export function BrowserPane({
     }
     const { path, line, column, fallbackUrl, requestId } = bridgeOpenRequest;
     let cancelled = false;
+    console.log(
+      `[paseo-bridge] open requested browserId=${browserId} req=${requestId} path=${path} domReady=${domReadyRef.current} hasWebview=${Boolean(
+        webviewRef.current,
+      )}`,
+    );
 
-    const runFallback = () => {
+    const runFallback = (reason: string) => {
+      console.warn(`[paseo-bridge] fallback (reload) path=${path} reason=${reason}`);
       if (fallbackUrl) {
         navigate(fallbackUrl);
       }
@@ -1011,27 +1024,31 @@ export function BrowserPane({
       const webview = webviewRef.current;
       if (!webview || !domReadyRef.current) {
         // Never became ready — load the file the classic way (may reload).
-        runFallback();
+        runFallback("webview-not-ready");
         return;
       }
-      let handled = false;
+      let result: BridgeOpenResult = {};
       try {
-        handled =
-          (await executeWebviewJavaScript(
+        result =
+          ((await executeWebviewJavaScript(
             webview,
             buildBridgeOpenScript({ path, line, column }),
-          )) === true;
-      } catch {
-        handled = false;
+          )) as BridgeOpenResult | null) ?? {};
+      } catch (error) {
+        console.warn(`[paseo-bridge] executeJavaScript threw path=${path}`, error);
+        result = { ok: false, error: "executeJavaScript threw" };
       }
       if (cancelled) {
         return;
       }
-      if (handled) {
+      console.log(
+        `[paseo-bridge] bridge fetch path=${path} ok=${result.ok} status=${result.status ?? "-"} error=${result.error ?? "-"}`,
+      );
+      if (result.ok === true) {
         clearBridgeOpenRequest(browserId, requestId);
       } else {
-        // Bridge unreachable (extension not running) — fall back to a reload.
-        runFallback();
+        // Bridge unreachable / errored — fall back to a reload.
+        runFallback(`bridge-status-${result.status ?? "none"}`);
       }
     })();
 

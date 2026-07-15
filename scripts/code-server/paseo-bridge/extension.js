@@ -13,9 +13,23 @@
 // unit-tested under plain Node.
 
 const http = require("http");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 
 // Keep in sync with CODE_SERVER_BRIDGE_PORT in packages/app/src/workspace/browser-editor-url.ts.
 const DEFAULT_PORT = 8766;
+
+// Debug log the app author can read (host-local): ~/.paseo-bridge.log
+const LOG_FILE = path.join(os.homedir(), ".paseo-bridge.log");
+
+function logLine(msg) {
+  try {
+    fs.appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${msg}\n`);
+  } catch {
+    // Never let logging break the bridge.
+  }
+}
 
 function resolvePort() {
   const fromEnv = Number.parseInt(process.env.PASEO_BRIDGE_PORT ?? "", 10);
@@ -74,9 +88,10 @@ function sendJson(res, status, body) {
 
 /**
  * Builds the HTTP request handler. `openFile(path, line, column)` is injected so
- * the routing/parsing can be tested without the vscode module.
+ * the routing/parsing can be tested without the vscode module. `log` is optional
+ * so tests stay quiet.
  */
-function createRequestHandler({ openFile }) {
+function createRequestHandler({ openFile, log = () => {} }) {
   return async function handleRequest(req, res) {
     try {
       if (req.method === "OPTIONS") {
@@ -85,23 +100,47 @@ function createRequestHandler({ openFile }) {
       }
 
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      log(`${req.method} ${url.pathname}`);
 
       if (req.method === "GET" && url.pathname === "/health") {
         sendJson(res, 200, { ok: true, service: "paseo-bridge" });
         return;
       }
 
-      if (req.method === "POST" && url.pathname === "/open") {
-        const parsed = parseOpenPayload(await readBody(req));
-        if (parsed.error) {
-          sendJson(res, 400, { ok: false, error: parsed.error });
-          return;
+      // Lets the Paseo app push correlation logs into the same file.
+      if (req.method === "POST" && url.pathname === "/log") {
+        const raw = await readBody(req);
+        let msg = raw;
+        try {
+          msg = JSON.parse(raw)?.msg ?? raw;
+        } catch {
+          // keep raw
         }
-        await openFile(parsed.path, parsed.line, parsed.column);
+        log(`[app] ${msg}`);
         sendJson(res, 200, { ok: true });
         return;
       }
 
+      if (req.method === "POST" && url.pathname === "/open") {
+        const parsed = parseOpenPayload(await readBody(req));
+        if (parsed.error) {
+          log(`open bad-request: ${parsed.error}`);
+          sendJson(res, 400, { ok: false, error: parsed.error });
+          return;
+        }
+        log(`open path=${parsed.path} line=${parsed.line ?? "-"} col=${parsed.column ?? "-"}`);
+        try {
+          await openFile(parsed.path, parsed.line, parsed.column);
+        } catch (error) {
+          log(`open FAILED path=${parsed.path}: ${String(error?.message ?? error)}`);
+          throw error;
+        }
+        log(`open OK path=${parsed.path}`);
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+
+      log(`404 ${req.method} ${url.pathname}`);
       sendJson(res, 404, { ok: false, error: "not found" });
     } catch (error) {
       sendJson(res, 500, { ok: false, error: String(error?.message ?? error) });
@@ -111,13 +150,18 @@ function createRequestHandler({ openFile }) {
 
 let server = null;
 
-function activate(context) {
+function activate() {
   const vscode = require("vscode");
   const port = resolvePort();
+  logLine(`activate pid=${process.pid} port=${port}`);
 
   const openFile = async (filePath, line, column) => {
     const uri = vscode.Uri.file(filePath);
-    const options = { preview: false };
+    const options = {
+      preview: false,
+      preserveFocus: false,
+      viewColumn: vscode.ViewColumn.Active,
+    };
     if (line) {
       const position = new vscode.Position(line - 1, (column ?? 1) - 1);
       options.selection = new vscode.Range(position, position);
@@ -125,34 +169,26 @@ function activate(context) {
     await vscode.window.showTextDocument(uri, options);
   };
 
-  server = http.createServer(createRequestHandler({ openFile }));
+  server = http.createServer(createRequestHandler({ openFile, log: logLine }));
 
   server.on("error", (error) => {
     if (error && error.code === "EADDRINUSE") {
       // Another code-server window already serves the bridge on this port. Only
       // one window needs to; stand down quietly.
-      console.warn(`[paseo-bridge] port ${port} already in use; another window is serving.`);
+      logLine(`port ${port} already in use; another window is serving; standing down`);
       server = null;
       return;
     }
-    console.error("[paseo-bridge] server error:", error);
+    logLine(`server error: ${String(error?.message ?? error)}`);
   });
 
   server.listen(port, "127.0.0.1", () => {
-    console.log(`[paseo-bridge] listening on 127.0.0.1:${port}`);
-  });
-
-  context.subscriptions.push({
-    dispose() {
-      if (server) {
-        server.close();
-        server = null;
-      }
-    },
+    logLine(`listening on 127.0.0.1:${port}`);
   });
 }
 
 function deactivate() {
+  logLine("deactivate");
   if (server) {
     server.close();
     server = null;

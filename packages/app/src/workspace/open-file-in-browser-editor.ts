@@ -177,6 +177,9 @@ function openFileInBrowserEditorCore(
 
   const existing = findExistingBrowserEditorTab({ tabs: input.workspaceTabs, origin });
   if (existing) {
+    console.log(
+      `[paseo-bridge] openFile: reuse existing tab browserId=${existing.browserId} path=${input.absolutePath}`,
+    );
     input.navigateToTabId(existing.tabId);
     store.requestBridgeOpen(existing.browserId, bridgeOpen);
     return true;
@@ -184,6 +187,9 @@ function openFileInBrowserEditorCore(
 
   const preloaded = takePreloadedBrowserEditor(origin);
   if (preloaded) {
+    console.log(
+      `[paseo-bridge] openFile: adopt preloaded browserId=${preloaded.browserId} path=${input.absolutePath}`,
+    );
     createWorkspaceBrowser({
       browserId: preloaded.browserId,
       initialUrl: preloaded.folderUrl,
@@ -201,6 +207,7 @@ function openFileInBrowserEditorCore(
   }
 
   // Cold create: boot the workbench straight to the file (single reload).
+  console.log(`[paseo-bridge] openFile: cold create path=${input.absolutePath}`);
   const { browserId } = createWorkspaceBrowser({ initialUrl: fileUrl, chrome: "embedded" });
   const tabId = input.openWorkspaceTabFocused({ kind: "browser", browserId });
   if (tabId) {
