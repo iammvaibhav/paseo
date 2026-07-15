@@ -33,6 +33,7 @@ import type {
   CheckoutMergeResponse,
   CheckoutMergeFromBaseResponse,
   CheckoutPullResponse,
+  CheckoutSubmodulesResponse,
   CheckoutPushResponse,
   CheckoutRefreshResponse,
   CheckoutPrCreateResponse,
@@ -312,6 +313,7 @@ type CheckoutCommitPayload = CheckoutCommitResponse["payload"];
 type CheckoutMergePayload = CheckoutMergeResponse["payload"];
 type CheckoutMergeFromBasePayload = CheckoutMergeFromBaseResponse["payload"];
 type CheckoutPullPayload = CheckoutPullResponse["payload"];
+type CheckoutSubmodulesPayload = CheckoutSubmodulesResponse["payload"];
 type CheckoutPushPayload = CheckoutPushResponse["payload"];
 type CheckoutRefreshPayload = CheckoutRefreshResponse["payload"];
 type CheckoutPrCreatePayload = CheckoutPrCreateResponse["payload"];
@@ -3346,6 +3348,17 @@ export class DaemonClient {
         cwd,
       },
       responseType: "checkout_pull_response",
+    });
+  }
+
+  async checkoutSubmodules(cwd: string, requestId?: string): Promise<CheckoutSubmodulesPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: {
+        type: "checkout_submodules_request",
+        cwd,
+      },
+      responseType: "checkout_submodules_response",
     });
   }
 

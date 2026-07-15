@@ -1580,6 +1580,8 @@ export class Session {
         return this.checkoutSession.handleCheckoutMergeFromBaseRequest(msg);
       case "checkout_pull_request":
         return this.checkoutSession.handleCheckoutPullRequest(msg);
+      case "checkout_submodules_request":
+        return this.checkoutSession.handleSubmodulesRequest(msg);
       case "checkout_push_request":
         return this.checkoutSession.handleCheckoutPushRequest(msg);
       case "checkout.refresh.request":

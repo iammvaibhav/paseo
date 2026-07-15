@@ -1560,6 +1560,12 @@ export const CheckoutPullRequestSchema = z.object({
   requestId: z.string(),
 });
 
+export const CheckoutSubmodulesRequestSchema = z.object({
+  type: z.literal("checkout_submodules_request"),
+  cwd: z.string(),
+  requestId: z.string(),
+});
+
 export const CheckoutPushRequestSchema = z.object({
   type: z.literal("checkout_push_request"),
   cwd: z.string(),
@@ -2166,6 +2172,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   CheckoutMergeRequestSchema,
   CheckoutMergeFromBaseRequestSchema,
   CheckoutPullRequestSchema,
+  CheckoutSubmodulesRequestSchema,
   CheckoutPushRequestSchema,
   CheckoutRefreshRequestSchema,
   CheckoutPrCreateRequestSchema,
@@ -3598,6 +3605,31 @@ export const CheckoutPullResponseSchema = z.object({
   }),
 });
 
+export interface SubmoduleInfo {
+  path: string;
+  name: string;
+  status: "clean" | "dirty" | "uninitialized";
+  headRef: string | null;
+  children: SubmoduleInfo[];
+}
+
+const SubmoduleInfoSchema: z.ZodType<SubmoduleInfo> = z.object({
+  path: z.string(),
+  name: z.string(),
+  status: z.enum(["clean", "dirty", "uninitialized"]),
+  headRef: z.string().nullable(),
+  children: z.lazy(() => z.array(SubmoduleInfoSchema)),
+});
+
+export const CheckoutSubmodulesResponseSchema = z.object({
+  type: z.literal("checkout_submodules_response"),
+  payload: z.object({
+    cwd: z.string(),
+    submodules: z.array(SubmoduleInfoSchema),
+    requestId: z.string(),
+  }),
+});
+
 export const CheckoutPushResponseSchema = z.object({
   type: z.literal("checkout_push_response"),
   payload: z.object({
@@ -4418,6 +4450,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   CheckoutMergeResponseSchema,
   CheckoutMergeFromBaseResponseSchema,
   CheckoutPullResponseSchema,
+  CheckoutSubmodulesResponseSchema,
   CheckoutPushResponseSchema,
   CheckoutRefreshResponseSchema,
   CheckoutPrCreateResponseSchema,
@@ -4717,6 +4750,8 @@ export type CheckoutMergeFromBaseRequest = z.infer<typeof CheckoutMergeFromBaseR
 export type CheckoutMergeFromBaseResponse = z.infer<typeof CheckoutMergeFromBaseResponseSchema>;
 export type CheckoutPullRequest = z.infer<typeof CheckoutPullRequestSchema>;
 export type CheckoutPullResponse = z.infer<typeof CheckoutPullResponseSchema>;
+export type CheckoutSubmodulesRequest = z.infer<typeof CheckoutSubmodulesRequestSchema>;
+export type CheckoutSubmodulesResponse = z.infer<typeof CheckoutSubmodulesResponseSchema>;
 export type CheckoutPushRequest = z.infer<typeof CheckoutPushRequestSchema>;
 export type CheckoutPushResponse = z.infer<typeof CheckoutPushResponseSchema>;
 export type CheckoutRefreshRequest = z.infer<typeof CheckoutRefreshRequestSchema>;

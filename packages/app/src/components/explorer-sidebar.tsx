@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -36,6 +36,8 @@ import { RetainedPanelActivity } from "@/components/retained-panel";
 import { isWeb } from "@/constants/platform";
 import { buildWorkspaceAttachmentScopeKey } from "@/attachments/workspace-attachments-store";
 import { resolveDesktopExplorerWidth } from "@/components/desktop-sidebar-layout";
+import { useSubmodulesQuery } from "@/git/use-submodules-query";
+import { SubmodulePicker } from "@/git/submodule-picker";
 
 function logExplorerSidebar(_event: string, _details: Record<string, unknown>): void {}
 
@@ -272,6 +274,40 @@ interface SidebarContentProps {
   onOpenFile?: (filePath: string) => void;
 }
 
+function resolveEffectiveTab(
+  activeTab: ExplorerTab,
+  isGit: boolean,
+  showPrTab: boolean,
+): ExplorerTab {
+  const requested: ExplorerTab =
+    !isGit && (activeTab === "changes" || activeTab === "pr") ? "files" : activeTab;
+  return requested === "pr" && !showPrTab ? "changes" : requested;
+}
+
+function useSubmoduleContext({
+  serverId,
+  workspaceRoot,
+  isGit,
+  isOpen,
+}: {
+  serverId: string;
+  workspaceRoot: string;
+  isGit: boolean;
+  isOpen: boolean;
+}) {
+  const [selectedSubmodule, setSelectedSubmodule] = useState<string | null>(null);
+  const { submodules, hasSubmodules } = useSubmodulesQuery({
+    serverId,
+    cwd: workspaceRoot,
+    enabled: isGit && isOpen,
+  });
+  const effectiveCwd = useMemo(
+    () => (selectedSubmodule ? `${workspaceRoot}/${selectedSubmodule}` : workspaceRoot),
+    [workspaceRoot, selectedSubmodule],
+  );
+  return { effectiveCwd, submodules, hasSubmodules, selectedSubmodule, setSelectedSubmodule };
+}
+
 function ExplorerSidebarContent({
   activeTab,
   onTabPress,
@@ -287,28 +323,30 @@ function ExplorerSidebarContent({
   const { t } = useTranslation();
   const toast = useToast();
   const hasRightWindowControls = useHasOwnedWindowChromeObstruction("top-right");
-  const canQueryPullRequest = isGit && Boolean(workspaceRoot);
+
+  const submoduleState = useSubmoduleContext({ serverId, workspaceRoot, isGit, isOpen });
+  const { effectiveCwd, submodules, hasSubmodules, selectedSubmodule, setSelectedSubmodule } =
+    submoduleState;
+
+  const canQueryPullRequest = isGit && Boolean(effectiveCwd);
   const prPane = usePrPaneData({
     serverId,
-    cwd: workspaceRoot,
+    cwd: effectiveCwd,
     enabled: canQueryPullRequest && isOpen,
     timelineEnabled: activeTab === "pr" && canQueryPullRequest && isOpen,
   });
-  const hasPullRequest = prPane.prNumber !== null;
-  const showPrTab = hasPullRequest || (activeTab === "pr" && prPane.isLoading);
-  const requestedTab: ExplorerTab =
-    !isGit && (activeTab === "changes" || activeTab === "pr") ? "files" : activeTab;
-  const resolvedTab: ExplorerTab = requestedTab === "pr" && !showPrTab ? "changes" : requestedTab;
+  const showPrTab = prPane.prNumber !== null || (activeTab === "pr" && prPane.isLoading);
+  const resolvedTab = resolveEffectiveTab(activeTab, isGit, showPrTab);
   const prTabLabel = formatPrTabLabel(prPane.prNumber);
   const refreshGitActions = useCheckoutGitActionsStore((s) => s.refresh);
   const handlePrRetry = useCallback(() => {
-    refreshGitActions({ serverId, cwd: workspaceRoot }).catch((error) => {
+    refreshGitActions({ serverId, cwd: effectiveCwd }).catch((error) => {
       toast.error(error instanceof Error ? error.message : t("workspace.git.diff.failedRefresh"));
     });
-  }, [refreshGitActions, serverId, t, toast, workspaceRoot]);
+  }, [refreshGitActions, serverId, t, toast, effectiveCwd]);
   const workspaceAttachmentScopeKey = useMemo(
-    () => buildWorkspaceAttachmentScopeKey({ serverId, workspaceId, cwd: workspaceRoot }),
-    [serverId, workspaceId, workspaceRoot],
+    () => buildWorkspaceAttachmentScopeKey({ serverId, workspaceId, cwd: effectiveCwd }),
+    [serverId, workspaceId, effectiveCwd],
   );
 
   return (
@@ -356,6 +394,13 @@ function ExplorerSidebarContent({
           )}
         </View>
         <View style={styles.headerRightSection}>
+          {isGit && hasSubmodules && (
+            <SubmodulePicker
+              submodules={submodules}
+              selectedPath={selectedSubmodule}
+              onSelect={setSelectedSubmodule}
+            />
+          )}
           {!hasRightWindowControls && (
             <Pressable
               onPress={onClose}
@@ -386,7 +431,7 @@ function ExplorerSidebarContent({
           <GitDiffPane
             serverId={serverId}
             workspaceId={workspaceId}
-            cwd={workspaceRoot}
+            cwd={effectiveCwd}
             enabled={isOpen}
           />
         )}
@@ -394,14 +439,14 @@ function ExplorerSidebarContent({
           <FileExplorerPane
             serverId={serverId}
             workspaceId={workspaceId}
-            workspaceRoot={workspaceRoot}
+            workspaceRoot={selectedSubmodule ? effectiveCwd : workspaceRoot}
             onOpenFile={onOpenFile}
           />
         )}
         {resolvedTab === "pr" && (
           <PrTabContent
             serverId={serverId}
-            cwd={workspaceRoot}
+            cwd={effectiveCwd}
             prPane={prPane}
             workspaceAttachmentScopeKey={workspaceAttachmentScopeKey}
             onRetry={handlePrRetry}

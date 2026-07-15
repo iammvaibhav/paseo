@@ -6,6 +6,7 @@ import type {
   CheckoutRefreshRequest,
   CheckoutRenameBranchRequest,
   CheckoutStatusRequest,
+  CheckoutSubmodulesRequest,
   SessionInboundMessage,
   SessionOutboundMessage,
   SubscribeCheckoutDiffRequest,
@@ -43,6 +44,7 @@ import {
   pushCurrentBranch,
 } from "../../../utils/checkout-git.js";
 import { execCommand } from "../../../utils/spawn.js";
+import { discoverSubmodules } from "../../../utils/git-submodules.js";
 import { expandTilde } from "../../../utils/path.js";
 import type { GitMetadataGenerator } from "./git-metadata-generator.js";
 
@@ -1103,6 +1105,30 @@ export class CheckoutSession {
           githubFeaturesEnabled: true,
           error: error instanceof Error ? error.message : String(error),
           requestId,
+        },
+      });
+    }
+  }
+
+  async handleSubmodulesRequest(msg: CheckoutSubmodulesRequest): Promise<void> {
+    const cwd = expandTilde(msg.cwd);
+    try {
+      const submodules = await discoverSubmodules(cwd);
+      this.host.emit({
+        type: "checkout_submodules_response",
+        payload: {
+          cwd: msg.cwd,
+          submodules,
+          requestId: msg.requestId,
+        },
+      });
+    } catch {
+      this.host.emit({
+        type: "checkout_submodules_response",
+        payload: {
+          cwd: msg.cwd,
+          submodules: [],
+          requestId: msg.requestId,
         },
       });
     }
