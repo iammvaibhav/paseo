@@ -20,7 +20,8 @@ Artifacts live in `scripts/code-server/`:
 - `sh.paseo.code-server.plist` — macOS LaunchAgent
 - `paseo-code-server.service` — Linux user systemd unit
 - `user-settings.json` — shared defaults (trust off, no welcome, hidden activity bar)
-- `deploy.sh` — install/update the standalone binary, write config + settings, restart the service
+- `paseo-bridge/` — the in-place file-open extension (see below)
+- `deploy.sh` — install/update the standalone binary, write config + settings, install the bridge extension, restart the service
 - `sync-user-data.sh` — rsync User/ + extensions/ from this machine to the remotes
 
 Binary: standalone install under `~/.local/bin/code-server` (latest, or pin with `CODE_SERVER_VERSION`).
@@ -103,8 +104,22 @@ Implementation notes (easy to forget later):
   ?folder=/abs/workspace&payload=[["gotoLineMode","true"],["openFile","vscode-remote:///abs/path/to/file.ts:12:1"]]
   ```
 
-- An existing VS Code Web browser tab for that host origin is reused via `browser-store.requestNavigation` (triggers `webview.loadURL`). Payload is only read at workbench startup, so jumping to another file **reloads** that tab — acceptable; we deliberately avoid spawning a new browser tab per click.
+- An existing VS Code Web browser tab for that host origin is reused. File opens now go through the **paseo-bridge** extension (`browser-store.requestBridgeOpen`) so the file appears **in place with no reload** (see below). A `webview.loadURL` reload only happens for the one-time folder/workbench load or as a fallback when the bridge is unreachable.
 - HTTPS is not required on VPN IPs **if** the insecure-origin allowlist includes those origins (see above). Tailscale Serve is optional, not required for this fork's setup.
+
+## Snappy opens: preload + in-place bridge
+
+Two mechanisms make VS Code Web feel instant (Electron desktop only):
+
+**Preload.** When a workspace whose host has a VS Code Web URL becomes active, the app warms a chrome-less `<webview>` in the background (`workspace/preload-browser-editor.ts` → `ensureResidentBrowserWebview`), parked in the resident webview host. "Open → VS Code Web" then adopts that already-booted webview instead of cold-loading it. One warm window per code-server origin; switching workspaces on the same host reuses it (files still open by absolute path, so a stale folder root is only cosmetic).
+
+**In-place file open (paseo-bridge).** code-server reads the `?payload=[["openFile",…]]` map only at workbench startup, so changing it forces a full reload. Instead, the `scripts/code-server/paseo-bridge/` extension runs a loopback HTTP listener (`127.0.0.1:8766`, `PASEO_BRIDGE_PORT` to override) that handles `POST /open {path,line,column}` → `vscode.window.showTextDocument`. The app calls it **same-origin** from the workbench page via code-server's built-in reverse proxy — `fetch("/proxy/8766/open", …)` run through `webview.executeJavaScript` — so there is no new VPN-exposed port and no CORS/insecure-origin change. Keep the port in sync between `extension.js` (`DEFAULT_PORT`) and `packages/app/src/workspace/browser-editor-url.ts` (`CODE_SERVER_BRIDGE_PORT`).
+
+The extension is plain CommonJS (no build step); `deploy.sh` copies it to `~/.local/share/code-server/extensions/paseo-bridge/` and restarts the service (skip with `PASEO_SKIP_CODE_SERVER_EXTENSION=1`). It activates on `onStartupFinished`; if two windows race for the port, only the first binds (the rest stand down on `EADDRINUSE`) — fine for the single-window model.
+
+## Host file browser
+
+A desktop-only **Host files** entry in the left rail (`components/left-sidebar.tsx`) opens a right-side sidebar (`components/host-explorer-sidebar.tsx`) that browses the host filesystem rooted at `/`, independent of any workspace. It reuses the shared `FileExplorerPane` and the existing `file_explorer_request` / download RPCs — the server already accepts an arbitrary `cwd` and only sandboxes navigation _within_ it (`file-explorer/service.ts` `resolveScopedPath`), so no server change is needed. Clicking a file opens it in VS Code Web via `openHostFileInBrowserEditor` (absolute path → bridge, or a cold `?payload` open); the per-row **Download** action works as elsewhere. The sidebar renders inside the workspace screen and targets the active workspace's host, so it appears while a workspace is open.
 
 ## Syncing settings & extensions across the three hosts
 

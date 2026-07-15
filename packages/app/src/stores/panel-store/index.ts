@@ -86,6 +86,11 @@ export interface PanelState {
   explorerShowHiddenFiles: boolean;
   explorerFilesSplitRatio: number;
 
+  // Host file browser (desktop-only): a right-side sidebar rooted at the host
+  // filesystem root, independent of any workspace. `open` is session-only.
+  hostExplorer: { open: boolean; serverId: string | null };
+  hostExplorerWidth: number;
+
   // Actions
   toggleFocusMode: () => void;
   showMobileAgent: () => void;
@@ -113,6 +118,11 @@ export interface PanelState {
   setExplorerSortOption: (option: SortOption) => void;
   toggleExplorerShowHiddenFiles: () => void;
   setExplorerFilesSplitRatio: (ratio: number) => void;
+
+  // Host file browser actions
+  openHostExplorer: (serverId: string) => void;
+  closeHostExplorer: () => void;
+  setHostExplorerWidth: (width: number) => void;
 }
 
 const DEFAULT_DESKTOP_OPEN = isWeb;
@@ -149,6 +159,8 @@ export const usePanelStore = create<PanelState>()(
       explorerSortOption: "name",
       explorerShowHiddenFiles: true,
       explorerFilesSplitRatio: DEFAULT_EXPLORER_FILES_SPLIT_RATIO,
+      hostExplorer: { open: false, serverId: null },
+      hostExplorerWidth: DEFAULT_EXPLORER_SIDEBAR_WIDTH,
 
       toggleFocusMode: () =>
         set((state) => ({
@@ -290,6 +302,14 @@ export const usePanelStore = create<PanelState>()(
             ? clampExplorerFilesSplitRatio(ratio)
             : DEFAULT_EXPLORER_FILES_SPLIT_RATIO,
         }),
+      openHostExplorer: (serverId) => set({ hostExplorer: { open: true, serverId } }),
+      closeHostExplorer: () =>
+        set((state) =>
+          state.hostExplorer.open
+            ? { hostExplorer: { ...state.hostExplorer, open: false } }
+            : state,
+        ),
+      setHostExplorerWidth: (width) => set({ hostExplorerWidth: clampExplorerWidth(width) }),
     }),
     {
       name: "panel-state",
@@ -309,6 +329,7 @@ export const usePanelStore = create<PanelState>()(
         explorerSortOption: state.explorerSortOption,
         explorerShowHiddenFiles: state.explorerShowHiddenFiles,
         explorerFilesSplitRatio: state.explorerFilesSplitRatio,
+        hostExplorerWidth: state.hostExplorerWidth,
       }),
     },
   ),

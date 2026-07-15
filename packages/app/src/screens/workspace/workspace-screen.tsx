@@ -59,6 +59,7 @@ import {
   FloatingPanelPortalHostNameProvider,
 } from "@/components/ui/floating-panel-portal";
 import { ExplorerSidebar } from "@/components/explorer-sidebar";
+import { HostExplorerSidebar } from "@/components/host-explorer-sidebar";
 import { SplitContainer } from "@/components/split-container";
 import { RetainedPanel } from "@/components/retained-panel";
 import { SourceControlPanelIcon } from "@/components/icons/source-control-panel-icon";
@@ -193,8 +194,10 @@ import {
 } from "@/workspace/file-open";
 import {
   openBrowserEditorTab,
+  openHostFileInBrowserEditor,
   tryOpenFileInBrowserEditor,
 } from "@/workspace/open-file-in-browser-editor";
+import { usePreloadBrowserEditor } from "@/workspace/preload-browser-editor";
 import { RenderProfile } from "@/utils/render-profiler";
 import { useWorkspaceCheckoutStatus } from "@/screens/workspace/use-workspace-checkout-status";
 
@@ -1688,6 +1691,8 @@ function WorkspaceScreenContent({
   );
   const workspaceDirectory = workspaceDescriptor?.workspaceDirectory || null;
   const isMissingWorkspaceDirectory = Boolean(workspaceDescriptor) && !workspaceDirectory;
+  // Warm VS Code Web in the background so "Open → VS Code Web" is instant.
+  usePreloadBrowserEditor({ browserEditorUrl, workspaceDirectory });
   const [isImportSheetVisible, setIsImportSheetVisible] = useState(false);
   const canOpenImportSheet = [client, isConnected, workspaceDirectory].every(Boolean);
   const openImportSheet = useCallback(() => {
@@ -2523,6 +2528,22 @@ function WorkspaceScreenContent({
       openBrowserEditorTab({
         url,
         browserEditorUrl,
+        workspaceTabs: uiTabs,
+        openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
+        navigateToTabId,
+      });
+    },
+    [browserEditorUrl, navigateToTabId, openWorkspaceTabFocused, persistenceKey, uiTabs],
+  );
+
+  const handleOpenHostFile = useCallback(
+    (absolutePath: string) => {
+      if (!persistenceKey || !browserEditorUrl) {
+        return;
+      }
+      openHostFileInBrowserEditor({
+        browserEditorUrl,
+        absolutePath,
         workspaceTabs: uiTabs,
         openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
         navigateToTabId,
@@ -3723,6 +3744,8 @@ function WorkspaceScreenContent({
                   onOpenFile={handleOpenFileFromExplorer}
                 />
               ) : null}
+
+              <HostExplorerSidebar serverId={normalizedServerId} onOpenFile={handleOpenHostFile} />
             </View>
             <ImportSessionSheet
               visible={isImportSheetVisible}

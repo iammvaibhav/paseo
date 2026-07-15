@@ -182,6 +182,8 @@ All local customizations live on **`vaibhav/customizations`**, branched from `up
 - ACP **Allow All** mode for generic ACP providers (Cursor, Grok, etc.)
 - **Open in editor over SSH** for remote workspaces (`HostProfile.sshHost`)
 - **Open → VS Code Web** via always-on code-server on each host (`HostProfile.browserEditorUrl`) — see [docs/code-server.md](docs/code-server.md)
+  - Background **preload** so it opens instantly, and in-place file opens with no reload via the `scripts/code-server/paseo-bridge/` extension
+  - Desktop-only **Host files** browser (left rail) rooted at `/`, opening files in VS Code Web
 - LaTeX math rendering for agent messages
 - `scripts/sync-custom-branch.sh` for multi-host deploy
 
@@ -216,6 +218,7 @@ npx tsx packages/cli/src/index.js daemon restart --home ~/.paseo
 ```bash
 PASEO_SKIP_REMOTES=1 ./scripts/sync-custom-branch.sh          # local only
 PASEO_SKIP_LOCAL=1 ./scripts/sync-custom-branch.sh            # remotes only
+PASEO_SKIP_DAEMON=1 ./scripts/sync-custom-branch.sh          # code-server + settings only (no daemon build/restart)
 PASEO_SKIP_CODE_SERVER=1 ./scripts/sync-custom-branch.sh      # skip VS Code Web deploy
 PASEO_SYNC_CODE_SERVER_USER_DATA=1 ./scripts/sync-custom-branch.sh  # also rsync code-server User/ + extensions/
 PASEO_NODE_VERSION=22 ./scripts/sync-custom-branch.sh

@@ -2,6 +2,7 @@ import { router, usePathname } from "expo-router";
 import {
   CalendarClock,
   FolderPlus,
+  HardDrive,
   History,
   Home,
   Plus,
@@ -31,7 +32,7 @@ import { SidebarDisplayPreferencesMenu } from "@/components/sidebar/sidebar-disp
 import { Shortcut } from "@/components/ui/shortcut";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useIsCompactFormFactor } from "@/constants/layout";
-import { isWeb } from "@/constants/platform";
+import { getIsElectron, isWeb } from "@/constants/platform";
 import { useOpenProjectPicker } from "@/hooks/use-open-project-picker";
 import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
 import { canCreateWorktreeForProjectKind } from "@/projects/host-projects";
@@ -404,6 +405,37 @@ function SidebarHostPicker({
   );
 }
 
+/**
+ * Desktop-only entry that opens the host file browser (rooted at the filesystem
+ * root) for the active workspace's host. Files clicked there open in VS Code Web,
+ * which is Electron-only — so this button is hidden elsewhere.
+ */
+function SidebarHostFilesButton({ theme }: { theme: SidebarTheme }) {
+  const openHostExplorer = usePanelStore((state) => state.openHostExplorer);
+  const activeSelection = useActiveWorkspaceSelection();
+  const hosts = useHosts();
+  const serverId = activeSelection?.serverId ?? hosts[0]?.serverId ?? null;
+  const handlePress = useCallback(() => {
+    if (serverId) {
+      openHostExplorer(serverId);
+    }
+  }, [openHostExplorer, serverId]);
+
+  if (!getIsElectron() || !serverId) {
+    return null;
+  }
+
+  return (
+    <FooterIconButton
+      onPress={handlePress}
+      testID="sidebar-host-files"
+      label="Host files"
+      icon={HardDrive}
+      theme={theme}
+    />
+  );
+}
+
 function IconTooltipContent({
   label,
   shortcutKeys,
@@ -524,6 +556,7 @@ function SidebarFooter({
           icon={Home}
           theme={theme}
         />
+        <SidebarHostFilesButton theme={theme} />
         <FooterIconButton
           onPress={handleSettings}
           testID="sidebar-settings"

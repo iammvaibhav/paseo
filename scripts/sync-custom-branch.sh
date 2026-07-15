@@ -21,6 +21,8 @@
 #   PASEO_LOCAL_HOME=$HOME/.paseo
 #   PASEO_SKIP_REMOTES=1              # local only
 #   PASEO_SKIP_LOCAL=1                # remotes only
+#   PASEO_SKIP_DAEMON=1               # skip daemon build/restart; still sync git,
+#                                     #   deploy code-server, and push settings
 #   PASEO_SKIP_CODE_SERVER=1          # skip code-server deploy everywhere
 #   PASEO_SYNC_CODE_SERVER_USER_DATA=1  # also rsync User/ + extensions/ local → remotes
 #   CODE_SERVER_VERSION=4.127.0       # pin code-server; omit for latest
@@ -328,8 +330,12 @@ deploy_code_server() {
 ensure_node
 ensure_fork_remotes
 sync_git
-maybe_install_deps
-build_and_restart
+if [[ '${PASEO_SKIP_DAEMON:-0}' == "1" ]]; then
+  log "Skipping daemon build/restart (PASEO_SKIP_DAEMON=1)"
+else
+  maybe_install_deps
+  build_and_restart
+fi
 deploy_code_server
 log "Done"
 EOF
@@ -359,9 +365,13 @@ main() {
     ensure_fork_remotes
     ensure_node
     sync_local_git
-    build_server
-    install_cli_wrapper "$ROOT_DIR"
-    restart_local_daemon
+    if [[ "${PASEO_SKIP_DAEMON:-0}" != "1" ]]; then
+      build_server
+      install_cli_wrapper "$ROOT_DIR"
+      restart_local_daemon
+    else
+      log "Skipping local daemon build/restart (PASEO_SKIP_DAEMON=1)"
+    fi
     deploy_local_code_server
   fi
 

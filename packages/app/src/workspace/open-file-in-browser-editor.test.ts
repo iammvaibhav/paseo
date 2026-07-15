@@ -12,21 +12,33 @@ vi.mock("@/stores/browser-store", () => ({
   useBrowserStore: {
     getState: vi.fn(() => ({
       requestNavigation: vi.fn(),
+      requestBridgeOpen: vi.fn(),
     })),
   },
 }));
 
+vi.mock("@/workspace/preload-browser-editor", () => ({
+  takePreloadedBrowserEditor: vi.fn(() => null),
+}));
+
 import { getIsElectron } from "@/constants/platform";
 import { createWorkspaceBrowser, getBrowserRecord, useBrowserStore } from "@/stores/browser-store";
-import { openBrowserEditorTab, tryOpenFileInBrowserEditor } from "./open-file-in-browser-editor";
+import { takePreloadedBrowserEditor } from "@/workspace/preload-browser-editor";
+import {
+  openBrowserEditorTab,
+  openHostFileInBrowserEditor,
+  tryOpenFileInBrowserEditor,
+} from "./open-file-in-browser-editor";
 
 describe("tryOpenFileInBrowserEditor", () => {
   beforeEach(() => {
     vi.mocked(getIsElectron).mockReturnValue(true);
     vi.mocked(getBrowserRecord).mockReset();
     vi.mocked(createWorkspaceBrowser).mockClear();
+    vi.mocked(takePreloadedBrowserEditor).mockReturnValue(null);
     vi.mocked(useBrowserStore.getState).mockReturnValue({
       requestNavigation: vi.fn(),
+      requestBridgeOpen: vi.fn(),
     } as never);
   });
 
@@ -70,7 +82,7 @@ describe("tryOpenFileInBrowserEditor", () => {
     expect(navigateToTabId).toHaveBeenCalledWith("tab-1");
   });
 
-  it("reuses an existing embedded browser tab for the same origin", () => {
+  it("opens a file in place via the bridge when a tab already exists (no reload)", () => {
     vi.mocked(getBrowserRecord).mockReturnValue({
       browserId: "existing",
       url: "http://blrofc3:8765/?folder=%2Frepo",
@@ -84,14 +96,18 @@ describe("tryOpenFileInBrowserEditor", () => {
       createdAt: 0,
     });
     const requestNavigation = vi.fn();
-    vi.mocked(useBrowserStore.getState).mockReturnValue({ requestNavigation } as never);
+    const requestBridgeOpen = vi.fn();
+    vi.mocked(useBrowserStore.getState).mockReturnValue({
+      requestNavigation,
+      requestBridgeOpen,
+    } as never);
     const navigateToTabId = vi.fn();
 
     expect(
       tryOpenFileInBrowserEditor({
         browserEditorUrl: "http://blrofc3:8765",
         workspaceDirectory: "/repo",
-        location: { path: "/repo/b.ts" },
+        location: { path: "/repo/b.ts", lineStart: 12 },
         workspaceTabs: [
           { tabId: "tab-existing", target: { kind: "browser", browserId: "existing" } },
         ],
@@ -101,7 +117,15 @@ describe("tryOpenFileInBrowserEditor", () => {
     ).toBe(true);
 
     expect(createWorkspaceBrowser).not.toHaveBeenCalled();
-    expect(requestNavigation).toHaveBeenCalled();
+    expect(requestNavigation).not.toHaveBeenCalled();
+    expect(requestBridgeOpen).toHaveBeenCalledWith(
+      "existing",
+      expect.objectContaining({
+        path: "/repo/b.ts",
+        line: 12,
+        fallbackUrl: expect.stringContaining("payload="),
+      }),
+    );
     expect(navigateToTabId).toHaveBeenCalledWith("tab-existing");
   });
 
@@ -138,5 +162,116 @@ describe("tryOpenFileInBrowserEditor", () => {
       chrome: "embedded",
     });
     expect(navigateToTabId).toHaveBeenCalledWith("tab-new");
+  });
+
+  it("adopts a preloaded (warm) browser and opens the file via the bridge", () => {
+    vi.mocked(takePreloadedBrowserEditor).mockReturnValue({
+      browserId: "warm-id",
+      origin: "http://blrofc3:8765",
+      folderUrl: "http://blrofc3:8765/?folder=%2Frepo",
+    });
+    const requestBridgeOpen = vi.fn();
+    vi.mocked(useBrowserStore.getState).mockReturnValue({
+      requestNavigation: vi.fn(),
+      requestBridgeOpen,
+    } as never);
+    const openWorkspaceTabFocused = vi.fn(() => "tab-warm");
+    const navigateToTabId = vi.fn();
+
+    expect(
+      tryOpenFileInBrowserEditor({
+        browserEditorUrl: "http://blrofc3:8765",
+        workspaceDirectory: "/repo",
+        location: { path: "src/a.ts", lineStart: 4 },
+        workspaceTabs: [],
+        openWorkspaceTabFocused,
+        navigateToTabId,
+      }),
+    ).toBe(true);
+
+    expect(createWorkspaceBrowser).toHaveBeenCalledWith({
+      browserId: "warm-id",
+      initialUrl: "http://blrofc3:8765/?folder=%2Frepo",
+      chrome: "embedded",
+    });
+    expect(openWorkspaceTabFocused).toHaveBeenCalledWith({ kind: "browser", browserId: "warm-id" });
+    expect(navigateToTabId).toHaveBeenCalledWith("tab-warm");
+    expect(requestBridgeOpen).toHaveBeenCalledWith(
+      "warm-id",
+      expect.objectContaining({ path: "/repo/src/a.ts", line: 4 }),
+    );
+  });
+});
+
+describe("openHostFileInBrowserEditor", () => {
+  beforeEach(() => {
+    vi.mocked(getIsElectron).mockReturnValue(true);
+    vi.mocked(getBrowserRecord).mockReset();
+    vi.mocked(createWorkspaceBrowser).mockClear();
+    vi.mocked(takePreloadedBrowserEditor).mockReturnValue(null);
+    vi.mocked(useBrowserStore.getState).mockReturnValue({
+      requestNavigation: vi.fn(),
+      requestBridgeOpen: vi.fn(),
+    } as never);
+  });
+
+  it("cold-opens an absolute host file rooted at its parent directory", () => {
+    const openWorkspaceTabFocused = vi.fn(() => "tab-host");
+    const navigateToTabId = vi.fn();
+
+    expect(
+      openHostFileInBrowserEditor({
+        browserEditorUrl: "http://blrofc3:8765",
+        absolutePath: "/etc/hosts",
+        workspaceTabs: [],
+        openWorkspaceTabFocused,
+        navigateToTabId,
+      }),
+    ).toBe(true);
+
+    const initialUrl = vi.mocked(createWorkspaceBrowser).mock.calls[0]?.[0]?.initialUrl ?? "";
+    expect(initialUrl).toContain("folder=%2Fetc");
+    expect(initialUrl).toContain("payload=");
+    expect(navigateToTabId).toHaveBeenCalledWith("tab-host");
+  });
+
+  it("opens a host file in place when a tab already exists", () => {
+    vi.mocked(getBrowserRecord).mockReturnValue({
+      browserId: "existing",
+      url: "http://blrofc3:8765/?folder=%2Frepo",
+      title: "",
+      chrome: "embedded",
+      isLoading: false,
+      canGoBack: false,
+      canGoForward: false,
+      faviconUrl: null,
+      lastError: null,
+      createdAt: 0,
+    });
+    const requestBridgeOpen = vi.fn();
+    vi.mocked(useBrowserStore.getState).mockReturnValue({
+      requestNavigation: vi.fn(),
+      requestBridgeOpen,
+    } as never);
+    const navigateToTabId = vi.fn();
+
+    expect(
+      openHostFileInBrowserEditor({
+        browserEditorUrl: "http://blrofc3:8765",
+        absolutePath: "/var/log/system.log",
+        workspaceTabs: [
+          { tabId: "tab-existing", target: { kind: "browser", browserId: "existing" } },
+        ],
+        openWorkspaceTabFocused: vi.fn(),
+        navigateToTabId,
+      }),
+    ).toBe(true);
+
+    expect(createWorkspaceBrowser).not.toHaveBeenCalled();
+    expect(requestBridgeOpen).toHaveBeenCalledWith(
+      "existing",
+      expect.objectContaining({ path: "/var/log/system.log" }),
+    );
+    expect(navigateToTabId).toHaveBeenCalledWith("tab-existing");
   });
 });

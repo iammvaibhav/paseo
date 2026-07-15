@@ -44,6 +44,7 @@ import {
 import type { AttachmentMetadata, BrowserElementAttachment } from "@/attachments/types";
 import { persistAttachmentFromDataUrl } from "@/attachments/service";
 import { WORKSPACE_SECONDARY_HEADER_HEIGHT } from "@/constants/layout";
+import { buildBridgeOpenPath } from "@/workspace/browser-editor-url";
 import {
   getDesktopHost,
   isElectronRuntime,
@@ -302,6 +303,30 @@ function executeWebviewJavaScript(webview: ElectronWebview, code: string): Promi
 }
 
 function ignoreWebviewJavaScriptError() {}
+
+/**
+ * Builds a guest-page script that asks the paseo-bridge code-server extension to
+ * open a file in place (no reload). The fetch is same-origin (reached through
+ * code-server's `/proxy/<port>/` reverse proxy). Resolves to `true` on success
+ * so the caller can fall back to a normal navigation when the bridge is absent.
+ * Every value is JSON-encoded, so paths cannot break out of the script.
+ */
+function buildBridgeOpenScript(input: {
+  path: string;
+  line: number | null;
+  column: number | null;
+}): string {
+  const body = JSON.stringify({
+    path: input.path,
+    ...(input.line ? { line: input.line } : {}),
+    ...(input.column ? { column: input.column } : {}),
+  });
+  return `(async () => { try { const r = await fetch(${JSON.stringify(
+    buildBridgeOpenPath(),
+  )}, { method: "POST", headers: { "content-type": "application/json" }, body: ${JSON.stringify(
+    body,
+  )} }); return r.ok === true; } catch (e) { return false; } })()`;
+}
 
 function destroyWebviewSelector(webview: ElectronWebview): void {
   void executeWebviewJavaScript(
@@ -615,6 +640,10 @@ export function BrowserPane({
     (state) => state.navigationRequestByBrowserId[browserId] ?? null,
   );
   const clearNavigationRequest = useBrowserStore((state) => state.clearNavigationRequest);
+  const bridgeOpenRequest = useBrowserStore(
+    (state) => state.bridgeOpenRequestByBrowserId[browserId] ?? null,
+  );
+  const clearBridgeOpenRequest = useBrowserStore((state) => state.clearBridgeOpenRequest);
   const webviewRef = useRef<ElectronWebview | null>(null);
   const webviewHostRef = useRef<HTMLDivElement | null>(null);
   const urlInputRef = useRef<WebTextInput | null>(null);
@@ -937,6 +966,46 @@ export function BrowserPane({
     navigate(navigationRequest.url);
     clearNavigationRequest(browserId, navigationRequest.requestId);
   }, [browserId, clearNavigationRequest, navigate, navigationRequest]);
+
+  useEffect(() => {
+    if (!bridgeOpenRequest) {
+      return;
+    }
+    const { path, line, column, fallbackUrl, requestId } = bridgeOpenRequest;
+    const webview = webviewRef.current;
+    // Cold window / not yet loaded: the bridge extension isn't up, so load the
+    // file the classic way (this also boots the workbench on first open).
+    if (!webview || !domReadyRef.current) {
+      if (fallbackUrl) {
+        navigate(fallbackUrl);
+      }
+      clearBridgeOpenRequest(browserId, requestId);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      let handled = false;
+      try {
+        handled =
+          (await executeWebviewJavaScript(
+            webview,
+            buildBridgeOpenScript({ path, line, column }),
+          )) === true;
+      } catch {
+        handled = false;
+      }
+      if (cancelled) {
+        return;
+      }
+      if (!handled && fallbackUrl) {
+        navigate(fallbackUrl);
+      }
+      clearBridgeOpenRequest(browserId, requestId);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [browserId, bridgeOpenRequest, clearBridgeOpenRequest, navigate]);
 
   const handleBack = useCallback(() => {
     webviewRef.current?.goBack?.();

@@ -52,6 +52,21 @@ export function buildBrowserEditorUrl(input: {
   }
 }
 
+/**
+ * Port the paseo-bridge code-server extension listens on (loopback only). The
+ * app reaches it same-origin from the code-server workbench page through
+ * code-server's built-in reverse proxy at `/proxy/<port>/`, so no new port is
+ * exposed and no CORS/insecure-origin changes are needed.
+ *
+ * Keep in sync with DEFAULT_PORT in scripts/code-server/paseo-bridge/extension.js.
+ */
+export const CODE_SERVER_BRIDGE_PORT = 8766;
+
+/** Same-origin path (relative to the code-server workbench) for the open bridge. */
+export function buildBridgeOpenPath(): string {
+  return `/proxy/${CODE_SERVER_BRIDGE_PORT}/open`;
+}
+
 /** Origin form Chromium expects for --unsafely-treat-insecure-origin-as-secure. */
 export function browserEditorOriginFromUrl(baseUrl: string): string | null {
   const trimmed = baseUrl.trim();

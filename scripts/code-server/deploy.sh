@@ -10,6 +10,7 @@
 #   CODE_SERVER_VERSION=4.127.0   # pin; omit for latest
 #   CODE_SERVER_SCRIPTS_DIR=...   # defaults to this script's directory
 #   CODE_SERVER_SETTINGS_FILE=... # optional explicit settings.json to install
+#   PASEO_SKIP_CODE_SERVER_EXTENSION=1 # skip installing the paseo-bridge extension
 #
 # Settings source (first match wins):
 #   1. CODE_SERVER_SETTINGS_FILE
@@ -111,6 +112,25 @@ deploy_files() {
     log "Wrote ${USER_DIR}/settings.json from ${settings_src}"
   fi
   log "Wrote ${CONFIG_DIR}/config.yaml"
+}
+
+deploy_extension() {
+  if [[ "${PASEO_SKIP_CODE_SERVER_EXTENSION:-0}" == "1" ]]; then
+    log "Skipping paseo-bridge extension (PASEO_SKIP_CODE_SERVER_EXTENSION=1)"
+    return
+  fi
+  local ext_src="${SCRIPTS_DIR}/paseo-bridge"
+  local ext_dst="${HOME}/.local/share/code-server/extensions/paseo-bridge"
+
+  if [[ ! -f "${ext_src}/package.json" ]]; then
+    log "Warning: paseo-bridge extension missing at ${ext_src}; skipping"
+    return
+  fi
+
+  mkdir -p "$(dirname "$ext_dst")"
+  rm -rf "$ext_dst"
+  cp -R "$ext_src" "$ext_dst"
+  log "Installed paseo-bridge extension to ${ext_dst}"
 }
 
 deploy_macos_service() {
@@ -216,6 +236,7 @@ main() {
   require_host_kind
   ensure_binary
   deploy_files
+  deploy_extension
   case "$(uname -s)" in
     Darwin) deploy_macos_service ;;
     Linux) deploy_linux_service ;;
