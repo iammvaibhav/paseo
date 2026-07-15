@@ -1,16 +1,15 @@
 import { resolve, basename } from "node:path";
 import { runGitCommand } from "./run-git-command.js";
 
-export interface SubmoduleInfo {
+export interface SubmoduleEntry {
   path: string;
   name: string;
   status: "clean" | "dirty" | "uninitialized";
   headRef: string | null;
-  children: SubmoduleInfo[];
+  parentPath: string | null;
 }
 
-export async function discoverSubmodules(repoRoot: string): Promise<SubmoduleInfo[]> {
-  // Get all submodules recursively
+export async function discoverSubmodules(repoRoot: string): Promise<SubmoduleEntry[]> {
   const result = await runGitCommand(["submodule", "status", "--recursive"], {
     cwd: repoRoot,
     timeout: 15_000,
@@ -20,15 +19,12 @@ export async function discoverSubmodules(repoRoot: string): Promise<SubmoduleInf
     return [];
   }
 
-  // Parse git submodule status output
-  // Format: " <sha> <path> (<describe>)" or "+<sha> <path> (<describe>)" (dirty) or "-<sha> <path>" (uninitialized)
   const entries: { path: string; status: "clean" | "dirty" | "uninitialized" }[] = [];
 
   for (const line of result.stdout.split("\n")) {
     if (!line.trim()) continue;
 
     const prefix = line.charAt(0);
-    // After the optional prefix char and SHA, the path follows
     const match = /^[+ -]([0-9a-f]+) (.+?)(?:\s+\(.*\))?$/.exec(line);
     if (!match) continue;
 
@@ -45,7 +41,8 @@ export async function discoverSubmodules(repoRoot: string): Promise<SubmoduleInf
     entries.push({ path: subPath, status });
   }
 
-  // For each entry, get the current branch and refine dirty status
+  const allPaths = new Set(entries.map((e) => e.path));
+
   const enriched = await Promise.all(
     entries.map(async (entry) => {
       const absPath = resolve(repoRoot, entry.path);
@@ -60,10 +57,9 @@ export async function discoverSubmodules(repoRoot: string): Promise<SubmoduleInf
           const ref = branchResult.stdout.trim();
           headRef = ref === "HEAD" ? null : ref;
         } catch {
-          // ignore — submodule might not be initialized
+          // ignore
         }
 
-        // Also check if there are uncommitted changes (more accurate than the +/- prefix)
         if (entry.status === "clean") {
           try {
             const statusResult = await runGitCommand(["status", "--porcelain"], {
@@ -79,54 +75,28 @@ export async function discoverSubmodules(repoRoot: string): Promise<SubmoduleInf
         }
       }
 
+      const parentPath = findParentSubmodule(entry.path, allPaths);
+
       return {
         path: entry.path,
         name: basename(entry.path),
         status: entry.status,
         headRef,
+        parentPath,
       };
     }),
   );
 
-  // Build tree from flat list
-  return buildSubmoduleTree(enriched);
+  return enriched;
 }
 
-interface FlatSubmodule {
-  path: string;
-  name: string;
-  status: "clean" | "dirty" | "uninitialized";
-  headRef: string | null;
-}
-
-function buildSubmoduleTree(flat: FlatSubmodule[]): SubmoduleInfo[] {
-  // Sort by path depth so parents come before children
-  const sorted = [...flat].sort((a, b) => a.path.split("/").length - b.path.split("/").length);
-
-  const root: SubmoduleInfo[] = [];
-  const byPath = new Map<string, SubmoduleInfo>();
-
-  for (const entry of sorted) {
-    const node: SubmoduleInfo = { ...entry, children: [] };
-    byPath.set(entry.path, node);
-
-    // Find parent: walk up the path to find the nearest ancestor that is a submodule
-    let placed = false;
-    const parts = entry.path.split("/");
-    for (let i = parts.length - 1; i > 0; i--) {
-      const parentPath = parts.slice(0, i).join("/");
-      const parent = byPath.get(parentPath);
-      if (parent) {
-        parent.children.push(node);
-        placed = true;
-        break;
-      }
-    }
-
-    if (!placed) {
-      root.push(node);
+function findParentSubmodule(subPath: string, allPaths: Set<string>): string | null {
+  const parts = subPath.split("/");
+  for (let i = parts.length - 1; i > 0; i--) {
+    const candidate = parts.slice(0, i).join("/");
+    if (allPaths.has(candidate)) {
+      return candidate;
     }
   }
-
-  return root;
+  return null;
 }

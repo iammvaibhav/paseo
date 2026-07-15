@@ -3605,27 +3605,19 @@ export const CheckoutPullResponseSchema = z.object({
   }),
 });
 
-export interface SubmoduleInfo {
-  path: string;
-  name: string;
-  status: "clean" | "dirty" | "uninitialized";
-  headRef: string | null;
-  children: SubmoduleInfo[];
-}
-
-const SubmoduleInfoSchema: z.ZodType<SubmoduleInfo> = z.object({
+const SubmoduleEntrySchema = z.object({
   path: z.string(),
   name: z.string(),
   status: z.enum(["clean", "dirty", "uninitialized"]),
   headRef: z.string().nullable(),
-  children: z.lazy(() => z.array(SubmoduleInfoSchema)),
+  parentPath: z.string().nullable(),
 });
 
 export const CheckoutSubmodulesResponseSchema = z.object({
   type: z.literal("checkout_submodules_response"),
   payload: z.object({
     cwd: z.string(),
-    submodules: z.array(SubmoduleInfoSchema),
+    submodules: z.array(SubmoduleEntrySchema),
     requestId: z.string(),
   }),
 });

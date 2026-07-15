@@ -296,10 +296,18 @@ function useSubmoduleContext({
   isOpen: boolean;
 }) {
   const [selectedSubmodule, setSelectedSubmodule] = useState<string | null>(null);
-  const { submodules, hasSubmodules } = useSubmodulesQuery({
+  const { submodules, hasSubmodules, isLoading } = useSubmodulesQuery({
     serverId,
     cwd: workspaceRoot,
     enabled: isGit && isOpen,
+  });
+  console.log("[submodules]", {
+    isGit,
+    isOpen,
+    workspaceRoot,
+    hasSubmodules,
+    isLoading,
+    count: submodules.length,
   });
   const effectiveCwd = useMemo(
     () => (selectedSubmodule ? `${workspaceRoot}/${selectedSubmodule}` : workspaceRoot),
