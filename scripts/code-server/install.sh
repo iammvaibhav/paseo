@@ -2,9 +2,9 @@
 # Install/update standalone code-server and deploy Paseo configs + service units.
 #
 # Usage (run on the machine being configured):
-#   ./scripts/code-server/deploy.sh local
-#   ./scripts/code-server/deploy.sh blrofc3
-#   ./scripts/code-server/deploy.sh iammvaibhav
+#   ./scripts/code-server/install.sh local
+#   ./scripts/code-server/install.sh blrofc3
+#   ./scripts/code-server/install.sh iammvaibhav
 #
 # Env:
 #   CODE_SERVER_VERSION=4.127.0   # pin; omit for latest
@@ -39,7 +39,7 @@ die() {
 
 usage() {
   cat >&2 <<'EOF'
-Usage: deploy.sh <local|blrofc3|iammvaibhav>
+Usage: install.sh <local|blrofc3|iammvaibhav>
 EOF
   exit 2
 }

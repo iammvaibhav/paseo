@@ -16,7 +16,8 @@
 #   3. Update code-server (binary + config + systemd user unit)
 #
 # Usage:
-#   ./scripts/sync-custom-branch.sh
+#   ./scripts/deploy.sh            # full sync + deploy (local + remotes)
+#   ./scripts/deploy.sh --help     # show arguments and env variables
 #
 # Overrides:
 #   PASEO_CUSTOM_BRANCH=vaibhav/customizations
@@ -259,7 +260,7 @@ deploy_local_code_server() {
     return
   fi
   log "Deploying local code-server"
-  bash "$ROOT_DIR/scripts/code-server/deploy.sh" local
+  bash "$ROOT_DIR/scripts/code-server/install.sh" local
 }
 
 sync_code_server_settings_to_remotes() {
@@ -424,7 +425,7 @@ deploy_code_server() {
   fi
   cd "\$HOME/\$REMOTE_REPO_DIR"
   log "Deploying code-server"
-  CODE_SERVER_VERSION='${CODE_SERVER_VERSION:-}' bash scripts/code-server/deploy.sh '$host'
+  CODE_SERVER_VERSION='${CODE_SERVER_VERSION:-}' bash scripts/code-server/install.sh '$host'
 }
 
 ensure_node
@@ -457,7 +458,63 @@ remote_paseo_home() {
   esac
 }
 
+print_help() {
+  cat <<EOF
+Paseo deploy — sync the custom fork branch and deploy across local + remote hosts.
+
+Usage:
+  ./scripts/deploy.sh                 Full run: auto-commit, rebase onto upstream,
+                                      push, build + restart daemon, deploy code-server.
+  ./scripts/deploy.sh -h | --help     Show this help.
+
+Takes no positional arguments; behavior is controlled by env variables.
+
+What a full run does (local Mac):
+  1. Auto-commit uncommitted changes (message via claude, else timestamp)
+  2. Fetch upstream, fast-forward origin/main to upstream/main
+  3. Rebase '$BRANCH' onto $UPSTREAM_REMOTE/main (agent resolves conflicts)
+  4. Push branch to $ORIGIN_REMOTE, build server, restart daemon ($LOCAL_PASEO_HOME)
+  5. Deploy code-server (binary + config + paseo-bridge extension)
+Then repeats git sync + code-server deploy on: ${REMOTE_HOSTS[*]}.
+
+Scope flags (set to 1):
+  PASEO_SKIP_LOCAL                 Skip the local Mac entirely (remotes only)
+  PASEO_SKIP_REMOTES              Skip all remote hosts (local only)
+  PASEO_SKIP_DAEMON              Skip daemon build/restart (git + code-server only)
+  PASEO_SKIP_CODE_SERVER         Skip code-server deploy everywhere
+  PASEO_SKIP_CODE_SERVER_EXTENSION  Skip installing the paseo-bridge extension
+  PASEO_SYNC_CODE_SERVER_USER_DATA  Also rsync code-server User/ + extensions/ to remotes
+
+Model selection (claude-driven steps):
+  PASEO_COMMIT_MSG_MODEL          Model for auto-commit messages (default: $COMMIT_MSG_MODEL)
+  PASEO_CONFLICT_MODEL           Model for rebase conflict resolution (default: $CONFLICT_MODEL)
+  PASEO_CONFLICT_EFFORT          Effort for conflict resolution (default: $CONFLICT_EFFORT)
+
+Other:
+  CODE_SERVER_VERSION            Pin code-server version (omit for latest)
+  PASEO_NODE_VERSION             Node version via nvm (default from .tool-versions: $NODE_VERSION)
+  PASEO_CUSTOM_BRANCH            Custom branch (default: $BRANCH)
+  PASEO_UPSTREAM_REMOTE          Upstream remote (default: $UPSTREAM_REMOTE)
+  PASEO_ORIGIN_REMOTE            Fork remote (default: $ORIGIN_REMOTE)
+  PASEO_LOCAL_HOME               Local daemon home (default: $LOCAL_PASEO_HOME)
+
+Per-host code-server install (run on a single machine):
+  ./scripts/code-server/install.sh <local|${REMOTE_HOSTS[0]}|${REMOTE_HOSTS[1]}>
+
+Examples:
+  PASEO_SKIP_REMOTES=1 ./scripts/deploy.sh          # local only
+  PASEO_SKIP_DAEMON=1  ./scripts/deploy.sh          # code-server + settings, no daemon
+EOF
+}
+
 main() {
+  case "${1:-}" in
+    -h | --help | help)
+      print_help
+      exit 0
+      ;;
+  esac
+
   cd "$ROOT_DIR"
 
   if [[ "${PASEO_SKIP_LOCAL:-0}" != "1" ]]; then

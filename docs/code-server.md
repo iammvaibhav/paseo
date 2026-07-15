@@ -21,27 +21,27 @@ Artifacts live in `scripts/code-server/`:
 - `paseo-code-server.service` — Linux user systemd unit
 - `user-settings.json` — shared defaults (trust off, no welcome, hidden activity bar)
 - `paseo-bridge/` — the in-place file-open extension (see below)
-- `deploy.sh` — install/update the standalone binary, write config + settings, install the bridge extension, restart the service
+- `install.sh` — install/update the standalone binary, write config + settings, install the bridge extension, restart the service
 - `sync-user-data.sh` — rsync User/ + extensions/ from this machine to the remotes
 
 Binary: standalone install under `~/.local/bin/code-server` (latest, or pin with `CODE_SERVER_VERSION`).
 
 ### Deploy / update (preferred)
 
-`./scripts/sync-custom-branch.sh` deploys code-server on local + remotes after the daemon sync (binary update, config, service restart). **User settings** come from this Mac’s live `~/.local/share/code-server/User/settings.json` (pushed to remotes automatically). The repo `user-settings.json` is only a bootstrap fallback when no live file exists yet. Overrides:
+`./scripts/deploy.sh` deploys code-server on local + remotes after the daemon sync (binary update, config, service restart). **User settings** come from this Mac’s live `~/.local/share/code-server/User/settings.json` (pushed to remotes automatically). The repo `user-settings.json` is only a bootstrap fallback when no live file exists yet. Overrides:
 
 ```bash
-PASEO_SKIP_CODE_SERVER=1 ./scripts/sync-custom-branch.sh              # daemon only
-PASEO_SYNC_CODE_SERVER_USER_DATA=1 ./scripts/sync-custom-branch.sh    # also rsync full User/ + extensions/
-CODE_SERVER_VERSION=4.127.0 ./scripts/sync-custom-branch.sh           # pin binary version
+PASEO_SKIP_CODE_SERVER=1 ./scripts/deploy.sh              # daemon only
+PASEO_SYNC_CODE_SERVER_USER_DATA=1 ./scripts/deploy.sh    # also rsync full User/ + extensions/
+CODE_SERVER_VERSION=4.127.0 ./scripts/deploy.sh           # pin binary version
 ```
 
 Or deploy one host directly:
 
 ```bash
-./scripts/code-server/deploy.sh local
-./scripts/code-server/deploy.sh blrofc3      # run on that host (or via sync script)
-./scripts/code-server/deploy.sh iammvaibhav
+./scripts/code-server/install.sh local
+./scripts/code-server/install.sh blrofc3      # run on that host (or via sync script)
+./scripts/code-server/install.sh iammvaibhav
 ```
 
 Workspace trust / Restricted Mode is disabled by default (`--disable-workspace-trust` on the service, plus `security.workspace.trust.enabled: false` in `User/settings.json`) so folders open in full mode.
@@ -115,7 +115,7 @@ Two mechanisms make VS Code Web feel instant (Electron desktop only):
 
 **In-place file open (paseo-bridge).** code-server reads the `?payload=[["openFile",…]]` map only at workbench startup, so changing it forces a full reload. Instead, the `scripts/code-server/paseo-bridge/` extension runs a loopback HTTP listener (`127.0.0.1:8766`, `PASEO_BRIDGE_PORT` to override) that handles `POST /open {path,line,column}` → `vscode.window.showTextDocument`. The app calls it **same-origin** from the workbench page via code-server's built-in reverse proxy — `fetch("/proxy/8766/open", …)` run through `webview.executeJavaScript` — so there is no new VPN-exposed port and no CORS/insecure-origin change. Keep the port in sync between `extension.js` (`DEFAULT_PORT`) and `packages/app/src/workspace/browser-editor-url.ts` (`CODE_SERVER_BRIDGE_PORT`).
 
-The extension is plain CommonJS (no build step); `deploy.sh` copies it to `~/.local/share/code-server/extensions/paseo-bridge/` and restarts the service (skip with `PASEO_SKIP_CODE_SERVER_EXTENSION=1`). It activates on `onStartupFinished`; if two windows race for the port, only the first binds (the rest stand down on `EADDRINUSE`) — fine for the single-window model.
+The extension is plain CommonJS (no build step); `install.sh` copies it to `~/.local/share/code-server/extensions/paseo-bridge/` and restarts the service (skip with `PASEO_SKIP_CODE_SERVER_EXTENSION=1`). It activates on `onStartupFinished`; if two windows race for the port, only the first binds (the rest stand down on `EADDRINUSE`) — fine for the single-window model.
 
 ## Host file browser
 

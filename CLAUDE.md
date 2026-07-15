@@ -185,14 +185,14 @@ All local customizations live on **`vaibhav/customizations`**, branched from `up
   - Background **preload** so it opens instantly, and in-place file opens with no reload via the `scripts/code-server/paseo-bridge/` extension
   - Desktop-only **Host files** browser (left rail) rooted at `/`, opening files in VS Code Web
 - LaTeX math rendering for agent messages
-- `scripts/sync-custom-branch.sh` for multi-host deploy
+- `scripts/deploy.sh` for multi-host deploy
 
 Do day-to-day work on this branch, not on `main`.
 
 ### Day-to-day flow
 
 1. Commit changes on `vaibhav/customizations`.
-2. Run `./scripts/sync-custom-branch.sh` from the repo root.
+2. Run `./scripts/deploy.sh` from the repo root.
 
 The script:
 
@@ -216,12 +216,12 @@ npx tsx packages/cli/src/index.js daemon restart --home ~/.paseo
 ### Useful overrides
 
 ```bash
-PASEO_SKIP_REMOTES=1 ./scripts/sync-custom-branch.sh          # local only
-PASEO_SKIP_LOCAL=1 ./scripts/sync-custom-branch.sh            # remotes only
-PASEO_SKIP_DAEMON=1 ./scripts/sync-custom-branch.sh          # code-server + settings only (no daemon build/restart)
-PASEO_SKIP_CODE_SERVER=1 ./scripts/sync-custom-branch.sh      # skip VS Code Web deploy
-PASEO_SYNC_CODE_SERVER_USER_DATA=1 ./scripts/sync-custom-branch.sh  # also rsync code-server User/ + extensions/
-PASEO_NODE_VERSION=22 ./scripts/sync-custom-branch.sh
+PASEO_SKIP_REMOTES=1 ./scripts/deploy.sh          # local only
+PASEO_SKIP_LOCAL=1 ./scripts/deploy.sh            # remotes only
+PASEO_SKIP_DAEMON=1 ./scripts/deploy.sh          # code-server + settings only (no daemon build/restart)
+PASEO_SKIP_CODE_SERVER=1 ./scripts/deploy.sh      # skip VS Code Web deploy
+PASEO_SYNC_CODE_SERVER_USER_DATA=1 ./scripts/deploy.sh  # also rsync code-server User/ + extensions/
+PASEO_NODE_VERSION=22 ./scripts/deploy.sh
 ```
 
 code-server settings sync uses this Mac’s live `~/.local/share/code-server/User/settings.json` (not the repo template).
