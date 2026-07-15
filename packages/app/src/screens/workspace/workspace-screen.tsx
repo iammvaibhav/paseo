@@ -1740,8 +1740,9 @@ function WorkspaceScreenContent({
   );
   const workspaceDirectory = workspaceDescriptor?.workspaceDirectory || null;
   const isMissingWorkspaceDirectory = Boolean(workspaceDescriptor) && !workspaceDirectory;
-  // Warm VS Code Web in the background so "Open → VS Code Web" is instant.
-  usePreloadBrowserEditor({ browserEditorUrl, workspaceDirectory });
+  // Warm VS Code Web in the background so "Open → VS Code Web" is instant, and
+  // keep the single per-host instance rooted at the active workspace's folder.
+  usePreloadBrowserEditor({ browserEditorUrl, workspaceDirectory, isActive: isRouteFocused });
   const [isImportSheetVisible, setIsImportSheetVisible] = useState(false);
   const canOpenImportSheet = [client, isConnected, workspaceDirectory].every(Boolean);
   const openImportSheet = useCallback(() => {

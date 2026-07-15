@@ -1,10 +1,11 @@
 import { useEffect } from "react";
 import {
   ensureResidentBrowserWebview,
+  navigateResidentBrowserWebview,
   removeResidentBrowserWebview,
 } from "@/components/browser-webview-resident";
 import { getIsElectron } from "@/constants/platform";
-import { createBrowserId } from "@/stores/browser-store";
+import { createBrowserId, getBrowserRecord, useBrowserStore } from "@/stores/browser-store";
 import { browserEditorOriginFromUrl, buildBrowserEditorUrl } from "@/workspace/browser-editor-url";
 
 /**
@@ -64,6 +65,27 @@ export function ensureBrowserEditorInstance(input: {
   return instance;
 }
 
+/**
+ * Re-root the single per-host instance to a new folder (the active workspace's
+ * directory). VS Code Web can't hot-swap its root folder in the browser — the
+ * workbench is bootstrapped per root — so this is a navigation (reload). We do it
+ * on the parked/hidden webview so it reloads in the background and is already
+ * showing the right folder by the time the user opens it.
+ */
+function rerootBrowserEditorInstance(instance: BrowserEditorInstance, folderUrl: string): void {
+  instance.folderUrl = folderUrl;
+  // If the webview is parked here, navigate it directly (background reload).
+  if (navigateResidentBrowserWebview(instance.browserId, folderUrl)) {
+    return;
+  }
+  // Otherwise it's adopted into a pane (possibly hidden): let the pane owning the
+  // element navigate it, and keep the store record's URL in sync for adoption.
+  if (getBrowserRecord(instance.browserId)) {
+    useBrowserStore.getState().updateBrowser(instance.browserId, { url: folderUrl });
+    useBrowserStore.getState().requestNavigation(instance.browserId, folderUrl);
+  }
+}
+
 /** Drops and destroys the instance for an origin (e.g. host URL removed). */
 export function clearBrowserEditorInstance(origin: string): void {
   const instance = instanceByOrigin.get(origin);
@@ -80,16 +102,20 @@ export function resetBrowserEditorInstancesForTests(): void {
 }
 
 /**
- * Warms VS Code Web for the active workspace's host whenever it has a configured
- * URL. Mount once from the workspace screen (Electron only; no-op elsewhere).
+ * Warms VS Code Web for the active workspace's host and keeps its single per-host
+ * instance rooted at the active workspace's folder. Mount from the workspace
+ * screen with `isActive` = whether this workspace is the one being viewed; when a
+ * different workspace becomes active, its folder wins (background re-root/reload).
+ * Electron only; no-op elsewhere.
  */
 export function usePreloadBrowserEditor(input: {
   browserEditorUrl: string | null | undefined;
   workspaceDirectory: string | null | undefined;
+  isActive: boolean;
 }): void {
-  const { browserEditorUrl, workspaceDirectory } = input;
+  const { browserEditorUrl, workspaceDirectory, isActive } = input;
   useEffect(() => {
-    if (!getIsElectron()) {
+    if (!getIsElectron() || !isActive) {
       return;
     }
     const url = browserEditorUrl?.trim();
@@ -98,6 +124,12 @@ export function usePreloadBrowserEditor(input: {
       return;
     }
     const folderUrl = buildBrowserEditorUrl({ baseUrl: url, folderPath: folder });
-    ensureBrowserEditorInstance({ browserEditorUrl: url, folderUrl });
-  }, [browserEditorUrl, workspaceDirectory]);
+    if (!folderUrl) {
+      return;
+    }
+    const instance = ensureBrowserEditorInstance({ browserEditorUrl: url, folderUrl });
+    if (instance && instance.folderUrl !== folderUrl) {
+      rerootBrowserEditorInstance(instance, folderUrl);
+    }
+  }, [browserEditorUrl, workspaceDirectory, isActive]);
 }

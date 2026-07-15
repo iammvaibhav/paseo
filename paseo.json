@@ -28,6 +28,9 @@
     },
     "typecheck": {
       "command": "npm run typecheck"
+    },
+    "build-desktop": {
+      "command": "CSC_IDENTITY_AUTO_DISCOVERY=false npm run build:desktop -- -c.mac.notarize=false -c.mac.hardenedRuntime=false"
     }
   }
 }

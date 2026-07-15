@@ -204,6 +204,27 @@ export function resizeResidentBrowserWebview(input: {
   return { width, height };
 }
 
+/**
+ * Navigate a currently-parked webview to a new URL (used to re-root the single
+ * VS Code Web instance to the active workspace's folder). Sets `src` directly so
+ * the parked-but-painting webview reloads in the background. Returns false when
+ * the webview isn't parked here (it's adopted into a pane — navigate via the
+ * browser store's navigation request instead).
+ */
+export function navigateResidentBrowserWebview(browserId: string, url: string): boolean {
+  const normalizedBrowserId = trimNonEmpty(browserId);
+  const normalizedUrl = trimNonEmpty(url);
+  if (!normalizedBrowserId || !normalizedUrl) {
+    return false;
+  }
+  const webview = residentWebviewsByBrowserId.get(normalizedBrowserId);
+  if (!webview) {
+    return false;
+  }
+  (webview as BrowserWebviewElement).src = normalizedUrl;
+  return true;
+}
+
 export function removeResidentBrowserWebview(browserId: string): void {
   const normalizedBrowserId = trimNonEmpty(browserId);
   if (!normalizedBrowserId) {
