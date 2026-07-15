@@ -143,10 +143,28 @@ deploy_extension() {
     return
   fi
 
+  # Stop code-server first: it refuses to reinstall an extension that's active in
+  # a running window ("Please restart VS Code before reinstalling"). The service
+  # (re)start below brings it back up with the new extension.
+  stop_service
+
   log "Installing paseo-bridge into code-server"
-  "$BIN" --install-extension "$vsix" --force
+  if ! "$BIN" --install-extension "$vsix" --force; then
+    log "Warning: code-server extension install failed; VS Code Web opens will fall back to reload"
+  fi
   rm -f "$vsix"
   log "Installed paseo-bridge extension (restart below activates it)"
+}
+
+stop_service() {
+  case "$(uname -s)" in
+    Darwin)
+      launchctl bootout "gui/$(id -u)/sh.paseo.code-server" >/dev/null 2>&1 || true
+      ;;
+    Linux)
+      systemctl --user stop paseo-code-server.service >/dev/null 2>&1 || true
+      ;;
+  esac
 }
 
 deploy_macos_service() {
