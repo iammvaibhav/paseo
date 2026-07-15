@@ -9,6 +9,7 @@
 #   4. Push the branch to origin (iammvaibhav/paseo fork)
 #   5. Build server + restart the production-style daemon (~/.paseo)
 #   6. Update local code-server (binary + config + LaunchAgent + bridge extension)
+#   7. Build the desktop app (unsigned) and install it as "Paseo Test.app"
 #
 # Remote workflow (blrofc3, iammvaibhav):
 #   1. Ensure origin points at the fork and tracks the custom branch
@@ -28,6 +29,8 @@
 #   PASEO_SKIP_DAEMON=1               # skip daemon build/restart; still sync git,
 #                                     #   deploy code-server, and push settings
 #   PASEO_SKIP_CODE_SERVER=1          # skip code-server deploy everywhere
+#   PASEO_BUILD_DESKTOP=0             # skip building the desktop app (built by default)
+#   PASEO_DESKTOP_TEST_APP=...        # install path for the desktop build (default /Applications/Paseo Test.app)
 #   PASEO_SYNC_CODE_SERVER_USER_DATA=1  # also rsync User/ + extensions/ local → remotes
 #   CODE_SERVER_VERSION=4.127.0       # pin code-server; omit for latest
 #   PASEO_COMMIT_MSG_MODEL=...        # claude model for auto-commit messages (default Haiku 4.5)
@@ -55,6 +58,9 @@ REMOTE_HOSTS=(blrofc3 iammvaibhav)
 COMMIT_MSG_MODEL="${PASEO_COMMIT_MSG_MODEL:-claude-haiku-4-5-20251001}"
 CONFLICT_MODEL="${PASEO_CONFLICT_MODEL:-claude-opus-4-8}"
 CONFLICT_EFFORT="${PASEO_CONFLICT_EFFORT:-xhigh}"
+
+# Where the unsigned desktop test build is installed (local Mac only).
+DESKTOP_TEST_APP="${PASEO_DESKTOP_TEST_APP:-/Applications/Paseo Test.app}"
 
 if [[ -z "${PASEO_NODE_VERSION:-}" ]]; then
   if [[ -f "$ROOT_DIR/.tool-versions" ]]; then
@@ -258,6 +264,32 @@ deploy_local_code_server() {
   fi
   log "Deploying local code-server"
   bash "$ROOT_DIR/scripts/code-server/install.sh" local
+}
+
+build_desktop_app() {
+  if [[ "${PASEO_BUILD_DESKTOP:-1}" == "0" ]]; then
+    log "Skipping desktop app build (PASEO_BUILD_DESKTOP=0)"
+    return
+  fi
+  # Unsigned local test build. Bare `build:desktop` hangs on notarization and an
+  # ad-hoc hardened build crashes at launch (dyld team-ID mismatch), so disable
+  # both — see docs/development.md § Local desktop builds.
+  log "Building desktop app (unsigned test build) — this takes a few minutes"
+  (
+    cd "$ROOT_DIR"
+    CSC_IDENTITY_AUTO_DISCOVERY=false npm run build:desktop -- \
+      -c.mac.notarize=false -c.mac.hardenedRuntime=false
+  )
+  # electron-builder writes Paseo.app under packages/desktop/release/mac*/.
+  local built
+  built="$(find "$ROOT_DIR/packages/desktop/release" -maxdepth 2 -name 'Paseo.app' -type d 2>/dev/null | head -1)"
+  if [[ -z "$built" ]]; then
+    die "Desktop build finished but no Paseo.app found under packages/desktop/release"
+  fi
+  log "Installing $built → $DESKTOP_TEST_APP"
+  rm -rf "$DESKTOP_TEST_APP"
+  cp -R "$built" "$DESKTOP_TEST_APP"
+  log "Desktop test app installed at $DESKTOP_TEST_APP"
 }
 
 sync_code_server_settings_to_remotes() {
@@ -473,14 +505,17 @@ What a full run does (local Mac):
      pass, streaming its output; the script makes one merge commit)
   4. Push branch to $ORIGIN_REMOTE, build server, restart daemon ($LOCAL_PASEO_HOME)
   5. Deploy code-server (binary + config + paseo-bridge extension)
+  6. Build the desktop app (unsigned) and install it as "$DESKTOP_TEST_APP"
 Then repeats git sync + code-server deploy on: ${REMOTE_HOSTS[*]}.
 
-Scope flags (set to 1):
+Scope flags (set to 1 unless noted):
   PASEO_SKIP_LOCAL                 Skip the local Mac entirely (remotes only)
   PASEO_SKIP_REMOTES              Skip all remote hosts (local only)
   PASEO_SKIP_DAEMON              Skip daemon build/restart (git + code-server only)
   PASEO_SKIP_CODE_SERVER         Skip code-server deploy everywhere
   PASEO_SKIP_CODE_SERVER_EXTENSION  Skip installing the paseo-bridge extension
+  PASEO_BUILD_DESKTOP=0            Skip the desktop app build (built by default)
+  PASEO_DESKTOP_TEST_APP=<path>    Desktop install path (default: $DESKTOP_TEST_APP)
   PASEO_SYNC_CODE_SERVER_USER_DATA  Also rsync code-server User/ + extensions/ to remotes
 
 Model selection (claude-driven steps):
@@ -528,6 +563,7 @@ main() {
       log "Skipping local daemon build/restart (PASEO_SKIP_DAEMON=1)"
     fi
     deploy_local_code_server
+    build_desktop_app
   fi
 
   if [[ "${PASEO_SKIP_REMOTES:-0}" != "1" ]]; then
