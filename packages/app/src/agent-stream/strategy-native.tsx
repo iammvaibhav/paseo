@@ -40,6 +40,24 @@ interface SavedNativeScrollPosition {
   mode: BottomAnchorMode;
 }
 
+interface HistoryRowDisplayVariants {
+  regular?: StreamItem;
+  compact?: StreamItem;
+}
+
+const historyRowDisplayVariants = new WeakMap<StreamItem, HistoryRowDisplayVariants>();
+
+function getHistoryRowDisplayVariant(item: StreamItem, compact: boolean): StreamItem {
+  let variants = historyRowDisplayVariants.get(item);
+  if (!variants) {
+    variants = {};
+    historyRowDisplayVariants.set(item, variants);
+  }
+  const key = compact ? "compact" : "regular";
+  variants[key] ??= { ...item };
+  return variants[key];
+}
+
 function keyExtractor(item: { id: string }): string {
   return item.id;
 }
@@ -48,6 +66,8 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
   const {
     agentId,
     segments,
+    historyRowRevision,
+    liveHeadRowRevision,
     boundary,
     renderers,
     listEmptyComponent,
@@ -87,12 +107,33 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
   const suppressStickyRestickRef = useRef(false);
   const pendingRestoreFrameRef = useRef<number | null>(null);
 
-  const historyRows = useMemo(() => {
+  const historyItems = useMemo(() => {
     if (segments.historyVirtualized.length === 0) {
       return segments.historyMounted;
     }
     return [...segments.historyVirtualized, ...segments.historyMounted];
   }, [segments.historyMounted, segments.historyVirtualized]);
+  // Keep unchanged item identities intact so live updates only rerender rows
+  // whose projected content or local display state actually changed. A rare
+  // breakpoint change intentionally refreshes the whole history window.
+  const globallyRevisedHistoryRows = useMemo(() => {
+    const globalDisplayState = historyRowRevision?.globalDisplayState ?? false;
+    return historyItems.map((item) => getHistoryRowDisplayVariant(item, globalDisplayState));
+  }, [historyItems, historyRowRevision?.globalDisplayState]);
+  const displayStateHistoryRows = useMemo(
+    () =>
+      globallyRevisedHistoryRows.map((item) =>
+        historyRowRevision?.displayStateById.has(item.id) ? { ...item } : item,
+      ),
+    [globallyRevisedHistoryRows, historyRowRevision?.displayStateById],
+  );
+  const historyRows = useMemo(
+    () =>
+      displayStateHistoryRows.map((item) =>
+        historyRowRevision?.contentById.has(item.id) ? { ...item } : item,
+      ),
+    [displayStateHistoryRows, historyRowRevision?.contentById],
+  );
 
   const clearNativeViewportSettling = useCallback(() => {
     if (nativeViewportSettlingFrameIdRef.current !== null) {
@@ -427,12 +468,15 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
 
   const renderItem = useStableEvent(
     ({ item, index }: ListRenderItemInfo<StreamItem>): ReactElement | null => {
-      const rendered = renderHistoryMountedRow(item, index, historyRows);
+      const rendered = renderHistoryMountedRow(item, index, historyItems);
       return (rendered ?? null) as ReactElement | null;
     },
   );
 
   const liveHeaderContent = useMemo(() => {
+    // Stable render events read the latest expansion state; this revision makes
+    // the memo invoke them again when that state changes.
+    void liveHeadRowRevision;
     const liveHeadRows = segments.liveHead.map((item, index) => (
       <Fragment key={item.id}>{renderLiveHeadRow(item, index, segments.liveHead)}</Fragment>
     ));
@@ -451,7 +495,14 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
         {liveAuxiliary}
       </Fragment>
     );
-  }, [boundary, listEmptyComponent, renderLiveAuxiliary, renderLiveHeadRow, segments.liveHead]);
+  }, [
+    boundary,
+    listEmptyComponent,
+    liveHeadRowRevision,
+    renderLiveAuxiliary,
+    renderLiveHeadRow,
+    segments.liveHead,
+  ]);
 
   const historyFooterContent = useMemo(() => {
     if (!isLoadingOlderHistory) {
@@ -464,12 +515,15 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
     );
   }, [isLoadingOlderHistory]);
 
+  // RN's FlatList strictMode keeps its internal renderItem wrapper stable when
+  // data or the live header changes, preserving the row identities above.
   return (
     <FlatList
       ref={flatListRef}
       data={historyRows}
       renderItem={renderItem}
       keyExtractor={keyExtractor}
+      strictMode
       testID="agent-chat-scroll"
       nativeID="agent-chat-scroll-native-virtualized"
       ListHeaderComponent={liveHeaderContent ?? undefined}

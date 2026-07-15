@@ -11,7 +11,6 @@ import React, {
 import { ActivityIndicator } from "react-native";
 import { measureElement as measureVirtualElement, useVirtualizer } from "@tanstack/react-virtual";
 import { useRetainedPanelActive } from "@/components/retained-panel";
-import { useWebElementScrollbar } from "@/components/use-web-scrollbar";
 import { estimateStreamItemHeight } from "./web-virtualization";
 import type { StreamRenderInput, StreamStrategy, StreamViewportHandle } from "./strategy";
 import { createStreamStrategy } from "./strategy";
@@ -101,6 +100,7 @@ function isScrollContainerOverscrolledPastBottom(
 function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: boolean }) {
   const {
     segments,
+    liveHeadRowRevision,
     boundary,
     renderers,
     listEmptyComponent,
@@ -144,11 +144,6 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
   const savedScrollPositionRef = useRef<SavedWebScrollPosition | null>(null);
   const suppressStickToBottomRef = useRef(false);
   const pendingRestoreFrameRef = useRef<number | null>(null);
-  const showDesktopWebScrollbar = !isMobileBreakpoint;
-  const scrollbarOverlay = useWebElementScrollbar(scrollContainerRef, {
-    enabled: showDesktopWebScrollbar,
-    contentRef,
-  });
   const shouldUseVirtualizer = segments.historyVirtualized.length > 0;
   const {
     renderHistoryVirtualizedRow,
@@ -649,10 +644,11 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     ));
   }, [renderHistoryMountedRow, segments.historyMounted]);
   const liveHeadRows = useMemo(() => {
+    void liveHeadRowRevision;
     return segments.liveHead.map((item, index) => (
       <Fragment key={item.id}>{renderLiveHeadRow(item, index, segments.liveHead)}</Fragment>
     ));
-  }, [renderLiveHeadRow, segments.liveHead]);
+  }, [liveHeadRowRevision, renderLiveHeadRow, segments.liveHead]);
   const liveAuxiliary = useMemo(() => {
     return renderLiveAuxiliary();
   }, [renderLiveAuxiliary]);
@@ -673,47 +669,40 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     !liveAuxiliary;
 
   return (
-    <>
-      <div
-        ref={handleScrollContainerRef}
-        data-testid="agent-chat-scroll"
-        id={`agent-chat-scroll-${shouldUseVirtualizer ? "web-dom-virtualized" : "web-dom-scroll"}`}
-        style={scrollContainerStyle}
-      >
-        <div ref={handleContentRef} style={contentContainerStyle}>
-          {historyStartSlot}
-          {shouldUseVirtualizer ? (
-            <div style={virtualRowsContainerStyle}>
-              {virtualRows.map((virtualRow) => {
-                const item = segments.historyVirtualized[virtualRow.index];
-                if (!item) {
-                  return null;
-                }
-                return (
-                  <div
-                    key={virtualRow.key}
-                    data-index={virtualRow.index}
-                    ref={measureVirtualizedRowElement}
-                    style={renderVirtualRowStyle(virtualRow.start)}
-                  >
-                    {renderHistoryVirtualizedRow(
-                      item,
-                      virtualRow.index,
-                      segments.historyVirtualized,
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          ) : null}
-          {mountedHistoryRows}
-          {liveHeadRows}
-          {liveAuxiliary}
-          {shouldRenderEmpty ? listEmptyComponent : null}
-        </div>
+    <div
+      ref={handleScrollContainerRef}
+      data-testid="agent-chat-scroll"
+      id={`agent-chat-scroll-${shouldUseVirtualizer ? "web-dom-virtualized" : "web-dom-scroll"}`}
+      style={scrollContainerStyle}
+    >
+      <div ref={handleContentRef} style={contentContainerStyle}>
+        {historyStartSlot}
+        {shouldUseVirtualizer ? (
+          <div style={virtualRowsContainerStyle}>
+            {virtualRows.map((virtualRow) => {
+              const item = segments.historyVirtualized[virtualRow.index];
+              if (!item) {
+                return null;
+              }
+              return (
+                <div
+                  key={virtualRow.key}
+                  data-index={virtualRow.index}
+                  ref={measureVirtualizedRowElement}
+                  style={renderVirtualRowStyle(virtualRow.start)}
+                >
+                  {renderHistoryVirtualizedRow(item, virtualRow.index, segments.historyVirtualized)}
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
+        {mountedHistoryRows}
+        {liveHeadRows}
+        {liveAuxiliary}
+        {shouldRenderEmpty ? listEmptyComponent : null}
       </div>
-      {scrollbarOverlay}
-    </>
+    </div>
   );
 }
 
