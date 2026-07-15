@@ -9,8 +9,15 @@
 # Env:
 #   CODE_SERVER_VERSION=4.127.0   # pin; omit for latest
 #   CODE_SERVER_SCRIPTS_DIR=...   # defaults to this script's directory
+#   CODE_SERVER_SETTINGS_FILE=... # optional explicit settings.json to install
 #
-# Safe to re-run: refreshes config/settings/unit files and restarts the service.
+# Settings source (first match wins):
+#   1. CODE_SERVER_SETTINGS_FILE
+#   2. Live ~/.local/share/code-server/User/settings.json (if present)
+#   3. Repo scripts/code-server/user-settings.json (bootstrap defaults)
+#
+# Safe to re-run: refreshes config/unit files and restarts the service.
+# Live User settings are preserved when present (not overwritten by the repo).
 
 set -euo pipefail
 
@@ -69,17 +76,41 @@ ensure_binary() {
   fi
 }
 
+resolve_settings_src() {
+  local live_settings="${USER_DIR}/settings.json"
+  local repo_settings="${SCRIPTS_DIR}/user-settings.json"
+
+  if [[ -n "${CODE_SERVER_SETTINGS_FILE:-}" ]]; then
+    [[ -f "$CODE_SERVER_SETTINGS_FILE" ]] || die "CODE_SERVER_SETTINGS_FILE not found: $CODE_SERVER_SETTINGS_FILE"
+    printf '%s\n' "$CODE_SERVER_SETTINGS_FILE"
+    return
+  fi
+  if [[ -f "$live_settings" ]]; then
+    printf '%s\n' "$live_settings"
+    return
+  fi
+  [[ -f "$repo_settings" ]] || die "Missing settings: $repo_settings"
+  printf '%s\n' "$repo_settings"
+}
+
 deploy_files() {
   local config_src="${SCRIPTS_DIR}/config.${HOST_KIND}.yaml"
-  local settings_src="${SCRIPTS_DIR}/user-settings.json"
+  local settings_src
+  settings_src="$(resolve_settings_src)"
 
   [[ -f "$config_src" ]] || die "Missing config: $config_src"
-  [[ -f "$settings_src" ]] || die "Missing settings: $settings_src"
 
   mkdir -p "$CONFIG_DIR" "$USER_DIR"
   cp "$config_src" "${CONFIG_DIR}/config.yaml"
-  cp "$settings_src" "${USER_DIR}/settings.json"
-  log "Wrote ${CONFIG_DIR}/config.yaml and ${USER_DIR}/settings.json"
+
+  # Live settings already at the destination — keep them (don't clobber with repo).
+  if [[ "$(cd "$(dirname "$settings_src")" && pwd)/$(basename "$settings_src")" == "${USER_DIR}/settings.json" ]]; then
+    log "Keeping live settings at ${USER_DIR}/settings.json"
+  else
+    cp "$settings_src" "${USER_DIR}/settings.json"
+    log "Wrote ${USER_DIR}/settings.json from ${settings_src}"
+  fi
+  log "Wrote ${CONFIG_DIR}/config.yaml"
 }
 
 deploy_macos_service() {

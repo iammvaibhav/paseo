@@ -221,6 +221,8 @@ PASEO_SYNC_CODE_SERVER_USER_DATA=1 ./scripts/sync-custom-branch.sh  # also rsync
 PASEO_NODE_VERSION=22 ./scripts/sync-custom-branch.sh
 ```
 
+code-server settings sync uses this Mac’s live `~/.local/share/code-server/User/settings.json` (not the repo template).
+
 ### Local desktop test builds
 
 Never run bare `npm run build:desktop` locally — it hangs on notarization, and an ad-hoc build with hardened runtime crashes at launch (dyld "different Team IDs"). Use:

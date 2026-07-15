@@ -24,6 +24,11 @@
 #   PASEO_SKIP_CODE_SERVER=1          # skip code-server deploy everywhere
 #   PASEO_SYNC_CODE_SERVER_USER_DATA=1  # also rsync User/ + extensions/ local → remotes
 #   CODE_SERVER_VERSION=4.127.0       # pin code-server; omit for latest
+#
+# code-server User settings: sync always pushes this Mac's live
+# ~/.local/share/code-server/User/settings.json to remotes (not the repo template).
+# Repo scripts/code-server/user-settings.json is only a bootstrap fallback when no
+# live settings file exists yet.
 
 set -euo pipefail
 
@@ -153,6 +158,30 @@ deploy_local_code_server() {
   fi
   log "Deploying local code-server"
   bash "$ROOT_DIR/scripts/code-server/deploy.sh" local
+}
+
+sync_code_server_settings_to_remotes() {
+  if [[ "${PASEO_SKIP_CODE_SERVER:-0}" == "1" ]]; then
+    return
+  fi
+  if [[ "${PASEO_SKIP_REMOTES:-0}" == "1" ]]; then
+    return
+  fi
+
+  local src="${HOME}/.local/share/code-server/User/settings.json"
+  if [[ ! -f "$src" ]]; then
+    log "No live code-server settings at $src; remotes keep deploy defaults"
+    return
+  fi
+
+  log "Pushing live code-server settings to remotes ($src)"
+  local host
+  for host in "${REMOTE_HOSTS[@]}"; do
+    log "  → $host"
+    ssh -o BatchMode=yes "$host" 'mkdir -p ~/.local/share/code-server/User'
+    rsync -az "$src" "$host:~/.local/share/code-server/User/settings.json"
+    ssh -o BatchMode=yes "$host" 'systemctl --user restart paseo-code-server.service'
+  done
 }
 
 sync_code_server_user_data() {
@@ -343,6 +372,7 @@ main() {
     done
   fi
 
+  sync_code_server_settings_to_remotes
   sync_code_server_user_data
 
   log "Sync complete"

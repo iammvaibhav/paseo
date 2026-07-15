@@ -27,11 +27,11 @@ Binary: standalone install under `~/.local/bin/code-server` (latest, or pin with
 
 ### Deploy / update (preferred)
 
-`./scripts/sync-custom-branch.sh` deploys code-server on local + remotes after the daemon sync (binary update, config, service restart). Overrides:
+`./scripts/sync-custom-branch.sh` deploys code-server on local + remotes after the daemon sync (binary update, config, service restart). **User settings** come from this Mac’s live `~/.local/share/code-server/User/settings.json` (pushed to remotes automatically). The repo `user-settings.json` is only a bootstrap fallback when no live file exists yet. Overrides:
 
 ```bash
 PASEO_SKIP_CODE_SERVER=1 ./scripts/sync-custom-branch.sh              # daemon only
-PASEO_SYNC_CODE_SERVER_USER_DATA=1 ./scripts/sync-custom-branch.sh    # also rsync User/ + extensions/
+PASEO_SYNC_CODE_SERVER_USER_DATA=1 ./scripts/sync-custom-branch.sh    # also rsync full User/ + extensions/
 CODE_SERVER_VERSION=4.127.0 ./scripts/sync-custom-branch.sh           # pin binary version
 ```
 
