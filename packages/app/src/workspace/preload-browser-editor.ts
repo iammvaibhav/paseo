@@ -8,89 +8,79 @@ import { createBrowserId } from "@/stores/browser-store";
 import { browserEditorOriginFromUrl, buildBrowserEditorUrl } from "@/workspace/browser-editor-url";
 
 /**
- * Background warm-up for VS Code Web (code-server).
+ * One persistent VS Code Web (code-server) instance per host origin.
  *
- * We keep one always-loaded, chrome-less `<webview>` parked per code-server
- * origin (Electron only) so that "Open → VS Code Web" reveals an already-booted
- * workbench instead of cold-loading it. The parked webview lives in the resident
- * webview map (in-memory, not persisted); the browser-store record is created
- * only when the user actually opens the tab, which then adopts this warm webview
- * by its `browserId`. Nothing is written to the persisted browser store until an
- * open happens, so preloading leaves no clutter behind.
+ * We keep exactly ONE chrome-less `<webview>` per code-server origin, warmed in
+ * the background (Electron only). Opening reveals it, closing parks it (kept
+ * alive, hidden), reopening re-reveals the SAME warm instance — so it never
+ * cold-reloads. Because there's only one window per host, its extension host
+ * reliably owns the paseo-bridge port and is the window the user sees, which is
+ * what makes in-place file opens work.
+ *
+ * The registry is in-memory (not persisted). The browser-store record + tab are
+ * created lazily when the instance is first revealed; the parked webview lives in
+ * the resident webview map and is adopted by its stable `browserId`.
  */
 
-interface PreloadedBrowserEditor {
+export interface BrowserEditorInstance {
   browserId: string;
   origin: string;
   folderUrl: string;
 }
 
-const preloadedByOrigin = new Map<string, PreloadedBrowserEditor>();
+const instanceByOrigin = new Map<string, BrowserEditorInstance>();
 
-export function preloadBrowserEditor(input: {
+/**
+ * Returns the persistent instance for the host, creating + warming it if needed.
+ * Never creates a second instance for the same origin. Returns null off Electron
+ * or when the URL/folder can't be resolved.
+ */
+export function ensureBrowserEditorInstance(input: {
   browserEditorUrl: string;
-  folderPath: string;
-}): void {
+  folderUrl: string | null | undefined;
+}): BrowserEditorInstance | null {
   if (!getIsElectron()) {
-    return;
+    return null;
   }
   const origin = browserEditorOriginFromUrl(input.browserEditorUrl);
   if (!origin) {
-    return;
+    return null;
   }
-  const folderUrl = buildBrowserEditorUrl({
-    baseUrl: input.browserEditorUrl,
-    folderPath: input.folderPath,
-  });
-  if (!folderUrl) {
-    return;
-  }
-  // Keep exactly one warm window per origin, rooted at the ACTIVE workspace's
-  // folder. If the active workspace changed (same host, different folder), tear
-  // the stale warm window down and re-warm for the new folder — otherwise "Open"
-  // would adopt a window rooted elsewhere and have to reload to the right folder.
-  const existing = preloadedByOrigin.get(origin);
+  const existing = instanceByOrigin.get(origin);
   if (existing) {
-    if (existing.folderUrl === folderUrl) {
-      return;
-    }
-    removeResidentBrowserWebview(existing.browserId);
-    preloadedByOrigin.delete(origin);
+    // Make sure the warm webview still exists (recreate it if it was destroyed).
+    // No-op when it's already parked or currently adopted into a visible pane.
+    ensureResidentBrowserWebview({ browserId: existing.browserId, url: existing.folderUrl });
+    return existing;
+  }
+  const folderUrl = input.folderUrl?.trim();
+  if (!folderUrl) {
+    return null;
   }
   const browserId = createBrowserId();
-  preloadedByOrigin.set(origin, { browserId, origin, folderUrl });
+  const instance: BrowserEditorInstance = { browserId, origin, folderUrl };
+  instanceByOrigin.set(origin, instance);
   ensureResidentBrowserWebview({ browserId, url: folderUrl });
+  return instance;
 }
 
-/**
- * Claims the warm webview for an origin (removing it from the registry) so the
- * caller can open a tab that adopts it. Returns null when nothing is warm.
- */
-export function takePreloadedBrowserEditor(origin: string): PreloadedBrowserEditor | null {
-  const preloaded = preloadedByOrigin.get(origin) ?? null;
-  if (preloaded) {
-    preloadedByOrigin.delete(origin);
-  }
-  return preloaded;
-}
-
-/** Drops and destroys the warm webview for an origin (e.g. host URL removed). */
-export function clearPreloadedBrowserEditor(origin: string): void {
-  const preloaded = preloadedByOrigin.get(origin);
-  if (!preloaded) {
+/** Drops and destroys the instance for an origin (e.g. host URL removed). */
+export function clearBrowserEditorInstance(origin: string): void {
+  const instance = instanceByOrigin.get(origin);
+  if (!instance) {
     return;
   }
-  preloadedByOrigin.delete(origin);
-  removeResidentBrowserWebview(preloaded.browserId);
+  instanceByOrigin.delete(origin);
+  removeResidentBrowserWebview(instance.browserId);
 }
 
 /** For tests: drop registry state without touching the DOM resident map. */
-export function resetPreloadedBrowserEditorsForTests(): void {
-  preloadedByOrigin.clear();
+export function resetBrowserEditorInstancesForTests(): void {
+  instanceByOrigin.clear();
 }
 
 /**
- * Warms VS Code Web for the active workspace whenever its host has a configured
+ * Warms VS Code Web for the active workspace's host whenever it has a configured
  * URL. Mount once from the workspace screen (Electron only; no-op elsewhere).
  */
 export function usePreloadBrowserEditor(input: {
@@ -107,6 +97,7 @@ export function usePreloadBrowserEditor(input: {
     if (!url || !folder) {
       return;
     }
-    preloadBrowserEditor({ browserEditorUrl: url, folderPath: folder });
+    const folderUrl = buildBrowserEditorUrl({ baseUrl: url, folderPath: folder });
+    ensureBrowserEditorInstance({ browserEditorUrl: url, folderUrl });
   }, [browserEditorUrl, workspaceDirectory]);
 }
