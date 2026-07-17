@@ -8,7 +8,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, { useAnimatedStyle, useSharedValue, runOnJS } from "react-native-reanimated";
-import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import { Gesture } from "react-native-gesture-handler";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { HardDrive, X } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
@@ -21,6 +21,7 @@ import {
   usePrPaneData,
 } from "@/git/pull-request-panel";
 import { useCheckoutGitActionsStore } from "@/git/actions-store";
+import type { Forge } from "@/git/forge";
 import type { UsePrPaneDataResult } from "@/git/pull-request-panel/use-data";
 import { usePanelStore, selectIsFileExplorerOpen, type ExplorerTab } from "@/stores/panel-store";
 import { useToast } from "@/contexts/toast-context";
@@ -33,7 +34,8 @@ import { useKeyboardShiftStyle } from "@/hooks/use-keyboard-shift-style";
 import { useHasOwnedWindowChromeObstruction, WindowChromeSafeArea } from "@/utils/desktop-window";
 import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
 import { RetainedPanelActivity } from "@/components/retained-panel";
-import { getIsElectron, isWeb } from "@/constants/platform";
+import { getIsElectron } from "@/constants/platform";
+import { SidebarResizeHandle } from "@/components/sidebar-resize-handle";
 import { buildWorkspaceAttachmentScopeKey } from "@/attachments/workspace-attachments-store";
 import { resolveDesktopExplorerWidth } from "@/components/desktop-sidebar-layout";
 import { useSubmodulesQuery } from "@/git/use-submodules-query";
@@ -218,9 +220,11 @@ export function ExplorerSidebar({
   return (
     <Animated.View style={desktopSidebarStyle}>
       <View style={DESKTOP_SIDEBAR_BORDER_STYLE}>
-        <GestureDetector gesture={resizeGesture}>
-          <View style={RESIZE_HANDLE_STYLE} />
-        </GestureDetector>
+        <SidebarResizeHandle
+          edge="left"
+          gesture={resizeGesture}
+          testID="explorer-sidebar-resize-handle"
+        />
 
         <ExplorerSidebarContent
           activeTab={explorerTab}
@@ -308,6 +312,7 @@ function ExplorerTabs({
   filesLabel,
   hostLabel,
   prTabLabel,
+  forge,
   onTabPress,
   onHostPress,
 }: {
@@ -320,6 +325,7 @@ function ExplorerTabs({
   filesLabel: string;
   hostLabel: string;
   prTabLabel: string;
+  forge: Forge;
   onTabPress: (tab: ExplorerTab) => void;
   onHostPress: () => void;
 }) {
@@ -354,6 +360,7 @@ function ExplorerTabs({
           testID="explorer-tab-pr"
         >
           <PullRequestTabIcon
+            forge={forge}
             size={13}
             color={
               !showHostFiles && resolvedTab === "pr"
@@ -572,6 +579,7 @@ function ExplorerSidebarContent({
           filesLabel={t("workspace.tabs.explorer.files")}
           hostLabel={t("workspace.tabs.explorer.host", { defaultValue: "Host" })}
           prTabLabel={prTabLabel}
+          forge={prPane.forge}
           onTabPress={handleWorkspaceTabPress}
           onHostPress={handleShowHostFiles}
         />
@@ -673,14 +681,6 @@ const styles = StyleSheet.create((theme) => ({
     borderLeftColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceSidebar,
   },
-  resizeHandle: {
-    position: "absolute",
-    left: -5,
-    top: 0,
-    bottom: 0,
-    width: 10,
-    zIndex: 10,
-  },
   sidebarContent: {
     flex: 1,
     minHeight: 0,
@@ -737,4 +737,3 @@ const styles = StyleSheet.create((theme) => ({
 }));
 
 const DESKTOP_SIDEBAR_BORDER_STYLE = [styles.desktopSidebarBorder, { flex: 1 }];
-const RESIZE_HANDLE_STYLE = [styles.resizeHandle, isWeb && ({ cursor: "col-resize" } as object)];

@@ -2,20 +2,27 @@ import { useQuery } from "@tanstack/react-query";
 import { getDesktopHost, type DesktopEditorBridge } from "@/desktop/host";
 
 export type DesktopOpenTargetKind = "editor" | "file-manager";
-export type DesktopOpenMode = "open" | "reveal";
+export type DesktopOpenTargetIcon =
+  | { kind: "image"; dataUrl: string }
+  | { kind: "symbol"; name: "folder" | "terminal" };
 
 export interface DesktopOpenTarget {
   id: string;
   label: string;
   kind: DesktopOpenTargetKind;
+  icon?: DesktopOpenTargetIcon;
   supportsRemote?: boolean;
 }
 
 export interface OpenDesktopTargetInput {
   editorId: string;
-  path: string;
+  workspacePath?: string;
+  filePath?: string;
+  line?: number;
+  column?: number;
+  /** Remote-host open: the path lives on the SSH host. */
+  path?: string;
   cwd?: string;
-  mode?: DesktopOpenMode;
   /** SSH destination for opening the path on a remote host via the editor's Remote SSH support. */
   sshHost?: string;
 }

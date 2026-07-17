@@ -1,3 +1,9 @@
+import {
+  getDesktopHost,
+  type DesktopAttachedBrowserRegistration,
+  type DesktopBrowserBridge,
+} from "@/desktop/host";
+
 const RESIDENT_BROWSER_HOST_ID = "paseo-browser-resident-webviews";
 const PERSISTENT_BROWSER_WRAPPER_ATTRIBUTE = "data-paseo-persistent-browser-wrapper";
 const BROWSER_ID_ATTRIBUTE = "data-paseo-browser-id";
@@ -19,6 +25,60 @@ const persistentWebviewsByBrowserId = new Map<string, PersistentBrowserWebview>(
 
 interface BrowserWebviewElement extends HTMLElement {
   src: string;
+  getWebContentsId(): number;
+}
+
+interface BrowserWebviewIdentity {
+  browserId: string;
+  workspaceId: string;
+}
+
+export interface BrowserWebviewProfileHost {
+  profilePartition: string;
+  registerAttachedBrowser(input: DesktopAttachedBrowserRegistration): Promise<void>;
+}
+
+function isAttachedBrowserBridge(
+  browser: DesktopBrowserBridge | undefined,
+): browser is BrowserWebviewProfileHost {
+  return (
+    browser !== undefined &&
+    typeof browser.profilePartition === "string" &&
+    browser.profilePartition.startsWith("persist:") &&
+    typeof browser.registerAttachedBrowser === "function"
+  );
+}
+
+function getBrowserBridge(override?: BrowserWebviewProfileHost): BrowserWebviewProfileHost {
+  if (override) {
+    return override;
+  }
+  const browser = getDesktopHost()?.browser;
+  if (!isAttachedBrowserBridge(browser)) {
+    throw new Error("Electron browser profile bridge is unavailable");
+  }
+  return browser;
+}
+
+function registerBrowserWhenAttached(
+  webview: BrowserWebviewElement,
+  identity: BrowserWebviewIdentity,
+  browser: BrowserWebviewProfileHost,
+): void {
+  // Reparenting a webview can replace its guest WebContents without replacing
+  // this DOM element, so every attachment needs a fresh main-process registration.
+  webview.addEventListener("did-attach", () => {
+    const webContentsId = webview.getWebContentsId();
+    void browser
+      .registerAttachedBrowser({
+        browserId: identity.browserId,
+        workspaceId: identity.workspaceId,
+        webContentsId,
+      })
+      .catch((error) => {
+        console.error("[browser-webview] attached registration failed", error);
+      });
+  });
 }
 
 function trimNonEmpty(value: string | null | undefined): string | null {
@@ -141,10 +201,16 @@ function applyPersistentWrapperParking(record: PersistentBrowserWebview): void {
 
 export function prepareBrowserWebview(
   webview: HTMLElement,
-  input: { browserId: string; initialUrl?: string | null },
+  input: {
+    browserId: string;
+    workspaceId: string;
+    initialUrl?: string | null;
+    profileHost?: BrowserWebviewProfileHost;
+  },
 ): void {
+  const browser = getBrowserBridge(input.profileHost);
   webview.setAttribute(BROWSER_ID_ATTRIBUTE, input.browserId);
-  webview.setAttribute("partition", `persist:paseo-browser-${input.browserId}`);
+  webview.setAttribute("partition", browser.profilePartition);
   webview.setAttribute("allowpopups", "true");
   webview.setAttribute("spellcheck", "false");
   webview.setAttribute("autosize", "on");
@@ -157,6 +223,7 @@ export function prepareBrowserWebview(
   if (input.initialUrl) {
     (webview as BrowserWebviewElement).src = input.initialUrl;
   }
+  registerBrowserWhenAttached(webview as BrowserWebviewElement, input, browser);
 }
 
 export function isBrowserWebviewDomReady(webview: HTMLElement): boolean {
@@ -165,7 +232,9 @@ export function isBrowserWebviewDomReady(webview: HTMLElement): boolean {
 
 export function ensureResidentBrowserWebview(input: {
   browserId: string;
+  workspaceId: string;
   url: string;
+  profileHost?: BrowserWebviewProfileHost;
 }): HTMLElement | null {
   const browserId = trimNonEmpty(input.browserId);
   if (!browserId) {
@@ -191,7 +260,12 @@ export function ensureResidentBrowserWebview(input: {
   }
 
   const webview = ownerDocument.createElement("webview") as BrowserWebviewElement;
-  prepareBrowserWebview(webview, { browserId, initialUrl: input.url });
+  prepareBrowserWebview(webview, {
+    browserId,
+    workspaceId: input.workspaceId,
+    initialUrl: input.url,
+    profileHost: input.profileHost,
+  });
   releaseResidentBrowserWebview(browserId, webview);
   return webview;
 }
@@ -204,6 +278,7 @@ export function ensureResidentBrowserWebview(input: {
  */
 export function ensurePersistentBrowserWebview(input: {
   browserId: string;
+  workspaceId?: string;
   url: string;
 }): HTMLElement | null {
   const browserId = trimNonEmpty(input.browserId);
@@ -222,7 +297,14 @@ export function ensurePersistentBrowserWebview(input: {
   const wrapper = ownerDocument.createElement("div");
   wrapper.setAttribute(PERSISTENT_BROWSER_WRAPPER_ATTRIBUTE, browserId);
   const webview = ownerDocument.createElement("webview") as BrowserWebviewElement;
-  prepareBrowserWebview(webview, { browserId, initialUrl: input.url });
+  // Persistent browser-editor webviews are workspace-agnostic (one per host
+  // origin), so there is no meaningful workspaceId — fall back to the stable
+  // browserId as the registration key.
+  prepareBrowserWebview(webview, {
+    browserId,
+    workspaceId: input.workspaceId ?? browserId,
+    initialUrl: input.url,
+  });
   wrapper.appendChild(webview);
   ownerDocument.body.appendChild(wrapper);
 
@@ -333,6 +415,19 @@ export function removePersistentBrowserWebview(browserId: string): void {
   }
   applyPersistentWrapperParking(record);
   record.wrapper.remove();
+}
+
+export function getResidentBrowserWebview(browserId: string): HTMLElement | null {
+  const normalizedBrowserId = trimNonEmpty(browserId);
+  if (!normalizedBrowserId) {
+    return null;
+  }
+  const resident = residentWebviewsByBrowserId.get(normalizedBrowserId) ?? null;
+  if (resident?.isConnected) {
+    return resident;
+  }
+  const ownerDocument = readDocument();
+  return ownerDocument ? findBrowserWebview(normalizedBrowserId, ownerDocument) : null;
 }
 
 export function takeResidentBrowserWebview(browserId: string): HTMLElement | null {

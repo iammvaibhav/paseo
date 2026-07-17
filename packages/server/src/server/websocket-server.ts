@@ -53,7 +53,8 @@ import {
   buildAgentAttentionNotificationPayload,
   findLatestPermissionRequest,
 } from "@getpaseo/protocol/agent-attention-notification";
-import { createGitHubService, type GitHubService } from "../services/github-service.js";
+import { createGitHubService } from "../services/github-service.js";
+import type { ForgeService } from "../services/forge-service.js";
 import {
   extractWsBearerProtocol,
   extractWsBearerToken,
@@ -78,6 +79,7 @@ import {
   type BrowserAutomationHostCapability,
 } from "@getpaseo/protocol/browser-automation/capabilities";
 import type { BrowserToolsBroker } from "./browser-tools/broker.js";
+import type { DaemonRuntimeConfig } from "./session/daemon/daemon-session.js";
 
 const WS_CLOSE_DAEMON_AUTH_FAILED = 4401;
 
@@ -154,8 +156,9 @@ function createFallbackWorkspaceGitSnapshot(cwd: string): WorkspaceGitRuntimeSna
       hasRemote: false,
       diffStat: null,
     },
-    github: {
+    forge: {
       featuresEnabled: false,
+      authState: "no_remote",
       pullRequest: null,
       error: null,
     },
@@ -181,6 +184,7 @@ function createFallbackWorkspaceGitService(): WorkspaceGitService {
       mainRepoRoot: null,
     }),
     getSnapshot: async (cwd: string) => createFallbackWorkspaceGitSnapshot(cwd),
+    resolveForge: async () => null,
     getCheckoutDiff: async () => ({ diff: "" }),
     validateBranchRef: async () => ({ kind: "not-found" }),
     hasLocalBranch: async () => false,
@@ -209,6 +213,7 @@ function createFallbackWorkspaceGitService(): WorkspaceGitService {
     }),
     scheduleRefreshForCwd: () => {},
     onWorkspaceStateMayHaveChanged: () => {},
+    invalidateForge: () => {},
     dispose: () => {},
   };
 }
@@ -405,19 +410,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly externalSessionsByKey: Map<string, SessionConnection> = new Map();
   private readonly serverId: string;
   private readonly daemonVersion: string;
-  private readonly daemonRuntimeConfig:
-    | {
-        listen: string | null;
-        appBaseUrl?: string;
-        relay: {
-          enabled: boolean;
-          endpoint: string;
-          publicEndpoint: string;
-          useTls: boolean;
-          publicUseTls: boolean;
-        };
-      }
-    | undefined;
+  private readonly daemonRuntimeConfig: DaemonRuntimeConfig | undefined;
   private readonly agentManager: AgentManager;
   private readonly agentStorage: AgentStorage;
   private readonly projectRegistry: ProjectRegistry;
@@ -427,7 +420,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly scheduleService: ScheduleService;
   private readonly webhookService: WebhookService | null;
   private readonly checkoutDiffManager: CheckoutDiffManager;
-  private readonly github: GitHubService;
+  private readonly github: ForgeService;
   private readonly workspaceGitService: WorkspaceGitService;
   private readonly workspaceAutoName: WorkspaceAutoName;
   private readonly downloadTokenStore: DownloadTokenStore;
@@ -506,21 +499,10 @@ export class VoiceAssistantWebSocketServer {
     getDaemonTcpHost?: () => string | null,
     resolveScriptHealth?: (hostname: string) => ScriptHealthState | null,
     workspaceGitService?: WorkspaceGitService,
-    github?: GitHubService,
+    github?: ForgeService,
     pushNotificationSender?: PushNotificationSender,
     providerSnapshotManager?: ProviderSnapshotManager,
-    daemonRuntimeConfig?: {
-      listen: string | null;
-      worktreesRoot?: string;
-      appBaseUrl?: string;
-      relay: {
-        enabled: boolean;
-        endpoint: string;
-        publicEndpoint: string;
-        useTls: boolean;
-        publicUseTls: boolean;
-      };
-    },
+    daemonRuntimeConfig?: DaemonRuntimeConfig,
     serviceProxyPublicBaseUrl?: string | null,
     browserToolsBroker?: BrowserToolsBroker | null,
     webhookService?: WebhookService | null,
@@ -580,9 +562,10 @@ export class VoiceAssistantWebSocketServer {
       this.speech?.onReadinessChange((snapshot) => {
         this.publishSpeechReadiness(snapshot);
       }) ?? null;
-    this.unsubscribeDaemonConfigChange = this.daemonConfigStore.onChange((config) => {
+    this.unsubscribeDaemonConfigChange = this.daemonConfigStore.onChange((config, details) => {
       const nextAgentManagerState = this.providerSnapshotManager.applyMutableProviderConfig(
         config.providers,
+        { removeProviders: details.removedProviders },
       );
       this.agentManager.updateProviderRegistry(nextAgentManagerState);
       this.broadcastDaemonConfigChanged(config);
@@ -1034,6 +1017,13 @@ export class VoiceAssistantWebSocketServer {
       onLifecycleIntent: (intent) => {
         this.onLifecycleIntent?.(intent);
       },
+      onWorkspaceRecovered: async (workspace) => {
+        await Promise.all(
+          this.listActiveSessions().map((activeSession) =>
+            activeSession.refreshRecoveredWorkspaceForExternalMutation(workspace),
+          ),
+        );
+      },
       logger: connectionLogger.child({ module: "session" }),
       downloadTokenStore: this.downloadTokenStore,
       pushTokenStore: this.pushTokenStore,
@@ -1232,13 +1222,22 @@ export class VoiceAssistantWebSocketServer {
       serverId: this.serverId,
       hostname: getHostname(),
       version: this.daemonVersion,
+      // COMPAT(desktopManaged): added in v0.1.X, remove optional parsing after 2027-01-16.
+      desktopManaged: this.daemonRuntimeConfig?.desktopManaged === true,
       ...(this.serverCapabilities ? { capabilities: this.serverCapabilities } : {}),
       features: {
         // COMPAT(providersSnapshot): keep optional until all clients rely on snapshot flow.
         providersSnapshot: true,
+        // COMPAT(checkoutForgeSetAutoMerge): added in v0.1.106, remove old
+        // checkoutGithubSetAutoMerge fallback after 2026-12-28.
+        checkoutForgeSetAutoMerge: true,
         // COMPAT(checkoutGithubSetAutoMerge): added in v0.1.75, remove gate after 2026-11-13.
         checkoutGithubSetAutoMerge: true,
         githubCheckDetails: true,
+        // COMPAT(forgeCheckDetails): added in v0.1.106, remove githubCheckDetails fallback after 2026-12-28.
+        forgeCheckDetails: true,
+        // COMPAT(forgeSearch): added in v0.1.106, remove github_search fallback after 2026-12-28.
+        forgeSearch: true,
         // COMPAT(daemonStatusRpc): added in v0.1.76, remove gate after 2026-11-18.
         daemonStatusRpc: true,
         // COMPAT(terminalRestoreModes): added in v0.1.81, remove gate after 2026-11-23.
@@ -1253,8 +1252,10 @@ export class VoiceAssistantWebSocketServer {
         projectRemove: true,
         // COMPAT(projectAdd): added in v0.1.97, drop the gate when floor >= v0.1.97.
         projectAdd: true,
-        // COMPAT(worktreeRestore): added in v0.1.97, drop the gate when floor >= v0.1.97
+        // COMPAT(worktreeRestore): keep through 2027-01-11 for clients older than v0.1.105.
         worktreeRestore: true,
+        // COMPAT(workspaceRecovery): added in v0.1.105, remove after 2027-01-11 once daemon floor >= v0.1.105.
+        workspaceRecovery: true,
         // COMPAT(providerUsageList): added in v0.1.98, drop the gate when daemon floor >= v0.1.98.
         providerUsageList: true,
         // COMPAT(agentDetach): added in v0.1.98, remove gate after 2026-12-19 once daemon floor >= v0.1.98.
@@ -1262,7 +1263,7 @@ export class VoiceAssistantWebSocketServer {
         // COMPAT(daemonDiagnostics): added in v0.1.100, remove gate after 2026-12-25 once daemon floor >= v0.1.100.
         daemonDiagnostics: true,
         // COMPAT(daemonSelfUpdate): added in v0.1.93, remove gate after 2026-12-13.
-        daemonSelfUpdate: true,
+        daemonSelfUpdate: this.daemonRuntimeConfig?.desktopManaged !== true,
         // COMPAT(agentForkContext): added in v0.1.102, remove gate after 2026-12-28.
         agentForkContext: true,
         // COMPAT(agentForkContextCursor): added in v0.1.108, remove gate after 2027-01-14.
@@ -1273,8 +1274,20 @@ export class VoiceAssistantWebSocketServer {
         providerSubagents: true,
         // COMPAT(workspacePinning): added in v0.1.107, remove gate after 2027-01-12.
         workspacePinning: true,
-        // COMPAT(workspaceGithubClone): added in v0.1.108, remove gate after 2027-01-13.
-        workspaceGithubClone: true,
+        // COMPAT(projectGithubClone): added in v0.1.108, remove gate after 2027-01-15.
+        projectGithubClone: true,
+        // COMPAT(workspaceGithubRepositorySearch): added in v0.1.108, remove gate after 2027-01-15.
+        workspaceGithubRepositorySearch: true,
+        // COMPAT(projectCreateDirectory): added in v0.1.108, remove gate after 2027-01-15.
+        projectCreateDirectory: true,
+        // COMPAT(commitsList): added in v0.1.110, remove gate after 2027-01-16.
+        commitsList: true,
+        // COMPAT(providerRemoval): added in v0.1.105, drop the gate when floor >= v0.1.105.
+        providerRemoval: true,
+        // COMPAT(importSessionWorkspaceTarget): added in v0.1.110, remove gate after 2027-01-16.
+        importSessionWorkspaceTarget: true,
+        // COMPAT(forgeProviders): added in v0.1.106, drop the gate when daemon floor >= v0.1.106.
+        forgeProviders: true,
       },
     };
   }

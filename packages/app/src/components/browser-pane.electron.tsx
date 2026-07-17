@@ -941,6 +941,7 @@ export function BrowserPane({
       ? null
       : (ensurePersistentBrowserWebview({
           browserId,
+          workspaceId,
           url: initialUnsafeNavigationMessage ? "about:blank" : initialUrlRef.current,
         }) as ElectronWebview | null);
     const residentWebview = showChrome
@@ -952,10 +953,10 @@ export function BrowserPane({
       (document.createElement("webview") as ElectronWebview);
     webviewRef.current = webview;
     domReadyRef.current = isBrowserWebviewDomReady(webview);
-    void getDesktopHost()?.browser?.registerWorkspaceBrowser?.({ browserId, workspaceId });
     if (!persistentWebview && !residentWebview) {
       prepareBrowserWebview(webview, {
         browserId,
+        workspaceId,
         initialUrl: initialUnsafeNavigationMessage ? "about:blank" : initialUrlRef.current,
       });
     }

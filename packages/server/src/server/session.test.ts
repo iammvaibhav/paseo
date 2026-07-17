@@ -1,10 +1,14 @@
 import { execSync } from "child_process";
-import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve as resolvePath } from "path";
 import pino from "pino";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
+import {
+  assertPullRequestAutoMergeDisableReady,
+  assertPullRequestAutoMergeEnableReady,
+} from "../services/github-service.js";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import type { WorkspaceDescriptorPayload } from "@getpaseo/protocol/messages";
 import {
@@ -36,11 +40,14 @@ import {
   createProviderSnapshotManagerStub,
 } from "./test-utils/session-stubs.js";
 import { isPlatform } from "../test-utils/platform.js";
-import type {
-  GitHubCheckDetails,
-  GitHubPullRequestStatusFacts,
-  GitHubService,
+import {
+  GitHubAuthenticationError,
+  GitHubCliMissingError,
+  GitHubCommandError,
+  type GitHubService,
 } from "../services/github-service.js";
+import type { CheckDetails, ForgeService } from "../services/forge-service.js";
+import type { GitHubPullRequestStatusFacts } from "../services/github-facts.js";
 
 interface SessionHandlerInternals {
   interruptAgentIfRunning(agentId: string): Promise<void>;
@@ -58,7 +65,7 @@ interface SessionHandlerInternals {
   handleCheckoutCommitRequest(params: unknown): Promise<unknown>;
   handleCheckoutPrCreateRequest(params: unknown): Promise<unknown>;
   handleCheckoutPrMergeRequest(params: unknown): Promise<unknown>;
-  handleCheckoutGithubSetAutoMergeRequest(params: unknown): Promise<unknown>;
+  handleCheckoutForgeSetAutoMergeRequest(params: unknown): Promise<unknown>;
   handleCheckoutPullRequest(params: unknown): Promise<unknown>;
   handleCheckoutPushRequest(params: unknown): Promise<unknown>;
   handleCheckoutRefreshRequest(params: unknown): Promise<unknown>;
@@ -270,9 +277,10 @@ vi.mock("./worktree-bootstrap.js", async (importOriginal) => {
 interface SessionForTestOptions {
   agentManager?: { [K in keyof SessionOptions["agentManager"]]?: unknown };
   agentStorage?: { [K in keyof SessionOptions["agentStorage"]]?: unknown };
-  github?: Partial<GitHubService>;
+  github?: Partial<ForgeService & GitHubService>;
   checkoutDiffManager?: { scheduleRefreshForCwd: ReturnType<typeof vi.fn> };
   workspaceGitService?: {
+    getCheckout?: ReturnType<typeof vi.fn>;
     getCheckoutDiff?: ReturnType<typeof vi.fn>;
     getSnapshot?: ReturnType<typeof vi.fn>;
     suggestBranchesForCwd?: ReturnType<typeof vi.fn>;
@@ -282,6 +290,7 @@ interface SessionForTestOptions {
     hasLocalBranch?: ReturnType<typeof vi.fn>;
     resolveRepoRemoteUrl?: ReturnType<typeof vi.fn>;
     resolveRepoRoot?: ReturnType<typeof vi.fn>;
+    resolveForge?: ReturnType<typeof vi.fn>;
     getWorkspaceGitMetadata?: ReturnType<typeof vi.fn>;
   };
   workspaceRegistry?: { get: ReturnType<typeof vi.fn> };
@@ -314,7 +323,8 @@ function createSessionForTest(options: SessionForTestOptions = {}): Session {
   const checkoutDiffManager = options.checkoutDiffManager ?? {
     scheduleRefreshForCwd: vi.fn(),
   };
-  const workspaceGitService = options.workspaceGitService ?? {
+  const workspaceGitService = {
+    getCheckout: vi.fn(),
     getCheckoutDiff: vi.fn(),
     getSnapshot: vi.fn(),
     suggestBranchesForCwd: vi.fn(),
@@ -325,6 +335,11 @@ function createSessionForTest(options: SessionForTestOptions = {}): Session {
     resolveRepoRemoteUrl: vi.fn(),
     resolveRepoRoot: vi.fn(),
     getWorkspaceGitMetadata: vi.fn(),
+    resolveForge: vi.fn().mockResolvedValue({ forge: "github", service: github }),
+    // Mirror production: invalidateForge resolves the forge and busts the
+    // adapter's cache. The resolved forge here is github, so delegate to it.
+    invalidateForge: vi.fn((cwd: string) => github.invalidate({ cwd })),
+    ...options.workspaceGitService,
   };
   const messages = options.messages ?? [];
 
@@ -386,6 +401,223 @@ function createSessionForTest(options: SessionForTestOptions = {}): Session {
     daemonRuntimeConfig: options.daemonRuntimeConfig,
   });
 }
+
+describe("project command-center RPCs", () => {
+  test("returns normalized repositories from the host GitHub service", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const searchRepositories = vi.fn().mockResolvedValue([
+      {
+        id: "R_paseo",
+        name: "paseo",
+        nameWithOwner: "getpaseo/paseo",
+        description: "Development environment in your pocket",
+        visibility: "public",
+        updatedAt: "2026-07-15T10:00:00Z",
+        cloneUrl: "git@github.com:getpaseo/paseo.git",
+      },
+    ]);
+    const session = createSessionForTest({ messages, github: { searchRepositories } });
+
+    await session.handleMessage({
+      type: "workspace.github.search_repositories.request",
+      query: "paseo",
+      limit: 10,
+      requestId: "req-repositories",
+    });
+
+    expect(searchRepositories).toHaveBeenCalledWith({
+      cwd: expect.any(String),
+      query: "paseo",
+      limit: 10,
+    });
+    expect(messages).toEqual([
+      {
+        type: "workspace.github.search_repositories.response",
+        payload: {
+          status: "success",
+          requestId: "req-repositories",
+          repositories: [
+            {
+              id: "R_paseo",
+              name: "paseo",
+              nameWithOwner: "getpaseo/paseo",
+              description: "Development environment in your pocket",
+              visibility: "public",
+              updatedAt: "2026-07-15T10:00:00Z",
+              cloneUrl: "git@github.com:getpaseo/paseo.git",
+            },
+          ],
+          available: true,
+          error: null,
+        },
+      },
+    ]);
+  });
+
+  test.each([
+    {
+      error: new GitHubCliMissingError(),
+      expected: {
+        status: "unavailable",
+        requestId: "req-repositories-error",
+        reason: "gh_missing",
+        repositories: [],
+        available: false,
+        error: "GitHub CLI (gh) is not installed or not in PATH",
+      },
+    },
+    {
+      error: new GitHubAuthenticationError({ stderr: "gh auth login" }),
+      expected: {
+        status: "unauthenticated",
+        requestId: "req-repositories-error",
+        repositories: [],
+        available: false,
+        error: "GitHub CLI is not authenticated. Run gh auth login on the host.",
+      },
+    },
+    {
+      error: new GitHubCommandError({
+        args: ["search", "repos", "paseo"],
+        cwd: "/tmp",
+        exitCode: 1,
+        stderr: "GitHub API unavailable",
+      }),
+      expected: {
+        status: "error",
+        requestId: "req-repositories-error",
+        repositories: [],
+        available: true,
+        error: "GitHub API unavailable",
+      },
+    },
+  ])("maps GitHub runtime failures to $expected.status", async ({ error, expected }) => {
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({
+      messages,
+      github: { searchRepositories: vi.fn().mockRejectedValue(error) },
+    });
+
+    await session.handleMessage({
+      type: "workspace.github.search_repositories.request",
+      query: "paseo",
+      requestId: "req-repositories-error",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "workspace.github.search_repositories.response",
+        payload: expected,
+      },
+    ]);
+  });
+
+  test("creates a directory and returns its normalized Project descriptor", async () => {
+    const parentDirectory = realpathSync(mkdtempSync(join(tmpdir(), "paseo-project-session-")));
+    const directoryPath = join(parentDirectory, "new-project");
+    const messages: SessionOutboundMessage[] = [];
+    const projectUpsert = vi.fn().mockResolvedValue(undefined);
+    const session = createSessionForTest({
+      messages,
+      projectRegistry: {
+        list: vi.fn().mockResolvedValue([]),
+        upsert: projectUpsert,
+      },
+      workspaceGitService: {
+        getCheckout: vi.fn(async (cwd: string) => ({
+          cwd,
+          isGit: false as const,
+          currentBranch: null,
+          remoteUrl: null,
+          worktreeRoot: null,
+          isPaseoOwnedWorktree: false as const,
+          mainRepoRoot: null,
+        })),
+      },
+    });
+
+    try {
+      await session.handleMessage({
+        type: "project.create_directory.request",
+        parentPath: parentDirectory,
+        name: "new-project",
+        requestId: "req-create-directory",
+      });
+
+      expect(existsSync(directoryPath)).toBe(true);
+      expect(projectUpsert).toHaveBeenCalledOnce();
+      expect(messages).toEqual([
+        {
+          type: "project.create_directory.response",
+          payload: {
+            requestId: "req-create-directory",
+            directoryPath,
+            project: {
+              projectId: directoryPath,
+              projectDisplayName: "new-project",
+              projectCustomName: null,
+              projectRootPath: directoryPath,
+              projectKind: "non_git",
+            },
+            error: null,
+            errorCode: null,
+          },
+        },
+      ]);
+    } finally {
+      rmSync(parentDirectory, { recursive: true, force: true });
+    }
+  });
+
+  test("rolls back the directory when Project registration fails", async () => {
+    const parentDirectory = realpathSync(mkdtempSync(join(tmpdir(), "paseo-project-session-")));
+    const directoryPath = join(parentDirectory, "unregistered");
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({
+      messages,
+      projectRegistry: {
+        list: vi.fn().mockResolvedValue([]),
+        upsert: vi.fn().mockRejectedValue(new Error("registry unavailable")),
+      },
+      workspaceGitService: {
+        getCheckout: vi.fn(async (cwd: string) => ({
+          cwd,
+          isGit: false as const,
+          currentBranch: null,
+          remoteUrl: null,
+          worktreeRoot: null,
+          isPaseoOwnedWorktree: false as const,
+          mainRepoRoot: null,
+        })),
+      },
+    });
+
+    try {
+      await session.handleMessage({
+        type: "project.create_directory.request",
+        parentPath: parentDirectory,
+        name: "unregistered",
+        requestId: "req-registration-failure",
+      });
+
+      expect(existsSync(directoryPath)).toBe(false);
+      expect(messages).toEqual([
+        {
+          type: "project.create_directory.response",
+          payload: {
+            requestId: "req-registration-failure",
+            directoryPath,
+            project: null,
+            error: "Failed to register project: registry unavailable",
+            errorCode: "registration_failed",
+          },
+        },
+      ]);
+    } finally {
+      rmSync(parentDirectory, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("file explorer binary responses", () => {
   const tempDirs: string[] = [];
@@ -1188,7 +1420,7 @@ function createWorkspaceGitSnapshot(
   cwd: string,
   overrides?: {
     git?: Record<string, unknown>;
-    github?: Record<string, unknown>;
+    forge?: Record<string, unknown>;
   },
 ) {
   return {
@@ -1209,11 +1441,11 @@ function createWorkspaceGitSnapshot(
       diffStat: { additions: 3, deletions: 1 },
       ...overrides?.git,
     },
-    github: {
+    forge: {
       featuresEnabled: false,
       pullRequest: null,
       error: null,
-      ...overrides?.github,
+      ...overrides?.forge,
     },
   };
 }
@@ -2212,10 +2444,11 @@ describe("session checkout pull request merge", () => {
     };
     const workspaceGitService = {
       getSnapshot: vi.fn().mockResolvedValue({
-        github: {
+        forge: {
           pullRequest: {
             number: 42,
-            github: {
+            forgeSpecific: {
+              forge: "github",
               mergeStateStatus: "CLEAN",
               autoMergeRequest: null,
               viewerCanEnableAutoMerge: false,
@@ -2251,7 +2484,8 @@ describe("session checkout pull request merge", () => {
       mergeMethod: "squash",
       status: {
         number: 42,
-        github: {
+        forgeSpecific: {
+          forge: "github",
           mergeStateStatus: "CLEAN",
           autoMergeRequest: null,
           viewerCanEnableAutoMerge: false,
@@ -2272,7 +2506,7 @@ describe("session checkout pull request merge", () => {
     });
     expect(workspaceGitService.getSnapshot).toHaveBeenNthCalledWith(1, "/tmp/request-worktree", {
       force: true,
-      includeGitHub: true,
+      includeForge: true,
       reason: "merge-pr-validation",
     });
     expect(workspaceGitService.getSnapshot).toHaveBeenNthCalledWith(2, "/tmp/request-worktree", {
@@ -2296,8 +2530,8 @@ describe("session checkout pull request merge", () => {
     const github = {
       invalidate: vi.fn(),
       mergePullRequest: vi.fn(
-        async (input: { status?: { github?: { mergeStateStatus?: string | null } } }) => {
-          if (input.status?.github?.mergeStateStatus === "BLOCKED") {
+        async (input: { status?: { forgeSpecific?: { mergeStateStatus?: string | null } } }) => {
+          if (input.status?.forgeSpecific?.mergeStateStatus === "BLOCKED") {
             throw new Error("GitHub does not report this pull request as ready for direct merge");
           }
           return { success: true };
@@ -2305,10 +2539,11 @@ describe("session checkout pull request merge", () => {
       ),
     };
     const createSnapshot = (mergeStateStatus: "CLEAN" | "BLOCKED") => ({
-      github: {
+      forge: {
         pullRequest: {
           number: 42,
-          github: {
+          forgeSpecific: {
+            forge: "github",
             mergeStateStatus,
             autoMergeRequest: null,
             viewerCanEnableAutoMerge: false,
@@ -2345,13 +2580,13 @@ describe("session checkout pull request merge", () => {
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledTimes(1);
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/request-worktree", {
       force: true,
-      includeGitHub: true,
+      includeForge: true,
       reason: "merge-pr-validation",
     });
     expect(github.mergePullRequest).toHaveBeenCalledWith(
       expect.objectContaining({
         status: expect.objectContaining({
-          github: expect.objectContaining({ mergeStateStatus: "BLOCKED" }),
+          forgeSpecific: expect.objectContaining({ mergeStateStatus: "BLOCKED" }),
         }),
       }),
     );
@@ -2370,7 +2605,7 @@ describe("session checkout pull request merge", () => {
     });
   });
 
-  test("rejects direct merge when the current pull request is missing GitHub merge facts", async () => {
+  test("delegates direct merge when the current change request lacks GitHub-only merge facts", async () => {
     const messages: unknown[] = [];
     const github = {
       invalidate: vi.fn(),
@@ -2378,7 +2613,7 @@ describe("session checkout pull request merge", () => {
     };
     const workspaceGitService = {
       getSnapshot: vi.fn().mockResolvedValue({
-        github: {
+        forge: {
           pullRequest: {
             number: 42,
             mergeable: "MERGEABLE",
@@ -2395,22 +2630,31 @@ describe("session checkout pull request merge", () => {
       requestId: "request-pr-merge-missing-github-facts",
     });
 
-    expect(github.mergePullRequest).not.toHaveBeenCalled();
-    expect(github.invalidate).not.toHaveBeenCalled();
-    expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/request-worktree", {
+    expect(github.mergePullRequest).toHaveBeenCalledWith({
+      cwd: "/tmp/request-worktree",
+      prNumber: 42,
+      mergeMethod: "squash",
+      status: {
+        number: 42,
+        mergeable: "MERGEABLE",
+      },
+    });
+    expect(github.invalidate).toHaveBeenCalledWith({ cwd: "/tmp/request-worktree" });
+    expect(workspaceGitService.getSnapshot).toHaveBeenNthCalledWith(1, "/tmp/request-worktree", {
       force: true,
-      includeGitHub: true,
+      includeForge: true,
       reason: "merge-pr-validation",
+    });
+    expect(workspaceGitService.getSnapshot).toHaveBeenNthCalledWith(2, "/tmp/request-worktree", {
+      force: true,
+      reason: "merge-pr",
     });
     expect(messages).toContainEqual({
       type: "checkout_pr_merge_response",
       payload: {
         cwd: "/tmp/request-worktree",
-        success: false,
-        error: {
-          code: "UNKNOWN",
-          message: "GitHub merge facts are unavailable for this pull request",
-        },
+        success: true,
+        error: null,
         requestId: "request-pr-merge-missing-github-facts",
       },
     });
@@ -2424,10 +2668,11 @@ describe("session checkout pull request merge", () => {
     };
     const workspaceGitService = {
       getSnapshot: vi.fn().mockResolvedValue({
-        github: {
+        forge: {
           pullRequest: {
             number: 42,
-            github: {
+            forgeSpecific: {
+              forge: "github",
               mergeStateStatus: "CLEAN",
               autoMergeRequest: null,
               viewerCanEnableAutoMerge: false,
@@ -2475,7 +2720,8 @@ describe("session checkout pull request merge", () => {
 describe("session checkout pull request auto-merge", () => {
   const autoMergeGithubFacts = (
     overrides: Partial<GitHubPullRequestStatusFacts> = {},
-  ): GitHubPullRequestStatusFacts => ({
+  ): GitHubPullRequestStatusFacts & { forge: "github" } => ({
+    forge: "github",
     mergeStateStatus: "BLOCKED",
     autoMergeRequest: null,
     viewerCanEnableAutoMerge: true,
@@ -2498,15 +2744,18 @@ describe("session checkout pull request auto-merge", () => {
     const messages: unknown[] = [];
     const github = {
       invalidate: vi.fn(),
-      enablePullRequestAutoMerge: vi.fn().mockResolvedValue({ success: true }),
+      enablePullRequestAutoMerge: vi.fn(async (input) => {
+        assertPullRequestAutoMergeEnableReady(input);
+        return { success: true };
+      }),
     };
     const workspaceGitService = {
       getSnapshot: vi.fn().mockResolvedValue({
-        github: {
+        forge: {
           pullRequest: {
             number: 42,
             mergeable: "MERGEABLE",
-            github: autoMergeGithubFacts(),
+            forgeSpecific: autoMergeGithubFacts(),
           },
         },
       }),
@@ -2514,7 +2763,7 @@ describe("session checkout pull request auto-merge", () => {
     const session = createSessionForTest({ github, workspaceGitService, messages });
 
     await session.handleMessage({
-      type: "checkout.github.set_auto_merge.request",
+      type: "checkout.forge.set_auto_merge.request",
       cwd: "/tmp/request-worktree",
       enabled: true,
       mergeMethod: "squash",
@@ -2528,12 +2777,12 @@ describe("session checkout pull request auto-merge", () => {
       status: {
         number: 42,
         mergeable: "MERGEABLE",
-        github: autoMergeGithubFacts(),
+        forgeSpecific: autoMergeGithubFacts(),
       },
     });
     expect(workspaceGitService.getSnapshot).toHaveBeenNthCalledWith(1, "/tmp/request-worktree", {
       force: true,
-      includeGitHub: true,
+      includeForge: true,
       reason: "auto-merge-validation",
     });
     expect(workspaceGitService.getSnapshot).toHaveBeenNthCalledWith(2, "/tmp/request-worktree", {
@@ -2542,7 +2791,7 @@ describe("session checkout pull request auto-merge", () => {
     });
     expect(github.invalidate).toHaveBeenCalledWith({ cwd: "/tmp/request-worktree" });
     expect(messages).toContainEqual({
-      type: "checkout.github.set_auto_merge.response",
+      type: "checkout.forge.set_auto_merge.response",
       payload: {
         cwd: "/tmp/request-worktree",
         enabled: true,
@@ -2557,14 +2806,17 @@ describe("session checkout pull request auto-merge", () => {
     const messages: unknown[] = [];
     const github = {
       invalidate: vi.fn(),
-      disablePullRequestAutoMerge: vi.fn().mockResolvedValue({ success: true }),
+      disablePullRequestAutoMerge: vi.fn(async (input) => {
+        assertPullRequestAutoMergeDisableReady(input);
+        return { success: true };
+      }),
     };
     const workspaceGitService = {
       getSnapshot: vi.fn().mockResolvedValue({
-        github: {
+        forge: {
           pullRequest: {
             number: 42,
-            github: autoMergeGithubFacts({
+            forgeSpecific: autoMergeGithubFacts({
               autoMergeRequest: {
                 enabledAt: "2026-05-13T17:00:00Z",
                 mergeMethod: "SQUASH",
@@ -2580,7 +2832,7 @@ describe("session checkout pull request auto-merge", () => {
     const session = createSessionForTest({ github, workspaceGitService, messages });
 
     await session.handleMessage({
-      type: "checkout.github.set_auto_merge.request",
+      type: "checkout.forge.set_auto_merge.request",
       cwd: "/tmp/request-worktree",
       enabled: false,
       requestId: "request-pr-auto-merge-disable",
@@ -2591,7 +2843,7 @@ describe("session checkout pull request auto-merge", () => {
       prNumber: 42,
       status: {
         number: 42,
-        github: autoMergeGithubFacts({
+        forgeSpecific: autoMergeGithubFacts({
           autoMergeRequest: {
             enabledAt: "2026-05-13T17:00:00Z",
             mergeMethod: "SQUASH",
@@ -2604,7 +2856,7 @@ describe("session checkout pull request auto-merge", () => {
     });
     expect(workspaceGitService.getSnapshot).toHaveBeenNthCalledWith(1, "/tmp/request-worktree", {
       force: true,
-      includeGitHub: true,
+      includeForge: true,
       reason: "auto-merge-validation",
     });
     expect(workspaceGitService.getSnapshot).toHaveBeenNthCalledWith(2, "/tmp/request-worktree", {
@@ -2613,7 +2865,7 @@ describe("session checkout pull request auto-merge", () => {
     });
     expect(github.invalidate).toHaveBeenCalledWith({ cwd: "/tmp/request-worktree" });
     expect(messages).toContainEqual({
-      type: "checkout.github.set_auto_merge.response",
+      type: "checkout.forge.set_auto_merge.response",
       payload: {
         cwd: "/tmp/request-worktree",
         enabled: false,
@@ -2632,10 +2884,10 @@ describe("session checkout pull request auto-merge", () => {
     };
     const workspaceGitService = {
       getSnapshot: vi.fn().mockResolvedValue({
-        github: {
+        forge: {
           pullRequest: {
             number: 42,
-            github: autoMergeGithubFacts(),
+            forgeSpecific: autoMergeGithubFacts(),
           },
         },
       }),
@@ -2643,7 +2895,7 @@ describe("session checkout pull request auto-merge", () => {
     const session = createSessionForTest({ github, workspaceGitService, messages });
 
     await session.handleMessage({
-      type: "checkout.github.set_auto_merge.request",
+      type: "checkout.forge.set_auto_merge.request",
       cwd: "/tmp/request-worktree",
       enabled: true,
       mergeMethod: "merge",
@@ -2651,7 +2903,7 @@ describe("session checkout pull request auto-merge", () => {
     });
 
     expect(messages).toContainEqual({
-      type: "checkout.github.set_auto_merge.response",
+      type: "checkout.forge.set_auto_merge.response",
       payload: {
         cwd: "/tmp/request-worktree",
         enabled: true,
@@ -2669,14 +2921,17 @@ describe("session checkout pull request auto-merge", () => {
     const messages: unknown[] = [];
     const github = {
       invalidate: vi.fn(),
-      enablePullRequestAutoMerge: vi.fn().mockResolvedValue({ success: true }),
+      enablePullRequestAutoMerge: vi.fn(async (input) => {
+        assertPullRequestAutoMergeEnableReady(input);
+        return { success: true };
+      }),
     };
     const workspaceGitService = {
       getSnapshot: vi.fn().mockResolvedValue({
-        github: {
+        forge: {
           pullRequest: {
             number: 42,
-            github: autoMergeGithubFacts({
+            forgeSpecific: autoMergeGithubFacts({
               repository: {
                 autoMergeAllowed: true,
                 mergeCommitAllowed: true,
@@ -2692,22 +2947,24 @@ describe("session checkout pull request auto-merge", () => {
     const session = createSessionForTest({ github, workspaceGitService, messages });
 
     await session.handleMessage({
-      type: "checkout.github.set_auto_merge.request",
+      type: "checkout.forge.set_auto_merge.request",
       cwd: "/tmp/request-worktree",
       enabled: true,
       mergeMethod: "squash",
       requestId: "request-pr-auto-merge-method-disabled",
     });
 
-    expect(github.enablePullRequestAutoMerge).not.toHaveBeenCalled();
+    // The adapter owns the readiness precondition and rejects before any side
+    // effect, so it is invoked but the mutation never completes (no invalidate).
+    expect(github.enablePullRequestAutoMerge).toHaveBeenCalled();
     expect(github.invalidate).not.toHaveBeenCalled();
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/request-worktree", {
       force: true,
-      includeGitHub: true,
+      includeForge: true,
       reason: "auto-merge-validation",
     });
     expect(messages).toContainEqual({
-      type: "checkout.github.set_auto_merge.response",
+      type: "checkout.forge.set_auto_merge.response",
       payload: {
         cwd: "/tmp/request-worktree",
         enabled: true,
@@ -2725,14 +2982,17 @@ describe("session checkout pull request auto-merge", () => {
     const messages: unknown[] = [];
     const github = {
       invalidate: vi.fn(),
-      disablePullRequestAutoMerge: vi.fn().mockResolvedValue({ success: true }),
+      disablePullRequestAutoMerge: vi.fn(async (input) => {
+        assertPullRequestAutoMergeDisableReady(input);
+        return { success: true };
+      }),
     };
     const workspaceGitService = {
       getSnapshot: vi.fn().mockResolvedValue({
-        github: {
+        forge: {
           pullRequest: {
             number: 42,
-            github: autoMergeGithubFacts({
+            forgeSpecific: autoMergeGithubFacts({
               autoMergeRequest: {
                 enabledAt: "2026-05-13T17:00:00Z",
                 mergeMethod: "SQUASH",
@@ -2748,21 +3008,23 @@ describe("session checkout pull request auto-merge", () => {
     const session = createSessionForTest({ github, workspaceGitService, messages });
 
     await session.handleMessage({
-      type: "checkout.github.set_auto_merge.request",
+      type: "checkout.forge.set_auto_merge.request",
       cwd: "/tmp/request-worktree",
       enabled: false,
       requestId: "request-pr-auto-merge-disable-forbidden",
     });
 
-    expect(github.disablePullRequestAutoMerge).not.toHaveBeenCalled();
+    // The adapter owns the readiness precondition and rejects before any side
+    // effect, so it is invoked but the mutation never completes (no invalidate).
+    expect(github.disablePullRequestAutoMerge).toHaveBeenCalled();
     expect(github.invalidate).not.toHaveBeenCalled();
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/request-worktree", {
       force: true,
-      includeGitHub: true,
+      includeForge: true,
       reason: "auto-merge-validation",
     });
     expect(messages).toContainEqual({
-      type: "checkout.github.set_auto_merge.response",
+      type: "checkout.forge.set_auto_merge.response",
       payload: {
         cwd: "/tmp/request-worktree",
         enabled: false,
@@ -2780,14 +3042,17 @@ describe("session checkout pull request auto-merge", () => {
     const messages: unknown[] = [];
     const github = {
       invalidate: vi.fn(),
-      disablePullRequestAutoMerge: vi.fn().mockResolvedValue({ success: true }),
+      disablePullRequestAutoMerge: vi.fn(async (input) => {
+        assertPullRequestAutoMergeDisableReady(input);
+        return { success: true };
+      }),
     };
     const workspaceGitService = {
       getSnapshot: vi.fn().mockResolvedValue({
-        github: {
+        forge: {
           pullRequest: {
             number: 42,
-            github: autoMergeGithubFacts({
+            forgeSpecific: autoMergeGithubFacts({
               autoMergeRequest: {
                 enabledAt: "2026-05-13T17:00:00Z",
                 mergeMethod: "SQUASH",
@@ -2803,7 +3068,7 @@ describe("session checkout pull request auto-merge", () => {
     const session = createSessionForTest({ github, workspaceGitService, messages });
 
     await session.handleMessage({
-      type: "checkout.github.set_auto_merge.request",
+      type: "checkout.forge.set_auto_merge.request",
       cwd: "/tmp/request-worktree",
       enabled: false,
       mergeMethod: "squash",
@@ -2813,7 +3078,7 @@ describe("session checkout pull request auto-merge", () => {
     expect(github.disablePullRequestAutoMerge).not.toHaveBeenCalled();
     expect(github.invalidate).not.toHaveBeenCalled();
     expect(messages).toContainEqual({
-      type: "checkout.github.set_auto_merge.response",
+      type: "checkout.forge.set_auto_merge.response",
       payload: {
         cwd: "/tmp/request-worktree",
         enabled: false,
@@ -2912,7 +3177,7 @@ describe("session checkout refresh handling", () => {
     expect(github.invalidate).toHaveBeenCalledWith({ cwd: "/tmp/request-worktree" });
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/request-worktree", {
       force: true,
-      includeGitHub: true,
+      includeForge: true,
       reason: "manual-refresh",
     });
     expect(checkoutDiffManager.scheduleRefreshForCwd).toHaveBeenCalledWith("/tmp/request-worktree");
@@ -3837,7 +4102,7 @@ describe("session workspace script handling", () => {
 });
 
 describe("session pull request timeline handling", () => {
-  test("routes GitHub search requests through GitHubService", async () => {
+  test("routes GitHub search requests through ForgeService", async () => {
     const messages: unknown[] = [];
     const github = {
       invalidate: vi.fn(),
@@ -3845,7 +4110,8 @@ describe("session pull request timeline handling", () => {
         githubFeaturesEnabled: true,
         items: [
           {
-            kind: "pr",
+            kind: "change_request",
+            forge: "github",
             number: 42,
             title: "Ship search",
             url: "https://github.com/getpaseo/paseo/pull/42",
@@ -3859,7 +4125,17 @@ describe("session pull request timeline handling", () => {
         ],
       }),
     };
-    const session = createSessionForTest({ github, messages });
+    const gitlab = {
+      searchIssuesAndPrs: vi.fn().mockResolvedValue({
+        featuresEnabled: true,
+        authState: "authenticated",
+        items: [],
+      }),
+    };
+    const workspaceGitService = {
+      resolveForge: vi.fn().mockResolvedValue({ forge: "gitlab", service: gitlab }),
+    };
+    const session = createSessionForTest({ github, workspaceGitService, messages });
 
     await session.handleMessage({
       type: "github_search_request",
@@ -3876,12 +4152,14 @@ describe("session pull request timeline handling", () => {
       limit: 5,
       kinds: ["github-pr"],
     });
+    expect(gitlab.searchIssuesAndPrs).not.toHaveBeenCalled();
     expect(messages).toContainEqual({
       type: "github_search_response",
       payload: {
         items: [
           {
             kind: "pr",
+            forge: "github",
             number: 42,
             title: "Ship search",
             url: "https://github.com/getpaseo/paseo/pull/42",
@@ -3893,6 +4171,8 @@ describe("session pull request timeline handling", () => {
             updatedAt: "2026-04-18T13:00:00Z",
           },
         ],
+        featuresEnabled: true,
+        authState: "authenticated",
         githubFeaturesEnabled: true,
         error: null,
         requestId: "request-search",
@@ -3900,7 +4180,39 @@ describe("session pull request timeline handling", () => {
     });
   });
 
-  test("passes request identity to GitHubService and emits timeline items", async () => {
+  test("reports no remote when forge search has no resolved forge", async () => {
+    const messages: unknown[] = [];
+    const github = {
+      invalidate: vi.fn(),
+      searchIssuesAndPrs: vi.fn(),
+    };
+    const workspaceGitService = {
+      resolveForge: vi.fn().mockResolvedValue(null),
+    };
+    const session = createSessionForTest({ github, workspaceGitService, messages });
+
+    await session.handleMessage({
+      type: "forge.search.request",
+      cwd: "/tmp/repo",
+      query: "search",
+      limit: 5,
+      kinds: ["change_request"],
+      requestId: "request-search",
+    });
+
+    expect(github.searchIssuesAndPrs).not.toHaveBeenCalled();
+    expect(messages).toContainEqual({
+      type: "forge.search.response",
+      payload: {
+        items: [],
+        authState: "no_remote",
+        error: null,
+        requestId: "request-search",
+      },
+    });
+  });
+
+  test("passes request identity to ForgeService and emits timeline items", async () => {
     const messages: unknown[] = [];
     const github = {
       invalidate: vi.fn(),
@@ -4058,7 +4370,7 @@ describe("session pull request timeline handling", () => {
       checkRunId: number;
       workflowRunId?: number;
     }> = [];
-    const checkDetails: GitHubCheckDetails = {
+    const checkDetails: CheckDetails = {
       checkRunId: 12345,
       workflowRunId: 456,
       name: "server-tests",
@@ -4071,12 +4383,12 @@ describe("session pull request timeline handling", () => {
       failedJobs: [],
       truncated: false,
     };
-    const github: Partial<GitHubService> = {
+    const github: Partial<ForgeService> = {
       invalidate() {},
       async isAuthenticated() {
         return true;
       },
-      async getGitHubCheckDetails(request) {
+      async getCheckDetails(request) {
         checkDetailRequests.push({
           cwd: request.cwd,
           repoOwner: request.repoOwner,
@@ -4090,7 +4402,7 @@ describe("session pull request timeline handling", () => {
     const session = createSessionForTest({ github, messages });
 
     await session.handleMessage({
-      type: "checkout.github.get_check_details.request",
+      type: "checkout.forge.get_check_details.request",
       cwd: "/tmp/repo",
       repoOwner: "getpaseo",
       repoName: "paseo",
@@ -4110,7 +4422,7 @@ describe("session pull request timeline handling", () => {
     ]);
 
     expect(messages).toContainEqual({
-      type: "checkout.github.get_check_details.response",
+      type: "checkout.forge.get_check_details.response",
       payload: {
         cwd: "/tmp/repo",
         success: true,

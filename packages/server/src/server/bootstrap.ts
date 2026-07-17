@@ -338,6 +338,8 @@ export type DaemonLifecycleIntent =
 export interface PaseoDaemonConfig {
   listen: string;
   paseoHome: string;
+  daemonVersion?: string;
+  desktopManaged?: boolean;
   worktreesRoot?: string;
   corsAllowedOrigins: string[];
   allowedHosts?: HostnamesConfig;
@@ -501,7 +503,7 @@ export async function createPaseoDaemon(
   const logger = rootLogger.child({ module: "bootstrap" });
   const bootstrapStart = performance.now();
   const elapsed = () => `${(performance.now() - bootstrapStart).toFixed(0)}ms`;
-  const daemonVersion = resolveDaemonVersion(import.meta.url);
+  const daemonVersion = config.daemonVersion ?? resolveDaemonVersion(import.meta.url);
   const daemonConfigStore = new DaemonConfigStore(
     config.paseoHome,
     createInitialMutableDaemonConfig(config),
@@ -775,7 +777,7 @@ export async function createPaseoDaemon(
     paseoHome: config.paseoHome,
     worktreesRoot: config.worktreesRoot,
     deps: {
-      github,
+      forgeOverrides: { github },
     },
   });
   const providerSnapshotLogger = logger.child({ module: "provider-snapshot-manager" });
@@ -933,7 +935,6 @@ export async function createPaseoDaemon(
     readDaemonConfig: () => ({ metadataGeneration: daemonConfigStore.get().metadataGeneration }),
     gitMutation: createGitMutationService({
       workspaceGitService,
-      github,
       logger,
     }),
     emitWorkspaceUpdateForCwd: emitWorkspaceUpdateForCwdExternal,
@@ -1473,6 +1474,7 @@ export async function createPaseoDaemon(
                 listen: formatListenTarget(boundListenTarget ?? listenTarget),
                 worktreesRoot: config.worktreesRoot,
                 appBaseUrl: config.appBaseUrl,
+                desktopManaged: config.desktopManaged === true,
                 relay: {
                   enabled: relayEnabled,
                   endpoint: relayEndpoint,
