@@ -822,6 +822,7 @@ export const ptBR: TranslationResources = {
     sections: {
       sessions: "Histórico",
       schedules: "Agendamentos",
+      webhooks: "Webhooks",
     },
     worktreeSetup: {
       title: "Configurar scripts de worktree",

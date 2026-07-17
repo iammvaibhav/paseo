@@ -277,6 +277,29 @@ export const PersistedConfigSchema = z
           })
           .strict()
           .optional(),
+        tunnel: z
+          .object({
+            provider: z.enum(["tailscale-funnel", "cloudflared", "none"]).optional(),
+            localPort: z.number().int().positive().optional(),
+            // host:port the tunnel forwards to; defaults to the daemon's listen address.
+            localTarget: z.string().optional(),
+            autoStart: z.boolean().optional(),
+            // Explicit public base URL for `none`, or an override for the others.
+            publicBaseUrl: z.string().optional(),
+            tailscaleBin: z.string().optional(),
+            cloudflared: z
+              .object({
+                hostname: z.string().optional(),
+                bin: z.string().optional(),
+                configFile: z.string().optional(),
+                token: z.string().optional(),
+                tunnel: z.string().optional(),
+              })
+              .strict()
+              .optional(),
+          })
+          .strict()
+          .optional(),
         auth: DaemonAuthSchema.optional(),
       })
       .strict()

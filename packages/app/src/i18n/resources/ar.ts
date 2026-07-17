@@ -804,6 +804,7 @@ export const ar: TranslationResources = {
     sections: {
       sessions: "السجل",
       schedules: "الجداول",
+      webhooks: "Webhooks",
     },
     worktreeSetup: {
       title: "إعداد البرامج النصية لشجرة العمل",

@@ -118,6 +118,9 @@ import { FileBackedChatService } from "./chat/chat-service.js";
 import { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { LoopService } from "./loop-service.js";
 import { ScheduleService } from "./schedule/service.js";
+import { MAX_WEBHOOK_BODY_BYTES, WebhookService } from "./webhook/service.js";
+import { createWebhookRouteHandler } from "./webhook/route.js";
+import { TunnelManager } from "./tunnel/manager.js";
 import { DaemonConfigStore, type MutableDaemonConfig } from "./daemon-config-store.js";
 import { BrowserToolsBroker } from "./browser-tools/broker.js";
 import { DaemonConfigBrowserToolsPolicy } from "./browser-tools/policy.js";
@@ -361,6 +364,21 @@ export interface PaseoDaemonConfig {
     publicBaseUrl: string | null;
     standaloneListen: string | null;
   };
+  tunnel?: {
+    provider: "tailscale-funnel" | "cloudflared" | "none";
+    localPort: number;
+    localTarget: string;
+    autoStart: boolean;
+    publicBaseUrl: string | null;
+    tailscaleBin: string | null;
+    cloudflared: {
+      hostname: string | null;
+      bin: string | null;
+      configFile: string | null;
+      token: string | null;
+      tunnel: string | null;
+    };
+  };
   webUi?: {
     enabled: boolean;
     distDir: string | null;
@@ -569,6 +587,24 @@ export async function createPaseoDaemon(
   // Registered service hosts proxy directly; known service namespaces without a
   // route return 404 and never reach daemon APIs.
   app.use(serviceProxy.middleware());
+
+  // Public webhook ingress. Mounted before the Host allowlist, CORS, bearer
+  // auth, and express.json() so external senders (GitHub, Linear) reach it and
+  // HMAC can read the raw body. Only this path is exempt from the Host
+  // allowlist; every other daemon path still rejects the public tunnel host.
+  // The handler is assigned once the webhook service is constructed below.
+  let webhookRouteHandler: ReturnType<typeof createWebhookRouteHandler> | null = null;
+  app.post(
+    "/hooks/:id/:secret",
+    express.raw({ type: () => true, limit: MAX_WEBHOOK_BODY_BYTES }),
+    (req, res, next) => {
+      if (!webhookRouteHandler) {
+        res.status(503).json({ ok: false, error: "webhook service not ready" });
+        return;
+      }
+      void webhookRouteHandler(req, res, next);
+    },
+  );
 
   // Host allowlist / DNS rebinding protection (vite-like semantics).
   // For non-TCP (unix sockets), skip host validation.
@@ -1077,6 +1113,43 @@ export async function createPaseoDaemon(
     }
   });
   logger.info({ elapsed: elapsed() }, "Schedule service initialized");
+
+  const tunnelManager = new TunnelManager({
+    config: config.tunnel ?? {
+      provider: "none",
+      localPort: 6767,
+      localTarget: "127.0.0.1:6767",
+      autoStart: false,
+      publicBaseUrl: null,
+      tailscaleBin: null,
+      cloudflared: { hostname: null, bin: null, configFile: null, token: null, tunnel: null },
+    },
+    logger,
+  });
+  await tunnelManager.start();
+  logger.info(
+    {
+      elapsed: elapsed(),
+      provider: tunnelManager.getProvider(),
+      status: tunnelManager.getStatus(),
+    },
+    "Tunnel manager initialized",
+  );
+
+  const webhookService = new WebhookService({
+    paseoHome: config.paseoHome,
+    logger,
+    agentManager,
+    agentStorage,
+    createAgent,
+    createLocalCheckoutWorkspace: createScheduleLocalWorkspaceExternal,
+    createPaseoWorktreeWorkspace: createSchedulePaseoWorktreeExternal,
+    getPublicBaseUrl: () => tunnelManager.getPublicBaseUrl(),
+    getTunnelProvider: () => tunnelManager.getProvider(),
+    getTunnelStatus: () => tunnelManager.getStatus(),
+  });
+  webhookRouteHandler = createWebhookRouteHandler(webhookService, logger);
+
   logger.info({ elapsed: elapsed() }, "Loading persisted agent registry");
   const persistedRecords = await agentStorage.list();
   logger.info(
@@ -1381,6 +1454,7 @@ export async function createPaseoDaemon(
               },
               serviceProxyPublicBaseUrl,
               browserToolsBroker,
+              webhookService,
             );
 
             if (relayEnabled) {
@@ -1454,6 +1528,7 @@ export async function createPaseoDaemon(
     terminalManager.killAll();
     speechService.stop();
     await scheduleService.stop().catch(() => undefined);
+    await tunnelManager.stop().catch(() => undefined);
     await relayTransport?.stop().catch(() => undefined);
     if (wsServer) {
       await wsServer.close();

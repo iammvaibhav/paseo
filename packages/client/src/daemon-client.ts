@@ -99,6 +99,7 @@ import type {
 } from "@getpaseo/protocol/agent-types";
 import type { MutableDaemonConfig, MutableDaemonConfigPatch } from "@getpaseo/protocol/messages";
 import { isRelayClientWebSocketUrl } from "@getpaseo/protocol/daemon-endpoints";
+import type { WebhookAuth, WebhookFilter, WebhookTarget } from "@getpaseo/protocol/webhook/types";
 import { terminalSubscriptionKey } from "@getpaseo/protocol/terminal-subscription-key";
 import {
   asUint8Array,
@@ -475,6 +476,34 @@ type ScheduleUpdatePayload = Extract<
   SessionOutboundMessage,
   { type: "schedule/update/response" }
 >["payload"];
+type WebhookCreatePayload = Extract<
+  SessionOutboundMessage,
+  { type: "webhook/create/response" }
+>["payload"];
+type WebhookListPayload = Extract<
+  SessionOutboundMessage,
+  { type: "webhook/list/response" }
+>["payload"];
+type WebhookInspectPayload = Extract<
+  SessionOutboundMessage,
+  { type: "webhook/inspect/response" }
+>["payload"];
+type WebhookDeletePayload = Extract<
+  SessionOutboundMessage,
+  { type: "webhook/delete/response" }
+>["payload"];
+type WebhookUpdatePayload = Extract<
+  SessionOutboundMessage,
+  { type: "webhook/update/response" }
+>["payload"];
+type WebhookTestPayload = Extract<
+  SessionOutboundMessage,
+  { type: "webhook/test/response" }
+>["payload"];
+type WebhookConfigPayload = Extract<
+  SessionOutboundMessage,
+  { type: "webhook/config/response" }
+>["payload"];
 export type FetchAgentTimelinePayload = FetchAgentTimelineResponseMessage["payload"];
 export type AgentForkContextPayload = AgentForkContextResponseMessage["payload"];
 
@@ -751,6 +780,34 @@ export interface UpdateScheduleOptions {
   newAgentConfig?: UpdateScheduleNewAgentConfig;
   maxRuns?: number | null;
   expiresAt?: string | null;
+  requestId?: string;
+}
+export interface CreateWebhookOptions {
+  target: WebhookTarget;
+  promptTemplate: string;
+  name?: string | null;
+  enabled?: boolean;
+  auth?: WebhookAuth | null;
+  filter?: WebhookFilter | null;
+  requestId?: string;
+}
+export interface WebhookRefOptions {
+  id: string;
+  requestId?: string;
+}
+export interface UpdateWebhookOptions {
+  id: string;
+  name?: string | null;
+  enabled?: boolean;
+  target?: WebhookTarget;
+  promptTemplate?: string;
+  auth?: WebhookAuth | null;
+  filter?: WebhookFilter | null;
+  requestId?: string;
+}
+export interface TestWebhookOptions {
+  id: string;
+  samplePayload?: string;
   requestId?: string;
 }
 export interface RenameBranchInput {
@@ -4674,6 +4731,83 @@ export class DaemonClient {
         ...(options.expiresAt !== undefined ? { expiresAt: options.expiresAt } : {}),
       },
       responseType: "schedule/update/response",
+    });
+  }
+
+  async webhookCreate(options: CreateWebhookOptions): Promise<WebhookCreatePayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "webhook/create",
+        target: options.target,
+        promptTemplate: options.promptTemplate,
+        ...(options.name !== undefined ? { name: options.name } : {}),
+        ...(typeof options.enabled === "boolean" ? { enabled: options.enabled } : {}),
+        ...(options.auth !== undefined ? { auth: options.auth } : {}),
+        ...(options.filter !== undefined ? { filter: options.filter } : {}),
+      },
+      responseType: "webhook/create/response",
+    });
+  }
+
+  async webhookList(requestId?: string): Promise<WebhookListPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "webhook/list" },
+      responseType: "webhook/list/response",
+    });
+  }
+
+  async webhookInspect(options: WebhookRefOptions): Promise<WebhookInspectPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: { type: "webhook/inspect", webhookId: options.id },
+      responseType: "webhook/inspect/response",
+    });
+  }
+
+  async webhookDelete(options: WebhookRefOptions): Promise<WebhookDeletePayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: { type: "webhook/delete", webhookId: options.id },
+      responseType: "webhook/delete/response",
+    });
+  }
+
+  async webhookUpdate(options: UpdateWebhookOptions): Promise<WebhookUpdatePayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "webhook/update",
+        webhookId: options.id,
+        ...(options.name !== undefined ? { name: options.name } : {}),
+        ...(typeof options.enabled === "boolean" ? { enabled: options.enabled } : {}),
+        ...(options.target !== undefined ? { target: options.target } : {}),
+        ...(options.promptTemplate !== undefined ? { promptTemplate: options.promptTemplate } : {}),
+        ...(options.auth !== undefined ? { auth: options.auth } : {}),
+        ...(options.filter !== undefined ? { filter: options.filter } : {}),
+      },
+      responseType: "webhook/update/response",
+    });
+  }
+
+  async webhookTest(options: TestWebhookOptions): Promise<WebhookTestPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "webhook/test",
+        webhookId: options.id,
+        ...(options.samplePayload !== undefined ? { samplePayload: options.samplePayload } : {}),
+      },
+      responseType: "webhook/test/response",
+    });
+  }
+
+  async webhookConfig(requestId?: string): Promise<WebhookConfigPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "webhook/config" },
+      responseType: "webhook/config/response",
     });
   }
 

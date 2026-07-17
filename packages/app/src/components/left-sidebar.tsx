@@ -2,13 +2,13 @@ import { router, usePathname } from "expo-router";
 import {
   CalendarClock,
   FolderPlus,
-  HardDrive,
   History,
   Home,
   Plus,
   Search,
   Server,
   Settings,
+  Webhook,
   X,
 } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
@@ -34,7 +34,7 @@ import { SidebarHelpMenu } from "@/components/sidebar/sidebar-help-menu";
 import { Shortcut } from "@/components/ui/shortcut";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { HEADER_INNER_HEIGHT, useIsCompactFormFactor } from "@/constants/layout";
-import { getIsElectron, isWeb } from "@/constants/platform";
+import { isWeb } from "@/constants/platform";
 import { useOpenProjectPicker } from "@/hooks/use-open-project-picker";
 import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
 import { canCreateWorktreeForProjectKind } from "@/projects/host-projects";
@@ -60,6 +60,7 @@ import {
   buildOpenProjectRoute,
   buildNewWorkspaceRoute,
   buildSchedulesRoute,
+  buildWebhooksRoute,
   buildSessionsRoute,
   buildSettingsAddHostRoute,
   buildSettingsHostSectionRoute,
@@ -105,6 +106,7 @@ interface SidebarLabels {
   searchHosts: string;
   sessions: string;
   schedules: string;
+  webhooks: string;
   closeSidebar: string;
 }
 
@@ -114,6 +116,7 @@ interface MobileSidebarProps extends SidebarSharedProps {
   closeSidebar: () => void;
   handleViewMoreNavigate: () => void;
   handleViewSchedulesNavigate: () => void;
+  handleViewWebhooksNavigate: () => void;
 }
 
 interface DesktopSidebarProps extends SidebarSharedProps {
@@ -121,6 +124,7 @@ interface DesktopSidebarProps extends SidebarSharedProps {
   active: boolean;
   handleViewMore: () => void;
   handleViewSchedules: () => void;
+  handleViewWebhooks: () => void;
 }
 
 export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boolean }) {
@@ -217,6 +221,10 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
     router.push(buildSchedulesRoute());
   }, []);
 
+  const handleViewWebhooksNavigate = useCallback(() => {
+    router.push(buildWebhooksRoute());
+  }, []);
+
   const newWorkspaceKeys = useShortcutKeys("new-workspace");
   const labels = useMemo(
     (): SidebarLabels => ({
@@ -228,6 +236,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
       searchHosts: t("sidebar.host.searchPlaceholder"),
       sessions: t("sidebar.sections.sessions"),
       schedules: t("sidebar.sections.schedules"),
+      webhooks: t("sidebar.sections.webhooks"),
       closeSidebar: t("sidebar.actions.closeSidebar"),
     }),
     [t],
@@ -267,6 +276,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
           handleOpenHostSettings={handleOpenHostSettingsMobile}
           handleViewMoreNavigate={handleViewMoreNavigate}
           handleViewSchedulesNavigate={handleViewSchedulesNavigate}
+          handleViewWebhooksNavigate={handleViewWebhooksNavigate}
         />
       </RetainedPanelActivity>
     );
@@ -285,6 +295,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
         handleOpenHostSettings={handleOpenHostSettingsDesktop}
         handleViewMore={handleViewMoreNavigate}
         handleViewSchedules={handleViewSchedulesNavigate}
+        handleViewWebhooks={handleViewWebhooksNavigate}
       />
     </RetainedPanelActivity>
   );
@@ -394,37 +405,6 @@ function SidebarHostPicker({
         theme={theme}
       />
     </HostPicker>
-  );
-}
-
-/**
- * Desktop-only entry that opens the host file browser (rooted at the filesystem
- * root) for the active workspace's host. Files clicked there open in VS Code Web,
- * which is Electron-only — so this button is hidden elsewhere.
- */
-function SidebarHostFilesButton({ theme }: { theme: SidebarTheme }) {
-  const openHostExplorer = usePanelStore((state) => state.openHostExplorer);
-  const activeSelection = useActiveWorkspaceSelection();
-  const hosts = useHosts();
-  const serverId = activeSelection?.serverId ?? hosts[0]?.serverId ?? null;
-  const handlePress = useCallback(() => {
-    if (serverId) {
-      openHostExplorer(serverId);
-    }
-  }, [openHostExplorer, serverId]);
-
-  if (!getIsElectron() || !serverId) {
-    return null;
-  }
-
-  return (
-    <FooterIconButton
-      onPress={handlePress}
-      testID="sidebar-host-files"
-      label="Host files"
-      icon={HardDrive}
-      theme={theme}
-    />
   );
 }
 
@@ -548,7 +528,6 @@ function SidebarFooter({
           icon={Home}
           theme={theme}
         />
-        <SidebarHostFilesButton theme={theme} />
         <SidebarHelpMenu />
         <FooterIconButton
           onPress={handleSettings}
@@ -590,11 +569,13 @@ function MobileSidebar({
   closeSidebar,
   handleViewMoreNavigate,
   handleViewSchedulesNavigate,
+  handleViewWebhooksNavigate,
 }: MobileSidebarProps) {
   const pathname = usePathname();
   const hasActiveHostFilter = useSidebarViewStore((state) => state.hostFilters.length > 0);
   const isSessionsActive = pathname.includes("/sessions");
   const isSchedulesActive = pathname.includes("/schedules");
+  const isWebhooksActive = pathname.includes("/webhooks");
   const { gesture: closeGesture, gestureRef: closeGestureRef } = useCloseAgentListGesture();
 
   const handleViewMore = useCallback(() => {
@@ -606,6 +587,11 @@ function MobileSidebar({
     closeSidebar();
     handleViewSchedulesNavigate();
   }, [closeSidebar, handleViewSchedulesNavigate]);
+
+  const handleViewWebhooks = useCallback(() => {
+    closeSidebar();
+    handleViewWebhooksNavigate();
+  }, [closeSidebar, handleViewWebhooksNavigate]);
 
   const handleWorkspacePress = useCallback(() => {
     closeSidebar();
@@ -650,6 +636,14 @@ function MobileSidebar({
             onPress={handleViewSchedules}
             isActive={isSchedulesActive}
             testID="sidebar-schedules"
+            variant="compact"
+          />
+          <SidebarHeaderRow
+            icon={Webhook}
+            label={labels.webhooks}
+            onPress={handleViewWebhooks}
+            isActive={isWebhooksActive}
+            testID="sidebar-webhooks"
             variant="compact"
           />
         </View>
@@ -735,12 +729,14 @@ function DesktopSidebar({
   active,
   handleViewMore,
   handleViewSchedules,
+  handleViewWebhooks,
 }: DesktopSidebarProps) {
   const ownsTopLeft = useOwnsWindowChromeCorner("top-left");
   const pathname = usePathname();
   const hasActiveHostFilter = useSidebarViewStore((state) => state.hostFilters.length > 0);
   const isSessionsActive = pathname.includes("/sessions");
   const isSchedulesActive = pathname.includes("/schedules");
+  const isWebhooksActive = pathname.includes("/webhooks");
   const sidebarWidth = usePanelStore((state) => state.sidebarWidth);
   const setSidebarWidth = usePanelStore((state) => state.setSidebarWidth);
   const { width: viewportWidth } = useWindowDimensions();
@@ -840,6 +836,14 @@ function DesktopSidebar({
               onPress={handleViewSchedules}
               isActive={isSchedulesActive}
               testID="sidebar-schedules"
+              variant="compact"
+            />
+            <SidebarHeaderRow
+              icon={Webhook}
+              label={labels.webhooks}
+              onPress={handleViewWebhooks}
+              isActive={isWebhooksActive}
+              testID="sidebar-webhooks"
               variant="compact"
             />
           </View>

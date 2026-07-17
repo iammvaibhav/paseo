@@ -334,6 +334,7 @@ sync_code_server_user_data() {
 remote_sync_body() {
   local host="$1"
   local remote_home="$2"
+  local tunnel_provider="$3"
   cat <<EOF
 set -euo pipefail
 BRANCH='$BRANCH'
@@ -341,6 +342,7 @@ FORK_REPO='$FORK_REPO'
 REMOTE_REPO_DIR='$REMOTE_REPO_DIR'
 NODE_VERSION='$NODE_VERSION'
 PASEO_HOME='$remote_home'
+TUNNEL_PROVIDER='$tunnel_provider'
 
 log() {
   printf '\n[%s:%s] %s\n' "\$(date '+%H:%M:%S')" '$host' "\$*"
@@ -444,7 +446,20 @@ build_and_restart() {
   npm run build:server
   install_cli_wrapper
   log "Restarting daemon (\$PASEO_HOME)"
-  PATH="\$(daemon_path_env)" npx tsx packages/cli/src/index.js daemon restart --home "\$PASEO_HOME"
+  # Drive the webhook tunnel via env (not config.json) so an older daemon's strict
+  # config schema is never at risk; the new daemon reads PASEO_TUNNEL_PROVIDER and
+  # resolves its own public base URL (e.g. the Tailscale MagicDNS name).
+  local tunnel_env=()
+  if [[ -n "\$TUNNEL_PROVIDER" ]]; then
+    tunnel_env=("PASEO_TUNNEL_PROVIDER=\$TUNNEL_PROVIDER")
+    # cloudflared quick tunnels are run by the daemon itself; tailscale-funnel is
+    # managed out-of-band (tailscaled + ensure_remote_funnel), so no autostart.
+    if [[ "\$TUNNEL_PROVIDER" == "cloudflared" ]]; then
+      tunnel_env+=("PASEO_TUNNEL_AUTOSTART=1")
+    fi
+    log "Tunnel provider: \$TUNNEL_PROVIDER"
+  fi
+  PATH="\$(daemon_path_env)" "\${tunnel_env[@]}" npx tsx packages/cli/src/index.js daemon restart --home "\$PASEO_HOME"
 }
 
 deploy_code_server() {
@@ -474,8 +489,9 @@ EOF
 sync_remote_host() {
   local host="$1"
   local remote_home="$2"
+  local tunnel_provider="$3"
   log "Syncing remote host $host"
-  ssh -o BatchMode=yes "$host" "bash -s" < <(remote_sync_body "$host" "$remote_home")
+  ssh -o BatchMode=yes "$host" "bash -s" < <(remote_sync_body "$host" "$remote_home" "$tunnel_provider")
 }
 
 remote_paseo_home() {
@@ -485,6 +501,104 @@ remote_paseo_home() {
     iammvaibhav) echo "/home/ubuntu/.paseo" ;;
     *) die "Unknown remote host: $host" ;;
   esac
+}
+
+# Which webhook tunnel provider a host uses. Empty = none (webhooks still work if
+# the host is exposed some other way). blrofc3 uses Tailscale Funnel.
+remote_tunnel_provider() {
+  local host="$1"
+  case "$host" in
+    blrofc3) echo "tailscale-funnel" ;;
+    iammvaibhav) echo "cloudflared" ;;
+    *) echo "" ;;
+  esac
+}
+
+# Ensure cloudflared is installed on hosts that use it. Quick tunnels need no
+# account or domain; the daemon runs `cloudflared tunnel --url` itself.
+ensure_remote_cloudflared() {
+  local host="$1"
+  local tunnel_provider="$2"
+  if [[ "$tunnel_provider" != "cloudflared" ]]; then
+    return
+  fi
+  log "Ensuring cloudflared on $host"
+  ssh -o BatchMode=yes "$host" "bash -s" <<'REMOTE'
+set -uo pipefail
+say() { printf '  [cloudflared] %s\n' "$*"; }
+if command -v cloudflared >/dev/null 2>&1; then
+  say "already installed ($(command -v cloudflared))"
+  exit 0
+fi
+case "$(uname -m)" in
+  x86_64|amd64) arch=amd64 ;;
+  aarch64|arm64) arch=arm64 ;;
+  *) say "unsupported arch $(uname -m); install cloudflared manually"; exit 0 ;;
+esac
+url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}"
+tmp="$(mktemp)"
+say "downloading ${arch} binary"
+if ! curl -fsSL "$url" -o "$tmp"; then
+  say "download failed; install cloudflared manually"
+  rm -f "$tmp"
+  exit 0
+fi
+chmod +x "$tmp"
+if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+  sudo mv "$tmp" /usr/local/bin/cloudflared && say "installed to /usr/local/bin/cloudflared"
+else
+  mkdir -p "$HOME/.local/bin"
+  mv "$tmp" "$HOME/.local/bin/cloudflared" && say "installed to ~/.local/bin/cloudflared"
+fi
+cloudflared --version 2>/dev/null | head -1 | sed 's/^/  [cloudflared] /' || true
+REMOTE
+}
+
+# Ensure a Tailscale Funnel is up on the host, forwarding public HTTPS to the
+# daemon's listen address so /hooks/* is reachable from the internet. Idempotent:
+# skips when a funnel to the same target already exists. Only runs for hosts whose
+# provider is tailscale-funnel. Reads the daemon's listen address from config.json.
+ensure_remote_funnel() {
+  local host="$1"
+  local remote_home="$2"
+  local tunnel_provider="$3"
+  if [[ "$tunnel_provider" != "tailscale-funnel" ]]; then
+    return
+  fi
+  if [[ "${PASEO_SKIP_FUNNEL:-0}" == "1" ]]; then
+    log "Skipping Tailscale Funnel setup on $host (PASEO_SKIP_FUNNEL=1)"
+    return
+  fi
+  log "Ensuring Tailscale Funnel on $host"
+  ssh -o BatchMode=yes "$host" "PASEO_HOME='$remote_home' bash -s" <<'REMOTE'
+set -uo pipefail
+say() { printf '  [funnel] %s\n' "$*"; }
+cfg="$PASEO_HOME/config.json"
+if ! command -v tailscale >/dev/null 2>&1; then
+  say "tailscale not found; skipping"
+  exit 0
+fi
+listen="$(grep -oE '"listen"[[:space:]]*:[[:space:]]*"[^"]+"' "$cfg" 2>/dev/null | head -1 | grep -oE '"[^"]+"' | tail -1 | tr -d '"')"
+listen="${listen:-127.0.0.1:6767}"
+target="http://${listen/0.0.0.0/127.0.0.1}"
+if tailscale funnel status 2>/dev/null | grep -qF "$target"; then
+  say "already proxying to $target"
+  exit 0
+fi
+if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+  if sudo tailscale set --operator="$USER" 2>/dev/null; then
+    say "operator set to $USER"
+  else
+    say "could not set operator (continuing)"
+  fi
+fi
+if tailscale funnel --bg "$target" >/dev/null 2>&1; then
+  say "funnel up -> $target"
+  tailscale funnel status 2>/dev/null | grep -E "Funnel on|proxy" | sed 's/^/  [funnel] /' || true
+else
+  say "failed to start; run manually: sudo tailscale set --operator=$USER && tailscale funnel --bg $target"
+fi
+REMOTE
 }
 
 print_help() {
@@ -517,6 +631,7 @@ Scope flags (set to 1 unless noted):
   PASEO_BUILD_DESKTOP=0            Skip the desktop app build (built by default)
   PASEO_DESKTOP_TEST_APP=<path>    Desktop install path (default: $DESKTOP_TEST_APP)
   PASEO_SYNC_CODE_SERVER_USER_DATA  Also rsync code-server User/ + extensions/ to remotes
+  PASEO_SKIP_FUNNEL               Skip ensuring the Tailscale Funnel on funnel hosts (blrofc3)
 
 Model selection (claude-driven steps):
   PASEO_COMMIT_MSG_MODEL          Model for auto-commit messages (default: $COMMIT_MSG_MODEL)
@@ -569,7 +684,12 @@ main() {
   if [[ "${PASEO_SKIP_REMOTES:-0}" != "1" ]]; then
     local host
     for host in "${REMOTE_HOSTS[@]}"; do
-      sync_remote_host "$host" "$(remote_paseo_home "$host")"
+      local rhome rprovider
+      rhome="$(remote_paseo_home "$host")"
+      rprovider="$(remote_tunnel_provider "$host")"
+      ensure_remote_cloudflared "$host" "$rprovider"
+      sync_remote_host "$host" "$rhome" "$rprovider"
+      ensure_remote_funnel "$host" "$rhome" "$rprovider"
     done
   fi
 

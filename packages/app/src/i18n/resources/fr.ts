@@ -830,6 +830,7 @@ export const fr: TranslationResources = {
     sections: {
       sessions: "Historique",
       schedules: "Planifications",
+      webhooks: "Webhooks",
     },
     worktreeSetup: {
       title: "Configurer les scripts d'arbre de travail",

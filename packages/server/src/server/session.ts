@@ -144,6 +144,8 @@ import {
   createGitMetadataGenerator,
 } from "./session/checkout/git-metadata-generator.js";
 import { ChatScheduleLoopSession } from "./session/chat/chat-schedule-loop-session.js";
+import { WebhookSession } from "./session/webhook/webhook-session.js";
+import type { WebhookService } from "./webhook/service.js";
 import { ProviderCatalogSession } from "./session/provider/provider-catalog-session.js";
 import { WorkspaceFilesSession } from "./session/files/workspace-files-session.js";
 import { AgentConfigSession } from "./session/agent-config/agent-config-session.js";
@@ -418,6 +420,7 @@ export interface SessionOptions {
   filesystem?: SessionFileSystem;
   chatService: FileBackedChatService;
   scheduleService: ScheduleService;
+  webhookService?: WebhookService | null;
   loopService: LoopService;
   checkoutDiffManager: CheckoutDiffManager;
   github?: GitHubService;
@@ -580,6 +583,7 @@ export class Session {
   private readonly voiceSession: VoiceSession;
   private readonly checkoutSession: CheckoutSession;
   private readonly chatScheduleLoopSession: ChatScheduleLoopSession;
+  private readonly webhookSession: WebhookSession;
   private readonly providerCatalogSession: ProviderCatalogSession;
   private readonly workspaceFilesSession: WorkspaceFilesSession;
   private readonly agentConfigSession: AgentConfigSession;
@@ -609,6 +613,7 @@ export class Session {
       filesystem,
       chatService,
       scheduleService,
+      webhookService,
       loopService,
       checkoutDiffManager,
       github,
@@ -740,6 +745,13 @@ export class Session {
       scheduleService,
       loopService,
       clientId: this.clientId,
+      logger: this.sessionLogger,
+    });
+    this.webhookSession = new WebhookSession({
+      host: {
+        emit: (msg) => this.emit(msg),
+      },
+      webhookService: webhookService ?? null,
       logger: this.sessionLogger,
     });
     this.providerCatalogSession = new ProviderCatalogSession({
@@ -1744,6 +1756,20 @@ export class Session {
         return this.chatScheduleLoopSession.handleScheduleRunOnceRequest(msg);
       case "schedule/update":
         return this.chatScheduleLoopSession.handleScheduleUpdateRequest(msg);
+      case "webhook/create":
+        return this.webhookSession.handleCreateRequest(msg);
+      case "webhook/list":
+        return this.webhookSession.handleListRequest(msg);
+      case "webhook/inspect":
+        return this.webhookSession.handleInspectRequest(msg);
+      case "webhook/delete":
+        return this.webhookSession.handleDeleteRequest(msg);
+      case "webhook/update":
+        return this.webhookSession.handleUpdateRequest(msg);
+      case "webhook/test":
+        return this.webhookSession.handleTestRequest(msg);
+      case "webhook/config":
+        return this.webhookSession.handleConfigRequest(msg);
       default:
         return undefined;
     }

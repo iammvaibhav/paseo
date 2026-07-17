@@ -42,6 +42,22 @@ import {
   ScheduleUpdateResponseSchema,
 } from "./schedule/rpc-schemas.js";
 import {
+  WebhookCreateRequestSchema,
+  WebhookListRequestSchema,
+  WebhookInspectRequestSchema,
+  WebhookDeleteRequestSchema,
+  WebhookUpdateRequestSchema,
+  WebhookTestRequestSchema,
+  WebhookConfigRequestSchema,
+  WebhookCreateResponseSchema,
+  WebhookListResponseSchema,
+  WebhookInspectResponseSchema,
+  WebhookDeleteResponseSchema,
+  WebhookUpdateResponseSchema,
+  WebhookTestResponseSchema,
+  WebhookConfigResponseSchema,
+} from "./webhook/rpc-schemas.js";
+import {
   LoopRunRequestSchema,
   LoopListRequestSchema,
   LoopInspectRequestSchema,
@@ -2238,6 +2254,13 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ScheduleDeleteRequestSchema,
   ScheduleRunOnceRequestSchema,
   ScheduleUpdateRequestSchema,
+  WebhookCreateRequestSchema,
+  WebhookListRequestSchema,
+  WebhookInspectRequestSchema,
+  WebhookDeleteRequestSchema,
+  WebhookUpdateRequestSchema,
+  WebhookTestRequestSchema,
+  WebhookConfigRequestSchema,
   LoopRunRequestSchema,
   LoopListRequestSchema,
   LoopInspectRequestSchema,
@@ -4502,6 +4525,13 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ScheduleDeleteResponseSchema,
   ScheduleRunOnceResponseSchema,
   ScheduleUpdateResponseSchema,
+  WebhookCreateResponseSchema,
+  WebhookListResponseSchema,
+  WebhookInspectResponseSchema,
+  WebhookDeleteResponseSchema,
+  WebhookUpdateResponseSchema,
+  WebhookTestResponseSchema,
+  WebhookConfigResponseSchema,
   LoopRunResponseSchema,
   LoopListResponseSchema,
   LoopInspectResponseSchema,
@@ -4644,6 +4674,13 @@ export type ScheduleResumeResponse = z.infer<typeof ScheduleResumeResponseSchema
 export type ScheduleDeleteResponse = z.infer<typeof ScheduleDeleteResponseSchema>;
 export type ScheduleRunOnceResponse = z.infer<typeof ScheduleRunOnceResponseSchema>;
 export type ScheduleUpdateResponse = z.infer<typeof ScheduleUpdateResponseSchema>;
+export type WebhookCreateResponse = z.infer<typeof WebhookCreateResponseSchema>;
+export type WebhookListResponse = z.infer<typeof WebhookListResponseSchema>;
+export type WebhookInspectResponse = z.infer<typeof WebhookInspectResponseSchema>;
+export type WebhookDeleteResponse = z.infer<typeof WebhookDeleteResponseSchema>;
+export type WebhookUpdateResponse = z.infer<typeof WebhookUpdateResponseSchema>;
+export type WebhookTestResponse = z.infer<typeof WebhookTestResponseSchema>;
+export type WebhookConfigResponse = z.infer<typeof WebhookConfigResponseSchema>;
 export type LoopRunResponse = z.infer<typeof LoopRunResponseSchema>;
 export type LoopListResponse = z.infer<typeof LoopListResponseSchema>;
 export type LoopInspectResponse = z.infer<typeof LoopInspectResponseSchema>;
@@ -4709,6 +4746,13 @@ export type ScheduleResumeRequest = z.infer<typeof ScheduleResumeRequestSchema>;
 export type ScheduleDeleteRequest = z.infer<typeof ScheduleDeleteRequestSchema>;
 export type ScheduleRunOnceRequest = z.infer<typeof ScheduleRunOnceRequestSchema>;
 export type ScheduleUpdateRequest = z.infer<typeof ScheduleUpdateRequestSchema>;
+export type WebhookCreateRequest = z.infer<typeof WebhookCreateRequestSchema>;
+export type WebhookListRequest = z.infer<typeof WebhookListRequestSchema>;
+export type WebhookInspectRequest = z.infer<typeof WebhookInspectRequestSchema>;
+export type WebhookDeleteRequest = z.infer<typeof WebhookDeleteRequestSchema>;
+export type WebhookUpdateRequest = z.infer<typeof WebhookUpdateRequestSchema>;
+export type WebhookTestRequest = z.infer<typeof WebhookTestRequestSchema>;
+export type WebhookConfigRequest = z.infer<typeof WebhookConfigRequestSchema>;
 export type LoopRunRequest = z.infer<typeof LoopRunRequestSchema>;
 export type LoopListRequest = z.infer<typeof LoopListRequestSchema>;
 export type LoopInspectRequest = z.infer<typeof LoopInspectRequestSchema>;

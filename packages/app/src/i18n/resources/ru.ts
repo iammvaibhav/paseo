@@ -823,6 +823,7 @@ export const ru: TranslationResources = {
     sections: {
       sessions: "История",
       schedules: "Расписания",
+      webhooks: "Webhooks",
     },
     worktreeSetup: {
       title: "Настройка сценариев рабочего дерева",

@@ -811,6 +811,7 @@ export const en = {
     sections: {
       sessions: "History",
       schedules: "Schedules",
+      webhooks: "Webhooks",
     },
     worktreeSetup: {
       title: "Set up worktree scripts",
