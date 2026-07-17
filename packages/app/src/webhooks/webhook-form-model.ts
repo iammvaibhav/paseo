@@ -6,6 +6,7 @@ import type {
 } from "@getpaseo/protocol/agent-types";
 import type {
   WebhookAuth,
+  WebhookFilter,
   WebhookHmacPreset,
   WebhookSummary,
 } from "@getpaseo/protocol/webhook/types";
@@ -35,6 +36,13 @@ import {
 } from "@/schedules/schedule-project-targets";
 
 export type WebhookHmacPresetOption = "none" | WebhookHmacPreset;
+
+export interface WebhookFilterRule {
+  // Stable client-only id for React keys + per-row handlers; stripped on submit.
+  id: string;
+  path: string;
+  equals: string;
+}
 
 export interface WebhookFormDisplay {
   label: string;
@@ -92,6 +100,7 @@ export interface WebhookFormState {
   name: string;
   promptTemplate: string;
   enabled: boolean;
+  filterRules: WebhookFilterRule[];
   hmacPreset: WebhookHmacPresetOption;
   hmacSecret: string;
   hosts: WebhookFormHost[];
@@ -139,6 +148,9 @@ export interface WebhookFormModel {
   setName: (value: string) => void;
   setPromptTemplate: (value: string) => void;
   setEnabled: (value: boolean) => void;
+  addFilterRule: () => void;
+  updateFilterRule: (id: string, patch: Partial<Omit<WebhookFilterRule, "id">>) => void;
+  removeFilterRule: (id: string) => void;
   setHmacPreset: (value: WebhookHmacPresetOption) => void;
   setHmacSecret: (value: string) => void;
   setIsolation: (value: "local" | "worktree") => void;
@@ -443,6 +455,16 @@ function resolveInitialIsolation(input: {
   return input.preferences?.isolation ?? "local";
 }
 
+function buildInitialFilterRules(webhook: WebhookFormSnapshot["webhook"]): WebhookFilterRule[] {
+  return (
+    webhook?.filter?.rules.map((rule, index) => ({
+      id: `filter-${index}`,
+      path: rule.path,
+      equals: rule.equals,
+    })) ?? []
+  );
+}
+
 function resolveInitialHmacPreset(
   webhook: WebhookFormSnapshot["webhook"],
 ): WebhookHmacPresetOption {
@@ -653,6 +675,7 @@ function buildInitialState(snapshot: WebhookFormSnapshot): WebhookFormState {
     name: snapshot.webhook?.name ?? "",
     promptTemplate: snapshot.webhook?.promptTemplate ?? "",
     enabled: snapshot.webhook?.enabled ?? true,
+    filterRules: buildInitialFilterRules(snapshot.webhook),
     hmacPreset: resolveInitialHmacPreset(snapshot.webhook),
     hmacSecret: resolveInitialHmacSecret(snapshot.webhook),
     hosts: [...snapshot.hosts],
@@ -796,6 +819,7 @@ export function openWebhookForm(snapshot: WebhookFormSnapshot): WebhookFormModel
   let providerEntries: ProviderSnapshotEntry[] = [];
   let userModified = { ...INITIAL_USER_MODIFIED, isolation: false };
   let state = buildInitialState(snapshot);
+  let filterRuleSeq = state.filterRules.length;
 
   function publish(nextState: WebhookFormState): void {
     if (closed) {
@@ -1032,6 +1056,24 @@ export function openWebhookForm(snapshot: WebhookFormSnapshot): WebhookFormModel
     setEnabled(value) {
       publish({ ...state, enabled: value });
     },
+    addFilterRule() {
+      const rule: WebhookFilterRule = { id: `filter-${filterRuleSeq++}`, path: "", equals: "" };
+      publish({ ...state, filterRules: [...state.filterRules, rule] });
+    },
+    updateFilterRule(id, patch) {
+      publish({
+        ...state,
+        filterRules: state.filterRules.map((rule) =>
+          rule.id === id ? { ...rule, ...patch } : rule,
+        ),
+      });
+    },
+    removeFilterRule(id) {
+      publish({
+        ...state,
+        filterRules: state.filterRules.filter((rule) => rule.id !== id),
+      });
+    },
     setHmacPreset(value) {
       publish({ ...state, hmacPreset: value });
     },
@@ -1049,6 +1091,14 @@ export function openWebhookForm(snapshot: WebhookFormSnapshot): WebhookFormModel
       publish({ ...state, submitError: value });
     },
   };
+}
+
+/** Build the wire `filter` value; drops rules with an empty path, null if none. */
+export function buildWebhookFilter(state: WebhookFormState): WebhookFilter | null {
+  const rules = state.filterRules
+    .map((rule) => ({ path: rule.path.trim(), equals: rule.equals }))
+    .filter((rule) => rule.path.length > 0);
+  return rules.length > 0 ? { rules } : null;
 }
 
 /** Build the wire `auth` value from the form's HMAC selection. */

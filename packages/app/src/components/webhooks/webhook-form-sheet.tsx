@@ -50,6 +50,8 @@ import { useWebhookFormModel } from "@/webhooks/use-webhook-form-model";
 import { useWebhookFormProviderSnapshot } from "@/webhooks/use-webhook-form-provider-snapshot";
 import {
   buildWebhookAuth,
+  buildWebhookFilter,
+  type WebhookFilterRule,
   type WebhookFormDisplay,
   type WebhookFormHost,
   type WebhookFormModel,
@@ -316,6 +318,7 @@ function OpenWebhookFormSheet({
       enabled: state.enabled,
       promptTemplate: state.promptTemplate.trim(),
       auth: buildWebhookAuth(state),
+      filter: buildWebhookFilter(state),
     });
     return true;
   }, [webhook, state, updateWebhook]);
@@ -341,6 +344,7 @@ function OpenWebhookFormSheet({
       title: state.name.trim() || undefined,
     };
     const auth = buildWebhookAuth(state);
+    const filter = buildWebhookFilter(state);
 
     if (mode === "edit" && webhook) {
       await updateWebhook({
@@ -350,6 +354,7 @@ function OpenWebhookFormSheet({
         promptTemplate: state.promptTemplate.trim(),
         target: { type: "new-agent", config },
         auth,
+        filter,
       });
       return true;
     }
@@ -360,6 +365,7 @@ function OpenWebhookFormSheet({
       name: state.name.trim() || undefined,
       enabled: state.enabled,
       auth,
+      filter,
     });
     return true;
   }, [createWebhook, mode, persistPreferences, webhook, state, updateWebhook]);
@@ -502,6 +508,8 @@ function WebhookFormFields({
         />
       </Field>
 
+      <WebhookFilterFields model={model} state={state} controlSize={controlSize} />
+
       <WebhookTargetFields
         model={model}
         state={state}
@@ -515,6 +523,88 @@ function WebhookFormFields({
 
       {state.submitError ? <Text style={styles.submitError}>{state.submitError}</Text> : null}
     </>
+  );
+}
+
+function WebhookFilterFields({
+  model,
+  state,
+  controlSize,
+}: {
+  model: WebhookFormModel;
+  state: WebhookFormState;
+  controlSize: FieldControlSize;
+}): ReactElement {
+  return (
+    <Field label="Filter">
+      <View style={styles.filterList}>
+        <Text style={styles.hint}>
+          Only fire when every rule matches. Path is a dot-path into the JSON body (e.g.
+          event.event_type). Leave empty to always fire.
+        </Text>
+        {state.filterRules.map((rule) => (
+          <WebhookFilterRuleRow key={rule.id} rule={rule} model={model} controlSize={controlSize} />
+        ))}
+        <Button
+          variant="outline"
+          size="sm"
+          onPress={model.addFilterRule}
+          testID="webhook-filter-add"
+        >
+          Add rule
+        </Button>
+      </View>
+    </Field>
+  );
+}
+
+function WebhookFilterRuleRow({
+  rule,
+  model,
+  controlSize,
+}: {
+  rule: WebhookFilterRule;
+  model: WebhookFormModel;
+  controlSize: FieldControlSize;
+}): ReactElement {
+  const handleChangePath = useCallback(
+    (value: string) => model.updateFilterRule(rule.id, { path: value }),
+    [model, rule.id],
+  );
+  const handleChangeEquals = useCallback(
+    (value: string) => model.updateFilterRule(rule.id, { equals: value }),
+    [model, rule.id],
+  );
+  const handleRemove = useCallback(() => model.removeFilterRule(rule.id), [model, rule.id]);
+
+  return (
+    <View style={styles.filterRule} testID="webhook-filter-rule">
+      <FormTextInput
+        size={controlSize}
+        accessibilityLabel="Filter path"
+        initialValue={rule.path}
+        value={rule.path}
+        onChangeText={handleChangePath}
+        placeholder="Payload path (e.g. event.event_type)"
+        autoCapitalize="none"
+        autoCorrect={false}
+        testID="webhook-filter-path"
+      />
+      <FormTextInput
+        size={controlSize}
+        accessibilityLabel="Filter value"
+        initialValue={rule.equals}
+        value={rule.equals}
+        onChangeText={handleChangeEquals}
+        placeholder="Equals (e.g. incident.triggered)"
+        autoCapitalize="none"
+        autoCorrect={false}
+        testID="webhook-filter-equals"
+      />
+      <Button variant="ghost" size="sm" onPress={handleRemove} testID="webhook-filter-remove">
+        Remove
+      </Button>
+    </View>
   );
 }
 
@@ -1209,6 +1299,16 @@ const styles = StyleSheet.create((theme) => {
     submitError: {
       color: theme.colors.palette.red[300],
       fontSize: theme.fontSize.xs,
+    },
+    filterList: {
+      gap: theme.spacing[2],
+    },
+    filterRule: {
+      gap: theme.spacing[2],
+      padding: theme.spacing[3],
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      borderRadius: theme.borderRadius.base,
     },
     providerIcon: {
       color: theme.colors.foregroundMuted,
