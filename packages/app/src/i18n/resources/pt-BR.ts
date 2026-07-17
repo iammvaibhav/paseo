@@ -79,6 +79,8 @@ export const ptBR: TranslationResources = {
       sendMessage: "Enviar mensagem",
       queue: "Fila",
       send: "Enviar",
+      forkToNewTab: "Bifurcar em nova aba",
+      forkFailed: "Falha ao bifurcar o agente",
     },
     cancel: {
       cancelingAgent: "Cancelando agente",

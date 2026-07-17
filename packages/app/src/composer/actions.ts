@@ -189,6 +189,47 @@ export async function dispatchComposerAgentMessage(
   });
 }
 
+export interface ComposerForkClient {
+  forkAgent: (
+    sourceAgentId: string,
+    text: string,
+    options: {
+      messageId: string;
+      images: Array<{ data: string; mimeType: string }>;
+      attachments: ReturnType<typeof splitComposerAttachmentsForSubmit>["attachments"];
+    },
+  ) => Promise<{ agentId: string; strategy: "native" | "snapshot" | null }>;
+}
+
+export interface ForkComposerAgentInput {
+  client: ComposerForkClient;
+  sourceAgentId: string;
+  text: string;
+  attachments: ComposerAttachment[];
+  encodeImages: (
+    images: AttachmentMetadata[],
+  ) => Promise<Array<{ data: string; mimeType: string }> | undefined>;
+}
+
+/**
+ * Fork the source agent into a new sibling agent seeded with history up to now,
+ * running `text` as its first turn. Unlike a normal send, this does NOT append
+ * an optimistic message to the source agent's stream — the message belongs to
+ * the newly created agent, which the caller opens in a new tab.
+ */
+export async function forkComposerAgent(
+  input: ForkComposerAgentInput,
+): Promise<{ agentId: string; strategy: "native" | "snapshot" | null }> {
+  const wirePayload = splitComposerAttachmentsForSubmit(input.attachments);
+  const messageId = generateMessageId();
+  const imagesData = await input.encodeImages(wirePayload.images);
+  return await input.client.forkAgent(input.sourceAgentId, input.text, {
+    messageId,
+    images: imagesData ?? [],
+    attachments: wirePayload.attachments,
+  });
+}
+
 function appendUserMessageToStream(
   agentId: string,
   userMessage: UserMessageItem,
@@ -316,6 +357,56 @@ export async function sendQueuedComposerMessageNow(
         error instanceof Error
           ? error.message
           : (input.failedToSendMessage ?? i18n.t("composer.errors.failedToSend")),
+    };
+  }
+}
+
+export interface ForkQueuedComposerMessageInput {
+  agentId: string;
+  messageId: string;
+  queue: QueueWriter;
+  fork: (input: { text: string; attachments: ComposerAttachment[] }) => Promise<void>;
+  failedToForkMessage?: string;
+}
+
+export type ForkQueuedComposerMessageResult =
+  | { status: "missing" }
+  | { status: "forked" }
+  | { status: "failed"; errorMessage: string };
+
+/**
+ * Fork a queued message into a new sibling agent instead of letting it drain to
+ * the running agent. Removes it from the queue first (so it won't also be sent
+ * when the agent goes idle) and re-inserts it at the head if the fork fails.
+ */
+export async function forkQueuedComposerMessage(
+  input: ForkQueuedComposerMessageInput,
+): Promise<ForkQueuedComposerMessageResult> {
+  const item = input.queue.read(input.agentId).find((q) => q.id === input.messageId);
+  if (!item) return { status: "missing" };
+  input.queue.write((prev) => {
+    const next = new Map(prev);
+    next.set(
+      input.agentId,
+      (prev.get(input.agentId) ?? []).filter((q) => q.id !== input.messageId),
+    );
+    return next;
+  });
+  try {
+    await input.fork({ text: item.text, attachments: item.attachments });
+    return { status: "forked" };
+  } catch (error) {
+    input.queue.write((prev) => {
+      const next = new Map(prev);
+      next.set(input.agentId, [item, ...(prev.get(input.agentId) ?? [])]);
+      return next;
+    });
+    return {
+      status: "failed",
+      errorMessage:
+        error instanceof Error
+          ? error.message
+          : (input.failedToForkMessage ?? i18n.t("composer.errors.failedToSend")),
     };
   }
 }

@@ -638,6 +638,17 @@ export interface AgentSession {
   revertFiles?(input: { messageId: string }): Promise<void>;
   revertBoth?(input: { messageId: string }): Promise<void>;
   /**
+   * Fork this session's provider-native conversation up to the last completed
+   * turn into a NEW, independent provider session, WITHOUT mutating this
+   * session. Returns a persistence handle the manager can resume as a brand-new
+   * sibling agent that carries the live context (and prompt cache) forward.
+   *
+   * Only implemented by providers whose SDK supports non-destructive session
+   * forking (Claude `forkSession`, Codex `thread/fork`). When absent, callers
+   * fall back to seeding a fresh agent with a chat-history text snapshot.
+   */
+  forkSessionForNewAgent?(): Promise<AgentPersistenceHandle>;
+  /**
    * Out-of-band prompt handler. When non-null, the manager runs the returned
    * handler instead of allocating a turn. The handler emits stream events
    * directly via the provided `emit` callback, which routes through the

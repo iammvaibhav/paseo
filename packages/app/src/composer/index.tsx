@@ -31,6 +31,7 @@ import {
   Github,
   Image as ImageIcon,
   Paperclip,
+  Split,
 } from "lucide-react-native";
 import Animated from "react-native-reanimated";
 import { FOOTER_HEIGHT, MAX_CONTENT_WIDTH } from "@/constants/layout";
@@ -42,6 +43,7 @@ import {
 import { ContextWindowMeter } from "@/components/context-window-meter";
 import { useImageAttachmentPicker } from "@/hooks/use-image-attachment-picker";
 import { useSessionStore } from "@/stores/session-store";
+import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
 import { useFilePicker } from "@/hooks/use-file-picker";
 import { useFileDrop } from "@/components/file-drop/use-file-drop";
 import type { DroppedItem } from "@/components/file-drop/types";
@@ -54,6 +56,8 @@ import { focusWithRetries } from "@/utils/web-focus";
 import {
   cancelComposerAgent,
   dispatchComposerAgentMessage,
+  forkComposerAgent,
+  forkQueuedComposerMessage,
   editQueuedComposerMessage,
   findGithubItemByOption,
   isAttachmentSelectedForGithubItem,
@@ -332,13 +336,22 @@ interface RenderQueueTrackArgs {
   queuedMessages: readonly QueuedMessage[];
   handleEditQueuedMessage: (id: string) => void;
   handleSendQueuedNow: (id: string) => Promise<void>;
+  handleForkQueued: ((id: string) => void) | undefined;
   editLabel: string;
   sendNowLabel: string;
+  forkLabel: string;
 }
 
 function renderQueueTrack(args: RenderQueueTrackArgs): ReactElement | null {
-  const { queuedMessages, handleEditQueuedMessage, handleSendQueuedNow, editLabel, sendNowLabel } =
-    args;
+  const {
+    queuedMessages,
+    handleEditQueuedMessage,
+    handleSendQueuedNow,
+    handleForkQueued,
+    editLabel,
+    sendNowLabel,
+    forkLabel,
+  } = args;
   if (queuedMessages.length === 0) return null;
   return (
     <View style={styles.queueTrack}>
@@ -348,8 +361,10 @@ function renderQueueTrack(args: RenderQueueTrackArgs): ReactElement | null {
           item={item}
           onEdit={handleEditQueuedMessage}
           onSendNow={handleSendQueuedNow}
+          onFork={handleForkQueued}
           editLabel={editLabel}
           sendNowLabel={sendNowLabel}
+          forkLabel={forkLabel}
         />
       ))}
     </View>
@@ -532,16 +547,20 @@ interface QueuedMessageRowProps {
   item: QueuedMessage;
   onEdit: (id: string) => void;
   onSendNow: (id: string) => void;
+  onFork: ((id: string) => void) | undefined;
   editLabel: string;
   sendNowLabel: string;
+  forkLabel: string;
 }
 
 function QueuedMessageRow({
   item,
   onEdit,
   onSendNow,
+  onFork,
   editLabel,
   sendNowLabel,
+  forkLabel,
 }: QueuedMessageRowProps) {
   const handleEdit = useCallback(() => {
     onEdit(item.id);
@@ -549,6 +568,9 @@ function QueuedMessageRow({
   const handleSendNow = useCallback(() => {
     onSendNow(item.id);
   }, [onSendNow, item.id]);
+  const handleFork = useCallback(() => {
+    onFork?.(item.id);
+  }, [onFork, item.id]);
   return (
     <View style={styles.queueItem}>
       <Text style={styles.queueText} numberOfLines={2} ellipsizeMode="tail">
@@ -563,6 +585,16 @@ function QueuedMessageRow({
         >
           <ThemedPencil size={ICON_SIZE.sm} uniProps={iconForegroundMapping} />
         </Pressable>
+        {onFork ? (
+          <Pressable
+            onPress={handleFork}
+            style={styles.queueActionButton}
+            accessibilityLabel={forkLabel}
+            accessibilityRole="button"
+          >
+            <ThemedSplit size={ICON_SIZE.sm} uniProps={iconForegroundMapping} />
+          </Pressable>
+        ) : null}
         <Pressable
           onPress={handleSendNow}
           style={QUEUE_SEND_BUTTON_STYLE}
@@ -889,6 +921,8 @@ interface ComposerRightControlsSlotProps extends ComposerVoiceModeButtonProps {
   hasSendableContent: boolean;
   isProcessing: boolean;
   isCompact: boolean;
+  canFork: boolean;
+  onFork: () => void;
   cancelButton: ReactElement;
 }
 
@@ -899,6 +933,8 @@ function ComposerRightControlsSlot({
   hasSendableContent,
   isProcessing,
   isCompact,
+  canFork,
+  onFork,
   cancelButton,
   ...voiceProps
 }: ComposerRightControlsSlotProps) {
@@ -906,12 +942,59 @@ function ComposerRightControlsSlot({
   const showVoiceModeButton =
     !isVoiceModeForAgent && hasAgent && !isAgentRunning && !hideVoiceForCompactInput;
   const shouldShowCancelButton = isAgentRunning && !hasSendableContent && !isProcessing;
-  if (!showVoiceModeButton && !shouldShowCancelButton) return null;
+  // Fork sits next to the send button while the agent is busy and there's
+  // something to send: it spins the message off into a new sibling agent
+  // instead of queueing/interrupting the current one.
+  const showForkButton = canFork && isAgentRunning && hasSendableContent && !isProcessing;
+  if (!showVoiceModeButton && !shouldShowCancelButton && !showForkButton) return null;
   return (
     <View style={styles.rightControls}>
       {showVoiceModeButton ? <ComposerVoiceModeButton {...voiceProps} /> : null}
+      {showForkButton ? (
+        <ComposerForkButton
+          buttonIconSize={voiceProps.buttonIconSize}
+          onFork={onFork}
+          t={voiceProps.t}
+        />
+      ) : null}
       {cancelButton}
     </View>
+  );
+}
+
+function ComposerForkButton({
+  buttonIconSize,
+  onFork,
+  t,
+}: {
+  buttonIconSize: number;
+  onFork: () => void;
+  t: TFunction;
+}) {
+  const renderTriggerContent = useCallback(
+    ({ hovered }: PressableStateCallbackType & { hovered?: boolean }) => {
+      const colorMapping = hovered ? iconForegroundMapping : iconForegroundMutedMapping;
+      return <ThemedSplit size={buttonIconSize} uniProps={colorMapping} />;
+    },
+    [buttonIconSize],
+  );
+  return (
+    <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
+      <TooltipTrigger
+        onPress={onFork}
+        accessibilityLabel={t("composer.input.forkToNewTab")}
+        accessibilityRole="button"
+        testID="composer-fork-button"
+        style={styles.rightControlButton}
+      >
+        {renderTriggerContent}
+      </TooltipTrigger>
+      <TooltipContent side="top" align="center" offset={8}>
+        <View style={styles.tooltipRow}>
+          <Text style={styles.tooltipText}>{t("composer.input.forkToNewTab")}</Text>
+        </View>
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -1591,6 +1674,93 @@ export function Composer({
 
   const hasSendableContent = userInput.trim().length > 0 || selectedAttachments.length > 0;
 
+  // COMPAT(agentFork): gate the composer fork action on the daemon capability.
+  const supportsAgentFork = useSessionStore(
+    (state) => state.sessions[serverId]?.serverInfo?.features?.agentFork === true,
+  );
+  const agentWorkspaceId = useSessionStore(
+    (state) => state.sessions[serverId]?.agents?.get(agentId)?.workspaceId ?? null,
+  );
+  const canFork = supportsAgentFork && !onSubmitMessage && agentWorkspaceId != null;
+
+  // Shared fork core: create a sibling agent from the given content and open it
+  // in a new tab. Throws on failure so callers can surface/re-queue as needed.
+  const forkContentToNewTab = useCallback(
+    async (text: string, outgoing: ComposerAttachment[]) => {
+      const workspaceId = agentWorkspaceId;
+      if (!client || !workspaceId) {
+        throw new Error(t("composer.input.forkFailed"));
+      }
+      const result = await forkComposerAgent({
+        client,
+        sourceAgentId: agentIdRef.current,
+        text,
+        attachments: outgoing,
+        encodeImages,
+      });
+      navigateToWorkspace({
+        serverId,
+        workspaceId,
+        target: { kind: "agent", agentId: result.agentId },
+      });
+    },
+    [agentWorkspaceId, client, serverId, t],
+  );
+
+  const handleFork = useCallback(() => {
+    const text = userInput.trim();
+    const outgoingAttachments = buildOutgoingAttachments(attachments);
+    if (!text && outgoingAttachments.length === 0) return;
+    if (!client || !agentWorkspaceId) {
+      setSendError(t("composer.input.forkFailed"));
+      return;
+    }
+    setIsProcessing(true);
+    setSendError(null);
+    void (async () => {
+      try {
+        await forkContentToNewTab(text, outgoingAttachments);
+        clearDraft("sent");
+        setUserInput("");
+        setSelectedAttachments([]);
+        resetSuppression();
+      } catch (error) {
+        setSendError(error instanceof Error ? error.message : t("composer.input.forkFailed"));
+      } finally {
+        setIsProcessing(false);
+      }
+    })();
+  }, [
+    agentWorkspaceId,
+    attachments,
+    buildOutgoingAttachments,
+    clearDraft,
+    client,
+    forkContentToNewTab,
+    resetSuppression,
+    setSelectedAttachments,
+    setUserInput,
+    t,
+    userInput,
+  ]);
+
+  const handleForkQueued = useCallback(
+    async (id: string) => {
+      const result = await forkQueuedComposerMessage({
+        agentId,
+        messageId: id,
+        queue: queueWriter,
+        fork: ({ text, attachments: queuedAttachments }) =>
+          forkContentToNewTab(text, queuedAttachments),
+        failedToForkMessage: t("composer.input.forkFailed"),
+      });
+      if (result.status === "failed") {
+        setSendError(result.errorMessage);
+      }
+    },
+    [agentId, forkContentToNewTab, queueWriter, t],
+  );
+
   // Handle keyboard navigation for command autocomplete.
   const handleCommandKeyPress = useCallback(
     (event: { key: string; preventDefault: () => void }) =>
@@ -1649,6 +1819,8 @@ export function Composer({
         hasSendableContent={hasSendableContent}
         isProcessing={isProcessing}
         isCompact={isCompactLayout}
+        canFork={canFork}
+        onFork={handleFork}
         buttonIconSize={buttonIconSize}
         handleToggleRealtimeVoice={handleToggleRealtimeVoice}
         isConnected={isConnected}
@@ -1661,7 +1833,9 @@ export function Composer({
     ),
     [
       buttonIconSize,
+      canFork,
       cancelButton,
+      handleFork,
       handleToggleRealtimeVoice,
       hasAgent,
       hasSendableContent,
@@ -1883,10 +2057,12 @@ export function Composer({
         queuedMessages,
         handleEditQueuedMessage,
         handleSendQueuedNow,
+        handleForkQueued: canFork ? handleForkQueued : undefined,
         editLabel: t("composer.attachments.editQueuedMessage"),
         sendNowLabel: t("composer.attachments.sendQueuedMessageNow"),
+        forkLabel: t("composer.input.forkToNewTab"),
       }),
-    [handleEditQueuedMessage, handleSendQueuedNow, queuedMessages, t],
+    [canFork, handleEditQueuedMessage, handleForkQueued, handleSendQueuedNow, queuedMessages, t],
   );
 
   const messageInputContainerRef = useRef<View>(null);
@@ -2105,6 +2281,13 @@ const styles = StyleSheet.create((theme: Theme) => ({
     alignItems: "center",
     justifyContent: "center",
   },
+  rightControlButton: {
+    width: 28,
+    height: 28,
+    borderRadius: theme.borderRadius.full,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   realtimeVoiceButtonCompactReserve: {
     marginLeft: theme.spacing[1],
   },
@@ -2182,6 +2365,7 @@ const ThemedArrowUp = withUnistyles(ArrowUp);
 const ThemedGitPullRequest = withUnistyles(GitPullRequest);
 const ThemedCircleDot = withUnistyles(CircleDot);
 const ThemedAudioLines = withUnistyles(AudioLines);
+const ThemedSplit = withUnistyles(Split);
 const ThemedPaperclip = withUnistyles(Paperclip);
 const ThemedImageIcon = withUnistyles(ImageIcon);
 const ThemedFileText = withUnistyles(FileText);

@@ -2642,6 +2642,49 @@ export class DaemonClient {
     return payload;
   }
 
+  /**
+   * Fork a (typically running) source agent into a new sibling agent that
+   * inherits its history up to the last completed turn, then run `text` as the
+   * new agent's first turn. The daemon picks native session fork or a
+   * chat-history snapshot; either way this resolves to the new agent's id.
+   */
+  async forkAgent(
+    sourceAgentId: string,
+    text: string,
+    options?: SendMessageOptions,
+  ): Promise<{ agentId: string; strategy: "native" | "snapshot" | null }> {
+    const requestId = this.createRequestId();
+    const messageId = options?.messageId ?? crypto.randomUUID();
+    const message = SessionInboundMessageSchema.parse({
+      type: "agent.fork.request",
+      requestId,
+      sourceAgentId,
+      text,
+      ...(messageId ? { messageId } : {}),
+      ...(options?.images ? { images: options.images } : {}),
+      ...(options?.attachments ? { attachments: options.attachments } : {}),
+    });
+    const payload = await this.sendRequest({
+      requestId,
+      message,
+      timeout: 30000,
+      options: { skipQueue: true },
+      select: (msg) => {
+        if (msg.type !== "agent.fork.response") {
+          return null;
+        }
+        if (msg.payload.requestId !== requestId) {
+          return null;
+        }
+        return msg.payload;
+      },
+    });
+    if (payload.error || !payload.agentId) {
+      throw new Error(payload.error ?? "Fork failed");
+    }
+    return { agentId: payload.agentId, strategy: payload.strategy ?? null };
+  }
+
   // ============================================================================
   // Agent Interaction
   // ============================================================================

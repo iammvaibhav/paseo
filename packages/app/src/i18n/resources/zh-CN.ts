@@ -79,6 +79,8 @@ export const zhCN: TranslationResources = {
       sendMessage: "发送消息",
       queue: "排队",
       send: "发送",
+      forkToNewTab: "复刻到新标签页",
+      forkFailed: "复刻代理失败",
     },
     cancel: {
       cancelingAgent: "正在取消 Agent",

@@ -269,6 +269,59 @@ function selectForkContextRows(input: {
   };
 }
 
+/**
+ * Render the source agent's in-progress work on its latest turn — everything
+ * after the last user message — as a text attachment. Used by a mid-turn native
+ * fork, which forks the provider session up to the user message (a clean resume
+ * point) and carries the still-streaming work in as context instead. Returns
+ * null when the agent hasn't produced anything on the current turn yet.
+ */
+export function buildInFlightWorkAttachment(input: {
+  rows: readonly AgentTimelineRow[];
+  agentTitle?: string | null;
+}): TextAgentAttachment | null {
+  const projected = projectTimelineRows({ rows: input.rows, mode: "projected" });
+  const items = projected.map((entry) => entry.item);
+  let lastUserIndex = -1;
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (items[index]?.type === "user_message") {
+      lastUserIndex = index;
+      break;
+    }
+  }
+  if (lastUserIndex < 0) {
+    return null;
+  }
+  const afterItems = items.slice(lastUserIndex + 1);
+  if (afterItems.length === 0) {
+    return null;
+  }
+  const entries = curateProjectedActivityEntries(afterItems, {
+    maxItems: 0,
+    labelAssistantMessages: true,
+    includeKinds: ["assistant_message", "tool_call"],
+    includeExternalToolInput: false,
+  });
+  if (entries.length === 0) {
+    return null;
+  }
+  const header = [
+    "In-progress work from the source agent. Its response to your latest message was still being generated when you forked; treat this as partial context, not a finished result.",
+  ];
+  const agentTitle = trimContextMetadata(input.agentTitle);
+  if (agentTitle) {
+    header.push(`Source agent: ${agentTitle}`);
+  }
+  const body = entries.map((entry) => entry.text).join("\n");
+  return {
+    type: "text",
+    mimeType: "text/plain",
+    contextKind: "chat_history",
+    title: "Work in progress",
+    text: `<in-progress-work>\n${header.join("\n")}\n\n${body}\n</in-progress-work>`,
+  };
+}
+
 function trimContextMetadata(value: string | null | undefined): string | null {
   const trimmed = value?.trim();
   return trimmed ? trimmed : null;

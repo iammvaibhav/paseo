@@ -2456,6 +2456,42 @@ class ClaudeAgentSession implements AgentSession {
     await this.revertConversation(input);
   }
 
+  // Fork the current session into a new session id, leaving this session (and
+  // any in-flight turn) untouched. The returned handle resumes the fork's full
+  // context in a fresh sibling agent.
+  //
+  // Boundary choice:
+  //   - Mid-turn (agent running): fork up to the latest USER message so the
+  //     fork includes the prompt currently being worked on. We deliberately do
+  //     NOT fork up to the partial in-flight assistant message — it can end on
+  //     an unanswered tool_use, an invalid point to resume + append a new turn.
+  //     The fork re-does the in-progress work fresh with full context.
+  //   - Idle: fork up to the last completed assistant message so the fork
+  //     includes the whole final turn.
+  async forkSessionForNewAgent(): Promise<AgentPersistenceHandle> {
+    if (!this.claudeSessionId) {
+      throw new Error("Claude session is not ready to fork");
+    }
+    const lastAnchor = this.rewindTurnAnchors[this.rewindTurnAnchors.length - 1];
+    if (!lastAnchor) {
+      throw new Error("Claude session has no turn to fork from");
+    }
+    const midTurn = this.activeForegroundTurnId != null;
+    const upToMessageId = midTurn
+      ? lastAnchor.userMessageId
+      : (lastAnchor.assistantMessageId ?? lastAnchor.userMessageId);
+    if (!upToMessageId) {
+      throw new Error("Claude session has no message to fork from");
+    }
+    const fork = await realClaudeRewindSdk.forkSession(this.claudeSessionId, { upToMessageId });
+    return {
+      provider: "claude",
+      sessionId: fork.sessionId,
+      nativeHandle: fork.sessionId,
+      metadata: { ...this.config },
+    };
+  }
+
   private resolveSlashCommandInvocation(prompt: AgentPromptInput): SlashCommandInvocation | null {
     if (typeof prompt !== "string") {
       return null;

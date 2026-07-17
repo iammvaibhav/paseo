@@ -77,6 +77,8 @@ export const en = {
       sendMessage: "Send message",
       queue: "Queue",
       send: "Send",
+      forkToNewTab: "Fork to new tab",
+      forkFailed: "Failed to fork agent",
     },
     cancel: {
       cancelingAgent: "Canceling agent",
