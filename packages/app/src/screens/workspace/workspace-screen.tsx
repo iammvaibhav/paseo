@@ -60,7 +60,6 @@ import {
   FloatingPanelPortalHostNameProvider,
 } from "@/components/ui/floating-panel-portal";
 import { ExplorerSidebar } from "@/components/explorer-sidebar";
-import { HostExplorerSidebar } from "@/components/host-explorer-sidebar";
 import { SplitContainer } from "@/components/split-container";
 import { RetainedPanel } from "@/components/retained-panel";
 import { WindowChromeRegion } from "@/utils/desktop-window";
@@ -199,7 +198,10 @@ import {
   openHostFileInBrowserEditor,
   tryOpenFileInBrowserEditor,
 } from "@/workspace/open-file-in-browser-editor";
-import { usePreloadBrowserEditor } from "@/workspace/preload-browser-editor";
+import {
+  isBrowserEditorInstance,
+  usePreloadBrowserEditor,
+} from "@/workspace/preload-browser-editor";
 import { RenderProfile } from "@/utils/render-profiler";
 import { useWorkspaceCheckoutStatus } from "@/screens/workspace/use-workspace-checkout-status";
 
@@ -1584,7 +1586,7 @@ interface WorkspaceChromeRowProps extends Omit<
   portalHostName: string;
   showExplorerSidebar: boolean;
   workspaceRoot: string | null;
-  // Fork-only: opens the desktop "Host files" sidebar at the far edge of the row.
+  // Fork-only: opens files selected from the explorer's desktop Host tab.
   onOpenHostFile?: (absolutePath: string) => void;
 }
 
@@ -1611,12 +1613,12 @@ function WorkspaceChromeRow({
 
       {showExplorerSidebar && workspaceRoot ? (
         <WindowChromeRegion corners="top-right">
-          <ExplorerSidebar {...explorerProps} workspaceRoot={workspaceRoot} />
+          <ExplorerSidebar
+            {...explorerProps}
+            workspaceRoot={workspaceRoot}
+            onOpenHostFile={onOpenHostFile}
+          />
         </WindowChromeRegion>
-      ) : null}
-
-      {onOpenHostFile ? (
-        <HostExplorerSidebar serverId={explorerProps.serverId} onOpenFile={onOpenHostFile} />
       ) : null}
     </View>
   );
@@ -1740,9 +1742,6 @@ function WorkspaceScreenContent({
   );
   const workspaceDirectory = workspaceDescriptor?.workspaceDirectory || null;
   const isMissingWorkspaceDirectory = Boolean(workspaceDescriptor) && !workspaceDirectory;
-  // Warm VS Code Web in the background so "Open → VS Code Web" is instant, and
-  // keep the single per-host instance rooted at the active workspace's folder.
-  usePreloadBrowserEditor({ browserEditorUrl, workspaceDirectory, isActive: isRouteFocused });
   const [isImportSheetVisible, setIsImportSheetVisible] = useState(false);
   const canOpenImportSheet = [client, isConnected, workspaceDirectory].every(Boolean);
   const openImportSheet = useCallback(() => {
@@ -1766,6 +1765,14 @@ function WorkspaceScreenContent({
       }),
     [normalizedServerId, normalizedWorkspaceId],
   );
+  // Warm VS Code Web in the background, transfer its single tab away from any
+  // retained inactive workspace, and root it at the active workspace's folder.
+  usePreloadBrowserEditor({
+    browserEditorUrl,
+    workspaceDirectory,
+    workspaceKey: persistenceKey,
+    isActive: isRouteFocused,
+  });
   const openWorkspaceTabFocused = useWorkspaceLayoutStore((state) => state.openTabFocused);
   const openWorkspaceChildTabFocused = useWorkspaceLayoutStore(
     (state) => state.openChildTabFocused,
@@ -1990,9 +1997,11 @@ function WorkspaceScreenContent({
       }
       if (input.target?.kind === "browser") {
         const { browserId } = input.target;
-        useBrowserStore.getState().removeBrowser(browserId);
-        removeResidentBrowserWebview(browserId);
-        void getDesktopHost()?.browser?.clearPartition?.(browserId);
+        if (!isBrowserEditorInstance(browserId)) {
+          useBrowserStore.getState().removeBrowser(browserId);
+          removeResidentBrowserWebview(browserId);
+          void getDesktopHost()?.browser?.clearPartition?.(browserId);
+        }
       }
       closeWorkspaceTab(persistenceKey, normalizedTabId);
     },
@@ -2277,6 +2286,7 @@ function WorkspaceScreenContent({
         tryOpenFileInBrowserEditor({
           browserEditorUrl,
           workspaceDirectory,
+          workspaceKey: persistenceKey,
           location,
           workspaceTabs: uiTabs,
           openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
@@ -2318,6 +2328,7 @@ function WorkspaceScreenContent({
         tryOpenFileInBrowserEditor({
           browserEditorUrl,
           workspaceDirectory,
+          workspaceKey: persistenceKey,
           location: normalizedLocation,
           workspaceTabs: uiTabs,
           openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
@@ -2365,6 +2376,7 @@ function WorkspaceScreenContent({
         tryOpenFileInBrowserEditor({
           browserEditorUrl,
           workspaceDirectory,
+          workspaceKey: persistenceKey,
           location,
           workspaceTabs: uiTabs,
           openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
@@ -2578,6 +2590,7 @@ function WorkspaceScreenContent({
       openBrowserEditorTab({
         url,
         browserEditorUrl,
+        workspaceKey: persistenceKey,
         workspaceTabs: uiTabs,
         openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
         navigateToTabId,
@@ -2588,18 +2601,27 @@ function WorkspaceScreenContent({
 
   const handleOpenHostFile = useCallback(
     (absolutePath: string) => {
-      if (!persistenceKey || !browserEditorUrl) {
+      if (!persistenceKey || !browserEditorUrl || !workspaceDirectory) {
         return;
       }
       openHostFileInBrowserEditor({
         browserEditorUrl,
+        workspaceDirectory,
         absolutePath,
+        workspaceKey: persistenceKey,
         workspaceTabs: uiTabs,
         openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
         navigateToTabId,
       });
     },
-    [browserEditorUrl, navigateToTabId, openWorkspaceTabFocused, persistenceKey, uiTabs],
+    [
+      browserEditorUrl,
+      navigateToTabId,
+      openWorkspaceTabFocused,
+      persistenceKey,
+      uiTabs,
+      workspaceDirectory,
+    ],
   );
 
   useDesktopBrowserNewTabRequests({

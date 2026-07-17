@@ -44,7 +44,11 @@ import {
 import type { AttachmentMetadata, BrowserElementAttachment } from "@/attachments/types";
 import { persistAttachmentFromDataUrl } from "@/attachments/service";
 import { WORKSPACE_SECONDARY_HEADER_HEIGHT } from "@/constants/layout";
-import { buildBridgeOpenPath } from "@/workspace/browser-editor-url";
+import {
+  buildBridgeCloseAllPath,
+  buildBridgeOpenPath,
+  buildBridgeRestorePath,
+} from "@/workspace/browser-editor-url";
 import {
   getDesktopHost,
   isElectronRuntime,
@@ -52,8 +56,17 @@ import {
 } from "@/desktop/host";
 import { useBrowserStore, normalizeWorkspaceBrowserUrl } from "@/stores/browser-store";
 import {
+  buildWorkspaceTabPersistenceKey,
+  collectAllTabs,
+  useWorkspaceLayoutStore,
+} from "@/stores/workspace-layout-store";
+import {
+  ensurePersistentBrowserWebview,
+  hidePersistentBrowserWebview,
+  isBrowserWebviewDomReady,
   prepareBrowserWebview,
   releaseResidentBrowserWebview,
+  showPersistentBrowserWebview,
   takeResidentBrowserWebview,
 } from "./browser-webview-resident";
 
@@ -310,6 +323,15 @@ interface BridgeOpenResult {
   error?: string;
 }
 
+interface BridgeRestoreResult extends BridgeOpenResult {
+  found?: boolean;
+  restored?: number;
+  failed?: number;
+}
+
+const SESSION_RESTORE_PENDING_ATTRIBUTE = "data-paseo-session-restore-pending";
+const SESSION_RESTORED_URL_ATTRIBUTE = "data-paseo-session-restored-url";
+
 /**
  * Builds a guest-page script that asks the paseo-bridge code-server extension to
  * open a file in place (no reload). The fetch is same-origin (reached through
@@ -323,16 +345,144 @@ function buildBridgeOpenScript(input: {
   line: number | null;
   column: number | null;
 }): string {
-  const body = JSON.stringify({
+  const payload = {
     path: input.path,
     ...(input.line ? { line: input.line } : {}),
     ...(input.column ? { column: input.column } : {}),
-  });
-  return `(async () => { try { const r = await fetch(${JSON.stringify(
-    buildBridgeOpenPath(),
-  )}, { method: "POST", headers: { "content-type": "application/json" }, body: ${JSON.stringify(
-    body,
-  )} }); return { ok: r.ok === true, status: r.status }; } catch (e) { return { ok: false, error: String(e && e.message ? e.message : e) }; } })()`;
+  };
+  return `(async () => {
+    const payload = ${JSON.stringify(payload)};
+    const folder = new URL(window.location.href).searchParams.get("folder");
+    if (folder) payload.folder = folder;
+    let lastError = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const r = await fetch(${JSON.stringify(buildBridgeOpenPath())}, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (r.status !== 503 || attempt === 2) {
+          return { ok: r.ok === true, status: r.status };
+        }
+      } catch (e) {
+        lastError = String(e && e.message ? e.message : e);
+        if (attempt === 2) return { ok: false, error: lastError };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    return { ok: false, error: lastError || "bridge unavailable" };
+  })()`;
+}
+
+function buildBridgeCloseAllScript(): string {
+  return `(async () => {
+    try {
+      const folder = new URL(window.location.href).searchParams.get("folder");
+      if (!folder) return { ok: false, error: "missing folder" };
+      const r = await fetch(${JSON.stringify(buildBridgeCloseAllPath())}, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ folder }),
+      });
+      return { ok: r.ok === true, status: r.status };
+    } catch (e) {
+      return { ok: false, error: String(e && e.message ? e.message : e) };
+    }
+  })()`;
+}
+
+function buildBridgeRestoreScript(): string {
+  return `(async () => {
+    const folder = new URL(window.location.href).searchParams.get("folder");
+    if (!folder) return { ok: false, error: "missing folder" };
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      try {
+        const r = await fetch(${JSON.stringify(buildBridgeRestorePath())}, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ folder }),
+        });
+        if (r.status !== 503 || attempt === 49) {
+          const body = await r.json().catch(() => ({}));
+          return { ok: r.ok === true, status: r.status, ...body };
+        }
+      } catch (e) {
+        if (attempt === 49) {
+          return { ok: false, error: String(e && e.message ? e.message : e) };
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    return { ok: false, error: "bridge unavailable" };
+  })()`;
+}
+
+function browserEditorFolder(url: string): string | null {
+  try {
+    return new URL(url).searchParams.get("folder");
+  } catch {
+    return null;
+  }
+}
+
+function restoreBrowserEditorSession(
+  webview: ElectronWebview,
+  expectedUrl: string | null | undefined,
+): void {
+  const currentUrl = webview.getURL?.() ?? webview.getAttribute("src") ?? "";
+  const currentFolder = browserEditorFolder(currentUrl);
+  const expectedFolder = expectedUrl ? browserEditorFolder(expectedUrl) : null;
+  if (
+    !currentUrl ||
+    !currentFolder ||
+    (expectedFolder !== null && currentFolder !== expectedFolder) ||
+    webview.getAttribute(SESSION_RESTORE_PENDING_ATTRIBUTE) === currentUrl ||
+    webview.getAttribute(SESSION_RESTORED_URL_ATTRIBUTE) === currentUrl
+  ) {
+    return;
+  }
+  webview.setAttribute(SESSION_RESTORE_PENDING_ATTRIBUTE, currentUrl);
+  void executeWebviewJavaScript(webview, buildBridgeRestoreScript())
+    .then((result) => {
+      const restoreResult = (result ?? {}) as BridgeRestoreResult;
+      if (restoreResult.ok === true) {
+        webview.setAttribute(SESSION_RESTORED_URL_ATTRIBUTE, currentUrl);
+        console.log(
+          `[paseo-bridge] session restore url=${currentUrl} found=${restoreResult.found} files=${restoreResult.restored ?? 0} failed=${restoreResult.failed ?? 0}`,
+        );
+      } else {
+        console.warn(
+          `[paseo-bridge] session restore failed url=${currentUrl} status=${restoreResult.status ?? "-"} error=${restoreResult.error ?? "-"}`,
+        );
+      }
+      return undefined;
+    })
+    .catch(ignoreWebviewJavaScriptError)
+    .finally(() => {
+      if (webview.getAttribute(SESSION_RESTORE_PENDING_ATTRIBUTE) === currentUrl) {
+        webview.removeAttribute(SESSION_RESTORE_PENDING_ATTRIBUTE);
+      }
+    });
+}
+
+function workspaceHasBrowserTab(workspaceKey: string, browserId: string): boolean {
+  const layout = useWorkspaceLayoutStore.getState().layoutByWorkspace[workspaceKey];
+  if (!layout) {
+    return false;
+  }
+  return collectAllTabs(layout.root).some(
+    (tab) => tab.target.kind === "browser" && tab.target.browserId === browserId,
+  );
+}
+
+function isBridgeWebviewReady(
+  webview: ElectronWebview | null,
+  domReady: boolean,
+  showChrome: boolean,
+  host: HTMLDivElement | null,
+): webview is ElectronWebview {
+  return Boolean(webview && domReady && (!showChrome || host?.contains(webview)));
 }
 
 function destroyWebviewSelector(webview: ElectronWebview): void {
@@ -629,6 +779,7 @@ export function BrowserPane({
   workspaceId,
   cwd,
   isInteractive,
+  isWorkspaceActive = true,
   onFocusPane,
 }: {
   browserId: string;
@@ -636,6 +787,7 @@ export function BrowserPane({
   workspaceId: string;
   cwd: string | null;
   isInteractive?: boolean;
+  isWorkspaceActive?: boolean;
   onFocusPane?: () => void;
 }) {
   const { theme } = useUnistyles();
@@ -679,6 +831,10 @@ export function BrowserPane({
   const workspaceAttachmentScopeKey = useMemo(
     () => buildBrowserAttachmentScopeKey({ cwd, serverId, workspaceId }),
     [cwd, serverId, workspaceId],
+  );
+  const workspaceKey = useMemo(
+    () => buildWorkspaceTabPersistenceKey({ serverId, workspaceId }),
+    [serverId, workspaceId],
   );
   const workspaceAttachments = useWorkspaceAttachments(workspaceAttachmentScopeKey ?? "");
   const setWorkspaceAttachments = useWorkspaceAttachmentsStore(
@@ -766,6 +922,9 @@ export function BrowserPane({
     if (!isElectronRuntime()) {
       return;
     }
+    if (!showChrome && !isWorkspaceActive) {
+      return;
+    }
 
     const host = webviewHostRef.current;
     if (!host) {
@@ -778,11 +937,23 @@ export function BrowserPane({
       initialUrlRef.current,
       browserErrorLabelsRef.current,
     );
-    const residentWebview = takeResidentBrowserWebview(browserId) as ElectronWebview | null;
-    const webview = residentWebview ?? (document.createElement("webview") as ElectronWebview);
+    const persistentWebview = showChrome
+      ? null
+      : (ensurePersistentBrowserWebview({
+          browserId,
+          url: initialUnsafeNavigationMessage ? "about:blank" : initialUrlRef.current,
+        }) as ElectronWebview | null);
+    const residentWebview = showChrome
+      ? (takeResidentBrowserWebview(browserId) as ElectronWebview | null)
+      : null;
+    const webview =
+      persistentWebview ??
+      residentWebview ??
+      (document.createElement("webview") as ElectronWebview);
     webviewRef.current = webview;
+    domReadyRef.current = isBrowserWebviewDomReady(webview);
     void getDesktopHost()?.browser?.registerWorkspaceBrowser?.({ browserId, workspaceId });
-    if (!residentWebview) {
+    if (!persistentWebview && !residentWebview) {
       prepareBrowserWebview(webview, {
         browserId,
         initialUrl: initialUnsafeNavigationMessage ? "about:blank" : initialUrlRef.current,
@@ -796,6 +967,7 @@ export function BrowserPane({
     webview.style.background = "transparent";
 
     const handleStartLoading = () => {
+      webview.removeAttribute(SESSION_RESTORED_URL_ATTRIBUTE);
       updateBrowser(browserId, { isLoading: true, lastError: null });
       syncNavigationState({ syncUrl: false });
     };
@@ -870,6 +1042,9 @@ export function BrowserPane({
       if (markers.length > 0) {
         applyAnnotationMarkers(webview, markers);
       }
+      if (persistentWebview) {
+        restoreBrowserEditorSession(webview, browserRef.current?.url);
+      }
     };
     const handleWebviewFocus = () => {
       onFocusPane?.();
@@ -887,7 +1062,14 @@ export function BrowserPane({
     webview.addEventListener("focus", handleWebviewFocus);
     webview.addEventListener("mousedown", handleWebviewFocus);
 
-    host.appendChild(webview);
+    if (persistentWebview) {
+      showPersistentBrowserWebview(browserId, host);
+      if (domReadyRef.current) {
+        restoreBrowserEditorSession(webview, browserRef.current?.url);
+      }
+    } else {
+      host.appendChild(webview);
+    }
     if (initialUnsafeNavigationMessage) {
       updateBrowserRef.current(browserIdRef.current, {
         isLoading: false,
@@ -907,7 +1089,18 @@ export function BrowserPane({
       webview.removeEventListener("dom-ready", handleDomReady);
       webview.removeEventListener("focus", handleWebviewFocus);
       webview.removeEventListener("mousedown", handleWebviewFocus);
-      if (host.contains(webview)) {
+      if (persistentWebview) {
+        if (
+          workspaceKey !== null &&
+          !workspaceHasBrowserTab(workspaceKey, browserIdRef.current) &&
+          isBrowserWebviewDomReady(webview)
+        ) {
+          void executeWebviewJavaScript(webview, buildBridgeCloseAllScript()).catch(
+            ignoreWebviewJavaScriptError,
+          );
+        }
+        hidePersistentBrowserWebview(browserIdRef.current);
+      } else if (host.contains(webview)) {
         const browserStillExists = Boolean(
           useBrowserStore.getState().browsersById[browserIdRef.current],
         );
@@ -923,7 +1116,7 @@ export function BrowserPane({
       domReadyRef.current = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [browserId, onFocusPane]);
+  }, [browserId, isWorkspaceActive, onFocusPane, showChrome, workspaceKey]);
 
   const navigate = useCallback(
     (nextUrl: string) => {
@@ -978,15 +1171,31 @@ export function BrowserPane({
     if (!navigationRequest) {
       return;
     }
+    if (!showChrome && !isWorkspaceActive) {
+      return;
+    }
     navigate(navigationRequest.url);
     clearNavigationRequest(browserId, navigationRequest.requestId);
-  }, [browserId, clearNavigationRequest, navigate, navigationRequest]);
+  }, [
+    browserId,
+    clearNavigationRequest,
+    isWorkspaceActive,
+    navigate,
+    navigationRequest,
+    showChrome,
+  ]);
 
   useEffect(() => {
     if (!bridgeOpenRequest) {
       return;
     }
-    const { path, line, column, fallbackUrl, requestId } = bridgeOpenRequest;
+    if (!showChrome && !isWorkspaceActive) {
+      return;
+    }
+    const { path, line, column, fallbackUrl, requestId, targetWorkspaceKey } = bridgeOpenRequest;
+    if (targetWorkspaceKey && targetWorkspaceKey !== workspaceKey) {
+      return;
+    }
     let cancelled = false;
     console.log(
       `[paseo-bridge] open requested browserId=${browserId} req=${requestId} path=${path} domReady=${domReadyRef.current} hasWebview=${Boolean(
@@ -1011,7 +1220,15 @@ export function BrowserPane({
         if (cancelled) {
           return;
         }
-        if (webviewRef.current && domReadyRef.current) {
+        const currentWebview = webviewRef.current;
+        if (
+          isBridgeWebviewReady(
+            currentWebview,
+            domReadyRef.current,
+            showChrome,
+            webviewHostRef.current,
+          )
+        ) {
           break;
         }
         await new Promise<void>((resolve) => {
@@ -1022,7 +1239,7 @@ export function BrowserPane({
         return;
       }
       const webview = webviewRef.current;
-      if (!webview || !domReadyRef.current) {
+      if (!isBridgeWebviewReady(webview, domReadyRef.current, showChrome, webviewHostRef.current)) {
         // Never became ready — load the file the classic way (may reload).
         runFallback("webview-not-ready");
         return;
@@ -1055,7 +1272,15 @@ export function BrowserPane({
     return () => {
       cancelled = true;
     };
-  }, [browserId, bridgeOpenRequest, clearBridgeOpenRequest, navigate]);
+  }, [
+    browserId,
+    bridgeOpenRequest,
+    clearBridgeOpenRequest,
+    isWorkspaceActive,
+    navigate,
+    showChrome,
+    workspaceKey,
+  ]);
 
   const handleBack = useCallback(() => {
     webviewRef.current?.goBack?.();

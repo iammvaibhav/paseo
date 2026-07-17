@@ -58,13 +58,24 @@ export function buildBrowserEditorUrl(input: {
  * code-server's built-in reverse proxy at `/proxy/<port>/`, so no new port is
  * exposed and no CORS/insecure-origin changes are needed.
  *
- * Keep in sync with DEFAULT_PORT in scripts/code-server/paseo-bridge/extension.js.
+ * Keep in sync with BROKER_PORT in scripts/code-server/paseo-bridge/extension.js.
  */
 export const CODE_SERVER_BRIDGE_PORT = 8766;
 
 /** Same-origin path (relative to the code-server workbench) for the open bridge. */
 export function buildBridgeOpenPath(): string {
-  return `/proxy/${CODE_SERVER_BRIDGE_PORT}/open`;
+  // The broker-specific route deliberately differs from the legacy bridge's
+  // `/open`, so a stale pre-broker extension can only trigger the reload
+  // fallback rather than opening the file in the wrong hidden window.
+  return `/proxy/${CODE_SERVER_BRIDGE_PORT}/broker/open`;
+}
+
+export function buildBridgeCloseAllPath(): string {
+  return `/proxy/${CODE_SERVER_BRIDGE_PORT}/broker/close-all`;
+}
+
+export function buildBridgeRestorePath(): string {
+  return `/proxy/${CODE_SERVER_BRIDGE_PORT}/broker/restore`;
 }
 
 /** Origin form Chromium expects for --unsafely-treat-insecure-origin-as-secure. */

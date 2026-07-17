@@ -10,7 +10,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, { useAnimatedStyle, useSharedValue, runOnJS } from "react-native-reanimated";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
-import { X } from "lucide-react-native";
+import { HardDrive, X } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import {
   formatPrTabLabel,
@@ -33,7 +33,7 @@ import { useKeyboardShiftStyle } from "@/hooks/use-keyboard-shift-style";
 import { useHasOwnedWindowChromeObstruction, WindowChromeSafeArea } from "@/utils/desktop-window";
 import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
 import { RetainedPanelActivity } from "@/components/retained-panel";
-import { isWeb } from "@/constants/platform";
+import { getIsElectron, isWeb } from "@/constants/platform";
 import { buildWorkspaceAttachmentScopeKey } from "@/attachments/workspace-attachments-store";
 import { resolveDesktopExplorerWidth } from "@/components/desktop-sidebar-layout";
 import { useSubmodulesQuery } from "@/git/use-submodules-query";
@@ -47,6 +47,7 @@ interface ExplorerSidebarProps {
   workspaceRoot: string;
   isGit: boolean;
   onOpenFile?: (filePath: string) => void;
+  onOpenHostFile?: (filePath: string) => void;
 }
 
 interface ExplorerSidebarSharedState {
@@ -77,6 +78,7 @@ export function CompactExplorerSidebar({
   workspaceRoot,
   isGit,
   onOpenFile,
+  onOpenHostFile,
 }: ExplorerSidebarProps) {
   const { theme } = useUnistyles();
   const insets = useSafeAreaInsets();
@@ -134,6 +136,7 @@ export function CompactExplorerSidebar({
           isGit={isGit}
           isOpen={isOpen}
           onOpenFile={onOpenFile}
+          onOpenHostFile={onOpenHostFile}
         />
       </MobilePanelOverlay>
     </RetainedPanelActivity>
@@ -146,6 +149,7 @@ export function ExplorerSidebar({
   workspaceRoot,
   isGit,
   onOpenFile,
+  onOpenHostFile,
 }: ExplorerSidebarProps) {
   const insets = useSafeAreaInsets();
   const explorerWidth = usePanelStore((state) => state.explorerWidth);
@@ -228,6 +232,7 @@ export function ExplorerSidebar({
           isGit={isGit}
           isOpen={isOpen}
           onOpenFile={onOpenFile}
+          onOpenHostFile={onOpenHostFile}
         />
       </View>
     </Animated.View>
@@ -262,6 +267,106 @@ function ExplorerTabButton({
   );
 }
 
+function HostExplorerTabButton({
+  active,
+  label,
+  onPress,
+}: {
+  active: boolean;
+  label: string;
+  onPress: () => void;
+}) {
+  const { theme } = useUnistyles();
+  const accessibilityState = useMemo(() => ({ selected: active }), [active]);
+  const tabStyle = useMemo(() => [styles.tab, active && styles.tabActive], [active]);
+  const tabTextStyle = useMemo(() => [styles.tabText, active && styles.tabTextActive], [active]);
+
+  return (
+    <Pressable
+      testID="explorer-tab-host"
+      accessibilityRole="tab"
+      accessibilityState={accessibilityState}
+      style={tabStyle}
+      onPress={onPress}
+    >
+      <HardDrive
+        size={13}
+        color={active ? theme.colors.foreground : theme.colors.foregroundMuted}
+      />
+      <Text style={tabTextStyle}>{label}</Text>
+    </Pressable>
+  );
+}
+
+function ExplorerTabs({
+  resolvedTab,
+  isGit,
+  showPrTab,
+  showHostFiles,
+  hostEnabled,
+  changesLabel,
+  filesLabel,
+  hostLabel,
+  prTabLabel,
+  onTabPress,
+  onHostPress,
+}: {
+  resolvedTab: ExplorerTab;
+  isGit: boolean;
+  showPrTab: boolean;
+  showHostFiles: boolean;
+  hostEnabled: boolean;
+  changesLabel: string;
+  filesLabel: string;
+  hostLabel: string;
+  prTabLabel: string;
+  onTabPress: (tab: ExplorerTab) => void;
+  onHostPress: () => void;
+}) {
+  const { theme } = useUnistyles();
+  return (
+    <View style={styles.tabsContainer}>
+      {isGit && (
+        <ExplorerTabButton
+          tab="changes"
+          active={!showHostFiles && resolvedTab === "changes"}
+          label={changesLabel}
+          onTabPress={onTabPress}
+          testID="explorer-tab-changes"
+        />
+      )}
+      <ExplorerTabButton
+        tab="files"
+        active={!showHostFiles && resolvedTab === "files"}
+        label={filesLabel}
+        onTabPress={onTabPress}
+        testID="explorer-tab-files"
+      />
+      {hostEnabled ? (
+        <HostExplorerTabButton active={showHostFiles} label={hostLabel} onPress={onHostPress} />
+      ) : null}
+      {isGit && showPrTab && (
+        <ExplorerTabButton
+          tab="pr"
+          active={!showHostFiles && resolvedTab === "pr"}
+          label={prTabLabel}
+          onTabPress={onTabPress}
+          testID="explorer-tab-pr"
+        >
+          <PullRequestTabIcon
+            size={13}
+            color={
+              !showHostFiles && resolvedTab === "pr"
+                ? theme.colors.foreground
+                : theme.colors.foregroundMuted
+            }
+          />
+        </ExplorerTabButton>
+      )}
+    </View>
+  );
+}
+
 interface SidebarContentProps {
   activeTab: ExplorerTab;
   onTabPress: (tab: ExplorerTab) => void;
@@ -272,6 +377,7 @@ interface SidebarContentProps {
   isGit: boolean;
   isOpen: boolean;
   onOpenFile?: (filePath: string) => void;
+  onOpenHostFile?: (filePath: string) => void;
 }
 
 function resolveEffectiveTab(
@@ -316,6 +422,79 @@ function useSubmoduleContext({
   return { effectiveCwd, submodules, hasSubmodules, selectedSubmodule, setSelectedSubmodule };
 }
 
+function ExplorerContentArea({
+  showHostFiles,
+  resolvedTab,
+  serverId,
+  workspaceId,
+  effectiveCwd,
+  workspaceRoot,
+  selectedSubmodule,
+  isOpen,
+  onOpenFile,
+  onOpenHostFile,
+  prPane,
+  workspaceAttachmentScopeKey,
+  onPrRetry,
+}: {
+  showHostFiles: boolean;
+  resolvedTab: ExplorerTab;
+  serverId: string;
+  workspaceId?: string | null;
+  effectiveCwd: string;
+  workspaceRoot: string;
+  selectedSubmodule: string | null;
+  isOpen: boolean;
+  onOpenFile?: (filePath: string) => void;
+  onOpenHostFile: (filePath: string) => void;
+  prPane: UsePrPaneDataResult;
+  workspaceAttachmentScopeKey: string;
+  onPrRetry: () => void;
+}) {
+  if (showHostFiles) {
+    return (
+      <View style={styles.contentArea} testID="explorer-content-area">
+        <FileExplorerPane
+          serverId={serverId}
+          workspaceId={null}
+          workspaceRoot="/"
+          onOpenFile={onOpenHostFile}
+        />
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.contentArea} testID="explorer-content-area">
+      {resolvedTab === "changes" && (
+        <GitDiffPane
+          serverId={serverId}
+          workspaceId={workspaceId}
+          cwd={effectiveCwd}
+          enabled={isOpen}
+        />
+      )}
+      {resolvedTab === "files" && (
+        <FileExplorerPane
+          serverId={serverId}
+          workspaceId={workspaceId}
+          workspaceRoot={selectedSubmodule ? effectiveCwd : workspaceRoot}
+          onOpenFile={onOpenFile}
+        />
+      )}
+      {resolvedTab === "pr" && (
+        <PrTabContent
+          serverId={serverId}
+          cwd={effectiveCwd}
+          prPane={prPane}
+          workspaceAttachmentScopeKey={workspaceAttachmentScopeKey}
+          onRetry={onPrRetry}
+        />
+      )}
+    </View>
+  );
+}
+
 function ExplorerSidebarContent({
   activeTab,
   onTabPress,
@@ -326,11 +505,13 @@ function ExplorerSidebarContent({
   isGit,
   isOpen,
   onOpenFile,
+  onOpenHostFile,
 }: SidebarContentProps) {
   const { theme } = useUnistyles();
   const { t } = useTranslation();
   const toast = useToast();
   const hasRightWindowControls = useHasOwnedWindowChromeObstruction("top-right");
+  const [showHostFiles, setShowHostFiles] = useState(false);
 
   const submoduleState = useSubmoduleContext({ serverId, workspaceRoot, isGit, isOpen });
   const { effectiveCwd, submodules, hasSubmodules, selectedSubmodule, setSelectedSubmodule } =
@@ -346,6 +527,20 @@ function ExplorerSidebarContent({
   const showPrTab = prPane.prNumber !== null || (activeTab === "pr" && prPane.isLoading);
   const resolvedTab = resolveEffectiveTab(activeTab, isGit, showPrTab);
   const prTabLabel = formatPrTabLabel(prPane.prNumber);
+  const handleWorkspaceTabPress = useCallback(
+    (tab: ExplorerTab) => {
+      setShowHostFiles(false);
+      onTabPress(tab);
+    },
+    [onTabPress],
+  );
+  const handleShowHostFiles = useCallback(() => setShowHostFiles(true), []);
+  const handleOpenHostFile = useCallback(
+    (filePath: string) => {
+      onOpenHostFile?.(filePath.startsWith("/") ? filePath : `/${filePath}`);
+    },
+    [onOpenHostFile],
+  );
   const refreshGitActions = useCheckoutGitActionsStore((s) => s.refresh);
   const handlePrRetry = useCallback(() => {
     refreshGitActions({ serverId, cwd: effectiveCwd }).catch((error) => {
@@ -367,40 +562,19 @@ function ExplorerSidebarContent({
         testID="explorer-header"
       >
         <TitlebarDragRegion />
-        <View style={styles.tabsContainer}>
-          {isGit && (
-            <ExplorerTabButton
-              tab="changes"
-              active={resolvedTab === "changes"}
-              label={t("workspace.tabs.explorer.changes")}
-              onTabPress={onTabPress}
-              testID="explorer-tab-changes"
-            />
-          )}
-          <ExplorerTabButton
-            tab="files"
-            active={resolvedTab === "files"}
-            label={t("workspace.tabs.explorer.files")}
-            onTabPress={onTabPress}
-            testID="explorer-tab-files"
-          />
-          {isGit && showPrTab && (
-            <ExplorerTabButton
-              tab="pr"
-              active={resolvedTab === "pr"}
-              label={prTabLabel}
-              onTabPress={onTabPress}
-              testID="explorer-tab-pr"
-            >
-              <PullRequestTabIcon
-                size={13}
-                color={
-                  resolvedTab === "pr" ? theme.colors.foreground : theme.colors.foregroundMuted
-                }
-              />
-            </ExplorerTabButton>
-          )}
-        </View>
+        <ExplorerTabs
+          resolvedTab={resolvedTab}
+          isGit={isGit}
+          showPrTab={showPrTab}
+          showHostFiles={showHostFiles}
+          hostEnabled={getIsElectron() && Boolean(onOpenHostFile)}
+          changesLabel={t("workspace.tabs.explorer.changes")}
+          filesLabel={t("workspace.tabs.explorer.files")}
+          hostLabel={t("workspace.tabs.explorer.host", { defaultValue: "Host" })}
+          prTabLabel={prTabLabel}
+          onTabPress={handleWorkspaceTabPress}
+          onHostPress={handleShowHostFiles}
+        />
         <View style={styles.headerRightSection}>
           {isGit && hasSubmodules && (
             <SubmodulePicker
@@ -433,34 +607,21 @@ function ExplorerSidebarContent({
         </View>
       </WindowChromeSafeArea>
 
-      {/* Content based on active tab */}
-      <View style={styles.contentArea} testID="explorer-content-area">
-        {resolvedTab === "changes" && (
-          <GitDiffPane
-            serverId={serverId}
-            workspaceId={workspaceId}
-            cwd={effectiveCwd}
-            enabled={isOpen}
-          />
-        )}
-        {resolvedTab === "files" && (
-          <FileExplorerPane
-            serverId={serverId}
-            workspaceId={workspaceId}
-            workspaceRoot={selectedSubmodule ? effectiveCwd : workspaceRoot}
-            onOpenFile={onOpenFile}
-          />
-        )}
-        {resolvedTab === "pr" && (
-          <PrTabContent
-            serverId={serverId}
-            cwd={effectiveCwd}
-            prPane={prPane}
-            workspaceAttachmentScopeKey={workspaceAttachmentScopeKey}
-            onRetry={handlePrRetry}
-          />
-        )}
-      </View>
+      <ExplorerContentArea
+        showHostFiles={showHostFiles}
+        resolvedTab={resolvedTab}
+        serverId={serverId}
+        workspaceId={workspaceId}
+        effectiveCwd={effectiveCwd}
+        workspaceRoot={workspaceRoot}
+        selectedSubmodule={selectedSubmodule}
+        isOpen={isOpen}
+        onOpenFile={onOpenFile}
+        onOpenHostFile={handleOpenHostFile}
+        prPane={prPane}
+        workspaceAttachmentScopeKey={workspaceAttachmentScopeKey}
+        onPrRetry={handlePrRetry}
+      />
     </View>
   );
 }

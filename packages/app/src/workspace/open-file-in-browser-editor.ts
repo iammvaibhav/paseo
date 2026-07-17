@@ -9,6 +9,7 @@ import {
 } from "@/workspace/preload-browser-editor";
 
 interface BrowserEditorTabActions {
+  workspaceKey: string;
   workspaceTabs: ReadonlyArray<{ tabId: string; target: WorkspaceTabTarget }>;
   openWorkspaceTabFocused: (target: WorkspaceTabTarget) => string | null;
   navigateToTabId: (tabId: string) => void;
@@ -27,6 +28,7 @@ export interface OpenFileInBrowserEditorInput extends BrowserEditorTabActions {
 
 export interface OpenHostFileInBrowserEditorInput extends BrowserEditorTabActions {
   browserEditorUrl: string;
+  workspaceDirectory: string;
   /** Absolute host path of the file to open. */
   absolutePath: string;
   line?: number | null;
@@ -73,6 +75,7 @@ export function tryOpenFileInBrowserEditor(input: OpenFileInBrowserEditorInput):
   return openFileInBrowserEditorCore({
     browserEditorUrl: input.browserEditorUrl,
     folderPath: input.workspaceDirectory,
+    workspaceKey: input.workspaceKey,
     absolutePath: resolved.absolutePath,
     line: input.location.lineStart ?? null,
     workspaceTabs: input.workspaceTabs,
@@ -93,7 +96,11 @@ export function openHostFileInBrowserEditor(input: OpenHostFileInBrowserEditorIn
 
   return openFileInBrowserEditorCore({
     browserEditorUrl: input.browserEditorUrl,
-    folderPath: parentDirectory(input.absolutePath),
+    // Host files can live anywhere, but the one persistent editor must remain
+    // rooted at the active workspace. The bridge can open an absolute path
+    // outside that root without changing folders.
+    folderPath: input.workspaceDirectory,
+    workspaceKey: input.workspaceKey,
     absolutePath: input.absolutePath,
     line: input.line ?? null,
     workspaceTabs: input.workspaceTabs,
@@ -142,6 +149,7 @@ function openFileInBrowserEditorCore(
     line: input.line,
     column: 1,
     fallbackUrl: fileUrl,
+    targetWorkspaceKey: input.workspaceKey,
   });
   return true;
 }
@@ -175,10 +183,4 @@ function revealBrowserEditor(
   if (tabId) {
     actions.navigateToTabId(tabId);
   }
-}
-
-function parentDirectory(absolutePath: string): string {
-  const normalized = absolutePath.replace(/\\/g, "/");
-  const parent = normalized.replace(/\/[^/]*\/?$/, "");
-  return parent || "/";
 }

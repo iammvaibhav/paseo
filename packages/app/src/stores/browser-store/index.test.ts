@@ -46,6 +46,7 @@ describe("browser-store bridge-open channel", () => {
       line: 12,
       column: 0,
       fallbackUrl: "http://blrofc3:8765/?folder=%2Frepo",
+      targetWorkspaceKey: " server-1:workspace-1 ",
     });
     const first = useBrowserStore.getState().bridgeOpenRequestByBrowserId[VALID_ID];
     expect(first).toEqual({
@@ -53,6 +54,7 @@ describe("browser-store bridge-open channel", () => {
       line: 12,
       column: null, // 0 is not a positive integer
       fallbackUrl: "http://blrofc3:8765/?folder=%2Frepo",
+      targetWorkspaceKey: "server-1:workspace-1",
       requestId: 1,
     });
 

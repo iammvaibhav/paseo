@@ -1,10 +1,21 @@
 const RESIDENT_BROWSER_HOST_ID = "paseo-browser-resident-webviews";
+const PERSISTENT_BROWSER_WRAPPER_ATTRIBUTE = "data-paseo-persistent-browser-wrapper";
 const BROWSER_ID_ATTRIBUTE = "data-paseo-browser-id";
+const DOM_READY_ATTRIBUTE = "data-paseo-dom-ready";
+const DOM_READY_LISTENER_ATTRIBUTE = "data-paseo-dom-ready-listener";
 const RESIDENT_VIEWPORT_WIDTH = 1280;
 const RESIDENT_VIEWPORT_HEIGHT = 800;
 
 const residentWebviewsByBrowserId = new Map<string, HTMLElement>();
 const residentWebviewSizesByBrowserId = new Map<string, { width: number; height: number }>();
+interface PersistentBrowserWebview {
+  wrapper: HTMLElement;
+  webview: HTMLElement;
+  target: HTMLElement | null;
+  resizeObserver: ResizeObserver | null;
+  updatePosition: (() => void) | null;
+}
+const persistentWebviewsByBrowserId = new Map<string, PersistentBrowserWebview>();
 
 interface BrowserWebviewElement extends HTMLElement {
   src: string;
@@ -102,6 +113,32 @@ function clearResidentWebviewParkingStyle(webview: HTMLElement): void {
   webview.style.zIndex = "";
 }
 
+function applyPersistentWrapperParking(record: PersistentBrowserWebview): void {
+  record.target = null;
+  record.resizeObserver?.disconnect();
+  record.resizeObserver = null;
+  if (record.updatePosition && typeof window !== "undefined") {
+    window.removeEventListener("resize", record.updatePosition);
+    window.removeEventListener("scroll", record.updatePosition, true);
+  }
+  record.updatePosition = null;
+
+  const { wrapper, webview } = record;
+  wrapper.setAttribute("aria-hidden", "true");
+  wrapper.style.position = "fixed";
+  wrapper.style.left = "0";
+  wrapper.style.top = "0";
+  wrapper.style.width = "1px";
+  wrapper.style.height = "1px";
+  wrapper.style.overflow = "hidden";
+  wrapper.style.opacity = "1";
+  wrapper.style.pointerEvents = "none";
+  wrapper.style.zIndex = "0";
+  wrapper.style.visibility = "visible";
+
+  applyResidentWebviewStyle(webview, webview.getAttribute(BROWSER_ID_ATTRIBUTE));
+}
+
 export function prepareBrowserWebview(
   webview: HTMLElement,
   input: { browserId: string; initialUrl?: string | null },
@@ -111,9 +148,19 @@ export function prepareBrowserWebview(
   webview.setAttribute("allowpopups", "true");
   webview.setAttribute("spellcheck", "false");
   webview.setAttribute("autosize", "on");
+  if (!webview.hasAttribute(DOM_READY_LISTENER_ATTRIBUTE)) {
+    webview.setAttribute(DOM_READY_LISTENER_ATTRIBUTE, "true");
+    webview.addEventListener("dom-ready", () => {
+      webview.setAttribute(DOM_READY_ATTRIBUTE, "true");
+    });
+  }
   if (input.initialUrl) {
     (webview as BrowserWebviewElement).src = input.initialUrl;
   }
+}
+
+export function isBrowserWebviewDomReady(webview: HTMLElement): boolean {
+  return webview.getAttribute(DOM_READY_ATTRIBUTE) === "true";
 }
 
 export function ensureResidentBrowserWebview(input: {
@@ -149,6 +196,145 @@ export function ensureResidentBrowserWebview(input: {
   return webview;
 }
 
+/**
+ * Creates a webview whose wrapper is appended to document.body exactly once.
+ * Showing, hiding, and workspace switching only change wrapper geometry; the
+ * `<webview>` is never detached/reparented, because Electron destroys and
+ * recreates guest WebContents when a webview leaves the DOM.
+ */
+export function ensurePersistentBrowserWebview(input: {
+  browserId: string;
+  url: string;
+}): HTMLElement | null {
+  const browserId = trimNonEmpty(input.browserId);
+  if (!browserId) {
+    return null;
+  }
+  const ownerDocument = readDocument();
+  if (!ownerDocument) {
+    return null;
+  }
+  const existing = persistentWebviewsByBrowserId.get(browserId);
+  if (existing?.wrapper.isConnected && existing.webview.isConnected) {
+    return existing.webview;
+  }
+
+  const wrapper = ownerDocument.createElement("div");
+  wrapper.setAttribute(PERSISTENT_BROWSER_WRAPPER_ATTRIBUTE, browserId);
+  const webview = ownerDocument.createElement("webview") as BrowserWebviewElement;
+  prepareBrowserWebview(webview, { browserId, initialUrl: input.url });
+  wrapper.appendChild(webview);
+  ownerDocument.body.appendChild(wrapper);
+
+  const record: PersistentBrowserWebview = {
+    wrapper,
+    webview,
+    target: null,
+    resizeObserver: null,
+    updatePosition: null,
+  };
+  persistentWebviewsByBrowserId.set(browserId, record);
+  applyPersistentWrapperParking(record);
+  return webview;
+}
+
+export function showPersistentBrowserWebview(browserId: string, target: HTMLElement): boolean {
+  const normalizedBrowserId = trimNonEmpty(browserId);
+  if (!normalizedBrowserId) {
+    return false;
+  }
+  const record = persistentWebviewsByBrowserId.get(normalizedBrowserId);
+  if (!record || !target.isConnected) {
+    return false;
+  }
+
+  record.resizeObserver?.disconnect();
+  if (record.updatePosition && typeof window !== "undefined") {
+    window.removeEventListener("resize", record.updatePosition);
+    window.removeEventListener("scroll", record.updatePosition, true);
+  }
+  record.target = target;
+  const updatePosition = () => {
+    if (record.target !== target || !target.isConnected) {
+      return;
+    }
+    const rect = target.getBoundingClientRect();
+    record.wrapper.style.left = `${Math.round(rect.left)}px`;
+    record.wrapper.style.top = `${Math.round(rect.top)}px`;
+    record.wrapper.style.width = `${Math.max(1, Math.round(rect.width))}px`;
+    record.wrapper.style.height = `${Math.max(1, Math.round(rect.height))}px`;
+  };
+  record.updatePosition = updatePosition;
+
+  const { wrapper, webview } = record;
+  wrapper.setAttribute("aria-hidden", "false");
+  wrapper.style.position = "fixed";
+  wrapper.style.overflow = "hidden";
+  wrapper.style.opacity = "1";
+  wrapper.style.pointerEvents = "auto";
+  wrapper.style.zIndex = "2";
+  wrapper.style.visibility = "visible";
+  webview.style.display = "flex";
+  webview.style.position = "absolute";
+  webview.style.left = "0";
+  webview.style.top = "0";
+  webview.style.width = "100%";
+  webview.style.height = "100%";
+  webview.style.border = "0";
+  webview.style.pointerEvents = "auto";
+  updatePosition();
+
+  if (typeof ResizeObserver !== "undefined") {
+    record.resizeObserver = new ResizeObserver(updatePosition);
+    record.resizeObserver.observe(target);
+  }
+  if (typeof window !== "undefined") {
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    window.requestAnimationFrame(updatePosition);
+  }
+  return true;
+}
+
+export function hidePersistentBrowserWebview(browserId: string): boolean {
+  const normalizedBrowserId = trimNonEmpty(browserId);
+  const record = normalizedBrowserId
+    ? persistentWebviewsByBrowserId.get(normalizedBrowserId)
+    : null;
+  if (!record) {
+    return false;
+  }
+  applyPersistentWrapperParking(record);
+  return true;
+}
+
+export function navigatePersistentBrowserWebview(browserId: string, url: string): boolean {
+  const normalizedBrowserId = trimNonEmpty(browserId);
+  const normalizedUrl = trimNonEmpty(url);
+  const record = normalizedBrowserId
+    ? persistentWebviewsByBrowserId.get(normalizedBrowserId)
+    : null;
+  if (!record || !normalizedUrl) {
+    return false;
+  }
+  (record.webview as BrowserWebviewElement).src = normalizedUrl;
+  return true;
+}
+
+export function removePersistentBrowserWebview(browserId: string): void {
+  const normalizedBrowserId = trimNonEmpty(browserId);
+  if (!normalizedBrowserId) {
+    return;
+  }
+  const record = persistentWebviewsByBrowserId.get(normalizedBrowserId);
+  persistentWebviewsByBrowserId.delete(normalizedBrowserId);
+  if (!record) {
+    return;
+  }
+  applyPersistentWrapperParking(record);
+  record.wrapper.remove();
+}
+
 export function takeResidentBrowserWebview(browserId: string): HTMLElement | null {
   const normalizedBrowserId = trimNonEmpty(browserId);
   if (!normalizedBrowserId) {
@@ -163,6 +349,30 @@ export function takeResidentBrowserWebview(browserId: string): HTMLElement | nul
   residentWebviewsByBrowserId.delete(normalizedBrowserId);
   clearResidentWebviewParkingStyle(webview);
   return webview;
+}
+
+/**
+ * Moves an adopted webview back to the resident host without destroying it.
+ * Used when the persistent VS Code Web instance transfers between retained
+ * workspace screens.
+ */
+export function parkBrowserWebview(browserId: string): boolean {
+  const normalizedBrowserId = trimNonEmpty(browserId);
+  if (!normalizedBrowserId) {
+    return false;
+  }
+  const ownerDocument = readDocument();
+  if (!ownerDocument) {
+    return false;
+  }
+  const webview =
+    residentWebviewsByBrowserId.get(normalizedBrowserId) ??
+    findBrowserWebview(normalizedBrowserId, ownerDocument);
+  if (!webview) {
+    return false;
+  }
+  releaseResidentBrowserWebview(normalizedBrowserId, webview);
+  return true;
 }
 
 export function releaseResidentBrowserWebview(browserId: string, webview: HTMLElement): void {
@@ -243,5 +453,10 @@ export function clearResidentBrowserWebviewsForTests(): void {
   }
   residentWebviewsByBrowserId.clear();
   residentWebviewSizesByBrowserId.clear();
+  for (const record of persistentWebviewsByBrowserId.values()) {
+    applyPersistentWrapperParking(record);
+    record.wrapper.remove();
+  }
+  persistentWebviewsByBrowserId.clear();
   readDocument()?.getElementById(RESIDENT_BROWSER_HOST_ID)?.remove();
 }

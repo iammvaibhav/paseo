@@ -1,11 +1,12 @@
 import { useEffect } from "react";
 import {
-  ensureResidentBrowserWebview,
-  navigateResidentBrowserWebview,
-  removeResidentBrowserWebview,
+  ensurePersistentBrowserWebview,
+  navigatePersistentBrowserWebview,
+  removePersistentBrowserWebview,
 } from "@/components/browser-webview-resident";
 import { getIsElectron } from "@/constants/platform";
 import { createBrowserId, getBrowserRecord, useBrowserStore } from "@/stores/browser-store";
+import { collectAllTabs, useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import { browserEditorOriginFromUrl, buildBrowserEditorUrl } from "@/workspace/browser-editor-url";
 
 /**
@@ -31,6 +32,27 @@ export interface BrowserEditorInstance {
 
 const instanceByOrigin = new Map<string, BrowserEditorInstance>();
 
+export function isBrowserEditorInstance(browserId: string): boolean {
+  return Array.from(instanceByOrigin.values()).some((instance) => instance.browserId === browserId);
+}
+
+function removeDuplicateBrowserEditor(browserId: string): void {
+  const layoutState = useWorkspaceLayoutStore.getState();
+  const tabsToClose: Array<{ workspaceKey: string; tabId: string }> = [];
+  for (const [workspaceKey, layout] of Object.entries(layoutState.layoutByWorkspace)) {
+    for (const tab of collectAllTabs(layout.root)) {
+      if (tab.target.kind === "browser" && tab.target.browserId === browserId) {
+        tabsToClose.push({ workspaceKey, tabId: tab.tabId });
+      }
+    }
+  }
+  useBrowserStore.getState().removeBrowser(browserId);
+  for (const tab of tabsToClose) {
+    useWorkspaceLayoutStore.getState().closeTab(tab.workspaceKey, tab.tabId);
+  }
+  removePersistentBrowserWebview(browserId);
+}
+
 /**
  * Returns the persistent instance for the host, creating + warming it if needed.
  * Never creates a second instance for the same origin. Returns null off Electron
@@ -51,17 +73,45 @@ export function ensureBrowserEditorInstance(input: {
   if (existing) {
     // Make sure the warm webview still exists (recreate it if it was destroyed).
     // No-op when it's already parked or currently adopted into a visible pane.
-    ensureResidentBrowserWebview({ browserId: existing.browserId, url: existing.folderUrl });
+    ensurePersistentBrowserWebview({ browserId: existing.browserId, url: existing.folderUrl });
+    const requestedFolderUrl = input.folderUrl?.trim();
+    if (requestedFolderUrl && existing.folderUrl !== requestedFolderUrl) {
+      rerootBrowserEditorInstance(existing, requestedFolderUrl);
+    }
     return existing;
   }
   const folderUrl = input.folderUrl?.trim();
   if (!folderUrl) {
     return null;
   }
-  const browserId = createBrowserId();
-  const instance: BrowserEditorInstance = { browserId, origin, folderUrl };
+  // Browser records persist across app launches while this in-memory registry
+  // does not. Adopt the newest embedded record for this origin and remove stale
+  // duplicates, otherwise every relaunch can create another hidden code-server
+  // window competing for the bridge port.
+  const persistedRecords = Object.values(useBrowserStore.getState().browsersById ?? {})
+    .filter(
+      (record) => record.chrome === "embedded" && browserEditorOriginFromUrl(record.url) === origin,
+    )
+    .sort((left, right) => right.createdAt - left.createdAt);
+  const persisted = persistedRecords[0] ?? null;
+  for (const duplicate of persistedRecords.slice(1)) {
+    removeDuplicateBrowserEditor(duplicate.browserId);
+  }
+
+  const browserId = persisted?.browserId ?? createBrowserId();
+  const instance: BrowserEditorInstance = {
+    browserId,
+    origin,
+    // The workspace making this call is authoritative. Persisted records are
+    // only reused for identity/partition continuity; their URL may belong to
+    // the previously active workspace.
+    folderUrl,
+  };
   instanceByOrigin.set(origin, instance);
-  ensureResidentBrowserWebview({ browserId, url: folderUrl });
+  ensurePersistentBrowserWebview({ browserId, url: instance.folderUrl });
+  if (persisted && persisted.url !== folderUrl) {
+    useBrowserStore.getState().updateBrowser(browserId, { url: folderUrl });
+  }
   return instance;
 }
 
@@ -74,14 +124,17 @@ export function ensureBrowserEditorInstance(input: {
  */
 function rerootBrowserEditorInstance(instance: BrowserEditorInstance, folderUrl: string): void {
   instance.folderUrl = folderUrl;
+  const hasBrowserRecord = Boolean(getBrowserRecord(instance.browserId));
+  if (hasBrowserRecord) {
+    useBrowserStore.getState().updateBrowser(instance.browserId, { url: folderUrl });
+  }
   // If the webview is parked here, navigate it directly (background reload).
-  if (navigateResidentBrowserWebview(instance.browserId, folderUrl)) {
+  if (navigatePersistentBrowserWebview(instance.browserId, folderUrl)) {
     return;
   }
   // Otherwise it's adopted into a pane (possibly hidden): let the pane owning the
   // element navigate it, and keep the store record's URL in sync for adoption.
-  if (getBrowserRecord(instance.browserId)) {
-    useBrowserStore.getState().updateBrowser(instance.browserId, { url: folderUrl });
+  if (hasBrowserRecord) {
     useBrowserStore.getState().requestNavigation(instance.browserId, folderUrl);
   }
 }
@@ -93,7 +146,7 @@ export function clearBrowserEditorInstance(origin: string): void {
     return;
   }
   instanceByOrigin.delete(origin);
-  removeResidentBrowserWebview(instance.browserId);
+  removePersistentBrowserWebview(instance.browserId);
 }
 
 /** For tests: drop registry state without touching the DOM resident map. */
@@ -111,16 +164,17 @@ export function resetBrowserEditorInstancesForTests(): void {
 export function usePreloadBrowserEditor(input: {
   browserEditorUrl: string | null | undefined;
   workspaceDirectory: string | null | undefined;
+  workspaceKey: string | null | undefined;
   isActive: boolean;
 }): void {
-  const { browserEditorUrl, workspaceDirectory, isActive } = input;
+  const { browserEditorUrl, workspaceDirectory, workspaceKey, isActive } = input;
   useEffect(() => {
     if (!getIsElectron() || !isActive) {
       return;
     }
     const url = browserEditorUrl?.trim();
     const folder = workspaceDirectory?.trim();
-    if (!url || !folder) {
+    if (!url || !folder || !workspaceKey?.trim()) {
       return;
     }
     const folderUrl = buildBrowserEditorUrl({ baseUrl: url, folderPath: folder });
@@ -131,5 +185,5 @@ export function usePreloadBrowserEditor(input: {
     if (instance && instance.folderUrl !== folderUrl) {
       rerootBrowserEditorInstance(instance, folderUrl);
     }
-  }, [browserEditorUrl, workspaceDirectory, isActive]);
+  }, [browserEditorUrl, workspaceDirectory, workspaceKey, isActive]);
 }

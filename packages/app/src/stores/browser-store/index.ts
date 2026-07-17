@@ -32,6 +32,8 @@ export interface BrowserBridgeOpenRequest {
   path: string;
   line: number | null;
   column: number | null;
+  /** Only the BrowserPane mounted for this workspace may consume the request. */
+  targetWorkspaceKey: string | null;
   /**
    * URL to fall back to (via a normal reload) when the bridge is unreachable —
    * e.g. the code-server window is still cold or the extension has not started.
@@ -59,6 +61,7 @@ interface BrowserStoreState extends BrowserIndexState {
       line?: number | null;
       column?: number | null;
       fallbackUrl?: string | null;
+      targetWorkspaceKey?: string | null;
     },
   ) => void;
   clearBridgeOpenRequest: (browserId: string, requestId: number) => void;
@@ -173,6 +176,7 @@ export const useBrowserStore = create<BrowserStoreState>()(
                 line: normalizePositiveInteger(input.line),
                 column: normalizePositiveInteger(input.column),
                 fallbackUrl: trimNonEmpty(input.fallbackUrl),
+                targetWorkspaceKey: trimNonEmpty(input.targetWorkspaceKey),
                 requestId: (previous?.requestId ?? 0) + 1,
               },
             },

@@ -1,7 +1,8 @@
-import { useCallback, useMemo, useState, memo } from "react";
-import { View, Text, Pressable, ScrollView } from "react-native";
+import { useCallback, useMemo, useState, memo, useRef } from "react";
+import { View, Text, Pressable, ScrollView, Modal } from "react-native";
 import { ChevronDown, FolderGit2, Circle } from "lucide-react-native";
 import { StyleSheet } from "react-native-unistyles";
+import { isWeb } from "@/constants/platform";
 import type { SubmoduleInfo } from "./use-submodules-query";
 
 interface SubmodulePickerProps {
@@ -12,8 +13,20 @@ interface SubmodulePickerProps {
 
 export function SubmodulePicker({ submodules, selectedPath, onSelect }: SubmodulePickerProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const triggerRef = useRef<View>(null);
+  const [dropdownPosition, setDropdownPosition] = useState({ top: 0, right: 0 });
 
-  const toggle = useCallback(() => setIsOpen((v) => !v), []);
+  const toggle = useCallback(() => {
+    if (!isOpen && triggerRef.current) {
+      triggerRef.current.measureInWindow((x, y, width, height) => {
+        setDropdownPosition({ top: y + height + 2, right: window.innerWidth - (x + width) });
+        setIsOpen(true);
+      });
+    } else {
+      setIsOpen(false);
+    }
+  }, [isOpen]);
+
   const close = useCallback(() => setIsOpen(false), []);
 
   const selectedLabel = selectedPath
@@ -30,8 +43,13 @@ export function SubmodulePicker({ submodules, selectedPath, onSelect }: Submodul
 
   const handleSelectRoot = useCallback(() => handleSelect(null), [handleSelect]);
 
+  const dropdownStyle = useMemo(
+    () => [pickerStyles.dropdown, { top: dropdownPosition.top, right: dropdownPosition.right }],
+    [dropdownPosition.top, dropdownPosition.right],
+  );
+
   return (
-    <View style={pickerStyles.container}>
+    <View ref={triggerRef} style={pickerStyles.container}>
       <Pressable onPress={toggle} style={pickerStyles.trigger}>
         {({ hovered }) => (
           <>
@@ -53,9 +71,9 @@ export function SubmodulePicker({ submodules, selectedPath, onSelect }: Submodul
         )}
       </Pressable>
       {isOpen && (
-        <>
+        <Modal transparent visible onRequestClose={close}>
           <Pressable style={pickerStyles.backdrop} onPress={close} />
-          <View style={pickerStyles.dropdown}>
+          <View style={dropdownStyle}>
             <ScrollView style={pickerStyles.scrollArea} bounces={false}>
               <SubmoduleRow
                 label="root"
@@ -67,7 +85,7 @@ export function SubmodulePicker({ submodules, selectedPath, onSelect }: Submodul
               {renderTree(submodules, 0, selectedPath, handleSelect)}
             </ScrollView>
           </View>
-        </>
+        </Modal>
       )}
     </View>
   );
@@ -177,9 +195,7 @@ function lastPathSegment(p: string): string {
 }
 
 const pickerStyles = StyleSheet.create((theme) => ({
-  container: {
-    position: "relative",
-  },
+  container: {},
   trigger: {
     flexDirection: "row",
     alignItems: "center",
@@ -204,31 +220,34 @@ const pickerStyles = StyleSheet.create((theme) => ({
   },
   backdrop: {
     position: "absolute",
-    top: -9999,
-    left: -9999,
-    right: -9999,
-    bottom: -9999,
-    zIndex: 99,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
   },
   dropdown: {
     position: "absolute",
-    top: "100%",
-    right: 0,
-    zIndex: 100,
-    minWidth: 220,
-    maxHeight: 300,
+    minWidth: 240,
+    maxHeight: 400,
     backgroundColor: theme.colors.surface0,
     borderWidth: 1,
     borderColor: theme.colors.border,
     borderRadius: theme.borderRadius.md,
-    shadowColor: "#000",
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
+    ...(isWeb
+      ? ({
+          boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
+        } as object)
+      : {
+          shadowColor: "#000",
+          shadowOpacity: 0.25,
+          shadowRadius: 16,
+          shadowOffset: { width: 0, height: 4 },
+        }),
     overflow: "hidden",
   },
   scrollArea: {
-    maxHeight: 300,
+    maxHeight: 400,
+    paddingVertical: theme.spacing[1],
   },
   row: {
     paddingVertical: theme.spacing[1],

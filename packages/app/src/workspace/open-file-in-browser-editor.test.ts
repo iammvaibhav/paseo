@@ -46,6 +46,7 @@ describe("openBrowserEditorTab", () => {
       openBrowserEditorTab({
         url: "http://blrofc3:8765/?folder=%2Frepo",
         browserEditorUrl: "http://blrofc3:8765",
+        workspaceKey: "server-1:workspace-1",
         workspaceTabs: [],
         openWorkspaceTabFocused: vi.fn(),
         navigateToTabId: vi.fn(),
@@ -61,6 +62,7 @@ describe("openBrowserEditorTab", () => {
       openBrowserEditorTab({
         url: "http://blrofc3:8765/?folder=%2Frepo",
         browserEditorUrl: "http://blrofc3:8765",
+        workspaceKey: "server-1:workspace-1",
         workspaceTabs: [],
         openWorkspaceTabFocused,
         navigateToTabId,
@@ -87,6 +89,7 @@ describe("openBrowserEditorTab", () => {
     openBrowserEditorTab({
       url: "http://blrofc3:8765/?folder=%2Frepo",
       browserEditorUrl: "http://blrofc3:8765",
+      workspaceKey: "server-1:workspace-1",
       workspaceTabs: [
         { tabId: "tab-existing", target: { kind: "browser", browserId: "vscode-web-1" } },
       ],
@@ -111,6 +114,7 @@ describe("tryOpenFileInBrowserEditor", () => {
       tryOpenFileInBrowserEditor({
         browserEditorUrl: "http://blrofc3:8765",
         workspaceDirectory: "/repo",
+        workspaceKey: "server-1:workspace-1",
         location: { path: "src/a.ts", lineStart: 4 },
         workspaceTabs: [],
         openWorkspaceTabFocused,
@@ -127,6 +131,7 @@ describe("tryOpenFileInBrowserEditor", () => {
       expect.objectContaining({
         path: "/repo/src/a.ts",
         line: 4,
+        targetWorkspaceKey: "server-1:workspace-1",
         fallbackUrl: expect.stringContaining("payload="),
       }),
     );
@@ -138,6 +143,7 @@ describe("tryOpenFileInBrowserEditor", () => {
       tryOpenFileInBrowserEditor({
         browserEditorUrl: "http://blrofc3:8765",
         workspaceDirectory: "/repo",
+        workspaceKey: "server-1:workspace-1",
         location: { path: "src/a.ts" },
         workspaceTabs: [],
         openWorkspaceTabFocused: vi.fn(),
@@ -155,13 +161,19 @@ describe("openHostFileInBrowserEditor", () => {
     expect(
       openHostFileInBrowserEditor({
         browserEditorUrl: "http://blrofc3:8765",
+        workspaceDirectory: "/repo",
         absolutePath: "/etc/hosts",
+        workspaceKey: "server-1:workspace-1",
         workspaceTabs: [],
         openWorkspaceTabFocused: vi.fn(() => "tab-1"),
         navigateToTabId: vi.fn(),
       }),
     ).toBe(true);
 
+    expect(ensureBrowserEditorInstance).toHaveBeenCalledWith({
+      browserEditorUrl: "http://blrofc3:8765",
+      folderUrl: "http://blrofc3:8765/?folder=%2Frepo",
+    });
     expect(requestBridgeOpen).toHaveBeenCalledWith(
       "vscode-web-1",
       expect.objectContaining({ path: "/etc/hosts" }),

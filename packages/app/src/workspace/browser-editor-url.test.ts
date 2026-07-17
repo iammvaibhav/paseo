@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   browserEditorOriginFromUrl,
   buildBrowserEditorUrl,
+  buildBridgeRestorePath,
   collectBrowserEditorOrigins,
 } from "./browser-editor-url";
 
@@ -54,6 +55,12 @@ describe("buildBrowserEditorUrl", () => {
   it("returns null for empty inputs", () => {
     expect(buildBrowserEditorUrl({ baseUrl: "", folderPath: "/tmp" })).toBeNull();
     expect(buildBrowserEditorUrl({ baseUrl: "http://x", folderPath: "" })).toBeNull();
+  });
+});
+
+describe("buildBridgeRestorePath", () => {
+  it("targets the broker restore route", () => {
+    expect(buildBridgeRestorePath()).toBe("/proxy/8766/broker/restore");
   });
 });
 
