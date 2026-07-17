@@ -448,18 +448,19 @@ build_and_restart() {
   log "Restarting daemon (\$PASEO_HOME)"
   # Drive the webhook tunnel via env (not config.json) so an older daemon's strict
   # config schema is never at risk; the new daemon reads PASEO_TUNNEL_PROVIDER and
-  # resolves its own public base URL (e.g. the Tailscale MagicDNS name).
-  local tunnel_env=()
+  # resolves its own public base URL (e.g. the Tailscale MagicDNS name). Export the
+  # vars (rather than an inline env-prefix) so the spawned daemon inherits them —
+  # a quoted array expansion as an env-prefix is parsed as a command, not assignments.
   if [[ -n "\$TUNNEL_PROVIDER" ]]; then
-    tunnel_env=("PASEO_TUNNEL_PROVIDER=\$TUNNEL_PROVIDER")
+    export PASEO_TUNNEL_PROVIDER="\$TUNNEL_PROVIDER"
     # cloudflared quick tunnels are run by the daemon itself; tailscale-funnel is
     # managed out-of-band (tailscaled + ensure_remote_funnel), so no autostart.
     if [[ "\$TUNNEL_PROVIDER" == "cloudflared" ]]; then
-      tunnel_env+=("PASEO_TUNNEL_AUTOSTART=1")
+      export PASEO_TUNNEL_AUTOSTART=1
     fi
     log "Tunnel provider: \$TUNNEL_PROVIDER"
   fi
-  PATH="\$(daemon_path_env)" "\${tunnel_env[@]}" npx tsx packages/cli/src/index.js daemon restart --home "\$PASEO_HOME"
+  PATH="\$(daemon_path_env)" npx tsx packages/cli/src/index.js daemon restart --home "\$PASEO_HOME"
 }
 
 deploy_code_server() {
