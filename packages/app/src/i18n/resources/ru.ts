@@ -79,6 +79,8 @@ export const ru: TranslationResources = {
       sendMessage: "Отправить сообщение",
       queue: "Очередь",
       send: "Отправлять",
+      forkToNewTab: "Форкнуть в новую вкладку",
+      forkFailed: "Не удалось форкнуть агента",
     },
     cancel: {
       cancelingAgent: "Отменяющий агент",

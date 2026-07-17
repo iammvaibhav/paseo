@@ -79,6 +79,8 @@ export const ja: TranslationResources = {
       sendMessage: "メッセージを送信",
       queue: "キュー",
       send: "送信",
+      forkToNewTab: "新しいタブにフォーク",
+      forkFailed: "エージェントのフォークに失敗しました",
     },
     cancel: {
       cancelingAgent: "エージェントをキャンセル中",

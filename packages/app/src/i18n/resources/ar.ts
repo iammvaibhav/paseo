@@ -79,6 +79,8 @@ export const ar: TranslationResources = {
       sendMessage: "أرسل رسالة",
       queue: "طابور",
       send: "يرسل",
+      forkToNewTab: "نسخ إلى تبويب جديد",
+      forkFailed: "فشل نسخ الوكيل",
     },
     cancel: {
       cancelingAgent: "وكيل الإلغاء",

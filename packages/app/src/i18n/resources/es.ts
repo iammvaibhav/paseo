@@ -79,6 +79,8 @@ export const es: TranslationResources = {
       sendMessage: "enviar mensaje",
       queue: "Cola",
       send: "Enviar",
+      forkToNewTab: "Bifurcar en pestaña nueva",
+      forkFailed: "No se pudo bifurcar el agente",
     },
     cancel: {
       cancelingAgent: "Agente de cancelación",

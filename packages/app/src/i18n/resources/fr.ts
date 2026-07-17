@@ -80,6 +80,8 @@ export const fr: TranslationResources = {
       sendMessage: "Envoyer un message",
       queue: "File d'attente",
       send: "Envoyer",
+      forkToNewTab: "Dupliquer dans un nouvel onglet",
+      forkFailed: "Échec de la duplication de l'agent",
     },
     cancel: {
       cancelingAgent: "Agent d'annulation",
