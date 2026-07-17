@@ -1061,6 +1061,34 @@ export async function createPaseoDaemon(
     await emitWorkspaceUpdatesExternal([result.workspace.workspaceId]);
     return result;
   };
+  // Webhook variants deliberately DO NOT broadcast the workspace on creation. The
+  // client seeds an empty "New Agent" composer tab whenever it observes a focused
+  // workspace with zero agents; broadcasting before the agent exists trips that.
+  // The webhook service broadcasts once, after the agent is attached.
+  const createWebhookLocalWorkspaceExternal = async (input: {
+    cwd: string;
+    firstAgentContext: FirstAgentContext;
+  }) => {
+    const workspace = await createLocalCheckoutWorkspace(
+      { cwd: input.cwd, title: resolveFirstAgentPromptTitle(input.firstAgentContext) },
+      { projectRegistry, workspaceRegistry, workspaceGitService },
+    );
+    workspaceAutoName.scheduleForDirectory({
+      workspaceId: workspace.workspaceId,
+      cwd: workspace.cwd,
+      firstAgentContext: input.firstAgentContext,
+    });
+    return workspace;
+  };
+  const createWebhookPaseoWorktreeExternal = async (input: {
+    cwd: string;
+    firstAgentContext: FirstAgentContext;
+  }) => {
+    return createPaseoWorktreeForTools({
+      cwd: input.cwd,
+      firstAgentContext: input.firstAgentContext,
+    });
+  };
   const archiveScheduleWorkspaceExternal = async (workspaceId: string, repoRoot: string) => {
     await archiveByScope(
       {
@@ -1142,8 +1170,9 @@ export async function createPaseoDaemon(
     agentManager,
     agentStorage,
     createAgent,
-    createLocalCheckoutWorkspace: createScheduleLocalWorkspaceExternal,
-    createPaseoWorktreeWorkspace: createSchedulePaseoWorktreeExternal,
+    createLocalCheckoutWorkspace: createWebhookLocalWorkspaceExternal,
+    createPaseoWorktreeWorkspace: createWebhookPaseoWorktreeExternal,
+    emitWorkspaceUpdatesForWorkspaceIds: emitWorkspaceUpdatesExternal,
     getPublicBaseUrl: () => tunnelManager.getPublicBaseUrl(),
     getTunnelProvider: () => tunnelManager.getProvider(),
     getTunnelStatus: () => tunnelManager.getStatus(),

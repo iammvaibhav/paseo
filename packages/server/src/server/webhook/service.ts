@@ -66,6 +66,10 @@ export interface WebhookServiceOptions {
   createPaseoWorktreeWorkspace: (
     input: WebhookWorkspaceCreateInput,
   ) => Promise<CreatePaseoWorktreeWorkflowResult>;
+  // Broadcast a workspace_update to clients. Called only AFTER the agent is
+  // attached, so the client never observes the zero-agent workspace (which would
+  // make it seed an empty "New Agent" composer tab).
+  emitWorkspaceUpdatesForWorkspaceIds: (workspaceIds: string[]) => Promise<void>;
   // Tunnel introspection for the webhook/config RPC + hook-URL rendering.
   getPublicBaseUrl: () => string | null;
   getTunnelProvider: () => WebhookTunnelProvider;
@@ -103,6 +107,7 @@ export class WebhookService {
   private readonly createPaseoWorktreeWorkspace: (
     input: WebhookWorkspaceCreateInput,
   ) => Promise<CreatePaseoWorktreeWorkflowResult>;
+  private readonly emitWorkspaceUpdatesForWorkspaceIds: (workspaceIds: string[]) => Promise<void>;
   private readonly getPublicBaseUrl: () => string | null;
   private readonly getTunnelProvider: () => WebhookTunnelProvider;
   private readonly getTunnelStatus: () => WebhookTunnelStatus;
@@ -117,6 +122,7 @@ export class WebhookService {
     this.createAgent = options.createAgent;
     this.createLocalCheckoutWorkspace = options.createLocalCheckoutWorkspace;
     this.createPaseoWorktreeWorkspace = options.createPaseoWorktreeWorkspace;
+    this.emitWorkspaceUpdatesForWorkspaceIds = options.emitWorkspaceUpdatesForWorkspaceIds;
     this.getPublicBaseUrl = options.getPublicBaseUrl;
     this.getTunnelProvider = options.getTunnelProvider;
     this.getTunnelStatus = options.getTunnelStatus;
@@ -392,6 +398,9 @@ export class WebhookService {
         agentId: created.snapshot.id,
         workspaceId: workspace.workspaceId,
       });
+      // Surface the workspace only now that its agent exists, so the client
+      // opens a single (agent) tab instead of seeding an empty composer first.
+      await this.emitWorkspaceUpdatesForWorkspaceIds([workspace.workspaceId]);
       if (created.initialPromptError) {
         throw created.initialPromptError;
       }
