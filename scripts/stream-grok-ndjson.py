@@ -4,6 +4,9 @@
 Reads NDJSON events from stdin and writes a human-readable progress stream to
 stdout (line-flushed). Optionally mirrors the raw NDJSON to a log file.
 
+Thought/text events arrive as tiny token chunks — they are concatenated on one
+line (or continuous stream), not one line per token.
+
 Usage:
   grok -p --output-format streaming-json "..." | stream-grok-ndjson.py [log_path]
 """
@@ -17,13 +20,25 @@ import sys
 def main() -> int:
     log_path = sys.argv[1] if len(sys.argv) > 1 else None
     log = open(log_path, "w", encoding="utf-8") if log_path else None
-    in_text = False
+    # "text" | "thought" | None — which stream we're currently concatenating.
+    active_stream: str | None = None
 
-    def end_text_run() -> None:
-        nonlocal in_text
-        if in_text:
+    def end_stream() -> None:
+        nonlocal active_stream
+        if active_stream is not None:
             print(flush=True)
-            in_text = False
+            active_stream = None
+
+    def write_stream(kind: str, data: str, *, prefix: str = "") -> None:
+        nonlocal active_stream
+        if not data:
+            return
+        if active_stream != kind:
+            end_stream()
+            if prefix:
+                print(prefix, end="", flush=True)
+            active_stream = kind
+        print(data, end="", flush=True)
 
     try:
         for raw in sys.stdin:
@@ -38,30 +53,27 @@ def main() -> int:
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
-                end_text_run()
+                end_stream()
                 print(raw, end="", flush=True)
                 continue
 
             if not isinstance(event, dict):
-                end_text_run()
+                end_stream()
                 print(line, flush=True)
                 continue
 
             kind = event.get("type")
             if kind == "text":
-                print(event.get("data") or "", end="", flush=True)
-                in_text = True
+                write_stream("text", event.get("data") or "")
                 continue
 
-            end_text_run()
             if kind == "thought":
-                data = (event.get("data") or "").strip()
-                if data:
-                    preview = " ".join(data.split())
-                    if len(preview) > 200:
-                        preview = preview[:197] + "..."
-                    print(f"  · {preview}", flush=True)
-            elif kind == "error":
+                # Do not strip chunks — leading spaces are word separators between tokens.
+                write_stream("thought", event.get("data") or "", prefix="  · ")
+                continue
+
+            end_stream()
+            if kind == "error":
                 print(f"error: {event.get('message') or event}", flush=True)
             elif kind == "end":
                 turns = event.get("num_turns")
@@ -88,7 +100,7 @@ def main() -> int:
                 elif kind:
                     print(f"  [{kind}]", flush=True)
 
-        end_text_run()
+        end_stream()
     finally:
         if log is not None:
             log.close()

@@ -262,10 +262,11 @@ interface RenderLeftContentArgs {
   serverId: string;
   focusInput: () => void;
   isCompactLayout: boolean;
+  isPaneFocused: boolean;
 }
 
 function renderLeftContent(args: RenderLeftContentArgs): ReactElement {
-  const { agentControls, agentId, serverId, focusInput, isCompactLayout } = args;
+  const { agentControls, agentId, serverId, focusInput, isCompactLayout, isPaneFocused } = args;
   if (resolveAgentControlsMode(agentControls) === "draft" && agentControls) {
     return <DraftAgentControls {...agentControls} isCompactLayout={isCompactLayout} />;
   }
@@ -273,6 +274,7 @@ function renderLeftContent(args: RenderLeftContentArgs): ReactElement {
     <AgentControls
       agentId={agentId}
       serverId={serverId}
+      isPaneFocused={isPaneFocused}
       onDropdownClose={focusInput}
       isCompactLayout={isCompactLayout}
     />
@@ -600,7 +602,7 @@ function QueuedMessageRow({
         ) : null}
         <Pressable
           onPress={handleSendNow}
-          style={QUEUE_SEND_BUTTON_STYLE}
+          style={[styles.queueActionButton, styles.queueSendButton]}
           accessibilityLabel={sendNowLabel}
           accessibilityRole="button"
         >
@@ -2009,8 +2011,9 @@ export function Composer({
         serverId,
         focusInput,
         isCompactLayout,
+        isPaneFocused,
       }),
-    [agentControls, agentId, focusInput, isCompactLayout, serverId],
+    [agentControls, agentId, focusInput, isCompactLayout, isPaneFocused, serverId],
   );
 
   const handleAttachButtonRef = useCallback((node: View | null) => {
@@ -2406,8 +2409,6 @@ const styles = StyleSheet.create((theme: Theme) => ({
     fontSize: theme.fontSize.sm,
   },
 })) as unknown as Record<string, object>;
-
-const QUEUE_SEND_BUTTON_STYLE = [styles.queueActionButton, styles.queueSendButton];
 
 const ThemedPencil = withUnistyles(Pencil);
 const ThemedArrowUp = withUnistyles(ArrowUp);

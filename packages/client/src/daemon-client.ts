@@ -1,5 +1,6 @@
 import type { z } from "zod";
 import { CLIENT_CAPS, type ClientCapability } from "@getpaseo/protocol/client-capabilities";
+import type { AgentAttentionNotificationPayload } from "@getpaseo/protocol/agent-attention-notification";
 import {
   AgentCreateFailedStatusPayloadSchema,
   AgentCreatedStatusPayloadSchema,
@@ -252,6 +253,10 @@ export type DaemonEvent =
       payload: Extract<SessionOutboundMessage, { type: "workspace_update" }>["payload"];
     }
   | {
+      type: "project.update";
+      payload: Extract<SessionOutboundMessage, { type: "project.update" }>["payload"];
+    }
+  | {
       type: "workspace_setup_progress";
       workspaceId: string;
       payload: Extract<SessionOutboundMessage, { type: "workspace_setup_progress" }>["payload"];
@@ -320,6 +325,14 @@ export interface SendMessageOptions {
   attachments?: SendAgentMessageRequest["attachments"];
 }
 
+export interface AgentAttentionRequiredNotification {
+  agentId: string;
+  reason: "finished" | "error" | "permission";
+  timestamp: string;
+  shouldNotify: boolean;
+  notification?: AgentAttentionNotificationPayload;
+}
+
 type AgentConfigOverrides = Partial<Omit<AgentSessionConfig, "provider" | "cwd">>;
 
 export interface CreateAgentRequestOptions extends AgentConfigOverrides {
@@ -328,6 +341,7 @@ export interface CreateAgentRequestOptions extends AgentConfigOverrides {
   cwd?: string;
   env?: CreateAgentRequestMessage["env"];
   workspaceId?: string;
+  callerAgentId?: string;
   initialPrompt?: string;
   clientMessageId?: string;
   outputSchema?: Record<string, unknown>;
@@ -336,6 +350,8 @@ export interface CreateAgentRequestOptions extends AgentConfigOverrides {
   git?: GitSetupOptions;
   worktree?: CreateAgentRequestMessage["worktree"];
   autoArchive?: CreateAgentRequestMessage["autoArchive"];
+  // COMPAT(createAgentWorktree): low-level old callers may still send the
+  // create-agent worktree field. Added in v0.2.0; remove after 2027-01-17.
   worktreeName?: string;
   requestId?: string;
   labels?: Record<string, string>;
@@ -770,16 +786,11 @@ export interface StopLoopOptions {
 export interface CreateScheduleOptions {
   prompt: string;
   name?: string | null;
-  cadence:
-    | {
-        type: "every";
-        everyMs: number;
-      }
-    | {
-        type: "cron";
-        expression: string;
-        timezone?: string;
-      };
+  cadence: {
+    type: "cron";
+    expression: string;
+    timezone?: string;
+  };
   target:
     | {
         type: "self";
@@ -831,16 +842,11 @@ export interface UpdateScheduleOptions {
   id: string;
   name?: string | null;
   prompt?: string;
-  cadence?:
-    | {
-        type: "every";
-        everyMs: number;
-      }
-    | {
-        type: "cron";
-        expression: string;
-        timezone?: string;
-      };
+  cadence?: {
+    type: "cron";
+    expression: string;
+    timezone?: string;
+  };
   newAgentConfig?: UpdateScheduleNewAgentConfig;
   maxRuns?: number | null;
   expiresAt?: string | null;
@@ -1547,6 +1553,31 @@ export class DaemonClient {
       if (handlers.size === 0) {
         this.messageHandlers.delete(type);
       }
+    };
+  }
+
+  onAgentAttentionRequired(
+    handler: (notification: AgentAttentionRequiredNotification) => void,
+  ): () => void {
+    const unsubscribeLegacy = this.on("agent_stream", (message) => {
+      if (message.payload.event.type !== "attention_required") {
+        return;
+      }
+      const event = message.payload.event;
+      handler({
+        agentId: message.payload.agentId,
+        reason: event.reason,
+        timestamp: event.timestamp,
+        shouldNotify: event.shouldNotify,
+        ...(event.notification ? { notification: event.notification } : {}),
+      });
+    });
+    const unsubscribeDedicated = this.on("agent_attention_required", (message) => {
+      handler(message.payload);
+    });
+    return () => {
+      unsubscribeLegacy();
+      unsubscribeDedicated();
     };
   }
 
@@ -2324,6 +2355,7 @@ export class DaemonClient {
       config,
       ...(options.env ? { env: options.env } : {}),
       ...(options.workspaceId !== undefined ? { workspaceId: options.workspaceId } : {}),
+      ...(options.callerAgentId !== undefined ? { callerAgentId: options.callerAgentId } : {}),
       ...(options.initialPrompt ? { initialPrompt: options.initialPrompt } : {}),
       ...(options.clientMessageId ? { clientMessageId: options.clientMessageId } : {}),
       ...(options.outputSchema ? { outputSchema: options.outputSchema } : {}),
@@ -2757,6 +2789,35 @@ export class DaemonClient {
       throw new Error(payload.error);
     }
     return payload;
+  }
+
+  async setAgentTimelineSubscription(agentIds: string[]): Promise<void> {
+    // COMPAT(selectiveAgentTimeline): added in v0.1.106. Old daemons keep their
+    // legacy global stream and do not understand this RPC. Remove after
+    // 2027-01-12 once the supported daemon floor is >= v0.1.106.
+    if (!this.lastServerInfoMessage?.features?.selectiveAgentTimeline) {
+      return;
+    }
+
+    const requestId = this.createRequestId();
+    const normalizedAgentIds = [...new Set(agentIds)].sort();
+    const message = SessionInboundMessageSchema.parse({
+      type: "agent.timeline.set_subscription.request",
+      agentIds: normalizedAgentIds,
+      requestId,
+    });
+
+    await this.sendRequest({
+      requestId,
+      message,
+      options: { skipQueue: true },
+      select: (response) => {
+        if (response.type !== "agent.timeline.set_subscription.response") {
+          return null;
+        }
+        return response.payload.requestId === requestId ? response.payload : null;
+      },
+    });
   }
 
   async buildAgentForkContext(
@@ -4391,6 +4452,33 @@ export class DaemonClient {
     });
   }
 
+  async connectHub(hubUrl: string, token: string, requestId?: string) {
+    this.requireHubRelationshipSupport();
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "hub.management.daemon.connect.request", hubUrl, token },
+      responseType: "hub.management.daemon.connect.response",
+    });
+  }
+
+  async getHubStatus(requestId?: string) {
+    this.requireHubRelationshipSupport();
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "hub.management.daemon.get_status.request" },
+      responseType: "hub.management.daemon.get_status.response",
+    });
+  }
+
+  async disconnectHub(force = false, requestId?: string) {
+    this.requireHubRelationshipSupport();
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "hub.management.daemon.disconnect.request", force },
+      responseType: "hub.management.daemon.disconnect.response",
+    });
+  }
+
   async getDaemonPairingOffer(
     options?: DaemonPairingOfferOptions,
   ): Promise<DaemonPairingOfferPayload> {
@@ -5288,6 +5376,13 @@ export class DaemonClient {
     return this.lastServerInfoMessage;
   }
 
+  private requireHubRelationshipSupport(): void {
+    // COMPAT(hubRelationship): added in v0.1.X, drop the gate when floor >= v0.1.X.
+    if (this.lastServerInfoMessage?.features?.hubRelationship !== true) {
+      throw new Error("Update the host to use Hub relationship management.");
+    }
+  }
+
   private resolveTransportUrlForAttempt(): string {
     return this.config.url;
   }
@@ -5314,6 +5409,7 @@ export class DaemonClient {
             [CLIENT_CAPS.reasoningMergeEnum]: true,
             [CLIENT_CAPS.terminalReflowableSnapshot]: true,
             [CLIENT_CAPS.providerSubagents]: true,
+            [CLIENT_CAPS.projectUpdates]: true,
             ...this.config.capabilities,
           },
           ...(this.config.appVersion ? { appVersion: this.config.appVersion } : {}),
@@ -5784,6 +5880,8 @@ export class DaemonClient {
           workspaceId: msg.payload.kind === "upsert" ? msg.payload.workspace.id : msg.payload.id,
           payload: msg.payload,
         };
+      case "project.update":
+        return { type: "project.update", payload: msg.payload };
       case "workspace_setup_progress":
         return {
           type: "workspace_setup_progress",
