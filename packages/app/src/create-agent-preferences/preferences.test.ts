@@ -3,7 +3,9 @@ import { CreateAgentPreferencesService } from "./service";
 import {
   mergeCreateAgentSelectionPreferences,
   mergeProviderPreferences,
+  mergeProviderPreferencesWithScope,
   parseFormPreferences,
+  resolveEffectiveFormPreferences,
 } from "./preferences";
 import { FakeCreateAgentPreferenceStorage } from "./test-utils/fake-preference-storage";
 
@@ -139,5 +141,143 @@ describe("create agent preferences", () => {
 
   it("rejects an unknown isolation value as invalid stored preferences", () => {
     expect(parseFormPreferences({ provider: "codex", isolation: "sandbox" })).toEqual({});
+  });
+
+  it("resolves workspace model over project and global", () => {
+    const preferences = {
+      provider: "claude",
+      providerPreferences: {
+        claude: { model: "global-model" },
+      },
+      byProject: {
+        "proj-a": {
+          provider: "claude",
+          providerPreferences: {
+            claude: { model: "project-model" },
+          },
+        },
+      },
+      byWorkspace: {
+        "ws-1": {
+          provider: "codex",
+          providerPreferences: {
+            codex: { model: "workspace-model" },
+          },
+        },
+      },
+    };
+
+    expect(
+      resolveEffectiveFormPreferences(preferences, {
+        workspaceId: "ws-1",
+        projectKey: "proj-a",
+      }),
+    ).toEqual({
+      ...preferences,
+      provider: "codex",
+      // Workspace provider wins; per-provider models layer global → project → workspace.
+      providerPreferences: {
+        claude: { model: "project-model" },
+        codex: { model: "workspace-model" },
+      },
+    });
+  });
+
+  it("falls back to project selection when the workspace has none", () => {
+    const preferences = {
+      provider: "claude",
+      providerPreferences: {
+        claude: { model: "global-model" },
+      },
+      byProject: {
+        "proj-a": {
+          provider: "codex",
+          providerPreferences: {
+            codex: { model: "project-model" },
+          },
+        },
+      },
+    };
+
+    expect(
+      resolveEffectiveFormPreferences(preferences, {
+        workspaceId: "ws-new",
+        projectKey: "proj-a",
+      }),
+    ).toEqual({
+      ...preferences,
+      provider: "codex",
+      providerPreferences: {
+        claude: { model: "global-model" },
+        codex: { model: "project-model" },
+      },
+    });
+  });
+
+  it("writes model selection into workspace, project, and global scopes", () => {
+    expect(
+      mergeProviderPreferencesWithScope({
+        preferences: {},
+        provider: "claude",
+        updates: { model: "claude-opus-4-6" },
+        scope: { workspaceId: "ws-1", projectKey: "proj-a" },
+      }),
+    ).toEqual({
+      provider: "claude",
+      providerPreferences: {
+        claude: { model: "claude-opus-4-6" },
+      },
+      byProject: {
+        "proj-a": {
+          provider: "claude",
+          providerPreferences: {
+            claude: { model: "claude-opus-4-6" },
+          },
+        },
+      },
+      byWorkspace: {
+        "ws-1": {
+          provider: "claude",
+          providerPreferences: {
+            claude: { model: "claude-opus-4-6" },
+          },
+        },
+      },
+    });
+  });
+
+  it("keeps sibling workspace selections isolated", () => {
+    const afterWorkspaceA = mergeProviderPreferencesWithScope({
+      preferences: {},
+      provider: "claude",
+      updates: { model: "opus" },
+      scope: { workspaceId: "ws-a", projectKey: "proj" },
+    });
+    const afterWorkspaceB = mergeProviderPreferencesWithScope({
+      preferences: afterWorkspaceA,
+      provider: "claude",
+      updates: { model: "sonnet" },
+      scope: { workspaceId: "ws-b", projectKey: "proj" },
+    });
+
+    expect(
+      resolveEffectiveFormPreferences(afterWorkspaceB, {
+        workspaceId: "ws-a",
+        projectKey: "proj",
+      }).providerPreferences?.claude?.model,
+    ).toBe("opus");
+    expect(
+      resolveEffectiveFormPreferences(afterWorkspaceB, {
+        workspaceId: "ws-b",
+        projectKey: "proj",
+      }).providerPreferences?.claude?.model,
+    ).toBe("sonnet");
+    // New workspace in the project inherits the last project-level choice.
+    expect(
+      resolveEffectiveFormPreferences(afterWorkspaceB, {
+        workspaceId: "ws-new",
+        projectKey: "proj",
+      }).providerPreferences?.claude?.model,
+    ).toBe("sonnet");
   });
 });

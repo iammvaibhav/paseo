@@ -123,6 +123,8 @@ The extension is plain CommonJS (no build step). **Copying the folder into `exte
 
 An Electron-only **Host** tab beside **Files** in the existing explorer (`components/explorer-sidebar.tsx`) browses the active workspace's host filesystem rooted at `/`. Choosing **Files**, **Changes**, or the pull-request tab navigates back to the normal workspace explorer. Host mode reuses `FileExplorerPane` and the existing `file_explorer_request` / download RPCs — the server already accepts an arbitrary `cwd` and only sandboxes navigation _within_ it (`file-explorer/service.ts` `resolveScopedPath`), so no server change is needed. Clicking a host file opens it in VS Code Web via `openHostFileInBrowserEditor` (absolute path → bridge, or a cold `?payload` open); the per-row **Download** action works as elsewhere.
 
+**Drop to upload:** drag local files onto the **Files** or **Host** explorer pane. The desktop app streams them to the host daemon via `file.explorer.write.request` + binary transfer frames (not SSH/scp). Writes are sandboxed to the explorer root (`workspace` cwd or `/` for Host) and land in the selected directory (or its parent if a file is selected, else the root). Existing same-named files are overwritten.
+
 ## Syncing settings & extensions across the three hosts
 
 code-server stores user data under `~/.local/share/code-server/` by default:

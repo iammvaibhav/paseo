@@ -127,7 +127,6 @@ export const ja: TranslationResources = {
       initialPromptRequired: "初期プロンプトが必要です",
       alreadyLoading: "すでに読み込み中です",
       uploadFailed: "ファイルのアップロードに失敗しました",
-      fileTooLarge: "{{fileName}}が大きすぎます（最大{{size}}）",
     },
     clientCommands: {
       archiveAgent: "現在のエージェントをアーカイブ",
@@ -396,6 +395,11 @@ export const ja: TranslationResources = {
       states: {
         unavailable: "ワークスペースが利用できません",
         loading: "ファイルを読み込み中...",
+      },
+      drop: {
+        hostDisconnected: "Host is disconnected",
+        uploading: "Uploading {{count}} file(s)…",
+        uploaded: "Uploaded {{count}} file(s)",
       },
       errors: {
         failedToListDirectory: "ディレクトリの一覧取得に失敗しました",

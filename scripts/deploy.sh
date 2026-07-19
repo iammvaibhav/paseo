@@ -4,7 +4,7 @@
 # Local workflow (fork-based):
 #   1. Auto-commit any uncommitted changes (claude-written message, else timestamp)
 #   2. Fetch upstream, mirror origin/main ← upstream/main (fast-forward)
-#   3. Merge upstream/main into the custom branch; on conflict, an agent (claude)
+#   3. Merge upstream/main into the custom branch; on conflict, an agent (grok)
 #      resolves ALL conflicts in one pass and the script creates one merge commit
 #   4. Push the branch to origin (iammvaibhav/paseo fork)
 #   5. Build server + restart the production-style daemon (~/.paseo)
@@ -34,8 +34,8 @@
 #   PASEO_SYNC_CODE_SERVER_USER_DATA=1  # also rsync User/ + extensions/ local → remotes
 #   CODE_SERVER_VERSION=4.127.0       # pin code-server; omit for latest
 #   PASEO_COMMIT_MSG_MODEL=...        # claude model for auto-commit messages (default Haiku 4.5)
-#   PASEO_CONFLICT_MODEL=...          # claude model for merge conflict resolution (default Opus 4.8)
-#   PASEO_CONFLICT_EFFORT=xhigh       # effort for merge conflict resolution (low|medium|high|xhigh|max)
+#   PASEO_CONFLICT_MODEL=...          # grok model for merge conflict resolution (default grok-4.5)
+#   PASEO_CONFLICT_EFFORT=high        # effort for merge conflict resolution (low|medium|high|xhigh|max)
 #
 # code-server User settings: sync always pushes this Mac's live
 # ~/.local/share/code-server/User/settings.json to remotes (not the repo template).
@@ -53,11 +53,11 @@ LOCAL_PASEO_HOME="${PASEO_LOCAL_HOME:-$HOME/.paseo}"
 REMOTE_REPO_DIR="${PASEO_REMOTE_REPO_DIR:-paseo}"
 REMOTE_HOSTS=(blrofc3 iammvaibhav)
 
-# Models for the claude-driven steps. Commit messages are a light task (Haiku);
-# conflict resolution is hard and gets Opus at extra-high effort.
+# Commit messages stay on claude (Haiku). Conflict resolution uses the grok CLI
+# at high reasoning effort (Grok 4.5 High).
 COMMIT_MSG_MODEL="${PASEO_COMMIT_MSG_MODEL:-claude-haiku-4-5-20251001}"
-CONFLICT_MODEL="${PASEO_CONFLICT_MODEL:-claude-opus-4-8}"
-CONFLICT_EFFORT="${PASEO_CONFLICT_EFFORT:-xhigh}"
+CONFLICT_MODEL="${PASEO_CONFLICT_MODEL:-grok-4.5}"
+CONFLICT_EFFORT="${PASEO_CONFLICT_EFFORT:-high}"
 
 # Where the unsigned desktop test build is installed (local Mac only).
 DESKTOP_TEST_APP="${PASEO_DESKTOP_TEST_APP:-/Applications/Paseo Test.app}"
@@ -158,22 +158,41 @@ update_origin_main() {
 }
 
 resolve_conflicts_with_agent() {
-  if ! command -v claude >/dev/null 2>&1; then
-    die "Merge conflict but the claude CLI was not found; resolve manually (git merge --abort to bail)."
+  if ! command -v grok >/dev/null 2>&1; then
+    die "Merge conflict but the grok CLI was not found; resolve manually (git merge --abort to bail)."
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    die "Merge conflict but python3 was not found (needed to stream grok output); resolve manually (git merge --abort to bail)."
+  fi
+  local stream_filter="$ROOT_DIR/scripts/stream-grok-ndjson.py"
+  if [[ ! -f "$stream_filter" ]]; then
+    die "Missing $stream_filter (needed to stream grok output)."
   fi
   local files
   files="$(git -C "$ROOT_DIR" diff --name-only --diff-filter=U)"
   local count
   count="$(printf '%s\n' "$files" | grep -c . || true)"
-  log "Resolving $count conflicted file(s) with $CONFLICT_MODEL in one pass:"
+  local log_path="/tmp/paseo-merge-resolve.log"
+  log "Resolving $count conflicted file(s) with grok $CONFLICT_MODEL (effort=$CONFLICT_EFFORT) in one pass:"
   printf '  - %s\n' $files
-  log "Streaming agent output (also saved to /tmp/paseo-merge-resolve.log):"
-  # --verbose (not >/dev/null) so the agent's work is visible as it goes; tee keeps a copy.
-  # The agent resolves ALL conflicts; the SCRIPT (not the agent) verifies + commits.
+  log "Streaming agent output (raw NDJSON also saved to $log_path):"
+  # Headless grok with tools: -p runs the full agent loop; --always-approve skips prompts.
+  # streaming-json emits NDJSON as work happens (plain mode only prints at the end).
+  # Shell is denied so the agent cannot run git; the SCRIPT verifies + commits.
+  # pipefail so a grok failure is not masked by the stream filter exiting 0.
   if ! (
-    cd "$ROOT_DIR" && claude -p --verbose --model "$CONFLICT_MODEL" --effort "$CONFLICT_EFFORT" --dangerously-skip-permissions "You are resolving the conflicts from 'git merge $UPSTREAM_REMOTE/main' into the custom fork branch '$BRANCH'. Edit EVERY conflicted file to remove ALL conflict markers (<<<<<<<, =======, >>>>>>>) and produce a correct merge that keeps upstream's changes while preserving this fork's customizations. Resolve every conflict — leave no markers behind. Do not run any git commands. Conflicted files:$(printf ' %s' $files)" 2>&1 | tee /tmp/paseo-merge-resolve.log
+    cd "$ROOT_DIR" || exit 1
+    set -o pipefail
+    grok -p \
+      --model "$CONFLICT_MODEL" \
+      --effort "$CONFLICT_EFFORT" \
+      --always-approve \
+      --disallowed-tools "run_terminal_cmd" \
+      --output-format streaming-json \
+      "You are resolving the conflicts from 'git merge $UPSTREAM_REMOTE/main' into the custom fork branch '$BRANCH'. Edit EVERY conflicted file to remove ALL conflict markers (<<<<<<<, =======, >>>>>>>) and produce a correct merge that keeps upstream's changes while preserving this fork's customizations. Resolve every conflict — leave no markers behind. Do not run any git commands. Conflicted files:$(printf ' %s' $files)" 2>&1 \
+      | python3 -u "$stream_filter" "$log_path"
   ); then
-    die "claude conflict resolution failed; resolve manually (git merge --abort to bail)."
+    die "grok conflict resolution failed; resolve manually (git merge --abort to bail). Log: $log_path"
   fi
 }
 
@@ -634,10 +653,10 @@ Scope flags (set to 1 unless noted):
   PASEO_SYNC_CODE_SERVER_USER_DATA  Also rsync code-server User/ + extensions/ to remotes
   PASEO_SKIP_FUNNEL               Skip ensuring the Tailscale Funnel on funnel hosts (blrofc3)
 
-Model selection (claude-driven steps):
-  PASEO_COMMIT_MSG_MODEL          Model for auto-commit messages (default: $COMMIT_MSG_MODEL)
-  PASEO_CONFLICT_MODEL           Model for merge conflict resolution (default: $CONFLICT_MODEL)
-  PASEO_CONFLICT_EFFORT          Effort for merge conflict resolution (default: $CONFLICT_EFFORT)
+Model selection:
+  PASEO_COMMIT_MSG_MODEL          claude model for auto-commit messages (default: $COMMIT_MSG_MODEL)
+  PASEO_CONFLICT_MODEL           grok model for merge conflict resolution (default: $CONFLICT_MODEL)
+  PASEO_CONFLICT_EFFORT          Reasoning effort for conflict resolution (default: $CONFLICT_EFFORT)
 
 Other:
   CODE_SERVER_VERSION            Pin code-server version (omit for latest)

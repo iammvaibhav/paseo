@@ -127,7 +127,6 @@ export const ptBR: TranslationResources = {
       initialPromptRequired: "O prompt inicial é obrigatório",
       alreadyLoading: "Já está carregando",
       uploadFailed: "Falha ao enviar arquivo",
-      fileTooLarge: "{{fileName}} é grande demais (máximo {{size}})",
     },
     clientCommands: {
       archiveAgent: "Arquivar o agente atual",
@@ -396,6 +395,11 @@ export const ptBR: TranslationResources = {
       states: {
         unavailable: "Workspace indisponível",
         loading: "Carregando arquivos...",
+      },
+      drop: {
+        hostDisconnected: "Host is disconnected",
+        uploading: "Uploading {{count}} file(s)…",
+        uploaded: "Uploaded {{count}} file(s)",
       },
       errors: {
         failedToListDirectory: "Falha ao listar diretório",

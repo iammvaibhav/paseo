@@ -230,6 +230,85 @@ export async function readExplorerFileBytes({
   }
 }
 
+export interface PrepareExplorerFileWriteParams {
+  root: string;
+  directoryPath?: string;
+  fileName: string;
+}
+
+export interface ExplorerFileWriteDestination {
+  /** Relative path of the written file under root (posix separators). */
+  path: string;
+  absolutePath: string;
+  fileName: string;
+  absoluteTempPath: string;
+}
+
+/**
+ * Resolve a sandboxed destination for writing a file into an explorer directory.
+ * The parent directory must already exist and be a directory. The file itself may
+ * be new (missing) or overwritten.
+ */
+export async function prepareExplorerFileWrite({
+  root,
+  directoryPath = ".",
+  fileName,
+}: PrepareExplorerFileWriteParams): Promise<ExplorerFileWriteDestination> {
+  const sanitizedName = sanitizeExplorerFileName(fileName);
+  const parent = await resolveScopedPath({ root, relativePath: directoryPath });
+  let parentStats: Awaited<ReturnType<typeof fs.stat>>;
+  try {
+    parentStats = await fs.stat(parent.resolvedPath);
+  } catch (error) {
+    if (isMissingEntryError(error)) {
+      throw new Error("Destination directory does not exist", { cause: error });
+    }
+    throw error;
+  }
+  if (!parentStats.isDirectory()) {
+    throw new Error("Destination path is not a directory");
+  }
+
+  const parentRelative = normalizeRelativePath({ root, targetPath: parent.requestedPath });
+  const fileRelative =
+    parentRelative === "." ? sanitizedName : `${parentRelative}/${sanitizedName}`;
+
+  // Final path must stay inside the root even when the file does not exist yet.
+  const fileScoped = await resolveScopedPath({ root, relativePath: fileRelative });
+
+  // If an existing path is a directory, refuse to clobber it with a file.
+  try {
+    const existing = await fs.stat(fileScoped.resolvedPath);
+    if (existing.isDirectory()) {
+      throw new Error("A directory with that name already exists");
+    }
+  } catch (error) {
+    if (!isMissingEntryError(error)) {
+      throw error;
+    }
+  }
+
+  const absoluteTempPath = `${fileScoped.resolvedPath}.paseo-upload-${process.pid}-${Date.now()}`;
+
+  return {
+    path: normalizeRelativePath({ root, targetPath: fileScoped.requestedPath }),
+    absolutePath: fileScoped.resolvedPath,
+    fileName: sanitizedName,
+    absoluteTempPath,
+  };
+}
+
+function sanitizeExplorerFileName(value: string): string {
+  const name = path
+    .basename(value)
+    .replace(/[^a-zA-Z0-9._ -]/g, "_")
+    .trim();
+  if (!name || name === "." || name === "..") {
+    return "upload";
+  }
+  return name;
+}
+
 export async function getDownloadableFileInfo({ root, relativePath }: ReadFileParams): Promise<{
   path: string;
   absolutePath: string;

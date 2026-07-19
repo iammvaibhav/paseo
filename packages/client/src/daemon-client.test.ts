@@ -1674,6 +1674,96 @@ test("readFile resolves from binary file frames when the daemon supports them", 
   expect(new TextDecoder().decode(result.bytes)).toBe("hello");
 });
 
+test("writeExplorerFile sends scoped write request and binary chunks", async () => {
+  const logger = createMockLogger();
+  const mock = createMockTransport();
+
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger,
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const responsePromise = client.writeExplorerFile({
+    cwd: "/repo",
+    directoryPath: "src",
+    fileName: "notes.txt",
+    mimeType: "text/plain",
+    bytes: new TextEncoder().encode("hello"),
+    modifiedAt: "2026-05-02T00:00:00.000Z",
+    requestId: "req-write",
+    chunkSize: 5,
+  });
+
+  expect(JSON.parse(assertStr(mock.sent[0]))).toEqual({
+    type: "session",
+    message: {
+      type: "file.explorer.write.request",
+      cwd: "/repo",
+      directoryPath: "src",
+      fileName: "notes.txt",
+      mimeType: "text/plain",
+      size: 5,
+      modifiedAt: "2026-05-02T00:00:00.000Z",
+      requestId: "req-write",
+    },
+  });
+  expect(mock.sent.slice(1).map(assertUint8Array).map(decodeFileTransferFrame)).toEqual([
+    {
+      opcode: FileTransferOpcode.FileBegin,
+      requestId: "req-write",
+      metadata: {
+        mime: "text/plain",
+        size: 5,
+        encoding: "binary",
+        modifiedAt: "2026-05-02T00:00:00.000Z",
+        fileName: "notes.txt",
+      },
+      payload: new Uint8Array(),
+    },
+    {
+      opcode: FileTransferOpcode.FileChunk,
+      requestId: "req-write",
+      payload: new TextEncoder().encode("hello"),
+    },
+    {
+      opcode: FileTransferOpcode.FileEnd,
+      requestId: "req-write",
+      payload: new Uint8Array(),
+    },
+  ]);
+
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "file.explorer.write.response",
+      payload: {
+        requestId: "req-write",
+        cwd: "/repo",
+        path: "src/notes.txt",
+        fileName: "notes.txt",
+        size: 5,
+        error: null,
+      },
+    }),
+  );
+
+  await expect(responsePromise).resolves.toEqual({
+    requestId: "req-write",
+    cwd: "/repo",
+    path: "src/notes.txt",
+    fileName: "notes.txt",
+    size: 5,
+    error: null,
+  });
+});
+
 test("uploadFile sends metadata request and file bytes as binary chunks", async () => {
   const logger = createMockLogger();
   const mock = createMockTransport();

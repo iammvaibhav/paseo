@@ -2179,6 +2179,19 @@ export const FileUploadRequestSchema = z.object({
   requestId: z.string(),
 });
 
+/** Write a local client file into a host directory scoped by `cwd` (file explorer / Host tab). */
+export const FileExplorerWriteRequestSchema = z.object({
+  type: z.literal("file.explorer.write.request"),
+  cwd: z.string().min(1),
+  /** Relative directory under `cwd` that receives the file. Defaults to the root. */
+  directoryPath: z.string().optional(),
+  fileName: z.string().min(1),
+  mimeType: z.string().min(1),
+  size: z.number().int().nonnegative(),
+  modifiedAt: z.string(),
+  requestId: z.string(),
+});
+
 export const ClearAgentAttentionMessageSchema = z.object({
   type: z.literal("clear_agent_attention"),
   agentId: z.union([z.string(), z.array(z.string())]),
@@ -2453,6 +2466,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ProjectIconRequestSchema,
   FileDownloadTokenRequestSchema,
   FileUploadRequestSchema,
+  FileExplorerWriteRequestSchema,
   ClearAgentAttentionMessageSchema,
   ClientHeartbeatMessageSchema,
   PingMessageSchema,
@@ -4543,6 +4557,19 @@ export const FileUploadResponseSchema = z.object({
   }),
 });
 
+export const FileExplorerWriteResponseSchema = z.object({
+  type: z.literal("file.explorer.write.response"),
+  payload: z.object({
+    requestId: z.string(),
+    cwd: z.string(),
+    /** Relative path of the written file under `cwd`, or null on failure. */
+    path: z.string().nullable(),
+    fileName: z.string().nullable(),
+    size: z.number().nullable(),
+    error: z.string().nullable(),
+  }),
+});
+
 export const ListProviderModelsResponseMessageSchema = z.object({
   type: z.literal("list_provider_models_response"),
   payload: z.object({
@@ -4984,6 +5011,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ProjectIconResponseSchema,
   FileDownloadTokenResponseSchema,
   FileUploadResponseSchema,
+  FileExplorerWriteResponseSchema,
   ListProviderModelsResponseMessageSchema,
   ListProviderModesResponseMessageSchema,
   ListProviderFeaturesResponseMessageSchema,
@@ -5407,6 +5435,8 @@ export type FileDownloadTokenRequest = z.infer<typeof FileDownloadTokenRequestSc
 export type FileDownloadTokenResponse = z.infer<typeof FileDownloadTokenResponseSchema>;
 export type FileUploadRequest = z.infer<typeof FileUploadRequestSchema>;
 export type FileUploadResponse = z.infer<typeof FileUploadResponseSchema>;
+export type FileExplorerWriteRequest = z.infer<typeof FileExplorerWriteRequestSchema>;
+export type FileExplorerWriteResponse = z.infer<typeof FileExplorerWriteResponseSchema>;
 export type RestartServerRequestMessage = z.infer<typeof RestartServerRequestMessageSchema>;
 export type ShutdownServerRequestMessage = z.infer<typeof ShutdownServerRequestMessageSchema>;
 export type ClearAgentAttentionMessage = z.infer<typeof ClearAgentAttentionMessageSchema>;

@@ -35,9 +35,11 @@ import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { resolveProviderDefinition } from "@/utils/provider-definitions";
 import {
   buildFavoriteModelKey,
-  mergeProviderPreferences,
+  mergeProviderPreferencesWithScope,
+  resolveFavoriteModels,
   toggleFavoriteModel,
   useFormPreferences,
+  type FormPreferenceScope,
 } from "@/hooks/use-form-preferences";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Combobox, ComboboxItem, type ComboboxOption } from "@/components/ui/combobox";
@@ -315,12 +317,26 @@ function resolveProviderIcon(provider: string) {
 type AgentControlsSlice = {
   provider: string;
   cwd: string | null;
+  workspaceId: string | null;
+  projectKey: string | null;
   runtimeModelId: string | null;
   model: string | null | undefined;
   features: AgentFeature[] | undefined;
   thinkingOptionId: string | null | undefined;
   lastUsage: unknown;
 } | null;
+
+function resolveAgentPreferenceScope(input: {
+  workspaceId: string | null | undefined;
+  projectKey: string | null | undefined;
+}): FormPreferenceScope | null {
+  const workspaceId = input.workspaceId?.trim() || null;
+  const projectKey = input.projectKey?.trim() || null;
+  if (!workspaceId && !projectKey) {
+    return null;
+  }
+  return { workspaceId, projectKey };
+}
 
 function selectAgentControlsSlice(
   state: ReturnType<typeof useSessionStore.getState>,
@@ -331,9 +347,16 @@ function selectAgentControlsSlice(
   if (!currentAgent) {
     return null;
   }
+  const workspaceId = currentAgent.workspaceId ?? null;
+  const workspace = workspaceId
+    ? (state.sessions[serverId]?.workspaces.get(workspaceId) ?? null)
+    : null;
+  const projectKey = workspace?.projectId ?? workspace?.project?.projectKey ?? null;
   return {
     provider: currentAgent.provider,
     cwd: currentAgent.cwd,
+    workspaceId,
+    projectKey,
     runtimeModelId: currentAgent.runtimeInfo?.model ?? null,
     model: currentAgent.model,
     features: currentAgent.features,
@@ -1420,9 +1443,11 @@ export const AgentControls = memo(function AgentControls({
   const favoriteKeys = useMemo(
     () =>
       new Set(
-        (preferences.favoriteModels ?? []).map((favorite) => buildFavoriteModelKey(favorite)),
+        resolveFavoriteModels(preferences, serverId).map((favorite) =>
+          buildFavoriteModelKey(favorite),
+        ),
       ),
-    [preferences.favoriteModels],
+    [preferences, serverId],
   );
 
   const thinkingOptions = useMemo<AgentControlOption[]>(() => {
@@ -1434,6 +1459,14 @@ export const AgentControls = memo(function AgentControls({
 
   const agentProvider = agent?.provider;
   const activeModelId = modelSelection.activeModelId;
+  const preferenceScope = useMemo(
+    () =>
+      resolveAgentPreferenceScope({
+        workspaceId: agent?.workspaceId,
+        projectKey: agent?.projectKey,
+      }),
+    [agent?.projectKey, agent?.workspaceId],
+  );
 
   const handleSelectModel = useCallback(
     (modelId: string) => {
@@ -1441,12 +1474,13 @@ export const AgentControls = memo(function AgentControls({
         return;
       }
       void updatePreferences((current) =>
-        mergeProviderPreferences({
+        mergeProviderPreferencesWithScope({
           preferences: current,
           provider: agentProvider,
           updates: {
             model: modelId,
           },
+          scope: preferenceScope,
         }),
       ).catch((error) => {
         console.warn("[AgentControls] persist model preference failed", error);
@@ -1456,18 +1490,18 @@ export const AgentControls = memo(function AgentControls({
         toast.error(toErrorMessage(error));
       });
     },
-    [agentId, agentProvider, client, toast, updatePreferences],
+    [agentId, agentProvider, client, preferenceScope, toast, updatePreferences],
   );
 
   const handleToggleFavoriteModel = useCallback(
     (provider: string, modelId: string) => {
       void updatePreferences((current) =>
-        toggleFavoriteModel({ preferences: current, provider, modelId }),
+        toggleFavoriteModel({ preferences: current, provider, modelId, serverId }),
       ).catch((error) => {
         console.warn("[AgentControls] toggle favorite model failed", error);
       });
     },
-    [updatePreferences],
+    [serverId, updatePreferences],
   );
 
   const handleSelectThinkingOption = useCallback(
@@ -1477,7 +1511,7 @@ export const AgentControls = memo(function AgentControls({
       }
       if (activeModelId) {
         void updatePreferences((current) =>
-          mergeProviderPreferences({
+          mergeProviderPreferencesWithScope({
             preferences: current,
             provider: agentProvider,
             updates: {
@@ -1486,6 +1520,7 @@ export const AgentControls = memo(function AgentControls({
                 [activeModelId]: thinkingOptionId,
               },
             },
+            scope: preferenceScope,
           }),
         ).catch((error) => {
           console.warn("[AgentControls] persist thinking preference failed", error);
@@ -1499,7 +1534,7 @@ export const AgentControls = memo(function AgentControls({
           toast.error(toErrorMessage(error));
         });
     },
-    [activeModelId, agentId, agentProvider, client, toast, updatePreferences],
+    [activeModelId, agentId, agentProvider, client, preferenceScope, toast, updatePreferences],
   );
 
   const handleSetFeature = useCallback(
@@ -1508,7 +1543,7 @@ export const AgentControls = memo(function AgentControls({
         return;
       }
       void updatePreferences((current) =>
-        mergeProviderPreferences({
+        mergeProviderPreferencesWithScope({
           preferences: current,
           provider: agentProvider,
           updates: {
@@ -1516,6 +1551,7 @@ export const AgentControls = memo(function AgentControls({
               [featureId]: value,
             },
           },
+          scope: preferenceScope,
         }),
       ).catch((error) => {
         console.warn("[AgentControls] persist feature preference failed", error);
@@ -1525,7 +1561,7 @@ export const AgentControls = memo(function AgentControls({
         toast.error(toErrorMessage(error));
       });
     },
-    [agentId, agentProvider, client, toast, updatePreferences],
+    [agentId, agentProvider, client, preferenceScope, toast, updatePreferences],
   );
 
   const handleModelSelectorOpen = useCallback(() => {
@@ -1619,9 +1655,11 @@ export function DraftAgentControls({
   const favoriteKeys = useMemo(
     () =>
       new Set(
-        (preferences.favoriteModels ?? []).map((favorite) => buildFavoriteModelKey(favorite)),
+        resolveFavoriteModels(preferences, modelSelectorServerId).map((favorite) =>
+          buildFavoriteModelKey(favorite),
+        ),
       ),
-    [preferences.favoriteModels],
+    [modelSelectorServerId, preferences],
   );
 
   const effectiveSelectedThinkingOption =
@@ -1639,12 +1677,17 @@ export function DraftAgentControls({
   const handleToggleFavorite = useCallback(
     (provider: string, modelId: string) => {
       void updatePreferences((current) =>
-        toggleFavoriteModel({ preferences: current, provider, modelId }),
+        toggleFavoriteModel({
+          preferences: current,
+          provider,
+          modelId,
+          serverId: modelSelectorServerId,
+        }),
       ).catch((error) => {
         console.warn("[DraftAgentControls] toggle favorite model failed", error);
       });
     },
-    [updatePreferences],
+    [modelSelectorServerId, updatePreferences],
   );
 
   const draftModeChip = useMemo(

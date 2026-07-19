@@ -39,12 +39,21 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { FileDropZone } from "@/components/file-drop/file-drop-zone";
+import { useFileDrop } from "@/components/file-drop/use-file-drop";
+import type { DroppedItem } from "@/components/file-drop/types";
 import { useFileExplorerActions } from "@/hooks/use-file-explorer-actions";
 import { buildWorkspaceExplorerStateKey } from "@/hooks/use-file-explorer-actions";
 import { usePanelStore, type SortOption } from "@/stores/panel-store";
 import { formatTimeAgo } from "@/utils/time";
 import { buildAbsoluteExplorerPath } from "@/utils/explorer-paths";
 import { filterVisibleExplorerEntries, isHiddenExplorerPath } from "@/file-explorer/visibility";
+import {
+  droppedItemsToExplorerFiles,
+  resolveExplorerDropDirectoryPath,
+} from "@/file-explorer/drop-upload";
+import { useToast } from "@/contexts/toast-context";
+import { toErrorMessage } from "@/utils/error-messages";
 
 const SORT_OPTIONS: { value: SortOption }[] = [
   { value: "name" },
@@ -221,6 +230,7 @@ export function FileExplorerPane({
   onOpenFile,
 }: FileExplorerPaneProps) {
   const { t } = useTranslation();
+  const client = useSessionStore((state) => state.sessions[serverId]?.client ?? null);
 
   const daemons = useHosts();
   const daemonProfile = useMemo(
@@ -394,6 +404,10 @@ export function FileExplorerPane({
     void refetchExplorer();
   }, [refetchExplorer]);
 
+  const handleDropUploaded = useCallback(() => {
+    void refetchExplorer();
+  }, [refetchExplorer]);
+
   const sortLabels = useMemo(
     () => ({
       name: t("workspace.fileExplorer.sort.name"),
@@ -466,7 +480,15 @@ export function FileExplorerPane({
   }
 
   return (
-    <View style={styles.container}>
+    <FileDropZone style={styles.container}>
+      <FileExplorerDropTarget
+        disabled={!client}
+        client={client}
+        cwd={normalizedWorkspaceRoot}
+        directories={directories}
+        selectedEntryPath={selectedEntryPath}
+        onUploaded={handleDropUploaded}
+      />
       <FileExplorerPaneContent
         error={error}
         showInitialLoading={showInitialLoading}
@@ -484,8 +506,111 @@ export function FileExplorerPane({
         sortTriggerStyle={sortTriggerStyle}
         iconButtonStyle={iconButtonStyle}
       />
-    </View>
+    </FileDropZone>
   );
+}
+
+interface FileExplorerDropClient {
+  writeExplorerFile: (input: {
+    cwd: string;
+    directoryPath?: string;
+    fileName: string;
+    mimeType: string;
+    bytes: Uint8Array;
+  }) => Promise<{ error: string | null }>;
+}
+
+function FileExplorerDropTarget({
+  disabled,
+  client,
+  cwd,
+  directories,
+  selectedEntryPath,
+  onUploaded,
+}: {
+  disabled: boolean;
+  client: FileExplorerDropClient | null;
+  cwd: string;
+  directories: Map<string, { entries: ExplorerEntry[] }>;
+  selectedEntryPath: string | null;
+  onUploaded: () => void;
+}) {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const isUploadingDropRef = useRef(false);
+
+  const handleExplorerDrop = useCallback(
+    async (items: DroppedItem[]) => {
+      if (disabled || isUploadingDropRef.current) {
+        return;
+      }
+      if (!client) {
+        toast.error(t("workspace.fileExplorer.drop.hostDisconnected"));
+        return;
+      }
+
+      let files;
+      try {
+        files = await droppedItemsToExplorerFiles(items);
+      } catch (error) {
+        toast.error(toErrorMessage(error));
+        return;
+      }
+      if (files.length === 0) {
+        return;
+      }
+
+      const directoryPath = resolveExplorerDropDirectoryPath({
+        selectedEntryPath,
+        directories,
+      });
+
+      isUploadingDropRef.current = true;
+      toast.show(
+        t("workspace.fileExplorer.drop.uploading", {
+          count: files.length,
+        }),
+      );
+      try {
+        for (const file of files) {
+          const response = await client.writeExplorerFile({
+            cwd,
+            directoryPath,
+            fileName: file.fileName,
+            mimeType: file.mimeType,
+            bytes: file.bytes,
+          });
+          if (response.error) {
+            throw new Error(response.error);
+          }
+        }
+        toast.show(
+          t("workspace.fileExplorer.drop.uploaded", {
+            count: files.length,
+          }),
+          { variant: "success" },
+        );
+        onUploaded();
+      } catch (error) {
+        toast.error(toErrorMessage(error));
+      } finally {
+        isUploadingDropRef.current = false;
+      }
+    },
+    [client, cwd, directories, disabled, onUploaded, selectedEntryPath, t, toast],
+  );
+
+  useFileDrop(
+    {
+      onFiles: () => undefined,
+      onGenericFiles: (items) => {
+        void handleExplorerDrop(items);
+      },
+    },
+    { disabled },
+  );
+
+  return null;
 }
 
 interface FileExplorerPaneContentProps {

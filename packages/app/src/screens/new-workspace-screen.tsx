@@ -1047,9 +1047,13 @@ function buildComposerConfig(input: {
   workspaceDirectory: string | null;
   sourceDirectory: string | null;
   initialSetup?: WorkspaceDraftTabSetup | null;
+  projectKey?: string | null;
 }): Parameters<typeof useAgentInputDraft>[0]["composer"] {
-  const { serverId, isConnected, workspaceDirectory, sourceDirectory, initialSetup } = input;
+  const { serverId, isConnected, workspaceDirectory, sourceDirectory, initialSetup, projectKey } =
+    input;
   const workingDir = workspaceDirectory || sourceDirectory || undefined;
+  const preferenceScope =
+    typeof projectKey === "string" && projectKey.length > 0 ? { projectKey } : null;
   return {
     initialServerId: serverId || null,
     initialValues: buildComposerInitialValues({ workingDir, initialSetup }),
@@ -1057,7 +1061,17 @@ function buildComposerConfig(input: {
     isVisible: true,
     onlineServerIds: isConnected && serverId ? [serverId] : [],
     lockedWorkingDir: workingDir,
+    preferenceScope,
   };
+}
+
+function resolveSelectedProjectKey(
+  project: { projectKey: string } | null | undefined,
+): string | null {
+  if (!project) {
+    return null;
+  }
+  return project.projectKey;
 }
 
 function collectAttachedPrNumbers(attachments: ReadonlyArray<UserComposerAttachment>): Set<number> {
@@ -1715,6 +1729,7 @@ export function NewWorkspaceScreen({
       workspaceDirectory: workspace?.workspaceDirectory ?? null,
       sourceDirectory: selectedSourceDirectory,
       initialSetup: forkDraftSetup?.setup,
+      projectKey: resolveSelectedProjectKey(selectedProject),
     }),
   });
   const composerState = chatDraft.composerState;

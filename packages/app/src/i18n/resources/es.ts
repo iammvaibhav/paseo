@@ -127,7 +127,6 @@ export const es: TranslationResources = {
       initialPromptRequired: "Se requiere aviso inicial",
       alreadyLoading: "Ya cargando",
       uploadFailed: "Failed to upload file",
-      fileTooLarge: "{{fileName}} is too large (max {{size}})",
     },
     clientCommands: {
       archiveAgent: "Archivar el agente actual",
@@ -396,6 +395,11 @@ export const es: TranslationResources = {
       states: {
         unavailable: "Workspaceno está disponible",
         loading: "Cargando archivos...",
+      },
+      drop: {
+        hostDisconnected: "Host is disconnected",
+        uploading: "Uploading {{count}} file(s)…",
+        uploaded: "Uploaded {{count}} file(s)",
       },
       errors: {
         failedToListDirectory: "No se pudo listar el directorio",

@@ -832,8 +832,6 @@ interface ComposerProps {
   isCompactLayout?: boolean;
 }
 
-const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
-
 const EMPTY_ARRAY: readonly QueuedMessage[] = [];
 const StableMessageInput = memo(MessageInput);
 
@@ -1466,14 +1464,6 @@ export function Composer({
       if (files.length === 0) return;
       if (!client) {
         toastErrorRef.current(t("composer.errors.daemonClientDisconnected"));
-        return;
-      }
-
-      const oversized = files.find((f) => f.bytes.byteLength > MAX_FILE_SIZE_BYTES);
-      if (oversized) {
-        toastErrorRef.current(
-          t("composer.errors.fileTooLarge", { size: "50MB", fileName: oversized.fileName }),
-        );
         return;
       }
 

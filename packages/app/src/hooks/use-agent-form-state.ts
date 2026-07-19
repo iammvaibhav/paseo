@@ -15,7 +15,9 @@ import {
 import { useProvidersSnapshot } from "./use-providers-snapshot";
 import {
   useFormPreferences,
-  mergeProviderPreferences,
+  mergeProviderPreferencesWithScope,
+  resolveEffectiveFormPreferences,
+  type FormPreferenceScope,
   type FormPreferences,
 } from "./use-form-preferences";
 import {
@@ -37,6 +39,7 @@ import {
 } from "@/provider-selection/resolve-agent-form";
 
 export type { FormInitialValues } from "@/provider-selection/resolve-agent-form";
+export type { FormPreferenceScope } from "./use-form-preferences";
 
 export interface UseAgentFormStateOptions {
   initialServerId?: string | null;
@@ -45,6 +48,8 @@ export interface UseAgentFormStateOptions {
   isCreateFlow?: boolean;
   isTargetDaemonReady?: boolean;
   onlineServerIds?: string[];
+  /** Workspace/project scope for remembering the last selected model. */
+  preferenceScope?: FormPreferenceScope | null;
 }
 
 export interface UseAgentFormStateResult {
@@ -175,15 +180,16 @@ async function persistProviderPreferences(input: {
   provider: AgentProvider;
   formState: FormState;
   availableModels: AgentModelDefinition[] | null;
+  preferenceScope?: FormPreferenceScope | null;
   updatePreferences: (
     updates: Partial<FormPreferences> | ((current: FormPreferences) => FormPreferences),
   ) => Promise<void>;
 }): Promise<void> {
-  const { provider, formState, availableModels, updatePreferences } = input;
+  const { provider, formState, availableModels, preferenceScope, updatePreferences } = input;
   const resolvedModel = resolveEffectiveModel(availableModels, formState.model);
   const modelId = resolvedModel?.id ?? formState.model;
   await updatePreferences((current) =>
-    mergeProviderPreferences({
+    mergeProviderPreferencesWithScope({
       preferences: current,
       provider,
       updates: {
@@ -193,8 +199,15 @@ async function persistProviderPreferences(input: {
           ? { thinkingByModel: { [modelId]: formState.thinkingOptionId } }
           : {}),
       },
+      scope: preferenceScope,
     }),
   );
+}
+
+function buildPreferenceScopeKey(scope: FormPreferenceScope | null | undefined): string {
+  const workspaceId = scope?.workspaceId?.trim() || "";
+  const projectKey = scope?.projectKey?.trim() || "";
+  return `${workspaceId}\n${projectKey}`;
 }
 
 export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAgentFormStateResult {
@@ -205,9 +218,22 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
     isCreateFlow = true,
     isTargetDaemonReady: _isTargetDaemonReady = true,
     onlineServerIds = [],
+    preferenceScope = null,
   } = options;
 
   const { preferences, isLoading: isPreferencesLoading, updatePreferences } = useFormPreferences();
+  const effectivePreferences = useMemo(
+    () => resolveEffectiveFormPreferences(preferences, preferenceScope),
+    [preferences, preferenceScope],
+  );
+  const preferenceScopeKey = useMemo(
+    () => buildPreferenceScopeKey(preferenceScope),
+    [preferenceScope],
+  );
+  const preferenceScopeRef = useRef(preferenceScope);
+  useEffect(() => {
+    preferenceScopeRef.current = preferenceScope;
+  }, [preferenceScope]);
 
   const daemons = useHosts();
 
@@ -315,8 +341,8 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
     [initialValues, initialServerId],
   );
   const resolutionIntentKey = useMemo(
-    () => buildResolutionIntentKey(combinedInitialValues),
-    [combinedInitialValues],
+    () => `${buildResolutionIntentKey(combinedInitialValues)}\n${preferenceScopeKey}`,
+    [combinedInitialValues, preferenceScopeKey],
   );
 
   useEffect(() => {
@@ -346,17 +372,17 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
     dispatch({
       type: "COMPLETE_RESOLUTION",
       initialValues: combinedInitialValues,
-      preferences,
+      preferences: effectivePreferences,
       providerModelsByProvider: snapshotProviderModelsByProvider,
       allowedProviderMap: snapshotResolvableProviderDefinitionMap,
     });
   }, [
     combinedInitialValues,
+    effectivePreferences,
     formState.serverId,
     isCreateFlow,
     isPreferencesLoading,
     isVisible,
-    preferences,
     resolution.status,
     snapshotEntries,
     snapshotProviderModelsByProvider,
@@ -402,7 +428,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
       }
       const providerModels = allProviderModels.get(provider) ?? null;
       const providerDef = selectableProviderDefinitionMap.get(provider);
-      const providerPrefs = preferences?.providerPreferences?.[provider];
+      const providerPrefs = effectivePreferences?.providerPreferences?.[provider];
 
       dispatch({
         type: "SET_PROVIDER_FROM_USER",
@@ -411,11 +437,18 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
         providerDef,
         providerPrefs,
       });
-      void updatePreferences({ provider });
+      void updatePreferences((current) =>
+        mergeSelectedComposerPreferences({
+          preferences: current,
+          provider,
+          updates: {},
+          scope: preferenceScopeRef.current,
+        }),
+      );
     },
     [
       allProviderModels,
-      preferences?.providerPreferences,
+      effectivePreferences?.providerPreferences,
       selectableProviderDefinitionMap,
       updatePreferences,
     ],
@@ -428,7 +461,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
       }
       const providerDef = selectableProviderDefinitionMap.get(provider);
       const providerModels = allProviderModels.get(provider) ?? null;
-      const providerPrefs = preferences?.providerPreferences?.[provider];
+      const providerPrefs = effectivePreferences?.providerPreferences?.[provider];
       const normalizedModelId = normalizeSelectedModelId(modelId);
       const nextModelId = normalizedModelId || resolveDefaultModelId(providerModels);
 
@@ -447,12 +480,13 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
           updates: {
             model: nextModelId || undefined,
           },
+          scope: preferenceScopeRef.current,
         }),
       );
     },
     [
       allProviderModels,
-      preferences?.providerPreferences,
+      effectivePreferences?.providerPreferences,
       selectableProviderDefinitionMap,
       updatePreferences,
     ],
@@ -474,6 +508,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
             updates: {
               mode: modeId || undefined,
             },
+            scope: preferenceScopeRef.current,
           }),
         );
       }
@@ -495,6 +530,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
             updates: {
               model: nextModelId || undefined,
             },
+            scope: preferenceScopeRef.current,
           }),
         );
       }
@@ -516,6 +552,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
                 [modelId]: thinkingOptionId,
               },
             },
+            scope: preferenceScopeRef.current,
           }),
         );
       }
@@ -554,6 +591,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
       provider: formState.provider,
       formState,
       availableModels,
+      preferenceScope: preferenceScopeRef.current,
       updatePreferences,
     });
   }, [availableModels, formState, updatePreferences]);

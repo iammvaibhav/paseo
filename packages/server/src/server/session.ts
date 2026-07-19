@@ -1754,6 +1754,9 @@ export class Session {
       case "file.upload.request":
         this.workspaceFilesSession.handleFileUploadRequest(msg);
         return undefined;
+      case "file.explorer.write.request":
+        this.workspaceFilesSession.handleFileExplorerWriteRequest(msg);
+        return undefined;
       default:
         return undefined;
     }

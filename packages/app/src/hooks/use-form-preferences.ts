@@ -5,9 +5,14 @@ import {
   DEFAULT_FORM_PREFERENCES,
   isFavoriteModel,
   mergeProviderPreferences,
+  mergeProviderPreferencesWithScope,
+  normalizeFormPreferenceScope,
+  resolveEffectiveFormPreferences,
+  resolveFavoriteModels,
   toggleFavoriteModel,
   type FavoriteModelPreference,
   type FavoriteModelRow,
+  type FormPreferenceScope,
   type FormPreferences,
   type ProviderPreferences,
 } from "@/create-agent-preferences/preferences";
@@ -18,9 +23,24 @@ import {
 
 const FORM_PREFERENCES_QUERY_KEY = ["form-preferences"];
 
-export type { FavoriteModelPreference, FavoriteModelRow, FormPreferences, ProviderPreferences };
+export type {
+  FavoriteModelPreference,
+  FavoriteModelRow,
+  FormPreferenceScope,
+  FormPreferences,
+  ProviderPreferences,
+};
 
-export { buildFavoriteModelKey, isFavoriteModel, mergeProviderPreferences, toggleFavoriteModel };
+export {
+  buildFavoriteModelKey,
+  isFavoriteModel,
+  mergeProviderPreferences,
+  mergeProviderPreferencesWithScope,
+  normalizeFormPreferenceScope,
+  resolveEffectiveFormPreferences,
+  resolveFavoriteModels,
+  toggleFavoriteModel,
+};
 
 async function loadFormPreferences(): Promise<FormPreferences> {
   return createAgentPreferencesService.load();

@@ -127,7 +127,6 @@ export const ar: TranslationResources = {
       initialPromptRequired: "مطلوب موجه الأولي",
       alreadyLoading: "جارٍ التحميل بالفعل",
       uploadFailed: "Failed to upload file",
-      fileTooLarge: "{{fileName}} is too large (max {{size}})",
     },
     clientCommands: {
       archiveAgent: "أرشفة الوكيل الحالي",
@@ -392,6 +391,11 @@ export const ar: TranslationResources = {
       states: {
         unavailable: "Workspace غير متوفر",
         loading: "جارٍ تحميل الملفات...",
+      },
+      drop: {
+        hostDisconnected: "Host is disconnected",
+        uploading: "Uploading {{count}} file(s)…",
+        uploaded: "Uploaded {{count}} file(s)",
       },
       errors: {
         failedToListDirectory: "فشل في سرد ​​الدليل",

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -268,5 +268,53 @@ describe("WorkspaceFilesSession", () => {
     expect(readFileSync(join(paseoHome, "uploads", "upload_req-upload", "notes.txt"), "utf8")).toBe(
       "hello world",
     );
+  });
+
+  test("writes a dropped file into a scoped explorer directory", async () => {
+    const { subsystem, emitted } = makeSubsystem();
+    const workspace = makeDir("workspace-files-write-");
+    mkdirSync(join(workspace, "src"), { recursive: true });
+
+    subsystem.handleFileExplorerWriteRequest({
+      type: "file.explorer.write.request",
+      cwd: workspace,
+      directoryPath: "src",
+      fileName: "notes.txt",
+      mimeType: "text/plain",
+      size: 11,
+      modifiedAt: "2026-05-02T00:00:00.000Z",
+      requestId: "req-write",
+    });
+    await subsystem.handleFileTransferFrame(
+      uploadFrame({
+        opcode: FileTransferOpcode.FileBegin,
+        requestId: "req-write",
+        metadata: {
+          mime: "text/plain",
+          size: 11,
+          encoding: "binary",
+          modifiedAt: "2026-05-02T00:00:00.000Z",
+          fileName: "notes.txt",
+        },
+      }),
+    );
+    await subsystem.handleFileTransferFrame(
+      uploadFrame({
+        opcode: FileTransferOpcode.FileChunk,
+        requestId: "req-write",
+        payload: new TextEncoder().encode("hello world"),
+      }),
+    );
+    await subsystem.handleFileTransferFrame(
+      uploadFrame({ opcode: FileTransferOpcode.FileEnd, requestId: "req-write" }),
+    );
+
+    const message = emitted.find((entry) => entry.type === "file.explorer.write.response");
+    if (message?.type !== "file.explorer.write.response") {
+      throw new Error("expected a file.explorer.write.response message");
+    }
+    expect(message.payload.error).toBeNull();
+    expect(message.payload.path).toBe("src/notes.txt");
+    expect(readFileSync(join(workspace, "src", "notes.txt"), "utf8")).toBe("hello world");
   });
 });

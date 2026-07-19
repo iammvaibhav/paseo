@@ -127,7 +127,6 @@ export const ru: TranslationResources = {
       initialPromptRequired: "Требуется начальное приглашение",
       alreadyLoading: "Уже загружается",
       uploadFailed: "Failed to upload file",
-      fileTooLarge: "{{fileName}} is too large (max {{size}})",
     },
     clientCommands: {
       archiveAgent: "Архивировать текущего агента",
@@ -395,6 +394,11 @@ export const ru: TranslationResources = {
       states: {
         unavailable: "Workspace недоступен",
         loading: "Загрузка файлов...",
+      },
+      drop: {
+        hostDisconnected: "Host is disconnected",
+        uploading: "Uploading {{count}} file(s)…",
+        uploaded: "Uploaded {{count}} file(s)",
       },
       errors: {
         failedToListDirectory: "Не удалось указать каталог",

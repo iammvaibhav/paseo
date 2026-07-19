@@ -5,7 +5,8 @@ import type {
   ProviderSnapshotEntry,
 } from "@getpaseo/protocol/agent-types";
 import {
-  mergeProviderPreferences,
+  mergeProviderPreferencesWithScope,
+  type FormPreferenceScope,
   type FormPreferences,
   type ProviderPreferences,
 } from "@/hooks/use-form-preferences";
@@ -178,11 +179,13 @@ export function mergeSelectedComposerPreferences(args: {
   preferences: FormPreferences;
   provider: AgentProvider;
   updates: Partial<ProviderPreferences>;
+  scope?: FormPreferenceScope | null;
 }): FormPreferences {
-  return mergeProviderPreferences({
+  return mergeProviderPreferencesWithScope({
     preferences: args.preferences,
     provider: args.provider,
     updates: args.updates,
+    scope: args.scope,
   });
 }
 

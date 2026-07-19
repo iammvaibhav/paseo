@@ -5,6 +5,7 @@ import type { DraftCommandConfig } from "@/hooks/use-agent-commands-query";
 import {
   useAgentFormState,
   type CreateAgentInitialValues,
+  type FormPreferenceScope,
   type UseAgentFormStateResult,
 } from "@/hooks/use-agent-form-state";
 import { useDraftAgentFeatures } from "@/hooks/use-draft-agent-features";
@@ -34,6 +35,7 @@ interface AgentInputDraftComposerOptions {
   isVisible?: boolean;
   onlineServerIds?: string[];
   lockedWorkingDir?: string;
+  preferenceScope?: FormPreferenceScope | null;
 }
 
 interface UseAgentInputDraftInput {
@@ -68,6 +70,7 @@ export function useAgentInputDraft(input: UseAgentInputDraftInput): AgentInputDr
     isVisible: composerOptions?.isVisible ?? false,
     isCreateFlow: true,
     onlineServerIds: composerOptions?.onlineServerIds ?? [],
+    preferenceScope: composerOptions?.preferenceScope ?? null,
   });
   const draftKey = useMemo(
     () =>

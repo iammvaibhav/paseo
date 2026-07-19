@@ -283,6 +283,32 @@ describe("mergeSelectedComposerPreferences", () => {
       },
     });
   });
+
+  it("also writes scoped workspace and project preferences when a scope is provided", () => {
+    expect(
+      mergeSelectedComposerPreferences({
+        preferences: {},
+        provider: "codex",
+        updates: { model: "gpt-5.4" },
+        scope: { workspaceId: "ws-1", projectKey: "proj-a" },
+      }),
+    ).toEqual({
+      provider: "codex",
+      providerPreferences: { codex: { model: "gpt-5.4" } },
+      byProject: {
+        "proj-a": {
+          provider: "codex",
+          providerPreferences: { codex: { model: "gpt-5.4" } },
+        },
+      },
+      byWorkspace: {
+        "ws-1": {
+          provider: "codex",
+          providerPreferences: { codex: { model: "gpt-5.4" } },
+        },
+      },
+    });
+  });
 });
 
 describe("buildProviderDefinitions", () => {

@@ -339,6 +339,7 @@ export function WorkspaceDraftAgentTab({
   const workspaceFields = useWorkspaceFields(serverId, workspaceId, (w) => ({
     workspaceDirectory: w.workspaceDirectory,
     id: w.id,
+    projectId: w.projectId,
   }));
   const workspaceDirectory = workspaceFields?.workspaceDirectory || null;
   const draftSetup = initialSetup ?? null;
@@ -351,6 +352,13 @@ export function WorkspaceDraftAgentTab({
     initialSetup: draftSetup,
   });
   const onlineServerIds = resolveOnlineServerIds({ isConnected, serverId });
+  const preferenceScope = useMemo(
+    () => ({
+      workspaceId,
+      projectKey: workspaceFields?.projectId ?? null,
+    }),
+    [workspaceId, workspaceFields?.projectId],
+  );
   const draftStoreKey = useMemo(
     () =>
       buildDraftStoreKey({
@@ -369,6 +377,7 @@ export function WorkspaceDraftAgentTab({
       isVisible: true,
       onlineServerIds,
       lockedWorkingDir: draftWorkingDirectory ?? undefined,
+      preferenceScope,
     },
   });
   const composerState = draftInput.composerState;

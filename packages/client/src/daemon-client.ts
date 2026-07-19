@@ -24,6 +24,7 @@ import type {
   CreatePaseoWorktreeRequest,
   FileDownloadTokenResponse,
   FileUploadResponse,
+  FileExplorerWriteResponse,
   FileExplorerResponse,
   FetchAgentTimelineResponseMessage,
   AgentForkContextResponseMessage,
@@ -413,6 +414,18 @@ export interface FileUploadInput {
   chunkSize?: number;
 }
 export type FileUploadResult = FileUploadResponse["payload"];
+export type FileExplorerWriteResult = FileExplorerWriteResponse["payload"];
+
+export interface FileExplorerWriteInput {
+  cwd: string;
+  directoryPath?: string;
+  fileName: string;
+  mimeType: string;
+  bytes: Uint8Array | ArrayBuffer;
+  modifiedAt?: string;
+  requestId?: string;
+  chunkSize?: number;
+}
 type FileDownloadTokenPayload = FileDownloadTokenResponse["payload"];
 type ListProviderFeaturesPayload = ListProviderFeaturesResponseMessage["payload"];
 type ListProviderModelsPayload = ListProviderModelsResponseMessage["payload"];
@@ -4144,6 +4157,69 @@ export class DaemonClient {
         requestId: resolvedRequestId,
       },
       responseType: "file.upload.response",
+      options: { skipQueue: true },
+    });
+
+    this.sendBinaryFrame(
+      encodeFileTransferFrame({
+        opcode: FileTransferOpcode.FileBegin,
+        requestId: resolvedRequestId,
+        metadata: {
+          mime: input.mimeType,
+          size: bytes.byteLength,
+          encoding: "binary",
+          modifiedAt,
+          fileName: input.fileName,
+        },
+      }),
+    );
+
+    const chunkSize = input.chunkSize ?? 1024 * 1024;
+    for (let offset = 0; offset < bytes.byteLength; offset += chunkSize) {
+      this.sendBinaryFrame(
+        encodeFileTransferFrame({
+          opcode: FileTransferOpcode.FileChunk,
+          requestId: resolvedRequestId,
+          payload: bytes.subarray(offset, Math.min(offset + chunkSize, bytes.byteLength)),
+        }),
+      );
+    }
+
+    this.sendBinaryFrame(
+      encodeFileTransferFrame({
+        opcode: FileTransferOpcode.FileEnd,
+        requestId: resolvedRequestId,
+      }),
+    );
+
+    return responsePromise;
+  }
+
+  async writeExplorerFile(input: FileExplorerWriteInput): Promise<FileExplorerWriteResult> {
+    const bytes = asUint8Array(input.bytes);
+    if (!bytes) {
+      throw new Error("File bytes are required.");
+    }
+    const cwd = input.cwd.trim();
+    if (!cwd) {
+      throw new Error("cwd is required.");
+    }
+    const resolvedRequestId = this.createRequestId(input.requestId);
+    const modifiedAt = input.modifiedAt ?? new Date().toISOString();
+    const directoryPath = input.directoryPath?.trim() || ".";
+    const responsePromise = this.sendCorrelatedRequest({
+      requestId: resolvedRequestId,
+      message: {
+        type: "file.explorer.write.request",
+        cwd,
+        directoryPath,
+        fileName: input.fileName,
+        mimeType: input.mimeType,
+        size: bytes.byteLength,
+        modifiedAt,
+        requestId: resolvedRequestId,
+      },
+      responseType: "file.explorer.write.response",
       options: { skipQueue: true },
     });
 

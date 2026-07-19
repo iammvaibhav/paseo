@@ -8,6 +8,7 @@ import {
 import type {
   FileDownloadTokenRequest,
   FileExplorerRequest,
+  FileExplorerWriteRequest,
   FileUploadRequest,
   SessionInboundMessage,
   SessionOutboundMessage,
@@ -20,6 +21,7 @@ import {
   readExplorerFile,
   readExplorerFileBytes,
 } from "../../file-explorer/service.js";
+import { FileExplorerWriteStore } from "../../file-explorer/write-store.js";
 import { getProjectIcon } from "../../../utils/project-icon.js";
 
 /**
@@ -53,12 +55,14 @@ export class WorkspaceFilesSession {
   private readonly downloadTokenStore: DownloadTokenStore;
   private readonly logger: pino.Logger;
   private readonly fileUploads: FileUploadStore;
+  private readonly fileWrites: FileExplorerWriteStore;
 
   constructor(options: WorkspaceFilesSessionOptions) {
     this.host = options.host;
     this.downloadTokenStore = options.downloadTokenStore;
     this.logger = options.logger;
     this.fileUploads = new FileUploadStore({ paseoHome: options.paseoHome });
+    this.fileWrites = new FileExplorerWriteStore();
   }
 
   async handleFileExplorerRequest(request: FileExplorerRequest): Promise<void> {
@@ -175,7 +179,19 @@ export class WorkspaceFilesSession {
     this.fileUploads.beginUpload(request);
   }
 
+  handleFileExplorerWriteRequest(request: FileExplorerWriteRequest): void {
+    this.fileWrites.beginWrite(request);
+  }
+
   async handleFileTransferFrame(frame: FileTransferFrame): Promise<void> {
+    if (this.fileWrites.hasPending(frame.requestId)) {
+      const writeResponse = await this.fileWrites.receiveFrame(frame);
+      if (writeResponse) {
+        this.host.emit(writeResponse);
+      }
+      return;
+    }
+
     const response = await this.fileUploads.receiveFrame(frame);
     if (response) {
       this.host.emit(response);

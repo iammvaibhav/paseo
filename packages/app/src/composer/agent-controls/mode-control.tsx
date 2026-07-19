@@ -29,7 +29,11 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Shortcut } from "@/components/ui/shortcut";
 import { useSessionStore } from "@/stores/session-store";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
-import { mergeProviderPreferences, useFormPreferences } from "@/hooks/use-form-preferences";
+import {
+  mergeProviderPreferencesWithScope,
+  useFormPreferences,
+  type FormPreferenceScope,
+} from "@/hooks/use-form-preferences";
 import { resolveProviderDefinition } from "@/utils/provider-definitions";
 import { useToast } from "@/contexts/toast-context";
 import { useIsCompactFormFactor } from "@/constants/layout";
@@ -301,9 +305,16 @@ export const AgentModeControl = memo(function AgentModeControl({
     useShallow((state) => {
       const agent = state.sessions[serverId]?.agents?.get(agentId);
       if (!agent) return null;
+      const workspaceId = agent.workspaceId ?? null;
+      const workspace = workspaceId
+        ? (state.sessions[serverId]?.workspaces.get(workspaceId) ?? null)
+        : null;
+      const projectKey = workspace?.projectId ?? workspace?.project?.projectKey ?? null;
       return {
         provider: agent.provider,
         cwd: agent.cwd,
+        workspaceId,
+        projectKey,
         currentModeId: agent.currentModeId,
       };
     }),
@@ -318,6 +329,15 @@ export const AgentModeControl = memo(function AgentModeControl({
   const toast = useToast();
   const { entries: snapshotEntries } = useProvidersSnapshot(serverId, { cwd: slice?.cwd });
 
+  const preferenceScope = useMemo<FormPreferenceScope | null>(() => {
+    const workspaceId = slice?.workspaceId?.trim() || null;
+    const projectKey = slice?.projectKey?.trim() || null;
+    if (!workspaceId && !projectKey) {
+      return null;
+    }
+    return { workspaceId, projectKey };
+  }, [slice?.projectKey, slice?.workspaceId]);
+
   const providerDefinitions = useMemo<AgentProviderDefinition[]>(() => {
     if (!slice?.provider) return [];
     const definition = resolveProviderDefinition(slice.provider, snapshotEntries);
@@ -328,12 +348,13 @@ export const AgentModeControl = memo(function AgentModeControl({
     (modeId: string) => {
       if (!client || !slice?.provider) return;
       void updatePreferences((current) =>
-        mergeProviderPreferences({
+        mergeProviderPreferencesWithScope({
           preferences: current,
           provider: slice.provider,
           updates: {
             mode: modeId || undefined,
           },
+          scope: preferenceScope,
         }),
       ).catch((error) => {
         console.warn("[AgentModeControl] persist mode preference failed", error);
@@ -346,7 +367,7 @@ export const AgentModeControl = memo(function AgentModeControl({
           toast.error(toErrorMessage(error));
         });
     },
-    [agentId, client, slice?.provider, toast, updatePreferences],
+    [agentId, client, preferenceScope, slice?.provider, toast, updatePreferences],
   );
 
   if (!slice || availableModes.length === 0) return null;
