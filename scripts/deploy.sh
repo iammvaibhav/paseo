@@ -176,20 +176,22 @@ resolve_conflicts_with_agent() {
   log "Resolving $count conflicted file(s) with grok $CONFLICT_MODEL (effort=$CONFLICT_EFFORT) in one pass:"
   printf '  - %s\n' $files
   log "Streaming agent output (raw NDJSON also saved to $log_path):"
-  # Headless grok with tools: -p runs the full agent loop; --always-approve skips prompts.
+  # Headless grok with tools: -p/--single takes the prompt as its value (not a trailing arg).
   # streaming-json emits NDJSON as work happens (plain mode only prints at the end).
   # Shell is denied so the agent cannot run git; the SCRIPT verifies + commits.
   # pipefail so a grok failure is not masked by the stream filter exiting 0.
+  local prompt
+  prompt="You are resolving the conflicts from 'git merge $UPSTREAM_REMOTE/main' into the custom fork branch '$BRANCH'. Edit EVERY conflicted file to remove ALL conflict markers (<<<<<<<, =======, >>>>>>>) and produce a correct merge that keeps upstream's changes while preserving this fork's customizations. Resolve every conflict — leave no markers behind. Do not run any git commands. Conflicted files:$(printf ' %s' $files)"
   if ! (
     cd "$ROOT_DIR" || exit 1
     set -o pipefail
-    grok -p \
+    grok \
       --model "$CONFLICT_MODEL" \
       --effort "$CONFLICT_EFFORT" \
       --always-approve \
       --disallowed-tools "run_terminal_cmd" \
       --output-format streaming-json \
-      "You are resolving the conflicts from 'git merge $UPSTREAM_REMOTE/main' into the custom fork branch '$BRANCH'. Edit EVERY conflicted file to remove ALL conflict markers (<<<<<<<, =======, >>>>>>>) and produce a correct merge that keeps upstream's changes while preserving this fork's customizations. Resolve every conflict — leave no markers behind. Do not run any git commands. Conflicted files:$(printf ' %s' $files)" 2>&1 \
+      -p "$prompt" 2>&1 \
       | python3 -u "$stream_filter" "$log_path"
   ); then
     die "grok conflict resolution failed; resolve manually (git merge --abort to bail). Log: $log_path"
