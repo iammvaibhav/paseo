@@ -382,6 +382,7 @@ export const ptBR: TranslationResources = {
         modified: "Modificado",
         copyPath: "Copiar caminho",
         download: "Baixar",
+        downloadAsZip: "Download as ZIP",
       },
       actions: {
         back: "Voltar",

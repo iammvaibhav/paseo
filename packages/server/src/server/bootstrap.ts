@@ -127,6 +127,7 @@ import { createPaseoWorktree as createRegisteredPaseoWorktree } from "./paseo-wo
 import { createWorkspaceProvisioningService } from "./session/workspace-provisioning/workspace-provisioning-service.js";
 import { createPaseoWorktreeWorkflow } from "./worktree-session.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
+import { streamDirectoryAsZip } from "./file-download/zip-directory.js";
 import type { OpenAiSpeechProviderConfig } from "./speech/providers/openai/config.js";
 import type { LocalSpeechProviderConfig } from "./speech/providers/local/config.js";
 import type { RequestedSpeechProviders } from "./speech/speech-types.js";
@@ -759,6 +760,26 @@ export async function createPaseoDaemon(
       return;
     }
 
+    const safeFileName = entry.fileName.replace(/["\r\n]/g, "_");
+
+    // Directory downloads are streamed as a zip of the sandboxed folder.
+    if (entry.kind === "directory") {
+      try {
+        res.setHeader("Content-Type", entry.mimeType || "application/zip");
+        res.setHeader("Content-Disposition", `attachment; filename="${safeFileName}"`);
+        // No Content-Length: zip size is unknown until the archive is finished.
+        await streamDirectoryAsZip(entry.absolutePath, res);
+      } catch (err) {
+        logger.error({ err }, "Failed to stream directory zip download");
+        if (!res.headersSent) {
+          res.status(500).json({ error: "Failed to zip directory" });
+        } else {
+          res.end();
+        }
+      }
+      return;
+    }
+
     let fileHandle: Awaited<ReturnType<typeof open>> | null = null;
     try {
       fileHandle = await open(entry.absolutePath, DOWNLOAD_OPEN_FLAGS);
@@ -768,7 +789,6 @@ export async function createPaseoDaemon(
         return;
       }
 
-      const safeFileName = entry.fileName.replace(/["\r\n]/g, "_");
       res.setHeader("Content-Type", entry.mimeType);
       res.setHeader("Content-Disposition", `attachment; filename="${safeFileName}"`);
       res.setHeader("Content-Length", fileStats.size.toString());

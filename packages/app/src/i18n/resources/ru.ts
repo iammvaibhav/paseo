@@ -381,6 +381,7 @@ export const ru: TranslationResources = {
         modified: "Модифицированный",
         copyPath: "Копировать путь",
         download: "Скачать",
+        downloadAsZip: "Download as ZIP",
       },
       actions: {
         back: "Назад",

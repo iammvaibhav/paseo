@@ -382,6 +382,7 @@ export const ja: TranslationResources = {
         modified: "更新日時",
         copyPath: "パスをコピー",
         download: "ダウンロード",
+        downloadAsZip: "Download as ZIP",
       },
       actions: {
         back: "戻る",

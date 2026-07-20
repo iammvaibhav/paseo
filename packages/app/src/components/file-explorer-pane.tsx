@@ -200,11 +200,11 @@ function TreeRowItem({
           <DropdownMenuItem leading={copyLeading} onSelect={handleCopy}>
             {t("workspace.fileExplorer.context.copyPath")}
           </DropdownMenuItem>
-          {entry.kind === "file" ? (
-            <DropdownMenuItem leading={downloadLeading} onSelect={handleDownload}>
-              {t("workspace.fileExplorer.context.download")}
-            </DropdownMenuItem>
-          ) : null}
+          <DropdownMenuItem leading={downloadLeading} onSelect={handleDownload}>
+            {entry.kind === "directory"
+              ? t("workspace.fileExplorer.context.downloadAsZip")
+              : t("workspace.fileExplorer.context.download")}
+          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
     </Pressable>
@@ -924,13 +924,17 @@ function downloadExplorerEntry({
     targetPath: string,
   ) => ReturnType<StartDownloadParams["requestFileDownloadToken"]>;
 }): void {
-  if (!workspaceScopeId || entry.kind !== "file") {
+  if (!workspaceScopeId) {
     return;
+  }
+  let fileName = entry.name;
+  if (entry.kind === "directory" && !entry.name.endsWith(".zip")) {
+    fileName = `${entry.name}.zip`;
   }
   startDownload({
     serverId,
     scopeId: workspaceScopeId,
-    fileName: entry.name,
+    fileName,
     path: entry.path,
     daemonProfile,
     requestFileDownloadToken: (targetPath) => requestFileDownloadToken(targetPath),

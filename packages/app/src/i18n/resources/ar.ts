@@ -378,6 +378,7 @@ export const ar: TranslationResources = {
         modified: "معدل",
         copyPath: "نسخ المسار",
         download: "تحميل",
+        downloadAsZip: "Download as ZIP",
       },
       actions: {
         back: "خلف",

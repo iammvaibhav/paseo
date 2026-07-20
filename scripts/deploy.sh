@@ -8,9 +8,11 @@
 #   3. Merge upstream/main into the custom branch; on conflict, grok resolves,
 #      stages, fixes pre-commit checks, and completes the merge commit
 #   4. Push the branch to origin (iammvaibhav/paseo fork)
-#   5. Build server + restart the production-style daemon (~/.paseo)
-#   6. Update local code-server (binary + config + LaunchAgent + bridge extension)
-#   7. Build the desktop app (unsigned) and install it as "Paseo Test.app"
+#   5. In parallel (after the push):
+#        - each remote host (git pull + build + daemon + code-server)
+#        - local daemon (build server first, then restart) + local code-server
+#        - desktop app build/install
+#      Local server build runs before desktop so they don't race on packages/*/dist.
 #
 # Remote workflow (blrofc3, iammvaibhav):
 #   1. Ensure origin points at the fork and tracks the custom branch
@@ -446,6 +448,118 @@ build_desktop_app() {
   log "Desktop test app installed at $DESKTOP_TEST_APP"
 }
 
+# --- Parallel post-push deploy jobs ------------------------------------------------
+# After git is pushed, local daemon work, desktop build, and each remote host are
+# independent enough to overlap. Jobs log to /tmp/paseo-deploy-<name>.log so their
+# output does not interleave. Local `build:server` is NOT run in parallel with the
+# desktop build: both write packages/*/dist and would race.
+
+PARALLEL_PIDS=()
+PARALLEL_NAMES=()
+PARALLEL_LOGS=()
+
+start_parallel_job() {
+  local name="$1"
+  shift
+  local logf="/tmp/paseo-deploy-${name}.log"
+  : >"$logf"
+  log "→ starting job '$name' (log: $logf)"
+  (
+    set -euo pipefail
+    "$@"
+  ) >>"$logf" 2>&1 &
+  PARALLEL_PIDS+=("$!")
+  PARALLEL_NAMES+=("$name")
+  PARALLEL_LOGS+=("$logf")
+}
+
+wait_for_parallel_jobs() {
+  local fail=0
+  local i pid name logf status
+  for i in "${!PARALLEL_PIDS[@]}"; do
+    pid="${PARALLEL_PIDS[$i]}"
+    name="${PARALLEL_NAMES[$i]}"
+    logf="${PARALLEL_LOGS[$i]}"
+    status=0
+    wait "$pid" || status=$?
+    if [[ "$status" -eq 0 ]]; then
+      log "✓ job '$name' finished"
+    else
+      fail=1
+      log "✗ job '$name' failed (exit $status) — last lines of $logf:"
+      tail -n 50 "$logf" 2>/dev/null || true
+    fi
+  done
+  PARALLEL_PIDS=()
+  PARALLEL_NAMES=()
+  PARALLEL_LOGS=()
+  if [[ "$fail" -ne 0 ]]; then
+    die "One or more parallel deploy jobs failed (see /tmp/paseo-deploy-*.log)"
+  fi
+}
+
+# Local daemon path after packages are built: install wrapper + restart.
+local_daemon_restart_job() {
+  install_cli_wrapper "$ROOT_DIR"
+  restart_local_daemon
+}
+
+# One remote host end-to-end (runs on this Mac as an ssh driver; build happens on the host).
+remote_host_job() {
+  local host="$1"
+  local rhome="$2"
+  local rprovider="$3"
+  ensure_remote_cloudflared "$host" "$rprovider"
+  sync_remote_host "$host" "$rhome" "$rprovider"
+  ensure_remote_funnel "$host" "$rhome" "$rprovider"
+}
+
+# After branch is pushed: kick remotes + local restart/desktop/code-server in parallel.
+# Local server compile stays sequential before those local jobs so dist/ is not shared
+# with the desktop rebuild.
+run_parallel_post_push_deploy() {
+  PARALLEL_PIDS=()
+  PARALLEL_NAMES=()
+  PARALLEL_LOGS=()
+
+  log "Starting post-push deploy phase (parallel where safe)"
+
+  # Remotes can start immediately — they build on their own machines.
+  if [[ "${PASEO_SKIP_REMOTES:-0}" != "1" ]]; then
+    local host rhome rprovider
+    for host in "${REMOTE_HOSTS[@]}"; do
+      rhome="$(remote_paseo_home "$host")"
+      rprovider="$(remote_tunnel_provider "$host")"
+      start_parallel_job "remote-${host}" remote_host_job "$host" "$rhome" "$rprovider"
+    done
+  else
+    log "Skipping remotes (PASEO_SKIP_REMOTES=1)"
+  fi
+
+  if [[ "${PASEO_SKIP_LOCAL:-0}" != "1" ]]; then
+    # Build the server stack once on this Mac before any local consumer of dist/.
+    if [[ "${PASEO_SKIP_DAEMON:-0}" != "1" ]]; then
+      build_server
+      start_parallel_job "local-daemon" local_daemon_restart_job
+    else
+      log "Skipping local daemon build/restart (PASEO_SKIP_DAEMON=1)"
+    fi
+    start_parallel_job "local-code-server" deploy_local_code_server
+    start_parallel_job "desktop" build_desktop_app
+  else
+    log "Skipping local post-push jobs (PASEO_SKIP_LOCAL=1)"
+  fi
+
+  if [[ ${#PARALLEL_PIDS[@]} -eq 0 ]]; then
+    log "No parallel post-push jobs to run"
+    return
+  fi
+
+  log "Waiting for ${#PARALLEL_PIDS[@]} parallel job(s): ${PARALLEL_NAMES[*]}"
+  wait_for_parallel_jobs
+  log "Parallel post-push deploy phase complete"
+}
+
 sync_code_server_settings_to_remotes() {
   if [[ "${PASEO_SKIP_CODE_SERVER:-0}" == "1" ]]; then
     return
@@ -773,10 +887,10 @@ What a full run does (local Mac):
   2. Fetch upstream, fast-forward origin/main to upstream/main
   3. Merge $UPSTREAM_REMOTE/main into '$BRANCH' (on conflict, grok resolves, stages,
      fixes pre-commit checks, and completes the merge commit — streaming output)
-  4. Push branch to $ORIGIN_REMOTE, build server, restart daemon ($LOCAL_PASEO_HOME)
-  5. Deploy code-server (binary + config + paseo-bridge extension)
-  6. Build the desktop app (unsigned) and install it as "$DESKTOP_TEST_APP"
-Then repeats git sync + code-server deploy on: ${REMOTE_HOSTS[*]}.
+  4. Push branch to $ORIGIN_REMOTE
+  5. Post-push in parallel: each remote host, local daemon restart (+ server build first),
+     local code-server, and desktop app build/install
+Then remotes are ${REMOTE_HOSTS[*]} (each gets its own parallel job).
 
 Scope flags (set to 1 unless noted):
   PASEO_SKIP_LOCAL                 Skip the local Mac entirely (remotes only)
@@ -822,34 +936,21 @@ main() {
 
   cd "$ROOT_DIR"
 
+  # Sequential git phase — must finish (and push) before remotes can pull.
   if [[ "${PASEO_SKIP_LOCAL:-0}" != "1" ]]; then
     ensure_fork_remotes
     ensure_node
     autocommit_local_changes
     sync_local_git
-    if [[ "${PASEO_SKIP_DAEMON:-0}" != "1" ]]; then
-      build_server
-      install_cli_wrapper "$ROOT_DIR"
-      restart_local_daemon
-    else
-      log "Skipping local daemon build/restart (PASEO_SKIP_DAEMON=1)"
-    fi
-    deploy_local_code_server
-    build_desktop_app
+  elif [[ "${PASEO_SKIP_REMOTES:-0}" != "1" ]]; then
+    # Remotes-only still needs the branch on origin; local git may already be pushed.
+    log "PASEO_SKIP_LOCAL=1 — assuming $ORIGIN_REMOTE/$BRANCH is already up to date"
   fi
 
-  if [[ "${PASEO_SKIP_REMOTES:-0}" != "1" ]]; then
-    local host
-    for host in "${REMOTE_HOSTS[@]}"; do
-      local rhome rprovider
-      rhome="$(remote_paseo_home "$host")"
-      rprovider="$(remote_tunnel_provider "$host")"
-      ensure_remote_cloudflared "$host" "$rprovider"
-      sync_remote_host "$host" "$rhome" "$rprovider"
-      ensure_remote_funnel "$host" "$rhome" "$rprovider"
-    done
-  fi
+  # Post-push: local daemon/desktop + both remotes overlap.
+  run_parallel_post_push_deploy
 
+  # Settings push needs remotes reachable and code-server units present.
   sync_code_server_settings_to_remotes
   sync_code_server_user_data
 

@@ -183,6 +183,30 @@ describe("WorkspaceFilesSession", () => {
     expect(message.payload.size).toBe(11);
   });
 
+  test("issues a zip download token for a directory", async () => {
+    const cwd = makeDir("workspace-files-dir-token-");
+    mkdirSync(join(cwd, "docs"), { recursive: true });
+    writeFileSync(join(cwd, "docs", "a.md"), "a");
+    const { subsystem, emitted } = makeSubsystem();
+
+    await subsystem.handleFileDownloadTokenRequest({
+      type: "file_download_token_request",
+      cwd,
+      path: "docs",
+      requestId: "req-dir-token",
+    });
+
+    expect(emitted).toHaveLength(1);
+    const message = emitted[0];
+    if (message.type !== "file_download_token_response") {
+      throw new Error(`expected file_download_token_response, got ${message.type}`);
+    }
+    expect(message.payload.error).toBeNull();
+    expect(typeof message.payload.token).toBe("string");
+    expect(message.payload.fileName).toBe("docs.zip");
+    expect(message.payload.mimeType).toBe("application/zip");
+  });
+
   test("rejects an empty download-token cwd with an error envelope", async () => {
     const { subsystem, emitted } = makeSubsystem();
 

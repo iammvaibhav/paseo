@@ -377,6 +377,7 @@ export const en = {
         modified: "Modified",
         copyPath: "Copy path",
         download: "Download",
+        downloadAsZip: "Download as ZIP",
       },
       actions: {
         back: "Back",

@@ -378,6 +378,7 @@ export const zhCN: TranslationResources = {
         modified: "修改时间",
         copyPath: "复制路径",
         download: "下载",
+        downloadAsZip: "Download as ZIP",
       },
       actions: {
         back: "返回",

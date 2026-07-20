@@ -309,24 +309,59 @@ function sanitizeExplorerFileName(value: string): string {
   return name;
 }
 
-export async function getDownloadableFileInfo({ root, relativePath }: ReadFileParams): Promise<{
+export type DownloadableEntryKind = "file" | "directory";
+
+export interface DownloadableEntryInfo {
   path: string;
   absolutePath: string;
   fileName: string;
   mimeType: string;
   size: number;
-}> {
-  const filePath = await resolveScopedPath({ root, relativePath });
-  const handle = await openFileForRead(filePath.resolvedPath);
+  kind: DownloadableEntryKind;
+}
 
+/** @deprecated Prefer getDownloadableEntryInfo — kept as a file-only alias for older callers. */
+export async function getDownloadableFileInfo(
+  params: ReadFileParams,
+): Promise<DownloadableEntryInfo> {
+  const info = await getDownloadableEntryInfo(params);
+  if (info.kind !== "file") {
+    throw new Error("Requested path is not a file");
+  }
+  return info;
+}
+
+/**
+ * Resolve a sandboxed file or directory for download. Directories are served as
+ * a zip (fileName ends with .zip, mime application/zip); size is 0 until streamed.
+ */
+export async function getDownloadableEntryInfo({
+  root,
+  relativePath,
+}: ReadFileParams): Promise<DownloadableEntryInfo> {
+  const scoped = await resolveScopedPath({ root, relativePath });
+  const stats = await fs.stat(scoped.resolvedPath);
+  const relative = normalizeRelativePath({ root, targetPath: scoped.requestedPath });
+
+  if (stats.isDirectory()) {
+    const baseName = path.basename(scoped.resolvedPath) || "folder";
+    return {
+      path: relative,
+      absolutePath: scoped.resolvedPath,
+      fileName: `${baseName}.zip`,
+      mimeType: "application/zip",
+      size: 0,
+      kind: "directory",
+    };
+  }
+
+  if (!stats.isFile()) {
+    throw new Error("Requested path is not a file or directory");
+  }
+
+  const handle = await openFileForRead(scoped.resolvedPath);
   try {
-    const stats = await handle.stat();
-
-    if (!stats.isFile()) {
-      throw new Error("Requested path is not a file");
-    }
-
-    const ext = path.extname(filePath.resolvedPath).toLowerCase();
+    const ext = path.extname(scoped.resolvedPath).toLowerCase();
     let mimeType = "application/octet-stream";
     if (ext in IMAGE_MIME_TYPES) {
       mimeType = IMAGE_MIME_TYPES[ext];
@@ -340,11 +375,12 @@ export async function getDownloadableFileInfo({ root, relativePath }: ReadFilePa
     }
 
     return {
-      path: normalizeRelativePath({ root, targetPath: filePath.requestedPath }),
-      absolutePath: filePath.resolvedPath,
-      fileName: path.basename(filePath.requestedPath),
+      path: relative,
+      absolutePath: scoped.resolvedPath,
+      fileName: path.basename(scoped.requestedPath),
       mimeType,
       size: stats.size,
+      kind: "file",
     };
   } finally {
     await handle.close();

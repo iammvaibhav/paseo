@@ -16,7 +16,7 @@ import type {
 import { FileUploadStore } from "../../file-upload/index.js";
 import type { DownloadTokenStore } from "../../file-download/token-store.js";
 import {
-  getDownloadableFileInfo,
+  getDownloadableEntryInfo,
   listDirectoryEntries,
   readExplorerFile,
   readExplorerFileBytes,
@@ -253,7 +253,7 @@ export class WorkspaceFilesSession {
     );
 
     try {
-      const info = await getDownloadableFileInfo({
+      const info = await getDownloadableEntryInfo({
         root: cwd,
         relativePath: requestedPath,
       });
@@ -264,6 +264,7 @@ export class WorkspaceFilesSession {
         fileName: info.fileName,
         mimeType: info.mimeType,
         size: info.size,
+        kind: info.kind,
       });
 
       this.host.emit({

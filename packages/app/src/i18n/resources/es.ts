@@ -382,6 +382,7 @@ export const es: TranslationResources = {
         modified: "Modificado",
         copyPath: "Copiar ruta",
         download: "Descargar",
+        downloadAsZip: "Download as ZIP",
       },
       actions: {
         back: "Atrás",
