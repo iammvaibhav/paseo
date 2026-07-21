@@ -61,10 +61,13 @@ function useBrowserPanelDescriptor(target: {
   const url = browser?.url ?? "https://example.com";
   const chrome = resolveBrowserChromeMode(browser?.chrome);
   const icon = createBrowserTabIcon(browser?.faviconUrl ?? null);
+  const label = getBrowserLabel({ title: browser?.title ?? "", url, chrome });
+  const subtitle = getBrowserSubtitle({ url, chrome });
 
   return {
-    label: getBrowserLabel({ title: browser?.title ?? "", url, chrome }),
-    subtitle: getBrowserSubtitle({ url, chrome }),
+    label,
+    subtitle,
+    tooltip: url || label,
     titleState: "ready",
     icon,
     statusBucket: browser?.isLoading ? "running" : null,

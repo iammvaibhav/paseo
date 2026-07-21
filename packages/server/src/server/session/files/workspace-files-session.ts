@@ -10,6 +10,9 @@ import type {
   FileExplorerRequest,
   FileExplorerWriteRequest,
   FileUploadRequest,
+  FileSubscribeRequest,
+  FileUnsubscribeRequest,
+  FileWriteRequest,
   SessionInboundMessage,
   SessionOutboundMessage,
 } from "../../messages.js";
@@ -20,8 +23,10 @@ import {
   listDirectoryEntries,
   readExplorerFile,
   readExplorerFileBytes,
+  writeExplorerFile,
 } from "../../file-explorer/service.js";
 import { FileExplorerWriteStore } from "../../file-explorer/write-store.js";
+import { workspaceFileObserver, type FileObserver } from "../../file-explorer/observer.js";
 import { getProjectIcon } from "../../../utils/project-icon.js";
 
 /**
@@ -41,6 +46,7 @@ export interface WorkspaceFilesSessionOptions {
   downloadTokenStore: DownloadTokenStore;
   paseoHome: string;
   logger: pino.Logger;
+  fileObserver?: FileObserver;
 }
 
 /**
@@ -56,6 +62,8 @@ export class WorkspaceFilesSession {
   private readonly logger: pino.Logger;
   private readonly fileUploads: FileUploadStore;
   private readonly fileWrites: FileExplorerWriteStore;
+  private readonly fileObserver: FileObserver;
+  private readonly fileSubscriptions = new Map<string, () => void>();
 
   constructor(options: WorkspaceFilesSessionOptions) {
     this.host = options.host;
@@ -63,6 +71,73 @@ export class WorkspaceFilesSession {
     this.logger = options.logger;
     this.fileUploads = new FileUploadStore({ paseoHome: options.paseoHome });
     this.fileWrites = new FileExplorerWriteStore();
+    this.fileObserver = options.fileObserver ?? workspaceFileObserver;
+  }
+
+  async handleFileSubscribeRequest(request: FileSubscribeRequest): Promise<void> {
+    this.fileSubscriptions.get(request.subscriptionId)?.();
+    try {
+      const subscription = await this.fileObserver.subscribe(
+        { cwd: request.cwd, path: request.path },
+        (version) => {
+          this.host.emit({
+            type: "fs.file.update",
+            payload: { subscriptionId: request.subscriptionId, version },
+          });
+        },
+      );
+      this.fileSubscriptions.set(request.subscriptionId, subscription.unsubscribe);
+      this.host.emit({
+        type: "fs.file.subscribe.response",
+        payload: {
+          subscriptionId: request.subscriptionId,
+          initial: subscription.initial,
+          requestId: request.requestId,
+        },
+      });
+    } catch (error) {
+      this.host.emit({
+        type: "fs.file.subscribe.response",
+        payload: {
+          subscriptionId: request.subscriptionId,
+          initial: {
+            status: "error",
+            cwd: request.cwd,
+            path: request.path,
+            error: getErrorMessage(error),
+          },
+          requestId: request.requestId,
+        },
+      });
+    }
+  }
+
+  handleFileUnsubscribeRequest(request: FileUnsubscribeRequest): void {
+    this.fileSubscriptions.get(request.subscriptionId)?.();
+    this.fileSubscriptions.delete(request.subscriptionId);
+    this.host.emit({
+      type: "fs.file.unsubscribe.response",
+      payload: { subscriptionId: request.subscriptionId, requestId: request.requestId },
+    });
+  }
+
+  async handleFileWriteRequest(request: FileWriteRequest): Promise<void> {
+    const result = await writeExplorerFile({
+      root: request.cwd,
+      relativePath: request.path,
+      content: request.content,
+      expectedModifiedAt: request.expectedModifiedAt,
+      expectedRevision: request.expectedRevision,
+    });
+    this.host.emit({
+      type: "fs.file.write.response",
+      payload: { result, requestId: request.requestId },
+    });
+  }
+
+  dispose(): void {
+    for (const unsubscribe of this.fileSubscriptions.values()) unsubscribe();
+    this.fileSubscriptions.clear();
   }
 
   async handleFileExplorerRequest(request: FileExplorerRequest): Promise<void> {
@@ -119,6 +194,7 @@ export class WorkspaceFilesSession {
                 size: file.size,
                 encoding: file.encoding,
                 modifiedAt: file.modifiedAt,
+                revision: file.revision,
               },
             }),
           );

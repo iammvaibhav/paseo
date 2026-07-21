@@ -473,6 +473,7 @@ export const ar: TranslationResources = {
     },
     tabs: {
       loading: "تحميل...",
+      modified: "تغييرات غير محفوظة",
       loadingAgentTitle: "جارٍ تحميل عنوان الوكيل",
       emptyPane: "لا توجد علامات تبويب في هذا الجزء.",
       fallback: {
@@ -539,6 +540,13 @@ export const ar: TranslationResources = {
         failedToReloadAgent: "فشل في إعادة تحميل الوكيل",
       },
       confirmations: {
+        unsavedTitle: "تغييرات غير محفوظة",
+        unsavedMessage:
+          "تحتوي علامة التبويب هذه على تغييرات غير محفوظة. سيؤدي إغلاقها إلى تجاهل المسودة.",
+        closeWithoutSaving: "إغلاق بدون حفظ",
+        closePaneTitle: "إغلاق اللوحة؟",
+        bulkUnsaved:
+          "تحتوي {{count}} علامة تبويب على تغييرات غير محفوظة. سيؤدي الإغلاق إلى تجاهل المسودات.",
         close: "يغلق",
         cancel: "يلغي",
         archive: "أرشيف",
@@ -1453,6 +1461,25 @@ export const ar: TranslationResources = {
       binaryPreviewUnavailable: "المعاينة الثنائية غير متاحة",
       failedToLoad: "فشل تحميل الملف",
       failedToLoadPreview: "فشل تحميل معاينة الملف",
+      editor: {
+        fileSize: "حجم الملف {{size}}",
+        lines: "{{count}} سطر",
+        editorStatus: "حالة المحرر {{status}}",
+        unsavedChanges: "تغييرات غير محفوظة",
+        saving: "جارٍ الحفظ...",
+        saveFailed: "فشل الحفظ",
+        changedOnDisk: "تغيّر على القرص",
+        vimMode: "وضع Vim ‏{{mode}}",
+        cursor: "السطر {{line}}، العمود {{column}}",
+        preview: "معاينة",
+        source: "المصدر",
+        unavailableTitle: "الملف غير متاح على القرص",
+        conflictDescription: "تم الاحتفاظ بالمحتوى المحلي. اختر الإصدار الذي تريد إبقاءه.",
+        overwrite: "استبدال",
+        reload: "إعادة تحميل",
+        reloadTitle: "إعادة التحميل من القرص؟",
+        reloadMessage: "ستفقد تغييراتك المحلية.",
+      },
     },
     diff: {
       changesLabel: "التغييرات",
@@ -1548,11 +1575,17 @@ export const ar: TranslationResources = {
     sections: {
       general: "عام",
       appearance: "مظهر",
+      editor: "المحرر",
       shortcuts: "الاختصارات",
       integrations: "التكامل",
       permissions: "الأذونات",
       diagnostics: "التشخيص",
       about: "عن",
+    },
+    editor: {
+      title: "المحرر",
+      vimKeybindings: "اختصارات Vim",
+      vimHint: "تنطبق على ملفات المصدر في الويب وسطح المكتب.",
     },
     hostSections: {
       connections: "اتصالات",
