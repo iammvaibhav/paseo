@@ -514,9 +514,11 @@ remote_host_job() {
   ensure_remote_funnel "$host" "$rhome" "$rprovider"
 }
 
-# After branch is pushed: kick remotes + local restart/desktop/code-server in parallel.
-# Local server compile stays sequential before those local jobs so dist/ is not shared
-# with the desktop rebuild.
+# After branch is pushed:
+#   - remotes + local code-server start immediately (own machines / independent)
+#   - local daemon: build:server → install wrapper → restart (must finish before desktop)
+#   - desktop build starts only after local daemon restart, because build:desktop runs
+#     build:server:clean and would delete packages/*/dist mid-restart
 run_parallel_post_push_deploy() {
   PARALLEL_PIDS=()
   PARALLEL_NAMES=()
@@ -537,14 +539,21 @@ run_parallel_post_push_deploy() {
   fi
 
   if [[ "${PASEO_SKIP_LOCAL:-0}" != "1" ]]; then
-    # Build the server stack once on this Mac before any local consumer of dist/.
+    # Independent of dist/ — fine alongside remotes and the daemon build.
+    start_parallel_job "local-code-server" deploy_local_code_server
+
+    # Local daemon must use a stable dist/ through restart. Desktop's
+    # build:server:clean races that path, so keep this sequential first.
     if [[ "${PASEO_SKIP_DAEMON:-0}" != "1" ]]; then
       build_server
-      start_parallel_job "local-daemon" local_daemon_restart_job
+      install_cli_wrapper "$ROOT_DIR"
+      restart_local_daemon
+      log "Local daemon ready; starting desktop build (may rebuild dist/)"
     else
       log "Skipping local daemon build/restart (PASEO_SKIP_DAEMON=1)"
     fi
-    start_parallel_job "local-code-server" deploy_local_code_server
+
+    # Safe now: daemon process is up (modules already loaded). Desktop can clean+rebuild.
     start_parallel_job "desktop" build_desktop_app
   else
     log "Skipping local post-push jobs (PASEO_SKIP_LOCAL=1)"
