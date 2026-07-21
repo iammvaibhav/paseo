@@ -202,12 +202,20 @@ import {
   openHostFileInBrowserEditor,
   tryOpenFileInBrowserEditor,
 } from "@/workspace/open-file-in-browser-editor";
+import { tryOpenFileInPlannotator } from "@/workspace/open-file-in-plannotator";
+import {
+  handlePlannotatorSessionEvent,
+  type PlannotatorSessionEventPayload,
+} from "@/workspace/plannotator-feedback";
 import {
   isBrowserEditorInstance,
   usePreloadBrowserEditor,
 } from "@/workspace/preload-browser-editor";
 import { RenderProfile } from "@/utils/render-profiler";
 import { useWorkspaceCheckoutStatus } from "@/screens/workspace/use-workspace-checkout-status";
+import { useAppSettings } from "@/hooks/use-settings";
+import { useIsLocalDaemon } from "@/hooks/use-is-local-daemon";
+import { isRenderedMarkdownFile } from "@/components/file-pane-render-mode";
 
 const WORKSPACE_SETUP_AUTO_OPEN_WINDOW_MS = 30_000;
 const WORKSPACE_FLOATING_PANEL_PORTAL_HOST_PREFIX = "workspace-floating-panels";
@@ -1761,9 +1769,15 @@ function WorkspaceScreenContent({
   const client = useHostRuntimeClient(normalizedServerId);
   const isConnected = useHostRuntimeIsConnected(normalizedServerId);
   const hosts = useHosts();
-  const browserEditorUrl = useMemo(
-    () => hosts.find((entry) => entry.serverId === normalizedServerId)?.browserEditorUrl ?? null,
+  const hostProfile = useMemo(
+    () => hosts.find((entry) => entry.serverId === normalizedServerId) ?? null,
     [hosts, normalizedServerId],
+  );
+  const browserEditorUrl = hostProfile?.browserEditorUrl ?? null;
+  const isLocalDaemon = useIsLocalDaemon(normalizedServerId);
+  const { settings: appSettings } = useAppSettings();
+  const plannotatorAvailable = useSessionStore(
+    (state) => state.sessions[normalizedServerId]?.serverInfo?.features?.plannotator === true,
   );
   const workspaceDirectory = workspaceDescriptor?.workspaceDirectory || null;
   const isMissingWorkspaceDirectory = Boolean(workspaceDescriptor) && !workspaceDirectory;
@@ -1983,6 +1997,69 @@ function WorkspaceScreenContent({
     () => (workspaceLayout ? collectAllTabs(workspaceLayout.root) : EMPTY_UI_TABS),
     [workspaceLayout],
   );
+  const focusedAgentId = useMemo(() => {
+    if (!workspaceLayout) {
+      return null;
+    }
+    const focusedPane = (() => {
+      const panes = workspaceLayout.root
+        ? // walk via collectAllTabs: pick first agent tab as fallback
+          null
+        : null;
+      void panes;
+      return null;
+    })();
+    void focusedPane;
+    // Prefer the most recently focused agent tab among open tabs.
+    for (let i = uiTabs.length - 1; i >= 0; i -= 1) {
+      const tab = uiTabs[i];
+      if (tab?.target.kind === "agent") {
+        return tab.target.agentId;
+      }
+    }
+    return null;
+  }, [uiTabs, workspaceLayout]);
+  const plannotatorEmbedHost = useMemo(() => {
+    if (isLocalDaemon) {
+      return null;
+    }
+    const fromBrowserEditor = browserEditorUrl?.trim();
+    if (fromBrowserEditor) {
+      try {
+        return new URL(fromBrowserEditor).hostname || null;
+      } catch {
+        // fall through
+      }
+    }
+    return hostProfile?.sshHost?.trim() || hostProfile?.label?.trim() || null;
+  }, [browserEditorUrl, hostProfile, isLocalDaemon]);
+
+  useEffect(() => {
+    if (!client || !plannotatorAvailable) {
+      return;
+    }
+    return client.on("plannotator.session.event", (message) => {
+      void handlePlannotatorSessionEvent({
+        serverId: normalizedServerId,
+        event: message.payload as PlannotatorSessionEventPayload,
+        feedbackMode: appSettings.plannotatorFeedbackMode,
+        sendAgentMessage: async (agentId, text) => {
+          await client.sendAgentMessage(agentId, text);
+        },
+        toast: {
+          show: (msg) => toast.show(msg),
+          error: (msg) => toast.error(msg),
+        },
+      });
+    });
+  }, [
+    appSettings.plannotatorFeedbackMode,
+    client,
+    normalizedServerId,
+    plannotatorAvailable,
+    toast,
+  ]);
+
   useSyncWorkspaceActiveBrowser({
     workspaceLayout,
     isRouteFocused,
@@ -2340,6 +2417,55 @@ function WorkspaceScreenContent({
         return;
       }
       if (
+        getIsElectron() &&
+        plannotatorAvailable &&
+        appSettings.openMarkdownInPlannotator &&
+        workspaceDirectory &&
+        isRenderedMarkdownFile(location.path) &&
+        client
+      ) {
+        void tryOpenFileInPlannotator({
+          client,
+          workspaceDirectory,
+          workspaceKey: persistenceKey,
+          location,
+          agentId: focusedAgentId,
+          remote: !isLocalDaemon,
+          embedHost: plannotatorEmbedHost,
+          workspaceTabs: uiTabs,
+          openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
+          navigateToTabId,
+        }).then((opened) => {
+          if (opened) {
+            return undefined;
+          }
+          // Fall through if start failed.
+          if (
+            browserEditorUrl &&
+            tryOpenFileInBrowserEditor({
+              browserEditorUrl,
+              workspaceDirectory,
+              workspaceKey: persistenceKey,
+              location,
+              workspaceTabs: uiTabs,
+              openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
+              navigateToTabId,
+            })
+          ) {
+            return undefined;
+          }
+          const tabId = openWorkspaceTabFocused(
+            persistenceKey,
+            createWorkspaceFileTabTarget(location),
+          );
+          if (tabId) {
+            navigateToTabId(tabId);
+          }
+          return undefined;
+        });
+        return;
+      }
+      if (
         browserEditorUrl &&
         workspaceDirectory &&
         tryOpenFileInBrowserEditor({
@@ -2360,10 +2486,16 @@ function WorkspaceScreenContent({
       }
     },
     [
+      appSettings.openMarkdownInPlannotator,
       browserEditorUrl,
+      client,
+      focusedAgentId,
+      isLocalDaemon,
       navigateToTabId,
       openWorkspaceTabFocused,
       persistenceKey,
+      plannotatorAvailable,
+      plannotatorEmbedHost,
       uiTabs,
       workspaceDirectory,
     ],
@@ -2379,6 +2511,54 @@ function WorkspaceScreenContent({
         showMobileAgent();
       }
       if (!persistenceKey) {
+        return;
+      }
+      if (
+        getIsElectron() &&
+        plannotatorAvailable &&
+        appSettings.openMarkdownInPlannotator &&
+        workspaceDirectory &&
+        isRenderedMarkdownFile(normalizedLocation.path) &&
+        client
+      ) {
+        void tryOpenFileInPlannotator({
+          client,
+          workspaceDirectory,
+          workspaceKey: persistenceKey,
+          location: normalizedLocation,
+          agentId: focusedAgentId,
+          remote: !isLocalDaemon,
+          embedHost: plannotatorEmbedHost,
+          workspaceTabs: uiTabs,
+          openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
+          navigateToTabId,
+        }).then((opened) => {
+          if (opened) {
+            return undefined;
+          }
+          if (
+            browserEditorUrl &&
+            tryOpenFileInBrowserEditor({
+              browserEditorUrl,
+              workspaceDirectory,
+              workspaceKey: persistenceKey,
+              location: normalizedLocation,
+              workspaceTabs: uiTabs,
+              openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
+              navigateToTabId,
+            })
+          ) {
+            return undefined;
+          }
+          const target = createWorkspaceFileTabTarget(normalizedLocation);
+          const tabId = options?.parentTabId
+            ? openWorkspaceChildTabFocused(persistenceKey, target, options.parentTabId)
+            : openWorkspaceTabFocused(persistenceKey, target);
+          if (tabId) {
+            navigateToTabId(tabId);
+          }
+          return undefined;
+        });
         return;
       }
       if (
@@ -2405,12 +2585,18 @@ function WorkspaceScreenContent({
       }
     },
     [
+      appSettings.openMarkdownInPlannotator,
       browserEditorUrl,
+      client,
+      focusedAgentId,
+      isLocalDaemon,
       isMobile,
       navigateToTabId,
       openWorkspaceChildTabFocused,
       openWorkspaceTabFocused,
       persistenceKey,
+      plannotatorAvailable,
+      plannotatorEmbedHost,
       showMobileAgent,
       uiTabs,
       workspaceDirectory,
@@ -2427,7 +2613,30 @@ function WorkspaceScreenContent({
       if (!location) {
         return;
       }
-      // Prefer VS Code Web when configured — skip the in-app side file pane.
+      // Prefer Plannotator (when enabled) or VS Code Web — skip the in-app side file pane.
+      if (
+        getIsElectron() &&
+        plannotatorAvailable &&
+        appSettings.openMarkdownInPlannotator &&
+        workspaceDirectory &&
+        persistenceKey &&
+        isRenderedMarkdownFile(location.path) &&
+        client
+      ) {
+        void tryOpenFileInPlannotator({
+          client,
+          workspaceDirectory,
+          workspaceKey: persistenceKey,
+          location,
+          agentId: focusedAgentId,
+          remote: !isLocalDaemon,
+          embedHost: plannotatorEmbedHost,
+          workspaceTabs: uiTabs,
+          openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
+          navigateToTabId,
+        });
+        return;
+      }
       if (
         browserEditorUrl &&
         workspaceDirectory &&
@@ -2473,14 +2682,20 @@ function WorkspaceScreenContent({
       }
     },
     [
+      appSettings.openMarkdownInPlannotator,
       browserEditorUrl,
+      client,
+      focusedAgentId,
       handleOpenFileFromChat,
+      isLocalDaemon,
       isMobile,
       focusWorkspacePane,
       navigateToTabId,
       openWorkspaceChildTabFocused,
       openWorkspaceTabFocused,
       persistenceKey,
+      plannotatorAvailable,
+      plannotatorEmbedHost,
       splitWorkspacePaneEmpty,
       uiTabs,
       workspaceDirectory,
@@ -2656,6 +2871,48 @@ function WorkspaceScreenContent({
       });
     },
     [browserEditorUrl, navigateToTabId, openWorkspaceTabFocused, persistenceKey, uiTabs],
+  );
+
+  const handleOpenPlannotatorPath = useCallback(
+    (path: string) => {
+      if (!persistenceKey || !workspaceDirectory || !client) {
+        return;
+      }
+      const location = normalizeWorkspaceFileLocation({ path });
+      if (!location) {
+        return;
+      }
+      void tryOpenFileInPlannotator({
+        client,
+        workspaceDirectory,
+        workspaceKey: persistenceKey,
+        location,
+        agentId: focusedAgentId,
+        remote: !isLocalDaemon,
+        embedHost: plannotatorEmbedHost,
+        workspaceTabs: uiTabs,
+        openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
+        navigateToTabId,
+      }).then((opened) => {
+        if (!opened) {
+          toast.error(t("workspace.git.openInEditor.failedOpen"));
+        }
+        return undefined;
+      });
+    },
+    [
+      client,
+      focusedAgentId,
+      isLocalDaemon,
+      navigateToTabId,
+      openWorkspaceTabFocused,
+      persistenceKey,
+      plannotatorEmbedHost,
+      t,
+      toast,
+      uiTabs,
+      workspaceDirectory,
+    ],
   );
 
   const handleOpenHostFile = useCallback(
@@ -3572,6 +3829,8 @@ function WorkspaceScreenContent({
             activeFile={activeFileLocation}
             hideLabels
             onOpenBrowserEditorUrl={handleOpenBrowserEditorUrl}
+            onOpenPlannotatorPath={handleOpenPlannotatorPath}
+            plannotatorAvailable={plannotatorAvailable}
           />
         ) : null}
         {!isMobile && workspaceDirectory ? (
@@ -3688,6 +3947,8 @@ function WorkspaceScreenContent({
       handleViewScriptTerminal,
       handleOpenUrlInBrowserTab,
       handleOpenBrowserEditorUrl,
+      handleOpenPlannotatorPath,
+      plannotatorAvailable,
       showCompactButtonLabels,
       isGitCheckout,
       handleToggleExplorer,

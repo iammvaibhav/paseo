@@ -16,7 +16,7 @@ import {
 } from "./state";
 
 export type { BrowserChromeMode, BrowserRecord } from "./state";
-export { resolveBrowserChromeMode } from "./state";
+export { isChromeLessMode, isPersistentEmbeddedChrome, resolveBrowserChromeMode } from "./state";
 
 export interface BrowserNavigationRequest {
   url: string;

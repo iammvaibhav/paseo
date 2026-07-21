@@ -37,10 +37,19 @@ export interface PlannedBrowserEditorOpenTarget {
   url: string;
 }
 
+export interface PlannedPlannotatorOpenTarget {
+  source: "plannotator";
+  id: "plannotator";
+  label: "Plannotator";
+  /** Absolute path to open when the active file is markdown; null opens nothing until a file is selected. */
+  path: string | null;
+}
+
 export type PlannedWorkspaceOpenTarget =
   | PlannedDesktopOpenTarget
   | PlannedForgeOpenTarget
-  | PlannedBrowserEditorOpenTarget;
+  | PlannedBrowserEditorOpenTarget
+  | PlannedPlannotatorOpenTarget;
 
 export interface PlanWorkspaceOpenTargetsInput {
   workspaceDirectory: string;
@@ -53,6 +62,8 @@ export interface PlanWorkspaceOpenTargetsInput {
   browserEditorUrl?: string | null;
   checkoutStatus?: CheckoutStatusForOpenTarget | null;
   forge?: Forge | null;
+  /** When true and a markdown file is active, offer Plannotator. */
+  plannotatorAvailable?: boolean;
 }
 
 function resolveActiveFileForOpenTargets(
@@ -226,16 +237,41 @@ function planBrowserEditorOpenTarget(input: {
   };
 }
 
+function planPlannotatorOpenTarget(input: {
+  plannotatorAvailable?: boolean;
+  resolvedFile: ResolvedWorkspaceFilePaths | null;
+  activeFile?: WorkspaceFileLocation | null;
+}): PlannedPlannotatorOpenTarget | null {
+  if (!input.plannotatorAvailable) {
+    return null;
+  }
+  // Always show the target when the host has Plannotator; path may be null
+  // until a markdown file is focused (button can no-op).
+  const path = input.resolvedFile?.absolutePath ?? input.activeFile?.path ?? null;
+  return {
+    source: "plannotator",
+    id: "plannotator",
+    label: "Plannotator",
+    path,
+  };
+}
+
 export function planWorkspaceOpenTargets(
   input: PlanWorkspaceOpenTargetsInput,
 ): PlannedWorkspaceOpenTarget[] {
   const resolvedFile = resolveActiveFileForOpenTargets(input);
   const desktopTargets = planDesktopOpenTargets({ ...input, resolvedFile });
   const browserEditorTarget = planBrowserEditorOpenTarget(input);
+  const plannotatorTarget = planPlannotatorOpenTarget({
+    plannotatorAvailable: input.plannotatorAvailable,
+    resolvedFile,
+    activeFile: input.activeFile,
+  });
   const forgeTarget = planForgeOpenTarget({ ...input, resolvedFile });
   return [
     ...desktopTargets,
     ...(browserEditorTarget ? [browserEditorTarget] : []),
+    ...(plannotatorTarget ? [plannotatorTarget] : []),
     ...(forgeTarget ? [forgeTarget] : []),
   ];
 }

@@ -1,12 +1,15 @@
-export type BrowserChromeMode = "full" | "embedded";
+export type BrowserChromeMode = "full" | "embedded" | "embedded-transient";
 
 export interface BrowserRecord {
   browserId: string;
   url: string;
   title: string;
   /**
-   * `full` shows the in-pane toolbar + URL bar. `embedded` is a chrome-less
-   * surface (VS Code Web / code-server) that reuses the same webview.
+   * `full` shows the in-pane toolbar + URL bar.
+   * `embedded` is chrome-less and uses the persistent webview lifecycle
+   *   (VS Code Web / code-server — one webview per origin, never detached).
+   * `embedded-transient` is chrome-less with normal create/destroy lifecycle
+   *   (Plannotator sessions — each review is a different port/origin).
    */
   chrome: BrowserChromeMode;
   isLoading: boolean;
@@ -20,7 +23,20 @@ export interface BrowserRecord {
 export function resolveBrowserChromeMode(
   value: BrowserChromeMode | null | undefined,
 ): BrowserChromeMode {
-  return value === "embedded" ? "embedded" : "full";
+  if (value === "embedded" || value === "embedded-transient") {
+    return value;
+  }
+  return "full";
+}
+
+/** Persistent origin-bound webview (VS Code Web). */
+export function isPersistentEmbeddedChrome(chrome: BrowserChromeMode): boolean {
+  return chrome === "embedded";
+}
+
+/** Any chrome-less mode (no toolbar / URL bar). */
+export function isChromeLessMode(chrome: BrowserChromeMode): boolean {
+  return chrome === "embedded" || chrome === "embedded-transient";
 }
 
 export type BrowserRecordPatch = Partial<Omit<BrowserRecord, "browserId" | "createdAt">>;

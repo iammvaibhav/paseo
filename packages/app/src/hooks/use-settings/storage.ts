@@ -13,11 +13,13 @@ export type ReleaseChannel = "stable" | "beta";
 export type ServiceUrlBehavior = "ask" | "in-app" | "external";
 export type WorkspaceTitleSource = "title" | "branch";
 export type ToolCallDetailLevel = "overview" | "detailed";
+export type PlannotatorFeedbackMode = "auto-send" | "compose";
 
 const VALID_THEMES = new Set<string>([...Object.keys(THEME_TO_UNISTYLES), "auto"]);
 const VALID_SERVICE_URL_BEHAVIORS = new Set<ServiceUrlBehavior>(["ask", "in-app", "external"]);
 const VALID_WORKSPACE_TITLE_SOURCES = new Set<WorkspaceTitleSource>(["title", "branch"]);
 const VALID_TOOL_CALL_DETAIL_LEVELS = new Set<ToolCallDetailLevel>(["overview", "detailed"]);
+const VALID_PLANNOTATOR_FEEDBACK_MODES = new Set<PlannotatorFeedbackMode>(["auto-send", "compose"]);
 export const DEFAULT_TERMINAL_SCROLLBACK_LINES = 10_000;
 export const MIN_TERMINAL_SCROLLBACK_LINES = 0;
 export const MAX_TERMINAL_SCROLLBACK_LINES = 1_000_000;
@@ -44,6 +46,10 @@ export interface AppSettings {
   autoExpandReasoning: boolean;
   toolCallDetailLevel: ToolCallDetailLevel;
   vimKeybindings: boolean;
+  /** When true, rendered markdown file opens go to Plannotator (desktop, when available). */
+  openMarkdownInPlannotator: boolean;
+  /** How to deliver Plannotator feedback to the linked agent. */
+  plannotatorFeedbackMode: PlannotatorFeedbackMode;
 }
 
 export interface Settings extends AppSettings {
@@ -68,6 +74,8 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   autoExpandReasoning: false,
   toolCallDetailLevel: "detailed",
   vimKeybindings: false,
+  openMarkdownInPlannotator: false,
+  plannotatorFeedbackMode: "auto-send",
 };
 
 export const DEFAULT_APP_SETTINGS: Settings = {
@@ -188,8 +196,24 @@ function parseToolCallDetailLevel(stored: StoredAppSettings): ToolCallDetailLeve
   return null;
 }
 
-function pickAppSettings(stored: StoredAppSettings): Partial<AppSettings> {
+function pickPlannotatorAppSettings(stored: StoredAppSettings): Partial<AppSettings> {
   const result: Partial<AppSettings> = {};
+  if (typeof stored.openMarkdownInPlannotator === "boolean") {
+    result.openMarkdownInPlannotator = stored.openMarkdownInPlannotator;
+  }
+  if (
+    typeof stored.plannotatorFeedbackMode === "string" &&
+    VALID_PLANNOTATOR_FEEDBACK_MODES.has(stored.plannotatorFeedbackMode)
+  ) {
+    result.plannotatorFeedbackMode = stored.plannotatorFeedbackMode;
+  }
+  return result;
+}
+
+function pickAppSettings(stored: StoredAppSettings): Partial<AppSettings> {
+  const result: Partial<AppSettings> = {
+    ...pickPlannotatorAppSettings(stored),
+  };
   if (typeof stored.theme === "string" && VALID_THEMES.has(stored.theme)) {
     result.theme = stored.theme;
   }

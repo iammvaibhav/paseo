@@ -818,6 +818,7 @@ export const ru: TranslationResources = {
         openIn: "Открыть рабочую область в{{target}}",
         openFileIn: "Open {{fileName}} in {{target}}",
         failedOpen: "Не удалось открыть рабочую область",
+        noFile: "Select a Markdown file to open in Plannotator",
       },
       pr: {
         actions: {
@@ -1621,6 +1622,13 @@ export const ru: TranslationResources = {
       title: "Редактор",
       vimKeybindings: "Клавиши Vim",
       vimHint: "Применяется к исходным файлам в веб- и настольной версии.",
+      openMarkdownInPlannotator: "Open Markdown in Plannotator",
+      openMarkdownInPlannotatorHint:
+        "Desktop only. When available, .md files open in an embedded Plannotator review tab instead of the default viewer.",
+      plannotatorFeedbackMode: "Plannotator feedback",
+      plannotatorFeedbackModeHint: "How annotation feedback is delivered to the linked agent.",
+      plannotatorFeedbackAutoSend: "Auto-send",
+      plannotatorFeedbackCompose: "Pre-fill composer",
     },
     hostSections: {
       connections: "Соединения",

@@ -84,6 +84,7 @@ import {
 } from "@getpaseo/protocol/browser-automation/capabilities";
 import type { BrowserToolsBroker } from "./browser-tools/broker.js";
 import type { DaemonRuntimeConfig } from "./session/daemon/daemon-session.js";
+import { resolvePlannotatorBinary } from "../services/plannotator/resolve-binary.js";
 
 const WS_CLOSE_DAEMON_AUTH_FAILED = 4401;
 
@@ -506,6 +507,8 @@ export class VoiceAssistantWebSocketServer {
   private readonly hubRelationships: HubRelationshipManagement | null;
   private readonly browserToolsRegistrations = new Map<string, BrowserToolsRegistration>();
   private acceptingConnections = true;
+  /** COMPAT(plannotator): true when plannotator binary is resolvable at daemon start. */
+  private readonly plannotatorAvailable: boolean;
 
   constructor(
     server: HTTPServer,
@@ -632,6 +635,13 @@ export class VoiceAssistantWebSocketServer {
     this.providerUsageService = new ProviderUsageService({
       logger: this.logger,
     });
+
+    this.plannotatorAvailable = resolvePlannotatorBinary() !== null;
+    if (this.plannotatorAvailable) {
+      this.logger.info("Plannotator binary detected");
+    } else {
+      this.logger.debug("Plannotator binary not found; feature disabled");
+    }
 
     this.wss = this.createWebSocketServer(server, wsConfig, auth);
     this.startRuntimeMetricsInterval();
@@ -1425,6 +1435,9 @@ export class VoiceAssistantWebSocketServer {
         selectiveAgentTimeline: true,
         // COMPAT(stableProjectIdentity): added in v0.1.109, remove gate after 2027-01-15.
         stableProjectIdentity: true,
+        // COMPAT(plannotator): added in v0.2.x (fork), drop the gate when floor includes plannotator.
+        // Advertised when the plannotator binary is on PATH / ~/.local/bin.
+        plannotator: this.plannotatorAvailable === true,
       },
     };
   }

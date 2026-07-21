@@ -11,7 +11,7 @@ import { useWorkspaceDirectory } from "@/stores/session-store-hooks";
 function getBrowserLabel(input: {
   title: string;
   url: string;
-  chrome: "full" | "embedded";
+  chrome: "full" | "embedded" | "embedded-transient";
 }): string {
   const title = input.title.trim();
   if (title) {
@@ -19,6 +19,9 @@ function getBrowserLabel(input: {
   }
   if (input.chrome === "embedded") {
     return "VS Code Web";
+  }
+  if (input.chrome === "embedded-transient") {
+    return "Plannotator";
   }
 
   try {
@@ -29,8 +32,11 @@ function getBrowserLabel(input: {
   }
 }
 
-function getBrowserSubtitle(input: { url: string; chrome: "full" | "embedded" }): string {
-  if (input.chrome === "embedded") {
+function getBrowserSubtitle(input: {
+  url: string;
+  chrome: "full" | "embedded" | "embedded-transient";
+}): string {
+  if (input.chrome === "embedded" || input.chrome === "embedded-transient") {
     try {
       return new URL(input.url).hostname || "";
     } catch {

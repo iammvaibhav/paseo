@@ -788,6 +788,7 @@ export const zhCN: TranslationResources = {
         openIn: "在 {{target}} 中打开 workspace",
         openFileIn: "在 {{target}} 中打开 {{fileName}}",
         failedOpen: "打开 workspace 失败",
+        noFile: "Select a Markdown file to open in Plannotator",
       },
       pr: {
         actions: {
@@ -1567,6 +1568,13 @@ export const zhCN: TranslationResources = {
       title: "编辑器",
       vimKeybindings: "Vim 键位",
       vimHint: "适用于网页和桌面端的源文件。",
+      openMarkdownInPlannotator: "在 Plannotator 中打开 Markdown",
+      openMarkdownInPlannotatorHint:
+        "仅桌面端。可用时，.md 文件会在嵌入的 Plannotator 审阅标签中打开，而不是默认查看器。",
+      plannotatorFeedbackMode: "Plannotator 反馈",
+      plannotatorFeedbackModeHint: "批注反馈如何发送给关联的 agent。",
+      plannotatorFeedbackAutoSend: "自动发送",
+      plannotatorFeedbackCompose: "预填输入框",
     },
     hostSections: {
       connections: "连接",

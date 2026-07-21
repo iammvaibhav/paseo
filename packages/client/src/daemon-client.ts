@@ -3110,6 +3110,74 @@ export class DaemonClient {
     }
   }
 
+  async startPlannotatorSession(input: {
+    kind: "annotate";
+    path: string;
+    workspaceDir: string;
+    agentId?: string;
+    workspaceKey?: string;
+    remote?: boolean;
+  }): Promise<{ sessionId: string; port: number; url: string }> {
+    const requestId = this.createRequestId();
+    const message = SessionInboundMessageSchema.parse({
+      type: "plannotator.session.start.request",
+      requestId,
+      kind: input.kind,
+      path: input.path,
+      workspaceDir: input.workspaceDir,
+      ...(input.agentId ? { agentId: input.agentId } : {}),
+      ...(input.workspaceKey ? { workspaceKey: input.workspaceKey } : {}),
+      ...(input.remote !== undefined ? { remote: input.remote } : {}),
+    });
+    const payload = await this.sendRequest({
+      requestId,
+      message,
+      timeout: 30_000,
+      select: (msg) => {
+        if (msg.type !== "plannotator.session.start.response") {
+          return null;
+        }
+        if (msg.payload.requestId !== requestId) {
+          return null;
+        }
+        return msg.payload;
+      },
+    });
+    if (payload.error || !payload.sessionId || !payload.port || !payload.url) {
+      throw new Error(payload.error ?? "Failed to start Plannotator session");
+    }
+    return {
+      sessionId: payload.sessionId,
+      port: payload.port,
+      url: payload.url,
+    };
+  }
+
+  async stopPlannotatorSession(sessionId: string): Promise<void> {
+    const requestId = this.createRequestId();
+    const message = SessionInboundMessageSchema.parse({
+      type: "plannotator.session.stop.request",
+      requestId,
+      sessionId,
+    });
+    const payload = await this.sendRequest({
+      requestId,
+      message,
+      select: (msg) => {
+        if (msg.type !== "plannotator.session.stop.response") {
+          return null;
+        }
+        if (msg.payload.requestId !== requestId) {
+          return null;
+        }
+        return msg.payload;
+      },
+    });
+    if (payload.error) {
+      throw new Error(payload.error);
+    }
+  }
+
   async setAgentThinkingOption(
     agentId: string,
     thinkingOptionId: string | null,

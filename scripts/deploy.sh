@@ -29,6 +29,7 @@
 #   PASEO_LOCAL_HOME=$HOME/.paseo
 #   PASEO_SKIP_REMOTES=1              # local only
 #   PASEO_SKIP_LOCAL=1                # remotes only
+#   PASEO_REMOTE_HOSTS="blrofc3"      # subset of remotes (space-separated); default all
 #   PASEO_SKIP_DAEMON=1               # skip daemon build/restart; still sync git,
 #                                     #   deploy code-server, and push settings
 #   PASEO_SKIP_CODE_SERVER=1          # skip code-server deploy everywhere
@@ -55,7 +56,13 @@ ORIGIN_REMOTE="${PASEO_ORIGIN_REMOTE:-origin}"
 FORK_REPO="${PASEO_FORK_REPO:-git@github.com:iammvaibhav/paseo.git}"
 LOCAL_PASEO_HOME="${PASEO_LOCAL_HOME:-$HOME/.paseo}"
 REMOTE_REPO_DIR="${PASEO_REMOTE_REPO_DIR:-paseo}"
-REMOTE_HOSTS=(blrofc3 iammvaibhav)
+# Allow a space-separated subset, e.g. PASEO_REMOTE_HOSTS="blrofc3"
+if [[ -n "${PASEO_REMOTE_HOSTS:-}" ]]; then
+  # shellcheck disable=SC2206
+  REMOTE_HOSTS=(${PASEO_REMOTE_HOSTS})
+else
+  REMOTE_HOSTS=(blrofc3 iammvaibhav)
+fi
 
 # Commit messages stay on claude (Haiku). Conflict resolution + pre-commit repair
 # use the grok CLI at high reasoning effort (Grok 4.5 High).
@@ -422,6 +429,15 @@ deploy_local_code_server() {
   bash "$ROOT_DIR/scripts/code-server/install.sh" local
 }
 
+deploy_local_plannotator() {
+  if [[ "${PASEO_SKIP_PLANNOTATOR:-0}" == "1" ]]; then
+    log "Skipping local plannotator deploy (PASEO_SKIP_PLANNOTATOR=1)"
+    return
+  fi
+  log "Deploying local plannotator (binary only)"
+  PLANNOTATOR_VERSION="${PLANNOTATOR_VERSION:-}" bash "$ROOT_DIR/scripts/plannotator/install.sh" local
+}
+
 build_desktop_app() {
   if [[ "${PASEO_BUILD_DESKTOP:-1}" == "0" ]]; then
     log "Skipping desktop app build (PASEO_BUILD_DESKTOP=0)"
@@ -541,6 +557,7 @@ run_parallel_post_push_deploy() {
   if [[ "${PASEO_SKIP_LOCAL:-0}" != "1" ]]; then
     # Independent of dist/ — fine alongside remotes and the daemon build.
     start_parallel_job "local-code-server" deploy_local_code_server
+    start_parallel_job "local-plannotator" deploy_local_plannotator
 
     # Local daemon must use a stable dist/ through restart. Desktop's
     # build:server:clean races that path, so keep this sequential first.
@@ -750,6 +767,16 @@ deploy_code_server() {
   CODE_SERVER_VERSION='${CODE_SERVER_VERSION:-}' bash scripts/code-server/install.sh '$host'
 }
 
+deploy_plannotator() {
+  if [[ '${PASEO_SKIP_PLANNOTATOR:-0}' == "1" ]]; then
+    log "Skipping plannotator deploy (PASEO_SKIP_PLANNOTATOR=1)"
+    return
+  fi
+  cd "\$HOME/\$REMOTE_REPO_DIR"
+  log "Deploying plannotator (binary only)"
+  PLANNOTATOR_VERSION='${PLANNOTATOR_VERSION:-}' bash scripts/plannotator/install.sh '$host'
+}
+
 ensure_node
 ensure_fork_remotes
 sync_git
@@ -760,6 +787,7 @@ else
   build_and_restart
 fi
 deploy_code_server
+deploy_plannotator
 log "Done"
 EOF
 }
@@ -904,9 +932,12 @@ Then remotes are ${REMOTE_HOSTS[*]} (each gets its own parallel job).
 Scope flags (set to 1 unless noted):
   PASEO_SKIP_LOCAL                 Skip the local Mac entirely (remotes only)
   PASEO_SKIP_REMOTES              Skip all remote hosts (local only)
-  PASEO_SKIP_DAEMON              Skip daemon build/restart (git + code-server only)
+  PASEO_REMOTE_HOSTS             Space-separated remote subset (default: ${REMOTE_HOSTS[*]})
+  PASEO_SKIP_DAEMON              Skip local daemon build/restart (desktop still builds;
+                                   remotes still build/restart their own daemons)
   PASEO_SKIP_CODE_SERVER         Skip code-server deploy everywhere
   PASEO_SKIP_CODE_SERVER_EXTENSION  Skip installing the paseo-bridge extension
+  PASEO_SKIP_PLANNOTATOR         Skip plannotator binary deploy everywhere
   PASEO_BUILD_DESKTOP=0            Skip the desktop app build (built by default)
   PASEO_DESKTOP_TEST_APP=<path>    Desktop install path (default: $DESKTOP_TEST_APP)
   PASEO_SYNC_CODE_SERVER_USER_DATA  Also rsync code-server User/ + extensions/ to remotes
@@ -920,6 +951,7 @@ Model selection:
 
 Other:
   CODE_SERVER_VERSION            Pin code-server version (omit for latest)
+  PLANNOTATOR_VERSION            Pin plannotator version (omit for latest)
   PASEO_NODE_VERSION             Node version via nvm (default from .tool-versions: $NODE_VERSION)
   PASEO_CUSTOM_BRANCH            Custom branch (default: $BRANCH)
   PASEO_UPSTREAM_REMOTE          Upstream remote (default: $UPSTREAM_REMOTE)
@@ -931,7 +963,9 @@ Per-host code-server install (run on a single machine):
 
 Examples:
   PASEO_SKIP_REMOTES=1 ./scripts/deploy.sh          # local only
-  PASEO_SKIP_DAEMON=1  ./scripts/deploy.sh          # code-server + settings, no daemon
+  PASEO_SKIP_DAEMON=1  ./scripts/deploy.sh          # code-server + settings, no local daemon
+  PASEO_REMOTE_HOSTS=blrofc3 PASEO_SKIP_DAEMON=1 ./scripts/deploy.sh
+                                                    # only blrofc3 + desktop; no local daemon
 EOF
 }
 

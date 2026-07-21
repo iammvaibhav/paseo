@@ -70,6 +70,13 @@ import {
   LoopStopResponseSchema,
 } from "./loop/rpc-schemas.js";
 import {
+  PlannotatorSessionStartRequestSchema,
+  PlannotatorSessionStartResponseSchema,
+  PlannotatorSessionStopRequestSchema,
+  PlannotatorSessionStopResponseSchema,
+  PlannotatorSessionEventSchema,
+} from "./plannotator/rpc-schemas.js";
+import {
   BrowserAutomationExecuteRequestSchema,
   BrowserAutomationExecuteResponseSchema,
 } from "./browser-automation/rpc-schemas.js";
@@ -2613,6 +2620,8 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   LoopInspectRequestSchema,
   LoopLogsRequestSchema,
   LoopStopRequestSchema,
+  PlannotatorSessionStartRequestSchema,
+  PlannotatorSessionStopRequestSchema,
 ]);
 
 export type SessionInboundMessage = z.infer<typeof SessionInboundMessageSchema>;
@@ -2852,6 +2861,8 @@ export const ServerInfoStatusPayloadSchema = z
         selectiveAgentTimeline: z.boolean().optional(),
         // COMPAT(stableProjectIdentity): added in v0.1.109, remove gate after 2027-01-15.
         stableProjectIdentity: z.boolean().optional(),
+        // COMPAT(plannotator): added in v0.2.x (fork), drop the gate when floor includes plannotator.
+        plannotator: z.boolean().optional(),
       })
       .optional(),
   })
@@ -5359,6 +5370,9 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   LoopInspectResponseSchema,
   LoopLogsResponseSchema,
   LoopStopResponseSchema,
+  PlannotatorSessionStartResponseSchema,
+  PlannotatorSessionStopResponseSchema,
+  PlannotatorSessionEventSchema,
   DaemonUpdateProgressMessageSchema,
   DaemonUpdateResponseSchema,
 ]);

@@ -23,6 +23,7 @@ import {
   type ProviderSelectionState,
 } from "@/provider-selection/provider-selection";
 import { useDraftStore } from "@/stores/draft-store";
+import { subscribeComposerPrefill } from "@/workspace/plannotator-feedback";
 
 type AttachmentUpdater =
   | UserComposerAttachment[]
@@ -146,6 +147,16 @@ export function useAgentInputDraft(input: UseAgentInputDraftInput): AgentInputDr
     return () => {
       cancelled = true;
     };
+  }, [draftKey]);
+
+  // Plannotator (and similar) can prefill the composer while this draft is mounted.
+  useEffect(() => {
+    return subscribeComposerPrefill((payload) => {
+      if (payload.draftKey !== draftKey) {
+        return;
+      }
+      setText(payload.text);
+    });
   }, [draftKey]);
 
   useEffect(() => {

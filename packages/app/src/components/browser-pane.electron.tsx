@@ -793,7 +793,12 @@ export function BrowserPane({
   const { theme } = useUnistyles();
   const { t } = useTranslation();
   const browser = useBrowserStore((state) => state.browsersById[browserId] ?? null);
-  const showChrome = (browser?.chrome ?? "full") !== "embedded";
+  // `embedded` = chrome-less + persistent webview (VS Code Web).
+  // `embedded-transient` = chrome-less + normal lifecycle (Plannotator).
+  // `full` = toolbar + resident lifecycle.
+  const chromeMode = browser?.chrome ?? "full";
+  const showChrome = chromeMode === "full";
+  const usePersistentWebview = chromeMode === "embedded";
   const updateBrowser = useBrowserStore((state) => state.updateBrowser);
   const navigationRequest = useBrowserStore(
     (state) => state.navigationRequestByBrowserId[browserId] ?? null,
@@ -937,16 +942,16 @@ export function BrowserPane({
       initialUrlRef.current,
       browserErrorLabelsRef.current,
     );
-    const persistentWebview = showChrome
-      ? null
-      : (ensurePersistentBrowserWebview({
+    const persistentWebview = usePersistentWebview
+      ? (ensurePersistentBrowserWebview({
           browserId,
           workspaceId,
           url: initialUnsafeNavigationMessage ? "about:blank" : initialUrlRef.current,
-        }) as ElectronWebview | null);
-    const residentWebview = showChrome
-      ? (takeResidentBrowserWebview(browserId) as ElectronWebview | null)
+        }) as ElectronWebview | null)
       : null;
+    const residentWebview = usePersistentWebview
+      ? null
+      : (takeResidentBrowserWebview(browserId) as ElectronWebview | null);
     const webview =
       persistentWebview ??
       residentWebview ??
@@ -1117,7 +1122,7 @@ export function BrowserPane({
       domReadyRef.current = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [browserId, isWorkspaceActive, onFocusPane, showChrome, workspaceKey]);
+  }, [browserId, isWorkspaceActive, onFocusPane, showChrome, usePersistentWebview, workspaceKey]);
 
   const navigate = useCallback(
     (nextUrl: string) => {

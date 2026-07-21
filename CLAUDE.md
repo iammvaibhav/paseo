@@ -42,6 +42,7 @@ At the start of non-trivial work, list `docs/` and skim anything relevant to the
 | [docs/service-proxy.md](docs/service-proxy.md)                     | Service proxy: exposing workspace scripts at public URLs, DNS setup, reverse proxy config                                      |
 | [docs/code-server.md](docs/code-server.md)                         | Always-on VS Code Web (code-server) for Open → VS Code Web; install, VPN bind, settings sync                                   |
 | [docs/webhooks.md](docs/webhooks.md)                               | Webhooks: HTTP-triggered agents, configurable tunnels (Tailscale Funnel / cloudflared), URL token + HMAC auth, templating      |
+| [docs/plannotator.md](docs/plannotator.md)                         | Embedded Plannotator: daemon-spawned annotate sessions, feedback → agent, deploy                                               |
 | [docs/development.md](docs/development.md)                         | Dev server, build sync gotchas, CLI reference, agent state, Playwright MCP                                                     |
 | [docs/rpc-namespacing.md](docs/rpc-namespacing.md)                 | WebSocket RPC naming convention — dotted namespaces and `.request`/`.response` pairs                                           |
 | [docs/protocol-validation.md](docs/protocol-validation.md)         | zod-aot generated inbound WebSocket validation, patched compiler regressions, schema-purity rules                              |
@@ -188,6 +189,7 @@ All local customizations live on **`vaibhav/customizations`**, branched from `up
   - Desktop-only **Host files** browser (left rail) rooted at `/`, opening files in VS Code Web
 - LaTeX math rendering for agent messages
 - **Webhooks** — HTTP-triggered agents (a tab below Schedules) with configurable tunnel providers (Tailscale Funnel / cloudflared), URL-token + optional HMAC auth, and payload templating — see [docs/webhooks.md](docs/webhooks.md)
+- **Plannotator** — embedded markdown annotation review (daemon-spawned sessions, feedback → agent) — see [docs/plannotator.md](docs/plannotator.md)
 - `scripts/deploy.sh` for multi-host deploy
 
 Do day-to-day work on this branch, not on `main`.

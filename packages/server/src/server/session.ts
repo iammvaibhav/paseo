@@ -152,6 +152,7 @@ import {
 import { ChatScheduleLoopSession } from "./session/chat/chat-schedule-loop-session.js";
 import { WebhookSession } from "./session/webhook/webhook-session.js";
 import type { WebhookService } from "./webhook/service.js";
+import { PlannotatorSession } from "./session/plannotator/plannotator-session.js";
 import { ProviderCatalogSession } from "./session/provider/provider-catalog-session.js";
 import { WorkspaceFilesSession } from "./session/files/workspace-files-session.js";
 import { AgentConfigSession } from "./session/agent-config/agent-config-session.js";
@@ -627,6 +628,7 @@ export class Session {
   private readonly checkoutSession: CheckoutSession;
   private readonly chatScheduleLoopSession: ChatScheduleLoopSession;
   private readonly webhookSession: WebhookSession;
+  private readonly plannotatorSession: PlannotatorSession;
   private readonly providerCatalogSession: ProviderCatalogSession;
   private readonly workspaceFilesSession: WorkspaceFilesSession;
   private readonly agentConfigSession: AgentConfigSession;
@@ -812,6 +814,12 @@ export class Session {
         emit: (msg) => this.emit(msg),
       },
       webhookService: webhookService ?? null,
+      logger: this.sessionLogger,
+    });
+    this.plannotatorSession = new PlannotatorSession({
+      host: {
+        emit: (msg) => this.emit(msg),
+      },
       logger: this.sessionLogger,
     });
     this.providerCatalogSession = new ProviderCatalogSession({
@@ -1659,8 +1667,20 @@ export class Session {
       this.dispatchProviderMessage(msg) ??
       this.dispatchTerminalMessage(msg) ??
       this.dispatchChatScheduleLoopMessage(msg) ??
+      this.dispatchPlannotatorMessage(msg) ??
       this.dispatchMiscMessage(msg);
     if (promise) await promise;
+  }
+
+  private dispatchPlannotatorMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    switch (msg.type) {
+      case "plannotator.session.start.request":
+        return this.plannotatorSession.handleStartRequest(msg);
+      case "plannotator.session.stop.request":
+        return this.plannotatorSession.handleStopRequest(msg);
+      default:
+        return undefined;
+    }
   }
 
   private dispatchVoiceAndControlMessage(msg: SessionInboundMessage): Promise<void> | undefined {
@@ -6412,6 +6432,7 @@ export class Session {
     this.providerCatalogSession.dispose();
 
     await this.voiceSession.cleanup();
+    await this.plannotatorSession.dispose();
 
     this.terminalController.dispose();
 
