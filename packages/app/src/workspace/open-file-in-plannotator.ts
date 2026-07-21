@@ -43,6 +43,10 @@ export interface OpenFileInPlannotatorInput extends PlannotatorTabActions {
   embedHost?: string | null;
 }
 
+export type OpenFileInPlannotatorResult =
+  | { ok: true; sessionId: string; browserId: string }
+  | { ok: false; reason: string; message: string };
+
 /** Map a daemon-local ready URL onto the host address the desktop can reach. */
 export function buildPlannotatorEmbedUrl(input: {
   port: number;
@@ -75,19 +79,43 @@ export function buildPlannotatorEmbedUrl(input: {
   }
 }
 
+function focusPlannotatorBrowserTab(input: PlannotatorTabActions & { browserId: string }): boolean {
+  const openTab = input.workspaceTabs.find(
+    (tab) => tab.target.kind === "browser" && tab.target.browserId === input.browserId,
+  );
+  if (openTab) {
+    input.navigateToTabId(openTab.tabId);
+    return true;
+  }
+
+  const tabId = input.openWorkspaceTabFocused({ kind: "browser", browserId: input.browserId });
+  if (tabId) {
+    input.navigateToTabId(tabId);
+    return true;
+  }
+  return false;
+}
+
 /**
  * Open a markdown file in an embedded Plannotator annotate session.
- * Returns true when a session/tab was opened; false when the caller should
- * fall through to another opener (VS Code Web / built-in viewer).
+ * Returns a structured result so callers can surface the real failure reason.
  */
 export async function tryOpenFileInPlannotator(
   input: OpenFileInPlannotatorInput,
-): Promise<boolean> {
+): Promise<OpenFileInPlannotatorResult> {
   if (!getIsElectron()) {
-    return false;
+    return {
+      ok: false,
+      reason: "not_electron",
+      message: "Plannotator is only available in the desktop app",
+    };
   }
   if (!isRenderedMarkdownFile(input.location.path)) {
-    return false;
+    return {
+      ok: false,
+      reason: "not_markdown",
+      message: "Only Markdown files can be opened in Plannotator",
+    };
   }
 
   const resolved = resolveWorkspaceFilePaths({
@@ -95,7 +123,30 @@ export async function tryOpenFileInPlannotator(
     workspaceRoot: input.workspaceDirectory,
   });
   if (!resolved) {
-    return false;
+    console.warn("[plannotator] path did not resolve under workspace", {
+      path: input.location.path,
+      workspaceDirectory: input.workspaceDirectory,
+    });
+    return {
+      ok: false,
+      reason: "path_resolve_failed",
+      message: "Could not resolve the file path under the workspace",
+    };
+  }
+
+  // Client-side reuse: same path already open in a live tab.
+  const existing = findPlannotatorBrowserSessionByPath(resolved.absolutePath);
+  if (existing && getBrowserRecord(existing.browserId)) {
+    const focused = focusPlannotatorBrowserTab({
+      ...input,
+      browserId: existing.browserId,
+    });
+    if (focused) {
+      console.log(
+        `[plannotator] reuse client session=${existing.sessionId} browserId=${existing.browserId} path=${resolved.absolutePath}`,
+      );
+      return { ok: true, sessionId: existing.sessionId, browserId: existing.browserId };
+    }
   }
 
   let started: PlannotatorSessionStartResult;
@@ -109,8 +160,13 @@ export async function tryOpenFileInPlannotator(
       remote: input.remote === true,
     });
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     console.warn("[plannotator] failed to start session", error);
-    return false;
+    return {
+      ok: false,
+      reason: "start_failed",
+      message: message.trim() || "Could not open Plannotator",
+    };
   }
 
   const embedUrl = buildPlannotatorEmbedUrl({
@@ -120,6 +176,17 @@ export async function tryOpenFileInPlannotator(
     embedHost: input.embedHost,
   });
 
+  if (input.remote === true && !input.embedHost?.trim()) {
+    console.warn(
+      "[plannotator] remote session started but embedHost is missing; webview may not load",
+      { embedUrl, daemonUrl: started.url },
+    );
+  }
+
+  console.log(
+    `[plannotator] open session=${started.sessionId} port=${started.port} remote=${input.remote === true} url=${embedUrl} path=${resolved.absolutePath}`,
+  );
+
   const browserId = `plannotator-${started.sessionId}`;
   if (!getBrowserRecord(browserId)) {
     createWorkspaceBrowser({
@@ -128,10 +195,12 @@ export async function tryOpenFileInPlannotator(
       chrome: "embedded-transient",
     });
   } else {
-    useBrowserStore.getState().updateBrowser(browserId, { url: embedUrl });
+    useBrowserStore.getState().updateBrowser(browserId, {
+      url: embedUrl,
+      chrome: "embedded-transient",
+    });
   }
 
-  // Stash session id on the title so the feedback handler can stop/close.
   useBrowserStore.getState().updateBrowser(browserId, {
     title: `Plannotator · ${resolved.relativePath ?? resolved.absolutePath}`,
   });
@@ -140,21 +209,52 @@ export async function tryOpenFileInPlannotator(
     browserId,
     sessionId: started.sessionId,
     workspaceKey: input.workspaceKey,
+    path: resolved.absolutePath,
   });
 
-  const openTab = input.workspaceTabs.find(
-    (tab) => tab.target.kind === "browser" && tab.target.browserId === browserId,
-  );
-  if (openTab) {
-    input.navigateToTabId(openTab.tabId);
-    return true;
+  const focused = focusPlannotatorBrowserTab({ ...input, browserId });
+  if (!focused) {
+    console.warn("[plannotator] session started but failed to open a workspace tab", { browserId });
+    // Still ok — session is running; user may open the browser tab manually.
   }
 
-  const tabId = input.openWorkspaceTabFocused({ kind: "browser", browserId });
-  if (tabId) {
-    input.navigateToTabId(tabId);
+  return { ok: true, sessionId: started.sessionId, browserId };
+}
+
+/**
+ * Stop the daemon session (if any) for a closed browser tab. Safe no-op for
+ * non-plannotator browsers. Does not remove the browser record — caller owns that.
+ */
+export async function stopPlannotatorBrowserIfNeeded(input: {
+  client: PlannotatorSessionClient | null | undefined;
+  browserId: string;
+}): Promise<void> {
+  if (!input.browserId.startsWith("plannotator-")) {
+    return;
   }
-  return true;
+  const session =
+    getPlannotatorBrowserSessionByBrowserId(input.browserId) ??
+    // Fallback when registry was lost (app reload) — session id is in the browser id.
+    ({
+      browserId: input.browserId,
+      sessionId: input.browserId.slice("plannotator-".length),
+      workspaceKey: "",
+      path: "",
+    } satisfies PlannotatorBrowserSession);
+
+  clearPlannotatorBrowserSession(session.sessionId);
+
+  if (!input.client || !session.sessionId) {
+    return;
+  }
+  try {
+    await input.client.stopPlannotatorSession(session.sessionId);
+  } catch (error) {
+    console.warn("[plannotator] failed to stop session on tab close", {
+      sessionId: session.sessionId,
+      error,
+    });
+  }
 }
 
 // --- session ↔ browser bookkeeping (module-local) ---
@@ -163,14 +263,26 @@ export interface PlannotatorBrowserSession {
   browserId: string;
   sessionId: string;
   workspaceKey: string;
+  /** Absolute host path being annotated (for client-side reuse). */
+  path: string;
 }
 
 const sessionsByBrowserId = new Map<string, PlannotatorBrowserSession>();
 const sessionsBySessionId = new Map<string, PlannotatorBrowserSession>();
+const sessionsByPath = new Map<string, PlannotatorBrowserSession>();
 
 export function registerPlannotatorBrowserSession(session: PlannotatorBrowserSession): void {
+  // Drop stale path mapping if another session previously owned this path.
+  const previousForPath = sessionsByPath.get(session.path);
+  if (previousForPath && previousForPath.sessionId !== session.sessionId) {
+    sessionsByBrowserId.delete(previousForPath.browserId);
+    sessionsBySessionId.delete(previousForPath.sessionId);
+  }
   sessionsByBrowserId.set(session.browserId, session);
   sessionsBySessionId.set(session.sessionId, session);
+  if (session.path) {
+    sessionsByPath.set(session.path, session);
+  }
 }
 
 export function getPlannotatorBrowserSessionBySessionId(
@@ -185,6 +297,12 @@ export function getPlannotatorBrowserSessionByBrowserId(
   return sessionsByBrowserId.get(browserId) ?? null;
 }
 
+export function findPlannotatorBrowserSessionByPath(
+  absolutePath: string,
+): PlannotatorBrowserSession | null {
+  return sessionsByPath.get(absolutePath) ?? null;
+}
+
 export function clearPlannotatorBrowserSession(
   sessionId: string,
 ): PlannotatorBrowserSession | null {
@@ -194,5 +312,8 @@ export function clearPlannotatorBrowserSession(
   }
   sessionsBySessionId.delete(sessionId);
   sessionsByBrowserId.delete(session.browserId);
+  if (session.path && sessionsByPath.get(session.path)?.sessionId === sessionId) {
+    sessionsByPath.delete(session.path);
+  }
   return session;
 }

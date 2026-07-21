@@ -93,6 +93,10 @@ Daemon only annotates paths under the requested `workspaceDir`.
 
 Max 3 concurrent sessions per session manager; port pool `19432–19463`.
 
+- Re-opening the **same path** reuses the live session (no second process).
+- At the cap, the **oldest** session is stopped so a new open can proceed.
+- Closing a Plannotator browser tab calls `plannotator.session.stop` so slots free immediately.
+
 ## RPCs
 
 | Message                                           | Direction              |

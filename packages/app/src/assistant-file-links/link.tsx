@@ -1,13 +1,5 @@
 import { useMemo, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
-import {
-  Platform,
-  Pressable,
-  Text,
-  View,
-  type StyleProp,
-  type TextStyle,
-  type ViewStyle,
-} from "react-native";
+import { Platform, Text, View, type StyleProp, type TextStyle, type ViewStyle } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { isNative, isWeb } from "@/constants/platform";
 import { MarkdownTextSpan } from "@/components/markdown-text";
@@ -41,13 +33,18 @@ export function AssistantMarkdownLink({
     () => (target ? formatInlinePathTargetForTooltip(target, workspaceRoot) : null),
     [target, workspaceRoot],
   );
-  const handleAnchorClickCapture = useStableEvent((event: MouseEvent<HTMLAnchorElement>) => {
+  const handleWebClick = useStableEvent((event: MouseEvent<HTMLAnchorElement>) => {
+    // Own the entire click: never let the inner Pressable also fire (that was
+    // double-opening main + side on Cmd-click).
     event.preventDefault();
-    if (!isModifiedOpenEvent(event)) {
+    event.stopPropagation();
+    const native = event.nativeEvent as unknown as { stopImmediatePropagation?: () => void };
+    native.stopImmediatePropagation?.();
+    if (isModifiedOpenEvent(event)) {
+      onAuxPress();
       return;
     }
-    event.stopPropagation();
-    onAuxPress();
+    onPress();
   });
   const handleHoverIn = useStableEvent(() => {
     setHovered(true);
@@ -98,23 +95,24 @@ export function AssistantMarkdownLink({
     );
   }
 
+  // Web/Electron: click is handled only on the <a>. Inner Pressable is visual
+  // hover only — no onPress — so one gesture cannot open two dispositions.
   const anchor = (
     <a
       href={source.href}
-      onClickCapture={handleAnchorClickCapture}
-      onAuxClickCapture={preventAnchorNavigation}
+      onClick={handleWebClick}
+      onAuxClick={preventAnchorNavigation}
       style={LINK_ANCHOR_STYLE}
     >
-      <Pressable
-        accessibilityRole="link"
-        onPress={onPress}
-        onHoverIn={handleHoverIn}
-        onHoverOut={handleHoverOut}
-      >
-        <Text dataSet={monoSurface ? CODE_SURFACE_DATASET : undefined} style={hoveredTextStyle}>
+      <View onPointerEnter={handleHoverIn} onPointerLeave={handleHoverOut}>
+        <Text
+          accessibilityRole="link"
+          dataSet={monoSurface ? CODE_SURFACE_DATASET : undefined}
+          style={hoveredTextStyle}
+        >
           {children}
         </Text>
-      </Pressable>
+      </View>
     </a>
   );
 

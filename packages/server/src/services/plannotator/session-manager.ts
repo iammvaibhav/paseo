@@ -104,13 +104,50 @@ export class PlannotatorSessionManager {
     workspaceKey?: string;
     remote?: boolean;
   }): Promise<{ sessionId: string; port: number; url: string } | { error: string }> {
-    const prepared = this.prepareStart(input);
+    const workspaceDir = resolve(input.workspaceDir);
+    const absolutePath = isAbsolute(input.path)
+      ? resolve(input.path)
+      : resolve(workspaceDir, input.path);
+    if (!isPathInsideRoot(workspaceDir, absolutePath)) {
+      return { error: "Path is outside the workspace" };
+    }
+
+    // Re-open: same file already annotating — hand back the live session.
+    const existing = this.findLiveSessionByPath(absolutePath);
+    if (existing && !existing.settled && existing.child.exitCode === null) {
+      if (input.agentId) {
+        existing.agentId = input.agentId;
+      }
+      if (input.workspaceKey) {
+        existing.workspaceKey = input.workspaceKey;
+      }
+      this.logger.info(
+        { sessionId: existing.sessionId, port: existing.port, path: absolutePath, reused: true },
+        "plannotator session reused",
+      );
+      return { sessionId: existing.sessionId, port: existing.port, url: existing.url };
+    }
+
+    // Cap is small; if full, evict the oldest so re-clicks still work when the
+    // client failed to stop earlier sessions (e.g. tab close without stop).
+    if (this.sessions.size >= MAX_CONCURRENT_SESSIONS) {
+      const oldest = this.oldestSession();
+      if (oldest) {
+        this.logger.warn(
+          { sessionId: oldest.sessionId, path: oldest.path },
+          "plannotator max sessions; stopping oldest",
+        );
+        await this.forceStop(oldest.sessionId, { emitClosed: true, tryExitApi: true });
+      }
+    }
+
+    const prepared = this.prepareStart({ path: absolutePath, workspaceDir });
     if ("error" in prepared) {
       return prepared;
     }
 
     const remote = input.remote === true;
-    const { binary, workspaceDir, absolutePath, port, sessionId, readyFile } = prepared;
+    const { binary, port, sessionId, readyFile } = prepared;
     const env = this.buildSpawnEnv({ port, readyFile, remote });
 
     let child: ChildProcess;
@@ -167,6 +204,23 @@ export class PlannotatorSessionManager {
     await Promise.all(ids.map((id) => this.forceStop(id, { emitClosed: true, tryExitApi: true })));
   }
 
+  private findLiveSessionByPath(absolutePath: string): LiveSession | null {
+    for (const session of this.sessions.values()) {
+      if (session.path === absolutePath) {
+        return session;
+      }
+    }
+    return null;
+  }
+
+  private oldestSession(): LiveSession | null {
+    // Map iteration order is insertion order — first entry is oldest.
+    for (const session of this.sessions.values()) {
+      return session;
+    }
+    return null;
+  }
+
   private prepareStart(input: { path: string; workspaceDir: string }):
     | {
         binary: string;
@@ -187,9 +241,7 @@ export class PlannotatorSessionManager {
       };
     }
     const workspaceDir = resolve(input.workspaceDir);
-    const absolutePath = isAbsolute(input.path)
-      ? resolve(input.path)
-      : resolve(workspaceDir, input.path);
+    const absolutePath = resolve(input.path);
     if (!isPathInsideRoot(workspaceDir, absolutePath)) {
       return { error: "Path is outside the workspace" };
     }

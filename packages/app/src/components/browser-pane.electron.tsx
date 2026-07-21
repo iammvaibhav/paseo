@@ -927,7 +927,12 @@ export function BrowserPane({
     if (!isElectronRuntime()) {
       return;
     }
-    if (!showChrome && !isWorkspaceActive) {
+    // Inactive retained tabs must not keep a fixed-position persistent webview
+    // painted on screen (VS Code Web). Also skip mounting transient panes.
+    if (!isWorkspaceActive) {
+      if (usePersistentWebview) {
+        hidePersistentBrowserWebview(browserId);
+      }
       return;
     }
 

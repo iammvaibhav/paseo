@@ -82,7 +82,7 @@ function useBrowserPanelDescriptor(target: {
 
 function BrowserPanel() {
   const { serverId, workspaceId, target } = usePaneContext();
-  const { focusPane, isInteractive, isWorkspaceFocused } = usePaneFocus();
+  const { focusPane, isInteractive } = usePaneFocus();
   const cwd = useWorkspaceDirectory(serverId, workspaceId);
   invariant(target.kind === "browser", "BrowserPanel requires browser target");
   return (
@@ -92,7 +92,10 @@ function BrowserPanel() {
       workspaceId={workspaceId}
       cwd={cwd}
       isInteractive={isInteractive}
-      isWorkspaceActive={isWorkspaceFocused}
+      // Must be tab-focused, not merely workspace-focused: persistent VS Code
+      // webviews are position:fixed and would otherwise stay painted over other
+      // tabs (including Plannotator) while retained off-screen.
+      isWorkspaceActive={isInteractive}
       onFocusPane={focusPane}
     />
   );
