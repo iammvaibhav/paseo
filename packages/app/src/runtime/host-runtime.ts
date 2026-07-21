@@ -41,6 +41,7 @@ import { collectBrowserEditorOrigins } from "@/workspace/browser-editor-url";
 import { CLIENT_CAPS } from "@getpaseo/protocol/client-capabilities";
 import { BROWSER_AUTOMATION_COMMAND_NAMES } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import { useSessionStore } from "@/stores/session-store";
+import { useWorkspaceSetupStore } from "@/stores/workspace-setup-store";
 import { invalidateCheckoutGitQueriesForServer } from "@/git/query-keys";
 import { queryClient } from "@/data/query-client";
 import {
@@ -1597,8 +1598,6 @@ export class HostRuntimeStore {
     }
 
     rekeyMap(this.controllers, oldServerId, newServerId);
-    controller.adoptReconciledServerId(newServerId);
-
     rekeyMap(this.lastConnectionStatusByServer, oldServerId, newServerId);
     rekeyMap(this.directoryBootstrapInFlight, oldServerId, newServerId);
     this.replicaCache.reconcileServerId(oldServerId, newServerId);
@@ -1611,7 +1610,10 @@ export class HostRuntimeStore {
       markAgentError: (error) => controller.markAgentDirectorySyncError(error),
     });
     this.directorySyncByServer.set(newServerId, directory);
+    controller.adoptReconciledServerId(newServerId);
     const snapshot = controller.getSnapshot();
+    this.clearHostReplica(oldServerId);
+    this.syncSessionReplica(newServerId, snapshot);
     directory.connectionChanged({
       client: snapshot.client,
       status: snapshot.connectionStatus === "online" ? "online" : "offline",
@@ -1948,6 +1950,7 @@ export class HostRuntimeStore {
       this.directoryBootstrapInFlight.delete(serverId);
       this.directorySyncByServer.get(serverId)?.dispose();
       this.directorySyncByServer.delete(serverId);
+      this.clearHostReplica(serverId);
       void controller.stop();
       this.emit(serverId);
     }
@@ -1985,8 +1988,10 @@ export class HostRuntimeStore {
         controller.getSnapshot().connectionStatus,
       );
       controller.subscribe(() => {
-        this.maybeAutoBootstrapDirectories(host.serverId);
-        this.emit(host.serverId);
+        const snapshot = controller.getSnapshot();
+        this.syncSessionReplica(snapshot.serverId, snapshot);
+        this.maybeAutoBootstrapDirectories(snapshot.serverId);
+        this.emit(snapshot.serverId);
       });
       void controller
         .start(
@@ -2002,6 +2007,20 @@ export class HostRuntimeStore {
         });
       this.emit(host.serverId);
     }
+  }
+
+  private syncSessionReplica(serverId: string, snapshot: HostRuntimeSnapshot): void {
+    if (!snapshot.client) {
+      return;
+    }
+    const sessionStore = useSessionStore.getState();
+    sessionStore.initializeSession(serverId, snapshot.client, snapshot.clientGeneration);
+    sessionStore.updateSessionClient(serverId, snapshot.client, snapshot.clientGeneration);
+  }
+
+  private clearHostReplica(serverId: string): void {
+    useSessionStore.getState().clearSession(serverId);
+    useWorkspaceSetupStore.getState().clearServer(serverId);
   }
 
   private maybeAutoBootstrapDirectories(serverId: string): void {
