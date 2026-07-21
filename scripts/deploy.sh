@@ -449,8 +449,9 @@ build_desktop_app() {
   log "Building desktop app (unsigned test build) — this takes a few minutes"
   (
     cd "$ROOT_DIR"
+    # -p never: unsigned local test builds must not attempt GitHub publish (needs GH_TOKEN).
     CSC_IDENTITY_AUTO_DISCOVERY=false npm run build:desktop -- \
-      -c.mac.notarize=false -c.mac.hardenedRuntime=false
+      -c.mac.notarize=false -c.mac.hardenedRuntime=false -p never
   )
   # electron-builder writes Paseo.app under packages/desktop/release/mac*/.
   local built
@@ -780,8 +781,10 @@ deploy_plannotator() {
 ensure_node
 ensure_fork_remotes
 sync_git
-if [[ '${PASEO_SKIP_DAEMON:-0}' == "1" ]]; then
-  log "Skipping daemon build/restart (PASEO_SKIP_DAEMON=1)"
+# Remote daemons always rebuild/restart unless PASEO_SKIP_REMOTE_DAEMON=1.
+# PASEO_SKIP_DAEMON only affects the local Mac (see run_parallel_post_push_deploy).
+if [[ '${PASEO_SKIP_REMOTE_DAEMON:-0}' == "1" ]]; then
+  log "Skipping remote daemon build/restart (PASEO_SKIP_REMOTE_DAEMON=1)"
 else
   maybe_install_deps
   build_and_restart
@@ -933,8 +936,9 @@ Scope flags (set to 1 unless noted):
   PASEO_SKIP_LOCAL                 Skip the local Mac entirely (remotes only)
   PASEO_SKIP_REMOTES              Skip all remote hosts (local only)
   PASEO_REMOTE_HOSTS             Space-separated remote subset (default: ${REMOTE_HOSTS[*]})
-  PASEO_SKIP_DAEMON              Skip local daemon build/restart (desktop still builds;
-                                   remotes still build/restart their own daemons)
+  PASEO_SKIP_DAEMON              Skip local Mac daemon build/restart (desktop still builds)
+  PASEO_SKIP_REMOTE_DAEMON       Skip remote daemon build/restart (remotes still pull git +
+                                   code-server/plannotator; default is to rebuild remotes)
   PASEO_SKIP_CODE_SERVER         Skip code-server deploy everywhere
   PASEO_SKIP_CODE_SERVER_EXTENSION  Skip installing the paseo-bridge extension
   PASEO_SKIP_PLANNOTATOR         Skip plannotator binary deploy everywhere
