@@ -58,6 +58,8 @@ Open Markdown / Open → Plannotator
       plannotator annotate <path> --json --gate
   → client opens chrome-less transient webview tab at http://127.0.0.1:<port>
        (or http://<vpn-host>:<port> for remote hosts)
+  → browser store id is a normal createBrowserId() uuid (must match
+       BrowserAutomationBrowserIdSchema — never `plannotator-<sessionId>`)
   → user annotates / approves
   → process exits; stdout JSON parsed
   → plannotator.session.event { event: "feedback"|"closed", decision?, feedback? }

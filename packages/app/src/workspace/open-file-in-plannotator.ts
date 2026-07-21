@@ -1,6 +1,11 @@
 import { getIsElectron } from "@/constants/platform";
 import { isRenderedMarkdownFile } from "@/components/file-pane-render-mode";
-import { createWorkspaceBrowser, getBrowserRecord, useBrowserStore } from "@/stores/browser-store";
+import {
+  createBrowserId,
+  createWorkspaceBrowser,
+  getBrowserRecord,
+  useBrowserStore,
+} from "@/stores/browser-store";
 import type { WorkspaceTabTarget } from "@/stores/workspace-tabs-store";
 import { resolveWorkspaceFilePaths, type WorkspaceFileLocation } from "@/workspace/file-open";
 
@@ -97,6 +102,38 @@ function focusPlannotatorBrowserTab(input: PlannotatorTabActions & { browserId: 
 }
 
 /**
+ * Ensure a browser-store record exists for this session. Browser automation IDs
+ * must match `BrowserAutomationBrowserIdSchema` (uuid / timestamp-hex) — do NOT
+ * use a `plannotator-` prefix (Zod throws and the tab never opens).
+ */
+function ensurePlannotatorBrowserRecord(input: {
+  sessionId: string;
+  embedUrl: string;
+  title: string;
+}): string {
+  const existing = getPlannotatorBrowserSessionBySessionId(input.sessionId);
+  if (existing && getBrowserRecord(existing.browserId)) {
+    useBrowserStore.getState().updateBrowser(existing.browserId, {
+      url: input.embedUrl,
+      chrome: "embedded-transient",
+      title: input.title,
+    });
+    return existing.browserId;
+  }
+
+  const browserId = createBrowserId();
+  createWorkspaceBrowser({
+    browserId,
+    initialUrl: input.embedUrl,
+    chrome: "embedded-transient",
+  });
+  useBrowserStore.getState().updateBrowser(browserId, {
+    title: input.title,
+  });
+  return browserId;
+}
+
+/**
  * Open a markdown file in an embedded Plannotator annotate session.
  * Returns a structured result so callers can surface the real failure reason.
  */
@@ -183,27 +220,28 @@ export async function tryOpenFileInPlannotator(
     );
   }
 
-  console.log(
-    `[plannotator] open session=${started.sessionId} port=${started.port} remote=${input.remote === true} url=${embedUrl} path=${resolved.absolutePath}`,
-  );
+  const title = `Plannotator · ${resolved.relativePath ?? resolved.absolutePath}`;
 
-  const browserId = `plannotator-${started.sessionId}`;
-  if (!getBrowserRecord(browserId)) {
-    createWorkspaceBrowser({
-      browserId,
-      initialUrl: embedUrl,
-      chrome: "embedded-transient",
+  let browserId: string;
+  try {
+    browserId = ensurePlannotatorBrowserRecord({
+      sessionId: started.sessionId,
+      embedUrl,
+      title,
     });
-  } else {
-    useBrowserStore.getState().updateBrowser(browserId, {
-      url: embedUrl,
-      chrome: "embedded-transient",
-    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn("[plannotator] failed to create browser tab", error);
+    return {
+      ok: false,
+      reason: "browser_create_failed",
+      message: message.trim() || "Could not open Plannotator browser tab",
+    };
   }
 
-  useBrowserStore.getState().updateBrowser(browserId, {
-    title: `Plannotator · ${resolved.relativePath ?? resolved.absolutePath}`,
-  });
+  console.log(
+    `[plannotator] open session=${started.sessionId} browserId=${browserId} port=${started.port} remote=${input.remote === true} url=${embedUrl} path=${resolved.absolutePath}`,
+  );
 
   registerPlannotatorBrowserSession({
     browserId,
@@ -229,18 +267,10 @@ export async function stopPlannotatorBrowserIfNeeded(input: {
   client: PlannotatorSessionClient | null | undefined;
   browserId: string;
 }): Promise<void> {
-  if (!input.browserId.startsWith("plannotator-")) {
+  const session = getPlannotatorBrowserSessionByBrowserId(input.browserId);
+  if (!session) {
     return;
   }
-  const session =
-    getPlannotatorBrowserSessionByBrowserId(input.browserId) ??
-    // Fallback when registry was lost (app reload) — session id is in the browser id.
-    ({
-      browserId: input.browserId,
-      sessionId: input.browserId.slice("plannotator-".length),
-      workspaceKey: "",
-      path: "",
-    } satisfies PlannotatorBrowserSession);
 
   clearPlannotatorBrowserSession(session.sessionId);
 
@@ -277,6 +307,11 @@ export function registerPlannotatorBrowserSession(session: PlannotatorBrowserSes
   if (previousForPath && previousForPath.sessionId !== session.sessionId) {
     sessionsByBrowserId.delete(previousForPath.browserId);
     sessionsBySessionId.delete(previousForPath.sessionId);
+  }
+  // Drop stale browser mapping if session was re-bound to a new browser id.
+  const previousForSession = sessionsBySessionId.get(session.sessionId);
+  if (previousForSession && previousForSession.browserId !== session.browserId) {
+    sessionsByBrowserId.delete(previousForSession.browserId);
   }
   sessionsByBrowserId.set(session.browserId, session);
   sessionsBySessionId.set(session.sessionId, session);

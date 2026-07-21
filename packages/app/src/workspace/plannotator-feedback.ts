@@ -46,10 +46,13 @@ export async function handlePlannotatorSessionEvent(
     await deliverFeedback(input);
   }
 
-  const browserId = session?.browserId ?? `plannotator-${event.sessionId}`;
+  // browserId is a valid browser-store uuid, not derived from sessionId.
+  if (!session?.browserId) {
+    return;
+  }
   closePlannotatorBrowserTab({
-    browserId,
-    workspaceKey: session?.workspaceKey ?? event.workspaceKey ?? null,
+    browserId: session.browserId,
+    workspaceKey: session.workspaceKey || event.workspaceKey || null,
   });
 }
 
