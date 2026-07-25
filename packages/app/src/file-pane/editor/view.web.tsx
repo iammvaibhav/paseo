@@ -3,12 +3,15 @@ import { Annotation, Compartment, EditorState, Transaction } from "@codemirror/s
 import { EditorView } from "@codemirror/view";
 import { getLanguageForFile } from "@getpaseo/highlight";
 import { getCM, vim } from "@replit/codemirror-vim";
+import type { WorkspaceFileLocation } from "@/workspace/file-open";
 import type { FileEditorModel } from "./model";
 import { editorBaseExtensions, editorTheme, type EditorVisualTheme } from "./extensions.web";
 
 interface FileEditorViewProps {
   model: FileEditorModel;
   filename: string;
+  location: WorkspaceFileLocation;
+  navigationRevision: number;
   vimEnabled: boolean;
   theme: EditorVisualTheme;
   onCursorChange(position: { line: number; column: number }): void;
@@ -22,6 +25,8 @@ const vimCompartment = new Compartment();
 export function FileEditorView({
   model,
   filename,
+  location,
+  navigationRevision,
   vimEnabled,
   theme,
   onCursorChange,
@@ -51,7 +56,8 @@ export function FileEditorView({
               update.docChanged &&
               !update.transactions.some((tr) => tr.annotation(remoteUpdate))
             ) {
-              values.model.edit(update.state.doc.toString());
+              const { lineSeparator } = values.model.getSnapshot();
+              values.model.edit(update.state.doc.sliceString(0, undefined, lineSeparator));
             }
             if (update.selectionSet || update.docChanged) {
               const head = update.state.selection.main.head;
@@ -72,14 +78,29 @@ export function FileEditorView({
 
   useEffect(() => {
     const view = viewRef.current;
-    if (!view || view.state.doc.toString() === snapshot.content) return;
-    const head = Math.min(view.state.selection.main.head, snapshot.content.length);
+    if (!view) return;
+    const document = view.state.toText(snapshot.content);
+    if (view.state.doc.eq(document)) return;
+    const head = Math.min(view.state.selection.main.head, document.length);
     view.dispatch({
-      changes: { from: 0, to: view.state.doc.length, insert: snapshot.content },
+      changes: { from: 0, to: view.state.doc.length, insert: document },
       selection: { anchor: head },
       annotations: [remoteUpdate.of(true), Transaction.addToHistory.of(false)],
     });
   }, [snapshot.content]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view || !location.lineStart) return;
+    const lineStart = Math.min(location.lineStart, view.state.doc.lines);
+    const lineEnd = Math.min(location.lineEnd ?? lineStart, view.state.doc.lines);
+    const from = view.state.doc.line(lineStart).from;
+    const to = view.state.doc.line(Math.max(lineStart, lineEnd)).to;
+    view.dispatch({
+      selection: { anchor: from, head: lineEnd > lineStart ? to : from },
+      effects: EditorView.scrollIntoView(from, { y: "center" }),
+    });
+  }, [location.lineEnd, location.lineStart, navigationRevision]);
 
   useEffect(() => {
     viewRef.current?.dispatch({

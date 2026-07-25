@@ -40,6 +40,11 @@ import { buildWorkspaceAttachmentScopeKey } from "@/attachments/workspace-attach
 import { resolveDesktopExplorerWidth } from "@/components/desktop-sidebar-layout";
 import { useSubmodulesQuery } from "@/git/use-submodules-query";
 import { SubmodulePicker } from "@/git/submodule-picker";
+import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
+import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
+import { resolveFocusedChatTarget } from "@/composer/focused-chat-target";
+import { createWorkspaceFileAttachment } from "@/attachments/workspace-file";
+import { useDraftStore } from "@/stores/draft-store";
 
 function logExplorerSidebar(_event: string, _details: Record<string, unknown>): void {}
 
@@ -429,6 +434,45 @@ function useSubmoduleContext({
   return { effectiveCwd, submodules, hasSubmodules, selectedSubmodule, setSelectedSubmodule };
 }
 
+/**
+ * Shared add-to-chat state for the changes/files panes: both expose an "add file
+ * to chat" action that attaches the file to the focused chat's composer.
+ * Available only when a workspace with a focused chat is available.
+ */
+function useAddFileToChat({
+  serverId,
+  workspaceId,
+}: {
+  serverId: string;
+  workspaceId?: string | null;
+}) {
+  const workspaceKey = workspaceId
+    ? buildWorkspaceTabPersistenceKey({ serverId, workspaceId })
+    : null;
+  const layout = useWorkspaceLayoutStore((state) =>
+    workspaceKey ? state.layoutByWorkspace[workspaceKey] : undefined,
+  );
+  const focusTab = useWorkspaceLayoutStore((state) => state.focusTab);
+  const focusedChat = useMemo(
+    () => resolveFocusedChatTarget({ serverId, layout }),
+    [serverId, layout],
+  );
+  const addFile = useCallback(
+    (filePath: string) => {
+      if (!focusedChat || !workspaceKey) {
+        return;
+      }
+      void useDraftStore.getState().attachWorkspaceFile({
+        draftKey: focusedChat.draftKey,
+        attachment: createWorkspaceFileAttachment({ path: filePath }),
+      });
+      focusTab(workspaceKey, focusedChat.tabId);
+    },
+    [focusTab, focusedChat, workspaceKey],
+  );
+  return { addFile, canAddToChat: focusedChat !== null };
+}
+
 function ExplorerContentArea({
   showHostFiles,
   resolvedTab,
@@ -458,6 +502,9 @@ function ExplorerContentArea({
   workspaceAttachmentScopeKey: string;
   onPrRetry: () => void;
 }) {
+  const { addFile, canAddToChat } = useAddFileToChat({ serverId, workspaceId });
+  const onAddToChat = canAddToChat ? addFile : undefined;
+
   if (showHostFiles) {
     return (
       <View style={styles.contentArea} testID="explorer-content-area">
@@ -479,6 +526,8 @@ function ExplorerContentArea({
           workspaceId={workspaceId}
           cwd={effectiveCwd}
           enabled={isOpen}
+          onOpenFile={onOpenFile}
+          onAddToChat={onAddToChat}
         />
       )}
       {resolvedTab === "files" && (
@@ -487,6 +536,7 @@ function ExplorerContentArea({
           workspaceId={workspaceId}
           workspaceRoot={selectedSubmodule ? effectiveCwd : workspaceRoot}
           onOpenFile={onOpenFile}
+          onAddToChat={onAddToChat}
         />
       )}
       {resolvedTab === "pr" && (

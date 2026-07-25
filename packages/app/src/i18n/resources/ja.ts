@@ -371,6 +371,13 @@ export const ja: TranslationResources = {
       copyBranchName: "ブランチ名をコピー",
       copied: "コピーしました",
     },
+    fileActions: {
+      openFile: "ファイルを開く",
+      copyPath: "パスをコピー",
+      download: "ダウンロード",
+      addToChat: "チャットに追加…",
+      moreActions: "その他のアクション",
+    },
     fileExplorer: {
       sort: {
         name: "名前",
@@ -498,6 +505,7 @@ export const ja: TranslationResources = {
         openFor: "{{label}}のメニューを開く",
         copyResumeCommand: "再開コマンドをコピー",
         copyAgentId: "エージェントIDをコピー",
+        copyTerminalId: "ターミナルIDをコピー",
         copyFilePath: "ファイルパスをコピー",
         rename: "名前を変更",
         closeAbove: "上のタブを閉じる",
@@ -536,6 +544,7 @@ export const ja: TranslationResources = {
       toasts: {
         copyFailed: "コピーに失敗しました",
         agentIdCopiedLabel: "エージェントID",
+        terminalIdCopiedLabel: "ターミナルID",
         resumeCommandCopiedLabel: "再開コマンド",
         filePathCopiedLabel: "ファイルパス",
         resumeIdUnavailable: "再開IDが利用できません",
@@ -771,6 +780,8 @@ export const ja: TranslationResources = {
         },
       },
       diff: {
+        openChangesTab: "変更タブを開く",
+        closeChangesTab: "変更タブを閉じる",
         binaryFile: "バイナリファイル",
         tooLarge: "差分が大きすぎて表示できません",
         unified: "ユニファイド差分",
@@ -806,14 +817,13 @@ export const ja: TranslationResources = {
         deletedFile: "削除済み",
         commits: {
           title: "コミット",
-          legendLocal: "ローカル",
-          legendRemote: "リモート",
-          countLabel: "ベースより先のコミット数: {{count}}",
+          countLabel: "ワークスペースのコミット数: {{count}}",
+          noneAhead: "{{baseRef}} より先のコミットはまだありません",
           fileDiffEmpty: "表示する変更はありません",
           fileDiffError: "ファイル差分の読み込みに失敗しました",
           loading: "コミットを読み込み中…",
           loadError: "コミットの読み込みに失敗しました",
-          empty: "ベースより先のコミットはありません",
+          empty: "コミットはまだありません",
         },
       },
       openInEditor: {
@@ -948,6 +958,8 @@ export const ja: TranslationResources = {
       actions: {
         menu: "ワークスペースアクション",
         newWorkspace: "新しいワークスペース",
+        showMore: "さらに表示",
+        showLess: "表示を減らす",
         createWorkspaceFor: "{{projectName}}の新しいワークスペースを作成",
         copyPath: "パスをコピー",
         copyBranchName: "ブランチ名をコピー",
@@ -1005,9 +1017,6 @@ export const ja: TranslationResources = {
     refPicker: {
       startingRef: "開始Ref",
       chooseStart: "開始点を選択",
-      checkoutHint: "{{noun}} {{numberPrefix}}{{number}}をチェックアウトしますか？",
-      checkoutPr: "{{noun}} {{numberPrefix}}{{number}}をチェックアウト",
-      dismissCheckoutHint: "{{noun}} {{numberPrefix}}{{number}}のチェックアウトヒントを閉じる",
       intoBase: "{{baseRef}}に",
       searching: "検索中...",
       noMatchingRefs: "一致するRefがありません。",
@@ -1517,6 +1526,8 @@ export const ja: TranslationResources = {
       changesLabel: "変更",
       changesSubtitle: "作業ツリーの差分",
       commitSubtitle: "コミット差分",
+      uncommittedSubtitle: "未コミットの変更",
+      baseSubtitle: "{{baseRef}} との比較",
       directoryMissing: "ワークスペースディレクトリが見つかりません。",
       empty: "変更はありません",
       loadError: "差分の読み込みに失敗しました",

@@ -1,26 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { ReactElement, RefObject } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
-import { Pressable, Text, View } from "react-native";
+import { Pressable, StyleSheet as RNStyleSheet, Text, View } from "react-native";
 import type { PressableStateCallbackType } from "react-native";
 import ReanimatedAnimated from "react-native-reanimated";
 import { StyleSheet, useUnistyles, withUnistyles } from "react-native-unistyles";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { createNameId } from "mnemonic-id";
 import { useQuery } from "@tanstack/react-query";
-import {
-  Check,
-  ChevronDown,
-  Folder,
-  FolderPlus,
-  GitBranch,
-  GitPullRequest,
-  X,
-} from "lucide-react-native";
+import { ChevronDown, Folder, FolderPlus, GitBranch, GitPullRequest } from "lucide-react-native";
 import { Composer } from "@/composer";
 import { FileDropZone } from "@/components/file-drop/file-drop-zone";
-import { DraftAgentModeControl } from "@/composer/agent-controls/mode-control";
 import {
   resolveComposerAttachmentSubmitFormat,
   splitComposerAttachmentsForSubmit,
@@ -80,13 +71,13 @@ import {
 } from "@/projects/host-projects";
 import { useProjectIconDataByProjectKey } from "@/projects/project-icons";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
-import type { ComposerAttachment, UserComposerAttachment } from "@/attachments/types";
+import type { ComposerAttachment } from "@/attachments/types";
 import { useDraftWorkspaceAttachmentScopeKey } from "@/attachments/workspace-attachments-store";
 import type { MessagePayload } from "@/composer/types";
 import type { AgentAttachment, ForgeSearchItem } from "@getpaseo/protocol/messages";
 import type { CreatePaseoWorktreeInput } from "@getpaseo/client/internal/daemon-client";
 import type { AgentProvider } from "@getpaseo/protocol/agent-types";
-import type { WorkspaceDraftTabSetup, WorkspaceTabTarget } from "@/stores/workspace-tabs-store";
+import type { WorkspaceDraftTabSetup, WorkspaceTabTarget } from "@/workspace-tabs/model";
 import { isEmptyWorkspaceSubmission, runCreateEmptyWorkspace } from "./new-workspace-empty";
 import {
   getWorkspaceNamingAttachments,
@@ -99,7 +90,8 @@ import {
 } from "./new-workspace-picker-item";
 import {
   clearPickerPrAttachmentForTargetChange,
-  findCheckoutHintPrAttachment,
+  initialPickerSelectionState,
+  reducePickerSelection,
   syncPickerPrAttachment,
 } from "./new-workspace-picker-state";
 import {
@@ -184,10 +176,6 @@ interface NewWorkspaceScreenProps {
 interface PickerOptionData {
   options: ComboboxOptionType[];
   itemById: Map<string, PickerItem>;
-}
-
-interface PickerSelection {
-  item: PickerItem;
 }
 
 const BRANCH_OPTION_PREFIX = "branch:";
@@ -332,50 +320,6 @@ function ProjectPickerTrigger({
         <Text style={styles.tooltipText}>Choose project</Text>
       </TooltipContent>
     </Tooltip>
-  );
-}
-
-function CheckoutHintBadge({
-  label,
-  acceptLabel,
-  dismissLabel,
-  onAccept,
-  onDismiss,
-  iconColor,
-  iconSize,
-}: {
-  label: string;
-  acceptLabel: string;
-  dismissLabel: string;
-  onAccept: () => void;
-  onDismiss: () => void;
-  iconColor: string;
-  iconSize: number;
-}) {
-  return (
-    <View style={styles.checkoutHintBadge}>
-      <Text style={styles.badgeText} numberOfLines={1}>
-        {label}
-      </Text>
-      <Pressable
-        testID="new-workspace-checkout-hint-accept"
-        onPress={onAccept}
-        style={styles.checkoutHintAction}
-        accessibilityRole="button"
-        accessibilityLabel={acceptLabel}
-      >
-        <Check size={iconSize} color={iconColor} />
-      </Pressable>
-      <Pressable
-        testID="new-workspace-checkout-hint-dismiss"
-        onPress={onDismiss}
-        style={styles.checkoutHintAction}
-        accessibilityRole="button"
-        accessibilityLabel={dismissLabel}
-      >
-        <X size={iconSize} color={iconColor} />
-      </Pressable>
-    </View>
   );
 }
 
@@ -646,14 +590,6 @@ function formatPrLabel(item: Pick<ForgeSearchItem, "forge" | "number" | "title">
   return `${presentation.numberPrefix}${item.number} ${item.title}`;
 }
 
-function getCheckoutHintPresentation(item: ForgeSearchItem) {
-  const presentation = getForgePresentation(item.forge ?? "github");
-  return {
-    noun: presentation.changeRequestAbbrev,
-    numberPrefix: presentation.numberPrefix,
-  };
-}
-
 function pickerItemLabel(item: PickerItem): string {
   return item.kind === "branch" ? item.name : formatPrLabel(item.item);
 }
@@ -801,11 +737,6 @@ function getContentStyle(input: { isCompact: boolean; insetBottom: number }) {
     return [styles.content, styles.contentCompact, { paddingBottom: input.insetBottom }];
   }
   return [styles.content, styles.contentCentered];
-}
-
-function getSelectedPickerItem(selection: PickerSelection | null): PickerItem | null {
-  if (!selection) return null;
-  return selection.item;
 }
 
 function normalizeBranchDetails(
@@ -1072,47 +1003,6 @@ function resolveSelectedProjectKey(
     return null;
   }
   return project.projectKey;
-}
-
-function collectAttachedPrNumbers(attachments: ReadonlyArray<UserComposerAttachment>): Set<number> {
-  const numbers = new Set<number>();
-  for (const attachment of attachments) {
-    if (attachment.kind === "github_pr") {
-      numbers.add(attachment.item.number);
-    }
-  }
-  return numbers;
-}
-
-function pruneDismissedCheckoutHintPrNumbers(
-  dismissed: ReadonlySet<number>,
-  attached: ReadonlySet<number>,
-): ReadonlySet<number> {
-  let changed = false;
-  const next = new Set<number>();
-  for (const prNumber of dismissed) {
-    if (attached.has(prNumber)) {
-      next.add(prNumber);
-    } else {
-      changed = true;
-    }
-  }
-  return changed ? next : dismissed;
-}
-
-function useCheckoutHintDismissals(attachments: ReadonlyArray<UserComposerAttachment>) {
-  const [dismissedPrNumbers, setDismissedPrNumbers] = useState<ReadonlySet<number>>(
-    () => new Set(),
-  );
-  const attachedPrNumbers = useMemo(() => collectAttachedPrNumbers(attachments), [attachments]);
-
-  useEffect(() => {
-    setDismissedPrNumbers((current) =>
-      pruneDismissedCheckoutHintPrNumbers(current, attachedPrNumbers),
-    );
-  }, [attachedPrNumbers]);
-
-  return [dismissedPrNumbers, setDismissedPrNumbers] as const;
 }
 
 function usePendingWorkspaceDraftSetup(
@@ -1505,6 +1395,7 @@ function useNewWorkspaceFormStack(input: NewWorkspaceFormStackInput): ReactEleme
         open={project.openState}
         onOpenChange={project.onOpenChange}
         desktopPlacement="bottom-start"
+        desktopMinWidth={360}
         anchorRef={project.anchorRef}
         emptyText="No projects available."
         renderOption={project.renderOption}
@@ -1525,6 +1416,7 @@ function useNewWorkspaceFormStack(input: NewWorkspaceFormStackInput): ReactEleme
         searchable={false}
         title="Host"
         desktopPlacement="bottom-start"
+        desktopMinWidth={200}
         hostOptionTestID={newWorkspaceHostOptionTestID}
       >
         <Pressable
@@ -1661,7 +1553,6 @@ export function NewWorkspaceScreen({
     typeof normalizeWorkspaceDescriptor
   > | null>(null);
   const [pendingAction, setPendingAction] = useState<"chat" | "empty" | null>(null);
-  const [manualPickerSelection, setManualPickerSelection] = useState<PickerSelection | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const openAddProjectPicker = useOpenAddProject();
@@ -1733,10 +1624,22 @@ export function NewWorkspaceScreen({
     }),
   });
   const composerState = chatDraft.composerState;
-  const [dismissedCheckoutHintPrNumbers, setDismissedCheckoutHintPrNumbers] =
-    useCheckoutHintDismissals(chatDraft.attachments);
+  const [pickerSelection, dispatchPickerSelection] = useReducer(
+    reducePickerSelection,
+    initialPickerSelectionState,
+  );
+  const selectedItem = pickerSelection.selectedItem;
 
-  const selectedItem = getSelectedPickerItem(manualPickerSelection);
+  const handleGithubPrDetected = useCallback(() => {
+    dispatchPickerSelection({ type: "pr-detected" });
+  }, []);
+
+  const handleGithubPrAutoAttach = useCallback((item: ForgeSearchItem) => {
+    dispatchPickerSelection({
+      type: "pr-added",
+      item: { kind: "github-pr", item },
+    });
+  }, []);
 
   const withConnectedClient = useCallback(() => {
     if (!client || !isConnected) {
@@ -1837,7 +1740,7 @@ export function NewWorkspaceScreen({
         item,
       });
 
-      setManualPickerSelection({ item });
+      dispatchPickerSelection({ type: "picker-selected", item });
       chatDraft.setAttachments(nextAttachments);
       setPickerOpen(false);
     },
@@ -1853,7 +1756,7 @@ export function NewWorkspaceScreen({
     [itemById, selectPickerItem],
   );
 
-  const clearManualPickerSelectionForTargetChange = useCallback(
+  const clearPickerSelectionForTargetChange = useCallback(
     (currentTargetId: string, nextTargetId: string) => {
       const nextAttachments = clearPickerPrAttachmentForTargetChange({
         attachments: chatDraft.attachments,
@@ -1862,7 +1765,7 @@ export function NewWorkspaceScreen({
       });
       if (nextAttachments === chatDraft.attachments) return;
       chatDraft.setAttachments(nextAttachments);
-      setManualPickerSelection(null);
+      dispatchPickerSelection({ type: "target-changed" });
     },
     [chatDraft],
   );
@@ -1874,49 +1777,23 @@ export function NewWorkspaceScreen({
       // canCreateWorktree or non-git projects become unselectable.
       selectProjectOption(id);
       setProjectPickerOpen(false);
-      clearManualPickerSelectionForTargetChange(selectedProjectOptionId, id);
+      clearPickerSelectionForTargetChange(selectedProjectOptionId, id);
     },
-    [clearManualPickerSelectionForTargetChange, selectProjectOption, selectedProjectOptionId],
+    [clearPickerSelectionForTargetChange, selectProjectOption, selectedProjectOptionId],
   );
 
   const handleSelectWorkspaceHost = useCallback(
     (id: string) => {
       handleSelectHost(id);
-      clearManualPickerSelectionForTargetChange(selectedServerId, id);
+      clearPickerSelectionForTargetChange(selectedServerId, id);
     },
-    [clearManualPickerSelectionForTargetChange, handleSelectHost, selectedServerId],
+    [clearPickerSelectionForTargetChange, handleSelectHost, selectedServerId],
   );
 
   const handleAddProject = useCallback(() => {
     setProjectPickerOpen(false);
     openAddProjectPicker(selectedServerId);
   }, [openAddProjectPicker, selectedServerId]);
-
-  const checkoutHintPrAttachment = useMemo(
-    () =>
-      findCheckoutHintPrAttachment({
-        attachments: chatDraft.attachments,
-        selectedItem,
-        dismissedPrNumbers: dismissedCheckoutHintPrNumbers,
-      }),
-    [chatDraft.attachments, dismissedCheckoutHintPrNumbers, selectedItem],
-  );
-
-  const acceptCheckoutHint = useCallback(() => {
-    if (!checkoutHintPrAttachment) return;
-    selectPickerItem({ kind: "github-pr", item: checkoutHintPrAttachment.item });
-  }, [checkoutHintPrAttachment, selectPickerItem]);
-
-  const dismissCheckoutHint = useCallback(() => {
-    if (!checkoutHintPrAttachment) return;
-    const prNumber = checkoutHintPrAttachment.item.number;
-    setDismissedCheckoutHintPrNumbers((current) => {
-      if (current.has(prNumber)) return current;
-      const next = new Set(current);
-      next.add(prNumber);
-      return next;
-    });
-  }, [checkoutHintPrAttachment, setDismissedCheckoutHintPrNumbers]);
 
   const openPicker = useCallback(() => {
     setPickerOpen(true);
@@ -2173,7 +2050,7 @@ export function NewWorkspaceScreen({
   });
 
   const centeredStyle = useMemo(
-    () => [styles.centered, composerKeyboardStyle],
+    () => [animatedStaticStyles.centered, composerKeyboardStyle],
     [composerKeyboardStyle],
   );
 
@@ -2248,44 +2125,6 @@ export function NewWorkspaceScreen({
     },
   });
 
-  const composerFooter = useMemo(
-    () => (
-      <>
-        {agentControlsWithDisabled ? (
-          <DraftAgentModeControl placement="footer" {...agentControlsWithDisabled} />
-        ) : null}
-        {checkoutHintPrAttachment ? (
-          <CheckoutHintBadge
-            label={t("newWorkspace.refPicker.checkoutHint", {
-              number: checkoutHintPrAttachment.item.number,
-              ...getCheckoutHintPresentation(checkoutHintPrAttachment.item),
-            })}
-            acceptLabel={t("newWorkspace.refPicker.checkoutPr", {
-              number: checkoutHintPrAttachment.item.number,
-              ...getCheckoutHintPresentation(checkoutHintPrAttachment.item),
-            })}
-            dismissLabel={t("newWorkspace.refPicker.dismissCheckoutHint", {
-              number: checkoutHintPrAttachment.item.number,
-              ...getCheckoutHintPresentation(checkoutHintPrAttachment.item),
-            })}
-            onAccept={acceptCheckoutHint}
-            onDismiss={dismissCheckoutHint}
-            iconColor={theme.colors.foregroundMuted}
-            iconSize={theme.iconSize.sm}
-          />
-        ) : null}
-      </>
-    ),
-    [
-      acceptCheckoutHint,
-      agentControlsWithDisabled,
-      checkoutHintPrAttachment,
-      dismissCheckoutHint,
-      t,
-      theme.colors.foregroundMuted,
-      theme.iconSize.sm,
-    ],
-  );
   const screenHeaderLeft = useMemo(() => <SidebarMenuToggle />, []);
 
   return (
@@ -2309,6 +2148,7 @@ export function NewWorkspaceScreen({
             submitButtonTestID="workspace-create-submit"
             submitIcon="return"
             isSubmitLoading={isPending}
+            waitForGithubAutoAttachOnSubmit
             submitBehavior="preserve-and-lock"
             blurOnSubmit={true}
             value={chatDraft.text}
@@ -2316,12 +2156,13 @@ export function NewWorkspaceScreen({
             attachments={chatDraft.attachments}
             attachmentScopeKeys={visibleDraftContextScopeKeys}
             onChangeAttachments={chatDraft.setAttachments}
+            onGithubPrDetected={handleGithubPrDetected}
+            onGithubPrAutoAttach={handleGithubPrAutoAttach}
             cwd={selectedSourceDirectory ?? ""}
             clearDraft={handleClearDraft}
             autoFocus
             commandDraftConfig={composerState?.commandDraftConfig}
             agentControls={agentControlsWithDisabled}
-            footer={composerFooter}
           />
           {errorMessage ? <Text style={styles.errorText}>{errorMessage}</Text> : null}
         </ReanimatedAnimated.View>
@@ -2329,6 +2170,13 @@ export function NewWorkspaceScreen({
     </FileDropZone>
   );
 }
+
+const animatedStaticStyles = RNStyleSheet.create({
+  centered: {
+    width: "100%",
+    maxWidth: MAX_CONTENT_WIDTH,
+  },
+});
 
 const styles = StyleSheet.create((theme) => ({
   container: {
@@ -2347,10 +2195,6 @@ const styles = StyleSheet.create((theme) => ({
   },
   contentCompact: {
     justifyContent: "flex-end",
-  },
-  centered: {
-    width: "100%",
-    maxWidth: MAX_CONTENT_WIDTH,
   },
   composerTitleContainer: {
     marginBottom: theme.spacing[8],
@@ -2401,23 +2245,6 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing[2],
     borderRadius: theme.borderRadius["2xl"],
     gap: theme.spacing[1],
-  },
-  checkoutHintBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    height: BADGE_HEIGHT,
-    maxWidth: 240,
-    paddingHorizontal: theme.spacing[2],
-    borderRadius: theme.borderRadius["2xl"],
-    gap: theme.spacing[1],
-    backgroundColor: theme.colors.surface1,
-  },
-  checkoutHintAction: {
-    width: theme.iconSize.md,
-    height: theme.iconSize.md,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: theme.borderRadius.full,
   },
   badgeHovered: {
     backgroundColor: theme.colors.surface2,

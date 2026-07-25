@@ -15,15 +15,7 @@ import {
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { WORKSPACE_SECONDARY_HEADER_HEIGHT } from "@/constants/layout";
 import * as Clipboard from "expo-clipboard";
-import {
-  ChevronDown,
-  Copy,
-  Download,
-  Eye,
-  EyeOff,
-  MoreVertical,
-  RotateCw,
-} from "lucide-react-native";
+import { ChevronDown, Eye, EyeOff, RotateCw } from "lucide-react-native";
 import { MaterialFileIcon } from "@/components/material-file-icon";
 import { TreeChevron, TreeIndentGuides, TREE_INDENT_PER_LEVEL } from "@/components/tree-primitives";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
@@ -31,13 +23,7 @@ import type { AgentFileExplorerState, ExplorerEntry } from "@/stores/session-sto
 import { useHosts } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
 import { useDownloadStore } from "@/stores/download-store";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { FileActionsMenu } from "@/components/file-actions-menu";
 import { FileDropZone } from "@/components/file-drop/file-drop-zone";
 import { useFileDrop } from "@/components/file-drop/use-file-drop";
 import type { DroppedItem } from "@/components/file-drop/types";
@@ -53,6 +39,7 @@ import {
 } from "@/file-explorer/drop-upload";
 import { useToast } from "@/contexts/toast-context";
 import { toErrorMessage } from "@/utils/error-messages";
+import { useWorkspaceFileDragSource } from "@/attachments/use-workspace-file-drag-source";
 
 const SORT_OPTIONS: { value: SortOption }[] = [
   { value: "name" },
@@ -71,6 +58,8 @@ function formatFileSize({ size }: { size: number }): string {
 }
 
 interface TreeRowItemProps {
+  serverId: string;
+  workspaceId?: string | null;
   entry: ExplorerEntry;
   depth: number;
   isExpanded: boolean;
@@ -79,21 +68,8 @@ interface TreeRowItemProps {
   onEntryPress: (entry: ExplorerEntry) => void;
   onCopyPath: (path: string) => void;
   onDownloadEntry: (entry: ExplorerEntry) => void;
-}
-
-function stopPressInPropagation(event: { stopPropagation?: () => void }) {
-  event.stopPropagation?.();
-}
-
-function menuButtonStyle({
-  hovered,
-  pressed,
-  open,
-}: PressableStateCallbackType & { hovered?: boolean; open?: boolean }) {
-  return [
-    styles.menuButton,
-    (Boolean(hovered) || pressed || Boolean(open)) && styles.menuButtonActive,
-  ];
+  onAddToChat?: (path: string) => void;
+  testID?: string;
 }
 
 function sortTriggerStyle({
@@ -112,6 +88,8 @@ function treeRowKeyExtractor(row: TreeRow) {
 }
 
 function TreeRowItem({
+  serverId,
+  workspaceId,
   entry,
   depth,
   isExpanded,
@@ -120,10 +98,18 @@ function TreeRowItem({
   onEntryPress,
   onCopyPath,
   onDownloadEntry,
+  onAddToChat,
+  testID,
 }: TreeRowItemProps) {
   const { theme } = useUnistyles();
   const { t } = useTranslation();
   const isDirectory = entry.kind === "directory";
+  const dragSourceRef = useWorkspaceFileDragSource({
+    enabled: !isDirectory,
+    serverId,
+    workspaceId,
+    path: entry.path,
+  });
 
   const handlePress = useCallback(() => {
     onEntryPress(entry);
@@ -146,19 +132,38 @@ function TreeRowItem({
     onDownloadEntry(entry);
   }, [onDownloadEntry, entry]);
 
-  const copyLeading = useMemo(
-    () => <Copy size={14} color={theme.colors.foregroundMuted} />,
-    [theme.colors.foregroundMuted],
-  );
-  const downloadLeading = useMemo(
-    () => <Download size={14} color={theme.colors.foregroundMuted} />,
-    [theme.colors.foregroundMuted],
+  const handleAddToChat = useCallback(() => {
+    onAddToChat?.(entry.path);
+  }, [onAddToChat, entry.path]);
+
+  const metaHeader = useMemo(
+    () => (
+      <View style={styles.contextMetaBlock}>
+        <View style={styles.contextMetaRow}>
+          <Text style={styles.contextMetaLabel} numberOfLines={1}>
+            {t("workspace.fileExplorer.context.size")}
+          </Text>
+          <Text style={styles.contextMetaValue} numberOfLines={1} ellipsizeMode="tail">
+            {formatFileSize({ size: entry.size })}
+          </Text>
+        </View>
+        <View style={styles.contextMetaRow}>
+          <Text style={styles.contextMetaLabel} numberOfLines={1}>
+            {t("workspace.fileExplorer.context.modified")}
+          </Text>
+          <Text style={styles.contextMetaValue} numberOfLines={1} ellipsizeMode="tail">
+            {formatTimeAgo(new Date(entry.modifiedAt))}
+          </Text>
+        </View>
+      </View>
+    ),
+    [entry.modifiedAt, entry.size, t],
   );
 
   return (
-    <Pressable onPress={handlePress} style={pressableStyle}>
+    <Pressable onPress={handlePress} style={pressableStyle} testID={testID}>
       <TreeIndentGuides depth={depth} />
-      <View style={styles.entryInfo}>
+      <View ref={dragSourceRef} style={styles.entryInfo}>
         <View style={styles.entryIcon}>
           {(() => {
             if (!isDirectory) {
@@ -172,40 +177,15 @@ function TreeRowItem({
           {entry.name}
         </Text>
       </View>
-      <DropdownMenu>
-        <DropdownMenuTrigger hitSlop={8} onPressIn={stopPressInPropagation} style={menuButtonStyle}>
-          <MoreVertical size={16} color={theme.colors.foregroundMuted} />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" width={220}>
-          <View style={styles.contextMetaBlock}>
-            <View style={styles.contextMetaRow}>
-              <Text style={styles.contextMetaLabel} numberOfLines={1}>
-                {t("workspace.fileExplorer.context.size")}
-              </Text>
-              <Text style={styles.contextMetaValue} numberOfLines={1} ellipsizeMode="tail">
-                {formatFileSize({ size: entry.size })}
-              </Text>
-            </View>
-            <View style={styles.contextMetaRow}>
-              <Text style={styles.contextMetaLabel} numberOfLines={1}>
-                {t("workspace.fileExplorer.context.modified")}
-              </Text>
-              <Text style={styles.contextMetaValue} numberOfLines={1} ellipsizeMode="tail">
-                {formatTimeAgo(new Date(entry.modifiedAt))}
-              </Text>
-            </View>
-          </View>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem leading={copyLeading} onSelect={handleCopy}>
-            {t("workspace.fileExplorer.context.copyPath")}
-          </DropdownMenuItem>
-          <DropdownMenuItem leading={downloadLeading} onSelect={handleDownload}>
-            {entry.kind === "directory"
-              ? t("workspace.fileExplorer.context.downloadAsZip")
-              : t("workspace.fileExplorer.context.download")}
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <FileActionsMenu
+        fileKind={entry.kind}
+        onCopyPath={handleCopy}
+        onDownload={handleDownload}
+        onAddToChat={onAddToChat ? handleAddToChat : undefined}
+        header={metaHeader}
+        accessibilityLabel={t("workspace.fileActions.moreActions")}
+        testIDPrefix={testID}
+      />
     </Pressable>
   );
 }
@@ -215,6 +195,7 @@ interface FileExplorerPaneProps {
   workspaceId?: string | null;
   workspaceRoot: string;
   onOpenFile?: (filePath: string) => void;
+  onAddToChat?: (path: string) => void;
 }
 
 interface TreeRow {
@@ -227,6 +208,7 @@ export function FileExplorerPane({
   workspaceId,
   workspaceRoot,
   onOpenFile,
+  onAddToChat,
 }: FileExplorerPaneProps) {
   const { t } = useTranslation();
   const client = useSessionStore((state) => state.sessions[serverId]?.client ?? null);
@@ -434,12 +416,15 @@ export function FileExplorerPane({
     (info: ListRenderItemInfo<TreeRow>) => (
       <TreeRowDispatcher
         info={info}
+        serverId={serverId}
+        workspaceId={workspaceId}
         expandedPaths={expandedPaths}
         selectedEntryPath={selectedEntryPath}
         isDirectoryLoading={isDirectoryLoading}
         onEntryPress={handleEntryPress}
         onCopyPath={handleCopyPath}
         onDownloadEntry={handleDownloadEntry}
+        onAddToChat={onAddToChat}
       />
     ),
     [
@@ -448,7 +433,10 @@ export function FileExplorerPane({
       handleCopyPath,
       handleDownloadEntry,
       isDirectoryLoading,
+      onAddToChat,
       selectedEntryPath,
+      serverId,
+      workspaceId,
     ],
   );
 
@@ -980,20 +968,26 @@ function toggleDirectory({
 
 function TreeRowDispatcher({
   info,
+  serverId,
+  workspaceId,
   expandedPaths,
   selectedEntryPath,
   isDirectoryLoading,
   onEntryPress,
   onCopyPath,
   onDownloadEntry,
+  onAddToChat,
 }: {
   info: ListRenderItemInfo<TreeRow>;
+  serverId: string;
+  workspaceId?: string | null;
   expandedPaths: Set<string>;
   selectedEntryPath: string | null;
   isDirectoryLoading: (path: string) => boolean;
   onEntryPress: (entry: ExplorerEntry) => void;
   onCopyPath: (path: string) => void | Promise<void>;
   onDownloadEntry: (entry: ExplorerEntry) => void;
+  onAddToChat?: (path: string) => void;
 }) {
   const entry = info.item.entry;
   const depth = info.item.depth;
@@ -1004,6 +998,8 @@ function TreeRowDispatcher({
 
   return (
     <TreeRowItem
+      serverId={serverId}
+      workspaceId={workspaceId}
       entry={entry}
       depth={depth}
       isExpanded={isExpanded}
@@ -1012,6 +1008,7 @@ function TreeRowDispatcher({
       onEntryPress={onEntryPress}
       onCopyPath={onCopyPath}
       onDownloadEntry={onDownloadEntry}
+      onAddToChat={onAddToChat}
     />
   );
 }

@@ -57,6 +57,7 @@ interface FilePreviewBodyProps {
   isLoading: boolean;
   isMobile: boolean;
   location: WorkspaceFileLocation;
+  navigationRevision: number;
   imagePreviewUri: string | null;
 }
 
@@ -207,6 +208,7 @@ function FilePreviewBody({
   isLoading,
   isMobile,
   location,
+  navigationRevision,
   imagePreviewUri,
 }: FilePreviewBodyProps) {
   const theme = UnistylesRuntime.getTheme();
@@ -257,7 +259,7 @@ function FilePreviewBody({
       });
     }, 0);
     return () => clearTimeout(timeout);
-  }, [lineHeight, lineSelection]);
+  }, [lineHeight, lineSelection, navigationRevision]);
 
   if (isLoading && !preview) {
     return (
@@ -380,10 +382,12 @@ export function FilePane({
   serverId,
   workspaceRoot,
   location,
+  navigationRevision,
 }: {
   serverId: string;
   workspaceRoot: string;
   location: WorkspaceFileLocation;
+  navigationRevision: number;
 }) {
   const { t } = useTranslation();
   const isMobile = useIsCompactFormFactor();
@@ -455,6 +459,7 @@ export function FilePane({
     preview,
     supportsEditing,
   });
+  const canToggleMarkdownMode = isMarkdown && editable;
   const lineCount =
     preview?.kind === "text" ? (preview.content ?? "").split("\n").length : undefined;
   const errorMessage = getFileErrorMessage(query.error, t("panels.file.failedToLoad"));
@@ -467,8 +472,8 @@ export function FilePane({
       preview={preview}
       version={version}
       filename={getFileNameFromPath(location.path) ?? location.path}
-      markdownMode={isMarkdown ? markdownMode : undefined}
-      onMarkdownModeChange={isMarkdown ? setMarkdownMode : undefined}
+      markdownMode={canToggleMarkdownMode ? markdownMode : undefined}
+      onMarkdownModeChange={canToggleMarkdownMode ? setMarkdownMode : undefined}
       lineCount={lineCount}
       editable={editable}
       disconnectedMessage={t("workspace.terminal.hostDisconnected")}
@@ -476,6 +481,7 @@ export function FilePane({
       isLoading={query.isFetching}
       isMobile={isMobile}
       location={location}
+      navigationRevision={navigationRevision}
       imagePreviewUri={imagePreviewUri}
     />
   );
@@ -518,6 +524,7 @@ function FilePanePresentation({
   isLoading,
   isMobile,
   location,
+  navigationRevision,
   imagePreviewUri,
 }: {
   serverId: string;
@@ -535,6 +542,7 @@ function FilePanePresentation({
   isLoading: boolean;
   isMobile: boolean;
   location: WorkspaceFileLocation;
+  navigationRevision: number;
   imagePreviewUri: string | null;
 }) {
   if (!client && readTarget) {
@@ -562,6 +570,7 @@ function FilePanePresentation({
         isLoading={isLoading}
         isMobile={isMobile}
         location={location}
+        navigationRevision={navigationRevision}
       />
     );
   }
@@ -587,6 +596,7 @@ function FilePanePresentation({
         isLoading={isLoading}
         isMobile={isMobile}
         location={location}
+        navigationRevision={navigationRevision}
         imagePreviewUri={imagePreviewUri}
       />
     </View>
@@ -605,6 +615,7 @@ function EditableFilePane({
   isLoading,
   isMobile,
   location,
+  navigationRevision,
 }: {
   client: DaemonClient;
   cwd: string;
@@ -617,6 +628,7 @@ function EditableFilePane({
   isLoading: boolean;
   isMobile: boolean;
   location: WorkspaceFileLocation;
+  navigationRevision: number;
 }) {
   const { settings } = useAppSettings();
   const { t } = useTranslation();
@@ -626,9 +638,13 @@ function EditableFilePane({
     () => ({
       async read(): Promise<FileEditorFile> {
         const file = await client.readFile(cwd, path);
-        if (file.kind !== "text") throw new Error("File is no longer text.");
+        const decodedFile = explorerFileFromReadResult(file);
+        if (decodedFile.kind !== "text" || decodedFile.content === undefined) {
+          throw new Error("File is no longer text.");
+        }
         return {
-          content: new TextDecoder().decode(file.bytes),
+          content: decodedFile.content,
+          hasBom: decodedFile.hasBom,
           version: {
             status: "ready",
             cwd,
@@ -650,6 +666,7 @@ function EditableFilePane({
       new FileEditorModel({
         file: {
           content: preview.content ?? "",
+          hasBom: preview.hasBom,
           version: {
             status: "ready",
             cwd,
@@ -742,6 +759,8 @@ function EditableFilePane({
         <FileEditorView
           model={model}
           filename={filename}
+          location={location}
+          navigationRevision={navigationRevision}
           vimEnabled={settings.vimKeybindings}
           theme={visualTheme}
           onCursorChange={setCursor}
@@ -753,6 +772,7 @@ function EditableFilePane({
           isLoading={isLoading}
           isMobile={isMobile}
           location={location}
+          navigationRevision={navigationRevision}
           imagePreviewUri={null}
         />
       )}

@@ -6,7 +6,7 @@ import {
   getBrowserRecord,
   useBrowserStore,
 } from "@/stores/browser-store";
-import type { WorkspaceTabTarget } from "@/stores/workspace-tabs-store";
+import type { WorkspaceTabTarget } from "@/workspace-tabs/model";
 import { resolveWorkspaceFilePaths, type WorkspaceFileLocation } from "@/workspace/file-open";
 
 export interface PlannotatorSessionStartResult {

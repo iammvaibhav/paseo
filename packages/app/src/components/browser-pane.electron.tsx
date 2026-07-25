@@ -55,11 +55,8 @@ import {
   type DesktopBrowserShortcutEvent,
 } from "@/desktop/host";
 import { useBrowserStore, normalizeWorkspaceBrowserUrl } from "@/stores/browser-store";
-import {
-  buildWorkspaceTabPersistenceKey,
-  collectAllTabs,
-  useWorkspaceLayoutStore,
-} from "@/stores/workspace-layout-store";
+import { collectAllTabs, useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
+import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 import {
   ensurePersistentBrowserWebview,
   hidePersistentBrowserWebview,

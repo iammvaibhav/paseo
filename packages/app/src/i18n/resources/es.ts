@@ -371,6 +371,13 @@ export const es: TranslationResources = {
       copyBranchName: "Copiar nombre de rama",
       copied: "Copiado",
     },
+    fileActions: {
+      openFile: "Abrir archivo",
+      copyPath: "Copiar ruta",
+      download: "Descargar",
+      addToChat: "Añadir al chat…",
+      moreActions: "Más acciones",
+    },
     fileExplorer: {
       sort: {
         name: "Nombre",
@@ -498,6 +505,7 @@ export const es: TranslationResources = {
         openFor: "Menú abierto para{{label}}",
         copyResumeCommand: "Copiar comando de reanudación",
         copyAgentId: "Copiar ID del agente",
+        copyTerminalId: "Copiar ID del terminal",
         copyFilePath: "Copy file path",
         rename: "Rebautizar",
         closeAbove: "Cerrar pestañas arriba",
@@ -536,6 +544,7 @@ export const es: TranslationResources = {
       toasts: {
         copyFailed: "Copia fallida",
         agentIdCopiedLabel: "AgentID",
+        terminalIdCopiedLabel: "ID del terminal",
         resumeCommandCopiedLabel: "reanudar el comando",
         filePathCopiedLabel: "File path",
         resumeIdUnavailable: "ReanudarIDno disponible",
@@ -791,6 +800,8 @@ export const es: TranslationResources = {
         },
       },
       diff: {
+        openChangesTab: "Abrir la pestaña Cambios",
+        closeChangesTab: "Cerrar la pestaña Cambios",
         binaryFile: "archivo binario",
         tooLarge: "La diferencia es demasiado grande para mostrarse",
         unified: "Diferencia unificada",
@@ -826,14 +837,13 @@ export const es: TranslationResources = {
         deletedFile: "Eliminado",
         commits: {
           title: "Commits",
-          legendLocal: "local",
-          legendRemote: "en remoto",
-          countLabel: "{{count}} commits por delante de la base",
+          countLabel: "{{count}} commits del espacio de trabajo",
+          noneAhead: "Aún no hay commits por delante de {{baseRef}}",
           fileDiffEmpty: "No hay cambios para mostrar",
           fileDiffError: "Error al cargar el diff del archivo",
           loading: "Cargando commits…",
           loadError: "Error al cargar los commits",
-          empty: "No hay commits por delante de la base",
+          empty: "Aún no hay commits",
         },
       },
       openInEditor: {
@@ -968,6 +978,8 @@ export const es: TranslationResources = {
       actions: {
         menu: "AccionesWorkspace",
         newWorkspace: "Nuevo espacio de trabajo",
+        showMore: "Mostrar más",
+        showLess: "Mostrar menos",
         createWorkspaceFor: "Crea un nuevo espacio de trabajo para{{projectName}}",
         copyPath: "Copiar ruta",
         copyBranchName: "Copiar nombre de sucursal",
@@ -1025,9 +1037,6 @@ export const es: TranslationResources = {
     refPicker: {
       startingRef: "Árbitro inicial",
       chooseStart: "Elige por dónde empezar",
-      checkoutHint: "¿Mira {{noun}} {{numberPrefix}}{{number}}?",
-      checkoutPr: "Echa un vistazo a {{noun}} {{numberPrefix}}{{number}}",
-      dismissCheckoutHint: "Descartar la sugerencia de pago de {{noun}} {{numberPrefix}}{{number}}",
       intoBase: "en {{baseRef}}",
       searching: "Búsqueda...",
       noMatchingRefs: "No hay árbitros coincidentes.",
@@ -1544,6 +1553,8 @@ export const es: TranslationResources = {
       changesLabel: "Cambios",
       changesSubtitle: "Diferencias del árbol de trabajo",
       commitSubtitle: "Diferencias del commit",
+      uncommittedSubtitle: "Cambios sin confirmar",
+      baseSubtitle: "Comparado con {{baseRef}}",
       directoryMissing: "No se encontró el directorio de Workspace.",
       empty: "Sin cambios",
       loadError: "No se pudieron cargar las diferencias",

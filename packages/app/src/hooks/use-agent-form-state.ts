@@ -334,7 +334,9 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
   const modelSelectorProviders = snapshotModelSelectorProviders;
   const availableModels = snapshotSelectedProviderModels;
   const modeOptions = snapshotSelectedProviderModes;
-  const isAllModelsLoading = snapshotIsLoading || selectedProviderIsLoading;
+  const isModelSelectionLoading =
+    resolution.status === "pending" || snapshotIsLoading || selectedProviderIsLoading;
+  const isAllModelsLoading = isModelSelectionLoading;
 
   const combinedInitialValues = useMemo(
     () => combineInitialValues(initialValues, initialServerId),
@@ -605,7 +607,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
     () => availableThinkingOptionsRaw ?? [],
     [availableThinkingOptionsRaw],
   );
-  const isModelLoading = snapshotIsLoading || selectedProviderIsLoading;
+  const isModelLoading = isModelSelectionLoading;
   const modelError = snapshotError;
 
   const workingDirIsEmpty = !formState.workingDir.trim();

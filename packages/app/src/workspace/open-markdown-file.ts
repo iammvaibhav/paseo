@@ -1,6 +1,6 @@
 import { getIsElectron } from "@/constants/platform";
 import { isRenderedMarkdownFile } from "@/components/file-pane-render-mode";
-import type { WorkspaceTabTarget } from "@/stores/workspace-tabs-store";
+import type { WorkspaceTabTarget } from "@/workspace-tabs/model";
 import type { WorkspaceFileLocation } from "@/workspace/file-open";
 import {
   tryOpenFileInPlannotator,

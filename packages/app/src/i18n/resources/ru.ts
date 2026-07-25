@@ -370,6 +370,13 @@ export const ru: TranslationResources = {
       copyBranchName: "Копировать имя ветки",
       copied: "Скопировано",
     },
+    fileActions: {
+      openFile: "Открыть файл",
+      copyPath: "Копировать путь",
+      download: "Скачать",
+      addToChat: "Добавить в чат…",
+      moreActions: "Дополнительные действия",
+    },
     fileExplorer: {
       sort: {
         name: "Имя",
@@ -498,6 +505,7 @@ export const ru: TranslationResources = {
         openFor: "Открыть меню для{{label}}",
         copyResumeCommand: "Копировать команду возобновления",
         copyAgentId: "Скопировать идентификатор агента",
+        copyTerminalId: "Скопировать идентификатор терминала",
         copyFilePath: "Copy file path",
         rename: "Переименовать",
         closeAbove: "Закрыть вкладки выше",
@@ -535,6 +543,7 @@ export const ru: TranslationResources = {
       toasts: {
         copyFailed: "Не удалось скопировать",
         agentIdCopiedLabel: "AgentID",
+        terminalIdCopiedLabel: "Идентификатор терминала",
         resumeCommandCopiedLabel: "команда возобновления",
         filePathCopiedLabel: "File path",
         resumeIdUnavailable: "Резюме ID недоступно",
@@ -782,6 +791,8 @@ export const ru: TranslationResources = {
         },
       },
       diff: {
+        openChangesTab: "Открыть вкладку «Изменения»",
+        closeChangesTab: "Закрыть вкладку «Изменения»",
         binaryFile: "Бинарный файл",
         tooLarge: "Разница слишком велика для отображения",
         unified: "Единый дифференциал",
@@ -817,14 +828,13 @@ export const ru: TranslationResources = {
         deletedFile: "Удалено",
         commits: {
           title: "Коммиты",
-          legendLocal: "локально",
-          legendRemote: "на удалённом",
-          countLabel: "{{count}} коммитов впереди базы",
+          countLabel: "{{count}} коммитов рабочего пространства",
+          noneAhead: "Коммитов впереди {{baseRef}} пока нет",
           fileDiffEmpty: "Нет изменений для отображения",
           fileDiffError: "Не удалось загрузить различия файла",
           loading: "Загрузка коммитов…",
           loadError: "Не удалось загрузить коммиты",
-          empty: "Нет коммитов впереди базы",
+          empty: "Коммитов пока нет",
         },
       },
       openInEditor: {
@@ -959,6 +969,8 @@ export const ru: TranslationResources = {
       actions: {
         menu: "Действия Workspace",
         newWorkspace: "Новое рабочее пространство",
+        showMore: "Показать ещё",
+        showLess: "Показать меньше",
         createWorkspaceFor: "Создайте новое рабочее пространство для{{projectName}}.",
         copyPath: "Копировать путь",
         copyBranchName: "Скопировать название ветки",
@@ -1016,10 +1028,6 @@ export const ru: TranslationResources = {
     refPicker: {
       startingRef: "Начальная ссылка",
       chooseStart: "Выберите, с чего начать",
-      checkoutHint: "Проверьте {{noun}} {{numberPrefix}}{{number}}?",
-      checkoutPr: "Проверьте {{noun}} {{numberPrefix}}{{number}}",
-      dismissCheckoutHint:
-        "Отклонить подсказку по оформлению заказа {{noun}} {{numberPrefix}}{{number}}",
       intoBase: "в {{baseRef}}",
       searching: "Идет поиск...",
       noMatchingRefs: "Нет подходящих ссылок.",
@@ -1536,6 +1544,8 @@ export const ru: TranslationResources = {
       changesLabel: "Изменения",
       changesSubtitle: "Различия рабочего дерева",
       commitSubtitle: "Различия коммита",
+      uncommittedSubtitle: "Незафиксированные изменения",
+      baseSubtitle: "Сравнение с {{baseRef}}",
       directoryMissing: "Каталог Workspace не найден.",
       empty: "Нет изменений",
       loadError: "Не удалось загрузить различия",
