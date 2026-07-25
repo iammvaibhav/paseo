@@ -56,12 +56,14 @@ Open Markdown / Open → Plannotator
       PLANNOTATOR_PORT=… PLANNOTATOR_READY_FILE=… PLANNOTATOR_SKIP_BROWSER_OPEN=1 BROWSER=none
       [PLANNOTATOR_REMOTE=1 when remote]
       plannotator annotate <path> --json --gate
-  → client opens chrome-less transient webview tab at http://127.0.0.1:<port>
-       (or http://<vpn-host>:<port> for remote hosts)
+  → Electron serves the 22 MB UI bundle from a local cache and proxies its
+       small `/api/*` requests to http://<vpn-host>:<port>
+       (falls back to the direct remote URL if the local binary/cache is unavailable)
   → browser store id is a normal createBrowserId() uuid (must match
        BrowserAutomationBrowserIdSchema — never `plannotator-<sessionId>`)
   → user annotates / approves
-  → process exits; stdout JSON parsed
+  → accepted submit closes the Paseo tab immediately
+  → process exits after Plannotator's built-in grace period; stdout JSON parsed
   → plannotator.session.event { event: "feedback"|"closed", decision?, feedback? }
   → auto-send to agentId OR prefill composer (settings)
   → tab closes
@@ -72,14 +74,41 @@ Open Markdown / Open → Plannotator
 VS Code Web uses `chrome: "embedded"` (persistent webview, never detached).  
 Plannotator uses `chrome: "embedded-transient"` (chrome-less UI, normal create/destroy lifecycle) because each session is a **different port = different origin**.
 
+### Local UI acceleration
+
+Plannotator's upstream UI is a 22.6 MB Vite single-file build and its temporary server
+does not compress or cache it. Loading that HTML directly from a remote host takes
+roughly 10–15 seconds over VPN.
+
+The desktop app warms a local UI cache from the locally installed `plannotator` binary,
+then opens a loopback proxy per review. The proxy serves the large HTML locally and
+forwards only the small API calls to the remote session. If the binary version changes,
+its size/mtime cache key changes and the UI is extracted again. No Plannotator source
+checkout or custom upstream build is required.
+
+The proxy also sets Plannotator's existing preferences:
+
+- auto-close: immediate
+- color theme: `neutral`, following system light/dark mode
+- grid background: off
+
+After `/api/approve`, `/api/deny`, or `/api/feedback` succeeds, Electron tells the app
+to close the review tab immediately. Feedback delivery continues in the background
+while the upstream CLI completes its hard-coded 1.5 second response grace period.
+
 ### Settings
 
-| Setting                     | Default       | Meaning                                                                                                           |
-| --------------------------- | ------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `openMarkdownInPlannotator` | `false`       | When true (and feature available), rendered markdown opens go to Plannotator before VS Code Web / built-in viewer |
-| `plannotatorFeedbackMode`   | `"auto-send"` | `"auto-send"` → `sendAgentMessage`; `"compose"` → prefill agent draft                                             |
+| Setting                   | Default       | Meaning                                                               |
+| ------------------------- | ------------- | --------------------------------------------------------------------- |
+| `defaultFileOpener`       | `"paseo"`     | Ordinary file clicks use Paseo, VS Code Web, or Plannotator           |
+| `plannotatorFeedbackMode` | `"auto-send"` | `"auto-send"` → `sendAgentMessage`; `"compose"` → prefill agent draft |
 
-Explicit **Open → Plannotator** always works when the feature is available, regardless of the markdown default setting.
+Plannotator accepts document and configuration formats (`.md`, `.mdx`, `.txt`, HTML,
+YAML, JSON, TOML, INI, CSV, logs, XML, and related formats). When it is selected as
+the default, unsupported source-code files open in Paseo instead. Explicit
+**Open → Plannotator** remains available independently of the default.
+
+Cmd/Ctrl-click is an explicit side-pane disposition and always opens in Paseo.
 
 ### Remote hosts
 

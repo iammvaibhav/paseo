@@ -203,15 +203,15 @@ import {
 import {
   openBrowserEditorTab,
   openHostFileInBrowserEditor,
-  tryOpenFileInBrowserEditor,
 } from "@/workspace/open-file-in-browser-editor";
 import {
   stopPlannotatorBrowserIfNeeded,
   tryOpenFileInPlannotator,
 } from "@/workspace/open-file-in-plannotator";
-import { tryOpenMarkdownInPlannotatorIfEnabled } from "@/workspace/open-markdown-file";
+import { tryOpenFileWithDefaultOpener } from "@/workspace/open-file-with-default-opener";
 import { resolvePlannotatorEmbedHost } from "@/workspace/plannotator-embed-host";
 import {
+  closePlannotatorBrowserAfterSubmit,
   handlePlannotatorSessionEvent,
   type PlannotatorSessionEventPayload,
 } from "@/workspace/plannotator-feedback";
@@ -223,7 +223,6 @@ import { RenderProfile } from "@/utils/render-profiler";
 import { useWorkspaceCheckoutStatus } from "@/screens/workspace/use-workspace-checkout-status";
 import { useAppSettings } from "@/hooks/use-settings";
 import { useIsLocalDaemon } from "@/hooks/use-is-local-daemon";
-import { isRenderedMarkdownFile } from "@/components/file-pane-render-mode";
 
 const WORKSPACE_SETUP_AUTO_OPEN_WINDOW_MS = 30_000;
 const WORKSPACE_FLOATING_PANEL_PORTAL_HOST_PREFIX = "workspace-floating-panels";
@@ -2085,6 +2084,37 @@ function WorkspaceScreenContent({
     toast,
   ]);
 
+  useEffect(() => {
+    const subscribe = getDesktopHost()?.events?.on;
+    if (!subscribe) {
+      return;
+    }
+    let disposed = false;
+    let unsubscribe: (() => void) | null = null;
+    const subscription = subscribe("plannotator-submitted", (payload) => {
+      if (
+        typeof payload === "object" &&
+        payload !== null &&
+        "browserId" in payload &&
+        typeof payload.browserId === "string"
+      ) {
+        closePlannotatorBrowserAfterSubmit(payload.browserId);
+      }
+    });
+    void Promise.resolve(subscription).then((cleanup) => {
+      if (disposed) {
+        cleanup();
+        return undefined;
+      }
+      unsubscribe = cleanup;
+      return undefined;
+    });
+    return () => {
+      disposed = true;
+      unsubscribe?.();
+    };
+  }, []);
+
   useSyncWorkspaceActiveBrowser({
     workspaceLayout,
     isRouteFocused,
@@ -2434,56 +2464,33 @@ function WorkspaceScreenContent({
     workspaceSetupSnapshot,
   ]);
 
-  const handleOpenFileFromExplorer = useCallback(
-    function handleOpenFileFromExplorer(filePath: string) {
+  const tryOpenFileInConfiguredDefault = useCallback(
+    (location: WorkspaceFileLocation) => {
       if (!persistenceKey) {
-        return;
+        return Promise.resolve({ handled: false as const, via: "paseo" as const });
       }
-      const location = normalizeWorkspaceFileLocation({ path: filePath });
-      if (!location) {
-        return;
-      }
-      // Setting on: exclusive Plannotator for markdown — no VS Code / native fallthrough.
-      if (appSettings.openMarkdownInPlannotator && isRenderedMarkdownFile(location.path)) {
-        void tryOpenMarkdownInPlannotatorIfEnabled({
-          location,
-          client,
-          workspaceDirectory,
-          workspaceKey: persistenceKey,
-          agentId: focusedAgentId,
-          remote: !isLocalDaemon,
-          embedHost: plannotatorEmbedHost,
-          openMarkdownInPlannotator: true,
-          plannotatorAvailable,
-          workspaceTabs: uiTabs,
-          openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
-          navigateToTabId,
-          toast: { error: (msg) => toast.error(msg) },
-        });
-        return;
-      }
-      if (
-        browserEditorUrl &&
-        workspaceDirectory &&
-        tryOpenFileInBrowserEditor({
-          browserEditorUrl,
-          workspaceDirectory,
-          workspaceKey: persistenceKey,
-          location,
-          workspaceTabs: uiTabs,
-          openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
-          navigateToTabId,
-        })
-      ) {
-        return;
-      }
-      const tabId = openWorkspaceTabFocused(persistenceKey, createWorkspaceFileTabTarget(location));
-      if (tabId) {
-        navigateToTabId(tabId);
-      }
+      return tryOpenFileWithDefaultOpener({
+        defaultFileOpener: appSettings.defaultFileOpener,
+        location,
+        client,
+        workspaceDirectory,
+        workspaceKey: persistenceKey,
+        agentId: focusedAgentId,
+        remote: !isLocalDaemon,
+        embedHost: plannotatorEmbedHost,
+        plannotatorAvailable,
+        browserEditorUrl,
+        workspaceTabs: uiTabs,
+        openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
+        navigateToTabId,
+        toast: {
+          error: (message) => toast.error(message),
+          show: (message) => toast.show(message),
+        },
+      });
     },
     [
-      appSettings.openMarkdownInPlannotator,
+      appSettings.defaultFileOpener,
       browserEditorUrl,
       client,
       focusedAgentId,
@@ -2499,6 +2506,32 @@ function WorkspaceScreenContent({
     ],
   );
 
+  const handleOpenFileFromExplorer = useCallback(
+    function handleOpenFileFromExplorer(filePath: string) {
+      if (!persistenceKey) {
+        return;
+      }
+      const location = normalizeWorkspaceFileLocation({ path: filePath });
+      if (!location) {
+        return;
+      }
+      void tryOpenFileInConfiguredDefault(location).then((result) => {
+        if (result.handled) {
+          return undefined;
+        }
+        const tabId = openWorkspaceTabFocused(
+          persistenceKey,
+          createWorkspaceFileTabTarget(location),
+        );
+        if (tabId) {
+          navigateToTabId(tabId);
+        }
+        return undefined;
+      });
+    },
+    [navigateToTabId, openWorkspaceTabFocused, persistenceKey, tryOpenFileInConfiguredDefault],
+  );
+
   const handleOpenFileFromChat = useCallback(
     (location: WorkspaceFileLocation, options?: { parentTabId?: string | null }) => {
       const normalizedLocation = normalizeWorkspaceFileLocation(location);
@@ -2511,70 +2544,30 @@ function WorkspaceScreenContent({
       if (!persistenceKey) {
         return;
       }
-      // Setting on: exclusive Plannotator for markdown — no VS Code / native fallthrough.
-      if (
-        appSettings.openMarkdownInPlannotator &&
-        isRenderedMarkdownFile(normalizedLocation.path)
-      ) {
-        void tryOpenMarkdownInPlannotatorIfEnabled({
-          location: normalizedLocation,
-          client,
-          workspaceDirectory,
-          workspaceKey: persistenceKey,
-          agentId: focusedAgentId,
-          remote: !isLocalDaemon,
-          embedHost: plannotatorEmbedHost,
-          openMarkdownInPlannotator: true,
-          plannotatorAvailable,
-          workspaceTabs: uiTabs,
-          openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
-          navigateToTabId,
-          toast: { error: (msg) => toast.error(msg) },
-        });
-        return;
-      }
-      if (
-        browserEditorUrl &&
-        workspaceDirectory &&
-        tryOpenFileInBrowserEditor({
-          browserEditorUrl,
-          workspaceDirectory,
-          workspaceKey: persistenceKey,
-          location: normalizedLocation,
-          workspaceTabs: uiTabs,
-          openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
-          navigateToTabId,
-        })
-      ) {
-        return;
-      }
-      const target = createWorkspaceFileTabTarget(normalizedLocation);
-      const tabId = options?.parentTabId
-        ? openWorkspaceChildTabFocused(persistenceKey, target, options.parentTabId)
-        : openWorkspaceTabFocused(persistenceKey, target);
-      if (tabId) {
-        requestFileNavigation(tabId);
-        navigateToTabId(tabId);
-      }
+      void tryOpenFileInConfiguredDefault(normalizedLocation).then((result) => {
+        if (result.handled) {
+          return undefined;
+        }
+        const target = createWorkspaceFileTabTarget(normalizedLocation);
+        const tabId = options?.parentTabId
+          ? openWorkspaceChildTabFocused(persistenceKey, target, options.parentTabId)
+          : openWorkspaceTabFocused(persistenceKey, target);
+        if (tabId) {
+          requestFileNavigation(tabId);
+          navigateToTabId(tabId);
+        }
+        return undefined;
+      });
     },
     [
-      appSettings.openMarkdownInPlannotator,
-      browserEditorUrl,
-      client,
-      focusedAgentId,
-      isLocalDaemon,
       isMobile,
       navigateToTabId,
       openWorkspaceChildTabFocused,
       openWorkspaceTabFocused,
       persistenceKey,
-      plannotatorAvailable,
-      plannotatorEmbedHost,
       requestFileNavigation,
       showMobileAgent,
-      toast,
-      uiTabs,
-      workspaceDirectory,
+      tryOpenFileInConfiguredDefault,
     ],
   );
 

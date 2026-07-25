@@ -126,6 +126,13 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
     ) => ipcRenderer.invoke("paseo:browser:capture-element", browserId, rect),
     copyElement: (payload: { text?: string; imageDataUrl?: string }) =>
       ipcRenderer.invoke("paseo:browser:copy-element", payload),
+    preparePlannotator: (input: { browserId: string; remoteUrl: string }) =>
+      ipcRenderer.invoke("paseo:browser:prepare-plannotator", input) as Promise<{
+        url: string;
+        accelerated: boolean;
+      }>,
+    releasePlannotator: (browserId: string) =>
+      ipcRenderer.invoke("paseo:browser:release-plannotator", browserId),
   },
   browserEditor: {
     setInsecureOrigins: (origins: string[]) =>

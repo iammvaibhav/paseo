@@ -19,7 +19,7 @@ import { type AggregatedAgent } from "@/hooks/use-aggregated-agents";
 import { useSessionStore } from "@/stores/session-store";
 import { Archive, ChevronRight } from "lucide-react-native";
 import { getProviderIcon } from "@/components/provider-icons";
-import { navigateToAgent } from "@/utils/navigate-to-agent";
+import { openAgentFromHistory } from "@/workspace/open-agent-from-history";
 import { useArchiveAgent } from "@/hooks/use-archive-agent";
 
 interface AgentListProps {
@@ -386,15 +386,12 @@ export function AgentList({
         return;
       }
 
-      const serverId = agent.serverId;
-      const agentId = agent.id;
-
       onAgentSelect?.();
-      navigateToAgent({
-        serverId,
-        agentId,
+      void openAgentFromHistory({
+        serverId: agent.serverId,
+        agentId: agent.id,
         workspaceId: agent.workspaceId,
-        pin: true,
+        archived: Boolean(agent.archivedAt),
       });
     },
     [isActionSheetVisible, onAgentSelect],

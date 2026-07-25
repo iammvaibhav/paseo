@@ -1,50 +1,15 @@
-import { Pressable, Switch, Text, View, type StyleProp, type ViewStyle } from "react-native";
+import { Switch, Text, View, type ViewStyle } from "react-native";
 import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { useAppSettings } from "@/hooks/use-settings";
-import type { PlannotatorFeedbackMode } from "@/hooks/use-settings/storage";
+import type { DefaultFileOpener, PlannotatorFeedbackMode } from "@/hooks/use-settings/storage";
 import { SettingsSection } from "./settings-section";
 import { settingsStyles } from "@/styles/settings";
+import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
 
-const MODE_ROW_STYLE: ViewStyle = {
-  flexDirection: "row",
-  gap: 8,
+const CONTROL_STYLE: ViewStyle = {
   marginTop: 8,
 };
-
-const MODE_BUTTON_BASE: ViewStyle = {
-  paddingHorizontal: 10,
-  paddingVertical: 6,
-  borderRadius: 8,
-  borderWidth: 1,
-};
-
-function FeedbackModeButton(props: {
-  mode: PlannotatorFeedbackMode;
-  label: string;
-  selected: boolean;
-  onSelect: (mode: PlannotatorFeedbackMode) => void;
-}) {
-  const handlePress = useCallback(() => {
-    props.onSelect(props.mode);
-  }, [props]);
-  const accessibilityState = useMemo(() => ({ selected: props.selected }), [props.selected]);
-  const style = useMemo(
-    (): StyleProp<ViewStyle> => [MODE_BUTTON_BASE, { opacity: props.selected ? 1 : 0.7 }],
-    [props.selected],
-  );
-  return (
-    <Pressable
-      onPress={handlePress}
-      accessibilityRole="button"
-      accessibilityState={accessibilityState}
-      style={style}
-      testID={`plannotator-feedback-mode-${props.mode}`}
-    >
-      <Text style={settingsStyles.rowTitle}>{props.label}</Text>
-    </Pressable>
-  );
-}
 
 export function EditorSection() {
   const { t } = useTranslation();
@@ -53,14 +18,29 @@ export function EditorSection() {
     (vimKeybindings: boolean) => void updateSettings({ vimKeybindings }),
     [updateSettings],
   );
-  const handleMarkdownPlannotatorChange = useCallback(
-    (openMarkdownInPlannotator: boolean) => void updateSettings({ openMarkdownInPlannotator }),
+  const handleDefaultFileOpenerChange = useCallback(
+    (defaultFileOpener: DefaultFileOpener) => void updateSettings({ defaultFileOpener }),
     [updateSettings],
   );
   const handleFeedbackModeChange = useCallback(
     (plannotatorFeedbackMode: PlannotatorFeedbackMode) =>
       void updateSettings({ plannotatorFeedbackMode }),
     [updateSettings],
+  );
+  const defaultFileOpenerOptions = useMemo<Array<SegmentedControlOption<DefaultFileOpener>>>(
+    () => [
+      { value: "paseo", label: t("settings.editor.defaultFileOpenerPaseo") },
+      { value: "vscode-web", label: t("settings.editor.defaultFileOpenerVsCodeWeb") },
+      { value: "plannotator", label: t("settings.editor.defaultFileOpenerPlannotator") },
+    ],
+    [t],
+  );
+  const feedbackModeOptions = useMemo<Array<SegmentedControlOption<PlannotatorFeedbackMode>>>(
+    () => [
+      { value: "auto-send", label: t("settings.editor.plannotatorFeedbackAutoSend") },
+      { value: "compose", label: t("settings.editor.plannotatorFeedbackCompose") },
+    ],
+    [t],
   );
 
   return (
@@ -80,19 +60,17 @@ export function EditorSection() {
         </View>
         <View style={settingsStyles.row}>
           <View style={settingsStyles.rowContent}>
-            <Text style={settingsStyles.rowTitle}>
-              {t("settings.editor.openMarkdownInPlannotator")}
-            </Text>
-            <Text style={settingsStyles.rowHint}>
-              {t("settings.editor.openMarkdownInPlannotatorHint")}
-            </Text>
+            <Text style={settingsStyles.rowTitle}>{t("settings.editor.defaultFileOpener")}</Text>
+            <Text style={settingsStyles.rowHint}>{t("settings.editor.defaultFileOpenerHint")}</Text>
+            <SegmentedControl
+              options={defaultFileOpenerOptions}
+              value={settings.defaultFileOpener}
+              onValueChange={handleDefaultFileOpenerChange}
+              size="sm"
+              style={CONTROL_STYLE}
+              testID="default-file-opener"
+            />
           </View>
-          <Switch
-            value={settings.openMarkdownInPlannotator}
-            onValueChange={handleMarkdownPlannotatorChange}
-            accessibilityLabel={t("settings.editor.openMarkdownInPlannotator")}
-            testID="open-markdown-plannotator-toggle"
-          />
         </View>
         <View style={settingsStyles.row}>
           <View style={settingsStyles.rowContent}>
@@ -102,20 +80,14 @@ export function EditorSection() {
             <Text style={settingsStyles.rowHint}>
               {t("settings.editor.plannotatorFeedbackModeHint")}
             </Text>
-            <View style={MODE_ROW_STYLE}>
-              <FeedbackModeButton
-                mode="auto-send"
-                label={t("settings.editor.plannotatorFeedbackAutoSend")}
-                selected={settings.plannotatorFeedbackMode === "auto-send"}
-                onSelect={handleFeedbackModeChange}
-              />
-              <FeedbackModeButton
-                mode="compose"
-                label={t("settings.editor.plannotatorFeedbackCompose")}
-                selected={settings.plannotatorFeedbackMode === "compose"}
-                onSelect={handleFeedbackModeChange}
-              />
-            </View>
+            <SegmentedControl
+              options={feedbackModeOptions}
+              value={settings.plannotatorFeedbackMode}
+              onValueChange={handleFeedbackModeChange}
+              size="sm"
+              style={CONTROL_STYLE}
+              testID="plannotator-feedback-mode"
+            />
           </View>
         </View>
       </View>

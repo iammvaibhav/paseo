@@ -1,5 +1,5 @@
 import { getIsElectron } from "@/constants/platform";
-import { isRenderedMarkdownFile } from "@/components/file-pane-render-mode";
+import { getDesktopHost } from "@/desktop/host";
 import {
   createBrowserId,
   createWorkspaceBrowser,
@@ -51,6 +51,13 @@ export interface OpenFileInPlannotatorInput extends PlannotatorTabActions {
 export type OpenFileInPlannotatorResult =
   | { ok: true; sessionId: string; browserId: string }
   | { ok: false; reason: string; message: string };
+
+const PLANNOTATOR_ANNOTATABLE_DOC_REGEX =
+  /(\.(mdx?|txt|html?|ya?ml|jsonc?|json5|toml|ini|cfg|conf|properties|csv|tsv|log|xml)|\.env\.example)$/i;
+
+export function isPlannotatorAnnotatableFile(path: string): boolean {
+  return PLANNOTATOR_ANNOTATABLE_DOC_REGEX.test(path.trim());
+}
 
 /** Map a daemon-local ready URL onto the host address the desktop can reach. */
 export function buildPlannotatorEmbedUrl(input: {
@@ -107,6 +114,7 @@ function focusPlannotatorBrowserTab(input: PlannotatorTabActions & { browserId: 
  * use a `plannotator-` prefix (Zod throws and the tab never opens).
  */
 function ensurePlannotatorBrowserRecord(input: {
+  browserId: string;
   sessionId: string;
   embedUrl: string;
   title: string;
@@ -121,16 +129,97 @@ function ensurePlannotatorBrowserRecord(input: {
     return existing.browserId;
   }
 
-  const browserId = createBrowserId();
   createWorkspaceBrowser({
-    browserId,
+    browserId: input.browserId,
     initialUrl: input.embedUrl,
     chrome: "embedded-transient",
   });
-  useBrowserStore.getState().updateBrowser(browserId, {
+  useBrowserStore.getState().updateBrowser(input.browserId, {
     title: input.title,
   });
-  return browserId;
+  return input.browserId;
+}
+
+async function requestPlannotatorSession(input: {
+  openInput: OpenFileInPlannotatorInput;
+  absolutePath: string;
+}): Promise<
+  | { started: PlannotatorSessionStartResult }
+  | { error: OpenFileInPlannotatorResult & { ok: false } }
+> {
+  try {
+    const started = await input.openInput.client.startPlannotatorSession({
+      kind: "annotate",
+      path: input.absolutePath,
+      workspaceDir: input.openInput.workspaceDirectory,
+      ...(input.openInput.agentId ? { agentId: input.openInput.agentId } : {}),
+      workspaceKey: input.openInput.workspaceKey,
+      remote: input.openInput.remote === true,
+    });
+    return { started };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn("[plannotator] failed to start session", error);
+    return {
+      error: {
+        ok: false,
+        reason: "start_failed",
+        message: message.trim() || "Could not open Plannotator",
+      },
+    };
+  }
+}
+
+async function preparePlannotatorUiUrl(input: {
+  browserId: string;
+  remoteUrl: string;
+}): Promise<string> {
+  try {
+    const prepared = await getDesktopHost()?.browser?.preparePlannotator?.({
+      browserId: input.browserId,
+      remoteUrl: input.remoteUrl,
+    });
+    if (prepared?.url) {
+      console.log(
+        `[plannotator] UI ${prepared.accelerated ? "served locally" : "loaded remotely"} url=${prepared.url}`,
+      );
+      return prepared.url;
+    }
+  } catch (error) {
+    console.warn("[plannotator] local UI proxy unavailable; loading directly", error);
+  }
+  return input.remoteUrl;
+}
+
+async function createPlannotatorBrowser(input: {
+  browserId: string;
+  sessionId: string;
+  embedUrl: string;
+  title: string;
+  client: PlannotatorSessionClient;
+}): Promise<{ browserId: string } | { error: OpenFileInPlannotatorResult & { ok: false } }> {
+  try {
+    return {
+      browserId: ensurePlannotatorBrowserRecord({
+        browserId: input.browserId,
+        sessionId: input.sessionId,
+        embedUrl: input.embedUrl,
+        title: input.title,
+      }),
+    };
+  } catch (error) {
+    void getDesktopHost()?.browser?.releasePlannotator?.(input.browserId);
+    void input.client.stopPlannotatorSession(input.sessionId).catch(() => {});
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn("[plannotator] failed to create browser tab", error);
+    return {
+      error: {
+        ok: false,
+        reason: "browser_create_failed",
+        message: message.trim() || "Could not open Plannotator browser tab",
+      },
+    };
+  }
 }
 
 /**
@@ -147,11 +236,11 @@ export async function tryOpenFileInPlannotator(
       message: "Plannotator is only available in the desktop app",
     };
   }
-  if (!isRenderedMarkdownFile(input.location.path)) {
+  if (!isPlannotatorAnnotatableFile(input.location.path)) {
     return {
       ok: false,
-      reason: "not_markdown",
-      message: "Only Markdown files can be opened in Plannotator",
+      reason: "unsupported_file",
+      message: "This file type is not supported by Plannotator",
     };
   }
 
@@ -186,27 +275,16 @@ export async function tryOpenFileInPlannotator(
     }
   }
 
-  let started: PlannotatorSessionStartResult;
-  try {
-    started = await input.client.startPlannotatorSession({
-      kind: "annotate",
-      path: resolved.absolutePath,
-      workspaceDir: input.workspaceDirectory,
-      ...(input.agentId ? { agentId: input.agentId } : {}),
-      workspaceKey: input.workspaceKey,
-      remote: input.remote === true,
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn("[plannotator] failed to start session", error);
-    return {
-      ok: false,
-      reason: "start_failed",
-      message: message.trim() || "Could not open Plannotator",
-    };
+  const sessionAttempt = await requestPlannotatorSession({
+    openInput: input,
+    absolutePath: resolved.absolutePath,
+  });
+  if ("error" in sessionAttempt) {
+    return sessionAttempt.error;
   }
+  const { started } = sessionAttempt;
 
-  const embedUrl = buildPlannotatorEmbedUrl({
+  const remoteEmbedUrl = buildPlannotatorEmbedUrl({
     port: started.port,
     daemonUrl: started.url,
     remote: input.remote === true,
@@ -216,28 +294,27 @@ export async function tryOpenFileInPlannotator(
   if (input.remote === true && !input.embedHost?.trim()) {
     console.warn(
       "[plannotator] remote session started but embedHost is missing; webview may not load",
-      { embedUrl, daemonUrl: started.url },
+      { embedUrl: remoteEmbedUrl, daemonUrl: started.url },
     );
   }
 
   const title = `Plannotator · ${resolved.relativePath ?? resolved.absolutePath}`;
-
-  let browserId: string;
-  try {
-    browserId = ensurePlannotatorBrowserRecord({
-      sessionId: started.sessionId,
-      embedUrl,
-      title,
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn("[plannotator] failed to create browser tab", error);
-    return {
-      ok: false,
-      reason: "browser_create_failed",
-      message: message.trim() || "Could not open Plannotator browser tab",
-    };
+  const requestedBrowserId = createBrowserId();
+  const embedUrl = await preparePlannotatorUiUrl({
+    browserId: requestedBrowserId,
+    remoteUrl: remoteEmbedUrl,
+  });
+  const browserAttempt = await createPlannotatorBrowser({
+    browserId: requestedBrowserId,
+    sessionId: started.sessionId,
+    embedUrl,
+    title,
+    client: input.client,
+  });
+  if ("error" in browserAttempt) {
+    return browserAttempt.error;
   }
+  const { browserId } = browserAttempt;
 
   console.log(
     `[plannotator] open session=${started.sessionId} browserId=${browserId} port=${started.port} remote=${input.remote === true} url=${embedUrl} path=${resolved.absolutePath}`,
@@ -273,6 +350,7 @@ export async function stopPlannotatorBrowserIfNeeded(input: {
   }
 
   clearPlannotatorBrowserSession(session.sessionId);
+  await releasePlannotatorLocalProxy(input.browserId);
 
   if (!input.client || !session.sessionId) {
     return;
@@ -284,6 +362,14 @@ export async function stopPlannotatorBrowserIfNeeded(input: {
       sessionId: session.sessionId,
       error,
     });
+  }
+}
+
+export async function releasePlannotatorLocalProxy(browserId: string): Promise<void> {
+  try {
+    await getDesktopHost()?.browser?.releasePlannotator?.(browserId);
+  } catch (error) {
+    console.warn("[plannotator] failed to release local UI proxy", { browserId, error });
   }
 }
 

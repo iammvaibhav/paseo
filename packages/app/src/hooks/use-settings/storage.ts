@@ -14,12 +14,18 @@ export type ServiceUrlBehavior = "ask" | "in-app" | "external";
 export type WorkspaceTitleSource = "title" | "branch";
 export type ToolCallDetailLevel = "overview" | "detailed";
 export type PlannotatorFeedbackMode = "auto-send" | "compose";
+export type DefaultFileOpener = "paseo" | "vscode-web" | "plannotator";
 
 const VALID_THEMES = new Set<string>([...Object.keys(THEME_TO_UNISTYLES), "auto"]);
 const VALID_SERVICE_URL_BEHAVIORS = new Set<ServiceUrlBehavior>(["ask", "in-app", "external"]);
 const VALID_WORKSPACE_TITLE_SOURCES = new Set<WorkspaceTitleSource>(["title", "branch"]);
 const VALID_TOOL_CALL_DETAIL_LEVELS = new Set<ToolCallDetailLevel>(["overview", "detailed"]);
 const VALID_PLANNOTATOR_FEEDBACK_MODES = new Set<PlannotatorFeedbackMode>(["auto-send", "compose"]);
+const VALID_DEFAULT_FILE_OPENERS = new Set<DefaultFileOpener>([
+  "paseo",
+  "vscode-web",
+  "plannotator",
+]);
 export const DEFAULT_TERMINAL_SCROLLBACK_LINES = 10_000;
 export const MIN_TERMINAL_SCROLLBACK_LINES = 0;
 export const MAX_TERMINAL_SCROLLBACK_LINES = 1_000_000;
@@ -46,8 +52,8 @@ export interface AppSettings {
   autoExpandReasoning: boolean;
   toolCallDetailLevel: ToolCallDetailLevel;
   vimKeybindings: boolean;
-  /** When true, rendered markdown file opens go to Plannotator (desktop, when available). */
-  openMarkdownInPlannotator: boolean;
+  /** Preferred destination for ordinary file opens. Explicit side-pane opens remain in Paseo. */
+  defaultFileOpener: DefaultFileOpener;
   /** How to deliver Plannotator feedback to the linked agent. */
   plannotatorFeedbackMode: PlannotatorFeedbackMode;
 }
@@ -57,7 +63,10 @@ export interface Settings extends AppSettings {
   releaseChannel: ReleaseChannel;
 }
 
-type StoredAppSettings = Partial<AppSettings> & { compactToolCalls?: unknown };
+type StoredAppSettings = Partial<AppSettings> & {
+  compactToolCalls?: unknown;
+  openMarkdownInPlannotator?: unknown;
+};
 
 export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   theme: "auto",
@@ -74,7 +83,7 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   autoExpandReasoning: false,
   toolCallDetailLevel: "detailed",
   vimKeybindings: false,
-  openMarkdownInPlannotator: false,
+  defaultFileOpener: "paseo",
   plannotatorFeedbackMode: "auto-send",
 };
 
@@ -198,8 +207,15 @@ function parseToolCallDetailLevel(stored: StoredAppSettings): ToolCallDetailLeve
 
 function pickPlannotatorAppSettings(stored: StoredAppSettings): Partial<AppSettings> {
   const result: Partial<AppSettings> = {};
-  if (typeof stored.openMarkdownInPlannotator === "boolean") {
-    result.openMarkdownInPlannotator = stored.openMarkdownInPlannotator;
+  if (
+    typeof stored.defaultFileOpener === "string" &&
+    VALID_DEFAULT_FILE_OPENERS.has(stored.defaultFileOpener)
+  ) {
+    result.defaultFileOpener = stored.defaultFileOpener;
+  } else if (typeof stored.openMarkdownInPlannotator === "boolean") {
+    // COMPAT(defaultFileOpener): added in v0.2.0-beta.1; remove after 2027-01-21.
+    // Previously, a configured host sent non-markdown files to VS Code Web.
+    result.defaultFileOpener = stored.openMarkdownInPlannotator ? "plannotator" : "vscode-web";
   }
   if (
     typeof stored.plannotatorFeedbackMode === "string" &&

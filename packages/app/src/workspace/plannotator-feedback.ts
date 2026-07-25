@@ -2,8 +2,11 @@ import { buildDraftStoreKey } from "@/stores/draft-keys";
 import { useDraftStore } from "@/stores/draft-store";
 import { useBrowserStore } from "@/stores/browser-store";
 import { collectAllTabs, useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
+import { removeResidentBrowserWebview } from "@/components/browser-webview-resident";
+import { getDesktopHost } from "@/desktop/host";
 import {
   clearPlannotatorBrowserSession,
+  getPlannotatorBrowserSessionByBrowserId,
   getPlannotatorBrowserSessionBySessionId,
 } from "@/workspace/open-file-in-plannotator";
 
@@ -127,6 +130,20 @@ function closePlannotatorBrowserTab(input: {
     }
   }
   useBrowserStore.getState().removeBrowser(input.browserId);
+  removeResidentBrowserWebview(input.browserId);
+  void getDesktopHost()?.browser?.unregisterWorkspaceBrowser?.(input.browserId);
+}
+
+/** Close the visible tab as soon as Plannotator accepts feedback; delivery continues in background. */
+export function closePlannotatorBrowserAfterSubmit(browserId: string): void {
+  const session = getPlannotatorBrowserSessionByBrowserId(browserId);
+  if (!session) {
+    return;
+  }
+  closePlannotatorBrowserTab({
+    browserId,
+    workspaceKey: session.workspaceKey,
+  });
 }
 
 // --- composer prefill pub/sub ---

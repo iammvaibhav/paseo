@@ -167,6 +167,12 @@ export interface DesktopBrowserBridge {
   ) => Promise<string | null>;
   /** Copy element text and/or an image to the system clipboard from main. */
   copyElement?: (payload: { text?: string; imageDataUrl?: string }) => Promise<boolean>;
+  /** Serve the large Plannotator UI locally while proxying its API to the host. */
+  preparePlannotator?: (input: {
+    browserId: string;
+    remoteUrl: string;
+  }) => Promise<{ url: string; accelerated: boolean }>;
+  releasePlannotator?: (browserId: string) => Promise<void>;
 }
 
 export interface DesktopBrowserEditorBridge {

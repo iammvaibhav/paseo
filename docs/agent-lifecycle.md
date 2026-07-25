@@ -94,6 +94,21 @@ Provider session connection owns every process it spawns until the session is re
 `connect()` must dispose that process before rethrowing; the manager cannot clean up a session it never
 received.
 
+### Opening an archived agent from History
+
+The host's live agent directory is synced with `scope: "active"`, so archived agents never land in
+the session store on their own. The workspace tab reconcile
+(`reconcileWorkspaceTabs`) keeps an agent tab only if the agent is **active** (not `archivedAt`) or
+**pinned _and_ known** (present in `agents`/`agentDetails`). A cold archived agent is none of these,
+so a tab opened straight for it is pruned on the first reconcile and focus falls back to some other
+active agent in that workspace — the tab "opens the wrong agent."
+
+Opening an archived agent from the History list therefore does two things before navigating
+(`workspace/open-agent-from-history`): it `fetchAgent`s the record into `agentDetails` via
+`storeFetchedAgentDetail` (so reconcile counts it as **known**), and it pins the tab (so reconcile
+**keeps** it). The pane then mounts read-only and shows the Unarchive callout. Because `agentDetails`
+is not persisted, the pin is ignored on the next app session and the archived tab does not reappear.
+
 ## Tabs vs archive
 
 These are two distinct concepts that used to be conflated:

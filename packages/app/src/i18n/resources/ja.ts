@@ -1629,9 +1629,12 @@ export const ja: TranslationResources = {
       title: "エディター",
       vimKeybindings: "Vim キーバインド",
       vimHint: "Web とデスクトップのソースファイルに適用されます。",
-      openMarkdownInPlannotator: "Open Markdown in Plannotator",
-      openMarkdownInPlannotatorHint:
-        "Desktop only. When available, .md files open in an embedded Plannotator review tab instead of the default viewer.",
+      defaultFileOpener: "Default file opener",
+      defaultFileOpenerHint:
+        "Used for normal file clicks. Plannotator supports document and configuration files; source files fall back to Paseo.",
+      defaultFileOpenerPaseo: "Paseo",
+      defaultFileOpenerVsCodeWeb: "VS Code Web",
+      defaultFileOpenerPlannotator: "Plannotator",
       plannotatorFeedbackMode: "Plannotator feedback",
       plannotatorFeedbackModeHint: "How annotation feedback is delivered to the linked agent.",
       plannotatorFeedbackAutoSend: "Auto-send",

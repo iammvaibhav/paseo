@@ -1613,9 +1613,12 @@ export const ar: TranslationResources = {
       title: "المحرر",
       vimKeybindings: "اختصارات Vim",
       vimHint: "تنطبق على ملفات المصدر في الويب وسطح المكتب.",
-      openMarkdownInPlannotator: "Open Markdown in Plannotator",
-      openMarkdownInPlannotatorHint:
-        "Desktop only. When available, .md files open in an embedded Plannotator review tab instead of the default viewer.",
+      defaultFileOpener: "Default file opener",
+      defaultFileOpenerHint:
+        "Used for normal file clicks. Plannotator supports document and configuration files; source files fall back to Paseo.",
+      defaultFileOpenerPaseo: "Paseo",
+      defaultFileOpenerVsCodeWeb: "VS Code Web",
+      defaultFileOpenerPlannotator: "Plannotator",
       plannotatorFeedbackMode: "Plannotator feedback",
       plannotatorFeedbackModeHint: "How annotation feedback is delivered to the linked agent.",
       plannotatorFeedbackAutoSend: "Auto-send",

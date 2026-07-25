@@ -1594,9 +1594,12 @@ export const zhCN: TranslationResources = {
       title: "编辑器",
       vimKeybindings: "Vim 键位",
       vimHint: "适用于网页和桌面端的源文件。",
-      openMarkdownInPlannotator: "在 Plannotator 中打开 Markdown",
-      openMarkdownInPlannotatorHint:
-        "仅桌面端。可用时，.md 文件会在嵌入的 Plannotator 审阅标签中打开，而不是默认查看器。",
+      defaultFileOpener: "默认文件打开方式",
+      defaultFileOpenerHint:
+        "用于普通文件点击。Plannotator 支持文档和配置文件；源代码文件会改用 Paseo 打开。",
+      defaultFileOpenerPaseo: "Paseo",
+      defaultFileOpenerVsCodeWeb: "VS Code Web",
+      defaultFileOpenerPlannotator: "Plannotator",
       plannotatorFeedbackMode: "Plannotator 反馈",
       plannotatorFeedbackModeHint: "批注反馈如何发送给关联的 agent。",
       plannotatorFeedbackAutoSend: "自动发送",
