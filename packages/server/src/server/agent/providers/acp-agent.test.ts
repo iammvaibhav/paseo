@@ -1872,6 +1872,107 @@ describe("ACPAgentSession slash commands", () => {
     await expect(session.listCommands()).resolves.toEqual([]);
   });
 
+  test("keeps available_commands_update that arrives before sessionId is assigned", async () => {
+    // Grok (and possibly other ACP agents) emit available_commands_update with
+    // the new sessionId before session/new resolves. this.sessionId is still
+    // null at that point; dropping the update leaves slash commands empty.
+    const session = new ACPAgentSession(
+      {
+        provider: "grok",
+        cwd: "/tmp/paseo-acp-test",
+      },
+      {
+        provider: "grok",
+        logger: createTestLogger(),
+        defaultCommand: ["grok", "agent", "stdio"],
+        defaultModes: [],
+        capabilities: {
+          supportsStreaming: true,
+          supportsSessionPersistence: true,
+          supportsDynamicModes: true,
+          supportsMcpServers: true,
+          supportsReasoningStream: true,
+          supportsToolInvocations: true,
+        },
+        waitForInitialCommands: false,
+      },
+    );
+
+    await session.sessionUpdate({
+      sessionId: "session-before-assign",
+      update: {
+        sessionUpdate: "available_commands_update",
+        availableCommands: [
+          {
+            name: "check-work",
+            description: "Verify recent changes",
+            input: { hint: "optional scope" },
+          },
+          {
+            name: "compact",
+            description: "Compress conversation history",
+          },
+        ],
+      },
+    });
+
+    await expect(session.listCommands()).resolves.toEqual([
+      {
+        name: "check-work",
+        description: "Verify recent changes",
+        argumentHint: "optional scope",
+        kind: "command",
+      },
+      {
+        name: "compact",
+        description: "Compress conversation history",
+        argumentHint: "",
+        kind: "command",
+      },
+    ]);
+  });
+
+  test("still ignores available_commands_update for a different session after sessionId is set", async () => {
+    const session = new ACPAgentSession(
+      {
+        provider: "grok",
+        cwd: "/tmp/paseo-acp-test",
+      },
+      {
+        provider: "grok",
+        logger: createTestLogger(),
+        defaultCommand: ["grok", "agent", "stdio"],
+        defaultModes: [],
+        capabilities: {
+          supportsStreaming: true,
+          supportsSessionPersistence: true,
+          supportsDynamicModes: true,
+          supportsMcpServers: true,
+          supportsReasoningStream: true,
+          supportsToolInvocations: true,
+        },
+        waitForInitialCommands: false,
+      },
+    );
+
+    asInternals<{ sessionId: string | null }>(session).sessionId = "session-a";
+
+    await session.sessionUpdate({
+      sessionId: "session-b",
+      update: {
+        sessionUpdate: "available_commands_update",
+        availableCommands: [
+          {
+            name: "should-not-appear",
+            description: "From another session",
+          },
+        ],
+      },
+    });
+
+    await expect(session.listCommands()).resolves.toEqual([]);
+  });
+
   test("waits for async available_commands_update when enabled", async () => {
     const session = new ACPAgentSession(
       {

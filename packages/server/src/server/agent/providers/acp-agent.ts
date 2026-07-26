@@ -2206,7 +2206,12 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       },
       "provider.acp.raw_event",
     );
-    if (params.sessionId !== this.sessionId) {
+    // Accept updates that arrive before session/new resolves. Some agents
+    // (notably Grok) publish available_commands_update with the new sessionId
+    // before the session/new response returns, while this.sessionId is still
+    // null. Dropping those updates leaves the slash-command list empty for the
+    // whole session, because Grok does not re-send the batch afterward.
+    if (this.sessionId !== null && params.sessionId !== this.sessionId) {
       return;
     }
 
@@ -2608,7 +2613,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
         this.cachedCommands = update.availableCommands.map((command) => ({
           name: command.name,
           description: command.description,
-          argumentHint: "",
+          argumentHint: command.input?.hint ?? "",
           kind: "command",
         }));
         this.settleCommandsReady();
