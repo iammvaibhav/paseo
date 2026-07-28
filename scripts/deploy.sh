@@ -412,12 +412,100 @@ daemon_path_env() {
   printf '%s' "${HOME}/.local/bin:${PATH}"
 }
 
+# Map a daemon listen address to a loopback-friendly HTTP health URL.
+# Tailscale/all-interfaces binds are probed on 127.0.0.1 with the same port.
+daemon_health_url() {
+  local home="$1"
+  local listen=""
+  if [[ -f "$home/config.json" ]]; then
+    listen="$(
+      node -e '
+const fs = require("fs");
+try {
+  const c = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  const l = c && c.daemon && c.daemon.listen;
+  if (typeof l === "string" && l.trim()) process.stdout.write(l.trim());
+} catch {}
+' "$home/config.json" 2>/dev/null || true
+    )"
+  fi
+  if [[ -z "$listen" ]]; then
+    listen="127.0.0.1:6767"
+  fi
+  case "$listen" in
+    0.0.0.0:*) listen="127.0.0.1:${listen#0.0.0.0:}" ;;
+    \[::\]:*) listen="127.0.0.1:${listen#\[::\]:}" ;;
+    *:*)
+      # Non-loopback host (e.g. Tailscale IP): still probe loopback on that port.
+      listen="127.0.0.1:${listen##*:}"
+      ;;
+    *) listen="127.0.0.1:${listen}" ;;
+  esac
+  printf 'http://%s/api/health' "$listen"
+}
+
+wait_for_daemon_health() {
+  local home="$1"
+  local label="$2"
+  local timeout_s="${3:-90}"
+  local url
+  url="$(daemon_health_url "$home")"
+  local i
+  log "Waiting for $label daemon health at $url (up to ${timeout_s}s)"
+  for ((i = 1; i <= timeout_s; i++)); do
+    if curl -fsS --max-time 2 "$url" >/dev/null 2>&1; then
+      log "$label daemon healthy after ${i}s ($url)"
+      return 0
+    fi
+    sleep 1
+  done
+  log "$label daemon not healthy after ${timeout_s}s ($url)"
+  return 1
+}
+
+# Run daemon restart fully detached from this process tree. A blocking restart from
+# an agent that lives under the daemon can stop the daemon and die before start
+# runs — leaving the host with no daemon. nohup/setsid + health wait fixes that.
+restart_daemon_detached() {
+  local home="$1"
+  local label="$2"
+  local cwd="${3:-$ROOT_DIR}"
+  local logf="/tmp/paseo-daemon-restart-${label}.log"
+  local path_env
+  path_env="$(daemon_path_env)"
+  : >"$logf"
+  log "Restarting $label daemon ($home) [detached; log $logf]"
+
+  local restart_script
+  restart_script="$(
+    cat <<EOF
+set -euo pipefail
+cd $(printf %q "$cwd")
+export PATH=$(printf %q "$path_env")
+exec npx tsx packages/cli/src/index.js daemon restart --home $(printf %q "$home")
+EOF
+  )"
+
+  if command -v setsid >/dev/null 2>&1; then
+    # Linux: new session so SIGHUP/kill of the deploy process group cannot
+    # take the restart down mid-stop.
+    setsid bash -c "$restart_script" >>"$logf" 2>&1 </dev/null &
+  else
+    # macOS: no setsid by default.
+    nohup bash -c "$restart_script" >>"$logf" 2>&1 </dev/null &
+  fi
+  # Do not `wait` on the restart PID — if something still reaps us, health is truth.
+
+  if ! wait_for_daemon_health "$home" "$label" 90; then
+    log "$label daemon restart failed; last log lines from $logf:"
+    tail -n 80 "$logf" 2>/dev/null || true
+    die "$label daemon failed to come back after restart (see $logf). Recover with: PATH=\"\$HOME/.local/bin:\$PATH\" npx tsx packages/cli/src/index.js daemon start --home $(printf %q "$home")"
+  fi
+  log "$label daemon restart complete (log: $logf)"
+}
+
 restart_local_daemon() {
-  log "Restarting local daemon ($LOCAL_PASEO_HOME)"
-  (
-    cd "$ROOT_DIR"
-    PATH="$(daemon_path_env)" npx tsx packages/cli/src/index.js daemon restart --home "$LOCAL_PASEO_HOME"
-  )
+  restart_daemon_detached "$LOCAL_PASEO_HOME" "local" "$ROOT_DIR"
 }
 
 deploy_local_code_server() {
@@ -755,7 +843,46 @@ build_and_restart() {
     fi
     log "Tunnel provider: \$TUNNEL_PROVIDER"
   fi
-  PATH="\$(daemon_path_env)" npx tsx packages/cli/src/index.js daemon restart --home "\$PASEO_HOME"
+  # Detached restart so a flaky stop cannot leave the host without a start.
+  # Probe both the configured listen URL and loopback:port (Tailscale-only binds
+  # fail on 127.0.0.1; all-interfaces binds work on loopback).
+  restart_log="/tmp/paseo-daemon-restart-remote-\$\$.log"
+  : >"\$restart_log"
+  log "Restarting daemon (\$PASEO_HOME) [detached; log \$restart_log]"
+  if command -v setsid >/dev/null 2>&1; then
+    setsid bash -c "cd \"\$HOME/\$REMOTE_REPO_DIR\" && PATH=\"\$(daemon_path_env)\" npx tsx packages/cli/src/index.js daemon restart --home \"\$PASEO_HOME\"" >>"\$restart_log" 2>&1 </dev/null &
+  else
+    nohup bash -c "cd \"\$HOME/\$REMOTE_REPO_DIR\" && PATH=\"\$(daemon_path_env)\" npx tsx packages/cli/src/index.js daemon restart --home \"\$PASEO_HOME\"" >>"\$restart_log" 2>&1 </dev/null &
+  fi
+  listen="127.0.0.1:6767"
+  if [[ -f "\$PASEO_HOME/config.json" ]]; then
+    cfg_listen="\$(node -e 'try{const c=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\"));const l=c&&c.daemon&&c.daemon.listen;if(typeof l===\"string\"&&l.trim())process.stdout.write(l.trim())}catch{}' \"\$PASEO_HOME/config.json\" 2>/dev/null || true)"
+    if [[ -n "\$cfg_listen" ]]; then
+      listen="\$cfg_listen"
+    fi
+  fi
+  port="\${listen##*:}"
+  case "\$listen" in
+    0.0.0.0:*|\\[::\\]:*) primary="http://127.0.0.1:\${port}/api/health" ;;
+    *) primary="http://\${listen}/api/health" ;;
+  esac
+  secondary="http://127.0.0.1:\${port}/api/health"
+  ok=0
+  for i in \$(seq 1 90); do
+    if curl -fsS --max-time 2 "\$primary" >/dev/null 2>&1 \\
+      || curl -fsS --max-time 2 "\$secondary" >/dev/null 2>&1; then
+      log "Daemon healthy after \${i}s (\$primary)"
+      ok=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "\$ok" -ne 1 ]]; then
+    log "Daemon health check failed; restart log:"
+    tail -n 80 "\$restart_log" 2>/dev/null || true
+    echo "Daemon failed to come back (\$primary) after restart" >&2
+    exit 1
+  fi
 }
 
 deploy_code_server() {

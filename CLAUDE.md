@@ -194,10 +194,38 @@ All local customizations live on **`vaibhav/customizations`**, branched from `up
 
 Do day-to-day work on this branch, not on `main`.
 
+### Deployment — always use `./scripts/deploy.sh`
+
+**Always consult and run [`scripts/deploy.sh`](scripts/deploy.sh) for deploy.** Do not freestyle multi-host sync, remote restarts, or “just restart the daemon” with ad-hoc commands unless you are deliberately debugging a single host.
+
+|                 |                                                                                           |
+| --------------- | ----------------------------------------------------------------------------------------- |
+| **How**         | `./scripts/deploy.sh` from the repo root                                                  |
+| **Daemon home** | `~/.paseo` locally; `/home/vaibhav/.paseo` (blrofc3), `/home/ubuntu/.paseo` (iammvaibhav) |
+| **Port**        | **6767** (production-style host daemon — what the desktop app and remotes use)            |
+| **Not this**    | `npm run dev` / port **6768** / `.dev/paseo-home` is checkout hot-reload only, not deploy |
+
+The script builds server packages, restarts host daemons with **`--home …/.paseo`**, and syncs remotes. Local daemon restart is **detached** (so stop cannot leave the host with no start when an agent runs deploy) and waits for `/api/health`.
+
+**Recover if a local restart leaves the daemon down:**
+
+```bash
+cd /Users/vaibhav/paseo && PATH="$HOME/.local/bin:$PATH" \
+  npx tsx packages/cli/src/index.js daemon start --home "$HOME/.paseo" \
+  && curl -fsS http://127.0.0.1:6767/api/health
+```
+
+Remote recovery (example):
+
+```bash
+ssh blrofc3 'cd ~/paseo && PATH="$HOME/.local/bin:$PATH" npx tsx packages/cli/src/index.js daemon start --home "$HOME/.paseo"'
+ssh iammvaibhav 'cd ~/paseo && PATH="$HOME/.local/bin:$PATH" npx tsx packages/cli/src/index.js daemon start --home "$HOME/.paseo"'
+```
+
 ### Day-to-day flow
 
-1. Commit changes on `vaibhav/customizations`.
-2. Run `./scripts/deploy.sh` from the repo root.
+1. Commit changes on `vaibhav/customizations` (or let deploy auto-commit).
+2. Run `./scripts/deploy.sh` from the repo root — **this is the deploy path.**
 
 The script:
 
