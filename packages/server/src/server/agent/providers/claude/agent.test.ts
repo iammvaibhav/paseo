@@ -1992,7 +1992,7 @@ describe("ClaudeAgentSession context window usage", () => {
     }
   });
 
-  test("does not use aggregate result totals after the first result turn", async () => {
+  test("retains last known context fill when a later result has no stream usage", async () => {
     const session = await createSessionForTurns([
       [
         createInitMessage(),
@@ -2025,12 +2025,15 @@ describe("ClaudeAgentSession context window usage", () => {
         contextWindowMaxTokens: 200_000,
         contextWindowUsedTokens: 175,
       });
+      // Second turn has no stream/message_start, so we must not invent used tokens from
+      // accumulated result.usage — but we do keep the last accurate fill from turn 1.
       expect(secondTurn.usage).toEqual({
         inputTokens: 1_000,
         cachedInputTokens: 200,
         outputTokens: 300,
         totalCostUsd: 0.1,
         contextWindowMaxTokens: 200_000,
+        contextWindowUsedTokens: 175,
       });
     } finally {
       await session.close();
@@ -2280,7 +2283,7 @@ describe("ClaudeAgentSession context window usage", () => {
     }
   });
 
-  test("starting a new turn clears interrupted compact usage", async () => {
+  test("starting a new turn keeps last known compact context fill", async () => {
     const session = await createSessionForTurns([
       [
         createSuccessResult({
@@ -2316,20 +2319,16 @@ describe("ClaudeAgentSession context window usage", () => {
         expect.objectContaining({
           type: "turn_completed",
           provider: "claude",
-          usage: expect.objectContaining({
+          usage: {
             inputTokens: 0,
             cachedInputTokens: 0,
             outputTokens: 0,
             totalCostUsd: 0.04,
-          }),
+            contextWindowMaxTokens: 200_000,
+            contextWindowUsedTokens: 704,
+          },
         }),
       );
-      expect(
-        events.some(
-          (event) =>
-            event.type === "turn_completed" && event.usage.contextWindowUsedTokens !== undefined,
-        ),
-      ).toBe(false);
     } finally {
       await session.close();
     }

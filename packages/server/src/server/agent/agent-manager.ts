@@ -90,6 +90,36 @@ const STORED_AGENT_CAPABILITIES: AgentCapabilityFlags = {
 
 type TimeoutResult = "completed" | "timed_out";
 
+/**
+ * Merge usage snapshots field-by-field. Live `usage_updated` events often carry
+ * only context-window fields, while `turn_completed` carries billing totals and
+ * may omit context fill. Full replacement made the context meter vanish as soon
+ * as the agent went idle.
+ */
+function mergeAgentUsage(
+  previous: AgentUsage | undefined,
+  next: AgentUsage | undefined,
+): AgentUsage | undefined {
+  if (next === undefined) {
+    return previous;
+  }
+  if (previous === undefined) {
+    return next;
+  }
+  const merged: AgentUsage = { ...previous };
+  if (next.inputTokens !== undefined) merged.inputTokens = next.inputTokens;
+  if (next.cachedInputTokens !== undefined) merged.cachedInputTokens = next.cachedInputTokens;
+  if (next.outputTokens !== undefined) merged.outputTokens = next.outputTokens;
+  if (next.totalCostUsd !== undefined) merged.totalCostUsd = next.totalCostUsd;
+  if (next.contextWindowMaxTokens !== undefined) {
+    merged.contextWindowMaxTokens = next.contextWindowMaxTokens;
+  }
+  if (next.contextWindowUsedTokens !== undefined) {
+    merged.contextWindowUsedTokens = next.contextWindowUsedTokens;
+  }
+  return merged;
+}
+
 export class AgentManagerShuttingDownError extends Error {
   constructor() {
     super("Agent manager is shutting down");
@@ -3475,7 +3505,7 @@ export class AgentManager {
         this.onStreamThreadStarted(agent);
         return undefined;
       case "usage_updated":
-        agent.lastUsage = event.usage;
+        agent.lastUsage = mergeAgentUsage(agent.lastUsage, event.usage);
         this.emitState(agent);
         return undefined;
       case "mode_changed":
@@ -3605,7 +3635,7 @@ export class AgentManager {
       },
       "agent.manager.turn.completed",
     );
-    agent.lastUsage = event.usage;
+    agent.lastUsage = mergeAgentUsage(agent.lastUsage, event.usage);
     agent.lastError = undefined;
     if (!isForegroundEvent && agent.lifecycle !== "idle" && !agent.pendingReplacement) {
       (agent as ActiveManagedAgent).lifecycle = "idle";

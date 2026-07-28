@@ -4377,6 +4377,85 @@ test("runAgent refreshes runtimeInfo after completion", async () => {
   expect(refreshed?.runtimeInfo?.model).toBe("gpt-5.2-codex");
 });
 
+test("merges live context usage into turn_completed lastUsage so the meter stays after idle", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-usage-merge-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+
+  class UsageMergeSession extends TestAgentSession {
+    override async startTurn(): Promise<{ turnId: string }> {
+      this.interrupted = false;
+      const turnId = `turn-${++this.turnIdCounter}`;
+      setTimeout(() => {
+        this.pushEvent({ type: "turn_started", provider: this.provider, turnId });
+        // Live stream: context fill only (what Claude emits during the turn).
+        this.pushEvent({
+          type: "usage_updated",
+          provider: this.provider,
+          turnId,
+          usage: {
+            contextWindowMaxTokens: 200_000,
+            contextWindowUsedTokens: 42_000,
+          },
+        });
+        // Result: billing totals without context used (Claude often omits it here).
+        this.pushEvent({
+          type: "turn_completed",
+          provider: this.provider,
+          turnId,
+          usage: {
+            inputTokens: 1_000,
+            outputTokens: 200,
+            totalCostUsd: 0.05,
+            contextWindowMaxTokens: 200_000,
+          },
+        });
+      }, 0);
+      return { turnId };
+    }
+  }
+
+  class UsageMergeClient extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      return new UsageMergeSession(config);
+    }
+  }
+
+  const manager = new AgentManager({
+    clients: {
+      codex: new UsageMergeClient(),
+    },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000198",
+  });
+
+  try {
+    const snapshot = await manager.createAgent(
+      {
+        provider: "codex",
+        cwd: workdir,
+      },
+      undefined,
+      { workspaceId: undefined },
+    );
+
+    await manager.runAgent(snapshot.id, "hello");
+
+    const idle = manager.getAgent(snapshot.id);
+    expect(idle?.lifecycle).toBe("idle");
+    expect(idle?.lastUsage).toEqual({
+      inputTokens: 1_000,
+      outputTokens: 200,
+      totalCostUsd: 0.05,
+      contextWindowMaxTokens: 200_000,
+      contextWindowUsedTokens: 42_000,
+    });
+  } finally {
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
 test("waitForAgentEvent does not resolve idle until foreground turn is finalized", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-wait-coherence-"));
   const storagePath = join(workdir, "agents");
