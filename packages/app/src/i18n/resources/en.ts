@@ -929,6 +929,8 @@ export const en = {
         openSettings: "Open project settings",
         openNewWindow: "Open in new window",
         openNewWindowFailed: "Couldn't open a new window",
+        openFolder: "Open in file manager",
+        openFolderFailed: "Couldn't open folder",
         remove: "Remove project",
         removing: "Removing...",
       },
@@ -1862,6 +1864,7 @@ export const en = {
         sendMessage: "Send message",
         queueMessage: "Queue message",
         muteUnmuteVoiceMode: "Mute/unmute voice mode",
+        switchProject: "Switch project",
       },
       helpNotes: {
         showKeyboardShortcuts: "Available when focus is not in a text field or terminal.",

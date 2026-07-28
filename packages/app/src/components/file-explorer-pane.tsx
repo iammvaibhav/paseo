@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, type ReactElement, type RefObj
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
-  ActivityIndicator,
   FlatList,
   ListRenderItemInfo,
   Pressable,
@@ -12,13 +11,14 @@ import {
   type StyleProp,
   type ViewStyle,
 } from "react-native";
-import { StyleSheet, useUnistyles } from "react-native-unistyles";
+import { StyleSheet, useUnistyles, withUnistyles } from "react-native-unistyles";
 import { WORKSPACE_SECONDARY_HEADER_HEIGHT } from "@/constants/layout";
 import * as Clipboard from "expo-clipboard";
 import { ChevronDown, Eye, EyeOff, RotateCw } from "lucide-react-native";
 import { MaterialFileIcon } from "@/components/material-file-icon";
 import { TreeChevron, TreeIndentGuides, TREE_INDENT_PER_LEVEL } from "@/components/tree-primitives";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import type { Theme } from "@/styles/theme";
 import type { AgentFileExplorerState, ExplorerEntry } from "@/stores/session-store";
 import { useHosts } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
@@ -46,6 +46,11 @@ const SORT_OPTIONS: { value: SortOption }[] = [
   { value: "modified" },
   { value: "size" },
 ];
+
+const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
+const foregroundMutedColorMapping = (theme: Theme) => ({
+  color: theme.colors.foregroundMuted,
+});
 
 function formatFileSize({ size }: { size: number }): string {
   if (size < 1024) {
@@ -169,7 +174,9 @@ function TreeRowItem({
             if (!isDirectory) {
               return <MaterialFileIcon fileName={entry.name} size={16} />;
             }
-            if (loading) return <ActivityIndicator size="small" />;
+            if (loading) {
+              return <ThemedLoadingSpinner size="small" uniProps={foregroundMutedColorMapping} />;
+            }
             return <TreeChevron expanded={isExpanded} />;
           })()}
         </View>
@@ -680,7 +687,7 @@ function FileExplorerPaneContent(props: FileExplorerPaneContentProps) {
   if (showInitialLoading) {
     return (
       <View style={styles.centerState}>
-        <ActivityIndicator size="small" />
+        <ThemedLoadingSpinner size="small" uniProps={foregroundMutedColorMapping} />
         <Text style={styles.loadingText}>{t("workspace.fileExplorer.states.loading")}</Text>
       </View>
     );
