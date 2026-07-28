@@ -1026,8 +1026,34 @@ export class AgentManager {
   }
 
   fetchTimeline(id: string, options?: AgentTimelineFetchOptions): AgentTimelineFetchResult {
-    this.requireAgent(id);
+    // Allow timeline fetch after disk-seed even when the provider process is not live yet.
+    if (!this.timelineStore.has(id)) {
+      this.requireAgent(id);
+    }
     return this.timelineStore.fetch(id, options);
+  }
+
+  /**
+   * Seed the in-memory timeline from offline provider history (disk) so open/fetch
+   * can return immediately without spawning the agent. No-ops if timeline already
+   * has rows. When the agent later resumes, historyPrimed stays true if this store
+   * is already initialized (see initializeAgentTimelineForRegister).
+   */
+  seedTimelineFromItems(agentId: string, items: readonly AgentTimelineItem[]): boolean {
+    if (this.timelineStore.has(agentId) && this.timelineStore.getItems(agentId).length > 0) {
+      return false;
+    }
+    if (!this.timelineStore.has(agentId)) {
+      this.timelineStore.initialize(agentId, { timestamp: new Date().toISOString() });
+    }
+    for (const item of items) {
+      this.recordTimeline(agentId, item);
+    }
+    return items.length > 0;
+  }
+
+  hasTimeline(agentId: string): boolean {
+    return this.timelineStore.has(agentId);
   }
 
   listProviderSubagents(parentAgentId: string): ProviderSubagentDescriptor[] {

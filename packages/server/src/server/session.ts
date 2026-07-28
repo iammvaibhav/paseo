@@ -36,6 +36,10 @@ import type { TurnDetectionProvider } from "./speech/turn-detection-provider.js"
 import { isStoredAgentProviderAvailable, toAgentPersistenceHandle } from "./persistence-hooks.js";
 import { ensureAgentLoaded, ensureUnarchivedAgentLoaded } from "./agent/agent-loading.js";
 import {
+  supportsDiskTimeline,
+  tryReadProviderTimelineFromDisk,
+} from "./agent/provider-disk-history.js";
+import {
   formatSystemNotificationPrompt,
   sendPromptToAgent,
   waitForAgentRunStartWithTimeout,
@@ -6089,6 +6093,85 @@ export class Session {
     return this.selectProjectedTimelineProjection(input);
   }
 
+  /**
+   * Resolve agent payload + ensure timeline rows exist for a fetch.
+   * Prefers offline disk history (Grok/Claude) so open is instant; spawns the
+   * provider runtime in the background when the agent is not already live.
+   */
+  private async resolveTimelineFetchContext(agentId: string): Promise<{
+    providerId: string;
+    agentPayload: AgentSnapshotPayload;
+  }> {
+    const live = this.agentManager.getAgent(agentId);
+    if (live) {
+      return {
+        providerId: live.provider,
+        agentPayload: await this.buildAgentPayload(live),
+      };
+    }
+
+    const record = await this.agentStorage.get(agentId);
+    if (!record) {
+      throw new Error(`Agent not found: ${agentId}`);
+    }
+
+    const sessionId = record.persistence?.sessionId;
+    if (
+      sessionId &&
+      supportsDiskTimeline(record.provider) &&
+      !this.agentManager.hasTimeline(agentId)
+    ) {
+      const diskItems = await tryReadProviderTimelineFromDisk(
+        {
+          provider: record.provider,
+          cwd: record.cwd,
+          sessionId,
+        },
+        { logger: this.sessionLogger },
+      );
+      if (diskItems && diskItems.length > 0) {
+        this.agentManager.seedTimelineFromItems(agentId, diskItems);
+        this.sessionLogger.info(
+          {
+            agentId,
+            provider: record.provider,
+            itemCount: diskItems.length,
+          },
+          "Seeded agent timeline from provider disk history",
+        );
+      }
+    }
+
+    // Warm provider runtime in the background when we can answer from disk.
+    if (this.agentManager.hasTimeline(agentId)) {
+      void ensureAgentLoaded(agentId, {
+        agentManager: this.agentManager,
+        agentStorage: this.agentStorage,
+        logger: this.sessionLogger,
+      }).catch((error) => {
+        this.sessionLogger.warn(
+          { err: error, agentId },
+          "Background agent resume after disk timeline seed failed",
+        );
+      });
+      return {
+        providerId: record.provider,
+        agentPayload: this.buildStoredAgentPayload(record),
+      };
+    }
+
+    // Unsupported provider or missing disk files — full load (spawn).
+    const snapshot = await ensureAgentLoaded(agentId, {
+      agentManager: this.agentManager,
+      agentStorage: this.agentStorage,
+      logger: this.sessionLogger,
+    });
+    return {
+      providerId: snapshot.provider,
+      agentPayload: await this.buildAgentPayload(snapshot),
+    };
+  }
+
   private async handleFetchAgentTimelineRequest(
     msg: Extract<SessionInboundMessage, { type: "fetch_agent_timeline_request" }>,
   ): Promise<void> {
@@ -6104,12 +6187,7 @@ export class Session {
       : undefined;
 
     try {
-      const snapshot = await ensureAgentLoaded(msg.agentId, {
-        agentManager: this.agentManager,
-        agentStorage: this.agentStorage,
-        logger: this.sessionLogger,
-      });
-      const agentPayload = await this.buildAgentPayload(snapshot);
+      const { providerId, agentPayload } = await this.resolveTimelineFetchContext(msg.agentId);
 
       const controlTimeline = this.agentManager.fetchTimeline(msg.agentId, {
         direction,
@@ -6151,7 +6229,7 @@ export class Session {
           hasOlder: selectedTimeline.hasOlder,
           hasNewer: selectedTimeline.hasNewer,
           entries: selectedTimeline.entries.map((entry) => ({
-            provider: snapshot.provider,
+            provider: providerId,
             item: entry.item,
             timestamp: entry.timestamp,
             seqStart: entry.seqStart,
