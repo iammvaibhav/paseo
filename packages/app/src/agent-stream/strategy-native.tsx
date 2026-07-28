@@ -395,6 +395,21 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
     bottomAnchorController.prepareForStickyContentChange();
   }, [bottomAnchorController, historyRows, isActive, segments.liveHead]);
 
+  const scrollToItemId = useStableEvent((itemId: string) => {
+    suppressStickyRestickRef.current = true;
+    const index = historyRows.findIndex((row) => row.id === itemId);
+    if (index < 0) {
+      return;
+    }
+    programmaticScrollEventBudgetRef.current = 3;
+    flatListRef.current?.scrollToIndex({
+      index,
+      animated: true,
+      viewPosition: 0,
+    });
+    onNearBottomChange(false);
+  });
+
   useEffect(() => {
     const handle: StreamViewportHandle = {
       scrollToBottom: (reason = "jump-to-bottom") => {
@@ -404,6 +419,7 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
           reason,
         });
       },
+      scrollToItemId,
       prepareForViewportChange: () => {
         if (suppressStickyRestickRef.current) {
           return;
@@ -418,7 +434,7 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
         viewportRef.current = null;
       }
     };
-  }, [agentId, bottomAnchorController, markNativeViewportSettling, viewportRef]);
+  }, [agentId, bottomAnchorController, markNativeViewportSettling, scrollToItemId, viewportRef]);
 
   const isScrollEventNearBottom = useStableEvent(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {

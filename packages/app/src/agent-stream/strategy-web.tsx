@@ -623,6 +623,57 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     };
   }, [cancelPendingStickToBottom, evaluateHistoryStart, handleDomScroll, isLoadingOlderHistory]);
 
+  const scrollToItemId = useStableEvent((itemId: string) => {
+    suppressStickToBottomRef.current = true;
+    setFollowOutput(false);
+    cancelPendingStickToBottom();
+    onNearBottomChange(false);
+
+    const scrollContainer = scrollContainerRef.current;
+    if (!scrollContainer) {
+      return;
+    }
+
+    const findItemElement = (): HTMLElement | null => {
+      const node = scrollContainer.querySelector(
+        `[data-testid="stream-item-${CSS.escape(itemId)}"]`,
+      );
+      return node instanceof HTMLElement ? node : null;
+    };
+
+    const scrollElementIntoView = (element: HTMLElement) => {
+      element.scrollIntoView({ block: "start", behavior: "smooth" });
+      lastKnownScrollTopRef.current = scrollContainer.scrollTop;
+      updateScrollMetrics();
+    };
+
+    const mounted = findItemElement();
+    if (mounted) {
+      scrollElementIntoView(mounted);
+      return;
+    }
+
+    const virtualIndex = segments.historyVirtualized.findIndex((item) => item.id === itemId);
+    if (virtualIndex < 0) {
+      return;
+    }
+
+    rowVirtualizer.scrollToIndex(virtualIndex, { align: "start" });
+    window.requestAnimationFrame(() => {
+      const element = findItemElement();
+      if (element) {
+        scrollElementIntoView(element);
+        return;
+      }
+      window.requestAnimationFrame(() => {
+        const retry = findItemElement();
+        if (retry) {
+          scrollElementIntoView(retry);
+        }
+      });
+    });
+  });
+
   useEffect(() => {
     const handle: StreamViewportHandle = {
       scrollToBottom: () => {
@@ -631,6 +682,7 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
         cancelPendingStickToBottom();
         forceStickToBottom();
       },
+      scrollToItemId,
       prepareForViewportChange: () => {
         if (!followOutputRef.current || suppressStickToBottomRef.current) {
           return;
@@ -645,7 +697,13 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
       }
       cancelPendingStickToBottom();
     };
-  }, [cancelPendingStickToBottom, forceStickToBottom, scheduleStickToBottom, viewportRef]);
+  }, [
+    cancelPendingStickToBottom,
+    forceStickToBottom,
+    scheduleStickToBottom,
+    scrollToItemId,
+    viewportRef,
+  ]);
 
   const contentContainerStyle = useMemo((): CSSProperties => {
     return {

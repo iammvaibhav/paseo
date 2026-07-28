@@ -11,16 +11,22 @@ const AGENT_ID = "agent-1";
 function createRecordingDeps(overrides?: Partial<OpenAgentFromHistoryDeps>): {
   deps: OpenAgentFromHistoryDeps;
   hydrations: { serverId: string; agentId: string }[];
+  unarchives: { serverId: string; agentId: string }[];
   navigations: Parameters<OpenAgentFromHistoryDeps["navigateToAgent"]>[0][];
 } {
   const hydrations: { serverId: string; agentId: string }[] = [];
+  const unarchives: { serverId: string; agentId: string }[] = [];
   const navigations: Parameters<OpenAgentFromHistoryDeps["navigateToAgent"]>[0][] = [];
   return {
     hydrations,
+    unarchives,
     navigations,
     deps: {
       hydrateArchivedAgent: async (input) => {
         hydrations.push(input);
+      },
+      unarchiveAgent: async (input) => {
+        unarchives.push(input);
       },
       navigateToAgent: (input) => {
         navigations.push(input);
@@ -32,7 +38,7 @@ function createRecordingDeps(overrides?: Partial<OpenAgentFromHistoryDeps>): {
 
 describe("resolveOpenAgentFromHistory", () => {
   it("navigates active agents straight to their workspace tab without hydrating or pinning", async () => {
-    const { deps, hydrations, navigations } = createRecordingDeps();
+    const { deps, hydrations, unarchives, navigations } = createRecordingDeps();
 
     await resolveOpenAgentFromHistory(
       { serverId: SERVER_ID, agentId: AGENT_ID, workspaceId: WORKSPACE_ID, archived: false },
@@ -40,17 +46,22 @@ describe("resolveOpenAgentFromHistory", () => {
     );
 
     expect(hydrations).toEqual([]);
+    expect(unarchives).toEqual([]);
     expect(navigations).toEqual([
       { serverId: SERVER_ID, agentId: AGENT_ID, workspaceId: WORKSPACE_ID },
     ]);
   });
 
-  it("hydrates an archived agent before pinning its tab", async () => {
+  it("hydrates then unarchives an archived agent before pinning its tab", async () => {
     const order: string[] = [];
-    const { deps, hydrations, navigations } = createRecordingDeps({
+    const { deps, hydrations, unarchives, navigations } = createRecordingDeps({
       hydrateArchivedAgent: async (input) => {
         order.push("hydrate");
         hydrations.push(input);
+      },
+      unarchiveAgent: async (input) => {
+        order.push("unarchive");
+        unarchives.push(input);
       },
       navigateToAgent: (input) => {
         order.push("navigate");
@@ -63,21 +74,32 @@ describe("resolveOpenAgentFromHistory", () => {
       deps,
     );
 
-    expect(order).toEqual(["hydrate", "navigate"]);
+    expect(order).toEqual(["hydrate", "unarchive", "navigate"]);
     expect(hydrations).toEqual([{ serverId: SERVER_ID, agentId: AGENT_ID }]);
+    expect(unarchives).toEqual([{ serverId: SERVER_ID, agentId: AGENT_ID }]);
     expect(navigations).toEqual([
       { serverId: SERVER_ID, agentId: AGENT_ID, workspaceId: WORKSPACE_ID, pin: true },
     ]);
   });
 
-  it("waits for hydration to finish before navigating", async () => {
-    const deferred: { resolve: () => void } = { resolve: () => {} };
+  it("waits for hydration and unarchive to finish before navigating", async () => {
+    const deferred: { resolveHydrate: () => void; resolveUnarchive: () => void } = {
+      resolveHydrate: () => {},
+      resolveUnarchive: () => {},
+    };
     const hydrateStarted = vi.fn();
+    const unarchiveStarted = vi.fn();
     const { deps, navigations } = createRecordingDeps({
       hydrateArchivedAgent: () => {
         hydrateStarted();
         return new Promise<void>((resolve) => {
-          deferred.resolve = resolve;
+          deferred.resolveHydrate = resolve;
+        });
+      },
+      unarchiveAgent: () => {
+        unarchiveStarted();
+        return new Promise<void>((resolve) => {
+          deferred.resolveUnarchive = resolve;
         });
       },
     });
@@ -88,9 +110,15 @@ describe("resolveOpenAgentFromHistory", () => {
     );
 
     expect(hydrateStarted).toHaveBeenCalledTimes(1);
+    expect(unarchiveStarted).not.toHaveBeenCalled();
     expect(navigations).toEqual([]);
 
-    deferred.resolve();
+    deferred.resolveHydrate();
+    await Promise.resolve();
+    expect(unarchiveStarted).toHaveBeenCalledTimes(1);
+    expect(navigations).toEqual([]);
+
+    deferred.resolveUnarchive();
     await pending;
 
     expect(navigations).toHaveLength(1);

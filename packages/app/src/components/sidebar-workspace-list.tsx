@@ -40,6 +40,7 @@ import {
   ChevronRight,
   ExternalLink,
   GitPullRequest,
+  MessageCircleQuestion,
   Settings,
   MoreVertical,
   Plus,
@@ -61,8 +62,10 @@ import { useProjectIconDataByProjectKey } from "@/projects/project-icons";
 import {
   buildNewWorkspaceRoute,
   buildProjectSettingsRoute,
+  buildSessionsRoute,
   parseHostWorkspaceRouteFromPathname,
 } from "@/utils/host-routes";
+import { resolveProjectScope, resolveWorkspaceScope, useHistoryAskStore } from "@/history-ask";
 import {
   shouldShowSidebarHostLabels,
   type SidebarProjectEntry,
@@ -289,6 +292,7 @@ interface WorkspaceRowInnerProps {
   archiveStatus?: "idle" | "pending" | "success";
   archivePendingLabel?: string;
   onArchive?: () => void;
+  onAskHistory?: () => void;
   onCopyBranchName?: () => void;
   onCopyPath?: () => void;
   onRename?: () => void;
@@ -523,7 +527,9 @@ function ProjectRowTrailingActions({
         >
           <ProjectKebabMenu
             projectKey={project.projectKey}
+            projectName={displayName}
             projectPath={project.iconWorkingDir}
+            project={project}
             onRemoveProject={onRemoveProject}
             removeProjectStatus={removeProjectStatus}
           />
@@ -538,6 +544,10 @@ const settingsLeadingIcon = <ThemedSettings size={14} uniProps={foregroundMutedC
 const openInNewWindowLeadingIcon = (
   <ThemedExternalLink size={14} uniProps={foregroundMutedColorMapping} />
 );
+const ThemedMessageCircleQuestion = withUnistyles(MessageCircleQuestion);
+const askHistoryLeadingIcon = (
+  <ThemedMessageCircleQuestion size={14} uniProps={foregroundMutedColorMapping} />
+);
 
 function renderKebabTriggerIcon({ hovered }: { hovered?: boolean }) {
   return (
@@ -550,17 +560,22 @@ function renderKebabTriggerIcon({ hovered }: { hovered?: boolean }) {
 
 function ProjectKebabMenu({
   projectKey,
+  projectName,
   projectPath,
+  project,
   onRemoveProject,
   removeProjectStatus,
 }: {
   projectKey: string;
+  projectName: string;
   projectPath: string;
+  project: SidebarProjectEntry;
   onRemoveProject: () => void;
   removeProjectStatus: "idle" | "pending" | "success";
 }) {
   const { t } = useTranslation();
   const toast = useToast();
+  const setPendingScope = useHistoryAskStore((state) => state.setPendingScope);
   const handleOpenProjectSettings = useCallback(() => {
     if (projectKey.trim().length === 0) return;
     router.navigate(buildProjectSettingsRoute(projectKey));
@@ -580,6 +595,35 @@ function ProjectKebabMenu({
         toast.error(t("sidebar.project.actions.openNewWindowFailed"));
       });
   }, [projectPath, t, toast]);
+  const handleAskHistory = useCallback(() => {
+    const hostServerId = project.hosts[0]?.serverId ?? project.workspaces[0]?.serverId ?? null;
+    if (!hostServerId) {
+      toast.error(t("sidebar.project.toasts.hostDisconnected"));
+      return;
+    }
+    const workspacesOnHost = project.workspaces.filter(
+      (workspace) => workspace.serverId === hostServerId,
+    );
+    try {
+      const scope = resolveProjectScope({
+        serverId: hostServerId,
+        projectId: projectKey,
+        displayName: projectName,
+        workspaces: workspacesOnHost.map((workspace) => ({
+          id: workspace.workspaceId,
+          cwd: workspace.workspaceDirectory ?? workspace.projectRootPath ?? "",
+          projectId: workspace.projectKey,
+          displayName: workspace.name,
+        })),
+      });
+      setPendingScope(scope);
+      router.navigate(buildSessionsRoute());
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : t("sidebar.project.toasts.hostDisconnected"),
+      );
+    }
+  }, [project, projectKey, projectName, setPendingScope, t, toast]);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -610,6 +654,13 @@ function ProjectKebabMenu({
             {t("sidebar.project.actions.openNewWindow")}
           </DropdownMenuItem>
         ) : null}
+        <DropdownMenuItem
+          testID={`sidebar-project-menu-ask-history-${projectKey}`}
+          leading={askHistoryLeadingIcon}
+          onSelect={handleAskHistory}
+        >
+          {t("sidebar.project.actions.askHistory")}
+        </DropdownMenuItem>
         <OpenInFileManagerMenuItem
           path={projectPath}
           testID={`sidebar-project-menu-open-folder-${projectKey}`}
@@ -641,6 +692,7 @@ function WorkspaceRowRightGroup({
   archiveShortcutKeys,
   onArchive,
   onMarkAsRead,
+  onAskHistory,
   onCopyBranchName,
   onCopyPath,
   onRename,
@@ -659,6 +711,7 @@ function WorkspaceRowRightGroup({
   archiveShortcutKeys?: ShortcutKey[][] | null;
   onArchive?: () => void;
   onMarkAsRead?: () => void;
+  onAskHistory?: () => void;
   onCopyBranchName?: () => void;
   onCopyPath?: () => void;
   onRename?: () => void;
@@ -697,6 +750,7 @@ function WorkspaceRowRightGroup({
                 onCopyBranchName={onCopyBranchName}
                 onRename={onRename}
                 onMarkAsRead={onMarkAsRead}
+                onAskHistory={onAskHistory}
                 onArchive={onArchive}
                 archiveLabel={archiveLabel}
                 archiveStatus={archiveStatus}
@@ -1128,9 +1182,11 @@ function WorkspaceRowInner({
   archiveStatus = "idle",
   archivePendingLabel,
   onArchive,
+  onAskHistory,
   onCopyBranchName,
   onCopyPath,
   onRename,
+  onMarkAsRead,
   archiveShortcutKeys,
   isPinned,
   onTogglePin,
@@ -1219,6 +1275,8 @@ function WorkspaceRowInner({
                   archivePendingLabel={archivePendingLabel}
                   archiveShortcutKeys={archiveShortcutKeys}
                   onArchive={onArchive}
+                  onMarkAsRead={onMarkAsRead}
+                  onAskHistory={onAskHistory}
                   onCopyBranchName={onCopyBranchName}
                   onCopyPath={onCopyPath}
                   onRename={onRename}
@@ -1267,6 +1325,7 @@ function WorkspaceRowWithMenu({
 }) {
   const { t } = useTranslation();
   const toast = useToast();
+  const setPendingScope = useHistoryAskStore((state) => state.setPendingScope);
   const [isHidingWorkspace, setIsHidingWorkspace] = useState(false);
   const [isRenameOpen, setIsRenameOpen] = useState(false);
   const isArchiving = workspace.archivingAt !== null || isHidingWorkspace;
@@ -1294,6 +1353,31 @@ function WorkspaceRowWithMenu({
     }
     archiveController.archive();
   }, [archiveController, isArchiving]);
+
+  const handleAskHistory = useCallback(() => {
+    const cwd = workspace.workspaceDirectory?.trim();
+    if (!cwd) {
+      toast.error(t("sidebar.workspace.toasts.workspacePathUnavailable"));
+      return;
+    }
+    try {
+      const scope = resolveWorkspaceScope({
+        serverId: workspace.serverId,
+        workspaceId: workspace.workspaceId,
+        cwd,
+        displayName: workspace.name,
+        projectId: workspace.projectKey,
+      });
+      setPendingScope(scope);
+      router.navigate(buildSessionsRoute());
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t("sidebar.workspace.toasts.workspacePathUnavailable"),
+      );
+    }
+  }, [setPendingScope, t, toast, workspace]);
 
   const handleCopyPath = useCallback(() => {
     let copyTargetDirectory: string;
@@ -1394,6 +1478,7 @@ function WorkspaceRowWithMenu({
         archiveStatus={isArchiving ? "pending" : "idle"}
         archivePendingLabel={t("sidebar.workspace.actions.archiving")}
         onArchive={handleArchive}
+        onAskHistory={handleAskHistory}
         onCopyBranchName={canCopyBranchName ? handleCopyBranchName : undefined}
         onCopyPath={handleCopyPath}
         onRename={handleOpenRename}

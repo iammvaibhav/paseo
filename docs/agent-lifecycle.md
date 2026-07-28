@@ -104,11 +104,13 @@ the session store on their own. The workspace tab reconcile
 so a tab opened straight for it is pruned on the first reconcile and focus falls back to some other
 active agent in that workspace — the tab "opens the wrong agent."
 
-Opening an archived agent from the History list therefore does two things before navigating
+Opening an archived agent from the History list therefore does three things before navigating
 (`workspace/open-agent-from-history`): it `fetchAgent`s the record into `agentDetails` via
-`storeFetchedAgentDetail` (so reconcile counts it as **known**), and it pins the tab (so reconcile
-**keeps** it). The pane then mounts read-only and shows the Unarchive callout. Because `agentDetails`
-is not persisted, the pin is ignored on the next app session and the archived tab does not reappear.
+`storeFetchedAgentDetail` (so reconcile counts it as **known**), it **unarchives immediately** via
+`refreshAgent` (same as the Unarchive control — so timeline init runs and history is visible without
+a second click), and it pins the tab (so reconcile **keeps** it until the active directory catches
+up). The archived callout remains as a fallback if unarchive fails. Because `agentDetails` is not
+persisted, the pin is ignored on the next app session and a still-archived tab does not reappear.
 
 ## Tabs vs archive
 

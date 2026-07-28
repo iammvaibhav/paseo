@@ -34,6 +34,7 @@ import {
   type SelectFieldRenderOptionInput,
 } from "@/components/ui/select-field";
 import { formatThinkingOptionLabel } from "@/composer/agent-controls/utils";
+import { i18n } from "@/i18n/i18next";
 import {
   mergeProviderPreferences,
   useFormPreferences,
@@ -1033,7 +1034,7 @@ function WebhookEditExtras({
     queryFn: async () => {
       const client = useSessionStore.getState().sessions[serverId]?.client ?? null;
       if (!client) {
-        throw new Error("Daemon client unavailable");
+        throw new Error(i18n.t("common.errors.daemonClientUnavailable"));
       }
       const payload = await client.webhookInspect({ id: webhookId });
       if (payload.error) {

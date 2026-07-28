@@ -9,7 +9,11 @@ import {
   collectAssistantTurnContentForStreamRenderStrategy,
   type StreamStrategy,
 } from "./strategy";
-import { resolveAssistantTurnForkBoundary, type AssistantTurnForkBoundary } from "./turn-boundary";
+import {
+  resolveAssistantTurnForkBoundary,
+  resolvePrecedingUserMessage,
+  type AssistantTurnForkBoundary,
+} from "./turn-boundary";
 import {
   AssistantTurnFooter,
   LiveElapsed,
@@ -33,6 +37,7 @@ export type AssistantTurnForkHandler = (input: {
   target: AssistantForkTarget;
   boundary: AssistantTurnForkBoundary;
 }) => Promise<void> | void;
+export type JumpToUserMessageHandler = (itemId: string) => void;
 
 export const TurnFooter = memo(function TurnFooter({
   isRunning,
@@ -41,6 +46,7 @@ export const TurnFooter = memo(function TurnFooter({
   strategy,
   supportsTimelineCursor,
   onForkAssistantTurn,
+  onJumpToUserMessage,
 }: {
   isRunning: boolean;
   inFlightTurnStartedAt: Date | null;
@@ -48,6 +54,7 @@ export const TurnFooter = memo(function TurnFooter({
   strategy: TurnContentStrategy;
   supportsTimelineCursor: boolean;
   onForkAssistantTurn?: AssistantTurnForkHandler;
+  onJumpToUserMessage?: JumpToUserMessageHandler;
 }) {
   if (isRunning) {
     return (
@@ -67,6 +74,7 @@ export const TurnFooter = memo(function TurnFooter({
       startIndex={host.startIndex}
       supportsTimelineCursor={supportsTimelineCursor}
       onForkAssistantTurn={onForkAssistantTurn}
+      onJumpToUserMessage={onJumpToUserMessage}
     />
   );
 });
@@ -78,6 +86,7 @@ export const CompletedTurnFooterRow = memo(function CompletedTurnFooterRow({
   startIndex,
   supportsTimelineCursor,
   onForkAssistantTurn,
+  onJumpToUserMessage,
 }: {
   strategy: TurnContentStrategy;
   items: StreamItem[];
@@ -85,6 +94,7 @@ export const CompletedTurnFooterRow = memo(function CompletedTurnFooterRow({
   startIndex: number;
   supportsTimelineCursor: boolean;
   onForkAssistantTurn?: AssistantTurnForkHandler;
+  onJumpToUserMessage?: JumpToUserMessageHandler;
 }) {
   return (
     <TurnFooterRow>
@@ -95,6 +105,7 @@ export const CompletedTurnFooterRow = memo(function CompletedTurnFooterRow({
         startIndex={startIndex}
         supportsTimelineCursor={supportsTimelineCursor}
         onForkAssistantTurn={onForkAssistantTurn}
+        onJumpToUserMessage={onJumpToUserMessage}
       />
     </TurnFooterRow>
   );
@@ -138,6 +149,7 @@ function CompletedTurnFooter({
   startIndex,
   supportsTimelineCursor,
   onForkAssistantTurn,
+  onJumpToUserMessage,
 }: {
   strategy: TurnContentStrategy;
   items: StreamItem[];
@@ -145,6 +157,7 @@ function CompletedTurnFooter({
   startIndex: number;
   supportsTimelineCursor: boolean;
   onForkAssistantTurn?: AssistantTurnForkHandler;
+  onJumpToUserMessage?: JumpToUserMessageHandler;
 }) {
   const getContent = useCallback(
     () =>
@@ -160,6 +173,15 @@ function CompletedTurnFooter({
     startIndex,
     supportsTimelineCursor,
   });
+  const precedingUserMessage = useMemo(
+    () =>
+      resolvePrecedingUserMessage({
+        items,
+        startIndex,
+        getNeighborIndex: strategy.getNeighborIndex,
+      }),
+    [items, startIndex, strategy],
+  );
   const handleFork = useCallback(
     (target: AssistantForkTarget) => {
       if (!boundary) {
@@ -169,6 +191,12 @@ function CompletedTurnFooter({
     },
     [boundary, onForkAssistantTurn],
   );
+  const handleJumpToUserMessage = useCallback(() => {
+    if (!precedingUserMessage || !onJumpToUserMessage) {
+      return;
+    }
+    onJumpToUserMessage(precedingUserMessage.id);
+  }, [onJumpToUserMessage, precedingUserMessage]);
   return (
     <View style={stylesheet.turnFooterSlot}>
       <AssistantTurnFooter
@@ -176,6 +204,9 @@ function CompletedTurnFooter({
         completedAt={timing?.completedAt}
         durationMs={timing?.durationMs}
         onFork={boundary && onForkAssistantTurn ? handleFork : undefined}
+        onJumpToUserMessage={
+          precedingUserMessage && onJumpToUserMessage ? handleJumpToUserMessage : undefined
+        }
       />
     </View>
   );

@@ -21,6 +21,19 @@ export function openAgentFromHistory(input: OpenAgentFromHistoryInput): Promise<
         // Best effort — navigate regardless so the user still lands on the agent.
       }
     },
+    unarchiveAgent: async ({ serverId, agentId }) => {
+      const client = useSessionStore.getState().sessions[serverId]?.client ?? null;
+      if (!client) {
+        return;
+      }
+      try {
+        // Same path as the archived callout's Unarchive button: native unarchive
+        // + resume so ensureAgentIsInitialized and timeline catch-up can run.
+        await client.refreshAgent(agentId);
+      } catch {
+        // Best effort — still navigate; pane can show archived/error UI.
+      }
+    },
     navigateToAgent: (route) => {
       navigateToAgent(route);
     },

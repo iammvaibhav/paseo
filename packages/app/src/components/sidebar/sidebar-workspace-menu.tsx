@@ -2,7 +2,16 @@ import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { Archive, CircleCheck, Copy, MoreVertical, Pencil, Pin, PinOff } from "lucide-react-native";
+import {
+  Archive,
+  CircleCheck,
+  Copy,
+  MessageCircleQuestion,
+  MoreVertical,
+  Pencil,
+  Pin,
+  PinOff,
+} from "lucide-react-native";
 import { isNative, isWeb } from "@/constants/platform";
 import type { Theme } from "@/styles/theme";
 import type { ShortcutKey } from "@/utils/format-shortcut";
@@ -27,6 +36,7 @@ const ThemedPencil = withUnistyles(Pencil);
 const ThemedCircleCheck = withUnistyles(CircleCheck);
 const ThemedPin = withUnistyles(Pin);
 const ThemedPinOff = withUnistyles(PinOff);
+const ThemedMessageCircleQuestion = withUnistyles(MessageCircleQuestion);
 
 const copyLeadingIcon = <ThemedCopy size={14} uniProps={foregroundMutedColorMapping} />;
 const renameLeadingIcon = <ThemedPencil size={14} uniProps={foregroundMutedColorMapping} />;
@@ -36,6 +46,9 @@ const markAsReadLeadingIcon = (
 const archiveLeadingIcon = <ThemedArchive size={14} uniProps={foregroundMutedColorMapping} />;
 const pinLeadingIcon = <ThemedPin size={14} uniProps={foregroundMutedColorMapping} />;
 const unpinLeadingIcon = <ThemedPinOff size={14} uniProps={foregroundMutedColorMapping} />;
+const askHistoryLeadingIcon = (
+  <ThemedMessageCircleQuestion size={14} uniProps={foregroundMutedColorMapping} />
+);
 
 function renderTriggerIcon({ hovered }: { hovered?: boolean }) {
   return (
@@ -52,6 +65,7 @@ interface SidebarWorkspaceMenuProps {
   onCopyBranchName?: () => void;
   onRename?: () => void;
   onMarkAsRead?: () => void;
+  onAskHistory?: () => void;
   onArchive: () => void;
   archiveLabel?: string;
   archiveStatus?: "idle" | "pending" | "success";
@@ -68,6 +82,7 @@ export function SidebarWorkspaceMenu({
   onCopyBranchName,
   onRename,
   onMarkAsRead,
+  onAskHistory,
   onArchive,
   archiveLabel,
   archiveStatus,
@@ -138,6 +153,15 @@ export function SidebarWorkspaceMenu({
             onSelect={onTogglePin}
           >
             {isPinned ? t("sidebar.workspace.actions.unpin") : t("sidebar.workspace.actions.pin")}
+          </DropdownMenuItem>
+        ) : null}
+        {onAskHistory ? (
+          <DropdownMenuItem
+            testID={`sidebar-workspace-menu-ask-history-${workspaceKey}`}
+            leading={askHistoryLeadingIcon}
+            onSelect={onAskHistory}
+          >
+            {t("sidebar.workspace.actions.askHistory")}
           </DropdownMenuItem>
         ) : null}
         <OpenInFileManagerMenuItem

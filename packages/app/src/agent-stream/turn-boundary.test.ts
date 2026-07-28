@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { StreamItem } from "@/types/stream";
-import { resolveAssistantTurnForkBoundary } from "./turn-boundary";
+import {
+  resolveAssistantTurnForkBoundary,
+  resolvePrecedingUserMessage,
+  type StreamNeighborRelation,
+} from "./turn-boundary";
 
 function timestamp(seed: number): Date {
   return new Date(`2026-01-01T00:00:${seed.toString().padStart(2, "0")}.000Z`);
@@ -27,6 +31,26 @@ function assistantMessage(
     timestamp: timestamp(seed),
     ...(messageId ? { messageId } : {}),
   };
+}
+
+function thought(id: string, seed: number): Extract<StreamItem, { kind: "thought" }> {
+  return {
+    kind: "thought",
+    id,
+    text: id,
+    status: "ready",
+    timestamp: timestamp(seed),
+  };
+}
+
+/** Forward (web) order: chronological, "above" is lower index. */
+function forwardNeighborIndex(index: number, relation: StreamNeighborRelation): number {
+  return relation === "above" ? index - 1 : index + 1;
+}
+
+/** Inverted (native) order: newest first, "above" is higher index. */
+function invertedNeighborIndex(index: number, relation: StreamNeighborRelation): number {
+  return relation === "above" ? index + 1 : index - 1;
 }
 
 describe("resolveAssistantTurnForkBoundary", () => {
@@ -109,6 +133,58 @@ describe("resolveAssistantTurnForkBoundary", () => {
         items: [assistantMessage("assistant-1", 2)],
         startIndex: 0,
         supportsTimelineCursor: false,
+      }),
+    ).toBeUndefined();
+  });
+});
+
+describe("resolvePrecedingUserMessage", () => {
+  it("finds the user message above an assistant turn in forward order", () => {
+    const user = userMessage("user-1", 1);
+    const assistant = assistantMessage("assistant-1", 2, "msg-1");
+
+    expect(
+      resolvePrecedingUserMessage({
+        items: [user, thought("thought-1", 2), assistant],
+        startIndex: 2,
+        getNeighborIndex: forwardNeighborIndex,
+      }),
+    ).toBe(user);
+  });
+
+  it("returns the first of a consecutive user-message group", () => {
+    const first = userMessage("user-1", 1);
+    const second = userMessage("user-2", 2);
+    const assistant = assistantMessage("assistant-1", 3, "msg-1");
+
+    expect(
+      resolvePrecedingUserMessage({
+        items: [first, second, assistant],
+        startIndex: 2,
+        getNeighborIndex: forwardNeighborIndex,
+      }),
+    ).toBe(first);
+  });
+
+  it("finds the user message in inverted order", () => {
+    const assistant = assistantMessage("assistant-1", 2, "msg-1");
+    const user = userMessage("user-1", 1);
+
+    expect(
+      resolvePrecedingUserMessage({
+        items: [assistant, thought("thought-1", 2), user],
+        startIndex: 0,
+        getNeighborIndex: invertedNeighborIndex,
+      }),
+    ).toBe(user);
+  });
+
+  it("returns undefined when no user message precedes the turn", () => {
+    expect(
+      resolvePrecedingUserMessage({
+        items: [assistantMessage("assistant-1", 1)],
+        startIndex: 0,
+        getNeighborIndex: forwardNeighborIndex,
       }),
     ).toBeUndefined();
   });

@@ -9,6 +9,9 @@ export interface OpenAgentFromHistoryDeps {
   // Load the archived agent into the session store. Must resolve (never reject)
   // so navigation still happens on a best-effort basis if the fetch fails.
   hydrateArchivedAgent: (input: { serverId: string; agentId: string }) => Promise<void>;
+  // Resume the provider runtime (unarchive). Must resolve (never reject) so a
+  // refresh failure still opens the tab; the pane can show errors/retry.
+  unarchiveAgent: (input: { serverId: string; agentId: string }) => Promise<void>;
   navigateToAgent: (input: {
     serverId: string;
     agentId: string;
@@ -25,9 +28,10 @@ export interface OpenAgentFromHistoryDeps {
  * directory: the workspace tab reconcile would treat the freshly opened tab as
  * unknown + inactive and prune it, dropping focus onto whatever active agent
  * still lives in the same workspace (the "opens the wrong agent" bug). To open
- * an archived agent we first hydrate its record into the store (so reconcile
- * counts it as "known") and pin the tab (so reconcile keeps it), which lets the
- * pane mount as a read-only timeline with the Unarchive callout.
+ * an archived agent we hydrate its record (so reconcile counts it as "known"),
+ * unarchive/resume immediately (so timeline init runs and history is visible —
+ * no second Unarchive click), and pin the tab until the active directory
+ * catches up.
  */
 export async function resolveOpenAgentFromHistory(
   input: OpenAgentFromHistoryInput,
@@ -43,6 +47,7 @@ export async function resolveOpenAgentFromHistory(
   }
 
   await deps.hydrateArchivedAgent({ serverId: input.serverId, agentId: input.agentId });
+  await deps.unarchiveAgent({ serverId: input.serverId, agentId: input.agentId });
   deps.navigateToAgent({
     serverId: input.serverId,
     agentId: input.agentId,
