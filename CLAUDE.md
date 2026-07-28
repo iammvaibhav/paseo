@@ -205,21 +205,26 @@ Do day-to-day work on this branch, not on `main`.
 | **Port**        | **6767** (production-style host daemon — what the desktop app and remotes use)            |
 | **Not this**    | `npm run dev` / port **6768** / `.dev/paseo-home` is checkout hot-reload only, not deploy |
 
-The script builds server packages, restarts host daemons with **`--home …/.paseo`**, and syncs remotes. Local daemon restart is **detached** (so stop cannot leave the host with no start when an agent runs deploy) and waits for `/api/health`.
+The script builds server packages, restarts host daemons with **`--home …/.paseo`**, and syncs remotes. Local/remote restarts are **new-session detached** (not plain `nohup` — on macOS that still dies with a cancelled agent tool mid-restart) and must observe a **new PID + `/api/health`**. Restarts use the **built CLI** (`~/.local/bin/paseo` / `packages/cli/dist`), never `npx tsx` mid-build. On failure, deploy tries a detached **`daemon start` recovery** before aborting.
+
+**Local-only restart (agents):** after `npm run build:server`, use:
+
+```bash
+./scripts/restart-local-daemon.sh
+```
 
 **Recover if a local restart leaves the daemon down:**
 
 ```bash
-cd /Users/vaibhav/paseo && PATH="$HOME/.local/bin:$PATH" \
-  npx tsx packages/cli/src/index.js daemon start --home "$HOME/.paseo" \
+PATH="$HOME/.local/bin:$PATH" paseo daemon start --home "$HOME/.paseo" \
   && curl -fsS http://127.0.0.1:6767/api/health
 ```
 
 Remote recovery (example):
 
 ```bash
-ssh blrofc3 'cd ~/paseo && PATH="$HOME/.local/bin:$PATH" npx tsx packages/cli/src/index.js daemon start --home "$HOME/.paseo"'
-ssh iammvaibhav 'cd ~/paseo && PATH="$HOME/.local/bin:$PATH" npx tsx packages/cli/src/index.js daemon start --home "$HOME/.paseo"'
+ssh blrofc3 'PATH="$HOME/.local/bin:$PATH" paseo daemon start --home "$HOME/.paseo"'
+ssh iammvaibhav 'PATH="$HOME/.local/bin:$PATH" paseo daemon start --home "$HOME/.paseo"'
 ```
 
 ### Day-to-day flow

@@ -412,9 +412,8 @@ daemon_path_env() {
   printf '%s' "${HOME}/.local/bin:${PATH}"
 }
 
-# Map a daemon listen address to a loopback-friendly HTTP health URL.
-# Tailscale/all-interfaces binds are probed on 127.0.0.1 with the same port.
-daemon_health_url() {
+# Read configured daemon listen (e.g. 127.0.0.1:6767 or a Tailscale IP).
+daemon_listen_from_home() {
   local home="$1"
   local listen=""
   if [[ -f "$home/config.json" ]]; then
@@ -432,79 +431,199 @@ try {
   if [[ -z "$listen" ]]; then
     listen="127.0.0.1:6767"
   fi
-  case "$listen" in
-    0.0.0.0:*) listen="127.0.0.1:${listen#0.0.0.0:}" ;;
-    \[::\]:*) listen="127.0.0.1:${listen#\[::\]:}" ;;
-    *:*)
-      # Non-loopback host (e.g. Tailscale IP): still probe loopback on that port.
-      listen="127.0.0.1:${listen##*:}"
-      ;;
-    *) listen="127.0.0.1:${listen}" ;;
-  esac
-  printf 'http://%s/api/health' "$listen"
+  printf '%s' "$listen"
 }
 
-wait_for_daemon_health() {
+# Health probe URLs for a home: configured listen + loopback:port.
+# blrofc3 binds Tailscale only — loopback alone falsely fails.
+daemon_health_urls() {
   local home="$1"
-  local label="$2"
-  local timeout_s="${3:-90}"
-  local url
-  url="$(daemon_health_url "$home")"
-  local i
-  log "Waiting for $label daemon health at $url (up to ${timeout_s}s)"
-  for ((i = 1; i <= timeout_s; i++)); do
+  local listen port primary secondary
+  listen="$(daemon_listen_from_home "$home")"
+  port="${listen##*:}"
+  case "$listen" in
+    0.0.0.0:* | \[::\]:*)
+      primary="http://127.0.0.1:${port}/api/health"
+      secondary="$primary"
+      ;;
+    *)
+      primary="http://${listen}/api/health"
+      secondary="http://127.0.0.1:${port}/api/health"
+      ;;
+  esac
+  printf '%s %s' "$primary" "$secondary"
+}
+
+daemon_health_ok() {
+  local home="$1"
+  local urls url
+  # shellcheck disable=SC2207
+  urls=($(daemon_health_urls "$home"))
+  for url in "${urls[@]}"; do
     if curl -fsS --max-time 2 "$url" >/dev/null 2>&1; then
-      log "$label daemon healthy after ${i}s ($url)"
       return 0
     fi
-    sleep 1
   done
-  log "$label daemon not healthy after ${timeout_s}s ($url)"
   return 1
 }
 
-# Run daemon restart fully detached from this process tree. A blocking restart from
-# an agent that lives under the daemon can stop the daemon and die before start
-# runs — leaving the host with no daemon. nohup/setsid + health wait fixes that.
+read_daemon_pid() {
+  local home="$1"
+  local pid_file="$home/paseo.pid"
+  if [[ ! -f "$pid_file" ]]; then
+    return 1
+  fi
+  node -e '
+try {
+  const p = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  if (typeof p.pid === "number" && p.pid > 0) process.stdout.write(String(p.pid));
+} catch {}
+' "$pid_file" 2>/dev/null
+}
+
+# Built CLI only — never npx tsx for host restarts. Source+tsx races desktop
+# build:server:clean and missing workspace dist (highlight) and leaves the host
+# stopped after stop succeeds and start fails.
+daemon_cli_cmd() {
+  local cwd="${1:-$ROOT_DIR}"
+  local wrapper="${HOME}/.local/bin/paseo"
+  local dist_cli="$cwd/packages/cli/dist/index.js"
+  if [[ -x "$wrapper" ]]; then
+    printf '%s' "$wrapper"
+    return
+  fi
+  if [[ -f "$dist_cli" ]]; then
+    printf 'node %s' "$(printf %q "$dist_cli")"
+    return
+  fi
+  die "No built CLI for daemon restart (expected $wrapper or $dist_cli). Run build:server + install_cli_wrapper first."
+}
+
+# Launch a bash script in a NEW session (survives SIGTERM to the agent/deploy
+# process group). macOS has no setsid; plain `nohup … &` is still in the same
+# process group and dies mid-restart when the tool is cancelled — stop finishes,
+# start never runs, host stays down.
+launch_detached_bash() {
+  local logf="$1"
+  local script="$2"
+  python3 - "$logf" "$script" <<'PY'
+import os, sys, subprocess
+logf, script = sys.argv[1], sys.argv[2]
+log = open(logf, "ab", buffering=0)
+subprocess.Popen(
+    ["bash", "-c", script],
+    stdin=subprocess.DEVNULL,
+    stdout=log,
+    stderr=subprocess.STDOUT,
+    start_new_session=True,
+    close_fds=True,
+    env=os.environ.copy(),
+)
+PY
+}
+
+wait_for_new_daemon() {
+  local home="$1"
+  local label="$2"
+  local old_pid="${3:-}"
+  local logf="$4"
+  local timeout_s="${5:-90}"
+  local i new_pid
+  # shellcheck disable=SC2207
+  local urls
+  urls=($(daemon_health_urls "$home"))
+  log "Waiting for $label daemon NEW pid + health (${urls[*]}; up to ${timeout_s}s; old_pid=${old_pid:-none})"
+  for ((i = 1; i <= timeout_s; i++)); do
+    new_pid="$(read_daemon_pid "$home" || true)"
+    if [[ -n "$new_pid" && "$new_pid" != "${old_pid:-}" ]] && daemon_health_ok "$home"; then
+      log "$label daemon healthy after ${i}s (pid ${old_pid:-none} -> $new_pid)"
+      return 0
+    fi
+    if [[ $i -ge 8 ]] && grep -Eiq 'ERR_MODULE_NOT_FOUND|Failed to restart|Cannot find module|RESTART_FAILED' "$logf" 2>/dev/null; then
+      if [[ -z "$new_pid" || "$new_pid" == "${old_pid:-}" ]]; then
+        log "$label restart log shows failure and no new pid"
+        return 1
+      fi
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+# Detached restart: stop+start outside this process tree, then require a NEW pid
+# that answers /api/health. Plain health is wrong — the old daemon can still
+# answer while restart has not finished. On failure, attempt `daemon start`.
 restart_daemon_detached() {
   local home="$1"
   local label="$2"
   local cwd="${3:-$ROOT_DIR}"
   local logf="/tmp/paseo-daemon-restart-${label}.log"
-  local path_env
+  local path_env cli_cmd old_pid restart_script start_script
   path_env="$(daemon_path_env)"
+  cli_cmd="$(daemon_cli_cmd "$cwd")"
+  old_pid="$(read_daemon_pid "$home" || true)"
   : >"$logf"
-  log "Restarting $label daemon ($home) [detached; log $logf]"
+  log "Restarting $label daemon ($home) [new-session detached; log $logf] old_pid=${old_pid:-none} cli=$cli_cmd"
 
-  local restart_script
   restart_script="$(
     cat <<EOF
 set -euo pipefail
 cd $(printf %q "$cwd")
 export PATH=$(printf %q "$path_env")
-exec npx tsx packages/cli/src/index.js daemon restart --home $(printf %q "$home")
+export NVM_DIR="\${NVM_DIR:-\$HOME/.nvm}"
+# shellcheck disable=SC1091
+[ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
+exec $cli_cmd daemon restart --home $(printf %q "$home")
 EOF
   )"
 
-  if command -v setsid >/dev/null 2>&1; then
-    # Linux: new session so SIGHUP/kill of the deploy process group cannot
-    # take the restart down mid-stop.
-    setsid bash -c "$restart_script" >>"$logf" 2>&1 </dev/null &
-  else
-    # macOS: no setsid by default.
-    nohup bash -c "$restart_script" >>"$logf" 2>&1 </dev/null &
-  fi
-  # Do not `wait` on the restart PID — if something still reaps us, health is truth.
+  launch_detached_bash "$logf" "$restart_script"
 
-  if ! wait_for_daemon_health "$home" "$label" 90; then
-    log "$label daemon restart failed; last log lines from $logf:"
-    tail -n 80 "$logf" 2>/dev/null || true
-    die "$label daemon failed to come back after restart (see $logf). Recover with: PATH=\"\$HOME/.local/bin:\$PATH\" npx tsx packages/cli/src/index.js daemon start --home $(printf %q "$home")"
+  if wait_for_new_daemon "$home" "$label" "$old_pid" "$logf" 90; then
+    log "$label daemon restart complete (log: $logf)"
+    return 0
   fi
-  log "$label daemon restart complete (log: $logf)"
+
+  # Recovery: stop may have succeeded and start failed (or the first job was
+  # killed before start). Always try a detached start before giving up.
+  log "$label restart did not yield a new healthy pid; attempting detached start recovery"
+  {
+    echo "---- recovery start $(date -u +%Y-%m-%dT%H:%M:%SZ) ----"
+  } >>"$logf"
+  start_script="$(
+    cat <<EOF
+set -euo pipefail
+cd $(printf %q "$cwd")
+export PATH=$(printf %q "$path_env")
+export NVM_DIR="\${NVM_DIR:-\$HOME/.nvm}"
+# shellcheck disable=SC1091
+[ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
+exec $cli_cmd daemon start --home $(printf %q "$home")
+EOF
+  )"
+  # After a failed restart, old_pid may already be dead; accept any healthy pid.
+  launch_detached_bash "$logf" "$start_script"
+  if wait_for_new_daemon "$home" "$label" "" "$logf" 60; then
+    log "$label daemon recovered via detached start (log: $logf)"
+    return 0
+  fi
+
+  log "$label daemon restart failed; last log lines from $logf:"
+  tail -n 80 "$logf" 2>/dev/null || true
+  die "$label daemon failed to come back after restart (see $logf). Recover with: PATH=\"\$HOME/.local/bin:\$PATH\" paseo daemon start --home $(printf %q "$home")"
 }
 
 restart_local_daemon() {
+  # Require built artifacts so start does not race a half-written dist/.
+  if [[ ! -f "$ROOT_DIR/packages/cli/dist/index.js" ]]; then
+    die "packages/cli/dist missing before local daemon restart — build:server did not complete"
+  fi
+  if [[ ! -f "$ROOT_DIR/packages/highlight/dist/index.js" ]]; then
+    die "packages/highlight/dist missing before local daemon restart — build:server incomplete"
+  fi
+  if [[ ! -f "$ROOT_DIR/packages/server/dist/scripts/supervisor-entrypoint.js" ]]; then
+    die "packages/server/dist/scripts/supervisor-entrypoint.js missing — build:server incomplete"
+  fi
   restart_daemon_detached "$LOCAL_PASEO_HOME" "local" "$ROOT_DIR"
 }
 
@@ -843,16 +962,23 @@ build_and_restart() {
     fi
     log "Tunnel provider: \$TUNNEL_PROVIDER"
   fi
-  # Detached restart so a flaky stop cannot leave the host without a start.
-  # Probe both the configured listen URL and loopback:port (Tailscale-only binds
-  # fail on 127.0.0.1; all-interfaces binds work on loopback).
+  # Detached restart via built CLI (not npx tsx). Require a NEW pid + health on
+  # configured listen and/or loopback:port (Tailscale-only binds fail on 127.0.0.1).
   restart_log="/tmp/paseo-daemon-restart-remote-\$\$.log"
   : >"\$restart_log"
-  log "Restarting daemon (\$PASEO_HOME) [detached; log \$restart_log]"
+  old_pid=""
+  if [[ -f "\$PASEO_HOME/paseo.pid" ]]; then
+    old_pid="\$(node -e 'try{const p=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\"));if(p.pid)process.stdout.write(String(p.pid))}catch{}' \"\$PASEO_HOME/paseo.pid\" 2>/dev/null || true)"
+  fi
+  cli_bin="\$HOME/.local/bin/paseo"
+  if [[ ! -x "\$cli_bin" ]]; then
+    cli_bin="node \$HOME/\$REMOTE_REPO_DIR/packages/cli/dist/index.js"
+  fi
+  log "Restarting daemon (\$PASEO_HOME) [detached; log \$restart_log] old_pid=\${old_pid:-none}"
   if command -v setsid >/dev/null 2>&1; then
-    setsid bash -c "cd \"\$HOME/\$REMOTE_REPO_DIR\" && PATH=\"\$(daemon_path_env)\" npx tsx packages/cli/src/index.js daemon restart --home \"\$PASEO_HOME\"" >>"\$restart_log" 2>&1 </dev/null &
+    setsid bash -c "export PATH=\"\$(daemon_path_env)\"; export NVM_DIR=\"\${NVM_DIR:-\$HOME/.nvm}\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"; cd \"\$HOME/\$REMOTE_REPO_DIR\"; exec \$cli_bin daemon restart --home \"\$PASEO_HOME\"" >>"\$restart_log" 2>&1 </dev/null &
   else
-    nohup bash -c "cd \"\$HOME/\$REMOTE_REPO_DIR\" && PATH=\"\$(daemon_path_env)\" npx tsx packages/cli/src/index.js daemon restart --home \"\$PASEO_HOME\"" >>"\$restart_log" 2>&1 </dev/null &
+    nohup bash -c "export PATH=\"\$(daemon_path_env)\"; export NVM_DIR=\"\${NVM_DIR:-\$HOME/.nvm}\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"; cd \"\$HOME/\$REMOTE_REPO_DIR\"; exec \$cli_bin daemon restart --home \"\$PASEO_HOME\"" >>"\$restart_log" 2>&1 </dev/null &
   fi
   listen="127.0.0.1:6767"
   if [[ -f "\$PASEO_HOME/config.json" ]]; then
@@ -869,11 +995,17 @@ build_and_restart() {
   secondary="http://127.0.0.1:\${port}/api/health"
   ok=0
   for i in \$(seq 1 90); do
-    if curl -fsS --max-time 2 "\$primary" >/dev/null 2>&1 \\
-      || curl -fsS --max-time 2 "\$secondary" >/dev/null 2>&1; then
-      log "Daemon healthy after \${i}s (\$primary)"
-      ok=1
-      break
+    new_pid=""
+    if [[ -f "\$PASEO_HOME/paseo.pid" ]]; then
+      new_pid="\$(node -e 'try{const p=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\"));if(p.pid)process.stdout.write(String(p.pid))}catch{}' \"\$PASEO_HOME/paseo.pid\" 2>/dev/null || true)"
+    fi
+    if [[ -n "\$new_pid" && "\$new_pid" != "\${old_pid:-}" ]]; then
+      if curl -fsS --max-time 2 "\$primary" >/dev/null 2>&1 \\
+        || curl -fsS --max-time 2 "\$secondary" >/dev/null 2>&1; then
+        log "Daemon healthy after \${i}s (pid \${old_pid:-none} -> \$new_pid; \$primary)"
+        ok=1
+        break
+      fi
     fi
     sleep 1
   done
