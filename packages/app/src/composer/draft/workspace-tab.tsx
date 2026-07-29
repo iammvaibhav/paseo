@@ -15,6 +15,9 @@ import { composerWorkspaceAttachment } from "@/composer/attachments/workspace";
 import { useAgentInputDraft } from "@/composer/draft/input-draft";
 import type { CreateAgentInitialValues } from "@/hooks/use-agent-form-state";
 import { useDraftAgentCreateFlow, type DraftCreateAttempt } from "@/composer/draft/create-flow";
+import { useVoiceOptional } from "@/contexts/voice-context";
+import { useToast } from "@/contexts/toast-context";
+import { toErrorMessage } from "@/utils/error-messages";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { buildWorkspaceDraftAgentConfig } from "@/screens/workspace/workspace-draft-agent-config";
 import { buildDraftStoreKey } from "@/stores/draft-keys";
@@ -497,7 +500,9 @@ export function WorkspaceDraftAgentTab({
     draftId,
     getPendingServerId: () => serverId,
     initialAttempt: initialCreateAttempt,
-    allowEmptyText: allowsEmptyAutoSubmit,
+    // Empty create is required so voice mode can open a real agent from a
+    // brand-new draft tab without forcing the user to type first.
+    allowEmptyText: true,
     validateBeforeSubmit: ({ text, attachments }) => {
       const allowsEmptyDraftText = shouldAllowEmptyDraftText({
         allowsEmptyAutoSubmit,
@@ -551,6 +556,41 @@ export function WorkspaceDraftAgentTab({
       onCreated(result);
     },
   });
+  const voice = useVoiceOptional();
+  const toast = useToast();
+  const toastErrorRef = useRef(toast.error);
+  toastErrorRef.current = toast.error;
+  const handleStartVoiceMode = useCallback(async () => {
+    if (!voice || !isConnected || isSubmitting) {
+      return;
+    }
+    if (voice.isVoiceSwitching) {
+      return;
+    }
+
+    try {
+      await handleCreateFromInput({
+        text: draftInput.text,
+        attachments: draftInput.attachments,
+        cwd: composerState.workingDir,
+        startVoiceMode: true,
+      });
+    } catch (error) {
+      const message = toErrorMessage(error).trim();
+      if (message.length > 0) {
+        toastErrorRef.current(message);
+      }
+      throw error;
+    }
+  }, [
+    composerState.workingDir,
+    draftInput.attachments,
+    draftInput.text,
+    handleCreateFromInput,
+    isConnected,
+    isSubmitting,
+    voice,
+  ]);
   useCommandCenterActions({
     sourceId: `draft:${serverId}:${tabId}`,
     enabled: isPaneFocused && !isSubmitting,
@@ -702,6 +742,7 @@ export function WorkspaceDraftAgentTab({
           commandDraftConfig={composerState.commandDraftConfig}
           agentControls={composerAgentControls}
           isCompactLayout={isCompactComposerLayout}
+          onStartVoiceMode={handleStartVoiceMode}
         />
       </ReanimatedAnimated.View>
     </FileDropZone>

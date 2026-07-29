@@ -68,6 +68,9 @@ import {
   deriveRouteBottomAnchorRequest,
 } from "@/screens/agent/agent-ready-screen-bottom-anchor";
 import { WorkspaceDraftAgentTab } from "@/composer/draft/workspace-tab";
+import { useVoiceOptional } from "@/contexts/voice-context";
+import { useToast } from "@/contexts/toast-context";
+import { toErrorMessage } from "@/utils/error-messages";
 import { useCreateFlowStore } from "@/stores/create-flow-store";
 import { buildDraftStoreKey, generateDraftId } from "@/stores/draft-keys";
 import { usePanelStore } from "@/stores/panel-store";
@@ -412,13 +415,6 @@ function findActiveCreateHandoff(input: {
       pending.serverId === input.serverId &&
       pending.agentId === input.agentId,
   );
-}
-
-function toErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return String(error);
 }
 
 function isNotFoundErrorMessage(message: string): boolean {
@@ -1474,6 +1470,56 @@ function ActiveAgentComposer({
       workspaceId,
     ],
   );
+  const voice = useVoiceOptional();
+  const toast = useToast();
+  const toastErrorRef = useRef(toast.error);
+  toastErrorRef.current = toast.error;
+  const isConnected = useHostRuntimeIsConnected(serverId);
+  const pendingVoiceCreate = useCreateFlowStore((state) => {
+    const pending = Object.values(state.pendingByDraftId).find(
+      (entry) =>
+        entry.startVoiceMode === true &&
+        entry.serverId === serverId &&
+        entry.agentId === agentId &&
+        (entry.lifecycle === "sent" || entry.lifecycle === "active"),
+    );
+    return pending ?? null;
+  });
+  const pendingVoiceCreateKey = pendingVoiceCreate
+    ? `${pendingVoiceCreate.draftId}:${pendingVoiceCreate.clientMessageId}`
+    : null;
+  const startedVoiceCreateKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!pendingVoiceCreate || !pendingVoiceCreateKey || !voice || !isConnected) {
+      return;
+    }
+    if (voice.isVoiceSwitching) {
+      return;
+    }
+    if (voice.isVoiceModeForAgent(serverId, agentId)) {
+      useCreateFlowStore.getState().clear({ draftId: pendingVoiceCreate.draftId });
+      return;
+    }
+    if (startedVoiceCreateKeyRef.current === pendingVoiceCreateKey) {
+      return;
+    }
+    startedVoiceCreateKeyRef.current = pendingVoiceCreateKey;
+
+    void voice
+      .startVoice(serverId, agentId)
+      .then(() => {
+        useCreateFlowStore.getState().clear({ draftId: pendingVoiceCreate.draftId });
+        return undefined;
+      })
+      .catch((error) => {
+        startedVoiceCreateKeyRef.current = null;
+        const message = toErrorMessage(error).trim();
+        if (message.length > 0) {
+          toastErrorRef.current(message);
+        }
+      });
+  }, [agentId, isConnected, pendingVoiceCreate, pendingVoiceCreateKey, serverId, voice]);
 
   const { style: composerKeyboardStyle } = useKeyboardShiftStyle({
     mode: "translate",

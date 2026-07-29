@@ -449,12 +449,24 @@ interface AttemptStartRealtimeVoiceArgs {
   serverId: string;
   agentId: string;
   toastErrorRef: { current: (message: string) => void };
+  onStartVoiceMode?: (() => void | Promise<void>) | undefined;
 }
 
 function attemptStartRealtimeVoice(args: AttemptStartRealtimeVoiceArgs): void {
-  const { voice, isConnected, hasAgent, serverId, agentId, toastErrorRef } = args;
-  if (!voice || !isConnected || !hasAgent) return;
+  const { voice, isConnected, hasAgent, serverId, agentId, toastErrorRef, onStartVoiceMode } = args;
+  if (!voice || !isConnected) return;
   if (voice.isVoiceSwitching) return;
+  if (onStartVoiceMode) {
+    void Promise.resolve(onStartVoiceMode()).catch((error) => {
+      console.error("[Composer] Failed to start voice mode from draft", error);
+      const message = resolveErrorMessage(error);
+      if (message && message.trim().length > 0) {
+        toastErrorRef.current(message);
+      }
+    });
+    return;
+  }
+  if (!hasAgent) return;
   if (voice.isVoiceModeForAgent(serverId, agentId)) return;
   void voice.startVoice(serverId, agentId).catch((error) => {
     console.error("[Composer] Failed to start voice mode", error);
@@ -866,6 +878,11 @@ interface ComposerProps {
   onComposerHeightChange?: (height: number) => void;
   onAttentionInputFocus?: () => void;
   onAttentionPromptSend?: () => void;
+  /**
+   * Draft-tab only: create a real agent (if needed) then start voice mode.
+   * When set, the composer shows the voice button even before an agent exists.
+   */
+  onStartVoiceMode?: () => void | Promise<void>;
   /** Controlled agent controls rendered in input area (draft flows). */
   agentControls?: DraftAgentControlsProps;
   /** Extra styles merged onto the message input wrapper (e.g. elevated background). */
@@ -969,18 +986,20 @@ interface ComposerVoiceModeButtonProps {
 interface ComposerRightControlsSlotProps extends ComposerVoiceModeButtonProps {
   isVoiceModeForAgent: boolean;
   hasAgent: boolean;
+  isDraftComposer: boolean;
   isAgentRunning: boolean;
   hasSendableContent: boolean;
   isProcessing: boolean;
   isCompact: boolean;
   canFork: boolean;
   onFork: () => void;
-  cancelButton: ReactElement;
+  cancelButton: ReactNode;
 }
 
 function ComposerRightControlsSlot({
   isVoiceModeForAgent,
   hasAgent,
+  isDraftComposer,
   isAgentRunning,
   hasSendableContent,
   isProcessing,
@@ -991,8 +1010,9 @@ function ComposerRightControlsSlot({
   ...voiceProps
 }: ComposerRightControlsSlotProps) {
   const hideVoiceForCompactInput = isCompact && hasSendableContent;
+  const canStartVoiceOnTarget = hasAgent || isDraftComposer;
   const showVoiceModeButton =
-    !isVoiceModeForAgent && hasAgent && !isAgentRunning && !hideVoiceForCompactInput;
+    !isVoiceModeForAgent && canStartVoiceOnTarget && !isAgentRunning && !hideVoiceForCompactInput;
   const shouldShowCancelButton = isAgentRunning && !hasSendableContent && !isProcessing;
   // Fork sits next to the send button while the agent is busy and there's
   // something to send: it spins the message off into a new sibling agent
@@ -1126,6 +1146,7 @@ export function Composer({
   onComposerHeightChange,
   onAttentionInputFocus,
   onAttentionPromptSend,
+  onStartVoiceMode,
   agentControls,
   inputWrapperStyle,
   externalKeyboardShift,
@@ -1690,8 +1711,9 @@ export function Composer({
       serverId,
       agentId,
       toastErrorRef,
+      onStartVoiceMode,
     });
-  }, [agentId, hasAgent, isConnected, serverId, voice]);
+  }, [agentId, hasAgent, isConnected, onStartVoiceMode, serverId, voice]);
 
   const handleEditQueuedMessage = useCallback(
     (id: string) => {
@@ -1883,6 +1905,7 @@ export function Composer({
       <ComposerRightControlsSlot
         isVoiceModeForAgent={isVoiceModeForAgent}
         hasAgent={hasAgent}
+        isDraftComposer={Boolean(onStartVoiceMode)}
         isAgentRunning={isAgentRunning}
         hasSendableContent={hasSendableContent}
         isProcessing={isProcessing}
@@ -1906,6 +1929,7 @@ export function Composer({
       handleFork,
       handleToggleRealtimeVoice,
       hasAgent,
+      onStartVoiceMode,
       hasSendableContent,
       isAgentRunning,
       isConnected,

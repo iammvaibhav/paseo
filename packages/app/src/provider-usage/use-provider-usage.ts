@@ -14,8 +14,11 @@ export function providerUsageQueryKey(serverId: string | null | undefined) {
   return ["providerUsage", serverId ?? ""] as const;
 }
 
-async function fetchProviderUsage(client: ProviderUsageClient): Promise<ProviderUsageListPayload> {
-  return client.listProviderUsage();
+async function fetchProviderUsage(
+  client: ProviderUsageClient,
+  options?: { forceRefresh?: boolean },
+): Promise<ProviderUsageListPayload> {
+  return client.listProviderUsage(options?.forceRefresh ? { forceRefresh: true } : undefined);
 }
 
 interface UseProviderUsageOptions {
@@ -44,7 +47,9 @@ export function useProviderUsage(
     if (!client) {
       throw new Error(providerUsageCopy.clientUnavailable);
     }
-    return fetchProviderUsage(client);
+    // Always force the daemon past its 5m cache so tooltip/settings refreshes
+    // return live provider limits instead of a stale server snapshot.
+    return fetchProviderUsage(client, { forceRefresh: true });
   }, [client]);
 
   const query = useQuery({
@@ -59,6 +64,7 @@ export function useProviderUsage(
 
   const refresh = useCallback(async () => {
     if (!canFetch) return;
+    // Keep showing cached data while a forced refetch is in flight.
     await queryClient.invalidateQueries({ queryKey });
     await queryClient.fetchQuery({
       queryKey,
