@@ -1620,6 +1620,7 @@ export const ja: TranslationResources = {
     title: "コンテキストウィンドウ",
     used: "{{percentage}}%使用",
     tokens: "{{used}} / {{max}}トークン",
+    tokensUnknown: "0 トークン（使用状況待ち）",
     sessionCost: "セッションコスト: {{cost}}",
     accessibility: "コンテキストウィンドウ{{percentage}}%使用",
   },

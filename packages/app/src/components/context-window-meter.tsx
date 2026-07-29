@@ -98,6 +98,41 @@ function getMeterGeometry(showPercentage: boolean, glyphSize?: number) {
   };
 }
 
+function resolveMeterViewModel(input: {
+  maxTokens: number | null;
+  usedTokens: number | null;
+  totalCostUsd?: number | null;
+  pending: boolean;
+  showPercentage: boolean;
+  glyphSize?: number;
+  theme: ReturnType<typeof useUnistyles>["theme"];
+}) {
+  const geometry = getMeterGeometry(input.showPercentage, input.glyphSize);
+  const maxTokens = input.maxTokens;
+  const usedTokens = input.usedTokens;
+  const hasUsageSample =
+    maxTokens !== null &&
+    usedTokens !== null &&
+    isValidMaxTokens(maxTokens) &&
+    isValidUsedTokens(usedTokens);
+  const percentage = hasUsageSample ? (getUsagePercentage(maxTokens, usedTokens) ?? 0) : 0;
+  const clampedPercentage = clampPercentage(percentage);
+  return {
+    hasUsageSample,
+    resolvedMaxTokens: hasUsageSample ? maxTokens : 0,
+    resolvedUsedTokens: hasUsageSample ? usedTokens : 0,
+    percentage,
+    clampedPercentage,
+    roundedPercentage: Math.round(percentage),
+    geometry,
+    dashOffset: geometry.circumference - (clampedPercentage / 100) * geometry.circumference,
+    colors: getMeterColors(clampedPercentage, input.theme),
+    formattedSessionCost:
+      typeof input.totalCostUsd === "number" ? formatSessionCost(input.totalCostUsd) : null,
+    showPendingTrackOnly: !hasUsageSample && input.pending,
+  };
+}
+
 export function ContextWindowMeter({
   maxTokens,
   usedTokens,
@@ -116,8 +151,6 @@ export function ContextWindowMeter({
     serverId ?? null,
     { enabled: isTooltipOpen },
   );
-  const percentage =
-    maxTokens !== null && usedTokens !== null ? getUsagePercentage(maxTokens, usedTokens) : null;
   const handleTooltipOpenChange = useCallback(
     (nextOpen: boolean) => {
       setIsTooltipOpen(nextOpen);
@@ -128,46 +161,26 @@ export function ContextWindowMeter({
     [refreshProviderUsage],
   );
 
-  const geometry = getMeterGeometry(showPercentage, glyphSize);
-
-  // No usage yet: reserve the footprint with a track-only ring while a session is
-  // active so the real ring fades in without shifting siblings. Render nothing when
-  // no usage is expected.
-  if (percentage === null || maxTokens === null || usedTokens === null) {
-    if (!pending) {
-      return null;
-    }
-    return (
-      <View style={geometry.containerStyle}>
-        <Svg
-          width={geometry.svgSize}
-          height={geometry.svgSize}
-          viewBox={`0 0 ${geometry.svgSize} ${geometry.svgSize}`}
-          style={styles.svg}
-          accessibilityElementsHidden
-          importantForAccessibility="no-hide-descendants"
-        >
-          <Circle
-            cx={geometry.center}
-            cy={geometry.center}
-            r={geometry.radius}
-            fill="none"
-            stroke={theme.colors.surface3}
-            strokeWidth={geometry.strokeWidth}
-          />
-        </Svg>
-        {showPercentage ? <View style={styles.skeletonLabel} /> : null}
-      </View>
-    );
-  }
-
-  const clampedPercentage = clampPercentage(percentage);
-  const roundedPercentage = Math.round(percentage);
+  const {
+    hasUsageSample,
+    resolvedMaxTokens,
+    resolvedUsedTokens,
+    roundedPercentage,
+    geometry,
+    dashOffset,
+    colors,
+    formattedSessionCost,
+    showPendingTrackOnly,
+  } = resolveMeterViewModel({
+    maxTokens,
+    usedTokens,
+    totalCostUsd,
+    pending,
+    showPercentage,
+    glyphSize,
+    theme,
+  });
   const { svgSize, center, radius, strokeWidth, circumference, containerStyle } = geometry;
-  const dashOffset = circumference - (clampedPercentage / 100) * circumference;
-  const colors = getMeterColors(clampedPercentage, theme);
-  const formattedSessionCost =
-    typeof totalCostUsd === "number" ? formatSessionCost(totalCostUsd) : null;
 
   return (
     <Tooltip
@@ -199,22 +212,25 @@ export function ContextWindowMeter({
               cy={center}
               r={radius}
               fill="none"
-              stroke={colors.track}
+              stroke={showPendingTrackOnly ? theme.colors.surface3 : colors.track}
               strokeWidth={strokeWidth}
             />
-            <Circle
-              cx={center}
-              cy={center}
-              r={radius}
-              fill="none"
-              stroke={colors.progress}
-              strokeWidth={strokeWidth}
-              strokeLinecap="round"
-              strokeDasharray={circumference}
-              strokeDashoffset={dashOffset}
-            />
+            {showPendingTrackOnly ? null : (
+              <Circle
+                cx={center}
+                cy={center}
+                r={radius}
+                fill="none"
+                stroke={colors.progress}
+                strokeWidth={strokeWidth}
+                strokeLinecap="round"
+                strokeDasharray={circumference}
+                strokeDashoffset={dashOffset}
+              />
+            )}
           </Svg>
-          {showPercentage ? (
+          {showPercentage && showPendingTrackOnly ? <View style={styles.skeletonLabel} /> : null}
+          {showPercentage && !showPendingTrackOnly ? (
             <Text style={styles.percentageLabel}>{`${roundedPercentage}%`}</Text>
           ) : null}
         </Pressable>
@@ -226,10 +242,12 @@ export function ContextWindowMeter({
             {t("contextWindow.used", { percentage: roundedPercentage })}
           </Text>
           <Text style={styles.tooltipDetail}>
-            {t("contextWindow.tokens", {
-              used: formatTokenCount(usedTokens),
-              max: formatTokenCount(maxTokens),
-            })}
+            {hasUsageSample
+              ? t("contextWindow.tokens", {
+                  used: formatTokenCount(resolvedUsedTokens),
+                  max: formatTokenCount(resolvedMaxTokens),
+                })
+              : t("contextWindow.tokensUnknown")}
           </Text>
           {formattedSessionCost ? (
             <Text style={styles.tooltipDetail}>

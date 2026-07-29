@@ -1633,6 +1633,7 @@ export const ptBR: TranslationResources = {
     title: "Janela de contexto",
     used: "{{percentage}}% usado",
     tokens: "{{used}} / {{max}} tokens",
+    tokensUnknown: "0 tokens (aguardando uso)",
     sessionCost: "Custo da sessão {{cost}}",
     accessibility: "Janela de contexto {{percentage}}% usada",
   },

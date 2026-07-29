@@ -238,11 +238,7 @@ function renderContextWindowMeter(
   model: string | null,
   pending: boolean,
   glyphSize: number,
-): ReactElement | null {
-  const hasData = contextWindowMaxTokens !== null && contextWindowUsedTokens !== null;
-  if (!hasData && !pending) {
-    return null;
-  }
+): ReactElement {
   return (
     <ContextWindowMeter
       maxTokens={contextWindowMaxTokens}
@@ -1928,24 +1924,28 @@ export function Composer({
     agentState.contextWindowUsedTokens,
   );
 
-  const contextWindowPending =
-    agentState.status === "initializing" || agentState.status === "running";
+  // Always reserve the meter for agent composers, even before the first usage
+  // sample arrives (restored idle tabs, brand-new chats).
+  const contextWindowPending = true;
   const contextWindowMeterGlyphSize = isCompactLayout ? ICON_SIZE.md : buttonIconSize;
 
   const contextWindowMeter = useMemo(
     () =>
-      renderContextWindowMeter(
-        contextWindowMaxTokens,
-        contextWindowUsedTokens,
-        agentState.totalCostUsd,
-        false,
-        serverId,
-        agentState.provider,
-        agentState.model,
-        contextWindowPending,
-        contextWindowMeterGlyphSize,
-      ),
+      hasAgent
+        ? renderContextWindowMeter(
+            contextWindowMaxTokens,
+            contextWindowUsedTokens,
+            agentState.totalCostUsd,
+            false,
+            serverId,
+            agentState.provider,
+            agentState.model,
+            contextWindowPending,
+            contextWindowMeterGlyphSize,
+          )
+        : null,
     [
+      hasAgent,
       contextWindowMaxTokens,
       contextWindowUsedTokens,
       agentState.totalCostUsd,

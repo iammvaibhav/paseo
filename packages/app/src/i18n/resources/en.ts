@@ -1615,6 +1615,7 @@ export const en = {
     title: "Context window",
     used: "{{percentage}}% used",
     tokens: "{{used}} / {{max}} tokens",
+    tokensUnknown: "0 tokens (waiting for usage)",
     sessionCost: "Session cost {{cost}}",
     accessibility: "Context window {{percentage}}% used",
   },

@@ -1650,6 +1650,7 @@ export const fr: TranslationResources = {
     title: "Fenêtre contextuelle",
     used: "{{percentage}}% utilisé",
     tokens: "Jetons{{used}}/{{max}}",
+    tokensUnknown: "0 jeton (en attente d’usage)",
     sessionCost: "Coût de la séance{{cost}}",
     accessibility: "Fenêtre contextuelle{{percentage}}% utilisé",
   },

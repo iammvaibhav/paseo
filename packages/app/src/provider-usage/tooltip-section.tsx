@@ -38,7 +38,14 @@ export function ProviderUsageTooltipSection({
   }
 
   const usage = matchProviderUsage(view.payload.providers, activeProviderId, activeModelId);
-  if (!usage) return null;
+  if (!usage) {
+    return (
+      <>
+        <View style={styles.divider} />
+        <Text style={styles.detail}>{providerUsageCopy.empty}</Text>
+      </>
+    );
+  }
 
   return (
     <>
