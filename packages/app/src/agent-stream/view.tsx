@@ -1514,6 +1514,8 @@ const stylesheet = StyleSheet.create((theme) => ({
   contentWrapper: {
     width: "100%",
     maxWidth: MAX_CONTENT_WIDTH,
+    // Web flex parents often ignore alignSelf centering; match the composer.
+    marginHorizontal: "auto",
     alignSelf: "center",
     paddingHorizontal: theme.spacing[2],
   },
@@ -1535,6 +1537,8 @@ const stylesheet = StyleSheet.create((theme) => ({
   streamItemWrapper: {
     width: "100%",
     maxWidth: MAX_CONTENT_WIDTH,
+    // Web flex parents often ignore alignSelf centering; match the composer.
+    marginHorizontal: "auto",
     alignSelf: "center",
     paddingHorizontal: theme.spacing[2],
   },
