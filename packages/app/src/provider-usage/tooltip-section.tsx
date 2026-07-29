@@ -2,16 +2,10 @@ import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { ProviderUsageCard } from "./card";
 import { providerUsageCopy } from "./copy";
-import type { ProviderUsage, ProviderUsageView } from "./types";
+import { matchProviderUsage } from "./match-provider-usage";
+import type { ProviderUsageView } from "./types";
 
-function matchProvider(
-  providers: ProviderUsage[],
-  activeProviderId: string | null | undefined,
-): ProviderUsage | null {
-  if (!activeProviderId) return null;
-  const target = activeProviderId.toLowerCase();
-  return providers.find((usage) => usage.providerId.toLowerCase() === target) ?? null;
-}
+export { matchProviderUsage } from "./match-provider-usage";
 
 // Renders the active agent's provider usage inside the context-meter tooltip.
 // Returns nothing when the active provider has no usage entry, so the meter's
@@ -19,9 +13,11 @@ function matchProvider(
 export function ProviderUsageTooltipSection({
   view,
   activeProviderId,
+  activeModelId,
 }: {
   view: ProviderUsageView;
   activeProviderId: string | null | undefined;
+  activeModelId?: string | null;
 }) {
   if (view.kind === "loading") {
     return (
@@ -41,7 +37,7 @@ export function ProviderUsageTooltipSection({
     );
   }
 
-  const usage = matchProvider(view.payload.providers, activeProviderId);
+  const usage = matchProviderUsage(view.payload.providers, activeProviderId, activeModelId);
   if (!usage) return null;
 
   return (

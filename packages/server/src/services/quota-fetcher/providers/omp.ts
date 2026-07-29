@@ -118,16 +118,7 @@ const XaiCreditsConfigSchema = z
       })
       .nullish(),
     creditUsagePercent: ApiNumberSchema.optional(),
-    productUsage: z
-      .array(
-        z
-          .object({
-            product: z.string(),
-            usagePercent: ApiNumberSchema.optional(),
-          })
-          .passthrough(),
-      )
-      .nullish(),
+    // productUsage is intentionally ignored: SuperGrok UI only shows weekly credits.
     isUnifiedBillingUser: z.boolean().optional(),
   })
   .passthrough();
@@ -135,27 +126,6 @@ const XaiCreditsConfigSchema = z
 const XaiCreditsResponseSchema = z
   .object({
     config: XaiCreditsConfigSchema.nullish(),
-  })
-  .passthrough();
-
-const XaiMonthlyAmountSchema = z
-  .object({
-    val: ApiNumberSchema.optional(),
-  })
-  .nullish();
-
-const XaiMonthlyConfigSchema = z
-  .object({
-    monthlyLimit: XaiMonthlyAmountSchema,
-    used: XaiMonthlyAmountSchema,
-    billingPeriodStart: z.string().optional(),
-    billingPeriodEnd: z.string().optional(),
-  })
-  .passthrough();
-
-const XaiMonthlyResponseSchema = z
-  .object({
-    config: XaiMonthlyConfigSchema.nullish(),
   })
   .passthrough();
 
@@ -214,14 +184,6 @@ function resolveOmpIdentity(provider: string): OmpProviderIdentity {
     providerId: `omp-${provider}`,
     displayName: `OMP · ${provider}`,
   };
-}
-
-function productWindowId(product: string): string {
-  return `product_${product
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "")}`;
 }
 
 function percentWindow(input: {
@@ -305,46 +267,61 @@ function mapOmpLimitToBalance(
   };
 }
 
+function appendOmpLimit(
+  limit: z.infer<typeof OmpUsageLimitSchema>,
+  isSuperGrok: boolean,
+  windows: ProviderUsageWindow[],
+  balances: ProviderUsageBalance[],
+): void {
+  // SuperGrok reports multiple sub-windows; only keep the overall weekly credits bar.
+  if (isSuperGrok && limit.id !== "xai-oauth:credits:1w") {
+    return;
+  }
+  const window = mapOmpLimitToWindow(limit);
+  if (window) {
+    windows.push(window);
+    return;
+  }
+  if (isSuperGrok) return;
+  const balance = mapOmpLimitToBalance(limit);
+  if (balance) balances.push(balance);
+}
+
+function resolveOmpPlanLabel(metadata: Record<string, unknown> | undefined): string | null {
+  if (typeof metadata?.planType === "string") return metadata.planType;
+  if (typeof metadata?.billingKind !== "string") return null;
+  if (metadata.billingKind === "unified") return "SuperGrok (unified)";
+  return metadata.billingKind;
+}
+
 function mapOmpReportToUsage(report: z.infer<typeof OmpUsageReportSchema>): ProviderUsage | null {
   const identity = resolveOmpIdentity(report.provider);
   const windows: ProviderUsageWindow[] = [];
   const balances: ProviderUsageBalance[] = [];
   const details: ProviderUsageDetail[] = [];
+  const isSuperGrok = report.provider === "xai-oauth";
 
   for (const limit of report.limits ?? []) {
-    const window = mapOmpLimitToWindow(limit);
-    if (window) {
-      windows.push(window);
-      continue;
-    }
-    const balance = mapOmpLimitToBalance(limit);
-    if (balance) balances.push(balance);
+    appendOmpLimit(limit, isSuperGrok, windows, balances);
   }
 
-  const email = typeof report.metadata?.email === "string" ? report.metadata.email : null;
-  const orgName = typeof report.metadata?.orgName === "string" ? report.metadata.orgName : null;
-  if (email) details.push({ id: "account_email", label: "Account", value: email });
-  if (orgName) details.push({ id: "org_name", label: "Org", value: orgName });
+  // Keep SuperGrok card lean: no account/org detail rows.
+  if (!isSuperGrok) {
+    const email = typeof report.metadata?.email === "string" ? report.metadata.email : null;
+    const orgName = typeof report.metadata?.orgName === "string" ? report.metadata.orgName : null;
+    if (email) details.push({ id: "account_email", label: "Account", value: email });
+    if (orgName) details.push({ id: "org_name", label: "Org", value: orgName });
+  }
 
   if (windows.length === 0 && balances.length === 0 && details.length === 0) {
     return null;
-  }
-
-  let planLabel: string | null = null;
-  if (typeof report.metadata?.planType === "string") {
-    planLabel = report.metadata.planType;
-  } else if (typeof report.metadata?.billingKind === "string") {
-    planLabel =
-      report.metadata.billingKind === "unified"
-        ? "SuperGrok (unified)"
-        : report.metadata.billingKind;
   }
 
   return {
     providerId: identity.providerId,
     displayName: identity.displayName,
     status: "available",
-    planLabel,
+    planLabel: resolveOmpPlanLabel(report.metadata),
     windows,
     balances,
     details,
@@ -367,74 +344,16 @@ function parseCreditsPayload(payload: unknown): {
   const windows: ProviderUsageWindow[] = [];
   const weekly = percentWindow({
     id: "weekly_credits",
-    label: "Weekly credits",
+    label: "SuperGrok Weekly Credits",
     usagePercent: config?.creditUsagePercent,
     resetsAt,
   });
   if (weekly) windows.push(weekly);
 
-  for (const product of config?.productUsage ?? []) {
-    if (typeof product.usagePercent !== "number") continue;
-    let productName = product.product;
-    if (product.product === "GrokBuild") productName = "Grok Build";
-    else if (product.product === "Api") productName = "API";
-    const window = percentWindow({
-      id: productWindowId(product.product),
-      label: `${productName} (weekly)`,
-      usagePercent: product.usagePercent,
-      resetsAt,
-    });
-    if (window) windows.push(window);
-  }
-
   return {
     windows,
     planLabel: config?.isUnifiedBillingUser === true ? "SuperGrok (unified)" : null,
   };
-}
-
-function parseMonthlyPayload(payload: unknown): {
-  windows: ProviderUsageWindow[];
-  details: ProviderUsageDetail[];
-} {
-  const monthly = XaiMonthlyResponseSchema.parse(payload);
-  const config = monthly.config;
-  const used = config?.used?.val ?? null;
-  const limit = config?.monthlyLimit?.val ?? null;
-  const usedPct = usedPctOf(used, limit);
-  const resetsAt = config?.billingPeriodEnd
-    ? toIsoStringOrNull(Date.parse(config.billingPeriodEnd))
-    : null;
-  const windows: ProviderUsageWindow[] = [];
-  const details: ProviderUsageDetail[] = [];
-
-  if (usedPct !== null) {
-    windows.push(
-      windowFromUsedPct({
-        id: "monthly_included",
-        label: "Monthly included",
-        utilizationPct: usedPct,
-        resetsAt,
-        tone: toneFromUsedPct(usedPct),
-      }),
-    );
-  }
-
-  if (used !== null || limit !== null) {
-    let value = `${Math.round(limit ?? 0).toLocaleString()} limit`;
-    if (used !== null && limit !== null) {
-      value = `${Math.round(used).toLocaleString()} / ${Math.round(limit).toLocaleString()}`;
-    } else if (used !== null) {
-      value = `${Math.round(used).toLocaleString()} used`;
-    }
-    details.push({
-      id: "monthly_included_amount",
-      label: "Monthly included",
-      value,
-    });
-  }
-
-  return { windows, details };
 }
 
 function centsToDollars(value: number | null | undefined): number | null {
@@ -632,44 +551,27 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
       ...XAI_BILLING_HEADERS,
       Authorization: `Bearer ${token}`,
     };
-    const [creditsRes, monthlyRes] = await Promise.all([
-      fetchProviderApi(this.fetchApi, `${XAI_BILLING_BASE}?format=credits`, { headers }),
-      fetchProviderApi(this.fetchApi, XAI_BILLING_BASE, { headers }),
-    ]);
+    const creditsRes = await fetchProviderApi(this.fetchApi, `${XAI_BILLING_BASE}?format=credits`, {
+      headers,
+    });
 
-    if (!creditsRes.ok && !monthlyRes.ok) {
-      this.logger.debug(
-        { creditsStatus: creditsRes.status, monthlyStatus: monthlyRes.status },
-        "OMP SuperGrok usage fetch failed",
-      );
+    if (!creditsRes.ok) {
+      this.logger.debug({ creditsStatus: creditsRes.status }, "OMP SuperGrok usage fetch failed");
       return null;
     }
 
     const windows: ProviderUsageWindow[] = [];
-    const details: ProviderUsageDetail[] = [];
     let planLabel: string | null = "SuperGrok";
 
-    if (creditsRes.ok) {
-      try {
-        const parsed = parseCreditsPayload(await creditsRes.json());
-        windows.push(...parsed.windows);
-        if (parsed.planLabel) planLabel = parsed.planLabel;
-      } catch (error) {
-        this.logger.debug({ err: error }, "OMP SuperGrok credits payload parse failed");
-      }
+    try {
+      const parsed = parseCreditsPayload(await creditsRes.json());
+      windows.push(...parsed.windows);
+      if (parsed.planLabel) planLabel = parsed.planLabel;
+    } catch (error) {
+      this.logger.debug({ err: error }, "OMP SuperGrok credits payload parse failed");
     }
 
-    if (monthlyRes.ok) {
-      try {
-        const parsed = parseMonthlyPayload(await monthlyRes.json());
-        windows.push(...parsed.windows);
-        details.push(...parsed.details);
-      } catch (error) {
-        this.logger.debug({ err: error }, "OMP SuperGrok monthly payload parse failed");
-      }
-    }
-
-    if (windows.length === 0 && details.length === 0) {
+    if (windows.length === 0) {
       return null;
     }
 
@@ -680,7 +582,7 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
       planLabel,
       windows,
       balances: [],
-      details,
+      details: [],
       error: null,
       sourceLabel: "SuperGrok via OMP auth",
     };

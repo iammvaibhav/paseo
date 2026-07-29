@@ -14,8 +14,10 @@ interface ContextWindowMeterProps {
   totalCostUsd?: number | null;
   showPercentage?: boolean;
   serverId?: string;
-  /** The Paseo provider key, e.g. "claude", "gemini", "codex" */
+  /** The Paseo provider key, e.g. "claude", "gemini", "codex", "omp" */
   provider?: string | null;
+  /** Active model id so OMP multi-provider usage can pick the right card. */
+  model?: string | null;
   /** Reserve the meter footprint and show a loading ring while usage is pending. */
   pending?: boolean;
   /** Optional glyph envelope for icon-toolbar alignment. */
@@ -103,6 +105,7 @@ export function ContextWindowMeter({
   showPercentage = false,
   serverId,
   provider,
+  model,
   pending = false,
   glyphSize,
 }: ContextWindowMeterProps) {
@@ -233,7 +236,11 @@ export function ContextWindowMeter({
               {t("contextWindow.sessionCost", { cost: formattedSessionCost })}
             </Text>
           ) : null}
-          <ProviderUsageTooltipSection view={providerUsageView} activeProviderId={provider} />
+          <ProviderUsageTooltipSection
+            view={providerUsageView}
+            activeProviderId={provider}
+            activeModelId={model}
+          />
         </View>
       </TooltipContent>
     </Tooltip>

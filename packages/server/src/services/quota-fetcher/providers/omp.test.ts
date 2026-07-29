@@ -67,6 +67,18 @@ describe("OmpQuotaProvider", () => {
                   amount: { usedFraction: 0.41, unit: "percent" },
                   window: { id: "1w", label: "Weekly", resetsAt: Date.now() + 604_800_000 },
                 },
+                {
+                  id: "xai-oauth:product:api:1w",
+                  label: "API (Weekly)",
+                  amount: { usedFraction: 0.38, unit: "percent" },
+                  window: { id: "1w", label: "Weekly", resetsAt: Date.now() + 604_800_000 },
+                },
+                {
+                  id: "xai-oauth:included:1mo",
+                  label: "SuperGrok Monthly Included",
+                  amount: { usedFraction: 1, unit: "unknown" },
+                  window: { id: "1mo", label: "Monthly", resetsAt: Date.now() + 172_800_000 },
+                },
               ],
               metadata: { billingKind: "unified", email: "user@example.com" },
             },
@@ -108,6 +120,8 @@ describe("OmpQuotaProvider", () => {
       displayName: "OMP · SuperGrok",
       planLabel: "SuperGrok (unified)",
       status: "available",
+      windows: [expect.objectContaining({ id: "xai-oauth:credits:1w", usedPct: 41 })],
+      details: [],
     });
   });
 
@@ -221,15 +235,8 @@ describe("OmpQuotaProvider", () => {
       status: "available",
       planLabel: "SuperGrok (unified)",
       sourceLabel: "SuperGrok via OMP auth",
-      windows: expect.arrayContaining([
-        expect.objectContaining({ id: "weekly_credits", usedPct: 23 }),
-        expect.objectContaining({ id: "product_api", usedPct: 23 }),
-        expect.objectContaining({ id: "product_grokbuild", usedPct: 71 }),
-        expect.objectContaining({
-          id: "monthly_included",
-          usedPct: expect.closeTo((14_770 / 15_000) * 100, 5),
-        }),
-      ]),
+      windows: [expect.objectContaining({ id: "weekly_credits", usedPct: 23 })],
+      details: [],
     });
   });
 
