@@ -29,8 +29,10 @@ function statusText(usage: ProviderUsage): string | null {
   return usage.status === "error" ? "Error" : "Unavailable";
 }
 
-function footerText(usage: ProviderUsage): string | null {
-  const updated = formatAgo(usage.fetchedAt);
+function footerText(usage: ProviderUsage, listFetchedAt?: string | null): string | null {
+  // Prefer the list-response fetch time. Nested providers (especially OMP) may
+  // carry older provider-side timestamps that make the UI look stale on hover.
+  const updated = formatAgo(listFetchedAt ?? usage.fetchedAt);
   const parts = [usage.sourceLabel, updated ? `Updated ${updated}` : null].filter(
     (part): part is string => typeof part === "string" && part.length > 0,
   );
@@ -40,12 +42,14 @@ function footerText(usage: ProviderUsage): string | null {
 export function ProviderUsageCard({
   usage,
   compact = false,
+  listFetchedAt,
 }: {
   usage: ProviderUsage;
   compact?: boolean;
+  listFetchedAt?: string | null;
 }) {
   const status = statusText(usage);
-  const footer = footerText(usage);
+  const footer = footerText(usage, listFetchedAt);
   const balances = usage.balances ?? [];
   const details = usage.details ?? [];
 

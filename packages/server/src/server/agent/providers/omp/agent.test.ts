@@ -617,4 +617,63 @@ describe("OMP agent client and session", () => {
 
     runtime.finishTurn();
   });
+
+  test("refreshes context usage after a /shake custom notice", async () => {
+    const omp = new OmpHarness();
+    await omp.start();
+
+    const runtime = omp.runtime();
+    runtime.stats = {
+      tokens: { input: 100, output: 20, cacheRead: 50, cacheWrite: 0, total: 170 },
+      cost: 0.01,
+      contextUsage: { tokens: 369_000, contextWindow: 500_000 },
+    };
+    runtime.state = {
+      ...runtime.state,
+      contextUsage: { tokens: 369_000, contextWindow: 500_000 },
+    };
+
+    await omp.requireStartTurn("/shake");
+    runtime.beginTurn();
+    runtime.acceptPrompt("/shake", "user-shake");
+
+    // Simulate OMP freeing tokens via /shake, then emitting the notice.
+    runtime.stats = {
+      ...runtime.stats,
+      contextUsage: { tokens: 149_000, contextWindow: 500_000 },
+    };
+    runtime.state = {
+      ...runtime.state,
+      contextUsage: { tokens: 149_000, contextWindow: 500_000 },
+    };
+    runtime.acceptCustomMessage("Shook 252 tool results + 5 blocks (~219613 tokens freed).");
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const latest = [...omp.streamEvents()]
+        .toReversed()
+        .find((event) => event.type === "usage_updated");
+      if (
+        latest &&
+        latest.type === "usage_updated" &&
+        latest.usage?.contextWindowUsedTokens === 149_000
+      ) {
+        break;
+      }
+      await waitForImmediate();
+    }
+
+    const usageEvents = omp
+      .streamEvents()
+      .filter((event) => event.type === "usage_updated") as Array<{
+      type: "usage_updated";
+      usage?: { contextWindowUsedTokens?: number; contextWindowMaxTokens?: number };
+    }>;
+    expect(usageEvents.at(-1)).toMatchObject({
+      type: "usage_updated",
+      usage: {
+        contextWindowMaxTokens: 500_000,
+        contextWindowUsedTokens: 149_000,
+      },
+    });
+  });
 });

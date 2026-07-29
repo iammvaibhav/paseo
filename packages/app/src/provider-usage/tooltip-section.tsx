@@ -43,7 +43,7 @@ export function ProviderUsageTooltipSection({
   return (
     <>
       <View style={styles.divider} />
-      <ProviderUsageCard usage={usage} compact />
+      <ProviderUsageCard usage={usage} compact listFetchedAt={view.payload.fetchedAt} />
     </>
   );
 }

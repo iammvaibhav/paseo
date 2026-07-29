@@ -176,6 +176,7 @@ describe("ProviderUsageService", () => {
           displayName: "GLM coding plan",
           status: "available",
           planLabel: "GLM coding plan",
+          fetchedAt: "2026-06-19T00:00:00.000Z",
           windows: [
             {
               id: "biweekly",
@@ -302,6 +303,7 @@ describe("ProviderUsageService", () => {
           displayName: "Codex",
           status: "available",
           planLabel: "Pro 20x",
+          fetchedAt: "2026-06-19T00:00:00.000Z",
           windows: [{ id: "weekly", label: "Weekly", usedPct: 29 }],
         },
       ],

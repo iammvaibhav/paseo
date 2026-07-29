@@ -327,8 +327,7 @@ function mapOmpReportToUsage(report: z.infer<typeof OmpUsageReportSchema>): Prov
     details,
     error: null,
     sourceLabel: "via OMP",
-    fetchedAt:
-      typeof report.fetchedAt === "number" ? toIsoStringOrNull(report.fetchedAt) : undefined,
+    // Leave fetchedAt unset so ProviderUsageService stamps the list-response time.
   };
 }
 

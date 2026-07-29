@@ -1880,6 +1880,8 @@ export class OmpAgentSession implements AgentSession {
             trigger: event.reason === "manual" ? "manual" : "auto",
           },
         });
+        // Compact rewrites session context; pull fresh fill immediately.
+        void this.refreshUsage(turnId);
         return;
       case "agent_end": {
         const messages = event.messages ?? [];
@@ -2039,6 +2041,9 @@ export class OmpAgentSession implements AgentSession {
           });
         }
       }
+      // /shake and similar OMP side-effects free tokens via custom notices, not
+      // assistant message_end. Refresh the meter immediately so the UI drops.
+      void this.refreshUsage(turnId);
       if (!this.activeTurnHasUserMessage) {
         this.completeTurn(turnId, []);
       }

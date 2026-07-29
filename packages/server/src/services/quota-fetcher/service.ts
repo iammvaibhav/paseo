@@ -66,15 +66,20 @@ export class ProviderUsageService {
 
   private async fetchFreshUsage(nowMs: number): Promise<ProviderUsageListResult> {
     const settled = await Promise.allSettled(this.fetchers.map((fetcher) => fetcher.fetchUsage()));
+    const fetchedAt = new Date(nowMs).toISOString();
     const providers: ProviderUsage[] = [];
     for (const [index, result] of settled.entries()) {
       const fetcher = this.fetchers[index];
       if (result.status === "fulfilled") {
         const value = result.value;
         if (Array.isArray(value)) {
-          providers.push(...value);
+          for (const usage of value) {
+            // Always stamp the list-response time so "Updated Xm ago" reflects this
+            // daemon fetch, not a nested provider-side cache timestamp (OMP CLI).
+            providers.push({ ...usage, fetchedAt });
+          }
         } else {
-          providers.push(value);
+          providers.push({ ...value, fetchedAt });
         }
         continue;
       }
@@ -91,7 +96,7 @@ export class ProviderUsageService {
       );
     }
 
-    const result = { fetchedAt: new Date(nowMs).toISOString(), providers };
+    const result = { fetchedAt, providers };
     this.cached = { fetchedAtMs: nowMs, result };
     return result;
   }
