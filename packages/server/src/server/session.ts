@@ -6095,7 +6095,7 @@ export class Session {
 
   /**
    * Resolve agent payload + ensure timeline rows exist for a fetch.
-   * Prefers offline disk history (Grok/Claude) so open is instant; spawns the
+   * Prefers offline disk history (Grok/Claude/OMP) so open is instant; spawns the
    * provider runtime in the background when the agent is not already live.
    */
   private async resolveTimelineFetchContext(agentId: string): Promise<{
@@ -6126,6 +6126,9 @@ export class Session {
           provider: record.provider,
           cwd: record.cwd,
           sessionId,
+          ...(typeof record.persistence?.nativeHandle === "string"
+            ? { nativeHandle: record.persistence.nativeHandle }
+            : {}),
         },
         { logger: this.sessionLogger },
       );

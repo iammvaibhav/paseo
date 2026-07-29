@@ -27,6 +27,14 @@ const OMP_SQLITE_TIMEOUT_MS = 2_000;
 const OMP_USAGE_TIMEOUT_MS = 20_000;
 const CURSOR_USAGE_URL =
   "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage";
+// AGY's Models & Quota screen uses this Cloud Code Assist endpoint. OMP's
+// `omp usage` path for google-antigravity still scrapes fetchAvailableModels,
+// which only exposes a single short-window counter per backend (often ~0% used
+// and labeled Daily) — not the weekly + 5-hour buckets users actually hit.
+const ANTIGRAVITY_QUOTA_SUMMARY_URLS = [
+  "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+  "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+] as const;
 const XAI_BILLING_BASE = "https://cli-chat-proxy.grok.com/v1/billing";
 const XAI_BILLING_HEADERS = {
   Accept: "application/json",
@@ -40,6 +48,8 @@ const OmpOauthCredentialDataSchema = z.object({
   expiresAt: ApiNumberSchema.optional(),
   email: z.string().optional(),
   accountId: z.string().optional(),
+  projectId: z.string().optional(),
+  project_id: z.string().optional(),
 });
 
 const OmpUsageAmountSchema = z
@@ -107,6 +117,32 @@ const CursorUsageResponseSchema = z.object({
     .nullable()
     .optional(),
 });
+
+const AntigravityQuotaBucketSchema = z
+  .object({
+    bucketId: z.string().optional(),
+    displayName: z.string().optional(),
+    window: z.string().optional(),
+    resetTime: z.string().optional(),
+    description: z.string().optional(),
+    remainingFraction: ApiNumberSchema.optional(),
+  })
+  .passthrough();
+
+const AntigravityQuotaGroupSchema = z
+  .object({
+    displayName: z.string().optional(),
+    description: z.string().optional(),
+    buckets: z.array(AntigravityQuotaBucketSchema).optional(),
+  })
+  .passthrough();
+
+const AntigravityQuotaSummarySchema = z
+  .object({
+    groups: z.array(AntigravityQuotaGroupSchema).optional(),
+    description: z.string().optional(),
+  })
+  .passthrough();
 
 const XaiCreditsConfigSchema = z
   .object({
@@ -294,6 +330,75 @@ function resolveOmpPlanLabel(metadata: Record<string, unknown> | undefined): str
   return metadata.billingKind;
 }
 
+function antigravityGroupName(displayName: string | undefined): string | null {
+  const rawGroupName = displayName?.trim() || null;
+  if (!rawGroupName) return null;
+  const lowerGroup = rawGroupName.toLowerCase();
+  if (lowerGroup.includes("gemini")) return "Gemini";
+  if (lowerGroup.includes("claude") || lowerGroup.includes("gpt")) return "Claude/GPT";
+  return rawGroupName;
+}
+
+function antigravityBucketWindow(
+  groupName: string | null,
+  groupIndex: number,
+  bucket: z.infer<typeof AntigravityQuotaBucketSchema>,
+  bucketIndex: number,
+): ProviderUsageWindow | null {
+  const remainingFraction =
+    typeof bucket.remainingFraction === "number" && Number.isFinite(bucket.remainingFraction)
+      ? Math.max(0, Math.min(1, bucket.remainingFraction))
+      : null;
+  if (remainingFraction === null) return null;
+  const usedPct = (1 - remainingFraction) * 100;
+  const windowId =
+    bucket.bucketId?.trim() ||
+    [groupName ?? `group-${groupIndex}`, bucket.window?.trim() || `bucket-${bucketIndex}`]
+      .filter(Boolean)
+      .join(":");
+  const resetsAt = bucket.resetTime ? toIsoStringOrNull(Date.parse(bucket.resetTime)) : null;
+  const bucketLabel = bucket.displayName?.trim() || "Usage";
+  return windowFromUsedPct({
+    id: windowId,
+    label: groupName ? `${groupName} · ${bucketLabel}` : bucketLabel,
+    utilizationPct: usedPct,
+    resetsAt,
+    tone: toneFromUsedPct(usedPct),
+  });
+}
+
+function mapAntigravityQuotaSummary(
+  summary: z.infer<typeof AntigravityQuotaSummarySchema>,
+  email: string | null,
+): ProviderUsage | null {
+  const identity = resolveOmpIdentity("google-antigravity");
+  const windows: ProviderUsageWindow[] = [];
+  const details: ProviderUsageDetail[] = [];
+
+  for (const [groupIndex, group] of (summary.groups ?? []).entries()) {
+    const groupName = antigravityGroupName(group.displayName);
+    for (const [bucketIndex, bucket] of (group.buckets ?? []).entries()) {
+      const window = antigravityBucketWindow(groupName, groupIndex, bucket, bucketIndex);
+      if (window) windows.push(window);
+    }
+  }
+
+  if (email) details.push({ id: "account_email", label: "Account", value: email });
+  if (windows.length === 0) return null;
+
+  return {
+    providerId: identity.providerId,
+    displayName: identity.displayName,
+    status: "available",
+    planLabel: null,
+    windows,
+    balances: [],
+    details,
+    error: null,
+    sourceLabel: "Antigravity via OMP auth",
+  };
+}
+
 function mapOmpReportToUsage(report: z.infer<typeof OmpUsageReportSchema>): ProviderUsage | null {
   const identity = resolveOmpIdentity(report.provider);
   const windows: ProviderUsageWindow[] = [];
@@ -445,8 +550,16 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
       usages.push(usage);
     };
 
+    const antigravitySummary = await this.fetchAntigravityUsageFromOmpAuth();
+
     for (const usage of await this.fetchFromOmpUsageCommand()) {
+      // Prefer Cloud Code's weekly/5h summary over OMP CLI's daily backend counters.
+      if (usage.providerId === "omp-antigravity" && antigravitySummary) continue;
       pushUsage(usage);
+    }
+
+    if (antigravitySummary) {
+      pushUsage(antigravitySummary);
     }
 
     // OMP currently authenticates Cursor but does not expose a usage endpoint through
@@ -542,6 +655,43 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
     }
   }
 
+  private async fetchAntigravityUsageFromOmpAuth(): Promise<ProviderUsage | null> {
+    const credential = await this.readOmpOauthCredential("google-antigravity");
+    if (!credential) return null;
+    const token = (credential.access ?? credential.access_token)?.trim();
+    if (!token) return null;
+
+    const projectId = (credential.projectId ?? credential.project_id)?.trim() || null;
+    const body = projectId ? JSON.stringify({ project: projectId }) : JSON.stringify({});
+
+    for (const url of ANTIGRAVITY_QUOTA_SUMMARY_URLS) {
+      try {
+        const res = await fetchProviderApi(this.fetchApi, url, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+            "User-Agent": "antigravity",
+          },
+          body,
+        });
+        if (!res.ok) {
+          this.logger.debug(
+            { status: res.status, url },
+            "OMP Antigravity quota summary fetch failed",
+          );
+          continue;
+        }
+        const summary = AntigravityQuotaSummarySchema.parse(await res.json());
+        const usage = mapAntigravityQuotaSummary(summary, credential.email?.trim() || null);
+        if (usage) return usage;
+      } catch (error) {
+        this.logger.debug({ err: error, url }, "OMP Antigravity quota summary parse failed");
+      }
+    }
+    return null;
+  }
+
   private async fetchSuperGrokUsageFromOmpAuth(): Promise<ProviderUsage | null> {
     const token = await this.readOmpOauthAccessToken("xai-oauth");
     if (!token) return null;
@@ -587,7 +737,9 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
     };
   }
 
-  private async readOmpOauthAccessToken(provider: string): Promise<string | null> {
+  private async readOmpOauthCredential(
+    provider: string,
+  ): Promise<z.infer<typeof OmpOauthCredentialDataSchema> | null> {
     const dbPath = resolveOmpAgentDbPath(this.homeDir, this.agentDbPath);
     if (!dbPath) return null;
 
@@ -609,10 +761,16 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
       if (typeof expiresAt === "number" && Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
         return null;
       }
-      return token;
+      return data;
     } catch (error) {
-      this.logger.debug({ err: error, dbPath, provider }, "OMP OAuth token read failed");
+      this.logger.debug({ err: error, dbPath, provider }, "OMP OAuth credential read failed");
       return null;
     }
+  }
+
+  private async readOmpOauthAccessToken(provider: string): Promise<string | null> {
+    const data = await this.readOmpOauthCredential(provider);
+    if (!data) return null;
+    return (data.access ?? data.access_token)?.trim() || null;
   }
 }

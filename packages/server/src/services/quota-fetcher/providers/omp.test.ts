@@ -125,6 +125,142 @@ describe("OmpQuotaProvider", () => {
     });
   });
 
+  it("overrides OMP CLI Antigravity daily bars with Cloud Code weekly/5h summary", async () => {
+    if (!(await canRunSqlite3())) return;
+
+    const dir = mkdtempSync(join(tmpdir(), "omp-usage-"));
+    tempDirs.push(dir);
+    const dbPath = join(dir, "agent.db");
+    await createOauthCredentialDb(dbPath, "google-antigravity", {
+      access: "agy-access-token",
+      expires: Date.now() + 60_000,
+      email: "user@example.com",
+      projectId: "proj-1",
+    });
+
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        groups: [
+          {
+            displayName: "Gemini Models",
+            description: "Models within this group: Gemini Flash, Gemini Pro",
+            buckets: [
+              {
+                bucketId: "gemini-weekly",
+                displayName: "Weekly Limit",
+                window: "weekly",
+                resetTime: "2026-08-03T11:49:40Z",
+                remainingFraction: 0.946,
+              },
+              {
+                bucketId: "gemini-5h",
+                displayName: "Five Hour Limit",
+                window: "5h",
+                resetTime: "2026-07-29T15:53:09Z",
+                remainingFraction: 0.9869,
+              },
+            ],
+          },
+          {
+            displayName: "Claude and GPT models",
+            description: "Models within this group: Claude Opus, Claude Sonnet, GPT-OSS",
+            buckets: [
+              {
+                bucketId: "3p-weekly",
+                displayName: "Weekly Limit",
+                window: "weekly",
+                resetTime: "2026-08-03T11:49:25Z",
+                remainingFraction: 0.9877,
+              },
+              {
+                bucketId: "3p-5h",
+                displayName: "Five Hour Limit",
+                window: "5h",
+                remainingFraction: 1,
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    const provider = new OmpQuotaProvider({
+      logger: createTestLogger(),
+      fetch: fetchMock as unknown as typeof fetch,
+      agentDbPath: dbPath,
+      usageCommandRunner: async () => ({
+        stdout: JSON.stringify({
+          generatedAt: Date.now(),
+          reports: [
+            {
+              provider: "google-antigravity",
+              fetchedAt: Date.now(),
+              limits: [
+                {
+                  id: "google-antigravity:google:default:daily",
+                  label: "Usage (Google)",
+                  amount: { usedFraction: 0, unit: "percent" },
+                  window: { id: "daily", label: "Daily", resetsAt: Date.now() + 86_400_000 },
+                },
+                {
+                  id: "google-antigravity:openai:default:daily",
+                  label: "Usage (OpenAI)",
+                  amount: { usedFraction: 0, unit: "percent" },
+                  window: { id: "daily", label: "Daily", resetsAt: Date.now() + 86_400_000 },
+                },
+                {
+                  id: "google-antigravity:anthropic:default:daily",
+                  label: "Usage (Anthropic)",
+                  amount: { usedFraction: 0, unit: "percent" },
+                  window: { id: "daily", label: "Daily", resetsAt: Date.now() + 86_400_000 },
+                },
+              ],
+              metadata: { email: "user@example.com", projectId: "proj-1" },
+            },
+          ],
+        }),
+        stderr: "",
+      }),
+    });
+
+    const usage = await provider.fetchUsage();
+    const cards = Array.isArray(usage) ? usage : [usage];
+    const antigravity = cards.find((card) => card.providerId === "omp-antigravity");
+    expect(antigravity).toMatchObject({
+      providerId: "omp-antigravity",
+      displayName: "OMP · Antigravity",
+      status: "available",
+      sourceLabel: "Antigravity via OMP auth",
+      details: [{ id: "account_email", label: "Account", value: "user@example.com" }],
+    });
+    expect(antigravity?.windows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "gemini-weekly",
+          label: "Gemini · Weekly Limit",
+          usedPct: expect.closeTo(5.4, 5),
+        }),
+        expect.objectContaining({
+          id: "gemini-5h",
+          label: "Gemini · Five Hour Limit",
+          usedPct: expect.closeTo(1.31, 5),
+        }),
+        expect.objectContaining({
+          id: "3p-weekly",
+          label: "Claude/GPT · Weekly Limit",
+          usedPct: expect.closeTo(1.23, 5),
+        }),
+        expect.objectContaining({
+          id: "3p-5h",
+          label: "Claude/GPT · Five Hour Limit",
+          usedPct: 0,
+        }),
+      ]),
+    );
+    expect(antigravity?.windows).toHaveLength(4);
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
   it("falls back to Cursor dashboard API using OMP-stored Cursor auth", async () => {
     if (!(await canRunSqlite3())) return;
 
