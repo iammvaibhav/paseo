@@ -2017,6 +2017,10 @@ export class OmpAgentSession implements AgentSession {
       this.activeAssistantMessageId = null;
       if (turnId) {
         this.activeTurnTerminalAssistantMessage = event.message;
+        // Context fill is available as soon as OMP finishes an assistant
+        // step. Don't wait for agent_end + idle — long tool turns would
+        // otherwise leave the meter empty until the whole turn settles.
+        void this.refreshUsage(turnId);
       }
       return;
     }
@@ -2155,7 +2159,7 @@ export class OmpAgentSession implements AgentSession {
       provider: this.provider,
       turnId,
     });
-    void this.refreshAfterTurn(turnId);
+    void this.refreshUsage(turnId);
   }
 
   private async completeTurnAfterProviderIdle(
@@ -2181,7 +2185,7 @@ export class OmpAgentSession implements AgentSession {
     this.state = await this.runtimeSession.getState();
   }
 
-  private async refreshAfterTurn(turnId: string | undefined): Promise<void> {
+  private async refreshUsage(turnId: string | undefined): Promise<void> {
     await this.refreshState().catch(() => undefined);
     const usage = await this.runtimeSession
       .getSessionStats()

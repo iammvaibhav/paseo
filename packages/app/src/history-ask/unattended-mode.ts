@@ -19,8 +19,10 @@ export interface UnattendedModeCandidate {
  * - claude → bypassPermissions
  * - codex → full-access
  * - copilot → allow-all
- * - ACP (cursor/grok/agy/…) → paseo-allow-all, else first isUnattended mode
- * - otherwise → first isUnattended mode, then protocol manifest, then known id
+ * - When host snapshot lists modes: prefer `paseo-allow-all`, else first isUnattended
+ * - When snapshot is empty `[]`: omit mode (provider has no modes — e.g. some ACP
+ *   agents; daemon rejects invented mode ids with "Available modes: (none)")
+ * - When snapshot is unknown: manifest unattended only; never invent paseo-allow-all
  */
 export function resolveUnattendedModeId(
   provider: string,
@@ -31,38 +33,44 @@ export function resolveUnattendedModeId(
     return undefined;
   }
 
-  const modes = availableModes ?? [];
   const known = KNOWN_UNATTENDED_MODE_BY_PROVIDER[trimmedProvider];
+  const modesKnown = availableModes !== undefined && availableModes !== null;
+  const modes = availableModes ?? [];
 
+  // Built-in providers: prefer known unattended id even before modes load.
   if (known) {
-    if (modes.length === 0 || modes.some((mode) => mode.id === known)) {
+    if (!modesKnown || modes.length === 0 || modes.some((mode) => mode.id === known)) {
       return known;
     }
+    // Snapshot listed modes but not the known id — fall through.
   }
 
-  const acpAllowAll = modes.find((mode) => mode.id === ACP_ALLOW_ALL_MODE_ID);
-  if (acpAllowAll) {
-    return acpAllowAll.id;
+  if (modesKnown) {
+    // Explicit empty list: provider has no modes; createAgent must omit modeId.
+    if (modes.length === 0) {
+      return undefined;
+    }
+
+    const acpAllowAll = modes.find((mode) => mode.id === ACP_ALLOW_ALL_MODE_ID);
+    if (acpAllowAll) {
+      return acpAllowAll.id;
+    }
+
+    const markedUnattended = modes.find((mode) => mode.isUnattended === true);
+    if (markedUnattended) {
+      return markedUnattended.id;
+    }
+
+    // Modes exist but none are unattended — still pick known if present, else omit.
+    if (known && modes.some((mode) => mode.id === known)) {
+      return known;
+    }
+    return undefined;
   }
 
-  const markedUnattended = modes.find((mode) => mode.isUnattended === true);
-  if (markedUnattended) {
-    return markedUnattended.id;
-  }
-
+  // Modes unknown (no snapshot): use protocol manifest only.
   if (known) {
     return known;
   }
-
-  const fromManifest = getUnattendedModeId(trimmedProvider);
-  if (fromManifest) {
-    return fromManifest;
-  }
-
-  // ACP-style providers without a published unattended mode: prefer paseo-allow-all.
-  if (modes.length === 0) {
-    return ACP_ALLOW_ALL_MODE_ID;
-  }
-
-  return undefined;
+  return getUnattendedModeId(trimmedProvider);
 }

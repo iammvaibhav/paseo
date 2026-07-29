@@ -36,6 +36,7 @@ import { resolveProviderDefinition } from "@/utils/provider-definitions";
 import {
   buildFavoriteModelKey,
   mergeProviderPreferencesWithScope,
+  resolveEffectiveFormPreferences,
   resolveFavoriteModels,
   toggleFavoriteModel,
   useFormPreferences,
@@ -1533,6 +1534,14 @@ export const AgentControls = memo(function AgentControls({
       }
       try {
         await client.setAgentModel(agentId, modelId);
+        const preferredThinking =
+          resolveEffectiveFormPreferences(preferences, preferenceScope).providerPreferences?.[
+            agentProvider
+          ]?.thinkingByModel?.[modelId]?.trim() ?? "";
+        if (preferredThinking) {
+          const notice = await client.setAgentThinkingOption(agentId, preferredThinking);
+          showProviderNoticeToast(toast, notice);
+        }
         await updatePreferences((current) =>
           mergeProviderPreferencesWithScope({
             preferences: current,
@@ -1548,7 +1557,7 @@ export const AgentControls = memo(function AgentControls({
         toast.error(toErrorMessage(error));
       }
     },
-    [agentId, agentProvider, client, preferenceScope, toast, updatePreferences],
+    [agentId, agentProvider, client, preferenceScope, preferences, toast, updatePreferences],
   );
 
   const commandCenterModelActions = useMemo(

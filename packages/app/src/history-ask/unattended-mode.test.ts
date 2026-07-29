@@ -17,7 +17,7 @@ describe("resolveUnattendedModeId", () => {
     ).toBe("bypassPermissions");
   });
 
-  it("uses paseo-allow-all for ACP-style providers", () => {
+  it("uses paseo-allow-all only when the host lists it", () => {
     expect(
       resolveUnattendedModeId("cursor", [
         { id: "agent" },
@@ -32,8 +32,15 @@ describe("resolveUnattendedModeId", () => {
     ).toBe("yolo");
   });
 
-  it("defaults ACP providers without modes to paseo-allow-all", () => {
-    expect(resolveUnattendedModeId("grok")).toBe("paseo-allow-all");
-    expect(resolveUnattendedModeId("cursor")).toBe("paseo-allow-all");
+  it("omits mode when provider reports no modes (Available modes: none)", () => {
+    // Grok / some ACP agents advertise an empty mode list; inventing
+    // paseo-allow-all is rejected by create_agent validation.
+    expect(resolveUnattendedModeId("grok", [])).toBeUndefined();
+    expect(resolveUnattendedModeId("cursor", [])).toBeUndefined();
+  });
+
+  it("does not invent paseo-allow-all when modes are unknown", () => {
+    expect(resolveUnattendedModeId("grok")).toBeUndefined();
+    expect(resolveUnattendedModeId("cursor", null)).toBeUndefined();
   });
 });

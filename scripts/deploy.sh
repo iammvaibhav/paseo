@@ -34,13 +34,24 @@
 #                                     #   deploy code-server, and push settings
 #   PASEO_SKIP_CODE_SERVER=1          # skip code-server deploy everywhere
 #   PASEO_BUILD_DESKTOP=0             # skip building the desktop app (built by default)
-#   PASEO_DESKTOP_TEST_APP=...        # install path for the desktop build (default /Applications/Paseo Test.app)
+#   PASEO_DESKTOP_ONLY=1              # ONLY build/install/relaunch desktop (no git/remotes/daemon)
+#   PASEO_DESKTOP_APP=...             # install path (default /Applications/Paseo.app)
+#   PASEO_DESKTOP_TEST_APP=...        # COMPAT alias for PASEO_DESKTOP_APP
+#   PASEO_DEPLOY_FOREGROUND=1         # do not self-detach (interactive / debug)
+#   PASEO_DEPLOY_LOG_DIR=...          # durable log root (default ~/.paseo/deploy-logs)
 #   PASEO_SYNC_CODE_SERVER_USER_DATA=1  # also rsync User/ + extensions/ local → remotes
 #   CODE_SERVER_VERSION=4.127.0       # pin code-server; omit for latest
 #   PASEO_COMMIT_MSG_MODEL=...        # claude model for auto-commit messages (default Haiku 4.5)
 #   PASEO_CONFLICT_MODEL=...          # grok model for conflict/commit fix (default grok-4.5)
 #   PASEO_CONFLICT_EFFORT=high        # effort for conflict/commit fix (low|medium|high|xhigh|max)
 #   PASEO_CONFLICT_MAX_TURNS=80       # max agent turns for conflict/commit fix
+#
+# Detach + logs:
+#   By default deploy re-launches itself in a NEW session (start_new_session) so an
+#   agent tool cancel (SIGTERM on the process group) cannot kill mid-deploy. Daemon
+#   restarts were already detached; the parent wait/desktop/remotes were not — that
+#   is what this fixes. Follow progress at ~/.paseo/deploy-logs/latest.log (and the
+#   per-run directory it points at). Set PASEO_DEPLOY_FOREGROUND=1 to stay attached.
 #
 # code-server User settings: sync always pushes this Mac's live
 # ~/.local/share/code-server/User/settings.json to remotes (not the repo template).
@@ -71,8 +82,26 @@ CONFLICT_MODEL="${PASEO_CONFLICT_MODEL:-grok-4.5}"
 CONFLICT_EFFORT="${PASEO_CONFLICT_EFFORT:-high}"
 CONFLICT_MAX_TURNS="${PASEO_CONFLICT_MAX_TURNS:-80}"
 
-# Where the unsigned desktop test build is installed (local Mac only).
-DESKTOP_TEST_APP="${PASEO_DESKTOP_TEST_APP:-/Applications/Paseo Test.app}"
+# Desktop install target for this personal fork.
+# Default: /Applications/Paseo.app — we do NOT use "Paseo Test.app". Dock/Spotlight
+# stay on the same name; the installed app is already an ad-hoc custom build, not a
+# signed production binary we need to preserve side-by-side.
+# COMPAT(PASEO_DESKTOP_TEST_APP): old override name; prefer PASEO_DESKTOP_APP.
+DESKTOP_APP="${PASEO_DESKTOP_APP:-${PASEO_DESKTOP_TEST_APP:-/Applications/Paseo.app}}"
+# Durable deploy logs (survive agent tool cancel; agents should tail these).
+DEPLOY_LOG_ROOT="${PASEO_DEPLOY_LOG_DIR:-$HOME/.paseo/deploy-logs}"
+
+# Desktop-only mode: skip git sync, remotes, daemon, code-server, plannotator, settings.
+# Just ensure_node → build unsigned desktop → quit → rm -rf → cp -R → open.
+if [[ "${PASEO_DESKTOP_ONLY:-0}" == "1" ]]; then
+  export PASEO_SKIP_REMOTES=1
+  export PASEO_SKIP_DAEMON=1
+  export PASEO_SKIP_CODE_SERVER=1
+  export PASEO_SKIP_PLANNOTATOR=1
+  export PASEO_SKIP_FUNNEL=1
+  export PASEO_SYNC_CODE_SERVER_USER_DATA=0
+  # Keep PASEO_SKIP_LOCAL unset so local desktop still runs.
+fi
 
 if [[ -z "${PASEO_NODE_VERSION:-}" ]]; then
   if [[ -f "$ROOT_DIR/.tool-versions" ]]; then
@@ -90,6 +119,97 @@ log() {
 die() {
   printf 'error: %s\n' "$*" >&2
   exit 1
+}
+
+# Create ~/.paseo/deploy-logs/run-<ts>/ and export paths used by this process.
+# Also keep a /tmp/paseo-deploy-* mirror for older greps during a transition.
+init_deploy_log_dir() {
+  local stamp run_dir
+  stamp="$(date '+%Y%m%d-%H%M%S')"
+  run_dir="${DEPLOY_LOG_ROOT}/run-${stamp}"
+  mkdir -p "$run_dir"
+  # Symlinks for "where do I look?" without knowing the stamp.
+  ln -sfn "$run_dir" "${DEPLOY_LOG_ROOT}/latest-run"
+  export PASEO_DEPLOY_RUN_DIR="$run_dir"
+  export PASEO_DEPLOY_LOG="${run_dir}/deploy.log"
+  : >"$PASEO_DEPLOY_LOG"
+  ln -sfn "$PASEO_DEPLOY_LOG" "${DEPLOY_LOG_ROOT}/latest.log"
+  # Convenience mirrors under /tmp for existing muscle memory.
+  ln -sfn "$PASEO_DEPLOY_LOG" /tmp/paseo-deploy-run.log
+  ln -sfn "$run_dir" /tmp/paseo-deploy-latest-run
+  printf '%s\n' "$$" >"${run_dir}/pid"
+  log "Deploy logs: $PASEO_DEPLOY_LOG (run dir: $run_dir)"
+}
+
+# Re-exec this script in a NEW process session so SIGTERM on an agent tool's
+# process group cannot kill git/build/desktop mid-flight. Daemon restarts were
+# already new-session detached; the parent deploy wait was not — cancelled tools
+# left remotes/desktop half-done. Opt out with PASEO_DEPLOY_FOREGROUND=1.
+maybe_detach_self() {
+  case "${1:-}" in
+    -h | --help | help) return 0 ;;
+  esac
+  if [[ "${PASEO_DEPLOY_FOREGROUND:-0}" == "1" ]]; then
+    return 0
+  fi
+  if [[ "${PASEO_DEPLOY_DETACHED:-0}" == "1" ]]; then
+    return 0
+  fi
+
+  mkdir -p "$DEPLOY_LOG_ROOT"
+  local stamp run_dir main_log
+  stamp="$(date '+%Y%m%d-%H%M%S')"
+  run_dir="${DEPLOY_LOG_ROOT}/run-${stamp}"
+  mkdir -p "$run_dir"
+  main_log="${run_dir}/deploy.log"
+  : >"$main_log"
+  ln -sfn "$run_dir" "${DEPLOY_LOG_ROOT}/latest-run"
+  ln -sfn "$main_log" "${DEPLOY_LOG_ROOT}/latest.log"
+  ln -sfn "$main_log" /tmp/paseo-deploy-run.log
+  ln -sfn "$run_dir" /tmp/paseo-deploy-latest-run
+
+  # Force child into "already detached" mode with fixed log paths.
+  python3 - "$main_log" "$run_dir" "$ROOT_DIR" <<'PY'
+import os, subprocess, sys
+main_log, run_dir, root = sys.argv[1], sys.argv[2], sys.argv[3]
+log = open(main_log, "ab", buffering=0)
+env = os.environ.copy()
+env["PASEO_DEPLOY_DETACHED"] = "1"
+env["PASEO_DEPLOY_RUN_DIR"] = run_dir
+env["PASEO_DEPLOY_LOG"] = main_log
+script = f'''
+set -euo pipefail
+cd {root!r}
+export PATH="$HOME/.local/bin:$PATH"
+export NVM_DIR="${{NVM_DIR:-$HOME/.nvm}}"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+export PASEO_DEPLOY_DETACHED=1
+export PASEO_DEPLOY_RUN_DIR={run_dir!r}
+export PASEO_DEPLOY_LOG={main_log!r}
+echo "[$(date '+%H:%M:%S')] DETACHED deploy starting (pid $$ ppid $PPID) log=$PASEO_DEPLOY_LOG"
+exec bash {root!r}/scripts/deploy.sh
+'''
+p = subprocess.Popen(
+    ["bash", "-c", script],
+    stdin=subprocess.DEVNULL,
+    stdout=log,
+    stderr=subprocess.STDOUT,
+    start_new_session=True,
+    close_fds=True,
+    cwd=root,
+    env=env,
+)
+open(os.path.join(run_dir, "pid"), "w", encoding="utf-8").write(str(p.pid) + "\n")
+open("/tmp/paseo-deploy-pid", "w", encoding="utf-8").write(str(p.pid) + "\n")
+print(f"Detached deploy started pid={p.pid}")
+print(f"  log:     {main_log}")
+print(f"  run dir: {run_dir}")
+print(f"  tail:    tail -f {main_log}")
+print(f"  latest:  {os.path.expanduser('~')}/.paseo/deploy-logs/latest.log")
+print("Parent exits immediately so agent tool cancel cannot kill deploy.")
+PY
+
+  exit 0
 }
 
 ensure_node() {
@@ -645,18 +765,93 @@ deploy_local_plannotator() {
   PLANNOTATOR_VERSION="${PLANNOTATOR_VERSION:-}" bash "$ROOT_DIR/scripts/plannotator/install.sh" local
 }
 
+# ---------------------------------------------------------------------------
+# Desktop install contract (this fork — formal, do not invent a second path)
+#
+# Target: /Applications/Paseo.app (NOT "Paseo Test.app").
+#   Our dock/Spotlight app is already an ad-hoc custom build. We do not keep a
+#   signed production binary side-by-side. Paseo Test only matters if someone
+#   still has an official signed app to preserve.
+#
+# Can you replace while the window is open?
+#   • On disk: macOS can replace the .app while the process runs (old inodes).
+#   • In memory: open windows keep old JS/asar until quit — Electron does not
+#     hot-reload a packaged install.
+#   • Dangerous: `cp -R` *onto* an existing bundle (merge) mixes signatures/files
+#     → dyld Team ID crashes. Always `rm -rf` then `cp -R`.
+#
+# Canonical loop (what deploy does every time):
+#   1. build unsigned (~2 min)
+#   2. quit running app
+#   3. rm -rf /Applications/Paseo.app
+#   4. cp -R packages/desktop/release/mac-*/Paseo.app /Applications/Paseo.app
+#   5. open /Applications/Paseo.app
+# ---------------------------------------------------------------------------
+
+quit_desktop_app() {
+  local app_path="$1"
+  local app_name
+  app_name="$(basename "$app_path" .app)"
+
+  # Prefer AppleScript quit so Electron shuts down cleanly; fall back to killall
+  # by app name, then path-scoped pkill if still alive.
+  if pgrep -x "$app_name" >/dev/null 2>&1 || pgrep -f "${app_path}/Contents/MacOS/" >/dev/null 2>&1; then
+    log "Quitting ${app_name} before bundle replace"
+    osascript -e "tell application \"${app_name}\" to quit" >/dev/null 2>&1 || true
+    local i
+    for ((i = 1; i <= 20; i++)); do
+      if ! pgrep -x "$app_name" >/dev/null 2>&1 && ! pgrep -f "${app_path}/Contents/MacOS/" >/dev/null 2>&1; then
+        return 0
+      fi
+      sleep 0.5
+    done
+    killall "$app_name" >/dev/null 2>&1 || true
+    sleep 1
+    if pgrep -f "${app_path}/Contents/MacOS/" >/dev/null 2>&1; then
+      pkill -f "${app_path}/Contents/MacOS/" >/dev/null 2>&1 || true
+      sleep 1
+    fi
+  fi
+}
+
+# Install a built .app bundle over $DESKTOP_APP: quit → rm -rf → cp -R → open.
+# Never merge onto an existing bundle.
+install_desktop_app() {
+  local built="$1"
+  local dest="${2:-$DESKTOP_APP}"
+
+  if [[ ! -d "$built" ]]; then
+    die "install_desktop_app: built app missing: $built"
+  fi
+
+  log "Desktop install: quit → rm -rf → cp -R → open ($built → $dest)"
+  quit_desktop_app "$dest"
+
+  # ALWAYS delete first. `cp -R src dest` when dest exists merges into dest and
+  # can leave mixed signatures (dyld "different Team IDs" crash).
+  rm -rf "$dest"
+  cp -R "$built" "$dest"
+  log "Desktop app installed at $dest"
+
+  open "$dest" || open -a "$(basename "$dest" .app)" || {
+    log "Warning: could not open $dest — open it manually"
+    return 0
+  }
+  log "Desktop app relaunched: $dest"
+}
+
 build_desktop_app() {
   if [[ "${PASEO_BUILD_DESKTOP:-1}" == "0" ]]; then
     log "Skipping desktop app build (PASEO_BUILD_DESKTOP=0)"
     return
   fi
-  # Unsigned local test build. Bare `build:desktop` hangs on notarization and an
+  # Unsigned local build. Bare `build:desktop` hangs on notarization and an
   # ad-hoc hardened build crashes at launch (dyld team-ID mismatch), so disable
-  # both — see docs/development.md § Local desktop builds.
-  log "Building desktop app (unsigned test build) — this takes a few minutes"
+  # both — see CLAUDE.md § Local desktop builds.
+  log "Building desktop app (unsigned) → install $DESKTOP_APP — this takes a few minutes"
   (
     cd "$ROOT_DIR"
-    # -p never: unsigned local test builds must not attempt GitHub publish (needs GH_TOKEN).
+    # -p never: unsigned local builds must not attempt GitHub publish (needs GH_TOKEN).
     CSC_IDENTITY_AUTO_DISCOVERY=false npm run build:desktop -- \
       -c.mac.notarize=false -c.mac.hardenedRuntime=false -p never
   )
@@ -666,10 +861,7 @@ build_desktop_app() {
   if [[ -z "$built" ]]; then
     die "Desktop build finished but no Paseo.app found under packages/desktop/release"
   fi
-  log "Installing $built → $DESKTOP_TEST_APP"
-  rm -rf "$DESKTOP_TEST_APP"
-  cp -R "$built" "$DESKTOP_TEST_APP"
-  log "Desktop test app installed at $DESKTOP_TEST_APP"
+  install_desktop_app "$built" "$DESKTOP_APP"
 }
 
 # --- Parallel post-push deploy jobs ------------------------------------------------
@@ -685,8 +877,11 @@ PARALLEL_LOGS=()
 start_parallel_job() {
   local name="$1"
   shift
-  local logf="/tmp/paseo-deploy-${name}.log"
+  local run_dir="${PASEO_DEPLOY_RUN_DIR:-/tmp}"
+  local logf="${run_dir}/job-${name}.log"
   : >"$logf"
+  # Keep /tmp mirrors for quick tail during a run.
+  ln -sfn "$logf" "/tmp/paseo-deploy-${name}.log" 2>/dev/null || true
   log "→ starting job '$name' (log: $logf)"
   (
     set -euo pipefail
@@ -718,7 +913,7 @@ wait_for_parallel_jobs() {
   PARALLEL_NAMES=()
   PARALLEL_LOGS=()
   if [[ "$fail" -ne 0 ]]; then
-    die "One or more parallel deploy jobs failed (see /tmp/paseo-deploy-*.log)"
+    die "One or more parallel deploy jobs failed (see ${PASEO_DEPLOY_RUN_DIR:-/tmp}/job-*.log and ${DEPLOY_LOG_ROOT}/latest.log)"
   fi
 }
 
@@ -962,14 +1157,75 @@ build_and_restart() {
     fi
     log "Tunnel provider: \$TUNNEL_PROVIDER"
   fi
+  # Read pid/listen without broken quoting. IMPORTANT: do not put \\" inside
+  # single-quoted node -e scripts — that yields literal backslash-quotes and
+  # JS parse failures, so new_pid stays empty forever and health is never tried.
+  # Prefer python3 (stdlib json); fall back to node with proper single-quoted JS.
+  read_daemon_pid() {
+    local home="\$1"
+    local f="\$home/paseo.pid"
+    [[ -f "\$f" ]] || return 0
+    if command -v python3 >/dev/null 2>&1; then
+      python3 -c 'import json,sys
+try:
+ p=json.load(open(sys.argv[1])); print(p.get("pid") or "", end="")
+except Exception:
+ pass' "\$f" 2>/dev/null || true
+    elif command -v node >/dev/null 2>&1; then
+      node -e 'try{const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));if(p.pid!=null)process.stdout.write(String(p.pid))}catch{}' "\$f" 2>/dev/null || true
+    fi
+  }
+  read_daemon_listen() {
+    local home="\$1"
+    local f cfg out=""
+    # Prefer live pid file (what the process actually bound), then config.json.
+    f="\$home/paseo.pid"
+    if [[ -f "\$f" ]] && command -v python3 >/dev/null 2>&1; then
+      out="\$(python3 -c 'import json,sys
+try:
+ p=json.load(open(sys.argv[1])); print((p.get("listen") or "").strip(), end="")
+except Exception:
+ pass' "\$f" 2>/dev/null || true)"
+    fi
+    if [[ -z "\$out" ]]; then
+      cfg="\$home/config.json"
+      if [[ -f "\$cfg" ]] && command -v python3 >/dev/null 2>&1; then
+        out="\$(python3 -c 'import json,sys
+try:
+ c=json.load(open(sys.argv[1])); d=c.get("daemon") or {}; print((d.get("listen") or "").strip(), end="")
+except Exception:
+ pass' "\$cfg" 2>/dev/null || true)"
+      elif [[ -f "\$cfg" ]] && command -v node >/dev/null 2>&1; then
+        out="\$(node -e 'try{const c=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const l=c&&c.daemon&&c.daemon.listen;if(typeof l==="string"&&l.trim())process.stdout.write(l.trim())}catch{}' "\$cfg" 2>/dev/null || true)"
+      fi
+    fi
+    printf '%s' "\$out"
+  }
+  health_urls_for_listen() {
+    local listen="\$1"
+    local port primary secondary
+    listen="\${listen:-127.0.0.1:6767}"
+    port="\${listen##*:}"
+    case "\$listen" in
+      0.0.0.0:*|\\[::\\]:*)
+        primary="http://127.0.0.1:\${port}/api/health"
+        secondary="\$primary"
+        ;;
+      *)
+        # Tailscale/WireGuard-only binds (e.g. blrofc3 100.x:6767): primary is
+        # the real bind; secondary loopback often fails and must not be the only probe.
+        primary="http://\${listen}/api/health"
+        secondary="http://127.0.0.1:\${port}/api/health"
+        ;;
+    esac
+    printf '%s %s' "\$primary" "\$secondary"
+  }
+
   # Detached restart via built CLI (not npx tsx). Require a NEW pid + health on
   # configured listen and/or loopback:port (Tailscale-only binds fail on 127.0.0.1).
   restart_log="/tmp/paseo-daemon-restart-remote-\$\$.log"
   : >"\$restart_log"
-  old_pid=""
-  if [[ -f "\$PASEO_HOME/paseo.pid" ]]; then
-    old_pid="\$(node -e 'try{const p=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\"));if(p.pid)process.stdout.write(String(p.pid))}catch{}' \"\$PASEO_HOME/paseo.pid\" 2>/dev/null || true)"
-  fi
+  old_pid="\$(read_daemon_pid "\$PASEO_HOME")"
   cli_bin="\$HOME/.local/bin/paseo"
   if [[ ! -x "\$cli_bin" ]]; then
     cli_bin="node \$HOME/\$REMOTE_REPO_DIR/packages/cli/dist/index.js"
@@ -980,25 +1236,15 @@ build_and_restart() {
   else
     nohup bash -c "export PATH=\"\$(daemon_path_env)\"; export NVM_DIR=\"\${NVM_DIR:-\$HOME/.nvm}\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"; cd \"\$HOME/\$REMOTE_REPO_DIR\"; exec \$cli_bin daemon restart --home \"\$PASEO_HOME\"" >>"\$restart_log" 2>&1 </dev/null &
   fi
-  listen="127.0.0.1:6767"
-  if [[ -f "\$PASEO_HOME/config.json" ]]; then
-    cfg_listen="\$(node -e 'try{const c=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\"));const l=c&&c.daemon&&c.daemon.listen;if(typeof l===\"string\"&&l.trim())process.stdout.write(l.trim())}catch{}' \"\$PASEO_HOME/config.json\" 2>/dev/null || true)"
-    if [[ -n "\$cfg_listen" ]]; then
-      listen="\$cfg_listen"
-    fi
-  fi
-  port="\${listen##*:}"
-  case "\$listen" in
-    0.0.0.0:*|\\[::\\]:*) primary="http://127.0.0.1:\${port}/api/health" ;;
-    *) primary="http://\${listen}/api/health" ;;
-  esac
-  secondary="http://127.0.0.1:\${port}/api/health"
   ok=0
+  primary=""
   for i in \$(seq 1 90); do
-    new_pid=""
-    if [[ -f "\$PASEO_HOME/paseo.pid" ]]; then
-      new_pid="\$(node -e 'try{const p=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\"));if(p.pid)process.stdout.write(String(p.pid))}catch{}' \"\$PASEO_HOME/paseo.pid\" 2>/dev/null || true)"
-    fi
+    new_pid="\$(read_daemon_pid "\$PASEO_HOME")"
+    listen="\$(read_daemon_listen "\$PASEO_HOME")"
+    # shellcheck disable=SC2206
+    urls=(\$(health_urls_for_listen "\$listen"))
+    primary="\${urls[0]}"
+    secondary="\${urls[1]:-\$primary}"
     if [[ -n "\$new_pid" && "\$new_pid" != "\${old_pid:-}" ]]; then
       if curl -fsS --max-time 2 "\$primary" >/dev/null 2>&1 \\
         || curl -fsS --max-time 2 "\$secondary" >/dev/null 2>&1; then
@@ -1012,7 +1258,8 @@ build_and_restart() {
   if [[ "\$ok" -ne 1 ]]; then
     log "Daemon health check failed; restart log:"
     tail -n 80 "\$restart_log" 2>/dev/null || true
-    echo "Daemon failed to come back (\$primary) after restart" >&2
+    log "Debug: old_pid=\${old_pid:-none} new_pid=\$(read_daemon_pid "\$PASEO_HOME") listen=\$(read_daemon_listen "\$PASEO_HOME") primary=\${primary:-unset}"
+    echo "Daemon failed to come back (\${primary:-no-url}) after restart" >&2
     exit 1
   fi
 }
@@ -1181,6 +1428,8 @@ Usage:
 Takes no positional arguments; behavior is controlled by env variables.
 
 What a full run does (local Mac):
+  0. Self-detaches into a new session (unless PASEO_DEPLOY_FOREGROUND=1) and writes
+     durable logs under ~/.paseo/deploy-logs/ (latest.log → current run)
   1. Auto-commit uncommitted changes (message via claude; on pre-commit failure,
      grok fixes checks and commits)
   2. Fetch upstream, fast-forward origin/main to upstream/main
@@ -1188,8 +1437,12 @@ What a full run does (local Mac):
      fixes pre-commit checks, and completes the merge commit — streaming output)
   4. Push branch to $ORIGIN_REMOTE
   5. Post-push in parallel: each remote host, local daemon restart (+ server build first),
-     local code-server, and desktop app build/install
+     local code-server, and desktop app build/install to $DESKTOP_APP then relaunch
 Then remotes are ${REMOTE_HOSTS[*]} (each gets its own parallel job).
+
+Daemon restarts (local + remote) always run in a NEW session so cancelling an agent
+tool mid-wait cannot leave stop-without-start. The whole deploy is also detached by
+default for the same reason — agents should \`tail -f ~/.paseo/deploy-logs/latest.log\`.
 
 Scope flags (set to 1 unless noted):
   PASEO_SKIP_LOCAL                 Skip the local Mac entirely (remotes only)
@@ -1202,7 +1455,11 @@ Scope flags (set to 1 unless noted):
   PASEO_SKIP_CODE_SERVER_EXTENSION  Skip installing the paseo-bridge extension
   PASEO_SKIP_PLANNOTATOR         Skip plannotator binary deploy everywhere
   PASEO_BUILD_DESKTOP=0            Skip the desktop app build (built by default)
-  PASEO_DESKTOP_TEST_APP=<path>    Desktop install path (default: $DESKTOP_TEST_APP)
+  PASEO_DESKTOP_ONLY=1             ONLY desktop build/install/relaunch (no git/remotes/daemon)
+  PASEO_DESKTOP_APP=<path>         Desktop install path (default: $DESKTOP_APP)
+  PASEO_DESKTOP_TEST_APP=<path>    COMPAT alias for PASEO_DESKTOP_APP
+  PASEO_DEPLOY_FOREGROUND=1        Stay attached (no self-detach; for interactive debug)
+  PASEO_DEPLOY_LOG_DIR=<path>      Durable log root (default: $DEPLOY_LOG_ROOT)
   PASEO_SYNC_CODE_SERVER_USER_DATA  Also rsync code-server User/ + extensions/ to remotes
   PASEO_SKIP_FUNNEL               Skip ensuring the Tailscale Funnel on funnel hosts (blrofc3)
 
@@ -1225,6 +1482,7 @@ Per-host code-server install (run on a single machine):
   ./scripts/code-server/install.sh <local|${REMOTE_HOSTS[0]}|${REMOTE_HOSTS[1]}>
 
 Examples:
+  PASEO_DESKTOP_ONLY=1 ./scripts/deploy.sh          # app UI only: build + install Paseo.app + relaunch
   PASEO_SKIP_REMOTES=1 ./scripts/deploy.sh          # local only
   PASEO_SKIP_DAEMON=1  ./scripts/deploy.sh          # code-server + settings, no local daemon
   PASEO_REMOTE_HOSTS=blrofc3 PASEO_SKIP_DAEMON=1 ./scripts/deploy.sh
@@ -1240,7 +1498,34 @@ main() {
       ;;
   esac
 
+  # Self-detach before any heavy work unless FOREGROUND or already detached.
+  maybe_detach_self "$@"
+
   cd "$ROOT_DIR"
+
+  # Detached children inherit PASEO_DEPLOY_RUN_DIR/LOG; foreground runs init here.
+  if [[ -z "${PASEO_DEPLOY_RUN_DIR:-}" || -z "${PASEO_DEPLOY_LOG:-}" ]]; then
+    init_deploy_log_dir
+  else
+    mkdir -p "$PASEO_DEPLOY_RUN_DIR"
+    : >>"${PASEO_DEPLOY_LOG}"
+    log "Continuing detached deploy (log: $PASEO_DEPLOY_LOG)"
+  fi
+
+  # App-only: no git, remotes, daemon, or code-server — just desktop build + install.
+  if [[ "${PASEO_DESKTOP_ONLY:-0}" == "1" ]]; then
+    log "Desktop-only deploy (PASEO_DESKTOP_ONLY=1) → $DESKTOP_APP"
+    ensure_node
+    if [[ "${PASEO_BUILD_DESKTOP:-1}" == "0" ]]; then
+      die "PASEO_DESKTOP_ONLY=1 requires desktop build (unset PASEO_BUILD_DESKTOP=0)"
+    fi
+    build_desktop_app
+    log "Desktop-only deploy complete"
+    if [[ -n "${PASEO_DEPLOY_LOG:-}" ]]; then
+      log "Full log: $PASEO_DEPLOY_LOG"
+    fi
+    return 0
+  fi
 
   # Sequential git phase — must finish (and push) before remotes can pull.
   if [[ "${PASEO_SKIP_LOCAL:-0}" != "1" ]]; then
@@ -1261,6 +1546,9 @@ main() {
   sync_code_server_user_data
 
   log "Sync complete"
+  if [[ -n "${PASEO_DEPLOY_LOG:-}" ]]; then
+    log "Full log: $PASEO_DEPLOY_LOG"
+  fi
 }
 
 main "$@"

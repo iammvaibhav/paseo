@@ -520,8 +520,16 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
 
   const setModelFromUser = useCallback(
     (modelId: string) => {
-      dispatch({ type: "SET_MODEL_FROM_USER", modelId, availableModels });
       const provider = reducerStateRef.current.form.provider;
+      const providerPrefs = provider
+        ? effectivePreferences?.providerPreferences?.[provider]
+        : undefined;
+      dispatch({
+        type: "SET_MODEL_FROM_USER",
+        modelId,
+        availableModels,
+        providerPrefs,
+      });
       if (provider) {
         const normalizedModelId = normalizeSelectedModelId(modelId);
         const nextModelId = normalizedModelId || resolveDefaultModelId(availableModels);
@@ -537,7 +545,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
         );
       }
     },
-    [availableModels, updatePreferences],
+    [availableModels, effectivePreferences?.providerPreferences, updatePreferences],
   );
 
   const setThinkingOptionFromUser = useCallback(

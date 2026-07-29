@@ -66,21 +66,30 @@ export class ProviderUsageService {
 
   private async fetchFreshUsage(nowMs: number): Promise<ProviderUsageListResult> {
     const settled = await Promise.allSettled(this.fetchers.map((fetcher) => fetcher.fetchUsage()));
-    const providers = settled.map((result, index) => {
+    const providers: ProviderUsage[] = [];
+    for (const [index, result] of settled.entries()) {
       const fetcher = this.fetchers[index];
       if (result.status === "fulfilled") {
-        return result.value;
+        const value = result.value;
+        if (Array.isArray(value)) {
+          providers.push(...value);
+        } else {
+          providers.push(value);
+        }
+        continue;
       }
       this.logger.debug(
         { err: result.reason, providerId: fetcher.providerId },
         "Provider usage fetch failed",
       );
-      return unavailableUsage({
-        providerId: fetcher.providerId,
-        displayName: fetcher.displayName,
-        error: result.reason instanceof Error ? result.reason.message : String(result.reason),
-      });
-    });
+      providers.push(
+        unavailableUsage({
+          providerId: fetcher.providerId,
+          displayName: fetcher.displayName,
+          error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+        }),
+      );
+    }
 
     const result = { fetchedAt: new Date(nowMs).toISOString(), providers };
     this.cached = { fetchedAtMs: nowMs, result };

@@ -36,6 +36,8 @@ export {
   type LaunchHistoryAskResult,
 } from "./launch";
 
+export { resolveHistoryAskLaunchCwd } from "./resolve-launch-cwd";
+
 export {
   matchesHistoryAskFuzzy,
   filterByHistoryAskFuzzy,
@@ -43,3 +45,13 @@ export {
 } from "./fuzzy";
 
 export { useHistoryAskStore, type HistoryAskTab } from "./history-ask-store";
+
+export {
+  type HistoryAskHostSelection,
+  type HistoryAskHostPreferences,
+  loadHistoryAskHostPreferences,
+  updateHistoryAskHostSelection,
+  resolveHistoryAskHostSelection,
+} from "./host-preferences";
+
+export { parseHistoryAskAgentOpenUrl, openHistoryAskAgentLink } from "./open-agent-link";

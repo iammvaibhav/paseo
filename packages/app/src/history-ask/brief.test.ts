@@ -34,7 +34,9 @@ describe("buildHistoryAskBrief", () => {
     expect(brief).toContain("Codex");
     expect(brief).toContain("## HOW TO SEARCH");
     expect(brief).toContain("includeArchived");
-    expect(brief).toContain("agent id");
+    expect(brief).toContain("paseo://h/");
+    expect(brief).toContain("/agent/");
+    expect(brief).toContain("srv_local");
     expect(brief).toContain("## USER QUESTION");
     expect(brief).toContain("When did we add webhooks?");
   });

@@ -1,3 +1,4 @@
+import { setImmediate as waitForImmediate } from "node:timers/promises";
 import { describe, expect, test } from "vitest";
 
 import type { PaseoToolCatalog } from "../../tools/types.js";
@@ -579,5 +580,41 @@ describe("OMP agent client and session", () => {
     expect(omp.timeline().filter((item) => item.type === "user_message")).toEqual([
       { type: "user_message", text: "hello OMP", messageId: "user-1" },
     ]);
+  });
+  test("emits context usage after assistant message_end before turn idle", async () => {
+    const omp = new OmpHarness();
+    await omp.start();
+
+    const runtime = omp.runtime();
+    runtime.stats = {
+      tokens: { input: 100, output: 20, cacheRead: 50, cacheWrite: 0, total: 170 },
+      cost: 0.01,
+      contextUsage: { tokens: 1_234, contextWindow: 500_000 },
+    };
+    runtime.state = {
+      ...runtime.state,
+      contextUsage: { tokens: 1_234, contextWindow: 500_000 },
+    };
+
+    await omp.requireStartTurn("hello");
+    runtime.beginTurn();
+    runtime.acceptPrompt("hello", "user-1");
+    runtime.streamAssistantText("working");
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (omp.streamEvents().some((event) => event.type === "usage_updated")) break;
+      await waitForImmediate();
+    }
+    expect(omp.streamEvents().find((event) => event.type === "usage_updated")).toMatchObject({
+      type: "usage_updated",
+      usage: {
+        contextWindowMaxTokens: 500_000,
+        contextWindowUsedTokens: 1_234,
+        inputTokens: 100,
+        outputTokens: 20,
+      },
+    });
+
+    runtime.finishTurn();
   });
 });

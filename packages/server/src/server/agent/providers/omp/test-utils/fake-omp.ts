@@ -440,7 +440,7 @@ export class FakeOmpSession implements OmpRuntimeSession {
   streamAssistantText(text: string, responseId = "omp-assistant-1"): void {
     const message: OmpAgentMessage = {
       role: "assistant",
-      content: [],
+      content: [{ type: "text", text }],
       responseId,
     };
     this.emit({ type: "message_start", message });
@@ -449,6 +449,7 @@ export class FakeOmpSession implements OmpRuntimeSession {
       message,
       assistantMessageEvent: { type: "text_delta", delta: text },
     });
+    this.emit({ type: "message_end", message });
   }
 
   requestToolApproval(input: {

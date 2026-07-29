@@ -99,6 +99,7 @@ export type AgentFormAction =
       type: "SET_MODEL_FROM_USER";
       modelId: string;
       availableModels: AgentModelDefinition[] | null;
+      providerPrefs?: ProviderPrefs | undefined;
     }
   | { type: "CLEAR_PROVIDER_SELECTION_FROM_USER" }
   | { type: "SET_THINKING_OPTION_FROM_USER"; thinkingOptionId: string }
@@ -509,6 +510,94 @@ function pickNextThinkingOptionForProvider(input: {
   });
 }
 
+function applyProviderFromUser(
+  state: AgentFormReducerState,
+  action: Extract<AgentFormAction, { type: "SET_PROVIDER_FROM_USER" }>,
+): AgentFormReducerState {
+  const nextModelId = pickNextModelForProvider({
+    providerModels: action.providerModels,
+    providerPrefs: action.providerPrefs,
+  });
+  const nextModeId = pickNextModeForProvider({
+    providerDef: action.providerDef,
+    providerPrefs: action.providerPrefs,
+  });
+  const nextThinkingOptionId = pickNextThinkingOptionForProvider({
+    providerModels: action.providerModels,
+    providerPrefs: action.providerPrefs,
+    modelId: nextModelId,
+  });
+  return {
+    ...state,
+    form: {
+      ...state.form,
+      provider: action.provider,
+      modeId: nextModeId,
+      model: nextModelId,
+      thinkingOptionId: nextThinkingOptionId,
+    },
+    userModified: { ...state.userModified, provider: true },
+  };
+}
+
+function applyProviderAndModelFromUser(
+  state: AgentFormReducerState,
+  action: Extract<AgentFormAction, { type: "SET_PROVIDER_AND_MODEL_FROM_USER" }>,
+): AgentFormReducerState {
+  const normalizedModelId = normalizeSelectedModelId(action.modelId);
+  const nextModelId = normalizedModelId || resolveDefaultModelId(action.providerModels);
+  const nextThinkingOptionId = pickNextThinkingOptionForProvider({
+    providerModels: action.providerModels,
+    providerPrefs: action.providerPrefs,
+    modelId: nextModelId,
+  });
+  const nextModeId = pickNextModeForProviderAndModel({
+    currentProvider: state.form.provider,
+    currentModeId: state.form.modeId,
+    provider: action.provider,
+    providerDef: action.providerDef,
+    providerPrefs: action.providerPrefs,
+  });
+  return {
+    ...state,
+    form: {
+      ...state.form,
+      provider: action.provider,
+      model: nextModelId,
+      modeId: nextModeId,
+      thinkingOptionId: nextThinkingOptionId,
+    },
+    userModified: { ...state.userModified, provider: true, model: true },
+  };
+}
+
+function applyModelFromUser(
+  state: AgentFormReducerState,
+  action: Extract<AgentFormAction, { type: "SET_MODEL_FROM_USER" }>,
+): AgentFormReducerState {
+  const normalizedModelId = normalizeSelectedModelId(action.modelId);
+  const nextModelId = normalizedModelId || resolveDefaultModelId(action.availableModels);
+  const preferredThinking = nextModelId
+    ? (action.providerPrefs?.thinkingByModel?.[nextModelId]?.trim() ?? "")
+    : "";
+  const requestedThinkingOptionId =
+    preferredThinking || (state.userModified.thinkingOptionId ? state.form.thinkingOptionId : "");
+  const nextThinkingOptionId = resolveThinkingOptionId({
+    availableModels: action.availableModels,
+    modelId: nextModelId,
+    requestedThinkingOptionId,
+  });
+  return {
+    ...state,
+    form: {
+      ...state.form,
+      model: nextModelId,
+      thinkingOptionId: nextThinkingOptionId,
+    },
+    userModified: { ...state.userModified, model: true },
+  };
+}
+
 function completeResolution(
   state: AgentFormReducerState,
   action: CompleteResolutionAction,
@@ -554,60 +643,11 @@ export function resolveAgentForm(
         userModified: { ...state.userModified, serverId: true },
       };
 
-    case "SET_PROVIDER_FROM_USER": {
-      const nextModelId = pickNextModelForProvider({
-        providerModels: action.providerModels,
-        providerPrefs: action.providerPrefs,
-      });
-      const nextModeId = pickNextModeForProvider({
-        providerDef: action.providerDef,
-        providerPrefs: action.providerPrefs,
-      });
-      const nextThinkingOptionId = pickNextThinkingOptionForProvider({
-        providerModels: action.providerModels,
-        providerPrefs: action.providerPrefs,
-        modelId: nextModelId,
-      });
-      return {
-        ...state,
-        form: {
-          ...state.form,
-          provider: action.provider,
-          modeId: nextModeId,
-          model: nextModelId,
-          thinkingOptionId: nextThinkingOptionId,
-        },
-        userModified: { ...state.userModified, provider: true },
-      };
-    }
+    case "SET_PROVIDER_FROM_USER":
+      return applyProviderFromUser(state, action);
 
-    case "SET_PROVIDER_AND_MODEL_FROM_USER": {
-      const normalizedModelId = normalizeSelectedModelId(action.modelId);
-      const nextModelId = normalizedModelId || resolveDefaultModelId(action.providerModels);
-      const nextThinkingOptionId = resolveThinkingOptionId({
-        availableModels: action.providerModels,
-        modelId: nextModelId,
-        requestedThinkingOptionId: "",
-      });
-      const nextModeId = pickNextModeForProviderAndModel({
-        currentProvider: state.form.provider,
-        currentModeId: state.form.modeId,
-        provider: action.provider,
-        providerDef: action.providerDef,
-        providerPrefs: action.providerPrefs,
-      });
-      return {
-        ...state,
-        form: {
-          ...state.form,
-          provider: action.provider,
-          model: nextModelId,
-          modeId: nextModeId,
-          thinkingOptionId: nextThinkingOptionId,
-        },
-        userModified: { ...state.userModified, provider: true, model: true },
-      };
-    }
+    case "SET_PROVIDER_AND_MODEL_FROM_USER":
+      return applyProviderAndModelFromUser(state, action);
 
     case "SET_MODE_FROM_USER":
       return {
@@ -616,26 +656,8 @@ export function resolveAgentForm(
         userModified: { ...state.userModified, modeId: true },
       };
 
-    case "SET_MODEL_FROM_USER": {
-      const normalizedModelId = normalizeSelectedModelId(action.modelId);
-      const nextModelId = normalizedModelId || resolveDefaultModelId(action.availableModels);
-      const nextThinkingOptionId = resolveThinkingOptionId({
-        availableModels: action.availableModels,
-        modelId: nextModelId,
-        requestedThinkingOptionId: state.userModified.thinkingOptionId
-          ? state.form.thinkingOptionId
-          : "",
-      });
-      return {
-        ...state,
-        form: {
-          ...state.form,
-          model: nextModelId,
-          thinkingOptionId: nextThinkingOptionId,
-        },
-        userModified: { ...state.userModified, model: true },
-      };
-    }
+    case "SET_MODEL_FROM_USER":
+      return applyModelFromUser(state, action);
 
     case "CLEAR_PROVIDER_SELECTION_FROM_USER":
       return {

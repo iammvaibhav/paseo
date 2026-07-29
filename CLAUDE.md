@@ -200,14 +200,35 @@ Do day-to-day work on this branch, not on `main`.
 
 **Always consult and run [`scripts/deploy.sh`](scripts/deploy.sh) for deploy.** Do not freestyle multi-host sync, remote restarts, or “just restart the daemon” with ad-hoc commands unless you are deliberately debugging a single host.
 
-|                 |                                                                                           |
-| --------------- | ----------------------------------------------------------------------------------------- |
-| **How**         | `./scripts/deploy.sh` from the repo root                                                  |
-| **Daemon home** | `~/.paseo` locally; `/home/vaibhav/.paseo` (blrofc3), `/home/ubuntu/.paseo` (iammvaibhav) |
-| **Port**        | **6767** (production-style host daemon — what the desktop app and remotes use)            |
-| **Not this**    | `npm run dev` / port **6768** / `.dev/paseo-home` is checkout hot-reload only, not deploy |
+|                 |                                                                                                    |
+| --------------- | -------------------------------------------------------------------------------------------------- |
+| **How**         | `./scripts/deploy.sh` from the repo root                                                           |
+| **Daemon home** | `~/.paseo` locally; `/home/vaibhav/.paseo` (blrofc3), `/home/ubuntu/.paseo` (iammvaibhav)          |
+| **Port**        | **6767** (production-style host daemon — what the desktop app and remotes use)                     |
+| **Desktop**     | Unsigned build → **quit → `rm -rf` → `cp -R` → `open` `/Applications/Paseo.app`** (not Paseo Test) |
+| **Not this**    | `npm run dev` / port **6768** / `.dev/paseo-home` is checkout hot-reload only, not deploy          |
 
-The script builds server packages, restarts host daemons with **`--home …/.paseo`**, and syncs remotes. Local/remote restarts are **new-session detached** (not plain `nohup` — on macOS that still dies with a cancelled agent tool mid-restart) and must observe a **new PID + `/api/health`**. Restarts use the **built CLI** (`~/.local/bin/paseo` / `packages/cli/dist`), never `npx tsx` mid-build. On failure, deploy tries a detached **`daemon start` recovery** before aborting.
+#### Agents MUST treat deploy as fire-and-forget
+
+`./scripts/deploy.sh` **self-detaches** by default (new process session via `start_new_session`). The parent exits immediately and prints the log path. **Do not** run deploy under a long-lived agent tool wait that can be cancelled — canceling used to SIGTERM the whole process group and kill desktop/remotes mid-flight even though daemon restarts were already detached.
+
+```bash
+./scripts/deploy.sh
+# → prints: Detached deploy started pid=… log=~/.paseo/deploy-logs/run-…/deploy.log
+# Then poll logs; do not keep a shell parent waiting on deploy.
+tail -f ~/.paseo/deploy-logs/latest.log
+```
+
+| Log                    | Path                                                                                      |
+| ---------------------- | ----------------------------------------------------------------------------------------- |
+| **Latest full deploy** | `~/.paseo/deploy-logs/latest.log` (symlink)                                               |
+| **Latest run dir**     | `~/.paseo/deploy-logs/latest-run/` (jobs: `job-desktop.log`, `job-remote-blrofc3.log`, …) |
+| **Mirrors**            | `/tmp/paseo-deploy-run.log`, `/tmp/paseo-deploy-latest-run` → same files                  |
+| **PID**                | `~/.paseo/deploy-logs/latest-run/pid` and `/tmp/paseo-deploy-pid`                         |
+
+Interactive / debug (stay attached): `PASEO_DEPLOY_FOREGROUND=1 ./scripts/deploy.sh`.
+
+The script builds server packages, restarts host daemons with **`--home …/.paseo`**, and syncs remotes. Local/remote **daemon** restarts are **new-session detached** (not plain `nohup` — on macOS that still dies with a cancelled agent tool mid-restart) and must observe a **new PID + `/api/health`**. Restarts use the **built CLI** (`~/.local/bin/paseo` / `packages/cli/dist`), never `npx tsx` mid-build. On failure, deploy tries a detached **`daemon start` recovery** before aborting. The **whole deploy** is also detached by default so waiting for health/desktop cannot be killed by tool cancel.
 
 **Local-only restart (agents):** after `npm run build:server`, use:
 
@@ -232,14 +253,46 @@ ssh iammvaibhav 'PATH="$HOME/.local/bin:$PATH" paseo daemon start --home "$HOME/
 ### Day-to-day flow
 
 1. Commit changes on `vaibhav/customizations` (or let deploy auto-commit).
-2. Run `./scripts/deploy.sh` from the repo root — **this is the deploy path.**
+2. Run `./scripts/deploy.sh` from the repo root — **this is the deploy path.** (Self-detaches; tail `~/.paseo/deploy-logs/latest.log`.)
 
 The script:
 
-1. **Local Mac** — auto-commits any uncommitted changes (commit message written by the `claude` CLI on **Haiku 4.5**, falling back to a timestamp; if pre-commit fails, **Grok 4.5 high** fixes lint/format/typecheck and commits), fetches `upstream`, fast-forwards `origin/main` to `upstream/main`, **merges** `upstream/main` into the custom branch (on conflict, `grok` at **Grok 4.5 / `high` effort** resolves markers, stages, fixes pre-commit checks, and completes the merge commit — streaming its output), then **pushes** to `origin`. After the push, post-deploy work runs **in parallel**: each remote host, local daemon restart (after a local `build:server`), local code-server, and the **desktop app** build/install as `/Applications/Paseo Test.app` — skip with `PASEO_BUILD_DESKTOP=0`, retarget with `PASEO_DESKTOP_TEST_APP`. Local server compile is not parallel with the desktop build (both write `packages/*/dist`). Models are overridable via `PASEO_COMMIT_MSG_MODEL` / `PASEO_CONFLICT_MODEL` / `PASEO_CONFLICT_EFFORT` / `PASEO_CONFLICT_MAX_TURNS`. A merge commit is used deliberately (simpler + one-pass resolution); linear history is not preserved.
+1. **Local Mac** — auto-commits any uncommitted changes (commit message written by the `claude` CLI on **Haiku 4.5**, falling back to a timestamp; if pre-commit fails, **Grok 4.5 high** fixes lint/format/typecheck and commits), fetches `upstream`, fast-forwards `origin/main` to `upstream/main`, **merges** `upstream/main` into the custom branch (on conflict, `grok` at **Grok 4.5 / `high` effort** resolves markers, stages, fixes pre-commit checks, and completes the merge commit — streaming its output), then **pushes** to `origin`. After the push, post-deploy work runs **in parallel**: each remote host, local daemon restart (after a local `build:server`), local code-server, and the **desktop app** build then install via the formal loop below. Skip desktop with `PASEO_BUILD_DESKTOP=0`; retarget with `PASEO_DESKTOP_APP` (COMPAT: `PASEO_DESKTOP_TEST_APP`). Local server compile is not parallel with the desktop build (both write `packages/*/dist`). Models are overridable via `PASEO_COMMIT_MSG_MODEL` / `PASEO_CONFLICT_MODEL` / `PASEO_CONFLICT_EFFORT` / `PASEO_CONFLICT_MAX_TURNS`. A merge commit is used deliberately (simpler + one-pass resolution); linear history is not preserved.
 2. **`blrofc3`** and **`iammvaibhav`** — each is a parallel post-push job: repoints `origin` to the fork if still on `getpaseo/paseo`, checks out `vaibhav/customizations` from `origin`, installs deps when `package.json` / lockfile changed, builds, and restarts each host's `~/.paseo` daemon.
 
 No longer requires a clean working tree — uncommitted changes are auto-committed first. The auto-commit runs the pre-commit hook (lint/format/typecheck), so a quality failure aborts the sync before anything is pushed.
+
+#### Desktop install (this fork) — formal contract
+
+**Do you need Paseo Test?** No. `/Applications/Paseo.app` is already an ad-hoc custom build, not a signed production app we must protect. `Paseo Test.app` only matters if you keep a signed release side-by-side (upstream-doc default). **This fork always replaces `Paseo.app`.**
+
+| Layout                            | When                                                                                       |
+| --------------------------------- | ------------------------------------------------------------------------------------------ |
+| Replace `/Applications/Paseo.app` | **Daily custom-fork use** — dock/Spotlight stay the same (what deploy does)                |
+| Paseo (Orig) + replace Paseo      | Only if you still have a signed release to keep (manual; not deploy)                       |
+| `Paseo Test.app`                  | Safer default in **upstream** docs when you must not touch a signed app — **not our path** |
+
+**Can you replace while the window is open?** Partially:
+
+- **On disk:** macOS can replace the `.app` while the process still runs (process keeps old inodes).
+- **In memory:** open windows keep old JS/asar until quit/relaunch. Electron does **not** hot-reload a packaged install.
+- **Dangerous:** `cp -R` _onto_ an existing bundle **merges** files → mixed signatures → dyld Team ID crashes. Always **`rm -rf` then `cp -R`**.
+
+**Canonical loop** (what `deploy.sh` → `install_desktop_app` does every time; ~2 min build + ~2s install):
+
+```bash
+# 1) build unsigned
+CSC_IDENTITY_AUTO_DISCOVERY=false npm run build:desktop -- \
+  -c.mac.notarize=false -c.mac.hardenedRuntime=false -p never
+
+# 2) quit → replace → open  (never merge onto an existing .app)
+osascript -e 'tell application "Paseo" to quit'
+rm -rf /Applications/Paseo.app
+cp -R packages/desktop/release/mac-arm64/Paseo.app /Applications/Paseo.app
+open /Applications/Paseo.app
+```
+
+Expect a brief close/reopen. That is intentional — not a bug.
 
 ### Manual equivalents
 
@@ -256,6 +309,7 @@ npx tsx packages/cli/src/index.js daemon restart --home ~/.paseo
 ### Useful overrides
 
 ```bash
+PASEO_DESKTOP_ONLY=1 ./scripts/deploy.sh          # app UI only: build + install /Applications/Paseo.app + relaunch
 PASEO_SKIP_REMOTES=1 ./scripts/deploy.sh          # local only
 PASEO_SKIP_LOCAL=1 ./scripts/deploy.sh            # remotes only
 PASEO_SKIP_DAEMON=1 ./scripts/deploy.sh          # code-server + settings only (no daemon build/restart)
@@ -266,14 +320,10 @@ PASEO_NODE_VERSION=22 ./scripts/deploy.sh
 
 code-server settings sync uses this Mac’s live `~/.local/share/code-server/User/settings.json` (not the repo template).
 
-### Local desktop test builds
+### Local desktop builds (unsigned)
 
-Never run bare `npm run build:desktop` locally — it hangs on notarization, and an ad-hoc build with hardened runtime crashes at launch (dyld "different Team IDs"). Use:
+Never run bare `npm run build:desktop` locally — it hangs on notarization, and an ad-hoc build with hardened runtime crashes at launch (dyld "different Team IDs"). Use the unsigned flags above (or let `./scripts/deploy.sh` do it).
 
-```bash
-CSC_IDENTITY_AUTO_DISCOVERY=false npm run build:desktop -- -c.mac.notarize=false -c.mac.hardenedRuntime=false
-```
+**Agents: do not invent install paths.** Always the formal loop in **Desktop install (this fork)** above: target **`/Applications/Paseo.app`**, **quit → `rm -rf` → `cp -R` → `open`**. Never `Paseo Test.app` for day-to-day deploy. Never `cp -R` onto an existing bundle without deleting first. Prefer `./scripts/deploy.sh` (or `PASEO_SKIP_REMOTES=1` for local-only) so build + install stay one path.
 
-Install the result under a different name (e.g. `Paseo Test.app`) — never over the signed `/Applications/Paseo.app`. Full details and rescue steps in [docs/development.md](docs/development.md) § Local desktop builds (unsigned).
-
-**App-only changes** (UI, components, styles — nothing under `packages/server`/`cli`/`protocol`/`relay`/`highlight`): skip the sync script, just build the desktop app and install as `Paseo Test.app`. See [docs/development.md](docs/development.md) § App-only changes.
+**App-only changes** (UI only): `PASEO_SKIP_REMOTES=1 PASEO_SKIP_DAEMON=1 ./scripts/deploy.sh` still builds/installs desktop via the same contract.

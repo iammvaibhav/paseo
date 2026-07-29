@@ -403,6 +403,10 @@ export class OmpHarness {
     return this.events.filter((event) => event.type === "turn_completed").length;
   }
 
+  streamEvents(): AgentStreamEvent[] {
+    return [...this.events];
+  }
+
   requestToolApproval(input: {
     id: string;
     tool: "bash" | "edit" | "write";

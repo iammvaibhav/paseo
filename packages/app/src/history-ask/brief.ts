@@ -1,3 +1,4 @@
+import { buildAgentDeepLink } from "@getpaseo/protocol/agent-deep-link";
 import type { HistorySearchRoots } from "./paths";
 import type { HistoryAskScope } from "./scope";
 
@@ -9,6 +10,11 @@ export function buildHistoryAskBrief(input: {
   const question = input.question.trim();
   const scope = input.scope;
   const roots = input.roots;
+  // Exact openable URL shape used by the Paseo client (History row open path).
+  const exampleOpenUrl = buildAgentDeepLink({
+    serverId: scope.serverId,
+    agentId: "AGENT_ID_HERE",
+  });
 
   const scopeLines = [
     `- Kind: \`${scope.kind}\``,
@@ -83,9 +89,16 @@ export function buildHistoryAskBrief(input: {
     "   - Open matching Paseo agent JSON under the catalog paths.",
     "   - Follow `persistence` / native handles into Claude / Codex / Grok / other native transcript files when needed.",
     "   - Skim logs and message text for answers — do not invent sessions that are not on disk.",
-    "3. **Answer with citations**",
-    "   - For each claim, cite **agent id**, **title**, **cwd**, and a short **snippet**.",
-    "   - If nothing matches, say so clearly and suggest a broader scope.",
+    "3. **Answer with clickable citations (required)**",
+    "   - The user opens a past session by tapping a markdown link in your reply — same as clicking a row in History.",
+    "   - For **every** matching session, emit exactly one markdown link:",
+    "     `[Session title](paseo://h/<urlencoded-serverId>/agent/<urlencoded-agentId>)`",
+    `   - This host's serverId is \`${scope.serverId}\`. Example URL (replace AGENT_ID_HERE with a real agent id):`,
+    `     \`${exampleOpenUrl}\``,
+    "   - Example line:",
+    `     - [Implement webhooks](${exampleOpenUrl.replace("AGENT_ID_HERE", "agt_example123")})`,
+    "   - Under each link: **cwd** + a short **snippet**.",
+    "   - Never invent agent ids. If nothing matches, say so clearly.",
   );
 
   return [

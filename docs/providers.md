@@ -89,6 +89,8 @@ Keep the protocol shape provider-agnostic. Do not add provider-specific renderer
 
 Kimi Code usage follows the CLI-managed credential file at `KIMI_CODE_HOME` or `~/.kimi-code/credentials/kimi-code.json`; do not probe the legacy `~/.kimi` path as the primary source for current Kimi Code installs.
 
+OMP plan usage is multi-provider: the `omp` fetcher prefers `omp usage --json` and expands every authenticated OMP account with a usage report into separate cards (`omp`, `omp-claude`, `omp-antigravity`, `omp-codex`, …). Cursor is authenticated in OMP but currently has no `omp usage` endpoint, so the fetcher falls back to Cursor's dashboard API using the OMP-stored Cursor OAuth token. If the CLI is unavailable, SuperGrok still falls back to reading `xai-oauth` from `~/.omp/agent/agent.db` (`OMP_HOME` override supported) and calling `cli-chat-proxy.grok.com/v1/billing`.
+
 ---
 
 ## ACP Provider Checklist

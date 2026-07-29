@@ -123,6 +123,7 @@ import { useRewindAgentMutation } from "@/components/rewind/use-rewind-agent-mut
 import { AssistantForkMenu, type AssistantForkTarget } from "@/components/assistant-fork-menu";
 import { JumpToUserMessageButton } from "@/components/jump-to-user-message-button";
 import { useRetainedPanelActive } from "@/components/retained-panel";
+import { openHistoryAskAgentLink } from "@/history-ask/open-agent-link";
 export type { InlinePathTarget } from "@/assistant-file-links";
 export type { AssistantForkTarget };
 
@@ -1607,7 +1608,8 @@ export const AssistantMessage = memo(function AssistantMessage({
     addMathPlugin(parser);
     const defaultValidateLink = parser.validateLink.bind(parser);
     parser.validateLink = (url: string) => {
-      if (url.trim().toLowerCase().startsWith("file://")) {
+      const lower = url.trim().toLowerCase();
+      if (lower.startsWith("file://") || lower.startsWith("paseo:")) {
         return true;
       }
 
@@ -1618,6 +1620,11 @@ export const AssistantMessage = memo(function AssistantMessage({
 
   const fileLinkActions = useAssistantFileLinkActions();
   const handleMarkdownLinkPress = useStableEvent((url: string) => {
+    // History Ask citations use paseo://h/{serverId}/agent/{agentId} deep links.
+    // Open those like History rows (workspace tab + unarchive) instead of file links.
+    if (openHistoryAskAgentLink(url)) {
+      return false;
+    }
     fileLinkActions.open({ href: url }, "main");
     // react-native-markdown-display opens the link itself when this returns true.
     // We already handled it above, so return false to avoid duplicate opens.
