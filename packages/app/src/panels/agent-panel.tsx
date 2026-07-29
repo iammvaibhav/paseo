@@ -24,7 +24,6 @@ import { FileDropZone } from "@/components/file-drop/file-drop-zone";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { SidebarCallout } from "@/components/sidebar-callout";
 import { Composer } from "@/composer";
-import { getActiveMessageSubmissions } from "@/composer/submission/model";
 import { RewindComposerRestoreProvider } from "@/components/rewind/composer-restore";
 import { getProviderIcon } from "@/components/provider-icons";
 import {
@@ -74,7 +73,7 @@ import { toErrorMessage } from "@/utils/error-messages";
 import { useCreateFlowStore } from "@/stores/create-flow-store";
 import { buildDraftStoreKey, generateDraftId } from "@/stores/draft-keys";
 import { usePanelStore } from "@/stores/panel-store";
-import { selectAgentTimelineState, type Agent, useSessionStore } from "@/stores/session-store";
+import { type Agent, useSessionStore } from "@/stores/session-store";
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 import type { Theme } from "@/styles/theme";
@@ -395,7 +394,6 @@ export function useDraftPanelDescriptor(
 }
 
 const EMPTY_STREAM_ITEMS: StreamItem[] = [];
-const EMPTY_MESSAGE_SUBMISSIONS = [] as const;
 const EMPTY_PENDING_PERMISSIONS = new Map<string, PendingPermission>();
 const EMPTY_PENDING_PERMISSION_LIST: PendingPermission[] = [];
 
@@ -737,12 +735,11 @@ function ChatAgentContent({
   const historySyncGeneration = useSessionStore(
     (state) => state.sessions[serverId]?.historySyncGeneration ?? 0,
   );
-  const replicaTimelineStatus = useSessionStore((state) =>
+  const hasAppliedAuthoritativeHistory = useSessionStore((state) =>
     agentId
-      ? selectAgentTimelineState(state.sessions[serverId], agentId).status
-      : ("cold" as const),
+      ? state.sessions[serverId]?.agentAuthoritativeHistoryApplied?.get(agentId) === true
+      : false,
   );
-  const hasAppliedAuthoritativeHistory = replicaTimelineStatus === "synced";
   const agentHistorySyncGeneration = useSessionStore((state) =>
     agentId ? (state.sessions[serverId]?.agentHistorySyncGeneration?.get(agentId) ?? -1) : -1,
   );
@@ -778,8 +775,7 @@ function ChatAgentContent({
     kind: "idle",
   });
 
-  const hasHydratedHistoryBefore =
-    hasAppliedAuthoritativeHistory || replicaTimelineStatus === "painted";
+  const hasHydratedHistoryBefore = hasAppliedAuthoritativeHistory;
 
   const attentionController = useAgentAttentionClear({
     agentId,
@@ -1237,11 +1233,6 @@ const AgentStreamSection = memo(function AgentStreamSection({
   const streamItemsRaw = useSessionStore((state) =>
     agentId ? state.sessions[serverId]?.agentStreamTail?.get(agentId) : undefined,
   );
-  const pendingMessageSubmissions = useSessionStore((state) =>
-    agentId
-      ? getActiveMessageSubmissions(state.sessions[serverId]?.messageSubmissions.get(agentId))
-      : EMPTY_MESSAGE_SUBMISSIONS,
-  );
   const streamItems = streamItemsRaw ?? EMPTY_STREAM_ITEMS;
   const pendingPermissionList = useStoreWithEqualityFn(
     useSessionStore,
@@ -1281,7 +1272,6 @@ const AgentStreamSection = memo(function AgentStreamSection({
       routeBottomAnchorRequest={routeBottomAnchorRequest}
       isAuthoritativeHistoryReady={hasAppliedAuthoritativeHistory}
       toast={toast}
-      pendingMessageSubmissions={pendingMessageSubmissions}
       onOpenWorkspaceFile={onOpenWorkspaceFile}
     />
   );

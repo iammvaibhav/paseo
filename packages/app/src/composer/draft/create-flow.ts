@@ -8,13 +8,12 @@ import {
 import { useCreateFlowStore } from "@/stores/create-flow-store";
 import { useSessionStore } from "@/stores/session-store";
 import {
-  createUserMessage,
+  buildOptimisticUserMessage,
   generateMessageId,
   type StreamItem,
   type UserMessageImageAttachment,
 } from "@/types/stream";
 import type { AgentAttachment } from "@getpaseo/protocol/messages";
-import type { PendingMessageSubmission } from "@/composer/submission/model";
 
 const EMPTY_STREAM_ITEMS: StreamItem[] = [];
 
@@ -164,7 +163,7 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
   const formErrorMessage = machine.tag === "draft" ? machine.errorMessage : "";
   const isSubmitting = machine.tag === "creating";
 
-  const submittedStreamItems = useMemo<StreamItem[]>(() => {
+  const optimisticStreamItems = useMemo<StreamItem[]>(() => {
     if (machine.tag !== "creating") {
       return EMPTY_STREAM_ITEMS;
     }
@@ -178,22 +177,13 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
     }
 
     return [
-      createUserMessage({
-        clientMessageId: machine.attempt.clientMessageId,
+      buildOptimisticUserMessage({
+        id: machine.attempt.clientMessageId,
         text: machine.attempt.text,
         timestamp: machine.attempt.timestamp,
         images: machine.attempt.images,
         attachments: machine.attempt.attachments,
       }),
-    ];
-  }, [machine]);
-  const pendingMessageSubmissions = useMemo<readonly PendingMessageSubmission[]>(() => {
-    if (machine.tag !== "creating") return [];
-    return [
-      {
-        clientMessageId: machine.attempt.clientMessageId,
-        submittedAt: machine.attempt.timestamp,
-      },
     ];
   }, [machine]);
 
@@ -235,8 +225,8 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
           handoffCreatedAgentUserMessage(
             pendingServerId,
             createResult.agentId,
-            createUserMessage({
-              clientMessageId: attempt.clientMessageId,
+            buildOptimisticUserMessage({
+              id: attempt.clientMessageId,
               text: attempt.text,
               timestamp: attempt.timestamp,
               images: attempt.images,
@@ -358,8 +348,7 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
     machine,
     formErrorMessage,
     isSubmitting,
-    submittedStreamItems,
-    pendingMessageSubmissions,
+    optimisticStreamItems,
     draftAgent,
     handleCreateFromInput,
     continueCreateFromAttempt,

@@ -3800,8 +3800,6 @@ export const SendAgentMessageResponseMessageSchema = z.object({
     agentId: z.string(),
     accepted: z.boolean(),
     error: z.string().nullable(),
-    // COMPAT(messageSubmissionDisposition): added in v0.2.3, remove optional parsing after 2027-01-27.
-    outOfBand: z.boolean().optional(),
   }),
 });
 
