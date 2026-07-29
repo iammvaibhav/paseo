@@ -296,6 +296,7 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
         text: attempt.text,
         attachments,
         cwd,
+        ...(startVoiceMode ? { startVoiceMode: true } : {}),
       });
       if (validationError) {
         const error = new Error(validationError);

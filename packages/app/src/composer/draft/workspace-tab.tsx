@@ -502,9 +502,9 @@ export function WorkspaceDraftAgentTab({
     // Empty create is required so voice mode can open a real agent from a
     // brand-new draft tab without forcing the user to type first.
     allowEmptyText: true,
-    validateBeforeSubmit: ({ text, attachments }) => {
+    validateBeforeSubmit: ({ text, attachments, startVoiceMode }) => {
       const allowsEmptyDraftText = shouldAllowEmptyDraftText({
-        allowsEmptyAutoSubmit,
+        allowsEmptyAutoSubmit: allowsEmptyAutoSubmit || startVoiceMode === true,
         attachments,
       });
       return validateDraftSubmission({

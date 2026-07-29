@@ -213,7 +213,9 @@ Do day-to-day work on this branch, not on `main`.
 `./scripts/deploy.sh` **self-detaches** by default (new process session via `start_new_session`). The parent exits immediately and prints the log path. **Do not** run deploy under a long-lived agent tool wait that can be cancelled — canceling used to SIGTERM the whole process group and kill desktop/remotes mid-flight even though daemon restarts were already detached.
 
 ```bash
-./scripts/deploy.sh
+# Prefer a clean env so a previous detached child cannot leak state into this shell.
+env -u PASEO_DEPLOY_DETACHED -u PASEO_DEPLOY_RUN_DIR -u PASEO_DEPLOY_LOG -u PASEO_DEPLOY_FOREGROUND \
+  ./scripts/deploy.sh
 # → prints: Detached deploy started pid=… log=~/.paseo/deploy-logs/run-…/deploy.log
 # Then poll logs; do not keep a shell parent waiting on deploy.
 tail -f ~/.paseo/deploy-logs/latest.log
@@ -227,6 +229,12 @@ tail -f ~/.paseo/deploy-logs/latest.log
 | **PID**                | `~/.paseo/deploy-logs/latest-run/pid` and `/tmp/paseo-deploy-pid`                         |
 
 Interactive / debug (stay attached): `PASEO_DEPLOY_FOREGROUND=1 ./scripts/deploy.sh`.
+
+**Hard rules (agents):**
+
+1. **Expect the detach banner.** A healthy launch prints `Detached deploy started pid=…` and exits the parent immediately. If you instead see only `Continuing detached deploy` with **no** new `Detached deploy started`, the shell is still attached — kill it and relaunch with the `env -u …` form above.
+2. **Never set `PASEO_DEPLOY_DETACHED` / `PASEO_DEPLOY_DETACH_TOKEN` yourself.** They are internal child-only. `deploy.sh` only trusts a child that holds the per-run detach token file + is a session leader; leaked env from a previous run always re-detaches.
+3. **Never long-wait on deploy in the tool.** Launch, read the printed log path / pid, then poll `~/.paseo/deploy-logs/latest.log` (or the job logs) with short commands.
 
 The script builds server packages, restarts host daemons with **`--home …/.paseo`**, and syncs remotes. Local/remote **daemon** restarts are **new-session detached** (not plain `nohup` — on macOS that still dies with a cancelled agent tool mid-restart) and must observe a **new PID + `/api/health`**. Restarts use the **built CLI** (`~/.local/bin/paseo` / `packages/cli/dist`), never `npx tsx` mid-build. On failure, deploy tries a detached **`daemon start` recovery** before aborting. The **whole deploy** is also detached by default so waiting for health/desktop cannot be killed by tool cancel.
 

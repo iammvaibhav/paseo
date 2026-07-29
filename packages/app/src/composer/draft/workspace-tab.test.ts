@@ -68,4 +68,31 @@ describe("workspace draft empty text readiness", () => {
       }),
     ).toBe(false);
   });
+
+  test("allows empty drafts when voice mode starts an agent from a new tab", () => {
+    expect(
+      shouldAllowEmptyDraftText({
+        allowsEmptyAutoSubmit: true,
+        attachments: [],
+      }),
+    ).toBe(true);
+  });
+
+  test("validateDraftSubmission accepts empty text when empty auto-submit is allowed", () => {
+    expect(
+      validate({
+        text: "",
+        allowsEmptyAutoSubmit: true,
+      }),
+    ).toBeNull();
+  });
+
+  test("validateDraftSubmission still rejects empty text without empty auto-submit", () => {
+    expect(
+      validate({
+        text: "",
+        allowsEmptyAutoSubmit: false,
+      }),
+    ).toBe("Initial prompt is required");
+  });
 });

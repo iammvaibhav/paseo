@@ -53,6 +53,11 @@
 #   is what this fixes. Follow progress at ~/.paseo/deploy-logs/latest.log (and the
 #   per-run directory it points at). Set PASEO_DEPLOY_FOREGROUND=1 to stay attached.
 #
+#   PASEO_DEPLOY_DETACHED is INTERNAL. Never set it by hand. Inherited stale
+#   PASEO_DEPLOY_DETACHED / PASEO_DEPLOY_RUN_DIR / PASEO_DEPLOY_LOG from a previous
+#   agent shell are ignored unless this process holds the matching detach token
+#   written for its run dir. That is what prevents tool-cancel from killing deploy.
+#
 # code-server User settings: sync always pushes this Mac's live
 # ~/.local/share/code-server/User/settings.json to remotes (not the repo template).
 # Repo scripts/code-server/user-settings.json is only a bootstrap fallback when no
@@ -140,11 +145,32 @@ init_deploy_log_dir() {
   printf '%s\n' "$$" >"${run_dir}/pid"
   log "Deploy logs: $PASEO_DEPLOY_LOG (run dir: $run_dir)"
 }
-
 # Re-exec this script in a NEW process session so SIGTERM on an agent tool's
 # process group cannot kill git/build/desktop mid-flight. Daemon restarts were
 # already new-session detached; the parent deploy wait was not — cancelled tools
 # left remotes/desktop half-done. Opt out with PASEO_DEPLOY_FOREGROUND=1.
+#
+# Do NOT trust PASEO_DEPLOY_DETACHED alone. Agent tool shells can be session
+# leaders and can inherit a leaked DETACHED=1 from a previous child, which used
+# to skip re-fork and leave deploy killable by [Command cancelled]. The only
+# trusted "already detached" proof is a per-run token file matching the env.
+is_trusted_detached_child() {
+  [[ "${PASEO_DEPLOY_DETACHED:-0}" == "1" ]] || return 1
+  [[ -n "${PASEO_DEPLOY_RUN_DIR:-}" && -n "${PASEO_DEPLOY_LOG:-}" ]] || return 1
+  [[ -n "${PASEO_DEPLOY_DETACH_TOKEN:-}" ]] || return 1
+  local token_file expected actual
+  token_file="${PASEO_DEPLOY_RUN_DIR}/detach.token"
+  [[ -f "$token_file" ]] || return 1
+  expected="$(tr -d '[:space:]' <"$token_file" 2>/dev/null || true)"
+  actual="$(printf '%s' "${PASEO_DEPLOY_DETACH_TOKEN}" | tr -d '[:space:]')"
+  [[ -n "$expected" && "$expected" == "$actual" ]] || return 1
+  # Also require we are a session leader (start_new_session child).
+  local pid pgid
+  pid="$(ps -o pid= -p "$$" 2>/dev/null | tr -d '[:space:]')"
+  pgid="$(ps -o pgid= -p "$$" 2>/dev/null | tr -d '[:space:]')"
+  [[ -n "$pid" && -n "$pgid" && "$pid" -eq "$pgid" ]]
+}
+
 maybe_detach_self() {
   case "${1:-}" in
     -h | --help | help) return 0 ;;
@@ -152,31 +178,45 @@ maybe_detach_self() {
   if [[ "${PASEO_DEPLOY_FOREGROUND:-0}" == "1" ]]; then
     return 0
   fi
-  if [[ "${PASEO_DEPLOY_DETACHED:-0}" == "1" ]]; then
+
+  if is_trusted_detached_child; then
     return 0
   fi
 
+  if [[ "${PASEO_DEPLOY_DETACHED:-0}" == "1" || -n "${PASEO_DEPLOY_RUN_DIR:-}" || -n "${PASEO_DEPLOY_LOG:-}" ]]; then
+    # Stale env from a previous detached child leaked into this shell.
+    printf '[%s] Ignoring inherited deploy detach env outside a trusted child; re-detaching.\n' \
+      "$(date '+%H:%M:%S')" >&2
+    unset PASEO_DEPLOY_DETACHED PASEO_DEPLOY_RUN_DIR PASEO_DEPLOY_LOG PASEO_DEPLOY_DETACH_TOKEN
+  fi
+
   mkdir -p "$DEPLOY_LOG_ROOT"
-  local stamp run_dir main_log
+  local stamp run_dir main_log detach_token
   stamp="$(date '+%Y%m%d-%H%M%S')"
   run_dir="${DEPLOY_LOG_ROOT}/run-${stamp}"
   mkdir -p "$run_dir"
   main_log="${run_dir}/deploy.log"
   : >"$main_log"
+  # Per-run secret: only the child we spawn with this token is "already detached".
+  detach_token="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+  printf '%s\n' "$detach_token" >"${run_dir}/detach.token"
   ln -sfn "$run_dir" "${DEPLOY_LOG_ROOT}/latest-run"
   ln -sfn "$main_log" "${DEPLOY_LOG_ROOT}/latest.log"
   ln -sfn "$main_log" /tmp/paseo-deploy-run.log
   ln -sfn "$run_dir" /tmp/paseo-deploy-latest-run
 
-  # Force child into "already detached" mode with fixed log paths.
-  python3 - "$main_log" "$run_dir" "$ROOT_DIR" <<'PY'
+  # Force child into "already detached" mode with fixed log paths + token.
+  python3 - "$main_log" "$run_dir" "$ROOT_DIR" "$detach_token" <<'PY'
 import os, subprocess, sys
-main_log, run_dir, root = sys.argv[1], sys.argv[2], sys.argv[3]
+main_log, run_dir, root, detach_token = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 log = open(main_log, "ab", buffering=0)
 env = os.environ.copy()
 env["PASEO_DEPLOY_DETACHED"] = "1"
 env["PASEO_DEPLOY_RUN_DIR"] = run_dir
 env["PASEO_DEPLOY_LOG"] = main_log
+env["PASEO_DEPLOY_DETACH_TOKEN"] = detach_token
+# Never keep a parent FOREGROUND opt-in on the child.
+env.pop("PASEO_DEPLOY_FOREGROUND", None)
 script = f'''
 set -euo pipefail
 cd {root!r}
@@ -186,6 +226,8 @@ export NVM_DIR="${{NVM_DIR:-$HOME/.nvm}}"
 export PASEO_DEPLOY_DETACHED=1
 export PASEO_DEPLOY_RUN_DIR={run_dir!r}
 export PASEO_DEPLOY_LOG={main_log!r}
+export PASEO_DEPLOY_DETACH_TOKEN={detach_token!r}
+unset PASEO_DEPLOY_FOREGROUND || true
 echo "[$(date '+%H:%M:%S')] DETACHED deploy starting (pid $$ ppid $PPID) log=$PASEO_DEPLOY_LOG"
 exec bash {root!r}/scripts/deploy.sh
 '''
@@ -211,6 +253,7 @@ PY
 
   exit 0
 }
+
 
 ensure_node() {
   export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"

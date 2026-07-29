@@ -215,4 +215,42 @@ describe("useDraftAgentCreateFlow", () => {
       startVoiceMode: true,
     });
   });
+
+  it("forwards startVoiceMode to validateBeforeSubmit for empty voice creates", async () => {
+    const createRequest = vi.fn(async () => ({
+      agentId: "agent-1",
+      result: { id: "agent-1" },
+    }));
+    const onCreateSuccess = vi.fn();
+    const validateBeforeSubmit = vi.fn(() => null);
+
+    const { result } = renderHook(() =>
+      useDraftAgentCreateFlow({
+        draftId: "draft-voice-validate",
+        getPendingServerId: () => "server-1",
+        allowEmptyText: true,
+        buildDraftAgent: (currentAttempt) => ({ currentAttempt }),
+        createRequest,
+        onCreateSuccess,
+        validateBeforeSubmit,
+      }),
+    );
+
+    await act(async () => {
+      await result.current.handleCreateFromInput({
+        text: "",
+        attachments: [],
+        cwd: "/repo",
+        startVoiceMode: true,
+      });
+    });
+
+    expect(validateBeforeSubmit).toHaveBeenCalledWith({
+      text: "",
+      attachments: [],
+      cwd: "/repo",
+      startVoiceMode: true,
+    });
+    expect(createRequest).toHaveBeenCalledTimes(1);
+  });
 });
