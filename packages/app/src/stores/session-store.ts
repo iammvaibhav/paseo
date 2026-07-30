@@ -122,6 +122,7 @@ export interface Agent {
   parentAgentId: string | null;
   labels: Record<string, string>;
   projectPlacement?: ProjectPlacementPayload | null;
+  providerUnavailable?: boolean;
 }
 
 export interface WorkspaceDescriptor {

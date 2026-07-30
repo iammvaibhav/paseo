@@ -881,6 +881,8 @@ export const SetVoiceModeMessageSchema = z.object({
   type: z.literal("set_voice_mode"),
   enabled: z.boolean(),
   agentId: z.string().optional(),
+  // COMPAT(voiceSendBehavior): added in v0.2.4, drop the gate when floor >= v0.2.4
+  sendBehavior: z.enum(["interrupt", "queue"]).optional(),
   requestId: z.string().optional(),
 });
 

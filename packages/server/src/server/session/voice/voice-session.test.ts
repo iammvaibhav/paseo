@@ -74,8 +74,8 @@ function createFakeHost(): FakeVoiceHost {
     sendSpokenInput: async (agentId, text) => {
       spokenInput.push({ agentId, text });
     },
-    interruptAgentIfRunning: async () => {},
-    hasActiveAgentRun: () => false,
+    interruptAgentIfRunning: vi.fn(async () => {}),
+    hasActiveAgentRun: vi.fn(() => false),
   };
 }
 
@@ -132,6 +132,89 @@ describe("VoiceSession streaming transcription", () => {
         }),
       }),
     );
+
+    await voiceSession.cleanup();
+  });
+
+  test("barges in as soon as VAD confirms speech, before any partial transcript", async () => {
+    const { voiceSession, detector, host } = createVoiceSession();
+    host.hasActiveAgentRun = vi.fn(() => true);
+
+    await voiceSession.handleSetVoiceMode(true, VOICE_AGENT_ID);
+    detector.emit("speech_started");
+    await settle();
+
+    expect(host.interruptAgentIfRunning).toHaveBeenCalledWith(VOICE_AGENT_ID);
+    expect(host.emitted).toContainEqual(
+      expect.objectContaining({
+        type: "voice_input_state",
+        payload: { isSpeaking: true },
+      }),
+    );
+
+    await voiceSession.cleanup();
+  });
+
+  test("queue mode leaves the agent running and delivers spoken input after idle", async () => {
+    const { voiceSession, detector, sttSession, host } = createVoiceSession();
+    let isRunning = true;
+    host.hasActiveAgentRun = vi.fn(() => isRunning);
+    host.interruptAgentIfRunning = vi.fn(async () => {});
+    const idleListeners = new Set<() => void>();
+    host.onAgentBecameIdle = (_agentId, listener) => {
+      idleListeners.add(listener);
+      return () => {
+        idleListeners.delete(listener);
+      };
+    };
+
+    await voiceSession.handleSetVoiceMode(true, VOICE_AGENT_ID, undefined, "queue");
+    detector.emit("speech_started");
+    await settle();
+    detector.emit("speech_stopped");
+    await settle();
+    sttSession.emitCommitted({ segmentId: "segment-queue", previousSegmentId: null });
+    sttSession.emitTranscript({
+      segmentId: "segment-queue",
+      transcript: "save this for later",
+      isFinal: true,
+      language: "en",
+    });
+    await settle();
+
+    expect(host.interruptAgentIfRunning).not.toHaveBeenCalled();
+    expect(host.spokenInput).toEqual([]);
+    expect(host.emitted).toContainEqual(
+      expect.objectContaining({
+        type: "activity_log",
+        payload: expect.objectContaining({
+          content: "Queued voice message until the agent finishes",
+          metadata: expect.objectContaining({ voiceQueued: true }),
+        }),
+      }),
+    );
+
+    isRunning = false;
+    for (const listener of idleListeners) {
+      listener();
+    }
+    await settle();
+
+    expect(host.spokenInput).toEqual([{ agentId: VOICE_AGENT_ID, text: "save this for later" }]);
+
+    await voiceSession.cleanup();
+  });
+
+  test("interrupt mode still barges in on VAD speech start", async () => {
+    const { voiceSession, detector, host } = createVoiceSession();
+    host.hasActiveAgentRun = vi.fn(() => true);
+    host.interruptAgentIfRunning = vi.fn(async () => {});
+
+    await voiceSession.handleSetVoiceMode(true, VOICE_AGENT_ID, undefined, "interrupt");
+    detector.emit("speech_started");
+    await settle();
+
+    expect(host.interruptAgentIfRunning).toHaveBeenCalledWith(VOICE_AGENT_ID);
 
     await voiceSession.cleanup();
   });

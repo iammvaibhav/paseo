@@ -211,6 +211,11 @@ export const en = {
       callout: "This agent is archived",
       unarchive: "Unarchive",
     },
+    providerUnavailable: {
+      callout: "This agent's provider is no longer available on this host.",
+      detail: "You can still read the history, or continue in a new draft with another provider.",
+      continueWithAnotherProvider: "Continue with another provider",
+    },
   },
   sessions: {
     title: "History",
@@ -1704,8 +1709,10 @@ export const en = {
       defaultSend: {
         label: "Default send",
         descriptions: {
-          interrupt: "When the agent is running, Enter interrupts. Command/Ctrl+Enter queues.",
-          queue: "When the agent is running, Enter queues. Command/Ctrl+Enter submits.",
+          interrupt:
+            "When the agent is running, Enter or spoken input interrupts. Command/Ctrl+Enter queues typed messages.",
+          queue:
+            "When the agent is running, Enter or spoken input queues. Command/Ctrl+Enter submits typed messages.",
         },
         options: {
           interrupt: "Interrupt",

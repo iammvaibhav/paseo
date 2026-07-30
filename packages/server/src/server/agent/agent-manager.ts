@@ -481,6 +481,13 @@ function isTurnTerminalEvent(event: AgentStreamEvent): boolean {
   );
 }
 
+function isUnrecoverableProviderInterruptError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /process is closed|session is closed|RPC session is closed|RPC process is closed|not connected|EPIPE|ENOENT/i.test(
+    message,
+  );
+}
+
 function abortMessage(reason: unknown, fallbackMessage: string): string {
   if (typeof reason === "string") return reason;
   if (reason instanceof Error) return reason.message;
@@ -1026,6 +1033,30 @@ export class AgentManager {
       this.recordTimeline(agentId, item);
     }
     return items.length > 0;
+  }
+
+  /**
+   * Seed the in-memory timeline from the durable store without requiring a live
+   * provider runtime. Used for history-only opens when the agent provider is
+   * unavailable or still warming up.
+   */
+  async seedTimelineFromDurable(agentId: string): Promise<boolean> {
+    if (this.timelineStore.has(agentId) && this.timelineStore.getItems(agentId).length > 0) {
+      return true;
+    }
+    if (!this.durableTimelineStore) {
+      return false;
+    }
+    const rows = await this.durableTimelineStore.getCommittedRows(agentId);
+    if (rows.length === 0) {
+      return false;
+    }
+    this.timelineStore.initialize(agentId, {
+      rows,
+      nextSeq: rows[rows.length - 1]!.seq + 1,
+      timestamp: new Date().toISOString(),
+    });
+    return true;
   }
 
   hasTimeline(agentId: string): boolean {
@@ -2323,16 +2354,35 @@ export class AgentManager {
       return { status: "not_running" };
     }
 
-    const interruptAcknowledged = await this.interruptSession(agent.session, agentId);
+    const interruptResult = await this.interruptSession(agent.session, agentId);
     const settlement = await this.waitWithTimeout({
       operation: run.settledPromise,
-      timeoutMs: interruptAcknowledged
+      timeoutMs: interruptResult.acknowledged
         ? INTERRUPT_SESSION_TIMEOUT_MS
         : this.rescueTimeouts.interruptSessionMs,
     });
 
-    if (!interruptAcknowledged) {
-      return { status: settlement === "completed" ? "settled" : "refused" };
+    if (!interruptResult.acknowledged) {
+      if (settlement === "completed") {
+        return { status: "settled" };
+      }
+      // Provider process/session already gone: synthesizing a local cancel is
+      // safe (there is no live provider turn left to split-brain with) and is
+      // required to clear sticky lifecycle=running zombies.
+      if (isUnrecoverableProviderInterruptError(interruptResult.error)) {
+        this.logger.warn(
+          {
+            agentId,
+            turnId: run.turnId,
+            kind: run.kind,
+            err: interruptResult.error,
+          },
+          "cancelAgentRun: provider runtime already dead, force-canceling",
+        );
+        await this.forceCancelStaleRun(agent, run);
+        return { status: "settled" };
+      }
+      return { status: "refused" };
     }
 
     if (settlement === "timed_out" && run.turnId) {
@@ -2352,11 +2402,7 @@ export class AgentManager {
         { agentId, kind: run.kind },
         "cancelAgentRun: acknowledged turn still active after timeout, force-canceling",
       );
-      await this.dispatchSessionEvent(agent, {
-        type: "turn_canceled",
-        provider: agent.provider,
-        reason: "interrupted",
-      });
+      await this.forceCancelStaleRun(agent, run);
     }
 
     if (agent.pendingPermissions.size > 0) {
@@ -2365,6 +2411,38 @@ export class AgentManager {
       this.emitState(agent);
     }
     return { status: "settled" };
+  }
+
+  private async forceCancelStaleRun(
+    agent: ActiveManagedAgent,
+    run: { turnId: string | null; kind: string; settledPromise: Promise<void> },
+  ): Promise<void> {
+    if (run.turnId) {
+      await this.dispatchSessionEvent(agent, {
+        type: "turn_canceled",
+        provider: agent.provider,
+        reason: "interrupted",
+        turnId: run.turnId,
+      });
+      await run.settledPromise;
+      return;
+    }
+
+    await this.dispatchSessionEvent(agent, {
+      type: "turn_canceled",
+      provider: agent.provider,
+      reason: "interrupted",
+    });
+
+    // Bare turn_canceled may not clear a sticky lifecycle=running with no
+    // foreground turn id. Force the manager side to idle.
+    if (agent.lifecycle === "running" && agent.activeForegroundTurnId === null) {
+      (agent as ActiveManagedAgent).lifecycle = "idle";
+      agent.lastError = undefined;
+      this.runs.settleTerminalRun(agent.id, undefined);
+      this.touchUpdatedAt(agent);
+      this.emitState(agent);
+    }
   }
 
   private async cancelAgentRunBefore(
@@ -2377,7 +2455,10 @@ export class AgentManager {
     }
   }
 
-  private async interruptSession(session: AgentSession, agentId: string): Promise<boolean> {
+  private async interruptSession(
+    session: AgentSession,
+    agentId: string,
+  ): Promise<{ acknowledged: boolean; error?: unknown }> {
     try {
       const result = await this.waitWithTimeout({
         operation: session.interrupt(),
@@ -2395,12 +2476,12 @@ export class AgentManager {
           { agentId, timeoutMs: this.rescueTimeouts.interruptSessionMs },
           "Timed out interrupting session during cancel",
         );
-        return false;
+        return { acknowledged: false };
       }
-      return true;
+      return { acknowledged: true };
     } catch (error) {
       this.logger.error({ err: error, agentId }, "Failed to interrupt session");
-      return false;
+      return { acknowledged: false, error };
     }
   }
 

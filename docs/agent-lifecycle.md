@@ -26,7 +26,9 @@ action such as archive, replacement, reload, workspace teardown, or daemon shutd
 
 ### Cancellation
 
-Cancellation changes lifecycle state only after the provider acknowledges the interrupt or emits a terminal turn event. If the interrupt is rejected or times out, the agent remains `running` with its active foreground turn intact. Follow-up actions such as replacement, reload, rewind, and Stop must report that failure instead of accepting work they cannot perform. Synthesizing a local cancellation without provider acknowledgment creates a split-brain session: Paseo accepts a new prompt while the provider still owns the previous foreground turn.
+Cancellation changes lifecycle state only after the provider acknowledges the interrupt or emits a terminal turn event. If the interrupt is rejected or times out while the provider may still own a live turn, the agent remains `running` with its active foreground turn intact. Follow-up actions such as replacement, reload, rewind, and Stop must report that failure instead of accepting work they cannot perform. Synthesizing a local cancellation without provider acknowledgment creates a split-brain session: Paseo accepts a new prompt while the provider still owns the previous foreground turn.
+
+Exception: when interrupt fails because the provider runtime is already dead (`process is closed` / `session is closed` / similar), there is no live provider turn left to split-brain with. Cancel force-settles the managed run to `idle` so sticky `running` zombies (for example after OMP was SIGTERM'd mid-turn) can be stopped, replaced, or reloaded.
 
 ## Relationships
 

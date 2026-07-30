@@ -135,8 +135,13 @@ class OmpCliRuntimeSession implements OmpRuntimeSession {
     await this.request({ type: "set_auto_compaction", enabled });
   }
 
+  // Interrupt must resolve inside AgentManager's interrupt window (~2s).
+  // A hung OMP turn (blocked tool/MCP) can leave the abort RPC unanswered;
+  // waiting the default 30s makes stop/replace appear stuck.
+  private static readonly ABORT_TIMEOUT_MS = 1_000;
+
   async abort(): Promise<void> {
-    await this.request({ type: "abort" });
+    await this.request({ type: "abort" }, OmpCliRuntimeSession.ABORT_TIMEOUT_MS);
   }
 
   async getState(): Promise<OmpSessionState> {

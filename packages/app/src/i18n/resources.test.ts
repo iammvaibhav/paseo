@@ -512,6 +512,12 @@ describe("translation resources", () => {
     expect(en.message.compaction.completed).toBe("Context compacted");
     expect(en.agentPanel.archived.callout).toBe("This agent is archived");
     expect(en.agentPanel.archived.unarchive).toBe("Unarchive");
+    expect(en.agentPanel.providerUnavailable.callout).toBe(
+      "This agent's provider is no longer available on this host.",
+    );
+    expect(en.agentPanel.providerUnavailable.continueWithAnotherProvider).toBe(
+      "Continue with another provider",
+    );
     expect(en.desktop.quitting.title).toBe("Quitting Paseo...");
     expect(en.desktop.quitting.detail).toBe("Stopping the local daemon.");
     expect(en.composer.attachments.dropImagesHere).toBe("Drop images here");

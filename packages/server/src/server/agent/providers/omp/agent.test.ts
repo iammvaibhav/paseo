@@ -19,6 +19,10 @@ class ManualIdleScheduler implements OmpProviderIdleScheduler {
     return new Promise((resolve) => this.retries.push(resolve));
   }
 
+  waitedCount(): number {
+    return this.waitCount;
+  }
+
   waitForWaits(count: number): Promise<void> {
     if (this.waitCount >= count) return Promise.resolve();
     return new Promise((resolve) => this.waiters.push({ count, resolve }));
@@ -264,6 +268,49 @@ describe("OMP agent client and session", () => {
     omp.reportProviderState({ isStreaming: false, isCompacting: false });
     scheduler.retry();
     await expect(completion).resolves.toMatchObject({ finalText: "first done" });
+  });
+
+  test("fails immediately on overloaded assistant without waiting for provider idle", async () => {
+    const scheduler = new ManualIdleScheduler();
+    const omp = new OmpHarness({ providerIdleScheduler: scheduler });
+    await omp.start();
+
+    const { completion } = await omp.startPromptWithTerminalAssistantFailure("continue", {
+      role: "assistant",
+      content: [],
+      errorMessage: "Anthropic stream error (overloaded_error): Overloaded",
+      stopReason: "error",
+      provider: "anthropic",
+      model: "claude-opus-5",
+      responseId: "resp-overloaded",
+    });
+
+    await expect(completion).rejects.toThrow(/overloaded_error|Overloaded/);
+    expect(omp.completedTurnCount()).toBe(0);
+    expect(omp.failedTurnCount()).toBe(1);
+    expect(omp.failedTurnErrors()[0]).toContain("overloaded_error");
+    expect(omp.failedTurnErrors()[0]).toContain("stopReason=error");
+    // Must not park on provider-idle retries while streaming stays sticky.
+    await waitForImmediate();
+    expect(scheduler.waitedCount()).toBe(0);
+  });
+
+  test("fails immediately on aborted assistant stopReason without waiting for provider idle", async () => {
+    const omp = new OmpHarness({ providerIdleScheduler: new ManualIdleScheduler() });
+    await omp.start();
+
+    const { completion } = await omp.startPromptWithTerminalAssistantFailure("hello?", {
+      role: "assistant",
+      content: [],
+      errorMessage: "Interrupted by user",
+      stopReason: "aborted",
+      provider: "anthropic",
+      model: "claude-opus-5",
+    });
+
+    await expect(completion).rejects.toThrow(/Interrupted by user/);
+    expect(omp.failedTurnCount()).toBe(1);
+    expect(omp.failedTurnErrors()[0]).toContain("stopReason=aborted");
   });
 
   test("does not complete on OMP's extension-notice agent_end", async () => {
@@ -543,6 +590,29 @@ describe("OMP agent client and session", () => {
       },
     });
     expect(omp.runningToolCallIds()).toEqual([]);
+  });
+
+  test("interrupt still cancels when OMP abort hangs or fails", async () => {
+    const omp = new OmpHarness();
+    await omp.start();
+
+    await omp.requireStartTurn("stuck tool call");
+    const runtime = omp.runtime();
+    runtime.beginTurn();
+    runtime.emit({
+      type: "tool_execution_start",
+      toolCallId: "tool-stuck",
+      toolName: "bash",
+      args: { command: "sleep 999" },
+    });
+    runtime.failNextAbort(new Error("OMP RPC request timed out for abort"));
+
+    await omp.interrupt();
+
+    expect(omp.wasAborted()).toBe(true);
+    expect(omp.canceledTurnCount()).toBe(1);
+    expect(omp.runningToolCallIds()).toEqual([]);
+    expect(omp.isClosed()).toBe(true);
   });
 
   test("a resumed session does not re-emit replayed events as live timeline items", async () => {

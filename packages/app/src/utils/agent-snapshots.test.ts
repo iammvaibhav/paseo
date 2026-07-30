@@ -31,6 +31,9 @@ function createSnapshot(
     persistence: input.persistence ?? null,
     title: input.title ?? null,
     labels: (input.labels ?? {}) as AgentSnapshotPayload["labels"],
+    ...(input.providerUnavailable === undefined
+      ? {}
+      : { providerUnavailable: input.providerUnavailable }),
   };
 }
 
@@ -70,5 +73,16 @@ describe("normalizeAgentSnapshot", () => {
     expect(missing.parentAgentId).toBeNull();
     expect(empty.parentAgentId).toBeNull();
     expect(nonString.parentAgentId).toBeNull();
+  });
+
+  it("preserves providerUnavailable from the snapshot payload", () => {
+    const unavailable = normalizeAgentSnapshot(
+      createSnapshot({ providerUnavailable: true }),
+      "server-1",
+    );
+    const available = normalizeAgentSnapshot(createSnapshot(), "server-1");
+
+    expect(unavailable.providerUnavailable).toBe(true);
+    expect(available.providerUnavailable).toBe(false);
   });
 });

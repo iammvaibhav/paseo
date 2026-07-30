@@ -244,6 +244,35 @@ export class OmpHarness {
     return { completion: run };
   }
 
+  async startPromptWithTerminalAssistantFailure(
+    input: string,
+    failure: Extract<OmpAgentMessage, { role: "assistant" }>,
+    providerState: { isStreaming: boolean; isCompacting: boolean } = {
+      isStreaming: true,
+      isCompacting: false,
+    },
+  ): Promise<{ completion: Promise<unknown> }> {
+    const session = this.requireSession();
+    const promptStarted = this.omp.latestSession().nextPrompt();
+    const completion = session.run(input);
+    await promptStarted;
+    const runtime = this.omp.latestSession();
+    runtime.beginTurn();
+    runtime.acceptPrompt(input, "user-1");
+    runtime.state = { ...runtime.state, ...providerState };
+    runtime.emit({ type: "message_end", message: failure });
+    runtime.finishTurn(failure);
+    return { completion };
+  }
+
+  failedTurnCount(): number {
+    return this.events.filter((event) => event.type === "turn_failed").length;
+  }
+
+  failedTurnErrors(): string[] {
+    return this.events.flatMap((event) => (event.type === "turn_failed" ? [event.error] : []));
+  }
+
   waitForProviderStateChecks(count: number): Promise<void> {
     return this.omp.latestSession().waitForStateRequests(count);
   }
@@ -465,6 +494,10 @@ export class OmpHarness {
 
   wasAborted(): boolean {
     return this.omp.latestSession().abortRequested;
+  }
+
+  failNextAbort(error: Error): void {
+    this.omp.latestSession().failNextAbort(error);
   }
 
   runtime() {

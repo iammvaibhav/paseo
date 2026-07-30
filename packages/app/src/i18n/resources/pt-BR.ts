@@ -215,6 +215,11 @@ export const ptBR: TranslationResources = {
       callout: "Este agente está arquivado",
       unarchive: "Desarquivar",
     },
+    providerUnavailable: {
+      callout: "This agent's provider is no longer available on this host.",
+      detail: "You can still read the history, or continue in a new draft with another provider.",
+      continueWithAnotherProvider: "Continue with another provider",
+    },
   },
   sessions: {
     title: "Histórico de agentes",

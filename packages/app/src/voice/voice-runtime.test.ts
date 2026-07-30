@@ -93,7 +93,9 @@ describe("voice runtime", () => {
     await runtime.startVoice("server-1", "agent-1");
 
     expect(engine.initialize).toHaveBeenCalled();
-    expect(adapter.setVoiceMode).toHaveBeenCalledWith(true, "agent-1");
+    expect(adapter.setVoiceMode).toHaveBeenCalledWith(true, "agent-1", {
+      sendBehavior: "interrupt",
+    });
     expect(engine.startCapture).toHaveBeenCalled();
     expect(runtime.getSnapshot()).toMatchObject({
       phase: "listening",
@@ -349,6 +351,26 @@ describe("voice runtime", () => {
     expect(runtime.getTelemetrySnapshot().isSpeaking).toBe(true);
   });
 
+  it("does not interrupt assistant playback on speech in queue mode", async () => {
+    const adapter = createSessionAdapter();
+    const { runtime, engine } = createRuntime();
+    runtime.registerSession(adapter);
+
+    await runtime.startVoice("server-1", "agent-1", { sendBehavior: "queue" });
+    runtime.onAssistantAudioStarted("server-1");
+    vi.mocked(engine.stop).mockClear();
+    vi.mocked(engine.clearQueue).mockClear();
+
+    runtime.onServerSpeechStateChanged("server-1", true);
+
+    expect(engine.stop).not.toHaveBeenCalled();
+    expect(engine.clearQueue).not.toHaveBeenCalled();
+    expect(runtime.getTelemetrySnapshot().isSpeaking).toBe(true);
+    expect(adapter.setVoiceMode).toHaveBeenCalledWith(true, "agent-1", {
+      sendBehavior: "queue",
+    });
+  });
+
   it("drops queued voice chunks that arrive after server speech interrupts playback", async () => {
     const adapter = createSessionAdapter();
     const { runtime, engine } = createRuntime();
@@ -412,7 +434,9 @@ describe("voice runtime", () => {
       "audio focus unavailable",
     );
 
-    expect(adapter.setVoiceMode).toHaveBeenNthCalledWith(1, true, "agent-1");
+    expect(adapter.setVoiceMode).toHaveBeenNthCalledWith(1, true, "agent-1", {
+      sendBehavior: "interrupt",
+    });
     expect(adapter.setVoiceMode).toHaveBeenNthCalledWith(2, false);
     expect(runtime.getSnapshot().phase).toBe("disabled");
   });
@@ -436,7 +460,9 @@ describe("voice runtime", () => {
     runtime.updateSessionConnection("server-1", true);
     await Promise.resolve();
 
-    expect(adapter.setVoiceMode).toHaveBeenCalledWith(true, "agent-1");
+    expect(adapter.setVoiceMode).toHaveBeenCalledWith(true, "agent-1", {
+      sendBehavior: "interrupt",
+    });
   });
 
   it("does not emit when the snapshot is unchanged", async () => {

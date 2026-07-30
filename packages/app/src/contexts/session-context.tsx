@@ -53,6 +53,7 @@ import {
 } from "@/utils/agent-initialization";
 import { encodeImages } from "@/utils/encode-images";
 import { derivePendingPermissionKey } from "@/utils/agent-snapshots";
+import { storeFetchedAgentDetail } from "@/utils/hydrate-fetched-agent";
 import type { AttachmentMetadata } from "@/attachments/types";
 import { patchWorkspaceScripts } from "@/contexts/session-workspace-scripts";
 import { useToast } from "@/contexts/toast-context";
@@ -583,11 +584,11 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
   useEffect(() => {
     const unregister = voiceRuntime?.registerSession({
       serverId,
-      setVoiceMode: async (enabled, agentId) => {
+      setVoiceMode: async (enabled, agentId, options) => {
         if (!client) {
           throw new Error(t("common.errors.daemonUnavailable"));
         }
-        await client.setVoiceMode(enabled, agentId);
+        await client.setVoiceMode(enabled, agentId, options);
       },
       sendVoiceAudioChunk: async (audioData, mimeType) => {
         if (!client) {
@@ -658,6 +659,21 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       const currentCursor = session?.agentTimelineCursor.get(agentId);
       const currentTail = session?.agentStreamTail.get(agentId) ?? [];
       const currentHead = session?.agentStreamHead.get(agentId) ?? [];
+
+      // Timeline responses include an agent snapshot. Persist it when the agent
+      // isn't already in the directory (common for unavailable-provider history).
+      if (payload.agent) {
+        const known = session?.agents.get(agentId) ?? session?.agentDetails.get(agentId) ?? null;
+        if (!known) {
+          storeFetchedAgentDetail({
+            serverId,
+            result: {
+              agent: payload.agent,
+              project: null,
+            },
+          });
+        }
+      }
 
       setAgentTimelineHasOlder(serverId, (prev) => {
         if (prev.get(agentId) === payload.hasOlder) {

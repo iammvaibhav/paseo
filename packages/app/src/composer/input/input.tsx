@@ -621,7 +621,9 @@ function MessageInputOverlay({
     | {
         isMuted: boolean;
         isVoiceSwitching: boolean;
+        sendBehavior: "interrupt" | "queue";
         toggleMute: () => void;
+        setSendBehavior: (sendBehavior: "interrupt" | "queue") => Promise<void>;
       }
     | null
     | undefined;
@@ -660,7 +662,9 @@ function MessageInputOverlay({
       <RealtimeVoiceOverlay
         isMuted={voice.isMuted}
         isSwitching={voice.isVoiceSwitching}
+        sendBehavior={voice.sendBehavior}
         onToggleMute={voice.toggleMute}
+        onSendBehaviorChange={voice.setSendBehavior}
         onStop={onRealtimeVoiceStop}
       />
     );
@@ -819,12 +823,17 @@ interface ToggleRealtimeVoiceContext {
     | {
         isVoiceSwitching: boolean;
         isVoiceModeForAgent: (serverId: string, agentId: string) => boolean;
-        startVoice: (serverId: string, agentId: string) => Promise<unknown>;
+        startVoice: (
+          serverId: string,
+          agentId: string,
+          options?: { sendBehavior?: "interrupt" | "queue" },
+        ) => Promise<unknown>;
       }
     | null
     | undefined;
   voiceServerId: string | undefined;
   voiceAgentId: string | undefined;
+  sendBehavior: "interrupt" | "queue";
   isConnected: boolean;
   disabled: boolean;
   isAgentRunning: boolean;
@@ -846,13 +855,15 @@ function toggleRealtimeVoiceImpl(ctx: ToggleRealtimeVoiceContext): void {
     ctx.toast.error(ctx.interruptBeforeVoiceMessage);
     return;
   }
-  void ctx.voice.startVoice(ctx.voiceServerId, ctx.voiceAgentId).catch((error) => {
-    console.error("[MessageInput] Failed to start realtime voice", error);
-    const message = extractErrorMessage(error);
-    if (message && message.trim().length > 0) {
-      ctx.toast.error(message);
-    }
-  });
+  void ctx.voice
+    .startVoice(ctx.voiceServerId, ctx.voiceAgentId, { sendBehavior: ctx.sendBehavior })
+    .catch((error) => {
+      console.error("[MessageInput] Failed to start realtime voice", error);
+      const message = extractErrorMessage(error);
+      if (message && message.trim().length > 0) {
+        ctx.toast.error(message);
+      }
+    });
 }
 
 interface StartDictationContext {
@@ -1425,6 +1436,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         voice,
         voiceServerId,
         voiceAgentId,
+        sendBehavior: defaultSendBehavior,
         isConnected,
         disabled,
         isAgentRunning,
@@ -1433,6 +1445,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         interruptBeforeVoiceMessage: t("composer.voice.interruptBeforeVoice"),
       });
     }, [
+      defaultSendBehavior,
       disabled,
       handleStopRealtimeVoice,
       isAgentRunning,

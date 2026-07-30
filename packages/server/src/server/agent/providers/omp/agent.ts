@@ -546,9 +546,19 @@ function formatOmpErrorMessage(message: Extract<OmpAgentMessage, { role: "assist
   return details.length > 0 ? `${headline} (${details.join(", ")})` : headline;
 }
 
+function isTerminalOmpAssistantFailure(
+  message: Extract<OmpAgentMessage, { role: "assistant" }>,
+): boolean {
+  if (message.errorMessage?.trim()) {
+    return true;
+  }
+  const stopReason = message.stopReason?.trim().toLowerCase();
+  return stopReason === "error" || stopReason === "aborted";
+}
+
 function latestOmpErrorMessage(messages: OmpAgentMessage[]): string | null {
   const latestAssistant = messages.findLast((message) => message.role === "assistant");
-  if (!latestAssistant || !latestAssistant.errorMessage?.trim()) {
+  if (!latestAssistant || !isTerminalOmpAssistantFailure(latestAssistant)) {
     return null;
   }
   return formatOmpErrorMessage(latestAssistant);
@@ -1130,11 +1140,62 @@ export class OmpAgentSession implements AgentSession {
   async interrupt(): Promise<void> {
     const turnId = this.activeTurnId;
     try {
-      await this.runtimeSession.abort();
-    } finally {
+      try {
+        await this.runtimeSession.abort();
+      } catch (error) {
+        // Abort can hang when OMP is blocked inside a tool/MCP call, or fail
+        // outright when the RPC process is already dead. Force-close the RPC
+        // process so stop/replace can settle instead of refusing forever.
+        // Do not await the full tree-kill here: AgentManager only gives ~2s for
+        // interrupt() to acknowledge, and kill can take longer.
+        this.logger.warn(
+          { err: error, turnId: turnId ?? undefined },
+          "OMP abort failed during interrupt; forcing runtime close",
+        );
+        this.closed = true;
+        this.clearOmpSessionState();
+        void this.runtimeSession.close().catch((closeError: unknown) => {
+          this.logger.warn(
+            { err: closeError, turnId: turnId ?? undefined },
+            "OMP force-close after failed abort also failed",
+          );
+        });
+      } finally {
+        this.terminalizeActiveWork();
+      }
+      if (turnId && this.activeTurnId === turnId) {
+        this.activeTurnId = null;
+        this.activeClientMessageId = null;
+        this.activeTurnStarted = false;
+        this.activeTurnHasUserMessage = false;
+        this.activeAssistantMessageId = null;
+        this.activeTurnTerminalAssistantMessage = null;
+        this.clearNoTurnBuffers();
+        this.emit({
+          type: "turn_canceled",
+          provider: this.provider,
+          reason: "interrupted",
+          turnId,
+        });
+      } else if (!turnId && this.activeTurnId == null) {
+        // Lifecycle can remain "running" in AgentManager after the provider
+        // process dies with no active turn id. Emit a bare cancel so cancel
+        // settlement can clear the sticky busy state.
+        this.emit({
+          type: "turn_canceled",
+          provider: this.provider,
+          reason: "interrupted",
+        });
+      }
+    } catch (error) {
+      // Interrupt must never throw: a dead OMP process is exactly when Stop
+      // needs to succeed and clear sticky running.
+      this.logger.warn(
+        { err: error, turnId: turnId ?? undefined },
+        "OMP interrupt failed; emitting forced cancel",
+      );
+      this.closed = true;
       this.terminalizeActiveWork();
-    }
-    if (turnId && this.activeTurnId === turnId) {
       this.activeTurnId = null;
       this.activeClientMessageId = null;
       this.activeTurnStarted = false;
@@ -1146,7 +1207,7 @@ export class OmpAgentSession implements AgentSession {
         type: "turn_canceled",
         provider: this.provider,
         reason: "interrupted",
-        turnId,
+        ...(turnId ? { turnId } : {}),
       });
     }
   }
@@ -1883,25 +1944,9 @@ export class OmpAgentSession implements AgentSession {
         // Compact rewrites session context; pull fresh fill immediately.
         void this.refreshUsage(turnId);
         return;
-      case "agent_end": {
-        const messages = event.messages ?? [];
-        let terminalMessages: OmpAgentMessage[] | null = null;
-        if (messages.some((message) => message.role === "assistant")) {
-          terminalMessages = messages;
-        } else if (this.activeTurnTerminalAssistantMessage) {
-          terminalMessages = [this.activeTurnTerminalAssistantMessage];
-        }
-        // OMP can end an internal extension-notice cycle before it starts the
-        // model turn for the same prompt. Ignore only cycles where neither the
-        // terminal payload nor the live stream contained an assistant message.
-        if (!terminalMessages) {
-          return;
-        }
-        // A state request is processed after OMP's RPC loop becomes promptable,
-        // so do not advertise Paseo idle until it reports that transition.
-        void this.completeTurnAfterProviderIdle(turnId, terminalMessages);
+      case "agent_end":
+        this.handleAgentEnd(event, turnId);
         return;
-      }
       default:
         return;
     }
@@ -2139,6 +2184,36 @@ export class OmpAgentSession implements AgentSession {
       mapSubagentDetail: (detail) =>
         this.subagentCardTracker.detailFor(toolCallId, detail) ?? detail,
     });
+  }
+
+  private handleAgentEnd(
+    event: Extract<OmpAgentSessionEvent, { type: "agent_end" }>,
+    turnId: string | undefined,
+  ): void {
+    const messages = event.messages ?? [];
+    let terminalMessages: OmpAgentMessage[] | null = null;
+    if (messages.some((message) => message.role === "assistant")) {
+      terminalMessages = messages;
+    } else if (this.activeTurnTerminalAssistantMessage) {
+      terminalMessages = [this.activeTurnTerminalAssistantMessage];
+    }
+    // OMP can end an internal extension-notice cycle before it starts the
+    // model turn for the same prompt. Ignore only cycles where neither the
+    // terminal payload nor the live stream contained an assistant message.
+    if (!terminalMessages) {
+      return;
+    }
+    // Provider-idle waiting is for successful turns that still look busy
+    // (stream/compact flags lag). Terminal failures — especially Anthropic
+    // overloaded_error — can leave isStreaming stuck true forever. Fail
+    // closed immediately so the UI surfaces [System Error] and leaves running.
+    if (latestOmpErrorMessage(terminalMessages)) {
+      this.completeTurn(turnId, terminalMessages);
+      return;
+    }
+    // A state request is processed after OMP's RPC loop becomes promptable,
+    // so do not advertise Paseo idle until it reports that transition.
+    void this.completeTurnAfterProviderIdle(turnId, terminalMessages);
   }
 
   private completeTurn(turnId: string | undefined, messages: OmpAgentMessage[]): void {

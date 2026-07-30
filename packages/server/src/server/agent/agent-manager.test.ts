@@ -1628,6 +1628,66 @@ test("cancelAgentRun succeeds when the provider queues completion before rejecti
   }
 });
 
+test("cancelAgentRun settles sticky running when the provider process is already closed", async () => {
+  const fixture = await createControlledInterruptFixture({
+    name: "interrupt-process-closed",
+    agentId: "00000000-0000-4000-8000-000000000307",
+    turnId: "dead-process-turn",
+    interrupt: async () => {
+      throw new Error("OMP RPC process is closed");
+    },
+  });
+
+  try {
+    // Autonomous turn_started with no active foreground turn leaves the
+    // zombie lifecycle=running state after OMP is SIGTERM'd mid-turn.
+    const running = waitForAgentLifecycle(fixture.manager, fixture.agentId, "running");
+    fixture.session.pushEvent({
+      type: "turn_started",
+      provider: "codex",
+      turnId: "orphaned-autonomous-turn",
+    });
+    await running;
+    expect(fixture.manager.getAgent(fixture.agentId)?.activeForegroundTurnId).toBeNull();
+
+    await expect(fixture.manager.cancelAgentRun(fixture.agentId)).resolves.toEqual({
+      status: "settled",
+    });
+    expect(fixture.manager.getAgent(fixture.agentId)).toMatchObject({
+      lifecycle: "idle",
+      activeForegroundTurnId: null,
+    });
+    expect(fixture.manager.hasInFlightRun(fixture.agentId)).toBe(false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("cancelAgentRun force-cancels a foreground turn when the provider session is closed", async () => {
+  const fixture = await createControlledInterruptFixture({
+    name: "interrupt-session-closed-foreground",
+    agentId: "00000000-0000-4000-8000-000000000308",
+    turnId: "closed-session-turn",
+    interrupt: async () => {
+      throw new Error("OMP RPC session is closed");
+    },
+  });
+
+  try {
+    await fixture.startForegroundRun();
+
+    await expect(fixture.manager.cancelAgentRun(fixture.agentId)).resolves.toEqual({
+      status: "settled",
+    });
+    expect(fixture.manager.getAgent(fixture.agentId)).toMatchObject({
+      lifecycle: "idle",
+      activeForegroundTurnId: null,
+    });
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("listProviderAvailability uses registered client keys, including custom providers", async () => {
   const customClient: AgentClient = {
     provider: "zai",

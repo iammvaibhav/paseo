@@ -130,6 +130,7 @@ export class FakeOmpSession implements OmpRuntimeSession {
   compactError: Error | null = null;
   emitCompactEnd = true;
   getStateError: Error | null = null;
+  abortError: Error | null = null;
   promptAck: OmpPromptAck = {};
   branchResponse: { text?: string; cancelled?: boolean } = { text: "" };
   branchMessages: Array<{ entryId: string; text: string }> = [];
@@ -239,6 +240,15 @@ export class FakeOmpSession implements OmpRuntimeSession {
 
   async abort(): Promise<void> {
     this.abortRequested = true;
+    if (this.abortError) {
+      const error = this.abortError;
+      this.abortError = null;
+      throw error;
+    }
+  }
+
+  failNextAbort(error: Error): void {
+    this.abortError = error;
   }
 
   async getState(): Promise<OmpSessionState> {

@@ -26,13 +26,11 @@ import { Brain, ListTodo, Settings2, ShieldCheck, Zap } from "lucide-react-nativ
 import { ComboboxTrigger } from "@/components/ui/combobox-trigger";
 import { CombinedModelSelector } from "@/components/combined-model-selector";
 import {
-  buildProviderSelectorProviders,
   buildSelectableProviderSelectorProviders,
   type ProviderSelectorProvider,
 } from "@/provider-selection/provider-selection";
 import { useSessionStore } from "@/stores/session-store";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
-import { resolveProviderDefinition } from "@/utils/provider-definitions";
 import {
   buildFavoriteModelKey,
   mergeProviderPreferencesWithScope,
@@ -83,6 +81,12 @@ import { ComposerControlLayoutProvider } from "@/composer/agent-controls/layout-
 import { ComposerToolbarGlyph } from "@/composer/agent-controls/glyph";
 import { AgentControlTrigger } from "@/composer/agent-controls/control";
 import { CompactModelSheet } from "@/composer/agent-controls/model-sheet";
+import { generateDraftId } from "@/stores/draft-keys";
+import {
+  buildDraftWorkspaceAttachmentScopeKey,
+  useWorkspaceAttachmentsStore,
+} from "@/attachments/workspace-attachments-store";
+import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
 
 interface AgentControlOption {
   id: string;
@@ -334,6 +338,7 @@ type AgentControlsSlice = {
   features: AgentFeature[] | undefined;
   thinkingOptionId: string | null | undefined;
   lastUsage: unknown;
+  title: string | null;
 } | null;
 
 function resolveAgentPreferenceScope(input: {
@@ -372,6 +377,7 @@ function selectAgentControlsSlice(
     features: currentAgent.features,
     thinkingOptionId: currentAgent.thinkingOptionId,
     lastUsage: currentAgent.lastUsage,
+    title: currentAgent.title,
   };
 }
 
@@ -383,27 +389,6 @@ function resolveSnapshotSelectedEntry(
     return null;
   }
   return snapshotEntries.find((e) => e.provider === agentProvider) ?? null;
-}
-
-function buildAgentProviderDefinitions(
-  agentProvider: string | undefined,
-  snapshotEntries: ReturnType<typeof useProvidersSnapshot>["entries"],
-): AgentProviderDefinition[] {
-  const definition = agentProvider
-    ? resolveProviderDefinition(agentProvider, snapshotEntries)
-    : undefined;
-  return definition ? [definition] : [];
-}
-
-function buildAgentProviderModels(
-  agentProvider: string | undefined,
-  models: AgentModelDefinition[] | null,
-): Map<string, AgentModelDefinition[]> {
-  const map = new Map<string, AgentModelDefinition[]>();
-  if (agentProvider && models) {
-    map.set(agentProvider, models);
-  }
-  return map;
 }
 
 function buildOpenChangeHandler(
@@ -1470,24 +1455,12 @@ export const AgentControls = memo(function AgentControls({
   const models = snapshotSelectedEntry?.models ?? null;
   const selectedProviderIsLoading = snapshotSelectedEntry?.status === "loading";
 
-  const agentProviderDefinitions = useMemo(
-    () => buildAgentProviderDefinitions(agent?.provider, snapshotEntries),
-    [agent?.provider, snapshotEntries],
+  // Live agents still only mutate model on the current provider session, but the
+  // selector lists every available provider so the user can fork into another one.
+  const agentModelSelectorProviders = useMemo(
+    () => buildSelectableProviderSelectorProviders(snapshotEntries),
+    [snapshotEntries],
   );
-
-  const agentProviderModels = useMemo(
-    () => buildAgentProviderModels(agent?.provider, models),
-    [agent?.provider, models],
-  );
-  const agentModelSelectorProviders = useMemo(() => {
-    if (snapshotSelectedEntry) {
-      return buildSelectableProviderSelectorProviders([snapshotSelectedEntry]);
-    }
-    return buildProviderSelectorProviders({
-      providerDefinitions: agentProviderDefinitions,
-      modelsByProvider: agentProviderModels,
-    });
-  }, [agentProviderDefinitions, agentProviderModels, snapshotSelectedEntry]);
 
   const modelSelection = resolveAgentModelSelection({
     models,
@@ -1527,7 +1500,11 @@ export const AgentControls = memo(function AgentControls({
     [agent?.projectKey, agent?.workspaceId],
   );
 
-  const handleSelectModel = useCallback(
+  const supportsAgentForkContext = useSessionStore(
+    (state) => state.sessions[serverId]?.serverInfo?.features?.agentForkContext === true,
+  );
+
+  const handleSelectSameProviderModel = useCallback(
     async (modelId: string) => {
       if (!client || !agentProvider) {
         return;
@@ -1560,6 +1537,88 @@ export const AgentControls = memo(function AgentControls({
     [agentId, agentProvider, client, preferenceScope, preferences, toast, updatePreferences],
   );
 
+  const handleSelectProviderAndModel = useCallback(
+    async (nextProvider: string, modelId: string) => {
+      if (!client || !agent) {
+        return;
+      }
+      if (nextProvider === agent.provider) {
+        await handleSelectSameProviderModel(modelId);
+        return;
+      }
+
+      const workspaceId = agent.workspaceId?.trim() || null;
+      if (!workspaceId) {
+        toast.error(t("message.actions.forkMissingWorkspace"));
+        return;
+      }
+      if (!supportsAgentForkContext) {
+        toast.error(t("message.actions.forkUnavailable"));
+        return;
+      }
+
+      try {
+        const draftId = generateDraftId();
+        const payload = await client.buildAgentForkContext(agentId);
+        if (!payload.attachment) {
+          throw new Error(payload.error ?? t("message.actions.forkFailed"));
+        }
+        useWorkspaceAttachmentsStore.getState().setWorkspaceAttachments({
+          scopeKey: buildDraftWorkspaceAttachmentScopeKey(draftId),
+          attachments: [
+            {
+              kind: "chat_history",
+              id: `chat_history:${draftId}`,
+              attachment: payload.attachment,
+              source: {
+                serverId,
+                agentId,
+                boundaryMessageId: payload.boundaryMessageId,
+                boundaryCursor: payload.boundaryCursor,
+                itemCount: payload.itemCount,
+              },
+            },
+          ],
+        });
+
+        const featureValues: Record<string, unknown> = {};
+        for (const feature of agent.features ?? []) {
+          featureValues[feature.id] = feature.value;
+        }
+
+        navigateToWorkspace({
+          serverId,
+          workspaceId,
+          target: {
+            kind: "draft",
+            draftId,
+            setup: {
+              provider: nextProvider,
+              cwd: agent.cwd ?? "",
+              modeId: null,
+              model: modelId,
+              thinkingOptionId: null,
+              featureValues,
+            },
+          },
+        });
+      } catch (error) {
+        console.warn("[AgentControls] cross-provider fork failed", error);
+        toast.error(toErrorMessage(error) || t("message.actions.forkFailed"));
+      }
+    },
+    [
+      agent,
+      agentId,
+      client,
+      handleSelectSameProviderModel,
+      serverId,
+      supportsAgentForkContext,
+      t,
+      toast,
+    ],
+  );
+
   const commandCenterModelActions = useMemo(
     () =>
       buildModelChoiceContributions({
@@ -1570,9 +1629,18 @@ export const AgentControls = memo(function AgentControls({
         groupLabel: t("shell.commandCenter.modelGroupLabel"),
         searchKeywords: t("shell.commandCenter.modelSearchKeywords"),
         getIcon: getCommandCenterProviderIcon,
-        select: (_provider, modelId) => handleSelectModel(modelId),
+        select: (provider, modelId) => {
+          void handleSelectProviderAndModel(provider, modelId);
+        },
       }),
-    [activeModelId, agentModelSelectorProviders, agentProvider, handleSelectModel, serverId, t],
+    [
+      activeModelId,
+      agentModelSelectorProviders,
+      agentProvider,
+      handleSelectProviderAndModel,
+      serverId,
+      t,
+    ],
   );
   useCommandCenterActions({
     sourceId: `agent:${serverId}:${agentId}`,
@@ -1672,7 +1740,8 @@ export const AgentControls = memo(function AgentControls({
       modelSelectorProviders={agentModelSelectorProviders}
       modelOptions={modelOptions}
       selectedModelId={modelSelection.activeModelId ?? undefined}
-      onSelectModel={handleSelectModel}
+      onSelectModel={handleSelectSameProviderModel}
+      onSelectProviderAndModel={handleSelectProviderAndModel}
       favoriteKeys={favoriteKeys}
       onToggleFavoriteModel={handleToggleFavoriteModel}
       thinkingOptions={thinkingOptions.length > 1 ? thinkingOptions : undefined}

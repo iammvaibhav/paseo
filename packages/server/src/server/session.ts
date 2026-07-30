@@ -1024,6 +1024,19 @@ export class Session {
         },
         interruptAgentIfRunning: (agentId) => this.interruptAgentIfRunning(agentId),
         hasActiveAgentRun: (agentId) => this.hasActiveAgentRun(agentId),
+        onAgentBecameIdle: (agentId, listener) => {
+          let wasActive = this.hasActiveAgentRun(agentId);
+          return this.agentManager.subscribe((event) => {
+            if (event.type !== "agent_state" || event.agent.id !== agentId) {
+              return;
+            }
+            const isActive = this.agentManager.hasInFlightRun(agentId);
+            if (wasActive && !isActive) {
+              listener();
+            }
+            wasActive = isActive;
+          });
+        },
       },
       logger: this.sessionLogger,
       sessionId: this.sessionId,
@@ -1860,7 +1873,12 @@ export class Session {
         this.voiceSession.handleAudioPlayed(msg.id);
         return undefined;
       case "set_voice_mode":
-        return this.voiceSession.handleSetVoiceMode(msg.enabled, msg.agentId, msg.requestId);
+        return this.voiceSession.handleSetVoiceMode(
+          msg.enabled,
+          msg.agentId,
+          msg.requestId,
+          msg.sendBehavior,
+        );
       case "dictation_stream_start":
         return this.voiceSession.handleDictationStreamStart(msg);
       case "dictation_stream_chunk":
@@ -6143,6 +6161,9 @@ export class Session {
       throw new Error(`Agent not found: ${agentId}`);
     }
 
+    const registeredProviderIds = new Set(this.providerSnapshotManager.listRegisteredProviderIds());
+    const providerAvailable = isStoredAgentProviderAvailable(record, registeredProviderIds);
+
     const sessionId = record.persistence?.sessionId;
     if (
       sessionId &&
@@ -6173,25 +6194,42 @@ export class Session {
       }
     }
 
-    // Warm provider runtime in the background when we can answer from disk.
-    if (this.agentManager.hasTimeline(agentId)) {
-      void ensureAgentLoaded(agentId, {
-        agentManager: this.agentManager,
-        agentStorage: this.agentStorage,
-        logger: this.sessionLogger,
-      }).catch((error) => {
-        this.sessionLogger.warn(
-          { err: error, agentId },
-          "Background agent resume after disk timeline seed failed",
+    if (!this.agentManager.hasTimeline(agentId)) {
+      await this.agentManager.seedTimelineFromDurable(agentId);
+    }
+
+    // History-only answer when we already have a timeline, or when the provider
+    // is gone and we can only surface the stored agent snapshot.
+    if (this.agentManager.hasTimeline(agentId) || !providerAvailable) {
+      if (!this.agentManager.hasTimeline(agentId)) {
+        // Empty in-memory timeline so fetchTimeline works without a live agent.
+        this.agentManager.seedTimelineFromItems(agentId, []);
+      }
+      if (providerAvailable) {
+        // Warm provider runtime in the background when we can answer from disk.
+        void ensureAgentLoaded(agentId, {
+          agentManager: this.agentManager,
+          agentStorage: this.agentStorage,
+          logger: this.sessionLogger,
+        }).catch((error) => {
+          this.sessionLogger.warn(
+            { err: error, agentId },
+            "Background agent resume after disk timeline seed failed",
+          );
+        });
+      } else {
+        this.sessionLogger.info(
+          { agentId, provider: record.provider },
+          "Serving agent timeline without unavailable provider runtime",
         );
-      });
+      }
       return {
         providerId: record.provider,
         agentPayload: this.buildStoredAgentPayload(record),
       };
     }
 
-    // Unsupported provider or missing disk files — full load (spawn).
+    // Supported provider with no disk/durable history — full load (spawn).
     const snapshot = await ensureAgentLoaded(agentId, {
       agentManager: this.agentManager,
       agentStorage: this.agentStorage,
@@ -6406,12 +6444,7 @@ export class Session {
     msg: Extract<SessionInboundMessage, { type: "agent.fork_context.request" }>,
   ): Promise<void> {
     try {
-      const snapshot = await ensureAgentLoaded(msg.agentId, {
-        agentManager: this.agentManager,
-        agentStorage: this.agentStorage,
-        logger: this.sessionLogger,
-      });
-      const agentPayload = await this.buildAgentPayload(snapshot);
+      const { agentPayload } = await this.resolveTimelineFetchContext(msg.agentId);
       const timeline = this.agentManager.fetchTimeline(msg.agentId, {
         direction: "tail",
         limit: 0,
@@ -6423,7 +6456,7 @@ export class Session {
           : null,
         boundaryMessageId: msg.boundaryMessageId,
         agentTitle: agentPayload.title,
-        cwd: snapshot.cwd,
+        cwd: agentPayload.cwd,
       });
 
       this.emit({

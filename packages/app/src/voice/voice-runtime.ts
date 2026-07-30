@@ -24,11 +24,13 @@ export type VoiceRuntimePhase =
   | "playing"
   | "stopping";
 
+export type VoiceSendBehavior = "interrupt" | "queue";
 export interface VoiceRuntimeSnapshot {
   phase: VoiceRuntimePhase;
   isVoiceMode: boolean;
   isVoiceSwitching: boolean;
   isMuted: boolean;
+  sendBehavior: VoiceSendBehavior;
   activeServerId: string | null;
   activeAgentId: string | null;
 }
@@ -41,7 +43,11 @@ export interface VoiceRuntimeTelemetrySnapshot {
 
 export interface VoiceSessionAdapter {
   serverId: string;
-  setVoiceMode(enabled: boolean, agentId?: string): Promise<void>;
+  setVoiceMode(
+    enabled: boolean,
+    agentId?: string,
+    options?: { sendBehavior?: VoiceSendBehavior },
+  ): Promise<void>;
   sendVoiceAudioChunk(audioData: string, mimeType: string): Promise<void>;
   audioPlayed(chunkId: string): Promise<void>;
   abortRequest(): Promise<void>;
@@ -109,6 +115,7 @@ const INITIAL_SNAPSHOT: VoiceRuntimeSnapshot = {
   isVoiceMode: false,
   isVoiceSwitching: false,
   isMuted: false,
+  sendBehavior: "interrupt",
   activeServerId: null,
   activeAgentId: null,
 };
@@ -127,6 +134,7 @@ function snapshotsEqual(left: VoiceRuntimeSnapshot, right: VoiceRuntimeSnapshot)
     left.isVoiceMode === right.isVoiceMode &&
     left.isVoiceSwitching === right.isVoiceSwitching &&
     left.isMuted === right.isMuted &&
+    left.sendBehavior === right.sendBehavior &&
     left.activeServerId === right.activeServerId &&
     left.activeAgentId === right.activeAgentId
   );
@@ -153,10 +161,15 @@ export interface VoiceRuntime {
   handleCapturePcm(chunk: Uint8Array): void;
   handleCaptureVolume(level: number): void;
   handleAudioOutput(serverId: string, payload: AudioOutputPayload): void;
-  startVoice(serverId: string, agentId: string): Promise<void>;
+  startVoice(
+    serverId: string,
+    agentId: string,
+    options?: { sendBehavior?: VoiceSendBehavior },
+  ): Promise<void>;
   stopVoice(): Promise<void>;
   destroy(): Promise<void>;
   toggleMute(): void;
+  setSendBehavior(sendBehavior: VoiceSendBehavior): Promise<void>;
   isVoiceModeForAgent(serverId: string, agentId: string): boolean;
   shouldPlayVoiceAudio(serverId: string): boolean;
   onAssistantAudioStarted(serverId: string): void;
@@ -485,7 +498,9 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
 
     patchSnapshot((prev) => ({ ...prev, isVoiceSwitching: true }));
     try {
-      await activeSession.adapter.setVoiceMode(true, state.snapshot.activeAgentId);
+      await activeSession.adapter.setVoiceMode(true, state.snapshot.activeAgentId, {
+        sendBehavior: state.snapshot.sendBehavior,
+      });
       state.transportReady = true;
     } finally {
       patchSnapshot((prev) => ({ ...prev, isVoiceSwitching: false }));
@@ -617,7 +632,7 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
       void processPlaybackQueue(serverId);
     },
 
-    async startVoice(serverId, agentId) {
+    async startVoice(serverId, agentId, options) {
       const session = sessions.get(serverId);
       if (!session) {
         throw new Error(`Voice runtime is not ready for host ${serverId}`);
@@ -637,6 +652,7 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
 
       const previousServerId = state.snapshot.activeServerId;
       const previousAgentId = state.snapshot.activeAgentId;
+      const sendBehavior = options?.sendBehavior ?? state.snapshot.sendBehavior ?? "interrupt";
       const generation = state.generation + 1;
       let enabledCurrentVoiceMode = false;
       state.generation = generation;
@@ -645,6 +661,7 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
         ...prev,
         isVoiceSwitching: true,
         phase: "starting",
+        sendBehavior,
         activeServerId: serverId,
         activeAgentId: agentId,
       }));
@@ -667,7 +684,7 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
         });
 
         await deps.engine.initialize();
-        await session.adapter.setVoiceMode(true, agentId);
+        await session.adapter.setVoiceMode(true, agentId, { sendBehavior });
         enabledCurrentVoiceMode = true;
         await deps.engine.startCapture();
         if (state.generation !== generation) {
@@ -683,6 +700,7 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
           isVoiceMode: true,
           isVoiceSwitching: false,
           phase: "listening",
+          sendBehavior,
           isMuted: deps.engine.isMuted(),
         }));
       } catch (error) {
@@ -744,6 +762,23 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
       }
 
       patchSnapshot((prev) => ({ ...prev, isMuted: false }));
+    },
+
+    async setSendBehavior(sendBehavior) {
+      if (state.snapshot.sendBehavior === sendBehavior) {
+        return;
+      }
+      patchSnapshot((prev) => ({ ...prev, sendBehavior }));
+      if (!state.snapshot.isVoiceMode) {
+        return;
+      }
+      const activeSession = getActiveSession();
+      if (!activeSession || !state.snapshot.activeAgentId) {
+        return;
+      }
+      await activeSession.adapter.setVoiceMode(true, state.snapshot.activeAgentId, {
+        sendBehavior,
+      });
     },
 
     isVoiceModeForAgent(serverId, agentId) {
@@ -811,7 +846,7 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
 
       state.serverSpeechDetected = isSpeaking;
       state.serverSpeechStartedAt = isSpeaking ? (state.serverSpeechStartedAt ?? Date.now()) : null;
-      if (isSpeaking) {
+      if (isSpeaking && state.snapshot.sendBehavior !== "queue") {
         const shouldInterruptPlayback =
           state.snapshot.phase === "playing" || playback.groups.size > 0;
         resetPlaybackState();

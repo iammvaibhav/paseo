@@ -20,6 +20,7 @@ import { shallow, useShallow } from "zustand/shallow";
 import { useStoreWithEqualityFn } from "zustand/traditional";
 import { AgentStreamView, type AgentStreamViewHandle } from "@/agent-stream/view";
 import { ArchivedAgentCallout } from "@/components/archived-agent-callout";
+import { UnavailableProviderCallout } from "@/components/unavailable-provider-callout";
 import { FileDropZone } from "@/components/file-drop/file-drop-zone";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { SidebarCallout } from "@/components/sidebar-callout";
@@ -68,6 +69,7 @@ import {
 } from "@/screens/agent/agent-ready-screen-bottom-anchor";
 import { WorkspaceDraftAgentTab } from "@/composer/draft/workspace-tab";
 import { useVoiceOptional } from "@/contexts/voice-context";
+import { useAppSettings } from "@/hooks/use-settings";
 import { useToast } from "@/contexts/toast-context";
 import { toErrorMessage } from "@/utils/error-messages";
 import { useCreateFlowStore } from "@/stores/create-flow-store";
@@ -115,6 +117,7 @@ interface ChatAgentSelectedState extends ChatAgentStateShape {
   archivedAt: Date | null;
   requiresAttention: boolean;
   attentionReason: Agent["attentionReason"] | null;
+  providerUnavailable: boolean;
 }
 
 function resolveChatAgentFromSession(
@@ -136,6 +139,7 @@ const EMPTY_CHAT_AGENT_STATE: ChatAgentSelectedState = {
   archivedAt: null,
   requiresAttention: false,
   attentionReason: null,
+  providerUnavailable: false,
 };
 
 function selectChatAgentState(
@@ -162,6 +166,7 @@ function selectChatAgentState(
     archivedAt: agent.archivedAt ?? null,
     requiresAttention: agent.requiresAttention ?? false,
     attentionReason: agent.attentionReason ?? null,
+    providerUnavailable: agent.providerUnavailable === true,
   };
 }
 
@@ -1159,6 +1164,7 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
         isPaneFocused={isPaneFocused}
         isArchivingCurrentAgent={isArchivingCurrentAgent}
         archivedAt={agentState.archivedAt}
+        providerUnavailable={agentState.providerUnavailable}
         cwd={cwd}
         isSubmitLoading={false}
         agentInputDraft={agentInputDraft}
@@ -1283,6 +1289,7 @@ const AgentComposerSection = memo(function AgentComposerSection({
   isPaneFocused,
   isArchivingCurrentAgent,
   archivedAt,
+  providerUnavailable,
   cwd,
   isSubmitLoading,
   agentInputDraft,
@@ -1296,6 +1303,7 @@ const AgentComposerSection = memo(function AgentComposerSection({
   isPaneFocused: boolean;
   isArchivingCurrentAgent: boolean;
   archivedAt: Date | null;
+  providerUnavailable: boolean;
   cwd: string;
   isSubmitLoading: boolean;
   agentInputDraft: AgentInputDraft;
@@ -1304,8 +1312,29 @@ const AgentComposerSection = memo(function AgentComposerSection({
   onComposerHeightChange: (height: number) => void;
   onMessageSent: () => void;
 }) {
+  const { workspaceId, retargetCurrentTab } = usePaneContext();
+
+  const handleContinueWithAnotherProvider = useCallback(() => {
+    if (!agentId || !workspaceId) {
+      return;
+    }
+    // Open a fresh draft in the same workspace with no provider preselected so
+    // the user can pick a currently available provider/model.
+    retargetCurrentTab({
+      kind: "draft",
+      draftId: generateDraftId(),
+    });
+  }, [agentId, retargetCurrentTab, workspaceId]);
+
   if (!agentId) {
     return null;
+  }
+  if (providerUnavailable) {
+    return (
+      <UnavailableProviderCallout
+        onContinueWithAnotherProvider={handleContinueWithAnotherProvider}
+      />
+    );
   }
   if (archivedAt) {
     return <ArchivedAgentCallout serverId={serverId} agentId={agentId} />;
@@ -1461,6 +1490,7 @@ function ActiveAgentComposer({
     ],
   );
   const voice = useVoiceOptional();
+  const { settings: appSettings } = useAppSettings();
   const toast = useToast();
   const toastErrorRef = useRef(toast.error);
   toastErrorRef.current = toast.error;
@@ -1497,7 +1527,7 @@ function ActiveAgentComposer({
     startedVoiceCreateKeyRef.current = pendingVoiceCreateKey;
 
     void voice
-      .startVoice(serverId, agentId)
+      .startVoice(serverId, agentId, { sendBehavior: appSettings.sendBehavior })
       .then(() => {
         useCreateFlowStore.getState().clear({ draftId: pendingVoiceCreate.draftId });
         return undefined;
@@ -1509,7 +1539,15 @@ function ActiveAgentComposer({
           toastErrorRef.current(message);
         }
       });
-  }, [agentId, isConnected, pendingVoiceCreate, pendingVoiceCreateKey, serverId, voice]);
+  }, [
+    agentId,
+    appSettings.sendBehavior,
+    isConnected,
+    pendingVoiceCreate,
+    pendingVoiceCreateKey,
+    serverId,
+    voice,
+  ]);
 
   const { style: composerKeyboardStyle } = useKeyboardShiftStyle({
     mode: "translate",

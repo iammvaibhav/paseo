@@ -448,12 +448,22 @@ interface AttemptStartRealtimeVoiceArgs {
   hasAgent: boolean;
   serverId: string;
   agentId: string;
+  sendBehavior: "interrupt" | "queue";
   toastErrorRef: { current: (message: string) => void };
   onStartVoiceMode?: (() => void | Promise<void>) | undefined;
 }
 
 function attemptStartRealtimeVoice(args: AttemptStartRealtimeVoiceArgs): void {
-  const { voice, isConnected, hasAgent, serverId, agentId, toastErrorRef, onStartVoiceMode } = args;
+  const {
+    voice,
+    isConnected,
+    hasAgent,
+    serverId,
+    agentId,
+    sendBehavior,
+    toastErrorRef,
+    onStartVoiceMode,
+  } = args;
   if (!voice || !isConnected) return;
   if (voice.isVoiceSwitching) return;
   if (onStartVoiceMode) {
@@ -468,7 +478,7 @@ function attemptStartRealtimeVoice(args: AttemptStartRealtimeVoiceArgs): void {
   }
   if (!hasAgent) return;
   if (voice.isVoiceModeForAgent(serverId, agentId)) return;
-  void voice.startVoice(serverId, agentId).catch((error) => {
+  void voice.startVoice(serverId, agentId, { sendBehavior }).catch((error) => {
     console.error("[Composer] Failed to start voice mode", error);
     const message = resolveErrorMessage(error);
     if (message && message.trim().length > 0) {
@@ -1726,10 +1736,11 @@ export function Composer({
       hasAgent,
       serverId,
       agentId,
+      sendBehavior: appSettings.sendBehavior,
       toastErrorRef,
       onStartVoiceMode,
     });
-  }, [agentId, hasAgent, isConnected, onStartVoiceMode, serverId, voice]);
+  }, [agentId, appSettings.sendBehavior, hasAgent, isConnected, onStartVoiceMode, serverId, voice]);
 
   const handleEditQueuedMessage = useCallback(
     (id: string) => {
