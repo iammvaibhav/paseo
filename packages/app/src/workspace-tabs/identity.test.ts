@@ -132,3 +132,94 @@ describe("commit diff tab identity", () => {
     ).toBeNull();
   });
 });
+
+describe("draft fork source tab identity", () => {
+  test("normalizes a persisted fork source and drops unknown junk", () => {
+    const target = normalizeWorkspaceTabTarget({
+      kind: "draft",
+      draftId: " draft-1 ",
+      forkSource: {
+        sourceAgentId: " agent-src ",
+        boundaryUserMessageId: " user-msg-1 ",
+        boundaryCursor: { epoch: " epoch-1 ", seq: 0 },
+        boundaryMessageId: " assistant-msg-1 ",
+        somethingElse: "junk",
+      },
+    } as never);
+
+    expect(target).toEqual({
+      kind: "draft",
+      draftId: "draft-1",
+      forkSource: {
+        sourceAgentId: "agent-src",
+        boundaryUserMessageId: "user-msg-1",
+        boundaryCursor: { epoch: "epoch-1", seq: 0 },
+        boundaryMessageId: "assistant-msg-1",
+      },
+    });
+  });
+
+  test("drops a fork source without a source agent id", () => {
+    expect(
+      normalizeWorkspaceTabTarget({
+        kind: "draft",
+        draftId: "draft-1",
+        forkSource: { sourceAgentId: "   " },
+      } as never),
+    ).toEqual({ kind: "draft", draftId: "draft-1" });
+  });
+
+  test("drops a non-record fork source and a malformed boundary cursor", () => {
+    expect(
+      normalizeWorkspaceTabTarget({
+        kind: "draft",
+        draftId: "draft-1",
+        forkSource: "agent-src",
+      } as never),
+    ).toEqual({ kind: "draft", draftId: "draft-1" });
+    expect(
+      normalizeWorkspaceTabTarget({
+        kind: "draft",
+        draftId: "draft-1",
+        forkSource: {
+          sourceAgentId: "agent-src",
+          boundaryCursor: { epoch: "epoch-1", seq: 1.5 },
+        },
+      } as never),
+    ).toEqual({ kind: "draft", draftId: "draft-1", forkSource: { sourceAgentId: "agent-src" } });
+  });
+
+  test("treats a fork draft and a plain draft with the same id as different targets", () => {
+    const forkSource = { sourceAgentId: "agent-src", boundaryUserMessageId: "user-msg-1" };
+
+    expect(
+      workspaceTabTargetsEqual(
+        { kind: "draft", draftId: "draft-1", forkSource },
+        { kind: "draft", draftId: "draft-1" },
+      ),
+    ).toBe(false);
+    expect(
+      workspaceTabTargetsEqual(
+        { kind: "draft", draftId: "draft-1", forkSource },
+        { kind: "draft", draftId: "draft-1", forkSource: { ...forkSource } },
+      ),
+    ).toBe(true);
+  });
+
+  test("compares the whole fork boundary, not just the source agent", () => {
+    expect(
+      workspaceTabTargetsEqual(
+        {
+          kind: "draft",
+          draftId: "draft-1",
+          forkSource: { sourceAgentId: "agent-src", boundaryCursor: { epoch: "epoch-1", seq: 7 } },
+        },
+        {
+          kind: "draft",
+          draftId: "draft-1",
+          forkSource: { sourceAgentId: "agent-src", boundaryCursor: { epoch: "epoch-1", seq: 8 } },
+        },
+      ),
+    ).toBe(false);
+  });
+});

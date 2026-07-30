@@ -1437,10 +1437,10 @@ export const AgentForkContextRequestMessageSchema = z.object({
 });
 
 // Fork a (typically running) source agent into a brand-new sibling/root agent
-// that inherits history "up to now" (the last completed turn), then run `text`
-// as the fork's first turn. The server picks native provider session fork when
-// available and falls back to a chat-history text snapshot otherwise; the
-// client contract is identical either way.
+// that inherits history up to the fork boundary, then run `text` as the fork's
+// first turn. The server picks native provider session fork when available and
+// falls back to a chat-history text snapshot otherwise; the client contract is
+// identical either way.
 export const AgentForkRequestMessageSchema = z.object({
   type: z.literal("agent.fork.request"),
   sourceAgentId: z.string(),
@@ -1448,6 +1448,20 @@ export const AgentForkRequestMessageSchema = z.object({
   messageId: z.string().optional(), // Client-provided ID for dedup of the first turn
   images: z.array(ImageAttachmentSchema).optional(),
   attachments: AgentAttachmentsSchema,
+  // Fork boundary, describing the assistant turn the fork's history ends at.
+  // All three are absent for "fork everything up to now".
+  //
+  // `boundaryUserMessageId` is the provider id of the user message that opened
+  // that turn: the only anchor a native provider session fork can address, since
+  // provider assistant ids are not universally observable. The cursor/message id
+  // pair addresses the same point in the daemon timeline and drives the snapshot
+  // fallback, matching `agent.fork_context.request`.
+  boundaryUserMessageId: z.string().optional(),
+  boundaryCursor: AgentTimelineCursorSchema.optional(),
+  boundaryMessageId: z.string().optional(),
+  // Config the fork composer submitted with, when it differs from the source
+  // agent (the user changed model/mode/thinking before forking).
+  overrides: AgentSessionConfigSchema.partial().optional(),
   requestId: z.string(),
 });
 
@@ -3760,6 +3774,9 @@ export const AgentForkResponseMessageSchema = z.object({
     agentId: z.string().nullable(),
     // Which strategy the server used, for diagnostics/telemetry. Absent on error.
     strategy: z.enum(["native", "snapshot"]).nullable().optional(),
+    // Snapshot of the created fork, so a fork-mode draft tab can swap straight
+    // to an agent tab without waiting for the live-agent broadcast.
+    agent: AgentSnapshotPayloadSchema.nullable().optional(),
     error: z.string().nullable(),
   }),
 });

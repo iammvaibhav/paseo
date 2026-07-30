@@ -38,8 +38,9 @@ import { getIsElectron } from "@/constants/platform";
 import { SidebarResizeHandle } from "@/components/sidebar-resize-handle";
 import { buildWorkspaceAttachmentScopeKey } from "@/attachments/workspace-attachments-store";
 import { resolveDesktopExplorerWidth } from "@/components/desktop-sidebar-layout";
-import { useSubmodulesQuery } from "@/git/use-submodules-query";
+import { findSubmodule, useSubmodulesQuery } from "@/git/use-submodules-query";
 import { SubmodulePicker } from "@/git/submodule-picker";
+import { resolveSelectedSubmoduleForCheckout } from "@/stores/explorer-submodule-memory";
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 import { resolveFocusedChatTarget } from "@/composer/focused-chat-target";
@@ -413,20 +414,34 @@ function useSubmoduleContext({
   isGit: boolean;
   isOpen: boolean;
 }) {
-  const [selectedSubmodule, setSelectedSubmodule] = useState<string | null>(null);
-  const { submodules, hasSubmodules, isLoading } = useSubmodulesQuery({
+  const storedSubmodule = usePanelStore((state) =>
+    resolveSelectedSubmoduleForCheckout({
+      serverId,
+      cwd: workspaceRoot,
+      selectedSubmoduleByCheckout: state.selectedSubmoduleByCheckout,
+    }),
+  );
+  const setSelectedSubmoduleForCheckout = usePanelStore(
+    (state) => state.setSelectedSubmoduleForCheckout,
+  );
+  const { submodules, hasSubmodules, isResolved } = useSubmodulesQuery({
     serverId,
     cwd: workspaceRoot,
     enabled: isGit && isOpen,
   });
-  console.log("[submodules]", {
-    isGit,
-    isOpen,
-    workspaceRoot,
-    hasSubmodules,
-    isLoading,
-    count: submodules.length,
-  });
+  // The remembered submodule survives until the checkout proves it is gone;
+  // holding it through the initial fetch avoids a root -> submodule flip that
+  // would make the diff and PR panes fetch the superproject first.
+  const selectedSubmodule =
+    storedSubmodule && isResolved && !findSubmodule(submodules, storedSubmodule)
+      ? null
+      : storedSubmodule;
+  const setSelectedSubmodule = useCallback(
+    (submodulePath: string | null) => {
+      setSelectedSubmoduleForCheckout({ serverId, cwd: workspaceRoot, submodulePath });
+    },
+    [serverId, setSelectedSubmoduleForCheckout, workspaceRoot],
+  );
   const effectiveCwd = useMemo(
     () => (selectedSubmodule ? `${workspaceRoot}/${selectedSubmodule}` : workspaceRoot),
     [workspaceRoot, selectedSubmodule],

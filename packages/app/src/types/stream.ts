@@ -86,6 +86,9 @@ export type UserMessageImageAttachment = AttachmentMetadata;
 export interface UserMessageItem {
   kind: "user_message";
   id: string;
+  // Provider message id, when the provider exposes one. Distinct from `id`,
+  // which falls back to a synthetic timeline id.
+  messageId?: string;
   clientMessageId?: string;
   text: string;
   timestamp: Date;
@@ -239,6 +242,7 @@ function markThoughtReady(item: ThoughtItem): ThoughtItem {
 
 function buildUserMessageItem(input: {
   id: string;
+  messageId?: string;
   clientMessageId?: string;
   text: string;
   timestamp: Date;
@@ -248,6 +252,7 @@ function buildUserMessageItem(input: {
     return {
       kind: "user_message",
       id: input.id,
+      ...(input.messageId ? { messageId: input.messageId } : {}),
       ...(input.clientMessageId ? { clientMessageId: input.clientMessageId } : {}),
       text: input.optimistic.text,
       timestamp: input.optimistic.timestamp,
@@ -263,6 +268,7 @@ function buildUserMessageItem(input: {
   return {
     kind: "user_message",
     id: input.id,
+    ...(input.messageId ? { messageId: input.messageId } : {}),
     ...(input.clientMessageId ? { clientMessageId: input.clientMessageId } : {}),
     text: input.text,
     timestamp: input.timestamp,
@@ -335,6 +341,7 @@ export function handoffCreatedAgentUserMessageToStream(params: {
 
   const handedOffMessage = buildUserMessageItem({
     id: userMessage.id,
+    ...(userMessage.messageId ? { messageId: userMessage.messageId } : {}),
     text: message.text,
     timestamp: message.timestamp,
     optimistic: message,
@@ -377,6 +384,7 @@ function appendUserMessage(
 
   const nextItem = buildUserMessageItem({
     id: entryId,
+    ...(messageId ? { messageId } : {}),
     clientMessageId,
     text: chunk,
     timestamp,

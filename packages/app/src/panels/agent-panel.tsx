@@ -89,7 +89,7 @@ import { SubagentsTrack } from "@/subagents/track";
 import type { PendingPermission } from "@/types/shared";
 import type { StreamItem } from "@/types/stream";
 import { getInitDeferred, getInitKey } from "@/utils/agent-initialization";
-import { normalizeAgentSnapshot } from "@/utils/agent-snapshots";
+import { normalizeAgentSnapshot, resolveSessionAgent } from "@/utils/agent-snapshots";
 import { storeFetchedAgentDetail } from "@/utils/hydrate-fetched-agent";
 import { applyLegacyDaemonWorkspaceOwnership } from "@/workspace/legacy-daemon-workspaces";
 import type { WorkspaceFileOpenRequest } from "@/workspace/file-open";
@@ -120,16 +120,6 @@ interface ChatAgentSelectedState extends ChatAgentStateShape {
   providerUnavailable: boolean;
 }
 
-function resolveChatAgentFromSession(
-  state: ReturnType<typeof useSessionStore.getState>,
-  serverId: string,
-  agentId: string | undefined,
-): Agent | null {
-  if (!agentId) return null;
-  const session = state.sessions[serverId];
-  return session?.agents?.get(agentId) ?? session?.agentDetails?.get(agentId) ?? null;
-}
-
 const EMPTY_CHAT_AGENT_STATE: ChatAgentSelectedState = {
   serverId: null,
   id: null,
@@ -147,7 +137,7 @@ function selectChatAgentState(
   serverId: string,
   agentId: string | undefined,
 ): ChatAgentSelectedState {
-  const agent = resolveChatAgentFromSession(state, serverId, agentId);
+  const agent = resolveSessionAgent(state.sessions[serverId], agentId);
   if (!agent) return EMPTY_CHAT_AGENT_STATE;
   return {
     serverId: agent.serverId,
@@ -347,6 +337,7 @@ function DraftPanel() {
       tabId={tabId}
       draftId={target.draftId}
       initialSetup={target.setup}
+      forkSource={target.forkSource}
       isPaneFocused={isInteractive}
       onOpenWorkspaceFile={openFileInWorkspace}
       onCreated={handleCreated}
@@ -1454,7 +1445,7 @@ function ActiveAgentComposer({
 
   const handleClientSlashCommand = useCallback(
     async (command: ClientSlashCommand) => {
-      const agent = resolveChatAgentFromSession(useSessionStore.getState(), serverId, agentId);
+      const agent = resolveSessionAgent(useSessionStore.getState().sessions[serverId], agentId);
       if (!agent) {
         throw new Error("Agent not found");
       }

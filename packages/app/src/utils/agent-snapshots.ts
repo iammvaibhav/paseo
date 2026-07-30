@@ -1,6 +1,7 @@
 import type { AgentSnapshotPayload } from "@getpaseo/protocol/messages";
 import type { AgentPermissionRequest } from "@getpaseo/protocol/agent-types";
 import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
+import type { Agent, SessionState } from "@/stores/session-store";
 
 export function derivePendingPermissionKey(
   agentId: string,
@@ -59,4 +60,20 @@ export function normalizeAgentSnapshot(snapshot: AgentSnapshotPayload, serverId:
     labels: snapshot.labels,
     providerUnavailable: snapshot.providerUnavailable === true,
   };
+}
+
+/**
+ * Resolve an agent snapshot from a session, spanning both directories.
+ *
+ * Active, project-placed agents live in `agents`; agents hydrated without a
+ * project placement (and archived ones) live in `agentDetails` — see
+ * `storeFetchedAgentDetail`. Callers that render or gate on an agent must
+ * consult both, otherwise a live agent looks statusless for the whole run.
+ */
+export function resolveSessionAgent(
+  session: Pick<SessionState, "agents" | "agentDetails"> | undefined,
+  agentId: string | undefined,
+): Agent | null {
+  if (!agentId) return null;
+  return session?.agents.get(agentId) ?? session?.agentDetails.get(agentId) ?? null;
 }

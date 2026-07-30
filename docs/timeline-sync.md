@@ -45,6 +45,8 @@ Actions that address a point in chat history, such as Fork, use the daemon timel
 
 The daemon validates that the epoch is current and the exact source sequence still exists before slicing rows. It slices before projection so later lifecycle updates cannot leak into the selected context.
 
+A fork carries a third anchor alongside those two: the provider message id of the **user message that opened the boundary turn**. Provider assistant ids are not universally observable — OMP synthesizes them — while the opening user message id is the anchor every provider already tracks for rewind. That is therefore the only anchor a native provider session fork can address, and the daemon degrades to the timeline-sliced snapshot when it is absent.
+
 ## Resume behavior
 
 When a client resumes with a known cursor, it catches up after that cursor to completion. It does not replace the view with a latest tail page, because tail pagination can skip the middle of a long background run.

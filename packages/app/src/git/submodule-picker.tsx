@@ -3,7 +3,7 @@ import { View, Text, Pressable, ScrollView, Modal } from "react-native";
 import { ChevronDown, FolderGit2, Circle } from "lucide-react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { isWeb } from "@/constants/platform";
-import type { SubmoduleInfo } from "./use-submodules-query";
+import { findSubmodule, type SubmoduleInfo } from "./use-submodules-query";
 
 interface SubmodulePickerProps {
   submodules: SubmoduleInfo[];
@@ -30,7 +30,7 @@ export function SubmodulePicker({ submodules, selectedPath, onSelect }: Submodul
   const close = useCallback(() => setIsOpen(false), []);
 
   const selectedLabel = selectedPath
-    ? (submodules.find((s) => s.path === selectedPath)?.name ?? lastPathSegment(selectedPath))
+    ? (findSubmodule(submodules, selectedPath)?.name ?? lastPathSegment(selectedPath))
     : "root";
 
   const handleSelect = useCallback(

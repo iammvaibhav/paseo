@@ -10,6 +10,18 @@ export interface WorkspaceDraftTabSetup {
   featureValues: Record<string, unknown>;
 }
 
+/**
+ * Set when a draft tab was opened by "fork chat into a new tab": submitting the
+ * draft forks `sourceAgentId` at this boundary instead of creating a new agent.
+ * All boundary fields absent means "fork everything up to now".
+ */
+export interface WorkspaceDraftForkSource {
+  sourceAgentId: string;
+  boundaryUserMessageId?: string;
+  boundaryCursor?: { epoch: string; seq: number };
+  boundaryMessageId?: string;
+}
+
 export interface WorkspaceWorkingDiffTabTarget {
   kind: "working_diff";
   focusPath?: string;
@@ -17,7 +29,12 @@ export interface WorkspaceWorkingDiffTabTarget {
 }
 
 export type WorkspaceTabTarget =
-  | { kind: "draft"; draftId: string; setup?: WorkspaceDraftTabSetup }
+  | {
+      kind: "draft";
+      draftId: string;
+      setup?: WorkspaceDraftTabSetup;
+      forkSource?: WorkspaceDraftForkSource;
+    }
   | { kind: "agent"; agentId: string }
   | { kind: "provider_subagent"; parentAgentId: string; subagentId: string }
   | { kind: "terminal"; terminalId: string }

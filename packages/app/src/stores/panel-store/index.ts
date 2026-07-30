@@ -7,6 +7,7 @@ import {
   resolveExplorerTabForCheckout,
   type ExplorerTab,
 } from "../explorer-tab-memory";
+import { setSelectedSubmoduleEntry } from "../explorer-submodule-memory";
 import { type ExplorerCheckoutContext } from "../explorer-checkout-context";
 import {
   buildOpenFileExplorerPatch,
@@ -75,6 +76,7 @@ export interface PanelState {
   // File explorer settings (shared between mobile/desktop)
   explorerTab: ExplorerTab;
   explorerTabByCheckout: Record<string, ExplorerTab>;
+  selectedSubmoduleByCheckout: Record<string, string>;
   expandedPathsByWorkspace: Record<string, string[]>;
   diffExpandedPathsByWorkspace: Record<string, string[]>;
   // Changes-view folder tree. Inverted semantics vs the fields above:
@@ -106,6 +108,11 @@ export interface PanelState {
   // File explorer settings actions
   setExplorerTab: (tab: ExplorerTab) => void;
   setExplorerTabForCheckout: (params: ExplorerCheckoutContext & { tab: ExplorerTab }) => void;
+  setSelectedSubmoduleForCheckout: (params: {
+    serverId: string;
+    cwd: string;
+    submodulePath: string | null;
+  }) => void;
   setExpandedPathsForWorkspace: (workspaceKey: string, paths: ExpandedPathsUpdate) => void;
   setDiffExpandedPathsForWorkspace: (workspaceKey: string, paths: string[]) => void;
   setDiffCollapsedFoldersForWorkspace: (workspaceKey: string, dirPaths: string[]) => void;
@@ -143,6 +150,7 @@ export const usePanelStore = create<PanelState>()(
       // File explorer defaults
       explorerTab: "changes",
       explorerTabByCheckout: {},
+      selectedSubmoduleByCheckout: {},
       expandedPathsByWorkspace: {},
       diffExpandedPathsByWorkspace: {},
       diffCollapsedFoldersByWorkspace: {},
@@ -254,6 +262,13 @@ export const usePanelStore = create<PanelState>()(
           }
           return nextState;
         }),
+      setSelectedSubmoduleForCheckout: (params) =>
+        set((state) => {
+          const next = setSelectedSubmoduleEntry(state.selectedSubmoduleByCheckout, params);
+          return next === state.selectedSubmoduleByCheckout
+            ? state
+            : { selectedSubmoduleByCheckout: next };
+        }),
       setExpandedPathsForWorkspace: (workspaceKey, paths) =>
         set((state) => {
           const currentPaths = state.expandedPathsByWorkspace[workspaceKey] ?? ["."];
@@ -302,7 +317,7 @@ export const usePanelStore = create<PanelState>()(
     }),
     {
       name: "panel-state",
-      version: 12,
+      version: 13,
       storage: createJSONStorage(() => AsyncStorage),
       migrate: (persistedState, version) =>
         migratePanelState(persistedState, version, { isWeb }) as unknown as PanelState,
@@ -310,6 +325,7 @@ export const usePanelStore = create<PanelState>()(
         desktop: state.desktop,
         explorerTab: state.explorerTab,
         explorerTabByCheckout: state.explorerTabByCheckout,
+        selectedSubmoduleByCheckout: state.selectedSubmoduleByCheckout,
         expandedPathsByWorkspace: state.expandedPathsByWorkspace,
         diffExpandedPathsByWorkspace: state.diffExpandedPathsByWorkspace,
         diffCollapsedFoldersByWorkspace: state.diffCollapsedFoldersByWorkspace,

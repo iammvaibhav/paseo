@@ -71,6 +71,7 @@ import {
   type AssistantTurnForkHandler,
   type TurnContentStrategy,
 } from "./turn-footer";
+import type { AssistantTurnForkBoundary } from "./turn-boundary";
 import { layoutStream, type StreamLayoutItem } from "./layout";
 import {
   type BottomAnchorLocalRequest,
@@ -99,7 +100,11 @@ import {
   useWorkspaceAttachmentsStore,
 } from "@/attachments/workspace-attachments-store";
 import type { WorkspaceComposerAttachment } from "@/attachments/types";
-import type { WorkspaceDraftTabSetup, WorkspaceTabTarget } from "@/workspace-tabs/model";
+import type {
+  WorkspaceDraftForkSource,
+  WorkspaceDraftTabSetup,
+  WorkspaceTabTarget,
+} from "@/workspace-tabs/model";
 import { toErrorMessage } from "@/utils/error-messages";
 import { useWorkspaceDraftSubmissionStore } from "@/stores/workspace-draft-submission-store";
 
@@ -319,8 +324,32 @@ function buildForkDraftSetup(agent: AgentScreenAgent): WorkspaceDraftTabSetup | 
 function buildForkDraftTabTarget(
   setup: WorkspaceDraftTabSetup | undefined,
   draftId: string,
+  forkSource?: WorkspaceDraftForkSource,
 ): WorkspaceTabTarget {
-  return setup ? { kind: "draft", draftId, setup } : { kind: "draft", draftId };
+  return {
+    kind: "draft",
+    draftId,
+    ...(setup ? { setup } : {}),
+    ...(forkSource ? { forkSource } : {}),
+  };
+}
+
+/**
+ * The source anchor a fork-mode draft submits with. `boundaryUserMessageId` is
+ * what the daemon needs for a native provider session fork; the cursor/message
+ * id pair addresses the same point for the snapshot fallback.
+ */
+function buildForkSource(
+  sourceAgentId: string,
+  boundary: AssistantTurnForkBoundary,
+  boundaryUserMessageId: string | undefined,
+): WorkspaceDraftForkSource {
+  return {
+    sourceAgentId,
+    ...(boundaryUserMessageId ? { boundaryUserMessageId } : {}),
+    ...(boundary.boundaryCursor ? { boundaryCursor: boundary.boundaryCursor } : {}),
+    ...(boundary.boundaryMessageId ? { boundaryMessageId: boundary.boundaryMessageId } : {}),
+  };
 }
 
 const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamViewProps>(
@@ -381,6 +410,11 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     const supportsAgentForkContextCursor = useSessionStore(
       (state) =>
         state.sessions[resolvedServerId]?.serverInfo?.features?.agentForkContextCursor === true,
+    );
+    // COMPAT(agentFork): gate the tab fork on the daemon's fork RPC capability.
+    const supportsAgentFork = useSessionStore(
+      (state) =>
+        !readOnly && state.sessions[resolvedServerId]?.serverInfo?.features?.agentFork === true,
     );
 
     const workspaceRoot = context.cwd?.trim() || "";
@@ -480,8 +514,36 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     });
 
     const handleForkAssistantTurn: AssistantTurnForkHandler = useStableEvent(
-      async ({ target, boundary }) => {
+      async ({ target, boundary, boundaryUserMessageId }) => {
         try {
+          const draftSetup = buildForkDraftSetup(context);
+
+          // A tab fork stays in this workspace, so the daemon can fork the
+          // provider session natively; the draft tab submits through the fork
+          // RPC instead of stashing a chat-history snapshot.
+          if (target === "tab") {
+            if (!supportsAgentFork) {
+              toast?.error(t("message.actions.forkUnavailable"));
+              return;
+            }
+            const workspaceId = context.workspaceId;
+            if (!workspaceId) {
+              throw new Error(t("message.actions.forkMissingWorkspace"));
+            }
+            navigateToWorkspace({
+              serverId: resolvedServerId,
+              workspaceId,
+              target: buildForkDraftTabTarget(
+                draftSetup,
+                generateDraftId(),
+                buildForkSource(agentId, boundary, boundaryUserMessageId),
+              ),
+            });
+            return;
+          }
+
+          // A workspace fork lands in a fresh worktree, whose cwd would
+          // contradict a native provider session; it keeps the text snapshot.
           if (!supportsAgentForkContext) {
             toast?.error(t("message.actions.forkUnavailable"));
             return;
@@ -489,39 +551,19 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           if (!client) {
             throw new Error(t("workspace.terminal.hostDisconnected"));
           }
-          const draftSetup = buildForkDraftSetup(context);
-          const prepareForkDraft = async () => {
-            const draftId = generateDraftId();
-            const payload = await client.buildAgentForkContext(agentId, boundary);
-            const attachment = buildChatHistoryAttachment({
-              draftId,
-              serverId: resolvedServerId,
-              agentId,
-              payload,
-              missingAttachmentMessage: t("message.actions.forkFailed"),
-            });
-            useWorkspaceAttachmentsStore.getState().setWorkspaceAttachments({
-              scopeKey: buildDraftWorkspaceAttachmentScopeKey(draftId),
-              attachments: [attachment],
-            });
-            return draftId;
-          };
-
-          if (target === "tab") {
-            const workspaceId = context.workspaceId;
-            if (!workspaceId) {
-              throw new Error(t("message.actions.forkMissingWorkspace"));
-            }
-            const draftId = await prepareForkDraft();
-            navigateToWorkspace({
-              serverId: resolvedServerId,
-              workspaceId,
-              target: buildForkDraftTabTarget(draftSetup, draftId),
-            });
-            return;
-          }
-
-          const draftId = await prepareForkDraft();
+          const draftId = generateDraftId();
+          const payload = await client.buildAgentForkContext(agentId, boundary);
+          const attachment = buildChatHistoryAttachment({
+            draftId,
+            serverId: resolvedServerId,
+            agentId,
+            payload,
+            missingAttachmentMessage: t("message.actions.forkFailed"),
+          });
+          useWorkspaceAttachmentsStore.getState().setWorkspaceAttachments({
+            scopeKey: buildDraftWorkspaceAttachmentScopeKey(draftId),
+            attachments: [attachment],
+          });
           const sourceDirectory =
             context.projectPlacement?.checkout?.cwd?.trim() || context.cwd.trim() || undefined;
           if (draftSetup) {

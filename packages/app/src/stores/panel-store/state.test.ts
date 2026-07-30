@@ -119,6 +119,24 @@ describe("panel-store migration", () => {
     expect(state.diffCollapsedFoldersByWorkspace).toEqual({ ws: ["src/app"] });
   });
 
+  it("initializes selectedSubmoduleByCheckout for state persisted before submodule memory", () => {
+    const state = migratePanelState({}, 12, { isWeb: false });
+
+    expect(state.selectedSubmoduleByCheckout).toEqual({});
+  });
+
+  it("keeps remembered submodule selections and drops malformed entries", () => {
+    const state = migratePanelState(
+      { selectedSubmoduleByCheckout: { "server-1::/tmp/repo": "packages/vendor", bad: 7 } },
+      13,
+      { isWeb: false },
+    );
+
+    expect(state.selectedSubmoduleByCheckout).toEqual({
+      "server-1::/tmp/repo": "packages/vendor",
+    });
+  });
+
   it("drops persisted compact panel state so cold starts return to content", () => {
     const state = migratePanelState(
       { mobileView: "agent-list", mobilePanel: { target: "file-explorer", revision: 42 } },

@@ -53,6 +53,7 @@ import { ICON_SIZE, type Theme } from "@/styles/theme";
 import type { DraftCommandConfig } from "@/hooks/use-agent-commands-query";
 import { encodeImages } from "@/utils/encode-images";
 import { focusWithRetries } from "@/utils/web-focus";
+import { resolveSessionAgent } from "@/utils/agent-snapshots";
 import {
   cancelComposerAgent,
   dispatchComposerAgentMessage,
@@ -216,7 +217,10 @@ function buildRealtimeVoiceButtonStyle(
 
 function buildAgentStateSelector(serverId: string, agentId: string) {
   return (state: ReturnType<typeof useSessionStore.getState>) => {
-    const agent = state.sessions[serverId]?.agents?.get(agentId) ?? null;
+    // Resolve across both directories: an active agent hydrated without a project
+    // placement lives in `agentDetails`, and reading only `agents` left the
+    // composer believing it had no status — hiding Stop for the whole run.
+    const agent = resolveSessionAgent(state.sessions[serverId], agentId);
     return {
       status: agent?.status ?? null,
       contextWindowMaxTokens: agent?.lastUsage?.contextWindowMaxTokens ?? null,

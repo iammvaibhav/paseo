@@ -395,6 +395,8 @@ interface AgentSession {
   setModel?(modelId: string | null): Promise<void>;
   setThinkingOption?(thinkingOptionId: string | null): Promise<void | AgentProviderNotice>;
   setFeature?(featureId: string, value: unknown): Promise<void>;
+  revertConversation?(input: { messageId: string }): Promise<void>;
+  forkSessionForNewAgent?(boundary?: AgentForkBoundary): Promise<AgentPersistenceHandle>;
   tryHandleOutOfBand?(prompt: AgentPromptInput): {
     run(ctx: { emit: (event: AgentStreamEvent) => void }): Promise<void>;
   } | null;
@@ -402,6 +404,10 @@ interface AgentSession {
 ```
 
 `setMode` and `setThinkingOption` may return an `AgentProviderNotice` when the provider knows the change needs user-facing context. For example, providers that stage changes until the next turn should return an `info` notice while a turn is already running. The app renders the notice generically as a toast; provider-specific lifecycle behavior stays in the provider implementation.
+
+`forkSessionForNewAgent` is how a provider opts into **native fork**. Fork chat creates a sibling agent that inherits the source's history; without this hook the daemon falls back to seeding a fresh session with a rendered chat-history text attachment, which loses the provider's own context and prompt cache. Implement it when the provider has a way to produce a NEW session carrying existing context **without mutating the source session** — Claude's SDK `forkSession`, or OMP's append-only session file, which Paseo forks by prefix-copying to a new file (`providers/omp/fork-session.ts`). A provider's in-place rewind primitive (OMP `branch`, Pi `navigateTree`) is the wrong tool: it mutates the live session.
+
+The optional `boundary` names the assistant turn the fork's history ends at, addressed by the provider id of the **user message that opened that turn** (see [timeline-sync.md](timeline-sync.md#durable-item-anchors) for why that is the anchor). Throw when the boundary is not resolvable in the provider's own history — `forkAgentToSibling` catches it and degrades to the timeline-accurate snapshot, which is strictly better than silently forking a wider history. With no boundary, fork up to the last completed turn; if a turn is in flight, stop at the last user message instead, because a session whose head is a half-written assistant turn can end on an unanswered tool call and is not a valid point to append a new prompt.
 
 ### Steps
 

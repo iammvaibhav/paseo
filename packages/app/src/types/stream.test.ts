@@ -1497,6 +1497,7 @@ describe("turn lifecycle events", () => {
       {
         kind: "user_message",
         id: "provider-owned-submitted",
+        messageId: "provider-owned-submitted",
         clientMessageId: submittedPrompt.id,
         text: submittedPrompt.text,
         timestamp: submittedPrompt.timestamp,

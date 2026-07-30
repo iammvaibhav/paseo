@@ -1,9 +1,17 @@
+import { readFile } from "node:fs/promises";
 import { setImmediate as waitForImmediate } from "node:timers/promises";
 import { describe, expect, test } from "vitest";
 
 import type { PaseoToolCatalog } from "../../tools/types.js";
 import type { OmpNoTurnScheduler, OmpProviderIdleScheduler } from "./agent.js";
 import { OmpHarness } from "./test-utils/omp-harness.js";
+
+function forkedEntryIds(contents: string): Array<string | undefined> {
+  return contents
+    .split("\n")
+    .filter((line) => line.trim())
+    .map((line) => (JSON.parse(line) as { id?: string }).id);
+}
 
 class ManualIdleScheduler implements OmpProviderIdleScheduler {
   private readonly retries: Array<() => void> = [];
@@ -636,6 +644,60 @@ describe("OMP agent client and session", () => {
       { type: "user_message", text: "next step", messageId: "user-1" },
       { type: "assistant_message", text: "on it", messageId: "omp-assistant-1" },
     ]);
+  });
+
+  test("forks a resumed session into a new session file without touching the source", async () => {
+    const omp = new OmpHarness();
+    await omp.resume({
+      user: { id: "user-history", text: "continue the audit" },
+      assistant: { id: "assistant-history", text: "audit context restored" },
+    });
+    const source = omp.launchConfiguration().session;
+    if (!source) throw new Error("resumed OMP launch has no session file");
+    const sourceBefore = await readFile(source, "utf8");
+
+    const handle = await omp.forkSession();
+
+    expect(handle.provider).toBe("omp");
+    expect(handle.nativeHandle).not.toBe(source);
+    expect(handle.sessionId).not.toBe("omp-session-1");
+    // The fork is a distinct session file carrying the same history.
+    expect(await readFile(source, "utf8")).toBe(sourceBefore);
+    expect(forkedEntryIds(await readFile(handle.nativeHandle ?? "", "utf8"))).toEqual([
+      handle.sessionId,
+      "user-history",
+      "assistant-history",
+    ]);
+  });
+
+  test("a mid-turn fork cuts at the last prompt instead of a half-written turn", async () => {
+    const omp = new OmpHarness();
+    await omp.resume({
+      user: { id: "user-history", text: "continue the audit" },
+      assistant: { id: "assistant-history", text: "audit context restored" },
+    });
+    await omp.requireStartTurn("keep going");
+
+    const handle = await omp.forkSession();
+
+    // The still-streaming assistant turn is left behind; the caller carries it
+    // forward as in-flight context text instead.
+    expect(forkedEntryIds(await readFile(handle.nativeHandle ?? "", "utf8"))).toEqual([
+      handle.sessionId,
+      "user-history",
+    ]);
+  });
+
+  test("rejects a fork boundary the OMP session file does not contain", async () => {
+    const omp = new OmpHarness();
+    await omp.resume({
+      user: { id: "user-history", text: "continue the audit" },
+      assistant: { id: "assistant-history", text: "audit context restored" },
+    });
+
+    await expect(omp.forkSession({ userMessageId: "user-not-here" })).rejects.toThrow(
+      /no entry user-not-here/,
+    );
   });
 
   test("re-emitted user message_end frames dedupe by native entry id", async () => {

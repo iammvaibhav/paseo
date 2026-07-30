@@ -5,6 +5,7 @@ import {
   type ExplorerTab,
 } from "../explorer-tab-memory";
 import { type ExplorerCheckoutContext } from "../explorer-checkout-context";
+import { sanitizeSelectedSubmoduleByCheckout } from "../explorer-submodule-memory";
 
 export type MobilePanelView = "agent" | "agent-list" | "file-explorer";
 
@@ -267,6 +268,9 @@ export function migratePanelState(
   ) {
     state.diffCollapsedFoldersByWorkspace = {};
   }
+  state.selectedSubmoduleByCheckout = sanitizeSelectedSubmoduleByCheckout(
+    state.selectedSubmoduleByCheckout,
+  );
   if (typeof state.explorerShowHiddenFiles !== "boolean") {
     state.explorerShowHiddenFiles = true;
   }

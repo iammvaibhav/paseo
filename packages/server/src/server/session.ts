@@ -6508,6 +6508,16 @@ export class Session {
         images: msg.images,
         attachments: msg.attachments,
         messageId: msg.messageId,
+        ...(msg.boundaryUserMessageId || msg.boundaryCursor || msg.boundaryMessageId
+          ? {
+              boundary: {
+                ...(msg.boundaryUserMessageId ? { userMessageId: msg.boundaryUserMessageId } : {}),
+                ...(msg.boundaryCursor ? { cursor: msg.boundaryCursor } : {}),
+                ...(msg.boundaryMessageId ? { messageId: msg.boundaryMessageId } : {}),
+              },
+            }
+          : {}),
+        ...(msg.overrides ? { overrides: msg.overrides } : {}),
         logger: this.sessionLogger,
       });
       const snapshot = this.agentManager.getAgent(result.agentId);
@@ -6521,6 +6531,7 @@ export class Session {
           sourceAgentId: msg.sourceAgentId,
           agentId: result.agentId,
           strategy: result.strategy,
+          agent: snapshot ? await this.buildAgentPayload(snapshot) : null,
           error: null,
         },
       });

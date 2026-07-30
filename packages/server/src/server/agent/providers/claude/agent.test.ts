@@ -15,6 +15,8 @@ import {
   toClaudeSdkMcpConfig,
 } from "./agent.js";
 import { claudeProjectDirSync } from "./project-dir.js";
+import { realClaudeRewindSdk } from "./rewind.js";
+import { FakeClaudeSdk } from "./test-rewind-claude-sdk.js";
 import { streamSession } from "../test-utils/session-stream-adapter.js";
 import type { AgentSession, AgentTimelineItem, AgentStreamEvent } from "../../agent-sdk-types.js";
 
@@ -1276,13 +1278,85 @@ describe("ClaudeAgentClient.listImportableSessions", () => {
   });
 });
 
+interface QueryFactoryForTurnsOptions {
+  getContextUsage?: ReturnType<typeof vi.fn>;
+  model?: string;
+}
+
+/**
+ * Streams one canned batch of SDK messages per submitted prompt, the way the real
+ * Claude query replays a turn back into the session.
+ */
+function createQueryFactoryForTurns(
+  turns: Array<Array<Record<string, unknown>>>,
+  options?: QueryFactoryForTurnsOptions,
+) {
+  return vi.fn(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
+    const queuedMessages: Array<Record<string, unknown>> = [];
+    const waiters: Array<() => void> = [];
+    let turnIndex = 0;
+    const closedRef = { value: false };
+    const getContextUsage = options?.getContextUsage ?? vi.fn(async () => undefined);
+
+    function wakeNextWaiter() {
+      const waiter = waiters.shift();
+      waiter?.();
+    }
+
+    function enqueue(message: Record<string, unknown>) {
+      queuedMessages.push(message);
+      wakeNextWaiter();
+    }
+
+    void (async () => {
+      for await (const _ of prompt) {
+        const turnMessages = turns[turnIndex] ?? [];
+        turnIndex += 1;
+        for (const message of turnMessages) {
+          enqueue(message);
+        }
+      }
+      closedRef.value = true;
+      wakeNextWaiter();
+    })();
+
+    return {
+      next: vi.fn(async () => {
+        while (queuedMessages.length === 0 && !closedRef.value) {
+          const { promise, resolve } = Promise.withResolvers<void>();
+          waiters.push(resolve);
+          await promise;
+        }
+        if (queuedMessages.length === 0) {
+          return { done: true, value: undefined };
+        }
+        return { done: false, value: queuedMessages.shift() };
+      }),
+      interrupt: vi.fn(async () => undefined),
+      return: vi.fn(async () => {
+        closedRef.value = true;
+        wakeNextWaiter();
+        return undefined;
+      }),
+      close: vi.fn(() => {
+        closedRef.value = true;
+        wakeNextWaiter();
+      }),
+      setPermissionMode: vi.fn(async () => undefined),
+      setModel: vi.fn(async () => undefined),
+      getContextUsage,
+      supportedModels: vi.fn(async () => []),
+      supportedCommands: vi.fn(async () => []),
+      rewindFiles: vi.fn(async () => ({ canRewind: true })),
+      [Symbol.asyncIterator]() {
+        return this;
+      },
+    };
+  });
+}
+
 describe("ClaudeAgentSession context window usage", () => {
   const logger = createTestLogger();
-
-  interface QueryFactoryForTurnsOptions {
-    getContextUsage?: ReturnType<typeof vi.fn>;
-    model?: string;
-  }
 
   async function createSessionForTest(): Promise<TestClaudeSession> {
     const client = new ClaudeAgentClient({ logger, resolveBinary: async () => "/test/claude/bin" });
@@ -1315,74 +1389,6 @@ describe("ClaudeAgentSession context window usage", () => {
       events.push(event);
     }
     return events;
-  }
-
-  function createQueryFactoryForTurns(
-    turns: Array<Array<Record<string, unknown>>>,
-    options?: QueryFactoryForTurnsOptions,
-  ) {
-    return vi.fn(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
-      const queuedMessages: Array<Record<string, unknown>> = [];
-      const waiters: Array<() => void> = [];
-      let turnIndex = 0;
-      const closedRef = { value: false };
-      const getContextUsage = options?.getContextUsage ?? vi.fn(async () => undefined);
-
-      function wakeNextWaiter() {
-        const waiter = waiters.shift();
-        waiter?.();
-      }
-
-      function enqueue(message: Record<string, unknown>) {
-        queuedMessages.push(message);
-        wakeNextWaiter();
-      }
-
-      void (async () => {
-        for await (const _ of prompt) {
-          const turnMessages = turns[turnIndex] ?? [];
-          turnIndex += 1;
-          for (const message of turnMessages) {
-            enqueue(message);
-          }
-        }
-        closedRef.value = true;
-        wakeNextWaiter();
-      })();
-
-      return {
-        next: vi.fn(async () => {
-          while (queuedMessages.length === 0 && !closedRef.value) {
-            await new Promise<void>((resolve) => {
-              waiters.push(resolve);
-            });
-          }
-          if (queuedMessages.length === 0) {
-            return { done: true, value: undefined };
-          }
-          return { done: false, value: queuedMessages.shift() };
-        }),
-        interrupt: vi.fn(async () => undefined),
-        return: vi.fn(async () => {
-          closedRef.value = true;
-          wakeNextWaiter();
-          return undefined;
-        }),
-        close: vi.fn(() => {
-          closedRef.value = true;
-          wakeNextWaiter();
-        }),
-        setPermissionMode: vi.fn(async () => undefined),
-        setModel: vi.fn(async () => undefined),
-        getContextUsage,
-        supportedModels: vi.fn(async () => []),
-        supportedCommands: vi.fn(async () => []),
-        rewindFiles: vi.fn(async () => ({ canRewind: true })),
-        [Symbol.asyncIterator]() {
-          return this;
-        },
-      };
-    });
   }
 
   function createInitMessage(sessionId = "session-1"): Record<string, unknown> {
@@ -2493,6 +2499,123 @@ describe("ClaudeAgentSession context window usage", () => {
         messageId: "assistant-third-party-1",
       },
     ]);
+  });
+});
+
+describe("ClaudeAgentSession native fork", () => {
+  const logger = createTestLogger();
+
+  function turnMessages(index: number, includeInit: boolean): Array<Record<string, unknown>> {
+    const messages: Array<Record<string, unknown>> = [];
+    if (includeInit) {
+      messages.push({
+        type: "system",
+        subtype: "init",
+        session_id: "session-1",
+        permissionMode: "default",
+        model: "claude-sonnet-4-6",
+      });
+    }
+    messages.push({
+      type: "user",
+      session_id: "session-1",
+      uuid: `user-${index}`,
+      message: { role: "user", content: [{ type: "text", text: `prompt ${index}` }] },
+    });
+    messages.push({
+      type: "assistant",
+      session_id: "session-1",
+      uuid: `assistant-${index}`,
+      message: {
+        id: `msg_${index}`,
+        type: "message",
+        role: "assistant",
+        model: "claude-sonnet-4-6",
+        content: [{ type: "text", text: `answer ${index}` }],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    });
+    messages.push({
+      type: "result",
+      subtype: "success",
+      duration_ms: 10,
+      duration_api_ms: 8,
+      is_error: false,
+      num_turns: 1,
+      result: "",
+      stop_reason: null,
+      total_cost_usd: 0,
+      usage: {},
+      permission_denials: [],
+      uuid: `result-${index}`,
+      session_id: "session-1",
+    });
+    return messages;
+  }
+
+  // Two completed turns: anchors end up as (user-1 -> assistant-1) and
+  // (user-2 -> assistant-2), so a boundary can name either turn.
+  async function createSessionWithTwoTurns(): Promise<AgentSession> {
+    const client = new ClaudeAgentClient({
+      logger,
+      queryFactory: createQueryFactoryForTurns([turnMessages(1, true), turnMessages(2, false)]),
+      resolveBinary: async () => "/test/claude/bin",
+    });
+    const session = await client.createSession({ provider: "claude", cwd: process.cwd() });
+    for (const prompt of ["prompt 1", "prompt 2"]) {
+      for await (const _ of streamSession(session, prompt)) {
+        // drain until the turn terminates
+      }
+    }
+    return session;
+  }
+
+  function stubForkSdk(): FakeClaudeSdk {
+    const claude = new FakeClaudeSdk();
+    vi.spyOn(realClaudeRewindSdk, "forkSession").mockImplementation(
+      async (sessionId: string, options: { upToMessageId: string }) =>
+        await claude.forkSession(sessionId, options),
+    );
+    return claude;
+  }
+
+  test("forks at the last completed turn when no boundary is requested", async () => {
+    const claude = stubForkSdk();
+    const session = await createSessionWithTwoTurns();
+
+    await expect(session.forkSessionForNewAgent?.()).resolves.toMatchObject({
+      provider: "claude",
+      sessionId: "forked-session-1",
+      nativeHandle: "forked-session-1",
+    });
+
+    expect(claude.recordedForks).toEqual([{ upToMessageId: "assistant-2" }]);
+    await session.close();
+  });
+
+  test("forks at the boundary turn's assistant message", async () => {
+    const claude = stubForkSdk();
+    const session = await createSessionWithTwoTurns();
+
+    await expect(
+      session.forkSessionForNewAgent?.({ userMessageId: "user-1" }),
+    ).resolves.toMatchObject({ sessionId: "forked-session-1" });
+
+    expect(claude.recordedForks).toEqual([{ upToMessageId: "assistant-1" }]);
+    await session.close();
+  });
+
+  test("throws instead of forking a different point when the boundary is unknown", async () => {
+    const claude = stubForkSdk();
+    const session = await createSessionWithTwoTurns();
+
+    await expect(
+      session.forkSessionForNewAgent?.({ userMessageId: "user-missing" }),
+    ).rejects.toThrow("Claude fork boundary user-missing is not in the tracked conversation");
+
+    expect(claude.recordedForks).toEqual([]);
+    await session.close();
   });
 });
 

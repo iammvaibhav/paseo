@@ -70,6 +70,7 @@ import {
   type AgentClient,
   type AgentCreateSessionOptions,
   type AgentFeature,
+  type AgentForkBoundary,
   type AgentLaunchContext,
   type AgentMetadata,
   type AgentMode,
@@ -2587,17 +2588,50 @@ class ClaudeAgentSession implements AgentSession {
   // context in a fresh sibling agent.
   //
   // Boundary choice:
-  //   - Mid-turn (agent running): fork up to the latest USER message so the
-  //     fork includes the prompt currently being worked on. We deliberately do
-  //     NOT fork up to the partial in-flight assistant message — it can end on
-  //     an unanswered tool_use, an invalid point to resume + append a new turn.
-  //     The fork re-does the in-progress work fresh with full context.
-  //   - Idle: fork up to the last completed assistant message so the fork
-  //     includes the whole final turn.
-  async forkSessionForNewAgent(): Promise<AgentPersistenceHandle> {
+  //   - Explicit boundary (mid-chat fork from an earlier turn): translate the
+  //     requested user message id the way rewind does, then fork up to that
+  //     turn's assistant message so the fork's history ends after the turn the
+  //     user pointed at. `activeForegroundTurnId` is irrelevant here — the
+  //     boundary names a historical point, not "now". A boundary we cannot
+  //     resolve throws instead of falling back to the latest turn: the caller
+  //     degrades to a timeline-accurate snapshot fork, which is always safer
+  //     than forking a point the user did not ask for.
+  //   - No boundary, mid-turn (agent running): fork up to the latest USER
+  //     message so the fork includes the prompt currently being worked on. We
+  //     deliberately do NOT fork up to the partial in-flight assistant message
+  //     — it can end on an unanswered tool_use, an invalid point to resume +
+  //     append a new turn. The fork re-does the in-progress work fresh with
+  //     full context.
+  //   - No boundary, idle: fork up to the last completed assistant message so
+  //     the fork includes the whole final turn.
+  async forkSessionForNewAgent(boundary?: AgentForkBoundary): Promise<AgentPersistenceHandle> {
     if (!this.claudeSessionId) {
       throw new Error("Claude session is not ready to fork");
     }
+    const upToMessageId = boundary
+      ? this.resolveForkBoundaryMessageId(boundary.userMessageId)
+      : this.resolveLatestForkMessageId();
+    const fork = await realClaudeRewindSdk.forkSession(this.claudeSessionId, { upToMessageId });
+    return {
+      provider: "claude",
+      sessionId: fork.sessionId,
+      nativeHandle: fork.sessionId,
+      metadata: { ...this.config },
+    };
+  }
+
+  private resolveForkBoundaryMessageId(userMessageId: string): string {
+    const targetUserMessageId = this.resolveClaudeMessageId(userMessageId);
+    const anchor = this.rewindTurnAnchors.find(
+      (candidate) => candidate.userMessageId === targetUserMessageId,
+    );
+    if (!anchor) {
+      throw new Error(`Claude fork boundary ${userMessageId} is not in the tracked conversation`);
+    }
+    return anchor.assistantMessageId ?? anchor.userMessageId;
+  }
+
+  private resolveLatestForkMessageId(): string {
     const lastAnchor = this.rewindTurnAnchors[this.rewindTurnAnchors.length - 1];
     if (!lastAnchor) {
       throw new Error("Claude session has no turn to fork from");
@@ -2609,13 +2643,7 @@ class ClaudeAgentSession implements AgentSession {
     if (!upToMessageId) {
       throw new Error("Claude session has no message to fork from");
     }
-    const fork = await realClaudeRewindSdk.forkSession(this.claudeSessionId, { upToMessageId });
-    return {
-      provider: "claude",
-      sessionId: fork.sessionId,
-      nativeHandle: fork.sessionId,
-      metadata: { ...this.config },
-    };
+    return upToMessageId;
   }
 
   private resolveSlashCommandInvocation(prompt: AgentPromptInput): SlashCommandInvocation | null {

@@ -10,6 +10,7 @@ import {
   type AgentClient,
   type AgentFeature,
   type AgentLaunchContext,
+  type AgentForkBoundary,
   type AgentMetadata,
   type AgentMode,
   type AgentModelDefinition,
@@ -37,6 +38,7 @@ import {
   type ToolCallDetail,
 } from "../../agent-sdk-types.js";
 import type { PaseoToolCatalog } from "../../tools/types.js";
+import { forkOmpSessionFile, type OmpSessionForkBoundary } from "./fork-session.js";
 import { importSessionFromPersistence } from "../../provider-session-import.js";
 import { runProviderTurn } from "../provider-runner.js";
 import {
@@ -1223,6 +1225,35 @@ export class OmpAgentSession implements AgentSession {
     await this.runtimeSession.branch(target);
     await this.refreshState();
     this.activeToolCalls.clear();
+  }
+
+  /**
+   * Fork the OMP session into a NEW session file, leaving this session (and any
+   * in-flight turn) untouched. `branch` is deliberately unused: it rewinds the
+   * live session in place, which is the opposite of a fork. See `fork-session.ts`
+   * for why a prefix copy of the JSONL file is a faithful session fork.
+   *
+   * Boundary choice:
+   *   - Explicit boundary: keep the whole turn opened by that user prompt.
+   *   - Mid-turn, no boundary: cut at the last prompt, so the fork's head is a
+   *     completed entry rather than a half-written assistant turn. The caller
+   *     carries the in-flight work in as context text.
+   *   - Idle, no boundary: copy the session up to its head.
+   */
+  async forkSessionForNewAgent(boundary?: AgentForkBoundary): Promise<AgentPersistenceHandle> {
+    const handle = this.describePersistence();
+    const sessionFile = handle?.nativeHandle;
+    if (!handle || !sessionFile) {
+      throw new Error("OMP session has no session file to fork");
+    }
+    const forkBoundary: OmpSessionForkBoundary | null = boundary
+      ? { kind: "user_entry", entryId: boundary.userMessageId }
+      : null;
+    const forked = await forkOmpSessionFile({
+      sessionFile,
+      boundary: forkBoundary ?? (this.activeTurnId ? { kind: "last_prompt" } : null),
+    });
+    return { ...handle, sessionId: forked.sessionId, nativeHandle: forked.sessionFile };
   }
 
   async close(): Promise<void> {

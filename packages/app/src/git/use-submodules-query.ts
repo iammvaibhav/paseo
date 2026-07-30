@@ -40,6 +40,20 @@ function buildTree(flat: SubmoduleEntry[]): SubmoduleInfo[] {
   return roots;
 }
 
+/** Depth-first lookup by path; submodules can nest, so a flat scan misses children. */
+export function findSubmodule(nodes: SubmoduleInfo[], path: string): SubmoduleInfo | null {
+  for (const node of nodes) {
+    if (node.path === path) {
+      return node;
+    }
+    const match = findSubmodule(node.children, path);
+    if (match) {
+      return match;
+    }
+  }
+  return null;
+}
+
 interface UseSubmodulesQueryOptions {
   serverId: string;
   cwd: string;
@@ -67,6 +81,9 @@ export function useSubmodulesQuery({ serverId, cwd, enabled = true }: UseSubmodu
   return {
     submodules: query.data ?? [],
     isLoading: query.isLoading,
+    // Distinguishes "not fetched yet" from "fetched, no submodules": a remembered
+    // submodule selection may only be discarded once the real list has arrived.
+    isResolved: query.data !== undefined,
     hasSubmodules: (query.data?.length ?? 0) > 0,
   };
 }

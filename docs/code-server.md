@@ -19,9 +19,9 @@ Artifacts live in `scripts/code-server/`:
 - `config.local.yaml` / `config.blrofc3.yaml` / `config.iammvaibhav.yaml`
 - `sh.paseo.code-server.plist` — macOS LaunchAgent
 - `paseo-code-server.service` — Linux user systemd unit
-- `user-settings.json` — shared defaults (trust off, no welcome, hidden activity bar)
+- `user-settings.json` — shared defaults (trust off, no welcome, hidden activity bar, language-server + watcher/search excludes)
 - `paseo-bridge/` — the in-place file-open extension (see below)
-- `install.sh` — install/update the standalone binary, write config + settings, install the bridge extension, restart the service
+- `install.sh` — install/update the standalone binary, write config + settings, install the bridge extension, install the Python language extensions, restart the service
 - `sync-user-data.sh` — rsync User/ + extensions/ from this machine to the remotes
 
 Binary: standalone install under `~/.local/bin/code-server` (latest, or pin with `CODE_SERVER_VERSION`).
@@ -34,6 +34,7 @@ Binary: standalone install under `~/.local/bin/code-server` (latest, or pin with
 PASEO_SKIP_CODE_SERVER=1 ./scripts/deploy.sh              # daemon only
 PASEO_SYNC_CODE_SERVER_USER_DATA=1 ./scripts/deploy.sh    # also rsync full User/ + extensions/
 CODE_SERVER_VERSION=4.127.0 ./scripts/deploy.sh           # pin binary version
+PASEO_SKIP_LANGUAGE_EXTENSIONS=1 ./scripts/deploy.sh      # skip ms-python.python + basedpyright
 ```
 
 Or deploy one host directly:
@@ -118,6 +119,68 @@ Two mechanisms make VS Code Web feel instant (Electron desktop only):
 The app calls the broker **same-origin** from the workbench page via code-server's built-in reverse proxy — `fetch("/proxy/8766/broker/open", …)` run through `webview.executeJavaScript` — so there is no new VPN-exposed port and no CORS/insecure-origin change. Keep `BROKER_PORT` in `extension.js` in sync with `CODE_SERVER_BRIDGE_PORT` in `packages/app/src/workspace/browser-editor-url.ts`.
 
 The extension is plain CommonJS (no build step). **Copying the folder into `extensions/` is not enough** — code-server only loads extensions registered in `~/.local/share/code-server/extensions/extensions.json`, so a plain copy is silently ignored (`code-server --list-extensions` won't show it and nothing binds `8766`). `install.sh` therefore packages a `.vsix` with `vsce` and runs `code-server --install-extension …vsix --force`, then restarts the service (skip the whole step with `PASEO_SKIP_CODE_SERVER_EXTENSION=1`). It activates on `onStartupFinished` while a code-server window is open. The app also targets each bridge-open request to the workspace that initiated it, so a retained inactive `BrowserPane` cannot consume the request before it reaches the broker. Verify with `code-server --list-extensions` (expect `paseo.paseo-bridge`) and `curl http://127.0.0.1:8765/proxy/8766/health` while a window is open; health should report `paseo-bridge-broker`.
+
+## Code navigation (Python / TypeScript)
+
+Two different owners, and mixing them up is what makes navigation silently regress
+after a deploy:
+
+| Layer                                               | Owner                                       | Lives in                                                                                |
+| --------------------------------------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Language extensions, host-agnostic editor keys      | **Paseo** — every host                      | `install.sh`, this Mac's `User/settings.json`, `scripts/code-server/user-settings.json` |
+| Anything describing a repo's content or interpreter | **That repo** — only where it's checked out | e.g. stackmod's `pyrightconfig.json` + `scripts/setup-ide.sh`                           |
+
+**Paseo installs the language servers, on every host.** A repo's `pyrightconfig.json` is
+inert without a language server, and **Pylance is Microsoft-licensed and is not on Open
+VSX**, so code-server can never install it. `deploy_language_extensions()` installs
+`ms-python.python` + `detachhead.basedpyright` (the maintained pyright fork that _is_ on
+Open VSX), `grep -qx` against `--list-extensions` making reruns a true no-op. Skip with
+`PASEO_SKIP_LANGUAGE_EXTENSIONS=1`.
+
+The installer owns this because `sync-user-data.sh`
+(`PASEO_SYNC_CODE_SERVER_USER_DATA=1`) does `rsync -az --delete` on `extensions/` —
+pushing this Mac's set over the remotes and wiping anything the Mac lacks. Installing
+from `install.sh` makes that self-healing and a brand-new remote navigable out of the
+box. **Keep both extensions installed on the Mac** too, or a user-data sync opens a
+window where the remotes lose them.
+
+**The settings push merges; it does not clobber.** `sync_code_server_settings_to_remotes()`
+used to `rsync` this Mac's whole `settings.json` over every remote, so any key the Mac
+lacked was _deleted_ there. That silently reverted stackmod's `make setup-ide` on every
+deploy — including `python.defaultInterpreterPath`, without which basedpyright cannot find
+the venv. It now reads the remote's current file, merges (`jq -s '.[0] * .[1]'`, so nested
+`files.watcherExclude` / `search.exclude` objects merge key-by-key) and pushes the result.
+The merge runs on the Mac, so no remote `jq` is required.
+
+Consequences, both intended:
+
+- This Mac stays authoritative for every key it **defines**; a remote's own host-level
+  keys survive.
+- Deploy can no longer **delete** a key from a remote. Removing a key here stops
+  overriding it, it does not unset it. Unset it on the remote directly.
+
+**Keep repo-shaped keys off the Mac.** They would be pushed to every host, where they are
+wrong: `search.exclude: {"data": true}` tuned for stackmod's 94 GB `data/` dir would hide
+`~/openalgo/data` on `iammvaibhav`, and `python.defaultInterpreterPath` is a Linux path
+that no Mac should broadcast. Those belong to the repo, which merges them into its own
+host's settings and is now preserved. Only host-agnostic keys go on the Mac and in
+`scripts/code-server/user-settings.json` (the bootstrap fallback for a remote with no live
+file yet) — merge them in, never hand-edit:
+
+```bash
+jq -s '.[0] * .[1]' ~/.local/share/code-server/User/settings.json patch.json > /tmp/x \
+  && mv /tmp/x ~/.local/share/code-server/User/settings.json
+```
+
+`python.languageServer: "None"` earns its place there: `install.sh` now puts basedpyright
+on every host, and this stops `ms-python` from starting its own (absent) server and
+fighting it. Generic `files.watcherExclude` entries matter more than they look — the
+watcher does **not** respect `.gitignore`, so an unexcluded build/cache dir gets fully
+walked by the extension host.
+
+Per-repo prerequisite, not Paseo's job: the venv a repo's `pyrightconfig.json` points at
+(e.g. `~/.venvs/stackmod-ide`, created by that repo's `make setup-ide`) must exist on the
+host.
 
 ## Host file browser
 

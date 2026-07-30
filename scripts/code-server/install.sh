@@ -165,6 +165,26 @@ deploy_extension() {
   log "Installed paseo-bridge extension (restart below activates it)"
 }
 
+deploy_language_extensions() {
+  # pyrightconfig.json in a repo is inert unless the language server exists.
+  # Pylance is Microsoft-licensed and is not on Open VSX, so code-server can
+  # never install it; basedpyright is the maintained pyright fork that is.
+  if [[ "${PASEO_SKIP_LANGUAGE_EXTENSIONS:-0}" == "1" ]]; then
+    log "Skipping language extensions (PASEO_SKIP_LANGUAGE_EXTENSIONS=1)"
+    return
+  fi
+  local ext
+  for ext in ms-python.python detachhead.basedpyright; do
+    if "$BIN" --list-extensions 2>/dev/null | grep -qx "$ext"; then
+      log "Language extension present: $ext"
+      continue
+    fi
+    log "Installing language extension: $ext"
+    "$BIN" --install-extension "$ext" --force >/dev/null 2>&1 \
+      || log "Warning: failed to install $ext (Open VSX unreachable?)"
+  done
+}
+
 deploy_macos_service() {
   local plist_src="${SCRIPTS_DIR}/sh.paseo.code-server.plist"
   local plist_dst="${HOME}/Library/LaunchAgents/sh.paseo.code-server.plist"
@@ -269,6 +289,7 @@ main() {
   ensure_binary
   deploy_files
   deploy_extension
+  deploy_language_extensions
   case "$(uname -s)" in
     Darwin) deploy_macos_service ;;
     Linux) deploy_linux_service ;;

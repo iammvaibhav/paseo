@@ -657,6 +657,33 @@ export interface AgentForkContextOptions {
   requestId?: string;
 }
 
+export interface ForkAgentOptions extends SendMessageOptions {
+  // Fork boundary: the assistant turn the fork's history ends at. All absent
+  // means "fork everything up to now". `boundaryUserMessageId` is the provider
+  // id of the user message that opened that turn, the only anchor a native
+  // provider session fork can address.
+  boundaryUserMessageId?: string;
+  boundaryCursor?: FetchAgentTimelineCursor;
+  boundaryMessageId?: string;
+  // Config the fork should run with when the fork composer changed it.
+  overrides?: Partial<AgentSessionConfig>;
+}
+
+/** Wire fields for the fork boundary, omitting anchors the caller did not supply. */
+function buildForkRequestBoundary(options: ForkAgentOptions | undefined): {
+  boundaryUserMessageId?: string;
+  boundaryCursor?: FetchAgentTimelineCursor;
+  boundaryMessageId?: string;
+} {
+  return {
+    ...(options?.boundaryUserMessageId
+      ? { boundaryUserMessageId: options.boundaryUserMessageId }
+      : {}),
+    ...(options?.boundaryCursor ? { boundaryCursor: options.boundaryCursor } : {}),
+    ...(options?.boundaryMessageId ? { boundaryMessageId: options.boundaryMessageId } : {}),
+  };
+}
+
 type AgentRefreshedStatusPayload = z.infer<typeof AgentRefreshedStatusPayloadSchema>;
 type RestartRequestedStatusPayload = z.infer<typeof RestartRequestedStatusPayloadSchema>;
 type ShutdownRequestedStatusPayload = z.infer<typeof ShutdownRequestedStatusPayloadSchema>;
@@ -2947,15 +2974,20 @@ export class DaemonClient {
 
   /**
    * Fork a (typically running) source agent into a new sibling agent that
-   * inherits its history up to the last completed turn, then run `text` as the
-   * new agent's first turn. The daemon picks native session fork or a
-   * chat-history snapshot; either way this resolves to the new agent's id.
+   * inherits its history up to the fork boundary (the last completed turn when
+   * no boundary is given), then run `text` as the new agent's first turn. The
+   * daemon picks native session fork or a chat-history snapshot; either way this
+   * resolves to the new agent's id plus its snapshot when the daemon sent one.
    */
   async forkAgent(
     sourceAgentId: string,
     text: string,
-    options?: SendMessageOptions,
-  ): Promise<{ agentId: string; strategy: "native" | "snapshot" | null }> {
+    options?: ForkAgentOptions,
+  ): Promise<{
+    agentId: string;
+    strategy: "native" | "snapshot" | null;
+    agent: AgentSnapshotPayload | null;
+  }> {
     const requestId = this.createRequestId();
     const messageId = options?.messageId ?? crypto.randomUUID();
     const message = SessionInboundMessageSchema.parse({
@@ -2966,6 +2998,8 @@ export class DaemonClient {
       ...(messageId ? { messageId } : {}),
       ...(options?.images ? { images: options.images } : {}),
       ...(options?.attachments ? { attachments: options.attachments } : {}),
+      ...buildForkRequestBoundary(options),
+      ...(options?.overrides ? { overrides: options.overrides } : {}),
     });
     const payload = await this.sendRequest({
       requestId,
@@ -2985,7 +3019,11 @@ export class DaemonClient {
     if (payload.error || !payload.agentId) {
       throw new Error(payload.error ?? "Fork failed");
     }
-    return { agentId: payload.agentId, strategy: payload.strategy ?? null };
+    return {
+      agentId: payload.agentId,
+      strategy: payload.strategy ?? null,
+      agent: payload.agent ?? null,
+    };
   }
 
   // ============================================================================

@@ -1046,12 +1046,48 @@ sync_code_server_settings_to_remotes() {
     return
   fi
 
+  # Merge, never clobber. A remote may carry host-level keys that this Mac has
+  # no business knowing about — stackmod's `make setup-ide` merges watcher/search
+  # excludes for its 94 GB data/ dir into blrofc3's settings, and a whole-file
+  # rsync silently reverted them on every deploy. This Mac stays authoritative
+  # for the keys it defines; remote-only keys survive. The merge runs here, not
+  # on the remote, so no remote jq is required.
+  local jq_bin=""
+  jq_bin="$(command -v jq 2>/dev/null || true)"
+  if [[ -z "$jq_bin" ]]; then
+    log "Warning: jq not found; pushing settings as a whole-file copy (remote-only keys will be lost)"
+  fi
+
   log "Pushing live code-server settings to remotes ($src)"
   local host
   for host in "${REMOTE_HOSTS[@]}"; do
     log "  → $host"
     ssh -o BatchMode=yes "$host" 'mkdir -p ~/.local/share/code-server/User'
-    rsync -az "$src" "$host:~/.local/share/code-server/User/settings.json"
+
+    local payload="$src"
+    local remote_current="" merged=""
+    if [[ -n "$jq_bin" ]]; then
+      remote_current="$(mktemp)"
+      if ssh -o BatchMode=yes "$host" 'cat ~/.local/share/code-server/User/settings.json 2>/dev/null' \
+          >"$remote_current" 2>/dev/null \
+        && [[ -s "$remote_current" ]] \
+        && "$jq_bin" -e . "$remote_current" >/dev/null 2>&1; then
+        merged="$(mktemp)"
+        if "$jq_bin" -s '.[0] * .[1]' "$remote_current" "$src" >"$merged" 2>/dev/null; then
+          payload="$merged"
+        else
+          log "    Warning: settings merge failed; pushing this Mac's file as-is"
+          rm -f "$merged"
+          merged=""
+        fi
+      fi
+      rm -f "$remote_current"
+    fi
+
+    rsync -az "$payload" "$host:~/.local/share/code-server/User/settings.json"
+    if [[ -n "$merged" ]]; then
+      rm -f "$merged"
+    fi
     ssh -o BatchMode=yes "$host" 'systemctl --user restart paseo-code-server.service'
   done
 }
