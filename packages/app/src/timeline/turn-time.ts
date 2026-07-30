@@ -70,9 +70,16 @@ export function deriveStreamTurnTiming(params: {
     flushCompletedTurn();
   }
 
+  // Optimistic prompts reserve the working footer only until the host starts
+  // producing turn content. A leftover optimistic flag after content arrives
+  // (or after a completed turn) must not pin the spinner once the agent is idle.
+  // #2484 tracked this with a separate submission lifecycle; that rework was
+  // reverted in #2596, so keep the narrow content-aware guard here.
+  const hasInFlightOptimisticPrompt = currentUserIsOptimistic && currentLastItemAt === null;
+
   return {
     byAssistantId,
     runningStartedAt,
-    isActive: isRunning || currentUserIsOptimistic,
+    isActive: isRunning || hasInFlightOptimisticPrompt,
   };
 }

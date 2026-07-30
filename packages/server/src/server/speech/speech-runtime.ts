@@ -15,6 +15,13 @@ import {
   initializeOpenAiSpeechServices,
   validateOpenAiCredentialRequirements,
 } from "./providers/openai/runtime.js";
+import {
+  getFishSpeechAvailability,
+  initializeFishSpeechServices,
+  validateFishCredentialRequirements,
+} from "./providers/fish/runtime.js";
+import type { FishSpeechProviderConfig } from "./providers/fish/config.js";
+import { FishTTS } from "./providers/fish/tts.js";
 import type { SpeechToTextProvider, TextToSpeechProvider } from "./speech-provider.js";
 import type { RequestedSpeechProviders } from "./speech-types.js";
 import type { TurnDetectionProvider } from "./turn-detection-provider.js";
@@ -314,9 +321,10 @@ function describeRequestedProviders(providers: RequestedSpeechProviders): {
 function resolveVoiceTtsLabel(
   ttsService: TextToSpeechProvider | null,
   localVoiceTtsProvider: TextToSpeechProvider | null,
-): "unavailable" | "local" | "openai" {
+): "unavailable" | "local" | "openai" | "fish" {
   if (!ttsService) return "unavailable";
   if (ttsService === localVoiceTtsProvider) return "local";
+  if (ttsService instanceof FishTTS) return "fish";
   return "openai";
 }
 
@@ -357,11 +365,13 @@ export interface SpeechService {
 export function createSpeechService(params: {
   logger: Logger;
   openaiConfig?: PaseoOpenAIConfig;
+  fishConfig?: FishSpeechProviderConfig;
   speechConfig?: PaseoSpeechConfig;
 }): SpeechService {
   const logger = params.logger.child({ module: "speech-runtime" });
   const speechConfig = params.speechConfig ?? null;
   const openaiConfig = params.openaiConfig;
+  const fishConfig = params.fishConfig;
   const providers = resolveRequestedSpeechProviders(speechConfig);
   const requestedProviders = describeRequestedProviders(providers);
 
@@ -370,12 +380,18 @@ export function createSpeechService(params: {
     openaiConfig,
     logger,
   });
+  validateFishCredentialRequirements({
+    providers,
+    fishConfig,
+    logger,
+  });
 
   logger.info(
     {
       requestedProviders,
       availability: {
         openai: getOpenAiSpeechAvailability(openaiConfig),
+        fish: getFishSpeechAvailability(fishConfig),
       },
     },
     "Speech provider reconciliation started",
@@ -514,12 +530,18 @@ export function createSpeechService(params: {
       },
       logger,
     });
+    const nextFishSpeech = initializeFishSpeechServices({
+      providers,
+      fishConfig,
+      existing: nextOpenAiSpeech,
+      logger,
+    });
 
     const previousLocalCleanup = localCleanup;
-    turnDetectionService = nextOpenAiSpeech.turnDetectionService;
-    sttService = nextOpenAiSpeech.sttService;
-    ttsService = nextOpenAiSpeech.ttsService;
-    dictationSttService = nextOpenAiSpeech.dictationSttService;
+    turnDetectionService = nextFishSpeech.turnDetectionService;
+    sttService = nextFishSpeech.sttService;
+    ttsService = nextFishSpeech.ttsService;
+    dictationSttService = nextFishSpeech.dictationSttService;
     localModelConfig = nextLocalSpeech.localModelConfig;
     localVoiceTtsProvider = nextLocalSpeech.localVoiceTtsProvider;
     localCleanup = nextLocalSpeech.cleanup;

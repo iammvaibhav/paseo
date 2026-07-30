@@ -76,6 +76,8 @@ import { getMarkdownListMarker, getMarkdownListSpacing } from "@/utils/markdown-
 import { markdownNodeContainsType } from "@/utils/markdown-ast";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import { HighlightedCodeBlock } from "@/components/highlighted-code-block";
+import { MermaidDiagram } from "@/components/mermaid-diagram";
+import { isMermaidFenceLanguage } from "@/components/mermaid-fence";
 import { splitMarkdownBlocks } from "@/utils/split-markdown-blocks";
 import { formatDuration, formatMessageTimestamp } from "@/utils/time";
 import { writeMarkdownToRichClipboard } from "@/utils/rich-clipboard";
@@ -1756,15 +1758,20 @@ export const AssistantMessage = memo(function AssistantMessage({
         _parent: ASTNode[],
         styles: MarkdownStyles,
         inheritedStyles: TextStyle = {},
-      ) => (
-        <HighlightedCodeBlock
-          key={node.key}
-          code={node.content}
-          language={node.sourceInfo}
-          inheritedStyles={inheritedStyles}
-          textStyle={styles.fence}
-        />
-      ),
+      ) => {
+        if (isMermaidFenceLanguage(node.sourceInfo)) {
+          return <MermaidDiagram key={node.key} code={node.content} />;
+        }
+        return (
+          <HighlightedCodeBlock
+            key={node.key}
+            code={node.content}
+            language={node.sourceInfo}
+            inheritedStyles={inheritedStyles}
+            textStyle={styles.fence}
+          />
+        );
+      },
       code_inline: (
         node: ASTNode,
         _children: ReactNode[],

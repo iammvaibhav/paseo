@@ -37,6 +37,43 @@ describe("deriveStreamTurnTiming", () => {
     assert.equal(timing.isActive, true);
   });
 
+  it("does not keep the working footer active for a stale optimistic prompt after turn content", () => {
+    const optimisticPrompt = {
+      ...user("optimistic", new Date("2026-05-15T00:00:00.000Z")),
+      optimistic: true as const,
+    };
+
+    const timing = deriveStreamTurnTiming({
+      agentStatus: "idle",
+      tail: [optimisticPrompt, assistant("a1", new Date("2026-05-15T00:00:07.000Z"))],
+      head: [],
+    });
+
+    assert.equal(timing.isActive, false);
+  });
+
+  it("clears optimistic activity when non-assistant turn content arrives while idle", () => {
+    const optimisticPrompt = {
+      ...user("optimistic", new Date("2026-05-15T00:00:00.000Z")),
+      optimistic: true as const,
+    };
+    const thought: StreamItem = {
+      kind: "thought",
+      id: "thought-1",
+      text: "thinking",
+      timestamp: new Date("2026-05-15T00:00:03.000Z"),
+      status: "ready",
+    };
+
+    const timing = deriveStreamTurnTiming({
+      agentStatus: "idle",
+      tail: [optimisticPrompt, thought],
+      head: [],
+    });
+
+    assert.equal(timing.isActive, false);
+  });
+
   it("does not start elapsed time from an optimistic prompt", () => {
     const optimisticPrompt = {
       ...user("optimistic", new Date("2026-05-15T00:00:00.000Z")),

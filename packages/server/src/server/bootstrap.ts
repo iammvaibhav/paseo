@@ -124,6 +124,7 @@ import { createPaseoWorktreeWorkflow } from "./worktree-session.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
 import { streamDirectoryAsZip } from "./file-download/zip-directory.js";
 import type { OpenAiSpeechProviderConfig } from "./speech/providers/openai/config.js";
+import type { FishSpeechProviderConfig } from "./speech/providers/fish/config.js";
 import type { LocalSpeechProviderConfig } from "./speech/providers/local/config.js";
 import type { RequestedSpeechProviders } from "./speech/speech-types.js";
 import { createSpeechService } from "./speech/speech-runtime.js";
@@ -350,6 +351,7 @@ function summarizeAgentMcpDebugBody(body: unknown): Record<string, unknown> {
 
 export type PaseoOpenAIConfig = OpenAiSpeechProviderConfig;
 export type PaseoLocalSpeechConfig = LocalSpeechProviderConfig;
+export type PaseoFishSpeechConfig = FishSpeechProviderConfig;
 
 export interface PaseoSpeechSttLanguages {
   dictation: string;
@@ -429,6 +431,7 @@ export interface PaseoDaemonConfig {
   appBaseUrl?: string;
   auth?: DaemonAuthConfig;
   openai?: PaseoOpenAIConfig;
+  fish?: PaseoFishSpeechConfig;
   speech?: PaseoSpeechConfig;
   voiceLlmProvider?: AgentProvider | null;
   voiceLlmProviderExplicit?: boolean;
@@ -1521,6 +1524,7 @@ export async function createPaseoDaemon(
   const speechService = createSpeechService({
     logger,
     openaiConfig: config.openai,
+    fishConfig: config.fish,
     speechConfig: config.speech,
   });
   logger.info({ elapsed: elapsed() }, "Speech service created");

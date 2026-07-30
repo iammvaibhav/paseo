@@ -535,7 +535,7 @@ export function loadConfig(
   const tunnel = resolveTunnelConfig(env, persisted, listen);
   const webUi = resolveWebUiConfig(paseoHome, env, options?.cli, persisted);
 
-  const { openai, speech } = resolveSpeechConfig({
+  const { openai, fish, speech } = resolveSpeechConfig({
     paseoHome,
     env,
     persisted,
@@ -577,6 +577,7 @@ export function loadConfig(
     appBaseUrl,
     auth: resolveAuthConfig(env, persisted),
     openai,
+    fish,
     speech,
     voiceLlmProvider: voiceLlm.provider,
     voiceLlmProviderExplicit: voiceLlm.providerExplicit,
