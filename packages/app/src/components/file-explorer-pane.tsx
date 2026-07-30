@@ -19,7 +19,11 @@ import { MaterialFileIcon } from "@/components/material-file-icon";
 import { TreeChevron, TreeIndentGuides, TREE_INDENT_PER_LEVEL } from "@/components/tree-primitives";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import type { Theme } from "@/styles/theme";
-import type { AgentFileExplorerState, ExplorerEntry } from "@/stores/session-store";
+import type {
+  AgentFileExplorerState,
+  ExplorerDirectory,
+  ExplorerEntry,
+} from "@/stores/session-store";
 import { useHosts } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
 import { useDownloadStore } from "@/stores/download-store";
@@ -29,16 +33,24 @@ import { useFileDrop } from "@/components/file-drop/use-file-drop";
 import type { DroppedItem } from "@/components/file-drop/types";
 import { useFileExplorerActions } from "@/hooks/use-file-explorer-actions";
 import { buildWorkspaceExplorerStateKey } from "@/hooks/use-file-explorer-actions";
-import { usePanelStore, type SortOption } from "@/stores/panel-store";
+import { usePanelStore, type ExpandedPathsUpdate, type SortOption } from "@/stores/panel-store";
 import { formatTimeAgo } from "@/utils/time";
 import { buildAbsoluteExplorerPath } from "@/utils/explorer-paths";
-import { filterVisibleExplorerEntries, isHiddenExplorerPath } from "@/file-explorer/visibility";
+import { isHiddenExplorerPath } from "@/file-explorer/visibility";
 import {
   droppedItemsToExplorerFiles,
   resolveExplorerDropDirectoryPath,
 } from "@/file-explorer/drop-upload";
 import { useToast } from "@/contexts/toast-context";
 import { toErrorMessage } from "@/utils/error-messages";
+import {
+  flattenExplorerTree,
+  reconcileRestoredExpandedPaths,
+  restoreExpandedDirectories,
+  setExpandedDirectoryPath,
+  showHiddenFilesAndRestoreExpandedDirectories,
+  type ExplorerTreeRow,
+} from "@/file-explorer/tree";
 import { useWorkspaceFileDragSource } from "@/attachments/use-workspace-file-drag-source";
 
 const SORT_OPTIONS: { value: SortOption }[] = [
@@ -88,7 +100,7 @@ function iconButtonStyle({ hovered, pressed }: PressableStateCallbackType & { ho
   return [styles.iconButton, (Boolean(hovered) || pressed) && styles.iconButtonHovered];
 }
 
-function treeRowKeyExtractor(row: TreeRow) {
+function treeRowKeyExtractor(row: ExplorerTreeRow) {
   return row.entry.path;
 }
 
@@ -205,11 +217,6 @@ interface FileExplorerPaneProps {
   onAddToChat?: (path: string) => void;
 }
 
-interface TreeRow {
-  entry: ExplorerEntry;
-  depth: number;
-}
-
 export function FileExplorerPane({
   serverId,
   workspaceId,
@@ -275,7 +282,7 @@ export function FileExplorerPane({
     [isExplorerLoading, pendingRequest],
   );
 
-  const treeListRef = useRef<FlatList<TreeRow>>(null);
+  const treeListRef = useRef<FlatList<ExplorerTreeRow>>(null);
 
   const hasInitializedRef = useRef(false);
 
@@ -288,9 +295,19 @@ export function FileExplorerPane({
       hasWorkspaceScope,
       hasInitializedRef,
       workspaceStateKey,
+      persistedExpandedPaths: expandedPaths,
+      showHiddenFiles,
       requestDirectoryListing,
+      setExpandedPathsForWorkspace,
     });
-  }, [hasWorkspaceScope, requestDirectoryListing, workspaceStateKey]);
+  }, [
+    expandedPaths,
+    hasWorkspaceScope,
+    requestDirectoryListing,
+    setExpandedPathsForWorkspace,
+    showHiddenFiles,
+    workspaceStateKey,
+  ]);
 
   const handleToggleDirectory = useCallback(
     (entry: ExplorerEntry) =>
@@ -367,11 +384,42 @@ export function FileExplorerPane({
 
   const handleToggleHiddenFiles = useCallback(() => {
     const willShow = !usePanelStore.getState().explorerShowHiddenFiles;
-    toggleExplorerShowHiddenFiles();
-    if (willShow) {
-      requestPersistedExpandedPaths({ workspaceStateKey, requestDirectoryListing });
+    if (!willShow) {
+      toggleExplorerShowHiddenFiles();
+      return;
     }
-  }, [requestDirectoryListing, toggleExplorerShowHiddenFiles, workspaceStateKey]);
+    const rootDirectory = directories.get(".");
+    if (!rootDirectory || !workspaceStateKey) {
+      toggleExplorerShowHiddenFiles();
+      return;
+    }
+    void showHiddenFilesAndRestoreExpandedDirectories({
+      rootDirectory,
+      persistedExpandedPaths: expandedPaths,
+      showHiddenFiles: toggleExplorerShowHiddenFiles,
+      requestDirectoryListing: (path) =>
+        requestDirectoryListing(path, {
+          recordHistory: false,
+          setCurrentPath: false,
+        }),
+    }).then((restoredPaths) => {
+      setExpandedPathsForWorkspace(workspaceStateKey, (currentPaths) =>
+        reconcileRestoredExpandedPaths({
+          persistedExpandedPaths: expandedPaths,
+          currentExpandedPaths: new Set(currentPaths),
+          restoredExpandedPaths: restoredPaths,
+        }),
+      );
+      return null;
+    });
+  }, [
+    directories,
+    expandedPaths,
+    requestDirectoryListing,
+    setExpandedPathsForWorkspace,
+    toggleExplorerShowHiddenFiles,
+    workspaceStateKey,
+  ]);
 
   const refreshExplorer = useCallback(
     () =>
@@ -407,7 +455,7 @@ export function FileExplorerPane({
   const currentSortLabel = resolveCurrentSortLabel(sortOption, sortLabels);
 
   const treeRows = useMemo(
-    () => resolveTreeRows({ directories, expandedPaths, sortOption, showHiddenFiles }),
+    () => flattenExplorerTree({ directories, expandedPaths, sortOption, showHiddenFiles }),
     [directories, expandedPaths, showHiddenFiles, sortOption],
   );
 
@@ -420,7 +468,7 @@ export function FileExplorerPane({
   const errorRecoveryPath = useMemo(() => getErrorRecoveryPath(explorerState), [explorerState]);
 
   const renderTreeRow = useCallback(
-    (info: ListRenderItemInfo<TreeRow>) => (
+    (info: ListRenderItemInfo<ExplorerTreeRow>) => (
       <TreeRowDispatcher
         info={info}
         serverId={serverId}
@@ -611,11 +659,11 @@ interface FileExplorerPaneContentProps {
   error: string | null;
   showInitialLoading: boolean;
   showBackFromError: boolean;
-  treeRows: TreeRow[];
+  treeRows: ExplorerTreeRow[];
   currentSortLabel: string;
   isRefreshFetching: boolean;
-  treeListRef: RefObject<FlatList<TreeRow> | null>;
-  renderTreeRow: (info: ListRenderItemInfo<TreeRow>) => ReactElement;
+  treeListRef: RefObject<FlatList<ExplorerTreeRow> | null>;
+  renderTreeRow: (info: ListRenderItemInfo<ExplorerTreeRow>) => ReactElement;
   handleSortCycle: () => void;
   handleToggleHiddenFiles: () => void;
   handleRefresh: () => void;
@@ -760,71 +808,6 @@ function FileExplorerPaneContent(props: FileExplorerPaneContentProps) {
   );
 }
 
-function sortEntries(entries: ExplorerEntry[], sortOption: SortOption): ExplorerEntry[] {
-  const sorted = [...entries];
-  sorted.sort((a, b) => {
-    if (a.kind !== b.kind) {
-      return a.kind === "directory" ? -1 : 1;
-    }
-    switch (sortOption) {
-      case "name":
-        return a.name.localeCompare(b.name);
-      case "modified":
-        return new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime();
-      case "size":
-        return b.size - a.size;
-      default:
-        return 0;
-    }
-  });
-  return sorted;
-}
-
-function buildTreeRows({
-  directories,
-  expandedPaths,
-  sortOption,
-  showHiddenFiles,
-  path,
-  depth,
-}: {
-  directories: Map<string, { path: string; entries: ExplorerEntry[] }>;
-  expandedPaths: Set<string>;
-  sortOption: SortOption;
-  showHiddenFiles: boolean;
-  path: string;
-  depth: number;
-}): TreeRow[] {
-  const directory = directories.get(path);
-  if (!directory) {
-    return [];
-  }
-
-  const rows: TreeRow[] = [];
-  const entries = sortEntries(
-    filterVisibleExplorerEntries(directory.entries, showHiddenFiles),
-    sortOption,
-  );
-
-  for (const entry of entries) {
-    rows.push({ entry, depth });
-    if (entry.kind === "directory" && expandedPaths.has(entry.path)) {
-      rows.push(
-        ...buildTreeRows({
-          directories,
-          expandedPaths,
-          sortOption,
-          showHiddenFiles,
-          path: entry.path,
-          depth: depth + 1,
-        }),
-      );
-    }
-  }
-
-  return rows;
-}
-
 function deriveExplorerFields(state: AgentFileExplorerState | undefined) {
   return {
     directories:
@@ -872,30 +855,6 @@ function resolveCurrentSortLabel(
   labels: Record<SortOption, string>,
 ): string {
   return labels[sortOption] ?? labels.name;
-}
-
-function resolveTreeRows({
-  directories,
-  expandedPaths,
-  sortOption,
-  showHiddenFiles,
-}: {
-  directories: Map<string, { path: string; entries: ExplorerEntry[] }>;
-  expandedPaths: Set<string>;
-  sortOption: SortOption;
-  showHiddenFiles: boolean;
-}): TreeRow[] {
-  if (!directories.get(".")) {
-    return [];
-  }
-  return buildTreeRows({
-    directories,
-    expandedPaths,
-    sortOption,
-    showHiddenFiles,
-    path: ".",
-    depth: 0,
-  });
 }
 
 type StartDownloadFn = ReturnType<typeof useDownloadStore.getState>["startDownload"];
@@ -946,26 +905,25 @@ function toggleDirectory({
   entry: ExplorerEntry;
   workspaceStateKey: string | null;
   expandedPaths: Set<string>;
-  directories: Map<string, { path: string; entries: ExplorerEntry[] }>;
+  directories: Map<string, ExplorerDirectory>;
   requestDirectoryListing: (
     path: string,
     opts?: { recordHistory?: boolean; setCurrentPath?: boolean },
-  ) => Promise<boolean>;
-  setExpandedPathsForWorkspace: (workspaceStateKey: string, paths: string[]) => void;
+  ) => Promise<ExplorerDirectory | null>;
+  setExpandedPathsForWorkspace: (workspaceStateKey: string, paths: ExpandedPathsUpdate) => void;
 }): void {
   if (!workspaceStateKey) {
     return;
   }
   const isExpanded = expandedPaths.has(entry.path);
-  if (isExpanded) {
-    setExpandedPathsForWorkspace(
-      workspaceStateKey,
-      Array.from(expandedPaths).filter((path) => path !== entry.path),
-    );
-    return;
-  }
-  setExpandedPathsForWorkspace(workspaceStateKey, [...Array.from(expandedPaths), entry.path]);
-  if (!directories.has(entry.path)) {
+  setExpandedPathsForWorkspace(workspaceStateKey, (currentPaths) =>
+    setExpandedDirectoryPath({
+      currentExpandedPaths: currentPaths,
+      directoryPath: entry.path,
+      expanded: !isExpanded,
+    }),
+  );
+  if (!isExpanded && !directories.has(entry.path)) {
     void requestDirectoryListing(entry.path, {
       recordHistory: false,
       setCurrentPath: false,
@@ -985,7 +943,7 @@ function TreeRowDispatcher({
   onDownloadEntry,
   onAddToChat,
 }: {
-  info: ListRenderItemInfo<TreeRow>;
+  info: ListRenderItemInfo<ExplorerTreeRow>;
   serverId: string;
   workspaceId?: string | null;
   expandedPaths: Set<string>;
@@ -1024,54 +982,59 @@ async function initializeExplorer({
   hasWorkspaceScope,
   hasInitializedRef,
   workspaceStateKey,
+  persistedExpandedPaths,
+  showHiddenFiles,
   requestDirectoryListing,
+  setExpandedPathsForWorkspace,
 }: {
   hasWorkspaceScope: boolean;
   hasInitializedRef: RefObject<boolean>;
   workspaceStateKey: string | null;
+  persistedExpandedPaths: ReadonlySet<string>;
+  showHiddenFiles: boolean;
   requestDirectoryListing: (
     path: string,
     opts?: { recordHistory?: boolean; setCurrentPath?: boolean },
-  ) => Promise<boolean>;
+  ) => Promise<ExplorerDirectory | null>;
+  setExpandedPathsForWorkspace: (workspaceStateKey: string, paths: ExpandedPathsUpdate) => void;
 }): Promise<void> {
   if (!hasWorkspaceScope || hasInitializedRef.current) {
     return;
   }
   hasInitializedRef.current = true;
-  const succeeded = await requestDirectoryListing(".", {
+  const rootDirectory = await requestDirectoryListing(".", {
     recordHistory: false,
     setCurrentPath: false,
   });
-  if (!succeeded) {
+  if (!rootDirectory) {
     hasInitializedRef.current = false;
     return;
   }
-  requestPersistedExpandedPaths({ workspaceStateKey, requestDirectoryListing });
-}
-
-function requestPersistedExpandedPaths({
-  workspaceStateKey,
-  requestDirectoryListing,
-}: {
-  workspaceStateKey: string | null;
-  requestDirectoryListing: (
-    path: string,
-    opts?: { recordHistory?: boolean; setCurrentPath?: boolean },
-  ) => Promise<boolean>;
-}): void {
-  const showHiddenFiles = usePanelStore.getState().explorerShowHiddenFiles;
-  const persistedPaths = usePanelStore.getState().expandedPathsByWorkspace[workspaceStateKey ?? ""];
-  if (!persistedPaths) {
+  if (!workspaceStateKey) {
     return;
   }
-  for (const path of persistedPaths) {
-    if (path !== "." && (showHiddenFiles || !isHiddenExplorerPath(path))) {
-      void requestDirectoryListing(path, {
+
+  const restoredPaths = await restoreExpandedDirectories({
+    rootDirectory,
+    persistedExpandedPaths,
+    showHiddenFiles,
+    requestDirectoryListing: (path) =>
+      requestDirectoryListing(path, {
         recordHistory: false,
         setCurrentPath: false,
-      });
-    }
-  }
+      }),
+  });
+  const hiddenPersistedPaths = showHiddenFiles
+    ? []
+    : Array.from(persistedExpandedPaths).filter(isHiddenExplorerPath);
+  const restoredPathsWithHidden = [...restoredPaths, ...hiddenPersistedPaths];
+  setExpandedPathsForWorkspace(workspaceStateKey, (currentPaths) =>
+    reconcileRestoredExpandedPaths({
+      persistedExpandedPaths,
+      currentExpandedPaths: new Set(currentPaths),
+      restoredExpandedPaths: restoredPathsWithHidden,
+    }),
+  );
 }
 
 async function refreshExplorerDirectories({
@@ -1084,7 +1047,7 @@ async function refreshExplorerDirectories({
   requestDirectoryListing: (
     path: string,
     opts?: { recordHistory?: boolean; setCurrentPath?: boolean },
-  ) => Promise<boolean>;
+  ) => Promise<ExplorerDirectory | null>;
 }): Promise<null> {
   if (!hasWorkspaceScope) {
     return null;

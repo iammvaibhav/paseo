@@ -722,6 +722,10 @@ export type FetchWorkspacesOptions = Omit<FetchWorkspacesRequest, "type" | "requ
 };
 export type FetchWorkspacesEntry = FetchWorkspacesPayload["entries"][number];
 export type FetchWorkspacesPageInfo = FetchWorkspacesPayload["pageInfo"];
+export type ProjectListPayload = Extract<
+  SessionOutboundMessage,
+  { type: "project.list.response" }
+>["payload"];
 export interface CreateChatRoomOptions {
   name: string;
   purpose?: string | null;
@@ -2159,6 +2163,24 @@ export class DaemonClient {
         if (msg.payload.requestId !== resolvedRequestId) {
           return null;
         }
+        return msg.payload;
+      },
+    });
+  }
+
+  async listProjects(requestId?: string): Promise<ProjectListPayload> {
+    const resolvedRequestId = this.createRequestId(requestId);
+    const message = SessionInboundMessageSchema.parse({
+      type: "project.list.request",
+      requestId: resolvedRequestId,
+    });
+    return this.sendRequest({
+      requestId: resolvedRequestId,
+      message,
+      options: { skipQueue: true },
+      select: (msg) => {
+        if (msg.type !== "project.list.response") return null;
+        if (msg.payload.requestId !== resolvedRequestId) return null;
         return msg.payload;
       },
     });
@@ -3673,6 +3695,7 @@ export class DaemonClient {
         cwd: payload.cwd,
         files: payload.files,
         error: payload.error,
+        diffTooLarge: payload.diffTooLarge,
         requestId: payload.requestId,
       };
     } finally {
