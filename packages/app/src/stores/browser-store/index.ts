@@ -32,6 +32,10 @@ export interface BrowserBridgeOpenRequest {
   path: string;
   line: number | null;
   column: number | null;
+  /** `diff` opens VS Code's diff editor for the file instead of the file. */
+  mode: "file" | "diff";
+  /** Diff left side. Null diffs the working tree against HEAD. */
+  baseRef: string | null;
   /** Only the BrowserPane mounted for this workspace may consume the request. */
   targetWorkspaceKey: string | null;
   /**
@@ -60,6 +64,8 @@ interface BrowserStoreState extends BrowserIndexState {
       path: string;
       line?: number | null;
       column?: number | null;
+      mode?: "file" | "diff";
+      baseRef?: string | null;
       fallbackUrl?: string | null;
       targetWorkspaceKey?: string | null;
     },
@@ -175,6 +181,8 @@ export const useBrowserStore = create<BrowserStoreState>()(
                 path,
                 line: normalizePositiveInteger(input.line),
                 column: normalizePositiveInteger(input.column),
+                mode: input.mode === "diff" ? "diff" : "file",
+                baseRef: trimNonEmpty(input.baseRef),
                 fallbackUrl: trimNonEmpty(input.fallbackUrl),
                 targetWorkspaceKey: trimNonEmpty(input.targetWorkspaceKey),
                 requestId: (previous?.requestId ?? 0) + 1,

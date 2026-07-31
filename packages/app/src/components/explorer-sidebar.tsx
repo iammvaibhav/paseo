@@ -55,6 +55,8 @@ interface ExplorerSidebarProps {
   workspaceRoot: string;
   isGit: boolean;
   onOpenFile?: (filePath: string) => void;
+  /** Fork-only: opens the file's git diff in VS Code Web (desktop only). */
+  onOpenDiff?: (filePath: string, baseRef: string | null) => void;
   onOpenHostFile?: (filePath: string) => void;
 }
 
@@ -86,6 +88,7 @@ export function CompactExplorerSidebar({
   workspaceRoot,
   isGit,
   onOpenFile,
+  onOpenDiff,
   onOpenHostFile,
 }: ExplorerSidebarProps) {
   const { theme } = useUnistyles();
@@ -144,6 +147,7 @@ export function CompactExplorerSidebar({
           isGit={isGit}
           isOpen={isOpen}
           onOpenFile={onOpenFile}
+          onOpenDiff={onOpenDiff}
           onOpenHostFile={onOpenHostFile}
         />
       </MobilePanelOverlay>
@@ -157,6 +161,7 @@ export function ExplorerSidebar({
   workspaceRoot,
   isGit,
   onOpenFile,
+  onOpenDiff,
   onOpenHostFile,
 }: ExplorerSidebarProps) {
   const insets = useSafeAreaInsets();
@@ -242,6 +247,7 @@ export function ExplorerSidebar({
           isGit={isGit}
           isOpen={isOpen}
           onOpenFile={onOpenFile}
+          onOpenDiff={onOpenDiff}
           onOpenHostFile={onOpenHostFile}
         />
       </View>
@@ -390,6 +396,7 @@ interface SidebarContentProps {
   isGit: boolean;
   isOpen: boolean;
   onOpenFile?: (filePath: string) => void;
+  onOpenDiff?: (filePath: string, baseRef: string | null) => void;
   onOpenHostFile?: (filePath: string) => void;
 }
 
@@ -498,6 +505,7 @@ function ExplorerContentArea({
   selectedSubmodule,
   isOpen,
   onOpenFile,
+  onOpenDiff,
   onOpenHostFile,
   prPane,
   workspaceAttachmentScopeKey,
@@ -512,6 +520,7 @@ function ExplorerContentArea({
   selectedSubmodule: string | null;
   isOpen: boolean;
   onOpenFile?: (filePath: string) => void;
+  onOpenDiff?: (filePath: string, baseRef: string | null) => void;
   onOpenHostFile: (filePath: string) => void;
   prPane: UsePrPaneDataResult;
   workspaceAttachmentScopeKey: string;
@@ -530,6 +539,17 @@ function ExplorerContentArea({
             onOpenFile(filePath.startsWith("/") ? filePath : `${submodulePrefix}${filePath}`)
         : undefined,
     [onOpenFile, submodulePrefix],
+  );
+  const handleOpenDiff = useMemo(
+    () =>
+      onOpenDiff
+        ? (filePath: string, baseRef: string | null) =>
+            onOpenDiff(
+              filePath.startsWith("/") ? filePath : `${submodulePrefix}${filePath}`,
+              baseRef,
+            )
+        : undefined,
+    [onOpenDiff, submodulePrefix],
   );
   const onAddToChat = useMemo(
     () =>
@@ -562,6 +582,7 @@ function ExplorerContentArea({
           cwd={effectiveCwd}
           enabled={isOpen}
           onOpenFile={handleOpenFile}
+          onOpenDiff={handleOpenDiff}
           onAddToChat={onAddToChat}
         />
       )}
@@ -597,6 +618,7 @@ function ExplorerSidebarContent({
   isGit,
   isOpen,
   onOpenFile,
+  onOpenDiff,
   onOpenHostFile,
 }: SidebarContentProps) {
   const { theme } = useUnistyles();
@@ -710,6 +732,7 @@ function ExplorerSidebarContent({
         selectedSubmodule={selectedSubmodule}
         isOpen={isOpen}
         onOpenFile={onOpenFile}
+        onOpenDiff={onOpenDiff}
         onOpenHostFile={handleOpenHostFile}
         prPane={prPane}
         workspaceAttachmentScopeKey={workspaceAttachmentScopeKey}

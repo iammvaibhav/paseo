@@ -137,6 +137,30 @@ describe("tryOpenFileInBrowserEditor", () => {
     );
   });
 
+  it("asks the bridge for a diff against the pane's base ref", () => {
+    const requestBridgeOpen = vi.fn();
+    vi.mocked(useBrowserStore.getState).mockReturnValue({ requestBridgeOpen } as never);
+
+    expect(
+      tryOpenFileInBrowserEditor({
+        browserEditorUrl: "http://blrofc3:8765",
+        workspaceDirectory: "/repo",
+        workspaceKey: "server-1:workspace-1",
+        location: { path: "src/a.ts" },
+        mode: "diff",
+        baseRef: "master",
+        workspaceTabs: [],
+        openWorkspaceTabFocused: vi.fn(() => "tab-1"),
+        navigateToTabId: vi.fn(),
+      }),
+    ).toBe(true);
+
+    expect(requestBridgeOpen).toHaveBeenCalledWith(
+      "vscode-web-1",
+      expect.objectContaining({ path: "/repo/src/a.ts", mode: "diff", baseRef: "master" }),
+    );
+  });
+
   it("returns false when not Electron", () => {
     vi.mocked(getIsElectron).mockReturnValue(false);
     expect(

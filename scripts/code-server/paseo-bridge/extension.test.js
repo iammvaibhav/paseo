@@ -48,10 +48,40 @@ test("parseOpenPayload normalizes fields", () => {
     path: "/a",
     line: 3,
     column: 2,
+    mode: "file",
   });
   assert.equal(parseOpenPayload("{}").error, "missing path");
   assert.equal(parseOpenPayload("not json").error, "invalid json");
   assert.equal(parseOpenPayload(JSON.stringify({ path: "/a", line: 0 })).line, null);
+  assert.deepEqual(
+    parseOpenPayload(JSON.stringify({ path: "/a", mode: "diff", baseRef: " master " })),
+    { path: "/a", line: null, column: null, mode: "diff", baseRef: "master" },
+  );
+});
+
+test("POST /open with mode=diff opens a diff instead of the file", async () => {
+  const diffCalls = [];
+  let openedFile = false;
+  const handler = createRequestHandler({
+    fileExists: () => true,
+    openFile: async () => {
+      openedFile = true;
+    },
+    openDiff: async (target, baseRef) => {
+      diffCalls.push([target, baseRef]);
+    },
+  });
+  const res = await runHandler(
+    handler,
+    mockReq({
+      method: "POST",
+      url: "/open",
+      body: JSON.stringify({ path: "/repo/a.ts", mode: "diff", baseRef: "master" }),
+    }),
+  );
+  assert.equal(res.status, 200);
+  assert.deepEqual(diffCalls, [["/repo/a.ts", "master"]]);
+  assert.equal(openedFile, false);
 });
 
 test("GET /health returns ok", async () => {

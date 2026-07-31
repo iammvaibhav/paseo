@@ -35,6 +35,7 @@ import {
   ChevronDown,
   Columns2,
   Download,
+  FileDiff,
   FolderTree,
   GitCommitHorizontal,
   GitMerge,
@@ -82,7 +83,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import * as Clipboard from "expo-clipboard";
-import { FILE_ACTIONS_MENU_WIDTH, FileActionsMenu } from "@/components/file-actions-menu";
+import {
+  FILE_ACTIONS_MENU_WIDTH,
+  FileActionIconButton,
+  FileActionsMenu,
+} from "@/components/file-actions-menu";
 import { useFileDownload } from "@/hooks/use-file-download";
 import { buildAbsoluteExplorerPath } from "@/utils/explorer-paths";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
@@ -213,6 +218,7 @@ interface DiffFileSectionProps {
   interactive?: boolean;
   onToggle?: (path: string) => void;
   onOpenFile?: (path: string) => void;
+  onOpenDiff?: (path: string) => void;
   onAddToChat?: (path: string) => void;
   onCopyPath?: (path: string) => void;
   onDownload?: (path: string) => void;
@@ -910,6 +916,60 @@ function SplitDiffColumn({
   );
 }
 
+/**
+ * Right-hand controls of a changed-file row: the one-click VS Code diff (only
+ * where VS Code Web is configured, and never for a file that is gone) plus the
+ * kebab holding every action.
+ */
+function DiffFileHeaderActions({
+  file,
+  onOpenFile,
+  onOpenDiff,
+  onCopyPath,
+  onDownload,
+  onAddToChat,
+  isActionsOpen,
+  onActionsOpenChange,
+  testID,
+}: {
+  file: ParsedDiffFile;
+  onOpenFile?: () => void;
+  onOpenDiff?: () => void;
+  onCopyPath?: () => void;
+  onDownload?: () => void;
+  onAddToChat?: () => void;
+  isActionsOpen: boolean;
+  onActionsOpenChange: (open: boolean) => void;
+  testID?: string;
+}) {
+  const { t } = useTranslation();
+  return (
+    <>
+      {onOpenDiff && !file.isDeleted ? (
+        <FileActionIconButton
+          icon={FileDiff}
+          onPress={onOpenDiff}
+          accessibilityLabel={t("workspace.fileActions.openDiff")}
+          testID={testID ? `${testID}-open-diff` : undefined}
+        />
+      ) : null}
+      <FileActionsMenu
+        fileKind="file"
+        fileExists={!file.isDeleted}
+        onOpenFile={onOpenFile}
+        onOpenDiff={onOpenDiff}
+        onCopyPath={onCopyPath}
+        onDownload={onDownload}
+        onAddToChat={onAddToChat}
+        open={isActionsOpen}
+        onOpenChange={onActionsOpenChange}
+        accessibilityLabel={t("workspace.fileActions.moreActions")}
+        testIDPrefix={testID}
+      />
+    </>
+  );
+}
+
 const DiffFileHeader = memo(function DiffFileHeader({
   file,
   workspaceFileDragScope,
@@ -919,6 +979,7 @@ const DiffFileHeader = memo(function DiffFileHeader({
   interactive = true,
   onToggle,
   onOpenFile,
+  onOpenDiff,
   onAddToChat,
   onCopyPath,
   onDownload,
@@ -949,6 +1010,10 @@ const DiffFileHeader = memo(function DiffFileHeader({
   const handleOpenFile = useCallback(() => {
     onOpenFile?.(file.path);
   }, [file.path, onOpenFile]);
+
+  const handleOpenDiff = useCallback(() => {
+    onOpenDiff?.(file.path);
+  }, [file.path, onOpenDiff]);
 
   const handleAddToChat = useCallback(() => {
     onAddToChat?.(file.path);
@@ -1064,17 +1129,16 @@ const DiffFileHeader = memo(function DiffFileHeader({
           testID={testID ? `${testID}-stat` : undefined}
         />
         {interactive ? (
-          <FileActionsMenu
-            fileKind="file"
-            fileExists={!file.isDeleted}
+          <DiffFileHeaderActions
+            file={file}
             onOpenFile={onOpenFile ? handleOpenFile : undefined}
+            onOpenDiff={onOpenDiff ? handleOpenDiff : undefined}
             onCopyPath={onCopyPath ? handleCopyPath : undefined}
             onDownload={onDownload ? handleDownload : undefined}
             onAddToChat={onAddToChat ? handleAddToChat : undefined}
-            open={isActionsOpen}
-            onOpenChange={setIsActionsOpen}
-            accessibilityLabel={t("workspace.fileActions.moreActions")}
-            testIDPrefix={testID}
+            isActionsOpen={isActionsOpen}
+            onActionsOpenChange={setIsActionsOpen}
+            testID={testID}
           />
         ) : null}
       </View>
@@ -1311,6 +1375,12 @@ interface GitDiffPaneProps {
   cwd: string;
   enabled?: boolean;
   onOpenFile?: (path: string) => void;
+  /**
+   * Opens the file's git diff in VS Code Web; absent when it isn't configured.
+   * `baseRef` is the pane's comparison base, or null while showing uncommitted
+   * changes (then the diff is the working tree against HEAD).
+   */
+  onOpenDiff?: (path: string, baseRef: string | null) => void;
   onAddToChat?: (path: string) => void;
 }
 
@@ -1844,6 +1914,7 @@ interface SharedDiffViewProps {
         onFilePress?: (path: string) => void;
         workspaceFileDragScope?: { serverId: string; workspaceId: string };
         onOpenFile?: (path: string) => void;
+        onOpenDiff?: (path: string) => void;
         onAddToChat?: (path: string) => void;
         onCopyPath?: (path: string) => void;
         onDownload?: (path: string) => void;
@@ -1896,6 +1967,7 @@ export function SharedDiffView({ files, displayPreferences, mode }: SharedDiffVi
   const focusPath = mode.kind === "working_tab" ? mode.focusPath : undefined;
   const focusRequestId = mode.kind === "working_tab" ? mode.focusRequestId : undefined;
   const onOpenFile = mode.kind === "working_tree" ? mode.onOpenFile : undefined;
+  const onOpenDiff = mode.kind === "working_tree" ? mode.onOpenDiff : undefined;
   const onAddToChat = mode.kind === "working_tree" ? mode.onAddToChat : undefined;
   const workspaceFileDragScope =
     mode.kind === "working_tree" ? mode.workspaceFileDragScope : undefined;
@@ -2217,6 +2289,7 @@ export function SharedDiffView({ files, displayPreferences, mode }: SharedDiffVi
             interactive={interactive}
             onToggle={interactive ? (onFilePress ?? handleToggleExpanded) : undefined}
             onOpenFile={onOpenFile}
+            onOpenDiff={onOpenDiff}
             onAddToChat={onAddToChat}
             onCopyPath={onCopyPath}
             onDownload={onDownload}
@@ -2254,6 +2327,7 @@ export function SharedDiffView({ files, displayPreferences, mode }: SharedDiffVi
       interactive,
       onFilePress,
       onOpenFile,
+      onOpenDiff,
       onAddToChat,
       onCopyPath,
       onDownload,
@@ -2621,6 +2695,7 @@ export function GitDiffPane({
   cwd,
   enabled,
   onOpenFile,
+  onOpenDiff,
   onAddToChat,
 }: GitDiffPaneProps) {
   const { settings: appSettings } = useAppSettings();
@@ -2783,6 +2858,15 @@ export function GitDiffPane({
     },
     [downloadFile],
   );
+  // The row only knows its path; the comparison base belongs to the pane.
+  const openDiffAtCurrentBase = useMemo(
+    () =>
+      onOpenDiff
+        ? (path: string) => onOpenDiff(path, diffMode === "base" ? (baseRef ?? null) : null)
+        : undefined,
+    [baseRef, diffMode, onOpenDiff],
+  );
+
   const workingTreeMode = useMemo(
     () => ({
       kind: "working_tree" as const,
@@ -2793,6 +2877,7 @@ export function GitDiffPane({
       onFilePress: onChangesFilePress,
       workspaceFileDragScope: workspaceId ? { serverId, workspaceId } : undefined,
       onOpenFile,
+      onOpenDiff: openDiffAtCurrentBase,
       onAddToChat,
       onCopyPath: handleCopyPath,
       onDownload: handleDownloadPath,
@@ -2808,6 +2893,7 @@ export function GitDiffPane({
       serverId,
       workspaceId,
       onOpenFile,
+      openDiffAtCurrentBase,
       onAddToChat,
       handleCopyPath,
       handleDownloadPath,

@@ -24,6 +24,10 @@ export interface OpenFileInBrowserEditorInput extends BrowserEditorTabActions {
   browserEditorUrl: string;
   workspaceDirectory: string;
   location: WorkspaceFileLocation;
+  /** `diff` opens VS Code's diff editor for the file instead of the file. */
+  mode?: "file" | "diff";
+  /** Diff left side. Null/absent diffs the working tree against HEAD. */
+  baseRef?: string | null;
 }
 
 export interface OpenHostFileInBrowserEditorInput extends BrowserEditorTabActions {
@@ -78,6 +82,8 @@ export function tryOpenFileInBrowserEditor(input: OpenFileInBrowserEditorInput):
     workspaceKey: input.workspaceKey,
     absolutePath: resolved.absolutePath,
     line: input.location.lineStart ?? null,
+    mode: input.mode ?? "file",
+    baseRef: input.baseRef ?? null,
     workspaceTabs: input.workspaceTabs,
     openWorkspaceTabFocused: input.openWorkspaceTabFocused,
     navigateToTabId: input.navigateToTabId,
@@ -115,6 +121,8 @@ function openFileInBrowserEditorCore(
     folderPath: string;
     absolutePath: string;
     line: number | null;
+    mode?: "file" | "diff";
+    baseRef?: string | null;
   },
 ): boolean {
   // Fallback URL: a classic ?folder=&payload= open, used only when the bridge is
@@ -142,12 +150,19 @@ function openFileInBrowserEditorCore(
     return false;
   }
 
-  console.log(`[paseo-bridge] openFile browserId=${instance.browserId} path=${input.absolutePath}`);
+  const mode = input.mode ?? "file";
+  console.log(
+    `[paseo-bridge] ${mode} browserId=${instance.browserId} path=${input.absolutePath} base=${input.baseRef ?? "-"}`,
+  );
   revealBrowserEditor(instance, input);
   useBrowserStore.getState().requestBridgeOpen(instance.browserId, {
     path: input.absolutePath,
     line: input.line,
     column: 1,
+    mode,
+    baseRef: input.baseRef ?? null,
+    // A bridge too old to know about `mode` opens the plain file, so the reload
+    // fallback matching that is the honest one for a diff request too.
     fallbackUrl: fileUrl,
     targetWorkspaceKey: input.workspaceKey,
   });

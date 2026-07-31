@@ -341,11 +341,15 @@ function buildBridgeOpenScript(input: {
   path: string;
   line: number | null;
   column: number | null;
+  mode: "file" | "diff";
+  baseRef: string | null;
 }): string {
   const payload = {
     path: input.path,
     ...(input.line ? { line: input.line } : {}),
     ...(input.column ? { column: input.column } : {}),
+    ...(input.mode === "diff" ? { mode: "diff" } : {}),
+    ...(input.baseRef ? { baseRef: input.baseRef } : {}),
   };
   return `(async () => {
     const payload = ${JSON.stringify(payload)};
@@ -1200,13 +1204,14 @@ export function BrowserPane({
     if (!showChrome && !isWorkspaceActive) {
       return;
     }
-    const { path, line, column, fallbackUrl, requestId, targetWorkspaceKey } = bridgeOpenRequest;
+    const { path, line, column, mode, baseRef, fallbackUrl, requestId, targetWorkspaceKey } =
+      bridgeOpenRequest;
     if (targetWorkspaceKey && targetWorkspaceKey !== workspaceKey) {
       return;
     }
     let cancelled = false;
     console.log(
-      `[paseo-bridge] open requested browserId=${browserId} req=${requestId} path=${path} domReady=${domReadyRef.current} hasWebview=${Boolean(
+      `[paseo-bridge] ${mode} requested browserId=${browserId} req=${requestId} path=${path} domReady=${domReadyRef.current} hasWebview=${Boolean(
         webviewRef.current,
       )}`,
     );
@@ -1257,7 +1262,7 @@ export function BrowserPane({
         result =
           ((await executeWebviewJavaScript(
             webview,
-            buildBridgeOpenScript({ path, line, column }),
+            buildBridgeOpenScript({ path, line, column, mode, baseRef }),
           )) as BridgeOpenResult | null) ?? {};
       } catch (error) {
         console.warn(`[paseo-bridge] executeJavaScript threw path=${path}`, error);

@@ -2,15 +2,20 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { execFile } = require("node:child_process");
 
 const HOST = "127.0.0.1";
 const BROKER_PORT = 8766;
 const OPEN_TIMEOUT_MS = 2500;
+// Must stay under REQUEST_TIMEOUT_MS: the broker gives up on the worker first.
+const DIFF_TIMEOUT_MS = 3000;
 const REQUEST_TIMEOUT_MS = 4000;
 const RESTORE_TIMEOUT_MS = 30_000;
 const HEARTBEAT_INTERVAL_MS = 1000;
 const REGISTRATION_TTL_MS = 10_000;
 const SESSION_VERSION = 1;
+/** URI scheme for one git revision of one file (the read-only side of a diff). */
+const GIT_REVISION_SCHEME = "paseo-git";
 
 let workerServer = null;
 let brokerServer = null;
@@ -20,6 +25,7 @@ let heartbeatTimer = null;
 let registerSoonTimer = null;
 let windowStateDisposable = null;
 let workspaceFoldersDisposable = null;
+let gitRevisionDisposable = null;
 let sessionDisposables = [];
 let extensionContext = null;
 let sessionSavePromise = Promise.resolve();
@@ -97,7 +103,12 @@ function parseOpenPayload(body) {
     path: filePath,
     line: positiveIntegerOrNull(parsed.line),
     column: positiveIntegerOrNull(parsed.column),
+    mode: parsed.mode === "diff" ? "diff" : "file",
   };
+  const baseRef = typeof parsed.baseRef === "string" ? parsed.baseRef.trim() : "";
+  if (baseRef) {
+    payload.baseRef = baseRef;
+  }
   const folder = typeof parsed.folder === "string" ? parsed.folder.trim() : "";
   if (folder) {
     payload.folder = folder;
@@ -143,29 +154,142 @@ function parseRegistrationPayload(body) {
   };
 }
 
-async function openFileWithTimeout(filePath, line, column) {
-  const vscode = require("vscode");
-  const uri = vscode.Uri.file(filePath);
-  const options = { preview: false };
-  if (line) {
-    const position = new vscode.Position(line - 1, (column ?? 1) - 1);
-    options.selection = new vscode.Range(position, position);
-  }
+async function withTimeout(promise, message, timeoutMs = OPEN_TIMEOUT_MS) {
   let timeout;
   try {
     await Promise.race([
-      vscode.window.showTextDocument(uri, options),
+      promise,
       new Promise((_resolve, reject) => {
-        timeout = setTimeout(
-          () => reject(new Error("showTextDocument timed out")),
-          OPEN_TIMEOUT_MS,
-        );
+        timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
         timeout.unref?.();
       }),
     ]);
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function openFileWithTimeout(filePath, line, column) {
+  const vscode = require("vscode");
+  const options = { preview: false };
+  if (line) {
+    const position = new vscode.Position(line - 1, (column ?? 1) - 1);
+    options.selection = new vscode.Range(position, position);
+  }
+  await withTimeout(
+    vscode.window.showTextDocument(vscode.Uri.file(filePath), options),
+    "showTextDocument timed out",
+  );
+}
+
+/**
+ * Read-only side of a diff: one revision of one file, served by this extension.
+ *
+ * The git extension's own `git:` URIs are not usable here. It only resolves paths
+ * belonging to a repository it has opened, and a superproject over
+ * `git.detectSubmodulesLimit` (10) submodules never opens them — so every
+ * SCM-backed command silently fails for files inside a submodule, which is
+ * exactly where Paseo's changes come from. `git show` needs none of that.
+ */
+function gitRevisionUri(vscode, params) {
+  return vscode.Uri.from({
+    scheme: GIT_REVISION_SCHEME,
+    // Keep the real filename in the path so VS Code picks the language mode.
+    path: `/${params.path}`,
+    query: JSON.stringify(params),
+  });
+}
+
+function gitRepoRoot(filePath) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "git",
+      ["-C", path.dirname(filePath), "rev-parse", "--show-toplevel"],
+      { encoding: "utf8" },
+      (error, stdout) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(stdout.trim());
+      },
+    );
+  });
+}
+
+function gitShow(repoRoot, ref, relativePath) {
+  return new Promise((resolve) => {
+    execFile(
+      "git",
+      ["-C", repoRoot, "show", `${ref}:${relativePath}`],
+      { encoding: "buffer", maxBuffer: 64 * 1024 * 1024 },
+      // A path absent at that ref is an added file. An empty left side is the
+      // diff to show, not an error.
+      (error, stdout) => resolve(error ? Buffer.alloc(0) : stdout),
+    );
+  });
+}
+
+function createGitRevisionProvider(vscode) {
+  const emitter = new vscode.EventEmitter();
+  const read = async (uri) => {
+    const params = JSON.parse(uri.query);
+    return gitShow(params.repo, params.ref, params.path);
+  };
+  return {
+    onDidChangeFile: emitter.event,
+    watch: () => new vscode.Disposable(() => {}),
+    async stat(uri) {
+      const content = await read(uri);
+      return {
+        type: vscode.FileType.File,
+        ctime: 0,
+        mtime: 0,
+        size: content.length,
+        permissions: vscode.FilePermission.Readonly,
+      };
+    },
+    readFile: read,
+    readDirectory: () => [],
+    createDirectory: () => {},
+    writeFile: () => {
+      throw vscode.FileSystemError.NoPermissions();
+    },
+    delete: () => {
+      throw vscode.FileSystemError.NoPermissions();
+    },
+    rename: () => {
+      throw vscode.FileSystemError.NoPermissions();
+    },
+  };
+}
+
+/**
+ * VS Code's native diff editor for a changed file. Without a base ref the right
+ * side is the working file, so it stays editable — the same shape as the SCM
+ * view's "Open Changes". With one it is `baseRef..HEAD`, matching what Paseo's
+ * Committed view lists.
+ */
+async function openDiffWithTimeout(filePath, baseRef) {
+  const vscode = require("vscode");
+  const repo = await gitRepoRoot(filePath);
+  const relativePath = path.relative(repo, filePath);
+  const name = path.basename(filePath);
+  const left = gitRevisionUri(vscode, { repo, ref: baseRef ?? "HEAD", path: relativePath });
+  const right = baseRef
+    ? gitRevisionUri(vscode, { repo, ref: "HEAD", path: relativePath })
+    : vscode.Uri.file(filePath);
+  await withTimeout(
+    vscode.commands.executeCommand(
+      "vscode.diff",
+      left,
+      right,
+      baseRef ? `${name} (${baseRef} ↔ HEAD)` : `${name} (working tree)`,
+      { preview: false },
+    ),
+    "openDiff timed out",
+    DIFF_TIMEOUT_MS,
+  );
 }
 
 async function closeAllEditors() {
@@ -297,24 +421,30 @@ async function handleWorkerCloseAll({ res, parsed, closeEditors, saveSession, lo
   }
 }
 
-async function handleWorkerOpen({ res, parsed, openFile, fileExists, saveSession, log }) {
-  log(`worker open path=${parsed.path} line=${parsed.line ?? "-"} col=${parsed.column ?? "-"}`);
+async function handleWorkerOpen({ res, parsed, openFile, openDiff, fileExists, saveSession, log }) {
+  log(
+    `worker ${parsed.mode} path=${parsed.path} line=${parsed.line ?? "-"} col=${parsed.column ?? "-"} base=${parsed.baseRef ?? "-"}`,
+  );
   // Opening a path that does not exist would leave VS Code showing an empty
   // editor named after it, and the caller retrying with a `?payload` reload
   // makes that phantom editor survive. Report it instead.
   if (!fileExists(parsed.path)) {
-    log(`worker open MISSING path=${parsed.path}`);
+    log(`worker ${parsed.mode} MISSING path=${parsed.path}`);
     sendJson(res, 404, { ok: false, error: "file not found" });
     return;
   }
   try {
-    await openFile(parsed.path, parsed.line, parsed.column);
+    if (parsed.mode === "diff") {
+      await openDiff(parsed.path, parsed.baseRef ?? null);
+    } else {
+      await openFile(parsed.path, parsed.line, parsed.column);
+    }
     await saveSession(parsed.folder);
-    log(`worker open OK path=${parsed.path}`);
+    log(`worker ${parsed.mode} OK path=${parsed.path}`);
     sendJson(res, 200, { ok: true });
   } catch (error) {
     const message = String(error?.message ?? error);
-    log(`worker open FAILED path=${parsed.path}: ${message}`);
+    log(`worker ${parsed.mode} FAILED path=${parsed.path}: ${message}`);
     sendJson(res, 500, { ok: false, error: message });
   }
 }
@@ -335,6 +465,7 @@ async function handleWorkerRestore({ res, parsed, restoreSession, log }) {
 
 function createRequestHandler({
   openFile = openFileWithTimeout,
+  openDiff = openDiffWithTimeout,
   fileExists = (target) => fs.existsSync(target),
   closeEditors = closeAllEditors,
   saveSession = persistCurrentEditorSession,
@@ -383,7 +514,7 @@ function createRequestHandler({
       await handleWorkerRestore({ res, parsed, restoreSession, log });
       return;
     }
-    await handleWorkerOpen({ res, parsed, openFile, fileExists, saveSession, log });
+    await handleWorkerOpen({ res, parsed, openFile, openDiff, fileExists, saveSession, log });
   };
 }
 
@@ -713,6 +844,11 @@ function activate(context) {
   });
   windowStateDisposable = vscode.window.onDidChangeWindowState(scheduleRegistration);
   workspaceFoldersDisposable = vscode.workspace.onDidChangeWorkspaceFolders(scheduleRegistration);
+  gitRevisionDisposable = vscode.workspace.registerFileSystemProvider(
+    GIT_REVISION_SCHEME,
+    createGitRevisionProvider(vscode),
+    { isReadonly: true, isCaseSensitive: true },
+  );
   sessionDisposables = [
     vscode.window.tabGroups.onDidChangeTabs(scheduleSessionPersistence),
     vscode.window.tabGroups.onDidChangeTabGroups(scheduleSessionPersistence),
@@ -727,12 +863,14 @@ function deactivate() {
   registerSoonTimer = null;
   windowStateDisposable?.dispose();
   workspaceFoldersDisposable?.dispose();
+  gitRevisionDisposable?.dispose();
   for (const disposable of sessionDisposables) {
     disposable.dispose();
   }
   sessionDisposables = [];
   windowStateDisposable = null;
   workspaceFoldersDisposable = null;
+  gitRevisionDisposable = null;
   extensionContext = null;
   sessionSavePromise = Promise.resolve();
   sessionSaveRequested = false;

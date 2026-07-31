@@ -204,6 +204,7 @@ import {
 import {
   openBrowserEditorTab,
   openHostFileInBrowserEditor,
+  tryOpenFileInBrowserEditor,
 } from "@/workspace/open-file-in-browser-editor";
 import {
   stopPlannotatorBrowserIfNeeded,
@@ -2533,6 +2534,39 @@ function WorkspaceScreenContent({
     [navigateToTabId, openWorkspaceTabFocused, persistenceKey, tryOpenFileInConfiguredDefault],
   );
 
+  // Fork-only: VS Code Web's own diff editor for a changed file. Offered only
+  // where VS Code Web exists — there is no in-app diff editor to fall back to,
+  // and the inline diff in the pane already covers that.
+  const handleOpenDiffFromExplorer = useMemo(() => {
+    if (!getIsElectron() || !browserEditorUrl || !persistenceKey || !workspaceDirectory) {
+      return undefined;
+    }
+    return (filePath: string, baseRef: string | null) => {
+      const location = normalizeWorkspaceFileLocation({ path: filePath });
+      if (!location) {
+        return;
+      }
+      tryOpenFileInBrowserEditor({
+        browserEditorUrl,
+        workspaceDirectory,
+        workspaceKey: persistenceKey,
+        location,
+        mode: "diff",
+        baseRef,
+        workspaceTabs: uiTabs,
+        openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
+        navigateToTabId,
+      });
+    };
+  }, [
+    browserEditorUrl,
+    navigateToTabId,
+    openWorkspaceTabFocused,
+    persistenceKey,
+    uiTabs,
+    workspaceDirectory,
+  ]);
+
   const handleOpenFileFromChat = useCallback(
     (location: WorkspaceFileLocation, options?: { parentTabId?: string | null }) => {
       const normalizedLocation = normalizeWorkspaceFileLocation(location);
@@ -4164,6 +4198,7 @@ function WorkspaceScreenContent({
               workspaceRoot={workspaceDirectory}
               isGit={isGitCheckout}
               onOpenFile={handleOpenFileFromExplorer}
+              onOpenDiff={handleOpenDiffFromExplorer}
               onOpenHostFile={handleOpenHostFile}
             >
               {workspaceCenterColumn}

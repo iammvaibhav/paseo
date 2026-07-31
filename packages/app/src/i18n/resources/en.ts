@@ -410,6 +410,7 @@ export const en = {
     },
     fileActions: {
       openFile: "Open file",
+      openDiff: "Open diff",
       copyPath: "Copy path",
       download: "Download",
       addToChat: "Add to chat…",
