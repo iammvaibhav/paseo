@@ -264,11 +264,33 @@ function createGitRevisionProvider(vscode) {
   };
 }
 
+function hasDiffTab(vscode, left, right) {
+  for (const group of vscode.window.tabGroups.all ?? []) {
+    for (const tab of group.tabs ?? []) {
+      const input = tab.input;
+      if (
+        input?.original?.toString() === left.toString() &&
+        input?.modified?.toString() === right.toString()
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 /**
  * VS Code's native diff editor for a changed file. Without a base ref the right
  * side is the working file, so it stays editable — the same shape as the SCM
  * view's "Open Changes". With one it is `baseRef..HEAD`, matching what Paseo's
  * Committed view lists.
+ *
+ * Success is "the diff tab exists", not "the `vscode.diff` command resolved".
+ * That command settles only once the diff has been *computed*, and VS Code caps
+ * its own diff algorithm at `diffEditor.maxComputationTime` (5s by default) —
+ * so a heavily rewritten file resolved after any timeout small enough to fit
+ * the broker's request budget, and the caller reloaded away from an editor that
+ * was already on screen.
  */
 async function openDiffWithTimeout(filePath, baseRef) {
   const vscode = require("vscode");
@@ -279,17 +301,34 @@ async function openDiffWithTimeout(filePath, baseRef) {
   const right = baseRef
     ? gitRevisionUri(vscode, { repo, ref: "HEAD", path: relativePath })
     : vscode.Uri.file(filePath);
-  await withTimeout(
-    vscode.commands.executeCommand(
+
+  let failure = null;
+  vscode.commands
+    .executeCommand(
       "vscode.diff",
       left,
       right,
       baseRef ? `${name} (${baseRef} ↔ HEAD)` : `${name} (working tree)`,
       { preview: false },
-    ),
-    "openDiff timed out",
-    DIFF_TIMEOUT_MS,
-  );
+    )
+    .then(undefined, (error) => {
+      failure = error;
+    });
+
+  const deadline = Date.now() + DIFF_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (failure) {
+      throw failure;
+    }
+    if (hasDiffTab(vscode, left, right)) {
+      return;
+    }
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 50);
+      timer.unref?.();
+    });
+  }
+  throw new Error("openDiff timed out");
 }
 
 async function closeAllEditors() {
@@ -897,6 +936,7 @@ module.exports = {
   createRequestHandler,
   captureEditorSession,
   deactivate,
+  hasDiffTab,
   parseOpenPayload,
   restoreEditorSession,
   selectBrokerTargets,

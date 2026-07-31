@@ -6,6 +6,7 @@ const {
   captureEditorSession,
   createBrokerHandler,
   createRequestHandler,
+  hasDiffTab,
   parseOpenPayload,
   restoreEditorSession,
   selectBrokerTargets,
@@ -82,6 +83,30 @@ test("POST /open with mode=diff opens a diff instead of the file", async () => {
   assert.equal(res.status, 200);
   assert.deepEqual(diffCalls, [["/repo/a.ts", "master"]]);
   assert.equal(openedFile, false);
+});
+
+test("hasDiffTab matches only the exact revision pair on screen", () => {
+  const uri = (value) => ({ toString: () => value });
+  const left = uri('paseo-git:/a.sh?{"ref":"main"}');
+  const right = uri('paseo-git:/a.sh?{"ref":"HEAD"}');
+  const withTabs = (tabs) => ({ window: { tabGroups: { all: [{ tabs }] } } });
+
+  assert.equal(
+    hasDiffTab(withTabs([{ input: { original: left, modified: right } }]), left, right),
+    true,
+  );
+  // Same file, different base — a stale tab must not pass for a new request.
+  assert.equal(
+    hasDiffTab(
+      withTabs([{ input: { original: uri('paseo-git:/a.sh?{"ref":"dev"}'), modified: right } }]),
+      left,
+      right,
+    ),
+    false,
+  );
+  // A plain editor for the same file is not a diff.
+  assert.equal(hasDiffTab(withTabs([{ input: { uri: right } }]), left, right), false);
+  assert.equal(hasDiffTab({ window: { tabGroups: {} } }, left, right), false);
 });
 
 test("GET /health returns ok", async () => {
