@@ -155,6 +155,12 @@ export interface OmpNoTurnScheduler {
 // guarantees prompt_result waits for queued extension work.
 const OMP_NO_TURN_SETTLE_MS = 5_000;
 
+// Upper bound on waiting for OMP to report a promptable RPC loop after
+// agent_end. Generous because a large-context auto-compaction runs inside this
+// window; bounded because `isStreaming` can stay stuck true forever on some
+// terminal failures, and an unbounded wait means a permanently spinning agent.
+const PROVIDER_IDLE_WAIT_TIMEOUT_MS = 10 * 60_000;
+
 interface OmpPromptPayload {
   text: string;
   images?: OmpImageContent[];
@@ -892,6 +898,12 @@ export class OmpAgentSession implements AgentSession {
   private activeTurnTerminalAssistantMessage: OmpAgentMessage | null = null;
   private activeTurnStarted = false;
   private activeTurnHasUserMessage = false;
+  /**
+   * Bumped by `startTurn` and by every terminal turn emit. Lets the
+   * provider-idle wait detect that its cycle was settled (or superseded) by
+   * another path instead of guessing from the mutable turn fields.
+   */
+  private turnGeneration = 0;
   private activeNoTurnPromptText: string | null = null;
   private readonly pendingNoTurnOutputs: Array<{ turnId: string; message: string }> = [];
   private activePromptRequestId: string | null = null;
@@ -978,6 +990,7 @@ export class OmpAgentSession implements AgentSession {
 
     const payload = convertPromptInput(prompt, { model: this.state.model });
     const turnId = randomUUID();
+    this.turnGeneration += 1;
     this.live = true;
     this.activeTurnId = turnId;
     this.activeClientMessageId = options?.clientMessageId ?? null;
@@ -1020,7 +1033,7 @@ export class OmpAgentSession implements AgentSession {
         this.activeTurnTerminalAssistantMessage = null;
         this.clearNoTurnBuffers();
         if (isOmpRequestAbortError(error)) {
-          this.emit({
+          this.emitTurnTerminal({
             type: "turn_canceled",
             provider: this.provider,
             turnId,
@@ -1028,7 +1041,7 @@ export class OmpAgentSession implements AgentSession {
           });
           return;
         }
-        this.emit({
+        this.emitTurnTerminal({
           type: "turn_failed",
           provider: this.provider,
           turnId,
@@ -1173,7 +1186,7 @@ export class OmpAgentSession implements AgentSession {
         this.activeAssistantMessageId = null;
         this.activeTurnTerminalAssistantMessage = null;
         this.clearNoTurnBuffers();
-        this.emit({
+        this.emitTurnTerminal({
           type: "turn_canceled",
           provider: this.provider,
           reason: "interrupted",
@@ -1183,7 +1196,7 @@ export class OmpAgentSession implements AgentSession {
         // Lifecycle can remain "running" in AgentManager after the provider
         // process dies with no active turn id. Emit a bare cancel so cancel
         // settlement can clear the sticky busy state.
-        this.emit({
+        this.emitTurnTerminal({
           type: "turn_canceled",
           provider: this.provider,
           reason: "interrupted",
@@ -1205,7 +1218,7 @@ export class OmpAgentSession implements AgentSession {
       this.activeAssistantMessageId = null;
       this.activeTurnTerminalAssistantMessage = null;
       this.clearNoTurnBuffers();
-      this.emit({
+      this.emitTurnTerminal({
         type: "turn_canceled",
         provider: this.provider,
         reason: "interrupted",
@@ -1382,6 +1395,20 @@ export class OmpAgentSession implements AgentSession {
     for (const subscriber of this.subscribers) {
       subscriber(event);
     }
+  }
+
+  /**
+   * Every terminal turn event MUST go through here. `turnGeneration` is the
+   * "someone already settled the current provider cycle" token: the idle-wait
+   * loop captures it on entry so it can tell "another path terminalized this
+   * turn" from "I gave up silently". A silent give-up latches AgentManager at
+   * lifecycle=running forever with no way back except an explicit Stop.
+   */
+  private emitTurnTerminal(
+    event: Extract<AgentStreamEvent, { type: "turn_completed" | "turn_failed" | "turn_canceled" }>,
+  ): void {
+    this.turnGeneration += 1;
+    this.emit(event);
   }
 
   private currentTurnIdForEvent(): string | undefined {
@@ -1881,6 +1908,18 @@ export class OmpAgentSession implements AgentSession {
     this.terminalizeActiveWork();
     this.subagentIndex.clear(this.runtimeSession);
     if (!this.activeTurnId) {
+      // A provider-started turn (agent_start with no Paseo turn id) leaves
+      // AgentManager running with nothing to settle it. Emit a bare terminal so
+      // a crashed OMP does not require a manual Stop. Suppressed once close()
+      // has run: that exit is expected and the agent is being torn down.
+      if (this.activeTurnStarted && !this.closed) {
+        this.activeTurnStarted = false;
+        this.activeTurnHasUserMessage = false;
+        this.activeTurnTerminalAssistantMessage = null;
+        this.clearNoTurnBuffers();
+        this.logger.warn({ error }, "omp.turn.process_exit_without_turn_id");
+        this.emitTurnTerminal({ type: "turn_failed", provider: this.provider, error });
+      }
       return;
     }
     const turnId = this.activeTurnId;
@@ -1890,7 +1929,7 @@ export class OmpAgentSession implements AgentSession {
     this.activeTurnHasUserMessage = false;
     this.activeTurnTerminalAssistantMessage = null;
     this.clearNoTurnBuffers();
-    this.emit({
+    this.emitTurnTerminal({
       type: "turn_failed",
       provider: this.provider,
       turnId,
@@ -2232,6 +2271,10 @@ export class OmpAgentSession implements AgentSession {
     // model turn for the same prompt. Ignore only cycles where neither the
     // terminal payload nor the live stream contained an assistant message.
     if (!terminalMessages) {
+      this.logger.debug(
+        { turnId, activeTurnStarted: this.activeTurnStarted, messageCount: messages.length },
+        "omp.turn.agent_end_without_assistant_message",
+      );
       return;
     }
     // Provider-idle waiting is for successful turns that still look busy
@@ -2257,7 +2300,7 @@ export class OmpAgentSession implements AgentSession {
     this.clearNoTurnBuffers();
     const errorMessage = latestOmpErrorMessage(messages);
     if (typeof errorMessage === "string" && errorMessage.length > 0) {
-      this.emit({
+      this.emitTurnTerminal({
         type: "turn_failed",
         provider: this.provider,
         turnId,
@@ -2265,7 +2308,7 @@ export class OmpAgentSession implements AgentSession {
       });
       return;
     }
-    this.emit({
+    this.emitTurnTerminal({
       type: "turn_completed",
       provider: this.provider,
       turnId,
@@ -2273,23 +2316,64 @@ export class OmpAgentSession implements AgentSession {
     void this.refreshUsage(turnId);
   }
 
+  /**
+   * `agent_end` is OMP's only signal that a turn is over, and this wait is the
+   * only route from it to a terminal turn event. Bailing out without emitting
+   * one latches AgentManager at lifecycle=running with no tracked turn: the
+   * timeline is complete, the provider is idle, and the UI spins forever until
+   * someone presses Stop. So every exit terminalizes unless another path
+   * already did (turnGeneration moved) or the session is gone.
+   */
   private async completeTurnAfterProviderIdle(
     turnId: string | undefined,
     messages: OmpAgentMessage[],
   ): Promise<void> {
+    const generation = this.turnGeneration;
+    const startedAt = Date.now();
+    let lastState: OmpSessionState | null = null;
+    let stateError: unknown;
     while (!this.closed && this.activeTurnStarted && this.currentTurnIdForEvent() === turnId) {
       try {
         const state = await this.runtimeSession.getState();
         this.state = state;
+        lastState = state;
+        stateError = undefined;
         if (!state.isStreaming && !state.isCompacting) {
           this.completeTurn(turnId, messages);
           return;
         }
       } catch (error) {
+        stateError = error;
         this.logger.debug({ err: error }, "OMP state unavailable while waiting for provider idle");
+      }
+      if (Date.now() - startedAt >= PROVIDER_IDLE_WAIT_TIMEOUT_MS) {
+        break;
       }
       await this.providerIdleScheduler.waitForRetry();
     }
+    if (this.turnGeneration !== generation) {
+      return;
+    }
+    if (this.closed) {
+      this.logger.warn(
+        { turnId, waitedMs: Date.now() - startedAt },
+        "omp.turn.idle_wait_abandoned_closed",
+      );
+      return;
+    }
+    this.logger.warn(
+      {
+        turnId,
+        waitedMs: Date.now() - startedAt,
+        activeTurnStarted: this.activeTurnStarted,
+        activeTurnId: this.activeTurnId,
+        isStreaming: lastState?.isStreaming ?? null,
+        isCompacting: lastState?.isCompacting ?? null,
+        ...(stateError ? { err: stateError } : {}),
+      },
+      "omp.turn.idle_wait_abandoned_terminalizing",
+    );
+    this.completeTurn(turnId, messages);
   }
 
   private async refreshState(): Promise<void> {

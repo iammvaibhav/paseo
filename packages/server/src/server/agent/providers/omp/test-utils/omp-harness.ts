@@ -202,6 +202,26 @@ export class OmpHarness {
     return { completion };
   }
 
+  /**
+   * OMP reports the turn as over without ever having reported it as started.
+   * The adapter has no `activeTurnStarted` to wait on, so this is the shape
+   * that used to drop the terminal event and hang the agent at `running`.
+   */
+  async startPromptWithAgentEndBeforeTurnStart(
+    input: string,
+    output: string,
+  ): Promise<{ completion: Promise<unknown> }> {
+    const session = this.requireSession();
+    const promptStarted = this.omp.latestSession().nextPrompt();
+    const completion = session.run(input);
+    await promptStarted;
+    const runtime = this.omp.latestSession();
+    runtime.acceptPrompt(input, "user-1");
+    runtime.streamAssistantText(output);
+    runtime.finishTurn();
+    return { completion };
+  }
+
   async runPromptAfterExtensionNotice(
     input: string,
     output: string,

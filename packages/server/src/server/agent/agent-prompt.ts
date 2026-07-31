@@ -149,6 +149,11 @@ export interface StartCreatedAgentInitialPromptParams {
 
 const AGENT_RUN_START_TIMEOUT_MS = 15_000;
 
+// Above this, "pressed send, nothing happened" is a real complaint rather than
+// normal provider handshake cost. Logged as a warn so it is greppable without
+// turning on trace.
+const SLOW_PROMPT_DISPATCH_MS = 1_500;
+
 export async function waitForAgentRunStartWithTimeout(
   agentManager: AgentManager,
   agentId: string,
@@ -178,33 +183,66 @@ export async function sendPromptToAgent(
   params: SendPromptToAgentParams,
 ): Promise<{ outOfBand: boolean }> {
   const unarchive = params.unarchive ?? true;
+  const startedAt = Date.now();
+  let unarchiveMs = 0;
+  let ensureLoadedMs = 0;
+  let setModeMs = 0;
 
   const record = await params.agentStorage.get(params.agentId);
+  const wasClosed = record?.lastStatus === "closed";
   if (record?.archivedAt) {
     if (!unarchive) {
       return { outOfBand: false };
     }
+    const unarchiveStartedAt = Date.now();
     await unarchiveAgentState(params.agentStorage, params.agentManager, params.agentId);
+    unarchiveMs = Date.now() - unarchiveStartedAt;
   }
 
+  const ensureLoadedStartedAt = Date.now();
   await ensureAgentLoaded(params.agentId, {
     agentManager: params.agentManager,
     agentStorage: params.agentStorage,
     logger: params.logger,
   });
+  ensureLoadedMs = Date.now() - ensureLoadedStartedAt;
 
   if (params.sessionMode) {
+    const setModeStartedAt = Date.now();
     await params.agentManager.setAgentMode(params.agentId, params.sessionMode);
+    setModeMs = Date.now() - setModeStartedAt;
   }
 
   const runOptions = params.messageId
     ? { ...params.runOptions, clientMessageId: params.messageId }
     : params.runOptions;
 
-  return await startAgentRun(params.agentManager, params.agentId, params.prompt, params.logger, {
-    replaceRunning: true,
-    runOptions,
-  });
+  const startRunStartedAt = Date.now();
+  try {
+    return await startAgentRun(params.agentManager, params.agentId, params.prompt, params.logger, {
+      replaceRunning: true,
+      runOptions,
+    });
+  } finally {
+    // "I pressed send and nothing happened for a while" is measured here.
+    // `startAgentRun` returns before the provider acknowledges the prompt, so
+    // the remaining latency to the spinner lives in `agent.turn.dispatched`.
+    const totalMs = Date.now() - startedAt;
+    const payload = {
+      agentId: params.agentId,
+      wasClosed,
+      unarchiveMs,
+      ensureLoadedMs,
+      setModeMs,
+      startRunMs: Date.now() - startRunStartedAt,
+      totalMs,
+    };
+    if (totalMs >= SLOW_PROMPT_DISPATCH_MS) {
+      params.logger.warn(payload, "agent.prompt.dispatch_slow");
+    } else {
+      params.logger.info(payload, "agent.prompt.dispatch");
+    }
+  }
 }
 
 export async function startCreatedAgentInitialPrompt(

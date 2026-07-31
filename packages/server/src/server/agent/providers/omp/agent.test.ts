@@ -331,6 +331,44 @@ describe("OMP agent client and session", () => {
     expect(omp.completedTurnCount()).toBe(1);
   });
 
+  test("completes the turn when OMP ends a turn it never reported as started", async () => {
+    const scheduler = new ManualIdleScheduler();
+    const omp = new OmpHarness({ providerIdleScheduler: scheduler });
+    await omp.start();
+
+    const { completion } = await omp.startPromptWithAgentEndBeforeTurnStart(
+      "hello OMP",
+      "done anyway",
+    );
+
+    await expect(completion).resolves.toMatchObject({ finalText: "done anyway" });
+    expect(omp.completedTurnCount()).toBe(1);
+    // Nothing to poll for: there was no started turn to wait on.
+    expect(scheduler.waitedCount()).toBe(0);
+  });
+
+  test("does not emit a second terminal event when an interrupt settles the idle wait", async () => {
+    const scheduler = new ManualIdleScheduler();
+    const omp = new OmpHarness({ providerIdleScheduler: scheduler });
+    await omp.start();
+
+    await omp.startPromptUntilProviderIdle("first", "first done", {
+      isStreaming: true,
+      isCompacting: false,
+    });
+    await omp.waitForProviderStateChecks(2);
+    await scheduler.waitForWaits(1);
+    expect(omp.completedTurnCount()).toBe(0);
+
+    await omp.interrupt();
+    expect(omp.canceledTurnCount()).toBe(1);
+
+    scheduler.retry();
+    await waitForImmediate();
+    expect(omp.completedTurnCount()).toBe(0);
+    expect(omp.canceledTurnCount()).toBe(1);
+  });
+
   test("omits live custom messages when display is false", async () => {
     const omp = new OmpHarness();
     await omp.start();

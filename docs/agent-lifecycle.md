@@ -30,6 +30,24 @@ Cancellation changes lifecycle state only after the provider acknowledges the in
 
 Exception: when interrupt fails because the provider runtime is already dead (`process is closed` / `session is closed` / similar), there is no live provider turn left to split-brain with. Cancel force-settles the managed run to `idle` so sticky `running` zombies (for example after OMP was SIGTERM'd mid-turn) can be stopped, replaced, or reloaded.
 
+### Every turn must terminalize
+
+`lifecycle: "running"` is a latch. Nothing re-checks it. A provider adapter that starts a
+turn and never emits `turn_completed`/`turn_failed`/`turn_canceled` leaves the agent
+spinning forever with a complete timeline and an idle provider, recoverable only by an
+explicit Stop.
+
+A provider adapter MUST emit exactly one terminal event per turn it started, on every exit
+path including give-ups and error paths. If the provider stops reporting, emit a terminal
+event carrying the diagnostic. Where an adapter waits for the provider to report itself
+idle, give the wait a deadline and terminalize when it passes.
+
+The hard part is doing that without double-firing when a concurrent interrupt or a second
+`agent_end` settles the same cycle. The OMP adapter distinguishes the two with a
+`turnGeneration` counter (`providers/omp/agent.ts`) and logs
+`omp.turn.idle_wait_abandoned_terminalizing` when it has to synthesize the event. A warn
+there means the provider left a turn un-terminated and Paseo covered for it.
+
 ## Relationships
 
 Agents can launch other agents via the agent-scoped `create_agent` MCP tool. Agent-scoped creation is always asynchronous and always stamps `paseo.parent-agent-id`, pointing back at the caller. Omit `workspaceId` to use the caller's workspace, or pass an existing workspace ID returned by `create_workspace`. Placement never changes parentage.

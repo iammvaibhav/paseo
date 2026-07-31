@@ -210,6 +210,33 @@ Check `$PASEO_HOME/daemon.log` for daemon logs. The default level is `info`; set
 `PASEO_LOG_LEVEL=trace` before launching the daemon when you need full provider,
 session, and agent-manager traces for stuck-state debugging.
 
+#### Turn lifecycle trail
+
+Turn lifecycle and prompt latency log at `info`/`warn`, so a stuck spinner or a
+late "thinking" indicator can be diagnosed from a normal `daemon.log` after the
+fact. Two lines per turn; trace is not required.
+
+| Line                                                | Level       | Read it for                                                                                                                   |
+| --------------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `agent.prompt.dispatch` / `_slow`                   | info / warn | Phase breakdown from prompt receipt: `ensureLoadedMs` (cold provider resume), `setModeMs`, `startRunMs`, `totalMs`            |
+| `agent.run.replace_cancelled_previous`              | info        | `cancelMs` — how long interrupting the previous turn took when you sent while busy                                            |
+| `agent.turn.dispatched` / `_slow`                   | info / warn | `startTurnMs` — provider handshake before the agent shows as running. The spinner appears at the end of this                  |
+| `agent.manager.turn.started`                        | info        | The turn Paseo believes it owns. `isForegroundEvent: false` means the provider started a turn Paseo did not                   |
+| `agent.manager.turn.started_outside_foreground_run` | warn        | Turn-id desync. Only a terminal event with a matching-or-absent id can settle it                                              |
+| `agent.manager.turn.completed` / `.canceled`        | info        | Proof the finished turn settled Paseo's lifecycle. **A spinner that never stops is diagnosed by its absence**                 |
+| `agent.manager.turn.completed_held_for_replacement` | warn        | Terminal event arrived but `pendingReplacement` held the agent busy. If the replacement never starts, this is the stuck point |
+| `omp.turn.idle_wait_abandoned_terminalizing`        | warn        | OMP's post-`agent_end` idle wait gave up; the terminal event was synthesized rather than lost                                 |
+
+The periodic `ws_runtime_metrics` line carries `agents.running[]`: one row per
+running agent with `agentId`, `hasForegroundTurn`, `hasTrackedRun`, and
+`staleMs`. A live turn has a small `staleMs`; a zombie's is frozen at its last
+stream event. This is how you name the stuck agent and its onset time:
+
+```bash
+grep ws_runtime_metrics "$PASEO_HOME/daemon.log" \
+  | jq -c '{t:(.time/1000|floor|todate), running:.agents.running}'
+```
+
 The supervisor rotates `daemon.log`. Persisted `log.file.rotate` settings in
 `$PASEO_HOME/config.json` win first. Without persisted config, the optional
 `PASEO_LOG_ROTATE_SIZE` and `PASEO_LOG_ROTATE_COUNT` env vars override the

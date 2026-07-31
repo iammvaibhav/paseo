@@ -1663,6 +1663,41 @@ test("cancelAgentRun settles sticky running when the provider process is already
   }
 });
 
+test("metrics snapshot names each running agent so a stuck spinner is identifiable", async () => {
+  const fixture = await createControlledInterruptFixture({
+    name: "metrics-running-diagnostic",
+    agentId: "00000000-0000-4000-8000-000000000309",
+    turnId: "metrics-turn",
+    interrupt: async () => {},
+  });
+
+  try {
+    const running = waitForAgentLifecycle(fixture.manager, fixture.agentId, "running");
+    fixture.session.pushEvent({
+      type: "turn_started",
+      provider: "codex",
+      turnId: "orphaned-autonomous-turn",
+    });
+    await running;
+
+    const snapshot = fixture.manager.getMetricsSnapshot();
+    expect(snapshot.byLifecycle.running).toBe(1);
+    expect(snapshot.withActiveForegroundTurn).toBe(0);
+    expect(snapshot.running).toEqual([
+      {
+        agentId: fixture.agentId,
+        provider: "codex",
+        hasForegroundTurn: false,
+        hasTrackedRun: true,
+        pendingReplacement: false,
+        staleMs: expect.any(Number),
+      },
+    ]);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("cancelAgentRun force-cancels a foreground turn when the provider session is closed", async () => {
   const fixture = await createControlledInterruptFixture({
     name: "interrupt-session-closed-foreground",

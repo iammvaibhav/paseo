@@ -76,6 +76,9 @@ import {
 
 const RELOAD_SESSION_CLOSE_TIMEOUT_MS = 3_000;
 const INTERRUPT_SESSION_TIMEOUT_MS = 2_000;
+// Above this, the gap between pressing send and the agent showing as running is
+// worth a warn line so it can be correlated with a user report after the fact.
+const SLOW_TURN_START_MS = 1_500;
 const STORED_AGENT_CAPABILITIES: AgentCapabilityFlags = {
   supportsStreaming: false,
   supportsSessionPersistence: true,
@@ -413,11 +416,27 @@ export type ManagedAgent =
   | ManagedAgentError
   | ManagedAgentClosed;
 
+/**
+ * One row per `running` agent. Aggregate counts told us "one agent is stuck"
+ * but never which one or since when, which is the whole question when a
+ * spinner will not stop. `staleMs` separates a live turn (fresh stream events)
+ * from a zombie (nothing since the last event).
+ */
+export interface RunningAgentDiagnostic {
+  agentId: string;
+  provider: string;
+  hasForegroundTurn: boolean;
+  hasTrackedRun: boolean;
+  pendingReplacement: boolean;
+  staleMs: number;
+}
+
 export interface AgentMetricsSnapshot {
   total: number;
   subscriptionCount: number;
   byLifecycle: Record<string, number>;
   withActiveForegroundTurn: number;
+  running: RunningAgentDiagnostic[];
   timelineStats: {
     totalItems: number;
     maxItemsPerAgent: number;
@@ -725,15 +744,28 @@ export class AgentManager {
 
   public getMetricsSnapshot(): AgentMetricsSnapshot {
     const byLifecycle: Record<string, number> = {};
+    const running: RunningAgentDiagnostic[] = [];
     let withActiveForegroundTurn = 0;
     let totalItems = 0;
     let maxItemsPerAgent = 0;
+    const now = Date.now();
 
     for (const agent of this.agents.values()) {
       byLifecycle[agent.lifecycle] = (byLifecycle[agent.lifecycle] ?? 0) + 1;
 
       if (agent.activeForegroundTurnId !== null) {
         withActiveForegroundTurn++;
+      }
+
+      if (agent.lifecycle === "running") {
+        running.push({
+          agentId: agent.id,
+          provider: agent.provider,
+          hasForegroundTurn: agent.activeForegroundTurnId !== null,
+          hasTrackedRun: this.runs.hasRun(agent.id),
+          pendingReplacement: agent.pendingReplacement,
+          staleMs: now - agent.updatedAt.getTime(),
+        });
       }
 
       if (!this.timelineStore.has(agent.id)) {
@@ -752,6 +784,7 @@ export class AgentManager {
       subscriptionCount: this.subscribers.size,
       byLifecycle,
       withActiveForegroundTurn,
+      running,
       timelineStats: {
         totalItems,
         maxItemsPerAgent,
@@ -2071,6 +2104,7 @@ export class AgentManager {
     const streamForwarder = async function* streamForwarder(this: AgentManager) {
       let turnId: string;
       let turnStream: ReturnType<AgentRunState["createTurnStream"]> | null = null;
+      const startTurnStartedAt = Date.now();
       try {
         const result = await agent.session.startTurn(prompt, options);
         turnId = result.turnId;
@@ -2096,17 +2130,22 @@ export class AgentManager {
       agent.lifecycle = "running";
       this.touchUpdatedAt(agent);
       this.emitState(agent);
-      this.logger.trace(
-        {
-          agentId,
-          provider: agent.provider,
-          sessionId: agent.persistence?.sessionId ?? undefined,
-          turnId,
-          lifecycle: agent.lifecycle,
-          activeForegroundTurnId: agent.activeForegroundTurnId,
-        },
-        "agent.manager.stream.start",
-      );
+      // The client renders the spinner off this state emit, so this duration is
+      // exactly the "clicked send, still nothing" window on the daemon side.
+      const startTurnMs = Date.now() - startTurnStartedAt;
+      const dispatchPayload = {
+        agentId,
+        provider: agent.provider,
+        sessionId: agent.persistence?.sessionId ?? undefined,
+        turnId,
+        isReplacement,
+        startTurnMs,
+      };
+      if (startTurnMs >= SLOW_TURN_START_MS) {
+        this.logger.warn(dispatchPayload, "agent.turn.dispatched_slow");
+      } else {
+        this.logger.info(dispatchPayload, "agent.turn.dispatched");
+      }
 
       turnStream = this.runs.createTurnStream(turnId);
       this.runs.addWaiter(agent, turnStream.waiter);
@@ -2192,14 +2231,25 @@ export class AgentManager {
     this.touchUpdatedAt(agent);
     this.emitState(agent);
 
+    const cancelStartedAt = Date.now();
     try {
       await this.cancelAgentRunBefore(agentId, "replace");
+      // Sending while a turn is running has to interrupt the provider first;
+      // that wait is the dominant cause of a late spinner on a busy agent.
+      this.logger.info(
+        { agentId, provider: agent.provider, cancelMs: Date.now() - cancelStartedAt },
+        "agent.run.replace_cancelled_previous",
+      );
       return this.streamAgent(agentId, prompt, options);
     } catch (error) {
       const latest = this.agents.get(agentId);
       if (latest) {
         latest.pendingReplacement = false;
       }
+      this.logger.warn(
+        { err: error, agentId, provider: agent.provider, cancelMs: Date.now() - cancelStartedAt },
+        "agent.run.replace_failed",
+      );
       throw error;
     }
   }
@@ -3447,6 +3497,16 @@ export class AgentManager {
       isTurnTerminalEvent(event) &&
       this.runs.hasFinalizedTurn(agent, eventTurnId)
     ) {
+      this.logger.info(
+        {
+          agentId: agent.id,
+          provider: agent.provider,
+          turnId: eventTurnId,
+          eventType: event.type,
+          lifecycle: agent.lifecycle,
+        },
+        "agent.manager.turn.terminal_already_finalized",
+      );
       return false;
     }
 
@@ -3683,7 +3743,10 @@ export class AgentManager {
     isForegroundEvent: boolean;
   }): void {
     const { agent, event, eventTurnId, isForegroundEvent } = params;
-    this.logger.trace(
+    // Info, not trace: this is one line per turn and it is the record that
+    // proves whether a finished turn actually settled Paseo's lifecycle. A
+    // stuck spinner is diagnosed by its absence.
+    this.logger.info(
       {
         agentId: agent.id,
         provider: agent.provider,
@@ -3691,6 +3754,8 @@ export class AgentManager {
         turnId: eventTurnId,
         lifecycle: agent.lifecycle,
         activeForegroundTurnId: agent.activeForegroundTurnId,
+        isForegroundEvent,
+        pendingReplacement: agent.pendingReplacement,
       },
       "agent.manager.turn.completed",
     );
@@ -3698,9 +3763,24 @@ export class AgentManager {
     // usage_updated already provided; if usage is absent, keep lastUsage.
     agent.lastUsage = mergeAgentUsage(agent.lastUsage, event.usage);
     agent.lastError = undefined;
-    if (!isForegroundEvent && agent.lifecycle !== "idle" && !agent.pendingReplacement) {
-      (agent as ActiveManagedAgent).lifecycle = "idle";
-      this.emitState(agent);
+    if (!isForegroundEvent && agent.lifecycle !== "idle") {
+      if (agent.pendingReplacement) {
+        // Deliberate: replacement holds the agent busy until its new turn
+        // starts. If the replacement never starts, this is where the spinner
+        // gets stuck — so it is a warn, not a silent skip.
+        this.logger.warn(
+          {
+            agentId: agent.id,
+            provider: agent.provider,
+            turnId: eventTurnId,
+            lifecycle: agent.lifecycle,
+          },
+          "agent.manager.turn.completed_held_for_replacement",
+        );
+      } else {
+        (agent as ActiveManagedAgent).lifecycle = "idle";
+        this.emitState(agent);
+      }
     }
     void this.refreshRuntimeInfo(agent);
   }
@@ -3756,7 +3836,7 @@ export class AgentManager {
       | undefined;
   }): void {
     const { agent, event, eventTurnId, isForegroundEvent, options } = params;
-    this.logger.trace(
+    this.logger.info(
       {
         agentId: agent.id,
         provider: agent.provider,
@@ -3764,7 +3844,9 @@ export class AgentManager {
         turnId: eventTurnId,
         lifecycle: agent.lifecycle,
         activeForegroundTurnId: agent.activeForegroundTurnId,
-        eventTurnId,
+        isForegroundEvent,
+        pendingReplacement: agent.pendingReplacement,
+        reason: event.reason,
       },
       "agent.manager.turn.canceled",
     );
@@ -3784,7 +3866,7 @@ export class AgentManager {
     isForegroundEvent: boolean;
   }): void {
     const { agent, eventTurnId, isForegroundEvent } = params;
-    this.logger.trace(
+    this.logger.info(
       {
         agentId: agent.id,
         provider: agent.provider,
@@ -3792,10 +3874,25 @@ export class AgentManager {
         turnId: eventTurnId,
         lifecycle: agent.lifecycle,
         activeForegroundTurnId: agent.activeForegroundTurnId,
+        isForegroundEvent,
       },
       "agent.manager.turn.started",
     );
     if (!isForegroundEvent) {
+      // The provider started a turn Paseo did not: either an id desync with
+      // our own startTurn, or work the provider began on its own. Only a
+      // terminal event with a matching-or-absent turn id can settle it, so
+      // record it — a spinner that never stops starts here.
+      this.logger.warn(
+        {
+          agentId: agent.id,
+          provider: agent.provider,
+          sessionId: agent.persistence?.sessionId ?? undefined,
+          turnId: eventTurnId,
+          activeForegroundTurnId: agent.activeForegroundTurnId,
+        },
+        "agent.manager.turn.started_outside_foreground_run",
+      );
       this.runs.trackAutonomousRun(agent.id, eventTurnId ?? null);
       agent.lifecycle = "running";
       this.emitState(agent);
