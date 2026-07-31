@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import type {
   AgentCapabilityFlags,
+  AgentPersistenceHandle,
   AgentPromptInput,
   AgentSession,
   AgentStreamEvent,
@@ -9,33 +10,9 @@ import type {
 } from "./agent-sdk-types.js";
 import { wrapSessionProvider } from "./provider-registry.js";
 
-type OptionalAgentSessionMethodName = {
-  [K in keyof AgentSession]-?: undefined extends AgentSession[K]
-    ? NonNullable<AgentSession[K]> extends (...args: never[]) => unknown
-      ? K
-      : never
-    : never;
-}[keyof AgentSession];
-
-const OPTIONAL_AGENT_SESSION_METHOD_NAMES = [
-  "listCommands",
-  "setModel",
-  "setThinkingOption",
-  "setFeature",
-  "revertConversation",
-  "revertFiles",
-  "revertBoth",
-  "tryHandleOutOfBand",
-] as const satisfies readonly OptionalAgentSessionMethodName[];
-
-type MissingOptionalAgentSessionMethod = Exclude<
-  OptionalAgentSessionMethodName,
-  (typeof OPTIONAL_AGENT_SESSION_METHOD_NAMES)[number]
->;
-
-const _allOptionalAgentSessionMethodsAreCovered: MissingOptionalAgentSessionMethod extends never
-  ? true
-  : never = true;
+// Completeness of the forwarding list is enforced at compile time by
+// `WrappedAgentSession` in provider-registry.ts; these tests cover the behavior
+// of each forward.
 
 const CAPABILITIES: AgentCapabilityFlags = {
   supportsStreaming: true,
@@ -118,6 +95,16 @@ class FakeSession implements AgentSession {
     this.recordedCalls.push("interrupt");
   }
 
+  isRuntimeAlive() {
+    this.recordedCalls.push("isRuntimeAlive");
+    return false;
+  }
+
+  async forkSessionForNewAgent(): Promise<AgentPersistenceHandle> {
+    this.recordedCalls.push("forkSessionForNewAgent");
+    return { provider: "claude", sessionId: "forked-session", nativeHandle: "/tmp/fork.jsonl" };
+  }
+
   async close() {
     this.recordedCalls.push("close");
   }
@@ -181,6 +168,8 @@ describe("wrapSessionProvider", () => {
     await wrapped.revertBoth?.({ messageId: "message-1" });
     const handler = wrapped.tryHandleOutOfBand?.("/compact");
     await handler?.run({ emit: () => {} });
+    expect(wrapped.isRuntimeAlive?.()).toBe(false);
+    await wrapped.forkSessionForNewAgent?.();
 
     expect(session.recordedCalls).toEqual([
       "listCommands",
@@ -192,6 +181,20 @@ describe("wrapSessionProvider", () => {
       "revertBoth",
       "tryHandleOutOfBand",
       "tryHandleOutOfBand.run",
+      "isRuntimeAlive",
+      "forkSessionForNewAgent",
     ]);
+  });
+
+  test("rewrites the forked persistence handle onto the registry-facing provider", async () => {
+    const wrapped = wrapSessionProvider("custom-claude", new FakeSession());
+
+    // The manager resumes this handle as a new agent, so it has to name the
+    // registry provider — not the inner provider the session was built with.
+    await expect(wrapped.forkSessionForNewAgent?.()).resolves.toEqual({
+      provider: "custom-claude",
+      sessionId: "forked-session",
+      nativeHandle: "/tmp/fork.jsonl",
+    });
   });
 });

@@ -396,6 +396,7 @@ interface AgentSession {
   setThinkingOption?(thinkingOptionId: string | null): Promise<void | AgentProviderNotice>;
   setFeature?(featureId: string, value: unknown): Promise<void>;
   revertConversation?(input: { messageId: string }): Promise<void>;
+  isRuntimeAlive?(): boolean;
   forkSessionForNewAgent?(boundary?: AgentForkBoundary): Promise<AgentPersistenceHandle>;
   tryHandleOutOfBand?(prompt: AgentPromptInput): {
     run(ctx: { emit: (event: AgentStreamEvent) => void }): Promise<void>;
@@ -405,9 +406,24 @@ interface AgentSession {
 
 `setMode` and `setThinkingOption` may return an `AgentProviderNotice` when the provider knows the change needs user-facing context. For example, providers that stage changes until the next turn should return an `info` notice while a turn is already running. The app renders the notice generically as a toast; provider-specific lifecycle behavior stays in the provider implementation.
 
+Every optional method also has to be forwarded in `wrapSessionProvider`
+(`agent/provider-registry.ts`), because that wrapper — not your class — is what the manager
+holds. A method the wrapper omits is simply `undefined` at every call site, and callers take
+their "provider can't do this" path without any error: that is how native fork was dead for
+every provider while `fork-session.ts` looked healthy. The wrapper's `WrappedAgentSession` type
+makes a missing key a build error, so add the forward in the same change as the hook.
+
+`isRuntimeAlive` lets a provider report that its runtime is gone. Answer `false` once the
+session can no longer take work — a child process that exited, a connection that closed — and a
+prompt reloads the session from persistence instead of failing against it (see
+[agent-lifecycle.md](agent-lifecycle.md#cancellation)). Leave the hook off if you cannot tell;
+absent means "no signal", never "dead".
+
 `forkSessionForNewAgent` is how a provider opts into **native fork**. Fork chat creates a sibling agent that inherits the source's history; without this hook the daemon falls back to seeding a fresh session with a rendered chat-history text attachment, which loses the provider's own context and prompt cache. Implement it when the provider has a way to produce a NEW session carrying existing context **without mutating the source session** — Claude's SDK `forkSession`, or OMP's append-only session file, which Paseo forks by prefix-copying to a new file (`providers/omp/fork-session.ts`). A provider's in-place rewind primitive (OMP `branch`, Pi `navigateTree`) is the wrong tool: it mutates the live session.
 
 The optional `boundary` names the assistant turn the fork's history ends at, addressed by the provider id of the **user message that opened that turn** (see [timeline-sync.md](timeline-sync.md#durable-item-anchors) for why that is the anchor). Throw when the boundary is not resolvable in the provider's own history — `forkAgentToSibling` catches it and degrades to the timeline-accurate snapshot, which is strictly better than silently forking a wider history. With no boundary, fork up to the last completed turn; if a turn is in flight, stop at the last user message instead, because a session whose head is a half-written assistant turn can end on an unanswered tool call and is not a valid point to append a new prompt.
+
+A session that implements `tryHandleOutOfBand` must also mark the commands it intercepts as `delivery: "out_of_band"` in `listCommands`. That field is what tells the composer to send the command straight through while a turn is running instead of putting it in the queue — a queued `/steer` arrives after the turn it was meant to steer. Attachments turn a prompt into content blocks, which `tryHandleOutOfBand` rejects, so the composer treats a draft with attachments as an ordinary turn no matter what the command is.
 
 ### Steps
 

@@ -209,6 +209,60 @@ describe("processTimelineResponse", () => {
     ]);
   });
 
+  it("replaces an unanchored tail when a cursorless tail page arrives outside init", () => {
+    const stranded: StreamItem = {
+      kind: "thought",
+      id: "thought-stranded",
+      text: "live reasoning that landed before any cursor",
+      timestamp: new Date(500),
+      status: "ready",
+    };
+
+    const result = processTimelineResponse({
+      ...baseTimelineInput,
+      currentTail: [stranded],
+      currentCursor: undefined,
+      payload: {
+        ...baseTimelineInput.payload,
+        direction: "tail",
+        startCursor: { seq: 1 },
+        endCursor: { seq: 2 },
+        entries: [
+          makeTimelineEntry(1, "first prompt", "user_message"),
+          makeTimelineEntry(2, "answer"),
+        ],
+      },
+    });
+
+    expect(result.tail.map((item) => item.kind)).toEqual(["user_message", "assistant_message"]);
+    expect(result.cursor).toEqual({ epoch: "epoch-1", startSeq: 1, endSeq: 2 });
+  });
+
+  it("keeps older loaded history when a tail page arrives with a cursor", () => {
+    const older: StreamItem = {
+      kind: "thought",
+      id: "thought-older",
+      text: "older page",
+      timestamp: new Date(500),
+      status: "ready",
+    };
+
+    const result = processTimelineResponse({
+      ...baseTimelineInput,
+      currentTail: [older],
+      currentCursor: { epoch: "epoch-1", startSeq: 1, endSeq: 5 },
+      payload: {
+        ...baseTimelineInput.payload,
+        direction: "tail",
+        startCursor: { seq: 6 },
+        endCursor: { seq: 6 },
+        entries: [makeTimelineEntry(6, "newest")],
+      },
+    });
+
+    expect(result.tail.map((item) => item.kind)).toEqual(["thought", "assistant_message"]);
+  });
+
   it("returns error path when payload.error is set", () => {
     const result = processTimelineResponse({
       ...baseTimelineInput,

@@ -485,6 +485,13 @@ export class OmpHarness {
     return await this.requireSession().listCommands();
   }
 
+  async runOutOfBand(prompt: string): Promise<boolean> {
+    const handler = this.requireSession().tryHandleOutOfBand(prompt);
+    if (!handler) return false;
+    await handler.run({ emit: (event) => this.events.push(event) });
+    return true;
+  }
+
   async setMode(modeId: string) {
     return await this.requireSession().setMode(modeId);
   }
@@ -560,6 +567,10 @@ export class OmpHarness {
 
   isClosed(): boolean {
     return this.omp.latestSession().closed;
+  }
+
+  isRuntimeAlive(): boolean {
+    return this.requireSession().isRuntimeAlive();
   }
 
   async waitForSubscriptionFallback(): Promise<string[]> {

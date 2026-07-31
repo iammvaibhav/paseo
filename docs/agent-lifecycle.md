@@ -30,6 +30,27 @@ Cancellation changes lifecycle state only after the provider acknowledges the in
 
 Exception: when interrupt fails because the provider runtime is already dead (`process is closed` / `session is closed` / similar), there is no live provider turn left to split-brain with. Cancel force-settles the managed run to `idle` so sticky `running` zombies (for example after OMP was SIGTERM'd mid-turn) can be stopped, replaced, or reloaded.
 
+An adapter must not manufacture that exception by killing its own runtime. A provider that
+does not answer the interrupt inside the short interactive window is slow, not dead: OMP acks
+`abort` in tens of milliseconds when healthy, so the budget only lapses on an event-loop stall
+on a large context. The OMP adapter therefore keeps the process, retries the abort with a wider
+budget, and reports the refused stop; only a second Stop while the first abort is still
+unanswered force-closes.
+
+### Recovering a dead runtime
+
+A dead provider runtime is recoverable, not terminal. `startAgentRun`
+(`agent/agent-prompt.ts`) asks the session `isRuntimeAlive()` before dispatching and reloads it
+from its persistence handle when the answer is `false`, which resumes the provider session,
+keeps the timeline, and clears a sticky `running` lifecycle. Every prompt entrypoint — app, MCP,
+CLI, schedules, webhooks — goes through that funnel.
+
+Recover, do not report. A prompt that fails against a runtime Paseo already knows is gone reads
+as a broken agent: the composer shows a spinner for a turn that will never start, and the user's
+message is lost. Before this existed, one force-closed OMP process failed every following prompt
+with `OMP RPC process is closed` until someone ran Reload agent by hand. Reload failures still
+fall through to the provider's own error, because that error is the useful one.
+
 ### Every turn must terminalize
 
 `lifecycle: "running"` is a latch. Nothing re-checks it. A provider adapter that starts a

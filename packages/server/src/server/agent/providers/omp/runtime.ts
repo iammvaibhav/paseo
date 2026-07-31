@@ -49,7 +49,7 @@ export interface OmpRuntimeSession {
   ): Promise<OmpPromptAck>;
   compact(customInstructions?: string): Promise<void>;
   setAutoCompaction(enabled: boolean): Promise<void>;
-  abort(): Promise<void>;
+  abort(timeoutMs?: number): Promise<void>;
   getState(): Promise<OmpSessionState>;
   getMessages(): Promise<OmpAgentMessage[]>;
   getAvailableModels(timeoutMs?: number): Promise<OmpModel[]>;

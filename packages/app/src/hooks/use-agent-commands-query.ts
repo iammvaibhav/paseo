@@ -12,6 +12,12 @@ export interface AgentSlashCommand {
   description: string;
   argumentHint: string;
   kind?: string;
+  /**
+   * "out_of_band" means the daemon runs the command against the live session
+   * without starting or canceling a turn (OMP /steer, /compact, Codex /goal).
+   * Absent on older daemons; treat that as "turn".
+   */
+  delivery?: "turn" | "out_of_band";
 }
 
 export type DraftCommandConfig = AgentCommandsDraftConfig;

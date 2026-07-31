@@ -10,7 +10,12 @@ export type AgentUnarchiveController = Pick<AgentManager, "notifyAgentState" | "
 
 export type AgentRunController = Pick<
   AgentManager,
-  "getAgent" | "tryRunOutOfBand" | "hasInFlightRun" | "replaceAgentRun" | "streamAgent"
+  | "getAgent"
+  | "tryRunOutOfBand"
+  | "hasInFlightRun"
+  | "replaceAgentRun"
+  | "streamAgent"
+  | "reloadAgentSession"
 >;
 
 export interface StartAgentRunOptions {
@@ -44,6 +49,7 @@ export async function startAgentRun(
   if (agentManager.tryRunOutOfBand(agentId, prompt)) {
     return { outOfBand: true };
   }
+  await recoverDeadProviderRuntime(agentManager, agentId, logger);
   const shouldReplace = Boolean(options?.replaceRunning && agentManager.hasInFlightRun(agentId));
   const runOptions = options?.runOptions;
   const iterator = shouldReplace
@@ -85,6 +91,41 @@ export async function startAgentRun(
     }
   })();
   return { outOfBand: false };
+}
+
+/**
+ * Reload a session whose provider runtime is gone, before the prompt is
+ * dispatched at it.
+ *
+ * A dead runtime used to be terminal: `startTurn` rejected, the turn failed
+ * with the provider's "process is closed" diagnostic, and every later prompt
+ * failed the same way until someone ran Reload agent by hand. Reloading here
+ * resumes the provider session from its persistence handle, keeps the timeline,
+ * and clears the sticky `running` lifecycle that made the composer spin over a
+ * runtime doing nothing.
+ *
+ * Recovery is best-effort: if the reload fails, the prompt still goes to the old
+ * session so the user gets the provider's real error instead of a reload error.
+ */
+async function recoverDeadProviderRuntime(
+  agentManager: AgentRunController,
+  agentId: string,
+  logger: Logger,
+): Promise<void> {
+  const snapshot = agentManager.getAgent(agentId);
+  const session = snapshot && "session" in snapshot ? snapshot.session : null;
+  if (!snapshot || session?.isRuntimeAlive?.() !== false) {
+    return;
+  }
+  logger.warn(
+    { agentId, provider: snapshot.provider, lifecycle: snapshot.lifecycle },
+    "agent.run.reloading_dead_provider_runtime",
+  );
+  try {
+    await agentManager.reloadAgentSession(agentId);
+  } catch (error) {
+    logger.warn({ err: error, agentId }, "agent.run.dead_provider_runtime_reload_failed");
+  }
 }
 
 /**

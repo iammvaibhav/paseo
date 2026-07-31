@@ -179,6 +179,7 @@ describe("composer send behavior", () => {
     runDefaultSendAction({
       defaultSendBehavior: "interrupt",
       isAgentRunning: true,
+      sendsOutOfBand: false,
       onQueue: defaultAction.onQueue,
       handleSendMessage: defaultAction.handleSendMessage,
       handleQueueMessage: defaultAction.handleQueueMessage,
@@ -188,6 +189,7 @@ describe("composer send behavior", () => {
     runAlternateSendAction({
       defaultSendBehavior: "interrupt",
       isAgentRunning: true,
+      sendsOutOfBand: false,
       onQueue: alternateAction.onQueue,
       handleSendMessage: alternateAction.handleSendMessage,
       handleQueueMessage: alternateAction.handleQueueMessage,
@@ -202,6 +204,7 @@ describe("composer send behavior", () => {
     runDefaultSendAction({
       defaultSendBehavior: "queue",
       isAgentRunning: true,
+      sendsOutOfBand: false,
       onQueue: defaultAction.onQueue,
       handleSendMessage: defaultAction.handleSendMessage,
       handleQueueMessage: defaultAction.handleQueueMessage,
@@ -211,12 +214,38 @@ describe("composer send behavior", () => {
     runAlternateSendAction({
       defaultSendBehavior: "queue",
       isAgentRunning: true,
+      sendsOutOfBand: false,
       onQueue: alternateAction.onQueue,
       handleSendMessage: alternateAction.handleSendMessage,
       handleQueueMessage: alternateAction.handleQueueMessage,
     });
 
     expect(defaultAction.calls).toEqual(["queue"]);
+    expect(alternateAction.calls).toEqual(["send"]);
+  });
+
+  it("never queues an out-of-band command, whatever the send behavior", () => {
+    const defaultAction = actions();
+    runDefaultSendAction({
+      defaultSendBehavior: "queue",
+      isAgentRunning: true,
+      sendsOutOfBand: true,
+      onQueue: defaultAction.onQueue,
+      handleSendMessage: defaultAction.handleSendMessage,
+      handleQueueMessage: defaultAction.handleQueueMessage,
+    });
+
+    const alternateAction = actions();
+    runAlternateSendAction({
+      defaultSendBehavior: "interrupt",
+      isAgentRunning: true,
+      sendsOutOfBand: true,
+      onQueue: alternateAction.onQueue,
+      handleSendMessage: alternateAction.handleSendMessage,
+      handleQueueMessage: alternateAction.handleQueueMessage,
+    });
+
+    expect(defaultAction.calls).toEqual(["send"]);
     expect(alternateAction.calls).toEqual(["send"]);
   });
 });

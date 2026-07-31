@@ -112,6 +112,7 @@ export class FakeOmpSession implements OmpRuntimeSession {
   readonly hostToolUpdates: OmpRpcHostToolUpdate[] = [];
   getStateRequestCount = 0;
   abortRequested = false;
+  readonly abortTimeoutBudgets: Array<number | undefined> = [];
   readonly canceledExtensionUiRequests: string[] = [];
   readonly extensionUiResponses: Array<{
     id: string;
@@ -130,7 +131,7 @@ export class FakeOmpSession implements OmpRuntimeSession {
   compactError: Error | null = null;
   emitCompactEnd = true;
   getStateError: Error | null = null;
-  abortError: Error | null = null;
+  readonly abortErrors: Error[] = [];
   promptAck: OmpPromptAck = {};
   branchResponse: { text?: string; cancelled?: boolean } = { text: "" };
   branchMessages: Array<{ entryId: string; text: string }> = [];
@@ -238,17 +239,17 @@ export class FakeOmpSession implements OmpRuntimeSession {
     };
   }
 
-  async abort(): Promise<void> {
+  async abort(timeoutMs?: number): Promise<void> {
     this.abortRequested = true;
-    if (this.abortError) {
-      const error = this.abortError;
-      this.abortError = null;
+    this.abortTimeoutBudgets.push(timeoutMs);
+    const error = this.abortErrors.shift();
+    if (error) {
       throw error;
     }
   }
 
   failNextAbort(error: Error): void {
-    this.abortError = error;
+    this.abortErrors.push(error);
   }
 
   async getState(): Promise<OmpSessionState> {

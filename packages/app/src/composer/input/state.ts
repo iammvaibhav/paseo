@@ -41,6 +41,12 @@ interface StopRealtimeVoiceContext {
 interface SendActionContext {
   defaultSendBehavior: SendBehavior;
   isAgentRunning: boolean;
+  /**
+   * The draft invokes a provider command that runs against the live turn
+   * instead of starting one (OMP /steer, /compact, …). Queueing one delivers it
+   * after the turn it was meant to affect, so it always sends.
+   */
+  sendsOutOfBand: boolean;
   onQueue: ((payload: MessagePayload) => void) | undefined;
   handleSendMessage: () => void;
   handleQueueMessage: () => void;
@@ -72,7 +78,12 @@ export function computeCanStartDictation(input: {
 }
 
 export function runDefaultSendAction(ctx: SendActionContext): void {
-  if (ctx.defaultSendBehavior === "queue" && ctx.isAgentRunning && ctx.onQueue) {
+  if (
+    ctx.defaultSendBehavior === "queue" &&
+    !ctx.sendsOutOfBand &&
+    ctx.isAgentRunning &&
+    ctx.onQueue
+  ) {
     ctx.handleQueueMessage();
     return;
   }
@@ -80,7 +91,7 @@ export function runDefaultSendAction(ctx: SendActionContext): void {
 }
 
 export function runAlternateSendAction(ctx: SendActionContext): void {
-  if (ctx.defaultSendBehavior === "queue") {
+  if (ctx.defaultSendBehavior === "queue" || ctx.sendsOutOfBand) {
     ctx.handleSendMessage();
     return;
   }

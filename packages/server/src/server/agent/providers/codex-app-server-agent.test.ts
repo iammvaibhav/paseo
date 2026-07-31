@@ -3742,6 +3742,7 @@ describe("Codex app-server provider", () => {
       description: "Summarize conversation to prevent hitting the context limit",
       argumentHint: "",
       kind: "command",
+      delivery: "out_of_band",
     });
 
     const handler = session.tryHandleOutOfBand?.("/compact");

@@ -5062,6 +5062,12 @@ const AgentSlashCommandSchema = z.object({
   description: z.string(),
   argumentHint: z.string(),
   kind: z.enum(["command", "skill"]).optional().catch("command"),
+  // "out_of_band" commands are executed by the provider as a side effect of the
+  // active turn (OMP /steer, /compact, …) instead of starting a new one. The
+  // composer must send them through immediately rather than queueing them
+  // behind the running turn — a queued /steer arrives after the turn it was
+  // meant to steer. Absent (old daemon) means "turn".
+  delivery: z.enum(["turn", "out_of_band"]).optional().catch("turn"),
 });
 
 export const ListCommandsResponseSchema = z.object({

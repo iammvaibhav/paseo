@@ -141,6 +141,39 @@ describe("submitAgentInput", () => {
     expect(clearDraft).not.toHaveBeenCalled();
   });
 
+  it("skips the queue while the agent is running when the caller forces a send", async () => {
+    const queueMessage = vi.fn();
+    const submitMessage = vi.fn(async () => {});
+    const clearDraft = vi.fn();
+    const setUserInput = vi.fn();
+    const setAttachments = vi.fn();
+    const setSendError = vi.fn();
+    const setIsProcessing = vi.fn();
+
+    await expect(
+      submitAgentInput({
+        message: "/steer run the printf instead",
+        attachments: [],
+        isAgentRunning: true,
+        forceSend: true,
+        canSubmit: true,
+        queueMessage,
+        submitMessage,
+        clearDraft,
+        setUserInput,
+        setAttachments,
+        setSendError,
+        setIsProcessing,
+      }),
+    ).resolves.toBe("submitted");
+
+    expect(queueMessage).not.toHaveBeenCalled();
+    expect(submitMessage).toHaveBeenCalledWith({
+      message: "/steer run the printf instead",
+      attachments: [],
+    });
+  });
+
   it("restores the composer when submit fails", async () => {
     const submitError = new Error("No host selected");
     const queueMessage = vi.fn();

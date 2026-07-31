@@ -498,6 +498,15 @@ export interface AgentRuntimeInfo {
 export type AgentSlashCommandKind = "command" | "skill";
 
 /**
+ * How a command reaches the provider. "turn" commands are ordinary prompts and
+ * start a turn. "out_of_band" commands are the ones `tryHandleOutOfBand`
+ * intercepts: they run against the live session without allocating or
+ * canceling a turn, so clients must send them straight through instead of
+ * queueing them behind a running turn.
+ */
+export type AgentSlashCommandDelivery = "turn" | "out_of_band";
+
+/**
  * Represents a slash command available in an agent session.
  * Commands are executed by sending them as prompts with / prefix.
  */
@@ -506,6 +515,7 @@ export interface AgentSlashCommand {
   description: string;
   argumentHint: string;
   kind?: AgentSlashCommandKind;
+  delivery?: AgentSlashCommandDelivery;
 }
 
 export interface ListImportableSessionsOptions {
@@ -647,6 +657,14 @@ export interface AgentSession {
   ): Promise<AgentPermissionResult | void>;
   describePersistence(): AgentPersistenceHandle | null;
   interrupt(): Promise<void>;
+  /**
+   * Whether the provider runtime backing this session can still take work. A
+   * `false` answer is what lets a prompt recover by reloading the session from
+   * persistence instead of failing forever against a dead child process.
+   * Providers that cannot tell leave this off — absent means "no signal", never
+   * "dead".
+   */
+  isRuntimeAlive?(): boolean;
   /** Release live runtime resources without archiving or deleting the durable native session. */
   close(): Promise<void>;
   listCommands?(): Promise<AgentSlashCommand[]>;

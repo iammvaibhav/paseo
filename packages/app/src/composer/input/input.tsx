@@ -129,6 +129,9 @@ export interface MessageInputProps {
   /** Controls what the default send action (Enter, send button, dictation) does
    *  when the agent is running. "interrupt" sends immediately, "queue" queues. */
   defaultSendBehavior?: "interrupt" | "queue";
+  /** The current draft is a provider command the daemon runs out of band
+   *  (OMP /steer, /compact, …). Those never queue and never interrupt. */
+  sendsOutOfBand?: boolean;
   /** Callback for queue button when agent is running */
   onQueue?: (payload: MessagePayload) => void;
   /** Optional handler used when submit button is in loading state. */
@@ -785,6 +788,7 @@ function SendButtonTooltip({
 interface DictationTranscriptContext {
   value: string;
   defaultSendBehavior: "interrupt" | "queue";
+  sendsOutOfBand: boolean;
   isAgentRunning: boolean;
   onQueue: ((payload: MessagePayload) => void) | undefined;
   onSubmit: (payload: MessagePayload) => void;
@@ -804,7 +808,12 @@ function applyDictationTranscript(text: string, ctx: DictationTranscriptContext)
     return;
   }
 
-  if (ctx.defaultSendBehavior === "queue" && ctx.isAgentRunning && ctx.onQueue) {
+  if (
+    ctx.defaultSendBehavior === "queue" &&
+    !ctx.sendsOutOfBand &&
+    ctx.isAgentRunning &&
+    ctx.onQueue
+  ) {
     ctx.onQueue({ text: nextValue, attachments: ctx.attachments, cwd: ctx.cwd });
     ctx.onChangeText("");
     return;
@@ -1048,6 +1057,7 @@ interface SendButtonStateInput {
   isSubmitLoading: boolean;
   onSubmitLoadingPress: (() => void) | undefined;
   defaultSendBehavior: "interrupt" | "queue";
+  sendsOutOfBand: boolean;
   isAgentRunning: boolean;
 }
 
@@ -1062,7 +1072,8 @@ function computeSendButtonState(input: SendButtonStateInput): SendButtonStateOut
     input.isSubmitLoading && typeof input.onSubmitLoadingPress === "function";
   const isSendButtonDisabled =
     input.disabled || (!canPressLoadingButton && (input.isSubmitDisabled || input.isSubmitLoading));
-  const defaultActionQueues = input.defaultSendBehavior === "queue" && input.isAgentRunning;
+  const defaultActionQueues =
+    input.defaultSendBehavior === "queue" && input.isAgentRunning && !input.sendsOutOfBand;
   return { canPressLoadingButton, isSendButtonDisabled, defaultActionQueues };
 }
 
@@ -1097,6 +1108,7 @@ interface ResolvedMessageInputProps {
   voiceAgentId: string | undefined;
   isAgentRunning: boolean;
   defaultSendBehavior: "interrupt" | "queue";
+  sendsOutOfBand: boolean;
   onQueue: ((payload: MessagePayload) => void) | undefined;
   onSubmitLoadingPress: (() => void) | undefined;
   onKeyPressCallback: ((event: { key: string; preventDefault: () => void }) => boolean) | undefined;
@@ -1139,6 +1151,7 @@ function resolveMessageInputProps(props: MessageInputProps): ResolvedMessageInpu
     voiceAgentId: props.voiceAgentId,
     isAgentRunning: props.isAgentRunning ?? false,
     defaultSendBehavior: props.defaultSendBehavior ?? "interrupt",
+    sendsOutOfBand: props.sendsOutOfBand ?? false,
     onQueue: props.onQueue,
     onSubmitLoadingPress: props.onSubmitLoadingPress,
     onKeyPressCallback: props.onKeyPress,
@@ -1189,6 +1202,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       voiceAgentId,
       isAgentRunning,
       defaultSendBehavior,
+      sendsOutOfBand,
       onQueue,
       onSubmitLoadingPress,
       onKeyPressCallback,
@@ -1274,6 +1288,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         applyDictationTranscript(text, {
           value: valueRef.current,
           defaultSendBehavior,
+          sendsOutOfBand,
           isAgentRunning,
           onQueue,
           onSubmit,
@@ -1283,7 +1298,16 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           autoSend,
         });
       },
-      [onChangeText, onSubmit, onQueue, attachments, cwd, isAgentRunning, defaultSendBehavior],
+      [
+        onChangeText,
+        onSubmit,
+        onQueue,
+        attachments,
+        cwd,
+        isAgentRunning,
+        defaultSendBehavior,
+        sendsOutOfBand,
+      ],
     );
 
     const handleDictationError = useCallback(
@@ -1505,21 +1529,37 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       runDefaultSendAction({
         defaultSendBehavior,
         isAgentRunning,
+        sendsOutOfBand,
         onQueue,
         handleSendMessage,
         handleQueueMessage,
       });
-    }, [defaultSendBehavior, isAgentRunning, onQueue, handleQueueMessage, handleSendMessage]);
+    }, [
+      defaultSendBehavior,
+      sendsOutOfBand,
+      isAgentRunning,
+      onQueue,
+      handleQueueMessage,
+      handleSendMessage,
+    ]);
 
     const handleAlternateSendAction = useCallback(() => {
       runAlternateSendAction({
         defaultSendBehavior,
         isAgentRunning,
+        sendsOutOfBand,
         onQueue,
         handleSendMessage,
         handleQueueMessage,
       });
-    }, [defaultSendBehavior, isAgentRunning, handleSendMessage, handleQueueMessage, onQueue]);
+    }, [
+      defaultSendBehavior,
+      sendsOutOfBand,
+      isAgentRunning,
+      handleSendMessage,
+      handleQueueMessage,
+      onQueue,
+    ]);
 
     const getWebTextArea = useCallback(
       (): TextAreaHandle | null => getWebTextAreaImpl(textInputRef.current),
@@ -1615,6 +1655,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         isSubmitLoading,
         onSubmitLoadingPress,
         defaultSendBehavior,
+        sendsOutOfBand,
         isAgentRunning,
       });
     useIosHardwareKeyboardSubmit({
@@ -1625,6 +1666,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       submitButtonAccessibilityLabel,
       canPressLoadingButton,
       defaultActionQueues,
+      sendsOutOfBand,
       isAgentRunning,
       t,
     });

@@ -50,7 +50,8 @@ import type { DroppedItem } from "@/components/file-drop/types";
 import { MessageInput, type MessageInputRef, type AttachmentMenuItem } from "./input/input";
 import type { ImageAttachment, MessagePayload } from "./types";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
-import type { DraftCommandConfig } from "@/hooks/use-agent-commands-query";
+import { useAgentCommandsQuery, type DraftCommandConfig } from "@/hooks/use-agent-commands-query";
+import { isOutOfBandCommandDraft } from "@/composer/out-of-band-command";
 import { encodeImages } from "@/utils/encode-images";
 import { focusWithRetries } from "@/utils/web-focus";
 import { resolveSessionAgent } from "@/utils/agent-snapshots";
@@ -1433,6 +1434,22 @@ export function Composer({
   const isAgentRunning = agentState.status === "running";
   const hasAgent = agentState.status !== null;
 
+  // /steer and friends run against the live turn instead of starting one, so
+  // they must never enter the queue: a queued /steer is delivered after the
+  // turn it was meant to steer. The daemon reports which commands those are;
+  // this query shares its cache with the autocomplete's.
+  const { commands: agentCommands } = useAgentCommandsQuery({
+    serverId,
+    agentId,
+    enabled: isAgentRunning && userInput.trimStart().startsWith("/"),
+    draftConfig: commandDraftConfig,
+  });
+  const sendsOutOfBand = isOutOfBandCommandDraft({
+    text: userInput,
+    hasAttachments: buildOutgoingAttachments(attachments).length > 0,
+    commands: agentCommands,
+  });
+
   const queueWriter = useMemo<QueueWriter>(
     () => ({
       read: (id) => useSessionStore.getState().sessions[serverId]?.queuedMessages?.get(id) ?? [],
@@ -1539,9 +1556,17 @@ export function Composer({
       if (blurOnSubmit) {
         messageInputRef.current?.blur();
       }
-      void sendMessageWithContent(payload.text, outgoingAttachments, payload.forceSend);
+      const forceSend =
+        payload.forceSend ||
+        isOutOfBandCommandDraft({
+          text: payload.text,
+          hasAttachments: outgoingAttachments.length > 0,
+          commands: agentCommands,
+        });
+      void sendMessageWithContent(payload.text, outgoingAttachments, forceSend);
     },
     [
+      agentCommands,
       attachments,
       blurOnSubmit,
       buildOutgoingAttachments,
@@ -1789,9 +1814,26 @@ export function Composer({
       if (clientSlashCommand && runClientSlashCommand(clientSlashCommand)) {
         return;
       }
+      if (
+        isOutOfBandCommandDraft({
+          text: payload.text,
+          hasAttachments: outgoingAttachments.length > 0,
+          commands: agentCommands,
+        })
+      ) {
+        void sendMessageWithContent(payload.text, outgoingAttachments, true);
+        return;
+      }
       queueMessage(payload.text, outgoingAttachments);
     },
-    [attachments, buildOutgoingAttachments, queueMessage, runClientSlashCommand],
+    [
+      agentCommands,
+      attachments,
+      buildOutgoingAttachments,
+      queueMessage,
+      runClientSlashCommand,
+      sendMessageWithContent,
+    ],
   );
 
   const hasSendableContent = userInput.trim().length > 0 || selectedAttachments.length > 0;
@@ -2314,6 +2356,7 @@ export function Composer({
                 voiceAgentId={agentId}
                 isAgentRunning={isAgentRunning}
                 defaultSendBehavior={appSettings.sendBehavior}
+                sendsOutOfBand={sendsOutOfBand}
                 onQueue={handleQueue}
                 onSubmitLoadingPress={submitLoadingPressHandler}
                 onKeyPress={handleCommandKeyPress}

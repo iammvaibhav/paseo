@@ -194,6 +194,80 @@ test("sendPromptToAgent forwards the client message id as run options", async ()
   });
 });
 
+function createPromptScenario(isRuntimeAlive?: () => boolean) {
+  const agent: ManagedAgent = Object.create(null);
+  Reflect.set(agent, "id", "agent-1");
+  Reflect.set(agent, "provider", "omp");
+  Reflect.set(agent, "lifecycle", "error");
+  Reflect.set(agent, "session", isRuntimeAlive ? { isRuntimeAlive } : {});
+
+  const streamAgent = vi.fn(() => (async function* noop() {})());
+  const reloadAgentSession = vi.fn(async () => agent);
+  const agentManager: AgentManager = Object.create(AgentManager.prototype);
+  Reflect.set(
+    agentManager,
+    "getAgent",
+    vi.fn(() => agent),
+  );
+  Reflect.set(agentManager, "tryRunOutOfBand", vi.fn().mockReturnValue(false));
+  Reflect.set(agentManager, "hasInFlightRun", vi.fn().mockReturnValue(false));
+  Reflect.set(agentManager, "streamAgent", streamAgent);
+  Reflect.set(agentManager, "reloadAgentSession", reloadAgentSession);
+
+  const agentStorage: AgentStorage = Object.create(AgentStorage.prototype);
+  Reflect.set(
+    agentStorage,
+    "get",
+    vi.fn(async () => null),
+  );
+
+  const send = () =>
+    sendPromptToAgent({
+      agentManager,
+      agentStorage,
+      agentId: "agent-1",
+      prompt: "hello",
+      logger: createTestLogger(),
+    });
+
+  return { send, streamAgent, reloadAgentSession };
+}
+
+test("a prompt reloads the session when the provider runtime is dead", async () => {
+  const scenario = createPromptScenario(() => false);
+
+  await scenario.send();
+
+  // Reload has to happen before dispatch, otherwise the prompt dies against the
+  // dead runtime and the user sees "process is closed" instead of an answer.
+  expect(scenario.reloadAgentSession).toHaveBeenCalledWith("agent-1");
+  expect(scenario.streamAgent).toHaveBeenCalled();
+  expect(scenario.reloadAgentSession.mock.invocationCallOrder[0]).toBeLessThan(
+    scenario.streamAgent.mock.invocationCallOrder[0]!,
+  );
+});
+
+test("a prompt still dispatches when the session reload fails", async () => {
+  const scenario = createPromptScenario(() => false);
+  scenario.reloadAgentSession.mockRejectedValueOnce(new Error("resume failed"));
+
+  await scenario.send();
+
+  // The provider's own error is more useful than a reload error.
+  expect(scenario.streamAgent).toHaveBeenCalled();
+});
+
+test("a prompt does not reload a live or unreportable runtime", async () => {
+  const live = createPromptScenario(() => true);
+  await live.send();
+  expect(live.reloadAgentSession).not.toHaveBeenCalled();
+
+  // Providers that cannot report liveness must keep the old behavior.
+  const silent = createPromptScenario();
+  await silent.send();
+  expect(silent.reloadAgentSession).not.toHaveBeenCalled();
+});
+
 test("finish notifications tell the parent the child's last assistant message", async () => {
   const scenario = createFinishNotificationScenario({
     childLastAssistantMessage: "Implemented the cleanup and all checks pass.",

@@ -149,6 +149,21 @@ describe("OMP agent client and session", () => {
     ]);
   });
 
+  test("declares steer out of band and redirects the live turn without canceling it", async () => {
+    const omp = new OmpHarness();
+    await omp.start();
+    await omp.requireStartTurn("run the long thing");
+
+    const steer = (await omp.commands()).find((command) => command.name === "steer");
+    expect(steer?.delivery).toBe("out_of_band");
+
+    await expect(omp.runOutOfBand("/steer print instead")).resolves.toBe(true);
+
+    expect(omp.runtime().steerRequests).toEqual([{ message: "print instead", imageCount: 0 }]);
+    expect(omp.wasAborted()).toBe(false);
+    expect(omp.canceledTurnCount()).toBe(0);
+  });
+
   test("streams a prompt through completion", async () => {
     const omp = new OmpHarness();
     await omp.start();
@@ -638,11 +653,37 @@ describe("OMP agent client and session", () => {
     expect(omp.runningToolCallIds()).toEqual([]);
   });
 
-  test("interrupt still cancels when OMP abort hangs or fails", async () => {
+  test("interrupt keeps a live OMP process when abort misses its ack window", async () => {
     const omp = new OmpHarness();
     await omp.start();
 
-    await omp.requireStartTurn("stuck tool call");
+    await omp.requireStartTurn("slow to acknowledge");
+    const runtime = omp.runtime();
+    runtime.beginTurn();
+    runtime.emit({
+      type: "tool_execution_start",
+      toolCallId: "tool-slow",
+      toolName: "bash",
+      args: { command: "sleep 30" },
+    });
+    runtime.failNextAbort(new Error("OMP RPC request timed out for abort"));
+
+    await expect(omp.interrupt()).rejects.toThrow("timed out for abort");
+
+    // The turn is still really running, so nothing is terminalized and the
+    // process survives; the abort is retried with a wider budget instead.
+    expect(omp.isClosed()).toBe(false);
+    expect(omp.isRuntimeAlive()).toBe(true);
+    expect(omp.canceledTurnCount()).toBe(0);
+    expect(omp.runningToolCallIds()).toEqual(["tool-slow"]);
+    expect(runtime.abortTimeoutBudgets).toEqual([undefined, 30_000]);
+  });
+
+  test("a second interrupt force-closes while the first abort is still unanswered", async () => {
+    const omp = new OmpHarness();
+    await omp.start();
+
+    await omp.requireStartTurn("genuinely hung tool call");
     const runtime = omp.runtime();
     runtime.beginTurn();
     runtime.emit({
@@ -651,7 +692,37 @@ describe("OMP agent client and session", () => {
       toolName: "bash",
       args: { command: "sleep 999" },
     });
-    runtime.failNextAbort(new Error("OMP RPC request timed out for abort"));
+    const timedOut = () => new Error("OMP RPC request timed out for abort");
+    // Interactive abort, its background retry, then the second Stop.
+    runtime.failNextAbort(timedOut());
+    runtime.failNextAbort(timedOut());
+    runtime.failNextAbort(timedOut());
+
+    await expect(omp.interrupt()).rejects.toThrow("timed out for abort");
+    await omp.interrupt();
+
+    expect(omp.canceledTurnCount()).toBe(1);
+    expect(omp.runningToolCallIds()).toEqual([]);
+    expect(omp.isClosed()).toBe(true);
+    // A prompt after this must reload the session instead of dying against a
+    // runtime that is no longer there.
+    expect(omp.isRuntimeAlive()).toBe(false);
+  });
+
+  test("interrupt force-closes immediately when the OMP process is already dead", async () => {
+    const omp = new OmpHarness();
+    await omp.start();
+
+    await omp.requireStartTurn("orphaned turn");
+    const runtime = omp.runtime();
+    runtime.beginTurn();
+    runtime.emit({
+      type: "tool_execution_start",
+      toolCallId: "tool-orphan",
+      toolName: "bash",
+      args: { command: "sleep 999" },
+    });
+    runtime.failNextAbort(new Error("OMP RPC process is closed"));
 
     await omp.interrupt();
 
@@ -659,6 +730,21 @@ describe("OMP agent client and session", () => {
     expect(omp.canceledTurnCount()).toBe(1);
     expect(omp.runningToolCallIds()).toEqual([]);
     expect(omp.isClosed()).toBe(true);
+  });
+
+  test("a crashed OMP process reports a dead runtime", async () => {
+    const omp = new OmpHarness();
+    await omp.start();
+    expect(omp.isRuntimeAlive()).toBe(true);
+
+    await omp.requireStartTurn("work that outlives its process");
+    const runtime = omp.runtime();
+    runtime.beginTurn();
+    runtime.emit({ type: "process_exit", error: "OMP RPC process exited with code 1" });
+
+    // Nothing closed the session, so `closed` alone would still say "alive".
+    expect(omp.isClosed()).toBe(false);
+    expect(omp.isRuntimeAlive()).toBe(false);
   });
 
   test("a resumed session does not re-emit replayed events as live timeline items", async () => {

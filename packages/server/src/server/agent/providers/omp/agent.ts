@@ -161,6 +161,11 @@ const OMP_NO_TURN_SETTLE_MS = 5_000;
 // terminal failures, and an unbounded wait means a permanently spinning agent.
 const PROVIDER_IDLE_WAIT_TIMEOUT_MS = 10 * 60_000;
 
+// Budget for the abort retry that runs after the interactive 1s ack window
+// lapses. Wide enough to outlast an event-loop stall on a large context, since
+// the alternative is killing an OMP process that is still working.
+const OMP_BACKGROUND_ABORT_TIMEOUT_MS = 30_000;
+
 interface OmpPromptPayload {
   text: string;
   images?: OmpImageContent[];
@@ -923,7 +928,16 @@ export class OmpAgentSession implements AgentSession {
   private readonly providerIdleScheduler: OmpProviderIdleScheduler;
   private readonly noTurnScheduler: OmpNoTurnScheduler;
   private closed = false;
+  // Set when the RPC child process is gone for good: an observed exit, or a
+  // force-close after a hung abort. Distinct from `closed`, which only covers
+  // teardown Paseo initiated — an OMP that crashes or is OOM-killed leaves
+  // `closed` false with nothing behind the session.
+  private runtimeExited = false;
   private live: boolean;
+  // True once an abort missed its short ack window while the RPC process was
+  // still alive. The next interrupt escalates to a force-close; a terminal turn
+  // event clears it.
+  private unackedAbort = false;
   private readonly emittedUserMessageIds = new Set<string>();
 
   constructor(options: OmpAgentSessionOptions) {
@@ -1154,30 +1168,16 @@ export class OmpAgentSession implements AgentSession {
 
   async interrupt(): Promise<void> {
     const turnId = this.activeTurnId;
+    const unackedAbort = await this.abortForInterrupt(turnId);
+    if (unackedAbort) {
+      // The turn is still genuinely running, so leave it alone and surface the
+      // failed stop. AgentManager reports "refused" and the pending retry
+      // usually lands within a second; pressing Stop again escalates to a
+      // force-close.
+      throw unackedAbort;
+    }
     try {
-      try {
-        await this.runtimeSession.abort();
-      } catch (error) {
-        // Abort can hang when OMP is blocked inside a tool/MCP call, or fail
-        // outright when the RPC process is already dead. Force-close the RPC
-        // process so stop/replace can settle instead of refusing forever.
-        // Do not await the full tree-kill here: AgentManager only gives ~2s for
-        // interrupt() to acknowledge, and kill can take longer.
-        this.logger.warn(
-          { err: error, turnId: turnId ?? undefined },
-          "OMP abort failed during interrupt; forcing runtime close",
-        );
-        this.closed = true;
-        this.clearOmpSessionState();
-        void this.runtimeSession.close().catch((closeError: unknown) => {
-          this.logger.warn(
-            { err: closeError, turnId: turnId ?? undefined },
-            "OMP force-close after failed abort also failed",
-          );
-        });
-      } finally {
-        this.terminalizeActiveWork();
-      }
+      this.terminalizeActiveWork();
       if (turnId && this.activeTurnId === turnId) {
         this.activeTurnId = null;
         this.activeClientMessageId = null;
@@ -1225,6 +1225,78 @@ export class OmpAgentSession implements AgentSession {
         ...(turnId ? { turnId } : {}),
       });
     }
+  }
+
+  /**
+   * Sends `abort` for an interactive stop. Returns the error when the RPC
+   * process is alive but missed the short ack window; in every other case the
+   * runtime is already dead (or has just been force-closed here) and the caller
+   * proceeds to cancel the turn locally.
+   */
+  private async abortForInterrupt(turnId: string | null): Promise<unknown> {
+    try {
+      await this.runtimeSession.abort();
+      this.unackedAbort = false;
+      return undefined;
+    } catch (error) {
+      // A missed ack means "slow", not "dead". OMP answers abort in tens of
+      // milliseconds when healthy, so the 1s budget only lapses on an event-loop
+      // stall — a large context on a loaded host is enough. Force-closing here
+      // kills a session that is mid-turn, which is how a busy agent used to lose
+      // its OMP process and then reject every following prompt with "OMP RPC
+      // process is closed". Any other failure means the process really is gone.
+      const ackTimedOut = /request timed out for abort/i.test(toDiagnosticErrorMessage(error));
+      if (ackTimedOut && !this.unackedAbort) {
+        this.unackedAbort = true;
+        this.logger.warn(
+          { err: error, turnId: turnId ?? undefined },
+          "OMP abort did not acknowledge in time; retrying instead of closing",
+        );
+        this.retryAbortInBackground(turnId);
+        return error;
+      }
+      // Either the RPC process is already gone, or a previous abort is still
+      // unanswered and Stop was pressed again — a genuine hang. Force-close the
+      // RPC process so stop/replace can settle instead of refusing forever. Do
+      // not await the full tree-kill here: AgentManager only gives ~2s for
+      // interrupt() to acknowledge, and kill can take longer.
+      this.unackedAbort = false;
+      this.logger.warn(
+        { err: error, turnId: turnId ?? undefined },
+        "OMP abort failed during interrupt; forcing runtime close",
+      );
+      this.closed = true;
+      this.runtimeExited = true;
+      this.clearOmpSessionState();
+      void this.runtimeSession.close().catch((closeError: unknown) => {
+        this.logger.warn(
+          { err: closeError, turnId: turnId ?? undefined },
+          "OMP force-close after failed abort also failed",
+        );
+      });
+      return undefined;
+    }
+  }
+
+  private retryAbortInBackground(turnId: string | null): void {
+    void (async () => {
+      try {
+        await this.runtimeSession.abort(OMP_BACKGROUND_ABORT_TIMEOUT_MS);
+        this.unackedAbort = false;
+      } catch (error) {
+        if (this.closed) {
+          return;
+        }
+        this.logger.warn(
+          { err: error, turnId: turnId ?? undefined },
+          "OMP background abort retry failed",
+        );
+      }
+    })();
+  }
+
+  isRuntimeAlive(): boolean {
+    return !this.closed && !this.runtimeExited;
   }
 
   async revertConversation(input: { messageId: string }): Promise<void> {
@@ -1408,6 +1480,9 @@ export class OmpAgentSession implements AgentSession {
     event: Extract<AgentStreamEvent, { type: "turn_completed" | "turn_failed" | "turn_canceled" }>,
   ): void {
     this.turnGeneration += 1;
+    // The turn is over, so a lapsed abort ack from it must not make the next
+    // Stop escalate straight to a force-close.
+    this.unackedAbort = false;
     this.emit(event);
   }
 
@@ -1905,6 +1980,7 @@ export class OmpAgentSession implements AgentSession {
   }
 
   private handleProcessExit(error: string): void {
+    this.runtimeExited = true;
     this.terminalizeActiveWork();
     this.subagentIndex.clear(this.runtimeSession);
     if (!this.activeTurnId) {
