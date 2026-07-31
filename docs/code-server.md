@@ -24,7 +24,7 @@ Artifacts live in `scripts/code-server/`:
 - `install.sh` — install/update the standalone binary, write config + settings, install the bridge extension, install the Python language extensions, restart the service
 - `sync-user-data.sh` — rsync User/ + extensions/ from this machine to the remotes
 
-Binary: standalone install under `~/.local/bin/code-server` (latest, or pin with `CODE_SERVER_VERSION`).
+Binary: standalone install under `~/.local/bin/code-server` (latest, or pin with `CODE_SERVER_VERSION`). Upstream does not publish every arch for every release — 4.131.0 has no `macos-arm64` tarball — so a failed binary update logs `Binary update FAILED` and keeps the installed binary instead of aborting; config, settings, and the bridge extension still deploy.
 
 ### Deploy / update (preferred)
 
@@ -106,6 +106,8 @@ Implementation notes (easy to forget later):
   ```
 
 - An existing VS Code Web browser tab for that host origin is reused. File opens now go through the **paseo-bridge** extension (`browser-store.requestBridgeOpen`) so the file appears **in place with no reload** (see below). A `webview.loadURL` reload only happens for the one-time folder/workbench load or as a fallback when the bridge is unreachable.
+- Paths the explorer hands up are relative to the pane's root, which is the **selected submodule** when the submodule picker has one — not the workspace root that everything downstream resolves against. `ExplorerSidebar` re-anchors them (`explorer-sidebar.tsx`, `submodulePrefix`) before the open/add-to-chat callbacks. Miss that and every open under a selected submodule targets a path that does not exist.
+- A path that is not on disk gets a **404** from the bridge, and the app then skips the reload fallback and toasts instead. Reloading to the `?payload` URL would leave VS Code showing a blank editor named after the missing file, which reads like the open half-worked.
 - HTTPS is not required on VPN IPs **if** the insecure-origin allowlist includes those origins (see above). Tailscale Serve is optional, not required for this fork's setup.
 
 ## Snappy opens: preload + in-place bridge

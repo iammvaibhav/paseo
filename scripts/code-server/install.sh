@@ -64,7 +64,14 @@ ensure_binary() {
   fi
 
   log "Installing/updating standalone code-server${CODE_SERVER_VERSION:+ (v$CODE_SERVER_VERSION)}"
-  curl -fsSL https://code-server.dev/install.sh | sh -s -- "${args[@]}"
+  # Upstream does not publish every arch for every release — 4.131.0 ships no
+  # macos-arm64 tarball — and a failed update must not stop the config, settings,
+  # and extension deploy when a working binary is already installed.
+  if ! curl -fsSL https://code-server.dev/install.sh | sh -s -- "${args[@]}"; then
+    [[ -x "$BIN" ]] || die "code-server install failed and no binary at $BIN"
+    log "Binary update FAILED; keeping ${before:-existing install}"
+    return
+  fi
 
   if [[ ! -x "$BIN" ]]; then
     die "code-server binary missing at $BIN after install"
