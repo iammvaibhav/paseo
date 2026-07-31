@@ -411,7 +411,6 @@ export const ar: TranslationResources = {
     },
     fileActions: {
       openFile: "افتح الملف",
-      openDiff: "افتح الفروقات",
       copyPath: "نسخ المسار",
       download: "تحميل",
       addToChat: "إضافة إلى الدردشة…",

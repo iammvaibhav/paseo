@@ -415,7 +415,6 @@ export const ja: TranslationResources = {
     },
     fileActions: {
       openFile: "ファイルを開く",
-      openDiff: "差分を開く",
       copyPath: "パスをコピー",
       download: "ダウンロード",
       addToChat: "チャットに追加…",

@@ -415,7 +415,6 @@ export const ptBR: TranslationResources = {
     },
     fileActions: {
       openFile: "Abrir arquivo",
-      openDiff: "Abrir diff",
       copyPath: "Copiar caminho",
       download: "Baixar",
       addToChat: "Adicionar ao chat…",

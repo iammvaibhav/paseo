@@ -1073,7 +1073,12 @@ sync_code_server_settings_to_remotes() {
         && [[ -s "$remote_current" ]] \
         && "$jq_bin" -e . "$remote_current" >/dev/null 2>&1; then
         merged="$(mktemp)"
-        if "$jq_bin" -s '.[0] * .[1]' "$remote_current" "$src" >"$merged" 2>/dev/null; then
+        # --slurpfile, not `-s file file`: jq is often the jaq clone on macOS,
+        # whose --slurp reads only the first file and silently yields null for
+        # the second — which sent this Mac's file over whole and deleted every
+        # remote-only key, the exact clobbering this merge exists to prevent.
+        if "$jq_bin" -n --slurpfile remote "$remote_current" --slurpfile local "$src" \
+          '$remote[0] * $local[0]' >"$merged" 2>/dev/null; then
           payload="$merged"
         else
           log "    Warning: settings merge failed; pushing this Mac's file as-is"

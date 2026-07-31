@@ -1,10 +1,9 @@
 import { useMemo, type ReactElement, type ReactNode } from "react";
-import { Pressable, type PressableStateCallbackType } from "react-native";
+import { type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import {
   Copy,
   Download,
-  FileDiff,
   FileText,
   MessageSquarePlus,
   MoreVertical,
@@ -38,8 +37,6 @@ interface FileActionsMenuProps {
   fileKind: "file" | "directory";
   fileExists?: boolean;
   onOpenFile?: () => void;
-  /** Opens the file's git diff (VS Code Web only). */
-  onOpenDiff?: () => void;
   onCopyPath?: () => void;
   onDownload?: () => void;
   onAddToChat?: () => void;
@@ -74,7 +71,6 @@ export function FileActionsMenu({
   fileKind,
   fileExists = true,
   onOpenFile,
-  onOpenDiff,
   onCopyPath,
   onDownload,
   onAddToChat,
@@ -96,15 +92,6 @@ export function FileActionsMenu({
         icon: FileText,
         onSelect: onOpenFile,
         testID: testIDPrefix ? `${testIDPrefix}-open-file` : undefined,
-      });
-    }
-    if (availableFile && onOpenDiff) {
-      next.push({
-        key: "open-diff",
-        label: t("workspace.fileActions.openDiff"),
-        icon: FileDiff,
-        onSelect: onOpenDiff,
-        testID: testIDPrefix ? `${testIDPrefix}-open-diff` : undefined,
       });
     }
     if (onCopyPath) {
@@ -133,17 +120,7 @@ export function FileActionsMenu({
       });
     }
     return next;
-  }, [
-    fileExists,
-    fileKind,
-    onAddToChat,
-    onCopyPath,
-    onDownload,
-    onOpenDiff,
-    onOpenFile,
-    t,
-    testIDPrefix,
-  ]);
+  }, [fileExists, fileKind, onAddToChat, onCopyPath, onDownload, onOpenFile, t, testIDPrefix]);
 
   if (actions.length === 0) {
     return null;
@@ -206,37 +183,3 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface2,
   },
 }));
-
-/**
- * One-click sibling of the kebab: same trigger chrome and hit box, one action.
- * Lives here so a row's icon buttons and its menu cannot drift apart.
- */
-export function FileActionIconButton({
-  icon,
-  onPress,
-  accessibilityLabel,
-  hitSlop = 12,
-  testID,
-}: {
-  icon: LucideIcon;
-  onPress: () => void;
-  accessibilityLabel: string;
-  hitSlop?: number;
-  testID?: string;
-}): ReactElement {
-  const ThemedIcon = useMemo(() => withUnistyles(icon), [icon]);
-  return (
-    <Pressable
-      hitSlop={hitSlop}
-      // Inside a pressable row: opening this must not also toggle the row.
-      onPressIn={stopTriggerPropagation}
-      onPress={onPress}
-      style={triggerStyle}
-      accessibilityRole="button"
-      accessibilityLabel={accessibilityLabel}
-      testID={testID}
-    >
-      <ThemedIcon size={ICON_SIZE.sm} uniProps={foregroundMutedColorMapping} />
-    </Pressable>
-  );
-}

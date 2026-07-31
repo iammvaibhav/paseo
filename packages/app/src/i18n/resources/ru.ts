@@ -414,7 +414,6 @@ export const ru: TranslationResources = {
     },
     fileActions: {
       openFile: "Открыть файл",
-      openDiff: "Открыть различия",
       copyPath: "Копировать путь",
       download: "Скачать",
       addToChat: "Добавить в чат…",

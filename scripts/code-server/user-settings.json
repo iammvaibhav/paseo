@@ -9,6 +9,7 @@
   "workbench.activityBar.location": "hidden",
   "workbench.secondarySideBar.defaultVisibility": "hidden",
   "workbench.tips.enabled": false,
+  "diffEditor.hideUnchangedRegions.enabled": true,
   "python.languageServer": "None",
   "python.terminal.activateEnvironment": false,
   "basedpyright.analysis.diagnosticMode": "openFilesOnly",

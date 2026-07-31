@@ -415,7 +415,6 @@ export const es: TranslationResources = {
     },
     fileActions: {
       openFile: "Abrir archivo",
-      openDiff: "Abrir diferencias",
       copyPath: "Copiar ruta",
       download: "Descargar",
       addToChat: "Añadir al chat…",

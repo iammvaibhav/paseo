@@ -411,7 +411,6 @@ export const zhCN: TranslationResources = {
     },
     fileActions: {
       openFile: "打开文件",
-      openDiff: "打开差异",
       copyPath: "复制路径",
       download: "下载",
       addToChat: "添加到聊天…",
