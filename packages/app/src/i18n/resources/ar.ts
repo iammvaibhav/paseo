@@ -1529,6 +1529,7 @@ export const ar: TranslationResources = {
     },
     file: {
       directoryMissing: "لم يتم العثور على دليل Workspace.",
+      notFoundOnHost: "لم يتم العثور على الملف على المضيف: {{path}}",
       loading: "جارٍ تحميل الملف...",
       noPreview: "لا تتوفر معاينة",
       binaryPreviewUnavailable: "المعاينة الثنائية غير متاحة",

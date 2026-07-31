@@ -1271,10 +1271,18 @@ export function BrowserPane({
       );
       if (result.ok === true) {
         clearBridgeOpenRequest(browserId, requestId);
-      } else {
-        // Bridge unreachable / errored — fall back to a reload.
-        runFallback(`bridge-status-${result.status ?? "none"}`);
+        return;
       }
+      if (result.status === 404) {
+        // The bridge reached VS Code and the path is not on disk. Reloading to the
+        // `?payload` URL would open a phantom blank editor named after it.
+        console.warn(`[paseo-bridge] file not found path=${path}`);
+        toastRef.current.error(t("workspace.file.notFoundOnHost", { path }));
+        clearBridgeOpenRequest(browserId, requestId);
+        return;
+      }
+      // Bridge unreachable / errored — fall back to a reload.
+      runFallback(`bridge-status-${result.status ?? "none"}`);
     })();
 
     return () => {
@@ -1287,6 +1295,7 @@ export function BrowserPane({
     isWorkspaceActive,
     navigate,
     showChrome,
+    t,
     workspaceKey,
   ]);
 

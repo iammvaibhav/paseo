@@ -1575,6 +1575,7 @@ export const fr: TranslationResources = {
     },
     file: {
       directoryMissing: "Répertoire Workspace introuvable.",
+      notFoundOnHost: "Fichier introuvable sur l'hôte : {{path}}",
       loading: "Chargement du fichier...",
       noPreview: "Aucun aperçu disponible",
       binaryPreviewUnavailable: "Aperçu binaire indisponible",

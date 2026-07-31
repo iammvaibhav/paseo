@@ -64,6 +64,7 @@ test("GET /health returns ok", async () => {
 test("POST /open calls openFile with parsed args", async () => {
   const calls = [];
   const handler = createRequestHandler({
+    fileExists: () => true,
     openFile: async (path, line, column) => {
       calls.push([path, line, column]);
     },
@@ -92,6 +93,26 @@ test("POST /open with a missing path returns 400 and does not open", async () =>
     mockReq({ method: "POST", url: "/open", body: JSON.stringify({}) }),
   );
   assert.equal(res.status, 400);
+  assert.equal(called, false);
+});
+
+test("POST /open for a path that is not on disk returns 404 and does not open", async () => {
+  let called = false;
+  const handler = createRequestHandler({
+    fileExists: () => false,
+    openFile: async () => {
+      called = true;
+    },
+  });
+  const res = await runHandler(
+    handler,
+    mockReq({
+      method: "POST",
+      url: "/open",
+      body: JSON.stringify({ path: "/repo/gone.ts" }),
+    }),
+  );
+  assert.equal(res.status, 404);
   assert.equal(called, false);
 });
 

@@ -1540,6 +1540,7 @@ export const en = {
     },
     file: {
       directoryMissing: "Workspace directory not found.",
+      notFoundOnHost: "File not found on the host: {{path}}",
       loading: "Loading file...",
       noPreview: "No preview available",
       binaryPreviewUnavailable: "Binary preview unavailable",

@@ -1563,6 +1563,7 @@ export const ru: TranslationResources = {
     },
     file: {
       directoryMissing: "Каталог Workspace не найден.",
+      notFoundOnHost: "Файл не найден на хосте: {{path}}",
       loading: "Загрузка файла...",
       noPreview: "Предварительный просмотр недоступен",
       binaryPreviewUnavailable: "Предварительный просмотр двоичного файла недоступен.",

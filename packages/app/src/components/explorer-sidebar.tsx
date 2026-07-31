@@ -518,7 +518,27 @@ function ExplorerContentArea({
   onPrRetry: () => void;
 }) {
   const { addFile, canAddToChat } = useAddFileToChat({ serverId, workspaceId });
-  const onAddToChat = canAddToChat ? addFile : undefined;
+  // The changes and files panes are rooted at the selected submodule, so the
+  // paths they hand back are relative to it. Everything downstream — the
+  // workspace file tab, VS Code Web, chat attachments — resolves paths against
+  // the workspace root.
+  const submodulePrefix = selectedSubmodule ? `${selectedSubmodule}/` : "";
+  const handleOpenFile = useMemo(
+    () =>
+      onOpenFile
+        ? (filePath: string) =>
+            onOpenFile(filePath.startsWith("/") ? filePath : `${submodulePrefix}${filePath}`)
+        : undefined,
+    [onOpenFile, submodulePrefix],
+  );
+  const onAddToChat = useMemo(
+    () =>
+      canAddToChat
+        ? (filePath: string) =>
+            addFile(filePath.startsWith("/") ? filePath : `${submodulePrefix}${filePath}`)
+        : undefined,
+    [addFile, canAddToChat, submodulePrefix],
+  );
 
   if (showHostFiles) {
     return (
@@ -541,7 +561,7 @@ function ExplorerContentArea({
           workspaceId={workspaceId}
           cwd={effectiveCwd}
           enabled={isOpen}
-          onOpenFile={onOpenFile}
+          onOpenFile={handleOpenFile}
           onAddToChat={onAddToChat}
         />
       )}
@@ -550,7 +570,7 @@ function ExplorerContentArea({
           serverId={serverId}
           workspaceId={workspaceId}
           workspaceRoot={selectedSubmodule ? effectiveCwd : workspaceRoot}
-          onOpenFile={onOpenFile}
+          onOpenFile={handleOpenFile}
           onAddToChat={onAddToChat}
         />
       )}

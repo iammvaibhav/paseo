@@ -1558,6 +1558,7 @@ export const ptBR: TranslationResources = {
     },
     file: {
       directoryMissing: "Diretório do workspace não encontrado.",
+      notFoundOnHost: "Arquivo não encontrado no host: {{path}}",
       loading: "Carregando arquivo...",
       noPreview: "Nenhuma prévia disponível",
       binaryPreviewUnavailable: "Prévia binária indisponível",

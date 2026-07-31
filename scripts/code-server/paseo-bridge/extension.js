@@ -1,4 +1,5 @@
 const http = require("node:http");
+const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
@@ -33,7 +34,6 @@ const brokerRegistrations = new Map();
 
 function writeLog(line) {
   try {
-    const fs = require("node:fs");
     const os = require("node:os");
     fs.appendFileSync(
       path.join(os.homedir(), ".local", "share", "paseo-bridge.log"),
@@ -297,8 +297,16 @@ async function handleWorkerCloseAll({ res, parsed, closeEditors, saveSession, lo
   }
 }
 
-async function handleWorkerOpen({ res, parsed, openFile, saveSession, log }) {
+async function handleWorkerOpen({ res, parsed, openFile, fileExists, saveSession, log }) {
   log(`worker open path=${parsed.path} line=${parsed.line ?? "-"} col=${parsed.column ?? "-"}`);
+  // Opening a path that does not exist would leave VS Code showing an empty
+  // editor named after it, and the caller retrying with a `?payload` reload
+  // makes that phantom editor survive. Report it instead.
+  if (!fileExists(parsed.path)) {
+    log(`worker open MISSING path=${parsed.path}`);
+    sendJson(res, 404, { ok: false, error: "file not found" });
+    return;
+  }
   try {
     await openFile(parsed.path, parsed.line, parsed.column);
     await saveSession(parsed.folder);
@@ -327,6 +335,7 @@ async function handleWorkerRestore({ res, parsed, restoreSession, log }) {
 
 function createRequestHandler({
   openFile = openFileWithTimeout,
+  fileExists = (target) => fs.existsSync(target),
   closeEditors = closeAllEditors,
   saveSession = persistCurrentEditorSession,
   restoreSession = restoreSavedEditorSession,
@@ -374,7 +383,7 @@ function createRequestHandler({
       await handleWorkerRestore({ res, parsed, restoreSession, log });
       return;
     }
-    await handleWorkerOpen({ res, parsed, openFile, saveSession, log });
+    await handleWorkerOpen({ res, parsed, openFile, fileExists, saveSession, log });
   };
 }
 

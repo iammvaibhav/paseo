@@ -1572,6 +1572,7 @@ export const es: TranslationResources = {
     },
     file: {
       directoryMissing: "No se encontró el directorio de Workspace.",
+      notFoundOnHost: "Archivo no encontrado en el host: {{path}}",
       loading: "Cargando archivo...",
       noPreview: "No hay vista previa disponible",
       binaryPreviewUnavailable: "Vista previa binaria no disponible",

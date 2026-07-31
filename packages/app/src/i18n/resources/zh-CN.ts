@@ -1510,6 +1510,7 @@ export const zhCN: TranslationResources = {
     },
     file: {
       directoryMissing: "未找到 workspace 目录。",
+      notFoundOnHost: "主机上未找到文件：{{path}}",
       loading: "正在加载文件...",
       noPreview: "没有可用预览",
       binaryPreviewUnavailable: "二进制预览不可用",

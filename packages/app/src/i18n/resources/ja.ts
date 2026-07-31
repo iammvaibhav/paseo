@@ -1545,6 +1545,7 @@ export const ja: TranslationResources = {
     },
     file: {
       directoryMissing: "ワークスペースディレクトリが見つかりません。",
+      notFoundOnHost: "ホストにファイルが見つかりません: {{path}}",
       loading: "ファイルを読み込み中...",
       noPreview: "プレビューが利用できません",
       binaryPreviewUnavailable: "バイナリプレビューが利用できません",
