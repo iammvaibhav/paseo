@@ -190,6 +190,74 @@ deploy_language_extensions() {
     "$BIN" --install-extension "$ext" --force >/dev/null 2>&1 \
       || log "Warning: failed to install $ext (Open VSX unreachable?)"
   done
+  backfill_python_env_tools
+}
+
+# ms-python.python is published to Open VSX only as `universal`, and that
+# package OMITS the native `pet` binary (python-environment-tools) that ships in
+# the marketplace's per-platform VSIXs. Without it every interpreter resolution
+# dies on `spawn .../python-env-tools/bin/pet ENOENT`, so the Python
+# Environments extension warns "Default interpreter path '<x>' could not be
+# resolved" once per window and selects no interpreter at all (breaking the
+# interpreter picker, Jupyter kernel auto-detect and terminal activation;
+# basedpyright is unaffected, it reads pyrightconfig.json).
+#
+# So fetch just that one file, for THIS host's platform, at the installed
+# version. Runs on every deploy and on every installed copy, which also heals
+# the regression after code-server auto-updates the extension to a new
+# universal build.
+backfill_python_env_tools() {
+  local plat
+  case "$(uname -s)-$(uname -m)" in
+    Linux-x86_64) plat=linux-x64 ;;
+    Linux-aarch64 | Linux-arm64) plat=linux-arm64 ;;
+    Darwin-arm64) plat=darwin-arm64 ;;
+    Darwin-x86_64) plat=darwin-x64 ;;
+    *)
+      log "Warning: unknown platform $(uname -s)-$(uname -m); skipping pet backfill"
+      return
+      ;;
+  esac
+  if ! command -v unzip >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+    log "Warning: curl/unzip missing; skipping pet backfill"
+    return
+  fi
+
+  local dir ver pet vsix url
+  for dir in "${HOME}/.local/share/code-server/extensions/ms-python.python-"*; do
+    [[ -d "$dir" ]] || continue
+    pet="${dir}/python-env-tools/bin/pet"
+    if [[ -x "$pet" ]] && "$pet" --version >/dev/null 2>&1; then
+      continue
+    fi
+    [[ "$(basename "$dir")" =~ ^ms-python\.python-([0-9]+\.[0-9]+\.[0-9]+) ]] || continue
+    ver="${BASH_REMATCH[1]}"
+
+    url="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/ms-python/vsextensions/python/${ver}/vspackage?targetPlatform=${plat}"
+    vsix="$(mktemp -t pyext.XXXXXX)"
+    log "Backfilling python-env-tools/pet ($ver, $plat)"
+    if ! curl -fsSL --compressed --max-time 180 -o "$vsix" "$url"; then
+      log "Warning: could not download ms-python $ver for $plat; interpreter resolution will stay broken"
+      rm -f "$vsix"
+      continue
+    fi
+    mkdir -p "$(dirname "$pet")"
+    if ! unzip -p "$vsix" extension/python-env-tools/bin/pet > "$pet" 2>/dev/null; then
+      log "Warning: no python-env-tools/bin/pet inside the $plat VSIX"
+      rm -f "$pet" "$vsix"
+      continue
+    fi
+    rm -f "$vsix"
+    chmod +x "$pet"
+    # A truncated download or an arch mismatch only shows up on exec; a broken
+    # binary is worse than none (ENOEXEC instead of a retryable ENOENT).
+    if ! "$pet" --version >/dev/null 2>&1; then
+      log "Warning: extracted pet does not run; removing"
+      rm -f "$pet"
+      continue
+    fi
+    log "pet installed: $("$pet" --version)"
+  done
 }
 
 deploy_macos_service() {
