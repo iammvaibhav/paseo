@@ -946,6 +946,11 @@ export const ja: TranslationResources = {
       settings: "設定",
       closeSidebar: "サイドバーを閉じる",
     },
+    fleetStats: {
+      label: "フリート統計",
+      collecting: "フリート統計を収集中…",
+      failed: "フリート統計を収集できませんでした",
+    },
     help: {
       trigger: "ヘルプとサポート",
       sectionHelp: "ヘルプ",

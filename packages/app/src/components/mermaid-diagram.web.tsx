@@ -3,15 +3,14 @@ import { Text, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type MermaidApi from "mermaid";
 import { stripTerminalFenceNewline } from "@/components/mermaid-fence";
+import {
+  createMermaidConfig,
+  type MermaidDiagramAppearance,
+} from "@/components/mermaid-diagram-config";
 import type { Theme } from "@/styles/theme";
 
-interface MermaidDiagramProps {
+interface MermaidDiagramProps extends MermaidDiagramAppearance {
   code: string;
-  colorScheme?: Theme["colorScheme"];
-  backgroundColor?: string;
-  foregroundColor?: string;
-  mutedColor?: string;
-  borderColor?: string;
 }
 
 interface MermaidRenderState {
@@ -29,15 +28,41 @@ function loadMermaid(): Promise<typeof MermaidApi> {
 
 function MermaidDiagramBase({
   code,
-  colorScheme = "dark",
-  backgroundColor = "transparent",
-  foregroundColor = "inherit",
+  colorScheme,
+  backgroundColor,
+  nodeBackgroundColor,
+  nodeBorderColor,
+  clusterBackgroundColor,
+  foregroundColor,
   mutedColor,
-  borderColor,
+  fontFamily,
 }: MermaidDiagramProps) {
   const renderedCode = useMemo(() => stripTerminalFenceNewline(code), [code]);
   const [state, setState] = useState<MermaidRenderState>({ svg: null, error: null });
   const svgHtml = useMemo(() => (state.svg ? { __html: state.svg } : null), [state.svg]);
+  const config = useMemo(
+    () =>
+      createMermaidConfig({
+        colorScheme,
+        backgroundColor,
+        nodeBackgroundColor,
+        nodeBorderColor,
+        clusterBackgroundColor,
+        foregroundColor,
+        mutedColor,
+        fontFamily,
+      }),
+    [
+      backgroundColor,
+      clusterBackgroundColor,
+      colorScheme,
+      fontFamily,
+      foregroundColor,
+      mutedColor,
+      nodeBackgroundColor,
+      nodeBorderColor,
+    ],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -46,25 +71,13 @@ function MermaidDiagramBase({
     async function renderDiagram() {
       try {
         const mermaid = await loadMermaid();
-        mermaid.initialize({
-          startOnLoad: false,
-          securityLevel: "strict",
-          theme: colorScheme === "light" ? "default" : "dark",
-          fontFamily: "inherit",
-          themeVariables: {
-            background: backgroundColor,
-            primaryTextColor: foregroundColor,
-            secondaryTextColor: mutedColor ?? foregroundColor,
-            tertiaryTextColor: mutedColor ?? foregroundColor,
-            lineColor: mutedColor ?? foregroundColor,
-            textColor: foregroundColor,
-            mainBkg: backgroundColor,
-            nodeBorder: borderColor ?? mutedColor ?? foregroundColor,
-            clusterBkg: backgroundColor,
-            titleColor: foregroundColor,
-            edgeLabelBackground: backgroundColor,
-          },
-        });
+        // Measure against the fonts we will actually paint with, or every label
+        // box comes out too narrow and clips. See mermaid-diagram-config.ts.
+        await document.fonts.ready;
+        if (cancelled) {
+          return;
+        }
+        mermaid.initialize(config);
 
         // Mermaid mutates the DOM while rendering; keep cleanup idempotent.
         const { svg } = await mermaid.render(renderId, renderedCode);
@@ -90,7 +103,7 @@ function MermaidDiagramBase({
     return () => {
       cancelled = true;
     };
-  }, [backgroundColor, borderColor, colorScheme, foregroundColor, mutedColor, renderedCode]);
+  }, [config, renderedCode]);
 
   if (state.error) {
     return (
@@ -134,9 +147,12 @@ const svgHostStyle: React.CSSProperties = {
 const mermaidThemeMapping = (theme: Theme): Partial<MermaidDiagramProps> => ({
   colorScheme: theme.colorScheme,
   backgroundColor: theme.colors.surface2,
+  nodeBackgroundColor: theme.colors.surface3,
+  nodeBorderColor: theme.colors.surface4,
+  clusterBackgroundColor: theme.colors.surface1,
   foregroundColor: theme.colors.foreground,
   mutedColor: theme.colors.foregroundMuted,
-  borderColor: theme.colors.border,
+  fontFamily: theme.fontFamily.ui,
 });
 
 const ThemedMermaidDiagram = withUnistyles(MermaidDiagramBase);

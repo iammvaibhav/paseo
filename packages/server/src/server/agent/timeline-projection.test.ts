@@ -650,6 +650,51 @@ describe("selectProjectedTimelinePage", () => {
     expect(page.hasOlder).toBe(true);
   });
 
+  test("before limit counts projected entries, not canonical rows", () => {
+    // Each turn is 1 user message + 9 tool lifecycle deltas that collapse into a
+    // single entry: 10 canonical rows per 2 projected entries.
+    const rows: AgentTimelineRow[] = [];
+    for (let turn = 0; turn < 60; turn += 1) {
+      const base = turn * 10;
+      rows.push({
+        seq: base + 1,
+        timestamp: new Date(1000 + base).toISOString(),
+        item: { type: "user_message", text: `message ${turn + 1}` },
+      });
+      for (let delta = 0; delta < 9; delta += 1) {
+        const completed = delta === 8;
+        rows.push({
+          seq: base + 2 + delta,
+          timestamp: new Date(1001 + base + delta).toISOString(),
+          item: {
+            type: "tool_call",
+            callId: `call_${turn}`,
+            name: "shell",
+            status: completed ? "completed" : "running",
+            error: null,
+            detail: {
+              type: "unknown",
+              input: { cmd: `run ${turn}` },
+              output: completed ? { stdout: "done" } : null,
+            },
+          },
+        });
+      }
+    }
+
+    const page = selectProjectedTimelinePage({
+      rows,
+      direction: "before",
+      cursorSeq: 601,
+      limit: 40,
+    });
+
+    expect(page.entries).toHaveLength(40);
+    expect(page.startSeq).toBe(401);
+    expect(page.endSeq).toBe(600);
+    expect(page.hasOlder).toBe(true);
+  });
+
   test("tail page includes a wide tool when its completion is the newest seq", () => {
     const rows: AgentTimelineRow[] = [
       toolRow(1, "running"),

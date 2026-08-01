@@ -927,6 +927,11 @@ export const zhCN: TranslationResources = {
       settings: "设置",
       closeSidebar: "关闭侧边栏",
     },
+    fleetStats: {
+      label: "集群统计",
+      collecting: "正在收集集群统计…",
+      failed: "无法收集集群统计",
+    },
     help: {
       trigger: "帮助与支持",
       sectionHelp: "帮助",

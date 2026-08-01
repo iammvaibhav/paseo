@@ -357,6 +357,26 @@ describe("dispatchComposerAgentMessage", () => {
     expect(stream.tail.get("agent") ?? []).toEqual([]);
   });
 
+  it("leaves the timeline to the provider for out-of-band commands", async () => {
+    const client = createFakeSendClient();
+    const stream = createFakeStream();
+
+    await dispatchComposerAgentMessage({
+      client,
+      agentId: "agent",
+      text: "/steer print instead",
+      attachments: [],
+      encodeImages: passthroughEncodeImages,
+      stream,
+      skipOptimisticUserMessage: true,
+    });
+
+    expect(client.calls).toHaveLength(1);
+    expect(client.calls[0]?.text).toBe("/steer print instead");
+    expect(stream.head.get("agent")).toBeUndefined();
+    expect(stream.tail.get("agent") ?? []).toEqual([]);
+  });
+
   it("sends text + image data + structured attachments and appends user_message to the tail when head is empty", async () => {
     const client = createFakeSendClient();
     const stream = createFakeStream();

@@ -18,6 +18,7 @@ import {
   type AppUpdateCheckIntent,
   type AppReleaseChannel,
 } from "../features/auto-updater.js";
+import { openOmpStatsFleet } from "../features/omp-stats-fleet.js";
 import {
   getBundledCliShimPath,
   getCliInstallStatus,
@@ -627,6 +628,7 @@ export function createDaemonCommandHandlers(): Record<string, DesktopCommandHand
     install_skills: () => installSkills(),
     update_skills: () => updateSkills(),
     uninstall_skills: () => uninstallSkills(),
+    omp_stats_fleet_open: () => openOmpStatsFleet(),
   };
 }
 

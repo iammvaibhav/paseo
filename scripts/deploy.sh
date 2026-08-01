@@ -1032,6 +1032,48 @@ run_parallel_post_push_deploy() {
   log "Parallel post-push deploy phase complete"
 }
 
+sync_system_prompt() {
+  if [[ "${PASEO_SKIP_SYSTEM_PROMPT:-0}" == "1" ]]; then
+    return
+  fi
+
+  local prompt_file="$ROOT_DIR/scripts/paseo-system-prompt.md"
+  local patcher="$ROOT_DIR/scripts/set-append-system-prompt.mjs"
+  if [[ ! -f "$prompt_file" || ! -f "$patcher" ]]; then
+    log "No canonical system prompt on disk; leaving daemon.appendSystemPrompt alone"
+    return
+  fi
+
+  # base64 so the prompt survives argv and shell quoting on the way to each host.
+  local b64
+  b64="$(base64 < "$prompt_file" | tr -d '\n')"
+
+  # Must run BEFORE the daemon restarts: the config store only re-reads
+  # config.json at boot, and it writes its in-memory value back on any later
+  # patch, so a prompt written after the restart would be reverted.
+  if [[ "${PASEO_SKIP_LOCAL:-0}" != "1" ]]; then
+    log "Syncing daemon system prompt (local)"
+    node "$patcher" "$b64" | while read -r line; do log "  $line"; done
+  fi
+
+  if [[ "${PASEO_SKIP_REMOTES:-0}" == "1" ]]; then
+    return
+  fi
+
+  local host
+  for host in "${REMOTE_HOSTS[@]}"; do
+    log "Syncing daemon system prompt → $host"
+    # Remote PATH has no node for non-login shells; nvm is how deploy gets it there.
+    if ssh -o BatchMode=yes "$host" \
+        "export NVM_DIR=\"\$HOME/.nvm\"; . \"\$NVM_DIR/nvm.sh\" >/dev/null 2>&1; node - '$b64'" \
+        < "$patcher" 2>&1 | while read -r line; do log "  $line"; done; then
+      :
+    else
+      log "  Warning: system prompt sync failed on $host"
+    fi
+  done
+}
+
 sync_code_server_settings_to_remotes() {
   if [[ "${PASEO_SKIP_CODE_SERVER:-0}" == "1" ]]; then
     return
@@ -1621,6 +1663,10 @@ main() {
     # Remotes-only still needs the branch on origin; local git may already be pushed.
     log "PASEO_SKIP_LOCAL=1 — assuming $ORIGIN_REMOTE/$BRANCH is already up to date"
   fi
+
+  # Config must be on disk before daemons restart below; the config store only
+  # reads config.json at boot.
+  sync_system_prompt
 
   # Post-push: local daemon/desktop + both remotes overlap.
   run_parallel_post_push_deploy

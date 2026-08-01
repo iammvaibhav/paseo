@@ -935,6 +935,11 @@ export const ar: TranslationResources = {
       settings: "إعدادات",
       closeSidebar: "إغلاق الشريط الجانبي",
     },
+    fleetStats: {
+      label: "إحصاءات الأسطول",
+      collecting: "جارٍ جمع إحصاءات الأسطول…",
+      failed: "تعذر جمع إحصاءات الأسطول",
+    },
     help: {
       trigger: "المساعدة والدعم",
       sectionHelp: "المساعدة",

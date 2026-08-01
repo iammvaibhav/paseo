@@ -945,6 +945,11 @@ export const en = {
       settings: "Settings",
       closeSidebar: "Close sidebar",
     },
+    fleetStats: {
+      label: "Fleet stats",
+      collecting: "Collecting fleet stats…",
+      failed: "Could not collect fleet stats",
+    },
     help: {
       trigger: "Help and support",
       sectionHelp: "Help",

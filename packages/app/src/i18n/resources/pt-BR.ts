@@ -957,6 +957,11 @@ export const ptBR: TranslationResources = {
       settings: "Configurações",
       closeSidebar: "Fechar barra lateral",
     },
+    fleetStats: {
+      label: "Estatísticas da frota",
+      collecting: "Coletando estatísticas da frota…",
+      failed: "Não foi possível coletar as estatísticas da frota",
+    },
     help: {
       trigger: "Ajuda e suporte",
       sectionHelp: "Ajuda",

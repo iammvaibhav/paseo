@@ -1,6 +1,7 @@
 import { router, usePathname } from "expo-router";
 import {
   CalendarClock,
+  ChartColumn,
   FolderPlus,
   History,
   Home,
@@ -32,9 +33,12 @@ import { SidebarHeaderRow } from "@/components/sidebar/sidebar-header-row";
 import { SidebarDisplayPreferencesMenu } from "@/components/sidebar/sidebar-display-preferences-menu";
 import { SidebarHelpMenu } from "@/components/sidebar/sidebar-help-menu";
 import { SidebarResizeHandle } from "@/components/sidebar-resize-handle";
+import { SyncedLoader } from "@/components/synced-loader";
 import { Shortcut } from "@/components/ui/shortcut";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { HEADER_INNER_HEIGHT, useIsCompactFormFactor } from "@/constants/layout";
+import { getIsElectron } from "@/constants/platform";
+import { useOpenFleetStats } from "@/desktop/fleet-stats";
 import { useOpenAddProject } from "@/hooks/use-open-add-project";
 import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
 import { canCreateWorktreeForProjectKind } from "@/projects/host-projects";
@@ -312,6 +316,7 @@ function FooterIconButton({
   label,
   icon: Icon,
   iconSize,
+  isBusy,
   shortcutKeys,
   theme,
 }: {
@@ -320,6 +325,8 @@ function FooterIconButton({
   label: string;
   icon: typeof FolderPlus;
   iconSize?: number;
+  /** Swaps the icon for a spinner and swallows presses while an action runs. */
+  isBusy?: boolean;
   shortcutKeys?: ReturnType<typeof useShortcutKeys>;
   theme: SidebarTheme;
   buttonRef?: RefObject<View | null>;
@@ -336,14 +343,19 @@ function FooterIconButton({
           accessible
           accessibilityLabel={label}
           accessibilityRole="button"
+          disabled={isBusy}
           onPress={onPress}
         >
-          {({ hovered }) => (
-            <Icon
-              size={iconSize ?? theme.iconSize.md}
-              color={hovered ? theme.colors.foreground : theme.colors.foregroundMuted}
-            />
-          )}
+          {({ hovered }) =>
+            isBusy ? (
+              <SyncedLoader size={iconSize ?? theme.iconSize.md} color={theme.colors.foreground} />
+            ) : (
+              <Icon
+                size={iconSize ?? theme.iconSize.md}
+                color={hovered ? theme.colors.foreground : theme.colors.foregroundMuted}
+              />
+            )
+          }
         </Pressable>
       </TooltipTrigger>
       <TooltipContent side="top" align="center" offset={8}>
@@ -536,6 +548,29 @@ const SidebarNewWorkspaceHeaderRow = memo(function SidebarNewWorkspaceHeaderRow(
   );
 });
 
+/**
+ * Fork-only, Electron-only: collects omp stats across every host and shows the
+ * merged dashboard in its own desktop window (docs/omp-fleet-stats.md).
+ */
+function SidebarFleetStatsButton({ theme }: { theme: SidebarTheme }) {
+  const { t } = useTranslation();
+  const { open, isOpening } = useOpenFleetStats();
+
+  if (!getIsElectron()) {
+    return null;
+  }
+  return (
+    <FooterIconButton
+      onPress={open}
+      testID="sidebar-fleet-stats"
+      label={isOpening ? t("sidebar.fleetStats.collecting") : t("sidebar.fleetStats.label")}
+      icon={ChartColumn}
+      isBusy={isOpening}
+      theme={theme}
+    />
+  );
+}
+
 function SidebarFooter({
   theme,
   handleOpenProject,
@@ -584,6 +619,7 @@ function SidebarFooter({
           icon={Home}
           theme={theme}
         />
+        <SidebarFleetStatsButton theme={theme} />
         <SidebarHelpMenu />
         <FooterIconButton
           onPress={handleSettings}

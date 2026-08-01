@@ -439,6 +439,32 @@ function selectProjectedEntriesAfter(input: {
   };
 }
 
+/**
+ * Reach back far enough that the window newly exposes `limit` projected
+ * entries. `limit` counts entries, not canonical rows: tool lifecycle collapse
+ * and chunk merging fold a variable number of rows into one entry, so a fixed
+ * seq span yields an unpredictable — usually much smaller — page and turns
+ * scroll-back through a long session into a crawl. Entries that merely span
+ * into the window from above don't count; they were already delivered by the
+ * newer page that owns their position.
+ */
+function selectProjectedWindowStartBefore(input: {
+  entries: readonly TimelineProjectionEntry[];
+  endSeq: number;
+  minSeq: number;
+  limit: number;
+}): number {
+  const starts: number[] = [];
+  for (const entry of input.entries) {
+    if (entry.seqStart <= input.endSeq) {
+      starts.push(entry.seqStart);
+    }
+  }
+  starts.sort((left, right) => right - left);
+  const boundary = starts[input.limit - 1];
+  return boundary === undefined ? input.minSeq : Math.max(input.minSeq, boundary);
+}
+
 export function selectProjectedTimelinePage(input: {
   rows: readonly AgentTimelineRow[];
   bounds?: { minSeq: number; maxSeq: number };
@@ -526,7 +552,15 @@ export function selectProjectedTimelinePage(input: {
   } else {
     const cursorSeq = input.cursorSeq ?? bounds.maxSeq + 1;
     endSeq = Math.min(bounds.maxSeq, cursorSeq - 1);
-    startSeq = limit === 0 ? bounds.minSeq : Math.max(bounds.minSeq, cursorSeq - limit);
+    startSeq =
+      limit === 0
+        ? bounds.minSeq
+        : selectProjectedWindowStartBefore({
+            entries: projectedAll,
+            endSeq,
+            minSeq: bounds.minSeq,
+            limit,
+          });
   }
 
   if (startSeq > endSeq) {

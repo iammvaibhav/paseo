@@ -338,10 +338,13 @@ PASEO_SKIP_LOCAL=1 ./scripts/deploy.sh            # remotes only
 PASEO_SKIP_DAEMON=1 ./scripts/deploy.sh          # code-server + settings only (no daemon build/restart)
 PASEO_SKIP_CODE_SERVER=1 ./scripts/deploy.sh      # skip VS Code Web deploy
 PASEO_SYNC_CODE_SERVER_USER_DATA=1 ./scripts/deploy.sh  # also rsync code-server User/ + extensions/
+PASEO_SKIP_SYSTEM_PROMPT=1 ./scripts/deploy.sh    # leave each host's daemon.appendSystemPrompt alone
 PASEO_NODE_VERSION=22 ./scripts/deploy.sh
 ```
 
 code-server settings sync uses this Mac’s live `~/.local/share/code-server/User/settings.json` (not the repo template).
+
+The daemon system prompt is version-controlled at [`scripts/paseo-system-prompt.md`](scripts/paseo-system-prompt.md) and pushed into `daemon.appendSystemPrompt` in every host's `~/.paseo/config.json` by `scripts/set-append-system-prompt.mjs`. It syncs **before** the daemons restart on purpose: `DaemonConfigStore` only reads `config.json` at boot and writes its in-memory value back on any later patch, so a prompt written after the restart is reverted by the next settings change. Editing `config.json` by hand on a running daemon has the same problem — change it in Settings → Host → System prompt, or let deploy do it. Note ACP providers (Grok, Cursor, Antigravity) have no system-prompt plumbing and never receive it.
 
 ### Local desktop builds (unsigned)
 

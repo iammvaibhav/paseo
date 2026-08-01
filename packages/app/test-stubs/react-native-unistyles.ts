@@ -10,11 +10,17 @@ const testTheme = {
     surface1: "#fafafa",
     surface2: "#f4f4f5",
     border: "#e4e4e7",
+    accent: "#2563eb",
+    destructive: "#b91c1c",
   },
   spacing: [0, 4, 8, 12, 16, 20, 24, 28, 32],
+  fontFamily: {
+    mono: "monospace",
+  },
   fontSize: {
     xs: 12,
     sm: 14,
+    code: 12,
   },
   fontWeight: {
     normal: "400",

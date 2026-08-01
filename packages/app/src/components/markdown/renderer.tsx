@@ -25,8 +25,9 @@ import texmath from "markdown-it-texmath";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { AppearanceStyleBoundary } from "@/components/appearance-style-boundary";
 import { HighlightedCodeBlock } from "@/components/highlighted-code-block";
-import { MermaidDiagram } from "@/components/mermaid-diagram";
-import { isMermaidFenceLanguage } from "@/components/mermaid-fence";
+
+import { renderRichFence } from "./rich-fence";
+
 import { MathView } from "@/components/math-view";
 import { MarkdownParagraphView, MarkdownTextSpan } from "@/components/markdown-text";
 import { MarkdownTableCellText } from "@/components/markdown-text-selection";
@@ -656,9 +657,11 @@ export function createSharedMarkdownRules(): RenderRules {
       styles: MarkdownStyles,
       inheritedStyles: TextStyle = {},
     ) => {
-      if (isMermaidFenceLanguage(node.sourceInfo)) {
-        return <MermaidDiagram key={node.key} code={node.content} />;
+      const richFence = renderRichFence(node);
+      if (richFence) {
+        return richFence;
       }
+
       return (
         <HighlightedCodeBlock
           key={node.key}

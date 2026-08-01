@@ -170,6 +170,14 @@ export interface DispatchComposerAgentMessageInput {
     images: AttachmentMetadata[],
   ) => Promise<Array<{ data: string; mimeType: string }> | undefined>;
   stream: AgentStreamWriter;
+  /**
+   * The daemon runs this prompt out of band, so it never records a user
+   * message for it. Providers echo what they accepted themselves — OMP re-emits
+   * the steered text as its own user entry — and an optimistic bubble on top of
+   * that shows the same message twice, once with the `/steer ` prefix and once
+   * without.
+   */
+  skipOptimisticUserMessage?: boolean;
 }
 
 export async function dispatchComposerAgentMessage(
@@ -179,18 +187,19 @@ export async function dispatchComposerAgentMessage(
     format: input.attachmentSubmitFormat,
   });
   const messageId = generateMessageId();
-  const userMessage = buildOptimisticUserMessage({
-    id: messageId,
-    text: input.text,
-    timestamp: new Date(),
-    images: wirePayload.images,
-    attachments: wirePayload.attachments,
-  });
-  const rollbackOptimisticMessage = appendUserMessageToStream(
-    input.agentId,
-    userMessage,
-    input.stream,
-  );
+  const rollbackOptimisticMessage = input.skipOptimisticUserMessage
+    ? null
+    : appendUserMessageToStream(
+        input.agentId,
+        buildOptimisticUserMessage({
+          id: messageId,
+          text: input.text,
+          timestamp: new Date(),
+          images: wirePayload.images,
+          attachments: wirePayload.attachments,
+        }),
+        input.stream,
+      );
   try {
     const imagesData = await input.encodeImages(wirePayload.images);
     await input.client.sendAgentMessage(input.agentId, input.text, {
@@ -199,7 +208,7 @@ export async function dispatchComposerAgentMessage(
       attachments: wirePayload.attachments,
     });
   } catch (error) {
-    rollbackOptimisticMessage();
+    rollbackOptimisticMessage?.();
     throw error;
   }
 }

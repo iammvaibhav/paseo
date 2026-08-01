@@ -50,7 +50,11 @@ import type { DroppedItem } from "@/components/file-drop/types";
 import { MessageInput, type MessageInputRef, type AttachmentMenuItem } from "./input/input";
 import type { ImageAttachment, MessagePayload } from "./types";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
-import { useAgentCommandsQuery, type DraftCommandConfig } from "@/hooks/use-agent-commands-query";
+import {
+  useAgentCommandsQuery,
+  type AgentSlashCommand,
+  type DraftCommandConfig,
+} from "@/hooks/use-agent-commands-query";
 import { isOutOfBandCommandDraft } from "@/composer/out-of-band-command";
 import { encodeImages } from "@/utils/encode-images";
 import { focusWithRetries } from "@/utils/web-focus";
@@ -1322,6 +1326,7 @@ export function Composer({
     ((agentId: string, text: string, attachments: ComposerAttachment[]) => Promise<void>) | null
   >(null);
   const onSubmitMessageRef = useRef(onSubmitMessage);
+  const agentCommandsRef = useRef<readonly AgentSlashCommand[]>([]);
 
   const addImages = useCallback(
     (images: ImageAttachment[]) => {
@@ -1414,6 +1419,11 @@ export function Composer({
         }),
         encodeImages,
         stream,
+        skipOptimisticUserMessage: isOutOfBandCommandDraft({
+          text,
+          hasAttachments: sendAttachments.length > 0,
+          commands: agentCommandsRef.current,
+        }),
       });
       onAttentionPromptSend?.();
     };
@@ -1444,6 +1454,7 @@ export function Composer({
     enabled: isAgentRunning && userInput.trimStart().startsWith("/"),
     draftConfig: commandDraftConfig,
   });
+  agentCommandsRef.current = agentCommands;
   const sendsOutOfBand = isOutOfBandCommandDraft({
     text: userInput,
     hasAttachments: buildOutgoingAttachments(attachments).length > 0,

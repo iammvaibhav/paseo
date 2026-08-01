@@ -957,6 +957,11 @@ export const ru: TranslationResources = {
       settings: "Настройки",
       closeSidebar: "Закрыть боковую панель",
     },
+    fleetStats: {
+      label: "Статистика флота",
+      collecting: "Сбор статистики флота…",
+      failed: "Не удалось собрать статистику флота",
+    },
     help: {
       trigger: "Помощь и поддержка",
       sectionHelp: "Помощь",

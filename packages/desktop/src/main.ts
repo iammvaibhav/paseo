@@ -101,6 +101,7 @@ import {
 } from "@getpaseo/protocol/agent-deep-link";
 import { AgentNavigationInbox, parseAgentDeepLinkFromArgv } from "./agent-navigation.js";
 import { PlannotatorProxyManager } from "./features/plannotator-proxy.js";
+import { stopOmpStatsFleet } from "./features/omp-stats-fleet.js";
 
 const DEV_SERVER_URL = process.env.EXPO_DEV_URL ?? "http://localhost:8081";
 const APP_SCHEME = "paseo";
@@ -1138,6 +1139,7 @@ electronAutoUpdater.on("before-quit-for-update", quitLifecycle.handleBeforeQuitF
 app.on("before-quit", quitLifecycle.handleBeforeQuit);
 app.on("before-quit", () => {
   void plannotatorProxyManager?.closeAll();
+  stopOmpStatsFleet();
 });
 
 app.on("window-all-closed", () => {

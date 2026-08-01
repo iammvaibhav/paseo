@@ -966,6 +966,11 @@ export const es: TranslationResources = {
       settings: "Ajustes",
       closeSidebar: "Cerrar barra lateral",
     },
+    fleetStats: {
+      label: "Estadísticas de flota",
+      collecting: "Recopilando estadísticas de flota…",
+      failed: "No se pudieron recopilar las estadísticas de flota",
+    },
     help: {
       trigger: "Ayuda y soporte",
       sectionHelp: "Ayuda",

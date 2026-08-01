@@ -31,6 +31,8 @@ Large unbounded timeline responses can exceed relay frame limits, so catch-up us
 
 Page limits are projected-item targets. A tool call lifecycle is one projected item even if it spans many source sequence numbers, and assistant/reasoning chunks are merged before counting. The response carries `seqStart`, `seqEnd`, `sourceSeqRanges`, and `collapsed` so clients can advance sequence cursors without rendering delta rows.
 
+This holds in every direction, including `before`. A backward page reaches back until the window newly exposes `limit` projected items; it never treats `limit` as a span of source sequence numbers. Get that wrong and scroll-back through a tool-heavy session delivers a handful of rows per request, so the user can scroll for a long time and never reach the top. Items that only span into the window from above don't count toward the limit — the newer page that owns their display position already delivered them.
+
 When the app fetches `direction: "after"` and the daemon responds with `hasNewer: true`, the app must immediately fetch the next page from `endCursor`. The catch-up is complete only when `hasNewer: false`.
 
 Initialization timeouts guard lack of catch-up progress, not the full multi-page sync. A successful page that queues the next `after` page refreshes the watchdog.
