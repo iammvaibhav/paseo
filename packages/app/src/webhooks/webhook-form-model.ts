@@ -11,7 +11,7 @@ import type {
   WebhookSummary,
 } from "@getpaseo/protocol/webhook/types";
 import type { FormPreferences } from "@/create-agent-preferences/preferences";
-import { formatThinkingOptionLabel } from "@/composer/agent-controls/utils";
+import { formatThinkingOptionLabel } from "@/agent-controls/labels";
 import {
   buildSelectableProviderSelectorProviders,
   type ProviderSelectorProvider,

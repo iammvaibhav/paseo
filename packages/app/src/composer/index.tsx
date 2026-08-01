@@ -42,7 +42,7 @@ import {
 } from "@/composer/agent-controls";
 import { ContextWindowMeter } from "@/components/context-window-meter";
 import { useImageAttachmentPicker } from "@/hooks/use-image-attachment-picker";
-import { useSessionStore } from "@/stores/session-store";
+import { selectAgentTurnPresentation, useSessionStore } from "@/stores/session-store";
 import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
 import { useFilePicker } from "@/hooks/use-file-picker";
 import { useFileDrop } from "@/components/file-drop/use-file-drop";
@@ -74,7 +74,6 @@ import {
   sendQueuedComposerMessageNow,
   toggleGithubAttachmentFromPicker,
   uploadFileAttachments,
-  type AgentStreamWriter,
   type QueueWriter,
   type QueuedComposerMessage,
 } from "@/composer/actions";
@@ -101,6 +100,7 @@ import { useKeyboardActionHandler } from "@/hooks/use-keyboard-action-handler";
 import type { KeyboardActionDefinition } from "@/keyboard/keyboard-action-dispatcher";
 import type { MessageInputKeyboardActionKind } from "@/keyboard/actions";
 import { submitAgentInput } from "@/composer/submit";
+import { createMessageSubmissionWriter } from "@/composer/submission/writer";
 import { ComposerKeyboardScopeProvider } from "@/composer/keyboard-scope";
 import { useAppSettings } from "@/hooks/use-settings";
 import { isWeb, isNative } from "@/constants/platform";
@@ -974,22 +974,6 @@ function ComposerCancelButton({
   );
 }
 
-interface ComposerCancelButtonSlotProps extends ComposerCancelButtonProps {
-  isAgentRunning: boolean;
-  hasSendableContent: boolean;
-  isProcessing: boolean;
-}
-
-function ComposerCancelButtonSlot({
-  isAgentRunning,
-  hasSendableContent,
-  isProcessing,
-  ...rest
-}: ComposerCancelButtonSlotProps) {
-  if (!isAgentRunning || hasSendableContent || isProcessing) return null;
-  return <ComposerCancelButton {...rest} />;
-}
-
 interface ComposerVoiceModeButtonProps {
   buttonIconSize: number;
   handleToggleRealtimeVoice: () => void;
@@ -1008,11 +992,10 @@ interface ComposerRightControlsSlotProps extends ComposerVoiceModeButtonProps {
   isDraftComposer: boolean;
   isAgentRunning: boolean;
   hasSendableContent: boolean;
-  isProcessing: boolean;
   isCompact: boolean;
+  isProcessing: boolean;
   canFork: boolean;
   onFork: () => void;
-  cancelButton: ReactNode;
 }
 
 function ComposerRightControlsSlot({
@@ -1021,23 +1004,21 @@ function ComposerRightControlsSlot({
   isDraftComposer,
   isAgentRunning,
   hasSendableContent,
-  isProcessing,
   isCompact,
+  isProcessing,
   canFork,
   onFork,
-  cancelButton,
   ...voiceProps
 }: ComposerRightControlsSlotProps) {
   const hideVoiceForCompactInput = isCompact && hasSendableContent;
   const canStartVoiceOnTarget = hasAgent || isDraftComposer;
   const showVoiceModeButton =
     !isVoiceModeForAgent && canStartVoiceOnTarget && !isAgentRunning && !hideVoiceForCompactInput;
-  const shouldShowCancelButton = isAgentRunning && !hasSendableContent && !isProcessing;
   // Fork sits next to the send button while the agent is busy and there's
   // something to send: it spins the message off into a new sibling agent
   // instead of queueing/interrupting the current one.
   const showForkButton = canFork && isAgentRunning && hasSendableContent && !isProcessing;
-  if (!showVoiceModeButton && !shouldShowCancelButton && !showForkButton) return null;
+  if (!showVoiceModeButton && !showForkButton) return null;
   return (
     <View style={styles.rightControls}>
       {showVoiceModeButton ? <ComposerVoiceModeButton {...voiceProps} /> : null}
@@ -1048,7 +1029,6 @@ function ComposerRightControlsSlot({
           t={voiceProps.t}
         />
       ) : null}
-      {cancelButton}
     </View>
   );
 }
@@ -1198,8 +1178,6 @@ export function Composer({
   const queuedMessages = queuedMessagesRaw ?? EMPTY_ARRAY;
 
   const setQueuedMessages = useSessionStore((state) => state.setQueuedMessages);
-  const setAgentStreamTail = useSessionStore((state) => state.setAgentStreamTail);
-  const setAgentStreamHead = useSessionStore((state) => state.setAgentStreamHead);
 
   const isCompactFormFactor = useIsCompactFormFactor();
   const isCompactLayout = resolveCompactLayout(isCompactLayoutOverride, isCompactFormFactor);
@@ -1244,7 +1222,6 @@ export function Composer({
   const [cursorIndex, setCursorIndex] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isUploadingFile, setIsUploadingFile] = useState(false);
-  const [isCancellingAgent, setIsCancellingAgent] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [isMessageInputFocused, setIsMessageInputFocused] = useState(false);
   const [isGithubPickerOpen, setIsGithubPickerOpen] = useState(false);
@@ -1403,12 +1380,6 @@ export function Composer({
       if (!client) {
         throw new Error(t("workspace.terminal.hostDisconnected"));
       }
-      const stream: AgentStreamWriter = {
-        getTail: (id) => useSessionStore.getState().sessions[serverId]?.agentStreamTail?.get(id),
-        getHead: (id) => useSessionStore.getState().sessions[serverId]?.agentStreamHead?.get(id),
-        setHead: (updater) => setAgentStreamHead(serverId, updater),
-        setTail: (updater) => setAgentStreamTail(serverId, updater),
-      };
       await dispatchComposerAgentMessage({
         client,
         agentId: targetAgentId,
@@ -1418,7 +1389,7 @@ export function Composer({
           supportsForgeAttachments: supportsForgeSearch,
         }),
         encodeImages,
-        stream,
+        submission: createMessageSubmissionWriter(serverId),
         skipOptimisticUserMessage: isOutOfBandCommandDraft({
           text,
           hasAttachments: sendAttachments.length > 0,
@@ -1427,21 +1398,21 @@ export function Composer({
       });
       onAttentionPromptSend?.();
     };
-  }, [
-    client,
-    onAttentionPromptSend,
-    serverId,
-    setAgentStreamTail,
-    setAgentStreamHead,
-    supportsForgeSearch,
-    t,
-  ]);
+  }, [client, onAttentionPromptSend, serverId, supportsForgeSearch, t]);
 
   useEffect(() => {
     onSubmitMessageRef.current = onSubmitMessage;
   }, [onSubmitMessage]);
 
-  const isAgentRunning = agentState.status === "running";
+  const hasActiveTurn = useSessionStore(
+    (state) => selectAgentTurnPresentation(state.sessions[serverId], agentId).isActive,
+  );
+  const isCancellingAgent = useSessionStore(
+    (state) => selectAgentTurnPresentation(state.sessions[serverId], agentId).isCancelling,
+  );
+  const beginAgentCancellation = useSessionStore((state) => state.beginAgentCancellation);
+  const settleAgentCancellation = useSessionStore((state) => state.settleAgentCancellation);
+  const isAgentRunning = hasActiveTurn;
   const hasAgent = agentState.status !== null;
 
   // /steer and friends run against the live turn instead of starting one, so
@@ -1692,31 +1663,37 @@ export function Composer({
     [openAttachment],
   );
 
-  useEffect(() => {
-    if (!isAgentRunning || !isConnected) {
-      setIsCancellingAgent(false);
-    }
-  }, [isAgentRunning, isConnected]);
-
   const handleCancelAgent = useCallback(() => {
-    const didCancel = cancelComposerAgent({
+    const targetAgentId = agentIdRef.current;
+    const cancellation = cancelComposerAgent({
       client,
-      agentId: agentIdRef.current,
+      agentId: targetAgentId,
       isAgentRunning,
       isCancellingAgent,
       isConnected,
-      onCancelFailed: (error) => {
-        setIsCancellingAgent(false);
+    });
+    if (!cancellation) return;
+    const requestId = beginAgentCancellation(serverId, targetAgentId);
+    void cancellation
+      .catch((error) => {
         const message = resolveErrorMessage(error);
         if (message && message.trim().length > 0) {
           toastErrorRef.current(message);
         }
-      },
-    });
-    if (!didCancel) return;
-    setIsCancellingAgent(true);
+      })
+      .finally(() => {
+        settleAgentCancellation(serverId, targetAgentId, requestId);
+      });
     messageInputRef.current?.focus();
-  }, [client, isAgentRunning, isCancellingAgent, isConnected]);
+  }, [
+    beginAgentCancellation,
+    client,
+    isAgentRunning,
+    isCancellingAgent,
+    isConnected,
+    serverId,
+    settleAgentCancellation,
+  ]);
 
   const focusMessageInputForKeyboardAction = useCallback(() => {
     focusMessageInputWithPlatformStrategy(messageInputRef);
@@ -1955,12 +1932,9 @@ export function Composer({
     [isCompactLayout, voiceButtonDisabled],
   );
 
-  const cancelButton = useMemo(
+  const activeActionContent = useMemo(
     () => (
-      <ComposerCancelButtonSlot
-        isAgentRunning={isAgentRunning}
-        hasSendableContent={hasSendableContent}
-        isProcessing={isProcessing}
+      <ComposerCancelButton
         buttonIconSize={buttonIconSize}
         cancelButtonStyle={cancelButtonStyle}
         handleCancelAgent={handleCancelAgent}
@@ -1975,11 +1949,8 @@ export function Composer({
       buttonIconSize,
       cancelButtonStyle,
       handleCancelAgent,
-      hasSendableContent,
-      isAgentRunning,
       isCancellingAgent,
       isConnected,
-      isProcessing,
       t,
     ],
   );
@@ -1992,8 +1963,8 @@ export function Composer({
         isDraftComposer={Boolean(onStartVoiceMode)}
         isAgentRunning={isAgentRunning}
         hasSendableContent={hasSendableContent}
-        isProcessing={isProcessing}
         isCompact={isCompactLayout}
+        isProcessing={isProcessing}
         canFork={canFork}
         onFork={handleFork}
         buttonIconSize={buttonIconSize}
@@ -2003,13 +1974,11 @@ export function Composer({
         realtimeVoiceButtonStyle={realtimeVoiceButtonStyle}
         voiceToggleKeys={voiceToggleKeys}
         t={t}
-        cancelButton={cancelButton}
       />
     ),
     [
       buttonIconSize,
       canFork,
-      cancelButton,
       handleFork,
       handleToggleRealtimeVoice,
       hasAgent,
@@ -2363,6 +2332,7 @@ export function Composer({
                 leftContent={leftContent}
                 beforeVoiceContent={beforeVoiceContent}
                 rightContent={rightContent}
+                activeActionContent={activeActionContent}
                 voiceServerId={serverId}
                 voiceAgentId={agentId}
                 isAgentRunning={isAgentRunning}

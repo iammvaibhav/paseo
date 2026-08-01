@@ -33,7 +33,7 @@ import {
   type SelectFieldOption,
   type SelectFieldRenderOptionInput,
 } from "@/components/ui/select-field";
-import { formatThinkingOptionLabel } from "@/composer/agent-controls/utils";
+import { formatThinkingOptionLabel } from "@/agent-controls/labels";
 import { i18n } from "@/i18n/i18next";
 import {
   mergeProviderPreferences,

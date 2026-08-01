@@ -92,6 +92,7 @@ export interface PanelState {
 
   // Actions
   toggleFocusMode: () => void;
+  exitFocusMode: () => void;
   showMobileAgent: () => void;
   showMobileAgentList: () => void;
   toggleMobileAgentList: () => void;
@@ -164,6 +165,13 @@ export const usePanelStore = create<PanelState>()(
         set((state) => ({
           desktop: { ...state.desktop, focusModeEnabled: !state.desktop.focusModeEnabled },
         })),
+
+      exitFocusMode: () =>
+        set((state) =>
+          state.desktop.focusModeEnabled
+            ? { desktop: { ...state.desktop, focusModeEnabled: false } }
+            : state,
+        ),
 
       showMobileAgent: () => set((state) => setMobilePanelTargetPatch(state, "agent")),
 

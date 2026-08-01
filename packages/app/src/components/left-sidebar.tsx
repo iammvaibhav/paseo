@@ -60,6 +60,7 @@ import { usePanelStore } from "@/stores/panel-store";
 import { useOwnsWindowChromeCorner, WindowChromeSafeArea } from "@/utils/desktop-window";
 import { useCloseAgentListGesture } from "@/mobile-panels/gestures";
 import { MobilePanelOverlay } from "@/mobile-panels/presentation";
+import { useIsMobilePanelPresented } from "@/mobile-panels/provider";
 import {
   buildOpenProjectRoute,
   buildNewWorkspaceRoute,
@@ -83,14 +84,14 @@ interface SidebarSharedProps {
   pinnedGroups: PinnedSidebarGroups;
   projects: SidebarProjectEntry[];
   workspaceEntriesByKey: ReadonlyMap<string, SidebarWorkspaceEntry>;
-  projectNamesByKey: Map<string, string>;
+  projectNamesByViewKey: Map<string, string>;
   isInitialLoad: boolean;
   isRevalidating: boolean;
   isManualRefresh: boolean;
   groupMode: SidebarGroupMode;
   collapsedProjectKeys: ReadonlySet<string>;
   shortcutIndexByWorkspaceKey: Map<string, number>;
-  toggleProjectCollapsed: (projectKey: string) => void;
+  toggleProjectCollapsed: (projectViewKey: string) => void;
   handleRefresh: () => void;
   handleOpenProject: () => void;
   handleHome: () => void;
@@ -141,7 +142,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
   const {
     projects,
     workspaceEntriesByKey,
-    projectNamesByKey,
+    projectNamesByViewKey,
     isInitialLoad,
     isRevalidating,
     refreshAll,
@@ -252,7 +253,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
     pinnedGroups,
     projects,
     workspaceEntriesByKey,
-    projectNamesByKey,
+    projectNamesByViewKey,
     isInitialLoad,
     isRevalidating,
     isManualRefresh,
@@ -640,7 +641,7 @@ function MobileSidebar({
   pinnedGroups,
   projects,
   workspaceEntriesByKey,
-  projectNamesByKey,
+  projectNamesByViewKey,
   isInitialLoad,
   isRevalidating,
   isManualRefresh,
@@ -669,6 +670,7 @@ function MobileSidebar({
   const isSchedulesActive = pathname.includes("/schedules");
   const isWebhooksActive = pathname.includes("/webhooks");
   const { gesture: closeGesture, gestureRef: closeGestureRef } = useCloseAgentListGesture();
+  const dragGestureHostPresented = useIsMobilePanelPresented("agent-list");
 
   const handleViewMore = useCallback(() => {
     closeSidebar();
@@ -771,12 +773,13 @@ function MobileSidebar({
             pinnedGroups={pinnedGroups}
             projects={projects}
             workspaceEntriesByKey={workspaceEntriesByKey}
-            projectNamesByKey={projectNamesByKey}
+            projectNamesByViewKey={projectNamesByViewKey}
             isRefreshing={isManualRefresh && isRevalidating}
             onRefresh={handleRefresh}
             onWorkspacePress={handleWorkspacePress}
             onAddProject={handleOpenProject}
             parentGestureRef={closeGestureRef}
+            dragGestureHostPresented={dragGestureHostPresented}
             listHeaderComponent={workspacesSectionHeaderElement}
           />
         )}
@@ -801,7 +804,7 @@ function DesktopSidebar({
   pinnedGroups,
   projects,
   workspaceEntriesByKey,
-  projectNamesByKey,
+  projectNamesByViewKey,
   isInitialLoad,
   isRevalidating,
   isManualRefresh,
@@ -948,7 +951,7 @@ function DesktopSidebar({
             pinnedGroups={pinnedGroups}
             projects={projects}
             workspaceEntriesByKey={workspaceEntriesByKey}
-            projectNamesByKey={projectNamesByKey}
+            projectNamesByViewKey={projectNamesByViewKey}
             isRefreshing={isManualRefresh && isRevalidating}
             onRefresh={handleRefresh}
             onAddProject={handleOpenProject}

@@ -12,13 +12,8 @@ import {
   splitComposerAttachmentsForSubmit,
   type ComposerAttachmentSubmitFormat,
 } from "@/composer/attachments/submit";
-import {
-  appendOptimisticUserMessageToStream,
-  buildOptimisticUserMessage,
-  generateMessageId,
-  type StreamItem,
-  type UserMessageItem,
-} from "@/types/stream";
+import { createUserMessage, generateMessageId, type UserMessageItem } from "@/types/stream";
+import type { MessageSubmissionRejectionOutcome } from "@/composer/submission/model";
 import type { PickedImageAttachmentInput } from "@/hooks/image-attachment-picker";
 import { i18n } from "@/i18n/i18next";
 
@@ -70,11 +65,10 @@ export interface ComposerCancelClient {
   cancelAgent: (agentId: string) => Promise<void> | void;
 }
 
-export interface AgentStreamWriter {
-  getTail: (agentId: string) => StreamItem[] | undefined;
-  getHead: (agentId: string) => StreamItem[] | undefined;
-  setHead: (updater: (prev: Map<string, StreamItem[]>) => Map<string, StreamItem[]>) => void;
-  setTail: (updater: (prev: Map<string, StreamItem[]>) => Map<string, StreamItem[]>) => void;
+export interface MessageSubmissionWriter {
+  begin: (agentId: string, message: UserMessageItem) => void;
+  accept: (agentId: string, clientMessageId: string) => void;
+  reject: (agentId: string, clientMessageId: string) => MessageSubmissionRejectionOutcome;
 }
 
 export interface QueueWriter {
@@ -145,19 +139,16 @@ export interface CancelComposerAgentInput {
   isAgentRunning: boolean;
   isCancellingAgent: boolean;
   isConnected: boolean;
-  onCancelFailed: (error: unknown) => void;
 }
 
-export function cancelComposerAgent(input: CancelComposerAgentInput): boolean {
-  if (!input.isAgentRunning || input.isCancellingAgent) return false;
-  if (!input.isConnected || !input.client) return false;
+export function cancelComposerAgent(input: CancelComposerAgentInput): Promise<void> | null {
+  if (!input.isAgentRunning || input.isCancellingAgent) return null;
+  if (!input.isConnected || !input.client) return null;
   try {
-    void Promise.resolve(input.client.cancelAgent(input.agentId)).catch(input.onCancelFailed);
+    return Promise.resolve(input.client.cancelAgent(input.agentId));
   } catch (error) {
-    input.onCancelFailed(error);
-    return false;
+    return Promise.reject(error);
   }
-  return true;
 }
 
 export interface DispatchComposerAgentMessageInput {
@@ -169,7 +160,7 @@ export interface DispatchComposerAgentMessageInput {
   encodeImages: (
     images: AttachmentMetadata[],
   ) => Promise<Array<{ data: string; mimeType: string }> | undefined>;
-  stream: AgentStreamWriter;
+  submission: MessageSubmissionWriter;
   /**
    * The daemon runs this prompt out of band, so it never records a user
    * message for it. Providers echo what they accepted themselves — OMP re-emits
@@ -186,29 +177,28 @@ export async function dispatchComposerAgentMessage(
   const wirePayload = splitComposerAttachmentsForSubmit(input.attachments, {
     format: input.attachmentSubmitFormat,
   });
-  const messageId = generateMessageId();
-  const rollbackOptimisticMessage = input.skipOptimisticUserMessage
-    ? null
-    : appendUserMessageToStream(
-        input.agentId,
-        buildOptimisticUserMessage({
-          id: messageId,
-          text: input.text,
-          timestamp: new Date(),
-          images: wirePayload.images,
-          attachments: wirePayload.attachments,
-        }),
-        input.stream,
-      );
+  const clientMessageId = generateMessageId();
+  if (!input.skipOptimisticUserMessage) {
+    const userMessage = createUserMessage({
+      clientMessageId,
+      text: input.text,
+      timestamp: new Date(),
+      images: wirePayload.images,
+      attachments: wirePayload.attachments,
+    });
+    input.submission.begin(input.agentId, userMessage);
+  }
   try {
     const imagesData = await input.encodeImages(wirePayload.images);
     await input.client.sendAgentMessage(input.agentId, input.text, {
-      messageId,
+      messageId: clientMessageId,
       images: imagesData ?? [],
       attachments: wirePayload.attachments,
     });
+    input.submission.accept(input.agentId, clientMessageId);
   } catch (error) {
-    rollbackOptimisticMessage?.();
+    const outcome = input.submission.reject(input.agentId, clientMessageId);
+    if (outcome === "accepted") return;
     throw error;
   }
 }
@@ -237,9 +227,9 @@ export interface ForkComposerAgentInput {
 
 /**
  * Fork the source agent into a new sibling agent seeded with history up to now,
- * running `text` as its first turn. Unlike a normal send, this does NOT append
- * an optimistic message to the source agent's stream — the message belongs to
- * the newly created agent, which the caller opens in a new tab.
+ * running `text` as its first turn. Unlike a normal send, this does NOT record a
+ * submitted message on the source agent's timeline — the message belongs to the
+ * newly created agent, which the caller opens in a new tab.
  */
 export async function forkComposerAgent(
   input: ForkComposerAgentInput,
@@ -252,34 +242,6 @@ export async function forkComposerAgent(
     images: imagesData ?? [],
     attachments: wirePayload.attachments,
   });
-}
-
-function appendUserMessageToStream(
-  agentId: string,
-  userMessage: UserMessageItem,
-  stream: AgentStreamWriter,
-): () => void {
-  const result = appendOptimisticUserMessageToStream({
-    tail: stream.getTail(agentId) ?? [],
-    head: stream.getHead(agentId) ?? [],
-    message: userMessage,
-    placement: "active-head",
-  });
-  const write = result.changedHead ? stream.setHead : stream.setTail;
-  const items = result.changedHead ? result.head : result.tail;
-  write((prev) => new Map(prev).set(agentId, items));
-
-  return () => {
-    write((prev) => {
-      const current = prev.get(agentId);
-      if (!current) return prev;
-      const nextItems = current.filter(
-        (item) => item.id !== userMessage.id || item.kind !== "user_message" || !item.optimistic,
-      );
-      if (nextItems.length === current.length) return prev;
-      return new Map(prev).set(agentId, nextItems);
-    });
-  };
 }
 
 export interface QueueComposerMessageInput {

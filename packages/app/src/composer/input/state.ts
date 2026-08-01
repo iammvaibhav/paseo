@@ -52,6 +52,55 @@ interface SendActionContext {
   handleQueueMessage: () => void;
 }
 
+interface DictationTranscriptContext {
+  value: string;
+  defaultSendBehavior: SendBehavior;
+  /**
+   * The draft invokes a provider command that runs against the live turn
+   * instead of starting one (OMP /steer, /compact, …), so an auto-sent
+   * transcript must bypass the queue exactly like a manual send does.
+   */
+  sendsOutOfBand: boolean;
+  isAgentRunning: boolean;
+  onQueue: ((payload: MessagePayload) => void) | undefined;
+  onSubmit: (payload: MessagePayload) => void;
+  onChangeText: (text: string) => void;
+  attachments: MessagePayload["attachments"];
+  cwd: string;
+  autoSend: boolean;
+}
+
+export function applyDictationTranscript(text: string, ctx: DictationTranscriptContext): void {
+  if (!text) return;
+  const shouldPad = ctx.value.length > 0 && !/\s$/.test(ctx.value);
+  const nextValue = `${ctx.value}${shouldPad ? " " : ""}${text}`;
+
+  if (!ctx.autoSend) {
+    ctx.onChangeText(nextValue);
+    return;
+  }
+
+  ctx.onChangeText(nextValue);
+
+  if (
+    ctx.defaultSendBehavior === "queue" &&
+    !ctx.sendsOutOfBand &&
+    ctx.isAgentRunning &&
+    ctx.onQueue
+  ) {
+    ctx.onQueue({ text: nextValue, attachments: ctx.attachments, cwd: ctx.cwd });
+    ctx.onChangeText("");
+    return;
+  }
+
+  ctx.onSubmit({
+    text: nextValue,
+    attachments: ctx.attachments,
+    cwd: ctx.cwd,
+    forceSend: ctx.isAgentRunning || undefined,
+  });
+}
+
 interface MessageInputKeyboardActions {
   focusInput: () => void;
   isDictationRecording: () => boolean;

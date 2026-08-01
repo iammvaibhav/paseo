@@ -369,7 +369,7 @@ const DEFAULT_PERSISTED_CONFIG = PersistedConfigSchema.parse({
       allowedOrigins: ["https://app.paseo.sh"],
     },
     relay: {
-      enabled: true,
+      enabled: false,
     },
   },
   app: {
