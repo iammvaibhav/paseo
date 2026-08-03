@@ -77,6 +77,7 @@ import { useStableEvent } from "@/hooks/use-stable-event";
 import { HighlightedCodeBlock } from "@/components/highlighted-code-block";
 
 import { renderRichFence } from "@/components/markdown/rich-fence";
+import { ChartDataProvider } from "@/components/chart-data-context";
 import { splitMarkdownBlocks } from "@/utils/split-markdown-blocks";
 import { formatDuration, formatMessageTimestamp } from "@/utils/time";
 import { writeMarkdownToRichClipboard } from "@/utils/rich-clipboard";
@@ -1812,7 +1813,7 @@ export const AssistantMessage = memo(function AssistantMessage({
     [spacing],
   );
 
-  return (
+  const assistantBlocks = (
     <View testID="assistant-message" style={assistantContainerStyle}>
       {keyedBlocks.map(({ key, block }, index) => (
         <AssistantMessageBlockContainer
@@ -1829,6 +1830,19 @@ export const AssistantMessage = memo(function AssistantMessage({
         </AssistantMessageBlockContainer>
       ))}
     </View>
+  );
+
+  // Charts that reference a workspace file read it through this host+cwd. Without
+  // the scope they fall back to demanding inline rows, which is the right answer
+  // wherever a message renders outside a workspace.
+  if (!client || !serverId || !workspaceRoot) {
+    return assistantBlocks;
+  }
+
+  return (
+    <ChartDataProvider client={client} serverId={serverId} cwd={workspaceRoot}>
+      {assistantBlocks}
+    </ChartDataProvider>
   );
 });
 

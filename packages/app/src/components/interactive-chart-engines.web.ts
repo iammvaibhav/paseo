@@ -1,6 +1,8 @@
 import type * as EChartsApi from "echarts";
 import type { ChartAssemblyInput } from "flint-chart";
 import type { ChartFenceLanguage } from "./interactive-chart-fence";
+import { applyChartRows, findChartDataUrl } from "./chart-data-source";
+import type { ChartRow } from "./chart-data-source";
 
 /** Backends that can draw a chart in the timeline. */
 export type ChartBackend = "echarts" | "vegalite" | "plotly";
@@ -16,6 +18,8 @@ interface MountChartParams {
   spec: Record<string, unknown>;
   language: ChartFenceLanguage;
   colorScheme: "light" | "dark";
+  /** Reads a workspace file when the spec references one instead of inlining rows. */
+  resolveData?: ((path: string) => Promise<ChartRow[]>) | null;
 }
 
 let echartsPromise: Promise<typeof EChartsApi> | null = null;
@@ -195,9 +199,22 @@ export async function mountChart({
   spec,
   language,
   colorScheme,
+  resolveData,
 }: MountChartParams): Promise<ChartMount> {
   const backend = resolveChartBackend(spec, language);
-  const compiled = await compileSpec(spec, language, backend);
+
+  // A referenced file has to become rows before Flint compiles or a backend
+  // reads the spec — none of them can fetch from the daemon themselves.
+  const dataUrl = findChartDataUrl(spec, language);
+  let resolved = spec;
+  if (dataUrl !== null) {
+    if (!resolveData) {
+      throw new Error("Chart data files are only available inside a workspace");
+    }
+    resolved = applyChartRows(spec, language, await resolveData(dataUrl));
+  }
+
+  const compiled = await compileSpec(resolved, language, backend);
 
   if (backend === "vegalite") {
     return mountVegaLite(host, compiled, colorScheme);

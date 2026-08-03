@@ -4,6 +4,7 @@ import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { Theme } from "@/styles/theme";
 import type { ChartFenceLanguage } from "./interactive-chart-fence";
 import { mountChart, type ChartMount } from "./interactive-chart-engines.web";
+import { useChartDataResolver } from "./chart-data-context";
 
 interface InteractiveChartProps {
   code: string;
@@ -33,6 +34,7 @@ function InteractiveChartBase({ code, language, colorScheme = "dark" }: Interact
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [state, setState] = useState<ChartRenderState>({ error: null, ready: false });
   const spec = useMemo(() => parseChartSpec(code), [code]);
+  const resolveData = useChartDataResolver();
 
   useEffect(() => {
     if (!spec) {
@@ -56,6 +58,7 @@ function InteractiveChartBase({ code, language, colorScheme = "dark" }: Interact
           spec: spec as Record<string, unknown>,
           language,
           colorScheme,
+          resolveData,
         });
 
         // An unmount during the await still has to release the engine.
@@ -82,7 +85,7 @@ function InteractiveChartBase({ code, language, colorScheme = "dark" }: Interact
       observer?.disconnect();
       mounted?.dispose();
     };
-  }, [spec, language, colorScheme]);
+  }, [spec, language, colorScheme, resolveData]);
 
   if (state.error) {
     return (
