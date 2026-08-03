@@ -6,6 +6,11 @@ import {
   DirectTcpHostConnectionSchema,
   type DirectTcpHostConnection,
 } from "@getpaseo/protocol/host-connection-schema";
+import {
+  type HostAppearance,
+  defaultHostAppearance,
+  normalizeStoredHostAppearance,
+} from "@/hosts/appearance";
 
 export { DirectTcpHostConnectionSchema, type DirectTcpHostConnection };
 
@@ -40,6 +45,7 @@ export type HostLifecycle = Record<string, never>;
 export interface HostProfile {
   serverId: string;
   label: string;
+  appearance: HostAppearance;
   lifecycle: HostLifecycle;
   connections: HostConnection[];
   preferredConnectionId: string | null;
@@ -180,6 +186,7 @@ export function upsertHostConnectionInProfiles(input: {
     const profile: HostProfile = {
       serverId,
       label: derivedLabel,
+      appearance: defaultHostAppearance(),
       lifecycle: defaultLifecycle(),
       connections: [input.connection],
       preferredConnectionId: input.connection.id,
@@ -384,6 +391,7 @@ export function normalizeStoredHostProfile(entry: unknown): HostProfile | null {
   return {
     serverId,
     label,
+    appearance: normalizeStoredHostAppearance(record.appearance),
     lifecycle: defaultLifecycle(),
     connections,
     preferredConnectionId,

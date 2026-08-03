@@ -4,7 +4,7 @@ vi.mock("@/constants/platform", () => ({
   getIsElectron: vi.fn(() => true),
 }));
 
-vi.mock("@/stores/browser-store", () => ({
+vi.mock("@/desktop/browser/store", () => ({
   createWorkspaceBrowser: vi.fn(() => ({ browserId: "vscode-web-1", url: "http://x" })),
   getBrowserRecord: vi.fn(() => null),
   useBrowserStore: {
@@ -23,7 +23,7 @@ vi.mock("@/workspace/preload-browser-editor", () => ({
 }));
 
 import { getIsElectron } from "@/constants/platform";
-import { createWorkspaceBrowser, getBrowserRecord, useBrowserStore } from "@/stores/browser-store";
+import { createWorkspaceBrowser, getBrowserRecord, useBrowserStore } from "@/desktop/browser/store";
 import { ensureBrowserEditorInstance } from "@/workspace/preload-browser-editor";
 import {
   openBrowserEditorTab,

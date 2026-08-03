@@ -8,7 +8,7 @@ vi.mock("@/constants/platform", () => ({
   getIsElectron: vi.fn(() => true),
 }));
 
-vi.mock("@/components/browser-webview-resident", () => ({
+vi.mock("@/desktop/browser/resident-webviews", () => ({
   ensurePersistentBrowserWebview: vi.fn(),
   hidePersistentBrowserWebview: vi.fn(() => true),
   navigatePersistentBrowserWebview: vi.fn(() => true),
@@ -16,7 +16,7 @@ vi.mock("@/components/browser-webview-resident", () => ({
 }));
 
 let nextBrowserId = 0;
-vi.mock("@/stores/browser-store", () => ({
+vi.mock("@/desktop/browser/store", () => ({
   createBrowserId: vi.fn(() => `vscode-web-${(nextBrowserId += 1)}`),
   getBrowserRecord: vi.fn(() => null),
   useBrowserStore: {
@@ -35,8 +35,8 @@ import { getIsElectron } from "@/constants/platform";
 import {
   ensurePersistentBrowserWebview,
   navigatePersistentBrowserWebview,
-} from "@/components/browser-webview-resident";
-import { createBrowserId, getBrowserRecord, useBrowserStore } from "@/stores/browser-store";
+} from "@/desktop/browser/resident-webviews";
+import { createBrowserId, getBrowserRecord, useBrowserStore } from "@/desktop/browser/store";
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import {
   ensureBrowserEditorInstance,

@@ -1,8 +1,8 @@
 import { buildDraftStoreKey } from "@/stores/draft-keys";
 import { useDraftStore } from "@/stores/draft-store";
-import { useBrowserStore } from "@/stores/browser-store";
+import { useBrowserStore } from "@/desktop/browser/store";
 import { collectAllTabs, useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
-import { removeResidentBrowserWebview } from "@/components/browser-webview-resident";
+import { removeResidentBrowserWebview } from "@/desktop/browser/resident-webviews";
 import { getDesktopHost } from "@/desktop/host";
 import {
   clearPlannotatorBrowserSession,

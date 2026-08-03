@@ -1,5 +1,5 @@
 import { getIsElectron } from "@/constants/platform";
-import { createWorkspaceBrowser, getBrowserRecord, useBrowserStore } from "@/stores/browser-store";
+import { createWorkspaceBrowser, getBrowserRecord, useBrowserStore } from "@/desktop/browser/store";
 import type { WorkspaceTabTarget } from "@/workspace-tabs/model";
 import { buildBrowserEditorUrl } from "@/workspace/browser-editor-url";
 import { resolveWorkspaceFilePaths, type WorkspaceFileLocation } from "@/workspace/file-open";

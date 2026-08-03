@@ -3,9 +3,9 @@ import {
   ensurePersistentBrowserWebview,
   navigatePersistentBrowserWebview,
   removePersistentBrowserWebview,
-} from "@/components/browser-webview-resident";
+} from "@/desktop/browser/resident-webviews";
 import { getIsElectron } from "@/constants/platform";
-import { createBrowserId, getBrowserRecord, useBrowserStore } from "@/stores/browser-store";
+import { createBrowserId, getBrowserRecord, useBrowserStore } from "@/desktop/browser/store";
 import { collectAllTabs, useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import { browserEditorOriginFromUrl, buildBrowserEditorUrl } from "@/workspace/browser-editor-url";
 
