@@ -28,7 +28,8 @@ import {
   cloneElement,
 } from "react";
 import type { ComponentType, ReactNode } from "react";
-import { MarkdownIt, type ASTNode, type RenderRules } from "react-native-markdown-display";
+import type MarkdownIt from "markdown-it";
+import { type ASTNode, type RenderRules } from "react-native-markdown-display";
 import MaskedView from "@react-native-masked-view/masked-view";
 import {
   Circle,
@@ -79,6 +80,7 @@ import { HighlightedCodeBlock } from "@/components/highlighted-code-block";
 import { renderRichFence } from "@/components/markdown/rich-fence";
 import { ChartDataProvider } from "@/components/chart-data-context";
 import { splitMarkdownBlocks } from "@/utils/split-markdown-blocks";
+import { createAssistantMarkdownParser } from "@/utils/assistant-markdown-parser";
 import { formatDuration, formatMessageTimestamp } from "@/utils/time";
 import { writeMarkdownToRichClipboard } from "@/utils/rich-clipboard";
 import { getDefaultMarkdownClipboardEnvironment } from "@/utils/rich-clipboard-default-environment";
@@ -113,6 +115,12 @@ import { AssistantForkMenu, type AssistantForkTarget } from "@/components/assist
 import { JumpToUserMessageButton } from "@/components/jump-to-user-message-button";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { openHistoryAskAgentLink } from "@/history-ask/open-agent-link";
+import {
+  markdownCopyDataSet,
+  markdownCopyOrderedListDataSet,
+  markdownCopyTableCellDataSet,
+  type MarkdownCopyInlineTag,
+} from "@/assistant-selection-copy/markup";
 export type { InlinePathTarget } from "@/assistant-file-links";
 export type { AssistantForkTarget };
 
@@ -896,10 +904,7 @@ function AssistantMarkdownImage({
   );
 }
 
-function getInlineCodeAutoLinkUrl(
-  markdownParser: ReturnType<typeof MarkdownIt>,
-  content: string,
-): string | null {
+function getInlineCodeAutoLinkUrl(markdownParser: MarkdownIt, content: string): string | null {
   const trimmed = content.trim();
   if (!trimmed) {
     return null;
@@ -944,6 +949,7 @@ function getMarkdownLinkSource(node: AssistantMarkdownAstNode): AssistantFileLin
   return {
     href: typeof node.attributes?.href === "string" ? node.attributes.href : "",
     text: getMarkdownNodeText(node),
+    title: typeof node.attributes?.title === "string" ? node.attributes.title : undefined,
     markup: node.markup,
     sourceInfo: node.sourceInfo,
     sourceType: node.sourceType === "inline-code" ? "inline-code" : undefined,
@@ -1380,6 +1386,7 @@ interface MarkdownInheritedTextProps {
   textStyle: TextStyle;
   style?: StyleProp<TextStyle>;
   monoSurface?: boolean;
+  copyTag?: MarkdownCopyInlineTag;
   children: ReactNode;
 }
 
@@ -1388,6 +1395,7 @@ function MarkdownInheritedText({
   textStyle,
   style: overrideStyle,
   monoSurface,
+  copyTag,
   children,
 }: MarkdownInheritedTextProps) {
   const style = useMemo(
@@ -1403,6 +1411,7 @@ function MarkdownInheritedText({
   return (
     <MarkdownTextSpan
       monoSurface={monoSurface}
+      copyTag={copyTag}
       style={style}
       onPress={linkPress?.onPress}
       accessibilityRole={linkPress?.accessibilityRole}
@@ -1426,13 +1435,27 @@ function MarkdownListItemContent({ contentStyle, children }: MarkdownListItemCon
 
 interface MarkdownListViewProps {
   baseStyle: ViewStyle;
+  copyTag: "ol" | "ul";
+  orderedStart?: unknown;
   spacing: { marginTop: number; marginBottom: number };
   children: ReactNode;
 }
 
-function MarkdownListView({ baseStyle, spacing, children }: MarkdownListViewProps) {
+function MarkdownListView({
+  baseStyle,
+  copyTag,
+  orderedStart,
+  spacing,
+  children,
+}: MarkdownListViewProps) {
   const style = useMemo(() => [baseStyle, spacing], [baseStyle, spacing]);
-  return <View style={style}>{children}</View>;
+  const copyDataSet =
+    copyTag === "ol" ? markdownCopyOrderedListDataSet(orderedStart) : markdownCopyDataSet.ul;
+  return (
+    <View style={style} dataSet={copyDataSet}>
+      {children}
+    </View>
+  );
 }
 
 export const AssistantMessage = memo(function AssistantMessage({
@@ -1445,15 +1468,14 @@ export const AssistantMessage = memo(function AssistantMessage({
   spacing = "default",
 }: AssistantMessageProps) {
   const markdownParser = useMemo(() => {
-    const parser = MarkdownIt({ typographer: true, linkify: true });
+    const parser = createAssistantMarkdownParser();
     addMathPlugin(parser);
     const defaultValidateLink = parser.validateLink.bind(parser);
     parser.validateLink = (url: string) => {
       const lower = url.trim().toLowerCase();
-      if (lower.startsWith("file://") || lower.startsWith("paseo:")) {
+      if (lower.startsWith("paseo:")) {
         return true;
       }
-
       return defaultValidateLink(url);
     };
     return parser;
@@ -1474,6 +1496,103 @@ export const AssistantMessage = memo(function AssistantMessage({
 
   const markdownRules = useMemo<RenderRules>(() => {
     return {
+      heading1: (
+        node: ASTNode,
+        children: ReactNode[],
+        _parent: ASTNode[],
+        styles: MarkdownStyles,
+      ) => (
+        <View key={node.key} style={styles._VIEW_SAFE_heading1} dataSet={markdownCopyDataSet.h1}>
+          {children}
+        </View>
+      ),
+      heading2: (
+        node: ASTNode,
+        children: ReactNode[],
+        _parent: ASTNode[],
+        styles: MarkdownStyles,
+      ) => (
+        <View key={node.key} style={styles._VIEW_SAFE_heading2} dataSet={markdownCopyDataSet.h2}>
+          {children}
+        </View>
+      ),
+      heading3: (
+        node: ASTNode,
+        children: ReactNode[],
+        _parent: ASTNode[],
+        styles: MarkdownStyles,
+      ) => (
+        <View key={node.key} style={styles._VIEW_SAFE_heading3} dataSet={markdownCopyDataSet.h3}>
+          {children}
+        </View>
+      ),
+      heading4: (
+        node: ASTNode,
+        children: ReactNode[],
+        _parent: ASTNode[],
+        styles: MarkdownStyles,
+      ) => (
+        <View key={node.key} style={styles._VIEW_SAFE_heading4} dataSet={markdownCopyDataSet.h4}>
+          {children}
+        </View>
+      ),
+      heading5: (
+        node: ASTNode,
+        children: ReactNode[],
+        _parent: ASTNode[],
+        styles: MarkdownStyles,
+      ) => (
+        <View key={node.key} style={styles._VIEW_SAFE_heading5} dataSet={markdownCopyDataSet.h5}>
+          {children}
+        </View>
+      ),
+      heading6: (
+        node: ASTNode,
+        children: ReactNode[],
+        _parent: ASTNode[],
+        styles: MarkdownStyles,
+      ) => (
+        <View key={node.key} style={styles._VIEW_SAFE_heading6} dataSet={markdownCopyDataSet.h6}>
+          {children}
+        </View>
+      ),
+      blockquote: (
+        node: ASTNode,
+        children: ReactNode[],
+        _parent: ASTNode[],
+        styles: MarkdownStyles,
+      ) => (
+        <View
+          key={node.key}
+          style={styles._VIEW_SAFE_blockquote}
+          dataSet={markdownCopyDataSet.blockquote}
+        >
+          {children}
+        </View>
+      ),
+      hr: (node: ASTNode, _children: ReactNode[], _parent: ASTNode[], styles: MarkdownStyles) => (
+        <View key={node.key} style={styles._VIEW_SAFE_hr} dataSet={markdownCopyDataSet.hr} />
+      ),
+      table: (node: ASTNode, children: ReactNode[], _parent: ASTNode[], styles: MarkdownStyles) => (
+        <View key={node.key} style={styles._VIEW_SAFE_table} dataSet={markdownCopyDataSet.table}>
+          {children}
+        </View>
+      ),
+      thead: (node: ASTNode, children: ReactNode[], _parent: ASTNode[], styles: MarkdownStyles) => (
+        <View key={node.key} style={styles._VIEW_SAFE_thead} dataSet={markdownCopyDataSet.thead}>
+          {children}
+        </View>
+      ),
+      tbody: (node: ASTNode, children: ReactNode[], _parent: ASTNode[], styles: MarkdownStyles) => (
+        <View key={node.key} style={styles._VIEW_SAFE_tbody} dataSet={markdownCopyDataSet.tbody}>
+          {children}
+        </View>
+      ),
+      tr: (node: ASTNode, children: ReactNode[], _parent: ASTNode[], styles: MarkdownStyles) => (
+        <View key={node.key} style={styles._VIEW_SAFE_tr} dataSet={markdownCopyDataSet.tr}>
+          {children}
+        </View>
+      ),
       text: (
         node: ASTNode,
         _children: ReactNode[],
@@ -1520,6 +1639,7 @@ export const AssistantMessage = memo(function AssistantMessage({
       ) => (
         <MarkdownInheritedText
           key={node.key}
+          copyTag="strong"
           inheritedStyles={inheritedStyles}
           textStyle={styles.strong}
         >
@@ -1535,6 +1655,7 @@ export const AssistantMessage = memo(function AssistantMessage({
       ) => (
         <MarkdownInheritedText
           key={node.key}
+          copyTag="em"
           inheritedStyles={inheritedStyles}
           textStyle={styles.em}
         >
@@ -1550,6 +1671,7 @@ export const AssistantMessage = memo(function AssistantMessage({
       ) => (
         <MarkdownInheritedText
           key={node.key}
+          copyTag="s"
           inheritedStyles={inheritedStyles}
           textStyle={styles.s}
         >
@@ -1570,7 +1692,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         _parent: ASTNode[],
         styles: MarkdownStyles,
       ) => (
-        <MarkdownTextSpan key={node.key} style={styles.hardbreak}>
+        <MarkdownTextSpan key={node.key} style={styles.hardbreak} copyTag="br">
           {"\n"}
         </MarkdownTextSpan>
       ),
@@ -1671,6 +1793,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         return (
           <MarkdownInheritedText
             key={node.key}
+            copyTag="code"
             inheritedStyles={inheritedStyles}
             textStyle={styles.code_inline}
             monoSurface
@@ -1688,6 +1811,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         <MarkdownListView
           key={node.key}
           baseStyle={styles.bullet_list}
+          copyTag="ul"
           spacing={getMarkdownListSpacing(node, parent)}
         >
           {children}
@@ -1702,6 +1826,8 @@ export const AssistantMessage = memo(function AssistantMessage({
         <MarkdownListView
           key={node.key}
           baseStyle={styles.ordered_list}
+          copyTag="ol"
+          orderedStart={node.attributes?.start}
           spacing={getMarkdownListSpacing(node, parent)}
         >
           {children}
@@ -1718,8 +1844,10 @@ export const AssistantMessage = memo(function AssistantMessage({
         const contentStyle = isOrdered ? styles.ordered_list_content : styles.bullet_list_content;
 
         return (
-          <View key={node.key} style={styles.list_item}>
-            <Text style={iconStyle}>{marker}</Text>
+          <View key={node.key} style={styles.list_item} dataSet={markdownCopyDataSet.li}>
+            <Text style={iconStyle} dataSet={markdownCopyDataSet.ignore}>
+              {marker}
+            </Text>
             <MarkdownListItemContent contentStyle={contentStyle}>
               {children}
             </MarkdownListItemContent>
@@ -1728,12 +1856,22 @@ export const AssistantMessage = memo(function AssistantMessage({
       },
       th: (node: ASTNode, children: ReactNode[], _parent: ASTNode[], styles: MarkdownStyles) => (
         <MarkdownTableCellText key={node.key}>
-          <View style={styles._VIEW_SAFE_th}>{children}</View>
+          <View
+            style={styles._VIEW_SAFE_th}
+            dataSet={markdownCopyTableCellDataSet("th", node.attributes?.style)}
+          >
+            {children}
+          </View>
         </MarkdownTableCellText>
       ),
       td: (node: ASTNode, children: ReactNode[], _parent: ASTNode[], styles: MarkdownStyles) => (
         <MarkdownTableCellText key={node.key}>
-          <View style={styles._VIEW_SAFE_td}>{children}</View>
+          <View
+            style={styles._VIEW_SAFE_td}
+            dataSet={markdownCopyTableCellDataSet("td", node.attributes?.style)}
+          >
+            {children}
+          </View>
         </MarkdownTableCellText>
       ),
       paragraph: (

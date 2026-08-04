@@ -12,25 +12,38 @@ import {
   type ViewStyle,
 } from "react-native";
 import { StyleSheet, useUnistyles, withUnistyles } from "react-native-unistyles";
-import { WORKSPACE_SECONDARY_HEADER_HEIGHT } from "@/constants/layout";
+import { useIsCompactFormFactor, WORKSPACE_SECONDARY_HEADER_HEIGHT } from "@/constants/layout";
 import * as Clipboard from "expo-clipboard";
 import { ChevronDown, Eye, EyeOff, RotateCw } from "lucide-react-native";
 import { MaterialFileIcon } from "@/components/material-file-icon";
-import { TreeChevron, TreeIndentGuides, TREE_INDENT_PER_LEVEL } from "@/components/tree-primitives";
+import {
+  TreeChevron,
+  TreeIndentGuides,
+  treeRowPaddingLeft,
+  WORKSPACE_FILE_ROW_TRAILING_PADDING,
+  WORKSPACE_FILE_ROW_VERTICAL_PADDING,
+  WORKSPACE_TREE_ICON_LABEL_GAP,
+  WORKSPACE_TREE_ICON_SIZE,
+  WORKSPACE_TREE_LOADING_ICON_SIZE,
+} from "@/components/tree-primitives";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import {
+  useOverlayFlatListScrollbar,
+  type OverlayFlatListScrollbar,
+} from "@/components/ui/overlay-scrollbar/use-overlay-flat-list-scrollbar";
 import type { Theme } from "@/styles/theme";
 import type {
   AgentFileExplorerState,
   ExplorerDirectory,
   ExplorerEntry,
 } from "@/stores/session-store";
-import { useHosts } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
-import { useDownloadStore } from "@/stores/download-store";
-import { FileActionsMenu } from "@/components/file-actions-menu";
+import { FileActionsContextMenuContent } from "@/components/file-actions-menu";
+import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { FileDropZone } from "@/components/file-drop/file-drop-zone";
 import { useFileDrop } from "@/components/file-drop/use-file-drop";
 import type { DroppedItem } from "@/components/file-drop/types";
+import { useFileDownload } from "@/hooks/use-file-download";
 import { useFileExplorerActions } from "@/hooks/use-file-explorer-actions";
 import { buildWorkspaceExplorerStateKey } from "@/hooks/use-file-explorer-actions";
 import { usePanelStore, type ExpandedPathsUpdate, type SortOption } from "@/stores/panel-store";
@@ -118,7 +131,6 @@ function TreeRowItem({
   onAddToChat,
   testID,
 }: TreeRowItemProps) {
-  const { theme } = useUnistyles();
   const { t } = useTranslation();
   const isDirectory = entry.kind === "directory";
   const dragSourceRef = useWorkspaceFileDragSource({
@@ -135,10 +147,10 @@ function TreeRowItem({
   const pressableStyle = useCallback(
     ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
       styles.entryRow,
-      { paddingLeft: theme.spacing[2] + depth * TREE_INDENT_PER_LEVEL },
+      { paddingLeft: treeRowPaddingLeft(depth) },
       (Boolean(hovered) || pressed || isSelected) && styles.entryRowActive,
     ],
-    [depth, isSelected, theme.spacing],
+    [depth, isSelected],
   );
 
   const handleCopy = useCallback(() => {
@@ -178,34 +190,40 @@ function TreeRowItem({
   );
 
   return (
-    <Pressable onPress={handlePress} style={pressableStyle} testID={testID}>
-      <TreeIndentGuides depth={depth} />
-      <View ref={dragSourceRef} style={styles.entryInfo}>
-        <View style={styles.entryIcon}>
-          {(() => {
-            if (!isDirectory) {
-              return <MaterialFileIcon fileName={entry.name} size={16} />;
-            }
-            if (loading) {
-              return <ThemedLoadingSpinner size="small" uniProps={foregroundMutedColorMapping} />;
-            }
-            return <TreeChevron expanded={isExpanded} />;
-          })()}
+    <ContextMenu>
+      <ContextMenuTrigger onPress={handlePress} style={pressableStyle} testID={testID}>
+        <TreeIndentGuides depth={depth} />
+        <View ref={dragSourceRef} style={styles.entryInfo}>
+          <View style={styles.entryIcon}>
+            {(() => {
+              if (!isDirectory) {
+                return <MaterialFileIcon fileName={entry.name} size={WORKSPACE_TREE_ICON_SIZE} />;
+              }
+              if (loading) {
+                return (
+                  <ThemedLoadingSpinner
+                    size={WORKSPACE_TREE_LOADING_ICON_SIZE}
+                    uniProps={foregroundMutedColorMapping}
+                  />
+                );
+              }
+              return <TreeChevron expanded={isExpanded} />;
+            })()}
+          </View>
+          <Text style={styles.entryName} numberOfLines={1}>
+            {entry.name}
+          </Text>
         </View>
-        <Text style={styles.entryName} numberOfLines={1}>
-          {entry.name}
-        </Text>
-      </View>
-      <FileActionsMenu
+      </ContextMenuTrigger>
+      <FileActionsContextMenuContent
         fileKind={entry.kind}
         onCopyPath={handleCopy}
         onDownload={handleDownload}
         onAddToChat={onAddToChat ? handleAddToChat : undefined}
         header={metaHeader}
-        accessibilityLabel={t("workspace.fileActions.moreActions")}
         testIDPrefix={testID}
       />
-    </Pressable>
+    </ContextMenu>
   );
 }
 
@@ -226,12 +244,8 @@ export function FileExplorerPane({
 }: FileExplorerPaneProps) {
   const { t } = useTranslation();
   const client = useSessionStore((state) => state.sessions[serverId]?.client ?? null);
+  const isCompact = useIsCompactFormFactor();
 
-  const daemons = useHosts();
-  const daemonProfile = useMemo(
-    () => daemons.find((daemon) => daemon.serverId === serverId),
-    [daemons, serverId],
-  );
   const normalizedWorkspaceRoot = useMemo(() => workspaceRoot.trim(), [workspaceRoot]);
   const workspaceStateKey = useMemo(
     () =>
@@ -241,10 +255,6 @@ export function FileExplorerPane({
       }),
     [normalizedWorkspaceRoot, workspaceId],
   );
-  const workspaceScopeId = useMemo(
-    () => workspaceId?.trim() || normalizedWorkspaceRoot,
-    [normalizedWorkspaceRoot, workspaceId],
-  );
   const hasWorkspaceScope = Boolean(workspaceStateKey && normalizedWorkspaceRoot);
   const explorerState = useSessionStore((state) =>
     workspaceStateKey && state.sessions[serverId]
@@ -252,12 +262,16 @@ export function FileExplorerPane({
       : undefined,
   );
 
-  const { requestDirectoryListing, requestFileDownloadToken, selectExplorerEntry } =
-    useFileExplorerActions({
-      serverId,
-      workspaceId,
-      workspaceRoot: normalizedWorkspaceRoot,
-    });
+  const { requestDirectoryListing, selectExplorerEntry } = useFileExplorerActions({
+    serverId,
+    workspaceId,
+    workspaceRoot: normalizedWorkspaceRoot,
+  });
+  const downloadFile = useFileDownload({
+    serverId,
+    workspaceId,
+    workspaceRoot: normalizedWorkspaceRoot,
+  });
   const sortOption = usePanelStore((state) => state.explorerSortOption);
   const showHiddenFiles = usePanelStore((state) => state.explorerShowHiddenFiles);
   const setSortOption = usePanelStore((state) => state.setExplorerSortOption);
@@ -283,6 +297,7 @@ export function FileExplorerPane({
   );
 
   const treeListRef = useRef<FlatList<ExplorerTreeRow>>(null);
+  const scrollbar = useOverlayFlatListScrollbar(treeListRef, { enabled: !isCompact });
 
   const hasInitializedRef = useRef(false);
 
@@ -362,18 +377,14 @@ export function FileExplorerPane({
     [normalizedWorkspaceRoot],
   );
 
-  const startDownload = useDownloadStore((state) => state.startDownload);
   const handleDownloadEntry = useCallback(
-    (entry: ExplorerEntry) =>
-      downloadExplorerEntry({
-        entry,
-        workspaceScopeId,
-        serverId,
-        daemonProfile,
-        startDownload,
-        requestFileDownloadToken,
-      }),
-    [daemonProfile, requestFileDownloadToken, serverId, startDownload, workspaceScopeId],
+    (entry: ExplorerEntry) => {
+      if (entry.kind !== "file") {
+        return;
+      }
+      downloadFile({ fileName: entry.name, path: entry.path });
+    },
+    [downloadFile],
   );
 
   const handleSortCycle = useCallback(() => {
@@ -470,9 +481,9 @@ export function FileExplorerPane({
   const renderTreeRow = useCallback(
     (info: ListRenderItemInfo<ExplorerTreeRow>) => (
       <TreeRowDispatcher
-        info={info}
         serverId={serverId}
         workspaceId={workspaceId}
+        info={info}
         expandedPaths={expandedPaths}
         selectedEntryPath={selectedEntryPath}
         isDirectoryLoading={isDirectoryLoading}
@@ -488,8 +499,8 @@ export function FileExplorerPane({
       handleCopyPath,
       handleDownloadEntry,
       isDirectoryLoading,
-      onAddToChat,
       selectedEntryPath,
+      onAddToChat,
       serverId,
       workspaceId,
     ],
@@ -539,6 +550,7 @@ export function FileExplorerPane({
         currentSortLabel={currentSortLabel}
         isRefreshFetching={isRefreshFetching}
         treeListRef={treeListRef}
+        scrollbar={scrollbar}
         renderTreeRow={renderTreeRow}
         handleSortCycle={handleSortCycle}
         handleToggleHiddenFiles={handleToggleHiddenFiles}
@@ -663,6 +675,7 @@ interface FileExplorerPaneContentProps {
   currentSortLabel: string;
   isRefreshFetching: boolean;
   treeListRef: RefObject<FlatList<ExplorerTreeRow> | null>;
+  scrollbar: OverlayFlatListScrollbar;
   renderTreeRow: (info: ListRenderItemInfo<ExplorerTreeRow>) => ReactElement;
   handleSortCycle: () => void;
   handleToggleHiddenFiles: () => void;
@@ -684,6 +697,7 @@ function FileExplorerPaneContent(props: FileExplorerPaneContentProps) {
     currentSortLabel,
     isRefreshFetching,
     treeListRef,
+    scrollbar,
     renderTreeRow,
     handleSortCycle,
     handleToggleHiddenFiles,
@@ -744,8 +758,14 @@ function FileExplorerPaneContent(props: FileExplorerPaneContentProps) {
   return (
     <View style={[styles.treePane, styles.treePaneFill]}>
       <View style={styles.paneHeader} testID="files-pane-header">
-        <Pressable onPress={handleSortCycle} style={sortTriggerStyleProp}>
-          <Text style={styles.sortTriggerText}>{currentSortLabel}</Text>
+        <Pressable
+          onPress={handleSortCycle}
+          style={sortTriggerStyleProp}
+          testID="files-sort-trigger"
+        >
+          <Text style={styles.sortTriggerText} testID="files-sort-label">
+            {currentSortLabel}
+          </Text>
           <ChevronDown size={12} color={theme.colors.foregroundMuted} />
         </Pressable>
         <View style={styles.headerActions}>
@@ -756,6 +776,7 @@ function FileExplorerPaneContent(props: FileExplorerPaneContentProps) {
             accessibilityRole="button"
             accessibilityLabel={hiddenFilesToggleAccessibilityLabel}
             accessibilityState={hiddenFilesToggleAccessibilityState}
+            testID="files-hidden-toggle"
           >
             {showHiddenFiles ? (
               <Eye size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />
@@ -774,6 +795,7 @@ function FileExplorerPaneContent(props: FileExplorerPaneContentProps) {
                 ? t("workspace.fileExplorer.actions.refreshing")
                 : t("workspace.fileExplorer.actions.refresh")
             }
+            testID="files-refresh"
           >
             <View style={styles.refreshIcon}>
               {isRefreshFetching ? (
@@ -798,12 +820,17 @@ function FileExplorerPaneContent(props: FileExplorerPaneContentProps) {
           keyExtractor={treeRowKeyExtractor}
           testID="file-explorer-tree-scroll"
           contentContainerStyle={styles.entriesContent}
-          showsVerticalScrollIndicator
+          onLayout={scrollbar.onLayout}
+          onScroll={scrollbar.onScroll}
+          onContentSizeChange={scrollbar.onContentSizeChange}
+          scrollEventThrottle={16}
+          showsVerticalScrollIndicator={!scrollbar.enabled}
           initialNumToRender={24}
           maxToRenderPerBatch={40}
           windowSize={12}
         />
       )}
+      {treeRows.length > 0 ? scrollbar.overlay : null}
     </View>
   );
 }
@@ -857,43 +884,6 @@ function resolveCurrentSortLabel(
   return labels[sortOption] ?? labels.name;
 }
 
-type StartDownloadFn = ReturnType<typeof useDownloadStore.getState>["startDownload"];
-type StartDownloadParams = Parameters<StartDownloadFn>[0];
-
-function downloadExplorerEntry({
-  entry,
-  workspaceScopeId,
-  serverId,
-  daemonProfile,
-  startDownload,
-  requestFileDownloadToken,
-}: {
-  entry: ExplorerEntry;
-  workspaceScopeId: string | undefined;
-  serverId: string;
-  daemonProfile: StartDownloadParams["daemonProfile"];
-  startDownload: StartDownloadFn;
-  requestFileDownloadToken: (
-    targetPath: string,
-  ) => ReturnType<StartDownloadParams["requestFileDownloadToken"]>;
-}): void {
-  if (!workspaceScopeId) {
-    return;
-  }
-  let fileName = entry.name;
-  if (entry.kind === "directory" && !entry.name.endsWith(".zip")) {
-    fileName = `${entry.name}.zip`;
-  }
-  startDownload({
-    serverId,
-    scopeId: workspaceScopeId,
-    fileName,
-    path: entry.path,
-    daemonProfile,
-    requestFileDownloadToken: (targetPath) => requestFileDownloadToken(targetPath),
-  });
-}
-
 function toggleDirectory({
   entry,
   workspaceStateKey,
@@ -932,9 +922,9 @@ function toggleDirectory({
 }
 
 function TreeRowDispatcher({
-  info,
   serverId,
   workspaceId,
+  info,
   expandedPaths,
   selectedEntryPath,
   isDirectoryLoading,
@@ -943,9 +933,9 @@ function TreeRowDispatcher({
   onDownloadEntry,
   onAddToChat,
 }: {
-  info: ListRenderItemInfo<ExplorerTreeRow>;
   serverId: string;
   workspaceId?: string | null;
+  info: ListRenderItemInfo<ExplorerTreeRow>;
   expandedPaths: Set<string>;
   selectedEntryPath: string | null;
   isDirectoryLoading: (path: string) => boolean;
@@ -974,6 +964,7 @@ function TreeRowDispatcher({
       onCopyPath={onCopyPath}
       onDownloadEntry={onDownloadEntry}
       onAddToChat={onAddToChat}
+      testID={`file-explorer-row-${info.index}`}
     />
   );
 }
@@ -1157,7 +1148,6 @@ const styles = StyleSheet.create((theme) => ({
     minHeight: 0,
   },
   entriesContent: {
-    paddingHorizontal: theme.spacing[2],
     paddingTop: theme.spacing[2],
     paddingBottom: theme.spacing[4],
   },
@@ -1207,9 +1197,8 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: 2,
-    paddingRight: theme.spacing[2],
-    borderRadius: theme.borderRadius.md,
+    paddingVertical: WORKSPACE_FILE_ROW_VERTICAL_PADDING,
+    paddingRight: WORKSPACE_FILE_ROW_TRAILING_PADDING,
   },
   entryRowActive: {
     backgroundColor: theme.colors.surfaceSidebarHover,
@@ -1218,26 +1207,20 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    gap: theme.spacing[2],
+    gap: WORKSPACE_TREE_ICON_LABEL_GAP,
     minWidth: 0,
   },
   entryIcon: {
+    width: WORKSPACE_TREE_ICON_SIZE,
+    height: WORKSPACE_TREE_ICON_SIZE,
+    alignItems: "center",
+    justifyContent: "center",
     flexShrink: 0,
   },
   entryName: {
     flex: 1,
     color: theme.colors.foreground,
     fontSize: theme.fontSize.sm,
-  },
-  menuButton: {
-    width: 30,
-    height: 30,
-    borderRadius: theme.borderRadius.full,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  menuButtonActive: {
-    backgroundColor: theme.colors.surface2,
   },
   contextMetaBlock: {
     paddingVertical: theme.spacing[1],

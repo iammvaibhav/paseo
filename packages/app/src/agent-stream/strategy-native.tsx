@@ -490,7 +490,7 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
           reason,
         });
       },
-      scrollToItemId,
+      scrollToMessage: scrollToItemId,
       prepareForViewportChange: () => {
         if (suppressStickyRestickRef.current) {
           return;

@@ -113,6 +113,7 @@ export class FakeOmpSession implements OmpRuntimeSession {
   getStateRequestCount = 0;
   abortRequested = false;
   readonly abortTimeoutBudgets: Array<number | undefined> = [];
+  abortError: Error | null = null;
   readonly canceledExtensionUiRequests: string[] = [];
   readonly extensionUiResponses: Array<{
     id: string;
@@ -240,6 +241,9 @@ export class FakeOmpSession implements OmpRuntimeSession {
   }
 
   async abort(timeoutMs?: number): Promise<void> {
+    if (this.abortError) {
+      throw this.abortError;
+    }
     this.abortRequested = true;
     this.abortTimeoutBudgets.push(timeoutMs);
     const error = this.abortErrors.shift();

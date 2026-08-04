@@ -1,5 +1,13 @@
 import { useMemo, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
-import { Platform, Text, View, type StyleProp, type TextStyle, type ViewStyle } from "react-native";
+import {
+  Platform,
+  Pressable,
+  Text,
+  View,
+  type StyleProp,
+  type TextStyle,
+  type ViewStyle,
+} from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { isNative, isWeb } from "@/constants/platform";
 import { MarkdownTextSpan } from "@/components/markdown-text";
@@ -8,6 +16,7 @@ import { Shortcut } from "@/components/ui/shortcut";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
+import { markdownCopyDataSet } from "@/assistant-selection-copy/markup";
 import { useAssistantFileLinkResolverContext } from "./provider";
 import type { AssistantFileLinkSource } from "./resolver";
 import { useFileLink } from "./use-file-link";
@@ -18,6 +27,11 @@ interface AssistantMarkdownLinkProps {
   monoSurface?: boolean;
   children: ReactNode;
 }
+
+const MARKDOWN_CODE_LINK_DATASET = {
+  ...CODE_SURFACE_DATASET,
+  ...markdownCopyDataSet.code,
+} as const;
 
 export function AssistantMarkdownLink({
   source,
@@ -33,18 +47,13 @@ export function AssistantMarkdownLink({
     () => (target ? formatInlinePathTargetForTooltip(target, workspaceRoot) : null),
     [target, workspaceRoot],
   );
-  const handleWebClick = useStableEvent((event: MouseEvent<HTMLAnchorElement>) => {
-    // Own the entire click: never let the inner Pressable also fire (that was
-    // double-opening main + side on Cmd-click).
+  const handleAnchorClickCapture = useStableEvent((event: MouseEvent<HTMLAnchorElement>) => {
     event.preventDefault();
-    event.stopPropagation();
-    const native = event.nativeEvent as unknown as { stopImmediatePropagation?: () => void };
-    native.stopImmediatePropagation?.();
-    if (isModifiedOpenEvent(event)) {
-      onAuxPress();
+    if (!isModifiedOpenEvent(event)) {
       return;
     }
-    onPress();
+    event.stopPropagation();
+    onAuxPress();
   });
   const handleHoverIn = useStableEvent(() => {
     setHovered(true);
@@ -59,6 +68,7 @@ export function AssistantMarkdownLink({
     () => ({ onPress, accessibilityRole: "link" }),
     [onPress],
   );
+  const unwrapForMarkdownCopy = source.sourceType === "inline-code" || source.markup === "linkify";
 
   if (isNative) {
     // Must be a MarkdownTextSpan, not a plain <Text>: on iOS the link renders
@@ -95,24 +105,28 @@ export function AssistantMarkdownLink({
     );
   }
 
-  // Web/Electron: click is handled only on the <a>. Inner Pressable is visual
-  // hover only — no onPress — so one gesture cannot open two dispositions.
   const anchor = (
     <a
+      {...(unwrapForMarkdownCopy ? { "data-paseo-markdown-unwrap": "true" } : {})}
       href={source.href}
-      onClick={handleWebClick}
-      onAuxClick={preventAnchorNavigation}
+      title={source.title}
+      onClickCapture={handleAnchorClickCapture}
+      onAuxClickCapture={preventAnchorNavigation}
       style={LINK_ANCHOR_STYLE}
     >
-      <View onPointerEnter={handleHoverIn} onPointerLeave={handleHoverOut}>
+      <Pressable
+        accessibilityRole="link"
+        onPress={onPress}
+        onHoverIn={handleHoverIn}
+        onHoverOut={handleHoverOut}
+      >
         <Text
-          accessibilityRole="link"
-          dataSet={monoSurface ? CODE_SURFACE_DATASET : undefined}
+          dataSet={monoSurface ? MARKDOWN_CODE_LINK_DATASET : undefined}
           style={hoveredTextStyle}
         >
           {children}
         </Text>
-      </View>
+      </Pressable>
     </a>
   );
 
