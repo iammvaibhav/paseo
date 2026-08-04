@@ -2530,9 +2530,7 @@ export class AgentManager {
     const interruptResult = await this.interruptSession(agent.session, agentId);
     const settlement = await this.waitWithTimeout({
       operation: run.settledPromise,
-      timeoutMs: interruptResult.acknowledged
-        ? INTERRUPT_SESSION_TIMEOUT_MS
-        : this.rescueTimeouts.interruptSessionMs,
+      timeoutMs: this.rescueTimeouts.interruptSessionMs,
     });
 
     if (!interruptResult.acknowledged) {
@@ -2558,23 +2556,14 @@ export class AgentManager {
       return { status: "refused" };
     }
 
-    if (settlement === "timed_out" && run.turnId) {
+    if (settlement === "timed_out") {
       this.logger.warn(
         { agentId, turnId: run.turnId, kind: run.kind },
         "cancelAgentRun: acknowledged turn still active after timeout, force-canceling",
       );
-      await this.dispatchSessionEvent(agent, {
-        type: "turn_canceled",
-        provider: agent.provider,
-        reason: "interrupted",
-        turnId: run.turnId,
-      });
-      await run.settledPromise;
-    } else if (settlement === "timed_out" && run.kind === "autonomous") {
-      this.logger.warn(
-        { agentId, kind: run.kind },
-        "cancelAgentRun: acknowledged turn still active after timeout, force-canceling",
-      );
+      // Always force-clear manager bookkeeping. Synthesizing turn_canceled and
+      // awaiting settledPromise can hang forever when the turnId was already
+      // finalized (terminal_already_finalized no-ops without settling the run).
       await this.forceCancelStaleRun(agent, run);
     }
 
@@ -2590,32 +2579,26 @@ export class AgentManager {
     agent: ActiveManagedAgent,
     run: { turnId: string | null; kind: string; settledPromise: Promise<void> },
   ): Promise<void> {
-    if (run.turnId) {
-      await this.dispatchSessionEvent(agent, {
-        type: "turn_canceled",
-        provider: agent.provider,
-        reason: "interrupted",
-        turnId: run.turnId,
-      });
-      await run.settledPromise;
-      return;
-    }
-
     await this.dispatchSessionEvent(agent, {
       type: "turn_canceled",
       provider: agent.provider,
       reason: "interrupted",
+      ...(run.turnId ? { turnId: run.turnId } : {}),
     });
 
-    // Bare turn_canceled may not clear a sticky lifecycle=running with no
-    // foreground turn id. Force the manager side to idle.
-    if (agent.lifecycle === "running" && agent.activeForegroundTurnId === null) {
+    // Never wait on settledPromise here. If the turnId was already finalized,
+    // handleStreamEvent returns early without settling the tracked run, which
+    // previously hung cancel/reload/stop indefinitely.
+    agent.pendingReplacement = false;
+    agent.activeForegroundTurnId = null;
+    this.applyActiveTurnTerminal(agent, run.turnId ?? undefined);
+    if (agent.lifecycle === "running") {
       (agent as ActiveManagedAgent).lifecycle = "idle";
       agent.lastError = undefined;
-      this.runs.settleTerminalRun(agent.id, undefined);
-      this.touchUpdatedAt(agent);
-      this.emitState(agent);
     }
+    this.runs.clearAgentRun(agent.id);
+    this.touchUpdatedAt(agent);
+    this.emitState(agent);
   }
 
   private async cancelAgentRunBefore(
@@ -3623,6 +3606,44 @@ export class AgentManager {
     );
   }
 
+  /**
+   * After a replace race, OMP can continue a turnId that was already finalized
+   * in the foreground. Terminal events for that turn must still settle the
+   * autonomous tracked run or lifecycle stays `running` forever.
+   */
+  private settleAlreadyFinalizedTerminal(
+    agent: ActiveManagedAgent,
+    event: AgentStreamEvent,
+    eventTurnId: string,
+    fromHistory: boolean,
+  ): void {
+    this.logger.info(
+      {
+        agentId: agent.id,
+        provider: agent.provider,
+        turnId: eventTurnId,
+        eventType: event.type,
+        lifecycle: agent.lifecycle,
+      },
+      "agent.manager.turn.terminal_already_finalized",
+    );
+    if (fromHistory) {
+      return;
+    }
+    this.runs.settleTerminalRun(agent.id, eventTurnId);
+    if (
+      agent.lifecycle === "running" &&
+      agent.activeForegroundTurnId === null &&
+      !agent.pendingReplacement &&
+      !this.runs.hasRun(agent.id)
+    ) {
+      (agent as ActiveManagedAgent).lifecycle = "idle";
+      agent.lastError = undefined;
+      this.touchUpdatedAt(agent);
+      this.emitState(agent);
+    }
+  }
+
   private async handleStreamEvent(
     agent: ActiveManagedAgent,
     event: AgentStreamEvent,
@@ -3639,16 +3660,7 @@ export class AgentManager {
       isTurnTerminalEvent(event) &&
       this.runs.hasFinalizedTurn(agent, eventTurnId)
     ) {
-      this.logger.info(
-        {
-          agentId: agent.id,
-          provider: agent.provider,
-          turnId: eventTurnId,
-          eventType: event.type,
-          lifecycle: agent.lifecycle,
-        },
-        "agent.manager.turn.terminal_already_finalized",
-      );
+      this.settleAlreadyFinalizedTerminal(agent, event, eventTurnId, options?.fromHistory === true);
       return false;
     }
 
@@ -3887,7 +3899,6 @@ export class AgentManager {
 
     if (
       event.item.type === "user_message" &&
-      event.item.clientMessageId &&
       this.reconcileSubmittedPromptEcho(agent, event.item)
     ) {
       flags.shouldDispatchEvent = false;
@@ -4090,6 +4101,9 @@ export class AgentManager {
     );
     this.runs.trackAutonomousRun(agent.id, eventTurnId ?? null);
     if (eventTurnId) {
+      // Provider continued a turn we already finalized (seen after replace
+      // races). Clear the finalized mark so a later terminal can settle.
+      agent.finalizedForegroundTurnIds.delete(eventTurnId);
       this.openActiveTurn(agent, eventTurnId, new Date());
     }
     agent.lifecycle = "running";
@@ -4202,14 +4216,27 @@ export class AgentManager {
     agent: ActiveManagedAgent,
     item: Extract<AgentTimelineItem, { type: "user_message" }>,
   ): AgentTimelineRow | null {
-    const { clientMessageId, messageId } = item;
-    if (!clientMessageId) return null;
-    const existing = this.timelineStore.getSubmittedUserMessage(agent.id, clientMessageId);
+    const { clientMessageId, messageId, text } = item;
+    const existing = clientMessageId
+      ? this.timelineStore.getSubmittedUserMessage(agent.id, clientMessageId)
+      : this.timelineStore.findOldestUnenrichedSubmittedUserMessageByText(agent.id, text);
     if (!existing || existing.item.type !== "user_message") return null;
+    const resolvedClientMessageId = existing.item.clientMessageId;
+    if (!resolvedClientMessageId) return null;
+    // Text-only matches must not steal provider identity from a different echo
+    // of the same prompt body when an earlier submission was already enriched.
+    if (
+      !clientMessageId &&
+      existing.providerMessageId &&
+      messageId &&
+      existing.providerMessageId !== messageId
+    ) {
+      return null;
+    }
     if (messageId) {
       const enriched = this.timelineStore.enrichSubmittedUserMessage(
         agent.id,
-        clientMessageId,
+        resolvedClientMessageId,
         messageId,
       );
       if (enriched) this.enqueueDurableTimelineUpdate(agent.id, enriched);

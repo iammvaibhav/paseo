@@ -502,6 +502,32 @@ describe("OMP agent client and session", () => {
     expect(omp.completedTurnCount()).toBe(1);
   });
 
+  test("keeps clientMessageId on delayed native user echo after false local-only", async () => {
+    const omp = new OmpHarness();
+    await omp.start();
+
+    const completion = await omp.runPromptAfterCompletedFalseLocalOnly(
+      "hello OMP",
+      "delayed autonomous turn",
+      "msg-client-local-only",
+    );
+
+    expect(completion.completedBeforeNativeEcho).toBe(true);
+    expect(omp.timeline().filter((item) => item.type === "user_message")).toEqual([
+      {
+        type: "user_message",
+        text: "hello OMP",
+        clientMessageId: "msg-client-local-only",
+      },
+      {
+        type: "user_message",
+        text: "hello OMP",
+        messageId: "user-native-delayed",
+        clientMessageId: "msg-client-local-only",
+      },
+    ]);
+  });
+
   test("completes an autonomous OMP turn without a foreground turn ID", async () => {
     const omp = new OmpHarness();
     await omp.start();

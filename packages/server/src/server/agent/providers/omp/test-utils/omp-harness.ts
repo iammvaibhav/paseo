@@ -429,6 +429,44 @@ export class OmpHarness {
     return { completedBeforeTurn, result: await run };
   }
 
+  /**
+   * Reproduces the false local-only race: OMP ack says local-only and the
+   * foreground turn completes, then the real native user echo arrives later on
+   * an autonomous turn after `activeClientMessageId` was cleared.
+   */
+  async runPromptAfterCompletedFalseLocalOnly(
+    input: string,
+    output: string,
+    clientMessageId: string,
+  ): Promise<{ completedBeforeNativeEcho: boolean; result: unknown }> {
+    const session = this.requireSession();
+    const runtime = this.omp.latestSession();
+    runtime.promptAck = { agentInvoked: false };
+    const promptStarted = runtime.nextPrompt();
+    const run = session.run(input, { clientMessageId });
+    let completed = false;
+    void run.then(
+      () => {
+        completed = true;
+        return undefined;
+      },
+      () => {
+        completed = true;
+        return undefined;
+      },
+    );
+    await promptStarted;
+    await waitForImmediate();
+    await waitForImmediate();
+    const completedBeforeNativeEcho = completed;
+    runtime.beginTurn();
+    runtime.acceptPrompt(input, "user-native-delayed");
+    runtime.streamAssistantText(output);
+    runtime.finishTurn();
+    await waitForImmediate();
+    return { completedBeforeNativeEcho, result: await run };
+  }
+
   async runAutonomousTurn(output: string): Promise<void> {
     const runtime = this.omp.latestSession();
     runtime.beginTurn();

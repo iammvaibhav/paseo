@@ -899,6 +899,13 @@ export class OmpAgentSession implements AgentSession {
   private pendingCombinedAskUserResponse: PendingCombinedAskUserResponse | null = null;
   private activeTurnId: string | null = null;
   private activeClientMessageId: string | null = null;
+  /**
+   * Survives false local-only `completeTurn` so a delayed native user echo can
+   * still carry the submitted prompt's clientMessageId for timeline reconcile.
+   * Cleared when a native user message with that binding is emitted, or when the
+   * next `startTurn` replaces it.
+   */
+  private pendingClientMessageBinding: { clientMessageId: string; text: string } | null = null;
   private activeAssistantMessageId: string | null = null;
   private activeTurnTerminalAssistantMessage: OmpAgentMessage | null = null;
   private activeTurnStarted = false;
@@ -1008,6 +1015,9 @@ export class OmpAgentSession implements AgentSession {
     this.live = true;
     this.activeTurnId = turnId;
     this.activeClientMessageId = options?.clientMessageId ?? null;
+    this.pendingClientMessageBinding = options?.clientMessageId
+      ? { clientMessageId: options.clientMessageId, text: payload.text }
+      : null;
     this.activeAssistantMessageId = null;
     this.activeTurnTerminalAssistantMessage = null;
     this.activeTurnStarted = false;
@@ -1538,11 +1548,29 @@ export class OmpAgentSession implements AgentSession {
     this.pendingNoTurnOutputs.splice(0, this.pendingNoTurnOutputs.length);
   }
 
+  private resolveClientMessageIdForUserText(text: string): string | null {
+    if (this.activeClientMessageId) {
+      return this.activeClientMessageId;
+    }
+    const pending = this.pendingClientMessageBinding;
+    if (pending && pending.text === text) {
+      return pending.clientMessageId;
+    }
+    return null;
+  }
+
+  private clearPendingClientMessageBinding(clientMessageId: string | null | undefined): void {
+    if (clientMessageId && this.pendingClientMessageBinding?.clientMessageId === clientMessageId) {
+      this.pendingClientMessageBinding = null;
+    }
+  }
+
   private emitBufferedNoTurnOutputs(turnId: string): void {
     const promptText = this.activeNoTurnPromptText;
     const outputs = this.pendingNoTurnOutputs.filter((output) => output.turnId === turnId);
     this.clearNoTurnBuffers();
     if (promptText) {
+      const clientMessageId = this.resolveClientMessageIdForUserText(promptText);
       this.emit({
         type: "timeline",
         provider: this.provider,
@@ -1550,7 +1578,7 @@ export class OmpAgentSession implements AgentSession {
         item: {
           type: "user_message",
           text: promptText,
-          ...(this.activeClientMessageId ? { clientMessageId: this.activeClientMessageId } : {}),
+          ...(clientMessageId ? { clientMessageId } : {}),
         },
       });
     }
@@ -2250,7 +2278,7 @@ export class OmpAgentSession implements AgentSession {
     }
     const nativeMessage = event.message as OmpAgentMessage & { id?: unknown; entryId?: unknown };
     const messageId = readNativeMessageId(nativeMessage);
-    const clientMessageId = this.activeClientMessageId;
+    const clientMessageId = this.resolveClientMessageIdForUserText(text);
     const emitUserMessage = (resolvedMessageId?: string): void => {
       if (resolvedMessageId) {
         // OMP re-emits user message_end frames for entries it has already
@@ -2272,6 +2300,13 @@ export class OmpAgentSession implements AgentSession {
           ...(clientMessageId ? { clientMessageId } : {}),
         },
       });
+      // Native provider identity means the submitted prompt echo was observed;
+      // drop the binding so a later same-text autonomous user message does not
+      // inherit it. Keep the binding across false local-only buffered emits
+      // (no messageId) until this native echo arrives.
+      if (resolvedMessageId) {
+        this.clearPendingClientMessageBinding(clientMessageId);
+      }
     };
     if (messageId) {
       emitUserMessage(messageId);

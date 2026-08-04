@@ -176,6 +176,25 @@ export class InMemoryAgentTimelineStore {
     return row ? cloneRow(row) : null;
   }
 
+  /**
+   * Oldest submitted user prompt that still lacks provider identity. Used when a
+   * provider echo arrives without `clientMessageId` (e.g. OMP false local-only
+   * race) so FIFO same-text submissions still reconcile correctly.
+   */
+  findOldestUnenrichedSubmittedUserMessageByText(
+    agentId: string,
+    text: string,
+  ): AgentTimelineRow | null {
+    const row = this.requireState(agentId).rows.find(
+      (candidate) =>
+        candidate.item.type === "user_message" &&
+        candidate.item.clientMessageId !== undefined &&
+        candidate.item.text === text &&
+        candidate.providerMessageId === undefined,
+    );
+    return row ? cloneRow(row) : null;
+  }
+
   enrichSubmittedUserMessage(
     agentId: string,
     clientMessageId: string,

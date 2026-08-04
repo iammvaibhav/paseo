@@ -1747,6 +1747,109 @@ test("metrics snapshot names each running agent so a stuck spinner is identifiab
   }
 });
 
+test("settles autonomous continuation of a previously finalized turnId", async () => {
+  // Repro for blrofc3 agent 7d9c4543: replace dispatched turn T, T completed
+  // immediately (finalized), then OMP continued T outside the foreground run.
+  // The later turn_completed hit terminal_already_finalized and left the agent
+  // stuck in lifecycle=running with hasTrackedRun=true.
+  const turnId = "continued-after-finalize";
+  const fixture = await createControlledInterruptFixture({
+    name: "finalized-autonomous-continue",
+    agentId: "00000000-0000-4000-8000-000000000310",
+    turnId,
+    interrupt: async () => {},
+  });
+
+  try {
+    await fixture.startForegroundRun();
+    expect(fixture.manager.getAgent(fixture.agentId)?.activeForegroundTurnId).toBe(turnId);
+
+    const idle = waitForAgentLifecycle(fixture.manager, fixture.agentId, "idle");
+    fixture.session.pushEvent({
+      type: "turn_completed",
+      provider: "codex",
+      turnId,
+    });
+    await idle;
+    expect(fixture.manager.hasInFlightRun(fixture.agentId)).toBe(false);
+    expect(fixture.manager.getAgent(fixture.agentId)?.finalizedForegroundTurnIds.has(turnId)).toBe(
+      true,
+    );
+
+    // Simulate the premature-finalize bookkeeping remaining while OMP continues
+    // the same turnId outside any foreground run.
+    const running = waitForAgentLifecycle(fixture.manager, fixture.agentId, "running");
+    fixture.session.pushEvent({
+      type: "turn_started",
+      provider: "codex",
+      turnId,
+    });
+    await running;
+    expect(fixture.manager.getAgent(fixture.agentId)?.activeForegroundTurnId).toBeNull();
+    expect(fixture.manager.hasInFlightRun(fixture.agentId)).toBe(true);
+
+    // Even if the finalized mark races back in, completion must settle.
+    fixture.manager.getAgent(fixture.agentId)!.finalizedForegroundTurnIds.add(turnId);
+
+    const settled = waitForAgentLifecycle(fixture.manager, fixture.agentId, "idle");
+    fixture.session.pushEvent({
+      type: "turn_completed",
+      provider: "codex",
+      turnId,
+    });
+    await settled;
+    expect(fixture.manager.hasInFlightRun(fixture.agentId)).toBe(false);
+    expect(fixture.manager.getAgent(fixture.agentId)).toMatchObject({
+      lifecycle: "idle",
+      activeForegroundTurnId: null,
+      pendingReplacement: false,
+    });
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("cancelAgentRun force-clears an autonomous run whose turnId is already finalized", async () => {
+  // Repro: synthesize turn_canceled for a finalized turnId used to no-op in
+  // handleStreamEvent, so cancel awaited settledPromise forever and stop/reload hung.
+  const fixture = await createControlledInterruptFixture({
+    name: "interrupt-finalized-autonomous",
+    agentId: "00000000-0000-4000-8000-000000000311",
+    turnId: "finalized-autonomous-turn",
+    interrupt: async () => {
+      // Acknowledge interrupt but never emit a provider terminal.
+    },
+  });
+
+  try {
+    const running = waitForAgentLifecycle(fixture.manager, fixture.agentId, "running");
+    fixture.session.pushEvent({
+      type: "turn_started",
+      provider: "codex",
+      turnId: "finalized-autonomous-turn",
+    });
+    await running;
+
+    const agent = fixture.manager.getAgent(fixture.agentId);
+    expect(agent).not.toBeNull();
+    // Re-mark after un-finalize-on-start: simulate the stuck bookkeeping where
+    // the autonomous run remains while the turnId is marked finalized.
+    agent!.finalizedForegroundTurnIds.add("finalized-autonomous-turn");
+
+    await expect(fixture.manager.cancelAgentRun(fixture.agentId)).resolves.toEqual({
+      status: "settled",
+    });
+    expect(fixture.manager.getAgent(fixture.agentId)).toMatchObject({
+      lifecycle: "idle",
+      activeForegroundTurnId: null,
+      pendingReplacement: false,
+    });
+    expect(fixture.manager.hasInFlightRun(fixture.agentId)).toBe(false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("cancelAgentRun force-cancels a foreground turn when the provider session is closed", async () => {
   const fixture = await createControlledInterruptFixture({
     name: "interrupt-session-closed-foreground",
