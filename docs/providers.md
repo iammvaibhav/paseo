@@ -38,6 +38,8 @@ OMP is a first-class built-in provider, disabled by default. Its launch contract
 
 OMP supports native Paseo host tools. The adapter registers the full caller-scoped Paseo tool catalog directly with OMP, matching providers such as Claude that expose the full catalog through MCP. Serialize every OMP host definition with `loadMode: "essential"` so `create_agent`, `send_agent_prompt`, `wait_for_agent`, and related tools remain direct calls; omitting the field makes OMP mount non-built-in names under `xd://` instead. OMP's provider-managed task subagents are surfaced as Paseo subagents through `child_session` imports; the parent keeps the subagents track while the child runtime stays owned by OMP. Custom OMP profiles should extend `omp`; other Pi-compatible forks can still extend `pi`, override `command`, and set `params.sessionDir` to their JSONL session directory.
 
+OMP RPC caps every stdout frame at 1 MiB. Protocol v1 answers an oversized response by throwing the payload away and returning `RPC response exceeded the transport limit`, which is how a _successful_ snapcompact — megabytes of standing image frames in the compact result's `preserveData` — surfaced as a failed `/compact`. The `ready` handshake advertises `supportedProtocolVersions`; `OmpCliRuntimeSession` answers with `negotiate_protocol` for v2, and `JsonlRpcProcess` reassembles the `rpc_chunk` sequences v2 sends in place of truncated frames. OMP upgrades its encoder only after it has written that response, so anything it emits during startup is still v1-encoded. `compact` and `handoff` are blocking LLM jobs and get no wall-clock RPC timeout, matching Pi.
+
 Pi RPC extension UI dialog requests (`select`, `input`, `editor`, `confirm`) are bridged into Paseo question permissions and answered with `extension_ui_response`. Pi extensions such as `ask_user` may chain dialogs: for example, a `select` can be followed by an optional-comment `input`. When an `ask_user` tool call declares `allowComment: true`, Paseo presents the selection and optional comment as one question permission, answers Pi's initial `select` immediately, then auto-answers the follow-up optional `input` with the comment the user already supplied (or an empty string). Preserve placeholders and optional/skip semantics for standalone optional inputs so the app can still distinguish "skip this optional input" from "cancel the whole dialog." Fire-and-forget extension UI requests such as notifications are intentionally ignored by the provider adapter unless Paseo grows first-class UI for them.
 
 OpenCode MCP injection is dynamic and session-scoped. Call OpenCode's `mcp.add` endpoint with the MCP server config and do not follow it with `mcp.connect`; `connect` only toggles MCP servers already present in OpenCode's own config. New OpenCode versions return `McpServerNotFoundError`/404 for `connect` after a dynamic add because the server is not config-backed, while older versions silently swallowed the same missing-config path.
@@ -401,7 +403,6 @@ interface AgentSession {
   setFeature?(featureId: string, value: unknown): Promise<void>;
   revertConversation?(input: { messageId: string }): Promise<void>;
   isRuntimeAlive?(): boolean;
-  forkSessionForNewAgent?(boundary?: AgentForkBoundary): Promise<AgentPersistenceHandle>;
   tryHandleOutOfBand?(prompt: AgentPromptInput): {
     run(ctx: { emit: (event: AgentStreamEvent) => void }): Promise<void>;
   } | null;
@@ -413,19 +414,15 @@ interface AgentSession {
 Every optional method also has to be forwarded in `wrapSessionProvider`
 (`agent/provider-registry.ts`), because that wrapper — not your class — is what the manager
 holds. A method the wrapper omits is simply `undefined` at every call site, and callers take
-their "provider can't do this" path without any error: that is how native fork was dead for
-every provider while `fork-session.ts` looked healthy. The wrapper's `WrappedAgentSession` type
-makes a missing key a build error, so add the forward in the same change as the hook.
+their "provider can't do this" path without any error, so the hook looks healthy and is dead.
+The wrapper's `WrappedAgentSession` type makes a missing key a build error, so add the forward
+in the same change as the hook.
 
 `isRuntimeAlive` lets a provider report that its runtime is gone. Answer `false` once the
 session can no longer take work — a child process that exited, a connection that closed — and a
 prompt reloads the session from persistence instead of failing against it (see
 [agent-lifecycle.md](agent-lifecycle.md#cancellation)). Leave the hook off if you cannot tell;
 absent means "no signal", never "dead".
-
-`forkSessionForNewAgent` is how a provider opts into **native fork**. Fork chat creates a sibling agent that inherits the source's history; without this hook the daemon falls back to seeding a fresh session with a rendered chat-history text attachment, which loses the provider's own context and prompt cache. Implement it when the provider has a way to produce a NEW session carrying existing context **without mutating the source session** — Claude's SDK `forkSession`, or OMP's append-only session file, which Paseo forks by prefix-copying to a new file (`providers/omp/fork-session.ts`). A provider's in-place rewind primitive (OMP `branch`, Pi `navigateTree`) is the wrong tool: it mutates the live session.
-
-The optional `boundary` names the assistant turn the fork's history ends at, addressed by the provider id of the **user message that opened that turn** (see [timeline-sync.md](timeline-sync.md#durable-item-anchors) for why that is the anchor). Throw when the boundary is not resolvable in the provider's own history — `forkAgentToSibling` catches it and degrades to the timeline-accurate snapshot, which is strictly better than silently forking a wider history. With no boundary, fork up to the last completed turn; if a turn is in flight, stop at the last user message instead, because a session whose head is a half-written assistant turn can end on an unanswered tool call and is not a valid point to append a new prompt.
 
 A session that implements `tryHandleOutOfBand` must also mark the commands it intercepts as `delivery: "out_of_band"` in `listCommands`. That field is what tells the composer to send the command straight through while a turn is running instead of putting it in the queue — a queued `/steer` arrives after the turn it was meant to steer. Attachments turn a prompt into content blocks, which `tryHandleOutOfBand` rejects, so the composer treats a draft with attachments as an ordinary turn no matter what the command is.
 

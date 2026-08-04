@@ -127,7 +127,6 @@ function createSubmitClient(options: { forkAgentSnapshot?: { id: string } | null
       forkAgentCalls.push({ sourceAgentId, text, options: forkOptions });
       return {
         agentId: "agent-forked",
-        strategy: "native",
         agent: forkAgentSnapshot,
       };
     },
@@ -137,7 +136,6 @@ function createSubmitClient(options: { forkAgentSnapshot?: { id: string } | null
 
 const forkSource: WorkspaceDraftForkSource = {
   sourceAgentId: "agent-src",
-  boundaryUserMessageId: "user-msg-1",
   boundaryCursor: { epoch: "epoch-1", seq: 7 },
   boundaryMessageId: "assistant-msg-1",
 };
@@ -182,17 +180,17 @@ describe("workspace draft fork submission", () => {
     expect(forkAgentCalls[0].text).toBe("keep going");
   });
 
-  test("sends the fork boundary trio and the composer's config overrides", async () => {
+  test("sends the fork boundary pair and the composer's config overrides", async () => {
     const { client, forkAgentCalls } = createSubmitClient();
 
     await submit(client, { forkSource });
 
     expect(forkAgentCalls[0].options).toEqual({
       messageId: "client-msg-1",
-      boundaryUserMessageId: "user-msg-1",
       boundaryCursor: { epoch: "epoch-1", seq: 7 },
       boundaryMessageId: "assistant-msg-1",
       overrides: {
+        provider: "codewhale",
         modeId: "build",
         model: "deepseek/deepseek-v4-pro",
         thinkingOptionId: "high",
@@ -206,19 +204,19 @@ describe("workspace draft fork submission", () => {
 
     await submit(client, { forkSource: { sourceAgentId: "agent-src" } });
 
-    expect(forkAgentCalls[0].options).not.toHaveProperty("boundaryUserMessageId");
     expect(forkAgentCalls[0].options).not.toHaveProperty("boundaryCursor");
     expect(forkAgentCalls[0].options).not.toHaveProperty("boundaryMessageId");
   });
 
-  test("never leaks the fork composer's cwd or provider into the overrides", async () => {
+  test("carries the fork composer's provider so a fork can switch providers", async () => {
     const { client, forkAgentCalls } = createSubmitClient();
 
     await submit(client, { forkSource });
 
     const overrides = forkAgentCalls[0].options.overrides as Record<string, unknown>;
+    expect(overrides.provider).toBe("codewhale");
+    // cwd stays the source's; the fork runs in the same workspace directory.
     expect(overrides).not.toHaveProperty("cwd");
-    expect(overrides).not.toHaveProperty("provider");
   });
 
   test("fails loudly instead of creating a plain agent when the fork has no snapshot", async () => {

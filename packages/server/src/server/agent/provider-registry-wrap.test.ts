@@ -2,7 +2,6 @@ import { describe, expect, test } from "vitest";
 
 import type {
   AgentCapabilityFlags,
-  AgentPersistenceHandle,
   AgentPromptInput,
   AgentSession,
   AgentStreamEvent,
@@ -100,11 +99,6 @@ class FakeSession implements AgentSession {
     return false;
   }
 
-  async forkSessionForNewAgent(): Promise<AgentPersistenceHandle> {
-    this.recordedCalls.push("forkSessionForNewAgent");
-    return { provider: "claude", sessionId: "forked-session", nativeHandle: "/tmp/fork.jsonl" };
-  }
-
   async close() {
     this.recordedCalls.push("close");
   }
@@ -169,7 +163,6 @@ describe("wrapSessionProvider", () => {
     const handler = wrapped.tryHandleOutOfBand?.("/compact");
     await handler?.run({ emit: () => {} });
     expect(wrapped.isRuntimeAlive?.()).toBe(false);
-    await wrapped.forkSessionForNewAgent?.();
 
     expect(session.recordedCalls).toEqual([
       "listCommands",
@@ -182,19 +175,6 @@ describe("wrapSessionProvider", () => {
       "tryHandleOutOfBand",
       "tryHandleOutOfBand.run",
       "isRuntimeAlive",
-      "forkSessionForNewAgent",
     ]);
-  });
-
-  test("rewrites the forked persistence handle onto the registry-facing provider", async () => {
-    const wrapped = wrapSessionProvider("custom-claude", new FakeSession());
-
-    // The manager resumes this handle as a new agent, so it has to name the
-    // registry provider — not the inner provider the session was built with.
-    await expect(wrapped.forkSessionForNewAgent?.()).resolves.toEqual({
-      provider: "custom-claude",
-      sessionId: "forked-session",
-      nativeHandle: "/tmp/fork.jsonl",
-    });
   });
 });

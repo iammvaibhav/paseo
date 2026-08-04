@@ -140,7 +140,6 @@ describe("draft fork source tab identity", () => {
       draftId: " draft-1 ",
       forkSource: {
         sourceAgentId: " agent-src ",
-        boundaryUserMessageId: " user-msg-1 ",
         boundaryCursor: { epoch: " epoch-1 ", seq: 0 },
         boundaryMessageId: " assistant-msg-1 ",
         somethingElse: "junk",
@@ -152,7 +151,6 @@ describe("draft fork source tab identity", () => {
       draftId: "draft-1",
       forkSource: {
         sourceAgentId: "agent-src",
-        boundaryUserMessageId: "user-msg-1",
         boundaryCursor: { epoch: "epoch-1", seq: 0 },
         boundaryMessageId: "assistant-msg-1",
       },
@@ -190,7 +188,7 @@ describe("draft fork source tab identity", () => {
   });
 
   test("treats a fork draft and a plain draft with the same id as different targets", () => {
-    const forkSource = { sourceAgentId: "agent-src", boundaryUserMessageId: "user-msg-1" };
+    const forkSource = { sourceAgentId: "agent-src", boundaryMessageId: "assistant-msg-1" };
 
     expect(
       workspaceTabTargetsEqual(

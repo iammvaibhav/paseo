@@ -6768,10 +6768,11 @@ export class Session {
         images: msg.images,
         attachments: msg.attachments,
         messageId: msg.messageId,
-        ...(msg.boundaryUserMessageId || msg.boundaryCursor || msg.boundaryMessageId
+        // `boundaryUserMessageId` only ever addressed a provider-native session
+        // fork, which no longer exists. Old clients still send it; ignore it.
+        ...(msg.boundaryCursor || msg.boundaryMessageId
           ? {
               boundary: {
-                ...(msg.boundaryUserMessageId ? { userMessageId: msg.boundaryUserMessageId } : {}),
                 ...(msg.boundaryCursor ? { cursor: msg.boundaryCursor } : {}),
                 ...(msg.boundaryMessageId ? { messageId: msg.boundaryMessageId } : {}),
               },
@@ -6790,7 +6791,9 @@ export class Session {
           requestId: msg.requestId,
           sourceAgentId: msg.sourceAgentId,
           agentId: result.agentId,
-          strategy: result.strategy,
+          // Fork is always a chat-history snapshot now; the field stays on the
+          // wire for old clients that read it.
+          strategy: "snapshot",
           agent: snapshot ? await this.buildAgentPayload(snapshot) : null,
           error: null,
         },

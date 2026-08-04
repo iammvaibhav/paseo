@@ -202,9 +202,10 @@ export async function submitDraftCreateRequest(input: {
 }
 
 /**
- * Fork the source agent at the draft's boundary. Provider and cwd come from the
- * source session — a native provider fork inherits both — so only the composer's
- * model/mode/thinking/feature choices travel as overrides.
+ * Fork the source agent at the draft's boundary. The fork's history is a
+ * transcript attachment, not a resumed provider session, so the composer's
+ * provider choice travels with it — a fork may land on a different provider
+ * than the source. Only `cwd` stays pinned to the source's workspace.
  */
 async function submitDraftForkRequest(input: {
   attempt: { clientMessageId: string };
@@ -218,6 +219,7 @@ async function submitDraftForkRequest(input: {
 }): Promise<{ agentId: string | null; result: AgentSnapshotPayload }> {
   const { attempt, text, images, attachments, client, forkSource, config } = input;
   const overrides: Partial<AgentSessionConfig> = {
+    provider: config.provider,
     ...(config.modeId ? { modeId: config.modeId } : {}),
     ...(config.model ? { model: config.model } : {}),
     ...(config.thinkingOptionId ? { thinkingOptionId: config.thinkingOptionId } : {}),
@@ -227,9 +229,6 @@ async function submitDraftForkRequest(input: {
     messageId: attempt.clientMessageId,
     ...(images && images.length > 0 ? { images } : {}),
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
-    ...(forkSource.boundaryUserMessageId
-      ? { boundaryUserMessageId: forkSource.boundaryUserMessageId }
-      : {}),
     ...(forkSource.boundaryCursor ? { boundaryCursor: forkSource.boundaryCursor } : {}),
     ...(forkSource.boundaryMessageId ? { boundaryMessageId: forkSource.boundaryMessageId } : {}),
     ...(Object.keys(overrides).length > 0 ? { overrides } : {}),

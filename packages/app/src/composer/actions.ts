@@ -227,7 +227,7 @@ export interface ComposerForkClient {
       images: Array<{ data: string; mimeType: string }>;
       attachments: ReturnType<typeof splitComposerAttachmentsForSubmit>["attachments"];
     },
-  ) => Promise<{ agentId: string; strategy: "native" | "snapshot" | null }>;
+  ) => Promise<{ agentId: string }>;
 }
 
 export interface ForkComposerAgentInput {
@@ -248,7 +248,7 @@ export interface ForkComposerAgentInput {
  */
 export async function forkComposerAgent(
   input: ForkComposerAgentInput,
-): Promise<{ agentId: string; strategy: "native" | "snapshot" | null }> {
+): Promise<{ agentId: string }> {
   const wirePayload = splitComposerAttachmentsForSubmit(input.attachments);
   const messageId = generateMessageId();
   const imagesData = await input.encodeImages(wirePayload.images);

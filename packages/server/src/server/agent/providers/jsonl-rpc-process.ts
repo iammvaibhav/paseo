@@ -13,8 +13,59 @@ export const JSONL_RPC_DEFAULT_TIMEOUT_MS = 30_000;
 export const JSONL_RPC_NO_TIMEOUT = null;
 
 const STDERR_BUFFER_LIMIT = 8192;
+/** Frames can be multi-MiB; keep the diagnostic for an unparseable one bounded. */
+const LOGGED_LINE_LIMIT = 2048;
 const GRACEFUL_SHUTDOWN_TIMEOUT_MS = 2_000;
 const FORCE_SHUTDOWN_TIMEOUT_MS = 1_000;
+
+/**
+ * OMP/Pi RPC protocol v2 splits any frame over the 1 MiB line limit into
+ * `rpc_chunk` frames. Cap reassembly at the sender's own ceiling (64 MiB) so a
+ * corrupt or hostile `byteLength` cannot make us buffer without bound.
+ */
+const MAX_REASSEMBLED_FRAME_BYTES = 64 * 1024 * 1024;
+
+interface ChunkSequence {
+  chunkId: string;
+  count: number;
+  byteLength: number;
+  nextIndex: number;
+  received: number;
+  chunks: Buffer[];
+}
+
+interface RpcChunk {
+  chunkId: string;
+  index: number;
+  count: number;
+  byteLength: number;
+  data: string;
+}
+
+/** Validate one `rpc_chunk` envelope against the same bounds the sender applies. */
+function parseRpcChunk(frame: Record<string, unknown>): RpcChunk | null {
+  const { chunkId, index, count, byteLength, data } = frame;
+  if (typeof chunkId !== "string" || chunkId.length === 0 || typeof data !== "string") {
+    return null;
+  }
+  if (
+    typeof index !== "number" ||
+    typeof count !== "number" ||
+    typeof byteLength !== "number" ||
+    !Number.isSafeInteger(index) ||
+    !Number.isSafeInteger(count) ||
+    !Number.isSafeInteger(byteLength)
+  ) {
+    return null;
+  }
+  if (index < 0 || count < 2 || index >= count) {
+    return null;
+  }
+  if (byteLength <= 0 || byteLength > MAX_REASSEMBLED_FRAME_BYTES) {
+    return null;
+  }
+  return { chunkId, index, count, byteLength, data };
+}
 
 export interface JsonlRpcLaunch {
   command: string;
@@ -79,15 +130,21 @@ export class JsonlRpcProcess {
   private nextRequestId = 1;
   private disposed = false;
   private stdoutBuffer = "";
+  private chunkSequence: ChunkSequence | null = null;
 
   constructor(private readonly options: JsonlRpcProcessOptions) {
     this.diagnosticName = options.diagnosticName ?? "JSONL RPC";
     this.child = (options.spawn ?? spawnJsonlRpcProcess)(options.launch);
-    this.child.stdout.on("data", (chunk) => {
-      this.handleStdoutChunk(chunk.toString());
+    // Decode with a StringDecoder so a multi-byte character split across two
+    // stdout reads is not corrupted. Multi-MiB frames (protocol v2 chunks)
+    // always straddle read boundaries.
+    this.child.stdout.setEncoding("utf8");
+    this.child.stderr.setEncoding("utf8");
+    this.child.stdout.on("data", (chunk: string) => {
+      this.handleStdoutChunk(chunk);
     });
-    this.child.stderr.on("data", (chunk) => {
-      this.stderrBuffer += chunk.toString();
+    this.child.stderr.on("data", (chunk: string) => {
+      this.stderrBuffer += chunk;
       if (this.stderrBuffer.length > STDERR_BUFFER_LIMIT) {
         this.stderrBuffer = this.stderrBuffer.slice(-STDERR_BUFFER_LIMIT);
       }
@@ -204,20 +261,45 @@ export class JsonlRpcProcess {
   }
 
   private handleLine(line: string): void {
+    const frame = this.parseFrame(line);
+    if (!frame) {
+      return;
+    }
+    if (frame.type === "rpc_chunk") {
+      const reassembled = this.reassembleChunk(frame);
+      if (reassembled) {
+        this.dispatchFrame(reassembled);
+      }
+      return;
+    }
+    if (this.chunkSequence) {
+      this.options.logger.warn(
+        { chunkId: this.chunkSequence.chunkId, frameType: frame.type },
+        `Discarding interrupted ${this.diagnosticName} chunk sequence`,
+      );
+      this.chunkSequence = null;
+    }
+    this.dispatchFrame(frame);
+  }
+
+  private parseFrame(line: string): Record<string, unknown> | null {
     let parsed: unknown;
     try {
       parsed = JSON.parse(line);
     } catch (error) {
       this.options.logger.warn(
-        { error, line },
+        { error, line: line.slice(0, LOGGED_LINE_LIMIT), lineLength: line.length },
         `Ignoring non-JSON ${this.diagnosticName} stdout line`,
       );
-      return;
+      return null;
     }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return;
+      return null;
     }
-    const message = parsed as Record<string, unknown>;
+    return parsed as Record<string, unknown>;
+  }
+
+  private dispatchFrame(message: Record<string, unknown>): void {
     if (message.type === "response") {
       this.handleResponse(message as unknown as JsonlRpcResponse);
       return;
@@ -225,6 +307,56 @@ export class JsonlRpcProcess {
     for (const subscriber of this.messageSubscribers) {
       subscriber(message);
     }
+  }
+
+  /**
+   * Accumulate one `rpc_chunk` frame, returning the decoded frame once the last
+   * chunk lands. Any protocol violation drops the whole sequence: the sender
+   * only chunks frames that would otherwise be truncated, so losing one is no
+   * worse than protocol v1 and never desynchronizes later frames.
+   */
+  private reassembleChunk(frame: Record<string, unknown>): Record<string, unknown> | null {
+    const chunk = parseRpcChunk(frame);
+    if (!chunk) {
+      return this.dropChunkSequence("invalid rpc chunk metadata", { chunkId: frame.chunkId });
+    }
+    const { chunkId, index, count, byteLength, data } = chunk;
+    if (index === 0) {
+      this.chunkSequence = { chunkId, count, byteLength, nextIndex: 0, received: 0, chunks: [] };
+    }
+    const sequence = this.chunkSequence;
+    if (!sequence) {
+      return this.dropChunkSequence("rpc chunk sequence must start at index 0", { chunkId });
+    }
+    if (
+      sequence.chunkId !== chunkId ||
+      sequence.count !== count ||
+      sequence.byteLength !== byteLength ||
+      sequence.nextIndex !== index
+    ) {
+      return this.dropChunkSequence("rpc chunk sequence mismatch", { chunkId });
+    }
+    const payload = Buffer.from(data, "base64");
+    sequence.chunks.push(payload);
+    sequence.received += payload.byteLength;
+    sequence.nextIndex += 1;
+    if (sequence.received > sequence.byteLength) {
+      return this.dropChunkSequence("rpc chunk sequence exceeds declared length", { chunkId });
+    }
+    if (sequence.nextIndex < sequence.count) {
+      return null;
+    }
+    this.chunkSequence = null;
+    if (sequence.received !== sequence.byteLength) {
+      return this.dropChunkSequence("rpc chunk sequence length mismatch", { chunkId });
+    }
+    return this.parseFrame(Buffer.concat(sequence.chunks).toString("utf8"));
+  }
+
+  private dropChunkSequence(reason: string, context: Record<string, unknown>): null {
+    this.chunkSequence = null;
+    this.options.logger.warn(context, `Ignoring ${this.diagnosticName} chunk frame: ${reason}`);
+    return null;
   }
 
   private handleResponse(response: JsonlRpcResponse): void {

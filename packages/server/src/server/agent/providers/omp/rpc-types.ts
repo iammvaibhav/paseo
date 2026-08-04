@@ -500,6 +500,11 @@ const OmpCommandBase = { id: z.string().optional() };
 export const OmpRpcCommandSchema = z.discriminatedUnion("type", [
   z.object({
     ...OmpCommandBase,
+    type: z.literal("negotiate_protocol"),
+    protocolVersion: z.number(),
+  }),
+  z.object({
+    ...OmpCommandBase,
     type: z.literal("prompt"),
     message: z.string(),
     images: z.array(OmpImageContentSchema).optional(),
@@ -569,6 +574,9 @@ export const OmpBranchMessagesResultSchema = z
   .object({
     messages: z.array(z.object({ entryId: z.string(), text: z.string() }).passthrough()).optional(),
   })
+  .passthrough();
+export const OmpNegotiateProtocolResultSchema = z
+  .object({ protocolVersion: z.number().optional() })
   .passthrough();
 
 export type OmpThinkingLevel = z.infer<typeof OmpThinkingLevelSchema>;

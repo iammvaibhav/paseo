@@ -37,10 +37,6 @@ export type TurnContentStrategy = StreamStrategy;
 export type AssistantTurnForkHandler = (input: {
   target: AssistantForkTarget;
   boundary: AssistantTurnForkBoundary;
-  // Provider id of the user message that opened the boundary turn — the only
-  // anchor a native provider session fork can address. Absent when the provider
-  // does not expose ids for user messages.
-  boundaryUserMessageId?: string;
 }) => Promise<void> | void;
 export type JumpToUserMessageHandler = (itemId: string) => void;
 
@@ -222,15 +218,9 @@ function CompletedTurnFooter({
       if (!boundary) {
         return;
       }
-      return onForkAssistantTurn?.({
-        target,
-        boundary,
-        ...(precedingUserMessage?.messageId
-          ? { boundaryUserMessageId: precedingUserMessage.messageId }
-          : {}),
-      });
+      return onForkAssistantTurn?.({ target, boundary });
     },
-    [boundary, onForkAssistantTurn, precedingUserMessage],
+    [boundary, onForkAssistantTurn],
   );
   const handleJumpToUserMessage = useCallback(() => {
     if (!precedingUserMessage || !onJumpToUserMessage) {

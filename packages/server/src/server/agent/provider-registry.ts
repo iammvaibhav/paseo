@@ -350,10 +350,8 @@ function mergeModelAdditions(
 /**
  * Every optional `AgentSession` method the wrapper must mention. Skipping one is
  * invisible at runtime — the property is just `undefined` and callers quietly
- * take their fallback path, which is how `forkSessionForNewAgent` went missing
- * and demoted every native session fork to a chat-history snapshot. Requiring
- * the key (while still allowing an `undefined` value) turns the next omission
- * into a build error.
+ * take their fallback path. Requiring the key (while still allowing an
+ * `undefined` value) turns the next omission into a build error.
  */
 type OptionalAgentSessionMethod = keyof {
   [K in keyof AgentSession as undefined extends AgentSession[K]
@@ -396,16 +394,6 @@ export function wrapSessionProvider(provider: AgentProvider, inner: AgentSession
     setThinkingOption: inner.setThinkingOption?.bind(inner),
     setFeature: inner.setFeature?.bind(inner),
     revertConversation: inner.revertConversation?.bind(inner),
-    // The forked handle crosses back out to the manager, so it needs the same
-    // registry-facing provider id rewrite describePersistence gets. Omitting
-    // this member entirely is what silently demoted every native fork to a
-    // chat-history snapshot.
-    forkSessionForNewAgent: inner.forkSessionForNewAgent
-      ? async (boundary) => ({
-          ...(await inner.forkSessionForNewAgent!(boundary)),
-          provider,
-        })
-      : undefined,
     revertFiles: inner.revertFiles?.bind(inner),
     revertBoth: inner.revertBoth?.bind(inner),
     tryHandleOutOfBand: inner.tryHandleOutOfBand?.bind(inner),

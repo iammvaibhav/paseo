@@ -2,7 +2,7 @@ import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import pino from "pino";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { OmpCliRuntime } from "./cli-runtime.js";
 import type { OmpRuntimeLaunch } from "./runtime.js";
@@ -138,6 +138,52 @@ describe("OMP CLI runtime", () => {
     child.stdout.write(`${JSON.stringify({ type: "notice", level: "info", message: "ready" })}\n`);
 
     expect(eventTypes).toEqual(["notice"]);
+  });
+
+  test("negotiates RPC protocol v2 when the ready handshake advertises it", async () => {
+    const child = createOmpChild();
+    const commands: Record<string, unknown>[] = [];
+    replyToCommands(child, (command) => {
+      commands.push(withoutRequestId(command));
+      return { protocolVersion: 2 };
+    });
+    await createRuntime(child).startSession({ cwd: "/workspace/project" });
+
+    child.stdout.write(
+      `${JSON.stringify({
+        type: "ready",
+        protocolVersion: 1,
+        supportedProtocolVersions: [1, 2],
+      })}\n`,
+    );
+    // A second handshake must not re-negotiate.
+    child.stdout.write(
+      `${JSON.stringify({
+        type: "ready",
+        protocolVersion: 1,
+        supportedProtocolVersions: [1, 2],
+      })}\n`,
+    );
+    await vi.waitFor(() => expect(commands).toHaveLength(1));
+
+    expect(commands).toEqual([{ type: "negotiate_protocol", protocolVersion: 2 }]);
+  });
+
+  test("stays on RPC protocol v1 when the ready handshake does not advertise v2", async () => {
+    const child = createOmpChild();
+    const commands: Record<string, unknown>[] = [];
+    replyToCommands(child, (command) => {
+      commands.push(withoutRequestId(command));
+      return {};
+    });
+    const session = await createRuntime(child).startSession({ cwd: "/workspace/project" });
+
+    child.stdout.write(
+      `${JSON.stringify({ type: "ready", protocolVersion: 1, supportedProtocolVersions: [1] })}\n`,
+    );
+    await session.setThinkingLevel("high");
+
+    expect(commands).toEqual([{ type: "set_thinking_level", level: "high" }]);
   });
 
   test("lists commands through get_available_commands", async () => {

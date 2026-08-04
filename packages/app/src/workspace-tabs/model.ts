@@ -17,7 +17,6 @@ export interface WorkspaceDraftTabSetup {
  */
 export interface WorkspaceDraftForkSource {
   sourceAgentId: string;
-  boundaryUserMessageId?: string;
   boundaryCursor?: { epoch: string; seq: number };
   boundaryMessageId?: string;
 }

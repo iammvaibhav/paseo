@@ -5,7 +5,6 @@ import { setImmediate as waitForImmediate } from "node:timers/promises";
 import pino from "pino";
 
 import type {
-  AgentForkBoundary,
   AgentPersistenceHandle,
   AgentPermissionResponse,
   AgentSessionConfig,
@@ -548,10 +547,6 @@ export class OmpHarness {
   async rewind(messageId: string, restoredPrompt: string): Promise<void> {
     this.omp.latestSession().branchResponse = { text: restoredPrompt };
     await this.requireSession().revertConversation({ messageId });
-  }
-
-  async forkSession(boundary?: AgentForkBoundary): Promise<AgentPersistenceHandle> {
-    return await this.requireSession().forkSessionForNewAgent(boundary);
   }
 
   branchRequests(): string[] {

@@ -2,7 +2,7 @@ import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import pino from "pino";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { JsonlRpcProcess, type JsonlRpcExit } from "./jsonl-rpc-process.js";
 
@@ -38,6 +38,25 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line
       process.stdout.write('\\u2028b"}\r\n');
       respond(command, true, null);
     }, 5);
+    return;
+  }
+  if (command.type === "chunk") {
+    // Mirror the OMP protocol v2 encoder: split one oversized frame into
+    // base64 rpc_chunk frames.
+    const payload = JSON.stringify(command.frame);
+    const buffer = Buffer.from(payload, "utf8");
+    const chunkSize = command.chunkSize;
+    const count = Math.ceil(buffer.byteLength / chunkSize);
+    for (let index = 0; index < count; index += 1) {
+      process.stdout.write(JSON.stringify({
+        type: "rpc_chunk",
+        chunkId: "rpc-1",
+        index,
+        count,
+        byteLength: buffer.byteLength,
+        data: buffer.subarray(index * chunkSize, (index + 1) * chunkSize).toString("base64"),
+      }) + "\n");
+    }
     return;
   }
   if (command.type === "fail") {
@@ -138,6 +157,107 @@ describe("JsonlRpcProcess", () => {
       await transport.request({ type: "emit" });
 
       expect(messages).toEqual([{ type: "notice", text: "a\u2028b" }]);
+    } finally {
+      await transport.close();
+    }
+  });
+
+  test("reassembles a chunked response that exceeds the single-frame limit", async () => {
+    const transport = startProcess();
+    const value = "x".repeat(2_000_000);
+
+    try {
+      await expect(
+        transport.request({
+          type: "chunk",
+          chunkSize: 262_144,
+          frame: {
+            type: "response",
+            id: "req_1",
+            command: "chunk",
+            success: true,
+            data: { value, unicode: "🌍 ünïcode" },
+          },
+        }),
+      ).resolves.toEqual({ value, unicode: "🌍 ünïcode" });
+    } finally {
+      await transport.close();
+    }
+  });
+
+  test("reassembles a chunked event frame and publishes it to subscribers", async () => {
+    const transport = startProcess();
+    const messages: Record<string, unknown>[] = [];
+    transport.onMessage((message) => messages.push(message));
+    const text = "y".repeat(1_500_000);
+
+    try {
+      transport.send({
+        type: "chunk",
+        chunkSize: 262_144,
+        frame: { type: "notice", text },
+      });
+      await vi.waitFor(() => expect(messages).toHaveLength(1));
+
+      expect(messages[0]).toEqual({ type: "notice", text });
+    } finally {
+      await transport.close();
+    }
+  });
+
+  test("drops a chunk sequence with inconsistent metadata without losing later frames", async () => {
+    const child = createInMemoryChildProcess();
+    const transport = startProcess({ child });
+    const messages: Record<string, unknown>[] = [];
+    transport.onMessage((message) => messages.push(message));
+
+    try {
+      const first = Buffer.from('{"type":"notice","text":"part-', "utf8");
+      const second = Buffer.from('one"}', "utf8");
+      child.stdout.write(
+        `${JSON.stringify({
+          type: "rpc_chunk",
+          chunkId: "rpc-1",
+          index: 0,
+          count: 2,
+          byteLength: first.byteLength + second.byteLength,
+          data: first.toString("base64"),
+        })}\n`,
+      );
+      // Wrong chunkId for the open sequence: the whole sequence is dropped.
+      child.stdout.write(
+        `${JSON.stringify({
+          type: "rpc_chunk",
+          chunkId: "rpc-2",
+          index: 1,
+          count: 2,
+          byteLength: first.byteLength + second.byteLength,
+          data: second.toString("base64"),
+        })}\n`,
+      );
+      child.stdout.write(`${JSON.stringify({ type: "notice", text: "after" })}\n`);
+      await vi.waitFor(() => expect(messages).toHaveLength(1));
+
+      expect(messages).toEqual([{ type: "notice", text: "after" }]);
+    } finally {
+      await transport.close();
+    }
+  });
+
+  test("decodes a multi-byte character split across two stdout reads", async () => {
+    const child = createInMemoryChildProcess();
+    const transport = startProcess({ child });
+    const messages: Record<string, unknown>[] = [];
+    transport.onMessage((message) => messages.push(message));
+
+    try {
+      const line = Buffer.from(`${JSON.stringify({ type: "notice", text: "🌍" })}\n`, "utf8");
+      const splitAt = line.indexOf(Buffer.from("🌍", "utf8")) + 2;
+      child.stdout.write(line.subarray(0, splitAt));
+      child.stdout.write(line.subarray(splitAt));
+      await vi.waitFor(() => expect(messages).toHaveLength(1));
+
+      expect(messages).toEqual([{ type: "notice", text: "🌍" }]);
     } finally {
       await transport.close();
     }

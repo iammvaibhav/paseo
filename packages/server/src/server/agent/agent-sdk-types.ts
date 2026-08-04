@@ -626,17 +626,6 @@ export interface AgentPermissionResult {
   followUpPrompt?: AgentPromptInput;
 }
 
-/**
- * The assistant turn a fork's inherited history ends at, addressed by the user
- * message that opened it. Provider assistant message ids are not universally
- * observable (OMP synthesizes them), while the opening user message id is the
- * anchor every provider already tracks for rewind — so that is the anchor a
- * native session fork uses. Absent boundary means "everything up to now".
- */
-export interface AgentForkBoundary {
-  userMessageId: string;
-}
-
 export interface AgentSession {
   readonly provider: AgentProvider;
   readonly id: string | null;
@@ -674,18 +663,6 @@ export interface AgentSession {
   revertConversation?(input: { messageId: string }): Promise<void>;
   revertFiles?(input: { messageId: string }): Promise<void>;
   revertBoth?(input: { messageId: string }): Promise<void>;
-  /**
-   * Fork this session's provider-native conversation into a NEW, independent
-   * provider session, WITHOUT mutating this session. Returns a persistence
-   * handle the manager can resume as a brand-new sibling agent that carries the
-   * live context (and prompt cache) forward.
-   *
-   * Only implemented by providers with a non-destructive session-fork primitive
-   * (Claude `forkSession`, OMP session-file branch copy). When absent — or when
-   * the boundary can't be resolved in the provider's own history — callers fall
-   * back to seeding a fresh agent with a chat-history text snapshot.
-   */
-  forkSessionForNewAgent?(boundary?: AgentForkBoundary): Promise<AgentPersistenceHandle>;
   /**
    * Out-of-band prompt handler. When non-null, the manager runs the returned
    * handler instead of allocating a turn. The handler emits stream events

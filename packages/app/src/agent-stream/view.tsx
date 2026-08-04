@@ -324,19 +324,13 @@ function buildForkDraftTabTarget(
   };
 }
 
-/**
- * The source anchor a fork-mode draft submits with. `boundaryUserMessageId` is
- * what the daemon needs for a native provider session fork; the cursor/message
- * id pair addresses the same point for the snapshot fallback.
- */
+/** The source anchor a fork-mode draft submits with. */
 function buildForkSource(
   sourceAgentId: string,
   boundary: AssistantTurnForkBoundary,
-  boundaryUserMessageId: string | undefined,
 ): WorkspaceDraftForkSource {
   return {
     sourceAgentId,
-    ...(boundaryUserMessageId ? { boundaryUserMessageId } : {}),
     ...(boundary.boundaryCursor ? { boundaryCursor: boundary.boundaryCursor } : {}),
     ...(boundary.boundaryMessageId ? { boundaryMessageId: boundary.boundaryMessageId } : {}),
   };
@@ -516,10 +510,10 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     });
 
     const handleForkAssistantTurn: AssistantTurnForkHandler = useStableEvent(
-      async ({ target, boundary, boundaryUserMessageId }) => {
-        // A tab fork stays in this workspace, so the daemon can fork the
-        // provider session natively; the draft tab submits through the fork
-        // RPC instead of stashing a chat-history snapshot.
+      async ({ target, boundary }) => {
+        // A tab fork stays in this workspace, so the draft tab submits through
+        // the fork RPC and lets the daemon render the chat-history snapshot from
+        // the source timeline.
         if (target === "tab") {
           try {
             if (!supportsAgentFork) {
@@ -536,7 +530,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
               target: buildForkDraftTabTarget(
                 buildForkDraftSetup(context),
                 generateDraftId(),
-                buildForkSource(agentId, boundary, boundaryUserMessageId),
+                buildForkSource(agentId, boundary),
               ),
             });
           } catch (error) {
@@ -545,9 +539,9 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           return;
         }
 
-        // A workspace fork lands in a fresh worktree, whose cwd would
-        // contradict a native provider session; it keeps the text snapshot
-        // that `useForkAgent` stashes on the new draft.
+        // A workspace fork lands in a fresh worktree, so it goes through
+        // `useForkAgent`, which stashes the chat-history snapshot on the new
+        // workspace's draft.
         await forkAgent({
           agentId,
           agent: context,

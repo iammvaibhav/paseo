@@ -109,16 +109,12 @@ export function normalizeWorkspaceDraftForkSource(
   if (!sourceAgentId) {
     return undefined;
   }
-  const boundaryUserMessageId = trimNonEmpty(
-    typeof record.boundaryUserMessageId === "string" ? record.boundaryUserMessageId : null,
-  );
   const boundaryMessageId = trimNonEmpty(
     typeof record.boundaryMessageId === "string" ? record.boundaryMessageId : null,
   );
   const boundaryCursor = normalizeWorkspaceDraftForkBoundaryCursor(record.boundaryCursor);
   return {
     sourceAgentId,
-    ...(boundaryUserMessageId ? { boundaryUserMessageId } : {}),
     ...(boundaryCursor ? { boundaryCursor } : {}),
     ...(boundaryMessageId ? { boundaryMessageId } : {}),
   };
@@ -213,7 +209,6 @@ function workspaceDraftForkSourcesEqual(
   }
   return (
     left.sourceAgentId === right.sourceAgentId &&
-    left.boundaryUserMessageId === right.boundaryUserMessageId &&
     left.boundaryMessageId === right.boundaryMessageId &&
     left.boundaryCursor?.epoch === right.boundaryCursor?.epoch &&
     left.boundaryCursor?.seq === right.boundaryCursor?.seq

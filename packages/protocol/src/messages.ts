@@ -1489,13 +1489,12 @@ export const AgentForkRequestMessageSchema = z.object({
   images: z.array(ImageAttachmentSchema).optional(),
   attachments: AgentAttachmentsSchema,
   // Fork boundary, describing the assistant turn the fork's history ends at.
-  // All three are absent for "fork everything up to now".
+  // Both are absent for "fork everything up to now". The cursor/message id pair
+  // addresses the point in the daemon timeline the fork's chat-history snapshot
+  // is cut at, matching `agent.fork_context.request`.
   //
-  // `boundaryUserMessageId` is the provider id of the user message that opened
-  // that turn: the only anchor a native provider session fork can address, since
-  // provider assistant ids are not universally observable. The cursor/message id
-  // pair addresses the same point in the daemon timeline and drives the snapshot
-  // fallback, matching `agent.fork_context.request`.
+  // `boundaryUserMessageId` addressed a provider-native session fork, which no
+  // longer exists. Kept so old clients still parse; the daemon ignores it.
   boundaryUserMessageId: z.string().optional(),
   boundaryCursor: AgentTimelineCursorSchema.optional(),
   boundaryMessageId: z.string().optional(),
@@ -2969,8 +2968,8 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(agentForkContextCursor): added in v0.1.108, remove gate after 2027-01-14.
         agentForkContextCursor: z.boolean().optional(),
         // COMPAT(agentFork): added in v0.1.108, remove gate after 2027-01-17.
-        // Fork a running agent into a new sibling agent (native session fork
-        // when the provider supports it, chat-history snapshot otherwise).
+        // Fork a running agent into a new sibling agent seeded with the
+        // source's chat history.
         agentFork: z.boolean().optional(),
         // COMPAT(providerSubagents): added in v0.1.107, remove gate after 2027-01-12.
         providerSubagents: z.boolean().optional(),
@@ -3880,7 +3879,8 @@ export const AgentForkResponseMessageSchema = z.object({
     sourceAgentId: z.string(),
     // The newly created forked agent's id, or null when the fork failed.
     agentId: z.string().nullable(),
-    // Which strategy the server used, for diagnostics/telemetry. Absent on error.
+    // Vestigial: fork is always a chat-history snapshot. Kept on the wire for
+    // old clients that read it, and to parse an old daemon's "native".
     strategy: z.enum(["native", "snapshot"]).nullable().optional(),
     // Snapshot of the created fork, so a fork-mode draft tab can swap straight
     // to an agent tab without waiting for the live-agent broadcast.

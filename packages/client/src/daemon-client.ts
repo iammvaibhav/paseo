@@ -666,11 +666,8 @@ export interface AgentForkContextOptions {
 }
 
 export interface ForkAgentOptions extends SendMessageOptions {
-  // Fork boundary: the assistant turn the fork's history ends at. All absent
-  // means "fork everything up to now". `boundaryUserMessageId` is the provider
-  // id of the user message that opened that turn, the only anchor a native
-  // provider session fork can address.
-  boundaryUserMessageId?: string;
+  // Fork boundary: the assistant turn the fork's history ends at. Both absent
+  // means "fork everything up to now".
   boundaryCursor?: FetchAgentTimelineCursor;
   boundaryMessageId?: string;
   // Config the fork should run with when the fork composer changed it.
@@ -679,14 +676,10 @@ export interface ForkAgentOptions extends SendMessageOptions {
 
 /** Wire fields for the fork boundary, omitting anchors the caller did not supply. */
 function buildForkRequestBoundary(options: ForkAgentOptions | undefined): {
-  boundaryUserMessageId?: string;
   boundaryCursor?: FetchAgentTimelineCursor;
   boundaryMessageId?: string;
 } {
   return {
-    ...(options?.boundaryUserMessageId
-      ? { boundaryUserMessageId: options.boundaryUserMessageId }
-      : {}),
     ...(options?.boundaryCursor ? { boundaryCursor: options.boundaryCursor } : {}),
     ...(options?.boundaryMessageId ? { boundaryMessageId: options.boundaryMessageId } : {}),
   };
@@ -3024,7 +3017,7 @@ export class DaemonClient {
    * Fork a (typically running) source agent into a new sibling agent that
    * inherits its history up to the fork boundary (the last completed turn when
    * no boundary is given), then run `text` as the new agent's first turn. The
-   * daemon picks native session fork or a chat-history snapshot; either way this
+   * history rides along as a chat-history attachment on that first turn; this
    * resolves to the new agent's id plus its snapshot when the daemon sent one.
    */
   async forkAgent(
@@ -3033,7 +3026,6 @@ export class DaemonClient {
     options?: ForkAgentOptions,
   ): Promise<{
     agentId: string;
-    strategy: "native" | "snapshot" | null;
     agent: AgentSnapshotPayload | null;
   }> {
     const requestId = this.createRequestId();
@@ -3069,7 +3061,6 @@ export class DaemonClient {
     }
     return {
       agentId: payload.agentId,
-      strategy: payload.strategy ?? null,
       agent: payload.agent ?? null,
     };
   }
