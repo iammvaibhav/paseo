@@ -190,4 +190,32 @@ describe("shared tool-call display mapping", () => {
       displayName: "Plan",
     });
   });
+
+  it("summarizes eval with the cell title", () => {
+    const display = buildToolCallDisplayModel({
+      name: "eval",
+      status: "running",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { language: "py", code: "print(1)", title: "load config" },
+        output: null,
+      },
+    });
+    expect(display).toEqual({ displayName: "Eval", summary: "load config" });
+  });
+
+  it("falls back to the first code line when an eval cell has no title", () => {
+    const display = buildToolCallDisplayModel({
+      name: "eval",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { language: "js", code: "\n\n  await Bun.file('x').text()\n" },
+        output: null,
+      },
+    });
+    expect(display.summary).toBe("await Bun.file('x').text()");
+  });
 });

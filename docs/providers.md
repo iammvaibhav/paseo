@@ -471,6 +471,24 @@ Tests use `isProviderAvailable(provider)` to skip when the binary or credentials
 
 ---
 
+## Rich tool payloads with no canonical detail
+
+`ToolCallDetail` (`packages/protocol/src/agent-types.ts`) is a closed wire union, and a tool that maps to none of its variants lands in `unknown`, where the app prints the whole envelope as JSON.
+
+**Do not add a variant for one provider's tool.** The union is a `z.discriminatedUnion` on the wire and `buildCanonicalDetailDisplay` throws on an unrecognized `type`, so a six-month-old app crashes on the tool-call row the moment a new daemon sends a new variant. That breaks the protocol contract in [protocol-compatibility.md](protocol-compatibility.md). A variant is worth it only when several providers produce the shape.
+
+For a single provider, keep the payload in `unknown` and recognize its shape in the app. The daemon already forwards the provider envelope verbatim, so a shape-keyed renderer also works against old hosts and stored history. Oh My Pi's `eval` is the worked example:
+
+- `packages/app/src/utils/eval-detail.ts` parses the notebook payload (`details.cells`, `jsonOutputs`, `images`) with zod and returns null for anything else. `ToolCallDetailsContent` only receives a detail, never the tool name, so recognition is by shape, not by name.
+- `packages/app/src/components/tool-call-details.tsx` renders a cell per entry: highlighted code, captured output, duration, exit code.
+- The collapsed badge summary comes from `buildUnknownDetailOverride` in `packages/protocol/src/tool-call-display.ts`, keyed on the tool name. Adding a name there is safe in both directions; adding a detail variant is not.
+
+Check what the envelope actually carries before mapping it. `eval` keeps `display()` values in `details.jsonOutputs` and images in `details.images` — neither appears in the text output, so a text-only mapping loses them silently.
+
+To get UI proof without the real provider, add a scenario to the mock provider (`packages/server/src/server/agent/providers/mock-load-test-agent.ts`) driven by a magic prompt, then drive it from an e2e spec. `emit an eval tool call` plus `packages/app/e2e/browser/eval-tool-call.spec.ts` is the pattern.
+
+---
+
 ## Gotchas
 
 **Mode IDs can be URIs.** ACP providers like Copilot use full URIs as mode IDs (e.g., `"https://agentclientprotocol.com/protocol/session-modes#agent"`). Never assume mode IDs are simple strings. The manifest `defaultModeId` must match exactly.

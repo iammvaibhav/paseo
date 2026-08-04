@@ -127,8 +127,34 @@ function buildCanonicalDetailDisplay(input: ToolCallDisplayInput): DetailDisplay
   }
 }
 
+// Oh My Pi's `eval` runs a code cell; its arguments carry the cell title and
+// source. Without this the badge reads "Eval" with no hint of what ran.
+function buildEvalSummary(detail: ToolCallDisplayInput["detail"]): string | undefined {
+  if (detail.type !== "unknown" || !isRecord(detail.input)) {
+    return undefined;
+  }
+  const title = readString(detail.input.title);
+  if (title) {
+    return title;
+  }
+  const code = readString(detail.input.code);
+  const firstLine = code
+    ?.split("\n")
+    .find((line) => line.trim().length > 0)
+    ?.trim();
+  if (!firstLine) {
+    return undefined;
+  }
+  return firstLine.length > 120 ? `${firstLine.slice(0, 120)}...` : firstLine;
+}
+
 function buildUnknownDetailOverride(input: ToolCallDisplayInput): DetailDisplay {
   const lowerName = input.name.trim().toLowerCase();
+  if (lowerName === "eval") {
+    return {
+      summary: buildEvalSummary(input.detail),
+    };
+  }
   if (input.detail.type === "unknown" && lowerName === "task") {
     return {
       displayName: "Task",

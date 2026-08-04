@@ -31,6 +31,11 @@ export function resolveToolCallIconName(toolName: string, detail?: ToolCallDetai
   if (lowerName === "speak") {
     return "mic_vocal";
   }
+  // Oh My Pi's code-cell kernel; the detail payload is `unknown`, which would
+  // otherwise resolve to the generic wrench.
+  if (lowerName === "eval") {
+    return "square_terminal";
+  }
   if (isPaseoToolName(lowerName)) {
     return "paseo";
   }
