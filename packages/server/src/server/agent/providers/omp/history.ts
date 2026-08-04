@@ -7,6 +7,7 @@ import type { OmpAgentMessage } from "./rpc-types.js";
 import type { OmpRuntimeSession } from "./runtime.js";
 import { OMP_HISTORY_MAPPER_HOOKS } from "./history-hooks.js";
 import { formatOmpSubagentTitle } from "./subagent-title.js";
+import { resolveOmpSessionFile } from "./session-descriptor.js";
 
 interface OmpSessionEntry {
   type?: string;
@@ -50,17 +51,15 @@ export async function* streamOmpHistory(input: {
   if (!input.sessionFile) {
     return;
   }
+  const sessionFile = await resolveOmpSessionFile(input.sessionFile);
   const visitedSessionFiles = input.visitedSessionFiles ?? new Set<string>();
-  if (visitedSessionFiles.has(input.sessionFile)) {
+  if (visitedSessionFiles.has(sessionFile)) {
     return;
   }
-  visitedSessionFiles.add(input.sessionFile);
+  visitedSessionFiles.add(sessionFile);
   let entries: OmpSessionEntry[];
   try {
-    entries = await readActiveOmpEntryChain(
-      input.sessionFile,
-      input.runtimeSession?.activeBranchEntryId,
-    );
+    entries = await readActiveOmpEntryChain(sessionFile, input.runtimeSession?.activeBranchEntryId);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return;

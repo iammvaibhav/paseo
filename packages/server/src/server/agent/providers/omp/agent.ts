@@ -70,7 +70,11 @@ import { getUserMessageText } from "./message-history.js";
 import { mapOmpSystemNoticeToToolCall } from "./system-notice.js";
 import { materializeProviderImage } from "../provider-image-output.js";
 import { OmpCliRuntime } from "./cli-runtime.js";
-import { listOmpImportableSessions, readOmpImportSessionConfig } from "./session-descriptor.js";
+import {
+  listOmpImportableSessions,
+  readOmpImportSessionConfig,
+  resolveOmpSessionFile,
+} from "./session-descriptor.js";
 import type { OmpRuntime, OmpRuntimeSession, OmpStartSessionInput } from "./runtime.js";
 import type {
   OmpAgentSessionEvent,
@@ -2540,10 +2544,11 @@ export class OmpAgentClient implements AgentClient {
     overrides?: Partial<AgentSessionConfig>,
     launchContext?: AgentLaunchContext,
   ): Promise<AgentSession> {
-    const sessionFile = handle.nativeHandle;
-    if (!sessionFile) {
+    const rawSessionFile = handle.nativeHandle;
+    if (!rawSessionFile) {
       throw new Error("OMP resume requires a native session file handle");
     }
+    const sessionFile = await resolveOmpSessionFile(rawSessionFile);
 
     const persistenceMetadata = parsePersistenceMetadata(handle.metadata);
     const resumeConfig = buildResumeConfig(persistenceMetadata, overrides, this.provider);

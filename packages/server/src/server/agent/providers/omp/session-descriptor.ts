@@ -139,11 +139,15 @@ function resolveOmpAgentDir(input: {
   env: NodeJS.ProcessEnv;
   homeDir: string;
 }): string {
-  const configured =
+  const envAgentDir =
     input.runtimeSettings?.env?.[OMP_AGENT_DIR_ENV] ?? input.env[OMP_AGENT_DIR_ENV];
-  if (configured?.trim()) {
-    return resolveConfigPath(configured, { baseDir: process.cwd(), homeDir: input.homeDir });
+  if (envAgentDir?.trim()) {
+    return resolveConfigPath(envAgentDir, {
+      baseDir: process.cwd(),
+      homeDir: input.homeDir,
+    });
   }
+
   return path.join(input.homeDir, OMP_CONFIG_DIR_NAME, "agent");
 }
 
@@ -272,181 +276,153 @@ function toOmpImportSessionConfig(descriptor: OmpSessionDescriptor): OmpImportSe
 }
 
 async function readHeadChunk(filePath: string): Promise<string | null> {
-  const handle = await open(filePath, "r").catch(() => null);
-  if (!handle) return null;
   try {
-    const buffer = Buffer.alloc(HEAD_BYTES);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    if (bytesRead <= 0) return null;
-    return buffer.subarray(0, bytesRead).toString("utf8");
-  } finally {
-    await handle.close().catch(() => undefined);
+    const handle = await open(filePath, "r");
+    try {
+      const buffer = Buffer.alloc(HEAD_BYTES);
+      const { bytesRead } = await handle.read(buffer, 0, HEAD_BYTES, 0);
+      return buffer.toString("utf8", 0, bytesRead);
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return null;
   }
 }
 
-function parseSessionHeaderFromChunk(chunk: string): OmpSessionHeader | null {
-  for (const line of chunk.split(/\r?\n/u)) {
-    const header = parseSessionHeader(line.trim());
-    if (header) return header;
+async function readTail(filePath: string): Promise<string> {
+  const handle = await open(filePath, "r");
+  try {
+    const fileStat = await handle.stat();
+    const size = fileStat.size;
+    const start = Math.max(0, size - TAIL_BYTES);
+    const length = size - start;
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, start);
+    return buffer.toString("utf8", 0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
+function parseSessionHeaderFromChunk(headChunk: string): OmpSessionHeader | null {
+  for (const line of headChunk.split("\n")) {
+    if (!line.trim()) continue;
+    const record = parseJsonRecord(line);
+    if (!record || record.type !== "session") continue;
+    const sessionId = typeof record.id === "string" ? record.id : null;
+    const cwd = typeof record.cwd === "string" ? record.cwd : null;
+    if (!sessionId || !cwd) continue;
+    return {
+      sessionId,
+      cwd,
+      createdAt: parseDate(record.timestamp),
+    };
   }
   return null;
 }
 
-function parseSessionHeadFromChunk(chunk: string): OmpSessionHead {
+function parseSessionHeadFromChunk(headChunk: string): OmpSessionHead {
   let title: string | null = null;
   let firstUserMessage: string | null = null;
   let model: string | null = null;
   let thinkingOptionId: string | null = null;
-  let lineCount = 0;
 
-  for (const rawLine of chunk.split(/\r?\n/u)) {
-    lineCount += 1;
-    const entry = parseJsonRecord(rawLine.trim());
-    if (!entry) continue;
+  for (const line of headChunk.split("\n")) {
+    if (!line.trim()) continue;
+    const record = parseJsonRecord(line);
+    if (!record) continue;
 
-    if (entry.type === "session_info") {
-      title = readNonEmptyString(entry.name) ?? title;
+    if (record.type === "session_info") {
+      title = readNonEmptyString(record.name) ?? title;
     }
-    if (entry.type === "title") {
-      title = readNonEmptyString(entry.title) ?? title;
+    if (record.type === "title") {
+      title = readNonEmptyString(record.title) ?? title;
     }
 
-    model = extractModel(entry) ?? model;
-    thinkingOptionId = extractThinkingOptionId(entry) ?? thinkingOptionId;
+    if (record.type === "model_change") {
+      model = readNonEmptyString(record.model) ?? model;
+    }
+    if (record.type === "thinking_level_change") {
+      thinkingOptionId = readNonEmptyString(record.thinkingLevel) ?? thinkingOptionId;
+    }
 
-    if (!firstUserMessage && entry.type === "message" && isRecord(entry.message)) {
-      if (entry.message.role === "user") {
-        firstUserMessage = extractMessageText(entry.message.content);
+    if (record.type === "message" && isRecord(record.message)) {
+      const role = record.message.role;
+      if (role === "user" && !firstUserMessage) {
+        firstUserMessage = extractMessageText(record.message.content);
       }
-    }
-
-    if (title && firstUserMessage && model && thinkingOptionId) {
-      break;
-    }
-    if (lineCount >= FULL_SCAN_LINE_LIMIT && firstUserMessage) {
-      break;
     }
   }
 
   return { title, firstUserMessage, model, thinkingOptionId };
 }
 
-async function readTail(filePath: string): Promise<string> {
-  const fileStats = await stat(filePath);
-  const start = Math.max(0, fileStats.size - TAIL_BYTES);
-  const length = fileStats.size - start;
-  const handle = await open(filePath, "r");
-  try {
-    const buffer = Buffer.alloc(length);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
-    return buffer.subarray(0, bytesRead).toString("utf8");
-  } finally {
-    await handle.close().catch(() => undefined);
-  }
-}
-
-async function readFileMtime(filePath: string): Promise<Date | null> {
-  try {
-    return (await stat(filePath)).mtime;
-  } catch {
-    return null;
-  }
-}
-
-function parseSessionHeader(firstLine: string): OmpSessionHeader | null {
-  const entry = parseJsonRecord(firstLine);
-  if (!entry || entry.type !== "session") return null;
-  const sessionId = typeof entry.id === "string" ? entry.id : null;
-  const cwd = typeof entry.cwd === "string" ? entry.cwd : null;
-  if (!sessionId || !cwd) return null;
-  const createdAt = parseDate(entry.timestamp);
-  return { sessionId, cwd, createdAt };
-}
-
-function parseSessionTail(tail: string): OmpSessionTail {
-  const lines = tail.split(/\r?\n/u);
+function parseSessionTail(tailContent: string): OmpSessionTail {
   let title: string | null = null;
   let lastActivityAt: Date | null = null;
-  let fallbackTimestamp: Date | null = null;
   let lastUserMessage: string | null = null;
   let model: string | null = null;
   let thinkingOptionId: string | null = null;
 
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const entry = parseJsonRecord(lines[index].trim());
-    if (!entry) continue;
+  const lines = tailContent
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const scanned = lines.slice(-FULL_SCAN_LINE_LIMIT);
 
-    if (!title && entry.type === "session_info") {
-      title = readNonEmptyString(entry.name);
-    }
-    if (!title && entry.type === "title") {
-      title = readNonEmptyString(entry.title);
-    }
+  for (const line of scanned) {
+    const record = parseJsonRecord(line);
+    if (!record) continue;
 
-    if (!model) {
-      model = extractModel(entry);
-    }
-
-    if (!thinkingOptionId) {
-      thinkingOptionId = extractThinkingOptionId(entry);
+    const timestamp = parseDate(record.timestamp);
+    if (timestamp && (!lastActivityAt || timestamp > lastActivityAt)) {
+      lastActivityAt = timestamp;
     }
 
-    const entryTimestamp = parseDate(entry.timestamp);
-    if (!fallbackTimestamp && entryTimestamp) {
-      fallbackTimestamp = entryTimestamp;
+    if (record.type === "session_info") {
+      title = readNonEmptyString(record.name) ?? title;
+    }
+    if (record.type === "title" || record.type === "title_change") {
+      title = readNonEmptyString(record.title) ?? title;
     }
 
-    if (entry.type !== "message") continue;
-
-    if (!lastActivityAt && entryTimestamp) {
-      lastActivityAt = entryTimestamp;
+    if (record.type === "model_change") {
+      model = readNonEmptyString(record.model) ?? model;
+    }
+    if (record.type === "thinking_level_change") {
+      thinkingOptionId = readNonEmptyString(record.thinkingLevel) ?? thinkingOptionId;
     }
 
-    if (!lastUserMessage && isRecord(entry.message) && entry.message.role === "user") {
-      lastUserMessage = extractMessageText(entry.message.content);
+    if (record.type === "message" && isRecord(record.message)) {
+      const role = record.message.role;
+      if (role === "user") {
+        const text = extractMessageText(record.message.content);
+        if (text) {
+          lastUserMessage = text;
+        }
+      }
     }
   }
 
-  return {
-    title,
-    lastActivityAt: lastActivityAt ?? fallbackTimestamp,
-    lastUserMessage,
-    model,
-    thinkingOptionId,
-  };
+  return { title, lastActivityAt, lastUserMessage, model, thinkingOptionId };
 }
 
-function extractModel(entry: Record<string, unknown>): string | null {
-  if (entry.type === "model_change") {
-    // Pi records provider + modelId; OMP records a combined model string.
-    return buildModelId(entry.provider, entry.modelId) ?? readNonEmptyString(entry.model);
-  }
-
-  if (entry.type === "message" && isRecord(entry.message)) {
-    return buildModelId(entry.message.provider, entry.message.model);
-  }
-
-  return null;
+function readNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-function extractThinkingOptionId(entry: Record<string, unknown>): string | null {
-  return entry.type === "thinking_level_change" ? readNonEmptyString(entry.thinkingLevel) : null;
+function normalizePromptPreview(text: string | null): string | null {
+  if (!text) return null;
+  const singleLine = text.replace(/\s+/g, " ").trim();
+  if (!singleLine) return null;
+  return singleLine.length > 120 ? `${singleLine.slice(0, 117)}...` : singleLine;
 }
 
-function buildModelId(provider: unknown, modelId: unknown): string | null {
-  const providerName = readNonEmptyString(provider);
-  const modelName = readNonEmptyString(modelId);
-  if (!providerName || !modelName) {
-    return null;
-  }
-  return `${providerName}/${modelName}`;
-}
-
-function parseJsonRecord(line: string): Record<string, unknown> | null {
-  if (!line) return null;
+async function readFileMtime(filePath: string): Promise<Date | null> {
   try {
-    const parsed = JSON.parse(line) as unknown;
-    return isRecord(parsed) ? parsed : null;
+    const stats = await stat(filePath);
+    return stats.mtime;
   } catch {
     return null;
   }
@@ -456,14 +432,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function readNonEmptyString(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function normalizePromptPreview(text: string | null): string | null {
-  const normalized = text?.trim().replace(/\s+/g, " ") ?? "";
-  if (!normalized) return null;
-  return normalized.length > 160 ? normalized.slice(0, 160) : normalized;
+function parseJsonRecord(line: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(line) as unknown;
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 function readReadableSessionTitleFromPath(filePath: string): string | null {
@@ -502,4 +477,69 @@ function extractMessageText(content: unknown): string | null {
     .join("\n\n")
     .trim();
   return text || null;
+}
+
+/**
+ * Resolves an OMP session file path. If the given file is missing or has a stub/empty
+ * session (< 2000 bytes), searches `~/.omp/agent/sessions/` recursively for a matching
+ * session filename (`<timestamp>_<sessionId>.jsonl`) that contains full session history.
+ */
+export async function resolveOmpSessionFile(
+  sessionFile: string,
+  options?: { homeDir?: string },
+): Promise<string> {
+  const trimmed = sessionFile.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+
+  try {
+    const fileStat = await stat(trimmed);
+    if (fileStat.size > 2000) {
+      return trimmed;
+    }
+  } catch {
+    // File does not exist on disk
+  }
+
+  const fileName = path.basename(trimmed);
+  if (!fileName.endsWith(".jsonl")) {
+    return trimmed;
+  }
+
+  const homeDir = options?.homeDir ?? homedir();
+  const sessionsRoot = path.join(homeDir, ".omp", "agent", "sessions");
+
+  const match = await findSessionFileByBasename(sessionsRoot, fileName);
+  return match ?? trimmed;
+}
+
+async function findSessionFileByBasename(dir: string, fileName: string): Promise<string | null> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      const match = await findSessionFileByBasename(fullPath, fileName);
+      if (match) {
+        return match;
+      }
+    } else if (entry.isFile() && entry.name === fileName) {
+      try {
+        const fileStat = await stat(fullPath);
+        if (fileStat.size > 2000) {
+          return fullPath;
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  return null;
 }

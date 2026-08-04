@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
 
-import { listOmpImportableSessions, readOmpImportSessionConfig } from "./session-descriptor.js";
+import {
+  listOmpImportableSessions,
+  readOmpImportSessionConfig,
+  resolveOmpSessionFile,
+} from "./session-descriptor.js";
 
 async function writeSession(root: string, relativePath: string, lines: unknown[]): Promise<string> {
   const filePath = path.join(root, "sessions", relativePath);
@@ -144,5 +148,18 @@ describe("OMP session descriptor", () => {
     await expect(listOmpImportableSessions({ homeDir: home, env: {} })).resolves.toEqual([
       expect.objectContaining({ providerHandleId: sessionFile, cwd }),
     ]);
+  });
+  test("resolveOmpSessionFile locates actual session file when given a stub or missing path", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "paseo-omp-session-resolve-"));
+    const fileName = "2026-08-04T00-00-00-000Z_019f0000-0000-7000-8000-000000000000.jsonl";
+    const invalidPath = path.join(home, ".omp", "agent", "sessions", "invalid-dir", fileName);
+    const realPath = path.join(home, ".omp", "agent", "sessions", "home-real-dir", fileName);
+
+    await mkdir(path.dirname(realPath), { recursive: true });
+    const line = JSON.stringify({ type: "session", id: "s1", timestamp: "2026-08-04" }) + "\n";
+    await writeFile(realPath, line.repeat(50), "utf8");
+
+    const resolved = await resolveOmpSessionFile(invalidPath, { homeDir: home });
+    expect(resolved).toBe(realPath);
   });
 });
