@@ -16,6 +16,7 @@ export interface AgentScreenAgent {
   currentModeId?: string | null;
   model?: string | null;
   thinkingOptionId?: string | null;
+  effectiveThinkingOptionId?: string | null;
   runtimeInfo?: {
     model?: string | null;
     modeId?: string | null;

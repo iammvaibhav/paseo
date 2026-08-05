@@ -358,22 +358,28 @@ function resolveAgentPreferenceScope(input: {
   return { workspaceId, projectKey };
 }
 
+function findCurrentAgent(
+  state: ReturnType<typeof useSessionStore.getState>,
+  serverId: string,
+  agentId: string,
+) {
+  const session = state.sessions[serverId];
+  if (!session) return null;
+  return session.agents.get(agentId) ?? session.agentDetails.get(agentId) ?? null;
+}
+
 function selectAgentControlsSlice(
   state: ReturnType<typeof useSessionStore.getState>,
   serverId: string,
   agentId: string,
 ): AgentControlsSlice {
-  const currentAgent =
-    state.sessions[serverId]?.agents?.get(agentId) ??
-    state.sessions[serverId]?.agentDetails?.get(agentId) ??
-    null;
+  const currentAgent = findCurrentAgent(state, serverId, agentId);
   if (!currentAgent) {
     return null;
   }
+  const session = state.sessions[serverId];
   const workspaceId = currentAgent.workspaceId ?? null;
-  const workspace = workspaceId
-    ? (state.sessions[serverId]?.workspaces.get(workspaceId) ?? null)
-    : null;
+  const workspace = workspaceId && session ? (session.workspaces.get(workspaceId) ?? null) : null;
   const projectKey = workspace?.projectId ?? workspace?.project?.projectKey ?? null;
   return {
     provider: currentAgent.provider,
@@ -383,7 +389,10 @@ function selectAgentControlsSlice(
     runtimeModelId: currentAgent.runtimeInfo?.model ?? null,
     model: currentAgent.model,
     features: currentAgent.features,
-    thinkingOptionId: currentAgent.thinkingOptionId,
+    thinkingOptionId:
+      currentAgent.effectiveThinkingOptionId ??
+      currentAgent.runtimeInfo?.thinkingOptionId ??
+      currentAgent.thinkingOptionId,
     lastUsage: currentAgent.lastUsage,
     title: currentAgent.title,
   };

@@ -135,6 +135,7 @@ export interface Agent {
   model: string | null;
   features?: AgentFeature[];
   thinkingOptionId?: string | null;
+  effectiveThinkingOptionId?: string | null;
   requiresAttention?: boolean;
   attentionReason?: "finished" | "error" | "permission" | null;
   attentionTimestamp?: Date | null;

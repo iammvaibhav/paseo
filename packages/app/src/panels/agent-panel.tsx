@@ -156,7 +156,10 @@ function selectChatAgentState(
     capabilities: agent.capabilities,
     currentModeId: agent.currentModeId,
     model: agent.model,
-    thinkingOptionId: agent.thinkingOptionId,
+    thinkingOptionId:
+      agent.effectiveThinkingOptionId ??
+      agent.runtimeInfo?.thinkingOptionId ??
+      agent.thinkingOptionId,
     runtimeInfo: agent.runtimeInfo,
     features: agent.features,
     lastError: agent.lastError ?? null,
