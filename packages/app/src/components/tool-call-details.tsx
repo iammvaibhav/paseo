@@ -20,6 +20,7 @@ import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
 import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
 import { extensionFromPath, highlightToKeyedLines } from "@/utils/highlight-cache";
 import { parseEvalToolCallDetail, type EvalCell, type EvalDetailModel } from "@/utils/eval-detail";
+import { parseWebSearchToolCallDetail, type WebSearchDetailModel } from "@/utils/web-search-detail";
 import { HighlightedLines } from "./highlighted-content";
 import { DiffViewer } from "./diff-viewer";
 import { getCodeInsets } from "./code-insets";
@@ -39,6 +40,7 @@ interface ToolCallDetailsContentProps {
   maxHeight?: number;
   fillAvailableHeight?: boolean;
   showLoadingSkeleton?: boolean;
+  toolName?: string;
 }
 
 interface DetailStyles {
@@ -314,6 +316,95 @@ function EvalDetailSection({ model, ds }: { model: EvalDetailModel; ds: DetailSt
             </View>
           </View>
         ))}
+      </ScrollView>
+    </View>
+  );
+}
+function WebSearchDetailSection({ model, ds }: { model: WebSearchDetailModel; ds: DetailStyles }) {
+  return (
+    <View style={ds.sectionFillStyle}>
+      <ScrollView
+        style={ds.codeVerticalScrollStyle}
+        contentContainerStyle={styles.evalStack}
+        nestedScrollEnabled
+        showsVerticalScrollIndicator
+      >
+        <View style={styles.evalCell}>
+          <View style={styles.evalCellHeader}>
+            <Text style={styles.evalLanguageText}>query</Text>
+            <Text style={styles.evalTitleText} numberOfLines={2} selectable>
+              {model.query}
+            </Text>
+          </View>
+          {model.intent && model.intent !== model.query ? (
+            <View style={styles.webSearchIntentBox}>
+              <Text style={styles.evalLanguageText}>intent</Text>
+              <Text style={styles.plainText} selectable>
+                {model.intent}
+              </Text>
+            </View>
+          ) : null}
+        </View>
+
+        {model.webResults && model.webResults.length > 0 ? (
+          <View style={styles.evalCell}>
+            <View style={styles.evalCellHeader}>
+              <Text style={styles.evalLanguageText}>results</Text>
+            </View>
+            <View style={styles.webSearchResultsStack}>
+              {model.webResults.map((result, idx) => (
+                <View key={result.url || idx} style={styles.webSearchResultRow}>
+                  <Text selectable style={styles.webResultTitle}>
+                    {result.title || result.url}
+                  </Text>
+                  {result.url ? (
+                    <Text selectable style={styles.webResultUrl}>
+                      {result.url}
+                    </Text>
+                  ) : null}
+                  {result.snippet ? (
+                    <Text selectable style={styles.webResultSnippet}>
+                      {result.snippet}
+                    </Text>
+                  ) : null}
+                </View>
+              ))}
+            </View>
+          </View>
+        ) : null}
+
+        {model.content ? (
+          <View style={styles.evalCell}>
+            <View style={styles.evalCellHeader}>
+              <Text style={styles.evalLanguageText}>content</Text>
+            </View>
+            <ScrollView
+              horizontal
+              nestedScrollEnabled
+              showsHorizontalScrollIndicator
+              contentContainerStyle={styles.codeHorizontalContent}
+            >
+              <View style={styles.codeLine} dataSet={CODE_SURFACE_DATASET}>
+                <Text selectable style={styles.scrollText}>
+                  {model.content}
+                </Text>
+              </View>
+            </ScrollView>
+          </View>
+        ) : null}
+
+        {model.annotations && model.annotations.length > 0 ? (
+          <View style={styles.evalCell}>
+            <View style={styles.evalCellHeader}>
+              <Text style={styles.evalLanguageText}>annotations</Text>
+            </View>
+            <View style={styles.scrollContent}>
+              <Text selectable style={styles.scrollText} dataSet={CODE_SURFACE_DATASET}>
+                {model.annotations.join("\n\n")}
+              </Text>
+            </View>
+          </View>
+        ) : null}
       </ScrollView>
     </View>
   );
@@ -770,10 +861,14 @@ function buildDetailSections(
   ds: DetailStyles,
   t: TFunction,
   evalModel: EvalDetailModel | null,
+  webSearchModel: WebSearchDetailModel | null,
 ): ReactNode[] {
   if (!detail) return [];
   if (evalModel) {
     return [<EvalDetailSection key="eval" model={evalModel} ds={ds} />];
+  }
+  if (webSearchModel) {
+    return [<WebSearchDetailSection key="web-search" model={webSearchModel} ds={ds} />];
   }
   if (detail.type === "shell") {
     return [
@@ -896,15 +991,31 @@ function ToolCallDetailsContentInner({
   maxHeight,
   fillAvailableHeight = false,
   showLoadingSkeleton = false,
+  toolName,
 }: ToolCallDetailsContentProps) {
   const { t } = useTranslation();
   const resolvedMaxHeight = fillAvailableHeight ? undefined : (maxHeight ?? 300);
   const evalModel = useMemo(() => parseEvalToolCallDetail(detail), [detail]);
-  const ds = useDetailStyles(detail, resolvedMaxHeight, fillAvailableHeight, evalModel !== null);
+  const webSearchModel = useMemo(
+    () => parseWebSearchToolCallDetail(detail, toolName),
+    [detail, toolName],
+  );
+  const ds = useDetailStyles(
+    detail,
+    resolvedMaxHeight,
+    fillAvailableHeight,
+    evalModel !== null || webSearchModel !== null,
+  );
   const diffLines = useDiffLines(detail);
 
-  const sections: ReactNode[] = buildDetailSections(detail, diffLines, ds, t, evalModel);
-
+  const sections: ReactNode[] = buildDetailSections(
+    detail,
+    diffLines,
+    ds,
+    t,
+    evalModel,
+    webSearchModel,
+  );
   if (errorText) {
     sections.push(<ErrorSection key="error" errorText={errorText} ds={ds} />);
   }
@@ -1074,6 +1185,36 @@ const styles = StyleSheet.create((theme) => {
       height: 220,
       borderRadius: theme.borderRadius.base,
       backgroundColor: theme.colors.surface2,
+    },
+    webSearchIntentBox: {
+      paddingHorizontal: theme.spacing[3],
+      paddingVertical: theme.spacing[2],
+      gap: theme.spacing[1],
+      borderTopWidth: theme.borderWidth[1],
+      borderTopColor: theme.colors.border,
+      backgroundColor: theme.colors.surface1,
+    },
+    webSearchResultsStack: {
+      padding: theme.spacing[3],
+      gap: theme.spacing[3],
+    },
+    webSearchResultRow: {
+      gap: theme.spacing[1],
+    },
+    webResultTitle: {
+      fontSize: theme.fontSize.sm,
+      fontWeight: theme.fontWeight.medium,
+      color: theme.colors.foreground,
+    },
+    webResultUrl: {
+      fontFamily: theme.fontFamily.mono,
+      fontSize: theme.fontSize.xs,
+      color: theme.colors.foregroundMuted,
+    },
+    webResultSnippet: {
+      fontSize: theme.fontSize.xs,
+      color: theme.colors.foreground,
+      lineHeight: 18,
     },
     subAgentSessionText: {
       fontFamily: theme.fontFamily.mono,

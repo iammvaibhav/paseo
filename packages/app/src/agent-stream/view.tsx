@@ -1549,7 +1549,11 @@ function PermissionRequestCard({
       ) : null}
 
       {!isPlanRequest ? (
-        <ToolCallDetailsContent detail={resolvedToolCallDetail} maxHeight={200} />
+        <ToolCallDetailsContent
+          detail={resolvedToolCallDetail}
+          maxHeight={200}
+          toolName={request.name}
+        />
       ) : null}
 
       {footer}

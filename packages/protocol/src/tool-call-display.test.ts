@@ -218,4 +218,31 @@ describe("shared tool-call display mapping", () => {
     });
     expect(display.summary).toBe("await Bun.file('x').text()");
   });
+  it("builds Web Search display for search detail with web_search toolName", () => {
+    const display = buildToolCallDisplayModel({
+      name: "web_search",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "search",
+        query: "Gemini 3.6 Flash",
+        toolName: "web_search",
+      },
+    });
+    expect(display).toEqual({ displayName: "Web Search", summary: "Gemini 3.6 Flash" });
+  });
+
+  it("builds Web Search display for unknown detail matching web_search", () => {
+    const display = buildToolCallDisplayModel({
+      name: "web_search",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { i: "Search comparison", query: "Gemini 3.6 Flash vs DeepSeek" },
+        output: null,
+      },
+    });
+    expect(display).toEqual({ displayName: "Web Search", summary: "Gemini 3.6 Flash vs DeepSeek" });
+  });
 });

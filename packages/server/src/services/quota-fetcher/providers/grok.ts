@@ -3,15 +3,27 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Logger } from "pino";
 import { z } from "zod";
-import type { ProviderUsage, ProviderUsageBalance } from "../../../server/messages.js";
+import type {
+  ProviderUsage,
+  ProviderUsageBalance,
+  ProviderUsageWindow,
+} from "../../../server/messages.js";
 import type { ProviderApiFetch, ProviderUsageFetcher } from "../provider.js";
 import {
   ApiNumberSchema,
   toneFromUsedPct,
   usedPctOf,
   fetchProviderApi,
+  toIsoStringOrNull,
   unavailableUsage,
+  windowFromUsedPct,
 } from "../usage.js";
+
+const GROK_BILLING_BASE = "https://cli-chat-proxy.grok.com/v1/billing";
+const GROK_BILLING_HEADERS = {
+  Accept: "application/json",
+  "X-XAI-Token-Auth": "xai-grok-cli",
+} as const;
 
 const GrokUsageResponseSchema = z.object({
   config: z
@@ -26,6 +38,7 @@ const GrokUsageResponseSchema = z.object({
           val: ApiNumberSchema.optional(),
         })
         .nullish(),
+      billingPeriodEnd: z.string().optional(),
     })
     .nullish(),
   usage: z
@@ -34,6 +47,30 @@ const GrokUsageResponseSchema = z.object({
     })
     .nullish(),
 });
+
+// Same credits payload SuperGrok uses via OMP (`format=credits`). Grok Build CLI
+// auth hits the same proxy with ~/.grok/auth.json tokens.
+const GrokCreditsConfigSchema = z
+  .object({
+    currentPeriod: z
+      .object({
+        start: z.string().optional(),
+        end: z.string().optional(),
+        type: z.string().optional(),
+      })
+      .nullish(),
+    creditUsagePercent: ApiNumberSchema.optional(),
+    // productUsage is intentionally ignored: SuperGrok UI only shows weekly credits.
+    isUnifiedBillingUser: z.boolean().optional(),
+    billingPeriodEnd: z.string().optional(),
+  })
+  .passthrough();
+
+const GrokCreditsResponseSchema = z
+  .object({
+    config: GrokCreditsConfigSchema.nullish(),
+  })
+  .passthrough();
 
 interface GrokQuotaProviderOptions {
   logger: Logger;
@@ -67,6 +104,62 @@ export function extractGrokTokenFromAuth(auth: unknown): string | null {
   return null;
 }
 
+function parseCreditsPayload(payload: unknown): {
+  windows: ProviderUsageWindow[];
+  planLabel: string | null;
+} {
+  const credits = GrokCreditsResponseSchema.parse(payload);
+  const config = credits.config;
+  const periodEnd = config?.currentPeriod?.end ?? config?.billingPeriodEnd;
+  const resetsAt = periodEnd ? toIsoStringOrNull(Date.parse(periodEnd)) : null;
+  const windows: ProviderUsageWindow[] = [];
+  if (
+    typeof config?.creditUsagePercent === "number" &&
+    Number.isFinite(config.creditUsagePercent)
+  ) {
+    const usedPct = Math.max(0, Math.min(100, config.creditUsagePercent));
+    windows.push(
+      windowFromUsedPct({
+        id: "weekly_credits",
+        label: "SuperGrok Weekly Credits",
+        utilizationPct: usedPct,
+        resetsAt,
+        tone: toneFromUsedPct(usedPct),
+      }),
+    );
+  }
+
+  return {
+    windows,
+    planLabel: config?.isUnifiedBillingUser === true ? "SuperGrok (unified)" : null,
+  };
+}
+
+function parseMonthlyBalances(payload: unknown): ProviderUsageBalance[] {
+  const resp = GrokUsageResponseSchema.parse(payload);
+  const monthlyLimit = resp.config?.monthlyLimit?.val ?? null;
+  // Live CLI billing uses config.used.val; older mocks used usage.creditUsage.
+  const creditUsage = resp.config?.used?.val ?? resp.usage?.creditUsage ?? null;
+  if (monthlyLimit === null && creditUsage === null) return [];
+
+  const remaining =
+    monthlyLimit !== null && creditUsage !== null ? Math.max(0, monthlyLimit - creditUsage) : null;
+  return [
+    {
+      id: "monthly_credits",
+      label: "Monthly credits",
+      used: creditUsage,
+      remaining,
+      limit: monthlyLimit,
+      unit: "credits",
+      resetsAt: resp.config?.billingPeriodEnd
+        ? toIsoStringOrNull(Date.parse(resp.config.billingPeriodEnd))
+        : null,
+      tone: toneFromUsedPct(usedPctOf(creditUsage, monthlyLimit)),
+    },
+  ];
+}
+
 export class GrokQuotaProvider implements ProviderUsageFetcher {
   readonly providerId = "grok";
   readonly displayName = "Grok";
@@ -87,50 +180,59 @@ export class GrokQuotaProvider implements ProviderUsageFetcher {
 
     if (!token) return unavailableUsage(this);
 
-    const res = await fetchProviderApi(
-      this.fetchApi,
-      "https://cli-chat-proxy.grok.com/v1/billing",
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "X-XAI-Token-Auth": "xai-grok-cli",
-          Accept: "application/json",
-        },
-      },
-    );
+    const headers = {
+      ...GROK_BILLING_HEADERS,
+      Authorization: `Bearer ${token}`,
+    };
 
-    if (!res.ok) {
-      this.logger.debug({ status: res.status }, "Grok usage fetch failed");
-      return unavailableUsage(this);
+    // Prefer the SuperGrok weekly credits view used by XAI OAuth / Grok Build CLI.
+    // Fall back to monthly absolute credits when credits format is unavailable.
+    const [creditsRes, monthlyRes] = await Promise.all([
+      fetchProviderApi(this.fetchApi, `${GROK_BILLING_BASE}?format=credits`, { headers }),
+      fetchProviderApi(this.fetchApi, GROK_BILLING_BASE, { headers }),
+    ]);
+
+    let windows: ProviderUsageWindow[] = [];
+    let planLabel: string | null = null;
+    if (creditsRes.ok) {
+      try {
+        const parsed = parseCreditsPayload(await creditsRes.json());
+        windows = parsed.windows;
+        planLabel = parsed.planLabel;
+      } catch (error) {
+        this.logger.debug({ err: error }, "Grok credits payload parse failed");
+      }
+    } else {
+      this.logger.debug({ status: creditsRes.status }, "Grok credits usage fetch failed");
     }
 
-    const resp = GrokUsageResponseSchema.parse(await res.json());
-    const monthlyLimit = resp.config?.monthlyLimit?.val ?? null;
-    // Live CLI billing uses config.used.val; older mocks used usage.creditUsage.
-    const creditUsage = resp.config?.used?.val ?? resp.usage?.creditUsage ?? null;
-    const balances: ProviderUsageBalance[] = [];
-    if (monthlyLimit !== null || creditUsage !== null) {
-      const remaining =
-        monthlyLimit !== null && creditUsage !== null
-          ? Math.max(0, monthlyLimit - creditUsage)
-          : null;
-      balances.push({
-        id: "monthly_credits",
-        label: "Monthly credits",
-        used: creditUsage,
-        remaining,
-        limit: monthlyLimit,
-        unit: "credits",
-        tone: toneFromUsedPct(usedPctOf(creditUsage, monthlyLimit)),
-      });
+    let balances: ProviderUsageBalance[] = [];
+    if (monthlyRes.ok) {
+      try {
+        balances = parseMonthlyBalances(await monthlyRes.json());
+      } catch (error) {
+        this.logger.debug({ err: error }, "Grok monthly billing parse failed");
+      }
+    } else {
+      this.logger.debug({ status: monthlyRes.status }, "Grok monthly usage fetch failed");
+    }
+
+    // Unified SuperGrok accounts surface weekly % as the primary meter; keep the
+    // card lean (no absolute monthly bar) so it matches the SuperGrok/XAI OAuth card.
+    if (windows.length > 0 && planLabel === "SuperGrok (unified)") {
+      balances = [];
+    }
+
+    if (windows.length === 0 && balances.length === 0) {
+      return unavailableUsage(this);
     }
 
     return {
       providerId: this.providerId,
       displayName: this.displayName,
       status: "available",
-      planLabel: null,
-      windows: [],
+      planLabel,
+      windows,
       balances,
       details: [],
       error: null,

@@ -22,10 +22,15 @@ describe("matchProviderUsage", () => {
     usage({ providerId: "omp-claude", displayName: "OMP · Claude" }),
     usage({ providerId: "omp-antigravity", displayName: "OMP · Antigravity" }),
     usage({ providerId: "claude", displayName: "Claude" }),
+    usage({ providerId: "grok", displayName: "Grok" }),
   ];
 
   it("matches non-OMP providers exactly", () => {
     expect(matchProviderUsage(providers, "claude")?.providerId).toBe("claude");
+  });
+
+  it("matches native Grok Build CLI sessions", () => {
+    expect(matchProviderUsage(providers, "grok", "grok-4.5")?.providerId).toBe("grok");
   });
 
   it("picks OMP Claude limits for Claude Fable models on OMP agents", () => {
@@ -38,6 +43,33 @@ describe("matchProviderUsage", () => {
   it("picks SuperGrok limits for Grok models on OMP agents", () => {
     expect(matchProviderUsage(providers, "omp", "xai/grok-4.5")?.providerId).toBe("omp");
     expect(matchProviderUsage(providers, "omp", "Grok 4.5")?.providerId).toBe("omp");
+  });
+
+  it("picks Grok Build OMP card when present", () => {
+    const withGrokBuild = [
+      ...providers,
+      usage({ providerId: "omp-grok-build", displayName: "OMP · Grok Build" }),
+    ];
+    expect(matchProviderUsage(withGrokBuild, "omp", "grok-build/grok-4.5")?.providerId).toBe(
+      "omp-grok-build",
+    );
+  });
+
+  it("falls back to native Grok usage when OMP SuperGrok card is missing", () => {
+    const withoutOmpSuperGrok = providers.filter((entry) => entry.providerId !== "omp");
+    expect(matchProviderUsage(withoutOmpSuperGrok, "omp", "grok-build/grok-4.5")?.providerId).toBe(
+      "grok",
+    );
+    expect(matchProviderUsage(withoutOmpSuperGrok, "omp", "grok-4.5")?.providerId).toBe("grok");
+    expect(matchProviderUsage(withoutOmpSuperGrok, "omp", "xai/grok-4.5")?.providerId).toBe("grok");
+  });
+
+  it("does not show Claude usage for Grok models when SuperGrok cards are missing", () => {
+    const withoutGrokCards = providers.filter(
+      (entry) => entry.providerId !== "omp" && entry.providerId !== "grok",
+    );
+    expect(matchProviderUsage(withoutGrokCards, "omp", "grok-build/grok-4.5")).toBeNull();
+    expect(matchProviderUsage(withoutGrokCards, "omp", "Grok 4.5")).toBeNull();
   });
 
   it("picks Antigravity limits for Gemini/Antigravity models", () => {

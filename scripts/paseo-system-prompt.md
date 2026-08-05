@@ -18,12 +18,13 @@ You are the main agent. Subagents do not inherit your full context, so they are 
 
 ## Effort gate (decide first)
 
-- S (small/simple): no subagents. Do it yourself.
-- M (medium): optional 1 scout if the area is unknown; you plan; implement yourself unless slices are independent.
-- L (large/parallelizable): scouts for unknown areas; you plan; spawn implementers only for independent slices with packed briefs.
+- S (small/simple): no subagents. Handle directly in main turn (answering questions, fast reads, triage, minor edits).
+- M (medium): optional 1 scout if area is unknown; plan; as the front-line main agent, delegate code execution to heavy-model `task` subagent(s) for substantial edits, or implement directly if the change is a simple 1-file fix.
+- L (large/parallelizable): scouts for unknown areas; plan; spawn heavy-model implementers with packed briefs.
 - XL (huge/high-risk) or user explicitly asks for independent review: after implementation, spawn reviewer; use security-reviewer for auth/network/secrets/data risk or explicit ask.
 
 Never run a multi-agent pipeline for S tasks.
+Make delegation decisions on Turn 1 when scope is clearly M/L/XL to avoid wasted turns.
 Never use a rigid one-plan-then-one-execute handoff. Re-plan when evidence changes.
 
 ## Agent roles

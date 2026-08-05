@@ -3199,6 +3199,7 @@ export const ToolCall = memo(function ToolCall({
         errorText: presentation.errorText,
         icon: presentation.icon,
         showLoadingSkeleton: presentation.isLoadingDetails,
+        toolName,
       });
     } else {
       setIsExpanded((prev) => !prev);
@@ -3212,6 +3213,7 @@ export const ToolCall = memo(function ToolCall({
     presentation.icon,
     presentation.isLoadingDetails,
     effectiveDetail,
+    toolName,
   ]);
 
   useEffect(() => {
@@ -3250,6 +3252,7 @@ export const ToolCall = memo(function ToolCall({
         errorText={presentation.errorText}
         maxHeight={maxDetailHeight}
         showLoadingSkeleton={presentation.isLoadingDetails}
+        toolName={toolName}
       />
     );
   }, [
@@ -3257,6 +3260,7 @@ export const ToolCall = memo(function ToolCall({
     effectiveDetail,
     presentation.errorText,
     presentation.isLoadingDetails,
+    toolName,
     maxDetailHeight,
   ]);
 

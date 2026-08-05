@@ -27,7 +27,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
-
+function isWebSearchToolName(name: string): boolean {
+  const lower = name.trim().toLowerCase();
+  return (
+    lower === "web_search" ||
+    lower === "websearch" ||
+    lower === "web-search" ||
+    lower.endsWith("_web_search") ||
+    lower.endsWith("_websearch")
+  );
+}
 function humanizeToolName(name: string): string {
   const trimmed = name.trim();
   if (!trimmed) {
@@ -92,11 +101,16 @@ function buildCanonicalDetailDisplay(input: ToolCallDisplayInput): DetailDisplay
       return buildFilePathDisplay("Edit", input.detail.filePath, input.cwd);
     case "write":
       return buildFilePathDisplay("Write", input.detail.filePath, input.cwd);
-    case "search":
+    case "search": {
+      const isWeb =
+        input.detail.toolName === "web_search" ||
+        isWebSearchToolName(input.name) ||
+        Boolean(input.detail.webResults && input.detail.webResults.length > 0);
       return {
-        displayName: "Search",
+        displayName: isWeb ? "Web Search" : "Search",
         summary: input.detail.query,
       };
+    }
     case "fetch":
       return {
         displayName: "Fetch",
@@ -153,6 +167,20 @@ function buildUnknownDetailOverride(input: ToolCallDisplayInput): DetailDisplay 
   if (lowerName === "eval") {
     return {
       summary: buildEvalSummary(input.detail),
+    };
+  }
+  if (isWebSearchToolName(input.name)) {
+    let summary: string | undefined;
+    if (input.detail.type === "unknown" && isRecord(input.detail.input)) {
+      summary =
+        readString(input.detail.input.query) ??
+        readString(input.detail.input.search_query) ??
+        readString(input.detail.input.q) ??
+        readString(input.detail.input.i);
+    }
+    return {
+      displayName: "Web Search",
+      ...(summary ? { summary } : {}),
     };
   }
   if (input.detail.type === "unknown" && lowerName === "task") {

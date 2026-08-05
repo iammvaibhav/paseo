@@ -36,6 +36,9 @@ export function resolveToolCallIconName(toolName: string, detail?: ToolCallDetai
   if (lowerName === "eval") {
     return "square_terminal";
   }
+  if (lowerName === "web_search" || lowerName === "websearch" || lowerName === "web-search") {
+    return "search";
+  }
   if (isPaseoToolName(lowerName)) {
     return "paseo";
   }
