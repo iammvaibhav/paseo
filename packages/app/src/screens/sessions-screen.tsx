@@ -82,8 +82,10 @@ function SessionsScreenContent() {
   useEffect(() => {
     if (pendingScope?.serverId) {
       setSelectedHost(pendingScope.serverId);
+    } else if (activeTab === "ask" && selectedHost === ALL_HOSTS_OPTION_ID && hosts.length > 0) {
+      setSelectedHost(hosts[0].serverId);
     }
-  }, [pendingScope?.serverId]);
+  }, [activeTab, pendingScope?.serverId, selectedHost, hosts]);
 
   const handleRefresh = useCallback(() => {
     setIsManualRefresh(true);
@@ -791,8 +793,9 @@ const styles = StyleSheet.create((theme) => ({
       xs: theme.spacing[3],
       md: theme.spacing[6],
     },
-    paddingBottom: theme.spacing[2],
-    color: theme.colors.foregroundMuted,
+    paddingTop: theme.spacing[2],
+    paddingBottom: theme.spacing[1],
+    color: theme.colors.foreground,
     fontSize: theme.fontSize.sm,
     fontWeight: "600",
   },
@@ -804,6 +807,11 @@ const styles = StyleSheet.create((theme) => ({
     paddingTop: theme.spacing[4],
   },
   askHint: {
+    paddingHorizontal: {
+      xs: theme.spacing[3],
+      md: theme.spacing[6],
+    },
+    paddingBottom: theme.spacing[2],
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.xs,
   },

@@ -688,7 +688,7 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     color: theme.colors.foregroundMuted,
     flexShrink: 0,
-    width: 132,
+    width: 170,
   },
   columnMetaFixed: {
     fontSize: theme.fontSize.sm,
@@ -701,7 +701,7 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     color: theme.colors.foregroundMuted,
     flexShrink: 0,
-    width: 132,
+    width: 170,
   },
   badge: {
     flexDirection: "row",
