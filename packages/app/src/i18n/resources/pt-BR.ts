@@ -162,6 +162,7 @@ export const ptBR: TranslationResources = {
       fallback: "Provedor",
       select: "Selecionar provedor do agente",
     },
+    providerSwitched: "Provedor alterado para {{provider}}",
     thinking: {
       title: "Raciocínio",
       unknown: "Desconhecido",

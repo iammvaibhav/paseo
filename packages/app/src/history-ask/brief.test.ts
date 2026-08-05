@@ -32,6 +32,7 @@ describe("buildHistoryAskBrief", () => {
     expect(brief).toContain("~/.claude/projects/");
     expect(brief).toContain("~/.grok/sessions/");
     expect(brief).toContain("Codex");
+    expect(brief).toContain("OMP");
     expect(brief).toContain("## HOW TO SEARCH");
     expect(brief).toContain("includeArchived");
     expect(brief).toContain("paseo://h/");

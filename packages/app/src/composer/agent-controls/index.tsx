@@ -68,6 +68,7 @@ import { useToast } from "@/contexts/toast-context";
 import { toErrorMessage } from "@/utils/error-messages";
 import { showProviderNoticeToast } from "@/utils/provider-notice-toast";
 import { useAgentControlCommandCenterActions } from "@/command-center/agent-control-registration";
+import { formatProviderLabel } from "@/utils/provider-label";
 import { isNative } from "@/constants/platform";
 import {
   resolveComposerControlDensity,
@@ -362,7 +363,10 @@ function selectAgentControlsSlice(
   serverId: string,
   agentId: string,
 ): AgentControlsSlice {
-  const currentAgent = state.sessions[serverId]?.agents?.get(agentId) ?? null;
+  const currentAgent =
+    state.sessions[serverId]?.agents?.get(agentId) ??
+    state.sessions[serverId]?.agentDetails?.get(agentId) ??
+    null;
   if (!currentAgent) {
     return null;
   }
@@ -408,6 +412,45 @@ function buildOpenChangeHandler(
   };
 }
 
+function checkCanSelectProvider(
+  onSelectProvider: unknown,
+  providerOptions?: unknown[],
+  modelSelectorProviders?: unknown[],
+): boolean {
+  if (!onSelectProvider) return false;
+  return Boolean(providerOptions?.length || modelSelectorProviders?.length);
+}
+
+function checkCanSelectThinking(
+  onSelectThinkingOption: unknown,
+  thinkingOptions?: unknown[],
+): boolean {
+  if (!onSelectThinkingOption) return false;
+  return Boolean(thinkingOptions?.length);
+}
+
+function resolveDisplayProviderFallback(
+  selectedProviderId: string | undefined | null,
+  fallbackLabel: string,
+): string {
+  if (!selectedProviderId) return fallbackLabel;
+  return `${formatProviderLabel(selectedProviderId)} (Unavailable)`;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildFeatureControls(features: any[] | undefined) {
+  if (!features) return [];
+  return features.map((feature) => {
+    if (feature.type === "toggle") return { type: "toggle" as const };
+    const selectedOption = feature.options?.find(
+      (option: { id: string; label: string }) => option.id === feature.value,
+    );
+    return {
+      type: "select" as const,
+      label: selectedOption?.label ?? feature.label,
+    };
+  });
+}
 function ControlledAgentControls({
   provider,
   providerOptions,
@@ -451,18 +494,18 @@ function ControlledAgentControls({
   const _modelAnchorRef = useRef<View>(null);
   const thinkingAnchorRef = useRef<View>(null);
 
-  const canSelectProvider = Boolean(
-    onSelectProvider && providerOptions && providerOptions.length > 0,
+  const canSelectProvider = checkCanSelectProvider(
+    onSelectProvider,
+    providerOptions,
+    modelSelectorProviders,
   );
   const canSelectModel = Boolean(onSelectModel);
-  const canSelectThinking = Boolean(
-    onSelectThinkingOption && thinkingOptions && thinkingOptions.length > 0,
-  );
+  const canSelectThinking = checkCanSelectThinking(onSelectThinkingOption, thinkingOptions);
 
   const displayProvider = findOptionLabel(
     providerOptions,
     selectedProviderId,
-    t("agentControls.provider.fallback"),
+    resolveDisplayProviderFallback(selectedProviderId, t("agentControls.provider.fallback")),
   );
   const formattedThinkingOptions = useMemo(
     () => toThinkingControlOptions(thinkingOptions),
@@ -474,34 +517,24 @@ function ControlledAgentControls({
     formattedThinkingOptions[0]?.label ?? t("agentControls.thinking.unknown"),
   );
 
+  const hasMode = modeControl != null;
   const hasAnyControl = resolveHasAnyControl({
     providerOptions,
     canSelectModel,
     thinkingOptions,
     features,
-    hasMode: modeControl !== null && modeControl !== undefined,
+    hasMode,
   });
-  const featureControls = useMemo(
-    () =>
-      (features ?? []).map((feature) => {
-        if (feature.type === "toggle") return { type: "toggle" as const };
-        const selectedOption = feature.options.find((option) => option.id === feature.value);
-        return {
-          type: "select" as const,
-          label: selectedOption?.label ?? feature.label,
-        };
-      }),
-    [features],
-  );
+  const featureControls = useMemo(() => buildFeatureControls(features), [features]);
   const controlPresence = useMemo(
     () => ({
       hasModel: canSelectModel,
       hasThinking: canSelectThinking,
-      hasMode: modeControl !== null && modeControl !== undefined,
+      hasMode,
       features: featureControls,
       fontScale,
     }),
-    [canSelectModel, canSelectThinking, featureControls, fontScale, modeControl],
+    [canSelectModel, canSelectThinking, featureControls, fontScale, hasMode],
   );
   const presentation = useMemo(() => resolveComposerControlPresentation(density), [density]);
   const layoutContextValue = useMemo(
@@ -1551,6 +1584,20 @@ export const AgentControls = memo(function AgentControls({
         return;
       }
 
+      // Try updating the agent's provider in-place first
+      try {
+        await client.updateAgent(agentId, { provider: nextProvider, model: modelId });
+        toast.show(
+          t("agentControls.providerSwitched", { provider: formatProviderLabel(nextProvider) }),
+        );
+        return;
+      } catch (updateErr) {
+        console.info(
+          "[AgentControls] in-place provider update failed, falling back to fork",
+          updateErr,
+        );
+      }
+
       const workspaceId = agent.workspaceId?.trim() || null;
       if (!workspaceId) {
         toast.error(t("message.actions.forkMissingWorkspace"));
@@ -1560,7 +1607,6 @@ export const AgentControls = memo(function AgentControls({
         toast.error(t("message.actions.forkUnavailable"));
         return;
       }
-
       try {
         const draftId = generateDraftId();
         const payload = await client.buildAgentForkContext(agentId);

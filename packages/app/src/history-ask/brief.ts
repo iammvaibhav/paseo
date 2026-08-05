@@ -49,6 +49,10 @@ export function buildHistoryAskBrief(input: {
         ];
 
   const nativeLines: string[] = [
+    "### OMP (Oh My Pi / Pi / OpenCode)",
+    "- OMP session JSONL files live under `~/.omp/agent/sessions/` (and profile subdirs `~/.omp/profiles/*/agent/sessions/`).",
+    "- OMP agent database lives at `~/.omp/agent/agent.db` (and `~/.omp/profiles/*/agent/agent.db`).",
+    "- Follow `persistence` or native session handles into OMP session files to read full conversation history.",
     "### Claude",
     ...(roots.claudeProjectDirs.length > 0
       ? roots.claudeProjectDirs.map((path) => `- \`${path}/\``)
@@ -87,7 +91,7 @@ export function buildHistoryAskBrief(input: {
     "   - Rank by title/keywords from the user question, recency (`lastActivityAt` / `updatedAt`), and provider.",
     "2. **Read transcripts**",
     "   - Open matching Paseo agent JSON under the catalog paths.",
-    "   - Follow `persistence` / native handles into Claude / Codex / Grok / other native transcript files when needed.",
+    "   - Follow `persistence` / native handles into OMP / Claude / Codex / Grok / other native transcript files when needed.",
     "   - Skim logs and message text for answers — do not invent sessions that are not on disk.",
     "3. **Answer with clickable citations (required)**",
     "   - The user opens a past session by tapping a markdown link in your reply — same as clicking a row in History.",

@@ -1,5 +1,33 @@
 import type { ProjectDescriptor, WorkspaceDescriptor } from "@/stores/session-store";
+import { isHistoryAskAgent } from "@/history-ask";
+import { isHomeDirectoryPath } from "@/utils/path";
 import { projectDisplayNameFromProjectId } from "@/utils/project-display-name";
+
+export interface WorkspaceAgentForSidebar {
+  workspaceId?: string | null;
+  labels?: Record<string, string> | null;
+}
+
+export function isSidebarWorkspaceHidden(input: {
+  workspace: WorkspaceDescriptor;
+  agentsInWorkspace: WorkspaceAgentForSidebar[];
+}): boolean {
+  if (
+    input.agentsInWorkspace.length > 0 &&
+    input.agentsInWorkspace.every((a) => isHistoryAskAgent(a.labels))
+  ) {
+    return true;
+  }
+
+  if (isHomeDirectoryPath(input.workspace.workspaceDirectory)) {
+    const hasRegularAgent = input.agentsInWorkspace.some((a) => !isHistoryAskAgent(a.labels));
+    if (!hasRegularAgent) {
+      return true;
+    }
+  }
+
+  return false;
+}
 
 export interface WorkspaceStructureHostPlacement {
   serverId: string;
@@ -23,10 +51,11 @@ export interface WorkspaceStructure {
   projects: WorkspaceStructureProject[];
 }
 
-interface WorkspaceStructureSession {
+export interface WorkspaceStructureSession {
   serverId: string;
   projects: Iterable<ProjectDescriptor>;
   workspaces: Iterable<WorkspaceDescriptor>;
+  agents?: Iterable<WorkspaceAgentForSidebar>;
 }
 
 interface ProjectDraft {
@@ -79,7 +108,24 @@ export function buildWorkspaceStructureProjects(input: {
   }
 
   for (const session of input.sessions) {
+    const agentsByWorkspaceId = new Map<string, WorkspaceAgentForSidebar[]>();
+    if (session.agents) {
+      for (const agent of session.agents) {
+        if (!agent.workspaceId) continue;
+        const existing = agentsByWorkspaceId.get(agent.workspaceId);
+        if (existing) {
+          existing.push(agent);
+        } else {
+          agentsByWorkspaceId.set(agent.workspaceId, [agent]);
+        }
+      }
+    }
+
     for (const workspace of session.workspaces) {
+      const agentsInWorkspace = agentsByWorkspaceId.get(workspace.id) ?? [];
+      if (isSidebarWorkspaceHidden({ workspace, agentsInWorkspace })) {
+        continue;
+      }
       const viewKey = viewKeyByServerProjectId.get(session.serverId)?.get(workspace.projectId);
       if (!viewKey) continue;
       byProject.get(viewKey)?.workspaces.push({
@@ -91,6 +137,7 @@ export function buildWorkspaceStructureProjects(input: {
   }
 
   return Array.from(byProject.values())
+    .filter((draft) => draft.workspaces.length > 0)
     .map((draft) => ({
       viewKey: draft.viewKey,
       projectKey: draft.projectKey,

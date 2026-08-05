@@ -162,6 +162,7 @@ export const zhCN: TranslationResources = {
       fallback: "Provider",
       select: "选择 Agent Provider",
     },
+    providerSwitched: "已将 Provider 切换为 {{provider}}",
     thinking: {
       title: "Thinking",
       unknown: "未知",

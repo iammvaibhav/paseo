@@ -162,6 +162,7 @@ export const es: TranslationResources = {
       fallback: "Proveedor",
       select: "Seleccionar proveedor de agente",
     },
+    providerSwitched: "Proveedor cambiado a {{provider}}",
     thinking: {
       title: "Pensamiento",
       unknown: "Desconocido",

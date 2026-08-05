@@ -25,6 +25,7 @@ import { FileDropZone } from "@/components/file-drop/file-drop-zone";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { SidebarCallout } from "@/components/sidebar-callout";
 import { Composer } from "@/composer";
+import { formatProviderLabel } from "@/utils/provider-label";
 import { getActiveMessageSubmissions } from "@/composer/submission/model";
 import { RewindComposerRestoreProvider } from "@/components/rewind/composer-restore";
 import { getProviderIcon } from "@/components/provider-icons";
@@ -226,17 +227,6 @@ function renderChatAgentNonReadyView(args: {
     );
   }
   return null;
-}
-
-function formatProviderLabel(provider: Agent["provider"]): string {
-  if (!provider) {
-    return "Agent";
-  }
-  return provider
-    .split(/[-_\s]+/)
-    .filter((part) => part.length > 0)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
 }
 
 function resolveWorkspaceAgentTabLabel(title: string | null | undefined): string | null {
@@ -1186,6 +1176,15 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
       <View style={styles.root}>
         <FileDropZone style={styles.container} disabled={isArchivingCurrentAgent}>
           {contentContainer}
+
+          {agentState.providerUnavailable ? (
+            <SidebarCallout
+              title={t("agentPanel.providerUnavailable.callout")}
+              description={t("agentPanel.providerUnavailable.detail")}
+              variant="default"
+              testID="agent-provider-unavailable-banner"
+            />
+          ) : null}
 
           {showHistorySyncError ? (
             <SidebarCallout

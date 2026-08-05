@@ -162,6 +162,7 @@ export const ru: TranslationResources = {
       fallback: "Поставщик",
       select: "Выберите поставщика агентов",
     },
+    providerSwitched: "Провайдер изменен на {{provider}}",
     thinking: {
       title: "мышление",
       unknown: "Неизвестный",

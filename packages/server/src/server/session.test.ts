@@ -5239,3 +5239,105 @@ describe("agent config setters", () => {
     });
   });
 });
+
+describe("unavailable provider agent handling", () => {
+  test("refresh_agent_request succeeds and emits stored snapshot when provider is unavailable", async () => {
+    const messages: unknown[] = [];
+    const agentRecord = {
+      id: "agent-unavailable-1",
+      provider: "claude",
+      cwd: "/tmp/test-repo",
+      createdAt: "2026-04-16T00:00:00.000Z",
+      updatedAt: "2026-04-16T00:00:00.000Z",
+      lastStatus: "closed",
+    };
+    const agentStorage = {
+      get: vi.fn().mockResolvedValue(agentRecord),
+      upsert: vi.fn().mockResolvedValue(undefined),
+    };
+    const providerSnapshotManager = {
+      listRegisteredProviderIds: vi.fn().mockReturnValue(["codex", "opencode"]),
+      on: vi.fn(),
+      off: vi.fn(),
+    };
+    const agentManager = {
+      getAgent: vi.fn().mockReturnValue(null),
+      hasTimeline: vi.fn().mockReturnValue(true),
+      getTimeline: vi.fn().mockReturnValue([{ id: "t1" }]),
+      unarchiveSnapshot: vi.fn().mockResolvedValue(false),
+    };
+
+    const session = createSessionForTest({
+      agentStorage,
+      providerSnapshotManager,
+      agentManager,
+      messages,
+    });
+
+    await session.handleMessage({
+      type: "refresh_agent_request",
+      agentId: "agent-unavailable-1",
+      requestId: "req-refresh-unavail",
+    });
+
+    const updateMsg = messages.find((m) => m.type === "agent_update");
+    expect(updateMsg).toBeDefined();
+    expect(updateMsg.payload.agent.providerUnavailable).toBe(true);
+
+    const statusMsg = messages.find((m) => m.type === "status");
+    expect(statusMsg).toEqual({
+      type: "status",
+      payload: {
+        status: "agent_refreshed",
+        agentId: "agent-unavailable-1",
+        requestId: "req-refresh-unavail",
+        timelineSize: 1,
+      },
+    });
+  });
+
+  test("update_agent_request can switch an agent's provider", async () => {
+    const messages: unknown[] = [];
+    const updateAgentMetadata = vi.fn().mockResolvedValue(undefined);
+    const agentManager = {
+      updateAgentMetadata,
+      getAgent: vi.fn().mockReturnValue(null),
+    };
+    const agentStorage = {
+      get: vi.fn().mockResolvedValue({
+        id: "agent-unavailable-1",
+        provider: "codex",
+        cwd: "/tmp/test-repo",
+        createdAt: "2026-04-16T00:00:00.000Z",
+        updatedAt: "2026-04-16T00:00:00.000Z",
+        lastStatus: "closed",
+      }),
+    };
+    const session = createSessionForTest({
+      agentManager,
+      agentStorage,
+      messages,
+    });
+
+    await session.handleMessage({
+      type: "update_agent_request",
+      agentId: "agent-unavailable-1",
+      provider: "codex",
+      model: "gpt-4o",
+      requestId: "req-update-provider",
+    });
+    expect(updateAgentMetadata).toHaveBeenCalledWith("agent-unavailable-1", {
+      provider: "codex",
+      model: "gpt-4o",
+    });
+    expect(messages).toContainEqual({
+      type: "update_agent_response",
+      payload: {
+        requestId: "req-update-provider",
+        agentId: "agent-unavailable-1",
+        accepted: true,
+        error: null,
+      },
+    });
+  });
+});

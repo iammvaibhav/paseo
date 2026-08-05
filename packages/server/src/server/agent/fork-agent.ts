@@ -49,12 +49,27 @@ export interface ForkAgentResult {
  * point in the daemon timeline.
  */
 export async function forkAgentToSibling(input: ForkAgentInput): Promise<ForkAgentResult> {
-  const { agentManager } = input;
-  const source = agentManager.getAgent(input.sourceAgentId);
+  const { agentManager, agentStorage } = input;
+  let source = agentManager.getAgent(input.sourceAgentId);
   if (!source) {
-    throw new Error(`Agent ${input.sourceAgentId} not found`);
+    const record = await agentStorage.get(input.sourceAgentId);
+    if (!record) {
+      throw new Error(`Agent ${input.sourceAgentId} not found`);
+    }
+    source = {
+      id: record.id,
+      cwd: record.cwd,
+      workspaceId: record.workspaceId,
+      provider: record.provider,
+      config: {
+        provider: record.provider,
+        cwd: record.cwd,
+        title: record.title ?? null,
+        systemPrompt: record.config?.systemPrompt ?? null,
+        mcpServers: record.config?.mcpServers ?? null,
+      },
+    } as unknown as ManagedAgent;
   }
-
   // A provisional title derived from the fork's first prompt keeps the new tab
   // from being an exact duplicate of the source title.
   const { provisionalTitle } = resolveCreateAgentTitles({

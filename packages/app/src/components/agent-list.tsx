@@ -21,7 +21,7 @@ import { Archive, ChevronRight } from "lucide-react-native";
 import { getProviderIcon } from "@/components/provider-icons";
 import { openAgentFromHistory } from "@/workspace/open-agent-from-history";
 import { useArchiveAgent } from "@/hooks/use-archive-agent";
-
+import { isHistoryAskAgent } from "@/history-ask";
 interface AgentListProps {
   agents: AggregatedAgent[];
   showCheckoutInfo?: boolean;
@@ -201,6 +201,14 @@ function SessionRowTrailingAttention({
   );
 }
 
+function isRedundantWorkspaceName(workspaceName: string, agent: AggregatedAgent): boolean {
+  if (!workspaceName) return true;
+  if (isHistoryAskAgent(agent.labels)) return true;
+  if (workspaceName === agent.title || workspaceName.startsWith("Ask:")) return true;
+  if (agent.title && agent.title.startsWith(workspaceName)) return true;
+  return false;
+}
+
 function SessionRow({
   agent,
   isMobile,
@@ -254,6 +262,8 @@ function SessionRow({
   const showDesktopAttention =
     !isMobile && showAttentionIndicator && Boolean(agent.requiresAttention);
 
+  const showWorkspacePrefix = !isMobile && !isRedundantWorkspaceName(workspaceName, agent);
+
   return (
     <Pressable
       style={pressableStyle}
@@ -264,7 +274,7 @@ function SessionRow({
       <View style={styles.rowContent}>
         <View style={styles.rowTitleRow}>
           <WorkspaceTitlePrefix
-            visible={!isMobile && Boolean(workspaceName)}
+            visible={showWorkspacePrefix}
             workspaceName={workspaceName}
             testID={`agent-row-workspace-${agent.serverId}-${agent.id}`}
             iconSize={theme.iconSize.xs}
@@ -691,9 +701,7 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     color: theme.colors.foregroundMuted,
     flexShrink: 0,
-    width: 120,
-    marginLeft: theme.spacing[4],
-    textAlign: "right" as const,
+    width: 132,
   },
   badge: {
     flexDirection: "row",

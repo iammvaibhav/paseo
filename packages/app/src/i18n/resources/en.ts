@@ -160,6 +160,7 @@ export const en = {
       fallback: "Provider",
       select: "Select agent provider",
     },
+    providerSwitched: "Switched provider to {{provider}}",
     thinking: {
       title: "Thinking",
       unknown: "Unknown",

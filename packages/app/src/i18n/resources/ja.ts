@@ -162,6 +162,7 @@ export const ja: TranslationResources = {
       fallback: "プロバイダー",
       select: "エージェントプロバイダーを選択",
     },
+    providerSwitched: "プロバイダーを{{provider}}に変更しました",
     thinking: {
       title: "思考",
       unknown: "不明",

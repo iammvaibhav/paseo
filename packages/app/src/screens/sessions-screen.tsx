@@ -114,7 +114,7 @@ function SessionsScreenContent() {
         pendingScope,
         selectedHost,
         hosts,
-        requireConcreteHost: true,
+        requireConcreteHost: false,
       }),
     [pendingScope, selectedHost, hosts],
   );
@@ -123,7 +123,7 @@ function SessionsScreenContent() {
     activeTab === "ask" &&
     !pendingScope &&
     selectedHost === ALL_HOSTS_OPTION_ID &&
-    hosts.length > 1;
+    hosts.length === 0;
 
   const showHostFilter = hosts.length > 1;
   const showLoadError = history.isError && sortedAgents.length === 0;

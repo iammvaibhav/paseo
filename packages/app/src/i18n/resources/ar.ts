@@ -162,6 +162,7 @@ export const ar: TranslationResources = {
       fallback: "مزود",
       select: "حدد مزود الوكيل",
     },
+    providerSwitched: "تم تغيير المزود إلى {{provider}}",
     thinking: {
       title: "التفكير",
       unknown: "مجهول",

@@ -47,6 +47,7 @@ export interface HistorySearchRoots {
   paseoAgentDirs: string[];
   claudeProjectDirs: string[];
   grokSessionDirs: string[];
+  ompSessionDirs: string[];
 }
 
 /**
@@ -60,6 +61,7 @@ export function buildHistorySearchRoots(cwds: readonly string[]): HistorySearchR
     paseoAgentDirs: unique.map((cwd) => `~/.paseo/agents/${sanitizePaseoAgentDir(cwd)}`),
     claudeProjectDirs: unique.map((cwd) => `~/.claude/projects/${encodeClaudeProjectDir(cwd)}`),
     grokSessionDirs: unique.map((cwd) => `~/.grok/sessions/${encodeGrokSessionDir(cwd)}`),
+    ompSessionDirs: ["~/.omp/agent/sessions/"],
   };
 }
 

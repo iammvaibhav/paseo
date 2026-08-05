@@ -506,6 +506,8 @@ interface WriteLabelsResult {
 interface AgentMetadataPatch {
   title?: string;
   labels?: AgentLabelPatch;
+  provider?: string;
+  model?: string | null;
 }
 
 const SYSTEM_ERROR_PREFIX = "[System Error]";
@@ -1844,10 +1846,25 @@ export class AgentManager {
       throw new Error(`Agent not found: ${agentId}`);
     }
 
-    const nextRecord = {
+    const nextRecord: StoredAgentRecord = {
       ...record,
       ...(patch.title ? { title: patch.title } : {}),
       ...(patch.labels ? { labels: applyLabelPatch(record.labels, patch.labels) } : {}),
+      ...(patch.provider
+        ? {
+            provider: patch.provider,
+            persistence: null,
+            runtimeInfo: undefined,
+          }
+        : {}),
+      ...(patch.model !== undefined
+        ? {
+            config: {
+              ...record.config,
+              model: patch.model,
+            },
+          }
+        : {}),
       updatedAt: this.nextStoredUpdatedAt(record),
     };
     await registry.upsert(nextRecord);
@@ -1993,15 +2010,25 @@ export class AgentManager {
     updates: {
       title?: string;
       labels?: Record<string, string>;
+      provider?: string;
+      model?: string | null;
     },
   ): Promise<void> {
     const liveAgent = this.getAgent(agentId);
     if (liveAgent) {
+      if (updates.provider && updates.provider !== liveAgent.provider) {
+        await this.closeAgent(agentId);
+        await this.writeStoredMetadata(agentId, updates);
+        return;
+      }
       if (updates.title) {
         await this.setTitle(agentId, updates.title);
       }
       if (updates.labels) {
         await this.writeLabels(agentId, updates.labels);
+      }
+      if (updates.model !== undefined) {
+        await this.setAgentModel(agentId, updates.model);
       }
       return;
     }

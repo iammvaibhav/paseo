@@ -58,6 +58,7 @@ export async function launchHistoryAsk(
 
   const { provider, model } = await resolveLaunchProviderModel(input);
   const modeId = await resolveLaunchModeId(input, provider, primaryCwd);
+  const workspaceId = input.scope.workspaceId ?? input.scope.workspaceIds?.[0];
 
   const agent = await input.client.createAgent({
     config: {
@@ -67,9 +68,7 @@ export async function launchHistoryAsk(
       ...(model ? { model } : {}),
       title: buildHistoryAskTitle(question),
     },
-    ...(input.scope.kind === "workspace" && input.scope.workspaceId
-      ? { workspaceId: input.scope.workspaceId }
-      : {}),
+    ...(workspaceId ? { workspaceId } : {}),
     initialPrompt: buildHistoryAskBrief({
       scope: input.scope,
       question,

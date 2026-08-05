@@ -2650,7 +2650,12 @@ export class DaemonClient {
 
   async updateAgent(
     agentId: string,
-    updates: { name?: string; labels?: Record<string, string> },
+    updates: {
+      name?: string;
+      labels?: Record<string, string>;
+      provider?: string;
+      model?: string | null;
+    },
   ): Promise<void> {
     const requestId = this.createRequestId();
     const message = SessionInboundMessageSchema.parse({
@@ -2660,6 +2665,8 @@ export class DaemonClient {
       ...(updates.labels && Object.keys(updates.labels).length > 0
         ? { labels: updates.labels }
         : {}),
+      ...(updates.provider !== undefined ? { provider: updates.provider } : {}),
+      ...(updates.model !== undefined ? { model: updates.model } : {}),
       requestId,
     });
     const payload = await this.sendRequest({

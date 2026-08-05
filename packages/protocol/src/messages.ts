@@ -874,6 +874,8 @@ export const UpdateAgentRequestMessageSchema = z.object({
   agentId: z.string(),
   name: z.string().optional(),
   labels: z.record(z.string(), z.string()).optional(),
+  provider: z.string().optional(),
+  model: z.string().nullable().optional(),
   requestId: z.string(),
 });
 

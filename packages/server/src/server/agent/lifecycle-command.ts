@@ -162,21 +162,27 @@ export async function updateAgentCommand(
     agentId: string;
     name?: string;
     labels?: Record<string, string>;
+    provider?: string;
+    model?: string | null;
   },
 ): Promise<UpdateAgentResult> {
   const title = input.name?.trim();
   const labels = input.labels && Object.keys(input.labels).length > 0 ? input.labels : undefined;
+  const provider = input.provider?.trim();
+  const model = input.model;
 
-  if (!title && !labels) {
+  if (!title && !labels && !provider && model === undefined) {
     return {
       accepted: false,
-      error: "Nothing to update (provide name and/or labels)",
+      error: "Nothing to update (provide name, labels, provider, and/or model)",
     };
   }
 
   await dependencies.agentManager.updateAgentMetadata(input.agentId, {
     ...(title ? { title } : {}),
     ...(labels ? { labels } : {}),
+    ...(provider ? { provider } : {}),
+    ...(model !== undefined ? { model } : {}),
   });
 
   return {

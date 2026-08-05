@@ -43,6 +43,7 @@ import {
   supportsDiskTimeline,
   tryReadProviderTimelineFromDisk,
 } from "./agent/provider-disk-history.js";
+import type { AgentTimelineItem } from "./agent/agent-sdk-types.js";
 import {
   formatSystemNotificationPrompt,
   sendPromptToAgent,
@@ -2040,7 +2041,14 @@ export class Session {
       case "close_items_request":
         return this.handleCloseItemsRequest(msg);
       case "update_agent_request":
-        return this.handleUpdateAgentRequest(msg.agentId, msg.name, msg.labels, msg.requestId);
+        return this.handleUpdateAgentRequest(
+          msg.agentId,
+          msg.name,
+          msg.labels,
+          msg.provider,
+          msg.model,
+          msg.requestId,
+        );
       case "project.rename.request":
         return this.handleProjectRenameRequest(msg.projectId, msg.customName, msg.requestId);
       case "project.icon.set.request":
@@ -2675,6 +2683,8 @@ export class Session {
     agentId: string,
     name: string | undefined,
     labels: Record<string, string> | undefined,
+    provider: string | undefined,
+    model: string | null | undefined,
     requestId: string,
   ): Promise<void> {
     this.sessionLogger.info(
@@ -2683,6 +2693,8 @@ export class Session {
         requestId,
         hasName: typeof name === "string",
         labelCount: labels ? Object.keys(labels).length : 0,
+        provider,
+        model,
       },
       "session: update_agent_request",
     );
@@ -2690,7 +2702,7 @@ export class Session {
     try {
       const result = await updateAgentCommand(
         { agentManager: this.agentManager },
-        { agentId, name, labels },
+        { agentId, name, labels, provider, model },
       );
 
       if (!result.accepted) {
@@ -3552,6 +3564,37 @@ export class Session {
     }
   }
 
+  private async seedUnavailableProviderTimeline(
+    agentId: string,
+    record: Awaited<ReturnType<typeof this.agentStorage.get>> & {},
+  ): Promise<void> {
+    if (this.agentManager.hasTimeline(agentId)) {
+      return;
+    }
+    const sessionId = record.persistence?.sessionId;
+    let diskItems: AgentTimelineItem[] | null = null;
+    if (sessionId && supportsDiskTimeline(record.provider)) {
+      diskItems = await tryReadProviderTimelineFromDisk(
+        {
+          provider: record.provider,
+          cwd: record.cwd,
+          sessionId,
+          ...(typeof record.persistence?.nativeHandle === "string"
+            ? { nativeHandle: record.persistence.nativeHandle }
+            : {}),
+        },
+        { logger: this.sessionLogger },
+      );
+    }
+    if (diskItems && diskItems.length > 0) {
+      this.agentManager.seedTimelineFromItems(agentId, diskItems);
+    } else {
+      await this.agentManager.seedTimelineFromDurable(agentId);
+      if (!this.agentManager.hasTimeline(agentId)) {
+        this.agentManager.seedTimelineFromItems(agentId, []);
+      }
+    }
+  }
   private async handleRefreshAgentRequest(
     msg: Extract<SessionInboundMessage, { type: "refresh_agent_request" }>,
   ): Promise<void> {
@@ -3573,9 +3616,39 @@ export class Session {
         if (!record) {
           throw new Error(`Agent not found: ${agentId}`);
         }
-        const registeredProviderIds = this.providerSnapshotManager.listRegisteredProviderIds();
+        const registeredProviderIds = new Set(
+          this.providerSnapshotManager.listRegisteredProviderIds(),
+        );
         if (!isStoredAgentProviderAvailable(record, registeredProviderIds)) {
-          throw new Error(`Agent ${agentId} references unavailable provider '${record.provider}'`);
+          this.sessionLogger.info(
+            { agentId, provider: record.provider },
+            "Refreshing stored agent snapshot without unavailable provider runtime",
+          );
+          await this.seedUnavailableProviderTimeline(agentId, record);
+          const storedPayload = this.buildStoredAgentPayload(record, registeredProviderIds);
+          this.emit({
+            type: "agent_update",
+            payload: {
+              kind: "upsert",
+              agent: storedPayload,
+              project: record.workspaceId
+                ? await this.buildProjectPlacementForWorkspaceId(record.workspaceId)
+                : null,
+            },
+          });
+          const timelineSize = this.agentManager.getTimeline(agentId).length;
+          if (requestId) {
+            this.emit({
+              type: "status",
+              payload: {
+                status: "agent_refreshed",
+                agentId,
+                requestId,
+                timelineSize,
+              },
+            });
+          }
+          return;
         }
         if (!toAgentPersistenceHandle(registeredProviderIds, record.persistence)) {
           throw new Error(`Agent ${agentId} cannot be refreshed because it lacks persistence`);
