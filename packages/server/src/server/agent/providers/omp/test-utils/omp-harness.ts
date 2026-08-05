@@ -85,6 +85,9 @@ export class OmpHarness {
   queueCommands(commands: OmpRpcSlashCommand[]): void {
     this.omp.queueCommands(commands);
   }
+  getSession(): OmpAgentSession {
+    return this.requireSession();
+  }
 
   failEventSubscription(error: Error): void {
     this.omp.failNextSubagentSubscription("events", error);

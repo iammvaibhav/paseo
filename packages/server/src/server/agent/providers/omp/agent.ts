@@ -493,7 +493,8 @@ function resolveThinkingOptionId(
   cachedThinkingOptionId: string | null,
   sessionThinkingLevel: OmpThinkingLevel | undefined,
 ): OmpThinkingLevel | null {
-  const currentThinking = cachedThinkingOptionId ?? sessionThinkingLevel;
+  const currentThinking =
+    normalizeOmpThinkingOption(sessionThinkingLevel) ?? cachedThinkingOptionId;
   return normalizeOmpThinkingOption(currentThinking);
 }
 
@@ -2448,6 +2449,12 @@ export class OmpAgentSession implements AgentSession {
 
   private async refreshState(): Promise<void> {
     this.state = await this.runtimeSession.getState();
+    if (this.state.thinkingLevel) {
+      const normalized = normalizeOmpThinkingOption(this.state.thinkingLevel);
+      if (normalized) {
+        this.lastKnownThinkingOptionId = normalized;
+      }
+    }
   }
 
   private async refreshAfterTurn(finalUsage: Promise<void>): Promise<void> {

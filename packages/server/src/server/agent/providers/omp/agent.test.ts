@@ -163,6 +163,18 @@ describe("OMP agent client and session", () => {
       "xhigh",
     ]);
   });
+  test("updates runtime thinkingOptionId when session thinking level changes at runtime", async () => {
+    const omp = new OmpHarness();
+    await omp.start();
+    omp.runtime().state.thinkingLevel = "low";
+
+    const initialInfo = await omp.getSession().getRuntimeInfo();
+    expect(initialInfo.thinkingOptionId).toBe("low");
+
+    omp.runtime().state.thinkingLevel = "high";
+    const updatedInfo = await omp.getSession().getRuntimeInfo();
+    expect(updatedInfo.thinkingOptionId).toBe("high");
+  });
 
   test("declares steer out of band and redirects the live turn without canceling it", async () => {
     const omp = new OmpHarness();
