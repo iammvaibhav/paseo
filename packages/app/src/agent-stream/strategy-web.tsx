@@ -754,6 +754,14 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     rearmHistoryStartFromUserIntent();
   });
 
+  // Upward intent must drop stick immediately. Waiting for the paired scroll event races
+  // stream layout effects that re-anchor while followOutput is still true, yanking the
+  // viewport back to the live tail while the user is mid-history.
+  const markUpwardUserIntent = useStableEvent(() => {
+    markUpwardInputEvidence();
+    stopFollowingOutputFromUserIntent();
+  });
+
   const handleDomScroll = useCallback(() => {
     const scrollContainer = scrollContainerRef.current;
     if (!isActiveRef.current || !scrollContainer || !isScrollContainerMeasurable(scrollContainer)) {
@@ -842,7 +850,8 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
   ]);
 
   // Following output is a layout invariant: rows, footer, and bottom offset must
-  // reach the browser in the same paint.
+  // reach the browser in the same paint. Mid-history viewports stay frozen because
+  // followOutput is cleared on upward intent before this effect can re-anchor.
   useLayoutEffect(() => {
     if (!isActive || !followOutputRef.current) {
       return;
@@ -938,7 +947,7 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     }
 
     const markUpwardViewportInput = () => {
-      markUpwardInputEvidence();
+      markUpwardUserIntent();
       if (scrollContainer.scrollTop <= USER_SCROLL_DELTA_EPSILON) {
         rearmHistoryStartFromUserIntent();
       }
@@ -974,6 +983,9 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
       if (event.button === 0) {
         if (isVerticalScrollbarGutterPress(event, scrollContainer)) {
           mouseScrollGestureRef.current = { kind: "scrollbar", pointerId: event.pointerId };
+          // Scrollbar ownership must drop stick before the first scroll event; stream
+          // layout can re-anchor in that gap and yank a mid-history viewport.
+          stopFollowingOutputFromUserIntent();
         }
         return;
       }
@@ -991,6 +1003,9 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
         return;
       }
       if (event.clientY < gesture.lastClientY - USER_SCROLL_DELTA_EPSILON) {
+        if (!gesture.hasUpwardEvidence) {
+          stopFollowingOutputFromUserIntent();
+        }
         gesture.hasUpwardEvidence = true;
         if (gesture.evidenceExpiryFrame !== null) {
           window.cancelAnimationFrame(gesture.evidenceExpiryFrame);
@@ -1073,8 +1088,9 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     clearUpwardInputEvidence,
     handleDomScroll,
     isActive,
-    markUpwardInputEvidence,
+    markUpwardUserIntent,
     rearmHistoryStartFromUserIntent,
+    stopFollowingOutputFromUserIntent,
   ]);
 
   useEffect(() => {
