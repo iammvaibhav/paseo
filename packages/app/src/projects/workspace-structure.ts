@@ -1,6 +1,5 @@
 import type { ProjectDescriptor, WorkspaceDescriptor } from "@/stores/session-store";
 import { isHistoryAskAgent } from "@/history-ask";
-import { isHomeDirectoryPath } from "@/utils/path";
 import { projectDisplayNameFromProjectId } from "@/utils/project-display-name";
 
 export interface WorkspaceAgentForSidebar {
@@ -9,24 +8,12 @@ export interface WorkspaceAgentForSidebar {
 }
 
 export function isSidebarWorkspaceHidden(input: {
-  workspace: WorkspaceDescriptor;
   agentsInWorkspace: WorkspaceAgentForSidebar[];
 }): boolean {
-  if (
+  return (
     input.agentsInWorkspace.length > 0 &&
     input.agentsInWorkspace.every((a) => isHistoryAskAgent(a.labels))
-  ) {
-    return true;
-  }
-
-  if (isHomeDirectoryPath(input.workspace.workspaceDirectory)) {
-    const hasRegularAgent = input.agentsInWorkspace.some((a) => !isHistoryAskAgent(a.labels));
-    if (!hasRegularAgent) {
-      return true;
-    }
-  }
-
-  return false;
+  );
 }
 
 export interface WorkspaceStructureHostPlacement {
@@ -123,7 +110,7 @@ export function buildWorkspaceStructureProjects(input: {
 
     for (const workspace of session.workspaces) {
       const agentsInWorkspace = agentsByWorkspaceId.get(workspace.id) ?? [];
-      if (isSidebarWorkspaceHidden({ workspace, agentsInWorkspace })) {
+      if (isSidebarWorkspaceHidden({ agentsInWorkspace })) {
         continue;
       }
       const viewKey = viewKeyByServerProjectId.get(session.serverId)?.get(workspace.projectId);
@@ -137,7 +124,6 @@ export function buildWorkspaceStructureProjects(input: {
   }
 
   return Array.from(byProject.values())
-    .filter((draft) => draft.workspaces.length > 0)
     .map((draft) => ({
       viewKey: draft.viewKey,
       projectKey: draft.projectKey,

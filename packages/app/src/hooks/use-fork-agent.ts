@@ -20,7 +20,11 @@ import {
 import { useWorkspaceDraftSubmissionStore } from "@/stores/workspace-draft-submission-store";
 import { toErrorMessage } from "@/utils/error-messages";
 import { buildNewWorkspaceRoute } from "@/utils/host-routes";
-import type { WorkspaceDraftTabSetup, WorkspaceTabTarget } from "@/workspace-tabs/model";
+import type {
+  WorkspaceDraftForkSource,
+  WorkspaceDraftTabSetup,
+  WorkspaceTabTarget,
+} from "@/workspace-tabs/model";
 
 /**
  * The subset of an agent record that a fork needs in order to seed the new
@@ -58,6 +62,12 @@ export interface ForkAgentRequest {
   workspaceId?: string;
   target: AssistantForkTarget;
   boundary?: ForkAgentBoundary;
+  /**
+   * Set for completed-turn tab forks: the draft submits through the fork RPC so
+   * the daemon renders the transcript at submit time. The chat-history pill
+   * preloaded by this hook is a preview of that transcript.
+   */
+  forkSource?: WorkspaceDraftForkSource;
 }
 
 export interface UseForkAgentInput {
@@ -118,8 +128,14 @@ function buildForkDraftSetup(agent: ForkAgentSource): WorkspaceDraftTabSetup | u
 function buildForkDraftTabTarget(
   setup: WorkspaceDraftTabSetup | undefined,
   draftId: string,
+  forkSource?: WorkspaceDraftForkSource,
 ): WorkspaceTabTarget {
-  return setup ? { kind: "draft", draftId, setup } : { kind: "draft", draftId };
+  return {
+    kind: "draft",
+    draftId,
+    ...(setup ? { setup } : {}),
+    ...(forkSource ? { forkSource } : {}),
+  };
 }
 
 /**
@@ -136,8 +152,10 @@ export function useForkAgent(
   const router = useRouter();
   const client = useSessionStore((state) => state.sessions[serverId]?.client ?? null);
   const supportsAgentForkContext = useHostFeature(serverId, "agentForkContext") && !readOnly;
+  // COMPAT(agentFork): added in v0.1.108, remove gate after 2027-01-17.
+  const supportsAgentFork = useHostFeature(serverId, "agentFork") && !readOnly;
 
-  return useStableEvent(async ({ agentId, agent, workspaceId, target, boundary }) => {
+  return useStableEvent(async ({ agentId, agent, workspaceId, target, boundary, forkSource }) => {
     try {
       if (!supportsAgentForkContext) {
         toast?.error(t("message.actions.forkUnavailable"));
@@ -165,6 +183,12 @@ export function useForkAgent(
       };
 
       if (target === "tab") {
+        // A forkSource draft submits through the fork RPC; without the RPC the
+        // daemon would create a plain agent and drop the forked history.
+        if (forkSource && !supportsAgentFork) {
+          toast?.error(t("message.actions.forkUnavailable"));
+          return;
+        }
         if (!workspaceId) {
           throw new Error(t("message.actions.forkMissingWorkspace"));
         }
@@ -172,7 +196,7 @@ export function useForkAgent(
         navigateToWorkspace({
           serverId,
           workspaceId,
-          target: buildForkDraftTabTarget(draftSetup, draftId),
+          target: buildForkDraftTabTarget(draftSetup, draftId, forkSource),
         });
         return;
       }

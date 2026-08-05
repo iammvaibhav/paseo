@@ -103,13 +103,7 @@ import { isWeb } from "@/constants/platform";
 import type { Theme } from "@/styles/theme";
 import { recordRenderProfileReasons } from "@/utils/render-profiler";
 import { useRetainedPanelActive } from "@/components/retained-panel";
-import { generateDraftId } from "@/stores/draft-keys";
-import type {
-  WorkspaceDraftForkSource,
-  WorkspaceDraftTabSetup,
-  WorkspaceTabTarget,
-} from "@/workspace-tabs/model";
-import { toErrorMessage } from "@/utils/error-messages";
+import type { WorkspaceDraftForkSource } from "@/workspace-tabs/model";
 
 function renderLiveAuxiliaryNode(input: {
   pendingPermissions: ReactNode;
@@ -291,43 +285,6 @@ function useRetainedValue<T>(value: T, active: boolean): T {
 const EMPTY_PENDING_MESSAGE_SUBMISSIONS: readonly PendingMessageSubmission[] = [];
 const GROUPED_TOOL_CALL_DETAIL_MAX_HEIGHT = 200;
 
-function buildForkDraftSetup(agent: AgentScreenAgent): WorkspaceDraftTabSetup | undefined {
-  if (!agent.provider) {
-    return undefined;
-  }
-
-  const featureValues: Record<string, unknown> = {};
-  for (const feature of agent.features ?? []) {
-    featureValues[feature.id] = feature.value;
-  }
-
-  return {
-    provider: agent.provider,
-    cwd: agent.cwd,
-    modeId: agent.currentModeId ?? agent.runtimeInfo?.modeId ?? null,
-    model: agent.model ?? agent.runtimeInfo?.model ?? null,
-    thinkingOptionId:
-      agent.effectiveThinkingOptionId ??
-      agent.runtimeInfo?.thinkingOptionId ??
-      agent.thinkingOptionId ??
-      null,
-    featureValues,
-  };
-}
-
-function buildForkDraftTabTarget(
-  setup: WorkspaceDraftTabSetup | undefined,
-  draftId: string,
-  forkSource: WorkspaceDraftForkSource,
-): WorkspaceTabTarget {
-  return {
-    kind: "draft",
-    draftId,
-    ...(setup ? { setup } : {}),
-    forkSource,
-  };
-}
-
 /** The source anchor a fork-mode draft submits with. */
 function buildForkSource(
   sourceAgentId: string,
@@ -400,11 +357,6 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     const supportsAgentForkContextCursor = useSessionStore(
       (state) =>
         state.sessions[resolvedServerId]?.serverInfo?.features?.agentForkContextCursor === true,
-    );
-    // COMPAT(agentFork): gate the tab fork on the daemon's fork RPC capability.
-    const supportsAgentFork = useSessionStore(
-      (state) =>
-        !readOnly && state.sessions[resolvedServerId]?.serverInfo?.features?.agentFork === true,
     );
     const supportsChatOutline = useSessionStore(
       (state) =>
@@ -515,43 +467,19 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
 
     const handleForkAssistantTurn: AssistantTurnForkHandler = useStableEvent(
       async ({ target, boundary }) => {
-        // A tab fork stays in this workspace, so the draft tab submits through
-        // the fork RPC and lets the daemon render the chat-history snapshot from
-        // the source timeline.
-        if (target === "tab") {
-          try {
-            if (!supportsAgentFork) {
-              toast?.error(t("message.actions.forkUnavailable"));
-              return;
-            }
-            const workspaceId = context.workspaceId;
-            if (!workspaceId) {
-              throw new Error(t("message.actions.forkMissingWorkspace"));
-            }
-            navigateToWorkspace({
-              serverId: resolvedServerId,
-              workspaceId,
-              target: buildForkDraftTabTarget(
-                buildForkDraftSetup(context),
-                generateDraftId(),
-                buildForkSource(agentId, boundary),
-              ),
-            });
-          } catch (error) {
-            toast?.error(toErrorMessage(error) || t("message.actions.forkFailed"));
-          }
-          return;
-        }
-
-        // A workspace fork lands in a fresh worktree, so it goes through
-        // `useForkAgent`, which stashes the chat-history snapshot on the new
-        // workspace's draft.
+        // Both targets go through `useForkAgent`, which preloads the
+        // chat-history snapshot on the draft so the transcript is visible in
+        // the composer before submit. A tab fork additionally carries a
+        // forkSource so the draft submits through the fork RPC, letting the
+        // daemon re-render the transcript from the source timeline at submit
+        // time (same boundary, same rendering).
         await forkAgent({
           agentId,
           agent: context,
           workspaceId: context.workspaceId,
           target,
           boundary,
+          ...(target === "tab" ? { forkSource: buildForkSource(agentId, boundary) } : {}),
         });
       },
     );

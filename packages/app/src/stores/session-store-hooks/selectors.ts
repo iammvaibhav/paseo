@@ -1,12 +1,13 @@
 import equal from "fast-deep-equal";
 import {
   buildWorkspaceStructureProjects,
+  type WorkspaceAgentForSidebar,
   type WorkspaceStructure,
   type WorkspaceStructureProject,
 } from "@/projects/workspace-structure";
 import type { DesktopBadgeWorkspaceStatus } from "@/utils/desktop-badge-state";
 import { resolveWorkspaceMapKeyByIdentity } from "@/utils/workspace-identity";
-import type { ProjectDescriptor, WorkspaceDescriptor } from "../session-store";
+import type { Agent, ProjectDescriptor, WorkspaceDescriptor } from "../session-store";
 
 export type { DesktopBadgeWorkspaceStatus } from "@/utils/desktop-badge-state";
 export type { WorkspaceStructure, WorkspaceStructureProject } from "@/projects/workspace-structure";
@@ -18,6 +19,7 @@ export interface SessionsSnapshot {
       hasHydratedWorkspaces?: boolean;
       workspaces: Map<string, WorkspaceDescriptor>;
       projects?: Map<string, ProjectDescriptor>;
+      agents?: Map<string, Agent>;
     }
   >;
 }
@@ -146,6 +148,7 @@ export function selectWorkspaceStructureProjects(
     serverId: string;
     workspaces: Iterable<WorkspaceDescriptor>;
     projects: Iterable<ProjectDescriptor>;
+    agents: Iterable<WorkspaceAgentForSidebar>;
   }> = [];
 
   for (const serverId of serverIds) {
@@ -159,6 +162,7 @@ export function selectWorkspaceStructureProjects(
       serverId,
       workspaces: workspaces?.values() ?? [],
       projects: projects.values(),
+      agents: session.agents?.values() ?? [],
     });
   }
 

@@ -219,6 +219,29 @@ describe("workspace draft fork submission", () => {
     expect(overrides).not.toHaveProperty("cwd");
   });
 
+  test("strips the chat-history preview from the fork payload so the daemon's transcript is not duplicated", async () => {
+    const { client, forkAgentCalls } = createSubmitClient();
+
+    await submit(client, {
+      forkSource,
+      attachments: [
+        {
+          type: "text",
+          mimeType: "text/plain",
+          contextKind: "chat_history",
+          title: "Chat history",
+          text: "Previous conversation",
+        },
+        { type: "text", mimeType: "text/plain", title: "A note", text: "keep this" },
+      ],
+    });
+
+    const options = forkAgentCalls[0].options;
+    expect(options.attachments).toEqual([
+      { type: "text", mimeType: "text/plain", title: "A note", text: "keep this" },
+    ]);
+  });
+
   test("fails loudly instead of creating a plain agent when the fork has no snapshot", async () => {
     const { client, createAgentCalls } = createSubmitClient({ forkAgentSnapshot: null });
 

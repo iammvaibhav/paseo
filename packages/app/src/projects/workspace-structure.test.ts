@@ -173,4 +173,52 @@ describe("buildWorkspaceStructureProjects", () => {
       placementShapedKey,
     );
   });
+
+  test("keeps home-directory workspaces with no agents visible", () => {
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [project({ id: "/Users/vaibhav", key: null, root: "/Users/vaibhav" })],
+          workspaces: [workspace("ws-home", "/Users/vaibhav", "/Users/vaibhav")],
+          agents: [],
+        },
+      ],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].workspaceKeys).toEqual(["host-a:ws-home"]);
+  });
+
+  test("keeps home-directory workspaces with a regular agent visible", () => {
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [project({ id: "/Users/vaibhav", key: null, root: "/Users/vaibhav" })],
+          workspaces: [workspace("ws-home", "/Users/vaibhav", "/Users/vaibhav")],
+          agents: [{ workspaceId: "ws-home", labels: {} }],
+        },
+      ],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].workspaceKeys).toEqual(["host-a:ws-home"]);
+  });
+
+  test("hides workspaces whose agents are all History Ask agents", () => {
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [project({ id: "/Users/vaibhav", key: null, root: "/Users/vaibhav" })],
+          workspaces: [workspace("ws-home", "/Users/vaibhav", "/Users/vaibhav")],
+          agents: [{ workspaceId: "ws-home", labels: { "paseo.history-ask": "1" } }],
+        },
+      ],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].workspaceKeys).toEqual([]);
+  });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isAbsolutePath, isHomeDirectoryPath } from "./path";
+import { isAbsolutePath } from "./path";
 
 describe("isAbsolutePath", () => {
   it("returns true for Unix absolute paths", () => {
@@ -35,26 +35,5 @@ describe("isAbsolutePath", () => {
   it("handles mixed separators in absolute paths", () => {
     expect(isAbsolutePath("C:/Users\\mixed/path")).toBe(true);
     expect(isAbsolutePath("/tmp\\mixed/path")).toBe(true);
-  });
-});
-
-describe("isHomeDirectoryPath", () => {
-  it("returns true for home directory paths", () => {
-    expect(isHomeDirectoryPath("~")).toBe(true);
-    expect(isHomeDirectoryPath("/Users/vaibhav")).toBe(true);
-    expect(isHomeDirectoryPath("/Users/vaibhav/")).toBe(true);
-    expect(isHomeDirectoryPath("/home/ubuntu")).toBe(true);
-    expect(isHomeDirectoryPath("/root")).toBe(true);
-    expect(isHomeDirectoryPath("C:\\Users\\vaibhav")).toBe(true);
-    expect(isHomeDirectoryPath("C:/Users/vaibhav")).toBe(true);
-  });
-
-  it("returns false for project subdirectories or non-home paths", () => {
-    expect(isHomeDirectoryPath("/Users/vaibhav/projects/app")).toBe(false);
-    expect(isHomeDirectoryPath("/home/ubuntu/repo")).toBe(false);
-    expect(isHomeDirectoryPath("C:\\Users\\vaibhav\\projects")).toBe(false);
-    expect(isHomeDirectoryPath("/var/log")).toBe(false);
-    expect(isHomeDirectoryPath("")).toBe(false);
-    expect(isHomeDirectoryPath(null)).toBe(false);
   });
 });

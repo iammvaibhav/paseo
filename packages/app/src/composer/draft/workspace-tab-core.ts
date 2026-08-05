@@ -228,7 +228,16 @@ async function submitDraftForkRequest(input: {
   const fork = await client.forkAgent(forkSource.sourceAgentId, text, {
     messageId: attempt.clientMessageId,
     ...(images && images.length > 0 ? { images } : {}),
-    ...(attachments && attachments.length > 0 ? { attachments } : {}),
+    // The chat-history pill on a fork draft is a preview: the daemon renders
+    // the transcript itself from the fork boundary at submit time, so sending
+    // it would attach the conversation twice to the fork's first message.
+    ...(attachments && attachments.length > 0
+      ? {
+          attachments: attachments.filter(
+            (attachment) => attachment.type !== "text" || attachment.contextKind !== "chat_history",
+          ),
+        }
+      : {}),
     ...(forkSource.boundaryCursor ? { boundaryCursor: forkSource.boundaryCursor } : {}),
     ...(forkSource.boundaryMessageId ? { boundaryMessageId: forkSource.boundaryMessageId } : {}),
     ...(Object.keys(overrides).length > 0 ? { overrides } : {}),
