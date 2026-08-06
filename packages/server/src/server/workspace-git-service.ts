@@ -52,7 +52,25 @@ export const WORKSPACE_GIT_SELF_HEAL_INTERVAL_MS = 60_000;
 const FORGE_PR_STATUS_POLL_FAST_INTERVAL_MS = 20_000;
 const FORGE_PR_STATUS_POLL_SLOW_INTERVAL_MS = 120_000;
 const FORGE_PR_STATUS_POLL_ERROR_BACKOFF_CAP_MS = 300_000;
-const DEGRADED_GIT_POLL_INTERVAL_MS = 5_000;
+// A watcher-less fallback polls git state; 60s keeps the load bounded when
+// inotify is unavailable (5s × several workspaces × ~3 git commands each was a
+// command storm that saturated the daemon event loop on busy hosts).
+const DEGRADED_GIT_POLL_INTERVAL_MS = 60_000;
+/** Delay before re-subscribing after a transient (EINTR) watcher failure. */
+const WORKING_TREE_WATCH_RETRY_DELAY_MS = 10_000;
+/** Consecutive transient failures before degrading to polling for good. */
+const WORKING_TREE_WATCH_MAX_TRANSIENT_RETRIES = 3;
+
+function isTransientWatchError(error: unknown): boolean {
+  return error instanceof Error && /Interrupted system call|EINTR/i.test(error.message);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolveTimeout) => {
+    const timer = setTimeout(resolveTimeout, ms);
+    timer.unref?.();
+  });
+}
 // Auxiliary reads may reuse cached values within this window; snapshots do not expire on read.
 const WORKSPACE_GIT_AUXILIARY_READ_TTL_MS = 15_000;
 // Non-forced refresh triggers share this minimum gap to absorb watcher/self-heal bursts; force bypasses it.
@@ -384,6 +402,8 @@ interface WorkingTreeWatchTarget {
   fallbackPollTimer: NodeJS.Timeout | null;
   listeners: Set<() => void>;
   closed: boolean;
+  /** Consecutive transient (EINTR) watcher failures; capped before degrading. */
+  watchRetries: number;
 }
 
 interface WorkspaceGitAuxiliaryReadCacheEntry<T> {
@@ -1147,6 +1167,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       fallbackPollTimer: null,
       listeners: new Set(),
       closed: false,
+      watchRetries: 0,
     };
 
     await this.startWorkingTreeSubscription(target);
@@ -1167,6 +1188,10 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
         target.watchPath,
         (error, events) => {
           if (error) {
+            if (isTransientWatchError(error)) {
+              void this.retryWorkingTreeSubscription(target);
+              return;
+            }
             this.logger.warn(
               { err: error, cwd: target.cwd },
               "Working tree watcher error; using degraded polling",
@@ -1254,6 +1279,44 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       });
     }
     this.startWorkingTreeWatchFallback(target, reason);
+  }
+
+  /**
+   * A transient watcher failure (EINTR on the inotify poll — a signal
+   * interrupted the syscall, not a persistent problem) is retried instead of
+   * degrading to git polling forever. Bounded: after
+   * WORKING_TREE_WATCH_MAX_TRANSIENT_RETRIES consecutive EINTRs the target
+   * degrades like any other error.
+   */
+  private async retryWorkingTreeSubscription(target: WorkingTreeWatchTarget): Promise<void> {
+    target.watchRetries += 1;
+    if (target.watchRetries > WORKING_TREE_WATCH_MAX_TRANSIENT_RETRIES) {
+      this.logger.warn(
+        { cwd: target.cwd, retries: target.watchRetries },
+        "Working tree watcher kept failing with transient errors; using degraded polling",
+      );
+      this.degradeWorkingTreeWatch(target, "watcher_error");
+      return;
+    }
+    this.logger.warn(
+      { cwd: target.cwd, retries: target.watchRetries },
+      "Working tree watcher hit a transient error; retrying subscription",
+    );
+    const subscription = target.subscription;
+    target.subscription = null;
+    if (subscription) {
+      await subscription.unsubscribe().catch((error) => {
+        this.logger.warn(
+          { err: error, cwd: target.cwd },
+          "Failed to stop broken working tree watcher",
+        );
+      });
+    }
+    await sleep(WORKING_TREE_WATCH_RETRY_DELAY_MS);
+    if (target.closed || target.fallbackPollTimer) {
+      return;
+    }
+    await this.startWorkingTreeSubscription(target);
   }
 
   private async promoteWorkingTreeWatchTarget(

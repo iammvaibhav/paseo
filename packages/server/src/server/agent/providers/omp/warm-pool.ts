@@ -6,6 +6,30 @@ import type { Logger } from "pino";
 
 import type { OmpRuntime, OmpRuntimeSession } from "./runtime.js";
 
+/** How often the pool health-sweeps its idle entries. */
+const WARM_POOL_SWEEP_INTERVAL_MS = 60_000;
+/** An idle process must answer get_state this fast or it is treated as dead. */
+const WARM_POOL_SWEEP_GETSTATE_TIMEOUT_MS = 3_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolvePromise, rejectPromise) => {
+    const timer = setTimeout(() => rejectPromise(new Error(`Timed out after ${ms}ms`)), ms);
+    timer.unref?.();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolvePromise(value);
+        return undefined;
+      },
+      (error) => {
+        clearTimeout(timer);
+        rejectPromise(error);
+        return undefined;
+      },
+    );
+  });
+}
+
 /**
  * Warm pool of idle OMP processes.
  *
@@ -60,11 +84,62 @@ export class OmpWarmPool {
   private readonly logger: Logger;
   private readonly entries: WarmEntry[] = [];
   private readonly filling = new Map<string, Promise<void>>();
+  /** Most recent claim input per key, so a health sweep can refill dead entries. */
+  private readonly lastInputByKey = new Map<string, OmpWarmPoolInput>();
+  private sweepTimer: NodeJS.Timeout | null = null;
   private closed = false;
 
   constructor(options: OmpWarmPoolOptions) {
     this.runtime = options.runtime;
     this.logger = options.logger;
+  }
+
+  /**
+   * Start the periodic health sweep: entries whose process stopped answering
+   * get_state are disposed and their key is refilled, so an idle pooled
+   * process that dies does not silently leave the next create cold.
+   */
+  startSweep(): void {
+    if (this.sweepTimer) {
+      return;
+    }
+    const timer = setInterval(() => void this.sweep(), WARM_POOL_SWEEP_INTERVAL_MS);
+    timer.unref?.();
+    this.sweepTimer = timer;
+  }
+
+  private async sweep(): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+    const liveKeys = new Set<string>();
+    const dead: WarmEntry[] = [];
+    for (const entry of this.entries) {
+      try {
+        await withTimeout(entry.session.getState(), WARM_POOL_SWEEP_GETSTATE_TIMEOUT_MS);
+        liveKeys.add(entry.key);
+      } catch {
+        dead.push(entry);
+      }
+    }
+    if (dead.length > 0) {
+      this.entries.splice(
+        0,
+        this.entries.length,
+        ...this.entries.filter((entry) => !dead.includes(entry)),
+      );
+      for (const entry of dead) {
+        void this.dispose(entry);
+      }
+      this.logger.info({ dead: dead.length }, "OMP warm pool sweep disposed unresponsive entries");
+    }
+    // Refill keys whose last live entry died. In-flight fills are deduped by
+    // key inside fill(), so concurrent sweeps/claims cannot double-spawn.
+    for (const [key, input] of this.lastInputByKey) {
+      if (!liveKeys.has(key) && !this.filling.has(key)) {
+        this.fill(input);
+      }
+    }
   }
 
   /**
@@ -79,6 +154,7 @@ export class OmpWarmPool {
     }
     const key = keyFor(input);
     const systemPrompt = input.systemPrompt.trim();
+    this.lastInputByKey.set(key, input);
 
     // Drop entries that can never satisfy this claim: different key (mode or
     // cwd drift) or same key with a different system prompt (the daemon append
@@ -119,6 +195,10 @@ export class OmpWarmPool {
   /** Close every pooled process. Idempotent; safe to call mid-fill. */
   async closeAll(): Promise<void> {
     this.closed = true;
+    if (this.sweepTimer) {
+      clearInterval(this.sweepTimer);
+      this.sweepTimer = null;
+    }
     const entries = this.entries.splice(0);
     await Promise.all(entries.map((entry) => this.dispose(entry)));
     // Wait for in-flight fills so their freshly spawned processes are closed

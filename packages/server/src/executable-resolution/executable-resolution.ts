@@ -108,6 +108,16 @@ export function executableExists(
   return exists(executablePath) ? executablePath : null;
 }
 
+/**
+ * Availability probes are expensive: finding "omp" shells out to `which -a`
+ * and then runs `omp --version` (a ~300ms Bun runtime boot). Every agent
+ * create checks the provider's binary through requireAvailableClient, so
+ * memoize recent results. A 60s TTL bounds staleness; a binary that vanishes
+ * mid-run surfaces loudly at spawn time anyway.
+ */
+const EXECUTABLE_CACHE_TTL_MS = 60_000;
+const executableCache = new Map<string, { path: string | null; at: number }>();
+
 export async function findExecutable(
   name: string,
   probeTimeoutMs = PROBE_TIMEOUT_MS,
@@ -117,26 +127,34 @@ export async function findExecutable(
     return null;
   }
 
+  const cached = executableCache.get(trimmed);
+  if (cached && Date.now() - cached.at < EXECUTABLE_CACHE_TTL_MS) {
+    return cached.path;
+  }
+
+  let resolved: string | null;
   if (process.platform === "win32") {
-    return windowsExecutableResolution.find(trimmed, {
+    resolved = await windowsExecutableResolution.find(trimmed, {
       enumeratePathCandidates: enumerateCandidates,
       probeExecutable,
       exists: existsSync,
       probeTimeoutMs,
     });
-  }
-
-  if (hasPathSeparator(trimmed)) {
-    return (await probeExecutable(trimmed, probeTimeoutMs)) ? trimmed : null;
-  }
-
-  const candidates = await enumerateCandidates(trimmed);
-  for (const candidate of candidates) {
-    if (await probeExecutable(candidate, probeTimeoutMs)) {
-      return candidate;
+  } else if (hasPathSeparator(trimmed)) {
+    resolved = (await probeExecutable(trimmed, probeTimeoutMs)) ? trimmed : null;
+  } else {
+    const candidates = await enumerateCandidates(trimmed);
+    resolved = null;
+    for (const candidate of candidates) {
+      if (await probeExecutable(candidate, probeTimeoutMs)) {
+        resolved = candidate;
+        break;
+      }
     }
   }
-  return null;
+
+  executableCache.set(trimmed, { path: resolved, at: Date.now() });
+  return resolved;
 }
 
 export async function isCommandAvailable(command: string): Promise<boolean> {
