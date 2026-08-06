@@ -228,6 +228,10 @@ class OmpCliRuntimeSession implements OmpRuntimeSession {
     await this.request({ type: "set_thinking_level", level });
   }
 
+  async newSession(): Promise<void> {
+    await this.request({ type: "new_session" });
+  }
+
   async getSessionStats(): Promise<OmpSessionStats> {
     // COMPAT(ompGetStateFallback): added in v0.1.105 — older OMP binaries
     // lack the `get_session_stats` RPC command; fall back to extracting

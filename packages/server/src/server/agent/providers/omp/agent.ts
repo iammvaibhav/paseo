@@ -76,6 +76,7 @@ import {
   resolveOmpSessionFile,
 } from "./session-descriptor.js";
 import type { OmpRuntime, OmpRuntimeSession, OmpStartSessionInput } from "./runtime.js";
+import { OmpWarmPool } from "./warm-pool.js";
 import type {
   OmpAgentSessionEvent,
   OmpAgentMessage,
@@ -2475,6 +2476,7 @@ export class OmpAgentClient implements AgentClient {
   private readonly noTurnScheduler?: OmpNoTurnScheduler;
   private readonly usagePollScheduler?: OmpUsagePollScheduler;
   private readonly runtime: OmpRuntime;
+  private readonly warmPool: OmpWarmPool;
 
   constructor(options: OmpAgentClientOptions) {
     const { runtimeProviderParams, modelRoleParams } = resolveOmpProviderParams(
@@ -2498,6 +2500,7 @@ export class OmpAgentClient implements AgentClient {
     this.noTurnScheduler = options.noTurnScheduler;
     this.usagePollScheduler = options.usagePollScheduler;
     this.runtime = options.runtime ?? createRuntime(options.logger, runtimeSettings);
+    this.warmPool = new OmpWarmPool({ runtime: this.runtime, logger: this.logger });
   }
 
   private async configureNativePaseoTools(
@@ -2515,17 +2518,16 @@ export class OmpAgentClient implements AgentClient {
     launchContext?: AgentLaunchContext,
   ): Promise<AgentSession> {
     const launchMode = this.resolveLaunchMode(config.modeId);
-    const runtimeSession = await this.runtime.startSession({
-      cwd: config.cwd,
-      protocolMode: "rpc-ui",
-      model: config.model,
-      thinkingOptionId: normalizeOmpThinkingOption(config.thinkingOptionId) ?? undefined,
-      noSession: config.internal === true,
-      modeId: launchMode.modeId,
-      extraArgs: launchMode.extraArgs,
-      systemPrompt: composeSystemPromptParts(config.systemPrompt, config.daemonAppendSystemPrompt),
-      env: launchContext?.env,
-    });
+    const systemPrompt = composeSystemPromptParts(
+      config.systemPrompt,
+      config.daemonAppendSystemPrompt,
+    );
+    const runtimeSession = await this.startRuntimeSession(
+      config,
+      launchContext,
+      launchMode,
+      systemPrompt,
+    );
     try {
       await this.configureNativePaseoTools(runtimeSession, launchContext?.paseoTools);
       return new OmpAgentSession({
@@ -2544,6 +2546,66 @@ export class OmpAgentClient implements AgentClient {
       await runtimeSession.close().catch(() => undefined);
       throw error;
     }
+  }
+
+  /**
+   * Launch (or hand off from the warm pool) the omp process backing a new
+   * agent create. The warm pool is only usable when the create differs from a
+   * pooled process solely in model/thinking: internal agents, per-create env,
+   * and custom system prompts all force a cold launch.
+   */
+  private async startRuntimeSession(
+    config: AgentSessionConfig,
+    launchContext: AgentLaunchContext | undefined,
+    launchMode: { modeId: string; extraArgs: string[] },
+    systemPrompt: string | undefined,
+  ): Promise<OmpRuntimeSession> {
+    const thinking = normalizeOmpThinkingOption(config.thinkingOptionId) ?? undefined;
+    const model = config.model;
+    const poolEligible =
+      config.internal !== true &&
+      !launchContext?.env &&
+      !config.systemPrompt?.trim() &&
+      typeof model === "string" &&
+      model.includes("/");
+    if (poolEligible) {
+      const pooled = await this.warmPool.claim({
+        cwd: config.cwd,
+        modeId: launchMode.modeId,
+        extraArgs: launchMode.extraArgs,
+        systemPrompt: systemPrompt ?? "",
+      });
+      if (pooled) {
+        try {
+          const slash = model.indexOf("/");
+          await pooled.newSession();
+          await pooled.setModel(model.slice(0, slash), model.slice(slash + 1));
+          if (thinking) {
+            await pooled.setThinkingLevel(thinking);
+          }
+          return pooled;
+        } catch (error) {
+          // The handoff left the pooled process in an unknown state; close it
+          // and fall back to a cold launch rather than risk a broken agent.
+          this.logger.warn(
+            { err: error, provider: this.provider },
+            "OMP warm pool handoff failed; cold starting",
+          );
+          await pooled.close().catch(() => undefined);
+        }
+      }
+    }
+    return this.runtime.startSession({
+      cwd: config.cwd,
+      protocolMode: "rpc-ui",
+      model: config.model,
+      thinkingOptionId: thinking,
+      noSession: config.internal === true,
+      modeId: launchMode.modeId,
+      extraArgs: launchMode.extraArgs,
+      systemPrompt,
+      env: launchContext?.env,
+    });
   }
 
   async resumeSession(
@@ -2706,5 +2768,13 @@ export class OmpAgentClient implements AgentClient {
       commandConfig: this.runtimeSettings?.command,
       defaultBinary: "omp",
     });
+  }
+
+  /**
+   * Release pool-owned processes at daemon shutdown. Called via
+   * AgentClient.shutdown (shutdownAgentClients) — must be idempotent.
+   */
+  async shutdown(): Promise<void> {
+    await this.warmPool.closeAll();
   }
 }

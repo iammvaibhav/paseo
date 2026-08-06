@@ -55,6 +55,12 @@ export interface OmpRuntimeSession {
   getAvailableModels(timeoutMs?: number): Promise<OmpModel[]>;
   setModel(provider: string, modelId: string): Promise<OmpModel>;
   setThinkingLevel(level: OmpThinkingLevel): Promise<void>;
+  /**
+   * Reset the session in place: mints a fresh session file in the process's
+   * session directory and clears conversational state. Used by the warm pool
+   * to hand a booted process to a new agent create.
+   */
+  newSession(): Promise<void>;
   getSessionStats(): Promise<OmpSessionStats>;
   getCommands(): Promise<OmpRpcSlashCommand[]>;
   setSubagentSubscription(level: OmpSubagentSubscriptionLevel): Promise<void>;
