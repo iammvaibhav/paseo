@@ -962,9 +962,14 @@ export const ar: TranslationResources = {
         host: "المضيف",
         changeRequest: "طلب السحب",
         checks: "الفحوصات",
-        scripts: "البرامج النصية",
+        services: "الخدمات",
         diff: "إحصائيات الفروق",
         timestamp: "آخر نشاط",
+      },
+      checks: {
+        iconAndText: "أيقونة ونص",
+        icon: "أيقونة فقط",
+        none: "مخفي",
       },
       hostFilter: {
         label: "المضيف",
@@ -1045,7 +1050,8 @@ export const ar: TranslationResources = {
     },
     workspace: {
       status: {
-        scriptsAvailable: "البرامج النصية المتاحة",
+        serviceRunning: "الخدمة {{name}} قيد التشغيل",
+        serviceUnhealthy: "الخدمة {{name}} غير سليمة",
         creating: "جارٍ الإنشاء...",
       },
       actions: {
@@ -1461,6 +1467,19 @@ export const ar: TranslationResources = {
         show: "عرض متقدم",
         hide: "إخفاء المتقدمة",
       },
+      headers: {
+        title: "رؤوس مخصصة",
+        add: "إضافة رأس",
+        name: "الاسم",
+        value: "القيمة",
+        remove: "إزالة الرأس",
+        errors: {
+          missingName: "أدخل اسمًا لكل رأس",
+          invalidName: "{{name}} ليس اسم رأس صالحًا",
+          invalidValue: "يحتوي {{name}} على فاصل أسطر غير صالح",
+          duplicateName: "تم إدخال {{name}} أكثر من مرة",
+        },
+      },
       passwordVisibility: {
         show: "إظهار كلمة المرور",
         hide: "إخفاء كلمة المرور",
@@ -1818,6 +1837,7 @@ export const ar: TranslationResources = {
           es: "Español",
           fr: "Français",
           ja: "日本語",
+          ko: "한국어",
           ptBR: "Português brasileiro",
           ru: "Русский",
           zhCN: "中文",

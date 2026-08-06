@@ -8,15 +8,23 @@ import {
   type BrowserChromeMode,
   type BrowserRecord,
   type BrowserRecordPatch,
+  type BrowserViewport,
   createBrowserRecord,
+  normalizeBrowserIndexState,
   normalizeBrowserUrl,
   removeBrowserFromIndex,
   sanitizeBrowsersForPersist,
   trimNonEmpty,
 } from "./state";
 
-export type { BrowserChromeMode, BrowserRecord } from "./state";
-export { isChromeLessMode, isPersistentEmbeddedChrome, resolveBrowserChromeMode } from "./state";
+export type { BrowserChromeMode, BrowserRecord, BrowserViewport } from "./state";
+export {
+  createFixedBrowserViewport,
+  isChromeLessMode,
+  isPersistentEmbeddedChrome,
+  resolveBrowserChromeMode,
+  RESPONSIVE_BROWSER_VIEWPORT,
+} from "./state";
 
 export interface BrowserNavigationRequest {
   url: string;
@@ -55,6 +63,7 @@ interface BrowserStoreState extends BrowserIndexState {
     chrome?: BrowserChromeMode;
   }) => string;
   updateBrowser: (browserId: string, patch: BrowserRecordPatch) => void;
+  setBrowserViewport: (browserId: string, viewport: BrowserViewport) => void;
   removeBrowser: (browserId: string) => void;
   requestNavigation: (browserId: string, url: string) => void;
   clearNavigationRequest: (browserId: string, requestId: number) => void;
@@ -118,6 +127,9 @@ export const useBrowserStore = create<BrowserStoreState>()(
       },
       updateBrowser: (browserId, patch) => {
         set((state) => applyBrowserPatch(state, browserId, patch));
+      },
+      setBrowserViewport: (browserId, viewport) => {
+        set((state) => applyBrowserPatch(state, browserId, { viewport }));
       },
       removeBrowser: (browserId) => {
         set((state) => {
@@ -211,6 +223,10 @@ export const useBrowserStore = create<BrowserStoreState>()(
       name: "workspace-browser-store",
       storage: createJSONStorage(() => AsyncStorage),
       partialize: (state) => sanitizeBrowsersForPersist(state),
+      merge: (persistedState, currentState) => ({
+        ...currentState,
+        ...normalizeBrowserIndexState(persistedState),
+      }),
     },
   ),
 );

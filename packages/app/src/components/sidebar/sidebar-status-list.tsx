@@ -46,7 +46,8 @@ import {
 } from "@/components/sidebar/sidebar-workspace-row-content";
 import { useOpenKebabMenuVisibility } from "@/components/sidebar/use-open-kebab-menu-visibility";
 import { getSidebarRowBackdrop } from "@/components/sidebar/sidebar-row-backdrop";
-import { selectWorkspaceScriptSummary } from "@/components/sidebar/workspace-meta-row";
+import { getStatusDotColor } from "@/utils/status-dot-color";
+import { selectWorkspaceServiceSummary } from "@/components/sidebar/workspace-meta-row";
 import {
   SidebarWorkspaceTrailingContent,
   useSidebarWorkspaceTrailing,
@@ -66,9 +67,20 @@ import type { ToggleSidebarWorkspacePin } from "@/hooks/use-sidebar-workspace-pi
 const foregroundMutedColorMapping = (theme: Theme) => ({
   color: theme.colors.foregroundMuted,
 });
-const amberColorMapping = (theme: Theme) => ({ color: theme.colors.palette.amber[500] });
-const redColorMapping = (theme: Theme) => ({ color: theme.colors.palette.red[500] });
-const greenColorMapping = (theme: Theme) => ({ color: theme.colors.palette.green[500] });
+// One mapping per bucket, resolved through the status-dot producer so a group header and
+// the rows under it cannot disagree about what "failed" looks like.
+const needsInputColorMapping = (theme: Theme) => ({
+  color: getStatusDotColor({ theme, bucket: "needs_input" }) ?? undefined,
+});
+const failedColorMapping = (theme: Theme) => ({
+  color: getStatusDotColor({ theme, bucket: "failed" }) ?? undefined,
+});
+const attentionColorMapping = (theme: Theme) => ({
+  color: getStatusDotColor({ theme, bucket: "attention" }) ?? undefined,
+});
+const runningColorMapping = (theme: Theme) => ({
+  color: getStatusDotColor({ theme, bucket: "running" }) ?? undefined,
+});
 
 const ThemedChevronDown = withUnistyles(ChevronDown);
 const ThemedChevronRight = withUnistyles(ChevronRight);
@@ -261,7 +273,7 @@ function StatusGroupRows({
   } = useLimitedSidebarGroup(group.rows);
 
   return (
-    <View style={styles.statusGroupBlock}>
+    <View style={collapsed ? undefined : styles.statusGroupBlockExpanded}>
       <StatusGroupHeader group={group} collapsed={collapsed} />
       {!collapsed ? (
         <View
@@ -288,6 +300,7 @@ function StatusGroupRows({
             <SidebarGroupToggleRow
               expanded={workspacesExpanded}
               onPress={toggleWorkspacesExpanded}
+              indented
               testID={`sidebar-status-show-more-${group.bucket}`}
             />
           ) : null}
@@ -389,13 +402,13 @@ function StatusGroupLeadingVisual({
 function StatusGroupIcon({ bucket }: { bucket: StatusGroup["bucket"] }) {
   switch (bucket) {
     case "needs_input":
-      return <ThemedCircleAlert size={14} uniProps={amberColorMapping} />;
+      return <ThemedCircleAlert size={14} uniProps={needsInputColorMapping} />;
     case "failed":
-      return <ThemedCircleX size={14} uniProps={redColorMapping} />;
+      return <ThemedCircleX size={14} uniProps={failedColorMapping} />;
     case "attention":
-      return <ThemedCircleCheck size={14} uniProps={greenColorMapping} />;
+      return <ThemedCircleCheck size={14} uniProps={attentionColorMapping} />;
     case "running":
-      return <ThemedCircleDot size={14} uniProps={amberColorMapping} />;
+      return <ThemedCircleDot size={14} uniProps={runningColorMapping} />;
     case "done":
       return <ThemedCircleCheck size={14} uniProps={foregroundMutedColorMapping} />;
   }
@@ -709,7 +722,7 @@ function StatusWorkspaceRowInner({
   const trailing = useSidebarWorkspaceTrailing();
 
   const isDesktop = !isTouchPlatform;
-  const scriptSummary = isDesktop ? selectWorkspaceScriptSummary(workspace.scripts) : null;
+  const serviceSummary = isDesktop ? selectWorkspaceServiceSummary(workspace.scripts) : null;
 
   const accessibilityState = useMemo(() => ({ selected }), [selected]);
 
@@ -744,7 +757,7 @@ function StatusWorkspaceRowInner({
               workspace={workspace}
               leadingProjectName={projectName}
               hostBadgeLabel={hostBadge?.label}
-              scriptSummary={scriptSummary}
+              serviceSummary={serviceSummary}
               workspaceKey={workspace.workspaceKey}
               onCopyPath={onCopyPath}
               onCopyBranchName={onCopyBranchName}
@@ -771,7 +784,7 @@ function StatusWorkspaceRowInner({
                 hostBadge={hostBadge}
                 leadingProjectName={projectName}
                 leadingProjectIconDataUri={projectIconDataUri}
-                scriptSummary={scriptSummary}
+                serviceSummary={serviceSummary}
                 backdrop={getSidebarRowBackdrop({ selected, isHovered })}
                 isHovered={isHovered}
                 isLoading={isArchiving}
@@ -912,8 +925,9 @@ const styles = StyleSheet.create((theme) => ({
   pinnedSection: {
     marginBottom: theme.spacing[1],
   },
-  statusGroupBlock: {
-    marginBottom: theme.spacing[1],
+  // Matches `projectBlockExpanded` in sidebar-workspace-list.tsx. See the note there.
+  statusGroupBlockExpanded: {
+    paddingBottom: theme.spacing[3],
   },
   statusWorkspaceListContainer: {},
   statusGroupRow: {
@@ -957,7 +971,7 @@ const styles = StyleSheet.create((theme) => ({
     minWidth: 0,
   },
   statusGroupTitle: {
-    color: theme.colors.foreground,
+    color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
     fontWeight: "400",
     minWidth: 0,
@@ -968,7 +982,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   workspaceRow: {
     minHeight: 36,
-    marginBottom: theme.spacing[1],
+    marginBottom: theme.spacing[0.5],
     paddingVertical: theme.spacing[2],
     paddingLeft: theme.spacing[2],
     paddingRight: theme.spacing[3],

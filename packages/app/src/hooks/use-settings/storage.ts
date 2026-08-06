@@ -3,7 +3,13 @@ import type { QueryClient } from "@tanstack/react-query";
 import type { DesktopSettings } from "@/desktop/settings/desktop-settings";
 import { parseAppLanguage, type AppLanguage } from "@/i18n/locales";
 import {
+  DEFAULT_SIDEBAR_CHECKS_DISPLAY,
+  parseSidebarChecksDisplay,
+  type SidebarChecksDisplay,
+} from "@/components/sidebar/display-preferences/checks-display";
+import {
   DEFAULT_SIDEBAR_ROW_ITEMS,
+  isChecksHiddenByLegacyRowItem,
   parseSidebarRowItems,
   type SidebarRowItems,
 } from "@/components/sidebar/display-preferences/row-items";
@@ -64,6 +70,7 @@ export interface AppSettings {
   workspaceTitleSource: WorkspaceTitleSource;
   sidebarWorkspaceTrailing: SidebarWorkspaceTrailing;
   sidebarRowItems: SidebarRowItems;
+  sidebarChecksDisplay: SidebarChecksDisplay;
   autoExpandReasoning: boolean;
   toolCallDetailLevel: ToolCallDetailLevel;
   chatOutlineEnabled: boolean;
@@ -79,9 +86,14 @@ export interface Settings extends AppSettings {
   releaseChannel: ReleaseChannel;
 }
 
-type StoredAppSettings = Partial<AppSettings> & {
+/**
+ * `sidebarRowItems` is widened back to `unknown` because it is still read for a value the
+ * current shape no longer has — see `isChecksHiddenByLegacyRowItem`.
+ */
+type StoredAppSettings = Partial<Omit<AppSettings, "sidebarRowItems">> & {
   compactToolCalls?: unknown;
   openMarkdownInPlannotator?: unknown;
+  sidebarRowItems?: unknown;
 };
 
 export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
@@ -99,6 +111,7 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   workspaceTitleSource: "title",
   sidebarWorkspaceTrailing: "diff",
   sidebarRowItems: DEFAULT_SIDEBAR_ROW_ITEMS,
+  sidebarChecksDisplay: DEFAULT_SIDEBAR_CHECKS_DISPLAY,
   autoExpandReasoning: false,
   toolCallDetailLevel: "detailed",
   chatOutlineEnabled: true,
@@ -225,6 +238,15 @@ function parseToolCallDetailLevel(stored: StoredAppSettings): ToolCallDetailLeve
   return null;
 }
 
+function parseStoredSidebarChecksDisplay(stored: StoredAppSettings): SidebarChecksDisplay | null {
+  const display = parseSidebarChecksDisplay(stored.sidebarChecksDisplay);
+  if (display !== null) {
+    return display;
+  }
+  // COMPAT(sidebarRowItemsChecks): migrated in v0.3.0, remove after 2027-08-05.
+  return isChecksHiddenByLegacyRowItem(stored.sidebarRowItems) ? "none" : null;
+}
+
 function pickBooleanAppSettings(stored: StoredAppSettings): Partial<AppSettings> {
   const result: Partial<AppSettings> = {};
   if (typeof stored.useLegacyTerminalRenderer === "boolean") {
@@ -297,6 +319,10 @@ function pickAppSettings(stored: StoredAppSettings): Partial<AppSettings> {
   Object.assign(result, pickEnumAppSettings(stored));
   if (stored.sidebarRowItems !== undefined) {
     result.sidebarRowItems = parseSidebarRowItems(stored.sidebarRowItems);
+  }
+  const sidebarChecksDisplay = parseStoredSidebarChecksDisplay(stored);
+  if (sidebarChecksDisplay !== null) {
+    result.sidebarChecksDisplay = sidebarChecksDisplay;
   }
   const language = parseAppLanguage(stored.language);
   if (language !== null) {

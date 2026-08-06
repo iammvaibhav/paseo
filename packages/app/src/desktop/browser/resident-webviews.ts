@@ -3,17 +3,22 @@ import {
   type DesktopAttachedBrowserRegistration,
   type DesktopBrowserBridge,
 } from "@/desktop/host";
+import type { BrowserViewport } from "@/desktop/browser/store";
 
 const RESIDENT_BROWSER_HOST_ID = "paseo-browser-resident-webviews";
 const PERSISTENT_BROWSER_WRAPPER_ATTRIBUTE = "data-paseo-persistent-browser-wrapper";
 const BROWSER_ID_ATTRIBUTE = "data-paseo-browser-id";
 const DOM_READY_ATTRIBUTE = "data-paseo-dom-ready";
 const DOM_READY_LISTENER_ATTRIBUTE = "data-paseo-dom-ready-listener";
+const BROWSER_SURFACE_ATTRIBUTE = "data-paseo-browser-surface";
 const RESIDENT_VIEWPORT_WIDTH = 1280;
 const RESIDENT_VIEWPORT_HEIGHT = 800;
 
 const residentWebviewsByBrowserId = new Map<string, HTMLElement>();
+const residentSurfacesByBrowserId = new Map<string, HTMLElement>();
 const residentWebviewSizesByBrowserId = new Map<string, { width: number; height: number }>();
+const readyResidentWebviews = new WeakSet<HTMLElement>();
+
 interface PersistentBrowserWebview {
   wrapper: HTMLElement;
   webview: HTMLElement;
@@ -81,6 +86,17 @@ function registerBrowserWhenAttached(
   });
 }
 
+function registerBrowserReadiness(webview: HTMLElement): void {
+  webview.addEventListener("did-start-loading", () => {
+    readyResidentWebviews.delete(webview);
+    webview.removeAttribute(DOM_READY_ATTRIBUTE);
+  });
+  webview.addEventListener("dom-ready", () => {
+    readyResidentWebviews.add(webview);
+    webview.setAttribute(DOM_READY_ATTRIBUTE, "true");
+  });
+}
+
 function trimNonEmpty(value: string | null | undefined): string | null {
   if (typeof value !== "string") {
     return null;
@@ -94,22 +110,50 @@ function readDocument(): Document | null {
 }
 
 function applyResidentHostParkingStyle(host: HTMLElement): void {
-  // Parked browser webviews must remain paintable at all times; screenshot
-  // correctness depends on the proven states in docs/browser-capture-harness.md.
-  host.setAttribute("aria-hidden", "true");
+  // The host is permanent. Individual browser surfaces switch between their
+  // pane bounds and the proven paintable 1x1 parking geometry.
+  host.removeAttribute("aria-hidden");
   host.style.position = "fixed";
   host.style.left = "0";
   host.style.top = "0";
-  host.style.width = "1px";
-  host.style.height = "1px";
-  host.style.overflow = "hidden";
+  host.style.width = "100vw";
+  host.style.height = "100vh";
+  host.style.overflow = "visible";
   host.style.opacity = "1";
   host.style.pointerEvents = "none";
   host.style.display = "block";
-  host.style.zIndex = "";
+  host.style.zIndex = "0";
   host.style.clipPath = "";
   host.style.visibility = "visible";
   host.style.transform = "";
+}
+
+function applyParkedBrowserSurfaceStyle(surface: HTMLElement): void {
+  surface.setAttribute("aria-hidden", "true");
+  surface.style.position = "fixed";
+  surface.style.left = "0";
+  surface.style.top = "0";
+  surface.style.width = "1px";
+  surface.style.height = "1px";
+  surface.style.overflow = "hidden";
+  surface.style.opacity = "1";
+  surface.style.pointerEvents = "none";
+  surface.style.display = "block";
+  surface.style.visibility = "visible";
+  surface.style.transform = "";
+}
+
+function getBrowserSurface(browserId: string, ownerDocument: Document): HTMLElement {
+  const existing = residentSurfacesByBrowserId.get(browserId);
+  if (existing?.isConnected) {
+    return existing;
+  }
+  const surface = ownerDocument.createElement("div");
+  surface.setAttribute(BROWSER_SURFACE_ATTRIBUTE, browserId);
+  applyParkedBrowserSurfaceStyle(surface);
+  getResidentBrowserHost(ownerDocument).appendChild(surface);
+  residentSurfacesByBrowserId.set(browserId, surface);
+  return surface;
 }
 
 function getResidentBrowserHost(ownerDocument: Document): HTMLElement {
@@ -199,6 +243,105 @@ function applyPersistentWrapperParking(record: PersistentBrowserWebview): void {
   applyResidentWebviewStyle(webview, webview.getAttribute(BROWSER_ID_ATTRIBUTE));
 }
 
+export function rememberBrowserWebviewSize(input: {
+  browserId: string;
+  width: number;
+  height: number;
+}): { width: number; height: number } | null {
+  const browserId = trimNonEmpty(input.browserId);
+  if (!browserId || input.width <= 0 || input.height <= 0) {
+    return null;
+  }
+  const dimensions = {
+    width: Math.max(1, Math.round(input.width)),
+    height: Math.max(1, Math.round(input.height)),
+  };
+  residentWebviewSizesByBrowserId.set(browserId, dimensions);
+  return dimensions;
+}
+
+function applyBrowserWebviewDimensions(webview: HTMLElement, viewport: BrowserViewport): void {
+  webview.style.display = "flex";
+  webview.style.border = "0";
+  webview.style.background = "transparent";
+  if (viewport.mode === "responsive") {
+    webview.style.flex = "1";
+    webview.style.width = "100%";
+    webview.style.height = "100%";
+    return;
+  }
+  webview.style.flex = "0 0 auto";
+  webview.style.width = `${viewport.width}px`;
+  webview.style.height = `${viewport.height}px`;
+}
+
+export function applyBrowserWebviewViewport(webview: HTMLElement, viewport: BrowserViewport): void {
+  clearResidentWebviewParkingStyle(webview);
+  applyBrowserWebviewDimensions(webview, viewport);
+}
+
+export function applyInactiveBrowserWebviewViewport(
+  browserId: string,
+  webview: HTMLElement,
+  viewport: BrowserViewport,
+): void {
+  if (viewport.mode === "fixed") {
+    rememberBrowserWebviewSize({ browserId, width: viewport.width, height: viewport.height });
+  }
+  applyResidentWebviewStyle(webview, trimNonEmpty(browserId));
+}
+
+export function presentBrowserWebview(
+  browserId: string,
+  webview: HTMLElement,
+  anchor: HTMLElement,
+  clip: HTMLElement,
+): void {
+  const normalizedBrowserId = trimNonEmpty(browserId);
+  if (!normalizedBrowserId) {
+    return;
+  }
+  const ownerDocument = readDocument();
+  if (!ownerDocument) {
+    return;
+  }
+  const surface = getBrowserSurface(normalizedBrowserId, ownerDocument);
+  if (webview.parentElement !== surface) {
+    surface.appendChild(webview);
+  }
+  const anchorBounds = anchor.getBoundingClientRect();
+  const clipBounds = clip.getBoundingClientRect();
+  const left = Math.max(anchorBounds.left, clipBounds.left);
+  const top = Math.max(anchorBounds.top, clipBounds.top);
+  const right = Math.min(
+    anchorBounds.left + anchorBounds.width,
+    clipBounds.left + clipBounds.width,
+  );
+  const bottom = Math.min(
+    anchorBounds.top + anchorBounds.height,
+    clipBounds.top + clipBounds.height,
+  );
+  const surfaceLeft = Math.ceil(left);
+  const surfaceTop = Math.ceil(top);
+  const surfaceRight = Math.floor(right);
+  const surfaceBottom = Math.floor(bottom);
+  const hasVisibleArea = surfaceRight > surfaceLeft && surfaceBottom > surfaceTop;
+  surface.setAttribute("aria-hidden", "false");
+  surface.style.position = "fixed";
+  surface.style.left = `${surfaceLeft}px`;
+  surface.style.top = `${surfaceTop}px`;
+  surface.style.width = `${Math.max(0, surfaceRight - surfaceLeft)}px`;
+  surface.style.height = `${Math.max(0, surfaceBottom - surfaceTop)}px`;
+  surface.style.overflow = "hidden";
+  surface.style.opacity = "1";
+  surface.style.pointerEvents = hasVisibleArea ? "auto" : "none";
+  surface.style.display = "flex";
+  surface.style.visibility = "visible";
+  webview.style.position = "absolute";
+  webview.style.left = `${Math.round(anchorBounds.left - surfaceLeft)}px`;
+  webview.style.top = `${Math.round(anchorBounds.top - surfaceTop)}px`;
+}
+
 export function prepareBrowserWebview(
   webview: HTMLElement,
   input: {
@@ -214,20 +357,22 @@ export function prepareBrowserWebview(
   webview.setAttribute("allowpopups", "true");
   webview.setAttribute("spellcheck", "false");
   webview.setAttribute("autosize", "on");
-  if (!webview.hasAttribute(DOM_READY_LISTENER_ATTRIBUTE)) {
-    webview.setAttribute(DOM_READY_LISTENER_ATTRIBUTE, "true");
-    webview.addEventListener("dom-ready", () => {
-      webview.setAttribute(DOM_READY_ATTRIBUTE, "true");
-    });
-  }
   if (input.initialUrl) {
     (webview as BrowserWebviewElement).src = input.initialUrl;
   }
   registerBrowserWhenAttached(webview as BrowserWebviewElement, input, browser);
+  if (!webview.hasAttribute(DOM_READY_LISTENER_ATTRIBUTE)) {
+    webview.setAttribute(DOM_READY_LISTENER_ATTRIBUTE, "true");
+    registerBrowserReadiness(webview);
+  }
 }
 
 export function isBrowserWebviewDomReady(webview: HTMLElement): boolean {
-  return webview.getAttribute(DOM_READY_ATTRIBUTE) === "true";
+  return webview.getAttribute(DOM_READY_ATTRIBUTE) === "true" || readyResidentWebviews.has(webview);
+}
+
+export function isResidentBrowserWebviewReady(webview: HTMLElement): boolean {
+  return readyResidentWebviews.has(webview) || webview.getAttribute(DOM_READY_ATTRIBUTE) === "true";
 }
 
 export function ensureResidentBrowserWebview(input: {
@@ -253,7 +398,10 @@ export function ensureResidentBrowserWebview(input: {
 
   const existing = findBrowserWebview(browserId, ownerDocument);
   if (existing) {
-    if (existing.parentElement?.id === RESIDENT_BROWSER_HOST_ID) {
+    if (
+      existing.parentElement?.id === RESIDENT_BROWSER_HOST_ID ||
+      existing.parentElement?.hasAttribute(BROWSER_SURFACE_ATTRIBUTE)
+    ) {
       releaseResidentBrowserWebview(browserId, existing);
     }
     return existing;
@@ -441,8 +589,6 @@ export function takeResidentBrowserWebview(browserId: string): HTMLElement | nul
     return null;
   }
 
-  residentWebviewsByBrowserId.delete(normalizedBrowserId);
-  clearResidentWebviewParkingStyle(webview);
   return webview;
 }
 
@@ -483,7 +629,11 @@ export function releaseResidentBrowserWebview(browserId: string, webview: HTMLEl
 
   residentWebviewsByBrowserId.set(normalizedBrowserId, webview);
   applyResidentWebviewStyle(webview, normalizedBrowserId);
-  getResidentBrowserHost(ownerDocument).appendChild(webview);
+  const surface = getBrowserSurface(normalizedBrowserId, ownerDocument);
+  applyParkedBrowserSurfaceStyle(surface);
+  if (webview.parentElement !== surface) {
+    surface.appendChild(webview);
+  }
 }
 
 export function resizeResidentBrowserWebview(input: {
@@ -495,18 +645,18 @@ export function resizeResidentBrowserWebview(input: {
   if (!normalizedBrowserId) {
     return null;
   }
-  const width = Math.max(1, Math.round(input.width));
-  const height = Math.max(1, Math.round(input.height));
-  residentWebviewSizesByBrowserId.set(normalizedBrowserId, { width, height });
+  const dimensions = rememberBrowserWebviewSize(input);
+  if (!dimensions) {
+    return null;
+  }
 
   const ownerDocument = readDocument();
   const webview = ownerDocument ? findBrowserWebview(normalizedBrowserId, ownerDocument) : null;
   if (webview) {
-    webview.style.width = `${width}px`;
-    webview.style.height = `${height}px`;
+    applyBrowserWebviewDimensions(webview, { mode: "fixed", ...dimensions });
   }
 
-  return { width, height };
+  return dimensions;
 }
 
 /**
@@ -537,9 +687,12 @@ export function removeResidentBrowserWebview(browserId: string): void {
   }
 
   const resident = residentWebviewsByBrowserId.get(normalizedBrowserId) ?? null;
+  const surface = residentSurfacesByBrowserId.get(normalizedBrowserId) ?? null;
   residentWebviewsByBrowserId.delete(normalizedBrowserId);
+  residentSurfacesByBrowserId.delete(normalizedBrowserId);
   residentWebviewSizesByBrowserId.delete(normalizedBrowserId);
   resident?.remove();
+  surface?.remove();
 }
 
 export function clearResidentBrowserWebviewsForTests(): void {
@@ -547,6 +700,7 @@ export function clearResidentBrowserWebviewsForTests(): void {
     webview.remove();
   }
   residentWebviewsByBrowserId.clear();
+  residentSurfacesByBrowserId.clear();
   residentWebviewSizesByBrowserId.clear();
   for (const record of persistentWebviewsByBrowserId.values()) {
     applyPersistentWrapperParking(record);

@@ -984,9 +984,14 @@ export const ptBR: TranslationResources = {
         host: "Host",
         changeRequest: "Pull request",
         checks: "Verificações",
-        scripts: "Scripts",
+        services: "Serviços",
         diff: "Estatísticas de diff",
         timestamp: "Última atividade",
+      },
+      checks: {
+        iconAndText: "Ícone e texto",
+        icon: "Somente ícone",
+        none: "Oculto",
       },
       hostFilter: {
         label: "Host",
@@ -1067,7 +1072,8 @@ export const ptBR: TranslationResources = {
     },
     workspace: {
       status: {
-        scriptsAvailable: "Scripts disponíveis",
+        serviceRunning: "Serviço {{name}} em execução",
+        serviceUnhealthy: "Serviço {{name}} com falha",
         creating: "Criando...",
       },
       actions: {
@@ -1488,6 +1494,19 @@ export const ptBR: TranslationResources = {
         show: "Mostrar avançado",
         hide: "Ocultar avançado",
       },
+      headers: {
+        title: "Cabeçalhos personalizados",
+        add: "Adicionar cabeçalho",
+        name: "Nome",
+        value: "Valor",
+        remove: "Remover cabeçalho",
+        errors: {
+          missingName: "Digite um nome para cada cabeçalho",
+          invalidName: "{{name}} não é um nome de cabeçalho válido",
+          invalidValue: "{{name}} contém uma quebra de linha inválida",
+          duplicateName: "{{name}} foi inserido mais de uma vez",
+        },
+      },
       passwordVisibility: {
         show: "Mostrar senha",
         hide: "Ocultar senha",
@@ -1849,6 +1868,7 @@ export const ptBR: TranslationResources = {
           es: "Espanhol",
           fr: "Francês",
           ja: "Japonês",
+          ko: "Coreano",
           ptBR: "Português brasileiro",
           ru: "Russo",
           zhCN: "Chinês simplificado",

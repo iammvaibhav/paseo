@@ -36,6 +36,7 @@ import {
 import {
   buildLocalDaemonTransportUrl,
   createDesktopLocalDaemonTransportFactory,
+  createDesktopWebSocketTransportFactory,
 } from "@/desktop/daemon/desktop-daemon-transport";
 import { getDesktopHost } from "@/desktop/host";
 import { collectBrowserEditorOrigins } from "@/workspace/browser-editor-url";
@@ -490,6 +491,7 @@ function createDefaultDeps(): HostRuntimeControllerDeps {
   return {
     createClient: ({ host, connection, clientId, runtimeGeneration }) => {
       const localTransportFactory = createDesktopLocalDaemonTransportFactory();
+      const webSocketTransportFactory = createDesktopWebSocketTransportFactory();
       const base = {
         suppressSendErrors: true,
         clientId,
@@ -512,10 +514,12 @@ function createDefaultDeps(): HostRuntimeControllerDeps {
       if (connection.type === "directTcp") {
         return new DaemonClient({
           ...base,
+          ...(webSocketTransportFactory ? { transportFactory: webSocketTransportFactory } : {}),
           url: buildDaemonWebSocketUrl(connection.endpoint, {
             useTls: connection.useTls ?? false,
           }),
           ...(connection.password ? { password: connection.password } : {}),
+          ...(connection.headers ? { headers: connection.headers } : {}),
         });
       }
       return new DaemonClient({
@@ -1371,7 +1375,7 @@ export class HostRuntimeStore {
   private queuedAgentDrainInFlight = new Set<string>();
   private directorySyncByServer = new Map<string, DirectorySync>();
   private configuredOverrideBootstrapInFlight: Promise<void> | null = null;
-  private bootStarted = false;
+  private bootPromise: Promise<void> | null = null;
   private storage: HostRuntimeStorage;
   private replicaCache: ReplicaCache;
 
@@ -1406,12 +1410,11 @@ export class HostRuntimeStore {
     return this.hostRegistryLoaded;
   }
 
-  boot(): void {
-    if (this.bootStarted) {
-      return;
+  boot(): Promise<void> {
+    if (!this.bootPromise) {
+      this.bootPromise = this.runBoot();
     }
-    this.bootStarted = true;
-    void this.runBoot();
+    return this.bootPromise;
   }
 
   private async runBoot(): Promise<void> {
@@ -1655,6 +1658,7 @@ export class HostRuntimeStore {
     endpoint: string;
     useTls?: boolean;
     password?: string;
+    headers?: Record<string, string>;
     label?: string;
     existingClient?: DaemonClient;
   }): Promise<HostProfile> {
@@ -1669,6 +1673,7 @@ export class HostRuntimeStore {
         endpoint,
         useTls: input.useTls ?? false,
         ...(password ? { password } : {}),
+        ...(input.headers ? { headers: input.headers } : {}),
       },
       existingClient: input.existingClient,
     });
@@ -1710,6 +1715,7 @@ export class HostRuntimeStore {
     endpoint: string;
     useTls?: boolean;
     password?: string;
+    headers?: Record<string, string>;
     label?: string;
   }): Promise<{ profile: HostProfile; serverId: string; hostname: string | null }> {
     const endpoint = normalizeHostPort(input.endpoint);
@@ -1722,6 +1728,7 @@ export class HostRuntimeStore {
         endpoint,
         useTls: input.useTls ?? false,
         ...(password ? { password } : {}),
+        ...(input.headers ? { headers: input.headers } : {}),
       },
     });
   }
@@ -2481,12 +2488,14 @@ export interface HostMutations {
     endpoint: string;
     useTls?: boolean;
     password?: string;
+    headers?: Record<string, string>;
     label?: string;
   }) => Promise<HostProfile>;
   probeAndUpsertDirectConnection: (input: {
     endpoint: string;
     useTls?: boolean;
     password?: string;
+    headers?: Record<string, string>;
     label?: string;
   }) => Promise<{ profile: HostProfile; serverId: string; hostname: string | null }>;
   upsertRelayConnection: (input: {
