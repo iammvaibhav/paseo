@@ -65,6 +65,7 @@ import {
   resolveAgentModelSelection,
 } from "@/composer/agent-controls/utils";
 import { useIsCompactFormFactor } from "@/constants/layout";
+import { readMeasuredWidth } from "@/hooks/use-container-width";
 import { useToast } from "@/contexts/toast-context";
 import { toErrorMessage } from "@/utils/error-messages";
 import { showProviderNoticeToast } from "@/utils/provider-notice-toast";
@@ -571,7 +572,8 @@ function ControlledAgentControls({
 
   const handleLayout = useCallback(
     (event: LayoutChangeEvent) => {
-      const availableWidth = event.nativeEvent.layout.width;
+      const availableWidth = readMeasuredWidth(event);
+      if (availableWidth === null) return;
       availableWidthRef.current = availableWidth;
       updateDensityForWidth(availableWidth);
     },
