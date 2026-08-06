@@ -58,8 +58,8 @@ const FORGE_PR_STATUS_POLL_ERROR_BACKOFF_CAP_MS = 300_000;
 const DEGRADED_GIT_POLL_INTERVAL_MS = 60_000;
 /** Delay before re-subscribing after a transient (EINTR) watcher failure. */
 const WORKING_TREE_WATCH_RETRY_DELAY_MS = 10_000;
-/** Consecutive transient failures before degrading to polling for good. */
-const WORKING_TREE_WATCH_MAX_TRANSIENT_RETRIES = 3;
+/** Log the retry warn only once per this many consecutive retries. */
+const WORKING_TREE_WATCH_RETRY_LOG_EVERY = 6;
 
 function isTransientWatchError(error: unknown): boolean {
   return error instanceof Error && /Interrupted system call|EINTR/i.test(error.message);
@@ -1282,26 +1282,22 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
   }
 
   /**
-   * A transient watcher failure (EINTR on the inotify poll — a signal
-   * interrupted the syscall, not a persistent problem) is retried instead of
-   * degrading to git polling forever. Bounded: after
-   * WORKING_TREE_WATCH_MAX_TRANSIENT_RETRIES consecutive EINTRs the target
-   * degrades like any other error.
+   * A transient watcher failure (EINTR on the inotify poll — a signal such as
+   * SIGCHLD from a child process exit interrupted the syscall) is retried
+   * instead of degrading to git polling forever. EINTR is never fatal for
+   * poll(2), so the retry is unbounded: the degraded poll (60s) is the safety
+   * net while the subscription is down, and the watcher recovers on the next
+   * re-subscribe. The warn is rate-limited to avoid spam on hosts that signal
+   * the daemon frequently.
    */
   private async retryWorkingTreeSubscription(target: WorkingTreeWatchTarget): Promise<void> {
     target.watchRetries += 1;
-    if (target.watchRetries > WORKING_TREE_WATCH_MAX_TRANSIENT_RETRIES) {
+    if (target.watchRetries % WORKING_TREE_WATCH_RETRY_LOG_EVERY === 1) {
       this.logger.warn(
         { cwd: target.cwd, retries: target.watchRetries },
-        "Working tree watcher kept failing with transient errors; using degraded polling",
+        "Working tree watcher hit a transient error; retrying subscription",
       );
-      this.degradeWorkingTreeWatch(target, "watcher_error");
-      return;
     }
-    this.logger.warn(
-      { cwd: target.cwd, retries: target.watchRetries },
-      "Working tree watcher hit a transient error; retrying subscription",
-    );
     const subscription = target.subscription;
     target.subscription = null;
     if (subscription) {
