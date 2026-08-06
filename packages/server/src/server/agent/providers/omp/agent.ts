@@ -45,7 +45,7 @@ import {
   type ResolvedProviderLaunch,
 } from "../../provider-launch-config.js";
 import { renderPromptAttachmentAsText } from "../../prompt-attachments.js";
-import { composeSystemPromptParts } from "../../system-prompt.js";
+import { composeSystemPromptParts, hasSignificantLaunchEnv } from "../../system-prompt.js";
 import {
   buildBinaryDiagnosticRows,
   buildCommandResolutionDiagnosticRows,
@@ -2564,7 +2564,7 @@ export class OmpAgentClient implements AgentClient {
     const model = config.model;
     const poolEligible =
       config.internal !== true &&
-      !launchContext?.env &&
+      !hasSignificantLaunchEnv(launchContext?.env) &&
       !config.systemPrompt?.trim() &&
       typeof model === "string" &&
       model.includes("/");
@@ -2574,6 +2574,7 @@ export class OmpAgentClient implements AgentClient {
         modeId: launchMode.modeId,
         extraArgs: launchMode.extraArgs,
         systemPrompt: systemPrompt ?? "",
+        env: launchContext?.env,
       });
       if (pooled) {
         try {

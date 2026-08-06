@@ -34,6 +34,13 @@ export interface OmpWarmPoolInput {
   extraArgs: string[];
   /** Trimmed system prompt the claiming agent would launch with. */
   systemPrompt: string;
+  /**
+   * Launch env. Only the identity bookkeeping vars are expected here
+   * (`PASEO_AGENT_ID`/`PASEO_AGENT_CWD`); callers must cold-start when the
+   * env carries anything else. The identity pair is set on warm spawns so
+   * agent-spawned CLIs keep working.
+   */
+  env?: Record<string, string>;
 }
 
 interface OmpWarmPoolOptions {
@@ -161,6 +168,11 @@ export class OmpWarmPool {
       // Model/thinking are deliberately omitted: they are applied per-create
       // via RPC at claim time.
       systemPrompt: input.systemPrompt.trim() || undefined,
+      // Identity plumbing only: the claimer's agent id differs from the fill's,
+      // but these vars are only read by agent-spawned CLIs and cwd is pinned by
+      // the pool key. Anything behavioral in env would have made the create
+      // cold-start (eligibility), so only the identity pair can arrive here.
+      env: input.env && Object.keys(input.env).length > 0 ? input.env : undefined,
     });
     try {
       // Blocks until the process has booted and answered `ready`.
@@ -215,13 +227,21 @@ export class OmpWarmPool {
 }
 
 function keyFor(input: OmpWarmPoolInput): string {
-  // cwd + launch-only flags + system prompt fully determine a launch; model
-  // and thinking are applied per-claim over RPC.
+  // cwd + launch-only flags + system prompt + any significant env fully
+  // determine a launch; model and thinking are applied per-claim over RPC.
+  // The identity pair (PASEO_AGENT_ID/PASEO_AGENT_CWD) is deliberately
+  // excluded: it differs per create and is plumbing, not behavior.
+  const env = input.env ? { ...input.env } : undefined;
+  if (env) {
+    delete env.PASEO_AGENT_ID;
+    delete env.PASEO_AGENT_CWD;
+  }
   return JSON.stringify({
     cwd: path.resolve(input.cwd),
     modeId: input.modeId,
     extraArgs: input.extraArgs,
     systemPrompt: input.systemPrompt.trim(),
+    env: env && Object.keys(env).length > 0 ? env : undefined,
   });
 }
 
