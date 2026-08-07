@@ -2551,9 +2551,9 @@ export class OmpAgentClient implements AgentClient {
 
   /**
    * Launch (or hand off from the warm pool) the omp process backing a new
-   * agent create. The warm pool is only usable when the create differs from a
-   * pooled process solely in model/thinking: internal agents, per-create env,
-   * and custom system prompts all force a cold launch.
+   * agent create. A pooled process is re-targeted to this create's workspace,
+   * model and thinking level over RPC, so only launch-fixed differences force
+   * a cold start: internal agents, per-create env, and custom system prompts.
    */
   private async startRuntimeSession(
     config: AgentSessionConfig,
