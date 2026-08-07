@@ -27,6 +27,8 @@ import { SettingsTextAreaCard } from "@/components/settings-textarea";
 import { Alert as InlineAlert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { FormTextInput } from "@/components/ui/form-field";
+import { useIsCompactFormFactor } from "@/constants/layout";
 import {
   ProfileDraft,
   TerminalProfileEditModal,
@@ -374,6 +376,10 @@ export function HostSettingsPage({
       <HostStatusBadges serverId={serverId} />
 
       <HostAppearanceSection host={host} />
+
+      <SettingsSection title="Mission Control">
+        <MissionControlCard serverId={serverId} />
+      </SettingsSection>
 
       {isLocalDaemon ? <LocalDaemonSection /> : null}
 
@@ -1187,6 +1193,94 @@ function AutoArchiveMergedWorkspacesCard({ serverId }: { serverId: string }) {
           onValueChange={handleValueChange}
           accessibilityLabel="Archive merged PR workspaces"
           testID="host-page-auto-archive-merged-workspaces-switch"
+        />
+      </View>
+    </View>
+  );
+}
+
+const DEFAULT_MISSION_CONTROL_RETENTION_DAYS = 30;
+
+function MissionControlCard({ serverId }: { serverId: string }) {
+  const isConnected = useHostRuntimeIsConnected(serverId);
+  const isCompact = useIsCompactFormFactor();
+  const { config, patchConfig } = useDaemonConfig(serverId);
+  const retentionDays =
+    config?.missionControl?.retentionDays ?? DEFAULT_MISSION_CONTROL_RETENTION_DAYS;
+  const summarizerEnabled = config?.missionControl?.summarizer?.enabled ?? true;
+  const retentionDraftRef = useRef<string | null>(null);
+
+  const handleSummarizerChange = useCallback(
+    (next: boolean) => {
+      void patchConfig({ missionControl: { summarizer: { enabled: next } } }).catch((error) => {
+        console.error("[HostPage] Failed to update mission control summarizer", error);
+        Alert.alert(
+          "Unable to update Mission Control",
+          error instanceof Error ? error.message : String(error),
+        );
+      });
+    },
+    [patchConfig],
+  );
+
+  const handleRetentionChange = useCallback((text: string) => {
+    retentionDraftRef.current = text.replace(/[^0-9]/g, "");
+  }, []);
+
+  const handleRetentionCommit = useCallback(() => {
+    const raw = retentionDraftRef.current;
+    retentionDraftRef.current = null;
+    if (raw === null) {
+      return;
+    }
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isFinite(parsed) || parsed < 1 || parsed === retentionDays) {
+      return;
+    }
+    void patchConfig({ missionControl: { retentionDays: parsed } }).catch((error) => {
+      console.error("[HostPage] Failed to update mission control retention", error);
+      Alert.alert(
+        "Unable to update Mission Control",
+        error instanceof Error ? error.message : String(error),
+      );
+    });
+  }, [patchConfig, retentionDays]);
+
+  if (!isConnected) return null;
+
+  return (
+    <View style={settingsStyles.card} testID="host-page-mission-control-card">
+      <View style={settingsStyles.row}>
+        <View style={settingsStyles.rowContent}>
+          <Text style={settingsStyles.rowTitle}>Mission Control</Text>
+          <Text style={settingsStyles.rowHint}>
+            Summarize fleet events into milestone cards on the Mission Control feed.
+          </Text>
+        </View>
+        <Switch
+          value={summarizerEnabled}
+          onValueChange={handleSummarizerChange}
+          accessibilityLabel="Summarize fleet events"
+          testID="host-page-mission-control-summarizer-switch"
+        />
+      </View>
+      <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+        <View style={settingsStyles.rowContent}>
+          <Text style={settingsStyles.rowTitle}>Feed retention</Text>
+          <Text style={settingsStyles.rowHint}>Days the Mission Control feed keeps events.</Text>
+        </View>
+        <FormTextInput
+          size={isCompact ? "md" : "sm"}
+          initialValue={String(retentionDays)}
+          resetKey={String(retentionDays)}
+          onChangeText={handleRetentionChange}
+          onSubmitEditing={handleRetentionCommit}
+          onBlur={handleRetentionCommit}
+          keyboardType="number-pad"
+          inputMode="numeric"
+          accessibilityLabel="Mission Control feed retention days"
+          testID="host-page-mission-control-retention-input"
+          style={styles.retentionInput}
         />
       </View>
     </View>
@@ -2032,6 +2126,9 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     justifyContent: "flex-end",
     gap: theme.spacing[2],
+  },
+  retentionInput: {
+    width: 88,
   },
   emptyCard: {
     padding: theme.spacing[4],

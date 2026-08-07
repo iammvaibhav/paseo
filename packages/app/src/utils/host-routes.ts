@@ -428,6 +428,10 @@ export function buildSchedulesRoute() {
   return "/schedules" as const;
 }
 
+export function buildMissionControlRoute() {
+  return "/mission-control" as const;
+}
+
 export function buildWebhooksRoute() {
   return "/webhooks" as const;
 }

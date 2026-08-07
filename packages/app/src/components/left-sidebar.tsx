@@ -6,6 +6,7 @@ import {
   History,
   Home,
   Plus,
+  Radar,
   Search,
   Server,
   Settings,
@@ -40,9 +41,11 @@ import { HEADER_INNER_HEIGHT, useIsCompactFormFactor } from "@/constants/layout"
 import { getIsElectron } from "@/constants/platform";
 import { useOpenFleetStats } from "@/desktop/fleet-stats";
 import { useOpenAddProject } from "@/hooks/use-open-add-project";
+import { useAggregatedAgents } from "@/hooks/use-aggregated-agents";
 import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
 import { canCreateWorktreeForProjectKind } from "@/projects/host-projects";
-import { useHostFeature } from "@/runtime/host-features";
+import { useHostFeature, useHostFeatureMap } from "@/runtime/host-features";
+import { deriveSidebarStateBucket } from "@/utils/sidebar-agent-state";
 import {
   type SidebarProjectEntry,
   type SidebarWorkspaceEntry,
@@ -53,7 +56,7 @@ import { RetainedPanelActivity } from "@/components/retained-panel";
 import type { StatusGroup } from "@/hooks/sidebar-status-view-model";
 import { type SidebarGroupMode, useSidebarViewStore } from "@/stores/sidebar-view-store";
 import { useKeyboardShortcutsStore } from "@/stores/keyboard-shortcuts-store";
-import { useHosts } from "@/runtime/host-runtime";
+import { useHostRuntimeConnectionStatuses, useHosts } from "@/runtime/host-runtime";
 import { useActiveWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
 import { useWorkspace } from "@/stores/session-store-hooks";
 import { usePanelStore } from "@/stores/panel-store";
@@ -64,6 +67,7 @@ import { useIsMobilePanelPresented } from "@/mobile-panels/provider";
 import {
   buildOpenProjectRoute,
   buildNewWorkspaceRoute,
+  buildMissionControlRoute,
   buildSchedulesRoute,
   buildWebhooksRoute,
   buildSessionsRoute,
@@ -77,6 +81,20 @@ import { SidebarCalloutSlot } from "./sidebar-callout-slot";
 import { SidebarWorkspaceList } from "./sidebar-workspace-list";
 
 type SidebarTheme = ReturnType<typeof useUnistyles>["theme"];
+
+interface SidebarLabels {
+  addProject: string;
+  newWorkspace: string;
+  hosts: string;
+  home: string;
+  settings: string;
+  searchHosts: string;
+  sessions: string;
+  schedules: string;
+  missionControl: string;
+  webhooks: string;
+  closeSidebar: string;
+}
 
 interface SidebarSharedProps {
   theme: SidebarTheme;
@@ -99,19 +117,10 @@ interface SidebarSharedProps {
   newWorkspaceKeys: ShortcutKey[][] | null;
   handleAddHost: () => void;
   handleOpenHostSettings: (serverId: string) => void;
-}
-
-interface SidebarLabels {
-  addProject: string;
-  newWorkspace: string;
-  hosts: string;
-  home: string;
-  settings: string;
-  searchHosts: string;
-  sessions: string;
-  schedules: string;
-  webhooks: string;
-  closeSidebar: string;
+  /** Any connected host advertises features.missionControl — gates the row. */
+  hasMissionControl: boolean;
+  /** Needs-you + failed agents across all hosts; the row's count pill. */
+  missionControlBadgeCount: number;
 }
 
 interface MobileSidebarProps extends SidebarSharedProps {
@@ -121,6 +130,7 @@ interface MobileSidebarProps extends SidebarSharedProps {
   handleViewMoreNavigate: () => void;
   handleViewSchedulesNavigate: () => void;
   handleViewWebhooksNavigate: () => void;
+  handleViewMissionControlNavigate: () => void;
 }
 
 interface DesktopSidebarProps extends SidebarSharedProps {
@@ -129,6 +139,7 @@ interface DesktopSidebarProps extends SidebarSharedProps {
   handleViewMore: () => void;
   handleViewSchedules: () => void;
   handleViewWebhooks: () => void;
+  handleViewMissionControl: () => void;
 }
 
 export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boolean }) {
@@ -228,6 +239,40 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
     router.push(buildWebhooksRoute());
   }, []);
 
+  const handleViewMissionControlNavigate = useCallback(() => {
+    router.push(buildMissionControlRoute());
+  }, []);
+
+  const hosts = useHosts();
+  const hostServerIds = useMemo(() => hosts.map((host) => host.serverId), [hosts]);
+  const missionControlFeatureMap = useHostFeatureMap(hostServerIds, "missionControl");
+  const hostConnectionStatuses = useHostRuntimeConnectionStatuses(hostServerIds);
+  const hasMissionControl = useMemo(
+    () =>
+      hosts.some(
+        (host) =>
+          hostConnectionStatuses.get(host.serverId) === "online" &&
+          missionControlFeatureMap.get(host.serverId) === true,
+      ),
+    [hostConnectionStatuses, hosts, missionControlFeatureMap],
+  );
+  const { agents: aggregatedAgents } = useAggregatedAgents();
+  const missionControlBadgeCount = useMemo(() => {
+    let count = 0;
+    for (const agent of aggregatedAgents) {
+      const bucket = deriveSidebarStateBucket({
+        status: agent.status,
+        pendingPermissionCount: agent.pendingPermissionCount ?? 0,
+        requiresAttention: agent.requiresAttention,
+        attentionReason: agent.attentionReason,
+      });
+      if (bucket === "needs_input" || bucket === "failed") {
+        count += 1;
+      }
+    }
+    return count;
+  }, [aggregatedAgents]);
+
   const newWorkspaceKeys = useShortcutKeys("new-workspace");
   const labels = useMemo(
     (): SidebarLabels => ({
@@ -239,6 +284,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
       searchHosts: t("sidebar.host.searchPlaceholder"),
       sessions: t("sidebar.sections.sessions"),
       schedules: t("sidebar.sections.schedules"),
+      missionControl: t("sidebar.sections.missionControl"),
       webhooks: t("sidebar.sections.webhooks"),
       closeSidebar: t("sidebar.actions.closeSidebar"),
     }),
@@ -261,6 +307,8 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
     handleRefresh,
     labels,
     newWorkspaceKeys,
+    hasMissionControl,
+    missionControlBadgeCount,
   };
 
   if (isCompactLayout) {
@@ -279,6 +327,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
           handleViewMoreNavigate={handleViewMoreNavigate}
           handleViewSchedulesNavigate={handleViewSchedulesNavigate}
           handleViewWebhooksNavigate={handleViewWebhooksNavigate}
+          handleViewMissionControlNavigate={handleViewMissionControlNavigate}
         />
       </RetainedPanelActivity>
     );
@@ -298,6 +347,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
         handleViewMore={handleViewMoreNavigate}
         handleViewSchedules={handleViewSchedulesNavigate}
         handleViewWebhooks={handleViewWebhooksNavigate}
+        handleViewMissionControl={handleViewMissionControlNavigate}
       />
     </RetainedPanelActivity>
   );
@@ -656,15 +706,19 @@ function MobileSidebar({
   insetsTop,
   insetsBottom,
   closeSidebar,
+  hasMissionControl,
+  missionControlBadgeCount,
   handleViewMoreNavigate,
   handleViewSchedulesNavigate,
   handleViewWebhooksNavigate,
+  handleViewMissionControlNavigate,
 }: MobileSidebarProps) {
   const pathname = usePathname();
   const hasActiveHostFilter = useSidebarViewStore((state) => state.hostFilters.length > 0);
   const isSessionsActive = pathname.includes("/sessions");
   const isSchedulesActive = pathname.includes("/schedules");
   const isWebhooksActive = pathname.includes("/webhooks");
+  const isMissionControlActive = pathname.includes("/mission-control");
   const { gesture: closeGesture, gestureRef: closeGestureRef } = useCloseAgentListGesture();
   const dragGestureHostPresented = useIsMobilePanelPresented("agent-list");
 
@@ -682,6 +736,11 @@ function MobileSidebar({
     closeSidebar();
     handleViewWebhooksNavigate();
   }, [closeSidebar, handleViewWebhooksNavigate]);
+
+  const handleViewMissionControl = useCallback(() => {
+    closeSidebar();
+    handleViewMissionControlNavigate();
+  }, [closeSidebar, handleViewMissionControlNavigate]);
 
   const handleWorkspacePress = useCallback(() => {
     closeSidebar();
@@ -712,6 +771,17 @@ function MobileSidebar({
             shortcutKeys={newWorkspaceKeys}
             onBeforeNavigate={closeSidebar}
           />
+          {hasMissionControl ? (
+            <SidebarHeaderRow
+              icon={Radar}
+              label={labels.missionControl}
+              onPress={handleViewMissionControl}
+              isActive={isMissionControlActive}
+              testID="sidebar-mission-control"
+              variant="compact"
+              badgeCount={missionControlBadgeCount}
+            />
+          ) : null}
           <SidebarHeaderRow
             icon={History}
             label={labels.sessions}
@@ -816,9 +886,12 @@ function DesktopSidebar({
   handleOpenHostSettings,
   insetsTop,
   active,
+  hasMissionControl,
+  missionControlBadgeCount,
   handleViewMore,
   handleViewSchedules,
   handleViewWebhooks,
+  handleViewMissionControl,
 }: DesktopSidebarProps) {
   const ownsTopLeft = useOwnsWindowChromeCorner("top-left");
   const pathname = usePathname();
@@ -826,6 +899,7 @@ function DesktopSidebar({
   const isSessionsActive = pathname.includes("/sessions");
   const isSchedulesActive = pathname.includes("/schedules");
   const isWebhooksActive = pathname.includes("/webhooks");
+  const isMissionControlActive = pathname.includes("/mission-control");
   const sidebarWidth = usePanelStore((state) => state.sidebarWidth);
   const setSidebarWidth = usePanelStore((state) => state.setSidebarWidth);
   const { width: viewportWidth } = useWindowDimensions();
@@ -906,6 +980,17 @@ function DesktopSidebar({
               variant="compact"
               shortcutKeys={newWorkspaceKeys}
             />
+            {hasMissionControl ? (
+              <SidebarHeaderRow
+                icon={Radar}
+                label={labels.missionControl}
+                onPress={handleViewMissionControl}
+                isActive={isMissionControlActive}
+                testID="sidebar-mission-control"
+                variant="compact"
+                badgeCount={missionControlBadgeCount}
+              />
+            ) : null}
             <SidebarHeaderRow
               icon={History}
               label={labels.sessions}

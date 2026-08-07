@@ -1022,6 +1022,7 @@ export const ja: TranslationResources = {
     sections: {
       sessions: "履歴",
       schedules: "スケジュール",
+      missionControl: "Mission Control",
       webhooks: "Webhooks",
     },
     worktreeSetup: {

@@ -1033,6 +1033,7 @@ export const ptBR: TranslationResources = {
     sections: {
       sessions: "Histórico",
       schedules: "Agendamentos",
+      missionControl: "Mission Control",
       webhooks: "Webhooks",
     },
     worktreeSetup: {

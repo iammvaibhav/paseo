@@ -39,6 +39,7 @@ import {
   toAgentPersistenceHandle,
 } from "./persistence-hooks.js";
 import { ensureAgentLoaded, ensureUnarchivedAgentLoaded } from "./agent/agent-loading.js";
+import { expandUserPath } from "./path-utils.js";
 import {
   supportsDiskTimeline,
   tryReadProviderTimelineFromDisk,
@@ -167,6 +168,8 @@ import {
 import { ChatScheduleLoopSession } from "./session/chat/chat-schedule-loop-session.js";
 import { WebhookSession } from "./session/webhook/webhook-session.js";
 import type { WebhookService } from "./webhook/service.js";
+import type { PeerManager } from "./peers/peer-manager.js";
+import type { MissionControlService } from "./mission-control/service.js";
 import { PlannotatorSession } from "./session/plannotator/plannotator-session.js";
 import { ProviderCatalogSession } from "./session/provider/provider-catalog-session.js";
 import { WorkspaceFilesSession } from "./session/files/workspace-files-session.js";
@@ -464,6 +467,8 @@ export interface SessionOptions {
   chatService: FileBackedChatService;
   scheduleService: ScheduleService;
   webhookService?: WebhookService | null;
+  peerManager?: PeerManager | null;
+  missionControlService?: MissionControlService | null;
   loopService: LoopService;
   checkoutDiffManager: CheckoutDiffManager;
   github?: ForgeService;
@@ -595,6 +600,11 @@ interface WorkspaceUpdateOptions {
   optimisticStatus?: WorkspaceDescriptorPayload["status"];
 }
 
+/** Normalize an optional constructor option to `null` without adding a `??` in hot constructors. */
+function orNull<T>(value: T | null | undefined): T | null {
+  return value ?? null;
+}
+
 function describeRegistryTransition(record: ArchivedRecordSnapshot | null): RegistryTransition {
   if (!record) {
     return "created";
@@ -683,6 +693,8 @@ export class Session {
   private readonly checkoutSession: CheckoutSession;
   private readonly chatScheduleLoopSession: ChatScheduleLoopSession;
   private readonly webhookSession: WebhookSession;
+  private readonly peerManager: PeerManager | null;
+  private readonly missionControlService: MissionControlService | null;
   private readonly plannotatorSession: PlannotatorSession;
   private readonly providerCatalogSession: ProviderCatalogSession;
   private readonly workspaceFilesSession: WorkspaceFilesSession;
@@ -719,6 +731,8 @@ export class Session {
       chatService,
       scheduleService,
       webhookService,
+      peerManager,
+      missionControlService,
       loopService,
       checkoutDiffManager,
       github,
@@ -874,6 +888,8 @@ export class Session {
     });
     this.webhookSession = customSessions.webhookSession;
     this.plannotatorSession = customSessions.plannotatorSession;
+    this.peerManager = orNull(peerManager);
+    this.missionControlService = orNull(missionControlService);
     this.providerCatalogSession = new ProviderCatalogSession({
       host: {
         emit: (msg) => this.emit(msg),
@@ -1887,6 +1903,8 @@ export class Session {
       this.dispatchTerminalMessage(msg) ??
       this.dispatchChatScheduleLoopMessage(msg) ??
       this.dispatchPlannotatorMessage(msg) ??
+      this.dispatchMissionControlPeersMessage(msg) ??
+      this.dispatchMissionControlEventsMessage(msg) ??
       this.dispatchMiscMessage(msg);
     if (promise) await promise;
   }
@@ -1900,6 +1918,66 @@ export class Session {
       default:
         return undefined;
     }
+  }
+
+  private async handleMissionControlPeersListRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.peers.list.request" }>,
+  ): Promise<void> {
+    this.emit({
+      type: "mission_control.peers.list.response",
+      payload: {
+        requestId: msg.requestId,
+        peers: this.peerManager?.getPeerStatuses() ?? [],
+      },
+    });
+  }
+
+  private dispatchMissionControlPeersMessage(
+    msg: SessionInboundMessage,
+  ): Promise<void> | undefined {
+    switch (msg.type) {
+      case "mission_control.peers.list.request":
+        return this.handleMissionControlPeersListRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  private dispatchMissionControlEventsMessage(
+    msg: SessionInboundMessage,
+  ): Promise<void> | undefined {
+    switch (msg.type) {
+      case "mission_control.events.fetch.request":
+        return this.handleMissionControlEventsFetchRequest(msg);
+      case "mission_control.events.ack.request":
+        return this.handleMissionControlEventsAckRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  private async handleMissionControlEventsFetchRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.events.fetch.request" }>,
+  ): Promise<void> {
+    const events =
+      this.missionControlService?.fetchEvents({
+        sinceTs: msg.sinceTs,
+        limit: msg.limit,
+      }) ?? [];
+    this.emit({
+      type: "mission_control.events.fetch.response",
+      payload: { requestId: msg.requestId, events },
+    });
+  }
+
+  private async handleMissionControlEventsAckRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.events.ack.request" }>,
+  ): Promise<void> {
+    this.missionControlService?.ackEvents(msg.eventIds);
+    this.emit({
+      type: "mission_control.events.ack.response",
+      payload: { requestId: msg.requestId },
+    });
   }
 
   private dispatchVoiceAndControlMessage(msg: SessionInboundMessage): Promise<void> | undefined {
@@ -3208,7 +3286,7 @@ export class Session {
    */
   private async handleCreateAgentRequest(msg: CreateAgentRequestMessage): Promise<void> {
     const {
-      config,
+      config: rawConfig,
       worktreeName,
       requestId,
       initialPrompt,
@@ -3221,6 +3299,12 @@ export class Session {
       attachments,
       env,
     } = msg;
+    // Expand `~` (the host-wide cwd contract — e.g. the Mission Control Commander) to
+    // the daemon's home directory so every downstream path (directory check, worktree
+    // creation, workspace provisioning, intent resolution, agent-manager validation)
+    // sees an absolute path. Matches the MCP create path (resolveMcpInitialCwd) and
+    // the provider-snapshot path (resolveSnapshotCwd), which both accept `~`.
+    const config = { ...rawConfig, cwd: expandUserPath(rawConfig.cwd) };
     this.sessionLogger.info(
       { cwd: config.cwd, provider: config.provider, worktreeName },
       `Creating agent in ${config.cwd} (${config.provider})${
@@ -3256,7 +3340,7 @@ export class Session {
       });
       createdWorktreeForCleanup = createdWorktree;
       const resolvedIntent = await this.resolveSessionCreateAgentIntent({
-        request: msg,
+        request: { ...msg, config },
         createdWorktree,
         workspacePromptTitle,
       });

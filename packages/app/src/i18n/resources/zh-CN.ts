@@ -1003,6 +1003,7 @@ export const zhCN: TranslationResources = {
     sections: {
       sessions: "历史",
       schedules: "计划",
+      missionControl: "Mission Control",
       webhooks: "Webhooks",
     },
     worktreeSetup: {

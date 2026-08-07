@@ -335,6 +335,7 @@ function mergeMutableConfigIntoPersistedConfig(params: {
 
   return {
     ...persisted,
+    ...(mutable.missionControl !== undefined ? { missionControl: mutable.missionControl } : {}),
     daemon: {
       ...persisted.daemon,
       ...(persistRelayEnabled

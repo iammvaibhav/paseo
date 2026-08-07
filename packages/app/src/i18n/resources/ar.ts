@@ -1011,6 +1011,7 @@ export const ar: TranslationResources = {
     sections: {
       sessions: "السجل",
       schedules: "الجداول",
+      missionControl: "Mission Control",
       webhooks: "Webhooks",
     },
     worktreeSetup: {

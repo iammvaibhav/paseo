@@ -149,8 +149,11 @@ import { FileBackedChatService } from "./chat/chat-service.js";
 import { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { LoopService } from "./loop-service.js";
 import { ScheduleService } from "./schedule/service.js";
+import { MissionControlService } from "./mission-control/service.js";
+import { MissionControlDigest } from "./mission-control/digest.js";
 import { MAX_WEBHOOK_BODY_BYTES, WebhookService } from "./webhook/service.js";
 import { createWebhookRouteHandler } from "./webhook/route.js";
+import { PeerManager } from "./peers/peer-manager.js";
 import { TunnelManager } from "./tunnel/manager.js";
 import { DaemonConfigStore, type MutableDaemonConfig } from "./daemon-config-store.js";
 import { BrowserToolsBroker } from "./browser-tools/broker.js";
@@ -456,6 +459,7 @@ export interface PaseoDaemonConfig {
       thinkingOptionId?: string;
     }>;
   };
+  missionControl?: PersistedConfig["missionControl"];
   providerOverrides?: Record<string, ProviderOverride>;
   log?: PersistedConfig["log"];
   onLifecycleIntent?: (intent: DaemonLifecycleIntent) => void;
@@ -553,6 +557,7 @@ function createInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDae
     autoArchiveAfterMerge: config.autoArchiveAfterMerge ?? false,
     enableTerminalAgentHooks: config.enableTerminalAgentHooks ?? false,
     appendSystemPrompt: config.appendSystemPrompt ?? "",
+    ...(config.missionControl ? { missionControl: config.missionControl } : {}),
   };
 
   if (config.terminalProfiles !== undefined) {
@@ -1314,6 +1319,26 @@ export async function createPaseoDaemon(
   });
   logger.info({ elapsed: elapsed() }, "Schedule service initialized");
 
+  const missionControlDigest = new MissionControlDigest({
+    agentManager,
+    agentStorage,
+    logger,
+  });
+  const missionControlService = new MissionControlService({
+    paseoHome: config.paseoHome,
+    logger,
+    agentManager,
+    agentStorage,
+    daemonConfigStore,
+    serverId,
+    hostName: getHostname(),
+    broadcast: (message) => wsServer?.broadcast(wrapSessionMessage(message)),
+    digest: missionControlDigest,
+  });
+  await missionControlService.start();
+  missionControlDigest.start();
+  logger.info({ elapsed: elapsed() }, "Mission control service initialized");
+
   const tunnelManager = new TunnelManager({
     config: config.tunnel ?? {
       provider: "none",
@@ -1335,6 +1360,13 @@ export async function createPaseoDaemon(
     },
     "Tunnel manager initialized",
   );
+
+  const peerManager = new PeerManager({
+    peers: loadPersistedConfig(config.paseoHome).peers ?? [],
+    logger,
+    appVersion: daemonVersion,
+    missionControlDigest,
+  });
 
   const webhookService = new WebhookService({
     paseoHome: config.paseoHome,
@@ -1412,6 +1444,7 @@ export async function createPaseoDaemon(
     createPaseoWorktree: createAgentCommandDependencies.createPaseoWorktree,
     browserToolsEnabled: browserToolsPolicy.isEnabled(),
     browserToolsBroker,
+    peerManager,
     paseoHome: config.paseoHome,
     worktreesRoot: config.worktreesRoot,
     callerAgentId: runtime.callerAgentId,
@@ -1691,6 +1724,8 @@ export async function createPaseoDaemon(
               browserToolsBroker,
               webhookService,
               hubRelationships,
+              peerManager,
+              missionControlService,
             );
             relayRuntime = createRelayRuntime({
               config: {
@@ -1757,7 +1792,9 @@ export async function createPaseoDaemon(
     await providerSnapshotManager.shutdown();
     terminalManager.killAll();
     speechService.stop();
+    await missionControlService.stop().catch(() => undefined);
     await scheduleService.stop().catch(() => undefined);
+    await peerManager.close().catch(() => undefined);
     await tunnelManager.stop().catch(() => undefined);
     await relayRuntime?.stop().catch(() => undefined);
     if (wsServer) {

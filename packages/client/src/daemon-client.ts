@@ -597,6 +597,18 @@ type WebhookConfigPayload = Extract<
   SessionOutboundMessage,
   { type: "webhook/config/response" }
 >["payload"];
+type MissionControlEventsFetchPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.events.fetch.response" }
+>["payload"];
+type MissionControlEventsAckPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.events.ack.response" }
+>["payload"];
+type MissionControlPeersListPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.peers.list.response" }
+>["payload"];
 export type FetchAgentTimelinePayload = FetchAgentTimelineResponseMessage["payload"];
 export type AgentForkContextPayload = AgentForkContextResponseMessage["payload"];
 
@@ -5645,6 +5657,46 @@ export class DaemonClient {
       requestId,
       message: { type: "webhook/config" },
       responseType: "webhook/config/response",
+    });
+  }
+
+  async missionControlEventsFetch(options?: {
+    sinceTs?: string;
+    limit?: number;
+    requestId?: string;
+  }): Promise<MissionControlEventsFetchPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options?.requestId,
+      message: {
+        type: "mission_control.events.fetch.request",
+        ...(options?.sinceTs ? { sinceTs: options.sinceTs } : {}),
+        ...(typeof options?.limit === "number" ? { limit: options.limit } : {}),
+      },
+      responseType: "mission_control.events.fetch.response",
+    });
+  }
+
+  async missionControlEventsAck(options: {
+    eventIds: string[];
+    requestId?: string;
+  }): Promise<MissionControlEventsAckPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "mission_control.events.ack.request",
+        eventIds: options.eventIds,
+      },
+      responseType: "mission_control.events.ack.response",
+    });
+  }
+
+  async missionControlPeersList(requestId?: string): Promise<MissionControlPeersListPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: {
+        type: "mission_control.peers.list.request",
+      },
+      responseType: "mission_control.peers.list.response",
     });
   }
 

@@ -15,6 +15,8 @@ import type { FileBackedChatService } from "./chat/chat-service.js";
 import type { LoopService } from "./loop-service.js";
 import type { ScheduleService } from "./schedule/service.js";
 import type { WebhookService } from "./webhook/service.js";
+import type { PeerManager } from "./peers/peer-manager.js";
+import type { MissionControlService } from "./mission-control/service.js";
 import type { CheckoutDiffManager, CheckoutDiffMetrics } from "./checkout-diff-manager.js";
 import type { DaemonConfigStore, MutableDaemonConfig } from "./daemon-config-store.js";
 import {
@@ -558,6 +560,8 @@ export class VoiceAssistantWebSocketServer {
   private unsubscribeTerminalActivity: (() => void) | null = null;
   private readonly browserToolsBroker: BrowserToolsBroker | null;
   private readonly hubRelationships: HubRelationshipManagement | null;
+  private readonly peerManager: PeerManager | null;
+  private readonly missionControlService: MissionControlService | null;
   private readonly browserToolsRegistrations = new Map<string, BrowserToolsRegistration>();
   private acceptingConnections = true;
   /** COMPAT(plannotator): true when plannotator binary is resolvable at daemon start. */
@@ -610,6 +614,8 @@ export class VoiceAssistantWebSocketServer {
     browserToolsBroker?: BrowserToolsBroker | null,
     webhookService?: WebhookService | null,
     hubRelationships?: HubRelationshipManagement | null,
+    peerManager?: PeerManager | null,
+    missionControlService?: MissionControlService | null,
   ) {
     this.logger = logger.child({ module: "websocket-server" });
     this.advertiseDaemonStatusRpc = wsConfig.daemonStatusRpc !== false;
@@ -622,6 +628,8 @@ export class VoiceAssistantWebSocketServer {
     this.daemonRuntimeConfig = daemonRuntimeConfig;
     this.browserToolsBroker = browserToolsBroker ?? null;
     this.hubRelationships = hubRelationships ?? null;
+    this.peerManager = peerManager ?? null;
+    this.missionControlService = missionControlService ?? null;
     this.agentManager = agentManager;
     this.agentStorage = agentStorage;
     this.projectRegistry = projectRegistry ?? createNoopProjectRegistry();
@@ -1346,6 +1354,8 @@ export class VoiceAssistantWebSocketServer {
       loopService: this.loopService,
       scheduleService: this.scheduleService,
       webhookService: this.webhookService,
+      peerManager: this.peerManager,
+      missionControlService: this.missionControlService,
       checkoutDiffManager: this.checkoutDiffManager,
       github: this.github,
       workspaceGitService: this.workspaceGitService,
@@ -1620,6 +1630,7 @@ export class VoiceAssistantWebSocketServer {
         // COMPAT(plannotator): added in v0.2.x (fork), drop the gate when floor includes plannotator.
         // Advertised when the plannotator binary is on PATH / ~/.local/bin.
         plannotator: this.plannotatorAvailable === true,
+        missionControl: true,
         // COMPAT(projectCustomIcon): added in v0.2.0, remove after 2027-01-20.
         projectCustomIcon: true,
       },

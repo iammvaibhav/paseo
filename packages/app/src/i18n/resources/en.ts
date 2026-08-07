@@ -1021,6 +1021,7 @@ export const en = {
     sections: {
       sessions: "History",
       schedules: "Schedules",
+      missionControl: "Mission Control",
       webhooks: "Webhooks",
     },
     worktreeSetup: {

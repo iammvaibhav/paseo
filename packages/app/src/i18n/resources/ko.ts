@@ -1013,6 +1013,7 @@ export const ko: TranslationResources = {
     sections: {
       sessions: "기록",
       schedules: "일정",
+      missionControl: "Mission Control",
       webhooks: "Webhooks",
     },
     worktreeSetup: {

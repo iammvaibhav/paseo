@@ -29,6 +29,9 @@ interface SidebarHeaderRowProps {
    */
   variant?: SidebarHeaderRowVariant;
   shortcutKeys?: ShortcutKey[][] | null;
+  /** Optional count pill rendered right-aligned (e.g. needs-you agents for
+   * Mission Control). Hidden when falsy/zero. */
+  badgeCount?: number;
 }
 
 export function SidebarHeaderRow({
@@ -41,6 +44,7 @@ export function SidebarHeaderRow({
   accessibilityLabel,
   variant = "header",
   shortcutKeys = null,
+  badgeCount,
 }: SidebarHeaderRowProps) {
   const ThemedIcon = useMemo(() => withUnistyles(Icon), [Icon]);
 
@@ -71,10 +75,15 @@ export function SidebarHeaderRow({
           {shortcutKeys && Boolean(state.hovered) ? (
             <Shortcut chord={shortcutKeys} style={styles.shortcut} />
           ) : null}
+          {typeof badgeCount === "number" && badgeCount > 0 ? (
+            <View style={styles.countBadge}>
+              <Text style={styles.countBadgeText}>{badgeCount}</Text>
+            </View>
+          ) : null}
         </>
       );
     },
-    [ThemedIcon, isActive, label, shortcutKeys],
+    [ThemedIcon, badgeCount, isActive, label, shortcutKeys],
   );
 
   return (
@@ -158,5 +167,17 @@ const styles = StyleSheet.create((theme) => ({
   },
   shortcut: {
     marginLeft: "auto",
+  },
+  countBadge: {
+    marginLeft: "auto",
+    paddingHorizontal: theme.spacing[1],
+    paddingVertical: 2,
+    borderRadius: theme.borderRadius.md,
+    backgroundColor: theme.colors.surface2,
+  },
+  countBadgeText: {
+    fontSize: theme.fontSize.xs,
+    fontWeight: theme.fontWeight.medium,
+    color: theme.colors.foregroundMuted,
   },
 }));

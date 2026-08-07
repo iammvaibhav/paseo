@@ -1,8 +1,9 @@
 import { z } from "zod";
+import type { DaemonClient } from "@getpaseo/client";
 import { ensureValidJson } from "../../json-utils.js";
 import type { Logger } from "pino";
 
-import type { AgentMode, AgentProvider } from "../agent-sdk-types.js";
+import type { AgentMode, AgentProvider, AgentTimelineItem } from "../agent-sdk-types.js";
 import type { AgentManager } from "../agent-manager.js";
 import {
   AgentFeatureSchema,
@@ -22,6 +23,7 @@ import { curateAgentActivity } from "../activity-curator.js";
 import { selectItemsByProjectedLimit } from "../timeline-projection.js";
 import type { AgentStorage } from "../agent-storage.js";
 import { ensureAgentLoaded } from "../agent-loading.js";
+import { supportsDiskTimeline, tryReadProviderTimelineFromDisk } from "../provider-disk-history.js";
 import { isStoredAgentProviderAvailable } from "../../persistence-hooks.js";
 import {
   archiveByScope,
@@ -83,6 +85,7 @@ import {
 } from "../../worktree/commands.js";
 import { registerBrowserTools } from "../../browser-tools/tools.js";
 import type { BrowserToolsBroker } from "../../browser-tools/broker.js";
+import { buildPeerUnreachableError, type PeerManager } from "../../peers/peer-manager.js";
 import type {
   PaseoToolCatalog,
   PaseoToolConfig,
@@ -125,6 +128,7 @@ export interface PaseoToolHostDependencies {
   ) => Promise<string>;
   browserToolsEnabled?: boolean;
   browserToolsBroker?: BrowserToolsBroker | null;
+  peerManager?: PeerManager | null;
   paseoHome?: string;
   worktreesRoot?: string;
   /**
@@ -535,6 +539,118 @@ function resolveTerminalKeyToken(key: string, literal: boolean): string {
   }
 }
 
+/**
+ * Shared selection/curation for get_agent_activity, across the live and peek
+ * paths so both produce byte-identical summaries.
+ */
+function curateActivitySummary(input: { timeline: AgentTimelineItem[]; limit?: number }): {
+  updateCount: number;
+  content: string;
+} {
+  const selection = selectItemsByProjectedLimit({
+    items: input.timeline,
+    direction: "tail",
+    limit: input.limit ?? 0,
+  });
+  const curatedContent = curateAgentActivity(selection.items);
+  const { totalProjected, shownProjected } = selection;
+
+  const noun = totalProjected === 1 ? "activity" : "activities";
+  const countHeader =
+    input.limit && shownProjected < totalProjected
+      ? `Showing ${shownProjected} of ${totalProjected} ${noun} (limited to ${input.limit})`
+      : `Showing all ${totalProjected} ${noun}`;
+
+  return {
+    updateCount: input.timeline.length,
+    content: `${countHeader}\n\n${curatedContent}`,
+  };
+}
+
+/**
+ * Read an agent's activity without ever spawning its provider process: live
+ * agents answer from the in-memory timeline, closed agents from the stored
+ * record plus offline provider disk history.
+ */
+async function peekAgentActivity(input: {
+  agentId: string;
+  agentManager: AgentManager;
+  agentStorage: AgentStorage;
+  logger: Logger;
+}): Promise<{ timeline: AgentTimelineItem[]; currentModeId: string | null }> {
+  const live = input.agentManager.getAgent(input.agentId);
+  if (live) {
+    return {
+      timeline: input.agentManager.getTimeline(input.agentId),
+      currentModeId: live.currentModeId,
+    };
+  }
+
+  const record = await input.agentStorage.get(input.agentId);
+  if (!record) {
+    throw new Error(`Agent ${input.agentId} not found`);
+  }
+
+  if (!input.agentManager.hasTimeline(input.agentId)) {
+    const sessionId = record.persistence?.sessionId;
+    if (sessionId && supportsDiskTimeline(record.provider)) {
+      const diskItems = await tryReadProviderTimelineFromDisk(
+        {
+          provider: record.provider,
+          cwd: record.cwd,
+          sessionId,
+          ...(typeof record.persistence?.nativeHandle === "string"
+            ? { nativeHandle: record.persistence.nativeHandle }
+            : {}),
+        },
+        { logger: input.logger },
+      );
+      if (diskItems && diskItems.length > 0) {
+        input.agentManager.seedTimelineFromItems(input.agentId, diskItems);
+      }
+    }
+    if (!input.agentManager.hasTimeline(input.agentId)) {
+      input.agentManager.seedTimelineFromItems(input.agentId, []);
+    }
+  }
+
+  const rows = input.agentManager.fetchTimeline(input.agentId, {
+    direction: "tail",
+    limit: 0,
+  }).rows;
+  return {
+    timeline: rows.map((row) => row.item),
+    currentModeId: null,
+  };
+}
+
+async function listPeerFleetAgents(input: {
+  client: DaemonClient;
+  peerName: string;
+  includeArchived: boolean;
+  statuses?: readonly string[];
+  sinceMs: number;
+}): Promise<Array<AgentListItemPayload & { host: string }>> {
+  const payload = await input.client.fetchAgents({
+    ...(input.includeArchived ? { filter: { includeArchived: true } } : {}),
+    page: { limit: 200 },
+  });
+  const result: Array<AgentListItemPayload & { host: string }> = [];
+  for (const entry of payload.entries) {
+    if (
+      input.statuses &&
+      input.statuses.length > 0 &&
+      !input.statuses.includes(entry.agent.status)
+    ) {
+      continue;
+    }
+    if (Date.parse(entry.agent.updatedAt) >= input.sinceMs) {
+      result.push({ ...toAgentListItemPayload(entry.agent), host: input.peerName });
+    }
+  }
+  return result;
+}
+
 export function createPaseoToolCatalog(options: PaseoToolHostDependencies): PaseoToolCatalog {
   const {
     agentManager,
@@ -546,6 +662,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     callerAgentId,
     resolveSpeakHandler,
     resolveCallerContext,
+    peerManager,
     logger,
   } = options;
   const childLogger = logger.child({ module: "agent", component: "paseo-tool-catalog" });
@@ -2986,6 +3103,12 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           .number()
           .optional()
           .describe("Optional limit for number of activities to include (most recent first)."),
+        peek: z
+          .boolean()
+          .optional()
+          .describe(
+            "When true, read the stored timeline without loading the agent (no provider spawn).",
+          ),
       },
       outputSchema: {
         agentId: z.string(),
@@ -2994,7 +3117,25 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         content: z.string(),
       },
     },
-    async ({ agentId, limit }) => {
+    async ({ agentId, limit, peek }) => {
+      if (peek) {
+        const activity = await peekAgentActivity({
+          agentId,
+          agentManager,
+          agentStorage,
+          logger: childLogger,
+        });
+        const summary = curateActivitySummary({ timeline: activity.timeline, limit });
+        return {
+          content: [],
+          structuredContent: ensureValidJson({
+            agentId,
+            updateCount: summary.updateCount,
+            currentModeId: activity.currentModeId,
+            content: summary.content,
+          }),
+        };
+      }
       await ensureAgentLoaded(agentId, {
         agentManager,
         agentStorage,
@@ -3002,30 +3143,15 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       });
       const timeline = agentManager.getTimeline(agentId);
       const snapshot = agentManager.getAgent(agentId);
-
-      const selection = selectItemsByProjectedLimit({
-        items: timeline,
-        direction: "tail",
-        limit: limit ?? 0,
-      });
-      const curatedContent = curateAgentActivity(selection.items);
-      const { totalProjected, shownProjected } = selection;
-
-      const noun = totalProjected === 1 ? "activity" : "activities";
-      const countHeader =
-        limit && shownProjected < totalProjected
-          ? `Showing ${shownProjected} of ${totalProjected} ${noun} (limited to ${limit})`
-          : `Showing all ${totalProjected} ${noun}`;
-
-      const contentWithCount = `${countHeader}\n\n${curatedContent}`;
+      const summary = curateActivitySummary({ timeline, limit });
 
       return {
         content: [],
         structuredContent: ensureValidJson({
           agentId,
-          updateCount: timeline.length,
+          updateCount: summary.updateCount,
           currentModeId: snapshot?.currentModeId ?? null,
-          content: contentWithCount,
+          content: summary.content,
         }),
       };
     },
@@ -3112,6 +3238,216 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         response,
         logger: childLogger,
       });
+      return {
+        content: [],
+        structuredContent: ensureValidJson({ success: true }),
+      };
+    },
+  );
+
+  const fleetCreateAgentInputSchema = z
+    .object({
+      host: z
+        .string()
+        .min(1)
+        .describe(
+          "Target host: a peer name from the daemon peers config, or 'local' for this daemon.",
+        ),
+      ...canonicalTopLevelInputSchema,
+      cwd: z
+        .string()
+        .optional()
+        .describe(
+          "Working directory on the target host. Required when targeting a peer without workspaceId.",
+        ),
+    })
+    .passthrough();
+
+  const fleetListAgentsInputSchema = {
+    includeArchived: z.boolean().optional().default(false),
+    sinceHours: z
+      .number()
+      .int()
+      .positive()
+      .max(24 * 30)
+      .optional()
+      .default(48),
+    statuses: z.array(AgentStatusEnum).optional(),
+    limit: z.number().int().positive().max(200).optional().default(50),
+  };
+
+  const fleetAgentListItemSchema = AgentListItemPayloadSchema.extend({
+    host: z.string(),
+  });
+
+  const resolveFleetHost = (host: string): DaemonClient | null => {
+    if (!peerManager) {
+      return null;
+    }
+    const peerStatus = peerManager.getPeerStatus(host);
+    if (!peerStatus) {
+      return null;
+    }
+    if (peerStatus.state !== "online") {
+      throw buildPeerUnreachableError(host, peerStatus.lastSeenAt);
+    }
+    return peerManager.getPeerClient(host);
+  };
+
+  registerTool(
+    "fleet_list_agents",
+    {
+      title: "List agents across hosts",
+      description:
+        "List agents on this daemon and every reachable peer host, tagged with the host each agent runs on. " +
+        "Unreachable hosts are omitted; use mission_control.peers.list or the board for host status.",
+      inputSchema: fleetListAgentsInputSchema,
+      outputSchema: {
+        agents: z.array(fleetAgentListItemSchema),
+      },
+    },
+    async ({ includeArchived = false, sinceHours = 48, statuses, limit = 50 }) => {
+      const localResult = await toCatalog().executeTool("list_agents", {
+        includeArchived,
+        sinceHours,
+        statuses,
+        limit,
+      });
+      const localAgents = z
+        .object({ agents: z.array(AgentListItemPayloadSchema) })
+        .parse(localResult.structuredContent).agents;
+      const agents: Array<AgentListItemPayload & { host: string }> = [];
+      for (const agent of localAgents) {
+        agents.push({ ...agent, host: "local" });
+      }
+
+      if (peerManager) {
+        const sinceMs = Date.now() - sinceHours * 60 * 60 * 1000;
+        for (const peerStatus of peerManager.getPeerStatuses()) {
+          if (peerStatus.state !== "online") {
+            continue;
+          }
+          const client = peerManager.getPeerClient(peerStatus.name);
+          if (!client) {
+            continue;
+          }
+          try {
+            const peerAgents = await listPeerFleetAgents({
+              client,
+              peerName: peerStatus.name,
+              includeArchived,
+              statuses,
+              sinceMs,
+            });
+            agents.push(...peerAgents);
+          } catch (error) {
+            childLogger.warn(
+              { err: error, peer: peerStatus.name },
+              "Failed to list agents on peer",
+            );
+          }
+        }
+      }
+
+      agents.sort(compareAgentListItems);
+      return {
+        content: [],
+        structuredContent: ensureValidJson({ agents: agents.slice(0, limit) }),
+      };
+    },
+  );
+
+  registerTool(
+    "fleet_create_agent",
+    {
+      title: "Create agent on a host",
+      description:
+        "Create an agent on a specific host in the fleet. host is a peer name from the daemon peers config, or 'local' for this daemon. " +
+        "Requires provider/model (for example codex/gpt-5.4) and an initial prompt. " +
+        "When targeting a peer, cwd or workspaceId is required to place the agent on that host.",
+      inputSchema: fleetCreateAgentInputSchema,
+      outputSchema: {
+        agentId: z.string(),
+        type: AgentProviderEnum,
+        status: AgentStatusEnum,
+        cwd: z.string(),
+        workspaceId: z.string().optional(),
+        currentModeId: z.string().nullable(),
+        availableModes: z.array(ProviderModeSchema),
+        lastMessage: z.string().nullable().optional(),
+        permission: AgentPermissionRequestPayloadSchema.nullable().optional(),
+      },
+    },
+    async (args, context) => {
+      const { host, cwd, workspaceId, provider, initialPrompt, title, labels, settings } = args;
+      if (host === "local") {
+        const { cwd: _cwd, ...localArgs } = args;
+        return toCatalog().executeTool("create_agent", localArgs, context);
+      }
+      const client = resolveFleetHost(host);
+      if (!client) {
+        throw new Error(`Host "${host}" is not a configured peer`);
+      }
+      if (!cwd && !workspaceId) {
+        throw new Error(`cwd or workspaceId is required to place the agent on host "${host}"`);
+      }
+      const snapshot = await client.createAgent({
+        provider,
+        cwd: cwd ?? ".",
+        workspaceId,
+        initialPrompt,
+        title,
+        labels,
+        ...(settings?.modeId ? { modeId: settings.modeId } : {}),
+        ...(settings?.thinkingOptionId ? { thinkingOptionId: settings.thinkingOptionId } : {}),
+        ...(settings?.features ? { featureValues: settings.features } : {}),
+      });
+      return {
+        content: [],
+        structuredContent: ensureValidJson({
+          agentId: snapshot.id,
+          type: snapshot.provider,
+          status: snapshot.status,
+          cwd: snapshot.cwd,
+          ...(snapshot.workspaceId ? { workspaceId: snapshot.workspaceId } : {}),
+          currentModeId: snapshot.currentModeId,
+          availableModes: snapshot.availableModes,
+          lastMessage: null,
+          permission: sanitizePermissionRequest(snapshot.pendingPermissions[0] ?? null),
+        }),
+      };
+    },
+  );
+
+  registerTool(
+    "fleet_send_prompt",
+    {
+      title: "Send agent prompt on a host",
+      description:
+        "Send a task to an agent on a specific host in the fleet. host is a peer name from the daemon peers config, or 'local' for this daemon.",
+      inputSchema: {
+        host: z
+          .string()
+          .min(1)
+          .describe(
+            "Target host: a peer name from the daemon peers config, or 'local' for this daemon.",
+          ),
+        agentId: z.string(),
+        prompt: z.string(),
+      },
+      outputSchema: {
+        success: z.boolean(),
+      },
+    },
+    async ({ host, agentId, prompt }) => {
+      if (host === "local") {
+        return toCatalog().executeTool("send_agent_prompt", { agentId, prompt });
+      }
+      const client = resolveFleetHost(host);
+      if (!client) {
+        throw new Error(`Host "${host}" is not a configured peer`);
+      }
+      await client.sendAgentMessage(agentId, prompt);
       return {
         content: [],
         structuredContent: ensureValidJson({ success: true }),

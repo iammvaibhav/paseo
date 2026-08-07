@@ -11,6 +11,7 @@ import type { AgentProviderRuntimeSettingsMap } from "./agent/provider-launch-co
 import { ensurePrivateFile, writePrivateFileAtomicSync } from "./private-files.js";
 import { TerminalProfileSchema } from "@getpaseo/protocol/messages";
 import { PaseoServicePortAllocationSchema } from "@getpaseo/protocol/paseo-config-schema";
+import { PeerConfigSchema } from "./peers/types.js";
 
 export const LogLevelSchema = z.enum(["trace", "debug", "info", "warn", "error", "fatal"]);
 export const LogFormatSchema = z.enum(["pretty", "json"]);
@@ -166,6 +167,30 @@ const FeatureWebUiSchema = z
   .object({
     enabled: z.boolean().optional(),
     distDir: z.string().min(1).optional(),
+  })
+  .strict();
+
+const MissionControlSummarizerConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    baseUrl: z.string().nullable().default(null),
+    apiKey: z.string().nullable().default(null),
+    model: z.string().default("extract"),
+    minNewItems: z.number().int().positive().default(12),
+    debounceSeconds: z.number().int().positive().default(30),
+  })
+  .strict();
+
+// Absent config = feature on with defaults; the summarizer stays silently
+// disabled when no gateway baseUrl resolves (config or LLM_GATEWAY_URL).
+const MissionControlConfigSchema = z
+  .object({
+    retentionDays: z.number().int().positive().default(30),
+    // Zod 3 `.default()` requires the object's *output* type; all fields defaulted
+    // makes that output all-required, so `{}` is not assignable. `.optional()` keeps
+    // field-level defaults (partial configs normalize) and MissionControlService's
+    // `readConfig()` applies the same defaults when the whole section is absent.
+    summarizer: MissionControlSummarizerConfigSchema.optional(),
   })
   .strict();
 
@@ -346,6 +371,7 @@ export const PersistedConfigSchema = z
       })
       .strict()
       .optional(),
+    peers: z.array(PeerConfigSchema).optional(),
     features: z
       .object({
         dictation: FeatureDictationSchema.optional(),
@@ -354,6 +380,8 @@ export const PersistedConfigSchema = z
       })
       .strict()
       .optional(),
+
+    missionControl: MissionControlConfigSchema.optional(),
 
     log: LogConfigSchema.optional(),
   })

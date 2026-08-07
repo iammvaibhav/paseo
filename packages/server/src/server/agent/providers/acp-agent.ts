@@ -2182,8 +2182,31 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     }
     this.pendingPermissions.clear();
 
-    if (this.activeForegroundTurnId) {
+    const turnId = this.activeForegroundTurnId;
+    if (!turnId) {
+      return;
+    }
+
+    try {
       await this.connection.cancel({ sessionId: this.sessionId });
+    } catch (error) {
+      this.logger.debug({ err: error }, "ACP session/cancel failed during interrupt");
+    }
+
+    // Always release the local foreground turn on interrupt. Some ACP bridges
+    // (e.g. print-mode wrappers that spawn a slow CLI per prompt) stream useful
+    // updates but do not settle session/prompt promptly after cancel. Leaving
+    // activeForegroundTurnId set blocks every later startTurn with
+    // "A foreground turn is already active", including replaceRunning sends.
+    // A late prompt response is ignored in handlePromptResponse / finishTurn.
+    if (this.activeForegroundTurnId === turnId) {
+      this.synthesizeCanceledToolCalls();
+      this.finishTurn({
+        type: "turn_canceled",
+        provider: this.provider,
+        reason: "Interrupted",
+        turnId,
+      });
     }
   }
 
@@ -2867,6 +2890,12 @@ export class ACPAgentSession implements AgentSession, ACPClient {
   }
 
   private handlePromptResponse(response: PromptResponse, turnId: string): void {
+    // Ignore late responses after interrupt force-released the turn, or after a
+    // newer foreground turn replaced it.
+    if (this.activeForegroundTurnId !== turnId) {
+      return;
+    }
+
     this.currentTurnUsage = mapACPUsage(response.usage) ?? this.currentTurnUsage;
 
     switch (response.stopReason) {
@@ -2960,6 +2989,18 @@ export class ACPAgentSession implements AgentSession, ACPClient {
   private finishTurn(
     event: Extract<AgentStreamEvent, { type: "turn_completed" | "turn_failed" | "turn_canceled" }>,
   ): void {
+    // Drop stale completions/cancels that no longer own the foreground turn.
+    if (
+      event.turnId &&
+      this.activeForegroundTurnId &&
+      event.turnId !== this.activeForegroundTurnId
+    ) {
+      return;
+    }
+    if (event.turnId && this.activeForegroundTurnId === null) {
+      return;
+    }
+
     this.deliverTranslatedEvents(this.flushPendingUserMessage());
     this.activeForegroundTurnId = null;
     this.fallbackAssistantMessageId = null;

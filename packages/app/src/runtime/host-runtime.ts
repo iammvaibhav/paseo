@@ -2423,6 +2423,49 @@ export function useHostRuntimeConnectionStatus(serverId: string): HostRuntimeCon
   );
 }
 
+/**
+ * Builds the aggregate connection-status map for the given hosts.
+ *
+ * Lives at module scope (not inside the hook) so the React Compiler treats the
+ * call as opaque and keeps every argument — `version` included — in the
+ * auto-memo dep list. An in-hook `void version` read is dead-code-eliminated by
+ * the compiler (the value never feeds a visible computation), leaving
+ * `serverIds` as the only memo dep; with a stable serverIds array the map then
+ * freezes at the mount-time status and never reflects later transitions (the
+ * Mission Control board/sidebar gate on it). Here `version` keys the per-tick
+ * cache: when the store's aggregate version ticks, the map is rebuilt from
+ * fresh snapshots.
+ */
+let lastConnectionStatusMapBuild: {
+  store: HostRuntimeStore;
+  version: number;
+  key: string;
+  statuses: ReadonlyMap<string, HostRuntimeConnectionStatus>;
+} | null = null;
+
+function buildConnectionStatusMap(
+  store: HostRuntimeStore,
+  serverIds: readonly string[],
+  version: number,
+): ReadonlyMap<string, HostRuntimeConnectionStatus> {
+  const key = serverIds.join("\u0000");
+  const cached = lastConnectionStatusMapBuild;
+  if (
+    cached !== null &&
+    cached.store === store &&
+    cached.version === version &&
+    cached.key === key
+  ) {
+    return cached.statuses;
+  }
+  const statuses = new Map<string, HostRuntimeConnectionStatus>();
+  for (const serverId of serverIds) {
+    statuses.set(serverId, store.getSnapshot(serverId)?.connectionStatus ?? "connecting");
+  }
+  lastConnectionStatusMapBuild = { store, version, key, statuses };
+  return statuses;
+}
+
 export function useHostRuntimeConnectionStatuses(
   serverIds: readonly string[],
 ): ReadonlyMap<string, HostRuntimeConnectionStatus> {
@@ -2432,17 +2475,7 @@ export function useHostRuntimeConnectionStatuses(
     () => store.getVersion(),
     () => store.getVersion(),
   );
-
-  return useMemo(() => {
-    // The aggregate version is the reactivity trigger; re-read snapshots on every host tick.
-    void version;
-    return new Map(
-      serverIds.map(
-        (serverId) =>
-          [serverId, store.getSnapshot(serverId)?.connectionStatus ?? "connecting"] as const,
-      ),
-    );
-  }, [serverIds, store, version]);
+  return buildConnectionStatusMap(store, serverIds, version);
 }
 
 export function useHostRuntimeLastError(serverId: string): string | null {

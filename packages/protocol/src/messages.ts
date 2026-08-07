@@ -58,6 +58,25 @@ import {
   WebhookConfigResponseSchema,
 } from "./webhook/rpc-schemas.js";
 import {
+  MissionControlEventsFetchRequestSchema,
+  MissionControlEventsFetchResponseSchema,
+  MissionControlEventsAckRequestSchema,
+  MissionControlEventsAckResponseSchema,
+  MissionControlPeersListRequestSchema,
+  MissionControlPeersListResponseSchema,
+  MissionControlEventMessageSchema,
+} from "./mission-control/types.js";
+export {
+  MissionControlEventSchema,
+  MissionControlEventKindSchema,
+  MissionControlProofSchema,
+  MissionControlPeerStatusSchema,
+  type MissionControlEvent,
+  type MissionControlEventKind,
+  type MissionControlProof,
+  type MissionControlPeerStatus,
+} from "./mission-control/types.js";
+import {
   LoopRunRequestSchema,
   LoopListRequestSchema,
   LoopInspectRequestSchema,
@@ -167,6 +186,24 @@ const MutableRelayConfigSchema = z
     enabled: z.boolean(),
   })
   .passthrough();
+// Mission Control fleet monitoring. All keys optional; defaults live server-side
+// (persisted-config.ts + MissionControlService), absent config = feature on with defaults.
+const MutableMissionControlSummarizerConfigSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    baseUrl: z.string().nullable().optional(),
+    apiKey: z.string().nullable().optional(),
+    model: z.string().optional(),
+    minNewItems: z.number().optional(),
+    debounceSeconds: z.number().optional(),
+  })
+  .passthrough();
+const MutableMissionControlConfigSchema = z
+  .object({
+    retentionDays: z.number().optional(),
+    summarizer: MutableMissionControlSummarizerConfigSchema.optional(),
+  })
+  .passthrough();
 export const MutableDaemonConfigSchema = z
   .object({
     // COMPAT(relayConfig): added in v0.2.6, remove after 2027-01-31 when old daemons are unsupported.
@@ -183,6 +220,7 @@ export const MutableDaemonConfigSchema = z
     enableTerminalAgentHooks: z.boolean().default(false),
     appendSystemPrompt: z.string().default(""),
     terminalProfiles: z.array(TerminalProfileSchema).optional(),
+    missionControl: MutableMissionControlConfigSchema.optional(),
   })
   .passthrough();
 
@@ -200,6 +238,7 @@ export const MutableDaemonConfigPatchSchema = z
     enableTerminalAgentHooks: z.boolean().optional(),
     appendSystemPrompt: z.string().optional(),
     terminalProfiles: z.array(TerminalProfileSchema).optional(),
+    missionControl: MutableMissionControlConfigSchema.partial().optional(),
   })
   .partial()
   .passthrough();
@@ -2777,6 +2816,9 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   LoopStopRequestSchema,
   PlannotatorSessionStartRequestSchema,
   PlannotatorSessionStopRequestSchema,
+  MissionControlEventsFetchRequestSchema,
+  MissionControlEventsAckRequestSchema,
+  MissionControlPeersListRequestSchema,
 ]);
 
 export type SessionInboundMessage = z.infer<typeof SessionInboundMessageSchema>;
@@ -3040,6 +3082,8 @@ export const ServerInfoStatusPayloadSchema = z
         projectCustomIcon: z.boolean().optional(),
         // COMPAT(plannotator): added in v0.2.x (fork), drop the gate when floor includes plannotator.
         plannotator: z.boolean().optional(),
+        // COMPAT(missionControl): added in v0.3.x, drop the gate when floor includes mission control.
+        missionControl: z.boolean().optional(),
       })
       .optional(),
   })
@@ -5671,6 +5715,10 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   PlannotatorSessionStartResponseSchema,
   PlannotatorSessionStopResponseSchema,
   PlannotatorSessionEventSchema,
+  MissionControlEventsFetchResponseSchema,
+  MissionControlEventsAckResponseSchema,
+  MissionControlPeersListResponseSchema,
+  MissionControlEventMessageSchema,
   DaemonUpdateProgressMessageSchema,
   DaemonUpdateResponseSchema,
 ]);
@@ -5845,6 +5893,12 @@ export type WebhookDeleteResponse = z.infer<typeof WebhookDeleteResponseSchema>;
 export type WebhookUpdateResponse = z.infer<typeof WebhookUpdateResponseSchema>;
 export type WebhookTestResponse = z.infer<typeof WebhookTestResponseSchema>;
 export type WebhookConfigResponse = z.infer<typeof WebhookConfigResponseSchema>;
+export type MissionControlEventsFetchResponse = z.infer<
+  typeof MissionControlEventsFetchResponseSchema
+>;
+export type MissionControlEventsAckResponse = z.infer<typeof MissionControlEventsAckResponseSchema>;
+export type MissionControlPeersListResponse = z.infer<typeof MissionControlPeersListResponseSchema>;
+export type MissionControlEventMessage = z.infer<typeof MissionControlEventMessageSchema>;
 export type LoopRunResponse = z.infer<typeof LoopRunResponseSchema>;
 export type LoopListResponse = z.infer<typeof LoopListResponseSchema>;
 export type LoopInspectResponse = z.infer<typeof LoopInspectResponseSchema>;
@@ -5921,6 +5975,11 @@ export type WebhookDeleteRequest = z.infer<typeof WebhookDeleteRequestSchema>;
 export type WebhookUpdateRequest = z.infer<typeof WebhookUpdateRequestSchema>;
 export type WebhookTestRequest = z.infer<typeof WebhookTestRequestSchema>;
 export type WebhookConfigRequest = z.infer<typeof WebhookConfigRequestSchema>;
+export type MissionControlEventsFetchRequest = z.infer<
+  typeof MissionControlEventsFetchRequestSchema
+>;
+export type MissionControlEventsAckRequest = z.infer<typeof MissionControlEventsAckRequestSchema>;
+export type MissionControlPeersListRequest = z.infer<typeof MissionControlPeersListRequestSchema>;
 export type LoopRunRequest = z.infer<typeof LoopRunRequestSchema>;
 export type LoopListRequest = z.infer<typeof LoopListRequestSchema>;
 export type LoopInspectRequest = z.infer<typeof LoopInspectRequestSchema>;
