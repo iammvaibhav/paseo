@@ -37,6 +37,7 @@ import type { HostnamesConfig } from "./hostnames.js";
 import { isHostnameAllowed } from "./hostnames.js";
 import { Session, type SessionLifecycleIntent, type SessionRuntimeMetrics } from "./session.js";
 import type { HubRelationshipManagement } from "./hub/relationship-controller.js";
+import { WorkspaceSetupRuntime } from "./workspace-setup-runtime.js";
 import type { HubExecutionAgents } from "./hub/daemon-executions.js";
 import type { AgentProvider } from "./agent/agent-sdk-types.js";
 import { ProviderSnapshotManager } from "./agent/provider-snapshot-manager.js";
@@ -152,6 +153,17 @@ type WebSocketRuntimeDiagnosticPayload = WebSocketRuntimeDiagnosticSnapshot<
 type WebSocketRuntimeMetricsLogPayload = Omit<WebSocketRuntimeDiagnosticPayload, "collectedAt">;
 
 type TerminalAttentionReason = "finished" | "needs_input";
+
+/** COMPAT(plannotator): log once at daemon start whether the binary is resolvable. */
+function detectPlannotatorAvailability(logger: pino.Logger): boolean {
+  const available = resolvePlannotatorBinary() !== null;
+  if (available) {
+    logger.info("Plannotator binary detected");
+  } else {
+    logger.debug("Plannotator binary not found; feature disabled");
+  }
+  return available;
+}
 
 function resolveTerminalAttentionReason(input: {
   attentionReason?: TerminalActivity["attentionReason"];
@@ -542,6 +554,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly voiceSpeakHandlers = new Map<string, VoiceSpeakHandler>();
   private readonly voiceCallerContexts = new Map<string, VoiceCallerContext>();
   private readonly workspaceSetupSnapshots = new Map<string, WorkspaceSetupSnapshot>();
+  private readonly workspaceSetupRuntime: WorkspaceSetupRuntime;
   private readonly providerSnapshotManager: ProviderSnapshotManager;
   private onLifecycleIntent!: ((intent: SessionLifecycleIntent) => void) | null;
   private onBranchChanged!:
@@ -616,8 +629,10 @@ export class VoiceAssistantWebSocketServer {
     hubRelationships?: HubRelationshipManagement | null,
     peerManager?: PeerManager | null,
     missionControlService?: MissionControlService | null,
+    workspaceSetupRuntime: WorkspaceSetupRuntime = new WorkspaceSetupRuntime(),
   ) {
     this.logger = logger.child({ module: "websocket-server" });
+    this.workspaceSetupRuntime = workspaceSetupRuntime;
     this.advertiseDaemonStatusRpc = wsConfig.daemonStatusRpc !== false;
     this.advertiseRelayConfig = wsConfig.relayConfig !== false;
     this.serverId = serverId;
@@ -701,12 +716,7 @@ export class VoiceAssistantWebSocketServer {
       logger: this.logger,
     });
 
-    this.plannotatorAvailable = resolvePlannotatorBinary() !== null;
-    if (this.plannotatorAvailable) {
-      this.logger.info("Plannotator binary detected");
-    } else {
-      this.logger.debug("Plannotator binary not found; feature disabled");
-    }
+    this.plannotatorAvailable = detectPlannotatorAvailability(this.logger);
 
     this.wss = this.createWebSocketServer(server, wsConfig, auth);
     this.startRuntimeMetricsInterval();
@@ -1373,6 +1383,7 @@ export class VoiceAssistantWebSocketServer {
       serviceProxy: this.serviceProxy ?? undefined,
       scriptRuntimeStore: this.scriptRuntimeStore ?? undefined,
       workspaceSetupSnapshots: this.workspaceSetupSnapshots,
+      workspaceSetupRuntime: this.workspaceSetupRuntime,
       onBranchChanged: this.onBranchChanged ?? undefined,
       getDaemonTcpPort: this.getDaemonTcpPort ?? undefined,
       getDaemonTcpHost: this.getDaemonTcpHost ?? undefined,
