@@ -1,10 +1,29 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import type { Logger } from "pino";
+import { z } from "zod";
 
+import { writeJsonFileAtomic } from "../../../atomic-file.js";
+import { resolvePaseoHome } from "../../../paseo-home.js";
 import type { OmpRuntime, OmpRuntimeSession } from "./runtime.js";
+
+/**
+ * The launch shape of the most recent pooled create, remembered across daemon
+ * restarts so the pool can boot warm instead of leaving the first create of
+ * each session cold. Only launch-fixed dimensions are stored; `cwd` is a hint
+ * for where to spawn (a claim moves the process anyway).
+ */
+const warmPoolSeedSchema = z.object({
+  cwd: z.string(),
+  modeId: z.string(),
+  extraArgs: z.array(z.string()),
+  systemPrompt: z.string(),
+});
+
+const WARM_POOL_SEED_FILE = "omp-warm-pool.json";
 
 /**
  * How often the pool reconciles itself against its invariant (drop dead idle
@@ -131,11 +150,18 @@ export class OmpWarmPool {
   private readonly filling = new Map<string, Promise<void>[]>();
   /**
    * Keys seen recently, newest-first by `usedAt`. The maintenance loop keeps
-   * one live idle process for each of the most recent WARM_POOL_MAX_KEYS keys
-   * — a create in one workspace must never cost another workspace its warm
-   * process, which is what makes multi-worktree work stay fast.
+   * WARM_POOL_TARGET_IDLE live idle processes for each of the most recent
+   * WARM_POOL_MAX_KEYS keys.
    */
   private readonly trackedKeys = new Map<string, TrackedKey>();
+  /**
+   * Key primed from the persisted seed at boot, before any create proved what
+   * the daemon actually launches. Dropped as soon as a real claim confirms or
+   * contradicts it, so a stale seed cannot hold idle processes forever.
+   */
+  private provisionalKey: string | null = null;
+  /** Key currently written to the seed file; avoids rewriting on every claim. */
+  private seededKey: string | null = null;
   private maintainTimer: NodeJS.Timeout | null = null;
   private closed = false;
 
@@ -145,18 +171,104 @@ export class OmpWarmPool {
   }
 
   /**
-   * Start the maintenance loop. It reconciles the pool against its invariant:
-   * dispose entries whose process stopped answering, then refill any tracked
-   * key that has no live idle entry. Without it the pool only refills behind a
-   * claim, so an idle process that dies leaves the next create cold.
+   * Prime the pool from the persisted seed and start the maintenance loop.
+   *
+   * Priming matters because the pool is otherwise lazy: it fills behind a
+   * claim, so the first create after every daemon restart pays a full cold
+   * boot. The seed is the launch shape of the last pooled create, so the
+   * processes booted here are the ones the next create will actually want.
+   *
+   * Maintenance reconciles the pool against its invariant: dispose entries
+   * whose process stopped answering, then top tracked keys back up.
    */
-  startSweep(): void {
+  start(): void {
     if (this.maintainTimer) {
       return;
     }
     const timer = setInterval(() => void this.maintain(), WARM_POOL_MAINTAIN_INTERVAL_MS);
     timer.unref?.();
     this.maintainTimer = timer;
+    void this.primeFromSeed();
+  }
+
+  /** Boot the seed's launch shape so the first create of this daemon is warm. */
+  private async primeFromSeed(): Promise<void> {
+    const seed = await this.readSeed();
+    if (!seed || this.closed || this.entries.length > 0 || this.trackedKeys.size > 0) {
+      return;
+    }
+    // A workspace can disappear between restarts; the spawn directory is only
+    // a hint, since a claim moves the process to wherever it is needed.
+    const input: OmpWarmPoolInput = {
+      ...seed,
+      cwd: existsSync(seed.cwd) ? seed.cwd : homedir(),
+    };
+    const key = keyFor(input);
+    this.provisionalKey = key;
+    this.seededKey = key;
+    this.trackedKeys.set(key, { input, usedAt: Date.now() });
+    this.fill(input);
+    this.logger.info({ cwd: input.cwd, modeId: input.modeId }, "OMP warm pool priming from seed");
+  }
+
+  private async readSeed(): Promise<z.infer<typeof warmPoolSeedSchema> | null> {
+    try {
+      const raw = await readFile(this.seedPath(), "utf8");
+      const parsed = warmPoolSeedSchema.safeParse(JSON.parse(raw));
+      return parsed.success ? parsed.data : null;
+    } catch {
+      // No seed yet (first run) or an unreadable one: stay lazy.
+      return null;
+    }
+  }
+
+  /**
+   * Remember this launch shape for the next daemon start. Only written when
+   * the key changes, so steady-state creates do no disk work.
+   */
+  private persistSeed(input: OmpWarmPoolInput, key: string): void {
+    if (this.seededKey === key) {
+      return;
+    }
+    this.seededKey = key;
+    void writeJsonFileAtomic(this.seedPath(), {
+      cwd: input.cwd,
+      modeId: input.modeId,
+      extraArgs: input.extraArgs,
+      systemPrompt: input.systemPrompt,
+    } satisfies z.infer<typeof warmPoolSeedSchema>).catch((error: unknown) => {
+      this.logger.debug({ err: error }, "OMP warm pool seed write failed");
+    });
+  }
+
+  private seedPath(): string {
+    return path.join(resolvePaseoHome(), WARM_POOL_SEED_FILE);
+  }
+
+  /**
+   * Resolve the boot guess against the first real claim: confirm it, or retire
+   * the processes it booted for the wrong key.
+   */
+  private settleProvisionalKey(claimedKey: string): void {
+    const provisional = this.provisionalKey;
+    if (!provisional) {
+      return;
+    }
+    this.provisionalKey = null;
+    if (provisional === claimedKey) {
+      return;
+    }
+    this.trackedKeys.delete(provisional);
+    const stale = this.entries.filter((entry) => entry.key === provisional);
+    if (stale.length === 0) {
+      return;
+    }
+    const survivors = this.entries.filter((entry) => entry.key !== provisional);
+    this.entries.splice(0, this.entries.length, ...survivors);
+    for (const entry of stale) {
+      void this.dispose(entry);
+    }
+    this.logger.info({ disposed: stale.length }, "OMP warm pool retired mis-seeded processes");
   }
 
   private async maintain(): Promise<void> {
@@ -238,6 +350,8 @@ export class OmpWarmPool {
     }
     const key = keyFor(input);
     const cwd = path.resolve(input.cwd);
+    this.settleProvisionalKey(key);
+    this.persistSeed(input, key);
     this.trackedKeys.set(key, { input, usedAt: Date.now() });
 
     for (;;) {

@@ -2501,7 +2501,7 @@ export class OmpAgentClient implements AgentClient {
     this.usagePollScheduler = options.usagePollScheduler;
     this.runtime = options.runtime ?? createRuntime(options.logger, runtimeSettings);
     this.warmPool = new OmpWarmPool({ runtime: this.runtime, logger: this.logger });
-    this.warmPool.startSweep();
+    this.warmPool.start();
   }
 
   private async configureNativePaseoTools(
