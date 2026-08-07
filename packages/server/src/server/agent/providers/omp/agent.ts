@@ -184,6 +184,8 @@ interface OmpPersistenceMetadata {
   thinkingOptionId?: string;
   modeId?: string;
   systemPrompt?: string;
+  systemPromptMode?: "append" | "replace";
+  toolAllowlist?: string[];
 }
 
 interface StartTurnResult {
@@ -413,6 +415,10 @@ function parsePersistenceMetadata(metadata: AgentMetadata | undefined): OmpPersi
       : {}),
     ...(typeof metadata.modeId === "string" ? { modeId: metadata.modeId } : {}),
     ...(typeof metadata.systemPrompt === "string" ? { systemPrompt: metadata.systemPrompt } : {}),
+    ...(typeof metadata.systemPromptMode === "string"
+      ? { systemPromptMode: metadata.systemPromptMode as "append" | "replace" }
+      : {}),
+    ...(Array.isArray(metadata.toolAllowlist) ? { toolAllowlist: metadata.toolAllowlist } : {}),
   };
 }
 
@@ -439,6 +445,8 @@ function buildResumeConfig(
       thinkingOptionId,
       modeId,
       systemPrompt: overrideConfig.systemPrompt ?? metadata.systemPrompt,
+      systemPromptMode: overrideConfig.systemPromptMode ?? metadata.systemPromptMode,
+      toolAllowlist: overrideConfig.toolAllowlist ?? metadata.toolAllowlist,
     },
   };
 }
@@ -458,10 +466,15 @@ function buildResumeStartInput(input: {
     thinkingOptionId: normalizeOmpThinkingOption(input.resumeConfig.thinkingOptionId) ?? undefined,
     ...(input.launchMode.modeId ? { modeId: input.launchMode.modeId } : {}),
     ...(input.launchMode.extraArgs ? { extraArgs: input.launchMode.extraArgs } : {}),
-    systemPrompt: composeSystemPromptParts(
-      input.resumeConfig.config.systemPrompt,
-      input.resumeConfig.config.daemonAppendSystemPrompt,
-    ),
+    systemPrompt:
+      input.resumeConfig.config.systemPromptMode === "replace"
+        ? input.resumeConfig.config.systemPrompt?.trim() || undefined
+        : composeSystemPromptParts(
+            input.resumeConfig.config.systemPrompt,
+            input.resumeConfig.config.daemonAppendSystemPrompt,
+          ),
+    systemPromptMode: input.resumeConfig.config.systemPromptMode,
+    toolAllowlist: input.resumeConfig.config.toolAllowlist,
   };
 }
 
@@ -554,6 +567,32 @@ function latestOmpErrorMessage(messages: OmpAgentMessage[]): string | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Restrict the Paseo host-tool catalog to the allowlisted names. The filtered
+ * catalog is what gets serialized to omp (the model never sees other tools)
+ * and what the host-tool router executes against (defense in depth).
+ */
+function filterPaseoToolsByAllowlist(
+  catalog: PaseoToolCatalog | undefined,
+  allowlist: string[] | undefined,
+): PaseoToolCatalog | undefined {
+  if (!catalog || !allowlist?.length) {
+    return catalog;
+  }
+  const allowed = new Set(allowlist);
+  const tools = new Map([...catalog.tools].filter(([name]) => allowed.has(name)));
+  return {
+    tools,
+    getTool: (name) => tools.get(name),
+    executeTool: (name, input, context) => {
+      if (!allowed.has(name)) {
+        throw new Error(`Paseo tool not allowed: ${name}`);
+      }
+      return catalog.executeTool(name, input, context);
+    },
+  };
 }
 
 function optionalString(value: unknown): string | undefined {
@@ -1966,12 +2005,28 @@ export class OmpAgentSession implements AgentSession {
         // A resumed OMP process replays session events for pre-existing
         // conversation on startup; that content is delivered via
         // streamHistory, so replay must not re-enter the live timeline.
+        // The mid-turn variant is the dangerous one: live never became true
+        // (or flipped back) while a turn is active, so a terminal like
+        // agent_end would be swallowed and the lifecycle stays running.
+        if (this.activeTurnStarted) {
+          this.logger.warn(
+            {
+              eventType: event.type,
+              activeTurnStarted: this.activeTurnStarted,
+              activeTurnId: this.activeTurnId ?? null,
+            },
+            "omp.turn.session_event_outside_live_run",
+          );
+        }
         return;
       }
       this.handleSessionEvent(event);
       return;
     }
-    this.logger.debug({ event }, "Dropped unknown OMP runtime event");
+    this.logger.warn(
+      { eventType: (event as { type?: string }).type },
+      "Dropped unknown OMP runtime event",
+    );
   }
 
   private handleProcessExit(error: string): void {
@@ -2204,6 +2259,19 @@ export class OmpAgentSession implements AgentSession {
       this.activeAssistantMessageId = null;
       if (turnId) {
         this.activeTurnTerminalAssistantMessage = event.message;
+      } else {
+        // No active turn id: this is a provider-initiated (autonomous) turn,
+        // or the turn binding was lost. The terminal assistant message is not
+        // recorded, so a later agent_end with an empty messages array cannot
+        // settle the turn through the fallback below. Debug-only here — the
+        // per-turn warning lives at agent_end (agent_end_without_assistant_message).
+        this.logger.debug(
+          {
+            activeTurnStarted: this.activeTurnStarted,
+            activeTurnId: this.activeTurnId ?? null,
+          },
+          "omp.turn.assistant_message_without_turn_id",
+        );
       }
       return;
     }
@@ -2342,7 +2410,14 @@ export class OmpAgentSession implements AgentSession {
     // terminal payload nor the live stream contained an assistant message.
     if (!terminalMessages) {
       this.logger.debug(
-        { turnId, activeTurnStarted: this.activeTurnStarted, messageCount: messages.length },
+        {
+          turnId,
+          activeTurnStarted: this.activeTurnStarted,
+          activeTurnId: this.activeTurnId ?? null,
+          activeTurnTerminalAssistantMessage: this.activeTurnTerminalAssistantMessage !== null,
+          messageCount: messages.length,
+          messageRoles: messages.map((message) => message.role),
+        },
         "omp.turn.agent_end_without_assistant_message",
       );
       return;
@@ -2519,10 +2594,14 @@ export class OmpAgentClient implements AgentClient {
     launchContext?: AgentLaunchContext,
   ): Promise<AgentSession> {
     const launchMode = this.resolveLaunchMode(config.modeId);
-    const systemPrompt = composeSystemPromptParts(
-      config.systemPrompt,
-      config.daemonAppendSystemPrompt,
-    );
+    const systemPrompt = this.composeLaunchSystemPrompt(config);
+    const paseoTools = filterPaseoToolsByAllowlist(launchContext?.paseoTools, config.toolAllowlist);
+    if (!paseoTools && config.toolAllowlist?.length) {
+      this.logger.warn(
+        { provider: this.provider, allowlist: config.toolAllowlist },
+        "Agent restricts tools to an allowlist but no Paseo host-tool catalog is available; only builtin/MCP tools will load",
+      );
+    }
     const runtimeSession = await this.startRuntimeSession(
       config,
       launchContext,
@@ -2530,7 +2609,7 @@ export class OmpAgentClient implements AgentClient {
       systemPrompt,
     );
     try {
-      await this.configureNativePaseoTools(runtimeSession, launchContext?.paseoTools);
+      await this.configureNativePaseoTools(runtimeSession, paseoTools);
       return new OmpAgentSession({
         runtimeSession,
         config,
@@ -2541,12 +2620,24 @@ export class OmpAgentClient implements AgentClient {
         providerIdleScheduler: this.providerIdleScheduler,
         noTurnScheduler: this.noTurnScheduler,
         usagePollScheduler: this.usagePollScheduler,
-        paseoTools: launchContext?.paseoTools,
+        paseoTools,
       });
     } catch (error) {
       await runtimeSession.close().catch(() => undefined);
       throw error;
     }
+  }
+
+  /**
+   * The system prompt handed to the omp process. Replace mode uses the
+   * per-agent prompt verbatim — the daemon append prompt is append-only and
+   * must not leak into a replaced harness.
+   */
+  private composeLaunchSystemPrompt(config: AgentSessionConfig): string | undefined {
+    if (config.systemPromptMode === "replace") {
+      return config.systemPrompt?.trim() || undefined;
+    }
+    return composeSystemPromptParts(config.systemPrompt, config.daemonAppendSystemPrompt);
   }
 
   /**
@@ -2606,6 +2697,8 @@ export class OmpAgentClient implements AgentClient {
       modeId: launchMode.modeId,
       extraArgs: launchMode.extraArgs,
       systemPrompt,
+      systemPromptMode: config.systemPromptMode,
+      toolAllowlist: config.toolAllowlist,
       env: launchContext?.env,
     });
   }
@@ -2634,7 +2727,17 @@ export class OmpAgentClient implements AgentClient {
       }),
     );
     try {
-      await this.configureNativePaseoTools(runtimeSession, launchContext?.paseoTools);
+      const paseoTools = filterPaseoToolsByAllowlist(
+        launchContext?.paseoTools,
+        resumeConfig.config.toolAllowlist,
+      );
+      if (!paseoTools && resumeConfig.config.toolAllowlist?.length) {
+        this.logger.warn(
+          { provider: this.provider, allowlist: resumeConfig.config.toolAllowlist },
+          "Resumed agent restricts tools to an allowlist but no Paseo host-tool catalog is available; only builtin/MCP tools will load",
+        );
+      }
+      await this.configureNativePaseoTools(runtimeSession, paseoTools);
       return new OmpAgentSession({
         runtimeSession,
         config: resumeConfig.config,
@@ -2645,7 +2748,7 @@ export class OmpAgentClient implements AgentClient {
         providerIdleScheduler: this.providerIdleScheduler,
         noTurnScheduler: this.noTurnScheduler,
         usagePollScheduler: this.usagePollScheduler,
-        paseoTools: launchContext?.paseoTools,
+        paseoTools,
         live: false,
       });
     } catch (error) {
@@ -2762,7 +2865,18 @@ export class OmpAgentClient implements AgentClient {
     modeId: string;
     extraArgs: string[];
   } {
-    return resolveOmpLaunchMode(modeId, this.modelRoleParams);
+    try {
+      return resolveOmpLaunchMode(modeId, this.modelRoleParams);
+    } catch (error) {
+      // A stored modeId can outlive a provider switch (e.g. claude
+      // `bypassPermissions` persisted before the agent moved to omp). Fall
+      // back to the default mode instead of failing the launch outright.
+      this.logger.warn(
+        { err: error, modeId },
+        "Unsupported OMP mode; falling back to the default mode",
+      );
+      return resolveOmpLaunchMode(undefined, this.modelRoleParams);
+    }
   }
 
   private async resolveOmpLaunch(): Promise<ResolvedProviderLaunch> {

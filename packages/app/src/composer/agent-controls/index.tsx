@@ -27,6 +27,12 @@ import { getAgentFeatureIcon, ThinkingIcon } from "@/agent-controls/icons";
 import { formatThinkingOptionLabel } from "@/agent-controls/labels";
 import { ComboboxTrigger } from "@/components/ui/combobox-trigger";
 import { CombinedModelSelector } from "@/components/combined-model-selector";
+import { saveCommanderModel } from "@/mission-control/launch";
+import { isCommanderAgent } from "@/mission-control/labels";
+import {
+  resolveUnattendedModeId,
+  type UnattendedModeCandidate,
+} from "@/history-ask/unattended-mode";
 import {
   buildSelectableProviderSelectorProviders,
   type ProviderSelectorProvider,
@@ -98,6 +104,29 @@ interface AgentControlOption {
 type AgentControlSelector = "provider" | "mode" | "model" | "thinking" | `feature-${string}`;
 
 const EMPTY_AGENT_PROVIDER_DEFINITIONS: AgentProviderDefinition[] = [];
+
+/**
+ * Mode to persist when the model picker switches an agent to another provider.
+ * A mode picked on the old provider is meaningless on the new one; map it to
+ * the new provider's unattended equivalent (same mapping History Ask uses for
+ * unattended launches). Returns undefined when the current mode stays valid or
+ * when there is nothing to remap — the daemon then keeps the stored mode and
+ * defensively falls back at launch if the provider rejects it.
+ */
+function resolveModeIdForProviderSwitch(input: {
+  currentModeId: string | null;
+  nextProvider: string;
+  nextProviderModes?: readonly UnattendedModeCandidate[] | null;
+}): string | undefined {
+  const { currentModeId, nextProvider, nextProviderModes } = input;
+  if (!currentModeId) {
+    return undefined;
+  }
+  if (nextProviderModes?.some((mode) => mode.id === currentModeId)) {
+    return undefined;
+  }
+  return resolveUnattendedModeId(nextProvider, nextProviderModes);
+}
 
 interface ControlledAgentControlsProps {
   provider: string;
@@ -1485,6 +1514,10 @@ export const AgentControls = memo(function AgentControls({
     useShallow((state) => selectAgentControlsSlice(state, serverId, agentId)),
   );
   const client = useSessionStore((state) => state.sessions[serverId]?.client ?? null);
+  const agentLabels = useSessionStore(
+    (state) => state.sessions[serverId]?.agents.get(agentId)?.labels ?? null,
+  );
+  const isCommander = isCommanderAgent(agentLabels);
   const toast = useToast();
   const modeControl = useLiveAgentModeControl(serverId, agentId);
   const commandCenterModes = toCommandCenterModes(modeControl);
@@ -1562,6 +1595,10 @@ export const AgentControls = memo(function AgentControls({
       }
       try {
         await client.setAgentModel(agentId, modelId);
+        // Remember the Commander's model per host so relaunches keep it.
+        if (isCommander) {
+          void saveCommanderModel(serverId, { provider: agentProvider, model: modelId });
+        }
         const preferredThinking =
           resolveEffectiveFormPreferences(preferences, preferenceScope).providerPreferences?.[
             agentProvider
@@ -1583,33 +1620,24 @@ export const AgentControls = memo(function AgentControls({
         toast.error(toErrorMessage(error));
       }
     },
-    [agentId, agentProvider, client, preferenceScope, preferences, toast, updatePreferences],
+    [
+      agentId,
+      agentProvider,
+      client,
+      isCommander,
+      preferenceScope,
+      preferences,
+      serverId,
+      toast,
+      updatePreferences,
+    ],
   );
 
-  const handleSelectProviderAndModel = useCallback(
-    async (nextProvider: string, modelId: string) => {
+  const handleCrossProviderFork = useCallback(
+    async (nextProvider: string, modelId: string): Promise<void> => {
       if (!client || !agent) {
         return;
       }
-      if (nextProvider === agent.provider) {
-        await handleSelectSameProviderModel(modelId);
-        return;
-      }
-
-      // Try updating the agent's provider in-place first
-      try {
-        await client.updateAgent(agentId, { provider: nextProvider, model: modelId });
-        toast.show(
-          t("agentControls.providerSwitched", { provider: formatProviderLabel(nextProvider) }),
-        );
-        return;
-      } catch (updateErr) {
-        console.info(
-          "[AgentControls] in-place provider update failed, falling back to fork",
-          updateErr,
-        );
-      }
-
       const workspaceId = agent.workspaceId?.trim() || null;
       if (!workspaceId) {
         toast.error(t("message.actions.forkMissingWorkspace"));
@@ -1669,13 +1697,59 @@ export const AgentControls = memo(function AgentControls({
         toast.error(toErrorMessage(error) || t("message.actions.forkFailed"));
       }
     },
+    [agent, agentId, client, serverId, supportsAgentForkContext, t, toast],
+  );
+
+  const handleSelectProviderAndModel = useCallback(
+    async (nextProvider: string, modelId: string) => {
+      if (!client || !agent) {
+        return;
+      }
+      if (nextProvider === agent.provider) {
+        await handleSelectSameProviderModel(modelId);
+        return;
+      }
+
+      // A mode picked on the old provider (e.g. claude `bypassPermissions`) is
+      // meaningless on the new one. Remap it to the new provider's unattended
+      // equivalent so the agent survives the switch; the daemon also remaps
+      // defensively when no mode is sent here.
+      const modeId = resolveModeIdForProviderSwitch({
+        currentModeId: modeControl?.selectedModeId ?? null,
+        nextProvider,
+        nextProviderModes: snapshotEntries?.find((entry) => entry.provider === nextProvider)?.modes,
+      });
+
+      // Try updating the agent's provider in-place first
+      try {
+        await client.updateAgent(agentId, {
+          provider: nextProvider,
+          model: modelId,
+          ...(modeId !== undefined ? { modeId } : {}),
+        });
+        toast.show(
+          t("agentControls.providerSwitched", { provider: formatProviderLabel(nextProvider) }),
+        );
+        return;
+      } catch (updateErr) {
+        console.info(
+          "[AgentControls] in-place provider update failed, falling back to fork",
+          updateErr,
+        );
+      }
+
+      // In-place update failed (the daemon cannot switch a live agent across
+      // providers): fork the agent into a new draft on the new provider.
+      await handleCrossProviderFork(nextProvider, modelId);
+    },
     [
       agent,
       agentId,
       client,
+      handleCrossProviderFork,
       handleSelectSameProviderModel,
-      serverId,
-      supportsAgentForkContext,
+      modeControl,
+      snapshotEntries,
       t,
       toast,
     ],

@@ -14,7 +14,7 @@ import {
 import type { TFunction } from "i18next";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, Pressable, Text, View } from "react-native";
+import { Alert, Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, useUnistyles, withUnistyles } from "react-native-unistyles";
 import type { TerminalProfile } from "@getpaseo/protocol/messages";
 import {
@@ -23,10 +23,17 @@ import {
 } from "@getpaseo/protocol/terminal-profiles";
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
 import { AdaptiveRenameModal } from "@/components/rename-modal";
-import { SettingsTextAreaCard } from "@/components/settings-textarea";
+import { SettingsTextArea, SettingsTextAreaCard } from "@/components/settings-textarea";
 import { Alert as InlineAlert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { SegmentedControl } from "@/components/ui/segmented-control";
 import { FormTextInput } from "@/components/ui/form-field";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import {
@@ -1200,27 +1207,619 @@ function AutoArchiveMergedWorkspacesCard({ serverId }: { serverId: string }) {
 }
 
 const DEFAULT_MISSION_CONTROL_RETENTION_DAYS = 30;
+const MISSION_CONTROL_NAMING_THEMES = [
+  "mixed",
+  "indian",
+  "cartoon",
+  "scientists",
+  "astronauts",
+  "mythology",
+  "nature",
+] as const;
+
+function missionControlDropdownTriggerStyle({ pressed }: PressableStateCallbackType) {
+  return pressed
+    ? [styles.mcDropdownTrigger, styles.mcDropdownTriggerPressed]
+    : styles.mcDropdownTrigger;
+}
+
+/** Normalize an optional config read to a default without a `??` in hot renders. */
+function orDefault<T>(value: T | null | undefined, fallback: T): T {
+  return value ?? fallback;
+}
+
+function reportMissionControlPatchError(error: unknown): void {
+  console.error("[HostPage] Failed to update mission control", error);
+  Alert.alert(
+    "Unable to update Mission Control",
+    error instanceof Error ? error.message : String(error),
+  );
+}
+
+function parseRetentionDays(raw: string | null): number | null {
+  if (raw === null) {
+    return null;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return null;
+  }
+  return parsed;
+}
+
+function HostAliasRow({
+  host,
+  serverId,
+  alias,
+  isCompact,
+  onCommit,
+}: {
+  host: HostProfile;
+  serverId: string;
+  alias: string;
+  isCompact: boolean;
+  onCommit: (alias: string) => void;
+}) {
+  const draftRef = useRef<string | null>(null);
+  const handleChange = useCallback((text: string) => {
+    draftRef.current = text;
+  }, []);
+  const handleCommit = useCallback(() => {
+    const draft = draftRef.current;
+    draftRef.current = null;
+    if (draft === null || draft.trim() === alias) {
+      return;
+    }
+    onCommit(draft.trim());
+  }, [alias, onCommit]);
+  return (
+    <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle} numberOfLines={1}>
+          {host.label}
+        </Text>
+        <Text style={settingsStyles.rowHint}>Alias shown to the Commander for this host.</Text>
+      </View>
+      <FormTextInput
+        size={isCompact ? "md" : "sm"}
+        initialValue={alias}
+        resetKey={alias}
+        onChangeText={handleChange}
+        onSubmitEditing={handleCommit}
+        onBlur={handleCommit}
+        accessibilityLabel={`Alias for ${host.label}`}
+        testID={`host-page-mission-control-alias-${serverId}`}
+        style={styles.mcAliasInput}
+      />
+    </View>
+  );
+}
+
+function MissionControlSummarizerRow({
+  enabled,
+  onEnabledChange,
+}: {
+  enabled: boolean;
+  onEnabledChange: (next: boolean) => void;
+}) {
+  return (
+    <View style={settingsStyles.row}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>Mission Control</Text>
+        <Text style={settingsStyles.rowHint}>
+          Summarize fleet events into milestone cards on the Mission Control feed.
+        </Text>
+      </View>
+      <Switch
+        value={enabled}
+        onValueChange={onEnabledChange}
+        accessibilityLabel="Summarize fleet events"
+        testID="host-page-mission-control-summarizer-switch"
+      />
+    </View>
+  );
+}
+
+function MissionControlBackendRow({
+  backend,
+  onBackendChange,
+}: {
+  backend: "gateway" | "omp";
+  onBackendChange: (next: "gateway" | "omp") => void;
+}) {
+  return (
+    <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>Summarizer backend</Text>
+        <Text style={settingsStyles.rowHint}>
+          Gateway sends summaries through the LLM gateway; omp runs a local model.
+        </Text>
+      </View>
+      <SegmentedControl
+        options={[
+          { value: "gateway", label: "Gateway" },
+          { value: "omp", label: "omp" },
+        ]}
+        value={backend}
+        onValueChange={onBackendChange}
+      />
+    </View>
+  );
+}
+
+function MissionControlRetentionRow({
+  retentionDays,
+  isCompact,
+  onChangeText,
+  onCommit,
+}: {
+  retentionDays: number;
+  isCompact: boolean;
+  onChangeText: (text: string) => void;
+  onCommit: () => void;
+}) {
+  return (
+    <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>Feed retention</Text>
+        <Text style={settingsStyles.rowHint}>Days the Mission Control feed keeps events.</Text>
+      </View>
+      <FormTextInput
+        size={isCompact ? "md" : "sm"}
+        initialValue={String(retentionDays)}
+        resetKey={String(retentionDays)}
+        onChangeText={onChangeText}
+        onSubmitEditing={onCommit}
+        onBlur={onCommit}
+        keyboardType="number-pad"
+        inputMode="numeric"
+        accessibilityLabel="Mission Control feed retention days"
+        testID="host-page-mission-control-retention-input"
+        style={styles.retentionInput}
+      />
+    </View>
+  );
+}
+
+function MissionControlAutopilotModeRow({
+  mode,
+  onModeChange,
+}: {
+  mode: "off" | "observe" | "act";
+  onModeChange: (next: "off" | "observe" | "act") => void;
+}) {
+  return (
+    <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>Autopilot</Text>
+        <Text style={settingsStyles.rowHint}>
+          Evaluates finished workers: observe posts verdict cards, act also sends nudges.
+        </Text>
+      </View>
+      <SegmentedControl
+        options={[
+          { value: "off", label: "Off" },
+          { value: "observe", label: "Observe" },
+          { value: "act", label: "Act" },
+        ]}
+        value={mode}
+        onValueChange={onModeChange}
+      />
+    </View>
+  );
+}
+
+function MissionControlAutopilotModelRow({
+  model,
+  isCompact,
+  onChangeText,
+  onCommit,
+}: {
+  model: string;
+  isCompact: boolean;
+  onChangeText: (text: string) => void;
+  onCommit: () => void;
+}) {
+  return (
+    <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>Evaluator model</Text>
+        <Text style={settingsStyles.rowHint}>
+          Verdict model tier alias; defaults to gateway “smart” or omp “@slow”.
+        </Text>
+      </View>
+      <FormTextInput
+        size={isCompact ? "md" : "sm"}
+        initialValue={model}
+        resetKey={model}
+        onChangeText={onChangeText}
+        onSubmitEditing={onCommit}
+        onBlur={onCommit}
+        accessibilityLabel="Autopilot evaluator model"
+        testID="host-page-mission-control-autopilot-model-input"
+        style={styles.mcAutopilotModelInput}
+      />
+    </View>
+  );
+}
+
+function MissionControlAutopilotScopeRow({
+  scope,
+  onScopeChange,
+}: {
+  scope: "commander-spawned" | "all";
+  onScopeChange: (next: "commander-spawned" | "all") => void;
+}) {
+  return (
+    <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>Evaluation scope</Text>
+        <Text style={settingsStyles.rowHint}>
+          Commander-spawned evaluates only the Commander workers; all evaluates every agent.
+        </Text>
+      </View>
+      <SegmentedControl
+        options={[
+          { value: "commander-spawned", label: "Commander-spawned" },
+          { value: "all", label: "All" },
+        ]}
+        value={scope}
+        onValueChange={onScopeChange}
+      />
+    </View>
+  );
+}
+
+function MissionControlAutopilotMaxNudgesRow({
+  maxNudges,
+  isCompact,
+  onChangeText,
+  onCommit,
+}: {
+  maxNudges: number;
+  isCompact: boolean;
+  onChangeText: (text: string) => void;
+  onCommit: () => void;
+}) {
+  return (
+    <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>Max nudges per agent</Text>
+        <Text style={settingsStyles.rowHint}>
+          A nudge verdict at the cap escalates instead of nudging again.
+        </Text>
+      </View>
+      <FormTextInput
+        size={isCompact ? "md" : "sm"}
+        initialValue={String(maxNudges)}
+        resetKey={String(maxNudges)}
+        onChangeText={onChangeText}
+        onSubmitEditing={onCommit}
+        onBlur={onCommit}
+        keyboardType="number-pad"
+        inputMode="numeric"
+        accessibilityLabel="Autopilot max nudges per agent"
+        testID="host-page-mission-control-autopilot-max-nudges-input"
+        style={styles.retentionInput}
+      />
+    </View>
+  );
+}
+
+function MissionControlNamingThemeRow({
+  namingTheme,
+  onThemeChange,
+}: {
+  namingTheme: (typeof MISSION_CONTROL_NAMING_THEMES)[number];
+  onThemeChange: (next: string) => void;
+}) {
+  const { theme } = useUnistyles();
+  const matchedTheme = MISSION_CONTROL_NAMING_THEMES.find((option) => option === namingTheme);
+  const namingThemeLabel = matchedTheme ?? "mixed";
+  const selectThemeHandlers = useMemo(() => {
+    const handlers: Record<string, () => void> = {};
+    for (const option of MISSION_CONTROL_NAMING_THEMES) {
+      handlers[option] = () => onThemeChange(option);
+    }
+    return handlers;
+  }, [onThemeChange]);
+  return (
+    <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>Agent naming theme</Text>
+        <Text style={settingsStyles.rowHint}>Name pool the daemon draws agent names from.</Text>
+      </View>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          testID="host-page-mission-control-naming-theme"
+          style={missionControlDropdownTriggerStyle}
+          accessibilityRole="button"
+          accessibilityLabel={`Agent naming theme: ${namingThemeLabel}`}
+        >
+          <Text style={styles.mcDropdownTriggerText}>{namingThemeLabel}</Text>
+          <ChevronRight size={ICON_SIZE.sm} color={theme.colors.foregroundMuted} />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent side="bottom" align="end" width={200}>
+          {MISSION_CONTROL_NAMING_THEMES.map((option) => (
+            <DropdownMenuItem
+              key={option}
+              selected={option === namingTheme}
+              onSelect={selectThemeHandlers[option]}
+            >
+              {option}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </View>
+  );
+}
+
+function MissionControlDefaultHostRow({
+  defaultHost,
+  hosts,
+  onDefaultHostChange,
+}: {
+  defaultHost: string | null;
+  hosts: HostProfile[];
+  onDefaultHostChange: (next: string | null) => void;
+}) {
+  const { theme } = useUnistyles();
+  const selectedDefaultHostDisplay = useMemo(() => {
+    if (!defaultHost) {
+      return null;
+    }
+    const host = hosts.find((item) => item.serverId === defaultHost);
+    return host ? { label: host.label } : { label: defaultHost };
+  }, [defaultHost, hosts]);
+  const selectNoneHandler = useCallback(() => onDefaultHostChange(null), [onDefaultHostChange]);
+  const selectHostHandlers = useMemo(() => {
+    const handlers: Record<string, () => void> = {};
+    for (const host of hosts) {
+      handlers[host.serverId] = () => onDefaultHostChange(host.serverId);
+    }
+    return handlers;
+  }, [hosts, onDefaultHostChange]);
+  return (
+    <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>Default dispatch host</Text>
+        <Text style={settingsStyles.rowHint}>
+          Host the Commander routes new work to when the user gives no preference.
+        </Text>
+      </View>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          testID="host-page-mission-control-default-host"
+          style={missionControlDropdownTriggerStyle}
+          accessibilityRole="button"
+          accessibilityLabel="Default dispatch host"
+        >
+          <Text style={styles.mcDropdownTriggerText}>
+            {selectedDefaultHostDisplay?.label ?? "None"}
+          </Text>
+          <ChevronRight size={ICON_SIZE.sm} color={theme.colors.foregroundMuted} />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent side="bottom" align="end" width={200}>
+          <DropdownMenuItem selected={defaultHost === null} onSelect={selectNoneHandler}>
+            None
+          </DropdownMenuItem>
+          {hosts.map((host) => (
+            <DropdownMenuItem
+              key={host.serverId}
+              selected={host.serverId === defaultHost}
+              onSelect={selectHostHandlers[host.serverId]}
+            >
+              {host.label}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </View>
+  );
+}
+
+function MissionControlInstructionsRow({
+  instructionsDraft,
+  onChangeText,
+  onCommit,
+}: {
+  instructionsDraft: string;
+  onChangeText: (text: string) => void;
+  onCommit: () => void;
+}) {
+  return (
+    <>
+      <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+        <View style={settingsStyles.rowContent}>
+          <Text style={settingsStyles.rowTitle}>Commander instructions</Text>
+          <Text style={settingsStyles.rowHint}>
+            The Commander contract; the daemon wraps it with the fleet context pack at launch.
+          </Text>
+        </View>
+      </View>
+      <SettingsTextArea
+        accessibilityLabel="Commander instructions"
+        value={instructionsDraft}
+        onChangeText={onChangeText}
+        onBlur={onCommit}
+        placeholder="The Commander contract..."
+        testID="host-page-mission-control-commander-instructions"
+        style={styles.mcInstructionsInput}
+      />
+    </>
+  );
+}
+
+/**
+ * Autopilot evaluation controls. Owns its own config read + patch handlers so
+ * MissionControlCard stays a flat list of row groups.
+ */
+function MissionControlAutopilotRows({
+  serverId,
+  isCompact,
+}: {
+  serverId: string;
+  isCompact: boolean;
+}) {
+  const { config, patchConfig } = useDaemonConfig(serverId);
+  const autopilot = config?.missionControl?.autopilot;
+  const mode = orDefault(autopilot?.mode, "off");
+  const model = orDefault(autopilot?.model, "");
+  const scope = orDefault(autopilot?.scope, "commander-spawned");
+  const maxNudges = orDefault(autopilot?.maxNudgesPerAgent, 2);
+  const modelDraftRef = useRef<string | null>(null);
+  const maxNudgesDraftRef = useRef<string | null>(null);
+
+  const patchAutopilot = useCallback(
+    (updates: Record<string, unknown>) => {
+      void patchConfig({
+        missionControl: {
+          ...config?.missionControl,
+          autopilot: { ...config?.missionControl?.autopilot, ...updates },
+        },
+      }).catch(reportMissionControlPatchError);
+    },
+    [config?.missionControl, patchConfig],
+  );
+
+  const handleModeChange = useCallback(
+    (next: "off" | "observe" | "act") => patchAutopilot({ mode: next }),
+    [patchAutopilot],
+  );
+
+  const handleModelChange = useCallback((text: string) => {
+    modelDraftRef.current = text;
+  }, []);
+
+  const handleModelCommit = useCallback(() => {
+    const draft = modelDraftRef.current;
+    modelDraftRef.current = null;
+    if (draft === null) {
+      return;
+    }
+    const next = draft.trim();
+    if (next === model) {
+      return;
+    }
+    patchAutopilot({ model: next.length > 0 ? next : null });
+  }, [model, patchAutopilot]);
+
+  const handleScopeChange = useCallback(
+    (next: "commander-spawned" | "all") => patchAutopilot({ scope: next }),
+    [patchAutopilot],
+  );
+
+  const handleMaxNudgesChange = useCallback((text: string) => {
+    maxNudgesDraftRef.current = text.replace(/[^0-9]/g, "");
+  }, []);
+
+  const handleMaxNudgesCommit = useCallback(() => {
+    const raw = maxNudgesDraftRef.current;
+    maxNudgesDraftRef.current = null;
+    if (raw === null) {
+      return;
+    }
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isFinite(parsed) || parsed < 1 || parsed === maxNudges) {
+      return;
+    }
+    patchAutopilot({ maxNudgesPerAgent: parsed });
+  }, [maxNudges, patchAutopilot]);
+
+  return (
+    <>
+      <MissionControlAutopilotModeRow mode={mode} onModeChange={handleModeChange} />
+      <MissionControlAutopilotModelRow
+        model={model}
+        isCompact={isCompact}
+        onChangeText={handleModelChange}
+        onCommit={handleModelCommit}
+      />
+      <MissionControlAutopilotScopeRow scope={scope} onScopeChange={handleScopeChange} />
+      <MissionControlAutopilotMaxNudgesRow
+        maxNudges={maxNudges}
+        isCompact={isCompact}
+        onChangeText={handleMaxNudgesChange}
+        onCommit={handleMaxNudgesCommit}
+      />
+    </>
+  );
+}
 
 function MissionControlCard({ serverId }: { serverId: string }) {
   const isConnected = useHostRuntimeIsConnected(serverId);
   const isCompact = useIsCompactFormFactor();
+  const hosts = useHosts();
   const { config, patchConfig } = useDaemonConfig(serverId);
-  const retentionDays =
-    config?.missionControl?.retentionDays ?? DEFAULT_MISSION_CONTROL_RETENTION_DAYS;
-  const summarizerEnabled = config?.missionControl?.summarizer?.enabled ?? true;
+  const missionControl = config?.missionControl;
+  const retentionDays = orDefault(
+    missionControl?.retentionDays,
+    DEFAULT_MISSION_CONTROL_RETENTION_DAYS,
+  );
+  const summarizerEnabled = orDefault(missionControl?.summarizer?.enabled, true);
+  const summarizerBackend = orDefault(missionControl?.summarizer?.backend, "gateway");
+  const namingTheme = orDefault(missionControl?.naming?.theme, "mixed");
+  const defaultHost = orDefault(missionControl?.defaultHost, null);
+  const hostAliases = orDefault(missionControl?.hostAliases, {});
+  const commanderInstructions = orDefault(missionControl?.commanderInstructions, "");
   const retentionDraftRef = useRef<string | null>(null);
+  const [instructionsDraft, setInstructionsDraft] = useState(commanderInstructions);
+
+  useEffect(() => {
+    setInstructionsDraft(commanderInstructions);
+  }, [commanderInstructions]);
+
+  // The server replaces the whole missionControl object on patch, so every
+  // change re-sends the current values for the keys it does not touch.
+  const patchMissionControl = useCallback(
+    (updates: Record<string, unknown>) => {
+      void patchConfig({ missionControl: { ...config?.missionControl, ...updates } }).catch(
+        reportMissionControlPatchError,
+      );
+    },
+    [config?.missionControl, patchConfig],
+  );
 
   const handleSummarizerChange = useCallback(
     (next: boolean) => {
-      void patchConfig({ missionControl: { summarizer: { enabled: next } } }).catch((error) => {
-        console.error("[HostPage] Failed to update mission control summarizer", error);
-        Alert.alert(
-          "Unable to update Mission Control",
-          error instanceof Error ? error.message : String(error),
-        );
+      patchMissionControl({
+        summarizer: { ...config?.missionControl?.summarizer, enabled: next },
       });
     },
-    [patchConfig],
+    [config?.missionControl?.summarizer, patchMissionControl],
+  );
+
+  const handleBackendChange = useCallback(
+    (next: "gateway" | "omp") => {
+      patchMissionControl({
+        summarizer: { ...config?.missionControl?.summarizer, backend: next },
+      });
+    },
+    [config?.missionControl?.summarizer, patchMissionControl],
+  );
+
+  const handleThemeChange = useCallback(
+    (next: string) => {
+      patchMissionControl({ naming: { theme: next } });
+    },
+    [patchMissionControl],
+  );
+
+  const handleDefaultHostChange = useCallback(
+    (next: string | null) => {
+      patchMissionControl({ defaultHost: next });
+    },
+    [patchMissionControl],
+  );
+
+  const handleAliasCommit = useCallback(
+    (hostServerId: string) => (alias: string) => {
+      patchMissionControl({
+        hostAliases: { ...config?.missionControl?.hostAliases, [hostServerId]: alias },
+      });
+    },
+    [config?.missionControl?.hostAliases, patchMissionControl],
   );
 
   const handleRetentionChange = useCallback((text: string) => {
@@ -1230,59 +1829,58 @@ function MissionControlCard({ serverId }: { serverId: string }) {
   const handleRetentionCommit = useCallback(() => {
     const raw = retentionDraftRef.current;
     retentionDraftRef.current = null;
-    if (raw === null) {
+    const parsed = parseRetentionDays(raw);
+    if (parsed === null || parsed === retentionDays) {
       return;
     }
-    const parsed = Number.parseInt(raw, 10);
-    if (!Number.isFinite(parsed) || parsed < 1 || parsed === retentionDays) {
+    patchMissionControl({ retentionDays: parsed });
+  }, [patchMissionControl, retentionDays]);
+
+  const handleInstructionsCommit = useCallback(() => {
+    const next = instructionsDraft.trim();
+    if (next === commanderInstructions) {
       return;
     }
-    void patchConfig({ missionControl: { retentionDays: parsed } }).catch((error) => {
-      console.error("[HostPage] Failed to update mission control retention", error);
-      Alert.alert(
-        "Unable to update Mission Control",
-        error instanceof Error ? error.message : String(error),
-      );
-    });
-  }, [patchConfig, retentionDays]);
+    patchMissionControl({ commanderInstructions: next });
+  }, [commanderInstructions, instructionsDraft, patchMissionControl]);
 
   if (!isConnected) return null;
 
   return (
     <View style={settingsStyles.card} testID="host-page-mission-control-card">
-      <View style={settingsStyles.row}>
-        <View style={settingsStyles.rowContent}>
-          <Text style={settingsStyles.rowTitle}>Mission Control</Text>
-          <Text style={settingsStyles.rowHint}>
-            Summarize fleet events into milestone cards on the Mission Control feed.
-          </Text>
-        </View>
-        <Switch
-          value={summarizerEnabled}
-          onValueChange={handleSummarizerChange}
-          accessibilityLabel="Summarize fleet events"
-          testID="host-page-mission-control-summarizer-switch"
+      <MissionControlSummarizerRow
+        enabled={summarizerEnabled}
+        onEnabledChange={handleSummarizerChange}
+      />
+      <MissionControlBackendRow backend={summarizerBackend} onBackendChange={handleBackendChange} />
+      <MissionControlAutopilotRows serverId={serverId} isCompact={isCompact} />
+      <MissionControlRetentionRow
+        retentionDays={retentionDays}
+        isCompact={isCompact}
+        onChangeText={handleRetentionChange}
+        onCommit={handleRetentionCommit}
+      />
+      <MissionControlNamingThemeRow namingTheme={namingTheme} onThemeChange={handleThemeChange} />
+      <MissionControlDefaultHostRow
+        defaultHost={defaultHost}
+        hosts={hosts}
+        onDefaultHostChange={handleDefaultHostChange}
+      />
+      {hosts.map((host) => (
+        <HostAliasRow
+          key={host.serverId}
+          host={host}
+          serverId={host.serverId}
+          alias={hostAliases[host.serverId] ?? ""}
+          isCompact={isCompact}
+          onCommit={handleAliasCommit(host.serverId)}
         />
-      </View>
-      <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
-        <View style={settingsStyles.rowContent}>
-          <Text style={settingsStyles.rowTitle}>Feed retention</Text>
-          <Text style={settingsStyles.rowHint}>Days the Mission Control feed keeps events.</Text>
-        </View>
-        <FormTextInput
-          size={isCompact ? "md" : "sm"}
-          initialValue={String(retentionDays)}
-          resetKey={String(retentionDays)}
-          onChangeText={handleRetentionChange}
-          onSubmitEditing={handleRetentionCommit}
-          onBlur={handleRetentionCommit}
-          keyboardType="number-pad"
-          inputMode="numeric"
-          accessibilityLabel="Mission Control feed retention days"
-          testID="host-page-mission-control-retention-input"
-          style={styles.retentionInput}
-        />
-      </View>
+      ))}
+      <MissionControlInstructionsRow
+        instructionsDraft={instructionsDraft}
+        onChangeText={setInstructionsDraft}
+        onCommit={handleInstructionsCommit}
+      />
     </View>
   );
 }
@@ -2132,6 +2730,33 @@ const styles = StyleSheet.create((theme) => ({
   },
   retentionInput: {
     width: 88,
+  },
+  mcAutopilotModelInput: {
+    width: 160,
+  },
+  mcDropdownTrigger: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+    paddingVertical: theme.spacing[1],
+    paddingHorizontal: theme.spacing[2],
+    borderRadius: theme.borderRadius.md,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.border,
+  },
+  mcDropdownTriggerPressed: {
+    opacity: 0.85,
+  },
+  mcDropdownTriggerText: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.sm,
+  },
+  mcAliasInput: {
+    width: 160,
+  },
+  mcInstructionsInput: {
+    marginHorizontal: theme.spacing[4],
+    marginBottom: theme.spacing[3],
   },
   emptyCard: {
     padding: theme.spacing[4],

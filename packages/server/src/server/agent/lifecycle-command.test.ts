@@ -36,7 +36,13 @@ class FakeLifecycleAgentManager implements LifecycleAgentManager {
   readonly closedAgentIds: string[] = [];
   readonly metadataUpdates: Array<{
     agentId: string;
-    updates: { title?: string; labels?: Record<string, string> };
+    updates: {
+      title?: string;
+      labels?: Record<string, string>;
+      provider?: string;
+      model?: string | null;
+      modeId?: string;
+    };
   }> = [];
   readonly labelUpdates: Array<{ agentId: string; labels: Record<string, string> }> = [];
   readonly notifiedAgentIds: string[] = [];
@@ -155,6 +161,9 @@ class FakeLifecycleAgentManager implements LifecycleAgentManager {
     updates: {
       title?: string;
       labels?: Record<string, string>;
+      provider?: string;
+      model?: string | null;
+      modeId?: string;
     },
   ): Promise<void> {
     this.metadataUpdates.push({ agentId, updates });
@@ -269,7 +278,7 @@ describe("agent lifecycle commands", () => {
       updateAgentCommand({ agentManager: manager }, { agentId: "agent-1", name: "   " }),
     ).resolves.toEqual({
       accepted: false,
-      error: "Nothing to update (provide name and/or labels)",
+      error: "Nothing to update (provide name, labels, provider, and/or model)",
     });
 
     expect(storage.upserts).toHaveLength(0);

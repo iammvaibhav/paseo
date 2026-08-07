@@ -1,5 +1,6 @@
 import type { ProjectDescriptor, WorkspaceDescriptor } from "@/stores/session-store";
 import { isHistoryAskAgent } from "@/history-ask";
+import { isCommanderAgent } from "@/mission-control/labels";
 import { projectDisplayNameFromProjectId } from "@/utils/project-display-name";
 
 export interface WorkspaceAgentForSidebar {
@@ -12,7 +13,7 @@ export function isSidebarWorkspaceHidden(input: {
 }): boolean {
   return (
     input.agentsInWorkspace.length > 0 &&
-    input.agentsInWorkspace.every((a) => isHistoryAskAgent(a.labels))
+    input.agentsInWorkspace.every((a) => isHistoryAskAgent(a.labels) || isCommanderAgent(a.labels))
   );
 }
 

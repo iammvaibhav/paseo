@@ -121,7 +121,22 @@ class OmpCliRuntimeSession implements OmpRuntimeSession {
       const event = OmpRuntimeEventSchema.safeParse(message);
       if (event.success) {
         this.emit(event.data);
+        return;
       }
+      // A frame the daemon's schema rejects is dropped here with no other
+      // trace. If OMP emits an event type or field shape this daemon version
+      // does not know, an `agent_end` (or the whole tail of a turn) can vanish
+      // and leave the agent lifecycle stuck at running. Surface it.
+      this.logger.warn(
+        {
+          frameType: typeof message.type === "string" ? message.type : "<non-string type>",
+          frameKeys: Object.keys(message).slice(0, 12),
+          issue: event.error.issues
+            ?.slice(0, 3)
+            .map((issue) => `${issue.path.join(".")}: ${issue.message}`),
+        },
+        "omp.rpc.schema_drop",
+      );
     });
     process.onExit(({ error }) => {
       this.emit({ type: "process_exit", error: error.message });
@@ -272,10 +287,39 @@ class OmpCliRuntimeSession implements OmpRuntimeSession {
   }
 
   async setHostTools(tools: OmpRpcHostToolDefinition[]): Promise<string[]> {
+    const requestedNames = tools.map((tool) => tool.name);
+    if (requestedNames.length === 0) {
+      return await this.requestSetHostTools(tools);
+    }
+    let registered = await this.requestSetHostTools(tools);
+    let missing = requestedNames.filter((name) => !new Set(registered).has(name));
+    if (missing.length === 0) {
+      return registered;
+    }
+    // A non-empty catalog must never register zero (or fewer) tools silently:
+    // the session would run without Paseo host tools while nothing logs why.
+    // Retry once — set_host_tools is idempotent (replaces the tool set) — then
+    // surface what is still missing so the failure stays loud either way.
+    this.logger.error(
+      { requested: requestedNames, registered, missing },
+      "OMP set_host_tools registered fewer tools than requested; retrying once",
+    );
+    registered = await this.requestSetHostTools(tools);
+    missing = requestedNames.filter((name) => !new Set(registered).has(name));
+    if (missing.length > 0) {
+      this.logger.error(
+        { requested: requestedNames, registered, stillMissing: missing },
+        "OMP set_host_tools still missing tools after retry",
+      );
+    }
+    return registered;
+  }
+
+  private async requestSetHostTools(tools: OmpRpcHostToolDefinition[]): Promise<string[]> {
     const data = OmpHostToolsResultSchema.parse(
       await this.request({ type: "set_host_tools", tools }),
     );
-    return data.toolNames ?? [];
+    return data.toolNames;
   }
 
   sendHostToolResult(result: OmpRpcHostToolResult): void {

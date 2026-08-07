@@ -53,6 +53,11 @@ import {
 import type { CheckDetails, ForgeService } from "../services/forge-service.js";
 import type { GitHubPullRequestStatusFacts } from "../services/github-facts.js";
 
+// An async generator that yields nothing, for stubbing startAgentRun's stream.
+function noopAgentStream() {
+  return (async function* () {})();
+}
+
 interface SessionHandlerInternals {
   interruptAgentIfRunning(agentId: string): Promise<void>;
   handleSendAgentMessage(
@@ -371,6 +376,7 @@ function createSessionForTest(options: SessionForTestOptions = {}): Session {
     agentManager: asAgentManager({
       listAgents: vi.fn(() => []),
       listProviderSubagentActivity: vi.fn(() => []),
+      getRegisteredProviderIds: vi.fn(() => []),
       subscribe: vi.fn(() => () => {}),
       ...options.agentManager,
     }),
@@ -1108,6 +1114,7 @@ describe("agent detach RPC", () => {
       agentManager: {
         getAgent,
         detachAgent,
+        getRegisteredProviderIds: vi.fn().mockReturnValue(["codex"]),
       },
       agentStorage: {
         list: vi.fn().mockResolvedValue([]),
@@ -5256,12 +5263,15 @@ describe("unavailable provider agent handling", () => {
       upsert: vi.fn().mockResolvedValue(undefined),
     };
     const providerSnapshotManager = {
-      listRegisteredProviderIds: vi.fn().mockReturnValue(["codex", "opencode"]),
+      listRegisteredProviderIds: vi.fn().mockReturnValue(["claude", "codex", "opencode"]),
       on: vi.fn(),
       off: vi.fn(),
     };
     const agentManager = {
       getAgent: vi.fn().mockReturnValue(null),
+      // claude is a known provider (registered in the snapshot manager) but
+      // has no materialized client, so it is not spawnable on this daemon.
+      getRegisteredProviderIds: vi.fn().mockReturnValue(["codex", "opencode"]),
       hasTimeline: vi.fn().mockReturnValue(true),
       getTimeline: vi.fn().mockReturnValue([{ id: "t1" }]),
       unarchiveSnapshot: vi.fn().mockResolvedValue(false),
@@ -5339,5 +5349,156 @@ describe("unavailable provider agent handling", () => {
         error: null,
       },
     });
+  });
+
+  test("fetch_agent_timeline_request serves history-only when the provider is disabled", async () => {
+    const messages: unknown[] = [];
+    const agentRecord = {
+      id: "agent-unavailable-2",
+      provider: "claude",
+      cwd: "/tmp/test-repo",
+      createdAt: "2026-04-16T00:00:00.000Z",
+      updatedAt: "2026-04-16T00:00:00.000Z",
+      lastStatus: "closed",
+    };
+    const agentStorage = {
+      get: vi.fn().mockResolvedValue(agentRecord),
+    };
+    // The snapshot manager's registered list is every *known* provider: claude
+    // is included even though it is disabled on this daemon. The agent
+    // manager's client set is what can actually spawn, and claude is not in it.
+    // This divergence is the regression: availability must follow the client
+    // set, not the known-provider list.
+    const providerSnapshotManager = {
+      listRegisteredProviderIds: vi.fn().mockReturnValue(["claude", "codex", "opencode", "omp"]),
+      on: vi.fn(),
+      off: vi.fn(),
+    };
+    const agentManager = {
+      getAgent: vi.fn().mockReturnValue(null),
+      getRegisteredProviderIds: vi.fn().mockReturnValue(["codex", "opencode"]),
+      hasTimeline: vi.fn().mockReturnValue(false),
+      seedTimelineFromDurable: vi.fn().mockResolvedValue(false),
+      seedTimelineFromItems: vi.fn(),
+      fetchTimeline: vi.fn().mockReturnValue({
+        epoch: "epoch-1",
+        direction: "tail",
+        reset: false,
+        staleCursor: false,
+        gap: false,
+        window: { minSeq: 0, maxSeq: 0, nextSeq: 0 },
+        hasOlder: false,
+        hasNewer: false,
+        rows: [],
+      }),
+    };
+
+    const session = createSessionForTest({
+      agentStorage,
+      agentManager,
+      providerSnapshotManager,
+      messages,
+    });
+
+    await session.handleMessage({
+      type: "fetch_agent_timeline_request",
+      agentId: "agent-unavailable-2",
+      requestId: "req-timeline-unavail",
+      direction: "tail",
+      projection: "projected",
+    });
+
+    const response = messages.find((m) => m.type === "fetch_agent_timeline_response");
+    expect(response).toBeDefined();
+    expect(response.payload.error).toBeNull();
+    expect(response.payload.agent).toMatchObject({
+      id: "agent-unavailable-2",
+      provider: "claude",
+      providerUnavailable: true,
+    });
+    // The history-only branch seeded an empty timeline instead of spawning.
+    expect(agentManager.seedTimelineFromItems).toHaveBeenCalledWith("agent-unavailable-2", []);
+  });
+
+  test("agent.fork.request passes the availability gate for a disabled-provider source", async () => {
+    const messages: unknown[] = [];
+    const agentRecord = {
+      id: "agent-unavailable-2",
+      provider: "claude",
+      cwd: "/tmp/test-repo",
+      workspaceId: "wks_fork",
+      createdAt: "2026-04-16T00:00:00.000Z",
+      updatedAt: "2026-04-16T00:00:00.000Z",
+      lastStatus: "closed",
+      title: "unavailable source",
+    };
+    // The fork lands on an available provider. The mock only needs the fields
+    // the fork pipeline touches before payload projection (`id` for the agent
+    // map, `provider` for startAgentRun's trace) — `buildAgentPayload` is
+    // stubbed below because this test targets the availability gate, not the
+    // payload shape.
+    const forkedAgent = { id: "forked-agent", provider: "omp" };
+    const agentStorage = {
+      get: vi.fn(async (agentId: string) =>
+        agentId === "agent-unavailable-2" ? agentRecord : null,
+      ),
+    };
+    const agentManager = {
+      getAgent: vi.fn((agentId: string) =>
+        agentId === "agent-unavailable-2" ? null : forkedAgent,
+      ),
+      getRegisteredProviderIds: vi.fn().mockReturnValue(["codex", "omp"]),
+      hasTimeline: vi.fn().mockReturnValue(false),
+      seedTimelineFromDurable: vi.fn().mockResolvedValue(false),
+      seedTimelineFromItems: vi.fn(),
+      fetchTimeline: vi.fn().mockReturnValue({
+        epoch: "epoch-1",
+        direction: "tail",
+        reset: false,
+        staleCursor: false,
+        gap: false,
+        window: { minSeq: 0, maxSeq: 0, nextSeq: 0 },
+        hasOlder: false,
+        hasNewer: false,
+        rows: [],
+      }),
+      createAgent: vi.fn(async () => forkedAgent),
+      waitForAgentClose: vi.fn().mockResolvedValue(undefined),
+      tryRunOutOfBand: vi.fn().mockReturnValue(false),
+      hasInFlightRun: vi.fn().mockReturnValue(false),
+      streamAgent: vi.fn(noopAgentStream),
+    };
+
+    const session = createSessionForTest({
+      agentStorage,
+      agentManager,
+      messages,
+    });
+    const internals = asSessionInternalsHelper<{
+      agentUpdates: { forwardLiveAgent: () => Promise<void> };
+      buildAgentPayload: (agent: { id?: string; provider?: string }) => Promise<unknown>;
+    }>(session);
+    // Neither surface is under test: the fork response just echoes the created
+    // agent back, and the update stream isn't what this test exercises.
+    internals.agentUpdates.forwardLiveAgent = async () => undefined;
+    internals.buildAgentPayload = async (agent) => ({ id: agent?.id, provider: agent?.provider });
+
+    await session.handleMessage({
+      type: "agent.fork.request",
+      sourceAgentId: "agent-unavailable-2",
+      text: "keep going",
+      requestId: "req-fork-unavail",
+      overrides: { provider: "omp" },
+    });
+
+    const response = messages.find((m) => m.type === "agent.fork.response");
+    expect(response).toBeDefined();
+    expect(response.payload.error).toBeNull();
+    expect(response.payload.agentId).toBe("forked-agent");
+    expect(response.payload.sourceAgentId).toBe("agent-unavailable-2");
+    expect(response.payload.agent).toMatchObject({ id: "forked-agent", provider: "omp" });
+    // Forking a source whose provider is unavailable must not fail before the
+    // fork is created.
+    expect(agentManager.createAgent).toHaveBeenCalledOnce();
   });
 });

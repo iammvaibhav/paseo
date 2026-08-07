@@ -18,6 +18,8 @@ const SERIALIZABLE_CONFIG_SCHEMA = z
     featureValues: z.record(z.string(), z.unknown()).nullable().optional(),
     extra: z.record(z.string(), z.any()).nullable().optional(),
     systemPrompt: z.string().nullable().optional(),
+    systemPromptMode: z.enum(["append", "replace"]).nullable().optional(),
+    toolAllowlist: z.array(z.string()).nullable().optional(),
     mcpServers: z.record(z.string(), z.any()).nullable().optional(),
   })
   .nullable()
@@ -43,6 +45,10 @@ const STORED_AGENT_SCHEMA = z.object({
   lastActivityAt: z.string().optional(),
   lastUserMessageAt: z.string().nullable().optional(),
   title: z.string().nullable().optional(),
+  // Identity fields (Mission Control naming + description refresh). Optional
+  // so records written by older daemons still parse.
+  name: z.string().optional(),
+  shortDescription: z.string().optional(),
   labels: z.record(z.string(), z.string()).default({}),
   lastStatus: AgentStatusSchema.default("closed"),
   lastModeId: z.string().nullable().optional(),
@@ -76,12 +82,47 @@ export type SerializableAgentConfig = Pick<
   | "featureValues"
   | "extra"
   | "systemPrompt"
+  | "systemPromptMode"
+  | "toolAllowlist"
   | "mcpServers"
 >;
 
 export type StoredAgentRecord = z.infer<typeof STORED_AGENT_SCHEMA>;
 export function parseStoredAgentRecord(value: unknown): StoredAgentRecord {
   return STORED_AGENT_SCHEMA.parse(value);
+}
+
+/** Resolve the projection overrides for a snapshot, keeping stored fields the projection drops. */
+function buildSnapshotProjectionOptions(
+  agent: ManagedAgent,
+  existing: StoredAgentRecord | null,
+  options?: { title?: string | null; internal?: boolean },
+): { title?: string | null; createdAt?: string; internal?: boolean } {
+  const hasTitleOverride =
+    options !== undefined && Object.prototype.hasOwnProperty.call(options, "title");
+  const hasInternalOverride =
+    options !== undefined && Object.prototype.hasOwnProperty.call(options, "internal");
+  return {
+    title: hasTitleOverride ? (options?.title ?? null) : (existing?.title ?? null),
+    createdAt: existing?.createdAt,
+    internal: hasInternalOverride ? options?.internal : (agent.internal ?? existing?.internal),
+  };
+}
+
+/** Preserve identity and soft-delete fields the snapshot projection doesn't carry. */
+function preserveStoredIdentityFields(
+  record: StoredAgentRecord,
+  existing: StoredAgentRecord | null,
+): void {
+  if (record.name === undefined && existing?.name !== undefined) {
+    record.name = existing.name;
+  }
+  if (record.shortDescription === undefined && existing?.shortDescription !== undefined) {
+    record.shortDescription = existing.shortDescription;
+  }
+  if (existing && existing.archivedAt !== undefined) {
+    record.archivedAt = existing.archivedAt;
+  }
 }
 
 export class AgentStorage {
@@ -209,22 +250,17 @@ export class AgentStorage {
     await this.load();
     await this.waitForPendingWrite(agent.id);
     const existing = (await this.get(agent.id)) ?? null;
-    const hasTitleOverride =
-      options !== undefined && Object.prototype.hasOwnProperty.call(options, "title");
-    const hasInternalOverride =
-      options !== undefined && Object.prototype.hasOwnProperty.call(options, "internal");
-    const record = toStoredAgentRecord(agent, {
-      title: hasTitleOverride ? (options?.title ?? null) : (existing?.title ?? null),
-      createdAt: existing?.createdAt,
-      internal: hasInternalOverride ? options?.internal : (agent.internal ?? existing?.internal),
-    });
+    const record = toStoredAgentRecord(
+      agent,
+      buildSnapshotProjectionOptions(agent, existing, options),
+    );
 
-    // Preserve soft-delete/archive status across snapshot flushes.
-    // `archivedAt` is not part of the ManagedAgent snapshot, so a naive projection
-    // would wipe it during normal persistence (including on daemon restart).
-    if (existing && existing.archivedAt !== undefined) {
-      record.archivedAt = existing.archivedAt;
-    }
+    // Preserve identity fields across snapshot flushes for records where the
+    // projection doesn't carry them yet (e.g. a ManagedAgent restored without
+    // its stored identity), plus soft-delete/archive status that a naive
+    // projection would wipe during normal persistence (including daemon restarts).
+    preserveStoredIdentityFields(record, existing);
+
     await this.upsert(record);
   }
 

@@ -129,6 +129,7 @@ export class JsonlRpcProcess {
   private stderrBuffer = "";
   private nextRequestId = 1;
   private disposed = false;
+  private processExited = false;
   private stdoutBuffer = "";
   private chunkSequence: ChunkSequence | null = null;
 
@@ -153,6 +154,17 @@ export class JsonlRpcProcess {
       this.failAll(error instanceof Error ? error : new Error(String(error)));
     });
     this.child.on("exit", (code, signal) => {
+      if (this.processExited) {
+        // The stdout-close handler already surfaced an exit for this process
+        // (half-open channel). Do not double-notify subscribers.
+        this.failAll(
+          new Error(
+            `${this.diagnosticName} process exited with code ${code ?? "null"} and signal ${signal ?? "null"}\n${this.stderrBuffer}`.trim(),
+          ),
+        );
+        return;
+      }
+      this.processExited = true;
       const error = new Error(
         `${this.diagnosticName} process exited with code ${code ?? "null"} and signal ${signal ?? "null"}\n${this.stderrBuffer}`.trim(),
       );
@@ -161,6 +173,39 @@ export class JsonlRpcProcess {
         subscriber(exit);
       }
       this.failAll(error);
+    });
+    // A provider that closes its stdout while the process stays alive stops
+    // emitting events with no process-exit signal: the daemon would wait for a
+    // terminal that can never arrive. That is an event (stream close), not a
+    // timeout — surface it as an exit so the agent terminalizes instead of
+    // spinning. Defer one tick because `stdout close` and the child `exit`
+    // event can arrive in either order: if the process actually exited, let
+    // its own handler publish the real code/signal.
+    this.child.stdout.on("close", () => {
+      if (this.processExited || this.disposed) {
+        return;
+      }
+      setImmediate(() => {
+        if (this.processExited || this.disposed) {
+          return;
+        }
+        if (this.child.exitCode !== null || this.child.signalCode !== null) {
+          return;
+        }
+        this.processExited = true;
+        const error = new Error(
+          `${this.diagnosticName} process stdout closed while the process is still running\n${this.stderrBuffer}`.trim(),
+        );
+        this.options.logger.warn(
+          { error: error.message },
+          `${this.diagnosticName} stdout closed while running`,
+        );
+        const exit = { code: null, signal: null, error };
+        for (const subscriber of this.exitSubscribers) {
+          subscriber(exit);
+        }
+        this.failAll(error);
+      });
     });
   }
 

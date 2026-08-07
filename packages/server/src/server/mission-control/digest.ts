@@ -23,6 +23,10 @@ const PARENT_NOTIFIED_DIGEST_KINDS: Partial<Record<MissionControlEventKind, true
   finished: true,
   failed: true,
 };
+// Soft enforcement layer: every digest ends with the contract restated so long
+// sessions cannot drift into doing the work themselves.
+const DIGEST_REMINDER_LINE =
+  "Reminder: you are the orchestrator — dispatch and report; never run commands, debug, or edit anything yourself.";
 
 export interface MissionControlDigestOrigin {
   serverId: string;
@@ -42,10 +46,20 @@ export interface MissionControlDigestSink {
   enqueue(event: MissionControlEvent, origin: MissionControlDigestOrigin): void;
 }
 
+/**
+ * Supplies the compact fleet-context delta for digest bodies. Implemented by
+ * mission-control/context.ts; the digest stays agnostic of how the context is
+ * assembled. Null delta = nothing changed (or context unavailable) → no block.
+ */
+export interface MissionControlDigestContextProvider {
+  deltaBlock(): Promise<string | null>;
+}
+
 export interface MissionControlDigestOptions {
   agentManager: AgentManager;
   agentStorage: AgentStorage;
   logger: Logger;
+  contextProvider?: MissionControlDigestContextProvider | null;
 }
 
 /**
@@ -58,6 +72,7 @@ export class MissionControlDigest implements MissionControlDigestSink {
   private readonly agentManager: AgentManager;
   private readonly agentStorage: AgentStorage;
   private readonly logger: Logger;
+  private readonly contextProvider: MissionControlDigestContextProvider | null;
 
   private buffer: BufferedMissionControlEvent[] = [];
   private commanderId: string | null = null;
@@ -69,6 +84,7 @@ export class MissionControlDigest implements MissionControlDigestSink {
     this.agentManager = options.agentManager;
     this.agentStorage = options.agentStorage;
     this.logger = options.logger.child({ module: "mission-control-digest" });
+    this.contextProvider = options.contextProvider ?? null;
   }
 
   start(): void {
@@ -137,7 +153,8 @@ export class MissionControlDigest implements MissionControlDigestSink {
       return;
     }
 
-    const prompt = formatSystemNotificationPrompt(buildDigestBody(digestItems));
+    const contextBlock = this.contextProvider ? await this.contextProvider.deltaBlock() : null;
+    const prompt = formatSystemNotificationPrompt(buildDigestBody(digestItems, contextBlock));
     try {
       const dispatched = await startAgentRun(this.agentManager, commanderId, prompt, this.logger, {
         replaceRunning: false,
@@ -267,12 +284,17 @@ export class MissionControlDigest implements MissionControlDigestSink {
   }
 }
 
-function buildDigestBody(entries: readonly BufferedMissionControlEvent[]): string {
+function buildDigestBody(
+  entries: readonly BufferedMissionControlEvent[],
+  contextBlock: string | null,
+): string {
   const noun = entries.length === 1 ? "event" : "events";
   const lines = entries.map(({ event, origin }) => {
     const link = `paseo://h/${origin.serverId}/agent/${event.agentId}`;
     const line = `- [${event.kind}] ${event.headline} — ${event.agentTitle} (${origin.hostName}) — ${link}`;
     return event.detail ? `${line}\n  ${event.detail}` : line;
   });
-  return `Fleet digest: ${entries.length} ${noun}.\n\n${lines.join("\n")}`;
+  const body = `Fleet digest: ${entries.length} ${noun}.\n\n${lines.join("\n")}`;
+  const prefixed = contextBlock ? `${contextBlock}\n\n${body}` : body;
+  return `${prefixed}\n\n${DIGEST_REMINDER_LINE}`;
 }

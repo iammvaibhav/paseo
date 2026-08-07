@@ -32,7 +32,10 @@ export const MissionControlEventSchema = z.object({
   agentId: z.string(),
   agentTitle: z.string(),
   kind: MissionControlEventKindSchema,
-  source: z.enum(["system", "summarizer"]),
+  // self: reported by the agent itself via report_milestone. autopilot:
+  // verdicts from the autopilot evaluator. Additive; older payloads without
+  // them still parse (source is required, existing values unchanged).
+  source: z.enum(["system", "summarizer", "self", "autopilot"]),
   severity: z.enum(["info", "attention", "blocker"]),
   headline: z.string(), // ≤ 120 chars, plain language
   detail: z.string().optional(),
@@ -107,3 +110,73 @@ export const MissionControlEventMessageSchema = z.object({
   event: MissionControlEventSchema,
 });
 export type MissionControlEventMessage = z.infer<typeof MissionControlEventMessageSchema>;
+
+// ============================================================================
+// Context pack RPC — every daemon serves it; the Commander-host daemon
+// aggregates it over peers so the Commander's worldview is one fetch per host.
+// ============================================================================
+
+export const MissionControlInventoryProjectWorkspaceSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  description: z.string().optional(),
+  cwd: z.string(),
+  kind: z.string(), // worktree | directory | local_checkout
+});
+export type MissionControlInventoryProjectWorkspace = z.infer<
+  typeof MissionControlInventoryProjectWorkspaceSchema
+>;
+
+export const MissionControlInventoryProjectSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  description: z.string().optional(),
+  hostServerId: z.string(),
+  workspaces: z.array(MissionControlInventoryProjectWorkspaceSchema),
+});
+export type MissionControlInventoryProject = z.infer<typeof MissionControlInventoryProjectSchema>;
+
+export const MissionControlInventorySchema = z.object({
+  projects: z.array(MissionControlInventoryProjectSchema),
+});
+export type MissionControlInventory = z.infer<typeof MissionControlInventorySchema>;
+
+// Models per provider: provider name → available model ids. Pure wire shape;
+// enrichment (labels, thinking options, role defaults) stays server-side.
+export const MissionControlModelsSchema = z.record(z.string(), z.array(z.string()));
+export type MissionControlModels = z.infer<typeof MissionControlModelsSchema>;
+
+// Roster entry: recent and running agents with their identity fields. All
+// identity fields optional so older daemons/records degrade gracefully.
+export const MissionControlContextAgentSummarySchema = z.object({
+  agentId: z.string(),
+  hostServerId: z.string(),
+  name: z.string().optional(),
+  title: z.string().nullable().optional(),
+  description: z.string().optional(),
+  status: z.string().optional(),
+});
+export type MissionControlContextAgentSummary = z.infer<
+  typeof MissionControlContextAgentSummarySchema
+>;
+
+export const MissionControlContextFetchRequestSchema = z.object({
+  type: z.literal("mission_control.context.fetch.request"),
+  requestId: z.string(),
+});
+export type MissionControlContextFetchRequest = z.infer<
+  typeof MissionControlContextFetchRequestSchema
+>;
+
+export const MissionControlContextFetchResponseSchema = z.object({
+  type: z.literal("mission_control.context.fetch.response"),
+  payload: z.object({
+    requestId: z.string(),
+    inventory: MissionControlInventorySchema,
+    models: MissionControlModelsSchema,
+    recentAgents: z.array(MissionControlContextAgentSummarySchema),
+  }),
+});
+export type MissionControlContextFetchResponse = z.infer<
+  typeof MissionControlContextFetchResponseSchema
+>;

@@ -44,20 +44,39 @@ export function generateEventId(): string {
 }
 
 /**
+ * Per-agent autopilot bookkeeping. Persisted so a daemon restart neither
+ * re-evaluates a finish that already produced a verdict nor forgets how many
+ * nudges a worker has burned through.
+ */
+export interface MissionControlAutopilotObservation {
+  nudgeCount: number;
+  lastEvaluatedSeq: number;
+  /**
+   * Finished-event ledger: the attention timestamp of the last evaluated
+   * finish. Each finish is uniquely identified by that timestamp, so a
+   * replayed agent_state for the same transition can never evaluate twice.
+   */
+  lastEvaluatedFinishedAt: string | null;
+}
+
+/**
  * Per-agent summarizer cursors. Persisted so a daemon restart does not resummarize
  * rows that were already consumed or repost a headline that was already posted.
  */
 export interface MissionControlObservation {
   lastTimelineSeq: number;
   lastSummarizerTs: string | null;
+  /** Timestamp of the agent's most recent self-reported event (report_milestone). */
+  lastSelfReportTs: string | null;
   lastEventByKind: Partial<Record<MissionControlEventKind, string>>;
+  autopilot?: MissionControlAutopilotObservation;
 }
 
 export interface MissionControlAppendInput {
   agentId: string;
   agentTitle: string;
   kind: MissionControlEventKind;
-  source: "system" | "summarizer";
+  source: "system" | "summarizer" | "self" | "autopilot";
   severity: "info" | "attention" | "blocker";
   headline: string;
   detail?: string;
@@ -169,12 +188,53 @@ export class MissionControlStore {
       }
       const lastTimelineSeq = value["lastTimelineSeq"];
       const lastSummarizerTs = value["lastSummarizerTs"];
+      const lastSelfReportTs = value["lastSelfReportTs"];
+      const autopilotRaw = value["autopilot"];
       this.observations.set(agentId, {
         lastTimelineSeq: typeof lastTimelineSeq === "number" ? lastTimelineSeq : -1,
         lastSummarizerTs: typeof lastSummarizerTs === "string" ? lastSummarizerTs : null,
+        lastSelfReportTs: typeof lastSelfReportTs === "string" ? lastSelfReportTs : null,
         lastEventByKind,
+        ...(isRecord(autopilotRaw)
+          ? {
+              autopilot: {
+                nudgeCount:
+                  typeof autopilotRaw["nudgeCount"] === "number" ? autopilotRaw["nudgeCount"] : 0,
+                lastEvaluatedSeq:
+                  typeof autopilotRaw["lastEvaluatedSeq"] === "number"
+                    ? autopilotRaw["lastEvaluatedSeq"]
+                    : -1,
+                lastEvaluatedFinishedAt:
+                  typeof autopilotRaw["lastEvaluatedFinishedAt"] === "string"
+                    ? autopilotRaw["lastEvaluatedFinishedAt"]
+                    : null,
+              },
+            }
+          : {}),
       });
     }
+  }
+
+  /**
+   * The live chain head for (agentId, kind): the last event of that kind that
+   * has not itself been superseded. Used for coalescing.
+   */
+  private previousEventFor(
+    agentId: string,
+    kind: MissionControlEventKind,
+  ): MissionControlEvent | undefined {
+    const previousId = this.getObservation(agentId).lastEventByKind[kind];
+    return previousId ? this.events.find((event) => event.id === previousId) : undefined;
+  }
+
+  /**
+   * Whether the next append for (agentId, kind) would coalesce: the previous
+   * event of that kind exists and is still unacked. The rate-limited
+   * self-report path allows a within-window report only when it coalesces.
+   */
+  wouldCoalesce(agentId: string, kind: MissionControlEventKind): boolean {
+    const previous = this.previousEventFor(agentId, kind);
+    return previous !== undefined && !this.ackedEventIds.has(previous.id);
   }
 
   /**
@@ -183,14 +243,13 @@ export class MissionControlStore {
    * and carries the running coalesced count.
    */
   async append(input: MissionControlAppendInput): Promise<MissionControlEvent> {
-    const previousId = this.getObservation(input.agentId).lastEventByKind[input.kind];
-    const previous = previousId ? this.events.find((event) => event.id === previousId) : undefined;
+    const previous = this.previousEventFor(input.agentId, input.kind);
     const coalesces = previous !== undefined && !this.ackedEventIds.has(previous.id);
     const event = MissionControlEventSchema.parse({
       id: generateEventId(),
       ts: new Date().toISOString(),
       ...input,
-      ...(coalesces
+      ...(coalesces && previous
         ? {
             supersedesId: previous.id,
             coalescedCount: (previous.coalescedCount ?? 0) + 1,
@@ -237,23 +296,42 @@ export class MissionControlStore {
       this.observations.get(agentId) ?? {
         lastTimelineSeq: -1,
         lastSummarizerTs: null,
+        lastSelfReportTs: null,
         lastEventByKind: {},
+        autopilot: { nudgeCount: 0, lastEvaluatedSeq: -1, lastEvaluatedFinishedAt: null },
       }
     );
   }
 
   updateObservation(
     agentId: string,
-    patch: Partial<Pick<MissionControlObservation, "lastTimelineSeq" | "lastSummarizerTs">> & {
+    patch: Partial<
+      Pick<MissionControlObservation, "lastTimelineSeq" | "lastSummarizerTs" | "lastSelfReportTs">
+    > & {
       lastEventByKind?: Partial<Record<MissionControlEventKind, string>>;
+      autopilot?: Partial<MissionControlAutopilotObservation>;
     },
   ): void {
     const current = this.getObservation(agentId);
     const next: MissionControlObservation = {
       lastTimelineSeq: patch.lastTimelineSeq ?? current.lastTimelineSeq,
       lastSummarizerTs: patch.lastSummarizerTs ?? current.lastSummarizerTs,
+      lastSelfReportTs: patch.lastSelfReportTs ?? current.lastSelfReportTs,
       lastEventByKind: { ...current.lastEventByKind, ...patch.lastEventByKind },
     };
+    if (patch.autopilot !== undefined) {
+      next.autopilot = {
+        nudgeCount: patch.autopilot.nudgeCount ?? current.autopilot?.nudgeCount ?? 0,
+        lastEvaluatedSeq:
+          patch.autopilot.lastEvaluatedSeq ?? current.autopilot?.lastEvaluatedSeq ?? -1,
+        lastEvaluatedFinishedAt:
+          patch.autopilot.lastEvaluatedFinishedAt ??
+          current.autopilot?.lastEvaluatedFinishedAt ??
+          null,
+      };
+    } else if (current.autopilot !== undefined) {
+      next.autopilot = current.autopilot;
+    }
     this.observations.set(agentId, next);
     this.persistTail = this.persistTail
       .then(() => this.persistObservations())

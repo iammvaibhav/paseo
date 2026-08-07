@@ -8,7 +8,7 @@
  */
 import type { Logger } from "pino";
 
-import type { AgentTimelineItem } from "./agent-sdk-types.js";
+import type { ImportedTimelineEntry } from "./agent-sdk-types.js";
 import { readClaudeTimelineFromDisk } from "./providers/claude-history.js";
 import { readGrokTimelineFromDisk } from "./providers/grok-history.js";
 import { readOmpTimelineFromDisk } from "./providers/omp/omp-history.js";
@@ -24,7 +24,7 @@ export interface DiskHistorySource {
 export async function tryReadProviderTimelineFromDisk(
   source: DiskHistorySource,
   options?: { logger?: Logger },
-): Promise<AgentTimelineItem[] | null> {
+): Promise<ImportedTimelineEntry[] | null> {
   const { provider, cwd, sessionId, nativeHandle } = source;
 
   if (provider === "omp") {
@@ -49,7 +49,8 @@ export async function tryReadProviderTimelineFromDisk(
 
   if (provider === "grok") {
     try {
-      return readGrokTimelineFromDisk({ cwd, sessionId });
+      const items = readGrokTimelineFromDisk({ cwd, sessionId });
+      return items?.map((item) => ({ item })) ?? null;
     } catch (error) {
       options?.logger?.warn({ err: error, sessionId, provider }, "Grok disk history read failed");
       return null;
@@ -57,7 +58,8 @@ export async function tryReadProviderTimelineFromDisk(
   }
 
   if (provider === "claude") {
-    return readClaudeTimelineFromDisk({ cwd, sessionId, logger: options?.logger });
+    const items = await readClaudeTimelineFromDisk({ cwd, sessionId, logger: options?.logger });
+    return items?.map((item) => ({ item })) ?? null;
   }
 
   return null;

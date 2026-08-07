@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useSessionStore } from "@/stores/session-store";
+import { isCommanderAgent } from "@/mission-control/labels";
 import { agentHistoryQueryKey, allAgentHistoryQueryRootKey } from "./agent-history-query-key";
 
 export const ARCHIVE_AGENT_PENDING_QUERY_KEY = ["archive-agent-pending"] as const;
@@ -416,6 +417,12 @@ export function useArchiveAgent() {
       const client = useSessionStore.getState().sessions[input.serverId]?.client ?? null;
       if (!client) {
         throw new Error(t("common.errors.daemonClientUnavailable"));
+      }
+      // The Commander (label `paseo.mission-control=*`) is never archivable
+      // from any UI surface — every affordance routes through this hook.
+      const agent = useSessionStore.getState().sessions[input.serverId]?.agents.get(input.agentId);
+      if (agent && isCommanderAgent(agent.labels)) {
+        throw new Error("The Commander cannot be archived");
       }
       return await client.archiveAgent(input.agentId);
     },

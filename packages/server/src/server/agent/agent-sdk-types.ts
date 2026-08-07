@@ -577,10 +577,23 @@ export interface AgentSessionConfig {
    */
   systemPrompt?: string;
   /**
+   * How `systemPrompt` is applied. "append" (default) layers it under the
+   * provider's coding harness; "replace" swaps the harness out entirely for
+   * the given prompt. Replace mode also skips the daemon-level append prompt.
+   */
+  systemPromptMode?: "append" | "replace";
+  /**
    * Daemon-level instructions appended at runtime. This is deliberately not
    * persisted into agent config so daemon setting changes apply cleanly.
    */
   daemonAppendSystemPrompt?: string;
+  /**
+   * Tool names the agent may call. When set, the provider restricts its tool
+   * surface to this list: provider-native (builtin) tools are filtered via the
+   * provider's own tool-selection flag, and Paseo host tools are filtered
+   * server-side before injection. Absent = unrestricted.
+   */
+  toolAllowlist?: string[];
   modeId?: string;
   model?: string;
   thinkingOptionId?: string;

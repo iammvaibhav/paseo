@@ -221,4 +221,39 @@ describe("buildWorkspaceStructureProjects", () => {
     expect(result).toHaveLength(1);
     expect(result[0].workspaceKeys).toEqual([]);
   });
+
+  test("hides the Commander's home-directory workspace", () => {
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [project({ id: "/Users/vaibhav", key: null, root: "/Users/vaibhav" })],
+          workspaces: [workspace("ws-home", "/Users/vaibhav", "/Users/vaibhav")],
+          agents: [{ workspaceId: "ws-home", labels: { "paseo.mission-control": "commander" } }],
+        },
+      ],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].workspaceKeys).toEqual([]);
+  });
+
+  test("keeps a home workspace visible when a Commander shares it with a regular agent", () => {
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [project({ id: "/Users/vaibhav", key: null, root: "/Users/vaibhav" })],
+          workspaces: [workspace("ws-home", "/Users/vaibhav", "/Users/vaibhav")],
+          agents: [
+            { workspaceId: "ws-home", labels: { "paseo.mission-control": "commander" } },
+            { workspaceId: "ws-home", labels: {} },
+          ],
+        },
+      ],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].workspaceKeys).toEqual(["host-a:ws-home"]);
+  });
 });

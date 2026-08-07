@@ -86,6 +86,9 @@ import {
 import { registerBrowserTools } from "../../browser-tools/tools.js";
 import type { BrowserToolsBroker } from "../../browser-tools/broker.js";
 import { buildPeerUnreachableError, type PeerManager } from "../../peers/peer-manager.js";
+import { hasMissionControlLabels } from "../../mission-control/naming.js";
+import type { MissionControlService } from "../../mission-control/service.js";
+import { MissionControlProofSchema } from "@getpaseo/protocol/mission-control/types";
 import type {
   PaseoToolCatalog,
   PaseoToolConfig,
@@ -129,8 +132,13 @@ export interface PaseoToolHostDependencies {
   browserToolsEnabled?: boolean;
   browserToolsBroker?: BrowserToolsBroker | null;
   peerManager?: PeerManager | null;
+  missionControlService?: MissionControlService | null;
   paseoHome?: string;
   worktreesRoot?: string;
+  /**
+   * This daemon's serverId, for building paseo://h/… deep links.
+   */
+  serverId?: string;
   /**
    * ID of the agent that is using this tool catalog.
    * Used for cwd/mode inheritance when agents spawn child agents.
@@ -506,6 +514,47 @@ const TerminalSummarySchema = z.object({
   cwd: z.string(),
 });
 
+const historySearchResultItemSchema = z.object({
+  agentId: z.string(),
+  name: z.string().optional(),
+  title: z.string().nullable().optional(),
+  description: z.string().optional(),
+  cwd: z.string(),
+  status: z.string(),
+  updatedAt: z.string(),
+  link: z.string().optional(),
+});
+
+type HistorySearchResultItem = z.infer<typeof historySearchResultItemSchema>;
+
+interface HistorySearchTarget {
+  name?: string;
+  title?: string | null;
+  shortDescription?: string;
+  cwd: string;
+}
+
+/**
+ * Multi-token case-insensitive metadata filter, mirroring the History Ask
+ * fuzzy matcher (packages/app/src/history-ask/fuzzy.ts): every whitespace-
+ * separated token must match at least one of title/name/description/cwd.
+ */
+function matchesHistorySearch(query: string, target: HistorySearchTarget): boolean {
+  const tokens = query
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((token) => token.length > 0);
+  if (tokens.length === 0) {
+    return false;
+  }
+  const fields = [target.title, target.name, target.shortDescription, target.cwd]
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim().toLowerCase())
+    .filter((value) => value.length > 0);
+  return tokens.every((token) => fields.some((field) => field.includes(token)));
+}
+
 function resolveTerminalKeyToken(key: string, literal: boolean): string {
   if (literal) {
     return key;
@@ -663,6 +712,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     resolveSpeakHandler,
     resolveCallerContext,
     peerManager,
+    missionControlService,
     logger,
   } = options;
   const childLogger = logger.child({ module: "agent", component: "paseo-tool-catalog" });
@@ -2094,7 +2144,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
 
       const structuredSnapshot = buildStoredAgentPayload(
         record,
-        new Set(providerSnapshotManager.listRegisteredProviderIds()),
+        new Set(agentManager.getRegisteredProviderIds()),
       );
       return {
         content: [],
@@ -2141,7 +2191,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       );
       const liveIds = new Set(liveSnapshots.map((snapshot) => snapshot.id));
       const storedRecords = await agentStorage.list();
-      const registeredProviderIds = new Set(providerSnapshotManager.listRegisteredProviderIds());
+      const registeredProviderIds = new Set(agentManager.getRegisteredProviderIds());
       const storedAgents = storedRecords
         .filter((record) => !record.internal && !liveIds.has(record.id))
         .filter((record) => includeArchived || !record.archivedAt)
@@ -3158,6 +3208,60 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   );
 
   registerTool(
+    "history_search",
+    {
+      title: "Search history",
+      description:
+        "Search stored agents on this daemon by title, name, description, or working directory. " +
+        "Every whitespace-separated query token must match at least one of those fields (case-insensitive substring). " +
+        "Use for 'have we done X before' questions; check the roster first.",
+      inputSchema: {
+        query: z.string().min(1),
+        sinceHours: z.number().int().positive().optional(),
+        limit: z.number().int().positive().max(50).optional().default(20),
+      },
+      outputSchema: {
+        results: z.array(historySearchResultItemSchema),
+      },
+    },
+    async ({ query, sinceHours, limit = 20 }) => {
+      const sinceMs = sinceHours !== undefined ? Date.now() - sinceHours * 60 * 60 * 1000 : null;
+      const records = await agentStorage.list();
+      const candidates = records
+        .filter((record) => !record.internal && !hasMissionControlLabels(record.labels))
+        .filter((record) => sinceMs === null || Date.parse(record.updatedAt) >= sinceMs)
+        .filter((record) => matchesHistorySearch(query, record))
+        .slice(0, limit);
+      const results: HistorySearchResultItem[] = [];
+      for (const record of candidates) {
+        const item: HistorySearchResultItem = {
+          agentId: record.id,
+          cwd: record.cwd,
+          status: record.lastStatus,
+          updatedAt: record.updatedAt,
+        };
+        if (record.name !== undefined) {
+          item.name = record.name;
+        }
+        if (record.title !== undefined) {
+          item.title = record.title;
+        }
+        if (record.shortDescription !== undefined) {
+          item.description = record.shortDescription;
+        }
+        if (options.serverId) {
+          item.link = `paseo://h/${options.serverId}/agent/${record.id}`;
+        }
+        results.push(item);
+      }
+      return {
+        content: [],
+        structuredContent: ensureValidJson({ results }),
+      };
+    },
+  );
+
+  registerTool(
     "set_agent_mode",
     {
       title: "Set agent session mode",
@@ -3241,6 +3345,62 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       return {
         content: [],
         structuredContent: ensureValidJson({ success: true }),
+      };
+    },
+  );
+
+  registerTool(
+    "report_milestone",
+    {
+      title: "Report milestone",
+      description:
+        "Report a real milestone to Mission Control: root cause found, a fix landed, tests green, blocked, or a changed approach. Report once per real milestone, never progress updates; parents report for their provider-internal subagents. Rate limited to one report per minute per agent.",
+      inputSchema: {
+        kind: z.enum(["finding", "milestone", "blocked", "diverged"]),
+        headline: z
+          .string()
+          .max(120)
+          .describe("Plain-language headline, at most 120 characters, no markdown."),
+        detail: z.string().optional().describe("Optional one or two sentence detail."),
+        proof: z
+          .array(MissionControlProofSchema)
+          .optional()
+          .describe("Optional evidence: URL, image, diff, or command references."),
+      },
+      outputSchema: {
+        ok: z.boolean(),
+        eventId: z.string().optional(),
+        reason: z.string().optional(),
+        error: z.string().optional(),
+      },
+    },
+    async ({ kind, headline, detail, proof }) => {
+      if (!callerAgentId) {
+        throw new Error("report_milestone requires an agent-scoped session");
+      }
+      if (!missionControlService) {
+        throw new Error("Mission Control is not enabled on this host");
+      }
+      const result = await missionControlService.reportSelfMilestone(callerAgentId, {
+        kind,
+        headline,
+        detail,
+        proof,
+      });
+      if (!result.ok) {
+        return {
+          content: [],
+          isError: true,
+          structuredContent: ensureValidJson({
+            ok: false,
+            reason: result.reason,
+            error: result.message,
+          }),
+        };
+      }
+      return {
+        content: [],
+        structuredContent: ensureValidJson({ ok: true, eventId: result.event.id }),
       };
     },
   );

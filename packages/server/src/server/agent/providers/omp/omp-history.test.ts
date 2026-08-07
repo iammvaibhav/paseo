@@ -53,14 +53,16 @@ describe("OMP offline disk history", () => {
 
     await expect(readOmpTimelineFromDisk({ sessionFile })).resolves.toEqual([
       {
-        type: "user_message",
-        text: "hello offline",
-        messageId: "user-1",
+        item: { type: "user_message", text: "hello offline", messageId: "user-1" },
+        timestamp: "2026-07-29T00:00:01.000Z",
       },
       {
-        type: "assistant_message",
-        text: "hi from disk",
-        messageId: "omp-history-assistant-1",
+        item: {
+          type: "assistant_message",
+          text: "hi from disk",
+          messageId: "omp-history-assistant-1",
+        },
+        timestamp: "2026-07-29T00:00:02.000Z",
       },
     ]);
   });
@@ -100,9 +102,8 @@ describe("OMP offline disk history", () => {
       }),
     ).resolves.toEqual([
       {
-        type: "user_message",
-        text: "seed me",
-        messageId: "user-seed",
+        item: { type: "user_message", text: "seed me", messageId: "user-seed" },
+        timestamp: "2026-07-29T00:00:01.000Z",
       },
     ]);
   });

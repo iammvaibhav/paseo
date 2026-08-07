@@ -178,6 +178,25 @@ const MissionControlSummarizerConfigSchema = z
     model: z.string().default("extract"),
     minNewItems: z.number().int().positive().default(12),
     debounceSeconds: z.number().int().positive().default(30),
+    // Summarizer judgment backend. "omp" shells a local omp invocation instead
+    // of the LLM gateway (blrofc3 compliance: gateway never sees provider keys).
+    backend: z.enum(["gateway", "omp"]).default("gateway"),
+  })
+  .strict();
+
+const MissionControlAutopilotConfigSchema = z
+  .object({
+    // Evaluate-and-act on worker completion. "off" (default, safety first):
+    // inert. "observe": verdict cards only. "act": also sends bounded nudges.
+    mode: z.enum(["off", "observe", "act"]).default("off"),
+    // Evaluator model tier alias; absent resolves per backend (gateway "smart",
+    // omp "@slow"). The Commander's own model stays separately configurable.
+    model: z.string().nullable().optional(),
+    // Which finished agents the evaluator considers: the Commander's workers
+    // (default) or every non-mission-control agent.
+    scope: z.enum(["commander-spawned", "all"]).default("commander-spawned"),
+    // Bounded nudges per agent; a nudge verdict at the cap escalates instead.
+    maxNudgesPerAgent: z.number().int().positive().default(2),
   })
   .strict();
 
@@ -191,6 +210,34 @@ const MissionControlConfigSchema = z
     // field-level defaults (partial configs normalize) and MissionControlService's
     // `readConfig()` applies the same defaults when the whole section is absent.
     summarizer: MissionControlSummarizerConfigSchema.optional(),
+    autopilot: MissionControlAutopilotConfigSchema.optional(),
+    // Self-reporting kill-switch: when false, the report_milestone prompt
+    // paragraph is not injected into agent system prompts (default true).
+    selfReport: z
+      .object({
+        enabled: z.boolean().default(true),
+      })
+      .strict()
+      .optional(),
+    // Identity: naming theme for the daemon naming service; "mixed" default lives
+    // server-side (mission-control/naming.ts).
+    naming: z
+      .object({
+        theme: z
+          .enum(["mixed", "indian", "cartoon", "scientists", "astronauts", "mythology", "nature"])
+          .optional(),
+      })
+      .strict()
+      .optional(),
+    // Commander dispatch: preferred host when the Commander routes work. Null
+    // (default) means the Commander decides from the fleet map.
+    defaultHost: z.string().nullable().optional(),
+    // Friendly aliases for peer host names ("blrofc3": "work server"), used in
+    // the Commander's fleet map.
+    hostAliases: z.record(z.string(), z.string()).optional(),
+    // Commander contract/instructions overridden from Settings; defaults to the
+    // shipped DEFAULT_COMMANDER_CONTRACT server-side.
+    commanderInstructions: z.string().optional(),
   })
   .strict();
 

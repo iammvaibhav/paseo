@@ -31,9 +31,13 @@ function createOmpChild(): OmpChild {
   return child;
 }
 
-function createRuntime(child: OmpChild, launches: OmpRuntimeLaunch[] = []): OmpCliRuntime {
+function createRuntime(
+  child: OmpChild,
+  launches: OmpRuntimeLaunch[] = [],
+  logger: pino.Logger = pino({ level: "silent" }),
+): OmpCliRuntime {
   return new OmpCliRuntime({
-    logger: pino({ level: "silent" }),
+    logger,
     command: ["omp"],
     commandsRpcName: "get_available_commands",
     spawnProcess: (launch) => {
@@ -138,6 +142,48 @@ describe("OMP CLI runtime", () => {
     child.stdout.write(`${JSON.stringify({ type: "notice", level: "info", message: "ready" })}\n`);
 
     expect(eventTypes).toEqual(["notice"]);
+  });
+
+  test("logs omp.rpc.schema_drop when a frame fails schema validation", async () => {
+    const child = createOmpChild();
+    const warnings: Array<{ msg: string; frameType?: string }> = [];
+    const logger = pino(
+      { level: "warn" },
+      {
+        write(line: string) {
+          const parsed = JSON.parse(line) as { msg: string; frameType?: string };
+          warnings.push(parsed);
+        },
+      },
+    );
+    const session = await createRuntime(child, [], logger).startSession({
+      cwd: "/workspace/project",
+    });
+    const eventTypes: string[] = [];
+    session.onEvent((event) => eventTypes.push(event.type));
+
+    // agent_end with a malformed messages entry fails OmpAgentMessageSchema.
+    child.stdout.write(
+      `${JSON.stringify({
+        type: "agent_end",
+        messages: [{ role: "assistant", content: [{ type: "text", text: "ok" }] }],
+      })}\n`,
+    );
+    child.stdout.write(
+      `${JSON.stringify({
+        type: "agent_end",
+        messages: [{ role: "assistant", content: [{ type: "mystery_block", data: 1 }] }],
+      })}\n`,
+    );
+
+    await vi.waitFor(() => expect(warnings.length).toBeGreaterThan(0));
+
+    expect(warnings[0]).toMatchObject({
+      msg: "omp.rpc.schema_drop",
+      frameType: "agent_end",
+    });
+    // The malformed frame is dropped, the valid one still emits.
+    expect(eventTypes).toEqual(["agent_end"]);
   });
 
   test("negotiates RPC protocol v2 when the ready handshake advertises it", async () => {

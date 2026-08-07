@@ -79,6 +79,8 @@ export function toStoredAgentRecord(
     lastActivityAt: agent.updatedAt.toISOString(),
     lastUserMessageAt: agent.lastUserMessageAt ? agent.lastUserMessageAt.toISOString() : null,
     title: options?.title ?? null,
+    ...(agent.name !== undefined ? { name: agent.name } : {}),
+    ...(agent.shortDescription !== undefined ? { shortDescription: agent.shortDescription } : {}),
     labels: agent.labels,
     lastStatus: agent.lifecycle,
     lastModeId: agent.currentModeId ?? config?.modeId ?? null,
@@ -134,6 +136,8 @@ export function toAgentPayload(
     pendingPermissions: sanitizePendingPermissions(agent.pendingPermissions),
     persistence: projectPersistenceHandleForWire(agent.persistence),
     title: options?.title ?? null,
+    ...(agent.name !== undefined ? { name: agent.name } : {}),
+    ...(agent.shortDescription !== undefined ? { shortDescription: agent.shortDescription } : {}),
     labels: agent.labels,
   };
 
@@ -239,6 +243,8 @@ export function buildStoredAgentPayload(
     pendingPermissions: [],
     persistence,
     title: record.title ?? null,
+    ...(record.name !== undefined ? { name: record.name } : {}),
+    ...(record.shortDescription !== undefined ? { shortDescription: record.shortDescription } : {}),
     requiresAttention: record.requiresAttention ?? false,
     attentionReason: record.attentionReason ?? null,
     attentionTimestamp: record.attentionTimestamp ?? null,
@@ -327,6 +333,12 @@ function buildSerializableConfig(config: AgentSessionConfig): SerializableAgentC
   }
   if (config.systemPrompt) {
     serializable.systemPrompt = config.systemPrompt;
+  }
+  if (config.systemPromptMode) {
+    serializable.systemPromptMode = config.systemPromptMode;
+  }
+  if (config.toolAllowlist?.length) {
+    serializable.toolAllowlist = config.toolAllowlist;
   }
   if (config.mcpServers) {
     serializable.mcpServers = config.mcpServers;

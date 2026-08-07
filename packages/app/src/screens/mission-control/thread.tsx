@@ -37,21 +37,54 @@ import { useStableEvent } from "@/hooks/use-stable-event";
 import { useHostRuntimeClient } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
 import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
-import type { StreamItem } from "@/types/stream";
+import type { AgentToolCallData, StreamItem } from "@/types/stream";
 import {
   createWorkspaceFileTabTarget,
   normalizeWorkspaceFileLocation,
 } from "@/workspace/file-open";
+import {
+  loadScrollRestoreStates,
+  saveScrollRestoreState,
+  type CommanderScrollRestoreState,
+} from "@/mission-control/scroll-restore-store";
 import { FeedCard, type FeedCardEvent } from "./feed-card";
+import { MutedSystemRow } from "./muted-system-row";
+import { isPaseoSystemMessage, PaseoSystemRow } from "./paseo-system-row";
 
 const THREAD_ANCHOR_ID = "mission-control-thread";
 const THREAD_INITIAL_REQUEST_KEY = "mission-control-thread-initial";
 const THREAD_CONTAINER_KEY = "mission-control-thread";
 const NEAR_BOTTOM_THRESHOLD = 32;
 const EMPTY_STREAM_ITEMS: StreamItem[] = [];
+/** Hard cap for the scroll-restore application window during hydration. */
+const RESTORE_DEADLINE_MS = 8_000;
 
 const ThemedChevronDown = withUnistyles(ChevronDown);
-const accentForegroundMapping = (theme: Theme) => ({ color: theme.colors.accentForeground });
+const foregroundMapping = (theme: Theme) => ({ color: theme.colors.foreground });
+
+// Bracket-prefixed provider fallback records ("[credential_pin] Unsupported
+// history record", "[developer] developer note") are plumbing, not prose.
+const BRACKET_PLUMBING_PATTERN = /^\[[a-z][a-z0-9_]*\]\s/;
+const OMP_NOTICE_SOURCES = new Set(["omp_notice", "omp_system_notice"]);
+
+function isPlumbingAssistantText(text: string): boolean {
+  return BRACKET_PLUMBING_PATTERN.test(text.trimStart());
+}
+
+function isOmpNoticeToolCall(data: AgentToolCallData): boolean {
+  const source = data.metadata?.source;
+  return (
+    data.name === "omp_notice" || (typeof source === "string" && OMP_NOTICE_SOURCES.has(source))
+  );
+}
+
+function ompNoticeMessage(data: AgentToolCallData): string {
+  const detail = data.detail;
+  if (detail.type === "plain_text") {
+    return detail.label || detail.text || data.name;
+  }
+  return data.name;
+}
 
 type ThreadRow =
   | { kind: "event"; event: FeedCardEvent; ts: number }
@@ -74,6 +107,12 @@ function CommanderMessageRow({
 }: CommanderMessageRowProps): ReactElement | null {
   switch (item.kind) {
     case "user_message":
+      // `<paseo-system>` envelopes (fleet digests, schedule fires, notify-on-
+      // finish) must never render as raw user prose — they become a collapsed
+      // divider row that expands into the formatted digest.
+      if (isPaseoSystemMessage(item.text)) {
+        return <PaseoSystemRow text={item.text} timestamp={item.timestamp.getTime()} />;
+      }
       return (
         <UserMessage
           serverId={serverId}
@@ -87,6 +126,12 @@ function CommanderMessageRow({
         />
       );
     case "assistant_message":
+      // Unknown provider history records fall through as bracket-prefixed
+      // plumbing text ("[credential_pin] Unsupported history record"). They
+      // carry no conversation value — drop them entirely.
+      if (isPlumbingAssistantText(item.text)) {
+        return null;
+      }
       return (
         <AssistantMessage
           occurrenceKey={item.id}
@@ -108,6 +153,13 @@ function CommanderMessageRow({
     case "tool_call":
       if (item.payload.source === "agent") {
         const data = item.payload.data;
+        // OMP provider notices (quota warnings, task-result notices) render as
+        // muted one-line system rows, never as inline tool-call prose.
+        if (isOmpNoticeToolCall(data)) {
+          return (
+            <MutedSystemRow message={ompNoticeMessage(data)} timestamp={item.timestamp.getTime()} />
+          );
+        }
         return (
           <ToolCall
             toolName={data.name}
@@ -156,11 +208,19 @@ export interface MissionControlCommander {
 interface MissionControlThreadProps {
   events: FeedCardEvent[];
   commander: MissionControlCommander | null;
+  /**
+   * False when the owning screen lost navigation focus while staying mounted
+   * (web keeps route screens mounted/hidden). Scroll state is persisted on the
+   * focus-out transition, because react-native-screens web remounts the thread
+   * on the next visit without ever running unmount cleanups.
+   */
+  isFocused: boolean;
 }
 
 export function MissionControlThread({
   events,
   commander,
+  isFocused,
 }: MissionControlThreadProps): ReactElement {
   const client = useHostRuntimeClient(commander?.serverId ?? "");
   const commanderAgent = useSessionStore((state) =>
@@ -195,6 +255,9 @@ export function MissionControlThread({
   const programmaticScrollEventBudgetRef = useRef(0);
   const isUserScrollActiveRef = useRef(false);
   const userScrollEndFrameIdRef = useRef<number | null>(null);
+  // Armed while a mid-history scroll restore owns the landing position; gates
+  // the initial-entry route request so it cannot yank the restored viewport.
+  const [midHistoryRestoreArmed, setMidHistoryRestoreArmed] = useState(false);
   const streamViewportMetricsRef = useRef({
     containerKey: THREAD_CONTAINER_KEY,
     contentHeight: 0,
@@ -264,20 +327,23 @@ export function MissionControlThread({
   }, [commanderRows, eventRows]);
 
   const hasAnyRow = rows.length > 0;
+  const anchorAgentId = commander ? `${THREAD_ANCHOR_ID}:${commander.serverId}` : THREAD_ANCHOR_ID;
   const routeRequest = useMemo<BottomAnchorRouteRequest | null>(
     () =>
-      hasAnyRow
+      // A mid-history restore owns the landing position; the initial-entry
+      // anchor would otherwise yank the restored viewport to the live tail.
+      hasAnyRow && !midHistoryRestoreArmed
         ? {
             reason: "initial-entry",
             agentId: THREAD_ANCHOR_ID,
-            requestKey: THREAD_INITIAL_REQUEST_KEY,
+            requestKey: `${THREAD_INITIAL_REQUEST_KEY}:${commander?.serverId ?? ""}:${commander?.agentId ?? ""}`,
           }
         : null,
-    [hasAnyRow],
+    [commander, hasAnyRow, midHistoryRestoreArmed],
   );
 
   const bottomAnchorController = useBottomAnchorController({
-    agentId: THREAD_ANCHOR_ID,
+    agentId: anchorAgentId,
     routeRequest,
     isAuthoritativeHistoryReady: true,
     renderStrategy: "forward-list",
@@ -294,6 +360,16 @@ export function MissionControlThread({
       const maxOffset = Math.max(0, metrics.contentHeight - metrics.viewportHeight);
       programmaticScrollEventBudgetRef.current = 3;
       flatListRef.current?.scrollToOffset({ offset: maxOffset, animated });
+      // Mirror what the resulting scroll event will report before the reflow
+      // lands, so the sticky verification never races an event-less or laggy
+      // scrollToOffset and leaves the tail un-followed.
+      if (metrics.offsetY !== maxOffset) {
+        streamViewportMetricsRef.current = { ...metrics, offsetY: maxOffset };
+      }
+      bottomAnchorController.handleScrollNearBottomChange({
+        nextIsNearBottom: true,
+        scrollDelta: 0,
+      });
     },
   });
 
@@ -351,6 +427,13 @@ export function MissionControlThread({
     }
 
     const nearBottom = isScrollEventNearBottom(event);
+    // Wheel/trackpad scrolling never fires the drag events the controller
+    // reattaches on. When the user rolls back down to the bottom while
+    // detached, re-latch follow the same way a drag ending at the bottom does.
+    if (nearBottom && modeRef.current === "detached" && !isUserScrollActiveRef.current) {
+      bottomAnchorController.endUserScroll({ isNearBottom: true });
+      return;
+    }
     bottomAnchorController.handleScrollNearBottomChange({
       nextIsNearBottom: nearBottom,
       scrollDelta: contentOffset.y - previousOffsetY,
@@ -360,6 +443,11 @@ export function MissionControlThread({
   const handleScrollBeginDrag = useStableEvent(
     (_event: NativeSyntheticEvent<NativeScrollEvent>) => {
       isUserScrollActiveRef.current = true;
+      // A drag is user intent: never let the programmatic-scroll budget keep
+      // swallowing the user's own scroll events, and drop any restore still
+      // waiting out hydration — the user is choosing their own position.
+      programmaticScrollEventBudgetRef.current = 0;
+      clearPendingRestore();
       bottomAnchorController.beginUserScroll();
     },
   );
@@ -375,6 +463,7 @@ export function MissionControlThread({
   });
 
   const handleMomentumScrollBegin = useStableEvent(() => {
+    programmaticScrollEventBudgetRef.current = 0;
     if (userScrollEndFrameIdRef.current !== null) {
       cancelAnimationFrame(userScrollEndFrameIdRef.current);
       userScrollEndFrameIdRef.current = null;
@@ -396,6 +485,199 @@ export function MissionControlThread({
     },
   );
 
+  // Scroll restore: per-host persisted position (or the live bottom for first
+  // visits), applied deterministically instead of racing hydration. The
+  // initial-entry route request drives sticky-bottom mode, but its frame-based
+  // verification swallows rapid content-size changes while the thread hydrates
+  // (observed: the anchor chases 830 -> 3692 and then strands the viewport
+  // mid-history). So the restore target is re-applied on every content change
+  // until the thread has hydrated to (at least) the height the user left, or a
+  // deadline elapses — whichever comes first guarantees the correct landing.
+  const restoreServerIdRef = useRef<string | null>(null);
+  const restorePendingRef = useRef<CommanderScrollRestoreState | null>(null);
+  const restoreDeadlineRef = useRef(0);
+  const restoreApplyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearPendingRestore = useCallback(() => {
+    restorePendingRef.current = null;
+    clearTimeout(restoreApplyTimerRef.current ?? undefined);
+    restoreApplyTimerRef.current = null;
+  }, []);
+
+  const scheduleRestoreApply = useStableEvent(() => {
+    if (!restorePendingRef.current) {
+      return;
+    }
+    clearTimeout(restoreApplyTimerRef.current ?? undefined);
+    restoreApplyTimerRef.current = null;
+    const delay = Math.min(400, Math.max(0, restoreDeadlineRef.current - Date.now()));
+    restoreApplyTimerRef.current = setTimeout(() => {
+      restoreApplyTimerRef.current = null;
+      applyRestore();
+    }, delay);
+  });
+
+  // Applies the pending restore target to the current list metrics. Stays
+  // armed (re-applying on later content-size changes) until the content has
+  // hydrated to the saved height or the restore deadline elapses.
+  const applyRestore = useStableEvent(() => {
+    const pending = restorePendingRef.current;
+    if (!pending) {
+      return;
+    }
+    const metrics = streamViewportMetricsRef.current;
+    if (
+      metrics.viewportMeasuredForKey !== metrics.containerKey ||
+      metrics.contentMeasuredForKey !== metrics.containerKey ||
+      metrics.contentHeight <= 0 ||
+      metrics.viewportHeight <= 0
+    ) {
+      scheduleRestoreApply();
+      return;
+    }
+    const maxOffset = Math.max(0, metrics.contentHeight - metrics.viewportHeight);
+    const restoredOffset = pending.atBottom
+      ? maxOffset
+      : Math.min(
+          Math.max(
+            0,
+            pending.contentHeight > 0
+              ? Math.round(pending.offsetY * (metrics.contentHeight / pending.contentHeight))
+              : pending.offsetY,
+          ),
+          maxOffset,
+        );
+    programmaticScrollEventBudgetRef.current = 3;
+    flatListRef.current?.scrollToOffset({ offset: restoredOffset, animated: false });
+    scrollOffsetYRef.current = restoredOffset;
+    streamViewportMetricsRef.current = { ...metrics, offsetY: restoredOffset };
+    if (pending.atBottom) {
+      // The restore landed on the live tail: keep follow engaged so later
+      // streaming stays anchored.
+      bottomAnchorController.handleScrollNearBottomChange({
+        nextIsNearBottom: true,
+        scrollDelta: 0,
+      });
+    } else {
+      // Restored position is mid-history by definition — never let the
+      // controller re-yank to the live tail.
+      bottomAnchorController.detachByUser();
+    }
+    const deadlinePassed = Date.now() >= restoreDeadlineRef.current;
+    const hydratedToSaved =
+      pending.contentHeight > 0 && metrics.contentHeight >= pending.contentHeight * 0.95;
+    if (deadlinePassed || hydratedToSaved) {
+      restorePendingRef.current = null;
+      return;
+    }
+    // Still hydrating: stay armed so the next content-size change re-applies.
+    scheduleRestoreApply();
+  });
+
+  const serverId = commander?.serverId ?? null;
+  useEffect(() => {
+    if (!serverId) {
+      return;
+    }
+    if (restoreServerIdRef.current === serverId) {
+      return;
+    }
+    restoreServerIdRef.current = serverId;
+    clearPendingRestore();
+    restoreDeadlineRef.current = Date.now() + RESTORE_DEADLINE_MS;
+    let cancelled = false;
+    void loadScrollRestoreStates()
+      .then((states) => {
+        if (cancelled) {
+          return;
+        }
+        const state = states[serverId] ?? null;
+        // First-ever visit (no stored state), "left at the bottom", and a
+        // recreated commander on the same host all restore to the live tail —
+        // armed as a pending bottom target so hydration cannot strand the
+        // viewport mid-history (the initial-entry route request alone races
+        // hydration). A mid-history position from the same commander restores
+        // verbatim (scaled by content height).
+        if (state && !state.atBottom && (!state.agentId || state.agentId === commander?.agentId)) {
+          restorePendingRef.current = state;
+          setMidHistoryRestoreArmed(true);
+        } else {
+          restorePendingRef.current = {
+            serverId,
+            atBottom: true,
+            offsetY: 0,
+            contentHeight: state?.contentHeight ?? 0,
+            viewportHeight: state?.viewportHeight ?? 0,
+          };
+        }
+        return scheduleRestoreApply();
+      })
+      .catch(() => {
+        // Storage read failure falls back to bottom-anchored (no pending).
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [clearPendingRestore, commander?.agentId, scheduleRestoreApply, serverId]);
+
+  // Snapshot the current scroll state for a commander host. Reads live refs, so
+  // it is safe to call from any effect that runs after the last scroll.
+  const persistScrollPosition = useCallback((targetServerId: string, targetAgentId: string) => {
+    const metrics = streamViewportMetricsRef.current;
+    const atBottom =
+      modeRef.current === "sticky-bottom" ||
+      metrics.offsetY + metrics.viewportHeight >= metrics.contentHeight - NEAR_BOTTOM_THRESHOLD;
+    void saveScrollRestoreState({
+      serverId: targetServerId,
+      agentId: targetAgentId,
+      atBottom,
+      offsetY: scrollOffsetYRef.current,
+      contentHeight: metrics.contentHeight,
+      viewportHeight: metrics.viewportHeight,
+    });
+  }, []);
+
+  // Persist where the user left, keyed by commander host, when the thread goes
+  // away (navigation, host switch, compact-panel swap). Keyed on the stable
+  // identity string, not the object: session hydration re-creates the
+  // `commander` object every few ms on first load, and tearing down on that
+  // churn would snapshot half-hydrated scroll metrics into storage.
+  const commanderRef = useRef(commander);
+  commanderRef.current = commander;
+  const commanderIdentity = commander ? `${commander.serverId}:${commander.agentId}` : "";
+  useEffect(() => {
+    const current = commanderRef.current;
+    if (!current) {
+      return;
+    }
+    const savedServerId = current.serverId;
+    const savedAgentId = current.agentId;
+    return () => {
+      persistScrollPosition(savedServerId, savedAgentId);
+    };
+  }, [commanderIdentity, persistScrollPosition]);
+
+  // On web the route screen blurs but stays mounted (react-native-screens
+  // remounts it on the next visit without running unmount cleanups), so the
+  // focus-out transition is the reliable "user left" signal.
+  const lastFocusedRef = useRef(isFocused);
+  useEffect(() => {
+    const wasFocused = lastFocusedRef.current;
+    lastFocusedRef.current = isFocused;
+    if (!wasFocused || isFocused || !commander) {
+      return;
+    }
+    persistScrollPosition(commander.serverId, commander.agentId);
+  }, [commander, isFocused, persistScrollPosition]);
+
+  // Drop any in-flight restore scheduling when the thread goes away.
+  useEffect(() => {
+    return () => {
+      clearTimeout(restoreApplyTimerRef.current ?? undefined);
+      restoreApplyTimerRef.current = null;
+    };
+  }, []);
+
   const handleListLayout = useStableEvent((event: LayoutChangeEvent) => {
     const previousViewportWidth = streamViewportMetricsRef.current.viewportWidth;
     const previousViewportHeight = streamViewportMetricsRef.current.viewportHeight;
@@ -414,6 +696,7 @@ export function MissionControlThread({
       previousViewportHeight,
       viewportHeight,
     });
+    scheduleRestoreApply();
   });
 
   const handleContentSizeChange = useStableEvent((_width: number, height: number) => {
@@ -429,6 +712,7 @@ export function MissionControlThread({
       previousContentHeight,
       contentHeight: nextContentHeight,
     });
+    scheduleRestoreApply();
   });
 
   const renderItem = useStableEvent(({ item }: ListRenderItemInfo<ThreadRow>): ReactElement => {
@@ -486,7 +770,7 @@ export function MissionControlThread({
               testID="mission-control-new-pill"
             >
               <Text style={styles.newPillText}>{pendingNewCount} new</Text>
-              <ThemedChevronDown size={14} uniProps={accentForegroundMapping} />
+              <ThemedChevronDown size={14} uniProps={foregroundMapping} />
             </Pressable>
           ) : null}
         </View>
@@ -503,7 +787,12 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
   },
   listContent: {
-    paddingVertical: theme.spacing[3],
+    paddingVertical: theme.spacing[4],
+    // Match AgentStreamView's horizontal gutters.
+    paddingHorizontal: {
+      xs: theme.spacing[3],
+      md: theme.spacing[4],
+    },
   },
   newPill: {
     position: "absolute",
@@ -513,14 +802,17 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[1],
     borderRadius: 999,
-    backgroundColor: theme.colors.accent,
+    backgroundColor: theme.colors.surface2,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.accent,
     paddingHorizontal: theme.spacing[3],
     paddingVertical: theme.spacing[1],
+    ...theme.shadow.sm,
   },
   newPillText: {
     fontFamily: theme.fontFamily.ui,
     fontSize: theme.fontSize.sm,
     fontWeight: theme.fontWeight.medium,
-    color: theme.colors.accentForeground,
+    color: theme.colors.foreground,
   },
 }));

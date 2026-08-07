@@ -171,10 +171,12 @@ import { shouldSeedEmptyWorkspaceDraft } from "@/screens/workspace/workspace-emp
 import {
   buildBulkCloseConfirmationMessage,
   type BulkCloseConfirmationLabels,
+  type BulkClosableTabGroups,
   classifyBulkClosableTabs,
   closeBulkWorkspaceTabs,
 } from "@/screens/workspace/workspace-bulk-close";
 import { resolveCloseAgentTabPolicy } from "@/subagents";
+import { isCommanderAgent } from "@/mission-control/labels";
 import {
   getPanelInstanceAttributes,
   useModifiedPanelTabIds,
@@ -3324,6 +3326,26 @@ function WorkspaceScreenContent({
       }
 
       const groups = classifyBulkClosableTabs(tabsToClose);
+      // The Commander (label `paseo.mission-control=*`) is never archivable:
+      // its tabs close layout-only, so count them as plain tabs, not agents.
+      const guardedGroups: BulkClosableTabGroups = {
+        agentTabs: [],
+        terminalTabs: groups.terminalTabs,
+        otherTabs: [...groups.otherTabs],
+      };
+      for (const agentTab of groups.agentTabs) {
+        const agent =
+          useSessionStore.getState().sessions[normalizedServerId]?.agents.get(agentTab.agentId) ??
+          null;
+        if (isCommanderAgent(agent?.labels)) {
+          guardedGroups.otherTabs.push({
+            tabId: agentTab.tabId,
+            target: { kind: "agent", agentId: agentTab.agentId },
+          });
+        } else {
+          guardedGroups.agentTabs.push(agentTab);
+        }
+      }
       const modifiedCount = tabsToClose.filter(
         (tab) =>
           getPanelInstanceAttributes({
@@ -3332,7 +3354,10 @@ function WorkspaceScreenContent({
             tabId: tab.tabId,
           }).modified,
       ).length;
-      const bulkMessage = buildBulkCloseConfirmationMessage(groups, bulkCloseConfirmationLabels);
+      const bulkMessage = buildBulkCloseConfirmationMessage(
+        guardedGroups,
+        bulkCloseConfirmationLabels,
+      );
       const confirmed = await confirmDialog({
         title,
         message:
@@ -3349,7 +3374,7 @@ function WorkspaceScreenContent({
 
       await closeBulkWorkspaceTabs({
         client,
-        groups,
+        groups: guardedGroups,
         closeTab,
         closeWorkspaceTabWithCleanup: (cleanupInput) => {
           if (!persistenceKey) {

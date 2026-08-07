@@ -38,6 +38,8 @@ export interface OmpStartSessionInput {
   session?: string;
   noSession?: boolean;
   systemPrompt?: string;
+  systemPromptMode?: "append" | "replace";
+  toolAllowlist?: string[];
   extraArgs?: string[];
 }
 
@@ -148,9 +150,67 @@ function appendOmpLaunchArgs(
     argv.push("--session", session.session);
   }
   if (systemPrompt) {
-    argv.push("--append-system-prompt", systemPrompt);
+    // `--system-prompt` replaces omp's coding harness entirely (renders
+    // custom-system-prompt.md); `--append-system-prompt` layers under it.
+    if (session.systemPromptMode === "replace") {
+      argv.push("--system-prompt", systemPrompt);
+    } else {
+      argv.push("--append-system-prompt", systemPrompt);
+    }
+  }
+  if (session.toolAllowlist?.length) {
+    // omp's `--tools` is the selective allowlist, but it only accepts builtin
+    // tool names (validation at parse time throws on anything else). Paseo
+    // host tools are injected over RPC and filtered server-side; when the
+    // allowlist holds no builtin names, `--no-tools` drops every builtin so
+    // only the allowlisted host tools remain.
+    const builtinTools = session.toolAllowlist.filter((name) => OMP_BUILTIN_TOOL_NAMES.has(name));
+    if (builtinTools.length > 0) {
+      argv.push("--tools", builtinTools.join(","));
+    } else {
+      argv.push("--no-tools");
+    }
   }
 }
+
+/**
+ * omp's builtin tool names (`--tools` accepts only these; mirrors
+ * `@oh-my-pi/pi-coding-agent/src/tools/builtin-names.ts`). Keep in sync when
+ * omp adds or removes a builtin.
+ */
+const OMP_BUILTIN_TOOL_NAMES = new Set([
+  "read",
+  "bash",
+  "edit",
+  "ast_grep",
+  "ast_edit",
+  "ask",
+  "debug",
+  "eval",
+  "github",
+  "glob",
+  "grep",
+  "lsp",
+  "inspect_image",
+  "browser",
+  "computer",
+  "checkpoint",
+  "rewind",
+  "security_scan",
+  "task",
+  "hub",
+  "todo",
+  "web_search",
+  "write",
+  "memory_edit",
+  "retain",
+  "recall",
+  "reflect",
+  "learn",
+  "manage_skill",
+  "yield",
+  "goal",
+]);
 
 function hasModeFlag(argv: string[]): boolean {
   for (let i = 0; i < argv.length; i += 1) {

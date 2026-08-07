@@ -22,6 +22,7 @@ import { getProviderIcon } from "@/components/provider-icons";
 import { openAgentFromHistory } from "@/workspace/open-agent-from-history";
 import { useArchiveAgent } from "@/hooks/use-archive-agent";
 import { isHistoryAskAgent } from "@/history-ask";
+import { isCommanderAgent } from "@/mission-control/labels";
 interface AgentListProps {
   agents: AggregatedAgent[];
   showCheckoutInfo?: boolean;
@@ -409,6 +410,11 @@ export function AgentList({
 
   const handleAgentLongPress = useCallback(
     (agent: AggregatedAgent) => {
+      // The Commander (label `paseo.mission-control=*`) is never archivable
+      // from any UI surface.
+      if (isCommanderAgent(agent.labels)) {
+        return;
+      }
       const isRunning = agent.status === "running";
       if (isRunning) {
         setActionAgent(agent);
@@ -431,6 +437,10 @@ export function AgentList({
 
   const handleArchiveAgent = useCallback(() => {
     if (!actionAgent || !actionClient) {
+      return;
+    }
+    if (isCommanderAgent(actionAgent.labels)) {
+      setActionAgent(null);
       return;
     }
     // Timeout errors are swallowed — the daemon will still process the archive
@@ -558,14 +568,16 @@ export function AgentList({
               >
                 <Text style={styles.sheetCancelText}>{t("common.actions.cancel")}</Text>
               </Pressable>
-              <Pressable
-                disabled={isActionDaemonUnavailable}
-                style={[styles.sheetButton, styles.sheetArchiveButton]}
-                onPress={handleArchiveAgent}
-                testID="agent-action-archive"
-              >
-                <Text style={sheetArchiveTextStyle}>{t("agentList.archiveSheet.archive")}</Text>
-              </Pressable>
+              {actionAgent && isCommanderAgent(actionAgent.labels) ? null : (
+                <Pressable
+                  disabled={isActionDaemonUnavailable}
+                  style={[styles.sheetButton, styles.sheetArchiveButton]}
+                  onPress={handleArchiveAgent}
+                  testID="agent-action-archive"
+                >
+                  <Text style={sheetArchiveTextStyle}>{t("agentList.archiveSheet.archive")}</Text>
+                </Pressable>
+              )}
             </View>
           </View>
         </View>

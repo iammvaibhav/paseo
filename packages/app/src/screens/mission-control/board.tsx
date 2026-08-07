@@ -13,6 +13,7 @@ import { deriveSidebarStateBucket, type SidebarStateBucket } from "@/utils/sideb
 import { getStatusDotColor } from "@/utils/status-dot-color";
 import { useCompactTimeAgo } from "@/hooks/use-compact-time-ago";
 import { openAgentFromHistory } from "@/workspace/open-agent-from-history";
+import { isCommanderAgent } from "@/mission-control/labels";
 
 // Board bucket order per the Mission Control spec — needs-input and failures
 // first, done last. Distinct from the sidebar's status-list order on purpose.
@@ -73,6 +74,11 @@ export function MissionControlBoard({ testID }: { testID?: string } = {}) {
   const items = useMemo<BoardItem[]>(() => {
     const agentsByBucket = new Map<SidebarStateBucket, AggregatedAgent[]>();
     for (const agent of agents) {
+      // The Commander (label `paseo.mission-control=*`) is invisible on the
+      // board — it lives in the Mission Control thread, never in a bucket.
+      if (isCommanderAgent(agent.labels)) {
+        continue;
+      }
       const bucket = deriveSidebarStateBucket({
         status: agent.status,
         pendingPermissionCount: agent.pendingPermissionCount ?? 0,
@@ -175,19 +181,27 @@ function AgentRow({
     });
   }, [agent]);
 
+  const primaryLabel = agent.name ?? agent.title ?? agent.id;
   return (
     <Pressable
       onPress={handlePress}
       accessibilityRole="button"
-      accessibilityLabel={`${agent.title ?? agent.id}, ${STATUS_BUCKET_LABELS[bucket]}`}
+      accessibilityLabel={`${primaryLabel}, ${STATUS_BUCKET_LABELS[bucket]}`}
       style={agentRowStyle}
     >
       {() => (
         <>
           <Icon size={12} uniProps={iconColorMapping} />
-          <Text numberOfLines={1} style={styles.agentTitle}>
-            {agent.title ?? agent.id}
-          </Text>
+          <View style={styles.agentText}>
+            <Text numberOfLines={1} style={styles.agentTitle}>
+              {primaryLabel}
+            </Text>
+            {agent.name && agent.title ? (
+              <Text numberOfLines={1} style={styles.agentSubtitle}>
+                {agent.title}
+              </Text>
+            ) : null}
+          </View>
           {timeLabel ? <Text style={styles.rowTime}>{timeLabel}</Text> : null}
           {hostBadge ? <HostBadge badge={hostBadge} /> : null}
         </>
@@ -230,11 +244,18 @@ const styles = StyleSheet.create((theme) => ({
   agentRowHovered: {
     backgroundColor: theme.colors.surfaceSidebarHover,
   },
-  agentTitle: {
+  agentText: {
     flex: 1,
+    minWidth: 0,
+  },
+  agentTitle: {
     fontSize: theme.fontSize.sm,
     fontWeight: theme.fontWeight.normal,
     color: theme.colors.foreground,
+  },
+  agentSubtitle: {
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foregroundMuted,
   },
   rowTime: {
     fontSize: theme.fontSize.xs,

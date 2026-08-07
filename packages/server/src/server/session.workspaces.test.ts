@@ -575,6 +575,7 @@ function createSessionForWorkspaceTests(
     subscribe: () => () => {},
     listAgents: () => [],
     listProviderSubagentActivity: () => [],
+    getRegisteredProviderIds: () => [],
     getAgent: () => null,
     archiveAgent: async () => ({ archivedAt: new Date().toISOString() }),
     archiveSnapshot: async () => ({}),
@@ -1518,6 +1519,7 @@ test("archive emits an authoritative agent_update upsert for subscribed clients"
       agentManager: asAgentManager({
         subscribe: () => () => {},
         listAgents: () => [],
+        getRegisteredProviderIds: () => ["codex"],
         getAgent: () => null,
         archiveAgent: async () => {
           const archivedAt = new Date().toISOString();
@@ -1885,6 +1887,7 @@ test("close_items_request archives agents and kills terminals in one batch", asy
       agentManager: asAgentManager({
         subscribe: () => () => {},
         listAgents: () => [],
+        getRegisteredProviderIds: () => ["codex"],
         getAgent: (agentId: string) => (agentId === "agent-1" ? { id: agentId } : null),
         hasInFlightRun: (agentId: string) => agentId === "agent-1",
         cancelAgentRun,
@@ -2055,6 +2058,7 @@ test("close_items_request archives stored agents that are not currently loaded",
       agentManager: asAgentManager({
         subscribe: () => () => {},
         listAgents: () => [],
+        getRegisteredProviderIds: () => ["codex"],
         getAgent: (agentId: string) => (agentId === "agent-live" ? { id: agentId } : null),
         hasInFlightRun: () => false,
         archiveAgent: async (agentId: string) => {
@@ -2216,6 +2220,7 @@ test("close_items_request continues after an archive failure", async () => {
       agentManager: asAgentManager({
         subscribe: () => () => {},
         listAgents: () => [],
+        getRegisteredProviderIds: () => ["codex"],
         getAgent: (agentId: string) =>
           agentId === "agent-bad" || agentId === "agent-good" ? { id: agentId } : null,
         hasInFlightRun: () => false,
@@ -3316,6 +3321,7 @@ test("workspace update stream keeps persisted workspace visible after agents sto
       agentManager: asAgentManager({
         subscribe: () => () => {},
         listAgents: () => [],
+        getRegisteredProviderIds: () => ["codex"],
         getAgent: () => null,
       }),
       agentStorage: asAgentStorage({

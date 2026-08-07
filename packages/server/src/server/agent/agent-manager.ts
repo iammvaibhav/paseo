@@ -13,6 +13,7 @@ import {
 import type { Logger } from "pino";
 import { z } from "zod";
 import type { TerminalManager } from "../../terminal/terminal-manager.js";
+import { buildSelfReportSystemPrompt } from "../mission-control/self-report.js";
 
 import {
   getAgentStreamEventTurnId,
@@ -62,7 +63,11 @@ import {
 } from "./agent-stream-coalescer.js";
 import { limitAgentTimelineItemContent } from "./agent-timeline-content.js";
 import { AgentRunState, type ForegroundTurnWaiter } from "./agent-run-state.js";
-import { getAgentProviderDefinition } from "@getpaseo/protocol/provider-manifest";
+import {
+  getAgentProviderDefinition,
+  getUnattendedModeId,
+  isValidAgentProvider,
+} from "@getpaseo/protocol/provider-manifest";
 import { invokeRewindCapability, type RewindMode } from "./rewind/rewind.js";
 import { isSystemInjectedEnvelope } from "./agent-prompt.js";
 import { stripInternalPaseoMcpServer, withRuntimePaseoMcpServer } from "./runtime-mcp-config.js";
@@ -194,6 +199,12 @@ function buildStoredAgentConfig(record: StoredAgentRecord): AgentSessionConfig {
   if (record.config.systemPrompt != null) {
     config.systemPrompt = record.config.systemPrompt;
   }
+  if (record.config.systemPromptMode != null) {
+    config.systemPromptMode = record.config.systemPromptMode;
+  }
+  if (record.config.toolAllowlist != null) {
+    config.toolAllowlist = record.config.toolAllowlist;
+  }
   if (record.config.mcpServers != null) config.mcpServers = record.config.mcpServers;
   return stripInternalPaseoMcpServer(config);
 }
@@ -287,6 +298,19 @@ export interface AgentManagerOptions {
   idFactory?: () => string;
   registry?: AgentStorage;
   onAgentAttention?: AgentAttentionCallback;
+  /**
+   * Called once per brand-new agent (no stored record yet) at registration,
+   * before the first snapshot persists. The daemon naming service uses it to
+   * stamp a fleet-wide name on every created agent. Returning a name assigns
+   * it; returning null/undefined leaves the agent unnamed (backfill covers it).
+   */
+  onAgentCreated?: (params: {
+    agentId: string;
+    labels: Record<string, string>;
+    internal: boolean;
+    provider: AgentProvider;
+    cwd: string;
+  }) => Promise<string | null | undefined> | string | null | undefined;
   onWorkspaceStateMayHaveChanged?: (params: { cwd: string }) => void;
   durableTimelineStore?: AgentTimelineStore;
   terminalManager?: TerminalManager | null;
@@ -295,6 +319,13 @@ export interface AgentManagerOptions {
   paseoToolsEnabled?: boolean;
   paseoToolCatalogFactory?: PaseoToolCatalogFactory;
   appendSystemPrompt?: string;
+  /**
+   * Kill-switch for the Mission Control self-report paragraph in the daemon
+   * append system prompt (missionControl.selfReport.enabled; default true).
+   * The paragraph is additionally omitted for paseo.mission-control=* labeled
+   * agents regardless of this flag.
+   */
+  missionControlSelfReportEnabled?: boolean;
   agentStreamCoalesceWindowMs?: number;
   rescueTimeouts?: AgentManagerRescueTimeouts;
   logger: Logger;
@@ -390,6 +421,17 @@ interface ManagedAgentBase {
    * User-defined labels for categorizing agents (e.g., { surface: "workspace" }).
    */
   labels: Record<string, string>;
+  /**
+   * Mission Control identity: fun stable fleet-wide name assigned at creation
+   * by the daemon naming service. Optional — older records/live agents may
+   * not have one yet (backfill assigns).
+   */
+  name?: string;
+  /**
+   * Mission Control identity: living one-liner refreshed at milestones by the
+   * summarizer pass. Optional, mirrors the stored record field.
+   */
+  shortDescription?: string;
 }
 
 type ManagedAgentWithSession = ManagedAgentBase & {
@@ -508,6 +550,9 @@ interface AgentMetadataPatch {
   labels?: AgentLabelPatch;
   provider?: string;
   model?: string | null;
+  modeId?: string;
+  name?: string;
+  shortDescription?: string;
 }
 
 const SYSTEM_ERROR_PREFIX = "[System Error]";
@@ -682,31 +727,28 @@ export class AgentManager {
   private paseoToolsEnabled = true;
   private paseoToolCatalogFactory: PaseoToolCatalogFactory | null = null;
   private appendSystemPrompt: string;
+  private missionControlSelfReportEnabled: boolean;
   private onAgentAttention?: AgentAttentionCallback;
   private onAgentArchived?: AgentArchivedCallback;
+  private onAgentCreated?: AgentManagerOptions["onAgentCreated"];
   private onWorkspaceStateMayHaveChanged?: (params: { cwd: string }) => void;
   private logger: Logger;
   private readonly rescueTimeouts: Required<AgentManagerRescueTimeouts>;
   private acceptingAgentRegistrations = true;
 
-  constructor(options: AgentManagerOptions) {
-    this.idFactory = options?.idFactory ?? (() => randomUUID());
-    this.registry = options?.registry;
-    this.durableTimelineStore = options?.durableTimelineStore;
-    this.onAgentAttention = options?.onAgentAttention;
-    this.onWorkspaceStateMayHaveChanged = options?.onWorkspaceStateMayHaveChanged;
-    this.mcpBaseUrl = options?.mcpBaseUrl ?? null;
-    this.mcpAuthToken = options?.mcpAuthToken ?? null;
-    this.configurePaseoTools(options);
-    this.appendSystemPrompt = options.appendSystemPrompt ?? "";
-    this.logger = options.logger.child({ module: "agent", component: "agent-manager" });
-    this.rescueTimeouts = {
+  private static resolveRescueTimeouts(
+    options: AgentManagerOptions,
+  ): Required<AgentManagerRescueTimeouts> {
+    return {
       reloadSessionCloseMs:
         options.rescueTimeouts?.reloadSessionCloseMs ?? RELOAD_SESSION_CLOSE_TIMEOUT_MS,
       interruptSessionMs:
         options.rescueTimeouts?.interruptSessionMs ?? INTERRUPT_SESSION_TIMEOUT_MS,
     };
-    this.agentStreamCoalescer = new AgentStreamCoalescer({
+  }
+
+  private createStreamCoalescer(options: AgentManagerOptions): AgentStreamCoalescer {
+    return new AgentStreamCoalescer({
       windowMs: options.agentStreamCoalesceWindowMs ?? AGENT_STREAM_COALESCE_DEFAULT_WINDOW_MS,
       timers: { setTimeout, clearTimeout },
       onFlush: ({ agentId, item, provider, turnId }) => {
@@ -714,6 +756,23 @@ export class AgentManager {
         this.notifyForegroundTurnWaiters(agentId, event);
       },
     });
+  }
+
+  constructor(options: AgentManagerOptions) {
+    this.idFactory = options?.idFactory ?? (() => randomUUID());
+    this.registry = options?.registry;
+    this.durableTimelineStore = options?.durableTimelineStore;
+    this.onAgentAttention = options?.onAgentAttention;
+    this.onAgentCreated = options?.onAgentCreated;
+    this.onWorkspaceStateMayHaveChanged = options?.onWorkspaceStateMayHaveChanged;
+    this.mcpBaseUrl = options?.mcpBaseUrl ?? null;
+    this.mcpAuthToken = options?.mcpAuthToken ?? null;
+    this.configurePaseoTools(options);
+    this.appendSystemPrompt = options.appendSystemPrompt ?? "";
+    this.missionControlSelfReportEnabled = options.missionControlSelfReportEnabled ?? true;
+    this.logger = options.logger.child({ module: "agent", component: "agent-manager" });
+    this.rescueTimeouts = AgentManager.resolveRescueTimeouts(options);
+    this.agentStreamCoalescer = this.createStreamCoalescer(options);
     this.updateProviderRegistry({
       providerDefinitions: options.providerDefinitions ?? {},
       clients: options.clients ?? {},
@@ -1102,16 +1161,23 @@ export class AgentManager {
    * can return immediately without spawning the agent. No-ops if timeline already
    * has rows. When the agent later resumes, historyPrimed stays true if this store
    * is already initialized (see initializeAgentTimelineForRegister).
+   *
+   * Entries may carry their original timestamps; those are preserved so seeded
+   * history keeps real activity times instead of being stamped "now".
    */
-  seedTimelineFromItems(agentId: string, items: readonly AgentTimelineItem[]): boolean {
+  seedTimelineFromItems(agentId: string, items: readonly ImportedTimelineEntry[]): boolean {
     if (this.timelineStore.has(agentId) && this.timelineStore.getItems(agentId).length > 0) {
       return false;
     }
     if (!this.timelineStore.has(agentId)) {
       this.timelineStore.initialize(agentId, { timestamp: new Date().toISOString() });
     }
-    for (const item of items) {
-      this.recordTimeline(agentId, item);
+    for (const entry of items) {
+      this.recordTimeline(
+        agentId,
+        entry.item,
+        entry.timestamp ? { timestamp: entry.timestamp } : undefined,
+      );
     }
     return items.length > 0;
   }
@@ -1196,6 +1262,7 @@ export class AgentManager {
     const { storedConfig, launchConfig } = await this.prepareSessionConfig(
       config,
       resolvedAgentId,
+      options.labels,
       options?.env,
     );
     this.requireEnabledProvider(storedConfig.provider);
@@ -1277,6 +1344,7 @@ export class AgentManager {
     const { storedConfig, launchConfig } = await this.prepareSessionConfig(
       mergedConfig,
       resolvedAgentId,
+      options?.labels,
     );
 
     const client = this.requireClient(handle.provider);
@@ -1333,6 +1401,7 @@ export class AgentManager {
         cwd: input.cwd,
       },
       resolvedAgentId,
+      input.labels,
     );
     const launchContext = await this.buildLaunchContext(resolvedAgentId, client, storedConfig.cwd);
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
@@ -1414,7 +1483,11 @@ export class AgentManager {
       ...overrides,
       provider,
     } as AgentSessionConfig;
-    const { storedConfig, launchConfig } = await this.prepareSessionConfig(refreshConfig, agentId);
+    const { storedConfig, launchConfig } = await this.prepareSessionConfig(
+      refreshConfig,
+      agentId,
+      existing.labels,
+    );
     const launchContext = await this.buildLaunchContext(agentId, client, storedConfig.cwd);
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
 
@@ -1817,6 +1890,38 @@ export class AgentManager {
     this.emitState(agent, { persist: false });
   }
 
+  async setAgentName(agentId: string, name: string): Promise<void> {
+    const normalized = name.trim();
+    if (!normalized) {
+      return;
+    }
+    const liveAgent = this.agents.get(agentId);
+    if (liveAgent) {
+      liveAgent.name = normalized;
+      this.touchUpdatedAt(liveAgent);
+      await this.persistSnapshot(liveAgent);
+      this.emitState(liveAgent, { persist: false });
+      return;
+    }
+    await this.writeStoredMetadata(agentId, { name: normalized });
+  }
+
+  async setAgentShortDescription(agentId: string, description: string): Promise<void> {
+    const normalized = description.trim();
+    if (!normalized) {
+      return;
+    }
+    const liveAgent = this.agents.get(agentId);
+    if (liveAgent) {
+      liveAgent.shortDescription = normalized;
+      this.touchUpdatedAt(liveAgent);
+      await this.persistSnapshot(liveAgent);
+      this.emitState(liveAgent, { persist: false });
+      return;
+    }
+    await this.writeStoredMetadata(agentId, { shortDescription: normalized });
+  }
+
   async setLabels(agentId: string, labels: Record<string, string>): Promise<void> {
     const agent = this.requireAgent(agentId);
     await this.writeLabels(agent.id, labels);
@@ -1850,6 +1955,8 @@ export class AgentManager {
     const nextRecord: StoredAgentRecord = {
       ...record,
       ...(patch.title ? { title: patch.title } : {}),
+      ...(patch.name ? { name: patch.name } : {}),
+      ...(patch.shortDescription ? { shortDescription: patch.shortDescription } : {}),
       ...(patch.labels ? { labels: applyLabelPatch(record.labels, patch.labels) } : {}),
       ...(patch.provider
         ? {
@@ -1863,6 +1970,14 @@ export class AgentManager {
             config: {
               ...record.config,
               model: patch.model,
+            },
+          }
+        : {}),
+      ...(patch.modeId !== undefined
+        ? {
+            config: {
+              ...record.config,
+              modeId: patch.modeId,
             },
           }
         : {}),
@@ -2013,13 +2128,24 @@ export class AgentManager {
       labels?: Record<string, string>;
       provider?: string;
       model?: string | null;
+      modeId?: string;
+      name?: string;
+      shortDescription?: string;
     },
   ): Promise<void> {
     const liveAgent = this.getAgent(agentId);
     if (liveAgent) {
       if (updates.provider && updates.provider !== liveAgent.provider) {
+        const modeId = this.resolveModeIdForProviderChange(
+          liveAgent.config.modeId,
+          updates.provider,
+          updates.modeId,
+        );
         await this.closeAgent(agentId);
-        await this.writeStoredMetadata(agentId, updates);
+        await this.writeStoredMetadata(agentId, {
+          ...updates,
+          ...(modeId !== undefined ? { modeId } : {}),
+        });
         return;
       }
       if (updates.title) {
@@ -2031,10 +2157,67 @@ export class AgentManager {
       if (updates.model !== undefined) {
         await this.setAgentModel(agentId, updates.model);
       }
+      if (updates.name !== undefined) {
+        await this.setAgentName(agentId, updates.name);
+      }
+      if (updates.shortDescription !== undefined) {
+        await this.setAgentShortDescription(agentId, updates.shortDescription);
+      }
       return;
     }
 
-    await this.writeStoredMetadata(agentId, updates);
+    // Closed agent: a provider change must still remap the stored mode, or the
+    // next resume fails with "Unsupported <provider> mode '<old mode>'".
+    let storedUpdates = updates;
+    if (updates.provider && this.registry) {
+      const record = await this.registry.get(agentId);
+      if (record?.config?.modeId) {
+        const modeId = this.resolveModeIdForProviderChange(
+          record.config.modeId,
+          updates.provider,
+          updates.modeId,
+        );
+        if (modeId !== undefined) {
+          storedUpdates = { ...storedUpdates, modeId };
+        }
+      }
+    }
+    await this.writeStoredMetadata(agentId, storedUpdates);
+  }
+
+  /**
+   * Resolve the modeId to persist when an agent switches providers. An explicit
+   * modeId (the app picker remaps via resolveUnattendedModeId) wins; otherwise a
+   * stored mode that the new provider does not offer is remapped to the new
+   * provider's unattended mode so the agent survives the switch instead of
+   * failing at its next launch. Custom (non-manifest) providers keep the stored
+   * mode — their mode space is opaque, and the omp provider defensively falls
+   * back at launch if it cannot honor the mode.
+   */
+  private resolveModeIdForProviderChange(
+    currentModeId: string | undefined,
+    nextProvider: string,
+    explicitModeId: string | undefined,
+  ): string | undefined {
+    if (explicitModeId !== undefined) {
+      return explicitModeId;
+    }
+    if (!currentModeId || !isValidAgentProvider(nextProvider)) {
+      return currentModeId;
+    }
+    const definition = getAgentProviderDefinition(nextProvider);
+    if (definition.modes.some((mode) => mode.id === currentModeId)) {
+      return currentModeId;
+    }
+    const unattendedModeId = getUnattendedModeId(nextProvider);
+    if (unattendedModeId) {
+      this.logger.warn(
+        { provider: nextProvider, fromModeId: currentModeId, toModeId: unattendedModeId },
+        "Remapped agent modeId for new provider",
+      );
+      return unattendedModeId;
+    }
+    return currentModeId;
   }
 
   async runAgent(
@@ -3028,6 +3211,22 @@ export class AgentManager {
         options?.initialTitle ?? null,
       );
 
+      // Identity: keep an existing record's name/description on resume/reload;
+      // brand-new agents get a name stamped by the daemon naming service hook
+      // (skipped for mission-control-labeled agents inside the service).
+      const existingRecord = await this.registry?.get(resolvedAgentId);
+      const name =
+        existingRecord?.name ??
+        (await this.onAgentCreated?.({
+          agentId: resolvedAgentId,
+          labels: options?.labels ?? {},
+          internal: config.internal ?? false,
+          provider: config.provider,
+          cwd: config.cwd,
+        })) ??
+        undefined;
+      const shortDescription = existingRecord?.shortDescription;
+
       const now = new Date();
       const { durableTimelineHasRows } = await this.initializeAgentTimelineForRegister({
         agentId: resolvedAgentId,
@@ -3042,6 +3241,8 @@ export class AgentManager {
         now,
         durableTimelineHasRows,
         options,
+        name,
+        shortDescription,
       });
 
       this.assertAcceptingAgentRegistrations();
@@ -3153,6 +3354,8 @@ export class AgentManager {
     config: AgentSessionConfig;
     now: Date;
     durableTimelineHasRows: boolean;
+    name?: string;
+    shortDescription?: string;
     options:
       | {
           createdAt?: Date;
@@ -3176,6 +3379,8 @@ export class AgentManager {
       cwd: config.cwd,
       workspaceId: options?.workspaceId,
       owner: options?.owner,
+      name: params.name,
+      shortDescription: params.shortDescription,
       session,
       capabilities: session.capabilities,
       config,
@@ -3520,9 +3725,6 @@ export class AgentManager {
     const providerSubagentEvents: Extract<AgentStreamEvent, { type: "provider_subagent" }>[] = [];
     for await (const event of agent.session.streamHistory()) {
       if (event.type === "timeline") {
-        if (event.item.type === "user_message" && isSystemInjectedEnvelope(event.item.text)) {
-          continue;
-        }
         historyEvents.push(event);
       } else if (event.type === "provider_subagent") {
         providerSubagentEvents.push(event);
@@ -3588,9 +3790,6 @@ export class AgentManager {
           continue;
         }
         if (event.type !== "timeline") {
-          continue;
-        }
-        if (event.item.type === "user_message" && isSystemInjectedEnvelope(event.item.text)) {
           continue;
         }
         const row = this.recordTimeline(
@@ -3937,6 +4136,12 @@ export class AgentManager {
     const { agent, event, options, flags } = params;
 
     if (event.item.type === "user_message" && isSystemInjectedEnvelope(event.item.text)) {
+      // System-injected envelopes (fleet digests, chat mentions, schedule
+      // fires, notify-on-finish) are real timeline rows: clients render them
+      // as collapsed paseo-system dividers, never as raw user prose. Record
+      // and dispatch so they reach the client timeline, but never wake
+      // foreground-turn waiters on a message the user did not send.
+      this.recordAndDispatchTimelineItem(agent.id, event.item, event.provider, event.turnId);
       flags.shouldDispatchEvent = false;
       flags.shouldNotifyWaiters = false;
       return;
@@ -4704,6 +4909,7 @@ export class AgentManager {
   private async prepareSessionConfig(
     config: AgentSessionConfig,
     agentId: string,
+    labels?: Record<string, string>,
     env?: Record<string, string>,
   ): Promise<PreparedSessionConfig> {
     const storedConfig = await this.normalizeConfig(stripInternalPaseoMcpServer(config), { env });
@@ -4714,14 +4920,24 @@ export class AgentManager {
         mcpBaseUrl: this.mcpBaseUrl,
         mcpAuthToken: this.mcpAuthToken,
       }),
+      labels ?? {},
     );
     return { storedConfig, launchConfig };
   }
 
-  private applyDaemonAppendSystemPrompt(config: AgentSessionConfig): AgentSessionConfig {
-    const daemonAppendSystemPrompt = this.appendSystemPrompt.trim();
+  private applyDaemonAppendSystemPrompt(
+    config: AgentSessionConfig,
+    labels: Record<string, string>,
+  ): AgentSessionConfig {
     const next = { ...config };
     delete next.daemonAppendSystemPrompt;
+    const selfReportPrompt = buildSelfReportSystemPrompt(
+      labels,
+      this.missionControlSelfReportEnabled,
+    );
+    const daemonAppendSystemPrompt = [this.appendSystemPrompt.trim(), selfReportPrompt]
+      .filter((part): part is string => Boolean(part))
+      .join("\n\n");
 
     return daemonAppendSystemPrompt
       ? {

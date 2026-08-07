@@ -5,6 +5,7 @@ export type AgentDirectoryEntry = Pick<
   | "id"
   | "serverId"
   | "title"
+  | "name"
   | "status"
   | "lastActivityAt"
   | "cwd"

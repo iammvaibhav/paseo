@@ -329,6 +329,40 @@ describe("JsonlRpcProcess", () => {
     });
   });
 
+  test("publishes a synthetic exit when stdout closes while the process stays alive", async () => {
+    // A provider that closes its stdout but keeps running stops emitting
+    // events with no process-exit signal. The daemon must not wait forever for
+    // a terminal that can never arrive: stdout close is surfaced as an exit.
+    const child = createInMemoryChildProcess();
+    const transport = startProcess({ child });
+    const exit = nextExit(transport);
+
+    const request = transport.request({ type: "hang" });
+    child.stdout.end();
+
+    await expect(exit).resolves.toMatchObject({
+      code: null,
+      signal: null,
+      error: expect.objectContaining({
+        message: expect.stringContaining("stdout closed while the process is still running"),
+      }),
+    });
+    await expect(request).rejects.toThrow("stdout closed while the process is still running");
+  });
+
+  test("does not double-publish when stdout closes after a real exit", async () => {
+    const child = createInMemoryChildProcess();
+    const transport = startProcess({ child });
+    const exits: JsonlRpcExit[] = [];
+    transport.onExit((exit) => exits.push(exit));
+
+    child.emit("exit", 7, null);
+    child.stdout.end();
+    await vi.waitFor(() => expect(exits).toHaveLength(1));
+
+    expect(exits[0]).toMatchObject({ code: 7, signal: null });
+  });
+
   test("rejects pending requests while shutting down the child process", async () => {
     const transport = startProcess();
     await transport.request({ type: "echo", value: "ready" });

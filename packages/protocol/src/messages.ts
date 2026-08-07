@@ -64,6 +64,8 @@ import {
   MissionControlEventsAckResponseSchema,
   MissionControlPeersListRequestSchema,
   MissionControlPeersListResponseSchema,
+  MissionControlContextFetchRequestSchema,
+  MissionControlContextFetchResponseSchema,
   MissionControlEventMessageSchema,
 } from "./mission-control/types.js";
 export {
@@ -71,10 +73,20 @@ export {
   MissionControlEventKindSchema,
   MissionControlProofSchema,
   MissionControlPeerStatusSchema,
+  MissionControlInventorySchema,
+  MissionControlInventoryProjectSchema,
+  MissionControlInventoryProjectWorkspaceSchema,
+  MissionControlModelsSchema,
+  MissionControlContextAgentSummarySchema,
   type MissionControlEvent,
   type MissionControlEventKind,
   type MissionControlProof,
   type MissionControlPeerStatus,
+  type MissionControlInventory,
+  type MissionControlInventoryProject,
+  type MissionControlInventoryProjectWorkspace,
+  type MissionControlModels,
+  type MissionControlContextAgentSummary,
 } from "./mission-control/types.js";
 import {
   LoopRunRequestSchema,
@@ -196,12 +208,50 @@ const MutableMissionControlSummarizerConfigSchema = z
     model: z.string().optional(),
     minNewItems: z.number().optional(),
     debounceSeconds: z.number().optional(),
+    // Backend: gateway (default) or omp (shell out to omp --model @smol).
+    backend: z.enum(["gateway", "omp"]).optional(),
+  })
+  .passthrough();
+const MutableMissionControlNamingConfigSchema = z
+  .object({
+    theme: z
+      .enum(["mixed", "indian", "cartoon", "scientists", "astronauts", "mythology", "nature"])
+      .optional(),
+  })
+  .passthrough();
+const MutableMissionControlAutopilotConfigSchema = z
+  .object({
+    // Evaluate-and-act on worker completion: off (default) | observe | act.
+    mode: z.enum(["off", "observe", "act"]).optional(),
+    // Evaluator model tier alias; defaults server-side per backend.
+    model: z.string().nullable().optional(),
+    // commander-spawned (default) | all.
+    scope: z.enum(["commander-spawned", "all"]).optional(),
+    // Bounded nudges per agent before a nudge verdict escalates instead.
+    maxNudgesPerAgent: z.number().optional(),
   })
   .passthrough();
 const MutableMissionControlConfigSchema = z
   .object({
     retentionDays: z.number().optional(),
     summarizer: MutableMissionControlSummarizerConfigSchema.optional(),
+    autopilot: MutableMissionControlAutopilotConfigSchema.optional(),
+    // Self-reporting kill-switch; defaults to enabled server-side.
+    selfReport: z
+      .object({
+        enabled: z.boolean().optional(),
+      })
+      .passthrough()
+      .optional(),
+    // Identity: naming theme for the daemon naming service. Optional, defaults
+    // to "mixed" server-side.
+    naming: MutableMissionControlNamingConfigSchema.optional(),
+    // Commander dispatch: preferred host when the Commander routes work.
+    defaultHost: z.string().nullable().optional(),
+    // Friendly aliases for peer host names ("blrofc3": "work server").
+    hostAliases: z.record(z.string(), z.string()).optional(),
+    // Commander contract/instructions overridden from Settings.
+    commanderInstructions: z.string().optional(),
   })
   .passthrough();
 export const MutableDaemonConfigSchema = z
@@ -444,6 +494,8 @@ const AgentSessionConfigSchema = z.object({
     .partial()
     .optional(),
   systemPrompt: z.string().optional(),
+  systemPromptMode: z.enum(["append", "replace"]).optional(),
+  toolAllowlist: z.array(z.string()).optional(),
   mcpServers: z.record(z.string(), McpServerConfigSchema).optional(),
 });
 
@@ -812,6 +864,10 @@ export const AgentSnapshotPayloadSchema = z.object({
   lastUsage: AgentUsageSchema.optional(),
   lastError: z.string().optional(),
   title: z.string().nullable(),
+  // Identity fields (Mission Control naming + description refresh). Optional
+  // for wire back-compat: older daemons/clients simply omit them.
+  name: z.string().optional(),
+  shortDescription: z.string().optional(),
   labels: z.record(z.string(), z.string()).default({}),
   requiresAttention: z.boolean().optional(),
   attentionReason: z.enum(["finished", "error", "permission"]).nullable().optional(),
@@ -917,6 +973,12 @@ export const UpdateAgentRequestMessageSchema = z.object({
   labels: z.record(z.string(), z.string()).optional(),
   provider: z.string().optional(),
   model: z.string().nullable().optional(),
+  /**
+   * Mode id to persist alongside a provider change. Clients send the mode
+   * remapped for the new provider; the daemon also remaps automatically when
+   * the stored mode is invalid for the new provider.
+   */
+  modeId: z.string().optional(),
   requestId: z.string(),
 });
 
@@ -2819,6 +2881,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   MissionControlEventsFetchRequestSchema,
   MissionControlEventsAckRequestSchema,
   MissionControlPeersListRequestSchema,
+  MissionControlContextFetchRequestSchema,
 ]);
 
 export type SessionInboundMessage = z.infer<typeof SessionInboundMessageSchema>;
@@ -5718,6 +5781,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   MissionControlEventsFetchResponseSchema,
   MissionControlEventsAckResponseSchema,
   MissionControlPeersListResponseSchema,
+  MissionControlContextFetchResponseSchema,
   MissionControlEventMessageSchema,
   DaemonUpdateProgressMessageSchema,
   DaemonUpdateResponseSchema,
@@ -5898,6 +5962,9 @@ export type MissionControlEventsFetchResponse = z.infer<
 >;
 export type MissionControlEventsAckResponse = z.infer<typeof MissionControlEventsAckResponseSchema>;
 export type MissionControlPeersListResponse = z.infer<typeof MissionControlPeersListResponseSchema>;
+export type MissionControlContextFetchResponse = z.infer<
+  typeof MissionControlContextFetchResponseSchema
+>;
 export type MissionControlEventMessage = z.infer<typeof MissionControlEventMessageSchema>;
 export type LoopRunResponse = z.infer<typeof LoopRunResponseSchema>;
 export type LoopListResponse = z.infer<typeof LoopListResponseSchema>;
@@ -5980,6 +6047,9 @@ export type MissionControlEventsFetchRequest = z.infer<
 >;
 export type MissionControlEventsAckRequest = z.infer<typeof MissionControlEventsAckRequestSchema>;
 export type MissionControlPeersListRequest = z.infer<typeof MissionControlPeersListRequestSchema>;
+export type MissionControlContextFetchRequest = z.infer<
+  typeof MissionControlContextFetchRequestSchema
+>;
 export type LoopRunRequest = z.infer<typeof LoopRunRequestSchema>;
 export type LoopListRequest = z.infer<typeof LoopListRequestSchema>;
 export type LoopInspectRequest = z.infer<typeof LoopInspectRequestSchema>;

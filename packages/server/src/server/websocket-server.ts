@@ -1405,6 +1405,7 @@ export class VoiceAssistantWebSocketServer {
             }
           : undefined,
       serverId: this.serverId,
+      hostName: getHostname(),
       daemonVersion: this.daemonVersion,
       daemonRuntimeConfig: this.daemonRuntimeConfig,
       getWebSocketRuntimeMetrics: () => this.lastRuntimeMetricsSnapshot,

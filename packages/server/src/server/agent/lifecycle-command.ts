@@ -31,6 +31,9 @@ export interface LifecycleAgentManager {
     updates: {
       title?: string;
       labels?: Record<string, string>;
+      provider?: string;
+      model?: string | null;
+      modeId?: string;
     },
   ): Promise<void>;
 }
@@ -164,14 +167,16 @@ export async function updateAgentCommand(
     labels?: Record<string, string>;
     provider?: string;
     model?: string | null;
+    modeId?: string;
   },
 ): Promise<UpdateAgentResult> {
   const title = input.name?.trim();
   const labels = input.labels && Object.keys(input.labels).length > 0 ? input.labels : undefined;
   const provider = input.provider?.trim();
   const model = input.model;
+  const modeId = input.modeId?.trim();
 
-  if (!title && !labels && !provider && model === undefined) {
+  if (!title && !labels && !provider && model === undefined && modeId === undefined) {
     return {
       accepted: false,
       error: "Nothing to update (provide name, labels, provider, and/or model)",
@@ -183,6 +188,7 @@ export async function updateAgentCommand(
     ...(labels ? { labels } : {}),
     ...(provider ? { provider } : {}),
     ...(model !== undefined ? { model } : {}),
+    ...(modeId !== undefined ? { modeId } : {}),
   });
 
   return {

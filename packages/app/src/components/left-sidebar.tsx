@@ -57,6 +57,7 @@ import type { StatusGroup } from "@/hooks/sidebar-status-view-model";
 import { type SidebarGroupMode, useSidebarViewStore } from "@/stores/sidebar-view-store";
 import { useKeyboardShortcutsStore } from "@/stores/keyboard-shortcuts-store";
 import { useHostRuntimeConnectionStatuses, useHosts } from "@/runtime/host-runtime";
+import { isCommanderAgent } from "@/mission-control/labels";
 import { useActiveWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
 import { useWorkspace } from "@/stores/session-store-hooks";
 import { usePanelStore } from "@/stores/panel-store";
@@ -260,6 +261,11 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
   const missionControlBadgeCount = useMemo(() => {
     let count = 0;
     for (const agent of aggregatedAgents) {
+      // The Commander (label `paseo.mission-control=*`) never counts toward the
+      // needs-you pill; it is invisible everywhere outside Mission Control.
+      if (isCommanderAgent(agent.labels)) {
+        continue;
+      }
       const bucket = deriveSidebarStateBucket({
         status: agent.status,
         pendingPermissionCount: agent.pendingPermissionCount ?? 0,

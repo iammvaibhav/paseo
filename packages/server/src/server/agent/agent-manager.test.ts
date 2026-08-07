@@ -15,6 +15,7 @@ import {
 } from "./agent-manager.js";
 import { AgentStorage } from "./agent-storage.js";
 import { toAgentPayload } from "./agent-projections.js";
+import { MISSION_CONTROL_SELF_REPORT_PROMPT } from "../mission-control/self-report.js";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import { formatSystemNotificationPrompt, startAgentRun } from "./agent-prompt.js";
 import { ensureAgentLoaded, ensureUnarchivedAgentLoaded } from "./agent-loading.js";
@@ -1367,7 +1368,9 @@ test("createAgent injects daemon append system prompt at runtime only", async ()
   const record = await storage.get(snapshot.id);
 
   expect(client.createdConfigs[0]?.systemPrompt).toBe("Agent instructions.");
-  expect(client.createdConfigs[0]?.daemonAppendSystemPrompt).toBe("Daemon instructions.");
+  expect(client.createdConfigs[0]?.daemonAppendSystemPrompt).toBe(
+    `Daemon instructions.\n\n${MISSION_CONTROL_SELF_REPORT_PROMPT}`,
+  );
   expect(snapshot.config).not.toHaveProperty("daemonAppendSystemPrompt");
   expect(record?.config?.systemPrompt).toBe("Agent instructions.");
   expect(record?.config).not.toHaveProperty("daemonAppendSystemPrompt");
@@ -1394,6 +1397,65 @@ test("daemon append system prompt is injected into Pi configs", async () => {
   await manager.createAgent(
     {
       provider: "pi",
+      cwd: workdir,
+      systemPrompt: "Agent instructions.",
+    },
+    undefined,
+    { workspaceId: undefined },
+  );
+
+  expect(client.createdConfigs[0]?.daemonAppendSystemPrompt).toBe(
+    `Daemon instructions.\n\n${MISSION_CONTROL_SELF_REPORT_PROMPT}`,
+  );
+});
+
+test("self-report paragraph is omitted for mission-control-labeled agents", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-test-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+  const client = new TestAgentClient();
+  const manager = new AgentManager({
+    clients: {
+      codex: client,
+    },
+    registry: storage,
+    logger,
+    appendSystemPrompt: "Daemon instructions.",
+    idFactory: () => "00000000-0000-4000-8000-000000000105",
+  });
+
+  await manager.createAgent(
+    {
+      provider: "codex",
+      cwd: workdir,
+      systemPrompt: "Agent instructions.",
+    },
+    undefined,
+    { workspaceId: undefined, labels: { "paseo.mission-control": "commander" } },
+  );
+
+  expect(client.createdConfigs[0]?.daemonAppendSystemPrompt).toBe("Daemon instructions.");
+});
+
+test("self-report paragraph is omitted when the kill-switch is off", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-test-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+  const client = new TestAgentClient();
+  const manager = new AgentManager({
+    clients: {
+      codex: client,
+    },
+    registry: storage,
+    logger,
+    appendSystemPrompt: "Daemon instructions.",
+    missionControlSelfReportEnabled: false,
+    idFactory: () => "00000000-0000-4000-8000-000000000106",
+  });
+
+  await manager.createAgent(
+    {
+      provider: "codex",
       cwd: workdir,
       systemPrompt: "Agent instructions.",
     },
@@ -1991,6 +2053,7 @@ test("createAgent passes daemon launch env through the provider launch context",
     cwd: workdir,
     model: "gpt-5.4",
     modeId: "auto-review",
+    daemonAppendSystemPrompt: MISSION_CONTROL_SELF_REPORT_PROMPT,
   });
   expect(client.lastLaunchContext).toEqual({
     agentId: snapshot.id,
@@ -3585,6 +3648,112 @@ test("updateAgentMetadata bumps updatedAt for stored agents", async () => {
   expect(after?.title).toBe("Stored title");
   expect(after?.labels).toEqual({ surface: "mobile", role: "worker" });
   expect(Date.parse(after!.updatedAt)).toBeGreaterThan(Date.parse(before!.updatedAt));
+});
+
+test("live provider switch remaps a mode the new provider does not offer", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-provider-switch-live-remap-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+  const manager = new AgentManager({
+    clients: {
+      codex: new TestAgentClient(),
+    },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000133",
+  });
+
+  const snapshot = await manager.createAgent(
+    {
+      provider: "codex",
+      cwd: workdir,
+      modeId: "full-access",
+      model: "gpt-5.2-codex",
+    },
+    undefined,
+    { workspaceId: undefined },
+  );
+  expect(manager.getAgent(snapshot.id)).not.toBeNull();
+
+  await manager.updateAgentMetadata(snapshot.id, { provider: "omp" });
+
+  // The live session is closed so the next prompt resumes under omp.
+  expect(manager.getAgent(snapshot.id)).toBeNull();
+  const stored = await storage.get(snapshot.id);
+  expect(stored?.provider).toBe("omp");
+  // `full-access` is not an omp mode -> remapped to omp's unattended mode.
+  expect(stored?.config?.modeId).toBe("full");
+});
+
+test("provider switch keeps a mode the new provider offers", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-provider-switch-keep-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+  const manager = new AgentManager({
+    clients: {
+      omp: new TestAgentClient("omp"),
+    },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000134",
+  });
+
+  const snapshot = await manager.createAgent(
+    {
+      provider: "omp",
+      cwd: workdir,
+      modeId: "full",
+      model: "opencode-zen/deepseek-v4-flash",
+    },
+    undefined,
+    { workspaceId: undefined },
+  );
+
+  // omp -> omp is not a switch; codex -> omp with a valid omp mode keeps it.
+  await manager.updateAgentMetadata(snapshot.id, { provider: "codex", modeId: "full-access" });
+  let stored = await storage.get(snapshot.id);
+  expect(stored?.config?.modeId).toBe("full-access");
+
+  await manager.updateAgentMetadata(snapshot.id, { provider: "omp", modeId: "full" });
+  stored = await storage.get(snapshot.id);
+  expect(stored?.config?.modeId).toBe("full");
+});
+
+test("closed provider switch remaps the stored mode and explicit modeId wins", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-provider-switch-closed-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+  const manager = new AgentManager({
+    clients: {
+      codex: new TestAgentClient(),
+    },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000135",
+  });
+
+  const snapshot = await manager.createAgent(
+    {
+      provider: "codex",
+      cwd: workdir,
+      modeId: "bypassPermissions",
+      model: "gpt-5.2-codex",
+    },
+    undefined,
+    { workspaceId: undefined },
+  );
+  await manager.closeAgent(snapshot.id);
+  expect(manager.getAgent(snapshot.id)).toBeNull();
+
+  // No explicit mode: stored `bypassPermissions` is invalid for omp -> remap.
+  await manager.updateAgentMetadata(snapshot.id, { provider: "omp" });
+  let stored = await storage.get(snapshot.id);
+  expect(stored?.config?.modeId).toBe("full");
+
+  // Explicit mode wins over the stored one.
+  await manager.updateAgentMetadata(snapshot.id, { provider: "omp", modeId: "ask" });
+  stored = await storage.get(snapshot.id);
+  expect(stored?.config?.modeId).toBe("ask");
 });
 
 test("persists live mode, model, and thinking changes without an external snapshot subscriber", async () => {
@@ -9193,7 +9362,7 @@ test("listImportableSessions skips providers that lack supportsSessionListing ev
   expect(result.map((d) => d.provider)).toEqual(["claude"]);
 });
 
-test("user_message events wrapping a paseo-system envelope are not added to the timeline", async () => {
+test("user_message events wrapping a paseo-system envelope reach the timeline", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-envelope-live-"));
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
@@ -9224,11 +9393,14 @@ test("user_message events wrapping a paseo-system envelope are not added to the 
   const timeline = manager.getTimeline(snapshot.id);
   const userMessages = timeline.filter((item) => item.type === "user_message");
 
-  expect(userMessages).toHaveLength(1);
-  expect(userMessages[0].text).toBe("plain user message");
+  // Envelope rows are real timeline rows now: clients render them as collapsed
+  // paseo-system dividers instead of raw user prose.
+  expect(userMessages).toHaveLength(2);
+  expect(userMessages[0]?.text).toBe(formatSystemNotificationPrompt("child finished"));
+  expect(userMessages[1]?.text).toBe("plain user message");
 });
 
-test("user_message events wrapping a paseo-system envelope are not restored during history replay", async () => {
+test("user_message events wrapping a paseo-system envelope are restored during history replay", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-envelope-history-"));
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
@@ -9265,8 +9437,11 @@ test("user_message events wrapping a paseo-system envelope are not restored duri
   const timeline = manager.getTimeline(snapshot.id);
   const userMessages = timeline.filter((item) => item.type === "user_message");
 
-  expect(userMessages).toHaveLength(1);
-  expect(userMessages[0].text).toBe("real user message");
+  // History replay must match the live path: envelope rows survive so digest
+  // history does not vanish when the agent reloads.
+  expect(userMessages).toHaveLength(2);
+  expect(userMessages[0]?.text).toBe(formatSystemNotificationPrompt("schedule fired"));
+  expect(userMessages[1]?.text).toBe("real user message");
 });
 
 test("commandMayHaveChangedExternalState matches remote-state commands", () => {

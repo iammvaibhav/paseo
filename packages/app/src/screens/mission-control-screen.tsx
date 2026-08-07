@@ -19,11 +19,11 @@ import { getHostRuntimeStore, useHosts } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
 import { useShallow } from "zustand/react/shallow";
 import {
-  isCommanderAgent,
   launchCommander,
   loadCommanderHostServerId,
   saveCommanderHostServerId,
 } from "@/mission-control/launch";
+import { isCommanderAgent } from "@/mission-control/labels";
 import { useIsCompactFormFactor } from "@/constants/layout";
 
 type CompactPanel = "thread" | "board";
@@ -204,7 +204,12 @@ export function MissionControlScreen(): ReactElement {
       return (
         <>
           <View style={styles.threadArea}>
-            <MissionControlThread events={events} commander={commanderRef} />
+            <MissionControlThread
+              key={`${commanderRef.serverId}:${commanderRef.agentId}`}
+              events={events}
+              commander={commanderRef}
+              isFocused={isFocused}
+            />
           </View>
           <View style={composerContainerStyle}>
             <Composer

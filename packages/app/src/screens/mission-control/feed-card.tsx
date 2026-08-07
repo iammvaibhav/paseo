@@ -142,6 +142,15 @@ export function FeedCard({ event }: { event: FeedCardEvent }): ReactElement {
   const handlePointerLeave = useCallback(() => setIsHovered(false), []);
   const handleOpenAgent = useCallback(() => openEventAgent(event), [event]);
   const timestamp = new Date(event.ts);
+  // The daemon now stamps names onto MC events, but events recorded before
+  // that or arriving from older hosts only carry the title — prefer the live
+  // agent's identity when one is known.
+  const liveAgent = useSessionStore((state) =>
+    event.serverId && event.agentId
+      ? (state.sessions[event.serverId]?.agents.get(event.agentId) ?? null)
+      : null,
+  );
+  const agentChipLabel = liveAgent?.name ?? liveAgent?.title ?? event.agentTitle;
 
   return (
     <View
@@ -164,12 +173,12 @@ export function FeedCard({ event }: { event: FeedCardEvent }): ReactElement {
           <Pressable
             onPress={handleOpenAgent}
             accessibilityRole="button"
-            accessibilityLabel={`Open agent ${event.agentTitle}`}
+            accessibilityLabel={`Open agent ${agentChipLabel}`}
             style={styles.agentChip}
             testID="mission-control-feed-agent-chip"
           >
             <Text style={styles.agentChipText} numberOfLines={1}>
-              {event.agentTitle}
+              {agentChipLabel}
             </Text>
           </Pressable>
           <Text style={styles.metaSeparator}>·</Text>
@@ -200,8 +209,7 @@ const styles = StyleSheet.create((theme) => ({
   card: {
     flexDirection: "row",
     gap: theme.spacing[3],
-    paddingVertical: theme.spacing[3],
-    paddingHorizontal: theme.spacing[4],
+    padding: theme.spacing[3],
     borderRadius: theme.borderRadius.md,
     borderWidth: 1,
     borderColor: "transparent",

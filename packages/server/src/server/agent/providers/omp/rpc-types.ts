@@ -565,9 +565,13 @@ export const OmpModelsResultSchema = z
 export const OmpCommandsResultSchema = z
   .object({ commands: z.array(OmpRpcSlashCommandSchema).optional() })
   .passthrough();
-export const OmpHostToolsResultSchema = z
-  .object({ toolNames: z.array(z.string()).optional() })
-  .passthrough();
+/**
+ * set_host_tools must answer with the registered tool names. A success frame
+ * without `toolNames` (or with zero names for a non-empty request) is a
+ * registration failure — never pass it through silently, or the session ends
+ * up without Paseo host tools while nothing logs why.
+ */
+export const OmpHostToolsResultSchema = z.object({ toolNames: z.array(z.string()) }).passthrough();
 export const OmpBranchResultSchema = z
   .object({ text: z.string().optional(), cancelled: z.boolean().optional() })
   .passthrough();

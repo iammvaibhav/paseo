@@ -7,10 +7,7 @@ import {
   resolveUnattendedModeId,
   type UnattendedModeCandidate,
 } from "@/history-ask/unattended-mode";
-import { buildCommanderBrief } from "./brief";
-
-export const MISSION_CONTROL_LABEL_KEY = "paseo.mission-control";
-export const MISSION_CONTROL_LABEL_VALUE = "commander";
+import { commanderLabels } from "./labels";
 
 /**
  * The Commander is host-wide; `~` is the only cwd that always exists on every host.
@@ -24,15 +21,31 @@ export const COMMANDER_TITLE = "Commander";
 const DEFAULT_PROVIDER: AgentProvider = "claude";
 
 const COMMANDER_HOST_PREFERENCES_KEY = "@paseo:mission-control-commander-host";
+const COMMANDER_MODEL_PREFERENCES_KEY = "@paseo:mission-control-commander-model";
 
-export function commanderLabels(): Record<string, string> {
-  return {
-    [MISSION_CONTROL_LABEL_KEY]: MISSION_CONTROL_LABEL_VALUE,
-  };
-}
+/**
+ * The Commander's hard tool restriction (spec: Commander contract). Only Paseo
+ * fleet/agent tools; no bash, no file editing, no task subagents. The daemon
+ * filters the injected Paseo host-tool catalog to these names and the omp
+ * provider launches with builtin tools disabled.
+ */
+export const COMMANDER_TOOL_ALLOWLIST = [
+  "fleet_list_agents",
+  "fleet_create_agent",
+  "fleet_send_prompt",
+  "create_agent",
+  "send_agent_prompt",
+  "get_agent_status",
+  "get_agent_activity",
+  "list_agents",
+  "create_workspace",
+  "list_workspaces",
+  "history_search",
+] as const;
 
-export function isCommanderAgent(labels: Record<string, string> | null | undefined): boolean {
-  return labels?.[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE;
+interface CommanderModelMemory {
+  provider: AgentProvider;
+  model: string;
 }
 
 export interface LaunchCommanderInput {
@@ -51,7 +64,7 @@ export interface LaunchCommanderResult {
 }
 
 export async function launchCommander(input: LaunchCommanderInput): Promise<LaunchCommanderResult> {
-  const { provider, model } = await resolveCommanderProviderModel();
+  const { provider, model } = await resolveCommanderProviderModel(input.serverId);
   const modeId = await resolveCommanderModeId(input, provider);
 
   const agent = await input.client.createAgent({
@@ -61,8 +74,12 @@ export async function launchCommander(input: LaunchCommanderInput): Promise<Laun
       ...(modeId ? { modeId } : {}),
       ...(model ? { model } : {}),
       title: COMMANDER_TITLE,
+      // Replace omp's coding harness with the Commander contract + context pack.
+      // The daemon builds the actual system prompt at create time (the context
+      // pack lives on the host); no visible brief message is sent.
+      systemPromptMode: "replace",
+      toolAllowlist: [...COMMANDER_TOOL_ALLOWLIST],
     },
-    initialPrompt: buildCommanderBrief(),
     labels: commanderLabels(),
   });
 
@@ -72,11 +89,15 @@ export async function launchCommander(input: LaunchCommanderInput): Promise<Laun
   };
 }
 
-/** Orchestration preferences → default provider. No per-host override: the commander host picker is separate. */
-async function resolveCommanderProviderModel(): Promise<{
+/** Last model the user picked for the Commander on this host, else orchestration preferences. */
+async function resolveCommanderProviderModel(serverId: string): Promise<{
   provider: AgentProvider;
   model: string | undefined;
 }> {
+  const remembered = await loadCommanderModel(serverId);
+  if (remembered) {
+    return { provider: remembered.provider, model: remembered.model };
+  }
   const preferences = await createAgentPreferencesService.load();
   const effective = resolveEffectiveFormPreferences(preferences, {
     workspaceId: null,
@@ -134,4 +155,49 @@ export async function saveCommanderHostServerId(serverId: string): Promise<void>
     return;
   }
   await AsyncStorage.setItem(COMMANDER_HOST_PREFERENCES_KEY, trimmed);
+}
+
+/**
+ * Per-host "last commander model" memory: the model the user last picked for
+ * the Commander via the normal agent picker. The screen's model picker saves
+ * here; launch prefers it over orchestration preferences.
+ */
+export async function saveCommanderModel(
+  serverId: string,
+  memory: CommanderModelMemory,
+): Promise<void> {
+  const trimmedServerId = serverId.trim();
+  if (!trimmedServerId || !memory.model.trim()) {
+    return;
+  }
+  const current = await loadCommanderModels();
+  await AsyncStorage.setItem(
+    COMMANDER_MODEL_PREFERENCES_KEY,
+    JSON.stringify({ ...current, [trimmedServerId]: memory }),
+  );
+}
+
+export async function loadCommanderModel(serverId: string): Promise<CommanderModelMemory | null> {
+  const models = await loadCommanderModels();
+  const memory = models[serverId];
+  if (!memory || typeof memory.provider !== "string" || typeof memory.model !== "string") {
+    return null;
+  }
+  return memory;
+}
+
+async function loadCommanderModels(): Promise<Record<string, CommanderModelMemory>> {
+  try {
+    const raw = await AsyncStorage.getItem(COMMANDER_MODEL_PREFERENCES_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return {};
+    }
+    return parsed as Record<string, CommanderModelMemory>;
+  } catch {
+    return {};
+  }
 }

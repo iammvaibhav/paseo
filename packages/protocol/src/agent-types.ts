@@ -461,6 +461,8 @@ export interface AgentSessionConfig {
    * Mapped by each provider to its native instruction field.
    */
   systemPrompt?: string;
+  systemPromptMode?: "append" | "replace";
+  toolAllowlist?: string[];
   modeId?: string;
   model?: string;
   thinkingOptionId?: string;

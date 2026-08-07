@@ -609,6 +609,10 @@ type MissionControlPeersListPayload = Extract<
   SessionOutboundMessage,
   { type: "mission_control.peers.list.response" }
 >["payload"];
+type MissionControlContextFetchPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.context.fetch.response" }
+>["payload"];
 export type FetchAgentTimelinePayload = FetchAgentTimelineResponseMessage["payload"];
 export type AgentForkContextPayload = AgentForkContextResponseMessage["payload"];
 
@@ -2668,6 +2672,7 @@ export class DaemonClient {
       labels?: Record<string, string>;
       provider?: string;
       model?: string | null;
+      modeId?: string;
     },
   ): Promise<void> {
     const requestId = this.createRequestId();
@@ -2680,6 +2685,7 @@ export class DaemonClient {
         : {}),
       ...(updates.provider !== undefined ? { provider: updates.provider } : {}),
       ...(updates.model !== undefined ? { model: updates.model } : {}),
+      ...(updates.modeId !== undefined ? { modeId: updates.modeId } : {}),
       requestId,
     });
     const payload = await this.sendRequest({
@@ -5697,6 +5703,16 @@ export class DaemonClient {
         type: "mission_control.peers.list.request",
       },
       responseType: "mission_control.peers.list.response",
+    });
+  }
+
+  async missionControlContextFetch(requestId?: string): Promise<MissionControlContextFetchPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: {
+        type: "mission_control.context.fetch.request",
+      },
+      responseType: "mission_control.context.fetch.response",
     });
   }
 

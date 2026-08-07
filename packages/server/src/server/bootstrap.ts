@@ -151,6 +151,9 @@ import { LoopService } from "./loop-service.js";
 import { ScheduleService } from "./schedule/service.js";
 import { MissionControlService } from "./mission-control/service.js";
 import { MissionControlDigest } from "./mission-control/digest.js";
+import { createFleetContextDigestProvider } from "./mission-control/context.js";
+import { AgentNamingService } from "./mission-control/naming.js";
+import { runIdentityBackfill } from "./mission-control/backfill.js";
 import { MAX_WEBHOOK_BODY_BYTES, WebhookService } from "./webhook/service.js";
 import { createWebhookRouteHandler } from "./webhook/route.js";
 import { PeerManager } from "./peers/peer-manager.js";
@@ -323,6 +326,51 @@ export function createTerminalActivityRouteHandler(
       res.status(500).json({ error: "Failed to update terminal activity" });
     }
   };
+}
+
+function applyHostAllowlist(
+  app: express.Express,
+  listenTarget: ListenTarget,
+  configuredHostnames: HostnamesConfig | undefined,
+): void {
+  // Host allowlist / DNS rebinding protection (vite-like semantics).
+  // For non-TCP (unix sockets), skip host validation.
+  if (listenTarget.type === "tcp") {
+    app.use((req, res, next) => {
+      const hostHeader = typeof req.headers.host === "string" ? req.headers.host : undefined;
+      if (!isHostnameAllowed(hostHeader, configuredHostnames)) {
+        res.status(403).json({ error: "Invalid Host header" });
+        return;
+      }
+      next();
+    });
+  }
+}
+
+function createCorsMiddleware(allowedOrigins: ReadonlySet<string>): express.RequestHandler {
+  return (req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin && (allowedOrigins.has("*") || allowedOrigins.has(origin))) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+      res.setHeader("Access-Control-Allow-Credentials", "true");
+    }
+    if (req.method === "OPTIONS") {
+      res.status(204).end();
+      return;
+    }
+    next();
+  };
+}
+
+function resolveServiceProxyListenTarget(
+  serviceProxy: PaseoDaemonConfig["serviceProxy"],
+): ListenTarget | null {
+  if (!serviceProxy?.standaloneListen) {
+    return null;
+  }
+  return parseListenString(serviceProxy.standaloneListen);
 }
 
 function summarizeAgentMcpDebugMessage(body: unknown): Record<string, unknown> {
@@ -684,16 +732,7 @@ export async function createPaseoDaemon(
 
   // Host allowlist / DNS rebinding protection (vite-like semantics).
   // For non-TCP (unix sockets), skip host validation.
-  if (listenTarget.type === "tcp") {
-    app.use((req, res, next) => {
-      const hostHeader = typeof req.headers.host === "string" ? req.headers.host : undefined;
-      if (!isHostnameAllowed(hostHeader, configuredHostnames)) {
-        res.status(403).json({ error: "Invalid Host header" });
-        return;
-      }
-      next();
-    });
-  }
+  applyHostAllowlist(app, listenTarget, configuredHostnames);
 
   // CORS - allow same-origin + configured origins
   const allowedOrigins = new Set([
@@ -710,20 +749,7 @@ export async function createPaseoDaemon(
       : []),
   ]);
 
-  app.use((req, res, next) => {
-    const origin = req.headers.origin;
-    if (origin && (allowedOrigins.has("*") || allowedOrigins.has(origin))) {
-      res.setHeader("Access-Control-Allow-Origin", origin);
-      res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-      res.setHeader("Access-Control-Allow-Credentials", "true");
-    }
-    if (req.method === "OPTIONS") {
-      res.status(204).end();
-      return;
-    }
-    next();
-  });
+  app.use(createCorsMiddleware(allowedOrigins));
 
   // Local, harmless, and token-gated; deliberately skips daemon auth.
   app.post(
@@ -847,9 +873,7 @@ export async function createPaseoDaemon(
   // requests that don't match a registered script route.
   httpServer.on("upgrade", serviceProxy.upgradeHandler({ passthroughUnknown: true }));
 
-  if (config.serviceProxy?.standaloneListen) {
-    serviceProxyListenTarget = parseListenString(config.serviceProxy.standaloneListen);
-  }
+  serviceProxyListenTarget = resolveServiceProxyListenTarget(config.serviceProxy);
 
   const agentStorage = new AgentStorage(config.agentStoragePath, logger);
   const projectRegistry = new FileBackedProjectRegistry(
@@ -891,11 +915,24 @@ export async function createPaseoDaemon(
     extraClients: config.agentClients,
   });
   const initialAgentManagerState = providerSnapshotManager.getAgentManagerProviderState();
-  const agentManager = new AgentManager({
+  // Mission Control naming: assigns a fleet-wide name to every created agent
+  // (except paseo.mission-control=* labeled agents). Constructed before
+  // AgentManager so its onAgentCreated hook can reference it; the manager is
+  // accessed lazily via the accessor.
+  const agentNamingService: AgentNamingService = new AgentNamingService({
+    agentStorage,
+    getAgentManager: () => agentManager,
+    readTheme: () => daemonConfigStore.get().missionControl?.naming?.theme,
+    logger,
+  });
+  const agentManager: AgentManager = new AgentManager({
     clients: initialAgentManagerState.clients,
     providerDefinitions: initialAgentManagerState.providerDefinitions,
     registry: agentStorage,
     appendSystemPrompt: config.appendSystemPrompt,
+    missionControlSelfReportEnabled:
+      daemonConfigStore.get().missionControl?.selfReport?.enabled ?? true,
+    onAgentCreated: (params) => agentNamingService.assignNameForCreatedAgent(params),
     onWorkspaceStateMayHaveChanged: ({ cwd }) => {
       workspaceGitService.onWorkspaceStateMayHaveChanged(cwd);
     },
@@ -1319,10 +1356,24 @@ export async function createPaseoDaemon(
   });
   logger.info({ elapsed: elapsed() }, "Schedule service initialized");
 
-  const missionControlDigest = new MissionControlDigest({
+  const missionControlDigest: MissionControlDigest = new MissionControlDigest({
     agentManager,
     agentStorage,
     logger,
+    // peerManager is constructed after the digest (it needs the digest as its
+    // event sink), so the context provider resolves it lazily at flush time.
+    contextProvider: createFleetContextDigestProvider({
+      agentManager,
+      agentStorage,
+      workspaceRegistry,
+      projectRegistry,
+      providerSnapshotManager,
+      peerManager: () => peerManager,
+      daemonConfigStore,
+      serverId,
+      hostName: getHostname(),
+      logger,
+    }),
   });
   const missionControlService = new MissionControlService({
     paseoHome: config.paseoHome,
@@ -1338,6 +1389,26 @@ export async function createPaseoDaemon(
   await missionControlService.start();
   missionControlDigest.start();
   logger.info({ elapsed: elapsed() }, "Mission control service initialized");
+
+  // Identity backfill: names for agents missing one (free), descriptions for
+  // closed agents and titles for untitled workspaces via the structured
+  // generation chain, capped to avoid a first-boot stampede. Fire-and-forget:
+  // boot must not block on LLM calls; new agents are named by the
+  // onAgentCreated hook regardless.
+  void runIdentityBackfill({
+    agentManager,
+    agentStorage,
+    naming: agentNamingService,
+    providerSnapshotManager,
+    workspaceRegistry,
+    workspaceGitService,
+    readDaemonConfig: () => ({
+      metadataGeneration: daemonConfigStore.get().metadataGeneration,
+    }),
+    logger,
+  }).catch((error) => {
+    logger.warn({ err: error }, "Identity backfill failed");
+  });
 
   const tunnelManager = new TunnelManager({
     config: config.tunnel ?? {
@@ -1361,7 +1432,7 @@ export async function createPaseoDaemon(
     "Tunnel manager initialized",
   );
 
-  const peerManager = new PeerManager({
+  const peerManager: PeerManager = new PeerManager({
     peers: loadPersistedConfig(config.paseoHome).peers ?? [],
     logger,
     appVersion: daemonVersion,
@@ -1445,6 +1516,8 @@ export async function createPaseoDaemon(
     browserToolsEnabled: browserToolsPolicy.isEnabled(),
     browserToolsBroker,
     peerManager,
+    missionControlService,
+    serverId,
     paseoHome: config.paseoHome,
     worktreesRoot: config.worktreesRoot,
     callerAgentId: runtime.callerAgentId,

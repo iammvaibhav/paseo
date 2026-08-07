@@ -71,6 +71,7 @@ import { ChatOutlineRail } from "@/agent-stream/chat-outline/rail";
 import { useChatOutline } from "@/agent-stream/chat-outline/use-chat-outline";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { planTimelineTailFetch } from "@/timeline/timeline-sync-plan";
+import { isPaseoSystemMessage, PaseoSystemRow } from "@/screens/mission-control/paseo-system-row";
 import {
   CompletedTurnFooterRow,
   TurnFooter,
@@ -643,6 +644,13 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
 
     const renderUserMessageItem = useCallback(
       (layoutItem: StreamLayoutItem, item: Extract<StreamItem, { kind: "user_message" }>) => {
+        // `<paseo-system>` envelopes (fleet digests, schedule fires, notify-on-
+        // finish) are system-injected context, not user prose: render them as
+        // the same collapsed divider the Mission Control thread uses so the
+        // raw envelope text never leaks into any transcript.
+        if (isPaseoSystemMessage(item.text)) {
+          return <PaseoSystemRow text={item.text} timestamp={item.timestamp.getTime()} />;
+        }
         return (
           <UserMessage
             serverId={resolvedServerId}

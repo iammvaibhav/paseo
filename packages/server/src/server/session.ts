@@ -2,7 +2,7 @@ import equal from "fast-deep-equal";
 import { v4 as uuidv4 } from "uuid";
 import { lstat, mkdir, mkdtemp, rename, rm, stat } from "node:fs/promises";
 import { basename, resolve, sep } from "path";
-import { homedir } from "node:os";
+import { homedir, hostname as osHostname } from "node:os";
 import { CLIENT_CAPS, type ClientCapability } from "@getpaseo/protocol/client-capabilities";
 import {
   serializeAgentStreamEvent,
@@ -44,7 +44,7 @@ import {
   supportsDiskTimeline,
   tryReadProviderTimelineFromDisk,
 } from "./agent/provider-disk-history.js";
-import type { AgentTimelineItem } from "./agent/agent-sdk-types.js";
+import type { ImportedTimelineEntry } from "./agent/agent-sdk-types.js";
 import {
   formatSystemNotificationPrompt,
   sendPromptToAgent,
@@ -170,6 +170,15 @@ import { WebhookSession } from "./session/webhook/webhook-session.js";
 import type { WebhookService } from "./webhook/service.js";
 import type { PeerManager } from "./peers/peer-manager.js";
 import type { MissionControlService } from "./mission-control/service.js";
+import {
+  buildCommanderLaunchSystemPrompt,
+  buildLocalContextPayload,
+} from "./mission-control/context.js";
+import {
+  DEFAULT_COMMANDER_CONTRACT,
+  MISSION_CONTROL_LABEL_KEY,
+  MISSION_CONTROL_LABEL_VALUE,
+} from "./mission-control/commander-contract.js";
 import { PlannotatorSession } from "./session/plannotator/plannotator-session.js";
 import { ProviderCatalogSession } from "./session/provider/provider-catalog-session.js";
 import { WorkspaceFilesSession } from "./session/files/workspace-files-session.js";
@@ -516,6 +525,7 @@ export interface SessionOptions {
     getSpeechReadiness?: () => SpeechReadinessSnapshot;
   };
   serverId?: string;
+  hostName?: string;
   daemonVersion?: string;
   daemonRuntimeConfig?: DaemonRuntimeConfig;
   getWebSocketRuntimeMetrics?: () => DaemonWebSocketRuntimeDiagnosticSnapshot | null;
@@ -695,6 +705,8 @@ export class Session {
   private readonly webhookSession: WebhookSession;
   private readonly peerManager: PeerManager | null;
   private readonly missionControlService: MissionControlService | null;
+  private readonly serverId: string;
+  private readonly hostName: string;
   private readonly plannotatorSession: PlannotatorSession;
   private readonly providerCatalogSession: ProviderCatalogSession;
   private readonly workspaceFilesSession: WorkspaceFilesSession;
@@ -758,22 +770,23 @@ export class Session {
       voiceBridge,
       dictation,
       serverId,
+      hostName,
       daemonVersion,
       daemonRuntimeConfig,
       getWebSocketRuntimeMetrics,
     } = options;
     this.clientId = clientId;
     this.scopes = [...scopes];
-    this.appVersion = appVersion ?? null;
+    this.appVersion = orNull(appVersion);
     this.clientCapabilities = parseClientCapabilities(clientCapabilities);
     this.sessionId = uuidv4();
     this.onMessage = onMessage;
-    this.onMessageToSource = onMessageToSource ?? null;
-    this.onBinaryMessage = onBinaryMessage ?? null;
-    this.onBinaryMessageToSource = onBinaryMessageToSource ?? null;
+    this.onMessageToSource = orNull(onMessageToSource);
+    this.onBinaryMessage = orNull(onBinaryMessage);
+    this.onBinaryMessageToSource = orNull(onBinaryMessageToSource);
     this.getTransportBufferedAmount = getTransportBufferedAmount ?? (() => 0);
-    this.onLifecycleIntent = onLifecycleIntent ?? null;
-    this.onWorkspaceRecovered = onWorkspaceRecovered ?? null;
+    this.onLifecycleIntent = orNull(onLifecycleIntent);
+    this.onWorkspaceRecovered = orNull(onWorkspaceRecovered);
     this.pushTokenStore = pushTokenStore;
     this.paseoHome = paseoHome;
     this.worktreesRoot = worktreesRoot;
@@ -890,6 +903,8 @@ export class Session {
     this.plannotatorSession = customSessions.plannotatorSession;
     this.peerManager = orNull(peerManager);
     this.missionControlService = orNull(missionControlService);
+    this.serverId = serverId ?? "local";
+    this.hostName = hostName ?? osHostname();
     this.providerCatalogSession = new ProviderCatalogSession({
       host: {
         emit: (msg) => this.emit(msg),
@@ -1006,13 +1021,13 @@ export class Session {
       logger: this.sessionLogger,
     });
     this.providerSnapshotManager = providerSnapshotManager;
-    this.serviceProxy = serviceProxy ?? null;
-    this.scriptRuntimeStore = scriptRuntimeStore ?? null;
+    this.serviceProxy = orNull(serviceProxy);
+    this.scriptRuntimeStore = orNull(scriptRuntimeStore);
     this.workspaceSetupSnapshots = workspaceSetupSnapshots ?? new Map();
-    this.getDaemonTcpPort = getDaemonTcpPort ?? null;
-    this.getDaemonTcpHost = getDaemonTcpHost ?? null;
-    this.serviceProxyPublicBaseUrl = serviceProxyPublicBaseUrl ?? null;
-    this.resolveScriptHealth = resolveScriptHealth ?? null;
+    this.getDaemonTcpPort = orNull(getDaemonTcpPort);
+    this.getDaemonTcpHost = orNull(getDaemonTcpHost);
+    this.serviceProxyPublicBaseUrl = orNull(serviceProxyPublicBaseUrl);
+    this.resolveScriptHealth = orNull(resolveScriptHealth);
     this.workspaceScripts = createWorkspaceScriptsService({
       serviceProxy: this.serviceProxy,
       scriptRuntimeStore: this.scriptRuntimeStore,
@@ -1762,9 +1777,14 @@ export class Session {
     return this.enrichAgentPayload(toAgentPayload(agent));
   }
 
+  /**
+   * Availability means "this daemon can spawn the provider", i.e. it has a
+   * materialized client. `listRegisteredProviderIds()` would be wrong here:
+   * it returns every known provider definition, disabled ones included.
+   */
   private buildStoredAgentPayload(
     record: StoredAgentRecord,
-    registeredProviderIds = new Set(this.providerSnapshotManager.listRegisteredProviderIds()),
+    registeredProviderIds = new Set(this.agentManager.getRegisteredProviderIds()),
   ): AgentSnapshotPayload {
     return buildStoredAgentPayload(record, registeredProviderIds);
   }
@@ -1905,6 +1925,7 @@ export class Session {
       this.dispatchPlannotatorMessage(msg) ??
       this.dispatchMissionControlPeersMessage(msg) ??
       this.dispatchMissionControlEventsMessage(msg) ??
+      this.dispatchMissionControlContextMessage(msg) ??
       this.dispatchMiscMessage(msg);
     if (promise) await promise;
   }
@@ -1977,6 +1998,34 @@ export class Session {
     this.emit({
       type: "mission_control.events.ack.response",
       payload: { requestId: msg.requestId },
+    });
+  }
+
+  private dispatchMissionControlContextMessage(
+    msg: SessionInboundMessage,
+  ): Promise<void> | undefined {
+    switch (msg.type) {
+      case "mission_control.context.fetch.request":
+        return this.handleMissionControlContextFetchRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  private async handleMissionControlContextFetchRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.context.fetch.request" }>,
+  ): Promise<void> {
+    const payload = await buildLocalContextPayload({
+      workspaceRegistry: this.workspaceRegistry,
+      projectRegistry: this.projectRegistry,
+      providerSnapshotManager: this.providerSnapshotManager,
+      agentManager: this.agentManager,
+      agentStorage: this.agentStorage,
+      serverId: this.serverId,
+    });
+    this.emit({
+      type: "mission_control.context.fetch.response",
+      payload: { requestId: msg.requestId, ...payload },
     });
   }
 
@@ -2125,6 +2174,7 @@ export class Session {
           msg.labels,
           msg.provider,
           msg.model,
+          msg.modeId,
           msg.requestId,
         );
       case "project.rename.request":
@@ -2763,6 +2813,7 @@ export class Session {
     labels: Record<string, string> | undefined,
     provider: string | undefined,
     model: string | null | undefined,
+    modeId: string | undefined,
     requestId: string,
   ): Promise<void> {
     this.sessionLogger.info(
@@ -2773,6 +2824,7 @@ export class Session {
         labelCount: labels ? Object.keys(labels).length : 0,
         provider,
         model,
+        modeId,
       },
       "session: update_agent_request",
     );
@@ -2780,7 +2832,7 @@ export class Session {
     try {
       const result = await updateAgentCommand(
         { agentManager: this.agentManager },
-        { agentId, name, labels, provider, model },
+        { agentId, name, labels, provider, model, modeId },
       );
 
       if (!result.accepted) {
@@ -3483,6 +3535,33 @@ export class Session {
     });
     config = { ...config, cwd: intent.cwd };
 
+    // The Commander's system prompt is built server-side at create time: the
+    // context pack lives on the daemon, so every (re)launch gets a fresh
+    // worldview instead of a stale app-side brief. Replace mode keeps the
+    // built prompt out from under omp's coding harness.
+    if (intent.labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE) {
+      const contract =
+        this.daemonConfigStore.get().missionControl?.commanderInstructions?.trim() ||
+        DEFAULT_COMMANDER_CONTRACT;
+      config = {
+        ...config,
+        systemPromptMode: "replace",
+        systemPrompt: await buildCommanderLaunchSystemPrompt({
+          agentManager: this.agentManager,
+          agentStorage: this.agentStorage,
+          workspaceRegistry: this.workspaceRegistry,
+          projectRegistry: this.projectRegistry,
+          providerSnapshotManager: this.providerSnapshotManager,
+          peerManager: this.peerManager,
+          daemonConfigStore: this.daemonConfigStore,
+          serverId: this.serverId,
+          hostName: this.hostName,
+          logger: this.sessionLogger,
+          contract,
+        }),
+      };
+    }
+
     return {
       config,
       intent,
@@ -3656,7 +3735,7 @@ export class Session {
       return;
     }
     const sessionId = record.persistence?.sessionId;
-    let diskItems: AgentTimelineItem[] | null = null;
+    let diskItems: ImportedTimelineEntry[] | null = null;
     if (sessionId && supportsDiskTimeline(record.provider)) {
       diskItems = await tryReadProviderTimelineFromDisk(
         {
@@ -3700,9 +3779,7 @@ export class Session {
         if (!record) {
           throw new Error(`Agent not found: ${agentId}`);
         }
-        const registeredProviderIds = new Set(
-          this.providerSnapshotManager.listRegisteredProviderIds(),
-        );
+        const registeredProviderIds = new Set(this.agentManager.getRegisteredProviderIds());
         if (!isStoredAgentProviderAvailable(record, registeredProviderIds)) {
           this.sessionLogger.info(
             { agentId, provider: record.provider },
@@ -4260,7 +4337,7 @@ export class Session {
     // (excluding internal agents which are for ephemeral system tasks)
     const registryRecords = await this.agentStorage.list();
     const liveIds = new Set(agentSnapshots.map((a) => a.id));
-    const registeredProviderIds = new Set(this.providerSnapshotManager.listRegisteredProviderIds());
+    const registeredProviderIds = new Set(this.agentManager.getRegisteredProviderIds());
     const persistedAgents = registryRecords
       .filter((record) => !liveIds.has(record.id) && !record.internal)
       // Keep raw-record filters ahead of projection; seeded homes can carry thousands of archived agents.
@@ -6518,7 +6595,7 @@ export class Session {
       throw new Error(`Agent not found: ${agentId}`);
     }
 
-    const registeredProviderIds = new Set(this.providerSnapshotManager.listRegisteredProviderIds());
+    const registeredProviderIds = new Set(this.agentManager.getRegisteredProviderIds());
     const providerAvailable = isStoredAgentProviderAvailable(record, registeredProviderIds);
 
     const sessionId = record.persistence?.sessionId;
@@ -6914,11 +6991,11 @@ export class Session {
     msg: Extract<SessionInboundMessage, { type: "agent.fork.request" }>,
   ): Promise<void> {
     try {
-      await ensureAgentLoaded(msg.sourceAgentId, {
-        agentManager: this.agentManager,
-        agentStorage: this.agentStorage,
-        logger: this.sessionLogger,
-      });
+      // Forking only needs the stored record plus a seeded timeline
+      // (`forkAgentToSibling` falls back to storage when the source is not
+      // live). Resolve through the timeline context so an agent whose provider
+      // is currently unavailable can still be forked from its history.
+      await this.resolveTimelineFetchContext(msg.sourceAgentId);
       const result = await forkAgentToSibling({
         agentManager: this.agentManager,
         agentStorage: this.agentStorage,
