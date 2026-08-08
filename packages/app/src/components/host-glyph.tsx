@@ -18,10 +18,15 @@ export interface HostGlyphProps {
   serverId: string;
   /** Host alias/label; its first character becomes the default initial. */
   label: string;
-  /** Glyph diameter. Rows draw at 16; the inspector header can go larger. */
-  size?: number;
+  /**
+   * Glyph diameter. "sm" is the dense metadata-chip size used by Mission
+   * Control cards; numeric sizes remain available for established surfaces.
+   */
+  size?: number | "sm";
   testID?: string;
 }
+
+const SMALL_GLYPH_SIZE = 14;
 
 /**
  * A host's face everywhere in the app — the Mission Control board, the sidebar
@@ -41,6 +46,7 @@ export interface HostGlyphProps {
  * The tooltip carries the full host name.
  */
 export function HostGlyph({ serverId, label, size = 16, testID }: HostGlyphProps) {
+  const resolvedSize = size === "sm" ? SMALL_GLYPH_SIZE : size;
   const { config } = useDaemonConfig(serverId);
   const connectionStatus = useHostRuntimeConnectionStatus(serverId);
 
@@ -55,11 +61,11 @@ export function HostGlyph({ serverId, label, size = 16, testID }: HostGlyphProps
   const glyphStyle = useMemo(
     () => [
       FALLBACK_LAYOUT,
-      { width: size, height: size, borderRadius: size / 2 },
+      { width: resolvedSize, height: resolvedSize, borderRadius: resolvedSize / 2 },
       { backgroundColor: identityColor(colorName) },
       signal !== "none" && styles.dimmed,
     ],
-    [colorName, signal, size],
+    [colorName, resolvedSize, signal],
   );
 
   // Emoji render at roughly their font size while letters sit at ~0.55em, so a
@@ -71,8 +77,11 @@ export function HostGlyph({ serverId, label, size = 16, testID }: HostGlyphProps
     textScale = glyphUnits > 1 ? 0.5 : 0.62;
   }
   const textStyle = useMemo(
-    () => [WHITE_TEXT, { fontSize: Math.round(size * textScale), lineHeight: size }],
-    [size, textScale],
+    () => [
+      WHITE_TEXT,
+      { fontSize: Math.round(resolvedSize * textScale), lineHeight: resolvedSize },
+    ],
+    [resolvedSize, textScale],
   );
 
   const displayName = label.trim().length > 0 ? label : serverId;
@@ -82,7 +91,7 @@ export function HostGlyph({ serverId, label, size = 16, testID }: HostGlyphProps
         pointerEvents="none"
         style={[
           styles.statusRing,
-          { borderRadius: size / 2 },
+          { borderRadius: resolvedSize / 2 },
           signal === "warning" ? styles.statusRingWarning : styles.statusRingDanger,
         ]}
       />

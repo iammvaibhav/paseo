@@ -8,7 +8,7 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
-import { Dimensions, Text, View } from "react-native";
+import { Dimensions, Pressable, Text, View, type GestureResponderEvent } from "react-native";
 import { useTranslation } from "react-i18next";
 import { FadeIn, FadeOut } from "react-native-reanimated";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
@@ -28,8 +28,6 @@ import { getForgePresentation, normalizeForge } from "@/git/forge";
 import { ForgeBrandIcon } from "@/git/forge-icon";
 import type { Theme } from "@/styles/theme";
 import { DiffStat } from "@/components/diff-stat";
-import { Pressable } from "react-native";
-import type { GestureResponderEvent } from "react-native";
 import { Portal } from "@gorhom/portal";
 import { useBottomSheetModalInternal } from "@gorhom/bottom-sheet";
 import type { SidebarWorkspaceEntry } from "@/hooks/use-sidebar-workspaces-list";
@@ -42,6 +40,28 @@ import { useIsCompactFormFactor } from "@/constants/layout";
 import { FloatingSurface } from "@/components/ui/floating";
 import { isWeb } from "@/constants/platform";
 import { useHosts } from "@/runtime/host-runtime";
+import { useSessionStore } from "@/stores/session-store";
+
+/**
+ * The workspace's project description (the description field that exists:
+ * project records carry `projectDescription`; workspaces have no
+ * description of their own on the wire). Resolved per (serverId, workspaceId)
+ * through the session store — the hover card's only description source.
+ */
+function useWorkspaceProjectDescription(workspace: SidebarWorkspaceEntry): string | null {
+  return useSessionStore((state) => {
+    const session = state.sessions[workspace.serverId];
+    if (!session) {
+      return null;
+    }
+    const descriptor = session.workspaces.get(workspace.workspaceId);
+    if (!descriptor) {
+      return null;
+    }
+    const project = descriptor.projectId ? session.projects.get(descriptor.projectId) : null;
+    return project?.projectDescription ?? null;
+  });
+}
 
 interface Rect {
   x: number;
@@ -222,6 +242,7 @@ function WorkspaceHoverCardContent({
   contentRef: React.RefObject<View | null>;
 }): ReactElement | null {
   const { t } = useTranslation();
+  const projectDescription = useWorkspaceProjectDescription(workspace);
   const bottomSheetInternal = useBottomSheetModalInternal(true);
   const [triggerRect, setTriggerRect] = useState<Rect | null>(null);
   const [contentSize, setContentSize] = useState<{ width: number; height: number } | null>(null);
@@ -294,6 +315,15 @@ function WorkspaceHoverCardContent({
               {workspace.name}
             </Text>
           </View>
+          {projectDescription ? (
+            <Text
+              style={styles.cardDescription}
+              numberOfLines={3}
+              testID="hover-card-workspace-description"
+            >
+              {projectDescription}
+            </Text>
+          ) : null}
           {prHint ? <PrBadge hint={prHint} style={styles.cardInfoRow} /> : null}
           {workspace.diffStat ? (
             <View style={styles.cardInfoRow}>
@@ -604,6 +634,15 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: theme.fontWeight.normal,
     flex: 1,
     minWidth: 0,
+  },
+  // The project description under the workspace name: secondary text, wrapped
+  // up to three lines, same horizontal rhythm as the header and info rows.
+  cardDescription: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.xs,
+    lineHeight: 16,
+    paddingHorizontal: theme.spacing[3],
+    paddingBottom: theme.spacing[2],
   },
   cardInfoRow: {
     flexDirection: "row",

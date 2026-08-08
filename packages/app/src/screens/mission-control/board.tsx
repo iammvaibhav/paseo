@@ -1,14 +1,25 @@
 import {
   memo,
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
   type ReactElement,
   type RefObject,
 } from "react";
-import { FlatList, Text, View, type PressableStateCallbackType } from "react-native";
+import { createPortal } from "react-dom";
+import {
+  FlatList,
+  Modal,
+  Platform,
+  StatusBar,
+  Text,
+  View,
+  type PressableStateCallbackType,
+} from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { FadeIn, FadeOut } from "react-native-reanimated";
 import {
   Archive,
   CircleAlert,
@@ -33,8 +44,12 @@ import { useHoverSafeZone } from "@/hooks/use-hover-safe-zone";
 import { useMissionControlLifecycle } from "@/mission-control/use-mission-control-lifecycle";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
 import { HostGlyph } from "@/components/host-glyph";
+import { FloatingSurface } from "@/components/ui/floating";
+import { getOverlayRoot, OVERLAY_Z } from "@/lib/overlay-root";
+import { isWeb } from "@/constants/platform";
 import {
   LIFECYCLE_BUCKET_LABELS,
+  rowActivityMs,
   type LifecycleBucket,
   type LifecycleRow,
 } from "@/mission-control/lifecycle";
@@ -216,9 +231,12 @@ export function MissionControlBoard({
       if (item.kind === "offlineHost") {
         return (
           <View style={styles.offlineHostRow} key={itemKey(item)}>
-            <Text style={styles.offlineHostLabel} numberOfLines={1}>
-              {item.label}
-            </Text>
+            <HostGlyph
+              serverId={item.serverId}
+              label={item.label}
+              size="sm"
+              testID={`mission-control-offline-host-glyph-${item.serverId}`}
+            />
             <Text style={styles.offlineHostState}>offline</Text>
           </View>
         );
@@ -431,33 +449,144 @@ function AgentRowMenuContent({
   );
 }
 
-/** Hover identity popover (docs/hover.md): shows the agent title and the
- * current headline below the row when both are missing it renders nothing. */
+interface PopoverRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+function measurePopoverTrigger(element: View): Promise<PopoverRect> {
+  return new Promise((resolve) => {
+    element.measureInWindow((x, y, width, height) => {
+      resolve({ x, y, width, height });
+    });
+  });
+}
+
+// Native Modal onRequestClose (Android back button). Hoisted so the Modal
+// never re-creates a prop per render; the popover is hover-only (web) today.
+const noopRequestClose = () => undefined;
+
+/** Hover identity card (docs/hover.md + spec "Hover identity card"): shows
+ * the full agent title and its short description below the row, truncated
+ * compact; when both are missing it renders nothing.
+ *
+ * Rendered through the sanctioned floating-panel escape
+ * (docs/floating-panels.md Gotcha 1/2): web portals into the shared
+ * overlay-root at the tooltip layer, native opens a transparent Modal. An
+ * in-tree absolutely positioned popover paints BEHIND adjacent FlatList rows
+ * on web — later siblings stack above earlier ones regardless of zIndex.
+ * Positioning mirrors ui/tooltip.tsx: the trigger is measured with
+ * measureInWindow and the content is bottom-anchored below the row at the
+ * old in-tree offsets, so it needs no content-size round-trip (no
+ * two-measurement flash). Pointer-events stay none; the row's
+ * useHoverSafeZone bridges the gap. */
 function AgentRowIdentityPopover({
+  rowTriggerRef,
   rowPopoverRef,
   title,
-  headline,
+  description,
 }: {
+  rowTriggerRef: RefObject<View | null>;
   rowPopoverRef: RefObject<View | null>;
   title: string | null;
-  headline: string | null;
+  description: string | null;
 }): ReactElement | null {
-  if (title === null && headline === null) {
+  const [triggerRect, setTriggerRect] = useState<PopoverRect | null>(null);
+  const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    if (!rowTriggerRef.current) {
+      return;
+    }
+    const statusBarHeight = Platform.OS === "android" ? (StatusBar.currentHeight ?? 0) : 0;
+    let cancelled = false;
+    void measurePopoverTrigger(rowTriggerRef.current).then((rect) => {
+      if (!cancelled) {
+        setTriggerRect({ ...rect, y: rect.y + statusBarHeight });
+      }
+      return undefined;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [rowTriggerRef]);
+
+  useEffect(() => {
+    if (!triggerRect) {
+      return;
+    }
+    // Below the row, inset like the old in-tree popover (left/right
+    // theme.spacing[2], gap theme.spacing[1]).
+    setPosition({ x: triggerRect.x + 8, y: triggerRect.y + triggerRect.height + 4 });
+  }, [triggerRect]);
+
+  const frameStyle = useMemo(() => {
+    const width = triggerRect ? Math.max(0, triggerRect.width - 16) : undefined;
+    return {
+      position: "absolute" as const,
+      top: position?.y ?? -9999,
+      left: position?.x ?? -9999,
+      ...(width !== undefined ? { width } : {}),
+    };
+  }, [position?.x, position?.y, triggerRect]);
+
+  if (title === null && description === null) {
     return null;
   }
-  return (
-    <View ref={rowPopoverRef} pointerEvents="none" style={styles.identityPopover}>
+
+  const popover = (
+    <FloatingSurface
+      ref={rowPopoverRef}
+      pointerEvents="none"
+      entering={FadeIn.duration(80)}
+      exiting={FadeOut.duration(80)}
+      collapsable={false}
+      testID="mission-control-row-popover"
+      style={styles.identityPopover}
+      frameStyle={frameStyle}
+    >
       {title ? (
         <Text style={styles.identityPopoverTitle} numberOfLines={2}>
           {title}
         </Text>
       ) : null}
-      {headline ? (
-        <Text style={styles.identityPopoverDescription} numberOfLines={4}>
-          {headline}
+      {description ? (
+        <Text style={styles.identityPopoverDescription} numberOfLines={3}>
+          {description}
         </Text>
       ) : null}
-    </View>
+    </FloatingSurface>
+  );
+
+  // Web: avoid React Native Web's <Modal/> (it renders <dialog> and can steal
+  // focus / disrupt hover) — portal into the shared overlay-root at the
+  // tooltip layer so the popover floats above adjacent rows, dropdown menus,
+  // and modals. Same escape as ui/tooltip.tsx.
+  if (isWeb) {
+    return createPortal(
+      <View pointerEvents="none" style={styles.identityPopoverOverlay}>
+        {popover}
+      </View>,
+      getOverlayRoot(),
+    );
+  }
+
+  // Native: a transparent Modal floats above every sibling pane (hover is
+  // web-only today, so this is the defensive native path of the same escape).
+  return (
+    <Modal
+      visible
+      transparent
+      animationType="none"
+      statusBarTranslucent={Platform.OS === "android"}
+      onRequestClose={noopRequestClose}
+    >
+      <View pointerEvents="none" style={styles.identityPopoverModalOverlay}>
+        {popover}
+      </View>
+    </Modal>
   );
 }
 
@@ -471,7 +600,12 @@ function AgentRowImpl({
   hideAgentNames: boolean;
 }): ReactElement {
   const { agent } = row;
-  const timeLabel = useCompactTimeAgo(agent.lastActivityAt);
+  // Dormant rows derive their timestamp from the agent's real last activity
+  // (newest MC event) instead of the directory's rollout/boot fallback, so
+  // each dormant row reads when it last did anything (live bug: every Dormant
+  // row showed the same relative time).
+  const activityTime = useMemo(() => new Date(rowActivityMs(row)), [row]);
+  const timeLabel = useCompactTimeAgo(activityTime);
   const { Icon, mapping } = rowIconAndColor(row);
   const toast = useToast();
   const { archiveAgent, isArchivingAgent } = useArchiveAgent();
@@ -581,7 +715,7 @@ function AgentRowImpl({
         >
           <>
             <Icon size={12} uniProps={mapping} />
-            <HostGlyph serverId={agent.serverId} label={agent.serverLabel} size={16} />
+            <HostGlyph serverId={agent.serverId} label={agent.serverLabel} size="sm" />
             <AgentRowTextContent
               row={row}
               keyLine={keyLine}
@@ -615,9 +749,10 @@ function AgentRowImpl({
       </ContextMenu>
       {rowHovered ? (
         <AgentRowIdentityPopover
+          rowTriggerRef={rowTriggerRef}
           rowPopoverRef={rowPopoverRef}
           title={agent.title}
-          headline={headline}
+          description={agent.shortDescription ?? headline}
         />
       ) : null}
     </View>
@@ -681,18 +816,28 @@ const styles = StyleSheet.create((theme) => ({
     userSelect: "none",
   },
   // Hover envelope (docs/hover.md): plain View tracks pointer, the
-  // ContextMenuTrigger inside owns press. position: relative anchors the
-  // identity popover below the row.
+  // ContextMenuTrigger inside owns press. The identity popover portals out of
+  // this envelope (it can't paint above later siblings from inside the list),
+  // so the envelope only anchors the hover region.
   rowHoverEnvelope: {
     position: "relative",
   },
-  identityPopover: {
+  // Full-screen portal overlay in the shared overlay-root. The popover floats
+  // at the tooltip layer — above adjacent rows, dropdown menus, and modals.
+  identityPopoverOverlay: {
     position: "absolute",
-    top: "100%",
-    left: theme.spacing[2],
-    right: theme.spacing[2],
-    zIndex: 10,
-    marginTop: theme.spacing[1],
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    zIndex: OVERLAY_Z.tooltip,
+  },
+  identityPopoverModalOverlay: {
+    flex: 1,
+  },
+  // Content styling only — position/width live in the FloatingSurface
+  // frameStyle (measured, row-relative).
+  identityPopover: {
     gap: theme.spacing[1],
     padding: theme.spacing[3],
     borderRadius: theme.borderRadius.lg,
@@ -788,12 +933,6 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     marginHorizontal: theme.spacing[3],
     marginTop: theme.spacing[2],
-  },
-  offlineHostLabel: {
-    flexShrink: 1,
-    fontSize: theme.fontSize.sm,
-    fontWeight: theme.fontWeight.normal,
-    color: theme.colors.foregroundMuted,
   },
   offlineHostState: {
     fontSize: theme.fontSize.xs,

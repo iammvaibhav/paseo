@@ -15,6 +15,7 @@ import { MISSION_CONTROL_LABEL_KEY, MISSION_CONTROL_LABEL_VALUE } from "./comman
 import type { FleetContextDependencies } from "./context.js";
 import { buildCommanderLaunchConfig } from "./context.js";
 import { readBundledCommanderPrompt } from "./commander-contract.js";
+import type { MissionControlAppendInput } from "./store.js";
 
 /**
  * The Commander is host-wide; `~` is the only cwd that always exists on every
@@ -66,6 +67,18 @@ export interface EnsureCommanderOnBootInput {
   /** This host's own identity for the "designated host" check. */
   hostName: string;
   hostAlias: string | null;
+  /**
+   * Publishes a mission-control event. Used to surface a failed Commander
+   * recreate as a Needs-you card (kind "blocked", blocker severity) while the
+   * old Commander stays live. Absent in tests and on hosts without the
+   * service.
+   */
+  publishEvent?: (input: Omit<MissionControlAppendInput, "agentTitle">) => void;
+}
+
+/** The Needs-you card headline for a failed Commander spawn. */
+function commanderRecreateFailureHeadline(message: string): string {
+  return `Commander recreate failed — ${message}`;
 }
 
 export interface EnsureCommanderOnBootResult {
@@ -188,8 +201,11 @@ export async function archiveCommanderAgent(
 
 /**
  * Reset the Commander (mission_control.commander.reset + drift recreate):
- * archive the current one and spawn fresh with a new context pack. Shares the
- * drift-recreate machinery with ensureCommanderOnBoot.
+ * spawn a fresh one with a new context pack first; once it is live, archive
+ * the current one (its conversation stays in History). A failed spawn keeps
+ * the current Commander and surfaces the error as a Needs-you card instead of
+ * leaving the fleet with none. Shares the drift-recreate machinery with
+ * ensureCommanderOnBoot.
  */
 export async function resetCommander(
   input: EnsureCommanderOnBootInput,
@@ -213,15 +229,38 @@ export async function resetCommander(
   }
 
   const existing = await findExistingCommander(input.agentManager, input.agentStorage);
-  if (existing) {
-    await archiveCommanderAgent(input.agentManager, input.agentStorage, existing, input.logger);
+  // Spawn-first swap: the current Commander stays live until the fresh one is
+  // up. A failed spawn (live incident: "Provider claude is disabled") must not
+  // leave the fleet with NO Commander — the old one is kept and the error is
+  // surfaced as a Needs-you card. Only after the new Commander is live is the
+  // old one archived (conversation stays in History).
+  try {
+    const { agentId } = await spawnCommander(input);
+    if (existing) {
+      await archiveCommanderAgent(input.agentManager, input.agentStorage, existing, input.logger);
+    }
+    input.logger.info(
+      { component: "commander", agentId, archived: existing ?? null },
+      "mission_control.commander.reset_complete",
+    );
+    return { ok: true, agentId };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    input.logger.error(
+      { err: error, component: "commander", agentId: existing ?? null },
+      "mission_control.commander.reset_failed",
+    );
+    if (existing) {
+      input.publishEvent?.({
+        agentId: existing,
+        kind: "blocked",
+        source: "system",
+        severity: "blocker",
+        headline: commanderRecreateFailureHeadline(message),
+      });
+    }
+    return { ok: false, error: message };
   }
-  const { agentId } = await spawnCommander(input);
-  input.logger.info(
-    { component: "commander", agentId, archived: existing ?? null },
-    "mission_control.commander.reset_complete",
-  );
-  return { ok: true, agentId };
 }
 
 /**
@@ -233,8 +272,10 @@ export async function resetCommander(
  *
  * Drift auto-recreate (spec Commander): the stored Commander carries its build
  * hash (system prompt + tool allowlist); when it differs from the current
- * build's hash, the stale Commander is archived and a fresh one spawned — the
- * old conversation stays in History. Logs under component "commander".
+ * build's hash, a fresh Commander is spawned first and the stale one archived
+ * once the new one is live — the old conversation stays in History, and a
+ * failed spawn keeps the stale Commander running (surfaced as a Needs-you
+ * card) rather than leaving none. Logs under component "commander".
  */
 export async function ensureCommanderOnBoot(
   input: EnsureCommanderOnBootInput,
@@ -273,8 +314,8 @@ export async function ensureCommanderOnBoot(
       return { created: false, agentId: existing };
     }
     // Drift: a stale build (prompt/tool allowlist changed since spawn, or a
-    // pre-hash Commander). Archive it and spawn fresh — the old conversation
-    // stays in History. Kills the manual post-deploy archive step.
+    // pre-hash Commander). Logged before the swap so the boot trail shows what
+    // triggered it.
     input.logger.info(
       {
         component: "commander",
@@ -284,12 +325,40 @@ export async function ensureCommanderOnBoot(
       },
       "mission_control.commander.drift_detected",
     );
-    await archiveCommanderAgent(input.agentManager, input.agentStorage, existing, input.logger);
+    // Spawn-first swap: the stale Commander stays live until the fresh one is
+    // up, so a failed spawn keeps the fleet talking instead of leaving the
+    // board's empty state for minutes (live incident: "Provider claude is
+    // disabled" — the old Commander had already been archived). The old one is
+    // archived only after the new Commander is live; on failure it is kept and
+    // the error surfaces as a Needs-you card.
+    try {
+      const { agentId } = await spawnCommander(input);
+      await archiveCommanderAgent(input.agentManager, input.agentStorage, existing, input.logger);
+      input.logger.info(
+        { component: "commander", agentId, recreated: true },
+        "mission_control.commander.ensured",
+      );
+      return { created: true, agentId };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      input.logger.error(
+        { err: error, component: "commander", agentId: existing },
+        "mission_control.commander.recreate_failed",
+      );
+      input.publishEvent?.({
+        agentId: existing,
+        kind: "blocked",
+        source: "system",
+        severity: "blocker",
+        headline: commanderRecreateFailureHeadline(message),
+      });
+      return { created: false, agentId: existing };
+    }
   }
 
   const { agentId } = await spawnCommander(input);
   input.logger.info(
-    { component: "commander", agentId, recreated: Boolean(existing) },
+    { component: "commander", agentId, recreated: false },
     "mission_control.commander.ensured",
   );
   return { created: true, agentId };

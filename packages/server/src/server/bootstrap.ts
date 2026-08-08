@@ -1637,6 +1637,7 @@ export async function createPaseoDaemon(
         centralConfig: () => centralMissionControlConfig.get(),
         hostName: getHostname(),
         hostAlias: daemonConfigStore.get().missionControl?.hostAlias?.trim() || null,
+        publishEvent: (event) => missionControlService.publishEvent(event),
         launchContext: {
           agentManager,
           agentStorage,
@@ -1668,6 +1669,7 @@ export async function createPaseoDaemon(
     centralConfig: () => centralMissionControlConfig.get(),
     hostName: getHostname(),
     hostAlias: daemonConfigStore.get().missionControl?.hostAlias?.trim() || null,
+    publishEvent: (event) => missionControlService.publishEvent(event),
     launchContext: {
       agentManager,
       agentStorage,

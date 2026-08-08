@@ -77,13 +77,25 @@ interface StallTracking {
   /** Last report_status landing; run start counts as the origin. The nudge
    *  timer keys to this ONLY — timeline rows do not reset it. */
   lastStatusAt: number;
-  /** When the last status-ask steer was sent (either trigger); the single
-   *  outstanding-nudge guard. Cleared only when a report_status lands or the
-   *  run ends — no re-nudge until then. */
+  /** When the current lapse's FIRST status-ask steer was sent (either
+   *  trigger). The escalation window ("no response for escalateSeconds after
+   *  ANY nudge") anchors here — re-nudges within the lapse do not restart it.
+   *  Cleared when a report_status lands or the run ends. */
   nudgedAt: number | null;
-  /** Silence-trigger nudges sent this run (backoff counter). */
+  /** When the MOST RECENT status-ask steer was sent (either trigger). The
+   *  consecutive-nudge spacing anchor: a trigger re-fires only once its
+   *  effective (backed-off) interval has elapsed since this. */
+  lastNudgeAt: number | null;
+  /** Trigger that sent the last nudge. While a lapse is pending (nudgedAt
+   *  set) ONLY this trigger may re-nudge — consecutive unanswered nudges of
+   *  the same trigger widen; the other trigger waits for a fresh lapse. */
+  lastNudgeTrigger: "silence" | "status" | null;
+  /** Silence-trigger nudges sent this run (backoff counter). Widens the
+   *  silence interval on consecutive UNANSWERED lapses; a landed report_status
+   *  (compliance), a user prompt, or run end resets it to the base. */
   silenceNudges: number;
-  /** Cadence-trigger nudges sent this run (backoff counter). */
+  /** Cadence-trigger nudges sent this run (backoff counter). Same discipline
+   *  as silenceNudges: widen only on consecutive unanswered lapses. */
   statusNudges: number;
   /** When the recovery interrupt was proposed (ms epoch); null until then.
    *  One recovery per lapse; cleared with the nudge guard on report_status. */
@@ -267,6 +279,19 @@ export class MissionControlService {
     await this.store.initialize();
     await this.store.prune(this.readConfig().retentionDays);
     this.unsubscribe = this.agentManager.subscribe((event) => this.handleManagerEvent(event));
+    // Boot adoption of surviving runs (spec "Stall detection v2 + watchdog" →
+    // "Boot adoption of surviving runs"): records still `running` whose
+    // provider runtime is ALIVE are adopted into stall tracking immediately —
+    // a run that predates this daemon process never produced a
+    // lifecycle→running transition to arm on. Dead-runtime records just arm
+    // the reconcile 2-min heal window. The sweep re-runs this every 30s
+    // (idempotent), so the first post-restart-grace sweep backstops it.
+    void this.reconcileRunningRecords(Date.now()).catch((error: unknown) => {
+      this.logger.error(
+        { err: error, component: "stall", bootAdoption: true },
+        "Boot adoption scan failed",
+      );
+    });
     this.sweepTimer = setInterval(() => {
       this.sweepStalled();
       void this.runWatchdog().catch((error: unknown) => {
@@ -611,7 +636,7 @@ export class MissionControlService {
     const withinRateLimitWindow =
       lastSelfReportTs !== null &&
       Date.now() - Date.parse(lastSelfReportTs) < SELF_REPORT_RATE_LIMIT_MS;
-    const { kind, severity } = mapReportStatus(input);
+    const { kind, severity, reportKind } = mapReportStatus(input);
     if (withinRateLimitWindow && !this.store.wouldCoalesce(agentId, kind)) {
       return {
         ok: false,
@@ -626,6 +651,10 @@ export class MissionControlService {
       source: "self",
       severity,
       headline: input.headline,
+      // Keep the original report_status kind on the card so the app can icon
+      // progress vs milestone vs finding vs fix vs decision distinctly even
+      // though the feed collapses them onto the milestone/finding card kinds.
+      ...(reportKind !== undefined ? { reportKind } : {}),
       ...(input.detail ? { detail: input.detail } : {}),
       ...(input.proofs && input.proofs.length > 0 ? { proof: input.proofs } : {}),
     });
@@ -637,7 +666,14 @@ export class MissionControlService {
       tracking.lastStatusAt = Date.now();
       tracking.lastStreamAt = Date.now();
       tracking.nudgedAt = null;
+      tracking.lastNudgeAt = null;
+      tracking.lastNudgeTrigger = null;
       tracking.escalatedAt = null;
+      // Compliance breaks the consecutive-unanswered streak: backoff widens
+      // only on unanswered nudges, so a report_status returns both triggers
+      // to their configured base intervals.
+      tracking.silenceNudges = 0;
+      tracking.statusNudges = 0;
     }
     this.store.updateObservation(agentId, { lastSelfReportTs: event.ts });
     if (input.title !== undefined || input.description !== undefined) {
@@ -708,6 +744,8 @@ export class MissionControlService {
           lastStreamAt: Date.now(),
           lastStatusAt: Date.now(),
           nudgedAt: null,
+          lastNudgeAt: null,
+          lastNudgeTrigger: null,
           silenceNudges: 0,
           statusNudges: 0,
           escalatedAt: null,
@@ -845,10 +883,14 @@ export class MissionControlService {
    * - Silence trigger: NO timeline output at all for silenceNudgeSeconds.
    * - Cadence trigger: no report_status for statusNudgeSeconds even with
    *   timeline flowing. Whichever fires first sends the SAME status-ask
-   *   steer (forceSend, no approval in either mode), recorded auto-sent.
-   *   report_status resets both timers; timeline resets only the silence
-   *   timer; at most ONE outstanding nudge per agent (no re-nudge until a
-   *   status lands or the run ends); per-trigger exponential backoff.
+   *   steer (forceSend, no approval in either mode), recorded auto-sent,
+   *   verbose-only card. report_status resets both timers AND both backoff
+   *   counters; timeline resets only the silence timer.
+   * - Consecutive-lapse backoff: a trigger re-fires on the next lapse spaced
+   *   by its effective interval — unanswered nudges widen it (2x, 4x …,
+   *   capped at 30min) so a genuinely-silent run is nagged ever less often;
+   *   a landed report_status (compliance) returns both triggers to their
+   *   configured base interval. At most one nudge per sweep.
    * - Escalation = recovery: if, >escalateSeconds after ANY nudge, the agent
    *   produced NO response at all (no report_status AND no new timeline
    *   rows), propose an interrupt that starts a fresh run. Approval-gated
@@ -866,23 +908,21 @@ export class MissionControlService {
       if (this.stalledByAgent.has(agentId)) {
         continue;
       }
+      // Healed runs are dead (record -> error); never nudged or escalated.
+      if (tracking.healed) {
+        continue;
+      }
       // User-stopped runs are Done; never ask or recover them.
       if (this.store.getStopOrigin(agentId) === "user") {
         continue;
       }
-      // One outstanding nudge per agent: whichever trigger fires first wins,
-      // and neither re-fires until a report_status lands or the run ends.
-      if (tracking.nudgedAt === null) {
-        const silenceMs = now - tracking.lastStreamAt;
-        if (silenceMs >= nudgeBackoffMs(silenceNudgeSeconds, tracking.silenceNudges)) {
-          this.fireStallNudge(agentId, tracking, silenceNudgeSeconds, "silence");
-        } else {
-          const statusMs = now - tracking.lastStatusAt;
-          if (statusMs >= nudgeBackoffMs(statusNudgeSeconds, tracking.statusNudges)) {
-            this.fireStallNudge(agentId, tracking, statusNudgeSeconds, "status");
-          }
-        }
-      }
+      // One nudge per sweep. While a lapse is pending (nudgedAt set) only the
+      // trigger that started it may re-nudge — consecutive UNANSWERED nudges
+      // of the same trigger widen its effective interval (2x, 4x … capped at
+      // 30min), so a genuinely-silent run is nudged ever less often; a landed
+      // report_status clears the anchors and resets the counters, so a
+      // compliant agent is nudged again at the configured base interval.
+      this.maybeFireNudge(agentId, tracking, now, silenceNudgeSeconds, statusNudgeSeconds);
       const respondedAfterNudge =
         tracking.nudgedAt !== null &&
         (tracking.lastStatusAt > tracking.nudgedAt || tracking.lastStreamAt > tracking.nudgedAt);
@@ -897,6 +937,47 @@ export class MissionControlService {
     }
   }
 
+  /**
+   * Decide and fire at most one nudge for a tracked agent (or none). Called
+   * once per sweep per agent. While a lapse is pending only the trigger that
+   * started it may re-nudge; a re-nudge fires only once its effective
+   * (backed-off) interval has elapsed since the last nudge — consecutive
+   * unanswered lapses widen (2x, 4x …, capped at 30min); compliance (a
+   * report_status clears the anchors + counters) returns to the base interval.
+   */
+  private maybeFireNudge(
+    agentId: string,
+    tracking: StallTracking,
+    now: number,
+    silenceNudgeSeconds: number,
+    statusNudgeSeconds: number,
+  ): void {
+    const silenceDue =
+      now - tracking.lastStreamAt >= nudgeBackoffMs(silenceNudgeSeconds, tracking.silenceNudges);
+    const statusDue =
+      now - tracking.lastStatusAt >= nudgeBackoffMs(statusNudgeSeconds, tracking.statusNudges);
+    const lapseOwner = tracking.nudgedAt === null ? null : tracking.lastNudgeTrigger;
+    const silenceEligible = lapseOwner === null || lapseOwner === "silence";
+    const statusEligible = lapseOwner === null || lapseOwner === "status";
+    if ((silenceDue && silenceEligible) || (statusDue && statusEligible)) {
+      const lastNudgeAge =
+        tracking.lastNudgeAt === null ? Number.POSITIVE_INFINITY : now - tracking.lastNudgeAt;
+      if (
+        silenceDue &&
+        silenceEligible &&
+        lastNudgeAge >= nudgeBackoffMs(silenceNudgeSeconds, tracking.silenceNudges)
+      ) {
+        this.fireStallNudge(agentId, tracking, silenceNudgeSeconds, "silence");
+      } else if (
+        statusDue &&
+        statusEligible &&
+        lastNudgeAge >= nudgeBackoffMs(statusNudgeSeconds, tracking.statusNudges)
+      ) {
+        this.fireStallNudge(agentId, tracking, statusNudgeSeconds, "status");
+      }
+    }
+  }
+
   /** Status-ask steer, sent directly; recorded as an auto-sent proposal. */
   private fireStallNudge(
     agentId: string,
@@ -904,7 +985,14 @@ export class MissionControlService {
     nudgeSeconds: number,
     trigger: "silence" | "status",
   ): void {
-    tracking.nudgedAt = Date.now();
+    tracking.lastNudgeAt = Date.now();
+    tracking.lastNudgeTrigger = trigger;
+    if (tracking.nudgedAt === null) {
+      // Escalation anchor: the FIRST nudge of the lapse. Re-nudges within the
+      // lapse (consecutive unanswered, widened spacing) do not restart the
+      // escalation window.
+      tracking.nudgedAt = Date.now();
+    }
     if (trigger === "silence") {
       tracking.silenceNudges += 1;
     } else {
@@ -935,6 +1023,11 @@ export class MissionControlService {
         reason,
         classification: "normal",
         forceSend: true,
+        // Nudges are machinery, not user-facing: the status-ask steer card
+        // renders in verbose mode only (spec "Stall detection v2 + watchdog"
+        // → "Nudges are machinery"). The audit trail (auto-sent proposal +
+        // log) is kept; the app hides the card in the normal feed.
+        verboseOnly: true,
       })
       .catch((error: unknown) => {
         this.logger.warn(
@@ -1047,12 +1140,20 @@ export class MissionControlService {
   }
 
   /**
-   * Boot pass: stored records still `running` whose live agent has no live
-   * runtime are abrupt kills (daemon restart while the record was mid-run).
-   * Idempotent — healed records flip to `error` and never match again.
+   * Boot pass over stored records still `running`:
+   * - Runtime ALIVE → boot adoption of a surviving run (spec "Boot adoption
+   *   of surviving runs"): the run predates this daemon process, so no
+   *   lifecycle→running transition armed the stall tracker; adopt it into
+   *   tracking seeded from the record's lastActivityAt so both nudge triggers
+   *   are armed. A live runtime is neither healed nor ignored.
+   * - Runtime DEAD → abrupt kill (daemon restart while the record was
+   *   mid-run): arm the 2-min heal window, then self-heal to `error`.
+   * Idempotent — tracked records skip, healed records flip to `error` and
+   * never match again.
    */
   private async reconcileRunningRecords(now: number): Promise<void> {
     const records = await this.agentStorage.list();
+    let adopted = 0;
     for (const record of records) {
       if (record.lastStatus !== "running") {
         this.recordDeadSince.delete(record.id);
@@ -1068,6 +1169,8 @@ export class MissionControlService {
         live !== null && live.lifecycle !== "closed" && live.session?.isRuntimeAlive?.() !== false;
       if (hasLiveRuntime) {
         this.recordDeadSince.delete(record.id);
+        this.adoptSurvivingRun(record);
+        adopted += 1;
         continue;
       }
       if (this.recordDeadSince.get(record.id) === undefined) {
@@ -1098,6 +1201,47 @@ export class MissionControlService {
         "Running-record reconciliation healed an interrupted run (record -> error, origin system)",
       );
     }
+    if (adopted > 0) {
+      this.logger.info(
+        { component: "stall", count: adopted },
+        "Boot adoption: adopted surviving running runs into stall tracking",
+      );
+    }
+  }
+
+  /**
+   * Adopt one surviving pre-restart run into stall tracking. The stall
+   * tracker only arms on a lifecycle→running transition, so a run that
+   * predates the daemon process is invisible to it forever (no nudge, no
+   * escalation). Seeding both nudge timers from the record's lastActivityAt
+   * arms the silence and cadence triggers from the run's real last activity.
+   * No card is emitted — the run predates this daemon, and the tracker is
+   * bookkeeping for sweep decisions only.
+   */
+  private adoptSurvivingRun(record: { id: string; lastActivityAt?: string | null }): void {
+    const parsed = record.lastActivityAt ? Date.parse(record.lastActivityAt) : NaN;
+    const seededAt = Number.isFinite(parsed) ? parsed : Date.now();
+    this.stallTracking.set(record.id, {
+      lastStreamAt: seededAt,
+      lastStatusAt: seededAt,
+      nudgedAt: null,
+      lastNudgeAt: null,
+      lastNudgeTrigger: null,
+      silenceNudges: 0,
+      statusNudges: 0,
+      escalatedAt: null,
+      deadSince: null,
+      healed: false,
+    });
+    this.logger.info(
+      {
+        component: "stall",
+        agentId: record.id,
+        lastActivityAt: record.lastActivityAt ?? null,
+        seededAt: new Date(seededAt).toISOString(),
+      },
+      "Boot adoption: adopted a surviving running run into stall tracking",
+    );
   }
 
   /**
@@ -1181,6 +1325,9 @@ export class MissionControlService {
           : `Proposal ${proposal.status}`,
         detail: proposal.message,
         proposal,
+        // Machinery-only cards (stall status-ask nudges) render in verbose
+        // mode only; everything else is a normal-mode card. Absent → normal.
+        ...(proposal.verboseOnly ? { verboseOnly: true } : {}),
       },
       { skipDigest: true },
     );
@@ -1271,24 +1418,25 @@ type MissionControlCentralConfigPatch = Parameters<CentralMissionControlConfigSt
 function mapReportStatus(input: MissionControlReportStatusInput): {
   kind: MissionControlAppendInput["kind"];
   severity: MissionControlAppendInput["severity"];
+  reportKind?: MissionControlReportStatusInput["kind"];
 } {
   switch (input.status) {
     case "blocked":
-      return { kind: "blocked", severity: "blocker" };
+      return { kind: "blocked", severity: "blocker", reportKind: input.kind };
     case "completed":
-      return { kind: "finished", severity: "info" };
+      return { kind: "finished", severity: "info", reportKind: input.kind };
     case "inconclusive":
-      return { kind: "diverged", severity: "attention" };
+      return { kind: "diverged", severity: "attention", reportKind: input.kind };
     case "working":
       switch (input.kind) {
         case "finding":
         case "fix":
         case "decision":
-          return { kind: "finding", severity: "info" };
+          return { kind: "finding", severity: "info", reportKind: input.kind };
         case "progress":
         case "milestone":
         case undefined:
-          return { kind: "milestone", severity: "info" };
+          return { kind: "milestone", severity: "info", reportKind: input.kind };
       }
   }
 }

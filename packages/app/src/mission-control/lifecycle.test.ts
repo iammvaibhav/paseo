@@ -11,6 +11,7 @@ import {
   groupLifecycleRows,
   lifecycleRowVisible,
   parseVerdictEvent,
+  rowActivityMs,
 } from "./lifecycle";
 
 const NOW = Date.UTC(2026, 7, 8, 12, 0, 0);
@@ -487,5 +488,41 @@ describe("groupLifecycleRows", () => {
       },
     ]);
     expect(counts).toEqual({ needsYou: 0, working: 1, ready: 1, done: 1 });
+  });
+});
+
+describe("rowActivityMs", () => {
+  it("uses the newest mission-control event for dormant rows, not the directory boot fallback", () => {
+    // Dormant agent whose directory lastActivityAt is a shared rollout/boot
+    // value (18m ago) but whose last real activity was a day earlier.
+    const dormant = makeAgent({ lastActivityAt: new Date(NOW - 18 * 60_000) });
+    const state = derive(dormant, []);
+    const row = {
+      ...state,
+      agent: dormant,
+      sortTime: 0,
+      lastEventAt: NOW - DAY_MS,
+    };
+    expect(rowActivityMs(row)).toBe(NOW - DAY_MS);
+  });
+
+  it("falls back to the agent's directory lastActivityAt for dormant rows without events", () => {
+    const dormant = makeAgent({ lastActivityAt: new Date(NOW - 18 * 60_000) });
+    const state = derive(dormant, []);
+    const row = { ...state, agent: dormant, sortTime: 0, lastEventAt: null };
+    expect(rowActivityMs(row)).toBe(NOW - 18 * 60_000);
+  });
+
+  it("keeps the live directory timestamp for non-dormant rows (ticks while running)", () => {
+    const running = makeAgent({ status: "running", lastActivityAt: new Date(NOW - 5_000) });
+    const state = derive(running, []);
+    const row = {
+      ...state,
+      agent: running,
+      sortTime: 0,
+      // A running agent's last event is older than its live activity.
+      lastEventAt: NOW - 60_000,
+    };
+    expect(rowActivityMs(row)).toBe(NOW - 5_000);
   });
 });

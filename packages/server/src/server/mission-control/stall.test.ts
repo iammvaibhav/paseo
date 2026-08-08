@@ -174,17 +174,18 @@ describe("MissionControlService stall v2 + watchdog", () => {
     tracking.lastStatusAt = Date.now() - ms;
   }
 
-  /** Backdate the nudge send time (recovery clock). */
+  /** Backdate the nudge send times (escalation + spacing anchors). */
   function setNudgeAge(agentId: string, ms: number): void {
     const tracking = (
       service as unknown as {
-        stallTracking: Map<string, { nudgedAt: number | null }>;
+        stallTracking: Map<string, { nudgedAt: number | null; lastNudgeAt: number | null }>;
       }
     ).stallTracking.get(agentId);
     if (!tracking) {
       throw new Error(`no stall tracking for ${agentId}`);
     }
     tracking.nudgedAt = Date.now() - ms;
+    tracking.lastNudgeAt = Date.now() - ms;
   }
 
   function sweep(): void {
@@ -251,65 +252,99 @@ describe("MissionControlService stall v2 + watchdog", () => {
     ).toBe(false);
   });
 
-  test("whichever trigger fires first wins: one outstanding nudge per agent", () => {
+  test("one nudge per sweep; both triggers due → silence wins, next lapse widens", () => {
     startRunning("agent-1");
     // Fully silent run: both triggers are due, but only the first (silence)
-    // fires — a single outstanding nudge per agent.
+    // fires — at most one nudge per sweep.
     setSilence("agent-1", 121_000);
     setStatusSilence("agent-1", 301_000);
     sweep();
     expect(createProposal).toHaveBeenCalledTimes(1);
     expect(createProposal.mock.calls[0][0].reason).toBe("No timeline output for >120s mid-run");
-    // Neither trigger re-fires while a nudge is outstanding, even past both
-    // intervals.
-    setSilence("agent-1", 601_000);
+    // The unanswered lapse re-nudges only once the widened silence interval
+    // (2x = 240s) has elapsed since the last nudge.
+    setSilence("agent-1", 241_000);
     setStatusSilence("agent-1", 601_000);
+    setNudgeAge("agent-1", 241_000);
     sweep();
-    expect(createProposal).toHaveBeenCalledTimes(1);
+    expect(createProposal).toHaveBeenCalledTimes(2);
+    expect(createProposal.mock.calls[1][0].reason).toBe("No timeline output for >120s mid-run");
   });
 
-  test("one nudge per lapse: stream activity does not re-arm it", () => {
+  test("consecutive unanswered lapses widen: nudge → no answer → next fires at 2x", () => {
     startRunning("agent-1");
     setStatusSilence("agent-1", 301_000);
     sweep();
     expect(createProposal).toHaveBeenCalledTimes(1);
 
-    // A second lapse without an intervening report_status does not re-nudge.
+    // No report_status lands: the next nudge needs the widened 2x interval
+    // (600s) — a 301s lapse is still below it.
     setStatusSilence("agent-1", 301_000);
     sweep();
     expect(createProposal).toHaveBeenCalledTimes(1);
 
-    // Timeline activity ends an escalation episode but not a nudge lapse.
+    // Timeline activity resets the silence timer but NOT the cadence counter:
+    // still no nudge at 301s.
     streamTimeline("agent-1", { type: "assistant_message", text: "still here" });
     setStatusSilence("agent-1", 301_000);
     sweep();
     expect(createProposal).toHaveBeenCalledTimes(1);
+
+    // Past the widened interval since the last nudge: the second unanswered
+    // lapse fires at 2x (600s).
+    setNudgeAge("agent-1", 601_000);
+    setStatusSilence("agent-1", 601_000);
+    sweep();
+    expect(createProposal).toHaveBeenCalledTimes(2);
   });
 
-  test("a landed report_status resets the nudge timer and re-arms the guard", async () => {
+  test("compliance resets backoff: nudge → report_status → next lapse fires at the configured 1x", async () => {
     startRunning("agent-1");
     setStatusSilence("agent-1", 301_000);
     sweep();
     expect(createProposal).toHaveBeenCalledTimes(1);
 
     // The agent answers the nudge with a report_status: both timers restart
-    // and the one-per-lapse guard clears. The next cadence nudge lands at the
-    // backed-off interval (300 * 2 = 600s).
+    // AND the backoff counters reset. The next cadence nudge fires at the
+    // CONFIGURED interval (300s), not the widened 2x (600s) — compliance is
+    // never punished with a wider cadence.
     const result = await service.reportSelfStatus("agent-1", {
       status: "working",
       kind: "progress",
       headline: "still here",
     });
     expect(result.ok).toBe(true);
-    setStatusSilence("agent-1", 301_000);
+    // Below the base interval: nothing yet.
+    setStatusSilence("agent-1", 200_000);
     sweep();
     expect(createProposal).toHaveBeenCalledTimes(1);
-    setStatusSilence("agent-1", 601_000);
+    // At the base 1x interval: the second nudge fires.
+    setStatusSilence("agent-1", 301_000);
     sweep();
     expect(createProposal).toHaveBeenCalledTimes(2);
   });
 
-  test("silence trigger backs off after each nudge; a status lands between lapses", async () => {
+  test("three consecutive unanswered lapses fire at 4x; cap covered by nudgeBackoffMs units", () => {
+    startRunning("agent-1");
+    setStatusSilence("agent-1", 301_000);
+    sweep();
+    expect(createProposal).toHaveBeenCalledTimes(1); // 1x = 300s
+    setNudgeAge("agent-1", 601_000);
+    setStatusSilence("agent-1", 601_000);
+    sweep();
+    expect(createProposal).toHaveBeenCalledTimes(2); // 2x = 600s
+    // The 4x interval (1200s) has not elapsed since the last nudge: no nudge.
+    setNudgeAge("agent-1", 601_000);
+    setStatusSilence("agent-1", 601_000);
+    sweep();
+    expect(createProposal).toHaveBeenCalledTimes(2);
+    setNudgeAge("agent-1", 1201_000);
+    setStatusSilence("agent-1", 1201_000);
+    sweep();
+    expect(createProposal).toHaveBeenCalledTimes(3); // 4x = 1200s
+  });
+
+  test("silence trigger widens on unanswered lapses; a report_status returns it to base", async () => {
     startRunning("agent-1");
     // First silence lapse: nudge at 120s.
     setSilence("agent-1", 121_000);
@@ -317,42 +352,42 @@ describe("MissionControlService stall v2 + watchdog", () => {
     expect(createProposal).toHaveBeenCalledTimes(1);
     expect(createProposal.mock.calls[0][0].reason).toBe("No timeline output for >120s mid-run");
 
-    // A report_status clears the guard and resets both timers, but the
-    // per-run backoff persists: the next silence nudge needs 240s.
-    await service.reportSelfStatus("agent-1", {
-      status: "working",
-      kind: "progress",
-      headline: "still here",
-    });
+    // Unanswered second lapse: fires only at the widened 2x (240s).
     setSilence("agent-1", 121_000);
     sweep();
     expect(createProposal).toHaveBeenCalledTimes(1);
+    setNudgeAge("agent-1", 241_000);
     setSilence("agent-1", 241_000);
     sweep();
     expect(createProposal).toHaveBeenCalledTimes(2);
     expect(createProposal.mock.calls[1][0].reason).toBe("No timeline output for >120s mid-run");
+
+    // A report_status resets the silence counter: the next silence lapse
+    // fires at the base 120s again, not the widened 480s.
+    await service.reportSelfStatus("agent-1", {
+      status: "working",
+      kind: "progress",
+      headline: "still here",
+    });
+    setSilence("agent-1", 121_000);
+    sweep();
+    expect(createProposal).toHaveBeenCalledTimes(3);
+    expect(createProposal.mock.calls[2][0].reason).toBe("No timeline output for >120s mid-run");
   });
 
-  test("a user prompt resets nudge backoff", async () => {
+  test("a user prompt resets nudge backoff", () => {
     startRunning("agent-1");
-    // Two silence nudges: effective interval is now 480s.
+    // Two consecutive UNANSWERED silence lapses: interval widened to 2x.
     setSilence("agent-1", 121_000);
     sweep();
     expect(createProposal).toHaveBeenCalledTimes(1);
-    await service.reportSelfStatus("agent-1", {
-      status: "working",
-      kind: "progress",
-      headline: "still here",
-    });
+    setNudgeAge("agent-1", 241_000);
     setSilence("agent-1", 241_000);
     sweep();
     expect(createProposal).toHaveBeenCalledTimes(2);
-    await service.reportSelfStatus("agent-1", {
-      status: "working",
-      kind: "progress",
-      headline: "still here",
-    });
-    // 241s is below the backed-off 480s interval: no nudge...
+    // The third consecutive unanswered lapse needs 4x (480s): 241s is not
+    // enough.
+    setNudgeAge("agent-1", 241_000);
     setSilence("agent-1", 241_000);
     sweep();
     expect(createProposal).toHaveBeenCalledTimes(2);
@@ -434,14 +469,14 @@ describe("MissionControlService stall v2 + watchdog", () => {
 
     // A report_status starts a fresh lapse: the nudge guard clears (but a
     // timeline row does not), so the next status silence re-nudges at the
-    // backed-off interval (300 * 2 = 600s).
+    // CONFIGURED interval (300s) — compliance reset the backoff counter.
     const result = await service.reportSelfStatus("agent-1", {
       status: "working",
       kind: "progress",
       headline: "made progress",
     });
     expect(result.ok).toBe(true);
-    setStatusSilence("agent-1", 601_000);
+    setStatusSilence("agent-1", 301_000);
     sweep();
     expect(createProposal).toHaveBeenCalledTimes(2);
   });
@@ -630,7 +665,7 @@ describe("MissionControlService stall v2 + watchdog", () => {
     expect(store.getStopOrigin("agent-1")).toBe("system");
   });
 
-  test("running-record reconciliation skips excluded and live-runtime records", async () => {
+  test("reconciliation adopts live-runtime records and skips excluded records", async () => {
     const liveAgent = runningAgent("agent-1");
     getAgent.mockImplementation((agentId: string) => (agentId === "agent-1" ? liveAgent : null));
     listRecords.mockResolvedValue([
@@ -657,10 +692,180 @@ describe("MissionControlService stall v2 + watchdog", () => {
       },
     ]);
     await (service as unknown as { runWatchdog(): Promise<void> }).runWatchdog();
-    // agent-1 has a live runtime; agent-commander has no runtime but is
-    // excluded. Nothing heals.
+    // agent-1 has a live runtime → adopted into stall tracking (neither
+    // healed nor ignored). agent-commander has no runtime but is excluded →
+    // skipped entirely. Nothing heals, nothing is proposed.
     expect(upsertRecord).not.toHaveBeenCalled();
     expect(createProposal).not.toHaveBeenCalled();
+    // Test seam: reach the private stall-tracking map (unchecked by design).
+    const stallTracking = (service as unknown as { stallTracking: Map<string, unknown> })
+      .stallTracking;
+    expect(stallTracking.has("agent-1")).toBe(true);
+    expect(stallTracking.has("agent-commander")).toBe(false);
+  });
+
+  test("boot adoption adopts a live pre-restart running record and arms the nudge timers", async () => {
+    // The live bug (agent 3a71c7bb): a run that STARTED before the daemon
+    // restart stayed `running` with a LIVE runtime — the stall tracker only
+    // arms on a lifecycle→running transition it observes, so the run produced
+    // zero stall lines under the new pid. Boot reconciliation must ADOPT it,
+    // seeding both nudge timers from the record's lastActivityAt.
+    const lastActivityAt = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    getAgent.mockReturnValue(runningAgent("agent-1"));
+    listRecords.mockResolvedValue([
+      {
+        id: "agent-1",
+        provider: "omp",
+        cwd: "/tmp",
+        createdAt: "2026-08-08T00:00:00.000Z",
+        updatedAt: "2026-08-08T00:00:00.000Z",
+        lastStatus: "running",
+        lastActivityAt,
+        config: {},
+        persistence: null,
+      },
+    ]);
+    await (service as unknown as { runWatchdog(): Promise<void> }).runWatchdog();
+
+    // Adopted: trackers seeded from lastActivityAt, both triggers armed.
+    // Test seam: reach the private stall-tracking map (unchecked by design).
+    const stallTracking = (
+      service as unknown as {
+        stallTracking: Map<string, { lastStatusAt: number; lastStreamAt: number }>;
+      }
+    ).stallTracking;
+    const tracking = stallTracking.get("agent-1");
+    expect(tracking).toBeDefined();
+    expect(tracking?.lastStatusAt).toBe(Date.parse(lastActivityAt));
+    expect(tracking?.lastStreamAt).toBe(Date.parse(lastActivityAt));
+    // Adoption is NOT a heal: the record stays running, origin untouched.
+    expect(upsertRecord).not.toHaveBeenCalled();
+    expect(store.getStopOrigin("agent-1")).toBeNull();
+    // Adoption logged under component "stall" (per-record + count).
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ component: "stall", agentId: "agent-1", lastActivityAt }),
+      expect.stringContaining("adopt"),
+    );
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ component: "stall", count: 1 }),
+      expect.stringContaining("adopt"),
+    );
+
+    // The seeded timers arm the triggers: the pre-restart run has been quiet
+    // for >statusNudgeSeconds, so the first sweep nudges (status-ask steer,
+    // verbose-only).
+    sweep();
+    expect(createProposal).toHaveBeenCalledTimes(1);
+    expect(createProposal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        origin: "stall",
+        targetAgentId: "agent-1",
+        deliveryMode: "steer",
+        forceSend: true,
+        verboseOnly: true,
+      }),
+    );
+  });
+
+  test("boot heal of a dead pre-restart run is unchanged (dead runs heal, never adopt)", async () => {
+    // A pre-restart run whose runtime DIED must keep the existing heal path:
+    // record -> error, origin system, stalled + recovery. Adoption is only
+    // for ALIVE runtimes.
+    getAgent.mockReturnValue(null);
+    getRecord.mockResolvedValue({
+      id: "agent-1",
+      provider: "omp",
+      cwd: "/tmp",
+      createdAt: "2026-08-08T00:00:00.000Z",
+      updatedAt: "2026-08-08T00:00:00.000Z",
+      lastStatus: "running",
+      lastActivityAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+      config: {},
+      persistence: null,
+    });
+    listRecords.mockResolvedValue([
+      {
+        id: "agent-1",
+        provider: "omp",
+        cwd: "/tmp",
+        createdAt: "2026-08-08T00:00:00.000Z",
+        updatedAt: "2026-08-08T00:00:00.000Z",
+        lastStatus: "running",
+        lastActivityAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+        config: {},
+        persistence: null,
+      },
+    ]);
+    upsertRecord.mockImplementation(async (record: Record<string, unknown>) => {
+      expect(record.lastStatus).toBe("error");
+    });
+    // First observation arms the 2-min heal window; the dead run is never
+    // adopted into stall tracking.
+    await (service as unknown as { runWatchdog(): Promise<void> }).runWatchdog();
+    expect(upsertRecord).not.toHaveBeenCalled();
+    // Test seam: reach the private stall-tracking map (unchecked by design).
+    const stallTracking = (service as unknown as { stallTracking: Map<string, unknown> })
+      .stallTracking;
+    expect(stallTracking.has("agent-1")).toBe(false);
+
+    // Dead for >2min now: heal exactly as before boot adoption.
+    const recordDeadSince = (service as unknown as { recordDeadSince: Map<string, number> })
+      .recordDeadSince;
+    recordDeadSince.set("agent-1", Date.now() - 121_000);
+    await (service as unknown as { runWatchdog(): Promise<void> }).runWatchdog();
+    expect(upsertRecord).toHaveBeenCalledTimes(1);
+    expect(upsertRecord.mock.calls[0][0]).toMatchObject({ id: "agent-1", lastStatus: "error" });
+    expect(store.getStopOrigin("agent-1")).toBe("system");
+    expect(
+      broadcast.mock.calls.some(
+        (call: unknown[]) => (call[0] as { event?: { kind?: string } }).event?.kind === "stalled",
+      ),
+    ).toBe(true);
+    expect(createProposal).toHaveBeenCalledTimes(1);
+    expect(createProposal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        origin: "stall",
+        targetAgentId: "agent-1",
+        deliveryMode: "interrupt",
+      }),
+    );
+    // Still never adopted, even after healing.
+    expect(stallTracking.has("agent-1")).toBe(false);
+  });
+
+  test("status-ask nudge card is verbose-only; the hard escalation stays a normal card", async () => {
+    // Drive the REAL approvals (not the stub) so proposal events actually
+    // broadcast with their verbose classification.
+    (service as unknown as { approvals: unknown }).approvals = realApprovals;
+    startRunning("agent-1");
+    setStatusSilence("agent-1", 301_000);
+    sweep();
+    await flushBroadcasts();
+    const proposalEvents = broadcast.mock.calls
+      .map((call: unknown[]) => (call[0] as { event?: { kind?: string } })?.event)
+      .filter((event) => event?.kind === "proposal");
+    // The status-ask steer: verbose-only card, machinery audit trail kept.
+    const nudgeEvent = proposalEvents.at(-1);
+    expect(nudgeEvent?.proposal?.deliveryMode).toBe("steer");
+    expect(nudgeEvent?.verboseOnly).toBe(true);
+    expect(nudgeEvent?.proposal?.verboseOnly).toBe(true);
+
+    // The hard escalation (interrupt, approval-gated in Ask) is a
+    // NORMAL-mode card: no verboseOnly. Backdate every clock so the agent
+    // has produced NO response after the nudge (fresh status timestamps
+    // would count as a response).
+    setStatusSilence("agent-1", 601_000);
+    setSilence("agent-1", 601_000);
+    setNudgeAge("agent-1", 301_000);
+    sweep();
+    await flushBroadcasts();
+    const escalationEvents = broadcast.mock.calls
+      .map((call: unknown[]) => (call[0] as { event?: { kind?: string } })?.event)
+      .filter((event) => event?.kind === "proposal");
+    const escalationEvent = escalationEvents[escalationEvents.length - 1];
+    expect(escalationEvent?.proposal?.deliveryMode).toBe("interrupt");
+    expect(escalationEvent?.verboseOnly).toBeUndefined();
+    expect(escalationEvent?.proposal?.verboseOnly).toBeUndefined();
   });
 
   test("a user stop expires pending machinery proposals for the agent", async () => {

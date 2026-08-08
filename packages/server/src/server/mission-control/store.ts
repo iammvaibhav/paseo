@@ -76,6 +76,8 @@ export interface MissionControlAppendInput {
   detail?: string;
   proof?: MissionControlEvent["proof"];
   proposal?: MissionControlEvent["proposal"];
+  // Original report_status kind preserved on source:"self" events (additive).
+  reportKind?: MissionControlEvent["reportKind"];
 }
 
 export interface MissionControlFetchOptions {

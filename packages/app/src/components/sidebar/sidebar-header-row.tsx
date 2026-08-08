@@ -94,7 +94,17 @@ export function SidebarHeaderRow({
               {badgeSegments
                 .filter((segment) => segment.count > 0)
                 .map((segment) => (
-                  <View key={segment.testID} style={styles.countBadge} testID={segment.testID}>
+                  <View
+                    key={segment.testID}
+                    style={[
+                      styles.countBadge,
+                      segment.tone === "attention"
+                        ? styles.countBadgeAttention
+                        : styles.countBadgeSuccess,
+                    ]}
+                    accessibilityLabel={`${segment.count} ${segment.label}`}
+                    testID={segment.testID}
+                  >
                     <Text style={styles.countBadgeText}>{segment.count}</Text>
                   </View>
                 ))}
@@ -195,14 +205,22 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[1],
   },
   countBadge: {
-    paddingHorizontal: theme.spacing[1],
-    paddingVertical: 2,
-    borderRadius: theme.borderRadius.md,
-    backgroundColor: theme.colors.surface2,
+    width: theme.spacing[4],
+    height: theme.spacing[4],
+    borderRadius: theme.borderRadius.full,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  countBadgeAttention: {
+    backgroundColor: theme.colors.statusDanger,
+  },
+  countBadgeSuccess: {
+    backgroundColor: theme.colors.statusSuccess,
   },
   countBadgeText: {
     fontSize: theme.fontSize.xs,
-    fontWeight: theme.fontWeight.medium,
-    color: theme.colors.foregroundMuted,
+    lineHeight: theme.spacing[4],
+    fontWeight: theme.fontWeight.normal,
+    color: theme.colors.palette.white,
   },
 }));

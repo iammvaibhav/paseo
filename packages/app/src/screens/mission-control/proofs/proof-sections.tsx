@@ -37,6 +37,30 @@ export function isSpecProofKind(kind: MissionControlProof["kind"]): kind is Spec
   );
 }
 
+/**
+ * True when the proof carries content its renderer can resolve (spec kinds:
+ * image/video need a file path on the agent's host, api/code need an inline
+ * excerpt, pr/url need a label/url/path). A proof with no resolvable media
+ * must never render an expandable section that opens to nothing (live bug:
+ * {kind:"image", label} rendered an empty "Image proof" section).
+ */
+export function proofCanRenderContent(proof: MissionControlProof): boolean {
+  switch (proof.kind) {
+    case "image":
+    case "video":
+      return Boolean(proof.path?.trim());
+    case "api":
+    case "code":
+      return Boolean(proof.excerpt?.trim());
+    case "pr":
+    case "url":
+      return Boolean((proof.label ?? proof.url ?? proof.path ?? "").trim());
+    default:
+      // Legacy diff/command proofs render as chips elsewhere; not a section.
+      return false;
+  }
+}
+
 function proofChipLabel(proof: MissionControlProof): string {
   return (proof.label || proof.url || proof.path || "").trim();
 }
@@ -120,7 +144,7 @@ export function ProofSections({ proofs, serverId }: ProofSectionsProps): ReactEl
   const sections = useMemo(() => {
     const byKind = new Map<SpecProofKind, MissionControlProof[]>();
     for (const proof of proofs) {
-      if (!isSpecProofKind(proof.kind)) {
+      if (!isSpecProofKind(proof.kind) || !proofCanRenderContent(proof)) {
         continue;
       }
       const list = byKind.get(proof.kind) ?? [];

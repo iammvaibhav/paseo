@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { useIsFocused } from "@react-navigation/native";
+import { useMissionControlActive } from "@/screens/mission-control/focus-context";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { router } from "expo-router";
@@ -83,7 +83,7 @@ function findCommander(
 
 export function MissionControlScreen(): ReactElement {
   const { t } = useTranslation();
-  const isFocused = useIsFocused();
+  const isFocused = useMissionControlActive();
   const isCompact = useIsCompactFormFactor();
   const insets = useSafeAreaInsets();
   const hosts = useHosts();

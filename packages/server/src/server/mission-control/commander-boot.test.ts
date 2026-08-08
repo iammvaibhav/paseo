@@ -52,6 +52,7 @@ function bootInput(
   });
   return {
     logger: createTestLogger(),
+    publishEvent: vi.fn(),
     agentManager: {
       listAgents: () => [],
       getAgent: () => null,
@@ -370,6 +371,11 @@ describe("ensureCommanderOnBoot", () => {
     expect(input.createAgent).toHaveBeenCalledTimes(1);
     const createCall = vi.mocked(input.createAgent).mock.calls[0][0];
     expect(createCall.labels[COMMANDER_HASH_LABEL_KEY]).toBe(computeCommanderBuildHash());
+    // Spawn-first swap: the fresh Commander must be live before the stale one
+    // is archived, so a failed spawn keeps the old one running.
+    expect(vi.mocked(input.createAgent).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(archiveAgent).mock.invocationCallOrder[0],
+    );
   });
 
   test("archives a pre-hash Commander (no stored hash) and spawns fresh", async () => {
@@ -405,11 +411,69 @@ describe("ensureCommanderOnBoot", () => {
     expect(result.agentId).toBe("commander-new");
     expect(archiveSnapshot).toHaveBeenCalledWith("commander-legacy", expect.any(String));
     expect(input.createAgent).toHaveBeenCalledTimes(1);
+    // Spawn-first swap: create before archive (drift recreate keeps the old
+    // Commander live until the fresh one is up).
+    expect(vi.mocked(input.createAgent).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(archiveSnapshot).mock.invocationCallOrder[0],
+    );
+  });
+
+  test("keeps the stale Commander and emits a Needs-you card when the drifted recreate fails", async () => {
+    const archiveAgent = vi.fn(async () => ({ archivedAt: new Date().toISOString() }));
+    const createAgent = vi.fn().mockRejectedValue(new Error("Provider claude is disabled"));
+    const publishEvent = vi.fn();
+    const input = bootInput({
+      agentManager: {
+        listAgents: () => [
+          {
+            id: "commander-stale",
+            labels: {
+              "paseo.mission-control": "commander",
+              [COMMANDER_HASH_LABEL_KEY]: "stale-hash",
+            },
+          },
+        ],
+        getAgent: () => ({
+          id: "commander-stale",
+          labels: { "paseo.mission-control": "commander" },
+        }),
+        archiveAgent,
+        archiveSnapshot: vi.fn(async () => ({ id: "commander-stale" })),
+      } as unknown as AgentManager,
+      agentStorage: {
+        list: async () => [],
+        get: async () => ({
+          id: "commander-stale",
+          labels: {
+            "paseo.mission-control": "commander",
+            [COMMANDER_HASH_LABEL_KEY]: "stale-hash",
+          },
+          archivedAt: null,
+          lastStatus: "closed",
+          config: { provider: "codex", cwd: "/repo" },
+        }),
+      } as unknown as AgentStorage,
+      createAgent: createAgent as EnsureCommanderOnBootInput["createAgent"],
+      publishEvent,
+    });
+    const result = await ensureCommanderOnBoot(input);
+    // The stale Commander is kept — the fleet never loses its Commander.
+    expect(result).toEqual({ created: false, agentId: "commander-stale" });
+    expect(archiveAgent).not.toHaveBeenCalled();
+    expect(createAgent).toHaveBeenCalledTimes(1);
+    // The actual spawn error surfaces as a Needs-you card on the old agent.
+    expect(publishEvent).toHaveBeenCalledWith({
+      agentId: "commander-stale",
+      kind: "blocked",
+      source: "system",
+      severity: "blocker",
+      headline: "Commander recreate failed — Provider claude is disabled",
+    });
   });
 });
 
 describe("resetCommander", () => {
-  test("archives the current Commander and spawns a fresh one with a new context pack", async () => {
+  test("spawns a fresh Commander first, then archives the current one", async () => {
     const archiveSnapshot = vi.fn(async () => ({ id: "commander-1" }));
     const input = bootInput({
       agentManager: {
@@ -444,6 +508,11 @@ describe("resetCommander", () => {
     const createCall = vi.mocked(input.createAgent).mock.calls[0][0];
     expect(createCall.labels[COMMANDER_HASH_LABEL_KEY]).toBe(computeCommanderBuildHash());
     expect(createCall.initialPrompt).toContain("Fleet context snapshot:");
+    // Spawn-first swap: the fresh Commander is live before the current one is
+    // archived, so a failed spawn keeps the old one.
+    expect(vi.mocked(input.createAgent).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(archiveSnapshot).mock.invocationCallOrder[0],
+    );
   });
 
   test("spawns fresh without archiving when no Commander exists", async () => {
@@ -476,5 +545,53 @@ describe("resetCommander", () => {
     const result = await resetCommander(input);
     expect(result.ok).toBe(false);
     expect(input.createAgent).not.toHaveBeenCalled();
+  });
+
+  test("keeps the current Commander and emits a Needs-you card when the reset spawn fails", async () => {
+    const archiveSnapshot = vi.fn(async () => ({ id: "commander-1" }));
+    const createAgent = vi.fn().mockRejectedValue(new Error("Provider claude is disabled"));
+    const publishEvent = vi.fn();
+    const input = bootInput({
+      agentManager: {
+        listAgents: () => [],
+        getAgent: () => null,
+        archiveAgent: vi.fn(async () => ({ archivedAt: new Date().toISOString() })),
+        archiveSnapshot,
+      } as unknown as AgentManager,
+      agentStorage: {
+        list: async () => [
+          {
+            id: "commander-1",
+            labels: { "paseo.mission-control": "commander" },
+            archivedAt: null,
+            lastStatus: "closed",
+            config: { provider: "codex", cwd: "/repo" },
+          },
+        ],
+        get: async () => ({
+          id: "commander-1",
+          labels: { "paseo.mission-control": "commander" },
+          archivedAt: null,
+          lastStatus: "closed",
+          config: { provider: "codex", cwd: "/repo" },
+        }),
+      } as unknown as AgentStorage,
+      createAgent: createAgent as EnsureCommanderOnBootInput["createAgent"],
+      publishEvent,
+    });
+    const result = await resetCommander(input);
+    expect(result).toEqual({ ok: false, error: "Provider claude is disabled" });
+    // The current Commander survives a failed reset — nothing is archived.
+    expect(archiveSnapshot).not.toHaveBeenCalled();
+    expect(input.agentManager.archiveAgent).not.toHaveBeenCalled();
+    expect(createAgent).toHaveBeenCalledTimes(1);
+    // The actual spawn error surfaces as a Needs-you card on the old agent.
+    expect(publishEvent).toHaveBeenCalledWith({
+      agentId: "commander-1",
+      kind: "blocked",
+      source: "system",
+      severity: "blocker",
+      headline: "Commander recreate failed — Provider claude is disabled",
+    });
   });
 });

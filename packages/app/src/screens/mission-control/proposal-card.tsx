@@ -11,6 +11,10 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { Switch } from "@/components/ui/switch";
 import { useSessionStore } from "@/stores/session-store";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
+import { HostGlyph } from "@/components/host-glyph";
+import { formatTimeAgo } from "@/utils/time";
+import { resolveSessionAgent } from "@/utils/agent-snapshots";
+import { useMissionControlCentralConfig } from "@/mission-control/central-config";
 import type { Theme } from "@/styles/theme";
 import type { FeedCardEvent } from "@/screens/mission-control/feed-card";
 
@@ -36,6 +40,30 @@ function originLabel(origin: MissionControlProposal["origin"]): string {
 /** True while the proposal still needs a user decision (Ask mode / forced ask). */
 export function isPendingProposalEvent(event: FeedCardEvent): boolean {
   return event.kind === "proposal" && event.proposal?.status === "pending";
+}
+
+/**
+ * Machinery-only proposal card: stall status-ask nudges (origin "stall",
+ * deliveryMode "steer") that already went out. The daemon stamps these
+ * `verboseOnly: true` (spec: a steer never disrupts the turn; recorded as an
+ * auto-sent proposal, never pending). Normal (non-verbose) mode never renders
+ * them; verbose is the debug view. Escalation/recovery proposals
+ * (deliveryMode "interrupt", approval-gated) and verifier/commander cards
+ * always render. Legacy hosts / pre-field persisted events fall back to the
+ * origin+delivery+status shape — a sent stall steer is machinery, nothing else
+ * matches all three.
+ */
+export function isVerboseOnlyProposalEvent(event: FeedCardEvent): boolean {
+  if (event.kind !== "proposal" || !event.proposal) {
+    return false;
+  }
+  const proposal = event.proposal;
+  if (event.verboseOnly === true || proposal.verboseOnly === true) {
+    return true;
+  }
+  return (
+    proposal.origin === "stall" && proposal.deliveryMode === "steer" && proposal.status === "sent"
+  );
 }
 
 export function countPendingProposals(events: readonly FeedCardEvent[]): number {
@@ -71,10 +99,15 @@ export function ProposalCard({ proposal, event, onResolved }: ProposalCardProps)
 
   const liveAgent = useSessionStore((state) =>
     event.serverId && event.agentId
-      ? (state.sessions[event.serverId]?.agents.get(event.agentId) ?? null)
+      ? resolveSessionAgent(state.sessions[event.serverId], event.agentId)
       : null,
   );
-  const agentChipLabel = liveAgent?.name ?? liveAgent?.title ?? event.agentTitle;
+  const hideAgentNames = useMissionControlCentralConfig().config?.hideAgentNames === true;
+  const agentTitle = liveAgent?.title ?? event.agentTitle;
+  const agentChipLabel = hideAgentNames
+    ? agentTitle
+    : (liveAgent?.name ?? liveAgent?.title ?? event.agentTitle);
+  const timestamp = new Date(event.ts);
 
   const respond = useCallback(
     async (action: "approve" | "deny", editedMessage?: string) => {
@@ -160,15 +193,25 @@ export function ProposalCard({ proposal, event, onResolved }: ProposalCardProps)
           ) : null}
         </View>
 
+        <Text style={styles.agentTitle} numberOfLines={1}>
+          {agentTitle}
+        </Text>
+
         <View style={styles.agentChipRow}>
           <View style={styles.agentChip}>
             <Text style={styles.agentChipText} numberOfLines={1}>
               {agentChipLabel}
             </Text>
           </View>
-          <Text style={styles.hostLabel} numberOfLines={1}>
-            {event.serverLabel}
-          </Text>
+          <Text style={styles.metaSeparator}>·</Text>
+          <HostGlyph
+            serverId={event.serverId}
+            label={event.serverLabel}
+            size="sm"
+            testID="mission-control-proposal-host-glyph"
+          />
+          <Text style={styles.metaSeparator}>·</Text>
+          <Text style={styles.timestamp}>{formatTimeAgo(timestamp)}</Text>
         </View>
 
         {isEditing ? (
@@ -280,13 +323,15 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface1,
+    overflow: "hidden",
   },
   // Same icon-slot column as FeedCard (width 18 + row gap 12) so the proposal
   // content left edge aligns with every other feed card.
   iconSlot: {
-    paddingTop: 2,
     width: 18,
+    height: 20,
     alignItems: "center",
+    justifyContent: "center",
   },
   content: {
     flex: 1,
@@ -303,10 +348,15 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.xs,
   },
+  agentTitle: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.sm,
+    lineHeight: 20,
+  },
   agentChipRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: theme.spacing[2],
+    gap: theme.spacing[1],
   },
   agentChip: {
     borderRadius: theme.borderRadius.sm,
@@ -319,10 +369,13 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foreground,
     fontSize: theme.fontSize.xs,
   },
-  hostLabel: {
+  metaSeparator: {
+    color: theme.colors.foregroundExtraMuted,
+    fontSize: theme.fontSize.xs,
+  },
+  timestamp: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.xs,
-    flexShrink: 1,
   },
   message: {
     color: theme.colors.foreground,

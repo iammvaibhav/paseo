@@ -240,4 +240,40 @@ describe("ProofSections", () => {
     expect(document.body.textContent).toContain("npm test · exit 0");
     expect(document.body.textContent).not.toContain("Image proof");
   });
+
+  it("omits a section whose proofs have no resolvable media", () => {
+    mount([
+      { kind: "image", label: "Screenshot" },
+      { kind: "video", label: "Demo" },
+    ]);
+
+    expect(document.body.textContent).not.toContain("Image proof");
+    expect(document.body.textContent).not.toContain("Video proof");
+    expect(document.querySelectorAll("[role=button]")).toHaveLength(0);
+  });
+
+  it("keeps the section when at least one proof of the kind resolves", () => {
+    mount([{ kind: "image", label: "Bare label" }, imageProof()]);
+
+    expect(document.body.textContent).toContain("Image proof");
+  });
+
+  it("shows a compact muted media-unavailable line when the media fetch fails at expand time", async () => {
+    mediaFetchMock.mockReset();
+    mediaFetchMock.mockResolvedValue({
+      requestId: "req_missing",
+      ok: false,
+      error: "No such file",
+    });
+    mount([imageProof({ path: "/tmp/missing.png" })]);
+
+    expandHeader("Image proof");
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(document.body.textContent).toContain("Media unavailable");
+    expect(document.body.textContent).not.toContain("No such file");
+  });
 });

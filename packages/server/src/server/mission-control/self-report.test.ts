@@ -175,6 +175,48 @@ describe("MissionControlService.reportSelfStatus", () => {
     expect(updateAgentMetadata).not.toHaveBeenCalled();
   });
 
+  test("preserves the original report_status kind as reportKind for card icons", async () => {
+    // progress|milestone collapse onto kind "milestone" and finding|fix|
+    // decision onto kind "finding" — reportKind keeps the original so the app
+    // can icon them distinctly. Absent when the report carries no kind.
+    // (Distinct agents: one self-report per agent per minute, no coalesce
+    // across kinds.)
+    const progress = await service.reportSelfStatus("agent-1", {
+      status: "working",
+      kind: "progress",
+      headline: "Halfway there",
+    });
+    expect(progress.ok).toBe(true);
+    if (!progress.ok) {
+      return;
+    }
+    expect(progress.event.kind).toBe("milestone");
+    expect(progress.event.reportKind).toBe("progress");
+
+    const finding = await service.reportSelfStatus("agent-2", {
+      status: "working",
+      kind: "finding",
+      headline: "Root cause isolated",
+    });
+    expect(finding.ok).toBe(true);
+    if (!finding.ok) {
+      return;
+    }
+    expect(finding.event.kind).toBe("finding");
+    expect(finding.event.reportKind).toBe("finding");
+
+    const bare = await service.reportSelfStatus("agent-3", {
+      status: "working",
+      headline: "No kind given",
+    });
+    expect(bare.ok).toBe(true);
+    if (!bare.ok) {
+      return;
+    }
+    expect(bare.event.kind).toBe("milestone");
+    expect(bare.event.reportKind).toBeUndefined();
+  });
+
   test("title/description updates flow through the identity path", async () => {
     const result = await service.reportSelfStatus("agent-1", {
       status: "working",

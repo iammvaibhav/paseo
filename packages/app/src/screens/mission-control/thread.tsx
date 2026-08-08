@@ -734,7 +734,7 @@ export function MissionControlThread({
 
   const renderItem = useStableEvent(({ item }: ListRenderItemInfo<ThreadRow>): ReactElement => {
     if (item.kind === "event") {
-      return <FeedCard event={item.event} />;
+      return <FeedCard event={item.event} verbose={verbose} />;
     }
     return (
       <MemoizedCommanderMessageRow

@@ -41,6 +41,10 @@ export interface ProposalCreateInput {
    *  a pending card. Mode, presence, and user-stop do not apply. Used by the
    *  stall status-ask nudge (a steer that only asks for a status). */
   forceSend?: boolean;
+  /** Machinery-only: the emitted card renders in verbose mode only. Carried
+   *  onto the proposal record (audit trail) and the emitted event so the app
+   *  can hide it in the normal feed. Absent → normal-mode card. */
+  verboseOnly?: boolean;
 }
 
 /**

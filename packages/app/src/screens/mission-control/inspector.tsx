@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, type ReactElement } from "react";
 import { Text, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { ArrowUpRight } from "lucide-react-native";
+import { ArrowUpRight, X } from "lucide-react-native";
 import { useShallow } from "zustand/react/shallow";
 import { AgentStreamView } from "@/agent-stream/view";
 import { Composer } from "@/composer";
@@ -36,7 +36,11 @@ const VIEWED_TIMELINE_SOURCE_ID = "mission-control-inspector";
 const INSPECTOR_HEADER_MIN_HEIGHT = 48;
 
 const ThemedArrowUpRight = withUnistyles(ArrowUpRight);
+const ThemedX = withUnistyles(X);
 const arrowUpRightMutedMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+// Hoisted so the header button never takes a fresh JSX element as a prop
+// (react-perf: no JSX literals in prop position).
+const CLOSE_INSPECTOR_ICON = <ThemedX size={14} uniProps={arrowUpRightMutedMapping} />;
 
 interface MissionControlInspectorProps {
   target: InspectorTarget;
@@ -231,6 +235,25 @@ export function MissionControlInspector({
     [handleOpenInWorkspace, openInWorkspaceTrailing],
   );
 
+  // Desktop close: the inspector is an embedded pane, not a navigation — the X
+  // clears the inspected agent (target → null unmounts the pane). Width prefs
+  // are owned by the resizable rail and are untouched; the focused-agent
+  // heartbeat cleanup on unmount stops reporting this agent. Compact has its
+  // own BackHeader back button (same action).
+  const closeInspectorButton = useMemo(
+    () => (
+      <Button
+        variant="ghost"
+        size="xs"
+        leftIcon={CLOSE_INSPECTOR_ICON}
+        onPress={closeInspector}
+        testID="mission-control-inspector-close"
+        accessibilityLabel="Close inspector"
+      />
+    ),
+    [closeInspector],
+  );
+
   const headerTitleAccessory = useMemo(
     () => (
       <View style={styles.headerBadgeSlot}>
@@ -261,6 +284,7 @@ export function MissionControlInspector({
       </View>
       <HostGlyph serverId={serverId} label={hostLabel} size={20} />
       {openInWorkspaceButton}
+      {closeInspectorButton}
     </View>
   );
 

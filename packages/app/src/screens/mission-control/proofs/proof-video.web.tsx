@@ -41,7 +41,9 @@ export function ProofVideo({
     return <Text style={styles.statusText}>Loading video…</Text>;
   }
   if (media.status === "error") {
-    return <Text style={styles.errorText}>{media.error}</Text>;
+    // A failed fetch at expand time renders a compact muted line, never empty
+    // space (live bug: unresolvable proofs expanded to a blank section).
+    return <Text style={styles.unavailableText}>Media unavailable</Text>;
   }
   return <VideoBody data={media.data} mimeType={media.mimeType} />;
 }
@@ -77,9 +79,9 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.xs,
     color: theme.colors.foregroundMuted,
   },
-  errorText: {
+  unavailableText: {
     fontFamily: theme.fontFamily.ui,
     fontSize: theme.fontSize.xs,
-    color: theme.colors.destructive,
+    color: theme.colors.foregroundExtraMuted,
   },
 }));

@@ -269,6 +269,21 @@ export function toLifecycleRow(agent: AggregatedAgent, state: AgentLifecycleStat
 }
 
 /**
+ * The instant a row's timestamp should read as "when it last did anything".
+ * Dormant agents' directory `lastActivityAt` falls back to a shared
+ * rollout/boot value (every dormant row would read the same age — live bug);
+ * their real last activity is the newest mission-control event for the agent.
+ * Every other bucket keeps the live directory timestamp, which ticks on every
+ * timeline row while an agent is running.
+ */
+export function rowActivityMs(row: LifecycleRow): number {
+  if (row.bucket === "dormant" && row.lastEventAt !== null) {
+    return row.lastEventAt;
+  }
+  return row.agent.lastActivityAt.getTime();
+}
+
+/**
  * Default-view visibility: Needs you / Running / Ready always show; Done shows
  * while inside the retention window; Dormant never shows. "All unarchived"
  * (showAll) reveals every unarchived agent regardless of age or bucket.

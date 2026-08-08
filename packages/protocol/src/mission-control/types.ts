@@ -19,6 +19,21 @@ export const MissionControlEventKindSchema = z.enum([
 export type MissionControlEventKind = z.infer<typeof MissionControlEventKindSchema>;
 
 /**
+ * Original `report_status` kind, kept on the emitted event so the app can
+ * icon progress vs milestone vs finding vs fix vs decision distinctly even
+ * though the feed collapses them onto the milestone/finding card kinds.
+ * Additive; absent on events that are not report_status self-reports.
+ */
+export const MissionControlReportKindSchema = z.enum([
+  "finding",
+  "fix",
+  "milestone",
+  "decision",
+  "progress",
+]);
+export type MissionControlReportKind = z.infer<typeof MissionControlReportKindSchema>;
+
+/**
  * Proof attached to a report_status self-report or a summarizer card. Spec
  * kinds are image|video|api|code|pr|url; the legacy diff/command kinds and
  * additions/deletions/exitCode fields stay accepted so old persisted events
@@ -48,7 +63,7 @@ export const MissionControlReportStatusInputSchema = z.object({
   status: z.enum(["working", "completed", "inconclusive", "blocked"]),
   headline: z.string(), // <= 120 chars, plain language
   detail: z.string().optional(), // 1-2 sentences
-  kind: z.enum(["finding", "fix", "milestone", "decision", "progress"]).optional(),
+  kind: MissionControlReportKindSchema.optional(),
   title: z.string().optional(), // ONLY when the agent decides its title changed
   description: z.string().optional(), // living short description, same rule
   proofs: z.array(MissionControlProofSchema).optional(),
@@ -73,6 +88,10 @@ export const MissionControlProposalSchema = z.object({
   classification: z.enum(["normal", "destructive"]),
   status: z.enum(["pending", "approved", "denied", "sent", "expired"]),
   allowPair: z.boolean().optional(),
+  // Machinery-only audit trail (stall status-ask nudges): the card renders in
+  // verbose mode only; the auto-sent proposal record + log stay. Additive —
+  // absent on every normal-mode card (escalation, verifier, commander).
+  verboseOnly: z.boolean().optional(),
 });
 export type MissionControlProposal = z.infer<typeof MissionControlProposalSchema>;
 
@@ -99,6 +118,15 @@ export const MissionControlEventSchema = z.object({
   // Full proposal payload when kind === "proposal". Status changes append a
   // new proposal event superseding the previous one for the same proposal id.
   proposal: MissionControlProposalSchema.optional(),
+  // Machinery-only card: rendered ONLY in verbose mode (stall status-ask
+  // nudges). Absent on normal-mode cards — the app must not render this card
+  // in the default feed. Mirrors proposal.verboseOnly; additive.
+  verboseOnly: z.boolean().optional(),
+  // Original report_status kind (finding/fix/milestone/decision/progress) on
+  // source:"self" events, preserved for distinct card icons even though the
+  // feed collapses progress|milestone → kind "milestone" and finding|fix|
+  // decision → kind "finding". Additive; absent when not a self-report.
+  reportKind: MissionControlReportKindSchema.optional(),
 });
 export type MissionControlEvent = z.infer<typeof MissionControlEventSchema>;
 

@@ -31,6 +31,7 @@ import { DownloadToast } from "@/components/download-toast";
 import { QuittingOverlay } from "@/components/quitting-overlay";
 import { KeyboardShortcutsDialog } from "@/components/keyboard-shortcuts-dialog";
 import { AppDiagnosticHost } from "@/components/app-diagnostic-host";
+import { MissionControlPersistent } from "@/screens/mission-control-persistent";
 import { LeftSidebar } from "@/components/left-sidebar";
 import { WindowSidebarMenuToggle } from "@/components/headers/menu-header";
 import { SidebarModelProvider } from "@/components/sidebar/sidebar-model";
@@ -933,6 +934,7 @@ function AppShell() {
         <AppWithSidebar>
           <WorkspaceRouteNavigationBridge />
           <RootStack />
+          <MissionControlPersistent />
         </AppWithSidebar>
       </HorizontalScrollProvider>
     </MobilePanelsProvider>

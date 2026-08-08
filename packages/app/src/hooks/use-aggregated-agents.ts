@@ -76,6 +76,7 @@ export function useAggregatedAgents(options?: {
           serverLabel,
           title: agent.title ?? null,
           name: agent.name ?? null,
+          shortDescription: agent.shortDescription ?? null,
           status: agent.status,
           lastActivityAt: agent.lastActivityAt,
           cwd: agent.cwd,
