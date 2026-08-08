@@ -65,7 +65,6 @@ import {
 import { collectAllTabs, useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 import {
-  applyBrowserWebviewViewport,
   applyInactiveBrowserWebviewViewport,
   ensurePersistentBrowserWebview,
   hidePersistentBrowserWebview,
@@ -1018,7 +1017,13 @@ export function BrowserPane({
             if (!isPresentedRef.current) {
               return;
             }
-            presentBrowserWebview(browserIdRef.current, webview, host, clip);
+            presentBrowserWebview(
+              browserIdRef.current,
+              webview,
+              host,
+              clip,
+              browserViewportRef.current,
+            );
             rememberResolvedBrowserWebviewSize(browserIdRef.current, webview);
           });
     if (usePersistentWebview) {
@@ -1026,8 +1031,7 @@ export function BrowserPane({
     } else {
       releaseResidentBrowserWebview(browserId, webview);
       if (isPresentedRef.current) {
-        applyBrowserWebviewViewport(webview, browserViewportRef.current);
-        presentBrowserWebview(browserId, webview, host, clip);
+        presentBrowserWebview(browserId, webview, host, clip, browserViewportRef.current);
       } else {
         applyInactiveBrowserWebviewViewport(browserId, webview, browserViewportRef.current);
       }
@@ -1116,6 +1120,13 @@ export function BrowserPane({
     };
     const handleWebviewFocus = () => {
       onFocusPane?.();
+      webview.focus?.();
+      const focusBrowser = getDesktopHost()?.browser?.focus;
+      if (typeof focusBrowser === "function") {
+        void focusBrowser(browserIdRef.current).catch((error) => {
+          console.error("[browser-webview] focus failed", error);
+        });
+      }
     };
 
     webview.addEventListener("did-start-loading", handleStartLoading);
@@ -1203,11 +1214,10 @@ export function BrowserPane({
       releaseResidentBrowserWebview(browserId, webview);
       return;
     }
-    applyBrowserWebviewViewport(webview, browserViewport);
     const host = webviewHostRef.current;
     const clip = webviewClipRef.current;
     if (host && clip) {
-      presentBrowserWebview(browserId, webview, host, clip);
+      presentBrowserWebview(browserId, webview, host, clip, browserViewport);
     }
     if (browserViewport.mode === "fixed") {
       rememberBrowserWebviewSize({
