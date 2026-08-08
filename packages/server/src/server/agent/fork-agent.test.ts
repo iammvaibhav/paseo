@@ -60,8 +60,7 @@ function createForkScenario() {
     modeId: "omp-build",
     model: "omp/default",
     thinkingOptionId: "omp-high",
-    approvalPolicy: "never",
-    extra: { claude: { fallbackModel: "sonnet" } },
+    providerOptions: { approval_policy: "never", fallbackModel: "sonnet" },
   });
   Reflect.set(source, "session", createWrappedSourceSession());
 
@@ -170,8 +169,7 @@ test("keeps the source's config when the fork stays on the same provider", async
     model: "omp/other",
     modeId: "omp-build",
     thinkingOptionId: "omp-high",
-    approvalPolicy: "never",
-    extra: { claude: { fallbackModel: "sonnet" } },
+    providerOptions: { approval_policy: "never", fallbackModel: "sonnet" },
   });
 });
 
@@ -190,8 +188,7 @@ test("drops provider-specific config when the fork switches provider", async () 
     // Provider-agnostic config survives the switch.
     systemPrompt: "be terse",
   });
-  // OMP's model/mode/thinking and Claude-shaped `extra` would be nonsense here.
+  // OMP's model/mode/thinking and providerOptions would be nonsense here.
   expect(config.thinkingOptionId).toBeUndefined();
-  expect(config.approvalPolicy).toBeUndefined();
-  expect(config.extra).toBeUndefined();
+  expect(config.providerOptions).toBeUndefined();
 });

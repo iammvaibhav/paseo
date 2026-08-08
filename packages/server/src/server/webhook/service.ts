@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Logger } from "pino";
 import type { AgentManager } from "../agent/agent-manager.js";
 import { ensureAgentLoaded } from "../agent/agent-loading.js";
+import type { ProviderOptions } from "@getpaseo/protocol/agent-types";
 import type { AgentSessionConfig } from "../agent/agent-sdk-types.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
 import { resolveCreateAgentTitles } from "../agent/create-agent-title.js";
@@ -592,15 +593,47 @@ function buildAgentConfig(
     model: config.model,
     thinkingOptionId: config.thinkingOptionId,
     title: config.title,
-    approvalPolicy: config.approvalPolicy,
-    sandboxMode: config.sandboxMode,
-    networkAccess: config.networkAccess,
-    webSearch: config.webSearch,
+    // Webhook wire schema still carries the pre-native-options knobs
+    // (approvalPolicy / sandboxMode / …). Map them into providerOptions so the
+    // shared AgentSessionConfig + provider option validators stay authoritative.
+    providerOptions: buildWebhookProviderOptions(config),
     featureValues: config.featureValues,
-    extra: config.extra,
     systemPrompt: config.systemPrompt,
     mcpServers: config.mcpServers as AgentSessionConfig["mcpServers"],
   };
+}
+
+function buildWebhookProviderOptions(
+  config: Extract<WebhookTarget, { type: "new-agent" }>["config"],
+): ProviderOptions | undefined {
+  // Wire-schema `extra` is intentionally loose (Record<string, unknown>);
+  // provider option validators re-check the shape at create time.
+  const providerOptions: ProviderOptions = {
+    ...(config.extra?.codex as ProviderOptions | undefined),
+    ...(config.extra?.claude as ProviderOptions | undefined),
+  };
+  if (config.approvalPolicy) {
+    providerOptions.approval_policy = config.approvalPolicy;
+  }
+  if (config.sandboxMode) {
+    providerOptions.sandbox_mode = config.sandboxMode;
+  }
+  if (typeof config.networkAccess === "boolean") {
+    const existing =
+      typeof providerOptions.sandbox_workspace_write === "object" &&
+      providerOptions.sandbox_workspace_write !== null &&
+      !Array.isArray(providerOptions.sandbox_workspace_write)
+        ? providerOptions.sandbox_workspace_write
+        : {};
+    providerOptions.sandbox_workspace_write = {
+      ...existing,
+      network_access: config.networkAccess,
+    };
+  }
+  if (typeof config.webSearch === "boolean") {
+    providerOptions.web_search = config.webSearch ? "live" : "disabled";
+  }
+  return Object.keys(providerOptions).length > 0 ? providerOptions : undefined;
 }
 
 function resolveTitle(configTitle: string | null, prompt: string): string {

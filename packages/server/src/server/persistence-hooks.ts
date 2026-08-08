@@ -62,22 +62,28 @@ export function attachAgentStoragePersistence(
   return unsubscribe;
 }
 
+function nullableToUndefined<T>(value: T | null | undefined): T | undefined {
+  return value ?? undefined;
+}
+
 export function buildConfigOverrides(record: StoredAgentRecord): Partial<AgentSessionConfig> {
+  const config = record.config;
+  // Launch contract fields (systemPromptMode/toolAllowlist) must survive
+  // resume/reload — a resumed verifier/Commander must not come back with the
+  // default toolset because those stored fields were dropped here.
   return stripInternalPaseoMcpServer({
     provider: record.provider,
     cwd: record.cwd,
-    modeId: record.lastModeId ?? record.config?.modeId ?? undefined,
-    model: record.config?.model ?? undefined,
-    thinkingOptionId: record.config?.thinkingOptionId ?? undefined,
-    featureValues: record.config?.featureValues ?? undefined,
-    extra: record.config?.extra ?? undefined,
-    systemPrompt: record.config?.systemPrompt ?? undefined,
-    // Launch contract fields must survive resume/reload (live bug: a resumed
-    // verifier/Commander came back with the default toolset because the
-    // stored systemPromptMode/toolAllowlist were dropped here).
-    systemPromptMode: record.config?.systemPromptMode ?? undefined,
-    toolAllowlist: record.config?.toolAllowlist ?? undefined,
-    mcpServers: record.config?.mcpServers ?? undefined,
+    modeId: nullableToUndefined(config?.modeId),
+    model: nullableToUndefined(config?.model),
+    thinkingOptionId: nullableToUndefined(config?.thinkingOptionId),
+    featureValues: nullableToUndefined(config?.featureValues),
+    providerOptions: nullableToUndefined(config?.providerOptions),
+    toolPolicy: nullableToUndefined(config?.toolPolicy),
+    systemPrompt: nullableToUndefined(config?.systemPrompt),
+    systemPromptMode: nullableToUndefined(config?.systemPromptMode),
+    toolAllowlist: nullableToUndefined(config?.toolAllowlist),
+    mcpServers: nullableToUndefined(config?.mcpServers),
   });
 }
 
@@ -88,18 +94,9 @@ export function buildSessionConfig(
   if (!isProviderRegistered(options?.validProviders, record.provider)) {
     return null;
   }
-  const overrides = buildConfigOverrides(record);
-  return stripInternalPaseoMcpServer({
-    provider: record.provider,
-    cwd: record.cwd,
-    modeId: overrides.modeId,
-    model: overrides.model,
-    thinkingOptionId: overrides.thinkingOptionId,
-    featureValues: overrides.featureValues,
-    extra: overrides.extra,
-    systemPrompt: overrides.systemPrompt,
-    mcpServers: overrides.mcpServers,
-  });
+  // Same shape as resume overrides — keep one source of truth for stored
+  // config reconstruction so launch-contract fields cannot drift.
+  return buildConfigOverrides(record) as AgentSessionConfig;
 }
 
 export function isStoredAgentProviderAvailable(

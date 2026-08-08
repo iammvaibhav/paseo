@@ -108,8 +108,8 @@ async function createSnapshotFork(params: {
   });
 
   // A fork that lands on a different provider than the source keeps only the
-  // provider-agnostic config. `extra`, approval/sandbox policy and the
-  // model/mode/thinking trio are all provider-specific and are nonsense on the
+  // provider-agnostic config. providerOptions/toolPolicy and the
+  // model/mode/thinking trio are provider-specific and are nonsense on the
   // new provider; the fork composer's overrides supply correct ones. Forking
   // across providers is only possible at all because the history travels as a
   // transcript rather than a resumed provider session.

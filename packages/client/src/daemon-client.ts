@@ -913,11 +913,7 @@ export interface CreateScheduleOptions {
           archiveOnFinish?: boolean;
           isolation?: "local" | "worktree";
           title?: string | null;
-          approvalPolicy?: string;
-          sandboxMode?: string;
-          networkAccess?: boolean;
-          webSearch?: boolean;
-          extra?: AgentSessionConfig["extra"];
+          providerOptions?: AgentSessionConfig["providerOptions"];
           systemPrompt?: string;
           mcpServers?: AgentSessionConfig["mcpServers"];
         };

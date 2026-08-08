@@ -11,6 +11,7 @@ import {
   PARENT_AGENT_ID_LABEL,
 } from "@getpaseo/protocol/agent-labels";
 import type { Logger } from "pino";
+import type { ProviderOptions, ToolPolicy } from "@getpaseo/protocol/agent-types";
 import { z } from "zod";
 import type { TerminalManager } from "../../terminal/terminal-manager.js";
 import { buildSelfReportSystemPrompt } from "../mission-control/self-report.js";
@@ -229,7 +230,10 @@ function buildStoredAgentConfig(record: StoredAgentRecord): AgentSessionConfig {
   if (record.config.featureValues != null) {
     config.featureValues = record.config.featureValues;
   }
-  if (record.config.extra != null) config.extra = record.config.extra;
+  if (record.config.providerOptions != null) {
+    config.providerOptions = record.config.providerOptions;
+  }
+  if (record.config.toolPolicy != null) config.toolPolicy = record.config.toolPolicy;
   if (record.config.systemPrompt != null) {
     config.systemPrompt = record.config.systemPrompt;
   }
@@ -311,6 +315,15 @@ interface AgentManagerRescueTimeouts {
 interface ProviderEnabledFlag {
   enabled: boolean;
   derivedFromProviderId?: string | null;
+  validateOptions?: (options: ProviderOptions | undefined) => ProviderOptions | undefined;
+  applyOptions?: (
+    config: AgentSessionConfig,
+    options: ProviderOptions | undefined,
+  ) => AgentSessionConfig;
+  applyToolPolicy?: (
+    config: AgentSessionConfig,
+    toolPolicy: ToolPolicy | undefined,
+  ) => AgentSessionConfig;
 }
 type ProviderEnabledMap = Partial<Record<AgentProvider, ProviderEnabledFlag>>;
 type ProviderClientMap = Partial<Record<AgentProvider, AgentClient>>;
@@ -798,6 +811,7 @@ interface RegisterSessionOptions {
 export class AgentManager {
   private readonly clients = new Map<AgentProvider, AgentClient>();
   private readonly providerEnabled = new Map<AgentProvider, boolean>();
+  private readonly providerDefinitions = new Map<AgentProvider, ProviderEnabledFlag>();
   private readonly agents = new Map<string, LiveManagedAgent>();
   private readonly timelineStore = new InMemoryAgentTimelineStore();
   private readonly providerSubagents = new ProviderSubagentStore();
@@ -899,9 +913,11 @@ export class AgentManager {
     clients: ProviderClientMap;
   }): void {
     this.providerEnabled.clear();
+    this.providerDefinitions.clear();
     for (const [provider, definition] of Object.entries(input.providerDefinitions)) {
       if (definition) {
         this.providerEnabled.set(provider, definition.enabled);
+        this.providerDefinitions.set(provider, definition);
       }
     }
 
@@ -1456,7 +1472,8 @@ export class AgentManager {
           model: config.model,
           thinkingOptionId: config.thinkingOptionId,
           featureValues: config.featureValues,
-          extra: config.extra,
+          providerOptions: config.providerOptions,
+          toolPolicy: config.toolPolicy,
           systemPrompt: config.systemPrompt,
           systemPromptMode: config.systemPromptMode,
           toolAllowlist: config.toolAllowlist,
@@ -5295,7 +5312,39 @@ export class AgentManager {
       normalized.modeId = await this.resolveDefaultModeId(normalized, options.env);
     }
 
-    return normalized;
+    return this.applyProviderConfiguration(normalized);
+  }
+
+  private applyProviderConfiguration(config: AgentSessionConfig): AgentSessionConfig {
+    const definition = this.providerDefinitions.get(config.provider);
+    if (config.providerOptions !== undefined && !definition?.validateOptions) {
+      throw new Error(`Provider '${config.provider}' does not accept providerOptions`);
+    }
+    const validatedOptions = definition?.validateOptions?.(config.providerOptions);
+    const withOptions = definition?.applyOptions
+      ? definition.applyOptions(config, validatedOptions)
+      : config;
+    this.validateToolPolicyServers(withOptions);
+    if (withOptions.toolPolicy && !definition?.applyToolPolicy) {
+      throw new Error(
+        `Provider '${config.provider}' cannot preapprove exact MCP tools for unattended execution`,
+      );
+    }
+    return definition?.applyToolPolicy
+      ? definition.applyToolPolicy(withOptions, withOptions.toolPolicy)
+      : withOptions;
+  }
+
+  private validateToolPolicyServers(config: AgentSessionConfig): void {
+    if (!config.toolPolicy) return;
+    const serverNames = new Set(Object.keys(config.mcpServers ?? {}));
+    for (const grant of config.toolPolicy.preapproved) {
+      if (!serverNames.has(grant.server)) {
+        throw new Error(
+          `toolPolicy preapproval '${grant.server}.${grant.tool}' requires MCP server '${grant.server}' in the same agent request`,
+        );
+      }
+    }
   }
 
   private async resolveDefaultModeId(
