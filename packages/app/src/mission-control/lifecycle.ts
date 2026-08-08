@@ -45,6 +45,22 @@ export interface AgentLifecycleState {
   dormant: boolean;
   /** True when lastActivityAt falls inside the retention window. */
   withinWindow: boolean;
+  /**
+   * Emit-time identity snapshots for recorded buckets (Done / Ready / Dormant):
+   * the agent's title and short description as of its newest mission-control
+   * event — never the live directory values (which the daemon may rewrite
+   * later). Null when no event ever carried the field; Running / Needs-you
+   * rows render live identity instead (they are current state, not history).
+   */
+  snapshotTitle: string | null;
+  snapshotShortDescription: string | null;
+  /**
+   * Stop origin snapshotted at the last run's terminal event (who cancelled
+   * the agent's last run). Null when no stop was in effect at emit time or
+   * the row is in a live bucket. Recorded rows render this, never the live
+   * directory stoppedBy.
+   */
+  snapshotStoppedBy: "user" | "machinery" | "system" | null;
 }
 
 export const DEFAULT_RETENTION_DAYS = 30;
@@ -123,6 +139,9 @@ interface LifecycleFold {
   lastReportHeadline: string | null;
   lastEventAt: number | null;
   pendingProposalCount: number;
+  snapshotTitle: string | null;
+  snapshotShortDescription: string | null;
+  snapshotStoppedBy: "user" | "machinery" | "system" | null;
 }
 
 /** Fold one agent's events (ascending) into lifecycle bookkeeping. */
@@ -132,11 +151,23 @@ function foldLifecycleEvents(events: readonly MissionControlEvent[]): LifecycleF
   let lastReportHeadline: string | null = null;
   let lastEventAt: number | null = null;
   let pendingProposalCount = 0;
+  let snapshotTitle: string | null = null;
+  let snapshotShortDescription: string | null = null;
+  let snapshotStoppedBy: "user" | "machinery" | "system" | null = null;
 
   for (const event of events) {
     const tsMs = eventTimeMs(event);
     if (lastEventAt === null || tsMs > lastEventAt) {
       lastEventAt = tsMs;
+    }
+    // Identity snapshots: every event carries the agent's emit-time title;
+    // shortDescription and stoppedBy are stamped when present. Newest wins.
+    snapshotTitle = event.agentTitle;
+    if (event.shortDescription !== undefined) {
+      snapshotShortDescription = event.shortDescription;
+    }
+    if (event.stoppedBy !== undefined) {
+      snapshotStoppedBy = event.stoppedBy;
     }
     if (event.kind === "proposal") {
       if (event.proposal?.status === "pending") {
@@ -148,9 +179,13 @@ function foldLifecycleEvents(events: readonly MissionControlEvent[]): LifecycleF
     // status (report, run transition, verdict) instead.
     lastReportHeadline = event.headline;
     if (event.kind === "started") {
-      // A new run reopens the lifecycle: prior done/cleared is bookkeeping.
+      // A new run reopens the lifecycle: prior done/cleared is bookkeeping,
+      // and the previous run's stop origin no longer describes this one (the
+      // daemon clears the origin before emitting the started card, so the
+      // started event's own snapshot — usually absent — is the new truth).
       reviewState = "none";
       verdict = null;
+      snapshotStoppedBy = event.stoppedBy ?? null;
       continue;
     }
     if (event.kind === "finished") {
@@ -164,20 +199,32 @@ function foldLifecycleEvents(events: readonly MissionControlEvent[]): LifecycleF
     }
   }
 
-  return { reviewState, verdict, lastReportHeadline, lastEventAt, pendingProposalCount };
+  return {
+    reviewState,
+    verdict,
+    lastReportHeadline,
+    lastEventAt,
+    pendingProposalCount,
+    snapshotTitle,
+    snapshotShortDescription,
+    snapshotStoppedBy,
+  };
 }
 
 function deriveLifecycleBucket(input: {
   agent: AggregatedAgent;
   reviewState: LifecycleReviewState;
   pendingProposalCount: number;
+  snapshotStoppedBy: "user" | "machinery" | "system" | null;
 }): { bucket: LifecycleBucket; doneReason: LifecycleDoneReason | null } {
-  const { agent, reviewState, pendingProposalCount } = input;
+  const { agent, reviewState, pendingProposalCount, snapshotStoppedBy } = input;
   const pendingPermission =
     (agent.pendingPermissionCount ?? 0) > 0 || agent.attentionReason === "permission";
   const failed = agent.status === "error" || agent.attentionReason === "error";
   const running = agent.status === "running" || agent.status === "initializing";
-  const userStopped = agent.stoppedBy === "user";
+  // Recorded stop origin (who stopped the LAST run, per its terminal event) —
+  // never the live directory stoppedBy, which the daemon may rewrite later.
+  const userStopped = snapshotStoppedBy === "user";
 
   if ((pendingPermission || failed || pendingProposalCount > 0) && !userStopped) {
     // Live attention signals (permission / error / proposals) outrank running
@@ -238,6 +285,7 @@ export function deriveAgentLifecycle(input: {
     agent,
     reviewState: fold.reviewState,
     pendingProposalCount: fold.pendingProposalCount,
+    snapshotStoppedBy: fold.snapshotStoppedBy,
   });
 
   return {
@@ -250,6 +298,9 @@ export function deriveAgentLifecycle(input: {
     pendingProposalCount: fold.pendingProposalCount,
     dormant: derived.bucket === "dormant",
     withinWindow: agent.lastActivityAt.getTime() >= now - retentionMs,
+    snapshotTitle: fold.snapshotTitle,
+    snapshotShortDescription: fold.snapshotShortDescription,
+    snapshotStoppedBy: fold.snapshotStoppedBy,
   };
 }
 
@@ -274,28 +325,32 @@ export function toLifecycleRow(agent: AggregatedAgent, state: AgentLifecycleStat
 /**
  * The instant a row's timestamp should read as "when it last did anything".
  *
- * Dormant agents' directory `lastActivityAt` is NOT trustworthy: the daemon
- * stamps stored records with the registration/restore time whenever an idle
- * agent is loaded across a daemon restart, so every agent that did nothing
- * since the last boot reads the same shared value (live bug). For dormant
- * rows the real evidence is the newest mission-control event (`lastEventAt`),
- * with the agent's last user message as the reliable floor for pre-rollout
- * agents that have no events at all. When neither exists, the true instant is
- * unknown — return null so the row renders no age rather than a fabricated
- * one (a wrong age is worse than none).
+ * Recorded buckets (Done / Ready / Dormant) read the real evidence — the
+ * newest mission-control event (`lastEventAt`; a verdict card IS an event, so
+ * verdict time is included) — because the directory `lastActivityAt` is NOT
+ * trustworthy for history: the daemon stamps stored records with the
+ * registration/restore time whenever an idle agent is loaded across a daemon
+ * restart, so every recorded agent that did nothing since the last boot reads
+ * the same shared value (live bug). Dormant rows additionally use the agent's
+ * last user message as the reliable floor for pre-rollout agents that have no
+ * events at all. When no trustworthy instant exists, the true one is unknown
+ * — return null so the row renders no age rather than a fabricated one (a
+ * wrong age is worse than none).
  *
- * Every other bucket keeps the live directory timestamp, which ticks on every
- * timeline row while an agent is running.
+ * Live buckets (Running / Needs-you) keep the live directory timestamp, which
+ * ticks on every timeline row while an agent is running.
  */
 export function rowActivityMs(row: LifecycleRow): number | null {
-  if (row.bucket === "dormant") {
+  if (row.bucket === "done" || row.bucket === "ready" || row.bucket === "dormant") {
     const candidates: number[] = [];
     if (row.lastEventAt !== null) {
       candidates.push(row.lastEventAt);
     }
-    const lastUserMessageMs = row.agent.lastUserMessageAt?.getTime();
-    if (lastUserMessageMs !== undefined) {
-      candidates.push(lastUserMessageMs);
+    if (row.bucket === "dormant") {
+      const lastUserMessageMs = row.agent.lastUserMessageAt?.getTime();
+      if (lastUserMessageMs !== undefined) {
+        candidates.push(lastUserMessageMs);
+      }
     }
     return candidates.length > 0 ? Math.max(...candidates) : null;
   }

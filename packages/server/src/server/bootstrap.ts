@@ -1709,7 +1709,6 @@ export async function createPaseoDaemon(
       isAgentFocused: (agentId) => wsServer?.anyClientFocusedOnAgent(agentId) ?? false,
       readStopOrigin: (agentId) => missionControlService.getStopOrigin(agentId) ?? null,
     }),
-    naming: agentNamingService,
     verifier: verifierDispatcher,
     resetCommander: () =>
       resetCommander({

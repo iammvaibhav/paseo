@@ -304,6 +304,56 @@ describe("buildLocalRecentAgents roster filter", () => {
     const summaries = await buildLocalRecentAgents(deps);
     expect(summaries).toEqual([]);
   });
+
+  test("ages the roster row from the last user message when there is no self-report", async () => {
+    const deps = buildDependencies({
+      records: [
+        {
+          id: "agent-running",
+          labels: {},
+          name: "Rusty",
+          title: "Fix auth",
+          updatedAt: "2026-01-02T00:10:00Z",
+          lastUserMessageAt: "2026-01-02T00:06:00Z",
+          lastStatus: "running",
+          config: { provider: "codex", cwd: "/repo/alpha/app" },
+        },
+      ],
+      live: [{ id: "agent-running", lifecycle: "running" }],
+      events: [],
+    });
+    const summaries = await buildLocalRecentAgents(deps);
+    expect(summaries).toHaveLength(1);
+    // The age is the last user message, NOT the boot-rewritten updatedAt.
+    expect(summaries[0]?.lastActivityAt).toBe("2026-01-02T00:06:00Z");
+    expect(summaries[0]?.lastReportHeadline).toBeUndefined();
+  });
+
+  test("omits the age when neither a self-report nor a user message exists", async () => {
+    const deps = buildDependencies({
+      records: [
+        {
+          id: "agent-running",
+          labels: {},
+          name: "Rusty",
+          title: "Fix auth",
+          updatedAt: "2026-01-02T00:10:00Z",
+          lastStatus: "running",
+          config: { provider: "codex", cwd: "/repo/alpha/app" },
+        },
+      ],
+      live: [{ id: "agent-running", lifecycle: "running" }],
+      events: [],
+    });
+    const summaries = await buildLocalRecentAgents(deps);
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.lastActivityAt).toBeUndefined();
+    // The roster line renders without a stale boot-stamped age.
+    const context = await buildFleetContextData(deps);
+    const pack = buildContextPack(context);
+    expect(pack).toContain("Rusty — Fix auth — running —");
+    expect(pack).not.toMatch(/Rusty — Fix auth — running, \d+d ago/);
+  });
 });
 
 describe("fleet context digest provider", () => {

@@ -3833,6 +3833,104 @@ test("reloadAgentSession re-derives the Commander launch contract for commander-
   expect(resumed.config.systemPrompt).toContain("You are the Commander");
 });
 
+test("resume with commander labels serves the fleet tool catalog on the resumed session", async () => {
+  // Regression (live incident 2026-08-08): a Commander session rebuilt by a
+  // resume variant that dropped labels/contract came back with NO fleet_*
+  // tools ("Tool fleet_create_agent not found"; only memory/skill builtins).
+  // The resume options must thread labels so the launch-context catalog build
+  // (PaseoToolRuntimeContext.callerLabels) and the contract re-derivation see
+  // the commander identity on EVERY session build.
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-commander-catalog-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+
+  class CatalogCaptureClient extends TestAgentClient {
+    // Mirrors bootstrap wiring: omp advertises native Paseo tools.
+    override readonly capabilities = {
+      ...TEST_CAPABILITIES,
+      supportsNativePaseoTools: true,
+    } as const;
+    lastLaunchContext: AgentLaunchContext | undefined;
+
+    override async resumeSession(
+      handle: AgentPersistenceHandle,
+      config?: Partial<AgentSessionConfig>,
+      launchContext?: AgentLaunchContext,
+    ): Promise<AgentSession> {
+      this.lastLaunchContext = launchContext;
+      return super.resumeSession(handle, config, launchContext);
+    }
+  }
+  const client = new CatalogCaptureClient();
+  const fleetCatalog: PaseoToolCatalog = {
+    tools: new Map([
+      [
+        "fleet_create_agent",
+        {
+          name: "fleet_create_agent",
+          title: "Create agent on a host",
+          description: "fleet spawn",
+          inputSchema: undefined,
+          outputSchema: undefined,
+          handler: async () => ({ content: [], structuredContent: {} }),
+        },
+      ],
+      [
+        "tag_message",
+        {
+          name: "tag_message",
+          title: "Tag user message to agents",
+          description: "attribute messages",
+          inputSchema: undefined,
+          outputSchema: undefined,
+          handler: async () => ({ content: [], structuredContent: {} }),
+        },
+      ],
+    ]),
+    getTool: () => undefined,
+    executeTool: async () => ({ content: [], structuredContent: {} }),
+  };
+  const commanderLabels = { [MISSION_CONTROL_LABEL_KEY]: MISSION_CONTROL_LABEL_VALUE };
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000304",
+    resolveCommanderLaunchContract: (labels) =>
+      labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE
+        ? {
+            systemPromptMode: "replace",
+            systemPrompt: "# Identity\n\nYou are the Commander",
+            toolAllowlist: [...COMMANDER_TOOL_ALLOWLIST],
+          }
+        : null,
+    paseoToolCatalogFactory: ({ callerAgentId, callerLabels }) => {
+      // The catalog factory sees the caller labels ONLY when the session
+      // build threads them — the resume path under test must.
+      expect(callerLabels?.[MISSION_CONTROL_LABEL_KEY]).toBe(MISSION_CONTROL_LABEL_VALUE);
+      expect(callerAgentId).toBe("00000000-0000-4000-8000-000000000304");
+      return fleetCatalog;
+    },
+  });
+
+  const resumed = await manager.resumeAgentFromPersistence(
+    { provider: "codex", sessionId: "session-commander-catalog" },
+    { provider: "codex", cwd: workdir, modeId: null, model: null },
+    "00000000-0000-4000-8000-000000000304",
+    { labels: commanderLabels },
+  );
+
+  // The session config carries the fleet allowlist (--no-tools contract)…
+  expect(resumed.config.toolAllowlist).toEqual([...COMMANDER_TOOL_ALLOWLIST]);
+  expect(resumed.config.systemPromptMode).toBe("replace");
+  // …and the provider launch context carries the fleet catalog itself, so the
+  // omp process is served fleet_create_agent at runtime.
+  expect(client.lastLaunchContext?.paseoTools).toBe(fleetCatalog);
+  expect(Array.from(client.lastLaunchContext?.paseoTools?.tools.keys() ?? [])).toContain(
+    "fleet_create_agent",
+  );
+});
+
 test("setTitle bumps updatedAt and persists title in the same snapshot write", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-set-title-updated-at-"));
   const storagePath = join(workdir, "agents");
@@ -3867,6 +3965,52 @@ test("setTitle bumps updatedAt and persists title in the same snapshot write", a
   const live = manager.getAgent(snapshot.id);
   expect(live).not.toBeNull();
   expect(live!.updatedAt.getTime()).toBeGreaterThan(Date.parse(before!.updatedAt));
+});
+
+test("setAgentName is write-once: renames (and clears) of an already-named agent are rejected", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-name-write-once-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+  const manager = new AgentManager({
+    clients: {
+      codex: new TestAgentClient(),
+    },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000411",
+  });
+
+  const snapshot = await manager.createAgent(
+    {
+      provider: "codex",
+      cwd: workdir,
+    },
+    undefined,
+    { workspaceId: undefined },
+  );
+
+  // First assignment sticks.
+  await manager.setAgentName(snapshot.id, "Ripley");
+  expect(manager.getAgent(snapshot.id)?.name).toBe("Ripley");
+  expect((await storage.get(snapshot.id))?.name).toBe("Ripley");
+
+  // A rename of an already-named agent is rejected: no state churn.
+  await manager.setAgentName(snapshot.id, "Miso");
+  expect(manager.getAgent(snapshot.id)?.name).toBe("Ripley");
+  expect((await storage.get(snapshot.id))?.name).toBe("Ripley");
+
+  // Clearing is rejected too.
+  await manager.setAgentName(snapshot.id, "   ");
+  expect(manager.getAgent(snapshot.id)?.name).toBe("Ripley");
+  expect((await storage.get(snapshot.id))?.name).toBe("Ripley");
+
+  // Stored-only agents (closed) are equally immutable once named.
+  await manager.closeAgent(snapshot.id);
+  expect(manager.getAgent(snapshot.id)).toBeNull();
+  await manager.setAgentName(snapshot.id, "Noodle");
+  expect((await storage.get(snapshot.id))?.name).toBe("Ripley");
+
+  rmSync(workdir, { recursive: true, force: true });
 });
 
 test("updateAgentMetadata bumps updatedAt for stored agents", async () => {

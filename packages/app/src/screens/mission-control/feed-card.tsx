@@ -294,10 +294,9 @@ export function deriveFeedCardText(
 } {
   // Title is frozen from the event snapshot at emit time (immutable card copy).
   const title = event.agentTitle;
-  // Agent name chip stays live (names are stable identity).
-  const agentChipLabel = hideAgentNames
-    ? title
-    : (liveAgent?.name ?? liveAgent?.title ?? event.agentTitle);
+  // Agent name chip stays live (names are stable identity); its fallback is
+  // the emit-time title snapshot, never the live title.
+  const agentChipLabel = hideAgentNames ? title : (liveAgent?.name ?? event.agentTitle);
 
   // Cards are immutable append-only snapshots: cards render from their stored
   // snapshot, never from live agent identity updates. On started cards, the

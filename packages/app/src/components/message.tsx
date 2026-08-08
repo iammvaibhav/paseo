@@ -3123,6 +3123,8 @@ interface ToolCallProps {
   metadata?: Record<string, unknown>;
   /** agentId → display name for fleet dispatch renderers (live identity join). */
   agentNames?: Readonly<Record<string, string | undefined>>;
+  /** host → display alias resolver (maps "local" to host alias). */
+  resolveHost?: (host: string) => string;
   isLastInSequence?: boolean;
   disableOuterSpacing?: boolean;
   onInlineDetailsHoverChange?: (hovered: boolean) => void;
@@ -3143,6 +3145,7 @@ export const ToolCall = memo(function ToolCall({
   cwd,
   metadata,
   agentNames,
+  resolveHost,
   isLastInSequence = false,
   disableOuterSpacing,
   onInlineDetailsHoverChange,
@@ -3182,9 +3185,10 @@ export const ToolCall = memo(function ToolCall({
         metadata,
         cwd,
         agentNames,
+        resolveHost,
         resolveIcon: resolveToolCallIcon,
       }),
-    [toolName, status, error, effectiveDetail, metadata, cwd, agentNames],
+    [toolName, status, error, effectiveDetail, metadata, cwd, agentNames, resolveHost],
   );
   const handleOpenFile = useMemo(() => {
     const openFilePath = presentation.openFilePath;
@@ -3257,6 +3261,7 @@ export const ToolCall = memo(function ToolCall({
         maxHeight={maxDetailHeight}
         showLoadingSkeleton={presentation.isLoadingDetails}
         toolName={toolName}
+        resolveHost={resolveHost}
       />
     );
   }, [
@@ -3266,6 +3271,7 @@ export const ToolCall = memo(function ToolCall({
     presentation.isLoadingDetails,
     toolName,
     maxDetailHeight,
+    resolveHost,
   ]);
 
   if (presentation.isPlan && effectiveDetail?.type === "plan") {
@@ -3307,6 +3313,7 @@ function areToolCallPropsEqual(previous: ToolCallProps, next: ToolCallProps) {
   if (previous.cwd !== next.cwd) return false;
   if (previous.metadata !== next.metadata) return false;
   if (previous.agentNames !== next.agentNames) return false;
+  if (previous.resolveHost !== next.resolveHost) return false;
   if (previous.isLastInSequence !== next.isLastInSequence) return false;
   if (previous.disableOuterSpacing !== next.disableOuterSpacing) return false;
   if (previous.onOpenFilePath !== next.onOpenFilePath) return false;

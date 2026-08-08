@@ -63,7 +63,20 @@ export function generateProposalId(): string {
 export interface MissionControlObservation {
   /** Timestamp of the agent's most recent self-reported event (report_status). */
   lastSelfReportTs: string | null;
+  /**
+   * Run epoch of the most recent self-reported event. The report_status
+   * 60s rate limit is run-scoped: a report in a NEW run is never spam, so
+   * the window only applies when this matches the agent's current runEpoch.
+   */
+  lastSelfReportRunEpoch: number;
   lastEventByKind: Partial<Record<MissionControlEventKind, string>>;
+  /**
+   * Run boundary for coalescing. Bumped on every `started` append and on
+   * every store boot (initialize); stamped on each appended event as
+   * `runEpoch`. Events coalesce only within the same epoch, so a `started`
+   * — or a daemon restart — ends the previous run's chains.
+   */
+  runEpoch: number;
 }
 
 export interface MissionControlAppendInput {
@@ -79,6 +92,8 @@ export interface MissionControlAppendInput {
   proposal?: MissionControlEvent["proposal"];
   // Original report_status kind preserved on source:"self" events (additive).
   reportKind?: MissionControlEvent["reportKind"];
+  // Stop origin snapshotted at emit time (additive; see the event schema).
+  stoppedBy?: MissionControlEvent["stoppedBy"];
 }
 
 export interface MissionControlFetchOptions {
@@ -168,6 +183,12 @@ export class MissionControlStore {
       this.nextSeq = maxSeq;
     }
     await this.loadObservations();
+    // A daemon restart is a run boundary: a run spanning a restart must not
+    // resurrect a pre-restart (agentId, kind) chain. Bump every agent's epoch
+    // so pre-restart events can never be coalesced with (or inherited from).
+    for (const [agentId, observation] of this.observations) {
+      this.updateObservation(agentId, { runEpoch: observation.runEpoch + 1 });
+    }
     await this.loadReviewState();
     await this.loadProposals();
     await this.loadMessageTags();
@@ -242,8 +263,13 @@ export class MissionControlStore {
         }
       }
       const lastSelfReportTs = value["lastSelfReportTs"];
+      const lastSelfReportRunEpoch = value["lastSelfReportRunEpoch"];
+      const runEpoch = value["runEpoch"];
       this.observations.set(agentId, {
         lastSelfReportTs: typeof lastSelfReportTs === "string" ? lastSelfReportTs : null,
+        lastSelfReportRunEpoch:
+          typeof lastSelfReportRunEpoch === "number" ? lastSelfReportRunEpoch : 0,
+        runEpoch: typeof runEpoch === "number" ? runEpoch : 0,
         lastEventByKind,
       });
     }
@@ -407,46 +433,46 @@ export class MissionControlStore {
 
   /**
    * Whether the next append for (agentId, kind) would coalesce: the previous
-   * event of that kind exists and is still unacked. The rate-limited
-   * self-report path allows a within-window report only when it coalesces.
+   * event of that kind exists, is still unacked, AND belongs to the agent's
+   * current run. Coalescing-only: the self-report rate-limit escape is the
+   * service's own predicate (see MissionControlService
+   * canBypassSelfReportRateLimit), built on getEvent/isEventPending — the
+   * two rules never share a predicate.
    */
   wouldCoalesce(agentId: string, kind: MissionControlEventKind): boolean {
     const previous = this.previousEventFor(agentId, kind);
-    return previous !== undefined && !this.ackedEventIds.has(previous.id);
+    if (previous === undefined || this.ackedEventIds.has(previous.id)) {
+      return false;
+    }
+    return (previous.runEpoch ?? 0) === this.getObservation(agentId).runEpoch;
   }
 
   /**
    * Append a new event, coalescing it into the (agentId, kind) chain when the
-   * previous chain head is still unacked: the new event supersedes the old one
-   * and carries the running coalesced count.
+   * previous chain head is still unacked AND belongs to the same run: the new
+   * event supersedes the old one and carries the per-run coalesced count. A
+   * `started` event (or a daemon restart) ends the run, so a later event of a
+   * kind never coalesces over — or inherits detail/proofs from — an event of
+   * the same kind from a previous run. Proposal cards supersede in place
+   * across runs regardless of ack state.
    */
   async append(input: MissionControlAppendInput): Promise<MissionControlEvent> {
-    // Proposal cards supersede in place: each status change for the same
-    // proposal id supersedes the proposal's previous card, regardless of ack
-    // state (the app always shows the latest card for a proposal).
-    const proposalId = input.proposal?.id;
-    const previousProposalEvent = proposalId ? this.lastEventForProposal(proposalId) : undefined;
-    const previous = previousProposalEvent ?? this.previousEventFor(input.agentId, input.kind);
-    const coalesces = previous !== undefined && !this.ackedEventIds.has(previous.id);
-    // When a system card (e.g. the run-finished event) coalesces over a
-    // self-reported card, keep the self report's proofs and detail: a proof
-    // is the evidence the worker attached, and losing it on coalesce would
-    // hide every proof attached to a completed report_status.
-    const superseded =
-      previous && (previousProposalEvent !== undefined || coalesces) ? previous : undefined;
+    // A `started` event opens a new run; the (agentId, kind) chain is
+    // run-scoped (see runEpochForAppend and supersessionFor).
+    const runEpoch = this.runEpochForAppend(input.agentId, input.kind);
+    const { superseded, isProposal } = this.supersessionFor(input, runEpoch);
     const event = MissionControlEventSchema.parse({
       id: generateEventId(),
       ts: new Date().toISOString(),
       seq: this.nextSeq++,
       ...input,
+      runEpoch,
       ...(superseded && !input.proof && superseded.proof ? { proof: superseded.proof } : {}),
       ...(superseded && !input.detail && superseded.detail ? { detail: superseded.detail } : {}),
       ...(superseded
         ? {
             supersedesId: superseded.id,
-            ...(previousProposalEvent === undefined
-              ? { coalescedCount: (superseded.coalescedCount ?? 0) + 1 }
-              : {}),
+            ...(!isProposal ? { coalescedCount: (superseded.coalescedCount ?? 0) + 1 } : {}),
           }
         : {}),
     });
@@ -473,6 +499,45 @@ export class MissionControlStore {
       }
     }
     return undefined;
+  }
+
+  /**
+   * The run epoch for the next append of `kind`. A `started` event opens a
+   * new run: the agent's stored epoch is bumped (and persisted) first, so
+   * the started card and everything after it live in the new run.
+   */
+  private runEpochForAppend(agentId: string, kind: MissionControlEventKind): number {
+    const current = this.getObservation(agentId).runEpoch;
+    if (kind !== "started") {
+      return current;
+    }
+    this.updateObservation(agentId, { runEpoch: current + 1 });
+    return current + 1;
+  }
+
+  /** The event the next append supersedes, and whether that is a proposal. */
+  private supersessionFor(
+    input: MissionControlAppendInput,
+    runEpoch: number,
+  ): { superseded: MissionControlEvent | undefined; isProposal: boolean } {
+    // Proposal cards supersede in place: each status change for the same
+    // proposal id supersedes the proposal's previous card, regardless of ack
+    // state or run boundary (the app always shows the latest card for a
+    // proposal; its status changes are one logical card).
+    const proposalId = input.proposal?.id;
+    const previousProposalEvent = proposalId ? this.lastEventForProposal(proposalId) : undefined;
+    const previous = previousProposalEvent ?? this.previousEventFor(input.agentId, input.kind);
+    // The (agentId, kind) chain coalesces only over the unacked same-kind
+    // head of the SAME run. When a system card (e.g. the run-finished event)
+    // coalesces over a self-reported card, the self report's proofs and
+    // detail are kept: a proof is the evidence the worker attached, and
+    // losing it on coalesce would hide every proof attached to a completed
+    // report_status.
+    const sameRun = previousProposalEvent !== undefined || (previous?.runEpoch ?? 0) === runEpoch;
+    const coalesces = previous !== undefined && !this.ackedEventIds.has(previous.id) && sameRun;
+    const superseded =
+      previous && (previousProposalEvent !== undefined || coalesces) ? previous : undefined;
+    return { superseded, isProposal: previousProposalEvent !== undefined };
   }
 
   fetchEvents(options?: MissionControlFetchOptions): MissionControlEvent[] {
@@ -502,6 +567,19 @@ export class MissionControlStore {
     for (const eventId of eventIds) {
       this.ackedEventIds.add(eventId);
     }
+  }
+
+  /** The retained event with the given id, if any. Reads a single event. */
+  getEvent(eventId: string): MissionControlEvent | undefined {
+    return this.events.find((event) => event.id === eventId);
+  }
+
+  /**
+   * Whether a retained event is still pending: never acked by a client. Reads
+   * ack state only; meaningful for event ids that exist in the store.
+   */
+  isEventPending(eventId: string): boolean {
+    return !this.ackedEventIds.has(eventId);
   }
 
   // ==========================================================================
@@ -713,20 +791,26 @@ export class MissionControlStore {
     return (
       this.observations.get(agentId) ?? {
         lastSelfReportTs: null,
+        lastSelfReportRunEpoch: 0,
         lastEventByKind: {},
+        runEpoch: 0,
       }
     );
   }
 
   updateObservation(
     agentId: string,
-    patch: Partial<Pick<MissionControlObservation, "lastSelfReportTs">> & {
+    patch: Partial<
+      Pick<MissionControlObservation, "lastSelfReportTs" | "lastSelfReportRunEpoch" | "runEpoch">
+    > & {
       lastEventByKind?: Partial<Record<MissionControlEventKind, string>>;
     },
   ): void {
     const current = this.getObservation(agentId);
     const next: MissionControlObservation = {
       lastSelfReportTs: patch.lastSelfReportTs ?? current.lastSelfReportTs,
+      lastSelfReportRunEpoch: patch.lastSelfReportRunEpoch ?? current.lastSelfReportRunEpoch,
+      runEpoch: patch.runEpoch ?? current.runEpoch,
       lastEventByKind: { ...current.lastEventByKind, ...patch.lastEventByKind },
     };
     this.observations.set(agentId, next);

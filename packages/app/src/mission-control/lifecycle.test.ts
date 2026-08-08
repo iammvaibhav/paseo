@@ -212,6 +212,76 @@ describe("deriveAgentLifecycle — review state fold", () => {
   });
 });
 
+describe("deriveAgentLifecycle — emit-time identity snapshots", () => {
+  it("snapshots the newest event's title as the recorded identity", () => {
+    // The board's Done/Ready/Dormant rows render this snapshot, never the
+    // live directory title (which the daemon may rewrite later).
+    const state = derive(makeAgent({ title: "Live rewritten title" }), [
+      makeEvent({ kind: "started", headline: "Started running", agentTitle: "Old title" }),
+      makeEvent({ kind: "finished", headline: "Finished", agentTitle: "Terminal title" }),
+    ]);
+    expect(state).toMatchObject({
+      bucket: "ready",
+      snapshotTitle: "Terminal title",
+    });
+  });
+
+  it("snapshots the newest shortDescription that an event carried", () => {
+    const state = derive(makeAgent({ shortDescription: "live description" }), [
+      makeEvent({
+        kind: "started",
+        headline: "Started running",
+        shortDescription: "First brief",
+      }),
+      makeEvent({
+        kind: "finished",
+        headline: "Finished",
+        shortDescription: "Final brief",
+      }),
+    ]);
+    expect(state.snapshotShortDescription).toBe("Final brief");
+  });
+
+  it("keeps the last known shortDescription when a later event carries none", () => {
+    const state = derive(makeAgent(), [
+      makeEvent({
+        kind: "milestone",
+        headline: "Progress",
+        shortDescription: "Known brief",
+      }),
+      makeEvent({ kind: "finished", headline: "Finished" }),
+    ]);
+    expect(state.snapshotShortDescription).toBe("Known brief");
+  });
+
+  it("snapshots the last run's stop origin from its terminal event", () => {
+    const state = derive(makeAgent(), [
+      makeEvent({ kind: "started", headline: "Started running" }),
+      makeEvent({ kind: "interrupted", headline: "Interrupted by you", stoppedBy: "user" }),
+    ]);
+    expect(state.snapshotStoppedBy).toBe("user");
+  });
+
+  it("resets the stop-origin snapshot when a new run starts", () => {
+    // The daemon clears the origin before the started card; a later run must
+    // not inherit the previous run's stop.
+    const state = derive(makeAgent(), [
+      makeEvent({ kind: "interrupted", headline: "Interrupted by you", stoppedBy: "user" }),
+      makeEvent({ kind: "started", headline: "Started running" }),
+    ]);
+    expect(state.snapshotStoppedBy).toBeNull();
+  });
+
+  it("leaves all snapshots null for agents with no events (pre-rollout dormant)", () => {
+    const state = derive(makeAgent({ title: "live title" }), []);
+    expect(state).toMatchObject({
+      snapshotTitle: null,
+      snapshotShortDescription: null,
+      snapshotStoppedBy: null,
+    });
+  });
+});
+
 describe("deriveAgentLifecycle — buckets", () => {
   it("puts permission-blocked agents in needs_you even while running", () => {
     const state = derive(makeAgent({ status: "running", pendingPermissionCount: 1 }), [
@@ -282,15 +352,13 @@ describe("deriveAgentLifecycle — buckets", () => {
 describe("deriveAgentLifecycle — user-stopped ≠ Needs you", () => {
   it("lands a user-stopped agent in done with the stopped-by-user marker", () => {
     // Live bug: a user-pressed Stop landed the row in Needs-you. The stop
-    // origin rides the agent snapshot (stoppedBy: "user"), so the derivation
-    // can tell a user stop from a normal finish.
-    const state = derive(
-      makeAgent({ stoppedBy: "user", requiresAttention: true, attentionReason: "finished" }),
-      [
-        makeEvent({ kind: "started", headline: "Started running" }),
-        makeEvent({ kind: "interrupted", headline: "Interrupted by you" }),
-      ],
-    );
+    // origin rides the run's terminal event snapshot (stoppedBy: "user"),
+    // so the derivation can tell a user stop from a normal finish without
+    // reading the live directory stoppedBy.
+    const state = derive(makeAgent({ requiresAttention: true, attentionReason: "finished" }), [
+      makeEvent({ kind: "started", headline: "Started running" }),
+      makeEvent({ kind: "interrupted", headline: "Interrupted by you", stoppedBy: "user" }),
+    ]);
     expect(state).toMatchObject({
       bucket: "done",
       doneReason: "stopped-by-user",
@@ -302,23 +370,23 @@ describe("deriveAgentLifecycle — user-stopped ≠ Needs you", () => {
     // The live Needs-you manifestation: after the stop the attention still
     // reads finished and/or a proposal card is pending. The user performed the
     // stop — nothing needs them.
-    const state = derive(
-      makeAgent({ stoppedBy: "user", requiresAttention: true, attentionReason: "finished" }),
-      [makeProposalEvent({ headline: "Proposal (verifier): proof demand", source: "verifier" })],
-    );
+    const state = derive(makeAgent({ requiresAttention: true, attentionReason: "finished" }), [
+      makeProposalEvent({
+        headline: "Proposal (verifier): proof demand",
+        source: "verifier",
+        stoppedBy: "user",
+      }),
+    ]);
     expect(state).toMatchObject({ bucket: "done", doneReason: "stopped-by-user" });
   });
 
   it("prevents stopped-by-user chip from coexisting with a terminal Finished reviewState", () => {
     // When the agent finished (reviewState "ready"), the ready-for-review
     // semantics take precedence and the stopped-by-user chip is omitted.
-    const state = derive(
-      makeAgent({ stoppedBy: "user", requiresAttention: true, attentionReason: "finished" }),
-      [
-        makeEvent({ kind: "started", headline: "Started running" }),
-        makeEvent({ kind: "finished", headline: "Finished" }),
-      ],
-    );
+    const state = derive(makeAgent({ requiresAttention: true, attentionReason: "finished" }), [
+      makeEvent({ kind: "started", headline: "Started running" }),
+      makeEvent({ kind: "finished", headline: "Finished", stoppedBy: "user" }),
+    ]);
     expect(state).toMatchObject({
       bucket: "ready",
       doneReason: null,
@@ -327,64 +395,55 @@ describe("deriveAgentLifecycle — user-stopped ≠ Needs you", () => {
   });
 
   it("keeps machinery stops on the attention path (error → needs_you)", () => {
-    const state = derive(
-      makeAgent({ stoppedBy: "machinery", status: "error", attentionReason: "error" }),
-      [makeEvent({ kind: "failed", headline: "Failed with an error" })],
-    );
+    const state = derive(makeAgent({ status: "error", attentionReason: "error" }), [
+      makeEvent({ kind: "failed", headline: "Failed with an error", stoppedBy: "machinery" }),
+    ]);
     expect(state).toMatchObject({ bucket: "needs_you", doneReason: null });
   });
 
   it("lands abruptly-killed (system origin) agents in needs_you, not done", () => {
-    const state = derive(
-      makeAgent({ stoppedBy: "system", status: "error", attentionReason: "error" }),
-      [makeEvent({ kind: "failed", headline: "Failed with an error" })],
-    );
+    const state = derive(makeAgent({ status: "error", attentionReason: "error" }), [
+      makeEvent({ kind: "failed", headline: "Failed with an error", stoppedBy: "system" }),
+    ]);
     expect(state).toMatchObject({ bucket: "needs_you", doneReason: null });
   });
 
   it("keeps a machinery stop with finished attention on the ready path", () => {
-    const state = derive(
-      makeAgent({ stoppedBy: "machinery", requiresAttention: true, attentionReason: "finished" }),
-      [makeEvent({ kind: "finished", headline: "Finished" })],
-    );
+    const state = derive(makeAgent({ requiresAttention: true, attentionReason: "finished" }), [
+      makeEvent({ kind: "finished", headline: "Finished", stoppedBy: "machinery" }),
+    ]);
     expect(state).toMatchObject({ bucket: "ready", doneReason: null });
   });
 
   it("returns a user-stopped agent to running when a new run starts (reopen)", () => {
-    const state = derive(makeAgent({ stoppedBy: "user", status: "running" }), [
+    const state = derive(makeAgent({ status: "running" }), [
       makeEvent({ kind: "started", headline: "Started running" }),
-      makeEvent({ kind: "finished", headline: "Finished" }),
+      makeEvent({ kind: "finished", headline: "Finished", stoppedBy: "user" }),
       makeEvent({ kind: "started", headline: "Started running" }),
     ]);
     expect(state).toMatchObject({ bucket: "running", doneReason: null, reviewState: "none" });
   });
 
   it("does not re-derive done after the user-stopped row is cleared", () => {
-    // Clear is bookkeeping on the server; the stop origin itself is not
-    // cleared there, so the cleared reviewState must outrank the marker.
-    const state = derive(
-      makeAgent({ stoppedBy: "user", requiresAttention: true, attentionReason: "finished" }),
-      [
-        makeEvent({ kind: "finished", headline: "Finished" }),
-        makeEvent({ kind: "verdict", source: "system", headline: "Cleared", detail: "Cleared" }),
-      ],
-    );
+    // Clear is bookkeeping on the server; the stop origin snapshot itself is
+    // not cleared there, so the cleared reviewState must outrank the marker.
+    const state = derive(makeAgent({ requiresAttention: true, attentionReason: "finished" }), [
+      makeEvent({ kind: "finished", headline: "Finished", stoppedBy: "user" }),
+      makeEvent({ kind: "verdict", source: "system", headline: "Cleared", detail: "Cleared" }),
+    ]);
     expect(state).toMatchObject({ bucket: "dormant", doneReason: null, reviewState: "cleared" });
   });
 
   it("keeps verdict-done semantics when a verdict lands after a user stop", () => {
-    const state = derive(
-      makeAgent({ stoppedBy: "user", requiresAttention: true, attentionReason: "finished" }),
-      [
-        makeEvent({ kind: "finished", headline: "Finished" }),
-        makeEvent({
-          kind: "verdict",
-          source: "verifier",
-          headline: "Done — looks good",
-          detail: "looks good",
-        }),
-      ],
-    );
+    const state = derive(makeAgent({ requiresAttention: true, attentionReason: "finished" }), [
+      makeEvent({ kind: "finished", headline: "Finished", stoppedBy: "user" }),
+      makeEvent({
+        kind: "verdict",
+        source: "verifier",
+        headline: "Done — looks good",
+        detail: "looks good",
+      }),
+    ]);
     expect(state).toMatchObject({ bucket: "done", doneReason: null });
     expect(state.verdict?.by).toBe("verifier");
   });
@@ -657,5 +716,50 @@ describe("rowActivityMs", () => {
       lastEventAt: NOW - 60_000,
     };
     expect(rowActivityMs(row)).toBe(NOW - 5_000);
+  });
+
+  it("uses the newest mission-control event for done rows, never the boot-rewritten directory stamp", () => {
+    // Done row whose directory lastActivityAt is a shared restore value (18m
+    // ago) but whose verdict card — the real "when it ended" — is older.
+    const done = makeAgent({ lastActivityAt: new Date(NOW - 18 * 60_000) });
+    const state = derive(done, [
+      makeEvent({ kind: "finished", headline: "Finished" }),
+      makeEvent({
+        kind: "verdict",
+        source: "system",
+        headline: "Marked done",
+        detail: "Marked done",
+      }),
+    ]);
+    const row = { ...state, agent: done, sortTime: 0, lastEventAt: NOW - DAY_MS };
+    expect(rowActivityMs(row)).toBe(NOW - DAY_MS);
+  });
+
+  it("uses the newest mission-control event for ready rows (verdict time included)", () => {
+    // Ready rows are history too: the finish card is the last real activity,
+    // not the directory stamp rewritten at boot/restore.
+    const ready = makeAgent({ lastActivityAt: new Date(NOW - 5_000) });
+    const state = derive(ready, [
+      makeEvent({
+        kind: "finished",
+        headline: "Finished",
+        ts: new Date(NOW - 2 * DAY_MS).toISOString(),
+      }),
+    ]);
+    const row = { ...state, agent: ready, sortTime: 0, lastEventAt: NOW - 2 * DAY_MS };
+    expect(rowActivityMs(row)).toBe(NOW - 2 * DAY_MS);
+  });
+
+  it("renders no age (null) for a done row with no event evidence", () => {
+    const done = makeAgent({ lastActivityAt: new Date(NOW - 18 * 60_000) });
+    const state = derive(done, []);
+    const row = {
+      ...state,
+      agent: done,
+      sortTime: 0,
+      lastEventAt: null,
+      bucket: "done" as const,
+    };
+    expect(rowActivityMs(row)).toBeNull();
   });
 });

@@ -262,10 +262,10 @@ export function ProposalCard({
       : null,
   );
   const hideAgentNames = useMissionControlCentralConfig().config?.hideAgentNames === true;
-  const agentTitle = liveAgent?.title ?? event.agentTitle;
-  const agentChipLabel = hideAgentNames
-    ? agentTitle
-    : (liveAgent?.name ?? liveAgent?.title ?? event.agentTitle);
+  // Emit-time snapshot: recorded cards never render the live title. Only the
+  // name chip may read live identity (names are write-once).
+  const agentTitle = event.agentTitle;
+  const agentChipLabel = hideAgentNames ? agentTitle : (liveAgent?.name ?? event.agentTitle);
   const timestamp = new Date(event.ts);
   // Live relative time via the shared ticker; the label ages in place without
   // re-rendering the card or the list.

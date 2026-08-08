@@ -317,6 +317,12 @@ function AgentRowTextContent({
   headline: string | null;
 }): ReactElement {
   const isDone = row.bucket === "done";
+  // Recorded rows (Done/Ready/Dormant) read the stop origin snapshotted into
+  // the lifecycle fold at the last run's terminal event — never the live
+  // directory stoppedBy (machinery may rewrite it later). Live buckets are
+  // current state, so their live value is the truth.
+  const isRecorded = row.bucket === "done" || row.bucket === "ready" || row.bucket === "dormant";
+  const stoppedBy = isRecorded ? row.snapshotStoppedBy : (row.agent.stoppedBy ?? null);
   return (
     <View style={styles.agentText}>
       <Text numberOfLines={1} style={styles.agentTitle}>
@@ -330,7 +336,7 @@ function AgentRowTextContent({
             </Text>
           </View>
         ) : null}
-        {row.agent.stoppedBy === "system" ? (
+        {stoppedBy === "system" ? (
           <View style={styles.stoppedChip}>
             <Text numberOfLines={1} style={styles.stoppedChipText}>
               Interrupted
@@ -590,6 +596,37 @@ function AgentRowIdentityPopover({
   );
 }
 
+// Recorded rows (Done/Ready/Dormant) render the identity snapshotted at the
+// last run's terminal event — never the live title/shortDescription (the
+// daemon may rewrite them later). Live buckets (Running/Needs-you) are
+// current state, so their live identity is the truth.
+function deriveRowIdentity(row: LifecycleRow, hideAgentNames: boolean) {
+  const { agent } = row;
+  const isRecorded = row.bucket === "done" || row.bucket === "ready" || row.bucket === "dormant";
+  const keyLine = isRecorded
+    ? (row.snapshotTitle ?? agent.name ?? agent.id)
+    : (agent.title ?? agent.name ?? agent.id);
+  const showNameChip = agent.name !== null && agent.name !== keyLine && !hideAgentNames;
+  // On done rows the verdict line already carries the summary; a headline that
+  // is literally the same text (user "Marked done"/"Cleared" cards) would read
+  // as a duplicated line.
+  const headline =
+    row.lastReportHeadline !== null &&
+    row.bucket === "done" &&
+    row.verdict !== null &&
+    row.lastReportHeadline === row.verdict.summary
+      ? null
+      : row.lastReportHeadline;
+  // Hover-popover identity follows the same recorded/live split: recorded
+  // rows show the shortDescription snapshot (falling back to the event
+  // headline), live rows the live shortDescription.
+  const identityDescription = isRecorded
+    ? (row.snapshotShortDescription ?? headline)
+    : (agent.shortDescription ?? headline);
+  const popoverTitle = isRecorded ? row.snapshotTitle : agent.title;
+  return { keyLine, showNameChip, headline, identityDescription, popoverTitle };
+}
+
 const MemoizedAgentRow = memo(AgentRowImpl);
 
 function AgentRowImpl({
@@ -686,20 +723,12 @@ function AgentRowImpl({
     });
   }, [agent.id, agent.serverId, archiveAgent]);
 
-  const keyLine = agent.title ?? agent.name ?? agent.id;
-  const showNameChip = agent.name !== null && agent.name !== keyLine && !hideAgentNames;
+  const { keyLine, showNameChip, headline, identityDescription, popoverTitle } = deriveRowIdentity(
+    row,
+    hideAgentNames,
+  );
   const isDone = row.bucket === "done";
   const bucketLabel = LIFECYCLE_BUCKET_LABELS[row.bucket];
-  // On done rows the verdict line already carries the summary; a headline that
-  // is literally the same text (user "Marked done"/"Cleared" cards) would read
-  // as a duplicated line.
-  const headline =
-    row.lastReportHeadline !== null &&
-    isDone &&
-    row.verdict !== null &&
-    row.lastReportHeadline === row.verdict.summary
-      ? null
-      : row.lastReportHeadline;
 
   const menuActions = resolveBoardRowMenuActions(row);
   const isArchiving = isArchivingAgent({ serverId: agent.serverId, agentId: agent.id });
@@ -757,8 +786,8 @@ function AgentRowImpl({
         <AgentRowIdentityPopover
           rowTriggerRef={rowTriggerRef}
           rowPopoverRef={rowPopoverRef}
-          title={agent.title}
-          description={agent.shortDescription ?? headline}
+          title={popoverTitle}
+          description={identityDescription}
         />
       ) : null}
     </View>

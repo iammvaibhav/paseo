@@ -479,8 +479,9 @@ describe("MissionControlApprovals notifications", () => {
 // ============================================================================
 // Ask-mode gating per action class (spec: "apart from nudge, everything should
 // require my approval in ask mode. Spinning up a new agent as well,
-// everything."). The exemption is ONE predicate (isAskModeAutoSendExempt) and
-// this table pins every action class so it cannot drift.
+// everything."). The exemptions are TWO separate named checks
+// (isForceSendNudge / isAllowPairExempt) and this table pins every action
+// class so it cannot drift — both paths asserted separately below.
 // ============================================================================
 
 describe("MissionControlApprovals ask-mode gating per action class", () => {
@@ -492,7 +493,7 @@ describe("MissionControlApprovals ask-mode gating per action class", () => {
         label: string;
         input: ProposalCreateInput;
       }> = [
-        // The ONLY exemption: the status-ask nudge (auto-sent, forceSend).
+        // The FIRST exemption path: the status-ask nudge (auto-sent, forceSend).
         {
           label: "status-ask nudge",
           input: baseInput({
@@ -563,6 +564,7 @@ describe("MissionControlApprovals ask-mode gating per action class", () => {
         statuses.set(action.label, proposal.status);
       }
 
+      // Exemption path 1 (isForceSendNudge): the status-ask nudge auto-sends.
       expect(statuses.get("status-ask nudge")).toBe("sent");
       expect(harness.delivered).toHaveLength(1); // only the nudge delivered
       for (const [label, status] of statuses) {
@@ -570,6 +572,25 @@ describe("MissionControlApprovals ask-mode gating per action class", () => {
           expect(status, `${label} must wait for approval in ask mode`).toBe("pending");
         }
       }
+
+      // Exemption path 2 (isAllowPairExempt), asserted separately: a
+      // user-granted allow-pair auto-sends the rest of that exchange, even in
+      // ask mode — a different pair still waits.
+      const grant = await harness.approvals.createProposal(baseInput());
+      expect(grant.status).toBe("pending");
+      await harness.approvals.resolveProposal({
+        proposalId: grant.id,
+        action: "approve",
+        allowPair: true,
+      });
+      const paired = await harness.approvals.createProposal(
+        baseInput({ allowPairKey: "server-1:worker-1" }),
+      );
+      expect(paired.status).toBe("sent");
+      const differentPair = await harness.approvals.createProposal(
+        baseInput({ targetAgentId: "worker-3" }),
+      );
+      expect(differentPair.status).toBe("pending");
     } finally {
       await teardown(harness);
     }

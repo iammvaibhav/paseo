@@ -373,6 +373,47 @@ describe("MissionControlService.reportSelfStatus", () => {
     expect(broadcast).toHaveBeenCalledTimes(1);
   });
 
+  test("a run-boundary self-report within the window is admitted as a fresh card", async () => {
+    const first = await service.reportSelfStatus("agent-1", {
+      status: "completed",
+      headline: "First run done",
+      detail: "stale detail",
+      proofs: [{ kind: "url", url: "https://example.com/evidence" }],
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) {
+      return;
+    }
+    // The run ends and a new run starts: the daemon emits a `started` card,
+    // which bumps the agent's run epoch in the store.
+    const internals = service as unknown as { store: MissionControlStore };
+    await internals.store.append({
+      agentId: "agent-1",
+      agentTitle: "Agent 1",
+      kind: "started",
+      source: "system",
+      severity: "info",
+      headline: "Started running",
+    });
+    // The report lands within the 60s window but in the NEW run: it is never
+    // spam, so it is admitted — and it must NOT fold into the previous run's
+    // chain (no inherited detail/proof, no supersede).
+    const second = await service.reportSelfStatus("agent-1", {
+      status: "completed",
+      headline: "Second run done",
+      detail: "fresh detail",
+    });
+    expect(second.ok).toBe(true);
+    if (!second.ok) {
+      return;
+    }
+    expect(second.event.supersedesId).toBeUndefined();
+    expect(second.event.detail).toBe("fresh detail");
+    expect(second.event.proof).toBeUndefined();
+    expect(second.event.runEpoch).toBe(1);
+    expect(broadcast).toHaveBeenCalledTimes(2);
+  });
+
   test("same-kind excess within the window coalesces instead of erroring", async () => {
     const first = await service.reportSelfStatus("agent-1", {
       status: "working",

@@ -277,7 +277,9 @@ describe("FeedCard", () => {
     act(() => root?.render(<FeedCard event={proposalEvent} />));
 
     const card = container?.querySelector('[data-testid="mission-control-proposal-card"]');
-    expect(card?.textContent).toContain("Repair mission control cards");
+    // The card renders the emit-time title snapshot, never the live title.
+    expect(card?.textContent).toContain("Original event title");
+    expect(card?.textContent).not.toContain("Repair mission control cards");
     expect(card?.querySelector('[data-icon="Clock"]')).not.toBeNull();
     expect(
       card?.querySelector('[data-testid="mission-control-proposal-host-glyph"]'),

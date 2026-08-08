@@ -22,6 +22,9 @@ function makeRow(bucket: LifecycleRow["bucket"]): LifecycleRow {
     pendingProposalCount: 0,
     dormant: bucket === "dormant",
     withinWindow: true,
+    snapshotTitle: null,
+    snapshotShortDescription: null,
+    snapshotStoppedBy: null,
     sortTime: 0,
     agent: {
       id: "agent-1",

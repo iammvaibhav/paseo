@@ -23,7 +23,7 @@ import {
 } from "./commander-contract.js";
 import type { FleetContextDependencies } from "./context.js";
 import { buildCommanderLaunchConfig } from "./context.js";
-import { isSystemWorkspaceName } from "./naming-backfill.js";
+import { isCommanderSystemMarkerName } from "./naming-backfill.js";
 import type { MissionControlAppendInput } from "./store.js";
 
 // The allowlist now lives in commander-contract.ts (the static contract
@@ -312,7 +312,7 @@ export async function resolveOrCreateCommanderWorkspace(
     )[0];
   if (existing) {
     const stableTitle = commanderHomeWorkspaceTitle(input.hostName, input.hostAlias);
-    if (!existing.title || isSystemWorkspaceName(existing.title)) {
+    if (needsCommanderTitleStabilization(existing.title)) {
       await input.workspaceRegistry.upsert({
         ...existing,
         title: stableTitle,
@@ -335,6 +335,27 @@ export async function resolveOrCreateCommanderWorkspace(
 }
 
 /**
+ * Whether a reused Commander home workspace's title needs stabilization: it
+ * is missing or still the legacy `<paseo-system>` machinery marker, so the
+ * provisioning path re-titles it to the stable host-derived title. (The
+ * provisioning-overwrite decision — not shared with orphan cleanup or the
+ * naming backfill.)
+ */
+export function needsCommanderTitleStabilization(title: string | null | undefined): boolean {
+  return !title || isCommanderSystemMarkerName(title);
+}
+
+/**
+ * Whether a workspace title is the legacy `<paseo-system>` machinery marker
+ * (pre-fix auto-namer leak). The orphan self-heal treats it as commander
+ * infrastructure — the legacy-marker decision, separate from the current
+ * stable host-derived title check.
+ */
+export function isLegacyCommanderWorkspaceMarker(title: string): boolean {
+  return isCommanderSystemMarkerName(title);
+}
+
+/**
  * True when a workspace title marks commander home-dir infrastructure: the
  * legacy `<paseo-system>` marker (pre-fix auto-namer leak) or the current
  * stable host-derived title. The orphan self-heal treats both as commander
@@ -350,7 +371,10 @@ export function isCommanderHomeWorkspaceTitle(
   if (!title) {
     return false;
   }
-  return isSystemWorkspaceName(title) || title === commanderHomeWorkspaceTitle(hostName, hostAlias);
+  return (
+    isLegacyCommanderWorkspaceMarker(title) ||
+    title === commanderHomeWorkspaceTitle(hostName, hostAlias)
+  );
 }
 
 /**

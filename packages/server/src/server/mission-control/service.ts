@@ -27,9 +27,11 @@ import {
   type MissionControlAppendInput,
   type MissionControlFetchOptions,
   type MissionControlMessageTag,
+  type MissionControlObservation,
   type MissionControlReviewStateRecord,
   type MissionControlVerdict,
 } from "./store.js";
+import type { MissionControlEventKind } from "@getpaseo/protocol/mission-control/types";
 import {
   MissionControlApprovals,
   ProposalDeliveryAborted,
@@ -45,7 +47,6 @@ import {
   CentralMissionControlConfigStore,
   type ResolvedMissionControlCentralConfig,
 } from "./config.js";
-import type { AgentNamingService } from "./naming.js";
 import { TurnLifecycleLog } from "./turn-lifecycle-log.js";
 
 const STALL_SWEEP_INTERVAL_MS = 30_000;
@@ -222,13 +223,6 @@ export interface MissionControlServiceOptions {
    * commander-boot machinery; absent → the reset RPC reports an error.
    */
   resetCommander?: () => Promise<{ ok: true; agentId: string } | { ok: false; error: string }>;
-  /**
-   * Daemon naming service, for the instant theme re-map (spec App "Names":
-   * a namingTheme patch re-maps all auto-assigned names immediately and
-   * broadcasts agent_update). Optional so the service stays constructible in
-   * tests without it; bootstrap wires it.
-   */
-  naming?: AgentNamingService | null;
 }
 
 export interface MissionControlServiceConfig {
@@ -277,7 +271,6 @@ export class MissionControlService {
   private readonly verifier: MissionControlServiceOptions["verifier"];
   private readonly centralConfig: CentralMissionControlConfigStore;
   private readonly presenceSource: MissionControlPresenceSource;
-  private readonly naming: AgentNamingService | null;
   private readonly resetCommanderFn: MissionControlServiceOptions["resetCommander"];
   private readonly spawnFromProposal: MissionControlServiceOptions["spawnFromProposal"];
   readonly approvals: MissionControlApprovals;
@@ -374,7 +367,6 @@ export class MissionControlService {
     this.digest = options.digest ?? null;
     this.verifier = options.verifier ?? null;
     this.presenceSource = options.presence;
-    this.naming = options.naming ?? null;
     this.resetCommanderFn = options.resetCommander;
     this.spawnFromProposal = options.spawnFromProposal;
     this.bootedAtMs = Date.now();
@@ -813,20 +805,11 @@ export class MissionControlService {
   async patchCentralConfig(
     patch: MissionControlCentralConfigPatch,
   ): Promise<ResolvedMissionControlCentralConfig> {
-    const previousTheme = this.centralConfig.get().namingTheme;
-    const resolved = await this.centralConfig.patch(patch);
-    // Instant theme re-map (spec App "Names"): a namingTheme patch re-maps
-    // all auto-assigned agent names to the new pool and broadcasts
-    // agent_update for every renamed agent. Re-map failures must never fail
-    // the config patch itself — the theme is already persisted.
-    if (patch.namingTheme !== undefined && resolved.namingTheme !== previousTheme && this.naming) {
-      try {
-        await this.naming.remapAllNames();
-      } catch (error) {
-        this.logger.error({ err: error }, "mission_control.naming.remap_failed");
-      }
-    }
-    return resolved;
+    // Names are write-once: a namingTheme patch affects only future
+    // assignments (the theme is read fresh at assign time) and never
+    // re-maps existing names, so there is nothing to do beyond persisting
+    // the patch.
+    return this.centralConfig.patch(patch);
   }
 
   async setMode(mode: MissionControlMode): Promise<ResolvedMissionControlCentralConfig> {
@@ -877,8 +860,9 @@ export class MissionControlService {
   /**
    * Self-reported status from the report_status MCP tool (renamed from
    * report_milestone; the old tool name is deleted). Excluded agents get a
-   * polite error; a within-window report is only accepted when it coalesces
-   * into the agent's existing unacked event of the same kind.
+   * polite error; a within-window report is only accepted when it bypasses
+   * the rate limit (new run, or a fold-in into the agent's existing unacked
+   * event of the same kind — see canBypassSelfReportRateLimit).
    *
    * status mapping: working → kind from input.kind; completed → finished +
    * ready-for-review (post-rollout only); inconclusive → diverged (no ready);
@@ -899,12 +883,9 @@ export class MissionControlService {
       };
     }
     const observation = this.store.getObservation(agentId);
-    const lastSelfReportTs = observation.lastSelfReportTs;
-    const withinRateLimitWindow =
-      lastSelfReportTs !== null &&
-      Date.now() - Date.parse(lastSelfReportTs) < SELF_REPORT_RATE_LIMIT_MS;
+    const withinRateLimitWindow = this.withinSelfReportRateLimit(observation);
     const { kind, severity, reportKind } = mapReportStatus(input);
-    if (withinRateLimitWindow && !this.store.wouldCoalesce(agentId, kind)) {
+    if (withinRateLimitWindow && !this.canBypassSelfReportRateLimit(kind, observation)) {
       return {
         ok: false,
         reason: "rate_limited",
@@ -946,7 +927,10 @@ export class MissionControlService {
       tracking.statusNudges = 0;
     }
     this.lastStatusAtByAgent.set(agentId, Date.now());
-    this.store.updateObservation(agentId, { lastSelfReportTs: event.ts });
+    this.store.updateObservation(agentId, {
+      lastSelfReportTs: event.ts,
+      lastSelfReportRunEpoch: event.runEpoch ?? observation.runEpoch,
+    });
     if (input.title !== undefined || input.description !== undefined) {
       await this.applyIdentityUpdate(agentId, {
         ...(input.title !== undefined ? { title: input.title } : {}),
@@ -974,6 +958,55 @@ export class MissionControlService {
       }
     }
     return { ok: true, event, identity };
+  }
+
+  /**
+   * Whether a report from this agent lands inside the 60s self-report
+   * rate-limit window. The window is run-scoped, like coalescing: a report in
+   * a NEW run is never spam (the previous report belongs to the superseded
+   * run), so it only applies when the last report landed in the agent's
+   * current run.
+   */
+  private withinSelfReportRateLimit(observation: MissionControlObservation): boolean {
+    if (observation.lastSelfReportTs === null) {
+      return false;
+    }
+    if (observation.lastSelfReportRunEpoch !== observation.runEpoch) {
+      return false;
+    }
+    return Date.now() - Date.parse(observation.lastSelfReportTs) < SELF_REPORT_RATE_LIMIT_MS;
+  }
+
+  /**
+   * The self-report rate limit's OWN escape, independent of feed coalescing
+   * (production rule: two unrelated behavioral rules never share a predicate —
+   * the coalesce check doubling as the rate-limit escape silently reintroduced
+   * a fixed bug). A report inside the 60s window is admitted when it is
+   *   - a NEW-run report: the persisted lastSelfReportRunEpoch pins the
+   *     previous self-report to a superseded run, so this one is never spam
+   *     (the window itself is run-scoped the same way), or
+   *   - a same-run fold-in: it continues the agent's still-pending card of
+   *     the same kind — the unacked head of the current run's chain — so it
+   *     folds into that card instead of spamming a new one.
+   * The fold-in conjuncts are read through the store's getEvent/isEventPending
+   * primitives (existence, run epoch, ack state) rather than wouldCoalesce.
+   */
+  private canBypassSelfReportRateLimit(
+    kind: MissionControlEventKind,
+    observation: MissionControlObservation,
+  ): boolean {
+    if (observation.lastSelfReportRunEpoch !== observation.runEpoch) {
+      return true;
+    }
+    const headId = observation.lastEventByKind[kind];
+    if (headId === undefined) {
+      return false;
+    }
+    const head = this.store.getEvent(headId);
+    if (head === undefined || (head.runEpoch ?? 0) !== observation.runEpoch) {
+      return false;
+    }
+    return this.store.isEventPending(head.id);
   }
 
   /**
@@ -2313,10 +2346,14 @@ export class MissionControlService {
     const agentTitle = await this.resolveAgentTitle(input.agentId);
     const shortDescription =
       input.shortDescription ?? (await this.resolveAgentShortDescription(input.agentId));
+    // Snapshot the stop origin at emit time so recorded cards never read the
+    // live directory stoppedBy (which the daemon may rewrite later).
+    const stoppedBy = this.store.getStopOrigin(input.agentId);
     const event = await this.store.append({
       ...input,
       agentTitle,
       ...(shortDescription ? { shortDescription } : {}),
+      ...(stoppedBy ? { stoppedBy } : {}),
     });
     this.broadcast({
       type: "mission_control_event",

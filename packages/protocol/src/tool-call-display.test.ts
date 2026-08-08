@@ -245,4 +245,32 @@ describe("shared tool-call display mapping", () => {
     });
     expect(display).toEqual({ displayName: "Web Search", summary: "Gemini 3.6 Flash vs DeepSeek" });
   });
+  it("resolves host=local to resolved alias for fleet_create_agent and fleet_send_prompt", () => {
+    const resolveHost = (h: string) => (h === "local" ? "vaibhav-dev" : h);
+    const createDisplay = buildToolCallDisplayModel({
+      name: "fleet_create_agent",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { host: "local", provider: "codex/gpt-5.4" },
+        output: { details: { agentId: "worker-1" } },
+      },
+      resolveHost,
+    });
+    expect(createDisplay.displayName).toBe("Spawned worker-1 on vaibhav-dev");
+
+    const sendDisplay = buildToolCallDisplayModel({
+      name: "fleet_send_prompt",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { host: "local", agentId: "worker-1", prompt: "hello" },
+        output: null,
+      },
+      resolveHost,
+    });
+    expect(sendDisplay.displayName).toBe("→ Steered worker-1 (vaibhav-dev)");
+  });
 });

@@ -2126,6 +2126,18 @@ export class AgentManager {
     if (!normalized) {
       return;
     }
+    // Names are write-once: once an agent has a name it is immutable, so a
+    // rename (or clear) of an already-named agent is rejected here. Only the
+    // naming backfill assigns names, and it only ever targets never-named
+    // records, so this guard is the single choke point.
+    const currentName = await this.currentAgentName(agentId);
+    if (currentName) {
+      this.logger.warn(
+        { agentId, currentName, attempted: normalized },
+        "agent.naming.rename_rejected_name_immutable",
+      );
+      return;
+    }
     const liveAgent = this.agents.get(agentId);
     if (liveAgent) {
       liveAgent.name = normalized;
@@ -2135,6 +2147,16 @@ export class AgentManager {
       return;
     }
     await this.writeStoredMetadata(agentId, { name: normalized });
+  }
+
+  /** The agent's current name: live state first, then the stored record. */
+  private async currentAgentName(agentId: string): Promise<string | null> {
+    const liveName = this.agents.get(agentId)?.name;
+    if (liveName) {
+      return liveName;
+    }
+    const record = this.registry ? await this.registry.get(agentId) : null;
+    return record?.name || null;
   }
 
   async setAgentShortDescription(agentId: string, description: string): Promise<void> {
@@ -2373,6 +2395,14 @@ export class AgentManager {
       shortDescription?: string;
     },
   ): Promise<void> {
+    // Names are write-once: route any name update through setAgentName (the
+    // single choke point that rejects renames of already-named agents) and
+    // strip it from the patch so no branch below writes `name` to storage
+    // directly. `undefined` is never persisted by writeStoredMetadata.
+    if (updates.name !== undefined) {
+      await this.setAgentName(agentId, updates.name);
+      updates = { ...updates, name: undefined };
+    }
     const liveAgent = this.getAgent(agentId);
     if (liveAgent) {
       if (updates.provider && updates.provider !== liveAgent.provider) {
@@ -2399,9 +2429,6 @@ export class AgentManager {
       }
       if (updates.thinkingOptionId !== undefined) {
         await this.setAgentThinkingOption(agentId, updates.thinkingOptionId);
-      }
-      if (updates.name !== undefined) {
-        await this.setAgentName(agentId, updates.name);
       }
       if (updates.shortDescription !== undefined) {
         await this.setAgentShortDescription(agentId, updates.shortDescription);

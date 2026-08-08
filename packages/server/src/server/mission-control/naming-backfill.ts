@@ -371,10 +371,25 @@ export interface WorkspaceProposalCandidate {
 }
 
 /**
- * The Commander's home workspace marker; never a rename candidate.
+ * The literal `<paseo-system>` marker — the Commander's home-workspace name
+ * (and the legacy pre-fix auto-namer leak). The raw string match shared by
+ * the system-workspace predicates in this file and commander-boot.ts; never
+ * a decision on its own (production rule: no shared predicates across
+ * unrelated rules — each call site names its own domain predicate).
  */
-export function isSystemWorkspaceName(name: string | null | undefined): boolean {
+export function isCommanderSystemMarkerName(name: string | null | undefined): boolean {
   return (name?.trim() ?? "") === "<paseo-system>";
+}
+
+/**
+ * Backfill exclusion: a workspace whose name OR title is the Commander's
+ * system marker is machinery, not user work — never a rename candidate.
+ */
+export function isSystemWorkspaceExcludedFromBackfill(
+  name: string | null | undefined,
+  title: string | null | undefined,
+): boolean {
+  return isCommanderSystemMarkerName(name) || isCommanderSystemMarkerName(title);
 }
 
 function normalizeDirForCompare(pathValue: string): string {
@@ -400,7 +415,7 @@ export function selectWorkspaceProposalCandidates(
   const home = options.homeDir?.trim() ? normalizeDirForCompare(options.homeDir.trim()) : null;
   const candidates: WorkspaceProposalCandidate[] = [];
   for (const workspace of workspaces) {
-    if (isSystemWorkspaceName(workspace.name) || isSystemWorkspaceName(workspace.title)) {
+    if (isSystemWorkspaceExcludedFromBackfill(workspace.name, workspace.title)) {
       continue;
     }
     if (home && workspace.cwd && normalizeDirForCompare(workspace.cwd) === home) {

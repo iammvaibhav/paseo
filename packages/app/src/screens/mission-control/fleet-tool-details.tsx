@@ -51,19 +51,28 @@ function rowLabel(raw: unknown): string {
 export function FleetToolCallDetailBody({
   toolName,
   detail,
+  resolveHost,
 }: {
   toolName: string;
   detail?: ToolCallDetail;
+  resolveHost?: (host: string) => string;
 }): ReactElement | null {
   const leaf = toolName.trim().toLowerCase().split(/[.:/]/).at(-1) ?? toolName;
-  const body = useMemo(() => buildFleetBody(leaf, detail), [leaf, detail]);
+  const body = useMemo(
+    () => buildFleetBody(leaf, detail, resolveHost),
+    [leaf, detail, resolveHost],
+  );
   if (!body) {
     return null;
   }
   return <View style={styles.container}>{body}</View>;
 }
 
-function buildFleetBody(leaf: string, detail: ToolCallDetail | undefined): ReactElement | null {
+function buildFleetBody(
+  leaf: string,
+  detail: ToolCallDetail | undefined,
+  resolveHost?: (host: string) => string,
+): ReactElement | null {
   const input = readToolInput(detail);
   const output = readToolOutput(detail);
 
@@ -83,10 +92,11 @@ function buildFleetBody(leaf: string, detail: ToolCallDetail | undefined): React
       return (
         <View style={styles.roster}>
           {agents.map((raw) => {
-            const host =
+            const rawHost =
               typeof raw === "object" && raw !== null && !Array.isArray(raw)
                 ? readString((raw as Record<string, unknown>).host)
                 : undefined;
+            const host = rawHost ? (resolveHost?.(rawHost) ?? rawHost) : undefined;
             const status =
               typeof raw === "object" && raw !== null && !Array.isArray(raw)
                 ? readString((raw as Record<string, unknown>).status)
@@ -127,7 +137,8 @@ function buildFleetBody(leaf: string, detail: ToolCallDetail | undefined): React
               typeof raw === "object" && raw !== null && !Array.isArray(raw)
                 ? (raw as Record<string, unknown>)
                 : null;
-            const host = row ? readString(row.host) : undefined;
+            const rawHost = row ? readString(row.host) : undefined;
+            const host = rawHost ? (resolveHost?.(rawHost) ?? rawHost) : undefined;
             const snippet = row ? readString(row.snippet) : undefined;
             const matchKey = `${rowLabel(raw)}:${host ?? ""}:${snippet ?? ""}`;
             return (

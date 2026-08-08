@@ -151,8 +151,9 @@ export interface MissionControlApprovalsOptions {
 export type ProposalChangeListener = (proposal: MissionControlProposal) => void;
 
 /**
- * THE ask-mode exemption predicate (single source of truth — pinned by
- * approvals.test.ts "ask-mode gating per action class").
+ * The ask-mode auto-send exemptions, evaluated as two separate named checks
+ * at the call site (no shared predicate across the two rules — production
+ * rule "no shared predicates").
  *
  * User decision, verbatim: "apart from nudge, everything should require my
  * approval in ask mode. Spinning up a new agent as well, everything."
@@ -169,11 +170,22 @@ export type ProposalChangeListener = (proposal: MissionControlProposal) => void;
  * they send immediately (see MissionControlApprovals.autoApproved); only
  * destructive classification, presence, and user-stop still force ask.
  */
-export function isAskModeAutoSendExempt(
-  input: Pick<ProposalCreateInput, "forceSend">,
-  allowPairActive: boolean,
-): boolean {
-  return input.forceSend === true || allowPairActive;
+
+/**
+ * The stall status-ask nudge exemption (`forceSend`): a steer that merely
+ * asks for a report_status is auto-sent in either mode and never sits
+ * pending for approval.
+ */
+export function isForceSendNudge(input: Pick<ProposalCreateInput, "forceSend">): boolean {
+  return input.forceSend === true;
+}
+
+/**
+ * The verifier allow-pair exemption: a message in a verifier<->worker
+ * exchange the user EXPLICITLY allow-paired auto-sends, even in ask mode.
+ */
+export function isAllowPairExempt(allowPairActive: boolean): boolean {
+  return allowPairActive;
 }
 
 /**
@@ -218,8 +230,9 @@ export class MissionControlApprovals {
   /**
    * True when a proposal sends immediately instead of asking. Destructive
    * actions, a user viewing the target, and user-stop conflicts always ask —
-   * even in auto mode. In ask mode, ONLY isAskModeAutoSendExempt applies
-   * (status-ask nudge / user-granted allow-pair): everything else waits.
+   * even in auto mode. In ask mode, ONLY the two explicit exemptions apply
+   * (status-ask nudge via isForceSendNudge / user-granted allow-pair via
+   * isAllowPairExempt): everything else waits.
    */
   private autoApproved(input: ProposalCreateInput): boolean {
     if (input.classification === "destructive") {
@@ -234,12 +247,14 @@ export class MissionControlApprovals {
     if (this.getMode() === "auto") {
       return true;
     }
-    // Ask mode: only the explicit exemptions auto-send (single predicate —
-    // see isAskModeAutoSendExempt). A granted allow-pair covers the whole
-    // exchange; the pair scope defaults to serverId:targetAgentId and may be
-    // overridden (worker pair for worker→verifier reply proposals).
+    // Ask mode: only the explicit exemptions auto-send, evaluated as two
+    // separate named checks (isForceSendNudge / isAllowPairExempt). A granted
+    // allow-pair covers the whole exchange; the pair scope defaults to
+    // serverId:targetAgentId and may be overridden (worker pair for
+    // worker→verifier reply proposals).
     const pairKey = input.allowPairKey ?? this.pairKey(input.serverId, input.targetAgentId);
-    return isAskModeAutoSendExempt(input, this.allowPairs.has(pairKey));
+    const allowPairActive = this.allowPairs.has(pairKey);
+    return isForceSendNudge(input) || isAllowPairExempt(allowPairActive);
   }
 
   private pairKey(serverId: string, targetAgentId: string): string {

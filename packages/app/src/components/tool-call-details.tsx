@@ -43,6 +43,7 @@ interface ToolCallDetailsContentProps {
   fillAvailableHeight?: boolean;
   showLoadingSkeleton?: boolean;
   toolName?: string;
+  resolveHost?: (host: string) => string;
 }
 
 interface DetailStyles {
@@ -994,6 +995,7 @@ function ToolCallDetailsContentInner({
   fillAvailableHeight = false,
   showLoadingSkeleton = false,
   toolName,
+  resolveHost,
 }: ToolCallDetailsContentProps) {
   const { t } = useTranslation();
   const resolvedMaxHeight = fillAvailableHeight ? undefined : (maxHeight ?? 300);
@@ -1028,7 +1030,7 @@ function ToolCallDetailsContentInner({
   // standard sections (thought cards expanded to an empty body).
   const fleetBody =
     toolName && fleetToolLeafName(toolName) ? (
-      <FleetToolCallDetailBody toolName={toolName} detail={detail} />
+      <FleetToolCallDetailBody toolName={toolName} detail={detail} resolveHost={resolveHost} />
     ) : null;
   if (fleetBody !== null) {
     return <View style={ds.fullBleedContainerStyle}>{fleetBody}</View>;

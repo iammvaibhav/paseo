@@ -36,6 +36,7 @@ import type { SpeechToTextProvider, TextToSpeechProvider } from "./speech/speech
 import type { TurnDetectionProvider } from "./speech/turn-detection-provider.js";
 import {
   buildConfigOverrides,
+  extractTimestamps,
   isStoredAgentProviderAvailable,
   toAgentPersistenceHandle,
 } from "./persistence-hooks.js";
@@ -4111,7 +4112,20 @@ export class Session {
         : overrides;
       let snapshot: ManagedAgent;
       try {
-        snapshot = await this.agentManager.resumeAgentFromPersistence(handle, effectiveOverrides);
+        // Labels ride the resume options (mission-control.md "Tool serving"
+        // gotcha): the launch-context catalog build is label-gated and the
+        // Commander/verifier launch contract is re-derived from labels on
+        // EVERY session build. A resume that omits them comes back with the
+        // default toolset and an ungated catalog (live incident: a
+        // freshly recreated Commander lost its fleet_* tools). Mirrors
+        // ensureAgentLoaded (agent-loading.ts), which threads
+        // extractTimestamps(record) into the same options.
+        snapshot = await this.agentManager.resumeAgentFromPersistence(
+          handle,
+          effectiveOverrides,
+          undefined,
+          matched ? extractTimestamps(matched.record) : undefined,
+        );
       } catch (error) {
         if (matched?.didUnarchive && matched.originalArchivedAt) {
           await this.agentManager.archiveSnapshot(matched.record.id, matched.originalArchivedAt);

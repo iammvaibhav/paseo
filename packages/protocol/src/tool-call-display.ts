@@ -14,6 +14,12 @@ export type ToolCallDisplayInput = Pick<
    * touching stores. Unknown ids fall back to the raw agentId.
    */
   agentNames?: Readonly<Record<string, string | undefined>>;
+  /**
+   * host string → display alias, resolved live by the caller (Mission Control
+   * thread). Maps daemon-side values like "local" to the resolved host alias
+   * (spec: never render "local" as a host chip).
+   */
+  resolveHost?: (host: string) => string;
 };
 
 export interface ToolCallDisplayModel {
@@ -104,7 +110,8 @@ function buildFleetSendPromptDisplay(
   input: ToolCallDisplayInput,
   toolInput: Record<string, unknown> | null,
 ): DetailDisplay {
-  const host = toolInput ? readString(toolInput.host) : undefined;
+  const rawHost = toolInput ? readString(toolInput.host) : undefined;
+  const host = rawHost ? (input.resolveHost?.(rawHost) ?? rawHost) : undefined;
   const agentId = toolInput ? readString(toolInput.agentId) : undefined;
   const name = agentId ? (readString(input.agentNames?.[agentId]) ?? agentId) : undefined;
   const target = name ?? "agent";
@@ -127,7 +134,9 @@ function buildFleetCreateAgentDisplay(
   toolInput: Record<string, unknown> | null,
   toolOutput: Record<string, unknown> | null,
 ): DetailDisplay {
-  const host = leaf === "fleet_create_agent" && toolInput ? readString(toolInput.host) : undefined;
+  const rawHost =
+    leaf === "fleet_create_agent" && toolInput ? readString(toolInput.host) : undefined;
+  const host = rawHost ? (input.resolveHost?.(rawHost) ?? rawHost) : undefined;
   const agentId = toolOutput ? readString(toolOutput.agentId) : undefined;
   const name = agentId ? (readString(input.agentNames?.[agentId]) ?? agentId) : undefined;
   const label = name ?? "agent";

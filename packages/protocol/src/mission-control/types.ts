@@ -186,6 +186,11 @@ export const MissionControlEventSchema = z.object({
   proof: z.array(MissionControlProofSchema).optional(),
   supersedesId: z.string().optional(), // coalescing chain
   coalescedCount: z.number().optional(),
+  // Run-scoped coalescing: the agent's run epoch at emit time (absent on
+  // pre-upgrade rows). A `started` event — or a daemon restart — bumps the
+  // agent's epoch; (agentId, kind) chains coalesce only within one epoch, so
+  // a finish never inherits detail/proofs from a previous run's completion.
+  runEpoch: z.number().optional(),
   // Full proposal payload when kind === "proposal". Status changes append a
   // new proposal event superseding the previous one for the same proposal id.
   proposal: MissionControlProposalSchema.optional(),
@@ -204,6 +209,13 @@ export const MissionControlEventSchema = z.object({
   // feed collapses progress|milestone → kind "milestone" and finding|fix|
   // decision → kind "finding". Additive; absent when not a self-report.
   reportKind: MissionControlReportKindSchema.optional(),
+  // Stop origin snapshotted at emit time: who cancelled the agent's last run
+  // when this event was recorded ("user" = the user stopped it, "machinery" =
+  // a steer/replace superseded it, "system" = provider crash/watchdog). The
+  // board's Done/Ready/Dormant rows render this snapshot, never the live
+  // directory stoppedBy. Additive; absent when no stop was in effect at emit
+  // time (a fresh run clears the origin before its `started` event).
+  stoppedBy: z.enum(["user", "machinery", "system"]).optional(),
 });
 export type MissionControlEvent = z.infer<typeof MissionControlEventSchema>;
 

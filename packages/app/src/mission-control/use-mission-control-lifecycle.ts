@@ -1,7 +1,12 @@
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import equal from "fast-deep-equal";
 import { useAggregatedAgents } from "@/hooks/use-aggregated-agents";
 import { useAggregatedMissionControlEvents } from "@/hooks/use-aggregated-mission-control-events";
+import {
+  useHostRuntimeConnectionStatuses,
+  useHosts,
+  type HostRuntimeConnectionStatus,
+} from "@/runtime/host-runtime";
 import type { MissionControlEvent } from "@getpaseo/protocol/mission-control/types";
 import { isCommanderAgent } from "./labels";
 import {
@@ -54,11 +59,38 @@ export function useMissionControlLifecycle(
   const agentsResult = useAggregatedAgents();
   const { agents } = agentsResult;
   const eventsResult = useAggregatedMissionControlEvents({ enabled });
+  const hosts = useHosts();
+  const serverIds = useMemo(() => hosts.map((host) => host.serverId), [hosts]);
+  const connectionStatuses = useHostRuntimeConnectionStatuses(serverIds);
 
   // Keyed by "serverId:agentId" — reuse the previous LifecycleRow when neither
   // the agent nor its derived state changed, so downstream memo/shallow
   // comparisons (React.memo rows) can bail early.
   const prevRowsRef = useRef<Map<string, LifecycleRow>>(new Map());
+
+  // Connection-generation scoping (rule: client caches die on reconnect): a
+  // host reconnect can change what the feed reports for its agents (the
+  // aggregated hook drops the old connection's pages), so the identity cache
+  // must not pin pre-reconnect row objects into the post-reconnect board.
+  // Clearing it makes every row re-derive with fresh identities once.
+  const prevConnectionStatusesRef = useRef<Map<string, HostRuntimeConnectionStatus>>(new Map());
+  useEffect(() => {
+    const previous = prevConnectionStatusesRef.current;
+    const next = new Map<string, HostRuntimeConnectionStatus>();
+    let reconnected = false;
+    for (const host of hosts) {
+      const status = connectionStatuses.get(host.serverId) ?? "connecting";
+      next.set(host.serverId, status);
+      const previousStatus = previous.get(host.serverId);
+      if (previousStatus !== undefined && previousStatus !== "online" && status === "online") {
+        reconnected = true;
+      }
+    }
+    prevConnectionStatusesRef.current = next;
+    if (reconnected) {
+      prevRowsRef.current = new Map();
+    }
+  }, [connectionStatuses, hosts]);
 
   const rows = useMemo<LifecycleRow[]>(() => {
     const eventsByAgent = new Map<string, MissionControlEvent[]>();

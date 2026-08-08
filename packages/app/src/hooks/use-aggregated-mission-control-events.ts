@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import equal from "fast-deep-equal";
 import { useFetchQueries } from "@/data/query";
 import {
@@ -9,6 +9,7 @@ import {
   getHostRuntimeStore,
   useHostRuntimeConnectionStatuses,
   useHosts,
+  type HostRuntimeConnectionStatus,
 } from "@/runtime/host-runtime";
 import type { MissionControlEvent } from "@getpaseo/protocol/mission-control/types";
 
@@ -150,6 +151,51 @@ export function useAggregatedMissionControlEvents(options?: {
   // Preserved sorted array — returned as-is when every element kept its identity
   // and order, so callers using reference equality skip re-renders entirely.
   const prevSortedRef = useRef<AggregatedMissionControlEvent[]>([]);
+
+  // Connection-generation scoping (rule: client caches die on reconnect): when
+  // a host cycles offline -> online, its accumulated pages came from the old
+  // connection — the daemon may have truncated or superseded events while
+  // disconnected, and `olderEvents` would resurrect them into the merged feed.
+  // On the transition, drop that host's paged state (older pages + has-more
+  // flags) and clear the identity caches so nothing from the previous
+  // connection leaks into the new one. The live query page refetches itself:
+  // the runtime invalidates the per-host events query on reconnect.
+  const prevConnectionStatusesRef = useRef<Map<string, HostRuntimeConnectionStatus>>(new Map());
+  useEffect(() => {
+    const previous = prevConnectionStatusesRef.current;
+    const next = new Map<string, HostRuntimeConnectionStatus>();
+    const reconnectedHostIds: string[] = [];
+    for (const host of hosts) {
+      const status = connectionStatuses.get(host.serverId) ?? "connecting";
+      next.set(host.serverId, status);
+      const previousStatus = previous.get(host.serverId);
+      if (previousStatus !== undefined && previousStatus !== "online" && status === "online") {
+        reconnectedHostIds.push(host.serverId);
+      }
+    }
+    prevConnectionStatusesRef.current = next;
+    if (reconnectedHostIds.length === 0) {
+      return;
+    }
+    const reconnected = new Set(reconnectedHostIds);
+    setOlderEvents((current) =>
+      current.some((event) => reconnected.has(event.serverId))
+        ? current.filter((event) => !reconnected.has(event.serverId))
+        : current,
+    );
+    setHasMoreByHost((current) => {
+      if (!reconnectedHostIds.some((serverId) => current[serverId] !== undefined)) {
+        return current;
+      }
+      const nextHasMore = { ...current };
+      for (const serverId of reconnectedHostIds) {
+        delete nextHasMore[serverId];
+      }
+      return nextHasMore;
+    });
+    prevEventsRef.current = new Map();
+    prevSortedRef.current = [];
+  }, [connectionStatuses, hosts]);
 
   const result = useMemo(() => {
     const allEvents: AggregatedMissionControlEvent[] = [...olderEvents];

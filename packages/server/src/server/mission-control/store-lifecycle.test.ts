@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { createTestLogger } from "../../test-utils/test-logger.js";
-import type { MissionControlProposal } from "@getpaseo/protocol/mission-control/types";
+import type {
+  MissionControlEvent,
+  MissionControlProposal,
+} from "@getpaseo/protocol/mission-control/types";
 import { MissionControlStore } from "./store.js";
 
 /** Drain the store's fire-and-forget write tails so temp dirs can be removed. */
@@ -289,6 +292,26 @@ describe("MissionControlStore v3 cursor paging + message tags", () => {
     expect(reloaded.getStopOrigin("agent-2")).toBeNull();
   });
 
+  test("lastSelfReportRunEpoch persists across a reload", async () => {
+    store.updateObservation("agent-1", {
+      lastSelfReportTs: "t1",
+      lastSelfReportRunEpoch: 3,
+      runEpoch: 3,
+    });
+    await awaitStoreWrites(store);
+
+    const reloaded = new MissionControlStore({ paseoHome: dir, logger: createTestLogger() });
+    await reloaded.initialize();
+    expect(reloaded.getObservation("agent-1")).toMatchObject({
+      lastSelfReportTs: "t1",
+      lastSelfReportRunEpoch: 3,
+    });
+    // The reload bumps the run epoch (restart boundary); the recorded report
+    // epoch is untouched, so the next report is a different run.
+    expect(reloaded.getObservation("agent-1").runEpoch).toBe(4);
+    await awaitStoreWrites(reloaded);
+  });
+
   test("review-state.json is written atomically", async () => {
     await store.setReviewState("agent-1", "done");
     await awaitStoreWrites(store);
@@ -296,3 +319,181 @@ describe("MissionControlStore v3 cursor paging + message tags", () => {
     expect(JSON.parse(raw)).toMatchObject({ "agent-1": { reviewState: "done" } });
   });
 });
+
+describe("MissionControlStore run-scoped coalescing", () => {
+  let dir: string;
+  let store: MissionControlStore;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "mc-store-run-"));
+    store = new MissionControlStore({ paseoHome: dir, logger: createTestLogger() });
+    await store.initialize();
+  });
+
+  afterEach(async () => {
+    await awaitStoreWrites(store);
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const DETAIL = "Root cause reproduced as route unmount/remount.";
+  const PROOFS = [
+    { kind: "command" as const, label: "App typecheck", excerpt: "exit 0" },
+    { kind: "command" as const, label: "Targeted oxlint", excerpt: "exit 0" },
+  ];
+
+  function started(agentId: string): Promise<MissionControlEvent> {
+    return store.append({
+      agentId,
+      agentTitle: "Agent",
+      kind: "started",
+      source: "system",
+      severity: "info",
+      headline: "Started running",
+    });
+  }
+
+  /** The report_status(status:"completed") shape: kind finished, source self. */
+  function selfReportedCompletion(agentId: string): Promise<MissionControlEvent> {
+    return store.append({
+      agentId,
+      agentTitle: "Agent",
+      kind: "finished",
+      source: "self",
+      severity: "info",
+      headline: "Everything asked is done",
+      detail: DETAIL,
+      proof: PROOFS,
+    });
+  }
+
+  /** The bare system run-end "Finished" card. */
+  function runEndFinish(agentId: string): Promise<MissionControlEvent> {
+    return store.append({
+      agentId,
+      agentTitle: "Agent",
+      kind: "finished",
+      source: "system",
+      severity: "info",
+      headline: "Finished",
+    });
+  }
+
+  test("a `started` event opens a new run epoch stamped on every event", async () => {
+    expect(store.getObservation("agent-1").runEpoch).toBe(0);
+    const start = await started("agent-1");
+    expect(start.runEpoch).toBe(1);
+    const report = await selfReportedCompletion("agent-1");
+    expect(report.runEpoch).toBe(1);
+    expect(store.getObservation("agent-1").runEpoch).toBe(1);
+  });
+
+  test("same-run coalesce keeps the self-report's detail and proofs on the finish", async () => {
+    const report = await selfReportedCompletion("agent-1");
+    // The unacked same-run head is coalesceable.
+    expect(store.wouldCoalesce("agent-1", "finished")).toBe(true);
+    const finish = await runEndFinish("agent-1");
+    expect(finish.supersedesId).toBe(report.id);
+    expect(finish.runEpoch).toBe(report.runEpoch);
+    expect(finish.detail).toBe(DETAIL);
+    expect(finish.proof).toEqual(PROOFS);
+    expect(finish.coalescedCount).toBe(1);
+    // The superseded self-report is hidden from the default feed: one card.
+    expect(store.fetchEvents().find((event) => event.id === report.id)).toBeUndefined();
+    expect(store.fetchEvents().find((event) => event.id === finish.id)).toBeDefined();
+  });
+
+  test("a `started` between the self-report and the finish breaks the chain", async () => {
+    const report = await selfReportedCompletion("agent-1");
+    // The unacked same-run head was coalesceable; a `started` ends the run.
+    expect(store.wouldCoalesce("agent-1", "finished")).toBe(true);
+    await started("agent-1");
+    expect(store.wouldCoalesce("agent-1", "finished")).toBe(false);
+    const finish = await runEndFinish("agent-1");
+    expect(finish.supersedesId).toBeUndefined();
+    expect(finish.runEpoch).toBe(1);
+    expect(finish.detail).toBeUndefined();
+    expect(finish.proof).toBeUndefined();
+    expect(finish.coalescedCount).toBeUndefined();
+    // The previous run's report is still live (not superseded) and its chain
+    // count was not incremented.
+    expect(store.fetchEvents().find((event) => event.id === report.id)).toBeDefined();
+    expect(report.coalescedCount).toBeUndefined();
+  });
+
+  test("coalescedCount counts only within the current run", async () => {
+    await selfReportedCompletion("agent-1");
+    const firstFinish = await runEndFinish("agent-1");
+    expect(firstFinish.coalescedCount).toBe(1);
+    const secondFinish = await runEndFinish("agent-1");
+    expect(secondFinish.coalescedCount).toBe(2);
+    // A new run starts a fresh chain: the next finish is count-less and
+    // inherits nothing from the previous run's chain.
+    await started("agent-1");
+    const fresh = await runEndFinish("agent-1");
+    expect(fresh.coalescedCount).toBeUndefined();
+    expect(fresh.detail).toBeUndefined();
+    expect(fresh.proof).toBeUndefined();
+  });
+
+  test("proposal status changes still supersede in place across a `started`", async () => {
+    const pending = await store.append({
+      agentId: "agent-1",
+      agentTitle: "Agent 1",
+      kind: "proposal",
+      source: "system",
+      severity: "blocker",
+      headline: "Proposal (stall): silent",
+      detail: "message",
+      proposal: proposal({ id: "mcp_run", status: "pending" }),
+    });
+    await started("agent-1");
+    const sent = await store.append({
+      agentId: "agent-1",
+      agentTitle: "Agent 1",
+      kind: "proposal",
+      source: "system",
+      severity: "info",
+      headline: "Proposal sent",
+      detail: "message",
+      proposal: proposal({ id: "mcp_run", status: "sent" }),
+    });
+    expect(sent.supersedesId).toBe(pending.id);
+    // Proposal supersede-in-place never carries the coalesce counter.
+    expect(sent.coalescedCount).toBeUndefined();
+    expect(store.fetchEvents().find((event) => event.id === pending.id)).toBeUndefined();
+    expect(store.fetchEvents().find((event) => event.id === sent.id)).toBeDefined();
+  });
+
+  test("a daemon restart breaks pre-restart chains: a run spanning a restart inherits nothing", async () => {
+    const report = await selfReportedCompletion("agent-1");
+    const finish = await runEndFinish("agent-1");
+    expect(finish.supersedesId).toBe(report.id);
+    expect(finish.proof).toEqual(PROOFS);
+    await awaitStoreWrites(store);
+
+    // Simulate a daemon restart: a fresh store over the same home.
+    const restarted = new MissionControlStore({ paseoHome: dir, logger: createTestLogger() });
+    await restarted.initialize();
+    const post = await runEndFinishOn(restarted, "agent-1");
+    expect(post.supersedesId).toBeUndefined();
+    expect(post.detail).toBeUndefined();
+    expect(post.proof).toBeUndefined();
+    expect(post.coalescedCount).toBeUndefined();
+    await awaitStoreWrites(restarted);
+  });
+});
+
+/** runEndFinish bound to a specific store (the restart test reloads one). */
+async function runEndFinishOn(
+  target: MissionControlStore,
+  agentId: string,
+): Promise<MissionControlEvent> {
+  return target.append({
+    agentId,
+    agentTitle: "Agent",
+    kind: "finished",
+    source: "system",
+    severity: "info",
+    headline: "Finished",
+  });
+}

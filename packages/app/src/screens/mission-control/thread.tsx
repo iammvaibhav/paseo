@@ -4,6 +4,7 @@ import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { ChevronDown } from "lucide-react-native";
 import type { Theme } from "@/styles/theme";
+import { MAX_CONTENT_WIDTH, useIsCompactFormFactor } from "@/constants/layout";
 import {
   ActivityLog,
   AssistantMessage,
@@ -29,8 +30,8 @@ import {
 import { useToast } from "@/contexts/toast-context";
 import { ToolCallSheetProvider } from "@/components/tool-call-sheet";
 import { useStableEvent } from "@/hooks/use-stable-event";
-import { useHostRuntimeClient } from "@/runtime/host-runtime";
-import { MAX_CONTENT_WIDTH, useIsCompactFormFactor } from "@/constants/layout";
+import { useHostRuntimeClient, useHosts } from "@/runtime/host-runtime";
+import { useDaemonConfig } from "@/hooks/use-daemon-config";
 import { useSessionStore } from "@/stores/session-store";
 import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
 import type { AgentToolCallData, StreamItem } from "@/types/stream";
@@ -141,16 +142,16 @@ interface CommanderMessageRowProps {
   verbose: boolean;
   /** agentId → display name for fleet dispatch tool badges. */
   agentNames: Readonly<Record<string, string | undefined>>;
+  /** host → display alias resolver (maps "local" to host alias). */
+  resolveHost?: (host: string) => string;
 }
 
 function renderThreadToolCall(
   item: Extract<StreamItem, { kind: "tool_call" }>,
   verbose: boolean,
   agentNames: Readonly<Record<string, string | undefined>>,
+  resolveHost?: (host: string) => string,
 ): ReactElement | null {
-  if (!verbose) {
-    return null;
-  }
   if (item.payload.source === "agent") {
     const data = item.payload.data;
     // OMP provider notices (quota warnings, task-result notices) render as
@@ -179,6 +180,7 @@ function renderThreadToolCall(
         error={dispatchError ?? data.error}
         metadata={data.metadata}
         agentNames={agentNames}
+        resolveHost={resolveHost}
       />
     );
   }
@@ -191,6 +193,7 @@ function renderThreadToolCall(
       args={item.payload.data.arguments}
       result={item.payload.data.result}
       status={item.payload.data.status}
+      resolveHost={resolveHost}
     />
   );
 }
@@ -203,6 +206,7 @@ function CommanderMessageRow({
   workspaceRoot,
   verbose,
   agentNames,
+  resolveHost,
 }: CommanderMessageRowProps): ReactElement | null {
   switch (item.kind) {
     case "user_message":
@@ -259,7 +263,7 @@ function CommanderMessageRow({
         />
       );
     case "tool_call":
-      return renderThreadToolCall(item, verbose, agentNames);
+      return renderThreadToolCall(item, verbose, agentNames, resolveHost);
     case "todo_list":
       return verbose ? <TodoListCard items={item.items} /> : null;
     case "activity_log":
@@ -279,12 +283,34 @@ function CommanderMessageRow({
       return null;
   }
 }
-
 const MemoizedCommanderMessageRow = memo(CommanderMessageRow);
 
 export interface MissionControlCommander {
   serverId: string;
   agentId: string;
+}
+
+// Resolves tool-payload host strings for display. "local" (or an empty host)
+// is only meaningful daemon-side — render the commander host's alias instead;
+// never the literal "local".
+function useCommanderHostResolver(commander: MissionControlCommander | null) {
+  const hosts = useHosts();
+  const commanderConfig = useDaemonConfig(commander?.serverId ?? null);
+  const commanderHostAlias =
+    commanderConfig.config?.missionControl?.hostAlias?.trim() ||
+    hosts.find((h) => h.serverId === commander?.serverId)?.label ||
+    commander?.serverId ||
+    null;
+  return useCallback(
+    (host: string): string => {
+      const trimmed = host.trim();
+      if (trimmed === "" || trimmed.toLowerCase() === "local") {
+        return commanderHostAlias ?? trimmed;
+      }
+      return trimmed;
+    },
+    [commanderHostAlias],
+  );
 }
 
 interface MissionControlThreadProps {
@@ -323,6 +349,8 @@ export function MissionControlThread({
     commander ? (state.sessions[commander.serverId]?.agents.get(commander.agentId) ?? null) : null,
   );
   const workspaceRoot = commanderAgent?.cwd?.trim() || "";
+
+  const resolveHost = useCommanderHostResolver(commander);
   const toast = useToast();
   const handleInlinePathPress = useStableEvent((target: InlinePathTarget) => {
     if (!target.path || !commander) {
@@ -419,7 +447,10 @@ export function MissionControlThread({
 
   // Live agent identity for the fleet dispatch tool badges ("Steered Name
   // (host)", "Spawned Name on host"). Shallow-compared so the memoized row
-  // keeps its reference while the store churns.
+  // keeps its reference while the store churns. Live NAME is fine (names are
+  // write-once identity); live TITLE is not a snapshot — a badge must never
+  // read a recorded dispatch through today's title. When no name is known the
+  // display falls back to the agentId carried in the tool payload itself.
   const agentNames = useSessionStore(
     useShallow((state) => {
       if (!commander) {
@@ -431,11 +462,11 @@ export function MissionControlThread({
       }
       const names: Record<string, string | undefined> = {};
       for (const [agentId, agent] of session.agents) {
-        names[agentId] = agent.name ?? agent.title ?? undefined;
+        names[agentId] = agent.name ?? undefined;
       }
       for (const [agentId, agent] of session.agentDetails) {
         if (names[agentId] === undefined) {
-          names[agentId] = agent.name ?? agent.title ?? undefined;
+          names[agentId] = agent.name ?? undefined;
         }
       }
       return names;
@@ -562,6 +593,7 @@ export function MissionControlThread({
             workspaceRoot={workspaceRoot}
             verbose={verbose}
             agentNames={agentNames}
+            resolveHost={resolveHost}
           />
         );
       // Same centered content column as AgentStreamView's stream items: the web
@@ -604,7 +636,7 @@ export function MissionControlThread({
 
   const showEarlierHeader = useMemo(() => {
     if (hiddenEarlierCount <= 0) {
-      return null;
+      return undefined;
     }
     return (
       <Pressable
@@ -621,7 +653,7 @@ export function MissionControlThread({
 
   const newPillAffordance = useMemo(() => {
     if (pendingNewCount <= 0) {
-      return null;
+      return undefined;
     }
     return (
       <Pressable
@@ -652,7 +684,7 @@ export function MissionControlThread({
               strategy={streamStrategy}
               viewportRef={viewportRef}
               onNearBottomChange={setIsNearBottom}
-              scrollToBottomAffordance={newPillAffordance ?? undefined}
+              scrollToBottomAffordance={newPillAffordance}
               agentId={anchorAgentId}
               segments={segments}
               boundary={boundary}
@@ -669,7 +701,7 @@ export function MissionControlThread({
               baseListContentContainerStyle={styles.listContent}
               forwardListContentContainerStyle={styles.listContent}
               keyExtractor={keyExtractor}
-              topSlot={showEarlierHeader ?? undefined}
+              topSlot={showEarlierHeader}
             />
           </View>
         </PaseoAgentLinkProvider>

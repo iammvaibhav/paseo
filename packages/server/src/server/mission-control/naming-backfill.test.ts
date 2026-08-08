@@ -8,7 +8,8 @@ import {
   formatRenameProposalMessage,
   hasFullIdentity,
   isAgentBackfillEligible,
-  isSystemWorkspaceName,
+  isCommanderSystemMarkerName,
+  isSystemWorkspaceExcludedFromBackfill,
   parseBackfillResponse,
   resolveIdentityUpdates,
   resolveWorkspaceRenameProposals,
@@ -398,13 +399,20 @@ describe("resolveIdentityUpdates (title replacement heuristic)", () => {
   });
 });
 
-describe("isSystemWorkspaceName", () => {
-  test("the commander-home marker is a system workspace", () => {
-    expect(isSystemWorkspaceName("<paseo-system>")).toBe(true);
-    expect(isSystemWorkspaceName("  <paseo-system>  ")).toBe(true);
-    expect(isSystemWorkspaceName("feat/payments")).toBe(false);
-    expect(isSystemWorkspaceName(null)).toBe(false);
-    expect(isSystemWorkspaceName(undefined)).toBe(false);
+describe("isCommanderSystemMarkerName / isSystemWorkspaceExcludedFromBackfill", () => {
+  test("the commander-home marker is the shared literal match", () => {
+    expect(isCommanderSystemMarkerName("<paseo-system>")).toBe(true);
+    expect(isCommanderSystemMarkerName("  <paseo-system>  ")).toBe(true);
+    expect(isCommanderSystemMarkerName("feat/payments")).toBe(false);
+    expect(isCommanderSystemMarkerName(null)).toBe(false);
+    expect(isCommanderSystemMarkerName(undefined)).toBe(false);
+  });
+
+  test("backfill exclusion: a system-named or system-titled workspace is excluded", () => {
+    expect(isSystemWorkspaceExcludedFromBackfill("<paseo-system>", null)).toBe(true);
+    expect(isSystemWorkspaceExcludedFromBackfill(null, "<paseo-system>")).toBe(true);
+    expect(isSystemWorkspaceExcludedFromBackfill("feat/payments", "Payments work")).toBe(false);
+    expect(isSystemWorkspaceExcludedFromBackfill(null, null)).toBe(false);
   });
 });
 

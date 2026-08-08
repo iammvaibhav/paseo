@@ -238,6 +238,13 @@ function summarizeRecentAgent(
   } else {
     status = lifecycle ?? record.lastStatus;
   }
+  // The roster age is real user-visible activity: the latest self-report when
+  // there is one, else the last user message. Never record.updatedAt — boot,
+  // restore, and reconciliation rewrite it, so it is not "when this really
+  // happened" (production rule: machinery never rewrites user-visible
+  // timestamps). With neither a report nor a user message, the age is omitted
+  // from the roster line rather than showing a boot-stamped one.
+  const lastActivityAt = report ? report.at : record.lastUserMessageAt;
   return {
     agentId: record.id,
     hostServerId: serverId,
@@ -246,7 +253,7 @@ function summarizeRecentAgent(
     ...(record.shortDescription !== undefined ? { description: record.shortDescription } : {}),
     ...(status ? { status } : {}),
     ...(report ? { lastReportHeadline: report.headline } : {}),
-    ...(report ? { lastActivityAt: report.at } : { lastActivityAt: record.updatedAt }),
+    ...(lastActivityAt ? { lastActivityAt } : {}),
   };
 }
 

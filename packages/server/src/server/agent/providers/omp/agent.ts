@@ -583,6 +583,17 @@ function filterPaseoToolsByAllowlist(
   }
   const allowed = new Set(allowlist);
   const tools = new Map([...catalog.tools].filter(([name]) => allowed.has(name)));
+  if (tools.size === 0) {
+    // An allowlist that matches ZERO catalog tools is indistinguishable from
+    // no catalog: the session would launch --no-tools with nothing to serve
+    // (live incident: a Commander whose allowlist named tools the running
+    // build's catalog did not register came back with "Tool fleet_create_agent
+    // not found" and only memory/skill builtins, silently — the empty catalog
+    // was truthy so the warn below never fired). Returning undefined routes
+    // this into the existing loud "no Paseo host-tool catalog is available"
+    // warning instead of silently serving zero tools.
+    return undefined;
+  }
   return {
     tools,
     getTool: (name) => tools.get(name),
@@ -1204,6 +1215,16 @@ export class OmpAgentSession implements AgentSession {
         ...(this.config.model ? { model: this.config.model } : {}),
         ...(this.config.thinkingOptionId ? { thinkingOptionId: this.config.thinkingOptionId } : {}),
         ...(this.currentModeId ? { modeId: this.currentModeId } : {}),
+        // The launch contract must survive a resume even when the resume
+        // overrides omit it: buildResumeConfig merges handle metadata under
+        // the overrides, so a session resumed with no overrides (or by a
+        // caller that dropped the contract fields) keeps the allowlist and
+        // replace-mode prompt instead of coming back with the default toolset
+        // (live incident: a recreated Commander lost its fleet_* tools on a
+        // resume variant that dropped systemPromptMode/toolAllowlist).
+        ...(this.config.systemPrompt ? { systemPrompt: this.config.systemPrompt } : {}),
+        ...(this.config.systemPromptMode ? { systemPromptMode: this.config.systemPromptMode } : {}),
+        ...(this.config.toolAllowlist?.length ? { toolAllowlist: this.config.toolAllowlist } : {}),
       },
     };
   }
