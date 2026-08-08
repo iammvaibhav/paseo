@@ -20,7 +20,7 @@ import { ComboboxItem } from "@/components/ui/combobox";
 import { Button } from "@/components/ui/button";
 import { CombinedModelSelector } from "@/components/combined-model-selector";
 import { useIsCompactFormFactor } from "@/constants/layout";
-import { HostStatusDotSlot } from "@/components/hosts/host-picker";
+import { HostGlyphSlot } from "@/components/hosts/host-picker";
 import { createControlGeometry, type FieldControlSize } from "@/components/ui/control-geometry";
 import { Field, FormTextInput } from "@/components/ui/form-field";
 import { Switch } from "@/components/ui/switch";
@@ -954,7 +954,10 @@ function HostOptionItem({
   active,
   onPress,
 }: SelectFieldRenderOptionInput<string>): ReactElement {
-  const leadingSlot = useMemo(() => <HostStatusDotSlot serverId={option.value} />, [option.value]);
+  const leadingSlot = useMemo(
+    () => <HostGlyphSlot serverId={option.value} label={option.label} />,
+    [option.label, option.value],
+  );
 
   return (
     <ComboboxItem

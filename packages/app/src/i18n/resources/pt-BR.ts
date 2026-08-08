@@ -1036,7 +1036,7 @@ export const ptBR: TranslationResources = {
       sessions: "Histórico",
       schedules: "Agendamentos",
       missionControl: "Mission Control",
-      missionControlWorking: "Agentes em atividade",
+      missionControlNeedsYou: "Precisa de você",
       missionControlReady: "Prontos para revisão",
       webhooks: "Webhooks",
     },

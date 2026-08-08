@@ -1,18 +1,21 @@
 import { describe, expect, test } from "vitest";
 import {
+  buildBackfillMarkdownReport,
   buildBackfillPrompt,
-  buildWorkspaceRenameProposals,
+  buildBackfillReportAgentChanges,
+  deriveTitleFromFirstPrompt,
   DESCRIPTION_MAX_CHARS,
   formatRenameProposalMessage,
   hasFullIdentity,
   isAgentBackfillEligible,
-  isDerivedWorkspaceTitle,
+  isSystemWorkspaceName,
   parseBackfillResponse,
-  proposalTitleFromSlug,
   resolveIdentityUpdates,
+  resolveWorkspaceRenameProposals,
   selectBackfillCandidates,
-  WORKSPACE_PROPOSAL_MAX_WORDS,
+  selectWorkspaceProposalCandidates,
   type BackfillCandidate,
+  type BackfillWorkspaceResponse,
 } from "./naming-backfill.js";
 
 function candidate(overrides: Partial<BackfillCandidate> = {}): BackfillCandidate {
@@ -22,6 +25,8 @@ function candidate(overrides: Partial<BackfillCandidate> = {}): BackfillCandidat
     title: null,
     shortDescription: null,
     cwd: "/repo/alpha",
+    firstPrompt: null,
+    lastReportHeadline: null,
     ...overrides,
   };
 }
@@ -67,6 +72,39 @@ describe("isAgentBackfillEligible / selectBackfillCandidates", () => {
         name: "Ripley",
         title: "Fix auth",
         shortDescription: "auth worker",
+      }),
+    ).toBe(false);
+  });
+
+  test("complete agent with an auto-derived title is eligible for title replacement", () => {
+    expect(
+      isAgentBackfillEligible({
+        agentId: "a1",
+        name: "Ripley",
+        title: "Fix the auth flow",
+        shortDescription: "auth worker",
+        firstPrompt: "Fix the auth flow",
+      }),
+    ).toBe(true);
+    expect(
+      isAgentBackfillEligible({
+        agentId: "a1",
+        name: "Ripley",
+        title: "fix/auth-slug",
+        shortDescription: "auth worker",
+        firstPrompt: "fix/auth-slug",
+      }),
+    ).toBe(true);
+  });
+
+  test("complete agent with a user-set title stays skipped even with a prompt", () => {
+    expect(
+      isAgentBackfillEligible({
+        agentId: "a1",
+        name: "Ripley",
+        title: "Payments work",
+        shortDescription: "auth worker",
+        firstPrompt: "Fix the auth flow",
       }),
     ).toBe(false);
   });
@@ -148,6 +186,22 @@ describe("buildBackfillPrompt", () => {
     });
     expect(prompt).toContain("current title: Fix auth");
   });
+
+  test("carries first prompt excerpt and last report headline per candidate", () => {
+    const prompt = buildBackfillPrompt({
+      hostLabel: "h",
+      namingTheme: "mixed",
+      candidates: [
+        candidate({
+          firstPrompt: "Fix the auth flow so login stops failing",
+          lastReportHeadline: "Root cause found",
+        }),
+      ],
+    });
+    expect(prompt).toContain('first user prompt: "Fix the auth flow so login stops failing"');
+    expect(prompt).toContain('last report: "Root cause found"');
+    expect(prompt).toContain("Derive each title from what was ACTUALLY asked");
+  });
 });
 
 describe("parseBackfillResponse", () => {
@@ -159,22 +213,34 @@ describe("parseBackfillResponse", () => {
 
   test("parses a bare JSON object", () => {
     const result = parseBackfillResponse(valid);
-    expect(result).toHaveLength(1);
-    expect(result?.[0]).toMatchObject({
+    expect(result?.agents).toHaveLength(1);
+    expect(result?.agents[0]).toMatchObject({
       agentId: "agent-1",
       name: "Ripley",
       title: "Fix auth",
       description: "working on auth",
     });
+    expect(result?.workspaces).toEqual([]);
+  });
+
+  test("parses workspace proposals in the same payload", () => {
+    const result = parseBackfillResponse(
+      JSON.stringify({
+        agents: [{ agentId: "agent-1", name: "Ripley" }],
+        workspaces: [{ workspaceId: "w1", name: "Payments overhaul" }],
+      }),
+    );
+    expect(result?.agents).toHaveLength(1);
+    expect(result?.workspaces).toEqual([{ workspaceId: "w1", name: "Payments overhaul" }]);
   });
 
   test("strips code fences and omp progress noise", () => {
     const fenced = `Working...\n\`\`\`json\n${valid}\n\`\`\``;
-    expect(parseBackfillResponse(fenced)).toHaveLength(1);
+    expect(parseBackfillResponse(fenced)?.agents).toHaveLength(1);
   });
 
   test("ignores prose before the JSON object", () => {
-    expect(parseBackfillResponse(`Here you go:\n${valid}`)).toHaveLength(1);
+    expect(parseBackfillResponse(`Here you go:\n${valid}`)?.agents).toHaveLength(1);
   });
 
   test("returns null on malformed or missing JSON", () => {
@@ -187,7 +253,7 @@ describe("parseBackfillResponse", () => {
     const result = parseBackfillResponse(
       JSON.stringify({ agents: [{ agentId: "agent-1", name: "Ripley" }] }),
     );
-    expect(result?.[0]).toEqual({ agentId: "agent-1", name: "Ripley" });
+    expect(result?.agents[0]).toEqual({ agentId: "agent-1", name: "Ripley" });
   });
 });
 
@@ -236,79 +302,195 @@ describe("resolveIdentityUpdates (apply-time idempotency)", () => {
   });
 });
 
-describe("workspace derived-title heuristic", () => {
-  test("null title is a derived default", () => {
-    expect(isDerivedWorkspaceTitle({ workspaceId: "w1", name: "feat/x", title: null })).toBe(true);
+describe("deriveTitleFromFirstPrompt (same derivation as create-agent-title)", () => {
+  test("uses the first content line, whitespace-collapsed", () => {
+    expect(deriveTitleFromFirstPrompt("  Fix the auth flow  ")).toBe("Fix the auth flow");
+    expect(deriveTitleFromFirstPrompt("Fix auth\nAdd tests for it")).toBe("Fix auth");
   });
 
-  test("title equal to the derived name is still a derived default", () => {
-    expect(isDerivedWorkspaceTitle({ workspaceId: "w1", name: "feat/x", title: "feat/x" })).toBe(
-      true,
-    );
+  test("clamps to 60 chars", () => {
+    const long = "w".repeat(100);
+    expect(deriveTitleFromFirstPrompt(long)).toHaveLength(60);
   });
 
-  test("a real user title is not a derived default", () => {
-    expect(
-      isDerivedWorkspaceTitle({ workspaceId: "w1", name: "feat/x", title: "Payments work" }),
-    ).toBe(false);
-  });
-
-  test("whitespace-only title counts as derived", () => {
-    expect(isDerivedWorkspaceTitle({ workspaceId: "w1", name: "feat/x", title: "   " })).toBe(true);
+  test("null on empty prompts", () => {
+    expect(deriveTitleFromFirstPrompt(null)).toBeNull();
+    expect(deriveTitleFromFirstPrompt("   ")).toBeNull();
+    expect(deriveTitleFromFirstPrompt("")).toBeNull();
   });
 });
 
-describe("proposalTitleFromSlug", () => {
-  test("de-slugs branch names with prefixes", () => {
-    expect(proposalTitleFromSlug("feat/mc-backfill")).toBe("Mc Backfill");
-    expect(proposalTitleFromSlug("fix/auth-timeout")).toBe("Auth Timeout");
-    expect(proposalTitleFromSlug("chore_deps")).toBe("Chore Deps");
+describe("resolveIdentityUpdates (title replacement heuristic)", () => {
+  test("replaces a title equal to the first-prompt derivation (auto-generated)", () => {
+    const updates = resolveIdentityUpdates({
+      candidates: [candidate({ title: "Fix the auth flow", firstPrompt: "Fix the auth flow" })],
+      responses: [{ agentId: "agent-1", title: "Overhaul login auth" }],
+    });
+    expect(updates).toEqual([{ agentId: "agent-1", title: "Overhaul login auth" }]);
   });
 
-  test("handles plain slugs without prefixes", () => {
-    expect(proposalTitleFromSlug("vaibhav/customizations")).toBe("Vaibhav Customizations");
-    expect(proposalTitleFromSlug("v1.2.3")).toBe("V1 2 3");
+  test("replaces a derived title even when clamped from a long first prompt", () => {
+    const firstPrompt = "Fix the auth flow and add tests for the new token refresh path today";
+    const derived = deriveTitleFromFirstPrompt(firstPrompt);
+    expect(derived).not.toBeNull();
+    const updates = resolveIdentityUpdates({
+      candidates: [candidate({ title: derived, firstPrompt })],
+      responses: [{ agentId: "agent-1", title: "Auth overhaul" }],
+    });
+    expect(updates).toEqual([{ agentId: "agent-1", title: "Auth overhaul" }]);
   });
 
-  test("caps at five words", () => {
-    const name = "feat/one-two-three-four-five-six";
-    const result = proposalTitleFromSlug(name);
-    expect(result?.split(" ")).toHaveLength(WORKSPACE_PROPOSAL_MAX_WORDS);
-    expect(result).toBe("One Two Three Four Five");
+  test("keeps a user-set title that differs from the derivation", () => {
+    const updates = resolveIdentityUpdates({
+      candidates: [candidate({ title: "Payments work", firstPrompt: "Fix the auth flow" })],
+      responses: [{ agentId: "agent-1", title: "Overhaul login auth" }],
+    });
+    expect(updates).toEqual([]);
   });
 
-  test("rejects non-slug names and default branches", () => {
-    expect(proposalTitleFromSlug("tmp")).toBeNull();
-    expect(proposalTitleFromSlug("paseo")).toBeNull();
-    expect(proposalTitleFromSlug("main")).toBeNull();
-    expect(proposalTitleFromSlug("master")).toBeNull();
-    expect(proposalTitleFromSlug("develop")).toBeNull();
-    expect(proposalTitleFromSlug("dev")).toBeNull();
+  test("keeps a user-set title when no first prompt is available", () => {
+    const updates = resolveIdentityUpdates({
+      candidates: [candidate({ title: "Payments work" })],
+      responses: [{ agentId: "agent-1", title: "Overhaul login auth" }],
+    });
+    expect(updates).toEqual([]);
   });
 
-  test("rejects sentence-like derived names containing whitespace", () => {
-    expect(proposalTitleFromSlug("Read mc-read-1.txt first word")).toBeNull();
-    expect(proposalTitleFromSlug("Add report_milestone tool prompt")).toBeNull();
+  test("still fills a missing title (fill-if-missing unchanged)", () => {
+    const updates = resolveIdentityUpdates({
+      candidates: [candidate({ title: null, firstPrompt: "Fix the auth flow" })],
+      responses: [{ agentId: "agent-1", title: "Auth overhaul" }],
+    });
+    expect(updates).toEqual([{ agentId: "agent-1", title: "Auth overhaul" }]);
   });
 
-  test("handles single-word slugs after prefix strip and empty results", () => {
-    expect(proposalTitleFromSlug("feat/auth")).toBe("Auth");
-    expect(proposalTitleFromSlug("feat/")).toBeNull();
+  test("names and descriptions stay fill-if-missing even when the title is replaced", () => {
+    const updates = resolveIdentityUpdates({
+      candidates: [
+        candidate({
+          title: "Fix the auth flow",
+          firstPrompt: "Fix the auth flow",
+          shortDescription: "existing description",
+        }),
+      ],
+      responses: [
+        {
+          agentId: "agent-1",
+          name: "Nova",
+          title: "Overhaul login auth",
+          description: "replacement description",
+        },
+      ],
+    });
+    // name still missing → filled; description present → untouched.
+    expect(updates).toEqual([{ agentId: "agent-1", name: "Nova", title: "Overhaul login auth" }]);
   });
 });
 
-describe("buildWorkspaceRenameProposals", () => {
-  test("only derived-default titles become proposals", () => {
-    const proposals = buildWorkspaceRenameProposals([
+describe("isSystemWorkspaceName", () => {
+  test("the commander-home marker is a system workspace", () => {
+    expect(isSystemWorkspaceName("<paseo-system>")).toBe(true);
+    expect(isSystemWorkspaceName("  <paseo-system>  ")).toBe(true);
+    expect(isSystemWorkspaceName("feat/payments")).toBe(false);
+    expect(isSystemWorkspaceName(null)).toBe(false);
+    expect(isSystemWorkspaceName(undefined)).toBe(false);
+  });
+});
+
+describe("selectWorkspaceProposalCandidates", () => {
+  test("sends every non-system, non-home workspace to the one-shot (LLM decides)", () => {
+    const candidates = selectWorkspaceProposalCandidates([
       { workspaceId: "w1", name: "feat/payments", title: null },
-      { workspaceId: "w2", name: "feat/payments", title: "Payments work" },
-      { workspaceId: "w3", name: "tmp", title: null },
-      { workspaceId: "w4", name: "main", title: null },
-      { workspaceId: "w5", name: "Read mc-read-1.txt first word", title: null },
+      { workspaceId: "w2", name: "Payments work", title: "Payments work" },
+      { workspaceId: "w3", name: "stackmod", title: "stackmod" },
+      { workspaceId: "w4", name: "breezeapi", title: null },
+      { workspaceId: "w5", name: "thankful-penguin", title: null },
+      {
+        workspaceId: "w6",
+        name: "<paseo-system>",
+        title: null,
+        cwd: "/Users/vaibhav",
+        agents: [{ title: "Fix auth", shortDescription: null }],
+      },
+    ]);
+    // Auto-generated names, user-titled workspaces, and slug names ALL go in —
+    // only the system workspace is excluded.
+    expect(candidates.map((c) => c.workspaceId)).toEqual(["w1", "w2", "w3", "w4", "w5"]);
+  });
+
+  test("carries the workspace's agents as context", () => {
+    const candidates = selectWorkspaceProposalCandidates([
+      {
+        workspaceId: "w1",
+        name: "feat/payments",
+        title: null,
+        agents: [
+          { title: "Fix the payments flow", shortDescription: "payments worker" },
+          { title: null, shortDescription: "auth" },
+        ],
+      },
+    ]);
+    expect(candidates[0]?.agents).toEqual([
+      { title: "Fix the payments flow", shortDescription: "payments worker" },
+      { title: null, shortDescription: "auth" },
+    ]);
+  });
+
+  test("home-dir workspaces are excluded when homeDir is provided", () => {
+    const candidates = selectWorkspaceProposalCandidates(
+      [
+        { workspaceId: "w1", name: "feat/x", title: null, cwd: "/Users/vaibhav" },
+        { workspaceId: "w2", name: "feat/y", title: null, cwd: "/Users/vaibhav/project" },
+      ],
+      { homeDir: "/Users/vaibhav" },
+    );
+    expect(candidates.map((c) => c.workspaceId)).toEqual(["w2"]);
+  });
+});
+
+describe("resolveWorkspaceRenameProposals (LLM workspace names)", () => {
+  const candidates = selectWorkspaceProposalCandidates([
+    { workspaceId: "w1", name: "feat/payments", title: null },
+    { workspaceId: "w2", name: "fix/auth", title: null },
+  ]);
+
+  function response(overrides: Partial<BackfillWorkspaceResponse>): BackfillWorkspaceResponse {
+    return { workspaceId: "w1", name: "Payments overhaul", ...overrides };
+  }
+
+  test("uses the LLM-proposed names (no mechanical title-casing)", () => {
+    const proposals = resolveWorkspaceRenameProposals(candidates, [
+      response({ name: "Payments API overhaul" }),
+      response({ workspaceId: "w2", name: "Auth flow fix" }),
     ]);
     expect(proposals).toEqual([
-      { workspaceId: "w1", oldName: "feat/payments", newName: "Payments" },
+      { workspaceId: "w1", oldName: "feat/payments", newName: "Payments API overhaul" },
+      { workspaceId: "w2", oldName: "fix/auth", newName: "Auth flow fix" },
     ]);
+  });
+
+  test("drops unknown workspaceIds, empty names, and over-long names", () => {
+    const proposals = resolveWorkspaceRenameProposals(candidates, [
+      response({ workspaceId: "ghost", name: "Whatever" }),
+      response({ name: "   " }),
+      response({ name: "one two three four five six" }),
+    ]);
+    expect(proposals).toEqual([]);
+  });
+
+  test("drops names at or under the word cap but keeps exactly 5 words", () => {
+    const proposals = resolveWorkspaceRenameProposals(candidates, [
+      response({ name: "one two three four five" }),
+    ]);
+    expect(proposals).toEqual([
+      { workspaceId: "w1", oldName: "feat/payments", newName: "one two three four five" },
+    ]);
+  });
+
+  test("drops a proposal that echoes the current name", () => {
+    expect(
+      resolveWorkspaceRenameProposals(candidates, [response({ name: "feat/payments" })]),
+    ).toEqual([]);
   });
 });
 
@@ -325,5 +507,126 @@ describe("formatRenameProposalMessage", () => {
     expect(message).toContain("feat/payments -> Payments");
     expect(message).toContain("fix/auth -> Auth Fix");
     expect(message).toContain("--apply <approved.json>");
+  });
+});
+
+describe("buildBackfillPrompt workspace section", () => {
+  test("lists workspaces with agent context and instructs the LLM on auto names", () => {
+    const prompt = buildBackfillPrompt({
+      hostLabel: "h",
+      namingTheme: "mixed",
+      candidates: [],
+      workspaceCandidates: [
+        {
+          workspaceId: "w1",
+          name: "feat/payments",
+          agents: [
+            { title: "Fix the payments flow", shortDescription: "payments worker" },
+            { title: null, shortDescription: null },
+          ],
+        },
+        {
+          workspaceId: "w2",
+          name: "Explain advisory feed freshness for npm install checks",
+          agents: [],
+        },
+      ],
+    });
+    expect(prompt).toContain('workspaceId=w1 | current name: "feat/payments"');
+    expect(prompt).toContain('agents working here: "Fix the payments flow" — payments worker');
+    expect(prompt).toContain("branch/dir slugs");
+    expect(prompt).toContain('"thankful-penguin"');
+    expect(prompt).toContain("max 5 words");
+    expect(prompt).toContain("intentional human name");
+    expect(prompt).toContain('"workspaces":[{"workspaceId":"...","name":"..."}]');
+  });
+});
+
+describe("buildBackfillReportAgentChanges", () => {
+  test("diffs candidates against updates into per-field rows", () => {
+    const rows = buildBackfillReportAgentChanges(
+      [candidate({ name: null, title: "Fix the auth flow", shortDescription: "auth" })],
+      [
+        {
+          agentId: "agent-1",
+          name: "Nova",
+          title: "Overhaul login auth",
+          shortDescription: "working on login",
+        },
+      ],
+    );
+    expect(rows).toEqual([
+      { agentId: "agent-1", field: "name", oldValue: null, newValue: "Nova" },
+      {
+        agentId: "agent-1",
+        field: "title",
+        oldValue: "Fix the auth flow",
+        newValue: "Overhaul login auth",
+      },
+      {
+        agentId: "agent-1",
+        field: "description",
+        oldValue: "auth",
+        newValue: "working on login",
+      },
+    ]);
+  });
+
+  test("ignores updates for unknown candidates", () => {
+    expect(
+      buildBackfillReportAgentChanges([candidate()], [{ agentId: "ghost", title: "X" }]),
+    ).toEqual([]);
+  });
+});
+
+describe("buildBackfillMarkdownReport", () => {
+  const report = buildBackfillMarkdownReport({
+    hostLabel: "work server",
+    namingTheme: "nature",
+    generatedAt: "2026-08-08T00:00:00.000Z",
+    agentChanges: [
+      { agentId: "agent-1", field: "name", oldValue: null, newValue: "Nova" },
+      {
+        agentId: "agent-1",
+        field: "title",
+        oldValue: "fix/auth",
+        newValue: "Overhaul login auth",
+      },
+    ],
+    workspaceProposals: [{ workspaceId: "w1", oldName: "feat/payments", newName: "Payments" }],
+  });
+
+  test("has the report header, how-to-approve section, and both tables", () => {
+    expect(report).toContain("# Mission Control naming backfill report");
+    expect(report).toContain("Host: `work server`");
+    expect(report).toContain("Naming theme: `nature`");
+    expect(report).toContain("Generated: 2026-08-08T00:00:00.000Z");
+    expect(report).toContain("## How to approve");
+    expect(report).toContain("**Nothing has been applied yet.**");
+    expect(report).toContain("delete any row you reject");
+    expect(report).toContain("--apply <approved.json>");
+  });
+
+  test("agent table carries old → new rows", () => {
+    expect(report).toContain("| Agent | Field | Old | New |");
+    expect(report).toContain("| agent-1 | name | — | Nova |");
+    expect(report).toContain("| agent-1 | title | fix/auth | Overhaul login auth |");
+  });
+
+  test("workspace table carries old → new rows", () => {
+    expect(report).toContain("| Workspace | Old name | New name |");
+    expect(report).toContain("| w1 | feat/payments | Payments |");
+  });
+
+  test("empty sections render as explicit no-change notes", () => {
+    const empty = buildBackfillMarkdownReport({
+      hostLabel: "h",
+      namingTheme: "mixed",
+      generatedAt: "2026-08-08T00:00:00.000Z",
+      agentChanges: [],
+      workspaceProposals: [],
+    });
+    expect(empty).toContain("_No agent identity changes._");
+    expect(empty).toContain("_No workspace renames._");
   });
 });

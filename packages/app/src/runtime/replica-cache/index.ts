@@ -166,6 +166,7 @@ function serializeAgent(agent: Agent): StoredAgent {
     requiresAttention: agent.requiresAttention ?? false,
     attentionReason: agent.attentionReason ?? null,
     attentionTimestamp: agent.attentionTimestamp?.toISOString() ?? null,
+    ...(agent.stoppedBy ? { stoppedBy: agent.stoppedBy } : {}),
     archivedAt: agent.archivedAt?.toISOString() ?? null,
   };
   return {

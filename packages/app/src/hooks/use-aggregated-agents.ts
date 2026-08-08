@@ -85,6 +85,7 @@ export function useAggregatedAgents(options?: {
           requiresAttention: agent.requiresAttention,
           attentionReason: agent.attentionReason,
           attentionTimestamp: agent.attentionTimestamp,
+          stoppedBy: agent.stoppedBy ?? null,
           archivedAt: agent.archivedAt,
           createdAt: agent.createdAt,
           labels: agent.labels,

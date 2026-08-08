@@ -27,7 +27,8 @@ export interface ResolvedMissionControlCentralConfig {
   namingTheme: string;
   hideAgentNames: boolean;
   defaultDispatchHost: string | null;
-  nudgeSeconds: number;
+  silenceNudgeSeconds: number;
+  statusNudgeSeconds: number;
   escalateSeconds: number;
 }
 
@@ -45,7 +46,8 @@ export const DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG: ResolvedMissionControlCentr
   namingTheme: "mixed",
   hideAgentNames: false,
   defaultDispatchHost: null,
-  nudgeSeconds: 120,
+  silenceNudgeSeconds: 120,
+  statusNudgeSeconds: 300,
   escalateSeconds: 300,
 };
 
@@ -63,6 +65,7 @@ export class CentralMissionControlConfigStore {
   private readonly dir: string;
   private readonly logger: Logger;
   private config: MissionControlCentralConfig = {};
+  private initialized = false;
 
   constructor(options: { paseoHome: string; logger: Logger }) {
     this.dir = join(options.paseoHome, CENTRAL_CONFIG_DIR);
@@ -70,6 +73,13 @@ export class CentralMissionControlConfigStore {
   }
 
   async initialize(): Promise<void> {
+    // Idempotent: ONE store is shared daemon-wide (bootstrap initializes it,
+    // MissionControlService.start() also calls initialize), so a second call
+    // must never re-read the file and clobber in-memory state.
+    if (this.initialized) {
+      return;
+    }
+    this.initialized = true;
     await mkdir(this.dir, { recursive: true });
     let content: string;
     try {
@@ -85,6 +95,27 @@ export class CentralMissionControlConfigStore {
       const parsed: unknown = JSON.parse(content);
       if (isRecord(parsed)) {
         this.config = pickCentralConfigKeys(parsed);
+        // Migrate the pre-rename knob (nudgeSeconds -> statusNudgeSeconds):
+        // pre-release central config, so one read at load is enough — the old
+        // key is dropped from the persisted file.
+        if (
+          typeof parsed["nudgeSeconds"] === "number" &&
+          this.config.statusNudgeSeconds === undefined
+        ) {
+          this.config.statusNudgeSeconds = parsed["nudgeSeconds"];
+          try {
+            await writeJsonFileAtomic(join(this.dir, CENTRAL_CONFIG_FILENAME), this.config);
+            this.logger.info(
+              { component: "config", from: "nudgeSeconds", to: "statusNudgeSeconds" },
+              "mission_control.config.migrated_nudge_knob",
+            );
+          } catch (error) {
+            this.logger.warn(
+              { err: error },
+              "Failed to persist migrated central config (legacy nudgeSeconds)",
+            );
+          }
+        }
       }
     } catch (error) {
       this.logger.warn({ err: error }, "Failed to parse central mission control config");
@@ -138,7 +169,8 @@ const CENTRAL_CONFIG_KEYS: readonly (keyof ResolvedMissionControlCentralConfig)[
   "namingTheme",
   "hideAgentNames",
   "defaultDispatchHost",
-  "nudgeSeconds",
+  "silenceNudgeSeconds",
+  "statusNudgeSeconds",
   "escalateSeconds",
 ];
 
@@ -170,7 +202,10 @@ function resolveCentralConfig(
     namingTheme: stored.namingTheme ?? defaults.namingTheme,
     hideAgentNames: stored.hideAgentNames ?? defaults.hideAgentNames,
     defaultDispatchHost: stored.defaultDispatchHost ?? defaults.defaultDispatchHost,
-    nudgeSeconds: stored.nudgeSeconds ?? defaults.nudgeSeconds,
+    silenceNudgeSeconds: stored.silenceNudgeSeconds ?? defaults.silenceNudgeSeconds,
+    // Legacy fallback: pre-rename files carry status cadence as nudgeSeconds.
+    statusNudgeSeconds:
+      stored.statusNudgeSeconds ?? stored.nudgeSeconds ?? defaults.statusNudgeSeconds,
     escalateSeconds: stored.escalateSeconds ?? defaults.escalateSeconds,
   };
 }

@@ -1045,7 +1045,7 @@ export const es: TranslationResources = {
       sessions: "Historial",
       schedules: "Horarios",
       missionControl: "Mission Control",
-      missionControlWorking: "Agentes activos",
+      missionControlNeedsYou: "Necesita tu atención",
       missionControlReady: "Listos para revisión",
       webhooks: "Webhooks",
     },

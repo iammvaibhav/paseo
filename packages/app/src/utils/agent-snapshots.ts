@@ -82,6 +82,7 @@ export function normalizeAgentSnapshot(snapshot: AgentSnapshotPayload, serverId:
     requiresAttention: snapshot.requiresAttention ?? false,
     attentionReason: snapshot.attentionReason ?? null,
     attentionTimestamp,
+    stoppedBy: snapshot.stoppedBy ?? null,
     archivedAt,
     parentAgentId,
     labels: snapshot.labels,

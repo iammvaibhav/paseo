@@ -3795,6 +3795,101 @@ test("persists live mode, model, and thinking changes without an external snapsh
   expect(persisted?.runtimeInfo?.model).toBe("gpt-5.4");
 });
 
+test("a user thinking/model change persists into the stored config AND the persistence handle so a machinery relaunch carries it", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-machinery-dispatch-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+
+  // Mirrors the omp provider: describePersistence returns the session's own
+  // config (model/thinkingOptionId), and setThinkingOption/setModel update it.
+  class PersistenceAwareSession extends TestAgentSession {
+    private sessionConfig: AgentSessionConfig;
+
+    constructor(config: AgentSessionConfig) {
+      super(config);
+      this.sessionConfig = config;
+    }
+
+    override async setThinkingOption(thinkingOptionId: string | null): Promise<void> {
+      this.sessionConfig = {
+        ...this.sessionConfig,
+        thinkingOptionId: thinkingOptionId ?? undefined,
+      };
+    }
+
+    override async setModel(modelId: string | null): Promise<void> {
+      this.sessionConfig = { ...this.sessionConfig, model: modelId ?? undefined };
+    }
+
+    override describePersistence() {
+      return {
+        provider: this.provider,
+        sessionId: this.id,
+        metadata: {
+          cwd: this.sessionConfig.cwd,
+          ...(this.sessionConfig.model ? { model: this.sessionConfig.model } : {}),
+          ...(this.sessionConfig.thinkingOptionId
+            ? { thinkingOptionId: this.sessionConfig.thinkingOptionId }
+            : {}),
+        },
+      };
+    }
+  }
+  class PersistenceAwareClient extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      return new PersistenceAwareSession(config);
+    }
+  }
+
+  const client = new PersistenceAwareClient();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000991",
+  });
+
+  const snapshot = await manager.createAgent(
+    {
+      provider: "codex",
+      cwd: workdir,
+      model: "gpt-5.2-codex",
+      thinkingOptionId: "low",
+    },
+    undefined,
+    { workspaceId: undefined },
+  );
+
+  // The user raises thinking from the composer; the run uses "high".
+  await manager.setAgentThinkingOption(snapshot.id, "high");
+  await manager.setAgentModel(snapshot.id, "gpt-5.4");
+  await manager.flush();
+
+  // Persisted into the stored agent config: machinery dispatches build their
+  // launch config from the record, so they reuse the last user-set values.
+  const persisted = await storage.get(snapshot.id);
+  expect(persisted?.config?.model).toBe("gpt-5.4");
+  expect(persisted?.config?.thinkingOptionId).toBe("high");
+
+  // The persistence handle metadata (used as the resume base by omp) is
+  // re-described on the mutation, not left at creation time.
+  const live = manager.getAgent(snapshot.id);
+  expect(live?.persistence?.metadata).toMatchObject({
+    model: "gpt-5.4",
+    thinkingOptionId: "high",
+  });
+
+  // Machinery dispatch = startAgentRun's dead-runtime recovery: reloadAgentSession
+  // resumes from the persistence handle with the agent's current config. The
+  // resume overrides must carry the user-set model + thinking.
+  await manager.reloadAgentSession(snapshot.id);
+  await manager.flush();
+  expect(client.resumeOverrides.at(-1)).toMatchObject({
+    model: "gpt-5.4",
+    thinkingOptionId: "high",
+  });
+});
+
 test("later explicit config mutations win over events emitted by earlier mutations", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-config-mutation-order-"));
   class ConfigMutationSession extends TestAgentSession {

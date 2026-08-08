@@ -4,7 +4,12 @@ import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import type { MissionControlProposal } from "@getpaseo/protocol/mission-control/types";
-import { MissionControlApprovals, PROPOSAL_TTL_MS, type ProposalCreateInput } from "./approvals.js";
+import {
+  MissionControlApprovals,
+  ProposalDeliveryAborted,
+  PROPOSAL_TTL_MS,
+  type ProposalCreateInput,
+} from "./approvals.js";
 import type { MissionControlPresenceSource } from "./presence.js";
 import { MissionControlStore } from "./store.js";
 
@@ -30,7 +35,7 @@ interface Harness {
 async function build(overrides?: {
   mode?: "ask" | "auto";
   focused?: (agentId: string) => boolean;
-  stoppedBy?: (agentId: string) => "user" | "machinery" | null;
+  stoppedBy?: (agentId: string) => "user" | "machinery" | "system" | null;
 }): Promise<Harness> {
   const dir = await mkdtemp(join(tmpdir(), "mc-approvals-"));
   const store = new MissionControlStore({ paseoHome: dir, logger: createTestLogger() });
@@ -162,6 +167,91 @@ describe("MissionControlApprovals ask mode", () => {
         action: "approve",
       });
       expect(missing).toMatchObject({ ok: false });
+    } finally {
+      await teardown(harness);
+    }
+  });
+
+  test("forceSend bypasses the gate in ask mode: recorded sent and delivered, never pending", async () => {
+    const harness = await build({ mode: "ask" });
+    try {
+      const proposal = await harness.approvals.createProposal(
+        baseInput({ origin: "stall", deliveryMode: "steer", forceSend: true }),
+      );
+      expect(proposal.status).toBe("sent");
+      expect(harness.delivered).toEqual([
+        {
+          agentId: "worker-1",
+          message: "Prove the fix with a failing test.",
+          deliveryMode: "steer",
+        },
+      ]);
+      expect(harness.published.map((p) => p.status)).toEqual(["sent"]);
+      expect(harness.approvals.getProposal(proposal.id)?.status).toBe("sent");
+    } finally {
+      await teardown(harness);
+    }
+  });
+
+  test("forceSend wins over presence conflicts that would otherwise force ask", async () => {
+    const harness = await build({
+      mode: "ask",
+      focused: (agentId) => agentId === "worker-1",
+      stoppedBy: (agentId) => (agentId === "worker-1" ? "user" : null),
+    });
+    try {
+      const proposal = await harness.approvals.createProposal(
+        baseInput({ origin: "stall", forceSend: true }),
+      );
+      expect(proposal.status).toBe("sent");
+      expect(harness.delivered).toHaveLength(1);
+    } finally {
+      await teardown(harness);
+    }
+  });
+
+  test("an aborted delivery records the proposal expired, never pending or redelivered", async () => {
+    const harness = await build({ mode: "ask" });
+    try {
+      harness.approvals = new MissionControlApprovals({
+        store: harness.store,
+        presence: harness.presence,
+        logger: createTestLogger(),
+        getMode: () => harness.mode,
+        deliver: async () => {
+          throw new ProposalDeliveryAborted("worker-1", "user_stopped");
+        },
+        publishProposalEvent: async (proposal) => {
+          harness.published.push(proposal);
+          return { id: `mce_${harness.published.length}` };
+        },
+      });
+      const proposal = await harness.approvals.createProposal(baseInput({ forceSend: true }));
+      expect(proposal.status).toBe("expired");
+      expect(harness.delivered).toHaveLength(0);
+      expect(harness.approvals.getProposal(proposal.id)?.status).toBe("expired");
+      expect(harness.published.map((p) => p.status)).toEqual(["expired"]);
+    } finally {
+      await teardown(harness);
+    }
+  });
+
+  test("expirePendingForAgent kills every pending proposal for the agent", async () => {
+    const harness = await build({ mode: "ask" });
+    try {
+      const first = await harness.approvals.createProposal(baseInput());
+      const second = await harness.approvals.createProposal(
+        baseInput({ message: "One more proof." }),
+      );
+      await harness.approvals.expirePendingForAgent("worker-1");
+      expect(harness.approvals.getProposal(first.id)?.status).toBe("expired");
+      expect(harness.approvals.getProposal(second.id)?.status).toBe("expired");
+      const resolve = await harness.approvals.resolveProposal({
+        proposalId: first.id,
+        action: "approve",
+      });
+      expect(resolve).toMatchObject({ ok: false });
+      expect(harness.delivered).toHaveLength(0);
     } finally {
       await teardown(harness);
     }

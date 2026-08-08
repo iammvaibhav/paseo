@@ -1,4 +1,5 @@
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { useMissionControlCentralConfig } from "@/mission-control/central-config";
 import type { TFunction } from "i18next";
 import { SquarePen } from "lucide-react-native";
 import React, {
@@ -86,6 +87,7 @@ import {
   selectAgentTimelineState,
   selectAgentTurnPresentation,
   type Agent,
+  type SessionState,
   useSessionStore,
 } from "@/stores/session-store";
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
@@ -180,6 +182,34 @@ function selectChatAgentState(
   };
 }
 
+function selectAgentDescriptor(
+  state: { sessions: Record<string, SessionState> },
+  serverId: string,
+  agentId: string,
+): {
+  provider: Agent["provider"];
+  title: string | null;
+  name: string | null;
+  status: Agent["status"] | null;
+  pendingPermissionCount: number;
+  requiresAttention: boolean;
+  attentionReason: Agent["attentionReason"];
+  isTurnActive: boolean;
+} {
+  const session = state.sessions[serverId];
+  const agent = resolveSessionAgent(session, agentId);
+  return {
+    provider: agent?.provider ?? "codex",
+    title: agent?.title ?? null,
+    name: agent?.name ?? null,
+    status: agent?.status ?? null,
+    pendingPermissionCount: agent?.pendingPermissions.length ?? 0,
+    requiresAttention: agent?.requiresAttention ?? false,
+    attentionReason: agent?.attentionReason ?? null,
+    isTurnActive: selectAgentTurnPresentation(session, agentId).isActive,
+  };
+}
+
 function buildChatAgentFromState(
   state: ChatAgentStateShape,
   projectPlacement: Agent["projectPlacement"] | null,
@@ -261,29 +291,24 @@ function useAgentPanelDescriptor(
   context: { serverId: string },
 ): PanelDescriptor {
   const descriptorState = useSessionStore(
-    useShallow((state) => {
-      const session = state.sessions[context.serverId];
-      const agent =
-        session?.agents?.get(target.agentId) ?? session?.agentDetails?.get(target.agentId) ?? null;
-      return {
-        provider: agent?.provider ?? "codex",
-        title: agent?.title ?? null,
-        status: agent?.status ?? null,
-        pendingPermissionCount: agent?.pendingPermissions.length ?? 0,
-        requiresAttention: agent?.requiresAttention ?? false,
-        attentionReason: agent?.attentionReason ?? null,
-        isTurnActive: selectAgentTurnPresentation(session, target.agentId).isActive,
-      };
-    }),
+    useShallow((state) => selectAgentDescriptor(state, context.serverId, target.agentId)),
   );
   const provider = descriptorState.provider;
   const label = resolveWorkspaceAgentTabLabel(descriptorState.title);
   const icon = getProviderIcon(provider);
+  // Agent tab tooltips (spec "Names"): "Name — Title" when names are enabled,
+  // title only when hideAgentNames is set (the central Mission Control toggle).
+  const hideAgentNames = useMissionControlCentralConfig().config?.hideAgentNames === true;
+  const fallbackTooltip = `${formatProviderLabel(provider)} agent`;
+  const tooltip =
+    !hideAgentNames && descriptorState.name
+      ? `${descriptorState.name} — ${label ?? fallbackTooltip}`
+      : (label ?? fallbackTooltip);
 
   return {
     label: label ?? "",
     subtitle: `${formatProviderLabel(provider)} agent`,
-    tooltip: label ?? `${formatProviderLabel(provider)} agent`,
+    tooltip,
     titleState: label ? "ready" : "loading",
     icon,
     statusBucket: descriptorState.status

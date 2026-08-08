@@ -31,6 +31,7 @@ function makeAgent(overrides: Partial<AggregatedAgent> = {}): AggregatedAgent {
     requiresAttention: false,
     attentionReason: null,
     attentionTimestamp: null,
+    stoppedBy: null,
     archivedAt: null,
     createdAt: new Date(NOW - DAY_MS),
     labels: {},
@@ -271,6 +272,103 @@ describe("deriveAgentLifecycle — buckets", () => {
     // history and must not flood the Ready bucket.
     const state = derive(makeAgent({ requiresAttention: true, attentionReason: "finished" }), []);
     expect(state.bucket).toBe("dormant");
+  });
+});
+
+describe("deriveAgentLifecycle — user-stopped ≠ Needs you", () => {
+  it("lands a user-stopped agent in done with the stopped-by-user marker", () => {
+    // Live bug: a user-pressed Stop landed the row in Needs-you. The stop
+    // origin rides the agent snapshot (stoppedBy: "user"), so the derivation
+    // can tell a user stop from a normal finish.
+    const state = derive(
+      makeAgent({ stoppedBy: "user", requiresAttention: true, attentionReason: "finished" }),
+      [
+        makeEvent({ kind: "started", headline: "Started running" }),
+        makeEvent({ kind: "finished", headline: "Finished" }),
+      ],
+    );
+    expect(state).toMatchObject({
+      bucket: "done",
+      doneReason: "stopped-by-user",
+      reviewState: "ready",
+    });
+  });
+
+  it("makes a user stop outrank pending proposals and finished attention", () => {
+    // The live Needs-you manifestation: after the stop the attention still
+    // reads finished and/or a proposal card is pending. The user performed the
+    // stop — nothing needs them.
+    const state = derive(
+      makeAgent({ stoppedBy: "user", requiresAttention: true, attentionReason: "finished" }),
+      [
+        makeEvent({ kind: "finished", headline: "Finished" }),
+        makeProposalEvent({ headline: "Proposal (verifier): proof demand", source: "verifier" }),
+      ],
+    );
+    expect(state).toMatchObject({ bucket: "done", doneReason: "stopped-by-user" });
+  });
+
+  it("keeps machinery stops on the attention path (error → needs_you)", () => {
+    const state = derive(
+      makeAgent({ stoppedBy: "machinery", status: "error", attentionReason: "error" }),
+      [makeEvent({ kind: "failed", headline: "Failed with an error" })],
+    );
+    expect(state).toMatchObject({ bucket: "needs_you", doneReason: null });
+  });
+
+  it("lands abruptly-killed (system origin) agents in needs_you, not done", () => {
+    const state = derive(
+      makeAgent({ stoppedBy: "system", status: "error", attentionReason: "error" }),
+      [makeEvent({ kind: "failed", headline: "Failed with an error" })],
+    );
+    expect(state).toMatchObject({ bucket: "needs_you", doneReason: null });
+  });
+
+  it("keeps a machinery stop with finished attention on the ready path", () => {
+    const state = derive(
+      makeAgent({ stoppedBy: "machinery", requiresAttention: true, attentionReason: "finished" }),
+      [makeEvent({ kind: "finished", headline: "Finished" })],
+    );
+    expect(state).toMatchObject({ bucket: "ready", doneReason: null });
+  });
+
+  it("returns a user-stopped agent to running when a new run starts (reopen)", () => {
+    const state = derive(makeAgent({ stoppedBy: "user", status: "running" }), [
+      makeEvent({ kind: "started", headline: "Started running" }),
+      makeEvent({ kind: "finished", headline: "Finished" }),
+      makeEvent({ kind: "started", headline: "Started running" }),
+    ]);
+    expect(state).toMatchObject({ bucket: "running", doneReason: null, reviewState: "none" });
+  });
+
+  it("does not re-derive done after the user-stopped row is cleared", () => {
+    // Clear is bookkeeping on the server; the stop origin itself is not
+    // cleared there, so the cleared reviewState must outrank the marker.
+    const state = derive(
+      makeAgent({ stoppedBy: "user", requiresAttention: true, attentionReason: "finished" }),
+      [
+        makeEvent({ kind: "finished", headline: "Finished" }),
+        makeEvent({ kind: "verdict", source: "system", headline: "Cleared", detail: "Cleared" }),
+      ],
+    );
+    expect(state).toMatchObject({ bucket: "dormant", doneReason: null, reviewState: "cleared" });
+  });
+
+  it("keeps verdict-done semantics when a verdict lands after a user stop", () => {
+    const state = derive(
+      makeAgent({ stoppedBy: "user", requiresAttention: true, attentionReason: "finished" }),
+      [
+        makeEvent({ kind: "finished", headline: "Finished" }),
+        makeEvent({
+          kind: "verdict",
+          source: "verifier",
+          headline: "Done — looks good",
+          detail: "looks good",
+        }),
+      ],
+    );
+    expect(state).toMatchObject({ bucket: "done", doneReason: null });
+    expect(state.verdict?.by).toBe("verifier");
   });
 });
 

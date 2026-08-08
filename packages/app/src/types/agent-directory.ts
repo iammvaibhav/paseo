@@ -14,6 +14,7 @@ export type AgentDirectoryEntry = Pick<
   | "requiresAttention"
   | "attentionReason"
   | "attentionTimestamp"
+  | "stoppedBy"
   | "archivedAt"
   | "createdAt"
   | "labels"

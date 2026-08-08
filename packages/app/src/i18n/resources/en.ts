@@ -1024,7 +1024,7 @@ export const en = {
       sessions: "History",
       schedules: "Schedules",
       missionControl: "Mission Control",
-      missionControlWorking: "Working agents",
+      missionControlNeedsYou: "Needs you",
       missionControlReady: "Ready for review",
       webhooks: "Webhooks",
     },

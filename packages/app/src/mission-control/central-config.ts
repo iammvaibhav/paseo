@@ -31,7 +31,8 @@ export interface ResolvedMissionControlCentralConfig {
   namingTheme: string;
   hideAgentNames: boolean;
   defaultDispatchHost: string | null;
-  nudgeSeconds: number;
+  silenceNudgeSeconds: number;
+  statusNudgeSeconds: number;
   escalateSeconds: number;
 }
 
@@ -47,7 +48,8 @@ const RESOLVED_DEFAULTS: ResolvedMissionControlCentralConfig = {
   namingTheme: "mixed",
   hideAgentNames: false,
   defaultDispatchHost: null,
-  nudgeSeconds: 120,
+  silenceNudgeSeconds: 120,
+  statusNudgeSeconds: 300,
   escalateSeconds: 300,
 };
 
@@ -69,7 +71,8 @@ export function resolveMissionControlCentralConfig(
     namingTheme: config.namingTheme ?? "mixed",
     hideAgentNames: config.hideAgentNames ?? false,
     defaultDispatchHost: config.defaultDispatchHost ?? null,
-    nudgeSeconds: config.nudgeSeconds ?? 120,
+    silenceNudgeSeconds: config.silenceNudgeSeconds ?? 120,
+    statusNudgeSeconds: config.statusNudgeSeconds ?? config.nudgeSeconds ?? 300,
     escalateSeconds: config.escalateSeconds ?? 300,
   };
 }

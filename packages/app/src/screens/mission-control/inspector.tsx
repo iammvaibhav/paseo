@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, type ReactElement } from "react";
 import { Text, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -6,15 +6,16 @@ import { ArrowUpRight } from "lucide-react-native";
 import { useShallow } from "zustand/react/shallow";
 import { AgentStreamView } from "@/agent-stream/view";
 import { Composer } from "@/composer";
+import { useAgentInputDraft } from "@/composer/draft/input-draft";
 import { getActiveMessageSubmissions } from "@/composer/submission/model";
-import type { UserComposerAttachment } from "@/attachments/types";
+import { buildDraftStoreKey } from "@/stores/draft-keys";
 import { ArchivedAgentCallout } from "@/components/archived-agent-callout";
 import { BackHeader } from "@/components/headers/back-header";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/contexts/toast-context";
 import { useIsCompactFormFactor } from "@/constants/layout";
-import { useHostBadges } from "@/hosts/use-host-badges";
-import { HostBadge } from "@/hosts/host-badge";
+import { HostGlyph } from "@/components/host-glyph";
+import { useHosts } from "@/runtime/host-runtime";
 import { useLoadOlderAgentHistory } from "@/hooks/use-load-older-agent-history";
 import type { AgentScreenAgent } from "@/hooks/use-agent-screen-state-machine";
 import { resolveSessionAgent } from "@/utils/agent-snapshots";
@@ -108,8 +109,11 @@ export function MissionControlInspector({
     (state) => state.sessions[serverId]?.viewedTimelineSync ?? null,
   );
   const setFocusedAgentId = useSessionStore((state) => state.setFocusedAgentId);
-  const hostBadges = useHostBadges({ enabled: true });
-  const hostBadge = hostBadges.get(serverId) ?? null;
+  const hosts = useHosts();
+  const hostLabel = useMemo(
+    () => hosts.find((host) => host.serverId === serverId)?.label?.trim() || serverId,
+    [hosts, serverId],
+  );
 
   // Register the inspected agent as viewed so the timeline stays synced (tail
   // fetch on first sight, catch-up while visible) — same bridge the thread
@@ -132,17 +136,13 @@ export function MissionControlInspector({
     return () => setFocusedAgentId(serverId, null);
   }, [agentId, isFocused, serverId, setFocusedAgentId]);
 
-  const [draftText, setDraftText] = useState("");
-  const [draftAttachments, setDraftAttachments] = useState<UserComposerAttachment[]>([]);
-  // A swap to a different agent is a fresh context: drop the previous draft.
-  useEffect(() => {
-    setDraftText("");
-    setDraftAttachments([]);
-  }, [agentId, serverId]);
-  const clearDraft = useCallback(() => {
-    setDraftText("");
-    setDraftAttachments([]);
-  }, []);
+  // Inspector composer draft (spec "Composer drafts"): keyed by the inspected
+  // agent via the shared draft store, so text survives navigation — and a
+  // target swap loads that agent's own saved draft (live bug: raw useState
+  // reset the draft on every navigation and agent swap).
+  const agentDraft = useAgentInputDraft({
+    draftKey: buildDraftStoreKey({ serverId, agentId }),
+  });
 
   const olderHistory = useLoadOlderAgentHistory({ serverId, agentId, toast });
   const historyPagination = useMemo(
@@ -232,13 +232,12 @@ export function MissionControlInspector({
   );
 
   const headerTitleAccessory = useMemo(
-    () =>
-      hostBadge ? (
-        <View style={styles.headerBadgeSlot}>
-          <HostBadge badge={hostBadge} />
-        </View>
-      ) : null,
-    [hostBadge],
+    () => (
+      <View style={styles.headerBadgeSlot}>
+        <HostGlyph serverId={serverId} label={hostLabel} size={20} />
+      </View>
+    ),
+    [hostLabel, serverId],
   );
 
   const header = isCompact ? (
@@ -260,7 +259,7 @@ export function MissionControlInspector({
           </Text>
         ) : null}
       </View>
-      {hostBadge ? <HostBadge badge={hostBadge} /> : null}
+      <HostGlyph serverId={serverId} label={hostLabel} size={20} />
       {openInWorkspaceButton}
     </View>
   );
@@ -292,12 +291,12 @@ export function MissionControlInspector({
             agentId={agentId}
             serverId={serverId}
             isPaneFocused={isFocused}
-            value={draftText}
-            onChangeText={setDraftText}
-            attachments={draftAttachments}
-            onChangeAttachments={setDraftAttachments}
+            value={agentDraft.text}
+            onChangeText={agentDraft.setText}
+            attachments={agentDraft.attachments}
+            onChangeAttachments={agentDraft.setAttachments}
             cwd={composerCwd}
-            clearDraft={clearDraft}
+            clearDraft={agentDraft.clear}
             submitButtonTestID="mission-control-inspector-composer-submit"
           />
         )}

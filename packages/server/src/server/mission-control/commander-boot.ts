@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { Logger } from "pino";
 
 import type { MissionControlCentralConfig } from "@getpaseo/protocol/mission-control/types";
@@ -12,6 +14,7 @@ import type { ProviderSnapshotManager } from "../agent/provider-snapshot-manager
 import { MISSION_CONTROL_LABEL_KEY, MISSION_CONTROL_LABEL_VALUE } from "./commander-contract.js";
 import type { FleetContextDependencies } from "./context.js";
 import { buildCommanderLaunchConfig } from "./context.js";
+import { readBundledCommanderPrompt } from "./commander-contract.js";
 
 /**
  * The Commander is host-wide; `~` is the only cwd that always exists on every
@@ -20,6 +23,13 @@ import { buildCommanderLaunchConfig } from "./context.js";
  */
 export const COMMANDER_CWD = "~";
 export const COMMANDER_TITLE = "Commander";
+
+/**
+ * Label carrying the Commander's build hash (baked system prompt + tool
+ * allowlist) at spawn. Drift auto-recreate compares it on daemon boot: hash ≠
+ * current build → archive the stale Commander and spawn fresh.
+ */
+export const COMMANDER_HASH_LABEL_KEY = "paseo.mission-control.build-hash";
 
 /**
  * The Commander's hard tool restriction (spec: Commander contract). Only Paseo
@@ -63,10 +73,155 @@ export interface EnsureCommanderOnBootResult {
   agentId?: string;
 }
 
-function commanderLabels(): Record<string, string> {
+function commanderLabels(buildHash: string): Record<string, string> {
   return {
     [MISSION_CONTROL_LABEL_KEY]: MISSION_CONTROL_LABEL_VALUE,
+    [COMMANDER_HASH_LABEL_KEY]: buildHash,
   };
+}
+
+/**
+ * The Commander's build hash: the bundled (repo-shipped) system prompt plus
+ * the hard tool allowlist. Both change only on deploy, so a hash mismatch on
+ * boot means a stale build — archive + recreate. User instructions from
+ * central config intentionally do NOT enter the hash: editing
+ * commanderInstructions is a runtime setting, not build drift, and must never
+ * nuke the live conversation.
+ */
+export function computeCommanderBuildHash(): string {
+  const shippedPrompt = readBundledCommanderPrompt().trim();
+  const allowlist = [...COMMANDER_TOOL_ALLOWLIST].sort().join("\0");
+  return createHash("sha256").update(shippedPrompt).update("\0").update(allowlist).digest("hex");
+}
+
+/**
+ * Resolve the commander model override from central config: "provider/model"
+ * or a bare model on the host's first registered provider. Absent → the
+ * host's default (no model override).
+ */
+function resolveCommanderProviderModel(
+  central: MissionControlCentralConfig,
+  providerIds: readonly string[],
+): { provider: string; model?: string } {
+  const commanderModel = central.commanderModel?.trim() ?? null;
+  const provider = providerIds[0];
+  if (commanderModel === null) {
+    return { provider };
+  }
+  const slashIndex = commanderModel.indexOf("/");
+  if (slashIndex > 0) {
+    return {
+      provider: commanderModel.slice(0, slashIndex).trim(),
+      model: commanderModel.slice(slashIndex + 1).trim(),
+    };
+  }
+  return { provider, model: commanderModel };
+}
+
+/**
+ * Spawn the fleet Commander with the static system prompt and a fresh context
+ * pack as its first message. Central commanderModel overrides the host default
+ * model. Single fleet commander: callers must have verified no live
+ * commander-labeled agent exists.
+ */
+export async function spawnCommander(
+  input: EnsureCommanderOnBootInput,
+): Promise<{ agentId: string }> {
+  const { systemPrompt, firstMessage } = await buildCommanderLaunchConfig(input.launchContext);
+  const providerIds = input.providerSnapshotManager.listRegisteredProviderIds();
+  const { provider, model } = resolveCommanderProviderModel(input.centralConfig(), providerIds);
+
+  const createInput: CreateAgentFromMcpInput = {
+    kind: "mcp",
+    provider,
+    title: COMMANDER_TITLE,
+    initialPrompt: firstMessage,
+    cwd: COMMANDER_CWD,
+    labels: commanderLabels(computeCommanderBuildHash()),
+    config: {
+      cwd: COMMANDER_CWD,
+      systemPromptMode: "replace",
+      systemPrompt,
+      toolAllowlist: [...COMMANDER_TOOL_ALLOWLIST],
+      ...(model ? { model } : {}),
+    },
+    background: true,
+    notifyOnFinish: false,
+  };
+
+  const result = await input.createAgent(createInput);
+  input.logger.info(
+    {
+      component: "commander",
+      agentId: result.snapshot.id,
+      provider,
+      ...(model ? { model } : {}),
+      commanderHost: input.centralConfig().commanderHost ?? "local",
+    },
+    "mission_control.commander.spawned",
+  );
+  return { agentId: result.snapshot.id };
+}
+
+/**
+ * Archive the current Commander (live or stored-only) so its conversation
+ * stays in History while a fresh one takes over. Never throws on a missing
+ * record — archiving is best-effort bookkeeping.
+ */
+export async function archiveCommanderAgent(
+  agentManager: AgentManager,
+  agentStorage: AgentStorage,
+  agentId: string,
+  logger: Logger,
+): Promise<void> {
+  logger.info({ component: "commander", agentId }, "mission_control.commander.archiving_stale");
+  const live = agentManager.getAgent(agentId);
+  if (live) {
+    await agentManager.archiveAgent(agentId);
+    return;
+  }
+  const record = await agentStorage.get(agentId);
+  if (record && !record.archivedAt) {
+    await agentManager.archiveSnapshot(agentId, new Date().toISOString());
+  }
+}
+
+/**
+ * Reset the Commander (mission_control.commander.reset + drift recreate):
+ * archive the current one and spawn fresh with a new context pack. Shares the
+ * drift-recreate machinery with ensureCommanderOnBoot.
+ */
+export async function resetCommander(
+  input: EnsureCommanderOnBootInput,
+): Promise<{ ok: true; agentId: string } | { ok: false; error: string }> {
+  if (input.launchContext.daemonConfigStore.get().missionControl?.enabled === false) {
+    return { ok: false, error: "Mission Control is disabled on this host" };
+  }
+  const central = input.centralConfig();
+  const designated =
+    central.commanderHost === null ||
+    central.commanderHost === undefined ||
+    central.commanderHost === "local" ||
+    central.commanderHost === input.hostName ||
+    (input.hostAlias !== null && central.commanderHost === input.hostAlias);
+  if (!designated) {
+    return { ok: false, error: "This host is not the designated commander host" };
+  }
+  const providerIds = input.providerSnapshotManager.listRegisteredProviderIds();
+  if (providerIds.length === 0) {
+    return { ok: false, error: "No provider registered on this host" };
+  }
+
+  const existing = await findExistingCommander(input.agentManager, input.agentStorage);
+  if (existing) {
+    await archiveCommanderAgent(input.agentManager, input.agentStorage, existing, input.logger);
+  }
+  const { agentId } = await spawnCommander(input);
+  input.logger.info(
+    { component: "commander", agentId, archived: existing ?? null },
+    "mission_control.commander.reset_complete",
+  );
+  return { ok: true, agentId };
 }
 
 /**
@@ -75,6 +230,11 @@ function commanderLabels(): Record<string, string> {
  * exists (live or unarchived), create it with the static system prompt and the
  * context pack as its first message. Central commanderModel overrides the host
  * default model. Single fleet commander: never creates a second one.
+ *
+ * Drift auto-recreate (spec Commander): the stored Commander carries its build
+ * hash (system prompt + tool allowlist); when it differs from the current
+ * build's hash, the stale Commander is archived and a fresh one spawned — the
+ * old conversation stays in History. Logs under component "commander".
  */
 export async function ensureCommanderOnBoot(
   input: EnsureCommanderOnBootInput,
@@ -95,11 +255,6 @@ export async function ensureCommanderOnBoot(
     return { created: false };
   }
 
-  const existing = await findExistingCommander(input.agentManager, input.agentStorage);
-  if (existing) {
-    return { created: false, agentId: existing };
-  }
-
   const providerIds = input.providerSnapshotManager.listRegisteredProviderIds();
   if (providerIds.length === 0) {
     input.logger.warn(
@@ -109,52 +264,35 @@ export async function ensureCommanderOnBoot(
     return { created: false };
   }
 
-  const { systemPrompt, firstMessage } = await buildCommanderLaunchConfig(input.launchContext);
-  // Central commanderModel is "provider/model" or a bare model on the host's
-  // default provider; absent → the host's first registered provider + default.
-  const commanderModel = central.commanderModel?.trim() ?? null;
-  let provider = providerIds[0];
-  let model: string | undefined;
-  if (commanderModel !== null) {
-    const slashIndex = commanderModel.indexOf("/");
-    if (slashIndex > 0) {
-      provider = commanderModel.slice(0, slashIndex).trim();
-      model = commanderModel.slice(slashIndex + 1).trim();
-    } else {
-      model = commanderModel;
+  const existing = await findExistingCommander(input.agentManager, input.agentStorage);
+  if (existing) {
+    const record = await input.agentStorage.get(existing);
+    const storedHash = record?.labels?.[COMMANDER_HASH_LABEL_KEY] ?? null;
+    const currentHash = computeCommanderBuildHash();
+    if (storedHash === currentHash) {
+      return { created: false, agentId: existing };
     }
+    // Drift: a stale build (prompt/tool allowlist changed since spawn, or a
+    // pre-hash Commander). Archive it and spawn fresh — the old conversation
+    // stays in History. Kills the manual post-deploy archive step.
+    input.logger.info(
+      {
+        component: "commander",
+        agentId: existing,
+        storedHash: storedHash ?? null,
+        currentHash,
+      },
+      "mission_control.commander.drift_detected",
+    );
+    await archiveCommanderAgent(input.agentManager, input.agentStorage, existing, input.logger);
   }
 
-  const createInput: CreateAgentFromMcpInput = {
-    kind: "mcp",
-    provider,
-    title: COMMANDER_TITLE,
-    initialPrompt: firstMessage,
-    cwd: COMMANDER_CWD,
-    labels: commanderLabels(),
-    config: {
-      cwd: COMMANDER_CWD,
-      systemPromptMode: "replace",
-      systemPrompt,
-      toolAllowlist: [...COMMANDER_TOOL_ALLOWLIST],
-      ...(model ? { model } : {}),
-    },
-    background: true,
-    notifyOnFinish: false,
-  };
-
-  const result = await input.createAgent(createInput);
+  const { agentId } = await spawnCommander(input);
   input.logger.info(
-    {
-      component: "boot",
-      agentId: result.snapshot.id,
-      provider,
-      ...(model ? { model } : {}),
-      commanderHost: central.commanderHost ?? "local",
-    },
-    "mission_control.boot.commander_created",
+    { component: "commander", agentId, recreated: Boolean(existing) },
+    "mission_control.commander.ensured",
   );
-  return { created: true, agentId: result.snapshot.id };
+  return { created: true, agentId };
 }
 
 async function findExistingCommander(

@@ -1824,6 +1824,46 @@ test("listDirectory sends a list file explorer request and returns directory ent
   });
 });
 
+test("missionControlCommanderReset sends the reset request and resolves the response", async () => {
+  const logger = createMockLogger();
+  const mock = createMockTransport();
+
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_reset_test",
+    logger,
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const responsePromise = client.missionControlCommanderReset("req-reset");
+
+  expect(JSON.parse(assertStr(mock.sent[0]))).toEqual({
+    type: "session",
+    message: {
+      type: "mission_control.commander.reset.request",
+      requestId: "req-reset",
+    },
+  });
+
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "mission_control.commander.reset.response",
+      payload: { requestId: "req-reset", ok: true },
+    }),
+  );
+
+  await expect(responsePromise).resolves.toEqual({
+    requestId: "req-reset",
+    ok: true,
+  });
+});
+
 test("readFile hides legacy base64 behind bytes", async () => {
   const logger = createMockLogger();
   const mock = createMockTransport();

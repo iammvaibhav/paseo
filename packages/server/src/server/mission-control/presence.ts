@@ -13,7 +13,7 @@ export interface MissionControlPresenceSource {
   /** True when any trusted connected client has the agent open with the app visible. */
   isAgentFocused(agentId: string): boolean;
   /** Who cancelled the agent's last run, or null when never cancelled. */
-  getStoppedBy(agentId: string): "user" | "machinery" | null;
+  getStoppedBy(agentId: string): "user" | "machinery" | "system" | null;
 }
 
 /** Inputs the factory closes over; injected at bootstrap wiring time. */
@@ -21,7 +21,7 @@ export interface MissionControlPresenceSourceInput {
   /** Live aggregation across connected client sessions (heartbeat state). */
   isAgentFocused: (agentId: string) => boolean;
   /** Persisted cancel origin for the agent's last run (mission-control store). */
-  readStopOrigin: (agentId: string) => "user" | "machinery" | null;
+  readStopOrigin: (agentId: string) => "user" | "machinery" | "system" | null;
 }
 
 /**

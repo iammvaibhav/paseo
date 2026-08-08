@@ -30,57 +30,63 @@ import {
   type MissionControlReviewStateRecord,
   type MissionControlVerdict,
 } from "./store.js";
-import { MissionControlApprovals, type MissionControlApprovalsOptions } from "./approvals.js";
+import {
+  MissionControlApprovals,
+  ProposalDeliveryAborted,
+  type MissionControlApprovalsOptions,
+} from "./approvals.js";
 import { MISSION_CONTROL_LABEL_KEY, MISSION_CONTROL_LABEL_VALUE } from "./commander-contract.js";
 import type { MissionControlPresenceSource } from "./presence.js";
 import {
   CentralMissionControlConfigStore,
   type ResolvedMissionControlCentralConfig,
 } from "./config.js";
+import type { AgentNamingService } from "./naming.js";
 
 const STALL_SWEEP_INTERVAL_MS = 30_000;
 const DAILY_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const RESTART_GRACE_MS = 60_000;
-// Wait-aware: an open hub-wait/subagent-wait tool call extends the stall
-// clock by the declared timeout plus this grace before nudging.
-const STALL_WAIT_GRACE_MS = 120_000;
-// Declared timeouts used when the open wait call does not carry one.
-const HUB_WAIT_DEFAULT_TIMEOUT_MS = 30_000;
-const SUBAGENT_WAIT_DEFAULT_TIMEOUT_MS = 10 * 60_000;
 // Watchdog: record still says running but the provider runtime is dead for
 // this long before self-healing the record to error.
 const WATCHDOG_DEAD_RUNTIME_MS = 2 * 60_000;
 const TIMELINE_BUFFER_CAP = 2000;
 const MISSION_CONTROL_LABEL_PREFIX = "paseo.mission-control";
 const SELF_REPORT_RATE_LIMIT_MS = 60_000;
+/** Exponential-backoff ceiling for nudge intervals: 30 minutes. */
+const NUDGE_BACKOFF_CAP_MS = 30 * 60 * 1000;
 
 /**
- * Stall v2 threshold math. Wait-aware: an open known-wait tool call extends
- * the clock to the declared timeout + 120s (nudge) and keeps the configured
- * nudge→escalate gap on top (escalate = declared + 120 + (escalate - nudge)).
- * Exported so the wait-aware math is unit-testable without a service.
+ * Effective nudge interval for a trigger after `priorNudges` nudges of that
+ * trigger in the same run: base interval doubles per nudge (120 -> 240 ->
+ * 480 ...), capped at 30 minutes. Reset by a user prompt or run end.
+ * Exported so the backoff math is unit-testable without a service.
  */
-export function computeStallThresholdsMs(params: {
-  waitAwareTimeoutMs: number | null;
-  nudgeSeconds: number;
-  escalateSeconds: number;
-}): { nudgeMs: number; escalateMs: number } {
-  const { waitAwareTimeoutMs, nudgeSeconds, escalateSeconds } = params;
-  const nudgeMs = nudgeSeconds * 1000;
-  const escalateMs = escalateSeconds * 1000;
-  if (waitAwareTimeoutMs === null) {
-    return { nudgeMs, escalateMs };
+export function nudgeBackoffMs(baseSeconds: number, priorNudges: number): number {
+  const baseMs = baseSeconds * 1000;
+  if (priorNudges <= 0) {
+    return Math.min(baseMs, NUDGE_BACKOFF_CAP_MS);
   }
-  const waitBaseMs = waitAwareTimeoutMs + STALL_WAIT_GRACE_MS;
-  return { nudgeMs: waitBaseMs, escalateMs: waitBaseMs + (escalateMs - nudgeMs) };
+  return Math.min(baseMs * 2 ** priorNudges, NUDGE_BACKOFF_CAP_MS);
 }
 
 interface StallTracking {
+  /** Last timeline activity (any stream event). Escalation's "no response at
+   *  all" check uses this — a timeline row after the nudge counts as a
+   *  response. */
   lastStreamAt: number;
-  tailItem: AgentStreamEvent | null;
-  /** Fired once per silence episode (nudge proposal through the approval gate). */
+  /** Last report_status landing; run start counts as the origin. The nudge
+   *  timer keys to this ONLY — timeline rows do not reset it. */
+  lastStatusAt: number;
+  /** When the last status-ask steer was sent (either trigger); the single
+   *  outstanding-nudge guard. Cleared only when a report_status lands or the
+   *  run ends — no re-nudge until then. */
   nudgedAt: number | null;
-  /** Fired once per silence episode (stalled event + Needs-you card). */
+  /** Silence-trigger nudges sent this run (backoff counter). */
+  silenceNudges: number;
+  /** Cadence-trigger nudges sent this run (backoff counter). */
+  statusNudges: number;
+  /** When the recovery interrupt was proposed (ms epoch); null until then.
+   *  One recovery per lapse; cleared with the nudge guard on report_status. */
   escalatedAt: number | null;
   /** First sweep time the provider runtime was observed dead; null while alive. */
   deadSince: number | null;
@@ -101,16 +107,41 @@ export interface MissionControlServiceOptions {
   /** Presence contract for the approval gate (focused client / user-stop). */
   presence: MissionControlPresenceSource;
   /**
+   * The daemon-wide central config store (constructed once in bootstrap and
+   * shared with naming, resetCommander, and commander-boot). Injected so a
+   * patch made here is immediately visible to every consumer — there must be
+   * exactly ONE instance. Optional so the service stays constructible in
+   * tests without one; when absent the service falls back to its own store.
+   */
+  centralConfig?: CentralMissionControlConfigStore | null;
+  /**
    * Ephemeral verifier dispatcher (VerifierSlice's MissionControlVerifierDispatcher).
    * Optional so the service boots without it; bootstrap wires it.
    */
   verifier?: { start(): void | Promise<void>; stop(): void | Promise<void> } | null;
+  /**
+   * Archive the current Commander and spawn a fresh one with a new context
+   * pack (mission_control.commander.reset). Wired by bootstrap with the full
+   * commander-boot machinery; absent → the reset RPC reports an error.
+   */
+  resetCommander?: () => Promise<{ ok: true; agentId: string } | { ok: false; error: string }>;
+  /**
+   * Daemon naming service, for the instant theme re-map (spec App "Names":
+   * a namingTheme patch re-maps all auto-assigned names immediately and
+   * broadcasts agent_update). Optional so the service stays constructible in
+   * tests without it; bootstrap wires it.
+   */
+  naming?: AgentNamingService | null;
 }
 
 export interface MissionControlServiceConfig {
   retentionDays: number;
-  /** Stall v2 thresholds, seconds of silence mid-run. Central-config driven. */
-  stall: { nudgeSeconds: number; escalateSeconds: number };
+  /** Stall v2 thresholds, seconds mid-run. Central-config driven. */
+  stall: {
+    silenceNudgeSeconds: number;
+    statusNudgeSeconds: number;
+    escalateSeconds: number;
+  };
 }
 
 export type SelfReportResult =
@@ -134,6 +165,8 @@ export class MissionControlService {
   private readonly verifier: MissionControlServiceOptions["verifier"];
   private readonly centralConfig: CentralMissionControlConfigStore;
   private readonly presenceSource: MissionControlPresenceSource;
+  private readonly naming: AgentNamingService | null;
+  private readonly resetCommanderFn: MissionControlServiceOptions["resetCommander"];
   readonly approvals: MissionControlApprovals;
 
   private readonly timelineRows = new Map<string, AgentTimelineRow[]>();
@@ -145,6 +178,8 @@ export class MissionControlService {
   private readonly excludedAgentIds = new Set<string>();
   private readonly reviewStateListeners = new Set<ReviewStateListener>();
   private readonly selfReportListeners = new Set<(event: MissionControlEvent) => void>();
+  /** First observation of a dead-runtime running record (periodic scan). */
+  private readonly recordDeadSince = new Map<string, number>();
   private unsubscribe: (() => void) | null = null;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
   private pruneTimer: ReturnType<typeof setInterval> | null = null;
@@ -160,12 +195,16 @@ export class MissionControlService {
     this.digest = options.digest ?? null;
     this.verifier = options.verifier ?? null;
     this.presenceSource = options.presence;
+    this.naming = options.naming ?? null;
+    this.resetCommanderFn = options.resetCommander;
     this.bootedAtMs = Date.now();
     this.store = new MissionControlStore({ paseoHome: options.paseoHome, logger: this.logger });
-    this.centralConfig = new CentralMissionControlConfigStore({
-      paseoHome: options.paseoHome,
-      logger: this.logger,
-    });
+    this.centralConfig =
+      options.centralConfig ??
+      new CentralMissionControlConfigStore({
+        paseoHome: options.paseoHome,
+        logger: this.logger,
+      });
     this.approvals = new MissionControlApprovals(this.buildApprovalsOptions());
   }
 
@@ -176,19 +215,45 @@ export class MissionControlService {
       logger: this.logger,
       getMode: () => this.centralConfig.get().mode,
       deliver: async (input) => {
+        // User always outranks: never dispatch machinery to an agent whose
+        // last run was user-stopped — the steer would restart a run the user
+        // explicitly stopped. Checked here, immediately before dispatch, so a
+        // stop landing after proposal creation still wins.
+        if (this.store.getStopOrigin(input.agentId) === "user") {
+          throw new ProposalDeliveryAborted(input.agentId, "user_stopped");
+        }
         // Same delivery semantics as fleet_send_prompt: busy omp turns are
         // live-steered out-of-band (/steer, instant, non-cancelling); idle
         // agents run normally; busy providers without a steer path queue
         // until idle. Stall nudges always target mid-run agents, so a busy
         // target must never fail the delivery.
-        await dispatchLocalPromptMode({
-          agentManager: this.agentManager,
-          agentStorage: this.agentStorage,
-          agentId: input.agentId,
-          prompt: input.message,
-          mode: input.deliveryMode,
-          logger: this.logger,
-        });
+        //
+        // Ack retraction must fire on EVERY machinery dispatch path: when the
+        // target is the Commander, arm the shared ack-drop tracker so a pure
+        // "ok" reply from the delivered turn is retracted like a digest reply.
+        // The tracker's arm is one-shot (cleared on the first turn_started)
+        // and expires if the dispatch starts no turn (out-of-band steer), so
+        // a user-prompted turn is never classified.
+        const ackDrop = this.digest?.ackDrop ?? null;
+        const commanderTarget = ackDrop !== null && (await this.isCommanderAgentId(input.agentId));
+        if (commanderTarget) {
+          ackDrop?.arm();
+        }
+        try {
+          await dispatchLocalPromptMode({
+            agentManager: this.agentManager,
+            agentStorage: this.agentStorage,
+            agentId: input.agentId,
+            prompt: input.message,
+            mode: input.deliveryMode,
+            logger: this.logger,
+          });
+        } catch (error) {
+          if (commanderTarget) {
+            ackDrop?.disarm();
+          }
+          throw error;
+        }
       },
       publishProposalEvent: async (proposal) => {
         const event = await this.emitProposalEvent(proposal);
@@ -411,6 +476,28 @@ export class MissionControlService {
     return null;
   }
 
+  /** True when the given agent id is the Commander (live or stored). */
+  private async isCommanderAgentId(agentId: string): Promise<boolean> {
+    const live = this.agentManager.getAgent(agentId);
+    if (live?.labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE) {
+      return true;
+    }
+    const record = await this.agentStorage.get(agentId);
+    return record?.labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE;
+  }
+
+  /**
+   * mission_control.commander.reset: archive the current Commander (the old
+   * conversation stays in History) and spawn a fresh one with a new context
+   * pack, reusing the drift-recreate machinery (commander-boot).
+   */
+  async resetCommander(): Promise<{ ok: true; agentId: string } | { ok: false; error: string }> {
+    if (!this.resetCommanderFn) {
+      return { ok: false, error: "Commander reset is not available on this host" };
+    }
+    return this.resetCommanderFn();
+  }
+
   getProposal(proposalId: string): MissionControlProposal | null {
     return this.approvals.getProposal(proposalId);
   }
@@ -434,7 +521,20 @@ export class MissionControlService {
   async patchCentralConfig(
     patch: MissionControlCentralConfigPatch,
   ): Promise<ResolvedMissionControlCentralConfig> {
-    return this.centralConfig.patch(patch);
+    const previousTheme = this.centralConfig.get().namingTheme;
+    const resolved = await this.centralConfig.patch(patch);
+    // Instant theme re-map (spec App "Names"): a namingTheme patch re-maps
+    // all auto-assigned agent names to the new pool and broadcasts
+    // agent_update for every renamed agent. Re-map failures must never fail
+    // the config patch itself — the theme is already persisted.
+    if (patch.namingTheme !== undefined && resolved.namingTheme !== previousTheme && this.naming) {
+      try {
+        await this.naming.remapAllNames();
+      } catch (error) {
+        this.logger.error({ err: error }, "mission_control.naming.remap_failed");
+      }
+    }
+    return resolved;
   }
 
   async setMode(mode: MissionControlMode): Promise<ResolvedMissionControlCentralConfig> {
@@ -457,12 +557,17 @@ export class MissionControlService {
   // v3 stop origins + dormant derivation
   // ==========================================================================
 
-  getStopOrigin(agentId: string): "user" | "machinery" | null {
+  getStopOrigin(agentId: string): "user" | "machinery" | "system" | null {
     return this.store.getStopOrigin(agentId);
   }
 
-  recordStopOrigin(agentId: string, origin: "user" | "machinery" | null): void {
+  recordStopOrigin(agentId: string, origin: "user" | "machinery" | "system" | null): void {
     this.store.recordStopOrigin(agentId, origin);
+    // A user stop outranks machinery: pending proposals for this agent are
+    // dead — approving them later would restart a run the user stopped.
+    if (origin === "user") {
+      void this.approvals.expirePendingForAgent(agentId);
+    }
   }
 
   isDormant(agentId: string): boolean {
@@ -524,6 +629,16 @@ export class MissionControlService {
       ...(input.detail ? { detail: input.detail } : {}),
       ...(input.proofs && input.proofs.length > 0 ? { proof: input.proofs } : {}),
     });
+    // A landed report_status resets BOTH nudge timers (silence + cadence) and
+    // clears the outstanding-nudge guard + escalation lapse. Timeline
+    // activity deliberately only resets the silence timer.
+    const tracking = this.stallTracking.get(agentId);
+    if (tracking) {
+      tracking.lastStatusAt = Date.now();
+      tracking.lastStreamAt = Date.now();
+      tracking.nudgedAt = null;
+      tracking.escalatedAt = null;
+    }
     this.store.updateObservation(agentId, { lastSelfReportTs: event.ts });
     if (input.title !== undefined || input.description !== undefined) {
       await this.applyIdentityUpdate(agentId, {
@@ -585,10 +700,16 @@ export class MissionControlService {
 
     if (agent.lifecycle === "running") {
       if (previousLifecycle !== "running") {
+        // A new run invalidates the previous run's stop origin: the origin
+        // describes who stopped the agent's LAST run ("user" would otherwise
+        // stick to an agent that later ran and finished on its own).
+        this.store.recordStopOrigin(agent.id, null);
         this.stallTracking.set(agent.id, {
           lastStreamAt: Date.now(),
-          tailItem: null,
+          lastStatusAt: Date.now(),
           nudgedAt: null,
+          silenceNudges: 0,
+          statusNudges: 0,
           escalatedAt: null,
           deadSince: null,
           healed: false,
@@ -671,13 +792,17 @@ export class MissionControlService {
     }
     const tracking = this.stallTracking.get(agentId);
     if (tracking) {
+      // Any timeline activity resets the silence-trigger clock (and counts as
+      // a response to a nudge for escalation) but does NOT reset the
+      // cadence-trigger clock or the outstanding-nudge guard: only a
+      // report_status landing does that. A user prompt resets the nudge
+      // backoff counters.
       tracking.lastStreamAt = Date.now();
-      tracking.nudgedAt = null;
-      tracking.escalatedAt = null;
-      this.stalledByAgent.delete(agentId);
-      if (event.type === "timeline") {
-        tracking.tailItem = event;
+      if (event.type === "timeline" && event.item.type === "user_message") {
+        tracking.silenceNudges = 0;
+        tracking.statusNudges = 0;
       }
+      this.stalledByAgent.delete(agentId);
     }
     if (event.type === "timeline" && seq !== undefined) {
       const row: AgentTimelineRow = {
@@ -714,55 +839,102 @@ export class MissionControlService {
   }
 
   /**
-   * Stall v2: silent >nudgeSeconds mid-run (no timeline rows) -> status-ask
-   * steer through the approval gate, once per silence episode. Silent
-   * >escalateSeconds -> stalled event + Needs-you card, once per episode.
-   * Wait-aware: when the open tool call is a known wait (hub wait, subagent
-   * wait), the clock extends to declared timeout + 120s (nudge) and
-   * declared timeout + 300s (escalate), keeping the configured gap.
+   * Stall v2 (two nudge triggers + recovery):
+   * - Eligibility: running agents only (stallTracking is deleted when a run
+   *   leaves "running"); user-stopped agents are never nudged or recovered.
+   * - Silence trigger: NO timeline output at all for silenceNudgeSeconds.
+   * - Cadence trigger: no report_status for statusNudgeSeconds even with
+   *   timeline flowing. Whichever fires first sends the SAME status-ask
+   *   steer (forceSend, no approval in either mode), recorded auto-sent.
+   *   report_status resets both timers; timeline resets only the silence
+   *   timer; at most ONE outstanding nudge per agent (no re-nudge until a
+   *   status lands or the run ends); per-trigger exponential backoff.
+   * - Escalation = recovery: if, >escalateSeconds after ANY nudge, the agent
+   *   produced NO response at all (no report_status AND no new timeline
+   *   rows), propose an interrupt that starts a fresh run. Approval-gated
+   *   normally (ask: Needs-you card; auto: sends; presence/user-stop force
+   *   ask). A stalled event is emitted either way.
    */
   private sweepStalled(): void {
     if (this.inRestartGrace()) {
       return;
     }
     const now = Date.now();
-    const { nudgeSeconds, escalateSeconds } = this.readConfig().stall;
+    const { silenceNudgeSeconds, statusNudgeSeconds, escalateSeconds } = this.readConfig().stall;
+    const escalateMs = escalateSeconds * 1000;
     for (const [agentId, tracking] of this.stallTracking) {
       if (this.stalledByAgent.has(agentId)) {
         continue;
       }
-      const waitAwareMs = this.openWaitTimeoutMs(tracking);
-      const silenceMs = now - tracking.lastStreamAt;
-      const { nudgeMs, escalateMs } = computeStallThresholdsMs({
-        waitAwareTimeoutMs: waitAwareMs,
-        nudgeSeconds,
-        escalateSeconds,
-      });
-      if (tracking.nudgedAt === null && silenceMs >= nudgeMs) {
-        this.fireStallNudge(agentId, tracking, nudgeSeconds);
+      // User-stopped runs are Done; never ask or recover them.
+      if (this.store.getStopOrigin(agentId) === "user") {
+        continue;
       }
-      if (tracking.escalatedAt === null && silenceMs >= escalateMs) {
-        this.escalateStall(agentId, tracking, waitAwareMs !== null, escalateMs);
+      // One outstanding nudge per agent: whichever trigger fires first wins,
+      // and neither re-fires until a report_status lands or the run ends.
+      if (tracking.nudgedAt === null) {
+        const silenceMs = now - tracking.lastStreamAt;
+        if (silenceMs >= nudgeBackoffMs(silenceNudgeSeconds, tracking.silenceNudges)) {
+          this.fireStallNudge(agentId, tracking, silenceNudgeSeconds, "silence");
+        } else {
+          const statusMs = now - tracking.lastStatusAt;
+          if (statusMs >= nudgeBackoffMs(statusNudgeSeconds, tracking.statusNudges)) {
+            this.fireStallNudge(agentId, tracking, statusNudgeSeconds, "status");
+          }
+        }
+      }
+      const respondedAfterNudge =
+        tracking.nudgedAt !== null &&
+        (tracking.lastStatusAt > tracking.nudgedAt || tracking.lastStreamAt > tracking.nudgedAt);
+      if (
+        tracking.nudgedAt !== null &&
+        tracking.escalatedAt === null &&
+        !respondedAfterNudge &&
+        now - tracking.nudgedAt >= escalateMs
+      ) {
+        this.escalateStall(agentId, tracking, escalateSeconds);
       }
     }
   }
 
-  /** Status-ask steer through the approval gate; one per silence episode. */
-  private fireStallNudge(agentId: string, tracking: StallTracking, nudgeSeconds: number): void {
+  /** Status-ask steer, sent directly; recorded as an auto-sent proposal. */
+  private fireStallNudge(
+    agentId: string,
+    tracking: StallTracking,
+    nudgeSeconds: number,
+    trigger: "silence" | "status",
+  ): void {
     tracking.nudgedAt = Date.now();
+    if (trigger === "silence") {
+      tracking.silenceNudges += 1;
+    } else {
+      tracking.statusNudges += 1;
+    }
+    const reason =
+      trigger === "silence"
+        ? `No timeline output for >${nudgeSeconds}s mid-run`
+        : `No report_status for >${nudgeSeconds}s mid-run`;
     this.logger.warn(
-      { component: "stall", agentId, silentSeconds: nudgeSeconds },
-      "Stall nudge proposal created",
+      {
+        component: "stall",
+        agentId,
+        trigger,
+        triggerSeconds: nudgeSeconds,
+        nudgeCount: trigger === "silence" ? tracking.silenceNudges : tracking.statusNudges,
+      },
+      "Stall nudge sent (status-ask steer)",
     );
     void this.approvals
       .createProposal({
         origin: "stall",
         serverId: this.serverId,
         targetAgentId: agentId,
-        message: "You've been silent for a while. Post a one-line report_status, then continue.",
+        message:
+          "You've been quiet for a while. Post a one-line report_status summarizing where you are, then continue.",
         deliveryMode: "steer",
-        reason: `No timeline activity for >${nudgeSeconds}s mid-run`,
+        reason,
         classification: "normal",
+        forceSend: true,
       })
       .catch((error: unknown) => {
         this.logger.warn(
@@ -772,63 +944,64 @@ export class MissionControlService {
       });
   }
 
-  /** Stalled event + Needs-you card; once per silence episode. */
-  private escalateStall(
-    agentId: string,
-    tracking: StallTracking,
-    waitAware: boolean,
-    escalateMs: number,
-  ): void {
+  /**
+   * Recovery: the nudged agent gave no response at all for escalateSeconds.
+   * An interrupt starts a fresh run (also recovering a dead provider
+   * process); the stalled event is emitted regardless of gate outcome.
+   */
+  private escalateStall(agentId: string, tracking: StallTracking, escalateSeconds: number): void {
     tracking.escalatedAt = Date.now();
-    const minutes = Math.round(escalateMs / 60_000);
+    const minutes = Math.round(escalateSeconds / 60);
     void this.emitEvent({
       agentId,
       kind: "stalled",
       source: "system",
       severity: "attention",
-      headline: `Stalled (no activity for ${minutes} min)`,
+      headline: `Stalled (no response for ${minutes} min)`,
     });
+    this.fireRecoveryProposal(
+      agentId,
+      `No response for >${escalateSeconds}s after the status-ask nudge`,
+    );
     this.logger.warn(
-      { component: "stall", agentId, waitAware, escalateMs },
-      "Stall escalated; Needs-you card emitted",
+      { component: "stall", agentId, escalateSeconds },
+      "Stall escalated; recovery proposal created",
     );
   }
 
   /**
-   * Declared timeout of the open wait tool call, or null when the tail tool
-   * call is not a known wait (hub wait / subagent wait). Falls back to the
-   * per-kind default when the call carries no explicit timeout.
+   * Interrupt-and-send recovery proposal through the approval gate: Ask mode
+   * sits as a card; Auto mode sends; presence/user-stop force ask. One per
+   * call — callers guarantee per-heal/per-lapse once semantics.
    */
-  private openWaitTimeoutMs(tracking: StallTracking): number | null {
-    const tail = tracking.tailItem;
-    if (!tail || tail.type !== "timeline") {
-      return null;
-    }
-    if (tail.item.type !== "tool_call" || tail.item.status !== "running") {
-      return null;
-    }
-    const item = tail.item;
-    const name = item.name.toLowerCase();
-    const input =
-      item.detail.type === "unknown" && isRecord(item.detail.input) ? item.detail.input : null;
-    const declared = declaredWaitTimeoutMs(input);
-    if (name === "hub") {
-      const op = typeof input?.op === "string" ? input.op : "";
-      if (op !== "wait") {
-        return null;
-      }
-      return declared ?? HUB_WAIT_DEFAULT_TIMEOUT_MS;
-    }
-    if (name === "task" || item.detail.type === "sub_agent") {
-      return declared ?? SUBAGENT_WAIT_DEFAULT_TIMEOUT_MS;
-    }
-    return null;
+  private fireRecoveryProposal(agentId: string, reason: string): void {
+    void this.approvals
+      .createProposal({
+        origin: "stall",
+        serverId: this.serverId,
+        targetAgentId: agentId,
+        message: "Continue whatever you were working on and post a one-line report_status.",
+        deliveryMode: "interrupt",
+        reason,
+        classification: "normal",
+      })
+      .catch((error: unknown) => {
+        this.logger.warn(
+          { err: error, component: "stall", agentId },
+          "Failed to create stall recovery proposal",
+        );
+      });
   }
 
   /**
    * Reconciliation watchdog: a record stuck `running` whose provider runtime
-   * is dead for >2min self-heals — record -> error, stalled event, loud log.
-   * Root-causing the freeze itself is out of scope (tracked separately).
+   * is dead for >2min self-heals — record -> error, origin "system", stalled
+   * event, recovery proposal, loud log. Two layers: live tracked agents whose
+   * runtime reports dead (or whose live agent vanished), plus a periodic
+   * record scan that backstops orphans whose live agent is gone/closed with
+   * no agent_state transition — the running-daemon analogue of boot
+   * reconciliation (a killed provider process must never leave a record stuck
+   * "running").
    */
   private async runWatchdog(): Promise<void> {
     if (this.inRestartGrace()) {
@@ -840,8 +1013,12 @@ export class MissionControlService {
         continue;
       }
       const live = this.agentManager.getAgent(agentId);
+      // Runtime-dead: the manager no longer has the agent (a killed provider
+      // can drop it without an agent_state transition) or the session itself
+      // reports the runtime gone.
       const runtimeDead =
-        live !== null && live.lifecycle !== "closed" && live.session?.isRuntimeAlive?.() === false;
+        live === null ||
+        (live.lifecycle !== "closed" && live.session?.isRuntimeAlive?.() === false);
       if (!runtimeDead) {
         tracking.deadSince = null;
         continue;
@@ -866,8 +1043,68 @@ export class MissionControlService {
       tracking.nudgedAt = now;
       tracking.escalatedAt = now;
     }
+    await this.reconcileRunningRecords(now);
   }
 
+  /**
+   * Boot pass: stored records still `running` whose live agent has no live
+   * runtime are abrupt kills (daemon restart while the record was mid-run).
+   * Idempotent — healed records flip to `error` and never match again.
+   */
+  private async reconcileRunningRecords(now: number): Promise<void> {
+    const records = await this.agentStorage.list();
+    for (const record of records) {
+      if (record.lastStatus !== "running") {
+        this.recordDeadSince.delete(record.id);
+        continue;
+      }
+      // Live tracked agents are owned by the tracked loop above.
+      if (this.stallTracking.has(record.id) || this.isExcludedAgent(null, record.id)) {
+        this.recordDeadSince.delete(record.id);
+        continue;
+      }
+      const live = this.agentManager.getAgent(record.id);
+      const hasLiveRuntime =
+        live !== null && live.lifecycle !== "closed" && live.session?.isRuntimeAlive?.() !== false;
+      if (hasLiveRuntime) {
+        this.recordDeadSince.delete(record.id);
+        continue;
+      }
+      if (this.recordDeadSince.get(record.id) === undefined) {
+        this.recordDeadSince.set(record.id, now);
+        continue;
+      }
+      if (now - (this.recordDeadSince.get(record.id) ?? now) < WATCHDOG_DEAD_RUNTIME_MS) {
+        continue;
+      }
+      try {
+        await this.selfHealDeadRuntime(record.id);
+      } catch (error) {
+        this.logger.error(
+          {
+            err: error,
+            component: "stall",
+            watchdogHeal: true,
+            reconcile: true,
+            agentId: record.id,
+          },
+          "Running-record reconciliation self-heal failed",
+        );
+        continue;
+      }
+      this.recordDeadSince.delete(record.id);
+      this.logger.warn(
+        { component: "stall", watchdogHeal: true, reconcile: true, agentId: record.id },
+        "Running-record reconciliation healed an interrupted run (record -> error, origin system)",
+      );
+    }
+  }
+
+  /**
+   * Self-heal one dead-runtime run: record -> error, stop origin "system"
+   * (abrupt kill — distinct from user-stopped and from a run that failed on
+   * its own error), stalled event, recovery proposal (interrupt-and-send).
+   */
   private async selfHealDeadRuntime(agentId: string): Promise<void> {
     const record = await this.agentStorage.get(agentId);
     if (!record || record.lastStatus !== "running") {
@@ -882,7 +1119,7 @@ export class MissionControlService {
       lastStatus: "error",
       updatedAt: new Date().toISOString(),
     });
-    this.store.recordStopOrigin(agentId, "machinery");
+    this.store.recordStopOrigin(agentId, "system");
     await this.emitEvent({
       agentId,
       kind: "stalled",
@@ -890,6 +1127,7 @@ export class MissionControlService {
       severity: "attention",
       headline: "Provider runtime died; run record self-healed to error",
     });
+    this.fireRecoveryProposal(agentId, "Provider runtime died; run interrupted");
     this.logger.error(
       {
         component: "stall",
@@ -897,7 +1135,7 @@ export class MissionControlService {
         agentId,
         recordStatus: record.lastStatus,
       },
-      "Watchdog self-healed dead provider runtime (record -> error, stalled event emitted)",
+      "Watchdog self-healed dead provider runtime (record -> error, origin system, recovery proposed)",
     );
   }
 
@@ -1020,7 +1258,8 @@ export class MissionControlService {
       // v3: retention + stall thresholds are central-config driven.
       retentionDays: central.retentionDays,
       stall: {
-        nudgeSeconds: central.nudgeSeconds,
+        silenceNudgeSeconds: central.silenceNudgeSeconds,
+        statusNudgeSeconds: central.statusNudgeSeconds,
         escalateSeconds: central.escalateSeconds,
       },
     };
@@ -1059,19 +1298,4 @@ function hasExclusionLabels(labels: Record<string, string>): boolean {
     return true;
   }
   return PARENT_AGENT_ID_LABEL in labels;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** Explicit timeout on a wait tool call (timeoutMs wins over timeout). */
-function declaredWaitTimeoutMs(input: Record<string, unknown> | null): number | null {
-  if (typeof input?.timeoutMs === "number" && input.timeoutMs > 0) {
-    return input.timeoutMs;
-  }
-  if (typeof input?.timeout === "number" && input.timeout > 0) {
-    return input.timeout;
-  }
-  return null;
 }

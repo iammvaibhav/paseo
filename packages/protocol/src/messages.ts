@@ -79,6 +79,8 @@ import {
   MissionControlConfigGetResponseSchema,
   MissionControlConfigPatchRequestSchema,
   MissionControlConfigPatchResponseSchema,
+  MissionControlCommanderResetRequestSchema,
+  MissionControlCommanderResetResponseSchema,
   MissionControlSearchRequestSchema,
   MissionControlSearchResponseSchema,
   MissionControlMediaFetchRequestSchema,
@@ -104,6 +106,8 @@ export {
   MissionControlMediaFetchResponseSchema,
   MissionControlProposalsCreateRequestSchema,
   MissionControlProposalsCreateResponseSchema,
+  MissionControlCommanderResetRequestSchema,
+  MissionControlCommanderResetResponseSchema,
   type MissionControlEvent,
   type MissionControlEventKind,
   type MissionControlProof,
@@ -273,6 +277,19 @@ const MutableMissionControlConfigSchema = z
     // THIS machine's alias ("work server"). Fleet map assembles aliases from
     // each host's own declaration — no hardcoded machine lists.
     hostAlias: z.string().optional(),
+    // Per-host glyph identity (host settings → Mission Control card): custom
+    // initials (1–2 chars, emoji allowed) and an identity-color name from the
+    // app's ten-color palette. Absent or null = alias initial + deterministic
+    // color. `color` is stored opaquely; the app validates it against its
+    // palette on read, so the palette never has to be duplicated here.
+    hostGlyph: z
+      .object({
+        initials: z.string().max(4).optional(),
+        color: z.string().optional(),
+      })
+      .passthrough()
+      .nullable()
+      .optional(),
     // COMPAT(missionControlV3): retentionDays/summarizer/autopilot/selfReport/
     // naming/defaultHost/hostAliases/commanderInstructions predate central
     // config; they stay accepted so old config files keep parsing. v3 reads
@@ -917,6 +934,12 @@ export const AgentSnapshotPayloadSchema = z.object({
   requiresAttention: z.boolean().optional(),
   attentionReason: z.enum(["finished", "error", "permission"]).nullable().optional(),
   attentionTimestamp: z.string().nullable().optional(),
+  // Mission Control stop origins (v3.1): who stopped the agent's last run.
+  // The app derives a user-stopped row as Done ("Stopped by you") instead of
+  // Needs-you; a system-stopped row (abrupt kill: daemon restart/provider
+  // crash, watchdog/boot heal) is Interrupted and lands in Needs-you.
+  // Optional for wire back-compat: old daemons simply omit it.
+  stoppedBy: z.enum(["user", "machinery", "system"]).optional(),
   archivedAt: z.string().nullable().optional(),
   providerUnavailable: z.boolean().optional(),
 });
@@ -2966,6 +2989,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   MissionControlModeSetRequestSchema,
   MissionControlConfigGetRequestSchema,
   MissionControlConfigPatchRequestSchema,
+  MissionControlCommanderResetRequestSchema,
   MissionControlSearchRequestSchema,
   MissionControlMediaFetchRequestSchema,
 ]);
@@ -5882,6 +5906,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   MissionControlModeSetResponseSchema,
   MissionControlConfigGetResponseSchema,
   MissionControlConfigPatchResponseSchema,
+  MissionControlCommanderResetResponseSchema,
   MissionControlSearchResponseSchema,
   MissionControlMediaFetchResponseSchema,
   DaemonUpdateProgressMessageSchema,
@@ -6176,6 +6201,12 @@ export type MissionControlModeSetRequest = z.infer<typeof MissionControlModeSetR
 export type MissionControlConfigGetRequest = z.infer<typeof MissionControlConfigGetRequestSchema>;
 export type MissionControlConfigPatchRequest = z.infer<
   typeof MissionControlConfigPatchRequestSchema
+>;
+export type MissionControlCommanderResetRequest = z.infer<
+  typeof MissionControlCommanderResetRequestSchema
+>;
+export type MissionControlCommanderResetResponse = z.infer<
+  typeof MissionControlCommanderResetResponseSchema
 >;
 export type LoopRunRequest = z.infer<typeof LoopRunRequestSchema>;
 export type LoopListRequest = z.infer<typeof LoopListRequestSchema>;

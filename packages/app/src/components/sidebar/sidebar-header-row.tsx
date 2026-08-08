@@ -17,6 +17,11 @@ export interface SidebarHeaderRowBadgeSegment {
   /** Accessibility label for the segment. */
   label: string;
   testID: string;
+  /**
+   * Status-token family for the chip (spec: same tokens as the board
+   * buckets — needs-you = attention, ready-for-review = success).
+   */
+  tone: "attention" | "success";
 }
 
 type SidebarHeaderRowVariant = "header" | "compact";

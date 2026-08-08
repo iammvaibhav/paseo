@@ -15,6 +15,9 @@ export type LifecycleBucket = "needs_you" | "running" | "ready" | "done" | "dorm
 
 export type LifecycleReviewState = "none" | "ready" | "done" | "cleared";
 
+/** Why a row is Done without a verdict card (spec "Lifecycle"). */
+export type LifecycleDoneReason = "stopped-by-user";
+
 export interface LifecycleVerdict {
   by: "verifier" | "user";
   summary: string;
@@ -25,6 +28,12 @@ export interface AgentLifecycleState {
   bucket: LifecycleBucket;
   reviewState: LifecycleReviewState;
   verdict: LifecycleVerdict | null;
+  /**
+   * Distinct Done marker: the user stopped the agent's last run (spec:
+   * user-stopped ≠ Needs-you). Null for every other bucket — verdict-done
+   * rows carry `verdict` instead, and cleared rows leave the lifecycle.
+   */
+  doneReason: LifecycleDoneReason | null;
   /** Latest meaningful status headline (non-proposal), newest event wins. */
   lastReportHeadline: string | null;
   /** Millisecond timestamp of the agent's newest mission-control event. */
@@ -162,32 +171,44 @@ function deriveLifecycleBucket(input: {
   agent: AggregatedAgent;
   reviewState: LifecycleReviewState;
   pendingProposalCount: number;
-}): LifecycleBucket {
+}): { bucket: LifecycleBucket; doneReason: LifecycleDoneReason | null } {
   const { agent, reviewState, pendingProposalCount } = input;
   const pendingPermission =
     (agent.pendingPermissionCount ?? 0) > 0 || agent.attentionReason === "permission";
   const failed = agent.status === "error" || agent.attentionReason === "error";
   const running = agent.status === "running" || agent.status === "initializing";
+  const userStopped = agent.stoppedBy === "user";
 
-  if (pendingPermission || failed || pendingProposalCount > 0) {
-    return "needs_you";
+  if ((pendingPermission || failed || pendingProposalCount > 0) && !userStopped) {
+    // Live attention signals (permission / error / proposals) outrank running
+    // and the review fold — except when the USER performed the stop: nothing
+    // new needs them (spec "User-stopped ≠ Needs you"; the live bug was a
+    // user-stopped agent reading as Needs-you via these signals).
+    return { bucket: "needs_you", doneReason: null };
   }
   if (running) {
-    return "running";
+    // Reopen: any new run returns the agent to Running (spec "Lifecycle").
+    return { bucket: "running", doneReason: null };
+  }
+  if (userStopped && reviewState !== "done" && reviewState !== "cleared") {
+    // User-stopped ≠ Needs you (spec "Lifecycle"): the user performed the
+    // stop, nothing needs them — Done with a "Stopped by you" marker. A
+    // verdict-done or cleared row keeps its own semantics.
+    return { bucket: "done", doneReason: "stopped-by-user" };
   }
   if (reviewState === "done") {
     // reviewState outranks the agent's finished attention: the daemon does not
     // clear requiresAttention on a verdict, so a done agent would otherwise
     // keep reading as ready-for-review.
-    return "done";
+    return { bucket: "done", doneReason: null };
   }
   if (reviewState === "ready") {
     // Ready accrues only from server-recorded lifecycle (finished events /
     // reportSelfStatus completed) — spec: pre-rollout idle agents are Dormant,
     // never retroactively "Ready for review".
-    return "ready";
+    return { bucket: "ready", doneReason: null };
   }
-  return "dormant";
+  return { bucket: "dormant", doneReason: null };
 }
 
 /**
@@ -212,20 +233,21 @@ export function deriveAgentLifecycle(input: {
   });
 
   const fold = foldLifecycleEvents(ordered);
-  const bucket = deriveLifecycleBucket({
+  const derived = deriveLifecycleBucket({
     agent,
     reviewState: fold.reviewState,
     pendingProposalCount: fold.pendingProposalCount,
   });
 
   return {
-    bucket,
+    bucket: derived.bucket,
     reviewState: fold.reviewState,
     verdict: fold.verdict,
+    doneReason: derived.doneReason,
     lastReportHeadline: fold.lastReportHeadline,
     lastEventAt: fold.lastEventAt,
     pendingProposalCount: fold.pendingProposalCount,
-    dormant: bucket === "dormant",
+    dormant: derived.bucket === "dormant",
     withinWindow: agent.lastActivityAt.getTime() >= now - retentionMs,
   };
 }

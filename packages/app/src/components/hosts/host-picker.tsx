@@ -3,7 +3,7 @@ import { Pressable, View } from "react-native";
 import type { GestureResponderEvent } from "react-native";
 import { Plus, Server, Settings } from "lucide-react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
-import { HostStatusDot } from "@/components/host-status-dot";
+import { HostGlyph } from "@/components/host-glyph";
 import { Combobox, ComboboxItem, type ComboboxProps } from "@/components/ui/combobox";
 import { useLocalDaemonServerId } from "@/hooks/use-is-local-daemon";
 import { useHostRuntimeSnapshot, type ActiveConnection } from "@/runtime/host-runtime";
@@ -29,10 +29,16 @@ interface HostPickerHost {
   label: string;
 }
 
-export function HostStatusDotSlot({ serverId }: { serverId: string }): ReactElement {
+export function HostGlyphSlot({
+  serverId,
+  label,
+}: {
+  serverId: string;
+  label: string;
+}): ReactElement {
   return (
-    <View style={styles.statusDotSlot}>
-      <HostStatusDot serverId={serverId} />
+    <View style={styles.hostGlyphSlot}>
+      <HostGlyph serverId={serverId} label={label} size={16} />
     </View>
   );
 }
@@ -79,7 +85,10 @@ export function HostPickerOption({
     showActiveConnection && activeConnection
       ? formatActiveConnectionLabel(activeConnection)
       : undefined;
-  const leadingSlot = useMemo(() => <HostStatusDotSlot serverId={serverId} />, [serverId]);
+  const leadingSlot = useMemo(
+    () => <HostGlyphSlot serverId={serverId} label={label} />,
+    [label, serverId],
+  );
   const handleSettingsPress = useCallback(
     (event: GestureResponderEvent) => {
       event.stopPropagation();
@@ -318,9 +327,9 @@ export function HostPicker({
 }
 
 const styles = StyleSheet.create((theme) => ({
-  statusDotSlot: {
-    width: theme.iconSize.sm,
-    height: theme.iconSize.sm,
+  hostGlyphSlot: {
+    width: theme.iconSize.md,
+    height: theme.iconSize.md,
     alignItems: "center",
     justifyContent: "center",
   },

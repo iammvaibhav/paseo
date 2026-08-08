@@ -1793,7 +1793,22 @@ export class Session {
     const storedRecord = await this.agentStorage.get(payload.id);
     payload.title = storedRecord?.title ?? null;
     payload.archivedAt = storedRecord?.archivedAt ?? null;
+    this.attachStopOrigin(payload);
     return payload;
+  }
+
+  /**
+   * Mission Control stop origin (v3.1): who stopped the agent's last run.
+   * Lives in the mission-control store (cancel_agent_request records "user",
+   * the stall watchdog/boot reconciliation records "system" for abrupt
+   * kills), so it rides the snapshot only at the wire boundary. Omitted when
+   * the agent was never stopped (additive).
+   */
+  private attachStopOrigin(payload: AgentSnapshotPayload): void {
+    const origin = this.missionControlService?.getStopOrigin(payload.id) ?? null;
+    if (origin !== null) {
+      payload.stoppedBy = origin;
+    }
   }
 
   private buildAgentPayload(agent: ManagedAgent): Promise<AgentSnapshotPayload> {
@@ -1809,7 +1824,9 @@ export class Session {
     record: StoredAgentRecord,
     registeredProviderIds = new Set(this.agentManager.getRegisteredProviderIds()),
   ): AgentSnapshotPayload {
-    return buildStoredAgentPayload(record, registeredProviderIds);
+    const payload = buildStoredAgentPayload(record, registeredProviderIds);
+    this.attachStopOrigin(payload);
+    return payload;
   }
 
   private isProviderVisibleToClient(provider: string): boolean {
@@ -1960,6 +1977,7 @@ export class Session {
     (msg) => this.dispatchMissionControlProposalsMessage(msg),
     (msg) => this.dispatchMissionControlModeMessage(msg),
     (msg) => this.dispatchMissionControlConfigMessage(msg),
+    (msg) => this.dispatchMissionControlCommanderMessage(msg),
     (msg) => this.dispatchMissionControlSearchMessage(msg),
     (msg) => this.dispatchMissionControlMediaMessage(msg),
     (msg) => this.dispatchMiscMessage(msg),
@@ -2241,6 +2259,33 @@ export class Session {
         },
       });
     }
+  }
+
+  private dispatchMissionControlCommanderMessage(
+    msg: SessionInboundMessage,
+  ): Promise<void> | undefined {
+    switch (msg.type) {
+      case "mission_control.commander.reset.request":
+        return this.handleMissionControlCommanderResetRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  private async handleMissionControlCommanderResetRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.commander.reset.request" }>,
+  ): Promise<void> {
+    const result = this.missionControlService
+      ? await this.missionControlService.resetCommander()
+      : { ok: false as const, error: "Mission Control is not enabled on this host" };
+    this.emit({
+      type: "mission_control.commander.reset.response",
+      payload: {
+        requestId: msg.requestId,
+        ok: result.ok,
+        ...(result.ok ? {} : { error: result.error }),
+      },
+    });
   }
 
   private dispatchMissionControlSearchMessage(

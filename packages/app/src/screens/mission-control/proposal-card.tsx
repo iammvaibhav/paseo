@@ -151,145 +151,153 @@ export function ProposalCard({ proposal, event, onResolved }: ProposalCardProps)
 
   return (
     <View style={styles.card} testID="mission-control-proposal-card">
-      <View style={styles.headerRow}>
-        <View style={styles.originSlot}>
-          {originIcon}
+      <View style={styles.iconSlot}>{originIcon}</View>
+      <View style={styles.content}>
+        <View style={styles.headerRow}>
           <Text style={styles.originLabel}>{originLabel(proposal.origin)}</Text>
+          {proposal.classification === "destructive" ? (
+            <StatusBadge label="Destructive" variant="error" />
+          ) : null}
         </View>
-        {proposal.classification === "destructive" ? (
-          <StatusBadge label="Destructive" variant="error" />
-        ) : null}
-      </View>
 
-      <View style={styles.agentChipRow}>
-        <View style={styles.agentChip}>
-          <Text style={styles.agentChipText} numberOfLines={1}>
-            {agentChipLabel}
+        <View style={styles.agentChipRow}>
+          <View style={styles.agentChip}>
+            <Text style={styles.agentChipText} numberOfLines={1}>
+              {agentChipLabel}
+            </Text>
+          </View>
+          <Text style={styles.hostLabel} numberOfLines={1}>
+            {event.serverLabel}
           </Text>
         </View>
-        <Text style={styles.hostLabel} numberOfLines={1}>
-          {event.serverLabel}
-        </Text>
-      </View>
 
-      {isEditing ? (
-        <SettingsTextArea
-          accessibilityLabel="Proposal message"
-          value={draft}
-          onChangeText={setDraft}
-          placeholder="Message to send"
-          testID="mission-control-proposal-message-input"
-          style={styles.messageInput}
-        />
-      ) : (
-        <Text style={styles.message} testID="mission-control-proposal-message">
-          {proposal.message}
-        </Text>
-      )}
-
-      {proposal.reason ? (
-        <Text style={styles.reason} numberOfLines={3}>
-          {proposal.reason}
-        </Text>
-      ) : null}
-
-      {showAllowPair ? (
-        <View style={styles.allowPairRow}>
-          <Text style={styles.allowPairLabel}>Auto-approve this exchange</Text>
-          <Switch
-            value={allowPair}
-            onValueChange={setAllowPair}
-            accessibilityLabel="Auto-approve the rest of this verifier exchange"
-            testID="mission-control-proposal-allow-pair"
+        {isEditing ? (
+          <SettingsTextArea
+            accessibilityLabel="Proposal message"
+            value={draft}
+            onChangeText={setDraft}
+            placeholder="Message to send"
+            testID="mission-control-proposal-message-input"
+            style={styles.messageInput}
           />
-        </View>
-      ) : null}
+        ) : (
+          <Text style={styles.message} testID="mission-control-proposal-message">
+            {proposal.message}
+          </Text>
+        )}
 
-      {isPending ? (
-        <View style={styles.actionsRow}>
-          {isEditing ? (
-            <>
-              <Button
-                variant="default"
-                size="sm"
-                onPress={handleSendEdit}
-                disabled={isResponding}
-                loading={isResponding}
-                testID="mission-control-proposal-send"
-              >
-                Send
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                onPress={handleCancelEdit}
-                disabled={isResponding}
-                testID="mission-control-proposal-cancel-edit"
-              >
-                Cancel
-              </Button>
-            </>
-          ) : (
-            <>
-              <Button
-                variant="default"
-                size="sm"
-                onPress={handleApprove}
-                disabled={isResponding}
-                loading={isResponding}
-                testID="mission-control-proposal-approve"
-              >
-                Approve
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onPress={handleOpenEdit}
-                disabled={isResponding}
-                testID="mission-control-proposal-edit"
-              >
-                Edit
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onPress={handleDeny}
-                disabled={isResponding}
-                testID="mission-control-proposal-deny"
-              >
-                Deny
-              </Button>
-            </>
-          )}
-        </View>
-      ) : (
-        <Text style={styles.resolvedLabel}>{proposal.status}</Text>
-      )}
+        {proposal.reason ? (
+          <Text style={styles.reason} numberOfLines={3}>
+            {proposal.reason}
+          </Text>
+        ) : null}
 
-      {error ? <Text style={styles.error}>{error}</Text> : null}
+        {showAllowPair ? (
+          <View style={styles.allowPairRow}>
+            <Text style={styles.allowPairLabel}>Auto-approve this exchange</Text>
+            <Switch
+              value={allowPair}
+              onValueChange={setAllowPair}
+              accessibilityLabel="Auto-approve the rest of this verifier exchange"
+              testID="mission-control-proposal-allow-pair"
+            />
+          </View>
+        ) : null}
+
+        {isPending ? (
+          <View style={styles.actionsRow}>
+            {isEditing ? (
+              <>
+                <Button
+                  variant="default"
+                  size="sm"
+                  onPress={handleSendEdit}
+                  disabled={isResponding}
+                  loading={isResponding}
+                  testID="mission-control-proposal-send"
+                >
+                  Send
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onPress={handleCancelEdit}
+                  disabled={isResponding}
+                  testID="mission-control-proposal-cancel-edit"
+                >
+                  Cancel
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  variant="default"
+                  size="sm"
+                  onPress={handleApprove}
+                  disabled={isResponding}
+                  loading={isResponding}
+                  testID="mission-control-proposal-approve"
+                >
+                  Approve
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onPress={handleOpenEdit}
+                  disabled={isResponding}
+                  testID="mission-control-proposal-edit"
+                >
+                  Edit
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onPress={handleDeny}
+                  disabled={isResponding}
+                  testID="mission-control-proposal-deny"
+                >
+                  Deny
+                </Button>
+              </>
+            )}
+          </View>
+        ) : (
+          <Text style={styles.resolvedLabel}>{proposal.status}</Text>
+        )}
+
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create((theme) => ({
   card: {
-    gap: theme.spacing[2],
+    flexDirection: "row",
+    gap: theme.spacing[3],
     padding: theme.spacing[3],
     borderRadius: theme.borderRadius.md,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface1,
   },
+  // Same icon-slot column as FeedCard (width 18 + row gap 12) so the proposal
+  // content left edge aligns with every other feed card.
+  iconSlot: {
+    paddingTop: 2,
+    width: 18,
+    alignItems: "center",
+  },
+  content: {
+    flex: 1,
+    minWidth: 0,
+    gap: theme.spacing[2],
+  },
   headerRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: theme.spacing[2],
-  },
-  originSlot: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[1],
   },
   originLabel: {
     color: theme.colors.foregroundMuted,

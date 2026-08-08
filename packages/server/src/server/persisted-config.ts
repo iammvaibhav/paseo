@@ -234,6 +234,18 @@ const MissionControlConfigSchema = z
     // commander-host hardcoded list.
     hostAlias: z.string().optional(),
     enabled: z.boolean().optional(),
+    // Per-host glyph identity (host settings): custom initials (1–2 chars,
+    // emoji allowed) + an identity-color name from the app's palette. Null
+    // clears a previous override. The app owns the palette and validates on
+    // read; this schema only persists it.
+    hostGlyph: z
+      .object({
+        initials: z.string().max(4).optional(),
+        color: z.string().optional(),
+      })
+      .strict()
+      .nullable()
+      .optional(),
     // Friendly aliases for peer host names ("blrofc3": "work server"), used in
     // the Commander's fleet map.
     hostAliases: z.record(z.string(), z.string()).optional(),

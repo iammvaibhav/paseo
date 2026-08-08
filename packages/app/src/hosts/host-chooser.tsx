@@ -12,7 +12,7 @@ import { router } from "expo-router";
 import { Server } from "lucide-react-native";
 import { create } from "zustand";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
-import { HostStatusDotSlot } from "@/components/hosts/host-picker";
+import { HostGlyphSlot } from "@/components/hosts/host-picker";
 import { isWeb } from "@/constants/platform";
 import { useLocalDaemonServerId } from "@/hooks/use-is-local-daemon";
 import {
@@ -125,7 +125,7 @@ function HostChooserRow({
       testID={`host-chooser-row-${host.serverId}`}
     >
       <View style={styles.rowIconSlot}>
-        <HostStatusDotSlot serverId={host.serverId} />
+        <HostGlyphSlot serverId={host.serverId} label={host.label} />
       </View>
       <View style={styles.rowText}>
         <Text style={styles.rowTitle} numberOfLines={1}>

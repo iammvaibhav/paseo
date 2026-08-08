@@ -7,7 +7,10 @@ import type { ProviderSnapshotManager } from "../agent/provider-snapshot-manager
 import type { DaemonConfigStore } from "../daemon-config-store.js";
 import {
   ensureCommanderOnBoot,
+  resetCommander,
+  computeCommanderBuildHash,
   COMMANDER_TOOL_ALLOWLIST,
+  COMMANDER_HASH_LABEL_KEY,
   type EnsureCommanderOnBootInput,
 } from "./commander-boot.js";
 import type { FleetContextDependencies } from "./context.js";
@@ -51,9 +54,13 @@ function bootInput(
     logger: createTestLogger(),
     agentManager: {
       listAgents: () => [],
+      getAgent: () => null,
+      archiveAgent: vi.fn(async () => ({ archivedAt: new Date().toISOString() })),
+      archiveSnapshot: vi.fn(async () => ({ id: "commander-1" })),
     } as unknown as AgentManager,
     agentStorage: {
       list: async () => [],
+      get: async () => null,
     } as unknown as AgentStorage,
     providerSnapshotManager: {
       listRegisteredProviderIds: () => ["codex"],
@@ -71,7 +78,8 @@ function bootInput(
       namingTheme: "mixed",
       hideAgentNames: false,
       defaultDispatchHost: null,
-      nudgeSeconds: 120,
+      silenceNudgeSeconds: 120,
+      statusNudgeSeconds: 300,
       escalateSeconds: 300,
     }),
     launchContext: minimalLaunchContext(),
@@ -88,7 +96,10 @@ describe("ensureCommanderOnBoot", () => {
     expect(result.created).toBe(true);
     expect(input.createAgent).toHaveBeenCalledTimes(1);
     const createCall = vi.mocked(input.createAgent).mock.calls[0][0];
-    expect(createCall.labels).toEqual({ "paseo.mission-control": "commander" });
+    expect(createCall.labels).toEqual({
+      "paseo.mission-control": "commander",
+      [COMMANDER_HASH_LABEL_KEY]: computeCommanderBuildHash(),
+    });
     expect(createCall.title).toBe("Commander");
     expect(createCall.config.systemPromptMode).toBe("replace");
     expect(createCall.config.toolAllowlist).toEqual([...COMMANDER_TOOL_ALLOWLIST]);
@@ -112,7 +123,8 @@ describe("ensureCommanderOnBoot", () => {
         namingTheme: "mixed",
         hideAgentNames: false,
         defaultDispatchHost: null,
-        nudgeSeconds: 120,
+        silenceNudgeSeconds: 120,
+        statusNudgeSeconds: 300,
         escalateSeconds: 300,
       }),
     });
@@ -125,8 +137,32 @@ describe("ensureCommanderOnBoot", () => {
   test("does not create a second Commander when one is live", async () => {
     const input = bootInput({
       agentManager: {
-        listAgents: () => [{ id: "commander-1", labels: { "paseo.mission-control": "commander" } }],
+        listAgents: () => [
+          {
+            id: "commander-1",
+            labels: {
+              "paseo.mission-control": "commander",
+              [COMMANDER_HASH_LABEL_KEY]: computeCommanderBuildHash(),
+            },
+          },
+        ],
+        getAgent: () => null,
+        archiveAgent: vi.fn(async () => ({ archivedAt: new Date().toISOString() })),
+        archiveSnapshot: vi.fn(async () => ({ id: "commander-1" })),
       } as unknown as AgentManager,
+      agentStorage: {
+        list: async () => [],
+        get: async () => ({
+          id: "commander-1",
+          labels: {
+            "paseo.mission-control": "commander",
+            [COMMANDER_HASH_LABEL_KEY]: computeCommanderBuildHash(),
+          },
+          archivedAt: null,
+          lastStatus: "closed",
+          config: { provider: "codex", cwd: "/repo" },
+        }),
+      } as unknown as AgentStorage,
     });
     const result = await ensureCommanderOnBoot(input);
     expect(result.created).toBe(false);
@@ -139,16 +175,30 @@ describe("ensureCommanderOnBoot", () => {
         list: async () => [
           {
             id: "commander-stored",
-            labels: { "paseo.mission-control": "commander" },
+            labels: {
+              "paseo.mission-control": "commander",
+              [COMMANDER_HASH_LABEL_KEY]: computeCommanderBuildHash(),
+            },
             archivedAt: null,
             lastStatus: "closed",
             config: { provider: "codex", cwd: "/repo" },
           },
         ],
+        get: async () => ({
+          id: "commander-stored",
+          labels: {
+            "paseo.mission-control": "commander",
+            [COMMANDER_HASH_LABEL_KEY]: computeCommanderBuildHash(),
+          },
+          archivedAt: null,
+          lastStatus: "closed",
+          config: { provider: "codex", cwd: "/repo" },
+        }),
       } as unknown as AgentStorage,
     });
     const result = await ensureCommanderOnBoot(input);
     expect(result.created).toBe(false);
+    expect(result.agentId).toBe("commander-stored");
     expect(input.createAgent).not.toHaveBeenCalled();
   });
 
@@ -184,7 +234,8 @@ describe("ensureCommanderOnBoot", () => {
         namingTheme: "mixed",
         hideAgentNames: false,
         defaultDispatchHost: null,
-        nudgeSeconds: 120,
+        silenceNudgeSeconds: 120,
+        statusNudgeSeconds: 300,
         escalateSeconds: 300,
       }),
     });
@@ -208,7 +259,8 @@ describe("ensureCommanderOnBoot", () => {
         namingTheme: "mixed",
         hideAgentNames: false,
         defaultDispatchHost: null,
-        nudgeSeconds: 120,
+        silenceNudgeSeconds: 120,
+        statusNudgeSeconds: 300,
         escalateSeconds: 300,
       }),
     });
@@ -236,6 +288,193 @@ describe("ensureCommanderOnBoot", () => {
     });
     const result = await ensureCommanderOnBoot(input);
     expect(result.created).toBe(false);
+    expect(input.createAgent).not.toHaveBeenCalled();
+  });
+
+  test("keeps a live Commander whose build hash matches the current build", async () => {
+    const currentHash = computeCommanderBuildHash();
+    const input = bootInput({
+      agentManager: {
+        listAgents: () => [
+          {
+            id: "commander-1",
+            labels: {
+              "paseo.mission-control": "commander",
+              [COMMANDER_HASH_LABEL_KEY]: currentHash,
+            },
+          },
+        ],
+        getAgent: () => null,
+        archiveAgent: vi.fn(async () => ({ archivedAt: new Date().toISOString() })),
+        archiveSnapshot: vi.fn(async () => ({ id: "commander-1" })),
+      } as unknown as AgentManager,
+      agentStorage: {
+        list: async () => [],
+        get: async () => ({
+          id: "commander-1",
+          labels: {
+            "paseo.mission-control": "commander",
+            [COMMANDER_HASH_LABEL_KEY]: currentHash,
+          },
+          archivedAt: null,
+          lastStatus: "closed",
+          config: { provider: "codex", cwd: "/repo" },
+        }),
+      } as unknown as AgentStorage,
+    });
+    const result = await ensureCommanderOnBoot(input);
+    expect(result.created).toBe(false);
+    expect(result.agentId).toBe("commander-1");
+    expect(input.createAgent).not.toHaveBeenCalled();
+    expect(input.agentManager.archiveAgent).not.toHaveBeenCalled();
+  });
+
+  test("archives a live Commander whose build hash drifted and spawns a fresh one", async () => {
+    const archiveAgent = vi.fn(async () => ({ archivedAt: new Date().toISOString() }));
+    const input = bootInput({
+      agentManager: {
+        listAgents: () => [
+          {
+            id: "commander-stale",
+            labels: {
+              "paseo.mission-control": "commander",
+              [COMMANDER_HASH_LABEL_KEY]: "stale-hash",
+            },
+          },
+        ],
+        getAgent: () => ({
+          id: "commander-stale",
+          labels: { "paseo.mission-control": "commander" },
+        }),
+        archiveAgent,
+        archiveSnapshot: vi.fn(async () => ({ id: "commander-stale" })),
+      } as unknown as AgentManager,
+      agentStorage: {
+        list: async () => [],
+        get: async () => ({
+          id: "commander-stale",
+          labels: {
+            "paseo.mission-control": "commander",
+            [COMMANDER_HASH_LABEL_KEY]: "stale-hash",
+          },
+          archivedAt: null,
+          lastStatus: "closed",
+          config: { provider: "codex", cwd: "/repo" },
+        }),
+      } as unknown as AgentStorage,
+    });
+    const result = await ensureCommanderOnBoot(input);
+    expect(result.created).toBe(true);
+    expect(result.agentId).toBe("commander-new");
+    expect(archiveAgent).toHaveBeenCalledWith("commander-stale");
+    expect(input.createAgent).toHaveBeenCalledTimes(1);
+    const createCall = vi.mocked(input.createAgent).mock.calls[0][0];
+    expect(createCall.labels[COMMANDER_HASH_LABEL_KEY]).toBe(computeCommanderBuildHash());
+  });
+
+  test("archives a pre-hash Commander (no stored hash) and spawns fresh", async () => {
+    const archiveSnapshot = vi.fn(async () => ({ id: "commander-legacy" }));
+    const input = bootInput({
+      agentManager: {
+        listAgents: () => [],
+        getAgent: () => null,
+        archiveAgent: vi.fn(async () => ({ archivedAt: new Date().toISOString() })),
+        archiveSnapshot,
+      } as unknown as AgentManager,
+      agentStorage: {
+        list: async () => [
+          {
+            id: "commander-legacy",
+            labels: { "paseo.mission-control": "commander" },
+            archivedAt: null,
+            lastStatus: "closed",
+            config: { provider: "codex", cwd: "/repo" },
+          },
+        ],
+        get: async () => ({
+          id: "commander-legacy",
+          labels: { "paseo.mission-control": "commander" },
+          archivedAt: null,
+          lastStatus: "closed",
+          config: { provider: "codex", cwd: "/repo" },
+        }),
+      } as unknown as AgentStorage,
+    });
+    const result = await ensureCommanderOnBoot(input);
+    expect(result.created).toBe(true);
+    expect(result.agentId).toBe("commander-new");
+    expect(archiveSnapshot).toHaveBeenCalledWith("commander-legacy", expect.any(String));
+    expect(input.createAgent).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("resetCommander", () => {
+  test("archives the current Commander and spawns a fresh one with a new context pack", async () => {
+    const archiveSnapshot = vi.fn(async () => ({ id: "commander-1" }));
+    const input = bootInput({
+      agentManager: {
+        listAgents: () => [],
+        getAgent: () => null,
+        archiveAgent: vi.fn(async () => ({ archivedAt: new Date().toISOString() })),
+        archiveSnapshot,
+      } as unknown as AgentManager,
+      agentStorage: {
+        list: async () => [
+          {
+            id: "commander-1",
+            labels: { "paseo.mission-control": "commander" },
+            archivedAt: null,
+            lastStatus: "closed",
+            config: { provider: "codex", cwd: "/repo" },
+          },
+        ],
+        get: async () => ({
+          id: "commander-1",
+          labels: { "paseo.mission-control": "commander" },
+          archivedAt: null,
+          lastStatus: "closed",
+          config: { provider: "codex", cwd: "/repo" },
+        }),
+      } as unknown as AgentStorage,
+    });
+    const result = await resetCommander(input);
+    expect(result).toEqual({ ok: true, agentId: "commander-new" });
+    expect(archiveSnapshot).toHaveBeenCalledWith("commander-1", expect.any(String));
+    expect(input.createAgent).toHaveBeenCalledTimes(1);
+    const createCall = vi.mocked(input.createAgent).mock.calls[0][0];
+    expect(createCall.labels[COMMANDER_HASH_LABEL_KEY]).toBe(computeCommanderBuildHash());
+    expect(createCall.initialPrompt).toContain("Fleet context snapshot:");
+  });
+
+  test("spawns fresh without archiving when no Commander exists", async () => {
+    const input = bootInput();
+    const result = await resetCommander(input);
+    expect(result).toEqual({ ok: true, agentId: "commander-new" });
+    expect(input.agentManager.archiveAgent).not.toHaveBeenCalled();
+    expect(input.createAgent).toHaveBeenCalledTimes(1);
+  });
+
+  test("fails on a host that is not the designated commander host", async () => {
+    const input = bootInput({
+      centralConfig: () => ({
+        commanderHost: "other-host",
+        commanderModel: null,
+        commanderInstructions: "",
+        verifierModel: null,
+        verifierConcurrency: 3,
+        evaluationScope: "commander",
+        mode: "ask",
+        retentionDays: 30,
+        namingTheme: "mixed",
+        hideAgentNames: false,
+        defaultDispatchHost: null,
+        silenceNudgeSeconds: 120,
+        statusNudgeSeconds: 120,
+        escalateSeconds: 300,
+      }),
+    });
+    const result = await resetCommander(input);
+    expect(result.ok).toBe(false);
     expect(input.createAgent).not.toHaveBeenCalled();
   });
 });

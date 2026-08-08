@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { resolveCreateAgentTitles } from "../agent/create-agent-title.js";
 import { hasMissionControlLabels } from "./naming.js";
 
 /**
@@ -13,13 +14,19 @@ import { hasMissionControlLabels } from "./naming.js";
  *
  * Two passes:
  *   1. Agent identity: assign name + title + description to existing agents
- *      missing them. Idempotent: an agent with all three fields is skipped.
- *      The one-shot produces the values in bulk JSON; the script applies them
- *      via the `update_agent_request` RPC (name/title/shortDescription).
- *   2. Workspace rename proposals: old→new proposals (max 5 words, descriptive)
- *      ONLY for titles equal to derived defaults (branch/dir slugs). The
- *      script emits them as a single Mission Control proposal card
- *      (kind "proposal", origin commander, classification normal) and never
+ *      missing them, and REPLACE titles that equal the deterministic
+ *      first-prompt derivation (auto-generated; user-set titles are never
+ *      touched). Idempotent: complete agents with user-set titles are
+ *      skipped. The one-shot produces the values in bulk JSON; the script
+ *      applies them via the `update_agent_request` RPC
+ *      (name/title/shortDescription).
+ *   2. Workspace rename proposals: every non-system, non-home workspace goes
+ *      into the SAME omp one-shot with its agents' titles+descriptions as
+ *      context; the LLM proposes a new descriptive name (max 5 words) ONLY
+ *      for names that read as auto-generated (slugs, bare project/dir names,
+ *      worktree slugs), keeping human-looking names untouched. The script
+ *      emits them as a single Mission Control proposal card (kind
+ *      "proposal", origin commander, classification normal) and never
  *      auto-applies; applying is a separate `--apply` step driven by the
  *      `workspace.title.set.request` RPC.
  */
@@ -38,6 +45,10 @@ export interface BackfillAgentInput {
   cwd?: string;
   archivedAt?: string | null;
   internal?: boolean;
+  /** First user prompt excerpt (~200 chars, metadata-driven; never a transcript). */
+  firstPrompt?: string | null;
+  /** Headline of the agent's most recent report_status self-report. */
+  lastReportHeadline?: string | null;
 }
 
 export interface BackfillCandidate {
@@ -46,6 +57,8 @@ export interface BackfillCandidate {
   title: string | null;
   shortDescription: string | null;
   cwd: string;
+  firstPrompt: string | null;
+  lastReportHeadline: string | null;
 }
 
 /** One agent row the one-shot is asked to produce identity for. */
@@ -63,9 +76,11 @@ export function hasFullIdentity(
 }
 
 /**
- * An agent needs the backfill when it misses at least one identity field and
- * is not machinery or archived. Mission-control-labeled agents (Commander,
- * Verifier, future monitors) are invisible to the fleet and never renamed.
+ * An agent needs the backfill when it misses at least one identity field or
+ * its title equals the deterministic first-prompt derivation (auto-generated
+ * → replaceable), and it is not machinery or archived. Mission-control-labeled
+ * agents (Commander, Verifier, future monitors) are invisible to the fleet
+ * and never renamed.
  */
 export function isAgentBackfillEligible(agent: BackfillAgentInput): boolean {
   if (agent.archivedAt) {
@@ -77,7 +92,15 @@ export function isAgentBackfillEligible(agent: BackfillAgentInput): boolean {
   if (hasMissionControlLabels(agent.labels ?? {})) {
     return false;
   }
-  return !hasFullIdentity(agent);
+  if (!hasFullIdentity(agent)) {
+    return true;
+  }
+  // Complete agent: eligible only when its title is auto-generated (equals
+  // the deterministic derivation from the first user prompt) — user-set
+  // titles are never touched.
+  const derived = deriveTitleFromFirstPrompt(agent.firstPrompt ?? null);
+  const title = agent.title?.trim();
+  return Boolean(title && derived !== null && title === derived);
 }
 
 export function selectBackfillCandidates(
@@ -94,6 +117,8 @@ export function selectBackfillCandidates(
       title: agent.title?.trim() || null,
       shortDescription: agent.shortDescription?.trim() || null,
       cwd: agent.cwd?.trim() || "",
+      firstPrompt: agent.firstPrompt?.trim() || null,
+      lastReportHeadline: agent.lastReportHeadline?.trim() || null,
     });
   }
   return candidates;
@@ -109,13 +134,27 @@ export function buildBackfillPrompt(input: {
   hostLabel: string;
   namingTheme: string;
   candidates: readonly BackfillCandidate[];
+  workspaceCandidates?: readonly WorkspaceProposalCandidate[];
 }): string {
-  const { hostLabel, namingTheme, candidates } = input;
+  const { hostLabel, namingTheme, candidates, workspaceCandidates = [] } = input;
   const lines = candidates.map(
     (candidate, index) =>
-      `${index + 1}. agentId=${candidate.agentId}${candidate.title ? ` | current title: ${candidate.title}` : ""} | cwd: ${candidate.cwd || "(unknown)"}`,
+      `${index + 1}. agentId=${candidate.agentId}${candidate.title ? ` | current title: ${candidate.title}` : ""} | cwd: ${candidate.cwd || "(unknown)"}${candidate.firstPrompt ? ` | first user prompt: "${candidate.firstPrompt}"` : ""}${candidate.lastReportHeadline ? ` | last report: "${candidate.lastReportHeadline}"` : ""}`,
   );
-  return [
+  const workspaceLines = workspaceCandidates.map((candidate, index) => {
+    const agentContext = candidate.agents
+      .map((agent) => {
+        const title = agent.title?.trim();
+        const description = agent.shortDescription?.trim();
+        if (title && description) {
+          return `"${title}" — ${description}`;
+        }
+        return `"${title ?? description ?? "(no identity yet)"}"`;
+      })
+      .join(" | ");
+    return `${index + 1}. workspaceId=${candidate.workspaceId} | current name: "${candidate.name}"${agentContext ? ` | agents working here: ${agentContext}` : ""}`;
+  });
+  const sections = [
     "You are the naming pass of a one-time fleet identity backfill for the Mission Control board.",
     `Host: ${hostLabel}.`,
     "",
@@ -126,17 +165,37 @@ export function buildBackfillPrompt(input: {
     '- "title": a concise task title (max 8 words, plain language) describing what the agent is working on.',
     '- "description": one living sentence (max 200 chars, present tense, no markdown) describing what the agent is doing.',
     "",
-    "Use the current title and cwd as the only source material. Never invent agentIds. Never include secrets or raw file contents.",
+    "Derive each title from what was ACTUALLY asked: use the agent's first user prompt excerpt (and the last report headline when present) as the source material — never the current title, which may be the auto-derived placeholder being replaced.",
+    "Use the current title and cwd only as supporting context. Never invent agentIds. Never include secrets or raw file contents.",
+  ];
+  if (workspaceLines.length > 0) {
+    sections.push(
+      "",
+      'Workspaces: for each workspace below, decide whether its current name reads as AUTO-GENERATED — branch/dir slugs ("feat/payments", "vaibhav/customizations", "main"), bare project or directory names ("stackmod", "breezeapi"), Paseo worktree slugs (random word pairs like "thankful-penguin" or names ending in "-wt-"), or awkward machine names. For those, propose a NEW descriptive name (max 5 words, plain language, no branch prefixes or separators) that reflects what its agents actually work on — use the listed agents\' titles/descriptions as context. If the current name already reads as an intentional human name (a real task label like "Explain advisory feed freshness for npm install checks"), return NO proposal for it: omit it from the "workspaces" array. Never propose for workspaces not listed.',
+      "",
+      "Workspaces:",
+      ...workspaceLines,
+    );
+  }
+  sections.push(
     "",
     "Reply with ONLY a JSON object, no prose, no code fences:",
-    '{"agents":[{"agentId":"...","name":"...","title":"...","description":"..."}]}',
+    '{"agents":[{"agentId":"...","name":"...","title":"...","description":"..."}],"workspaces":[{"workspaceId":"...","name":"..."}]}',
     "",
     "Agents:",
     ...lines,
-  ].join("\n");
+  );
+  return sections.join("\n");
 }
 
 /** Wire shape of the one-shot's bulk JSON response. */
+export const BackfillWorkspaceResponseSchema = z.object({
+  workspaceId: z.string().min(1),
+  name: z.string().min(1),
+});
+
+export type BackfillWorkspaceResponse = z.infer<typeof BackfillWorkspaceResponseSchema>;
+
 export const BackfillResponseSchema = z.object({
   agents: z.array(
     z.object({
@@ -146,9 +205,15 @@ export const BackfillResponseSchema = z.object({
       description: z.string().optional(),
     }),
   ),
+  workspaces: z.array(BackfillWorkspaceResponseSchema).optional(),
 });
 
 export type BackfillAgentResponse = z.infer<typeof BackfillResponseSchema>["agents"][number];
+
+export interface BackfillParsedResponse {
+  agents: BackfillAgentResponse[];
+  workspaces: BackfillWorkspaceResponse[];
+}
 
 /**
  * Tolerant parse of the one-shot stdout: strips fenced blocks and leading
@@ -156,7 +221,7 @@ export type BackfillAgentResponse = z.infer<typeof BackfillResponseSchema>["agen
  * object, and validates it against {@link BackfillResponseSchema}. Returns
  * null when no valid payload is found.
  */
-export function parseBackfillResponse(output: string): BackfillAgentResponse[] | null {
+export function parseBackfillResponse(output: string): BackfillParsedResponse | null {
   const open = output.indexOf("{");
   if (open === -1) {
     return null;
@@ -202,7 +267,20 @@ export function parseBackfillResponse(output: string): BackfillAgentResponse[] |
   if (!result.success) {
     return null;
   }
-  return result.data.agents;
+  return { agents: result.data.agents, workspaces: result.data.workspaces ?? [] };
+}
+
+/**
+ * Deterministic derived title for an agent's first user prompt, using the
+ * SAME derivation as create-agent-title.ts (first content line,
+ * whitespace-collapsed, clamped). When the stored title equals this
+ * derivation the title was auto-generated and is safe to replace.
+ */
+export function deriveTitleFromFirstPrompt(prompt: string | null): string | null {
+  if (!prompt || prompt.trim().length === 0) {
+    return null;
+  }
+  return resolveCreateAgentTitles({ initialPrompt: prompt }).provisionalTitle;
 }
 
 export interface BackfillIdentityUpdate {
@@ -213,10 +291,16 @@ export interface BackfillIdentityUpdate {
 }
 
 /**
- * Fold the one-shot's responses into per-agent updates, filling ONLY fields
- * the candidate still misses and the response actually provides. This is the
- * apply-time idempotency filter: a completed agent is never touched, and a
- * response that repeats an existing value is a no-op.
+ * Fold the one-shot's responses into per-agent updates:
+ *
+ * - name / description: fill ONLY when the candidate still misses them and
+ *   the response provides a value (unchanged).
+ * - title: fill when missing; REPLACE when the current title equals the
+ *   deterministic derivation from the first user prompt (auto-generated →
+ *   the LLM proposal wins); anything else is user-set and untouched.
+ *
+ * This is the apply-time idempotency filter: a completed agent is never
+ * touched, and a response that repeats an existing value is a no-op.
  */
 export function resolveIdentityUpdates(input: {
   candidates: readonly BackfillCandidate[];
@@ -235,8 +319,13 @@ export function resolveIdentityUpdates(input: {
       update.name = name;
     }
     const title = response.title?.trim();
-    if (title && !candidate.title) {
-      update.title = title;
+    if (title) {
+      const derived = deriveTitleFromFirstPrompt(candidate.firstPrompt);
+      if (!candidate.title) {
+        update.title = title;
+      } else if (derived !== null && candidate.title === derived) {
+        update.title = title;
+      }
     }
     const description = response.description?.trim();
     if (description && description.length <= DESCRIPTION_MAX_CHARS && !candidate.shortDescription) {
@@ -253,10 +342,19 @@ export function resolveIdentityUpdates(input: {
 // Workspace rename proposals
 // ============================================================================
 
+export interface WorkspaceAgentContextInput {
+  title?: string | null;
+  shortDescription?: string | null;
+}
+
 export interface WorkspaceBackfillInput {
   workspaceId: string;
   name: string;
   title?: string | null;
+  /** Workspace directory (payload `workspaceDirectory`/`projectRootPath`) for system-home exclusion. */
+  cwd?: string | null;
+  /** The workspace's agents (titles + descriptions) so proposals reflect actual work. */
+  agents?: readonly WorkspaceAgentContextInput[];
 }
 
 export interface WorkspaceRenameProposal {
@@ -265,94 +363,84 @@ export interface WorkspaceRenameProposal {
   newName: string;
 }
 
-/** Common branch prefixes — the derived name is a branch slug, not a real title. */
-const BRANCH_PREFIX_RE =
-  /^(feat|feature|fix|bugfix|hotfix|chore|docs|refactor|refactoring|test|tests|style|perf|build|ci|wip|release|dependabot)[/-]/i;
-
-const SLUG_SEPARATOR_RE = /[-_/.]/;
-
-const DEFAULT_BRANCH_NAMES: Record<string, true> = {
-  main: true,
-  master: true,
-  develop: true,
-  dev: true,
-};
-
-/**
- * A workspace title is a derived default (branch/dir slug) when it is unset
- * or when the user-set title equals the derived name itself — either way the
- * title carries no information beyond the slug.
- */
-export function isDerivedWorkspaceTitle(workspace: WorkspaceBackfillInput): boolean {
-  const title = workspace.title?.trim();
-  if (!title) {
-    return true;
-  }
-  return title === workspace.name.trim();
+/** A workspace the one-shot is asked to propose a new name for. */
+export interface WorkspaceProposalCandidate {
+  workspaceId: string;
+  name: string;
+  agents: readonly WorkspaceAgentContextInput[];
 }
 
 /**
- * The derived name must actually look like a slug to be worth renaming: it
- * contains slug separators or a branch prefix, and is not a default branch
- * name or a too-short string.
+ * The Commander's home workspace marker; never a rename candidate.
  */
-export function isSlugLikeDerivedName(name: string): boolean {
-  const trimmed = name.trim();
-  if (trimmed.length < 2) {
-    return false;
-  }
-  // A real branch/dir slug never contains whitespace — sentence-like derived
-  // names (generated from an agent's first prompt) are not rename targets.
-  if (/\s/.test(trimmed)) {
-    return false;
-  }
-  if (DEFAULT_BRANCH_NAMES[trimmed.toLowerCase()]) {
-    return false;
-  }
-  return SLUG_SEPARATOR_RE.test(trimmed) || BRANCH_PREFIX_RE.test(trimmed);
+export function isSystemWorkspaceName(name: string | null | undefined): boolean {
+  return (name?.trim() ?? "") === "<paseo-system>";
+}
+
+function normalizeDirForCompare(pathValue: string): string {
+  return pathValue.replace(/[\\/]+$/, "");
 }
 
 /**
- * Deterministic old→new proposal from a branch/dir slug: strip the branch
- * prefix, split on separators, capitalize each word, join with spaces, cap at
- * 5 words. Returns null when the name is not a proposal candidate or the
- * result is a no-op.
+ * Candidate selection for the workspace pass. Auto-generated workspace names
+ * are NOT distinguishable from user-set ones on the wire (Paseo's auto-namer
+ * also writes the `title` field), so every non-system, non-home workspace is
+ * sent to the bulk one-shot WITH its agents (titles + descriptions) as
+ * context; the LLM decides which names read as auto-generated and proposes
+ * renames for those only (human-looking names get no proposal). Every
+ * proposal is human-gated (report review + `--apply`), so biasing toward
+ * more candidates is safe. System/home workspaces (the Commander's
+ * `<paseo-system>` home and the ambient home-dir workspace) are machinery,
+ * not user work — never rename.
  */
-export function proposalTitleFromSlug(name: string): string | null {
-  const trimmed = name.trim();
-  if (!isSlugLikeDerivedName(trimmed)) {
-    return null;
-  }
-  const slug = trimmed.replace(BRANCH_PREFIX_RE, "");
-  const words = slug
-    .split(/[-_/.]+/)
-    .map((word) => word.trim())
-    .filter(Boolean)
-    .slice(0, WORKSPACE_PROPOSAL_MAX_WORDS);
-  if (words.length === 0) {
-    return null;
-  }
-  const title = words.map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
-  if (title === trimmed) {
-    return null;
-  }
-  return title;
-}
-
-/** All rename proposals for a host's workspaces. Never auto-applied. */
-export function buildWorkspaceRenameProposals(
+export function selectWorkspaceProposalCandidates(
   workspaces: readonly WorkspaceBackfillInput[],
-): WorkspaceRenameProposal[] {
-  const proposals: WorkspaceRenameProposal[] = [];
+  options: { homeDir?: string | null } = {},
+): WorkspaceProposalCandidate[] {
+  const home = options.homeDir?.trim() ? normalizeDirForCompare(options.homeDir.trim()) : null;
+  const candidates: WorkspaceProposalCandidate[] = [];
   for (const workspace of workspaces) {
-    if (!isDerivedWorkspaceTitle(workspace)) {
+    if (isSystemWorkspaceName(workspace.name) || isSystemWorkspaceName(workspace.title)) {
       continue;
     }
-    const newName = proposalTitleFromSlug(workspace.name);
-    if (!newName) {
+    if (home && workspace.cwd && normalizeDirForCompare(workspace.cwd) === home) {
       continue;
     }
-    proposals.push({ workspaceId: workspace.workspaceId, oldName: workspace.name, newName });
+    candidates.push({
+      workspaceId: workspace.workspaceId,
+      name: workspace.name,
+      agents: workspace.agents ?? [],
+    });
+  }
+  return candidates;
+}
+
+/**
+ * Fold the one-shot's workspace responses into old→new proposals: only
+ * responses for known candidate workspaceIds, with a non-empty name that is
+ * at most {@link WORKSPACE_PROPOSAL_MAX_WORDS} words and actually differs
+ * from the current name. Anything else is dropped (no fallback title-casing).
+ */
+export function resolveWorkspaceRenameProposals(
+  candidates: readonly WorkspaceProposalCandidate[],
+  responses: readonly BackfillWorkspaceResponse[],
+): WorkspaceRenameProposal[] {
+  const byId = new Map(candidates.map((candidate) => [candidate.workspaceId, candidate]));
+  const proposals: WorkspaceRenameProposal[] = [];
+  for (const response of responses) {
+    const candidate = byId.get(response.workspaceId);
+    if (!candidate) {
+      continue;
+    }
+    const newName = response.name.trim();
+    const words = newName.split(/\s+/).filter(Boolean);
+    if (words.length === 0 || words.length > WORKSPACE_PROPOSAL_MAX_WORDS) {
+      continue;
+    }
+    if (newName === candidate.name) {
+      continue;
+    }
+    proposals.push({ workspaceId: response.workspaceId, oldName: candidate.name, newName });
   }
   return proposals;
 }
@@ -371,4 +459,132 @@ export function formatRenameProposalMessage(
     "",
     ...lines,
   ].join("\n");
+}
+
+// ============================================================================
+// Markdown backfill report (--report <path>.md)
+// ============================================================================
+
+/** One changed identity field, for the old → new report table. */
+export interface BackfillIdentityChangeRow {
+  agentId: string;
+  field: "name" | "title" | "description";
+  oldValue: string | null;
+  newValue: string;
+}
+
+/**
+ * Diff candidates against the resolved updates into per-field change rows.
+ * Only fields the update actually changes appear; unchanged fields are
+ * omitted so the report stays reviewable.
+ */
+export function buildBackfillReportAgentChanges(
+  candidates: readonly BackfillCandidate[],
+  updates: readonly BackfillIdentityUpdate[],
+): BackfillIdentityChangeRow[] {
+  const byId = new Map(candidates.map((candidate) => [candidate.agentId, candidate]));
+  const rows: BackfillIdentityChangeRow[] = [];
+  for (const update of updates) {
+    const candidate = byId.get(update.agentId);
+    if (!candidate) {
+      continue;
+    }
+    if (update.name !== undefined) {
+      rows.push({
+        agentId: update.agentId,
+        field: "name",
+        oldValue: candidate.name,
+        newValue: update.name,
+      });
+    }
+    if (update.title !== undefined) {
+      rows.push({
+        agentId: update.agentId,
+        field: "title",
+        oldValue: candidate.title,
+        newValue: update.title,
+      });
+    }
+    if (update.shortDescription !== undefined) {
+      rows.push({
+        agentId: update.agentId,
+        field: "description",
+        oldValue: candidate.shortDescription,
+        newValue: update.shortDescription,
+      });
+    }
+  }
+  return rows;
+}
+
+/**
+ * Human-reviewable markdown report per host: old → new tables for agent
+ * identity (name/title/description) and workspace renames, with a short
+ * how-to-approve header. The user reviews it and rejects rows by deleting
+ * them; `--apply <file>` consumes only the approved file.
+ */
+export function buildBackfillMarkdownReport(input: {
+  hostLabel: string;
+  namingTheme: string;
+  /** ISO timestamp; the caller supplies it so tests stay deterministic. */
+  generatedAt: string;
+  agentChanges: readonly BackfillIdentityChangeRow[];
+  workspaceProposals: readonly WorkspaceRenameProposal[];
+}): string {
+  const { hostLabel, namingTheme, generatedAt, agentChanges, workspaceProposals } = input;
+  const sections: string[] = [
+    "# Mission Control naming backfill report",
+    "",
+    `- Host: \`${hostLabel}\``,
+    `- Naming theme: \`${namingTheme}\``,
+    `- Generated: ${generatedAt}`,
+    "",
+    "## How to approve",
+    "",
+    "This report lists every change the backfill proposes. **Nothing has been applied yet.**",
+    "",
+    "1. Review the tables below and **delete any row you reject**.",
+    "2. Agent identity changes (name/title/description) are applied when you re-run the backfill **without** `--dry-run`.",
+    "3. Workspace renames are never auto-applied. Approve them by running:",
+    "",
+    "```sh",
+    "node --import tsx scripts/mc-backfill.mjs --host <host> --apply <approved.json>",
+    "```",
+    "",
+    'where `<approved.json>` is a JSON array of `{ "workspaceId": "...", "newName": "..." }` entries for the rows you kept.',
+    "",
+  ];
+
+  if (agentChanges.length > 0) {
+    sections.push(
+      "## Agent identity changes",
+      "",
+      "| Agent | Field | Old | New |",
+      "| --- | --- | --- | --- |",
+      ...agentChanges.map(
+        (change) =>
+          `| ${change.agentId} | ${change.field} | ${change.oldValue ?? "—"} | ${change.newValue} |`,
+      ),
+      "",
+    );
+  } else {
+    sections.push("## Agent identity changes", "", "_No agent identity changes._", "");
+  }
+
+  if (workspaceProposals.length > 0) {
+    sections.push(
+      "## Workspace renames",
+      "",
+      "| Workspace | Old name | New name |",
+      "| --- | --- | --- |",
+      ...workspaceProposals.map(
+        (proposal) => `| ${proposal.workspaceId} | ${proposal.oldName} | ${proposal.newName} |`,
+      ),
+      "",
+    );
+  } else {
+    sections.push("## Workspace renames", "", "_No workspace renames._", "");
+  }
+
+  return sections.join("\n");
 }

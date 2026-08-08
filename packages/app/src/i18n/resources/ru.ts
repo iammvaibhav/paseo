@@ -1036,7 +1036,7 @@ export const ru: TranslationResources = {
       sessions: "История",
       schedules: "Расписания",
       missionControl: "Mission Control",
-      missionControlWorking: "Активные агенты",
+      missionControlNeedsYou: "Требует внимания",
       missionControlReady: "Готовы к проверке",
       webhooks: "Webhooks",
     },

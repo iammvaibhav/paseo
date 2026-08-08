@@ -13,6 +13,7 @@ import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { AppearanceStyleBoundary } from "@/components/appearance-style-boundary";
 import type { ToolCallDetail } from "@getpaseo/protocol/agent-types";
+import { fleetToolLeafName } from "@getpaseo/protocol/tool-call-display";
 import { buildLineDiff, parseUnifiedDiff, type DiffLine } from "@/utils/tool-call-parsers";
 import { highlightDiffLines } from "@/utils/diff-highlight";
 import { hasMeaningfulToolCallDetail } from "@/utils/tool-call-detail-state";
@@ -1021,9 +1022,14 @@ function ToolCallDetailsContentInner({
     sections.push(<ErrorSection key="error" errorText={errorText} ds={ds} />);
   }
 
-  const fleetBody = toolName ? (
-    <FleetToolCallDetailBody toolName={toolName} detail={detail} />
-  ) : null;
+  // The fleet body renders ONLY for fleet dispatch tools. A JSX element is
+  // always truthy, so the old `toolName ? <FleetToolCallDetailBody/> : null`
+  // guard let `fleetBody !== null` pass for every tool call and swallowed the
+  // standard sections (thought cards expanded to an empty body).
+  const fleetBody =
+    toolName && fleetToolLeafName(toolName) ? (
+      <FleetToolCallDetailBody toolName={toolName} detail={detail} />
+    ) : null;
   if (fleetBody !== null) {
     return <View style={ds.fullBleedContainerStyle}>{fleetBody}</View>;
   }

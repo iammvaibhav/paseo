@@ -37,6 +37,25 @@ export interface ProposalCreateInput {
   reason: string;
   classification: "normal" | "destructive";
   allowPair?: boolean;
+  /** Bypass the gate entirely: record as auto-sent ("sent") and deliver, never
+   *  a pending card. Mode, presence, and user-stop do not apply. Used by the
+   *  stall status-ask nudge (a steer that only asks for a status). */
+  forceSend?: boolean;
+}
+
+/**
+ * Thrown by the deliver hook to abort a dispatch that must never happen.
+ * Approvals treats it as a hard stop: the proposal is recorded "expired"
+ * (never redelivered, never pending) instead of bouncing back to pending.
+ */
+export class ProposalDeliveryAborted extends Error {
+  constructor(
+    public readonly agentId: string,
+    public readonly reason: "user_stopped",
+  ) {
+    super(`Proposal delivery aborted: ${reason} for agent ${agentId}`);
+    this.name = "ProposalDeliveryAborted";
+  }
 }
 
 export interface ResolveProposalInput {
@@ -82,6 +101,9 @@ export type ProposalChangeListener = (proposal: MissionControlProposal) => void;
  * - Auto mode: proposals send immediately — EXCEPT destructive
  *   classification, a user viewing the target agent, or a user-stop on the
  *   target's last run: those always ask.
+ * - forceSend: bypasses the gate entirely, recorded as "sent" and delivered —
+ *   the stall status-ask nudge (a harmless steer asking for a report_status)
+ *   never sits pending, in either mode.
  * - Allow-pair: the first approved verifier<->worker exchange can grant a pair
  *   that auto-approves the rest of that exchange, even in ask mode.
  *
@@ -138,7 +160,8 @@ export class MissionControlApprovals {
 
   /**
    * Create a proposal. Returns the proposal with status "pending" (asked) or
-   * "sent" (auto-approved). Expiry is swept lazily on every create.
+   * "sent" (auto-approved / force-sent). Expiry is swept lazily on every
+   * create.
    */
   async createProposal(input: ProposalCreateInput): Promise<MissionControlProposal> {
     await this.expireStale();
@@ -148,7 +171,7 @@ export class MissionControlApprovals {
       ...input,
       status: "pending",
     };
-    if (this.autoApproved(input)) {
+    if (input.forceSend || this.autoApproved(input)) {
       proposal.status = "sent";
       await this.send(proposal);
       return proposal;
@@ -267,6 +290,24 @@ export class MissionControlApprovals {
         deliveryMode: proposal.deliveryMode,
       });
     } catch (error) {
+      if (error instanceof ProposalDeliveryAborted) {
+        // The dispatch was refused (user outranks machinery): never redeliver,
+        // never leave it pending — record it expired and log.
+        proposal.status = "expired";
+        await this.store.putProposal(proposal);
+        await this.publish(proposal);
+        this.logger.info(
+          {
+            component: "approvals",
+            proposalId: proposal.id,
+            origin: proposal.origin,
+            targetAgentId: proposal.targetAgentId,
+            reason: error.reason,
+          },
+          "mission_control.approvals.delivery_aborted",
+        );
+        return;
+      }
       // Delivery failed: the proposal returns to pending so the card keeps its
       // Approve affordance and the user can retry — never record "sent" for a
       // message that did not reach the agent.
@@ -297,6 +338,28 @@ export class MissionControlApprovals {
       },
       "mission_control.approvals.proposal_sent",
     );
+  }
+
+  /**
+   * A user stop outranks machinery: every pending proposal targeting the agent
+   * is dead (approving it later would restart a run the user explicitly
+   * stopped). Marks them expired and publishes the cards.
+   */
+  async expirePendingForAgent(agentId: string): Promise<void> {
+    const pending = this.store
+      .listProposals()
+      .filter((proposal) => proposal.targetAgentId === agentId && proposal.status === "pending");
+    for (const proposal of pending) {
+      const expired: Proposal = { ...proposal, status: "expired" };
+      await this.store.putProposal(expired);
+      await this.publish(expired);
+    }
+    if (pending.length > 0) {
+      this.logger.info(
+        { component: "approvals", agentId, count: pending.length },
+        "mission_control.approvals.pending_expired_on_user_stop",
+      );
+    }
   }
 
   private async publish(proposal: MissionControlProposal): Promise<void> {

@@ -550,6 +550,7 @@ interface AgentMetadataPatch {
   labels?: AgentLabelPatch;
   provider?: string;
   model?: string | null;
+  thinkingOptionId?: string | null;
   modeId?: string;
   name?: string;
   shortDescription?: string;
@@ -1845,6 +1846,11 @@ export class AgentManager {
     if (agent.runtimeInfo) {
       agent.runtimeInfo = { ...agent.runtimeInfo, model: normalizedModelId };
     }
+    // Re-describe the persistence handle so its metadata carries the latest
+    // user-set model: relaunch paths that prefer handle metadata (omp resume,
+    // handle-driven reloads) must reuse the last user-set value, not the
+    // creation-time one (spec Commander: "Runtime settings stick").
+    this.refreshPersistenceHandle(agent);
     this.touchUpdatedAt(agent);
     this.emitState(agent);
   }
@@ -1872,6 +1878,9 @@ export class AgentManager {
         thinkingOptionId: normalizedThinkingOptionId,
       };
     }
+    // Same persistence-handle refresh as setAgentModel: machinery dispatches
+    // must reuse the last user-set thinking level, never creation-time values.
+    this.refreshPersistenceHandle(agent);
     this.touchUpdatedAt(agent);
     this.emitState(agent);
     return notice;
@@ -1989,6 +1998,14 @@ export class AgentManager {
             config: {
               ...record.config,
               model: patch.model,
+            },
+          }
+        : {}),
+      ...(patch.thinkingOptionId !== undefined
+        ? {
+            config: {
+              ...record.config,
+              thinkingOptionId: patch.thinkingOptionId,
             },
           }
         : {}),
@@ -2147,6 +2164,7 @@ export class AgentManager {
       labels?: Record<string, string>;
       provider?: string;
       model?: string | null;
+      thinkingOptionId?: string | null;
       modeId?: string;
       name?: string;
       shortDescription?: string;
@@ -2175,6 +2193,9 @@ export class AgentManager {
       }
       if (updates.model !== undefined) {
         await this.setAgentModel(agentId, updates.model);
+      }
+      if (updates.thinkingOptionId !== undefined) {
+        await this.setAgentThinkingOption(agentId, updates.thinkingOptionId);
       }
       if (updates.name !== undefined) {
         await this.setAgentName(agentId, updates.name);
@@ -4162,6 +4183,20 @@ export class AgentManager {
         return undefined;
       default:
         return undefined;
+    }
+  }
+
+  /**
+   * Re-describe the session's persistence handle after a config mutation so
+   * `agent.persistence.metadata` (model/thinkingOptionId/modeId) tracks the
+   * latest user-set values. Relaunch paths that prefer handle metadata (omp
+   * resume via buildResumeConfig, handle-driven reloads) otherwise fall back
+   * to the creation-time values stored at registration.
+   */
+  private refreshPersistenceHandle(agent: ActiveManagedAgent): void {
+    const handle = agent.session.describePersistence();
+    if (handle) {
+      agent.persistence = attachPersistenceCwd(handle, agent.cwd);
     }
   }
 

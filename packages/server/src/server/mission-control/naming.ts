@@ -6,9 +6,10 @@ import type { AgentStorage } from "../agent/agent-storage.js";
  * Mission Control Identity: the daemon naming service.
  *
  * Every created agent gets a fun, stable, fleet-wide name from a curated pool
- * (theme from `missionControl.naming.theme`, default "mixed"). Names are
- * collision-avoiding per host against live + stored agents; when a theme's
- * pool is exhausted the suffix walks Roman numerals (" II", " III", ...).
+ * (theme from the central Mission Control config's `namingTheme`, default
+ * "mixed"). Names are collision-avoiding per host against live + stored
+ * agents; when a theme's pool is exhausted the suffix walks Roman numerals
+ * (" II", " III", ...).
  *
  * Agents labeled `paseo.mission-control=*` (the Commander and monitors) are
  * excluded — they are hidden from Mission Control, not part of its roster.
@@ -735,6 +736,28 @@ export interface AgentCreatedIdentityInput {
 }
 
 const ROMAN_SUFFIXES = ["II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"] as const;
+const ROMAN_SUFFIX_RE = / (II|III|IV|V|VI|VII|VIII|IX|X)$/;
+
+/** Every curated pool name across all themes, for auto-assignment detection. */
+const ALL_POOL_NAMES: ReadonlySet<string> = new Set(Object.values(NAME_POOLS).flat());
+
+/**
+ * A name is auto-assigned when it comes from one of the curated theme pools
+ * (optionally with a Roman-numeral suffix from pool exhaustion). Anything
+ * else — sentence-like names, personal names, project names — is treated as
+ * user-set and never touched by theme re-maps.
+ */
+export function isAutoAssignedName(name: string): boolean {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (ALL_POOL_NAMES.has(trimmed)) {
+    return true;
+  }
+  const base = trimmed.replace(ROMAN_SUFFIX_RE, "");
+  return base !== trimmed && ALL_POOL_NAMES.has(base);
+}
 
 export class AgentNamingService {
   private readonly agentStorage: AgentStorage;
@@ -795,6 +818,68 @@ export class AgentNamingService {
     return assigned;
   }
 
+  /**
+   * Instant theme re-map (spec: "theme switch re-maps all auto-assigned names
+   * server-side immediately and broadcasts agent_update"). Renames every
+   * auto-assigned name to the current theme's pool — deterministic
+   * (pool order, agents sorted by id), collision-avoiding against live +
+   * stored names, and leaves user-set names (anything not from a curated
+   * pool) untouched. A name already in the target pool is kept as-is to
+   * avoid churn. Renames go through AgentManager.setAgentName, which
+   * broadcasts `agent_update` for live agents through the standard pipeline;
+   * stored-only (closed, unarchived) agents are updated in storage and
+   * picked up on the client's next fetch. Returns the rename count.
+   */
+  async remapAllNames(): Promise<number> {
+    const theme = this.currentTheme();
+    const candidates = await this.collectRemapCandidates();
+    if (candidates.length === 0) {
+      return 0;
+    }
+    const used = await this.collectUsedNames();
+    let renamed = 0;
+    for (const candidate of candidates) {
+      if (NAME_POOLS[theme].includes(candidate.name)) {
+        continue;
+      }
+      const next = this.pickNameDeterministic(theme, used);
+      if (!next) {
+        break;
+      }
+      used.add(next);
+      await this.getAgentManager().setAgentName(candidate.agentId, next);
+      renamed += 1;
+    }
+    this.logger.info({ theme, renamed }, "Re-mapped auto-assigned agent names");
+    return renamed;
+  }
+
+  /** Auto-assigned, non-archived, non-machinery agents, sorted for determinism. */
+  private async collectRemapCandidates(): Promise<Array<{ agentId: string; name: string }>> {
+    const byId = new Map<string, { agentId: string; name: string }>();
+    for (const record of await this.agentStorage.list()) {
+      if (record.archivedAt || record.internal || hasMissionControlLabels(record.labels)) {
+        continue;
+      }
+      if (!record.name) {
+        continue;
+      }
+      byId.set(record.id, { agentId: record.id, name: record.name });
+    }
+    for (const agent of this.getAgentManager().listAgents()) {
+      if (agent.internal || hasMissionControlLabels(agent.labels)) {
+        continue;
+      }
+      if (!agent.name) {
+        continue;
+      }
+      byId.set(agent.id, { agentId: agent.id, name: agent.name });
+    }
+    return [...byId.values()]
+      .filter((entry) => isAutoAssignedName(entry.name))
+      .sort((left, right) => left.agentId.localeCompare(right.agentId));
+  }
+
   private currentTheme(): AgentNamingTheme {
     return normalizeNamingTheme(this.readTheme());
   }
@@ -828,6 +913,30 @@ export class AgentNamingService {
       }
     }
     const base = candidates[0];
+    if (!base) {
+      return null;
+    }
+    for (const suffix of ROMAN_SUFFIXES) {
+      const candidate = `${base} ${suffix}`;
+      if (!used.has(candidate)) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Deterministic variant used by theme re-maps: pool order instead of a
+   * random shuffle, so a re-map is reproducible for the same agent set.
+   */
+  private pickNameDeterministic(theme: AgentNamingTheme, used: ReadonlySet<string>): string | null {
+    const pool = NAME_POOLS[theme];
+    for (const candidate of pool) {
+      if (!used.has(candidate)) {
+        return candidate;
+      }
+    }
+    const base = pool[0];
     if (!base) {
       return null;
     }

@@ -12,6 +12,12 @@ import { parseHistoryAskAgentOpenUrl } from "@/history-ask/open-agent-link-parse
 import { useSessionStore } from "@/stores/session-store";
 import { resolveSessionAgent } from "@/utils/agent-snapshots";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
+import {
+  normalizeHostGlyphOverride,
+  resolveHostGlyphPresentation,
+} from "@/components/host-glyph-model";
+import { identityColor } from "@/styles/identity-colors";
+import { useDaemonConfig } from "@/hooks/use-daemon-config";
 
 /**
  * `paseo://` agent links in Commander prose render as inline agent chips
@@ -67,6 +73,7 @@ export function PaseoAgentLinkChip({
   const liveAgent = useSessionStore((state) =>
     target ? resolveSessionAgent(state.sessions[target.serverId], target.agentId) : null,
   );
+  const daemonConfig = useDaemonConfig(target?.serverId ?? null);
 
   const handlePress = useCallback(() => {
     if (context) {
@@ -74,22 +81,53 @@ export function PaseoAgentLinkChip({
     }
   }, [context, href]);
 
+  const hideAgentNames = context?.hideAgentNames === true;
+  const hostPresentation = useMemo(() => {
+    if (!target) {
+      return null;
+    }
+    const override = normalizeHostGlyphOverride(daemonConfig.config?.missionControl?.hostGlyph);
+    return resolveHostGlyphPresentation({
+      serverId: target.serverId,
+      label: target.serverId,
+      override,
+    });
+  }, [target, daemonConfig.config]);
+
   if (!target) {
     return null;
   }
-  const label = context?.hideAgentNames
-    ? (liveAgent?.title ?? liveAgent?.name ?? fallbackText ?? "Open agent")
-    : (liveAgent?.name ?? liveAgent?.title ?? fallbackText ?? "Open agent");
+
+  const title = liveAgent?.title ?? "";
+  const name = liveAgent?.name ?? "";
+  // Respect hideAgentNames: the chip shows the title only.
+  const primary = hideAgentNames
+    ? title || name || fallbackText || "Open agent"
+    : name || title || fallbackText || "Open agent";
+  const secondary = hideAgentNames ? null : title;
 
   return (
     <Text
       onPress={handlePress}
       accessibilityRole="button"
-      accessibilityLabel={`Open agent ${label}`}
+      accessibilityLabel={`Open agent ${primary}`}
       style={styles.chip}
+      numberOfLines={1}
       testID="mission-control-paseo-agent-chip"
     >
-      {label}
+      {hostPresentation ? (
+        <Text
+          style={[styles.hostGlyph, { backgroundColor: identityColor(hostPresentation.colorName) }]}
+        >
+          {hostPresentation.glyph}
+        </Text>
+      ) : null}
+      {` ${primary}`}
+      {secondary && secondary !== primary ? (
+        <Text style={styles.chipTitle} numberOfLines={1}>
+          {` · ${secondary}`}
+        </Text>
+      ) : null}
     </Text>
   );
 }
@@ -104,5 +142,14 @@ const styles = StyleSheet.create((theme) => ({
     fontFamily: theme.fontFamily.ui,
     fontSize: theme.fontSize.xs,
     color: theme.colors.foreground,
+  },
+  chipTitle: {
+    color: theme.colors.foregroundMuted,
+  },
+  hostGlyph: {
+    borderRadius: 999,
+    overflow: "hidden",
+    paddingHorizontal: 3,
+    color: "#ffffff",
   },
 }));

@@ -260,17 +260,19 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
   const missionControlBadges = useMemo(
     (): SidebarHeaderRowBadgeSegment[] => [
       {
-        count: counts.working,
-        label: t("sidebar.sections.missionControlWorking"),
-        testID: "sidebar-mission-control-badge-working",
+        count: counts.needsYou,
+        label: t("sidebar.sections.missionControlNeedsYou"),
+        testID: "sidebar-mission-control-badge-needs-you",
+        tone: "attention",
       },
       {
         count: counts.ready,
         label: t("sidebar.sections.missionControlReady"),
         testID: "sidebar-mission-control-badge-ready",
+        tone: "success",
       },
     ],
-    [counts.ready, counts.working, t],
+    [counts.needsYou, counts.ready, t],
   );
 
   const newWorkspaceKeys = useShortcutKeys("new-workspace");

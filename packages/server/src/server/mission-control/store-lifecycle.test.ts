@@ -280,10 +280,12 @@ describe("MissionControlStore v3 cursor paging + message tags", () => {
 
   test("stop origins round-trip across reload", async () => {
     store.recordStopOrigin("agent-1", "user");
+    store.recordStopOrigin("agent-3", "system");
     await awaitStoreWrites(store);
     const reloaded = new MissionControlStore({ paseoHome: dir, logger: createTestLogger() });
     await reloaded.initialize();
     expect(reloaded.getStopOrigin("agent-1")).toBe("user");
+    expect(reloaded.getStopOrigin("agent-3")).toBe("system");
     expect(reloaded.getStopOrigin("agent-2")).toBeNull();
   });
 

@@ -26,7 +26,7 @@ import {
   MenuTrigger,
   type MenuPageDefinition,
 } from "@/components/ui/menu";
-import { HostStatusDot } from "@/components/host-status-dot";
+import { HostGlyph } from "@/components/host-glyph";
 import { isWeb } from "@/constants/platform";
 import { useHosts } from "@/runtime/host-runtime";
 import type { Theme } from "@/styles/theme";
@@ -427,10 +427,10 @@ function HostFilterItem({
   const leading = useMemo(
     () => (
       <View testID={`sidebar-host-filter-status-${serverId}`}>
-        <HostStatusDot serverId={serverId} />
+        <HostGlyph serverId={serverId} label={label} size={14} />
       </View>
     ),
-    [serverId],
+    [label, serverId],
   );
 
   return (

@@ -1016,7 +1016,7 @@ export const ko: TranslationResources = {
       sessions: "기록",
       schedules: "일정",
       missionControl: "Mission Control",
-      missionControlWorking: "작업 중",
+      missionControlNeedsYou: "조치 필요",
       missionControlReady: "검토 대기",
       webhooks: "Webhooks",
     },

@@ -143,6 +143,8 @@ export interface Agent {
   requiresAttention?: boolean;
   attentionReason?: "finished" | "error" | "permission" | null;
   attentionTimestamp?: Date | null;
+  /** Mission Control stop origin for the agent's last run (v3.1). */
+  stoppedBy?: "user" | "machinery" | "system" | null;
   archivedAt?: Date | null;
   parentAgentId: string | null;
   labels: Record<string, string>;
@@ -2040,6 +2042,7 @@ export const useSessionStore = create<SessionStore>()(
             requiresAttention: agent.requiresAttention ?? false,
             attentionReason: agent.attentionReason ?? null,
             attentionTimestamp: agent.attentionTimestamp ?? null,
+            stoppedBy: agent.stoppedBy ?? null,
             createdAt: agent.createdAt,
             labels: agent.labels,
           });

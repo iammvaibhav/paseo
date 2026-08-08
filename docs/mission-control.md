@@ -74,6 +74,7 @@ Rules baked into the injected system-prompt appendix (daemon-side, rides the sam
 Buckets: **Needs you** (blocked / failed / awaiting input / pending proposals) → **Running** → **Ready for review** → **Done**.
 
 - Ready for review accrues only from rollout onward (finish events after this ships). Existing idle agents become **Dormant**: hidden by default, shown under the "All unarchived" toggle. A dormant agent that runs again enters the lifecycle normally.
+- **User-stopped ≠ Needs you**: an agent whose last run has `stoppedBy: "user"` lands in **Done** with a distinct "Stopped by you" chip (clearable like any done row) — the user performed the stop, nothing needs them (live bug: user-stopped Hale rendered in Needs-you). Any other stop (error, crash, machinery) keeps the current attention path → Needs-you. The stop origin must reach the app (additive snapshot field if not already on the wire).
 - Done is set by a Verifier verdict or the user. Semantics: bookkeeping only. Agent record untouched (idle, alive, forkable). Card links from pruned/archived agents degrade to the history view.
 - **Clear** (per-row and clear-all in the Done section): persisted acknowledgment; removes from Done display. Reopen: any new run or prompt puts the agent back in Running.
 - Board default view: last 30 days. Toggle: all unarchived agents regardless of age.
@@ -115,7 +116,9 @@ Proposal = {
 ## Commander
 
 - **Single fleet Commander** on the designated commander host (central setting; iammvaibhav-class always-on host). Daemon boot ensures it exists (auto-create with label `paseo.mission-control=commander` if missing and this host is designated). Nothing needed in deploy scripts.
-- Fast model (routing over injected context needs no deep reasoning): default = host default omp model; central setting can override.
+- **Drift auto-recreate**: the Commander record stores a hash of its baked system prompt + tool allowlist at spawn. On daemon boot, hash ≠ current build → archive the stale Commander and spawn fresh (old conversation stays in History). Kills the manual post-deploy archive step (live incident: a pre-v3 Commander lost `fleet_send_prompt`/`send_agent_prompt` after deploy and reported "can't reach Hale").
+- **Reset Commander**: `mission_control.commander.reset.request/response` — archive current + spawn fresh with a new context pack. Exposed in the thread overflow menu.
+- Fast model (routing over injected context needs no deep reasoning): default = host default omp model; central setting can override. **Runtime settings stick**: a user change to the Commander's model/thinking in the composer persists into the stored agent config; machinery dispatches (digest flush, approval delivery) must never re-pass creation-time settings (live bug: every digest run reset thinking to `low` via `--thinking <stored initial>`).
 - **Prompt layering (cache-preserving)**:
   1. System prompt = static only: identity, playbook, safety, tool contract. Lives in repo markdown: `packages/server/src/server/mission-control/commander-prompt.md` (bundled at build; user instructions from settings appended). The orchestrator reminder moves here — never again in message bodies.
   2. First conversation message = context pack snapshot: fleet map + per-host aliases, projects + descriptions, workspaces, roster (one line per live agent: name, title, status, last report headline, age; running + review only; cap 30), and **per-host invocable provider/model strings** — the exact `provider/model` values `create_agent`/`fleet_create_agent` accept, listed verbatim so the Commander never guesses provider strings (transcript failure: five rejected guesses). Refreshed via context updates when models change.
@@ -124,7 +127,7 @@ Proposal = {
 - **User → Commander delivery is interrupt** (replaceRunning), not steer — your message takes over immediately. The interrupt mechanics (cancel notices, resumed tool calls) are machinery noise hidden in normal mode (see App: verbose mode). Commander → workers stays steer-default.
 - **User-message tagging**: Commander records `relatedAgentIds` for each user message it handles (tool: `tag_message` or structured field in its reply pipeline — implementer's choice, must persist in store). Tagged messages feed verifier spawns. Fleet-wide remarks tag all active.
 - `fleet_get_agent_activity { host, agentId, limit? }`: new tool, same shape as local `get_agent_activity`, proxied over peering — kills "can't read its timeline from here".
-- Ack suppression: digests instruct — no prose when nothing needs action. Server drops pure-ack replies (single-token/`ok` heuristic) from the visible thread; log them.
+- Ack suppression: digests instruct — no prose when nothing needs action. Server drops pure-ack replies (single-token/`ok` heuristic) from the visible thread; log them. Retraction must fire on EVERY machinery dispatch path, including the async approvals delivery (live bug: post-async, `ok` replies persisted in the thread).
 - **Stop button**: Mission Control header exposes Stop (cancels the Commander's active turn via the existing cancel RPC). Typing "stop" must never be the only way.
 
 ## Fleet search (`fleet_search`)
@@ -148,11 +151,17 @@ Playbook: `fleet_search` is THE lookup path; `history_search` (metadata-only) re
 
 Data-derived thresholds (from 60-session analysis: inference gap p99 = 83s; hub-wait p90 = 19min):
 
-- Silent >120s mid-run (no timeline rows) → status-ask **steer** through the approval gate ("post a one-line report_status, then continue").
-- Silent >300s → escalate: stalled event + Needs-you card.
-- **Wait-aware**: if the open tool call is a known wait (hub wait, subagent wait), threshold = declared timeout + 120s instead.
-- One nudge per silence episode; escalation once per episode; all logged.
+- **Eligibility — Running only.** Nudge/escalation apply solely to agents with a run in progress. Ready-for-review (self-declared complete), Done, user-stopped, and failed agents are never nudged or recovered (failed already surfaces in Needs-you; user-stopped is Done). Commander/Verifier/internal agents excluded.
+- **Two nudge triggers, one nudge action.** Both produce the same status-ask **steer, sent directly — no approval in either mode** (a steer never disrupts the turn; recorded as an auto-sent proposal, never pending):
+  - **Silence trigger** (`silenceNudgeSeconds`, default 120): NO timeline output at all — no tool calls, no text — while mid-run. Early warning for a wedged turn. No wait-exception: a steer lands mid-hub-wait harmlessly, and repeat-noise is handled by backoff, not exemptions.
+  - **Cadence trigger** (`statusNudgeSeconds`, default 300): no `report_status`, even though timeline rows may be flowing. Prompt: "You've been quiet for a while. Post a one-line report_status summarizing where you are, then continue."
+  - Shared discipline: a `report_status` resets BOTH timers; timeline activity resets only the silence timer; at most ONE outstanding nudge per agent (whichever trigger fires first), no re-nudge until a status lands or the run ends.
+  - **Exponential backoff** (built-in, not a setting): each successive nudge in the same run doubles that trigger's effective interval (120 → 240 → 480…, capped at 30min); reset by a user prompt or run end. Keeps a 30-minute hub wait from producing a card every 2 minutes.
+- **Escalation = recovery**: after ANY nudge, if the agent produces NO response at all (no report_status AND no new timeline rows) within `escalateSeconds` (default 300), create a **recovery proposal** with `deliveryMode: "interrupt"`: "Continue whatever you were working on and post a one-line report_status." An interrupt starts a fresh run, so this also recovers agents whose provider process died mid-run. Ask mode: approval card in Needs-you; Auto mode: sends automatically; presence/user-stop still force ask. A stalled event is emitted either way — this is what gives the Commander autonomy to recover stuck agents.
+- **No hard sleeps**: agents must run long commands detached + poll, or use hub wait — never synchronous sleeps. A steer lands during a hub wait, so a healthy waiting agent answers the nudge and never escalates; response-based escalation supersedes the old wait-aware thresholds.
 - **Reconciliation watchdog**: record `running` but provider runtime dead/exited >2min → self-heal record to error state, emit stalled event, log loudly. (Root-cause of the freeze itself is tracked separately by the user — do not chase it here.)
+- **Abrupt kills (daemon restart, provider crash)**: boot reconciliation + the watchdog mark such runs **interrupted** (stop origin `system` — distinct from user-stopped AND from a run that failed on its own error). Interrupted agents land in Needs-you with an "Interrupted" chip and immediately qualify for the recovery proposal (interrupt-and-send "Continue whatever you were working on…") — Ask: card; Auto: sends. After a daemon restart the Commander is boot-ensured, the store is persisted, and healed agents' recovery proposals flow through the same gate: the fleet resumes itself.
+- All three knobs (`silenceNudgeSeconds`, `statusNudgeSeconds`, `escalateSeconds`) are user-editable in central Mission Control settings.
 
 ## Protocol
 
@@ -162,6 +171,7 @@ Per docs/rpc-namespacing.md and docs/protocol-compatibility.md. Additive only; w
 - `mission_control.proposals.respond.request/response` — approve/deny/edit `{ proposalId, action, editedMessage?, allowPair? }`.
 - `mission_control.mode.set.request/response` — ask/auto.
 - `mission_control.config.get/patch.request/response` — central settings (stored on commander host).
+- `mission_control.commander.reset.request/response` — archive current Commander, spawn fresh with a new context pack.
 - `mission_control.events.fetch` — gains cursor paging (`beforeSeq`, `limit`).
 - `mission_control.search.request/response` — `{ query, limit?, deep? }` → `{ matches }`; the full tiered search runs inside the owning daemon; the commander host merges local + peer results (mirrors `fleet_list_agents`).
 - Push: proposals and lifecycle changes ride the existing `mission_control_event` push as new event kinds: `proposal`, `verdict`, plus `source: "verifier"`.
@@ -180,34 +190,44 @@ Central (stored on commander host, edited from anywhere via `mission_control.con
 - `verifierModel?`, `verifierConcurrency` (default 3), `evaluationScope: "commander" | "all"`
 - `mode: "ask" | "auto"` (default ask), `retentionDays` (default 30)
 - `namingTheme`, `hideAgentNames` (default false), `defaultDispatchHost`
-- Stall thresholds (`nudgeSeconds` 120, `escalateSeconds` 300)
+- Stall thresholds (`nudgeSeconds` 300 — seconds without a status update before the agent is asked for one; `escalateSeconds` 300 — seconds of total timeline silence before escalating as stalled)
 
 ## App
 
 - **Screen**: `[left sidebar (existing collapse)] [Commander thread (collapsible to thin strip)] [Inspector] [board rail (drag-resizable)]`.
   - Board row click AND full feed-card click (entire card is pressable, not just the name) → agent opens in Inspector in place. Repeated clicks swap content. No navigation, no tabs.
-  - Inspector = embedded `AgentStreamView` **with composer** (reply in place). Header: agent name/title, host glyph, "Open in workspace →" (the only thing that navigates). Inspector reports `focusedAgentId` via the existing heartbeat.
+  - Inspector = embedded `AgentStreamView` **with composer** (reply in place). Header: agent name/title, host glyph, "Open in workspace →" (the only thing that navigates). Inspector reports `focusedAgentId` via the existing heartbeat. **Inspector width is drag-resizable** (same handle pattern as the board rail), persisted.
   - Compact form factor: Inspector becomes a full-screen push with back; no split.
-- **Board**: running sorted by name (stable); review/done by time desc. Rows: title is the key line, name is the identity chip, one-line last-report. Host shown as a small glyph avatar: deterministic accent color from serverId + host alias initial (or per-host emoji override in host settings), tooltip = full name — design-token native.
-- **Badges**: sidebar Mission Control row shows working count + ready-for-review count (two segments, both when both exist).
-- **Thread**: cursor paging on scroll-up (no more hardcoded 200-and-done), windowed unloading; composer gutter aligned with chat content like every other screen.
+- **Board**: running sorted by name (stable); review/done by time desc. Rows: title is the key line, name is the identity chip, one-line last-report. Host shown as a small glyph avatar: deterministic accent color from serverId + host alias initial (or per-host override in host settings: custom 1–2 char initials/emoji + color), tooltip = full name — design-token native.
+- **Board row context menu**: right-click (web) / long-press (native) via the menu engine (docs/menus.md): Open in workspace; **Copy reference** (copies `Name — Title — agentId` to the clipboard for pasting into chat); Stop (running rows); Mark done / Clear (bucket-dependent); Archive (non-running rows only — Running shows Stop instead). No kebab.
+- **Hover identity card**: hovering a board row (or an agent chip in the thread) shows full title + short description; long-press on native.
+- **Badges**: sidebar Mission Control row shows small colored count chips using the same status tokens as the board buckets — needs-you (attention color) and ready-for-review (success color); each renders only when non-zero. No bare uncolored number.
+- **Sidebar host glyph (app-wide)**: the left sidebar replaces the host status dot with the SAME glyph chip used on board rows — one identity everywhere. Connection status moves onto the glyph (e.g. dimmed/ring when offline) so no information is lost. Initials + color are user-overridable per host (host settings), defaulting to alias initial + deterministic color.
+- **Thread**: cursor paging on scroll-up (no more hardcoded 200-and-done), windowed unloading.
+- **Gutter**: the visual left edge of message text and the composer box must match the regular agent chat exactly (agent chat is the reference; padding tokens already match — fix the card-internal indents). Acceptance = side-by-side screenshot against a workspace agent chat.
+- **Composer drafts**: MC thread composer and Inspector composer persist drafts via the existing draft store (`useAgentInputDraft`), keyed by commander/inspected agent — text survives navigation, like every workspace tab (live bug: both use raw `useState`).
 - **Tool rendering**: per-tool renderers hooked into the existing presentation registry: `fleet_send_prompt` → "→ Steered **Name** (host)" header + collapsed markdown body; `fleet_list_agents` → one-line "Checked fleet roster · N agents", expandable; `create_agent`/`fleet_create_agent` → "Spawned **Name** on host". No raw JSON dumps for known tools.
 - **Native chips**: `paseo://` agent links in Commander prose render as inline agent chips (same component as feed cards), not text links.
 - **Proposal cards**: Approve / Edit / Deny (+ allow-pair checkbox for verifier exchanges). Pending proposals also surface in Needs-you.
 - **Verbose mode** (per-device UI toggle in the MC header overflow, default OFF): normal mode shows your conversation, status/verdict/proposal cards, and pretty-rendered dispatch actions ONLY — Commander tool-call internals, thinking, inbound `<paseo-system>` digest/context messages, and interrupt mechanics are hidden. Verbose shows everything (the debug view). Digest inbound messages are pure machinery duplicating the cards — normal mode never renders them.
 - **Card consistency**: every status update renders as the same uniform visible card — started, finished, failed, milestone, verdict. Nothing status-like is ever collapsed behind a divider. Collapsed-by-default is reserved for proofs and pretty-rendered tool bodies. (Live bug: fleet-digest system rows render as a collapsed "finished or failed with an error" divider while other statuses are cards — that row class disappears with digest hiding above.)
 - **Started-card enrichment**: the started card renders live agent identity — once the agent's first report_status lands a title/description, the SAME card shows it (reactive join on agent identity, no new event row). A started card should never read as a bare "agent started" once anything better is known.
-- **Keep Mission Control mounted**: navigating away and back must not remount/refetch/re-scroll. The screen stays alive (route kept in memory per docs/expo-router.md constraints — freeze, don't unmount), scroll position is preserved exactly, no restore animation, no flicker. Snappy is the acceptance bar: return to MC is instant and visually still.
-- **Stop button** in the header (see Commander section).
-- **Names**: daemon-held naming map; theme switch re-maps instantly and broadcasts; `hideAgentNames` toggle hides chips leaving titles.
-- **Settings**: new central Mission Control settings screen (fleet policy; NOT inside any host's overview). Host overview keeps only alias + enabled. Ask/Auto toggle is in the MC header, mirrored read-only in settings.
+- **Keep Mission Control mounted**: navigating away and back must not remount/refetch/re-scroll. The screen stays alive (route kept in memory per docs/expo-router.md constraints — freeze, don't unmount). **Scroll preservation reuses the regular agent chat's mechanism** (AgentStreamView's anchoring), not a bespoke restore pass — zero visible motion on return (live bug: a ~1s up-then-down restore animation). Snappy is the acceptance bar: return to MC is instant and visually still.
+- **Stop button** in the header (see Commander section). MC header contains ONLY: Ask/Auto toggle, Stop, overflow menu (verbose mode, Clear view, Reset Commander). **No Commander-host dropdown in the header** — host selection lives in central settings (live drift: a header `SelectField` picker exists; remove it).
+- **Clear view**: overflow action sets a per-device clear-point — the thread renders from that moment; older cards stay in the store behind a "show earlier" affordance. Does not touch the Commander. (Reset Commander — the real context clear — is the RPC in the Commander section.)
+- **Names**: daemon-held naming map; **theme switch re-maps all auto-assigned names server-side immediately and broadcasts `agent_update`** (live bug: config patch only persists — no re-map, no broadcast, UI never changes); `hideAgentNames` toggle hides chips leaving titles.
+- **Agent tab tooltips** (workspace tabs, not just MC): hover shows "Name — Title" when names are enabled, title only when `hideAgentNames` is set.
+- **Settings**: new central Mission Control settings screen (fleet policy; NOT inside any host's overview). Host overview keeps only alias + enabled — the alias field copy is "Alias for this machine". **Commander model and Verifier model use the app's `CombinedModelSelector`**, never free-text; Verifier model is labeled as an override (empty = omp `modelRoles.verifier` → `task` role). Ask/Auto toggle is in the MC header, mirrored read-only in settings.
 - **Proofs**: feed cards and thread render proof sections collapsed by default ("Image proof", "API proof", ...). Image → existing image pipeline; video → new renderer (expo-video native, `<video>` web); api/code → code blocks from excerpt; pr/url → chip. Cross-host media: authenticated daemon file-fetch RPC proxied over peering, size-capped, pruned with retention.
 - **Project descriptions**: `description` field on project records + edit sheet textarea; injected into Commander context pack for routing.
+- **Thinking expansion (regression fix)**: thought items in ALL agent chats must expand on press. Two live bugs from the render slice: thought items compute `canOpenDetails: false` when the empty-detail heuristic swallows their text, and `"thinking"` was routed to `FleetToolCallDetailBody` which returns `null`. Fix both; add a regression test.
 
 ## Naming backfill (one-time, via omp scout — no in-daemon provider calls)
 
-- Agents (all hosts): assign name + title + description for existing agents missing them. Runs as an omp one-shot per host against daemon RPCs.
-- Workspaces: generate old→new rename proposals (max 5 words, descriptive) ONLY for titles equal to derived defaults (branch/dir slugs). Present as a proposal card for one-shot user approval; never auto-apply. Set-once going forward: workspace names never auto-change after creation; agents name workspaces they create; titles are the living layer.
+- One bulk omp one-shot per host (default model `@smol`), metadata-driven — never transcripts. Prompt input per agent: current name/title/description **+ first user prompt excerpt (~200 chars) + last report_status headline** — titles derive from what was actually asked, not from the bad title being replaced.
+- **Agent titles are replaced, not just filled**: recompute the deterministic derived title from the first prompt (`create-agent-title.ts`); current title matches the derivation → auto-generated → replaceable. Anything else = user-set → untouched. Descriptions/names still fill-if-missing.
+- Workspaces: generate old→new rename proposals (max 5 words, descriptive) ONLY for titles equal to derived defaults (branch/dir slugs). **Workspace title proposals get the workspace's agents (titles + descriptions) as context** so the name reflects what's actually worked on there. Present as a proposal card for one-shot user approval; never auto-apply. Set-once going forward: workspace names never auto-change after creation; agents name workspaces they create; titles are the living layer.
+- **Deliverable = markdown report per host** (`--report <path>.md`): old→new tables for agent identity and workspace renames. The user annotates/approves the report; `--apply` consumes only the approved file.
 
 ## Logging
 
@@ -235,3 +255,4 @@ Every background mechanism logs structured lines under `module: "mission-control
 8. Proofs: image + code + api render collapsed/expandable; video renders (sample file); cross-host fetch path exercised (dev: same-host).
 9. Watchdog: kill a worker's provider process → record self-heals + stalled event.
 10. Typecheck, lint, format, build:client, build:server all green.
+11. v3.1: theme switch re-names instantly in UI; Commander thinking survives a digest flush; no `ok` rows in the thread after digests; stale Commander auto-recreated on boot after a prompt change; drafts survive navigation; thinking cards expand in a normal workspace chat; inspector resizes; board row right-click menu works; backfill dry-run emits the md report.

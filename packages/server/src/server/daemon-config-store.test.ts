@@ -463,6 +463,66 @@ describe("DaemonConfigStore", () => {
     expect(persisted.daemon?.appendSystemPrompt).toBe("Prefer terse replies.");
   });
 
+  test("patch persists per-host missionControl.hostGlyph into config.json", () => {
+    const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-daemon-config-store-"));
+    tempDirs.push(paseoHome);
+
+    const store = new DaemonConfigStore(
+      paseoHome,
+      {
+        mcp: { injectIntoAgents: false },
+        browserTools: { enabled: false },
+        providers: {},
+        metadataGeneration: { providers: [] },
+        autoArchiveAfterMerge: false,
+        enableTerminalAgentHooks: false,
+        appendSystemPrompt: "",
+      },
+      undefined,
+    );
+
+    store.patch({
+      missionControl: {
+        enabled: true,
+        hostAlias: "work server",
+        hostGlyph: { initials: "WS", color: "indigo" },
+      },
+    });
+
+    expect(store.get().missionControl?.hostGlyph).toEqual({ initials: "WS", color: "indigo" });
+    const persisted = loadPersistedConfig(paseoHome);
+    expect(persisted.missionControl?.hostGlyph).toEqual({ initials: "WS", color: "indigo" });
+  });
+
+  test("patch clears missionControl.hostGlyph with an explicit null", () => {
+    const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-daemon-config-store-"));
+    tempDirs.push(paseoHome);
+
+    const store = new DaemonConfigStore(
+      paseoHome,
+      {
+        mcp: { injectIntoAgents: false },
+        browserTools: { enabled: false },
+        providers: {},
+        metadataGeneration: { providers: [] },
+        autoArchiveAfterMerge: false,
+        enableTerminalAgentHooks: false,
+        appendSystemPrompt: "",
+      },
+      undefined,
+    );
+
+    store.patch({
+      missionControl: { hostGlyph: { initials: "WS", color: "indigo" } },
+    });
+    store.patch({
+      missionControl: { ...store.get().missionControl, hostGlyph: null },
+    });
+
+    expect(store.get().missionControl?.hostGlyph).toBeNull();
+    expect(loadPersistedConfig(paseoHome).missionControl?.hostGlyph).toBeNull();
+  });
+
   test("patch persists browser tools opt-in into config.json", () => {
     const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-daemon-config-store-"));
     tempDirs.push(paseoHome);

@@ -1044,7 +1044,7 @@ export const fr: TranslationResources = {
       sessions: "Historique",
       schedules: "Planifications",
       missionControl: "Mission Control",
-      missionControlWorking: "Agents actifs",
+      missionControlNeedsYou: "Nécessite votre attention",
       missionControlReady: "Prêts pour révision",
       webhooks: "Webhooks",
     },

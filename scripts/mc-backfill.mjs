@@ -5,56 +5,73 @@
  *
  * Runs against ONE daemon (one host) and does three things:
  *
- *   1. Agent identity: reads agents missing name/title/description (idempotent
- *      filter — complete agents are never touched), drives ONE omp one-shot
+ *   1. Agent identity: reads agents missing name/title/description or whose
+ *      title equals the deterministic first-prompt derivation (auto-generated;
+ *      user-set titles are never touched), drives ONE omp one-shot
  *      (`omp -p --no-tools --model <model>`) to produce names/titles/
  *      descriptions in bulk JSON, and applies them via the existing
  *      `update_agent_request` RPC (name/title/shortDescription fields).
  *      The naming theme comes from the central Mission Control config
  *      (`mission_control.config.get` → config.namingTheme) unless overridden.
- *   2. Workspace rename proposals: computes old→new proposals (max 5 words,
- *      descriptive) ONLY for workspaces whose title is a derived default
- *      (branch/dir slug), and emits ONE Mission Control proposal-style card
- *      (kind "proposal", origin commander, classification normal) listing the
- *      'old -> new' lines. NEVER auto-applies.
+ *   2. Workspace rename proposals: the deterministic eligibility pass picks
+ *      workspaces with no user title whose derived name is a branch/dir slug
+ *      (never system/home workspaces like `<paseo-system>`); the SAME omp
+ *      one-shot proposes a new descriptive name (max 5 words) per workspace,
+ *      using its agents' titles+descriptions as context. The script emits ONE
+ *      Mission Control proposal-style card (kind "proposal", origin commander,
+ *      classification normal) listing the 'old -> new' lines. NEVER auto-applies.
  *   3. `--apply <approved.json>` applies an approved rename list via the
  *      existing `workspace.title.set.request` RPC (manual step; the card is
  *      advisory only).
  *
  * Usage:
  *   node --import tsx scripts/mc-backfill.mjs \
- *     --host 127.0.0.1:6768 --password <pw> [--dry-run] [--apply approved.json]
+ *     --host 127.0.0.1:6768 --password <pw> [--dry-run] [--report report.md] [--apply approved.json]
  *
  * Options:
  *   --host <host[:port]>     daemon endpoint (default 127.0.0.1:6768)
  *   --password <pw>          daemon password (default $PASEO_PASSWORD)
  *   --dry-run                print the plan; apply nothing
+ *   --report <path.md>       write a human-reviewable old→new markdown report
  *   --apply <file.json>      apply approved workspace renames
  *                           [{ "workspaceId": "...", "newName": "..." }]
  *   --model <model>          omp one-shot model (default @smol)
  *   --theme <theme>          naming theme override (default: central config)
  *   --no-agents              skip the agent identity pass
- *   --no-proposals           skip the workspace proposal card
+ *   --no-proposals           skip the workspace proposal pass
  *   --prompt-only            print the one-shot prompt and exit
  *   --target-agent <id>      proposal card target (default: the Commander)
  *   --timeout-ms <n>         omp one-shot timeout (default 300000)
  *
- * Safe by construction: agent writes only fill MISSING identity fields, the
- * proposal card never auto-applies, and workspace renames require --apply.
+ * Safe by construction: agent writes only fill MISSING identity fields (and
+ * replace titles whose current value equals the deterministic derivation —
+ * user-set titles are never touched), the proposal card never auto-applies,
+ * and workspace renames require --apply. The markdown report documents the
+ * whole plan; rejected rows are simply deleted before applying.
  */
 
 import { DaemonClient } from "@getpaseo/client";
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { homedir } from "node:os";
 import { WebSocket } from "ws";
 import {
+  buildBackfillMarkdownReport,
   buildBackfillPrompt,
-  buildWorkspaceRenameProposals,
+  buildBackfillReportAgentChanges,
   formatRenameProposalMessage,
   parseBackfillResponse,
   resolveIdentityUpdates,
+  resolveWorkspaceRenameProposals,
   selectBackfillCandidates,
+  selectWorkspaceProposalCandidates,
 } from "../packages/server/src/server/mission-control/naming-backfill.js";
+
+const require = createRequire(import.meta.url);
+// Advertise a real client version so the daemon does not treat this CLI as a
+// legacy client (which hides non-legacy providers and returns zero agents).
+const CLIENT_APP_VERSION = require("../packages/client/package.json").version;
 
 const DEFAULT_HOST = "127.0.0.1:6768";
 const DEFAULT_MODEL = "@smol";
@@ -94,6 +111,7 @@ function parseArgs(argv) {
       case "host":
       case "password":
       case "apply":
+      case "report":
       case "model":
       case "theme":
       case "targetAgent":
@@ -123,7 +141,7 @@ function createClient(host, password) {
     url,
     clientId: `mc-backfill-${process.pid}`,
     clientType: "cli",
-    appVersion: "mc-backfill",
+    appVersion: CLIENT_APP_VERSION,
     password,
     connectTimeoutMs: 15_000,
     webSocketFactory: (targetUrl, options) =>
@@ -189,7 +207,70 @@ async function applyApprovedRenames(client, applyPath) {
   console.log(`Applied ${approved.length} workspace rename(s).`);
 }
 
-async function runBackfillPass(client, args, hostLabel) {
+const MAX_EVENTS_FOR_HEADLINES = 2000;
+
+/**
+ * Prompt enrichment (spec "Naming backfill"): per agent, the first user
+ * prompt excerpt (metadata prompt index — never a transcript) and the last
+ * report_status headline (Mission Control events store). One bulk events
+ * fetch + one prompt-index peek per agent; the omp one-shot stays a single
+ * bulk call per host. Enrichment runs BEFORE candidate selection because
+ * title-replacement eligibility (complete agents with auto-derived titles)
+ * depends on the first prompt.
+ */
+async function enrichAgentsWithActivity(client, agents) {
+  if (agents.length === 0) {
+    return agents;
+  }
+  const [events, promptIndexes] = await Promise.all([
+    client.missionControlEventsFetch({ limit: MAX_EVENTS_FOR_HEADLINES }).catch(() => null),
+    Promise.all(
+      agents.map((agent) => client.listAgentTimelinePrompts(agent.agentId).catch(() => null)),
+    ),
+  ]);
+  // Events come back newest-first; the first self-report row per agent is its
+  // latest report_status headline.
+  const headlineByAgent = new Map();
+  for (const event of events?.events ?? []) {
+    if (event.source !== "self" || !event.headline) {
+      continue;
+    }
+    if (!headlineByAgent.has(event.agentId)) {
+      headlineByAgent.set(event.agentId, event.headline);
+    }
+  }
+  return agents.map((agent, index) => ({
+    ...agent,
+    firstPrompt: promptIndexes[index]?.prompts?.[0]?.preview ?? null,
+    lastReportHeadline: headlineByAgent.get(agent.agentId) ?? null,
+  }));
+}
+
+/** Workspace → agents join by workspaceId, falling back to cwd containment. */
+function agentsByWorkspaceId(workspaces, agents) {
+  const byId = new Map(workspaces.map((workspace) => [workspace.id, []]));
+  for (const agent of agents) {
+    const direct = agent.workspaceId ? byId.get(agent.workspaceId) : null;
+    if (direct) {
+      direct.push(agent);
+      continue;
+    }
+    const dir = agent.cwd;
+    if (!dir) {
+      continue;
+    }
+    for (const workspace of workspaces) {
+      const root = workspace.workspaceDirectory ?? workspace.projectRootPath;
+      if (root && (dir === root || dir.startsWith(`${root}/`) || dir.startsWith(`${root}\\`))) {
+        byId.get(workspace.id).push(agent);
+        break;
+      }
+    }
+  }
+  return byId;
+}
+
+async function fetchBackfillInputs(client, args) {
   const [agentsPayload, workspacesPayload, configPayload] = await Promise.all([
     client.fetchAgents({}),
     client.fetchWorkspaces({}),
@@ -204,48 +285,16 @@ async function runBackfillPass(client, args, hostLabel) {
       shortDescription: agent.shortDescription ?? null,
       labels: agent.labels ?? {},
       cwd: agent.cwd,
+      workspaceId: agent.workspaceId,
       archivedAt: agent.archivedAt ?? null,
     };
   });
   const workspaces = workspacesPayload.entries ?? [];
   const namingTheme = args.theme ?? configPayload?.config?.namingTheme ?? "mixed";
+  return { agents, workspaces, namingTheme };
+}
 
-  const proposals = args.noProposals
-    ? []
-    : buildWorkspaceRenameProposals(
-        workspaces.map((workspace) => ({
-          workspaceId: workspace.id,
-          name: workspace.name,
-          title: workspace.title ?? null,
-        })),
-      );
-
-  const candidates = args.noAgents ? [] : selectBackfillCandidates(agents);
-  const updates = await runAgentIdentityPass(client, args, hostLabel, namingTheme, candidates);
-  if (args.promptOnly) {
-    // The prompt was printed (or "no candidates" logged) inside the pass.
-    return;
-  }
-
-  console.log(
-    JSON.stringify(
-      {
-        host: args.host,
-        namingTheme,
-        agentCandidates: candidates.length,
-        plannedAgentUpdates: updates,
-        workspaceProposals: proposals,
-      },
-      null,
-      2,
-    ),
-  );
-
-  if (args.dryRun) {
-    console.log("\nDRY RUN: nothing was applied.");
-    return;
-  }
-
+async function applyBackfillResults(client, args, hostLabel, updates, proposals) {
   for (const update of updates) {
     await client.updateAgent(update.agentId, {
       ...(update.name !== undefined ? { name: update.name } : {}),
@@ -273,22 +322,45 @@ async function runBackfillPass(client, args, hostLabel) {
   }
 }
 
-async function runAgentIdentityPass(client, args, hostLabel, namingTheme, candidates) {
-  if (candidates.length === 0) {
-    if (args.promptOnly) {
-      console.log("No agent candidates to backfill on this host.");
-    }
-    return [];
+async function runBackfillPass(client, args, hostLabel) {
+  const { agents, workspaces, namingTheme } = await fetchBackfillInputs(client, args);
+
+  const workspaceAgents = agentsByWorkspaceId(workspaces, agents);
+  const candidates = args.noAgents
+    ? []
+    : selectBackfillCandidates(await enrichAgentsWithActivity(client, agents));
+  const workspaceCandidates = args.noProposals
+    ? []
+    : selectWorkspaceProposalCandidates(
+        workspaces.map((workspace) => ({
+          workspaceId: workspace.id,
+          name: workspace.name,
+          title: workspace.title ?? null,
+          cwd: workspace.workspaceDirectory ?? workspace.projectRootPath,
+          agents: (workspaceAgents.get(workspace.id) ?? []).map((agent) => ({
+            title: agent.title ?? null,
+            shortDescription: agent.shortDescription ?? null,
+          })),
+        })),
+        { homeDir: homedir() },
+      );
+
+  if (candidates.length === 0 && workspaceCandidates.length === 0) {
+    console.log("No agent or workspace candidates to backfill on this host.");
+    return;
   }
+
   const prompt = buildBackfillPrompt({
     hostLabel,
     namingTheme,
     candidates: candidates.slice(0, args.maxCandidates),
+    workspaceCandidates,
   });
   if (args.promptOnly) {
     process.stdout.write(`${prompt}\n`);
-    return [];
+    return;
   }
+
   const output = await runOmpOneShot(prompt, args.model, args.timeoutMs);
   const responses = parseBackfillResponse(output);
   if (!responses) {
@@ -296,7 +368,42 @@ async function runAgentIdentityPass(client, args, hostLabel, namingTheme, candid
     console.error(output.slice(0, 4000));
     process.exit(3);
   }
-  return resolveIdentityUpdates({ candidates, responses });
+  const updates = resolveIdentityUpdates({ candidates, responses: responses.agents });
+  const proposals = resolveWorkspaceRenameProposals(workspaceCandidates, responses.workspaces);
+
+  if (args.report) {
+    const report = buildBackfillMarkdownReport({
+      hostLabel,
+      namingTheme,
+      generatedAt: new Date().toISOString(),
+      agentChanges: buildBackfillReportAgentChanges(candidates, updates),
+      workspaceProposals: proposals,
+    });
+    await writeFile(args.report, report, "utf8");
+    console.log(`Wrote backfill report to ${args.report}`);
+  }
+
+  console.log(
+    JSON.stringify(
+      {
+        host: args.host,
+        namingTheme,
+        agentCandidates: candidates.length,
+        plannedAgentUpdates: updates,
+        workspaceCandidates: workspaceCandidates.length,
+        workspaceProposals: proposals,
+      },
+      null,
+      2,
+    ),
+  );
+
+  if (args.dryRun) {
+    console.log("\nDRY RUN: nothing was applied.");
+    return;
+  }
+
+  await applyBackfillResults(client, args, hostLabel, updates, proposals);
 }
 
 async function main() {

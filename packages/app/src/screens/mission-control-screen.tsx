@@ -10,7 +10,6 @@ import { MoreVertical, PanelLeftClose, PanelLeftOpen, Square } from "lucide-reac
 import type { Theme } from "@/styles/theme";
 import { Button } from "@/components/ui/button";
 import { SegmentedControl } from "@/components/ui/segmented-control";
-import { SelectField, type SelectFieldOption } from "@/components/ui/select-field";
 import { MenuHeader } from "@/components/headers/menu-header";
 import { HeaderToggleButton } from "@/components/headers/header-toggle-button";
 import {
@@ -22,7 +21,9 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/contexts/toast-context";
 import { Composer } from "@/composer";
-import type { UserComposerAttachment } from "@/attachments/types";
+import { useAgentInputDraft } from "@/composer/draft/input-draft";
+import { buildDraftStoreKey } from "@/stores/draft-keys";
+import { confirmDialog } from "@/utils/confirm-dialog";
 import { MissionControlBoard } from "@/screens/mission-control/board";
 import {
   MissionControlThread,
@@ -31,18 +32,16 @@ import {
 import { MissionControlInspector } from "@/screens/mission-control/inspector";
 import { useInspectorStore } from "@/screens/mission-control/inspector-store";
 import { BoardRail } from "@/mission-control/board-rail";
+import { InspectorRail } from "@/mission-control/inspector-rail";
 import { MissionControlModeToggle } from "@/mission-control/mode-toggle";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
+import { useClearViewPoint } from "@/mission-control/clear-view";
 import { useAggregatedMissionControlEvents } from "@/hooks/use-aggregated-mission-control-events";
 import { getHostRuntimeStore, useHosts } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
 import { useHostFeature } from "@/runtime/host-features";
 import { useShallow } from "zustand/react/shallow";
-import {
-  launchCommander,
-  loadCommanderHostServerId,
-  saveCommanderHostServerId,
-} from "@/mission-control/launch";
+import { launchCommander, loadCommanderHostServerId } from "@/mission-control/launch";
 import { isCommanderAgent } from "@/mission-control/labels";
 import { useIsCompactFormFactor } from "@/constants/layout";
 
@@ -95,13 +94,13 @@ export function MissionControlScreen(): ReactElement {
   const [startError, setStartError] = useState<string | null>(null);
   const [recreatingArchivedId, setRecreatingArchivedId] = useState<string | null>(null);
   const [compactPanel, setCompactPanel] = useState<CompactPanel>("thread");
-  const [draftText, setDraftText] = useState("");
-  const [draftAttachments, setDraftAttachments] = useState<UserComposerAttachment[]>([]);
   const [threadCollapsed, setThreadCollapsed] = useState(false);
   const [verbose, setVerbose] = useState(false);
+  const [resettingCommander, setResettingCommander] = useState(false);
   const toast = useToast();
   const { config: missionControlConfig } = useMissionControlCentralConfig();
   const hideAgentNames = missionControlConfig?.hideAgentNames === true;
+  const { clearPointTs, setClearViewPoint } = useClearViewPoint();
 
   useEffect(() => {
     let cancelled = false;
@@ -152,10 +151,16 @@ export function MissionControlScreen(): ReactElement {
     };
   }, []);
 
-  const selectedServerId =
-    commanderHostServerId && hosts.some((host) => host.serverId === commanderHostServerId)
-      ? commanderHostServerId
-      : null;
+  // The Commander lives on the designated host from the central config; the
+  // saved per-device preference is the fallback for hosts that predate a
+  // central designation. Header host selection was removed (spec): the picker
+  // lives in Mission Control settings.
+  const centralCommanderHost = missionControlConfig?.commanderHost ?? null;
+  const selectedServerId = useMemo(() => {
+    const known = (id: string | null): string | null =>
+      id && hosts.some((host) => host.serverId === id) ? id : null;
+    return known(centralCommanderHost) ?? known(commanderHostServerId);
+  }, [centralCommanderHost, commanderHostServerId, hosts]);
 
   // v3 feature gate: the split view (collapsible thread + inspector) exists
   // only when the commander host advertises missionControlV3. One gate, here.
@@ -188,12 +193,6 @@ export function MissionControlScreen(): ReactElement {
     }
     return state.sessions[selectedServerId]?.agents.get(commander.agentId) ?? null;
   });
-
-  const handleSelectHost = useCallback((serverId: string) => {
-    setCommanderHostServerId(serverId);
-    setStartError(null);
-    void saveCommanderHostServerId(serverId);
-  }, []);
 
   const startCommander = useCallback(
     async (serverId: string) => {
@@ -239,25 +238,6 @@ export function MissionControlScreen(): ReactElement {
       .finally(() => setIsStarting(false));
   }, [commander, isFocused, recreatingArchivedId, selectedServerId, startCommander]);
 
-  const hostOptions = useMemo<SelectFieldOption<string>[]>(
-    () =>
-      hosts.map((host) => ({
-        id: host.serverId,
-        label: host.label,
-        value: host.serverId,
-      })),
-    [hosts],
-  );
-  const selectedHostDisplay = useMemo(() => {
-    const host = hosts.find((item) => item.serverId === selectedServerId);
-    return host ? { label: host.label } : null;
-  }, [hosts, selectedServerId]);
-
-  const clearDraft = useCallback(() => {
-    setDraftText("");
-    setDraftAttachments([]);
-  }, []);
-
   const commanderRef = useMemo<MissionControlCommander | null>(
     () =>
       selectedServerId && commander && !commander.archived
@@ -265,6 +245,14 @@ export function MissionControlScreen(): ReactElement {
         : null,
     [commander, selectedServerId],
   );
+
+  // Commander composer draft (spec "Composer drafts"): keyed by the commander
+  // agent via the shared draft store, so text survives navigation like every
+  // workspace tab (live bug: raw useState lost the draft on route changes).
+  const commanderDraftKey = commanderRef
+    ? buildDraftStoreKey({ serverId: commanderRef.serverId, agentId: commanderRef.agentId })
+    : "mission-control:no-commander";
+  const commanderDraft = useAgentInputDraft({ draftKey: commanderDraftKey });
 
   const handleStopCommander = useCallback(() => {
     if (!commanderRef) {
@@ -287,6 +275,56 @@ export function MissionControlScreen(): ReactElement {
     router.push("/settings/mission-control");
   }, []);
 
+  const handleClearView = useCallback(() => {
+    // Per-device clear point (spec): the thread renders from this moment;
+    // older cards stay in the store behind the thread's "Show earlier"
+    // affordance. Does not touch the Commander.
+    setClearViewPoint(Date.now());
+  }, [setClearViewPoint]);
+
+  const handleResetCommander = useCallback(() => {
+    if (!commanderRef || resettingCommander) {
+      return;
+    }
+    void (async () => {
+      const confirmed = await confirmDialog({
+        title: "Reset Commander?",
+        message:
+          "The current Commander is archived and a fresh one starts with a new context pack. The old conversation stays in History.",
+        confirmLabel: "Reset",
+        destructive: true,
+      });
+      if (!confirmed || !commanderRef) {
+        return;
+      }
+      const client = getHostRuntimeStore().getClient(commanderRef.serverId);
+      if (!client) {
+        return;
+      }
+      setResettingCommander(true);
+      // Guard the auto-recreate effect against the archive-then-spawn window:
+      // while this agentId is marked as being replaced, the effect must not
+      // launch a second Commander. The guard stays set — it only ever blocks
+      // re-creating the archived commander this reset replaced.
+      setRecreatingArchivedId(commanderRef.agentId);
+      try {
+        const result = await client.missionControlCommanderReset();
+        if (!result.ok) {
+          throw new Error(result.error ?? "Failed to reset Commander");
+        }
+        toast.show("Commander reset", { testID: "mission-control-reset-toast" });
+      } catch (error) {
+        console.error("[MissionControl] Failed to reset Commander:", error);
+        toast.show("Unable to reset Commander", {
+          durationMs: 2200,
+          testID: "mission-control-reset-failed-toast",
+        });
+      } finally {
+        setResettingCommander(false);
+      }
+    })();
+  }, [commanderRef, resettingCommander, toast]);
+
   const inspectorTarget = useInspectorStore((state) => state.target);
 
   const composerCwd = commanderAgent?.cwd ?? "~";
@@ -296,9 +334,9 @@ export function MissionControlScreen(): ReactElement {
     if (!selectedServerId) {
       return (
         <View style={styles.centerState} testID="mission-control-no-host">
-          <Text style={styles.centerStateTitle}>Select a host for the Commander</Text>
+          <Text style={styles.centerStateTitle}>No Commander host set</Text>
           <Text style={styles.centerStateHint}>
-            The Commander lives on one host; pick it in the header to start.
+            Pick the Commander host in Mission Control settings to start.
           </Text>
         </View>
       );
@@ -311,8 +349,8 @@ export function MissionControlScreen(): ReactElement {
               key={`${commanderRef.serverId}:${commanderRef.agentId}`}
               events={events}
               commander={commanderRef}
-              isFocused={isFocused}
               verbose={verbose}
+              clearPointTs={clearPointTs}
               onLoadOlder={loadOlderEvents}
               isLoadingOlder={isLoadingOlder}
               hasOlderEvents={hasOlderEvents}
@@ -323,12 +361,12 @@ export function MissionControlScreen(): ReactElement {
               agentId={commanderRef.agentId}
               serverId={commanderRef.serverId}
               isPaneFocused={isFocused}
-              value={draftText}
-              onChangeText={setDraftText}
-              attachments={draftAttachments}
-              onChangeAttachments={setDraftAttachments}
+              value={commanderDraft.text}
+              onChangeText={commanderDraft.setText}
+              attachments={commanderDraft.attachments}
+              onChangeAttachments={commanderDraft.setAttachments}
               cwd={composerCwd}
-              clearDraft={clearDraft}
+              clearDraft={commanderDraft.clear}
               submitButtonTestID="mission-control-composer-submit"
             />
           </View>
@@ -355,24 +393,6 @@ export function MissionControlScreen(): ReactElement {
       </View>
     );
   })();
-
-  const hostPicker = useMemo(
-    () => (
-      <SelectField<string>
-        label="Commander host"
-        value={selectedServerId ?? null}
-        selectedDisplay={selectedHostDisplay}
-        options={hostOptions}
-        onChange={handleSelectHost}
-        placeholder="Select host"
-        emptyText="No hosts found"
-        field={false}
-        size="sm"
-        triggerTestID="mission-control-host-picker"
-      />
-    ),
-    [handleSelectHost, hostOptions, selectedHostDisplay, selectedServerId],
-  );
 
   const handleCollapseThread = useCallback(() => {
     setThreadCollapsed((current) => !current);
@@ -418,7 +438,6 @@ export function MissionControlScreen(): ReactElement {
           </Button>
         ) : null}
         {v3Enabled ? <MissionControlModeToggle size="sm" /> : null}
-        {hostPicker}
         {v3Enabled ? (
           <DropdownMenu>
             <DropdownMenuTrigger
@@ -436,6 +455,22 @@ export function MissionControlScreen(): ReactElement {
               >
                 Verbose mode
               </DropdownMenuItem>
+              {commanderRef ? (
+                <>
+                  <DropdownMenuItem onSelect={handleClearView} testID="mission-control-clear-view">
+                    Clear view
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onSelect={handleResetCommander}
+                    disabled={resettingCommander}
+                    status={resettingCommander ? "pending" : undefined}
+                    pendingLabel="Resetting..."
+                    testID="mission-control-reset-commander"
+                  >
+                    Reset Commander
+                  </DropdownMenuItem>
+                </>
+              ) : null}
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 onSelect={handleOpenSettings}
@@ -451,12 +486,14 @@ export function MissionControlScreen(): ReactElement {
     [
       collapseToggleState,
       commanderRef,
+      handleClearView,
       handleCollapseThread,
       handleOpenSettings,
+      handleResetCommander,
       handleStopCommander,
       handleToggleVerbose,
-      hostPicker,
       isCompact,
+      resettingCommander,
       threadCollapsed,
       verbose,
       v3Enabled,
@@ -549,11 +586,11 @@ export function MissionControlScreen(): ReactElement {
       <View style={styles.desktopBody}>
         {threadPane}
         {v3Enabled && inspectorTarget ? (
-          <View style={styles.inspectorRail}>
+          <InspectorRail flexFill={v3Enabled && threadCollapsed}>
             <MissionControlInspector target={inspectorTarget} isFocused={isFocused} />
-          </View>
+          </InspectorRail>
         ) : null}
-        <BoardRail>
+        <BoardRail flexFill={v3Enabled && !inspectorTarget && threadCollapsed}>
           <MissionControlBoard
             hideAgentNames={hideAgentNames}
             testID="mission-control-board-rail"
@@ -604,12 +641,6 @@ const styles = StyleSheet.create((theme) => ({
     textTransform: "uppercase",
     letterSpacing: 1,
     transform: [{ rotate: "-90deg" }],
-  },
-  inspectorRail: {
-    width: 400,
-    minWidth: 0,
-    borderLeftWidth: theme.borderWidth[1],
-    borderLeftColor: theme.colors.border,
   },
   headerActions: {
     flexDirection: "row",

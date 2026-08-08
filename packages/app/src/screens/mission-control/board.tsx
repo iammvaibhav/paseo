@@ -1,20 +1,53 @@
-import { memo, useCallback, useMemo, useState, type ReactElement } from "react";
-import { FlatList, Pressable, Text, View, type PressableStateCallbackType } from "react-native";
+import {
+  memo,
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  type ReactElement,
+  type RefObject,
+} from "react";
+import { FlatList, Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { CircleAlert, CircleCheck, CircleDot, CircleX } from "lucide-react-native";
+import {
+  Archive,
+  CircleAlert,
+  CircleCheck,
+  CircleDot,
+  CircleX,
+  Copy,
+  ExternalLink,
+  Square,
+} from "lucide-react-native";
 import type { Theme } from "@/styles/theme";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import { useToast } from "@/contexts/toast-context";
+import { useHoverSafeZone } from "@/hooks/use-hover-safe-zone";
 import { useMissionControlLifecycle } from "@/mission-control/use-mission-control-lifecycle";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
-import { HostGlyph } from "@/mission-control/host-glyph";
+import { HostGlyph } from "@/components/host-glyph";
 import {
   LIFECYCLE_BUCKET_LABELS,
   type LifecycleBucket,
   type LifecycleRow,
 } from "@/mission-control/lifecycle";
+import {
+  buildAgentReference,
+  resolveBoardRowMenuActions,
+  type BoardRowMenuAction,
+} from "@/mission-control/row-menu";
+import { useArchiveAgent } from "@/hooks/use-archive-agent";
 import { useInspectorStore } from "./inspector-store";
 import { useCompactTimeAgo } from "@/hooks/use-compact-time-ago";
+import { copyToClipboard } from "@/utils/copy-to-clipboard";
+import { openAgentFromHistory } from "@/workspace/open-agent-from-history";
 import {
   getHostRuntimeStore,
   useHostRuntimeConnectionStatuses,
@@ -25,6 +58,20 @@ const ThemedCircleAlert = withUnistyles(CircleAlert);
 const ThemedCircleCheck = withUnistyles(CircleCheck);
 const ThemedCircleDot = withUnistyles(CircleDot);
 const ThemedCircleX = withUnistyles(CircleX);
+const ThemedArchive = withUnistyles(Archive);
+const ThemedCopy = withUnistyles(Copy);
+const ThemedExternalLink = withUnistyles(ExternalLink);
+const ThemedSquare = withUnistyles(Square);
+
+const menuIconMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+
+// Static row-menu icons. Hoisted so the menu items never re-create JSX per
+// render (react-perf: no JSX literals in prop position).
+const MENU_OPEN_ICON = <ThemedExternalLink size={14} uniProps={menuIconMapping} />;
+const MENU_COPY_ICON = <ThemedCopy size={14} uniProps={menuIconMapping} />;
+const MENU_STOP_ICON = <ThemedSquare size={14} uniProps={menuIconMapping} />;
+const MENU_CIRCLE_CHECK_ICON = <ThemedCircleCheck size={14} uniProps={menuIconMapping} />;
+const MENU_ARCHIVE_ICON = <ThemedArchive size={14} uniProps={menuIconMapping} />;
 
 const warningColorMapping = (theme: Theme) => ({ color: theme.colors.statusDotWarning });
 const dangerColorMapping = (theme: Theme) => ({ color: theme.colors.statusDotDanger });
@@ -69,19 +116,23 @@ function itemKey(item: BoardItem): string {
   }
 }
 
-async function clearAgentLifecycle(serverId: string, agentId: string): Promise<void> {
+async function setAgentLifecycle(
+  serverId: string,
+  agentId: string,
+  action: "done" | "clear",
+): Promise<void> {
   const client = getHostRuntimeStore().getClient(serverId);
   if (!client) {
     return;
   }
-  const payload = await client.missionControlLifecycleSet({
-    serverId,
-    agentId,
-    action: "clear",
-  });
+  const payload = await client.missionControlLifecycleSet({ serverId, agentId, action });
   if (!payload.ok) {
-    throw new Error(payload.error ?? "Failed to clear");
+    throw new Error(payload.error ?? "Failed to update agent");
   }
+}
+
+async function clearAgentLifecycle(serverId: string, agentId: string): Promise<void> {
+  await setAgentLifecycle(serverId, agentId, "clear");
 }
 
 function MissionControlBoardEmpty(): ReactElement {
@@ -233,6 +284,183 @@ function BucketHeader({
   );
 }
 
+/** The row's identity block: title, status chips, headline, and the Done
+ * verdict line. Extracted so the trigger's JSX stays shallow (jsx-max-depth)
+ * and the chips keep the same nesting inside their own component. */
+function AgentRowTextContent({
+  row,
+  keyLine,
+  showNameChip,
+  headline,
+}: {
+  row: LifecycleRow;
+  keyLine: string;
+  showNameChip: boolean;
+  headline: string | null;
+}): ReactElement {
+  const isDone = row.bucket === "done";
+  return (
+    <View style={styles.agentText}>
+      <Text numberOfLines={1} style={styles.agentTitle}>
+        {keyLine}
+      </Text>
+      <View style={styles.agentMetaRow}>
+        {row.doneReason === "stopped-by-user" ? (
+          <View style={styles.stoppedChip}>
+            <Text numberOfLines={1} style={styles.stoppedChipText}>
+              Stopped by you
+            </Text>
+          </View>
+        ) : null}
+        {row.agent.stoppedBy === "system" ? (
+          <View style={styles.stoppedChip}>
+            <Text numberOfLines={1} style={styles.stoppedChipText}>
+              Interrupted
+            </Text>
+          </View>
+        ) : null}
+        {showNameChip ? (
+          <View style={styles.nameChip}>
+            <Text numberOfLines={1} style={styles.nameChipText}>
+              {row.agent.name}
+            </Text>
+          </View>
+        ) : null}
+        {headline ? (
+          <Text numberOfLines={1} style={styles.agentHeadline}>
+            {headline}
+          </Text>
+        ) : null}
+      </View>
+      {isDone && row.verdict ? (
+        <Text numberOfLines={1} style={styles.verdictLine}>
+          {row.verdict.summary}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+/** The row's context-menu items. Renders inside <ContextMenu> so the surface
+ * context flows through; extracted so AgentRowImpl's branch count stays under
+ * the complexity budget. */
+function AgentRowMenuContent({
+  agentId,
+  menuActions,
+  isArchiving,
+  onOpenInWorkspace,
+  onCopyReference,
+  onStop,
+  onMarkDone,
+  onClear,
+  onArchive,
+}: {
+  agentId: string;
+  menuActions: BoardRowMenuAction[];
+  isArchiving: boolean;
+  onOpenInWorkspace: () => void;
+  onCopyReference: () => void;
+  onStop: () => void;
+  onMarkDone: () => void;
+  onClear: () => void;
+  onArchive: () => void;
+}): ReactElement {
+  return (
+    <ContextMenuContent
+      align="start"
+      width={240}
+      testID={`mission-control-row-context-menu-${agentId}`}
+    >
+      {menuActions.includes("open") ? (
+        <ContextMenuItem
+          leading={MENU_OPEN_ICON}
+          onSelect={onOpenInWorkspace}
+          testID={`mission-control-row-open-${agentId}`}
+        >
+          Open in workspace
+        </ContextMenuItem>
+      ) : null}
+      {menuActions.includes("copy-reference") ? (
+        <ContextMenuItem
+          leading={MENU_COPY_ICON}
+          onSelect={onCopyReference}
+          testID={`mission-control-row-copy-reference-${agentId}`}
+        >
+          Copy reference
+        </ContextMenuItem>
+      ) : null}
+      {menuActions.includes("stop") ? (
+        <ContextMenuItem
+          leading={MENU_STOP_ICON}
+          onSelect={onStop}
+          testID={`mission-control-row-stop-${agentId}`}
+        >
+          Stop
+        </ContextMenuItem>
+      ) : null}
+      {menuActions.includes("mark-done") ? (
+        <ContextMenuItem
+          leading={MENU_CIRCLE_CHECK_ICON}
+          onSelect={onMarkDone}
+          testID={`mission-control-row-mark-done-${agentId}`}
+        >
+          Mark done
+        </ContextMenuItem>
+      ) : null}
+      {menuActions.includes("clear") ? (
+        <ContextMenuItem
+          leading={MENU_CIRCLE_CHECK_ICON}
+          onSelect={onClear}
+          testID={`mission-control-row-clear-${agentId}`}
+        >
+          Clear
+        </ContextMenuItem>
+      ) : null}
+      {menuActions.includes("archive") ? (
+        <ContextMenuItem
+          leading={MENU_ARCHIVE_ICON}
+          onSelect={onArchive}
+          status={isArchiving ? "pending" : undefined}
+          pendingLabel="Archiving..."
+          testID={`mission-control-row-archive-${agentId}`}
+        >
+          Archive
+        </ContextMenuItem>
+      ) : null}
+    </ContextMenuContent>
+  );
+}
+
+/** Hover identity popover (docs/hover.md): shows the agent title and the
+ * current headline below the row when both are missing it renders nothing. */
+function AgentRowIdentityPopover({
+  rowPopoverRef,
+  title,
+  headline,
+}: {
+  rowPopoverRef: RefObject<View | null>;
+  title: string | null;
+  headline: string | null;
+}): ReactElement | null {
+  if (title === null && headline === null) {
+    return null;
+  }
+  return (
+    <View ref={rowPopoverRef} pointerEvents="none" style={styles.identityPopover}>
+      {title ? (
+        <Text style={styles.identityPopoverTitle} numberOfLines={2}>
+          {title}
+        </Text>
+      ) : null}
+      {headline ? (
+        <Text style={styles.identityPopoverDescription} numberOfLines={4}>
+          {headline}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
 const MemoizedAgentRow = memo(AgentRowImpl);
 
 function AgentRowImpl({
@@ -245,6 +473,28 @@ function AgentRowImpl({
   const { agent } = row;
   const timeLabel = useCompactTimeAgo(agent.lastActivityAt);
   const { Icon, mapping } = rowIconAndColor(row);
+  const toast = useToast();
+  const { archiveAgent, isArchivingAgent } = useArchiveAgent();
+  const [contextMenuOpen, setContextMenuOpen] = useState(false);
+  const [rowHovered, setRowHovered] = useState(false);
+  const rowTriggerRef = useRef<View | null>(null);
+  const rowPopoverRef = useRef<View | null>(null);
+
+  const handleRowPointerEnter = useCallback(() => setRowHovered(true), []);
+  const handleRowPointerLeave = useCallback(() => setRowHovered(false), []);
+  const handleRowSafeZoneEnter = useCallback(() => setRowHovered(true), []);
+  const handleRowSafeZoneLeave = useCallback(() => setRowHovered(false), []);
+  useHoverSafeZone({
+    enabled: rowHovered,
+    triggerRef: rowTriggerRef,
+    contentRef: rowPopoverRef,
+    onEnterSafeZone: handleRowSafeZoneEnter,
+    onLeaveSafeZone: handleRowSafeZoneLeave,
+  });
+
+  const handleContextMenuOpenChange = useCallback((open: boolean) => {
+    setContextMenuOpen(open);
+  }, []);
 
   const handlePress = useCallback(() => {
     useInspectorStore.getState().openInspectorAgent({
@@ -253,11 +503,48 @@ function AgentRowImpl({
     });
   }, [agent.id, agent.serverId]);
 
+  const handleOpenInWorkspace = useCallback(() => {
+    void openAgentFromHistory({
+      serverId: agent.serverId,
+      agentId: agent.id,
+      workspaceId: agent.workspaceId ?? null,
+      archived: Boolean(agent.archivedAt),
+    });
+  }, [agent]);
+
+  const handleCopyReference = useCallback(() => {
+    void copyToClipboard(buildAgentReference(agent))
+      .then(() => toast.copied("Reference copied"))
+      .catch(() => toast.error("Unable to copy reference"));
+  }, [agent, toast]);
+
+  const handleStop = useCallback(() => {
+    const client = getHostRuntimeStore().getClient(agent.serverId);
+    if (!client) {
+      return;
+    }
+    void client.cancelAgent(agent.id).catch(() => {
+      // A failed cancel leaves the run going; the next push reconciles.
+    });
+  }, [agent.id, agent.serverId]);
+
+  const handleMarkDone = useCallback(() => {
+    void setAgentLifecycle(agent.serverId, agent.id, "done").catch(() => {
+      // Bookkeeping action; a failed mark leaves the row in Ready.
+    });
+  }, [agent.id, agent.serverId]);
+
   const handleClear = useCallback(() => {
     void clearAgentLifecycle(agent.serverId, agent.id).catch(() => {
       // Bookkeeping action; a failed clear leaves the row in Done.
     });
   }, [agent.id, agent.serverId]);
+
+  const handleArchive = useCallback(() => {
+    void archiveAgent({ serverId: agent.serverId, agentId: agent.id }).catch(() => {
+      // The daemon still processes the archive; the row disappears on push.
+    });
+  }, [agent.id, agent.serverId, archiveAgent]);
 
   const keyLine = agent.title ?? agent.name ?? agent.id;
   const showNameChip = agent.name !== null && agent.name !== keyLine && !hideAgentNames;
@@ -274,55 +561,66 @@ function AgentRowImpl({
       ? null
       : row.lastReportHeadline;
 
+  const menuActions = resolveBoardRowMenuActions(row);
+  const isArchiving = isArchivingAgent({ serverId: agent.serverId, agentId: agent.id });
+
   return (
-    <Pressable
-      onPress={handlePress}
-      accessibilityRole="button"
-      accessibilityLabel={`${keyLine}, ${bucketLabel}`}
-      style={agentRowStyle}
+    <View
+      ref={rowTriggerRef}
+      style={styles.rowHoverEnvelope}
+      onPointerEnter={handleRowPointerEnter}
+      onPointerLeave={handleRowPointerLeave}
     >
-      {() => (
-        <>
-          <Icon size={12} uniProps={mapping} />
-          <HostGlyph serverId={agent.serverId} label={agent.serverLabel} size={16} />
-          <View style={styles.agentText}>
-            <Text numberOfLines={1} style={styles.agentTitle}>
-              {keyLine}
-            </Text>
-            <View style={styles.agentMetaRow}>
-              {showNameChip ? (
-                <View style={styles.nameChip}>
-                  <Text numberOfLines={1} style={styles.nameChipText}>
-                    {agent.name}
-                  </Text>
-                </View>
-              ) : null}
-              {headline ? (
-                <Text numberOfLines={1} style={styles.agentHeadline}>
-                  {headline}
-                </Text>
-              ) : null}
-            </View>
-            {isDone && row.verdict ? (
-              <Text numberOfLines={1} style={styles.verdictLine}>
-                {row.verdict.summary}
-              </Text>
+      <ContextMenu open={contextMenuOpen} onOpenChange={handleContextMenuOpenChange}>
+        <ContextMenuTrigger
+          onPress={handlePress}
+          accessibilityRole="button"
+          accessibilityLabel={`${keyLine}, ${bucketLabel}`}
+          style={agentRowStyle}
+          testID={`mission-control-row-${agent.id}`}
+        >
+          <>
+            <Icon size={12} uniProps={mapping} />
+            <HostGlyph serverId={agent.serverId} label={agent.serverLabel} size={16} />
+            <AgentRowTextContent
+              row={row}
+              keyLine={keyLine}
+              showNameChip={showNameChip}
+              headline={headline}
+            />
+            {timeLabel ? <Text style={styles.rowTime}>{timeLabel}</Text> : null}
+            {isDone ? (
+              <Button
+                variant="ghost"
+                size="xs"
+                onPress={handleClear}
+                testID={`mission-control-clear-agent-${agent.id}`}
+              >
+                Clear
+              </Button>
             ) : null}
-          </View>
-          {timeLabel ? <Text style={styles.rowTime}>{timeLabel}</Text> : null}
-          {isDone ? (
-            <Button
-              variant="ghost"
-              size="xs"
-              onPress={handleClear}
-              testID={`mission-control-clear-agent-${agent.id}`}
-            >
-              Clear
-            </Button>
-          ) : null}
-        </>
-      )}
-    </Pressable>
+          </>
+        </ContextMenuTrigger>
+        <AgentRowMenuContent
+          agentId={agent.id}
+          menuActions={menuActions}
+          isArchiving={isArchiving}
+          onOpenInWorkspace={handleOpenInWorkspace}
+          onCopyReference={handleCopyReference}
+          onStop={handleStop}
+          onMarkDone={handleMarkDone}
+          onClear={handleClear}
+          onArchive={handleArchive}
+        />
+      </ContextMenu>
+      {rowHovered ? (
+        <AgentRowIdentityPopover
+          rowPopoverRef={rowPopoverRef}
+          title={agent.title}
+          headline={headline}
+        />
+      ) : null}
+    </View>
   );
 }
 
@@ -382,6 +680,39 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.lg,
     userSelect: "none",
   },
+  // Hover envelope (docs/hover.md): plain View tracks pointer, the
+  // ContextMenuTrigger inside owns press. position: relative anchors the
+  // identity popover below the row.
+  rowHoverEnvelope: {
+    position: "relative",
+  },
+  identityPopover: {
+    position: "absolute",
+    top: "100%",
+    left: theme.spacing[2],
+    right: theme.spacing[2],
+    zIndex: 10,
+    marginTop: theme.spacing[1],
+    gap: theme.spacing[1],
+    padding: theme.spacing[3],
+    borderRadius: theme.borderRadius.lg,
+    backgroundColor: theme.colors.surface2,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.border,
+    ...theme.shadow.sm,
+  },
+  identityPopoverTitle: {
+    fontFamily: theme.fontFamily.ui,
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.semibold,
+    color: theme.colors.foreground,
+  },
+  identityPopoverDescription: {
+    fontFamily: theme.fontFamily.ui,
+    fontSize: theme.fontSize.xs,
+    lineHeight: 16,
+    color: theme.colors.foregroundMuted,
+  },
   agentRowHovered: {
     backgroundColor: theme.colors.surfaceSidebarHover,
   },
@@ -412,6 +743,18 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.xs,
     fontWeight: theme.fontWeight.medium,
     color: theme.colors.foregroundMuted,
+  },
+  stoppedChip: {
+    paddingHorizontal: theme.spacing[1],
+    paddingVertical: 1,
+    borderRadius: theme.borderRadius.md,
+    backgroundColor: theme.colors.surface2,
+    flexShrink: 0,
+  },
+  stoppedChipText: {
+    fontSize: theme.fontSize.xs,
+    fontWeight: theme.fontWeight.medium,
+    color: theme.colors.statusDotWarning,
   },
   agentHeadline: {
     flexShrink: 1,

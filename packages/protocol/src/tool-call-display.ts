@@ -62,7 +62,7 @@ const FLEET_DISPATCH_TOOLS: Record<string, true> = {
   tag_message: true,
 };
 
-function fleetToolLeafName(name: string): string | null {
+export function fleetToolLeafName(name: string): string | null {
   const trimmed = name.trim().toLowerCase();
   if (FLEET_DISPATCH_TOOLS[trimmed]) {
     return trimmed;

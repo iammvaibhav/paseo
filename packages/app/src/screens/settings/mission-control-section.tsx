@@ -1,12 +1,15 @@
 import { useCallback, useMemo, useRef, useState, type ReactElement } from "react";
-import { Text, View, type PressableStateCallbackType } from "react-native";
+import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { ChevronDown } from "lucide-react-native";
+import { ChevronDown, X } from "lucide-react-native";
+import type { AgentProvider } from "@getpaseo/protocol/agent-types";
 import type {
   MissionControlCentralConfig,
   MissionControlMode,
 } from "@getpaseo/protocol/mission-control/types";
 import { SettingsTextArea } from "@/components/settings-textarea";
+import { CombinedModelSelector } from "@/components/combined-model-selector";
+import { SelectFieldTrigger } from "@/components/ui/select-field";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -19,6 +22,8 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { Switch } from "@/components/ui/switch";
 import { SettingsSection } from "@/screens/settings/settings-section";
 import { useIsCompactFormFactor } from "@/constants/layout";
+import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
+import { buildSelectableProviderSelectorProviders } from "@/provider-selection/provider-selection";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
 import { useHosts } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
@@ -37,6 +42,7 @@ const MISSION_CONTROL_NAMING_THEMES = [
 ] as const;
 
 const ThemedChevronDown = withUnistyles(ChevronDown);
+const ThemedX = withUnistyles(X);
 
 const chevronMutedMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
@@ -123,66 +129,6 @@ function DropdownRow<T extends string>({
   );
 }
 
-function TextRow({
-  title,
-  hint,
-  value,
-  onCommit,
-  testID,
-  isCompact,
-  placeholder,
-  first = false,
-}: {
-  title: string;
-  hint: string;
-  value: string | null;
-  onCommit: (next: string | null) => void;
-  testID: string;
-  isCompact: boolean;
-  placeholder?: string;
-  first?: boolean;
-}) {
-  const draftRef = useRef<string | null>(null);
-  const handleChange = useCallback((text: string) => {
-    draftRef.current = text;
-  }, []);
-  const handleCommit = useCallback(() => {
-    const draft = draftRef.current;
-    draftRef.current = null;
-    if (draft === null) {
-      return;
-    }
-    const trimmed = draft.trim();
-    const next = trimmed.length === 0 ? null : trimmed;
-    if (next === value) {
-      return;
-    }
-    onCommit(next);
-  }, [onCommit, value]);
-  return (
-    <View style={[settingsStyles.row, first ? null : settingsStyles.rowBorder]}>
-      <View style={settingsStyles.rowContent}>
-        <Text style={settingsStyles.rowTitle}>{title}</Text>
-        <Text style={settingsStyles.rowHint}>{hint}</Text>
-      </View>
-      <FormTextInput
-        size={isCompact ? "md" : "sm"}
-        initialValue={value ?? ""}
-        resetKey={value ?? ""}
-        onChangeText={handleChange}
-        onSubmitEditing={handleCommit}
-        onBlur={handleCommit}
-        placeholder={placeholder}
-        accessibilityLabel={title}
-        testID={testID}
-        style={styles.textInput}
-        autoCapitalize="none"
-        autoCorrect={false}
-      />
-    </View>
-  );
-}
-
 function NumberRow({
   title,
   hint,
@@ -248,6 +194,130 @@ function ModeRow({ mode }: { mode: MissionControlMode }) {
         </Text>
       </View>
       <StatusBadge label={mode === "auto" ? "Auto" : "Ask"} />
+    </View>
+  );
+}
+
+/**
+ * Split a stored "provider/model" override (the wire format the daemon parses)
+ * into selector state; a bare model resolves on the host default provider.
+ */
+function splitModelOverride(value: string | null): { provider: string; model: string } {
+  if (!value) {
+    return { provider: "", model: "" };
+  }
+  const slashIndex = value.indexOf("/");
+  if (slashIndex > 0) {
+    return {
+      provider: value.slice(0, slashIndex).trim(),
+      model: value.slice(slashIndex + 1).trim(),
+    };
+  }
+  return { provider: "", model: value.trim() };
+}
+
+/**
+ * Central-config model override row: the app's CombinedModelSelector (spec —
+ * never free-text). Empty = no override (the daemon falls back to the host
+ * default / omp modelRoles); the clear button restores that empty state.
+ */
+function ModelOverrideRow({
+  title,
+  hint,
+  value,
+  onCommit,
+  serverId,
+  testID,
+  isCompact,
+  first = false,
+}: {
+  title: string;
+  hint: string;
+  value: string | null;
+  onCommit: (next: string | null) => void;
+  serverId: string;
+  testID: string;
+  isCompact: boolean;
+  first?: boolean;
+}) {
+  const { entries: snapshotEntries, isLoading } = useProvidersSnapshot(serverId);
+  const providers = useMemo(
+    () => buildSelectableProviderSelectorProviders(snapshotEntries),
+    [snapshotEntries],
+  );
+  const { provider, model } = splitModelOverride(value);
+
+  const handleSelect = useCallback(
+    (nextProvider: AgentProvider, nextModel: string) => {
+      onCommit(`${nextProvider}/${nextModel}`);
+    },
+    [onCommit],
+  );
+  const handleClear = useCallback(() => {
+    onCommit(null);
+  }, [onCommit]);
+
+  const renderTrigger = useCallback(
+    ({
+      selectedModelLabel,
+      disabled,
+      isOpen,
+      hovered,
+      pressed,
+    }: {
+      selectedModelLabel: string;
+      onPress: () => void;
+      disabled: boolean;
+      isOpen: boolean;
+      hovered: boolean;
+      pressed: boolean;
+    }) => (
+      <SelectFieldTrigger
+        label={provider ? selectedModelLabel : "Host default"}
+        isPlaceholder={!provider}
+        placeholder="Host default"
+        active={hovered || pressed || isOpen}
+        disabled={disabled}
+        loading={isLoading}
+        size={isCompact ? "md" : "sm"}
+        testID={`${testID}-trigger`}
+      />
+    ),
+    [isCompact, isLoading, provider, testID],
+  );
+
+  return (
+    <View style={[settingsStyles.row, first ? null : settingsStyles.rowBorder]}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>{title}</Text>
+        <Text style={settingsStyles.rowHint}>{hint}</Text>
+      </View>
+      <View style={styles.modelSelectorSlot}>
+        <View style={styles.modelSelectorField}>
+          <CombinedModelSelector
+            providers={providers}
+            selectedProvider={provider}
+            selectedModel={model}
+            onSelect={handleSelect}
+            isLoading={isLoading}
+            triggerFill
+            serverId={serverId}
+            renderTrigger={renderTrigger}
+          />
+        </View>
+        {provider ? (
+          <Pressable
+            onPress={handleClear}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={`Clear ${title}`}
+            testID={`${testID}-clear`}
+            style={styles.modelClearButton}
+          >
+            <ThemedX size={14} uniProps={chevronMutedMapping} />
+          </Pressable>
+        ) : null}
+      </View>
     </View>
   );
 }
@@ -358,10 +428,18 @@ export function MissionControlSection(): ReactElement {
     (next: string) => void patch({ defaultDispatchHost: next }),
     [patch],
   );
-  const handleNudgeSecondsCommit = useCallback(
+  const handleStatusNudgeSecondsCommit = useCallback(
     (next: number | null) => {
       if (next !== null) {
-        void patch({ nudgeSeconds: next });
+        void patch({ statusNudgeSeconds: next });
+      }
+    },
+    [patch],
+  );
+  const handleSilenceNudgeSecondsCommit = useCallback(
+    (next: number | null) => {
+      if (next !== null) {
+        void patch({ silenceNudgeSeconds: next });
       }
     },
     [patch],
@@ -415,14 +493,14 @@ export function MissionControlSection(): ReactElement {
             testID="mission-control-settings-commander-host"
             first
           />
-          <TextRow
+          <ModelOverrideRow
             title="Commander model"
-            hint="Provider/model override; empty uses the host default model."
+            hint="Override; empty uses the host default model."
             value={config.commanderModel}
             onCommit={handleCommanderModelCommit}
+            serverId={hostServerId}
             testID="mission-control-settings-commander-model"
             isCompact={isCompact}
-            placeholder="Host default"
           />
         </View>
         <SettingsTextArea
@@ -437,14 +515,14 @@ export function MissionControlSection(): ReactElement {
 
       <SettingsSection title="Verifier">
         <View style={settingsStyles.card}>
-          <TextRow
+          <ModelOverrideRow
             title="Verifier model"
-            hint="Provider/model override; empty resolves to the task model role."
+            hint="Overrides omp modelRoles.verifier; empty = omp config."
             value={config.verifierModel}
             onCommit={handleVerifierModelCommit}
+            serverId={hostServerId}
             testID="mission-control-settings-verifier-model"
             isCompact={isCompact}
-            placeholder="Task model"
             first
           />
           <NumberRow
@@ -511,17 +589,25 @@ export function MissionControlSection(): ReactElement {
       <SettingsSection title="Stall detection">
         <View style={settingsStyles.card}>
           <NumberRow
-            title="Nudge after"
-            hint="Seconds of silence before the agent is nudged to report."
-            value={config.nudgeSeconds}
-            onCommit={handleNudgeSecondsCommit}
-            testID="mission-control-settings-nudge-seconds"
+            title="Silence nudge"
+            hint="Seconds of total silence (no output) before the agent is asked for a status."
+            value={config.silenceNudgeSeconds}
+            onCommit={handleSilenceNudgeSecondsCommit}
+            testID="mission-control-settings-silence-nudge-seconds"
             isCompact={isCompact}
             first
           />
           <NumberRow
+            title="Status nudge"
+            hint="Seconds without a status update before the agent is asked for one."
+            value={config.statusNudgeSeconds}
+            onCommit={handleStatusNudgeSecondsCommit}
+            testID="mission-control-settings-status-nudge-seconds"
+            isCompact={isCompact}
+          />
+          <NumberRow
             title="Escalate after"
-            hint="Seconds of silence before the run escalates to Needs you."
+            hint="Seconds after a nudge with no response before recovery."
             value={config.escalateSeconds}
             onCommit={handleEscalateSecondsCommit}
             testID="mission-control-settings-escalate-seconds"
@@ -586,8 +672,21 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     flexShrink: 1,
   },
-  textInput: {
-    width: 180,
+  modelSelectorSlot: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  modelSelectorField: {
+    width: 200,
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  modelClearButton: {
+    padding: theme.spacing[1],
+    borderRadius: theme.borderRadius.md,
   },
   numberInput: {
     width: 88,

@@ -632,6 +632,10 @@ type MissionControlConfigPatchPayload = Extract<
   SessionOutboundMessage,
   { type: "mission_control.config.patch.response" }
 >["payload"];
+type MissionControlCommanderResetPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.commander.reset.response" }
+>["payload"];
 type MissionControlModeSetPayload = Extract<
   SessionOutboundMessage,
   { type: "mission_control.mode.set.response" }
@@ -5836,7 +5840,23 @@ export class DaemonClient {
     });
   }
 
-  /** Flip the approval gate between ask and auto mode. */
+  /**
+   * Archive the current Commander and spawn a fresh one with a new context
+   * pack (mission_control.commander.reset). The old conversation stays in
+   * History. Mirrors the thread overflow "Reset Commander" action.
+   */
+  async missionControlCommanderReset(
+    requestId?: string,
+  ): Promise<MissionControlCommanderResetPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "mission_control.commander.reset.request" },
+      responseType: "mission_control.commander.reset.response",
+    });
+  }
+
+  /**
+   * Flip the approval gate between ask and auto mode. */
   async missionControlModeSet(
     mode: MissionControlMode,
     requestId?: string,

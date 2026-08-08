@@ -311,7 +311,12 @@ export const MissionControlCentralConfigSchema = z.object({
   hideAgentNames: z.boolean().optional(),
   // Preferred host when the Commander routes work.
   defaultDispatchHost: z.string().nullable().optional(),
-  // Stall detection thresholds (seconds).
+  // Stall detection thresholds (seconds). Two nudge triggers share one
+  // action: silenceNudgeSeconds (no timeline output at all) and
+  // statusNudgeSeconds (no report_status even with timeline flowing).
+  // nudgeSeconds is the deprecated pre-rename alias for statusNudgeSeconds.
+  silenceNudgeSeconds: z.number().optional(),
+  statusNudgeSeconds: z.number().optional(),
   nudgeSeconds: z.number().optional(),
   escalateSeconds: z.number().optional(),
 });
@@ -352,6 +357,32 @@ export const MissionControlConfigPatchResponseSchema = z.object({
 });
 export type MissionControlConfigPatchResponse = z.infer<
   typeof MissionControlConfigPatchResponseSchema
+>;
+
+// ============================================================================
+// v3 Commander reset: archive the current Commander (old conversation stays in
+// History) and spawn fresh with a new context pack. Exposed in the thread
+// overflow menu.
+// ============================================================================
+
+export const MissionControlCommanderResetRequestSchema = z.object({
+  type: z.literal("mission_control.commander.reset.request"),
+  requestId: z.string(),
+});
+export type MissionControlCommanderResetRequest = z.infer<
+  typeof MissionControlCommanderResetRequestSchema
+>;
+
+export const MissionControlCommanderResetResponseSchema = z.object({
+  type: z.literal("mission_control.commander.reset.response"),
+  payload: z.object({
+    requestId: z.string(),
+    ok: z.boolean(),
+    error: z.string().optional(),
+  }),
+});
+export type MissionControlCommanderResetResponse = z.infer<
+  typeof MissionControlCommanderResetResponseSchema
 >;
 
 // ============================================================================

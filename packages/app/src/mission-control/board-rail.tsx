@@ -9,6 +9,12 @@ import { clampBoardRailWidth, usePanelStore } from "@/stores/panel-store";
 interface BoardRailProps {
   children: ReactNode;
   testID?: string;
+  /**
+   * When true the rail grows to fill the row instead of its persisted fixed
+   * width — used when the Commander thread collapses with no inspector open,
+   * so no dead space appears (spec: no dead space in any collapse combo).
+   */
+  flexFill?: boolean;
 }
 
 /**
@@ -17,7 +23,11 @@ interface BoardRailProps {
  * so the rail comes back where the user left it, matching the sidebar's
  * resize pattern.
  */
-export function BoardRail({ children, testID = "mission-control-board-rail" }: BoardRailProps) {
+export function BoardRail({
+  children,
+  testID = "mission-control-board-rail",
+  flexFill = false,
+}: BoardRailProps) {
   const boardRailWidth = usePanelStore((state) => state.boardRailWidth);
   const setBoardRailWidth = usePanelStore((state) => state.setBoardRailWidth);
 
@@ -38,7 +48,7 @@ export function BoardRail({ children, testID = "mission-control-board-rail" }: B
   const resizeGesture = useMemo(
     () =>
       Gesture.Pan()
-        .enabled(true)
+        .enabled(!flexFill)
         .hitSlop({ left: 8, right: 8, top: 0, bottom: 0 })
         .onStart(() => {
           startWidthRef.current = boardRailWidth;
@@ -52,7 +62,7 @@ export function BoardRail({ children, testID = "mission-control-board-rail" }: B
         .onEnd(() => {
           runOnJS(handleResizeEnd)(resizeWidth.value);
         }),
-    [boardRailWidth, handleResizeEnd, resizeWidth],
+    [boardRailWidth, flexFill, handleResizeEnd, resizeWidth],
   );
 
   const animatedStyle = useAnimatedStyle(() => ({
@@ -60,7 +70,10 @@ export function BoardRail({ children, testID = "mission-control-board-rail" }: B
   }));
 
   return (
-    <Animated.View style={[styles.rail, animatedStyle]} testID={testID}>
+    <Animated.View
+      style={[styles.rail, animatedStyle, flexFill ? styles.railFill : null]}
+      testID={testID}
+    >
       <SidebarResizeHandle
         edge="left"
         gesture={resizeGesture}
@@ -76,6 +89,11 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     borderLeftWidth: 1,
     borderLeftColor: theme.colors.border,
+  },
+  // flex: 1 makes flexBasis 0, which overrides the animated width — the rail
+  // fills the row when the collapsed thread leaves it free space.
+  railFill: {
+    flex: 1,
   },
   content: {
     flex: 1,

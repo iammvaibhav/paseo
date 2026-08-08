@@ -1006,7 +1006,7 @@ export const zhCN: TranslationResources = {
       sessions: "历史",
       schedules: "计划",
       missionControl: "Mission Control",
-      missionControlWorking: "工作代理",
+      missionControlNeedsYou: "需要你处理",
       missionControlReady: "待审查",
       webhooks: "Webhooks",
     },

@@ -28,6 +28,13 @@ import { Alert as InlineAlert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { FormTextInput } from "@/components/ui/form-field";
+import { HostGlyph } from "@/components/host-glyph";
+import { normalizeHostGlyphOverride } from "@/components/host-glyph-model";
+import {
+  IDENTITY_COLOR_NAMES,
+  identityColor,
+  type IdentityColorName,
+} from "@/styles/identity-colors";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import {
   ProfileDraft,
@@ -1234,7 +1241,7 @@ function HostAliasRow({
     <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
       <View style={settingsStyles.rowContent}>
         <Text style={settingsStyles.rowTitle} numberOfLines={1}>
-          {label}
+          Alias for this machine
         </Text>
         <Text style={settingsStyles.rowHint}>Alias shown to the Commander for this host.</Text>
       </View>
@@ -1253,6 +1260,170 @@ function HostAliasRow({
   );
 }
 
+function HostGlyphInitialsRow({
+  label,
+  initials,
+  isCompact,
+  onCommit,
+}: {
+  label: string;
+  initials: string;
+  isCompact: boolean;
+  onCommit: (initials: string) => void;
+}) {
+  const draftRef = useRef<string | null>(null);
+  const handleChange = useCallback((text: string) => {
+    draftRef.current = text;
+  }, []);
+  const handleCommit = useCallback(() => {
+    const draft = draftRef.current;
+    draftRef.current = null;
+    if (draft === null || draft.trim() === initials) {
+      return;
+    }
+    onCommit(draft.trim());
+  }, [initials, onCommit]);
+  return (
+    <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle} numberOfLines={1}>
+          Initials
+        </Text>
+        <Text style={settingsStyles.rowHint}>
+          1–2 characters on the host glyph; emoji allowed. Blank uses the alias.
+        </Text>
+      </View>
+      <FormTextInput
+        size={isCompact ? "md" : "sm"}
+        initialValue={initials}
+        resetKey={initials}
+        maxLength={4}
+        placeholder="Auto"
+        onChangeText={handleChange}
+        onSubmitEditing={handleCommit}
+        onBlur={handleCommit}
+        accessibilityLabel={`Glyph initials for ${label}`}
+        testID="host-page-mission-control-glyph-initials"
+        style={styles.mcAliasInput}
+      />
+    </View>
+  );
+}
+
+function GlyphColorSwatch({
+  name,
+  value,
+  label,
+  onCommit,
+}: {
+  name: IdentityColorName | null;
+  value: IdentityColorName | null;
+  label: string;
+  onCommit: (color: IdentityColorName | null) => void;
+}) {
+  const handlePress = useCallback(() => onCommit(name), [name, onCommit]);
+  const testID =
+    name === null
+      ? "host-page-mission-control-glyph-color-auto"
+      : `host-page-mission-control-glyph-color-${name}`;
+  const accessibilityLabel =
+    name === null ? `Auto color for ${label}` : `${name} color for ${label}`;
+  return (
+    <Pressable
+      onPress={handlePress}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      testID={testID}
+      style={[
+        styles.glyphColorSwatch,
+        name !== null && { backgroundColor: identityColor(name) },
+        value === name && styles.glyphColorSwatchSelected,
+      ]}
+    >
+      {name === null ? <View style={styles.glyphColorSwatchAuto} /> : null}
+    </Pressable>
+  );
+}
+
+function HostGlyphColorRow({
+  label,
+  value,
+  onCommit,
+}: {
+  label: string;
+  /** Selected identity color; null = deterministic default for this host. */
+  value: IdentityColorName | null;
+  onCommit: (color: IdentityColorName | null) => void;
+}) {
+  return (
+    <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle} numberOfLines={1}>
+          Color
+        </Text>
+        <Text style={settingsStyles.rowHint}>
+          Chip color from the app&apos;s identity palette; Auto keeps the deterministic color for
+          this host.
+        </Text>
+        <View style={styles.glyphColorSwatches}>
+          <GlyphColorSwatch name={null} value={value} label={label} onCommit={onCommit} />
+          {IDENTITY_COLOR_NAMES.map((name) => (
+            <GlyphColorSwatch
+              key={name}
+              name={name}
+              value={value}
+              label={label}
+              onCommit={onCommit}
+            />
+          ))}
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function HostGlyphSection({
+  serverId,
+  hostLabel,
+  initials,
+  color,
+  isCompact,
+  onInitialsCommit,
+  onColorCommit,
+}: {
+  serverId: string;
+  hostLabel: string;
+  initials: string;
+  color: IdentityColorName | null;
+  isCompact: boolean;
+  onInitialsCommit: (initials: string) => void;
+  onColorCommit: (color: IdentityColorName | null) => void;
+}) {
+  return (
+    <>
+      <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+        <View style={settingsStyles.rowContent}>
+          <Text style={settingsStyles.rowTitle} numberOfLines={1}>
+            Glyph
+          </Text>
+          <Text style={settingsStyles.rowHint}>
+            Host chip on the board and sidebar. Connection status shows as a ring when the host is
+            offline.
+          </Text>
+        </View>
+        <HostGlyph serverId={serverId} label={hostLabel} size={20} />
+      </View>
+      <HostGlyphInitialsRow
+        label={hostLabel}
+        initials={initials}
+        isCompact={isCompact}
+        onCommit={onInitialsCommit}
+      />
+      <HostGlyphColorRow label={hostLabel} value={color} onCommit={onColorCommit} />
+    </>
+  );
+}
+
 function MissionControlCard({ serverId }: { serverId: string }) {
   const isConnected = useHostRuntimeIsConnected(serverId);
   const isCompact = useIsCompactFormFactor();
@@ -1261,6 +1432,9 @@ function MissionControlCard({ serverId }: { serverId: string }) {
   const missionControl = config?.missionControl;
   const enabled = missionControl?.enabled === true;
   const hostAlias = missionControl?.hostAlias ?? "";
+  const hostGlyph = normalizeHostGlyphOverride(missionControl?.hostGlyph);
+  const glyphInitials = hostGlyph?.initials ?? "";
+  const glyphColor = (hostGlyph?.color as IdentityColorName | null) ?? null;
 
   // The server replaces the whole missionControl object on patch, so every
   // change re-sends the current values for the keys it does not touch.
@@ -1287,6 +1461,32 @@ function MissionControlCard({ serverId }: { serverId: string }) {
     [patchMissionControl],
   );
 
+  // An emptied override is sent as `null` — not `{}` or `undefined`. The
+  // server's config merge recurses into objects (`{}` would merge into the old
+  // override) and JSON RPC serialization drops `undefined`, so only an explicit
+  // null reliably clears a previous hostGlyph.
+  const handleGlyphInitialsCommit = useCallback(
+    (initials: string) => {
+      const next = normalizeHostGlyphOverride({
+        ...hostGlyph,
+        initials: initials || undefined,
+      });
+      patchMissionControl({ hostGlyph: next ?? null });
+    },
+    [hostGlyph, patchMissionControl],
+  );
+
+  const handleGlyphColorCommit = useCallback(
+    (color: IdentityColorName | null) => {
+      const next = normalizeHostGlyphOverride({
+        ...hostGlyph,
+        color: color ?? undefined,
+      });
+      patchMissionControl({ hostGlyph: next ?? null });
+    },
+    [hostGlyph, patchMissionControl],
+  );
+
   if (!isConnected) return null;
 
   return (
@@ -1311,6 +1511,15 @@ function MissionControlCard({ serverId }: { serverId: string }) {
         alias={hostAlias}
         isCompact={isCompact}
         onCommit={handleAliasCommit}
+      />
+      <HostGlyphSection
+        serverId={serverId}
+        hostLabel={host?.label ?? serverId}
+        initials={glyphInitials}
+        color={glyphColor}
+        isCompact={isCompact}
+        onInitialsCommit={handleGlyphInitialsCommit}
+        onColorCommit={handleGlyphColorCommit}
       />
     </View>
   );
@@ -2161,6 +2370,34 @@ const styles = StyleSheet.create((theme) => ({
   },
   mcAliasInput: {
     width: 160,
+  },
+  glyphColorSwatches: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: theme.spacing[1],
+    marginTop: theme.spacing[1.5],
+  },
+  // Fixed 2px border in both states so selecting a swatch never moves the row
+  // (design §11: changing state must not move the layout).
+  glyphColorSwatch: {
+    width: 22,
+    height: 22,
+    borderRadius: theme.borderRadius.full,
+    borderWidth: 2,
+    borderColor: theme.colors.border,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  glyphColorSwatchSelected: {
+    borderColor: theme.colors.foreground,
+  },
+  glyphColorSwatchAuto: {
+    width: 10,
+    height: 10,
+    borderRadius: theme.borderRadius.full,
+    borderWidth: 1,
+    borderColor: theme.colors.foregroundMuted,
+    alignSelf: "center",
   },
   emptyCard: {
     padding: theme.spacing[4],

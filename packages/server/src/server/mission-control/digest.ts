@@ -14,6 +14,9 @@ import {
   startAgentRun,
   waitForAgentRunStartWithTimeout,
 } from "../agent/agent-prompt.js";
+import { CommanderAckDrop } from "./commander-ack-drop.js";
+
+export { isPureAckReply } from "./commander-ack-drop.js";
 
 const COMMANDER_LABEL = "paseo.mission-control";
 const COMMANDER_LABEL_VALUE = "commander";
@@ -33,48 +36,6 @@ const PARENT_NOTIFIED_DIGEST_KINDS: Partial<Record<MissionControlEventKind, true
 const DIGEST_NO_PROSE_INSTRUCTION =
   'If this digest needs no action from you, reply with a single short acknowledgment token (for example "ok") and nothing else. No summaries, no narration.';
 
-// Ack suppression: a digest-initiated run that answers with pure
-// acknowledgment (no question, proposal, or tool call) is retracted from the
-// visible thread. Replies to user-prompted turns are never classified.
-const ACK_DROP_EXACT_TOKENS: ReadonlySet<string> = new Set([
-  "ok",
-  "okay",
-  "k",
-  "kk",
-  "ack",
-  "acknowledged",
-  "got it",
-  "roger",
-  "understood",
-  "noted",
-  "done",
-  "sounds good",
-  "will do",
-  "sure",
-  "yep",
-  "yes",
-  "fine",
-  "10-4",
-  "👍",
-  "👌",
-  "✅",
-]);
-const ACK_DROP_NO_ACTION_PHRASES: readonly string[] = [
-  "no action needed",
-  "no action required",
-  "nothing to do",
-  "nothing needs action",
-  "nothing to report",
-  "nothing actionable",
-  "no changes needed",
-  "all clear",
-  "nothing new",
-  "no updates",
-];
-// Offers to act, plans, or open-ended remarks are proposals, never acks.
-const ACK_DROP_PROPOSAL_PATTERN =
-  /\b(should i|shall i|want me to|can i|i can|i will|i'll|i'd|let me|do you want|i could|i might|propose|suggest|plan|happy to|ready to)\b/i;
-
 export interface MissionControlDigestOrigin {
   serverId: string;
   hostName: string;
@@ -86,55 +47,18 @@ interface BufferedMissionControlEvent {
 }
 
 /**
- * The Commander turn a digest dispatch initiated, tracked so only its reply is
- * a candidate for ack suppression. User-prompted turns are never tracked.
- */
-interface AckDropTurn {
-  commanderId: string;
-  turnId: string | null;
-  assistantRows: Array<{ seq: number; text: string }>;
-  toolCallSeen: boolean;
-}
-
-/**
- * Pure-ack heuristic (spec Edge cases): true only for a short reply that
- * acknowledges without action. Never true for replies containing a question,
- * a proposal/offer to act, or structured/tool-call-ish content. Tool calls are
- * additionally excluded at the turn level by the caller.
- */
-export function isPureAckReply(text: string): boolean {
-  const trimmed = text.trim();
-  if (!trimmed) {
-    return false;
-  }
-  if (trimmed.includes("?")) {
-    return false;
-  }
-  if (trimmed.includes("\n")) {
-    return false;
-  }
-  if (trimmed.length > 60) {
-    return false;
-  }
-  if (trimmed.startsWith("<") || trimmed.includes("```") || trimmed.includes("`")) {
-    return false;
-  }
-  if (ACK_DROP_PROPOSAL_PATTERN.test(trimmed)) {
-    return false;
-  }
-  const normalized = trimmed.replace(/[.!]+$/g, "").toLowerCase();
-  if (ACK_DROP_EXACT_TOKENS.has(normalized)) {
-    return true;
-  }
-  return ACK_DROP_NO_ACTION_PHRASES.some((phrase) => normalized.includes(phrase));
-}
-
-/**
  * Narrow surface PeerSlice and MissionControlService depend on, so they stay
  * decoupled from the digest internals.
  */
 export interface MissionControlDigestSink {
   enqueue(event: MissionControlEvent, origin: MissionControlDigestOrigin): void;
+  /**
+   * Ack-retraction tracker for machinery-initiated Commander turns. The digest
+   * owns it; the approval-gate delivery path arms it too, so retraction fires
+   * on EVERY machinery dispatch path (spec: "including the async approvals
+   * delivery").
+   */
+  ackDrop?: CommanderAckDrop | null;
 }
 
 /**
@@ -166,15 +90,14 @@ export class MissionControlDigest implements MissionControlDigestSink {
   private readonly agentStorage: AgentStorage;
   private readonly logger: Logger;
   private readonly contextProvider: MissionControlDigestContextProvider | null;
+  /** Shared ack-retraction tracker; the approvals delivery arms it too. */
+  readonly ackDrop: CommanderAckDrop;
 
   private buffer: BufferedMissionControlEvent[] = [];
   private commanderId: string | null = null;
   private unsubscribeCommander: (() => void) | null = null;
   private sweepTimer: NodeJS.Timeout | null = null;
   private flushing = false;
-  /** True between a successful digest dispatch and the digest turn's terminal event. */
-  private ackDropArmed = false;
-  private ackDropTurn: AckDropTurn | null = null;
   /**
    * Commander session marker tracking: when the session id changes (restart)
    * or a compaction event passes on the stream, the launch-time context pack
@@ -188,6 +111,10 @@ export class MissionControlDigest implements MissionControlDigestSink {
     this.agentStorage = options.agentStorage;
     this.logger = options.logger.child({ module: "mission-control-digest" });
     this.contextProvider = options.contextProvider ?? null;
+    this.ackDrop = new CommanderAckDrop({
+      agentManager: options.agentManager,
+      logger: this.logger,
+    });
   }
 
   start(): void {
@@ -212,8 +139,7 @@ export class MissionControlDigest implements MissionControlDigestSink {
     this.unsubscribeCommander?.();
     this.unsubscribeCommander = null;
     this.commanderId = null;
-    this.ackDropArmed = false;
-    this.ackDropTurn = null;
+    this.ackDrop.detach();
   }
 
   enqueue(event: MissionControlEvent, origin: MissionControlDigestOrigin): void {
@@ -272,14 +198,14 @@ export class MissionControlDigest implements MissionControlDigestSink {
     // Arm before dispatch: the Commander was verified idle with no in-flight
     // run, so the next turn_started observed belongs to this digest. Any
     // dispatch failure below disarms again.
-    this.ackDropArmed = true;
+    this.ackDrop.arm();
     try {
       const dispatched = await startAgentRun(this.agentManager, commanderId, prompt, this.logger, {
         replaceRunning: false,
       });
       if (dispatched.outOfBand) {
         // Matched an out-of-band handler (e.g. /goal pause) — no run started.
-        this.ackDropArmed = false;
+        this.ackDrop.disarm();
         return;
       }
       // startAgentRun resolves before the turn is accepted; wait so a dispatch
@@ -288,8 +214,7 @@ export class MissionControlDigest implements MissionControlDigestSink {
     } catch (error) {
       // The dispatch raced a user prompt or the Commander closed. Never
       // interrupt — the events wait for the next quiet window.
-      this.ackDropArmed = false;
-      this.ackDropTurn = null;
+      this.ackDrop.disarm();
       this.snapshotNeeded = fresh || this.snapshotNeeded;
       this.logger.warn(
         { err: error, agentId: commanderId, eventCount: digestItems.length },
@@ -331,6 +256,7 @@ export class MissionControlDigest implements MissionControlDigestSink {
     this.unsubscribeCommander?.();
     this.unsubscribeCommander = null;
     this.commanderId = commanderId;
+    this.ackDrop.attach(commanderId ?? null);
     if (!commanderId) {
       return;
     }
@@ -349,10 +275,10 @@ export class MissionControlDigest implements MissionControlDigestSink {
   }
 
   /**
-   * Tracks the digest-initiated Commander turn so a pure-ack reply can be
-   * retracted from the visible thread. Only turns started while
-   * `ackDropArmed` (i.e. dispatched by this digest) are candidates — user
-   * turns never are.
+   * Digests' own stream tracking: compaction and session-change detection.
+   * Ack classification/retraction is handled by `this.ackDrop` (CommanderAckDrop),
+   * which subscribes to the same Commander stream; the approvals delivery path
+   * arms it too, so every machinery-initiated Commander turn is a candidate.
    */
   private handleCommanderStream(event: Extract<AgentManagerEvent, { type: "agent_stream" }>): void {
     const streamEvent = event.event;
@@ -361,73 +287,6 @@ export class MissionControlDigest implements MissionControlDigestSink {
       // pack is summarized away; re-inject a fresh snapshot on the next digest.
       this.snapshotNeeded = true;
     }
-    if (streamEvent.type === "turn_started") {
-      if (this.ackDropArmed && !this.ackDropTurn && this.commanderId) {
-        this.ackDropTurn = {
-          commanderId: this.commanderId,
-          turnId: streamEvent.turnId ?? null,
-          assistantRows: [],
-          toolCallSeen: false,
-        };
-      }
-      return;
-    }
-    const turn = this.ackDropTurn;
-    if (!turn) {
-      return;
-    }
-    if (streamEvent.type === "timeline") {
-      const item = streamEvent.item;
-      if (item.type === "assistant_message" && event.seq !== undefined) {
-        turn.assistantRows.push({ seq: event.seq, text: item.text });
-      } else if (item.type === "tool_call") {
-        turn.toolCallSeen = true;
-      }
-      return;
-    }
-    if (streamEvent.type === "turn_completed") {
-      void this.finalizeAckDropTurn(turn);
-      return;
-    }
-    if (streamEvent.type === "turn_failed" || streamEvent.type === "turn_canceled") {
-      // The digest turn did not complete normally: never classify a partial
-      // reply as an ack.
-      this.ackDropTurn = null;
-      this.ackDropArmed = false;
-    }
-  }
-
-  /**
-   * Classifies the digest turn's final assistant text and, when it is a pure
-   * ack (no question, proposal, or tool call), retracts it from the committed
-   * timeline and logs the drop.
-   */
-  private async finalizeAckDropTurn(turn: AckDropTurn): Promise<void> {
-    this.ackDropTurn = null;
-    this.ackDropArmed = false;
-    if (turn.toolCallSeen || turn.assistantRows.length === 0) {
-      return;
-    }
-    const text = turn.assistantRows
-      .map((row) => row.text)
-      .join("")
-      .trim();
-    if (!isPureAckReply(text)) {
-      return;
-    }
-    const seqs = turn.assistantRows.map((row) => row.seq);
-    this.logger.info(
-      { component: "digest", agentId: turn.commanderId, seqs, text },
-      "mission_control.digest.ack_drop",
-    );
-    await this.agentManager
-      .removeTimelineRows(turn.commanderId, seqs, "ack-drop")
-      .catch((error) => {
-        this.logger.warn(
-          { err: error, component: "digest", agentId: turn.commanderId, seqs },
-          "mission_control.digest.ack_drop_retract_failed",
-        );
-      });
   }
 
   private async selectDigestItems(commanderId: string): Promise<BufferedMissionControlEvent[]> {

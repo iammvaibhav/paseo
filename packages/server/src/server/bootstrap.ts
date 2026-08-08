@@ -156,7 +156,7 @@ import { createFleetContextDigestProvider } from "./mission-control/context.js";
 import { CentralMissionControlConfigStore } from "./mission-control/config.js";
 import { createMissionControlPresenceSource } from "./mission-control/presence.js";
 import { MissionControlVerifierDispatcher } from "./mission-control/verifier.js";
-import { ensureCommanderOnBoot } from "./mission-control/commander-boot.js";
+import { ensureCommanderOnBoot, resetCommander } from "./mission-control/commander-boot.js";
 import { AgentNamingService } from "./mission-control/naming.js";
 import { runIdentityBackfill } from "./mission-control/backfill.js";
 import { MAX_WEBHOOK_BODY_BYTES, WebhookService } from "./webhook/service.js";
@@ -1091,6 +1091,16 @@ export async function createPaseoDaemon(
     extraClients: config.agentClients,
   });
   const initialAgentManagerState = providerSnapshotManager.getAgentManagerProviderState();
+  // Central mission-control config (fleet policy, stored on the commander
+  // host). ONE shared instance for the whole daemon: naming reads the theme
+  // from it, MissionControlService writes patches through it, and
+  // resetCommander/commander-boot read it — so any patch is immediately
+  // visible to every consumer. No per-consumer copies, no second read path.
+  const centralMissionControlConfig = new CentralMissionControlConfigStore({
+    paseoHome: config.paseoHome,
+    logger,
+  });
+  await centralMissionControlConfig.initialize();
   // Mission Control naming: assigns a fleet-wide name to every created agent
   // (except paseo.mission-control=* labeled agents). Constructed before
   // AgentManager so its onAgentCreated hook can reference it; the manager is
@@ -1098,7 +1108,7 @@ export async function createPaseoDaemon(
   const agentNamingService: AgentNamingService = new AgentNamingService({
     agentStorage,
     getAgentManager: () => agentManager,
-    readTheme: () => daemonConfigStore.get().missionControl?.naming?.theme,
+    readTheme: () => centralMissionControlConfig.get().namingTheme,
     logger,
   });
   const agentManager: AgentManager = new AgentManager({
@@ -1538,15 +1548,8 @@ export async function createPaseoDaemon(
   });
   logger.info({ elapsed: elapsed() }, "Schedule service initialized");
 
-  // Central mission-control config (fleet policy, stored on the commander
-  // host). Boot-ensure and the digest's context provider read it; the
-  // MissionControlService keeps its own instance for writes.
-  const centralMissionControlConfig = new CentralMissionControlConfigStore({
-    paseoHome: config.paseoHome,
-    logger,
-  });
-  await centralMissionControlConfig.initialize();
-
+  // Central mission-control config is the daemon-wide instance constructed
+  // above (naming reads the theme from it); no second instance here.
   const missionControlDigest: MissionControlDigest = new MissionControlDigest({
     agentManager,
     agentStorage,
@@ -1617,11 +1620,37 @@ export async function createPaseoDaemon(
     hostName: getHostname(),
     broadcast: (message) => wsServer?.broadcast(wrapSessionMessage(message)),
     digest: missionControlDigest,
+    centralConfig: centralMissionControlConfig,
     presence: createMissionControlPresenceSource({
       isAgentFocused: (agentId) => wsServer?.anyClientFocusedOnAgent(agentId) ?? false,
       readStopOrigin: (agentId) => missionControlService.getStopOrigin(agentId) ?? null,
     }),
+    naming: agentNamingService,
     verifier: verifierDispatcher,
+    resetCommander: () =>
+      resetCommander({
+        logger,
+        agentManager,
+        agentStorage,
+        providerSnapshotManager,
+        createAgent,
+        centralConfig: () => centralMissionControlConfig.get(),
+        hostName: getHostname(),
+        hostAlias: daemonConfigStore.get().missionControl?.hostAlias?.trim() || null,
+        launchContext: {
+          agentManager,
+          agentStorage,
+          workspaceRegistry,
+          projectRegistry,
+          providerSnapshotManager,
+          peerManager: () => peerManager,
+          daemonConfigStore,
+          centralConfig: centralMissionControlConfig,
+          serverId,
+          hostName: getHostname(),
+          logger,
+        },
+      }),
   });
   await missionControlService.start();
   missionControlDigest.start();

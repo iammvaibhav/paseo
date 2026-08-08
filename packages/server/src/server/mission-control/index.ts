@@ -48,11 +48,17 @@ export { readBundledCommanderPrompt } from "./commander-contract.js";
 export { MISSION_CONTROL_LABEL_KEY, MISSION_CONTROL_LABEL_VALUE } from "./commander-contract.js";
 export {
   ensureCommanderOnBoot,
+  spawnCommander,
+  resetCommander,
+  archiveCommanderAgent,
+  computeCommanderBuildHash,
   COMMANDER_TOOL_ALLOWLIST,
   COMMANDER_TITLE,
   COMMANDER_CWD,
+  COMMANDER_HASH_LABEL_KEY,
 } from "./commander-boot.js";
 export type { EnsureCommanderOnBootInput, EnsureCommanderOnBootResult } from "./commander-boot.js";
+export { CommanderAckDrop, isPureAckReply } from "./commander-ack-drop.js";
 export { MISSION_CONTROL_SELF_REPORT_PROMPT, buildSelfReportSystemPrompt } from "./self-report.js";
 export {
   MissionControlVerifierDispatcher,

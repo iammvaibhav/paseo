@@ -41,6 +41,13 @@ export const DEFAULT_BOARD_RAIL_WIDTH = 300;
 export const MIN_BOARD_RAIL_WIDTH = 240;
 export const MAX_BOARD_RAIL_WIDTH = 480;
 
+// Mission Control inspector (drag-resizable, persisted). Default matches the
+// inspector's historic hardcoded width; bounds keep the thread column and the
+// board rail readable.
+export const DEFAULT_INSPECTOR_WIDTH = 400;
+export const MIN_INSPECTOR_WIDTH = 280;
+export const MAX_INSPECTOR_WIDTH = 560;
+
 export interface PanelVisibilityState {
   isAgentListOpen: boolean;
   isFileExplorerOpen: boolean;
@@ -78,6 +85,10 @@ export function clampExplorerWidth(width: number): number {
 
 export function clampBoardRailWidth(width: number): number {
   return clampNumber(width, MIN_BOARD_RAIL_WIDTH, MAX_BOARD_RAIL_WIDTH);
+}
+
+export function clampInspectorWidth(width: number): number {
+  return clampNumber(width, MIN_INSPECTOR_WIDTH, MAX_INSPECTOR_WIDTH);
 }
 
 export function clampExplorerFilesSplitRatio(ratio: number): number {
@@ -233,33 +244,19 @@ function migratePanelDesktopFocusMode(state: MigratablePanelState): void {
   }
 }
 
-export function migratePanelState(
-  persistedState: unknown,
-  version: number,
-  options: { isWeb: boolean },
-): MigratablePanelState {
-  const state = (persistedState ?? {}) as MigratablePanelState;
-  const { isWeb } = options;
-
-  if (version < 2) {
-    migratePanelV2Explorer(state, isWeb);
-  }
-  if (version < 3) {
-    migratePanelV3Explorer(state, isWeb);
-  }
-  if (!isExplorerTab(state.explorerTab)) {
-    state.explorerTab = "changes";
-  }
-  migratePanelExplorerTabByCheckout(state, version);
-  if (version < 8) {
-    migratePanelDesktopFocusMode(state);
-  }
+function migratePanelLayoutDimensions(state: MigratablePanelState, version: number): void {
   if (version < 6 || typeof state.sidebarWidth !== "number") {
     state.sidebarWidth = DEFAULT_SIDEBAR_WIDTH;
   }
   if (typeof state.boardRailWidth !== "number") {
     state.boardRailWidth = DEFAULT_BOARD_RAIL_WIDTH;
   }
+  if (typeof state.inspectorWidth !== "number") {
+    state.inspectorWidth = DEFAULT_INSPECTOR_WIDTH;
+  }
+}
+
+function migratePanelWorkspaceExpansionMaps(state: MigratablePanelState, version: number): void {
   if (
     version < 9 ||
     typeof state.expandedPathsByWorkspace !== "object" ||
@@ -281,6 +278,31 @@ export function migratePanelState(
   ) {
     state.diffCollapsedFoldersByWorkspace = {};
   }
+}
+
+export function migratePanelState(
+  persistedState: unknown,
+  version: number,
+  options: { isWeb: boolean },
+): MigratablePanelState {
+  const state = (persistedState ?? {}) as MigratablePanelState;
+  const { isWeb } = options;
+
+  if (version < 2) {
+    migratePanelV2Explorer(state, isWeb);
+  }
+  if (version < 3) {
+    migratePanelV3Explorer(state, isWeb);
+  }
+  if (!isExplorerTab(state.explorerTab)) {
+    state.explorerTab = "changes";
+  }
+  migratePanelExplorerTabByCheckout(state, version);
+  if (version < 8) {
+    migratePanelDesktopFocusMode(state);
+  }
+  migratePanelLayoutDimensions(state, version);
+  migratePanelWorkspaceExpansionMaps(state, version);
   state.selectedSubmoduleByCheckout = sanitizeSelectedSubmoduleByCheckout(
     state.selectedSubmoduleByCheckout,
   );

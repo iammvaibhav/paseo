@@ -138,7 +138,7 @@ export class MissionControlStore {
   private readonly reviewStateByAgent = new Map<string, MissionControlReviewStateRecord>();
   private readonly proposalsById = new Map<string, MissionControlProposal>();
   private readonly messageTagsByMessageId = new Map<string, MissionControlMessageTag>();
-  private readonly stopOriginByAgent = new Map<string, "user" | "machinery">();
+  private readonly stopOriginByAgent = new Map<string, "user" | "machinery" | "system">();
   private appendTail: Promise<void> = Promise.resolve();
   private persistTail: Promise<void> = Promise.resolve();
 
@@ -382,7 +382,7 @@ export class MissionControlStore {
       return;
     }
     for (const [agentId, value] of Object.entries(parsed)) {
-      if (value === "user" || value === "machinery") {
+      if (value === "user" || value === "machinery" || value === "system") {
         this.stopOriginByAgent.set(agentId, value);
       }
     }
@@ -644,7 +644,7 @@ export class MissionControlStore {
   // v3 stop origins: who cancelled the agent's last run ("user" forces ask)
   // ==========================================================================
 
-  recordStopOrigin(agentId: string, origin: "user" | "machinery" | null): void {
+  recordStopOrigin(agentId: string, origin: "user" | "machinery" | "system" | null): void {
     if (origin === null) {
       this.stopOriginByAgent.delete(agentId);
     } else {
@@ -653,7 +653,7 @@ export class MissionControlStore {
     this.schedulePersistStopOrigins();
   }
 
-  getStopOrigin(agentId: string): "user" | "machinery" | null {
+  getStopOrigin(agentId: string): "user" | "machinery" | "system" | null {
     return this.stopOriginByAgent.get(agentId) ?? null;
   }
 
@@ -796,7 +796,7 @@ export class MissionControlStore {
   }
 
   private async persistStopOrigins(): Promise<void> {
-    const snapshot: Record<string, "user" | "machinery"> = {};
+    const snapshot: Record<string, "user" | "machinery" | "system"> = {};
     for (const [agentId, origin] of this.stopOriginByAgent) {
       snapshot[agentId] = origin;
     }
