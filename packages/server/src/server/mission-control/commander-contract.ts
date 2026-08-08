@@ -13,6 +13,18 @@ export const MISSION_CONTROL_LABEL_KEY = "paseo.mission-control";
 export const MISSION_CONTROL_LABEL_VALUE = "commander";
 
 /**
+ * Commander adoption marker (verifier scope "commander"): set on a worker the
+ * Commander has taken over by sending it work (`fleet_send_prompt`). Value is
+ * the ISO timestamp of the FIRST adoption — the moment the Commander took
+ * over — which the verifier uses to bound audits to work finished AFTER
+ * adoption (an agent the user started and finished on its own is never
+ * audited). Idempotent by construction: repeated sends never rewrite it.
+ * Deliberately distinct from `paseo.parent-agent-id`: adoption is not
+ * parentage (the Commander did not spawn the agent).
+ */
+export const COMMANDER_ADOPTED_AT_LABEL = "paseo.commander-adopted-at";
+
+/**
  * The Commander's hard tool restriction (spec: Commander contract, user
  * decision "fleet-wide only"). Only Paseo FLEET tools — no host-specific
  * tools, no bash, no file editing, no task subagents — so the Commander can

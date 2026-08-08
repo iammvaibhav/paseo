@@ -278,20 +278,34 @@ deploy_macos_service() {
   if launchctl print "${domain}/${service}" >/dev/null 2>&1; then
     log "Stopping existing LaunchAgent ${domain}/${service}"
     launchctl bootout "${domain}/${service}" >/dev/null 2>&1 || true
+    # bootout teardown is asynchronous: the service can stay registered for
+    # several seconds while its process unwinds (code-server holds editor
+    # state). Wait until it is REALLY gone before deciding what to do next —
+    # kickstarting a service that is mid-teardown fails with "Could not find
+    # service ... in domain for user gui: N" (exit 37), which set -e turns
+    # into a failed deploy (code-server left down).
     local i
-    for i in 1 2 3 4 5 6 7 8; do
+    for i in $(seq 1 30); do
       if ! launchctl print "${domain}/${service}" >/dev/null 2>&1; then
         break
       fi
-      sleep 0.25
+      sleep 0.5
     done
   fi
 
   if launchctl print "${domain}/${service}" >/dev/null 2>&1; then
-    # Still registered (bootout raced with KeepAlive). Restart in place — the
-    # ProgramArguments path is a symlink, so kickstart picks up a new binary.
+    # Still registered after the teardown window (bootout raced with
+    # KeepAlive). Restart in place — the ProgramArguments path is a symlink,
+    # so kickstart picks up a new binary.
     log "LaunchAgent still loaded; kickstarting in place"
-    launchctl kickstart -k "${domain}/${service}"
+    if ! launchctl kickstart -k "${domain}/${service}"; then
+      # Teardown finished between the print above and the kickstart: the
+      # service is gone now, so load it fresh from the plist.
+      log "Kickstart failed; bootstrapping from plist"
+      launchctl bootstrap "$domain" "$plist_dst"
+      launchctl enable "${domain}/${service}" >/dev/null 2>&1 || true
+      launchctl kickstart -k "${domain}/${service}" >/dev/null 2>&1 || true
+    fi
   else
     if ! launchctl bootstrap "$domain" "$plist_dst"; then
       die "launchctl bootstrap failed for ${plist_dst}"

@@ -3798,11 +3798,8 @@ export class Session {
     const prompt = buildAgentPrompt(promptText, images, attachments);
 
     try {
-      // A user send supersedes the in-flight run: record the user stop origin
-      // so the superseded run reads as "Interrupted by you", not a failure.
-      if (this.agentManager.hasInFlightRun(agentId)) {
-        this.missionControlService?.recordStopOrigin(agentId, "user");
-      }
+      // Sending new work supersedes the in-flight run; the replacement turn
+      // starts a new run so no user stop origin is recorded.
       await sendPromptToAgent({
         agentManager: this.agentManager,
         agentStorage: this.agentStorage,
@@ -4378,7 +4375,11 @@ export class Session {
 
     try {
       await cancelAgentRunCommand(
-        { agentManager: this.agentManager, logger: this.sessionLogger },
+        {
+          agentManager: this.agentManager,
+          agentStorage: this.agentStorage,
+          logger: this.sessionLogger,
+        },
         agentId,
       );
       if (requestId) {
@@ -7657,16 +7658,33 @@ export class Session {
         if (steerPrompt !== prompt && this.agentManager.tryRunOutOfBand(agentId, steerPrompt)) {
           return { outOfBand: true };
         }
-        // Steer delivered as an interrupt fallback: still a USER send that
-        // supersedes the in-flight run — record the user stop origin.
-        this.missionControlService?.recordStopOrigin(agentId, "user");
-        return startAgentRun(this.agentManager, agentId, prompt, this.sessionLogger, {
-          replaceRunning: true,
-          runOptions: { replaceOrigin: "user" },
+        // Native steer could not be delivered (provider without a steer path,
+        // or a "running" record whose runtime is dead): escalate to an
+        // interrupt-style send (fresh run, replaceRunning) — never queue.
+        // A refused replace surfaces the error; a dead runtime is force-cancelled
+        // so the fresh run takes over.
+        return sendPromptToAgent({
+          agentManager: this.agentManager,
+          agentStorage: this.agentStorage,
+          agentId,
+          prompt,
+          replaceOrigin: "user",
+          messageId: msg.messageId,
+          logger: this.sessionLogger,
         });
       }
-      return startAgentRun(this.agentManager, agentId, prompt, this.sessionLogger, {
-        replaceRunning: false,
+      // No live in-flight run (idle agent, or a stored-only record whose
+      // runtime is gone): start a fresh run via the full send path — which
+      // loads the agent from storage first — never queue. The message is a
+      // USER prompt starting a run, not a supersede, so no stop origin.
+      return sendPromptToAgent({
+        agentManager: this.agentManager,
+        agentStorage: this.agentStorage,
+        agentId,
+        prompt,
+        replaceOrigin: "user",
+        messageId: msg.messageId,
+        logger: this.sessionLogger,
       });
     }
     if (msg.dispatchMode === "queue") {
@@ -7676,12 +7694,8 @@ export class Session {
         replaceRunning: false,
       });
     }
-    // Default (interrupt) send: a user prompt supersedes the in-flight run.
-    // Record the user stop origin up front so the superseded run's terminal
-    // failure reads as "Interrupted by you", not "Failed with an error".
-    if (this.agentManager.hasInFlightRun(agentId)) {
-      this.missionControlService?.recordStopOrigin(agentId, "user");
-    }
+    // Default (interrupt) send: sending new work replaces the in-flight run
+    // without recording a stop origin.
     return sendPromptToAgent({
       agentManager: this.agentManager,
       agentStorage: this.agentStorage,

@@ -69,6 +69,7 @@ export interface MissionControlObservation {
 export interface MissionControlAppendInput {
   agentId: string;
   agentTitle: string;
+  shortDescription?: string;
   kind: MissionControlEventKind;
   source: "system" | "summarizer" | "self" | "autopilot" | "verifier";
   severity: "info" | "attention" | "blocker";

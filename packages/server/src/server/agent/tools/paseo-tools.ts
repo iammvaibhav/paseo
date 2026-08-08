@@ -2637,7 +2637,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     },
     async ({ agentId }) => {
       const { cancelled } = await cancelAgentRunCommand(
-        { agentManager, logger: childLogger },
+        { agentManager, agentStorage, logger: childLogger },
         agentId,
       );
       return {
@@ -4737,16 +4737,30 @@ export async function dispatchLocalPromptMode(params: {
       }
     }
     if (!busy) {
-      await startAgentRun(agentManager, agentId, promptWithAttachments, logger, {
-        replaceRunning: false,
+      // No live in-flight run to steer against (idle agent, or a stored-only
+      // record whose runtime is gone): start a FRESH run via the full send
+      // path — which loads the agent from storage first — never queue behind
+      // a phantom "running" record. Mirrors the interrupt guarantee: a
+      // refused replace surfaces the error, never silently queues.
+      if (classification === "machinery" && typeof promptWithAttachments === "string") {
+        agentManager.expectPromptClassification(agentId, promptWithAttachments, "machinery");
+      }
+      await sendPromptToAgent({
+        agentManager,
+        agentStorage,
+        agentId,
+        prompt: promptWithAttachments,
+        replaceOrigin,
+        logger,
       });
       return "steer";
     }
-    // Busy on a provider without a native steer path: interrupt (replace the
-    // running turn). Queueing would sit behind a possibly-stuck run for up to
-    // ten minutes; the steer's value is timely delivery, so cancel and
-    // replace. startAgentRun still probes out-of-band first (harmless — the
-    // plain prompt has no /steer prefix), then replaces the running turn.
+    // Busy on a provider without a native steer path (or a "running" record
+    // whose runtime is dead): interrupt (replace the running turn). Queueing
+    // would sit behind a possibly-stuck run for up to ten minutes; the
+    // steer's value is timely delivery, so cancel and replace. startAgentRun
+    // still probes out-of-band first (harmless — the plain prompt has no
+    // /steer prefix), then replaces the running turn.
     recordStopOrigin?.(agentId, replaceOrigin ?? "machinery");
     await startAgentRun(agentManager, agentId, promptWithAttachments, logger, {
       replaceRunning: true,

@@ -190,10 +190,11 @@ function deriveLifecycleBucket(input: {
     // Reopen: any new run returns the agent to Running (spec "Lifecycle").
     return { bucket: "running", doneReason: null };
   }
-  if (userStopped && reviewState !== "done" && reviewState !== "cleared") {
+  if (userStopped && reviewState === "none") {
     // User-stopped ≠ Needs you (spec "Lifecycle"): the user performed the
-    // stop, nothing needs them — Done with a "Stopped by you" marker. A
-    // verdict-done or cleared row keeps its own semantics.
+    // stop, nothing needs them — Done with a "Stopped by you" marker. If the
+    // agent actually finished (reviewState "ready"), was marked done, or cleared,
+    // those terminal review states take precedence without the stopped chip.
     return { bucket: "done", doneReason: "stopped-by-user" };
   }
   if (reviewState === "done") {
@@ -260,25 +261,43 @@ export interface LifecycleRow extends AgentLifecycleState {
 }
 
 export function toLifecycleRow(agent: AggregatedAgent, state: AgentLifecycleState): LifecycleRow {
-  const lastActivityMs = agent.lastActivityAt.getTime();
   return {
     ...state,
     agent,
-    sortTime: state.lastEventAt ?? lastActivityMs,
+    // Sort by the same trustworthy activity instant the row displays, so a
+    // time-desc bucket (dormant included) orders by real activity. Unknown
+    // activity (null) sorts last.
+    sortTime: rowActivityMs({ ...state, agent, sortTime: 0 }) ?? 0,
   };
 }
 
 /**
  * The instant a row's timestamp should read as "when it last did anything".
- * Dormant agents' directory `lastActivityAt` falls back to a shared
- * rollout/boot value (every dormant row would read the same age — live bug);
- * their real last activity is the newest mission-control event for the agent.
+ *
+ * Dormant agents' directory `lastActivityAt` is NOT trustworthy: the daemon
+ * stamps stored records with the registration/restore time whenever an idle
+ * agent is loaded across a daemon restart, so every agent that did nothing
+ * since the last boot reads the same shared value (live bug). For dormant
+ * rows the real evidence is the newest mission-control event (`lastEventAt`),
+ * with the agent's last user message as the reliable floor for pre-rollout
+ * agents that have no events at all. When neither exists, the true instant is
+ * unknown — return null so the row renders no age rather than a fabricated
+ * one (a wrong age is worse than none).
+ *
  * Every other bucket keeps the live directory timestamp, which ticks on every
  * timeline row while an agent is running.
  */
-export function rowActivityMs(row: LifecycleRow): number {
-  if (row.bucket === "dormant" && row.lastEventAt !== null) {
-    return row.lastEventAt;
+export function rowActivityMs(row: LifecycleRow): number | null {
+  if (row.bucket === "dormant") {
+    const candidates: number[] = [];
+    if (row.lastEventAt !== null) {
+      candidates.push(row.lastEventAt);
+    }
+    const lastUserMessageMs = row.agent.lastUserMessageAt?.getTime();
+    if (lastUserMessageMs !== undefined) {
+      candidates.push(lastUserMessageMs);
+    }
+    return candidates.length > 0 ? Math.max(...candidates) : null;
   }
   return row.agent.lastActivityAt.getTime();
 }
@@ -323,9 +342,17 @@ function compareTimeDescRows(left: LifecycleRow, right: LifecycleRow): number {
   return compareRunningRows(left, right);
 }
 
-/** Per-bucket row sort (spec: running by name asc, review/done by time desc). */
+/**
+ * Per-bucket row sort (spec: running by name asc; review/done/dormant by time
+ * desc). Dormant sorts by time desc so the board surfaces the most recently
+ * active agent first — a name-sorted dormant list buries recency (live bug:
+ * the user's dormant list was strict alphabetical). needs_you joins the
+ * time-desc convention: its rows are review attention like ready, and the
+ * name sort made new attention indistinguishable from old. Running stays by
+ * name asc — a stable list while agents work has value.
+ */
 export function sortLifecycleRows(bucket: LifecycleBucket, rows: LifecycleRow[]): LifecycleRow[] {
-  if (bucket === "ready" || bucket === "done") {
+  if (bucket === "ready" || bucket === "done" || bucket === "dormant" || bucket === "needs_you") {
     return rows.sort(compareTimeDescRows);
   }
   return rows.sort(compareRunningRows);

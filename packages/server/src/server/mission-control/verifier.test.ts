@@ -380,6 +380,55 @@ describe("MissionControlVerifierDispatcher", () => {
     expect(harness.created.length).toBe(1);
   });
 
+  test("commander scope: a user-started agent the Commander adopted IS verified", async () => {
+    // Adoption marker = when the Commander took over (fleet_send_prompt
+    // delivered). The ready transition happens after adoption → auditable.
+    const worker = makeWorker("worker-1", {
+      "paseo.commander-adopted-at": "2020-01-01T00:00:00.000Z",
+    });
+    harness.setWorker(worker);
+    harness.emitReviewState("worker-1", "ready");
+    await vi.waitFor(() => expect(harness.created.length).toBe(1), WAIT);
+
+    // A sibling user-started agent without the marker stays out of scope.
+    harness.setWorker(makeWorker("root-2", {}));
+    harness.emitReviewState("root-2", "ready");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(harness.created.length).toBe(1);
+  });
+
+  test("commander scope: work finished before adoption is never retroactively audited", async () => {
+    // The persisted ready item predates the take-over: `at` (when the work
+    // became ready-for-review) is before the adoption marker's timestamp, so
+    // the ready item must NOT spawn a verifier.
+    const reconHarness = await createHarness({
+      readyForReview: [
+        { agentId: "worker-1", title: "User-finished work", at: "2020-01-01T00:00:00.000Z" },
+      ],
+    });
+    reconHarness.setWorker(
+      makeWorker("worker-1", { "paseo.commander-adopted-at": "2026-01-01T00:00:00.000Z" }),
+    );
+    reconHarness.dispatcher.start();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(reconHarness.created.length).toBe(0);
+    reconHarness.dispatcher.stop();
+    await rm(reconHarness.dir, { recursive: true, force: true });
+  });
+
+  test("commander scope: adoption does not collide with parentage", async () => {
+    // An adopted agent whose parent is a NORMAL agent is still in scope: the
+    // Commander took it over even though it did not spawn it.
+    const worker = makeWorker("worker-1", {
+      "paseo.parent-agent-id": "other-parent",
+      "paseo.commander-adopted-at": "2020-01-01T00:00:00.000Z",
+    });
+    harness.setWorker(makeWorker("other-parent", {}));
+    harness.setWorker(worker);
+    harness.emitReviewState("worker-1", "ready");
+    await vi.waitFor(() => expect(harness.created.length).toBe(1), WAIT);
+  });
+
   test("all scope verifies a root agent", async () => {
     const allHarness = await createHarness({ central: { evaluationScope: "all" } });
     allHarness.setWorker(makeWorker("root-1", {}));

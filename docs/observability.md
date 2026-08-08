@@ -24,14 +24,18 @@ node scripts/stall-check.mjs --recover  # interrupt + resume anything parked
 
 Exit code is 1 when anything is dormant, so it gates a cron or an alert. It reads agent records and omp transcripts straight off disk, so it works when the daemon is unhealthy and needs no RPC. A local run costs ~0.13s against a 7 MB transcript.
 
-### Installed cron (every host)
+### Installed stall-check schedule (every host)
 
-Deploy installs a cron entry on each host — marked with a `# paseo-stall-check` comment — that runs the local check every minute and appends to `~/.paseo/stall-check.log`:
+Deploy installs a per-minute schedule on each host that runs the local check and appends to `~/.paseo/stall-check.log`. The scheduler is chosen at install time by `scripts/install-stall-cron.sh`, in this order:
 
-- **Schedule:** `* * * * *`, one `stall-check.mjs` run per host per minute. The log captures output; a dormant agent makes the run exit 1 (nothing else happens — recovery stays approval-gated behind the daemon's own detector, so the cron never interrupts an agent on a false positive).
-- **Node path:** resolved at install time and baked into the crontab line absolutely, because cron runs with a minimal PATH. Check it with `crontab -l | grep paseo-stall-check`.
-- **Log:** `~/.paseo/stall-check.log`. Rotation lives in the cron line itself — once the log passes 5 MiB (~2 weeks of minute-ly runs) it is trimmed to the last 5 MiB.
-- **Disable:** set `PASEO_SKIP_STALL_CRON=1` on the next deploy (skips install/refresh on every host); to also stop an already-installed entry, delete the marker line and the command line beneath it from the crontab.
+1. **crontab** (macOS, Linux with cron) — a managed entry marked with a `# paseo-stall-check` comment followed by the command line. Re-running replaces the entry instead of duplicating it.
+2. **systemd user timer** (Linux without cron) — `paseo-stall-check.service` (oneshot) + `paseo-stall-check.timer` (`OnCalendar=minutely`) under `~/.config/systemd/user/`, enabled and started with `systemctl --user`. Idempotent: rewriting the units and re-enabling never duplicates. On headless hosts the timer only runs while the user manager is up, so linger matters — the script reports `loginctl`'s `Linger` state and enables it when it can (`sudo loginctl enable-linger`).
+3. **neither** — the script warns and exits 0. The stall check is a safety net, not a critical path: a missing scheduler must never fail a host's deploy job (it once did, on a host with no cron package — exit 127 killed the whole remote deploy).
+
+- **Schedule:** one `stall-check.mjs` run per host per minute. The log captures output; a dormant agent makes the run exit 1 (nothing else happens — recovery stays approval-gated behind the daemon's own detector, so the schedule never interrupts an agent on a false positive).
+- **Node path:** resolved at install time and baked into the scheduled command absolutely, because both cron and systemd run with a minimal environment. Check with `crontab -l | grep paseo-stall-check` or `systemctl --user cat paseo-stall-check.timer`.
+- **Log:** `~/.paseo/stall-check.log`. Rotation lives in the scheduled command itself — once the log passes 5 MiB (~2 weeks of minute-ly runs) it is trimmed to the last 5 MiB. The rotation+run string is shared verbatim between the cron entry and the systemd unit, so the two schedulers cannot drift.
+- **Disable:** set `PASEO_SKIP_STALL_CRON=1` on the next deploy (skips install/refresh on every host); to also stop an already-installed schedule, delete the marker line and the command line beneath it from the crontab, or `systemctl --user disable --now paseo-stall-check.timer` (plus remove `~/.config/systemd/user/paseo-stall-check.{service,timer}`).
 
 Recovery sends a prompt, which carries interrupt semantics: it cancels the parked run and starts a fresh one. That is the only action known to clear this state.
 

@@ -2,6 +2,6 @@ Mission Control self-reporting: use the report_status tool at major steps only �
 
 You also own your identity: report_status accepts optional title and description, and both persist on your agent record.
 
-- Title = your current main theme, kept STABLE. Rewrite it only when the work's theme genuinely diverges from the current title — in practice on a "decision"-kind report, and once at completion so the final title describes what was actually done. Never retitle on routine steps.
-- Description = a living 2-3 sentence "what this agent is doing now". REPLACE it (never append) whenever it materially changes; keep it under ~400 characters — the description is the Commander's context, so a little more is better.
-- Send title/description ONLY when changing them; omitting them leaves them untouched. The tool result echoes your stored title/description only when they drifted from what you sent (changed externally); otherwise they are already current.
+- Title = your current main theme. A spawn-seeded title (often the raw user prompt) is an initial guess — refine it when your main task theme is established or shifts (e.g. on a "decision" or "completed" report). Keep it concise and stable once refined.
+- Description = a living 2-3 sentence "what this agent is doing right now". Provide a fresh description whenever you report status so the feed card snapshot accurately reflects your current work; keep it under ~400 characters — the description is the Commander's live context.
+- Send title and description with your report_status whenever you have progressed or your task status has updated, so status snapshots stay fresh and accurate.

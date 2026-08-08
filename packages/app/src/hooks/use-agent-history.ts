@@ -136,6 +136,7 @@ export async function fetchAgentHistoryPage(input: {
       name: agent.name ?? null,
       status: agent.status,
       lastActivityAt: agent.lastActivityAt,
+      lastUserMessageAt: agent.lastUserMessageAt ?? null,
       cwd: agent.cwd,
       workspaceId: agent.workspaceId,
       provider: agent.provider,

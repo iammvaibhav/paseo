@@ -54,7 +54,7 @@ export function buildSelfReportIdentitySeed(identity?: SelfReportIdentitySeed): 
   if (!title && !description) {
     return (
       "Your current identity is unset: you have no title or description yet. " +
-      "Your first report_status can set both (pass title and/or description)."
+      "Your status reports should include a fresh description of what you are doing NOW, and refine title if it is a raw user prompt or spawn seed."
     );
   }
   const lines = ["Your current identity (persisted on your agent record):"];
@@ -65,7 +65,7 @@ export function buildSelfReportIdentitySeed(identity?: SelfReportIdentitySeed): 
     lines.push(`- Description: ${description}`);
   }
   lines.push(
-    "Compare against it before each report; send title/description only when they change.",
+    "Include a fresh description on status reports so your current activity is up to date, and refine title if it is still a raw prompt or spawn seed.",
   );
   return lines.join("\n");
 }

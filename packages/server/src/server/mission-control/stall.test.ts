@@ -1142,17 +1142,16 @@ describe("MissionControlService stall v2 + watchdog", () => {
     expect(store.getStopOrigin("agent-1")).toBeNull();
   });
 
-  test("a user prompt supersede records the user stop origin from the replace state", () => {
-    // startAgentRun({replaceRunning:true}) emits an agent_state carrying
-    // pendingReplacementOrigin "user" at replace start; the service records
-    // it as the stop origin so the superseded run's terminal failure reads as
-    // a user interruption instead of an unexplained error.
+  test("a user prompt supersede does not record a user stop origin", () => {
+    // A user prompt superseding an in-flight run is NOT a user hard-stop:
+    // pendingReplacementOrigin "user" does NOT set the stop origin (which stays
+    // null), so the board never shows "Stopped by you".
     startRunning(
       "agent-1",
       runningAgent("agent-1", { pendingReplacement: true, pendingReplacementOrigin: "user" }),
     );
-    expect(store.getStopOrigin("agent-1")).toBe("user");
-    // A machinery supersede records "machinery" — never "user".
+    expect(store.getStopOrigin("agent-1")).toBeNull();
+    // A machinery supersede records "machinery".
     startRunning("agent-1");
     startRunning(
       "agent-1",
@@ -1164,14 +1163,14 @@ describe("MissionControlService stall v2 + watchdog", () => {
     expect(store.getStopOrigin("agent-1")).toBe("machinery");
   });
 
-  test("a user-superseded run's terminal failure emits the interrupted card, not failed", async () => {
+  test("a user-superseded run's terminal failure is silent (no card emitted)", async () => {
     startRunning("agent-1");
     startRunning(
       "agent-1",
       runningAgent("agent-1", { pendingReplacement: true, pendingReplacementOrigin: "user" }),
     );
-    // The superseded run's terminal error state (pendingReplacement still
-    // set): must read "Interrupted by you" with an info tone.
+    // The superseded run's terminal error state: silent (no card emitted),
+    // since the new run's own started card tells the story.
     startRunning(
       "agent-1",
       runningAgent("agent-1", {
@@ -1186,13 +1185,7 @@ describe("MissionControlService stall v2 + watchdog", () => {
     const terminalCards = broadcast.mock.calls
       .map((call: unknown[]) => (call[0] as { event?: { kind?: string } })?.event)
       .filter((event) => event?.kind === "failed" || event?.kind === "interrupted");
-    expect(terminalCards.at(-1)).toMatchObject({
-      kind: "interrupted",
-      headline: "Interrupted by you",
-      severity: "info",
-    });
-    // The replacement run starts: origin cleared, board re-enters Running.
-    startRunning("agent-1");
+    expect(terminalCards).toHaveLength(0);
     expect(store.getStopOrigin("agent-1")).toBeNull();
   });
 
@@ -1258,9 +1251,7 @@ describe("MissionControlService stall v2 + watchdog", () => {
     ).toBe(false);
   });
 
-  test("a turn_failed stream event on a user supersede emits the interrupted card", async () => {
-    // Foreground turns deliver the terminal as a stream event before the
-    // error agent_state; the stream branch must apply the same origin gate.
+  test("a turn_failed stream event on a user supersede emits no card", async () => {
     startRunning("agent-1");
     startRunning(
       "agent-1",
@@ -1271,6 +1262,7 @@ describe("MissionControlService stall v2 + watchdog", () => {
         lifecycle: "error",
         lastError: "Interrupted by user (stopReason=aborted, model=anthropic/claude-opus-5)",
         pendingReplacement: true,
+        pendingReplacementOrigin: "user",
       }),
     );
     onEvent?.({
@@ -1287,17 +1279,13 @@ describe("MissionControlService stall v2 + watchdog", () => {
     expect(
       broadcast.mock.calls.some(
         (call: unknown[]) =>
-          (call[0] as { event?: { kind?: string } })?.event?.kind === "interrupted",
+          (call[0] as { event?: { kind?: string } })?.event?.kind === "interrupted" ||
+          (call[0] as { event?: { kind?: string } })?.event?.kind === "failed",
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
-  test("the runtime's abort of the freshly-replaced turn still reads as a user interruption", async () => {
-    // Live finding: the omp runtime aborts the REPLACEMENT turn itself with
-    // "Interrupted by user (stopReason=aborted, …)" while the superseded
-    // turn's tool call is still running — pendingReplacement is already
-    // cleared, but the user origin survives and the error is the user-abort
-    // signature, so it must render as an interruption, never a failure.
+  test("the runtime's abort of the freshly-replaced turn is silent", async () => {
     startRunning("agent-1");
     startRunning(
       "agent-1",
@@ -1311,19 +1299,15 @@ describe("MissionControlService stall v2 + watchdog", () => {
           "Interrupted by user (stopReason=aborted, model=google-antigravity/gemini-3.6-flash)",
         attention: { requiresAttention: true, attentionReason: "error" },
         pendingReplacement: false,
+        pendingReplacementOrigin: "user",
       }),
     );
     await flushBroadcasts();
     const terminalCards = broadcast.mock.calls
       .map((call: unknown[]) => (call[0] as { event?: { kind?: string } })?.event)
       .filter((event) => event?.kind === "failed" || event?.kind === "interrupted");
-    expect(terminalCards.at(-1)).toMatchObject({
-      kind: "interrupted",
-      headline: "Interrupted by you",
-      severity: "info",
-    });
+    expect(terminalCards).toHaveLength(0);
   });
-
   // ==========================================================================
   // Dormant-turn detector (the hard stop) + honest steer delivery
   // ==========================================================================
@@ -1651,6 +1635,255 @@ describe("MissionControlService stall v2 + watchdog", () => {
     await flushBroadcasts();
     expect(store.getProposal("mcp_steer_queued_ok")?.status).toBe("sent");
     expect(stalledCards()).toHaveLength(0);
+  });
+
+  // ==========================================================================
+  // Root Causes 2, 4, 5, 7 acceptance criteria
+  // ==========================================================================
+
+  test("user message to busy agent produces NO interrupted event and NO stopped chip, while hard stop does", async () => {
+    startRunning("agent-1");
+    // User replaces in-flight run with new prompt:
+    startRunning(
+      "agent-1",
+      runningAgent("agent-1", { pendingReplacement: true, pendingReplacementOrigin: "user" }),
+    );
+    // Superseded turn fails with abort signature:
+    startRunning(
+      "agent-1",
+      runningAgent("agent-1", {
+        lifecycle: "error",
+        lastError: "Interrupted by user (stopReason=aborted)",
+        attention: { requiresAttention: true, attentionReason: "error" },
+        pendingReplacement: true,
+        pendingReplacementOrigin: "user",
+      }),
+    );
+    await flushBroadcasts();
+    // NO interrupted event emitted:
+    const interruptedEvents = broadcast.mock.calls
+      .map((call: unknown[]) => (call[0] as { event?: { kind?: string } })?.event)
+      .filter((e) => e?.kind === "interrupted");
+    expect(interruptedEvents).toHaveLength(0);
+    // NO stopped chip recorded:
+    expect(store.getStopOrigin("agent-1")).toBeNull();
+
+    // Genuine hard stop:
+    broadcast.mockClear();
+    startRunning("agent-1");
+    store.recordStopOrigin("agent-1", "user");
+    expect(store.getStopOrigin("agent-1")).toBe("user");
+    startRunning(
+      "agent-1",
+      runningAgent("agent-1", {
+        lifecycle: "error",
+        lastError: "Interrupted by user (stopReason=aborted)",
+        attention: { requiresAttention: true, attentionReason: "error" },
+        pendingReplacement: false,
+        pendingReplacementOrigin: null,
+      }),
+    );
+    await flushBroadcasts();
+    const hardStopEvents = broadcast.mock.calls
+      .map((call: unknown[]) => (call[0] as { event?: { kind?: string } })?.event)
+      .filter((e) => e?.kind === "interrupted");
+    expect(hardStopEvents.length).toBeGreaterThan(0);
+  });
+
+  test("replace -> new run -> finish leaves no stopped chip", async () => {
+    startRunning("agent-1");
+    // Replace in progress:
+    startRunning(
+      "agent-1",
+      runningAgent("agent-1", { pendingReplacement: true, pendingReplacementOrigin: "user" }),
+    );
+    // New run starts:
+    startRunning("agent-1", runningAgent("agent-1", { lifecycle: "running" }));
+    expect(store.getStopOrigin("agent-1")).toBeNull();
+
+    // New run finishes:
+    startRunning(
+      "agent-1",
+      runningAgent("agent-1", {
+        lifecycle: "idle",
+        attention: { requiresAttention: true, attentionReason: "finished" },
+      }),
+    );
+    await flushBroadcasts();
+    expect(store.getStopOrigin("agent-1")).toBeNull();
+  });
+
+  test("status-report clock keeps firing across user messages and only resets on report_status", async () => {
+    startRunning("agent-1");
+    // Backdate status clock past 300s:
+    setStatusSilence("agent-1", 301_000);
+    // User message arrives (replace):
+    startRunning(
+      "agent-1",
+      runningAgent("agent-1", { pendingReplacement: true, pendingReplacementOrigin: "user" }),
+    );
+    // Silence clock reset via timeline stream, but status clock must NOT reset:
+    streamTimeline("agent-1", { type: "assistant_message", text: "working on new prompt" });
+    sweep();
+    // Status nudge STILL fires despite user message and new run replace:
+    expect(createProposal).toHaveBeenCalledTimes(1);
+    expect(createProposal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        origin: "stall",
+        deliveryMode: "steer",
+        reason: "No report_status for >300s mid-run",
+      }),
+    );
+
+    // Calling report_status resets the status-report clock:
+    createProposal.mockClear();
+    const res = await service.reportSelfStatus("agent-1", {
+      status: "working",
+      kind: "progress",
+      headline: "reported status",
+    });
+    expect(res.ok).toBe(true);
+    sweep();
+    expect(createProposal).not.toHaveBeenCalled();
+  });
+
+  test("agent with running subagent is not marked finished/ready-for-review until subagents terminalize", async () => {
+    getAgent.mockImplementation((agentId: string) => {
+      return runningAgent(agentId, {
+        lifecycle: "idle",
+        attention: {
+          requiresAttention: true,
+          attentionReason: "finished",
+          attentionTimestamp: new Date(),
+        },
+      });
+    });
+
+    startRunning("agent-1");
+
+    // Parent spawns a subagent (provider_subagent event upsert status: running):
+    onEvent?.({
+      type: "provider_subagent",
+      event: {
+        type: "upsert",
+        subagent: {
+          id: "sub-1",
+          parentAgentId: "agent-1",
+          provider: "omp",
+          title: "Subagent 1",
+          description: null,
+          status: "running",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          toolCallId: null,
+          cwd: null,
+          subtitle: null,
+        },
+      },
+    });
+
+    // Parent turn completes (attention: finished):
+    startRunning(
+      "agent-1",
+      runningAgent("agent-1", {
+        lifecycle: "idle",
+        attention: { requiresAttention: true, attentionReason: "finished" },
+      }),
+    );
+    await flushBroadcasts();
+
+    // Finished event GATED (not emitted yet because subagent is running):
+    const finishedEvents = broadcast.mock.calls
+      .map((call: unknown[]) => (call[0] as { event?: { kind?: string } })?.event)
+      .filter((e) => e?.kind === "finished");
+    expect(finishedEvents).toHaveLength(0);
+    expect(store.getReviewState("agent-1").reviewState).toBe("none");
+
+    // Subagent terminalizes (status: completed):
+    onEvent?.({
+      type: "provider_subagent",
+      event: {
+        type: "upsert",
+        subagent: {
+          id: "sub-1",
+          parentAgentId: "agent-1",
+          provider: "omp",
+          title: "Subagent 1",
+          description: null,
+          status: "completed",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          toolCallId: null,
+          cwd: null,
+          subtitle: null,
+        },
+      },
+    });
+    await flushBroadcasts();
+
+    // NOW finished event emits and agent is marked ready for review:
+    const deferredFinishedEvents = broadcast.mock.calls
+      .map((call: unknown[]) => (call[0] as { event?: { kind?: string } })?.event)
+      .filter((e) => e?.kind === "finished");
+    expect(deferredFinishedEvents).toHaveLength(1);
+  });
+
+  test("interrupted parent with cancelled subagents is not stuck", async () => {
+    getAgent.mockImplementation((agentId: string) => {
+      return runningAgent(agentId, {
+        lifecycle: "idle",
+        attention: { requiresAttention: false },
+      });
+    });
+
+    startRunning("agent-1");
+
+    // Parent spawns a subagent:
+    onEvent?.({
+      type: "provider_subagent",
+      event: {
+        type: "upsert",
+        subagent: {
+          id: "sub-2",
+          parentAgentId: "agent-1",
+          provider: "omp",
+          title: "Subagent 2",
+          description: null,
+          status: "running",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          toolCallId: null,
+          cwd: null,
+          subtitle: null,
+        },
+      },
+    });
+
+    // Interrupt cancels subagents (status: canceled):
+    onEvent?.({
+      type: "provider_subagent",
+      event: {
+        type: "upsert",
+        subagent: {
+          id: "sub-2",
+          parentAgentId: "agent-1",
+          provider: "omp",
+          title: "Subagent 2",
+          description: null,
+          status: "canceled",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          toolCallId: null,
+          cwd: null,
+          subtitle: null,
+        },
+      },
+    });
+    await flushBroadcasts();
+
+    // Parent is not stuck in deferred finish (running subagents set is empty):
+    const internals = service as unknown as { runningSubagentsByAgent: Map<string, Set<string>> };
+    expect(internals.runningSubagentsByAgent.get("agent-1")?.size ?? 0).toBe(0);
   });
 });
 

@@ -135,6 +135,11 @@ export interface EnsureCommanderOnBootInput {
    * service.
    */
   publishEvent?: (input: Omit<MissionControlAppendInput, "agentTitle">) => void;
+  /**
+   * Invoked after a successful Commander spawn (createAgent). Used by the
+   * daemon to arm the ack-drop tracker for the context-pack first turn.
+   */
+  onCommanderCreated?: (agentId: string) => void;
 }
 
 /** The Needs-you card headline for a failed Commander spawn. */
@@ -243,6 +248,7 @@ export async function spawnCommander(
     },
     "mission_control.commander.spawned",
   );
+  input.onCommanderCreated?.(result.snapshot.id);
   return { agentId: result.snapshot.id };
 }
 

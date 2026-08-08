@@ -171,6 +171,9 @@ export const MissionControlEventSchema = z.object({
   seq: z.number().optional(),
   agentId: z.string(),
   agentTitle: z.string(),
+  // Living short description snapshot frozen at emit time (immutable card copy).
+  // Optional for wire/record back-compat: legacy rows without it fall back to headline.
+  shortDescription: z.string().optional(),
   kind: MissionControlEventKindSchema,
   // self: reported by the agent itself via report_status. autopilot:
   // verdicts from the autopilot evaluator. verifier: verdict cards from the

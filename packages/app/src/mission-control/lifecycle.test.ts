@@ -12,6 +12,8 @@ import {
   lifecycleRowVisible,
   parseVerdictEvent,
   rowActivityMs,
+  sortLifecycleRows,
+  toLifecycleRow,
 } from "./lifecycle";
 
 const NOW = Date.UTC(2026, 7, 8, 12, 0, 0);
@@ -27,6 +29,7 @@ function makeAgent(overrides: Partial<AggregatedAgent> = {}): AggregatedAgent {
     name: null,
     status: "idle",
     lastActivityAt: new Date(NOW - 60_000),
+    lastUserMessageAt: null,
     cwd: "~",
     provider: "claude",
     requiresAttention: false,
@@ -285,13 +288,13 @@ describe("deriveAgentLifecycle — user-stopped ≠ Needs you", () => {
       makeAgent({ stoppedBy: "user", requiresAttention: true, attentionReason: "finished" }),
       [
         makeEvent({ kind: "started", headline: "Started running" }),
-        makeEvent({ kind: "finished", headline: "Finished" }),
+        makeEvent({ kind: "interrupted", headline: "Interrupted by you" }),
       ],
     );
     expect(state).toMatchObject({
       bucket: "done",
       doneReason: "stopped-by-user",
-      reviewState: "ready",
+      reviewState: "none",
     });
   });
 
@@ -301,12 +304,26 @@ describe("deriveAgentLifecycle — user-stopped ≠ Needs you", () => {
     // stop — nothing needs them.
     const state = derive(
       makeAgent({ stoppedBy: "user", requiresAttention: true, attentionReason: "finished" }),
-      [
-        makeEvent({ kind: "finished", headline: "Finished" }),
-        makeProposalEvent({ headline: "Proposal (verifier): proof demand", source: "verifier" }),
-      ],
+      [makeProposalEvent({ headline: "Proposal (verifier): proof demand", source: "verifier" })],
     );
     expect(state).toMatchObject({ bucket: "done", doneReason: "stopped-by-user" });
+  });
+
+  it("prevents stopped-by-user chip from coexisting with a terminal Finished reviewState", () => {
+    // When the agent finished (reviewState "ready"), the ready-for-review
+    // semantics take precedence and the stopped-by-user chip is omitted.
+    const state = derive(
+      makeAgent({ stoppedBy: "user", requiresAttention: true, attentionReason: "finished" }),
+      [
+        makeEvent({ kind: "started", headline: "Started running" }),
+        makeEvent({ kind: "finished", headline: "Finished" }),
+      ],
+    );
+    expect(state).toMatchObject({
+      bucket: "ready",
+      doneReason: null,
+      reviewState: "ready",
+    });
   });
 
   it("keeps machinery stops on the attention path (error → needs_you)", () => {
@@ -454,6 +471,74 @@ describe("groupLifecycleRows", () => {
     expect(readyGroup?.rows.map((row) => row.agent.name)).toEqual(["one", "two"]);
   });
 
+  it("sorts dormant rows newest-first by real activity, not by the shared boot stamp", () => {
+    // Three idle agents share the SAME boot-stamped directory lastActivityAt
+    // (7h ago) but have varied real last user messages. sortTime must come
+    // from the real activity, so the order is by message recency — a
+    // name-sorted or stamp-sorted list would be alphabetical (Alto, Basil,
+    // Cedar) or all-equal.
+    const mkDormant = (id: string, name: string, lastUserMessageAgoMs: number) => {
+      const agent = makeAgent({
+        id,
+        name,
+        lastActivityAt: new Date(NOW - 7 * 60 * 60 * 1000),
+        lastUserMessageAt: new Date(NOW - lastUserMessageAgoMs),
+      });
+      return toLifecycleRow(agent, derive(agent, []));
+    };
+    const rows = [
+      mkDormant("cedar", "Cedar", 30 * DAY_MS),
+      mkDormant("alto", "Alto", 2 * DAY_MS),
+      mkDormant("basil", "Basil", 12 * DAY_MS),
+    ];
+    expect(sortLifecycleRows("dormant", rows).map((row) => row.agent.name)).toEqual([
+      "Alto",
+      "Basil",
+      "Cedar",
+    ]);
+    expect(rows.map((row) => row.sortTime)).toEqual([
+      NOW - 2 * DAY_MS,
+      NOW - 12 * DAY_MS,
+      NOW - 30 * DAY_MS,
+    ]);
+  });
+
+  it("sorts dormant rows with only a mission-control event by that event, newest first", () => {
+    const mkDormant = (id: string, name: string, eventAgoMs: number) => {
+      const agent = makeAgent({ id, name, lastUserMessageAt: null });
+      const state = derive(agent, [makeEvent({ ts: new Date(NOW - eventAgoMs).toISOString() })]);
+      const row = toLifecycleRow(agent, state);
+      return row;
+    };
+    const rows = [mkDormant("a", "Older", 20 * DAY_MS), mkDormant("b", "Newer", 3 * DAY_MS)];
+    expect(sortLifecycleRows("dormant", rows).map((row) => row.agent.name)).toEqual([
+      "Newer",
+      "Older",
+    ]);
+  });
+
+  it("sorts needs_you rows by time descending like the other review buckets", () => {
+    const mkNeedsYou = (id: string, name: string, attentionAgoMs: number) => {
+      const agent = makeAgent({
+        id,
+        name,
+        status: "idle",
+        requiresAttention: true,
+        attentionReason: "permission",
+      });
+      const state = derive(agent, [
+        makeEvent({ kind: "milestone", ts: new Date(NOW - attentionAgoMs).toISOString() }),
+      ]);
+      expect(state.bucket).toBe("needs_you");
+      return toLifecycleRow(agent, state);
+    };
+    const rows = [mkNeedsYou("a", "Older", 40 * 60_000), mkNeedsYou("b", "Newer", 5 * 60_000)];
+    expect(sortLifecycleRows("needs_you", rows).map((row) => row.agent.name)).toEqual([
+      "Newer",
+      "Older",
+    ]);
+  });
+
   it("omits dormant rows unless showAll", () => {
     const dormant = makeAgent();
     const dormantRow = { ...derive(dormant, []), agent: dormant, sortTime: 0 };
@@ -506,11 +591,59 @@ describe("rowActivityMs", () => {
     expect(rowActivityMs(row)).toBe(NOW - DAY_MS);
   });
 
-  it("falls back to the agent's directory lastActivityAt for dormant rows without events", () => {
-    const dormant = makeAgent({ lastActivityAt: new Date(NOW - 18 * 60_000) });
+  it("uses the last user message as the floor for dormant rows without events, never the shared boot stamp", () => {
+    // Pre-rollout dormant agents have NO mission-control events, and the
+    // directory lastActivityAt is a shared boot/restore stamp (7h ago for
+    // every idle agent). The real last activity is the user message, weeks
+    // old and varied across agents.
+    const dormant = makeAgent({
+      lastActivityAt: new Date(NOW - 7 * 60 * 60 * 1000),
+      lastUserMessageAt: new Date(NOW - 21 * DAY_MS),
+    });
     const state = derive(dormant, []);
     const row = { ...state, agent: dormant, sortTime: 0, lastEventAt: null };
-    expect(rowActivityMs(row)).toBe(NOW - 18 * 60_000);
+    expect(rowActivityMs(row)).toBe(NOW - 21 * DAY_MS);
+  });
+
+  it("prefers the newest of the mission-control event and the last user message for dormant rows", () => {
+    // Event newer than the message: the event wins.
+    const withEvent = makeAgent({
+      lastActivityAt: new Date(NOW - 18 * 60_000),
+      lastUserMessageAt: new Date(NOW - 3 * DAY_MS),
+    });
+    const eventRow = {
+      ...derive(withEvent, []),
+      agent: withEvent,
+      sortTime: 0,
+      lastEventAt: NOW - DAY_MS,
+    };
+    expect(rowActivityMs(eventRow)).toBe(NOW - DAY_MS);
+
+    // Message newer than the event (user asked something after the agent's
+    // last self-reported activity): the message is the real last activity.
+    const withMessage = makeAgent({
+      lastActivityAt: new Date(NOW - 18 * 60_000),
+      lastUserMessageAt: new Date(NOW - 2 * 60_000),
+    });
+    const messageRow = {
+      ...derive(withMessage, []),
+      agent: withMessage,
+      sortTime: 0,
+      lastEventAt: NOW - DAY_MS,
+    };
+    expect(rowActivityMs(messageRow)).toBe(NOW - 2 * 60_000);
+  });
+
+  it("renders no age (null) for a dormant row with no trustworthy timestamp", () => {
+    // No events, no user message: the directory stamp is all we have, and it
+    // is a shared boot value — a fabricated age is worse than none.
+    const dormant = makeAgent({
+      lastActivityAt: new Date(NOW - 7 * 60 * 60 * 1000),
+      lastUserMessageAt: null,
+    });
+    const state = derive(dormant, []);
+    const row = { ...state, agent: dormant, sortTime: 0, lastEventAt: null };
+    expect(rowActivityMs(row)).toBeNull();
   });
 
   it("keeps the live directory timestamp for non-dormant rows (ticks while running)", () => {

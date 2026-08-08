@@ -150,33 +150,81 @@ describe("FeedCard", () => {
     container = null;
   });
 
-  it("reactively joins the live title onto terminal cards", () => {
+  it("keeps title frozen from event snapshot while agent name chip stays live", () => {
     expect(deriveFeedCardText(event(), liveAgent as Agent, false)).toEqual({
       agentChipLabel: "Worker One",
-      title: "Repair mission control cards",
+      title: "Original event title",
       headline: "Failed",
       detail: null,
     });
   });
 
-  it("uses the living description for started cards", () => {
+  it("uses the shortDescription snapshot on started cards", () => {
     expect(
       deriveFeedCardText(
-        event({ kind: "started", headline: "Started" }),
+        event({
+          kind: "started",
+          headline: "Started running",
+          shortDescription: "Polishing the shared card anatomy",
+        }),
         liveAgent as Agent,
         false,
       ),
     ).toMatchObject({
-      title: "Repair mission control cards",
+      title: "Original event title",
       headline: "Polishing the shared card anatomy",
+      agentChipLabel: "Worker One",
     });
+  });
+
+  it("falls back to the event headline on legacy started cards with no snapshot", () => {
+    expect(
+      deriveFeedCardText(
+        event({ kind: "started", headline: "Started running" }),
+        liveAgent as Agent,
+        false,
+      ),
+    ).toMatchObject({
+      title: "Original event title",
+      headline: "Started running",
+      agentChipLabel: "Worker One",
+    });
+  });
+
+  it("advances the relative time label live without any other state change", () => {
+    vi.useFakeTimers();
+    try {
+      const now = new Date("2026-08-08T12:00:00.000Z");
+      vi.setSystemTime(now);
+
+      const pastEvent = event({
+        ts: new Date(now.getTime() - 60_000).toISOString(),
+      });
+
+      act(() => {
+        root?.render(<FeedCard event={pastEvent} />);
+      });
+
+      const card = container?.querySelector('[data-testid="mission-control-feed-card-failed"]');
+      expect(card?.textContent).toContain("1m ago");
+
+      // Advance clock by 2 minutes and tick the shared ticker
+      vi.setSystemTime(new Date(now.getTime() + 120_000));
+      act(() => {
+        vi.advanceTimersByTime(60_000);
+      });
+
+      expect(card?.textContent).toContain("4m ago");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps the status icon, title, and small host glyph inside the highlighted card", () => {
     act(() => root?.render(<FeedCard event={event()} />));
 
     const card = container?.querySelector('[data-testid="mission-control-feed-card-failed"]');
-    expect(card?.textContent).toContain("Repair mission control cards");
+    expect(card?.textContent).toContain("Original event title");
     expect(card?.querySelector('[data-icon="CircleX"]')).not.toBeNull();
     expect(card?.querySelector('[data-testid="mission-control-feed-host-glyph"]')).not.toBeNull();
     expect(

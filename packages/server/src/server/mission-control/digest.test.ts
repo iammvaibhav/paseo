@@ -145,6 +145,27 @@ describe("isPureAckReply", () => {
     }
   });
 
+  test("accepts multi-clause standby acknowledgments (context-pack boot replies)", () => {
+    for (const text of [
+      "Acknowledged — fleet snapshot received. Standing by.",
+      "Acknowledged. Standing by.",
+      "Received. Standing by.",
+      "Understood — fleet context loaded. Ready.",
+      "ok — snapshot received. On standby.",
+    ]) {
+      expect(isPureAckReply(text), text).toBe(true);
+    }
+  });
+
+  test("never drops standby replies that contain action or decision verbs", () => {
+    for (const text of [
+      "Acknowledged stall — dispatched recovery to worker-1. Standing by.",
+      "Acknowledged. I'll create a new workspace. Standing by.",
+      "Received — spawning verifier for worker-2. Ready.",
+    ]) {
+      expect(isPureAckReply(text), text).toBe(false);
+    }
+  });
   test("never drops empty, multiline, or long replies", () => {
     expect(isPureAckReply("")).toBe(false);
     expect(isPureAckReply("   ")).toBe(false);

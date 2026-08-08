@@ -1504,7 +1504,8 @@ export async function createPaseoDaemon(
         agentManager,
         agentStorage,
         createAgent,
-        interruptAgent: (agentId) => cancelAgentRunCommand({ agentManager, logger }, agentId),
+        interruptAgent: (agentId) =>
+          cancelAgentRunCommand({ agentManager, agentStorage, logger }, agentId),
         archiveAgent: (agentId) =>
           archiveAgentCommand({ agentManager, agentStorage, logger }, agentId),
         listActiveWorkspaces: listActiveWorkspacesExternal,
@@ -1724,6 +1725,7 @@ export async function createPaseoDaemon(
         createCommanderWorkspace: async (cwd, title) =>
           workspaceProvisioning.createWorkspaceForDirectory(cwd, title),
         publishEvent: (event) => missionControlService.publishEvent(event),
+        onCommanderCreated: () => missionControlDigest.ackDrop.arm(),
         launchContext: {
           agentManager,
           agentStorage,
@@ -1775,6 +1777,7 @@ export async function createPaseoDaemon(
     createCommanderWorkspace: async (cwd, title) =>
       workspaceProvisioning.createWorkspaceForDirectory(cwd, title),
     publishEvent: (event) => missionControlService.publishEvent(event),
+    onCommanderCreated: () => missionControlDigest.ackDrop.arm(),
     launchContext: {
       agentManager,
       agentStorage,

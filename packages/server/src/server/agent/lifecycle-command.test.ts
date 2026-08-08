@@ -370,6 +370,38 @@ describe("agent lifecycle commands", () => {
 
     expect(manager.modeUpdates).toEqual([{ agentId: "agent-1", modeId: "plan" }]);
   });
+  test("canceling a phantom agent (stored record running, no live runtime) reconciles the record to error", async () => {
+    const storage = new FakeLifecycleAgentStorage();
+    const manager = new FakeLifecycleAgentManager(storage);
+    storage.records.set("phantom-1", {
+      ...storedAgent("phantom-1"),
+      lastStatus: "running",
+      lastError: null,
+    });
+
+    const result = await cancelAgentRunCommand(
+      { agentManager: manager, agentStorage: storage, logger },
+      "phantom-1",
+    );
+
+    expect(result).toEqual({
+      agent: { id: "phantom-1", cwd: "/workspace/project", lifecycle: "error" },
+      cancelled: true,
+    });
+    // Storage record must be reconciled to terminal state with diagnostic.
+    const record = storage.records.get("phantom-1");
+    expect(record?.lastStatus).toBe("error");
+    expect(record?.lastError).toContain("Provider runtime is no longer alive");
+  });
+
+  test("canceling a non-existent agent that is not stored throws Agent not found", async () => {
+    const storage = new FakeLifecycleAgentStorage();
+    const manager = new FakeLifecycleAgentManager(storage);
+
+    await expect(
+      cancelAgentRunCommand({ agentManager: manager, agentStorage: storage, logger }, "ghost-1"),
+    ).rejects.toThrow("Agent ghost-1 not found");
+  });
 });
 
 function managedAgent(

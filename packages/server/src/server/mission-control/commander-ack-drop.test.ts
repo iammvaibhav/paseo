@@ -229,4 +229,97 @@ describe("CommanderAckDrop", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(removeTimelineRows).not.toHaveBeenCalled();
   });
+
+  test("retracts multi-clause context-pack boot acknowledgments", async () => {
+    const { ackDrop, push, removeTimelineRows } = makeHarness();
+    ackDrop.arm();
+
+    push(turnStarted("turn-boot"));
+    push(assistantMessage("Acknowledged — fleet snapshot received. Standing by.", 100));
+    push(turnCompleted("turn-boot"));
+
+    await vi.waitFor(() => expect(removeTimelineRows).toHaveBeenCalledTimes(1));
+    expect(removeTimelineRows).toHaveBeenCalledWith("commander-1", [100], "ack-drop");
+  });
+
+  test("keeps genuine decision or dispatch summaries containing action verbs", async () => {
+    const { ackDrop, push, removeTimelineRows } = makeHarness();
+    ackDrop.arm();
+
+    push(turnStarted("turn-dispatch"));
+    push(
+      assistantMessage("Acknowledged stall — dispatched recovery to worker-1. Standing by.", 101),
+    );
+    push(turnCompleted("turn-dispatch"));
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(removeTimelineRows).not.toHaveBeenCalled();
+  });
+
+  test("an arm set before attach survives attach and classifies the first turn", async () => {
+    const subscribers: Array<(event: AgentManagerEvent) => void> = [];
+    const removeTimelineRows = vi.fn(async () => undefined);
+    const agentManager = {
+      subscribe: vi.fn((callback: (event: AgentManagerEvent) => void) => {
+        subscribers.push(callback);
+        return () => undefined;
+      }),
+      removeTimelineRows,
+    } as unknown as AgentManager;
+    const { logger } = makeLogCapture();
+    const ackDrop = new CommanderAckDrop({ agentManager, logger });
+
+    // Arm pre-attach (boot spawn path)
+    ackDrop.arm();
+    // Attach happens later when the digest discovers the commander
+    ackDrop.attach("commander-fresh");
+
+    const pushEvent = (event: AgentManagerEvent) => {
+      for (const cb of subscribers) cb(event);
+    };
+
+    pushEvent({
+      type: "agent_stream",
+      agentId: "commander-fresh",
+      event: { type: "turn_started", provider: "omp", turnId: "turn-fresh" },
+    });
+    pushEvent({
+      type: "agent_stream",
+      agentId: "commander-fresh",
+      event: {
+        type: "timeline",
+        provider: "omp",
+        item: { type: "assistant_message", text: "Acknowledged. Standing by." },
+      },
+      seq: 1,
+    });
+    pushEvent({
+      type: "agent_stream",
+      agentId: "commander-fresh",
+      event: { type: "turn_completed", provider: "omp", turnId: "turn-fresh" },
+    });
+
+    await vi.waitFor(() => expect(removeTimelineRows).toHaveBeenCalledTimes(1));
+    expect(removeTimelineRows).toHaveBeenCalledWith("commander-fresh", [1], "ack-drop");
+  });
+
+  test("expires an unconsumed boot arm after the TTL window", async () => {
+    vi.useFakeTimers();
+    try {
+      const { ackDrop, push, removeTimelineRows } = makeHarness();
+      ackDrop.arm();
+
+      // Fast-forward past the 10-minute TTL window
+      vi.advanceTimersByTime(600_001);
+
+      push(turnStarted("turn-late"));
+      push(assistantMessage("ok", 200));
+      push(turnCompleted("turn-late"));
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(removeTimelineRows).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

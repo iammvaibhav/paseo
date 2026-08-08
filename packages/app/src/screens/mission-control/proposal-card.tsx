@@ -12,7 +12,7 @@ import { Switch } from "@/components/ui/switch";
 import { useSessionStore } from "@/stores/session-store";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { HostGlyph } from "@/components/host-glyph";
-import { formatTimeAgo } from "@/utils/time";
+import { useLiveTimeAgo } from "@/hooks/use-compact-time-ago";
 import { resolveSessionAgent } from "@/utils/agent-snapshots";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
 import type { Theme } from "@/styles/theme";
@@ -267,6 +267,9 @@ export function ProposalCard({
     ? agentTitle
     : (liveAgent?.name ?? liveAgent?.title ?? event.agentTitle);
   const timestamp = new Date(event.ts);
+  // Live relative time via the shared ticker; the label ages in place without
+  // re-rendering the card or the list.
+  const timeAgo = useLiveTimeAgo(timestamp);
 
   const respond = useCallback(
     async (action: "approve" | "deny", editedMessage?: string) => {
@@ -373,7 +376,7 @@ export function ProposalCard({
             testID="mission-control-proposal-host-glyph"
           />
           <Text style={styles.metaSeparator}>·</Text>
-          <Text style={styles.timestamp}>{formatTimeAgo(timestamp)}</Text>
+          <Text style={styles.timestamp}>{timeAgo}</Text>
         </View>
 
         {isEditing ? (

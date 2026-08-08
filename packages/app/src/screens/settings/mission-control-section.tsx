@@ -1,5 +1,11 @@
 import { useCallback, useMemo, useRef, useState, type ReactElement } from "react";
-import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
+import {
+  Pressable,
+  Text,
+  View,
+  type PressableStateCallbackType,
+  type TextStyle,
+} from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { ChevronDown, X } from "lucide-react-native";
 import type { AgentProvider } from "@getpaseo/protocol/agent-types";
@@ -22,9 +28,14 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { Switch } from "@/components/ui/switch";
 import { SettingsSection } from "@/screens/settings/settings-section";
 import { useIsCompactFormFactor } from "@/constants/layout";
+import { useLocalDaemonServerId } from "@/hooks/use-is-local-daemon";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { buildSelectableProviderSelectorProviders } from "@/provider-selection/provider-selection";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
+import {
+  buildInvocableProviderModelStrings,
+  resolveCommanderHostServerId,
+} from "@/mission-control/model-options";
 import { useHosts } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
 import { settingsStyles } from "@/styles/settings";
@@ -217,6 +228,41 @@ function splitModelOverride(value: string | null): { provider: string; model: st
 }
 
 /**
+ * Availability notice under a model override row. A host that cannot serve a
+ * model list, and a stored value that host cannot run, are both surfaced —
+ * silently showing a broken override as normal is what let an unspawnable
+ * Commander model look fine.
+ */
+function renderAvailabilityNotice(input: {
+  isHostUnavailable: boolean;
+  isModelListUnavailable: boolean;
+  invalidValue: string | null;
+  hostLabel: string | null | undefined;
+  styles: { rowNotice: TextStyle; rowWarning: TextStyle };
+}): ReactElement | null {
+  const host = input.hostLabel ? `“${input.hostLabel}”` : "this host";
+  if (input.isHostUnavailable) {
+    return (
+      <Text style={input.styles.rowNotice}>
+        Host {input.hostLabel ? `“${input.hostLabel}” ` : ""}is unreachable or model list is
+        unavailable.
+      </Text>
+    );
+  }
+  if (input.isModelListUnavailable) {
+    return <Text style={input.styles.rowNotice}>No models available for {host}.</Text>;
+  }
+  if (input.invalidValue) {
+    return (
+      <Text style={input.styles.rowWarning}>
+        Model “{input.invalidValue}” is not configured or available on {host}.
+      </Text>
+    );
+  }
+  return null;
+}
+
+/**
  * Central-config model override row: the app's CombinedModelSelector (spec —
  * never free-text). Empty = no override (the daemon falls back to the host
  * default / omp modelRoles); the clear button restores that empty state.
@@ -227,6 +273,7 @@ function ModelOverrideRow({
   value,
   onCommit,
   serverId,
+  hostLabel,
   testID,
   isCompact,
   first = false,
@@ -235,17 +282,54 @@ function ModelOverrideRow({
   hint: string;
   value: string | null;
   onCommit: (next: string | null) => void;
-  serverId: string;
+  serverId: string | null;
+  hostLabel?: string;
   testID: string;
   isCompact: boolean;
   first?: boolean;
 }) {
-  const { entries: snapshotEntries, isLoading } = useProvidersSnapshot(serverId);
+  const {
+    entries: snapshotEntries,
+    isLoading,
+    error: snapshotError,
+  } = useProvidersSnapshot(serverId);
   const providers = useMemo(
-    () => buildSelectableProviderSelectorProviders(snapshotEntries),
+    () => (snapshotEntries ? buildSelectableProviderSelectorProviders(snapshotEntries) : []),
+    [snapshotEntries],
+  );
+  const invocableModels = useMemo(
+    () => buildInvocableProviderModelStrings(snapshotEntries),
     [snapshotEntries],
   );
   const { provider, model } = splitModelOverride(value);
+
+  const isHostUnavailable = !serverId || Boolean(snapshotError);
+  const isModelListUnavailable =
+    !isLoading && !isHostUnavailable && (!snapshotEntries || snapshotEntries.length === 0);
+
+  const isValid = useMemo(() => {
+    if (!value || isHostUnavailable || isModelListUnavailable) {
+      return true;
+    }
+    if (provider) {
+      if (model) {
+        return invocableModels.has(`${provider}/${model}`);
+      }
+      return snapshotEntries?.some((e) => e.enabled && e.provider === provider) ?? false;
+    }
+    if (model) {
+      return Array.from(invocableModels).some((k) => k.endsWith(`/${model}`));
+    }
+    return true;
+  }, [
+    value,
+    isHostUnavailable,
+    isModelListUnavailable,
+    provider,
+    model,
+    invocableModels,
+    snapshotEntries,
+  ]);
 
   const handleSelect = useCallback(
     (nextProvider: AgentProvider, nextModel: string) => {
@@ -271,19 +355,53 @@ function ModelOverrideRow({
       isOpen: boolean;
       hovered: boolean;
       pressed: boolean;
-    }) => (
-      <SelectFieldTrigger
-        label={provider ? selectedModelLabel : "Host default"}
-        isPlaceholder={!provider}
-        placeholder="Host default"
-        active={hovered || pressed || isOpen}
-        disabled={disabled}
-        loading={isLoading}
-        size={isCompact ? "md" : "sm"}
-        testID={`${testID}-trigger`}
-      />
-    ),
-    [isCompact, isLoading, provider, testID],
+    }) => {
+      let label = "Host default";
+      let isPlaceholder = true;
+
+      if (isHostUnavailable) {
+        label = !serverId ? "No host selected" : "Host unreachable";
+        isPlaceholder = true;
+      } else if (isModelListUnavailable) {
+        label = "Model list unavailable";
+        isPlaceholder = true;
+      } else if (value) {
+        if (!isValid) {
+          label = `${value} (invalid)`;
+          isPlaceholder = false;
+        } else if (provider) {
+          label = selectedModelLabel;
+          isPlaceholder = false;
+        } else {
+          label = value;
+          isPlaceholder = false;
+        }
+      }
+
+      return (
+        <SelectFieldTrigger
+          label={label}
+          isPlaceholder={isPlaceholder}
+          placeholder="Host default"
+          active={hovered || pressed || isOpen}
+          disabled={disabled || isHostUnavailable || isModelListUnavailable}
+          loading={isLoading}
+          size={isCompact ? "md" : "sm"}
+          testID={`${testID}-trigger`}
+        />
+      );
+    },
+    [
+      isCompact,
+      isLoading,
+      isHostUnavailable,
+      isModelListUnavailable,
+      isValid,
+      provider,
+      serverId,
+      testID,
+      value,
+    ],
   );
 
   return (
@@ -291,6 +409,13 @@ function ModelOverrideRow({
       <View style={settingsStyles.rowContent}>
         <Text style={settingsStyles.rowTitle}>{title}</Text>
         <Text style={settingsStyles.rowHint}>{hint}</Text>
+        {renderAvailabilityNotice({
+          isHostUnavailable: isHostUnavailable && Boolean(serverId),
+          isModelListUnavailable,
+          invalidValue: !isValid && value ? value : null,
+          hostLabel,
+          styles,
+        })}
       </View>
       <View style={styles.modelSelectorSlot}>
         <View style={styles.modelSelectorField}>
@@ -300,12 +425,13 @@ function ModelOverrideRow({
             selectedModel={model}
             onSelect={handleSelect}
             isLoading={isLoading}
+            disabled={isHostUnavailable || isModelListUnavailable}
             triggerFill
             serverId={serverId}
             renderTrigger={renderTrigger}
           />
         </View>
-        {provider ? (
+        {value ? (
           <Pressable
             onPress={handleClear}
             hitSlop={8}
@@ -334,6 +460,7 @@ export function MissionControlSection(): ReactElement {
   const { hostServerId, resolvingHost, config, isLoading, patchConfig } =
     useMissionControlCentralConfig();
   const [error, setError] = useState<string | null>(null);
+  const localServerId = useLocalDaemonServerId();
 
   const hostnameByServerId = useMemo(() => {
     const map = new Map<string, string | null>();
@@ -342,6 +469,31 @@ export function MissionControlSection(): ReactElement {
     }
     return map;
   }, [sessions]);
+
+  const commanderHostServerId = useMemo(
+    () =>
+      resolveCommanderHostServerId({
+        commanderHost: config?.commanderHost ?? null,
+        hosts,
+        hostnameByServerId,
+        localServerId,
+      }),
+    [config?.commanderHost, hostnameByServerId, hosts, localServerId],
+  );
+
+  const commanderHostLabel = useMemo(() => {
+    const rawHost = config?.commanderHost;
+    if (!rawHost) {
+      return null;
+    }
+    const host = hosts.find(
+      (h) =>
+        h.serverId === commanderHostServerId ||
+        h.label === rawHost ||
+        hostnameByServerId.get(h.serverId) === rawHost,
+    );
+    return host?.label ?? rawHost;
+  }, [config?.commanderHost, commanderHostServerId, hostnameByServerId, hosts]);
 
   const hostOptions = useMemo(
     () =>
@@ -545,7 +697,8 @@ export function MissionControlSection(): ReactElement {
             hint="Override; empty uses the host default model."
             value={config.commanderModel}
             onCommit={handleCommanderModelCommit}
-            serverId={hostServerId}
+            serverId={commanderHostServerId}
+            hostLabel={commanderHostLabel ?? undefined}
             testID="mission-control-settings-commander-model"
             isCompact={isCompact}
           />
@@ -748,5 +901,15 @@ const styles = StyleSheet.create((theme) => ({
   },
   instructionsInput: {
     marginTop: theme.spacing[3],
+  },
+  rowNotice: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.xs,
+    marginTop: theme.spacing[1],
+  },
+  rowWarning: {
+    color: theme.colors.statusDanger,
+    fontSize: theme.fontSize.xs,
+    marginTop: theme.spacing[1],
   },
 }));

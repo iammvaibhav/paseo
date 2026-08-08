@@ -35,7 +35,11 @@ import {
   ProposalDeliveryAborted,
   type MissionControlApprovalsOptions,
 } from "./approvals.js";
-import { MISSION_CONTROL_LABEL_KEY, MISSION_CONTROL_LABEL_VALUE } from "./commander-contract.js";
+import {
+  COMMANDER_ADOPTED_AT_LABEL,
+  MISSION_CONTROL_LABEL_KEY,
+  MISSION_CONTROL_LABEL_VALUE,
+} from "./commander-contract.js";
 import type { MissionControlPresenceSource } from "./presence.js";
 import {
   CentralMissionControlConfigStore,
@@ -344,6 +348,15 @@ export class MissionControlService {
     string,
     { proposalId: string; armedAt: number }
   >();
+  /**
+   * Time of the agent's last report_status call. Preserved across run
+   * replacements and restarts (only reportSelfStatus updates it).
+   */
+  private readonly lastStatusAtByAgent = new Map<string, number>();
+  /** Active running subagent ids per parent agent. */
+  private readonly runningSubagentsByAgent = new Map<string, Set<string>>();
+  /** Agents whose finished attention arrived while subagents were still running. */
+  private readonly deferredFinishByAgent = new Set<string>();
   /** Retained turn-step lifecycle record (bounded rotation, see class doc). */
   private readonly lifecycleLog: TurnLifecycleLog;
   private unsubscribe: (() => void) | null = null;
@@ -451,6 +464,16 @@ export class MissionControlService {
               this.armSteerDeliveryVerification(input.agentId, input.proposal);
             },
           });
+          // Commander adoption: a delivered commander-origin send marks the
+          // target as Commander-owned (verifier scope "commander" audits it).
+          // Fires only after the dispatch actually succeeded — a denied,
+          // aborted (user-stopped), or failed delivery never adopts. Stall
+          // nudges and verifier contacts (origins "stall"/"verifier") are
+          // machinery, not Commander take-overs; spawn-kind proposals never
+          // reach the deliver hook. Idempotent: first adoption wins.
+          if (input.proposal?.origin === "commander") {
+            await this.recordCommanderAdoption(input.agentId);
+          }
         } catch (error) {
           if (commanderTarget) {
             ackDrop?.disarm();
@@ -718,6 +741,44 @@ export class MissionControlService {
   }
 
   /**
+   * Commander adoption: a delivered commander-origin send (fleet_send_prompt)
+   * marks the target as Commander-owned so verifier scope "commander" audits
+   * it. The marker is the ISO timestamp of the FIRST adoption — the moment
+   * the Commander took over — and repeated sends never rewrite it (first
+   * adoption wins, idempotent). Mission-control machinery (Commander,
+   * verifier) is never adopted; an agent that is not live cannot be adopted.
+   * Returns the effective adoption timestamp, or null when nothing was
+   * recorded.
+   */
+  async recordCommanderAdoption(agentId: string): Promise<string | null> {
+    const live = this.agentManager.getAgent(agentId);
+    if (!live) {
+      this.logger.debug({ agentId }, "mission_control.commander_adopt_skipped_not_live");
+      return null;
+    }
+    if (hasMissionControlLabels(live.labels)) {
+      this.logger.debug(
+        { agentId, labels: live.labels },
+        "mission_control.commander_adopt_skipped_machinery",
+      );
+      return null;
+    }
+    const existing = live.labels[COMMANDER_ADOPTED_AT_LABEL];
+    if (typeof existing === "string" && existing.trim().length > 0) {
+      return existing;
+    }
+    const adoptedAt = new Date().toISOString();
+    try {
+      await this.agentManager.setLabels(agentId, { [COMMANDER_ADOPTED_AT_LABEL]: adoptedAt });
+    } catch (error) {
+      this.logger.warn({ err: error, agentId }, "mission_control.commander_adopt_failed");
+      return null;
+    }
+    this.logger.info({ agentId, adoptedAt }, "mission_control.commander_adopted");
+    return adoptedAt;
+  }
+
+  /**
    * mission_control.commander.reset: archive the current Commander (the old
    * conversation stays in History) and spawn a fresh one with a new context
    * pack, reusing the drift-recreate machinery (commander-boot).
@@ -884,6 +945,7 @@ export class MissionControlService {
       tracking.silenceNudges = 0;
       tracking.statusNudges = 0;
     }
+    this.lastStatusAtByAgent.set(agentId, Date.now());
     this.store.updateObservation(agentId, { lastSelfReportTs: event.ts });
     if (input.title !== undefined || input.description !== undefined) {
       await this.applyIdentityUpdate(agentId, {
@@ -968,6 +1030,10 @@ export class MissionControlService {
     }
     if (event.type === "agent_stream") {
       this.handleAgentStream(event.agentId, event.event, event.seq, event.timestamp);
+      return;
+    }
+    if (event.type === "provider_subagent") {
+      this.handleProviderSubagentEvent(event);
     }
   }
 
@@ -1002,9 +1068,11 @@ export class MissionControlService {
         // kept past run end because stallTracking is torn down at the run
         // boundary BEFORE the finished-attention handler consults it.
         this.runStartedAtByAgent.set(agent.id, runStartedAt);
+        const lastStatusAt = this.lastStatusAtByAgent.get(agent.id) ?? runStartedAt;
+        this.lastStatusAtByAgent.set(agent.id, lastStatusAt);
         this.stallTracking.set(agent.id, {
           lastStreamAt: runStartedAt,
-          lastStatusAt: runStartedAt,
+          lastStatusAt,
           nudgedAt: null,
           lastNudgeAt: null,
           lastNudgeTrigger: null,
@@ -1037,13 +1105,13 @@ export class MissionControlService {
         }
       }
       // A replace in progress carries who superseded the in-flight run
-      // (AgentRunOptions.replaceOrigin): record it as the stop origin so the
-      // superseded run's terminal failure reads as that party's interruption
-      // instead of an unexplained error. Cleared on the next non-replace run
-      // transition above (and the manager clears the flag when the
-      // replacement turn starts).
-      if (agent.pendingReplacementOrigin !== null) {
-        this.store.recordStopOrigin(agent.id, agent.pendingReplacementOrigin);
+      // (AgentRunOptions.replaceOrigin). Record MACHINERY supersedes (so the
+      // superseded run keeps the failure treatment). A USER replace records
+      // NOTHING: sending new work is NOT stopping the agent — the origin must
+      // stay null so the board never shows "Stopped by you" and the superseded
+      // run renders silently (the new run's own started card is the story).
+      if (agent.pendingReplacementOrigin === "machinery") {
+        this.store.recordStopOrigin(agent.id, "machinery");
       }
     } else if (previousLifecycle === "running") {
       this.stallTracking.delete(agent.id);
@@ -1055,6 +1123,10 @@ export class MissionControlService {
       this.toolStartedAtByAgent.delete(agent.id);
       this.steerVerifications.delete(agent.id);
       this.deferredSteerVerifications.delete(agent.id);
+      if (agent.lifecycle === "error" && agent.session?.isRuntimeAlive?.() === false) {
+        this.runningSubagentsByAgent.delete(agent.id);
+        this.deferredFinishByAgent.delete(agent.id);
+      }
       this.logger.info(
         { component: "turn-lifecycle", agentId: agent.id, lifecycle: agent.lifecycle },
         "agent.run.ended",
@@ -1071,32 +1143,29 @@ export class MissionControlService {
       if (this.attentionKeyByAgent.get(agent.id) !== reason) {
         this.attentionKeyByAgent.set(agent.id, reason);
         if (reason === "finished") {
-          void this.emitEvent({
-            agentId: agent.id,
-            kind: "finished",
-            source: "system",
-            severity: "info",
-            headline: "Finished",
-          });
-          // A finished run moves the agent to ready-for-review (rollout
-          // onward; scope "all" requires an auditable run — see
-          // markReadyForReview).
-          void this.markReadyForReview(agent.id);
+          if (this.hasRunningSubagents(agent.id)) {
+            this.deferredFinishByAgent.add(agent.id);
+            this.logger.info(
+              { component: "subagent-gate", agentId: agent.id },
+              "agent.finished.deferred_for_subagents",
+            );
+          } else {
+            void this.emitEvent({
+              agentId: agent.id,
+              kind: "finished",
+              source: "system",
+              severity: "info",
+              headline: "Finished",
+            });
+            void this.markReadyForReview(agent.id);
+          }
         } else if (reason === "error") {
-          // A run superseded by the USER (interrupt-and-send) is an
-          // interruption, not a failure: distinct kind + non-error tone. The
-          // gate needs the user origin AND (the supersede still in progress
-          // OR the failure being the runtime's user-abort signature) — a
-          // genuine failure, a machinery interrupt, or a crash still renders
-          // as the failure card.
-          this.emitRunTerminalErrorCard(
-            agent.id,
-            this.isUserSupersedeFailure(agent.id, agent.lastError),
-          );
+          this.emitRunTerminalErrorCard(agent.id, agent.lastError, agent);
         }
       }
     } else {
       this.attentionKeyByAgent.set(agent.id, "none");
+      this.deferredFinishByAgent.delete(agent.id);
     }
 
     if (agent.pendingPermissions.size > 0) {
@@ -1246,7 +1315,7 @@ export class MissionControlService {
       // Same origin gate as handleAgentState's error branch: a turn failed
       // because a USER prompt superseded it renders as an interruption,
       // everything else as the failure card.
-      this.emitRunTerminalErrorCard(agentId, this.isUserSupersedeFailure(agentId, event.error));
+      this.emitRunTerminalErrorCard(agentId, event.error);
       return;
     }
     if (event.type === "permission_requested" && !this.blockedByAgent.has(agentId)) {
@@ -2077,6 +2146,7 @@ export class MissionControlService {
       },
       "Boot adoption: adopted a surviving running run into stall tracking",
     );
+    this.lastStatusAtByAgent.set(record.id, seededAt);
   }
 
   /**
@@ -2131,39 +2201,109 @@ export class MissionControlService {
   }
 
   /**
-   * The feed card for a run that ended in an error state. A run superseded
-   * by the USER (interrupt-and-send) renders as a non-error "Interrupted by
-   * you" card; every other terminal failure (genuine error, provider crash,
-   * machinery-originated interrupt) keeps the "Failed with an error" card.
+   * Three-way classification of a run's terminal failure for the feed card:
+   * - "silent": the USER REPLACED the run with new work (interrupt-and-send).
+   *   The superseded run's abort is machinery noise; the new run's own started
+   *   card is the story. Emit NO card.
+   * - "interrupted": the USER HARD-STOPPED the agent (stop button / cancel
+   *   with no follow-up): origin "user", no replace in progress, abort
+   *   signature → "Interrupted by you".
+   * - "failed": everything else (genuine errors, provider crashes,
+   *   machinery-originated interrupts) → "Failed with an error".
    */
-  private emitRunTerminalErrorCard(agentId: string, supersededByUser: boolean): void {
-    void this.emitEvent({
-      agentId,
-      kind: supersededByUser ? "interrupted" : "failed",
-      source: "system",
-      severity: supersededByUser ? "info" : "attention",
-      headline: supersededByUser ? "Interrupted by you" : "Failed with an error",
-    });
+  private classifyRunTerminal(
+    agentId: string,
+    errorText: string | undefined,
+    candidateAgent?: ManagedAgent | null,
+  ): "interrupted" | "silent" | "failed" {
+    const agent = candidateAgent ?? this.agentManager.getAgent(agentId);
+    const isReplace =
+      agent?.pendingReplacement === true || (agent?.pendingReplacementOrigin ?? null) !== null;
+    const abortSignature = /Interrupted by user|stopReason=aborted/i.test(errorText ?? "");
+    if (isReplace && agent?.pendingReplacementOrigin === "user") {
+      return "silent";
+    }
+    if (this.store.getStopOrigin(agentId) === "user" && abortSignature && !isReplace) {
+      return "interrupted";
+    }
+    return "failed";
   }
 
   /**
-   * Whether a run's terminal failure is a USER interrupt-and-send's abort
-   * noise rather than a real failure. Two signals, both required: the
-   * recorded stop origin is "user" (only the user send path records that;
-   * machinery-originated interrupts record "machinery" and never match), AND
-   * either the supersede is still in progress (pendingReplacement) or the
-   * failure is the runtime's user-abort signature ("Interrupted by user
-   * (stopReason=aborted, …)") — the omp runtime also aborts the freshly
-   * replaced turn itself with that text while the superseded turn's tool call
-   * is still running. A genuine failure with a different message never
-   * matches, even when the origin is still recorded.
+   * The feed card for a run that ended in an error state.
    */
-  private isUserSupersedeFailure(agentId: string, errorText: string | undefined): boolean {
-    return (
-      this.store.getStopOrigin(agentId) === "user" &&
-      (/Interrupted by user|stopReason=aborted/i.test(errorText ?? "") ||
-        this.agentManager.getAgent(agentId)?.pendingReplacement === true)
-    );
+  private emitRunTerminalErrorCard(
+    agentId: string,
+    errorText: string | undefined,
+    candidateAgent?: ManagedAgent | null,
+  ): void {
+    const classification = this.classifyRunTerminal(agentId, errorText, candidateAgent);
+    if (classification === "silent") {
+      return;
+    }
+    const interrupted = classification === "interrupted";
+    void this.emitEvent({
+      agentId,
+      kind: interrupted ? "interrupted" : "failed",
+      source: "system",
+      severity: interrupted ? "info" : "attention",
+      headline: interrupted ? "Interrupted by you" : "Failed with an error",
+    });
+  }
+  private handleProviderSubagentEvent(
+    event: Extract<AgentManagerEvent, { type: "provider_subagent" }>,
+  ): void {
+    const managerEvent = event.event;
+    if (managerEvent.type === "upsert") {
+      const { parentAgentId, id, status } = managerEvent.subagent;
+      let set = this.runningSubagentsByAgent.get(parentAgentId);
+      if (status === "running") {
+        if (!set) {
+          set = new Set();
+          this.runningSubagentsByAgent.set(parentAgentId, set);
+        }
+        set.add(id);
+      } else {
+        set?.delete(id);
+        if (set && set.size === 0) {
+          this.resolveDeferredFinish(parentAgentId);
+        }
+      }
+    } else if (managerEvent.type === "remove") {
+      const set = this.runningSubagentsByAgent.get(managerEvent.parentAgentId);
+      set?.delete(managerEvent.subagentId);
+      if (set && set.size === 0) {
+        this.resolveDeferredFinish(managerEvent.parentAgentId);
+      }
+    }
+  }
+
+  private hasRunningSubagents(agentId: string): boolean {
+    return (this.runningSubagentsByAgent.get(agentId)?.size ?? 0) > 0;
+  }
+
+  private resolveDeferredFinish(agentId: string): void {
+    if (!this.deferredFinishByAgent.delete(agentId)) {
+      return;
+    }
+    const agent = this.agentManager.getAgent(agentId);
+    const stillFinished =
+      agent !== null &&
+      agent.lifecycle === "idle" &&
+      agent.attention.requiresAttention &&
+      agent.attention.attentionReason === "finished";
+    if (!stillFinished) {
+      return;
+    }
+    this.logger.info({ component: "subagent-gate", agentId }, "agent.finished.after_subagents");
+    void this.emitEvent({
+      agentId,
+      kind: "finished",
+      source: "system",
+      severity: "info",
+      headline: "Finished",
+    });
+    void this.markReadyForReview(agentId);
   }
 
   private async emitEvent(
@@ -2171,7 +2311,13 @@ export class MissionControlService {
     options?: { skipDigest?: boolean },
   ): Promise<MissionControlEvent> {
     const agentTitle = await this.resolveAgentTitle(input.agentId);
-    const event = await this.store.append({ ...input, agentTitle });
+    const shortDescription =
+      input.shortDescription ?? (await this.resolveAgentShortDescription(input.agentId));
+    const event = await this.store.append({
+      ...input,
+      agentTitle,
+      ...(shortDescription ? { shortDescription } : {}),
+    });
     this.broadcast({
       type: "mission_control_event",
       event,
@@ -2258,6 +2404,15 @@ export class MissionControlService {
     }
     const record = await this.agentStorage.get(agentId);
     return record?.name ?? record?.title ?? agentId;
+  }
+
+  private async resolveAgentShortDescription(agentId: string): Promise<string | undefined> {
+    const live = this.agentManager.getAgent(agentId);
+    if (live?.shortDescription) {
+      return live.shortDescription;
+    }
+    const record = await this.agentStorage.get(agentId).catch(() => null);
+    return record?.shortDescription ?? undefined;
   }
 
   private async applyIdentityUpdate(

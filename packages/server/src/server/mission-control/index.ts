@@ -45,7 +45,11 @@ export type { AgentNamingTheme, AgentNamingServiceOptions } from "./naming.js";
 export { runIdentityBackfill } from "./backfill.js";
 export type { IdentityBackfillOptions, IdentityBackfillReport } from "./backfill.js";
 export { readBundledCommanderPrompt } from "./commander-contract.js";
-export { MISSION_CONTROL_LABEL_KEY, MISSION_CONTROL_LABEL_VALUE } from "./commander-contract.js";
+export {
+  MISSION_CONTROL_LABEL_KEY,
+  MISSION_CONTROL_LABEL_VALUE,
+  COMMANDER_ADOPTED_AT_LABEL,
+} from "./commander-contract.js";
 export {
   ensureCommanderOnBoot,
   spawnCommander,

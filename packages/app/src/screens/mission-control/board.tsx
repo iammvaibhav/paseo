@@ -601,10 +601,16 @@ function AgentRowImpl({
 }): ReactElement {
   const { agent } = row;
   // Dormant rows derive their timestamp from the agent's real last activity
-  // (newest MC event) instead of the directory's rollout/boot fallback, so
-  // each dormant row reads when it last did anything (live bug: every Dormant
-  // row showed the same relative time).
-  const activityTime = useMemo(() => new Date(rowActivityMs(row)), [row]);
+  // (newest MC event, falling back to the last user message) instead of the
+  // directory's rollout/boot fallback, so each dormant row reads when it last
+  // did anything (live bug: every Dormant row showed the same relative time).
+  // A row with no trustworthy activity instant renders no age at all rather
+  // than a fabricated one.
+  const activityMs = useMemo(() => rowActivityMs(row), [row]);
+  const activityTime = useMemo(
+    () => (activityMs === null ? null : new Date(activityMs)),
+    [activityMs],
+  );
   const timeLabel = useCompactTimeAgo(activityTime);
   const { Icon, mapping } = rowIconAndColor(row);
   const toast = useToast();

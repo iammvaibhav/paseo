@@ -366,7 +366,7 @@ describe("fleet_send_prompt mode", () => {
     } as unknown as AgentManager;
     const catalog = createPaseoToolCatalog({
       agentManager,
-      agentStorage: {} as unknown as AgentStorage,
+      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
       providerSnapshotManager: createProviderSnapshotManagerStub()
         .manager as unknown as ProviderSnapshotManager,
       logger: createTestLogger(),
@@ -400,7 +400,7 @@ describe("fleet_send_prompt mode", () => {
 
     const catalog = createPaseoToolCatalog({
       agentManager,
-      agentStorage: {} as unknown as AgentStorage,
+      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
       providerSnapshotManager: createProviderSnapshotManagerStub()
         .manager as unknown as ProviderSnapshotManager,
       logger: createTestLogger(),
@@ -436,7 +436,7 @@ describe("fleet_send_prompt mode", () => {
     // from the mission-control approval path with an explicit classification.
     const result = await dispatchLocalPromptMode({
       agentManager,
-      agentStorage: {} as unknown as AgentStorage,
+      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
       agentId: "agent-1",
       prompt: "You've been quiet for a while. Post a one-line report_status.",
       mode: "steer",
@@ -494,7 +494,7 @@ describe("fleet_send_prompt mode", () => {
     } as unknown as AgentManager;
     const catalog = createPaseoToolCatalog({
       agentManager,
-      agentStorage: {} as unknown as AgentStorage,
+      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
       providerSnapshotManager: createProviderSnapshotManagerStub()
         .manager as unknown as ProviderSnapshotManager,
       logger: createTestLogger(),
@@ -590,7 +590,7 @@ describe("fleet_send_prompt mode", () => {
     } as unknown as AgentManager;
     const catalog = createPaseoToolCatalog({
       agentManager,
-      agentStorage: {} as unknown as AgentStorage,
+      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
       providerSnapshotManager: createProviderSnapshotManagerStub()
         .manager as unknown as ProviderSnapshotManager,
       logger: createTestLogger(),
@@ -628,7 +628,7 @@ describe("fleet_send_prompt mode", () => {
           path: "/tmp/paseo-attachments/notes.txt",
         },
       ],
-      undefined,
+      { replaceOrigin: "machinery" },
     );
     expect(result.structuredContent).toEqual({ success: true, deliveryMode: "steer" });
   });

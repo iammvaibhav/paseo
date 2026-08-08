@@ -79,6 +79,7 @@ export function useAggregatedAgents(options?: {
           shortDescription: agent.shortDescription ?? null,
           status: agent.status,
           lastActivityAt: agent.lastActivityAt,
+          lastUserMessageAt: agent.lastUserMessageAt,
           cwd: agent.cwd,
           workspaceId: agent.workspaceId,
           provider: agent.provider,

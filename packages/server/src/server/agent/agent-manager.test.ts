@@ -2632,6 +2632,90 @@ test("createAgent preserves a user-provided paseo MCP config", async () => {
   expect(client.lastConfig?.mcpServers).toEqual(snapshot.config.mcpServers);
 });
 
+test("createAgent records a terminal failed agent when provider session launch fails", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-failed-spawn-test-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+  const launchError = new Error(
+    "Provider omp/opencode-zen/deepseek-v4-flash-free is not configured",
+  );
+  const client = new (class extends TestAgentClient {
+    override async createSession(): Promise<AgentSession> {
+      throw launchError;
+    }
+  })();
+  const agentId = "00000000-0000-4000-8000-000000000901";
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: storage,
+    logger,
+    idFactory: () => agentId,
+  });
+
+  await expect(
+    manager.createAgent(
+      {
+        provider: "codex",
+        cwd: workdir,
+        model: "gpt-5.4",
+        title: "Failed spawn fixture",
+      },
+      undefined,
+      { workspaceId: "ws-failed-spawn" },
+    ),
+  ).rejects.toThrow("is not configured");
+
+  // A spawn whose provider never started must land a terminal failed record
+  // with the error message so the failure is user-visible on the board.
+  const record = await storage.get(agentId);
+  expect(record).not.toBeNull();
+  expect(record?.lastStatus).toBe("error");
+  expect(record?.lastError).toContain(
+    "Provider omp/opencode-zen/deepseek-v4-flash-free is not configured",
+  );
+  expect(record?.config?.model).toBe("gpt-5.4");
+  expect(record?.title).toBe("Failed spawn fixture");
+  expect(record?.workspaceId).toBe("ws-failed-spawn");
+  expect(record?.persistence).toBeNull();
+  expect(manager.getAgent(agentId)).toBeNull();
+});
+
+test("tryRunOutOfBand refuses a dead provider runtime so steer escalates", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-dead-oob-test-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+  class DeadRuntimeSession extends TestAgentSession {
+    override isRuntimeAlive() {
+      return false;
+    }
+    override tryHandleOutOfBand() {
+      return {
+        run: async () => {},
+      };
+    }
+  }
+  const client = new (class extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      return new DeadRuntimeSession(config);
+    }
+  })();
+  const agentId = "00000000-0000-4000-8000-000000000902";
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: storage,
+    logger,
+    idFactory: () => agentId,
+  });
+
+  await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+    workspaceId: undefined,
+  });
+
+  // With isRuntimeAlive returning false, tryRunOutOfBand must return false so
+  // callers escalate to interrupt instead of swallowing the steer.
+  expect(manager.tryRunOutOfBand(agentId, "/steer fix the tests")).toBe(false);
+});
+
 test("createAgent fails when cwd does not exist", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-test-"));
   const storagePath = join(workdir, "agents");
@@ -3034,6 +3118,82 @@ test("resumeAgentFromPersistence keeps metadata config, applies overrides, and p
       PASEO_AGENT_CWD: workdir,
     },
   });
+});
+
+test("resumeAgentFromPersistence preserves a stored agent's lastActivityAt instead of stamping the restore time", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-resume-preserve-activity-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+
+  const realActivityAt = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+  await storage.upsert({
+    id: "00000000-0000-4000-8000-000000000107",
+    provider: "codex",
+    cwd: workdir,
+    createdAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+    updatedAt: realActivityAt.toISOString(),
+    lastActivityAt: realActivityAt.toISOString(),
+    lastUserMessageAt: new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString(),
+    title: null,
+    labels: {},
+    lastStatus: "idle",
+    persistence: { provider: "codex", sessionId: "resume-session-preserve" },
+  });
+
+  class ResumePreserveClient implements AgentClient {
+    readonly provider = "codex" as const;
+    readonly capabilities = { ...TEST_CAPABILITIES, supportsMcpServers: true };
+
+    async isAvailable(): Promise<boolean> {
+      return true;
+    }
+
+    async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      return new TestAgentSession(config);
+    }
+
+    async fetchCatalog() {
+      return { models: [], modes: [] };
+    }
+
+    async resumeSession(
+      handle: AgentPersistenceHandle,
+      overrides?: Partial<AgentSessionConfig>,
+    ): Promise<AgentSession> {
+      const metadata = (handle.metadata ?? {}) as Partial<AgentSessionConfig>;
+      return new TestAgentSession({
+        ...metadata,
+        ...overrides,
+        provider: "codex",
+        cwd: overrides?.cwd ?? metadata.cwd ?? workdir,
+      });
+    }
+  }
+
+  const manager = new AgentManager({
+    clients: { codex: new ResumePreserveClient() },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000107",
+  });
+
+  // Raw handle resume — the same shape the app's resume path uses, WITHOUT
+  // passing timestamps, so registration must inherit them from the record.
+  const resumed = await manager.resumeAgentFromPersistence(
+    { provider: "codex", sessionId: "resume-session-preserve" },
+    { cwd: workdir },
+    "00000000-0000-4000-8000-000000000107",
+  );
+  expect(resumed.id).toBe("00000000-0000-4000-8000-000000000107");
+
+  // The agent did nothing during restore: its stored last-activity and last
+  // user message must be untouched (live bug: registration stamped idle
+  // agents with the restore time, so every dormant board row read the same
+  // "last activity").
+  const after = await storage.get("00000000-0000-4000-8000-000000000107");
+  expect(after?.lastActivityAt).toBe(realActivityAt.toISOString());
+  expect(after?.updatedAt).toBe(realActivityAt.toISOString());
+  expect(after?.lastUserMessageAt).not.toBeNull();
 });
 
 test("importProviderSession imports the selected session without listing and publishes ready state", async () => {

@@ -809,18 +809,21 @@ deploy_local_plannotator() {
   PLANNOTATOR_VERSION="${PLANNOTATOR_VERSION:-}" bash "$ROOT_DIR/scripts/plannotator/install.sh" local
 }
 
-# Install/refresh this host's stall-check cron entry (runs scripts/stall-check.mjs
-# every minute; managed line marked `# paseo-stall-check`). ensure_node already put
-# the nvm node on PATH, so the absolute path baked into the crontab line survives
-# cron's minimal PATH. Log: $LOCAL_PASEO_HOME/stall-check.log. Opt out: PASEO_SKIP_STALL_CRON=1.
+# Install/refresh this host's stall-check schedule (runs scripts/stall-check.mjs
+# every minute via crontab, or systemd user timer when no crontab exists; the
+# script warns and exits 0 when neither scheduler is available, so a missing
+# schedule never fails the deploy). ensure_node already put the nvm node on
+# PATH, so the absolute path baked into the scheduled command survives the
+# scheduler's minimal environment. Log: $LOCAL_PASEO_HOME/stall-check.log.
+# Opt out: PASEO_SKIP_STALL_CRON=1.
 install_stall_cron() {
   if [[ "${PASEO_SKIP_STALL_CRON:-0}" == "1" ]]; then
-    log "Skipping stall-check cron install (PASEO_SKIP_STALL_CRON=1)"
+    log "Skipping stall-check schedule install (PASEO_SKIP_STALL_CRON=1)"
     return
   fi
   local line
   line="$(bash "$ROOT_DIR/scripts/install-stall-cron.sh" "$ROOT_DIR" "$LOCAL_PASEO_HOME")"
-  log "Stall-check cron installed (every minute, log $LOCAL_PASEO_HOME/stall-check.log): $line"
+  log "Stall-check schedule installed (every minute, log $LOCAL_PASEO_HOME/stall-check.log): $line"
 }
 
 # ---------------------------------------------------------------------------
@@ -1491,12 +1494,12 @@ deploy_code_server
 deploy_plannotator
 install_stall_cron() {
   if [[ '${PASEO_SKIP_STALL_CRON:-0}' == "1" ]]; then
-    log "Skipping stall-check cron install (PASEO_SKIP_STALL_CRON=1)"
+    log "Skipping stall-check schedule install (PASEO_SKIP_STALL_CRON=1)"
     return
   fi
   local line
   line="\$(bash "\$HOME/\$REMOTE_REPO_DIR/scripts/install-stall-cron.sh" "\$HOME/\$REMOTE_REPO_DIR" "\$PASEO_HOME")"
-  log "Stall-check cron installed (every minute, log \$PASEO_HOME/stall-check.log): \$line"
+  log "Stall-check schedule installed (every minute, log \$PASEO_HOME/stall-check.log): \$line"
 }
 install_stall_cron
 log "Done"

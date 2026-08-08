@@ -45,6 +45,18 @@ const ACK_DROP_NO_ACTION_PHRASES: readonly string[] = [
 const ACK_DROP_PROPOSAL_PATTERN =
   /\b(should i|shall i|want me to|can i|i can|i will|i'll|i'd|let me|do you want|i could|i might|propose|suggest|plan|happy to|ready to)\b/i;
 
+// Multi-clause acknowledgments ("Acknowledged — fleet snapshot received.
+// Standing by.") are also pure acks when they only state receipt + readiness:
+// an ack lead, an optional neutral clause, a standby/readiness tail, and no
+// action/decision language anywhere. The length cap is 120 chars (higher than
+// the single-token path) because the regex shape itself is the guard.
+const ACK_DROP_STANDBY_PATTERN =
+  /^(acknowledged|ack|received|understood|noted|got it|roger|ok|okay|confirmed)\b[^?!\n]{0,90}\b(standing by|standing-by|on standby|awaiting|ready)\b\.?$/i;
+const ACK_DROP_ACTION_PATTERN =
+  /\b(dispatch|spawn|send|sent|creat|assign|recover|escalat|nudge|verif|contact|investigat|fix|build|deploy|start|continu|task|rout|handle|work|will|would|should|plan|propos|suggest|next|need|must|going|gonna|about)/i;
+
+const ARM_TTL_MS = 600_000;
+
 /**
  * Pure-ack heuristic (spec Edge cases): true only for a short reply that
  * acknowledges without action. Never true for replies containing a question,
@@ -62,9 +74,6 @@ export function isPureAckReply(text: string): boolean {
   if (trimmed.includes("\n")) {
     return false;
   }
-  if (trimmed.length > 60) {
-    return false;
-  }
   if (trimmed.startsWith("<") || trimmed.includes("```") || trimmed.includes("`")) {
     return false;
   }
@@ -72,10 +81,18 @@ export function isPureAckReply(text: string): boolean {
     return false;
   }
   const normalized = trimmed.replace(/[.!]+$/g, "").toLowerCase();
-  if (ACK_DROP_EXACT_TOKENS.has(normalized)) {
-    return true;
+  if (normalized.length <= 60) {
+    if (ACK_DROP_EXACT_TOKENS.has(normalized)) {
+      return true;
+    }
+    if (ACK_DROP_NO_ACTION_PHRASES.some((phrase) => normalized.includes(phrase))) {
+      return true;
+    }
   }
-  return ACK_DROP_NO_ACTION_PHRASES.some((phrase) => normalized.includes(phrase));
+  if (trimmed.length <= 120) {
+    return ACK_DROP_STANDBY_PATTERN.test(trimmed) && !ACK_DROP_ACTION_PATTERN.test(trimmed);
+  }
+  return false;
 }
 
 /**
@@ -115,6 +132,7 @@ export class CommanderAckDrop {
   private commanderId: string | null = null;
   private unsubscribe: (() => void) | null = null;
   private armed = false;
+  private armedAtMs = 0;
   private turn: AckDropTurn | null = null;
 
   constructor(options: CommanderAckDropOptions) {
@@ -131,8 +149,14 @@ export class CommanderAckDrop {
     if (this.commanderId === commanderId) {
       return;
     }
+    const wasArmed = this.armed;
+    const armedAt = this.armedAtMs;
     this.detach();
     this.commanderId = commanderId;
+    if (wasArmed) {
+      this.armed = true;
+      this.armedAtMs = armedAt;
+    }
     if (!commanderId) {
       return;
     }
@@ -151,6 +175,7 @@ export class CommanderAckDrop {
     this.unsubscribe = null;
     this.commanderId = null;
     this.armed = false;
+    this.armedAtMs = 0;
     this.turn = null;
   }
 
@@ -161,6 +186,7 @@ export class CommanderAckDrop {
    */
   arm(): void {
     this.armed = true;
+    this.armedAtMs = Date.now();
   }
 
   /** Cancel an armed dispatch that did not start a turn. */
@@ -172,15 +198,18 @@ export class CommanderAckDrop {
     const streamEvent = event.event;
     if (streamEvent.type === "turn_started") {
       if (this.armed && !this.turn && this.commanderId) {
-        this.armed = false;
-        this.turn = {
-          commanderId: this.commanderId,
-          turnId: streamEvent.turnId ?? null,
-          assistantRows: [],
-          toolCallSeen: false,
-        };
+        if (Date.now() - this.armedAtMs > ARM_TTL_MS) {
+          this.armed = false;
+        } else {
+          this.armed = false;
+          this.turn = {
+            commanderId: this.commanderId,
+            turnId: streamEvent.turnId ?? null,
+            assistantRows: [],
+            toolCallSeen: false,
+          };
+        }
       }
-      return;
     }
     const turn = this.turn;
     if (!turn) {

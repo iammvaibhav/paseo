@@ -15,7 +15,7 @@ import type {
 import type { AgentTimelineRow } from "../agent/agent-timeline-store-types.js";
 import type { PaseoToolResult } from "../agent/tools/types.js";
 import type { CreateAgentOptions } from "../agent/agent-manager.js";
-import { MISSION_CONTROL_LABEL_KEY } from "./commander-contract.js";
+import { COMMANDER_ADOPTED_AT_LABEL, MISSION_CONTROL_LABEL_KEY } from "./commander-contract.js";
 import { formatVerifierContactMessage } from "./approvals.js";
 import { hasMissionControlLabels } from "./naming.js";
 import type { MissionControlAppendInput, MissionControlFetchOptions } from "./store.js";
@@ -676,7 +676,7 @@ export class MissionControlVerifierDispatcher {
   }
 
   private async spawnVerifier(entry: VerifierReadyItem & { attempt: number }): Promise<void> {
-    if (!(await this.isInScope(entry.agentId))) {
+    if (!(await this.isInScope(entry.agentId, entry.at))) {
       this.inFlight = Math.max(0, this.inFlight - 1);
       this.queuedOrActive.delete(entry.agentId);
       this.logger.debug({ workerAgentId: entry.agentId }, "verifier.out_of_scope");
@@ -1034,17 +1034,46 @@ export class MissionControlVerifierDispatcher {
     }
   }
 
-  private async isInScope(workerAgentId: string): Promise<boolean> {
+  /**
+   * Scope "commander": an item is auditable when the worker is Commander-owned
+   * EITHER by spawn parentage (the Commander created it — unchanged) OR by
+   * Commander adoption (the Commander sent it work via fleet_send_prompt and
+   * the send was delivered). Adoption applies from the moment the Commander
+   * takes over: `readyAt` is when the item became ready-for-review, so work
+   * that finished BEFORE adoption is never retroactively audited — an agent
+   * the user started and finished on its own stays out of scope no matter how
+   * long the marker has sat there. `readyAt` is an ISO timestamp (same format
+   * as the marker), so the comparison is a plain string compare.
+   */
+  private async isInScope(workerAgentId: string, readyAt: string): Promise<boolean> {
     const scope = this.getCentralConfig().evaluationScope;
     if (scope === "all") {
       return true;
     }
     const worker = this.agentManager.getAgent(workerAgentId) ?? null;
     const parentAgentId = getParentAgentIdFromLabels(worker?.labels ?? {});
-    if (!parentAgentId) {
+    if (parentAgentId && (await this.isCommander(parentAgentId))) {
+      return true;
+    }
+    const adoptedAt = await this.getCommanderAdoptionTimestamp(workerAgentId, worker);
+    if (adoptedAt === null) {
       return false;
     }
-    return this.isCommander(parentAgentId);
+    // No retroactive audits: the ready moment must be strictly after the
+    // take-over (equal = finished at the same instant → still the user's work).
+    return readyAt > adoptedAt;
+  }
+
+  /** The Commander adoption marker (ISO timestamp), live labels first, then
+   *  the durable stored record (the marker must survive reloads and agent
+   *  restarts — same fallback as the Commander identity check). */
+  private async getCommanderAdoptionTimestamp(
+    workerAgentId: string,
+    worker: ManagedAgent | null,
+  ): Promise<string | null> {
+    const labels = worker?.labels ?? (await this.agentStorage.get(workerAgentId))?.labels;
+    const value = labels?.[COMMANDER_ADOPTED_AT_LABEL];
+    return typeof value === "string" && value.trim().length > 0 ? value : null;
   }
 
   private async isCommander(agentId: string): Promise<boolean> {

@@ -29,7 +29,7 @@ import { resolveSessionAgent } from "@/utils/agent-snapshots";
 import { useInspectorStore } from "@/screens/mission-control/inspector-store";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
 import { isVerboseOnlyProposalEvent, ProposalCard } from "@/screens/mission-control/proposal-card";
-import { formatTimeAgo } from "@/utils/time";
+import { useLiveTimeAgo } from "@/hooks/use-compact-time-ago";
 import { ProofSections } from "./proofs/proof-sections";
 import { HostGlyph } from "@/components/host-glyph";
 export type FeedCardEvent = MissionControlEvent & {
@@ -250,6 +250,9 @@ function FeedCardMetaRow({
   timestamp: Date;
   onOpenAgent: () => void;
 }): ReactElement {
+  // Live relative time: the shared ticker re-renders ONLY this label as it
+  // ages (see useLiveTimeAgo), never the card or the list.
+  const timeAgo = useLiveTimeAgo(timestamp);
   return (
     <View style={styles.metaRow}>
       <Pressable
@@ -271,7 +274,7 @@ function FeedCardMetaRow({
         testID="mission-control-feed-host-glyph"
       />
       <Text style={styles.metaSeparator}>·</Text>
-      <Text style={styles.timestamp}>{formatTimeAgo(timestamp)}</Text>
+      <Text style={styles.timestamp}>{timeAgo}</Text>
       <Text style={[styles.metaSeparator, !showOpenAffordance && styles.openHidden]}>·</Text>
       <Text style={[styles.openLabel, !showOpenAffordance && styles.openHidden]}>open</Text>
     </View>
@@ -289,16 +292,20 @@ export function deriveFeedCardText(
   headline: string | null;
   detail: string | null;
 } {
-  const title = liveAgent?.title ?? event.agentTitle;
+  // Title is frozen from the event snapshot at emit time (immutable card copy).
+  const title = event.agentTitle;
+  // Agent name chip stays live (names are stable identity).
   const agentChipLabel = hideAgentNames
     ? title
     : (liveAgent?.name ?? liveAgent?.title ?? event.agentTitle);
-  // Every historical card reacts to a later identity report. Started cards
-  // retain their living short description; terminal/status cards keep their
-  // event headline below the title rather than collapsing to a bare name chip.
+
+  // Cards are immutable append-only snapshots: cards render from their stored
+  // snapshot, never from live agent identity updates. On started cards, the
+  // stored shortDescription snapshot (if present at emit time) is shown;
+  // legacy rows with no snapshot fall back to the event's own headline.
   let headline: string | null = event.headline === title ? null : event.headline;
-  if (event.kind === "started" && liveAgent?.shortDescription) {
-    headline = liveAgent.shortDescription;
+  if (event.kind === "started" && event.shortDescription) {
+    headline = event.shortDescription;
   }
   return { agentChipLabel, title, headline, detail: event.detail ?? null };
 }

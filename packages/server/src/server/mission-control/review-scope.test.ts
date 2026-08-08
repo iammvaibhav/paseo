@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi, type Mock } from "vitest";
 import type pino from "pino";
 import type { AgentManager, AgentManagerEvent, ManagedAgent } from "../agent/agent-manager.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
@@ -11,6 +11,7 @@ import { MissionControlService } from "./service.js";
 import { CentralMissionControlConfigStore } from "./config.js";
 import { MissionControlStore } from "./store.js";
 import { createMissionControlPresenceSource } from "./presence.js";
+import type { ProposalCreateInput } from "./approvals.js";
 
 /**
  * Ready-for-review scope discipline: under evaluationScope "all" a bare run
@@ -246,5 +247,200 @@ describe("ready-for-review under evaluationScope commander (default unchanged)",
     harness.finishRun("agent-plain");
     expect(harness.service.getReviewState("agent-plain")).toMatchObject({ reviewState: "ready" });
     expect(harness.service.getReadyForReview()).toContain("agent-plain");
+  });
+});
+
+describe("Commander adoption (verifier scope feeding)", () => {
+  interface AdoptionHarness {
+    service: MissionControlService;
+    worker: ManagedAgent;
+    setLabels: Mock;
+    setWorker: (agent: ManagedAgent) => void;
+    cleanup: () => Promise<void>;
+  }
+
+  function makeAdoptableWorker(id: string): ManagedAgent {
+    return {
+      id,
+      labels: {},
+      internal: false,
+      provider: "omp",
+      cwd: `/tmp/${id}`,
+      lifecycle: "idle",
+      name: `Name-${id}`,
+      session: { isRuntimeAlive: () => true },
+      config: { provider: "omp", cwd: `/tmp/${id}`, title: `Title-${id}` },
+    } as unknown as ManagedAgent;
+  }
+
+  async function createAdoptionHarness(): Promise<AdoptionHarness> {
+    const dir = await mkdtemp(join(tmpdir(), "mc-adoption-"));
+    const centralConfig = new CentralMissionControlConfigStore({
+      paseoHome: dir,
+      logger: createMockLogger(),
+    });
+    await centralConfig.initialize();
+    const liveAgents = new Map<string, ManagedAgent>();
+    liveAgents.set("worker-1", makeAdoptableWorker("worker-1"));
+    // A minimal live surface that lets an idle STEER delivery succeed through
+    // dispatchLocalPromptMode → startAgentRun: idle (no replace), no
+    // out-of-band interception, a drainable empty stream.
+    const setLabels = vi.fn(async (agentId: string, labels: Record<string, string>) => {
+      const agent = liveAgents.get(agentId);
+      if (agent) {
+        agent.labels = { ...agent.labels, ...labels };
+      }
+    });
+    const service = new MissionControlService({
+      paseoHome: dir,
+      logger: createMockLogger(),
+      agentManager: {
+        getAgent: (agentId) => liveAgents.get(agentId) ?? null,
+        subscribe: vi.fn(() => () => {}),
+        hasInFlightRun: () => false,
+        tryRunOutOfBand: () => false,
+        streamAgent: async function* () {},
+        setLabels,
+      } as unknown as AgentManager,
+      agentStorage: { get: async () => null } as unknown as AgentStorage,
+      daemonConfigStore: { get: () => ({}) } as unknown as DaemonConfigStore,
+      centralConfig,
+      serverId: "test-server",
+      hostName: "test-host",
+      broadcast: vi.fn(),
+      presence: createMissionControlPresenceSource({
+        isAgentFocused: () => false,
+        readStopOrigin: () => null,
+      }),
+    });
+    await service.start();
+    return {
+      service,
+      worker: liveAgents.get("worker-1")!,
+      setLabels,
+      setWorker: (agent) => {
+        liveAgents.set(agent.id, agent);
+      },
+      cleanup: async () => {
+        await service.stop();
+        const internals = service as unknown as { store: MissionControlStore };
+        const tails = internals.store as unknown as {
+          appendTail: Promise<void>;
+          persistTail: Promise<void>;
+        };
+        await Promise.all([tails.appendTail, tails.persistTail]);
+        await rm(dir, { recursive: true, force: true });
+      },
+    };
+  }
+
+  function commanderSend(targetAgentId: string): ProposalCreateInput {
+    return {
+      origin: "commander",
+      serverId: "test-server",
+      targetAgentId,
+      message: "Ship the flaky-test fix",
+      deliveryMode: "steer",
+      reason: "Commander send",
+      classification: "normal",
+      timelineClassification: "instruction",
+    };
+  }
+
+  let harness: AdoptionHarness;
+
+  beforeEach(async () => {
+    harness = await createAdoptionHarness();
+  });
+
+  afterEach(async () => {
+    await harness.cleanup();
+  });
+
+  test("a delivered commander-origin send adopts the worker", async () => {
+    const proposal = await harness.service.approvals.createProposal(commanderSend("worker-1"));
+    // Ask mode (default): the send sits pending until approved; adoption must
+    // fire on DELIVERY, not on proposal creation.
+    expect(proposal.status).toBe("pending");
+    const resolved = await harness.service.approvals.resolveProposal({
+      proposalId: proposal.id,
+      action: "approve",
+    });
+    expect(resolved.ok).toBe(true);
+    const adoptedAt = harness.worker.labels["paseo.commander-adopted-at"];
+    expect(typeof adoptedAt).toBe("string");
+    expect(Number.isNaN(Date.parse(adoptedAt as string))).toBe(false);
+    expect(harness.setLabels).toHaveBeenCalledTimes(1);
+  });
+
+  test("repeated commander sends do not duplicate the marker (first adoption wins)", async () => {
+    const first = await harness.service.approvals.createProposal(commanderSend("worker-1"));
+    await harness.service.approvals.resolveProposal({ proposalId: first.id, action: "approve" });
+    const adoptedAt = harness.worker.labels["paseo.commander-adopted-at"];
+    expect(adoptedAt).toBeTruthy();
+
+    const second = await harness.service.approvals.createProposal(commanderSend("worker-1"));
+    await harness.service.approvals.resolveProposal({ proposalId: second.id, action: "approve" });
+
+    expect(harness.worker.labels["paseo.commander-adopted-at"]).toBe(adoptedAt);
+    expect(harness.setLabels).toHaveBeenCalledTimes(1);
+  });
+
+  test("auto mode adopts too (the same deliver funnel)", async () => {
+    await harness.service.setMode("auto");
+    const proposal = await harness.service.approvals.createProposal(commanderSend("worker-1"));
+    expect(proposal.status).toBe("sent");
+    expect(typeof harness.worker.labels["paseo.commander-adopted-at"]).toBe("string");
+    expect(harness.setLabels).toHaveBeenCalledTimes(1);
+  });
+
+  test("stall status-ask nudges never adopt a worker", async () => {
+    const proposal = await harness.service.approvals.createProposal({
+      origin: "stall",
+      serverId: "test-server",
+      targetAgentId: "worker-1",
+      message: "Post a one-line report_status, then continue.",
+      deliveryMode: "steer",
+      reason: "No timeline output mid-run",
+      classification: "normal",
+      forceSend: true,
+    });
+    expect(proposal.status).toBe("sent");
+    expect(harness.worker.labels["paseo.commander-adopted-at"]).toBeUndefined();
+    expect(harness.setLabels).not.toHaveBeenCalled();
+  });
+
+  test("verifier-to-worker contacts never adopt a worker", async () => {
+    const proposal = await harness.service.approvals.createProposal({
+      origin: "verifier",
+      serverId: "test-server",
+      targetAgentId: "worker-1",
+      message: "Prove the fix with a failing test.",
+      deliveryMode: "steer",
+      reason: "Verifier clarification request",
+      classification: "normal",
+    });
+    await harness.service.approvals.resolveProposal({
+      proposalId: proposal.id,
+      action: "approve",
+    });
+    expect(harness.worker.labels["paseo.commander-adopted-at"]).toBeUndefined();
+    expect(harness.setLabels).not.toHaveBeenCalled();
+  });
+
+  test("mission-control machinery is never adopted (Commander itself)", async () => {
+    harness.setWorker({
+      ...makeAdoptableWorker("commander-1"),
+      labels: { "paseo.mission-control": "commander" },
+    } as ManagedAgent);
+    const result = await harness.service.recordCommanderAdoption("commander-1");
+    expect(result).toBeNull();
+    expect(harness.setLabels).not.toHaveBeenCalled();
+  });
+
+  test("an agent that is not live is never adopted", async () => {
+    const result = await harness.service.recordCommanderAdoption("ghost");
+    expect(result).toBeNull();
+    expect(harness.setLabels).not.toHaveBeenCalled();
   });
 });

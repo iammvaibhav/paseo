@@ -22,7 +22,7 @@ This is an npm workspace monorepo:
 At the start of non-trivial work, list `docs/` and skim anything relevant to the task.
 
 | Doc                                                                | What's in it                                                                                                                   |
-| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
 | [docs/product.md](docs/product.md)                                 | What Paseo is, who it's for, where it's going                                                                                  |
 | [docs/architecture.md](docs/architecture.md)                       | System design, package layering, WebSocket protocol, agent lifecycle, data flow                                                |
 | [docs/agent-lifecycle.md](docs/agent-lifecycle.md)                 | Agent states, parent/child relationships, archive semantics, tabs vs archive, subagents track                                  |
@@ -47,8 +47,9 @@ At the start of non-trivial work, list `docs/` and skim anything relevant to the
 | [docs/mission-control.md](docs/mission-control.md)                 | Mission Control: fleet board, self-reported status feed, Commander + ephemeral Verifiers, Ask/Auto approval gate, fleet search |
 | [docs/plannotator.md](docs/plannotator.md)                         | Embedded Plannotator: daemon-spawned annotate sessions, feedback → agent, deploy                                               |
 | [docs/development.md](docs/development.md)                         | Dev server, build sync gotchas, CLI reference, agent state, Playwright MCP                                                     |
-| [docs/observability.md](docs/observability.md)                     | Telling a parked agent from a working one — the stall signature, where the forensic data lives, what to measure                |
-| [docs/rpc-namespacing.md](docs/rpc-namespacing.md)                 | WebSocket RPC naming convention — dotted namespaces and `.request`/`.response` pairs                                           |
+|                                                                    | [docs/observability.md](docs/observability.md)                                                                                 | Telling a parked agent from a working one — the stall signature, where the forensic data lives, what to measure                  |
+|                                                                    | [docs/omp-observability-extension.md](docs/omp-observability-extension.md)                                                     | omp hook extension that logs model-call lifecycle to a JSONL feed — lets the dormant-turn detector see a model request in flight |
+|                                                                    | [docs/rpc-namespacing.md](docs/rpc-namespacing.md)                                                                             | WebSocket RPC naming convention — dotted namespaces and `.request`/`.response` pairs                                             |
 | [docs/protocol-compatibility.md](docs/protocol-compatibility.md)   | Why app/daemon versions drift, protocol vs feature contract, capability gating, COMPAT tagging                                 |
 | [docs/protocol-validation.md](docs/protocol-validation.md)         | zod-aot generated inbound WebSocket validation, patched compiler regressions, schema-purity rules                              |
 | [docs/terminal-performance.md](docs/terminal-performance.md)       | Terminal latency pipeline, coalescing/backpressure invariants, benchmark + perf spec usage                                     |

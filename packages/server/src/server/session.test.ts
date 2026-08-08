@@ -5519,6 +5519,10 @@ describe("send_agent_message dispatch modes", () => {
         hasInFlightRun: vi.fn(() => false),
         streamAgent: vi.fn(noopAgentStream),
         replaceAgentRun: vi.fn(noopAgentStream),
+        // The full send path (sendPromptToAgent -> ensureAgentLoaded) touches
+        // these on every dispatch that is not an out-of-band steer.
+        waitForAgentClose: vi.fn(async () => undefined),
+        getRegisteredProviderIds: vi.fn(() => ["omp"]),
         ...agentManager,
       },
     });
@@ -5613,6 +5617,33 @@ describe("send_agent_message dispatch modes", () => {
     expect(replaceAgentRun).not.toHaveBeenCalled();
     expect(acceptedResponse(messages)).toMatchObject({
       requestId: "req-steer-idle",
+      accepted: true,
+    });
+  });
+  test("steer to a stored agent with no in-flight run escalates to a fresh run instead of queueing", async () => {
+    const streamAgent = vi.fn(noopAgentStream);
+    const replaceAgentRun = vi.fn(noopAgentStream);
+    const { session, messages } = createDispatchSession({
+      tryRunOutOfBand: vi.fn(() => false),
+      streamAgent,
+      replaceAgentRun,
+      hasInFlightRun: vi.fn(() => false),
+    });
+
+    await session.handleMessage({
+      type: "send_agent_message_request",
+      requestId: "req-steer-phantom-escalate",
+      agentId,
+      text: "steer after restart",
+      dispatchMode: "steer",
+    });
+
+    // Steer with no in-flight run routes through the full send path (starts
+    // a fresh run) rather than queueing or failing raw.
+    expect(streamAgent).toHaveBeenCalledTimes(1);
+    expect(replaceAgentRun).not.toHaveBeenCalled();
+    expect(acceptedResponse(messages)).toMatchObject({
+      requestId: "req-steer-phantom-escalate",
       accepted: true,
     });
   });

@@ -187,6 +187,32 @@ function formatProviderList(providers: readonly string[]): string {
   return providers.length > 0 ? providers.join(", ") : "none";
 }
 
+/**
+ * Optional record fields carried across a failed spawn. A provider launch that
+ * fails must record the failure without wiping identity or attention state a
+ * previous run established, so every already-set optional field is preserved
+ * verbatim and absent ones stay absent.
+ */
+function preservedSpawnFields(
+  existing: StoredAgentRecord | null | undefined,
+): Partial<StoredAgentRecord> {
+  if (!existing) {
+    return {};
+  }
+  const preserved: Partial<StoredAgentRecord> = {};
+  if (existing.name !== undefined) preserved.name = existing.name;
+  if (existing.shortDescription !== undefined)
+    preserved.shortDescription = existing.shortDescription;
+  if (existing.requiresAttention !== undefined)
+    preserved.requiresAttention = existing.requiresAttention;
+  if (existing.attentionReason !== undefined) preserved.attentionReason = existing.attentionReason;
+  if (existing.attentionTimestamp !== undefined)
+    preserved.attentionTimestamp = existing.attentionTimestamp;
+  if (existing.internal !== undefined) preserved.internal = existing.internal;
+  if (existing.archivedAt !== undefined) preserved.archivedAt = existing.archivedAt;
+  return preserved;
+}
+
 function buildStoredAgentConfig(record: StoredAgentRecord): AgentSessionConfig {
   const config: AgentSessionConfig = {
     provider: record.provider,
@@ -747,6 +773,26 @@ function getFirstUserMessageTextFromRows(rows: readonly AgentTimelineRow[]): str
     }
   }
   return null;
+}
+
+/** Options accepted by AgentManager.registerSession. */
+interface RegisterSessionOptions {
+  createdAt?: Date;
+  updatedAt?: Date;
+  lastUserMessageAt?: Date | null;
+  labels?: Record<string, string>;
+  timeline?: AgentTimelineItem[];
+  timelineRows?: AgentTimelineRow[];
+  timelineNextSeq?: number;
+  persistence?: AgentPersistenceHandle;
+  historyPrimed?: boolean;
+  lastUsage?: AgentUsage;
+  lastError?: string;
+  attention?: AttentionState;
+  initialTitle?: string | null;
+  publishWhenReady?: boolean;
+  workspaceId?: string;
+  owner?: AgentOwner;
 }
 
 export class AgentManager {
@@ -1338,14 +1384,94 @@ export class AgentManager {
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     const createOptions = this.buildCreateSessionOptions(options);
-    const session = await client.createSession(providerLaunchConfig, launchContext, createOptions);
-    await this.requireExternalMcpSupport(session, storedConfig);
-    return this.registerSession(session, storedConfig, resolvedAgentId, {
-      labels: options.labels,
-      initialTitle: options.initialTitle,
-      workspaceId: options.workspaceId,
-      owner: options.owner,
-    });
+
+    try {
+      const session = await client.createSession(
+        providerLaunchConfig,
+        launchContext,
+        createOptions,
+      );
+      await this.requireExternalMcpSupport(session, storedConfig);
+      return await this.registerSession(session, storedConfig, resolvedAgentId, {
+        labels: options.labels,
+        initialTitle: options.initialTitle,
+        workspaceId: options.workspaceId,
+        owner: options.owner,
+      });
+    } catch (error) {
+      // A spawn whose provider process launch failed must not look like a
+      // running (or vanished) agent. The provider creation was attempted but
+      // no session survived — record the failure as a terminal failed agent
+      // carrying the provider's error text, so the board/user sees the
+      // rejection instead of a silent void. Pre-flight rejections (disabled
+      // provider, unavailable client, MCP unsupported) throw before/during this
+      // catch and leave no record.
+      const isMcpError =
+        error instanceof Error && error.message.includes("does not support MCP servers");
+      if (!isMcpError && !this.agents.has(resolvedAgentId)) {
+        await this.persistFailedSpawnRecord(resolvedAgentId, config, options, error);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Record a spawn whose provider launch failed as a terminal failed agent
+   * (lastStatus "error") carrying the provider's error message. Best-effort:
+   * the write must never mask the original launch error. Identity fields
+   * (name/title/description) of any prior record are preserved so a reload
+   * path that fails to recreate the agent does not wipe its stored identity.
+   */
+  private async persistFailedSpawnRecord(
+    agentId: string,
+    config: AgentSessionConfig,
+    options: CreateAgentOptions,
+    error: unknown,
+  ): Promise<void> {
+    if (!this.registry) {
+      return;
+    }
+    try {
+      const existing = await this.registry.get(agentId);
+      const now = new Date();
+      const message = error instanceof Error ? error.message : String(error);
+      const provider = config.provider.includes("/")
+        ? config.provider.split("/")[0]!
+        : config.provider;
+      await this.registry.upsert({
+        id: agentId,
+        provider,
+        cwd: config.cwd,
+        ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
+        createdAt: existing?.createdAt ?? now.toISOString(),
+        updatedAt: now.toISOString(),
+        lastActivityAt: existing?.lastActivityAt ?? now.toISOString(),
+        lastUserMessageAt: existing?.lastUserMessageAt ?? null,
+        title: existing?.title ?? config.title ?? null,
+        ...preservedSpawnFields(existing),
+        labels: options.labels ?? existing?.labels ?? {},
+        lastStatus: "error",
+        config: {
+          modeId: config.modeId,
+          model: config.model,
+          thinkingOptionId: config.thinkingOptionId,
+          featureValues: config.featureValues,
+          extra: config.extra,
+          systemPrompt: config.systemPrompt,
+          systemPromptMode: config.systemPromptMode,
+          toolAllowlist: config.toolAllowlist,
+          mcpServers: config.mcpServers,
+        },
+        persistence: null,
+        lastError: message,
+      });
+      this.logger.warn(
+        { err: error, agentId, provider: config.provider },
+        "agent.create.provider_launch_failed_recorded",
+      );
+    } catch (persistError) {
+      this.logger.warn({ err: persistError, agentId }, "Failed to persist failed-spawn record");
+    }
   }
 
   private buildCreateSessionOptions(options?: {
@@ -2368,6 +2494,9 @@ export class AgentManager {
    */
   tryRunOutOfBand(agentId: string, prompt: AgentPromptInput, options?: AgentRunOptions): boolean {
     const agent = this.requireSessionAgent(agentId);
+    if (agent.session.isRuntimeAlive?.() === false) {
+      return false;
+    }
     const handler = agent.session.tryHandleOutOfBand?.(prompt);
     if (!handler) {
       return false;
@@ -3403,28 +3532,34 @@ export class AgentManager {
     });
   }
 
+  /**
+   * A restored agent registered WITHOUT explicit timestamps (e.g. a raw
+   * handle resume) must inherit its stored updatedAt/lastUserMessageAt:
+   * `now`/null would otherwise stamp the record with the registration time
+   * and wipe the last user message even though the agent did nothing (live
+   * bug: every idle-through-restart agent read the same "last activity").
+   */
+  private inheritStoredTimestampsForRestore(
+    existingRecord: StoredAgentRecord,
+    options: RegisterSessionOptions | undefined,
+  ): RegisterSessionOptions {
+    const inherited: RegisterSessionOptions = { ...options };
+    if (inherited.updatedAt === undefined) {
+      inherited.updatedAt = new Date(existingRecord.lastActivityAt ?? existingRecord.updatedAt);
+    }
+    if (inherited.lastUserMessageAt === undefined) {
+      inherited.lastUserMessageAt = existingRecord.lastUserMessageAt
+        ? new Date(existingRecord.lastUserMessageAt)
+        : null;
+    }
+    return inherited;
+  }
+
   private async registerSession(
     session: AgentSession,
     config: AgentSessionConfig,
     agentId: string,
-    options?: {
-      createdAt?: Date;
-      updatedAt?: Date;
-      lastUserMessageAt?: Date | null;
-      labels?: Record<string, string>;
-      timeline?: AgentTimelineItem[];
-      timelineRows?: AgentTimelineRow[];
-      timelineNextSeq?: number;
-      persistence?: AgentPersistenceHandle;
-      historyPrimed?: boolean;
-      lastUsage?: AgentUsage;
-      lastError?: string;
-      attention?: AttentionState;
-      initialTitle?: string | null;
-      publishWhenReady?: boolean;
-      workspaceId?: string;
-      owner?: AgentOwner;
-    },
+    options?: RegisterSessionOptions,
   ): Promise<ManagedAgent> {
     let registered = false;
     try {
@@ -3462,13 +3597,20 @@ export class AgentManager {
         options,
       });
 
+      // A restored agent must keep its stored timestamps when the caller did
+      // not pass explicit ones (live bug: registration stamped idle agents
+      // with the restore time, so every dormant board row read the same age).
+      const restoredRegistrationOptions =
+        existingRecord === null || existingRecord === undefined
+          ? options
+          : this.inheritStoredTimestampsForRestore(existingRecord, options);
       const managed = this.buildManagedAgentForRegister({
         resolvedAgentId,
         session,
         config,
         now,
         durableTimelineHasRows,
-        options,
+        options: restoredRegistrationOptions,
         name,
         shortDescription,
       });
@@ -3491,7 +3633,19 @@ export class AgentManager {
       await this.refreshSessionState(managed, { emit: false });
       this.assertAgentRegistrationActive(managed);
       managed.lifecycle = "idle";
-      this.touchUpdatedAt(managed);
+      // Registration is bookkeeping for a RESTORED agent (resume/reload of an
+      // existing stored record): it did not actually do anything, so do not
+      // advance updatedAt. The snapshot projection derives the record's
+      // lastActivityAt from updatedAt, so bumping it here rewrites every
+      // idle-through-restart agent's real last-activity with this process's
+      // boot/restore time — the shared "last activity" every dormant board
+      // row used to read (live bug). Preserved timestamps mean an agent that
+      // has not run since the last boot keeps its true lastActivityAt; real
+      // activity (timeline rows, user messages, lifecycle transitions) still
+      // bumps updatedAt via touchUpdatedAt and re-persists as usual.
+      if (!existingRecord) {
+        this.touchUpdatedAt(managed);
+      }
       await this.persistSnapshot(managed);
       this.assertAgentRegistrationActive(managed);
       this.emitState(managed, { persist: false });

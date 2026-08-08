@@ -31,7 +31,7 @@ describe("buildSelfReportSystemPrompt", () => {
     expect(prompt).toContain(MISSION_CONTROL_SELF_REPORT_PROMPT);
     // No identity known yet: the seed says so explicitly.
     expect(prompt).toContain("no title or description yet");
-    expect(prompt).toContain("Your first report_status can set both");
+    expect(prompt).toContain("include a fresh description of what you are doing NOW");
     expect(MISSION_CONTROL_SELF_REPORT_PROMPT.length).toBeGreaterThan(0);
   });
 
@@ -48,17 +48,14 @@ describe("buildSelfReportSystemPrompt", () => {
 
   test("paragraph carries the title/description ownership rules", () => {
     const prompt = MISSION_CONTROL_SELF_REPORT_PROMPT;
-    // The agent owns its identity; title is stable, retitled on divergence.
+    // The agent owns its identity; title is refined, description kept fresh.
     expect(prompt).toContain("title");
     expect(prompt).toContain("description");
-    expect(prompt).toContain("kept STABLE");
-    expect(prompt).toContain('"decision"-kind report');
-    expect(prompt).toContain("REPLACE it");
+    expect(prompt).toContain("initial guess");
+    expect(prompt).toContain('"decision" or "completed" report');
+    expect(prompt).toContain("fresh description");
     expect(prompt).toContain("~400 characters");
-    expect(prompt).toContain("Send title/description ONLY when changing them");
-    // Drift-only identity echo: results only report externally-changed values.
-    expect(prompt).toContain("drifted from what you sent");
-    expect(prompt).toContain("already current");
+    expect(prompt).toContain("Send title and description with your report_status");
   });
 
   test("seeds the agent's current title and description into the built prompt", () => {
@@ -69,8 +66,8 @@ describe("buildSelfReportSystemPrompt", () => {
     expect(prompt).not.toBeNull();
     expect(prompt).toContain("- Title: Fix auth");
     expect(prompt).toContain("- Description: Reproducing the login failure");
-    // Compare-and-decide pointer so the next report can revise the identity.
-    expect(prompt).toContain("Compare against it before each report");
+    // Identity guidance so status reports stay up to date.
+    expect(prompt).toContain("Include a fresh description on status reports");
   });
 
   test("returns null for a mission-control-labeled agent", () => {

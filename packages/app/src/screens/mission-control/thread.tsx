@@ -148,6 +148,9 @@ function renderThreadToolCall(
   verbose: boolean,
   agentNames: Readonly<Record<string, string | undefined>>,
 ): ReactElement | null {
+  if (!verbose) {
+    return null;
+  }
   if (item.payload.source === "agent") {
     const data = item.payload.data;
     // OMP provider notices (quota warnings, task-result notices) render as
@@ -225,9 +228,11 @@ function CommanderMessageRow({
         />
       );
     case "assistant_message":
-      // Unknown provider history records fall through as bracket-prefixed
-      // plumbing text ("[credential_pin] Unsupported history record"). They
-      // carry no conversation value — drop them entirely.
+      // Normal mode shows ONLY cards and user messages: assistant turn text,
+      // thinking, tool calls, and acknowledgments are all verbose-only.
+      if (!verbose) {
+        return null;
+      }
       if (isPlumbingAssistantText(item.text)) {
         return null;
       }
