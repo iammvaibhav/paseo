@@ -172,6 +172,7 @@ import { WebhookSession } from "./session/webhook/webhook-session.js";
 import type { WebhookService } from "./webhook/service.js";
 import type { PeerManager } from "./peers/peer-manager.js";
 import type { MissionControlService } from "./mission-control/service.js";
+import { commanderHomeWorkspaceTitle } from "./mission-control/commander-boot.js";
 import { buildCommanderLaunchConfig, buildLocalContextPayload } from "./mission-control/context.js";
 import {
   MISSION_CONTROL_LABEL_KEY,
@@ -631,6 +632,52 @@ function describeRegistryTransition(record: ArchivedRecordSnapshot | null): Regi
 }
 
 /**
+ * The first-conversation context for a freshly created agent: the trimmed
+ * prompt and any attachments. Empty when neither is present.
+ */
+function buildFirstAgentContext(
+  trimmedPrompt: string | undefined,
+  attachments: AgentAttachment[] | undefined,
+): FirstAgentContext {
+  return {
+    ...(trimmedPrompt ? { prompt: trimmedPrompt } : {}),
+    ...(attachments && attachments.length > 0 ? { attachments } : {}),
+  };
+}
+
+/**
+ * The Commander's home workspace is infrastructure: it gets the stable
+ * host-derived title, never a message-derived one (live incident: the
+ * `<paseo-system>` context pack titled the workspace on every spawn).
+ */
+function resolveWorkspacePromptTitle(
+  labels: Record<string, string>,
+  hostName: string,
+  hostAlias: string | null,
+  firstAgentContext: FirstAgentContext,
+): string | null {
+  if (labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE) {
+    return commanderHomeWorkspaceTitle(hostName, hostAlias);
+  }
+  return resolveFirstAgentPromptTitle(firstAgentContext);
+}
+
+/**
+ * Commander: the context pack snapshot is the first conversation message; a
+ * caller-supplied initial prompt (unusual for the Commander) follows it.
+ */
+function resolveEffectiveInitialPrompt(
+  firstMessage: string | undefined,
+  trimmedPrompt: string | undefined,
+  initialPrompt: string | undefined,
+): string | undefined {
+  if (firstMessage) {
+    return trimmedPrompt ? `${firstMessage}\n\n${trimmedPrompt}` : firstMessage;
+  }
+  return initialPrompt;
+}
+
+/**
  * Session represents a single connected client session.
  * It owns all state management, orchestration logic, and message processing.
  * Session has no knowledge of WebSockets - it only emits and receives messages.
@@ -888,11 +935,17 @@ export class Session {
         listLiveAgents: () => this.agentManager.listAgents(),
         resolveAgentIdentifier: (identifier) => this.resolveAgentIdentifier(identifier),
         sendAgentMessage: async (agentId, text) => {
+          // Schedule/loop sends are machinery: a dispatch that supersedes a
+          // busy run keeps the failure treatment, never a user interruption.
+          if (this.agentManager.hasInFlightRun(agentId)) {
+            this.missionControlService?.recordStopOrigin(agentId, "machinery");
+          }
           await sendPromptToAgent({
             agentManager: this.agentManager,
             agentStorage: this.agentStorage,
             agentId,
             prompt: formatSystemNotificationPrompt(text),
+            replaceOrigin: "machinery",
             unarchive: false,
             logger: this.sessionLogger,
           });
@@ -3735,11 +3788,17 @@ export class Session {
     const prompt = buildAgentPrompt(promptText, images, attachments);
 
     try {
+      // A user send supersedes the in-flight run: record the user stop origin
+      // so the superseded run reads as "Interrupted by you", not a failure.
+      if (this.agentManager.hasInFlightRun(agentId)) {
+        this.missionControlService?.recordStopOrigin(agentId, "user");
+      }
       await sendPromptToAgent({
         agentManager: this.agentManager,
         agentStorage: this.agentStorage,
         agentId,
         prompt,
+        replaceOrigin: "user",
         messageId,
         runOptions,
         logger: this.sessionLogger,
@@ -3800,11 +3859,13 @@ export class Session {
         initialPrompt: trimmedPrompt,
       });
 
-      const firstAgentContext: FirstAgentContext = {
-        ...(trimmedPrompt ? { prompt: trimmedPrompt } : {}),
-        ...(attachments && attachments.length > 0 ? { attachments } : {}),
-      };
-      const workspacePromptTitle = resolveFirstAgentPromptTitle(firstAgentContext);
+      const firstAgentContext = buildFirstAgentContext(trimmedPrompt, attachments);
+      const workspacePromptTitle = resolveWorkspacePromptTitle(
+        msg.labels,
+        this.hostName,
+        this.daemonConfigStore.get().missionControl?.hostAlias?.trim() || null,
+        firstAgentContext,
+      );
       const createdWorktree = await this.createAgentLifecycleDispatch.createWorktreeForRequest({
         cwd: config.cwd,
         target: worktree,
@@ -3822,11 +3883,11 @@ export class Session {
         throw new Error(`Working directory does not exist or is not a directory: ${resolvedCwd}`);
       }
 
-      // Commander: the context pack snapshot is the first conversation message;
-      // a caller-supplied initial prompt (unusual for the Commander) follows it.
-      const effectiveInitialPrompt = resolvedIntent.firstMessage
-        ? resolvedIntent.firstMessage + (trimmedPrompt ? `\n\n${trimmedPrompt}` : "")
-        : initialPrompt;
+      const effectiveInitialPrompt = resolveEffectiveInitialPrompt(
+        resolvedIntent.firstMessage,
+        trimmedPrompt,
+        initialPrompt,
+      );
 
       const { snapshot, liveSnapshot } = await createAgentCommand(
         {
@@ -3864,6 +3925,7 @@ export class Session {
             workspaceId: resolvedIntent.intent.workspaceId,
             cwd: resolvedIntent.config.cwd,
             firstAgentContext,
+            labels: msg.labels,
           },
           { currentSelection: this.getFocusedAgentSelectionForCwd(resolvedIntent.config.cwd) },
         );
@@ -7499,39 +7561,52 @@ export class Session {
     agentId: string,
     prompt: AgentPromptInput,
   ): Promise<{ outOfBand: boolean }> {
-    if (msg.dispatchMode === "steer" || msg.dispatchMode === "queue") {
-      // Steer: deliver without interrupting a running turn. When the text
-      // matches an out-of-band command (OMP /steer) the live turn is
-      // redirected; otherwise the prompt is queued — a busy agent must never
-      // error on a steer (spec: "send to a busy worker delivers as steer by
-      // default"). Queue: wait for idle first, then stream.
-      if (msg.dispatchMode === "queue") {
-        await this.waitForAgentIdle(agentId);
-      }
-      try {
-        return await startAgentRun(this.agentManager, agentId, prompt, this.sessionLogger, {
-          replaceRunning: false,
-        });
-      } catch (error) {
-        if (msg.dispatchMode !== "steer") {
-          throw error;
+    if (msg.dispatchMode === "steer") {
+      // Steer: deliver against the live turn without canceling it. An idle
+      // agent just runs the prompt (there is nothing to steer). A busy agent
+      // gets the native out-of-band steer when the provider has one — OMP
+      // accepts the text wrapped as `/steer …` and redirects the live turn.
+      // Busy on a provider WITHOUT a native steer path (or a structured prompt
+      // with attachments) falls back to an INTERRUPT (replaceRunning) — a
+      // steer's value is timely delivery, and queue-until-idle can sit for
+      // tens of minutes (matches dispatchLocalPromptMode's rule).
+      const busy = this.agentManager.hasInFlightRun(agentId);
+      if (busy) {
+        const steerPrompt = typeof prompt === "string" ? `/steer ${prompt}` : prompt;
+        if (steerPrompt !== prompt && this.agentManager.tryRunOutOfBand(agentId, steerPrompt)) {
+          return { outOfBand: true };
         }
-        // Busy agent + no out-of-band match: degrade to queue semantics.
-        this.sessionLogger.debug(
-          { err: error, agentId },
-          "Steer did not run out-of-band; queuing until idle",
-        );
-        await this.waitForAgentIdle(agentId);
-        return await startAgentRun(this.agentManager, agentId, prompt, this.sessionLogger, {
-          replaceRunning: false,
+        // Steer delivered as an interrupt fallback: still a USER send that
+        // supersedes the in-flight run — record the user stop origin.
+        this.missionControlService?.recordStopOrigin(agentId, "user");
+        return startAgentRun(this.agentManager, agentId, prompt, this.sessionLogger, {
+          replaceRunning: true,
+          runOptions: { replaceOrigin: "user" },
         });
       }
+      return startAgentRun(this.agentManager, agentId, prompt, this.sessionLogger, {
+        replaceRunning: false,
+      });
+    }
+    if (msg.dispatchMode === "queue") {
+      // Queue: wait for idle first, then stream without replacing.
+      await this.waitForAgentIdle(agentId);
+      return startAgentRun(this.agentManager, agentId, prompt, this.sessionLogger, {
+        replaceRunning: false,
+      });
+    }
+    // Default (interrupt) send: a user prompt supersedes the in-flight run.
+    // Record the user stop origin up front so the superseded run's terminal
+    // failure reads as "Interrupted by you", not "Failed with an error".
+    if (this.agentManager.hasInFlightRun(agentId)) {
+      this.missionControlService?.recordStopOrigin(agentId, "user");
     }
     return sendPromptToAgent({
       agentManager: this.agentManager,
       agentStorage: this.agentStorage,
       agentId,
       prompt,
+      replaceOrigin: "user",
       messageId: msg.messageId,
       logger: this.sessionLogger,
     });

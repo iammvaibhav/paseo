@@ -326,14 +326,6 @@ describe("keyboard-shortcuts", () => {
       action: "message-input.action",
       payload: { kind: "voice-mute-toggle" },
     },
-    {
-      name: "routes Escape to agent interrupt outside terminal focus",
-      event: { key: "Escape", code: "Escape" },
-      context: { focusScope: "message-input" },
-      action: "agent.interrupt",
-      preventDefault: false,
-      stopPropagation: false,
-    },
     // macOS rewrites event.key when Option is held (Option+T -> "†",
     // Option+[ -> "“", Option+Shift+W -> "„", etc.). Every Alt-bound
     // letter / bracket shortcut must still resolve.
@@ -496,6 +488,11 @@ describe("keyboard-shortcuts", () => {
       name: "does not interrupt agent when command center is open",
       event: { key: "Escape", code: "Escape" },
       context: { commandCenterOpen: true },
+    },
+    {
+      name: "does not interrupt agent from the message input",
+      event: { key: "Escape", code: "Escape" },
+      context: { focusScope: "message-input" },
     },
     {
       name: "does not bind pane shortcuts on non-mac platforms",

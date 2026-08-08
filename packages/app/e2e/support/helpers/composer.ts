@@ -65,11 +65,6 @@ export async function cancelAgent(page: Page): Promise<void> {
   await stopButton.click();
 }
 
-/** Escape is bound to the "agent.interrupt" keyboard shortcut. */
-export async function pressInterruptShortcut(page: Page): Promise<void> {
-  await page.keyboard.press("Escape");
-}
-
 export async function openAttachmentMenu(page: Page): Promise<void> {
   await page.getByTestId("message-input-attach-button").filter({ visible: true }).first().click();
   await expect(

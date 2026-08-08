@@ -6,9 +6,11 @@ import type pino from "pino";
 import type { AgentManager, AgentManagerEvent, ManagedAgent } from "../agent/agent-manager.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
 import type { AgentTimelineItem } from "../agent/agent-sdk-types.js";
+import type { MissionControlProposal } from "@getpaseo/protocol/mission-control/types";
 import type { DaemonConfigStore } from "../daemon-config-store.js";
 import { MissionControlService, nudgeBackoffMs } from "./service.js";
 import type { MissionControlApprovals } from "./approvals.js";
+import type { CentralMissionControlConfigStore } from "./config.js";
 import { MissionControlStore } from "./store.js";
 import { createMissionControlPresenceSource, isUserViewingAgent } from "./presence.js";
 import type { ClientPresenceState } from "../agent-attention-policy.js";
@@ -250,6 +252,184 @@ describe("MissionControlService stall v2 + watchdog", () => {
         (call: unknown[]) => (call[0] as { event?: { kind?: string } }).event?.kind === "stalled",
       ),
     ).toBe(false);
+  });
+
+  test("stall nudges stay native steer and auto-sent regardless of delivery-mode settings", async () => {
+    // Even with both commander/verifier → worker delivery modes set to
+    // interrupt (and queue), the stall status-ask nudge is untouched: it
+    // stays a native steer, forceSend (no approval in either mode).
+    const centralConfig = (
+      service as unknown as { centralConfig: CentralMissionControlConfigStore }
+    ).centralConfig;
+    await centralConfig.patch({
+      commanderToWorkerMode: "interrupt",
+      verifierToWorkerMode: "queue",
+    });
+
+    startRunning("agent-1");
+    setSilence("agent-1", 121_000);
+    sweep();
+    expect(createProposal).toHaveBeenCalledTimes(1);
+    expect(createProposal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        origin: "stall",
+        targetAgentId: "agent-1",
+        deliveryMode: "steer",
+        classification: "normal",
+        // The status-ask steer bypasses the approval gate in both modes.
+        forceSend: true,
+        reason: "No timeline output for >120s mid-run",
+      }),
+    );
+  });
+
+  function streamToolCall(
+    agentId: string,
+    callId: string,
+    status: "running" | "completed" | "failed",
+    error?: unknown,
+  ): void {
+    streamTimeline(agentId, {
+      type: "tool_call",
+      callId,
+      name: "fleet_create_agent",
+      status,
+      detail: { type: "plain_text", text: "tool call" },
+      ...(status === "failed" ? { error } : {}),
+    });
+  }
+
+  function blockedEvents(): Array<{ headline?: string; detail?: string }> {
+    return broadcast.mock.calls
+      .map((call: unknown[]) => (call[0] as { event?: { kind?: string } }).event)
+      .filter((event) => event?.kind === "blocked") as Array<{
+      headline?: string;
+      detail?: string;
+    }>;
+  }
+
+  function commanderAgent(agentId: string): ManagedAgent {
+    return runningAgent(agentId, {
+      labels: { "paseo.mission-control": "commander" },
+    });
+  }
+
+  test("Commander watchdog: N consecutive provider rejections emit exactly one Needs-you card, no nudge", async () => {
+    const commander = commanderAgent("commander-1");
+    getAgent.mockReturnValue(commander);
+    startRunning("commander-1", commander);
+
+    for (let i = 0; i < 5; i++) {
+      streamToolCall(
+        "commander-1",
+        `call-${i}`,
+        "failed",
+        "Provider opencode-zen is not configured",
+      );
+    }
+    await flushBroadcasts();
+    const events = blockedEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0]?.headline).toContain("fleet_create_agent");
+    expect(events[0]?.detail).toContain("Provider opencode-zen is not configured");
+    // Card only — the Commander is never nudged.
+    expect(createProposal).not.toHaveBeenCalled();
+  });
+
+  test("Commander watchdog: schema-validation class errors count too", async () => {
+    const commander = commanderAgent("commander-1");
+    getAgent.mockReturnValue(commander);
+    startRunning("commander-1", commander);
+
+    for (let i = 0; i < 3; i++) {
+      streamToolCall(
+        "commander-1",
+        `call-${i}`,
+        "failed",
+        "provider must be provider/model, for example codex/gpt-5.4",
+      );
+    }
+    await flushBroadcasts();
+    expect(blockedEvents()).toHaveLength(1);
+  });
+
+  test("Commander watchdog: non-provider failures never card", async () => {
+    const commander = commanderAgent("commander-1");
+    getAgent.mockReturnValue(commander);
+    startRunning("commander-1", commander);
+
+    for (let i = 0; i < 6; i++) {
+      streamToolCall("commander-1", `call-${i}`, "failed", "bash: command not found: nope");
+    }
+    await flushBroadcasts();
+    expect(blockedEvents()).toHaveLength(0);
+    expect(createProposal).not.toHaveBeenCalled();
+  });
+
+  test("Commander watchdog: a successful call of the same tool breaks the streak", async () => {
+    const commander = commanderAgent("commander-1");
+    getAgent.mockReturnValue(commander);
+    startRunning("commander-1", commander);
+
+    streamToolCall("commander-1", "call-0", "failed", "Provider opencode-zen is not configured");
+    streamToolCall("commander-1", "call-1", "failed", "Provider opencode-zen is not configured");
+    streamToolCall("commander-1", "call-2", "completed");
+    for (let i = 3; i < 6; i++) {
+      streamToolCall(
+        "commander-1",
+        `call-${i}`,
+        "failed",
+        "Provider opencode-zen is not configured",
+      );
+    }
+    await flushBroadcasts();
+    // Only the post-success streak counts; exactly one card.
+    expect(blockedEvents()).toHaveLength(1);
+  });
+
+  test("Commander watchdog: a turn boundary resets, so each looping turn cards once", async () => {
+    const commander = commanderAgent("commander-1");
+    getAgent.mockReturnValue(commander);
+    startRunning("commander-1", commander);
+
+    for (let i = 0; i < 3; i++) {
+      streamToolCall(
+        "commander-1",
+        `call-${i}`,
+        "failed",
+        "Provider opencode-zen is not configured",
+      );
+    }
+    onEvent?.({
+      type: "agent_stream",
+      agentId: "commander-1",
+      event: { type: "turn_completed", provider: "omp", turnId: "turn-1" },
+    });
+    for (let i = 3; i < 6; i++) {
+      streamToolCall(
+        "commander-1",
+        `call-${i}`,
+        "failed",
+        "Provider opencode-zen is not configured",
+      );
+    }
+    await flushBroadcasts();
+    expect(blockedEvents()).toHaveLength(2);
+  });
+
+  test("Commander watchdog: worker tool failures are untouched", async () => {
+    // A plain worker (not MC-labeled) with the same failure pattern must not
+    // produce a watchdog card — worker stall handling is the stall machinery's
+    // job, and that path is unchanged.
+    const worker = runningAgent("agent-1");
+    getAgent.mockReturnValue(worker);
+    startRunning("agent-1", worker);
+    for (let i = 0; i < 5; i++) {
+      streamToolCall("agent-1", `call-${i}`, "failed", "Provider opencode-zen is not configured");
+    }
+    await flushBroadcasts();
+    expect(blockedEvents()).toHaveLength(0);
+    expect(createProposal).not.toHaveBeenCalled();
   });
 
   test("one nudge per sweep; both triggers due → silence wins, next lapse widens", () => {
@@ -710,6 +890,13 @@ describe("MissionControlService stall v2 + watchdog", () => {
     // arms on a lifecycle→running transition it observes, so the run produced
     // zero stall lines under the new pid. Boot reconciliation must ADOPT it,
     // seeding both nudge timers from the record's lastActivityAt.
+    // This test focuses on nudge arming; park the dormant-turn hard stop so
+    // the 30-minute-old silent adopted run does not fire a recovery in the
+    // same sweep (that firing is covered by the dormant-turn tests).
+    const centralConfig = (
+      service as unknown as { centralConfig: CentralMissionControlConfigStore }
+    ).centralConfig;
+    await centralConfig.patch({ dormantTurnSeconds: 3600 });
     const lastActivityAt = new Date(Date.now() - 30 * 60 * 1000).toISOString();
     getAgent.mockReturnValue(runningAgent("agent-1"));
     listRecords.mockResolvedValue([
@@ -849,6 +1036,9 @@ describe("MissionControlService stall v2 + watchdog", () => {
     expect(nudgeEvent?.proposal?.deliveryMode).toBe("steer");
     expect(nudgeEvent?.verboseOnly).toBe(true);
     expect(nudgeEvent?.proposal?.verboseOnly).toBe(true);
+    // Classify at the source: the nudge's timeline row on the agent's own
+    // chat is machinery (auditable; rendered as a muted placeholder).
+    expect(nudgeEvent?.proposal?.timelineClassification).toBe("machinery");
 
     // The hard escalation (interrupt, approval-gated in Ask) is a
     // NORMAL-mode card: no verboseOnly. Backdate every clock so the agent
@@ -878,6 +1068,51 @@ describe("MissionControlService stall v2 + watchdog", () => {
     expect(expirePendingForAgent).toHaveBeenCalledTimes(1);
   });
 
+  test("a machinery-classified row is the tracker's own prompt, never agent activity", async () => {
+    startRunning("agent-1");
+    const tracking = (
+      service as unknown as {
+        stallTracking: Map<
+          string,
+          {
+            lastStreamAt: number;
+            silenceNudges: number;
+            statusNudges: number;
+          }
+        >;
+      }
+    ).stallTracking.get("agent-1");
+    if (!tracking) {
+      throw new Error("no stall tracking for agent-1");
+    }
+    setSilence("agent-1", 30_000);
+    tracking.silenceNudges = 2;
+    tracking.statusNudges = 1;
+    const before = tracking.lastStreamAt;
+
+    // The nudge's own recorded row must not reset the silence clock, count as
+    // a response (escalation), or reset the backoff counters.
+    streamTimeline("agent-1", {
+      type: "user_message",
+      text: "You've been quiet for a while. Post a one-line report_status.",
+      classification: "machinery",
+    });
+    expect(tracking.lastStreamAt).toBe(before);
+    expect(tracking.silenceNudges).toBe(2);
+    expect(tracking.statusNudges).toBe(1);
+
+    // A machinery-delivered INSTRUCTION (Commander/Verifier direction) IS
+    // activity: the agent was told something new.
+    streamTimeline("agent-1", {
+      type: "user_message",
+      text: "Direction change: prioritize the payments path.",
+      classification: "instruction",
+    });
+    expect(tracking.lastStreamAt).toBeGreaterThan(before);
+    expect(tracking.silenceNudges).toBe(0);
+    expect(tracking.statusNudges).toBe(0);
+  });
+
   test("machinery dispatch aborts for a user-stopped agent: proposal expires, steer never sent", async () => {
     startRunning("agent-1");
     store.recordStopOrigin("agent-1", "user");
@@ -905,6 +1140,517 @@ describe("MissionControlService stall v2 + watchdog", () => {
     expect(store.getStopOrigin("agent-1")).toBe("user");
     startRunning("agent-1");
     expect(store.getStopOrigin("agent-1")).toBeNull();
+  });
+
+  test("a user prompt supersede records the user stop origin from the replace state", () => {
+    // startAgentRun({replaceRunning:true}) emits an agent_state carrying
+    // pendingReplacementOrigin "user" at replace start; the service records
+    // it as the stop origin so the superseded run's terminal failure reads as
+    // a user interruption instead of an unexplained error.
+    startRunning(
+      "agent-1",
+      runningAgent("agent-1", { pendingReplacement: true, pendingReplacementOrigin: "user" }),
+    );
+    expect(store.getStopOrigin("agent-1")).toBe("user");
+    // A machinery supersede records "machinery" — never "user".
+    startRunning("agent-1");
+    startRunning(
+      "agent-1",
+      runningAgent("agent-1", {
+        pendingReplacement: true,
+        pendingReplacementOrigin: "machinery",
+      }),
+    );
+    expect(store.getStopOrigin("agent-1")).toBe("machinery");
+  });
+
+  test("a user-superseded run's terminal failure emits the interrupted card, not failed", async () => {
+    startRunning("agent-1");
+    startRunning(
+      "agent-1",
+      runningAgent("agent-1", { pendingReplacement: true, pendingReplacementOrigin: "user" }),
+    );
+    // The superseded run's terminal error state (pendingReplacement still
+    // set): must read "Interrupted by you" with an info tone.
+    startRunning(
+      "agent-1",
+      runningAgent("agent-1", {
+        lifecycle: "error",
+        lastError: "Interrupted by user (stopReason=aborted, model=anthropic/claude-opus-5)",
+        attention: { requiresAttention: true, attentionReason: "error" },
+        pendingReplacement: true,
+        pendingReplacementOrigin: "user",
+      }),
+    );
+    await flushBroadcasts();
+    const terminalCards = broadcast.mock.calls
+      .map((call: unknown[]) => (call[0] as { event?: { kind?: string } })?.event)
+      .filter((event) => event?.kind === "failed" || event?.kind === "interrupted");
+    expect(terminalCards.at(-1)).toMatchObject({
+      kind: "interrupted",
+      headline: "Interrupted by you",
+      severity: "info",
+    });
+    // The replacement run starts: origin cleared, board re-enters Running.
+    startRunning("agent-1");
+    expect(store.getStopOrigin("agent-1")).toBeNull();
+  });
+
+  test("a machinery supersede and a genuine failure keep the failure card", async () => {
+    // Machinery-originated interrupt (escalation/recovery): origin is
+    // "machinery", the superseded run still renders as a failure.
+    startRunning("agent-1");
+    startRunning(
+      "agent-1",
+      runningAgent("agent-1", {
+        pendingReplacement: true,
+        pendingReplacementOrigin: "machinery",
+      }),
+    );
+    startRunning(
+      "agent-1",
+      runningAgent("agent-1", {
+        lifecycle: "error",
+        lastError: "Interrupted by user (stopReason=aborted, model=anthropic/claude-opus-5)",
+        attention: { requiresAttention: true, attentionReason: "error" },
+        pendingReplacement: true,
+        pendingReplacementOrigin: "machinery",
+      }),
+    );
+    await flushBroadcasts();
+    expect(
+      broadcast.mock.calls.some(
+        (call: unknown[]) => (call[0] as { event?: { kind?: string } })?.event?.kind === "failed",
+      ),
+    ).toBe(true);
+    expect(
+      broadcast.mock.calls.some(
+        (call: unknown[]) =>
+          (call[0] as { event?: { kind?: string } })?.event?.kind === "interrupted",
+      ),
+    ).toBe(false);
+
+    // A genuine failure after a user stop (no supersede in progress) is NOT
+    // an interruption: pendingReplacement is false, so the failure card stays.
+    broadcast.mockClear();
+    startRunning("agent-1");
+    store.recordStopOrigin("agent-1", "user");
+    startRunning(
+      "agent-1",
+      runningAgent("agent-1", {
+        lifecycle: "error",
+        lastError: "provider process crashed",
+        attention: { requiresAttention: true, attentionReason: "error" },
+        pendingReplacement: false,
+      }),
+    );
+    await flushBroadcasts();
+    expect(
+      broadcast.mock.calls.some(
+        (call: unknown[]) => (call[0] as { event?: { kind?: string } })?.event?.kind === "failed",
+      ),
+    ).toBe(true);
+    expect(
+      broadcast.mock.calls.some(
+        (call: unknown[]) =>
+          (call[0] as { event?: { kind?: string } })?.event?.kind === "interrupted",
+      ),
+    ).toBe(false);
+  });
+
+  test("a turn_failed stream event on a user supersede emits the interrupted card", async () => {
+    // Foreground turns deliver the terminal as a stream event before the
+    // error agent_state; the stream branch must apply the same origin gate.
+    startRunning("agent-1");
+    startRunning(
+      "agent-1",
+      runningAgent("agent-1", { pendingReplacement: true, pendingReplacementOrigin: "user" }),
+    );
+    getAgent.mockReturnValue(
+      runningAgent("agent-1", {
+        lifecycle: "error",
+        lastError: "Interrupted by user (stopReason=aborted, model=anthropic/claude-opus-5)",
+        pendingReplacement: true,
+      }),
+    );
+    onEvent?.({
+      type: "agent_stream",
+      agentId: "agent-1",
+      event: {
+        type: "turn_failed",
+        provider: "omp",
+        turnId: "turn-1",
+        error: "Interrupted by user (stopReason=aborted, model=anthropic/claude-opus-5)",
+      },
+    });
+    await flushBroadcasts();
+    expect(
+      broadcast.mock.calls.some(
+        (call: unknown[]) =>
+          (call[0] as { event?: { kind?: string } })?.event?.kind === "interrupted",
+      ),
+    ).toBe(true);
+  });
+
+  test("the runtime's abort of the freshly-replaced turn still reads as a user interruption", async () => {
+    // Live finding: the omp runtime aborts the REPLACEMENT turn itself with
+    // "Interrupted by user (stopReason=aborted, …)" while the superseded
+    // turn's tool call is still running — pendingReplacement is already
+    // cleared, but the user origin survives and the error is the user-abort
+    // signature, so it must render as an interruption, never a failure.
+    startRunning("agent-1");
+    startRunning(
+      "agent-1",
+      runningAgent("agent-1", { pendingReplacement: true, pendingReplacementOrigin: "user" }),
+    );
+    startRunning(
+      "agent-1",
+      runningAgent("agent-1", {
+        lifecycle: "error",
+        lastError:
+          "Interrupted by user (stopReason=aborted, model=google-antigravity/gemini-3.6-flash)",
+        attention: { requiresAttention: true, attentionReason: "error" },
+        pendingReplacement: false,
+      }),
+    );
+    await flushBroadcasts();
+    const terminalCards = broadcast.mock.calls
+      .map((call: unknown[]) => (call[0] as { event?: { kind?: string } })?.event)
+      .filter((event) => event?.kind === "failed" || event?.kind === "interrupted");
+    expect(terminalCards.at(-1)).toMatchObject({
+      kind: "interrupted",
+      headline: "Interrupted by you",
+      severity: "info",
+    });
+  });
+
+  // ==========================================================================
+  // Dormant-turn detector (the hard stop) + honest steer delivery
+  // ==========================================================================
+
+  /**
+   * Patch the central stall knobs so ONLY the dormant detector can fire:
+   * nudges/escalation are parked at an hour so a backdated silence clock
+   * cannot produce a nudge that muddies the assertion.
+   */
+  async function parkNudgesAndEscalation(): Promise<void> {
+    const centralConfig = (
+      service as unknown as { centralConfig: CentralMissionControlConfigStore }
+    ).centralConfig;
+    await centralConfig.patch({
+      silenceNudgeSeconds: 3600,
+      statusNudgeSeconds: 3600,
+      escalateSeconds: 3600,
+      dormantTurnSeconds: 300,
+    });
+  }
+
+  function stalledCards(): Array<{ headline?: string }> {
+    return broadcast.mock.calls
+      .map((call: unknown[]) => (call[0] as { type?: string; event?: { kind?: string } })?.event)
+      .filter((event) => event?.kind === "stalled") as Array<{ headline?: string }>;
+  }
+
+  test("dormant turn (open run, no tool in flight, no output past threshold) is detected and recovered", async () => {
+    await parkNudgesAndEscalation();
+    startRunning("agent-1");
+    setSilence("agent-1", 301_000);
+    sweep();
+    await flushBroadcasts();
+
+    // Recovery via the proven replace-cancel escalation (interrupt delivery).
+    expect(createProposal).toHaveBeenCalledTimes(1);
+    expect(createProposal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        origin: "stall",
+        targetAgentId: "agent-1",
+        deliveryMode: "interrupt",
+        classification: "normal",
+        reason: expect.stringContaining("no tool in flight"),
+      }),
+    );
+    // The stalled event is visible in the feed — a loud net, never silent.
+    const dormantEvents = stalledCards();
+    expect(dormantEvents).toHaveLength(1);
+    expect(dormantEvents[0]?.headline).toContain("Dormant");
+
+    // Once per run: a further sweep does not re-recover (or re-nudge).
+    sweep();
+    await flushBroadcasts();
+    expect(createProposal).toHaveBeenCalledTimes(1);
+  });
+
+  test("an agent inside a long declared tool call is never flagged dormant", async () => {
+    await parkNudgesAndEscalation();
+    startRunning("agent-1");
+    // A 30-minute `hub wait` — an unmatched running tool_call row. The
+    // in-flight set is the server-side mirror of omp's tool_execution_start.
+    streamToolCall("agent-1", "call-wait", "running");
+    expect(
+      (
+        service as unknown as { inFlightToolsByAgent: Map<string, Set<string>> }
+      ).inFlightToolsByAgent.get("agent-1"),
+    ).toEqual(new Set(["call-wait"]));
+    setSilence("agent-1", 601_000);
+    sweep();
+    await flushBroadcasts();
+    // Working, not dormant: no hard stop, no stalled event.
+    expect(createProposal).not.toHaveBeenCalled();
+    expect(stalledCards()).toHaveLength(0);
+
+    // The wait ends (terminal tool row closes the in-flight call) and the
+    // agent then goes silent again — now the hard stop fires.
+    streamToolCall("agent-1", "call-wait", "completed");
+    expect(
+      (
+        service as unknown as { inFlightToolsByAgent: Map<string, Set<string>> }
+      ).inFlightToolsByAgent.get("agent-1")?.size ?? 0,
+    ).toBe(0);
+    setSilence("agent-1", 601_000);
+    sweep();
+    await flushBroadcasts();
+    expect(createProposal).toHaveBeenCalledTimes(1);
+    expect(createProposal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deliveryMode: "interrupt",
+        reason: expect.stringContaining("no tool in flight"),
+      }),
+    );
+  });
+
+  test("a turn boundary closes stale in-flight tool rows", async () => {
+    await parkNudgesAndEscalation();
+    startRunning("agent-1");
+    streamToolCall("agent-1", "call-wait", "running");
+    // The run is interrupted mid-tool: the runtime may never emit the tool's
+    // terminal row. The turn boundary must clear the stale in-flight set so
+    // a subsequent silent gap is not masked by a ghost tool call.
+    onEvent?.({
+      type: "agent_stream",
+      agentId: "agent-1",
+      event: { type: "turn_canceled", provider: "omp", reason: "interrupted", turnId: "turn-1" },
+    });
+    expect(
+      (
+        service as unknown as { inFlightToolsByAgent: Map<string, Set<string>> }
+      ).inFlightToolsByAgent.get("agent-1")?.size ?? 0,
+    ).toBe(0);
+    setSilence("agent-1", 301_000);
+    sweep();
+    await flushBroadcasts();
+    expect(createProposal).toHaveBeenCalledTimes(1);
+  });
+
+  test("a nudge's own machinery row never resets its escalation clock (the net that catches the wedge)", async () => {
+    startRunning("agent-1");
+    setStatusSilence("agent-1", 301_000);
+    sweep();
+    expect(createProposal).toHaveBeenCalledTimes(1); // the status-ask nudge
+
+    // The nudge's own machinery-classified row lands on the agent's timeline
+    // (the verbose-mode audit placeholder). It must NOT count as a response,
+    // reset the silence clock, or reset the backoff counters — otherwise a
+    // wedged agent's escalation is forever reset by its own nudges (live
+    // incident: three nudges vanished while Paseo reported success because
+    // each nudge's own row reset the escalation window).
+    streamTimeline("agent-1", {
+      type: "user_message",
+      text: "You've been quiet for a while. Post a one-line report_status.",
+      classification: "machinery",
+    });
+    setStatusSilence("agent-1", 601_000);
+    setSilence("agent-1", 601_000);
+    setNudgeAge("agent-1", 301_000);
+    sweep();
+    await flushBroadcasts();
+
+    // Escalation STILL fires at escalateSeconds: recovery interrupt + stalled.
+    expect(createProposal).toHaveBeenCalledTimes(2);
+    expect(createProposal.mock.calls[1][0]).toMatchObject({
+      origin: "stall",
+      targetAgentId: "agent-1",
+      deliveryMode: "interrupt",
+      reason: expect.stringContaining("300"),
+    });
+    expect(stalledCards()).toHaveLength(1);
+  });
+
+  test("steer reported handled but producing no activity is marked undelivered and escalated", async () => {
+    (service as unknown as { approvals: unknown }).approvals = realApprovals;
+    startRunning("agent-1");
+    // A machinery steer already recorded "sent" (tryRunOutOfBand handled).
+    const proposal: MissionControlProposal = {
+      id: "mcp_steer_verify",
+      createdAt: new Date().toISOString(),
+      origin: "stall",
+      serverId: "test-server",
+      targetAgentId: "agent-1",
+      message: "Post a one-line report_status.",
+      deliveryMode: "steer",
+      reason: "status ask",
+      classification: "normal",
+      status: "sent",
+    };
+    await store.putProposal(proposal);
+    const internals = service as unknown as {
+      armSteerDeliveryVerification(agentId: string, p: MissionControlProposal | undefined): void;
+      steerVerifications: Map<string, { proposalId: string; armedAt: number; deadline: number }>;
+    };
+    internals.armSteerDeliveryVerification("agent-1", proposal);
+    // The verification window elapses with NO agent activity.
+    const verification = internals.steerVerifications.get("agent-1");
+    expect(verification).toBeDefined();
+    verification!.deadline = Date.now() - 1;
+    sweep();
+    await flushBroadcasts();
+
+    // The proposal is never left "sent" for a message that did not land.
+    expect(store.getProposal("mcp_steer_verify")?.status).toBe("undelivered");
+    // Escalated via the existing recovery interrupt (ask mode: pending card).
+    expect(stalledCards()).toHaveLength(1);
+    const recoveryCards = broadcast.mock.calls
+      .map(
+        (call: unknown[]) =>
+          (call[0] as { event?: { proposal?: { deliveryMode?: string } } })?.event,
+      )
+      .filter((event) => event?.proposal?.deliveryMode === "interrupt");
+    expect(recoveryCards.length).toBeGreaterThan(0);
+  });
+
+  test("real agent activity satisfies a pending steer verification", async () => {
+    (service as unknown as { approvals: unknown }).approvals = realApprovals;
+    startRunning("agent-1");
+    const proposal: MissionControlProposal = {
+      id: "mcp_steer_ok",
+      createdAt: new Date().toISOString(),
+      origin: "stall",
+      serverId: "test-server",
+      targetAgentId: "agent-1",
+      message: "Post a one-line report_status.",
+      deliveryMode: "steer",
+      reason: "status ask",
+      classification: "normal",
+      status: "sent",
+    };
+    await store.putProposal(proposal);
+    const internals = service as unknown as {
+      armSteerDeliveryVerification(agentId: string, p: MissionControlProposal | undefined): void;
+      steerVerifications: Map<string, { proposalId: string; armedAt: number; deadline: number }>;
+    };
+    internals.armSteerDeliveryVerification("agent-1", proposal);
+    // The agent answers: the verification clears on real activity.
+    streamTimeline("agent-1", { type: "assistant_message", text: "on it" });
+    const verification = internals.steerVerifications.get("agent-1");
+    expect(verification).toBeUndefined();
+    sweep();
+    await flushBroadcasts();
+    expect(store.getProposal("mcp_steer_ok")?.status).toBe("sent");
+    expect(stalledCards()).toHaveLength(0);
+    expect(
+      broadcast.mock.calls.some(
+        (call: unknown[]) =>
+          (call[0] as { event?: { proposal?: { deliveryMode?: string } } })?.event?.proposal
+            ?.deliveryMode === "interrupt",
+      ),
+    ).toBe(false);
+  });
+
+  test("a steer during a long declared tool call is never marked undelivered or escalated", async () => {
+    // A legitimately long NON-interruptible tool (a 5-minute build) is not a
+    // wedge: omp queues the steer and delivers it after the tool completes.
+    // The verification must be DEFERRED while the tool is in flight — arming
+    // the 90s clock against the tool's silence would false-positive
+    // "undelivered" and the recovery interrupt would destroy the healthy
+    // build. Only "steer acked + no tool in flight + no activity" is
+    // evidence of stranding.
+    (service as unknown as { approvals: unknown }).approvals = realApprovals;
+    startRunning("agent-1");
+    const proposal: MissionControlProposal = {
+      id: "mcp_steer_queued",
+      createdAt: new Date().toISOString(),
+      origin: "stall",
+      serverId: "test-server",
+      targetAgentId: "agent-1",
+      message: "Post a one-line report_status.",
+      deliveryMode: "steer",
+      reason: "status ask",
+      classification: "normal",
+      status: "sent",
+    };
+    await store.putProposal(proposal);
+    // The long build is in flight when the steer arrives.
+    streamToolCall("agent-1", "build", "running");
+    const internals = service as unknown as {
+      armSteerDeliveryVerification(agentId: string, p: MissionControlProposal | undefined): void;
+      steerVerifications: Map<string, { proposalId: string; armedAt: number; deadline: number }>;
+      deferredSteerVerifications: Map<string, { proposalId: string; armedAt: number }>;
+    };
+    internals.armSteerDeliveryVerification("agent-1", proposal);
+    // Deferred, not armed: no clock runs while the tool is in flight.
+    expect(internals.steerVerifications.get("agent-1")).toBeUndefined();
+    expect(internals.deferredSteerVerifications.get("agent-1")).toMatchObject({
+      proposalId: "mcp_steer_queued",
+    });
+
+    // Even far past a 90s window, nothing fires while the tool runs.
+    sweep();
+    await flushBroadcasts();
+    expect(store.getProposal("mcp_steer_queued")?.status).toBe("sent");
+    expect(stalledCards()).toHaveLength(0);
+    expect(
+      broadcast.mock.calls.some(
+        (call: unknown[]) =>
+          (call[0] as { event?: { proposal?: { deliveryMode?: string } } })?.event?.proposal
+            ?.deliveryMode === "interrupt",
+      ),
+    ).toBe(false);
+
+    // The build finishes (5 min later): NOW the steer's own window starts.
+    streamToolCall("agent-1", "build", "completed");
+    expect(internals.deferredSteerVerifications.get("agent-1")).toBeUndefined();
+    const armed = internals.steerVerifications.get("agent-1");
+    expect(armed).toBeDefined();
+    expect(armed!.proposalId).toBe("mcp_steer_queued");
+    // The build's terminal row is the tool's conclusion, not the steer's
+    // effect — with no steer response, the fresh window still expires.
+    armed!.deadline = Date.now() - 1;
+    sweep();
+    await flushBroadcasts();
+    expect(store.getProposal("mcp_steer_queued")?.status).toBe("undelivered");
+    expect(stalledCards()).toHaveLength(1);
+  });
+
+  test("a steer deferred behind a tool is verified once the tool ends and the agent responds", async () => {
+    (service as unknown as { approvals: unknown }).approvals = realApprovals;
+    startRunning("agent-1");
+    const proposal: MissionControlProposal = {
+      id: "mcp_steer_queued_ok",
+      createdAt: new Date().toISOString(),
+      origin: "stall",
+      serverId: "test-server",
+      targetAgentId: "agent-1",
+      message: "Post a one-line report_status.",
+      deliveryMode: "steer",
+      reason: "status ask",
+      classification: "normal",
+      status: "sent",
+    };
+    await store.putProposal(proposal);
+    streamToolCall("agent-1", "build", "running");
+    const internals = service as unknown as {
+      armSteerDeliveryVerification(agentId: string, p: MissionControlProposal | undefined): void;
+      steerVerifications: Map<string, { proposalId: string; armedAt: number; deadline: number }>;
+    };
+    internals.armSteerDeliveryVerification("agent-1", proposal);
+    // Tool ends; then the queued steer is processed — the agent responds.
+    streamToolCall("agent-1", "build", "completed");
+    streamTimeline("agent-1", { type: "assistant_message", text: "build done, here's my status" });
+    // The response cleared the verification: proposal stays honestly "sent".
+    expect(internals.steerVerifications.get("agent-1")).toBeUndefined();
+    sweep();
+    await flushBroadcasts();
+    expect(store.getProposal("mcp_steer_queued_ok")?.status).toBe("sent");
+    expect(stalledCards()).toHaveLength(0);
   });
 });
 

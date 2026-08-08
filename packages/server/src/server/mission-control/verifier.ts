@@ -32,11 +32,13 @@ import type { MissionControlAppendInput, MissionControlFetchOptions } from "./st
  * timeline tools — the verifier session gets exactly two tools:
  *
  * - contact_worker { message }: routes through the approval gate as a
- *   verifier-origin proposal; once sent, the message is delivered as a steer
- *   to the worker with a reply marker, and the worker's next report_status or
- *   final turn text is relayed back into the waiting verifier session. An
- *   approved allow-pair short-circuits further approvals for the pair
- *   (handled by the approvals module).
+ *   verifier-origin proposal; once sent, the message is delivered to the
+ *   worker with a reply marker using the fleet verifierToWorkerMode delivery
+ *   setting (default "interrupt"; "steer" injects without cancelling when the
+ *   worker is mid-turn on omp), and the worker's next report_status or final
+ *   turn text is relayed back into the waiting verifier session. An approved
+ *   allow-pair short-circuits further approvals for the pair (handled by the
+ *   approvals module).
  * - submit_verdict { result: done|insufficient, summary }: "done" marks the
  *   item done via the lifecycle API and posts the verdict card; "insufficient"
  *   without a prior contact creates the proof-demand proposal itself.
@@ -98,6 +100,13 @@ export interface VerifierCentralConfig {
   verifierModel?: string | null;
   verifierConcurrency: number;
   evaluationScope: "commander" | "all";
+  // Delivery mode for verifier → worker contacts (contact_worker and the
+  // post-verdict proof demand). Resolved from the fleet central setting
+  // verifierToWorkerMode (default "interrupt"); stall nudges are unaffected.
+  verifierToWorkerMode: "steer" | "interrupt" | "queue";
+  // Ask/auto approval mode (spec: everything gated in ask mode except the
+  // status-ask nudge — including verifier spawns and worker→verifier replies).
+  mode: "ask" | "auto";
 }
 
 export interface VerifierReadyItem {
@@ -119,11 +128,39 @@ export interface VerifierProposal {
   serverId: string;
   targetAgentId: string;
   message: string;
-  deliveryMode: "steer" | "interrupt";
+  deliveryMode: "steer" | "interrupt" | "queue";
   reason: string;
   classification: "normal" | "destructive";
-  status: "pending" | "approved" | "denied" | "sent" | "expired";
+  status: "pending" | "approved" | "denied" | "sent" | "expired" | "undelivered";
   allowPair?: boolean;
+  /** "send" (default) | "spawn" — spawn-kind proposals create a new agent. */
+  kind?: "send" | "spawn";
+  spawnPlan?: {
+    host?: string;
+    provider: string;
+    model?: string;
+    title?: string;
+    summary: string;
+    initialPrompt?: string;
+    cwd?: string;
+    workspaceId?: string;
+    thinking?: string;
+    features?: Record<string, unknown>;
+    labels?: Record<string, string>;
+    mode?: string;
+    background?: boolean;
+    detached?: boolean;
+    worktree?: {
+      worktreeName?: string;
+      branchName?: string;
+      baseBranch?: string;
+      refName?: string;
+      action?: "branch-off" | "checkout";
+      githubPrNumber?: number;
+    };
+  };
+  spawnedAgentId?: string;
+  verifierAgentId?: string;
 }
 
 export interface VerifierCreateProposalInput {
@@ -131,9 +168,13 @@ export interface VerifierCreateProposalInput {
   serverId: string;
   targetAgentId: string;
   message: string;
-  deliveryMode: "steer";
+  deliveryMode: "steer" | "interrupt" | "queue";
   reason: string;
   classification: "normal" | "destructive";
+  kind?: "send" | "spawn";
+  spawnPlan?: VerifierProposal["spawnPlan"];
+  verifierAgentId?: string;
+  allowPairKey?: string;
 }
 
 /**
@@ -152,6 +193,9 @@ export interface VerifierAgentManager {
   ): Promise<ManagedAgent>;
   runAgent(agentId: string, prompt: string, options?: AgentRunOptions): Promise<AgentRunResult>;
   archiveAgent(agentId: string): Promise<{ archivedAt: string }>;
+  /** Cancel an active run (used to deliver the worker reply when the verifier's
+   *  previous turn is still hanging). Optional for tests. */
+  cancelAgentRun?(agentId: string): Promise<unknown>;
 }
 
 export interface VerifierAgentStorage {
@@ -183,7 +227,14 @@ export interface MissionControlVerifierDispatcherOptions {
   setReviewState: (
     agentId: string,
     state: VerifierReviewStateKind,
-    options?: { verdict?: { by: "verifier" | "user"; summary: string; at: string } },
+    options?: {
+      verdict?: {
+        by: "verifier" | "user";
+        summary: string;
+        at: string;
+        verifierAgentId?: string;
+      };
+    },
   ) => Promise<void>;
   /** Emit a feed card (used for the Needs-you card on retry exhaustion). */
   publish: (input: Omit<MissionControlAppendInput, "agentTitle">) => void;
@@ -191,7 +242,13 @@ export interface MissionControlVerifierDispatcherOptions {
   agentDefinitionPath?: string;
 }
 
-type VerifierRunPhase = "spawning" | "auditing" | "waiting" | "closed" | "failed";
+type VerifierRunPhase =
+  | "spawning"
+  | "auditing"
+  | "waiting"
+  | "awaiting-spawn"
+  | "closed"
+  | "failed";
 
 interface VerifierRun {
   item: VerifierReadyItem;
@@ -361,6 +418,10 @@ export class MissionControlVerifierDispatcher {
   private readonly runsByVerifier = new Map<string, VerifierRun>();
   private readonly runsByWorker = new Map<string, VerifierRun>();
   private readonly exchangesByProposal = new Map<string, VerifierRun>();
+  /** Spawn-kind proposals awaiting approval: proposalId → run (ask mode). */
+  private readonly spawnsByProposal = new Map<string, VerifierRun>();
+  /** Worker→verifier reply proposals awaiting approval: proposalId → run. */
+  private readonly replyProposalsByProposal = new Map<string, VerifierRun>();
   private inFlight = 0;
   private readonly workerReplyBuffers = new Map<string, string[]>();
   private unsubscribers: Array<() => void> = [];
@@ -456,7 +517,7 @@ export class MissionControlVerifierDispatcher {
           verifierAgentId,
           `${trimmed.slice(0, CONTACT_MESSAGE_MAX_CHARS)}${VERIFIER_REPLY_MARKER}`,
         ),
-        deliveryMode: "steer",
+        deliveryMode: this.getCentralConfig().verifierToWorkerMode,
         reason: "Verifier clarification request",
         classification: "normal",
       });
@@ -508,6 +569,7 @@ export class MissionControlVerifierDispatcher {
             by: "verifier",
             summary: summary || "Verified complete",
             at: new Date().toISOString(),
+            verifierAgentId,
           },
         });
         this.logger.info(
@@ -633,7 +695,98 @@ export class MissionControlVerifierDispatcher {
       timer: null,
       disposed: false,
     };
+    this.runsByWorker.set(entry.agentId, run);
 
+    const config = this.getCentralConfig();
+    if (config.mode === "ask") {
+      // Ask-mode gate (user decision: "apart from nudge, everything should
+      // require my approval in ask mode. Spinning up a new agent as well,
+      // everything."): the verifier spawn itself is a proposal. Approved →
+      // performSpawn; denied → the item stays ready-for-review with a
+      // Needs-you card. Auto mode skips the proposal and spawns as today.
+      const model =
+        resolveVerifierModel(readOmpModelRoles(), config.verifierModel ?? null) ?? "host-default";
+      const worker = this.agentManager.getAgent(entry.agentId) ?? null;
+      const proposal = await this.createProposal({
+        origin: "verifier",
+        serverId: this.serverId,
+        targetAgentId: entry.agentId,
+        message: `Spawn a Mission Control verifier to audit "${entry.title}" against its launch brief and evidence.`,
+        deliveryMode: "interrupt",
+        reason: "Verifier spawn",
+        classification: "normal",
+        kind: "spawn",
+        spawnPlan: {
+          provider: "omp",
+          model: model === "host-default" ? undefined : model,
+          title: `Verifier · ${entry.title}`,
+          summary: `Spawn a verifier to audit ${worker?.name ?? entry.title} (${
+            entry.agentId
+          }) on ${this.hostName} — model ${model}.`,
+        },
+      });
+      run.phase = "awaiting-spawn";
+      run.pendingProposalId = proposal.id;
+      this.spawnsByProposal.set(proposal.id, run);
+      this.logger.info(
+        { workerAgentId: entry.agentId, proposalId: proposal.id, status: proposal.status },
+        "verifier.spawn.proposed",
+      );
+      if (proposal.status === "sent") {
+        // Auto mode would not have gated; a granted spawn cannot be exempt in
+        // ask mode — "sent" here only happens when mode flipped between the
+        // read and the create. Resolve immediately.
+        this.spawnsByProposal.delete(proposal.id);
+        try {
+          await this.performSpawn(run, entry);
+        } catch (error) {
+          await this.failSpawnFor(entry, error);
+        }
+      }
+      return;
+    }
+    try {
+      await this.performSpawn(run, entry);
+    } catch (error) {
+      await this.failSpawnFor(entry, error);
+    }
+  }
+
+  /**
+   * Continue a spawn-kind verifier proposal once the user approves it (or auto
+   * mode auto-sent it). Wired as the approvals module's spawn hook for
+   * verifier-origin proposals (service.ts).
+   */
+  async approveVerifierSpawn(
+    proposal: VerifierProposal,
+  ): Promise<{ ok: true; agentId?: string } | { ok: false; error: string }> {
+    const run = this.spawnsByProposal.get(proposal.id);
+    if (!run || run.phase !== "awaiting-spawn") {
+      return { ok: false, error: "No verifier spawn is awaiting this proposal" };
+    }
+    this.spawnsByProposal.delete(proposal.id);
+    const entry: VerifierReadyItem & { attempt: number } = {
+      ...run.item,
+      attempt: run.attempt,
+    };
+    try {
+      const spawned = await this.performSpawn(run, entry);
+      return { ok: true, agentId: spawned };
+    } catch (error) {
+      this.logger.warn(
+        { err: error, workerAgentId: run.item.agentId, proposalId: proposal.id },
+        "verifier.spawn.approved_failed",
+      );
+      await this.failSpawnFor(entry, error);
+      return { ok: false, error: `verifier spawn failed: ${String(error)}` };
+    }
+  }
+
+  /** Create the verifier agent and start its audit turn (post-approval). */
+  private async performSpawn(
+    run: VerifierRun,
+    entry: VerifierReadyItem & { attempt: number },
+  ): Promise<string> {
     let verifierAgentId: string;
     try {
       const context = await this.buildSpawnContext(entry.agentId);
@@ -659,21 +812,20 @@ export class MissionControlVerifierDispatcher {
       );
       verifierAgentId = agent.id;
     } catch (error) {
-      this.inFlight -= 1;
+      this.inFlight = Math.max(0, this.inFlight - 1);
       this.queuedOrActive.delete(entry.agentId);
+      this.runsByWorker.delete(entry.agentId);
       this.logger.warn(
         { err: error, workerAgentId: entry.agentId, attempt: entry.attempt },
         "verifier.spawn_failed",
       );
-      await this.failRunFor(entry, `spawn failed: ${String(error)}`);
-      this.pumpQueue();
-      return;
+      throw error;
     }
 
     run.verifierAgentId = verifierAgentId;
     run.phase = "auditing";
+    run.pendingProposalId = null;
     this.runsByVerifier.set(verifierAgentId, run);
-    this.runsByWorker.set(entry.agentId, run);
     this.startRunTimer(run);
     const model =
       resolveVerifierModel(readOmpModelRoles(), this.getCentralConfig().verifierModel ?? null) ??
@@ -689,6 +841,16 @@ export class MissionControlVerifierDispatcher {
       "verifier.spawn",
     );
     this.runVerifierTurn(run, VERIFIER_INITIAL_PROMPT);
+    return verifierAgentId;
+  }
+
+  /** failRunFor with slot/queue cleanup, shared by the spawn failure paths. */
+  private async failSpawnFor(
+    entry: VerifierReadyItem & { attempt: number },
+    error: unknown,
+  ): Promise<void> {
+    await this.failRunFor(entry, `spawn failed: ${String(error)}`);
+    this.pumpQueue();
   }
 
   private runVerifierTurn(run: VerifierRun, prompt: string): void {
@@ -772,6 +934,7 @@ export class MissionControlVerifierDispatcher {
         severity: "blocker",
         headline: "Verification failed — needs your review",
         detail: reason.slice(0, 200),
+        ...(run.verifierAgentId ? { verifierAgentId: run.verifierAgentId } : {}),
       });
     }
     this.pumpQueue();
@@ -839,6 +1002,8 @@ export class MissionControlVerifierDispatcher {
     this.runsByWorker.delete(run.item.agentId);
     if (run.pendingProposalId) {
       this.exchangesByProposal.delete(run.pendingProposalId);
+      this.spawnsByProposal.delete(run.pendingProposalId);
+      this.replyProposalsByProposal.delete(run.pendingProposalId);
     }
     this.queuedOrActive.delete(run.item.agentId);
     this.workerReplyBuffers.delete(run.item.agentId);
@@ -979,6 +1144,74 @@ export class MissionControlVerifierDispatcher {
   }
 
   private handleProposalChange(proposal: VerifierProposal): void {
+    // Spawn-kind proposals (verifier spawns gated in ask mode): approved →
+    // the approvals spawn hook (service.ts → approveVerifierSpawn) performs
+    // the spawn; denied/expired → the item stays ready-for-review with a
+    // Needs-you card so the user sees the item was never audited.
+    const spawnRun = this.spawnsByProposal.get(proposal.id);
+    if (spawnRun) {
+      // "undelivered": the honest-steer gate flipped a "sent" proposal after
+      // the target produced no activity — the message never landed. Terminal
+      // like denied/expired; the spawn item stays ready-for-review.
+      if (
+        proposal.status === "denied" ||
+        proposal.status === "expired" ||
+        proposal.status === "undelivered"
+      ) {
+        this.spawnsByProposal.delete(proposal.id);
+        this.inFlight = Math.max(0, this.inFlight - 1);
+        this.queuedOrActive.delete(spawnRun.item.agentId);
+        this.runsByWorker.delete(spawnRun.item.agentId);
+        this.logger.info(
+          {
+            workerAgentId: spawnRun.item.agentId,
+            proposalId: proposal.id,
+            status: proposal.status,
+          },
+          "verifier.spawn.denied",
+        );
+        this.publish({
+          agentId: spawnRun.item.agentId,
+          kind: "blocked",
+          source: "system",
+          severity: "blocker",
+          headline: "Verifier spawn denied — needs your review",
+          detail: `The verifier spawn was ${proposal.status} by the user; the item stays ready for review.`,
+        });
+        this.pumpQueue();
+      }
+      return;
+    }
+    // Worker→verifier reply proposals: the delivery runs the verifier turn
+    // (service.ts routes it to deliverReplyToVerifier); here we only handle
+    // the denied/expired case — the verifier re-audits with the evidence at
+    // hand instead of waiting for a reply that will not come.
+    const replyRun = this.replyProposalsByProposal.get(proposal.id);
+    if (replyRun) {
+      if (
+        proposal.status === "denied" ||
+        proposal.status === "expired" ||
+        proposal.status === "undelivered"
+      ) {
+        this.replyProposalsByProposal.delete(proposal.id);
+        replyRun.pendingProposalId = null;
+        replyRun.waitingForReply = false;
+        this.logger.info(
+          {
+            workerAgentId: replyRun.item.agentId,
+            proposalId: proposal.id,
+            status: proposal.status,
+          },
+          "verifier.exchange.reply_denied",
+        );
+        this.runVerifierTurn(
+          replyRun,
+          `The worker's reply was not relayed (${proposal.status}). Re-audit the available evidence ` +
+            'and submit your verdict; if it is insufficient, submit result "insufficient".',
+        );
+      }
+      return;
+    }
     const run = this.exchangesByProposal.get(proposal.id);
     if (!run || run.phase === "closed" || run.phase === "failed") {
       return;
@@ -988,20 +1221,128 @@ export class MissionControlVerifierDispatcher {
       this.armExchangeRelay(run, proposal.id);
       return;
     }
-    if (proposal.status === "denied" || proposal.status === "expired") {
+    if (
+      proposal.status === "denied" ||
+      proposal.status === "expired" ||
+      proposal.status === "undelivered"
+    ) {
       this.exchangesByProposal.delete(proposal.id);
       run.pendingProposalId = null;
       this.logger.info(
         { workerAgentId: run.item.agentId, proposalId: proposal.id, status: proposal.status },
         "verifier.exchange.denied",
       );
+      let outcome: string;
+      if (proposal.status === "denied") {
+        outcome = "denied by the user";
+      } else if (proposal.status === "undelivered") {
+        outcome = "not delivered (the worker produced no activity after delivery)";
+      } else {
+        outcome = "not resolved in time (expired)";
+      }
       this.runVerifierTurn(
         run,
-        `Your contact request was ${proposal.status === "denied" ? "denied by the user" : "not resolved in time (expired)"}. ` +
+        `Your contact request was ${outcome}. ` +
           "Re-audit the available evidence and submit your verdict; if it is insufficient, " +
           'submit result "insufficient".',
       );
     }
+  }
+
+  /**
+   * Relay the worker's reply into the verifier session. Ask mode gates the
+   * relay as a proposal targeting the verifier itself (approving delivers the
+   * reply; denying sends the verifier back to re-audit). The allow-pair scope
+   * is the WORKER pair so a granted contact pair covers the whole exchange.
+   */
+  private async relayReplyToVerifier(run: VerifierRun, text: string): Promise<void> {
+    if (!run.verifierAgentId) {
+      return;
+    }
+    if (this.getCentralConfig().mode === "ask") {
+      try {
+        const proposal = await this.createProposal({
+          origin: "verifier",
+          serverId: this.serverId,
+          targetAgentId: run.verifierAgentId,
+          message: text,
+          deliveryMode: "interrupt",
+          reason: "Verifier exchange reply",
+          classification: "normal",
+          verifierAgentId: run.verifierAgentId,
+          // Pair scope = the worker pair (serverId:workerAgentId), matching
+          // the contact proposal's pair key so one granted pair covers the
+          // whole exchange in both directions.
+          allowPairKey: `${this.serverId}:${run.item.agentId}`,
+        });
+        this.replyProposalsByProposal.set(proposal.id, run);
+        run.pendingProposalId = proposal.id;
+        this.logger.info(
+          {
+            workerAgentId: run.item.agentId,
+            verifierAgentId: run.verifierAgentId,
+            proposalId: proposal.id,
+            status: proposal.status,
+          },
+          "verifier.exchange.reply_proposed",
+        );
+        if (proposal.status === "sent") {
+          // Mode flipped to auto between read and create (or allow-pair
+          // granted): the approvals module already routed the delivery.
+          this.replyProposalsByProposal.delete(proposal.id);
+          run.pendingProposalId = null;
+        }
+        return;
+      } catch (error) {
+        this.logger.warn(
+          { err: error, workerAgentId: run.item.agentId },
+          "verifier.exchange.reply_proposal_failed",
+        );
+      }
+    }
+    this.runVerifierTurn(run, text);
+  }
+
+  /**
+   * Deliver an approved worker→verifier reply proposal: run the reply text as
+   * the verifier's next turn (keeps the dispatcher's turn-end tracking armed).
+   * Called by the approvals module's deliver hook (service.ts routing).
+   * The verifier's previous turn may still be hanging (the model produced no
+   * final message after contact_worker) — cancel it so the reply lands.
+   */
+  async deliverReplyToVerifier(proposal: VerifierProposal): Promise<void> {
+    const run = this.replyProposalsByProposal.get(proposal.id);
+    if (!run || !run.verifierAgentId) {
+      return;
+    }
+    this.replyProposalsByProposal.delete(proposal.id);
+    run.pendingProposalId = null;
+    run.waitingForReply = false;
+    this.logger.info(
+      {
+        workerAgentId: run.item.agentId,
+        verifierAgentId: run.verifierAgentId,
+        proposalId: proposal.id,
+      },
+      "verifier.exchange.reply_sent",
+    );
+    // The verifier's previous turn may still be hanging (the model produced no
+    // final message after contact_worker); the reply must land, so cancel the
+    // stale run BEFORE starting the reply turn. runVerifierTurn is
+    // fire-and-forget, so the active-run rejection cannot be caught after the
+    // fact — gate on the live agent's active turn first.
+    const live = this.agentManager.getAgent(run.verifierAgentId);
+    if (live?.activeForegroundTurnId && this.agentManager.cancelAgentRun) {
+      try {
+        await this.agentManager.cancelAgentRun(run.verifierAgentId);
+      } catch (error) {
+        this.logger.debug(
+          { err: error, verifierAgentId: run.verifierAgentId },
+          "verifier.exchange.reply_cancel_skipped",
+        );
+      }
+    }
+    this.runVerifierTurn(run, proposal.message);
   }
 
   private handleWorkerSelfReport(event: MissionControlEvent): void {
@@ -1015,7 +1356,7 @@ export class MissionControlVerifierDispatcher {
       "verifier.exchange.relay",
     );
     const proof = formatProofs(event.proof);
-    this.runVerifierTurn(
+    void this.relayReplyToVerifier(
       run,
       `The worker replied with a status report:\n[${event.kind}] ${event.headline}` +
         `${event.detail ? ` — ${event.detail}` : ""}${proof}`,
@@ -1045,7 +1386,7 @@ export class MissionControlVerifierDispatcher {
         { workerAgentId: event.agentId, verifierAgentId: run.verifierAgentId },
         "verifier.exchange.relay",
       );
-      this.runVerifierTurn(run, `The worker replied:\n${text}`);
+      void this.relayReplyToVerifier(run, `The worker replied:\n${text}`);
       return;
     }
     if (event.event.type === "turn_failed") {
@@ -1079,7 +1420,7 @@ export class MissionControlVerifierDispatcher {
         serverId: this.serverId,
         targetAgentId: run.item.agentId,
         message,
-        deliveryMode: "steer",
+        deliveryMode: this.getCentralConfig().verifierToWorkerMode,
         reason: "Verifier proof demand",
         classification: "normal",
       });

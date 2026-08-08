@@ -1,4 +1,4 @@
-import type { ReactElement } from "react";
+import React, { type ReactElement } from "react";
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { formatTimeAgo } from "@/utils/time";

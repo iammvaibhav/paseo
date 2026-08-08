@@ -238,6 +238,60 @@ describe("buildWorkspaceStructureProjects", () => {
     expect(result[0].workspaceKeys).toEqual([]);
   });
 
+  test("shows the Commander's home-directory workspace when Mission Control verbose mode is on", () => {
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [project({ id: "/Users/vaibhav", key: null, root: "/Users/vaibhav" })],
+          workspaces: [workspace("ws-home", "/Users/vaibhav", "/Users/vaibhav")],
+          agents: [{ workspaceId: "ws-home", labels: { "paseo.mission-control": "commander" } }],
+        },
+      ],
+      hideCommanderWorkspaces: false,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].workspaceKeys).toEqual(["host-a:ws-home"]);
+  });
+
+  test("verbose mode never reveals History Ask workspaces", () => {
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [project({ id: "/Users/vaibhav", key: null, root: "/Users/vaibhav" })],
+          workspaces: [workspace("ws-home", "/Users/vaibhav", "/Users/vaibhav")],
+          agents: [{ workspaceId: "ws-home", labels: { "paseo.history-ask": "1" } }],
+        },
+      ],
+      hideCommanderWorkspaces: false,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].workspaceKeys).toEqual([]);
+  });
+
+  test("verbose mode keeps a home workspace visible when a Commander shares it with a regular agent", () => {
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [project({ id: "/Users/vaibhav", key: null, root: "/Users/vaibhav" })],
+          workspaces: [workspace("ws-home", "/Users/vaibhav", "/Users/vaibhav")],
+          agents: [
+            { workspaceId: "ws-home", labels: { "paseo.mission-control": "commander" } },
+            { workspaceId: "ws-home", labels: {} },
+          ],
+        },
+      ],
+      hideCommanderWorkspaces: false,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].workspaceKeys).toEqual(["host-a:ws-home"]);
+  });
+
   test("keeps a home workspace visible when a Commander shares it with a regular agent", () => {
     const result = buildWorkspaceStructureProjects({
       sessions: [

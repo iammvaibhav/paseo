@@ -300,6 +300,17 @@ describe("resolveIdentityUpdates (apply-time idempotency)", () => {
     });
     expect(updates).toEqual([{ agentId: "agent-1", title: "T" }]);
   });
+
+  test("accepts a description at the 400-char cap (Commander's context rule)", () => {
+    const description = "x".repeat(DESCRIPTION_MAX_CHARS);
+    const updates = resolveIdentityUpdates({
+      candidates: [candidate()],
+      responses: [{ agentId: "agent-1", name: "Nova", title: "T", description }],
+    });
+    expect(updates).toEqual([
+      { agentId: "agent-1", name: "Nova", title: "T", shortDescription: description },
+    ]);
+  });
 });
 
 describe("deriveTitleFromFirstPrompt (same derivation as create-agent-title)", () => {

@@ -1,8 +1,10 @@
 import type pino from "pino";
 import type { FirstAgentContext } from "@getpaseo/protocol/messages";
 
+import { isSystemInjectedEnvelope } from "./agent/agent-prompt.js";
 import { resolveFirstAgentPromptTitle } from "./agent/create-agent-title.js";
 import type { AgentManager } from "./agent/agent-manager.js";
+import { MISSION_CONTROL_LABEL_KEY } from "./mission-control/commander-contract.js";
 import type { ProviderSnapshotManager } from "./agent/provider-snapshot-manager.js";
 import type { StructuredGenerationDaemonConfig } from "./agent/structured-generation-providers.js";
 import {
@@ -39,6 +41,25 @@ interface ScheduleContext {
   currentSelection?: CurrentSelection;
 }
 
+/**
+ * Machinery must never drive a workspace's auto-name: a first message wrapped
+ * in the `<paseo-system>` envelope is a system payload (the Commander's
+ * context pack, digests, notifications), and mission-control-labeled agents
+ * (commander/verifier) are infrastructure, not user work — their workspaces
+ * carry stable titles set at provisioning. Live incident: the Commander's
+ * context pack titled its home workspace `<paseo-system>` on every spawn.
+ */
+function shouldSkipAutoName(input: {
+  firstAgentContext: FirstAgentContext;
+  labels?: Record<string, string> | null;
+}): boolean {
+  const prompt = input.firstAgentContext.prompt?.trim();
+  if (prompt && isSystemInjectedEnvelope(prompt)) {
+    return true;
+  }
+  return Object.keys(input.labels ?? {}).some((key) => key.startsWith(MISSION_CONTROL_LABEL_KEY));
+}
+
 export class WorkspaceAutoName {
   private readonly agentManager: AgentManager;
   private readonly workspaceRegistry: Pick<WorkspaceRegistry, "get" | "upsert">;
@@ -69,9 +90,14 @@ export class WorkspaceAutoName {
     input: {
       workspace: PersistedWorkspaceRecord;
       firstAgentContext: FirstAgentContext;
+      /** Labels of the agent being created, when known at schedule time. */
+      labels?: Record<string, string> | null;
     },
     context: ScheduleContext = {},
   ): void {
+    if (shouldSkipAutoName(input)) {
+      return;
+    }
     this.schedule(
       () =>
         this.maybeAutoNameWorkspaceBranchForFirstAgent({
@@ -90,9 +116,14 @@ export class WorkspaceAutoName {
       workspaceId: string;
       cwd: string;
       firstAgentContext: FirstAgentContext;
+      /** Labels of the agent being created, when known at schedule time. */
+      labels?: Record<string, string> | null;
     },
     context: ScheduleContext = {},
   ): void {
+    if (shouldSkipAutoName(input)) {
+      return;
+    }
     this.schedule(
       () =>
         this.maybeAutoNameDirectoryWorkspaceTitle({

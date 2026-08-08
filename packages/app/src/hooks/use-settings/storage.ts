@@ -19,7 +19,7 @@ export const APP_SETTINGS_KEY = "@paseo:app-settings";
 export const APP_SETTINGS_QUERY_KEY = ["app-settings"];
 const LEGACY_SETTINGS_KEY = "@paseo:settings";
 
-export type SendBehavior = "interrupt" | "queue";
+export type SendBehavior = "interrupt" | "queue" | "steer";
 export type ReleaseChannel = "stable" | "beta";
 export type ServiceUrlBehavior = "ask" | "in-app" | "external";
 export type WorkspaceTitleSource = "title" | "branch";
@@ -271,7 +271,11 @@ function pickEnumAppSettings(stored: StoredAppSettings): Partial<AppSettings> {
   if (typeof stored.theme === "string" && VALID_THEMES.has(stored.theme)) {
     result.theme = stored.theme;
   }
-  if (stored.sendBehavior === "interrupt" || stored.sendBehavior === "queue") {
+  if (
+    stored.sendBehavior === "interrupt" ||
+    stored.sendBehavior === "queue" ||
+    stored.sendBehavior === "steer"
+  ) {
     result.sendBehavior = stored.sendBehavior;
   }
   if (

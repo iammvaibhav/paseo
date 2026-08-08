@@ -122,6 +122,52 @@ describe("user message identity", () => {
       },
     ]);
   });
+
+  it("carries the machinery classification from a canonical timeline row", () => {
+    const timestamp = new Date("2026-07-27T10:00:00.000Z");
+    const result = applyStreamEvent({
+      tail: [],
+      head: [],
+      event: {
+        type: "timeline",
+        provider: "omp",
+        item: {
+          type: "user_message",
+          text: "You've been quiet for a while. Post a one-line report_status.",
+          classification: "machinery",
+        },
+      },
+      timestamp,
+    });
+
+    const user = [...result.tail, ...result.head].find(
+      (item): item is Extract<StreamItem, { kind: "user_message" }> => item.kind === "user_message",
+    );
+    expect(user).toMatchObject({
+      kind: "user_message",
+      text: "You've been quiet for a while. Post a one-line report_status.",
+      classification: "machinery",
+    });
+  });
+
+  it("treats an unclassified canonical row as an instruction (legacy safety: never hidden)", () => {
+    const result = applyStreamEvent({
+      tail: [],
+      head: [],
+      event: {
+        type: "timeline",
+        provider: "omp",
+        item: { type: "user_message", text: "Direction change: ship the fix.", messageId: "m-1" },
+      },
+      timestamp: new Date("2026-07-27T10:00:01.000Z"),
+    });
+
+    const user = [...result.tail, ...result.head].find(
+      (item): item is Extract<StreamItem, { kind: "user_message" }> => item.kind === "user_message",
+    );
+    expect(user?.text).toBe("Direction change: ship the fix.");
+    expect(user).not.toHaveProperty("classification");
+  });
 });
 
 function assistantTimeline(

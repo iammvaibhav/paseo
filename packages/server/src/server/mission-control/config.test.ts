@@ -16,7 +16,7 @@ describe("CentralMissionControlConfigStore stall knobs", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  test("defaults: silence 120, status 300, escalate 300", async () => {
+  test("defaults: silence 120, status 300, escalate 300, dormant turn 300", async () => {
     const store = new CentralMissionControlConfigStore({
       paseoHome: dir,
       logger: createTestLogger(),
@@ -26,7 +26,52 @@ describe("CentralMissionControlConfigStore stall knobs", () => {
       silenceNudgeSeconds: 120,
       statusNudgeSeconds: 300,
       escalateSeconds: 300,
+      dormantTurnSeconds: 300,
     });
+  });
+
+  test("dormantTurnSeconds round-trips through patch and a fresh store instance", async () => {
+    const store = new CentralMissionControlConfigStore({
+      paseoHome: dir,
+      logger: createTestLogger(),
+    });
+    await store.initialize();
+    const patched = await store.patch({ dormantTurnSeconds: 600 });
+    expect(patched.dormantTurnSeconds).toBe(600);
+    // A second store instance reads the persisted value back.
+    const reloaded = new CentralMissionControlConfigStore({
+      paseoHome: dir,
+      logger: createTestLogger(),
+    });
+    await reloaded.initialize();
+    expect(reloaded.get().dormantTurnSeconds).toBe(600);
+    // Unpatched keys keep defaults.
+    expect(reloaded.get().escalateSeconds).toBe(300);
+  });
+
+  test("delivery modes default to interrupt and accept the full union via patch", async () => {
+    const store = new CentralMissionControlConfigStore({
+      paseoHome: dir,
+      logger: createTestLogger(),
+    });
+    await store.initialize();
+    expect(store.get().commanderToWorkerMode).toBe("interrupt");
+    expect(store.get().verifierToWorkerMode).toBe("interrupt");
+
+    const patched = await store.patch({
+      commanderToWorkerMode: "steer",
+      verifierToWorkerMode: "queue",
+    });
+    expect(patched.commanderToWorkerMode).toBe("steer");
+    expect(patched.verifierToWorkerMode).toBe("queue");
+    // A second store instance reads the persisted values back.
+    const reloaded = new CentralMissionControlConfigStore({
+      paseoHome: dir,
+      logger: createTestLogger(),
+    });
+    await reloaded.initialize();
+    expect(reloaded.get().commanderToWorkerMode).toBe("steer");
+    expect(reloaded.get().verifierToWorkerMode).toBe("queue");
   });
 
   test("legacy nudgeSeconds migrates to statusNudgeSeconds at load and is dropped from the file", async () => {

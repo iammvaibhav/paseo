@@ -25,8 +25,13 @@ async function awaitStoreWrites(store: MissionControlStore): Promise<void> {
 }
 
 describe("buildSelfReportSystemPrompt", () => {
-  test("returns the paragraph for a normal agent when enabled", () => {
-    expect(buildSelfReportSystemPrompt({}, true)).toBe(MISSION_CONTROL_SELF_REPORT_PROMPT);
+  test("returns the paragraph plus the unset-identity seed for a normal agent when enabled", () => {
+    const prompt = buildSelfReportSystemPrompt({}, true);
+    expect(prompt).not.toBeNull();
+    expect(prompt).toContain(MISSION_CONTROL_SELF_REPORT_PROMPT);
+    // No identity known yet: the seed says so explicitly.
+    expect(prompt).toContain("no title or description yet");
+    expect(prompt).toContain("Your first report_status can set both");
     expect(MISSION_CONTROL_SELF_REPORT_PROMPT.length).toBeGreaterThan(0);
   });
 
@@ -39,6 +44,33 @@ describe("buildSelfReportSystemPrompt", () => {
     expect(prompt).toContain("inconclusive");
     expect(prompt).toContain("hub-wait");
     expect(prompt).toContain("proof");
+  });
+
+  test("paragraph carries the title/description ownership rules", () => {
+    const prompt = MISSION_CONTROL_SELF_REPORT_PROMPT;
+    // The agent owns its identity; title is stable, retitled on divergence.
+    expect(prompt).toContain("title");
+    expect(prompt).toContain("description");
+    expect(prompt).toContain("kept STABLE");
+    expect(prompt).toContain('"decision"-kind report');
+    expect(prompt).toContain("REPLACE it");
+    expect(prompt).toContain("~400 characters");
+    expect(prompt).toContain("Send title/description ONLY when changing them");
+    // Drift-only identity echo: results only report externally-changed values.
+    expect(prompt).toContain("drifted from what you sent");
+    expect(prompt).toContain("already current");
+  });
+
+  test("seeds the agent's current title and description into the built prompt", () => {
+    const prompt = buildSelfReportSystemPrompt({}, true, {
+      title: "Fix auth",
+      description: "Reproducing the login failure",
+    });
+    expect(prompt).not.toBeNull();
+    expect(prompt).toContain("- Title: Fix auth");
+    expect(prompt).toContain("- Description: Reproducing the login failure");
+    // Compare-and-decide pointer so the next report can revise the identity.
+    expect(prompt).toContain("Compare against it before each report");
   });
 
   test("returns null for a mission-control-labeled agent", () => {
@@ -112,6 +144,7 @@ describe("MissionControlService.reportSelfStatus", () => {
   let updateAgentMetadata: ReturnType<typeof vi.fn>;
   let enqueue: ReturnType<typeof vi.fn>;
   let getAgent: ReturnType<typeof vi.fn>;
+  let getStoredAgent: ReturnType<typeof vi.fn>;
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "mc-self-report-service-"));
@@ -119,6 +152,7 @@ describe("MissionControlService.reportSelfStatus", () => {
     updateAgentMetadata = vi.fn(async () => undefined);
     enqueue = vi.fn();
     getAgent = vi.fn(() => null);
+    getStoredAgent = vi.fn(async () => null);
     service = new MissionControlService({
       paseoHome: dir,
       logger: createTestLogger(),
@@ -127,7 +161,7 @@ describe("MissionControlService.reportSelfStatus", () => {
         updateAgentMetadata,
         subscribe: vi.fn(() => () => {}),
       } as unknown as AgentManager,
-      agentStorage: { get: async () => null } as unknown as AgentStorage,
+      agentStorage: { get: getStoredAgent } as unknown as AgentStorage,
       daemonConfigStore: { get: () => ({}) } as unknown as DaemonConfigStore,
       serverId: "test-server",
       hostName: "test-host",
@@ -173,6 +207,8 @@ describe("MissionControlService.reportSelfStatus", () => {
     });
     // title/description only update when the agent explicitly provides them.
     expect(updateAgentMetadata).not.toHaveBeenCalled();
+    // Nothing was sent, so there is nothing to compare: no identity echo.
+    expect(result.identity).toEqual({});
   });
 
   test("preserves the original report_status kind as reportKind for card icons", async () => {
@@ -218,6 +254,12 @@ describe("MissionControlService.reportSelfStatus", () => {
   });
 
   test("title/description updates flow through the identity path", async () => {
+    // The update lands on the record, so the agent's own values are current:
+    // the result must NOT restate them (no identity echo).
+    getStoredAgent.mockResolvedValue({
+      title: "Pipeline rename",
+      shortDescription: "Decided on the new pipeline shape",
+    });
     const result = await service.reportSelfStatus("agent-1", {
       status: "working",
       kind: "decision",
@@ -226,6 +268,9 @@ describe("MissionControlService.reportSelfStatus", () => {
       description: "Decided on the new pipeline shape",
     });
     expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
     expect(updateAgentMetadata).toHaveBeenCalledWith(
       "agent-1",
       expect.objectContaining({
@@ -233,6 +278,45 @@ describe("MissionControlService.reportSelfStatus", () => {
         shortDescription: "Decided on the new pipeline shape",
       }),
     );
+    expect(result.identity).toEqual({});
+  });
+
+  test("echoes stored identity only when it drifted from what the agent sent", async () => {
+    // External drift: the record holds a different title than the agent just
+    // sent (backfill/user/another surface overwrote it, or the write failed).
+    getStoredAgent.mockResolvedValue({
+      title: "Legacy title",
+      shortDescription: "Legacy description",
+    });
+    const result = await service.reportSelfStatus("agent-1", {
+      status: "working",
+      kind: "decision",
+      headline: "Changed direction",
+      title: "New direction",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    // Only the drifted title echoes (with the stored value); the description
+    // was not sent, so it stays silent even though the record holds one.
+    expect(result.identity).toEqual({ title: "Legacy title" });
+  });
+
+  test("echoes null for a side whose write did not stick", async () => {
+    // The agent sent a title but the record holds none: drift, echoed as null.
+    getStoredAgent.mockResolvedValue(null);
+    const result = await service.reportSelfStatus("agent-1", {
+      status: "working",
+      kind: "decision",
+      headline: "Renamed",
+      title: "Pipeline rename",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.identity).toEqual({ title: null });
   });
 
   test("completed self-reports map to a finished event and move the agent to ready-for-review", async () => {
@@ -346,7 +430,11 @@ describe("report_status tool", () => {
   ) {
     const reportSelfStatus =
       overrides.reportSelfStatus ??
-      vi.fn(async () => ({ ok: true, event: { id: "mce_test" } as MissionControlEvent }));
+      vi.fn(async () => ({
+        ok: true,
+        event: { id: "mce_test" } as MissionControlEvent,
+        identity: { title: "Drifted title", description: "Drifted description" },
+      }));
     const catalog = createPaseoToolCatalog({
       agentManager: {} as unknown as AgentManager,
       agentStorage: {} as unknown as AgentStorage,
@@ -379,6 +467,26 @@ describe("report_status tool", () => {
     };
     const result = await catalog.executeTool("report_status", input);
     expect(reportSelfStatus).toHaveBeenCalledWith("agent-1", input);
+    expect(result.structuredContent).toEqual({
+      ok: true,
+      eventId: "mce_test",
+      title: "Drifted title",
+      description: "Drifted description",
+    });
+  });
+
+  test("omits identity fields from the result when the agent's values are current", async () => {
+    const { catalog } = createCatalog({
+      reportSelfStatus: vi.fn(async () => ({
+        ok: true,
+        event: { id: "mce_test" } as MissionControlEvent,
+        identity: {},
+      })),
+    });
+    const result = await catalog.executeTool("report_status", {
+      status: "working",
+      headline: "All current",
+    });
     expect(result.structuredContent).toEqual({ ok: true, eventId: "mce_test" });
   });
 

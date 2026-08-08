@@ -32,7 +32,7 @@ import { hasMissionControlLabels } from "./naming.js";
  */
 
 /** Description length cap, mirrored by the server-side description generator. */
-export const DESCRIPTION_MAX_CHARS = 200;
+export const DESCRIPTION_MAX_CHARS = 400;
 /** Proposal titles are capped at 5 words per spec. */
 export const WORKSPACE_PROPOSAL_MAX_WORDS = 5;
 
@@ -163,7 +163,7 @@ export function buildBackfillPrompt(input: {
     "For each agent below produce exactly three fields:",
     '- "name": short identity chip fitting the theme (1-2 words). If the agent already has a name, KEEP IT UNCHANGED and still echo it back.',
     '- "title": a concise task title (max 8 words, plain language) describing what the agent is working on.',
-    '- "description": one living sentence (max 200 chars, present tense, no markdown) describing what the agent is doing.',
+    '- "description": 2-3 living sentences (max 400 chars, present tense, no markdown) describing what the agent is doing — this is the Commander\'s context, so a little more is better.',
     "",
     "Derive each title from what was ACTUALLY asked: use the agent's first user prompt excerpt (and the last report headline when present) as the source material — never the current title, which may be the auto-derived placeholder being replaced.",
     "Use the current title and cwd only as supporting context. Never invent agentIds. Never include secrets or raw file contents.",

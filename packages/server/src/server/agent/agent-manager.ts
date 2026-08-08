@@ -38,6 +38,7 @@ import {
   type AgentSessionConfig,
   type AgentStreamEvent,
   type AgentTimelineItem,
+  type AgentTimelineUserMessageClassification,
   type AgentUsage,
   type AgentRuntimeInfo,
   type ImportedTimelineEntry,
@@ -81,6 +82,13 @@ import {
 
 const RELOAD_SESSION_CLOSE_TIMEOUT_MS = 3_000;
 const INTERRUPT_SESSION_TIMEOUT_MS = 2_000;
+/**
+ * How long a pending machinery prompt classification survives before it is
+ * dropped as never-echoed. Dispatch failures (busy queue timeouts, dead
+ * runtimes) must never leave a stale expectation that stamps an unrelated
+ * later message of the same text.
+ */
+const PROMPT_CLASSIFICATION_TTL_MS = 30 * 60_000;
 // Above this, the gap between pressing send and the agent showing as running is
 // worth a warn line so it can be correlated with a user report after the fact.
 const SLOW_TURN_START_MS = 1_500;
@@ -326,6 +334,18 @@ export interface AgentManagerOptions {
    * agents regardless of this flag.
    */
   missionControlSelfReportEnabled?: boolean;
+  /**
+   * Mission Control Commander launch-contract re-derivation (bootstrap-wired
+   * to commander-boot). When present, prepareSessionConfig overlays the
+   * returned contract onto EVERY session build (create, reload, resume,
+   * import) for agents whose labels match — so a Commander session never comes
+   * back from a reload/resume with the default coding prompt or an
+   * unrestricted tool catalog, even when its stored record predates contract
+   * persistence. Returns null for non-Commander agents (workers untouched).
+   */
+  resolveCommanderLaunchContract?: (
+    labels: Record<string, string>,
+  ) => Partial<AgentSessionConfig> | null;
   agentStreamCoalesceWindowMs?: number;
   rescueTimeouts?: AgentManagerRescueTimeouts;
   logger: Logger;
@@ -402,6 +422,16 @@ interface ManagedAgentBase {
   >;
   inFlightPermissionResponses: Set<string>;
   pendingReplacement: boolean;
+  /**
+   * Who superseded the in-flight run (AgentRunOptions.replaceOrigin) when a
+   * replace is in progress. Set by replaceAgentRun, cleared when the
+   * replacement turn starts (or the replace fails). Lets the terminal failure
+   * of the superseded run be recognized as that party's interruption: "user"
+   * suppresses the [System Error] timeline row for the aborted turn and reads
+   * as "Interrupted by you" in Mission Control; "machinery" keeps the failure
+   * treatment. Null = no origin recorded (genuine abort/crash).
+   */
+  pendingReplacementOrigin: "user" | "machinery" | null;
   persistence: AgentPersistenceHandle | null;
   historyPrimed: boolean;
   lastUserMessageAt: Date | null;
@@ -601,6 +631,20 @@ function isUnrecoverableProviderInterruptError(error: unknown): boolean {
   );
 }
 
+/**
+ * The OMP runtime's signature for a request the USER aborted: the aborted
+ * assistant message reads "Interrupted by user (stopReason=aborted,
+ * model=…)". This exact text also surfaces on the REPLACEMENT turn when the
+ * runtime aborts the new prompt while the superseded turn's tool call is
+ * still running — in both cases it is the user's interrupt noise, never a
+ * real failure. Machinery-originated interrupts produce the same text but are
+ * distinguished by the recorded origin, not the text.
+ */
+function isUserAbortError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /Interrupted by user|stopReason=aborted/i.test(message);
+}
+
 function abortMessage(reason: unknown, fallbackMessage: string): string {
   if (typeof reason === "string") return reason;
   if (reason instanceof Error) return reason.message;
@@ -729,6 +773,7 @@ export class AgentManager {
   private paseoToolCatalogFactory: PaseoToolCatalogFactory | null = null;
   private appendSystemPrompt: string;
   private missionControlSelfReportEnabled: boolean;
+  private resolveCommanderLaunchContract: AgentManagerOptions["resolveCommanderLaunchContract"];
   private onAgentAttention?: AgentAttentionCallback;
   private onAgentArchived?: AgentArchivedCallback;
   private onAgentCreated?: AgentManagerOptions["onAgentCreated"];
@@ -736,6 +781,19 @@ export class AgentManager {
   private logger: Logger;
   private readonly rescueTimeouts: Required<AgentManagerRescueTimeouts>;
   private acceptingAgentRegistrations = true;
+
+  /**
+   * Machinery prompt classifications awaiting their timeline echo. Keyed by
+   * agentId → expected user_message text → classification. Populated by
+   * dispatchLocalPromptMode at dispatch time; consumed (once) when the
+   * provider's user_message echo for that exact text arrives, so the agent's
+   * own chat can render machinery prompts distinctly without protocol changes
+   * to the provider runtime.
+   */
+  private readonly pendingPromptClassifications = new Map<
+    string,
+    Array<{ text: string; classification: AgentTimelineUserMessageClassification; at: number }>
+  >();
 
   private static resolveRescueTimeouts(
     options: AgentManagerOptions,
@@ -771,6 +829,7 @@ export class AgentManager {
     this.configurePaseoTools(options);
     this.appendSystemPrompt = options.appendSystemPrompt ?? "";
     this.missionControlSelfReportEnabled = options.missionControlSelfReportEnabled ?? true;
+    this.resolveCommanderLaunchContract = options.resolveCommanderLaunchContract;
     this.logger = options.logger.child({ module: "agent", component: "agent-manager" });
     this.rescueTimeouts = AgentManager.resolveRescueTimeouts(options);
     this.agentStreamCoalescer = this.createStreamCoalescer(options);
@@ -1798,6 +1857,7 @@ export class AgentManager {
         bufferedPermissionResolutions: new Map(),
         inFlightPermissionResponses: new Set(),
         pendingReplacement: false,
+        pendingReplacementOrigin: null,
         activeForegroundTurnId: null,
         activeTurnId: null,
         activeTurnStartedAt: null,
@@ -2367,6 +2427,56 @@ export class AgentManager {
     await this.persistSnapshot(agent);
   }
 
+  /**
+   * Classify-at-the-source hook for machinery prompt delivery
+   * (dispatchLocalPromptMode). Registers an expectation that a prompt with
+   * EXACTLY `text` will surface as a user_message timeline row for this agent;
+   * the classification is stamped on that row when the echo arrives (first
+   * match consumed). Absent classification = "instruction" (visible), so a
+   * failed/never-echoed dispatch degrades to a normal visible prompt, never a
+   * hidden one.
+   */
+  expectPromptClassification(
+    agentId: string,
+    text: string,
+    classification: AgentTimelineUserMessageClassification,
+  ): void {
+    const entries = this.pendingPromptClassifications.get(agentId) ?? [];
+    entries.push({ text, classification, at: Date.now() });
+    this.pendingPromptClassifications.set(agentId, entries);
+  }
+
+  /** Consume (once) a pending machinery classification matching the echo text. */
+  private consumePromptClassification(
+    agentId: string,
+    text: string,
+  ): AgentTimelineUserMessageClassification | null {
+    const entries = this.pendingPromptClassifications.get(agentId);
+    if (!entries || entries.length === 0) {
+      return null;
+    }
+    const now = Date.now();
+    const index = entries.findIndex((entry) => entry.text === text);
+    if (index === -1) {
+      // Drop expectations whose dispatch never echoed, so a stale entry cannot
+      // stamp an unrelated later message of the same text.
+      const fresh = entries.filter((entry) => now - entry.at < PROMPT_CLASSIFICATION_TTL_MS);
+      if (fresh.length !== entries.length) {
+        if (fresh.length === 0) {
+          this.pendingPromptClassifications.delete(agentId);
+        } else {
+          this.pendingPromptClassifications.set(agentId, fresh);
+        }
+      }
+      return null;
+    }
+    const [matched] = entries.splice(index, 1);
+    if (entries.length === 0) {
+      this.pendingPromptClassifications.delete(agentId);
+    }
+    return matched.classification;
+  }
+
   async emitLiveTimelineItem(agentId: string, item: AgentTimelineItem): Promise<void> {
     const agent = this.requireAgent(agentId);
     this.touchUpdatedAt(agent);
@@ -2427,6 +2537,7 @@ export class AgentManager {
         turnId = result.turnId;
       } catch (error) {
         agent.pendingReplacement = false;
+        agent.pendingReplacementOrigin = null;
         const errorMsg = error instanceof Error ? error.message : "Failed to start turn";
         await this.handleStreamEvent(agent, {
           type: "turn_failed",
@@ -2440,6 +2551,12 @@ export class AgentManager {
 
       if (isReplacement) {
         agent.pendingReplacement = false;
+        // pendingReplacementOrigin deliberately SURVIVES the turn start: the
+        // omp runtime often aborts the freshly-replaced turn itself with
+        // "Interrupted by user (stopReason=aborted, …)" (the superseded turn's
+        // tool call is still running), and that abort is the user's interrupt
+        // noise — it must be recognizable in onStreamTurnFailed. The origin
+        // is cleared when the replacement run reaches a terminal state.
       }
       const turnStartedAt = new Date();
       pendingRun.started = true;
@@ -2543,6 +2660,11 @@ export class AgentManager {
     } else {
       nextLifecycle = "idle";
     }
+    if (nextLifecycle === "idle") {
+      // The supersede window closed: the replacement run reached a terminal
+      // state, so the abort noise of the superseded turn is no longer fresh.
+      mutableAgent.pendingReplacementOrigin = null;
+    }
     mutableAgent.lifecycle = nextLifecycle;
     const persistenceHandle =
       mutableAgent.session.describePersistence() ??
@@ -2604,13 +2726,46 @@ export class AgentManager {
 
     const agent = this.requireSessionAgent(agentId);
     agent.pendingReplacement = true;
+    // The replace origin rides the agent until the replacement turn starts:
+    // the superseded run's terminal failure consults it (onStreamTurnFailed
+    // suppresses the [System Error] row for user-originated supersedes) and
+    // the mission-control service records it as the stop origin.
+    agent.pendingReplacementOrigin = options?.replaceOrigin ?? null;
     agent.lifecycle = "running";
     this.touchUpdatedAt(agent);
     this.emitState(agent);
 
     const cancelStartedAt = Date.now();
     try {
-      await this.cancelAgentRunBefore(agentId, "replace");
+      try {
+        await this.cancelAgentRunBefore(agentId, "replace");
+      } catch (error) {
+        // A turn that will not terminate (e.g. an OMP parent turn held open
+        // by subagents) can refuse the first interrupt: the abort ack timed
+        // out. Escalate ONCE — the second abort either cancels the turn
+        // outright or force-closes the wedged runtime — so a user
+        // interrupt-and-send (or a machinery recovery interrupt) actually
+        // takes over instead of failing. If it still refuses, rethrow the
+        // original error loudly: a requested interrupt must never silently
+        // degrade into a queue.
+        const escalated = await this.cancelAgentRun(agentId);
+        if (escalated.status !== "settled" && escalated.status !== "not_running") {
+          throw error;
+        }
+        this.logger.warn(
+          { agentId, provider: agent.provider, cancelMs: Date.now() - cancelStartedAt },
+          "agent.run.replace_cancel_escalated",
+        );
+      }
+      // The escalated cancel may have force-closed a wedged provider runtime;
+      // reload the dead session so the replacement turn can start (pre-existing
+      // gap: a runtime that died mid-turn also landed here with a closed
+      // session and the replacement prompt failed with "process is closed").
+      const afterCancel = this.agents.get(agentId);
+      const session = afterCancel && "session" in afterCancel ? afterCancel.session : null;
+      if (session?.isRuntimeAlive?.() === false) {
+        await this.reloadAgentSession(agentId);
+      }
       // Sending while a turn is running has to interrupt the provider first;
       // that wait is the dominant cause of a late spinner on a busy agent.
       this.logger.info(
@@ -2622,6 +2777,7 @@ export class AgentManager {
       const latest = this.agents.get(agentId);
       if (latest) {
         latest.pendingReplacement = false;
+        latest.pendingReplacementOrigin = null;
       }
       this.logger.warn(
         { err: error, agentId, provider: agent.provider, cancelMs: Date.now() - cancelStartedAt },
@@ -2844,6 +3000,7 @@ export class AgentManager {
     // handleStreamEvent returns early without settling the tracked run, which
     // previously hung cancel/reload/stop indefinitely.
     agent.pendingReplacement = false;
+    agent.pendingReplacementOrigin = null;
     agent.activeForegroundTurnId = null;
     this.applyActiveTurnTerminal(agent, run.turnId ?? undefined);
     if (agent.lifecycle === "running") {
@@ -3465,6 +3622,7 @@ export class AgentManager {
       bufferedPermissionResolutions: new Map(),
       inFlightPermissionResponses: new Set(),
       pendingReplacement: false,
+      pendingReplacementOrigin: null,
       activeForegroundTurnId: null,
       activeTurnId: null,
       activeTurnStartedAt: null,
@@ -3528,6 +3686,7 @@ export class AgentManager {
       bufferedPermissionResolutions: new Map(),
       inFlightPermissionResponses: new Set(),
       pendingReplacement: false,
+      pendingReplacementOrigin: null,
       foregroundTurnWaiters: new Set(),
       finalizedForegroundTurnIds: new Set(),
       unsubscribeSession: null,
@@ -4220,6 +4379,17 @@ export class AgentManager {
   }): Promise<void> {
     const { agent, event, options, flags } = params;
 
+    // Machinery prompt delivery stamps its classification at the source
+    // (dispatchLocalPromptMode → expectPromptClassification); apply it to the
+    // echoed user_message row so the agent chat renders status asks as muted
+    // placeholders instead of raw prose. Consumed on first match.
+    if (event.item.type === "user_message") {
+      const classification = this.consumePromptClassification(agent.id, event.item.text);
+      if (classification) {
+        event.item = { ...event.item, classification };
+      }
+    }
+
     if (event.item.type === "user_message" && isSystemInjectedEnvelope(event.item.text)) {
       // System-injected envelopes (fleet digests, chat mentions, schedule
       // fires, notify-on-finish) are real timeline rows: clients render them
@@ -4306,6 +4476,7 @@ export class AgentManager {
         );
       } else {
         (agent as ActiveManagedAgent).lifecycle = "idle";
+        agent.pendingReplacementOrigin = null;
         this.emitState(agent);
       }
     }
@@ -4341,12 +4512,26 @@ export class AgentManager {
       agent.lifecycle = "error";
     }
     agent.lastError = event.error;
-    await this.appendSystemErrorTimelineMessage(
-      agent,
-      event.provider,
-      this.formatTurnFailedMessage(event),
-      options,
-    );
+    // A USER interrupt-and-send superseded this run: the abort ("Interrupted
+    // by user (stopReason=aborted, …)") is machinery noise, not a failure the
+    // user needs to see in the chat. This covers BOTH the superseded run's
+    // terminal failure (pendingReplacement still set) AND the freshly
+    // replaced turn being aborted by the runtime before producing output
+    // (pendingReplacement cleared, but the origin survives and the error is
+    // the user-abort signature). Machinery-originated interrupts
+    // (escalation/recovery) and genuine aborts/crashes — different origin or
+    // different error text — keep the row, loud.
+    const supersededByUser =
+      agent.pendingReplacementOrigin === "user" &&
+      (agent.pendingReplacement || isUserAbortError(event.error));
+    if (!supersededByUser) {
+      await this.appendSystemErrorTimelineMessage(
+        agent,
+        event.provider,
+        this.formatTurnFailedMessage(event),
+        options,
+      );
+    }
     this.resolvePendingPermissionsForAgent(agent, event.provider, options, "Turn failed");
     if (!isForegroundEvent && !agent.activeForegroundTurnId) {
       this.emitState(agent);
@@ -4383,6 +4568,7 @@ export class AgentManager {
     if (terminalDisposition === "stale") return;
     if (!isForegroundEvent && !agent.activeForegroundTurnId && !agent.pendingReplacement) {
       agent.lifecycle = "idle";
+      agent.pendingReplacementOrigin = null;
     }
     agent.lastError = undefined;
     this.resolvePendingPermissionsForAgent(agent, event.provider, options, "Interrupted");
@@ -4997,7 +5183,17 @@ export class AgentManager {
     labels?: Record<string, string>,
     env?: Record<string, string>,
   ): Promise<PreparedSessionConfig> {
-    const storedConfig = await this.normalizeConfig(stripInternalPaseoMcpServer(config), { env });
+    let storedConfig = await this.normalizeConfig(stripInternalPaseoMcpServer(config), { env });
+    const commanderContract = this.resolveCommanderLaunchContract
+      ? this.resolveCommanderLaunchContract(labels ?? {})
+      : null;
+    if (commanderContract) {
+      // Commander launch contract is re-derived per session build (create,
+      // reload, resume, import) so a reloaded Commander NEVER comes back with
+      // the default coding prompt or an unrestricted tool catalog. Applied
+      // after normalization so the contract fields pass through untouched.
+      storedConfig = { ...storedConfig, ...commanderContract };
+    }
     const launchConfig = this.applyDaemonAppendSystemPrompt(
       withRuntimePaseoMcpServer({
         config: storedConfig,
@@ -5006,19 +5202,42 @@ export class AgentManager {
         mcpAuthToken: this.mcpAuthToken,
       }),
       labels ?? {},
+      await this.readAgentIdentitySeed(agentId),
     );
     return { storedConfig, launchConfig };
+  }
+
+  /**
+   * The agent's current Mission Control identity (title + short description)
+   * as known at spawn time, for seeding into the appended self-report prompt.
+   * Mirrors the stored record fields report_status updates; a fresh agent has
+   * no record yet, so every field is null ("unset").
+   */
+  private async readAgentIdentitySeed(agentId: string): Promise<{
+    title?: string | null;
+    description?: string | null;
+  }> {
+    if (!this.registry) {
+      return {};
+    }
+    const record = await this.registry.get(agentId);
+    return {
+      title: record?.title ?? null,
+      description: record?.shortDescription ?? null,
+    };
   }
 
   private applyDaemonAppendSystemPrompt(
     config: AgentSessionConfig,
     labels: Record<string, string>,
+    currentIdentity?: { title?: string | null; description?: string | null },
   ): AgentSessionConfig {
     const next = { ...config };
     delete next.daemonAppendSystemPrompt;
     const selfReportPrompt = buildSelfReportSystemPrompt(
       labels,
       this.missionControlSelfReportEnabled,
+      currentIdentity,
     );
     const daemonAppendSystemPrompt = [this.appendSystemPrompt.trim(), selfReportPrompt]
       .filter((part): part is string => Boolean(part))

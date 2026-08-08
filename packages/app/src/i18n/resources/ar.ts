@@ -1815,10 +1815,13 @@ export const ar: TranslationResources = {
           interrupt:
             "عند تشغيل الوكيل، يوقف Enter التشغيل. Command/Ctrl+Enter يضيف إلى قائمة الانتظار.",
           queue: "عند تشغيل الوكيل، يضيف Enter إلى قائمة الانتظار. Command/Ctrl+Enter يرسل.",
+          steer:
+            "عند تشغيل الوكيل، يوجه Enter الوكيل — يكمل استدعاء الأداة الحالي، ويقرأ رسالتك، ثم يواصل. Command/Ctrl+Enter يوقف.",
         },
         options: {
           interrupt: "مقاطعة",
           queue: "طابور",
+          steer: "توجيه",
         },
       },
       serviceUrls: {

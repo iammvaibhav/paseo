@@ -20,7 +20,10 @@ export {
   type HostProjectRouteContext,
 } from "@/projects/host-project-model";
 
-export function useHostProjects(serverIds: string[]): HostProjectListItem[] {
-  const workspaceStructure = useWorkspaceStructure(serverIds);
+export function useHostProjects(
+  serverIds: string[],
+  options?: { hideCommanderWorkspaces?: boolean },
+): HostProjectListItem[] {
+  const workspaceStructure = useWorkspaceStructure(serverIds, options);
   return workspaceStructure.projects;
 }

@@ -161,21 +161,40 @@ function buildFleetToolDisplay(input: ToolCallDisplayInput, leaf: string): Detai
   const toolInput = readFleetToolInput(input.detail);
   const toolOutput = readFleetToolOutput(input.detail);
 
+  let base: DetailDisplay | null;
   switch (leaf) {
     case "fleet_send_prompt":
-      return buildFleetSendPromptDisplay(input, toolInput);
+      base = buildFleetSendPromptDisplay(input, toolInput);
+      break;
     case "fleet_list_agents":
-      return buildFleetListAgentsDisplay(toolOutput);
+      base = buildFleetListAgentsDisplay(toolOutput);
+      break;
     case "create_agent":
     case "fleet_create_agent":
-      return buildFleetCreateAgentDisplay(input, leaf, toolInput, toolOutput);
+      base = buildFleetCreateAgentDisplay(input, leaf, toolInput, toolOutput);
+      break;
     case "fleet_search":
-      return buildFleetSearchDisplay(toolInput, toolOutput);
+      base = buildFleetSearchDisplay(toolInput, toolOutput);
+      break;
     case "tag_message":
-      return buildTagMessageDisplay(toolInput);
+      base = buildTagMessageDisplay(toolInput);
+      break;
     default:
       return null;
   }
+  if (base === null || input.status !== "failed") {
+    return base;
+  }
+  // A failed dispatch must READ as failed (live incident: a rejected
+  // fleet_create_agent rendered a success-shaped header). Keep the tool
+  // identity in the label, put the truncated error on the summary line, and
+  // leave the full message to the expandable errorText.
+  const message = (formatErrorText(input.error) ?? "Dispatch failed").trim();
+  const truncated = message.length <= 100 ? message : `${message.slice(0, 97).trimEnd()}...`;
+  return {
+    displayName: base.displayName,
+    summary: truncated.length > 0 ? `Failed: ${truncated}` : "Dispatch failed",
+  };
 }
 function humanizeToolName(name: string): string {
   const trimmed = name.trim();

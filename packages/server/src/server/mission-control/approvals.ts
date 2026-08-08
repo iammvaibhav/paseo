@@ -2,6 +2,7 @@ import type { Logger } from "pino";
 import type {
   MissionControlProposal,
   MissionControlProposal as Proposal,
+  MissionControlProposalSpawnPlan,
 } from "@getpaseo/protocol/mission-control/types";
 import type { MissionControlPresenceSource } from "./presence.js";
 import { generateProposalId, type MissionControlStore } from "./store.js";
@@ -33,7 +34,9 @@ export interface ProposalCreateInput {
   serverId: string;
   targetAgentId: string;
   message: string;
-  deliveryMode: "steer" | "interrupt";
+  // "queue" rides along for verifier/commander delivery settings; stall nudges
+  // always create "steer".
+  deliveryMode: "steer" | "interrupt" | "queue";
   reason: string;
   classification: "normal" | "destructive";
   allowPair?: boolean;
@@ -45,6 +48,31 @@ export interface ProposalCreateInput {
    *  onto the proposal record (audit trail) and the emitted event so the app
    *  can hide it in the normal feed. Absent → normal-mode card. */
   verboseOnly?: boolean;
+  /**
+   * How the delivered prompt classifies on the target agent's OWN timeline
+   * row: "machinery" (status asks — stall nudges) vs "instruction"
+   * (Commander direction changes, Verifier proof demands, recovery).
+   * Absent = instruction (visible). Additive; the feed's verboseOnly gating
+   * is independent.
+   */
+  timelineClassification?: "machinery" | "instruction";
+  /**
+   * "send" (default) delivers `message` to the target agent; "spawn" creates a
+   * NEW agent from `spawnPlan` instead (Commander agent spawns, verifier
+   * spawns). Both kinds flow through the same gate.
+   */
+  kind?: "send" | "spawn";
+  /** What a spawn-kind proposal would create; required when kind === "spawn". */
+  spawnPlan?: MissionControlProposalSpawnPlan;
+  /** Verifier-origin attribution for card drill-in (verifier's agent id). */
+  verifierAgentId?: string;
+  /**
+   * Allow-pair scope override. Defaults to the standard pair key
+   * (serverId:targetAgentId). The verifier dispatcher sets it to the WORKER
+   * pair key for worker→verifier reply proposals so a granted contact pair
+   * covers the whole exchange in both directions.
+   */
+  allowPairKey?: string;
 }
 
 /**
@@ -78,13 +106,40 @@ export interface MissionControlApprovalsOptions {
   getMode: () => "ask" | "auto";
   /**
    * Deliver an approved proposal to the target agent. Steer delivers without
-   * interrupting a running turn; interrupt replaces it.
+   * interrupting a running turn (native OMP live-steer; a busy non-OMP agent
+   * is interrupted so the message lands promptly); queue waits for idle;
+   * interrupt replaces the running turn.
    */
   deliver: (input: {
     agentId: string;
     message: string;
-    deliveryMode: "steer" | "interrupt";
+    deliveryMode: "steer" | "interrupt" | "queue";
+    /**
+     * How the delivered prompt classifies on the target agent's own timeline
+     * row: "machinery" (status asks — stall nudges) vs "instruction"
+     * (Commander direction changes, Verifier proof demands, recovery).
+     * Absent = instruction (visible). Carried from the proposal's
+     * timelineClassification (verboseOnly stall nudges fall back to
+     * machinery for legacy records).
+     */
+    classification?: "machinery" | "instruction";
+    /**
+     * The proposal being delivered (additive). Lets the wiring route a
+     * verifier-origin proposal targeting the verifier itself (the worker→
+     * verifier reply relay) to the verifier dispatcher, which must run the
+     * turn to keep its turn-end tracking.
+     */
+    proposal?: Proposal;
   }) => Promise<void>;
+  /**
+   * Execute a spawn-kind proposal (kind === "spawn"): create the NEW agent the
+   * proposal describes. Runs on approve (user-approved pending card) and on
+   * auto-send in auto mode — the single execution path for both. Returns the
+   * spawned agent id so the proposal can record it (spawnedAgentId).
+   */
+  spawn?: (
+    proposal: Proposal,
+  ) => Promise<{ ok: true; agentId?: string } | { ok: false; error: string }>;
   /**
    * Push a proposal-card event (kind "proposal"). Status changes append a new
    * event superseding the previous one for the same proposal. Returns the
@@ -94,6 +149,32 @@ export interface MissionControlApprovalsOptions {
 }
 
 export type ProposalChangeListener = (proposal: MissionControlProposal) => void;
+
+/**
+ * THE ask-mode exemption predicate (single source of truth — pinned by
+ * approvals.test.ts "ask-mode gating per action class").
+ *
+ * User decision, verbatim: "apart from nudge, everything should require my
+ * approval in ask mode. Spinning up a new agent as well, everything."
+ *
+ * In ask mode a proposal sends WITHOUT user approval only when it is
+ *   - the status-ask nudge (`forceSend`: the stall steer that merely asks for
+ *     a report_status — auto-sent, in either mode), or
+ *   - a message in a verifier<->worker exchange the user EXPLICITLY
+ *     allow-paired (the first approved contact of the pair grants it).
+ *
+ * Everything else — Commander agent spawns, verifier spawns, verifier→worker
+ * contacts, worker→verifier replies, Commander→worker sends, escalation and
+ * recovery interrupts — waits for Approve/Edit/Deny in ask mode. In auto mode
+ * they send immediately (see MissionControlApprovals.autoApproved); only
+ * destructive classification, presence, and user-stop still force ask.
+ */
+export function isAskModeAutoSendExempt(
+  input: Pick<ProposalCreateInput, "forceSend">,
+  allowPairActive: boolean,
+): boolean {
+  return input.forceSend === true || allowPairActive;
+}
 
 /**
  * The approval gate. Every outbound send from mission-control machinery
@@ -119,6 +200,7 @@ export class MissionControlApprovals {
   private readonly logger: Logger;
   private readonly getMode: () => "ask" | "auto";
   private readonly deliver: MissionControlApprovalsOptions["deliver"];
+  private readonly spawn: MissionControlApprovalsOptions["spawn"];
   private readonly publishProposalEvent: MissionControlApprovalsOptions["publishProposalEvent"];
   private readonly allowPairs = new Set<string>();
   private readonly listeners = new Set<ProposalChangeListener>();
@@ -129,13 +211,15 @@ export class MissionControlApprovals {
     this.logger = options.logger;
     this.getMode = options.getMode;
     this.deliver = options.deliver;
+    this.spawn = options.spawn;
     this.publishProposalEvent = options.publishProposalEvent;
   }
 
   /**
    * True when a proposal sends immediately instead of asking. Destructive
    * actions, a user viewing the target, and user-stop conflicts always ask —
-   * even in auto mode.
+   * even in auto mode. In ask mode, ONLY isAskModeAutoSendExempt applies
+   * (status-ask nudge / user-granted allow-pair): everything else waits.
    */
   private autoApproved(input: ProposalCreateInput): boolean {
     if (input.classification === "destructive") {
@@ -150,12 +234,12 @@ export class MissionControlApprovals {
     if (this.getMode() === "auto") {
       return true;
     }
-    // Ask mode: a previously granted allow-pair auto-approves the rest of the
-    // verifier<->worker exchange.
-    return (
-      input.origin === "verifier" &&
-      this.allowPairs.has(this.pairKey(input.serverId, input.targetAgentId))
-    );
+    // Ask mode: only the explicit exemptions auto-send (single predicate —
+    // see isAskModeAutoSendExempt). A granted allow-pair covers the whole
+    // exchange; the pair scope defaults to serverId:targetAgentId and may be
+    // overridden (worker pair for worker→verifier reply proposals).
+    const pairKey = input.allowPairKey ?? this.pairKey(input.serverId, input.targetAgentId);
+    return isAskModeAutoSendExempt(input, this.allowPairs.has(pairKey));
   }
 
   private pairKey(serverId: string, targetAgentId: string): string {
@@ -169,10 +253,11 @@ export class MissionControlApprovals {
    */
   async createProposal(input: ProposalCreateInput): Promise<MissionControlProposal> {
     await this.expireStale();
+    const { allowPairKey: _allowPairKey, ...record } = input;
     const proposal: MissionControlProposal = {
       id: generateProposalId(),
       createdAt: new Date().toISOString(),
-      ...input,
+      ...record,
       status: "pending",
     };
     if (input.forceSend || this.autoApproved(input)) {
@@ -287,11 +372,48 @@ export class MissionControlApprovals {
   }
 
   private async send(proposal: Proposal): Promise<void> {
+    if (proposal.kind === "spawn") {
+      // Spawn-kind proposal: create the NEW agent described by spawnPlan
+      // (Commander/verifier spawns) instead of delivering a message. Single
+      // execution path for approve and auto mode; failures log loudly and
+      // never bounce a resolved proposal back to pending.
+      if (!this.spawn) {
+        this.logger.error(
+          { proposalId: proposal.id, origin: proposal.origin },
+          "mission_control.approvals.spawn_unavailable",
+        );
+        return;
+      }
+      const result = await this.spawn(proposal);
+      if (!result.ok) {
+        this.logger.error(
+          { proposalId: proposal.id, origin: proposal.origin, error: result.error },
+          "mission_control.approvals.spawn_failed",
+        );
+        return;
+      }
+      if (result.agentId) {
+        const updated: Proposal = { ...proposal, spawnedAgentId: result.agentId };
+        await this.store.putProposal(updated);
+        await this.publish(updated);
+        this.logger.info(
+          { proposalId: proposal.id, agentId: result.agentId, origin: proposal.origin },
+          "mission_control.approvals.spawned",
+        );
+      }
+      return;
+    }
     try {
       await this.deliver({
         agentId: proposal.targetAgentId,
         message: proposal.message,
         deliveryMode: proposal.deliveryMode,
+        proposal,
+        // Classify at the source: stall status-ask nudges are machinery
+        // (verboseOnly audit trail); everything else is an instruction
+        // (visible). Legacy verboseOnly records fall back to machinery.
+        classification:
+          proposal.timelineClassification ?? (proposal.verboseOnly ? "machinery" : "instruction"),
       });
     } catch (error) {
       if (error instanceof ProposalDeliveryAborted) {
@@ -342,6 +464,35 @@ export class MissionControlApprovals {
       },
       "mission_control.approvals.proposal_sent",
     );
+  }
+
+  /**
+   * Honest steer delivery: an out-of-band steer was reported "handled" but
+   * the agent produced no activity within the verification window — the
+   * message never actually landed (wedged-omp incident). A proposal must
+   * never stay recorded "sent" for a message that did not reach the agent:
+   * flip it to "undelivered" (terminal, auditable, never redelivered), push
+   * the updated card, and notify listeners.
+   */
+  async markUndelivered(proposalId: string): Promise<MissionControlProposal | null> {
+    const proposal = this.store.getProposal(proposalId);
+    if (!proposal || proposal.status !== "sent") {
+      return proposal ?? null;
+    }
+    const updated: Proposal = { ...proposal, status: "undelivered" };
+    await this.store.putProposal(updated);
+    await this.publish(updated);
+    this.logger.error(
+      {
+        component: "approvals",
+        proposalId: proposal.id,
+        origin: proposal.origin,
+        targetAgentId: proposal.targetAgentId,
+        deliveryMode: proposal.deliveryMode,
+      },
+      "mission_control.approvals.proposal_undelivered",
+    );
+    return updated;
   }
 
   /**

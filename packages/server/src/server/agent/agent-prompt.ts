@@ -168,6 +168,13 @@ export interface SendPromptToAgentParams {
   prompt: AgentPromptInput;
   messageId?: string;
   runOptions?: AgentRunOptions;
+  /**
+   * Who supersedes the in-flight run when this prompt replaces one (user
+   * interrupt-and-send vs machinery dispatch). Rides the run options to
+   * replaceAgentRun so the superseded run's terminal failure can be treated
+   * as that party's interruption (see AgentRunOptions.replaceOrigin).
+   */
+  replaceOrigin?: "user" | "machinery";
   /** Optional mode to set on the agent before the run starts. */
   sessionMode?: string;
   /**
@@ -272,9 +279,11 @@ export async function sendPromptToAgent(
     setModeMs = Date.now() - setModeStartedAt;
   }
 
-  const runOptions = params.messageId
-    ? { ...params.runOptions, clientMessageId: params.messageId }
-    : params.runOptions;
+  const runOptions: AgentRunOptions = {
+    ...params.runOptions,
+    ...(params.messageId ? { clientMessageId: params.messageId } : {}),
+    ...(params.replaceOrigin ? { replaceOrigin: params.replaceOrigin } : {}),
+  };
 
   const startRunStartedAt = Date.now();
   try {

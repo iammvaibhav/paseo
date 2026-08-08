@@ -72,6 +72,11 @@ export function buildConfigOverrides(record: StoredAgentRecord): Partial<AgentSe
     featureValues: record.config?.featureValues ?? undefined,
     extra: record.config?.extra ?? undefined,
     systemPrompt: record.config?.systemPrompt ?? undefined,
+    // Launch contract fields must survive resume/reload (live bug: a resumed
+    // verifier/Commander came back with the default toolset because the
+    // stored systemPromptMode/toolAllowlist were dropped here).
+    systemPromptMode: record.config?.systemPromptMode ?? undefined,
+    toolAllowlist: record.config?.toolAllowlist ?? undefined,
     mcpServers: record.config?.mcpServers ?? undefined,
   });
 }

@@ -8,6 +8,7 @@ import { useHostProjects } from "@/projects/host-projects";
 import { getHostRuntimeStore, useHostRegistryLoaded, useHosts } from "@/runtime/host-runtime";
 import { useSidebarOrderStore } from "@/stores/sidebar-order-store";
 import { useSidebarViewStore } from "@/stores/sidebar-view-store";
+import { useMissionControlVerbose } from "@/mission-control/use-mission-control-verbose";
 import {
   buildSidebarWorkspacePlacementModel,
   computeSidebarOrderUpdates,
@@ -133,7 +134,13 @@ export function useSidebarWorkspacesList(options?: {
 
   const hydratedServerIds = useHydratedWorkspaceServerIds(serverIds);
 
-  const hostProjects = useHostProjects(hydratedServerIds);
+  // Mission Control verbose mode exposes the Commander's home workspace in the
+  // sidebar for on-demand inspection; normal mode hides it (same flag the MC
+  // screen toggles — never a second preference).
+  const [missionControlVerbose] = useMissionControlVerbose();
+  const hostProjects = useHostProjects(hydratedServerIds, {
+    hideCommanderWorkspaces: !missionControlVerbose,
+  });
 
   const sidebarModel = useMemo(
     () =>

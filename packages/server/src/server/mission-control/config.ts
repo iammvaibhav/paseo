@@ -14,6 +14,8 @@ const CENTRAL_CONFIG_FILENAME = "central-config.json";
  * Resolved central Mission Control config: every key present, defaults filled.
  * Only commanderModel/verifierModel/commanderHost/defaultDispatchHost may be
  * null (the model overrides and host designations are optional by spec).
+ * commanderHost null = NO host is designated (never "self-designate"): the
+ * daemon must be explicitly told which host runs the fleet Commander.
  */
 export interface ResolvedMissionControlCentralConfig {
   commanderHost: string | null;
@@ -30,6 +32,21 @@ export interface ResolvedMissionControlCentralConfig {
   silenceNudgeSeconds: number;
   statusNudgeSeconds: number;
   escalateSeconds: number;
+  // Dormant-turn detector: seconds a running agent may sit with NO timeline
+  // output AND no tool call in flight before the turn is treated as wedged
+  // (omp loop-advance failure) and recovered via the interrupt path. Default
+  // 300 (5 min). Floor = slowest legitimate model call (178.6s max of 8242
+  // samples; a 727k-token call took 48s TTFT + 54s) — Paseo cannot observe a
+  // model request in flight (omp-internal, no timeline rows), so values under
+  // ~4 min risk false positives.
+  dormantTurnSeconds: number;
+  // Delivery semantics for commander/verifier → worker sends. Default
+  // "interrupt": a fleet direction change is time-sensitive — queue-until-idle
+  // can sit for tens of minutes. The Commander may still pass an explicit
+  // `mode` to fleet_send_prompt (e.g. "steer" for additive, non-urgent
+  // instructions); stall nudges are unaffected (always native steer).
+  commanderToWorkerMode: "steer" | "interrupt" | "queue";
+  verifierToWorkerMode: "steer" | "interrupt" | "queue";
 }
 
 export const DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG: ResolvedMissionControlCentralConfig = {
@@ -49,6 +66,9 @@ export const DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG: ResolvedMissionControlCentr
   silenceNudgeSeconds: 120,
   statusNudgeSeconds: 300,
   escalateSeconds: 300,
+  dormantTurnSeconds: 300,
+  commanderToWorkerMode: "interrupt",
+  verifierToWorkerMode: "interrupt",
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -172,6 +192,9 @@ const CENTRAL_CONFIG_KEYS: readonly (keyof ResolvedMissionControlCentralConfig)[
   "silenceNudgeSeconds",
   "statusNudgeSeconds",
   "escalateSeconds",
+  "dormantTurnSeconds",
+  "commanderToWorkerMode",
+  "verifierToWorkerMode",
 ];
 
 function pickCentralConfigKeys(value: Record<string, unknown>): MissionControlCentralConfig {
@@ -207,5 +230,8 @@ function resolveCentralConfig(
     statusNudgeSeconds:
       stored.statusNudgeSeconds ?? stored.nudgeSeconds ?? defaults.statusNudgeSeconds,
     escalateSeconds: stored.escalateSeconds ?? defaults.escalateSeconds,
+    dormantTurnSeconds: stored.dormantTurnSeconds ?? defaults.dormantTurnSeconds,
+    commanderToWorkerMode: stored.commanderToWorkerMode ?? defaults.commanderToWorkerMode,
+    verifierToWorkerMode: stored.verifierToWorkerMode ?? defaults.verifierToWorkerMode,
   };
 }

@@ -15,7 +15,12 @@ import {
 } from "./agent-manager.js";
 import { AgentStorage } from "./agent-storage.js";
 import { toAgentPayload } from "./agent-projections.js";
-import { MISSION_CONTROL_SELF_REPORT_PROMPT } from "../mission-control/self-report.js";
+import { buildSelfReportSystemPrompt } from "../mission-control/self-report.js";
+import {
+  COMMANDER_TOOL_ALLOWLIST,
+  MISSION_CONTROL_LABEL_KEY,
+  MISSION_CONTROL_LABEL_VALUE,
+} from "../mission-control/commander-contract.js";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import { formatSystemNotificationPrompt, startAgentRun } from "./agent-prompt.js";
 import { ensureAgentLoaded, ensureUnarchivedAgentLoaded } from "./agent-loading.js";
@@ -1369,7 +1374,7 @@ test("createAgent injects daemon append system prompt at runtime only", async ()
 
   expect(client.createdConfigs[0]?.systemPrompt).toBe("Agent instructions.");
   expect(client.createdConfigs[0]?.daemonAppendSystemPrompt).toBe(
-    `Daemon instructions.\n\n${MISSION_CONTROL_SELF_REPORT_PROMPT}`,
+    `Daemon instructions.\n\n${buildSelfReportSystemPrompt({}, true)}`,
   );
   expect(snapshot.config).not.toHaveProperty("daemonAppendSystemPrompt");
   expect(record?.config?.systemPrompt).toBe("Agent instructions.");
@@ -1405,7 +1410,7 @@ test("daemon append system prompt is injected into Pi configs", async () => {
   );
 
   expect(client.createdConfigs[0]?.daemonAppendSystemPrompt).toBe(
-    `Daemon instructions.\n\n${MISSION_CONTROL_SELF_REPORT_PROMPT}`,
+    `Daemon instructions.\n\n${buildSelfReportSystemPrompt({}, true)}`,
   );
 });
 
@@ -2053,7 +2058,7 @@ test("createAgent passes daemon launch env through the provider launch context",
     cwd: workdir,
     model: "gpt-5.4",
     modeId: "auto-review",
-    daemonAppendSystemPrompt: MISSION_CONTROL_SELF_REPORT_PROMPT,
+    daemonAppendSystemPrompt: buildSelfReportSystemPrompt({}, true),
   });
   expect(client.lastLaunchContext).toEqual({
     agentId: snapshot.id,
@@ -3569,6 +3574,101 @@ test("reloadAgentSession preserves current title when config title is unset", as
   const afterReload = await storage.get(snapshot.id);
   expect(afterReload?.title).toBe("Generated title");
   expect(afterReload?.config?.title).toBeUndefined();
+});
+
+test("reloadAgentSession seeds the agent's current title and description into the appended self-report prompt", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-reload-identity-seed-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+  const client = new TestAgentClient();
+  const manager = new AgentManager({
+    clients: {
+      codex: client,
+    },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000127",
+  });
+
+  const snapshot = await manager.createAgent(
+    {
+      provider: "codex",
+      cwd: workdir,
+    },
+    undefined,
+    { workspaceId: undefined },
+  );
+  await manager.setTitle(snapshot.id, "Fix auth");
+  await manager.setAgentShortDescription(snapshot.id, "Reproducing the login failure");
+
+  const seededAppend = buildSelfReportSystemPrompt({}, true, {
+    title: "Fix auth",
+    description: "Reproducing the login failure",
+  });
+  const firstConfig = client.createdConfigs[0];
+  // A fresh agent has no record at spawn: the append says the identity is unset.
+  expect(firstConfig?.daemonAppendSystemPrompt).toBe(buildSelfReportSystemPrompt({}, true));
+
+  await manager.reloadAgentSession(snapshot.id);
+
+  // The reloaded session's append carries the CURRENT identity from the record
+  // (reload resumes through the persistence handle, recorded in resumeOverrides).
+  const reloadedConfig = client.resumeOverrides.at(-1);
+  expect(reloadedConfig?.daemonAppendSystemPrompt).toBe(seededAppend);
+});
+
+test("reloadAgentSession re-derives the Commander launch contract for commander-labeled agents", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-commander-contract-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+  const client = new TestAgentClient();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000302",
+    // Mirrors bootstrap wiring: the current build's Commander contract.
+    resolveCommanderLaunchContract: (labels) =>
+      labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE
+        ? {
+            systemPromptMode: "replace",
+            systemPrompt: "# Identity\n\nYou are the Commander",
+            toolAllowlist: [...COMMANDER_TOOL_ALLOWLIST],
+          }
+        : null,
+  });
+  const commanderLabels = { [MISSION_CONTROL_LABEL_KEY]: MISSION_CONTROL_LABEL_VALUE };
+
+  // Spawn applies the contract at create time.
+  const snapshot = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+    workspaceId: undefined,
+    labels: commanderLabels,
+  });
+  expect(snapshot.config.systemPromptMode).toBe("replace");
+  expect(snapshot.config.toolAllowlist).toEqual([...COMMANDER_TOOL_ALLOWLIST]);
+
+  // Reload re-derives it for the live session (record shape irrelevant).
+  const reloaded = await manager.reloadAgentSession(snapshot.id);
+  expect(reloaded.config.systemPromptMode).toBe("replace");
+  expect(reloaded.config.toolAllowlist).toEqual([...COMMANDER_TOOL_ALLOWLIST]);
+  expect(reloaded.config.systemPrompt).toContain("You are the Commander");
+  const resumeConfig = client.resumeOverrides.at(-1);
+  expect(resumeConfig?.systemPromptMode).toBe("replace");
+  expect(resumeConfig?.toolAllowlist).toEqual([...COMMANDER_TOOL_ALLOWLIST]);
+
+  // Disk-resume (daemon restart) with an OLD record — live incident shape:
+  // the stored config carries NO systemPromptMode/toolAllowlist, but the
+  // resume still launches with the contract because it is re-derived from the
+  // current build, not the record.
+  const resumed = await manager.resumeAgentFromPersistence(
+    { provider: "codex", sessionId: "session-commander-legacy" },
+    { provider: "codex", cwd: workdir, modeId: null, model: null },
+    "00000000-0000-4000-8000-000000000303",
+    { labels: commanderLabels },
+  );
+  expect(resumed.config.systemPromptMode).toBe("replace");
+  expect(resumed.config.toolAllowlist).toEqual([...COMMANDER_TOOL_ALLOWLIST]);
+  expect(resumed.config.systemPrompt).toContain("You are the Commander");
 });
 
 test("setTitle bumps updatedAt and persists title in the same snapshot write", async () => {
@@ -5629,6 +5729,154 @@ test("replaceAgentRun stays running when a stale old terminal arrives before the
   await firstRunDrain;
   await secondRunDrain;
   unsubscribe();
+});
+
+test("user-originated replace suppresses the [System Error] abort row; machinery and genuine aborts keep it", async () => {
+  class AbortReplaceSession extends TestAgentSession {
+    private localTurnCounter = 0;
+    replacementAborts = false;
+
+    override async startTurn(): Promise<{ turnId: string }> {
+      const turnId = `turn-${++this.localTurnCounter}`;
+      const turnNum = this.localTurnCounter;
+      void (async () => {
+        this.pushEvent({ type: "turn_started", provider: this.provider, turnId });
+        if (turnNum === 1) {
+          await scenarioFirstRunGate.promise;
+          // The omp abort path: the superseded turn ends as a FAILED assistant
+          // message ("Interrupted by user (stopReason=aborted, …)").
+          this.pushEvent({
+            type: "turn_failed",
+            provider: this.provider,
+            turnId,
+            error: "Interrupted by user (stopReason=aborted, model=anthropic/claude-opus-5)",
+          });
+        } else if (this.replacementAborts) {
+          // Live finding: the omp runtime aborts the freshly-replaced turn
+          // itself with the same text while the superseded turn's tool call
+          // is still running.
+          this.pushEvent({
+            type: "turn_failed",
+            provider: this.provider,
+            turnId,
+            error:
+              "Interrupted by user (stopReason=aborted, model=google-antigravity/gemini-3.6-flash)",
+          });
+        } else {
+          this.pushEvent({ type: "turn_completed", provider: this.provider, turnId });
+        }
+      })();
+      return { turnId };
+    }
+
+    override async interrupt(): Promise<void> {
+      scenarioFirstRunGate.resolve();
+    }
+  }
+
+  let replacementAbortsForScenario = false;
+  let scenarioFirstRunGate = deferred<void>();
+
+  class AbortReplaceClient extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      const session = new AbortReplaceSession(config);
+      if (replacementAbortsForScenario) {
+        session.replacementAborts = true;
+      }
+      return session;
+    }
+  }
+
+  let scenarioCounter = 0;
+
+  async function runReplaceScenario(options: {
+    name: string;
+    replaceOrigin?: "user" | "machinery";
+    expectSystemError: boolean;
+    replacementAborts?: boolean;
+  }): Promise<void> {
+    replacementAbortsForScenario = options.replacementAborts === true;
+    scenarioFirstRunGate = deferred<void>();
+    const scenarioDir = mkdtempSync(
+      join(tmpdir(), `agent-manager-replace-origin-${options.name}-`),
+    );
+    const scenarioStorage = new AgentStorage(join(scenarioDir, "agents"), logger);
+    scenarioCounter += 1;
+    const manager = new AgentManager({
+      clients: {
+        codex: new AbortReplaceClient(),
+      },
+      registry: scenarioStorage,
+      logger,
+      idFactory: () => `00000000-0000-4000-8000-${String(scenarioCounter).padStart(12, "0")}`,
+    });
+
+    const snapshot = await manager.createAgent(
+      {
+        provider: "codex",
+        cwd: scenarioDir,
+      },
+      undefined,
+      { workspaceId: undefined },
+    );
+
+    const firstRun = manager.streamAgent(snapshot.id, "first run");
+    const firstRunDrain = (async () => {
+      for await (const _event of firstRun) {
+        // Drain events so lifecycle updates are applied.
+      }
+    })();
+    await manager.waitForAgentRunStart(snapshot.id);
+
+    const secondRun = await manager.replaceAgentRun(snapshot.id, "replacement run", {
+      replaceOrigin: options.replaceOrigin,
+    });
+    const secondRunDrain = (async () => {
+      for await (const _event of secondRun) {
+        // Drain replacement run (its turn completes on its own).
+      }
+    })();
+    await secondRunDrain;
+    await firstRunDrain;
+    // The superseded run's terminal processing is settled by the time
+    // replaceAgentRun resolves; a tick lets the replacement finish too.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const systemErrors = manager
+      .getTimeline(snapshot.id)
+      .filter(
+        (item): item is Extract<AgentTimelineItem, { type: "assistant_message" }> =>
+          item.type === "assistant_message" && item.text.includes("[System Error]"),
+      );
+    expect(
+      systemErrors.some((item) => item.text.includes("Interrupted by user")),
+      `${options.name}: user-abort system error row presence`,
+    ).toBe(options.expectSystemError);
+  }
+
+  // A USER interrupt-and-send superseding the run: the abort row is machinery
+  // noise — suppressed, the agent chat stays clean.
+  await runReplaceScenario({ name: "user", replaceOrigin: "user", expectSystemError: false });
+
+  // A MACHINERY supersede (escalation/recovery): the abort still reads as a
+  // failure — the [System Error] row stays, loud.
+  await runReplaceScenario({
+    name: "machinery",
+    replaceOrigin: "machinery",
+    expectSystemError: true,
+  });
+
+  // A genuine abort with no recorded origin: untouched — the row stays.
+  await runReplaceScenario({ name: "genuine", expectSystemError: true });
+
+  // The runtime aborting the freshly-replaced turn itself (the live omp
+  // pattern) is still the user's interrupt noise when the origin is user.
+  await runReplaceScenario({
+    name: "user-replacement-abort",
+    replaceOrigin: "user",
+    replacementAborts: true,
+    expectSystemError: false,
+  });
 });
 
 test("applies live autonomous events and preserves usage omitted from completion", async () => {
@@ -8989,6 +9237,72 @@ test("provider user_message is recorded from the live stream", async () => {
   // Provider's user_message should be recorded (no canonical to dedup against)
   expect(userMessages).toHaveLength(1);
   expect(userMessages[0].text).toBe("continuation prompt");
+});
+
+test("expectPromptClassification stamps the machinery classification on the echoed row once", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-prompt-classification-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+
+  class NudgeEchoSession extends TestAgentSession {
+    private classifiedTurn = 0;
+
+    override async startTurn(): Promise<{ turnId: string }> {
+      const turnId = `turn-classified-${++this.classifiedTurn}`;
+      this.pushEvent({ type: "turn_started", provider: this.provider, turnId });
+      // Provider echo for a steered/queued machinery prompt (no client identity).
+      this.pushEvent({
+        type: "timeline",
+        provider: this.provider,
+        item: { type: "user_message", text: "status please" },
+        turnId,
+      });
+      this.pushEvent({ type: "turn_completed", provider: this.provider, turnId });
+      return { turnId };
+    }
+  }
+
+  class NudgeEchoClient implements AgentClient {
+    readonly provider = "codex" as const;
+    readonly capabilities = TEST_CAPABILITIES;
+    async isAvailable(): Promise<boolean> {
+      return true;
+    }
+    async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      return new NudgeEchoSession(config);
+    }
+    async resumeSession(): Promise<AgentSession> {
+      throw new Error("unused");
+    }
+  }
+
+  const manager = new AgentManager({
+    clients: { codex: new NudgeEchoClient() },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000402",
+  });
+
+  const snapshot = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+    workspaceId: undefined,
+  });
+
+  // Classify at the source: the machinery dispatch registered its expectation
+  // before the prompt's echo landed.
+  manager.expectPromptClassification(snapshot.id, "status please", "machinery");
+  await manager.runAgent(snapshot.id, { text: "status please" });
+
+  const first = manager.getTimeline(snapshot.id).filter((item) => item.type === "user_message");
+  expect(first).toHaveLength(1);
+  expect(first[0]).toMatchObject({ text: "status please", classification: "machinery" });
+
+  // The expectation was consumed: an identical later echo (e.g. a repeat nudge
+  // with no pending dispatch) stays unclassified — absent = instruction.
+  await manager.runAgent(snapshot.id, { text: "status please" });
+  const rows = manager.getTimeline(snapshot.id).filter((item) => item.type === "user_message");
+  expect(rows).toHaveLength(2);
+  expect(rows[1]).toMatchObject({ text: "status please" });
+  expect(rows[1]).not.toHaveProperty("classification");
 });
 
 test("canonical submitted prompt keeps wire identity while rewind resolves provider identity", async () => {

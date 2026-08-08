@@ -50,7 +50,7 @@ import { useFilePicker } from "@/hooks/use-file-picker";
 import { useFileDrop } from "@/components/file-drop/use-file-drop";
 import type { DroppedItem } from "@/components/file-drop/types";
 import { MessageInput, type MessageInputRef, type AttachmentMenuItem } from "./input/input";
-import type { ImageAttachment, MessagePayload } from "./types";
+import type { ImageAttachment, MessageDispatchMode, MessagePayload } from "./types";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
 import {
   useAgentCommandsQuery,
@@ -1354,7 +1354,13 @@ export function Composer({
   const { pickFiles } = useFilePicker();
   const agentIdRef = useRef(agentId);
   const sendAgentMessageRef = useRef<
-    ((agentId: string, text: string, attachments: ComposerAttachment[]) => Promise<void>) | null
+    | ((
+        agentId: string,
+        text: string,
+        attachments: ComposerAttachment[],
+        dispatchMode?: MessageDispatchMode,
+      ) => Promise<void>)
+    | null
   >(null);
   const onSubmitMessageRef = useRef(onSubmitMessage);
   const agentCommandsRef = useRef<readonly AgentSlashCommand[]>([]);
@@ -1407,16 +1413,25 @@ export function Composer({
   }, [focusInput, onFocusInput]);
 
   const submitMessage = useCallback(
-    async (text: string, submitAttachments: ComposerAttachment[]) => {
+    async (
+      text: string,
+      submitAttachments: ComposerAttachment[],
+      dispatchMode?: MessageDispatchMode,
+    ) => {
       onMessageSent?.();
       if (onSubmitMessageRef.current) {
-        await onSubmitMessageRef.current({ text, attachments: submitAttachments, cwd });
+        await onSubmitMessageRef.current({
+          text,
+          attachments: submitAttachments,
+          cwd,
+          dispatchMode,
+        });
         return;
       }
       if (!sendAgentMessageRef.current) {
         throw new Error(t("workspace.terminal.hostDisconnected"));
       }
-      await sendAgentMessageRef.current(agentIdRef.current, text, submitAttachments);
+      await sendAgentMessageRef.current(agentIdRef.current, text, submitAttachments, dispatchMode);
     },
     [cwd, onMessageSent, t],
   );
@@ -1430,10 +1445,16 @@ export function Composer({
       targetAgentId: string,
       text: string,
       sendAttachments: ComposerAttachment[],
+      dispatchMode?: MessageDispatchMode,
     ) => {
       if (!client) {
         throw new Error(t("workspace.terminal.hostDisconnected"));
       }
+      const skipOptimistic = isOutOfBandCommandDraft({
+        text,
+        hasAttachments: sendAttachments.length > 0,
+        commands: agentCommandsRef.current,
+      });
       await dispatchComposerAgentMessage({
         client,
         agentId: targetAgentId,
@@ -1444,11 +1465,13 @@ export function Composer({
         }),
         encodeImages,
         submission: createMessageSubmissionWriter(serverId),
-        skipOptimisticUserMessage: isOutOfBandCommandDraft({
-          text,
-          hasAttachments: sendAttachments.length > 0,
-          commands: agentCommandsRef.current,
-        }),
+        ...(dispatchMode ? { dispatchMode } : {}),
+        // Steer-behavior sends keep their optimistic user message: the steered
+        // instruction is a user message, not machinery, and providers do not
+        // reliably echo it into the chat. Only a draft that IS an out-of-band
+        // command (typed /steer, /compact, …) skips the bubble — the daemon
+        // runs those out of band and an optimistic copy would double-show.
+        skipOptimisticUserMessage: skipOptimistic,
       });
       onAttentionPromptSend?.();
     };
@@ -1524,6 +1547,7 @@ export function Composer({
       outgoingMessage: string,
       outgoingAttachments: ComposerAttachment[],
       forceSend?: boolean,
+      dispatchMode?: MessageDispatchMode,
     ) => {
       const result = await submitAgentInput({
         message: outgoingMessage,
@@ -1531,6 +1555,7 @@ export function Composer({
         hasExternalContent,
         allowEmptySubmit,
         forceSend,
+        dispatchMode,
         submitBehavior,
         isAgentRunning,
         // Parent-managed submits are still valid submit paths even when the
@@ -1539,11 +1564,15 @@ export function Composer({
         queueMessage: ({ message: queuedText, attachments: queuedAttachments }) => {
           queueMessage(queuedText, queuedAttachments);
         },
-        submitMessage: async ({ message: submitText, attachments: submitAttachments }) => {
+        submitMessage: async ({
+          message: submitText,
+          attachments: submitAttachments,
+          dispatchMode: submitDispatchMode,
+        }) => {
           if (submitBehavior !== "preserve-and-lock") {
             beginSubmit(submitAttachments);
           }
-          await submitMessage(submitText, submitAttachments);
+          await submitMessage(submitText, submitAttachments, submitDispatchMode);
         },
         clearDraft,
         setUserInput,
@@ -1599,7 +1628,12 @@ export function Composer({
           hasAttachments: outgoingAttachments.length > 0,
           commands: agentCommands,
         });
-      void sendMessageWithContent(payload.text, outgoingAttachments, forceSend);
+      void sendMessageWithContent(
+        payload.text,
+        outgoingAttachments,
+        forceSend,
+        payload.dispatchMode,
+      );
     },
     [
       agentCommands,
@@ -1822,7 +1856,9 @@ export function Composer({
       hasAgent,
       serverId,
       agentId,
-      sendBehavior: appSettings.sendBehavior,
+      // Realtime voice predates the Steer send behavior; Steer maps to
+      // Interrupt (spoken input starts its own run).
+      sendBehavior: appSettings.sendBehavior === "steer" ? "interrupt" : appSettings.sendBehavior,
       toastErrorRef,
       onStartVoiceMode,
     });

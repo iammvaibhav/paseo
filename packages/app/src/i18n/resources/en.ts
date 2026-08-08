@@ -1827,10 +1827,13 @@ export const en = {
             "When the agent is running, Enter or spoken input interrupts. Command/Ctrl+Enter queues typed messages.",
           queue:
             "When the agent is running, Enter or spoken input queues. Command/Ctrl+Enter submits typed messages.",
+          steer:
+            "When the agent is running, Enter steers it — it finishes the current tool call, reads your message, then continues. Command/Ctrl+Enter interrupts.",
         },
         options: {
           interrupt: "Interrupt",
           queue: "Queue",
+          steer: "Steer",
         },
       },
       serviceUrls: {

@@ -1830,10 +1830,13 @@ export const ja: TranslationResources = {
         descriptions: {
           interrupt: "エージェント実行中、Enterで中断します。Command/Ctrl+Enterでキューに追加。",
           queue: "エージェント実行中、Enterでキューに追加します。Command/Ctrl+Enterで送信。",
+          steer:
+            "エージェント実行中、Enterでステアリングします。現在のツール呼び出しを完了し、メッセージを読み、続行します。Command/Ctrl+Enterで中断。",
         },
         options: {
           interrupt: "中断",
           queue: "キュー",
+          steer: "ステアリング",
         },
       },
       serviceUrls: {

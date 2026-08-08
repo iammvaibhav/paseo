@@ -143,7 +143,9 @@ export function selectHydratedWorkspaceServerIds(
 export function selectWorkspaceStructureProjects(
   state: SessionsSnapshot,
   serverIds: readonly string[],
+  options?: { hideCommanderWorkspaces?: boolean },
 ): WorkspaceStructureProject[] {
+  const { hideCommanderWorkspaces = true } = options ?? {};
   const sessions: Array<{
     serverId: string;
     workspaces: Iterable<WorkspaceDescriptor>;
@@ -170,7 +172,7 @@ export function selectWorkspaceStructureProjects(
     return EMPTY_WORKSPACE_STRUCTURE.projects;
   }
 
-  return buildWorkspaceStructureProjects({ sessions });
+  return buildWorkspaceStructureProjects({ sessions, hideCommanderWorkspaces });
 }
 
 export function selectProject(

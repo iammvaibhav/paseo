@@ -1794,10 +1794,13 @@ export const zhCN: TranslationResources = {
         descriptions: {
           interrupt: "Agent 运行时，Enter 会中断。Command/Ctrl+Enter 会排队。",
           queue: "Agent 运行时，Enter 会排队。Command/Ctrl+Enter 会提交。",
+          steer:
+            "Agent 运行时，Enter 会引导它——先完成当前工具调用，读取你的消息，然后继续。Command/Ctrl+Enter 会中断。",
         },
         options: {
           interrupt: "中断",
           queue: "排队",
+          steer: "引导",
         },
       },
       serviceUrls: {

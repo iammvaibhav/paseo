@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
 import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useMissionControlActive } from "@/screens/mission-control/focus-context";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
 import { MoreVertical, PanelLeftClose, PanelLeftOpen, Square } from "lucide-react-native";
@@ -35,19 +34,19 @@ import { BoardRail } from "@/mission-control/board-rail";
 import { InspectorRail } from "@/mission-control/inspector-rail";
 import { MissionControlModeToggle } from "@/mission-control/mode-toggle";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
+import { useMissionControlVerbose } from "@/mission-control/use-mission-control-verbose";
 import { useClearViewPoint } from "@/mission-control/clear-view";
 import { useAggregatedMissionControlEvents } from "@/hooks/use-aggregated-mission-control-events";
 import { getHostRuntimeStore, useHosts } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
 import { useHostFeature } from "@/runtime/host-features";
 import { useShallow } from "zustand/react/shallow";
-import { launchCommander, loadCommanderHostServerId } from "@/mission-control/launch";
+import { launchCommander } from "@/mission-control/launch";
 import { isCommanderAgent } from "@/mission-control/labels";
 import { useIsCompactFormFactor } from "@/constants/layout";
 
 type CompactPanel = "thread" | "board";
 
-const VERBOSE_STORAGE_KEY = "@paseo:mission-control-verbose";
 const THREAD_STRIP_WIDTH = 40;
 
 const ThemedMoreVertical = withUnistyles(MoreVertical);
@@ -89,78 +88,51 @@ export function MissionControlScreen(): ReactElement {
   const hosts = useHosts();
   const { events, isLoadingOlder, hasOlderEvents, loadOlderEvents } =
     useAggregatedMissionControlEvents();
-  const [commanderHostServerId, setCommanderHostServerId] = useState<string | null>(null);
   const [isStarting, setIsStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [recreatingArchivedId, setRecreatingArchivedId] = useState<string | null>(null);
   const [compactPanel, setCompactPanel] = useState<CompactPanel>("thread");
   const [threadCollapsed, setThreadCollapsed] = useState(false);
-  const [verbose, setVerbose] = useState(false);
+  // One per-device verbose flag, shared with the agent chat's machinery
+  // placeholder rendering (useMissionControlVerbose). The hook's second
+  // return is the toggle (same semantics as the previous local handler).
+  const [verbose, handleToggleVerbose] = useMissionControlVerbose();
   const [resettingCommander, setResettingCommander] = useState(false);
   const toast = useToast();
   const { config: missionControlConfig } = useMissionControlCentralConfig();
   const hideAgentNames = missionControlConfig?.hideAgentNames === true;
   const { clearPointTs, setClearViewPoint } = useClearViewPoint();
+  const serverInfoByServerId = useSessionStore(
+    useShallow((state) =>
+      Object.fromEntries(
+        Object.entries(state.sessions).map(([serverId, session]) => [
+          serverId,
+          session.serverInfo?.hostname ?? null,
+        ]),
+      ),
+    ),
+  );
 
-  useEffect(() => {
-    let cancelled = false;
-    void AsyncStorage.getItem(VERBOSE_STORAGE_KEY)
-      .then((value) => {
-        if (!cancelled) {
-          setVerbose(value === "1");
-        }
-        return value;
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) {
-          console.warn("Failed to load verbose preference", error);
-        }
-        return null;
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const handleToggleVerbose = useCallback(() => {
-    setVerbose((current) => !current);
-  }, []);
-
-  // Persist the per-device verbose toggle; the initial hydration read must not
-  // write the value straight back.
-  const verboseInitializedRef = useRef(false);
-  useEffect(() => {
-    if (!verboseInitializedRef.current) {
-      verboseInitializedRef.current = true;
-      return;
-    }
-    void AsyncStorage.setItem(VERBOSE_STORAGE_KEY, verbose ? "1" : "0").catch(() => undefined);
-  }, [verbose]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const saved = await loadCommanderHostServerId();
-      if (cancelled) {
-        return;
-      }
-      setCommanderHostServerId((current) => current ?? saved);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // The Commander lives on the designated host from the central config; the
-  // saved per-device preference is the fallback for hosts that predate a
-  // central designation. Header host selection was removed (spec): the picker
-  // lives in Mission Control settings.
+  // The Commander lives ONLY on the host designated in the central config:
+  // designation is required, never defaulted (live incident: null commanderHost
+  // made every host boot-ensure its own Commander). No designation → no host is
+  // selected and the empty state points at Mission Control settings. The
+  // central value is the daemon hostname (or host label), so resolve it to a
+  // connected host by serverId first, then by the host's server_info hostname.
   const centralCommanderHost = missionControlConfig?.commanderHost ?? null;
   const selectedServerId = useMemo(() => {
-    const known = (id: string | null): string | null =>
-      id && hosts.some((host) => host.serverId === id) ? id : null;
-    return known(centralCommanderHost) ?? known(commanderHostServerId);
-  }, [centralCommanderHost, commanderHostServerId, hosts]);
+    if (!centralCommanderHost) {
+      return null;
+    }
+    const direct = hosts.find((host) => host.serverId === centralCommanderHost);
+    if (direct) {
+      return direct.serverId;
+    }
+    return (
+      hosts.find((host) => serverInfoByServerId[host.serverId] === centralCommanderHost)
+        ?.serverId ?? null
+    );
+  }, [centralCommanderHost, hosts, serverInfoByServerId]);
 
   // v3 feature gate: the split view (collapsible thread + inspector) exists
   // only when the commander host advertises missionControlV3. One gate, here.
@@ -334,9 +306,9 @@ export function MissionControlScreen(): ReactElement {
     if (!selectedServerId) {
       return (
         <View style={styles.centerState} testID="mission-control-no-host">
-          <Text style={styles.centerStateTitle}>No Commander host set</Text>
+          <Text style={styles.centerStateTitle}>No Commander host designated</Text>
           <Text style={styles.centerStateHint}>
-            Pick the Commander host in Mission Control settings to start.
+            No host runs the fleet Commander until you pick one in Mission Control settings.
           </Text>
         </View>
       );

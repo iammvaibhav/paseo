@@ -13,6 +13,7 @@ import {
   type ComposerAttachmentSubmitFormat,
 } from "@/composer/attachments/submit";
 import { createUserMessage, generateMessageId, type UserMessageItem } from "@/types/stream";
+import type { MessageDispatchMode } from "@/composer/types";
 import type { MessageSubmissionRejectionOutcome } from "@/composer/submission/model";
 import type { PickedImageAttachmentInput } from "@/hooks/image-attachment-picker";
 import { i18n } from "@/i18n/i18next";
@@ -50,6 +51,7 @@ export interface ComposerSendClient {
       messageId: string;
       images: Array<{ data: string; mimeType: string }>;
       attachments: ReturnType<typeof splitComposerAttachmentsForSubmit>["attachments"];
+      dispatchMode?: MessageDispatchMode;
     },
   ) => Promise<void | { outOfBand?: boolean }>;
   uploadFile: (input: { fileName: string; mimeType: string; bytes: Uint8Array }) => Promise<{
@@ -177,6 +179,12 @@ export interface DispatchComposerAgentMessageInput {
   ) => Promise<Array<{ data: string; mimeType: string }> | undefined>;
   submission: MessageSubmissionWriter;
   /**
+   * Wire delivery semantics: "steer" delivers against the live turn (native
+   * OMP live-steer; interrupt fallback when the provider has no steer path),
+   * "queue" waits for idle, absent means interrupt.
+   */
+  dispatchMode?: MessageDispatchMode;
+  /**
    * The daemon runs this prompt out of band, so it never records a user
    * message for it. Providers echo what they accepted themselves — OMP re-emits
    * the steered text as its own user entry — and an optimistic bubble on top of
@@ -209,6 +217,7 @@ export async function dispatchComposerAgentMessage(
       messageId: clientMessageId,
       images: imagesData ?? [],
       attachments: wirePayload.attachments,
+      ...(input.dispatchMode ? { dispatchMode: input.dispatchMode } : {}),
     });
     input.submission.accept(input.agentId, clientMessageId);
   } catch (error) {

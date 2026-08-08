@@ -1845,10 +1845,13 @@ export const ptBR: TranslationResources = {
           interrupt:
             "Quando o agente está em execução, Enter interrompe. Command/Ctrl+Enter enfileira.",
           queue: "Quando o agente está em execução, Enter enfileira. Command/Ctrl+Enter envia.",
+          steer:
+            "Quando o agente está em execução, Enter o direciona: ele termina a chamada de ferramenta atual, lê sua mensagem e continua. Command/Ctrl+Enter interrompe.",
         },
         options: {
           interrupt: "Interromper",
           queue: "Fila",
+          steer: "Direcionar",
         },
       },
       serviceUrls: {

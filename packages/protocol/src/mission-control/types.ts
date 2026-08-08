@@ -15,6 +15,10 @@ export const MissionControlEventKindSchema = z.enum([
   // v3: proposal cards (approval gate) and verdict cards (verifier/user review).
   "proposal",
   "verdict",
+  // v3.1: a run superseded by a USER prompt (interrupt-and-send) — distinct
+  // from "failed" so the feed renders the user's interruption with a
+  // non-error tone while genuine failures keep the failure card.
+  "interrupted",
 ]);
 export type MissionControlEventKind = z.infer<typeof MissionControlEventKindSchema>;
 
@@ -65,10 +69,21 @@ export const MissionControlReportStatusInputSchema = z.object({
   detail: z.string().optional(), // 1-2 sentences
   kind: MissionControlReportKindSchema.optional(),
   title: z.string().optional(), // ONLY when the agent decides its title changed
-  description: z.string().optional(), // living short description, same rule
+  description: z.string().optional(), // living 2-3 sentence description, ~400 chars (same rule)
   proofs: z.array(MissionControlProofSchema).optional(),
 });
 export type MissionControlReportStatusInput = z.infer<typeof MissionControlReportStatusInputSchema>;
+
+/**
+ * How a machinery dispatch reaches a busy agent. "steer" injects into the
+ * live turn without cancelling (native OMP live-steer; a busy non-OMP agent
+ * is interrupted so the message lands promptly); "queue" waits for idle
+ * before streaming; "interrupt" cancels the running turn and replaces it.
+ * Widened to include "queue" when verifierToWorkerMode/commanderToWorkerMode
+ * gained the full union.
+ */
+export const MissionControlDeliveryModeSchema = z.enum(["steer", "interrupt", "queue"]);
+export type MissionControlDeliveryMode = z.infer<typeof MissionControlDeliveryModeSchema>;
 
 /**
  * Approval-gate proposal: an outbound send from mission-control machinery
@@ -76,6 +91,43 @@ export type MissionControlReportStatusInput = z.infer<typeof MissionControlRepor
  * user approval in Ask mode, or logged as sent in Auto mode. Cards ride the
  * feed as kind:"proposal" events (supersede-chain per proposal id).
  */
+/**
+ * What a spawn-kind proposal would create, shown on the card so approving is
+ * informed (host, provider/model, brief). The reconstruction fields are the
+ * serialized create input the daemon executes when the proposal resolves —
+ * they ride the wire so a pending spawn proposal survives a daemon restart.
+ */
+export const MissionControlProposalSpawnPlanSchema = z.object({
+  // Fleet host for fleet_create_agent; absent or "local" = this daemon.
+  host: z.string().optional(),
+  provider: z.string(),
+  model: z.string().optional(),
+  title: z.string().optional(),
+  // One-line plain-language summary of what would be spawned (card copy).
+  summary: z.string(),
+  // Reconstruction payload (server-internal; not rendered by the app).
+  initialPrompt: z.string().optional(),
+  cwd: z.string().optional(),
+  workspaceId: z.string().optional(),
+  thinking: z.string().optional(),
+  features: z.record(z.string(), z.unknown()).optional(),
+  labels: z.record(z.string(), z.string()).optional(),
+  mode: z.string().optional(),
+  background: z.boolean().optional(),
+  detached: z.boolean().optional(),
+  worktree: z
+    .object({
+      worktreeName: z.string().optional(),
+      branchName: z.string().optional(),
+      baseBranch: z.string().optional(),
+      refName: z.string().optional(),
+      action: z.enum(["branch-off", "checkout"]).optional(),
+      githubPrNumber: z.number().optional(),
+    })
+    .optional(),
+});
+export type MissionControlProposalSpawnPlan = z.infer<typeof MissionControlProposalSpawnPlanSchema>;
+
 export const MissionControlProposalSchema = z.object({
   id: z.string(), // "mcp_" + ulid
   createdAt: z.string(), // ISO
@@ -83,15 +135,31 @@ export const MissionControlProposalSchema = z.object({
   serverId: z.string(), // host the target agent runs on
   targetAgentId: z.string(),
   message: z.string(),
-  deliveryMode: z.enum(["steer", "interrupt"]),
+  deliveryMode: MissionControlDeliveryModeSchema,
   reason: z.string(),
   classification: z.enum(["normal", "destructive"]),
-  status: z.enum(["pending", "approved", "denied", "sent", "expired"]),
+  status: z.enum(["pending", "approved", "denied", "sent", "expired", "undelivered"]),
+  // "send" (default, absent = send): deliver `message` to the target agent.
+  // "spawn": create a NEW agent described by spawnPlan instead of sending.
+  kind: z.enum(["send", "spawn"]).optional(),
+  // Present when kind === "spawn": what would be created (card copy + the
+  // reconstruction payload). Approving (or auto mode) executes the spawn.
+  spawnPlan: MissionControlProposalSpawnPlanSchema.optional(),
+  // Set on a spawn proposal once the spawn executed (approve or auto mode).
+  spawnedAgentId: z.string().optional(),
+  // Verifier-origin attribution: the ephemeral verifier agent driving this
+  // proposal/exchange, so the app can drill from the card into its thread.
+  verifierAgentId: z.string().optional(),
   allowPair: z.boolean().optional(),
   // Machinery-only audit trail (stall status-ask nudges): the card renders in
   // verbose mode only; the auto-sent proposal record + log stay. Additive —
   // absent on every normal-mode card (escalation, verifier, commander).
   verboseOnly: z.boolean().optional(),
+  // How the delivered prompt classifies on the target agent's own timeline
+  // row: "machinery" (status asks — stall nudges) vs "instruction" (Commander
+  // direction changes, Verifier proof demands, recovery). Absent = instruction
+  // (visible). Additive; the feed's verboseOnly gating is independent.
+  timelineClassification: z.enum(["machinery", "instruction"]).optional(),
 });
 export type MissionControlProposal = z.infer<typeof MissionControlProposalSchema>;
 
@@ -118,6 +186,12 @@ export const MissionControlEventSchema = z.object({
   // Full proposal payload when kind === "proposal". Status changes append a
   // new proposal event superseding the previous one for the same proposal id.
   proposal: MissionControlProposalSchema.optional(),
+  // Verifier-origin attribution (verdict cards + verification-failed cards):
+  // the ephemeral verifier agent whose audit produced this card. Clicking the
+  // card drills into that agent's thread in the Mission Control inspector
+  // (verifiers stay hidden from board buckets but are reachable from their
+  // card). Additive; absent on cards without a verifier.
+  verifierAgentId: z.string().optional(),
   // Machinery-only card: rendered ONLY in verbose mode (stall status-ask
   // nudges). Absent on normal-mode cards — the app must not render this card
   // in the default feed. Mirrors proposal.verboseOnly; additive.
@@ -316,8 +390,10 @@ export type MissionControlModeSetResponse = z.infer<typeof MissionControlModeSet
 // ============================================================================
 
 export const MissionControlCentralConfigSchema = z.object({
-  // Designated commander host (host alias); boot ensures the Commander exists
-  // there. Null = this host designates itself when no other is set.
+  // Designated commander host (daemon hostname, host alias, or "local"); ONLY
+  // the designated host boot-ensures the Commander. Null = NO host is
+  // designated — no daemon may self-designate (live incident: every host
+  // spawned its own Commander because null read as "local is designated").
   commanderHost: z.string().nullable().optional(),
   // Commander model override; default = host default omp model.
   commanderModel: z.string().nullable().optional(),
@@ -347,6 +423,22 @@ export const MissionControlCentralConfigSchema = z.object({
   statusNudgeSeconds: z.number().optional(),
   nudgeSeconds: z.number().optional(),
   escalateSeconds: z.number().optional(),
+  // Dormant-turn detector: seconds a running agent may sit with NO timeline
+  // output AND no tool call in flight before the turn is treated as wedged
+  // (omp loop-advance failure) and recovered via the interrupt path. Default
+  // 300 (5 min). The floor is set by the slowest legitimate MODEL call
+  // (178.6s max of 8242 samples; one 727k-token call took 48s TTFT + 54s) —
+  // Paseo cannot observe a model request in flight (it lives inside omp and
+  // produces no timeline rows), so values under ~4 min risk false positives.
+  dormantTurnSeconds: z.number().optional(),
+  // Default delivery mode for commander-origin sends (fleet_send_prompt when
+  // the Commander omits `mode`). "interrupt" = timely direction change; an
+  // explicit `mode` argument from the Commander always wins. Stall nudges are
+  // NOT affected — they stay native steer regardless.
+  commanderToWorkerMode: MissionControlDeliveryModeSchema.optional(),
+  // Default delivery mode for verifier-origin contacts (contact_worker /
+  // proof demands). Same union; stall nudges unaffected.
+  verifierToWorkerMode: MissionControlDeliveryModeSchema.optional(),
 });
 export type MissionControlCentralConfig = z.infer<typeof MissionControlCentralConfigSchema>;
 

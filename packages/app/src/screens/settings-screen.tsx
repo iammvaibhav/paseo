@@ -189,6 +189,12 @@ const HOST_SECTION_ITEMS: HostSectionItem[] = [
   { id: "terminals", labelKey: "settings.hostSections.terminals", icon: SquareTerminal },
 ];
 
+const SEND_BEHAVIOR_DESCRIPTION_KEYS: Record<SendBehavior, string> = {
+  interrupt: "settings.general.defaultSend.descriptions.interrupt",
+  steer: "settings.general.defaultSend.descriptions.steer",
+  queue: "settings.general.defaultSend.descriptions.queue",
+};
+
 function renderHostSettingsContent(
   view: Extract<SettingsView, { kind: "host" }>,
   onHostRemoved: () => void,
@@ -239,6 +245,7 @@ function getSendBehaviorOptions(t: TFunction) {
   return [
     { value: "interrupt" as const, label: t("settings.general.defaultSend.options.interrupt") },
     { value: "queue" as const, label: t("settings.general.defaultSend.options.queue") },
+    { value: "steer" as const, label: t("settings.general.defaultSend.options.steer") },
   ];
 }
 
@@ -329,10 +336,7 @@ function GeneralSection({
   const { t, i18n } = useTranslation();
   const activeLocale = getActiveLocale(i18n.language);
   const sendBehaviorOptions = useMemo(() => getSendBehaviorOptions(t), [t]);
-  const sendBehaviorDescriptionKey =
-    settings.sendBehavior === "interrupt"
-      ? "settings.general.defaultSend.descriptions.interrupt"
-      : "settings.general.defaultSend.descriptions.queue";
+  const sendBehaviorDescriptionKey = SEND_BEHAVIOR_DESCRIPTION_KEYS[settings.sendBehavior];
   const selectedLanguageOption = LANGUAGE_OPTIONS.find(
     (option) => option.value === settings.language,
   );

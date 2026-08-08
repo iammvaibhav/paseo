@@ -780,6 +780,9 @@ export const AgentTimelineItemPayloadSchema: z.ZodType<AgentTimelineItem, unknow
     text: z.string(),
     messageId: z.string().optional(),
     clientMessageId: z.string().optional(),
+    // Machinery-originated prompt classification (stall status-ask nudges vs
+    // Commander/Verifier instructions). Absent = instruction (visible).
+    classification: z.enum(["machinery", "instruction"]).optional(),
   }),
   z.object({
     type: z.literal("assistant_message"),

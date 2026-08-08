@@ -26,6 +26,8 @@ import { createWorkspaceFileTabTarget, type WorkspaceFileOpenRequest } from "@/w
 import type { PendingPermission } from "@/types/shared";
 import type { StreamItem } from "@/types/stream";
 import type { Theme } from "@/styles/theme";
+import { useAggregatedMissionControlEvents } from "@/hooks/use-aggregated-mission-control-events";
+import { ProposalCard } from "@/screens/mission-control/proposal-card";
 import { useInspectorStore, type InspectorTarget } from "./inspector-store";
 
 const EMPTY_STREAM_ITEMS: StreamItem[] = [];
@@ -216,6 +218,21 @@ export function MissionControlInspector({
   const composerCwd = agent?.cwd ?? "~";
   const composerContainerStyle = useMemo(() => ({ paddingBottom: insets.bottom }), [insets.bottom]);
 
+  // Pending approval cards for THIS verifier's exchange (verifier-origin
+  // proposals awaiting Approve/Edit/Deny): shown above the verifier's thread
+  // so the audit conversation and its gate are visible together.
+  const { events: missionControlEvents } = useAggregatedMissionControlEvents();
+  const pendingExchangeCards = useMemo(
+    () =>
+      missionControlEvents.filter(
+        (event) =>
+          event.kind === "proposal" &&
+          event.proposal?.status === "pending" &&
+          event.proposal.verifierAgentId === agentId,
+      ),
+    [agentId, missionControlEvents],
+  );
+
   const openInWorkspaceTrailing = useMemo(
     () => <ThemedArrowUpRight size={14} uniProps={arrowUpRightMutedMapping} />,
     [],
@@ -291,6 +308,15 @@ export function MissionControlInspector({
   return (
     <View style={styles.container} testID="mission-control-inspector">
       {header}
+      {pendingExchangeCards.length > 0 ? (
+        <View style={styles.pendingCards} testID="mission-control-inspector-pending-exchange">
+          {pendingExchangeCards.map((event) =>
+            event.proposal ? (
+              <ProposalCard key={event.id} proposal={event.proposal} event={event} />
+            ) : null,
+          )}
+        </View>
+      ) : null}
       <View style={styles.streamArea}>
         <AgentStreamView
           agentId={agentId}
@@ -365,5 +391,12 @@ const styles = StyleSheet.create((theme) => ({
   streamArea: {
     flex: 1,
     minHeight: 0,
+  },
+  pendingCards: {
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+    padding: theme.spacing[2],
+    gap: theme.spacing[1],
+    maxHeight: 180,
   },
 }));

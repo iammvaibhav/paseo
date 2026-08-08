@@ -24,6 +24,7 @@ const BASE_CENTRAL_CONFIG: VerifierCentralConfig = {
   verifierModel: null,
   verifierConcurrency: 3,
   evaluationScope: "commander",
+  verifierToWorkerMode: "steer",
 };
 
 const VERIFIER_MD = `---
@@ -445,6 +446,7 @@ describe("MissionControlVerifierDispatcher", () => {
             by: "verifier",
             summary: "Proofs match the brief",
             at: expect.any(String),
+            verifierAgentId: "verifier-1",
           },
         },
       },
@@ -557,6 +559,43 @@ describe("MissionControlVerifierDispatcher", () => {
       summary: "Proof now present",
     });
     expect(harness.setReviewStateCalls[0]).toMatchObject({ agentId: "worker-1", state: "done" });
+  });
+
+  test("verifierToWorkerMode drives contact_worker and the proof demand", async () => {
+    const worker = makeWorker("worker-1", { "paseo.parent-agent-id": "commander-1" });
+    harness.setWorker(worker);
+    harness.emitReviewState("worker-1", "ready");
+    await vi.waitFor(() => expect(harness.created.length).toBe(1), WAIT);
+
+    // interrupt: the proof demand replaces the worker's running turn.
+    harness.setCentral({ verifierToWorkerMode: "interrupt" });
+    await harness.dispatcher.handleContactWorker("verifier-1", "interrupt me with proof");
+    expect(harness.proposals.at(-1)?.deliveryMode).toBe("interrupt");
+    expect(harness.proposals.at(-1)?.reason).toBe("Verifier clarification request");
+
+    // queue: waits for idle before streaming.
+    harness.setCentral({ verifierToWorkerMode: "queue" });
+    await harness.dispatcher.handleContactWorker("verifier-1", "queue me with proof");
+    expect(harness.proposals.at(-1)?.deliveryMode).toBe("queue");
+
+    // The post-verdict proof demand follows the same setting — a fresh audit
+    // that never contacted its worker.
+    const freshHarness = await createHarness({
+      central: { verifierToWorkerMode: "interrupt" },
+    });
+    freshHarness.setWorker(makeCommander());
+    freshHarness.setWorker(makeWorker("worker-2", { "paseo.parent-agent-id": "commander-1" }));
+    freshHarness.dispatcher.start();
+    freshHarness.emitReviewState("worker-2", "ready");
+    await vi.waitFor(() => expect(freshHarness.created.length).toBe(1), WAIT);
+    await freshHarness.dispatcher.handleSubmitVerdict("verifier-1", {
+      result: "insufficient",
+      summary: "no proof",
+    });
+    expect(freshHarness.proposals.at(-1)?.deliveryMode).toBe("interrupt");
+    expect(freshHarness.proposals.at(-1)?.reason).toBe("Verifier proof demand");
+    freshHarness.dispatcher.stop();
+    await rm(freshHarness.dir, { recursive: true, force: true });
   });
 
   test("auto mode short-circuits: a sent proposal steers immediately without a change event", async () => {

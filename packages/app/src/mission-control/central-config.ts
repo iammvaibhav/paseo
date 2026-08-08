@@ -34,6 +34,14 @@ export interface ResolvedMissionControlCentralConfig {
   silenceNudgeSeconds: number;
   statusNudgeSeconds: number;
   escalateSeconds: number;
+  // Dormant-turn detector threshold (mirrors the daemon's resolved central
+  // config): seconds a running agent may sit with no output AND no tool in
+  // flight before the turn is treated as wedged and recovered.
+  dormantTurnSeconds: number;
+  // Default delivery for commander/verifier → worker sends (mirrors the
+  // daemon's resolved central config). Stall nudges unaffected.
+  commanderToWorkerMode: "steer" | "interrupt" | "queue";
+  verifierToWorkerMode: "steer" | "interrupt" | "queue";
 }
 
 const RESOLVED_DEFAULTS: ResolvedMissionControlCentralConfig = {
@@ -51,6 +59,9 @@ const RESOLVED_DEFAULTS: ResolvedMissionControlCentralConfig = {
   silenceNudgeSeconds: 120,
   statusNudgeSeconds: 300,
   escalateSeconds: 300,
+  dormantTurnSeconds: 300,
+  commanderToWorkerMode: "interrupt",
+  verifierToWorkerMode: "interrupt",
 };
 
 export function resolveMissionControlCentralConfig(
@@ -74,6 +85,9 @@ export function resolveMissionControlCentralConfig(
     silenceNudgeSeconds: config.silenceNudgeSeconds ?? 120,
     statusNudgeSeconds: config.statusNudgeSeconds ?? config.nudgeSeconds ?? 300,
     escalateSeconds: config.escalateSeconds ?? 300,
+    dormantTurnSeconds: config.dormantTurnSeconds ?? 300,
+    commanderToWorkerMode: config.commanderToWorkerMode ?? "interrupt",
+    verifierToWorkerMode: config.verifierToWorkerMode ?? "interrupt",
   };
 }
 

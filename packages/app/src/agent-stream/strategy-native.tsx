@@ -21,7 +21,6 @@ import {
 } from "react-native";
 import { withUnistyles } from "react-native-unistyles";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
-import type { StreamItem } from "@/types/stream";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import type { Theme } from "@/styles/theme";
 import { useStableEvent } from "@/hooks/use-stable-event";
@@ -32,6 +31,7 @@ import {
   createStreamStrategy,
   isNearBottomForStreamRenderStrategy,
   resolveBottomAnchorTransportBehavior,
+  resolveDefaultItemKey,
 } from "./strategy";
 import {
   abandonHistoryStartPaginationRequest,
@@ -71,28 +71,32 @@ interface SavedNativeScrollPosition {
 const HISTORY_START_SETTLE_FRAMES = 2;
 
 interface HistoryRowDisplayVariants {
-  regular?: StreamItem;
-  compact?: StreamItem;
+  regular?: unknown;
+  compact?: unknown;
 }
 
-const historyRowDisplayVariants = new WeakMap<StreamItem, HistoryRowDisplayVariants>();
+const historyRowDisplayVariants = new WeakMap<object, HistoryRowDisplayVariants>();
 
-function getHistoryRowDisplayVariant(item: StreamItem, compact: boolean): StreamItem {
-  let variants = historyRowDisplayVariants.get(item);
+function getHistoryRowDisplayVariant<T>(item: T, compact: boolean): T {
+  // The cache is keyed by object identity; WeakMap requires an object key and
+  // rows are always objects, so the cast is only for the type system.
+  const key = item as unknown as object;
+  let variants = historyRowDisplayVariants.get(key);
   if (!variants) {
     variants = {};
-    historyRowDisplayVariants.set(item, variants);
+    historyRowDisplayVariants.set(key, variants);
   }
-  const key = compact ? "compact" : "regular";
-  variants[key] ??= { ...item };
-  return variants[key];
+  const variantKey = compact ? "compact" : "regular";
+  const existing = variants[variantKey];
+  if (existing !== undefined) {
+    return existing as T;
+  }
+  const next = { ...item };
+  variants[variantKey] = next;
+  return next;
 }
 
-function keyExtractor(item: { id: string }): string {
-  return item.id;
-}
-
-function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrategy }) {
+function NativeStreamViewport<T>(props: StreamRenderInput<T> & { strategy: StreamStrategy }) {
   const {
     agentId,
     segments,
@@ -113,12 +117,19 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
     listStyle,
     baseListContentContainerStyle,
     strategy,
+    keyExtractor,
+    topSlot,
   } = props;
   const { renderHistoryMountedRow, renderLiveHeadRow, renderLiveAuxiliary } = renderers;
   const isActive = useRetainedPanelActive();
   const isActiveRef = useRef(isActive);
   isActiveRef.current = isActive;
-  const flatListRef = useRef<FlatList<StreamItem>>(null);
+  const flatListRef = useRef<FlatList<T>>(null);
+  const resolveKey = useCallback(
+    (item: T, index: number): string =>
+      keyExtractor ? keyExtractor(item, index) : resolveDefaultItemKey(item, index),
+    [keyExtractor],
+  );
   const streamViewportMetricsRef = useRef({
     containerKey: "native-virtualized",
     contentHeight: 0,
@@ -161,17 +172,17 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
   }, [historyItems, historyRowRevision?.globalDisplayState]);
   const displayStateHistoryRows = useMemo(
     () =>
-      globallyRevisedHistoryRows.map((item) =>
-        historyRowRevision?.displayStateById.has(item.id) ? { ...item } : item,
+      globallyRevisedHistoryRows.map((item, index) =>
+        historyRowRevision?.displayStateById.has(resolveKey(item, index)) ? { ...item } : item,
       ),
-    [globallyRevisedHistoryRows, historyRowRevision?.displayStateById],
+    [globallyRevisedHistoryRows, historyRowRevision?.displayStateById, resolveKey],
   );
   const historyRows = useMemo(
     () =>
-      displayStateHistoryRows.map((item) =>
-        historyRowRevision?.contentById.has(item.id) ? { ...item } : item,
+      displayStateHistoryRows.map((item, index) =>
+        historyRowRevision?.contentById.has(resolveKey(item, index)) ? { ...item } : item,
       ),
-    [displayStateHistoryRows, historyRowRevision?.contentById],
+    [displayStateHistoryRows, historyRowRevision?.contentById, resolveKey],
   );
   const getHistoryStartPaginationInput = useStableEvent((): HistoryStartPaginationInput => {
     const metrics = streamViewportMetricsRef.current;
@@ -468,7 +479,7 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
 
   const scrollToItemId = useStableEvent((itemId: string) => {
     suppressStickyRestickRef.current = true;
-    const index = historyRows.findIndex((row) => row.id === itemId);
+    const index = historyRows.findIndex((row) => resolveKey(row, 0) === itemId);
     if (index < 0) {
       return;
     }
@@ -679,7 +690,7 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
   ]);
 
   const renderItem = useStableEvent(
-    ({ item, index }: ListRenderItemInfo<StreamItem>): ReactElement | null => {
+    ({ item, index }: ListRenderItemInfo<T>): ReactElement | null => {
       const rendered = renderHistoryMountedRow(item, index, historyItems);
       return (rendered ?? null) as ReactElement | null;
     },
@@ -690,7 +701,9 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
     // the memo invoke them again when that state changes.
     void liveHeadRowRevision;
     const liveHeadRows = segments.liveHead.map((item, index) => (
-      <Fragment key={item.id}>{renderLiveHeadRow(item, index, segments.liveHead)}</Fragment>
+      <Fragment key={resolveKey(item, index)}>
+        {renderLiveHeadRow(item, index, segments.liveHead)}
+      </Fragment>
     ));
     const liveAuxiliary = renderLiveAuxiliary();
     if (
@@ -713,12 +726,13 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
     liveHeadRowRevision,
     renderLiveAuxiliary,
     renderLiveHeadRow,
+    resolveKey,
     segments.liveHead,
   ]);
 
   const historyFooterContent = useMemo(() => {
     const isLoadingOperation = isHistoryStartLoadingOperation(historyStartPaginationState);
-    return (
+    const historyStartSlot = (
       <View style={historyStartSlotStyle} testID="older-history-slot">
         {isLoadingOperation ? (
           <View testID="load-older-history-spinner">
@@ -727,7 +741,17 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
         ) : null}
       </View>
     );
-  }, [historyStartPaginationState]);
+    // The inverted list renders the footer at the visual top; a caller-supplied
+    // top slot (e.g. "Show earlier") sits above the history-start slot.
+    return topSlot === undefined ? (
+      historyStartSlot
+    ) : (
+      <View>
+        {topSlot}
+        {historyStartSlot}
+      </View>
+    );
+  }, [historyStartPaginationState, topSlot]);
 
   // RN's FlatList strictMode keeps its internal renderItem wrapper stable when
   // data or the live header changes, preserving the row identities above.
@@ -736,7 +760,7 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
       ref={flatListRef}
       data={historyRows}
       renderItem={renderItem}
-      keyExtractor={keyExtractor}
+      keyExtractor={resolveKey}
       strictMode
       testID="agent-chat-scroll"
       nativeID="agent-chat-scroll-native-virtualized"

@@ -151,12 +151,17 @@ import { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { LoopService } from "./loop-service.js";
 import { ScheduleService } from "./schedule/service.js";
 import { MissionControlService } from "./mission-control/service.js";
+import type { MissionControlProposalSpawnPlan } from "@getpaseo/protocol/mission-control/types";
 import { MissionControlDigest } from "./mission-control/digest.js";
 import { createFleetContextDigestProvider } from "./mission-control/context.js";
 import { CentralMissionControlConfigStore } from "./mission-control/config.js";
 import { createMissionControlPresenceSource } from "./mission-control/presence.js";
 import { MissionControlVerifierDispatcher } from "./mission-control/verifier.js";
-import { ensureCommanderOnBoot, resetCommander } from "./mission-control/commander-boot.js";
+import {
+  buildCommanderLaunchContract,
+  ensureCommanderOnBoot,
+  resetCommander,
+} from "./mission-control/commander-boot.js";
 import { AgentNamingService } from "./mission-control/naming.js";
 import { runIdentityBackfill } from "./mission-control/backfill.js";
 import { MAX_WEBHOOK_BODY_BYTES, WebhookService } from "./webhook/service.js";
@@ -273,6 +278,77 @@ function createTerminalActivityUrl(listenTarget: ListenTarget | null): string | 
     "/api/terminal-activity",
     `http://${formatHostForHttpUrl(host)}:${listenTarget.port}`,
   ).toString();
+}
+
+type SpawnProposalResult = { ok: true; agentId: string } | { ok: false; error: string };
+
+/**
+ * Fleet-host branch of spawnFromProposal: create the agent through the peer
+ * client. Lifted out of the MissionControlService wiring so the closure stays
+ * within the complexity budget.
+ */
+async function spawnProposalOnPeer(
+  peerManager: PeerManager | null | undefined,
+  host: string,
+  plan: MissionControlProposalSpawnPlan,
+  providerModel: string,
+): Promise<SpawnProposalResult> {
+  const peerStatus = peerManager?.getPeerStatus(host) ?? null;
+  if (!peerStatus || peerStatus.state !== "online" || !peerManager) {
+    return { ok: false, error: `Host "${host}" is not an online peer` };
+  }
+  const peerClient = peerManager.getPeerClient(host);
+  if (!peerClient) {
+    return { ok: false, error: `Host "${host}" has no peer client` };
+  }
+  try {
+    const snapshot = await peerClient.createAgent({
+      provider: providerModel,
+      cwd: plan.cwd ?? ".",
+      ...(plan.workspaceId ? { workspaceId: plan.workspaceId } : {}),
+      ...(plan.initialPrompt ? { initialPrompt: plan.initialPrompt } : {}),
+      ...(plan.title ? { title: plan.title } : {}),
+      ...(plan.labels ? { labels: plan.labels } : {}),
+      ...(plan.mode ? { modeId: plan.mode } : {}),
+      ...(plan.thinking ? { thinkingOptionId: plan.thinking } : {}),
+      ...(plan.features ? { featureValues: plan.features } : {}),
+    });
+    return { ok: true, agentId: snapshot.id };
+  } catch (error) {
+    return { ok: false, error: `fleet spawn failed: ${String(error)}` };
+  }
+}
+
+/**
+ * Local branch of spawnFromProposal: reconstruct the create from the plan.
+ */
+async function spawnProposalLocally(
+  createAgent: (
+    input: Parameters<typeof createAgentCommand>[1],
+  ) => ReturnType<typeof createAgentCommand>,
+  plan: MissionControlProposalSpawnPlan,
+  providerModel: string,
+): Promise<SpawnProposalResult> {
+  try {
+    const result = await createAgent({
+      kind: "mcp",
+      provider: providerModel,
+      title: plan.title ?? "Agent",
+      ...(plan.initialPrompt ? { initialPrompt: plan.initialPrompt } : {}),
+      ...(plan.cwd ? { cwd: plan.cwd } : {}),
+      ...(plan.workspaceId ? { workspaceId: plan.workspaceId } : {}),
+      ...(plan.thinking ? { thinking: plan.thinking } : {}),
+      ...(plan.features ? { features: plan.features } : {}),
+      ...(plan.labels ? { labels: plan.labels } : {}),
+      ...(plan.mode ? { mode: plan.mode } : {}),
+      ...(plan.worktree ? { worktree: plan.worktree } : {}),
+      background: plan.background ?? true,
+      notifyOnFinish: false,
+    });
+    return { ok: true, agentId: result.snapshot.id };
+  } catch (error) {
+    return { ok: false, error: `spawn failed: ${String(error)}` };
+  }
 }
 
 const TerminalActivityReportSchema = z.object({
@@ -1118,6 +1194,13 @@ export async function createPaseoDaemon(
     appendSystemPrompt: config.appendSystemPrompt,
     missionControlSelfReportEnabled:
       daemonConfigStore.get().missionControl?.selfReport?.enabled ?? true,
+    // The Commander's launch contract (systemPromptMode replace + bundled
+    // prompt + tool allowlist) is re-derived on EVERY session build so a
+    // reloaded/resumed Commander never comes back with the default coding
+    // prompt or an unrestricted catalog (live incident: a Commander resumed
+    // that way because its stored record predated contract persistence).
+    resolveCommanderLaunchContract: (labels) =>
+      buildCommanderLaunchContract(labels, () => centralMissionControlConfig.get()),
     onAgentCreated: (params) => agentNamingService.assignNameForCreatedAgent(params),
     onWorkspaceStateMayHaveChanged: ({ cwd }) => {
       workspaceGitService.onWorkspaceStateMayHaveChanged(cwd);
@@ -1637,6 +1720,9 @@ export async function createPaseoDaemon(
         centralConfig: () => centralMissionControlConfig.get(),
         hostName: getHostname(),
         hostAlias: daemonConfigStore.get().missionControl?.hostAlias?.trim() || null,
+        workspaceRegistry,
+        createCommanderWorkspace: async (cwd, title) =>
+          workspaceProvisioning.createWorkspaceForDirectory(cwd, title),
         publishEvent: (event) => missionControlService.publishEvent(event),
         launchContext: {
           agentManager,
@@ -1652,6 +1738,22 @@ export async function createPaseoDaemon(
           logger,
         },
       }),
+    // Execute a commander-origin spawn-kind proposal (fleet_create_agent in
+    // ask mode): reconstruct the create from the proposal's spawnPlan. Local
+    // hosts use the create-agent command; peers spawn through the fleet
+    // client. This is the single execution path for approved spawn proposals
+    // (survives daemon restarts — the plan rides the persisted proposal).
+    spawnFromProposal: async (proposal) => {
+      const plan = proposal.spawnPlan;
+      if (!plan) {
+        return { ok: false, error: "Spawn proposal has no spawn plan" };
+      }
+      const providerModel = plan.model ? `${plan.provider}/${plan.model}` : plan.provider;
+      if (plan.host && plan.host !== "local") {
+        return spawnProposalOnPeer(peerManager, plan.host, plan, providerModel);
+      }
+      return spawnProposalLocally(createAgent, plan, providerModel);
+    },
   });
   await missionControlService.start();
   missionControlDigest.start();
@@ -1669,6 +1771,9 @@ export async function createPaseoDaemon(
     centralConfig: () => centralMissionControlConfig.get(),
     hostName: getHostname(),
     hostAlias: daemonConfigStore.get().missionControl?.hostAlias?.trim() || null,
+    workspaceRegistry,
+    createCommanderWorkspace: async (cwd, title) =>
+      workspaceProvisioning.createWorkspaceForDirectory(cwd, title),
     publishEvent: (event) => missionControlService.publishEvent(event),
     launchContext: {
       agentManager,

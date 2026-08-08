@@ -24,10 +24,12 @@ const COMMANDER_HOST_PREFERENCES_KEY = "@paseo:mission-control-commander-host";
 const COMMANDER_MODEL_PREFERENCES_KEY = "@paseo:mission-control-commander-model";
 
 /**
- * The Commander's hard tool restriction (spec: Commander contract). Only Paseo
- * fleet/agent tools; no bash, no file editing, no task subagents. The daemon
- * filters the injected Paseo host-tool catalog to these names and the omp
- * provider launches with builtin tools disabled.
+ * The Commander's hard tool restriction (spec: Commander contract, user
+ * decision "fleet-wide only"). Only Paseo FLEET tools; no host-specific
+ * tools, no bash, no file editing, no task subagents. The daemon filters the
+ * injected Paseo host-tool catalog to these names and the omp provider
+ * launches with builtin tools disabled. Mirrors the daemon-side
+ * COMMANDER_TOOL_ALLOWLIST (commander-contract.ts) — keep in sync.
  */
 export const COMMANDER_TOOL_ALLOWLIST = [
   "fleet_list_agents",
@@ -35,14 +37,6 @@ export const COMMANDER_TOOL_ALLOWLIST = [
   "fleet_send_prompt",
   "fleet_get_agent_activity",
   "fleet_search",
-  "create_agent",
-  "send_agent_prompt",
-  "get_agent_status",
-  "get_agent_activity",
-  "list_agents",
-  "create_workspace",
-  "list_workspaces",
-  "history_search",
   "tag_message",
 ] as const;
 

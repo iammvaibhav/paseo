@@ -33,6 +33,7 @@
 #   PASEO_SKIP_DAEMON=1               # skip daemon build/restart; still sync git,
 #                                     #   deploy code-server, and push settings
 #   PASEO_SKIP_CODE_SERVER=1          # skip code-server deploy everywhere
+#   PASEO_SKIP_STALL_CRON=1           # skip installing the stall-check cron on every host
 #   PASEO_BUILD_DESKTOP=0             # skip building the desktop app (built by default)
 #   PASEO_DESKTOP_ONLY=1              # ONLY build/install/relaunch desktop (no git/remotes/daemon)
 #   PASEO_DESKTOP_APP=...             # install path (default /Applications/Paseo.app)
@@ -808,6 +809,20 @@ deploy_local_plannotator() {
   PLANNOTATOR_VERSION="${PLANNOTATOR_VERSION:-}" bash "$ROOT_DIR/scripts/plannotator/install.sh" local
 }
 
+# Install/refresh this host's stall-check cron entry (runs scripts/stall-check.mjs
+# every minute; managed line marked `# paseo-stall-check`). ensure_node already put
+# the nvm node on PATH, so the absolute path baked into the crontab line survives
+# cron's minimal PATH. Log: $LOCAL_PASEO_HOME/stall-check.log. Opt out: PASEO_SKIP_STALL_CRON=1.
+install_stall_cron() {
+  if [[ "${PASEO_SKIP_STALL_CRON:-0}" == "1" ]]; then
+    log "Skipping stall-check cron install (PASEO_SKIP_STALL_CRON=1)"
+    return
+  fi
+  local line
+  line="$(bash "$ROOT_DIR/scripts/install-stall-cron.sh" "$ROOT_DIR" "$LOCAL_PASEO_HOME")"
+  log "Stall-check cron installed (every minute, log $LOCAL_PASEO_HOME/stall-check.log): $line"
+}
+
 # ---------------------------------------------------------------------------
 # Desktop install contract (this fork — formal, do not invent a second path)
 #
@@ -1004,6 +1019,7 @@ run_parallel_post_push_deploy() {
     # Independent of dist/ — fine alongside remotes and the daemon build.
     start_parallel_job "local-code-server" deploy_local_code_server
     start_parallel_job "local-plannotator" deploy_local_plannotator
+    start_parallel_job "local-stall-cron" install_stall_cron
 
     # Local daemon must use a stable dist/ through restart. Desktop's
     # build:server:clean races that path, so keep this sequential first.
@@ -1473,6 +1489,16 @@ else
 fi
 deploy_code_server
 deploy_plannotator
+install_stall_cron() {
+  if [[ '${PASEO_SKIP_STALL_CRON:-0}' == "1" ]]; then
+    log "Skipping stall-check cron install (PASEO_SKIP_STALL_CRON=1)"
+    return
+  fi
+  local line
+  line="\$(bash "\$HOME/\$REMOTE_REPO_DIR/scripts/install-stall-cron.sh" "\$HOME/\$REMOTE_REPO_DIR" "\$PASEO_HOME")"
+  log "Stall-check cron installed (every minute, log \$PASEO_HOME/stall-check.log): \$line"
+}
+install_stall_cron
 log "Done"
 EOF
 }
@@ -1630,6 +1656,7 @@ Scope flags (set to 1 unless noted):
   PASEO_SKIP_CODE_SERVER         Skip code-server deploy everywhere
   PASEO_SKIP_CODE_SERVER_EXTENSION  Skip installing the paseo-bridge extension
   PASEO_SKIP_PLANNOTATOR         Skip plannotator binary deploy everywhere
+  PASEO_SKIP_STALL_CRON          Skip installing the stall-check cron entry on every host
   PASEO_BUILD_DESKTOP=0            Skip the desktop app build (built by default)
   PASEO_DESKTOP_ONLY=1             ONLY desktop build/install/relaunch (no git/remotes/daemon)
   PASEO_DESKTOP_APP=<path>         Desktop install path (default: $DESKTOP_APP)

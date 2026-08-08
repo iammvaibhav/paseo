@@ -24,8 +24,7 @@ import {
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { MAX_CONTENT_WIDTH, useIsCompactFormFactor } from "@/constants/layout";
 import { useMutation } from "@tanstack/react-query";
-import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
-import { Check, ChevronDown, X } from "lucide-react-native";
+import { Check, X } from "lucide-react-native";
 import { usePanelStore } from "@/stores/panel-store";
 import {
   AssistantMessage,
@@ -67,11 +66,15 @@ import { OverviewToolCallGroupView } from "@/tool-calls/detail-level/overview/vi
 import { type AgentStreamRenderModel, buildAgentStreamRenderModel } from "./model";
 import { resolveStreamRenderStrategy } from "./strategy-resolver";
 import { type StreamSegmentRenderers, type StreamViewportHandle } from "./strategy";
+import { AnchoredList } from "./anchored-list";
+import { estimateStreamItemHeight } from "./web-virtualization";
 import { ChatOutlineRail } from "@/agent-stream/chat-outline/rail";
 import { useChatOutline } from "@/agent-stream/chat-outline/use-chat-outline";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { planTimelineTailFetch } from "@/timeline/timeline-sync-plan";
 import { isPaseoSystemMessage, PaseoSystemRow } from "@/screens/mission-control/paseo-system-row";
+import { MachineryMessageRow } from "./machinery-message-row";
+import { useMissionControlVerbose } from "@/mission-control/use-mission-control-verbose";
 import {
   CompletedTurnFooterRow,
   TurnFooter,
@@ -276,6 +279,12 @@ const AGENT_CAPABILITY_FLAG_KEYS: (keyof AgentCapabilityFlags)[] = [
 
 const EMPTY_STREAM_HEAD: StreamItem[] = [];
 
+// Stable identity: the strategy viewports key rows off this and re-create
+// their scroll-to-message plumbing when its identity changes.
+function streamItemKeyExtractor(item: StreamItem): string {
+  return item.id;
+}
+
 function useRetainedValue<T>(value: T, active: boolean): T {
   const retainedRef = useRef(value);
   if (active) {
@@ -336,13 +345,16 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         }),
       [isMobile],
     );
-    const [isNearBottom, setIsNearBottom] = useState(true);
     const [expandedInlineToolCallIds, setExpandedInlineToolCallIds] = useState<Set<string>>(
       new Set(),
     );
     const [expandedToolCallGroupIds, setExpandedToolCallGroupIds] = useState<Set<string>>(
       new Set(),
     );
+    // The one per-device Mission Control verbose flag: machinery prompt rows
+    // (status-ask nudges) render as a muted one-line placeholder ONLY in
+    // verbose mode — never the raw prompt.
+    const [verbose] = useMissionControlVerbose();
     const openFileExplorerForCheckout = usePanelStore((state) => state.openFileExplorerForCheckout);
     const setExplorerTabForCheckout = usePanelStore((state) => state.setExplorerTabForCheckout);
 
@@ -381,26 +393,35 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       agentId,
       toast,
     });
-    const { isLoadingOlder, hasOlder, progressKey, loadOlder } = historyPagination
-      ? {
-          isLoadingOlder: historyPagination.isLoadingOlder,
-          hasOlder: historyPagination.hasOlder,
-          progressKey: historyPagination.progressKey,
-          loadOlder: historyPagination.onLoadOlder,
-        }
-      : agentHistoryPagination;
-    // Keep entry/exit animations off on Android due to RN dispatchDraw crashes
-    // tracked in react-native-reanimated#8422.
-    const shouldDisableEntryExitAnimations = Platform.OS === "android";
-    const scrollIndicatorFadeIn = shouldDisableEntryExitAnimations
-      ? undefined
-      : FadeIn.duration(200);
-    const scrollIndicatorFadeOut = shouldDisableEntryExitAnimations
-      ? undefined
-      : FadeOut.duration(200);
+    // The external pagination source is a prop (inspector-composer path); the
+    // internal one is the agent-chat hook. Memoize the merged view so no new
+    // object flows from render scope into the viewport props (react-perf).
+    const paginationState = useMemo(
+      () =>
+        historyPagination
+          ? {
+              isLoadingOlder: historyPagination.isLoadingOlder,
+              hasOlder: historyPagination.hasOlder,
+              progressKey: historyPagination.progressKey,
+              loadOlder: historyPagination.onLoadOlder,
+            }
+          : {
+              isLoadingOlder: agentHistoryPagination.isLoadingOlder,
+              hasOlder: agentHistoryPagination.hasOlder,
+              progressKey: agentHistoryPagination.progressKey,
+              loadOlder: agentHistoryPagination.loadOlder,
+            },
+      [
+        historyPagination,
+        agentHistoryPagination.hasOlder,
+        agentHistoryPagination.isLoadingOlder,
+        agentHistoryPagination.loadOlder,
+        agentHistoryPagination.progressKey,
+      ],
+    );
+    const { isLoadingOlder, hasOlder, progressKey, loadOlder } = paginationState;
 
     useEffect(() => {
-      setIsNearBottom(true);
       setExpandedInlineToolCallIds(new Set());
       setExpandedToolCallGroupIds(new Set());
     }, [agentId]);
@@ -644,6 +665,14 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
 
     const renderUserMessageItem = useCallback(
       (layoutItem: StreamLayoutItem, item: Extract<StreamItem, { kind: "user_message" }>) => {
+        // Machinery rows (stall status-ask nudges) are the tracker's prompts,
+        // not user prose: verbose mode shows a muted one-line placeholder so
+        // the row stays auditable without leaking the raw nudge text; normal
+        // mode renders nothing (matching the pre-row behavior — steers were
+        // never visible in the chat).
+        if (item.classification === "machinery") {
+          return verbose ? <MachineryMessageRow timestamp={item.timestamp.getTime()} /> : null;
+        }
         // `<paseo-system>` envelopes (fleet digests, schedule fires, notify-on-
         // finish) are system-injected context, not user prose: render them as
         // the same collapsed divider the Mission Control thread uses so the
@@ -671,7 +700,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           />
         );
       },
-      [context.capabilities, agentId, client, pendingClientMessageIds, resolvedServerId],
+      [context.capabilities, agentId, client, pendingClientMessageIds, resolvedServerId, verbose],
     );
 
     const renderAssistantMessageItem = useCallback(
@@ -1025,49 +1054,38 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       <ToolCallSheetProvider>
         <AssistantSelectionCopySurface style={stylesheet.container}>
           <MessageOuterSpacingProvider disableOuterSpacing>
-            {streamRenderStrategy.render({
-              agentId,
-              segments: renderModel.segments,
-              historyRowRevision,
-              liveHeadRowRevision: expandedToolCallGroupIds,
-              boundary,
-              renderers,
-              listEmptyComponent,
-              viewportRef,
-              routeBottomAnchorRequest,
-              isAuthoritativeHistoryReady,
-              onNearBottomChange: setIsNearBottom,
-              onReadingPositionChange: chatOutline.reportReadingPosition,
-              onNearHistoryStart: loadOlder,
-              isLoadingOlderHistory: isLoadingOlder,
-              hasOlderHistory: hasOlder,
-              olderHistoryProgressKey: progressKey,
-              scrollEnabled: streamScrollEnabled,
-              listStyle: stylesheet.list,
-              baseListContentContainerStyle: stylesheet.listContentContainer,
-              forwardListContentContainerStyle: stylesheet.forwardListContentContainer,
-            })}
+            <AnchoredList
+              strategy={streamRenderStrategy}
+              viewportRef={viewportRef}
+              forceShowScrollToBottom={isTimelineDetached}
+              onScrollToBottomPress={scrollToBottom}
+              agentId={agentId}
+              segments={renderModel.segments}
+              historyRowRevision={historyRowRevision}
+              liveHeadRowRevision={expandedToolCallGroupIds}
+              boundary={boundary}
+              renderers={renderers}
+              listEmptyComponent={listEmptyComponent}
+              routeBottomAnchorRequest={routeBottomAnchorRequest}
+              isAuthoritativeHistoryReady={isAuthoritativeHistoryReady}
+              onReadingPositionChange={chatOutline.reportReadingPosition}
+              onNearHistoryStart={loadOlder}
+              isLoadingOlderHistory={isLoadingOlder}
+              hasOlderHistory={hasOlder}
+              olderHistoryProgressKey={progressKey}
+              scrollEnabled={streamScrollEnabled}
+              listStyle={stylesheet.list}
+              baseListContentContainerStyle={stylesheet.listContentContainer}
+              forwardListContentContainerStyle={stylesheet.forwardListContentContainer}
+              keyExtractor={streamItemKeyExtractor}
+              estimateItemSize={estimateStreamItemHeight}
+            />
           </MessageOuterSpacingProvider>
           <ChatOutlineRail
             prompts={chatOutline.prompts}
             activePrompt={chatOutline.activePrompt}
             onJumpToPrompt={chatOutline.jumpToPrompt}
           />
-          {(!isNearBottom || isTimelineDetached) && (
-            <View style={stylesheet.scrollToBottomContainer} pointerEvents="box-none">
-              <Animated.View entering={scrollIndicatorFadeIn} exiting={scrollIndicatorFadeOut}>
-                <Pressable
-                  style={stylesheet.scrollToBottomButton}
-                  onPress={scrollToBottom}
-                  accessibilityRole="button"
-                  accessibilityLabel={t("agentStream.scrollToBottom")}
-                  testID="scroll-to-bottom-button"
-                >
-                  <ChevronDown size={24} color={stylesheet.scrollToBottomIcon.color} />
-                </Pressable>
-              </Animated.View>
-            </View>
-          )}
         </AssistantSelectionCopySurface>
       </ToolCallSheetProvider>
     );
@@ -1568,25 +1586,6 @@ const stylesheet = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
     textAlign: "center",
-  },
-  scrollToBottomContainer: {
-    position: "absolute",
-    bottom: 16,
-    left: 0,
-    right: 0,
-    alignItems: "center",
-  },
-  scrollToBottomButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: theme.colors.surface2,
-    alignItems: "center",
-    justifyContent: "center",
-    ...theme.shadow.sm,
-  },
-  scrollToBottomIcon: {
-    color: theme.colors.foreground,
   },
 }));
 

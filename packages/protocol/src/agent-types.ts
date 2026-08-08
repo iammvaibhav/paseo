@@ -339,8 +339,23 @@ export interface CompactionTimelineItem {
   preTokens?: number;
 }
 
+/**
+ * Who originated a user-role timeline row. Machinery delivers prompts into an
+ * agent's own chat (stall status-ask nudges, Commander/Verifier directions)
+ * and marks the row at the source so the agent chat can render it distinctly.
+ * Absent = "instruction" (a visible prompt) — real user messages and legacy
+ * rows are never hidden.
+ */
+export type AgentTimelineUserMessageClassification = "machinery" | "instruction";
+
 export type AgentTimelineItem =
-  | { type: "user_message"; text: string; messageId?: string; clientMessageId?: string }
+  | {
+      type: "user_message";
+      text: string;
+      messageId?: string;
+      clientMessageId?: string;
+      classification?: AgentTimelineUserMessageClassification;
+    }
   | { type: "assistant_message"; text: string; messageId?: string }
   | { type: "reasoning"; text: string }
   | ToolCallTimelineItem

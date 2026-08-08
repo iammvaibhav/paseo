@@ -22,7 +22,7 @@ import type { ProviderSnapshotManager } from "../agent/provider-snapshot-manager
 import type { DaemonConfigStore } from "../daemon-config-store.js";
 import type { PeerManager } from "../peers/peer-manager.js";
 import type { ProjectRegistry, WorkspaceRegistry } from "../workspace-registry.js";
-import { readBundledCommanderPrompt } from "./commander-contract.js";
+import { buildCommanderSystemPrompt } from "./commander-contract.js";
 import { hasMissionControlLabels } from "./naming.js";
 import type { MissionControlReviewStateRecord, MissionControlReviewStateValue } from "./store.js";
 import type { MissionControlDigestContextProvider } from "./digest.js";
@@ -457,13 +457,11 @@ export function buildContextPack(context: FleetContextData): string {
  * prompt (identity, playbook, safety, tool contract — no fleet state) plus the
  * central commanderInstructions. The fleet worldview never enters here; it
  * rides the context pack as the first conversation message. Two builds with
- * different fleet state produce identical output.
+ * different fleet state produce identical output. Owned by the contract
+ * module (commander-contract) so reloads re-derive the same prompt; re-exported
+ * here for callers that referenced it from context.
  */
-export function buildCommanderSystemPrompt(commanderInstructions?: string): string {
-  const shipped = readBundledCommanderPrompt().trim();
-  const instructions = commanderInstructions?.trim();
-  return instructions ? `${shipped}\n\n${instructions}` : shipped;
-}
+export { buildCommanderSystemPrompt } from "./commander-contract.js";
 
 /**
  * Everything the daemon needs to launch the Commander: a static system prompt
@@ -697,28 +695,98 @@ function buildInventorySection(context: FleetContextData): string {
 }
 
 function buildModelsSection(context: FleetContextData): string {
-  const sections: string[] = [];
-  for (const host of context.hosts) {
-    const label = hostLabel(host);
-    const entries = Object.entries(host.models).filter(
-      ([provider]) => provider !== OMP_MODEL_ROLES_KEY,
+  const sections = context.hosts.map((host) =>
+    buildHostModelsSection(host.models, hostLabel(host)),
+  );
+  return `# Models\n${sections.join("\n\n")}`;
+}
+
+/**
+ * One host's Models block. Every line is a verbatim invocable provider/model
+ * string — exactly what create_agent/fleet_create_agent accept — plus the omp
+ * modelRoles translated into the same invocable form (effort split out), and
+ * roles whose model is absent from this host's provider snapshot marked
+ * explicitly unavailable. A "default worker model" line (the omp `task` role,
+ * invocable, with fallback when the role's model is missing) gives the
+ * Commander the spawn default without derivation. Exported so tests can drive
+ * the renderer directly.
+ */
+export function buildHostModelsSection(models: MissionControlModels, label: string): string {
+  const entries = Object.entries(models).filter(([provider]) => provider !== OMP_MODEL_ROLES_KEY);
+  if (entries.length === 0 && !models[OMP_MODEL_ROLES_KEY]) {
+    return `## ${label}\n- (no provider snapshot)`;
+  }
+  const lines = entries.flatMap(([provider, modelIds]) =>
+    modelIds.map((modelId) => `- ${provider}/${modelId}`),
+  );
+  const defaultWorkerLine = buildDefaultWorkerModelLine(models);
+  if (defaultWorkerLine) {
+    lines.push(defaultWorkerLine);
+  }
+  const roles = models[OMP_MODEL_ROLES_KEY];
+  if (roles && roles.length > 0) {
+    lines.push(
+      "- omp modelRoles → role mappings in invocable provider/model form, exactly what create_agent/fleet_create_agent accept:",
     );
-    if (entries.length === 0 && !host.models[OMP_MODEL_ROLES_KEY]) {
-      sections.push(`## ${label}\n- (no provider snapshot)`);
+    for (const entry of roles) {
+      const parsed = parseRoleEntry(entry);
+      if (!parsed) {
+        continue;
+      }
+      const { model, effort } = splitOmpEffortSuffix(parsed.model);
+      const resolved = resolveRoleInvocable(models, model);
+      if (resolved) {
+        lines.push(
+          `  - role "${parsed.role}" → ${resolved.invocable}${effort ? ` (effort: ${effort})` : ""}`,
+        );
+      } else {
+        // The role's model is not in this host's provider snapshot: present
+        // it as unavailable instead of an invocable string that would fail.
+        lines.push(`  - role "${parsed.role}" → ${model} (not available on this host)`);
+      }
+    }
+  }
+  return `## ${label}\n${lines.join("\n")}`;
+}
+
+/**
+ * The Commander's spawn default for a host: the omp `task` role model in
+ * invocable form. When the task role's model is missing from the host's
+ * snapshot (live case: role default referencing a model the host does not
+ * have), fall back to the first invocable model and say so — a default the
+ * Commander can actually spawn with beats an unavailable one.
+ */
+function buildDefaultWorkerModelLine(models: MissionControlModels): string | null {
+  const firstAvailable = firstInvocableModel(models);
+  const taskRole = (models[OMP_MODEL_ROLES_KEY] ?? [])
+    .map(parseRoleEntry)
+    .find((entry): entry is { role: string; model: string } => entry?.role === "task");
+  if (!taskRole) {
+    return firstAvailable ? `- default worker model: ${firstAvailable}` : null;
+  }
+  const { model } = splitOmpEffortSuffix(taskRole.model);
+  const resolved = resolveRoleInvocable(models, model);
+  if (resolved) {
+    return `- default worker model: ${resolved.invocable} (omp task role)`;
+  }
+  if (firstAvailable) {
+    return `- default worker model: ${firstAvailable} (omp task role "${model}" is not available on this host; using first available model)`;
+  }
+  return `- default worker model: none (omp task role "${model}" is not available on this host)`;
+}
+
+/** First invocable provider/model string in the snapshot, if any. */
+function firstInvocableModel(models: MissionControlModels): string | null {
+  for (const [provider, modelIds] of Object.entries(models)) {
+    if (provider === OMP_MODEL_ROLES_KEY) {
       continue;
     }
-    // Verbatim invocable provider/model strings — the exact values
-    // create_agent/fleet_create_agent accept. Never make the Commander guess.
-    const lines = entries.flatMap(([provider, modelIds]) =>
-      modelIds.map((modelId) => `- ${provider}/${modelId}`),
-    );
-    const roles = host.models[OMP_MODEL_ROLES_KEY];
-    if (roles && roles.length > 0) {
-      lines.push(`- omp modelRoles (role → model): ${roles.join("; ")}`);
+    const first = modelIds[0];
+    if (first) {
+      return `${provider}/${first}`;
     }
-    sections.push(`## ${label}\n${lines.join("\n")}`);
   }
-  return `# Models\n${sections.join("\n\n")}`;
+  return null;
 }
 
 function buildRosterSection(context: FleetContextData): string {
@@ -829,6 +897,69 @@ function readOmpModelRoles(): Record<string, string> {
     // Missing or unparsable config.yml is normal on non-omp hosts.
     return {};
   }
+}
+
+/**
+ * Split a stored "role: model" entry (the OMP_MODEL_ROLES_KEY format) into the
+ * role name and the raw model value. Malformed entries yield null and are
+ * skipped by the renderer.
+ */
+function parseRoleEntry(entry: string): { role: string; model: string } | null {
+  const separator = entry.indexOf(": ");
+  if (separator <= 0) {
+    return null;
+  }
+  const role = entry.slice(0, separator).trim();
+  const model = entry.slice(separator + 2).trim();
+  return role && model ? { role, model } : null;
+}
+
+/**
+ * omp's modelRoles values are the INTERNAL `provider/model:effort` form — the
+ * `:effort` suffix is not part of any invocable string. Split it off (last
+ * colon so model ids without a suffix pass through untouched); a missing
+ * suffix means no effort annotation.
+ */
+function splitOmpEffortSuffix(modelValue: string): { model: string; effort: string | null } {
+  const colonIndex = modelValue.lastIndexOf(":");
+  if (colonIndex <= 0) {
+    return { model: modelValue, effort: null };
+  }
+  return {
+    model: modelValue.slice(0, colonIndex),
+    effort: modelValue.slice(colonIndex + 1),
+  };
+}
+
+/**
+ * The invocable form of a role's model on a given host, or null when the model
+ * is absent from that host's provider snapshot. The model list renders
+ * `provider/modelId`; a role value is `family/model`. Prefer the direct
+ * provider/model form when the snapshot actually has that provider+model, else
+ * the provider whose model list owns the full 2-segment id — both are exactly
+ * the strings create_agent/fleet_create_agent accept.
+ */
+function resolveRoleInvocable(
+  hostModels: MissionControlModels,
+  model: string,
+): { invocable: string } | null {
+  const slashIndex = model.indexOf("/");
+  if (slashIndex > 0) {
+    const provider = model.slice(0, slashIndex);
+    const modelId = model.slice(slashIndex + 1);
+    if (hostModels[provider]?.includes(modelId)) {
+      return { invocable: model };
+    }
+  }
+  for (const [provider, modelIds] of Object.entries(hostModels)) {
+    if (provider === OMP_MODEL_ROLES_KEY) {
+      continue;
+    }
+    if (modelIds.includes(model)) {
+      return { invocable: `${provider}/${model}` };
+    }
+  }
+  return null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

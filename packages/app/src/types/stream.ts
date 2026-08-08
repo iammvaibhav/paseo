@@ -83,6 +83,15 @@ export type StreamItem =
 
 export type UserMessageImageAttachment = AttachmentMetadata;
 
+/**
+ * Who originated a user-role row in the agent's own chat. "machinery" rows
+ * (stall status-ask nudges) render as a muted one-line placeholder in
+ * verbose mode only; "instruction" (Commander direction changes, Verifier
+ * proof demands) and absent rows render as a normal user message — a user
+ * must always see what the agent was told.
+ */
+export type UserMessageClassification = "machinery" | "instruction";
+
 export interface UserMessageItem {
   kind: "user_message";
   id: string;
@@ -91,6 +100,7 @@ export interface UserMessageItem {
   // which falls back to a synthetic timeline id.
   messageId?: string;
   timelineCursor?: TimelinePosition;
+  classification?: UserMessageClassification;
   text: string;
   timestamp: Date;
   images?: UserMessageImageAttachment[];
@@ -102,6 +112,7 @@ export interface UserMessageInput {
   clientMessageId?: string;
   messageId?: string;
   timelineCursor?: TimelinePosition;
+  classification?: UserMessageClassification;
   text: string;
   timestamp: Date;
   images?: UserMessageImageAttachment[];
@@ -119,6 +130,7 @@ export function createUserMessage(input: UserMessageInput): UserMessageItem {
     ...(input.clientMessageId ? { clientMessageId: input.clientMessageId } : {}),
     ...(input.messageId ? { messageId: input.messageId } : {}),
     ...(input.timelineCursor ? { timelineCursor: input.timelineCursor } : {}),
+    ...(input.classification ? { classification: input.classification } : {}),
     text: input.text,
     timestamp: input.timestamp,
     ...(input.images && input.images.length > 0 ? { images: input.images } : {}),
@@ -259,6 +271,7 @@ function produceUserMessage(
     existing.clientMessageId === merged.clientMessageId &&
     existing.messageId === merged.messageId &&
     existing.timelineCursor === merged.timelineCursor &&
+    existing.classification === merged.classification &&
     existing.text === merged.text &&
     existing.timestamp === merged.timestamp &&
     existing.images === merged.images &&
@@ -833,6 +846,7 @@ function appendUserMessage(
   messageId?: string,
   clientMessageId?: string,
   timelineCursor?: TimelinePosition,
+  classification?: UserMessageClassification,
 ): StreamItem[] {
   const { chunk, hasContent } = normalizeChunk(text);
   if (!hasContent) {
@@ -845,6 +859,7 @@ function appendUserMessage(
     clientMessageId,
     messageId,
     timelineCursor,
+    classification,
     text: chunk,
     timestamp,
   });
@@ -1330,6 +1345,7 @@ function reduceTimelineEvent(
           item.messageId,
           item.clientMessageId,
           timelineCursor,
+          item.classification,
         ),
       );
     case "assistant_message":
@@ -1420,11 +1436,11 @@ export function reduceStreamUpdate(
  * Hydrate stream state from a batch of AgentManager stream events
  */
 export function hydrateStreamState(
-  events: Array<{
+  events: {
     event: AgentStreamEventPayload;
     timestamp: Date;
     timelineCursor?: TimelinePosition;
-  }>,
+  }[],
   options?: { source?: StreamUpdateSource; reservedItemIds?: ReadonlySet<string> },
 ): StreamItem[] {
   const hydrated = events.reduce<StreamItem[]>((state, { event, timestamp, timelineCursor }) => {
@@ -1706,6 +1722,7 @@ function applyCanonicalUserMessageEvent(params: {
       createUniqueTimelineId([...tail, ...head], "user", normalized.chunk.trim(), timestamp),
     messageId: event.item.messageId,
     clientMessageId: event.item.clientMessageId,
+    classification: event.item.classification,
     timelineCursor,
     text: normalized.chunk,
     timestamp,

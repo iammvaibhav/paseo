@@ -90,10 +90,14 @@ export function useWorkspaceDirectory(
   );
 }
 
-export function useWorkspaceStructure(serverIds: string[]): WorkspaceStructure {
+export function useWorkspaceStructure(
+  serverIds: string[],
+  options?: { hideCommanderWorkspaces?: boolean },
+): WorkspaceStructure {
+  const { hideCommanderWorkspaces = true } = options ?? {};
   const projects = useStoreWithEqualityFn(
     useSessionStore,
-    (state) => selectWorkspaceStructureProjects(state, serverIds),
+    (state) => selectWorkspaceStructureProjects(state, serverIds, { hideCommanderWorkspaces }),
     workspaceEqualityFns.deep,
   );
   const projectOrder = useStoreWithEqualityFn(

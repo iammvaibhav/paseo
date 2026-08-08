@@ -36,7 +36,7 @@ import {
   filesToImageAttachments,
 } from "@/utils/image-attachments-from-files";
 import type { ComposerAttachment } from "@/attachments/types";
-import type { ImageAttachment, MessagePayload } from "@/composer/types";
+import type { ImageAttachment, MessageDispatchMode, MessagePayload } from "@/composer/types";
 import { focusWithRetries } from "@/utils/web-focus";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Shortcut } from "@/components/ui/shortcut";
@@ -70,6 +70,7 @@ import {
   runDefaultSendAction,
   runMessageInputKeyboardAction,
   stopRealtimeVoice,
+  type SendBehavior,
 } from "./state";
 
 const DEFAULT_SEND_KEYS: ShortcutKey[][] = [["Enter"]];
@@ -127,8 +128,9 @@ export interface MessageInputProps {
   /** When true and there's sendable content, calls onQueue instead of onSubmit */
   isAgentRunning?: boolean;
   /** Controls what the default send action (Enter, send button, dictation) does
-   *  when the agent is running. "interrupt" sends immediately, "queue" queues. */
-  defaultSendBehavior?: "interrupt" | "queue";
+   *  when the agent is running. "interrupt" sends immediately, "queue" queues,
+   *  "steer" delivers against the live turn. */
+  defaultSendBehavior?: SendBehavior;
   /** The current draft is a provider command the daemon runs out of band
    *  (OMP /steer, /compact, …). Those never queue and never interrupt. */
   sendsOutOfBand?: boolean;
@@ -361,6 +363,7 @@ interface DesktopKeyPressContext {
   submitOnEnter: boolean;
   isAgentRunning: boolean;
   onQueue: ((payload: MessagePayload) => void) | undefined;
+  defaultSendBehavior: SendBehavior;
   isSubmitDisabled: boolean;
   isSubmitLoading: boolean;
   disabled: boolean;
@@ -388,7 +391,14 @@ function handleDesktopKeyPressImpl(
   if (!ctx.submitOnEnter) return;
   if (shiftKey) return;
 
-  if ((metaKey || ctrlKey) && ctx.isAgentRunning && ctx.onQueue) {
+  // The alternate action queues (interrupt/steer default) or sends as an
+  // interrupt (steer default escalates a steer). Queue needs onQueue; a steer
+  // default's alternate is a plain send, so it works without one.
+  if (
+    (metaKey || ctrlKey) &&
+    ctx.isAgentRunning &&
+    (ctx.onQueue || ctx.defaultSendBehavior === "steer")
+  ) {
     if (ctx.isSubmitDisabled || ctx.isSubmitLoading || ctx.disabled) return;
     event.preventDefault();
     ctx.handleAlternateSendAction();
@@ -885,6 +895,7 @@ interface SendMessageContext {
   allowEmptySubmit: boolean;
   cwd: string;
   isAgentRunning: boolean;
+  dispatchMode?: MessageDispatchMode;
   onSubmit: (payload: MessagePayload) => void;
   onMinimizeHeight: () => void;
   preserveHeightOnSubmit: boolean;
@@ -905,6 +916,7 @@ function sendMessageImpl(ctx: SendMessageContext): void {
     attachments: ctx.attachments,
     cwd: ctx.cwd,
     forceSend: ctx.isAgentRunning || undefined,
+    ...(ctx.dispatchMode ? { dispatchMode: ctx.dispatchMode } : {}),
   });
   // When the host preserves and locks the composer (e.g. new-workspace creation),
   // the text stays put — collapsing the height would clip it. Keep it grown.
@@ -997,7 +1009,7 @@ interface SendButtonStateInput {
   isSubmitDisabled: boolean;
   isSubmitLoading: boolean;
   onSubmitLoadingPress: (() => void) | undefined;
-  defaultSendBehavior: "interrupt" | "queue";
+  defaultSendBehavior: SendBehavior;
   sendsOutOfBand: boolean;
   isAgentRunning: boolean;
 }
@@ -1049,7 +1061,7 @@ interface ResolvedMessageInputProps {
   voiceServerId: string | undefined;
   voiceAgentId: string | undefined;
   isAgentRunning: boolean;
-  defaultSendBehavior: "interrupt" | "queue";
+  defaultSendBehavior: SendBehavior;
   sendsOutOfBand: boolean;
   onQueue: ((payload: MessagePayload) => void) | undefined;
   onSubmitLoadingPress: (() => void) | undefined;
@@ -1414,7 +1426,10 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         voice,
         voiceServerId,
         voiceAgentId,
-        sendBehavior: defaultSendBehavior,
+        // Realtime voice predates the Steer send behavior and only offers
+        // interrupt/queue; Steer maps to Interrupt (spoken input starts its
+        // own run rather than riding along with the live turn).
+        sendBehavior: defaultSendBehavior === "steer" ? "interrupt" : defaultSendBehavior,
         isConnected,
         disabled,
         isAgentRunning,
@@ -1466,6 +1481,32 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       ],
     );
 
+    const handleSteerSendMessage = useCallback(
+      () =>
+        sendMessageImpl({
+          value: valueRef.current,
+          attachments,
+          hasExternalContent,
+          allowEmptySubmit,
+          cwd,
+          isAgentRunning,
+          dispatchMode: "steer",
+          onSubmit,
+          onMinimizeHeight: minimizeInputHeight,
+          preserveHeightOnSubmit,
+        }),
+      [
+        allowEmptySubmit,
+        attachments,
+        cwd,
+        onSubmit,
+        isAgentRunning,
+        hasExternalContent,
+        minimizeInputHeight,
+        preserveHeightOnSubmit,
+      ],
+    );
+
     const handleQueueMessage = useCallback(
       () =>
         queueMessageImpl({
@@ -1486,6 +1527,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         sendsOutOfBand,
         onQueue,
         handleSendMessage,
+        handleSteerSendMessage,
         handleQueueMessage,
       });
     }, [
@@ -1495,6 +1537,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       onQueue,
       handleQueueMessage,
       handleSendMessage,
+      handleSteerSendMessage,
     ]);
 
     const handleAlternateSendAction = useCallback(() => {
@@ -1504,6 +1547,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         sendsOutOfBand,
         onQueue,
         handleSendMessage,
+        handleSteerSendMessage,
         handleQueueMessage,
       });
     }, [
@@ -1511,6 +1555,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       sendsOutOfBand,
       isAgentRunning,
       handleSendMessage,
+      handleSteerSendMessage,
       handleQueueMessage,
       onQueue,
     ]);
@@ -1587,6 +1632,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         submitOnEnter: shouldSubmitOnEnter,
         isAgentRunning,
         onQueue,
+        defaultSendBehavior,
         isSubmitDisabled,
         isSubmitLoading,
         disabled,

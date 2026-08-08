@@ -1849,10 +1849,13 @@ export const ru: TranslationResources = {
         descriptions: {
           interrupt: "Когда агент работает, Enter прерывает. Command/Ctrl+Enter ставит в очередь.",
           queue: "Когда агент работает, Enter ставит в очередь. Command/Ctrl+Enter отправляет.",
+          steer:
+            "Когда агент работает, Enter направляет его: он завершает текущий вызов инструмента, читает ваше сообщение и продолжает. Command/Ctrl+Enter прерывает.",
         },
         options: {
           interrupt: "Прерывать",
           queue: "Очередь",
+          steer: "Направлять",
         },
       },
       serviceUrls: {

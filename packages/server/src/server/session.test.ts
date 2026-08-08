@@ -5502,3 +5502,206 @@ describe("unavailable provider agent handling", () => {
     expect(agentManager.createAgent).toHaveBeenCalledOnce();
   });
 });
+
+describe("send_agent_message dispatch modes", () => {
+  const agentId = "11111111-1111-4111-8111-111111111111";
+
+  function createDispatchSession(agentManager: {
+    [K in keyof SessionOptions["agentManager"]]?: unknown;
+  }): { session: Session; messages: SessionOutboundMessage[] } {
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({
+      messages,
+      agentManager: {
+        listAgents: vi.fn(() => [{ id: agentId }]),
+        getAgent: vi.fn(() => ({ id: agentId, provider: "omp", lifecycle: "running" })),
+        tryRunOutOfBand: vi.fn(() => false),
+        hasInFlightRun: vi.fn(() => false),
+        streamAgent: vi.fn(noopAgentStream),
+        replaceAgentRun: vi.fn(noopAgentStream),
+        ...agentManager,
+      },
+    });
+    return { session, messages };
+  }
+
+  function acceptedResponse(messages: SessionOutboundMessage[]) {
+    return messages.find((m) => m.type === "send_agent_message_response")?.payload;
+  }
+
+  test("steer to a busy agent with a native steer path runs out of band without cancelling", async () => {
+    const tryRunOutOfBand = vi.fn(() => true);
+    const replaceAgentRun = vi.fn(noopAgentStream);
+    const streamAgent = vi.fn(noopAgentStream);
+    const { session, messages } = createDispatchSession({
+      tryRunOutOfBand,
+      replaceAgentRun,
+      streamAgent,
+      hasInFlightRun: vi.fn(() => true),
+    });
+
+    await session.handleMessage({
+      type: "send_agent_message_request",
+      requestId: "req-steer-native",
+      agentId,
+      text: "fix the test",
+      dispatchMode: "steer",
+    });
+
+    // The daemon maps the user's steer to the native out-of-band `/steer …`
+    // path — the live turn is redirected, never cancelled.
+    expect(tryRunOutOfBand).toHaveBeenCalledWith(agentId, "/steer fix the test");
+    expect(replaceAgentRun).not.toHaveBeenCalled();
+    expect(streamAgent).not.toHaveBeenCalled();
+    expect(acceptedResponse(messages)).toMatchObject({
+      requestId: "req-steer-native",
+      accepted: true,
+    });
+  });
+
+  test("steer to a busy agent without a native steer path falls back to an interrupt", async () => {
+    const replaceAgentRun = vi.fn(noopAgentStream);
+    const streamAgent = vi.fn(noopAgentStream);
+    const { session, messages } = createDispatchSession({
+      tryRunOutOfBand: vi.fn(() => false),
+      replaceAgentRun,
+      streamAgent,
+      hasInFlightRun: vi.fn(() => true),
+    });
+
+    await session.handleMessage({
+      type: "send_agent_message_request",
+      requestId: "req-steer-fallback",
+      agentId,
+      text: "fix the test",
+      dispatchMode: "steer",
+    });
+
+    // No out-of-band handler (non-OMP provider): the running turn is replaced
+    // (replaceRunning) — a steer's value is timely delivery, not waiting.
+    expect(replaceAgentRun).toHaveBeenCalledTimes(1);
+    expect(streamAgent).not.toHaveBeenCalled();
+    expect(acceptedResponse(messages)).toMatchObject({
+      requestId: "req-steer-fallback",
+      accepted: true,
+    });
+  });
+
+  test("steer to an idle agent just runs the prompt", async () => {
+    const tryRunOutOfBand = vi.fn(() => false);
+    const streamAgent = vi.fn(noopAgentStream);
+    const replaceAgentRun = vi.fn(noopAgentStream);
+    const { session, messages } = createDispatchSession({
+      tryRunOutOfBand,
+      streamAgent,
+      replaceAgentRun,
+      hasInFlightRun: vi.fn(() => false),
+    });
+
+    await session.handleMessage({
+      type: "send_agent_message_request",
+      requestId: "req-steer-idle",
+      agentId,
+      text: "fix the test",
+      dispatchMode: "steer",
+    });
+
+    // Nothing to steer: the prompt starts a normal run, without the /steer
+    // prefix (startAgentRun still probes the plain prompt — harmless).
+    expect(tryRunOutOfBand).not.toHaveBeenCalledWith(agentId, "/steer fix the test");
+    expect(streamAgent).toHaveBeenCalledTimes(1);
+    expect(replaceAgentRun).not.toHaveBeenCalled();
+    expect(acceptedResponse(messages)).toMatchObject({
+      requestId: "req-steer-idle",
+      accepted: true,
+    });
+  });
+
+  test("queue waits for idle and streams without replacing", async () => {
+    const streamAgent = vi.fn(noopAgentStream);
+    const replaceAgentRun = vi.fn(noopAgentStream);
+    const { session, messages } = createDispatchSession({
+      streamAgent,
+      replaceAgentRun,
+      hasInFlightRun: vi.fn(() => false),
+    });
+
+    await session.handleMessage({
+      type: "send_agent_message_request",
+      requestId: "req-queue",
+      agentId,
+      text: "whenever",
+      dispatchMode: "queue",
+    });
+
+    expect(replaceAgentRun).not.toHaveBeenCalled();
+    expect(streamAgent).toHaveBeenCalledTimes(1);
+    expect(acceptedResponse(messages)).toMatchObject({ requestId: "req-queue", accepted: true });
+  });
+
+  test("a default interrupt send to a busy agent replaces the run — never degrades to a queue", async () => {
+    // sendBehavior "interrupt" (or the default) sends WITHOUT dispatchMode;
+    // the daemon must take the replaceRunning path, never wait for idle.
+    const replaceAgentRun = vi.fn(noopAgentStream);
+    const streamAgent = vi.fn(noopAgentStream);
+    const { session, messages } = createDispatchSession({
+      replaceAgentRun,
+      streamAgent,
+      waitForAgentClose: vi.fn(async () => undefined),
+      waitForAgentRunStart: vi.fn(async () => undefined),
+      hasInFlightRun: vi.fn(() => true),
+    });
+
+    await session.handleMessage({
+      type: "send_agent_message_request",
+      requestId: "req-interrupt",
+      agentId,
+      text: "redirect me",
+    });
+
+    // The interrupt goes through startAgentRun({replaceRunning:true}) →
+    // replaceAgentRun with the USER's replace origin (so the superseded run
+    // reads as "Interrupted by you"). The queue path would have waited for
+    // idle and streamed without replacing — it must never be chosen here.
+    expect(replaceAgentRun).toHaveBeenCalledTimes(1);
+    expect(replaceAgentRun).toHaveBeenCalledWith(
+      agentId,
+      expect.any(String),
+      expect.objectContaining({ replaceOrigin: "user" }),
+    );
+    expect(streamAgent).not.toHaveBeenCalled();
+    expect(acceptedResponse(messages)).toMatchObject({
+      requestId: "req-interrupt",
+      accepted: true,
+    });
+  });
+
+  test("a refused replace on a busy agent surfaces the error — never silently queues", async () => {
+    // A run that will not terminate can refuse the interrupt. The send must
+    // FAIL LOUDLY (accepted: false with the reason), not silently fall back
+    // to queue-until-idle semantics.
+    const replaceAgentRun = vi.fn(async () => {
+      throw new Error("Cannot replace agent: active run cancellation was not acknowledged");
+    });
+    const streamAgent = vi.fn(noopAgentStream);
+    const { session, messages } = createDispatchSession({
+      replaceAgentRun,
+      streamAgent,
+      waitForAgentClose: vi.fn(async () => undefined),
+      hasInFlightRun: vi.fn(() => true),
+    });
+
+    await session.handleMessage({
+      type: "send_agent_message_request",
+      requestId: "req-refused",
+      agentId,
+      text: "redirect me",
+    });
+
+    const response = acceptedResponse(messages);
+    expect(response).toMatchObject({ requestId: "req-refused", accepted: false });
+    expect(String(response?.error)).toContain("replace");
+    // No queue fallback: the prompt was never streamed as a deferred run.
+    expect(streamAgent).not.toHaveBeenCalled();
+  });
+});

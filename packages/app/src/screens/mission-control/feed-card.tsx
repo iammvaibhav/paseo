@@ -1,10 +1,11 @@
 import { useCallback, useState, type ReactElement } from "react";
 import { Pressable, Text, View } from "react-native";
-import { StyleSheet } from "react-native-unistyles";
+import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { Theme } from "@/styles/theme";
 import {
   BadgeCheck,
   CircleCheck,
+  CircleSlash,
   CircleX,
   Clock,
   Flag,
@@ -17,7 +18,6 @@ import {
   ShieldAlert,
   Wrench,
 } from "lucide-react-native";
-import { withUnistyles } from "react-native-unistyles";
 import type {
   MissionControlEvent,
   MissionControlEventKind,
@@ -37,8 +37,78 @@ export type FeedCardEvent = MissionControlEvent & {
   serverLabel: string;
 };
 
+/**
+ * Position of a card within its run of adjacent cards in the thread. Runs are
+ * derived from adjacent same-family rows (event rows that render as cards),
+ * never from index parity. A run of one card is "only" and keeps the
+ * standalone pill; run members square their inner corners and share the run's
+ * frame so a run reads as ONE rounded rectangle with hairline dividers
+ * (design.md §5).
+ */
+export type CardRunPosition = "only" | "first" | "middle" | "last";
+
+/**
+ * Row classification for card-run derivation (see `cardRunPosition`):
+ * - "card": renders a card in the current mode — a run member.
+ * - "skip": renders nothing and takes no vertical space (verbose-only
+ *   machinery hidden by normal mode) — transparent to runs: the cards on
+ *   either side are still visually adjacent.
+ * - "gap": renders visible non-card content (messages, tool calls) — breaks
+ *   runs.
+ */
+export type CardRunRowClass = "card" | "skip" | "gap";
+
+/**
+ * Position of `index` within its maximal run of consecutive card rows. A run
+ * is a maximal sequence of adjacent rows classified "card"; "skip" rows
+ * (zero-height, render nothing) are transparent — they neither join nor break
+ * a run — and "gap" rows break it. A run of one card is "only". Throws when
+ * the row at `index` is not classified "card".
+ */
+export function cardRunPosition<T>(
+  rows: readonly T[],
+  index: number,
+  classify: (row: T) => CardRunRowClass,
+): CardRunPosition {
+  if (classify(rows[index]) !== "card") {
+    throw new RangeError(`cardRunPosition: row ${index} is not a card row`);
+  }
+  const hasCardAbove = hasCardNeighbor(rows, index - 1, -1, classify);
+  const hasCardBelow = hasCardNeighbor(rows, index + 1, 1, classify);
+  if (hasCardAbove && hasCardBelow) {
+    return "middle";
+  }
+  if (hasCardAbove) {
+    return "last";
+  }
+  if (hasCardBelow) {
+    return "first";
+  }
+  return "only";
+}
+
+function hasCardNeighbor<T>(
+  rows: readonly T[],
+  from: number,
+  step: 1 | -1,
+  classify: (row: T) => CardRunRowClass,
+): boolean {
+  for (let i = from; i >= 0 && i < rows.length; i += step) {
+    const rowClass = classify(rows[i]);
+    if (rowClass === "card") {
+      return true;
+    }
+    if (rowClass === "gap") {
+      return false;
+    }
+    // "skip": zero-height row — look past it to the next visible row.
+  }
+  return false;
+}
+
 const ThemedBadgeCheck = withUnistyles(BadgeCheck);
 const ThemedCircleCheck = withUnistyles(CircleCheck);
+const ThemedCircleSlash = withUnistyles(CircleSlash);
 const ThemedCircleX = withUnistyles(CircleX);
 const ThemedClock = withUnistyles(Clock);
 const ThemedFlag = withUnistyles(Flag);
@@ -64,6 +134,10 @@ const kindIcons: Record<MissionControlEventKind, ReactElement> = {
   diverged: <ThemedGitFork size={14} uniProps={iconForegroundMutedMapping} />,
   proposal: <ThemedSend size={14} uniProps={iconForegroundMutedMapping} />,
   verdict: <ThemedBadgeCheck size={14} uniProps={iconForegroundMutedMapping} />,
+  // A run superseded by a USER prompt (interrupt-and-send): distinct
+  // non-error glyph — the interruption is the user's own action, nothing
+  // failed. Same muted tone as the other status icons.
+  interrupted: <ThemedCircleSlash size={14} uniProps={iconForegroundMutedMapping} />,
 };
 
 /**
@@ -89,15 +163,20 @@ function eventIcon(event: FeedCardEvent): ReactElement {
 }
 
 function openEventAgent(event: FeedCardEvent): void {
+  // Verifier-attributed cards (verdict, verification-failed, verifier-origin
+  // proposal) open the VERIFIER's thread in the inspector: verifiers are
+  // hidden from board buckets but reachable from their cards, and the thread
+  // shows the verifier<->worker exchange plus the pending approval cards.
   useInspectorStore.getState().openInspectorAgent({
     serverId: event.serverId,
-    agentId: event.agentId,
+    agentId: event.verifierAgentId ?? event.agentId,
   });
 }
 
 export function FeedCard({
   event,
   verbose = false,
+  position = "only",
 }: {
   event: FeedCardEvent;
   /**
@@ -107,6 +186,12 @@ export function FeedCard({
    * always render.
    */
   verbose?: boolean;
+  /**
+   * Position within this card's run of adjacent cards (see CardRunPosition).
+   * The thread derives it from same-family rows; standalone cards default to
+   * "only" and keep all four rounded corners.
+   */
+  position?: CardRunPosition;
 }): ReactElement | null {
   const [isHovered, setIsHovered] = useState(false);
   const isCompact = useIsCompactFormFactor();
@@ -132,12 +217,13 @@ export function FeedCard({
     if (!verbose && isVerboseOnlyProposalEvent(event)) {
       return null;
     }
-    return <ProposalCard proposal={event.proposal} event={event} />;
+    return <ProposalCard proposal={event.proposal} event={event} position={position} />;
   }
 
   return (
     <FeedCardBody
       event={event}
+      position={position}
       showOpenAffordance={showOpenAffordance}
       isBlocker={isBlocker}
       isAttention={isAttention}
@@ -219,6 +305,7 @@ export function deriveFeedCardText(
 
 function FeedCardBody({
   event,
+  position,
   showOpenAffordance,
   isBlocker,
   isAttention,
@@ -230,6 +317,7 @@ function FeedCardBody({
   onOpenAgent,
 }: {
   event: FeedCardEvent;
+  position: CardRunPosition;
   showOpenAffordance: boolean;
   isBlocker: boolean;
   isAttention: boolean;
@@ -248,7 +336,15 @@ function FeedCardBody({
 
   return (
     <Pressable
-      style={[styles.card, isBlocker && styles.cardBlocker, isAttention && styles.cardAttention]}
+      style={[
+        styles.card,
+        isBlocker && styles.cardBlocker,
+        isAttention && styles.cardAttention,
+        position !== "only" && styles.cardInRun,
+        position === "first" && styles.cardRunFirst,
+        position === "middle" && styles.cardRunMiddle,
+        position === "last" && styles.cardRunLast,
+      ]}
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
       onPress={onOpenAgent}
@@ -296,6 +392,32 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: "transparent",
     minHeight: 56,
     overflow: "hidden",
+  },
+  // Run composition (see CardRunPosition): consecutive cards read as ONE
+  // rounded rectangle — first keeps the top corners, last the bottom, middle
+  // is square; every member carries the side edges and the top border of each
+  // member after the first is the hairline divider (design.md §5).
+  cardInRun: {
+    // Run members join the group frame: shared surface + border-colored edge.
+    backgroundColor: theme.colors.surface1,
+    borderColor: theme.colors.border,
+  },
+  cardRunFirst: {
+    borderBottomWidth: 0,
+    borderTopLeftRadius: theme.borderRadius.md,
+    borderTopRightRadius: theme.borderRadius.md,
+    borderBottomLeftRadius: theme.borderRadius.none,
+    borderBottomRightRadius: theme.borderRadius.none,
+  },
+  cardRunMiddle: {
+    borderBottomWidth: 0,
+    borderRadius: theme.borderRadius.none,
+  },
+  cardRunLast: {
+    borderTopLeftRadius: theme.borderRadius.none,
+    borderTopRightRadius: theme.borderRadius.none,
+    borderBottomLeftRadius: theme.borderRadius.md,
+    borderBottomRightRadius: theme.borderRadius.md,
   },
   cardBlocker: {
     borderColor: theme.colors.accent,

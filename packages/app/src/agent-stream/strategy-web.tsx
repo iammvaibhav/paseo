@@ -14,9 +14,8 @@ import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import type { Theme } from "@/styles/theme";
 import { WEB_SCROLLBAR_SIZE_PX } from "@/styles/web-scrollbar";
-import { estimateStreamItemHeight } from "./web-virtualization";
 import type { StreamRenderInput, StreamStrategy, StreamViewportHandle } from "./strategy";
-import { createStreamStrategy } from "./strategy";
+import { createStreamStrategy, resolveDefaultItemKey } from "./strategy";
 import {
   abandonHistoryStartPaginationRequest,
   createHistoryStartPaginationState,
@@ -63,6 +62,8 @@ const VIRTUALIZER_SCROLL_MARGIN_PX = HISTORY_START_SLOT_HEIGHT_PX + CONTENT_PADD
 // A row has to clear this much of the viewport top before the next one takes over as the
 // reading position, so a row resting exactly on the edge does not flip back and forth.
 const READING_POSITION_OFFSET_PX = 8;
+/** Row-height estimate used when the caller does not provide `estimateItemSize`. */
+const DEFAULT_ESTIMATED_ROW_HEIGHT_PX = 120;
 
 const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
 const foregroundMutedColorMapping = (theme: Theme) => ({
@@ -219,7 +220,7 @@ function isScrollContainerOverscrolledPastBottom(
   return getScrollContainerDistanceFromBottom(scrollContainer) < -BOTTOM_OVERSCROLL_TOLERANCE_PX;
 }
 
-function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: boolean }) {
+function WebStreamViewport<T>(props: StreamRenderInput<T> & { isMobileBreakpoint: boolean }) {
   const {
     segments,
     liveHeadRowRevision,
@@ -237,6 +238,9 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     olderHistoryProgressKey,
     scrollEnabled,
     isMobileBreakpoint,
+    keyExtractor,
+    estimateItemSize,
+    topSlot,
   } = props;
   const isActive = useRetainedPanelActive();
   const isActiveRef = useRef(isActive);
@@ -248,6 +252,11 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
   const handleContentRef = useCallback((node: HTMLElement | null) => {
     contentRef.current = node;
   }, []);
+  const resolveKey = useCallback(
+    (item: T, index: number): string =>
+      keyExtractor ? keyExtractor(item, index) : resolveDefaultItemKey(item, index),
+    [keyExtractor],
+  );
   const [followOutput, setFollowOutputr] = useState(true);
   const followOutputRef = useRef(followOutput);
   const setFollowOutput = (value: boolean) => {
@@ -303,10 +312,15 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     count: segments.historyVirtualized.length,
     enabled: shouldUseVirtualizer,
     getScrollElement: () => scrollContainerRef.current,
-    getItemKey: (index: number) => segments.historyVirtualized[index]?.id ?? index,
+    getItemKey: (index: number) => {
+      const row = segments.historyVirtualized[index];
+      return row ? resolveKey(row, index) : index;
+    },
     estimateSize: (index: number) => {
       const row = segments.historyVirtualized[index];
-      return row ? estimateStreamItemHeight(row) : 120;
+      return row
+        ? (estimateItemSize?.(row) ?? DEFAULT_ESTIMATED_ROW_HEIGHT_PX)
+        : DEFAULT_ESTIMATED_ROW_HEIGHT_PX;
     },
     measureElement: measureVirtualElement,
     scrollMargin: VIRTUALIZER_SCROLL_MARGIN_PX,
@@ -361,12 +375,17 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
       const scrollContainer = scrollContainerRef.current;
       const contentNode = contentRef.current;
       const anchorRow = segments.historyMounted.at(-1) ?? segments.historyVirtualized.at(-1);
+      const anchorRowIndex =
+        segments.historyMounted.length > 0
+          ? segments.historyMounted.length - 1
+          : segments.historyVirtualized.length - 1;
+      const anchorRowKey = anchorRow ? resolveKey(anchorRow, anchorRowIndex) : null;
       const anchorElement =
-        contentNode && anchorRow ? findHistoryRowElement(contentNode, anchorRow.id) : null;
-      if (scrollContainer && anchorRow && anchorElement) {
+        contentNode && anchorRowKey ? findHistoryRowElement(contentNode, anchorRowKey) : null;
+      if (scrollContainer && anchorRowKey && anchorElement) {
         historyStartPrependAnchorRef.current = {
           progressKey: olderHistoryProgressKey,
-          rowId: anchorRow.id,
+          rowId: anchorRowKey,
           viewportOffset:
             anchorElement.getBoundingClientRect().top - scrollContainer.getBoundingClientRect().top,
         };
@@ -736,11 +755,15 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     };
   }, [cancelPendingScrollRestore]);
 
+  // Stable per render-input; keeps the viewport handle from being re-created
+  // on every flush just because the scroll-to-message hook reads row keys.
+  const scrollToMessageKeyExtractor = useCallback((item: T) => resolveKey(item, 0), [resolveKey]);
   const { isJumpSettling, scrollToMessage } = useScrollToMessage({
     active: isActive,
     scrollContainerRef,
     rowVirtualizer,
     historyVirtualized: segments.historyVirtualized,
+    keyExtractor: scrollToMessageKeyExtractor,
     cancelPendingStickToBottom,
     setFollowOutput,
     onNearBottomChange,
@@ -1165,20 +1188,26 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     [],
   );
   const mountedHistoryRows = useMemo(() => {
-    return segments.historyMounted.map((item, index) => (
-      <div key={item.id} data-history-row-id={item.id} style={streamRowStyle}>
-        {renderHistoryMountedRow(item, index, segments.historyMounted)}
-      </div>
-    ));
-  }, [renderHistoryMountedRow, segments.historyMounted]);
+    return segments.historyMounted.map((item, index) => {
+      const rowKey = resolveKey(item, index);
+      return (
+        <div key={rowKey} data-history-row-id={rowKey} style={streamRowStyle}>
+          {renderHistoryMountedRow(item, index, segments.historyMounted)}
+        </div>
+      );
+    });
+  }, [renderHistoryMountedRow, resolveKey, segments.historyMounted]);
   const liveHeadRows = useMemo(() => {
     void liveHeadRowRevision;
-    return segments.liveHead.map((item, index) => (
-      <div key={item.id} data-history-row-id={item.id} style={streamRowStyle}>
-        {renderLiveHeadRow(item, index, segments.liveHead)}
-      </div>
-    ));
-  }, [liveHeadRowRevision, renderLiveHeadRow, segments.liveHead]);
+    return segments.liveHead.map((item, index) => {
+      const rowKey = resolveKey(item, index);
+      return (
+        <div key={rowKey} data-history-row-id={rowKey} style={streamRowStyle}>
+          {renderLiveHeadRow(item, index, segments.liveHead)}
+        </div>
+      );
+    });
+  }, [liveHeadRowRevision, renderLiveHeadRow, resolveKey, segments.liveHead]);
   const liveAuxiliary = useMemo(() => {
     return renderLiveAuxiliary();
   }, [renderLiveAuxiliary]);
@@ -1209,6 +1238,7 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     >
       <div ref={handleContentRef} style={contentContainerStyle}>
         {historyStartSlot}
+        {topSlot}
         {shouldUseVirtualizer ? (
           <div style={virtualRowsContainerStyle}>
             {virtualRows.map((virtualRow) => {
@@ -1216,11 +1246,12 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
               if (!item) {
                 return null;
               }
+              const rowKey = resolveKey(item, virtualRow.index);
               return (
                 <div
                   key={virtualRow.key}
                   data-index={virtualRow.index}
-                  data-history-row-id={item.id}
+                  data-history-row-id={rowKey}
                   ref={measureVirtualizedRowElement}
                   style={renderVirtualRowStyle(virtualRow.start)}
                 >

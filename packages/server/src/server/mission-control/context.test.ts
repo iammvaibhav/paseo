@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import type {
   MissionControlEvent,
@@ -23,6 +23,7 @@ import {
   buildContextDeltaBlock,
   buildContextPack,
   buildFleetContextData,
+  buildHostModelsSection,
   buildLocalRecentAgents,
   createFleetContextDigestProvider,
   type FleetContextDependencies,
@@ -239,13 +240,23 @@ describe("context pack as first conversation message", () => {
   });
 
   test("roster renders spec one-liners with headline and age", async () => {
-    const context = await buildFleetContextData(buildDependencies());
-    const pack = buildContextPack(context);
-    expect(pack).toContain('Rusty — Fix auth: "Root cause found"');
-    expect(pack).toContain("running, 218d ago");
-    expect(pack).toContain("Mira — Ship charts");
-    expect(pack).toContain("ready for review");
-    expect(pack).toContain("paseo://h/server-local/agent/agent-running");
+    // The age is rendered relative to now, so a hardcoded literal drifts by a day
+    // every day. Freeze the clock at exactly 218 days after the running fixture's
+    // updatedAt (2026-01-02T00:10:00Z) so the assertion holds regardless of how the
+    // renderer rounds. Only Date is faked; real timers keep working for the awaits.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-08-08T00:10:00Z"));
+    try {
+      const context = await buildFleetContextData(buildDependencies());
+      const pack = buildContextPack(context);
+      expect(pack).toContain('Rusty — Fix auth: "Root cause found"');
+      expect(pack).toContain("running, 218d ago");
+      expect(pack).toContain("Mira — Ship charts");
+      expect(pack).toContain("ready for review");
+      expect(pack).toContain("paseo://h/server-local/agent/agent-running");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -350,6 +361,95 @@ describe("invocable provider/model strings", () => {
     ];
     const block = buildContextDeltaBlock(previous, current);
     expect(block).toContain("models: codex/gpt-5.4, codex/gpt-5.4-mini");
+  });
+});
+
+describe("models block roles notation (invocable only)", () => {
+  const ROLES_KEY = "omp.modelRoles";
+
+  test("roles render invocable: owning provider prefixed, effort split out", () => {
+    const block = buildHostModelsSection(
+      {
+        omp: [
+          "opencode-zen/deepseek-v4-flash-free",
+          "anthropic/claude-fable-5",
+          "grok-build/grok-4.5",
+        ],
+        [ROLES_KEY]: [
+          "task: opencode-zen/deepseek-v4-flash-free:high",
+          "plan: grok-build/grok-4.5:high",
+        ],
+      },
+      "iammvaibhav",
+    );
+    expect(block).toContain(
+      '- role "task" → omp/opencode-zen/deepseek-v4-flash-free (effort: high)',
+    );
+    expect(block).toContain('- role "plan" → omp/grok-build/grok-4.5 (effort: high)');
+    // Never the bare internal provider/model:effort form in the block.
+    expect(block).not.toContain("opencode-zen/deepseek-v4-flash-free:high");
+    expect(block).not.toContain("grok-build/grok-4.5:high");
+  });
+
+  test("role model that is itself a provider/model pair stays direct when present", () => {
+    const block = buildHostModelsSection(
+      {
+        cursor: ["gpt-5.6-sol-high", "composer-2.5"],
+        [ROLES_KEY]: ["designer: cursor/gpt-5.6-sol-high"],
+      },
+      "macbook",
+    );
+    expect(block).toContain('- role "designer" → cursor/gpt-5.6-sol-high');
+    // A colon-less value carries no effort note.
+    expect(block).not.toContain("(effort:");
+  });
+
+  test("role missing from the snapshot renders as unavailable, not usable", () => {
+    const block = buildHostModelsSection(
+      {
+        omp: ["anthropic/claude-fable-5"],
+        [ROLES_KEY]: ["task: opencode-zen/deepseek-v4-flash-free:high"],
+      },
+      "iammvaibhav",
+    );
+    expect(block).toContain(
+      '- role "task" → opencode-zen/deepseek-v4-flash-free (not available on this host)',
+    );
+    expect(block).not.toContain("omp/opencode-zen/deepseek-v4-flash-free");
+  });
+
+  test("one line states the strings are exactly what the create tools accept", () => {
+    const block = buildHostModelsSection(
+      { omp: ["anthropic/claude-fable-5"], [ROLES_KEY]: ["task: anthropic/claude-fable-5:high"] },
+      "local",
+    );
+    expect(block).toContain("exactly what create_agent/fleet_create_agent accept");
+  });
+
+  test("default worker model line: task role invocable", () => {
+    const block = buildHostModelsSection(
+      {
+        omp: ["opencode-zen/deepseek-v4-flash-free"],
+        [ROLES_KEY]: ["task: opencode-zen/deepseek-v4-flash-free:high"],
+      },
+      "local",
+    );
+    expect(block).toContain(
+      "- default worker model: omp/opencode-zen/deepseek-v4-flash-free (omp task role)",
+    );
+  });
+
+  test("default worker model line: task role missing from snapshot falls back and says so", () => {
+    const block = buildHostModelsSection(
+      {
+        omp: ["anthropic/claude-fable-5", "opencode-go/deepseek-v4-flash"],
+        [ROLES_KEY]: ["task: opencode-zen/deepseek-v4-flash-free:high"],
+      },
+      "iammvaibhav",
+    );
+    expect(block).toContain(
+      '- default worker model: omp/anthropic/claude-fable-5 (omp task role "opencode-zen/deepseek-v4-flash-free" is not available on this host; using first available model)',
+    );
   });
 });
 

@@ -1632,7 +1632,11 @@ function ActiveAgentComposer({
     startedVoiceCreateKeyRef.current = pendingVoiceCreateKey;
 
     void voice
-      .startVoice(serverId, agentId, { sendBehavior: appSettings.sendBehavior })
+      .startVoice(serverId, agentId, {
+        // Realtime voice predates the Steer send behavior; Steer maps to
+        // Interrupt (spoken input starts its own run).
+        sendBehavior: appSettings.sendBehavior === "steer" ? "interrupt" : appSettings.sendBehavior,
+      })
       .then(() => {
         useCreateFlowStore.getState().clear({ draftId: pendingVoiceCreate.draftId });
         return undefined;

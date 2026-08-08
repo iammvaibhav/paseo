@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent } from "@/stores/session-store";
 type FeedCardEvent = import("./feed-card").FeedCardEvent;
 
-const { liveAgent, theme } = vi.hoisted(() => ({
+const { liveAgent, theme, openInspectorAgentMock } = vi.hoisted(() => ({
   liveAgent: {
     id: "agent-1",
     name: "Worker One",
@@ -16,7 +16,8 @@ const { liveAgent, theme } = vi.hoisted(() => ({
   },
   theme: {
     spacing: { 1: 4, 2: 8, 3: 12, 4: 16 },
-    borderRadius: { sm: 2, md: 6, full: 9999 },
+    borderRadius: { none: 0, sm: 2, md: 6, full: 9999 },
+    borderWidth: { 0: 0, 1: 1, 2: 2 },
     fontFamily: { ui: "system-ui" },
     fontSize: { xs: 12, sm: 14 },
     colors: {
@@ -31,6 +32,7 @@ const { liveAgent, theme } = vi.hoisted(() => ({
       statusDanger: "#d8847b",
     },
   },
+  openInspectorAgentMock: vi.fn(),
 }));
 
 vi.mock("react-native-unistyles", () => ({
@@ -44,12 +46,15 @@ vi.mock("react-native-unistyles", () => ({
 }));
 
 vi.mock("lucide-react-native", () => {
-  const icon = (name: string) => (props: Record<string, unknown>) =>
-    React.createElement("span", { ...props, "data-icon": name });
+  const icon = (name: string) =>
+    function MockIcon(props: Record<string, unknown>) {
+      return React.createElement("span", { ...props, "data-icon": name });
+    };
   return {
     BadgeCheck: icon("BadgeCheck"),
     Bot: icon("Bot"),
     CircleCheck: icon("CircleCheck"),
+    CircleSlash: icon("CircleSlash"),
     CircleX: icon("CircleX"),
     Clock: icon("Clock"),
     Flag: icon("Flag"),
@@ -79,7 +84,7 @@ vi.mock("@/stores/session-store", () => ({
     }),
 }));
 vi.mock("@/screens/mission-control/inspector-store", () => ({
-  useInspectorStore: { getState: () => ({ openInspectorAgent: vi.fn() }) },
+  useInspectorStore: { getState: () => ({ openInspectorAgent: openInspectorAgentMock }) },
 }));
 vi.mock("@/mission-control/central-config", () => ({
   useMissionControlCentralConfig: () => ({ config: { hideAgentNames: false } }),
@@ -110,7 +115,7 @@ vi.mock("./proofs/proof-sections", () => ({ ProofSections: () => null }));
 vi.stubGlobal("React", React);
 vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
 
-const { deriveFeedCardText, FeedCard } = await import("./feed-card");
+const { cardRunPosition, deriveFeedCardText, FeedCard } = await import("./feed-card");
 
 function event(overrides: Partial<FeedCardEvent> = {}): FeedCardEvent {
   return {
@@ -182,6 +187,24 @@ describe("FeedCard", () => {
     expect(card?.textContent).not.toContain("MacBook-Pro-89.local");
   });
 
+  it("renders a user-interrupted run as a distinct non-error card", () => {
+    // A run superseded by a USER prompt (interrupt-and-send) carries the
+    // daemon's kind:"interrupted" card ("Interrupted by you", severity info) —
+    // never the failure icon/tone.
+    const interruptedEvent = event({
+      kind: "interrupted",
+      severity: "info",
+      headline: "Interrupted by you",
+    });
+
+    act(() => root?.render(<FeedCard event={interruptedEvent} />));
+
+    const card = container?.querySelector('[data-testid="mission-control-feed-card-interrupted"]');
+    expect(card?.textContent).toContain("Interrupted by you");
+    expect(card?.querySelector('[data-icon="CircleSlash"]')).not.toBeNull();
+    expect(card?.querySelector('[data-icon="CircleX"]')).toBeNull();
+  });
+
   it("renders proposal title, icon, host glyph, and relative time in one surface", () => {
     const proposalEvent = event({
       kind: "proposal",
@@ -194,7 +217,9 @@ describe("FeedCard", () => {
         serverId: "server-1",
         targetAgentId: "agent-1",
         message: "Please report progress",
-        deliveryMode: "steer",
+        // Interrupt (escalation/recovery) so the card renders in normal mode:
+        // stall-origin STEER proposals are machinery, whatever their status.
+        deliveryMode: "interrupt",
         reason: "No recent activity",
         classification: "normal",
         status: "pending",
@@ -267,6 +292,43 @@ describe("FeedCard", () => {
     ).not.toBeNull();
   });
 
+  it("gates ANY unflagged stall steer as machinery, whatever its status (legacy fallback)", () => {
+    // Pre-field persisted events only carry origin+delivery+status. The
+    // fallback previously required status "sent", leaking EXPIRED stall
+    // proposal cards into normal mode — every stall steer is machinery
+    // regardless of how it resolved.
+    for (const status of ["expired", "denied"] as const) {
+      const legacyNudge = event({
+        kind: "proposal",
+        headline: `Proposal ${status}`,
+        severity: "info",
+        proposal: {
+          id: `proposal-legacy-${status}`,
+          createdAt: new Date().toISOString(),
+          origin: "stall",
+          serverId: "server-1",
+          targetAgentId: "agent-1",
+          message: "You've been quiet for a while.",
+          deliveryMode: "steer",
+          reason: "No recent status",
+          classification: "normal",
+          status,
+        },
+      });
+
+      act(() => root?.render(<FeedCard event={legacyNudge} />));
+      expect(
+        container?.querySelector('[data-testid="mission-control-proposal-card"]'),
+        `normal mode hides a ${status} stall steer`,
+      ).toBeNull();
+      act(() => root?.render(<FeedCard event={legacyNudge} verbose />));
+      expect(
+        container?.querySelector('[data-testid="mission-control-proposal-card"]'),
+        `verbose mode shows a ${status} stall steer`,
+      ).not.toBeNull();
+    }
+  });
+
   it("always renders escalation recovery proposals (interrupt) in normal mode", () => {
     const recoveryEvent = event({
       kind: "proposal",
@@ -293,10 +355,10 @@ describe("FeedCard", () => {
   });
 
   it("keeps report kinds semantically distinct: progress loader, fix wrench, decision branch, milestone flag", () => {
-    const cases: Array<{
+    const cases: {
       reportKind: "progress" | "fix" | "decision" | "milestone";
       icon: string;
-    }> = [
+    }[] = [
       { reportKind: "progress", icon: "LoaderCircle" },
       { reportKind: "fix", icon: "Wrench" },
       { reportKind: "decision", icon: "GitBranch" },
@@ -320,5 +382,218 @@ describe("FeedCard", () => {
     act(() => root?.render(<FeedCard event={event({ kind: "finding", headline: "Found it" })} />));
     const card = container?.querySelector('[data-testid="mission-control-feed-card-finding"]');
     expect(card?.querySelector('[data-icon="Search"]')).not.toBeNull();
+  });
+
+  it("squares run members and keeps only the run's outer corners rounded", () => {
+    const cases: {
+      position: "first" | "middle" | "last" | "only";
+      top: string;
+      bottom: string;
+    }[] = [
+      // Standalone card keeps all four corners; first keeps top, last keeps
+      // bottom, middle is square.
+      { position: "only", top: "6px", bottom: "6px" },
+      { position: "first", top: "6px", bottom: "0px" },
+      { position: "middle", top: "0px", bottom: "0px" },
+      { position: "last", top: "0px", bottom: "6px" },
+    ];
+    for (const { position, top, bottom } of cases) {
+      act(() => root?.render(<FeedCard event={event()} position={position} />));
+      const card = container?.querySelector<HTMLElement>(
+        '[data-testid="mission-control-feed-card-failed"]',
+      );
+      expect(card?.style.borderTopLeftRadius, `${position} top-left`).toBe(top);
+      expect(card?.style.borderTopRightRadius, `${position} top-right`).toBe(top);
+      expect(card?.style.borderBottomLeftRadius, `${position} bottom-left`).toBe(bottom);
+      expect(card?.style.borderBottomRightRadius, `${position} bottom-right`).toBe(bottom);
+    }
+  });
+
+  it("drops the bottom border on first/middle run members so the divider is single-px", () => {
+    act(() => root?.render(<FeedCard event={event()} position="first" />));
+    const firstCard = container?.querySelector<HTMLElement>(
+      '[data-testid="mission-control-feed-card-failed"]',
+    );
+    // The card above the last member supplies its divider via borderTop; the
+    // member itself only carries the run's outer edges.
+    expect(firstCard?.style.borderBottomWidth).toBe("0px");
+    expect(firstCard?.style.borderTopWidth).toBe("1px");
+    expect(firstCard?.style.borderLeftWidth).toBe("1px");
+    expect(firstCard?.style.borderRightWidth).toBe("1px");
+
+    act(() => root?.render(<FeedCard event={event()} position="middle" />));
+    const middleCard = container?.querySelector<HTMLElement>(
+      '[data-testid="mission-control-feed-card-failed"]',
+    );
+    expect(middleCard?.style.borderBottomWidth).toBe("0px");
+    expect(middleCard?.style.borderTopWidth).toBe("1px");
+    expect(middleCard?.style.borderLeftWidth).toBe("1px");
+    expect(middleCard?.style.borderRightWidth).toBe("1px");
+
+    act(() => root?.render(<FeedCard event={event()} position="last" />));
+    const lastCard = container?.querySelector<HTMLElement>(
+      '[data-testid="mission-control-feed-card-failed"]',
+    );
+    expect(lastCard?.style.borderBottomWidth).toBe("1px");
+    expect(lastCard?.style.borderTopWidth).toBe("1px");
+  });
+
+  it("joins run members to the group frame (shared surface + border edge)", () => {
+    act(() => root?.render(<FeedCard event={event()} position="first" />));
+    const card = container?.querySelector<HTMLElement>(
+      '[data-testid="mission-control-feed-card-failed"]',
+    );
+    expect(card?.style.borderLeftColor).toBe("rgba(51,51,51,1.00)");
+    expect(card?.style.borderTopColor).toBe("rgba(51,51,51,1.00)");
+    expect(card?.style.backgroundColor).toBe("rgb(34, 34, 34)");
+  });
+
+  it("applies run corners to proposal cards too", () => {
+    const proposalEvent = event({
+      kind: "proposal",
+      headline: "Proposal (stall): recovery",
+      severity: "blocker",
+      proposal: {
+        id: "proposal-1",
+        createdAt: new Date().toISOString(),
+        origin: "stall",
+        serverId: "server-1",
+        targetAgentId: "agent-1",
+        message: "Continue whatever you were working on.",
+        deliveryMode: "interrupt",
+        reason: "No response after nudge",
+        classification: "normal",
+        status: "pending",
+      },
+    });
+
+    act(() => root?.render(<FeedCard event={proposalEvent} position="middle" />));
+    const card = container?.querySelector<HTMLElement>(
+      '[data-testid="mission-control-proposal-card"]',
+    );
+    expect(card?.style.borderTopLeftRadius).toBe("0px");
+    expect(card?.style.borderTopRightRadius).toBe("0px");
+    expect(card?.style.borderBottomLeftRadius).toBe("0px");
+    expect(card?.style.borderBottomRightRadius).toBe("0px");
+    expect(card?.style.borderBottomWidth).toBe("0px");
+    expect(card?.style.borderTopWidth).toBe("1px");
+
+    act(() => root?.render(<FeedCard event={proposalEvent} position="last" />));
+    const lastCard = container?.querySelector<HTMLElement>(
+      '[data-testid="mission-control-proposal-card"]',
+    );
+    expect(lastCard?.style.borderTopLeftRadius).toBe("0px");
+    expect(lastCard?.style.borderTopRightRadius).toBe("0px");
+    expect(lastCard?.style.borderBottomLeftRadius).toBe("6px");
+    expect(lastCard?.style.borderBottomRightRadius).toBe("6px");
+  });
+});
+
+describe("cardRunPosition", () => {
+  const card = { card: true };
+  const gap = { card: false };
+  const skip = { skip: true };
+  const classify = (row: unknown): "card" | "skip" | "gap" => {
+    if ((row as { card?: boolean }).card) {
+      return "card";
+    }
+    if ((row as { skip?: boolean }).skip) {
+      return "skip";
+    }
+    return "gap";
+  };
+
+  it("classifies a standalone card as only", () => {
+    expect(cardRunPosition([card], 0, classify)).toBe("only");
+    expect(cardRunPosition([gap, card, gap], 1, classify)).toBe("only");
+  });
+
+  it("derives first/middle/last from adjacent runs, not index parity", () => {
+    const rows = [card, card, gap, card, card, card];
+    expect(cardRunPosition(rows, 0, classify)).toBe("first");
+    expect(cardRunPosition(rows, 1, classify)).toBe("last");
+    expect(cardRunPosition(rows, 3, classify)).toBe("first");
+    expect(cardRunPosition(rows, 4, classify)).toBe("middle");
+    expect(cardRunPosition(rows, 5, classify)).toBe("last");
+  });
+
+  it("breaks runs at non-card rows", () => {
+    expect(cardRunPosition([card, gap, card], 0, classify)).toBe("only");
+    expect(cardRunPosition([card, gap, card], 2, classify)).toBe("only");
+  });
+
+  it("treats zero-height skip rows as transparent: cards around them stay one run", () => {
+    // A verbose-only stall card hidden by normal mode renders nothing and
+    // takes no height, so the cards around it are still visually adjacent.
+    expect(cardRunPosition([card, skip, card], 0, classify)).toBe("first");
+    expect(cardRunPosition([card, skip, card], 2, classify)).toBe("last");
+    // A run edge stays on the last VISIBLE card even when a skip row follows.
+    expect(cardRunPosition([card, card, skip], 1, classify)).toBe("last");
+    expect(cardRunPosition([card, card, skip], 0, classify)).toBe("first");
+  });
+
+  it("throws for a row that is not classified as a card", () => {
+    expect(() => cardRunPosition([gap], 0, classify)).toThrow();
+    expect(() => cardRunPosition([skip], 0, classify)).toThrow();
+  });
+});
+
+describe("FeedCard verdict drill-in", () => {
+  let root: Root | null = null;
+  let container: HTMLElement | null = null;
+
+  beforeEach(() => {
+    openInspectorAgentMock.mockClear();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root?.unmount());
+    container?.remove();
+    root = null;
+    container = null;
+  });
+
+  it("verdict card click opens the VERIFIER's thread, not the worker's", () => {
+    act(() => {
+      root?.render(
+        <FeedCard
+          event={event({
+            kind: "verdict",
+            source: "verifier",
+            agentId: "worker-1",
+            agentTitle: "Worker One",
+            verifierAgentId: "verifier-9",
+          })}
+        />,
+      );
+    });
+    const card = container?.querySelector('[data-testid="mission-control-feed-card-verdict"]');
+    expect(card).not.toBeNull();
+    act(() => {
+      card?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(openInspectorAgentMock).toHaveBeenCalledWith({
+      serverId: "server-1",
+      agentId: "verifier-9",
+    });
+  });
+
+  it("cards without a verifier attribution open the event's own agent", () => {
+    act(() => {
+      root?.render(
+        <FeedCard event={event({ kind: "verdict", source: "system", agentId: "worker-1" })} />,
+      );
+    });
+    const card = container?.querySelector('[data-testid="mission-control-feed-card-verdict"]');
+    act(() => {
+      card?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(openInspectorAgentMock).toHaveBeenCalledWith({
+      serverId: "server-1",
+      agentId: "worker-1",
+    });
   });
 });

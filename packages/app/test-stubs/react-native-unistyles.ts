@@ -76,6 +76,26 @@ const testTheme = {
     1: 1,
     2: 2,
   },
+  shadow: {
+    sm: {
+      shadowColor: "rgba(0, 0, 0, 0.02)",
+      shadowOffset: { width: 0, height: 2 },
+      shadowRadius: 8,
+      elevation: 2,
+    },
+    md: {
+      shadowColor: "rgba(0, 0, 0, 0.04)",
+      shadowOffset: { width: 0, height: 4 },
+      shadowRadius: 16,
+      elevation: 4,
+    },
+    lg: {
+      shadowColor: "rgba(0, 0, 0, 0.08)",
+      shadowOffset: { width: 0, height: 8 },
+      shadowRadius: 24,
+      elevation: 8,
+    },
+  },
 };
 
 type StyleFactory<T> = (theme: typeof testTheme) => T;

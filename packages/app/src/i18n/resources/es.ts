@@ -1861,10 +1861,13 @@ export const es: TranslationResources = {
             "Cuando el agente se está ejecutando, Enter interrumpe. Command/Ctrl+Enter pone en cola.",
           queue:
             "Cuando el agente se está ejecutando, Enter pone en cola. Command/Ctrl+Enter envía.",
+          steer:
+            "Cuando el agente se está ejecutando, Enter lo dirige: termina la llamada de herramienta actual, lee tu mensaje y continúa. Command/Ctrl+Enter interrumpe.",
         },
         options: {
           interrupt: "Interrumpir",
           queue: "Cola",
+          steer: "Dirigir",
         },
       },
       serviceUrls: {

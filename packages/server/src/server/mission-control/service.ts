@@ -5,7 +5,7 @@ import type {
   AgentManagerEvent,
   ManagedAgent,
 } from "../agent/agent-manager.js";
-import type { AgentStorage } from "../agent/agent-storage.js";
+import type { AgentStorage, StoredAgentRecord } from "../agent/agent-storage.js";
 import type { AgentStreamEvent } from "../agent/agent-sdk-types.js";
 import type { AgentTimelineRow } from "../agent/agent-timeline-store-types.js";
 import { dispatchLocalPromptMode } from "../agent/tools/paseo-tools.js";
@@ -42,6 +42,7 @@ import {
   type ResolvedMissionControlCentralConfig,
 } from "./config.js";
 import type { AgentNamingService } from "./naming.js";
+import { TurnLifecycleLog } from "./turn-lifecycle-log.js";
 
 const STALL_SWEEP_INTERVAL_MS = 30_000;
 const DAILY_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -54,6 +55,24 @@ const MISSION_CONTROL_LABEL_PREFIX = "paseo.mission-control";
 const SELF_REPORT_RATE_LIMIT_MS = 60_000;
 /** Exponential-backoff ceiling for nudge intervals: 30 minutes. */
 const NUDGE_BACKOFF_CAP_MS = 30 * 60 * 1000;
+/**
+ * Honest-steer-delivery verification window: after an out-of-band steer
+ * (`tryRunOutOfBand` reported handled), the agent must produce timeline
+ * activity within this window or the proposal is marked undelivered and the
+ * recovery interrupt is proposed. Measured nudge→response latency: healthy
+ * agents 5–90s (median 76s over n=2); the wedged agent's own pathological
+ * tail starts at 173s. 90s separates a working loop from a wedged one without
+ * ever flagging a healthy one.
+ */
+const STEER_DELIVERY_VERIFY_MS = 90_000;
+/**
+ * Commander watchdog: the Commander is excluded from stall nudges/escalation
+ * by design, so a Commander looping on a failing tool looks frozen forever.
+ * After this many consecutive failed calls of the SAME tool in one turn, with
+ * validation/not-configured class errors, a single Needs-you card is emitted.
+ * Card only — the Commander is never nudged or interrupted.
+ */
+const COMMANDER_TOOL_LOOP_THRESHOLD = 3;
 
 /**
  * Effective nudge interval for a trigger after `priorNudges` nudges of that
@@ -67,6 +86,40 @@ export function nudgeBackoffMs(baseSeconds: number, priorNudges: number): number
     return Math.min(baseMs, NUDGE_BACKOFF_CAP_MS);
   }
   return Math.min(baseMs * 2 ** priorNudges, NUDGE_BACKOFF_CAP_MS);
+}
+
+/** Best-effort text of a tool-call failure, for the Commander watchdog. */
+function toolCallErrorMessage(error: unknown): string {
+  if (typeof error === "string") {
+    return error;
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string"
+  ) {
+    return (error as { message: string }).message;
+  }
+  return String(error);
+}
+
+/**
+ * The provider-rejection classes the Commander watchdog watches for: spawn
+ * schema-validation failures ("provider must be provider/model, for example
+ * codex/gpt-5.4") and "Provider X is not configured" runtime rejections. These
+ * are the errors a looping Commander produces when it cannot find an
+ * invocable provider string.
+ */
+function isProviderRejectionError(message: string): boolean {
+  return (
+    /not configured/i.test(message) ||
+    /provider must be provider\/model/i.test(message) ||
+    /provider must be <provider>\/<model>/i.test(message)
+  );
 }
 
 interface StallTracking {
@@ -104,6 +157,15 @@ interface StallTracking {
   deadSince: number | null;
   /** Watchdog already self-healed this run; skip re-healing until lifecycle change. */
   healed: boolean;
+  /** When this run started (lifecycle → running, or boot adoption seed). */
+  runStartedAt: number;
+  /** When the current turn started (turn_started stream event); null pre-first-turn. */
+  lastTurnStartedAt: number | null;
+  /** Dormant-turn detector: the recovery interrupt was already proposed for
+   *  this run (once per run — a wedged loop must not re-card every sweep).
+   *  Cleared with the nudge guard on report_status (a landed self-report
+   *  proves the loop advanced) and reset on a new run. */
+  dormantRecoveredAt: number | null;
 }
 
 export interface MissionControlServiceOptions {
@@ -129,8 +191,27 @@ export interface MissionControlServiceOptions {
   /**
    * Ephemeral verifier dispatcher (VerifierSlice's MissionControlVerifierDispatcher).
    * Optional so the service boots without it; bootstrap wires it.
+   * approveVerifierSpawn continues a spawn-kind verifier proposal once the
+   * user approves it (or auto mode sends it).
    */
-  verifier?: { start(): void | Promise<void>; stop(): void | Promise<void> } | null;
+  verifier?: {
+    start(): void | Promise<void>;
+    stop(): void | Promise<void>;
+    approveVerifierSpawn?: (
+      proposal: MissionControlProposal,
+    ) => Promise<{ ok: true; agentId?: string } | { ok: false; error: string }>;
+    deliverReplyToVerifier?: (proposal: MissionControlProposal) => Promise<void>;
+  } | null;
+  /**
+   * Execute a commander-origin spawn-kind proposal (create_agent /
+   * fleet_create_agent called by the Commander): reconstruct the create from
+   * the proposal's spawnPlan and spawn. Wired by bootstrap where the create
+   * command + fleet client resolution live; absent → spawn proposals resolve
+   * with an error (never bounce back to pending).
+   */
+  spawnFromProposal?: (
+    proposal: MissionControlProposal,
+  ) => Promise<{ ok: true; agentId?: string } | { ok: false; error: string }>;
   /**
    * Archive the current Commander and spawn a fresh one with a new context
    * pack (mission_control.commander.reset). Wired by bootstrap with the full
@@ -153,11 +234,26 @@ export interface MissionControlServiceConfig {
     silenceNudgeSeconds: number;
     statusNudgeSeconds: number;
     escalateSeconds: number;
+    /** Dormant-turn detector: no output AND no tool in flight for this long
+     *  → the turn is treated as wedged and recovered via the interrupt path. */
+    dormantTurnSeconds: number;
   };
 }
 
+/**
+ * The agent's identity AFTER a report_status landed, echoed in the tool result
+ * ONLY when it drifted from what the agent just sent (changed externally: a
+ * backfill, the user, another surface, or a silently failed identity write).
+ * Absent sides mean "the agent's own values are current — nothing to correct";
+ * present sides carry the stored value (null when the record holds none).
+ */
+export interface SelfReportIdentity {
+  title: string | null;
+  description: string | null;
+}
+
 export type SelfReportResult =
-  | { ok: true; event: MissionControlEvent }
+  | { ok: true; event: MissionControlEvent; identity: Partial<SelfReportIdentity> }
   | { ok: false; reason: "excluded" | "rate_limited"; message: string };
 
 export type ReviewStateListener = (
@@ -179,19 +275,77 @@ export class MissionControlService {
   private readonly presenceSource: MissionControlPresenceSource;
   private readonly naming: AgentNamingService | null;
   private readonly resetCommanderFn: MissionControlServiceOptions["resetCommander"];
+  private readonly spawnFromProposal: MissionControlServiceOptions["spawnFromProposal"];
   readonly approvals: MissionControlApprovals;
 
   private readonly timelineRows = new Map<string, AgentTimelineRow[]>();
+  /**
+   * When the agent's CURRENT (most recent) run started (ms epoch). Unlike
+   * stallTracking.runStartedAt this survives run end, so the finished-
+   * attention handler can bound "at least one report_status in this run"
+   * when deciding ready-for-review under evaluationScope "all". Seeded at
+   * the lifecycle→running transition and at boot adoption.
+   */
+  private readonly runStartedAtByAgent = new Map<string, number>();
   private readonly lifecycleByAgent = new Map<string, AgentLifecycleStatus>();
   private readonly attentionKeyByAgent = new Map<string, string>();
   private readonly blockedByAgent = new Set<string>();
   private readonly stalledByAgent = new Set<string>();
   private readonly stallTracking = new Map<string, StallTracking>();
   private readonly excludedAgentIds = new Set<string>();
+  /** Commander tool-loop watchdog state, keyed by agentId (see COMMANDER_TOOL_LOOP_THRESHOLD). */
+  private readonly commanderToolLoops = new Map<
+    string,
+    { toolName: string; consecutive: number; lastError: string; cardSent: boolean }
+  >();
   private readonly reviewStateListeners = new Set<ReviewStateListener>();
   private readonly selfReportListeners = new Set<(event: MissionControlEvent) => void>();
   /** First observation of a dead-runtime running record (periodic scan). */
   private readonly recordDeadSince = new Map<string, number>();
+  /**
+   * In-flight tool calls per agent (callIds of tool_call timeline items with
+   * status "running" not yet closed by completed/failed/canceled). This is
+   * the server-side mirror of omp's tool_execution_start/end rows: a
+   * NON-EMPTY set means the agent is inside a declared tool call (e.g. a
+   * 30-minute `hub wait`) and is WORKING, never dormant. The dormant-turn
+   * detector only fires when this set is EMPTY — "no unmatched in-flight tool
+   * call" is the distinguishing signal.
+   */
+  private readonly inFlightToolsByAgent = new Map<string, Set<string>>();
+  /** When each in-flight tool call started (agentId → callId → ms epoch), for ages. */
+  private readonly toolStartedAtByAgent = new Map<string, Map<string, number>>();
+  /**
+   * Last non-machinery stream event per agent (any agent, tracked or not).
+   * Independent of stallTracking so steer-delivery verification and the
+   * dormant detector read honest activity even across a run boundary.
+   */
+  private readonly lastActivityAtByAgent = new Map<string, number>();
+  /**
+   * Honest-steer-delivery verification: out-of-band steers whose handled
+   * dispatch must be confirmed by real agent activity within the window.
+   * Keyed by agentId; one pending verification per agent (newer replaces).
+   * The 90s clock ONLY starts when no tool call is in flight — a steer
+   * queued behind a legitimately long non-interruptible tool (a 5-minute
+   * build) is correctly pending, never evidence of stranding (see
+   * deferredSteerVerifications).
+   */
+  private readonly steerVerifications = new Map<
+    string,
+    { proposalId: string; armedAt: number; deadline: number }
+  >();
+  /**
+   * Steers that arrived while a tool call was in flight: the verification
+   * clock is suspended until the in-flight tool set empties (trackTurnLifecycle
+   * promotes the entry into steerVerifications at tool termination). Without
+   * this, a steer queued behind a long tool would false-positive "undelivered"
+   * and the recovery interrupt would destroy the healthy in-flight tool call.
+   */
+  private readonly deferredSteerVerifications = new Map<
+    string,
+    { proposalId: string; armedAt: number }
+  >();
+  /** Retained turn-step lifecycle record (bounded rotation, see class doc). */
+  private readonly lifecycleLog: TurnLifecycleLog;
   private unsubscribe: (() => void) | null = null;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
   private pruneTimer: ReturnType<typeof setInterval> | null = null;
@@ -209,8 +363,13 @@ export class MissionControlService {
     this.presenceSource = options.presence;
     this.naming = options.naming ?? null;
     this.resetCommanderFn = options.resetCommander;
+    this.spawnFromProposal = options.spawnFromProposal;
     this.bootedAtMs = Date.now();
     this.store = new MissionControlStore({ paseoHome: options.paseoHome, logger: this.logger });
+    this.lifecycleLog = new TurnLifecycleLog({
+      paseoHome: options.paseoHome,
+      logger: this.logger,
+    });
     this.centralConfig =
       options.centralConfig ??
       new CentralMissionControlConfigStore({
@@ -227,6 +386,20 @@ export class MissionControlService {
       logger: this.logger,
       getMode: () => this.centralConfig.get().mode,
       deliver: async (input) => {
+        // Worker→verifier reply relay: a verifier-origin proposal targeting
+        // the verifier itself must be run by the dispatcher (runVerifierTurn)
+        // so its turn-end tracking stays armed — the generic dispatch below
+        // cannot attach the dispatcher's completion handler.
+        if (
+          input.proposal &&
+          input.proposal.origin === "verifier" &&
+          input.proposal.verifierAgentId &&
+          input.proposal.verifierAgentId === input.agentId &&
+          this.verifier?.deliverReplyToVerifier
+        ) {
+          await this.verifier.deliverReplyToVerifier(input.proposal);
+          return;
+        }
         // User always outranks: never dispatch machinery to an agent whose
         // last run was user-stopped — the steer would restart a run the user
         // explicitly stopped. Checked here, immediately before dispatch, so a
@@ -236,9 +409,11 @@ export class MissionControlService {
         }
         // Same delivery semantics as fleet_send_prompt: busy omp turns are
         // live-steered out-of-band (/steer, instant, non-cancelling); idle
-        // agents run normally; busy providers without a steer path queue
-        // until idle. Stall nudges always target mid-run agents, so a busy
-        // target must never fail the delivery.
+        // agents run normally. A busy provider WITHOUT a native steer path is
+        // interrupted (replaceRunning) — a steer's value is timely delivery,
+        // and queue-until-idle can sit for tens of minutes. "queue" mode
+        // waits for idle instead. Stall nudges always target mid-run agents,
+        // so a busy target must never fail the delivery.
         //
         // Ack retraction must fire on EVERY machinery dispatch path: when the
         // target is the Commander, arm the shared ack-drop tracker so a pure
@@ -258,7 +433,23 @@ export class MissionControlService {
             agentId: input.agentId,
             prompt: input.message,
             mode: input.deliveryMode,
+            classification: input.classification,
+            // Proposal delivery (escalation recovery, verifier contact,
+            // commander steer) superseding a busy run is machinery-originated:
+            // the superseded run keeps the failure treatment.
+            replaceOrigin: "machinery",
+            recordStopOrigin: (agentId, origin) => this.store.recordStopOrigin(agentId, origin),
             logger: this.logger,
+            // Honest steer delivery: a handled out-of-band steer must be
+            // confirmed by real agent activity within the verification window.
+            // tryRunOutOfBand returning true means the prompt was handed to
+            // the provider runtime — but the wedged-omp incident showed that
+            // can be a lie: the steer vanished into a parked loop while Paseo
+            // recorded "sent". Arm the verification so a silent agent flips
+            // the proposal to undelivered and escalates instead.
+            onOutOfBandSteer: () => {
+              this.armSteerDeliveryVerification(input.agentId, input.proposal);
+            },
           });
         } catch (error) {
           if (commanderTarget) {
@@ -270,6 +461,21 @@ export class MissionControlService {
       publishProposalEvent: async (proposal) => {
         const event = await this.emitProposalEvent(proposal);
         return { id: event.id };
+      },
+      // Single spawn execution path for spawn-kind proposals (approve or auto
+      // mode): verifier spawns continue in the dispatcher; Commander spawns
+      // reconstruct from the proposal's spawnPlan (bootstrap-wired).
+      spawn: async (proposal) => {
+        if (proposal.origin === "verifier") {
+          if (!this.verifier?.approveVerifierSpawn) {
+            return { ok: false, error: "Verifier dispatcher is not available" };
+          }
+          return this.verifier.approveVerifierSpawn(proposal);
+        }
+        if (!this.spawnFromProposal) {
+          return { ok: false, error: "Spawn executor is not available" };
+        }
+        return this.spawnFromProposal(proposal);
       },
     };
   }
@@ -669,6 +875,9 @@ export class MissionControlService {
       tracking.lastNudgeAt = null;
       tracking.lastNudgeTrigger = null;
       tracking.escalatedAt = null;
+      // A landed self-report proves the turn loop advanced: the dormant-turn
+      // recovery latch clears (a fresh dormancy gets a fresh recovery).
+      tracking.dormantRecoveredAt = null;
       // Compliance breaks the consecutive-unanswered streak: backoff widens
       // only on unanswered nudges, so a report_status returns both triggers
       // to their configured base intervals.
@@ -682,6 +891,11 @@ export class MissionControlService {
         ...(input.description !== undefined ? { description: input.description } : {}),
       });
     }
+    // Echo the agent's identity in the tool result ONLY when it drifted from
+    // what the agent just sent — someone else changed it (backfill, the user,
+    // another surface) or the write silently failed. The echo exists to
+    // correct external drift, not to restate what the agent just told us.
+    const identity = await this.readSelfReportIdentity(agentId, input);
     if (input.status === "completed") {
       // Ready-for-review accrues only from rollout onward; pre-rollout agents
       // stay dormant even when a finish event predates the rollout marker.
@@ -697,7 +911,39 @@ export class MissionControlService {
         this.logger.warn({ err: error, agentId }, "mission_control.self_report_listener_failed");
       }
     }
-    return { ok: true, event };
+    return { ok: true, event, identity };
+  }
+
+  /**
+   * The agent's stored identity, echoed ONLY on sides that drifted from what
+   * the agent just sent. The echo exists to correct external drift (a
+   * backfill, the user, another surface) or a silently failed identity write —
+   * not to restate values the agent just set itself. Sides the agent did not
+   * send are never echoed (the agent made no claim about them). A stored side
+   * that is null while the agent sent a value is drift too (the write did not
+   * stick) and echoes as null.
+   */
+  private async readSelfReportIdentity(
+    agentId: string,
+    input: MissionControlReportStatusInput,
+  ): Promise<Partial<SelfReportIdentity>> {
+    let record: Pick<StoredAgentRecord, "title" | "shortDescription"> | null = null;
+    try {
+      record = await this.agentStorage.get(agentId);
+    } catch {
+      record = null;
+    }
+    const drift: Partial<SelfReportIdentity> = {};
+    if (input.title !== undefined && (record?.title?.trim() ?? null) !== input.title.trim()) {
+      drift.title = record?.title ?? null;
+    }
+    if (
+      input.description !== undefined &&
+      (record?.shortDescription?.trim() ?? null) !== input.description.trim()
+    ) {
+      drift.description = record?.shortDescription ?? null;
+    }
+    return drift;
   }
 
   /**
@@ -726,6 +972,11 @@ export class MissionControlService {
   }
 
   private handleAgentState(agent: ManagedAgent): void {
+    if (agent.lifecycle !== "running") {
+      // A run boundary (idle, closed, archived) invalidates any in-turn
+      // Commander tool-loop streak.
+      this.commanderToolLoops.delete(agent.id);
+    }
     if (this.isExcludedAgent(agent)) {
       this.excludedAgentIds.add(agent.id);
       return;
@@ -740,9 +991,20 @@ export class MissionControlService {
         // describes who stopped the agent's LAST run ("user" would otherwise
         // stick to an agent that later ran and finished on its own).
         this.store.recordStopOrigin(agent.id, null);
+        // A new run means any in-flight tool state from the previous run is
+        // stale (a wedged/interrupted run may never have closed its tools).
+        this.inFlightToolsByAgent.delete(agent.id);
+        this.toolStartedAtByAgent.delete(agent.id);
+        this.steerVerifications.delete(agent.id);
+        this.deferredSteerVerifications.delete(agent.id);
+        const runStartedAt = Date.now();
+        // Bounds "this run" for the ready-for-review predicate (scope "all"):
+        // kept past run end because stallTracking is torn down at the run
+        // boundary BEFORE the finished-attention handler consults it.
+        this.runStartedAtByAgent.set(agent.id, runStartedAt);
         this.stallTracking.set(agent.id, {
-          lastStreamAt: Date.now(),
-          lastStatusAt: Date.now(),
+          lastStreamAt: runStartedAt,
+          lastStatusAt: runStartedAt,
           nudgedAt: null,
           lastNudgeAt: null,
           lastNudgeTrigger: null,
@@ -751,6 +1013,18 @@ export class MissionControlService {
           escalatedAt: null,
           deadSince: null,
           healed: false,
+          runStartedAt,
+          lastTurnStartedAt: null,
+          dormantRecoveredAt: null,
+        });
+        this.logger.info(
+          { component: "turn-lifecycle", agentId: agent.id, provider: agent.provider },
+          "agent.run.started",
+        );
+        this.lifecycleLog.write({
+          event: "run_started",
+          agentId: agent.id,
+          provider: agent.provider,
         });
         if (!this.inRestartGrace()) {
           void this.emitEvent({
@@ -762,9 +1036,34 @@ export class MissionControlService {
           });
         }
       }
+      // A replace in progress carries who superseded the in-flight run
+      // (AgentRunOptions.replaceOrigin): record it as the stop origin so the
+      // superseded run's terminal failure reads as that party's interruption
+      // instead of an unexplained error. Cleared on the next non-replace run
+      // transition above (and the manager clears the flag when the
+      // replacement turn starts).
+      if (agent.pendingReplacementOrigin !== null) {
+        this.store.recordStopOrigin(agent.id, agent.pendingReplacementOrigin);
+      }
     } else if (previousLifecycle === "running") {
       this.stallTracking.delete(agent.id);
       this.stalledByAgent.delete(agent.id);
+      // Run ended: per-run detector state is stale — tools can no longer be
+      // "in flight", and a pending steer verification is moot (the run
+      // boundary itself is activity).
+      this.inFlightToolsByAgent.delete(agent.id);
+      this.toolStartedAtByAgent.delete(agent.id);
+      this.steerVerifications.delete(agent.id);
+      this.deferredSteerVerifications.delete(agent.id);
+      this.logger.info(
+        { component: "turn-lifecycle", agentId: agent.id, lifecycle: agent.lifecycle },
+        "agent.run.ended",
+      );
+      this.lifecycleLog.write({
+        event: "run_ended",
+        agentId: agent.id,
+        lifecycle: agent.lifecycle,
+      });
     }
 
     if (agent.attention.requiresAttention) {
@@ -779,16 +1078,21 @@ export class MissionControlService {
             severity: "info",
             headline: "Finished",
           });
-          // A finished run moves the agent to ready-for-review (rollout onward).
+          // A finished run moves the agent to ready-for-review (rollout
+          // onward; scope "all" requires an auditable run — see
+          // markReadyForReview).
           void this.markReadyForReview(agent.id);
         } else if (reason === "error") {
-          void this.emitEvent({
-            agentId: agent.id,
-            kind: "failed",
-            source: "system",
-            severity: "attention",
-            headline: "Failed with an error",
-          });
+          // A run superseded by the USER (interrupt-and-send) is an
+          // interruption, not a failure: distinct kind + non-error tone. The
+          // gate needs the user origin AND (the supersede still in progress
+          // OR the failure being the runtime's user-abort signature) — a
+          // genuine failure, a machinery interrupt, or a crash still renders
+          // as the failure card.
+          this.emitRunTerminalErrorCard(
+            agent.id,
+            this.isUserSupersedeFailure(agent.id, agent.lastError),
+          );
         }
       }
     } else {
@@ -811,12 +1115,62 @@ export class MissionControlService {
     }
   }
 
+  /**
+   * A finished run moves the agent to ready-for-review (rollout onward).
+   * Under evaluationScope "all" a bare run end is NOT an audit trigger: a
+   * hand-started conversational session that simply finished a turn has no
+   * launch brief and no self-reported status — nothing for a verifier to
+   * audit, and verifying it would interrupt healthy work for a guaranteed
+   * "insufficient". Only a run with a launch brief AND at least one
+   * report_status this run (a dispatched worker that reported progress)
+   * earns ready-for-review here; a `status: "completed"` report is the
+   * explicit, scope-independent path (reportSelfStatus). Under "commander"
+   * scope the verifier's own scope filter decides, so every finished run
+   * stays marked ready exactly as before.
+   */
   private async markReadyForReview(agentId: string): Promise<void> {
     if (this.store.getRolloutTs() === null) {
       return;
     }
+    if (this.centralConfig.get().evaluationScope === "all" && !this.hasAuditableRun(agentId)) {
+      return;
+    }
     await this.store.setReviewState(agentId, "ready");
     this.notifyReviewState(agentId);
+  }
+
+  /**
+   * Scope-"all" auditable-run predicate (see markReadyForReview): the agent
+   * was DISPATCHED — its timeline holds a launch brief (a non-empty
+   * user_message row) — AND it reported status at least once in the current
+   * run (a self-sourced mission-control event at/after the run start).
+   * Reuses the per-agent timeline buffer and the store's self-report feed
+   * (the verifier's own context pack reads the same records), so no new
+   * persistence is introduced. A conversational session never satisfies it:
+   * without report_status history a finished turn produces no audit.
+   */
+  private hasAuditableRun(agentId: string): boolean {
+    const rows = this.timelineRows.get(agentId) ?? [];
+    const hasLaunchBrief = rows.some(
+      (row) => row.item.type === "user_message" && row.item.text.trim().length > 0,
+    );
+    if (!hasLaunchBrief) {
+      return false;
+    }
+    // The run start is always known here: the finished attention arrives via
+    // handleAgentState, which recorded the run's lifecycle→running transition
+    // (or a boot-adoption seed) before any report could land. Missing means
+    // we never observed this run start, so nothing can be proven "this run".
+    const runStartedAt = this.runStartedAtByAgent.get(agentId);
+    if (runStartedAt === undefined) {
+      return false;
+    }
+    return this.fetchEvents({ includeSuperseded: true }).some(
+      (event) =>
+        event.agentId === agentId &&
+        event.source === "self" &&
+        Date.parse(event.ts) >= runStartedAt,
+    );
   }
 
   private handleAgentStream(
@@ -825,22 +1179,56 @@ export class MissionControlService {
     seq?: number,
     timestamp?: string,
   ): void {
+    const now = Date.now();
     if (this.excludedAgentIds.has(agentId) || this.isExcludedAgent(null, agentId)) {
+      // Excluded agents (MC-labeled: Commander, verifiers) never reach the
+      // stall machinery — so the Commander tool-loop watchdog runs here.
+      this.trackCommanderToolLoop(agentId, event);
+      // Commander stream events still satisfy a pending steer verification
+      // (a steer to the Commander must be verified like any other): record
+      // real activity so an out-of-band steer to an excluded agent is never
+      // falsely marked undelivered. A tool's own terminal row is NOT steer
+      // activity (the tool predates the steer).
+      if (!isMachineryRow(event) && !isToolTerminalRow(event)) {
+        this.lastActivityAtByAgent.set(agentId, now);
+        this.steerVerifications.delete(agentId);
+      }
       return;
     }
     const tracking = this.stallTracking.get(agentId);
+    // Turn-step bookkeeping: in-flight tool calls (the dormant detector's
+    // "working" signal) and the retained lifecycle record.
+    this.trackTurnLifecycle(agentId, event, now, tracking);
+    const machineryRow = isMachineryRow(event);
+    if (!machineryRow && !isToolTerminalRow(event)) {
+      // Any real stream event is activity: it satisfies the dormant
+      // detector's "no timeline output" signal and any pending steer
+      // delivery verification. A tool's own terminal row is deliberately
+      // excluded from the steer-verification activity signal: the tool was
+      // already in flight when the steer arrived, so its conclusion is not
+      // the steer's effect (and counting it would let a steer queued behind
+      // a long tool pass as "verified" without ever being processed).
+      this.lastActivityAtByAgent.set(agentId, now);
+      this.steerVerifications.delete(agentId);
+    }
     if (tracking) {
-      // Any timeline activity resets the silence-trigger clock (and counts as
-      // a response to a nudge for escalation) but does NOT reset the
-      // cadence-trigger clock or the outstanding-nudge guard: only a
-      // report_status landing does that. A user prompt resets the nudge
-      // backoff counters.
-      tracking.lastStreamAt = Date.now();
-      if (event.type === "timeline" && event.item.type === "user_message") {
-        tracking.silenceNudges = 0;
-        tracking.statusNudges = 0;
+      if (!machineryRow) {
+        // Machinery-originated rows (the status-ask nudge's own timeline
+        // placeholder) are the tracker's prompts, never agent activity: they
+        // must not reset the silence clock, count as a response to a nudge
+        // for escalation, or reset the backoff counters. Any other timeline
+        // activity resets the silence-trigger clock (and counts as a
+        // response to a nudge for escalation) but does NOT reset the
+        // cadence-trigger clock or the outstanding-nudge guard: only a
+        // report_status landing does that. A user prompt resets the nudge
+        // backoff counters.
+        tracking.lastStreamAt = now;
+        if (event.type === "timeline" && event.item.type === "user_message") {
+          tracking.silenceNudges = 0;
+          tracking.statusNudges = 0;
+        }
+        this.stalledByAgent.delete(agentId);
       }
-      this.stalledByAgent.delete(agentId);
     }
     if (event.type === "timeline" && seq !== undefined) {
       const row: AgentTimelineRow = {
@@ -855,13 +1243,10 @@ export class MissionControlService {
     }
     if (event.type === "turn_failed" && this.attentionKeyByAgent.get(agentId) !== "error") {
       this.attentionKeyByAgent.set(agentId, "error");
-      void this.emitEvent({
-        agentId,
-        kind: "failed",
-        source: "system",
-        severity: "attention",
-        headline: "Failed with an error",
-      });
+      // Same origin gate as handleAgentState's error branch: a turn failed
+      // because a USER prompt superseded it renders as an interruption,
+      // everything else as the failure card.
+      this.emitRunTerminalErrorCard(agentId, this.isUserSupersedeFailure(agentId, event.error));
       return;
     }
     if (event.type === "permission_requested" && !this.blockedByAgent.has(agentId)) {
@@ -872,6 +1257,215 @@ export class MissionControlService {
         source: "system",
         severity: "blocker",
         headline: "Waiting for permission",
+      });
+    }
+  }
+
+  /**
+   * Turn-step lifecycle bookkeeping for the managed (non-excluded)
+   * population: in-flight tool-call sets (the dormant detector's "working"
+   * signal — a non-empty set means the agent is inside a declared tool call
+   * and is NEVER flagged) plus the retained lifecycle record and greppable
+   * pino lines under component "turn-lifecycle" (module "mission-control").
+   *
+   * Ages: runAgeMs = time since the run started; turnAgeMs = time since the
+   * current turn started; toolDurationMs = the tool call's own duration.
+   */
+  private trackTurnLifecycle(
+    agentId: string,
+    event: AgentStreamEvent,
+    now: number,
+    tracking: StallTracking | undefined,
+  ): void {
+    const runAgeMs = tracking ? now - tracking.runStartedAt : null;
+    if (event.type === "turn_started") {
+      if (tracking) {
+        tracking.lastTurnStartedAt = now;
+      }
+      this.logger.info(
+        { component: "turn-lifecycle", agentId, turnId: event.turnId, runAgeMs },
+        "agent.turn.started",
+      );
+      this.lifecycleLog.write({
+        event: "turn_started",
+        agentId,
+        turnId: event.turnId,
+        runAgeMs,
+      });
+      return;
+    }
+    if (
+      event.type === "turn_completed" ||
+      event.type === "turn_failed" ||
+      event.type === "turn_canceled"
+    ) {
+      const turnAgeMs = tracking?.lastTurnStartedAt ? now - tracking.lastTurnStartedAt : null;
+      // A turn boundary closes any tool rows the runtime never closed (e.g.
+      // an interrupt mid-tool call): the in-flight set is per-turn.
+      this.inFlightToolsByAgent.delete(agentId);
+      this.toolStartedAtByAgent.delete(agentId);
+      this.promoteDeferredSteerVerification(agentId, now);
+      this.logger.info(
+        { component: "turn-lifecycle", agentId, type: event.type, turnAgeMs, runAgeMs },
+        "agent.turn.ended",
+      );
+      this.lifecycleLog.write({
+        event: "turn_ended",
+        agentId,
+        type: event.type,
+        turnAgeMs,
+        runAgeMs,
+      });
+      return;
+    }
+    if (event.type !== "timeline" || event.item.type !== "tool_call") {
+      return;
+    }
+    this.trackToolCallLifecycle(agentId, event.item, now, runAgeMs);
+  }
+
+  /**
+   * In-flight tool-call bookkeeping for one tool_call timeline item. A
+   * "running" row opens the call (added to the in-flight set — the dormant
+   * detector's "working" signal); a completed/failed/canceled row closes it
+   * and, when the set empties, starts the clock for any steer delivery
+   * verification that was deferred behind this tool (the omp strand happens
+   * AFTER the interruptible tool was aborted — nothing in flight, no further
+   * rows — which is exactly the state the freshly armed verification watches
+   * for).
+   */
+  private trackToolCallLifecycle(
+    agentId: string,
+    item: Extract<AgentStreamEvent, { type: "timeline" }>["item"] & { type: "tool_call" },
+    now: number,
+    runAgeMs: number | null,
+  ): void {
+    if (item.status === "running") {
+      let tools = this.inFlightToolsByAgent.get(agentId);
+      if (!tools) {
+        tools = new Set();
+        this.inFlightToolsByAgent.set(agentId, tools);
+      }
+      tools.add(item.callId);
+      let starts = this.toolStartedAtByAgent.get(agentId);
+      if (!starts) {
+        starts = new Map();
+        this.toolStartedAtByAgent.set(agentId, starts);
+      }
+      starts.set(item.callId, now);
+      this.logger.debug(
+        { component: "turn-lifecycle", agentId, callId: item.callId, tool: item.name, runAgeMs },
+        "agent.tool.started",
+      );
+      this.lifecycleLog.write({
+        event: "tool_started",
+        agentId,
+        callId: item.callId,
+        tool: item.name,
+        runAgeMs,
+      });
+      return;
+    }
+    // completed | failed | canceled — closes the unmatched running row.
+    this.inFlightToolsByAgent.get(agentId)?.delete(item.callId);
+    const startedAt = this.toolStartedAtByAgent.get(agentId)?.get(item.callId) ?? null;
+    if (startedAt !== null) {
+      this.toolStartedAtByAgent.get(agentId)?.delete(item.callId);
+    }
+    if ((this.inFlightToolsByAgent.get(agentId)?.size ?? 0) === 0) {
+      this.promoteDeferredSteerVerification(agentId, now);
+    }
+    this.logger.debug(
+      {
+        component: "turn-lifecycle",
+        agentId,
+        callId: item.callId,
+        tool: item.name,
+        status: item.status,
+        toolDurationMs: startedAt !== null ? now - startedAt : null,
+        runAgeMs,
+      },
+      "agent.tool.result",
+    );
+    this.lifecycleLog.write({
+      event: "tool_result",
+      agentId,
+      callId: item.callId,
+      tool: item.name,
+      status: item.status,
+      toolDurationMs: startedAt !== null ? now - startedAt : null,
+      runAgeMs,
+    });
+  }
+
+  /**
+   * Commander watchdog (narrow coverage for the otherwise-excluded class):
+   * track consecutive failed calls of the SAME tool within one turn whose
+   * errors are provider validation/not-configured rejections. At
+   * COMMANDER_TOOL_LOOP_THRESHOLD, emit exactly ONE Needs-you card naming the
+   * tool and the last error, so a looping Commander surfaces instead of
+   * appearing frozen. Card only — the Commander is never nudged or
+   * interrupted, and worker stall behavior is untouched (only MC-labeled
+   * agents reach this path).
+   */
+  private trackCommanderToolLoop(agentId: string, event: AgentStreamEvent): void {
+    const agent = this.agentManager.getAgent(agentId);
+    if (!agent || !hasMissionControlLabels(agent.labels)) {
+      return;
+    }
+    if (
+      event.type === "turn_completed" ||
+      event.type === "turn_failed" ||
+      event.type === "turn_canceled"
+    ) {
+      // The streak is per-turn: a turn boundary clears it so a fresh turn can
+      // surface again if it loops.
+      this.commanderToolLoops.delete(agentId);
+      return;
+    }
+    if (event.type !== "timeline" || event.item.type !== "tool_call") {
+      return;
+    }
+    const item = event.item;
+    if (item.status === "completed") {
+      // A successful call of the tracked tool breaks the consecutive streak.
+      const tracker = this.commanderToolLoops.get(agentId);
+      if (tracker && tracker.toolName === item.name) {
+        this.commanderToolLoops.delete(agentId);
+      }
+      return;
+    }
+    if (item.status !== "failed") {
+      return;
+    }
+    const message = toolCallErrorMessage(item.error);
+    if (!isProviderRejectionError(message)) {
+      return;
+    }
+    const previous = this.commanderToolLoops.get(agentId);
+    const consecutive = previous && previous.toolName === item.name ? previous.consecutive + 1 : 1;
+    const tracker = {
+      toolName: item.name,
+      consecutive,
+      lastError: message,
+      // One card per turn: keep the sent flag across streak increments so a
+      // turn that keeps failing past the threshold does not re-card.
+      cardSent: previous?.toolName === item.name ? previous.cardSent : false,
+    };
+    this.commanderToolLoops.set(agentId, tracker);
+    if (tracker.consecutive >= COMMANDER_TOOL_LOOP_THRESHOLD && !tracker.cardSent) {
+      tracker.cardSent = true;
+      this.logger.warn(
+        { component: "commander-watchdog", agentId, tool: item.name, consecutive, error: message },
+        "Commander looping on a failing tool; Needs-you card emitted",
+      );
+      void this.emitEvent({
+        agentId,
+        kind: "blocked",
+        source: "system",
+        severity: "blocker",
+        headline: `Commander needs you: "${item.name}" keeps failing`,
+        detail: `${item.name} failed ${consecutive} times in a row this turn — last error: ${message.slice(0, 200)}`,
       });
     }
   }
@@ -902,8 +1496,10 @@ export class MissionControlService {
       return;
     }
     const now = Date.now();
-    const { silenceNudgeSeconds, statusNudgeSeconds, escalateSeconds } = this.readConfig().stall;
+    const { silenceNudgeSeconds, statusNudgeSeconds, escalateSeconds, dormantTurnSeconds } =
+      this.readConfig().stall;
     const escalateMs = escalateSeconds * 1000;
+    const dormantMs = dormantTurnSeconds * 1000;
     for (const [agentId, tracking] of this.stallTracking) {
       if (this.stalledByAgent.has(agentId)) {
         continue;
@@ -926,15 +1522,44 @@ export class MissionControlService {
       const respondedAfterNudge =
         tracking.nudgedAt !== null &&
         (tracking.lastStatusAt > tracking.nudgedAt || tracking.lastStreamAt > tracking.nudgedAt);
+      // One recovery proposal per lapse, shared across mechanisms: the stall
+      // escalation and the dormant-turn detector each fire only while the
+      // OTHER has not already recovered this lapse (escalatedAt /
+      // dormantRecoveredAt — both cleared on a landed report_status and on
+      // run end). A wedged loop must never stack recovery cards.
       if (
         tracking.nudgedAt !== null &&
         tracking.escalatedAt === null &&
+        tracking.dormantRecoveredAt === null &&
         !respondedAfterNudge &&
         now - tracking.nudgedAt >= escalateMs
       ) {
         this.escalateStall(agentId, tracking, escalateSeconds);
       }
+      // Dormant-turn detector (the hard stop): a running agent with NO
+      // timeline output for > dormantTurnSeconds AND no tool call in flight
+      // has a wedged turn — omp's loop failed to advance (live incident:
+      // agent 3a71c7bb sat 26 minutes with an unprocessed user message and
+      // NOTHING in flight — no request, no tool — because the loop never
+      // stepped after skipping a wait-tool). A DECLARED tool call (an
+      // unmatched running tool_call row, e.g. a 30-minute `hub wait`) is
+      // WORKING and never flagged: the distinguishing signal is "no
+      // unmatched in-flight tool call" (inFlightToolsByAgent empty). A
+      // pending permission is in-flight too (the agent is blocked on the
+      // user, not wedged).
+      if (
+        tracking.escalatedAt === null &&
+        tracking.dormantRecoveredAt === null &&
+        (this.inFlightToolsByAgent.get(agentId)?.size ?? 0) === 0 &&
+        !this.blockedByAgent.has(agentId) &&
+        now - tracking.lastStreamAt >= dormantMs
+      ) {
+        this.fireDormantRecovery(agentId, tracking, dormantTurnSeconds);
+      }
     }
+    // Honest steer delivery: confirm out-of-band steers produced real agent
+    // activity within the verification window.
+    this.sweepSteerVerifications(now);
   }
 
   /**
@@ -1028,6 +1653,10 @@ export class MissionControlService {
         // → "Nudges are machinery"). The audit trail (auto-sent proposal +
         // log) is kept; the app hides the card in the normal feed.
         verboseOnly: true,
+        // The steer records a machinery-classified row on the agent's own
+        // timeline (auditable; rendered as a muted one-line placeholder in
+        // verbose mode, never the raw nudge text).
+        timelineClassification: "machinery",
       })
       .catch((error: unknown) => {
         this.logger.warn(
@@ -1084,6 +1713,206 @@ export class MissionControlService {
           "Failed to create stall recovery proposal",
         );
       });
+  }
+
+  /**
+   * Dormant-turn recovery (the hard stop): a running agent with no timeline
+   * output for >dormantTurnSeconds AND no tool call in flight has a wedged
+   * turn — omp's loop failed to advance (live incident: agent 3a71c7bb sat
+   * 26 minutes with an unprocessed user message and nothing in flight; the
+   * turn did not self-heal even when the thing it waited for completed).
+   * Force-cancel the wedged turn and start a fresh run via the proven
+   * replace-cancel escalation (interrupt delivery). Approval-gated exactly
+   * like the stall escalation; the stalled event fires regardless so the
+   * feed shows the harness bug instead of a silent paper-over. Logs loudly —
+   * this is a last-resort net, not the first line of defense.
+   */
+  private fireDormantRecovery(
+    agentId: string,
+    tracking: StallTracking,
+    dormantSeconds: number,
+  ): void {
+    tracking.dormantRecoveredAt = Date.now();
+    const minutes = Math.round(dormantSeconds / 60);
+    void this.emitEvent({
+      agentId,
+      kind: "stalled",
+      source: "system",
+      severity: "attention",
+      headline: `Dormant turn (no output, no tool in flight for ${minutes} min)`,
+      detail:
+        `No timeline output and no tool call in flight for >${dormantSeconds}s mid-run — ` +
+        "the turn loop may be wedged; recovery proposed.",
+    });
+    this.fireRecoveryProposal(
+      agentId,
+      `No output and no tool in flight for >${dormantSeconds}s — the turn loop appears wedged`,
+    );
+    this.logger.error(
+      {
+        component: "dormant-turn",
+        agentId,
+        dormantSeconds,
+        lastStreamAt: new Date(tracking.lastStreamAt).toISOString(),
+        runAgeMs: Date.now() - tracking.runStartedAt,
+      },
+      "Dormant turn detected (no output, no tool in flight); recovery interrupt proposed",
+    );
+    this.lifecycleLog.write({
+      event: "dormant_turn_detected",
+      agentId,
+      dormantSeconds,
+      lastStreamAt: new Date(tracking.lastStreamAt).toISOString(),
+      runAgeMs: Date.now() - tracking.runStartedAt,
+    });
+  }
+
+  /**
+   * Honest steer delivery: after a machinery steer reports handled
+   * (tryRunOutOfBand accepted it), the agent must actually produce timeline
+   * activity within the verification window — the wedged-omp incident showed
+   * "handled" can be a lie (three nudges recorded "sent" while the loop was
+   * parked and the prompts vanished). One pending verification per agent; a
+   * newer steer replaces an older one (its proposal is superseded either
+   * way). handleAgentStream clears it on any real activity.
+   *
+   * Tool-in-flight gating (critical — the whole distinction): the 90s clock
+   * starts NOW only when no tool call is in flight. If a tool IS in flight,
+   * the steer is queued behind it (correct omp behavior for non-interruptible
+   * tools — a 5-minute build is not a wedge), so the verification is DEFERRED
+   * and its clock starts when the tool set empties. Only "steer acked + no
+   * tool in flight + no activity" is evidence of stranding — exactly the
+   * state the omp bug produces (the strand happens after the interruptible
+   * tool was ABORTED, so nothing is in flight). Verifying during a live tool
+   * would interrupt healthy agents mid-build.
+   */
+  private armSteerDeliveryVerification(
+    agentId: string,
+    proposal: MissionControlProposal | undefined,
+  ): void {
+    if (!proposal) {
+      return;
+    }
+    const armedAt = Date.now();
+    if ((this.inFlightToolsByAgent.get(agentId)?.size ?? 0) > 0) {
+      this.deferredSteerVerifications.set(agentId, { proposalId: proposal.id, armedAt });
+      this.logger.info(
+        {
+          component: "steer-verify",
+          agentId,
+          proposalId: proposal.id,
+          windowMs: STEER_DELIVERY_VERIFY_MS,
+          deferred: true,
+        },
+        "Out-of-band steer deferred for delivery verification (tool in flight)",
+      );
+      return;
+    }
+    this.steerVerifications.set(agentId, {
+      proposalId: proposal.id,
+      armedAt,
+      deadline: armedAt + STEER_DELIVERY_VERIFY_MS,
+    });
+    this.logger.info(
+      {
+        component: "steer-verify",
+        agentId,
+        proposalId: proposal.id,
+        windowMs: STEER_DELIVERY_VERIFY_MS,
+      },
+      "Out-of-band steer armed for delivery verification",
+    );
+  }
+
+  /**
+   * Start the verification clock for a steer that was deferred behind an
+   * in-flight tool call, now that the in-flight set is empty. The tool's own
+   * terminal row that triggered this is NOT steer activity (it predates the
+   * steer), so the fresh window measures the steer's effect alone.
+   */
+  private promoteDeferredSteerVerification(agentId: string, now: number): void {
+    const deferred = this.deferredSteerVerifications.get(agentId);
+    if (!deferred) {
+      return;
+    }
+    this.deferredSteerVerifications.delete(agentId);
+    this.steerVerifications.set(agentId, {
+      proposalId: deferred.proposalId,
+      armedAt: now,
+      deadline: now + STEER_DELIVERY_VERIFY_MS,
+    });
+    this.logger.info(
+      {
+        component: "steer-verify",
+        agentId,
+        proposalId: deferred.proposalId,
+        windowMs: STEER_DELIVERY_VERIFY_MS,
+      },
+      "Deferred steer verification armed (in-flight tool terminated)",
+    );
+  }
+
+  /**
+   * Verification sweep: an out-of-band steer that produced NO agent activity
+   * within the window was never processed. Never leave the proposal recorded
+   * "sent" for a message that did not land — mark it undelivered (terminal,
+   * auditable) and escalate via the existing recovery interrupt, once per
+   * lapse (shared latch with the stall escalation and dormant-turn detector).
+   */
+  private sweepSteerVerifications(now: number): void {
+    for (const [agentId, verification] of this.steerVerifications) {
+      if (now < verification.deadline) {
+        continue;
+      }
+      this.steerVerifications.delete(agentId);
+      const producedActivity =
+        (this.lastActivityAtByAgent.get(agentId) ?? 0) > verification.armedAt;
+      if (producedActivity) {
+        continue;
+      }
+      const proposal = this.approvals.getProposal(verification.proposalId);
+      this.logger.error(
+        {
+          component: "steer-verify",
+          agentId,
+          proposalId: verification.proposalId,
+          windowMs: STEER_DELIVERY_VERIFY_MS,
+          proposalStatus: proposal?.status ?? null,
+        },
+        "Out-of-band steer reported handled but the agent produced NO activity; marking undelivered and escalating",
+      );
+      this.lifecycleLog.write({
+        event: "steer_unverified",
+        agentId,
+        proposalId: verification.proposalId,
+        windowMs: STEER_DELIVERY_VERIFY_MS,
+      });
+      if (proposal && proposal.status === "sent") {
+        void this.approvals.markUndelivered(proposal.id).catch((error: unknown) => {
+          this.logger.warn(
+            { err: error, component: "steer-verify", agentId, proposalId: proposal.id },
+            "Failed to mark steer proposal undelivered",
+          );
+        });
+      }
+      const tracking = this.stallTracking.get(agentId);
+      if (tracking && tracking.escalatedAt === null && tracking.dormantRecoveredAt === null) {
+        tracking.dormantRecoveredAt = now;
+        void this.emitEvent({
+          agentId,
+          kind: "stalled",
+          source: "system",
+          severity: "attention",
+          headline: "Steer undelivered (no agent activity after delivery)",
+        });
+        this.fireRecoveryProposal(
+          agentId,
+          `A steer was reported handled but produced no agent activity for >${Math.round(
+            STEER_DELIVERY_VERIFY_MS / 1000,
+          )}s — the turn loop may be wedged`,
+        );
+      }
+    }
   }
 
   /**
@@ -1221,6 +2050,9 @@ export class MissionControlService {
   private adoptSurvivingRun(record: { id: string; lastActivityAt?: string | null }): void {
     const parsed = record.lastActivityAt ? Date.parse(record.lastActivityAt) : NaN;
     const seededAt = Number.isFinite(parsed) ? parsed : Date.now();
+    // Same survival contract as stallTracking: a run that predates this
+    // process must still bound "this run" for the ready-for-review predicate.
+    this.runStartedAtByAgent.set(record.id, seededAt);
     this.stallTracking.set(record.id, {
       lastStreamAt: seededAt,
       lastStatusAt: seededAt,
@@ -1232,6 +2064,9 @@ export class MissionControlService {
       escalatedAt: null,
       deadSince: null,
       healed: false,
+      runStartedAt: seededAt,
+      lastTurnStartedAt: null,
+      dormantRecoveredAt: null,
     });
     this.logger.info(
       {
@@ -1295,6 +2130,42 @@ export class MissionControlService {
     return Date.now() - this.bootedAtMs < RESTART_GRACE_MS;
   }
 
+  /**
+   * The feed card for a run that ended in an error state. A run superseded
+   * by the USER (interrupt-and-send) renders as a non-error "Interrupted by
+   * you" card; every other terminal failure (genuine error, provider crash,
+   * machinery-originated interrupt) keeps the "Failed with an error" card.
+   */
+  private emitRunTerminalErrorCard(agentId: string, supersededByUser: boolean): void {
+    void this.emitEvent({
+      agentId,
+      kind: supersededByUser ? "interrupted" : "failed",
+      source: "system",
+      severity: supersededByUser ? "info" : "attention",
+      headline: supersededByUser ? "Interrupted by you" : "Failed with an error",
+    });
+  }
+
+  /**
+   * Whether a run's terminal failure is a USER interrupt-and-send's abort
+   * noise rather than a real failure. Two signals, both required: the
+   * recorded stop origin is "user" (only the user send path records that;
+   * machinery-originated interrupts record "machinery" and never match), AND
+   * either the supersede is still in progress (pendingReplacement) or the
+   * failure is the runtime's user-abort signature ("Interrupted by user
+   * (stopReason=aborted, …)") — the omp runtime also aborts the freshly
+   * replaced turn itself with that text while the superseded turn's tool call
+   * is still running. A genuine failure with a different message never
+   * matches, even when the origin is still recorded.
+   */
+  private isUserSupersedeFailure(agentId: string, errorText: string | undefined): boolean {
+    return (
+      this.store.getStopOrigin(agentId) === "user" &&
+      (/Interrupted by user|stopReason=aborted/i.test(errorText ?? "") ||
+        this.agentManager.getAgent(agentId)?.pendingReplacement === true)
+    );
+  }
+
   private async emitEvent(
     input: Omit<MissionControlAppendInput, "agentTitle">,
     options?: { skipDigest?: boolean },
@@ -1325,6 +2196,8 @@ export class MissionControlService {
           : `Proposal ${proposal.status}`,
         detail: proposal.message,
         proposal,
+        // Verifier-origin drill-in: the card opens the verifier's thread.
+        ...(proposal.verifierAgentId ? { verifierAgentId: proposal.verifierAgentId } : {}),
         // Machinery-only cards (stall status-ask nudges) render in verbose
         // mode only; everything else is a normal-mode card. Absent → normal.
         ...(proposal.verboseOnly ? { verboseOnly: true } : {}),
@@ -1355,6 +2228,11 @@ export class MissionControlService {
         severity: "info",
         headline,
         detail: input.verdict.summary,
+        // Verifier-origin drill-in: the card opens the verifier's thread
+        // (verifiers stay hidden from board buckets but are reachable here).
+        ...(input.verdict.verifierAgentId
+          ? { verifierAgentId: input.verdict.verifierAgentId }
+          : {}),
       },
       { skipDigest: true },
     );
@@ -1408,6 +2286,7 @@ export class MissionControlService {
         silenceNudgeSeconds: central.silenceNudgeSeconds,
         statusNudgeSeconds: central.statusNudgeSeconds,
         escalateSeconds: central.escalateSeconds,
+        dormantTurnSeconds: central.dormantTurnSeconds,
       },
     };
   }
@@ -1439,6 +2318,33 @@ function mapReportStatus(input: MissionControlReportStatusInput): {
           return { kind: "milestone", severity: "info", reportKind: input.kind };
       }
   }
+}
+
+/**
+ * A machinery-originated user row (the status-ask nudge's own timeline
+ * placeholder) is the tracker's prompt, never agent activity. Used by the
+ * stream handler for the silence clock, steer verification, and the dormant
+ * detector's "no timeline output" signal alike.
+ */
+function isMachineryRow(event: AgentStreamEvent): boolean {
+  return (
+    event.type === "timeline" &&
+    event.item.type === "user_message" &&
+    event.item.classification === "machinery"
+  );
+}
+
+/**
+ * A tool call's own terminal row (completed/failed/canceled) is the
+ * conclusion of a tool that was already in flight — deliberately excluded
+ * from the steer-verification activity signal: it predates the steer, so it
+ * is not the steer's effect (a steer queued behind a long tool must not pass
+ * as "verified" just because that tool eventually finished).
+ */
+function isToolTerminalRow(event: AgentStreamEvent): boolean {
+  return (
+    event.type === "timeline" && event.item.type === "tool_call" && event.item.status !== "running"
+  );
 }
 
 function hasExclusionLabels(labels: Record<string, string>): boolean {

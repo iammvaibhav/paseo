@@ -3,8 +3,15 @@ import type { DaemonClient } from "@getpaseo/client";
 import { ensureValidJson } from "../../json-utils.js";
 import type { Logger } from "pino";
 
-import type { AgentMode, AgentProvider, AgentTimelineItem } from "../agent-sdk-types.js";
+import type {
+  AgentMode,
+  AgentPromptInput,
+  AgentProvider,
+  AgentTimelineItem,
+  AgentTimelineUserMessageClassification,
+} from "../agent-sdk-types.js";
 import type { AgentManager } from "../agent-manager.js";
+import type { ManagedAgent } from "../agent-manager.js";
 import {
   AgentFeatureSchema,
   AgentPermissionRequestPayloadSchema,
@@ -24,6 +31,7 @@ import {
 import { curateAgentActivity } from "../activity-curator.js";
 import { selectItemsByProjectedLimit } from "../timeline-projection.js";
 import type { AgentStorage } from "../agent-storage.js";
+import type { StoredAgentRecord } from "../agent-storage.js";
 import { ensureAgentLoaded } from "../agent-loading.js";
 import { supportsDiskTimeline, tryReadProviderTimelineFromDisk } from "../provider-disk-history.js";
 import { isStoredAgentProviderAvailable } from "../../persistence-hooks.js";
@@ -96,8 +104,12 @@ import { registerBrowserTools } from "../../browser-tools/tools.js";
 import type { BrowserToolsBroker } from "../../browser-tools/broker.js";
 import { buildPeerUnreachableError, type PeerManager } from "../../peers/peer-manager.js";
 import { MissionControlSearchMatchSchema } from "@getpaseo/protocol/mission-control/types";
+import type { MissionControlProposalSpawnPlan } from "@getpaseo/protocol/mission-control/types";
 import { hasMissionControlLabels } from "../../mission-control/naming.js";
-import { MISSION_CONTROL_LABEL_KEY } from "../../mission-control/commander-contract.js";
+import {
+  MISSION_CONTROL_LABEL_KEY,
+  MISSION_CONTROL_LABEL_VALUE,
+} from "../../mission-control/commander-contract.js";
 import { MISSION_CONTROL_VERIFIER_LABEL_VALUE } from "../../mission-control/verifier.js";
 import {
   SEARCH_TIER3_TIMEOUT_MS,
@@ -783,6 +795,155 @@ async function listPeerFleetAgents(input: {
   return result;
 }
 
+/**
+ * The spawn outcome status: live agents carry `lifecycle`, persisted records
+ * carry `lastStatus`, and anything else is idle.
+ */
+function resolveSpawnedAgentStatus(spawned: ManagedAgent | StoredAgentRecord): string {
+  if ("lifecycle" in spawned) {
+    return spawned.lifecycle;
+  }
+  if ("lastStatus" in spawned) {
+    return spawned.lastStatus;
+  }
+  return "idle";
+}
+
+interface CommanderSpawnPlanInput {
+  host: string;
+  provider: string;
+  model: string | undefined;
+  title?: string;
+  summary: string;
+  initialPrompt?: string;
+  cwd?: string;
+  workspaceId?: string;
+  settings?: {
+    modeId?: string;
+    thinkingOptionId?: string;
+    features?: Record<string, unknown>;
+  };
+  labels?: Record<string, string>;
+}
+
+/** The spawnPlan reconstruction payload for a Commander spawn proposal. */
+function buildCommanderSpawnPlan(input: CommanderSpawnPlanInput): MissionControlProposalSpawnPlan {
+  const {
+    host,
+    provider,
+    model,
+    title,
+    summary,
+    initialPrompt,
+    cwd,
+    workspaceId,
+    settings,
+    labels,
+  } = input;
+  return {
+    host,
+    provider,
+    ...(model ? { model } : {}),
+    ...(title ? { title } : {}),
+    summary,
+    ...(initialPrompt ? { initialPrompt } : {}),
+    ...(cwd ? { cwd } : {}),
+    ...(workspaceId ? { workspaceId } : {}),
+    ...(settings?.modeId ? { mode: settings.modeId } : {}),
+    ...(settings?.thinkingOptionId ? { thinking: settings.thinkingOptionId } : {}),
+    ...(settings?.features ? { features: settings.features } : {}),
+    ...(labels ? { labels } : {}),
+  };
+}
+
+interface CommanderSpawnProposalInput {
+  serverId: string;
+  host: string;
+  provider: string;
+  title?: string;
+  initialPrompt?: string;
+  cwd?: string;
+  workspaceId?: string;
+  labels?: Record<string, string>;
+  settings?: {
+    model?: string | null;
+    modeId?: string;
+    thinkingOptionId?: string;
+    features?: Record<string, unknown>;
+  };
+  missionControlService: MissionControlService;
+  agentManager: AgentManager;
+  agentStorage: AgentStorage;
+}
+
+/**
+ * Ask-mode gate for fleet_create_agent (Commander caller): the spawn becomes
+ * a spawn-kind proposal whose card shows what would be created (host,
+ * provider/model, brief); approving (or auto mode) executes the spawn via the
+ * approvals spawn hook. Returns the structured content describing the outcome
+ * — pending approval, an already-spawned agent, or sent.
+ */
+async function buildCommanderSpawnProposalContent(
+  input: CommanderSpawnProposalInput,
+): Promise<Record<string, unknown>> {
+  const { host, provider, settings, title, initialPrompt, cwd, workspaceId, labels } = input;
+  const slash = provider.indexOf("/");
+  const model = slash > 0 ? provider.slice(slash + 1) : (settings?.model ?? undefined);
+  const cleanProvider = slash > 0 ? provider.slice(0, slash) : provider;
+  const summary = `Spawn ${title ?? "an agent"} (${provider}) on ${host}`;
+  const proposal = await input.missionControlService.approvals.createProposal({
+    origin: "commander",
+    serverId: input.serverId,
+    targetAgentId: "",
+    message: initialPrompt ? `${summary}: ${initialPrompt.slice(0, 200)}` : summary,
+    deliveryMode: "interrupt",
+    reason: "Commander spawn",
+    classification: "normal",
+    kind: "spawn",
+    spawnPlan: buildCommanderSpawnPlan({
+      host,
+      provider: cleanProvider,
+      model,
+      title,
+      summary,
+      initialPrompt,
+      cwd,
+      workspaceId,
+      settings,
+      labels,
+    }),
+  });
+  if (proposal.status === "pending") {
+    return {
+      agentId: null,
+      type: cleanProvider,
+      status: "pending-approval",
+      guidance: `Spawn request sent for approval (proposal ${proposal.id}). The agent will be created once approved.`,
+    };
+  }
+  // Auto mode: the spawn hook already created the agent.
+  if (proposal.spawnedAgentId) {
+    const spawned =
+      input.agentManager.getAgent(proposal.spawnedAgentId) ??
+      (await input.agentStorage.get(proposal.spawnedAgentId));
+    if (spawned) {
+      return {
+        agentId: spawned.id,
+        type: spawned.provider,
+        status: resolveSpawnedAgentStatus(spawned),
+        cwd: spawned.cwd,
+        ...(spawned.workspaceId ? { workspaceId: spawned.workspaceId } : {}),
+      };
+    }
+  }
+  return {
+    agentId: null,
+    type: cleanProvider,
+    status: "sent",
+    guidance: `Spawn request sent (proposal ${proposal.id}).`,
+  };
+}
+
 export function createPaseoToolCatalog(options: PaseoToolHostDependencies): PaseoToolCatalog {
   const {
     agentManager,
@@ -792,14 +953,28 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     scheduleService,
     providerSnapshotManager,
     callerAgentId,
+    callerLabels,
     resolveSpeakHandler,
     resolveCallerContext,
     peerManager,
     missionControlService,
+    serverId,
     logger,
   } = options;
   const childLogger = logger.child({ module: "agent", component: "paseo-tool-catalog" });
   const callerContext = callerAgentId ? (resolveCallerContext?.(callerAgentId) ?? null) : null;
+
+  /**
+   * Ask-mode gate for Commander actions (user decision: everything is gated in
+   * ask mode except the status-ask nudge). The Commander is the ONLY
+   * mission-control machinery that drives the fleet spawn/send tools, so its
+   * fleet_create_agent and fleet_send_prompt calls route through the approval
+   * gate as proposals (kind "spawn"/"send", origin "commander"). Auto mode
+   * sends immediately via the approvals module; non-Commander callers
+   * (workers spawning subagents) are untouched.
+   */
+  const isCommanderCaller =
+    callerLabels?.[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE;
 
   const parseToolInput = async (tool: PaseoToolDefinition, input: unknown): Promise<unknown> => {
     const inputSchema = tool.inputSchema;
@@ -813,6 +988,141 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         ? (inputSchema as z.ZodType)
         : z.object(inputSchema as z.ZodRawShape).passthrough();
     return schema.parseAsync(input);
+  };
+
+  // Provider rejections on the spawn tools are dead ends unless the error
+  // teaches the fix: the rejection classes below carry nothing about what a
+  // VALID provider string looks like on the target host. Both the schema
+  // rejection ("provider must be provider/model, for example codex/gpt-5.4")
+  // and the runtime "Provider X is not configured" rejection get augmented
+  // with the host, the rejected value, and capped invocable alternatives so a
+  // single corrected retry is possible from the error text alone.
+  const PROVIDER_SPAWN_TOOLS = new Set(["create_agent", "fleet_create_agent"]);
+  const PROVIDER_REJECTION_PATTERNS = [
+    /not configured/i,
+    /provider must be provider\/model/i,
+    /provider must be <provider>\/<model>/i,
+  ];
+
+  const toolErrorMessage = (error: unknown): string => {
+    if (error instanceof Error) {
+      return error.message;
+    }
+    if (typeof error === "string") {
+      return error;
+    }
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "issues" in error &&
+      Array.isArray((error as { issues?: unknown }).issues)
+    ) {
+      const messages = (error as { issues: Array<{ message?: unknown }> }).issues
+        .map((issue) => (typeof issue.message === "string" ? issue.message : ""))
+        .filter((message) => message.length > 0);
+      if (messages.length > 0) {
+        return messages.join("; ");
+      }
+    }
+    return String(error);
+  };
+
+  const isProviderRejection = (message: string): boolean =>
+    PROVIDER_REJECTION_PATTERNS.some((pattern) => pattern.test(message));
+
+  const providerArg = (input: unknown): string | null => {
+    const provider = (input as { provider?: unknown } | null)?.provider;
+    return typeof provider === "string" && provider.trim() ? provider.trim() : null;
+  };
+
+  const hostArg = (input: unknown): string | null => {
+    const host = (input as { host?: unknown } | null)?.host;
+    return typeof host === "string" && host.trim() ? host.trim() : null;
+  };
+
+  const collectHostInvocableModels = async (host: string): Promise<string[]> => {
+    try {
+      let entries: Array<{ provider: string; models?: Array<{ id?: string | null }> }>;
+      if (host === "local") {
+        // wait:false — never warm up providers (spawning binaries) on an
+        // error path; the snapshot is advisory for the correction hint.
+        entries = await providerSnapshotManager.listProviders({ wait: false });
+      } else {
+        const client = peerManager?.getPeerClient(host);
+        if (!client) {
+          return [];
+        }
+        const snapshot = await client.getProvidersSnapshot();
+        entries = snapshot.entries ?? [];
+      }
+      const strings: string[] = [];
+      for (const entry of entries) {
+        for (const model of entry.models ?? []) {
+          if (model.id) {
+            strings.push(`${entry.provider}/${model.id}`);
+          }
+        }
+      }
+      return strings;
+    } catch {
+      // Augmentation is best-effort: never mask the original rejection.
+      return [];
+    }
+  };
+
+  const providerMatchScore = (rejected: string, candidate: string): number => {
+    let score = 0;
+    const rejectedProvider = rejected.split("/")[0];
+    const candidateProvider = candidate.split("/")[0];
+    if (rejectedProvider && candidateProvider && rejectedProvider === candidateProvider) {
+      score += 100;
+    }
+    if (candidate.includes(rejected) || rejected.includes(candidate)) {
+      score += 50;
+    }
+    let shared = 0;
+    const limit = Math.min(rejected.length, candidate.length);
+    while (shared < limit && rejected[shared] === candidate[shared]) {
+      shared += 1;
+    }
+    return score + shared;
+  };
+
+  const formatProviderSuggestions = (rejected: string, valid: readonly string[]): string => {
+    if (valid.length === 0) {
+      return "No provider/model strings are currently available on this host.";
+    }
+    const scored = valid
+      .map((candidate, index) => ({
+        candidate,
+        index,
+        score: providerMatchScore(rejected, candidate),
+      }))
+      .sort((left, right) => right.score - left.score || left.index - right.index);
+    const shown = scored.slice(0, 5).map((entry) => `- ${entry.candidate}`);
+    const hidden = valid.length - shown.length;
+    if (hidden > 0) {
+      shown.push(`- ... and ${hidden} more (${valid.length} invocable strings on this host)`);
+    }
+    return shown.join("\n");
+  };
+
+  const buildActionableSpawnError = async (params: {
+    toolName: string;
+    input: unknown;
+    original: unknown;
+  }): Promise<Error> => {
+    const provider = providerArg(params.input);
+    const host = hostArg(params.input) ?? "local";
+    const valid = await collectHostInvocableModels(host);
+    const message = toolErrorMessage(params.original);
+    const lines = [
+      `${params.toolName} rejected provider "${provider ?? "(missing)"}" on host ${host}: ${message}`,
+      "",
+      `Valid invocable provider/model strings on ${host} (exactly what create_agent/fleet_create_agent accept):`,
+      formatProviderSuggestions(provider ?? "", valid),
+    ];
+    return new Error(lines.join("\n"));
   };
 
   const tools = new Map<string, PaseoToolDefinition>();
@@ -845,7 +1155,15 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       if (!tool) {
         throw new Error(`Paseo tool not found: ${name}`);
       }
-      return tool.handler(await parseToolInput(tool, input), context);
+      try {
+        const parsed = await parseToolInput(tool, input);
+        return await tool.handler(parsed, context);
+      } catch (error) {
+        if (PROVIDER_SPAWN_TOOLS.has(name) && isProviderRejection(toolErrorMessage(error))) {
+          throw await buildActionableSpawnError({ toolName: name, input, original: error });
+        }
+        throw error;
+      }
     },
   });
 
@@ -2123,11 +2441,18 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     }) => {
       const shouldNotifyOnFinish = Boolean(callerAgentId && notifyOnFinish && background);
 
+      // Agent-originated (Commander/Verifier/worker) sends that supersede a
+      // busy run are machinery-originated: the superseded run keeps the
+      // failure treatment, never reads as a user interruption.
+      if (agentManager.hasInFlightRun(agentId)) {
+        missionControlService?.recordStopOrigin(agentId, "machinery");
+      }
       await sendPromptToAgent({
         agentManager,
         agentStorage,
         agentId,
         prompt,
+        replaceOrigin: "machinery",
         sessionMode,
         logger: childLogger,
       });
@@ -3440,7 +3765,12 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         "Report status to Mission Control at major steps only: root cause found, a fix landed, tests green, blocked, direction changed, done. " +
         'Silence between milestones; never send progress updates. "completed" means conclusively done — everything asked, finished; any doubt, ' +
         'cut short, or still in discussion: report "inconclusive", never "completed". Completion claims should carry proofs. ' +
-        "Prefer hub-wait over sleep/timeout polling loops. Rate limited to one report per minute per agent.",
+        "Prefer hub-wait over sleep/timeout polling loops. Rate limited to one report per minute per agent. " +
+        "Optional title/description maintain YOUR identity on the agent record: title is your current main theme, kept stable — retitle only " +
+        "when the work's theme genuinely diverges (a decision-kind report, or once at completion); description is a living 2-3 sentence " +
+        "'what this agent is doing now', replaced (never appended) whenever it materially changes, under ~400 characters. Send " +
+        "title/description only when changing them; omitting them leaves them untouched. The result echoes your stored title/description " +
+        "only when they drifted from what you sent (changed externally); otherwise no identity fields are returned.",
       inputSchema: MissionControlReportStatusInputSchema.extend({
         headline: z
           .string()
@@ -3452,6 +3782,12 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         eventId: z.string().optional(),
         reason: z.string().optional(),
         error: z.string().optional(),
+        // Drift-only identity echo: the agent's stored title and short
+        // description (null when never set), present ONLY when they differ
+        // from what the agent just sent — someone else changed them. Absent
+        // when the agent's own values are already current.
+        title: z.string().nullable().optional(),
+        description: z.string().nullable().optional(),
       },
     },
     async (input) => {
@@ -3475,7 +3811,16 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       }
       return {
         content: [],
-        structuredContent: ensureValidJson({ ok: true, eventId: result.event.id }),
+        structuredContent: ensureValidJson({
+          ok: true,
+          eventId: result.event.id,
+          // Drift-only identity echo: present only when the stored identity
+          // differs from what the agent sent (external drift).
+          ...(result.identity.title !== undefined ? { title: result.identity.title } : {}),
+          ...(result.identity.description !== undefined
+            ? { description: result.identity.description }
+            : {}),
+        }),
       };
     },
   );
@@ -3652,6 +3997,28 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     },
     async (args, context) => {
       const { host, cwd, workspaceId, provider, initialPrompt, title, labels, settings } = args;
+      if (isCommanderCaller && missionControlService) {
+        // Ask-mode gate (user decision: everything gated except the nudge —
+        // including spawning a new agent). The spawn becomes a spawn-kind
+        // proposal whose card shows what would be created (host, provider/
+        // model, brief); approving (or auto mode) executes the spawn via the
+        // approvals spawn hook (bootstrap spawnFromProposal).
+        const structuredContent = await buildCommanderSpawnProposalContent({
+          serverId: serverId ?? "",
+          host,
+          provider,
+          title,
+          initialPrompt,
+          cwd,
+          workspaceId,
+          labels,
+          settings,
+          missionControlService,
+          agentManager,
+          agentStorage,
+        });
+        return { content: [], structuredContent: ensureValidJson(structuredContent) };
+      }
       if (host === "local") {
         const { cwd: _cwd, ...localArgs } = args;
         return toCatalog().executeTool("create_agent", localArgs, context);
@@ -3865,7 +4232,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   function buildFleetSearchTier3Runner(): FleetSearchTier3Runner {
     return {
       async run({ query }) {
-        const serverId = options.serverId ?? "";
+        const localServerId = options.serverId ?? "";
         const providerIds = providerSnapshotManager.listRegisteredProviderIds();
         if (providerIds.length === 0) {
           childLogger.info(
@@ -3905,7 +4272,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
               kind: "mcp",
               provider,
               title,
-              initialPrompt: buildFleetHistoryAskBrief(query, serverId),
+              initialPrompt: buildFleetHistoryAskBrief(query, localServerId),
               cwd: workspace?.cwd ?? "~",
               ...(workspace ? { workspaceId: workspace.workspaceId } : {}),
               labels: { "paseo.history-ask": "1", "paseo.history-ask.scope": "host" },
@@ -3933,7 +4300,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           });
           const answer =
             result.lastMessage ?? (await agentManager.getLastAssistantMessage(agentId)) ?? "";
-          const matches = parseHistoryAskMatches(answer, serverId);
+          const matches = parseHistoryAskMatches(answer, localServerId);
           childLogger.info(
             { component: "search", agentId, matches: matches.length },
             "mission_control.fleet_search.tier3_done",
@@ -3958,9 +4325,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       title: "Send agent prompt on a host",
       description:
         "Send a task to an agent on a specific host in the fleet. host is a peer name from the daemon peers config, or 'local' for this daemon. " +
-        'mode controls delivery to a busy agent: "steer" (default) injects into the live turn without cancelling (OMP live-steer; ' +
-        'non-OMP busy agents queue), "queue" waits for the agent to idle before streaming, "interrupt" cancels the running turn ' +
-        "and replaces it with this prompt.",
+        'mode controls delivery to a busy agent: "steer" injects into the live turn without cancelling (OMP live-steer; a busy non-OMP ' +
+        'agent is interrupted so the message lands promptly), "queue" waits for the agent to idle before streaming, "interrupt" cancels ' +
+        "the running turn and replaces it with this prompt. Omit mode to use the fleet commanderToWorkerMode central setting " +
+        '(default "interrupt"); an explicit mode always overrides it — prefer "steer" for additive, non-urgent instructions.',
       inputSchema: {
         host: z
           .string()
@@ -3970,7 +4338,12 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           ),
         agentId: z.string(),
         prompt: z.string(),
-        mode: z.enum(["steer", "interrupt", "queue"]).optional().default("steer"),
+        mode: z
+          .enum(["steer", "interrupt", "queue"])
+          .optional()
+          .describe(
+            "Delivery to a busy agent. Omit to use the fleet commanderToWorkerMode setting.",
+          ),
         // Composer paste-through: the Commander forwards user attachments
         // (uploaded_file, github_pr, review, ...) as descriptors only — no
         // base64 through the model. The receiving daemon resolves them into
@@ -3985,18 +4358,61 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       },
       outputSchema: {
         success: z.boolean(),
-        deliveryMode: z.string(),
+        deliveryMode: z.enum(["steer", "interrupt", "queue", "steer-interrupt"]),
       },
     },
-    async ({ host, agentId, prompt, mode = "steer", attachments }) => {
+    async ({ host, agentId, prompt, mode, attachments }) => {
+      // The Commander's default comes from the fleet central setting
+      // commanderToWorkerMode (default "interrupt" — a fleet direction change
+      // is time-sensitive and queue-until-idle can sit for tens of minutes).
+      // An explicit mode argument from the Commander always wins; it may
+      // choose "steer" for additive, non-urgent instructions.
+      const effectiveMode =
+        mode ?? missionControlService?.getCentralConfig().commanderToWorkerMode ?? "interrupt";
+      if (isCommanderCaller && missionControlService) {
+        // Ask-mode gate (user decision: everything gated except the nudge).
+        // The send becomes a proposal; auto mode delivers immediately via the
+        // approvals module, ask mode waits for Approve/Edit/Deny.
+        const proposal = await missionControlService.approvals.createProposal({
+          origin: "commander",
+          serverId: serverId ?? "",
+          targetAgentId: agentId,
+          message: prompt,
+          deliveryMode: effectiveMode,
+          reason: "Commander send",
+          classification: "normal",
+          timelineClassification: "instruction",
+        });
+        if (proposal.status === "pending") {
+          return {
+            content: [],
+            structuredContent: ensureValidJson({
+              success: false,
+              deliveryMode: effectiveMode,
+              guidance: `Send request sent for approval (proposal ${proposal.id}). It will be delivered once approved.`,
+            }),
+          };
+        }
+        // Auto mode: approvals already delivered the message.
+        return {
+          content: [],
+          structuredContent: ensureValidJson({ success: true, deliveryMode: effectiveMode }),
+        };
+      }
       if (host === "local") {
         const deliveredAs = await dispatchLocalPromptMode({
           agentManager,
           agentStorage,
           agentId,
           prompt,
-          mode,
+          mode: effectiveMode,
           attachments,
+          // A Commander/Verifier dispatch superseding a busy worker's run is
+          // machinery-originated — the superseded run must keep the failure
+          // treatment, never read as a user interruption.
+          replaceOrigin: "machinery",
+          recordStopOrigin: (stopAgentId, origin) =>
+            missionControlService?.recordStopOrigin(stopAgentId, origin),
           logger: childLogger,
         });
         return {
@@ -4009,12 +4425,12 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         throw new Error(`Host "${host}" is not a configured peer`);
       }
       await client.sendAgentMessage(agentId, prompt, {
-        dispatchMode: mode,
+        dispatchMode: effectiveMode,
         ...(attachments && attachments.length > 0 ? { attachments } : {}),
       });
       return {
         content: [],
-        structuredContent: ensureValidJson({ success: true, deliveryMode: mode }),
+        structuredContent: ensureValidJson({ success: true, deliveryMode: effectiveMode }),
       };
     },
   );
@@ -4090,7 +4506,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         title: "Contact worker",
         description:
           "Request proof or clarification from the worker you are auditing. The message is " +
-          "routed through the approval gate and delivered as a steer; the worker's reply " +
+          "routed through the approval gate and delivered per the fleet verifierToWorkerMode " +
+          "setting (default interrupt; steer when the worker is mid-turn); the worker's reply " +
           "(its next report_status or final turn text) is relayed back to you as a message. " +
           "Call this when a requirement of the brief is unproven or a proof is missing.",
         inputSchema: {
@@ -4169,14 +4586,68 @@ async function waitForAgentIdle(
 /**
  * Local delivery for fleet_send_prompt modes:
  * - steer: OMP live-steer (out-of-band, non-cancelling) when the agent is busy
- *   on the omp provider; an idle agent just runs the prompt; a busy non-OMP
- *   agent falls back to queue so the message is never lost to a cancel.
+ *   on the omp provider; an idle agent just runs the prompt. A busy agent on a
+ *   provider WITHOUT a native steer path is INTERRUPTED (replaceRunning) —
+ *   a steer's value is timely delivery, and queue-until-idle can sit for tens
+ *   of minutes, so the fallback cancels and replaces rather than waiting.
+ *   The returned value distinguishes the fallback ("steer-interrupt") from a
+ *   native steer so callers/logs stay honest about what actually happened.
  * - queue: wait for idle, then stream without replacing.
  * - interrupt: today's replaceRunning behavior (sendPromptToAgent).
  *
  * Attachments ride along as prompt blocks (buildAgentPrompt) — descriptors
  * only, resolved by the daemon from the attachment store, never base64.
+ *
+ * Returns what ACTUALLY happened: "steer" (native out-of-band steer or a plain
+ * run on an idle agent), "steer-interrupt" (steer requested, delivered as an
+ * interrupt fallback on a busy non-OMP agent), "interrupt" (requested
+ * interrupt), or "queue" (requested queue; waited for idle then ran).
  */
+/**
+ * The interrupt delivery path (dispatchLocalPromptMode mode "interrupt"):
+ * cancel the running turn and replace it with the prompt. The superseded
+ * run's terminal failure is attributed to `replaceOrigin` (default
+ * "machinery" — dispatchLocalPromptMode's callers are machinery dispatches).
+ */
+async function dispatchInterrupt(params: {
+  agentManager: AgentManager;
+  agentStorage: AgentStorage;
+  agentId: string;
+  promptWithAttachments: AgentPromptInput;
+  classification: AgentTimelineUserMessageClassification;
+  replaceOrigin?: "user" | "machinery";
+  recordStopOrigin?: (agentId: string, origin: "user" | "machinery") => void;
+  logger: Logger;
+}): Promise<"interrupt"> {
+  const {
+    agentManager,
+    agentStorage,
+    agentId,
+    promptWithAttachments,
+    classification,
+    replaceOrigin,
+    recordStopOrigin,
+    logger,
+  } = params;
+  // Interrupt turns echo the submitted prompt as a user row naturally; stamp
+  // machinery classification onto that echo so it renders as a placeholder.
+  if (classification === "machinery" && typeof promptWithAttachments === "string") {
+    agentManager.expectPromptClassification(agentId, promptWithAttachments, "machinery");
+  }
+  if (agentManager.hasInFlightRun(agentId)) {
+    recordStopOrigin?.(agentId, replaceOrigin ?? "machinery");
+  }
+  await sendPromptToAgent({
+    agentManager,
+    agentStorage,
+    agentId,
+    prompt: promptWithAttachments,
+    replaceOrigin,
+    logger,
+  });
+  return "interrupt";
+}
+
 export async function dispatchLocalPromptMode(params: {
   agentManager: AgentManager;
   agentStorage: AgentStorage;
@@ -4184,19 +4655,55 @@ export async function dispatchLocalPromptMode(params: {
   prompt: string;
   mode: "steer" | "interrupt" | "queue";
   attachments?: AgentAttachment[];
+  /**
+   * How the delivered prompt classifies on the agent's OWN timeline row:
+   * "machinery" (status asks — stall nudges) vs "instruction" (Commander
+   * direction changes, Verifier proof demands, recovery). Absent =
+   * "instruction" (visible). Machinery rows render as a muted one-line
+   * placeholder in the agent chat (verbose mode only); instruction rows must
+   * always be visible — including steer deliveries, which otherwise record no
+   * user row in Paseo's timeline at all.
+   */
+  classification?: AgentTimelineUserMessageClassification;
+  /**
+   * Who supersedes the in-flight run when this dispatch replaces one
+   * (interrupt, or the steer→interrupt fallback on a busy non-OMP agent).
+   * Machinery dispatches pass "machinery" so the superseded run's terminal
+   * failure keeps the failure treatment (see AgentRunOptions.replaceOrigin).
+   */
+  replaceOrigin?: "user" | "machinery";
+  /**
+   * Mission Control stop-origin recorder, called exactly when this dispatch
+   * replaces an in-flight run. Machinery callers wire their MC service/store
+   * here so the superseded run's origin reads "machinery" — never "user".
+   */
+  recordStopOrigin?: (agentId: string, origin: "user" | "machinery") => void;
+  /**
+   * Honest-steer-delivery hook: called exactly when an out-of-band steer was
+   * accepted by the provider runtime (tryRunOutOfBand returned handled). The
+   * caller (mission-control) arms a delivery-verification window because
+   * "handled" does not by itself prove the steer was processed — a wedged
+   * omp loop can swallow the prompt while Paseo records "sent".
+   */
+  onOutOfBandSteer?: () => void;
   logger: Logger;
-}): Promise<"steer" | "interrupt" | "queue"> {
+}): Promise<"steer" | "interrupt" | "queue" | "steer-interrupt"> {
   const { agentManager, agentStorage, agentId, prompt, mode, attachments, logger } = params;
+  const classification = params.classification ?? "instruction";
+  const replaceOrigin = params.replaceOrigin;
+  const recordStopOrigin = params.recordStopOrigin;
   const promptWithAttachments = buildAgentPrompt(prompt, undefined, attachments);
   if (mode === "interrupt") {
-    await sendPromptToAgent({
+    return dispatchInterrupt({
       agentManager,
       agentStorage,
       agentId,
-      prompt: promptWithAttachments,
+      promptWithAttachments,
+      classification,
+      replaceOrigin,
+      recordStopOrigin,
       logger,
     });
-    return "interrupt";
   }
   if (mode === "steer") {
     const busy = agentManager.hasInFlightRun(agentId);
@@ -4211,6 +4718,21 @@ export async function dispatchLocalPromptMode(params: {
           : prompt;
       const handled = agentManager.tryRunOutOfBand(agentId, `/steer ${steerText}`);
       if (handled) {
+        // The native steer runs inside the provider runtime and records NO
+        // user row in Paseo's timeline (no turn, no echo). Record the prompt
+        // ourselves so the agent's chat is never missing an instruction:
+        // instruction rows render as a normal user message, machinery rows as
+        // a muted one-line placeholder (verbose mode only).
+        await agentManager.appendTimelineItem(agentId, {
+          type: "user_message",
+          text: steerText,
+          classification,
+        });
+        // Honest delivery: handled means the provider accepted the prompt —
+        // NOT that the agent will act on it (a wedged omp loop can swallow
+        // the steer entirely). The machinery caller verifies real activity
+        // and escalates when none comes.
+        params.onOutOfBandSteer?.();
         return "steer";
       }
     }
@@ -4220,7 +4742,17 @@ export async function dispatchLocalPromptMode(params: {
       });
       return "steer";
     }
-    // Busy on a provider without a steer path: fall through to queue.
+    // Busy on a provider without a native steer path: interrupt (replace the
+    // running turn). Queueing would sit behind a possibly-stuck run for up to
+    // ten minutes; the steer's value is timely delivery, so cancel and
+    // replace. startAgentRun still probes out-of-band first (harmless — the
+    // plain prompt has no /steer prefix), then replaces the running turn.
+    recordStopOrigin?.(agentId, replaceOrigin ?? "machinery");
+    await startAgentRun(agentManager, agentId, promptWithAttachments, logger, {
+      replaceRunning: true,
+      runOptions: replaceOrigin ? { replaceOrigin } : undefined,
+    });
+    return "steer-interrupt";
   }
   const idle = await waitForAgentIdle(agentManager, agentId, FLEET_QUEUE_WAIT_TIMEOUT_MS);
   if (!idle) {
@@ -4228,6 +4760,9 @@ export async function dispatchLocalPromptMode(params: {
       `Agent ${agentId} is still busy after ${Math.round(FLEET_QUEUE_WAIT_TIMEOUT_MS / 60_000)} min; ` +
         "retry with mode 'interrupt' to cancel the running turn.",
     );
+  }
+  if (classification === "machinery" && typeof promptWithAttachments === "string") {
+    agentManager.expectPromptClassification(agentId, promptWithAttachments, "machinery");
   }
   await startAgentRun(agentManager, agentId, promptWithAttachments, logger, {
     replaceRunning: false,

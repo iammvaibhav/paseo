@@ -6,20 +6,15 @@ import {
   getWebMountedRecentStreamItems,
   getWebPartialVirtualizationThreshold,
 } from "./web-virtualization";
-import { orderHeadForStreamRenderStrategy, orderTailForStreamRenderStrategy } from "./strategy";
+import {
+  orderHeadForStreamRenderStrategy,
+  orderTailForStreamRenderStrategy,
+  type StreamHistoryBoundary,
+  type StreamRenderSegments,
+} from "./strategy";
 import { resolveStreamRenderStrategy } from "./strategy-resolver";
 
-export interface StreamRenderSegments {
-  historyVirtualized: StreamItem[];
-  historyMounted: StreamItem[];
-  liveHead: StreamItem[];
-}
-
-export interface StreamHistoryBoundary {
-  hasVirtualizedHistory: boolean;
-  hasMountedHistory: boolean;
-  hasLiveHead: boolean;
-}
+export type { StreamHistoryBoundary, StreamRenderSegments } from "./strategy";
 
 export interface StreamRenderAuxiliary {
   pendingPermissions: ReactNode;

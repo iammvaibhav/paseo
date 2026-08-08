@@ -2,7 +2,7 @@ import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { MessagePayload } from "@/composer/types";
 import type { MessageInputKeyboardActionKind } from "@/keyboard/actions";
 
-export type SendBehavior = "interrupt" | "queue";
+export type SendBehavior = "interrupt" | "queue" | "steer";
 
 interface ComposerSurfaceState {
   opacity: 0 | 1;
@@ -49,6 +49,11 @@ interface SendActionContext {
   sendsOutOfBand: boolean;
   onQueue: ((payload: MessagePayload) => void) | undefined;
   handleSendMessage: () => void;
+  /**
+   * Sends the draft with dispatchMode "steer": the daemon delivers it against
+   * the live turn (native OMP live-steer) instead of starting a new one.
+   */
+  handleSteerSendMessage: () => void;
   handleQueueMessage: () => void;
 }
 
@@ -98,6 +103,12 @@ export function applyDictationTranscript(text: string, ctx: DictationTranscriptC
     attachments: ctx.attachments,
     cwd: ctx.cwd,
     forceSend: ctx.isAgentRunning || undefined,
+    // Spoken input follows the selected send behavior: with Steer selected and
+    // the agent mid-turn, the transcript rides along with the live turn.
+    dispatchMode:
+      ctx.defaultSendBehavior === "steer" && ctx.isAgentRunning && !ctx.sendsOutOfBand
+        ? "steer"
+        : undefined,
   });
 }
 
@@ -127,6 +138,10 @@ export function computeCanStartDictation(input: {
 }
 
 export function runDefaultSendAction(ctx: SendActionContext): void {
+  if (ctx.defaultSendBehavior === "steer" && !ctx.sendsOutOfBand && ctx.isAgentRunning) {
+    ctx.handleSteerSendMessage();
+    return;
+  }
   if (
     ctx.defaultSendBehavior === "queue" &&
     !ctx.sendsOutOfBand &&
@@ -141,6 +156,12 @@ export function runDefaultSendAction(ctx: SendActionContext): void {
 
 export function runAlternateSendAction(ctx: SendActionContext): void {
   if (ctx.defaultSendBehavior === "queue" || ctx.sendsOutOfBand) {
+    ctx.handleSendMessage();
+    return;
+  }
+  if (ctx.defaultSendBehavior === "steer") {
+    // Cmd/Ctrl+Enter escalates a steer to an interrupt: the message replaces
+    // the running turn instead of riding along with it.
     ctx.handleSendMessage();
     return;
   }

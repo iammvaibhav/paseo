@@ -1864,10 +1864,13 @@ export const fr: TranslationResources = {
             "Lorsque l'agent est en cours d'exécution, Entrée interrompt. Commande/Ctrl+Entrée met en file d'attente.",
           queue:
             "Lorsque l'agent est en cours d'exécution, Entrée met en file d'attente. Commande/Ctrl+Entrée envoie.",
+          steer:
+            "Lorsque l'agent est en cours d'exécution, Entrée le dirige : il termine l'appel d'outil en cours, lit votre message, puis continue. Commande/Ctrl+Entrée interrompt.",
         },
         options: {
           interrupt: "Interrompre",
           queue: "File d'attente",
+          steer: "Diriger",
         },
       },
       serviceUrls: {

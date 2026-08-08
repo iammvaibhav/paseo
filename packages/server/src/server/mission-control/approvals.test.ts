@@ -28,7 +28,12 @@ interface Harness {
   approvals: MissionControlApprovals;
   presence: MissionControlPresenceSource;
   mode: "ask" | "auto";
-  delivered: Array<{ agentId: string; message: string; deliveryMode: "steer" | "interrupt" }>;
+  delivered: Array<{
+    agentId: string;
+    message: string;
+    deliveryMode: "steer" | "interrupt" | "queue";
+    classification?: "machinery" | "instruction";
+  }>;
   published: MissionControlProposal[];
 }
 
@@ -112,6 +117,10 @@ describe("MissionControlApprovals ask mode", () => {
           agentId: "worker-1",
           message: "Prove the fix with a failing test.",
           deliveryMode: "steer",
+          // classify-at-source: non-verboseOnly proposals deliver as visible
+          // "instruction" rows on the target's timeline.
+          classification: "instruction",
+          proposal: expect.objectContaining({ id: expect.any(String) }),
         },
       ]);
       const updated = harness.approvals.getProposal(proposal.id);
@@ -184,6 +193,10 @@ describe("MissionControlApprovals ask mode", () => {
           agentId: "worker-1",
           message: "Prove the fix with a failing test.",
           deliveryMode: "steer",
+          // classify-at-source: non-verboseOnly proposals deliver as visible
+          // "instruction" rows on the target's timeline.
+          classification: "instruction",
+          proposal: expect.objectContaining({ id: expect.any(String) }),
         },
       ]);
       expect(harness.published.map((p) => p.status)).toEqual(["sent"]);
@@ -205,6 +218,43 @@ describe("MissionControlApprovals ask mode", () => {
       );
       expect(proposal.status).toBe("sent");
       expect(harness.delivered).toHaveLength(1);
+    } finally {
+      await teardown(harness);
+    }
+  });
+
+  test("verboseOnly stall nudges deliver as machinery; everything else as instruction", async () => {
+    const harness = await build({ mode: "auto" });
+    try {
+      // The stall status-ask nudge: forceSend + verboseOnly → machinery row on
+      // the target's own timeline (auditable, rendered as a muted placeholder).
+      // The verboseOnly fallback classifies legacy records without the field.
+      await harness.approvals.createProposal(
+        baseInput({ origin: "stall", deliveryMode: "steer", forceSend: true, verboseOnly: true }),
+      );
+      // Verifier proof demand: no verboseOnly → instruction (always visible).
+      await harness.approvals.createProposal(baseInput({ origin: "verifier" }));
+      expect(harness.delivered.map((d) => d.classification)).toEqual(["machinery", "instruction"]);
+    } finally {
+      await teardown(harness);
+    }
+  });
+
+  test("an explicit timelineClassification rides the record and the deliver hook", async () => {
+    const harness = await build({ mode: "auto" });
+    try {
+      await harness.approvals.createProposal(
+        baseInput({
+          origin: "stall",
+          deliveryMode: "steer",
+          forceSend: true,
+          verboseOnly: true,
+          timelineClassification: "machinery",
+        }),
+      );
+      expect(harness.delivered[0].classification).toBe("machinery");
+      // The classification is persisted on the proposal record (audit trail).
+      expect(harness.approvals.listProposals()[0]?.timelineClassification).toBe("machinery");
     } finally {
       await teardown(harness);
     }
@@ -420,6 +470,207 @@ describe("MissionControlApprovals notifications", () => {
       const proposal = await harness.approvals.createProposal(baseInput());
       await harness.approvals.resolveProposal({ proposalId: proposal.id, action: "approve" });
       expect(seen).toEqual(["pending", "sent"]);
+    } finally {
+      await teardown(harness);
+    }
+  });
+});
+
+// ============================================================================
+// Ask-mode gating per action class (spec: "apart from nudge, everything should
+// require my approval in ask mode. Spinning up a new agent as well,
+// everything."). The exemption is ONE predicate (isAskModeAutoSendExempt) and
+// this table pins every action class so it cannot drift.
+// ============================================================================
+
+describe("MissionControlApprovals ask-mode gating per action class", () => {
+  test("enumerated action classes: nudge exempt, everything else pending in ask mode", async () => {
+    const harness = await build({ mode: "ask" });
+    try {
+      // Each row: what the machinery does → the proposal it creates.
+      const actionClasses: Array<{
+        label: string;
+        input: ProposalCreateInput;
+      }> = [
+        // The ONLY exemption: the status-ask nudge (auto-sent, forceSend).
+        {
+          label: "status-ask nudge",
+          input: baseInput({
+            origin: "stall",
+            deliveryMode: "steer",
+            forceSend: true,
+            verboseOnly: true,
+          }),
+        },
+        // Everything below must sit pending in ask mode.
+        {
+          label: "escalation/recovery interrupt",
+          input: baseInput({ origin: "stall", deliveryMode: "interrupt" }),
+        },
+        {
+          label: "Commander spawn (create_agent)",
+          input: baseInput({
+            origin: "commander",
+            targetAgentId: "",
+            kind: "spawn",
+            spawnPlan: { provider: "omp", model: "m/model", summary: "Spawn a worker" },
+          }),
+        },
+        {
+          label: "Commander fleet spawn (fleet_create_agent)",
+          input: baseInput({
+            origin: "commander",
+            targetAgentId: "",
+            kind: "spawn",
+            spawnPlan: {
+              host: "peer-a",
+              provider: "codex",
+              summary: "Spawn a worker on peer-a",
+            },
+          }),
+        },
+        {
+          label: "verifier spawn",
+          input: baseInput({
+            origin: "verifier",
+            targetAgentId: "worker-1",
+            kind: "spawn",
+            spawnPlan: { provider: "omp", summary: "Spawn a verifier for worker-1" },
+          }),
+        },
+        {
+          label: "verifier -> worker contact (contact_worker)",
+          input: baseInput({ origin: "verifier", deliveryMode: "interrupt" }),
+        },
+        {
+          label: "worker -> verifier reply relay",
+          input: baseInput({
+            origin: "verifier",
+            targetAgentId: "verifier-1",
+            allowPairKey: "server-1:worker-1",
+            message: "The worker replied with a status report.",
+          }),
+        },
+        {
+          label: "Commander -> worker send (fleet_send_prompt)",
+          input: baseInput({ origin: "commander", targetAgentId: "worker-2" }),
+        },
+      ];
+
+      const statuses = new Map<string, string>();
+      for (const action of actionClasses) {
+        const proposal = await harness.approvals.createProposal(action.input);
+        statuses.set(action.label, proposal.status);
+      }
+
+      expect(statuses.get("status-ask nudge")).toBe("sent");
+      expect(harness.delivered).toHaveLength(1); // only the nudge delivered
+      for (const [label, status] of statuses) {
+        if (label !== "status-ask nudge") {
+          expect(status, `${label} must wait for approval in ask mode`).toBe("pending");
+        }
+      }
+    } finally {
+      await teardown(harness);
+    }
+  });
+
+  test("a user-granted allow-pair remains the ONLY other ask-mode exemption", async () => {
+    const harness = await build({ mode: "ask" });
+    try {
+      // First contact: pending → approve WITH allowPair.
+      const first = await harness.approvals.createProposal(baseInput());
+      expect(first.status).toBe("pending");
+      await harness.approvals.resolveProposal({
+        proposalId: first.id,
+        action: "approve",
+        allowPair: true,
+      });
+      // The rest of the pair auto-sends (even in ask mode) — worker pair key.
+      const second = await harness.approvals.createProposal(
+        baseInput({ allowPairKey: "server-1:worker-1" }),
+      );
+      expect(second.status).toBe("sent");
+      // A DIFFERENT pair still waits — the exemption is pair-scoped.
+      const other = await harness.approvals.createProposal(
+        baseInput({ targetAgentId: "worker-3" }),
+      );
+      expect(other.status).toBe("pending");
+    } finally {
+      await teardown(harness);
+    }
+  });
+
+  test("spawn-kind proposal approves via the spawn hook and records spawnedAgentId", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mc-approvals-spawn-"));
+    const store = new MissionControlStore({ paseoHome: dir, logger: createTestLogger() });
+    await store.initialize();
+    const delivered: Harness["delivered"] = [];
+    const published: MissionControlProposal[] = [];
+    let spawned: MissionControlProposal | null = null;
+    const approvals = new MissionControlApprovals({
+      store,
+      presence: { isAgentFocused: () => false, getStoppedBy: () => null },
+      logger: createTestLogger(),
+      getMode: () => "ask",
+      deliver: async (input) => {
+        delivered.push(input);
+      },
+      publishProposalEvent: async (proposal) => {
+        published.push(proposal);
+        return { id: proposal.id };
+      },
+      spawn: async (proposal) => {
+        spawned = proposal;
+        return { ok: true, agentId: "spawned-42" };
+      },
+    });
+    try {
+      const proposal = await approvals.createProposal({
+        origin: "commander",
+        serverId: "server-1",
+        targetAgentId: "",
+        message: "Spawn a worker",
+        deliveryMode: "interrupt",
+        reason: "Commander spawn",
+        classification: "normal",
+        kind: "spawn",
+        spawnPlan: { provider: "omp", summary: "Spawn a worker" },
+      });
+      expect(proposal.status).toBe("pending");
+      expect(delivered).toHaveLength(0); // spawns never "deliver" a message
+      await approvals.resolveProposal({ proposalId: proposal.id, action: "approve" });
+      expect(spawned?.id).toBe(proposal.id);
+      expect(approvals.getProposal(proposal.id)?.status).toBe("sent");
+      expect(approvals.getProposal(proposal.id)?.spawnedAgentId).toBe("spawned-42");
+      expect(delivered).toHaveLength(0);
+    } finally {
+      await awaitStoreWrites(store);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("auto mode sends every action class immediately (destructive still asks)", async () => {
+    const harness = await build({ mode: "auto" });
+    try {
+      const spawn = await harness.approvals.createProposal(
+        baseInput({
+          origin: "commander",
+          targetAgentId: "",
+          kind: "spawn",
+          spawnPlan: { provider: "omp", summary: "Spawn a worker" },
+        }),
+      );
+      expect(spawn.status).toBe("sent");
+      const send = await harness.approvals.createProposal(
+        baseInput({ origin: "commander", targetAgentId: "worker-2" }),
+      );
+      expect(send.status).toBe("sent");
+      expect(harness.delivered.map((d) => d.agentId)).toEqual(["worker-2"]);
+      const destructive = await harness.approvals.createProposal(
+        baseInput({ origin: "commander", classification: "destructive" }),
+      );
+      expect(destructive.status).toBe("pending");
     } finally {
       await teardown(harness);
     }

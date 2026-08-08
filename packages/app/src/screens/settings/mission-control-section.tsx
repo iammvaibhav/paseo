@@ -368,6 +368,15 @@ export function MissionControlSection(): ReactElement {
     [],
   );
 
+  const deliveryModeOptions = useMemo<DropdownRowOption<"steer" | "interrupt" | "queue">[]>(
+    () => [
+      { value: "steer", label: "Steer" },
+      { value: "interrupt", label: "Interrupt" },
+      { value: "queue", label: "Queue" },
+    ],
+    [],
+  );
+
   const patch = useCallback(
     async (updates: Partial<MissionControlCentralConfig>) => {
       try {
@@ -452,6 +461,22 @@ export function MissionControlSection(): ReactElement {
     },
     [patch],
   );
+  const handleDormantTurnSecondsCommit = useCallback(
+    (next: number | null) => {
+      if (next !== null) {
+        void patch({ dormantTurnSeconds: next });
+      }
+    },
+    [patch],
+  );
+  const handleCommanderToWorkerModeSelect = useCallback(
+    (next: "steer" | "interrupt" | "queue") => void patch({ commanderToWorkerMode: next }),
+    [patch],
+  );
+  const handleVerifierToWorkerModeSelect = useCallback(
+    (next: "steer" | "interrupt" | "queue") => void patch({ verifierToWorkerMode: next }),
+    [patch],
+  );
 
   if (resolvingHost || isLoading) {
     return (
@@ -482,11 +507,33 @@ export function MissionControlSection(): ReactElement {
         </View>
       </SettingsSection>
 
+      <SettingsSection title="Delivery">
+        <View style={settingsStyles.card}>
+          <DropdownRow
+            title="Commander → worker"
+            hint="How the Commander's fleet_send_prompt reaches a busy worker by default. Steer = additive, non-urgent instructions (injects without cancelling; a busy non-OMP worker is interrupted so it still lands); interrupt = immediate direction change (cancels and replaces); queue = waits for idle. An explicit mode in the tool call overrides this."
+            value={config.commanderToWorkerMode}
+            options={deliveryModeOptions}
+            onSelect={handleCommanderToWorkerModeSelect}
+            testID="mission-control-settings-commander-to-worker-mode"
+            first
+          />
+          <DropdownRow
+            title="Verifier → worker"
+            hint="How verifier proof demands reach the worker. Steer = additive clarification request; interrupt = takes over immediately; queue = waits for idle."
+            value={config.verifierToWorkerMode}
+            options={deliveryModeOptions}
+            onSelect={handleVerifierToWorkerModeSelect}
+            testID="mission-control-settings-verifier-to-worker-mode"
+          />
+        </View>
+      </SettingsSection>
+
       <SettingsSection title="Commander">
         <View style={settingsStyles.card}>
           <DropdownRow
             title="Commander host"
-            hint="The host that runs the fleet Commander. None lets the current host designate itself."
+            hint="The host that runs the fleet Commander. Only this designated host ensures it; None means no host does until you pick one."
             value={config.commanderHost}
             options={hostOptions}
             onSelect={handleCommanderHostSelect}
@@ -535,7 +582,7 @@ export function MissionControlSection(): ReactElement {
           />
           <DropdownRow
             title="Evaluation scope"
-            hint="Which agents the verifier audits."
+            hint="Which agents the verifier audits. 'All agents' audits an agent only when it declared completion or was dispatched with a brief and reported progress — a finished chat turn alone never triggers an audit."
             value={config.evaluationScope}
             options={evaluationScopeOptions}
             onSelect={handleEvaluationScopeSelect}
@@ -611,6 +658,14 @@ export function MissionControlSection(): ReactElement {
             value={config.escalateSeconds}
             onCommit={handleEscalateSecondsCommit}
             testID="mission-control-settings-escalate-seconds"
+            isCompact={isCompact}
+          />
+          <NumberRow
+            title="Dormant turn"
+            hint="Seconds a running agent may sit with no output AND no tool in flight before its turn is treated as wedged and recovered. Healthy agents respond in 5-90s; the slowest legitimate model call observed was 178.6s (max of 8242 samples — one 727k-token call took 48s TTFT + 54s), and Paseo cannot see a model request in flight (it lives inside omp), so values under ~4 min risk false positives."
+            value={config.dormantTurnSeconds}
+            onCommit={handleDormantTurnSecondsCommit}
+            testID="mission-control-settings-dormant-turn-seconds"
             isCompact={isCompact}
           />
         </View>

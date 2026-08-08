@@ -208,6 +208,17 @@ export interface AgentRunOptions {
   resumeFrom?: AgentPersistenceHandle;
   maxThinkingTokens?: number;
   clientMessageId?: string;
+  /**
+   * Who superseded the in-flight run when this prompt replaces one
+   * (replaceRunning). The superseded run's terminal failure is then treated
+   * as that party's interruption instead of a genuine error: "user" (a user
+   * interrupt-and-send) suppresses the [System Error] timeline row for the
+   * aborted turn and renders as "Interrupted by you" in Mission Control;
+   * "machinery" (escalation/recovery/Commander sends) keeps the failure
+   * treatment. Absent = no origin recorded — genuine aborts/crashes are
+   * untouched. Only consulted when a replace actually happens.
+   */
+  replaceOrigin?: "user" | "machinery";
 }
 
 export interface AgentUsage {
@@ -375,8 +386,23 @@ export interface CompactionTimelineItem {
   preTokens?: number;
 }
 
+/**
+ * Who originated a user-role timeline row. Machinery delivers prompts into an
+ * agent's own chat (stall status-ask nudges, Commander/Verifier directions)
+ * and stamps the row at the source so the agent chat renders it distinctly.
+ * Absent = "instruction" (a visible prompt) — real user messages and legacy
+ * rows are never hidden.
+ */
+export type AgentTimelineUserMessageClassification = "machinery" | "instruction";
+
 export type AgentTimelineItem =
-  | { type: "user_message"; text: string; messageId?: string; clientMessageId?: string }
+  | {
+      type: "user_message";
+      text: string;
+      messageId?: string;
+      clientMessageId?: string;
+      classification?: AgentTimelineUserMessageClassification;
+    }
   | { type: "assistant_message"; text: string; messageId?: string }
   | { type: "reasoning"; text: string }
   | ToolCallTimelineItem

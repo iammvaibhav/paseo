@@ -10,11 +10,27 @@ export interface WorkspaceAgentForSidebar {
 
 export function isSidebarWorkspaceHidden(input: {
   agentsInWorkspace: WorkspaceAgentForSidebar[];
+  /**
+   * Mission Control verbose mode: when ON, the Commander's home workspace is
+   * shown in the sidebar so machinery can be inspected on demand; when OFF it
+   * is hidden. History Ask workspaces stay hidden in both modes.
+   */
+  hideCommanderWorkspaces: boolean;
 }): boolean {
-  return (
-    input.agentsInWorkspace.length > 0 &&
-    input.agentsInWorkspace.every((a) => isHistoryAskAgent(a.labels) || isCommanderAgent(a.labels))
+  if (input.agentsInWorkspace.length === 0) {
+    return false;
+  }
+  const hasOnlyMachinery = input.agentsInWorkspace.every(
+    (agent) => isHistoryAskAgent(agent.labels) || isCommanderAgent(agent.labels),
   );
+  if (!hasOnlyMachinery) {
+    return false;
+  }
+  const hasCommander = input.agentsInWorkspace.some((agent) => isCommanderAgent(agent.labels));
+  if (hasCommander && !input.hideCommanderWorkspaces) {
+    return false;
+  }
+  return true;
 }
 
 export interface WorkspaceStructureHostPlacement {
@@ -60,7 +76,10 @@ interface ProjectDraft {
 /** The single app boundary that turns host-local projects into grouped display projects. */
 export function buildWorkspaceStructureProjects(input: {
   sessions: WorkspaceStructureSession[];
+  /** Default hidden; Mission Control verbose mode passes false. */
+  hideCommanderWorkspaces?: boolean;
 }): WorkspaceStructureProject[] {
+  const { hideCommanderWorkspaces = true } = input;
   const byProject = new Map<string, ProjectDraft>();
   const projectEntries: Array<{ serverId: string; project: ProjectDescriptor }> = [];
   const keyCountsByServer = new Map<string, Map<string, number>>();
@@ -111,7 +130,7 @@ export function buildWorkspaceStructureProjects(input: {
 
     for (const workspace of session.workspaces) {
       const agentsInWorkspace = agentsByWorkspaceId.get(workspace.id) ?? [];
-      if (isSidebarWorkspaceHidden({ agentsInWorkspace })) {
+      if (isSidebarWorkspaceHidden({ agentsInWorkspace, hideCommanderWorkspaces })) {
         continue;
       }
       const viewKey = viewKeyByServerProjectId.get(session.serverId)?.get(workspace.projectId);

@@ -166,7 +166,6 @@ const SHORTCUT_HELP_LABEL_KEYS: Record<string, string> = {
   "cycle-agent-mode": "settings.shortcuts.help.cycleAgentMode",
   "voice-toggle": "settings.shortcuts.help.toggleVoiceMode",
   "dictation-toggle": "settings.shortcuts.help.startStopDictation",
-  "agent-interrupt": "settings.shortcuts.help.interruptAgent",
   "voice-mute-toggle": "settings.shortcuts.help.muteUnmuteVoiceMode",
 };
 
@@ -1022,20 +1021,6 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
       section: "agent-input",
       label: "Start/stop dictation",
       keys: ["mod", "D"],
-    },
-  },
-  {
-    id: "agent-interrupt",
-    action: "agent.interrupt",
-    combo: "Escape",
-    when: { commandCenter: false, terminal: false },
-    preventDefault: false,
-    stopPropagation: false,
-    help: {
-      id: "agent-interrupt",
-      section: "agent-input",
-      label: "Interrupt agent",
-      keys: ["Esc"],
     },
   },
   {

@@ -6,7 +6,8 @@ import type { AgentManager } from "../agent-manager.js";
 import type { AgentStorage } from "../agent-storage.js";
 import type { ProviderSnapshotManager } from "../provider-snapshot-manager.js";
 import type { PeerManager } from "../../peers/peer-manager.js";
-import { createPaseoToolCatalog } from "./paseo-tools.js";
+import type { MissionControlService } from "../../mission-control/service.js";
+import { createPaseoToolCatalog, dispatchLocalPromptMode } from "./paseo-tools.js";
 
 /** Canned fetch_agent_timeline response payload. */
 function peerTimelinePayload(): Record<string, unknown> {
@@ -267,9 +268,11 @@ describe("fleet_list_agents roster enrichment", () => {
 });
 
 describe("fleet_send_prompt mode", () => {
-  test("validates the schema: mode defaults to steer and rejects unknown modes", async () => {
+  test("validates the schema: mode defaults to the central setting (interrupt without MC) and rejects unknown modes", async () => {
     const { peerManager } = createFakePeerHarness();
     const catalog = createCatalog(peerManager);
+    // No missionControlService wired: the fleet default resolves to
+    // "interrupt" (the spec default of commanderToWorkerMode).
     await expect(
       catalog.executeTool("fleet_send_prompt", {
         host: "macbook",
@@ -283,9 +286,54 @@ describe("fleet_send_prompt mode", () => {
         host: "macbook",
         agentId: "peer-agent-1",
         prompt: "hello",
+      }),
+    ).resolves.toMatchObject({
+      structuredContent: { success: true, deliveryMode: "interrupt" },
+    });
+    await expect(
+      catalog.executeTool("fleet_send_prompt", {
+        host: "macbook",
+        agentId: "peer-agent-1",
+        prompt: "hello",
         mode: "replace",
       }),
     ).rejects.toThrow();
+  });
+
+  test("commanderToWorkerMode is the default when mode is omitted; an explicit mode overrides it", async () => {
+    const { client, peerManager } = createFakePeerHarness();
+    const catalog = createPaseoToolCatalog({
+      agentManager: {} as unknown as AgentManager,
+      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+      providerSnapshotManager: createProviderSnapshotManagerStub()
+        .manager as unknown as ProviderSnapshotManager,
+      peerManager,
+      // Commander host daemon: the fleet setting drives the default.
+      missionControlService: {
+        getCentralConfig: () => ({ commanderToWorkerMode: "queue" }),
+      } as unknown as MissionControlService,
+      logger: createTestLogger(),
+    });
+
+    // Omitted mode → the fleet commanderToWorkerMode setting (queue).
+    await catalog.executeTool("fleet_send_prompt", {
+      host: "macbook",
+      agentId: "peer-agent-1",
+      prompt: "follow up",
+    });
+    expect(client.sendAgentMessage).toHaveBeenLastCalledWith("peer-agent-1", "follow up", {
+      dispatchMode: "queue",
+    });
+    // An explicit mode from the Commander always wins (steer for additive).
+    await catalog.executeTool("fleet_send_prompt", {
+      host: "macbook",
+      agentId: "peer-agent-1",
+      prompt: "add a note",
+      mode: "steer",
+    });
+    expect(client.sendAgentMessage).toHaveBeenLastCalledWith("peer-agent-1", "add a note", {
+      dispatchMode: "steer",
+    });
   });
 
   test("proxies the dispatch mode to the peer via sendAgentMessage", async () => {
@@ -306,11 +354,15 @@ describe("fleet_send_prompt mode", () => {
   test("steers a busy omp agent locally through the out-of-band path without cancelling", async () => {
     const tryRunOutOfBand = vi.fn(() => true);
     const streamAgent = vi.fn();
+    const appendTimelineItem = vi.fn(async () => undefined);
     const agentManager = {
       getAgent: vi.fn(() => ({ provider: "omp" })),
       hasInFlightRun: vi.fn(() => true),
       tryRunOutOfBand,
       streamAgent,
+      // The native steer records the prompt as a timeline row (classify-at-
+      // source); the mock must accept the append.
+      appendTimelineItem,
     } as unknown as AgentManager;
     const catalog = createPaseoToolCatalog({
       agentManager,
@@ -328,23 +380,117 @@ describe("fleet_send_prompt mode", () => {
     });
     expect(tryRunOutOfBand).toHaveBeenCalledWith("agent-1", "/steer focus on tests");
     expect(streamAgent).not.toHaveBeenCalled();
+    expect(appendTimelineItem).toHaveBeenCalledWith(
+      "agent-1",
+      expect.objectContaining({ type: "user_message", text: "focus on tests" }),
+    );
     expect(result.structuredContent).toEqual({ success: true, deliveryMode: "steer" });
   });
 
-  test("queues behind a busy non-omp agent instead of cancelling", async () => {
-    const tryRunOutOfBand = vi.fn(() => false);
+  test("an instruction steer records a visible user row so the agent's chat is never missing a direction", async () => {
+    const tryRunOutOfBand = vi.fn(() => true);
+    const appendTimelineItem = vi.fn(async () => undefined);
+    const agentManager = {
+      getAgent: vi.fn(() => ({ provider: "omp" })),
+      hasInFlightRun: vi.fn(() => true),
+      tryRunOutOfBand,
+      appendTimelineItem,
+      expectPromptClassification: vi.fn(),
+    } as unknown as AgentManager;
+
+    const catalog = createPaseoToolCatalog({
+      agentManager,
+      agentStorage: {} as unknown as AgentStorage,
+      providerSnapshotManager: createProviderSnapshotManagerStub()
+        .manager as unknown as ProviderSnapshotManager,
+      logger: createTestLogger(),
+    });
+
+    const result = await catalog.executeTool("fleet_send_prompt", {
+      host: "local",
+      agentId: "agent-1",
+      prompt: "add a note about the fix",
+      mode: "steer",
+    });
+    // The native steer records no row in Paseo's timeline; the instruction is
+    // appended as a classified user row (absent classification = instruction).
+    expect(appendTimelineItem).toHaveBeenCalledWith("agent-1", {
+      type: "user_message",
+      text: "add a note about the fix",
+      classification: "instruction",
+    });
+    expect(result.structuredContent).toEqual({ success: true, deliveryMode: "steer" });
+  });
+
+  test("a machinery steer records a machinery-classified row (status asks render as a placeholder)", async () => {
+    const tryRunOutOfBand = vi.fn(() => true);
+    const appendTimelineItem = vi.fn(async () => undefined);
+    const agentManager = {
+      getAgent: vi.fn(() => ({ provider: "omp" })),
+      hasInFlightRun: vi.fn(() => true),
+      tryRunOutOfBand,
+      appendTimelineItem,
+    } as unknown as AgentManager;
+
+    // Machinery prompts (stall status-ask nudges) reach dispatchLocalPromptMode
+    // from the mission-control approval path with an explicit classification.
+    const result = await dispatchLocalPromptMode({
+      agentManager,
+      agentStorage: {} as unknown as AgentStorage,
+      agentId: "agent-1",
+      prompt: "You've been quiet for a while. Post a one-line report_status.",
+      mode: "steer",
+      classification: "machinery",
+      logger: createTestLogger(),
+    });
+    expect(result).toBe("steer");
+    expect(appendTimelineItem).toHaveBeenCalledWith("agent-1", {
+      type: "user_message",
+      text: "You've been quiet for a while. Post a one-line report_status.",
+      classification: "machinery",
+    });
+  });
+
+  test("an interrupt machinery dispatch registers an expectation instead of appending a row", async () => {
+    const expectPromptClassification = vi.fn();
     const streamAgent = vi.fn(async function* () {});
-    // First check reports busy (steer busy probe); the wait loop then sees idle.
-    let busy = true;
+    const appendTimelineItem = vi.fn(async () => undefined);
+    const agentManager = {
+      getAgent: vi.fn(() => ({ provider: "omp" })),
+      hasInFlightRun: vi.fn(() => false),
+      tryRunOutOfBand: vi.fn(() => false),
+      streamAgent,
+      appendTimelineItem,
+      expectPromptClassification,
+    } as unknown as AgentManager;
+
+    // The interrupt path echoes the submitted prompt as a natural user row;
+    // the machinery classification rides an expectation that stamps that echo.
+    await dispatchLocalPromptMode({
+      agentManager,
+      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+      agentId: "agent-1",
+      prompt: "status please",
+      mode: "interrupt",
+      classification: "machinery",
+      logger: createTestLogger(),
+    });
+    expect(expectPromptClassification).toHaveBeenCalledWith(
+      "agent-1",
+      "status please",
+      "machinery",
+    );
+    expect(appendTimelineItem).not.toHaveBeenCalled();
+  });
+
+  test("steer on a busy non-omp agent interrupts (replaceRunning) and reports the fallback honestly", async () => {
+    const tryRunOutOfBand = vi.fn(() => false);
+    const replaceAgentRun = vi.fn(async function* () {});
     const agentManager = {
       getAgent: vi.fn(() => ({ provider: "codex" })),
-      hasInFlightRun: vi.fn(() => {
-        const current = busy;
-        busy = false;
-        return current;
-      }),
+      hasInFlightRun: vi.fn(() => true),
       tryRunOutOfBand,
-      streamAgent,
+      replaceAgentRun,
     } as unknown as AgentManager;
     const catalog = createPaseoToolCatalog({
       agentManager,
@@ -360,12 +506,19 @@ describe("fleet_send_prompt mode", () => {
       prompt: "follow up",
       mode: "steer",
     });
-    // Never steers a non-omp provider via the /steer prefix; the message
-    // queues instead (startAgentRun still probes out-of-band with the plain
-    // prompt, which the provider declines).
+    // No native steer path on codex: the run is replaced instead of queued —
+    // a steer's value is timely delivery, queue-until-idle can sit for tens of
+    // minutes. startAgentRun still probes out-of-band with the plain prompt
+    // (declined), then replaces.
     expect(tryRunOutOfBand).not.toHaveBeenCalledWith("agent-1", "/steer follow up", undefined);
-    expect(streamAgent).toHaveBeenCalledWith("agent-1", "follow up", undefined);
-    expect(result.structuredContent).toEqual({ success: true, deliveryMode: "queue" });
+    // The steer fallback is a machinery dispatch (Commander/Verifier): the
+    // superseded run keeps the failure treatment, never a user interruption.
+    expect(replaceAgentRun).toHaveBeenCalledWith("agent-1", "follow up", {
+      replaceOrigin: "machinery",
+    });
+    // The caller is told the truth: this was a steer request delivered as an
+    // interrupt fallback, not a native steer.
+    expect(result.structuredContent).toEqual({ success: true, deliveryMode: "steer-interrupt" });
   });
 
   test("validates the attachments schema and rejects unknown attachment types", async () => {
@@ -386,7 +539,9 @@ describe("fleet_send_prompt mode", () => {
         prompt: "read my notes",
         attachments: [uploadedFile],
       }),
-    ).resolves.toMatchObject({ structuredContent: { success: true, deliveryMode: "steer" } });
+    ).resolves.toMatchObject({
+      structuredContent: { success: true, deliveryMode: "interrupt" },
+    });
     await expect(
       catalog.executeTool("fleet_send_prompt", {
         host: "macbook",

@@ -181,6 +181,7 @@ interface FakeSendCall {
     messageId: string;
     images: Array<{ data: string; mimeType: string }>;
     attachments: AgentAttachment[];
+    dispatchMode?: "steer" | "interrupt" | "queue";
   };
 }
 
@@ -455,6 +456,45 @@ describe("dispatchComposerAgentMessage", () => {
     expect(client.calls[0]?.text).toBe("/steer print instead");
     expect(stream.head.get("agent") ?? []).toEqual([]);
     expect(stream.tail.get("agent") ?? []).toEqual([]);
+  });
+
+  it("forwards the steer dispatch mode to the daemon and skips the optimistic row", async () => {
+    const client = createFakeSendClient();
+    const stream = createFakeStream();
+
+    await dispatchComposerAgentMessage({
+      client,
+      agentId: "agent",
+      text: "fix the test",
+      attachments: [],
+      encodeImages: passthroughEncodeImages,
+      submission: stream,
+      dispatchMode: "steer",
+      // The daemon runs the steer out of band and the provider re-emits the
+      // text as its own user entry, so no optimistic bubble (mirrors /steer).
+      skipOptimisticUserMessage: true,
+    });
+
+    expect(client.calls).toHaveLength(1);
+    expect(client.calls[0]?.options.dispatchMode).toBe("steer");
+    expect(stream.head.get("agent") ?? []).toEqual([]);
+    expect(stream.tail.get("agent") ?? []).toEqual([]);
+  });
+
+  it("omits dispatchMode from the wire when the caller did not request one", async () => {
+    const client = createFakeSendClient();
+    const stream = createFakeStream();
+
+    await dispatchComposerAgentMessage({
+      client,
+      agentId: "agent",
+      text: "plain message",
+      attachments: [],
+      encodeImages: passthroughEncodeImages,
+      submission: stream,
+    });
+
+    expect(client.calls[0]?.options.dispatchMode).toBeUndefined();
   });
 
   it("rolls back an already-running force send when its RPC fails", async () => {

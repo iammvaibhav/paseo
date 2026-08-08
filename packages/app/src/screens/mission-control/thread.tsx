@@ -1,18 +1,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
-import {
-  FlatList,
-  Pressable,
-  Text,
-  View,
-  type LayoutChangeEvent,
-  type ListRenderItemInfo,
-  type NativeScrollEvent,
-  type NativeSyntheticEvent,
-} from "react-native";
-import { StyleSheet } from "react-native-unistyles";
+import { Platform, Pressable, Text, View } from "react-native";
+import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { ChevronDown } from "lucide-react-native";
-import { withUnistyles } from "react-native-unistyles";
 import type { Theme } from "@/styles/theme";
 import {
   ActivityLog,
@@ -22,10 +12,15 @@ import {
   ToolCall,
   UserMessage,
 } from "@/components/message";
+import { type BottomAnchorRouteRequest } from "@/agent-stream/bottom-anchor-controller";
+import { AnchoredList } from "@/agent-stream/anchored-list";
 import {
-  type BottomAnchorRouteRequest,
-  useBottomAnchorController,
-} from "@/agent-stream/bottom-anchor-controller";
+  type StreamHistoryBoundary,
+  type StreamRenderSegments,
+  type StreamSegmentRenderers,
+  type StreamViewportHandle,
+} from "@/agent-stream/strategy";
+import { resolveStreamRenderStrategy } from "@/agent-stream/strategy-resolver";
 import {
   AssistantFileLinkResolverProvider,
   normalizeInlinePathTarget,
@@ -35,7 +30,7 @@ import { useToast } from "@/contexts/toast-context";
 import { ToolCallSheetProvider } from "@/components/tool-call-sheet";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import { useHostRuntimeClient } from "@/runtime/host-runtime";
-import { MAX_CONTENT_WIDTH } from "@/constants/layout";
+import { MAX_CONTENT_WIDTH, useIsCompactFormFactor } from "@/constants/layout";
 import { useSessionStore } from "@/stores/session-store";
 import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
 import type { AgentToolCallData, StreamItem } from "@/types/stream";
@@ -43,7 +38,9 @@ import {
   createWorkspaceFileTabTarget,
   normalizeWorkspaceFileLocation,
 } from "@/workspace/file-open";
-import { FeedCard, type FeedCardEvent } from "./feed-card";
+import { cardRunPosition, FeedCard, type CardRunRowClass, type FeedCardEvent } from "./feed-card";
+import { readDispatchToolResultError } from "./thread-tool-error";
+import { isVerboseOnlyProposalEvent } from "./proposal-card";
 import { MutedSystemRow } from "./muted-system-row";
 import { isPaseoSystemMessage, PaseoSystemRow } from "./paseo-system-row";
 import { PaseoAgentLinkProvider } from "@/components/markdown/paseo-agent-link";
@@ -53,13 +50,8 @@ import { useShallow } from "zustand/react/shallow";
 
 const THREAD_ANCHOR_ID = "mission-control-thread";
 const THREAD_INITIAL_REQUEST_KEY = "mission-control-thread-initial";
-const THREAD_CONTAINER_KEY = "mission-control-thread";
-const NEAR_BOTTOM_THRESHOLD = 32;
-/** Offset from the top that triggers loading an older page of events. */
-const NEAR_TOP_THRESHOLD = 24;
-/** Safety window: a prepend anchor that never lands is dropped after this. */
-const PREPEND_ANCHOR_TIMEOUT_MS = 3_000;
 const EMPTY_STREAM_ITEMS: StreamItem[] = [];
+const EMPTY_THREAD_ROWS: ThreadRow[] = [];
 const EMPTY_AGENT_NAMES: Readonly<Record<string, string | undefined>> = Object.freeze({});
 
 const ThemedChevronDown = withUnistyles(ChevronDown);
@@ -119,6 +111,23 @@ type ThreadRow =
   | { kind: "event"; event: FeedCardEvent; ts: number }
   | { kind: "commander"; item: StreamItem; ts: number };
 
+/**
+ * Classifies a thread row for card-run derivation: event rows render as cards
+ * ("card"); verbose-only machinery hidden by normal mode renders nothing and
+ * takes no height ("skip") — transparent to runs so the cards around it stay
+ * visually adjacent; commander rows (messages, tool calls) render visible
+ * content and break runs ("gap").
+ */
+function classifyThreadRow(row: ThreadRow, verbose: boolean): CardRunRowClass {
+  if (row.kind !== "event") {
+    return "gap";
+  }
+  if (!verbose && isVerboseOnlyProposalEvent(row.event)) {
+    return "skip";
+  }
+  return "card";
+}
+
 interface CommanderMessageRowProps {
   item: StreamItem;
   agentId: string;
@@ -154,12 +163,17 @@ function renderThreadToolCall(
     if (!verbose && (!prettyLeaf || isTagMessageTool(data.name))) {
       return null;
     }
+    // Errors are not machinery noise: a failed dispatch must read as failed in
+    // normal AND verbose mode. The result-level check catches rejections that
+    // completed with a structured `success: false` result (live incident:
+    // a rejected fleet_create_agent showed a success header).
+    const dispatchError = prettyLeaf ? readDispatchToolResultError(data) : null;
     return (
       <ToolCall
         toolName={data.name}
         detail={data.detail}
-        status={data.status}
-        error={data.error}
+        status={dispatchError ? "failed" : data.status}
+        error={dispatchError ?? data.error}
         metadata={data.metadata}
         agentNames={agentNames}
       />
@@ -327,66 +341,60 @@ export function MissionControlThread({
       target: createWorkspaceFileTabTarget(location),
     });
   });
-  const flatListRef = useRef<FlatList<ThreadRow>>(null);
-  const scrollOffsetYRef = useRef(0);
-  const programmaticScrollEventBudgetRef = useRef(0);
-  const isUserScrollActiveRef = useRef(false);
-  const userScrollEndFrameIdRef = useRef<number | null>(null);
-  // Armed while a mid-history scroll restore owns the landing position; gates
-  // the initial-entry route request so it cannot yank the restored viewport.
-  const streamViewportMetricsRef = useRef({
-    containerKey: THREAD_CONTAINER_KEY,
-    contentHeight: 0,
-    viewportWidth: 0,
-    viewportHeight: 0,
-    offsetY: 0,
-    viewportMeasuredForKey: null as string | null,
-    contentMeasuredForKey: null as string | null,
-  });
+  const isMobile = useIsCompactFormFactor();
+  const streamStrategy = useMemo(
+    () => resolveStreamRenderStrategy({ platform: Platform.OS, isMobileBreakpoint: isMobile }),
+    [isMobile],
+  );
+  const viewportRef = useRef<StreamViewportHandle | null>(null);
+  const [isNearBottom, setIsNearBottom] = useState(true);
+  const isNearBottomRef = useRef(true);
+  isNearBottomRef.current = isNearBottom;
 
-  // Cursor paging on scroll-up: a load is in flight while the request ref is
-  // armed; once it resolves with events, the next content-size change is the
-  // prepend and gets scroll-compensated so the visible rows don't jump.
-  const olderRequestInFlightRef = useRef(false);
-  const prependReadyRef = useRef(false);
+  // Cursor paging on scroll-up (older events): the shared surface's
+  // history-start pagination calls onNearHistoryStart when the user scrolls
+  // to the top; the surface's own prepend anchoring keeps the visible rows
+  // from jumping when the older page lands.
+  const [olderPageCount, setOlderPageCount] = useState(0);
+  const olderPageCountRef = useRef(0);
   // Set when an older page resolved with events, so the rows-growth effect
   // doesn't count prepended history as "new" activity.
   const prependGrowthRef = useRef(false);
-  const prependAnchorTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const clearPrependAnchor = useCallback(() => {
-    prependReadyRef.current = false;
-    clearTimeout(prependAnchorTimeoutRef.current ?? undefined);
-    prependAnchorTimeoutRef.current = null;
-  }, []);
-
-  const requestOlderEvents = useCallback(() => {
-    if (!onLoadOlder || olderRequestInFlightRef.current || isLoadingOlder || !hasOlderEvents) {
-      return;
+  // "Clear view" (spec): a per-device clear point filters the thread to rows
+  // from that moment on; the hidden rows stay in the store behind a "Show
+  // earlier" affordance. Revealing is in-memory — a fresh clear re-filters.
+  // Declared before the paging callback: while hiding rows, "Show earlier"
+  // owns paging back, so the scroll surface must not fetch older pages.
+  const [revealEarlier, setRevealEarlier] = useState(false);
+  useEffect(() => {
+    setRevealEarlier(false);
+  }, [clearPointTs]);
+  const requestOlderEvents = useCallback(async (): Promise<boolean> => {
+    if (!onLoadOlder || isLoadingOlder || !hasOlderEvents) {
+      return false;
     }
-    olderRequestInFlightRef.current = true;
-    clearPrependAnchor();
-    const result = onLoadOlder();
-    if (result && typeof result.then === "function") {
-      void Promise.resolve(result)
-        .then((loaded) => {
-          if (loaded) {
-            prependGrowthRef.current = true;
-            prependReadyRef.current = true;
-            prependAnchorTimeoutRef.current = setTimeout(
-              clearPrependAnchor,
-              PREPEND_ANCHOR_TIMEOUT_MS,
-            );
-          }
-          return loaded;
-        })
-        .finally(() => {
-          olderRequestInFlightRef.current = false;
-        });
-    } else {
-      olderRequestInFlightRef.current = false;
+    // While a "Clear view" filter is hiding earlier rows, "Show earlier" owns
+    // paging back — the scroll surface must not fetch older pages.
+    if (clearPointTs !== null && !revealEarlier) {
+      return false;
     }
-  }, [clearPrependAnchor, hasOlderEvents, isLoadingOlder, onLoadOlder]);
+    const loaded = await onLoadOlder();
+    // The screen's loadOlderEvents resolves true when any host returned new
+    // events; the surface treats `started === true` as a landed page.
+    const loadedEvents = loaded === true;
+    if (loadedEvents) {
+      prependGrowthRef.current = true;
+      olderPageCountRef.current += 1;
+      setOlderPageCount(olderPageCountRef.current);
+    }
+    return loadedEvents;
+  }, [clearPointTs, hasOlderEvents, isLoadingOlder, onLoadOlder, revealEarlier]);
+  // The surface keys paging progress on this: it is always non-null (the
+  // paging state machine refuses to load while the key is null) and changes
+  // exactly when an older page lands, which arms its prepend-anchor settle
+  // pass. The value itself is meaningless — only stability and change-on-load
+  // matter.
+  const olderHistoryProgressKey = `mission-control-older:${olderPageCount}`;
 
   const tail = useSessionStore((state) =>
     commander
@@ -480,14 +488,6 @@ export function MissionControlThread({
     return merged;
   }, [commanderRows, eventRows]);
 
-  // "Clear view" (spec): a per-device clear point filters the thread to rows
-  // from that moment on; the hidden rows stay in the store behind a "Show
-  // earlier" affordance. Revealing is in-memory — a fresh clear re-filters.
-  const [revealEarlier, setRevealEarlier] = useState(false);
-  useEffect(() => {
-    setRevealEarlier(false);
-  }, [clearPointTs]);
-
   const visibleRows = useMemo(() => {
     if (clearPointTs === null || revealEarlier) {
       return rows;
@@ -510,40 +510,7 @@ export function MissionControlThread({
     [commander, hasAnyRow],
   );
 
-  const bottomAnchorController = useBottomAnchorController({
-    agentId: anchorAgentId,
-    routeRequest,
-    isAuthoritativeHistoryReady: true,
-    renderStrategy: "forward-list",
-    transportBehavior: { verificationDelayFrames: 2, verificationRetryMode: "recheck" },
-    getMeasurementState: () => streamViewportMetricsRef.current,
-    isNearBottom: () => {
-      const metrics = streamViewportMetricsRef.current;
-      return (
-        metrics.offsetY + metrics.viewportHeight >= metrics.contentHeight - NEAR_BOTTOM_THRESHOLD
-      );
-    },
-    scrollToBottom: (animated) => {
-      const metrics = streamViewportMetricsRef.current;
-      const maxOffset = Math.max(0, metrics.contentHeight - metrics.viewportHeight);
-      programmaticScrollEventBudgetRef.current = 3;
-      flatListRef.current?.scrollToOffset({ offset: maxOffset, animated });
-      // Mirror what the resulting scroll event will report before the reflow
-      // lands, so the sticky verification never races an event-less or laggy
-      // scrollToOffset and leaves the tail un-followed.
-      if (metrics.offsetY !== maxOffset) {
-        streamViewportMetricsRef.current = { ...metrics, offsetY: maxOffset };
-      }
-      bottomAnchorController.handleScrollNearBottomChange({
-        nextIsNearBottom: true,
-        scrollDelta: 0,
-      });
-    },
-  });
-
   const [pendingNewCount, setPendingNewCount] = useState(0);
-  const modeRef = useRef(bottomAnchorController.mode);
-  modeRef.current = bottomAnchorController.mode;
   const previousRowCountRef = useRef(0);
   useEffect(() => {
     const previousCount = previousRowCountRef.current;
@@ -554,204 +521,79 @@ export function MissionControlThread({
       prependGrowthRef.current = false;
       return;
     }
-    if (modeRef.current === "detached" && rows.length > previousCount) {
+    if (!isNearBottomRef.current && rows.length > previousCount) {
       setPendingNewCount((current) => current + (rows.length - previousCount));
     }
   }, [rows.length]);
   useEffect(() => {
-    if (bottomAnchorController.mode === "sticky-bottom") {
+    if (isNearBottom) {
       setPendingNewCount(0);
     }
-  }, [bottomAnchorController.mode]);
+  }, [isNearBottom]);
 
   const handleJumpToBottom = useCallback(() => {
-    bottomAnchorController.requestLocalAnchor({
-      agentId: THREAD_ANCHOR_ID,
-      reason: "jump-to-bottom",
-    });
-  }, [bottomAnchorController]);
-
-  const isScrollEventNearBottom = useStableEvent(
-    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-      return (
-        contentOffset.y + layoutMeasurement.height >= contentSize.height - NEAR_BOTTOM_THRESHOLD
-      );
-    },
-  );
-
-  const handleScroll = useStableEvent((event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-    const previousOffsetY = scrollOffsetYRef.current;
-    scrollOffsetYRef.current = contentOffset.y;
-
-    streamViewportMetricsRef.current = {
-      containerKey: THREAD_CONTAINER_KEY,
-      contentHeight: Math.max(0, contentSize.height),
-      viewportWidth: Math.max(0, layoutMeasurement.width),
-      viewportHeight: Math.max(0, layoutMeasurement.height),
-      offsetY: contentOffset.y,
-      viewportMeasuredForKey: THREAD_CONTAINER_KEY,
-      contentMeasuredForKey: THREAD_CONTAINER_KEY,
-    };
-
-    if (programmaticScrollEventBudgetRef.current > 0) {
-      programmaticScrollEventBudgetRef.current -= 1;
-      return;
-    }
-
-    // Scroll-up paging: reaching the top of the loaded history with more
-    // events available fetches an older page. Only when the user has left the
-    // live tail (detached) — the initial bottom-anchored landing must never
-    // page. A "Clear view" filter that is hiding earlier rows disables
-    // scroll-up paging: the "Show earlier" affordance owns paging back.
-    if (
-      contentOffset.y <= NEAR_TOP_THRESHOLD &&
-      modeRef.current !== "sticky-bottom" &&
-      (clearPointTs === null || revealEarlier)
-    ) {
-      requestOlderEvents();
-    }
-
-    const nearBottom = isScrollEventNearBottom(event);
-    // Wheel/trackpad scrolling never fires the drag events the controller
-    // reattaches on. When the user rolls back down to the bottom while
-    // detached, re-latch follow the same way a drag ending at the bottom does.
-    if (nearBottom && modeRef.current === "detached" && !isUserScrollActiveRef.current) {
-      bottomAnchorController.endUserScroll({ isNearBottom: true });
-      return;
-    }
-    bottomAnchorController.handleScrollNearBottomChange({
-      nextIsNearBottom: nearBottom,
-      scrollDelta: contentOffset.y - previousOffsetY,
-    });
-  });
-
-  const handleScrollBeginDrag = useStableEvent(
-    (_event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      isUserScrollActiveRef.current = true;
-      // A drag is user intent: never let the programmatic-scroll budget keep
-      // swallowing the user's own scroll events.
-      programmaticScrollEventBudgetRef.current = 0;
-      bottomAnchorController.beginUserScroll();
-    },
-  );
-
-  const handleScrollEndDrag = useStableEvent((event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const isNearBottom = isScrollEventNearBottom(event);
-    const frameId = requestAnimationFrame(() => {
-      userScrollEndFrameIdRef.current = null;
-      isUserScrollActiveRef.current = false;
-      bottomAnchorController.endUserScroll({ isNearBottom });
-    });
-    userScrollEndFrameIdRef.current = frameId;
-  });
-
-  const handleMomentumScrollBegin = useStableEvent(() => {
-    programmaticScrollEventBudgetRef.current = 0;
-    if (userScrollEndFrameIdRef.current !== null) {
-      cancelAnimationFrame(userScrollEndFrameIdRef.current);
-      userScrollEndFrameIdRef.current = null;
-    }
-  });
-
-  const handleMomentumScrollEnd = useStableEvent(
-    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      if (!isUserScrollActiveRef.current) {
-        return;
-      }
-      const isNearBottom = isScrollEventNearBottom(event);
-      if (userScrollEndFrameIdRef.current !== null) {
-        cancelAnimationFrame(userScrollEndFrameIdRef.current);
-        userScrollEndFrameIdRef.current = null;
-      }
-      isUserScrollActiveRef.current = false;
-      bottomAnchorController.endUserScroll({ isNearBottom });
-    },
-  );
-
-  // Drop any in-flight prepend anchoring when the thread goes away. Scroll
-  // position preservation is the agent-chat pattern: the screen stays mounted
-  // (freeze, don't unmount) and the bottom-anchor controller owns follow; the
-  // FlatList keeps its offset across re-renders and width changes without a
-  // bespoke restore pass.
-  useEffect(() => {
-    return () => {
-      clearTimeout(prependAnchorTimeoutRef.current ?? undefined);
-      prependAnchorTimeoutRef.current = null;
-    };
+    viewportRef.current?.scrollToBottom("jump-to-bottom");
   }, []);
 
-  const handleListLayout = useStableEvent((event: LayoutChangeEvent) => {
-    const previousViewportWidth = streamViewportMetricsRef.current.viewportWidth;
-    const previousViewportHeight = streamViewportMetricsRef.current.viewportHeight;
-    const viewportWidth = Math.max(0, event.nativeEvent.layout.width);
-    const viewportHeight = Math.max(0, event.nativeEvent.layout.height);
-    streamViewportMetricsRef.current = {
-      ...streamViewportMetricsRef.current,
-      containerKey: THREAD_CONTAINER_KEY,
-      viewportWidth,
-      viewportHeight,
-      viewportMeasuredForKey: THREAD_CONTAINER_KEY,
-    };
-    bottomAnchorController.handleViewportMetricsChange({
-      previousViewportWidth,
-      viewportWidth,
-      previousViewportHeight,
-      viewportHeight,
-    });
-  });
-
-  const handleContentSizeChange = useStableEvent((_width: number, height: number) => {
-    const previousContentHeight = streamViewportMetricsRef.current.contentHeight;
-    const nextContentHeight = Math.max(0, height);
-    let nextOffsetY = streamViewportMetricsRef.current.offsetY;
-    // Prepend anchoring: after an older page lands, the rows above the
-    // viewport grew by the prepended height; compensate the scroll offset so
-    // the previously visible rows stay put (no jump during scroll-up paging).
-    if (prependReadyRef.current) {
-      clearPrependAnchor();
-      const addedHeight = nextContentHeight - previousContentHeight;
-      if (addedHeight > 0) {
-        nextOffsetY = Math.max(0, nextOffsetY + addedHeight);
-        programmaticScrollEventBudgetRef.current = 3;
-        flatListRef.current?.scrollToOffset({ offset: nextOffsetY, animated: false });
-        scrollOffsetYRef.current = nextOffsetY;
-      }
-    }
-    streamViewportMetricsRef.current = {
-      ...streamViewportMetricsRef.current,
-      containerKey: THREAD_CONTAINER_KEY,
-      contentHeight: nextContentHeight,
-      contentMeasuredForKey: THREAD_CONTAINER_KEY,
-      offsetY: nextOffsetY,
-    };
-    bottomAnchorController.handleContentSizeChange({
-      previousContentHeight,
-      contentHeight: nextContentHeight,
-    });
-  });
-
-  const renderItem = useStableEvent(({ item }: ListRenderItemInfo<ThreadRow>): ReactElement => {
-    if (item.kind === "event") {
-      return <FeedCard event={item.event} verbose={verbose} />;
-    }
-    return (
-      <MemoizedCommanderMessageRow
-        item={item.item}
-        agentId={commander?.agentId ?? ""}
-        serverId={commander?.serverId ?? ""}
-        client={client}
-        workspaceRoot={workspaceRoot}
-        verbose={verbose}
-        agentNames={agentNames}
-      />
-    );
-  });
+  const renderThreadRow = useStableEvent(
+    (item: ThreadRow, index: number, items: ThreadRow[]): ReactElement => {
+      // Fresh per render: `verbose` only changes via the header toggle.
+      const classifyRow = (row: ThreadRow): CardRunRowClass => classifyThreadRow(row, verbose);
+      const row =
+        item.kind === "event" ? (
+          <FeedCard
+            event={item.event}
+            verbose={verbose}
+            position={
+              classifyRow(item) === "card" ? cardRunPosition(items, index, classifyRow) : "only"
+            }
+          />
+        ) : (
+          <MemoizedCommanderMessageRow
+            item={item.item}
+            agentId={commander?.agentId ?? ""}
+            serverId={commander?.serverId ?? ""}
+            client={client}
+            workspaceRoot={workspaceRoot}
+            verbose={verbose}
+            agentNames={agentNames}
+          />
+        );
+      // Same centered content column as AgentStreamView's stream items: the web
+      // strategy viewport is full-width, so each row centers itself.
+      return <View style={styles.rowContent}>{row}</View>;
+    },
+  );
+  const renderers = useMemo<StreamSegmentRenderers<ThreadRow>>(
+    () => ({
+      renderHistoryVirtualizedRow: (item, index, items) => renderThreadRow(item, index, items),
+      renderHistoryMountedRow: (item, index, items) => renderThreadRow(item, index, items),
+      renderLiveHeadRow: (item, index, items) => renderThreadRow(item, index, items),
+      renderLiveAuxiliary: () => null,
+    }),
+    [renderThreadRow],
+  );
 
   const keyExtractor = useCallback((row: ThreadRow) => {
     return row.kind === "event" ? `event:${row.event.id}` : `cmd:${row.item.id}`;
   }, []);
+
+  const segments = useMemo<StreamRenderSegments<ThreadRow>>(
+    () => ({
+      historyVirtualized: EMPTY_THREAD_ROWS,
+      historyMounted: visibleRows,
+      liveHead: EMPTY_THREAD_ROWS,
+    }),
+    [visibleRows],
+  );
+  const boundary = useMemo<StreamHistoryBoundary>(
+    () => ({
+      hasVirtualizedHistory: false,
+      hasMountedHistory: visibleRows.length > 0,
+      hasLiveHead: false,
+    }),
+    [visibleRows.length],
+  );
 
   const handleRevealEarlier = useCallback(() => setRevealEarlier(true), []);
 
@@ -772,6 +614,24 @@ export function MissionControlThread({
     );
   }, [handleRevealEarlier, hiddenEarlierCount]);
 
+  const newPillAffordance = useMemo(() => {
+    if (pendingNewCount <= 0) {
+      return null;
+    }
+    return (
+      <Pressable
+        onPress={handleJumpToBottom}
+        style={styles.newPill}
+        accessibilityRole="button"
+        accessibilityLabel={`${pendingNewCount} new`}
+        testID="mission-control-new-pill"
+      >
+        <Text style={styles.newPillText}>{pendingNewCount} new</Text>
+        <ThemedChevronDown size={14} uniProps={foregroundMapping} />
+      </Pressable>
+    );
+  }, [handleJumpToBottom, pendingNewCount]);
+
   return (
     <ToolCallSheetProvider>
       <AssistantFileLinkResolverProvider
@@ -783,36 +643,29 @@ export function MissionControlThread({
       >
         <PaseoAgentLinkProvider openAgent={handleOpenPaseoAgent}>
           <View style={styles.container}>
-            <FlatList
-              ref={flatListRef}
-              data={visibleRows}
-              ListHeaderComponent={showEarlierHeader}
+            <AnchoredList
+              strategy={streamStrategy}
+              viewportRef={viewportRef}
+              onNearBottomChange={setIsNearBottom}
+              scrollToBottomAffordance={newPillAffordance ?? undefined}
+              agentId={anchorAgentId}
+              segments={segments}
+              boundary={boundary}
+              renderers={renderers}
+              listEmptyComponent={null}
+              routeBottomAnchorRequest={routeRequest}
+              isAuthoritativeHistoryReady
+              onNearHistoryStart={requestOlderEvents}
+              isLoadingOlderHistory={isLoadingOlder}
+              hasOlderHistory={hasOlderEvents}
+              olderHistoryProgressKey={olderHistoryProgressKey}
+              scrollEnabled
+              listStyle={styles.list}
+              baseListContentContainerStyle={styles.listContent}
+              forwardListContentContainerStyle={styles.listContent}
               keyExtractor={keyExtractor}
-              renderItem={renderItem}
-              onLayout={handleListLayout}
-              onScroll={handleScroll}
-              onScrollBeginDrag={handleScrollBeginDrag}
-              onScrollEndDrag={handleScrollEndDrag}
-              onMomentumScrollBegin={handleMomentumScrollBegin}
-              onMomentumScrollEnd={handleMomentumScrollEnd}
-              scrollEventThrottle={16}
-              onContentSizeChange={handleContentSizeChange}
-              contentContainerStyle={styles.listContent}
-              style={styles.list}
-              testID="mission-control-thread"
+              topSlot={showEarlierHeader ?? undefined}
             />
-            {bottomAnchorController.mode === "detached" && pendingNewCount > 0 ? (
-              <Pressable
-                onPress={handleJumpToBottom}
-                style={styles.newPill}
-                accessibilityRole="button"
-                accessibilityLabel={`${pendingNewCount} new`}
-                testID="mission-control-new-pill"
-              >
-                <Text style={styles.newPillText}>{pendingNewCount} new</Text>
-                <ThemedChevronDown size={14} uniProps={foregroundMapping} />
-              </Pressable>
-            ) : null}
           </View>
         </PaseoAgentLinkProvider>
       </AssistantFileLinkResolverProvider>
@@ -843,10 +696,15 @@ const styles = StyleSheet.create((theme) => ({
       md: theme.spacing[4],
     },
   },
-  newPill: {
-    position: "absolute",
-    bottom: theme.spacing[4],
+  // Rows center themselves inside the platform viewport (the web strategy's
+  // scroll container is full-width; the native list centers via listContent).
+  rowContent: {
+    width: "100%",
+    maxWidth: MAX_CONTENT_WIDTH,
+    marginHorizontal: "auto",
     alignSelf: "center",
+  },
+  newPill: {
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[1],

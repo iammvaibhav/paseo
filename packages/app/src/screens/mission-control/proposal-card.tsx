@@ -1,9 +1,9 @@
 import { useCallback, useMemo, useState, type ReactElement } from "react";
 import { Text, View } from "react-native";
-import { StyleSheet } from "react-native-unistyles";
+import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { Bot, Clock, ShieldCheck } from "lucide-react-native";
-import { withUnistyles } from "react-native-unistyles";
 import type { MissionControlProposal } from "@getpaseo/protocol/mission-control/types";
 import { SettingsTextArea } from "@/components/settings-textarea";
 import { Button } from "@/components/ui/button";
@@ -16,7 +16,7 @@ import { formatTimeAgo } from "@/utils/time";
 import { resolveSessionAgent } from "@/utils/agent-snapshots";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
 import type { Theme } from "@/styles/theme";
-import type { FeedCardEvent } from "@/screens/mission-control/feed-card";
+import type { CardRunPosition, FeedCardEvent } from "@/screens/mission-control/feed-card";
 
 export type ProposalResolvedStatus = "sent" | "denied";
 
@@ -25,6 +25,154 @@ const ThemedClock = withUnistyles(Clock);
 const ThemedShieldCheck = withUnistyles(ShieldCheck);
 
 const originIconMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+
+interface SubmitProposalResponseParams {
+  serverId: string;
+  proposalId: string;
+  action: "approve" | "deny";
+  editedMessage?: string;
+  allowPair: boolean;
+  t: TFunction;
+}
+
+/** The respond RPC, lifted out of ProposalCard to keep its complexity bounded. */
+async function submitProposalResponse({
+  serverId,
+  proposalId,
+  action,
+  editedMessage,
+  allowPair,
+  t,
+}: SubmitProposalResponseParams): Promise<void> {
+  const client = getHostRuntimeStore().getClient(serverId);
+  if (!client) {
+    throw new Error(t("common.errors.hostDisconnected"));
+  }
+  const result = await client.missionControlProposalsRespond({
+    proposalId,
+    action,
+    ...(editedMessage !== undefined ? { editedMessage } : {}),
+    ...(allowPair ? { allowPair: true } : {}),
+  });
+  if (!result.ok) {
+    throw new Error(result.error ?? "Unable to respond");
+  }
+}
+
+interface ProposalCardActionsProps {
+  isPending: boolean;
+  isEditing: boolean;
+  isResponding: boolean;
+  showAllowPair: boolean;
+  allowPair: boolean;
+  onAllowPairChange: (value: boolean) => void;
+  onSendEdit: () => void;
+  onCancelEdit: () => void;
+  onApprove: () => void;
+  onOpenEdit: () => void;
+  onDeny: () => void;
+  error: string | null;
+  resolvedStatus: string;
+}
+
+/**
+ * The proposal's interactive tail (allow-pair row, pending actions / resolved
+ * label, error). Lifted out of ProposalCard to keep its complexity bounded.
+ */
+function ProposalCardActions({
+  isPending,
+  isEditing,
+  isResponding,
+  showAllowPair,
+  allowPair,
+  onAllowPairChange,
+  onSendEdit,
+  onCancelEdit,
+  onApprove,
+  onOpenEdit,
+  onDeny,
+  error,
+  resolvedStatus,
+}: ProposalCardActionsProps): ReactElement {
+  return (
+    <>
+      {showAllowPair ? (
+        <View style={styles.allowPairRow}>
+          <Text style={styles.allowPairLabel}>Auto-approve this exchange</Text>
+          <Switch
+            value={allowPair}
+            onValueChange={onAllowPairChange}
+            accessibilityLabel="Auto-approve the rest of this verifier exchange"
+            testID="mission-control-proposal-allow-pair"
+          />
+        </View>
+      ) : null}
+
+      {isPending ? (
+        <View style={styles.actionsRow}>
+          {isEditing ? (
+            <>
+              <Button
+                variant="default"
+                size="sm"
+                onPress={onSendEdit}
+                disabled={isResponding}
+                loading={isResponding}
+                testID="mission-control-proposal-send"
+              >
+                Send
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onPress={onCancelEdit}
+                disabled={isResponding}
+                testID="mission-control-proposal-cancel-edit"
+              >
+                Cancel
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button
+                variant="default"
+                size="sm"
+                onPress={onApprove}
+                disabled={isResponding}
+                loading={isResponding}
+                testID="mission-control-proposal-approve"
+              >
+                Approve
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onPress={onOpenEdit}
+                disabled={isResponding}
+                testID="mission-control-proposal-edit"
+              >
+                Edit
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onPress={onDeny}
+                disabled={isResponding}
+                testID="mission-control-proposal-deny"
+              >
+                Deny
+              </Button>
+            </>
+          )}
+        </View>
+      ) : (
+        <Text style={styles.resolvedLabel}>{resolvedStatus}</Text>
+      )}
+
+      {error ? <Text style={styles.error}>{error}</Text> : null}
+    </>
+  );
+}
 
 function originLabel(origin: MissionControlProposal["origin"]): string {
   switch (origin) {
@@ -50,8 +198,10 @@ export function isPendingProposalEvent(event: FeedCardEvent): boolean {
  * them; verbose is the debug view. Escalation/recovery proposals
  * (deliveryMode "interrupt", approval-gated) and verifier/commander cards
  * always render. Legacy hosts / pre-field persisted events fall back to the
- * origin+delivery+status shape — a sent stall steer is machinery, nothing else
- * matches all three.
+ * origin+delivery shape — any stall-origin steer is machinery regardless of
+ * how it resolved (sent, expired, denied, or a pending that went stale): the
+ * pre-field fallback previously required status "sent", leaking expired stall
+ * cards into normal mode.
  */
 export function isVerboseOnlyProposalEvent(event: FeedCardEvent): boolean {
   if (event.kind !== "proposal" || !event.proposal) {
@@ -61,9 +211,7 @@ export function isVerboseOnlyProposalEvent(event: FeedCardEvent): boolean {
   if (event.verboseOnly === true || proposal.verboseOnly === true) {
     return true;
   }
-  return (
-    proposal.origin === "stall" && proposal.deliveryMode === "steer" && proposal.status === "sent"
-  );
+  return proposal.origin === "stall" && proposal.deliveryMode === "steer";
 }
 
 export function countPendingProposals(events: readonly FeedCardEvent[]): number {
@@ -79,6 +227,12 @@ export function countPendingProposals(events: readonly FeedCardEvent[]): number 
 export interface ProposalCardProps {
   proposal: MissionControlProposal;
   event: FeedCardEvent;
+  /**
+   * Position within this card's run of adjacent cards (see CardRunPosition).
+   * The thread derives it from same-family rows; standalone cards default to
+   * "only" and keep all four rounded corners.
+   */
+  position?: CardRunPosition;
   /** Called once the proposal has a terminal outcome so the feed can supersede. */
   onResolved?: (proposalId: string, status: ProposalResolvedStatus) => void;
 }
@@ -89,7 +243,12 @@ export interface ProposalCardProps {
  * that auto-approves the rest of the exchange. Owns the respond RPC and its
  * pending/error state.
  */
-export function ProposalCard({ proposal, event, onResolved }: ProposalCardProps): ReactElement {
+export function ProposalCard({
+  proposal,
+  event,
+  onResolved,
+  position = "only",
+}: ProposalCardProps): ReactElement {
   const { t } = useTranslation();
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState(proposal.message);
@@ -117,19 +276,14 @@ export function ProposalCard({ proposal, event, onResolved }: ProposalCardProps)
       setIsResponding(true);
       setError(null);
       try {
-        const client = getHostRuntimeStore().getClient(event.serverId);
-        if (!client) {
-          throw new Error(t("common.errors.hostDisconnected"));
-        }
-        const result = await client.missionControlProposalsRespond({
+        await submitProposalResponse({
+          serverId: event.serverId,
           proposalId: proposal.id,
           action,
-          ...(editedMessage !== undefined ? { editedMessage } : {}),
-          ...(allowPair ? { allowPair: true } : {}),
+          editedMessage,
+          allowPair,
+          t,
         });
-        if (!result.ok) {
-          throw new Error(result.error ?? "Unable to respond");
-        }
         setIsEditing(false);
         onResolved?.(proposal.id, action === "approve" ? "sent" : "denied");
       } catch (caught) {
@@ -183,7 +337,15 @@ export function ProposalCard({ proposal, event, onResolved }: ProposalCardProps)
   }, [proposal.origin]);
 
   return (
-    <View style={styles.card} testID="mission-control-proposal-card">
+    <View
+      style={[
+        styles.card,
+        position === "first" && styles.cardRunFirst,
+        position === "middle" && styles.cardRunMiddle,
+        position === "last" && styles.cardRunLast,
+      ]}
+      testID="mission-control-proposal-card"
+    >
       <View style={styles.iconSlot}>{originIcon}</View>
       <View style={styles.content}>
         <View style={styles.headerRow}>
@@ -235,80 +397,21 @@ export function ProposalCard({ proposal, event, onResolved }: ProposalCardProps)
           </Text>
         ) : null}
 
-        {showAllowPair ? (
-          <View style={styles.allowPairRow}>
-            <Text style={styles.allowPairLabel}>Auto-approve this exchange</Text>
-            <Switch
-              value={allowPair}
-              onValueChange={setAllowPair}
-              accessibilityLabel="Auto-approve the rest of this verifier exchange"
-              testID="mission-control-proposal-allow-pair"
-            />
-          </View>
-        ) : null}
-
-        {isPending ? (
-          <View style={styles.actionsRow}>
-            {isEditing ? (
-              <>
-                <Button
-                  variant="default"
-                  size="sm"
-                  onPress={handleSendEdit}
-                  disabled={isResponding}
-                  loading={isResponding}
-                  testID="mission-control-proposal-send"
-                >
-                  Send
-                </Button>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onPress={handleCancelEdit}
-                  disabled={isResponding}
-                  testID="mission-control-proposal-cancel-edit"
-                >
-                  Cancel
-                </Button>
-              </>
-            ) : (
-              <>
-                <Button
-                  variant="default"
-                  size="sm"
-                  onPress={handleApprove}
-                  disabled={isResponding}
-                  loading={isResponding}
-                  testID="mission-control-proposal-approve"
-                >
-                  Approve
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onPress={handleOpenEdit}
-                  disabled={isResponding}
-                  testID="mission-control-proposal-edit"
-                >
-                  Edit
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onPress={handleDeny}
-                  disabled={isResponding}
-                  testID="mission-control-proposal-deny"
-                >
-                  Deny
-                </Button>
-              </>
-            )}
-          </View>
-        ) : (
-          <Text style={styles.resolvedLabel}>{proposal.status}</Text>
-        )}
-
-        {error ? <Text style={styles.error}>{error}</Text> : null}
+        <ProposalCardActions
+          isPending={isPending}
+          isEditing={isEditing}
+          isResponding={isResponding}
+          showAllowPair={showAllowPair}
+          allowPair={allowPair}
+          onAllowPairChange={setAllowPair}
+          onSendEdit={handleSendEdit}
+          onCancelEdit={handleCancelEdit}
+          onApprove={handleApprove}
+          onOpenEdit={handleOpenEdit}
+          onDeny={handleDeny}
+          error={error}
+          resolvedStatus={proposal.status}
+        />
       </View>
     </View>
   );
@@ -324,6 +427,27 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface1,
     overflow: "hidden",
+  },
+  // Run composition (see CardRunPosition): consecutive cards read as ONE
+  // rounded rectangle — first keeps the top corners, last the bottom, middle
+  // is square; every member carries the side edges and the top border of each
+  // member after the first is the hairline divider (design.md §5).
+  cardRunFirst: {
+    borderBottomWidth: 0,
+    borderTopLeftRadius: theme.borderRadius.md,
+    borderTopRightRadius: theme.borderRadius.md,
+    borderBottomLeftRadius: theme.borderRadius.none,
+    borderBottomRightRadius: theme.borderRadius.none,
+  },
+  cardRunMiddle: {
+    borderBottomWidth: 0,
+    borderRadius: theme.borderRadius.none,
+  },
+  cardRunLast: {
+    borderTopLeftRadius: theme.borderRadius.none,
+    borderTopRightRadius: theme.borderRadius.none,
+    borderBottomLeftRadius: theme.borderRadius.md,
+    borderBottomRightRadius: theme.borderRadius.md,
   },
   // Same icon-slot column as FeedCard (width 18 + row gap 12) so the proposal
   // content left edge aligns with every other feed card.

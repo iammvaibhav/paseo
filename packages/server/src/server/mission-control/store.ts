@@ -99,6 +99,8 @@ export interface MissionControlVerdict {
   by: "verifier" | "user";
   summary: string;
   at: string;
+  /** The ephemeral verifier agent that produced a verifier verdict (drill-in). */
+  verifierAgentId?: string;
 }
 
 export interface MissionControlReviewStateRecord {
@@ -840,7 +842,11 @@ function parseReviewStateRecord(value: unknown): MissionControlReviewStateRecord
       typeof summary === "string" &&
       typeof at === "string"
     ) {
-      verdict = { by, summary, at };
+      const verifierAgentId =
+        typeof verdictRaw["verifierAgentId"] === "string"
+          ? verdictRaw["verifierAgentId"]
+          : undefined;
+      verdict = { by, summary, at, ...(verifierAgentId ? { verifierAgentId } : {}) };
     }
   }
   return { reviewState, doneAt, clearedAt, verdict };

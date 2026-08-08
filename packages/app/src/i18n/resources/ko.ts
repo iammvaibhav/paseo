@@ -1826,10 +1826,13 @@ export const ko: TranslationResources = {
             "에이전트가 실행 중일 때 Enter는 중단합니다. Command/Ctrl+Enter는 대기열에 추가합니다.",
           queue:
             "에이전트가 실행 중일 때 Enter는 대기열에 추가합니다. Command/Ctrl+Enter는 제출합니다.",
+          steer:
+            "에이전트가 실행 중일 때 Enter는 스티어링합니다. 현재 도구 호출을 마치고 메시지를 읽은 후 계속합니다. Command/Ctrl+Enter는 중단합니다.",
         },
         options: {
           interrupt: "중단",
           queue: "대기열",
+          steer: "스티어링",
         },
       },
       serviceUrls: {

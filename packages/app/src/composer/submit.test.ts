@@ -141,6 +141,43 @@ describe("submitAgentInput", () => {
     expect(clearDraft).not.toHaveBeenCalled();
   });
 
+  it("forwards the steer dispatch mode to the submit message", async () => {
+    const queueMessage = vi.fn();
+    const submitMessage = vi.fn(async () => {});
+    const clearDraft = vi.fn();
+    const setUserInput = vi.fn();
+    const setAttachments = vi.fn();
+    const setSendError = vi.fn();
+    const setIsProcessing = vi.fn();
+
+    await submitAgentInput({
+      message: "  steer me  ",
+      attachments: [],
+      dispatchMode: "steer",
+      forceSend: true,
+      isAgentRunning: true,
+      canSubmit: true,
+      queueMessage,
+      submitMessage,
+      clearDraft,
+      setUserInput,
+      setAttachments,
+      setSendError,
+      setIsProcessing,
+    });
+
+    // A steer always sends (never queues) and carries its dispatch mode along.
+    expect(queueMessage).not.toHaveBeenCalled();
+    expect(submitMessage).toHaveBeenCalledWith({
+      message: "steer me",
+      attachments: [],
+      dispatchMode: "steer",
+    });
+    expect(setUserInput).toHaveBeenCalledWith("");
+    expect(setAttachments).toHaveBeenCalledWith([]);
+    expect(clearDraft).toHaveBeenCalledWith("sent");
+  });
+
   it("skips the queue while the agent is running when the caller forces a send", async () => {
     const queueMessage = vi.fn();
     const submitMessage = vi.fn(async () => {});
