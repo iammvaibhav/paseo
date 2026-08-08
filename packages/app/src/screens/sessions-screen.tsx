@@ -12,11 +12,14 @@ import { router } from "expo-router";
 import { StyleSheet } from "react-native-unistyles";
 import { ChevronLeft } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import type { AgentProvider } from "@getpaseo/protocol/agent-types";
+import type { AgentSearchMatch } from "@getpaseo/protocol/messages";
 import { MenuHeader } from "@/components/headers/menu-header";
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { AgentList } from "@/components/agent-list";
+import { SearchField } from "@/components/ui/search-field";
 import { HostFilter } from "@/components/hosts/host-filter";
 import { ALL_HOSTS_OPTION_ID } from "@/components/hosts/host-picker";
 import { SegmentedControl } from "@/components/ui/segmented-control";
@@ -24,7 +27,8 @@ import { CombinedModelSelector } from "@/components/combined-model-selector";
 import { Field } from "@/components/ui/form-field";
 import { SelectFieldTrigger } from "@/components/ui/select-field";
 import { ModelProviderGlyph } from "@/components/model-browser";
-import { useAgentHistory } from "@/hooks/use-agent-history";
+import { type AgentHistoryHostError, useAgentHistory } from "@/hooks/use-agent-history";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { getHostRuntimeStore, useHosts } from "@/runtime/host-runtime";
 import { buildOpenProjectRoute } from "@/utils/host-routes";
 import { useToast } from "@/contexts/toast-context";
@@ -33,7 +37,6 @@ import type { AggregatedAgent } from "@/hooks/use-aggregated-agents";
 import type { HostProfile } from "@/types/host-connection";
 import { buildSelectableProviderSelectorProviders } from "@/provider-selection/provider-selection";
 import {
-  filterByHistoryAskFuzzy,
   isHistoryAskAgent,
   launchHistoryAsk,
   resolveHistoryAskLaunchCwd,
@@ -44,6 +47,47 @@ import {
 } from "@/history-ask";
 import { useHistoryAskModelSelection } from "@/history-ask/use-history-ask-model-selection";
 import { openAgentFromHistory } from "@/workspace/open-agent-from-history";
+
+/** Long enough that a typed word is one request, short enough to feel live. */
+const SEARCH_DEBOUNCE_MS = 200;
+
+const sessionsHostOptionTestID = (serverId: string) => `sessions-host-filter-item-${serverId}`;
+
+/**
+ * A host that failed while others answered. Without this the list silently
+ * under-reports, and under a query "No sessions match" becomes a claim the app
+ * has no basis for.
+ */
+function SessionHostErrorsBanner({
+  errors,
+  t,
+}: {
+  errors: AgentHistoryHostError[];
+  t: TFunction;
+}): ReactElement {
+  return (
+    <View style={styles.errorsBannerWrap}>
+      <View style={styles.errorsBanner} testID="sessions-host-errors">
+        {errors.map((error) => (
+          <Text key={error.serverId} style={styles.errorsBannerText}>
+            {t("sessions.hostLoadFailed", { host: error.serverName })}
+          </Text>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+/** An empty list means something different once a query is narrowing it. */
+function resolveEmptyText(input: {
+  t: TFunction;
+  isSearching: boolean;
+  isAllHosts: boolean;
+}): string {
+  if (input.isSearching) return input.t("sessions.noMatches");
+  if (input.isAllHosts) return input.t("sessions.empty");
+  return input.t("sessions.emptyForHost");
+}
 
 export function SessionsScreen() {
   const isFocused = useIsFocused();
@@ -59,15 +103,36 @@ function SessionsScreenContent() {
   const { t } = useTranslation();
   const hosts = useHosts();
   const [selectedHost, setSelectedHost] = useState(ALL_HOSTS_OPTION_ID);
+  const [searchInput, setSearchInput] = useState("");
+  const search = useDebouncedValue(searchInput, SEARCH_DEBOUNCE_MS).trim();
   const historyServerId = selectedHost === ALL_HOSTS_OPTION_ID ? null : selectedHost;
-  const history = useAgentHistory({ serverId: historyServerId });
 
   const activeTab = useHistoryAskStore((state) => state.activeTab);
   const setActiveTab = useHistoryAskStore((state) => state.setActiveTab);
   const pendingScope = useHistoryAskStore((state) => state.pendingScope);
   const clearPending = useHistoryAskStore((state) => state.clearPending);
 
-  const [searchQuery, setSearchQuery] = useState("");
+  // Server-side history search applies only on the Agents tab. Ask needs the
+  // unfiltered host history for job listing and launch cwd resolution.
+  const historySearch = activeTab === "agents" ? search : "";
+  const {
+    agents,
+    hasMore,
+    isInitialLoad,
+    isLoadingMore,
+    isError,
+    isSearchSupported,
+    isSearchTruncated,
+    searchMatchesByAgentKey,
+    hostErrors,
+    loadMore,
+    refreshAll,
+  } = useAgentHistory({
+    serverId: historyServerId,
+    search: historySearch,
+  });
+  const isSearching = isSearchSupported && historySearch.length > 0;
+
   const [isManualRefresh, setIsManualRefresh] = useState(false);
 
   useEffect(() => {
@@ -89,23 +154,15 @@ function SessionsScreenContent() {
 
   const handleRefresh = useCallback(() => {
     setIsManualRefresh(true);
-    void history.refreshAll().finally(() => setIsManualRefresh(false));
-  }, [history]);
+    void refreshAll().finally(() => setIsManualRefresh(false));
+  }, [refreshAll]);
 
-  const sortedAgents = useMemo(() => {
-    return [...history.agents].sort(
-      (a, b) => b.lastActivityAt.getTime() - a.lastActivityAt.getTime(),
-    );
-  }, [history.agents]);
+  const handleClearSearch = useCallback(() => setSearchInput(""), []);
 
-  const filteredAgents = useMemo(
-    () => filterByHistoryAskFuzzy(sortedAgents, searchQuery),
-    [sortedAgents, searchQuery],
-  );
-
+  // `useAgentHistory` owns the order: recency at rest, relevance under a query.
   const askAgents = useMemo(
-    () => sortedAgents.filter((agent) => isHistoryAskAgent(agent.labels)),
-    [sortedAgents],
+    () => agents.filter((agent) => isHistoryAskAgent(agent.labels)),
+    [agents],
   );
 
   // Pending project/workspace scope wins until cleared. Host-wide Ask requires a
@@ -128,7 +185,7 @@ function SessionsScreenContent() {
     hosts.length === 0;
 
   const showHostFilter = hosts.length > 1;
-  const showLoadError = history.isError && sortedAgents.length === 0;
+  const showLoadError = isError && agents.length === 0;
 
   const tabOptions = useMemo(
     () => [
@@ -157,6 +214,7 @@ function SessionsScreenContent() {
               selectedHost={selectedHost}
               onSelectHost={setSelectedHost}
               triggerTestID="sessions-host-filter-trigger"
+              hostOptionTestID={sessionsHostOptionTestID}
             />
           ) : null}
           <SegmentedControl
@@ -167,48 +225,52 @@ function SessionsScreenContent() {
             testID="sessions-tab-control"
           />
         </View>
-        {activeTab === "agents" ? (
-          <TextInput
+        {activeTab === "agents" && isSearchSupported ? (
+          <SearchField
+            value={searchInput}
+            onChangeText={setSearchInput}
+            placeholder={t("sessions.searchPlaceholder")}
+            clearAccessibilityLabel={t("sessions.actions.clearSearch")}
             testID="sessions-search-input"
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            placeholder={t("sessions.search.placeholder")}
-            placeholderTextColor={styles.placeholderColor.color}
-            style={styles.searchInput}
-            autoCorrect={false}
-            autoCapitalize="none"
-            clearButtonMode="while-editing"
+            clearTestID="sessions-search-clear"
           />
         ) : null}
       </View>
 
+      {hostErrors.length > 0 && activeTab === "agents" ? (
+        <SessionHostErrorsBanner errors={hostErrors} t={t} />
+      ) : null}
+
       {activeTab === "agents" ? (
         <SessionsAgentsTab
-          isInitialLoad={history.isInitialLoad}
+          isInitialLoad={isInitialLoad}
           showLoadError={showLoadError}
-          agents={filteredAgents}
-          searchQuery={searchQuery}
+          agents={agents}
+          isSearching={isSearching}
           selectedHost={selectedHost}
           isManualRefresh={isManualRefresh}
-          hasMore={history.hasMore}
-          isLoadingMore={history.isLoadingMore}
+          hasMore={hasMore}
+          isLoadingMore={isLoadingMore}
+          isSearchTruncated={isSearchTruncated}
+          searchMatchesByAgentKey={isSearching ? searchMatchesByAgentKey : undefined}
           onRefresh={handleRefresh}
-          onLoadMore={history.loadMore}
+          onLoadMore={loadMore}
+          onClearSearch={handleClearSearch}
         />
       ) : (
         <SessionsAskTab
           scope={resolvedAskScope}
           needsHostSelection={needsHostSelection}
-          historyAgents={sortedAgents}
+          historyAgents={agents}
           askAgents={askAgents}
-          isInitialLoad={history.isInitialLoad}
+          isInitialLoad={isInitialLoad}
           isManualRefresh={isManualRefresh}
-          hasMore={history.hasMore}
-          isLoadingMore={history.isLoadingMore}
+          hasMore={hasMore}
+          isLoadingMore={isLoadingMore}
           onRefresh={handleRefresh}
-          onLoadMore={history.loadMore}
+          onLoadMore={loadMore}
           onLaunched={clearPending}
-          refreshAll={history.refreshAll}
+          refreshAll={refreshAll}
         />
       )}
     </View>
@@ -219,33 +281,49 @@ function SessionsAgentsTab(input: {
   isInitialLoad: boolean;
   showLoadError: boolean;
   agents: AggregatedAgent[];
-  searchQuery: string;
+  isSearching: boolean;
   selectedHost: string;
   isManualRefresh: boolean;
   hasMore: boolean;
   isLoadingMore: boolean;
+  isSearchTruncated: boolean;
+  searchMatchesByAgentKey?: Record<string, AgentSearchMatch[]>;
   onRefresh: () => void;
   onLoadMore: () => void;
+  onClearSearch: () => void;
 }): ReactElement {
   const { t } = useTranslation();
-  const emptyText =
-    input.selectedHost === ALL_HOSTS_OPTION_ID ? t("sessions.empty") : t("sessions.emptyForHost");
+  const emptyText = resolveEmptyText({
+    t,
+    isSearching: input.isSearching,
+    isAllHosts: input.selectedHost === ALL_HOSTS_OPTION_ID,
+  });
 
   const handleBack = useCallback(() => {
     router.navigate(buildOpenProjectRoute());
   }, []);
 
-  const listFooterComponent = useMemo(
-    () =>
-      input.hasMore ? (
+  const listFooterComponent = useMemo(() => {
+    // A ranked result set has no next page — reaching a weaker match means
+    // narrowing the query, so the footer says that instead of offering a button.
+    if (input.isSearchTruncated) {
+      return (
         <View style={styles.footer}>
-          <Button variant="ghost" onPress={input.onLoadMore} disabled={input.isLoadingMore}>
-            {input.isLoadingMore ? "Loading..." : t("sessions.actions.loadMore")}
-          </Button>
+          <Text style={styles.footerHint}>{t("sessions.tooManyMatches")}</Text>
         </View>
-      ) : null,
-    [input.hasMore, input.onLoadMore, input.isLoadingMore, t],
-  );
+      );
+    }
+    if (!input.hasMore) {
+      return null;
+    }
+    return (
+      <View style={styles.footer}>
+        <Button variant="ghost" onPress={input.onLoadMore} disabled={input.isLoadingMore}>
+          {input.isLoadingMore ? "Loading..." : t("sessions.actions.loadMore")}
+        </Button>
+      </View>
+    );
+  }, [input.hasMore, input.isLoadingMore, input.isSearchTruncated, input.onLoadMore, t]);
 
   if (input.isInitialLoad) {
     return (
@@ -268,15 +346,17 @@ function SessionsAgentsTab(input: {
 
   if (input.agents.length === 0) {
     return (
-      <View style={styles.emptyContainer}>
-        <Text style={styles.emptyText}>
-          {input.searchQuery.trim() ? t("sessions.search.empty") : emptyText}
-        </Text>
-        {!input.searchQuery.trim() ? (
+      <View style={styles.emptyContainer} testID="sessions-empty">
+        <Text style={styles.emptyText}>{emptyText}</Text>
+        {input.isSearching ? (
+          <Button variant="ghost" onPress={input.onClearSearch}>
+            {t("sessions.actions.clearSearch")}
+          </Button>
+        ) : (
           <Button variant="ghost" leftIcon={ChevronLeft} onPress={handleBack}>
             {t("sessions.actions.back")}
           </Button>
-        ) : null}
+        )}
       </View>
     );
   }
@@ -290,6 +370,8 @@ function SessionsAgentsTab(input: {
       listFooterComponent={listFooterComponent}
       showAttentionIndicator={false}
       showHostColumn
+      searchMatchesByAgentKey={input.searchMatchesByAgentKey}
+      flat={input.isSearching}
     />
   );
 }
@@ -705,16 +787,6 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[3],
   },
-  searchInput: {
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.borderRadius.md,
-    paddingHorizontal: theme.spacing[3],
-    paddingVertical: theme.spacing[2],
-    color: theme.colors.foreground,
-    fontSize: theme.fontSize.sm,
-    backgroundColor: theme.colors.surface1,
-  },
   placeholderColor: {
     color: theme.colors.foregroundMuted,
   },
@@ -744,6 +816,28 @@ const styles = StyleSheet.create((theme) => ({
   footer: {
     alignItems: "center",
     paddingVertical: theme.spacing[4],
+  },
+  footerHint: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
+  },
+  errorsBannerWrap: {
+    paddingHorizontal: {
+      xs: theme.spacing[3],
+      md: theme.spacing[6],
+    },
+    paddingTop: theme.spacing[3],
+  },
+  errorsBanner: {
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.lg,
+    padding: theme.spacing[3],
+    gap: theme.spacing[1],
+  },
+  errorsBannerText: {
+    color: theme.colors.palette.red[300],
+    fontSize: theme.fontSize.xs,
   },
   askContainer: {
     flex: 1,

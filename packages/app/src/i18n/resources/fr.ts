@@ -245,6 +245,10 @@ export const fr: TranslationResources = {
     empty: "Aucune séance pour l'instant",
     emptyForHost: "No sessions for this host",
     loadError: "Unable to load sessions",
+    noMatches: "Aucune séance correspondante",
+    tooManyMatches: "Trop de résultats — affinez la recherche",
+    hostLoadFailed: "{{host}} : Impossible de charger l'historique",
+    searchPlaceholder: "Rechercher dans l'historique",
     tabs: {
       agents: "Agents",
       ask: "Ask",
@@ -281,6 +285,7 @@ export const fr: TranslationResources = {
       loadMore: "Charger plus",
       tryAgain: "Try again",
       back: "Back",
+      clearSearch: "Effacer la recherche",
     },
   },
   agentList: {

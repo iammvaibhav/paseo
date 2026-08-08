@@ -244,6 +244,10 @@ export const es: TranslationResources = {
     empty: "Aún no hay sesiones",
     emptyForHost: "No sessions for this host",
     loadError: "Unable to load sessions",
+    noMatches: "No hay sesiones que coincidan",
+    tooManyMatches: "Demasiadas coincidencias: acota la búsqueda",
+    hostLoadFailed: "{{host}}: No se pudo cargar el historial",
+    searchPlaceholder: "Buscar en el historial",
     tabs: {
       agents: "Agents",
       ask: "Ask",
@@ -280,6 +284,7 @@ export const es: TranslationResources = {
       loadMore: "Cargar más",
       tryAgain: "Try again",
       back: "Back",
+      clearSearch: "Borrar búsqueda",
     },
   },
   agentList: {

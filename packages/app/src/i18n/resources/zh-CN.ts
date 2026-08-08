@@ -241,6 +241,10 @@ export const zhCN: TranslationResources = {
     empty: "还没有会话",
     emptyForHost: "No sessions for this host",
     loadError: "Unable to load sessions",
+    noMatches: "没有匹配的会话",
+    tooManyMatches: "匹配过多 — 请缩小搜索范围",
+    hostLoadFailed: "{{host}}：无法加载历史",
+    searchPlaceholder: "搜索历史",
     tabs: {
       agents: "Agents",
       ask: "Ask",
@@ -277,6 +281,7 @@ export const zhCN: TranslationResources = {
       loadMore: "加载更多",
       tryAgain: "Try again",
       back: "Back",
+      clearSearch: "清除搜索",
     },
   },
   agentList: {

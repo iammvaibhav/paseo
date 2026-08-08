@@ -241,6 +241,10 @@ export const ar: TranslationResources = {
     empty: "لا توجد جلسات بعد",
     emptyForHost: "No sessions for this host",
     loadError: "Unable to load sessions",
+    noMatches: "لا توجد جلسات مطابقة",
+    tooManyMatches: "نتائج كثيرة جدًا — ضيّق نطاق البحث",
+    hostLoadFailed: "{{host}}: تعذر تحميل السجل",
+    searchPlaceholder: "البحث في السجل",
     tabs: {
       agents: "Agents",
       ask: "Ask",
@@ -277,6 +281,7 @@ export const ar: TranslationResources = {
       loadMore: "تحميل المزيد",
       tryAgain: "Try again",
       back: "Back",
+      clearSearch: "مسح البحث",
     },
   },
   agentList: {

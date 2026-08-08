@@ -240,13 +240,12 @@ export const ko: TranslationResources = {
   sessions: {
     title: "기록",
     empty: "아직 세션이 없습니다",
-    actions: {
-      loadMore: "더 불러오기",
-      tryAgain: "Try again",
-      back: "Back",
-    },
     emptyForHost: "No sessions for this host",
     loadError: "Unable to load sessions",
+    noMatches: "일치하는 세션이 없습니다",
+    tooManyMatches: "일치 항목이 너무 많습니다 — 검색 범위를 좁히세요",
+    hostLoadFailed: "{{host}}: 기록을 불러오지 못했습니다",
+    searchPlaceholder: "기록 검색",
     tabs: {
       agents: "Agents",
       ask: "Ask",
@@ -278,6 +277,12 @@ export const ko: TranslationResources = {
         hostDisconnected: "Host is not connected",
         launchFailed: "Failed to start History Ask",
       },
+    },
+    actions: {
+      loadMore: "더 불러오기",
+      tryAgain: "Try again",
+      back: "Back",
+      clearSearch: "검색 지우기",
     },
   },
   agentList: {

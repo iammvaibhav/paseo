@@ -244,6 +244,10 @@ export const ja: TranslationResources = {
     empty: "セッションがまだありません",
     emptyForHost: "No sessions for this host",
     loadError: "Unable to load sessions",
+    noMatches: "一致するセッションはありません",
+    tooManyMatches: "一致が多すぎます — 検索条件を絞ってください",
+    hostLoadFailed: "{{host}}: 履歴を読み込めませんでした",
+    searchPlaceholder: "履歴を検索",
     tabs: {
       agents: "Agents",
       ask: "Ask",
@@ -280,6 +284,7 @@ export const ja: TranslationResources = {
       loadMore: "さらに読み込む",
       tryAgain: "Try again",
       back: "Back",
+      clearSearch: "検索をクリア",
     },
   },
   agentList: {

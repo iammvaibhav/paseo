@@ -240,6 +240,10 @@ export const en = {
     empty: "No sessions yet",
     emptyForHost: "No sessions for this host",
     loadError: "Unable to load sessions",
+    noMatches: "No sessions match",
+    tooManyMatches: "Too many matches — narrow your search",
+    hostLoadFailed: "{{host}}: Could not load history",
+    searchPlaceholder: "Search history",
     tabs: {
       agents: "Agents",
       ask: "Ask",
@@ -276,6 +280,7 @@ export const en = {
       loadMore: "Load more",
       tryAgain: "Try again",
       back: "Back",
+      clearSearch: "Clear search",
     },
   },
   agentList: {

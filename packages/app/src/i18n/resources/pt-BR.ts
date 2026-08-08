@@ -244,6 +244,10 @@ export const ptBR: TranslationResources = {
     empty: "Nenhuma sessão ainda",
     emptyForHost: "No sessions for this host",
     loadError: "Unable to load sessions",
+    noMatches: "Nenhuma sessão corresponde",
+    tooManyMatches: "Muitos resultados — refine a busca",
+    hostLoadFailed: "{{host}}: Não foi possível carregar o histórico",
+    searchPlaceholder: "Buscar no histórico",
     tabs: {
       agents: "Agents",
       ask: "Ask",
@@ -280,6 +284,7 @@ export const ptBR: TranslationResources = {
       loadMore: "Carregar mais",
       tryAgain: "Try again",
       back: "Back",
+      clearSearch: "Limpar busca",
     },
   },
   agentList: {

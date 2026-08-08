@@ -243,6 +243,10 @@ export const ru: TranslationResources = {
     empty: "Сеансов пока нет",
     emptyForHost: "No sessions for this host",
     loadError: "Unable to load sessions",
+    noMatches: "Нет подходящих сеансов",
+    tooManyMatches: "Слишком много совпадений — уточните запрос",
+    hostLoadFailed: "{{host}}: Не удалось загрузить историю",
+    searchPlaceholder: "Поиск по истории",
     tabs: {
       agents: "Agents",
       ask: "Ask",
@@ -279,6 +283,7 @@ export const ru: TranslationResources = {
       loadMore: "Загрузить больше",
       tryAgain: "Try again",
       back: "Back",
+      clearSearch: "Очистить поиск",
     },
   },
   agentList: {
