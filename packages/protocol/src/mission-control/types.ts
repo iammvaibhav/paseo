@@ -19,6 +19,14 @@ export const MissionControlEventKindSchema = z.enum([
   // from "failed" so the feed renders the user's interruption with a
   // non-error tone while genuine failures keep the failure card.
   "interrupted",
+  // M4: Commander interaction cards. "clarification" is a structured question
+  // with options (+ optional free text) the Commander cannot resolve alone
+  // (which of two ambiguous targets, a user-private fact); "answer" is a
+  // structured fleet answer (agent status, generic) rendered with feed-card
+  // components instead of prose. Both are cards TO the user, never side
+  // effects on the fleet — they are not approval-gated.
+  "clarification",
+  "answer",
 ]);
 export type MissionControlEventKind = z.infer<typeof MissionControlEventKindSchema>;
 
@@ -128,6 +136,43 @@ export const MissionControlProposalSpawnPlanSchema = z.object({
 });
 export type MissionControlProposalSpawnPlan = z.infer<typeof MissionControlProposalSpawnPlanSchema>;
 
+/**
+ * What a meta-kind proposal would change (M4/M5): a fleet meta action —
+ * rename/archive a project, workspace, or agent; create a project; move an
+ * agent to another workspace; promote an experiment workspace to its own
+ * project. All target fields optional strings so the payload carries exactly
+ * the identifying fields each action needs; the daemon validates the plan
+ * against live fleet state when the proposal resolves (fleet_meta tool) or
+ * when it is applied (metaFromProposal hook). `serverId` names the host the
+ * action applies to ("local" or a peer name, same convention as the fleet
+ * tools); `destination` is the target workspace id for move_agent /
+ * promote_workspace and the parent project id for create_project.
+ */
+export const MissionControlProposalMetaPlanActionSchema = z.enum([
+  "rename_project",
+  "rename_workspace",
+  "rename_agent_title",
+  "archive_project",
+  "archive_workspace",
+  "archive_agent",
+  "create_project",
+  "move_agent",
+  "promote_workspace",
+]);
+export type MissionControlProposalMetaPlanAction = z.infer<
+  typeof MissionControlProposalMetaPlanActionSchema
+>;
+
+export const MissionControlMetaPlanSchema = z.object({
+  action: MissionControlProposalMetaPlanActionSchema,
+  serverId: z.string().optional(),
+  targetId: z.string().optional(),
+  targetLabel: z.string().optional(),
+  newValue: z.string().optional(),
+  destination: z.string().optional(),
+});
+export type MissionControlMetaPlan = z.infer<typeof MissionControlMetaPlanSchema>;
+
 export const MissionControlProposalSchema = z.object({
   id: z.string(), // "mcp_" + ulid
   createdAt: z.string(), // ISO
@@ -141,10 +186,19 @@ export const MissionControlProposalSchema = z.object({
   status: z.enum(["pending", "approved", "denied", "sent", "expired", "undelivered"]),
   // "send" (default, absent = send): deliver `message` to the target agent.
   // "spawn": create a NEW agent described by spawnPlan instead of sending.
-  kind: z.enum(["send", "spawn"]).optional(),
+  // "meta": apply a fleet meta action (rename/archive/move/create/promote)
+  // described by metaPlan instead of sending.
+  kind: z.enum(["send", "spawn", "meta"]).optional(),
   // Present when kind === "spawn": what would be created (card copy + the
   // reconstruction payload). Approving (or auto mode) executes the spawn.
   spawnPlan: MissionControlProposalSpawnPlanSchema.optional(),
+  // Present when kind === "meta": the fleet meta action the proposal would
+  // apply (rename/archive project·workspace·agent, create project, move
+  // agent, promote workspace). Approving (or auto mode) executes the action
+  // through the metaFromProposal hook. Card copy derives from action +
+  // targetId/targetLabel + newValue/destination; the app renders it as a
+  // meta card, never as a message send.
+  metaPlan: MissionControlMetaPlanSchema.optional(),
   // Set on a spawn proposal once the spawn executed (approve or auto mode).
   spawnedAgentId: z.string().optional(),
   // Verifier-origin attribution: the ephemeral verifier agent driving this
@@ -194,6 +248,40 @@ export const MissionControlEventSchema = z.object({
   // Full proposal payload when kind === "proposal". Status changes append a
   // new proposal event superseding the previous one for the same proposal id.
   proposal: MissionControlProposalSchema.optional(),
+  // M4: structured question card (kind "clarification"). The Commander cannot
+  // resolve which agent/workspace/project you mean, or the missing fact is
+  // one only you know. The app renders the question with the options as
+  // buttons plus a free-text input when allowFreeText is true; the user's
+  // choice is sent back as a normal user message to the Commander thread —
+  // there is NO separate response RPC. Additive; absent on every other card.
+  clarification: z
+    .object({
+      question: z.string(),
+      options: z.array(z.string()),
+      allowFreeText: z.boolean(),
+    })
+    .optional(),
+  // M4: structured fleet answer card (kind "answer"). Fleet questions the
+  // Commander answered — an agent-status answer renders name, host chip,
+  // state, last report, proofs (the same components as feed cards, so answers
+  // feel native); "generic" answers are free text plus optional labeled
+  // fields. Additive; absent on every other card.
+  answer: z
+    .object({
+      kind: z.enum(["agent_status", "generic"]),
+      agentId: z.string().optional(),
+      headline: z.string(),
+      body: z.string().optional(),
+      fields: z
+        .array(
+          z.object({
+            label: z.string(),
+            value: z.string(),
+          }),
+        )
+        .optional(),
+    })
+    .optional(),
   // Verifier-origin attribution (verdict cards + verification-failed cards):
   // the ephemeral verifier agent whose audit produced this card. Clicking the
   // card drills into that agent's thread in the Mission Control inspector

@@ -1,9 +1,9 @@
 import { useCallback, useMemo, useState, type ReactElement } from "react";
-import { Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
-import { Bot, Clock, ShieldCheck } from "lucide-react-native";
+import { Bot, ChevronDown, Clock, ShieldCheck } from "lucide-react-native";
 import type { MissionControlProposal } from "@getpaseo/protocol/mission-control/types";
 import { SettingsTextArea } from "@/components/settings-textarea";
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,7 @@ export type ProposalResolvedStatus = "sent" | "denied";
 const ThemedBot = withUnistyles(Bot);
 const ThemedClock = withUnistyles(Clock);
 const ThemedShieldCheck = withUnistyles(ShieldCheck);
+const ThemedChevronDown = withUnistyles(ChevronDown);
 
 const originIconMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
@@ -185,6 +186,138 @@ function originLabel(origin: MissionControlProposal["origin"]): string {
   }
 }
 
+function getMetaSummary(
+  metaPlan: NonNullable<MissionControlProposal["metaPlan"]>,
+  t: TFunction,
+): string {
+  const target = metaPlan.targetLabel ?? metaPlan.targetId ?? "";
+  const name = metaPlan.newValue ?? "";
+  const destination = metaPlan.destination ?? "";
+  switch (metaPlan.action) {
+    case "rename_project":
+      return t("missionControl.proposal.meta.renameProject", { target, name });
+    case "rename_workspace":
+      return t("missionControl.proposal.meta.renameWorkspace", { target, name });
+    case "rename_agent_title":
+      return t("missionControl.proposal.meta.renameAgentTitle", { target, name });
+    case "archive_project":
+      return t("missionControl.proposal.meta.archiveProject", { target });
+    case "archive_workspace":
+      return t("missionControl.proposal.meta.archiveWorkspace", { target });
+    case "archive_agent":
+      return t("missionControl.proposal.meta.archiveAgent", { target });
+    case "create_project":
+      return t("missionControl.proposal.meta.createProject", { target: target || name });
+    case "move_agent":
+      return t("missionControl.proposal.meta.moveAgent", { target, destination });
+    case "promote_workspace":
+      return t("missionControl.proposal.meta.promoteWorkspace", { target, destination });
+    default:
+      return target;
+  }
+}
+
+interface ChipInfo {
+  key: string;
+  label: string;
+}
+
+/** Reads a spawnPlan field from its labels slot or the legacy flat field. */
+function rawSpawnField(
+  spawnPlan: MissionControlProposal["spawnPlan"],
+  labels: Record<string, string> | undefined,
+  field: string,
+): string | undefined {
+  return (
+    labels?.[field] ??
+    ((spawnPlan as Record<string, unknown> | undefined)?.[field] as string | undefined)
+  );
+}
+
+/** Chip for the project the spawn targets, or the project it would create. */
+function projectChip(proposal: MissionControlProposal, t: TFunction): ChipInfo | null {
+  const spawnPlan = proposal.spawnPlan;
+  const labels = spawnPlan?.labels;
+  const rawProject = rawSpawnField(spawnPlan, labels, "project");
+  const rawNewProject = rawSpawnField(spawnPlan, labels, "newProject");
+  if (rawNewProject) {
+    return {
+      key: "newProject",
+      label: t("missionControl.proposal.chips.newProject", { label: rawNewProject }),
+    };
+  }
+  if (rawProject) {
+    return {
+      key: "project",
+      label: t("missionControl.proposal.chips.project", { label: rawProject }),
+    };
+  }
+  return null;
+}
+
+/** Chip for the workspace the spawn targets, or the one it would create. */
+function workspaceChip(proposal: MissionControlProposal, t: TFunction): ChipInfo | null {
+  const spawnPlan = proposal.spawnPlan;
+  const labels = spawnPlan?.labels;
+  const rawWorkspace =
+    labels?.workspace ?? spawnPlan?.workspaceId ?? rawSpawnField(spawnPlan, labels, "workspace");
+  const rawNewWorkspace = rawSpawnField(spawnPlan, labels, "newWorkspace");
+  if (rawNewWorkspace) {
+    return {
+      key: "newWorkspace",
+      label: t("missionControl.proposal.chips.newWorkspace", { label: rawNewWorkspace }),
+    };
+  }
+  if (rawWorkspace) {
+    return {
+      key: "workspace",
+      label: t("missionControl.proposal.chips.workspace", { label: rawWorkspace }),
+    };
+  }
+  return null;
+}
+
+/** Chip for the agent the proposal targets, or the agent it would spawn. */
+function agentChip(proposal: MissionControlProposal, t: TFunction): ChipInfo | null {
+  const spawnPlan = proposal.spawnPlan;
+  const labels = spawnPlan?.labels;
+  const rawAgent = spawnPlan?.title ?? labels?.agent ?? rawSpawnField(spawnPlan, labels, "agent");
+  const rawNewAgent = rawSpawnField(spawnPlan, labels, "newAgent");
+  if (rawNewAgent) {
+    return {
+      key: "newAgent",
+      label: t("missionControl.proposal.chips.newAgent", { label: rawNewAgent }),
+    };
+  }
+  if (rawAgent) {
+    const isSpawn = proposal.kind === "spawn";
+    return {
+      key: isSpawn ? "newAgent" : "agent",
+      label: isSpawn
+        ? t("missionControl.proposal.chips.newAgent", { label: rawAgent })
+        : t("missionControl.proposal.chips.agent", { label: rawAgent }),
+    };
+  }
+  return null;
+}
+
+function resolvePlanChips(proposal: MissionControlProposal, t: TFunction): ChipInfo[] {
+  const chips: ChipInfo[] = [];
+  const project = projectChip(proposal, t);
+  if (project) {
+    chips.push(project);
+  }
+  const workspace = workspaceChip(proposal, t);
+  if (workspace) {
+    chips.push(workspace);
+  }
+  const agent = agentChip(proposal, t);
+  if (agent) {
+    chips.push(agent);
+  }
+  return chips;
+}
+
 /** True while the proposal still needs a user decision (Ask mode / forced ask). */
 export function isPendingProposalEvent(event: FeedCardEvent): boolean {
   return event.kind === "proposal" && event.proposal?.status === "pending";
@@ -227,6 +360,8 @@ export function countPendingProposals(events: readonly FeedCardEvent[]): number 
 export interface ProposalCardProps {
   proposal: MissionControlProposal;
   event: FeedCardEvent;
+  /** Verbose mode (per-device MC header overflow toggle). Defaults to false. */
+  verbose?: boolean;
   /**
    * Position within this card's run of adjacent cards (see CardRunPosition).
    * The thread derives it from same-family rows; standalone cards default to
@@ -246,6 +381,7 @@ export interface ProposalCardProps {
 export function ProposalCard({
   proposal,
   event,
+  verbose = false,
   onResolved,
   position = "only",
 }: ProposalCardProps): ReactElement {
@@ -255,7 +391,7 @@ export function ProposalCard({
   const [allowPair, setAllowPair] = useState(false);
   const [isResponding, setIsResponding] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
+  const [isPayloadExpanded, setIsPayloadExpanded] = useState(true);
   const liveAgent = useSessionStore((state) =>
     event.serverId && event.agentId
       ? resolveSessionAgent(state.sessions[event.serverId], event.agentId)
@@ -329,6 +465,10 @@ export function ProposalCard({
     void respond("approve", trimmed);
   }, [draft, respond]);
 
+  const handleTogglePayload = useCallback(() => {
+    setIsPayloadExpanded((prev) => !prev);
+  }, []);
+
   const originIcon = useMemo(() => {
     if (proposal.origin === "verifier") {
       return <ThemedShieldCheck size={14} uniProps={originIconMapping} />;
@@ -338,6 +478,17 @@ export function ProposalCard({
     }
     return <ThemedClock size={14} uniProps={originIconMapping} />;
   }, [proposal.origin]);
+
+  const modelName = useMemo(() => {
+    const spawnPlan = proposal.spawnPlan;
+    if (!spawnPlan) {
+      return undefined;
+    }
+    if (spawnPlan.model) {
+      return spawnPlan.provider ? `${spawnPlan.provider}/${spawnPlan.model}` : spawnPlan.model;
+    }
+    return spawnPlan.provider;
+  }, [proposal.spawnPlan]);
 
   return (
     <View
@@ -379,6 +530,26 @@ export function ProposalCard({
           <Text style={styles.timestamp}>{timeAgo}</Text>
         </View>
 
+        {(() => {
+          const chips = resolvePlanChips(proposal, t);
+          if (chips.length === 0) return null;
+          return (
+            <View style={styles.planChipsRow} testID="mission-control-proposal-chips">
+              {chips.map((c) => (
+                <View key={c.key} style={styles.planChip}>
+                  <Text style={styles.planChipText}>{c.label}</Text>
+                </View>
+              ))}
+            </View>
+          );
+        })()}
+
+        {modelName ? (
+          <Text style={styles.modelLine} testID="mission-control-proposal-model">
+            {t("missionControl.proposal.model", { model: modelName })}
+          </Text>
+        ) : null}
+
         {isEditing ? (
           <SettingsTextArea
             accessibilityLabel="Proposal message"
@@ -390,7 +561,9 @@ export function ProposalCard({
           />
         ) : (
           <Text style={styles.message} testID="mission-control-proposal-message">
-            {proposal.message}
+            {proposal.metaPlan
+              ? getMetaSummary(proposal.metaPlan, t)
+              : (proposal.spawnPlan?.summary ?? proposal.message)}
           </Text>
         )}
 
@@ -398,6 +571,26 @@ export function ProposalCard({
           <Text style={styles.reason} numberOfLines={3}>
             {proposal.reason}
           </Text>
+        ) : null}
+
+        {verbose ? (
+          <View style={styles.payloadSection} testID="mission-control-proposal-payload-section">
+            <Pressable
+              onPress={handleTogglePayload}
+              style={styles.payloadToggle}
+              accessibilityRole="button"
+              accessibilityLabel={t("missionControl.proposal.payload")}
+              testID="mission-control-proposal-payload-toggle"
+            >
+              <Text style={styles.payloadToggleText}>{t("missionControl.proposal.payload")}</Text>
+              <ThemedChevronDown size={14} uniProps={originIconMapping} />
+            </Pressable>
+            {isPayloadExpanded ? (
+              <Text style={styles.payloadJson} testID="mission-control-proposal-payload">
+                {JSON.stringify(proposal, null, 2)}
+              </Text>
+            ) : null}
+          </View>
         ) : null}
 
         <ProposalCardActions
@@ -547,5 +740,49 @@ const styles = StyleSheet.create((theme) => ({
   error: {
     color: theme.colors.statusDanger,
     fontSize: theme.fontSize.xs,
+  },
+  planChipsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: theme.spacing[1],
+  },
+  planChip: {
+    borderRadius: theme.borderRadius.sm,
+    backgroundColor: theme.colors.surface2,
+    paddingHorizontal: theme.spacing[2],
+    paddingVertical: 2,
+  },
+  planChipText: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.xs,
+  },
+  modelLine: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.xs,
+  },
+  payloadSection: {
+    gap: theme.spacing[1],
+    marginTop: theme.spacing[1],
+    paddingTop: theme.spacing[1],
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
+  },
+  payloadToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  payloadToggleText: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.xs,
+    fontWeight: theme.fontWeight.medium,
+  },
+  payloadJson: {
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foregroundMuted,
+    backgroundColor: theme.colors.surface0,
+    padding: theme.spacing[2],
+    borderRadius: theme.borderRadius.sm,
   },
 }));

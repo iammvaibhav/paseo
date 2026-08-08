@@ -244,6 +244,17 @@ export interface MissionControlServiceOptions {
     proposal: MissionControlProposal,
   ) => Promise<{ ok: true; agentId?: string } | { ok: false; error: string }>;
   /**
+   * Execute a commander-origin meta-kind proposal (fleet_meta called by the
+   * Commander): apply the fleet meta action described by the proposal's
+   * metaPlan (rename/archive project·workspace·agent, create project, move
+   * agent, promote workspace). Wired by bootstrap where the meta actions
+   * module + move-agent RPC live; absent → meta proposals resolve with an
+   * error (never bounce back to pending). Mirrors spawnFromProposal.
+   */
+  metaFromProposal?: (
+    proposal: MissionControlProposal,
+  ) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /**
    * Archive the current Commander and spawn a fresh one with a new context
    * pack (mission_control.commander.reset). Wired by bootstrap with the full
    * commander-boot machinery; absent → the reset RPC reports an error.
@@ -298,6 +309,7 @@ export class MissionControlService {
   private readonly presenceSource: MissionControlPresenceSource;
   private readonly resetCommanderFn: MissionControlServiceOptions["resetCommander"];
   private readonly spawnFromProposal: MissionControlServiceOptions["spawnFromProposal"];
+  private readonly metaFromProposal: MissionControlServiceOptions["metaFromProposal"];
   readonly approvals: MissionControlApprovals;
 
   private readonly timelineRows = new Map<string, AgentTimelineRow[]>();
@@ -393,6 +405,7 @@ export class MissionControlService {
     this.presenceSource = options.presence;
     this.resetCommanderFn = options.resetCommander;
     this.spawnFromProposal = options.spawnFromProposal;
+    this.metaFromProposal = options.metaFromProposal;
     this.bootedAtMs = Date.now();
     this.store = new MissionControlStore({ paseoHome: options.paseoHome, logger: this.logger });
     this.lifecycleLog = new TurnLifecycleLog({
@@ -503,6 +516,15 @@ export class MissionControlService {
         }
         return this.spawnFromProposal(proposal);
       },
+      // Single execution path for meta-kind proposals (approve or auto mode):
+      // the Commander's fleet_meta actions (rename/archive/move/create/
+      // promote) apply through the bootstrap-wired metaFromProposal hook.
+      applyMeta: async (proposal) => {
+        if (!this.metaFromProposal) {
+          return { ok: false, error: "Meta executor is not available" };
+        }
+        return this.metaFromProposal(proposal);
+      },
     };
   }
 
@@ -605,6 +627,49 @@ export class MissionControlService {
   /** Fire-and-forget feed card emission (verifier retry-exhaustion cards). */
   publishEvent(input: Omit<MissionControlAppendInput, "agentTitle">): void {
     void this.emitEvent(input);
+  }
+
+  /**
+   * M4: emit a Commander interaction card (kind "clarification" or "answer")
+   * to the feed, attributed to the Commander (agentId = the Commander's agent
+   * id, resolved live). These are cards TO the user — a structured question
+   * with options, or a structured fleet answer — never side effects on the
+   * fleet, so they are not approval-gated and never trigger machinery turns.
+   * Returns null when no Commander is resolvable (the card cannot be
+   * attributed); the caller surfaces that as a tool error.
+   */
+  async emitCommanderCard(
+    input:
+      | {
+          kind: "clarification";
+          headline: string;
+          clarification: MissionControlEvent["clarification"];
+        }
+      | {
+          kind: "answer";
+          headline: string;
+          answer: MissionControlEvent["answer"];
+        },
+  ): Promise<MissionControlEvent | null> {
+    const commanderId = await this.resolveCommanderAgentId();
+    if (!commanderId) {
+      this.logger.warn(
+        { component: "commander-card", kind: input.kind },
+        "mission_control.commander_card.no_commander",
+      );
+      return null;
+    }
+    return this.emitEvent({
+      agentId: commanderId,
+      kind: input.kind,
+      source: "system",
+      severity: "info",
+      headline: input.headline,
+      ...("clarification" in input && input.clarification
+        ? { clarification: input.clarification }
+        : {}),
+      ...("answer" in input && input.answer ? { answer: input.answer } : {}),
+    });
   }
 
   subscribeReviewState(listener: ReviewStateListener): () => void {
@@ -2462,8 +2527,17 @@ export class MissionControlService {
   /** Proposal cards ride the feed as kind:"proposal" events. */
   private async emitProposalEvent(proposal: MissionControlProposal): Promise<MissionControlEvent> {
     const pending = proposal.status === "pending";
+    // Meta-kind proposals may target fleet objects rather than an agent
+    // (rename/archive project·workspace, create project, promote): their
+    // targetAgentId is "" by convention. The card still needs a real event
+    // identity — fall back to the Commander (the origin of these cards) so
+    // the feed resolves a live agent title and drill-in works.
+    let agentId = proposal.targetAgentId;
+    if (proposal.kind === "meta" && !agentId) {
+      agentId = (await this.resolveCommanderAgentId()) ?? agentId;
+    }
     return this.emitEvent({
-      agentId: proposal.targetAgentId,
+      agentId,
       kind: "proposal",
       source: proposal.origin === "verifier" ? "verifier" : "system",
       severity: pending ? "blocker" : "info",

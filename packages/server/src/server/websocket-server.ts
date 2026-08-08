@@ -1593,6 +1593,10 @@ export class VoiceAssistantWebSocketServer {
         // Mission Control v3: review lifecycle, approval gate, central config.
         // App gates the v3 screen once on this flag.
         missionControlV3: true,
+        // Mission Control v4: card grammar (meta proposals, clarification +
+        // answer cards, Commander clarify/post_answer tools). App gates the
+        // new card renderings once on this flag.
+        missionControlV4: true,
         // COMPAT(worktreeRestore): keep through 2027-01-11 for clients older than v0.1.105.
         worktreeRestore: true,
         // COMPAT(workspaceRecovery): added in v0.1.105, remove after 2027-01-11 once daemon floor >= v0.1.105.

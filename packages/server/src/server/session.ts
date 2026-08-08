@@ -184,6 +184,7 @@ import {
   MISSION_CONTROL_LABEL_VALUE,
 } from "./mission-control/commander-contract.js";
 import { resolveMissionControlMediaFetch } from "./mission-control/media.js";
+import { moveAgentToWorkspace } from "./mission-control/meta-actions.js";
 import { PlannotatorSession } from "./session/plannotator/plannotator-session.js";
 import { ProviderCatalogSession } from "./session/provider/provider-catalog-session.js";
 import { WorkspaceFilesSession } from "./session/files/workspace-files-session.js";
@@ -1365,6 +1366,23 @@ export class Session {
 
   async emitWorkspaceUpdatesForExternalWorkspaceIds(workspaceIds: Iterable<string>): Promise<void> {
     await this.emitWorkspaceUpdatesForWorkspaceIds(workspaceIds);
+  }
+
+  /**
+   * External-mutation agent-update fan-out (mission-control meta actions):
+   * emit an agent_update for a STORED (not-running) agent record mutated by
+   * daemon machinery outside this session (fleet_meta move_agent /
+   * rename_agent_title on closed agents). Live agents need no call — their
+   * agent_state events flow through every session's subscription already.
+   */
+  async emitAgentUpdateForExternalMutation(record: StoredAgentRecord): Promise<void> {
+    if (!this.agentUpdates.hasSubscription()) {
+      return;
+    }
+    const payload = await this.agentUpdates.emitStoredRecord(record);
+    if (payload.workspaceId) {
+      await this.emitWorkspaceUpdateForWorkspaceId(payload.workspaceId);
+    }
   }
 
   async syncWorkspaceGitObserversForExternalWorkspaceIds(
@@ -2603,6 +2621,8 @@ export class Session {
         return this.handleAgentPermissionResponse(msg.agentId, msg.requestId, msg.response);
       case "clear_agent_attention":
         return this.handleClearAgentAttention(msg.agentId, msg.requestId);
+      case "agent.workspace.move.request":
+        return this.handleAgentWorkspaceMoveRequest(msg);
       default:
         return undefined;
     }
@@ -4469,6 +4489,56 @@ export class Session {
           error: error instanceof Error ? error.message : "Failed to rewind agent",
         },
       });
+    }
+  }
+
+  /**
+   * M5: move an agent record to another workspace on the same host
+   * (agent.workspace.move RPC). Same validation + mutation path as the
+   * fleet_meta move_agent action — the session emits the agent_update (live
+   * agents already flow through agent_state; stored records emit here) plus
+   * workspace updates for both affected workspaces, then answers the RPC.
+   */
+  private async handleAgentWorkspaceMoveRequest(
+    msg: Extract<SessionInboundMessage, { type: "agent.workspace.move.request" }>,
+  ): Promise<void> {
+    const emitResponse = (accepted: boolean, error: string | null): void => {
+      this.emit({
+        type: "agent.workspace.move.response",
+        payload: {
+          requestId: msg.requestId,
+          agentId: msg.agentId,
+          workspaceId: msg.workspaceId,
+          accepted,
+          error,
+        },
+      });
+    };
+    try {
+      const result = await moveAgentToWorkspace(
+        {
+          agentManager: this.agentManager,
+          agentStorage: this.agentStorage,
+          workspaceRegistry: this.workspaceRegistry,
+        },
+        { agentId: msg.agentId, workspaceId: msg.workspaceId },
+      );
+      emitResponse(true, null);
+      if (!result.live) {
+        await this.agentUpdates.emitStoredRecord(result.record);
+      }
+      const affectedWorkspaceIds = [result.fromWorkspaceId, result.toWorkspaceId].filter(
+        (workspaceId): workspaceId is string => workspaceId !== null && workspaceId !== undefined,
+      );
+      if (affectedWorkspaceIds.length > 0) {
+        await this.emitWorkspaceUpdatesForWorkspaceIds(affectedWorkspaceIds);
+      }
+    } catch (error) {
+      this.sessionLogger.warn(
+        { err: error, agentId: msg.agentId, workspaceId: msg.workspaceId },
+        "agent.workspace.move rejected",
+      );
+      emitResponse(false, error instanceof Error ? error.message : String(error));
     }
   }
 

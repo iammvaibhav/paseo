@@ -320,6 +320,45 @@ export const ru: TranslationResources = {
       workspaceArchived:
         "Рабочее пространство этого агента заархивировано, поэтому его нельзя открыть в представлении рабочего пространства.",
     },
+    proposal: {
+      origin: {
+        verifier: "Контакт верификатора",
+        commander: "Командир",
+        stall: "Проверка зависания",
+      },
+      chips: {
+        project: "Проект: {{label}}",
+        workspace: "Рабочее пространство: {{label}}",
+        agent: "Агент: {{label}}",
+        newProject: "Новый проект: {{label}}",
+        newWorkspace: "Новое рабочее пространство: {{label}}",
+        newAgent: "Новый агент: {{label}}",
+      },
+      model: "Модель: {{model}}",
+      payload: "Полезная нагрузка",
+      meta: {
+        renameProject: "Переименовать проект {{target}} → {{name}}",
+        renameWorkspace: "Переименовать рабочее пространство {{target}} → {{name}}",
+        renameAgentTitle: "Переименовать заголовок агента {{target}} → {{name}}",
+        archiveProject: "Архивировать проект {{target}}",
+        archiveWorkspace: "Архивировать рабочее пространство {{target}}",
+        archiveAgent: "Архивировать агент {{target}}",
+        createProject: "Создать проект {{target}}",
+        moveAgent: "Переместить агент {{target}} → рабочее пространство {{destination}}",
+        promoteWorkspace: "Повысить {{target}} → проект {{destination}}",
+      },
+    },
+    clarification: {
+      title: "Уточнение",
+      send: "Отправить",
+      answerPlaceholder: "Введите ваш ответ...",
+      answered: "Отвечено: {{answer}}",
+    },
+    answer: {
+      title: "Ответ",
+      agentStatus: "Статус агента",
+      state: "Состояние",
+    },
   },
   message: {
     actions: {

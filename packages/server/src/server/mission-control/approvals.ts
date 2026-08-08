@@ -1,5 +1,6 @@
 import type { Logger } from "pino";
 import type {
+  MissionControlMetaPlan,
   MissionControlProposal,
   MissionControlProposal as Proposal,
   MissionControlProposalSpawnPlan,
@@ -59,11 +60,16 @@ export interface ProposalCreateInput {
   /**
    * "send" (default) delivers `message` to the target agent; "spawn" creates a
    * NEW agent from `spawnPlan` instead (Commander agent spawns, verifier
-   * spawns). Both kinds flow through the same gate.
+   * spawns); "meta" applies a fleet meta action (rename/archive/move/create/
+   * promote) from `metaPlan` instead. All three kinds flow through the same
+   * gate — ask mode holds the card, auto mode executes (destructive always
+   * asks), and resolveProposal is the single approve/deny path.
    */
-  kind?: "send" | "spawn";
+  kind?: "send" | "spawn" | "meta";
   /** What a spawn-kind proposal would create; required when kind === "spawn". */
   spawnPlan?: MissionControlProposalSpawnPlan;
+  /** What a meta-kind proposal would apply; required when kind === "meta". */
+  metaPlan?: MissionControlMetaPlan;
   /** Verifier-origin attribution for card drill-in (verifier's agent id). */
   verifierAgentId?: string;
   /**
@@ -141,6 +147,17 @@ export interface MissionControlApprovalsOptions {
     proposal: Proposal,
   ) => Promise<{ ok: true; agentId?: string } | { ok: false; error: string }>;
   /**
+   * Execute a meta-kind proposal (kind === "meta"): apply the fleet meta
+   * action the proposal describes (rename/archive project·workspace·agent,
+   * create project, move agent, promote workspace). Runs on approve
+   * (user-approved pending card) and on auto-send in auto mode — the single
+   * execution path for both. Failures log loudly and never bounce a resolved
+   * proposal back to pending (same contract as the spawn hook). Optional so
+   * the gate works without a meta executor; absent → meta proposals resolve
+   * with an error.
+   */
+  applyMeta?: (proposal: Proposal) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /**
    * Push a proposal-card event (kind "proposal"). Status changes append a new
    * event superseding the previous one for the same proposal. Returns the
    * emitted event so the caller can track supersede chains.
@@ -213,6 +230,7 @@ export class MissionControlApprovals {
   private readonly getMode: () => "ask" | "auto";
   private readonly deliver: MissionControlApprovalsOptions["deliver"];
   private readonly spawn: MissionControlApprovalsOptions["spawn"];
+  private readonly applyMeta: MissionControlApprovalsOptions["applyMeta"];
   private readonly publishProposalEvent: MissionControlApprovalsOptions["publishProposalEvent"];
   private readonly allowPairs = new Set<string>();
   private readonly listeners = new Set<ProposalChangeListener>();
@@ -224,6 +242,7 @@ export class MissionControlApprovals {
     this.getMode = options.getMode;
     this.deliver = options.deliver;
     this.spawn = options.spawn;
+    this.applyMeta = options.applyMeta;
     this.publishProposalEvent = options.publishProposalEvent;
   }
 
@@ -416,6 +435,41 @@ export class MissionControlApprovals {
           "mission_control.approvals.spawned",
         );
       }
+      return;
+    }
+    if (proposal.kind === "meta") {
+      // Meta-kind proposal: apply the fleet meta action described by
+      // metaPlan (rename/archive/move/create/promote) instead of delivering a
+      // message. Single execution path for approve and auto mode; failures
+      // log loudly and never bounce a resolved proposal back to pending (same
+      // contract as spawn).
+      if (!this.applyMeta) {
+        this.logger.error(
+          { proposalId: proposal.id, origin: proposal.origin },
+          "mission_control.approvals.meta_apply_unavailable",
+        );
+        return;
+      }
+      const result = await this.applyMeta(proposal);
+      if (!result.ok) {
+        this.logger.error(
+          { proposalId: proposal.id, origin: proposal.origin, error: result.error },
+          "mission_control.approvals.meta_apply_failed",
+        );
+        return;
+      }
+      await this.store.putProposal(proposal);
+      await this.publish(proposal);
+      this.logger.info(
+        {
+          component: "approvals",
+          proposalId: proposal.id,
+          origin: proposal.origin,
+          action: proposal.metaPlan?.action,
+          status: "sent",
+        },
+        "mission_control.approvals.meta_applied",
+      );
       return;
     }
     try {

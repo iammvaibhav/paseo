@@ -90,6 +90,11 @@ export interface MissionControlAppendInput {
   detail?: string;
   proof?: MissionControlEvent["proof"];
   proposal?: MissionControlEvent["proposal"];
+  // M4 Commander interaction cards (additive): structured question payload
+  // (kind "clarification") and structured fleet answer payload (kind
+  // "answer").
+  clarification?: MissionControlEvent["clarification"];
+  answer?: MissionControlEvent["answer"];
   // Original report_status kind preserved on source:"self" events (additive).
   reportKind?: MissionControlEvent["reportKind"];
   // Stop origin snapshotted at emit time (additive; see the event schema).

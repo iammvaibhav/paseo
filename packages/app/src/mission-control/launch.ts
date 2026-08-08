@@ -48,6 +48,9 @@ export const COMMANDER_TOOL_ALLOWLIST = [
   "fleet_get_agent_activity",
   "fleet_search",
   "tag_message",
+  "clarify",
+  "post_answer",
+  "fleet_meta",
 ] as const;
 
 interface CommanderModelMemory {

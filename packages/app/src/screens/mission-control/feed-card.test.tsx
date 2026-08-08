@@ -18,7 +18,8 @@ const { liveAgent, theme, openInspectorAgentMock } = vi.hoisted(() => ({
     spacing: { 1: 4, 2: 8, 3: 12, 4: 16 },
     borderRadius: { none: 0, sm: 2, md: 6, full: 9999 },
     borderWidth: { 0: 0, 1: 1, 2: 2 },
-    fontFamily: { ui: "system-ui" },
+    fontFamily: { ui: "system-ui", code: "monospace" },
+    fontWeight: { normal: "400", medium: "500", semibold: "600" },
     fontSize: { xs: 12, sm: 14 },
     colors: {
       accent: "#20744a",
@@ -53,6 +54,7 @@ vi.mock("lucide-react-native", () => {
   return {
     BadgeCheck: icon("BadgeCheck"),
     Bot: icon("Bot"),
+    ChevronDown: icon("ChevronDown"),
     CircleCheck: icon("CircleCheck"),
     CircleSlash: icon("CircleSlash"),
     CircleX: icon("CircleX"),
@@ -60,7 +62,10 @@ vi.mock("lucide-react-native", () => {
     Flag: icon("Flag"),
     GitBranch: icon("GitBranch"),
     GitFork: icon("GitFork"),
+    HelpCircle: icon("HelpCircle"),
     LoaderCircle: icon("LoaderCircle"),
+    MessageSquare: icon("MessageSquare"),
+    MessageSquareText: icon("MessageSquareText"),
     Rocket: icon("Rocket"),
     Search: icon("Search"),
     Send: icon("Send"),
@@ -109,7 +114,10 @@ vi.mock("@/components/ui/status-badge", () => ({
   StatusBadge: ({ label }: { label: string }) => <span>{label}</span>,
 }));
 vi.mock("@/components/ui/switch", () => ({ Switch: () => <input type="checkbox" /> }));
-vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock("react-i18next", () => ({
+  useTranslation: () => ({ t: (key: string) => key }),
+  initReactI18next: { type: "3rdParty", init: () => {} },
+}));
 vi.mock("./proofs/proof-sections", () => ({ ProofSections: () => null }));
 
 vi.stubGlobal("React", React);
@@ -645,5 +653,178 @@ describe("FeedCard verdict drill-in", () => {
       serverId: "server-1",
       agentId: "worker-1",
     });
+  });
+});
+describe("Proposal Card v2, ClarificationCard, and AnswerCard", () => {
+  let root: Root | null = null;
+  let container: HTMLElement | null = null;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root?.unmount());
+    container?.remove();
+    root = null;
+    container = null;
+  });
+
+  it("renders raw payload JSON in verbose mode and hides it in normal mode", () => {
+    const proposalEvent = event({
+      kind: "proposal",
+      headline: "Proposal (commander): spawn",
+      proposal: {
+        id: "proposal-v2-payload",
+        createdAt: new Date().toISOString(),
+        origin: "commander",
+        serverId: "server-1",
+        targetAgentId: "agent-1",
+        message: "Spawn agent",
+        deliveryMode: "interrupt",
+        reason: "User requested worker",
+        classification: "normal",
+        status: "pending",
+        kind: "spawn",
+        spawnPlan: {
+          provider: "anthropic",
+          model: "claude-3-5-sonnet",
+          summary: "Spawn new worker",
+        },
+      },
+    });
+
+    act(() => root?.render(<FeedCard event={proposalEvent} verbose={false} />));
+    expect(container?.querySelector('[data-testid="mission-control-proposal-payload"]')).toBeNull();
+
+    act(() => root?.render(<FeedCard event={proposalEvent} verbose={true} />));
+    const payloadEl = container?.querySelector('[data-testid="mission-control-proposal-payload"]');
+    expect(payloadEl).not.toBeNull();
+    expect(payloadEl?.textContent).toContain("proposal-v2-payload");
+  });
+
+  it("renders meta proposal summaries, model line, and plan chips", () => {
+    const metaEvent = event({
+      kind: "proposal",
+      proposal: {
+        id: "proposal-meta-1",
+        createdAt: new Date().toISOString(),
+        origin: "commander",
+        serverId: "server-1",
+        targetAgentId: "agent-1",
+        message: "Meta action",
+        deliveryMode: "interrupt",
+        reason: "Renaming workspace",
+        classification: "normal",
+        status: "pending",
+        kind: "meta",
+        metaPlan: {
+          action: "rename_workspace",
+          targetLabel: "OldWorkspace",
+          newValue: "NewWorkspace",
+        },
+      },
+    });
+
+    act(() => root?.render(<FeedCard event={metaEvent} />));
+    const card = container?.querySelector('[data-testid="mission-control-proposal-card"]');
+    expect(card).not.toBeNull();
+    expect(card?.textContent).toContain("missionControl.proposal.meta.renameWorkspace");
+
+    const spawnEvent = event({
+      kind: "proposal",
+      proposal: {
+        id: "proposal-spawn-1",
+        createdAt: new Date().toISOString(),
+        origin: "commander",
+        serverId: "server-1",
+        targetAgentId: "agent-1",
+        message: "Spawn worker",
+        deliveryMode: "interrupt",
+        reason: "New project spawn",
+        classification: "normal",
+        status: "pending",
+        kind: "spawn",
+        spawnPlan: {
+          provider: "anthropic",
+          model: "claude-3-5-sonnet",
+          summary: "Create worker agent for backend",
+          labels: {
+            newProject: "BackendAPI",
+          },
+        },
+      },
+    });
+
+    act(() => root?.render(<FeedCard event={spawnEvent} />));
+    const spawnCard = container?.querySelector('[data-testid="mission-control-proposal-card"]');
+    expect(spawnCard?.textContent).toContain("Create worker agent for backend");
+    expect(
+      spawnCard?.querySelector('[data-testid="mission-control-proposal-model"]'),
+    ).not.toBeNull();
+    expect(
+      spawnCard?.querySelector('[data-testid="mission-control-proposal-chips"]'),
+    ).not.toBeNull();
+  });
+
+  it("renders clarification card with question and options", () => {
+    const clarificationEvent = event({
+      kind: "clarification",
+      clarification: {
+        question: "Which workspace should be updated?",
+        options: ["workspace-a", "workspace-b"],
+        allowFreeText: true,
+      },
+    });
+
+    act(() => root?.render(<FeedCard event={clarificationEvent} />));
+    const card = container?.querySelector('[data-testid="mission-control-clarification-card"]');
+    expect(card).not.toBeNull();
+    const question = container?.querySelector(
+      '[data-testid="mission-control-clarification-question"]',
+    );
+    expect(question?.textContent).toBe("Which workspace should be updated?");
+  });
+
+  it("renders answer card for agent_status and generic kinds", () => {
+    const statusAnswerEvent = event({
+      kind: "answer",
+      answer: {
+        kind: "agent_status",
+        headline: "Agent worker-1 is idle",
+        body: "Completed all assigned tasks.",
+        fields: [{ label: "Status", value: "idle" }],
+      },
+    });
+
+    act(() => root?.render(<FeedCard event={statusAnswerEvent} />));
+    const card = container?.querySelector('[data-testid="mission-control-answer-card"]');
+    expect(card).not.toBeNull();
+    expect(
+      container?.querySelector('[data-testid="mission-control-answer-headline"]')?.textContent,
+    ).toBe("Agent worker-1 is idle");
+    expect(
+      container?.querySelector('[data-testid="mission-control-answer-body"]')?.textContent,
+    ).toBe("Completed all assigned tasks.");
+    expect(
+      container?.querySelector('[data-testid="mission-control-answer-fields"]'),
+    ).not.toBeNull();
+
+    const genericAnswerEvent = event({
+      kind: "answer",
+      answer: {
+        kind: "generic",
+        headline: "Fleet Overview",
+        body: "All systems operational.",
+      },
+    });
+
+    act(() => root?.render(<FeedCard event={genericAnswerEvent} />));
+    expect(container?.querySelector('[data-testid="mission-control-answer-card"]')).not.toBeNull();
+    expect(
+      container?.querySelector('[data-testid="mission-control-answer-headline"]')?.textContent,
+    ).toBe("Fleet Overview");
   });
 });

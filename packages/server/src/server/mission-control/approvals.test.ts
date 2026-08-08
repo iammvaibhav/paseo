@@ -556,6 +556,25 @@ describe("MissionControlApprovals ask-mode gating per action class", () => {
           label: "Commander -> worker send (fleet_send_prompt)",
           input: baseInput({ origin: "commander", targetAgentId: "worker-2" }),
         },
+        {
+          label: "Commander meta action (fleet_meta rename)",
+          input: baseInput({
+            origin: "commander",
+            targetAgentId: "",
+            kind: "meta",
+            metaPlan: { action: "rename_project", targetId: "prj_x", newValue: "payments" },
+          }),
+        },
+        {
+          label: "Commander meta action (fleet_meta archive — destructive)",
+          input: baseInput({
+            origin: "commander",
+            targetAgentId: "",
+            classification: "destructive",
+            kind: "meta",
+            metaPlan: { action: "archive_workspace", targetId: "wks_x" },
+          }),
+        },
       ];
 
       const statuses = new Map<string, string>();
@@ -692,6 +711,210 @@ describe("MissionControlApprovals ask-mode gating per action class", () => {
         baseInput({ origin: "commander", classification: "destructive" }),
       );
       expect(destructive.status).toBe("pending");
+    } finally {
+      await teardown(harness);
+    }
+  });
+});
+
+// ============================================================================
+// M4 meta-kind proposals: the Commander's fleet_meta actions (rename/archive
+// project·workspace·agent, create project, move agent, promote workspace)
+// ride the gate as kind "meta" proposals carrying a metaPlan. Same gate
+// contract as spawn: ask mode holds the card, auto mode applies immediately,
+// destructive (archive) always asks. Approve (or auto mode) executes through
+// the applyMeta hook — never a message delivery.
+// ============================================================================
+
+describe("MissionControlApprovals meta kind", () => {
+  const metaInput = (overrides: Partial<ProposalCreateInput> = {}): ProposalCreateInput =>
+    baseInput({
+      origin: "commander",
+      targetAgentId: "",
+      message: "Rename workspace wks_a to payments",
+      kind: "meta",
+      metaPlan: {
+        action: "rename_workspace",
+        targetId: "wks_a",
+        newValue: "payments",
+      },
+      ...overrides,
+    });
+
+  test("ask mode holds the meta proposal pending; applyMeta never runs and nothing delivers", async () => {
+    const harness = await build({ mode: "ask" });
+    try {
+      const applied: MissionControlProposal[] = [];
+      harness.approvals = new MissionControlApprovals({
+        store: harness.store,
+        presence: harness.presence,
+        logger: createTestLogger(),
+        getMode: () => harness.mode,
+        deliver: async (input) => {
+          harness.delivered.push(input);
+        },
+        publishProposalEvent: async (proposal) => {
+          harness.published.push(proposal);
+          return { id: `mce_${harness.published.length}` };
+        },
+        applyMeta: async (proposal) => {
+          applied.push(proposal);
+          return { ok: true };
+        },
+      });
+      const proposal = await harness.approvals.createProposal(metaInput());
+      expect(proposal.status).toBe("pending");
+      expect(proposal.kind).toBe("meta");
+      expect(proposal.metaPlan).toMatchObject({ action: "rename_workspace" });
+      expect(harness.delivered).toHaveLength(0);
+      expect(applied).toHaveLength(0);
+      // The record survives the gate (store round-trip keeps the metaPlan).
+      expect(harness.approvals.getProposal(proposal.id)?.metaPlan).toEqual(proposal.metaPlan);
+    } finally {
+      await teardown(harness);
+    }
+  });
+
+  test("approve applies the meta action through applyMeta and records sent", async () => {
+    const harness = await build({ mode: "ask" });
+    try {
+      const applied: MissionControlProposal[] = [];
+      harness.approvals = new MissionControlApprovals({
+        store: harness.store,
+        presence: harness.presence,
+        logger: createTestLogger(),
+        getMode: () => harness.mode,
+        deliver: async (input) => {
+          harness.delivered.push(input);
+        },
+        publishProposalEvent: async (proposal) => {
+          harness.published.push(proposal);
+          return { id: `mce_${harness.published.length}` };
+        },
+        applyMeta: async (proposal) => {
+          applied.push(proposal);
+          return { ok: true };
+        },
+      });
+      const proposal = await harness.approvals.createProposal(metaInput());
+      const result = await harness.approvals.resolveProposal({
+        proposalId: proposal.id,
+        action: "approve",
+      });
+      expect(result).toEqual({ ok: true });
+      expect(applied).toHaveLength(1);
+      expect(applied[0].metaPlan).toEqual(proposal.metaPlan);
+      expect(harness.delivered).toHaveLength(0); // meta never "delivers" a message
+      expect(harness.approvals.getProposal(proposal.id)?.status).toBe("sent");
+      expect(harness.published.map((p) => p.status)).toEqual(["pending", "sent"]);
+    } finally {
+      await teardown(harness);
+    }
+  });
+
+  test("auto mode applies the meta action immediately via applyMeta", async () => {
+    const harness = await build({ mode: "auto" });
+    try {
+      const applied: MissionControlProposal[] = [];
+      harness.approvals = new MissionControlApprovals({
+        store: harness.store,
+        presence: harness.presence,
+        logger: createTestLogger(),
+        getMode: () => harness.mode,
+        deliver: async (input) => {
+          harness.delivered.push(input);
+        },
+        publishProposalEvent: async (proposal) => {
+          harness.published.push(proposal);
+          return { id: `mce_${harness.published.length}` };
+        },
+        applyMeta: async (proposal) => {
+          applied.push(proposal);
+          return { ok: true };
+        },
+      });
+      const proposal = await harness.approvals.createProposal(metaInput());
+      expect(proposal.status).toBe("sent");
+      expect(applied).toHaveLength(1);
+      expect(applied[0].metaPlan?.action).toBe("rename_workspace");
+      expect(harness.delivered).toHaveLength(0);
+      expect(harness.published.map((p) => p.status)).toEqual(["sent"]);
+    } finally {
+      await teardown(harness);
+    }
+  });
+
+  test("destructive meta classification (archive) always asks, even in auto mode", async () => {
+    const harness = await build({ mode: "auto" });
+    try {
+      const applied: MissionControlProposal[] = [];
+      harness.approvals = new MissionControlApprovals({
+        store: harness.store,
+        presence: harness.presence,
+        logger: createTestLogger(),
+        getMode: () => harness.mode,
+        deliver: async (input) => {
+          harness.delivered.push(input);
+        },
+        publishProposalEvent: async (proposal) => {
+          harness.published.push(proposal);
+          return { id: `mce_${harness.published.length}` };
+        },
+        applyMeta: async (proposal) => {
+          applied.push(proposal);
+          return { ok: true };
+        },
+      });
+      const proposal = await harness.approvals.createProposal(
+        metaInput({
+          classification: "destructive",
+          metaPlan: { action: "archive_agent", targetId: "agent-9" },
+        }),
+      );
+      expect(proposal.status).toBe("pending");
+      expect(applied).toHaveLength(0);
+      expect(harness.delivered).toHaveLength(0);
+    } finally {
+      await teardown(harness);
+    }
+  });
+
+  test("meta approval in ask mode also waits (gated per action class)", async () => {
+    const harness = await build({ mode: "ask" });
+    try {
+      const proposal = await harness.approvals.createProposal(metaInput());
+      expect(proposal.status).toBe("pending");
+      expect(harness.delivered).toHaveLength(0);
+    } finally {
+      await teardown(harness);
+    }
+  });
+
+  test("applyMeta failures never bounce a resolved proposal back to pending", async () => {
+    const harness = await build({ mode: "auto" });
+    try {
+      harness.approvals = new MissionControlApprovals({
+        store: harness.store,
+        presence: harness.presence,
+        logger: createTestLogger(),
+        getMode: () => harness.mode,
+        deliver: async (input) => {
+          harness.delivered.push(input);
+        },
+        publishProposalEvent: async (proposal) => {
+          harness.published.push(proposal);
+          return { id: `mce_${harness.published.length}` };
+        },
+        applyMeta: async () => ({ ok: false as const, error: "workspace not found" }),
+      });
+      const proposal = await harness.approvals.createProposal(metaInput());
+      // The caller sees "sent" (the auto-mode contract), but the proposal is
+      // never recorded as applied: the store holds NO record (the action did
+      // not run, so it must never read as applied/sent). Same contract as the
+      // spawn hook.
+      expect(proposal.status).toBe("sent");
+      expect(harness.approvals.getProposal(proposal.id)).toBeNull();
+      expect(harness.delivered).toHaveLength(0);
     } finally {
       await teardown(harness);
     }

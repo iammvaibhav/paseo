@@ -106,7 +106,13 @@ import type { BrowserToolsBroker } from "../../browser-tools/broker.js";
 import { buildPeerUnreachableError, type PeerManager } from "../../peers/peer-manager.js";
 import { MissionControlSearchMatchSchema } from "@getpaseo/protocol/mission-control/types";
 import type { MissionControlProposalSpawnPlan } from "@getpaseo/protocol/mission-control/types";
+import { MissionControlMetaPlanSchema } from "@getpaseo/protocol/mission-control/types";
+import type { MissionControlMetaPlan } from "@getpaseo/protocol/mission-control/types";
 import { hasMissionControlLabels } from "../../mission-control/naming.js";
+import {
+  classifyFleetMetaAction,
+  buildFleetMetaProposalInput,
+} from "../../mission-control/fleet-meta.js";
 import {
   MISSION_CONTROL_LABEL_KEY,
   MISSION_CONTROL_LABEL_VALUE,
@@ -125,6 +131,8 @@ import type { MissionControlService } from "../../mission-control/service.js";
 import type { MissionControlVerifierDispatcher } from "../../mission-control/verifier.js";
 import { MissionControlReportStatusInputSchema } from "@getpaseo/protocol/mission-control/types";
 import type { MissionControlEvent } from "@getpaseo/protocol/mission-control/types";
+import type { MissionControlProposal } from "@getpaseo/protocol/mission-control/types";
+import type { ProposalCreateInput } from "../../mission-control/approvals.js";
 import type {
   PaseoToolCatalog,
   PaseoToolConfig,
@@ -872,27 +880,22 @@ interface CommanderSpawnProposalInput {
     thinkingOptionId?: string;
     features?: Record<string, unknown>;
   };
-  missionControlService: MissionControlService;
-  agentManager: AgentManager;
-  agentStorage: AgentStorage;
 }
 
 /**
- * Ask-mode gate for fleet_create_agent (Commander caller): the spawn becomes
- * a spawn-kind proposal whose card shows what would be created (host,
- * provider/model, brief); approving (or auto mode) executes the spawn via the
- * approvals spawn hook. Returns the structured content describing the outcome
- * — pending approval, an already-spawned agent, or sent.
+ * The proposal payload for a Commander spawn (fleet_create_agent): kind
+ * "spawn" whose card shows what would be created (host, provider/model,
+ * brief); approving (or auto mode) executes the spawn via the approvals spawn
+ * hook. Pure builder — the approval gate decides ask-vs-auto; the caller
+ * routes through runCommanderGatedAction.
  */
-async function buildCommanderSpawnProposalContent(
-  input: CommanderSpawnProposalInput,
-): Promise<Record<string, unknown>> {
+function buildCommanderSpawnProposalInput(input: CommanderSpawnProposalInput): ProposalCreateInput {
   const { host, provider, settings, title, initialPrompt, cwd, workspaceId, labels } = input;
   const slash = provider.indexOf("/");
   const model = slash > 0 ? provider.slice(slash + 1) : (settings?.model ?? undefined);
   const cleanProvider = slash > 0 ? provider.slice(0, slash) : provider;
   const summary = `Spawn ${title ?? "an agent"} (${provider}) on ${host}`;
-  const proposal = await input.missionControlService.approvals.createProposal({
+  return {
     origin: "commander",
     serverId: input.serverId,
     targetAgentId: "",
@@ -913,7 +916,21 @@ async function buildCommanderSpawnProposalContent(
       settings,
       labels,
     }),
-  });
+  };
+}
+
+/**
+ * Post-process a resolved spawn proposal into the fleet_create_agent tool's
+ * structured content: pending-approval, an already-spawned agent (auto mode
+ * — the spawn hook created it), or sent.
+ */
+async function formatSpawnProposalOutcome(input: {
+  proposal: MissionControlProposal;
+  agentManager: AgentManager;
+  agentStorage: AgentStorage;
+}): Promise<Record<string, unknown>> {
+  const { proposal, agentManager, agentStorage } = input;
+  const cleanProvider = proposal.spawnPlan?.provider ?? "unknown";
   if (proposal.status === "pending") {
     return {
       agentId: null,
@@ -925,8 +942,8 @@ async function buildCommanderSpawnProposalContent(
   // Auto mode: the spawn hook already created the agent.
   if (proposal.spawnedAgentId) {
     const spawned =
-      input.agentManager.getAgent(proposal.spawnedAgentId) ??
-      (await input.agentStorage.get(proposal.spawnedAgentId));
+      agentManager.getAgent(proposal.spawnedAgentId) ??
+      (await agentStorage.get(proposal.spawnedAgentId));
     if (spawned) {
       return {
         agentId: spawned.id,
@@ -976,6 +993,59 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
    */
   const isCommanderCaller =
     callerLabels?.[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE;
+
+  /**
+   * M4: the single approval-gate wrap point for mutating Commander tools.
+   * Every side-effectful Commander action (spawn, send, meta — fleet_create_agent,
+   * fleet_send_prompt, fleet_meta) routes its Commander-caller path through
+   * here: the tool declares itself mutating by supplying a proposal payload
+   * builder, and the gate decides — ask mode holds the card pending, auto
+   * mode approves and records, and destructive classification always asks
+   * (the existing approvals predicate). Non-Commander callers are untouched
+   * (workers spawning subagents use the plain create_agent path). Returns the
+   * resolved proposal so the caller can describe the outcome (pending vs
+   * sent); { ok: false } when the caller is not the Commander or Mission
+   * Control is not enabled.
+   */
+  const runCommanderGatedAction = async (action: {
+    /** Tool name for error messages (e.g. "fleet_meta"). */
+    toolName: string;
+    /** The parsed tool input, forwarded to classify + buildProposal. */
+    toolInput: unknown;
+    /**
+     * Destructive classification hook. Defaults to "normal"; a tool that can
+     * destroy fleet state (fleet_meta archive actions) classifies here so
+     * the gate always asks, even in auto mode. The returned classification
+     * is authoritative over the builder's.
+     */
+    classify?: (toolInput: unknown) => "normal" | "destructive";
+    /** Build the ProposalCreateInput the gate decides on. */
+    buildProposal: (toolInput: unknown) => Promise<ProposalCreateInput> | ProposalCreateInput;
+  }): Promise<{ ok: true; proposal: MissionControlProposal } | { ok: false; error: string }> => {
+    const { toolName, toolInput, classify, buildProposal } = action;
+    if (!isCommanderCaller) {
+      return { ok: false, error: `${toolName} requires a Commander caller` };
+    }
+    if (!missionControlService) {
+      return { ok: false, error: "Mission Control is not enabled on this host" };
+    }
+    try {
+      const proposalInput = await buildProposal(toolInput);
+      const proposal = await missionControlService.approvals.createProposal({
+        ...proposalInput,
+        // The tool's destructive classification (when it declares one) is
+        // authoritative; otherwise the builder's classification stands.
+        classification: classify?.(toolInput) ?? proposalInput.classification ?? "normal",
+      });
+      return { ok: true, proposal };
+    } catch (error) {
+      childLogger.warn(
+        { err: error, component: "approvals", tool: toolName },
+        "mission_control.commander_gated_action_failed",
+      );
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  };
 
   const parseToolInput = async (tool: PaseoToolDefinition, input: unknown): Promise<unknown> => {
     const inputSchema = tool.inputSchema;
@@ -4010,17 +4080,27 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         // proposal whose card shows what would be created (host, provider/
         // model, brief); approving (or auto mode) executes the spawn via the
         // approvals spawn hook (bootstrap spawnFromProposal).
-        const structuredContent = await buildCommanderSpawnProposalContent({
-          serverId: serverId ?? "",
-          host,
-          provider,
-          title,
-          initialPrompt,
-          cwd,
-          workspaceId,
-          labels,
-          settings,
-          missionControlService,
+        const gated = await runCommanderGatedAction({
+          toolName: "fleet_create_agent",
+          toolInput: args,
+          buildProposal: () =>
+            buildCommanderSpawnProposalInput({
+              serverId: serverId ?? "",
+              host,
+              provider,
+              title,
+              initialPrompt,
+              cwd,
+              workspaceId,
+              labels,
+              settings,
+            }),
+        });
+        if (!gated.ok) {
+          throw new Error(gated.error);
+        }
+        const structuredContent = await formatSpawnProposalOutcome({
+          proposal: gated.proposal,
           agentManager,
           agentStorage,
         });
@@ -4380,16 +4460,24 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         // Ask-mode gate (user decision: everything gated except the nudge).
         // The send becomes a proposal; auto mode delivers immediately via the
         // approvals module, ask mode waits for Approve/Edit/Deny.
-        const proposal = await missionControlService.approvals.createProposal({
-          origin: "commander",
-          serverId: serverId ?? "",
-          targetAgentId: agentId,
-          message: prompt,
-          deliveryMode: effectiveMode,
-          reason: "Commander send",
-          classification: "normal",
-          timelineClassification: "instruction",
+        const gated = await runCommanderGatedAction({
+          toolName: "fleet_send_prompt",
+          toolInput: { host, agentId, prompt, mode, attachments },
+          buildProposal: () => ({
+            origin: "commander",
+            serverId: serverId ?? "",
+            targetAgentId: agentId,
+            message: prompt,
+            deliveryMode: effectiveMode,
+            reason: "Commander send",
+            classification: "normal",
+            timelineClassification: "instruction",
+          }),
         });
+        if (!gated.ok) {
+          throw new Error(gated.error);
+        }
+        const proposal = gated.proposal;
         if (proposal.status === "pending") {
           return {
             content: [],
@@ -4438,6 +4526,89 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       return {
         content: [],
         structuredContent: ensureValidJson({ success: true, deliveryMode: effectiveMode }),
+      };
+    },
+  );
+
+  registerTool(
+    "fleet_meta",
+    {
+      title: "Fleet meta actions",
+      description:
+        "Apply a fleet meta action: rename/archive a project, workspace, or agent (agent TITLE only — names are " +
+        "permanent), create a project, move an agent to another workspace, or promote an experiment workspace " +
+        "(a workspace in the per-host experiments project) to its own project. " +
+        "Every action routes through the approval gate — archive actions always ask, even in auto mode. " +
+        "metaPlan: { action, serverId?, targetId?, targetLabel?, newValue?, destination? }. " +
+        'serverId names the host the action applies to ("local" or a peer name); destination is the target ' +
+        "workspace id for move_agent/promote_workspace and the project root path for create_project.",
+      inputSchema: {
+        metaPlan: MissionControlMetaPlanSchema,
+      },
+      outputSchema: {
+        ok: z.boolean(),
+        status: z.enum(["pending", "sent"]).optional(),
+        proposalId: z.string().optional(),
+        guidance: z.string().optional(),
+        error: z.string().optional(),
+      },
+    },
+    async (args: { metaPlan: MissionControlMetaPlan }) => {
+      if (!isCommanderCaller || !missionControlService) {
+        throw new Error("fleet_meta requires a Commander caller");
+      }
+      // M5: ask-mode gate (user decision: everything gated except the nudge).
+      // The meta action becomes a meta-kind proposal whose card shows what
+      // would change; approving (or auto mode — except destructive archives,
+      // which always ask) applies it via the metaFromProposal hook. args is
+      // schema-validated at the tool boundary (inputSchema), so classify and
+      // buildProposal close over the typed value.
+      const metaWorkspaceRegistry = options.workspaceRegistry;
+      const metaProjectRegistry = options.projectRegistry;
+      if (!metaWorkspaceRegistry || !metaProjectRegistry) {
+        throw new Error(
+          "fleet_meta is unavailable: workspace/project registries are not configured on this daemon",
+        );
+      }
+      const gated = await runCommanderGatedAction({
+        toolName: "fleet_meta",
+        toolInput: args,
+        classify: () => classifyFleetMetaAction(args.metaPlan),
+        buildProposal: () =>
+          buildFleetMetaProposalInput({
+            serverId: serverId ?? "",
+            metaPlan: args.metaPlan,
+            lookup: {
+              agentManager,
+              agentStorage,
+              workspaceRegistry: metaWorkspaceRegistry,
+              projectRegistry: metaProjectRegistry,
+            },
+          }),
+      });
+      if (!gated.ok) {
+        throw new Error(gated.error);
+      }
+      const proposal = gated.proposal;
+      if (proposal.status === "pending") {
+        return {
+          content: [],
+          structuredContent: ensureValidJson({
+            ok: true,
+            status: "pending",
+            proposalId: proposal.id,
+            guidance: `Meta action sent for approval (proposal ${proposal.id}). It will be applied once approved.`,
+          }),
+        };
+      }
+      return {
+        content: [],
+        structuredContent: ensureValidJson({
+          ok: true,
+          status: "sent",
+          proposalId: proposal.id,
+          guidance: `Meta action applied (proposal ${proposal.id}).`,
+        }),
       };
     },
   );
@@ -4493,6 +4664,181 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       return {
         content: [],
         structuredContent: ensureValidJson({ recorded: true }),
+      };
+    },
+  );
+
+  // M4 Commander interaction cards: clarify and post_answer are the ONLY ways
+  // the Commander speaks to the user besides proposals and direct replies.
+  // Registered unconditionally and gated like the fleet_* tools — the
+  // Commander's toolAllowlist (commander-contract.ts) hands them to the
+  // Commander session and nothing else, and the handler rejects non-Commander
+  // callers. They are NOT approval-gated: a clarification or answer card is a
+  // card TO the user, never a side effect on the fleet. The user's response
+  // to a clarification arrives as a normal user message; there is no
+  // response RPC.
+  registerTool(
+    "clarify",
+    {
+      title: "Ask the user a structured question",
+      description:
+        "Ask the user a question with discrete options (and optional free text) when you cannot " +
+        "resolve which agent, workspace, or project they mean, or when the missing fact is one only " +
+        "they know (user-private or consequential). Renders as a clarification card with the options " +
+        "as buttons; their choice comes back as a normal user message. NEVER ask what the snapshot " +
+        "or a fleet tool can answer. One question per card: pick the single decision that blocks " +
+        "dispatch.",
+      inputSchema: {
+        question: z
+          .string()
+          .trim()
+          .min(1, "question is required")
+          .max(500, "question must be at most 500 characters")
+          .describe(
+            "The single decision needed, phrased as a question the user can answer in one tap.",
+          ),
+        options: z
+          .array(z.string().trim().min(1).max(120))
+          .min(1)
+          .max(8)
+          .describe(
+            "Discrete answers (2-8). Each must be self-explanatory — the user taps without reading " +
+              "extra context.",
+          ),
+        allowFreeText: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Allow a free-text answer in addition to the options (true only when no option set can " +
+              "cover the answer space).",
+          ),
+      },
+      outputSchema: {
+        ok: z.boolean(),
+        eventId: z.string().optional(),
+      },
+    },
+    async (input: { question: string; options: string[]; allowFreeText: boolean }) => {
+      if (!isCommanderCaller) {
+        throw new Error("clarify requires a Commander caller");
+      }
+      if (!missionControlService) {
+        throw new Error("Mission Control is not enabled on this host");
+      }
+      const event = await missionControlService.emitCommanderCard({
+        kind: "clarification",
+        headline: input.question,
+        clarification: {
+          question: input.question,
+          options: input.options,
+          allowFreeText: input.allowFreeText,
+        },
+      });
+      if (!event) {
+        throw new Error("No Commander to attribute the clarification card to");
+      }
+      childLogger.info(
+        { component: "commander-card", eventId: event.id, kind: "clarification" },
+        "mission_control.commander_card.clarification",
+      );
+      return {
+        content: [],
+        structuredContent: ensureValidJson({ ok: true, eventId: event.id }),
+      };
+    },
+  );
+
+  registerTool(
+    "post_answer",
+    {
+      title: "Post a structured fleet answer",
+      description:
+        'Answer a fleet question as a structured answer card. Use kind "agent_status" when the ' +
+        "question is about a specific agent (renders name, host chip, state, last report, proofs — " +
+        'native feed-card components); use kind "generic" with optional labeled fields for ' +
+        "everything else, and free text only when the answer genuinely has no structure. Answer " +
+        "from the world snapshot and fleet tools, never from memory of old digests. One answer per " +
+        "call; multi-part answers get one card per question.",
+      inputSchema: {
+        kind: z
+          .enum(["agent_status", "generic"])
+          .describe(
+            "agent_status: about one agent (renders the agent's feed-card identity). generic: any " +
+              "other structured answer.",
+          ),
+        agentId: z
+          .string()
+          .optional()
+          .describe("The agent the answer is about; required when kind is agent_status."),
+        headline: z
+          .string()
+          .trim()
+          .min(1, "headline is required")
+          .max(120, "headline must be at most 120 characters")
+          .describe("One-line answer headline, plain language, no markdown."),
+        body: z
+          .string()
+          .optional()
+          .describe(
+            "Optional detail (1-3 sentences). Free text only when the answer has no structure; " +
+              "prefer fields.",
+          ),
+        fields: z
+          .array(
+            z.object({
+              label: z.string().trim().min(1).max(60),
+              value: z.string().trim().min(1).max(400),
+            }),
+          )
+          .max(12)
+          .optional()
+          .describe(
+            "Optional labeled rows (state, host, last report, proofs, dates...). Label the value, " +
+              "never paste raw ids.",
+          ),
+      },
+      outputSchema: {
+        ok: z.boolean(),
+        eventId: z.string().optional(),
+      },
+    },
+    async (input: {
+      kind: "agent_status" | "generic";
+      agentId?: string;
+      headline: string;
+      body?: string;
+      fields?: Array<{ label: string; value: string }>;
+    }) => {
+      if (!isCommanderCaller) {
+        throw new Error("post_answer requires a Commander caller");
+      }
+      if (!missionControlService) {
+        throw new Error("Mission Control is not enabled on this host");
+      }
+      if (input.kind === "agent_status" && !input.agentId) {
+        throw new Error("agentId is required when kind is agent_status");
+      }
+      const event = await missionControlService.emitCommanderCard({
+        kind: "answer",
+        headline: input.headline,
+        answer: {
+          kind: input.kind,
+          ...(input.agentId ? { agentId: input.agentId } : {}),
+          headline: input.headline,
+          ...(input.body ? { body: input.body } : {}),
+          ...(input.fields && input.fields.length > 0 ? { fields: input.fields } : {}),
+        },
+      });
+      if (!event) {
+        throw new Error("No Commander to attribute the answer card to");
+      }
+      childLogger.info(
+        { component: "commander-card", eventId: event.id, kind: "answer" },
+        "mission_control.commander_card.answer",
+      );
+      return {
+        content: [],
+        structuredContent: ensureValidJson({ ok: true, eventId: event.id }),
       };
     },
   );

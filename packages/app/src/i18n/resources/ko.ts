@@ -319,6 +319,45 @@ export const ko: TranslationResources = {
       workspaceArchived:
         "이 에이전트의 워크스페이스가 보관되어 워크스페이스 보기에서 열 수 없습니다.",
     },
+    proposal: {
+      origin: {
+        verifier: "검증자 연락처",
+        commander: "커맨더",
+        stall: "지연 확인",
+      },
+      chips: {
+        project: "프로젝트: {{label}}",
+        workspace: "워크스페이스: {{label}}",
+        agent: "에이전트: {{label}}",
+        newProject: "새 프로젝트: {{label}}",
+        newWorkspace: "새 워크스페이스: {{label}}",
+        newAgent: "새 에이전트: {{label}}",
+      },
+      model: "모델: {{model}}",
+      payload: "페이로드",
+      meta: {
+        renameProject: "프로젝트 이름 변경 {{target}} → {{name}}",
+        renameWorkspace: "워크스페이스 이름 변경 {{target}} → {{name}}",
+        renameAgentTitle: "에이전트 제목 변경 {{target}} → {{name}}",
+        archiveProject: "프로젝트 보관 {{target}}",
+        archiveWorkspace: "워크스페이스 보관 {{target}}",
+        archiveAgent: "에이전트 보관 {{target}}",
+        createProject: "프로젝트 생성 {{target}}",
+        moveAgent: "에이전트 이동 {{target}} → 워크스페이스 {{destination}}",
+        promoteWorkspace: "승격 {{target}} → 프로젝트 {{destination}}",
+      },
+    },
+    clarification: {
+      title: "확인 요청",
+      send: "전송",
+      answerPlaceholder: "답변을 입력하세요...",
+      answered: "답변됨: {{answer}}",
+    },
+    answer: {
+      title: "답변",
+      agentStatus: "에이전트 상태",
+      state: "상태",
+    },
   },
   message: {
     actions: {

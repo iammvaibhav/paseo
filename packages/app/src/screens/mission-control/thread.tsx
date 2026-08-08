@@ -123,6 +123,9 @@ function classifyThreadRow(row: ThreadRow, verbose: boolean): CardRunRowClass {
   if (row.kind !== "event") {
     return "gap";
   }
+  if (row.event.kind === "clarification" || row.event.kind === "answer") {
+    return "card";
+  }
   if (!verbose && isVerboseOnlyProposalEvent(row.event)) {
     return "skip";
   }

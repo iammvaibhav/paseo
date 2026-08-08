@@ -640,6 +640,15 @@ interface AgentMetadataPatch {
   modeId?: string;
   name?: string;
   shortDescription?: string;
+  /**
+   * Workspace this agent belongs to (mission-control move-agent capability).
+   * Re-points a stored record's placement without touching cwd, title, or
+   * name. Never set through updateAgentMetadata — the move path uses the
+   * dedicated `moveAgentWorkspace` method so live and stored records move
+   * together; this patch field exists so `writeStoredMetadata` is the single
+   * stored-record writer for both paths.
+   */
+  workspaceId?: string;
 }
 
 const SYSTEM_ERROR_PREFIX = "[System Error]";
@@ -2214,6 +2223,36 @@ export class AgentManager {
     await this.writeLabels(agent.id, labels);
   }
 
+  /**
+   * Mission-control move-agent capability: re-point a non-archived agent's
+   * workspace placement (workspaceId) to another workspace on this host,
+   * updating the live agent and the persisted record atomically. Refuses
+   * RUNNING agents — workspace attribution is a stable identity while a run
+   * is in flight, so moves require an idle/closed agent (callers stop the
+   * agent first). Refuses archived agents. The name, title, cwd, and every
+   * other identity field are untouched; only workspaceId and updatedAt move.
+   * The live path emits agent state (subscribers see the new placement); the
+   * stored path returns the rewritten record for the caller to emit.
+   */
+  async moveAgentWorkspace(agentId: string, workspaceId: string): Promise<StoredAgentRecord> {
+    const liveAgent = this.agents.get(agentId);
+    if (liveAgent) {
+      if (liveAgent.lifecycle === "running") {
+        throw new Error(`Agent ${agentId} is running; stop it before moving workspaces`);
+      }
+      liveAgent.workspaceId = workspaceId;
+      this.touchUpdatedAt(liveAgent);
+      await this.persistSnapshot(liveAgent);
+      this.emitState(liveAgent, { persist: false });
+      const record = await this.requireRegistry().get(agentId);
+      if (!record) {
+        throw new Error(`Agent not found in storage after move: ${agentId}`);
+      }
+      return record;
+    }
+    return this.writeStoredMetadata(agentId, { workspaceId });
+  }
+
   private async writeLabels(agentId: string, patch: AgentLabelPatch): Promise<WriteLabelsResult> {
     const liveAgent = this.agents.get(agentId);
     if (liveAgent) {
@@ -2276,6 +2315,7 @@ export class AgentManager {
             },
           }
         : {}),
+      ...(patch.workspaceId !== undefined ? { workspaceId: patch.workspaceId } : {}),
       updatedAt: this.nextStoredUpdatedAt(record),
     };
     await registry.upsert(nextRecord);

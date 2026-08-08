@@ -1171,6 +1171,172 @@ describe("agent detach RPC", () => {
   });
 });
 
+describe("agent.workspace.move RPC", () => {
+  test("moves a stored agent and emits the response + agent_update", async () => {
+    const messages: unknown[] = [];
+    const workspaceSource = {
+      workspaceId: "workspace-source",
+      projectId: "project-source",
+      cwd: "/tmp/source",
+      kind: "directory" as const,
+      displayName: "Source",
+      title: null,
+      branch: null,
+      baseBranch: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      archivedAt: null,
+    };
+    const workspaceTarget = {
+      workspaceId: "workspace-target",
+      projectId: "project-target",
+      cwd: "/tmp/target",
+      kind: "directory" as const,
+      displayName: "Target",
+      title: null,
+      branch: null,
+      baseBranch: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      archivedAt: null,
+    };
+    const agentBefore = createStoredAgentRecord({
+      id: "moving-agent",
+      cwd: "/tmp/source",
+      workspaceId: "workspace-source",
+      title: "Moving",
+      name: "glowing-otter",
+    });
+    const agentAfter = createStoredAgentRecord({
+      ...agentBefore,
+      updatedAt: "2026-01-01T00:00:01.000Z",
+      workspaceId: "workspace-target",
+    });
+    const moveAgentWorkspace = vi.fn().mockResolvedValue(agentAfter);
+    const getAgent = vi.fn(() => null);
+
+    const session = createSessionForTest({
+      messages,
+      agentManager: {
+        getAgent,
+        moveAgentWorkspace,
+        getRegisteredProviderIds: vi.fn().mockReturnValue(["codex"]),
+      },
+      agentStorage: {
+        list: vi.fn().mockResolvedValue([]),
+        get: vi.fn().mockResolvedValue(agentBefore),
+      },
+      workspaceRegistry: {
+        get: vi.fn(async (workspaceId: string) =>
+          workspaceId === "workspace-source" ? workspaceSource : workspaceTarget,
+        ),
+        list: vi.fn().mockResolvedValue([workspaceSource, workspaceTarget]),
+      },
+      projectRegistry: {
+        get: vi.fn(async (projectId: string) =>
+          projectId === "project-target"
+            ? {
+                projectId: "project-target",
+                rootPath: "/tmp/target",
+                kind: "directory",
+                displayName: "Target",
+                customName: null,
+                createdAt: "2026-01-01T00:00:00.000Z",
+                updatedAt: "2026-01-01T00:00:00.000Z",
+                archivedAt: null,
+              }
+            : null,
+        ),
+        list: vi.fn().mockResolvedValue([]),
+      },
+    });
+
+    // Subscribe so the agent_update emission path is live.
+    await session.handleMessage({
+      type: "fetch_agents_request",
+      requestId: "subscribe-agents",
+      subscribe: { subscriptionId: "agents-sub" },
+    });
+    messages.splice(0);
+
+    await session.handleMessage({
+      type: "agent.workspace.move.request",
+      agentId: "moving-agent",
+      workspaceId: "workspace-target",
+      requestId: "move-1",
+    });
+
+    expect(getAgent).toHaveBeenCalledWith("moving-agent");
+    expect(moveAgentWorkspace).toHaveBeenCalledWith("moving-agent", "workspace-target");
+    expect(messages).toContainEqual({
+      type: "agent.workspace.move.response",
+      payload: {
+        requestId: "move-1",
+        agentId: "moving-agent",
+        workspaceId: "workspace-target",
+        accepted: true,
+        error: null,
+      },
+    });
+    expect(messages).toContainEqual({
+      type: "agent_update",
+      payload: {
+        kind: "upsert",
+        agent: expect.objectContaining({
+          id: "moving-agent",
+          workspaceId: "workspace-target",
+        }),
+        project: expect.anything(),
+      },
+    });
+  });
+
+  test("refuses a move to a missing workspace and answers accepted:false", async () => {
+    const messages: unknown[] = [];
+    const session = createSessionForTest({
+      messages,
+      agentManager: {
+        getAgent: vi.fn(() => null),
+        moveAgentWorkspace: vi.fn(),
+        getRegisteredProviderIds: vi.fn().mockReturnValue(["codex"]),
+      },
+      agentStorage: {
+        list: vi.fn().mockResolvedValue([]),
+        get: vi.fn().mockResolvedValue(
+          createStoredAgentRecord({
+            id: "moving-agent",
+            cwd: "/tmp/source",
+            workspaceId: "workspace-source",
+            title: "Moving",
+          }),
+        ),
+      },
+      workspaceRegistry: {
+        get: vi.fn().mockResolvedValue(null),
+        list: vi.fn().mockResolvedValue([]),
+      },
+    });
+
+    await session.handleMessage({
+      type: "agent.workspace.move.request",
+      agentId: "moving-agent",
+      workspaceId: "workspace-missing",
+      requestId: "move-2",
+    });
+
+    expect(messages).toContainEqual({
+      type: "agent.workspace.move.response",
+      payload: {
+        requestId: "move-2",
+        agentId: "moving-agent",
+        workspaceId: "workspace-missing",
+        accepted: false,
+        error: "Workspace workspace-missing not found on this host",
+      },
+    });
+  });
+});
+
 function createProjectRecord(rootPath: string, archivedAt: string | null = null) {
   return {
     projectId: `project:${rootPath}`,

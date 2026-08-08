@@ -1317,3 +1317,31 @@ describe("remapLegacyCommanderCreateCwd", () => {
     expect(cwd).toBe(COMMANDER_HOME_CWD);
   });
 });
+
+describe("Commander build-hash contract", () => {
+  test("the tool allowlist pins exactly the nine tools (6 fleet + clarify + post_answer + fleet_meta)", () => {
+    // The hash covers prompt + allowlist, so a tool landing here without the
+    // paseo-tools registration (or vice versa) must fail this pin — the
+    // allowlist is the Commander's full catalog surface.
+    expect([...COMMANDER_TOOL_ALLOWLIST]).toEqual([
+      "fleet_list_agents",
+      "fleet_create_agent",
+      "fleet_send_prompt",
+      "fleet_get_agent_activity",
+      "fleet_search",
+      "tag_message",
+      "clarify",
+      "post_answer",
+      "fleet_meta",
+    ]);
+  });
+
+  test("the build hash derives from prompt + allowlist and is stable for the current build", () => {
+    const hash = computeCommanderBuildHash();
+    // Deterministic: same build, same hash — twice.
+    expect(computeCommanderBuildHash()).toBe(hash);
+    // The hash input includes the shipped prompt (not just the allowlist), so
+    // a contract edit moves the hash and the drift auto-recreate re-spawns.
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+  });
+});

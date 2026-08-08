@@ -633,3 +633,292 @@ describe("fleet_send_prompt mode", () => {
     expect(result.structuredContent).toEqual({ success: true, deliveryMode: "steer" });
   });
 });
+
+// ============================================================================
+// M4: Commander interaction cards (clarify / post_answer) and the generalized
+// approval-gate wrap point (runCommanderGatedAction) that every mutating
+// Commander tool routes through. clarify/post_answer are label-gated to the
+// Commander (registered only for commander-labeled callers) and are NOT
+// approval-gated: they emit feed cards attributed to the Commander, never
+// side effects on the fleet.
+// ============================================================================
+
+/** A minimal MissionControlService stub exposing the M4 card + gate surface. */
+function createMissionControlServiceStub(
+  overrides: Record<string, unknown> = {},
+): MissionControlService {
+  return {
+    emitCommanderCard: vi.fn(async () => ({ id: "mce_card_1" })),
+    getCentralConfig: () => ({ commanderToWorkerMode: "interrupt" }),
+    approvals: {
+      createProposal: vi.fn(),
+    },
+    ...overrides,
+  } as unknown as MissionControlService;
+}
+
+function createCommanderCatalog(input: {
+  missionControlService: MissionControlService;
+  peerManager?: PeerManager;
+  agentManager?: AgentManager;
+}) {
+  return createPaseoToolCatalog({
+    agentManager: input.agentManager ?? ({} as unknown as AgentManager),
+    agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+    providerSnapshotManager: createProviderSnapshotManagerStub()
+      .manager as unknown as ProviderSnapshotManager,
+    peerManager: input.peerManager ?? ({} as unknown as PeerManager),
+    callerAgentId: "commander-1",
+    callerLabels: { "paseo.mission-control": "commander" },
+    serverId: "host-a",
+    missionControlService: input.missionControlService,
+    logger: createTestLogger(),
+  });
+}
+
+describe("clarify tool", () => {
+  test("emits a clarification event with the full payload for the Commander caller", async () => {
+    const missionControlService = createMissionControlServiceStub();
+    const catalog = createCommanderCatalog({ missionControlService });
+    const result = await catalog.executeTool("clarify", {
+      question: "Which workspace should the backtest run in?",
+      options: ["payments (existing)", "experiments (new worktree)"],
+      allowFreeText: true,
+    });
+    expect(result.structuredContent).toEqual({ ok: true, eventId: "mce_card_1" });
+    expect(missionControlService.emitCommanderCard).toHaveBeenCalledWith({
+      kind: "clarification",
+      headline: "Which workspace should the backtest run in?",
+      clarification: {
+        question: "Which workspace should the backtest run in?",
+        options: ["payments (existing)", "experiments (new worktree)"],
+        allowFreeText: true,
+      },
+    });
+  });
+
+  test("rejects non-Commander callers (label-gated like the fleet_* tools)", async () => {
+    const catalog = createPaseoToolCatalog({
+      agentManager: {} as unknown as AgentManager,
+      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+      providerSnapshotManager: createProviderSnapshotManagerStub()
+        .manager as unknown as ProviderSnapshotManager,
+      callerAgentId: "worker-1",
+      missionControlService: createMissionControlServiceStub(),
+      logger: createTestLogger(),
+    });
+    await expect(
+      catalog.executeTool("clarify", { question: "q?", options: ["a"], allowFreeText: false }),
+    ).rejects.toThrow("clarify requires a Commander caller");
+  });
+});
+
+describe("post_answer tool", () => {
+  test("emits an agent_status answer card with fields", async () => {
+    const missionControlService = createMissionControlServiceStub();
+    const catalog = createCommanderCatalog({ missionControlService });
+    const result = await catalog.executeTool("post_answer", {
+      kind: "agent_status",
+      agentId: "worker-1",
+      headline: "worker-1 finished the backtest",
+      fields: [
+        { label: "State", value: "done" },
+        { label: "Proof", value: "PR #12" },
+      ],
+    });
+    expect(result.structuredContent).toEqual({ ok: true, eventId: "mce_card_1" });
+    expect(missionControlService.emitCommanderCard).toHaveBeenCalledWith({
+      kind: "answer",
+      headline: "worker-1 finished the backtest",
+      answer: {
+        kind: "agent_status",
+        agentId: "worker-1",
+        headline: "worker-1 finished the backtest",
+        fields: [
+          { label: "State", value: "done" },
+          { label: "Proof", value: "PR #12" },
+        ],
+      },
+    });
+  });
+
+  test("emits a generic answer card with a body and no agentId", async () => {
+    const missionControlService = createMissionControlServiceStub();
+    const catalog = createCommanderCatalog({ missionControlService });
+    const result = await catalog.executeTool("post_answer", {
+      kind: "generic",
+      headline: "Overnight runs: 3 done, 1 blocked",
+      body: "The blocked run waits on credentials.",
+    });
+    expect(result.structuredContent).toEqual({ ok: true, eventId: "mce_card_1" });
+    expect(missionControlService.emitCommanderCard).toHaveBeenCalledWith({
+      kind: "answer",
+      headline: "Overnight runs: 3 done, 1 blocked",
+      answer: {
+        kind: "generic",
+        headline: "Overnight runs: 3 done, 1 blocked",
+        body: "The blocked run waits on credentials.",
+      },
+    });
+  });
+
+  test("rejects agent_status without an agentId", async () => {
+    const missionControlService = createMissionControlServiceStub();
+    const catalog = createCommanderCatalog({ missionControlService });
+    await expect(
+      catalog.executeTool("post_answer", {
+        kind: "agent_status",
+        headline: "no target",
+      }),
+    ).rejects.toThrow("agentId is required when kind is agent_status");
+    expect(missionControlService.emitCommanderCard).not.toHaveBeenCalled();
+  });
+
+  test("rejects non-Commander callers (label-gated like the fleet_* tools)", async () => {
+    const catalog = createPaseoToolCatalog({
+      agentManager: {} as unknown as AgentManager,
+      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+      providerSnapshotManager: createProviderSnapshotManagerStub()
+        .manager as unknown as ProviderSnapshotManager,
+      callerAgentId: "worker-1",
+      missionControlService: createMissionControlServiceStub(),
+      logger: createTestLogger(),
+    });
+    await expect(
+      catalog.executeTool("post_answer", { kind: "generic", headline: "hi" }),
+    ).rejects.toThrow("post_answer requires a Commander caller");
+  });
+});
+
+describe("approval-gate wrap point (runCommanderGatedAction)", () => {
+  test("fleet_create_agent routes the Commander spawn through approvals.createProposal", async () => {
+    const createProposal = vi.fn(async () => ({
+      id: "mcp_1",
+      status: "pending",
+      kind: "spawn",
+    }));
+    const missionControlService = createMissionControlServiceStub({
+      approvals: { createProposal },
+    });
+    const catalog = createCommanderCatalog({ missionControlService });
+    const result = await catalog.executeTool("fleet_create_agent", {
+      host: "local",
+      provider: "codex/gpt-5.4",
+      initialPrompt: "run the backtest",
+      title: "backtest",
+    });
+    expect(createProposal).toHaveBeenCalledTimes(1);
+    const proposalInput = createProposal.mock.calls[0][0];
+    expect(proposalInput).toMatchObject({
+      origin: "commander",
+      serverId: "host-a",
+      targetAgentId: "",
+      kind: "spawn",
+      classification: "normal",
+    });
+    expect(proposalInput.spawnPlan).toMatchObject({
+      provider: "codex",
+      summary: "Spawn backtest (codex/gpt-5.4) on local",
+    });
+    // Pending card: the tool reports pending-approval, never a spawned agent.
+    expect(result.structuredContent).toMatchObject({
+      agentId: null,
+      status: "pending-approval",
+    });
+  });
+
+  test("fleet_send_prompt routes the Commander send through approvals.createProposal", async () => {
+    const createProposal = vi.fn(async () => ({
+      id: "mcp_2",
+      status: "pending",
+      kind: "send",
+    }));
+    const missionControlService = createMissionControlServiceStub({
+      approvals: { createProposal },
+    });
+    const catalog = createCommanderCatalog({ missionControlService });
+    const result = await catalog.executeTool("fleet_send_prompt", {
+      host: "local",
+      agentId: "worker-1",
+      prompt: "continue the backtest",
+      mode: "steer",
+    });
+    expect(createProposal).toHaveBeenCalledTimes(1);
+    expect(createProposal.mock.calls[0][0]).toMatchObject({
+      origin: "commander",
+      serverId: "host-a",
+      targetAgentId: "worker-1",
+      message: "continue the backtest",
+      deliveryMode: "steer",
+      reason: "Commander send",
+      classification: "normal",
+      timelineClassification: "instruction",
+    });
+    expect(result.structuredContent).toMatchObject({
+      success: false,
+      deliveryMode: "steer",
+    });
+  });
+
+  test("auto-approved sends report success and skip the pending card", async () => {
+    const createProposal = vi.fn(async () => ({
+      id: "mcp_3",
+      status: "sent",
+      kind: "send",
+    }));
+    const missionControlService = createMissionControlServiceStub({
+      approvals: { createProposal },
+    });
+    const catalog = createCommanderCatalog({ missionControlService });
+    const result = await catalog.executeTool("fleet_send_prompt", {
+      host: "local",
+      agentId: "worker-1",
+      prompt: "continue",
+    });
+    expect(result.structuredContent).toEqual({ success: true, deliveryMode: "interrupt" });
+  });
+
+  test("non-Commander callers take the ungated path (gate requires a Commander caller)", async () => {
+    const createProposal = vi.fn();
+    const missionControlService = createMissionControlServiceStub({
+      approvals: { createProposal },
+    });
+    const catalog = createPaseoToolCatalog({
+      agentManager: {} as unknown as AgentManager,
+      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+      providerSnapshotManager: createProviderSnapshotManagerStub()
+        .manager as unknown as ProviderSnapshotManager,
+      callerAgentId: "worker-1",
+      missionControlService,
+      logger: createTestLogger(),
+    });
+    // A worker calling fleet_create_agent on local spawns directly via
+    // create_agent — never a proposal.
+    await expect(
+      catalog.executeTool("fleet_create_agent", {
+        host: "local",
+        provider: "codex/gpt-5.4",
+        initialPrompt: "subtask",
+      }),
+    ).rejects.toThrow();
+    expect(createProposal).not.toHaveBeenCalled();
+  });
+
+  test("gate failures surface as tool errors with the underlying message", async () => {
+    const missionControlService = createMissionControlServiceStub({
+      approvals: {
+        createProposal: vi.fn(async () => {
+          throw new Error("store write failed");
+        }),
+      },
+    });
+    const catalog = createCommanderCatalog({ missionControlService });
+    await expect(
+      catalog.executeTool("fleet_send_prompt", {
+        host: "local",
+        agentId: "worker-1",
+        prompt: "continue",
+      }),
+    ).rejects.toThrow("store write failed");
+  });
+});

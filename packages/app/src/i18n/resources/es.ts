@@ -321,6 +321,45 @@ export const es: TranslationResources = {
       workspaceArchived:
         "El espacio de trabajo de este agente está archivado, por lo que no se puede abrir en la vista de espacio de trabajo.",
     },
+    proposal: {
+      origin: {
+        verifier: "Contacto de verificador",
+        commander: "Comandante",
+        stall: "Comprobación de bloqueo",
+      },
+      chips: {
+        project: "Proyecto: {{label}}",
+        workspace: "Espacio de trabajo: {{label}}",
+        agent: "Agente: {{label}}",
+        newProject: "Nuevo proyecto: {{label}}",
+        newWorkspace: "Nuevo espacio de trabajo: {{label}}",
+        newAgent: "Nuevo agente: {{label}}",
+      },
+      model: "Modelo: {{model}}",
+      payload: "Carga útil",
+      meta: {
+        renameProject: "Renombrar proyecto {{target}} → {{name}}",
+        renameWorkspace: "Renombrar espacio de trabajo {{target}} → {{name}}",
+        renameAgentTitle: "Renombrar título de agente {{target}} → {{name}}",
+        archiveProject: "Archivar proyecto {{target}}",
+        archiveWorkspace: "Archivar espacio de trabajo {{target}}",
+        archiveAgent: "Archivar agente {{target}}",
+        createProject: "Crear proyecto {{target}}",
+        moveAgent: "Mover agente {{target}} → espacio de trabajo {{destination}}",
+        promoteWorkspace: "Promocionar {{target}} → proyecto {{destination}}",
+      },
+    },
+    clarification: {
+      title: "Aclaración",
+      send: "Enviar",
+      answerPlaceholder: "Escribe tu respuesta...",
+      answered: "Respondido: {{answer}}",
+    },
+    answer: {
+      title: "Respuesta",
+      agentStatus: "Estado del agente",
+      state: "Estado",
+    },
   },
   message: {
     actions: {

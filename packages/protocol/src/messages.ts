@@ -1805,6 +1805,30 @@ export const AgentDetachResponseMessageSchema = z.object({
   payload: AgentActionResponsePayloadSchema,
 });
 
+// M5: move an agent record to another workspace on the same host
+// (mission-control fleet_meta move_agent / app move UI). Dotted RPC pair per
+// docs/rpc-namespacing.md; additive, feature-gated via server_info
+// `missionControlV4` (app checks the flag before offering the move UI).
+// Refusals (agent missing/archived/running, workspace missing/archived) come
+// back as `error` — the record is never half-moved.
+export const AgentWorkspaceMoveRequestMessageSchema = z.object({
+  type: z.literal("agent.workspace.move.request"),
+  agentId: z.string().min(1),
+  workspaceId: z.string().min(1),
+  requestId: z.string(),
+});
+
+export const AgentWorkspaceMoveResponseMessageSchema = z.object({
+  type: z.literal("agent.workspace.move.response"),
+  payload: z.object({
+    requestId: z.string(),
+    agentId: z.string(),
+    workspaceId: z.string(),
+    accepted: z.boolean(),
+    error: z.string().nullable(),
+  }),
+});
+
 export const AgentRewindModeSchema = z.enum(["conversation", "files", "both"]);
 
 export const AgentRewindRequestMessageSchema = z.object({
@@ -2917,6 +2941,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   SetAgentFeatureRequestMessageSchema,
   AgentDetachRequestMessageSchema,
   AgentRewindRequestMessageSchema,
+  AgentWorkspaceMoveRequestMessageSchema,
   AgentPermissionResponseMessageSchema,
   CheckoutStatusRequestSchema,
   SubscribeCheckoutDiffRequestSchema,
@@ -3275,6 +3300,10 @@ export const ServerInfoStatusPayloadSchema = z
         // Mission Control v3 (review lifecycle, approval gate, central config).
         // Added 2026-08-08; app gates the v3 screen once on this flag.
         missionControlV3: z.boolean().optional(),
+        // Mission Control v4 (card grammar): meta-kind proposals, clarification
+        // + answer cards, the Commander clarify/post_answer tools. Added
+        // 2026-08-09; app gates the new card renderings once on this flag.
+        missionControlV4: z.boolean().optional(),
         // COMPAT(commitsList): added in v0.1.110, remove gate after 2027-01-16.
         commitsList: z.boolean().optional(),
         // COMPAT(commitBaseClassification): added in v0.2.0, remove gate after 2027-01-23.
@@ -5857,6 +5886,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   AgentDetachResponseMessageSchema,
   AgentRewindResponseMessageSchema,
   UpdateAgentResponseMessageSchema,
+  AgentWorkspaceMoveResponseMessageSchema,
   ProjectRenameResponseSchema,
   ProjectDescriptionSetResponseSchema,
   ProjectIconSetResponseSchema,
@@ -6300,6 +6330,12 @@ export type SetAgentModelRequestMessage = z.infer<typeof SetAgentModelRequestMes
 export type SetAgentThinkingRequestMessage = z.infer<typeof SetAgentThinkingRequestMessageSchema>;
 export type SetAgentFeatureRequestMessage = z.infer<typeof SetAgentFeatureRequestMessageSchema>;
 export type AgentDetachRequestMessage = z.infer<typeof AgentDetachRequestMessageSchema>;
+export type AgentWorkspaceMoveRequestMessage = z.infer<
+  typeof AgentWorkspaceMoveRequestMessageSchema
+>;
+export type AgentWorkspaceMoveResponseMessage = z.infer<
+  typeof AgentWorkspaceMoveResponseMessageSchema
+>;
 export type AgentPermissionResponseMessage = z.infer<typeof AgentPermissionResponseMessageSchema>;
 export type CheckoutStatusRequest = z.infer<typeof CheckoutStatusRequestSchema>;
 export type CheckoutStatusResponse = z.infer<typeof CheckoutStatusResponseSchema>;

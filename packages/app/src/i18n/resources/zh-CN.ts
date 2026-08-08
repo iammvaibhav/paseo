@@ -317,6 +317,45 @@ export const zhCN: TranslationResources = {
       archivedBanner: "已归档",
       workspaceArchived: "此 Agent 的工作区已归档，无法在工作区视图中打开。",
     },
+    proposal: {
+      origin: {
+        verifier: "验证者联系",
+        commander: "指挥官",
+        stall: "停滞检查",
+      },
+      chips: {
+        project: "项目: {{label}}",
+        workspace: "工作区: {{label}}",
+        agent: "Agent: {{label}}",
+        newProject: "新项目: {{label}}",
+        newWorkspace: "新工作区: {{label}}",
+        newAgent: "新 Agent: {{label}}",
+      },
+      model: "模型: {{model}}",
+      payload: "有效载荷",
+      meta: {
+        renameProject: "重命名项目 {{target}} → {{name}}",
+        renameWorkspace: "重命名工作区 {{target}} → {{name}}",
+        renameAgentTitle: "重命名 Agent 标题 {{target}} → {{name}}",
+        archiveProject: "归档项目 {{target}}",
+        archiveWorkspace: "归档工作区 {{target}}",
+        archiveAgent: "归档 Agent {{target}}",
+        createProject: "创建项目 {{target}}",
+        moveAgent: "移动 Agent {{target}} → 工作区 {{destination}}",
+        promoteWorkspace: "提升 {{target}} → 项目 {{destination}}",
+      },
+    },
+    clarification: {
+      title: "澄清",
+      send: "发送",
+      answerPlaceholder: "输入您的回答...",
+      answered: "已回答: {{answer}}",
+    },
+    answer: {
+      title: "回答",
+      agentStatus: "Agent 状态",
+      state: "状态",
+    },
   },
   message: {
     actions: {

@@ -33,6 +33,9 @@ export const COMMANDER_ADOPTED_AT_LABEL = "paseo.commander-adopted-at";
  * variant; the four dropped local tools (get_agent_status, create_workspace,
  * list_workspaces, history_search) are covered by fleet_list_agents /
  * fleet_get_agent_activity / fleet_create_agent placement / fleet_search.
+ * M4 added the interaction tools `clarify` + `post_answer` (cards TO the
+ * user — never gated, never side effects) and M5 adds `fleet_meta` (the
+ * gated meta actions; implemented in the meta-actions module).
  * Mirrors the app-side launch allowlist. The omp provider launches with
  * `--no-tools` for this list (no builtin names), dropping the omp `task`
  * subagent tool entirely.
@@ -44,6 +47,9 @@ export const COMMANDER_TOOL_ALLOWLIST: readonly string[] = [
   "fleet_get_agent_activity",
   "fleet_search",
   "tag_message",
+  "clarify",
+  "post_answer",
+  "fleet_meta",
 ];
 
 /**

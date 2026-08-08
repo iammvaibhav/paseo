@@ -228,6 +228,7 @@ import {
   type CreateAgentCommandDependencies,
 } from "./agent/create-agent/create.js";
 import { archiveAgentCommand, cancelAgentRunCommand } from "./agent/lifecycle-command.js";
+import { applyMetaFromProposal } from "./mission-control/meta-actions.js";
 import { CreateAgentLifecycleDispatch } from "./agent/create-agent-lifecycle-dispatch.js";
 import {
   HubRelationshipController,
@@ -1774,6 +1775,36 @@ export async function createPaseoDaemon(
       }
       return spawnProposalLocally(createAgent, plan, providerModel);
     },
+    // Execute a commander-origin meta-kind proposal (fleet_meta in ask mode
+    // and auto mode): apply the fleet meta action described by metaPlan
+    // (rename/archive project·workspace·agent, create project, move agent,
+    // promote workspace) against this daemon's live registries. Shared with
+    // the agent.workspace.move RPC via moveAgentToWorkspace. Stored-agent
+    // updates (closed records — live agents flow through agent_state) fan out
+    // to every trusted session's agent_update service.
+    metaFromProposal: (proposal) =>
+      applyMetaFromProposal(
+        {
+          serverId,
+          hostName: getHostname(),
+          logger,
+          agentManager,
+          agentStorage,
+          workspaceRegistry,
+          projectRegistry,
+          archiveWorkspace: archiveWorkspaceByIdExternal,
+          archiveAgent: (agentId) =>
+            archiveAgentCommand({ agentManager, agentStorage, logger }, agentId),
+          emitStoredAgentUpdate: async (record) => {
+            await Promise.all(
+              (wsServer?.listTrustedSessions() ?? []).map((session) =>
+                session.emitAgentUpdateForExternalMutation(record),
+              ),
+            );
+          },
+        },
+        proposal,
+      ),
   });
   await missionControlService.start();
   logger.info({ elapsed: elapsed() }, "Mission control service initialized");

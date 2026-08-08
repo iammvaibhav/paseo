@@ -11,7 +11,9 @@ import {
   Flag,
   GitBranch,
   GitFork,
+  HelpCircle,
   LoaderCircle,
+  MessageSquareText,
   Rocket,
   Search,
   Send,
@@ -28,7 +30,9 @@ import { useSessionStore, type Agent } from "@/stores/session-store";
 import { resolveSessionAgent } from "@/utils/agent-snapshots";
 import { useInspectorStore } from "@/screens/mission-control/inspector-store";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
-import { isVerboseOnlyProposalEvent, ProposalCard } from "@/screens/mission-control/proposal-card";
+import { isVerboseOnlyProposalEvent, ProposalCard } from "./proposal-card";
+import { ClarificationCard } from "./clarification-card";
+import { AnswerCard } from "./answer-card";
 import { useLiveTimeAgo } from "@/hooks/use-compact-time-ago";
 import { ProofSections } from "./proofs/proof-sections";
 import { HostGlyph } from "@/components/host-glyph";
@@ -120,6 +124,8 @@ const ThemedSearch = withUnistyles(Search);
 const ThemedSend = withUnistyles(Send);
 const ThemedShieldAlert = withUnistyles(ShieldAlert);
 const ThemedWrench = withUnistyles(Wrench);
+const ThemedHelpCircle = withUnistyles(HelpCircle);
+const ThemedMessageSquareText = withUnistyles(MessageSquareText);
 
 const iconForegroundMutedMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
@@ -138,6 +144,8 @@ const kindIcons: Record<MissionControlEventKind, ReactElement> = {
   // non-error glyph — the interruption is the user's own action, nothing
   // failed. Same muted tone as the other status icons.
   interrupted: <ThemedCircleSlash size={14} uniProps={iconForegroundMutedMapping} />,
+  clarification: <ThemedHelpCircle size={14} uniProps={iconForegroundMutedMapping} />,
+  answer: <ThemedMessageSquareText size={14} uniProps={iconForegroundMutedMapping} />,
 };
 
 /**
@@ -217,9 +225,18 @@ export function FeedCard({
     if (!verbose && isVerboseOnlyProposalEvent(event)) {
       return null;
     }
-    return <ProposalCard proposal={event.proposal} event={event} position={position} />;
+    return (
+      <ProposalCard proposal={event.proposal} event={event} position={position} verbose={verbose} />
+    );
   }
 
+  if (event.kind === "clarification" && event.clarification) {
+    return <ClarificationCard event={event} position={position} />;
+  }
+
+  if (event.kind === "answer" && event.answer) {
+    return <AnswerCard event={event} position={position} />;
+  }
   return (
     <FeedCardBody
       event={event}

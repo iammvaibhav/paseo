@@ -133,8 +133,12 @@ export interface VerifierProposal {
   classification: "normal" | "destructive";
   status: "pending" | "approved" | "denied" | "sent" | "expired" | "undelivered";
   allowPair?: boolean;
-  /** "send" (default) | "spawn" — spawn-kind proposals create a new agent. */
-  kind?: "send" | "spawn";
+  /** "send" (default) | "spawn" | "meta" — spawn creates a new agent; meta
+   * applies a fleet meta action. The dispatcher only produces send/spawn;
+   * the type matches the approvals store so proposals flow through unchanged. */
+  kind?: "send" | "spawn" | "meta";
+  /** Present on kind:"meta" proposals (approvals store passthrough). */
+  metaPlan?: unknown;
   spawnPlan?: {
     host?: string;
     provider: string;

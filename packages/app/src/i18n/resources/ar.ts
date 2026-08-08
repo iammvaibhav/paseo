@@ -317,6 +317,45 @@ export const ar: TranslationResources = {
       archivedBanner: "مؤرشف",
       workspaceArchived: "مساحة عمل هذا الوكيل مؤرشفة، لذا لا يمكن فتحها في عرض مساحة العمل.",
     },
+    proposal: {
+      origin: {
+        verifier: "جهة اتصال المراجع",
+        commander: "القائد",
+        stall: "فحص التوقف",
+      },
+      chips: {
+        project: "المشروع: {{label}}",
+        workspace: "مساحة العمل: {{label}}",
+        agent: "الوكيل: {{label}}",
+        newProject: "مشروع جديد: {{label}}",
+        newWorkspace: "مساحة عمل جديدة: {{label}}",
+        newAgent: "وكيل جديد: {{label}}",
+      },
+      model: "النموذج: {{model}}",
+      payload: "الحمولة",
+      meta: {
+        renameProject: "إعادة تسمية المشروع {{target}} ← {{name}}",
+        renameWorkspace: "إعادة تسمية مساحة العمل {{target}} ← {{name}}",
+        renameAgentTitle: "إعادة تسمية عنوان الوكيل {{target}} ← {{name}}",
+        archiveProject: "أرشفة المشروع {{target}}",
+        archiveWorkspace: "أرشفة مساحة العمل {{target}}",
+        archiveAgent: "أرشفة الوكيل {{target}}",
+        createProject: "إنشاء مشروع {{target}}",
+        moveAgent: "نقل الوكيل {{target}} ← مساحة العمل {{destination}}",
+        promoteWorkspace: "ترقية {{target}} ← مشروع {{destination}}",
+      },
+    },
+    clarification: {
+      title: "توضيح",
+      send: "إرسال",
+      answerPlaceholder: "اكتب إجابتك...",
+      answered: "تمت الإجابة: {{answer}}",
+    },
+    answer: {
+      title: "إجابة",
+      agentStatus: "حالة الوكيل",
+      state: "الحالة",
+    },
   },
   message: {
     actions: {

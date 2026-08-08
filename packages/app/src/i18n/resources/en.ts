@@ -317,6 +317,45 @@ export const en = {
       workspaceArchived:
         "This agent's workspace is archived, so it cannot be opened in the workspace view.",
     },
+    proposal: {
+      origin: {
+        verifier: "Verifier contact",
+        commander: "Commander",
+        stall: "Stall check",
+      },
+      chips: {
+        project: "Project: {{label}}",
+        workspace: "Workspace: {{label}}",
+        agent: "Agent: {{label}}",
+        newProject: "New project: {{label}}",
+        newWorkspace: "New workspace: {{label}}",
+        newAgent: "New agent: {{label}}",
+      },
+      model: "Model: {{model}}",
+      payload: "Payload",
+      meta: {
+        renameProject: "Rename project {{target}} → {{name}}",
+        renameWorkspace: "Rename workspace {{target}} → {{name}}",
+        renameAgentTitle: "Rename agent {{target}} → {{name}}",
+        archiveProject: "Archive project {{target}}",
+        archiveWorkspace: "Archive workspace {{target}}",
+        archiveAgent: "Archive agent {{target}}",
+        createProject: "Create project {{target}}",
+        moveAgent: "Move agent {{target}} → workspace {{destination}}",
+        promoteWorkspace: "Promote {{target}} → project {{destination}}",
+      },
+    },
+    clarification: {
+      title: "Clarification",
+      send: "Send",
+      answerPlaceholder: "Type your answer...",
+      answered: "Answered: {{answer}}",
+    },
+    answer: {
+      title: "Answer",
+      agentStatus: "Agent status",
+      state: "State",
+    },
   },
   message: {
     actions: {

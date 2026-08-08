@@ -321,6 +321,45 @@ export const ja: TranslationResources = {
       workspaceArchived:
         "このエージェントのワークスペースはアーカイブされているため、ワークスペースビューで開くことはできません。",
     },
+    proposal: {
+      origin: {
+        verifier: "検証者の連絡先",
+        commander: "コマンダー",
+        stall: "ストールチェック",
+      },
+      chips: {
+        project: "プロジェクト: {{label}}",
+        workspace: "ワークスペース: {{label}}",
+        agent: "エージェント: {{label}}",
+        newProject: "新規プロジェクト: {{label}}",
+        newWorkspace: "新規ワークスペース: {{label}}",
+        newAgent: "新規エージェント: {{label}}",
+      },
+      model: "モデル: {{model}}",
+      payload: "ペイロード",
+      meta: {
+        renameProject: "プロジェクト名を変更 {{target}} → {{name}}",
+        renameWorkspace: "ワークスペース名を変更 {{target}} → {{name}}",
+        renameAgentTitle: "エージェントタイトルを変更 {{target}} → {{name}}",
+        archiveProject: "プロジェクトをアーカイブ {{target}}",
+        archiveWorkspace: "ワークスペースをアーカイブ {{target}}",
+        archiveAgent: "エージェントをアーカイブ {{target}}",
+        createProject: "プロジェクトを作成 {{target}}",
+        moveAgent: "エージェントを移動 {{target}} → ワークスペース {{destination}}",
+        promoteWorkspace: "昇格 {{target}} → プロジェクト {{destination}}",
+      },
+    },
+    clarification: {
+      title: "確認",
+      send: "送信",
+      answerPlaceholder: "回答を入力...",
+      answered: "回答済み: {{answer}}",
+    },
+    answer: {
+      title: "回答",
+      agentStatus: "エージェントのステータス",
+      state: "状態",
+    },
   },
   message: {
     actions: {

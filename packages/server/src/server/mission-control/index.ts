@@ -63,6 +63,25 @@ export {
 } from "./commander-boot.js";
 export type { EnsureCommanderOnBootInput, EnsureCommanderOnBootResult } from "./commander-boot.js";
 export { CommanderAckDrop, isPureAckReply } from "./commander-ack-drop.js";
+export {
+  moveAgentToWorkspace,
+  applyMetaPlan,
+  applyMetaFromProposal,
+  validateMetaPlan,
+  resolveExperimentsProject,
+  isDestructiveMetaAction,
+} from "./meta-actions.js";
+export type {
+  MetaActionsDependencies,
+  MetaActionsLookupDependencies,
+  MoveAgentDependencies,
+  MoveAgentInput,
+  MoveAgentResult,
+  MetaActionValidationResult,
+  MetaPlanActionResult,
+} from "./meta-actions.js";
+export { buildFleetMetaProposalInput, classifyFleetMetaAction } from "./fleet-meta.js";
+export type { BuildFleetMetaProposalInput } from "./fleet-meta.js";
 export { MISSION_CONTROL_SELF_REPORT_PROMPT, buildSelfReportSystemPrompt } from "./self-report.js";
 export {
   MissionControlVerifierDispatcher,
