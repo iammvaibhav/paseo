@@ -49,6 +49,20 @@ import {
   type ResolvedMissionControlCentralConfig,
 } from "./config.js";
 import { TurnLifecycleLog } from "./turn-lifecycle-log.js";
+import {
+  assembleRunRecord,
+  isFinalizableRunRecord,
+  type MissionControlRunPlacement,
+  type MissionControlRunRecord,
+} from "./run-records.js";
+import {
+  RollupCache,
+  deriveProjectRollup,
+  deriveWorkspaceRollup,
+  type ProjectRollup,
+  type WorkspaceRollup,
+} from "./rollups.js";
+import { HindsightClient, type HindsightRecallResult } from "./hindsight.js";
 
 const STALL_SWEEP_INTERVAL_MS = 30_000;
 const DAILY_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -58,6 +72,24 @@ const RESTART_GRACE_MS = 60_000;
 const WATCHDOG_DEAD_RUNTIME_MS = 2 * 60_000;
 const TIMELINE_BUFFER_CAP = 2000;
 const SELF_REPORT_RATE_LIMIT_MS = 60_000;
+/** Hindsight written-key set cap (guards unbounded memory; keys are run-scoped). */
+const HINDSIGHT_WRITTEN_KEYS_CAP = 5000;
+/** Event kinds that finalize a run record (run end or a verdict landing). */
+const RUN_RECORD_FINALIZING_KINDS: Record<MissionControlEventKind, boolean> = {
+  started: false,
+  finished: true,
+  failed: true,
+  blocked: false,
+  stalled: false,
+  milestone: false,
+  finding: false,
+  diverged: false,
+  proposal: false,
+  verdict: true,
+  interrupted: true,
+  clarification: false,
+  answer: false,
+};
 /** Exponential-backoff ceiling for nudge intervals: 30 minutes. */
 const NUDGE_BACKOFF_CAP_MS = 30 * 60 * 1000;
 /**
@@ -260,6 +292,17 @@ export interface MissionControlServiceOptions {
    * commander-boot machinery; absent → the reset RPC reports an error.
    */
   resetCommander?: () => Promise<{ ok: true; agentId: string } | { ok: false; error: string }>;
+  /**
+   * M6 run records: resolve the workspace/project attribution frozen into a
+   * run record at assembly time (host registry lookups live in bootstrap).
+   * Absent → records carry no workspace/project attribution (rollups then
+   * only group by what the daemon resolved).
+   */
+  resolveRunPlacement?: (input: {
+    agentId: string;
+    workspaceId?: string | null;
+    cwd?: string | null;
+  }) => Promise<MissionControlRunPlacement>;
 }
 
 export interface MissionControlServiceConfig {
@@ -301,6 +344,7 @@ export class MissionControlService {
   private readonly store: MissionControlStore;
   private readonly agentManager: AgentManager;
   private readonly agentStorage: AgentStorage;
+  private readonly daemonConfigStore: DaemonConfigStore;
   private readonly serverId: string;
   private readonly hostName: string;
   private readonly broadcast: (message: SessionOutboundMessage) => void;
@@ -310,7 +354,13 @@ export class MissionControlService {
   private readonly resetCommanderFn: MissionControlServiceOptions["resetCommander"];
   private readonly spawnFromProposal: MissionControlServiceOptions["spawnFromProposal"];
   private readonly metaFromProposal: MissionControlServiceOptions["metaFromProposal"];
+  private readonly resolveRunPlacement: MissionControlServiceOptions["resolveRunPlacement"];
   readonly approvals: MissionControlApprovals;
+  // M6 context architecture: run-record assembly, rollup cache, hindsight sink.
+  private readonly rollupCache = new RollupCache();
+  private readonly hindsightClient: HindsightClient;
+  /** Run records already written to the fleet bank (dedupe reassembles). */
+  private readonly hindsightWrittenKeys = new Set<string>();
 
   private readonly timelineRows = new Map<string, AgentTimelineRow[]>();
   /**
@@ -398,6 +448,7 @@ export class MissionControlService {
     this.logger = options.logger.child({ module: "mission-control" });
     this.agentManager = options.agentManager;
     this.agentStorage = options.agentStorage;
+    this.daemonConfigStore = options.daemonConfigStore;
     this.serverId = options.serverId;
     this.hostName = options.hostName;
     this.broadcast = options.broadcast;
@@ -406,6 +457,7 @@ export class MissionControlService {
     this.resetCommanderFn = options.resetCommander;
     this.spawnFromProposal = options.spawnFromProposal;
     this.metaFromProposal = options.metaFromProposal;
+    this.resolveRunPlacement = options.resolveRunPlacement;
     this.bootedAtMs = Date.now();
     this.store = new MissionControlStore({ paseoHome: options.paseoHome, logger: this.logger });
     this.lifecycleLog = new TurnLifecycleLog({
@@ -419,6 +471,7 @@ export class MissionControlService {
         logger: this.logger,
       });
     this.approvals = new MissionControlApprovals(this.buildApprovalsOptions());
+    this.hindsightClient = new HindsightClient({ logger: this.logger });
   }
 
   private buildApprovalsOptions(): MissionControlApprovalsOptions {
@@ -920,6 +973,62 @@ export class MissionControlService {
   }
 
   // ==========================================================================
+  // M6 context architecture: run records + rollups (docs/commander.md
+  // "Context architecture"). Records are assembled deterministically at run
+  // end / ready-for-review; rollups derive from them and cache in memory.
+  // ==========================================================================
+
+  /** All retained run records, newest run first. */
+  getRunRecords(): MissionControlRunRecord[] {
+    return this.store.getRunRecords();
+  }
+
+  /** The most recent run record for an agent (null when it has none). */
+  getLatestRunRecord(agentId: string): MissionControlRunRecord | null {
+    return this.store.getLatestRunRecord(agentId);
+  }
+
+  /** The most recent run records for an agent, newest first (cap limit). */
+  getAgentRunRecords(agentId: string, limit = 5): MissionControlRunRecord[] {
+    return this.store
+      .getRunRecords()
+      .filter((record) => record.agentId === agentId)
+      .slice(0, limit);
+  }
+
+  /** Workspace rollup (cached; recomputed when a new run record lands). */
+  getWorkspaceRollup(workspaceId: string): WorkspaceRollup | null {
+    return this.rollupCache.getWorkspace(workspaceId, () =>
+      deriveWorkspaceRollup(this.store.getRunRecords(), workspaceId),
+    );
+  }
+
+  /** Project rollup (cached; recomputed when a new run record lands). */
+  getProjectRollup(projectId: string): ProjectRollup | null {
+    return this.rollupCache.getProject(projectId, () =>
+      deriveProjectRollup(this.store.getRunRecords(), projectId),
+    );
+  }
+
+  /**
+   * Semantic recall over the configured fleet bank. Never blocks and never
+   * throws: when the bank is unconfigured or unreachable the caller gets
+   * { ok: false, reason: "memory unavailable" }.
+   */
+  async hindsightRecall(query: string, limit = 5): Promise<HindsightRecallResult> {
+    const config = this.centralConfig.get();
+    if (!HindsightClient.isEnabled(config.hindsightUrl)) {
+      return { ok: false, reason: "memory unavailable", error: "hindsight is not configured" };
+    }
+    return this.hindsightClient.recall({
+      url: config.hindsightUrl,
+      bank: config.hindsightBank,
+      query,
+      limit,
+    });
+  }
+
+  // ==========================================================================
   // Self-reporting (report_status tool)
   // ==========================================================================
 
@@ -1014,6 +1123,8 @@ export class MissionControlService {
       if (this.store.getRolloutTs() !== null) {
         await this.store.setReviewState(agentId, "ready");
         this.notifyReviewState(agentId);
+        // M6: the completed run finalizes its record via the ready transition.
+        void this.finalizeRunRecord(agentId, this.currentRunEpoch(agentId));
       }
     }
     for (const listener of this.selfReportListeners) {
@@ -1305,6 +1416,8 @@ export class MissionControlService {
     }
     await this.store.setReviewState(agentId, "ready");
     this.notifyReviewState(agentId);
+    // M6: ready-for-review finalizes the run record (deterministic upsert).
+    void this.finalizeRunRecord(agentId, this.currentRunEpoch(agentId));
   }
 
   /**
@@ -1339,6 +1452,128 @@ export class MissionControlService {
         event.source === "self" &&
         Date.parse(event.ts) >= runStartedAt,
     );
+  }
+
+  // ==========================================================================
+  // M6 run-record assembly (deterministic; no transcript reads, no model calls)
+  // ==========================================================================
+
+  /**
+   * Assemble and persist the run record for (agentId, runEpoch), then push it
+   * to the fleet memory bank when configured. Idempotent: re-assembly (run
+   * end, ready-for-review, verdict landing) upserts the same record id.
+   * Fire-and-forget from the event path — failures log, never block.
+   */
+  private async finalizeRunRecord(agentId: string, runEpoch: number): Promise<void> {
+    try {
+      const identity = await this.resolveRunIdentity(agentId);
+      let placement: MissionControlRunPlacement | null = null;
+      const live = this.agentManager.getAgent(agentId);
+      let workspaceId = live?.workspaceId ?? null;
+      let cwd = live?.cwd ?? null;
+      if (!live) {
+        // Closed agent: attribution comes from the durable record.
+        const stored = await this.agentStorage.get(agentId).catch(() => null);
+        workspaceId = stored?.workspaceId ?? null;
+        cwd = stored?.cwd ?? null;
+      }
+      if (this.resolveRunPlacement) {
+        try {
+          placement = await this.resolveRunPlacement({ agentId, workspaceId, cwd });
+        } catch (error) {
+          this.logger.warn({ err: error, agentId }, "mission_control.run_record.placement_failed");
+        }
+      }
+      const timelineRows = await this.readAgentTimelineRows(agentId);
+      const record = assembleRunRecord({
+        agentId,
+        agentName: identity.name,
+        agentTitle: identity.title,
+        hostAlias: this.resolveHostAlias(),
+        serverId: this.serverId,
+        runEpoch,
+        events: this.store.fetchEvents({ includeSuperseded: true }),
+        timelineRows,
+        reviewVerdict: this.store.getReviewState(agentId).verdict,
+        placement,
+      });
+      this.store.putRunRecord(record);
+      this.rollupCache.invalidate();
+      this.maybeWriteRunRecordToHindsight(record);
+    } catch (error) {
+      this.logger.warn(
+        { err: error, agentId, runEpoch },
+        "mission_control.run_record.assembly_failed",
+      );
+    }
+  }
+
+  /** Trigger assembly when a run ends (finished/failed/interrupted) or a verdict lands. */
+  private maybeAssembleRunRecordForEvent(event: MissionControlEvent): void {
+    if (!RUN_RECORD_FINALIZING_KINDS[event.kind]) {
+      return;
+    }
+    void this.finalizeRunRecord(
+      event.agentId,
+      event.runEpoch ?? this.currentRunEpoch(event.agentId),
+    );
+  }
+
+  private currentRunEpoch(agentId: string): number {
+    return this.store.getObservation(agentId).runEpoch;
+  }
+
+  /** The agent's fleet identity for run records (name + living title). */
+  private async resolveRunIdentity(agentId: string): Promise<{ name: string; title: string }> {
+    const live = this.agentManager.getAgent(agentId);
+    const record = await this.agentStorage.get(agentId).catch(() => null);
+    const name = live?.name ?? record?.name ?? record?.title ?? agentId;
+    return { name, title: record?.title ?? name };
+  }
+
+  /** Host alias for run records: the configured mission-control alias or hostname. */
+  private resolveHostAlias(): string {
+    const alias = this.daemonConfigStore.get().missionControl?.hostAlias?.trim();
+    return alias || this.hostName;
+  }
+
+  /** Launch-brief reader: timeline rows, empty when the agent is closed. */
+  private async readAgentTimelineRows(agentId: string): Promise<AgentTimelineRow[]> {
+    try {
+      return await this.agentManager.getTimelineRows(agentId);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Write a finalized run record to the fleet bank (fire-and-forget, failures
+   * throttled by the client). Written once per record; a record carrying a
+   * verdict is always re-written (the verdict is the final word on the run).
+   */
+  private maybeWriteRunRecordToHindsight(record: MissionControlRunRecord): void {
+    if (!isFinalizableRunRecord(record)) {
+      return;
+    }
+    const config = this.centralConfig.get();
+    if (!HindsightClient.isEnabled(config.hindsightUrl)) {
+      return;
+    }
+    if (record.verdict === null && this.hindsightWrittenKeys.has(record.id)) {
+      return;
+    }
+    this.hindsightWrittenKeys.add(record.id);
+    if (this.hindsightWrittenKeys.size > HINDSIGHT_WRITTEN_KEYS_CAP) {
+      const first = this.hindsightWrittenKeys.values().next().value;
+      if (typeof first === "string") {
+        this.hindsightWrittenKeys.delete(first);
+      }
+    }
+    void this.hindsightClient
+      .writeRunRecord({ url: config.hindsightUrl, bank: config.hindsightBank, record })
+      .catch(() => {
+        // The client swallows failures already; belt-and-braces for the void path.
+      });
   }
 
   private handleAgentStream(
@@ -2424,6 +2659,8 @@ export class MissionControlService {
       type: "mission_control_event",
       event,
     });
+    // M6 run records: a run-end or verdict event finalizes the run's record.
+    this.maybeAssembleRunRecordForEvent(event);
     // M3 runtime model: the feed keeps the event; the Commander no longer
     // receives event streams as chat. Only needs-you events (blocked /
     // stalled-escalation / verdict-insufficient) trigger an AUTO-mode

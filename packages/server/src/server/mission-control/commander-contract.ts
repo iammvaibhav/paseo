@@ -36,6 +36,10 @@ export const COMMANDER_ADOPTED_AT_LABEL = "paseo.commander-adopted-at";
  * M4 added the interaction tools `clarify` + `post_answer` (cards TO the
  * user — never gated, never side effects) and M5 adds `fleet_meta` (the
  * gated meta actions; implemented in the meta-actions module).
+ * M6 adds the read-only context tools `fleet_recall` (semantic recall over
+ * the Hindsight fleet memory bank; degrades to "memory unavailable" when the
+ * bank is unreachable) and `fleet_context` (run records / workspace+project
+ * rollups from the local store) — never gated, never side effects.
  * Mirrors the app-side launch allowlist. The omp provider launches with
  * `--no-tools` for this list (no builtin names), dropping the omp `task`
  * subagent tool entirely.
@@ -50,6 +54,8 @@ export const COMMANDER_TOOL_ALLOWLIST: readonly string[] = [
   "clarify",
   "post_answer",
   "fleet_meta",
+  "fleet_recall",
+  "fleet_context",
 ];
 
 /**

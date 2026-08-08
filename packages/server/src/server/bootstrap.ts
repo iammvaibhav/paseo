@@ -144,6 +144,8 @@ import { WorkspaceReconciliationService } from "./workspace-reconciliation-servi
 import {
   FileBackedProjectRegistry,
   FileBackedWorkspaceRegistry,
+  resolveProjectDisplayName,
+  resolveWorkspaceDisplayName,
   type WorkspaceArchiveContext,
 } from "./workspace-registry.js";
 import { FileBackedChatService } from "./chat/chat-service.js";
@@ -157,6 +159,7 @@ import { CommanderSnapshotInjector } from "./mission-control/commander-snapshot.
 import { CentralMissionControlConfigStore } from "./mission-control/config.js";
 import { createMissionControlPresenceSource } from "./mission-control/presence.js";
 import { MissionControlVerifierDispatcher } from "./mission-control/verifier.js";
+import { appendPriorWorkBlock } from "./mission-control/rollups.js";
 import {
   commanderHomeCwd,
   buildCommanderLaunchContract,
@@ -350,6 +353,47 @@ async function spawnProposalLocally(
     return { ok: true, agentId: result.snapshot.id };
   } catch (error) {
     return { ok: false, error: `spawn failed: ${String(error)}` };
+  }
+}
+
+/**
+ * M6 spawn-brief enrichment: append the workspace's '# Prior work in this
+ * workspace' block to a spawn plan's initial prompt (bounded ~2KB) when the
+ * target workspace has run records. Resolves the workspace from the plan's
+ * workspaceId, falling back to the cwd → workspace path. Runs at the spawn
+ * plan application point so ask and auto paths both enrich at execution time.
+ */
+async function enrichSpawnPlanWithPriorWork(
+  plan: MissionControlProposalSpawnPlan,
+  deps: {
+    logger: Logger;
+    findWorkspaceIdForCwd: (cwd: string) => Promise<string | null>;
+    getWorkspaceRollup: (
+      workspaceId: string,
+    ) => import("./mission-control/rollups.js").WorkspaceRollup | null;
+  },
+): Promise<MissionControlProposalSpawnPlan> {
+  try {
+    let workspaceId = plan.workspaceId;
+    if (!workspaceId && plan.cwd) {
+      workspaceId = (await deps.findWorkspaceIdForCwd(plan.cwd)) ?? undefined;
+    }
+    if (!workspaceId) {
+      return plan;
+    }
+    const rollup = deps.getWorkspaceRollup(workspaceId);
+    if (!rollup) {
+      return plan;
+    }
+    const initialPrompt = appendPriorWorkBlock(plan.initialPrompt, rollup);
+    if (initialPrompt === plan.initialPrompt) {
+      return plan;
+    }
+    return { ...plan, initialPrompt };
+  } catch (error) {
+    // Enrichment is best-effort: never fail the spawn on a rollup read.
+    deps.logger.warn({ err: error, component: "spawn-enrichment" }, "prior-work enrichment failed");
+    return plan;
   }
 }
 
@@ -1764,16 +1808,27 @@ export async function createPaseoDaemon(
     // hosts use the create-agent command; peers spawn through the fleet
     // client. This is the single execution path for approved spawn proposals
     // (survives daemon restarts — the plan rides the persisted proposal).
+    // M6: the '# Prior work in this workspace' block is appended HERE (the
+    // spawn plan application point) so BOTH the ask path (proposal approved
+    // later) and the auto path (auto-approved) enrich the brief at execution
+    // time with the freshest rollup.
     spawnFromProposal: async (proposal) => {
       const plan = proposal.spawnPlan;
       if (!plan) {
         return { ok: false, error: "Spawn proposal has no spawn plan" };
       }
-      const providerModel = plan.model ? `${plan.provider}/${plan.model}` : plan.provider;
-      if (plan.host && plan.host !== "local") {
-        return spawnProposalOnPeer(peerManager, plan.host, plan, providerModel);
+      const enriched = await enrichSpawnPlanWithPriorWork(plan, {
+        logger,
+        findWorkspaceIdForCwd: findWorkspaceIdForCwdExternal,
+        getWorkspaceRollup: (workspaceId) => missionControlService.getWorkspaceRollup(workspaceId),
+      });
+      const providerModel = enriched.model
+        ? `${enriched.provider}/${enriched.model}`
+        : enriched.provider;
+      if (enriched.host && enriched.host !== "local") {
+        return spawnProposalOnPeer(peerManager, enriched.host, enriched, providerModel);
       }
-      return spawnProposalLocally(createAgent, plan, providerModel);
+      return spawnProposalLocally(createAgent, enriched, providerModel);
     },
     // Execute a commander-origin meta-kind proposal (fleet_meta in ask mode
     // and auto mode): apply the fleet meta action described by metaPlan
@@ -1805,6 +1860,36 @@ export async function createPaseoDaemon(
         },
         proposal,
       ),
+    // M6 run records: resolve the workspace/project attribution frozen into a
+    // run record at assembly time (live registries; falls back to the cwd →
+    // workspace path when the agent carries no workspaceId).
+    resolveRunPlacement: async ({ workspaceId, cwd }) => {
+      let resolvedWorkspaceId = workspaceId ?? null;
+      if (!resolvedWorkspaceId && cwd) {
+        resolvedWorkspaceId = await findWorkspaceIdForCwdExternal(cwd);
+      }
+      if (!resolvedWorkspaceId) {
+        return { workspaceId: null, workspaceTitle: null, projectId: null, projectName: null };
+      }
+      const workspace = await workspaceRegistry.get(resolvedWorkspaceId);
+      if (!workspace) {
+        return {
+          workspaceId: resolvedWorkspaceId,
+          workspaceTitle: null,
+          projectId: null,
+          projectName: null,
+        };
+      }
+      const project = workspace.projectId
+        ? await projectRegistry.get(workspace.projectId).catch(() => null)
+        : null;
+      return {
+        workspaceId: resolvedWorkspaceId,
+        workspaceTitle: resolveWorkspaceDisplayName(workspace),
+        projectId: workspace.projectId ?? null,
+        projectName: project ? resolveProjectDisplayName(project) : null,
+      };
+    },
   });
   await missionControlService.start();
   logger.info({ elapsed: elapsed() }, "Mission control service initialized");

@@ -1319,7 +1319,7 @@ describe("remapLegacyCommanderCreateCwd", () => {
 });
 
 describe("Commander build-hash contract", () => {
-  test("the tool allowlist pins exactly the nine tools (6 fleet + clarify + post_answer + fleet_meta)", () => {
+  test("the tool allowlist pins exactly the eleven tools (6 fleet + clarify + post_answer + fleet_meta + 2 context)", () => {
     // The hash covers prompt + allowlist, so a tool landing here without the
     // paseo-tools registration (or vice versa) must fail this pin — the
     // allowlist is the Commander's full catalog surface.
@@ -1333,6 +1333,8 @@ describe("Commander build-hash contract", () => {
       "clarify",
       "post_answer",
       "fleet_meta",
+      "fleet_recall",
+      "fleet_context",
     ]);
   });
 

@@ -542,6 +542,12 @@ export const MissionControlCentralConfigSchema = z.object({
   // Default delivery mode for verifier-origin contacts (contact_worker /
   // proof demands). Same union; stall nudges unaffected.
   verifierToWorkerMode: MissionControlDeliveryModeSchema.optional(),
+  // M6 context architecture: the Hindsight fleet memory bank. hindsightUrl
+  // unset (null) = disabled — run records stay local only; the fleet_recall
+  // tool degrades to "memory unavailable". hindsightBank names the bank run
+  // records are written to and recalled over (default "paseo-fleet").
+  hindsightUrl: z.string().nullable().optional(),
+  hindsightBank: z.string().optional(),
 });
 export type MissionControlCentralConfig = z.infer<typeof MissionControlCentralConfigSchema>;
 

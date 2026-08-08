@@ -3941,6 +3941,85 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     lastUserMessage: z.string().nullable().optional(),
   });
 
+  // --- M6 context tools: fleet_recall / fleet_context (read-only) -----------
+
+  const runVerdictSchema = z
+    .object({
+      by: z.enum(["verifier", "user"]),
+      summary: z.string(),
+      at: z.string(),
+      verifierAgentId: z.string().optional(),
+    })
+    .nullable();
+
+  const runReportSchema = z.object({
+    ts: z.string(),
+    kind: z.string(),
+    headline: z.string(),
+    detail: z.string().optional(),
+    reportKind: z.string().optional(),
+  });
+
+  const runProofSchema = z.object({
+    kind: z.string(),
+    label: z.string().optional(),
+    url: z.string().optional(),
+    path: z.string().optional(),
+    excerpt: z.string().optional(),
+  });
+
+  const runRecordSchema = z.object({
+    id: z.string(),
+    agentId: z.string(),
+    agentName: z.string(),
+    agentTitle: z.string(),
+    hostAlias: z.string(),
+    serverId: z.string(),
+    workspaceId: z.string().nullable(),
+    workspaceTitle: z.string().nullable(),
+    projectId: z.string().nullable(),
+    projectName: z.string().nullable(),
+    runEpoch: z.number(),
+    startedAt: z.string(),
+    endedAt: z.string(),
+    outcome: z.string(),
+    brief: z.string().nullable(),
+    reports: z.array(runReportSchema),
+    verdict: runVerdictSchema,
+    proofs: z.array(runProofSchema),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  });
+
+  const runRollupEntrySchema = z.object({
+    agentId: z.string(),
+    agentName: z.string(),
+    endedAt: z.string(),
+    outcome: z.string(),
+    brief: z.string().nullable(),
+    decisions: z.array(z.string()),
+    open: z.array(z.string()),
+    verdict: z.string().nullable(),
+  });
+
+  const workspaceRollupSchema = z.object({
+    kind: z.literal("workspace"),
+    workspaceId: z.string(),
+    workspaceTitle: z.string().nullable(),
+    projectId: z.string().nullable(),
+    projectName: z.string().nullable(),
+    updatedAt: z.string(),
+    runs: z.array(runRollupEntrySchema),
+  });
+
+  const projectRollupSchema = z.object({
+    kind: z.literal("project"),
+    projectId: z.string(),
+    projectName: z.string().nullable(),
+    updatedAt: z.string(),
+    runs: z.array(runRollupEntrySchema),
+  });
+
   const resolveFleetHost = (host: string): DaemonClient | null => {
     if (!peerManager) {
       return null;
@@ -4608,6 +4687,123 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           status: "sent",
           proposalId: proposal.id,
           guidance: `Meta action applied (proposal ${proposal.id}).`,
+        }),
+      };
+    },
+  );
+
+  registerTool(
+    "fleet_recall",
+    {
+      title: "Recall prior fleet work from memory",
+      description:
+        "Semantic recall over the fleet memory bank (Hindsight): run records written when agents finish — briefs, " +
+        "report histories, decisions, verdicts. THE lookup for 'which agent was that' and for pulling related prior " +
+        "work into a brief. When the bank is unconfigured or unreachable this returns " +
+        '{ok:false, reason:"memory unavailable"} — fall back to fleet_search / fleet_get_agent_activity, never guess. ' +
+        "Read-only; never approval-gated.",
+      inputSchema: {
+        query: z
+          .string()
+          .min(1)
+          .describe(
+            "What to recall: an agent, a decision, a piece of work ('who fixed the auth bug').",
+          ),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .max(20)
+          .optional()
+          .default(5)
+          .describe("Maximum memories to return."),
+      },
+      outputSchema: {
+        ok: z.boolean(),
+        reason: z.string().optional(),
+        matches: z
+          .array(
+            z.object({
+              text: z.string(),
+              context: z.string().nullable().optional(),
+              occurredStart: z.string().nullable().optional(),
+              documentId: z.string().nullable().optional(),
+              tags: z.array(z.string()).nullable().optional(),
+            }),
+          )
+          .optional(),
+      },
+    },
+    async ({ query, limit = 5 }) => {
+      if (!missionControlService) {
+        return {
+          content: [],
+          structuredContent: ensureValidJson({
+            ok: false,
+            reason: "memory unavailable",
+          }),
+        };
+      }
+      const result = await missionControlService.hindsightRecall(query, limit);
+      return {
+        content: [],
+        structuredContent: ensureValidJson(result),
+      };
+    },
+  );
+
+  registerTool(
+    "fleet_context",
+    {
+      title: "Fetch run records and workspace/project rollups",
+      description:
+        "Fetch deterministic run records (brief + report history + verdict + proofs) and workspace/project rollups " +
+        "from the local mission-control store. Pass agentId for that agent's latest runs, workspaceId for the " +
+        "workspace rollup + its run records, projectId for the project rollup + its run records, or nothing for the " +
+        "most recent records fleet-wide. Use this to warm a worker's brief with prior context — spawned workers already " +
+        "receive the '# Prior work in this workspace' block automatically. Read-only; never approval-gated.",
+      inputSchema: {
+        workspaceId: z.string().optional(),
+        projectId: z.string().optional(),
+        agentId: z.string().optional(),
+      },
+      outputSchema: {
+        runRecords: z.array(runRecordSchema),
+        workspaceRollup: workspaceRollupSchema.optional(),
+        projectRollup: projectRollupSchema.optional(),
+      },
+    },
+    async (args: { workspaceId?: string; projectId?: string; agentId?: string }) => {
+      if (!missionControlService) {
+        return {
+          content: [],
+          structuredContent: ensureValidJson({
+            ok: false,
+            error: "Mission Control is not enabled on this host",
+          }),
+        };
+      }
+      const all = missionControlService.getRunRecords();
+      let runRecords = all;
+      let workspaceRollup: import("../../mission-control/rollups.js").WorkspaceRollup | undefined;
+      let projectRollup: import("../../mission-control/rollups.js").ProjectRollup | undefined;
+      if (args.agentId) {
+        runRecords = all.filter((record) => record.agentId === args.agentId).slice(0, 5);
+      } else if (args.workspaceId) {
+        runRecords = all.filter((record) => record.workspaceId === args.workspaceId).slice(0, 5);
+        workspaceRollup = missionControlService.getWorkspaceRollup(args.workspaceId) ?? undefined;
+      } else if (args.projectId) {
+        runRecords = all.filter((record) => record.projectId === args.projectId).slice(0, 5);
+        projectRollup = missionControlService.getProjectRollup(args.projectId) ?? undefined;
+      } else {
+        runRecords = all.slice(0, 10);
+      }
+      return {
+        content: [],
+        structuredContent: ensureValidJson({
+          runRecords,
+          ...(workspaceRollup ? { workspaceRollup } : {}),
+          ...(projectRollup ? { projectRollup } : {}),
         }),
       };
     },

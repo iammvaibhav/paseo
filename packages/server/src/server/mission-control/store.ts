@@ -11,8 +11,11 @@ import {
   type MissionControlProposal,
 } from "@getpaseo/protocol/mission-control/types";
 import { writeFileAtomic, writeJsonFileAtomic } from "../atomic-file.js";
+import type { MissionControlRunRecord } from "./run-records.js";
 
 export const MISSION_CONTROL_EVENTS_CAP = 5000;
+/** Run-record retention cap (records are larger than events; 2000 keeps ~2x the event window). */
+export const MISSION_CONTROL_RUN_RECORDS_CAP = 2000;
 const MISSION_CONTROL_DIR = "mission-control";
 const EVENTS_FILENAME = "events.jsonl";
 const OBSERVATIONS_FILENAME = "observations.json";
@@ -22,6 +25,9 @@ const REVIEW_STATE_FILENAME = "review-state.json";
 const PROPOSALS_FILENAME = "proposals.jsonl";
 const MESSAGE_TAGS_FILENAME = "message-tags.jsonl";
 const STOP_ORIGINS_FILENAME = "stop-origins.json";
+// M6 context architecture: per-run records (own JSONL, same append pattern as
+// proposals — the latest line for a key wins on load).
+const RUN_RECORDS_FILENAME = "run-records.jsonl";
 
 const CROCKFORD_BASE32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
@@ -164,6 +170,8 @@ export class MissionControlStore {
   private readonly proposalsById = new Map<string, MissionControlProposal>();
   private readonly messageTagsByMessageId = new Map<string, MissionControlMessageTag>();
   private readonly stopOriginByAgent = new Map<string, "user" | "machinery" | "system">();
+  // M6: per-run records keyed by their stable id ("mcr_<agentId>_<runEpoch>").
+  private readonly runRecordsById = new Map<string, MissionControlRunRecord>();
   private appendTail: Promise<void> = Promise.resolve();
   private persistTail: Promise<void> = Promise.resolve();
 
@@ -198,6 +206,7 @@ export class MissionControlStore {
     await this.loadProposals();
     await this.loadMessageTags();
     await this.loadStopOrigins();
+    await this.loadRunRecords();
   }
 
   private async loadEvents(): Promise<void> {
@@ -420,6 +429,38 @@ export class MissionControlStore {
     for (const [agentId, value] of Object.entries(parsed)) {
       if (value === "user" || value === "machinery" || value === "system") {
         this.stopOriginByAgent.set(agentId, value);
+      }
+    }
+  }
+
+  /**
+   * M6 run records: own JSONL, same append pattern as proposals — later lines
+   * for the same record id win, so re-assembly (a verdict landing after the
+   * run-end assembly) updates the record in place.
+   */
+  private async loadRunRecords(): Promise<void> {
+    let content: string;
+    try {
+      content = await readFile(join(this.dir, RUN_RECORDS_FILENAME), "utf-8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return;
+      }
+      this.logger.warn({ err: error }, "Failed to load mission control run records");
+      return;
+    }
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+      try {
+        const record = parseRunRecord(JSON.parse(trimmed));
+        if (record) {
+          this.runRecordsById.set(record.id, record);
+        }
+      } catch (error) {
+        this.logger.warn({ err: error }, "Skipping malformed mission control run record");
       }
     }
   }
@@ -746,6 +787,47 @@ export class MissionControlStore {
   }
 
   // ==========================================================================
+  // M6 run records: deterministic per-run context (brief + reports + verdict
+  // + proofs), assembled at run end / ready-for-review and persisted here.
+  // ==========================================================================
+
+  /**
+   * Upsert one run record. Idempotent per record id: a verdict landing after
+   * the run-end assembly re-writes the same record (latest line wins on load).
+   */
+  putRunRecord(record: MissionControlRunRecord): void {
+    this.runRecordsById.set(record.id, record);
+    this.appendTail = this.appendTail
+      .then(() =>
+        appendFile(join(this.dir, RUN_RECORDS_FILENAME), `${JSON.stringify(record)}\n`, "utf8"),
+      )
+      .catch((error) => {
+        this.logger.error({ err: error, recordId: record.id }, "Failed to append run record");
+      });
+  }
+
+  /** The most recent run record for an agent (or null when it has none). */
+  getLatestRunRecord(agentId: string): MissionControlRunRecord | null {
+    let latest: MissionControlRunRecord | null = null;
+    for (const record of this.runRecordsById.values()) {
+      if (record.agentId !== agentId) {
+        continue;
+      }
+      if (!latest || record.endedAt > latest.endedAt) {
+        latest = record;
+      }
+    }
+    return latest;
+  }
+
+  /** All retained run records, newest run first. */
+  getRunRecords(): MissionControlRunRecord[] {
+    return [...this.runRecordsById.values()].sort((left, right) =>
+      right.endedAt.localeCompare(left.endedAt),
+    );
+  }
+
+  // ==========================================================================
   // v3 dormant derivation: pre-rollout agents (no events since rollout) are
   // dormant — hidden by default, shown under the "All unarchived" toggle. A
   // dormant agent that runs again enters the lifecycle normally.
@@ -833,20 +915,47 @@ export class MissionControlStore {
     if (retained.length > hardCap) {
       retained = retained.slice(retained.length - hardCap);
     }
-    if (retained.length === this.events.length) {
+    if (retained.length !== this.events.length) {
+      this.events = retained;
+      const retainedIds = new Set(retained.map((event) => event.id));
+      this.supersedingEventIds.clear();
+      for (const event of retained) {
+        if (event.supersedesId && retainedIds.has(event.supersedesId)) {
+          this.supersedingEventIds.add(event.supersedesId);
+        }
+      }
+      await writeFileAtomic(
+        join(this.dir, EVENTS_FILENAME),
+        retained.map((event) => JSON.stringify(event)).join("\n") +
+          (retained.length > 0 ? "\n" : ""),
+      );
+    }
+    await this.pruneRunRecords(cutoffTs);
+  }
+
+  /**
+   * Run records share the retention window and their own cap: records for
+   * runs that ended before the cutoff (or beyond the cap) are dropped, oldest
+   * first. Follows the events pattern — rewrite the JSONL atomically.
+   */
+  private async pruneRunRecords(cutoffTs: string): Promise<void> {
+    let retained = [...this.runRecordsById.values()]
+      .filter((record) => record.endedAt >= cutoffTs)
+      .sort((left, right) => right.endedAt.localeCompare(left.endedAt));
+    if (retained.length > MISSION_CONTROL_RUN_RECORDS_CAP) {
+      retained = retained.slice(0, MISSION_CONTROL_RUN_RECORDS_CAP);
+    }
+    if (retained.length === this.runRecordsById.size) {
       return;
     }
-    this.events = retained;
-    const retainedIds = new Set(retained.map((event) => event.id));
-    this.supersedingEventIds.clear();
-    for (const event of retained) {
-      if (event.supersedesId && retainedIds.has(event.supersedesId)) {
-        this.supersedingEventIds.add(event.supersedesId);
-      }
+    this.runRecordsById.clear();
+    for (const record of retained) {
+      this.runRecordsById.set(record.id, record);
     }
     await writeFileAtomic(
-      join(this.dir, EVENTS_FILENAME),
-      retained.map((event) => JSON.stringify(event)).join("\n") + (retained.length > 0 ? "\n" : ""),
+      join(this.dir, RUN_RECORDS_FILENAME),
+      retained.map((record) => JSON.stringify(record)).join("\n") +
+        (retained.length > 0 ? "\n" : ""),
     );
   }
 
@@ -960,4 +1069,85 @@ function parseMessageTag(value: unknown): MissionControlMessageTag | null {
     return null;
   }
   return { messageId, agentIds, ts, text };
+}
+
+const RUN_OUTCOMES: Record<string, boolean> = {
+  finished: true,
+  failed: true,
+  interrupted: true,
+  blocked: true,
+  ready: true,
+  running: true,
+};
+
+/** Lenient parse: older/malformed lines are skipped, valid fields survive. */
+function parseRunRecord(value: unknown): MissionControlRunRecord | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const required = [
+    "id",
+    "agentId",
+    "agentName",
+    "agentTitle",
+    "hostAlias",
+    "serverId",
+    "runEpoch",
+    "startedAt",
+    "endedAt",
+    "createdAt",
+    "updatedAt",
+  ] as const;
+  for (const key of required) {
+    if (typeof value[key] !== "string" && key !== "runEpoch") {
+      return null;
+    }
+    if (key === "runEpoch" && typeof value[key] !== "number") {
+      return null;
+    }
+  }
+  const outcome = value["outcome"];
+  if (typeof outcome !== "string" || !RUN_OUTCOMES[outcome]) {
+    return null;
+  }
+  const reports = Array.isArray(value["reports"]) ? value["reports"].filter(isRunReport) : [];
+  const proofs = Array.isArray(value["proofs"]) ? value["proofs"].filter(isRunProof) : [];
+  const verdict =
+    value["verdict"] === null || value["verdict"] === undefined ? null : value["verdict"];
+  return {
+    id: value["id"] as string,
+    agentId: value["agentId"] as string,
+    agentName: value["agentName"] as string,
+    agentTitle: value["agentTitle"] as string,
+    hostAlias: value["hostAlias"] as string,
+    serverId: value["serverId"] as string,
+    workspaceId: typeof value["workspaceId"] === "string" ? value["workspaceId"] : null,
+    workspaceTitle: typeof value["workspaceTitle"] === "string" ? value["workspaceTitle"] : null,
+    projectId: typeof value["projectId"] === "string" ? value["projectId"] : null,
+    projectName: typeof value["projectName"] === "string" ? value["projectName"] : null,
+    runEpoch: value["runEpoch"] as number,
+    startedAt: value["startedAt"] as string,
+    endedAt: value["endedAt"] as string,
+    outcome: outcome as MissionControlRunRecord["outcome"],
+    brief: typeof value["brief"] === "string" ? value["brief"] : null,
+    reports,
+    verdict: isRecord(verdict) ? (verdict as unknown as MissionControlRunRecord["verdict"]) : null,
+    proofs,
+    createdAt: value["createdAt"] as string,
+    updatedAt: value["updatedAt"] as string,
+  };
+}
+
+function isRunReport(value: unknown): value is MissionControlRunRecord["reports"][number] {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return typeof value["ts"] === "string" && typeof value["headline"] === "string";
+}
+
+function isRunProof(value: unknown): value is MissionControlRunRecord["proofs"][number] {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return typeof value["kind"] === "string";
 }

@@ -127,3 +127,38 @@ export type {
 } from "./context.js";
 export { CommanderSnapshotInjector } from "./commander-snapshot.js";
 export type { CommanderSnapshotInjectorOptions } from "./commander-snapshot.js";
+export {
+  assembleRunRecord,
+  readLaunchBrief,
+  runRecordTags,
+  runRecordDocumentId,
+  isFinalizableRunRecord,
+  RUN_RECORD_BRIEF_MAX_CHARS,
+  RUN_RECORD_REPORTS_MAX,
+  RUN_RECORD_PROOFS_MAX,
+  ROLLUP_RUNS_PER_WORKSPACE,
+  ROLLUP_RUNS_PER_PROJECT,
+  PRIOR_WORK_BLOCK_MAX_BYTES,
+} from "./run-records.js";
+export type {
+  MissionControlRunRecord,
+  MissionControlRunReport,
+  MissionControlRunProof,
+  MissionControlRunOutcome,
+  MissionControlRunPlacement,
+  RunRecordAssemblyInput,
+} from "./run-records.js";
+export {
+  RollupCache,
+  deriveWorkspaceRollup,
+  deriveProjectRollup,
+  deriveRunRollupEntry,
+  buildPriorWorkBlock,
+} from "./rollups.js";
+export type { WorkspaceRollup, ProjectRollup, RunRollup, RunRollupEntry } from "./rollups.js";
+export { HindsightClient, buildRunRecordContent } from "./hindsight.js";
+export type {
+  HindsightClientOptions,
+  HindsightRecallMatch,
+  HindsightRecallResult,
+} from "./hindsight.js";

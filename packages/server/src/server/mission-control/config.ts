@@ -47,6 +47,12 @@ export interface ResolvedMissionControlCentralConfig {
   // instructions); stall nudges are unaffected (always native steer).
   commanderToWorkerMode: "steer" | "interrupt" | "queue";
   verifierToWorkerMode: "steer" | "interrupt" | "queue";
+  // M6 context architecture: Hindsight fleet memory bank. hindsightUrl null =
+  // disabled (run records stay local; fleet_recall degrades to "memory
+  // unavailable"). hindsightBank names the bank to write/recall (default
+  // "paseo-fleet"; the omp bank stays read-only, never written).
+  hindsightUrl: string | null;
+  hindsightBank: string;
 }
 
 export const DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG: ResolvedMissionControlCentralConfig = {
@@ -69,6 +75,8 @@ export const DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG: ResolvedMissionControlCentr
   dormantTurnSeconds: 300,
   commanderToWorkerMode: "interrupt",
   verifierToWorkerMode: "interrupt",
+  hindsightUrl: null,
+  hindsightBank: "paseo-fleet",
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -195,6 +203,8 @@ const CENTRAL_CONFIG_KEYS: readonly (keyof ResolvedMissionControlCentralConfig)[
   "dormantTurnSeconds",
   "commanderToWorkerMode",
   "verifierToWorkerMode",
+  "hindsightUrl",
+  "hindsightBank",
 ];
 
 function pickCentralConfigKeys(value: Record<string, unknown>): MissionControlCentralConfig {
@@ -209,22 +219,37 @@ function pickCentralConfigKeys(value: Record<string, unknown>): MissionControlCe
   return picked as MissionControlCentralConfig;
 }
 
+type NullableStringKnobs = Pick<
+  ResolvedMissionControlCentralConfig,
+  "commanderHost" | "commanderModel" | "verifierModel" | "defaultDispatchHost" | "hindsightUrl"
+>;
+
+/** The optional model overrides and host designations: string-or-null knobs. */
+function resolveNullableStringKnobs(
+  stored: MissionControlCentralConfig,
+  defaults: ResolvedMissionControlCentralConfig,
+): NullableStringKnobs {
+  const commanderHost = stored.commanderHost ?? defaults.commanderHost;
+  const commanderModel = stored.commanderModel ?? defaults.commanderModel;
+  const verifierModel = stored.verifierModel ?? defaults.verifierModel;
+  const defaultDispatchHost = stored.defaultDispatchHost ?? defaults.defaultDispatchHost;
+  const hindsightUrl = stored.hindsightUrl ?? defaults.hindsightUrl;
+  return { commanderHost, commanderModel, verifierModel, defaultDispatchHost, hindsightUrl };
+}
+
 function resolveCentralConfig(
   stored: MissionControlCentralConfig,
 ): ResolvedMissionControlCentralConfig {
   const defaults = DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG;
   return {
-    commanderHost: stored.commanderHost ?? defaults.commanderHost,
-    commanderModel: stored.commanderModel ?? defaults.commanderModel,
+    ...resolveNullableStringKnobs(stored, defaults),
     commanderInstructions: stored.commanderInstructions ?? defaults.commanderInstructions,
-    verifierModel: stored.verifierModel ?? defaults.verifierModel,
     verifierConcurrency: stored.verifierConcurrency ?? defaults.verifierConcurrency,
     evaluationScope: stored.evaluationScope ?? defaults.evaluationScope,
     mode: stored.mode ?? defaults.mode,
     retentionDays: stored.retentionDays ?? defaults.retentionDays,
     namingTheme: stored.namingTheme ?? defaults.namingTheme,
     hideAgentNames: stored.hideAgentNames ?? defaults.hideAgentNames,
-    defaultDispatchHost: stored.defaultDispatchHost ?? defaults.defaultDispatchHost,
     silenceNudgeSeconds: stored.silenceNudgeSeconds ?? defaults.silenceNudgeSeconds,
     // Legacy fallback: pre-rename files carry status cadence as nudgeSeconds.
     statusNudgeSeconds:
@@ -233,5 +258,6 @@ function resolveCentralConfig(
     dormantTurnSeconds: stored.dormantTurnSeconds ?? defaults.dormantTurnSeconds,
     commanderToWorkerMode: stored.commanderToWorkerMode ?? defaults.commanderToWorkerMode,
     verifierToWorkerMode: stored.verifierToWorkerMode ?? defaults.verifierToWorkerMode,
+    hindsightBank: stored.hindsightBank ?? defaults.hindsightBank,
   };
 }
