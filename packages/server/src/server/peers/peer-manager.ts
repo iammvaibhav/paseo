@@ -1,8 +1,5 @@
 import { DaemonClient, type WebSocketLike } from "@getpaseo/client";
-import type {
-  MissionControlEvent,
-  MissionControlPeerStatus,
-} from "@getpaseo/protocol/mission-control/types";
+import type { MissionControlPeerStatus } from "@getpaseo/protocol/mission-control/types";
 import {
   buildDaemonWebSocketUrl,
   normalizeHostPort,
@@ -11,7 +8,6 @@ import {
 import { WebSocket } from "ws";
 import type { Logger } from "pino";
 
-import type { MissionControlDigestSink } from "../mission-control/digest.js";
 import type { PeerConfig } from "./types.js";
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
@@ -75,7 +71,6 @@ export interface PeerManagerOptions {
   peers: PeerConfig[];
   logger: Logger;
   appVersion?: string;
-  missionControlDigest?: MissionControlDigestSink;
 }
 
 interface PeerConnection {
@@ -89,12 +84,10 @@ export class PeerManager {
   private readonly peers: PeerConnection[] = [];
   private readonly logger: Logger;
   private readonly appVersion: string | undefined;
-  private readonly missionControlDigest: MissionControlDigestSink | undefined;
 
   constructor(options: PeerManagerOptions) {
     this.logger = options.logger.child({ module: "peers" });
     this.appVersion = options.appVersion;
-    this.missionControlDigest = options.missionControlDigest;
     for (const config of options.peers) {
       this.peers.push(this.createPeer(config));
     }
@@ -157,10 +150,6 @@ export class PeerManager {
       }
     });
 
-    client.on("mission_control_event", (message) => {
-      this.forwardPeerEvent(peer, message.event);
-    });
-
     return peer;
   }
 
@@ -174,20 +163,5 @@ export class PeerManager {
       lastSeenAt: new Date().toISOString(),
     };
     this.logger.info({ peer: peer.config.name, serverId }, "Peer online");
-  }
-
-  private forwardPeerEvent(peer: PeerConnection, event: MissionControlEvent): void {
-    if (!this.missionControlDigest) {
-      return;
-    }
-    const serverId = peer.client.getLastServerInfoMessage()?.serverId ?? peer.serverId;
-    if (!serverId) {
-      this.logger.warn(
-        { peer: peer.config.name, eventId: event.id },
-        "Dropping peer event without serverId",
-      );
-      return;
-    }
-    this.missionControlDigest.enqueue(event, { serverId, hostName: peer.config.name });
   }
 }

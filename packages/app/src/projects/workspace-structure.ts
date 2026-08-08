@@ -1,6 +1,9 @@
 import type { ProjectDescriptor, WorkspaceDescriptor } from "@/stores/session-store";
+import {
+  COMMANDER_HOME_DIR_SEGMENT,
+  isSystemOwnedAgentLabels,
+} from "@getpaseo/protocol/mission-control/system-owned";
 import { isHistoryAskAgent } from "@/history-ask";
-import { isCommanderAgent } from "@/mission-control/labels";
 import { projectDisplayNameFromProjectId } from "@/utils/project-display-name";
 
 export interface WorkspaceAgentForSidebar {
@@ -8,27 +11,90 @@ export interface WorkspaceAgentForSidebar {
   labels?: Record<string, string> | null;
 }
 
-export function isSidebarWorkspaceHidden(input: {
+/**
+ * Known paseo-home directory names. The Commander home lives at
+ * `<paseoHome>/commander` (docs): the standard home is `~/.paseo`, the dev
+ * daemon's is `.dev/paseo-home`. Only these two layouts are matched, so a
+ * user project merely named "commander" (`~/commander`,
+ * `/Users/…/paseo/commander`, …) can never be mistaken for system-owned
+ * infrastructure.
+ */
+const KNOWN_PASEO_HOME_DIR_NAMES = new Set([".paseo", "paseo-home"]);
+
+/**
+ * True when a workspace directory is the Commander's reserved home
+ * (`<paseoHome>/commander` — the shared `COMMANDER_HOME_DIR_SEGMENT` as the
+ * last path segment under a known paseo-home directory). The directory is the
+ * workspace-level system-owned marker: no user project can claim that cwd, so
+ * the match is unambiguous even for an orphaned home workspace with no live
+ * agents.
+ */
+export function isCommanderHomeWorkspaceDirectory(
+  workspaceDirectory: string | null | undefined,
+): boolean {
+  if (!workspaceDirectory) {
+    return false;
+  }
+  const segments = workspaceDirectory.split("/");
+  if (segments[segments.length - 1] !== COMMANDER_HOME_DIR_SEGMENT) {
+    return false;
+  }
+  return KNOWN_PASEO_HOME_DIR_NAMES.has(segments[segments.length - 2]);
+}
+
+/**
+ * True when a workspace is system-owned: the Commander's reserved home
+ * directory, or a workspace whose agents are ALL system-owned
+ * (`paseo.mission-control*` — Commander, verifiers, machinery). History Ask
+ * workspaces are NOT system-owned (separate surface artifact); the sidebar
+ * keeps hiding those in both modes via {@link isSidebarWorkspaceHidden}.
+ */
+export function isSystemOwnedWorkspace(input: {
   agentsInWorkspace: WorkspaceAgentForSidebar[];
-  /**
-   * Mission Control verbose mode: when ON, the Commander's home workspace is
-   * shown in the sidebar so machinery can be inspected on demand; when OFF it
-   * is hidden. History Ask workspaces stay hidden in both modes.
-   */
-  hideCommanderWorkspaces: boolean;
+  workspaceDirectory: string | null | undefined;
 }): boolean {
+  if (isCommanderHomeWorkspaceDirectory(input.workspaceDirectory)) {
+    return true;
+  }
   if (input.agentsInWorkspace.length === 0) {
     return false;
   }
-  const hasOnlyMachinery = input.agentsInWorkspace.every(
-    (agent) => isHistoryAskAgent(agent.labels) || isCommanderAgent(agent.labels),
+  return input.agentsInWorkspace.every((agent) =>
+    isSystemOwnedAgentLabels(agent.labels ?? undefined),
   );
-  if (!hasOnlyMachinery) {
+}
+
+export function isSidebarWorkspaceHidden(input: {
+  agentsInWorkspace: WorkspaceAgentForSidebar[];
+  workspaceDirectory?: string | null;
+  /**
+   * Mission Control verbose mode: when ON, system-owned workspaces (the
+   * Commander's home + machinery-only workspaces) are shown in the sidebar so
+   * machinery can be inspected on demand; when OFF they are hidden. History
+   * Ask workspaces stay hidden in both modes.
+   */
+  hideSystemOwnedWorkspaces: boolean;
+}): boolean {
+  const { agentsInWorkspace, workspaceDirectory, hideSystemOwnedWorkspaces } = input;
+  const hasMachineryOnlyAgents =
+    agentsInWorkspace.length > 0 &&
+    agentsInWorkspace.every(
+      (agent) =>
+        isHistoryAskAgent(agent.labels) || isSystemOwnedAgentLabels(agent.labels ?? undefined),
+    );
+  const isCommanderHome = isCommanderHomeWorkspaceDirectory(workspaceDirectory);
+  if (!hasMachineryOnlyAgents && !isCommanderHome) {
     return false;
   }
-  const hasCommander = input.agentsInWorkspace.some((agent) => isCommanderAgent(agent.labels));
-  if (hasCommander && !input.hideCommanderWorkspaces) {
-    return false;
+  if (!hideSystemOwnedWorkspaces) {
+    // Verbose ON: machinery workspaces with a system-owned agent, and the
+    // Commander's home, show. History-Ask-only workspaces stay hidden in both modes.
+    const hasSystemOwnedAgent = agentsInWorkspace.some((agent) =>
+      isSystemOwnedAgentLabels(agent.labels ?? undefined),
+    );
+    if (hasSystemOwnedAgent || isCommanderHome) {
+      return false;
+    }
   }
   return true;
 }
@@ -77,9 +143,9 @@ interface ProjectDraft {
 export function buildWorkspaceStructureProjects(input: {
   sessions: WorkspaceStructureSession[];
   /** Default hidden; Mission Control verbose mode passes false. */
-  hideCommanderWorkspaces?: boolean;
+  hideSystemOwnedWorkspaces?: boolean;
 }): WorkspaceStructureProject[] {
-  const { hideCommanderWorkspaces = true } = input;
+  const { hideSystemOwnedWorkspaces = true } = input;
   const byProject = new Map<string, ProjectDraft>();
   const projectEntries: Array<{ serverId: string; project: ProjectDescriptor }> = [];
   const keyCountsByServer = new Map<string, Map<string, number>>();
@@ -130,7 +196,13 @@ export function buildWorkspaceStructureProjects(input: {
 
     for (const workspace of session.workspaces) {
       const agentsInWorkspace = agentsByWorkspaceId.get(workspace.id) ?? [];
-      if (isSidebarWorkspaceHidden({ agentsInWorkspace, hideCommanderWorkspaces })) {
+      if (
+        isSidebarWorkspaceHidden({
+          agentsInWorkspace,
+          workspaceDirectory: workspace.workspaceDirectory,
+          hideSystemOwnedWorkspaces,
+        })
+      ) {
         continue;
       }
       const viewKey = viewKeyByServerProjectId.get(session.serverId)?.get(workspace.projectId);

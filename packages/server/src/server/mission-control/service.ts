@@ -9,6 +9,7 @@ import type { AgentStorage, StoredAgentRecord } from "../agent/agent-storage.js"
 import type { AgentStreamEvent } from "../agent/agent-sdk-types.js";
 import type { AgentTimelineRow } from "../agent/agent-timeline-store-types.js";
 import { dispatchLocalPromptMode } from "../agent/tools/paseo-tools.js";
+import { formatSystemNotificationPrompt } from "../agent/agent-prompt.js";
 import type { DaemonConfigStore } from "../daemon-config-store.js";
 import type { SessionOutboundMessage } from "../messages.js";
 import type {
@@ -19,8 +20,8 @@ import type {
   MissionControlReportStatusInput,
 } from "@getpaseo/protocol/mission-control/types";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
+import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
 import { hasMissionControlLabels } from "./naming.js";
-import type { MissionControlDigestSink } from "./digest.js";
 import {
   MissionControlStore,
   generateProposalId,
@@ -56,7 +57,6 @@ const RESTART_GRACE_MS = 60_000;
 // this long before self-healing the record to error.
 const WATCHDOG_DEAD_RUNTIME_MS = 2 * 60_000;
 const TIMELINE_BUFFER_CAP = 2000;
-const MISSION_CONTROL_LABEL_PREFIX = "paseo.mission-control";
 const SELF_REPORT_RATE_LIMIT_MS = 60_000;
 /** Exponential-backoff ceiling for nudge intervals: 30 minutes. */
 const NUDGE_BACKOFF_CAP_MS = 30 * 60 * 1000;
@@ -110,6 +110,33 @@ function toolCallErrorMessage(error: unknown): string {
     return (error as { message: string }).message;
   }
   return String(error);
+}
+
+// The no-prose tail of an M3 machinery turn (mirrors the digest-era and
+// snapshot-turn instructions): the Commander handles the event or acks.
+const MACHINERY_TURN_NO_PROSE_INSTRUCTION =
+  'This is a machinery turn. Handle it per your playbook: route, dispatch, or recover with your tools. If no action is needed from you, reply with a single short acknowledgment token (for example "ok") and nothing else. No summaries, no narration.';
+
+/**
+ * The machinery-turn message body: the needs-you event as a standalone
+ * <paseo-system> message (the app renders any user row starting with the
+ * envelope as machinery). The fresh world snapshot arrives as its OWN
+ * envelope immediately before this row, injected by the CommanderSnapshot
+ * Injector on the same delivery path.
+ */
+function buildMachineryTurnMessage(
+  event: MissionControlEvent,
+  serverId: string,
+  hostName: string,
+): string {
+  const link = `paseo://h/${serverId}/agent/${event.agentId}`;
+  const detail = event.detail?.trim() ? `\n${event.detail.trim()}` : "";
+  return formatSystemNotificationPrompt(
+    [
+      `Needs you: [${event.kind}] ${event.headline} — ${event.agentTitle} (${hostName}) — ${link}${detail}`,
+      MACHINERY_TURN_NO_PROSE_INSTRUCTION,
+    ].join("\n\n"),
+  );
 }
 
 /**
@@ -182,7 +209,6 @@ export interface MissionControlServiceOptions {
   serverId: string;
   hostName: string;
   broadcast: (message: SessionOutboundMessage) => void;
-  digest?: MissionControlDigestSink;
   /** Presence contract for the approval gate (focused client / user-stop). */
   presence: MissionControlPresenceSource;
   /**
@@ -267,7 +293,6 @@ export class MissionControlService {
   private readonly serverId: string;
   private readonly hostName: string;
   private readonly broadcast: (message: SessionOutboundMessage) => void;
-  private readonly digest: MissionControlDigestSink | null;
   private readonly verifier: MissionControlServiceOptions["verifier"];
   private readonly centralConfig: CentralMissionControlConfigStore;
   private readonly presenceSource: MissionControlPresenceSource;
@@ -364,7 +389,6 @@ export class MissionControlService {
     this.serverId = options.serverId;
     this.hostName = options.hostName;
     this.broadcast = options.broadcast;
-    this.digest = options.digest ?? null;
     this.verifier = options.verifier ?? null;
     this.presenceSource = options.presence;
     this.resetCommanderFn = options.resetCommander;
@@ -420,57 +444,44 @@ export class MissionControlService {
         // waits for idle instead. Stall nudges always target mid-run agents,
         // so a busy target must never fail the delivery.
         //
-        // Ack retraction must fire on EVERY machinery dispatch path: when the
-        // target is the Commander, arm the shared ack-drop tracker so a pure
-        // "ok" reply from the delivered turn is retracted like a digest reply.
-        // The tracker's arm is one-shot (cleared on the first turn_started)
-        // and expires if the dispatch starts no turn (out-of-band steer), so
-        // a user-prompted turn is never classified.
-        const ackDrop = this.digest?.ackDrop ?? null;
-        const commanderTarget = ackDrop !== null && (await this.isCommanderAgentId(input.agentId));
-        if (commanderTarget) {
-          ackDrop?.arm();
-        }
-        try {
-          await dispatchLocalPromptMode({
-            agentManager: this.agentManager,
-            agentStorage: this.agentStorage,
-            agentId: input.agentId,
-            prompt: input.message,
-            mode: input.deliveryMode,
-            classification: input.classification,
-            // Proposal delivery (escalation recovery, verifier contact,
-            // commander steer) superseding a busy run is machinery-originated:
-            // the superseded run keeps the failure treatment.
-            replaceOrigin: "machinery",
-            recordStopOrigin: (agentId, origin) => this.store.recordStopOrigin(agentId, origin),
-            logger: this.logger,
-            // Honest steer delivery: a handled out-of-band steer must be
-            // confirmed by real agent activity within the verification window.
-            // tryRunOutOfBand returning true means the prompt was handed to
-            // the provider runtime — but the wedged-omp incident showed that
-            // can be a lie: the steer vanished into a parked loop while Paseo
-            // recorded "sent". Arm the verification so a silent agent flips
-            // the proposal to undelivered and escalates instead.
-            onOutOfBandSteer: () => {
-              this.armSteerDeliveryVerification(input.agentId, input.proposal);
-            },
-          });
-          // Commander adoption: a delivered commander-origin send marks the
-          // target as Commander-owned (verifier scope "commander" audits it).
-          // Fires only after the dispatch actually succeeded — a denied,
-          // aborted (user-stopped), or failed delivery never adopts. Stall
-          // nudges and verifier contacts (origins "stall"/"verifier") are
-          // machinery, not Commander take-overs; spawn-kind proposals never
-          // reach the deliver hook. Idempotent: first adoption wins.
-          if (input.proposal?.origin === "commander") {
-            await this.recordCommanderAdoption(input.agentId);
-          }
-        } catch (error) {
-          if (commanderTarget) {
-            ackDrop?.disarm();
-          }
-          throw error;
+        // COMPAT(digest): the digest-era ack-retraction arming for the
+        // delivered Commander turn was removed with the digest queue. The
+        // CommanderSnapshotInjector now owns the retraction primitive and
+        // arms it only for its own snapshot turn — a delivered message's
+        // reply (a proposal decision) is never classified.
+        await dispatchLocalPromptMode({
+          agentManager: this.agentManager,
+          agentStorage: this.agentStorage,
+          agentId: input.agentId,
+          prompt: input.message,
+          mode: input.deliveryMode,
+          classification: input.classification,
+          // Proposal delivery (escalation recovery, verifier contact,
+          // commander steer) superseding a busy run is machinery-originated:
+          // the superseded run keeps the failure treatment.
+          replaceOrigin: "machinery",
+          recordStopOrigin: (agentId, origin) => this.store.recordStopOrigin(agentId, origin),
+          logger: this.logger,
+          // Honest steer delivery: a handled out-of-band steer must be
+          // confirmed by real agent activity within the verification window.
+          // tryRunOutOfBand returning true means the prompt was handed to
+          // the provider runtime — but the wedged-omp incident showed that
+          // can be a lie: the steer vanished into a parked loop while Paseo
+          // recorded "sent". Arm the verification so a silent agent flips
+          // the proposal to undelivered and escalates instead.
+          onOutOfBandSteer: () => {
+            this.armSteerDeliveryVerification(input.agentId, input.proposal);
+          },
+        });
+        // Commander adoption: a delivered commander-origin send marks the
+        // target as Commander-owned (verifier scope "commander" audits it).
+        // Fires only after the dispatch actually succeeded — a denied,
+        // aborted (user-stopped), or failed delivery never adopts. Stall
+        // nudges and verifier contacts (origins "stall"/"verifier") are
+        // machinery, not Commander take-overs; spawn-kind proposals never
+        // reach the deliver hook. Idempotent: first adoption wins.
+        if (input.proposal?.origin === "commander") {
+          await this.recordCommanderAdoption(input.agentId);
         }
       },
       publishProposalEvent: async (proposal) => {
@@ -720,16 +731,6 @@ export class MissionControlService {
       }
     }
     return null;
-  }
-
-  /** True when the given agent id is the Commander (live or stored). */
-  private async isCommanderAgentId(agentId: string): Promise<boolean> {
-    const live = this.agentManager.getAgent(agentId);
-    if (live?.labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE) {
-      return true;
-    }
-    const record = await this.agentStorage.get(agentId);
-    return record?.labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE;
   }
 
   /**
@@ -2341,7 +2342,6 @@ export class MissionControlService {
 
   private async emitEvent(
     input: Omit<MissionControlAppendInput, "agentTitle">,
-    options?: { skipDigest?: boolean },
   ): Promise<MissionControlEvent> {
     const agentTitle = await this.resolveAgentTitle(input.agentId);
     const shortDescription =
@@ -2359,34 +2359,125 @@ export class MissionControlService {
       type: "mission_control_event",
       event,
     });
-    if (!options?.skipDigest) {
-      this.digest?.enqueue(event, { serverId: this.serverId, hostName: this.hostName });
-    }
+    // M3 runtime model: the feed keeps the event; the Commander no longer
+    // receives event streams as chat. Only needs-you events (blocked /
+    // stalled-escalation / verdict-insufficient) trigger an AUTO-mode
+    // machinery turn carrying the event — the fresh world snapshot rides the
+    // same turn via the CommanderSnapshotInjector's beforeAgentRun seam.
+    this.maybeDispatchMachineryTurn(event);
     return event;
+  }
+
+  // --- M3 machinery turns (docs/commander.md "Runtime model") ---
+
+  /**
+   * Needs-you event kinds that trigger an AUTO-mode machinery turn to the
+   * Commander: blocked (permission / verification-failed / tool-loop),
+   * stalled (escalation, dormant-turn, steer-undelivered, self-heal). Verdict
+   * cards join only when the verdict does NOT resolve the item (see
+   * shouldDispatchMachineryTurn) — a completion needs no routing. Ask mode
+   * never dispatches: the feed card is the ask.
+   */
+  private shouldDispatchMachineryTurn(event: MissionControlEvent): boolean {
+    if (event.kind === "blocked" || event.kind === "stalled") {
+      return true;
+    }
+    if (event.kind === "verdict") {
+      // Verdict-insufficient: the item stays needs-you (ready/none). A
+      // done/cleared verdict resolves the item — the Commander is not
+      // consulted about completions.
+      const review = this.store.getReviewState(event.agentId);
+      return review?.reviewState === "ready" || review?.reviewState === "none";
+    }
+    return false;
+  }
+
+  /**
+   * Fire-and-forget AUTO-mode machinery turn: delivers the needs-you event to
+   * the Commander as a steer-classified machinery message. The fresh world
+   * snapshot rides the same delivery automatically — the delivered message
+   * goes through startAgentRun, whose beforeAgentRun seam runs the
+   * CommanderSnapshotInjector first. Failures are logged, never surfaced: the
+   * event card already reached the feed, and the event is never re-queued
+   * (payloads are computed at delivery).
+   */
+  private maybeDispatchMachineryTurn(event: MissionControlEvent): void {
+    try {
+      if (this.centralConfig.get().mode !== "auto") {
+        return;
+      }
+      if (!this.shouldDispatchMachineryTurn(event)) {
+        return;
+      }
+      void this.dispatchMachineryTurn(event).catch((error) => {
+        this.logger.warn(
+          { err: error, eventId: event.id, kind: event.kind, agentId: event.agentId },
+          "mission_control.machinery_turn.dispatch_failed",
+        );
+      });
+    } catch (error) {
+      // centralConfig reads can throw pre-initialization; never let the event
+      // emission path fail on the machinery-turn side effect.
+      this.logger.warn(
+        { err: error, eventId: event.id },
+        "mission_control.machinery_turn.gate_failed",
+      );
+    }
+  }
+
+  private async dispatchMachineryTurn(event: MissionControlEvent): Promise<void> {
+    const commanderId = await this.resolveCommanderAgentId();
+    if (!commanderId) {
+      this.logger.debug(
+        { eventId: event.id, kind: event.kind },
+        "mission_control.machinery_turn.no_commander",
+      );
+      return;
+    }
+    if (event.agentId === commanderId) {
+      // The Commander's own blocked card (e.g. a failed spawn) must not be
+      // messaged back to itself.
+      return;
+    }
+    await dispatchLocalPromptMode({
+      agentManager: this.agentManager,
+      agentStorage: this.agentStorage,
+      agentId: commanderId,
+      prompt: buildMachineryTurnMessage(event, this.serverId, this.hostName),
+      mode: "steer",
+      classification: "machinery",
+      replaceOrigin: "machinery",
+      recordStopOrigin: (agentId, origin) => this.store.recordStopOrigin(agentId, origin),
+      logger: this.logger,
+      onOutOfBandSteer: () => {
+        this.armSteerDeliveryVerification(commanderId, undefined);
+      },
+    });
+    this.logger.info(
+      { eventId: event.id, kind: event.kind, agentId: event.agentId },
+      "mission_control.machinery_turn.dispatched",
+    );
   }
 
   /** Proposal cards ride the feed as kind:"proposal" events. */
   private async emitProposalEvent(proposal: MissionControlProposal): Promise<MissionControlEvent> {
     const pending = proposal.status === "pending";
-    return this.emitEvent(
-      {
-        agentId: proposal.targetAgentId,
-        kind: "proposal",
-        source: proposal.origin === "verifier" ? "verifier" : "system",
-        severity: pending ? "blocker" : "info",
-        headline: pending
-          ? `Proposal (${proposal.origin}): ${proposal.reason}`
-          : `Proposal ${proposal.status}`,
-        detail: proposal.message,
-        proposal,
-        // Verifier-origin drill-in: the card opens the verifier's thread.
-        ...(proposal.verifierAgentId ? { verifierAgentId: proposal.verifierAgentId } : {}),
-        // Machinery-only cards (stall status-ask nudges) render in verbose
-        // mode only; everything else is a normal-mode card. Absent → normal.
-        ...(proposal.verboseOnly ? { verboseOnly: true } : {}),
-      },
-      { skipDigest: true },
-    );
+    return this.emitEvent({
+      agentId: proposal.targetAgentId,
+      kind: "proposal",
+      source: proposal.origin === "verifier" ? "verifier" : "system",
+      severity: pending ? "blocker" : "info",
+      headline: pending
+        ? `Proposal (${proposal.origin}): ${proposal.reason}`
+        : `Proposal ${proposal.status}`,
+      detail: proposal.message,
+      proposal,
+      // Verifier-origin drill-in: the card opens the verifier's thread.
+      ...(proposal.verifierAgentId ? { verifierAgentId: proposal.verifierAgentId } : {}),
+      // Machinery-only cards (stall status-ask nudges) render in verbose
+      // mode only; everything else is a normal-mode card. Absent → normal.
+      ...(proposal.verboseOnly ? { verboseOnly: true } : {}),
+    });
   }
 
   /** Verdict cards ride the feed as kind:"verdict" events. */
@@ -2403,22 +2494,17 @@ export class MissionControlService {
     } else {
       headline = `Done — ${summary}`;
     }
-    return this.emitEvent(
-      {
-        agentId: input.agentId,
-        kind: "verdict",
-        source: input.verdict.by === "verifier" ? "verifier" : "system",
-        severity: "info",
-        headline,
-        detail: input.verdict.summary,
-        // Verifier-origin drill-in: the card opens the verifier's thread
-        // (verifiers stay hidden from board buckets but are reachable here).
-        ...(input.verdict.verifierAgentId
-          ? { verifierAgentId: input.verdict.verifierAgentId }
-          : {}),
-      },
-      { skipDigest: true },
-    );
+    return this.emitEvent({
+      agentId: input.agentId,
+      kind: "verdict",
+      source: input.verdict.by === "verifier" ? "verifier" : "system",
+      severity: "info",
+      headline,
+      detail: input.verdict.summary,
+      // Verifier-origin drill-in: the card opens the verifier's thread
+      // (verifiers stay hidden from board buckets but are reachable here).
+      ...(input.verdict.verifierAgentId ? { verifierAgentId: input.verdict.verifierAgentId } : {}),
+    });
   }
 
   private notifyReviewState(agentId: string): void {
@@ -2540,7 +2626,9 @@ function isToolTerminalRow(event: AgentStreamEvent): boolean {
 }
 
 function hasExclusionLabels(labels: Record<string, string>): boolean {
-  if (Object.keys(labels).some((key) => key.startsWith(MISSION_CONTROL_LABEL_PREFIX))) {
+  // System-owned (Commander/verifiers/machinery) via the one shared
+  // predicate; History Ask parentage is a separate exclusion signal.
+  if (isSystemOwnedAgentLabels(labels)) {
     return true;
   }
   return PARENT_AGENT_ID_LABEL in labels;

@@ -104,7 +104,7 @@ import type { PendingPermission } from "@/types/shared";
 import type { StreamItem } from "@/types/stream";
 import { getInitDeferred, getInitKey } from "@/utils/agent-initialization";
 import { normalizeAgentSnapshot, resolveSessionAgent } from "@/utils/agent-snapshots";
-import { isCommanderAgent } from "@/mission-control/labels";
+import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
 import { storeFetchedAgentDetail } from "@/utils/hydrate-fetched-agent";
 import { applyLegacyDaemonWorkspaceOwnership } from "@/workspace/legacy-daemon-workspaces";
 import type { WorkspaceFileOpenRequest } from "@/workspace/file-open";
@@ -1575,10 +1575,10 @@ function ActiveAgentComposer({
         closeWorkspaceTab(workspaceKey, tabId);
       }
 
-      // The Commander (label `paseo.mission-control=*`) is never archivable
-      // from any UI surface — `/exit` and `/clear` close the tab but leave it
-      // running so Mission Control can keep talking to it.
-      if (!isCommanderAgent(agent.labels)) {
+      // System-owned agents (Commander, verifiers, machinery) are never
+      // archivable from any UI surface — `/exit` and `/clear` close the tab but
+      // leave it running so Mission Control can keep talking to them.
+      if (!isSystemOwnedAgentLabels(agent.labels)) {
         await archiveAgent({ serverId, agentId });
       }
     },

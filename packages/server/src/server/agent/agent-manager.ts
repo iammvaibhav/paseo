@@ -359,6 +359,23 @@ export interface AgentManagerOptions {
     cwd: string;
   }) => Promise<string | null | undefined> | string | null | undefined;
   onWorkspaceStateMayHaveChanged?: (params: { cwd: string }) => void;
+  /**
+   * Per-turn pre-run hook (bootstrap-wired to the Commander snapshot
+   * injector). Invoked by startAgentRun for EVERY run — user messages,
+   * machinery turns, interrupt replacements — before the run starts, so a
+   * hook can dispatch its own machinery turn (a fresh world snapshot) ahead
+   * of the delivered prompt. The hook gates itself by agent labels and must
+   * be cheap for ordinary agents. `replaceRunning` mirrors the startAgentRun
+   * option the delivered message rides with — the injector uses it to tell
+   * the user-message path (replace) from the queue/machinery path (settle
+   * and proceed).
+   */
+  beforeAgentRun?: (input: {
+    agentId: string;
+    prompt: AgentPromptInput;
+    runOptions?: AgentRunOptions;
+    replaceRunning?: boolean;
+  }) => Promise<void> | void;
   durableTimelineStore?: AgentTimelineStore;
   terminalManager?: TerminalManager | null;
   mcpBaseUrl?: string;
@@ -838,6 +855,7 @@ export class AgentManager {
   private onAgentArchived?: AgentArchivedCallback;
   private onAgentCreated?: AgentManagerOptions["onAgentCreated"];
   private onWorkspaceStateMayHaveChanged?: (params: { cwd: string }) => void;
+  private beforeAgentRunCallback?: AgentManagerOptions["beforeAgentRun"];
   private logger: Logger;
   private readonly rescueTimeouts: Required<AgentManagerRescueTimeouts>;
   private acceptingAgentRegistrations = true;
@@ -884,6 +902,7 @@ export class AgentManager {
     this.onAgentAttention = options?.onAgentAttention;
     this.onAgentCreated = options?.onAgentCreated;
     this.onWorkspaceStateMayHaveChanged = options?.onWorkspaceStateMayHaveChanged;
+    this.beforeAgentRunCallback = options?.beforeAgentRun;
     this.mcpBaseUrl = options?.mcpBaseUrl ?? null;
     this.mcpAuthToken = options?.mcpAuthToken ?? null;
     this.configurePaseoTools(options);
@@ -1251,6 +1270,21 @@ export class AgentManager {
   getAgent(id: string): ManagedAgent | null {
     const agent = this.agents.get(id);
     return agent ? { ...agent } : null;
+  }
+
+  /**
+   * The startAgentRun pre-run seam (wired by agent-prompt): fires the
+   * bootstrap-registered beforeAgentRun hook (the Commander snapshot
+   * injector) for every run, before the delivered prompt starts. The hook
+   * gates itself by agent labels; without a registered hook this is a no-op.
+   */
+  async beforeAgentRun(input: {
+    agentId: string;
+    prompt: AgentPromptInput;
+    runOptions?: AgentRunOptions;
+    replaceRunning?: boolean;
+  }): Promise<void> {
+    await this.beforeAgentRunCallback?.(input);
   }
 
   async waitForAgentClose(agentId: string): Promise<void> {

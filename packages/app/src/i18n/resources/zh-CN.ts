@@ -312,6 +312,12 @@ export const zhCN: TranslationResources = {
       archive: "归档",
     },
   },
+  missionControl: {
+    inspector: {
+      archivedBanner: "已归档",
+      workspaceArchived: "此 Agent 的工作区已归档，无法在工作区视图中打开。",
+    },
+  },
   message: {
     actions: {
       copyCode: "复制代码",

@@ -311,6 +311,13 @@ export const en = {
       archive: "Archive",
     },
   },
+  missionControl: {
+    inspector: {
+      archivedBanner: "Archived",
+      workspaceArchived:
+        "This agent's workspace is archived, so it cannot be opened in the workspace view.",
+    },
+  },
   message: {
     actions: {
       copyCode: "Copy code",

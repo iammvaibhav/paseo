@@ -174,7 +174,10 @@ import { WebhookSession } from "./session/webhook/webhook-session.js";
 import type { WebhookService } from "./webhook/service.js";
 import type { PeerManager } from "./peers/peer-manager.js";
 import type { MissionControlService } from "./mission-control/service.js";
-import { commanderHomeWorkspaceTitle } from "./mission-control/commander-boot.js";
+import {
+  commanderHomeWorkspaceTitle,
+  remapLegacyCommanderCreateCwd,
+} from "./mission-control/commander-boot.js";
 import { buildCommanderLaunchConfig, buildLocalContextPayload } from "./mission-control/context.js";
 import {
   MISSION_CONTROL_LABEL_KEY,
@@ -3844,7 +3847,17 @@ export class Session {
     // creation, workspace provisioning, intent resolution, agent-manager validation)
     // sees an absolute path. Matches the MCP create path (resolveMcpInitialCwd) and
     // the provider-snapshot path (resolveSnapshotCwd), which both accept `~`.
-    const config = { ...rawConfig, cwd: expandUserPath(rawConfig.cwd) };
+    // Commander-labeled creates with the legacy `~` sentinel are redirected to the
+    // reserved home (`<paseoHome>/commander`) — the app's manual launch and the
+    // archived-recreate path cannot compute it (no RPC exposes paseoHome).
+    const config = {
+      ...rawConfig,
+      cwd: remapLegacyCommanderCreateCwd({
+        labels: msg.labels,
+        requestedCwd: expandUserPath(rawConfig.cwd),
+        paseoHome: this.paseoHome,
+      }),
+    };
     this.sessionLogger.info(
       { cwd: config.cwd, provider: config.provider, worktreeName },
       `Creating agent in ${config.cwd} (${config.provider})${

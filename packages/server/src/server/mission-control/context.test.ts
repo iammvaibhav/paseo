@@ -20,13 +20,14 @@ import type {
 import {
   buildCommanderLaunchConfig,
   buildCommanderSystemPrompt,
-  buildContextDeltaBlock,
-  buildContextPack,
   buildFleetContextData,
   buildHostModelsSection,
   buildLocalRecentAgents,
-  createFleetContextDigestProvider,
+  buildSnapshotBlock,
+  buildWorldSnapshot,
+  WORLD_SNAPSHOT_MARKER,
   type FleetContextDependencies,
+  type WorldSnapshot,
 } from "./context.js";
 import type { MissionControlReviewStateRecord } from "./store.js";
 import type { StoredAgentRecord } from "../agent/agent-storage.js";
@@ -202,12 +203,12 @@ describe("buildCommanderSystemPrompt (static)", () => {
   });
 });
 
-describe("context pack as first conversation message", () => {
-  test("launch config firstMessage is a system-enveloped fleet snapshot", async () => {
+describe("world snapshot as first conversation message", () => {
+  test("launch config firstMessage is the system-enveloped world snapshot", async () => {
     const deps = buildDependencies({ hostAlias: "work server" });
     const { systemPrompt, firstMessage } = await buildCommanderLaunchConfig(deps);
     expect(systemPrompt).not.toContain("Fleet map");
-    expect(firstMessage).toMatch(/^<paseo-system>\nFleet context snapshot:/);
+    expect(firstMessage).toMatch(/^<paseo-system>\n# Fleet state as of \d{4}-\d{2}-\d{2}T/);
     expect(firstMessage).toContain("Fleet map");
     expect(firstMessage).toContain('alias "work server"');
     expect(firstMessage).toContain("Alpha");
@@ -235,8 +236,8 @@ describe("context pack as first conversation message", () => {
       buildDependencies({ defaultDispatchHost: "local" }),
     );
     expect(context.defaultHost).toBe("local");
-    const pack = buildContextPack(context);
-    expect(pack).toContain('Default dispatch host (central config): "local"');
+    const block = buildSnapshotBlock(context, new Date().toISOString());
+    expect(block).toContain('Default dispatch host (central config): "local"');
   });
 
   test("roster renders spec one-liners with headline and age", async () => {
@@ -247,13 +248,24 @@ describe("context pack as first conversation message", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-08-08T00:10:00Z"));
     try {
-      const context = await buildFleetContextData(buildDependencies());
-      const pack = buildContextPack(context);
-      expect(pack).toContain('Rusty — Fix auth: "Root cause found"');
-      expect(pack).toContain("running, 218d ago");
-      expect(pack).toContain("Mira — Ship charts");
-      expect(pack).toContain("ready for review");
-      expect(pack).toContain("paseo://h/server-local/agent/agent-running");
+      const context = await buildFleetContextData(
+        buildDependencies({
+          // Rusty's report stays at 218d for the age assertion (running always
+          // qualifies). Mira's ready-for-review item must show recent activity
+          // to stay inside the roster's 24h window — the ready bucket does not
+          // escape the window like running does.
+          events: [
+            selfReportEvent("agent-running", "Root cause found", "2026-01-02T00:08:00Z"),
+            selfReportEvent("agent-review", "Charts done", "2026-08-07T23:00:00Z"),
+          ],
+        }),
+      );
+      const block = buildSnapshotBlock(context, new Date().toISOString());
+      expect(block).toContain('Rusty — Fix auth: "Root cause found"');
+      expect(block).toContain("running, 218d ago");
+      expect(block).toContain("Mira — Ship charts");
+      expect(block).toContain("ready for review");
+      expect(block).toContain("paseo://h/server-local/agent/agent-running");
     } finally {
       vi.useRealTimers();
     }
@@ -261,10 +273,122 @@ describe("context pack as first conversation message", () => {
 });
 
 describe("buildLocalRecentAgents roster filter", () => {
-  test("includes running and ready-for-review only", async () => {
-    const summaries = await buildLocalRecentAgents(buildDependencies());
-    const ids = summaries.map((agent) => agent.agentId).sort();
-    expect(ids).toEqual(["agent-review", "agent-running"]);
+  test("includes only agents active in the last 24 hours, bucketed by lifecycle", async () => {
+    // The fixture activity (Jan 2026 reports) is beyond the 24h window: only
+    // the running agent qualifies (running always qualifies). Freeze the clock
+    // inside the window to keep the ready-for-review agent too.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-02T00:20:00Z"));
+    try {
+      const summaries = await buildLocalRecentAgents(buildDependencies());
+      const ids = summaries.map((agent) => agent.agentId).sort();
+      expect(ids).toEqual(["agent-review", "agent-running"]);
+      expect(summaries.find((a) => a.agentId === "agent-running")?.status).toBe("running");
+      expect(summaries.find((a) => a.agentId === "agent-review")?.status).toBe("ready for review");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("excludes agents whose last activity is older than 24 hours", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-10T00:00:00Z"));
+    try {
+      const summaries = await buildLocalRecentAgents(buildDependencies());
+      // agent-running still qualifies (running always qualifies); agent-review
+      // (report 2026-01-02) is outside the window and drops out.
+      const ids = summaries.map((agent) => agent.agentId).sort();
+      expect(ids).toEqual(["agent-running"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("buckets needs-you ahead of running and marks done/idle within the window", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-02T00:20:00Z"));
+    try {
+      const records: StoredAgentRecord[] = [
+        {
+          id: "agent-blocked",
+          labels: {},
+          name: "Blocked One",
+          updatedAt: "2026-01-02T00:01:00Z",
+          lastStatus: "idle",
+          config: { provider: "codex", cwd: "/repo" },
+        },
+        {
+          id: "agent-running",
+          labels: {},
+          name: "Rusty",
+          updatedAt: "2026-01-02T00:10:00Z",
+          lastStatus: "running",
+          config: { provider: "codex", cwd: "/repo" },
+        },
+        {
+          id: "agent-done",
+          labels: {},
+          name: "Done One",
+          updatedAt: "2026-01-02T00:02:00Z",
+          lastStatus: "closed",
+          config: { provider: "codex", cwd: "/repo" },
+        },
+        {
+          id: "agent-idle",
+          labels: {},
+          name: "Idle One",
+          updatedAt: "2026-01-02T00:03:00Z",
+          lastStatus: "closed",
+          config: { provider: "codex", cwd: "/repo" },
+        },
+      ];
+      const deps = buildDependencies({
+        records,
+        live: [
+          // "blocked" is not a stored status: needs-you comes from the live
+          // attention flag (attention outranks the running lifecycle).
+          { id: "agent-blocked", lifecycle: "idle", attention: { requiresAttention: true } },
+          { id: "agent-running", lifecycle: "running" },
+        ],
+        reviewStates: new Map<string, MissionControlReviewStateRecord>([
+          ["agent-done", { reviewState: "done", doneAt: null, clearedAt: null, verdict: null }],
+        ]),
+        events: [
+          selfReportEvent("agent-blocked", "stuck", "2026-01-02T00:01:00Z"),
+          selfReportEvent("agent-running", "working", "2026-01-02T00:10:00Z"),
+          selfReportEvent("agent-done", "finished", "2026-01-02T00:02:00Z"),
+          selfReportEvent("agent-idle", "reported", "2026-01-02T00:03:00Z"),
+        ],
+      });
+      const summaries = await buildLocalRecentAgents(deps);
+      const byId = new Map(summaries.map((agent) => [agent.agentId, agent]));
+      expect(byId.get("agent-blocked")?.status).toBe("needs you");
+      expect(byId.get("agent-running")?.status).toBe("running");
+      expect(byId.get("agent-done")?.status).toBe("done");
+      expect(byId.get("agent-idle")?.status).toBe("idle");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a live attention flag buckets needs-you even when the record is not blocked", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-02T00:20:00Z"));
+    try {
+      const deps = buildDependencies({
+        live: [
+          {
+            id: "agent-running",
+            lifecycle: "running",
+            attention: { requiresAttention: true },
+          },
+        ],
+      });
+      const summaries = await buildLocalRecentAgents(deps);
+      expect(summaries.find((a) => a.agentId === "agent-running")?.status).toBe("needs you");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("caps the roster at 30", async () => {
@@ -350,34 +474,58 @@ describe("buildLocalRecentAgents roster filter", () => {
     expect(summaries[0]?.lastActivityAt).toBeUndefined();
     // The roster line renders without a stale boot-stamped age.
     const context = await buildFleetContextData(deps);
-    const pack = buildContextPack(context);
-    expect(pack).toContain("Rusty — Fix auth — running —");
-    expect(pack).not.toMatch(/Rusty — Fix auth — running, \d+d ago/);
+    const block = buildSnapshotBlock(context, new Date().toISOString());
+    expect(block).toContain("Rusty — Fix auth — running —");
+    expect(block).not.toMatch(/Rusty — Fix auth — running, \d+d ago/);
   });
 });
 
-describe("fleet context digest provider", () => {
-  test("primes baseline then emits deltas, and full snapshots when fresh", async () => {
+describe("world snapshot (buildWorldSnapshot / buildSnapshotBlock)", () => {
+  test("is stamped with the generation time via WORLD_SNAPSHOT_MARKER", async () => {
     const deps = buildDependencies();
-    const provider = createFleetContextDigestProvider(deps);
-    expect(await provider.deltaBlock()).toBeNull();
-    expect(await provider.deltaBlock()).toBeNull();
-    const mutated = buildDependencies({ hostAlias: "work server" });
-    const provider2 = createFleetContextDigestProvider(mutated);
-    await provider2.deltaBlock();
-    const delta = await provider2.deltaBlock();
-    expect(delta).toBeNull();
-    const fresh = await provider2.deltaBlock(true);
-    expect(fresh).toContain("Fleet context snapshot:");
-    expect(fresh).toContain("Fleet map");
+    const snapshot: WorldSnapshot = await buildWorldSnapshot(deps);
+    expect(snapshot.at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(snapshot.block.startsWith(`${WORLD_SNAPSHOT_MARKER}${snapshot.at}`)).toBe(true);
+    // The marker is how the injector identifies snapshot rows for
+    // supersede-in-place retraction.
+    expect(snapshot.block).toContain(WORLD_SNAPSHOT_MARKER);
+  });
+
+  test("renders fleet map, inventory, roster, models, and routing defaults", async () => {
+    const deps = buildDependencies();
+    const { block } = await buildWorldSnapshot(deps);
+    expect(block).toContain("# Fleet map");
+    expect(block).toContain("# Inventory");
+    expect(block).toContain("# Roster");
+    expect(block).toContain("# Models");
+    expect(block).toContain("# Routing defaults");
+    expect(block).toContain("Alpha (proj-1) — the alpha service");
+    expect(block).toContain("Alpha App [worktree]");
+  });
+
+  test("regenerates fresh: two calls differ in the stamp and reflect new state", async () => {
+    const deps = buildDependencies({ hostAlias: "work server" });
+    const first: WorldSnapshot = await buildWorldSnapshot(deps);
+    const second: WorldSnapshot = await buildWorldSnapshot(deps);
+    expect(second.at).not.toBe(first.at);
+    const mutated = buildDependencies({ hostAlias: "other alias" });
+    const third: WorldSnapshot = await buildWorldSnapshot(mutated);
+    expect(third.block).not.toBe(second.block);
+  });
+
+  test("block is inner content: no <paseo-system> envelope of its own", async () => {
+    const deps = buildDependencies();
+    const { block } = await buildWorldSnapshot(deps);
+    expect(block).not.toMatch(/^<paseo-system>/);
+    expect(block).toContain("# Fleet state as of ");
   });
 });
 
 describe("project descriptions in inventory", () => {
-  test("render in the context pack", async () => {
+  test("render in the world snapshot", async () => {
     const deps = buildDependencies();
-    const pack = buildContextPack(await buildFleetContextData(deps));
-    expect(pack).toContain("Alpha (proj-1) — the alpha service");
+    const block = buildSnapshotBlock(await buildFleetContextData(deps), new Date().toISOString());
+    expect(block).toContain("Alpha (proj-1) — the alpha service");
   });
 });
 
@@ -391,26 +539,10 @@ describe("invocable provider/model strings", () => {
       listRegisteredProviderIds: () => ["codex"],
     } as unknown as FleetContextDependencies["providerSnapshotManager"];
     const context = await buildFleetContextData(deps);
-    const pack = buildContextPack(context);
-    expect(pack).toContain("- codex/gpt-5.4");
-    expect(pack).toContain("- codex/gpt-5.4-mini");
-    expect(pack).not.toMatch(/- codex: /);
-  });
-
-  test("model changes surface through context deltas as invocable strings", () => {
-    const previous = [
-      { category: "models" as const, host: "local", id: "codex", line: "models: codex/gpt-5.4" },
-    ];
-    const current = [
-      {
-        category: "models" as const,
-        host: "local",
-        id: "codex",
-        line: "models: codex/gpt-5.4, codex/gpt-5.4-mini",
-      },
-    ];
-    const block = buildContextDeltaBlock(previous, current);
-    expect(block).toContain("models: codex/gpt-5.4, codex/gpt-5.4-mini");
+    const block = buildSnapshotBlock(context, new Date().toISOString());
+    expect(block).toContain("- codex/gpt-5.4");
+    expect(block).toContain("- codex/gpt-5.4-mini");
+    expect(block).not.toMatch(/- codex: /);
   });
 });
 
@@ -504,13 +636,11 @@ describe("models block roles notation (invocable only)", () => {
 });
 
 describe("single <paseo-system> envelope", () => {
-  test("context blocks are inner content: no envelope of their own", async () => {
+  test("snapshot blocks are inner content: the injector wraps exactly one envelope", async () => {
     const deps = buildDependencies();
-    const provider = createFleetContextDigestProvider(deps);
-    await provider.deltaBlock();
-    const fresh = await provider.deltaBlock(true);
-    expect(fresh).not.toMatch(/^<paseo-system>/);
-    expect(fresh).toContain("Fleet context snapshot:");
+    const { block } = await buildWorldSnapshot(deps);
+    expect(block).not.toMatch(/^<paseo-system>/);
+    expect(block).toContain("# Fleet state as of ");
   });
 });
 

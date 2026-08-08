@@ -313,6 +313,13 @@ export const ko: TranslationResources = {
       archive: "보관",
     },
   },
+  missionControl: {
+    inspector: {
+      archivedBanner: "보관됨",
+      workspaceArchived:
+        "이 에이전트의 워크스페이스가 보관되어 워크스페이스 보기에서 열 수 없습니다.",
+    },
+  },
   message: {
     actions: {
       copyCode: "코드 복사",

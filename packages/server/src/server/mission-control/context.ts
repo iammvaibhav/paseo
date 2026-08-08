@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +12,7 @@ import type {
   MissionControlInventoryProjectWorkspace,
   MissionControlModels,
 } from "@getpaseo/protocol/mission-control/types";
+import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
 import type { Logger } from "pino";
 import YAML from "yaml";
 
@@ -23,17 +23,22 @@ import type { DaemonConfigStore } from "../daemon-config-store.js";
 import type { PeerManager } from "../peers/peer-manager.js";
 import type { ProjectRegistry, WorkspaceRegistry } from "../workspace-registry.js";
 import { buildCommanderSystemPrompt } from "./commander-contract.js";
-import { hasMissionControlLabels } from "./naming.js";
 import type { MissionControlReviewStateRecord, MissionControlReviewStateValue } from "./store.js";
-import type { MissionControlDigestContextProvider } from "./digest.js";
 
 const OMP_CONFIG_RELATIVE_PATH = join(".omp", "agent", "config.yml");
 // Reserved MissionControlModels key carrying omp modelRoles (role → model) as
 // "role: model" strings. The renderer prints it as the roles block, never as a
 // provider's model list.
 const OMP_MODEL_ROLES_KEY = "omp.modelRoles";
-// Spec: roster is one line per live agent (running + ready-for-review only).
+// Spec: roster is one line per agent active in the last 24 hours, bucketed by
+// lifecycle (running/needs-you/ready/done). Running agents always qualify
+// regardless of age — a long-running worker is the hot set even when its last
+// self-report is older than the window.
 const ROSTER_LIMIT = 30;
+const ROSTER_ACTIVITY_WINDOW_MS = 24 * 60 * 60 * 1000;
+// The world snapshot's stamp line; the snapshot injector retracts the previous
+// snapshot row by matching rows that carry this marker.
+export const WORLD_SNAPSHOT_MARKER = "# Fleet state as of ";
 
 export interface MissionControlContextPayload {
   inventory: MissionControlInventory;
@@ -157,11 +162,12 @@ export async function buildLocalModels(input: LocalModelsInput): Promise<Mission
 }
 
 /**
- * Live agents for the Commander's roster: running or ready-for-review only
- * (spec), with identity fields (name/title/living description), the last
- * self-reported headline, and last-activity time for the age column. The
- * Commander and other mission-control-labeled agents are excluded — they are
- * not fleet work.
+ * Agents active in the last 24 hours for the world snapshot's roster, bucketed
+ * by lifecycle (running / needs-you / ready / done / idle), with identity
+ * fields (name/title/living description), the last self-reported headline, and
+ * last-activity time for the age column. Running agents always qualify (the
+ * hot set); other buckets must show activity within the window. The Commander
+ * and other system-owned agents are excluded — they are not fleet work.
  */
 export async function buildLocalRecentAgents(
   input: LocalRecentAgentsInput,
@@ -172,16 +178,16 @@ export async function buildLocalRecentAgents(
     Promise.resolve(input.getReviewStates?.() ?? null),
     Promise.resolve(input.getReportEvents?.() ?? null),
   ]);
-  const lifecycleById = new Map(live.map((agent) => [agent.id, agent.lifecycle]));
+  const liveById = new Map(live.map((agent) => [agent.id, agent]));
   const headlineByAgent = collectLatestSelfReports(events ?? []);
   const summaries: MissionControlContextAgentSummary[] = [];
   for (const record of records) {
-    if (record.archivedAt || record.internal === true || hasMissionControlLabels(record.labels)) {
+    if (record.archivedAt || record.internal === true || isSystemOwnedAgentLabels(record.labels)) {
       continue;
     }
     const summary = summarizeRecentAgent(
       record,
-      lifecycleById.get(record.id),
+      liveById.get(record.id),
       reviewStates?.get(record.id)?.reviewState,
       headlineByAgent.get(record.id),
       input.serverId,
@@ -217,27 +223,14 @@ function collectLatestSelfReports(
   return headlineByAgent;
 }
 
-/** One roster row: running/ready-for-review agents only, else null. */
+/** One roster row for an agent active in the window, bucketed by lifecycle, else null. */
 function summarizeRecentAgent(
   record: StoredAgentRecord,
-  lifecycle: string | undefined,
+  live: { lifecycle: string; attention?: { requiresAttention?: boolean } } | undefined,
   reviewState: MissionControlReviewStateValue | undefined,
   report: { headline: string; at: string } | undefined,
   serverId: string,
 ): MissionControlContextAgentSummary | null {
-  const running = lifecycle === "running";
-  const readyForReview = reviewState === "ready";
-  if (!running && !readyForReview) {
-    return null;
-  }
-  let status: string;
-  if (running) {
-    status = "running";
-  } else if (readyForReview) {
-    status = "ready for review";
-  } else {
-    status = lifecycle ?? record.lastStatus;
-  }
   // The roster age is real user-visible activity: the latest self-report when
   // there is one, else the last user message. Never record.updatedAt — boot,
   // restore, and reconciliation rewrite it, so it is not "when this really
@@ -245,6 +238,17 @@ function summarizeRecentAgent(
   // timestamps). With neither a report nor a user message, the age is omitted
   // from the roster line rather than showing a boot-stamped one.
   const lastActivityAt = report ? report.at : record.lastUserMessageAt;
+  const running = live?.lifecycle === "running";
+  if (!running && lastActivityAt) {
+    const parsed = Date.parse(lastActivityAt);
+    if (!Number.isNaN(parsed) && Date.now() - parsed > ROSTER_ACTIVITY_WINDOW_MS) {
+      return null;
+    }
+  } else if (!running) {
+    // No real-activity signal at all: not active, not in the snapshot.
+    return null;
+  }
+  const status = lifecycleBucket(record, live, reviewState);
   return {
     agentId: record.id,
     hostServerId: serverId,
@@ -255,6 +259,33 @@ function summarizeRecentAgent(
     ...(report ? { lastReportHeadline: report.headline } : {}),
     ...(lastActivityAt ? { lastActivityAt } : {}),
   };
+}
+
+/**
+ * The snapshot's lifecycle bucket for an agent: needs-you (blocked/failed/
+ * awaiting input — a live attention flag or a failed/blocked last status),
+ * running, ready for review, done, or idle. Bucket precedence: needs-you first
+ * (attention outranks the running lifecycle, matching the board's Needs-you
+ * bucket), then running, then ready, then done, then idle.
+ */
+function lifecycleBucket(
+  record: StoredAgentRecord,
+  live: { lifecycle: string; attention?: { requiresAttention?: boolean } } | undefined,
+  reviewState: MissionControlReviewStateValue | undefined,
+): string {
+  if (live?.attention?.requiresAttention === true || record.lastStatus === "error") {
+    return "needs you";
+  }
+  if (live?.lifecycle === "running") {
+    return "running";
+  }
+  if (reviewState === "ready") {
+    return "ready for review";
+  }
+  if (reviewState === "done") {
+    return "done";
+  }
+  return "idle";
 }
 
 export async function buildLocalContextPayload(
@@ -443,18 +474,46 @@ function derivePeerServerId(payload: MissionControlContextPayload | null): strin
 }
 
 /**
- * Renders the context-pack sections: fleet map, inventory, models+roles,
- * roster, routing defaults. Inline-sized by design — the whole fleet is ~10
- * projects / ~30 workspaces — so the Commander never queries for what the
- * daemon already knows. Delivered as the first conversation message at spawn
- * and re-injected whole after compaction/session restart.
+ * The world snapshot: a compact fleet-state block computed at turn start and
+ * injected before every Commander turn (docs/commander.md "Runtime model").
+ * Never accreted, never deltas — the snapshot is regenerated fresh each turn
+ * and the previous snapshot row is superseded in place by the injector.
  */
-export function buildContextPack(context: FleetContextData): string {
+export interface WorldSnapshot {
+  /** Generation time (ISO). Also stamped into the block's header line. */
+  at: string;
+  /** The compact block, headed by `# Fleet state as of <at>`. */
+  block: string;
+}
+
+/**
+ * Assemble the world snapshot: fleet map (hosts + aliases), project/workspace
+ * index with descriptions, last-24h agents bucketed by lifecycle, invocable
+ * models, and routing defaults — a few KB, computed at delivery, stamped with
+ * its generation time. Renders the same sections the launch-time context pack
+ * used, minus the digest-era delta machinery.
+ */
+export async function buildWorldSnapshot(input: FleetContextDependencies): Promise<WorldSnapshot> {
+  const at = new Date().toISOString();
+  const context = await buildFleetContextData(input);
+  return { at, block: buildSnapshotBlock(context, at) };
+}
+
+/**
+ * Renders the world-snapshot sections: fleet map, inventory, roster, models+
+ * roles, routing defaults, headed by the generation stamp. Inline-sized by
+ * design — the whole fleet is ~10 projects / ~30 workspaces — so the Commander
+ * never queries for what the daemon already knows. The header line carries
+ * WORLD_SNAPSHOT_MARKER so the injector can identify snapshot rows for
+ * supersede-in-place retraction.
+ */
+export function buildSnapshotBlock(context: FleetContextData, at: string): string {
   return [
+    `${WORLD_SNAPSHOT_MARKER}${at}`,
     buildFleetMapSection(context),
     buildInventorySection(context),
-    buildModelsSection(context),
     buildRosterSection(context),
+    buildModelsSection(context),
     buildRoutingDefaultsSection(context),
   ].join("\n\n");
 }
@@ -463,7 +522,7 @@ export function buildContextPack(context: FleetContextData): string {
  * The Commander's system prompt, static by construction: the bundled shipped
  * prompt (identity, playbook, safety, tool contract — no fleet state) plus the
  * central commanderInstructions. The fleet worldview never enters here; it
- * rides the context pack as the first conversation message. Two builds with
+ * rides the launch snapshot as the first conversation message. Two builds with
  * different fleet state produce identical output. Owned by the contract
  * module (commander-contract) so reloads re-derive the same prompt; re-exported
  * here for callers that referenced it from context.
@@ -472,190 +531,18 @@ export { buildCommanderSystemPrompt } from "./commander-contract.js";
 
 /**
  * Everything the daemon needs to launch the Commander: a static system prompt
- * and the context pack as the first conversation message. Fleet state is
- * snapshot at spawn; deltas ride digests afterwards.
+ * and the launch world snapshot as the first conversation message. Fleet state
+ * is snapshot at spawn; every later turn re-injects a fresh snapshot through
+ * the same <paseo-system> machinery path.
  */
 export async function buildCommanderLaunchConfig(
   input: FleetContextDependencies,
 ): Promise<{ systemPrompt: string; firstMessage: string }> {
   const central = resolveCentralConfig(input);
   const systemPrompt = buildCommanderSystemPrompt(central?.commanderInstructions ?? undefined);
-  const context = await buildFleetContextData(input);
-  const contextPack = buildContextPack(context);
-  const firstMessage = `<paseo-system>\nFleet context snapshot:\n${contextPack.trim()}\n</paseo-system>`;
+  const { block } = await buildWorldSnapshot(input);
+  const firstMessage = `<paseo-system>\n${block.trim()}\n</paseo-system>`;
   return { systemPrompt, firstMessage };
-}
-
-// --- Context delta (digest refresh) ---
-
-export interface ContextCanonicalEntry {
-  category: "host" | "project" | "workspace" | "models" | "omp-role" | "agent";
-  host: string;
-  id: string;
-  line: string;
-}
-
-function canonicalEntries(context: FleetContextData): ContextCanonicalEntry[] {
-  const entries: ContextCanonicalEntry[] = [];
-  for (const host of context.hosts) {
-    entries.push({
-      category: "host",
-      host: host.hostName,
-      id: host.hostName,
-      line: `host: ${host.hostName}${host.alias ? ` (alias "${host.alias}")` : ""} — ${describeReachability(host)}`,
-    });
-    for (const project of host.inventory.projects) {
-      const description = project.description?.trim();
-      const projectLine = `project: ${project.title} (${project.id})${
-        description ? ` — ${description}` : ""
-      }`;
-      entries.push({
-        category: "project",
-        host: host.hostName,
-        id: project.id,
-        line: projectLine,
-      });
-      for (const workspace of project.workspaces) {
-        entries.push({
-          category: "workspace",
-          host: host.hostName,
-          id: workspace.id,
-          line: `workspace: ${workspace.title} [${workspace.kind}] ${workspace.cwd} (${workspace.id})`,
-        });
-      }
-    }
-    for (const [provider, modelIds] of Object.entries(host.models)) {
-      if (provider === OMP_MODEL_ROLES_KEY) {
-        continue;
-      }
-      entries.push({
-        category: "models",
-        host: host.hostName,
-        id: provider,
-        line: `models: ${modelIds.map((modelId) => `${provider}/${modelId}`).join(", ")}`,
-      });
-    }
-    const roles = host.models[OMP_MODEL_ROLES_KEY];
-    if (roles && roles.length > 0) {
-      entries.push({
-        category: "omp-role",
-        host: host.hostName,
-        id: OMP_MODEL_ROLES_KEY,
-        line: `omp roles: ${roles.join("; ")}`,
-      });
-    }
-    for (const agent of host.recentAgents) {
-      entries.push({
-        category: "agent",
-        host: host.hostName,
-        id: agent.agentId,
-        line: `agent: ${agent.name ?? agent.title ?? agent.agentId} (${agent.agentId})`,
-      });
-    }
-  }
-  return entries;
-}
-
-function entryKey(entry: ContextCanonicalEntry): string {
-  return `${entry.category}|${entry.host}|${entry.id}`;
-}
-
-export function computeContextFingerprint(context: FleetContextData): string {
-  const serialized = canonicalEntries(context)
-    .map((entry) => `${entry.category}|${entry.host}|${entry.id}|${entry.line}`)
-    .join("\n");
-  return createHash("sha256").update(serialized).digest("hex");
-}
-
-/**
- * Compact "Context update:" block listing only the entries that changed
- * between two canonical snapshots; null when nothing changed. Removed entries
- * are listed with a "gone" marker so the Commander notices archives. INNER
- * content only — the digest composer wraps the whole message in exactly one
- * <paseo-system> envelope.
- */
-export function buildContextDeltaBlock(
-  previous: readonly ContextCanonicalEntry[],
-  current: readonly ContextCanonicalEntry[],
-): string | null {
-  const currentByKey = new Map(current.map((entry) => [entryKey(entry), entry]));
-  const previousByKey = new Map(previous.map((entry) => [entryKey(entry), entry]));
-  const added: string[] = [];
-  const changed: string[] = [];
-  const removed: string[] = [];
-
-  for (const [key, entry] of currentByKey) {
-    const prior = previousByKey.get(key);
-    if (!prior) {
-      added.push(entry.line);
-    } else if (prior.line !== entry.line) {
-      changed.push(entry.line);
-    }
-  }
-  for (const [key, entry] of previousByKey) {
-    if (!currentByKey.has(key)) {
-      removed.push(entry.line);
-    }
-  }
-
-  const lines: string[] = [];
-  for (const line of added) {
-    lines.push(`- added ${line}`);
-  }
-  for (const line of changed) {
-    lines.push(`- changed ${line}`);
-  }
-  for (const line of removed) {
-    lines.push(`- gone ${line}`);
-  }
-  if (lines.length === 0) {
-    return null;
-  }
-  return `Context update:\n${lines.join("\n")}`;
-}
-
-/**
- * Digest-facing context provider: caches the fleet context (peer fetches and
- * provider warmups are not free) and emits a compact delta on the first change
- * after boot. The first call primes the baseline — the Commander launch already
- * injected the full pack — and yields no block. `fresh: true` (after omp
- * compaction or a session restart wiped the first message) returns the whole
- * snapshot again and re-baselines so the next digest is a delta again.
- */
-export function createFleetContextDigestProvider(
-  input: FleetContextDependencies,
-): MissionControlDigestContextProvider {
-  const CONTEXT_CACHE_TTL_MS = 60_000;
-  let cached: { at: number; context: FleetContextData } | null = null;
-  let previousEntries: ContextCanonicalEntry[] | null = null;
-
-  async function fetchContext(): Promise<FleetContextData> {
-    const now = Date.now();
-    if (cached && now - cached.at < CONTEXT_CACHE_TTL_MS) {
-      return cached.context;
-    }
-    const context = await buildFleetContextData(input);
-    cached = { at: now, context };
-    return context;
-  }
-
-  return {
-    async deltaBlock(fresh: boolean = false): Promise<string | null> {
-      const context = await fetchContext();
-      const entries = canonicalEntries(context);
-      if (fresh) {
-        previousEntries = entries;
-        return `Fleet context snapshot:\n${buildContextPack(context).trim()}`;
-      }
-      if (previousEntries === null) {
-        previousEntries = entries;
-        return null;
-      }
-      const block = buildContextDeltaBlock(previousEntries, entries);
-      previousEntries = entries;
-      return block;
-    },
-  };
 }
 
 // --- Section renderers ---
@@ -862,16 +749,6 @@ function formatAge(iso: string): string {
 
 function hostLabel(host: FleetHostContext): string {
   return host.alias ?? host.hostName;
-}
-
-function describeReachability(host: FleetHostContext): string {
-  if (host.reachable) {
-    return "reachable";
-  }
-  if (host.lastSeenAt) {
-    return `unreachable since ${formatLastSeen(host.lastSeenAt)}`;
-  }
-  return "unreachable";
 }
 
 function formatLastSeen(iso: string): string {

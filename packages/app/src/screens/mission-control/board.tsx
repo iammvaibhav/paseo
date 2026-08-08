@@ -39,6 +39,7 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import { useTranslation } from "react-i18next";
 import { useToast } from "@/contexts/toast-context";
 import { useHoverSafeZone } from "@/hooks/use-hover-safe-zone";
 import { useMissionControlLifecycle } from "@/mission-control/use-mission-control-lifecycle";
@@ -60,6 +61,8 @@ import {
 } from "@/mission-control/row-menu";
 import { useArchiveAgent } from "@/hooks/use-archive-agent";
 import { useInspectorStore } from "./inspector-store";
+import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
+import { useWorkspaceOpenState } from "@/mission-control/workspace-open-state";
 import { useCompactTimeAgo } from "@/hooks/use-compact-time-ago";
 import { copyToClipboard } from "@/utils/copy-to-clipboard";
 import { openAgentFromHistory } from "@/workspace/open-agent-from-history";
@@ -372,6 +375,7 @@ function AgentRowMenuContent({
   agentId,
   menuActions,
   isArchiving,
+  openBlockedTooltip,
   onOpenInWorkspace,
   onCopyReference,
   onStop,
@@ -382,6 +386,9 @@ function AgentRowMenuContent({
   agentId: string;
   menuActions: BoardRowMenuAction[];
   isArchiving: boolean;
+  /** Non-null when the agent's workspace is archived/missing: the row's
+   * "Open in workspace" degrades to a disabled item with this explanation. */
+  openBlockedTooltip: string | null;
   onOpenInWorkspace: () => void;
   onCopyReference: () => void;
   onStop: () => void;
@@ -399,6 +406,8 @@ function AgentRowMenuContent({
         <ContextMenuItem
           leading={MENU_OPEN_ICON}
           onSelect={onOpenInWorkspace}
+          disabled={openBlockedTooltip !== null}
+          tooltip={openBlockedTooltip ?? undefined}
           testID={`mission-control-row-open-${agentId}`}
         >
           Open in workspace
@@ -650,6 +659,7 @@ function AgentRowImpl({
   );
   const timeLabel = useCompactTimeAgo(activityTime);
   const { Icon, mapping } = rowIconAndColor(row);
+  const { t } = useTranslation();
   const toast = useToast();
   const { archiveAgent, isArchivingAgent } = useArchiveAgent();
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
@@ -680,14 +690,21 @@ function AgentRowImpl({
     });
   }, [agent.id, agent.serverId]);
 
+  const { isArchivedOrMissing: workspaceArchivedOrMissing } = useWorkspaceOpenState(
+    agent.serverId,
+    agent.workspaceId,
+  );
   const handleOpenInWorkspace = useCallback(() => {
+    if (workspaceArchivedOrMissing) {
+      return;
+    }
     void openAgentFromHistory({
       serverId: agent.serverId,
       agentId: agent.id,
       workspaceId: agent.workspaceId ?? null,
       archived: Boolean(agent.archivedAt),
     });
-  }, [agent]);
+  }, [agent, workspaceArchivedOrMissing]);
 
   const handleCopyReference = useCallback(() => {
     void copyToClipboard(buildAgentReference(agent))
@@ -733,6 +750,18 @@ function AgentRowImpl({
   const menuActions = resolveBoardRowMenuActions(row);
   const isArchiving = isArchivingAgent({ serverId: agent.serverId, agentId: agent.id });
 
+  // System-owned agents (Commander, verifiers, machinery) are never archivable
+  // from any UI surface — drop the Archive affordance for them (they only
+  // appear on the board in verbose mode).
+  const isSystemOwned = isSystemOwnedAgentLabels(agent.labels);
+  const effectiveMenuActions = useMemo(
+    () => (isSystemOwned ? menuActions.filter((action) => action !== "archive") : menuActions),
+    [isSystemOwned, menuActions],
+  );
+  const openBlockedTooltip = workspaceArchivedOrMissing
+    ? t("missionControl.inspector.workspaceArchived")
+    : null;
+
   return (
     <View
       ref={rowTriggerRef}
@@ -772,8 +801,9 @@ function AgentRowImpl({
         </ContextMenuTrigger>
         <AgentRowMenuContent
           agentId={agent.id}
-          menuActions={menuActions}
+          menuActions={effectiveMenuActions}
           isArchiving={isArchiving}
+          openBlockedTooltip={openBlockedTooltip}
           onOpenInWorkspace={handleOpenInWorkspace}
           onCopyReference={handleCopyReference}
           onStop={handleStop}

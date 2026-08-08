@@ -22,7 +22,7 @@ import { getProviderIcon } from "@/components/provider-icons";
 import { openAgentFromHistory } from "@/workspace/open-agent-from-history";
 import { useArchiveAgent } from "@/hooks/use-archive-agent";
 import { isHistoryAskAgent } from "@/history-ask";
-import { isCommanderAgent } from "@/mission-control/labels";
+import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
 import { HighlightedText } from "@/components/ui/highlighted-text";
 import type { AgentSearchMatch } from "@getpaseo/protocol/messages";
 import type { MatchRange } from "@getpaseo/protocol/search/text-match";
@@ -445,9 +445,9 @@ export function AgentList({
 
   const handleAgentLongPress = useCallback(
     (agent: AggregatedAgent) => {
-      // The Commander (label `paseo.mission-control=*`) is never archivable
-      // from any UI surface.
-      if (isCommanderAgent(agent.labels)) {
+      // System-owned agents (Commander, verifiers, machinery) are never
+      // archivable from any UI surface.
+      if (isSystemOwnedAgentLabels(agent.labels)) {
         return;
       }
       const isRunning = agent.status === "running";
@@ -474,7 +474,7 @@ export function AgentList({
     if (!actionAgent || !actionClient) {
       return;
     }
-    if (isCommanderAgent(actionAgent.labels)) {
+    if (isSystemOwnedAgentLabels(actionAgent.labels)) {
       setActionAgent(null);
       return;
     }
@@ -613,7 +613,7 @@ export function AgentList({
               >
                 <Text style={styles.sheetCancelText}>{t("common.actions.cancel")}</Text>
               </Pressable>
-              {actionAgent && isCommanderAgent(actionAgent.labels) ? null : (
+              {actionAgent && isSystemOwnedAgentLabels(actionAgent.labels) ? null : (
                 <Pressable
                   disabled={isActionDaemonUnavailable}
                   style={[styles.sheetButton, styles.sheetArchiveButton]}

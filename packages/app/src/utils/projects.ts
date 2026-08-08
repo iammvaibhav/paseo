@@ -49,6 +49,13 @@ export interface ProjectHost {
 
 export interface BuildProjectsInput {
   hosts: ProjectHost[];
+  /**
+   * Mission Control verbose gate, forwarded to buildWorkspaceStructureProjects:
+   * system-owned workspaces (Commander home + machinery-only) stay hidden
+   * while verbose is OFF and show when it is ON. Defaults to hidden so
+   * non-MC callers never surface machinery.
+   */
+  hideSystemOwnedWorkspaces?: boolean;
 }
 
 export interface BuildProjectsResult {
@@ -117,13 +124,17 @@ function findProjectMetadata(
   return null;
 }
 
-function buildHostProjectEntries(hosts: ProjectHost[]): HostProjectListItem[] {
+function buildHostProjectEntries(
+  hosts: ProjectHost[],
+  hideSystemOwnedWorkspaces: boolean,
+): HostProjectListItem[] {
   return buildWorkspaceStructureProjects({
     sessions: hosts.map((host) => ({
       serverId: host.serverId,
       projects: host.projects,
       workspaces: host.workspaces,
     })),
+    hideSystemOwnedWorkspaces,
   });
 }
 
@@ -254,8 +265,9 @@ function attachHostWorkspaces(
 }
 
 export function buildProjects(input: BuildProjectsInput): BuildProjectsResult {
+  const hideSystemOwnedWorkspaces = input.hideSystemOwnedWorkspaces ?? true;
   const groups = new Map<string, ProjectGroup>();
-  const projectEntries = buildHostProjectEntries(input.hosts);
+  const projectEntries = buildHostProjectEntries(input.hosts, hideSystemOwnedWorkspaces);
 
   for (const host of input.hosts) {
     const hostProjects = projectEntries.filter((project) =>

@@ -139,7 +139,6 @@ describe("MissionControlService.reportSelfStatus", () => {
   let service: MissionControlService;
   let broadcast: ReturnType<typeof vi.fn>;
   let updateAgentMetadata: ReturnType<typeof vi.fn>;
-  let enqueue: ReturnType<typeof vi.fn>;
   let getAgent: ReturnType<typeof vi.fn>;
   let getStoredAgent: ReturnType<typeof vi.fn>;
 
@@ -147,7 +146,6 @@ describe("MissionControlService.reportSelfStatus", () => {
     dir = await mkdtemp(join(tmpdir(), "mc-self-report-service-"));
     broadcast = vi.fn();
     updateAgentMetadata = vi.fn(async () => undefined);
-    enqueue = vi.fn();
     getAgent = vi.fn(() => null);
     getStoredAgent = vi.fn(async () => null);
     service = new MissionControlService({
@@ -163,7 +161,6 @@ describe("MissionControlService.reportSelfStatus", () => {
       serverId: "test-server",
       hostName: "test-host",
       broadcast,
-      digest: { enqueue },
       presence: createMissionControlPresenceSource({
         isAgentFocused: () => false,
         readStopOrigin: () => null,
@@ -198,10 +195,7 @@ describe("MissionControlService.reportSelfStatus", () => {
       type: "mission_control_event",
       event: result.event,
     });
-    expect(enqueue).toHaveBeenCalledWith(result.event, {
-      serverId: "test-server",
-      hostName: "test-host",
-    });
+    // M3: the feed keeps the event; nothing is enqueued for the Commander.
     // title/description only update when the agent explicitly provides them.
     expect(updateAgentMetadata).not.toHaveBeenCalled();
     // Nothing was sent, so there is nothing to compare: no identity echo.

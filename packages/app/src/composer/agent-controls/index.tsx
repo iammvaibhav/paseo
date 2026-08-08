@@ -28,7 +28,7 @@ import { formatThinkingOptionLabel } from "@/agent-controls/labels";
 import { ComboboxTrigger } from "@/components/ui/combobox-trigger";
 import { CombinedModelSelector } from "@/components/combined-model-selector";
 import { saveCommanderModel } from "@/mission-control/launch";
-import { isCommanderAgent } from "@/mission-control/labels";
+import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
 import {
   resolveUnattendedModeId,
   type UnattendedModeCandidate,
@@ -1517,7 +1517,7 @@ export const AgentControls = memo(function AgentControls({
   const agentLabels = useSessionStore(
     (state) => state.sessions[serverId]?.agents.get(agentId)?.labels ?? null,
   );
-  const isCommander = isCommanderAgent(agentLabels);
+  const isCommander = isSystemOwnedAgentLabels(agentLabels ?? undefined);
   const toast = useToast();
   const modeControl = useLiveAgentModeControl(serverId, agentId);
   const commandCenterModes = toCommandCenterModes(modeControl);

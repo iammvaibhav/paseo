@@ -1,4 +1,7 @@
 import type { Logger } from "pino";
+
+import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
+
 import type { AgentManager } from "../agent/agent-manager.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
 
@@ -22,7 +25,9 @@ import type { AgentStorage } from "../agent/agent-storage.js";
  * excluded — they are hidden from Mission Control, not part of its roster.
  */
 
-export const MISSION_CONTROL_LABEL_PREFIX = "paseo.mission-control";
+// The label-key prefix marking system-owned agents lives in the shared
+// protocol module (one definition for server filters and app surfaces).
+export { MISSION_CONTROL_LABEL_PREFIX } from "@getpaseo/protocol/mission-control/system-owned";
 
 export type AgentNamingTheme =
   | "mixed"
@@ -912,8 +917,14 @@ export class AgentNamingService {
   }
 }
 
-export function hasMissionControlLabels(labels: Record<string, string>): boolean {
-  return Object.keys(labels).some((key) => key.startsWith(MISSION_CONTROL_LABEL_PREFIX));
+/**
+ * Server-side name for the shared system-owned predicate: true when the agent
+ * carries ANY `paseo.mission-control*` label (Commander, verifiers, machinery
+ * artifacts). One definition decides system-owned — the protocol module owns
+ * the logic, every surface consumes it.
+ */
+export function hasMissionControlLabels(labels: Record<string, string> | undefined): boolean {
+  return isSystemOwnedAgentLabels(labels);
 }
 
 function shuffle<T>(values: T[]): T[] {

@@ -312,6 +312,12 @@ export const ar: TranslationResources = {
       archive: "أرشيف",
     },
   },
+  missionControl: {
+    inspector: {
+      archivedBanner: "مؤرشف",
+      workspaceArchived: "مساحة عمل هذا الوكيل مؤرشفة، لذا لا يمكن فتحها في عرض مساحة العمل.",
+    },
+  },
   message: {
     actions: {
       copyCode: "نسخ الرمز",

@@ -190,7 +190,7 @@ export function isAllowPairExempt(allowPairActive: boolean): boolean {
 
 /**
  * The approval gate. Every outbound send from mission-control machinery
- * (verifier contacts, stall nudges, commander digest steers) flows through
+ * (verifier contacts, stall nudges, commander machinery steers) flows through
  * createProposal:
  *
  * - Ask mode (default): the proposal sits pending as a feed card until the

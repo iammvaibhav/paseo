@@ -1,3 +1,5 @@
+import { existsSync, rmSync } from "node:fs";
+
 import { describe, expect, test, vi } from "vitest";
 
 import type { MissionControlCentralConfig } from "@getpaseo/protocol/mission-control/types";
@@ -13,13 +15,16 @@ import {
   type PersistedWorkspaceRecord,
 } from "../workspace-registry.js";
 import {
+  commanderHomeCwd,
   ensureCommanderOnBoot,
   resetCommander,
   spawnCommander,
   archiveOrphanCommanderWorkspaces,
+  migrateLegacyCommanderHomeWorkspaces,
   resolveOrCreateCommanderWorkspace,
   commanderHomeWorkspaceTitle,
   computeCommanderBuildHash,
+  remapLegacyCommanderCreateCwd,
   COMMANDER_TOOL_ALLOWLIST,
   COMMANDER_HASH_LABEL_KEY,
   type EnsureCommanderOnBootInput,
@@ -27,6 +32,12 @@ import {
 import type { FleetContextDependencies } from "./context.js";
 
 const HOME_CWD = expandUserPath("~");
+// A synthetic daemon paseo home for tests: the Commander's reserved home is
+// `<paseoHome>/commander` (never the real `~/.paseo` — the dev stack's
+// overridden PASEO_HOME must not touch the production home).
+const TEST_PASEO_HOME = "/tmp/mc-test-paseo-home";
+// The reserved Commander home (`<paseoHome>/commander`).
+const COMMANDER_HOME_CWD = commanderHomeCwd(TEST_PASEO_HOME);
 
 function createWorkspaceRecord(
   overrides: Partial<PersistedWorkspaceRecord> & { workspaceId: string },
@@ -154,6 +165,7 @@ function bootInput(
       escalateSeconds: 300,
     }),
     launchContext: minimalLaunchContext(),
+    paseoHome: TEST_PASEO_HOME,
     hostName: "mac-work",
     hostAlias: null,
     workspaceRegistry: workspaceHarness,
@@ -230,12 +242,20 @@ describe("ensureCommanderOnBoot", () => {
     expect(createCall.title).toBe("Commander");
     expect(createCall.config.systemPromptMode).toBe("replace");
     expect(createCall.config.toolAllowlist).toEqual([...COMMANDER_TOOL_ALLOWLIST]);
-    // First message = context pack snapshot, not the system prompt.
-    expect(createCall.initialPrompt).toContain("Fleet context snapshot:");
+    // First message = world snapshot (headed by WORLD_SNAPSHOT_MARKER), not the system prompt.
+    expect(createCall.initialPrompt).toContain("# Fleet state as of ");
     expect(createCall.initialPrompt).toContain("Fleet map");
     expect(createCall.config.systemPrompt).not.toContain("Fleet map");
-    // The Commander is stamped with (and creates exactly one) home workspace.
+    // The Commander is stamped with (and creates exactly one) home workspace
+    // in the reserved home (`<paseoHome>/commander`).
     expect(createCall.workspaceId).toBe("wks_home_1");
+    expect(createCall.cwd).toBe(COMMANDER_HOME_CWD);
+    expect(createCall.config.cwd).toBe(COMMANDER_HOME_CWD);
+    const workspaceHarness = input.workspaceRegistry as WorkspaceRegistryHarness;
+    expect(workspaceHarness.records.get("wks_home_1")).toMatchObject({
+      cwd: COMMANDER_HOME_CWD,
+      title: commanderHomeWorkspaceTitle("mac-work", null),
+    });
   });
 
   test('designation by the explicit "local" value ensures the local host', async () => {
@@ -606,6 +626,62 @@ describe("ensureCommanderOnBoot", () => {
       headline: "Commander recreate failed — Provider claude is disabled",
     });
   });
+
+  test("migrates a legacy home-dir commander workspace on boot and provisions the reserved home", async () => {
+    // The pre-M2 world: a commander workspace rooted at the old home (`~` —
+    // the live collision where a user project at `~` surfaced the Commander)
+    // with a live commander agent inside it.
+    const legacy = createWorkspaceRecord({
+      workspaceId: "wks_legacy",
+      cwd: HOME_CWD,
+      title: commanderHomeWorkspaceTitle("mac-work", null),
+    });
+    const harness = workspaceRegistryHarness([legacy]);
+    const legacyRecord = {
+      id: "commander-legacy",
+      labels: { "paseo.mission-control": "commander" },
+      workspaceId: "wks_legacy",
+      archivedAt: null as string | null,
+      lastStatus: "closed",
+      config: { provider: "codex", cwd: "/repo" },
+    };
+    const archiveSnapshot = vi.fn(async (agentId: string, archivedAt: string) => {
+      legacyRecord.archivedAt = archivedAt;
+      return { id: agentId };
+    });
+    const input = bootInput({
+      centralConfig: designatedCentralConfig,
+      workspaceRegistry: harness,
+      createCommanderWorkspace: harness.createCommanderWorkspace,
+      agentManager: {
+        listAgents: () => [],
+        getAgent: () => null,
+        archiveAgent: vi.fn(async () => ({ archivedAt: new Date().toISOString() })),
+        archiveSnapshot,
+      } as unknown as AgentManager,
+      agentStorage: {
+        list: async () => [legacyRecord],
+        get: async () => (legacyRecord.archivedAt ? null : legacyRecord),
+      } as unknown as AgentStorage,
+    });
+    const result = await ensureCommanderOnBoot(input);
+    // The legacy workspace AND its commander agent are retired in one
+    // migration (cascade), then the drift-recreate machinery spawns fresh.
+    expect(result.created).toBe(true);
+    expect(result.agentId).toBe("commander-new");
+    expect(harness.records.get("wks_legacy")?.archivedAt).not.toBeNull();
+    expect(archiveSnapshot).toHaveBeenCalledWith("commander-legacy", expect.any(String));
+    // The fresh Commander is provisioned cleanly in the reserved home.
+    expect(input.createAgent).toHaveBeenCalledTimes(1);
+    const createCall = vi.mocked(input.createAgent).mock.calls[0][0];
+    expect(createCall.workspaceId).toBe("wks_home_1");
+    expect(createCall.cwd).toBe(COMMANDER_HOME_CWD);
+    expect(createCall.config.cwd).toBe(COMMANDER_HOME_CWD);
+    expect(harness.records.get("wks_home_1")).toMatchObject({
+      cwd: COMMANDER_HOME_CWD,
+      title: commanderHomeWorkspaceTitle("mac-work", null),
+    });
+  });
 });
 
 describe("resetCommander", () => {
@@ -644,7 +720,7 @@ describe("resetCommander", () => {
     expect(input.createAgent).toHaveBeenCalledTimes(1);
     const createCall = vi.mocked(input.createAgent).mock.calls[0][0];
     expect(createCall.labels[COMMANDER_HASH_LABEL_KEY]).toBe(computeCommanderBuildHash());
-    expect(createCall.initialPrompt).toContain("Fleet context snapshot:");
+    expect(createCall.initialPrompt).toContain("# Fleet state as of ");
     // Spawn-first swap: the fresh Commander is live before the current one is
     // archived, so a failed spawn keeps the old one.
     expect(vi.mocked(input.createAgent).mock.invocationCallOrder[0]).toBeLessThan(
@@ -750,6 +826,7 @@ describe("resolveOrCreateCommanderWorkspace", () => {
     const workspaceId = await resolveOrCreateCommanderWorkspace({
       workspaceRegistry: harness,
       createCommanderWorkspace: harness.createCommanderWorkspace,
+      paseoHome: TEST_PASEO_HOME,
       hostName: "mac-work",
       hostAlias: null,
       logger: createTestLogger(),
@@ -757,20 +834,59 @@ describe("resolveOrCreateCommanderWorkspace", () => {
     expect(workspaceId).toBe("wks_home_1");
     expect(harness.records.size).toBe(1);
     expect(harness.records.get("wks_home_1")).toMatchObject({
-      cwd: HOME_CWD,
+      cwd: COMMANDER_HOME_CWD,
       title: commanderHomeWorkspaceTitle("mac-work", null),
     });
+  });
+
+  test("creates the reserved home directory seam when provisioning a fresh workspace", async () => {
+    const harness = workspaceRegistryHarness();
+    const ensureCommanderHomeDir = vi.fn();
+    const workspaceId = await resolveOrCreateCommanderWorkspace({
+      workspaceRegistry: harness,
+      createCommanderWorkspace: harness.createCommanderWorkspace,
+      ensureCommanderHomeDir,
+      paseoHome: TEST_PASEO_HOME,
+      hostName: "mac-work",
+      hostAlias: null,
+      logger: createTestLogger(),
+    });
+    expect(workspaceId).toBe("wks_home_1");
+    expect(ensureCommanderHomeDir).toHaveBeenCalledTimes(1);
+  });
+
+  test("does not create the reserved home directory when reusing an existing workspace", async () => {
+    const existing = createWorkspaceRecord({
+      workspaceId: "wks_existing",
+      cwd: COMMANDER_HOME_CWD,
+      title: "Commander (mac-work)",
+    });
+    const harness = workspaceRegistryHarness([existing]);
+    const ensureCommanderHomeDir = vi.fn();
+    const workspaceId = await resolveOrCreateCommanderWorkspace({
+      workspaceRegistry: harness,
+      createCommanderWorkspace: harness.createCommanderWorkspace,
+      ensureCommanderHomeDir,
+      paseoHome: TEST_PASEO_HOME,
+      hostName: "mac-work",
+      hostAlias: null,
+      logger: createTestLogger(),
+    });
+    expect(workspaceId).toBe("wks_existing");
+    expect(ensureCommanderHomeDir).not.toHaveBeenCalled();
   });
 
   test("reuses the existing non-archived home workspace and never provisions a second record", async () => {
     const existing = createWorkspaceRecord({
       workspaceId: "wks_existing",
+      cwd: COMMANDER_HOME_CWD,
       title: "Commander (mac-work)",
     });
     const harness = workspaceRegistryHarness([existing]);
     const workspaceId = await resolveOrCreateCommanderWorkspace({
       workspaceRegistry: harness,
       createCommanderWorkspace: harness.createCommanderWorkspace,
+      paseoHome: TEST_PASEO_HOME,
       hostName: "mac-work",
       hostAlias: null,
       logger: createTestLogger(),
@@ -783,12 +899,14 @@ describe("resolveOrCreateCommanderWorkspace", () => {
   test("stabilizes a reused home workspace whose title is still the <paseo-system> marker", async () => {
     const existing = createWorkspaceRecord({
       workspaceId: "wks_leaky",
+      cwd: COMMANDER_HOME_CWD,
       title: "<paseo-system>",
     });
     const harness = workspaceRegistryHarness([existing]);
     const workspaceId = await resolveOrCreateCommanderWorkspace({
       workspaceRegistry: harness,
       createCommanderWorkspace: harness.createCommanderWorkspace,
+      paseoHome: TEST_PASEO_HOME,
       hostName: "mac-work",
       hostAlias: "work server",
       logger: createTestLogger(),
@@ -803,6 +921,7 @@ describe("resolveOrCreateCommanderWorkspace", () => {
     const workspaceId = await resolveOrCreateCommanderWorkspace({
       workspaceRegistry: harness,
       createCommanderWorkspace: harness.createCommanderWorkspace,
+      paseoHome: TEST_PASEO_HOME,
       hostName: "mac-work",
       hostAlias: "work server",
       logger: createTestLogger(),
@@ -814,6 +933,7 @@ describe("resolveOrCreateCommanderWorkspace", () => {
 
 describe("archiveOrphanCommanderWorkspaces", () => {
   const SELF_HEAL_INPUT = {
+    paseoHome: TEST_PASEO_HOME,
     hostName: "mac-work",
     hostAlias: null,
   };
@@ -828,7 +948,11 @@ describe("archiveOrphanCommanderWorkspaces", () => {
   }
 
   test("archives a <paseo-system>-titled home workspace with no live agent", async () => {
-    const orphan = createWorkspaceRecord({ workspaceId: "wks_orphan", title: "<paseo-system>" });
+    const orphan = createWorkspaceRecord({
+      workspaceId: "wks_orphan",
+      cwd: COMMANDER_HOME_CWD,
+      title: "<paseo-system>",
+    });
     const harness = workspaceRegistryHarness([orphan]);
     const archived = await archiveOrphanCommanderWorkspaces({
       workspaceRegistry: harness,
@@ -843,6 +967,7 @@ describe("archiveOrphanCommanderWorkspaces", () => {
   test("archives a stable-titled 'Commander (host)' home workspace when orphaned", async () => {
     const orphan = createWorkspaceRecord({
       workspaceId: "wks_stable_orphan",
+      cwd: COMMANDER_HOME_CWD,
       title: commanderHomeWorkspaceTitle("mac-work", null),
     });
     const harness = workspaceRegistryHarness([orphan]);
@@ -859,6 +984,7 @@ describe("archiveOrphanCommanderWorkspaces", () => {
   test("never archives a stable-titled home workspace while its Commander lives", async () => {
     const live = createWorkspaceRecord({
       workspaceId: "wks_stable_live",
+      cwd: COMMANDER_HOME_CWD,
       title: commanderHomeWorkspaceTitle("mac-work", null),
     });
     const harness = workspaceRegistryHarness([live]);
@@ -875,7 +1001,11 @@ describe("archiveOrphanCommanderWorkspaces", () => {
   });
 
   test("leaves a <paseo-system> home workspace alone when an unarchived agent references it", async () => {
-    const live = createWorkspaceRecord({ workspaceId: "wks_live", title: "<paseo-system>" });
+    const live = createWorkspaceRecord({
+      workspaceId: "wks_live",
+      cwd: COMMANDER_HOME_CWD,
+      title: "<paseo-system>",
+    });
     const harness = workspaceRegistryHarness([live]);
     const archived = await archiveOrphanCommanderWorkspaces({
       workspaceRegistry: harness,
@@ -892,7 +1022,11 @@ describe("archiveOrphanCommanderWorkspaces", () => {
   test("leaves a <paseo-system> home workspace alone when only an ARCHIVED agent references it", async () => {
     // A workspace whose commander was archived on reset is still an orphan and
     // must be archived — archived agents do not keep a workspace "live".
-    const orphan = createWorkspaceRecord({ workspaceId: "wks_orphan2", title: "<paseo-system>" });
+    const orphan = createWorkspaceRecord({
+      workspaceId: "wks_orphan2",
+      cwd: COMMANDER_HOME_CWD,
+      title: "<paseo-system>",
+    });
     const harness = workspaceRegistryHarness([orphan]);
     const archived = await archiveOrphanCommanderWorkspaces({
       workspaceRegistry: harness,
@@ -937,7 +1071,11 @@ describe("archiveOrphanCommanderWorkspaces", () => {
   });
 
   test("is idempotent: a second run archives nothing", async () => {
-    const orphan = createWorkspaceRecord({ workspaceId: "wks_orphan", title: "<paseo-system>" });
+    const orphan = createWorkspaceRecord({
+      workspaceId: "wks_orphan",
+      cwd: COMMANDER_HOME_CWD,
+      title: "<paseo-system>",
+    });
     const harness = workspaceRegistryHarness([orphan]);
     const input = {
       workspaceRegistry: harness,
@@ -950,10 +1088,154 @@ describe("archiveOrphanCommanderWorkspaces", () => {
   });
 });
 
+describe("migrateLegacyCommanderHomeWorkspaces", () => {
+  const MIGRATION_INPUT = {
+    paseoHome: TEST_PASEO_HOME,
+    hostName: "mac-work",
+    hostAlias: null,
+  };
+
+  function storedAgentRecord(
+    agentId: string,
+    workspaceId: string,
+    archivedAt: string | null = null,
+  ) {
+    return { id: agentId, workspaceId, archivedAt } as unknown as {
+      id: string;
+      workspaceId?: string;
+      archivedAt: string | null;
+    };
+  }
+
+  test("archives a legacy commander workspace at the old home, cascading to its agents", async () => {
+    const legacy = createWorkspaceRecord({
+      workspaceId: "wks_legacy",
+      cwd: HOME_CWD,
+      title: commanderHomeWorkspaceTitle("mac-work", null),
+    });
+    const harness = workspaceRegistryHarness([legacy]);
+    const archiveAgent = vi.fn(async () => ({ archivedAt: new Date().toISOString() }));
+    const archiveSnapshot = vi.fn(async () => ({ id: "agent-stored" }));
+    const migrated = await migrateLegacyCommanderHomeWorkspaces({
+      workspaceRegistry: harness,
+      agentManager: {
+        getAgent: (agentId: string) => (agentId === "agent-live" ? { id: agentId } : null),
+        archiveAgent,
+        archiveSnapshot,
+      } as unknown as AgentManager,
+      agentStorage: {
+        list: async () => [
+          storedAgentRecord("agent-live", "wks_legacy"),
+          storedAgentRecord("agent-stored", "wks_legacy"),
+          storedAgentRecord("agent-other-ws", "wks_elsewhere"),
+          storedAgentRecord("agent-archived", "wks_legacy", "2026-01-01T00:00:00.000Z"),
+        ],
+      } as unknown as Pick<AgentStorage, "list">,
+      ...MIGRATION_INPUT,
+      logger: createTestLogger(),
+    });
+    expect(migrated).toBe(1);
+    expect(harness.records.get("wks_legacy")?.archivedAt).not.toBeNull();
+    // Cascade: the live agent goes through the manager, the stored-only one
+    // through archiveSnapshot; other workspaces and archived agents untouched.
+    expect(archiveAgent).toHaveBeenCalledWith("agent-live");
+    expect(archiveSnapshot).toHaveBeenCalledWith("agent-stored", expect.any(String));
+    expect(archiveAgent).not.toHaveBeenCalledWith("agent-other-ws");
+    expect(archiveSnapshot).not.toHaveBeenCalledWith("agent-archived", expect.any(String));
+  });
+
+  test("is idempotent: the same legacy workspace is archived exactly once", async () => {
+    const legacy = createWorkspaceRecord({
+      workspaceId: "wks_legacy",
+      cwd: HOME_CWD,
+      title: commanderHomeWorkspaceTitle("mac-work", null),
+    });
+    const harness = workspaceRegistryHarness([legacy]);
+    const input = {
+      workspaceRegistry: harness,
+      agentManager: {
+        getAgent: () => null,
+        archiveAgent: vi.fn(async () => ({ archivedAt: new Date().toISOString() })),
+        archiveSnapshot: vi.fn(async () => ({ id: "agent" })),
+      } as unknown as AgentManager,
+      agentStorage: {
+        list: async () => [],
+      } as unknown as Pick<AgentStorage, "list">,
+      ...MIGRATION_INPUT,
+      logger: createTestLogger(),
+    };
+    expect(await migrateLegacyCommanderHomeWorkspaces(input)).toBe(1);
+    expect(await migrateLegacyCommanderHomeWorkspaces(input)).toBe(0);
+    expect(harness.records.get("wks_legacy")?.archivedAt).not.toBeNull();
+  });
+
+  test("never touches non-commander workspaces", async () => {
+    const userWork = createWorkspaceRecord({
+      workspaceId: "wks_user_home",
+      cwd: HOME_CWD,
+      title: "My real work",
+    });
+    const commanderElsewhere = createWorkspaceRecord({
+      workspaceId: "wks_elsewhere",
+      cwd: "/Users/vaibhav/paseo",
+      title: commanderHomeWorkspaceTitle("mac-work", null),
+    });
+    const archivedLegacy = createWorkspaceRecord({
+      workspaceId: "wks_archived_legacy",
+      cwd: HOME_CWD,
+      title: "<paseo-system>",
+      archivedAt: "2026-01-02T00:00:00.000Z",
+    });
+    const harness = workspaceRegistryHarness([userWork, commanderElsewhere, archivedLegacy]);
+    const migrated = await migrateLegacyCommanderHomeWorkspaces({
+      workspaceRegistry: harness,
+      agentManager: {
+        getAgent: () => null,
+        archiveAgent: vi.fn(async () => ({ archivedAt: new Date().toISOString() })),
+        archiveSnapshot: vi.fn(async () => ({ id: "agent" })),
+      } as unknown as AgentManager,
+      agentStorage: {
+        list: async () => [],
+      } as unknown as Pick<AgentStorage, "list">,
+      ...MIGRATION_INPUT,
+      logger: createTestLogger(),
+    });
+    expect(migrated).toBe(0);
+    expect(harness.records.get("wks_user_home")?.archivedAt).toBeNull();
+    expect(harness.records.get("wks_elsewhere")?.archivedAt).toBeNull();
+    expect(harness.records.get("wks_archived_legacy")?.archivedAt).toBe("2026-01-02T00:00:00.000Z");
+  });
+
+  test("never matches the new reserved home", async () => {
+    const currentHome = createWorkspaceRecord({
+      workspaceId: "wks_current",
+      cwd: COMMANDER_HOME_CWD,
+      title: commanderHomeWorkspaceTitle("mac-work", null),
+    });
+    const harness = workspaceRegistryHarness([currentHome]);
+    const migrated = await migrateLegacyCommanderHomeWorkspaces({
+      workspaceRegistry: harness,
+      agentManager: {
+        getAgent: () => null,
+        archiveAgent: vi.fn(async () => ({ archivedAt: new Date().toISOString() })),
+        archiveSnapshot: vi.fn(async () => ({ id: "agent" })),
+      } as unknown as AgentManager,
+      agentStorage: {
+        list: async () => [],
+      } as unknown as Pick<AgentStorage, "list">,
+      ...MIGRATION_INPUT,
+      logger: createTestLogger(),
+    });
+    expect(migrated).toBe(0);
+    expect(harness.records.get("wks_current")?.archivedAt).toBeNull();
+  });
+});
+
 describe("spawnCommander workspace reuse", () => {
   test("a reset respawn reuses the existing home workspace — no second record, same workspaceId", async () => {
     const existing = createWorkspaceRecord({
       workspaceId: "wks_home",
+      cwd: COMMANDER_HOME_CWD,
       title: "Commander (mac-work)",
     });
     const harness = workspaceRegistryHarness([existing]);
@@ -989,5 +1271,49 @@ describe("spawnCommander workspace reuse", () => {
     expect(firstCall.workspaceId).toBe("wks_home_1");
     expect(secondCall.workspaceId).toBe(firstCall.workspaceId);
     expect(harness.records.size).toBe(1);
+  });
+});
+
+describe("remapLegacyCommanderCreateCwd", () => {
+  const REMAP_INPUT = { paseoHome: TEST_PASEO_HOME };
+
+  test("redirects a commander-labeled create with the legacy `~` sentinel to the reserved home", () => {
+    const remapped = remapLegacyCommanderCreateCwd({
+      labels: { "paseo.mission-control": "commander" },
+      requestedCwd: HOME_CWD,
+      ...REMAP_INPUT,
+    });
+    expect(remapped).toBe(COMMANDER_HOME_CWD);
+  });
+
+  test("creates the reserved home directory when redirecting", () => {
+    const reservedHome = remapLegacyCommanderCreateCwd({
+      labels: { "paseo.mission-control": "commander" },
+      requestedCwd: HOME_CWD,
+      ...REMAP_INPUT,
+    });
+    expect(reservedHome).toBe(COMMANDER_HOME_CWD);
+    // The mkdir side effect targets the synthetic test home, never the real
+    // `~/.paseo` — the daemon's own home is off-limits to the dev stack.
+    expect(existsSync(COMMANDER_HOME_CWD)).toBe(true);
+    rmSync(COMMANDER_HOME_CWD, { recursive: true, force: true });
+  });
+
+  test("leaves a non-commander create at its requested cwd", () => {
+    const cwd = remapLegacyCommanderCreateCwd({
+      labels: { project: "payments" },
+      requestedCwd: "/Users/vaibhav",
+      ...REMAP_INPUT,
+    });
+    expect(cwd).toBe("/Users/vaibhav");
+  });
+
+  test("leaves a commander-labeled create with an explicit cwd untouched", () => {
+    const cwd = remapLegacyCommanderCreateCwd({
+      labels: { "paseo.mission-control": "commander" },
+      requestedCwd: COMMANDER_HOME_CWD,
+      ...REMAP_INPUT,
+    });
+    expect(cwd).toBe(COMMANDER_HOME_CWD);
   });
 });

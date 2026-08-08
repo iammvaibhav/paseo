@@ -99,10 +99,10 @@ describe("CommanderAckDrop", () => {
 
     await vi.waitFor(() => expect(removeTimelineRows).toHaveBeenCalledTimes(1));
     expect(removeTimelineRows).toHaveBeenCalledWith("commander-1", [7], "ack-drop");
-    const dropLog = logs.find((record) => record.message === "mission_control.digest.ack_drop");
+    const dropLog = logs.find((record) => record.message === "mission_control.machinery.ack_drop");
     expect(dropLog).toBeDefined();
     expect(dropLog?.payload).toMatchObject({
-      component: "digest",
+      component: "machinery",
       agentId: "commander-1",
       seqs: [7],
       text: "ok",

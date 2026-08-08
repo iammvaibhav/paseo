@@ -113,14 +113,17 @@ export interface CommanderAckDropOptions {
 
 /**
  * Retracts pure-ack replies from machinery-initiated Commander turns
- * (spec Commander: "Retraction must fire on EVERY machinery dispatch path,
- * including the async approvals delivery"). The digest arms it for digest
- * dispatches; the approval-gate delivery arms it when an approved proposal
- * targets the Commander. Arming is one-shot: only the first turn_started after
- * `arm()` is classified, so a user-prompted turn that races the dispatch is
- * never dropped. An armed dispatch that never starts a turn (out-of-band steer
- * to a busy Commander, dispatch failure) expires when the in-flight turn
- * settles.
+ * (spec Commander: "Retraction must fire on EVERY machinery dispatch path").
+ * The CommanderSnapshotInjector owns one instance and arms it for the
+ * snapshot's own turn (a state-only turn whose reply is a single
+ * acknowledgment token); the injector's armLaunchTurn covers the launch-time
+ * first turn. Arming is one-shot: only the first turn_started after `arm()`
+ * is classified, so a user-prompted turn that races the dispatch is never
+ * dropped. An armed dispatch that never starts a turn (out-of-band steer to
+ * a busy Commander, dispatch failure) expires when the in-flight turn
+ * settles. (COMPAT: the digest-era shared arming for the approvals delivery
+ * path was removed with the digest queue — with per-turn snapshot injection
+ * the delivered turn's own reply is never classified.)
  *
  * The guard is `isPureAckReply` + turn-level tool-call tracking: replies
  * containing a question, a proposal/offer to act, or any tool call are never
@@ -267,15 +270,15 @@ export class CommanderAckDrop {
     }
     const seqs = turn.assistantRows.map((row) => row.seq);
     this.logger.info(
-      { component: "digest", agentId: turn.commanderId, seqs, text },
-      "mission_control.digest.ack_drop",
+      { component: "machinery", agentId: turn.commanderId, seqs, text },
+      "mission_control.machinery.ack_drop",
     );
     await this.agentManager
       .removeTimelineRows(turn.commanderId, seqs, "ack-drop")
       .catch((error) => {
         this.logger.warn(
-          { err: error, component: "digest", agentId: turn.commanderId, seqs },
-          "mission_control.digest.ack_drop_retract_failed",
+          { err: error, component: "machinery", agentId: turn.commanderId, seqs },
+          "mission_control.machinery.ack_drop_retract_failed",
         );
       });
   }

@@ -16,6 +16,7 @@ export type AgentRunController = Pick<
   | "replaceAgentRun"
   | "streamAgent"
   | "reloadAgentSession"
+  | "beforeAgentRun"
 >;
 
 export interface StartAgentRunOptions {
@@ -35,8 +36,8 @@ export async function startAgentRun(
     {
       agentId,
       provider: snapshot?.provider,
-      providerSessionId: snapshot?.persistence?.sessionId ?? undefined,
-      turnId: snapshot?.activeForegroundTurnId ?? undefined,
+      providerSessionId: snapshot?.persistence?.sessionId,
+      turnId: snapshot?.activeForegroundTurnId,
       promptType: typeof prompt === "string" ? "string" : "structured",
       hasRunOptions: Boolean(options?.runOptions),
       replaceRunning: Boolean(options?.replaceRunning),
@@ -50,6 +51,19 @@ export async function startAgentRun(
     return { outOfBand: true };
   }
   await recoverDeadProviderRuntime(agentManager, agentId, logger);
+  // Per-turn pre-run seam (Commander world-snapshot injection): the hook may
+  // dispatch its own machinery turn ahead of this prompt. Runs after the
+  // dead-runtime recovery so the injected turn starts on a live session, and
+  // after the out-of-band check so OOB commands never trigger injection.
+  // typeof-guarded so manager shims without the seam stay no-ops.
+  if (typeof agentManager.beforeAgentRun === "function") {
+    await agentManager.beforeAgentRun({
+      agentId,
+      prompt,
+      runOptions: options?.runOptions,
+      replaceRunning: options?.replaceRunning,
+    });
+  }
   const shouldReplace = Boolean(options?.replaceRunning && agentManager.hasInFlightRun(agentId));
   const runOptions = options?.runOptions;
   const iterator = shouldReplace
@@ -59,7 +73,7 @@ export async function startAgentRun(
     {
       agentId,
       provider: snapshot?.provider,
-      providerSessionId: snapshot?.persistence?.sessionId ?? undefined,
+      providerSessionId: snapshot?.persistence?.sessionId,
       shouldReplace,
     },
     "agent.session.start_stream.iterator_returned",
@@ -73,7 +87,7 @@ export async function startAgentRun(
         {
           agentId,
           provider: snapshot?.provider,
-          providerSessionId: snapshot?.persistence?.sessionId ?? undefined,
+          providerSessionId: snapshot?.persistence?.sessionId,
         },
         "agent.session.iterator.drained",
       );
@@ -82,7 +96,7 @@ export async function startAgentRun(
         {
           agentId,
           provider: snapshot?.provider,
-          providerSessionId: snapshot?.persistence?.sessionId ?? undefined,
+          providerSessionId: snapshot?.persistence?.sessionId,
           err: error,
         },
         "agent.session.iterator.error",

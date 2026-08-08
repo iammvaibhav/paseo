@@ -316,6 +316,13 @@ export const fr: TranslationResources = {
       archive: "Archive",
     },
   },
+  missionControl: {
+    inspector: {
+      archivedBanner: "Archivé",
+      workspaceArchived:
+        "L'espace de travail de cet agent est archivé, il ne peut donc pas être ouvert dans la vue espace de travail.",
+    },
+  },
   message: {
     actions: {
       copyCode: "Copier le code",

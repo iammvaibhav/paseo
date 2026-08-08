@@ -176,7 +176,7 @@ import {
   closeBulkWorkspaceTabs,
 } from "@/screens/workspace/workspace-bulk-close";
 import { resolveCloseAgentTabPolicy } from "@/subagents";
-import { isCommanderAgent } from "@/mission-control/labels";
+import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
 import {
   getPanelInstanceAttributes,
   useModifiedPanelTabIds,
@@ -3326,8 +3326,9 @@ function WorkspaceScreenContent({
       }
 
       const groups = classifyBulkClosableTabs(tabsToClose);
-      // The Commander (label `paseo.mission-control=*`) is never archivable:
-      // its tabs close layout-only, so count them as plain tabs, not agents.
+      // System-owned agents (Commander, verifiers, machinery) are never
+      // archivable: their tabs close layout-only, so count them as plain tabs,
+      // not agents.
       const guardedGroups: BulkClosableTabGroups = {
         agentTabs: [],
         terminalTabs: groups.terminalTabs,
@@ -3337,7 +3338,7 @@ function WorkspaceScreenContent({
         const agent =
           useSessionStore.getState().sessions[normalizedServerId]?.agents.get(agentTab.agentId) ??
           null;
-        if (isCommanderAgent(agent?.labels)) {
+        if (isSystemOwnedAgentLabels(agent?.labels)) {
           guardedGroups.otherTabs.push({
             tabId: agentTab.tabId,
             target: { kind: "agent", agentId: agentTab.agentId },

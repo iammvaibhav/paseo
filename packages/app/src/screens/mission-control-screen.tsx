@@ -42,7 +42,7 @@ import { useSessionStore } from "@/stores/session-store";
 import { useHostFeature } from "@/runtime/host-features";
 import { useShallow } from "zustand/react/shallow";
 import { launchCommander } from "@/mission-control/launch";
-import { isCommanderAgent } from "@/mission-control/labels";
+import { MISSION_CONTROL_LABEL_KEY, MISSION_CONTROL_LABEL_VALUE } from "@/mission-control/labels";
 import { useIsCompactFormFactor } from "@/constants/layout";
 
 type CompactPanel = "thread" | "board";
@@ -67,13 +67,18 @@ function findCommander(
     { id: string; labels: Record<string, string>; archivedAt?: Date | null }
   >,
 ): { agentId: string; archived: boolean } | null {
+  // The thread targets THE Commander: value "commander" on the
+  // `paseo.mission-control` key — never a verifier (which carries the same
+  // key with value "verifier"), so findCommander can't adopt machinery.
+  const isCommander = (labels: Record<string, string>) =>
+    labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE;
   for (const agent of agents.values()) {
-    if (isCommanderAgent(agent.labels)) {
+    if (isCommander(agent.labels)) {
       return { agentId: agent.id, archived: Boolean(agent.archivedAt) };
     }
   }
   for (const agent of details.values()) {
-    if (isCommanderAgent(agent.labels)) {
+    if (isCommander(agent.labels)) {
       return { agentId: agent.id, archived: Boolean(agent.archivedAt) };
     }
   }

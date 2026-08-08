@@ -1,9 +1,11 @@
 import { useMemo, useCallback, useRef, useSyncExternalStore } from "react";
 import equal from "fast-deep-equal";
 import { useShallow } from "zustand/shallow";
+import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
 import { useSessionStore } from "@/stores/session-store";
 import type { AgentDirectoryEntry } from "@/types/agent-directory";
 import type { Agent } from "@/stores/session-store";
+import { useMissionControlVerbose } from "@/mission-control/use-mission-control-verbose";
 import { getHostRuntimeStore, useHosts } from "@/runtime/host-runtime";
 
 export interface AggregatedAgent extends AgentDirectoryEntry {
@@ -19,12 +21,43 @@ export interface AggregatedAgentsResult {
   refreshAll: () => void;
 }
 
+function toAggregatedAgent(agent: Agent, serverId: string, serverLabel: string): AggregatedAgent {
+  return {
+    id: agent.id,
+    serverId,
+    serverLabel,
+    title: agent.title ?? null,
+    name: agent.name ?? null,
+    shortDescription: agent.shortDescription ?? null,
+    status: agent.status,
+    lastActivityAt: agent.lastActivityAt,
+    lastUserMessageAt: agent.lastUserMessageAt,
+    cwd: agent.cwd,
+    workspaceId: agent.workspaceId,
+    provider: agent.provider,
+    pendingPermissionCount: agent.pendingPermissions.length,
+    requiresAttention: agent.requiresAttention,
+    attentionReason: agent.attentionReason,
+    attentionTimestamp: agent.attentionTimestamp,
+    stoppedBy: agent.stoppedBy ?? null,
+    archivedAt: agent.archivedAt,
+    createdAt: agent.createdAt,
+    labels: agent.labels,
+    projectPlacement: agent.projectPlacement,
+  };
+}
+
 export function useAggregatedAgents(options?: {
   includeArchived?: boolean;
 }): AggregatedAgentsResult {
   const daemons = useHosts();
   const runtime = getHostRuntimeStore();
   const includeArchived = options?.includeArchived ?? false;
+  // Mission Control verbose is THE debug gate: system-owned agents (Commander,
+  // verifiers, machinery) are hidden from every list/board/badge surface while
+  // it is OFF, and visible everywhere when it is ON. One filter here so no
+  // surface keeps its own variant.
+  const [verbose] = useMissionControlVerbose();
   const runtimeVersion = useSyncExternalStore(
     (onStoreChange) => runtime.subscribeAll(onStoreChange),
     () => runtime.getVersion(),
@@ -70,29 +103,10 @@ export function useAggregatedAgents(options?: {
         if (!includeArchived && agent.archivedAt) {
           continue;
         }
-        const nextAgent: AggregatedAgent = {
-          id: agent.id,
-          serverId,
-          serverLabel,
-          title: agent.title ?? null,
-          name: agent.name ?? null,
-          shortDescription: agent.shortDescription ?? null,
-          status: agent.status,
-          lastActivityAt: agent.lastActivityAt,
-          lastUserMessageAt: agent.lastUserMessageAt,
-          cwd: agent.cwd,
-          workspaceId: agent.workspaceId,
-          provider: agent.provider,
-          pendingPermissionCount: agent.pendingPermissions.length,
-          requiresAttention: agent.requiresAttention,
-          attentionReason: agent.attentionReason,
-          attentionTimestamp: agent.attentionTimestamp,
-          stoppedBy: agent.stoppedBy ?? null,
-          archivedAt: agent.archivedAt,
-          createdAt: agent.createdAt,
-          labels: agent.labels,
-          projectPlacement: agent.projectPlacement,
-        };
+        if (!verbose && isSystemOwnedAgentLabels(agent.labels)) {
+          continue;
+        }
+        const nextAgent = toAggregatedAgent(agent, serverId, serverLabel);
         const cacheKey = `${serverId}:${agent.id}`;
         const prev = prevAgentsRef.current.get(cacheKey);
         // Preserve object identity when fields are unchanged so callers can use
@@ -171,7 +185,7 @@ export function useAggregatedAgents(options?: {
       isInitialLoad,
       isRevalidating,
     };
-  }, [daemons, includeArchived, runtime, runtimeVersion, sessionAgents]);
+  }, [daemons, includeArchived, runtime, runtimeVersion, sessionAgents, verbose]);
 
   return {
     ...result,

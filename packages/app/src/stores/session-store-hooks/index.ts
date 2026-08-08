@@ -21,6 +21,7 @@ import {
 } from "./selectors";
 import { useSessionStore, type WorkspaceDescriptor } from "../session-store";
 import type { DesktopBadgeWorkspaceStatus } from "@/utils/desktop-badge-state";
+import { useMissionControlVerbose } from "@/mission-control/use-mission-control-verbose";
 
 // These are the ONLY supported ways to read workspaces from the session store.
 // Do not write raw `useSessionStore` selectors that return the workspaces Map, a session object,
@@ -92,12 +93,12 @@ export function useWorkspaceDirectory(
 
 export function useWorkspaceStructure(
   serverIds: string[],
-  options?: { hideCommanderWorkspaces?: boolean },
+  options?: { hideSystemOwnedWorkspaces?: boolean },
 ): WorkspaceStructure {
-  const { hideCommanderWorkspaces = true } = options ?? {};
+  const { hideSystemOwnedWorkspaces = true } = options ?? {};
   const projects = useStoreWithEqualityFn(
     useSessionStore,
-    (state) => selectWorkspaceStructureProjects(state, serverIds, { hideCommanderWorkspaces }),
+    (state) => selectWorkspaceStructureProjects(state, serverIds, { hideSystemOwnedWorkspaces }),
     workspaceEqualityFns.deep,
   );
   const projectOrder = useStoreWithEqualityFn(
@@ -147,9 +148,13 @@ export function useHasWorkspaces(serverId: string | null): boolean {
 }
 
 export function useWorkspaceStatusesForBadges(): DesktopBadgeWorkspaceStatus[] {
+  // Mission Control verbose gate: while OFF, system-owned workspaces (the
+  // Commander's home + machinery-only workspaces) are excluded from badge
+  // counts so hidden machinery never surfaces as a dock/favicon count.
+  const [verbose] = useMissionControlVerbose();
   return useStoreWithEqualityFn(
     useSessionStore,
-    (state) => selectWorkspaceStatusesForBadges(state),
+    (state) => selectWorkspaceStatusesForBadges(state, { hideSystemOwnedWorkspaces: !verbose }),
     workspaceEqualityFns.deep,
   );
 }

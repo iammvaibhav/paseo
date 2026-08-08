@@ -1,6 +1,6 @@
 import express from "express";
 import { createServer as createHTTPServer, type IncomingMessage, type ServerResponse } from "http";
-import { constants, existsSync, unlinkSync } from "fs";
+import { constants, existsSync, mkdirSync, unlinkSync } from "fs";
 import { open } from "fs/promises";
 import { randomUUID } from "node:crypto";
 import { hostname as getHostname } from "node:os";
@@ -152,12 +152,13 @@ import { LoopService } from "./loop-service.js";
 import { ScheduleService } from "./schedule/service.js";
 import { MissionControlService } from "./mission-control/service.js";
 import type { MissionControlProposalSpawnPlan } from "@getpaseo/protocol/mission-control/types";
-import { MissionControlDigest } from "./mission-control/digest.js";
-import { createFleetContextDigestProvider } from "./mission-control/context.js";
+import { buildWorldSnapshot } from "./mission-control/context.js";
+import { CommanderSnapshotInjector } from "./mission-control/commander-snapshot.js";
 import { CentralMissionControlConfigStore } from "./mission-control/config.js";
 import { createMissionControlPresenceSource } from "./mission-control/presence.js";
 import { MissionControlVerifierDispatcher } from "./mission-control/verifier.js";
 import {
+  commanderHomeCwd,
   buildCommanderLaunchContract,
   ensureCommanderOnBoot,
   resetCommander,
@@ -1187,6 +1188,11 @@ export async function createPaseoDaemon(
     readTheme: () => centralMissionControlConfig.get().namingTheme,
     logger,
   });
+  // Hoisted: the Commander snapshot injector (constructed after the manager,
+  // below) registers its per-turn seam here. The seam fires on EVERY
+  // startAgentRun; the injector gates itself by commander labels and is a
+  // no-op until constructed.
+  let commanderSnapshotInjector: CommanderSnapshotInjector | null = null;
   const agentManager: AgentManager = new AgentManager({
     clients: initialAgentManagerState.clients,
     providerDefinitions: initialAgentManagerState.providerDefinitions,
@@ -1194,6 +1200,10 @@ export async function createPaseoDaemon(
     appendSystemPrompt: config.appendSystemPrompt,
     missionControlSelfReportEnabled:
       daemonConfigStore.get().missionControl?.selfReport?.enabled ?? true,
+    // Per-turn world-snapshot injection (M3 runtime model): every message
+    // delivered to the Commander — user turn or machinery turn — is preceded
+    // by a fresh snapshot dispatched as its own machinery turn.
+    beforeAgentRun: (input) => commanderSnapshotInjector?.beforeTurn(input) ?? undefined,
     // The Commander's launch contract (systemPromptMode replace + bundled
     // prompt + tool allowlist) is re-derived on EVERY session build so a
     // reloaded/resumed Commander never comes back with the default coding
@@ -1634,27 +1644,31 @@ export async function createPaseoDaemon(
 
   // Central mission-control config is the daemon-wide instance constructed
   // above (naming reads the theme from it); no second instance here.
-  const missionControlDigest: MissionControlDigest = new MissionControlDigest({
+  // M3 runtime model: the Commander gets a FRESH world snapshot before every
+  // turn (user or machinery) — never accreted, never deltas. The injector
+  // owns the snapshot dispatch + supersede-in-place retraction; it is wired
+  // into startAgentRun via the beforeAgentRun seam above. peerManager and
+  // missionControlService are resolved lazily (the service is constructed
+  // after; the peer manager after that).
+  commanderSnapshotInjector = new CommanderSnapshotInjector({
     agentManager,
-    agentStorage,
     logger,
-    // peerManager is constructed after the digest (it needs the digest as its
-    // event sink), so the context provider resolves it lazily at flush time.
-    contextProvider: createFleetContextDigestProvider({
-      agentManager,
-      agentStorage,
-      workspaceRegistry,
-      projectRegistry,
-      providerSnapshotManager,
-      peerManager: () => peerManager,
-      daemonConfigStore,
-      centralConfig: centralMissionControlConfig,
-      getReviewStates: () => missionControlService.getReviewStates(),
-      getReportEvents: () => missionControlService.fetchEvents(),
-      serverId,
-      hostName: getHostname(),
-      logger,
-    }),
+    buildSnapshot: () =>
+      buildWorldSnapshot({
+        agentManager,
+        agentStorage,
+        workspaceRegistry,
+        projectRegistry,
+        providerSnapshotManager,
+        peerManager: () => peerManager,
+        daemonConfigStore,
+        centralConfig: centralMissionControlConfig,
+        getReviewStates: () => missionControlService.getReviewStates(),
+        getReportEvents: () => missionControlService.fetchEvents(),
+        serverId,
+        hostName: getHostname(),
+        logger,
+      }),
   });
   // Hoisted: the verifier dispatcher and the presence source capture the
   // service in closures that run only after boot, but TypeScript needs the
@@ -1703,7 +1717,6 @@ export async function createPaseoDaemon(
     serverId,
     hostName: getHostname(),
     broadcast: (message) => wsServer?.broadcast(wrapSessionMessage(message)),
-    digest: missionControlDigest,
     centralConfig: centralMissionControlConfig,
     presence: createMissionControlPresenceSource({
       isAgentFocused: (agentId) => wsServer?.anyClientFocusedOnAgent(agentId) ?? false,
@@ -1718,13 +1731,19 @@ export async function createPaseoDaemon(
         providerSnapshotManager,
         createAgent,
         centralConfig: () => centralMissionControlConfig.get(),
+        paseoHome: config.paseoHome,
         hostName: getHostname(),
         hostAlias: daemonConfigStore.get().missionControl?.hostAlias?.trim() || null,
         workspaceRegistry,
         createCommanderWorkspace: async (cwd, title) =>
           workspaceProvisioning.createWorkspaceForDirectory(cwd, title),
+        // The reserved commander home (`<paseoHome>/commander`) must exist
+        // before a fresh workspace is provisioned there.
+        ensureCommanderHomeDir: () => {
+          mkdirSync(commanderHomeCwd(config.paseoHome), { recursive: true });
+        },
         publishEvent: (event) => missionControlService.publishEvent(event),
-        onCommanderCreated: () => missionControlDigest.ackDrop.arm(),
+        onCommanderCreated: (commanderId) => commanderSnapshotInjector?.armLaunchTurn(commanderId),
         launchContext: {
           agentManager,
           agentStorage,
@@ -1757,7 +1776,6 @@ export async function createPaseoDaemon(
     },
   });
   await missionControlService.start();
-  missionControlDigest.start();
   logger.info({ elapsed: elapsed() }, "Mission control service initialized");
 
   // Boot-ensure the fleet Commander (spec: daemon boot creates it when this
@@ -1770,13 +1788,19 @@ export async function createPaseoDaemon(
     providerSnapshotManager,
     createAgent,
     centralConfig: () => centralMissionControlConfig.get(),
+    paseoHome: config.paseoHome,
     hostName: getHostname(),
     hostAlias: daemonConfigStore.get().missionControl?.hostAlias?.trim() || null,
     workspaceRegistry,
     createCommanderWorkspace: async (cwd, title) =>
       workspaceProvisioning.createWorkspaceForDirectory(cwd, title),
+    // The reserved commander home (`<paseoHome>/commander`) must exist
+    // before a fresh workspace is provisioned there.
+    ensureCommanderHomeDir: () => {
+      mkdirSync(commanderHomeCwd(config.paseoHome), { recursive: true });
+    },
     publishEvent: (event) => missionControlService.publishEvent(event),
-    onCommanderCreated: () => missionControlDigest.ackDrop.arm(),
+    onCommanderCreated: (commanderId) => commanderSnapshotInjector?.armLaunchTurn(commanderId),
     launchContext: {
       agentManager,
       agentStorage,
@@ -1850,7 +1874,6 @@ export async function createPaseoDaemon(
     peers: loadPersistedConfig(config.paseoHome).peers ?? [],
     logger,
     appVersion: daemonVersion,
-    missionControlDigest,
   });
 
   const webhookService = new WebhookService({

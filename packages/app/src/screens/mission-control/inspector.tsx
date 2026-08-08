@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, type ReactElement } from "react";
 import { Text, View } from "react-native";
+import { useTranslation } from "react-i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { ArrowUpRight, X } from "lucide-react-native";
+import { ArrowUpRight, Archive, X } from "lucide-react-native";
 import { useShallow } from "zustand/react/shallow";
 import { AgentStreamView } from "@/agent-stream/view";
 import { Composer } from "@/composer";
@@ -12,6 +13,7 @@ import { buildDraftStoreKey } from "@/stores/draft-keys";
 import { ArchivedAgentCallout } from "@/components/archived-agent-callout";
 import { BackHeader } from "@/components/headers/back-header";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/contexts/toast-context";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { HostGlyph } from "@/components/host-glyph";
@@ -23,6 +25,7 @@ import { useSessionStore, selectAgentTurnPresentation } from "@/stores/session-s
 import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
 import { openAgentFromHistory } from "@/workspace/open-agent-from-history";
 import { createWorkspaceFileTabTarget, type WorkspaceFileOpenRequest } from "@/workspace/file-open";
+import { useWorkspaceOpenState } from "@/mission-control/workspace-open-state";
 import type { PendingPermission } from "@/types/shared";
 import type { StreamItem } from "@/types/stream";
 import type { Theme } from "@/styles/theme";
@@ -39,6 +42,7 @@ const INSPECTOR_HEADER_MIN_HEIGHT = 48;
 
 const ThemedArrowUpRight = withUnistyles(ArrowUpRight);
 const ThemedX = withUnistyles(X);
+const ThemedArchive = withUnistyles(Archive);
 const arrowUpRightMutedMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 // Hoisted so the header button never takes a fresh JSX element as a prop
 // (react-perf: no JSX literals in prop position).
@@ -60,6 +64,7 @@ export function MissionControlInspector({
   target,
   isFocused,
 }: MissionControlInspectorProps): ReactElement {
+  const { t } = useTranslation();
   const isCompact = useIsCompactFormFactor();
   const insets = useSafeAreaInsets();
   const toast = useToast();
@@ -72,6 +77,11 @@ export function MissionControlInspector({
     }
     return resolveSessionAgent(session, agentId);
   });
+
+  const { isArchivedOrMissing: workspaceArchivedOrMissing } = useWorkspaceOpenState(
+    serverId,
+    agent?.workspaceId,
+  );
 
   const streamItems = useSessionStore(
     (state) => state.sessions[serverId]?.agentStreamTail.get(agentId) ?? EMPTY_STREAM_ITEMS,
@@ -202,19 +212,27 @@ export function MissionControlInspector({
   );
 
   const handleOpenInWorkspace = useCallback(() => {
+    if (workspaceArchivedOrMissing) {
+      return;
+    }
     void openAgentFromHistory({
       serverId,
       agentId,
       workspaceId: agent?.workspaceId ?? null,
       archived: agent ? Boolean(agent.archivedAt) : true,
     });
-  }, [agent, agentId, serverId]);
+  }, [agent, agentId, serverId, workspaceArchivedOrMissing]);
 
   const closeInspector = useInspectorStore((state) => state.closeInspector);
 
   const primaryLabel = agent?.name ?? agent?.title ?? agentId;
   const secondaryLabel = agent?.name && agent?.title ? agent.title : null;
   const isArchived = agent ? Boolean(agent.archivedAt) : false;
+  // Archived banner state: the agent itself is archived, or its workspace is
+  // archived/absent (opening it would dead-end on the missing-workspace
+  // redirect), so the inspector labels the row instead of pretending it is
+  // live work.
+  const showArchivedBanner = isArchived || workspaceArchivedOrMissing;
   const composerCwd = agent?.cwd ?? "~";
   const composerContainerStyle = useMemo(() => ({ paddingBottom: insets.bottom }), [insets.bottom]);
 
@@ -237,20 +255,38 @@ export function MissionControlInspector({
     () => <ThemedArrowUpRight size={14} uniProps={arrowUpRightMutedMapping} />,
     [],
   );
-  const openInWorkspaceButton = useMemo(
-    () => (
+  // Archived workspace: navigating would dead-end on the missing-workspace
+  // redirect, so the affordance degrades — disabled with an explanation
+  // (tooltip on web) instead of firing a dead route.
+  const openInWorkspaceButton = useMemo(() => {
+    const button = (
       <Button
         variant="ghost"
         size="xs"
         trailing={openInWorkspaceTrailing}
         onPress={handleOpenInWorkspace}
+        disabled={workspaceArchivedOrMissing}
         testID="mission-control-inspector-open-in-workspace"
       >
         Open in workspace
       </Button>
-    ),
-    [handleOpenInWorkspace, openInWorkspaceTrailing],
-  );
+    );
+    if (!workspaceArchivedOrMissing) {
+      return button;
+    }
+    return (
+      <Tooltip delayDuration={400} enabledOnDesktop enabledOnMobile={false}>
+        <TooltipTrigger asChild>
+          <View collapsable={false}>{button}</View>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" align="end" offset={8}>
+          <Text style={styles.openTooltipText}>
+            {t("missionControl.inspector.workspaceArchived")}
+          </Text>
+        </TooltipContent>
+      </Tooltip>
+    );
+  }, [handleOpenInWorkspace, openInWorkspaceTrailing, t, workspaceArchivedOrMissing]);
 
   // Desktop close: the inspector is an embedded pane, not a navigation — the X
   // clears the inspected agent (target → null unmounts the pane). Width prefs
@@ -308,6 +344,14 @@ export function MissionControlInspector({
   return (
     <View style={styles.container} testID="mission-control-inspector">
       {header}
+      {showArchivedBanner ? (
+        <View style={styles.archivedBanner} testID="mission-control-inspector-archived-banner">
+          <ThemedArchive size={12} uniProps={arrowUpRightMutedMapping} />
+          <Text style={styles.archivedBannerText}>
+            {t("missionControl.inspector.archivedBanner")}
+          </Text>
+        </View>
+      ) : null}
       {pendingExchangeCards.length > 0 ? (
         <View style={styles.pendingCards} testID="mission-control-inspector-pending-exchange">
           {pendingExchangeCards.map((event) =>
@@ -387,6 +431,28 @@ const styles = StyleSheet.create((theme) => ({
   },
   headerBadgeSlot: {
     marginLeft: theme.spacing[2],
+  },
+  archivedBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    paddingHorizontal: theme.spacing[3],
+    paddingVertical: theme.spacing[1],
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+    backgroundColor: theme.colors.surface1,
+  },
+  archivedBannerText: {
+    fontFamily: theme.fontFamily.ui,
+    fontSize: theme.fontSize.xs,
+    fontWeight: theme.fontWeight.medium,
+    color: theme.colors.foregroundMuted,
+  },
+  openTooltipText: {
+    fontFamily: theme.fontFamily.ui,
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foreground,
+    maxWidth: 220,
   },
   streamArea: {
     flex: 1,

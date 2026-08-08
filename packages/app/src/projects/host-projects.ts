@@ -22,7 +22,7 @@ export {
 
 export function useHostProjects(
   serverIds: string[],
-  options?: { hideCommanderWorkspaces?: boolean },
+  options?: { hideSystemOwnedWorkspaces?: boolean },
 ): HostProjectListItem[] {
   const workspaceStructure = useWorkspaceStructure(serverIds, options);
   return workspaceStructure.projects;

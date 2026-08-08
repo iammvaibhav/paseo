@@ -10,10 +10,20 @@ import {
 import { commanderLabels } from "./labels";
 
 /**
- * The Commander is host-wide; `~` is the only cwd that always exists on every host.
- * The daemon expands `~` to its own home directory on the create_agent path
- * (session.ts handleCreateAgentRequest, same contract as the provider-snapshot
- * path and the MCP create path), so no app-side lookup of the host's home is needed.
+ * The Commander is host-wide; `~` is the only cwd that always exists on every
+ * host. The daemon expands `~` to its own home directory on the create_agent
+ * path (session.ts handleCreateAgentRequest, same contract as the
+ * provider-snapshot path and the MCP create path), so no app-side lookup of
+ * the host's home is needed.
+ *
+ * M2 reserved-home contract: the app sends the "~" sentinel and the DAEMON
+ * redirects commander-labeled creates (`paseo.mission-control=commander`) to
+ * the reserved home (`<paseoHome>/commander` — commander-boot's
+ * commanderHomeCwd) instead of the legacy home-rooted workspace. The app
+ * cannot compute that path itself (no RPC exposes the daemon's paseoHome), so
+ * this sentinel is the app half of the contract; the redirect lives in the
+ * server create path. Never hardcode `~/.paseo/commander` here — the dev
+ * daemon's PASEO_HOME differs and must never write into `~/.paseo`.
  */
 export const COMMANDER_CWD = "~";
 export const COMMANDER_TITLE = "Commander";

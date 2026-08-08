@@ -315,6 +315,13 @@ export const ja: TranslationResources = {
       archive: "アーカイブ",
     },
   },
+  missionControl: {
+    inspector: {
+      archivedBanner: "アーカイブ済み",
+      workspaceArchived:
+        "このエージェントのワークスペースはアーカイブされているため、ワークスペースビューで開くことはできません。",
+    },
+  },
   message: {
     actions: {
       copyCode: "コードをコピー",

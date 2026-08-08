@@ -58,12 +58,12 @@ Naming immutability:
 
 The biggest change. See [docs/commander.md](commander.md#runtime-model-durable-thread-stateless-turns).
 
-- [ ] World-snapshot builder: hot set (hosts+aliases, project/workspace index with descriptions, last-24h agents by bucket, invocable models, routing defaults), stamped with generation time. Reuses the context-pack assembly in `context.ts`, minus the delta machinery.
-- [ ] Inject the snapshot per turn (user turns and machinery turns), keeping the system prompt byte-stable for prompt-cache hits.
-- [ ] Delete the digest queue → Commander path (`digest.ts` idle-flush into the thread, ack-drop machinery, delta context provider). The feed keeps its events; the Commander stops receiving them as chat.
-- [ ] Machinery turns: stall escalations, verdicts, and Auto-mode reactions become triggered turns carrying event + fresh snapshot.
-- [ ] Rolling dialogue summary once the thread exceeds a threshold; world state is never summarized (it regenerates).
-- [ ] Delete `CommanderAckDrop` and the retraction tracker — with no digest chatter there is nothing to retract.
+- [x] World-snapshot builder: hot set (hosts+aliases, project/workspace index with descriptions, last-24h agents by bucket, invocable models, routing defaults), stamped with generation time. Reuses the context-pack assembly in `context.ts`, minus the delta machinery.
+- [x] Inject the snapshot per turn (user turns and machinery turns), keeping the system prompt byte-stable for prompt-cache hits.
+- [x] Delete the digest queue → Commander path (`digest.ts` idle-flush into the thread, ack-drop machinery, delta context provider). The feed keeps its events; the Commander stops receiving them as chat.
+- [x] Machinery turns: stall escalations, verdicts, and Auto-mode reactions become triggered turns carrying event + fresh snapshot.
+- [ ] Rolling dialogue summary once the thread exceeds a threshold; world state is never summarized (it regenerates). **NOT BUILT in M3**: omp compaction already bounds the thread, and a daemon-side summarizer duplicates it; revisit with M6 run records (the snapshot regenerates every turn regardless, so world state never rots).
+- [~] Delete `CommanderAckDrop` and the retraction tracker — with no digest chatter there is nothing to retract. **Deferred past M3**: the digest-era shared arming (approvals delivery) is gone, but the primitive is reused by the per-turn snapshot injector to retract the snapshot turn's own pure-ack reply, and by `armLaunchTurn` for the launch first turn. Delete the class once the snapshot's ack convention changes.
 
 ## M4 — Card grammar
 

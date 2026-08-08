@@ -8,7 +8,6 @@ import {
   type HostRuntimeConnectionStatus,
 } from "@/runtime/host-runtime";
 import type { MissionControlEvent } from "@getpaseo/protocol/mission-control/types";
-import { isCommanderAgent } from "./labels";
 import {
   DEFAULT_RETENTION_DAYS,
   countLifecycle,
@@ -106,11 +105,10 @@ export function useMissionControlLifecycle(
 
     const nextRows: LifecycleRow[] = [];
     for (const agent of agents) {
-      // The Commander (label `paseo.mission-control=*`) is invisible on the
-      // board — it lives in the Mission Control thread, never in a bucket.
-      if (isCommanderAgent(agent.labels)) {
-        continue;
-      }
+      // System-owned agents (Commander, verifiers, machinery) are excluded
+      // upstream in useAggregatedAgents while Mission Control verbose mode is
+      // OFF — the same shared gate every list surface uses. With verbose ON
+      // they appear on the board too, for on-demand inspection.
       const state = deriveAgentLifecycle({
         agent,
         events: eventsByAgent.get(`${agent.serverId}:${agent.id}`) ?? EMPTY_EVENTS,

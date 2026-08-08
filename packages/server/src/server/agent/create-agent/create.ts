@@ -3,6 +3,7 @@ import type { Logger } from "pino";
 import type { TerminalManager } from "../../../terminal/terminal-manager.js";
 import type { CreatePaseoWorktreeInput } from "../../paseo-worktree-service.js";
 import { expandUserPath, resolvePathFromBase } from "../../path-utils.js";
+import { remapLegacyCommanderCreateCwd } from "../../mission-control/commander-boot.js";
 import { toWorktreeRequestError } from "../../worktree-errors.js";
 import type {
   AgentWorktreeSetupContinuation,
@@ -308,7 +309,14 @@ async function resolveMcpCreateAgent(
   const parentAgent = input.callerAgentId
     ? requireParentAgent(dependencies.agentManager, input.callerAgentId)
     : null;
-  const cwd = resolveMcpInitialCwd(input, parentAgent);
+  // Commander-labeled creates with the legacy `~` sentinel cwd are redirected
+  // to the reserved home (`<paseoHome>/commander`) — same remap as the session
+  // create path, so every client lands in the same reserved home.
+  const cwd = remapLegacyCommanderCreateCwd({
+    labels: input.labels,
+    requestedCwd: resolveMcpInitialCwd(input, parentAgent),
+    paseoHome: dependencies.paseoHome,
+  });
   const { resolvedCwd, setupContinuation, createdWorkspaceId, createdWorktree } =
     await resolveMcpCwd({
       dependencies,

@@ -315,6 +315,13 @@ export const ptBR: TranslationResources = {
       archive: "Arquivar",
     },
   },
+  missionControl: {
+    inspector: {
+      archivedBanner: "Arquivado",
+      workspaceArchived:
+        "O espaço de trabalho deste agente está arquivado, portanto não pode ser aberto na visualização de espaço de trabalho.",
+    },
+  },
   message: {
     actions: {
       copyCode: "Copiar código",

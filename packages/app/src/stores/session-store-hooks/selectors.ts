@@ -1,6 +1,7 @@
 import equal from "fast-deep-equal";
 import {
   buildWorkspaceStructureProjects,
+  isSystemOwnedWorkspace,
   type WorkspaceAgentForSidebar,
   type WorkspaceStructure,
   type WorkspaceStructureProject,
@@ -143,9 +144,9 @@ export function selectHydratedWorkspaceServerIds(
 export function selectWorkspaceStructureProjects(
   state: SessionsSnapshot,
   serverIds: readonly string[],
-  options?: { hideCommanderWorkspaces?: boolean },
+  options?: { hideSystemOwnedWorkspaces?: boolean },
 ): WorkspaceStructureProject[] {
-  const { hideCommanderWorkspaces = true } = options ?? {};
+  const { hideSystemOwnedWorkspaces = true } = options ?? {};
   const sessions: Array<{
     serverId: string;
     workspaces: Iterable<WorkspaceDescriptor>;
@@ -172,7 +173,7 @@ export function selectWorkspaceStructureProjects(
     return EMPTY_WORKSPACE_STRUCTURE.projects;
   }
 
-  return buildWorkspaceStructureProjects({ sessions, hideCommanderWorkspaces });
+  return buildWorkspaceStructureProjects({ sessions, hideSystemOwnedWorkspaces });
 }
 
 export function selectProject(
@@ -270,10 +271,39 @@ export function selectHasWorkspaces(state: SessionsSnapshot, serverId: string | 
 
 export function selectWorkspaceStatusesForBadges(
   state: SessionsSnapshot,
+  options?: { hideSystemOwnedWorkspaces?: boolean },
 ): DesktopBadgeWorkspaceStatus[] {
+  const { hideSystemOwnedWorkspaces = false } = options ?? {};
   const statuses: DesktopBadgeWorkspaceStatus[] = [];
   for (const session of Object.values(state.sessions)) {
+    const agentsByWorkspaceId = new Map<string, WorkspaceAgentForSidebar[]>();
+    if (hideSystemOwnedWorkspaces) {
+      // Mission Control verbose gate: exclude system-owned workspaces (the
+      // Commander's home + machinery-only workspaces) from the dock/favicon
+      // badge counts while verbose is OFF — same shared predicate the
+      // sidebar/project lists use, never a bespoke variant.
+      for (const agent of session.agents?.values() ?? []) {
+        if (!agent.workspaceId) {
+          continue;
+        }
+        const existing = agentsByWorkspaceId.get(agent.workspaceId);
+        if (existing) {
+          existing.push(agent);
+        } else {
+          agentsByWorkspaceId.set(agent.workspaceId, [agent]);
+        }
+      }
+    }
     for (const workspace of session.workspaces.values()) {
+      if (
+        hideSystemOwnedWorkspaces &&
+        isSystemOwnedWorkspace({
+          agentsInWorkspace: agentsByWorkspaceId.get(workspace.id) ?? [],
+          workspaceDirectory: workspace.workspaceDirectory,
+        })
+      ) {
+        continue;
+      }
       statuses.push(workspace.status);
     }
   }

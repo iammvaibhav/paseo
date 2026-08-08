@@ -314,6 +314,13 @@ export const ru: TranslationResources = {
       archive: "Архив",
     },
   },
+  missionControl: {
+    inspector: {
+      archivedBanner: "Архивирован",
+      workspaceArchived:
+        "Рабочее пространство этого агента заархивировано, поэтому его нельзя открыть в представлении рабочего пространства.",
+    },
+  },
   message: {
     actions: {
       copyCode: "Скопировать код",

@@ -1,8 +1,11 @@
 import { createHash } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 
 import type { Logger } from "pino";
 
 import type { MissionControlCentralConfig } from "@getpaseo/protocol/mission-control/types";
+import { COMMANDER_HOME_DIR_SEGMENT } from "@getpaseo/protocol/mission-control/system-owned";
 
 import type { AgentManager } from "../agent/agent-manager.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
@@ -58,12 +61,61 @@ export function buildCommanderLaunchContract(
 }
 
 /**
- * The Commander is host-wide; `~` is the only cwd that always exists on every
- * host. The create paths expand `~` to the daemon's home (same contract as the
- * app's launch).
+ * The Commander is host-wide and lives in a reserved home: `<paseoHome>/commander`
+ * (`~/.paseo/commander` in the standard layout where paseoHome = `~/.paseo`).
+ * Boot creates the directory if missing, and the Commander workspace cwd
+ * points there, so no user project can claim the Commander's cwd (live
+ * incident: a user project rooted at `~` surfaced the Commander
+ * workspace/agent inside it). The path is derived from the daemon's resolved
+ * paseoHome (PASEO_HOME or the standard `~/.paseo`) — never from `~`
+ * expansion, which would resolve to the OS home even under an overridden
+ * paseoHome (the dev stack's PASEO_HOME must never touch `~/.paseo`).
  */
-export const COMMANDER_CWD = "~";
+export function commanderHomeCwd(paseoHome: string): string {
+  return join(paseoHome, COMMANDER_HOME_DIR_SEGMENT);
+}
 export const COMMANDER_TITLE = "Commander";
+
+/**
+ * The pre-M2 Commander home: the daemon user's home directory (`~`). Boot
+ * migration retires commander workspaces still rooted here (archiving them and
+ * their contained agents) so the reserved home stays clean and no user project
+ * at `~` ever collides with the Commander again.
+ */
+export const LEGACY_COMMANDER_CWD = "~";
+
+/**
+ * Create-path cwd remap for commander-labeled agents (M2): clients send the
+ * legacy host-wide sentinel `~` as the Commander's cwd (the app's manual
+ * launch and the archived-recreate path — the app cannot compute
+ * `<paseoHome>/commander` because no RPC exposes paseoHome). A
+ * commander-labeled create whose cwd is that sentinel (expanded to the OS
+ * home) is redirected to the reserved home, creating it if missing — the only
+ * cwd the host-wide Commander may run from (live incident: a user project at
+ * `~` surfaced the Commander workspace/agent). Any other cwd — including the
+ * boot spawn path, which already passes the reserved home — passes through
+ * untouched. One remap point for every client.
+ */
+export function remapLegacyCommanderCreateCwd(input: {
+  labels: Record<string, string> | undefined;
+  /** The requested cwd, `~` already expanded by the caller. */
+  requestedCwd: string;
+  paseoHome: string | undefined;
+}): string {
+  const commanderLabeled =
+    input.labels?.[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE;
+  const legacyHomeCwd = expandUserPath(LEGACY_COMMANDER_CWD);
+  if (
+    !commanderLabeled ||
+    input.paseoHome === undefined ||
+    !areEquivalentPaths(input.requestedCwd, legacyHomeCwd)
+  ) {
+    return input.requestedCwd;
+  }
+  const reservedHome = commanderHomeCwd(input.paseoHome);
+  mkdirSync(reservedHome, { recursive: true });
+  return reservedHome;
+}
 
 /**
  * The Commander's home workspace is host-scoped infrastructure, never user
@@ -117,6 +169,13 @@ export interface EnsureCommanderOnBootInput {
   centralConfig: () => MissionControlCentralConfig;
   /** Everything buildCommanderLaunchConfig needs to snapshot the fleet. */
   launchContext: FleetContextDependencies;
+  /**
+   * The daemon's resolved paseo home (PASEO_HOME or the standard
+   * `~/.paseo`). The Commander's reserved home (`<paseoHome>/commander`)
+   * is derived from it, so an overridden paseoHome (dev stack) never
+   * touches `~/.paseo`.
+   */
+  paseoHome: string;
   /** This host's own identity for the "designated host" check. */
   hostName: string;
   hostAlias: string | null;
@@ -128,6 +187,12 @@ export interface EnsureCommanderOnBootInput {
   workspaceRegistry: Pick<WorkspaceRegistry, "list" | "upsert" | "archive">;
   /** Provisions a fresh home workspace only when none exists for reuse. */
   createCommanderWorkspace: (cwd: string, title: string) => Promise<{ workspaceId: string }>;
+  /**
+   * Creates the Commander's reserved home directory (`<paseoHome>/commander`)
+   * when missing, before a fresh workspace is provisioned there. Wired by the
+   * daemon to a real mkdir; absent in tests.
+   */
+  ensureCommanderHomeDir?: () => Promise<void> | void;
   /**
    * Publishes a mission-control event. Used to surface a failed Commander
    * recreate as a Needs-you card (kind "blocked", blocker severity) while the
@@ -222,11 +287,11 @@ export async function spawnCommander(
     provider,
     title: COMMANDER_TITLE,
     initialPrompt: firstMessage,
-    cwd: COMMANDER_CWD,
+    cwd: commanderHomeCwd(input.paseoHome),
     workspaceId,
     labels: commanderLabels(computeCommanderBuildHash()),
     config: {
-      cwd: COMMANDER_CWD,
+      cwd: commanderHomeCwd(input.paseoHome),
       systemPromptMode: "replace",
       systemPrompt,
       toolAllowlist: [...COMMANDER_TOOL_ALLOWLIST],
@@ -279,19 +344,31 @@ export interface CommanderWorkspaceDependencies {
   workspaceRegistry: Pick<WorkspaceRegistry, "list" | "upsert" | "archive">;
   /**
    * Provisions a fresh directory workspace for a cwd + title. Used only when
-   * no non-archived home-dir workspace exists yet; injected so commander-boot
-   * stays decoupled from workspace provisioning internals.
+   * no non-archived reserved-home workspace exists yet; injected so
+   * commander-boot stays decoupled from workspace provisioning internals.
    */
   createCommanderWorkspace: (cwd: string, title: string) => Promise<{ workspaceId: string }>;
+  /**
+   * Creates the Commander's reserved home directory (`<paseoHome>/commander`)
+   * when missing, before a fresh workspace is provisioned there. Wired by the
+   * daemon to a real mkdir; absent in tests.
+   */
+  ensureCommanderHomeDir?: () => Promise<void> | void;
+  /**
+   * The daemon's resolved paseo home (PASEO_HOME or the standard `~/.paseo`);
+   * the Commander's reserved home cwd is derived from it.
+   */
+  paseoHome: string;
   hostName: string;
   hostAlias: string | null;
   logger: Logger;
 }
 
 /**
- * Resolve the Commander's home workspace (cwd `~`): reuse the host's existing
- * non-archived home-dir workspace when one exists, otherwise provision a fresh
- * one. Never provisions a second record for the same cwd (live incident: a new
+ * Resolve the Commander's home workspace (cwd `<paseoHome>/commander`): reuse
+ * the host's existing non-archived reserved-home workspace when one exists,
+ * otherwise provision a fresh one (creating the reserved directory first).
+ * Never provisions a second record for the same cwd (live incident: a new
  * `<paseo-system>` home workspace on every spawn/reset — 3 records on macbook,
  * 2 on iammvaibhav, identical cwd). The workspace carries the stable
  * host-derived title; a reused workspace whose title is missing or still the
@@ -301,7 +378,7 @@ export interface CommanderWorkspaceDependencies {
 export async function resolveOrCreateCommanderWorkspace(
   input: CommanderWorkspaceDependencies,
 ): Promise<string> {
-  const homeCwd = expandUserPath(COMMANDER_CWD);
+  const homeCwd = commanderHomeCwd(input.paseoHome);
   const workspaces = await input.workspaceRegistry.list();
   const existing = workspaces
     .filter((workspace) => !workspace.archivedAt && areEquivalentPaths(workspace.cwd, homeCwd))
@@ -325,6 +402,9 @@ export async function resolveOrCreateCommanderWorkspace(
     }
     return existing.workspaceId;
   }
+  // The reserved home must exist before provisioning: the Commander's cwd is
+  // a real directory that no user project can claim.
+  await input.ensureCommanderHomeDir?.();
   const title = commanderHomeWorkspaceTitle(input.hostName, input.hostAlias);
   const workspace = await input.createCommanderWorkspace(homeCwd, title);
   input.logger.info(
@@ -383,21 +463,22 @@ export function isCommanderHomeWorkspaceTitle(
  * `<paseo-system>`, leaving sidebar-visible records with no live agent — 3 on
  * macbook incl. one whose spawn failed after provisioning, 2 on iammvaibhav).
  *
- * Archives every non-archived workspace whose cwd is the host's home directory,
- * whose title marks commander infrastructure (legacy `<paseo-system>` or the
- * stable `Commander (host)` title), and that has NO live agent attached. Real
- * workspaces are never touched (different cwd, different title, or any live
- * agent). Idempotent: archived records are skipped. Logs each archive; returns
- * the count.
+ * Archives every non-archived workspace whose cwd is the Commander's reserved
+ * home directory (`<paseoHome>/commander`), whose title marks commander
+ * infrastructure (legacy `<paseo-system>` or the stable `Commander (host)`
+ * title), and that has NO live agent attached. Real workspaces are never
+ * touched (different cwd, different title, or any live agent). Idempotent:
+ * archived records are skipped. Logs each archive; returns the count.
  */
 export async function archiveOrphanCommanderWorkspaces(input: {
   workspaceRegistry: Pick<WorkspaceRegistry, "list" | "archive">;
   agentStorage: Pick<AgentStorage, "list">;
+  paseoHome: string;
   hostName: string;
   hostAlias: string | null;
   logger: Logger;
 }): Promise<number> {
-  const homeCwd = expandUserPath(COMMANDER_CWD);
+  const homeCwd = commanderHomeCwd(input.paseoHome);
   // "Live" = any UNARCHIVED stored agent references the workspace. At daemon
   // boot the in-memory agent manager is still empty (records load on demand),
   // so only storage can tell whether a workspace is attached to a live agent —
@@ -442,6 +523,95 @@ export async function archiveOrphanCommanderWorkspaces(input: {
     );
   }
   return archived;
+}
+
+export interface MigrateLegacyCommanderWorkspacesInput {
+  workspaceRegistry: Pick<WorkspaceRegistry, "list" | "archive">;
+  agentManager: Pick<AgentManager, "getAgent" | "archiveAgent" | "archiveSnapshot">;
+  agentStorage: Pick<AgentStorage, "list">;
+  paseoHome: string;
+  hostName: string;
+  hostAlias: string | null;
+  logger: Logger;
+}
+
+/**
+ * Boot migration for the reserved Commander home (M2): archive every
+ * commander workspace still rooted at the OLD home (`~` — the live collision
+ * where a user project at `~` surfaced the Commander), cascading to the
+ * unarchived agents it contains, so provisioning then creates the new
+ * `<paseoHome>/commander` home cleanly and the drift-recreate machinery spawns a
+ * fresh Commander.
+ *
+ * A workspace is legacy commander infrastructure when its title marks it as
+ * such (`Commander (<host>)` or the `<paseo-system>` marker) AND its cwd is
+ * the old home directory — user workspaces are never touched (different
+ * title or different cwd). Idempotent: archived records are skipped, so each
+ * legacy workspace is retired exactly once. The new reserved home is never
+ * matched (its cwd is `<paseoHome>/commander`, not `~`). Logs each migration
+ * loudly (component "commander-boot"); returns the count.
+ */
+export async function migrateLegacyCommanderHomeWorkspaces(
+  input: MigrateLegacyCommanderWorkspacesInput,
+): Promise<number> {
+  const legacyCwd = expandUserPath(LEGACY_COMMANDER_CWD);
+  const workspaces = await input.workspaceRegistry.list();
+  let migrated = 0;
+  for (const workspace of workspaces) {
+    if (workspace.archivedAt) {
+      continue;
+    }
+    if (!isCommanderHomeWorkspaceTitle(workspace.title, input.hostName, input.hostAlias)) {
+      continue;
+    }
+    if (!areEquivalentPaths(workspace.cwd, legacyCwd)) {
+      continue;
+    }
+    // Cascade: archive every unarchived agent referencing the workspace
+    // (live via the manager, stored-only via snapshot) — the same shape as
+    // workspace-archive-service's archiveWorkspaceContents, scoped to the
+    // commander workspace so the drift-recreate path spawns a fresh one.
+    const archivedAt = new Date().toISOString();
+    const archivedAgents: string[] = [];
+    for (const record of await input.agentStorage.list()) {
+      if (record.archivedAt || record.workspaceId !== workspace.workspaceId) {
+        continue;
+      }
+      if (input.agentManager.getAgent(record.id)) {
+        await input.agentManager.archiveAgent(record.id);
+      } else {
+        await input.agentManager.archiveSnapshot(record.id, archivedAt);
+      }
+      archivedAgents.push(record.id);
+    }
+    await input.workspaceRegistry.archive(workspace.workspaceId, archivedAt);
+    migrated += 1;
+    input.logger.info(
+      {
+        module: "mission-control",
+        component: "commander-boot",
+        workspaceId: workspace.workspaceId,
+        cwd: workspace.cwd,
+        title: workspace.title,
+        archivedAgents,
+        archivedAt,
+        newHome: commanderHomeCwd(input.paseoHome),
+      },
+      "mission_control.boot.commander_home_migrated",
+    );
+  }
+  if (migrated > 0) {
+    input.logger.info(
+      {
+        module: "mission-control",
+        component: "commander-boot",
+        migrated,
+        newHome: commanderHomeCwd(input.paseoHome),
+      },
+      "mission_control.boot.commander_home_migration_complete",
+    );
+  }
+  return migrated;
 }
 
 /**
@@ -541,6 +711,7 @@ export async function ensureCommanderOnBoot(
     await archiveOrphanCommanderWorkspaces({
       workspaceRegistry: input.workspaceRegistry,
       agentStorage: input.agentStorage,
+      paseoHome: input.paseoHome,
       hostName: input.hostName,
       hostAlias: input.hostAlias,
       logger: input.logger,
@@ -549,6 +720,29 @@ export async function ensureCommanderOnBoot(
     input.logger.warn(
       { err: error, component: "boot" },
       "mission_control.boot.orphan_cleanup_failed",
+    );
+  }
+  // Boot migration (M2): retire commander workspaces still rooted at the OLD
+  // home (`~` — the live collision where a user project at `~` surfaced the
+  // Commander), cascading to their contained agents, so the reserved
+  // `<paseoHome>/commander` home is provisioned cleanly and the drift-recreate
+  // machinery spawns a fresh Commander. Every host migrates its own legacy
+  // home; runs before the designation gate like the orphan self-heal. Never
+  // blocks boot: migration failures are logged, not fatal.
+  try {
+    await migrateLegacyCommanderHomeWorkspaces({
+      workspaceRegistry: input.workspaceRegistry,
+      agentManager: input.agentManager,
+      agentStorage: input.agentStorage,
+      paseoHome: input.paseoHome,
+      hostName: input.hostName,
+      hostAlias: input.hostAlias,
+      logger: input.logger,
+    });
+  } catch (error) {
+    input.logger.warn(
+      { err: error, component: "boot" },
+      "mission_control.boot.commander_home_migration_failed",
     );
   }
   const central = input.centralConfig();

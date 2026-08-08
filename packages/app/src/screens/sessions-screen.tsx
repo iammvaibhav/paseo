@@ -46,6 +46,8 @@ import {
   type HistoryAskTab,
 } from "@/history-ask";
 import { useHistoryAskModelSelection } from "@/history-ask/use-history-ask-model-selection";
+import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
+import { useMissionControlVerbose } from "@/mission-control/use-mission-control-verbose";
 import { openAgentFromHistory } from "@/workspace/open-agent-from-history";
 
 /** Long enough that a typed word is one request, short enough to feel live. */
@@ -159,10 +161,19 @@ function SessionsScreenContent() {
 
   const handleClearSearch = useCallback(() => setSearchInput(""), []);
 
+  // Mission Control verbose is THE debug gate: system-owned agents (Commander,
+  // verifiers, machinery) are hidden from History while it is OFF and shown
+  // when it is ON — same shared predicate the sidebar/board/project lists use.
+  const [verbose] = useMissionControlVerbose();
+  const visibleAgents = useMemo(
+    () => (verbose ? agents : agents.filter((agent) => !isSystemOwnedAgentLabels(agent.labels))),
+    [agents, verbose],
+  );
+
   // `useAgentHistory` owns the order: recency at rest, relevance under a query.
   const askAgents = useMemo(
-    () => agents.filter((agent) => isHistoryAskAgent(agent.labels)),
-    [agents],
+    () => visibleAgents.filter((agent) => isHistoryAskAgent(agent.labels)),
+    [visibleAgents],
   );
 
   // Pending project/workspace scope wins until cleared. Host-wide Ask requires a
@@ -245,7 +256,7 @@ function SessionsScreenContent() {
         <SessionsAgentsTab
           isInitialLoad={isInitialLoad}
           showLoadError={showLoadError}
-          agents={agents}
+          agents={visibleAgents}
           isSearching={isSearching}
           selectedHost={selectedHost}
           isManualRefresh={isManualRefresh}

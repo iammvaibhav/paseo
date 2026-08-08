@@ -134,12 +134,13 @@ export function useSidebarWorkspacesList(options?: {
 
   const hydratedServerIds = useHydratedWorkspaceServerIds(serverIds);
 
-  // Mission Control verbose mode exposes the Commander's home workspace in the
-  // sidebar for on-demand inspection; normal mode hides it (same flag the MC
-  // screen toggles — never a second preference).
+  // Mission Control verbose mode exposes system-owned workspaces (the
+  // Commander's home + machinery-only workspaces) in the sidebar for
+  // on-demand inspection; normal mode hides them (same flag the MC screen
+  // toggles — never a second preference).
   const [missionControlVerbose] = useMissionControlVerbose();
   const hostProjects = useHostProjects(hydratedServerIds, {
-    hideCommanderWorkspaces: !missionControlVerbose,
+    hideSystemOwnedWorkspaces: !missionControlVerbose,
   });
 
   const sidebarModel = useMemo(

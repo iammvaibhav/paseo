@@ -56,9 +56,9 @@ export {
   resetCommander,
   archiveCommanderAgent,
   computeCommanderBuildHash,
+  commanderHomeCwd,
   COMMANDER_TOOL_ALLOWLIST,
   COMMANDER_TITLE,
-  COMMANDER_CWD,
   COMMANDER_HASH_LABEL_KEY,
 } from "./commander-boot.js";
 export type { EnsureCommanderOnBootInput, EnsureCommanderOnBootResult } from "./commander-boot.js";
@@ -86,18 +86,16 @@ export type {
 export {
   buildCommanderSystemPrompt,
   buildCommanderLaunchConfig,
-  buildContextPack,
+  buildWorldSnapshot,
+  buildSnapshotBlock,
   buildFleetContextData,
   buildLocalContextPayload,
   buildLocalInventory,
   buildLocalModels,
   buildLocalRecentAgents,
-  buildContextDeltaBlock,
-  computeContextFingerprint,
-  createFleetContextDigestProvider,
+  WORLD_SNAPSHOT_MARKER,
 } from "./context.js";
 export type {
-  ContextCanonicalEntry,
   FleetContextData,
   FleetContextDependencies,
   FleetHostContext,
@@ -106,4 +104,7 @@ export type {
   LocalModelsInput,
   LocalRecentAgentsInput,
   MissionControlContextPayload,
+  WorldSnapshot,
 } from "./context.js";
+export { CommanderSnapshotInjector } from "./commander-snapshot.js";
+export type { CommanderSnapshotInjectorOptions } from "./commander-snapshot.js";
