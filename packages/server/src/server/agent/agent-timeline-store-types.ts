@@ -60,4 +60,9 @@ export interface AgentTimelineStore {
   deleteAgent(agentId: string): Promise<void>;
   bulkInsert(agentId: string, rows: readonly AgentTimelineRow[]): Promise<void>;
   updateCommittedRow(agentId: string, row: AgentTimelineRow): Promise<void>;
+  /**
+   * Retract committed rows by seq (digest ack-drop). Optional so stores that
+   * predate the method degrade to in-memory-only removal instead of failing.
+   */
+  removeCommittedRows?(agentId: string, seqs: readonly number[]): Promise<AgentTimelineRow[]>;
 }

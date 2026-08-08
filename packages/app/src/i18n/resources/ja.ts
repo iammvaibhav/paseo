@@ -1025,6 +1025,8 @@ export const ja: TranslationResources = {
       sessions: "履歴",
       schedules: "スケジュール",
       missionControl: "Mission Control",
+      missionControlWorking: "作業中",
+      missionControlReady: "レビュー待ち",
       webhooks: "Webhooks",
     },
     worktreeSetup: {
@@ -1782,6 +1784,7 @@ export const ja: TranslationResources = {
       integrations: "連携",
       permissions: "権限",
       diagnostics: "診断",
+      missionControl: "Mission Control",
       about: "アプリ情報",
     },
     editor: {
@@ -2383,6 +2386,9 @@ export const ja: TranslationResources = {
         useAutomatic: "自動を使う",
         imageUrl: "画像またはサイトのURL",
         save: "変更を保存",
+        description: "Description",
+        descriptionLabel: "Project description",
+        descriptionPlaceholder: "What this project is for",
         savedToast: "プロジェクトを更新しました",
       },
       readFailures: {

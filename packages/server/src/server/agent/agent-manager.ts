@@ -1274,6 +1274,7 @@ export class AgentManager {
       client,
       storedConfig.cwd,
       options?.env,
+      options.labels,
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     const createOptions = this.buildCreateSessionOptions(options);
@@ -1354,7 +1355,13 @@ export class AgentManager {
         `Provider '${handle.provider}' is not available. Please ensure the CLI is installed.`,
       );
     }
-    const launchContext = await this.buildLaunchContext(resolvedAgentId, client, storedConfig.cwd);
+    const launchContext = await this.buildLaunchContext(
+      resolvedAgentId,
+      client,
+      storedConfig.cwd,
+      undefined,
+      options?.labels,
+    );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     const session = await client.resumeSession(
       handle,
@@ -1403,7 +1410,13 @@ export class AgentManager {
       resolvedAgentId,
       input.labels,
     );
-    const launchContext = await this.buildLaunchContext(resolvedAgentId, client, storedConfig.cwd);
+    const launchContext = await this.buildLaunchContext(
+      resolvedAgentId,
+      client,
+      storedConfig.cwd,
+      undefined,
+      input.labels,
+    );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     const imported = await client.importSession(
       {
@@ -1488,7 +1501,13 @@ export class AgentManager {
       agentId,
       existing.labels,
     );
-    const launchContext = await this.buildLaunchContext(agentId, client, storedConfig.cwd);
+    const launchContext = await this.buildLaunchContext(
+      agentId,
+      client,
+      storedConfig.cwd,
+      undefined,
+      existing.labels,
+    );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
 
     const session = handle
@@ -2929,6 +2948,37 @@ export class AgentManager {
       return;
     }
     await this.durableTimelineStore.deleteAgent(agentId);
+  }
+
+  /**
+   * Retract committed timeline rows by seq (digest ack-drop). Removes from the
+   * in-memory store — the source of truth for `fetchTimeline` — and mirrors the
+   * removal to the durable store when one is attached. Seq identity is
+   * preserved (gaps allowed) so existing cursors stay valid. Tolerant of
+   * unknown agents/seqs: rows that are not present are skipped silently.
+   */
+  async removeTimelineRows(
+    agentId: string,
+    rowIds: readonly number[],
+    reason: string,
+  ): Promise<void> {
+    if (!this.timelineStore.has(agentId)) {
+      this.logger.warn({ agentId, reason }, "agent.timeline.remove_skipped_unknown_agent");
+      return;
+    }
+    const removed = this.timelineStore.removeRows(agentId, rowIds);
+    if (removed.length > 0) {
+      this.logger.info(
+        { agentId, seqs: removed.map((row) => row.seq), reason },
+        "agent.timeline.rows_removed",
+      );
+    }
+    const durable = this.durableTimelineStore;
+    if (durable?.removeCommittedRows) {
+      await durable.removeCommittedRows(agentId, rowIds).catch((err) => {
+        this.logger.warn({ err, agentId, reason }, "agent.timeline.rows_remove_durable_failed");
+      });
+    }
   }
 
   async deleteAgentState(agentId: string): Promise<void> {
@@ -4952,6 +5002,7 @@ export class AgentManager {
     client: AgentClient,
     cwd: string,
     env?: Record<string, string>,
+    labels?: Record<string, string>,
   ): Promise<AgentLaunchContext> {
     const context: AgentLaunchContext = {
       agentId,
@@ -4966,7 +5017,10 @@ export class AgentManager {
       client.capabilities.supportsNativePaseoTools &&
       this.paseoToolCatalogFactory
     ) {
-      context.paseoTools = await this.paseoToolCatalogFactory({ callerAgentId: agentId });
+      context.paseoTools = await this.paseoToolCatalogFactory({
+        callerAgentId: agentId,
+        callerLabels: labels,
+      });
     }
     return context;
   }

@@ -113,6 +113,10 @@ import type {
   AgentSessionConfig,
 } from "@getpaseo/protocol/agent-types";
 import type { MutableDaemonConfig, MutableDaemonConfigPatch } from "@getpaseo/protocol/messages";
+import type {
+  MissionControlCentralConfig,
+  MissionControlMode,
+} from "@getpaseo/protocol/mission-control/types";
 import { isRelayClientWebSocketUrl } from "@getpaseo/protocol/daemon-endpoints";
 import type { WebhookAuth, WebhookFilter, WebhookTarget } from "@getpaseo/protocol/webhook/types";
 import { terminalSubscriptionKey } from "@getpaseo/protocol/terminal-subscription-key";
@@ -335,6 +339,9 @@ export interface SendMessageOptions {
   messageId?: string;
   images?: Array<{ data: string; mimeType: string }>;
   attachments?: SendAgentMessageRequest["attachments"];
+  // Delivery semantics for outbound prompts (fleet_send_prompt modes):
+  // steer / interrupt / queue. Absent = interrupt for wire compat.
+  dispatchMode?: "steer" | "interrupt" | "queue";
 }
 
 export interface AgentAttentionRequiredNotification {
@@ -612,6 +619,38 @@ type MissionControlPeersListPayload = Extract<
 type MissionControlContextFetchPayload = Extract<
   SessionOutboundMessage,
   { type: "mission_control.context.fetch.response" }
+>["payload"];
+type MissionControlSearchPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.search.response" }
+>["payload"];
+type MissionControlConfigGetPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.config.get.response" }
+>["payload"];
+type MissionControlConfigPatchPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.config.patch.response" }
+>["payload"];
+type MissionControlModeSetPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.mode.set.response" }
+>["payload"];
+type MissionControlProposalsRespondPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.proposals.respond.response" }
+>["payload"];
+type MissionControlProposalsCreatePayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.proposals.create.response" }
+>["payload"];
+type MissionControlLifecycleSetPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.lifecycle.set.response" }
+>["payload"];
+type MissionControlMediaFetchPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.media.fetch.response" }
 >["payload"];
 export type FetchAgentTimelinePayload = FetchAgentTimelineResponseMessage["payload"];
 export type AgentForkContextPayload = AgentForkContextResponseMessage["payload"];
@@ -2669,6 +2708,8 @@ export class DaemonClient {
     agentId: string,
     updates: {
       name?: string;
+      title?: string;
+      shortDescription?: string;
       labels?: Record<string, string>;
       provider?: string;
       model?: string | null;
@@ -2680,6 +2721,10 @@ export class DaemonClient {
       type: "update_agent_request",
       agentId,
       ...(updates.name !== undefined ? { name: updates.name } : {}),
+      ...(updates.title !== undefined ? { title: updates.title } : {}),
+      ...(updates.shortDescription !== undefined
+        ? { shortDescription: updates.shortDescription }
+        : {}),
       ...(updates.labels && Object.keys(updates.labels).length > 0
         ? { labels: updates.labels }
         : {}),
@@ -2725,6 +2770,26 @@ export class DaemonClient {
       throw new Error(payload.error ?? "renameProject rejected");
     }
     return { customName: payload.customName };
+  }
+
+  async setProjectDescription(
+    projectId: string,
+    description: string | null,
+    requestId?: string,
+  ): Promise<{ description: string | null }> {
+    const payload = await this.sendCorrelatedSessionRequest({
+      requestId,
+      message: {
+        type: "project.description.set.request",
+        projectId,
+        description,
+      },
+      responseType: "project.description.set.response",
+    });
+    if (!payload.accepted) {
+      throw new Error(payload.error ?? "setProjectDescription rejected");
+    }
+    return { description: payload.description };
   }
 
   async setProjectIcon(
@@ -3184,6 +3249,7 @@ export class DaemonClient {
       ...(messageId ? { messageId } : {}),
       ...(options?.images ? { images: options.images } : {}),
       ...(options?.attachments ? { attachments: options.attachments } : {}),
+      ...(options?.dispatchMode ? { dispatchMode: options.dispatchMode } : {}),
     });
     const payload = await this.sendRequest({
       requestId,
@@ -5668,6 +5734,7 @@ export class DaemonClient {
 
   async missionControlEventsFetch(options?: {
     sinceTs?: string;
+    beforeSeq?: number;
     limit?: number;
     requestId?: string;
   }): Promise<MissionControlEventsFetchPayload> {
@@ -5676,6 +5743,7 @@ export class DaemonClient {
       message: {
         type: "mission_control.events.fetch.request",
         ...(options?.sinceTs ? { sinceTs: options.sinceTs } : {}),
+        ...(typeof options?.beforeSeq === "number" ? { beforeSeq: options.beforeSeq } : {}),
         ...(typeof options?.limit === "number" ? { limit: options.limit } : {}),
       },
       responseType: "mission_control.events.fetch.response",
@@ -5713,6 +5781,159 @@ export class DaemonClient {
         type: "mission_control.context.fetch.request",
       },
       responseType: "mission_control.context.fetch.response",
+    });
+  }
+
+  /**
+   * Run the tiered fleet search (mission_control.search) on a daemon. The
+   * Commander-host fleet_search tool proxies this to every online peer and
+   * merges the per-host results. Matches carry host: "local" from the daemon
+   * that ran them; the merging caller re-stamps peer rows with the peer name.
+   */
+  async missionControlSearch(options: {
+    query: string;
+    limit?: number;
+    deep?: boolean;
+    requestId?: string;
+  }): Promise<MissionControlSearchPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "mission_control.search.request",
+        query: options.query,
+        ...(typeof options.limit === "number" ? { limit: options.limit } : {}),
+        ...(options.deep === true ? { deep: true } : {}),
+      },
+      responseType: "mission_control.search.response",
+    });
+  }
+
+  /**
+   * Read the central Mission Control config (fleet policy stored on the
+   * commander host). The responding daemon resolves defaults server-side, so
+   * every key of the returned config is present.
+   */
+  async missionControlConfigGet(requestId?: string): Promise<MissionControlConfigGetPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "mission_control.config.get.request" },
+      responseType: "mission_control.config.get.response",
+    });
+  }
+
+  /**
+   * Patch the central Mission Control config. `patch` is partial; the daemon
+   * merges it and returns the resolved config.
+   */
+  async missionControlConfigPatch(
+    patch: Partial<MissionControlCentralConfig>,
+    requestId?: string,
+  ): Promise<MissionControlConfigPatchPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "mission_control.config.patch.request", patch },
+      responseType: "mission_control.config.patch.response",
+    });
+  }
+
+  /** Flip the approval gate between ask and auto mode. */
+  async missionControlModeSet(
+    mode: MissionControlMode,
+    requestId?: string,
+  ): Promise<MissionControlModeSetPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "mission_control.mode.set.request", mode },
+      responseType: "mission_control.mode.set.response",
+    });
+  }
+
+  /**
+   * Respond to a pending proposal (approval gate): approve (optionally with an
+   * edited message) or deny. allowPair auto-approves the rest of a
+   * verifier<->worker exchange.
+   */
+  async missionControlProposalsRespond(options: {
+    proposalId: string;
+    action: "approve" | "deny";
+    editedMessage?: string;
+    allowPair?: boolean;
+    requestId?: string;
+  }): Promise<MissionControlProposalsRespondPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "mission_control.proposals.respond.request",
+        proposalId: options.proposalId,
+        action: options.action,
+        ...(options.editedMessage !== undefined ? { editedMessage: options.editedMessage } : {}),
+        ...(options.allowPair === true ? { allowPair: true } : {}),
+      },
+      responseType: "mission_control.proposals.respond.response",
+    });
+  }
+
+  /**
+   * Emit a commander-origin proposal card (kind "proposal", classification
+   * normal) from the one-time naming backfill — the workspace rename
+   * proposals card. Always lands pending (never auto-sends); the target
+   * defaults to the Commander when omitted.
+   */
+  async missionControlProposalsCreate(options: {
+    message: string;
+    reason?: string;
+    targetAgentId?: string | null;
+    requestId?: string;
+  }): Promise<MissionControlProposalsCreatePayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "mission_control.proposals.create.request",
+        message: options.message,
+        ...(options.reason !== undefined ? { reason: options.reason } : {}),
+        ...(options.targetAgentId !== undefined ? { targetAgentId: options.targetAgentId } : {}),
+      },
+      responseType: "mission_control.proposals.create.response",
+    });
+  }
+
+  /** Mark done / clear / reopen an agent in the Mission Control lifecycle. */
+  async missionControlLifecycleSet(options: {
+    serverId: string;
+    agentId: string;
+    action: "done" | "clear" | "reopen";
+    requestId?: string;
+  }): Promise<MissionControlLifecycleSetPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "mission_control.lifecycle.set.request",
+        serverId: options.serverId,
+        agentId: options.agentId,
+        action: options.action,
+      },
+      responseType: "mission_control.lifecycle.set.response",
+    });
+  }
+
+  /**
+   * Authenticated fetch of a proof file. host is "local" for this daemon or
+   * a peer name (the daemon proxies over peering). Size-capped + mime
+   * allowlisted server-side; the payload carries base64 content.
+   */
+  async missionControlMediaFetch(options: {
+    host: string;
+    path: string;
+    requestId?: string;
+  }): Promise<MissionControlMediaFetchPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "mission_control.media.fetch.request",
+        host: options.host,
+        path: options.path,
+      },
+      responseType: "mission_control.media.fetch.response",
     });
   }
 

@@ -98,19 +98,39 @@ export function useAggregatedAgents(options?: {
       }
     }
 
-    // Sort by: running agents first, then by most recent activity
+    // Sort by: running agents first, then by most recent activity. Running
+    // agents sort by name ascending — a running agent's lastActivityAt ticks
+    // on every timeline row, so sorting it by activity would reorder the board
+    // mid-stream. Name (then id) is a total order: stable while the set of
+    // running agents changes. Non-running agents keep recency order, with the
+    // same deterministic tiebreaks so the whole sort is a strict total order.
     allAgents.sort((left, right) => {
       const leftRunning = left.status === "running";
       const rightRunning = right.status === "running";
-      if (leftRunning && !rightRunning) {
-        return -1;
+      if (leftRunning !== rightRunning) {
+        return leftRunning ? -1 : 1;
       }
-      if (!leftRunning && rightRunning) {
-        return 1;
+      if (leftRunning) {
+        const leftKey = left.name ?? left.title ?? left.id;
+        const rightKey = right.name ?? right.title ?? right.id;
+        const nameCmp = leftKey.localeCompare(rightKey);
+        if (nameCmp !== 0) {
+          return nameCmp;
+        }
+        return `${left.serverId}:${left.id}`.localeCompare(`${right.serverId}:${right.id}`);
       }
       const leftTime = left.lastActivityAt.getTime();
       const rightTime = right.lastActivityAt.getTime();
-      return rightTime - leftTime;
+      if (leftTime !== rightTime) {
+        return rightTime - leftTime;
+      }
+      const leftKey = left.name ?? left.title ?? left.id;
+      const rightKey = right.name ?? right.title ?? right.id;
+      const nameCmp = leftKey.localeCompare(rightKey);
+      if (nameCmp !== 0) {
+        return nameCmp;
+      }
+      return `${left.serverId}:${left.id}`.localeCompare(`${right.serverId}:${right.id}`);
     });
 
     // Update the identity cache for the next render pass.

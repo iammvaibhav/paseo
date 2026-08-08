@@ -7,6 +7,13 @@ export type ToolCallDisplayInput = Pick<
   "name" | "status" | "error" | "metadata" | "detail"
 > & {
   cwd?: string;
+  /**
+   * agentId → display name, resolved live by the caller (Mission Control
+   * thread). Lets the fleet dispatch renderers ("Steered Name (host)",
+   * "Spawned Name on host") join agent identity without the protocol layer
+   * touching stores. Unknown ids fall back to the raw agentId.
+   */
+  agentNames?: Readonly<Record<string, string | undefined>>;
 };
 
 export interface ToolCallDisplayModel {
@@ -36,6 +43,139 @@ function isWebSearchToolName(name: string): boolean {
     lower.endsWith("_web_search") ||
     lower.endsWith("_websearch")
   );
+}
+
+// ---------------------------------------------------------------------------
+// Fleet dispatch tools (Mission Control spec "Tool rendering"). The Commander
+// calls these to route/steer/dispatch/search the fleet; each gets a pretty
+// one-line badge instead of a raw tool name or JSON dump. `tag_message` is
+// explicitly silent in normal (non-verbose) mode — the thread gates that; the
+// display model only supplies a label for verbose mode.
+// ---------------------------------------------------------------------------
+
+const FLEET_DISPATCH_TOOLS: Record<string, true> = {
+  fleet_send_prompt: true,
+  fleet_list_agents: true,
+  fleet_create_agent: true,
+  create_agent: true,
+  fleet_search: true,
+  tag_message: true,
+};
+
+function fleetToolLeafName(name: string): string | null {
+  const trimmed = name.trim().toLowerCase();
+  if (FLEET_DISPATCH_TOOLS[trimmed]) {
+    return trimmed;
+  }
+  if (isPaseoToolName(trimmed)) {
+    const leaf = getPaseoToolLeafName(trimmed);
+    if (leaf && FLEET_DISPATCH_TOOLS[leaf]) {
+      return leaf;
+    }
+  }
+  return null;
+}
+
+/**
+ * Fleet tool calls arrive with `detail: { type: "unknown", input: args,
+ * output: result }`; the omp host-tool result carries structuredContent under
+ * `output.details`. Older/orchestrator payloads keep args in `input` either
+ * way.
+ */
+function readFleetToolInput(
+  detail: ToolCallDisplayInput["detail"],
+): Record<string, unknown> | null {
+  return detail.type === "unknown" && isRecord(detail.input) ? detail.input : null;
+}
+
+function readFleetToolOutput(
+  detail: ToolCallDisplayInput["detail"],
+): Record<string, unknown> | null {
+  if (detail.type !== "unknown" || !isRecord(detail.output)) {
+    return null;
+  }
+  if (isRecord(detail.output.details)) {
+    return detail.output.details;
+  }
+  return null;
+}
+
+function buildFleetSendPromptDisplay(
+  input: ToolCallDisplayInput,
+  toolInput: Record<string, unknown> | null,
+): DetailDisplay {
+  const host = toolInput ? readString(toolInput.host) : undefined;
+  const agentId = toolInput ? readString(toolInput.agentId) : undefined;
+  const name = agentId ? (readString(input.agentNames?.[agentId]) ?? agentId) : undefined;
+  const target = name ?? "agent";
+  return {
+    displayName: host ? `→ Steered ${target} (${host})` : `→ Steered ${target}`,
+  };
+}
+
+function buildFleetListAgentsDisplay(toolOutput: Record<string, unknown> | null): DetailDisplay {
+  const agents = toolOutput?.agents;
+  const count = Array.isArray(agents) ? agents.length : null;
+  return {
+    displayName: count !== null ? `Checked fleet roster · ${count} agents` : "Checked fleet roster",
+  };
+}
+
+function buildFleetCreateAgentDisplay(
+  input: ToolCallDisplayInput,
+  leaf: string,
+  toolInput: Record<string, unknown> | null,
+  toolOutput: Record<string, unknown> | null,
+): DetailDisplay {
+  const host = leaf === "fleet_create_agent" && toolInput ? readString(toolInput.host) : undefined;
+  const agentId = toolOutput ? readString(toolOutput.agentId) : undefined;
+  const name = agentId ? (readString(input.agentNames?.[agentId]) ?? agentId) : undefined;
+  const label = name ?? "agent";
+  return {
+    displayName: host ? `Spawned ${label} on ${host}` : `Spawned ${label}`,
+  };
+}
+
+function buildFleetSearchDisplay(
+  toolInput: Record<string, unknown> | null,
+  toolOutput: Record<string, unknown> | null,
+): DetailDisplay {
+  const query = toolInput ? readString(toolInput.query) : undefined;
+  const matches = toolOutput?.matches;
+  const count = Array.isArray(matches) ? matches.length : null;
+  const queryPart = query ? `Searched fleet: "${query}"` : "Searched fleet";
+  return {
+    displayName: count !== null ? `${queryPart} · ${count} matches` : queryPart,
+  };
+}
+
+function buildTagMessageDisplay(toolInput: Record<string, unknown> | null): DetailDisplay {
+  const agentIds = toolInput?.agentIds;
+  const count = Array.isArray(agentIds) ? agentIds.length : null;
+  return {
+    displayName: count !== null ? `Tagged ${count} agents` : "Tagged agents",
+  };
+}
+
+function buildFleetToolDisplay(input: ToolCallDisplayInput, leaf: string): DetailDisplay | null {
+  const toolInput = readFleetToolInput(input.detail);
+  const toolOutput = readFleetToolOutput(input.detail);
+
+  switch (leaf) {
+    case "fleet_send_prompt":
+      return buildFleetSendPromptDisplay(input, toolInput);
+    case "fleet_list_agents":
+      return buildFleetListAgentsDisplay(toolOutput);
+    case "create_agent":
+    case "fleet_create_agent":
+      return buildFleetCreateAgentDisplay(input, leaf, toolInput, toolOutput);
+    case "fleet_search":
+      return buildFleetSearchDisplay(toolInput, toolOutput);
+    case "tag_message":
+      return buildTagMessageDisplay(toolInput);
+    default:
+      return null;
+  }
 }
 function humanizeToolName(name: string): string {
   const trimmed = name.trim();
@@ -205,7 +345,9 @@ function buildUnknownDetailOverride(input: ToolCallDisplayInput): DetailDisplay 
 
 export function buildToolCallDisplayModel(input: ToolCallDisplayInput): ToolCallDisplayModel {
   const canonicalDisplay = buildCanonicalDetailDisplay(input);
-  const unknownDetailOverride = buildUnknownDetailOverride(input);
+  const fleetLeaf = fleetToolLeafName(input.name);
+  const fleetDisplay = fleetLeaf ? buildFleetToolDisplay(input, fleetLeaf) : null;
+  const unknownDetailOverride = fleetDisplay ?? buildUnknownDetailOverride(input);
   const displayName =
     unknownDetailOverride.displayName ??
     canonicalDisplay.displayName ??

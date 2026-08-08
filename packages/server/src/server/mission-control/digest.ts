@@ -4,9 +4,10 @@ import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
 import type {
   MissionControlEvent,
   MissionControlEventKind,
+  MissionControlProof,
 } from "@getpaseo/protocol/mission-control/types";
 
-import type { AgentManager } from "../agent/agent-manager.js";
+import type { AgentManager, AgentManagerEvent } from "../agent/agent-manager.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
 import {
   formatSystemNotificationPrompt,
@@ -23,10 +24,56 @@ const PARENT_NOTIFIED_DIGEST_KINDS: Partial<Record<MissionControlEventKind, true
   finished: true,
   failed: true,
 };
-// Soft enforcement layer: every digest ends with the contract restated so long
-// sessions cannot drift into doing the work themselves.
-const DIGEST_REMINDER_LINE =
-  "Reminder: you are the orchestrator — dispatch and report; never run commands, debug, or edit anything yourself.";
+// The orchestrator reminder used to ride every digest body; v3 moved it into
+// the Commander's static system prompt — never in message bodies again.
+
+// Ack suppression (spec): digests instruct no prose when nothing needs action;
+// the daemon drops single-token pure-ack replies (isPureAckReply) from the
+// visible thread.
+const DIGEST_NO_PROSE_INSTRUCTION =
+  'If this digest needs no action from you, reply with a single short acknowledgment token (for example "ok") and nothing else. No summaries, no narration.';
+
+// Ack suppression: a digest-initiated run that answers with pure
+// acknowledgment (no question, proposal, or tool call) is retracted from the
+// visible thread. Replies to user-prompted turns are never classified.
+const ACK_DROP_EXACT_TOKENS: ReadonlySet<string> = new Set([
+  "ok",
+  "okay",
+  "k",
+  "kk",
+  "ack",
+  "acknowledged",
+  "got it",
+  "roger",
+  "understood",
+  "noted",
+  "done",
+  "sounds good",
+  "will do",
+  "sure",
+  "yep",
+  "yes",
+  "fine",
+  "10-4",
+  "👍",
+  "👌",
+  "✅",
+]);
+const ACK_DROP_NO_ACTION_PHRASES: readonly string[] = [
+  "no action needed",
+  "no action required",
+  "nothing to do",
+  "nothing needs action",
+  "nothing to report",
+  "nothing actionable",
+  "no changes needed",
+  "all clear",
+  "nothing new",
+  "no updates",
+];
+// Offers to act, plans, or open-ended remarks are proposals, never acks.
+const ACK_DROP_PROPOSAL_PATTERN =
+  /\b(should i|shall i|want me to|can i|i can|i will|i'll|i'd|let me|do you want|i could|i might|propose|suggest|plan|happy to|ready to)\b/i;
 
 export interface MissionControlDigestOrigin {
   serverId: string;
@@ -39,6 +86,50 @@ interface BufferedMissionControlEvent {
 }
 
 /**
+ * The Commander turn a digest dispatch initiated, tracked so only its reply is
+ * a candidate for ack suppression. User-prompted turns are never tracked.
+ */
+interface AckDropTurn {
+  commanderId: string;
+  turnId: string | null;
+  assistantRows: Array<{ seq: number; text: string }>;
+  toolCallSeen: boolean;
+}
+
+/**
+ * Pure-ack heuristic (spec Edge cases): true only for a short reply that
+ * acknowledges without action. Never true for replies containing a question,
+ * a proposal/offer to act, or structured/tool-call-ish content. Tool calls are
+ * additionally excluded at the turn level by the caller.
+ */
+export function isPureAckReply(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (trimmed.includes("?")) {
+    return false;
+  }
+  if (trimmed.includes("\n")) {
+    return false;
+  }
+  if (trimmed.length > 60) {
+    return false;
+  }
+  if (trimmed.startsWith("<") || trimmed.includes("```") || trimmed.includes("`")) {
+    return false;
+  }
+  if (ACK_DROP_PROPOSAL_PATTERN.test(trimmed)) {
+    return false;
+  }
+  const normalized = trimmed.replace(/[.!]+$/g, "").toLowerCase();
+  if (ACK_DROP_EXACT_TOKENS.has(normalized)) {
+    return true;
+  }
+  return ACK_DROP_NO_ACTION_PHRASES.some((phrase) => normalized.includes(phrase));
+}
+
+/**
  * Narrow surface PeerSlice and MissionControlService depend on, so they stay
  * decoupled from the digest internals.
  */
@@ -47,12 +138,14 @@ export interface MissionControlDigestSink {
 }
 
 /**
- * Supplies the compact fleet-context delta for digest bodies. Implemented by
+ * Supplies the fleet-context block for digest bodies. Implemented by
  * mission-control/context.ts; the digest stays agnostic of how the context is
- * assembled. Null delta = nothing changed (or context unavailable) → no block.
+ * assembled. `fresh` requests a full snapshot instead of a delta — used after
+ * omp compaction or a session restart wiped the launch-time context pack.
+ * Null block = nothing to say (no change, or context unavailable).
  */
 export interface MissionControlDigestContextProvider {
-  deltaBlock(): Promise<string | null>;
+  deltaBlock(fresh?: boolean): Promise<string | null>;
 }
 
 export interface MissionControlDigestOptions {
@@ -79,6 +172,16 @@ export class MissionControlDigest implements MissionControlDigestSink {
   private unsubscribeCommander: (() => void) | null = null;
   private sweepTimer: NodeJS.Timeout | null = null;
   private flushing = false;
+  /** True between a successful digest dispatch and the digest turn's terminal event. */
+  private ackDropArmed = false;
+  private ackDropTurn: AckDropTurn | null = null;
+  /**
+   * Commander session marker tracking: when the session id changes (restart)
+   * or a compaction event passes on the stream, the launch-time context pack
+   * is gone and the next digest re-injects a full snapshot instead of a delta.
+   */
+  private lastSessionId: string | null = null;
+  private snapshotNeeded = false;
 
   constructor(options: MissionControlDigestOptions) {
     this.agentManager = options.agentManager;
@@ -109,6 +212,8 @@ export class MissionControlDigest implements MissionControlDigestSink {
     this.unsubscribeCommander?.();
     this.unsubscribeCommander = null;
     this.commanderId = null;
+    this.ackDropArmed = false;
+    this.ackDropTurn = null;
   }
 
   enqueue(event: MissionControlEvent, origin: MissionControlDigestOrigin): void {
@@ -143,6 +248,13 @@ export class MissionControlDigest implements MissionControlDigestSink {
     if (this.agentManager.hasInFlightRun(commanderId)) {
       return;
     }
+    // A changed provider session id means the conversation was restarted and
+    // the launch-time context pack is gone — the next digest must re-inject it.
+    const sessionId = commander.persistence?.sessionId ?? null;
+    if (this.lastSessionId !== null && sessionId !== null && sessionId !== this.lastSessionId) {
+      this.snapshotNeeded = true;
+    }
+    this.lastSessionId = sessionId;
     if (this.buffer.length === 0) {
       return;
     }
@@ -153,14 +265,21 @@ export class MissionControlDigest implements MissionControlDigestSink {
       return;
     }
 
-    const contextBlock = this.contextProvider ? await this.contextProvider.deltaBlock() : null;
+    const fresh = this.snapshotNeeded;
+    this.snapshotNeeded = false;
+    const contextBlock = this.contextProvider ? await this.contextProvider.deltaBlock(fresh) : null;
     const prompt = formatSystemNotificationPrompt(buildDigestBody(digestItems, contextBlock));
+    // Arm before dispatch: the Commander was verified idle with no in-flight
+    // run, so the next turn_started observed belongs to this digest. Any
+    // dispatch failure below disarms again.
+    this.ackDropArmed = true;
     try {
       const dispatched = await startAgentRun(this.agentManager, commanderId, prompt, this.logger, {
         replaceRunning: false,
       });
       if (dispatched.outOfBand) {
         // Matched an out-of-band handler (e.g. /goal pause) — no run started.
+        this.ackDropArmed = false;
         return;
       }
       // startAgentRun resolves before the turn is accepted; wait so a dispatch
@@ -169,6 +288,9 @@ export class MissionControlDigest implements MissionControlDigestSink {
     } catch (error) {
       // The dispatch raced a user prompt or the Commander closed. Never
       // interrupt — the events wait for the next quiet window.
+      this.ackDropArmed = false;
+      this.ackDropTurn = null;
+      this.snapshotNeeded = fresh || this.snapshotNeeded;
       this.logger.warn(
         { err: error, agentId: commanderId, eventCount: digestItems.length },
         "mission_control.digest.dispatch_deferred",
@@ -216,10 +338,96 @@ export class MissionControlDigest implements MissionControlDigestSink {
       (event) => {
         if (event.type === "agent_state" && event.agent.id === commanderId) {
           this.maybeFlush();
+          return;
+        }
+        if (event.type === "agent_stream" && event.agentId === commanderId) {
+          this.handleCommanderStream(event);
         }
       },
       { agentId: commanderId },
     );
+  }
+
+  /**
+   * Tracks the digest-initiated Commander turn so a pure-ack reply can be
+   * retracted from the visible thread. Only turns started while
+   * `ackDropArmed` (i.e. dispatched by this digest) are candidates — user
+   * turns never are.
+   */
+  private handleCommanderStream(event: Extract<AgentManagerEvent, { type: "agent_stream" }>): void {
+    const streamEvent = event.event;
+    if (streamEvent.type === "timeline" && streamEvent.item.type === "compaction") {
+      // The Commander's conversation was compacted — the launch-time context
+      // pack is summarized away; re-inject a fresh snapshot on the next digest.
+      this.snapshotNeeded = true;
+    }
+    if (streamEvent.type === "turn_started") {
+      if (this.ackDropArmed && !this.ackDropTurn && this.commanderId) {
+        this.ackDropTurn = {
+          commanderId: this.commanderId,
+          turnId: streamEvent.turnId ?? null,
+          assistantRows: [],
+          toolCallSeen: false,
+        };
+      }
+      return;
+    }
+    const turn = this.ackDropTurn;
+    if (!turn) {
+      return;
+    }
+    if (streamEvent.type === "timeline") {
+      const item = streamEvent.item;
+      if (item.type === "assistant_message" && event.seq !== undefined) {
+        turn.assistantRows.push({ seq: event.seq, text: item.text });
+      } else if (item.type === "tool_call") {
+        turn.toolCallSeen = true;
+      }
+      return;
+    }
+    if (streamEvent.type === "turn_completed") {
+      void this.finalizeAckDropTurn(turn);
+      return;
+    }
+    if (streamEvent.type === "turn_failed" || streamEvent.type === "turn_canceled") {
+      // The digest turn did not complete normally: never classify a partial
+      // reply as an ack.
+      this.ackDropTurn = null;
+      this.ackDropArmed = false;
+    }
+  }
+
+  /**
+   * Classifies the digest turn's final assistant text and, when it is a pure
+   * ack (no question, proposal, or tool call), retracts it from the committed
+   * timeline and logs the drop.
+   */
+  private async finalizeAckDropTurn(turn: AckDropTurn): Promise<void> {
+    this.ackDropTurn = null;
+    this.ackDropArmed = false;
+    if (turn.toolCallSeen || turn.assistantRows.length === 0) {
+      return;
+    }
+    const text = turn.assistantRows
+      .map((row) => row.text)
+      .join("")
+      .trim();
+    if (!isPureAckReply(text)) {
+      return;
+    }
+    const seqs = turn.assistantRows.map((row) => row.seq);
+    this.logger.info(
+      { component: "digest", agentId: turn.commanderId, seqs, text },
+      "mission_control.digest.ack_drop",
+    );
+    await this.agentManager
+      .removeTimelineRows(turn.commanderId, seqs, "ack-drop")
+      .catch((error) => {
+        this.logger.warn(
+          { err: error, component: "digest", agentId: turn.commanderId, seqs },
+          "mission_control.digest.ack_drop_retract_failed",
+        );
+      });
   }
 
   private async selectDigestItems(commanderId: string): Promise<BufferedMissionControlEvent[]> {
@@ -292,9 +500,26 @@ function buildDigestBody(
   const lines = entries.map(({ event, origin }) => {
     const link = `paseo://h/${origin.serverId}/agent/${event.agentId}`;
     const line = `- [${event.kind}] ${event.headline} — ${event.agentTitle} (${origin.hostName}) — ${link}`;
-    return event.detail ? `${line}\n  ${event.detail}` : line;
+    const detail = event.detail ? `\n  ${event.detail}` : "";
+    const proofs = (event.proof ?? [])
+      .map((proof) => `\n  proof: ${formatDigestProof(proof)}`)
+      .join("");
+    return `${line}${detail}${proofs}`;
   });
   const body = `Fleet digest: ${entries.length} ${noun}.\n\n${lines.join("\n")}`;
   const prefixed = contextBlock ? `${contextBlock}\n\n${body}` : body;
-  return `${prefixed}\n\n${DIGEST_REMINDER_LINE}`;
+  return `${prefixed}\n\n${DIGEST_NO_PROSE_INSTRUCTION}`;
+}
+
+function formatDigestProof(proof: MissionControlProof): string {
+  const label = proof.label ?? proof.kind;
+  const target = proof.url ?? proof.path;
+  if (target) {
+    return `${label}: ${target}`;
+  }
+  if ("excerpt" in proof && typeof proof.excerpt === "string" && proof.excerpt.trim()) {
+    const trimmed = proof.excerpt.trim();
+    return `${label}: ${trimmed.length > 100 ? `${trimmed.slice(0, 100)}…` : trimmed}`;
+  }
+  return label;
 }

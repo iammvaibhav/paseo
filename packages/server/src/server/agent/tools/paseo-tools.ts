@@ -12,6 +12,8 @@ import {
   AgentPermissionResponseSchema,
   AgentSnapshotPayloadSchema,
   WorkspaceScriptPayloadSchema,
+  AgentAttachmentSchema,
+  type AgentAttachment,
 } from "../../messages.js";
 import type { AgentListItemPayload } from "../../messages.js";
 import {
@@ -60,7 +62,14 @@ import {
   toScheduleSummary,
   waitForAgentWithTimeout,
 } from "../mcp-shared.js";
-import { sendPromptToAgent, setupFinishNotification } from "../agent-prompt.js";
+import {
+  isSystemInjectedEnvelope,
+  sendPromptToAgent,
+  setupFinishNotification,
+  startAgentRun,
+} from "../agent-prompt.js";
+import { buildAgentPrompt, renderPromptAttachmentAsText } from "../prompt-attachments.js";
+import { resolveCommanderUserMessage } from "../../mission-control/tagging.js";
 import { respondToAgentPermission } from "../permission-response.js";
 import {
   archiveAgentCommand,
@@ -86,9 +95,23 @@ import {
 import { registerBrowserTools } from "../../browser-tools/tools.js";
 import type { BrowserToolsBroker } from "../../browser-tools/broker.js";
 import { buildPeerUnreachableError, type PeerManager } from "../../peers/peer-manager.js";
+import { MissionControlSearchMatchSchema } from "@getpaseo/protocol/mission-control/types";
 import { hasMissionControlLabels } from "../../mission-control/naming.js";
+import { MISSION_CONTROL_LABEL_KEY } from "../../mission-control/commander-contract.js";
+import { MISSION_CONTROL_VERIFIER_LABEL_VALUE } from "../../mission-control/verifier.js";
+import {
+  SEARCH_TIER3_TIMEOUT_MS,
+  buildFleetHistoryAskBrief,
+  mergeFleetSearchMatches,
+  parseHistoryAskMatches,
+  runFleetSearchHost,
+  type FleetSearchMatch,
+  type FleetSearchTier3Runner,
+} from "../../mission-control/search.js";
 import type { MissionControlService } from "../../mission-control/service.js";
-import { MissionControlProofSchema } from "@getpaseo/protocol/mission-control/types";
+import type { MissionControlVerifierDispatcher } from "../../mission-control/verifier.js";
+import { MissionControlReportStatusInputSchema } from "@getpaseo/protocol/mission-control/types";
+import type { MissionControlEvent } from "@getpaseo/protocol/mission-control/types";
 import type {
   PaseoToolCatalog,
   PaseoToolConfig,
@@ -145,6 +168,12 @@ export interface PaseoToolHostDependencies {
    */
   callerAgentId?: string;
   /**
+   * Caller labels captured at catalog-build time. Launch contexts are built
+   * before the agent registers, so label-gated tools (verifier) must not
+   * rely solely on a registry lookup.
+   */
+  callerLabels?: Readonly<Record<string, string>>;
+  /**
    * Optional resolver for session-bound speak handlers.
    * Used by hidden voice agents to narrate through daemon-managed TTS.
    */
@@ -152,6 +181,12 @@ export interface PaseoToolHostDependencies {
   resolveCallerContext?: (callerAgentId: string) => VoiceCallerContext | null;
   enableVoiceTools?: boolean;
   voiceOnly?: boolean;
+  /**
+   * Mission Control verifier dispatcher. When present and the caller agent is
+   * a verifier (paseo.mission-control=verifier), the catalog exposes the
+   * verifier-only tools contact_worker and submit_verdict.
+   */
+  verifierDispatcher?: MissionControlVerifierDispatcher | null;
   logger: Logger;
 }
 
@@ -671,6 +706,54 @@ async function peekAgentActivity(input: {
     timeline: rows.map((row) => row.item),
     currentModeId: null,
   };
+}
+
+/**
+ * Last report_status headlines per agent (cap 5, oldest -> newest). Only
+ * source "self" events are report_status reports; deterministic system cards
+ * never pollute the roster summary.
+ */
+function collectReportStatusHeadlines(
+  events: readonly MissionControlEvent[],
+): Map<string, string[]> {
+  const byAgent = new Map<string, MissionControlEvent[]>();
+  for (const event of events) {
+    if (event.source !== "self") {
+      continue;
+    }
+    const list = byAgent.get(event.agentId) ?? [];
+    list.push(event);
+    byAgent.set(event.agentId, list);
+  }
+  const result = new Map<string, string[]>();
+  for (const [agentId, list] of byAgent) {
+    list.sort((left, right) => left.ts.localeCompare(right.ts));
+    result.set(
+      agentId,
+      list.slice(-5).map((event) => event.headline),
+    );
+  }
+  return result;
+}
+
+/**
+ * The agent's most recent non-system user message (roster enrichment).
+ * System-injected envelopes (digests, notifications) are never user messages;
+ * closed agents without a buffered timeline report null.
+ */
+function lastUserMessageFor(agentManager: AgentManager, agentId: string): string | null {
+  const timeline = agentManager.getTimeline(agentId);
+  for (let index = timeline.length - 1; index >= 0; index--) {
+    const item = timeline[index];
+    if (item.type !== "user_message") {
+      continue;
+    }
+    if (isSystemInjectedEnvelope(item.text)) {
+      continue;
+    }
+    return item.text;
+  }
+  return null;
 }
 
 async function listPeerFleetAgents(input: {
@@ -3350,23 +3433,20 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   );
 
   registerTool(
-    "report_milestone",
+    "report_status",
     {
-      title: "Report milestone",
+      title: "Report status",
       description:
-        "Report a real milestone to Mission Control: root cause found, a fix landed, tests green, blocked, or a changed approach. Report once per real milestone, never progress updates; parents report for their provider-internal subagents. Rate limited to one report per minute per agent.",
-      inputSchema: {
-        kind: z.enum(["finding", "milestone", "blocked", "diverged"]),
+        "Report status to Mission Control at major steps only: root cause found, a fix landed, tests green, blocked, direction changed, done. " +
+        'Silence between milestones; never send progress updates. "completed" means conclusively done — everything asked, finished; any doubt, ' +
+        'cut short, or still in discussion: report "inconclusive", never "completed". Completion claims should carry proofs. ' +
+        "Prefer hub-wait over sleep/timeout polling loops. Rate limited to one report per minute per agent.",
+      inputSchema: MissionControlReportStatusInputSchema.extend({
         headline: z
           .string()
           .max(120)
           .describe("Plain-language headline, at most 120 characters, no markdown."),
-        detail: z.string().optional().describe("Optional one or two sentence detail."),
-        proof: z
-          .array(MissionControlProofSchema)
-          .optional()
-          .describe("Optional evidence: URL, image, diff, or command references."),
-      },
+      }),
       outputSchema: {
         ok: z.boolean(),
         eventId: z.string().optional(),
@@ -3374,19 +3454,14 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         error: z.string().optional(),
       },
     },
-    async ({ kind, headline, detail, proof }) => {
+    async (input) => {
       if (!callerAgentId) {
-        throw new Error("report_milestone requires an agent-scoped session");
+        throw new Error("report_status requires an agent-scoped session");
       }
       if (!missionControlService) {
         throw new Error("Mission Control is not enabled on this host");
       }
-      const result = await missionControlService.reportSelfMilestone(callerAgentId, {
-        kind,
-        headline,
-        detail,
-        proof,
-      });
+      const result = await missionControlService.reportSelfStatus(callerAgentId, input);
       if (!result.ok) {
         return {
           content: [],
@@ -3438,6 +3513,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
 
   const fleetAgentListItemSchema = AgentListItemPayloadSchema.extend({
     host: z.string(),
+    // Roster enrichment: the agent's last report_status headlines (cap 5,
+    // oldest -> newest) and its last non-system user message, when known.
+    reportStatus: z.array(z.string()).max(5).optional(),
+    lastUserMessage: z.string().nullable().optional(),
   });
 
   const resolveFleetHost = (host: string): DaemonClient | null => {
@@ -3476,9 +3555,26 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       const localAgents = z
         .object({ agents: z.array(AgentListItemPayloadSchema) })
         .parse(localResult.structuredContent).agents;
-      const agents: Array<AgentListItemPayload & { host: string }> = [];
+      // Roster enrichment: each row gains the agent's last report_status
+      // headlines (cap 5, oldest -> newest) and its last non-system user
+      // message when one is known. Local rows read the local store + live
+      // timeline; peer rows fetch one events payload per host.
+      const localReports = collectReportStatusHeadlines(missionControlService?.fetchEvents() ?? []);
+      const agents: Array<
+        AgentListItemPayload & {
+          host: string;
+          reportStatus?: string[];
+          lastUserMessage?: string | null;
+        }
+      > = [];
       for (const agent of localAgents) {
-        agents.push({ ...agent, host: "local" });
+        const reports = localReports.get(agent.id);
+        agents.push({
+          ...agent,
+          host: "local",
+          ...(reports ? { reportStatus: reports } : {}),
+          lastUserMessage: lastUserMessageFor(agentManager, agent.id),
+        });
       }
 
       if (peerManager) {
@@ -3499,7 +3595,23 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
               statuses,
               sinceMs,
             });
-            agents.push(...peerAgents);
+            let peerReports = new Map<string, string[]>();
+            try {
+              const eventsPayload = await client.missionControlEventsFetch({ limit: 1000 });
+              peerReports = collectReportStatusHeadlines(eventsPayload.events);
+            } catch (error) {
+              childLogger.warn(
+                { err: error, peer: peerStatus.name },
+                "Failed to fetch peer report_status events",
+              );
+            }
+            for (const agent of peerAgents) {
+              const reports = peerReports.get(agent.id);
+              agents.push({
+                ...agent,
+                ...(reports ? { reportStatus: reports } : {}),
+              });
+            }
           } catch (error) {
             childLogger.warn(
               { err: error, peer: peerStatus.name },
@@ -3580,11 +3692,275 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   );
 
   registerTool(
+    "fleet_get_agent_activity",
+    {
+      title: "Get agent activity on a host",
+      description:
+        "Return recent agent timeline entries as a curated summary, on this daemon ('local') or a peer host. " +
+        "Same shape as the local get_agent_activity tool; proxied over peering so the Commander can read any " +
+        "worker's timeline from its own host.",
+      inputSchema: {
+        host: z
+          .string()
+          .min(1)
+          .describe(
+            "Target host: a peer name from the daemon peers config, or 'local' for this daemon.",
+          ),
+        agentId: z.string(),
+        limit: z
+          .number()
+          .optional()
+          .describe("Optional limit for number of activities to include (most recent first)."),
+      },
+      outputSchema: {
+        agentId: z.string(),
+        updateCount: z.number(),
+        currentModeId: z.string().nullable(),
+        content: z.string(),
+      },
+    },
+    async ({ host, agentId, limit }) => {
+      if (host === "local") {
+        const local = await toCatalog().executeTool("get_agent_activity", { agentId, limit });
+        const parsed = z
+          .object({
+            agentId: z.string(),
+            updateCount: z.number(),
+            currentModeId: z.string().nullable(),
+            content: z.string(),
+          })
+          .parse(local.structuredContent);
+        return { content: [], structuredContent: ensureValidJson(parsed) };
+      }
+      const client = resolveFleetHost(host);
+      if (!client) {
+        throw new Error(`Host "${host}" is not a configured peer`);
+      }
+      const payload = await client.fetchAgentTimeline(agentId, {
+        direction: "tail",
+        ...(typeof limit === "number" ? { limit } : {}),
+      });
+      if (payload.error) {
+        throw new Error(payload.error);
+      }
+      const timeline = payload.entries.map((entry) => entry.item);
+      const summary = curateActivitySummary({ timeline, limit });
+      return {
+        content: [],
+        structuredContent: ensureValidJson({
+          agentId,
+          updateCount: summary.updateCount,
+          currentModeId: payload.agent?.currentModeId ?? null,
+          content: summary.content,
+        }),
+      };
+    },
+  );
+
+  registerTool(
+    "fleet_search",
+    {
+      title: "Search the fleet",
+      description:
+        "Find which agents worked on something, across this daemon and every reachable peer host. " +
+        "Tiered: identity/brief/report context first (instant), then a bounded transcript scan of the last 30 days, " +
+        "and — only with deep:true when the earlier tiers find nothing — a History Ask agent that reads transcripts on disk. " +
+        "Use for 'who worked on X' questions. fleet_list_agents is for rosters, not searching.",
+      inputSchema: {
+        query: z
+          .string()
+          .min(1)
+          .describe("Search text: a name, title, PR URL, or phrase an agent's work would mention."),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .max(50)
+          .optional()
+          .default(20)
+          .describe("Maximum matches to return, fleet-wide."),
+        deep: z
+          .boolean()
+          .optional()
+          .default(false)
+          .describe(
+            "When true and the deterministic tiers find nothing, spawn a History Ask agent to read stored transcripts. Expensive; ask only when shallow search fails.",
+          ),
+      },
+      outputSchema: {
+        matches: z.array(MissionControlSearchMatchSchema),
+      },
+    },
+    async ({ query, limit = 20, deep = false }) => {
+      const startedAt = Date.now();
+      const tier3Runner = buildFleetSearchTier3Runner();
+      const localMatches = await runFleetSearchHost({
+        query,
+        limit,
+        deep,
+        deps: {
+          agentManager,
+          agentStorage,
+          missionControlService: missionControlService ?? null,
+          workspaceRegistry: options.workspaceRegistry,
+          projectRegistry: options.projectRegistry,
+          logger: childLogger,
+          serverId: options.serverId,
+          tier3: deep ? tier3Runner : null,
+        },
+      });
+
+      const allMatches: FleetSearchMatch[] = [...localMatches];
+      if (peerManager) {
+        for (const peerStatus of peerManager.getPeerStatuses()) {
+          if (peerStatus.state !== "online") {
+            continue;
+          }
+          const client = peerManager.getPeerClient(peerStatus.name);
+          if (!client) {
+            continue;
+          }
+          try {
+            const payload = await client.missionControlSearch({ query, limit, deep });
+            for (const row of payload.matches) {
+              allMatches.push({ ...row, host: peerStatus.name });
+            }
+          } catch (error) {
+            childLogger.warn(
+              { err: error, peer: peerStatus.name, component: "search" },
+              "Failed to search peer",
+            );
+          }
+        }
+      }
+
+      const matches = mergeFleetSearchMatches(allMatches, limit);
+      childLogger.info(
+        {
+          component: "search",
+          query,
+          limit,
+          deep,
+          localMatches: localMatches.length,
+          hosts: [...new Set(matches.map((match) => match.host))],
+          matches: matches.length,
+          durationMs: Date.now() - startedAt,
+        },
+        "mission_control.fleet_search.done",
+      );
+      return {
+        content: [],
+        structuredContent: ensureValidJson({ matches }),
+      };
+    },
+  );
+
+  /**
+   * Tier 3 runner for fleet_search: spawns an omp History Ask agent on this
+   * host (the existing History Ask machinery — same labels, same paseo://
+   * citation contract as the app's launcher), waits for its answer, and maps
+   * the citations into fleet search rows. Matches come back host-less;
+   * runFleetSearchHost stamps them "local".
+   */
+  function buildFleetSearchTier3Runner(): FleetSearchTier3Runner {
+    return {
+      async run({ query }) {
+        const serverId = options.serverId ?? "";
+        const providerIds = providerSnapshotManager.listRegisteredProviderIds();
+        if (providerIds.length === 0) {
+          childLogger.info(
+            { component: "search" },
+            "mission_control.fleet_search.tier3_no_provider",
+          );
+          return null;
+        }
+        const provider = providerIds.includes("omp") ? "omp" : providerIds[0]!;
+        const workspaces = (await options.workspaceRegistry?.list()) ?? [];
+        const workspace = workspaces
+          .filter((candidate) => !candidate.archivedAt)
+          .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
+        const cleaned = query.trim().replace(/\s+/g, " ");
+        const title =
+          cleaned.length <= 40
+            ? `Ask: fleet search: ${cleaned}`
+            : `Ask: fleet search: ${cleaned.slice(0, 39)}…`;
+
+        let agentId: string;
+        try {
+          const created = await createAgentCommand(
+            {
+              agentManager,
+              agentStorage,
+              logger: childLogger,
+              paseoHome: options.paseoHome,
+              worktreesRoot: options.worktreesRoot,
+              terminalManager,
+              providerSnapshotManager,
+              createPaseoWorktree: options.createPaseoWorktree,
+              ...(options.ensureWorkspaceForCreate
+                ? { ensureWorkspaceForCreate: options.ensureWorkspaceForCreate }
+                : {}),
+            },
+            {
+              kind: "mcp",
+              provider,
+              title,
+              initialPrompt: buildFleetHistoryAskBrief(query, serverId),
+              cwd: workspace?.cwd ?? "~",
+              ...(workspace ? { workspaceId: workspace.workspaceId } : {}),
+              labels: { "paseo.history-ask": "1", "paseo.history-ask.scope": "host" },
+              background: false,
+              notifyOnFinish: false,
+            },
+          );
+          agentId = created.snapshot.id;
+        } catch (error) {
+          childLogger.warn(
+            { err: error, component: "search" },
+            "mission_control.fleet_search.tier3_spawn_failed",
+          );
+          return null;
+        }
+
+        const controller = new AbortController();
+        const timer = setTimeout(
+          () => controller.abort(new Error("deep fleet search timed out")),
+          SEARCH_TIER3_TIMEOUT_MS,
+        );
+        try {
+          const result = await agentManager.waitForAgentEvent(agentId, {
+            signal: controller.signal,
+          });
+          const answer =
+            result.lastMessage ?? (await agentManager.getLastAssistantMessage(agentId)) ?? "";
+          const matches = parseHistoryAskMatches(answer, serverId);
+          childLogger.info(
+            { component: "search", agentId, matches: matches.length },
+            "mission_control.fleet_search.tier3_done",
+          );
+          return matches;
+        } catch (error) {
+          childLogger.warn(
+            { err: error, component: "search", agentId },
+            "mission_control.fleet_search.tier3_failed",
+          );
+          return null;
+        } finally {
+          clearTimeout(timer);
+        }
+      },
+    };
+  }
+
+  registerTool(
     "fleet_send_prompt",
     {
       title: "Send agent prompt on a host",
       description:
-        "Send a task to an agent on a specific host in the fleet. host is a peer name from the daemon peers config, or 'local' for this daemon.",
+        "Send a task to an agent on a specific host in the fleet. host is a peer name from the daemon peers config, or 'local' for this daemon. " +
+        'mode controls delivery to a busy agent: "steer" (default) injects into the live turn without cancelling (OMP live-steer; ' +
+        'non-OMP busy agents queue), "queue" waits for the agent to idle before streaming, "interrupt" cancels the running turn ' +
+        "and replaces it with this prompt.",
       inputSchema: {
         host: z
           .string()
@@ -3594,28 +3970,269 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           ),
         agentId: z.string(),
         prompt: z.string(),
+        mode: z.enum(["steer", "interrupt", "queue"]).optional().default("steer"),
+        // Composer paste-through: the Commander forwards user attachments
+        // (uploaded_file, github_pr, review, ...) as descriptors only — no
+        // base64 through the model. The receiving daemon resolves them into
+        // the worker prompt via the existing attachment store.
+        attachments: z
+          .array(AgentAttachmentSchema)
+          .optional()
+          .describe(
+            "User attachments to forward to the worker (composer paste-through). Descriptors only; " +
+              "uploaded_file references are resolved by the daemon from its attachment store.",
+          ),
       },
       outputSchema: {
         success: z.boolean(),
+        deliveryMode: z.string(),
       },
     },
-    async ({ host, agentId, prompt }) => {
+    async ({ host, agentId, prompt, mode = "steer", attachments }) => {
       if (host === "local") {
-        return toCatalog().executeTool("send_agent_prompt", { agentId, prompt });
+        const deliveredAs = await dispatchLocalPromptMode({
+          agentManager,
+          agentStorage,
+          agentId,
+          prompt,
+          mode,
+          attachments,
+          logger: childLogger,
+        });
+        return {
+          content: [],
+          structuredContent: ensureValidJson({ success: true, deliveryMode: deliveredAs }),
+        };
       }
       const client = resolveFleetHost(host);
       if (!client) {
         throw new Error(`Host "${host}" is not a configured peer`);
       }
-      await client.sendAgentMessage(agentId, prompt);
+      await client.sendAgentMessage(agentId, prompt, {
+        dispatchMode: mode,
+        ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      });
       return {
         content: [],
-        structuredContent: ensureValidJson({ success: true }),
+        structuredContent: ensureValidJson({ success: true, deliveryMode: mode }),
       };
     },
   );
 
+  registerTool(
+    "tag_message",
+    {
+      title: "Tag user message to agents",
+      description:
+        "Record that the user message you are currently handling relates to the given agent ids. " +
+        "The Verifier reads these tags when auditing a worker, so tag every handled user message that names specific agents. " +
+        "Fleet-wide remarks (no specific agent) should tag all active agents from the roster. Never tag digest notifications.",
+      inputSchema: {
+        agentIds: z
+          .array(z.string().min(1))
+          .min(1)
+          .describe(
+            "Agent ids this user message relates to (fleet-wide remarks: all active roster ids).",
+          ),
+      },
+      outputSchema: {
+        recorded: z.boolean(),
+      },
+    },
+    async (input: { agentIds: string[] }) => {
+      const { agentIds } = input;
+      if (!callerAgentId) {
+        throw new Error("tag_message requires an agent-scoped session");
+      }
+      if (!missionControlService) {
+        throw new Error("Mission Control is not enabled on this host");
+      }
+      const message = resolveCommanderUserMessage(agentManager, callerAgentId);
+      if (!message) {
+        throw new Error("No user message found to tag; tag only while handling a user message");
+      }
+      const uniqueAgentIds: string[] = [...new Set(agentIds as string[])];
+      await missionControlService.recordMessageTags({
+        messageId: message.messageId,
+        agentIds: uniqueAgentIds,
+        ts: new Date().toISOString(),
+        text: message.text,
+      });
+      childLogger.info(
+        {
+          component: "tagging",
+          agentId: callerAgentId,
+          agentIds: uniqueAgentIds,
+          messageId: message.messageId,
+        },
+        "mission_control.tagging.recorded",
+      );
+      return {
+        content: [],
+        structuredContent: ensureValidJson({ recorded: true }),
+      };
+    },
+  );
+
+  // Verifier-only tools: exposed only to sessions of Mission Control verifier
+  // agents (paseo.mission-control=verifier). contact_worker routes through the
+  // approval gate and relays the worker's reply back; submit_verdict records
+  // the audit result. The verifier session's toolAllowlist restricts the
+  // catalog to exactly these two names.
+  const verifierDispatcher = options.verifierDispatcher ?? null;
+  if (
+    verifierDispatcher !== null &&
+    isVerifierCatalogCaller(options, verifierDispatcher, callerAgentId)
+  ) {
+    registerTool(
+      "contact_worker",
+      {
+        title: "Contact worker",
+        description:
+          "Request proof or clarification from the worker you are auditing. The message is " +
+          "routed through the approval gate and delivered as a steer; the worker's reply " +
+          "(its next report_status or final turn text) is relayed back to you as a message. " +
+          "Call this when a requirement of the brief is unproven or a proof is missing.",
+        inputSchema: {
+          message: z
+            .string()
+            .trim()
+            .min(1, "message is required")
+            .max(4000, "message must be at most 4000 characters")
+            .describe("Precise request naming the requirement and the proof you need."),
+        },
+      },
+      async ({ message }) => {
+        if (callerAgentId === undefined) {
+          throw new Error("contact_worker requires an agent-scoped session");
+        }
+        return verifierDispatcher.handleContactWorker(callerAgentId, message);
+      },
+    );
+
+    registerTool(
+      "submit_verdict",
+      {
+        title: "Submit verdict",
+        description:
+          'Finish the audit. result "done" marks the item done with your one-line summary; ' +
+          'result "insufficient" asks the worker for the missing proofs. Call exactly once ' +
+          "when the evidence is settled.",
+        inputSchema: {
+          result: z
+            .enum(["done", "insufficient"])
+            .describe("done: evidence proves the brief. insufficient: proofs are missing."),
+          summary: z
+            .string()
+            .trim()
+            .min(1, "summary is required")
+            .max(280, "summary must be at most 280 characters")
+            .describe("One-line summary: what was asked, what was evidenced (or what is missing)."),
+        },
+      },
+      async ({ result, summary }) => {
+        if (callerAgentId === undefined) {
+          throw new Error("submit_verdict requires an agent-scoped session");
+        }
+        return verifierDispatcher.handleSubmitVerdict(callerAgentId, { result, summary });
+      },
+    );
+  }
+
   return toCatalog();
+}
+
+// How long fleet_send_prompt mode "queue" waits for a busy agent's in-flight
+// run to settle before giving up with an actionable error.
+const FLEET_QUEUE_WAIT_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * Bounded wait for an agent's in-flight run to settle (queue mode). Polls the
+ * manager's run bookkeeping rather than listening for stream events so the
+ * caller gets a deterministic "still busy" answer at the deadline.
+ */
+async function waitForAgentIdle(
+  agentManager: AgentManager,
+  agentId: string,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!agentManager.hasInFlightRun(agentId)) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return !agentManager.hasInFlightRun(agentId);
+}
+
+/**
+ * Local delivery for fleet_send_prompt modes:
+ * - steer: OMP live-steer (out-of-band, non-cancelling) when the agent is busy
+ *   on the omp provider; an idle agent just runs the prompt; a busy non-OMP
+ *   agent falls back to queue so the message is never lost to a cancel.
+ * - queue: wait for idle, then stream without replacing.
+ * - interrupt: today's replaceRunning behavior (sendPromptToAgent).
+ *
+ * Attachments ride along as prompt blocks (buildAgentPrompt) — descriptors
+ * only, resolved by the daemon from the attachment store, never base64.
+ */
+export async function dispatchLocalPromptMode(params: {
+  agentManager: AgentManager;
+  agentStorage: AgentStorage;
+  agentId: string;
+  prompt: string;
+  mode: "steer" | "interrupt" | "queue";
+  attachments?: AgentAttachment[];
+  logger: Logger;
+}): Promise<"steer" | "interrupt" | "queue"> {
+  const { agentManager, agentStorage, agentId, prompt, mode, attachments, logger } = params;
+  const promptWithAttachments = buildAgentPrompt(prompt, undefined, attachments);
+  if (mode === "interrupt") {
+    await sendPromptToAgent({
+      agentManager,
+      agentStorage,
+      agentId,
+      prompt: promptWithAttachments,
+      logger,
+    });
+    return "interrupt";
+  }
+  if (mode === "steer") {
+    const busy = agentManager.hasInFlightRun(agentId);
+    if (busy && agentManager.getAgent(agentId)?.provider === "omp") {
+      // Live-steer is text-only; render attachments so the worker still sees
+      // their content without base64 crossing the model boundary.
+      const steerText =
+        attachments && attachments.length > 0
+          ? [prompt.trim(), ...attachments.map(renderPromptAttachmentAsText)]
+              .filter(Boolean)
+              .join("\n\n")
+          : prompt;
+      const handled = agentManager.tryRunOutOfBand(agentId, `/steer ${steerText}`);
+      if (handled) {
+        return "steer";
+      }
+    }
+    if (!busy) {
+      await startAgentRun(agentManager, agentId, promptWithAttachments, logger, {
+        replaceRunning: false,
+      });
+      return "steer";
+    }
+    // Busy on a provider without a steer path: fall through to queue.
+  }
+  const idle = await waitForAgentIdle(agentManager, agentId, FLEET_QUEUE_WAIT_TIMEOUT_MS);
+  if (!idle) {
+    throw new Error(
+      `Agent ${agentId} is still busy after ${Math.round(FLEET_QUEUE_WAIT_TIMEOUT_MS / 60_000)} min; ` +
+        "retry with mode 'interrupt' to cancel the running turn.",
+    );
+  }
+  await startAgentRun(agentManager, agentId, promptWithAttachments, logger, {
+    replaceRunning: false,
+  });
+  return "queue";
 }
 
 interface ArchiveWorktreeCommandContext {
@@ -3676,4 +4293,24 @@ function archiveWorktreeDependencies(
       ),
     sessionLogger: context.logger,
   };
+}
+
+/**
+ * Verifier-tool gate. Launch contexts are built BEFORE the agent registers,
+ * so the creation labels (callerLabels) must be honored first; the registry
+ * lookup only covers already-registered sessions (e.g. the agent MCP
+ * endpoint), never the create-time catalog build.
+ */
+function isVerifierCatalogCaller(
+  options: PaseoToolHostDependencies,
+  verifierDispatcher: PaseoToolHostDependencies["verifierDispatcher"] | null,
+  callerAgentId: string | undefined,
+): boolean {
+  if (!verifierDispatcher || callerAgentId === undefined) {
+    return false;
+  }
+  if (options.callerLabels?.[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_VERIFIER_LABEL_VALUE) {
+    return true;
+  }
+  return verifierDispatcher.isVerifierAgent(callerAgentId);
 }

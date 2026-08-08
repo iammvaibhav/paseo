@@ -132,6 +132,8 @@ export interface Agent {
   title: string | null;
   // Optional like the wire payload: older daemons omit identity fields.
   name?: string | null;
+  /** Living short description (report_status description refresh). */
+  shortDescription?: string | null;
   cwd: string;
   workspaceId?: string;
   model: string | null;
@@ -216,6 +218,7 @@ export interface ProjectDescriptor {
   projectDisplayName: string;
   projectCustomName: string | null;
   projectCustomIconRevision?: string | null;
+  projectDescription?: string | null;
   projectRootPath: string;
   projectKind: WorkspaceDescriptorPayload["projectKind"];
 }
@@ -229,6 +232,7 @@ export function normalizeProjectDescriptor(
     projectDisplayName: payload.projectDisplayName,
     projectCustomName: payload.projectCustomName ?? null,
     projectCustomIconRevision: payload.projectCustomIconRevision ?? null,
+    projectDescription: payload.projectDescription ?? null,
     projectRootPath: payload.projectRootPath,
     projectKind: payload.projectKind,
   };

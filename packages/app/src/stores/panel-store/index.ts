@@ -12,15 +12,19 @@ import { type ExplorerCheckoutContext } from "../explorer-checkout-context";
 import {
   buildOpenFileExplorerPatch,
   buildToggleFileExplorerPatch,
+  clampBoardRailWidth,
   clampExplorerFilesSplitRatio,
   clampExplorerWidth,
   clampSidebarWidth,
+  DEFAULT_BOARD_RAIL_WIDTH,
   DEFAULT_EXPLORER_FILES_SPLIT_RATIO,
   DEFAULT_EXPLORER_SIDEBAR_WIDTH,
   DEFAULT_SIDEBAR_WIDTH,
+  MAX_BOARD_RAIL_WIDTH,
   MAX_EXPLORER_FILES_SPLIT_RATIO,
   MAX_EXPLORER_SIDEBAR_WIDTH,
   MAX_SIDEBAR_WIDTH,
+  MIN_BOARD_RAIL_WIDTH,
   MIN_EXPLORER_FILES_SPLIT_RATIO,
   MIN_EXPLORER_SIDEBAR_WIDTH,
   MIN_SIDEBAR_WIDTH,
@@ -59,6 +63,10 @@ export {
   MIN_EXPLORER_FILES_SPLIT_RATIO,
   MIN_EXPLORER_SIDEBAR_WIDTH,
   MIN_SIDEBAR_WIDTH,
+  DEFAULT_BOARD_RAIL_WIDTH,
+  MIN_BOARD_RAIL_WIDTH,
+  MAX_BOARD_RAIL_WIDTH,
+  clampBoardRailWidth,
   selectIsAgentListOpen,
   selectIsFileExplorerOpen,
   selectPanelVisibility,
@@ -89,6 +97,7 @@ export interface PanelState {
   explorerSortOption: SortOption;
   explorerShowHiddenFiles: boolean;
   explorerFilesSplitRatio: number;
+  boardRailWidth: number;
 
   // Actions
   toggleFocusMode: () => void;
@@ -123,6 +132,7 @@ export interface PanelState {
   setExplorerSortOption: (option: SortOption) => void;
   toggleExplorerShowHiddenFiles: () => void;
   setExplorerFilesSplitRatio: (ratio: number) => void;
+  setBoardRailWidth: (width: number) => void;
 }
 
 const DEFAULT_DESKTOP_OPEN = isWeb;
@@ -160,6 +170,7 @@ export const usePanelStore = create<PanelState>()(
       explorerSortOption: "name",
       explorerShowHiddenFiles: true,
       explorerFilesSplitRatio: DEFAULT_EXPLORER_FILES_SPLIT_RATIO,
+      boardRailWidth: DEFAULT_BOARD_RAIL_WIDTH,
 
       toggleFocusMode: () =>
         set((state) => ({
@@ -313,6 +324,7 @@ export const usePanelStore = create<PanelState>()(
         })),
       setSidebarWidth: (width) => set({ sidebarWidth: clampSidebarWidth(width) }),
       setExplorerWidth: (width) => set({ explorerWidth: clampExplorerWidth(width) }),
+      setBoardRailWidth: (width) => set({ boardRailWidth: clampBoardRailWidth(width) }),
       setExplorerSortOption: (option) => set({ explorerSortOption: option }),
       toggleExplorerShowHiddenFiles: () =>
         set((state) => ({ explorerShowHiddenFiles: !state.explorerShowHiddenFiles })),
@@ -342,6 +354,7 @@ export const usePanelStore = create<PanelState>()(
         explorerSortOption: state.explorerSortOption,
         explorerShowHiddenFiles: state.explorerShowHiddenFiles,
         explorerFilesSplitRatio: state.explorerFilesSplitRatio,
+        boardRailWidth: state.boardRailWidth,
       }),
     },
   ),

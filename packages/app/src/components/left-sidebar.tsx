@@ -41,11 +41,9 @@ import { HEADER_INNER_HEIGHT, useIsCompactFormFactor } from "@/constants/layout"
 import { getIsElectron } from "@/constants/platform";
 import { useOpenFleetStats } from "@/desktop/fleet-stats";
 import { useOpenAddProject } from "@/hooks/use-open-add-project";
-import { useAggregatedAgents } from "@/hooks/use-aggregated-agents";
 import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
 import { canCreateWorktreeForProjectKind } from "@/projects/host-projects";
 import { useHostFeature, useHostFeatureMap } from "@/runtime/host-features";
-import { deriveSidebarStateBucket } from "@/utils/sidebar-agent-state";
 import {
   type SidebarProjectEntry,
   type SidebarWorkspaceEntry,
@@ -57,7 +55,8 @@ import type { StatusGroup } from "@/hooks/sidebar-status-view-model";
 import { type SidebarGroupMode, useSidebarViewStore } from "@/stores/sidebar-view-store";
 import { useKeyboardShortcutsStore } from "@/stores/keyboard-shortcuts-store";
 import { useHostRuntimeConnectionStatuses, useHosts } from "@/runtime/host-runtime";
-import { isCommanderAgent } from "@/mission-control/labels";
+import { useMissionControlLifecycle } from "@/mission-control/use-mission-control-lifecycle";
+import type { SidebarHeaderRowBadgeSegment } from "@/components/sidebar/sidebar-header-row";
 import { useActiveWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
 import { useWorkspace } from "@/stores/session-store-hooks";
 import { usePanelStore } from "@/stores/panel-store";
@@ -120,8 +119,8 @@ interface SidebarSharedProps {
   handleOpenHostSettings: (serverId: string) => void;
   /** Any connected host advertises features.missionControl — gates the row. */
   hasMissionControl: boolean;
-  /** Needs-you + failed agents across all hosts; the row's count pill. */
-  missionControlBadgeCount: number;
+  /** Two-segment badge: working + ready-for-review counts across all hosts. */
+  missionControlBadges: readonly SidebarHeaderRowBadgeSegment[];
 }
 
 interface MobileSidebarProps extends SidebarSharedProps {
@@ -257,27 +256,22 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
       ),
     [hostConnectionStatuses, hosts, missionControlFeatureMap],
   );
-  const { agents: aggregatedAgents } = useAggregatedAgents();
-  const missionControlBadgeCount = useMemo(() => {
-    let count = 0;
-    for (const agent of aggregatedAgents) {
-      // The Commander (label `paseo.mission-control=*`) never counts toward the
-      // needs-you pill; it is invisible everywhere outside Mission Control.
-      if (isCommanderAgent(agent.labels)) {
-        continue;
-      }
-      const bucket = deriveSidebarStateBucket({
-        status: agent.status,
-        pendingPermissionCount: agent.pendingPermissionCount ?? 0,
-        requiresAttention: agent.requiresAttention,
-        attentionReason: agent.attentionReason,
-      });
-      if (bucket === "needs_input" || bucket === "failed") {
-        count += 1;
-      }
-    }
-    return count;
-  }, [aggregatedAgents]);
+  const { counts } = useMissionControlLifecycle({ enabled: hasMissionControl });
+  const missionControlBadges = useMemo(
+    (): SidebarHeaderRowBadgeSegment[] => [
+      {
+        count: counts.working,
+        label: t("sidebar.sections.missionControlWorking"),
+        testID: "sidebar-mission-control-badge-working",
+      },
+      {
+        count: counts.ready,
+        label: t("sidebar.sections.missionControlReady"),
+        testID: "sidebar-mission-control-badge-ready",
+      },
+    ],
+    [counts.ready, counts.working, t],
+  );
 
   const newWorkspaceKeys = useShortcutKeys("new-workspace");
   const labels = useMemo(
@@ -314,7 +308,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
     labels,
     newWorkspaceKeys,
     hasMissionControl,
-    missionControlBadgeCount,
+    missionControlBadges,
   };
 
   if (isCompactLayout) {
@@ -713,7 +707,7 @@ function MobileSidebar({
   insetsBottom,
   closeSidebar,
   hasMissionControl,
-  missionControlBadgeCount,
+  missionControlBadges,
   handleViewMoreNavigate,
   handleViewSchedulesNavigate,
   handleViewWebhooksNavigate,
@@ -785,7 +779,7 @@ function MobileSidebar({
               isActive={isMissionControlActive}
               testID="sidebar-mission-control"
               variant="compact"
-              badgeCount={missionControlBadgeCount}
+              badgeSegments={missionControlBadges}
             />
           ) : null}
           <SidebarHeaderRow
@@ -893,7 +887,7 @@ function DesktopSidebar({
   insetsTop,
   active,
   hasMissionControl,
-  missionControlBadgeCount,
+  missionControlBadges,
   handleViewMore,
   handleViewSchedules,
   handleViewWebhooks,
@@ -994,7 +988,7 @@ function DesktopSidebar({
                 isActive={isMissionControlActive}
                 testID="sidebar-mission-control"
                 variant="compact"
-                badgeCount={missionControlBadgeCount}
+                badgeSegments={missionControlBadges}
               />
             ) : null}
             <SidebarHeaderRow

@@ -142,7 +142,7 @@ describe("shared tool-call display mapping", () => {
       error: null,
       detail: { type: "unknown", input: null, output: null },
     });
-    expect(display.displayName).toBe("Create Agent");
+    expect(display.displayName).toBe("Spawned agent");
   });
 
   it("humanizes Paseo MCP tool names (Codex format)", () => {
@@ -152,7 +152,7 @@ describe("shared tool-call display mapping", () => {
       error: null,
       detail: { type: "unknown", input: null, output: null },
     });
-    expect(display.displayName).toBe("Create Agent");
+    expect(display.displayName).toBe("Spawned agent");
   });
 
   it("humanizes list_agents Paseo tool", () => {

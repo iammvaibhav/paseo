@@ -67,26 +67,60 @@ import {
   MissionControlContextFetchRequestSchema,
   MissionControlContextFetchResponseSchema,
   MissionControlEventMessageSchema,
+  MissionControlLifecycleSetRequestSchema,
+  MissionControlLifecycleSetResponseSchema,
+  MissionControlProposalsRespondRequestSchema,
+  MissionControlProposalsRespondResponseSchema,
+  MissionControlProposalsCreateRequestSchema,
+  MissionControlProposalsCreateResponseSchema,
+  MissionControlModeSetRequestSchema,
+  MissionControlModeSetResponseSchema,
+  MissionControlConfigGetRequestSchema,
+  MissionControlConfigGetResponseSchema,
+  MissionControlConfigPatchRequestSchema,
+  MissionControlConfigPatchResponseSchema,
+  MissionControlSearchRequestSchema,
+  MissionControlSearchResponseSchema,
+  MissionControlMediaFetchRequestSchema,
+  MissionControlMediaFetchResponseSchema,
 } from "./mission-control/types.js";
 export {
   MissionControlEventSchema,
   MissionControlEventKindSchema,
   MissionControlProofSchema,
+  MissionControlProposalSchema,
+  MissionControlReportStatusInputSchema,
   MissionControlPeerStatusSchema,
   MissionControlInventorySchema,
   MissionControlInventoryProjectSchema,
   MissionControlInventoryProjectWorkspaceSchema,
   MissionControlModelsSchema,
   MissionControlContextAgentSummarySchema,
+  MissionControlCentralConfigSchema,
+  MissionControlLifecycleActionSchema,
+  MissionControlModeSchema,
+  MissionControlSearchMatchSchema,
+  MissionControlMediaFetchRequestSchema,
+  MissionControlMediaFetchResponseSchema,
+  MissionControlProposalsCreateRequestSchema,
+  MissionControlProposalsCreateResponseSchema,
   type MissionControlEvent,
   type MissionControlEventKind,
   type MissionControlProof,
+  type MissionControlProposal,
+  type MissionControlReportStatusInput,
   type MissionControlPeerStatus,
   type MissionControlInventory,
   type MissionControlInventoryProject,
   type MissionControlInventoryProjectWorkspace,
   type MissionControlModels,
   type MissionControlContextAgentSummary,
+  type MissionControlCentralConfig,
+  type MissionControlLifecycleAction,
+  type MissionControlMode,
+  type MissionControlSearchMatch,
+  type MissionControlMediaFetchRequest,
+  type MissionControlMediaFetchResponse,
 } from "./mission-control/types.js";
 import {
   LoopRunRequestSchema,
@@ -233,6 +267,17 @@ const MutableMissionControlAutopilotConfigSchema = z
   .passthrough();
 const MutableMissionControlConfigSchema = z
   .object({
+    // v3 per-host keys: only these two belong in the daemon config. Everything
+    // else moved to central config (mission_control.config.*).
+    enabled: z.boolean().optional(),
+    // THIS machine's alias ("work server"). Fleet map assembles aliases from
+    // each host's own declaration — no hardcoded machine lists.
+    hostAlias: z.string().optional(),
+    // COMPAT(missionControlV3): retentionDays/summarizer/autopilot/selfReport/
+    // naming/defaultHost/hostAliases/commanderInstructions predate central
+    // config; they stay accepted so old config files keep parsing. v3 reads
+    // prefer central config values where the key moved central. Remove after
+    // 2027-08-08 once all configs migrate to central.
     retentionDays: z.number().optional(),
     summarizer: MutableMissionControlSummarizerConfigSchema.optional(),
     autopilot: MutableMissionControlAutopilotConfigSchema.optional(),
@@ -969,7 +1014,14 @@ export const CloseItemsRequestMessageSchema = z.object({
 export const UpdateAgentRequestMessageSchema = z.object({
   type: z.literal("update_agent_request"),
   agentId: z.string(),
+  // Legacy alias for the display title (pre-v3 wire name). Kept for
+  // back-compat; prefer the explicit `title` field going forward. When both
+  // are present, `title` wins.
   name: z.string().optional(),
+  // Mission Control identity fields (naming backfill + description refresh).
+  // Additive wire fields: older daemons/clients simply omit them.
+  title: z.string().optional(),
+  shortDescription: z.string().optional(),
   labels: z.record(z.string(), z.string()).optional(),
   provider: z.string().optional(),
   model: z.string().nullable().optional(),
@@ -994,6 +1046,14 @@ export const ProjectRenameRequestSchema = z.object({
   projectId: z.string(),
   // Null or empty string clears the override and reverts to the derived name.
   customName: z.string().nullable(),
+  requestId: z.string(),
+});
+
+export const ProjectDescriptionSetRequestSchema = z.object({
+  type: z.literal("project.description.set.request"),
+  projectId: z.string(),
+  // Null or empty string clears the description.
+  description: z.string().nullable(),
   requestId: z.string(),
 });
 
@@ -1307,6 +1367,12 @@ export const SendAgentMessageRequestSchema = z.object({
   messageId: z.string().optional(), // Client-provided ID for deduplication
   images: z.array(ImageAttachmentSchema).optional(),
   attachments: AgentAttachmentsSchema,
+  // Delivery semantics for outbound prompts (v3, fleet_send_prompt modes).
+  // steer: deliver to a busy agent without interrupting (OMP live-steer when
+  // available, otherwise queued). interrupt: replace the running turn (today's
+  // default). queue: wait for idle, then stream without replacing. Absent =
+  // interrupt for wire compat.
+  dispatchMode: z.enum(["steer", "interrupt", "queue"]).optional(),
 });
 
 export const WaitForFinishRequestSchema = z.object({
@@ -1738,6 +1804,17 @@ export const ProjectRenameResponsePayloadSchema = z.object({
 export const ProjectRenameResponseSchema = z.object({
   type: z.literal("project.rename.response"),
   payload: ProjectRenameResponsePayloadSchema,
+});
+
+export const ProjectDescriptionSetResponseSchema = z.object({
+  type: z.literal("project.description.set.response"),
+  payload: z.object({
+    requestId: z.string(),
+    projectId: z.string(),
+    accepted: z.boolean(),
+    description: z.string().nullable(),
+    error: z.string().nullable(),
+  }),
 });
 
 export const ProjectIconSetResponseSchema = z.object({
@@ -2723,6 +2800,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   CloseItemsRequestMessageSchema,
   UpdateAgentRequestMessageSchema,
   ProjectRenameRequestSchema,
+  ProjectDescriptionSetRequestSchema,
   ProjectIconSetRequestSchema,
   ProjectRemoveRequestSchema,
   WorkspaceTitleSetRequestSchema,
@@ -2882,6 +2960,14 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   MissionControlEventsAckRequestSchema,
   MissionControlPeersListRequestSchema,
   MissionControlContextFetchRequestSchema,
+  MissionControlLifecycleSetRequestSchema,
+  MissionControlProposalsRespondRequestSchema,
+  MissionControlProposalsCreateRequestSchema,
+  MissionControlModeSetRequestSchema,
+  MissionControlConfigGetRequestSchema,
+  MissionControlConfigPatchRequestSchema,
+  MissionControlSearchRequestSchema,
+  MissionControlMediaFetchRequestSchema,
 ]);
 
 export type SessionInboundMessage = z.infer<typeof SessionInboundMessageSchema>;
@@ -3119,6 +3205,9 @@ export const ServerInfoStatusPayloadSchema = z
         projectCreateDirectory: z.boolean().optional(),
         // COMPAT(projectList): added in v0.2.4, drop the gate when floor >= v0.2.4.
         projectList: z.boolean().optional(),
+        // Mission Control v3 (review lifecycle, approval gate, central config).
+        // Added 2026-08-08; app gates the v3 screen once on this flag.
+        missionControlV3: z.boolean().optional(),
         // COMPAT(commitsList): added in v0.1.110, remove gate after 2027-01-16.
         commitsList: z.boolean().optional(),
         // COMPAT(commitBaseClassification): added in v0.2.0, remove gate after 2027-01-23.
@@ -3559,6 +3648,9 @@ export const WorkspaceProjectDescriptorPayloadSchema = z.object({
   projectCustomName: z.string().nullable().optional(),
   // COMPAT(projectCustomIcon): added in v0.2.0, remove after 2027-01-20.
   projectCustomIconRevision: z.string().nullable().optional(),
+  // Project description (v3): optional living description injected into the
+  // Commander context pack for routing. Null/absent = no description.
+  projectDescription: z.string().nullable().optional(),
   projectRootPath: z.string(),
   projectKind: z.enum(["git", "non_git", "directory"]),
 });
@@ -5672,6 +5764,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   AgentRewindResponseMessageSchema,
   UpdateAgentResponseMessageSchema,
   ProjectRenameResponseSchema,
+  ProjectDescriptionSetResponseSchema,
   ProjectIconSetResponseSchema,
   ProjectRemoveResponseSchema,
   WorkspaceTitleSetResponseSchema,
@@ -5783,6 +5876,14 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   MissionControlPeersListResponseSchema,
   MissionControlContextFetchResponseSchema,
   MissionControlEventMessageSchema,
+  MissionControlLifecycleSetResponseSchema,
+  MissionControlProposalsRespondResponseSchema,
+  MissionControlProposalsCreateResponseSchema,
+  MissionControlModeSetResponseSchema,
+  MissionControlConfigGetResponseSchema,
+  MissionControlConfigPatchResponseSchema,
+  MissionControlSearchResponseSchema,
+  MissionControlMediaFetchResponseSchema,
   DaemonUpdateProgressMessageSchema,
   DaemonUpdateResponseSchema,
 ]);
@@ -5879,6 +5980,7 @@ export type AgentDetachResponseMessage = z.infer<typeof AgentDetachResponseMessa
 export type AgentRewindResponseMessage = z.infer<typeof AgentRewindResponseMessageSchema>;
 export type UpdateAgentResponseMessage = z.infer<typeof UpdateAgentResponseMessageSchema>;
 export type ProjectRenameResponse = z.infer<typeof ProjectRenameResponseSchema>;
+export type ProjectDescriptionSetResponse = z.infer<typeof ProjectDescriptionSetResponseSchema>;
 export type ProjectIconSetResponse = z.infer<typeof ProjectIconSetResponseSchema>;
 export type ProjectRemoveResponse = z.infer<typeof ProjectRemoveResponseSchema>;
 export type WorkspaceTitleSetResponse = z.infer<typeof WorkspaceTitleSetResponseSchema>;
@@ -5966,6 +6068,17 @@ export type MissionControlContextFetchResponse = z.infer<
   typeof MissionControlContextFetchResponseSchema
 >;
 export type MissionControlEventMessage = z.infer<typeof MissionControlEventMessageSchema>;
+export type MissionControlLifecycleSetResponse = z.infer<
+  typeof MissionControlLifecycleSetResponseSchema
+>;
+export type MissionControlProposalsRespondResponse = z.infer<
+  typeof MissionControlProposalsRespondResponseSchema
+>;
+export type MissionControlModeSetResponse = z.infer<typeof MissionControlModeSetResponseSchema>;
+export type MissionControlConfigGetResponse = z.infer<typeof MissionControlConfigGetResponseSchema>;
+export type MissionControlConfigPatchResponse = z.infer<
+  typeof MissionControlConfigPatchResponseSchema
+>;
 export type LoopRunResponse = z.infer<typeof LoopRunResponseSchema>;
 export type LoopListResponse = z.infer<typeof LoopListResponseSchema>;
 export type LoopInspectResponse = z.infer<typeof LoopInspectResponseSchema>;
@@ -6050,6 +6163,20 @@ export type MissionControlPeersListRequest = z.infer<typeof MissionControlPeersL
 export type MissionControlContextFetchRequest = z.infer<
   typeof MissionControlContextFetchRequestSchema
 >;
+export type MissionControlLifecycleSetRequest = z.infer<
+  typeof MissionControlLifecycleSetRequestSchema
+>;
+export type MissionControlProposalsRespondRequest = z.infer<
+  typeof MissionControlProposalsRespondRequestSchema
+>;
+export type MissionControlProposalsCreateRequest = z.infer<
+  typeof MissionControlProposalsCreateRequestSchema
+>;
+export type MissionControlModeSetRequest = z.infer<typeof MissionControlModeSetRequestSchema>;
+export type MissionControlConfigGetRequest = z.infer<typeof MissionControlConfigGetRequestSchema>;
+export type MissionControlConfigPatchRequest = z.infer<
+  typeof MissionControlConfigPatchRequestSchema
+>;
 export type LoopRunRequest = z.infer<typeof LoopRunRequestSchema>;
 export type LoopListRequest = z.infer<typeof LoopListRequestSchema>;
 export type LoopInspectRequest = z.infer<typeof LoopInspectRequestSchema>;
@@ -6060,6 +6187,7 @@ export type DeleteAgentRequestMessage = z.infer<typeof DeleteAgentRequestMessage
 export type UpdateAgentRequestMessage = z.infer<typeof UpdateAgentRequestMessageSchema>;
 export type ProjectIconSource = z.infer<typeof ProjectIconSourceSchema>;
 export type ProjectRenameRequest = z.infer<typeof ProjectRenameRequestSchema>;
+export type ProjectDescriptionSetRequest = z.infer<typeof ProjectDescriptionSetRequestSchema>;
 export type ProjectIconSetRequest = z.infer<typeof ProjectIconSetRequestSchema>;
 export type ProjectRemoveRequest = z.infer<typeof ProjectRemoveRequestSchema>;
 export type WorkspaceTitleSetRequest = z.infer<typeof WorkspaceTitleSetRequestSchema>;

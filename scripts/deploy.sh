@@ -1074,6 +1074,56 @@ sync_system_prompt() {
   done
 }
 
+# Mission Control verifier: sync the omp agent definition
+# (packages/server/resources/verifier-agent.md → ~/.omp/agent/agents/verifier.md)
+# and modelRoles.verifier (copy of modelRoles.task) into ~/.omp/agent/config.yml
+# on every host. The daemon spawns the verifier as an omp agent and resolves
+# its model @verifier → @task → host default; deploy keeps the role defined so
+# @verifier resolves before the fallback chain is needed. Kept deliberately
+# small: one patcher, one definition file, no other omp-config keys touched.
+sync_omp_verifier_config() {
+  if [[ "${PASEO_SKIP_OMP_VERIFIER:-0}" == "1" ]]; then
+    return
+  fi
+
+  local agent_md="$ROOT_DIR/packages/server/resources/verifier-agent.md"
+  local patcher="$ROOT_DIR/scripts/set-omp-verifier-role.mjs"
+  if [[ ! -f "$agent_md" || ! -f "$patcher" ]]; then
+    log "No verifier agent definition on disk; leaving ~/.omp/agent alone"
+    return
+  fi
+
+  # base64 so the definition survives argv and shell quoting on the way to each host.
+  local b64
+  b64="$(base64 < "$agent_md" | tr -d '\n')"
+
+  if [[ "${PASEO_SKIP_LOCAL:-0}" != "1" ]]; then
+    log "Syncing omp verifier agent (local)"
+    if node "$patcher" "$b64" | while read -r line; do log "  $line"; done; then
+      :
+    else
+      log "  Warning: omp verifier sync failed locally"
+    fi
+  fi
+
+  if [[ "${PASEO_SKIP_REMOTES:-0}" == "1" ]]; then
+    return
+  fi
+
+  local host
+  for host in "${REMOTE_HOSTS[@]}"; do
+    log "Syncing omp verifier agent → $host"
+    # Remote PATH has no node for non-login shells; nvm is how deploy gets it there.
+    if ssh -o BatchMode=yes "$host" \
+        "export NVM_DIR=\"\$HOME/.nvm\"; . \"\$NVM_DIR/nvm.sh\" >/dev/null 2>&1; node - '$b64'" \
+        < "$patcher" 2>&1 | while read -r line; do log "  $line"; done; then
+      :
+    else
+      log "  Warning: omp verifier sync failed on $host"
+    fi
+  done
+}
+
 sync_code_server_settings_to_remotes() {
   if [[ "${PASEO_SKIP_CODE_SERVER:-0}" == "1" ]]; then
     return
@@ -1667,6 +1717,7 @@ main() {
   # Config must be on disk before daemons restart below; the config store only
   # reads config.json at boot.
   sync_system_prompt
+  sync_omp_verifier_config
 
   # Post-push: local daemon/desktop + both remotes overlap.
   run_parallel_post_push_deploy

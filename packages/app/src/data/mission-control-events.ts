@@ -14,10 +14,12 @@ export type MissionControlEventsClient = Pick<DaemonClient, "missionControlEvent
 export async function fetchMissionControlEvents(input: {
   client: MissionControlEventsClient;
   sinceTs?: string;
+  beforeSeq?: number;
   limit?: number;
 }): Promise<MissionControlEvent[]> {
   const payload = await input.client.missionControlEventsFetch({
     ...(input.sinceTs ? { sinceTs: input.sinceTs } : {}),
+    ...(typeof input.beforeSeq === "number" ? { beforeSeq: input.beforeSeq } : {}),
     ...(typeof input.limit === "number" ? { limit: input.limit } : {}),
   });
   return payload.events ?? [];

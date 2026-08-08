@@ -27,6 +27,7 @@ import { AppearanceStyleBoundary } from "@/components/appearance-style-boundary"
 import { HighlightedCodeBlock } from "@/components/highlighted-code-block";
 
 import { renderRichFence } from "./rich-fence";
+import { isPaseoAgentLink, PaseoAgentLinkChip, usePaseoAgentLinkContext } from "./paseo-agent-link";
 
 import { MathView } from "@/components/math-view";
 import { MarkdownParagraphView, MarkdownTextSpan } from "@/components/markdown-text";
@@ -526,6 +527,41 @@ function SharedMarkdownLink({
   );
 }
 
+function textFromLinkChildren(children: ReactNode): string {
+  return React.Children.toArray(children)
+    .flatMap((child) => (typeof child === "string" ? [child] : []))
+    .join("")
+    .trim();
+}
+
+/**
+ * Link rule entry: when the Mission Control thread mounts the
+ * PaseoAgentLinkProvider, `paseo://` agent deep links render as inline agent
+ * chips (opened in the Inspector); everywhere else they keep the plain link.
+ */
+function MarkdownPaseoAwareLink({
+  href,
+  inheritedStyles,
+  linkStyle,
+  onLinkPress,
+  children,
+}: SharedMarkdownLinkProps) {
+  const paseoContext = usePaseoAgentLinkContext();
+  if (paseoContext && isPaseoAgentLink(href)) {
+    return <PaseoAgentLinkChip href={href} fallbackText={textFromLinkChildren(children)} />;
+  }
+  return (
+    <SharedMarkdownLink
+      href={href}
+      inheritedStyles={inheritedStyles}
+      linkStyle={linkStyle}
+      onLinkPress={onLinkPress}
+    >
+      {children}
+    </SharedMarkdownLink>
+  );
+}
+
 function getMarkdownLinkHref(node: ASTNode): string {
   const href = node.attributes?.href;
   return typeof href === "string" ? href : "";
@@ -764,7 +800,7 @@ export function createSharedMarkdownRules(): RenderRules {
       styles: MarkdownStyles,
       onLinkPress?: (url: string) => boolean,
     ) => (
-      <SharedMarkdownLink
+      <MarkdownPaseoAwareLink
         key={node.key}
         href={getMarkdownLinkHref(node)}
         inheritedStyles={EMPTY_TEXT_STYLE}
@@ -772,7 +808,7 @@ export function createSharedMarkdownRules(): RenderRules {
         onLinkPress={onLinkPress}
       >
         {children}
-      </SharedMarkdownLink>
+      </MarkdownPaseoAwareLink>
     ),
     ...createMathRenderRules(),
   };

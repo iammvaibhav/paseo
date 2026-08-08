@@ -168,4 +168,133 @@ describe("tool-call-display", () => {
       summary: "npm run test",
     });
   });
+
+  it("pretty-renders fleet_send_prompt with live agent name and host", () => {
+    const display = buildToolCallDisplayModel({
+      name: "fleet_send_prompt",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { host: "macbook", agentId: "agent-1", prompt: "steer the turn" },
+        output: { content: [], details: { success: true } },
+      },
+      agentNames: { "agent-1": "Docs Smoke" },
+    });
+
+    expect(display.displayName).toBe("→ Steered Docs Smoke (macbook)");
+  });
+
+  it("falls back to agentId when no live name is known for fleet_send_prompt", () => {
+    const display = buildToolCallDisplayModel({
+      name: "fleet_send_prompt",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { host: "local", agentId: "agent-9", prompt: "hello" },
+        output: null,
+      },
+    });
+
+    expect(display.displayName).toBe("→ Steered agent-9 (local)");
+  });
+
+  it("pretty-renders fleet_list_agents with the roster count", () => {
+    const display = buildToolCallDisplayModel({
+      name: "fleet_list_agents",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { limit: 50 },
+        output: {
+          content: [],
+          details: {
+            agents: [
+              { id: "a", name: "Alpha" },
+              { id: "b", name: "Beta" },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(display.displayName).toBe("Checked fleet roster · 2 agents");
+  });
+
+  it("pretty-renders fleet_create_agent with name and host once the id resolves", () => {
+    const running = buildToolCallDisplayModel({
+      name: "fleet_create_agent",
+      status: "running",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { host: "work", provider: "anthropic/claude", initialPrompt: "fix it" },
+        output: null,
+      },
+    });
+    expect(running.displayName).toBe("Spawned agent on work");
+
+    const done = buildToolCallDisplayModel({
+      name: "fleet_create_agent",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { host: "work", provider: "anthropic/claude", initialPrompt: "fix it" },
+        output: { content: [], details: { agentId: "agent-7" } },
+      },
+      agentNames: { "agent-7": "Bug Hunter" },
+    });
+    expect(done.displayName).toBe("Spawned Bug Hunter on work");
+  });
+
+  it("pretty-renders fleet_search with query and match count", () => {
+    const display = buildToolCallDisplayModel({
+      name: "fleet_search",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { query: "auth" },
+        output: {
+          content: [],
+          details: { matches: [{ host: "local", name: "Auth Fix" }] },
+        },
+      },
+    });
+
+    expect(display.displayName).toBe('Searched fleet: "auth" · 1 matches');
+  });
+
+  it("labels tag_message for verbose mode", () => {
+    const display = buildToolCallDisplayModel({
+      name: "tag_message",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { agentIds: ["a", "b", "c"] },
+        output: { content: [], details: { recorded: true } },
+      },
+    });
+
+    expect(display.displayName).toBe("Tagged 3 agents");
+  });
+
+  it("keeps namespaced fleet tool names pretty", () => {
+    const display = buildToolCallDisplayModel({
+      name: "mcp__paseo__fleet_send_prompt",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { host: "macbook", agentId: "agent-1", prompt: "hi" },
+        output: null,
+      },
+    });
+
+    expect(display.displayName).toBe("→ Steered agent-1 (macbook)");
+  });
 });

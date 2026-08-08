@@ -35,6 +35,12 @@ export const DEFAULT_EXPLORER_FILES_SPLIT_RATIO = 0.38;
 export const MIN_EXPLORER_FILES_SPLIT_RATIO = 0.2;
 export const MAX_EXPLORER_FILES_SPLIT_RATIO = 0.8;
 
+// Mission Control board rail (drag-resizable, persisted). Default matches the
+// rail's historic hardcoded width; bounds keep the thread column readable.
+export const DEFAULT_BOARD_RAIL_WIDTH = 300;
+export const MIN_BOARD_RAIL_WIDTH = 240;
+export const MAX_BOARD_RAIL_WIDTH = 480;
+
 export interface PanelVisibilityState {
   isAgentListOpen: boolean;
   isFileExplorerOpen: boolean;
@@ -68,6 +74,10 @@ export function clampSidebarWidth(width: number): number {
 
 export function clampExplorerWidth(width: number): number {
   return clampNumber(width, MIN_EXPLORER_SIDEBAR_WIDTH, MAX_EXPLORER_SIDEBAR_WIDTH);
+}
+
+export function clampBoardRailWidth(width: number): number {
+  return clampNumber(width, MIN_BOARD_RAIL_WIDTH, MAX_BOARD_RAIL_WIDTH);
 }
 
 export function clampExplorerFilesSplitRatio(ratio: number): number {
@@ -246,6 +256,9 @@ export function migratePanelState(
   }
   if (version < 6 || typeof state.sidebarWidth !== "number") {
     state.sidebarWidth = DEFAULT_SIDEBAR_WIDTH;
+  }
+  if (typeof state.boardRailWidth !== "number") {
+    state.boardRailWidth = DEFAULT_BOARD_RAIL_WIDTH;
   }
   if (
     version < 9 ||

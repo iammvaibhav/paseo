@@ -1036,6 +1036,8 @@ export const ptBR: TranslationResources = {
       sessions: "Histórico",
       schedules: "Agendamentos",
       missionControl: "Mission Control",
+      missionControlWorking: "Agentes em atividade",
+      missionControlReady: "Prontos para revisão",
       webhooks: "Webhooks",
     },
     worktreeSetup: {
@@ -1795,6 +1797,7 @@ export const ptBR: TranslationResources = {
       integrations: "Integrações",
       permissions: "Permissões",
       diagnostics: "Diagnósticos",
+      missionControl: "Mission Control",
       about: "Sobre",
     },
     editor: {
@@ -2398,6 +2401,9 @@ export const ptBR: TranslationResources = {
         useAutomatic: "Usar automático",
         imageUrl: "URL de imagem ou site",
         save: "Salvar alterações",
+        description: "Description",
+        descriptionLabel: "Project description",
+        descriptionPlaceholder: "What this project is for",
         savedToast: "Projeto atualizado",
       },
       readFailures: {

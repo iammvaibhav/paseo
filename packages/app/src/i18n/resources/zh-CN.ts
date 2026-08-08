@@ -1006,6 +1006,8 @@ export const zhCN: TranslationResources = {
       sessions: "历史",
       schedules: "计划",
       missionControl: "Mission Control",
+      missionControlWorking: "工作代理",
+      missionControlReady: "待审查",
       webhooks: "Webhooks",
     },
     worktreeSetup: {
@@ -1746,6 +1748,7 @@ export const zhCN: TranslationResources = {
       integrations: "集成",
       permissions: "权限",
       diagnostics: "诊断",
+      missionControl: "Mission Control",
       about: "关于",
     },
     editor: {
@@ -2334,6 +2337,9 @@ export const zhCN: TranslationResources = {
         useAutomatic: "使用自动",
         imageUrl: "图片或网站 URL",
         save: "保存更改",
+        description: "Description",
+        descriptionLabel: "Project description",
+        descriptionPlaceholder: "What this project is for",
         savedToast: "Project 已更新",
       },
       readFailures: {

@@ -1036,6 +1036,8 @@ export const ru: TranslationResources = {
       sessions: "История",
       schedules: "Расписания",
       missionControl: "Mission Control",
+      missionControlWorking: "Активные агенты",
+      missionControlReady: "Готовы к проверке",
       webhooks: "Webhooks",
     },
     worktreeSetup: {
@@ -1800,6 +1802,7 @@ export const ru: TranslationResources = {
       integrations: "Интеграции",
       permissions: "Разрешения",
       diagnostics: "Диагностика",
+      missionControl: "Mission Control",
       about: "О",
     },
     editor: {
@@ -2401,6 +2404,9 @@ export const ru: TranslationResources = {
         useAutomatic: "Использовать автоматический",
         imageUrl: "URL изображения или сайта",
         save: "Сохранить изменения",
+        description: "Description",
+        descriptionLabel: "Project description",
+        descriptionPlaceholder: "What this project is for",
         savedToast: "Проект обновлён",
       },
       readFailures: {

@@ -10,6 +10,7 @@ interface SettingsTextAreaProps {
   onChangeText: (text: string) => void;
   onBlur?: () => void;
   placeholder?: string;
+  editable?: boolean;
   testID?: string;
   style?: StyleProp<TextStyle>;
 }
@@ -20,6 +21,7 @@ export function SettingsTextArea({
   onChangeText,
   onBlur,
   placeholder,
+  editable = true,
   testID,
   style,
 }: SettingsTextAreaProps) {
@@ -36,6 +38,7 @@ export function SettingsTextArea({
       onBlur={onBlur}
       placeholder={placeholder}
       placeholderTextColor={theme.colors.foregroundMuted}
+      editable={editable}
       style={inputStyle}
     />
   );

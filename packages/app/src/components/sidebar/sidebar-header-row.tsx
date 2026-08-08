@@ -11,6 +11,14 @@ import type { ShortcutKey } from "@/utils/format-shortcut";
 const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const foregroundMutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
+export interface SidebarHeaderRowBadgeSegment {
+  /** Count shown in the pill; zero-count segments are omitted entirely. */
+  count: number;
+  /** Accessibility label for the segment. */
+  label: string;
+  testID: string;
+}
+
 type SidebarHeaderRowVariant = "header" | "compact";
 
 interface SidebarHeaderRowProps {
@@ -29,9 +37,10 @@ interface SidebarHeaderRowProps {
    */
   variant?: SidebarHeaderRowVariant;
   shortcutKeys?: ShortcutKey[][] | null;
-  /** Optional count pill rendered right-aligned (e.g. needs-you agents for
-   * Mission Control). Hidden when falsy/zero. */
-  badgeCount?: number;
+  /** Optional count pills rendered right-aligned (e.g. Mission Control's
+   * working / ready-for-review split). Zero-count segments are omitted;
+   * both segments show when both are nonzero. */
+  badgeSegments?: readonly SidebarHeaderRowBadgeSegment[];
 }
 
 export function SidebarHeaderRow({
@@ -44,7 +53,7 @@ export function SidebarHeaderRow({
   accessibilityLabel,
   variant = "header",
   shortcutKeys = null,
-  badgeCount,
+  badgeSegments,
 }: SidebarHeaderRowProps) {
   const ThemedIcon = useMemo(() => withUnistyles(Icon), [Icon]);
 
@@ -75,15 +84,21 @@ export function SidebarHeaderRow({
           {shortcutKeys && Boolean(state.hovered) ? (
             <Shortcut chord={shortcutKeys} style={styles.shortcut} />
           ) : null}
-          {typeof badgeCount === "number" && badgeCount > 0 ? (
-            <View style={styles.countBadge}>
-              <Text style={styles.countBadgeText}>{badgeCount}</Text>
+          {badgeSegments && badgeSegments.some((segment) => segment.count > 0) ? (
+            <View style={styles.countBadges}>
+              {badgeSegments
+                .filter((segment) => segment.count > 0)
+                .map((segment) => (
+                  <View key={segment.testID} style={styles.countBadge} testID={segment.testID}>
+                    <Text style={styles.countBadgeText}>{segment.count}</Text>
+                  </View>
+                ))}
             </View>
           ) : null}
         </>
       );
     },
-    [ThemedIcon, badgeCount, isActive, label, shortcutKeys],
+    [ThemedIcon, badgeSegments, isActive, label, shortcutKeys],
   );
 
   return (
@@ -168,8 +183,13 @@ const styles = StyleSheet.create((theme) => ({
   shortcut: {
     marginLeft: "auto",
   },
-  countBadge: {
+  countBadges: {
     marginLeft: "auto",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+  },
+  countBadge: {
     paddingHorizontal: theme.spacing[1],
     paddingVertical: 2,
     borderRadius: theme.borderRadius.md,

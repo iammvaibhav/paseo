@@ -161,6 +161,7 @@ function serializeAgent(agent: Agent): StoredAgent {
     ...(agent.lastError ? { lastError: agent.lastError } : {}),
     title: agent.title,
     ...(agent.name ? { name: agent.name } : {}),
+    ...(agent.shortDescription ? { shortDescription: agent.shortDescription } : {}),
     labels: agent.labels,
     requiresAttention: agent.requiresAttention ?? false,
     attentionReason: agent.attentionReason ?? null,

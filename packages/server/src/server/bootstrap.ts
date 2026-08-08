@@ -153,6 +153,10 @@ import { ScheduleService } from "./schedule/service.js";
 import { MissionControlService } from "./mission-control/service.js";
 import { MissionControlDigest } from "./mission-control/digest.js";
 import { createFleetContextDigestProvider } from "./mission-control/context.js";
+import { CentralMissionControlConfigStore } from "./mission-control/config.js";
+import { createMissionControlPresenceSource } from "./mission-control/presence.js";
+import { MissionControlVerifierDispatcher } from "./mission-control/verifier.js";
+import { ensureCommanderOnBoot } from "./mission-control/commander-boot.js";
 import { AgentNamingService } from "./mission-control/naming.js";
 import { runIdentityBackfill } from "./mission-control/backfill.js";
 import { MAX_WEBHOOK_BODY_BYTES, WebhookService } from "./webhook/service.js";
@@ -616,6 +620,255 @@ function createInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDae
   return initialConfig;
 }
 
+/**
+ * Agent control plane MCP endpoint (POST/GET/DELETE on /mcp/agents). The
+ * route is exempt from the daemon-password middleware and authenticates with
+ * the injected capability token or a valid daemon password. Stateless: each
+ * request builds a fresh server + transport torn down when the response
+ * closes.
+ */
+function mountAgentMcpEndpoint(input: {
+  app: express.Express;
+  config: PaseoDaemonConfig;
+  agentMcpAuthToken: string;
+  logger: Logger;
+  createAgentToolHostDependencies: (runtime: PaseoToolRuntimeContext) => PaseoToolHostDependencies;
+}): void {
+  const { app, config, agentMcpAuthToken, logger, createAgentToolHostDependencies } = input;
+  const mcpEnabled = config.mcpEnabled ?? true;
+  if (!mcpEnabled) {
+    logger.info("Agent MCP HTTP endpoint disabled");
+    return;
+  }
+  const agentMcpRoute = "/mcp/agents";
+
+  const createAgentMcpSession = async (callerAgentId?: string) => {
+    const agentMcpServer = await createAgentMcpServer(
+      createAgentToolHostDependencies({ callerAgentId }),
+    );
+
+    // Stateless mode: each HTTP request builds a fresh server + transport that is
+    // torn down when the response closes, so no per-session state is retained between
+    // requests. The agent control plane only lists and calls tools, neither of which
+    // needs cross-request state, so sessions would only pin memory for the life of the
+    // daemon (agents that exit without a clean DELETE never get reaped).
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      // NOTE: We enforce a Vite-like host allowlist at the app/websocket layer.
+      // StreamableHTTPServerTransport's built-in check requires exact Host header matches.
+      enableDnsRebindingProtection: false,
+    });
+    Object.assign(transport, {
+      onerror: (err: Error) => {
+        logger.error({ err }, "Agent MCP transport error");
+      },
+    });
+
+    await agentMcpServer.connect(transport);
+    return { server: agentMcpServer, transport };
+  };
+
+  const runAgentMcpRequest = async (req: express.Request, res: express.Response): Promise<void> => {
+    // This route is exempt from the global daemon-password middleware, so it
+    // authenticates here using the injected capability token (or a valid
+    // daemon password). Without this, a password-protected daemon would be
+    // wide open on its agent control plane.
+    if (
+      !(await isAgentMcpRequestAuthorized({
+        password: config.auth?.password,
+        capabilityToken: agentMcpAuthToken,
+        authorizationHeader: req.header("authorization"),
+      }))
+    ) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    if (config.mcpDebug) {
+      logger.debug(
+        {
+          method: req.method,
+          url: req.originalUrl,
+          sessionId: req.header("mcp-session-id"),
+          authorization: req.header("authorization") ? REDACTED_LOG_VALUE : undefined,
+          body: summarizeAgentMcpDebugBody(req.body),
+        },
+        "Agent MCP request",
+      );
+    }
+    try {
+      // Stateless: GET (standalone SSE) and DELETE (session termination) have no
+      // meaning without sessions. The MCP client tolerates 405 on the GET stream
+      // and never issues a DELETE because it is never handed a session id.
+      if (req.method !== "POST") {
+        res.status(405).json({
+          jsonrpc: "2.0",
+          error: {
+            code: -32000,
+            message: "Method not allowed",
+          },
+          id: null,
+        });
+        return;
+      }
+      const callerAgentIdRaw = req.query.callerAgentId;
+      let callerAgentId: string | undefined;
+      if (typeof callerAgentIdRaw === "string") {
+        callerAgentId = callerAgentIdRaw;
+      } else if (Array.isArray(callerAgentIdRaw) && typeof callerAgentIdRaw[0] === "string") {
+        callerAgentId = callerAgentIdRaw[0];
+      }
+      const { server, transport } = await createAgentMcpSession(callerAgentId);
+      res.on("close", () => {
+        void transport.close();
+        void server.close();
+      });
+
+      await transport.handleRequest(
+        req as unknown as IncomingMessage,
+        res as unknown as ServerResponse,
+        req.body,
+      );
+    } catch (err) {
+      logger.error({ err }, "Failed to handle Agent MCP request");
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: "2.0",
+          error: {
+            code: -32603,
+            message: "Internal MCP server error",
+          },
+          id: null,
+        });
+      }
+    }
+  };
+
+  const handleAgentMcpRequest: express.RequestHandler = (req, res) => {
+    void runAgentMcpRequest(req, res);
+  };
+
+  app.post(agentMcpRoute, handleAgentMcpRequest);
+  app.get(agentMcpRoute, handleAgentMcpRequest);
+  app.delete(agentMcpRoute, handleAgentMcpRequest);
+  logger.info({ route: agentMcpRoute }, "Agent MCP server mounted on main app");
+}
+
+/**
+ * Token-gated file download endpoint handler. Directory entries stream as a
+ * zip; files stream directly. Token is single-use (consumeToken).
+ */
+async function handleFileDownload(input: {
+  req: express.Request;
+  res: express.Response;
+  downloadTokenStore: DownloadTokenStore;
+  logger: Logger;
+}): Promise<void> {
+  const { req, res, downloadTokenStore, logger } = input;
+  const token =
+    typeof req.query.token === "string" && req.query.token.trim().length > 0
+      ? req.query.token.trim()
+      : null;
+
+  if (!token) {
+    res.status(400).json({ error: "Missing download token" });
+    return;
+  }
+
+  const entry = downloadTokenStore.consumeToken(token);
+  if (!entry) {
+    res.status(403).json({ error: "Invalid or expired token" });
+    return;
+  }
+
+  const safeFileName = entry.fileName.replace(/["\r\n]/g, "_");
+
+  // Directory downloads are streamed as a zip of the sandboxed folder.
+  if (entry.kind === "directory") {
+    try {
+      res.setHeader("Content-Type", entry.mimeType || "application/zip");
+      res.setHeader("Content-Disposition", `attachment; filename="${safeFileName}"`);
+      // No Content-Length: zip size is unknown until the archive is finished.
+      await streamDirectoryAsZip(entry.absolutePath, res);
+    } catch (err) {
+      logger.error({ err }, "Failed to stream directory zip download");
+      if (!res.headersSent) {
+        res.status(500).json({ error: "Failed to zip directory" });
+      } else {
+        res.end();
+      }
+    }
+    return;
+  }
+
+  let fileHandle: Awaited<ReturnType<typeof open>> | null = null;
+  try {
+    fileHandle = await open(entry.absolutePath, DOWNLOAD_OPEN_FLAGS);
+    const fileStats = await fileHandle.stat();
+    if (!fileStats.isFile()) {
+      res.status(404).json({ error: "File not found" });
+      return;
+    }
+
+    res.setHeader("Content-Type", entry.mimeType);
+    res.setHeader("Content-Disposition", `attachment; filename="${safeFileName}"`);
+    res.setHeader("Content-Length", fileStats.size.toString());
+
+    const stream = fileHandle.createReadStream();
+    fileHandle = null;
+    stream.on("error", (err) => {
+      logger.error({ err }, "Failed to stream download");
+      if (!res.headersSent) {
+        res.status(500).json({ error: "Failed to read file" });
+      } else {
+        res.end();
+      }
+    });
+    stream.pipe(res);
+  } catch (err) {
+    logger.error({ err }, "Failed to download file");
+    if (!res.headersSent) {
+      res.status(404).json({ error: "File not found" });
+    }
+  } finally {
+    await fileHandle?.close().catch(() => undefined);
+  }
+}
+
+/**
+ * Public webhook ingress route on /hooks/:id/:secret. The handler is
+ * assigned lazily once the webhook service is constructed; requests before
+ * that get a 503 so callers retry rather than hang.
+ */
+function createWebhookIngress(app: express.Express): {
+  setHandler: (handler: ReturnType<typeof createWebhookRouteHandler>) => void;
+} {
+  let handler: ReturnType<typeof createWebhookRouteHandler> | null = null;
+  app.post(
+    "/hooks/:id/:secret",
+    express.raw({ type: () => true, limit: MAX_WEBHOOK_BODY_BYTES }),
+    (req, res, next) => {
+      if (!handler) {
+        res.status(503).json({ ok: false, error: "webhook service not ready" });
+        return;
+      }
+      void handler(req, res, next);
+    },
+  );
+  return {
+    setHandler: (next) => {
+      handler = next;
+    },
+  };
+}
+
+function resolveServiceProxyPublicBaseUrl(config: PaseoDaemonConfig): string | null {
+  return config.serviceProxy?.publicBaseUrl ? config.serviceProxy.publicBaseUrl : null;
+}
+
+function resolveConfiguredHostnames(config: PaseoDaemonConfig): PaseoDaemonConfig["hostnames"] {
+  return config.hostnames ?? config.allowedHosts;
+}
+
 export async function createPaseoDaemon(
   config: PaseoDaemonConfig,
   rootLogger: Logger,
@@ -673,16 +926,14 @@ export async function createPaseoDaemon(
   });
   applyTerminalAgentHookSetting({ store: daemonConfigStore, logger });
 
-  const serviceProxyPublicBaseUrl = config.serviceProxy?.publicBaseUrl
-    ? config.serviceProxy.publicBaseUrl
-    : null;
+  const serviceProxyPublicBaseUrl = resolveServiceProxyPublicBaseUrl(config);
   const serviceProxy = createServiceProxySubsystem({
     logger,
     publicBaseUrl: serviceProxyPublicBaseUrl,
   });
   const scriptRuntimeStore = new WorkspaceScriptRuntimeStore();
   const workspaceSetupRuntime = new WorkspaceSetupRuntime();
-  const configuredHostnames = config.hostnames ?? config.allowedHosts;
+  const configuredHostnames = resolveConfiguredHostnames(config);
   let wsServer: VoiceAssistantWebSocketServer | null = null;
   let serviceProxyListenTarget: ListenTarget | null = null;
   const scriptHealthMonitor = new ScriptHealthMonitor({
@@ -719,18 +970,7 @@ export async function createPaseoDaemon(
   // HMAC can read the raw body. Only this path is exempt from the Host
   // allowlist; every other daemon path still rejects the public tunnel host.
   // The handler is assigned once the webhook service is constructed below.
-  let webhookRouteHandler: ReturnType<typeof createWebhookRouteHandler> | null = null;
-  app.post(
-    "/hooks/:id/:secret",
-    express.raw({ type: () => true, limit: MAX_WEBHOOK_BODY_BYTES }),
-    (req, res, next) => {
-      if (!webhookRouteHandler) {
-        res.status(503).json({ ok: false, error: "webhook service not ready" });
-        return;
-      }
-      void webhookRouteHandler(req, res, next);
-    },
-  );
+  const webhookIngress = createWebhookIngress(app);
 
   // Host allowlist / DNS rebinding protection (vite-like semantics).
   // For non-TCP (unix sockets), skip host validation.
@@ -792,79 +1032,13 @@ export async function createPaseoDaemon(
     });
   });
 
-  const handleFileDownload = async (req: express.Request, res: express.Response): Promise<void> => {
-    const token =
-      typeof req.query.token === "string" && req.query.token.trim().length > 0
-        ? req.query.token.trim()
-        : null;
-
-    if (!token) {
-      res.status(400).json({ error: "Missing download token" });
-      return;
-    }
-
-    const entry = downloadTokenStore.consumeToken(token);
-    if (!entry) {
-      res.status(403).json({ error: "Invalid or expired token" });
-      return;
-    }
-
-    const safeFileName = entry.fileName.replace(/["\r\n]/g, "_");
-
-    // Directory downloads are streamed as a zip of the sandboxed folder.
-    if (entry.kind === "directory") {
-      try {
-        res.setHeader("Content-Type", entry.mimeType || "application/zip");
-        res.setHeader("Content-Disposition", `attachment; filename="${safeFileName}"`);
-        // No Content-Length: zip size is unknown until the archive is finished.
-        await streamDirectoryAsZip(entry.absolutePath, res);
-      } catch (err) {
-        logger.error({ err }, "Failed to stream directory zip download");
-        if (!res.headersSent) {
-          res.status(500).json({ error: "Failed to zip directory" });
-        } else {
-          res.end();
-        }
-      }
-      return;
-    }
-
-    let fileHandle: Awaited<ReturnType<typeof open>> | null = null;
-    try {
-      fileHandle = await open(entry.absolutePath, DOWNLOAD_OPEN_FLAGS);
-      const fileStats = await fileHandle.stat();
-      if (!fileStats.isFile()) {
-        res.status(404).json({ error: "File not found" });
-        return;
-      }
-
-      res.setHeader("Content-Type", entry.mimeType);
-      res.setHeader("Content-Disposition", `attachment; filename="${safeFileName}"`);
-      res.setHeader("Content-Length", fileStats.size.toString());
-
-      const stream = fileHandle.createReadStream();
-      fileHandle = null;
-      stream.on("error", (err) => {
-        logger.error({ err }, "Failed to stream download");
-        if (!res.headersSent) {
-          res.status(500).json({ error: "Failed to read file" });
-        } else {
-          res.end();
-        }
-      });
-      stream.pipe(res);
-    } catch (err) {
-      logger.error({ err }, "Failed to download file");
-      if (!res.headersSent) {
-        res.status(404).json({ error: "File not found" });
-      }
-    } finally {
-      await fileHandle?.close().catch(() => undefined);
-    }
-  };
-
   app.get("/api/files/download", (req, res) => {
-    void handleFileDownload(req, res);
+    void handleFileDownload({
+      req,
+      res,
+      downloadTokenStore,
+      logger,
+    });
   });
 
   const httpServer = createHTTPServer(app);
@@ -1364,6 +1538,15 @@ export async function createPaseoDaemon(
   });
   logger.info({ elapsed: elapsed() }, "Schedule service initialized");
 
+  // Central mission-control config (fleet policy, stored on the commander
+  // host). Boot-ensure and the digest's context provider read it; the
+  // MissionControlService keeps its own instance for writes.
+  const centralMissionControlConfig = new CentralMissionControlConfigStore({
+    paseoHome: config.paseoHome,
+    logger,
+  });
+  await centralMissionControlConfig.initialize();
+
   const missionControlDigest: MissionControlDigest = new MissionControlDigest({
     agentManager,
     agentStorage,
@@ -1378,12 +1561,53 @@ export async function createPaseoDaemon(
       providerSnapshotManager,
       peerManager: () => peerManager,
       daemonConfigStore,
+      centralConfig: centralMissionControlConfig,
+      getReviewStates: () => missionControlService.getReviewStates(),
+      getReportEvents: () => missionControlService.fetchEvents(),
       serverId,
       hostName: getHostname(),
       logger,
     }),
   });
-  const missionControlService = new MissionControlService({
+  // Hoisted: the verifier dispatcher and the presence source capture the
+  // service in closures that run only after boot, but TypeScript needs the
+  // binding declared before those initializers reference it.
+  let missionControlService: MissionControlService;
+  const verifierDispatcher = new MissionControlVerifierDispatcher({
+    logger,
+    agentManager,
+    agentStorage,
+    serverId,
+    hostName: getHostname(),
+    getCentralConfig: () => missionControlService.getCentralConfig(),
+    subscribeReviewState: (callback) =>
+      missionControlService.subscribeReviewState((agentId, record) =>
+        callback(agentId, record.reviewState),
+      ),
+    getReadyForReview: () => {
+      const events = missionControlService.fetchEvents();
+      const lastEventTsByAgent = new Map<string, string>();
+      for (const event of events) {
+        if (!lastEventTsByAgent.has(event.agentId)) {
+          lastEventTsByAgent.set(event.agentId, event.ts);
+        }
+      }
+      return missionControlService.getReadyForReview().map((agentId) => ({
+        agentId,
+        title: agentManager.getAgent(agentId)?.name ?? agentId,
+        at: lastEventTsByAgent.get(agentId) ?? new Date().toISOString(),
+      }));
+    },
+    fetchEvents: (options) => missionControlService.fetchEvents(options),
+    listMessageTags: () => missionControlService.allMessageTags(),
+    createProposal: (input) => missionControlService.approvals.createProposal(input),
+    onProposalChange: (callback) => missionControlService.onProposalChange(callback),
+    subscribeSelfReports: (callback) => missionControlService.subscribeSelfReports(callback),
+    setReviewState: (agentId, state, options) =>
+      missionControlService.setReviewState(agentId, state, options),
+    publish: (input) => missionControlService.publishEvent(input),
+  });
+  missionControlService = new MissionControlService({
     paseoHome: config.paseoHome,
     logger,
     agentManager,
@@ -1393,10 +1617,54 @@ export async function createPaseoDaemon(
     hostName: getHostname(),
     broadcast: (message) => wsServer?.broadcast(wrapSessionMessage(message)),
     digest: missionControlDigest,
+    presence: createMissionControlPresenceSource({
+      isAgentFocused: (agentId) => wsServer?.anyClientFocusedOnAgent(agentId) ?? false,
+      readStopOrigin: (agentId) => missionControlService.getStopOrigin(agentId) ?? null,
+    }),
+    verifier: verifierDispatcher,
   });
   await missionControlService.start();
   missionControlDigest.start();
   logger.info({ elapsed: elapsed() }, "Mission control service initialized");
+
+  // Boot-ensure the fleet Commander (spec: daemon boot creates it when this
+  // host is the designated commander host and none exists). Fire-and-forget:
+  // creation must not block boot; failures are logged, not fatal.
+  void ensureCommanderOnBoot({
+    logger,
+    agentManager,
+    agentStorage,
+    providerSnapshotManager,
+    createAgent,
+    centralConfig: () => centralMissionControlConfig.get(),
+    hostName: getHostname(),
+    hostAlias: daemonConfigStore.get().missionControl?.hostAlias?.trim() || null,
+    launchContext: {
+      agentManager,
+      agentStorage,
+      workspaceRegistry,
+      projectRegistry,
+      providerSnapshotManager,
+      peerManager: () => peerManager,
+      daemonConfigStore,
+      centralConfig: centralMissionControlConfig,
+      serverId,
+      hostName: getHostname(),
+      logger,
+    },
+  })
+    .then((result) => {
+      if (result.created) {
+        logger.info({ component: "boot", agentId: result.agentId }, "Commander ensured on boot");
+      }
+      return result;
+    })
+    .catch((error) => {
+      logger.warn(
+        { err: error, component: "boot" },
+        "mission_control.boot.ensure_failed — Commander creation deferred",
+      );
+    });
 
   // Identity backfill: names for agents missing one (free), descriptions for
   // closed agents and titles for untitled workspaces via the structured
@@ -1460,7 +1728,7 @@ export async function createPaseoDaemon(
     getTunnelProvider: () => tunnelManager.getProvider(),
     getTunnelStatus: () => tunnelManager.getStatus(),
   });
-  webhookRouteHandler = createWebhookRouteHandler(webhookService, logger);
+  webhookIngress.setHandler(createWebhookRouteHandler(webhookService, logger));
 
   logger.info({ elapsed: elapsed() }, "Loading persisted agent registry");
   const persistedRecords = await agentStorage.list();
@@ -1525,10 +1793,12 @@ export async function createPaseoDaemon(
     browserToolsBroker,
     peerManager,
     missionControlService,
+    verifierDispatcher,
     serverId,
     paseoHome: config.paseoHome,
     worktreesRoot: config.worktreesRoot,
     callerAgentId: runtime.callerAgentId,
+    callerLabels: runtime.callerLabels,
     enableVoiceTools: runtime.enableVoiceTools,
     voiceOnly: runtime.voiceOnly,
     resolveSpeakHandler: (agentId) => wsServer?.resolveVoiceSpeakHandler(agentId) ?? null,
@@ -1542,124 +1812,13 @@ export async function createPaseoDaemon(
 
   const mcpEnabled = config.mcpEnabled ?? true;
   let agentMcpBaseUrl: string | null = null;
-  if (mcpEnabled) {
-    const agentMcpRoute = "/mcp/agents";
-
-    const createAgentMcpSession = async (callerAgentId?: string) => {
-      const agentMcpServer = await createAgentMcpServer(
-        createAgentToolHostDependencies({ callerAgentId }),
-      );
-
-      // Stateless mode: each HTTP request builds a fresh server + transport that is
-      // torn down when the response closes, so no per-session state is retained between
-      // requests. The agent control plane only lists and calls tools, neither of which
-      // needs cross-request state, so sessions would only pin memory for the life of the
-      // daemon (agents that exit without a clean DELETE never get reaped).
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: undefined,
-        // NOTE: We enforce a Vite-like host allowlist at the app/websocket layer.
-        // StreamableHTTPServerTransport's built-in check requires exact Host header matches.
-        enableDnsRebindingProtection: false,
-      });
-      Object.assign(transport, {
-        onerror: (err: Error) => {
-          logger.error({ err }, "Agent MCP transport error");
-        },
-      });
-
-      await agentMcpServer.connect(transport);
-      return { server: agentMcpServer, transport };
-    };
-
-    const runAgentMcpRequest = async (
-      req: express.Request,
-      res: express.Response,
-    ): Promise<void> => {
-      // This route is exempt from the global daemon-password middleware, so it
-      // authenticates here using the injected capability token (or a valid
-      // daemon password). Without this, a password-protected daemon would be
-      // wide open on its agent control plane.
-      if (
-        !(await isAgentMcpRequestAuthorized({
-          password: config.auth?.password,
-          capabilityToken: agentMcpAuthToken,
-          authorizationHeader: req.header("authorization"),
-        }))
-      ) {
-        res.status(401).json({ error: "Unauthorized" });
-        return;
-      }
-      if (config.mcpDebug) {
-        logger.debug(
-          {
-            method: req.method,
-            url: req.originalUrl,
-            sessionId: req.header("mcp-session-id"),
-            authorization: req.header("authorization") ? REDACTED_LOG_VALUE : undefined,
-            body: summarizeAgentMcpDebugBody(req.body),
-          },
-          "Agent MCP request",
-        );
-      }
-      try {
-        // Stateless: GET (standalone SSE) and DELETE (session termination) have no
-        // meaning without sessions. The MCP client tolerates 405 on the GET stream
-        // and never issues a DELETE because it is never handed a session id.
-        if (req.method !== "POST") {
-          res.status(405).json({
-            jsonrpc: "2.0",
-            error: {
-              code: -32000,
-              message: "Method not allowed",
-            },
-            id: null,
-          });
-          return;
-        }
-        const callerAgentIdRaw = req.query.callerAgentId;
-        let callerAgentId: string | undefined;
-        if (typeof callerAgentIdRaw === "string") {
-          callerAgentId = callerAgentIdRaw;
-        } else if (Array.isArray(callerAgentIdRaw) && typeof callerAgentIdRaw[0] === "string") {
-          callerAgentId = callerAgentIdRaw[0];
-        }
-        const { server, transport } = await createAgentMcpSession(callerAgentId);
-        res.on("close", () => {
-          void transport.close();
-          void server.close();
-        });
-
-        await transport.handleRequest(
-          req as unknown as IncomingMessage,
-          res as unknown as ServerResponse,
-          req.body,
-        );
-      } catch (err) {
-        logger.error({ err }, "Failed to handle Agent MCP request");
-        if (!res.headersSent) {
-          res.status(500).json({
-            jsonrpc: "2.0",
-            error: {
-              code: -32603,
-              message: "Internal MCP server error",
-            },
-            id: null,
-          });
-        }
-      }
-    };
-
-    const handleAgentMcpRequest: express.RequestHandler = (req, res) => {
-      void runAgentMcpRequest(req, res);
-    };
-
-    app.post(agentMcpRoute, handleAgentMcpRequest);
-    app.get(agentMcpRoute, handleAgentMcpRequest);
-    app.delete(agentMcpRoute, handleAgentMcpRequest);
-    logger.info({ route: agentMcpRoute }, "Agent MCP server mounted on main app");
-  } else {
-    logger.info("Agent MCP HTTP endpoint disabled");
-  }
+  mountAgentMcpEndpoint({
+    app,
+    config,
+    agentMcpAuthToken,
+    logger,
+    createAgentToolHostDependencies,
+  });
 
   const speechService = createSpeechService({
     logger,

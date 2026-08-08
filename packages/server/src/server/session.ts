@@ -48,6 +48,7 @@ import type { ImportedTimelineEntry } from "./agent/agent-sdk-types.js";
 import {
   formatSystemNotificationPrompt,
   sendPromptToAgent,
+  startAgentRun,
   waitForAgentRunStartWithTimeout,
   unarchiveAgentState,
 } from "./agent/agent-prompt.js";
@@ -114,6 +115,7 @@ import {
   type TimelineProjectionMode,
 } from "./agent/timeline-projection.js";
 import { buildAgentForkContextAttachment } from "./agent/activity-curator.js";
+import type { AgentPromptInput } from "./agent/agent-sdk-types.js";
 import { buildAgentPrompt } from "./agent/prompt-attachments.js";
 import type { StructuredGenerationDaemonConfig } from "./agent/structured-generation-providers.js";
 import {
@@ -170,15 +172,12 @@ import { WebhookSession } from "./session/webhook/webhook-session.js";
 import type { WebhookService } from "./webhook/service.js";
 import type { PeerManager } from "./peers/peer-manager.js";
 import type { MissionControlService } from "./mission-control/service.js";
+import { buildCommanderLaunchConfig, buildLocalContextPayload } from "./mission-control/context.js";
 import {
-  buildCommanderLaunchSystemPrompt,
-  buildLocalContextPayload,
-} from "./mission-control/context.js";
-import {
-  DEFAULT_COMMANDER_CONTRACT,
   MISSION_CONTROL_LABEL_KEY,
   MISSION_CONTROL_LABEL_VALUE,
 } from "./mission-control/commander-contract.js";
+import { resolveMissionControlMediaFetch } from "./mission-control/media.js";
 import { PlannotatorSession } from "./session/plannotator/plannotator-session.js";
 import { ProviderCatalogSession } from "./session/provider/provider-catalog-session.js";
 import { WorkspaceFilesSession } from "./session/files/workspace-files-session.js";
@@ -384,6 +383,8 @@ interface ResolvedSessionCreateAgentIntent {
   config: AgentSessionConfig;
   intent: CreateAgentIntent;
   createdDirectoryWorkspace: boolean;
+  /** Commander only: the context pack snapshot, delivered as the first message. */
+  firstMessage?: string;
 }
 
 type FetchWorkspacesRequestMessage = Extract<
@@ -1459,6 +1460,18 @@ export class Session {
     return this.agentManager.hasInFlightRun(agentId);
   }
 
+  /**
+   * Bounded wait for an agent to finish its in-flight turn. Used by
+   * dispatchMode "queue": the prompt streams only once the agent is idle,
+   * without ever interrupting.
+   */
+  private async waitForAgentIdle(agentId: string, timeoutMs = 60_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (this.agentManager.hasInFlightRun(agentId) && Date.now() < deadline) {
+      await new Promise((done) => setTimeout(done, 250));
+    }
+  }
+
   private handleAgentRunError(agentId: string, error: unknown, context: string): void {
     const message = errorToFriendlyMessage(error);
     this.sessionLogger.error({ err: error, agentId, context }, `${context} for agent ${agentId}`);
@@ -1916,28 +1929,50 @@ export class Session {
     this.scopes = [...scopes];
   }
 
+  /**
+   * Inbound message routing: first dispatcher that claims the message wins.
+   * A table (not a `??` chain) so the mission-control RPC surface can keep
+   * growing without blowing the complexity budget.
+   */
+  private readonly inboundDispatchers: ReadonlyArray<
+    (msg: SessionInboundMessage, source?: object) => Promise<void> | undefined
+  > = [
+    (msg) => this.dispatchVoiceAndControlMessage(msg),
+    (msg) => this.dispatchAgentRewindMessage(msg),
+    (msg) => this.dispatchAgentRelationshipMessage(msg),
+    (msg, source) => this.dispatchAgentTimelineMessage(msg, source),
+    (msg) => this.dispatchHubExecutionMessage(msg),
+    (msg) => this.dispatchAgentLifecycleMessage(msg),
+    (msg) => this.dispatchProjectMessage(msg),
+    (msg) => this.dispatchAgentConfigMessage(msg),
+    (msg) => this.dispatchCheckoutMessage(msg),
+    (msg) => this.dispatchWorkspaceRecoveryMessage(msg),
+    (msg) => this.dispatchWorkspaceAndProjectMessage(msg),
+    (msg, source) => this.dispatchWorkspaceFileMessage(msg, source),
+    (msg) => this.dispatchProviderMessage(msg),
+    (msg) => this.dispatchTerminalMessage(msg),
+    (msg) => this.dispatchChatScheduleLoopMessage(msg),
+    (msg) => this.dispatchPlannotatorMessage(msg),
+    (msg) => this.dispatchMissionControlPeersMessage(msg),
+    (msg) => this.dispatchMissionControlEventsMessage(msg),
+    (msg) => this.dispatchMissionControlContextMessage(msg),
+    (msg) => this.dispatchMissionControlLifecycleMessage(msg),
+    (msg) => this.dispatchMissionControlProposalsMessage(msg),
+    (msg) => this.dispatchMissionControlModeMessage(msg),
+    (msg) => this.dispatchMissionControlConfigMessage(msg),
+    (msg) => this.dispatchMissionControlSearchMessage(msg),
+    (msg) => this.dispatchMissionControlMediaMessage(msg),
+    (msg) => this.dispatchMiscMessage(msg),
+  ];
+
   private async dispatchInboundMessage(msg: SessionInboundMessage, source?: object): Promise<void> {
-    const promise =
-      this.dispatchVoiceAndControlMessage(msg) ??
-      this.dispatchAgentRewindMessage(msg) ??
-      this.dispatchAgentRelationshipMessage(msg) ??
-      this.dispatchAgentTimelineMessage(msg, source) ??
-      this.dispatchHubExecutionMessage(msg) ??
-      this.dispatchAgentLifecycleMessage(msg) ??
-      this.dispatchAgentConfigMessage(msg) ??
-      this.dispatchCheckoutMessage(msg) ??
-      this.dispatchWorkspaceRecoveryMessage(msg) ??
-      this.dispatchWorkspaceAndProjectMessage(msg) ??
-      this.dispatchWorkspaceFileMessage(msg, source) ??
-      this.dispatchProviderMessage(msg) ??
-      this.dispatchTerminalMessage(msg) ??
-      this.dispatchChatScheduleLoopMessage(msg) ??
-      this.dispatchPlannotatorMessage(msg) ??
-      this.dispatchMissionControlPeersMessage(msg) ??
-      this.dispatchMissionControlEventsMessage(msg) ??
-      this.dispatchMissionControlContextMessage(msg) ??
-      this.dispatchMiscMessage(msg);
-    if (promise) await promise;
+    for (const dispatcher of this.inboundDispatchers) {
+      const promise = dispatcher(msg, source);
+      if (promise) {
+        await promise;
+        return;
+      }
+    }
   }
 
   private dispatchPlannotatorMessage(msg: SessionInboundMessage): Promise<void> | undefined {
@@ -1993,6 +2028,7 @@ export class Session {
     const events =
       this.missionControlService?.fetchEvents({
         sinceTs: msg.sinceTs,
+        beforeSeq: msg.beforeSeq,
         limit: msg.limit,
       }) ?? [];
     this.emit({
@@ -2031,12 +2067,260 @@ export class Session {
       providerSnapshotManager: this.providerSnapshotManager,
       agentManager: this.agentManager,
       agentStorage: this.agentStorage,
+      daemonConfigStore: this.daemonConfigStore,
       serverId: this.serverId,
     });
     this.emit({
       type: "mission_control.context.fetch.response",
       payload: { requestId: msg.requestId, ...payload },
     });
+  }
+
+  private dispatchMissionControlLifecycleMessage(
+    msg: SessionInboundMessage,
+  ): Promise<void> | undefined {
+    switch (msg.type) {
+      case "mission_control.lifecycle.set.request":
+        return this.handleMissionControlLifecycleSetRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  private async handleMissionControlLifecycleSetRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.lifecycle.set.request" }>,
+  ): Promise<void> {
+    const result = this.missionControlService
+      ? await this.missionControlService.setLifecycle({
+          agentId: msg.agentId,
+          action: msg.action,
+        })
+      : { ok: false as const, error: "Mission Control is not enabled on this host" };
+    this.emit({
+      type: "mission_control.lifecycle.set.response",
+      payload: {
+        requestId: msg.requestId,
+        ok: result.ok,
+        ...(result.ok ? {} : { error: result.error }),
+      },
+    });
+  }
+
+  private dispatchMissionControlProposalsMessage(
+    msg: SessionInboundMessage,
+  ): Promise<void> | undefined {
+    switch (msg.type) {
+      case "mission_control.proposals.respond.request":
+        return this.handleMissionControlProposalsRespondRequest(msg);
+      case "mission_control.proposals.create.request":
+        return this.handleMissionControlProposalsCreateRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  private async handleMissionControlProposalsCreateRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.proposals.create.request" }>,
+  ): Promise<void> {
+    const result = this.missionControlService
+      ? await this.missionControlService.createBackfillProposalCard({
+          message: msg.message,
+          reason: msg.reason,
+          targetAgentId: msg.targetAgentId ?? null,
+        })
+      : { ok: false as const, error: "Mission Control is not enabled on this host" };
+    this.emit({
+      type: "mission_control.proposals.create.response",
+      payload: {
+        requestId: msg.requestId,
+        ok: result.ok,
+        ...(result.ok ? { proposalId: result.proposalId } : { error: result.error }),
+      },
+    });
+  }
+
+  private async handleMissionControlProposalsRespondRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.proposals.respond.request" }>,
+  ): Promise<void> {
+    const result = this.missionControlService
+      ? await this.missionControlService.respondProposal({
+          proposalId: msg.proposalId,
+          action: msg.action,
+          editedMessage: msg.editedMessage,
+          allowPair: msg.allowPair,
+        })
+      : { ok: false as const, error: "Mission Control is not enabled on this host" };
+    this.emit({
+      type: "mission_control.proposals.respond.response",
+      payload: {
+        requestId: msg.requestId,
+        ok: result.ok,
+        ...(result.ok ? {} : { error: result.error }),
+      },
+    });
+  }
+
+  private dispatchMissionControlModeMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    switch (msg.type) {
+      case "mission_control.mode.set.request":
+        return this.handleMissionControlModeSetRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  private async handleMissionControlModeSetRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.mode.set.request" }>,
+  ): Promise<void> {
+    try {
+      if (!this.missionControlService) {
+        throw new Error("Mission Control is not enabled on this host");
+      }
+      await this.missionControlService.setMode(msg.mode);
+      this.emit({
+        type: "mission_control.mode.set.response",
+        payload: { requestId: msg.requestId, ok: true },
+      });
+    } catch (error) {
+      this.emit({
+        type: "mission_control.mode.set.response",
+        payload: {
+          requestId: msg.requestId,
+          ok: false,
+          error: getErrorMessageOr(error, "Failed to set Mission Control mode"),
+        },
+      });
+    }
+  }
+
+  private dispatchMissionControlConfigMessage(
+    msg: SessionInboundMessage,
+  ): Promise<void> | undefined {
+    switch (msg.type) {
+      case "mission_control.config.get.request":
+        return this.handleMissionControlConfigGetRequest(msg);
+      case "mission_control.config.patch.request":
+        return this.handleMissionControlConfigPatchRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  private async handleMissionControlConfigGetRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.config.get.request" }>,
+  ): Promise<void> {
+    this.emit({
+      type: "mission_control.config.get.response",
+      payload: {
+        requestId: msg.requestId,
+        config: this.missionControlService?.getCentralConfig() ?? {},
+      },
+    });
+  }
+
+  private async handleMissionControlConfigPatchRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.config.patch.request" }>,
+  ): Promise<void> {
+    try {
+      if (!this.missionControlService) {
+        throw new Error("Mission Control is not enabled on this host");
+      }
+      const config = await this.missionControlService.patchCentralConfig(msg.patch);
+      this.emit({
+        type: "mission_control.config.patch.response",
+        payload: { requestId: msg.requestId, config, ok: true },
+      });
+    } catch (error) {
+      this.emit({
+        type: "mission_control.config.patch.response",
+        payload: {
+          requestId: msg.requestId,
+          config: this.missionControlService?.getCentralConfig() ?? {},
+          ok: false,
+          error: getErrorMessageOr(error, "Failed to patch Mission Control config"),
+        },
+      });
+    }
+  }
+
+  private dispatchMissionControlSearchMessage(
+    msg: SessionInboundMessage,
+  ): Promise<void> | undefined {
+    switch (msg.type) {
+      case "mission_control.search.request":
+        return this.handleMissionControlSearchRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  private dispatchMissionControlMediaMessage(
+    msg: SessionInboundMessage,
+  ): Promise<void> | undefined {
+    switch (msg.type) {
+      case "mission_control.media.fetch.request":
+        return this.handleMissionControlMediaFetchRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  private async handleMissionControlMediaFetchRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.media.fetch.request" }>,
+  ): Promise<void> {
+    const result = await resolveMissionControlMediaFetch({
+      host: msg.host,
+      path: msg.path,
+      peerManager: this.peerManager,
+      logger: this.sessionLogger,
+    });
+    this.emit({
+      type: "mission_control.media.fetch.response",
+      payload: {
+        requestId: msg.requestId,
+        ok: result.ok,
+        ...(result.error ? { error: result.error } : {}),
+        ...(result.mimeType ? { mimeType: result.mimeType } : {}),
+        ...(result.fileName ? { fileName: result.fileName } : {}),
+        ...(typeof result.sizeBytes === "number" ? { sizeBytes: result.sizeBytes } : {}),
+        ...(result.data ? { data: result.data } : {}),
+      },
+    });
+  }
+
+  private async handleMissionControlSearchRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.search.request" }>,
+  ): Promise<void> {
+    try {
+      const { runFleetSearchHost } = await import("./mission-control/search.js");
+      const matches = await runFleetSearchHost({
+        query: msg.query,
+        ...(msg.limit !== undefined ? { limit: msg.limit } : {}),
+        ...(msg.deep !== undefined ? { deep: msg.deep } : {}),
+        deps: {
+          agentManager: this.agentManager,
+          agentStorage: this.agentStorage,
+          missionControlService: this.missionControlService,
+          workspaceRegistry: this.workspaceRegistry,
+          projectRegistry: this.projectRegistry,
+          logger: this.sessionLogger,
+          serverId: this.serverId,
+        },
+      });
+      this.emit({
+        type: "mission_control.search.response",
+        payload: { requestId: msg.requestId, matches },
+      });
+    } catch (error) {
+      this.emit({
+        type: "mission_control.search.response",
+        payload: {
+          requestId: msg.requestId,
+          matches: [],
+          error: getErrorMessageOr(error, "Failed to run Mission Control search"),
+        },
+      });
+    }
   }
 
   private dispatchVoiceAndControlMessage(msg: SessionInboundMessage): Promise<void> | undefined {
@@ -2181,16 +2465,14 @@ export class Session {
         return this.handleUpdateAgentRequest(
           msg.agentId,
           msg.name,
+          msg.title,
+          msg.shortDescription,
           msg.labels,
           msg.provider,
           msg.model,
           msg.modeId,
           msg.requestId,
         );
-      case "project.rename.request":
-        return this.handleProjectRenameRequest(msg.projectId, msg.customName, msg.requestId);
-      case "project.icon.set.request":
-        return this.handleProjectIconSetRequest(msg);
       case "send_agent_message_request":
         return this.handleSendAgentMessageRequest(msg);
       case "wait_for_finish_request":
@@ -2209,6 +2491,19 @@ export class Session {
         return this.handleAgentPermissionResponse(msg.agentId, msg.requestId, msg.response);
       case "clear_agent_attention":
         return this.handleClearAgentAttention(msg.agentId, msg.requestId);
+      default:
+        return undefined;
+    }
+  }
+
+  private dispatchProjectMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    switch (msg.type) {
+      case "project.rename.request":
+        return this.handleProjectRenameRequest(msg.projectId, msg.customName, msg.requestId);
+      case "project.description.set.request":
+        return this.handleProjectDescriptionSetRequest(msg);
+      case "project.icon.set.request":
+        return this.handleProjectIconSetRequest(msg);
       default:
         return undefined;
     }
@@ -2820,6 +3115,8 @@ export class Session {
   private async handleUpdateAgentRequest(
     agentId: string,
     name: string | undefined,
+    title: string | undefined,
+    shortDescription: string | undefined,
     labels: Record<string, string> | undefined,
     provider: string | undefined,
     model: string | null | undefined,
@@ -2831,6 +3128,8 @@ export class Session {
         agentId,
         requestId,
         hasName: typeof name === "string",
+        hasTitle: typeof title === "string",
+        hasShortDescription: typeof shortDescription === "string",
         labelCount: labels ? Object.keys(labels).length : 0,
         provider,
         model,
@@ -2842,7 +3141,7 @@ export class Session {
     try {
       const result = await updateAgentCommand(
         { agentManager: this.agentManager },
-        { agentId, name, labels, provider, model, modeId },
+        { agentId, name, title, shortDescription, labels, provider, model, modeId },
       );
 
       if (!result.accepted) {
@@ -2970,6 +3269,73 @@ export class Session {
           accepted: false,
           customName: null,
           error: getErrorMessageOr(error, "Failed to rename project"),
+        },
+      });
+    }
+  }
+
+  private async handleProjectDescriptionSetRequest(
+    request: Extract<SessionInboundMessage, { type: "project.description.set.request" }>,
+  ): Promise<void> {
+    const { projectId, requestId } = request;
+    this.sessionLogger.info(
+      { projectId, requestId, hasDescription: typeof request.description === "string" },
+      "session: project.description.set.request",
+    );
+    try {
+      const existing = await this.projectRegistry.get(projectId);
+      if (!existing) {
+        this.emit({
+          type: "project.description.set.response",
+          payload: {
+            requestId,
+            projectId,
+            accepted: false,
+            description: null,
+            error: "Project not found",
+          },
+        });
+        return;
+      }
+      const trimmed = request.description?.trim() ?? "";
+      const nextDescription = trimmed.length === 0 ? null : trimmed;
+      const updated = {
+        ...existing,
+        description: nextDescription,
+        updatedAt: new Date().toISOString(),
+      };
+      await this.projectRegistry.upsert(updated);
+      this.emit({
+        type: "project.description.set.response",
+        payload: {
+          requestId,
+          projectId,
+          accepted: true,
+          description: nextDescription,
+          error: null,
+        },
+      });
+      this.emitProjectUpdate({ kind: "upsert", project: updated });
+      const workspaces = await this.workspaceRegistry.list();
+      const affectedWorkspaceIds = workspaces
+        .filter((workspace) => workspace.projectId === projectId)
+        .map((workspace) => workspace.workspaceId);
+      if (affectedWorkspaceIds.length > 0) {
+        await this.emitWorkspaceUpdatesForWorkspaceIds(affectedWorkspaceIds);
+      }
+    } catch (error) {
+      this.sessionLogger.error(
+        { err: error, projectId, requestId },
+        "session: project.description.set.request error",
+      );
+      this.emit({
+        type: "project.description.set.response",
+        payload: {
+          requestId,
+          projectId,
+          accepted: false,
+          description: null,
+          error: getErrorMessageOr(error, "Failed to set project description"),
         },
       });
     }
@@ -3411,6 +3777,12 @@ export class Session {
         throw new Error(`Working directory does not exist or is not a directory: ${resolvedCwd}`);
       }
 
+      // Commander: the context pack snapshot is the first conversation message;
+      // a caller-supplied initial prompt (unusual for the Commander) follows it.
+      const effectiveInitialPrompt = resolvedIntent.firstMessage
+        ? resolvedIntent.firstMessage + (trimmedPrompt ? `\n\n${trimmedPrompt}` : "")
+        : initialPrompt;
+
       const { snapshot, liveSnapshot } = await createAgentCommand(
         {
           agentManager: this.agentManager,
@@ -3425,7 +3797,7 @@ export class Session {
           config: resolvedIntent.config,
           workspaceId: resolvedIntent.intent.workspaceId,
           worktreeName,
-          initialPrompt,
+          initialPrompt: effectiveInitialPrompt,
           clientMessageId,
           outputSchema,
           images,
@@ -3545,30 +3917,37 @@ export class Session {
     });
     config = { ...config, cwd: intent.cwd };
 
-    // The Commander's system prompt is built server-side at create time: the
-    // context pack lives on the daemon, so every (re)launch gets a fresh
-    // worldview instead of a stale app-side brief. Replace mode keeps the
-    // built prompt out from under omp's coding harness.
+    // The Commander's system prompt is static and built server-side at create
+    // time: the bundled commander-prompt.md plus central commanderInstructions.
+    // The fleet worldview is NOT in the prompt — it is snapshotted as the
+    // first conversation message (context pack), re-injected by digests after
+    // compaction or session restart.
     if (intent.labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE) {
-      const contract =
-        this.daemonConfigStore.get().missionControl?.commanderInstructions?.trim() ||
-        DEFAULT_COMMANDER_CONTRACT;
+      const launch = await buildCommanderLaunchConfig({
+        agentManager: this.agentManager,
+        agentStorage: this.agentStorage,
+        workspaceRegistry: this.workspaceRegistry,
+        projectRegistry: this.projectRegistry,
+        providerSnapshotManager: this.providerSnapshotManager,
+        peerManager: this.peerManager,
+        daemonConfigStore: this.daemonConfigStore,
+        centralConfig: () => this.missionControlService?.getCentralConfig() ?? null,
+        getReviewStates: () => this.missionControlService?.getReviewStates() ?? null,
+        getReportEvents: () => this.missionControlService?.fetchEvents() ?? null,
+        serverId: this.serverId,
+        hostName: this.hostName,
+        logger: this.sessionLogger,
+      });
       config = {
         ...config,
         systemPromptMode: "replace",
-        systemPrompt: await buildCommanderLaunchSystemPrompt({
-          agentManager: this.agentManager,
-          agentStorage: this.agentStorage,
-          workspaceRegistry: this.workspaceRegistry,
-          projectRegistry: this.projectRegistry,
-          providerSnapshotManager: this.providerSnapshotManager,
-          peerManager: this.peerManager,
-          daemonConfigStore: this.daemonConfigStore,
-          serverId: this.serverId,
-          hostName: this.hostName,
-          logger: this.sessionLogger,
-          contract,
-        }),
+        systemPrompt: launch.systemPrompt,
+      };
+      return {
+        config,
+        intent,
+        firstMessage: launch.firstMessage,
+        createdDirectoryWorkspace: !createdWorktree && !request.workspaceId && !callerAgent,
       };
     }
 
@@ -3876,6 +4255,9 @@ export class Session {
 
   private async handleCancelAgentRequest(agentId: string, requestId?: string): Promise<void> {
     this.sessionLogger.info({ agentId }, `Cancel request received for agent ${agentId}`);
+    // v3: a cancel originating from a client session RPC is a user stop — the
+    // approval gate always asks before touching this agent's next send.
+    this.missionControlService?.recordStopOrigin(agentId, "user");
 
     try {
       await cancelAgentRunCommand(
@@ -4955,6 +5337,7 @@ export class Session {
       projectDisplayName: resolveProjectDisplayName(project),
       projectCustomName: project.customName ?? null,
       projectCustomIconRevision: project.customIconRevision ?? null,
+      projectDescription: project.description ?? null,
       projectRootPath: project.rootPath,
       projectKind: project.kind,
     };
@@ -7066,6 +7449,49 @@ export class Session {
     }
   }
 
+  private async dispatchAgentMessageRun(
+    msg: Extract<SessionInboundMessage, { type: "send_agent_message_request" }>,
+    agentId: string,
+    prompt: AgentPromptInput,
+  ): Promise<{ outOfBand: boolean }> {
+    if (msg.dispatchMode === "steer" || msg.dispatchMode === "queue") {
+      // Steer: deliver without interrupting a running turn. When the text
+      // matches an out-of-band command (OMP /steer) the live turn is
+      // redirected; otherwise the prompt is queued — a busy agent must never
+      // error on a steer (spec: "send to a busy worker delivers as steer by
+      // default"). Queue: wait for idle first, then stream.
+      if (msg.dispatchMode === "queue") {
+        await this.waitForAgentIdle(agentId);
+      }
+      try {
+        return await startAgentRun(this.agentManager, agentId, prompt, this.sessionLogger, {
+          replaceRunning: false,
+        });
+      } catch (error) {
+        if (msg.dispatchMode !== "steer") {
+          throw error;
+        }
+        // Busy agent + no out-of-band match: degrade to queue semantics.
+        this.sessionLogger.debug(
+          { err: error, agentId },
+          "Steer did not run out-of-band; queuing until idle",
+        );
+        await this.waitForAgentIdle(agentId);
+        return await startAgentRun(this.agentManager, agentId, prompt, this.sessionLogger, {
+          replaceRunning: false,
+        });
+      }
+    }
+    return sendPromptToAgent({
+      agentManager: this.agentManager,
+      agentStorage: this.agentStorage,
+      agentId,
+      prompt,
+      messageId: msg.messageId,
+      logger: this.sessionLogger,
+    });
+  }
+
   private async handleSendAgentMessageRequest(
     msg: Extract<SessionInboundMessage, { type: "send_agent_message_request" }>,
   ): Promise<void> {
@@ -7097,14 +7523,7 @@ export class Session {
       );
       let dispatchResult: { outOfBand: boolean };
       try {
-        dispatchResult = await sendPromptToAgent({
-          agentManager: this.agentManager,
-          agentStorage: this.agentStorage,
-          agentId,
-          prompt,
-          messageId: msg.messageId,
-          logger: this.sessionLogger,
-        });
+        dispatchResult = await this.dispatchAgentMessageRun(msg, agentId, prompt);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         this.handleAgentRunError(agentId, error, "Failed to send agent message");
@@ -7121,6 +7540,21 @@ export class Session {
       }
 
       if (dispatchResult.outOfBand) {
+        this.emit({
+          type: "send_agent_message_response",
+          payload: {
+            requestId: msg.requestId,
+            agentId,
+            accepted: true,
+            error: null,
+          },
+        });
+        return;
+      }
+
+      // Steer/queue deliveries are accepted as queued: the run may start only
+      // after the current turn finishes, so a run-start wait would race it.
+      if (msg.dispatchMode === "steer" || msg.dispatchMode === "queue") {
         this.emit({
           type: "send_agent_message_response",
           payload: {

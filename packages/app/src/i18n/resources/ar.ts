@@ -1014,6 +1014,8 @@ export const ar: TranslationResources = {
       sessions: "السجل",
       schedules: "الجداول",
       missionControl: "Mission Control",
+      missionControlWorking: "العمال",
+      missionControlReady: "جاهز للمراجعة",
       webhooks: "Webhooks",
     },
     worktreeSetup: {
@@ -1766,6 +1768,7 @@ export const ar: TranslationResources = {
       integrations: "التكامل",
       permissions: "الأذونات",
       diagnostics: "التشخيص",
+      missionControl: "Mission Control",
       about: "عن",
     },
     editor: {
@@ -2361,6 +2364,9 @@ export const ar: TranslationResources = {
         useAutomatic: "استخدام التلقائي",
         imageUrl: "رابط صورة أو موقع",
         save: "حفظ التغييرات",
+        description: "Description",
+        descriptionLabel: "Project description",
+        descriptionPlaceholder: "What this project is for",
         savedToast: "تم تحديث المشروع",
       },
       readFailures: {

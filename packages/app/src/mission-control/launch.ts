@@ -33,6 +33,8 @@ export const COMMANDER_TOOL_ALLOWLIST = [
   "fleet_list_agents",
   "fleet_create_agent",
   "fleet_send_prompt",
+  "fleet_get_agent_activity",
+  "fleet_search",
   "create_agent",
   "send_agent_prompt",
   "get_agent_status",
@@ -41,6 +43,7 @@ export const COMMANDER_TOOL_ALLOWLIST = [
   "create_workspace",
   "list_workspaces",
   "history_search",
+  "tag_message",
 ] as const;
 
 interface CommanderModelMemory {
@@ -74,9 +77,10 @@ export async function launchCommander(input: LaunchCommanderInput): Promise<Laun
       ...(modeId ? { modeId } : {}),
       ...(model ? { model } : {}),
       title: COMMANDER_TITLE,
-      // Replace omp's coding harness with the Commander contract + context pack.
-      // The daemon builds the actual system prompt at create time (the context
-      // pack lives on the host); no visible brief message is sent.
+      // The daemon builds a static system prompt at create time (bundled
+      // commander-prompt.md + central commanderInstructions) and injects the
+      // fleet context pack as the first conversation message. No brief is sent
+      // from here.
       systemPromptMode: "replace",
       toolAllowlist: [...COMMANDER_TOOL_ALLOWLIST],
     },

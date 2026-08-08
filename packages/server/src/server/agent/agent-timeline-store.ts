@@ -195,6 +195,33 @@ export class InMemoryAgentTimelineStore {
     return row ? cloneRow(row) : null;
   }
 
+  /**
+   * Remove committed rows by seq (e.g. digest ack-drop retraction). Returns the
+   * removed rows. Seq identity is preserved — late observers see a gap rather
+   * than renumbered rows, so cursors stay valid.
+   */
+  removeRows(agentId: string, seqs: readonly number[]): AgentTimelineRow[] {
+    if (seqs.length === 0) {
+      return [];
+    }
+    const state = this.requireState(agentId);
+    const drop = new Set(seqs);
+    const removed: AgentTimelineRow[] = [];
+    const remaining: AgentTimelineRow[] = [];
+    for (const row of state.rows) {
+      if (drop.has(row.seq)) {
+        removed.push(row);
+      } else {
+        remaining.push(row);
+      }
+    }
+    if (removed.length === 0) {
+      return [];
+    }
+    state.rows = remaining;
+    return removed.map(cloneRow);
+  }
+
   enrichSubmittedUserMessage(
     agentId: string,
     clientMessageId: string,

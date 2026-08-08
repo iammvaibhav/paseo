@@ -50,12 +50,21 @@ import {
 import { FeedCard, type FeedCardEvent } from "./feed-card";
 import { MutedSystemRow } from "./muted-system-row";
 import { isPaseoSystemMessage, PaseoSystemRow } from "./paseo-system-row";
+import { PaseoAgentLinkProvider } from "@/components/markdown/paseo-agent-link";
+import { parseHistoryAskAgentOpenUrl } from "@/history-ask/open-agent-link-parse";
+import { useInspectorStore } from "@/screens/mission-control/inspector-store";
+import { useShallow } from "zustand/react/shallow";
 
 const THREAD_ANCHOR_ID = "mission-control-thread";
 const THREAD_INITIAL_REQUEST_KEY = "mission-control-thread-initial";
 const THREAD_CONTAINER_KEY = "mission-control-thread";
 const NEAR_BOTTOM_THRESHOLD = 32;
+/** Offset from the top that triggers loading an older page of events. */
+const NEAR_TOP_THRESHOLD = 24;
+/** Safety window: a prepend anchor that never lands is dropped after this. */
+const PREPEND_ANCHOR_TIMEOUT_MS = 3_000;
 const EMPTY_STREAM_ITEMS: StreamItem[] = [];
+const EMPTY_AGENT_NAMES: Readonly<Record<string, string | undefined>> = Object.freeze({});
 /** Hard cap for the scroll-restore application window during hydration. */
 const RESTORE_DEADLINE_MS = 8_000;
 
@@ -78,6 +87,32 @@ function isOmpNoticeToolCall(data: AgentToolCallData): boolean {
   );
 }
 
+// Pretty-rendered dispatch actions (spec "Tool rendering"). These are the only
+// Commander tool calls that surface in normal (non-verbose) mode — everything
+// else is machinery. `tag_message` is additionally silent in normal mode even
+// though it renders pretty in verbose.
+const PRETTY_DISPATCH_TOOLS: Record<string, true> = {
+  fleet_send_prompt: true,
+  fleet_list_agents: true,
+  fleet_create_agent: true,
+  create_agent: true,
+  fleet_search: true,
+};
+
+function prettyDispatchToolLeaf(name: string): string | null {
+  const trimmed = name.trim().toLowerCase();
+  if (PRETTY_DISPATCH_TOOLS[trimmed]) {
+    return trimmed;
+  }
+  const leaf = trimmed.split(/[.:/]/).at(-1) ?? "";
+  return PRETTY_DISPATCH_TOOLS[leaf] ? leaf : null;
+}
+
+function isTagMessageTool(name: string): boolean {
+  const trimmed = name.trim().toLowerCase();
+  return trimmed === "tag_message" || (trimmed.split(/[.:/]/).at(-1) ?? "") === "tag_message";
+}
+
 function ompNoticeMessage(data: AgentToolCallData): string {
   const detail = data.detail;
   if (detail.type === "plain_text") {
@@ -96,6 +131,57 @@ interface CommanderMessageRowProps {
   serverId: string;
   client: DaemonClient | null;
   workspaceRoot: string;
+  /** Verbose mode (per-device header toggle, default OFF) shows the full
+   * machinery: tool-call internals, thinking, paseo-system digests, interrupt
+   * mechanics. Normal mode renders only the conversation, status/verdict/
+   * proposal cards, and pretty-rendered dispatch actions. */
+  verbose: boolean;
+  /** agentId → display name for fleet dispatch tool badges. */
+  agentNames: Readonly<Record<string, string | undefined>>;
+}
+
+function renderThreadToolCall(
+  item: Extract<StreamItem, { kind: "tool_call" }>,
+  verbose: boolean,
+  agentNames: Readonly<Record<string, string | undefined>>,
+): ReactElement | null {
+  if (item.payload.source === "agent") {
+    const data = item.payload.data;
+    // OMP provider notices (quota warnings, task-result notices) render as
+    // muted one-line system rows, never as inline tool-call prose — and they
+    // are interrupt/cancel machinery, so normal mode hides them.
+    if (isOmpNoticeToolCall(data)) {
+      return verbose ? (
+        <MutedSystemRow message={ompNoticeMessage(data)} timestamp={item.timestamp.getTime()} />
+      ) : null;
+    }
+    // Normal mode: only pretty dispatch actions (tag_message is silent).
+    const prettyLeaf = prettyDispatchToolLeaf(data.name);
+    if (!verbose && (!prettyLeaf || isTagMessageTool(data.name))) {
+      return null;
+    }
+    return (
+      <ToolCall
+        toolName={data.name}
+        detail={data.detail}
+        status={data.status}
+        error={data.error}
+        metadata={data.metadata}
+        agentNames={agentNames}
+      />
+    );
+  }
+  if (!verbose) {
+    return null;
+  }
+  return (
+    <ToolCall
+      toolName={item.payload.data.toolName}
+      args={item.payload.data.arguments}
+      result={item.payload.data.result}
+      status={item.payload.data.status}
+    />
+  );
 }
 
 function CommanderMessageRow({
@@ -104,14 +190,19 @@ function CommanderMessageRow({
   serverId,
   client,
   workspaceRoot,
+  verbose,
+  agentNames,
 }: CommanderMessageRowProps): ReactElement | null {
   switch (item.kind) {
     case "user_message":
       // `<paseo-system>` envelopes (fleet digests, schedule fires, notify-on-
-      // finish) must never render as raw user prose — they become a collapsed
-      // divider row that expands into the formatted digest.
+      // finish) are pure machinery duplicating the cards — normal mode never
+      // renders them; verbose shows the parsed digest/context as an expanded
+      // block (never a collapsed divider).
       if (isPaseoSystemMessage(item.text)) {
-        return <PaseoSystemRow text={item.text} timestamp={item.timestamp.getTime()} />;
+        return verbose ? (
+          <PaseoSystemRow text={item.text} timestamp={item.timestamp.getTime()} />
+        ) : null;
       }
       return (
         <UserMessage
@@ -143,6 +234,10 @@ function CommanderMessageRow({
         />
       );
     case "thought":
+      // Thinking is machinery noise in normal mode; verbose is the debug view.
+      if (!verbose) {
+        return null;
+      }
       return (
         <ToolCall
           toolName="thinking"
@@ -151,48 +246,22 @@ function CommanderMessageRow({
         />
       );
     case "tool_call":
-      if (item.payload.source === "agent") {
-        const data = item.payload.data;
-        // OMP provider notices (quota warnings, task-result notices) render as
-        // muted one-line system rows, never as inline tool-call prose.
-        if (isOmpNoticeToolCall(data)) {
-          return (
-            <MutedSystemRow message={ompNoticeMessage(data)} timestamp={item.timestamp.getTime()} />
-          );
-        }
-        return (
-          <ToolCall
-            toolName={data.name}
-            detail={data.detail}
-            status={data.status}
-            error={data.error}
-            metadata={data.metadata}
-          />
-        );
-      }
-      return (
-        <ToolCall
-          toolName={item.payload.data.toolName}
-          args={item.payload.data.arguments}
-          result={item.payload.data.result}
-          status={item.payload.data.status}
-        />
-      );
+      return renderThreadToolCall(item, verbose, agentNames);
     case "todo_list":
-      return <TodoListCard items={item.items} />;
+      return verbose ? <TodoListCard items={item.items} /> : null;
     case "activity_log":
-      return (
+      return verbose ? (
         <ActivityLog
           type={item.activityType}
           message={item.message}
           timestamp={item.timestamp.getTime()}
           metadata={item.metadata}
         />
-      );
+      ) : null;
     case "compaction":
-      return (
+      return verbose ? (
         <CompactionMarker status={item.status} trigger={item.trigger} preTokens={item.preTokens} />
-      );
+      ) : null;
     default:
       return null;
   }
@@ -215,12 +284,27 @@ interface MissionControlThreadProps {
    * on the next visit without ever running unmount cleanups.
    */
   isFocused: boolean;
+  /**
+   * Verbose mode (per-device header overflow toggle, default OFF). Normal mode
+   * shows only the conversation, status/verdict/proposal cards, and
+   * pretty-rendered dispatch actions; verbose reveals tool-call internals,
+   * thinking, inbound paseo-system digests, and interrupt mechanics.
+   */
+  verbose?: boolean;
+  /** Load an older page of feed events (cursor paging via beforeSeq). */
+  onLoadOlder?: () => void | Promise<unknown>;
+  isLoadingOlder?: boolean;
+  hasOlderEvents?: boolean;
 }
 
 export function MissionControlThread({
   events,
   commander,
   isFocused,
+  verbose = false,
+  onLoadOlder,
+  isLoadingOlder = false,
+  hasOlderEvents = false,
 }: MissionControlThreadProps): ReactElement {
   const client = useHostRuntimeClient(commander?.serverId ?? "");
   const commanderAgent = useSessionStore((state) =>
@@ -268,6 +352,50 @@ export function MissionControlThread({
     contentMeasuredForKey: null as string | null,
   });
 
+  // Cursor paging on scroll-up: a load is in flight while the request ref is
+  // armed; once it resolves with events, the next content-size change is the
+  // prepend and gets scroll-compensated so the visible rows don't jump.
+  const olderRequestInFlightRef = useRef(false);
+  const prependReadyRef = useRef(false);
+  // Set when an older page resolved with events, so the rows-growth effect
+  // doesn't count prepended history as "new" activity.
+  const prependGrowthRef = useRef(false);
+  const prependAnchorTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearPrependAnchor = useCallback(() => {
+    prependReadyRef.current = false;
+    clearTimeout(prependAnchorTimeoutRef.current ?? undefined);
+    prependAnchorTimeoutRef.current = null;
+  }, []);
+
+  const requestOlderEvents = useCallback(() => {
+    if (!onLoadOlder || olderRequestInFlightRef.current || isLoadingOlder || !hasOlderEvents) {
+      return;
+    }
+    olderRequestInFlightRef.current = true;
+    clearPrependAnchor();
+    const result = onLoadOlder();
+    if (result && typeof result.then === "function") {
+      void Promise.resolve(result)
+        .then((loaded) => {
+          if (loaded) {
+            prependGrowthRef.current = true;
+            prependReadyRef.current = true;
+            prependAnchorTimeoutRef.current = setTimeout(
+              clearPrependAnchor,
+              PREPEND_ANCHOR_TIMEOUT_MS,
+            );
+          }
+          return loaded;
+        })
+        .finally(() => {
+          olderRequestInFlightRef.current = false;
+        });
+    } else {
+      olderRequestInFlightRef.current = false;
+    }
+  }, [clearPrependAnchor, hasOlderEvents, isLoadingOlder, onLoadOlder]);
+
   const tail = useSessionStore((state) =>
     commander
       ? (state.sessions[commander.serverId]?.agentStreamTail.get(commander.agentId) ??
@@ -283,6 +411,40 @@ export function MissionControlThread({
   const viewedTimelineSync = useSessionStore((state) =>
     commander ? (state.sessions[commander.serverId]?.viewedTimelineSync ?? null) : null,
   );
+
+  // Live agent identity for the fleet dispatch tool badges ("Steered Name
+  // (host)", "Spawned Name on host"). Shallow-compared so the memoized row
+  // keeps its reference while the store churns.
+  const agentNames = useSessionStore(
+    useShallow((state) => {
+      if (!commander) {
+        return EMPTY_AGENT_NAMES;
+      }
+      const session = state.sessions[commander.serverId];
+      if (!session) {
+        return EMPTY_AGENT_NAMES;
+      }
+      const names: Record<string, string | undefined> = {};
+      for (const [agentId, agent] of session.agents) {
+        names[agentId] = agent.name ?? agent.title ?? undefined;
+      }
+      for (const [agentId, agent] of session.agentDetails) {
+        if (names[agentId] === undefined) {
+          names[agentId] = agent.name ?? agent.title ?? undefined;
+        }
+      }
+      return names;
+    }),
+  );
+
+  const handleOpenPaseoAgent = useCallback((href: string): boolean => {
+    const target = parseHistoryAskAgentOpenUrl(href);
+    if (!target) {
+      return false;
+    }
+    useInspectorStore.getState().openInspectorAgent(target);
+    return true;
+  }, []);
 
   useEffect(() => {
     if (!commander || !viewedTimelineSync) {
@@ -380,6 +542,12 @@ export function MissionControlThread({
   useEffect(() => {
     const previousCount = previousRowCountRef.current;
     previousRowCountRef.current = rows.length;
+    // Older-page prepends are not new activity — never count them toward the
+    // "N new" pill (which tracks events since the user left the live tail).
+    if (prependGrowthRef.current) {
+      prependGrowthRef.current = false;
+      return;
+    }
     if (modeRef.current === "detached" && rows.length > previousCount) {
       setPendingNewCount((current) => current + (rows.length - previousCount));
     }
@@ -424,6 +592,15 @@ export function MissionControlThread({
     if (programmaticScrollEventBudgetRef.current > 0) {
       programmaticScrollEventBudgetRef.current -= 1;
       return;
+    }
+
+    // Scroll-up paging: reaching the top of the loaded history with more
+    // events available fetches an older page. Only when the user has left the
+    // live tail (detached) — the initial bottom-anchored landing must never
+    // page. The request-in-flight ref keeps this from re-firing on the same
+    // scroll position.
+    if (contentOffset.y <= NEAR_TOP_THRESHOLD && modeRef.current !== "sticky-bottom") {
+      requestOlderEvents();
     }
 
     const nearBottom = isScrollEventNearBottom(event);
@@ -675,6 +852,8 @@ export function MissionControlThread({
     return () => {
       clearTimeout(restoreApplyTimerRef.current ?? undefined);
       restoreApplyTimerRef.current = null;
+      clearTimeout(prependAnchorTimeoutRef.current ?? undefined);
+      prependAnchorTimeoutRef.current = null;
     };
   }, []);
 
@@ -702,11 +881,26 @@ export function MissionControlThread({
   const handleContentSizeChange = useStableEvent((_width: number, height: number) => {
     const previousContentHeight = streamViewportMetricsRef.current.contentHeight;
     const nextContentHeight = Math.max(0, height);
+    let nextOffsetY = streamViewportMetricsRef.current.offsetY;
+    // Prepend anchoring: after an older page lands, the rows above the
+    // viewport grew by the prepended height; compensate the scroll offset so
+    // the previously visible rows stay put (no jump during scroll-up paging).
+    if (prependReadyRef.current) {
+      clearPrependAnchor();
+      const addedHeight = nextContentHeight - previousContentHeight;
+      if (addedHeight > 0) {
+        nextOffsetY = Math.max(0, nextOffsetY + addedHeight);
+        programmaticScrollEventBudgetRef.current = 3;
+        flatListRef.current?.scrollToOffset({ offset: nextOffsetY, animated: false });
+        scrollOffsetYRef.current = nextOffsetY;
+      }
+    }
     streamViewportMetricsRef.current = {
       ...streamViewportMetricsRef.current,
       containerKey: THREAD_CONTAINER_KEY,
       contentHeight: nextContentHeight,
       contentMeasuredForKey: THREAD_CONTAINER_KEY,
+      offsetY: nextOffsetY,
     };
     bottomAnchorController.handleContentSizeChange({
       previousContentHeight,
@@ -726,6 +920,8 @@ export function MissionControlThread({
         serverId={commander?.serverId ?? ""}
         client={client}
         workspaceRoot={workspaceRoot}
+        verbose={verbose}
+        agentNames={agentNames}
       />
     );
   });
@@ -743,37 +939,39 @@ export function MissionControlThread({
         onOpenWorkspaceFile={handleInlinePathPress}
         toast={toast}
       >
-        <View style={styles.container}>
-          <FlatList
-            ref={flatListRef}
-            data={rows}
-            keyExtractor={keyExtractor}
-            renderItem={renderItem}
-            onLayout={handleListLayout}
-            onScroll={handleScroll}
-            onScrollBeginDrag={handleScrollBeginDrag}
-            onScrollEndDrag={handleScrollEndDrag}
-            onMomentumScrollBegin={handleMomentumScrollBegin}
-            onMomentumScrollEnd={handleMomentumScrollEnd}
-            scrollEventThrottle={16}
-            onContentSizeChange={handleContentSizeChange}
-            contentContainerStyle={styles.listContent}
-            style={styles.list}
-            testID="mission-control-thread"
-          />
-          {bottomAnchorController.mode === "detached" && pendingNewCount > 0 ? (
-            <Pressable
-              onPress={handleJumpToBottom}
-              style={styles.newPill}
-              accessibilityRole="button"
-              accessibilityLabel={`${pendingNewCount} new`}
-              testID="mission-control-new-pill"
-            >
-              <Text style={styles.newPillText}>{pendingNewCount} new</Text>
-              <ThemedChevronDown size={14} uniProps={foregroundMapping} />
-            </Pressable>
-          ) : null}
-        </View>
+        <PaseoAgentLinkProvider openAgent={handleOpenPaseoAgent}>
+          <View style={styles.container}>
+            <FlatList
+              ref={flatListRef}
+              data={rows}
+              keyExtractor={keyExtractor}
+              renderItem={renderItem}
+              onLayout={handleListLayout}
+              onScroll={handleScroll}
+              onScrollBeginDrag={handleScrollBeginDrag}
+              onScrollEndDrag={handleScrollEndDrag}
+              onMomentumScrollBegin={handleMomentumScrollBegin}
+              onMomentumScrollEnd={handleMomentumScrollEnd}
+              scrollEventThrottle={16}
+              onContentSizeChange={handleContentSizeChange}
+              contentContainerStyle={styles.listContent}
+              style={styles.list}
+              testID="mission-control-thread"
+            />
+            {bottomAnchorController.mode === "detached" && pendingNewCount > 0 ? (
+              <Pressable
+                onPress={handleJumpToBottom}
+                style={styles.newPill}
+                accessibilityRole="button"
+                accessibilityLabel={`${pendingNewCount} new`}
+                testID="mission-control-new-pill"
+              >
+                <Text style={styles.newPillText}>{pendingNewCount} new</Text>
+                <ThemedChevronDown size={14} uniProps={foregroundMapping} />
+              </Pressable>
+            ) : null}
+          </View>
+        </PaseoAgentLinkProvider>
       </AssistantFileLinkResolverProvider>
     </ToolCallSheetProvider>
   );

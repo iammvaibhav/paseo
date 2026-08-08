@@ -170,6 +170,9 @@ const FeatureWebUiSchema = z
   })
   .strict();
 
+// COMPAT(missionControlV3): summarizer/autopilot judgment machinery was
+// removed with v3. The schemas stay accepted so pre-v3 config files keep
+// parsing; nothing reads them anymore.
 const MissionControlSummarizerConfigSchema = z
   .object({
     enabled: z.boolean().default(true),
@@ -178,40 +181,34 @@ const MissionControlSummarizerConfigSchema = z
     model: z.string().default("extract"),
     minNewItems: z.number().int().positive().default(12),
     debounceSeconds: z.number().int().positive().default(30),
-    // Summarizer judgment backend. "omp" shells a local omp invocation instead
-    // of the LLM gateway (blrofc3 compliance: gateway never sees provider keys).
     backend: z.enum(["gateway", "omp"]).default("gateway"),
   })
   .strict();
 
+// COMPAT(missionControlV3): same COMPAT treatment as the summarizer schema —
+// accepted for old configs, unused by v3 code.
 const MissionControlAutopilotConfigSchema = z
   .object({
-    // Evaluate-and-act on worker completion. "off" (default, safety first):
-    // inert. "observe": verdict cards only. "act": also sends bounded nudges.
     mode: z.enum(["off", "observe", "act"]).default("off"),
-    // Evaluator model tier alias; absent resolves per backend (gateway "smart",
-    // omp "@slow"). The Commander's own model stays separately configurable.
     model: z.string().nullable().optional(),
-    // Which finished agents the evaluator considers: the Commander's workers
-    // (default) or every non-mission-control agent.
     scope: z.enum(["commander-spawned", "all"]).default("commander-spawned"),
-    // Bounded nudges per agent; a nudge verdict at the cap escalates instead.
     maxNudgesPerAgent: z.number().int().positive().default(2),
   })
   .strict();
 
-// Absent config = feature on with defaults; the summarizer stays silently
-// disabled when no gateway baseUrl resolves (config or LLM_GATEWAY_URL).
+// COMPAT(missionControlV3): summarizer/autopilot keys above are accepted for
+// old configs only; v3 code does not read them. Absent config = feature on
+// with defaults.
 const MissionControlConfigSchema = z
   .object({
     retentionDays: z.number().int().positive().default(30),
     // Zod 3 `.default()` requires the object's *output* type; all fields defaulted
     // makes that output all-required, so `{}` is not assignable. `.optional()` keeps
-    // field-level defaults (partial configs normalize) and MissionControlService's
-    // `readConfig()` applies the same defaults when the whole section is absent.
+    // field-level defaults (partial configs normalize); the service's `readConfig()`
+    // applies central-config defaults when the whole section is absent.
     summarizer: MissionControlSummarizerConfigSchema.optional(),
     autopilot: MissionControlAutopilotConfigSchema.optional(),
-    // Self-reporting kill-switch: when false, the report_milestone prompt
+    // Self-reporting kill-switch: when false, the report_status prompt
     // paragraph is not injected into agent system prompts (default true).
     selfReport: z
       .object({
@@ -232,11 +229,16 @@ const MissionControlConfigSchema = z
     // Commander dispatch: preferred host when the Commander routes work. Null
     // (default) means the Commander decides from the fleet map.
     defaultHost: z.string().nullable().optional(),
+    // v3 per-host keys: this machine's own fleet-map alias + feature switch.
+    // Fleet aliases assemble from each host's own declaration — never from a
+    // commander-host hardcoded list.
+    hostAlias: z.string().optional(),
+    enabled: z.boolean().optional(),
     // Friendly aliases for peer host names ("blrofc3": "work server"), used in
     // the Commander's fleet map.
     hostAliases: z.record(z.string(), z.string()).optional(),
-    // Commander contract/instructions overridden from Settings; defaults to the
-    // shipped DEFAULT_COMMANDER_CONTRACT server-side.
+    // Commander contract/instructions overridden from central config; the
+    // shipped default contract lives in the bundled commander-prompt.md.
     commanderInstructions: z.string().optional(),
   })
   .strict();

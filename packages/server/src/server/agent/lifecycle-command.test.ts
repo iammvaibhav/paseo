@@ -278,7 +278,8 @@ describe("agent lifecycle commands", () => {
       updateAgentCommand({ agentManager: manager }, { agentId: "agent-1", name: "   " }),
     ).resolves.toEqual({
       accepted: false,
-      error: "Nothing to update (provide name, labels, provider, and/or model)",
+      error:
+        "Nothing to update (provide name, title, shortDescription, labels, provider, and/or model)",
     });
 
     expect(storage.upserts).toHaveLength(0);
@@ -288,6 +289,34 @@ describe("agent lifecycle commands", () => {
         updates: {
           title: "Renamed agent",
           labels: { team: "infra" },
+        },
+      },
+    ]);
+  });
+
+  test("applies Mission Control identity fields with explicit title winning over the legacy name alias", async () => {
+    const storage = new FakeLifecycleAgentStorage();
+    storage.records.set("agent-1", storedAgent("agent-1"));
+    const manager = new FakeLifecycleAgentManager(storage);
+
+    await expect(
+      updateAgentCommand(
+        { agentManager: manager },
+        {
+          agentId: "agent-1",
+          name: "legacy-name-should-lose",
+          title: "Fix auth",
+          shortDescription: "  auth worker  ",
+        },
+      ),
+    ).resolves.toEqual({ accepted: true, error: null });
+
+    expect(manager.metadataUpdates).toEqual([
+      {
+        agentId: "agent-1",
+        updates: {
+          title: "Fix auth",
+          shortDescription: "auth worker",
         },
       },
     ]);

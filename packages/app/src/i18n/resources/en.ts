@@ -1024,6 +1024,8 @@ export const en = {
       sessions: "History",
       schedules: "Schedules",
       missionControl: "Mission Control",
+      missionControlWorking: "Working agents",
+      missionControlReady: "Ready for review",
       webhooks: "Webhooks",
     },
     worktreeSetup: {
@@ -1777,6 +1779,7 @@ export const en = {
       integrations: "Integrations",
       permissions: "Permissions",
       diagnostics: "Diagnostics",
+      missionControl: "Mission Control",
       about: "About",
     },
     editor: {
@@ -2375,6 +2378,9 @@ export const en = {
         useAutomatic: "Use automatic",
         imageUrl: "Image or website URL",
         save: "Save changes",
+        description: "Description",
+        descriptionLabel: "Project description",
+        descriptionPlaceholder: "What this project is for",
         savedToast: "Project updated",
       },
       readFailures: {

@@ -5,7 +5,9 @@ import { join } from "node:path";
 
 import type { DaemonClient } from "@getpaseo/client";
 import type {
+  MissionControlCentralConfig,
   MissionControlContextAgentSummary,
+  MissionControlEvent,
   MissionControlInventory,
   MissionControlInventoryProject,
   MissionControlInventoryProjectWorkspace,
@@ -15,12 +17,14 @@ import type { Logger } from "pino";
 import YAML from "yaml";
 
 import type { AgentManager } from "../agent/agent-manager.js";
-import type { AgentStorage } from "../agent/agent-storage.js";
+import type { AgentStorage, StoredAgentRecord } from "../agent/agent-storage.js";
 import type { ProviderSnapshotManager } from "../agent/provider-snapshot-manager.js";
 import type { DaemonConfigStore } from "../daemon-config-store.js";
 import type { PeerManager } from "../peers/peer-manager.js";
 import type { ProjectRegistry, WorkspaceRegistry } from "../workspace-registry.js";
+import { readBundledCommanderPrompt } from "./commander-contract.js";
 import { hasMissionControlLabels } from "./naming.js";
+import type { MissionControlReviewStateRecord, MissionControlReviewStateValue } from "./store.js";
 import type { MissionControlDigestContextProvider } from "./digest.js";
 
 const OMP_CONFIG_RELATIVE_PATH = join(".omp", "agent", "config.yml");
@@ -28,12 +32,15 @@ const OMP_CONFIG_RELATIVE_PATH = join(".omp", "agent", "config.yml");
 // "role: model" strings. The renderer prints it as the roles block, never as a
 // provider's model list.
 const OMP_MODEL_ROLES_KEY = "omp.modelRoles";
-const ROSTER_LIMIT = 100;
+// Spec: roster is one line per live agent (running + ready-for-review only).
+const ROSTER_LIMIT = 30;
 
 export interface MissionControlContextPayload {
   inventory: MissionControlInventory;
   models: MissionControlModels;
   recentAgents: MissionControlContextAgentSummary[];
+  /** This host's own missionControl.hostAlias declaration, if set. */
+  hostAlias?: string;
 }
 
 export interface LocalInventoryInput {
@@ -53,10 +60,23 @@ export interface LocalRecentAgentsInput {
   agentStorage: Pick<AgentStorage, "list">;
   agentManager: Pick<AgentManager, "listAgents">;
   serverId: string;
+  /**
+   * Lazy review-state map (running + ready-for-review roster filter). Resolved
+   * at call time so the provider can be constructed before the mission-control
+   * service is; absent → every live agent is a roster candidate.
+   */
+  getReviewStates?: () => ReadonlyMap<string, MissionControlReviewStateRecord> | null;
+  /**
+   * Lazy mission-control events, for each agent's last self-reported headline.
+   * Absent → roster lines omit the headline.
+   */
+  getReportEvents?: () => MissionControlEvent[] | null;
 }
 
 export interface LocalContextInput
-  extends LocalInventoryInput, LocalModelsInput, LocalRecentAgentsInput {}
+  extends LocalInventoryInput, LocalModelsInput, LocalRecentAgentsInput {
+  daemonConfigStore: Pick<DaemonConfigStore, "get">;
+}
 
 /**
  * Every project and workspace on this daemon, grouped by project, with titles
@@ -109,6 +129,7 @@ export async function buildLocalInventory(
     projectEntries.push({
       id: project.projectId,
       title: project.customName ?? project.displayName,
+      ...(project.description ? { description: project.description } : {}),
       hostServerId: input.serverId,
       workspaces: workspacesByProject.get(project.projectId) ?? [],
     });
@@ -136,32 +157,38 @@ export async function buildLocalModels(input: LocalModelsInput): Promise<Mission
 }
 
 /**
- * Recent and running agents with their identity fields (name/title/living
- * description), for the Commander's roster. The Commander and other
- * mission-control-labeled agents are excluded — they are not fleet work.
+ * Live agents for the Commander's roster: running or ready-for-review only
+ * (spec), with identity fields (name/title/living description), the last
+ * self-reported headline, and last-activity time for the age column. The
+ * Commander and other mission-control-labeled agents are excluded — they are
+ * not fleet work.
  */
 export async function buildLocalRecentAgents(
   input: LocalRecentAgentsInput,
 ): Promise<MissionControlContextAgentSummary[]> {
-  const [records, live] = await Promise.all([
+  const [records, live, reviewStates, events] = await Promise.all([
     input.agentStorage.list(),
     Promise.resolve(input.agentManager.listAgents()),
+    Promise.resolve(input.getReviewStates?.() ?? null),
+    Promise.resolve(input.getReportEvents?.() ?? null),
   ]);
   const lifecycleById = new Map(live.map((agent) => [agent.id, agent.lifecycle]));
+  const headlineByAgent = collectLatestSelfReports(events ?? []);
   const summaries: MissionControlContextAgentSummary[] = [];
   for (const record of records) {
     if (record.archivedAt || record.internal === true || hasMissionControlLabels(record.labels)) {
       continue;
     }
-    const status = lifecycleById.get(record.id) ?? record.lastStatus;
-    summaries.push({
-      agentId: record.id,
-      hostServerId: input.serverId,
-      ...(record.name !== undefined ? { name: record.name } : {}),
-      ...(record.title !== undefined ? { title: record.title } : {}),
-      ...(record.shortDescription !== undefined ? { description: record.shortDescription } : {}),
-      ...(status ? { status } : {}),
-    });
+    const summary = summarizeRecentAgent(
+      record,
+      lifecycleById.get(record.id),
+      reviewStates?.get(record.id)?.reviewState,
+      headlineByAgent.get(record.id),
+      input.serverId,
+    );
+    if (summary) {
+      summaries.push(summary);
+    }
   }
   const updatedAtMs = new Map(
     records.map((record) => {
@@ -173,6 +200,56 @@ export async function buildLocalRecentAgents(
   return summaries.slice(0, ROSTER_LIMIT);
 }
 
+/** Latest self-reported headline per agent, keyed by agentId. */
+function collectLatestSelfReports(
+  events: readonly MissionControlEvent[],
+): Map<string, { headline: string; at: string }> {
+  const headlineByAgent = new Map<string, { headline: string; at: string }>();
+  for (const event of events) {
+    if (event.source !== "self") {
+      continue;
+    }
+    const current = headlineByAgent.get(event.agentId);
+    if (!current || event.ts > current.at) {
+      headlineByAgent.set(event.agentId, { headline: event.headline, at: event.ts });
+    }
+  }
+  return headlineByAgent;
+}
+
+/** One roster row: running/ready-for-review agents only, else null. */
+function summarizeRecentAgent(
+  record: StoredAgentRecord,
+  lifecycle: string | undefined,
+  reviewState: MissionControlReviewStateValue | undefined,
+  report: { headline: string; at: string } | undefined,
+  serverId: string,
+): MissionControlContextAgentSummary | null {
+  const running = lifecycle === "running";
+  const readyForReview = reviewState === "ready";
+  if (!running && !readyForReview) {
+    return null;
+  }
+  let status: string;
+  if (running) {
+    status = "running";
+  } else if (readyForReview) {
+    status = "ready for review";
+  } else {
+    status = lifecycle ?? record.lastStatus;
+  }
+  return {
+    agentId: record.id,
+    hostServerId: serverId,
+    ...(record.name !== undefined ? { name: record.name } : {}),
+    ...(record.title !== undefined ? { title: record.title } : {}),
+    ...(record.shortDescription !== undefined ? { description: record.shortDescription } : {}),
+    ...(status ? { status } : {}),
+    ...(report ? { lastReportHeadline: report.headline } : {}),
+    ...(report ? { lastActivityAt: report.at } : { lastActivityAt: record.updatedAt }),
+  };
+}
+
 export async function buildLocalContextPayload(
   input: LocalContextInput,
 ): Promise<MissionControlContextPayload> {
@@ -181,7 +258,10 @@ export async function buildLocalContextPayload(
     buildLocalModels(input),
     buildLocalRecentAgents(input),
   ]);
-  return { inventory, models, recentAgents };
+  // Spec: the fleet map assembles aliases from each host's own declaration —
+  // this host's missionControl.hostAlias. Never a hardcoded machine list.
+  const hostAlias = input.daemonConfigStore.get().missionControl?.hostAlias?.trim() || undefined;
+  return { inventory, models, recentAgents, ...(hostAlias ? { hostAlias } : {}) };
 }
 
 export interface FleetHostContext {
@@ -212,6 +292,24 @@ export interface FleetContextDependencies {
   >;
   peerManager?: PeerManager | null | (() => PeerManager | null);
   daemonConfigStore: Pick<DaemonConfigStore, "get">;
+  /**
+   * Central mission-control config: the resolved config itself, a store
+   * exposing get(), or a lazy accessor. Lazy so the context provider can be
+   * built before the store is; absent → central defaults.
+   */
+  centralConfig?:
+    | MissionControlCentralConfig
+    | { get(): MissionControlCentralConfig }
+    | (() => MissionControlCentralConfig | { get(): MissionControlCentralConfig } | null)
+    | null;
+  /**
+   * Lazy review-state map (roster "running + review only" filter). Resolved at
+   * call time so the provider can be constructed before the mission-control
+   * service is; absent → every live agent is a roster candidate.
+   */
+  getReviewStates?: () => ReadonlyMap<string, MissionControlReviewStateRecord> | null;
+  /** Lazy mission-control events, for each agent's last self-reported headline. */
+  getReportEvents?: () => MissionControlEvent[] | null;
   serverId: string;
   hostName: string;
   logger: Logger;
@@ -220,6 +318,21 @@ export interface FleetContextDependencies {
 function resolvePeerManager(deps: FleetContextDependencies): PeerManager | null {
   const peerManager = deps.peerManager;
   return typeof peerManager === "function" ? peerManager() : (peerManager ?? null);
+}
+
+function resolveCentralConfig(deps: FleetContextDependencies): MissionControlCentralConfig | null {
+  const source = deps.centralConfig;
+  if (!source) {
+    return null;
+  }
+  if (typeof source === "function") {
+    const resolved = source();
+    if (resolved === null) {
+      return null;
+    }
+    return "get" in resolved ? resolved.get() : resolved;
+  }
+  return "get" in source ? source.get() : source;
 }
 
 /**
@@ -231,16 +344,13 @@ function resolvePeerManager(deps: FleetContextDependencies): PeerManager | null 
 export async function buildFleetContextData(
   input: FleetContextDependencies,
 ): Promise<FleetContextData> {
-  const missionControl = input.daemonConfigStore.get().missionControl;
-  const hostAliases = missionControl?.hostAliases ?? {};
-
   const local = await buildLocalContextPayload(input);
   const hosts: FleetHostContext[] = [
     {
       hostName: "local",
       serverId: input.serverId,
       machineName: input.hostName,
-      alias: resolveHostAlias("local", input.serverId, hostAliases),
+      alias: local.hostAlias ?? null,
       reachable: true,
       lastSeenAt: null,
       ...local,
@@ -263,7 +373,7 @@ export async function buildFleetContextData(
       hostName: status.name,
       serverId,
       machineName: null,
-      alias: resolveHostAlias(status.name, serverId, hostAliases),
+      alias: payload?.hostAlias ?? null,
       reachable: payload !== null,
       lastSeenAt: status.lastSeenAt,
       inventory: payload?.inventory ?? { projects: [] },
@@ -274,41 +384,29 @@ export async function buildFleetContextData(
 
   return {
     hosts,
-    defaultHost: resolveDefaultDispatchHost(missionControl?.defaultHost ?? null, hosts),
+    defaultHost: resolveDefaultDispatchHost(input, hosts),
   };
 }
 
 /**
- * Aliases are keyed by fleet host name (peer config name / "local") per the
- * spec, but the app's settings card can only enumerate hosts by serverId, so a
- * serverId key resolves to the same alias.
- */
-function resolveHostAlias(
-  hostName: string,
-  serverId: string | null,
-  hostAliases: Record<string, string>,
-): string | null {
-  if (hostAliases[hostName]) {
-    return hostAliases[hostName];
-  }
-  if (serverId && hostAliases[serverId]) {
-    return hostAliases[serverId];
-  }
-  return null;
-}
-
-/**
- * defaultHost may be a fleet host name ("local" or a peer config name) or — when
- * the settings card saved it — a serverId; map serverIds to the host name the
- * Commander actually dispatches with.
+ * Central config's defaultDispatchHost wins; the legacy per-host defaultHost
+ * key stays accepted as a COMPAT fallback until it is retired.
+ * COMPAT(defaultHost): added v0.3, remove once daemon floor stops sending it.
  */
 function resolveDefaultDispatchHost(
-  configured: string | null,
+  input: FleetContextDependencies,
   hosts: readonly FleetHostContext[],
 ): string | null {
+  const central = resolveCentralConfig(input);
+  let configured = central?.defaultDispatchHost ?? null;
+  if (!configured) {
+    configured = input.daemonConfigStore.get().missionControl?.defaultHost ?? null;
+  }
   if (!configured) {
     return null;
   }
+  // configured may be a serverId (settings card) — map to the host name the
+  // Commander actually dispatches with.
   for (const host of hosts) {
     if (host.serverId && host.serverId === configured) {
       return host.hostName;
@@ -325,6 +423,7 @@ async function fetchPeerContextPayload(
     inventory: response.inventory,
     models: response.models,
     recentAgents: response.recentAgents,
+    ...(response.hostAlias ? { hostAlias: response.hostAlias } : {}),
   };
 }
 
@@ -337,10 +436,11 @@ function derivePeerServerId(payload: MissionControlContextPayload | null): strin
 }
 
 /**
- * Renders the six context-pack sections: fleet map, inventory, models+roles,
- * roster, playbook, smart defaults. Inline-sized by design — the whole fleet is
- * ~10 projects / ~30 workspaces — so the Commander never queries for what the
- * daemon already knows.
+ * Renders the context-pack sections: fleet map, inventory, models+roles,
+ * roster, routing defaults. Inline-sized by design — the whole fleet is ~10
+ * projects / ~30 workspaces — so the Commander never queries for what the
+ * daemon already knows. Delivered as the first conversation message at spawn
+ * and re-injected whole after compaction/session restart.
  */
 export function buildContextPack(context: FleetContextData): string {
   return [
@@ -348,25 +448,37 @@ export function buildContextPack(context: FleetContextData): string {
     buildInventorySection(context),
     buildModelsSection(context),
     buildRosterSection(context),
-    buildPlaybookSection(),
-    buildSmartDefaultsSection(context),
+    buildRoutingDefaultsSection(context),
   ].join("\n\n");
 }
 
 /**
- * The Commander's replaced system prompt: the shipped/user contract (persona +
- * CAN/CANNOT) followed by the full context pack. This is the strong enforcement
- * layer; the digest reminder line restates the contract on every digest.
+ * The Commander's system prompt, static by construction: the bundled shipped
+ * prompt (identity, playbook, safety, tool contract — no fleet state) plus the
+ * central commanderInstructions. The fleet worldview never enters here; it
+ * rides the context pack as the first conversation message. Two builds with
+ * different fleet state produce identical output.
  */
-export function buildCommanderSystemPrompt(contract: string, contextPack: string): string {
-  return `${contract.trim()}\n\n${contextPack.trim()}`;
+export function buildCommanderSystemPrompt(commanderInstructions?: string): string {
+  const shipped = readBundledCommanderPrompt().trim();
+  const instructions = commanderInstructions?.trim();
+  return instructions ? `${shipped}\n\n${instructions}` : shipped;
 }
 
-export async function buildCommanderLaunchSystemPrompt(
-  input: FleetContextDependencies & { contract: string },
-): Promise<string> {
+/**
+ * Everything the daemon needs to launch the Commander: a static system prompt
+ * and the context pack as the first conversation message. Fleet state is
+ * snapshot at spawn; deltas ride digests afterwards.
+ */
+export async function buildCommanderLaunchConfig(
+  input: FleetContextDependencies,
+): Promise<{ systemPrompt: string; firstMessage: string }> {
+  const central = resolveCentralConfig(input);
+  const systemPrompt = buildCommanderSystemPrompt(central?.commanderInstructions ?? undefined);
   const context = await buildFleetContextData(input);
-  return buildCommanderSystemPrompt(input.contract, buildContextPack(context));
+  const contextPack = buildContextPack(context);
+  const firstMessage = `<paseo-system>\nFleet context snapshot:\n${contextPack.trim()}\n</paseo-system>`;
+  return { systemPrompt, firstMessage };
 }
 
 // --- Context delta (digest refresh) ---
@@ -388,11 +500,15 @@ function canonicalEntries(context: FleetContextData): ContextCanonicalEntry[] {
       line: `host: ${host.hostName}${host.alias ? ` (alias "${host.alias}")` : ""} — ${describeReachability(host)}`,
     });
     for (const project of host.inventory.projects) {
+      const description = project.description?.trim();
+      const projectLine = `project: ${project.title} (${project.id})${
+        description ? ` — ${description}` : ""
+      }`;
       entries.push({
         category: "project",
         host: host.hostName,
         id: project.id,
-        line: `project: ${project.title} (${project.id})`,
+        line: projectLine,
       });
       for (const workspace of project.workspaces) {
         entries.push({
@@ -411,7 +527,7 @@ function canonicalEntries(context: FleetContextData): ContextCanonicalEntry[] {
         category: "models",
         host: host.hostName,
         id: provider,
-        line: `models: ${provider}: ${modelIds.join(", ")}`,
+        line: `models: ${modelIds.map((modelId) => `${provider}/${modelId}`).join(", ")}`,
       });
     }
     const roles = host.models[OMP_MODEL_ROLES_KEY];
@@ -447,9 +563,11 @@ export function computeContextFingerprint(context: FleetContextData): string {
 }
 
 /**
- * Compact "<paseo-system> Context update:" block listing only the entries that
- * changed between two canonical snapshots; null when nothing changed. Removed
- * entries are listed with a "gone" marker so the Commander notices archives.
+ * Compact "Context update:" block listing only the entries that changed
+ * between two canonical snapshots; null when nothing changed. Removed entries
+ * are listed with a "gone" marker so the Commander notices archives. INNER
+ * content only — the digest composer wraps the whole message in exactly one
+ * <paseo-system> envelope.
  */
 export function buildContextDeltaBlock(
   previous: readonly ContextCanonicalEntry[],
@@ -488,14 +606,16 @@ export function buildContextDeltaBlock(
   if (lines.length === 0) {
     return null;
   }
-  return `<paseo-system> Context update:\n${lines.join("\n")}`;
+  return `Context update:\n${lines.join("\n")}`;
 }
 
 /**
- * Digest-facing delta provider: caches the fleet context (peer fetches and
+ * Digest-facing context provider: caches the fleet context (peer fetches and
  * provider warmups are not free) and emits a compact delta on the first change
  * after boot. The first call primes the baseline — the Commander launch already
- * injected the full pack — and yields no block.
+ * injected the full pack — and yields no block. `fresh: true` (after omp
+ * compaction or a session restart wiped the first message) returns the whole
+ * snapshot again and re-baselines so the next digest is a delta again.
  */
 export function createFleetContextDigestProvider(
   input: FleetContextDependencies,
@@ -515,9 +635,13 @@ export function createFleetContextDigestProvider(
   }
 
   return {
-    async deltaBlock(): Promise<string | null> {
+    async deltaBlock(fresh: boolean = false): Promise<string | null> {
       const context = await fetchContext();
       const entries = canonicalEntries(context);
+      if (fresh) {
+        previousEntries = entries;
+        return `Fleet context snapshot:\n${buildContextPack(context).trim()}`;
+      }
       if (previousEntries === null) {
         previousEntries = entries;
         return null;
@@ -554,8 +678,10 @@ function buildInventorySection(context: FleetContextData): string {
       continue;
     }
     const projectLines = host.inventory.projects.map((project) => {
+      const description = project.description?.trim();
+      const header = `- ${project.title} (${project.id})${description ? ` — ${description}` : ""}`;
       if (project.workspaces.length === 0) {
-        return `- ${project.title} (${project.id}) — no workspaces`;
+        return `${header} — no workspaces`;
       }
       const workspaceLines = project.workspaces
         .map(
@@ -563,7 +689,7 @@ function buildInventorySection(context: FleetContextData): string {
             `  - ${workspace.title} [${workspace.kind}] ${workspace.cwd} (${workspace.id})`,
         )
         .join("\n");
-      return `- ${project.title} (${project.id})\n${workspaceLines}`;
+      return `${header}\n${workspaceLines}`;
     });
     sections.push(`## ${label}\n${projectLines.join("\n")}`);
   }
@@ -581,10 +707,14 @@ function buildModelsSection(context: FleetContextData): string {
       sections.push(`## ${label}\n- (no provider snapshot)`);
       continue;
     }
-    const lines = entries.map(([provider, modelIds]) => `- ${provider}: ${modelIds.join(", ")}`);
+    // Verbatim invocable provider/model strings — the exact values
+    // create_agent/fleet_create_agent accept. Never make the Commander guess.
+    const lines = entries.flatMap(([provider, modelIds]) =>
+      modelIds.map((modelId) => `- ${provider}/${modelId}`),
+    );
     const roles = host.models[OMP_MODEL_ROLES_KEY];
     if (roles && roles.length > 0) {
-      lines.push(`- omp modelRoles: ${roles.join("; ")}`);
+      lines.push(`- omp modelRoles (role → model): ${roles.join("; ")}`);
     }
     sections.push(`## ${label}\n${lines.join("\n")}`);
   }
@@ -592,35 +722,34 @@ function buildModelsSection(context: FleetContextData): string {
 }
 
 function buildRosterSection(context: FleetContextData): string {
-  const lines: string[] = [];
+  const entries: Array<{ line: string; at: number }> = [];
   for (const host of context.hosts) {
     for (const agent of host.recentAgents) {
       const identity = [agent.name, agent.title].filter(Boolean).join(" — ");
-      const detail = [identity || agent.agentId, agent.description].filter(Boolean).join(": ");
-      lines.push(
-        `- ${detail} — ${hostLabel(host)}${agent.status ? `, ${agent.status}` : ""} (paseo://h/${agent.hostServerId}/agent/${agent.agentId})`,
-      );
+      const headline = agent.lastReportHeadline?.trim();
+      const detail = headline
+        ? `${identity || agent.agentId}: "${headline}"`
+        : identity || agent.agentId;
+      const age = agent.lastActivityAt ? formatAge(agent.lastActivityAt) : null;
+      const status = agent.status ?? "idle";
+      const atMs = agent.lastActivityAt ? Date.parse(agent.lastActivityAt) : NaN;
+      entries.push({
+        line: `- ${detail} — ${status}${age ? `, ${age} ago` : ""} — ${hostLabel(host)} (paseo://h/${agent.hostServerId}/agent/${agent.agentId})`,
+        at: Number.isNaN(atMs) ? 0 : atMs,
+      });
     }
   }
-  if (lines.length === 0) {
-    return "# Roster\n- (no recent agents)";
+  if (entries.length === 0) {
+    return "# Roster\n- (no running or ready-for-review agents)";
   }
-  return `# Roster\n${lines.join("\n")}`;
+  entries.sort((left, right) => right.at - left.at);
+  return `# Roster\n${entries
+    .slice(0, ROSTER_LIMIT)
+    .map((entry) => entry.line)
+    .join("\n")}`;
 }
 
-function buildPlaybookSection(): string {
-  return `# Playbook
-You dispatch and report; you never implement. Exact invocations:
-- Task on a specific host: fleet_create_agent({ host: "<host>", provider: "<provider>/<model>", cwd: "<abs path>", initialPrompt: "<task>" }). host is "local" or a peer name from the fleet map; cwd or workspaceId is required for peer hosts. Set notifyOnFinish-style reporting: tell the worker what proof to return.
-- Task on this daemon: create_agent({ provider: "<provider>/<model>", initialPrompt: "<task>" }) — no workspaceId creates a fresh workspace for it.
-- New isolated task: create_workspace({ isolation: "worktree", path: "<repo>", title: "<short name>" }) — defaults to branch-off from the default branch; the new worktree is off main/master. Dispatch the agent into it.
-- Continue an existing agent: send_agent_prompt({ agentId: "<id>", prompt: "<follow-up>" }) on this daemon, or fleet_send_prompt({ host: "<host>", agentId: "<id>", prompt: "<follow-up>" }) on a peer. Same agent, same context — use for continuations of that task.
-- New project from a GitHub link: if the repo is already cloned on the target host, create_workspace({ isolation: "local", path: "<checkout>", title: "<project>" }), then create_agent in that workspace. If it is not cloned, dispatch an agent on the target host to clone it first, then create_workspace, then create_agent.
-- Fork vs continue vs fresh: continue the same agent when it is the same task; fork (create_agent/fleet_create_agent with a brief that summarizes the prior context) when the new task shares context but differs; fresh agent when the task needs no prior context.
-- Prefer reusing an existing matching workspace over creating a new one.`;
-}
-
-function buildSmartDefaultsSection(context: FleetContextData): string {
+function buildRoutingDefaultsSection(context: FleetContextData): string {
   const lines = [
     "- The user's wording always wins: when they name a host, workspace, or agent, use exactly that.",
     "- Reuse a matching existing workspace; only create when nothing matches.",
@@ -628,17 +757,33 @@ function buildSmartDefaultsSection(context: FleetContextData): string {
   ];
   if (context.defaultHost) {
     lines.push(
-      `- Default dispatch host (missionControl.defaultHost): "${context.defaultHost}" — use it when the user names no host.`,
+      `- Default dispatch host (central config): "${context.defaultHost}" — use it when the user names no host.`,
     );
   } else {
     lines.push(
       "- No default dispatch host configured: choose from the fleet map by where the project lives, then capability, then load.",
     );
   }
-  return `# Smart defaults\n${lines.join("\n")}`;
+  return `# Routing defaults\n${lines.join("\n")}`;
 }
 
 // --- Helpers ---
+
+function formatAge(iso: string): string {
+  const parsed = Date.parse(iso);
+  if (Number.isNaN(parsed)) {
+    return "unknown";
+  }
+  const minutes = Math.max(0, Math.round((Date.now() - parsed) / 60_000));
+  if (minutes < 60) {
+    return `${minutes}m`;
+  }
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) {
+    return `${hours}h`;
+  }
+  return `${Math.round(hours / 24)}d`;
+}
 
 function hostLabel(host: FleetHostContext): string {
   return host.alias ?? host.hostName;

@@ -1,316 +1,237 @@
 # Mission Control
 
-Fleet monitoring and dispatch. One screen: a deterministic **board** of every agent on every host, a **feed** of milestone cards summarized by the LLM gateway, and a **Commander** agent you chat with that routes work across hosts. This doc is the implementation spec; it becomes the feature doc once shipped.
+Fleet monitoring and dispatch. One screen: a deterministic **board** of every agent on every host, a **feed** of self-reported status cards, a **Commander** agent you chat with that routes work, and ephemeral **Verifier** agents that audit finished work by its evidence. This doc is the implementation spec and the arbiter when two slices disagree.
+
+No LLM gateway anywhere in this feature. Everything is omp. Agents report their own status via a tool; nothing reads transcripts to guess.
 
 ## Vocabulary (glossary-bound)
 
-| Term            | Meaning                                                                                                                                |
-| --------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Mission Control | The screen at `/mission-control`. UI label wins; no synonyms ("fleet page", "dashboard" are wrong).                                    |
-| Board           | Right-rail roster: live state of all agents, all hosts. No LLM anywhere in this path.                                                  |
-| Feed            | Chronological milestone cards. Change, not state. Silence is the default.                                                              |
-| Commander       | The one durable agent you talk to. Label `paseo.mission-control=commander`. A normal daemon agent — model configurable like any agent. |
-| Digest          | A batched `<paseo-system>` prompt delivering buffered fleet events to the Commander when it is idle.                                   |
+| Term             | Meaning                                                                                                                                |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Board            | Right rail: every agent, every host, grouped by bucket. Plain data, no AI, cannot die.                                                 |
+| Feed             | Status cards interleaved with your Commander conversation in one thread.                                                               |
+| Commander        | The single durable fleet agent you chat with. Fast model. Routes, dispatches, steers. Never implements, never verifies.                |
+| Verifier         | Ephemeral omp agent spawned per ready-for-review item. Audits proofs against the brief. Marks done. Dies.                              |
+| Inspector        | Embedded agent view inside Mission Control (right half). Clicking a board row or feed card opens the agent here, never navigates away. |
+| Ask mode         | Every outbound action (steer, nudge, proof demand) becomes a proposal card requiring Approve/Edit/Deny. Default.                       |
+| Auto mode        | Proposals send immediately; card logs what went out. Destructive actions and user-presence conflicts still ask.                        |
+| Ready for review | Agent finished a run (or self-reported completed) and awaits a verifier/user verdict.                                                  |
+| Done             | Reviewed and confirmed complete. Bookkeeping only — never archives the agent.                                                          |
+| Dormant          | Pre-rollout or long-idle agents. Hidden by default; visible via the "All unarchived" toggle.                                           |
+| report_status    | The MCP tool every agent gets: self-reported status, title, description, milestones, proofs.                                           |
 
 ## Architecture
 
 ```
-agents (all hosts) ──agent_state/agent_stream──▶ MissionControlService (each daemon)
-                                                   ├─ detectors (no LLM): started/finished/failed/blocked/stalled
-                                                   ├─ summarizer (gateway `extract`): milestone/finding/diverged
-                                                   ├─ event store: $PASEO_HOME/mission-control/events.jsonl
-                                                   ├─ push: mission_control_event → all clients
-                                                   └─ digest queue → Commander (flush on idle, never interrupt)
-app ──connects to every host (existing)──▶ board + feed aggregate client-side
-commander-host daemon ──peer DaemonClients──▶ remote daemons (fleet tools + remote digests)
+worker agents --report_status tool--> event store --instant push--> app (board + feed)
+                                        |                |
+                                        |                +--> digest queue --idle flush--> Commander
+                                        |
+                                        +--ready-for-review--> verifier dispatcher --spawn--> Verifier (ephemeral)
+                                                                       |
+stall detector --silent too long--> steer status-ask (via approval gate)
+watchdog --dead session, running record--> self-heal + stalled event
+
+ALL outbound sends (Commander steers, Verifier contacts, stall nudges) --> approval gate --> proposal card --> send
 ```
 
-Three invariants, in priority order:
+The board and feed never wait on any LLM. Events hit the store and push to clients instantly. The digest queue only gates when the Commander's model reads them.
 
-1. **The board cannot die.** It renders only data the app already receives (`agent_update` per host). No new failure modes.
-2. **The feed never interrupts.** All Commander delivery goes through the digest queue; `replaceRunning` is never used for system-originated prompts. User messages keep today's preempt behavior — the user always outranks status.
-3. **No LLM in any liveness path.** Summarizer failure degrades to deterministic cards only.
+## Status reporting (`report_status`)
 
-## Protocol (`packages/protocol`)
-
-New file `src/mission-control/types.ts`, wired into `src/messages.ts` (follow `src/webhook/types.ts` precedent). Wire schemas stay pure — no `.transform()`/`.catch()`/`.preprocess()` (see docs/protocol-compatibility.md). Regenerate zod-aot validation per docs/protocol-validation.md.
+Replaces `report_milestone` (clean cutover: tool renamed, schema extended, prompt injection updated; delete the old name everywhere).
 
 ```ts
-export const MissionControlEventKindSchema = z.enum([
-  "started",
-  "finished",
-  "failed",
-  "blocked",
-  "stalled",
-  "milestone",
-  "finding",
-  "diverged",
-]);
-// NO "progress" kind. "Still working" is the board's job. Do not add it.
-
-export const MissionControlProofSchema = z.object({
-  kind: z.enum(["url", "image", "diff", "command"]),
-  url: z.string().optional(),
-  path: z.string().optional(),
-  label: z.string().optional(),
-  additions: z.number().optional(),
-  deletions: z.number().optional(),
-  exitCode: z.number().optional(),
-});
-
-export const MissionControlEventSchema = z.object({
-  id: z.string(), // "mce_" + ulid
-  ts: z.string(), // ISO
-  agentId: z.string(),
-  agentTitle: z.string(),
-  kind: MissionControlEventKindSchema,
-  source: z.enum(["system", "summarizer", "self", "autopilot"]),
-  severity: z.enum(["info", "attention", "blocker"]),
-  headline: z.string(), // ≤ 120 chars, plain language
-  detail: z.string().optional(),
-  proof: z.array(MissionControlProofSchema).optional(),
-  supersedesId: z.string().optional(), // coalescing chain
-  coalescedCount: z.number().optional(),
-});
-export type MissionControlEvent = z.infer<typeof MissionControlEventSchema>;
-```
-
-RPCs (dotted namespaces per docs/rpc-namespacing.md; requests top-level params, responses under `payload` with `requestId`):
-
-| Message                                | Shape                                                                                                                |
-| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `mission_control.events.fetch.request` | `{ sinceTs?: string, limit?: number, requestId }` → response `payload: { events: MissionControlEvent[], requestId }` |
-| `mission_control.events.ack.request`   | `{ eventIds: string[], requestId }` → response `payload: { requestId }`                                              |
-| `mission_control.peers.list.request`   | `{ requestId }` → response `payload: { peers: MissionControlPeerStatus[], requestId }`                               |
-| push `mission_control_event`           | `{ type: "mission_control_event", event: MissionControlEvent }`                                                      |
-
-```ts
-export const MissionControlPeerStatusSchema = z.object({
-  name: z.string(), // config name, e.g. "macbook"
-  url: z.string(),
-  state: z.enum(["online", "unreachable"]),
-  lastSeenAt: z.string().nullable(), // for "unreachable since 12:03, likely asleep"
-});
-```
-
-Feature flag: add `missionControl: z.boolean().optional()` to the `features` object inside `ServerInfoStatusPayloadSchema` (`messages.ts:2944` area). Client gates the sidebar entry on it — old daemon → entry hidden, no fallback path.
-
-## Daemon config (`persisted-config.ts` / `daemon-config-store.ts`)
-
-```jsonc
-{
-  "missionControl": {
-    "retentionDays": 30, // feed retention, settable from Settings UI
-    "summarizer": {
-      "enabled": true,
-      "baseUrl": null, // default: process.env.LLM_GATEWAY_URL
-      "apiKey": null, // default: process.env.LLM_GATEWAY_KEY
-      "model": "extract", // tier alias — benchmarked: 0.8–1.1s, correct discrimination
-      "minNewItems": 12, // delta size that triggers a summarizer pass
-      "debounceSeconds": 30, // per-agent
-    },
-    "autopilot": {
-      "mode": "off", // off | observe | act — off default, inert
-      "model": null, // evaluator tier alias; null = gateway "smart" / omp "@slow"
-      "scope": "commander-spawned", // commander-spawned | all
-      "maxNudgesPerAgent": 2, // nudge verdict at the cap escalates instead
-    },
-  },
-  "peers": [
-    // commander-host daemon only, empty elsewhere
-    { "name": "macbook", "url": "tcp://<mac-vpn-ip>:6767", "password": "…" },
-    { "name": "blrofc3", "url": "tcp://100.105.100.71:6767", "password": "…" },
-    { "name": "iammvaibhav", "url": "tcp://10.7.0.1:6767", "password": "…" },
-  ],
+ReportStatusInput = {
+  status: "working" | "completed" | "inconclusive" | "blocked",
+  headline: string,        // <=120 chars, plain language
+  detail?: string,         // 1-2 sentences
+  kind?: "finding" | "fix" | "milestone" | "decision" | "progress",
+  title?: string,          // ONLY when the agent decides its title changed (it receives the old one)
+  description?: string,    // living short description, same rule
+  proofs?: Proof[],
+}
+Proof = {
+  kind: "image" | "video" | "api" | "code" | "pr" | "url",
+  path?: string,           // file on the agent's host
+  url?: string,
+  label?: string,
+  excerpt?: string,        // inline content for api/code proofs
 }
 ```
 
-All keys optional with defaults; absent config = feature on with defaults, summarizer silently disabled when no gateway URL resolves.
+Rules baked into the injected system-prompt appendix (daemon-side, rides the same injection path as today):
 
-## Server (`packages/server/src/server/mission-control/`)
+- Report at major steps only: root cause found, fix landed, tests green, blocked, direction changed, done. Silence between milestones.
+- `completed` means conclusively done — everything asked, finished. Any doubt, cut short, still in discussion: report `inconclusive`, never `completed`.
+- Claims of completion should carry proofs. The worker owns proving; verifiers will demand proof otherwise.
+- Prefer hub-wait over `sleep`/timeout polling loops (also added to Commander playbook and worker brief templates).
 
-Construct in `bootstrap.ts` next to `ScheduleService`; pass `agentManager`, `agentStorage`, config store, logger, broadcast fn.
+`status: "completed"` (or a finished run) moves the agent to ready-for-review. `title`/`description` updates flow through the identity path (board, tabs, everywhere — same names everywhere, no diffs).
 
-### `store.ts`
+## Lifecycle
 
-- `events.jsonl` under `$PASEO_HOME/mission-control/` — append-only JSONL, loaded on boot, pruned on boot + daily to `retentionDays` (default 30) and hard cap 5000 rows. Use `writeFileAtomic`/append pattern from `atomic-file.ts`.
-- `observations.json` — per-agent `{ lastTimelineSeq, lastSummarizerTs, lastEventByKind: Record<kind, eventId> }`.
-- Coalescing: a new unacked event of the same `(agentId, kind)` sets `supersedesId` to the previous one and increments `coalescedCount`; fetch returns only the heads of chains by default.
+Buckets: **Needs you** (blocked / failed / awaiting input / pending proposals) → **Running** → **Ready for review** → **Done**.
 
-### `service.ts` — detectors (no LLM)
+- Ready for review accrues only from rollout onward (finish events after this ships). Existing idle agents become **Dormant**: hidden by default, shown under the "All unarchived" toggle. A dormant agent that runs again enters the lifecycle normally.
+- Done is set by a Verifier verdict or the user. Semantics: bookkeeping only. Agent record untouched (idle, alive, forkable). Card links from pruned/archived agents degrade to the history view.
+- **Clear** (per-row and clear-all in the Done section): persisted acknowledgment; removes from Done display. Reopen: any new run or prompt puts the agent back in Running.
+- Board default view: last 30 days. Toggle: all unarchived agents regardless of age.
+- Retention prunes cards only. Mission Control never archives agents.
 
-Subscribe once to `AgentManager` (`AgentManagerEvent`, `agent-manager.ts:211`). Deterministic transitions → events:
+Store: `reviewState: "none" | "ready" | "done" | "cleared"` + `doneAt/clearedAt/verdict {by: "verifier"|"user", summary, at}` per agent, persisted in the mission-control store (same JSONL + snapshot pattern as events).
 
-| Transition                               | Event      | severity  |
-| ---------------------------------------- | ---------- | --------- |
-| first `running` for an agent             | `started`  | info      |
-| `attentionReason: "finished"`            | `finished` | info      |
-| `attentionReason: "error"` / turn_failed | `failed`   | attention |
-| pendingPermissions > 0 or question       | `blocked`  | blocker   |
-| stall detector fires                     | `stalled`  | attention |
+## Verifier
 
-Stall detector: per running agent, track last `agent_stream` timestamp + the kind of the tail timeline item. Thresholds: no in-flight tool call → `stalled` at 5 min; in-flight tool call (long builds/tests are legitimately quiet) → 20 min. One `stalled` event per stretch (coalesced).
+Ephemeral. One per ready-for-review item, spawned in that item's context. Concurrency cap 3 per host (config). Hidden from board buckets and workspace activity badges (same exclusion mechanism as History Ask agents). Scope setting kept: verify commander-spawned only, or all agents.
 
-Exclusions (both detectors and summarizer): agents labeled `paseo.mission-control=*`, `internal: true` agents, and agents with `paseo.parent-agent-id` (subagents — their parents report for them). Daemon restart: emit one `started`-suppressing grace window (60s) so a restart doesn't fire phantom `stalled`/`started` storms.
+- Spawn context (injected, complete): worker's launch brief, full `report_status` history, attached proofs, user messages tagged to that agent, worker agentId + host. **No transcripts, no timeline tools** — the verifier judges what was asked vs what was evidenced. It never re-does or investigates the work itself.
+- Verdict: done (with one-line summary → verdict card + mark done) or insufficient → contact the worker for proof/clarification.
+- **Worker exchange**: verifier tool `contact_worker { message }` → routed through the approval gate → delivered as steer to the worker with a reply marker. The daemon relays the worker's reply (its next report_status or final turn text) back into the verifier session as a message. Both directions are gated in Ask mode. First approval of a verifier↔worker pair can grant **allow-pair** (checkbox on the proposal card): the rest of that exchange auto-approves.
+- Model: omp `modelRoles.verifier` (ship a repo-managed role addition = copy of `task` values). Resolution: `@verifier` → `@task` → host default. Overridable in MC settings.
+- Definition: `packages/server/resources/verifier-agent.md` — omp agent definition (instructions: audit proofs against brief, demand missing proofs via contact_worker, never do the work, verdict format). Deployed to `~/.omp/agent/agents/verifier.md` by the existing deploy sync (add to deploy script inventory; document in the file header).
 
-### `summarizer.ts` — judgment (gateway `extract`)
+## Approval gate (Ask / Auto)
 
-Trigger per agent, debounced: ≥ `minNewItems` new timeline rows since `lastTimelineSeq`, or a `finished` transition (outcome headline). Build input:
+Every outbound send from mission-control machinery (Commander steer via its tools stays as-is — this gates _autonomous_ machinery: verifier contacts, stall nudges, commander digest-initiated steers) creates a Proposal:
 
-- **Brief**: all user messages so far (first message + steering) from the stored timeline — this IS the divergence contract; no separate intent record.
-- **Delta**: `curateAgentActivity` over rows after `lastTimelineSeq`, capped ~6k chars.
+```ts
+Proposal = {
+  id, createdAt, origin: "verifier" | "commander" | "stall",
+  serverId, targetAgentId, message, deliveryMode: "steer" | "interrupt",
+  reason: string, classification: "normal" | "destructive",
+  status: "pending" | "approved" | "denied" | "sent" | "expired",
+  allowPair?: boolean,
+}
+```
 
-Call `${baseUrl}/chat/completions`, `model: "extract"`, `response_format: {type:"json_object"}`, `max_tokens: 900`, timeout 120s, one retry. Expected shape `{ worth_posting: boolean, kind: "finding"|"fix"|"milestone"|"blocked"|"diverged"|"progress", headline, detail? }`. Mapping: `fix`→`milestone`; `progress` or `worth_posting:false` → drop silently; `blocked`/`diverged` → severity attention. Editorial rules enforced in code, not prompt trust: max one summarizer event per agent per pass; drop headlines that normalize to something already posted for that agent (lowercase, strip non-alphanumerics, exact match); never post while a deterministic event for the same transition is younger than 10s (dedupe).
+- **Ask mode (default)**: every proposal is a card in feed + Needs-you bucket with Approve / Edit / Deny. Edit opens the message for tweaking before send.
+- **Auto mode**: proposals send immediately and the card records what went out — EXCEPT: `classification: "destructive"` (prompt instructs machinery to classify anything touching prod/deploy/deletion/irreversible ops) → always asks; and presence/stop conflicts (below) → always ask.
+- **Presence & user-stop (ask, never block, even in Auto)**: if the target agent has `stoppedBy: "user"` on its last run, or any connected client is viewing it (`focusedAgentId` match with `appVisible`), the proposal downgrades to ask. `focusedAgentId` must be set by BOTH the workspace agent tab AND the Mission Control inspector.
+- `stoppedBy: "user"` is recorded when a cancel originates from a client session RPC; machinery-originated cancels record their origin.
+- Mode toggle lives in the Mission Control screen header (not settings). RPC-backed, instant.
+- User messages always outrank: send to a busy worker delivers as steer by default; `fleet_send_prompt` gains `mode: "steer" | "interrupt" | "queue"` (default steer).
 
-Never send secrets; the delta is curated activity text only. Summarizer failure = log + skip; deterministic events unaffected.
+## Commander
 
-### `digest.ts` — Commander delivery
+- **Single fleet Commander** on the designated commander host (central setting; iammvaibhav-class always-on host). Daemon boot ensures it exists (auto-create with label `paseo.mission-control=commander` if missing and this host is designated). Nothing needed in deploy scripts.
+- Fast model (routing over injected context needs no deep reasoning): default = host default omp model; central setting can override.
+- **Prompt layering (cache-preserving)**:
+  1. System prompt = static only: identity, playbook, safety, tool contract. Lives in repo markdown: `packages/server/src/server/mission-control/commander-prompt.md` (bundled at build; user instructions from settings appended). The orchestrator reminder moves here — never again in message bodies.
+  2. First conversation message = context pack snapshot: fleet map + per-host aliases, projects + descriptions, workspaces, roster (one line per live agent: name, title, status, last report headline, age; running + review only; cap 30), and **per-host invocable provider/model strings** — the exact `provider/model` values `create_agent`/`fleet_create_agent` accept, listed verbatim so the Commander never guesses provider strings (transcript failure: five rejected guesses). Refreshed via context updates when models change.
+  3. Deltas ride digests (append-only, cache-friendly). After omp compaction or session restart, next digest carries a fresh snapshot.
+- Digest queue unchanged (idle flush, user outranks). Digest content: full report_status lines. Exactly ONE `<paseo-system>` envelope per digest/context-update message (a live bug double-wraps: `<paseo-system> <paseo-system> Context update:` — fix at the composer).
+- **User → Commander delivery is interrupt** (replaceRunning), not steer — your message takes over immediately. The interrupt mechanics (cancel notices, resumed tool calls) are machinery noise hidden in normal mode (see App: verbose mode). Commander → workers stays steer-default.
+- **User-message tagging**: Commander records `relatedAgentIds` for each user message it handles (tool: `tag_message` or structured field in its reply pipeline — implementer's choice, must persist in store). Tagged messages feed verifier spawns. Fleet-wide remarks tag all active.
+- `fleet_get_agent_activity { host, agentId, limit? }`: new tool, same shape as local `get_agent_activity`, proxied over peering — kills "can't read its timeline from here".
+- Ack suppression: digests instruct — no prose when nothing needs action. Server drops pure-ack replies (single-token/`ok` heuristic) from the visible thread; log them.
+- **Stop button**: Mission Control header exposes Stop (cancels the Commander's active turn via the existing cancel RPC). Typing "stop" must never be the only way.
 
-Buffer all events (local + peer-forwarded). Flush when: Commander exists, `status === "idle"`, no in-flight run, and buffer non-empty (check on every agent_state change of the Commander + 30s sweep). Flush = one `<paseo-system>` digest listing events with deep links (`paseo://h/{serverId}/agent/{agentId}`), sent through `startAgentRun` with `replaceRunning: false` — **never interrupt**. If dispatch races a user prompt, keep buffering. Skip `finished`/`failed` for agents whose labels mark the Commander as parent (`notifyOnFinish` already covers those). The digest prompt must not trigger attention on the Commander.
+## Fleet search (`fleet_search`)
 
-### Activity peek (pre-existing bug fix, non-optional)
+The Commander must resolve "who worked on X?" without spelunking. One tool, tiered inside the daemon, cross-host via peering, results merged:
 
-`get_agent_activity` (`paseo-tools.ts:2998`) calls `ensureAgentLoaded` unconditionally — reading a closed agent resurrects its provider process. Add `peek?: boolean` param (default false, back-compat): when true, read the stored timeline via `AgentStorage`/timeline store without loading. MissionControlService always reads storage directly, never the tool.
+```ts
+fleet_search { query: string, limit?: number, deep?: boolean }
+→ { matches: [{ host, agentId, name, title, status, matchedIn: "identity"|"brief"|"reports"|"transcript", snippet }] }
+```
 
-### Peering (`packages/server/src/server/peers/`)
+1. **Tier 1 — deterministic context** (always): substring + fuzzy over what the daemon already holds — agent names, titles, descriptions, launch briefs, report_status history, workspace/project names + descriptions. Instant.
+2. **Tier 2 — full-text transcript scan** (when tier 1 is thin): bounded scan over stored agent timelines (last 30 days, newest first, capped work per host). This is where a PR URL pasted into a prompt gets found.
+3. **Tier 3 — History Ask** (only when `deep: true`): falls back to the existing History Ask LLM machinery and returns its structured matches. The Commander asks for `deep` explicitly when tiers 1-2 fail.
 
-`peer-manager.ts`: for each `peers[]` entry, hold a `DaemonClient` (`@getpaseo/client`) with `createNodeWebSocketFactory` (copy CLI: `packages/cli/src/utils/client.ts:250`), password auth, built-in reconnect. State machine: `online` ↔ `unreachable{lastSeenAt}`. Uses:
+Playbook: `fleet_search` is THE lookup path; `history_search` (metadata-only) remains for title-ish queries. `fleet_list_agents` is for rosters, not searching.
 
-1. Subscribe to peer `mission_control_event` pushes → forward into the local digest queue (feed stays client-aggregated; forwarding is only for the Commander).
-2. Fleet MCP tools for the Commander (`paseo-tools.ts`): `fleet_list_agents` (merge local + peers), `fleet_create_agent({ host, ... })`, `fleet_send_prompt({ host, agentId, ... })` — proxied through the peer client. Unreachable peer → tool error: `Host "macbook" unreachable since 12:03 (likely asleep). Work queued for other hosts is unaffected; retry after it wakes.` Never silently retry.
-3. `mission_control.peers.list` RPC for the UI.
+`fleet_list_agents` enrichment: each row gains name, title, short description, and the last few report_status headlines (cap 5, oldest→newest so trajectory reads naturally), plus optional last user message per agent. Payload stays bounded (roster caps per current behavior).
 
-Server may depend on `@getpaseo/client` (client depends only on protocol; no cycle; build order already builds client before server).
+## Stall detection v2 + watchdog
 
-### Context pack (`packages/server/src/server/mission-control/context.ts`)
+Data-derived thresholds (from 60-session analysis: inference gap p99 = 83s; hub-wait p90 = 19min):
 
-The Commander never discovers what the daemon already knows. A deterministic builder assembles its worldview; querying is the failure mode. Sections:
+- Silent >120s mid-run (no timeline rows) → status-ask **steer** through the approval gate ("post a one-line report_status, then continue").
+- Silent >300s → escalate: stalled event + Needs-you card.
+- **Wait-aware**: if the open tool call is a known wait (hub wait, subagent wait), threshold = declared timeout + 120s instead.
+- One nudge per silence episode; escalation once per episode; all logged.
+- **Reconciliation watchdog**: record `running` but provider runtime dead/exited >2min → self-heal record to error state, emit stalled event, log loudly. (Root-cause of the freeze itself is tracked separately by the user — do not chase it here.)
 
-1. **Fleet map** — hosts with user aliases from `missionControl.hostAliases` config (e.g. `blrofc3: "work server"`, `iammvaibhav: "personal server"`), reachability, capability notes, privacy posture (`blrofc3`: work-compliant providers only).
-2. **Inventory** — every project and workspace across all hosts with titles and descriptions (local registry + `mission_control.context.fetch.request` RPC served by every daemon, aggregated over peers). ~10 projects / ~30 workspaces; small enough to inline whole.
-3. **Models** — providers/models available per host plus omp `modelRoles` defaults (each daemon parses its local `~/.omp/agent/config.yml`; peers report theirs through the same RPC).
-4. **Roster** — recent and running agents with name, title, living description (see Identity).
-5. **Playbook** — exact tool invocations for each pattern: task on host X (`fleet_create_agent`), new worktree workspace off main/master, new project from a GitHub link, continue vs fork vs fresh agent (fork when context helps but the task differs; same agent for a continuation; fresh when no context needed).
-6. **Smart defaults** — user's wording always wins; otherwise: default dispatch host from `missionControl.defaultHost`, reuse a matching existing workspace, dispatch-don't-discuss.
+## Protocol
 
-Injected into the Commander's **replaced** system prompt at launch; refreshed by piggybacking a compact delta on digests when the inventory changed. Staleness tolerated between refreshes.
+Per docs/rpc-namespacing.md and docs/protocol-compatibility.md. Additive only; wire schemas pure; regenerate zod-aot validators.
 
-### Commander contract
+- `mission_control.lifecycle.set.request/response` — mark done / clear / reopen `{ serverId, agentId, action }`.
+- `mission_control.proposals.respond.request/response` — approve/deny/edit `{ proposalId, action, editedMessage?, allowPair? }`.
+- `mission_control.mode.set.request/response` — ask/auto.
+- `mission_control.config.get/patch.request/response` — central settings (stored on commander host).
+- `mission_control.events.fetch` — gains cursor paging (`beforeSeq`, `limit`).
+- `mission_control.search.request/response` — `{ query, limit?, deep? }` → `{ matches }`; the full tiered search runs inside the owning daemon; the commander host merges local + peer results (mirrors `fleet_list_agents`).
+- Push: proposals and lifecycle changes ride the existing `mission_control_event` push as new event kinds: `proposal`, `verdict`, plus `source: "verifier"`.
+- Feature flag: `server_info.features.missionControlV3: true`. App gates once.
 
-The Commander is an orchestrator, not a coding agent. Three enforcement layers, strongest first:
+## Config
 
-1. **Tool restriction (hard)** — spawn with only the Paseo MCP tools it needs (`fleet_*`, `create_agent`, `send_agent_prompt`, `get_agent_status`, `get_agent_activity` peek, `list_agents`, workspace/project tools, history search). No bash, no file editing, no task subagents. Use omp's tool-selection surface (`--no-tools` exists; find the selective allowlist in `src/cli/flag-tables.ts:309` area) threaded through the omp provider launch args per-agent.
-2. **System prompt replacement (strong)** — omp `--system-prompt` renders `custom-system-prompt.md`, replacing the coding harness entirely (`src/system-prompt.ts:894`). Paseo already carries per-agent `config.systemPrompt` (`agent-sdk-types.ts:578`) but always emits `--append-system-prompt` (`omp/runtime.ts:94-147`); add `systemPromptMode: "append" | "replace"` so the Commander replaces. The replaced prompt = persona + CAN/CANNOT + context pack.
-   - CAN: dispatch, report status from context, name agents/workspaces, ask the user.
-   - CANNOT: run commands, read or edit files, debug failures (report them and offer to dispatch a debug agent), approve permissions, archive anything, restart daemons.
-3. **Per-prompt reminder (soft)** — every digest ends with one fixed line restating the contract, so long sessions cannot drift.
+Per host (`config.json` → daemon):
 
-Evidence this is needed: the first live Commander answered "spin up an agent on blrofc3 that replies Ok" with 25 tool calls — CLI spelunking, provider-auth debugging, daemon-log reading on two hosts — because the appended brief sat under omp's full coding prompt.
+- `missionControl.enabled`
+- `missionControl.hostAlias` — THIS machine's alias ("work server"). Fleet map assembles aliases from each host's own declaration. No hardcoded machine lists anywhere.
 
-### Identity: names, titles, descriptions
+Central (stored on commander host, edited from anywhere via `mission_control.config.*`):
 
-Every agent gets three fields; all optional on the wire (protocol back-compat):
+- `commanderHost`, `commanderModel?`, `commanderInstructions`
+- `verifierModel?`, `verifierConcurrency` (default 3), `evaluationScope: "commander" | "all"`
+- `mode: "ask" | "auto"` (default ask), `retentionDays` (default 30)
+- `namingTheme`, `hideAgentNames` (default false), `defaultDispatchHost`
+- Stall thresholds (`nudgeSeconds` 120, `escalateSeconds` 300)
 
-| Field         | Nature                                                                      | Producer                                                                                                                                                                                              |
-| ------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`        | Fun stable identifier ("Ripley") assigned at creation, fleet-wide, editable | Daemon naming service: curated pools, theme from `missionControl.naming.theme` (`mixed` default; `indian`, `cartoon`, `scientists`, `astronauts`, `mythology`, `nature`), collision-avoiding per host |
-| `title`       | Task summary, kept stable                                                   | Existing pipeline (`create-agent-title.ts`); re-titled only when a milestone summary differs significantly                                                                                            |
-| `description` | Living one-liner, refreshed at milestones                                   | Mission Control summarizer pass doubles as the refresher; persists via `agentManager.updateAgentMetadata`                                                                                             |
+## App
 
-- Add `name` + `shortDescription` to `StoredAgentRecord` and `AgentSnapshotPayload` (optional fields).
-- **Backfill on boot**, idempotent: agents missing a name get one; closed agents missing a description get one generated; untitled workspaces run through `workspace-auto-name.ts`.
-- **Identity injection**: the created agent is told its own name/title in its first prompt envelope, so "what's the status of the task involving X" is answerable by the Commander AND the agent knows itself.
-- **Compliance**: description/title generation uses the existing `agents.metadataGeneration.providers` fallback chain (`structured-generation-providers.ts`) — per-daemon config keeps blrofc3 on claude/cursor/codex. Mission Control feed summaries stay on the gateway for macbook/iammvaibhav; blrofc3's summarizer backend is `missionControl.summarizer.backend: "gateway" | "omp"` where `omp` shells `omp -p --no-tools --no-session --no-skills --no-rules --model @smol "…"` (~0.5–1s overhead, acceptable at milestone rate).
+- **Screen**: `[left sidebar (existing collapse)] [Commander thread (collapsible to thin strip)] [Inspector] [board rail (drag-resizable)]`.
+  - Board row click AND full feed-card click (entire card is pressable, not just the name) → agent opens in Inspector in place. Repeated clicks swap content. No navigation, no tabs.
+  - Inspector = embedded `AgentStreamView` **with composer** (reply in place). Header: agent name/title, host glyph, "Open in workspace →" (the only thing that navigates). Inspector reports `focusedAgentId` via the existing heartbeat.
+  - Compact form factor: Inspector becomes a full-screen push with back; no split.
+- **Board**: running sorted by name (stable); review/done by time desc. Rows: title is the key line, name is the identity chip, one-line last-report. Host shown as a small glyph avatar: deterministic accent color from serverId + host alias initial (or per-host emoji override in host settings), tooltip = full name — design-token native.
+- **Badges**: sidebar Mission Control row shows working count + ready-for-review count (two segments, both when both exist).
+- **Thread**: cursor paging on scroll-up (no more hardcoded 200-and-done), windowed unloading; composer gutter aligned with chat content like every other screen.
+- **Tool rendering**: per-tool renderers hooked into the existing presentation registry: `fleet_send_prompt` → "→ Steered **Name** (host)" header + collapsed markdown body; `fleet_list_agents` → one-line "Checked fleet roster · N agents", expandable; `create_agent`/`fleet_create_agent` → "Spawned **Name** on host". No raw JSON dumps for known tools.
+- **Native chips**: `paseo://` agent links in Commander prose render as inline agent chips (same component as feed cards), not text links.
+- **Proposal cards**: Approve / Edit / Deny (+ allow-pair checkbox for verifier exchanges). Pending proposals also surface in Needs-you.
+- **Verbose mode** (per-device UI toggle in the MC header overflow, default OFF): normal mode shows your conversation, status/verdict/proposal cards, and pretty-rendered dispatch actions ONLY — Commander tool-call internals, thinking, inbound `<paseo-system>` digest/context messages, and interrupt mechanics are hidden. Verbose shows everything (the debug view). Digest inbound messages are pure machinery duplicating the cards — normal mode never renders them.
+- **Card consistency**: every status update renders as the same uniform visible card — started, finished, failed, milestone, verdict. Nothing status-like is ever collapsed behind a divider. Collapsed-by-default is reserved for proofs and pretty-rendered tool bodies. (Live bug: fleet-digest system rows render as a collapsed "finished or failed with an error" divider while other statuses are cards — that row class disappears with digest hiding above.)
+- **Started-card enrichment**: the started card renders live agent identity — once the agent's first report_status lands a title/description, the SAME card shows it (reactive join on agent identity, no new event row). A started card should never read as a bare "agent started" once anything better is known.
+- **Keep Mission Control mounted**: navigating away and back must not remount/refetch/re-scroll. The screen stays alive (route kept in memory per docs/expo-router.md constraints — freeze, don't unmount), scroll position is preserved exactly, no restore animation, no flicker. Snappy is the acceptance bar: return to MC is instant and visually still.
+- **Stop button** in the header (see Commander section).
+- **Names**: daemon-held naming map; theme switch re-maps instantly and broadcasts; `hideAgentNames` toggle hides chips leaving titles.
+- **Settings**: new central Mission Control settings screen (fleet policy; NOT inside any host's overview). Host overview keeps only alias + enabled. Ask/Auto toggle is in the MC header, mirrored read-only in settings.
+- **Proofs**: feed cards and thread render proof sections collapsed by default ("Image proof", "API proof", ...). Image → existing image pipeline; video → new renderer (expo-video native, `<video>` web); api/code → code blocks from excerpt; pr/url → chip. Cross-host media: authenticated daemon file-fetch RPC proxied over peering, size-capped, pruned with retention.
+- **Project descriptions**: `description` field on project records + edit sheet textarea; injected into Commander context pack for routing.
 
-### History integration
+## Naming backfill (one-time, via omp scout — no in-daemon provider calls)
 
-Commander tool `history_search` reusing the History Ask machinery. Contract in the prompt: roster first; on miss, offer History search; go straight to History when the user says so.
+- Agents (all hosts): assign name + title + description for existing agents missing them. Runs as an omp one-shot per host against daemon RPCs.
+- Workspaces: generate old→new rename proposals (max 5 words, descriptive) ONLY for titles equal to derived defaults (branch/dir slugs). Present as a proposal card for one-shot user approval; never auto-apply. Set-once going forward: workspace names never auto-change after creation; agents name workspaces they create; titles are the living layer.
 
-## App (`packages/app`)
+## Logging
 
-### Route + chrome
-
-- `src/app/mission-control.tsx` — `HostRouteBootstrapBoundary` + `MissionControlScreen` (copy `app/schedules.tsx`, 10 lines).
-- `buildMissionControlRoute()` in `src/utils/host-routes.ts`.
-- `src/app/_layout.tsx`: `Stack.Screen name="mission-control"` + `/mission-control` in `shouldShowAppChrome` (~lines 873, 902). **Never** the cold-start destination (docs/expo-router.md).
-
-### Sidebar
-
-Both desktop (`left-sidebar.tsx` ~909) and mobile (~715) stacks: new `SidebarHeaderRow` **directly under New workspace, above History**. `SidebarHeaderRow` has NO badge prop today (verified: props are icon/label/onPress/isActive/testID/nativeID/accessibilityLabel/variant/shortcutKeys) — add optional `badgeCount?: number` rendering a small count pill; badge = `needs_input + failed` agents from `useAggregatedAgents`. Gate the row on `features.missionControl` of at least one connected host.
-
-### Data
-
-`src/data/` replica pattern (`push-router.ts` + `query.ts`): register `mission_control_event` push + `mission_control.events.fetch` per host; new hook `useAggregatedMissionControlEvents()` merges hosts client-side (mirror `use-aggregated-agents.ts` — the feed is cross-host from day one without peering).
-
-### Screen (`src/screens/mission-control-screen.tsx`)
-
-Desktop layout: center thread + right board rail. Compact/mobile: board is a panel/tab, thread is primary (docs/mobile-panels.md patterns).
-
-- **Board rail**: agent-keyed variant of `sidebar-status-list.tsx` grouping by `deriveAgentStateBucket` order `needs_input → failed → running → attention → done`, host badge per row, one-line activity, click → `openAgentFromHistory({serverId, agentId})`. Host offline → explicit "host offline" row (agents must not silently vanish).
-- **Thread**: ONE chronological list merging feed cards and Commander conversation (user decision — no two-pane split). Implementation: `MissionControlThread` FlatList over a union of `{kind:"event", event}` and `{kind:"commander", timelineItem}` sorted by ts; Commander items rendered with the same message components `AgentStreamView` uses (embedding precedent: `panels/provider-subagent-panel.tsx`, `composer/draft/workspace-tab.tsx`). Feed cards: icon per kind, headline, agent chip (deep link), proof chips, relative time; blocker severity pinned styling.
-- **Scroll**: bottom-anchored; when detached (user scrolled up), freeze and show "N new ↓" pill; auto-follow only at bottom. Reuse the existing bottom-anchor controller; read `skill://chat-scroll-freeze` before touching this.
-- **Composer**: existing `Composer`, pinned bottom, sends to the Commander agent on its configured host.
-- Unistyles rules apply (`useUnistyles()` forbidden in feed rows — docs/unistyles.md); hover per docs/hover.md.
-
-### Commander launch (`src/mission-control/launch.ts`)
-
-Client-first `createAgent` on the configured Commander host (screen setting, persisted in app storage), labels `{ "paseo.mission-control": "commander" }`, unattended mode, `systemPromptMode: "replace"` with the contract prompt + context pack. **No visible brief message** — the instructions live in the system prompt, not the thread. Model: **last model selected in the Commander** (persisted per host in app storage; when the user changes it via the normal picker, remember it); falls back to orchestration preferences on first run. Screen recreates the Commander if archived.
-
-### Commander invisibility
-
-The `paseo.mission-control=commander` label hides the Commander everywhere except Mission Control: excluded from board buckets and the sidebar badge count client-side; its home-dir workspace hidden from the sidebar (extend the existing home-dir hiding rule); not archivable from any UI surface; never in Running/Done. Do NOT use `internal: true` (kills History).
-
-### Settings
-
-Host settings page (`screens/settings/host-page.tsx` + `use-daemon-config.ts` patchConfig): "Mission Control" card — retention days (default 30), summarizer toggle + backend (`gateway`/`omp`), default dispatch host, host alias fields, naming theme picker, editable Commander instructions (multiline, defaults to the shipped contract). Follow docs/forms.md.
-
-## Milestone self-reporting (hybrid)
-
-The summarizer alone misses the best milestones: it reads transcripts third-hand, its trigger is conservative, and provider-internal subagents are invisible to the daemon entirely. Self-reporting is primary; the summarizer is the backstop.
-
-- **`report_milestone` MCP tool** (all agents): `{ kind: "finding"|"milestone"|"blocked"|"diverged", headline (≤120 chars), detail?, proof? }` → straight into the event store as `source: "self"`, instant, zero LLM cost. Rate-limited per agent (max 1/min, coalescing rules apply unchanged). Excluded agents (mission-control labels) get a polite error. Kill-switch: `missionControl.selfReport.enabled` (default true) also removes the prompt paragraph.
-- **Prompt injection**: one paragraph in the daemon-injected append system prompt (reaches every provider with prompt plumbing, including hand-started agents): report once per real milestone — found the cause, fixed it, tests green, blocked, changed approach; never progress updates. Parents report for provider-internal subagents. Omitted for mission-control-labeled agents.
-- **Summarizer demotion**: skip the summarizer pass for any agent that self-reported within the last N items (default: since the last pass cursor); it runs only for silent agents. Finished-transition outcome pass stays for everyone.
-- **Hardening**: gateway JSON parsing reuses the fence-tolerant extractor from the omp backend; a shape failure logs the raw body (truncated) and does not advance the cursor.
-
-## Autopilot
-
-Evaluate-and-act on worker completion. The Commander routes on a cheap model; judgment runs on a smart one. The evaluator never investigates — it is a verifier (what did the agent do) and a commander (accept / nudge / escalate), nothing else.
-
-- **Trigger**: a worker's `finished` event (scope config: `commander-spawned` default | `all`).
-- **Evaluator pass**: ephemeral, per event — no resident agent, no context growth. Input: the worker's brief (its user messages), activity delta since last verdict, self-reported milestones, proof. Backend: same switch as the summarizer (`gateway` | `omp` one-shot) but on the **evaluator model** (`missionControl.autopilot.model`, default a smart tier/opus-class; the Commander's own model stays cheap and separately configurable).
-- **Verdict** (structured): `accept` — mark complete, feed card notes it; `nudge` — daemon sends the worker precise follow-up instructions verbatim from the verdict; `escalate` — blocker card + digest to Commander/user with the reason.
-- **Boundaries** (the aggressiveness dial): `maxNudgesPerAgent` (default 2, then forced escalate); nudges never expand scope beyond the original brief; never touches permission prompts; `mode: off | observe | act` — `observe` posts verdicts as feed cards without acting, `act` sends nudges automatically. Default is `off` (safety first; rollout starts inert until the operator flips the mode in Settings).
-- Config: `missionControl.autopilot: { mode, model, scope, maxNudgesPerAgent }` + settings card controls.
-
-## Build order (waves)
-
-| Wave | Slices (parallel)                                                                                                                                                                                            |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1    | **A** protocol · **B** server service+RPCs+config · **C** app route/sidebar/badge/data/board · **D** app thread/composer/commander/settings · **E** server peek fix+digest queue · **F** peering+fleet tools |
-| 2    | integration: `npm run build:client && npm run build:server`, typecheck, lint, fix fallout                                                                                                                    |
-| 3    | verification: dev daemon + browser-driven web UI + small live agents (deepseek v4 flash free; gemini 3.6 flash on blrofc3)                                                                                   |
-
-Cross-slice contract = the schemas and names in this doc, verbatim. Slices must not run repo-wide validation mid-flight.
-
-## Verification checklist
-
-1. Dev daemon boots with `MissionControlService`; `server_info.features.missionControl === true`.
-2. Sidebar shows Mission Control under New workspace; badge counts needs-you agents.
-3. Board lists agents across configured hosts, buckets ordered, click-through works.
-4. Start a small agent → `started` card appears; let it work → summarizer posts ≤1 milestone card (or stays silent); finish → `finished` card with outcome headline.
-5. Commander answers a message, dispatches a worker, stays responsive; digest arrives only when idle (verify no turn interruption in daemon logs).
-6. Kill gateway env → summarizer disabled, deterministic cards still flow.
-7. Peer configured → remote agent events reach Commander digests; unplug peer → peers.list shows `unreachable` with lastSeen; fleet tool error mentions "likely asleep".
-8. Retention: events older than configured days pruned on boot.
+Every background mechanism logs structured lines under `module: "mission-control"` with `component`: `digest` (queue depth, flush, ack-drop), `verifier` (spawn, exchange, verdict), `approvals` (proposal created/resolved/sent/expired), `stall` (nudge/escalate/watchdog-heal), `context` (snapshot injected, size), `naming` (re-map, backfill). `grep mission-control ~/.paseo/daemon.log` must tell the whole story.
 
 ## Edge cases (bound decisions)
 
-- Commander/monitor agents excluded from their own feed (label filter) — no feedback loops.
-- Notification dedupe: `blocked` push notifications suppressed when the existing per-agent attention push already fired for the same permission request.
-- Daemon restart: 60s grace; single "host restarted" info event instead of phantom storms.
-- Digest rows in the thread render as a collapsed one-line divider ("Fleet digest · N events", expandable) — never raw `<paseo-system>` text. Unknown provider history records (e.g. `credential_pin`) and OMP notices render muted or not at all, never as inline prose.
-- Thread auto-follows at bottom; the "N new" pill appears only when the user has scrolled up. Pill uses theme tokens.
-- Entering Mission Control restores the exact scroll position you left (bottom-anchored if you left at bottom); no reflow jumps while content loads.
-- Archived agents: never archive the Commander from the screen (guard in UI); heartbeats are NOT used anywhere in this design.
-- 10 agents blocked at once: one coalesced blocker card listing all, not ten cards.
+- Commander/Verifier excluded from all board buckets, badge counts, and feed self-loops (label filter).
+- Verifier crash/timeout → item stays ready-for-review, retry once, then Needs-you card.
+- Proposal expiry: 24h → `expired`, card dims.
+- Worker archived while proposal pending → proposal expires.
+- Host offline: board shows "host offline" row; queued sends deliver on reconnect (existing peer queue semantics).
+- Ack-drop heuristic must never drop a reply containing a question, proposal, or any tool call.
+- 10 agents finishing at once: one digest, verifiers capped at 3, no interrupts of the Commander mid-turn.
+
+## Verification checklist (dev stack; NEVER restart the production daemon on 6767)
+
+1. Worker self-reports via report_status → instant feed card; completed → ready-for-review; verifier spawns, audits, marks done (or demands proof; exchange relay works; allow-pair works).
+2. Ask mode: stall nudge and verifier contact produce proposal cards; Approve sends steer; Edit modifies; Deny kills. Auto mode: sends immediately; destructive classification still asks; viewing the target in Inspector forces ask.
+3. Board: stable order while multiple agents stream; buckets correct; dormant hidden until toggle; Done + Clear semantics; badges.
+4. Inspector: card/row click opens in place, composer replies, focusedAgentId reported, Open-in-workspace navigates.
+5. Commander: boot-ensured, static system prompt (no reminder in messages), context pack as first message, digest deltas, ack turns suppressed, fleet_get_agent_activity works cross-host on dev (single host: local fallback path).
+6. Thread: scroll-up pages older events; composer aligned.
+7. Tool calls render pretty; agent links render as chips.
+8. Proofs: image + code + api render collapsed/expandable; video renders (sample file); cross-host fetch path exercised (dev: same-host).
+9. Watchdog: kill a worker's provider process → record self-heals + stalled event.
+10. Typecheck, lint, format, build:client, build:server all green.

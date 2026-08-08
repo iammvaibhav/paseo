@@ -17,6 +17,7 @@ export interface ProjectHostEntry {
   projectId: string;
   projectName: string;
   projectCustomName: string | null;
+  projectDescription: string | null;
   serverName: string;
   isOnline: boolean;
   repoRoot: string;
@@ -83,6 +84,7 @@ interface HostGroup {
   projectId: string;
   projectName: string;
   projectCustomName: string | null;
+  projectDescription: string | null;
   serverName: string;
   isOnline: boolean;
   workspaces: WorkspaceDescriptor[];
@@ -102,12 +104,13 @@ interface ProjectGroup {
 function findProjectMetadata(
   host: ProjectHost,
   projectId: string,
-): { customName: string | null; displayName: string } | null {
+): { customName: string | null; displayName: string; description: string | null } | null {
   for (const project of host.projects) {
     if (project.projectId === projectId) {
       return {
         customName: project.projectCustomName ?? null,
         displayName: project.projectDisplayName,
+        description: project.projectDescription ?? null,
       };
     }
   }
@@ -151,6 +154,7 @@ function toHostEntry(group: HostGroup): ProjectHostEntry {
     projectId: group.projectId,
     projectName: group.projectName,
     projectCustomName: group.projectCustomName,
+    projectDescription: group.projectDescription,
     serverName: group.serverName,
     isOnline: group.isOnline,
     repoRoot,
@@ -219,6 +223,7 @@ function addHostProjects(
         projectId,
         projectName: customName?.displayName ?? hostProject.projectName,
         projectCustomName: customName?.customName ?? null,
+        projectDescription: customName?.description ?? null,
         serverName: host.serverName,
         isOnline: host.isOnline,
         workspaces: [],

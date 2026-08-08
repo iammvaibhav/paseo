@@ -282,6 +282,7 @@ function createNoopProjectRegistry(): ProjectRegistry {
       projectKey: input.projectKey ?? null,
       customName: null,
       customIconRevision: null,
+      description: null,
       createdAt: input.timestamp,
       updatedAt: input.timestamp,
       archivedAt: null,
@@ -1587,6 +1588,9 @@ export class VoiceAssistantWebSocketServer {
         projectAdd: true,
         // COMPAT(projectList): added in v0.2.4, drop the gate when floor >= v0.2.4.
         projectList: true,
+        // Mission Control v3: review lifecycle, approval gate, central config.
+        // App gates the v3 screen once on this flag.
+        missionControlV3: true,
         // COMPAT(worktreeRestore): keep through 2027-01-11 for clients older than v0.1.105.
         worktreeRestore: true,
         // COMPAT(workspaceRecovery): added in v0.1.105, remove after 2027-01-11 once daemon floor >= v0.1.105.
@@ -2372,6 +2376,25 @@ export class VoiceAssistantWebSocketServer {
       focusedTerminalId: activity.focusedTerminalId,
       lastActivityAtMs: activity.lastActivityAt.getTime(),
     };
+  }
+
+  /**
+   * Whether any trusted connected client is currently viewing the agent: the
+   * client heartbeat reports focusedAgentId and the app/tab is visible.
+   * Consumed by the Mission Control approval gate (presence source) so
+   * outbound machinery sends downgrade to ask while a user is watching.
+   */
+  anyClientFocusedOnAgent(agentId: string): boolean {
+    for (const [, connection] of this.sessions) {
+      if (connection.kind !== "trusted") {
+        continue;
+      }
+      const state = this.getClientActivityState(connection.session);
+      if (state.appVisible && state.focusedAgentId === agentId) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private async broadcastAgentAttention(params: {

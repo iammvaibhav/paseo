@@ -1016,6 +1016,8 @@ export const ko: TranslationResources = {
       sessions: "기록",
       schedules: "일정",
       missionControl: "Mission Control",
+      missionControlWorking: "작업 중",
+      missionControlReady: "검토 대기",
       webhooks: "Webhooks",
     },
     worktreeSetup: {
@@ -1776,6 +1778,7 @@ export const ko: TranslationResources = {
       integrations: "통합",
       permissions: "권한",
       diagnostics: "진단",
+      missionControl: "Mission Control",
       about: "정보",
     },
     editor: {
@@ -2376,6 +2379,9 @@ export const ko: TranslationResources = {
         useAutomatic: "자동 사용",
         imageUrl: "이미지 또는 웹사이트 URL",
         save: "변경사항 저장",
+        description: "Description",
+        descriptionLabel: "Project description",
+        descriptionPlaceholder: "What this project is for",
         savedToast: "프로젝트가 업데이트되었습니다.",
       },
       readFailures: {

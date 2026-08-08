@@ -1045,6 +1045,8 @@ export const es: TranslationResources = {
       sessions: "Historial",
       schedules: "Horarios",
       missionControl: "Mission Control",
+      missionControlWorking: "Agentes activos",
+      missionControlReady: "Listos para revisión",
       webhooks: "Webhooks",
     },
     worktreeSetup: {
@@ -1809,6 +1811,7 @@ export const es: TranslationResources = {
       integrations: "Integraciones",
       permissions: "Permisos",
       diagnostics: "Diagnóstico",
+      missionControl: "Mission Control",
       about: "Acerca de",
     },
     editor: {
@@ -2413,6 +2416,9 @@ export const es: TranslationResources = {
         useAutomatic: "Usar automático",
         imageUrl: "URL de imagen o sitio web",
         save: "Guardar cambios",
+        description: "Description",
+        descriptionLabel: "Project description",
+        descriptionPlaceholder: "What this project is for",
         savedToast: "Proyecto actualizado",
       },
       readFailures: {

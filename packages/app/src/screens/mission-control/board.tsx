@@ -1,56 +1,61 @@
-import { useCallback, useMemo } from "react";
+import { memo, useCallback, useMemo, useState, type ReactElement } from "react";
 import { FlatList, Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { CircleAlert, CircleCheck, CircleDot, CircleX } from "lucide-react-native";
 import type { Theme } from "@/styles/theme";
-import { useAggregatedAgents, type AggregatedAgent } from "@/hooks/use-aggregated-agents";
-import { useHostBadges } from "@/hosts/use-host-badges";
-import { HostBadge } from "@/hosts/host-badge";
-import type { HostBadgeModel } from "@/hosts/appearance";
-import { useHostRuntimeConnectionStatuses, useHosts } from "@/runtime/host-runtime";
-import { STATUS_BUCKET_LABELS } from "@/hooks/sidebar-status-view-model";
-import { deriveSidebarStateBucket, type SidebarStateBucket } from "@/utils/sidebar-agent-state";
-import { getStatusDotColor } from "@/utils/status-dot-color";
+import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import { useMissionControlLifecycle } from "@/mission-control/use-mission-control-lifecycle";
+import { useMissionControlCentralConfig } from "@/mission-control/central-config";
+import { HostGlyph } from "@/mission-control/host-glyph";
+import {
+  LIFECYCLE_BUCKET_LABELS,
+  type LifecycleBucket,
+  type LifecycleRow,
+} from "@/mission-control/lifecycle";
+import { useInspectorStore } from "./inspector-store";
 import { useCompactTimeAgo } from "@/hooks/use-compact-time-ago";
-import { openAgentFromHistory } from "@/workspace/open-agent-from-history";
-import { isCommanderAgent } from "@/mission-control/labels";
-
-// Board bucket order per the Mission Control spec — needs-input and failures
-// first, done last. Distinct from the sidebar's status-list order on purpose.
-const BOARD_BUCKET_ORDER: readonly SidebarStateBucket[] = [
-  "needs_input",
-  "failed",
-  "running",
-  "attention",
-  "done",
-];
+import {
+  getHostRuntimeStore,
+  useHostRuntimeConnectionStatuses,
+  useHosts,
+} from "@/runtime/host-runtime";
 
 const ThemedCircleAlert = withUnistyles(CircleAlert);
 const ThemedCircleCheck = withUnistyles(CircleCheck);
 const ThemedCircleDot = withUnistyles(CircleDot);
 const ThemedCircleX = withUnistyles(CircleX);
 
-function bucketIcon(bucket: SidebarStateBucket) {
-  switch (bucket) {
-    case "needs_input":
-      return ThemedCircleAlert;
-    case "failed":
-      return ThemedCircleX;
+const warningColorMapping = (theme: Theme) => ({ color: theme.colors.statusDotWarning });
+const dangerColorMapping = (theme: Theme) => ({ color: theme.colors.statusDotDanger });
+const runningColorMapping = (theme: Theme) => ({ color: theme.colors.statusDotRunning });
+const successColorMapping = (theme: Theme) => ({ color: theme.colors.statusDotSuccess });
+const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundExtraMuted });
+
+/** Per-row leading glyph: failure stays red, awaiting-input amber, running blue,
+ * ready success green, done/dormant quiet. One status token per signal (§13). */
+function rowIconAndColor(row: LifecycleRow) {
+  switch (row.bucket) {
+    case "needs_you": {
+      const failed = row.agent.status === "error" || row.agent.attentionReason === "error";
+      return failed
+        ? { Icon: ThemedCircleX, mapping: dangerColorMapping }
+        : { Icon: ThemedCircleAlert, mapping: warningColorMapping };
+    }
     case "running":
-      return ThemedCircleDot;
-    case "attention":
+      return { Icon: ThemedCircleDot, mapping: runningColorMapping };
+    case "ready":
+      return { Icon: ThemedCircleCheck, mapping: successColorMapping };
     case "done":
-      return ThemedCircleCheck;
+      return { Icon: ThemedCircleCheck, mapping: mutedColorMapping };
+    case "dormant":
+      return { Icon: ThemedCircleDot, mapping: mutedColorMapping };
   }
 }
 
-const bucketColorMapping = (theme: Theme, bucket: SidebarStateBucket) => ({
-  color: getStatusDotColor({ theme, bucket }) ?? theme.colors.foregroundExtraMuted,
-});
-
 type BoardItem =
-  | { kind: "bucket"; bucket: SidebarStateBucket; label: string }
-  | { kind: "agent"; agent: AggregatedAgent; bucket: SidebarStateBucket }
+  | { kind: "bucket"; bucket: LifecycleBucket; label: string }
+  | { kind: "agent"; row: LifecycleRow }
   | { kind: "offlineHost"; serverId: string; label: string };
 
 function itemKey(item: BoardItem): string {
@@ -58,53 +63,84 @@ function itemKey(item: BoardItem): string {
     case "bucket":
       return `bucket:${item.bucket}`;
     case "agent":
-      return `agent:${item.agent.serverId}:${item.agent.id}`;
+      return `agent:${item.row.agent.serverId}:${item.row.agent.id}`;
     case "offlineHost":
       return `offline:${item.serverId}`;
   }
 }
 
-export function MissionControlBoard({ testID }: { testID?: string } = {}) {
-  const { agents } = useAggregatedAgents();
+async function clearAgentLifecycle(serverId: string, agentId: string): Promise<void> {
+  const client = getHostRuntimeStore().getClient(serverId);
+  if (!client) {
+    return;
+  }
+  const payload = await client.missionControlLifecycleSet({
+    serverId,
+    agentId,
+    action: "clear",
+  });
+  if (!payload.ok) {
+    throw new Error(payload.error ?? "Failed to clear");
+  }
+}
+
+function MissionControlBoardEmpty(): ReactElement {
+  return (
+    <Text style={styles.emptyState} testID="mission-control-board-empty">
+      No active agents
+    </Text>
+  );
+}
+
+export function MissionControlBoard({
+  testID,
+  hideAgentNames = false,
+}: {
+  testID?: string;
+  /**
+   * Central-config preference: hide name chips, leaving titles (spec).
+   * Defaults to the central config read; the prop lets callers override.
+   */
+  hideAgentNames?: boolean;
+} = {}) {
+  const [showAll, setShowAll] = useState(false);
+  const centralConfig = useMissionControlCentralConfig();
+  const resolvedHideAgentNames = hideAgentNames || centralConfig.config?.hideAgentNames === true;
+  const { groups } = useMissionControlLifecycle({
+    showAll,
+    retentionDays: centralConfig.config?.retentionDays,
+  });
   const hosts = useHosts();
   const serverIds = useMemo(() => hosts.map((host) => host.serverId), [hosts]);
   const connectionStatuses = useHostRuntimeConnectionStatuses(serverIds);
-  const hostBadges = useHostBadges({ enabled: true });
+
+  const doneRows = useMemo(
+    () => groups.find((group) => group.bucket === "done")?.rows ?? [],
+    [groups],
+  );
+
+  const handleClearAll = useCallback(() => {
+    // Clear every Done row on its own host. Fire-and-forget per agent; the
+    // "Cleared" verdict cards push back and refresh the board.
+    for (const row of doneRows) {
+      void clearAgentLifecycle(row.agent.serverId, row.agent.id).catch(() => {
+        // A failed clear leaves the row in Done; the next push reconciles.
+      });
+    }
+  }, [doneRows]);
 
   const items = useMemo<BoardItem[]>(() => {
-    const agentsByBucket = new Map<SidebarStateBucket, AggregatedAgent[]>();
-    for (const agent of agents) {
-      // The Commander (label `paseo.mission-control=*`) is invisible on the
-      // board — it lives in the Mission Control thread, never in a bucket.
-      if (isCommanderAgent(agent.labels)) {
-        continue;
-      }
-      const bucket = deriveSidebarStateBucket({
-        status: agent.status,
-        pendingPermissionCount: agent.pendingPermissionCount ?? 0,
-        requiresAttention: agent.requiresAttention,
-        attentionReason: agent.attentionReason,
-      });
-      const rows = agentsByBucket.get(bucket);
-      if (rows) {
-        rows.push(agent);
-      } else {
-        agentsByBucket.set(bucket, [agent]);
-      }
-    }
-
     const boardItems: BoardItem[] = [];
-    for (const bucket of BOARD_BUCKET_ORDER) {
-      const rows = agentsByBucket.get(bucket);
-      if (!rows || rows.length === 0) {
-        continue;
-      }
-      boardItems.push({ kind: "bucket", bucket, label: STATUS_BUCKET_LABELS[bucket] });
-      for (const agent of rows) {
-        boardItems.push({ kind: "agent", agent, bucket });
+    for (const group of groups) {
+      boardItems.push({
+        kind: "bucket",
+        bucket: group.bucket,
+        label: LIFECYCLE_BUCKET_LABELS[group.bucket],
+      });
+      for (const row of group.rows) {
+        boardItems.push({ kind: "agent", row });
       }
     }
-
     for (const host of hosts) {
       if (connectionStatuses.get(host.serverId) === "online") {
         continue;
@@ -112,15 +148,18 @@ export function MissionControlBoard({ testID }: { testID?: string } = {}) {
       boardItems.push({ kind: "offlineHost", serverId: host.serverId, label: host.label });
     }
     return boardItems;
-  }, [agents, connectionStatuses, hosts]);
+  }, [connectionStatuses, groups, hosts]);
 
   const renderItem = useCallback(
     ({ item }: { item: BoardItem }) => {
       if (item.kind === "bucket") {
         return (
-          <Text style={styles.bucketHeader} key={itemKey(item)}>
-            {item.label}
-          </Text>
+          <BucketHeader
+            key={itemKey(item)}
+            bucket={item.bucket}
+            label={item.label}
+            onClearAll={item.bucket === "done" && doneRows.length > 0 ? handleClearAll : null}
+          />
         );
       }
       if (item.kind === "offlineHost") {
@@ -134,76 +173,153 @@ export function MissionControlBoard({ testID }: { testID?: string } = {}) {
         );
       }
       return (
-        <AgentRow
+        <MemoizedAgentRow
           key={itemKey(item)}
-          agent={item.agent}
-          bucket={item.bucket}
-          hostBadge={hostBadges.get(item.agent.serverId) ?? null}
+          row={item.row}
+          hideAgentNames={resolvedHideAgentNames}
         />
       );
     },
-    [hostBadges],
+    [doneRows.length, handleClearAll, resolvedHideAgentNames],
   );
 
   return (
-    <FlatList
-      testID={testID}
-      data={items}
-      renderItem={renderItem}
-      keyExtractor={itemKey}
-      style={styles.list}
-      contentContainerStyle={styles.listContent}
-    />
+    <View style={styles.container}>
+      <View style={styles.toggleRow}>
+        <Text style={styles.toggleLabel}>All unarchived</Text>
+        <Switch
+          value={showAll}
+          onValueChange={setShowAll}
+          accessibilityLabel="Show all unarchived agents"
+          testID="mission-control-board-toggle"
+        />
+      </View>
+      <FlatList
+        testID={testID}
+        data={items}
+        renderItem={renderItem}
+        keyExtractor={itemKey}
+        style={styles.list}
+        contentContainerStyle={styles.listContent}
+        ListEmptyComponent={MissionControlBoardEmpty}
+      />
+    </View>
   );
 }
 
-function AgentRow({
-  agent,
+function BucketHeader({
   bucket,
-  hostBadge,
+  label,
+  onClearAll,
 }: {
-  agent: AggregatedAgent;
-  bucket: SidebarStateBucket;
-  hostBadge: HostBadgeModel | null;
+  bucket: LifecycleBucket;
+  label: string;
+  onClearAll: (() => void) | null;
 }) {
-  const timeLabel = useCompactTimeAgo(agent.lastActivityAt);
-  const Icon = bucketIcon(bucket);
-  const iconColorMapping = useCallback(
-    (theme: Theme) => bucketColorMapping(theme, bucket),
-    [bucket],
+  return (
+    <View style={styles.bucketHeaderRow}>
+      <Text style={styles.bucketHeader}>{label}</Text>
+      {onClearAll ? (
+        <Button
+          variant="ghost"
+          size="xs"
+          onPress={onClearAll}
+          testID={`mission-control-clear-${bucket}`}
+        >
+          Clear all
+        </Button>
+      ) : null}
+    </View>
   );
+}
+
+const MemoizedAgentRow = memo(AgentRowImpl);
+
+function AgentRowImpl({
+  row,
+  hideAgentNames,
+}: {
+  row: LifecycleRow;
+  hideAgentNames: boolean;
+}): ReactElement {
+  const { agent } = row;
+  const timeLabel = useCompactTimeAgo(agent.lastActivityAt);
+  const { Icon, mapping } = rowIconAndColor(row);
+
   const handlePress = useCallback(() => {
-    void openAgentFromHistory({
+    useInspectorStore.getState().openInspectorAgent({
       serverId: agent.serverId,
       agentId: agent.id,
-      workspaceId: agent.workspaceId ?? null,
-      archived: false,
     });
-  }, [agent]);
+  }, [agent.id, agent.serverId]);
 
-  const primaryLabel = agent.name ?? agent.title ?? agent.id;
+  const handleClear = useCallback(() => {
+    void clearAgentLifecycle(agent.serverId, agent.id).catch(() => {
+      // Bookkeeping action; a failed clear leaves the row in Done.
+    });
+  }, [agent.id, agent.serverId]);
+
+  const keyLine = agent.title ?? agent.name ?? agent.id;
+  const showNameChip = agent.name !== null && agent.name !== keyLine && !hideAgentNames;
+  const isDone = row.bucket === "done";
+  const bucketLabel = LIFECYCLE_BUCKET_LABELS[row.bucket];
+  // On done rows the verdict line already carries the summary; a headline that
+  // is literally the same text (user "Marked done"/"Cleared" cards) would read
+  // as a duplicated line.
+  const headline =
+    row.lastReportHeadline !== null &&
+    isDone &&
+    row.verdict !== null &&
+    row.lastReportHeadline === row.verdict.summary
+      ? null
+      : row.lastReportHeadline;
+
   return (
     <Pressable
       onPress={handlePress}
       accessibilityRole="button"
-      accessibilityLabel={`${primaryLabel}, ${STATUS_BUCKET_LABELS[bucket]}`}
+      accessibilityLabel={`${keyLine}, ${bucketLabel}`}
       style={agentRowStyle}
     >
       {() => (
         <>
-          <Icon size={12} uniProps={iconColorMapping} />
+          <Icon size={12} uniProps={mapping} />
+          <HostGlyph serverId={agent.serverId} label={agent.serverLabel} size={16} />
           <View style={styles.agentText}>
             <Text numberOfLines={1} style={styles.agentTitle}>
-              {primaryLabel}
+              {keyLine}
             </Text>
-            {agent.name && agent.title ? (
-              <Text numberOfLines={1} style={styles.agentSubtitle}>
-                {agent.title}
+            <View style={styles.agentMetaRow}>
+              {showNameChip ? (
+                <View style={styles.nameChip}>
+                  <Text numberOfLines={1} style={styles.nameChipText}>
+                    {agent.name}
+                  </Text>
+                </View>
+              ) : null}
+              {headline ? (
+                <Text numberOfLines={1} style={styles.agentHeadline}>
+                  {headline}
+                </Text>
+              ) : null}
+            </View>
+            {isDone && row.verdict ? (
+              <Text numberOfLines={1} style={styles.verdictLine}>
+                {row.verdict.summary}
               </Text>
             ) : null}
           </View>
           {timeLabel ? <Text style={styles.rowTime}>{timeLabel}</Text> : null}
-          {hostBadge ? <HostBadge badge={hostBadge} /> : null}
+          {isDone ? (
+            <Button
+              variant="ghost"
+              size="xs"
+              onPress={handleClear}
+              testID={`mission-control-clear-agent-${agent.id}`}
+            >
+              Clear
+            </Button>
+          ) : null}
         </>
       )}
     </Pressable>
@@ -216,11 +332,36 @@ const agentRowStyle = ({ hovered }: PressableStateCallbackType & { hovered?: boo
 ];
 
 const styles = StyleSheet.create((theme) => ({
+  container: {
+    flex: 1,
+    minWidth: 0,
+  },
   list: {
     flex: 1,
   },
   listContent: {
     paddingVertical: theme.spacing[2],
+  },
+  toggleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: theme.spacing[3],
+    paddingVertical: theme.spacing[2],
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+  },
+  toggleLabel: {
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.normal,
+    color: theme.colors.foregroundMuted,
+    userSelect: "none",
+  },
+  bucketHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingRight: theme.spacing[2],
   },
   bucketHeader: {
     fontSize: theme.fontSize.xs,
@@ -235,7 +376,7 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[2],
-    minHeight: 32,
+    minHeight: 36,
     paddingVertical: theme.spacing[1.5],
     paddingHorizontal: theme.spacing[3],
     borderRadius: theme.borderRadius.lg,
@@ -247,19 +388,49 @@ const styles = StyleSheet.create((theme) => ({
   agentText: {
     flex: 1,
     minWidth: 0,
+    gap: 1,
   },
   agentTitle: {
     fontSize: theme.fontSize.sm,
     fontWeight: theme.fontWeight.normal,
     color: theme.colors.foreground,
   },
-  agentSubtitle: {
+  agentMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+    minWidth: 0,
+  },
+  nameChip: {
+    paddingHorizontal: theme.spacing[1],
+    paddingVertical: 1,
+    borderRadius: theme.borderRadius.md,
+    backgroundColor: theme.colors.surface2,
+    flexShrink: 0,
+  },
+  nameChipText: {
+    fontSize: theme.fontSize.xs,
+    fontWeight: theme.fontWeight.medium,
+    color: theme.colors.foregroundMuted,
+  },
+  agentHeadline: {
+    flexShrink: 1,
     fontSize: theme.fontSize.xs,
     color: theme.colors.foregroundMuted,
+  },
+  verdictLine: {
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foregroundExtraMuted,
   },
   rowTime: {
     fontSize: theme.fontSize.xs,
     color: theme.colors.foregroundExtraMuted,
+  },
+  emptyState: {
+    paddingHorizontal: theme.spacing[3],
+    paddingTop: theme.spacing[4],
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foregroundMuted,
   },
   offlineHostRow: {
     flexDirection: "row",

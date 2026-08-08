@@ -4,6 +4,7 @@ import { openProjectEditForm, type ProjectEditFormSnapshot } from "./edit-form";
 const derivedName: ProjectEditFormSnapshot = {
   projectName: "grumpy-turtle",
   projectCustomName: null,
+  projectDescription: null,
   hasCustomIcon: false,
   currentIconDataUri: "data:image/png;base64,ZGVyaXZlZA==",
 };
@@ -11,6 +12,7 @@ const derivedName: ProjectEditFormSnapshot = {
 const customIcon: ProjectEditFormSnapshot = {
   projectName: "Turtle",
   projectCustomName: "Turtle",
+  projectDescription: "A turtle project",
   hasCustomIcon: true,
   currentIconDataUri: "data:image/png;base64,Y3VzdG9t",
 };
@@ -136,8 +138,36 @@ describe("project edit form model", () => {
 
     expect(model.getState().submission).toEqual({
       rename: { customName: "Renamed" },
+      description: null,
       icon: { type: "upload", data: "aW1hZ2U=" },
     });
+  });
+
+  it("submits a description only when it changed", () => {
+    const model = openProjectEditForm(derivedName);
+
+    model.setDescription("  The grumpy turtle  ");
+
+    expect(model.getState()).toMatchObject({
+      canSubmit: true,
+      submission: { rename: null, description: { description: "The grumpy turtle" }, icon: null },
+    });
+  });
+
+  it("clears the description when emptied", () => {
+    const model = openProjectEditForm(customIcon);
+
+    model.setDescription("   ");
+
+    expect(model.getState().submission.description).toEqual({ description: null });
+  });
+
+  it("treats a retyped identical description as no change", () => {
+    const model = openProjectEditForm(customIcon);
+
+    model.setDescription("A turtle project");
+
+    expect(model.getState()).toMatchObject({ canSubmit: false, submission: { description: null } });
   });
 
   it("drops a submit failure as soon as the user edits again", () => {

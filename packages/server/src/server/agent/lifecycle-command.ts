@@ -159,37 +159,67 @@ export interface UpdateAgentResult {
   error: string | null;
 }
 
+/** Identity + runtime metadata the update RPC may patch on an agent. */
+interface UpdateAgentMetadataPatch {
+  title?: string;
+  shortDescription?: string;
+  labels?: Record<string, string>;
+  provider?: string;
+  model?: string | null;
+  modeId?: string;
+}
+
 export async function updateAgentCommand(
   dependencies: Pick<AgentLifecycleCommandDependencies, "agentManager">,
   input: {
     agentId: string;
     name?: string;
+    title?: string;
+    shortDescription?: string;
     labels?: Record<string, string>;
     provider?: string;
     model?: string | null;
     modeId?: string;
   },
 ): Promise<UpdateAgentResult> {
-  const title = input.name?.trim();
+  // Legacy wire `name` is an alias for the display title (pre-v3). The
+  // explicit `title` field wins when both are present.
+  const title = input.title?.trim() ?? input.name?.trim();
+  const shortDescription = input.shortDescription?.trim();
   const labels = input.labels && Object.keys(input.labels).length > 0 ? input.labels : undefined;
   const provider = input.provider?.trim();
   const model = input.model;
   const modeId = input.modeId?.trim();
 
-  if (!title && !labels && !provider && model === undefined && modeId === undefined) {
+  const updates: UpdateAgentMetadataPatch = {};
+  if (title) {
+    updates.title = title;
+  }
+  if (shortDescription) {
+    updates.shortDescription = shortDescription;
+  }
+  if (labels) {
+    updates.labels = labels;
+  }
+  if (provider) {
+    updates.provider = provider;
+  }
+  if (model !== undefined) {
+    updates.model = model;
+  }
+  if (modeId !== undefined) {
+    updates.modeId = modeId;
+  }
+
+  if (Object.keys(updates).length === 0) {
     return {
       accepted: false,
-      error: "Nothing to update (provide name, labels, provider, and/or model)",
+      error:
+        "Nothing to update (provide name, title, shortDescription, labels, provider, and/or model)",
     };
   }
 
-  await dependencies.agentManager.updateAgentMetadata(input.agentId, {
-    ...(title ? { title } : {}),
-    ...(labels ? { labels } : {}),
-    ...(provider ? { provider } : {}),
-    ...(model !== undefined ? { model } : {}),
-    ...(modeId !== undefined ? { modeId } : {}),
-  });
+  await dependencies.agentManager.updateAgentMetadata(input.agentId, updates);
 
   return {
     accepted: true,

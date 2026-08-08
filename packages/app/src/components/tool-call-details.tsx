@@ -25,6 +25,7 @@ import { HighlightedLines } from "./highlighted-content";
 import { DiffViewer } from "./diff-viewer";
 import { getCodeInsets } from "./code-insets";
 import { isWeb } from "@/constants/platform";
+import { FleetToolCallDetailBody } from "@/screens/mission-control/fleet-tool-details";
 
 const ScrollView = isWeb ? RNScrollView : GHScrollView;
 
@@ -1018,6 +1019,13 @@ function ToolCallDetailsContentInner({
   );
   if (errorText) {
     sections.push(<ErrorSection key="error" errorText={errorText} ds={ds} />);
+  }
+
+  const fleetBody = toolName ? (
+    <FleetToolCallDetailBody toolName={toolName} detail={detail} />
+  ) : null;
+  if (fleetBody !== null) {
+    return <View style={ds.fullBleedContainerStyle}>{fleetBody}</View>;
   }
 
   if (sections.length === 0) {

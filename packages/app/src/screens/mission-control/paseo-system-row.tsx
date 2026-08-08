@@ -1,7 +1,8 @@
-import { useCallback, useMemo, useState, type ReactElement } from "react";
+import { useCallback, useMemo, type ReactElement } from "react";
 import { Pressable, Text, View } from "react-native";
-import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { ChevronDown, ScrollText } from "lucide-react-native";
+import { StyleSheet } from "react-native-unistyles";
+import { ScrollText } from "lucide-react-native";
+import { withUnistyles } from "react-native-unistyles";
 import type { Theme } from "@/styles/theme";
 import { openHistoryAskAgentLink } from "@/history-ask/open-agent-link";
 import { formatTimeAgo } from "@/utils/time";
@@ -138,7 +139,6 @@ export function parsePaseoSystemMessage(text: string): PaseoSystemDigest {
 }
 
 const ThemedScrollText = withUnistyles(ScrollText);
-const ThemedChevronDown = withUnistyles(ChevronDown);
 const mutedIconMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
 interface PaseoSystemRowProps {
@@ -146,27 +146,25 @@ interface PaseoSystemRowProps {
   timestamp: number;
 }
 
+/**
+ * Inbound `<paseo-system>` machinery (fleet digests, schedule fires,
+ * notify-on-finish). Normal (non-verbose) mode never renders these — they are
+ * pure machinery duplicating the feed cards; verbose mode shows them as a
+ * plain expanded block. Never a collapsed divider: nothing status-like is
+ * collapsed behind a divider (card-consistency spec); collapse is reserved
+ * for proofs and pretty-rendered tool bodies.
+ */
 export function PaseoSystemRow({ text, timestamp }: PaseoSystemRowProps): ReactElement {
-  const [expanded, setExpanded] = useState(false);
   const parsed = useMemo(() => parsePaseoSystemMessage(text), [text]);
-  const toggleExpanded = useCallback(() => setExpanded((current) => !current), []);
 
   const countLabel = parsed.count !== null ? `${parsed.count}` : "";
   const label = parsed.isDigest
     ? `Fleet digest · ${countLabel} event${parsed.count === 1 ? "" : "s"}`
     : "System notification";
-  const accessibilityState = useMemo(() => ({ expanded }), [expanded]);
 
   return (
     <View style={styles.container}>
-      <Pressable
-        onPress={toggleExpanded}
-        accessibilityRole="button"
-        accessibilityLabel={label}
-        accessibilityState={accessibilityState}
-        style={styles.row}
-        testID="mission-control-digest-row"
-      >
+      <View style={styles.headerRow}>
         <ThemedScrollText size={14} uniProps={mutedIconMapping} />
         <Text style={styles.label} numberOfLines={1}>
           {label}
@@ -174,24 +172,17 @@ export function PaseoSystemRow({ text, timestamp }: PaseoSystemRowProps): ReactE
         <Text style={styles.timestamp} numberOfLines={1}>
           {formatTimeAgo(new Date(timestamp))}
         </Text>
-        <ThemedChevronDown
-          size={14}
-          uniProps={mutedIconMapping}
-          style={[styles.chevron, expanded && styles.chevronExpanded]}
-        />
-      </Pressable>
-      {expanded ? (
-        <View style={styles.expanded}>
-          {parsed.entries.map((entry) => (
-            <PaseoSystemEntryRow key={paseoEntryListKey(entry)} entry={entry} />
-          ))}
-          {parsed.bodyLines.map((line) => (
-            <Text key={line} style={styles.bodyLine}>
-              {line}
-            </Text>
-          ))}
-        </View>
-      ) : null}
+      </View>
+      <View style={styles.body}>
+        {parsed.entries.map((entry) => (
+          <PaseoSystemEntryRow key={paseoEntryListKey(entry)} entry={entry} />
+        ))}
+        {parsed.bodyLines.map((line) => (
+          <Text key={line} style={styles.bodyLine}>
+            {line}
+          </Text>
+        ))}
+      </View>
     </View>
   );
 }
@@ -252,7 +243,7 @@ const styles = StyleSheet.create((theme) => ({
   container: {
     paddingVertical: theme.spacing[2],
   },
-  row: {
+  headerRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[2],
@@ -276,13 +267,7 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.xs,
     color: theme.colors.foregroundExtraMuted,
   },
-  chevron: {
-    transform: [{ rotate: "-90deg" }],
-  },
-  chevronExpanded: {
-    transform: [{ rotate: "0deg" }],
-  },
-  expanded: {
+  body: {
     marginTop: theme.spacing[1],
     paddingHorizontal: theme.spacing[2],
     gap: theme.spacing[1],
@@ -299,10 +284,10 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing[1],
   },
   entryKind: {
-    fontFamily: theme.fontFamily.ui,
+    fontFamily: theme.fontFamily.mono,
     fontSize: theme.fontSize.xs,
     color: theme.colors.foregroundExtraMuted,
-    paddingTop: 2,
+    textTransform: "uppercase",
   },
   entryBody: {
     flex: 1,
@@ -318,13 +303,14 @@ const styles = StyleSheet.create((theme) => ({
   entryMetaRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: theme.spacing[1],
+    gap: theme.spacing[2],
   },
   entryLinkChip: {
     borderRadius: theme.borderRadius.sm,
     backgroundColor: theme.colors.surface2,
     paddingHorizontal: theme.spacing[2],
-    paddingVertical: 1,
+    paddingVertical: 2,
+    alignSelf: "flex-start",
   },
   entryLinkChipText: {
     fontFamily: theme.fontFamily.ui,
@@ -343,8 +329,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   entryDetail: {
     fontFamily: theme.fontFamily.ui,
-    fontSize: theme.fontSize.xs,
-    lineHeight: 18,
+    fontSize: theme.fontSize.sm,
+    lineHeight: 20,
     color: theme.colors.foregroundMuted,
   },
 }));
