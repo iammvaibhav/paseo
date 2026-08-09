@@ -350,8 +350,10 @@ export class MissionControlApprovals {
           "mission_control.approvals.allow_pair_granted",
         );
       }
-      await this.send(updated);
-      return { ok: true };
+      // The send result carries execution failures (spawn/meta/delivery) back
+      // to the RPC caller so the app can surface them — a failed spawn must
+      // never read as a successful approve.
+      return this.send(updated);
     }
     const updated: MissionControlProposal = { ...proposal, status: "denied" };
     await this.store.putProposal(updated);
@@ -405,18 +407,23 @@ export class MissionControlApprovals {
     };
   }
 
-  private async send(proposal: Proposal): Promise<void> {
+  private async send(proposal: Proposal): Promise<{ ok: true } | { ok: false; error: string }> {
     if (proposal.kind === "spawn") {
       // Spawn-kind proposal: create the NEW agent described by spawnPlan
       // (Commander/verifier spawns) instead of delivering a message. Single
-      // execution path for approve and auto mode; failures log loudly and
-      // never bounce a resolved proposal back to pending.
+      // execution path for approve and auto mode. Failures log loudly and
+      // NEVER write a "sent" record (a spawn that did not run must not read
+      // as applied) — they surface to the caller so the respond RPC carries
+      // the error back to the app. In ask mode the pending record survives,
+      // so the card keeps its Approve affordance for a retry; in auto mode no
+      // record is written. Live bug: the failure was swallowed (resolve
+      // reported ok:true, record left pending) and Approve looked dead.
       if (!this.spawn) {
         this.logger.error(
           { proposalId: proposal.id, origin: proposal.origin },
           "mission_control.approvals.spawn_unavailable",
         );
-        return;
+        return { ok: false, error: "Spawn executor is not available" };
       }
       const result = await this.spawn(proposal);
       if (!result.ok) {
@@ -424,31 +431,34 @@ export class MissionControlApprovals {
           { proposalId: proposal.id, origin: proposal.origin, error: result.error },
           "mission_control.approvals.spawn_failed",
         );
-        return;
+        return { ok: false, error: result.error };
       }
+      const updated: Proposal = {
+        ...proposal,
+        ...(result.agentId ? { spawnedAgentId: result.agentId } : {}),
+      };
+      await this.store.putProposal(updated);
+      await this.publish(updated);
       if (result.agentId) {
-        const updated: Proposal = { ...proposal, spawnedAgentId: result.agentId };
-        await this.store.putProposal(updated);
-        await this.publish(updated);
         this.logger.info(
           { proposalId: proposal.id, agentId: result.agentId, origin: proposal.origin },
           "mission_control.approvals.spawned",
         );
       }
-      return;
+      return { ok: true };
     }
     if (proposal.kind === "meta") {
       // Meta-kind proposal: apply the fleet meta action described by
       // metaPlan (rename/archive/move/create/promote) instead of delivering a
       // message. Single execution path for approve and auto mode; failures
-      // log loudly and never bounce a resolved proposal back to pending (same
-      // contract as spawn).
+      // log loudly, never write a "sent" record (same contract as spawn), and
+      // surface to the caller.
       if (!this.applyMeta) {
         this.logger.error(
           { proposalId: proposal.id, origin: proposal.origin },
           "mission_control.approvals.meta_apply_unavailable",
         );
-        return;
+        return { ok: false, error: "Meta executor is not available" };
       }
       const result = await this.applyMeta(proposal);
       if (!result.ok) {
@@ -456,7 +466,7 @@ export class MissionControlApprovals {
           { proposalId: proposal.id, origin: proposal.origin, error: result.error },
           "mission_control.approvals.meta_apply_failed",
         );
-        return;
+        return { ok: false, error: result.error };
       }
       await this.store.putProposal(proposal);
       await this.publish(proposal);
@@ -470,7 +480,7 @@ export class MissionControlApprovals {
         },
         "mission_control.approvals.meta_applied",
       );
-      return;
+      return { ok: true };
     }
     try {
       await this.deliver({
@@ -501,11 +511,12 @@ export class MissionControlApprovals {
           },
           "mission_control.approvals.delivery_aborted",
         );
-        return;
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
       }
       // Delivery failed: the proposal returns to pending so the card keeps its
       // Approve affordance and the user can retry — never record "sent" for a
-      // message that did not reach the agent.
+      // message that did not reach the agent. The failure still surfaces to
+      // the caller so the app can explain why the approve did not deliver.
       proposal.status = "pending";
       await this.store.putProposal(proposal);
       await this.publish(proposal);
@@ -518,7 +529,7 @@ export class MissionControlApprovals {
         },
         "mission_control.approvals.delivery_failed",
       );
-      return;
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
     await this.store.putProposal(proposal);
     await this.publish(proposal);
@@ -533,6 +544,7 @@ export class MissionControlApprovals {
       },
       "mission_control.approvals.proposal_sent",
     );
+    return { ok: true };
   }
 
   /**

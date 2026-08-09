@@ -1,7 +1,7 @@
 import express from "express";
 import { createServer as createHTTPServer, type IncomingMessage, type ServerResponse } from "http";
 import { constants, existsSync, mkdirSync, unlinkSync } from "fs";
-import { open } from "fs/promises";
+import { open, mkdir } from "fs/promises";
 import { randomUUID } from "node:crypto";
 import { hostname as getHostname } from "node:os";
 import path from "node:path";
@@ -296,7 +296,6 @@ async function spawnProposalOnPeer(
   peerManager: PeerManager | null | undefined,
   host: string,
   plan: MissionControlProposalSpawnPlan,
-  providerModel: string,
 ): Promise<SpawnProposalResult> {
   const peerStatus = peerManager?.getPeerStatus(host) ?? null;
   if (!peerStatus || peerStatus.state !== "online" || !peerManager) {
@@ -308,7 +307,13 @@ async function spawnProposalOnPeer(
   }
   try {
     const snapshot = await peerClient.createAgent({
-      provider: providerModel,
+      // The peer create RPC is the SESSION create path, which looks up
+      // `provider` as a plain provider id and takes `model` separately. The
+      // MCP create path (spawnProposalLocally) splits "provider/model"
+      // itself; passing the combined string here made every peer spawn fail
+      // with "Provider provider/model is not configured" on the target host.
+      provider: plan.provider,
+      ...(plan.model ? { model: plan.model } : {}),
       cwd: plan.cwd ?? ".",
       ...(plan.workspaceId ? { workspaceId: plan.workspaceId } : {}),
       ...(plan.initialPrompt ? { initialPrompt: plan.initialPrompt } : {}),
@@ -1825,7 +1830,7 @@ export async function createPaseoDaemon(
         ? `${enriched.provider}/${enriched.model}`
         : enriched.provider;
       if (enriched.host && enriched.host !== "local") {
-        return spawnProposalOnPeer(peerManager, enriched.host, enriched, providerModel);
+        return spawnProposalOnPeer(peerManager, enriched.host, enriched);
       }
       return spawnProposalLocally(createAgent, enriched, providerModel);
     },
@@ -1849,6 +1854,9 @@ export async function createPaseoDaemon(
           archiveWorkspace: archiveWorkspaceByIdExternal,
           archiveAgent: (agentId) =>
             archiveAgentCommand({ agentManager, agentStorage, logger }, agentId),
+          mkdirp: async (dirPath) => {
+            await mkdir(dirPath, { recursive: true });
+          },
           emitStoredAgentUpdate: async (record) => {
             await Promise.all(
               (wsServer?.listTrustedSessions() ?? []).map((session) =>
@@ -2071,6 +2079,7 @@ export async function createPaseoDaemon(
     missionControlService,
     verifierDispatcher,
     serverId,
+    hostAlias: daemonConfigStore.get().missionControl?.hostAlias?.trim() || null,
     paseoHome: config.paseoHome,
     worktreesRoot: config.worktreesRoot,
     callerAgentId: runtime.callerAgentId,

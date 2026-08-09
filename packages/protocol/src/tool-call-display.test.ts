@@ -142,7 +142,7 @@ describe("shared tool-call display mapping", () => {
       error: null,
       detail: { type: "unknown", input: null, output: null },
     });
-    expect(display.displayName).toBe("Spawned agent");
+    expect(display.displayName).toBe("Spawned subagent");
   });
 
   it("humanizes Paseo MCP tool names (Codex format)", () => {
@@ -152,7 +152,7 @@ describe("shared tool-call display mapping", () => {
       error: null,
       detail: { type: "unknown", input: null, output: null },
     });
-    expect(display.displayName).toBe("Spawned agent");
+    expect(display.displayName).toBe("Spawned subagent");
   });
 
   it("humanizes list_agents Paseo tool", () => {
@@ -272,5 +272,47 @@ describe("shared tool-call display mapping", () => {
       resolveHost,
     });
     expect(sendDisplay.displayName).toBe("→ Steered worker-1 (vaibhav-dev)");
+  });
+
+  it("labels create_agent (the subagent spawn form) with the subagent type word", () => {
+    const display = buildToolCallDisplayModel({
+      name: "create_agent",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { provider: "codex/gpt-5.4", initialPrompt: "fix it" },
+        output: { details: { agentId: null } },
+      },
+    });
+    expect(display.displayName).toBe("Spawned subagent");
+  });
+
+  it("never doubles the type word when the resolved name already says it", () => {
+    const doubledName = buildToolCallDisplayModel({
+      name: "create_agent",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { provider: "codex/gpt-5.4" },
+        output: { details: { agentId: "child-9" } },
+      },
+      agentNames: { "child-9": "subagent" },
+    });
+    expect(doubledName.displayName).toBe("Spawned subagent");
+
+    const fleetDoubled = buildToolCallDisplayModel({
+      name: "fleet_create_agent",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { host: "work" },
+        output: { details: { agentId: "agent-9" } },
+      },
+      agentNames: { "agent-9": "agent" },
+    });
+    expect(fleetDoubled.displayName).toBe("Spawned agent on work");
   });
 });

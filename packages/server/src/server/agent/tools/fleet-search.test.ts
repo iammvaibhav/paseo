@@ -51,6 +51,8 @@ interface CatalogHarnessOptions {
   peerMatches?: Array<Record<string, unknown>>;
   offlinePeers?: boolean;
   unknownPeers?: boolean;
+  /** This daemon's Mission Control host alias (fleet tool results replace "local"). */
+  hostAlias?: string | null;
 }
 
 function createHarness(options: CatalogHarnessOptions = {}) {
@@ -109,6 +111,7 @@ function createHarness(options: CatalogHarnessOptions = {}) {
     projectRegistry: { list: async () => [] } as unknown as never,
     missionControlService: { fetchEvents: () => [] } as unknown as never,
     serverId: "server-local",
+    hostAlias: options.hostAlias ?? undefined,
     peerManager,
     logger: createTestLogger(),
   });
@@ -201,6 +204,24 @@ describe("fleet_search tool", () => {
     expect(client.missionControlSearch).not.toHaveBeenCalled();
     const matches = result.structuredContent.matches as Array<Record<string, unknown>>;
     expect(matches.map((match) => match.host)).toEqual(["local"]);
+  });
+
+  test("replaces the literal local host with the host alias in results", async () => {
+    const { catalog, client } = createHarness({
+      records: [record({ id: "local-1", name: "Rusty", title: "Fix auth" })],
+      peerMatches: [],
+      hostAlias: "work server",
+    });
+    const result = await catalog.executeTool("fleet_search", {
+      query: "auth",
+      limit: 20,
+      deep: false,
+    });
+    const matches = result.structuredContent.matches as Array<Record<string, unknown>>;
+    // The local match carries the alias; the peer was queried and returned none.
+    expect(matches.map((match) => match.host)).toEqual(["work server"]);
+    expect(matches[0]).toMatchObject({ agentId: "local-1", host: "work server" });
+    expect(client.missionControlSearch).toHaveBeenCalledTimes(1);
   });
 
   test("caps the merged result fleet-wide", async () => {

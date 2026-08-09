@@ -8,6 +8,7 @@ import {
   MissionControlApprovals,
   ProposalDeliveryAborted,
   PROPOSAL_TTL_MS,
+  type MissionControlApprovalsOptions,
   type ProposalCreateInput,
 } from "./approvals.js";
 import type { MissionControlPresenceSource } from "./presence.js";
@@ -41,6 +42,8 @@ async function build(overrides?: {
   mode?: "ask" | "auto";
   focused?: (agentId: string) => boolean;
   stoppedBy?: (agentId: string) => "user" | "machinery" | "system" | null;
+  spawn?: MissionControlApprovalsOptions["spawn"];
+  applyMeta?: MissionControlApprovalsOptions["applyMeta"];
 }): Promise<Harness> {
   const dir = await mkdtemp(join(tmpdir(), "mc-approvals-"));
   const store = new MissionControlStore({ paseoHome: dir, logger: createTestLogger() });
@@ -65,6 +68,8 @@ async function build(overrides?: {
     deliver: async (input) => {
       harness.delivered.push(input);
     },
+    ...(overrides?.spawn ? { spawn: overrides.spawn } : {}),
+    ...(overrides?.applyMeta ? { applyMeta: overrides.applyMeta } : {}),
     publishProposalEvent: async (proposal) => {
       harness.published.push(proposal);
       return { id: `mce_${harness.published.length}` };
@@ -687,6 +692,111 @@ describe("MissionControlApprovals ask-mode gating per action class", () => {
     } finally {
       await awaitStoreWrites(store);
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a failed spawn surfaces its error and never writes a sent record", async () => {
+    // Regression: the live "Approve does nothing" bug. The respond RPC
+    // returned ok:true while the spawn executor failed, so the app showed
+    // nothing. The approve must now return ok:false with the executor error so
+    // the app can surface it (toast), and the store must never claim the
+    // spawn applied ("sent") for a spawn that did not run.
+    const spawn = vi.fn(async () => ({ ok: false as const, error: "fleet spawn failed: boom" }));
+    const harness = await build({ mode: "ask", spawn });
+    try {
+      const proposal = await harness.approvals.createProposal({
+        origin: "commander",
+        serverId: "server-1",
+        targetAgentId: "",
+        message: "Spawn learning-llm smoke test",
+        deliveryMode: "interrupt",
+        reason: "Commander spawn",
+        classification: "normal",
+        kind: "spawn",
+        spawnPlan: { provider: "omp", summary: "Spawn a smoke test" },
+      });
+      expect(proposal.status).toBe("pending");
+
+      const result = await harness.approvals.resolveProposal({
+        proposalId: proposal.id,
+        action: "approve",
+      });
+      expect(result).toEqual({ ok: false, error: "fleet spawn failed: boom" });
+      expect(spawn).toHaveBeenCalledTimes(1);
+      // No "sent" record: the pending record survives so the card keeps its
+      // Approve affordance for a retry, but the failure is no longer silent.
+      expect(harness.approvals.getProposal(proposal.id)?.status).toBe("pending");
+      expect(harness.published.map((p) => p.status)).toEqual(["pending"]);
+    } finally {
+      await teardown(harness);
+    }
+  });
+
+  test("a failed spawn stays pending and a retry re-attempts the spawn (visible errors, no lie)", async () => {
+    // The click-loop half of the regression: the failure used to be silent
+    // (ok:true, nothing visible). Now each attempt surfaces the error to the
+    // caller while the card stays pending; once the executor succeeds the
+    // proposal records sent + spawnedAgentId.
+    const spawn = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false as const, error: "boom" })
+      .mockResolvedValueOnce({ ok: true as const, agentId: "spawned-42" });
+    const harness = await build({ mode: "ask", spawn });
+    try {
+      const proposal = await harness.approvals.createProposal({
+        origin: "commander",
+        serverId: "server-1",
+        targetAgentId: "",
+        message: "Spawn a worker",
+        deliveryMode: "interrupt",
+        reason: "Commander spawn",
+        classification: "normal",
+        kind: "spawn",
+        spawnPlan: { provider: "omp", summary: "Spawn a worker" },
+      });
+
+      const first = await harness.approvals.resolveProposal({
+        proposalId: proposal.id,
+        action: "approve",
+      });
+      expect(first).toEqual({ ok: false, error: "boom" });
+      expect(harness.approvals.getProposal(proposal.id)?.status).toBe("pending");
+
+      const second = await harness.approvals.resolveProposal({
+        proposalId: proposal.id,
+        action: "approve",
+      });
+      expect(second).toEqual({ ok: true });
+      expect(spawn).toHaveBeenCalledTimes(2);
+      expect(harness.approvals.getProposal(proposal.id)?.status).toBe("sent");
+      expect(harness.approvals.getProposal(proposal.id)?.spawnedAgentId).toBe("spawned-42");
+    } finally {
+      await teardown(harness);
+    }
+  });
+
+  test("an absent spawn executor surfaces the error without writing a sent record", async () => {
+    const harness = await build({ mode: "ask" }); // no spawn hook
+    try {
+      const proposal = await harness.approvals.createProposal({
+        origin: "commander",
+        serverId: "server-1",
+        targetAgentId: "",
+        message: "Spawn a worker",
+        deliveryMode: "interrupt",
+        reason: "Commander spawn",
+        classification: "normal",
+        kind: "spawn",
+        spawnPlan: { provider: "omp", summary: "Spawn a worker" },
+      });
+      const result = await harness.approvals.resolveProposal({
+        proposalId: proposal.id,
+        action: "approve",
+      });
+      expect(result).toEqual({ ok: false, error: "Spawn executor is not available" });
+      expect(harness.approvals.getProposal(proposal.id)?.status).toBe("pending");
+    } finally {
+      await teardown(harness);
     }
   });
 

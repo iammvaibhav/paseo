@@ -77,6 +77,9 @@ vi.mock("lucide-react-native", () => {
 
 vi.mock("@/constants/platform", () => ({ isNative: false }));
 vi.mock("@/constants/layout", () => ({ useIsCompactFormFactor: () => false }));
+vi.mock("@/contexts/toast-context", () => ({
+  useToast: () => ({ error: () => {}, show: () => {}, copied: () => {} }),
+}));
 vi.mock("@/stores/session-store", () => ({
   useSessionStore: (selector: (state: unknown) => unknown) =>
     selector({

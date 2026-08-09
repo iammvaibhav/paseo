@@ -5,12 +5,14 @@ import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { Bot, ChevronDown, Clock, ShieldCheck } from "lucide-react-native";
 import type { MissionControlProposal } from "@getpaseo/protocol/mission-control/types";
+import { resolvePlanChips, type WorkspaceTitleResolver } from "./proposal-card-chips";
 import { SettingsTextArea } from "@/components/settings-textarea";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Switch } from "@/components/ui/switch";
 import { useSessionStore } from "@/stores/session-store";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
+import { useToast } from "@/contexts/toast-context";
 import { HostGlyph } from "@/components/host-glyph";
 import { useLiveTimeAgo } from "@/hooks/use-compact-time-ago";
 import { resolveSessionAgent } from "@/utils/agent-snapshots";
@@ -217,135 +219,15 @@ function getMetaSummary(
   }
 }
 
-interface ChipInfo {
-  key: string;
-  label: string;
-}
-
-/** Reads a spawnPlan field from its labels slot or the legacy flat field. */
-function rawSpawnField(
-  spawnPlan: MissionControlProposal["spawnPlan"],
-  labels: Record<string, string> | undefined,
-  field: string,
-): string | undefined {
-  return (
-    labels?.[field] ??
-    ((spawnPlan as Record<string, unknown> | undefined)?.[field] as string | undefined)
-  );
-}
-
-/** Chip for the project the spawn targets, or the project it would create. */
-function projectChip(proposal: MissionControlProposal, t: TFunction): ChipInfo | null {
-  const spawnPlan = proposal.spawnPlan;
-  const labels = spawnPlan?.labels;
-  const rawProject = rawSpawnField(spawnPlan, labels, "project");
-  const rawNewProject = rawSpawnField(spawnPlan, labels, "newProject");
-  if (rawNewProject) {
-    return {
-      key: "newProject",
-      label: t("missionControl.proposal.chips.newProject", { label: rawNewProject }),
-    };
-  }
-  if (rawProject) {
-    return {
-      key: "project",
-      label: t("missionControl.proposal.chips.project", { label: rawProject }),
-    };
-  }
-  return null;
-}
-
-/** Chip for the workspace the spawn targets, or the one it would create. */
-function workspaceChip(proposal: MissionControlProposal, t: TFunction): ChipInfo | null {
-  const spawnPlan = proposal.spawnPlan;
-  const labels = spawnPlan?.labels;
-  const rawWorkspace =
-    labels?.workspace ?? spawnPlan?.workspaceId ?? rawSpawnField(spawnPlan, labels, "workspace");
-  const rawNewWorkspace = rawSpawnField(spawnPlan, labels, "newWorkspace");
-  if (rawNewWorkspace) {
-    return {
-      key: "newWorkspace",
-      label: t("missionControl.proposal.chips.newWorkspace", { label: rawNewWorkspace }),
-    };
-  }
-  if (rawWorkspace) {
-    return {
-      key: "workspace",
-      label: t("missionControl.proposal.chips.workspace", { label: rawWorkspace }),
-    };
-  }
-  return null;
-}
-
-/** Chip for the agent the proposal targets, or the agent it would spawn. */
-function agentChip(proposal: MissionControlProposal, t: TFunction): ChipInfo | null {
-  const spawnPlan = proposal.spawnPlan;
-  const labels = spawnPlan?.labels;
-  const rawAgent = spawnPlan?.title ?? labels?.agent ?? rawSpawnField(spawnPlan, labels, "agent");
-  const rawNewAgent = rawSpawnField(spawnPlan, labels, "newAgent");
-  if (rawNewAgent) {
-    return {
-      key: "newAgent",
-      label: t("missionControl.proposal.chips.newAgent", { label: rawNewAgent }),
-    };
-  }
-  if (rawAgent) {
-    const isSpawn = proposal.kind === "spawn";
-    return {
-      key: isSpawn ? "newAgent" : "agent",
-      label: isSpawn
-        ? t("missionControl.proposal.chips.newAgent", { label: rawAgent })
-        : t("missionControl.proposal.chips.agent", { label: rawAgent }),
-    };
-  }
-  return null;
-}
-
-function resolvePlanChips(proposal: MissionControlProposal, t: TFunction): ChipInfo[] {
-  const chips: ChipInfo[] = [];
-  const project = projectChip(proposal, t);
-  if (project) {
-    chips.push(project);
-  }
-  const workspace = workspaceChip(proposal, t);
-  if (workspace) {
-    chips.push(workspace);
-  }
-  const agent = agentChip(proposal, t);
-  if (agent) {
-    chips.push(agent);
-  }
-  return chips;
-}
-
 /** True while the proposal still needs a user decision (Ask mode / forced ask). */
 export function isPendingProposalEvent(event: FeedCardEvent): boolean {
   return event.kind === "proposal" && event.proposal?.status === "pending";
 }
 
-/**
- * Machinery-only proposal card: stall status-ask nudges (origin "stall",
- * deliveryMode "steer") that already went out. The daemon stamps these
- * `verboseOnly: true` (spec: a steer never disrupts the turn; recorded as an
- * auto-sent proposal, never pending). Normal (non-verbose) mode never renders
- * them; verbose is the debug view. Escalation/recovery proposals
- * (deliveryMode "interrupt", approval-gated) and verifier/commander cards
- * always render. Legacy hosts / pre-field persisted events fall back to the
- * origin+delivery shape — any stall-origin steer is machinery regardless of
- * how it resolved (sent, expired, denied, or a pending that went stale): the
- * pre-field fallback previously required status "sent", leaking expired stall
- * cards into normal mode.
- */
-export function isVerboseOnlyProposalEvent(event: FeedCardEvent): boolean {
-  if (event.kind !== "proposal" || !event.proposal) {
-    return false;
-  }
-  const proposal = event.proposal;
-  if (event.verboseOnly === true || proposal.verboseOnly === true) {
-    return true;
-  }
-  return proposal.origin === "stall" && proposal.deliveryMode === "steer";
-}
+// Shared with thread row classification (classifyThreadRow): verbose-only
+// stall nudges are "skip" in normal mode. Re-export keeps feed-card's
+// `import ... from "./proposal-card"` unchanged.
+export { isVerboseOnlyProposalEvent } from "./thread-classification";
 
 export function countPendingProposals(events: readonly FeedCardEvent[]): number {
   let count = 0;
@@ -386,6 +268,7 @@ export function ProposalCard({
   position = "only",
 }: ProposalCardProps): ReactElement {
   const { t } = useTranslation();
+  const toast = useToast();
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState(proposal.message);
   const [allowPair, setAllowPair] = useState(false);
@@ -396,6 +279,21 @@ export function ProposalCard({
     event.serverId && event.agentId
       ? resolveSessionAgent(state.sessions[event.serverId], event.agentId)
       : null,
+  );
+  // Workspace titles for plan chips resolve from the live session store like
+  // every other surface (title ?? name); the id is a record key, never a
+  // display label. Selecting the map reference keeps the card reactive to
+  // workspace renames without re-subscribing per workspace.
+  const sessionWorkspaces = useSessionStore((state) =>
+    event.serverId ? (state.sessions[event.serverId]?.workspaces ?? null) : null,
+  );
+  const resolveWorkspaceTitle = useCallback<WorkspaceTitleResolver>(
+    (workspaceId: string) => {
+      const workspace = sessionWorkspaces?.get(workspaceId);
+      const title = workspace?.title?.trim() || workspace?.name?.trim();
+      return title || undefined;
+    },
+    [sessionWorkspaces],
   );
   const hideAgentNames = useMissionControlCentralConfig().config?.hideAgentNames === true;
   // Emit-time snapshot: recorded cards never render the live title. Only the
@@ -426,12 +324,18 @@ export function ProposalCard({
         setIsEditing(false);
         onResolved?.(proposal.id, action === "approve" ? "sent" : "denied");
       } catch (caught) {
-        setError(caught instanceof Error ? caught.message : String(caught));
+        const message = caught instanceof Error ? caught.message : String(caught);
+        setError(message);
+        // Errors must never be silent: the respond RPC now carries spawn and
+        // delivery failures back (ok:false), so surface them as a toast too —
+        // the card's inline error can be lost when the feed re-renders the
+        // proposal from its aggregated event.
+        toast.error(message);
       } finally {
         setIsResponding(false);
       }
     },
-    [allowPair, event.serverId, isResponding, onResolved, proposal.id, t],
+    [allowPair, event.serverId, isResponding, onResolved, proposal.id, t, toast],
   );
 
   const isPending = proposal.status === "pending";
@@ -531,7 +435,7 @@ export function ProposalCard({
         </View>
 
         {(() => {
-          const chips = resolvePlanChips(proposal, t);
+          const chips = resolvePlanChips(proposal, t, resolveWorkspaceTitle);
           if (chips.length === 0) return null;
           return (
             <View style={styles.planChipsRow} testID="mission-control-proposal-chips">

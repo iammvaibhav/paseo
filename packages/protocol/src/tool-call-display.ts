@@ -139,7 +139,12 @@ function buildFleetCreateAgentDisplay(
   const host = rawHost ? (input.resolveHost?.(rawHost) ?? rawHost) : undefined;
   const agentId = toolOutput ? readString(toolOutput.agentId) : undefined;
   const name = agentId ? (readString(input.agentNames?.[agentId]) ?? agentId) : undefined;
-  const label = name ?? "agent";
+  // The spawn's nature words the fallback label: `create_agent` is the
+  // agent-scoped form ("creates your subagent"), so its fallback is "subagent"
+  // rather than the generic "agent" — and when the resolved name IS that word,
+  // collapse instead of doubling ("Spawned subagent subagent" never happens).
+  const typeWord = leaf === "create_agent" ? "subagent" : "agent";
+  const label = name && name.toLowerCase() !== typeWord ? name : typeWord;
   return {
     displayName: host ? `Spawned ${label} on ${host}` : `Spawned ${label}`,
   };

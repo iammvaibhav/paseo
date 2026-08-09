@@ -139,8 +139,12 @@ describe("actionable spawn provider rejections", () => {
         initialPrompt: "do the thing",
       })
       .catch((caught: unknown) => caught as Error);
+    // The peer create RPC is the SESSION create path: provider must be a
+    // plain provider id with model passed separately (the MCP/local path
+    // splits "provider/model" itself). Passing the combined string made every
+    // peer spawn fail with "Provider provider/model is not configured".
     expect(peerClient.createAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ provider: "claude/claude-sonnet-5" }),
+      expect.objectContaining({ provider: "claude", model: "claude-sonnet-5" }),
     );
     expect(error.message).toContain(
       'fleet_create_agent rejected provider "claude/claude-sonnet-5" on host macbook',

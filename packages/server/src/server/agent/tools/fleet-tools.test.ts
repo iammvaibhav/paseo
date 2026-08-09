@@ -265,6 +265,42 @@ describe("fleet_list_agents roster enrichment", () => {
       "Headline 7",
     ]);
   });
+
+  test("local roster rows carry the host alias instead of the literal local", async () => {
+    const { peerManager } = createFakePeerHarness();
+    const catalog = createPaseoToolCatalog({
+      agentManager: {
+        listAgents: () => [],
+        getRegisteredProviderIds: () => ["omp"],
+        getTimeline: () => [],
+      } as unknown as AgentManager,
+      agentStorage: {
+        get: async () => null,
+        list: async () => [
+          {
+            id: "local-1",
+            provider: "omp",
+            cwd: "/tmp",
+            labels: {},
+            createdAt: "2026-08-01T00:00:00Z",
+            updatedAt: "2026-08-01T00:00:00Z",
+            lastStatus: "closed",
+            title: "Local agent",
+          },
+        ],
+      } as unknown as AgentStorage,
+      providerSnapshotManager: createProviderSnapshotManagerStub()
+        .manager as unknown as ProviderSnapshotManager,
+      peerManager,
+      hostAlias: "work server",
+      logger: createTestLogger(),
+    });
+
+    const result = await catalog.executeTool("fleet_list_agents", { limit: 50 });
+    const agents = (result.structuredContent as { agents: Array<Record<string, unknown>> }).agents;
+    expect(agents).toHaveLength(1);
+    expect(agents[0]).toMatchObject({ id: "local-1", host: "work server" });
+  });
 });
 
 describe("fleet_send_prompt mode", () => {

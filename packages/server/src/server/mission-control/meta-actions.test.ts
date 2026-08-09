@@ -35,6 +35,7 @@ interface Harness {
   archivedAgentIds: string[];
   emittedStoredUpdates: StoredAgentRecord[];
   moves: Array<{ agentId: string; toWorkspaceId: string }>;
+  mkdirCalls: string[];
 }
 
 function storedAgent(overrides: Partial<StoredAgentRecord> = {}): StoredAgentRecord {
@@ -116,6 +117,7 @@ function build(
     archivedAgentIds: [],
     emittedStoredUpdates: [],
     moves: [],
+    mkdirCalls: [],
     deps: null as unknown as MetaActionsDependencies,
   };
   harness.deps = {
@@ -229,6 +231,9 @@ function build(
     },
     emitStoredAgentUpdate: async (record: StoredAgentRecord) => {
       harness.emittedStoredUpdates.push(record);
+    },
+    mkdirp: async (dirPath: string) => {
+      harness.mkdirCalls.push(dirPath);
     },
   };
   return harness;
@@ -428,7 +433,7 @@ describe("validateMetaPlan refusal paths", () => {
     ).resolves.toMatchObject({ ok: false, error: "Agent agent-ghost not found" });
   });
 
-  test("create_project: missing destination", async () => {
+  test("create_project: missing or relative destination", async () => {
     const h = build();
     await expect(
       applyMetaPlan(h.deps, plan({ action: "create_project", destination: "" })),
@@ -436,6 +441,22 @@ describe("validateMetaPlan refusal paths", () => {
       ok: false,
       error: "create_project requires a destination (project root path)",
     });
+    // A relative destination must be refused, never resolved against the
+    // daemon's cwd (that would register a project at an unintended location).
+    await expect(
+      applyMetaPlan(h.deps, plan({ action: "create_project", destination: "test" })),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: 'create_project destination must be an absolute path (got "test")',
+    });
+    await expect(
+      applyMetaPlan(h.deps, plan({ action: "create_project", destination: "~/test" })),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: 'create_project destination must be an absolute path (got "~/test")',
+    });
+    expect(h.mkdirCalls).toEqual([]);
+    expect(h.projects.size).toBe(1); // nothing registered
   });
 
   test("move_agent: missing ids, missing records, archived/running agent, archived workspace", async () => {
@@ -577,7 +598,7 @@ describe("applyMetaPlan happy paths", () => {
     expect(renamedAgent.name).toBe("glowing-otter");
   });
 
-  test("create_project allocates a project at the destination root", async () => {
+  test("create_project allocates a project at the destination root after mkdir -p", async () => {
     const h = build({ projects: [] });
     const result = await applyMetaPlan(h.deps, {
       action: "create_project",
@@ -585,6 +606,9 @@ describe("applyMetaPlan happy paths", () => {
       newValue: "new-work",
     });
     expect(result).toMatchObject({ ok: true });
+    // The root directory must be ensured BEFORE the record is registered so
+    // the project opens without a models error (missing-cwd resolution).
+    expect(h.mkdirCalls).toEqual(["/home/me/new-work"]);
     const created = Array.from(h.projects.values()).find((p) => p.rootPath === "/home/me/new-work");
     expect(created).toBeDefined();
     expect(created?.displayName).toBe("new-work");
@@ -656,6 +680,9 @@ describe("promote_workspace", () => {
       newValue: "backtesting",
     });
     expect(result).toMatchObject({ ok: true });
+
+    // The promoted project's root directory is ensured like create_project.
+    expect(h.mkdirCalls).toEqual(["/home/me/experiments/ws-a"]);
 
     // Project created at the workspace's path root, named from newValue.
     const promoted = Array.from(h.projects.values()).find(

@@ -184,6 +184,13 @@ export interface PaseoToolHostDependencies {
    */
   serverId?: string;
   /**
+   * This daemon's Mission Control host alias (missionControl.hostAlias).
+   * Fleet tool RESULTS replace the literal "local" host with this alias so
+   * the model's own echo and any raw JSON never surface "local" (spec: never
+   * render "local" as a host). Absent → keep "local" (the UI resolves it).
+   */
+  hostAlias?: string | null;
+  /**
    * ID of the agent that is using this tool catalog.
    * Used for cwd/mode inheritance when agents spawn child agents.
    */
@@ -979,6 +986,11 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     serverId,
     logger,
   } = options;
+  // The display label for THIS daemon in fleet tool results: the Mission
+  // Control host alias when configured, else "local" (the daemon-side host
+  // identifier the UI still resolves). Never the raw hostname — results and
+  // the model's echo of them must read as fleet aliases, not machine names.
+  const hostLabel = options.hostAlias?.trim() || "local";
   const childLogger = logger.child({ module: "agent", component: "paseo-tool-catalog" });
   const callerContext = callerAgentId ? (resolveCallerContext?.(callerAgentId) ?? null) : null;
 
@@ -4072,7 +4084,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         const reports = localReports.get(agent.id);
         agents.push({
           ...agent,
-          host: "local",
+          host: hostLabel,
           ...(reports ? { reportStatus: reports } : {}),
           lastUserMessage: lastUserMessageFor(agentManager, agent.id),
         });
@@ -4196,8 +4208,15 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       if (!cwd && !workspaceId) {
         throw new Error(`cwd or workspaceId is required to place the agent on host "${host}"`);
       }
+      const providerSlash = provider.indexOf("/");
       const snapshot = await client.createAgent({
-        provider,
+        // The peer create RPC is the SESSION create path: `provider` must be
+        // a plain provider id with `model` passed separately (the local
+        // create_agent path splits "provider/model" itself). Passing the
+        // combined string made every peer spawn fail with "Provider
+        // provider/model is not configured" on the target host.
+        provider: providerSlash > 0 ? provider.slice(0, providerSlash) : provider,
+        ...(providerSlash > 0 ? { model: provider.slice(providerSlash + 1) } : {}),
         cwd: cwd ?? ".",
         workspaceId,
         initialPrompt,
@@ -4367,6 +4386,11 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         }
       }
 
+      for (const match of allMatches) {
+        if (match.host === "local") {
+          match.host = hostLabel;
+        }
+      }
       const matches = mergeFleetSearchMatches(allMatches, limit);
       childLogger.info(
         {

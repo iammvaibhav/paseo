@@ -1,4 +1,4 @@
-import { basename, resolve } from "node:path";
+import { basename, isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
 
 import type { Logger } from "pino";
@@ -159,6 +159,14 @@ export interface MetaActionsDependencies extends MetaActionsLookupDependencies {
   archiveWorkspace: (workspaceId: string, requestId: string) => Promise<ArchiveResult>;
   /** Existing cascade: archive a single agent (cancel run + record). */
   archiveAgent: (agentId: string) => Promise<ArchiveAgentResult>;
+  /**
+   * mkdir -p a directory (and any missing parents) on this host. Project
+   * creation/promotion ensures the project root exists on disk BEFORE the
+   * record is registered: a registered root that does not exist breaks
+   * provider/model resolution against it ("models error" when opening the
+   * project). No-op when the directory already exists.
+   */
+  mkdirp: (dirPath: string) => Promise<void>;
   /**
    * Emit an agent_update for a STORED (not-running) agent record after a
    * mutation. Live agents flow through agent_state automatically; stored
@@ -334,8 +342,18 @@ async function validateCreateProject(
   _deps: MetaActionsLookupDependencies,
   plan: MissionControlMetaPlan,
 ): Promise<MetaActionValidationResult> {
-  if (!requireDestination(plan)) {
+  const destination = requireDestination(plan);
+  if (!destination) {
     return { ok: false, error: "create_project requires a destination (project root path)" };
+  }
+  // The destination becomes the on-disk project root. A relative path would
+  // silently resolve against the daemon's cwd (and ~ never expands), so it
+  // must be absolute — the Commander passes an explicit absolute root.
+  if (!isAbsolute(destination)) {
+    return {
+      ok: false,
+      error: `create_project destination must be an absolute path (got "${destination}")`,
+    };
   }
   return { ok: true };
 }
@@ -584,6 +602,12 @@ async function applyCreateProject(
   plan: MissionControlMetaPlan,
 ): Promise<MetaPlanActionResult> {
   const rootPath = resolve(requireDestination(plan));
+  // Ensure the root exists on disk BEFORE registering the record: a project
+  // whose root does not exist cannot be opened (provider/model resolution
+  // against the missing cwd fails with a models error). Validation above
+  // guarantees the destination is absolute, so this is the Commander's
+  // explicitly provided path — never a cwd-relative guess.
+  await deps.mkdirp(rootPath);
   const displayName = plan.newValue?.trim() || basename(rootPath) || rootPath;
   const project = await deps.projectRegistry.getOrCreateActiveByRoot({
     rootPath,
@@ -595,6 +619,7 @@ async function applyCreateProject(
     projectId: project.projectId,
     rootPath,
     displayName,
+    directoryEnsured: rootPath,
   });
   return { ok: true, summary: `Project ${project.projectId} ready at ${rootPath}` };
 }
@@ -632,6 +657,11 @@ async function applyPromoteWorkspace(
   // the workspace record into it. Agents stay put: they are owned by the
   // workspace, which now lives under the new project.
   const rootPath = workspace.worktreeRoot ?? workspace.cwd;
+  // Same gap as create_project: the new project's root must exist on disk
+  // before the record is registered, or opening the promoted project fails
+  // model resolution. mkdir -p is a no-op when the workspace root already
+  // exists (the normal case) and repairs stale/missing workspace records.
+  await deps.mkdirp(rootPath);
   const kind = workspace.kind === "directory" ? "non_git" : "git";
   const displayName = plan.newValue?.trim() || basename(rootPath) || rootPath;
   const project = await deps.projectRegistry.getOrCreateActiveByRoot({

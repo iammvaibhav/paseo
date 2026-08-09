@@ -41,7 +41,12 @@ import {
 } from "@/workspace/file-open";
 import { cardRunPosition, FeedCard, type CardRunRowClass, type FeedCardEvent } from "./feed-card";
 import { readDispatchToolResultError } from "./thread-tool-error";
-import { isVerboseOnlyProposalEvent } from "./proposal-card";
+import {
+  classifyThreadRow,
+  isTagMessageTool,
+  prettyDispatchToolLeaf,
+  type ThreadRow,
+} from "./thread-classification";
 import { MutedSystemRow } from "./muted-system-row";
 import { isPaseoSystemMessage, PaseoSystemRow } from "./paseo-system-row";
 import { PaseoAgentLinkProvider } from "@/components/markdown/paseo-agent-link";
@@ -74,62 +79,12 @@ function isOmpNoticeToolCall(data: AgentToolCallData): boolean {
   );
 }
 
-// Pretty-rendered dispatch actions (spec "Tool rendering"). These are the only
-// Commander tool calls that surface in normal (non-verbose) mode — everything
-// else is machinery. `tag_message` is additionally silent in normal mode even
-// though it renders pretty in verbose.
-const PRETTY_DISPATCH_TOOLS: Record<string, true> = {
-  fleet_send_prompt: true,
-  fleet_list_agents: true,
-  fleet_create_agent: true,
-  create_agent: true,
-  fleet_search: true,
-};
-
-function prettyDispatchToolLeaf(name: string): string | null {
-  const trimmed = name.trim().toLowerCase();
-  if (PRETTY_DISPATCH_TOOLS[trimmed]) {
-    return trimmed;
-  }
-  const leaf = trimmed.split(/[.:/]/).at(-1) ?? "";
-  return PRETTY_DISPATCH_TOOLS[leaf] ? leaf : null;
-}
-
-function isTagMessageTool(name: string): boolean {
-  const trimmed = name.trim().toLowerCase();
-  return trimmed === "tag_message" || (trimmed.split(/[.:/]/).at(-1) ?? "") === "tag_message";
-}
-
 function ompNoticeMessage(data: AgentToolCallData): string {
   const detail = data.detail;
   if (detail.type === "plain_text") {
     return detail.label || detail.text || data.name;
   }
   return data.name;
-}
-
-type ThreadRow =
-  | { kind: "event"; event: FeedCardEvent; ts: number }
-  | { kind: "commander"; item: StreamItem; ts: number };
-
-/**
- * Classifies a thread row for card-run derivation: event rows render as cards
- * ("card"); verbose-only machinery hidden by normal mode renders nothing and
- * takes no height ("skip") — transparent to runs so the cards around it stay
- * visually adjacent; commander rows (messages, tool calls) render visible
- * content and break runs ("gap").
- */
-function classifyThreadRow(row: ThreadRow, verbose: boolean): CardRunRowClass {
-  if (row.kind !== "event") {
-    return "gap";
-  }
-  if (row.event.kind === "clarification" || row.event.kind === "answer") {
-    return "card";
-  }
-  if (!verbose && isVerboseOnlyProposalEvent(row.event)) {
-    return "skip";
-  }
-  return "card";
 }
 
 interface CommanderMessageRowProps {
@@ -604,15 +559,21 @@ export function MissionControlThread({
       return <View style={styles.rowContent}>{row}</View>;
     },
   );
-  const renderers = useMemo<StreamSegmentRenderers<ThreadRow>>(
-    () => ({
+  const renderers = useMemo<StreamSegmentRenderers<ThreadRow>>(() => {
+    // Referenced so the memo re-creates when verbose flips (same pattern as
+    // use-aggregated-agents' runtimeVersion): the web strategy memoizes
+    // rendered rows on renderer identity, so a toggle flip MUST re-create the
+    // renderers or mounted rows keep the stale gate until new data lands. The
+    // stable event ref already points at this render's closure, so re-created
+    // renderers render with the fresh verbose value immediately — no remount.
+    void verbose;
+    return {
       renderHistoryVirtualizedRow: (item, index, items) => renderThreadRow(item, index, items),
       renderHistoryMountedRow: (item, index, items) => renderThreadRow(item, index, items),
       renderLiveHeadRow: (item, index, items) => renderThreadRow(item, index, items),
       renderLiveAuxiliary: () => null,
-    }),
-    [renderThreadRow],
-  );
+    };
+  }, [renderThreadRow, verbose]);
 
   const keyExtractor = useCallback((row: ThreadRow) => {
     return row.kind === "event" ? `event:${row.event.id}` : `cmd:${row.item.id}`;

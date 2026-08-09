@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -168,6 +168,7 @@ beforeAll(async () => {
       return { agentId, archivedAt: archived.archivedAt!, record: archived };
     },
     emitStoredAgentUpdate: async () => undefined,
+    mkdirp: (dirPath) => mkdir(dirPath, { recursive: true }),
   };
 });
 
@@ -253,5 +254,42 @@ describe("promote_workspace dev-stack e2e (service function, no UI)", () => {
     }
     // The experiments project itself is untouched.
     expect((await projectRegistry.get(experimentsProjectId))?.archivedAt).toBeNull();
+  });
+
+  test("create_project mkdir -p the destination before registering (no models-error failure mode)", async () => {
+    // A nested destination that does NOT exist anywhere yet: the exact shape
+    // of the reported bug (record registered, no directory on disk).
+    const createdRoot = join(PASEOS_HOME, "created-by-meta", "deep", "test");
+    await rm(createdRoot, { recursive: true, force: true });
+    await expect(access(createdRoot)).rejects.toThrow();
+
+    const result = await applyMetaPlan(deps, {
+      action: "create_project",
+      destination: createdRoot,
+      newValue: "meta-created",
+      serverId: "server-m5-e2e",
+    });
+    expect(result.ok).toBe(true);
+
+    // The fix: the root directory exists on disk right after apply, BEFORE
+    // any provider/model resolution touches it — so opening the project can
+    // never hit the missing-cwd models error for new projects.
+    await expect(access(createdRoot)).resolves.toBeUndefined();
+
+    const created = (await projectRegistry.list()).find(
+      (candidate) => candidate.rootPath === createdRoot && !candidate.archivedAt,
+    );
+    expect(created).toBeDefined();
+    expect(created?.displayName).toBe("meta-created");
+    expect(created?.kind).toBe("non_git");
+
+    // Cleanup: remove exactly what this test created.
+    await projectRegistry.remove(created!.projectId).catch(() => undefined);
+    await rm(join(PASEOS_HOME, "created-by-meta"), {
+      recursive: true,
+      force: true,
+      maxRetries: 3,
+      retryDelay: 100,
+    });
   });
 });
