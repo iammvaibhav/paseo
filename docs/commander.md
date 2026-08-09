@@ -38,7 +38,14 @@ The world snapshot is the hot set: hosts + aliases, the project/workspace index 
 
 **No digests.** The Commander's context never receives "this started, this stopped" event streams. Integrating events into current state is the daemon's job, and the snapshot is the result. When the machinery needs the Commander to act on an event — a stall escalation in Auto mode, a verdict that needs routing — it triggers a machinery turn carrying that event plus a fresh snapshot, through the same assembly path as a user turn. Nothing queued can rot, because the payload is computed at delivery.
 
-Turns are serialized today. Because state is externalized, independent user queries could run as parallel turns against the same thread; that is specced in the roadmap, not built.
+## The mailbox (delivery and follow-through)
+
+The Commander is an actor: one identity, one sequential turn loop, a mailbox everything writes into. Parallel Commander turns were considered and rejected — turns take seconds (the Commander only decides and delegates), the real work is already parallel because workers are parallel, and concurrent turns can race placements and interleave cards.
+
+- **Always accept.** Every inbound message — user chat, voice dispatch, machinery event — delivers immediately. Idle → a turn starts. Mid-turn → omp live-steer with an envelope: acknowledge in one line, fold the instruction into open work, prioritize the user, continue. Nothing cancels a running turn; nothing waits for one.
+- **The instruction ledger.** The daemon (not the model) records every user/voice instruction as a ledger row (id, text, open/closed). The per-turn envelope re-lists open rows the way the snapshot re-lists fleet state, so compaction can never lose an instruction. Rows close when the Commander emits a card citing the instruction (`respondsTo` on proposals/answers/clarifications); verbose mode exposes a manual close.
+- **Follow-through.** Terminal events (finished, failed, interrupted) and verdicts of agents the Commander dispatched or adopted enter the same mailbox as machinery turns — in both modes; Ask mode stays safe because any follow-up action becomes a gated proposal. The Commander then proposes a follow-up, posts an answer card, or stays silent.
+- **Adoption.** Dispatched = spawned by the Commander (`paseo.parent-agent-id`) or adopted (`paseo.commander-adopted-at`). Adoption happens on the first delivered `fleet_send_prompt`, or explicitly via the `adopt_agent` meta action — "take care of this agent" stamps the label without messaging the worker.
 
 ## Interaction grammar
 

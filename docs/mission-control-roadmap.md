@@ -97,11 +97,27 @@ See [docs/commander-voice.md](commander-voice.md). Depends on M0 (working Comman
 - [x] Logic harness: headless text-mode driver against the dev daemon asserting tool sequences and daemon effects.
 - [x] E2E audio proof: fish.audio TTS command → Live session → spoken proposal → verbal approval → worker spawned on the dev daemon; captured audio + daemon receipts.
 
-## M8 — Specced, not scheduled
+## M8 — The mailbox (approved 2026-08-09)
 
-Specs live in commander.md; build on demand:
+See commander.md "The mailbox". Parallel Commander turns are REJECTED (races, card interleaving, no real win — turns take seconds; workers are the parallelism).
+
+- [ ] Mailbox delivery: every message to the Commander (chat, voice, machinery) delivers immediately — idle starts a turn, busy live-steers with the ack-and-fold envelope. One delivery path.
+- [ ] Instruction ledger: daemon-owned rows per user/voice instruction, persisted in the mission-control store; per-turn envelope re-lists open rows; cards gain additive `respondsTo` and a citing card closes the row; manual close in verbose.
+- [ ] `adopt_agent` meta action: stamp `paseo.commander-adopted-at` without messaging the worker.
+- [ ] Live verification: per-turn snapshot supersede observed on a REAL session (the deployed commander shows only the launch snapshot; dev receipts exist, live path unpinned).
+
+## M9 — Commander Voice in-app
+
+- [ ] The Mission Control composer's voice button becomes Commander Voice (Gemini Live via the voice node); every other agent chat keeps stock Paseo voice mode.
+- [ ] Voice node runs as a managed service on the commander host; deploy.sh owns its lifecycle like code-server.
+- [ ] Multiple spoken instructions ride the mailbox (instant acks, async results, announce policy unchanged).
+
+## M10 — Fleet test campaign
+
+Per .dev/scratch/mc-next-wave-brief.md: three peered dev daemons + dev hindsight bank, `omp/opencode-go/deepseek-v4-flash` everywhere, mixed-instruction load test, edge-case sweep, headful chrome-MCP browsing, in-app voice e2e; bugs filed with receipts, then fixed and re-run.
+
+## Specced, not scheduled
 
 - One-shot deferred runs ("in three hours") as `maxRuns: 1` schedules behind a dedicated tool.
 - Schedules + webhooks CRUD as Commander tools.
-- Parallel Commander turns for independent queries (state is externalized; needs thread-append arbitration and per-turn proposal attribution).
 - Cross-host answer cards for multi-host questions (fan-out snapshot merge).
