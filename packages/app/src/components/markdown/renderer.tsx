@@ -23,7 +23,6 @@ import Markdown, {
 } from "react-native-markdown-display";
 import texmath from "markdown-it-texmath";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { AppearanceStyleBoundary } from "@/components/appearance-style-boundary";
 import { HighlightedCodeBlock } from "@/components/highlighted-code-block";
 
 import { renderRichFence } from "./rich-fence";
@@ -142,11 +141,7 @@ export function MarkdownRenderer({
     ],
   );
 
-  return (
-    <AppearanceStyleBoundary>
-      <MarkdownPartList parts={parts} rendererProps={rendererProps} />
-    </AppearanceStyleBoundary>
-  );
+  return <MarkdownPartList parts={parts} rendererProps={rendererProps} />;
 }
 
 type MarkdownPartRendererProps = Omit<MarkdownRendererProps, "text" | "enableHtmlish"> & {

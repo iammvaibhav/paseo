@@ -5,6 +5,7 @@ import type { AgentCapabilityFlags } from "../agent-sdk-types.js";
 import { checkProviderLaunchAvailable, resolveProviderLaunch } from "../provider-launch-config.js";
 import {
   ACPAgentClient,
+  type ACPCatalogModelResolver,
   type ACPClientCapabilityMeta,
   type ACPConfigFeatureOption,
   DEFAULT_ACP_CAPABILITIES,
@@ -49,6 +50,7 @@ interface GenericACPAgentClientOptions {
   clientCapabilityMeta?: ACPClientCapabilityMeta;
   configFeatureOptions?: ACPConfigFeatureOption[];
   extensionCommandsParser?: ACPExtensionCommandsParser;
+  catalogModelResolver?: ACPCatalogModelResolver;
 }
 
 export class GenericACPAgentClient extends ACPAgentClient {
@@ -77,6 +79,7 @@ export class GenericACPAgentClient extends ACPAgentClient {
       // so the daemon offers its own Allow All mode that auto-approves
       // permission requests (see getpaseo/paseo#1926).
       syntheticAllowAllMode: true,
+      catalogModelResolver: options.catalogModelResolver,
     });
 
     this.command = options.command;

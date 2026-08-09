@@ -1559,11 +1559,10 @@ export async function createPaseoDaemon(
         agentManager,
         agentStorage,
         createAgent,
+        // agentStorage is required for phantom-run reconciliation on cancel
+        // (fork: dead "running" records must go to error, not stay zombies).
         interruptAgent: (agentId) =>
           cancelAgentRunCommand({ agentManager, agentStorage, logger }, agentId),
-        archiveAgent: (agentId) =>
-          archiveAgentCommand({ agentManager, agentStorage, logger }, agentId),
-        listActiveWorkspaces: listActiveWorkspacesExternal,
         archiveWorkspace: archiveWorkspaceByIdExternal,
         cleanupFailedCreate: (input) =>
           hubAgentLifecycle.cleanupCreatedWorktreeAfterFailedAgentCreate(input),

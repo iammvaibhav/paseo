@@ -11,7 +11,6 @@ import { StyleSheet } from "react-native-unistyles";
 import { Image as ExpoImage } from "expo-image";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
-import { AppearanceStyleBoundary } from "@/components/appearance-style-boundary";
 import type { ToolCallDetail } from "@getpaseo/protocol/agent-types";
 import { fleetToolLeafName } from "@getpaseo/protocol/tool-call-display";
 import { buildLineDiff, parseUnifiedDiff, type DiffLine } from "@/utils/tool-call-parsers";
@@ -980,15 +979,7 @@ function LoadingSkeleton({ containerStyle }: { containerStyle: StyleProp<ViewSty
   );
 }
 
-export function ToolCallDetailsContent({ ...props }: ToolCallDetailsContentProps) {
-  return (
-    <AppearanceStyleBoundary>
-      <ToolCallDetailsContentInner {...props} />
-    </AppearanceStyleBoundary>
-  );
-}
-
-function ToolCallDetailsContentInner({
+export function ToolCallDetailsContent({
   detail,
   errorText,
   maxHeight,

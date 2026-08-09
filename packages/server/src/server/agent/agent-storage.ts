@@ -179,13 +179,20 @@ export class AgentStorage {
   }
 
   private queueRecordWrite(record: StoredAgentRecord): Promise<void> {
-    const agentId = record.id;
+    return this.queueRecordMutation(record.id, () => record);
+  }
+
+  private queueRecordMutation(
+    agentId: string,
+    mutate: (existing: StoredAgentRecord | null) => StoredAgentRecord,
+  ): Promise<void> {
     const prev = this.pendingWrites.get(agentId) ?? Promise.resolve();
     const next = prev.then(async () => {
       if (this.deleting.has(agentId)) {
         return undefined;
       }
 
+      const record = mutate(this.cache.get(agentId) ?? null);
       await this.writeRecord(record);
       return undefined;
     });
@@ -258,20 +265,22 @@ export class AgentStorage {
     options?: { title?: string | null; internal?: boolean },
   ): Promise<void> {
     await this.load();
-    await this.waitForPendingWrite(agent.id);
-    const existing = (await this.get(agent.id)) ?? null;
-    const record = toStoredAgentRecord(
-      agent,
-      buildSnapshotProjectionOptions(agent, existing, options),
-    );
+    // Project inside the per-agent write queue so concurrent archive/identity
+    // mutations cannot be clobbered by a stale pre-archive snapshot.
+    await this.queueRecordMutation(agent.id, (existing) => {
+      const record = toStoredAgentRecord(
+        agent,
+        buildSnapshotProjectionOptions(agent, existing, options),
+      );
 
-    // Preserve identity fields across snapshot flushes for records where the
-    // projection doesn't carry them yet (e.g. a ManagedAgent restored without
-    // its stored identity), plus soft-delete/archive status that a naive
-    // projection would wipe during normal persistence (including daemon restarts).
-    preserveStoredIdentityFields(record, existing);
+      // Preserve identity fields across snapshot flushes for records where the
+      // projection doesn't carry them yet (e.g. a ManagedAgent restored without
+      // its stored identity), plus soft-delete/archive status that a naive
+      // projection would wipe during normal persistence (including daemon restarts).
+      preserveStoredIdentityFields(record, existing);
 
-    await this.upsert(record);
+      return record;
+    });
   }
 
   async setTitle(agentId: string, title: string): Promise<void> {

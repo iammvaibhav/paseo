@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { View } from "react-native";
 import { Gesture } from "react-native-gesture-handler";
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue } from "react-native-reanimated";
+import { scheduleOnRN } from "react-native-worklets";
 import { StyleSheet } from "react-native-unistyles";
 import { SidebarResizeHandle } from "@/components/sidebar-resize-handle";
 import { clampInspectorWidth, usePanelStore } from "@/stores/panel-store";
@@ -37,6 +38,9 @@ export function InspectorRail({
 
   const startWidthRef = useRef(inspectorWidth);
   const resizeWidth = useSharedValue(inspectorWidth);
+  const [resizePressed, setResizePressed] = useState(false);
+  const showResizeGrip = useCallback(() => setResizePressed(true), []);
+  const hideResizeGrip = useCallback(() => setResizePressed(false), []);
 
   useEffect(() => {
     resizeWidth.value = inspectorWidth;
@@ -54,6 +58,9 @@ export function InspectorRail({
       Gesture.Pan()
         .enabled(!flexFill)
         .hitSlop({ left: 8, right: 8, top: 0, bottom: 0 })
+        .onBegin(() => {
+          scheduleOnRN(showResizeGrip);
+        })
         .onStart(() => {
           startWidthRef.current = inspectorWidth;
           resizeWidth.value = inspectorWidth;
@@ -66,8 +73,11 @@ export function InspectorRail({
         })
         .onEnd(() => {
           runOnJS(handleResizeEnd)(resizeWidth.value);
+        })
+        .onFinalize(() => {
+          scheduleOnRN(hideResizeGrip);
         }),
-    [flexFill, handleResizeEnd, inspectorWidth, resizeWidth],
+    [flexFill, handleResizeEnd, hideResizeGrip, inspectorWidth, resizeWidth, showResizeGrip],
   );
 
   const animatedStyle = useAnimatedStyle(() => ({
@@ -82,6 +92,7 @@ export function InspectorRail({
       <SidebarResizeHandle
         edge="left"
         gesture={resizeGesture}
+        pressed={resizePressed}
         testID="mission-control-inspector-resize-handle"
       />
       <View style={styles.content}>{children}</View>

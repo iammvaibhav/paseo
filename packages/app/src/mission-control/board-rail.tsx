@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { View } from "react-native";
 import { Gesture } from "react-native-gesture-handler";
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue } from "react-native-reanimated";
+import { scheduleOnRN } from "react-native-worklets";
 import { StyleSheet } from "react-native-unistyles";
 import { SidebarResizeHandle } from "@/components/sidebar-resize-handle";
 import { clampBoardRailWidth, usePanelStore } from "@/stores/panel-store";
@@ -33,6 +34,9 @@ export function BoardRail({
 
   const startWidthRef = useRef(boardRailWidth);
   const resizeWidth = useSharedValue(boardRailWidth);
+  const [resizePressed, setResizePressed] = useState(false);
+  const showResizeGrip = useCallback(() => setResizePressed(true), []);
+  const hideResizeGrip = useCallback(() => setResizePressed(false), []);
 
   useEffect(() => {
     resizeWidth.value = boardRailWidth;
@@ -50,6 +54,9 @@ export function BoardRail({
       Gesture.Pan()
         .enabled(!flexFill)
         .hitSlop({ left: 8, right: 8, top: 0, bottom: 0 })
+        .onBegin(() => {
+          scheduleOnRN(showResizeGrip);
+        })
         .onStart(() => {
           startWidthRef.current = boardRailWidth;
           resizeWidth.value = boardRailWidth;
@@ -61,8 +68,11 @@ export function BoardRail({
         })
         .onEnd(() => {
           runOnJS(handleResizeEnd)(resizeWidth.value);
+        })
+        .onFinalize(() => {
+          scheduleOnRN(hideResizeGrip);
         }),
-    [boardRailWidth, flexFill, handleResizeEnd, resizeWidth],
+    [boardRailWidth, flexFill, handleResizeEnd, hideResizeGrip, resizeWidth, showResizeGrip],
   );
 
   const animatedStyle = useAnimatedStyle(() => ({
@@ -77,6 +87,7 @@ export function BoardRail({
       <SidebarResizeHandle
         edge="left"
         gesture={resizeGesture}
+        pressed={resizePressed}
         testID="mission-control-board-resize-handle"
       />
       <View style={styles.content}>{children}</View>
