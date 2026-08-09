@@ -33,6 +33,11 @@
 #   PASEO_REMOTE_HOSTS="blrofc3"      # subset of remotes (space-separated); default all
 #   PASEO_SKIP_DAEMON=1               # skip daemon build/restart; still sync git,
 #                                     #   deploy code-server, and push settings
+#   PASEO_DEPLOY_NUDGE=0              # disable the self-wake nudge (default ON):
+#                                     #   running agents are snapshotted before each
+#                                     #   daemon restart and nudged after it comes
+#                                     #   back healthy, so they resurrect and resume
+#                                     #   without a human (never fails the deploy)
 #   PASEO_SKIP_CODE_SERVER=1          # skip code-server deploy everywhere
 #   PASEO_SKIP_STALL_CRON=1           # skip installing the stall-check cron on every host
 #   PASEO_SKIP_COMMANDER_VOICE=1      # skip Commander Voice node deploy everywhere
@@ -785,6 +790,26 @@ EOF
   die "$label daemon failed to come back after restart (see $logf). Recover with: PATH=\"\$HOME/.local/bin:\$PATH\" paseo daemon start --home $(printf %q "$home")"
 }
 
+# Self-wake nudge (opt out: PASEO_DEPLOY_NUDGE=0). A detached daemon restart
+# kills in-flight agent provider processes; the daemon respawns an agent's
+# provider process when a message is delivered to it, so nudging each agent
+# that was running before the restart resurrects it and lets the orchestrating
+# agent resume without a human. The nudge must NEVER fail the deploy:
+# scripts/deploy-nudge.mjs exits 0 on every failure and we add `|| true` here
+# as belt-and-braces.
+deploy_nudge_enabled() {
+  [[ "${PASEO_DEPLOY_NUDGE:-1}" != "0" ]]
+}
+
+# Run the nudge script against the LOCAL daemon. The password comes from the
+# same channel the CLI uses (PASEO_PASSWORD, overridable via PASEO_NUDGE_URL /
+# PASEO_NUDGE_PASSWORD). node is on PATH here: restart runs after ensure_node.
+deploy_nudge_run() {
+  PASEO_NUDGE_URL="${PASEO_NUDGE_URL:-}" \
+  PASEO_NUDGE_PASSWORD="${PASEO_NUDGE_PASSWORD:-${PASEO_PASSWORD:-}}" \
+    node "$ROOT_DIR/scripts/deploy-nudge.mjs" "$@"
+}
+
 restart_local_daemon() {
   # Require built artifacts so start does not race a half-written dist/.
   if [[ ! -f "$ROOT_DIR/packages/cli/dist/index.js" ]]; then
@@ -796,7 +821,22 @@ restart_local_daemon() {
   if [[ ! -f "$ROOT_DIR/packages/server/dist/scripts/supervisor-entrypoint.js" ]]; then
     die "packages/server/dist/scripts/supervisor-entrypoint.js missing — build:server incomplete"
   fi
+
+  # Self-wake nudge: snapshot running agents BEFORE the daemon stops, then nudge
+  # them after the health check passes (only reached when restart succeeded).
+  local nudge_file=""
+  if deploy_nudge_enabled; then
+    nudge_file="${PASEO_DEPLOY_RUN_DIR:-/tmp}/deploy-nudge-local.json"
+    log "Snapshotting running agents before local daemon restart (nudge: $nudge_file)"
+    deploy_nudge_run --snapshot "$nudge_file" || true
+  fi
+
   restart_daemon_detached "$LOCAL_PASEO_HOME" "local" "$ROOT_DIR"
+
+  if [[ -n "$nudge_file" ]]; then
+    log "Nudging resurrected agents after local daemon restart"
+    deploy_nudge_run --nudge "$nudge_file" || true
+  fi
 }
 
 deploy_local_code_server() {
@@ -1260,6 +1300,10 @@ REMOTE_REPO_DIR='$REMOTE_REPO_DIR'
 NODE_VERSION='$NODE_VERSION'
 PASEO_HOME='$remote_home'
 TUNNEL_PROVIDER='$tunnel_provider'
+# Self-wake nudge env (interpolated at heredoc time from the Mac's env; empty
+# values are fine — the nudge then skips instead of failing the deploy).
+PASEO_NUDGE_URL='${PASEO_NUDGE_URL:-}'
+PASEO_NUDGE_PASSWORD='${PASEO_NUDGE_PASSWORD:-${PASEO_PASSWORD:-}}'
 
 log() {
   printf '\n[%s:%s] %s\n' "\$(date '+%H:%M:%S')" '$host' "\$*"
@@ -1441,6 +1485,19 @@ except Exception:
     printf '%s %s' "\$primary" "\$secondary"
   }
 
+  # Self-wake nudge: snapshot running agents BEFORE the daemon stops. The
+  # daemon respawns an agent's provider process on first message, so after the
+  # restart below each snapshot agent is nudged and resumes without a human.
+  # Never fails the deploy (the script exits 0 on failure; || true too).
+  nudge_file=""
+  if [[ '${PASEO_DEPLOY_NUDGE:-1}' != "0" ]]; then
+    nudge_file="\$PASEO_HOME/deploy-nudge-remote.json"
+    log "Snapshotting running agents before daemon restart (nudge: \$nudge_file)"
+    PASEO_NUDGE_URL="\$PASEO_NUDGE_URL" \
+    PASEO_NUDGE_PASSWORD="\$PASEO_NUDGE_PASSWORD" \
+      node "\$HOME/\$REMOTE_REPO_DIR/scripts/deploy-nudge.mjs" --snapshot "\$nudge_file" || true
+  fi
+
   # Detached restart via built CLI (not npx tsx). Require a NEW pid + health on
   # configured listen and/or loopback:port (Tailscale-only binds fail on 127.0.0.1).
   restart_log="/tmp/paseo-daemon-restart-remote-\$\$.log"
@@ -1481,6 +1538,15 @@ except Exception:
     log "Debug: old_pid=\${old_pid:-none} new_pid=\$(read_daemon_pid "\$PASEO_HOME") listen=\$(read_daemon_listen "\$PASEO_HOME") primary=\${primary:-unset}"
     echo "Daemon failed to come back (\${primary:-no-url}) after restart" >&2
     exit 1
+  fi
+
+  # Health check passed — nudge the agents that were running before the restart
+  # so they resurrect (daemon respawns the provider on first message) and resume.
+  if [[ -n "\$nudge_file" ]]; then
+    log "Nudging resurrected agents after daemon restart"
+    PASEO_NUDGE_URL="\$PASEO_NUDGE_URL" \
+    PASEO_NUDGE_PASSWORD="\$PASEO_NUDGE_PASSWORD" \
+      node "\$HOME/\$REMOTE_REPO_DIR/scripts/deploy-nudge.mjs" --nudge "\$nudge_file" || true
   fi
 }
 

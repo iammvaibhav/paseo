@@ -258,7 +258,7 @@ Per host (`config.json` → daemon):
 
 Central (stored on commander host, edited from anywhere via `mission_control.config.*`):
 
-- `commanderHost`, `commanderModel?`, `commanderInstructions`
+- `commanderHost`, `commanderModel?`, `commanderInstructions`. `commanderHost` matches a daemon's serverId, OS hostname, or `missionControl.hostAlias`. Daemons sharing one machine share an OS hostname, so a hostname value makes ALL of them claim designation (each applies config patches locally instead of forwarding) — co-located daemons must be designated by alias or serverId.
 - `verifierModel?`, `verifierConcurrency` (default 3), `evaluationScope: "commander" | "all"`
 - `mode: "ask" | "auto"` (default ask), `retentionDays` (default 30)
 - `namingTheme`, `hideAgentNames` (default false), `defaultDispatchHost`
