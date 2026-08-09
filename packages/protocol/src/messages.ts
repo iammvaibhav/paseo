@@ -88,6 +88,10 @@ import {
   MissionControlMediaFetchResponseSchema,
   MissionControlMetaApplyRequestSchema,
   MissionControlMetaApplyResponseSchema,
+  MissionControlInstructionsListRequestSchema,
+  MissionControlInstructionsListResponseSchema,
+  MissionControlInstructionsCloseRequestSchema,
+  MissionControlInstructionsCloseResponseSchema,
 } from "./mission-control/types.js";
 export {
   MissionControlEventSchema,
@@ -1415,6 +1419,11 @@ export const SendAgentMessageRequestSchema = z.object({
   // default). queue: wait for idle, then stream without replacing. Absent =
   // interrupt for wire compat.
   dispatchMode: z.enum(["steer", "interrupt", "queue"]).optional(),
+  // M8 mailbox source attribution: "voice" marks a Commander Voice dispatch
+  // (scripts/commander-voice) so the daemon's instruction ledger records the
+  // right source. Absent = "chat" (the app composer). Additive; ignored for
+  // non-Commander targets.
+  source: z.enum(["chat", "voice"]).optional(),
 });
 
 export const WaitForFinishRequestSchema = z.object({
@@ -3066,6 +3075,8 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   MissionControlSearchRequestSchema,
   MissionControlMediaFetchRequestSchema,
   MissionControlMetaApplyRequestSchema,
+  MissionControlInstructionsListRequestSchema,
+  MissionControlInstructionsCloseRequestSchema,
 ]);
 
 export type SessionInboundMessage = z.infer<typeof SessionInboundMessageSchema>;
@@ -6018,6 +6029,8 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   MissionControlSearchResponseSchema,
   MissionControlMediaFetchResponseSchema,
   MissionControlMetaApplyResponseSchema,
+  MissionControlInstructionsListResponseSchema,
+  MissionControlInstructionsCloseResponseSchema,
   DaemonUpdateProgressMessageSchema,
   DaemonUpdateResponseSchema,
 ]);

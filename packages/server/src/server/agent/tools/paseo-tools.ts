@@ -887,6 +887,8 @@ interface CommanderSpawnProposalInput {
     thinkingOptionId?: string;
     features?: Record<string, unknown>;
   };
+  /** M8 instruction ledger: the open instruction id this dispatch answers. */
+  respondsTo?: string;
 }
 
 /**
@@ -923,6 +925,7 @@ function buildCommanderSpawnProposalInput(input: CommanderSpawnProposalInput): P
       settings,
       labels,
     }),
+    ...(input.respondsTo ? { respondsTo: input.respondsTo } : {}),
   };
 }
 
@@ -3929,6 +3932,12 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         .describe(
           "Working directory on the target host. Required when targeting a peer without workspaceId.",
         ),
+      respondsTo: z
+        .string()
+        .optional()
+        .describe(
+          "M8 instruction ledger: the open instruction id this dispatch answers (e.g. '#12'). The envelope lists open ids; cite one on every card you emit for a user instruction.",
+        ),
     })
     .passthrough();
 
@@ -4185,6 +4194,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
               workspaceId,
               labels,
               settings,
+              ...(args.respondsTo ? { respondsTo: args.respondsTo } : {}),
             }),
         });
         if (!gated.ok) {
@@ -4534,6 +4544,12 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           .describe(
             "Delivery to a busy agent. Omit to use the fleet commanderToWorkerMode setting.",
           ),
+        respondsTo: z
+          .string()
+          .optional()
+          .describe(
+            "M8 instruction ledger: the open instruction id this dispatch answers (e.g. '#12'). The envelope lists open ids; cite one on every card you emit for a user instruction.",
+          ),
         // Composer paste-through: the Commander forwards user attachments
         // (uploaded_file, github_pr, review, ...) as descriptors only — no
         // base64 through the model. The receiving daemon resolves them into
@@ -4551,7 +4567,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         deliveryMode: z.enum(["steer", "interrupt", "queue", "steer-interrupt"]),
       },
     },
-    async ({ host, agentId, prompt, mode, attachments }) => {
+    async ({ host, agentId, prompt, mode, attachments, respondsTo }) => {
       // The Commander's default comes from the fleet central setting
       // commanderToWorkerMode (default "interrupt" — a fleet direction change
       // is time-sensitive and queue-until-idle can sit for tens of minutes).
@@ -4575,6 +4591,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
             reason: "Commander send",
             classification: "normal",
             timelineClassification: "instruction",
+            ...(respondsTo ? { respondsTo } : {}),
           }),
         });
         if (!gated.ok) {
@@ -4647,6 +4664,12 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         "workspace id for move_agent/promote_workspace and the project root path for create_project.",
       inputSchema: {
         metaPlan: MissionControlMetaPlanSchema,
+        respondsTo: z
+          .string()
+          .optional()
+          .describe(
+            "M8 instruction ledger: the open instruction id this dispatch answers (e.g. '#12'). The envelope lists open ids; cite one on every card you emit for a user instruction.",
+          ),
       },
       outputSchema: {
         ok: z.boolean(),
@@ -4656,7 +4679,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         error: z.string().optional(),
       },
     },
-    async (args: { metaPlan: MissionControlMetaPlan }) => {
+    async (args: { metaPlan: MissionControlMetaPlan; respondsTo?: string }) => {
       if (!isCommanderCaller || !missionControlService) {
         throw new Error("fleet_meta requires a Commander caller");
       }
@@ -4677,8 +4700,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         toolName: "fleet_meta",
         toolInput: args,
         classify: () => classifyFleetMetaAction(args.metaPlan),
-        buildProposal: () =>
-          buildFleetMetaProposalInput({
+        buildProposal: async () => {
+          const proposalInput = await buildFleetMetaProposalInput({
             serverId: serverId ?? "",
             hostAlias: options.hostAlias,
             peerManager: peerManager ?? null,
@@ -4689,7 +4712,11 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
               workspaceRegistry: metaWorkspaceRegistry,
               projectRegistry: metaProjectRegistry,
             },
-          }),
+          });
+          return args.respondsTo
+            ? { ...proposalInput, respondsTo: args.respondsTo }
+            : proposalInput;
+        },
       });
       if (!gated.ok) {
         throw new Error(gated.error);
@@ -4957,13 +4984,24 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
             "Allow a free-text answer in addition to the options (true only when no option set can " +
               "cover the answer space).",
           ),
+        respondsTo: z
+          .string()
+          .optional()
+          .describe(
+            "M8 instruction ledger: the open instruction id this clarification answers (e.g. '#12'). The envelope lists open ids; cite one on every card you emit for a user instruction.",
+          ),
       },
       outputSchema: {
         ok: z.boolean(),
         eventId: z.string().optional(),
       },
     },
-    async (input: { question: string; options: string[]; allowFreeText: boolean }) => {
+    async (input: {
+      question: string;
+      options: string[];
+      allowFreeText: boolean;
+      respondsTo?: string;
+    }) => {
       if (!isCommanderCaller) {
         throw new Error("clarify requires a Commander caller");
       }
@@ -4977,6 +5015,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           question: input.question,
           options: input.options,
           allowFreeText: input.allowFreeText,
+          ...(input.respondsTo ? { respondsTo: input.respondsTo } : {}),
         },
       });
       if (!event) {
@@ -5041,6 +5080,12 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
             "Optional labeled rows (state, host, last report, proofs, dates...). Label the value, " +
               "never paste raw ids.",
           ),
+        respondsTo: z
+          .string()
+          .optional()
+          .describe(
+            "M8 instruction ledger: the open instruction id this answer responds to (e.g. '#12'). The envelope lists open ids; cite one on every card you emit for a user instruction.",
+          ),
       },
       outputSchema: {
         ok: z.boolean(),
@@ -5053,6 +5098,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       headline: string;
       body?: string;
       fields?: Array<{ label: string; value: string }>;
+      respondsTo?: string;
     }) => {
       if (!isCommanderCaller) {
         throw new Error("post_answer requires a Commander caller");
@@ -5072,6 +5118,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           headline: input.headline,
           ...(input.body ? { body: input.body } : {}),
           ...(input.fields && input.fields.length > 0 ? { fields: input.fields } : {}),
+          ...(input.respondsTo ? { respondsTo: input.respondsTo } : {}),
         },
       });
       if (!event) {

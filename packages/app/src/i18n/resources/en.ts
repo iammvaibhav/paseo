@@ -111,6 +111,7 @@ export const en = {
       muteVoice: "Mute voice",
       dictation: "Dictation",
       interruptBeforeVoice: "Interrupt the agent before starting voice mode",
+      commanderVoice: "Commander Voice",
     },
     attachments: {
       addImage: "Add image",
@@ -1883,6 +1884,9 @@ export const en = {
       hindsightSecondaryBank: "Recall bank (secondary)",
       hindsightSecondaryBankHint:
         "Read-only secondary bank consulted by fleet_recall. Empty disables.",
+      voiceNodeUrl: "Voice node URL",
+      voiceNodeUrlHint:
+        "Commander Voice server (e.g. ws://127.0.0.1:8787/ws). Empty hides Commander Voice in the Mission Control composer.",
     },
     general: {
       title: "General",

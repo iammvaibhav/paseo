@@ -113,6 +113,7 @@ export const ptBR: TranslationResources = {
       muteVoice: "Silenciar voz",
       dictation: "Ditado",
       interruptBeforeVoice: "Interrompa o agente antes de iniciar o modo de voz",
+      commanderVoice: "Voz do Comandante",
     },
     attachments: {
       addImage: "Adicionar imagem",
@@ -1901,6 +1902,9 @@ export const ptBR: TranslationResources = {
       hindsightSecondaryBank: "Banco de recall (secundário)",
       hindsightSecondaryBankHint:
         "Banco secundário somente leitura consultado pelo fleet_recall. Vazio o desativa.",
+      voiceNodeUrl: "URL do nó de voz",
+      voiceNodeUrlHint:
+        "Servidor de Voz do Comandante (ex.: ws://127.0.0.1:8787/ws). Vazio oculta a voz do Comandante no composer do Mission Control.",
     },
     general: {
       title: "Geral",

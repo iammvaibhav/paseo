@@ -115,6 +115,7 @@ export const fr: TranslationResources = {
       muteVoice: "Voix muette",
       dictation: "Dictée",
       interruptBeforeVoice: "Interrompre l'agent avant de démarrer le mode vocal",
+      commanderVoice: "Voix du Commandant",
     },
     attachments: {
       addImage: "Ajouter une image",
@@ -1919,6 +1920,9 @@ export const fr: TranslationResources = {
       hindsightSecondaryBank: "Banque de recall (secondaire)",
       hindsightSecondaryBankHint:
         "Banque secondaire en lecture seule consultée par fleet_recall. Vide pour désactiver.",
+      voiceNodeUrl: "URL du nœud vocal",
+      voiceNodeUrlHint:
+        "Serveur de voix du Commandant (p. ex. ws://127.0.0.1:8787/ws). Vide masque la voix du Commandant dans le compositeur de Mission Control.",
     },
     general: {
       title: "Général",

@@ -110,6 +110,27 @@ describe("CentralMissionControlConfigStore stall knobs", () => {
     expect(store.get().statusNudgeSeconds).toBe(400);
   });
 
+  test("voiceNodeUrl defaults null and round-trips through patch and reload", async () => {
+    const store = new CentralMissionControlConfigStore({
+      paseoHome: dir,
+      logger: createTestLogger(),
+    });
+    await store.initialize();
+    expect(store.get().voiceNodeUrl).toBeNull();
+
+    const patched = await store.patch({ voiceNodeUrl: "ws://127.0.0.1:8787/ws" });
+    expect(patched.voiceNodeUrl).toBe("ws://127.0.0.1:8787/ws");
+    // Unpatched keys keep defaults.
+    expect(patched.hindsightUrl).toBeNull();
+
+    const reloaded = new CentralMissionControlConfigStore({
+      paseoHome: dir,
+      logger: createTestLogger(),
+    });
+    await reloaded.initialize();
+    expect(reloaded.get().voiceNodeUrl).toBe("ws://127.0.0.1:8787/ws");
+  });
+
   test("initialize is idempotent: a second call never re-reads the file", async () => {
     const store = new CentralMissionControlConfigStore({
       paseoHome: dir,

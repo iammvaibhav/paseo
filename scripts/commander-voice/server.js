@@ -183,8 +183,14 @@ class VoiceSession {
     }
   }
 
-  /** Relay serverContent: output transcription plus text/audio model parts. */
+  /** Relay serverContent: input/output transcription plus text/audio model parts. */
   handleServerContent(serverContent) {
+    // What the USER said (input transcription) — the app's transcript strip
+    // renders "heard" lines from this. Additive: the standalone page ignores
+    // unknown frame types.
+    if (serverContent.inputTranscription?.text) {
+      this.sendJson({ type: "inputText", text: serverContent.inputTranscription.text });
+    }
     if (serverContent.outputTranscription?.text) {
       this.sendJson({ type: "text", text: serverContent.outputTranscription.text });
     }

@@ -157,7 +157,10 @@ export class DaemonConnection {
     if (!commander) {
       return { ok: false, error: "Commander agent not found on this daemon" };
     }
-    await this.client.sendAgentMessage(commander.id, message);
+    // M8 mailbox: the daemon owns delivery semantics (idle → run, busy →
+    // steer envelope) and records the ledger row with source "voice". The
+    // client dispatchMode is ignored for Commander targets.
+    await this.client.sendAgentMessage(commander.id, message, { source: "voice" });
     this.dispatchPending = true;
     return { ok: true, agentId: commander.id };
   }

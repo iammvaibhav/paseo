@@ -5,9 +5,11 @@ import type { Logger } from "pino";
 import {
   MissionControlEventKindSchema,
   MissionControlEventSchema,
+  MissionControlInstructionSchema,
   MissionControlProposalSchema,
   type MissionControlEvent,
   type MissionControlEventKind,
+  type MissionControlInstruction,
   type MissionControlProposal,
 } from "@getpaseo/protocol/mission-control/types";
 import { writeFileAtomic, writeJsonFileAtomic } from "../atomic-file.js";
@@ -16,6 +18,14 @@ import type { MissionControlRunRecord } from "./run-records.js";
 export const MISSION_CONTROL_EVENTS_CAP = 5000;
 /** Run-record retention cap (records are larger than events; 2000 keeps ~2x the event window). */
 export const MISSION_CONTROL_RUN_RECORDS_CAP = 2000;
+/**
+ * M8 instruction ledger cap. Open rows are the hot set (the per-turn envelope
+ * re-lists them); closed rows are history for the verbose thread. Rows are
+ * small (id + capped text + ts); 1000 keeps years of instructions.
+ */
+export const MISSION_CONTROL_INSTRUCTIONS_CAP = 1000;
+/** Instruction text cap (verbatim user/voice message, capped at record). */
+export const MISSION_CONTROL_INSTRUCTION_TEXT_CAP = 2000;
 const MISSION_CONTROL_DIR = "mission-control";
 const EVENTS_FILENAME = "events.jsonl";
 const OBSERVATIONS_FILENAME = "observations.json";
@@ -28,6 +38,8 @@ const STOP_ORIGINS_FILENAME = "stop-origins.json";
 // M6 context architecture: per-run records (own JSONL, same append pattern as
 // proposals — the latest line for a key wins on load).
 const RUN_RECORDS_FILENAME = "run-records.jsonl";
+// M8 instruction ledger (own JSONL, same append pattern — latest line wins).
+const INSTRUCTIONS_FILENAME = "instructions.jsonl";
 
 const CROCKFORD_BASE32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
@@ -172,6 +184,12 @@ export class MissionControlStore {
   private readonly stopOriginByAgent = new Map<string, "user" | "machinery" | "system">();
   // M6: per-run records keyed by their stable id ("mcr_<agentId>_<runEpoch>").
   private readonly runRecordsById = new Map<string, MissionControlRunRecord>();
+  // M8: instruction ledger keyed by short id ("#12"). Open rows are re-listed
+  // in the per-turn envelope; closed rows carry how they closed.
+  private readonly instructionsById = new Map<string, MissionControlInstruction>();
+  /** Next monotonic instruction number (persisted across restarts via the
+   *  ledger file's own max — ids never reuse after a prune). */
+  private nextInstructionNumber = 0;
   private appendTail: Promise<void> = Promise.resolve();
   private persistTail: Promise<void> = Promise.resolve();
 
@@ -207,6 +225,7 @@ export class MissionControlStore {
     await this.loadMessageTags();
     await this.loadStopOrigins();
     await this.loadRunRecords();
+    await this.loadInstructions();
   }
 
   private async loadEvents(): Promise<void> {
@@ -463,6 +482,43 @@ export class MissionControlStore {
         this.logger.warn({ err: error }, "Skipping malformed mission control run record");
       }
     }
+  }
+
+  /**
+   * M8 instruction ledger: own JSONL, same append pattern as run records —
+   * later lines for the same instruction id win (a close re-writes the row in
+   * place). The next id counter is derived from the max numeric suffix so ids
+   * never reuse after a prune/restart.
+   */
+  private async loadInstructions(): Promise<void> {
+    let content: string;
+    try {
+      content = await readFile(join(this.dir, INSTRUCTIONS_FILENAME), "utf-8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return;
+      }
+      this.logger.warn({ err: error }, "Failed to load mission control instructions");
+      return;
+    }
+    let maxNumber = 0;
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+      try {
+        const instruction = MissionControlInstructionSchema.parse(JSON.parse(trimmed));
+        this.instructionsById.set(instruction.id, instruction);
+        const number = parseInstructionNumber(instruction.id);
+        if (number > maxNumber) {
+          maxNumber = number;
+        }
+      } catch (error) {
+        this.logger.warn({ err: error }, "Skipping malformed mission control instruction");
+      }
+    }
+    this.nextInstructionNumber = maxNumber;
   }
 
   /**
@@ -828,6 +884,102 @@ export class MissionControlStore {
   }
 
   // ==========================================================================
+  // M8 instruction ledger: every user/voice instruction delivered to the
+  // Commander. Open rows ride the per-turn envelope (never lost to
+  // compaction); a citing card (respondsTo) or a verbose manual close closes
+  // a row. Own JSONL — the latest line for an id wins on load.
+  // ==========================================================================
+
+  /**
+   * Open a ledger row for a delivered user/voice instruction. The id is short
+   * and monotonic ("#12"); the counter survives restarts (derived from the
+   * max loaded id), so ids never reuse. Text is capped at
+   * MISSION_CONTROL_INSTRUCTION_TEXT_CAP.
+   */
+  openInstruction(input: { text: string; source: "chat" | "voice" }): MissionControlInstruction {
+    const number = ++this.nextInstructionNumber;
+    const instruction: MissionControlInstruction = {
+      id: `#${number}`,
+      text: input.text.trim().slice(0, MISSION_CONTROL_INSTRUCTION_TEXT_CAP),
+      ts: new Date().toISOString(),
+      source: input.source,
+      status: "open",
+    };
+    this.instructionsById.set(instruction.id, instruction);
+    this.appendInstruction(instruction);
+    this.pruneInstructionsInMemory();
+    return instruction;
+  }
+
+  /**
+   * Close an open instruction row. Returns the closed row, or null when the
+   * id is unknown or already closed (idempotent). `closedBy` records whether
+   * a citing card (cardId) or the verbose manual close (manual) closed it.
+   */
+  closeInstruction(id: string, closedBy: "cardId" | "manual"): MissionControlInstruction | null {
+    const current = this.instructionsById.get(id);
+    if (!current || current.status === "closed") {
+      return null;
+    }
+    const closed: MissionControlInstruction = { ...current, status: "closed", closedBy };
+    this.instructionsById.set(id, closed);
+    this.appendInstruction(closed);
+    return closed;
+  }
+
+  /** The retained row with the given ledger id, if any. */
+  getInstruction(id: string): MissionControlInstruction | null {
+    return this.instructionsById.get(id) ?? null;
+  }
+
+  /** All retained instruction rows, newest first. */
+  listInstructions(): MissionControlInstruction[] {
+    return [...this.instructionsById.values()].sort((left, right) =>
+      right.ts.localeCompare(left.ts),
+    );
+  }
+
+  /** Open rows only, oldest first (the envelope lists them in order). */
+  listOpenInstructions(): MissionControlInstruction[] {
+    return [...this.instructionsById.values()]
+      .filter((instruction) => instruction.status === "open")
+      .sort((left, right) => left.ts.localeCompare(right.ts));
+  }
+
+  private appendInstruction(instruction: MissionControlInstruction): void {
+    this.appendTail = this.appendTail
+      .then(() =>
+        appendFile(
+          join(this.dir, INSTRUCTIONS_FILENAME),
+          `${JSON.stringify(instruction)}\n`,
+          "utf8",
+        ),
+      )
+      .catch((error) => {
+        this.logger.error(
+          { err: error, instructionId: instruction.id },
+          "Failed to append mission control instruction",
+        );
+      });
+  }
+
+  /** Enforce the ledger cap in memory (the file keeps the full history;
+   *  pruned rows are unreachable by id, matching the events window). */
+  private pruneInstructionsInMemory(): void {
+    if (this.instructionsById.size <= MISSION_CONTROL_INSTRUCTIONS_CAP) {
+      return;
+    }
+    const byTs = [...this.instructionsById.values()].sort((left, right) =>
+      right.ts.localeCompare(left.ts),
+    );
+    const retained = byTs.slice(0, MISSION_CONTROL_INSTRUCTIONS_CAP);
+    this.instructionsById.clear();
+    for (const instruction of retained) {
+      this.instructionsById.set(instruction.id, instruction);
+    }
+  }
+
+  // ==========================================================================
   // v3 dormant derivation: pre-rollout agents (no events since rollout) are
   // dormant — hidden by default, shown under the "All unarchived" toggle. A
   // dormant agent that runs again enters the lifecycle normally.
@@ -1143,6 +1295,12 @@ function isRunReport(value: unknown): value is MissionControlRunRecord["reports"
     return false;
   }
   return typeof value["ts"] === "string" && typeof value["headline"] === "string";
+}
+
+/** The numeric suffix of a ledger id ("#12" → 12); 0 for malformed ids. */
+function parseInstructionNumber(id: string): number {
+  const match = /^#(\d+)$/.exec(id.trim());
+  return match ? Number(match[1]) : 0;
 }
 
 function isRunProof(value: unknown): value is MissionControlRunRecord["proofs"][number] {

@@ -57,6 +57,11 @@ export interface ResolvedMissionControlCentralConfig {
   hindsightUrl: string | null;
   hindsightBank: string;
   hindsightSecondaryBank: string | null;
+  // M9 in-app Commander Voice: where the voice node lives on this fleet. The
+  // app reads it from central config to decide whether to show Commander
+  // Voice in the Mission Control composer and where to connect. Null/empty =
+  // feature hidden.
+  voiceNodeUrl: string | null;
 }
 
 export const DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG: ResolvedMissionControlCentralConfig = {
@@ -82,6 +87,7 @@ export const DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG: ResolvedMissionControlCentr
   hindsightUrl: null,
   hindsightBank: "paseo-fleet",
   hindsightSecondaryBank: "omp",
+  voiceNodeUrl: null,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -237,6 +243,7 @@ const CENTRAL_CONFIG_KEYS: readonly (keyof ResolvedMissionControlCentralConfig)[
   "hindsightUrl",
   "hindsightBank",
   "hindsightSecondaryBank",
+  "voiceNodeUrl",
 ];
 
 function pickCentralConfigKeys(value: Record<string, unknown>): MissionControlCentralConfig {
@@ -259,6 +266,7 @@ type NullableStringKnobs = Pick<
   | "defaultDispatchHost"
   | "hindsightUrl"
   | "hindsightSecondaryBank"
+  | "voiceNodeUrl"
 >;
 
 /** The optional model overrides and host designations: string-or-null knobs. */
@@ -272,6 +280,7 @@ function resolveNullableStringKnobs(
   const defaultDispatchHost = stored.defaultDispatchHost ?? defaults.defaultDispatchHost;
   const hindsightUrl = stored.hindsightUrl ?? defaults.hindsightUrl;
   const hindsightSecondaryBank = stored.hindsightSecondaryBank ?? defaults.hindsightSecondaryBank;
+  const voiceNodeUrl = stored.voiceNodeUrl ?? defaults.voiceNodeUrl;
   return {
     commanderHost,
     commanderModel,
@@ -279,6 +288,7 @@ function resolveNullableStringKnobs(
     defaultDispatchHost,
     hindsightUrl,
     hindsightSecondaryBank,
+    voiceNodeUrl,
   };
 }
 

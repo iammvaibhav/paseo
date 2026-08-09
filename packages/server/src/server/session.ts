@@ -2186,9 +2186,51 @@ export class Session {
     switch (msg.type) {
       case "mission_control.lifecycle.set.request":
         return this.handleMissionControlLifecycleSetRequest(msg);
+      case "mission_control.instructions.list.request":
+        return this.handleMissionControlInstructionsListRequest(msg);
+      case "mission_control.instructions.close.request":
+        return this.handleMissionControlInstructionsCloseRequest(msg);
       default:
         return undefined;
     }
+  }
+
+  /**
+   * M8 instruction ledger: list every instruction row (open + closed, newest
+   * first). Served from the commander host's store; other hosts respond with
+   * an empty list (the ledger is daemon-owned on the commander host).
+   */
+  private async handleMissionControlInstructionsListRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.instructions.list.request" }>,
+  ): Promise<void> {
+    this.emit({
+      type: "mission_control.instructions.list.response",
+      payload: {
+        requestId: msg.requestId,
+        instructions: this.missionControlService?.listInstructions() ?? [],
+      },
+    });
+  }
+
+  /**
+   * M8 instruction ledger: manual close from the verbose thread affordance.
+   * Idempotent — closing an unknown/already-closed row still reports ok (the
+   * row simply leaves the open set).
+   */
+  private async handleMissionControlInstructionsCloseRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.instructions.close.request" }>,
+  ): Promise<void> {
+    const result = this.missionControlService
+      ? await this.missionControlService.closeInstruction(msg.instructionId)
+      : { ok: false as const, error: "Mission Control is not enabled on this host" };
+    this.emit({
+      type: "mission_control.instructions.close.response",
+      payload: {
+        requestId: msg.requestId,
+        ok: result.ok,
+        ...("error" in result && result.error ? { error: result.error } : {}),
+      },
+    });
   }
 
   private async handleMissionControlLifecycleSetRequest(
@@ -7908,6 +7950,55 @@ export class Session {
 
     try {
       const agentId = resolved.agentId;
+
+      // M8 mailbox: every message to the Commander delivers through the
+      // daemon's single instruction path (idle → run; busy → steer envelope;
+      // NEVER queue, NEVER replaceRunning). The client's dispatchMode is
+      // ignored for Commander targets — the composer's send-mode selector
+      // stops applying here. Chat and voice (commander_dispatch) both land
+      // on this path and get identical semantics. Machinery turns
+      // (dispatchMachineryTurn) are NOT instructions and never open a row.
+      const targetLabels =
+        this.agentManager.getAgent(agentId)?.labels ??
+        (await this.agentStorage.get(agentId).catch(() => null))?.labels;
+      if (
+        this.missionControlService &&
+        targetLabels?.[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE
+      ) {
+        const mailboxResult = await this.missionControlService.deliverCommanderInstruction({
+          text: msg.text,
+          source: msg.source ?? "chat",
+          ...(msg.attachments && msg.attachments.length > 0
+            ? { attachments: msg.attachments }
+            : {}),
+        });
+        if (!mailboxResult.ok) {
+          this.emit({
+            type: "send_agent_message_response",
+            payload: {
+              requestId: msg.requestId,
+              agentId,
+              accepted: false,
+              error: mailboxResult.error,
+            },
+          });
+          return;
+        }
+        // Steer/run deliveries are accepted immediately: the run may start
+        // after the snapshot turn settles (idle path) or ride the live turn
+        // (steer path), so a run-start wait would race it — mirrors the
+        // steer/queue response semantics below.
+        this.emit({
+          type: "send_agent_message_response",
+          payload: {
+            requestId: msg.requestId,
+            agentId,
+            accepted: true,
+            error: null,
+          },
+        });
+        return;
+      }
 
       const prompt = buildAgentPrompt(msg.text, msg.images, msg.attachments);
       this.sessionLogger.trace(

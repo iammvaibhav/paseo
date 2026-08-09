@@ -18,6 +18,7 @@
 #   1. Ensure origin points at the fork and tracks the custom branch
 #   2. Pull the branch from origin, install deps if needed, build, restart daemon
 #   3. Update code-server (binary + config + systemd user unit)
+#   4. Update the Commander Voice node (npm deps + env file + launchd/systemd unit)
 #
 # Usage:
 #   ./scripts/deploy.sh            # full sync + deploy (local + remotes)
@@ -34,6 +35,12 @@
 #                                     #   deploy code-server, and push settings
 #   PASEO_SKIP_CODE_SERVER=1          # skip code-server deploy everywhere
 #   PASEO_SKIP_STALL_CRON=1           # skip installing the stall-check cron on every host
+#   PASEO_SKIP_COMMANDER_VOICE=1      # skip Commander Voice node deploy everywhere
+#   PASEO_COMMANDER_VOICE_PASSWORD=... # daemon password for the voice node env file
+#                                     #   (write-once secret; NEVER commit — deploy
+#                                     #   writes it into ~/.config/commander-voice/env
+#                                     #   chmod 600 on each host, unset = keep existing)
+#   GEMINI_API_KEY=...                # Gemini Live key for the voice node env file
 #   PASEO_BUILD_DESKTOP=0             # skip building the desktop app (built by default)
 #   PASEO_DESKTOP_ONLY=1              # ONLY build/install/relaunch desktop (no git/remotes/daemon)
 #   PASEO_DESKTOP_APP=...             # install path (default /Applications/Paseo.app)
@@ -105,6 +112,7 @@ if [[ "${PASEO_DESKTOP_ONLY:-0}" == "1" ]]; then
   export PASEO_SKIP_CODE_SERVER=1
   export PASEO_SKIP_PLANNOTATOR=1
   export PASEO_SKIP_FUNNEL=1
+  export PASEO_SKIP_COMMANDER_VOICE=1
   export PASEO_SYNC_CODE_SERVER_USER_DATA=0
   # Keep PASEO_SKIP_LOCAL unset so local desktop still runs.
 fi
@@ -809,6 +817,22 @@ deploy_local_plannotator() {
   PLANNOTATOR_VERSION="${PLANNOTATOR_VERSION:-}" bash "$ROOT_DIR/scripts/plannotator/install.sh" local
 }
 
+# Commander Voice node (M9): managed service on the commander host. The daemon
+# password + Gemini key are written once into ~/.config/commander-voice/env
+# (chmod 600) from deploy env vars — never committed. Unset vars preserve the
+# existing env file, so re-deploys rotate nothing by accident.
+deploy_local_commander_voice() {
+  if [[ "${PASEO_SKIP_COMMANDER_VOICE:-0}" == "1" ]]; then
+    log "Skipping local Commander Voice deploy (PASEO_SKIP_COMMANDER_VOICE=1)"
+    return
+  fi
+  log "Deploying local Commander Voice node"
+  PASEO_HOME="$LOCAL_PASEO_HOME" \
+    PASEO_COMMANDER_VOICE_PASSWORD="${PASEO_COMMANDER_VOICE_PASSWORD:-}" \
+    GEMINI_API_KEY="${GEMINI_API_KEY:-}" \
+    bash "$ROOT_DIR/scripts/commander-voice/install.sh" local
+}
+
 # Install/refresh this host's stall-check schedule (runs scripts/stall-check.mjs
 # every minute via crontab, or systemd user timer when no crontab exists; the
 # script warns and exits 0 when neither scheduler is available, so a missing
@@ -1023,6 +1047,7 @@ run_parallel_post_push_deploy() {
     start_parallel_job "local-code-server" deploy_local_code_server
     start_parallel_job "local-plannotator" deploy_local_plannotator
     start_parallel_job "local-stall-cron" install_stall_cron
+    start_parallel_job "local-commander-voice" deploy_local_commander_voice
 
     # Local daemon must use a stable dist/ through restart. Desktop's
     # build:server:clean races that path, so keep this sequential first.
@@ -1479,6 +1504,21 @@ deploy_plannotator() {
   PLANNOTATOR_VERSION='${PLANNOTATOR_VERSION:-}' bash scripts/plannotator/install.sh '$host'
 }
 
+deploy_commander_voice() {
+  if [[ '${PASEO_SKIP_COMMANDER_VOICE:-0}' == "1" ]]; then
+    log "Skipping Commander Voice deploy (PASEO_SKIP_COMMANDER_VOICE=1)"
+    return
+  fi
+  cd "\$HOME/\$REMOTE_REPO_DIR"
+  log "Deploying Commander Voice node"
+  # The daemon password travels over ssh stdin (never argv/logs) and lands in
+  # ~/.config/commander-voice/env chmod 600 on the host; unset keeps existing.
+  PASEO_HOME="\$PASEO_HOME" \
+    PASEO_COMMANDER_VOICE_PASSWORD='${PASEO_COMMANDER_VOICE_PASSWORD:-}' \
+    GEMINI_API_KEY='${GEMINI_API_KEY:-}' \
+    bash scripts/commander-voice/install.sh '$host'
+}
+
 ensure_node
 ensure_fork_remotes
 sync_git
@@ -1492,6 +1532,7 @@ else
 fi
 deploy_code_server
 deploy_plannotator
+deploy_commander_voice
 install_stall_cron() {
   if [[ '${PASEO_SKIP_STALL_CRON:-0}' == "1" ]]; then
     log "Skipping stall-check schedule install (PASEO_SKIP_STALL_CRON=1)"
@@ -1660,6 +1701,7 @@ Scope flags (set to 1 unless noted):
   PASEO_SKIP_CODE_SERVER_EXTENSION  Skip installing the paseo-bridge extension
   PASEO_SKIP_PLANNOTATOR         Skip plannotator binary deploy everywhere
   PASEO_SKIP_STALL_CRON          Skip installing the stall-check cron entry on every host
+  PASEO_SKIP_COMMANDER_VOICE     Skip Commander Voice node deploy everywhere
   PASEO_BUILD_DESKTOP=0            Skip the desktop app build (built by default)
   PASEO_DESKTOP_ONLY=1             ONLY desktop build/install/relaunch (no git/remotes/daemon)
   PASEO_DESKTOP_APP=<path>         Desktop install path (default: $DESKTOP_APP)
@@ -1668,6 +1710,11 @@ Scope flags (set to 1 unless noted):
   PASEO_DEPLOY_LOG_DIR=<path>      Durable log root (default: $DEPLOY_LOG_ROOT)
   PASEO_SYNC_CODE_SERVER_USER_DATA  Also rsync code-server User/ + extensions/ to remotes
   PASEO_SKIP_FUNNEL               Skip ensuring the Tailscale Funnel on funnel hosts (blrofc3)
+
+Commander Voice (M9) secrets — written ONCE into ~/.config/commander-voice/env
+(chmod 600) on every host; never committed. Unset = keep the existing value:
+  PASEO_COMMANDER_VOICE_PASSWORD  daemon password for the voice node
+  GEMINI_API_KEY                  Gemini Live API key for the voice node
 
 Model selection:
   PASEO_COMMIT_MSG_MODEL          claude model for auto-commit messages (default: $COMMIT_MSG_MODEL)
@@ -1686,6 +1733,10 @@ Other:
 
 Per-host code-server install (run on a single machine):
   ./scripts/code-server/install.sh <local|${REMOTE_HOSTS[0]}|${REMOTE_HOSTS[1]}>
+
+Per-host Commander Voice install (run on a single machine):
+  ./scripts/commander-voice/install.sh <local|${REMOTE_HOSTS[0]}|${REMOTE_HOSTS[1]}>
+  (secrets come from PASEO_COMMANDER_VOICE_PASSWORD / GEMINI_API_KEY env vars)
 
 Examples:
   PASEO_DESKTOP_ONLY=1 ./scripts/deploy.sh          # app UI only: build + install Paseo.app + relaunch

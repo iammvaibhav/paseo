@@ -158,6 +158,10 @@ export const MissionControlProposalMetaPlanActionSchema = z.enum([
   "create_project",
   "move_agent",
   "promote_workspace",
+  // M8: adopt an agent without messaging it — stamp paseo.commander-adopted-at
+  // (live + stored) so the Commander takes over its lifecycle ("this is my
+  // agent, you take care of it"). Normal classification, gated like the rest.
+  "adopt_agent",
 ]);
 export type MissionControlProposalMetaPlanAction = z.infer<
   typeof MissionControlProposalMetaPlanActionSchema
@@ -215,6 +219,11 @@ export const MissionControlProposalSchema = z.object({
   // verbose mode only; the auto-sent proposal record + log stay. Additive —
   // absent on every normal-mode card (escalation, verifier, commander).
   verboseOnly: z.boolean().optional(),
+  // M8 instruction ledger: the ledger id this card cites (e.g. "#12"). Every
+  // card the Commander emits for a user instruction MUST carry it; a citing
+  // card closes the ledger row (daemon-side). Additive; absent on cards that
+  // are not answering an instruction.
+  respondsTo: z.string().optional(),
   // How the delivered prompt classifies on the target agent's own timeline
   // row: "machinery" (status asks — stall nudges) vs "instruction" (Commander
   // direction changes, Verifier proof demands, recovery). Absent = instruction
@@ -265,6 +274,9 @@ export const MissionControlEventSchema = z.object({
       question: z.string(),
       options: z.array(z.string()),
       allowFreeText: z.boolean(),
+      // M8 instruction ledger: the instruction this clarification answers.
+      // Additive; absent on cards that are not answering an instruction.
+      respondsTo: z.string().optional(),
     })
     .optional(),
   // M4: structured fleet answer card (kind "answer"). Fleet questions the
@@ -286,6 +298,9 @@ export const MissionControlEventSchema = z.object({
           }),
         )
         .optional(),
+      // M8 instruction ledger: the instruction this answer responds to.
+      // Additive; absent on cards that are not answering an instruction.
+      respondsTo: z.string().optional(),
     })
     .optional(),
   // Verifier-origin attribution (verdict cards + verification-failed cards):
@@ -469,6 +484,72 @@ export type MissionControlProposalsCreateResponse = z.infer<
 >;
 
 // ============================================================================
+// M8 instruction ledger (daemon-owned, docs/commander.md "The mailbox"):
+// every user/voice instruction delivered to the Commander becomes a row
+// (id "#12", verbatim text, ts, source chat|voice, open/closed). The
+// per-turn envelope re-lists open rows so compaction can never lose an ask;
+// a citing card (respondsTo) closes a row; verbose mode exposes manual close.
+// ============================================================================
+
+export const MissionControlInstructionSourceSchema = z.enum(["chat", "voice"]);
+export type MissionControlInstructionSource = z.infer<typeof MissionControlInstructionSourceSchema>;
+
+export const MissionControlInstructionSchema = z.object({
+  // Short monotonic ledger id, e.g. "#12".
+  id: z.string(),
+  // Verbatim user/voice message (daemon-capped length).
+  text: z.string(),
+  ts: z.string(),
+  source: MissionControlInstructionSourceSchema,
+  status: z.enum(["open", "closed"]),
+  // How the row closed: "cardId" = a citing card (respondsTo) closed it,
+  // "manual" = verbose-mode manual close. Absent while open.
+  closedBy: z.enum(["cardId", "manual"]).optional(),
+});
+export type MissionControlInstruction = z.infer<typeof MissionControlInstructionSchema>;
+
+export const MissionControlInstructionsListRequestSchema = z.object({
+  type: z.literal("mission_control.instructions.list.request"),
+  requestId: z.string(),
+});
+export type MissionControlInstructionsListRequest = z.infer<
+  typeof MissionControlInstructionsListRequestSchema
+>;
+
+export const MissionControlInstructionsListResponseSchema = z.object({
+  type: z.literal("mission_control.instructions.list.response"),
+  payload: z.object({
+    requestId: z.string(),
+    instructions: z.array(MissionControlInstructionSchema),
+  }),
+});
+export type MissionControlInstructionsListResponse = z.infer<
+  typeof MissionControlInstructionsListResponseSchema
+>;
+
+export const MissionControlInstructionsCloseRequestSchema = z.object({
+  type: z.literal("mission_control.instructions.close.request"),
+  requestId: z.string(),
+  // Ledger id to close ("#12") — manual close from the verbose thread.
+  instructionId: z.string(),
+});
+export type MissionControlInstructionsCloseRequest = z.infer<
+  typeof MissionControlInstructionsCloseRequestSchema
+>;
+
+export const MissionControlInstructionsCloseResponseSchema = z.object({
+  type: z.literal("mission_control.instructions.close.response"),
+  payload: z.object({
+    requestId: z.string(),
+    ok: z.boolean(),
+    error: z.string().optional(),
+  }),
+});
+export type MissionControlInstructionsCloseResponse = z.infer<
+  typeof MissionControlInstructionsCloseResponseSchema
+>;
+
+// ============================================================================
 // v3 ask/auto mode toggle (Mission Control screen header, RPC-backed).
 // ============================================================================
 
@@ -563,6 +644,11 @@ export const MissionControlCentralConfigSchema = z.object({
   // primary bank; it is NEVER written to — the write path stays pointed at
   // hindsightBank only. Null disables the secondary source.
   hindsightSecondaryBank: z.string().nullable().optional(),
+  // M9 in-app Commander Voice: where the voice node lives (scripts/
+  // commander-voice, managed as a service on the commander host). The app
+  // connects to it over WS for the Mission Control composer's Commander
+  // Voice button. Null/empty = the feature is hidden in the app.
+  voiceNodeUrl: z.string().nullable().optional(),
 });
 export type MissionControlCentralConfig = z.infer<typeof MissionControlCentralConfigSchema>;
 

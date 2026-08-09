@@ -44,6 +44,8 @@ import { useShallow } from "zustand/react/shallow";
 import { launchCommander } from "@/mission-control/launch";
 import { MISSION_CONTROL_LABEL_KEY, MISSION_CONTROL_LABEL_VALUE } from "@/mission-control/labels";
 import { useIsCompactFormFactor } from "@/constants/layout";
+import { isWeb } from "@/constants/platform";
+import { CommanderVoicePanel, resolveComposerVoiceVariant } from "@/mission-control/voice";
 
 type CompactPanel = "thread" | "board";
 
@@ -106,6 +108,12 @@ export function MissionControlScreen(): ReactElement {
   const toast = useToast();
   const { config: missionControlConfig } = useMissionControlCentralConfig();
   const hideAgentNames = missionControlConfig?.hideAgentNames === true;
+  // M9 Commander Voice: the composer's voice button becomes Commander Voice
+  // only on web/Electron with a voice node configured (empty = hidden; stock
+  // voice button remains). The panel connects straight to the voice node.
+  const voiceNodeUrl = missionControlConfig?.voiceNodeUrl ?? null;
+  const composerVoiceVariant = resolveComposerVoiceVariant({ isWeb, voiceNodeUrl });
+  const [isCommanderVoiceOpen, setIsCommanderVoiceOpen] = useState(false);
   const { clearPointTs, setClearViewPoint } = useClearViewPoint();
   const serverInfoByServerId = useSessionStore(
     useShallow((state) =>
@@ -170,6 +178,14 @@ export function MissionControlScreen(): ReactElement {
     }
     return state.sessions[selectedServerId]?.agents.get(commander.agentId) ?? null;
   });
+
+  const handleOpenCommanderVoice = useCallback(() => {
+    setIsCommanderVoiceOpen(true);
+  }, []);
+
+  const handleCloseCommanderVoice = useCallback(() => {
+    setIsCommanderVoiceOpen(false);
+  }, []);
 
   const startCommander = useCallback(
     async (serverId: string) => {
@@ -345,8 +361,19 @@ export function MissionControlScreen(): ReactElement {
               cwd={composerCwd}
               clearDraft={commanderDraft.clear}
               submitButtonTestID="mission-control-composer-submit"
+              // M8 mailbox: the Commander thread delivers every message
+              // immediately (idle run / busy steer-envelope) — the send-mode
+              // selector stops applying here.
+              mailboxDelivery
+              voiceModeVariant={composerVoiceVariant}
+              onCommanderVoicePress={
+                composerVoiceVariant === "commander" ? handleOpenCommanderVoice : undefined
+              }
             />
           </View>
+          {isCommanderVoiceOpen && composerVoiceVariant === "commander" && voiceNodeUrl ? (
+            <CommanderVoicePanel url={voiceNodeUrl} onClose={handleCloseCommanderVoice} />
+          ) : null}
         </>
       );
     }

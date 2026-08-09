@@ -1722,6 +1722,10 @@ export async function createPaseoDaemon(
         hostName: getHostname(),
         logger,
       }),
+    // M8 mailbox: the per-turn 'Open instructions:' ledger block rides every
+    // snapshot (regenerated per turn like the snapshot, never accreted). The
+    // service is hoisted — this closure resolves it lazily at turn time.
+    buildInstructionLedgerBlock: () => missionControlService.formatOpenInstructionsBlock(),
   });
   // Hoisted: the verifier dispatcher and the presence source capture the
   // service in closures that run only after boot, but TypeScript needs the
@@ -1821,6 +1825,11 @@ export async function createPaseoDaemon(
       isAgentFocused: (agentId) => wsServer?.anyClientFocusedOnAgent(agentId) ?? false,
       readStopOrigin: (agentId) => missionControlService.getStopOrigin(agentId) ?? null,
     }),
+    // M8 mailbox: the idle delivery path hands the speculative auto-recall
+    // block (within budget) to the snapshot injector so the fresh snapshot
+    // ahead of the run carries it alongside the ledger block.
+    setPendingInstructionEnvelope: (block) =>
+      commanderSnapshotInjector?.setPendingInstructionEnvelope(block),
     verifier: verifierDispatcher,
     resetCommander: () =>
       resetCommander({

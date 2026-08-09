@@ -63,7 +63,39 @@ PORT=8787 PASEO_WS_URL=ws://127.0.0.1:6767/ws \
 
 Optional env: `HOST`, `VOICE_NAME` (default Puck), `GEMINI_MODEL`,
 `UPDATE_BUFFER_CAP` (default 64), `TLS_KEY_PATH`/`TLS_CERT_PATH` (plain HTTP
-is fine for dev; localhost is a secure context for the mic).
+is fine for dev; localhost is a secure context for the mic). `PORT` defaults
+to 8787, `HOST` to 0.0.0.0. TLS: when both `TLS_KEY_PATH` and `TLS_CERT_PATH`
+are set the node serves HTTPS + WSS; the browser page then connects over
+`wss://` automatically.
+
+## Service (commander host)
+
+`install.sh` installs the node as a managed service — launchd LaunchAgent on
+macOS (`sh.paseo.commander-voice`), systemd user unit on Linux
+(`paseo-commander-voice.service`) — with a generated launcher that sources
+nvm + the env file, then execs `server.js`:
+
+```bash
+./scripts/commander-voice/install.sh local        # or blrofc3 / iammvaibhav
+```
+
+The service targets its LOCAL daemon (`ws://127.0.0.1:6767/ws`, or the host's
+actual daemon listen address when derivable). The daemon password hash in the
+host's config can't be used by the node (it authenticates over WS), so deploy
+writes the plaintext password — plus the Gemini key — once into
+`~/.config/commander-voice/env` (chmod 600) from user-set env vars; nothing
+secret is committed and re-runs preserve existing values unless overridden:
+
+```bash
+PASEO_COMMANDER_VOICE_PASSWORD=<daemon-password> GEMINI_API_KEY=<key> \
+  ./scripts/deploy.sh
+```
+
+`scripts/deploy.sh` owns the lifecycle (like code-server): install/refresh +
+restart on every deploy, opt out with `PASEO_SKIP_COMMANDER_VOICE=1`. After
+deploy, point the app's Mission Control settings → Memory → "Voice node URL"
+at the node (e.g. `ws://127.0.0.1:8787/ws`) to enable Commander Voice in the
+Mission Control composer.
 
 ## Tests
 

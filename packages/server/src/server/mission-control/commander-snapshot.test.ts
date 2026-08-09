@@ -227,6 +227,24 @@ describe("CommanderSnapshotInjector", () => {
     expect(startAgentRunMock).toHaveBeenCalledTimes(1);
   });
 
+  test("adopts snapshot rows from the WHOLE timeline, not a tail window (long-thread supersede)", async () => {
+    const harness = makeHarness({
+      agent: commanderAgent("commander-1"),
+      timelineRows: [snapshotRow(3)],
+    });
+    await harness.injector.beforeTurn({
+      agentId: "commander-1",
+      prompt: "next",
+      replaceRunning: true,
+    });
+    // limit: 0 = select-all. The default tail window (200 rows) dropped older
+    // snapshot rows on long threads, so they were never retracted.
+    expect(harness.fetchTimeline).toHaveBeenCalledWith("commander-1", {
+      direction: "tail",
+      limit: 0,
+    });
+  });
+
   test("skips injection when the Commander is busy (running turn carries the prior row)", async () => {
     const harness = makeHarness({ agent: commanderAgent("commander-1"), busy: true });
     await harness.injector.beforeTurn({

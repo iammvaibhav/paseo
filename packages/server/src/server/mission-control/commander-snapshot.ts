@@ -37,6 +37,12 @@ export interface CommanderSnapshotInjectorOptions {
   logger: Logger;
   /** Build the current world snapshot (mission-control/context). */
   buildSnapshot: () => Promise<WorldSnapshot>;
+  /**
+   * M8 mailbox: the per-turn 'Open instructions:' ledger block, regenerated
+   * per turn like the snapshot (never accreted). Empty string when nothing
+   * is open. Wired by bootstrap to the mission-control store.
+   */
+  buildInstructionLedgerBlock?: () => string;
 }
 
 /**
@@ -70,6 +76,7 @@ export class CommanderSnapshotInjector {
   private readonly agentManager: CommanderSnapshotInjectorOptions["agentManager"];
   private readonly logger: Logger;
   private readonly buildSnapshot: () => Promise<WorldSnapshot>;
+  private readonly buildInstructionLedgerBlock: () => string;
   /** Ack-retraction tracker for the snapshot's own machinery turn. */
   readonly ackDrop: CommanderAckDrop;
 
@@ -80,15 +87,31 @@ export class CommanderSnapshotInjector {
   private snapshotRowSeqs: number[] = [];
   /** Re-entrancy guard: the injector's own snapshot dispatch must not recurse. */
   private dispatchingSnapshot = false;
+  /**
+   * M8 mailbox: the speculative auto-recall block set by the delivery path
+   * immediately before an idle user/voice instruction starts its run. The
+   * next snapshot dispatch appends it (and clears it) — the fresh snapshot
+   * ahead of the message carries the recall block alongside the ledger
+   * block. Machinery turns never set it (they never trigger recall); a
+   * late-resolving recall is dropped, never a late steer.
+   */
+  private pendingInstructionEnvelope: string | null = null;
 
   constructor(options: CommanderSnapshotInjectorOptions) {
     this.agentManager = options.agentManager;
     this.logger = options.logger.child({ module: "mission-control", component: "snapshot" });
     this.buildSnapshot = options.buildSnapshot;
+    this.buildInstructionLedgerBlock = options.buildInstructionLedgerBlock ?? (() => "");
     this.ackDrop = new CommanderAckDrop({
       agentManager: options.agentManager as CommanderAckDropOptions["agentManager"],
       logger: this.logger,
     });
+  }
+
+  /** M8 mailbox: stage the speculative-recall block for the NEXT snapshot
+   *  dispatch (idle delivery path). Null clears a stale pending block. */
+  setPendingInstructionEnvelope(block: string | null): void {
+    this.pendingInstructionEnvelope = block;
   }
 
   /**
@@ -199,7 +222,10 @@ export class CommanderSnapshotInjector {
   private async adoptSnapshotRows(agentId: string): Promise<void> {
     let result;
     try {
-      result = await this.agentManager.fetchTimeline(agentId, { direction: "tail" });
+      // limit: 0 = select the WHOLE timeline. The default tail window (200
+      // rows) silently drops older snapshot rows on long threads, so they
+      // were never adopted and never retracted (stale-snapshot accretion).
+      result = await this.agentManager.fetchTimeline(agentId, { direction: "tail", limit: 0 });
     } catch {
       // Agent not loaded yet — nothing to adopt; the next turn re-reads.
       return;
@@ -246,11 +272,20 @@ export class CommanderSnapshotInjector {
    * dispatch rides a unique clientMessageId so the row is staged synchronously
    * at turn start — a delivered message that replaces this turn (user path)
    * cannot race the row out of the timeline.
+   *
+   * M8 mailbox: the snapshot body appends the per-turn 'Open instructions:'
+   * ledger block (regenerated per turn, never accreted) and, when an idle
+   * user/voice instruction staged one, the speculative auto-recall block.
    */
   private async dispatchSnapshot(agentId: string): Promise<void> {
     const { block } = await this.buildSnapshot();
+    const ledgerBlock = this.buildInstructionLedgerBlock();
+    const recallBlock = this.pendingInstructionEnvelope;
+    this.pendingInstructionEnvelope = null;
     const prompt = formatSystemNotificationPrompt(
-      `${block.trim()}\n\n${SNAPSHOT_NO_PROSE_INSTRUCTION}`,
+      [block.trim(), ledgerBlock, recallBlock, SNAPSHOT_NO_PROSE_INSTRUCTION]
+        .filter((part): part is string => part !== null && part.length > 0)
+        .join("\n\n"),
     );
     this.dispatchingSnapshot = true;
     this.ackDrop.arm();

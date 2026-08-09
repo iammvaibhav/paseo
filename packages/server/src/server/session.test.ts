@@ -128,6 +128,7 @@ test("cancel_agent_request reports refusal only through its response", async () 
   const getAgent = vi
     .fn()
     .mockReturnValueOnce({ id: agentId, provider: "codex", lifecycle: "running" })
+    .mockReturnValueOnce({ id: agentId, provider: "codex", lifecycle: "running" })
     .mockReturnValue(null);
   const session = createSessionForTest({
     messages,
@@ -684,6 +685,7 @@ describe("project command-center RPCs", () => {
               projectDisplayName: "new-project",
               projectCustomName: null,
               projectCustomIconRevision: null,
+              projectDescription: null,
               projectRootPath: directoryPath,
               projectKind: "non_git",
             },
@@ -5143,6 +5145,7 @@ test("project.list returns every active project descriptor", async () => {
             projectDisplayName: "acme/app",
             projectCustomName: null,
             projectCustomIconRevision: null,
+            projectDescription: null,
             projectRootPath: "/tmp/project-active",
             projectKind: "git",
           },
@@ -5637,6 +5640,7 @@ describe("unavailable provider agent handling", () => {
       waitForAgentClose: vi.fn().mockResolvedValue(undefined),
       tryRunOutOfBand: vi.fn().mockReturnValue(false),
       hasInFlightRun: vi.fn().mockReturnValue(false),
+      beforeAgentRun: vi.fn().mockResolvedValue(undefined),
       streamAgent: vi.fn(noopAgentStream),
     };
 
@@ -5694,6 +5698,10 @@ describe("send_agent_message dispatch modes", () => {
         // these on every dispatch that is not an out-of-band steer.
         waitForAgentClose: vi.fn(async () => undefined),
         getRegisteredProviderIds: vi.fn(() => ["omp"]),
+        // startAgentRun's per-turn pre-run seam (M2/M3 Commander snapshot
+        // injection): a no-op here — production's hook gates itself by agent
+        // labels, so these dispatch-mode tests never exercise it.
+        beforeAgentRun: vi.fn(async () => undefined),
         ...agentManager,
       },
     });
@@ -6073,6 +6081,115 @@ describe("mission control central config wire dispatch", () => {
         payload: {
           requestId: "req-config-get",
           config: { statusNudgeSeconds: 480, commanderHost: "commander-a" },
+        },
+      },
+    ]);
+  });
+});
+
+describe("mission control instruction-ledger RPC round trips", () => {
+  test("mission_control.instructions.list returns the service's ledger rows", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const listInstructions = vi.fn(() => [
+      {
+        id: "#12",
+        text: "deploy the fleet",
+        ts: "2026-08-09T10:00:00.000Z",
+        status: "open" as const,
+        source: "chat" as const,
+      },
+    ]);
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        listInstructions,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.instructions.list.request",
+      requestId: "req-instr-list",
+    });
+
+    expect(listInstructions).toHaveBeenCalledTimes(1);
+    expect(messages).toEqual([
+      {
+        type: "mission_control.instructions.list.response",
+        payload: {
+          requestId: "req-instr-list",
+          instructions: [
+            {
+              id: "#12",
+              text: "deploy the fleet",
+              ts: "2026-08-09T10:00:00.000Z",
+              status: "open",
+              source: "chat",
+            },
+          ],
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.instructions.list degrades to an empty list without a service", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({ messages, missionControlService: undefined });
+
+    await session.handleMessage({
+      type: "mission_control.instructions.list.request",
+      requestId: "req-instr-list-none",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.instructions.list.response",
+        payload: { requestId: "req-instr-list-none", instructions: [] },
+      },
+    ]);
+  });
+
+  test("mission_control.instructions.close routes to the service and reports ok", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const closeInstruction = vi.fn(async () => ({ ok: true as const }));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        closeInstruction,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.instructions.close.request",
+      requestId: "req-instr-close",
+      instructionId: "#12",
+    });
+
+    expect(closeInstruction).toHaveBeenCalledWith("#12");
+    expect(messages).toEqual([
+      {
+        type: "mission_control.instructions.close.response",
+        payload: { requestId: "req-instr-close", ok: true },
+      },
+    ]);
+  });
+
+  test("mission_control.instructions.close reports an error without a service", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({ messages, missionControlService: undefined });
+
+    await session.handleMessage({
+      type: "mission_control.instructions.close.request",
+      requestId: "req-instr-close-none",
+      instructionId: "#12",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.instructions.close.response",
+        payload: {
+          requestId: "req-instr-close-none",
+          ok: false,
+          error: "Mission Control is not enabled on this host",
         },
       },
     ]);

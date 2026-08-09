@@ -113,6 +113,7 @@ export const ru: TranslationResources = {
       muteVoice: "Отключить голос",
       dictation: "Диктант",
       interruptBeforeVoice: "Прерывайте агента перед запуском голосового режима",
+      commanderVoice: "Голос командира",
     },
     attachments: {
       addImage: "Добавить изображение",
@@ -1906,6 +1907,9 @@ export const ru: TranslationResources = {
       hindsightSecondaryBank: "Банк recall (вторичный)",
       hindsightSecondaryBankHint:
         "Вторичный банк только для чтения, используемый fleet_recall. Пустое значение отключает его.",
+      voiceNodeUrl: "URL голосового узла",
+      voiceNodeUrlHint:
+        "Сервер голоса командира (например, ws://127.0.0.1:8787/ws). Пустое значение скрывает голос командира в редакторе Mission Control.",
     },
     general: {
       title: "Общий",

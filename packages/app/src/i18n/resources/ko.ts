@@ -113,6 +113,7 @@ export const ko: TranslationResources = {
       muteVoice: "음성 음소거",
       dictation: "받아쓰기",
       interruptBeforeVoice: "음성 모드를 시작하기 전에 에이전트를 중단하세요",
+      commanderVoice: "커맨더 음성",
     },
     attachments: {
       addImage: "이미지 추가",
@@ -1882,6 +1883,9 @@ export const ko: TranslationResources = {
       hindsightSecondaryBank: "recall 뱅크(보조)",
       hindsightSecondaryBankHint:
         "fleet_recall이 참조하는 읽기 전용 보조 뱅크입니다. 비워 두면 비활성화됩니다.",
+      voiceNodeUrl: "음성 노드 URL",
+      voiceNodeUrlHint:
+        "커맨더 음성 서버(예: ws://127.0.0.1:8787/ws). 비워 두면 Mission Control 작성기에서 커맨더 음성이 숨겨집니다.",
     },
     general: {
       title: "일반",

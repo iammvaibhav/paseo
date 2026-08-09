@@ -717,6 +717,10 @@ export function MissionControlSection(): ReactElement {
     (next: string | null) => void patch({ hindsightSecondaryBank: next }),
     [patch],
   );
+  const handleVoiceNodeUrlCommit = useCallback(
+    (next: string | null) => void patch({ voiceNodeUrl: next }),
+    [patch],
+  );
 
   if (resolvingHost || isLoading) {
     return (
@@ -900,6 +904,15 @@ export function MissionControlSection(): ReactElement {
             value={config.hindsightSecondaryBank}
             onCommit={handleHindsightSecondaryBankCommit}
             testID="mission-control-settings-hindsight-secondary-bank"
+            isCompact={isCompact}
+            nullable
+          />
+          <TextRow
+            title={t("settings.missionControl.voiceNodeUrl")}
+            hint={t("settings.missionControl.voiceNodeUrlHint")}
+            value={config.voiceNodeUrl}
+            onCommit={handleVoiceNodeUrlCommit}
+            testID="mission-control-settings-voice-node-url"
             isCompact={isCompact}
             nullable
           />

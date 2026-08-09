@@ -933,6 +933,24 @@ interface ComposerProps {
    * When set, the composer shows the voice button even before an agent exists.
    */
   onStartVoiceMode?: () => void | Promise<void>;
+  /**
+   * M9 Commander Voice (Mission Control composer only): when "commander" the
+   * voice-mode button becomes "Commander Voice" and pressing it calls
+   * onCommanderVoicePress (which opens the voice session panel) instead of
+   * starting stock realtime voice mode. Default "stock" keeps every other
+   * agent chat untouched.
+   */
+  voiceModeVariant?: "stock" | "commander";
+  /** M9: required when voiceModeVariant === "commander" — opens the panel. */
+  onCommanderVoicePress?: () => void;
+  /**
+   * M8 mailbox: this thread is the Commander's mailbox. Every send is an
+   * immediate steer-capable delivery — the daemon delivers idle→run /
+   * busy→steer-envelope and IGNORES the client's dispatchMode, so the
+   * composer's send-mode selector (interrupt/queue/steer) stops applying:
+   * submits never queue and never interrupt. The queue track is hidden.
+   */
+  mailboxDelivery?: boolean;
   /** Controlled agent controls rendered in input area (draft flows). */
   agentControls?: DraftAgentControlsProps;
   /** Extra styles merged onto the message input wrapper (e.g. elevated background). */
@@ -1027,6 +1045,9 @@ interface ComposerVoiceModeButtonProps {
   ) => (object | undefined)[];
   voiceToggleKeys: ReturnType<typeof useShortcutKeys>;
   t: TFunction;
+  /** M9: "commander" swaps the stock voice button for the Commander Voice one. */
+  variant?: "stock" | "commander";
+  onCommanderVoicePress?: () => void;
 }
 
 interface ComposerRightControlsSlotProps extends ComposerVoiceModeButtonProps {
@@ -1053,16 +1074,22 @@ function ComposerRightControlsSlot({
   canFork,
   onFork,
   showVoice,
+  variant = "stock",
   ...voiceProps
 }: ComposerRightControlsSlotProps) {
   const hideVoiceForCompactInput = isCompact && hasSendableContent;
   const canStartVoiceOnTarget = hasAgent || isDraftComposer;
+  // Commander Voice (M9) is a separate WS session — it never needs the agent
+  // idle, so the commander variant stays visible while the Commander runs
+  // (the voice node dispatches non-blocking and results arrive as pushes).
   const showVoiceModeButton =
     showVoice &&
-    !isVoiceModeForAgent &&
-    canStartVoiceOnTarget &&
-    !isAgentRunning &&
-    !hideVoiceForCompactInput;
+    (variant === "commander"
+      ? canStartVoiceOnTarget && !hideVoiceForCompactInput
+      : !isVoiceModeForAgent &&
+        canStartVoiceOnTarget &&
+        !isAgentRunning &&
+        !hideVoiceForCompactInput);
   // Fork sits next to the send button while the agent is busy and there's
   // something to send: it spins the message off into a new sibling agent
   // instead of queueing/interrupting the current one.
@@ -1070,7 +1097,7 @@ function ComposerRightControlsSlot({
   if (!showVoiceModeButton && !showForkButton) return null;
   return (
     <View style={styles.rightControls}>
-      {showVoiceModeButton ? <ComposerVoiceModeButton {...voiceProps} /> : null}
+      {showVoiceModeButton ? <ComposerVoiceModeButton {...voiceProps} variant={variant} /> : null}
       {showForkButton ? (
         <ComposerForkButton
           buttonIconSize={voiceProps.buttonIconSize}
@@ -1126,32 +1153,41 @@ function ComposerVoiceModeButton({
   realtimeVoiceButtonStyle,
   voiceToggleKeys,
   t,
+  variant = "stock",
+  onCommanderVoicePress,
 }: ComposerVoiceModeButtonProps) {
-  const shortcutNode = voiceToggleKeys ? <Shortcut chord={voiceToggleKeys} /> : null;
+  const isCommander = variant === "commander";
+  const shortcutNode =
+    !isCommander && voiceToggleKeys ? <Shortcut chord={voiceToggleKeys} /> : null;
   const renderTriggerContent = useCallback(
     ({ hovered }: PressableStateCallbackType & { hovered?: boolean }) => {
-      if (isVoiceSwitching) {
+      if (!isCommander && isVoiceSwitching) {
         return <LoadingSpinner size="small" color="white" />;
       }
       const colorMapping = hovered ? iconForegroundMapping : iconForegroundMutedMapping;
       return <ThemedAudioLines size={buttonIconSize} uniProps={colorMapping} />;
     },
-    [buttonIconSize, isVoiceSwitching],
+    [buttonIconSize, isCommander, isVoiceSwitching],
   );
   return (
     <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
       <TooltipTrigger
-        onPress={handleToggleRealtimeVoice}
-        disabled={!isConnected || isVoiceSwitching}
-        accessibilityLabel={t("composer.voice.enableVoiceMode")}
+        onPress={isCommander ? onCommanderVoicePress : handleToggleRealtimeVoice}
+        disabled={!isConnected || (!isCommander && isVoiceSwitching)}
+        accessibilityLabel={
+          isCommander ? t("composer.voice.commanderVoice") : t("composer.voice.enableVoiceMode")
+        }
         accessibilityRole="button"
+        testID={isCommander ? "composer-commander-voice-button" : undefined}
         style={realtimeVoiceButtonStyle}
       >
         {renderTriggerContent}
       </TooltipTrigger>
       <TooltipContent side="top" align="center" offset={8}>
         <View style={styles.tooltipRow}>
-          <Text style={styles.tooltipText}>{t("composer.voice.voiceMode")}</Text>
+          <Text style={styles.tooltipText}>
+            {isCommander ? t("composer.voice.commanderVoice") : t("composer.voice.voiceMode")}
+          </Text>
           {shortcutNode}
         </View>
       </TooltipContent>
@@ -1195,6 +1231,9 @@ export function Composer({
   onAttentionInputFocus,
   onAttentionPromptSend,
   onStartVoiceMode,
+  voiceModeVariant = "stock",
+  onCommanderVoicePress,
+  mailboxDelivery = false,
   agentControls,
   inputWrapperStyle,
   externalKeyboardShift,
@@ -1621,7 +1660,11 @@ export function Composer({
       if (blurOnSubmit) {
         messageInputRef.current?.blur();
       }
+      // M8 mailbox: the Commander thread never queues and never interrupts —
+      // forceSend bypasses the local queue and steer rides the daemon's
+      // single mailbox delivery path (the daemon owns the envelope).
       const forceSend =
+        mailboxDelivery ||
         payload.forceSend ||
         isOutOfBandCommandDraft({
           text: payload.text,
@@ -1632,7 +1675,7 @@ export function Composer({
         payload.text,
         outgoingAttachments,
         forceSend,
-        payload.dispatchMode,
+        mailboxDelivery ? "steer" : payload.dispatchMode,
       );
     },
     [
@@ -1640,6 +1683,7 @@ export function Composer({
       attachments,
       blurOnSubmit,
       buildOutgoingAttachments,
+      mailboxDelivery,
       runClientSlashCommand,
       sendMessageWithContent,
     ],
@@ -2080,6 +2124,8 @@ export function Composer({
         realtimeVoiceButtonStyle={realtimeVoiceButtonStyle}
         voiceToggleKeys={voiceToggleKeys}
         t={t}
+        variant={voiceModeVariant}
+        onCommanderVoicePress={onCommanderVoicePress}
       />
     ),
     [
@@ -2089,6 +2135,7 @@ export function Composer({
       handleToggleRealtimeVoice,
       hasAgent,
       onStartVoiceMode,
+      onCommanderVoicePress,
       hasSendableContent,
       isAgentRunning,
       isConnected,
@@ -2099,6 +2146,7 @@ export function Composer({
       mode.showVoice,
       realtimeVoiceButtonStyle,
       t,
+      voiceModeVariant,
       voiceToggleKeys,
     ],
   );
@@ -2365,16 +2413,28 @@ export function Composer({
 
   const queueList = useMemo(
     () =>
-      renderQueueTrack({
-        queuedMessages,
-        handleEditQueuedMessage,
-        handleSendQueuedNow,
-        handleForkQueued: canFork ? handleForkQueued : undefined,
-        editLabel: t("composer.attachments.editQueuedMessage"),
-        sendNowLabel: t("composer.attachments.sendQueuedMessageNow"),
-        forkLabel: t("composer.input.forkToNewTab"),
-      }),
-    [canFork, handleEditQueuedMessage, handleForkQueued, handleSendQueuedNow, queuedMessages, t],
+      // M8 mailbox: the Commander thread never queues — messages deliver
+      // immediately (idle run / busy steer); the queue track is hidden.
+      mailboxDelivery
+        ? null
+        : renderQueueTrack({
+            queuedMessages,
+            handleEditQueuedMessage,
+            handleSendQueuedNow,
+            handleForkQueued: canFork ? handleForkQueued : undefined,
+            editLabel: t("composer.attachments.editQueuedMessage"),
+            sendNowLabel: t("composer.attachments.sendQueuedMessageNow"),
+            forkLabel: t("composer.input.forkToNewTab"),
+          }),
+    [
+      canFork,
+      handleEditQueuedMessage,
+      handleForkQueued,
+      handleSendQueuedNow,
+      mailboxDelivery,
+      queuedMessages,
+      t,
+    ],
   );
 
   const messageInputContainerRef = useRef<View>(null);
@@ -2462,9 +2522,12 @@ export function Composer({
                 voiceServerId={serverId}
                 voiceAgentId={agentId}
                 isAgentRunning={isAgentRunning}
-                defaultSendBehavior={appSettings.sendBehavior}
+                // M8 mailbox: the send-mode selector (interrupt/queue/steer)
+                // stops applying to the Commander thread — the default action
+                // is always a steer-capable immediate send.
+                defaultSendBehavior={mailboxDelivery ? "steer" : appSettings.sendBehavior}
                 sendsOutOfBand={sendsOutOfBand}
-                onQueue={handleQueue}
+                onQueue={mailboxDelivery ? undefined : handleQueue}
                 onSubmitLoadingPress={submitLoadingPressHandler}
                 onKeyPress={handleCommandKeyPress}
                 onSelectionChange={handleSelectionChange}

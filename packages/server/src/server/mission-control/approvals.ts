@@ -73,6 +73,14 @@ export interface ProposalCreateInput {
   /** Verifier-origin attribution for card drill-in (verifier's agent id). */
   verifierAgentId?: string;
   /**
+   * M8 instruction ledger: the instruction id this card cites (e.g. "#12").
+   * Every card the Commander emits for a user instruction MUST carry it. A
+   * citing card closes the ledger row (daemon-side, closedBy "cardId") —
+   * the row closes when the card is created, regardless of its approval
+   * outcome. Additive; absent on cards that are not answering an instruction.
+   */
+  respondsTo?: string;
+  /**
    * Allow-pair scope override. Defaults to the standard pair key
    * (serverId:targetAgentId). The verifier dispatcher sets it to the WORKER
    * pair key for worker→verifier reply proposals so a granted contact pair
@@ -291,6 +299,13 @@ export class MissionControlApprovals {
    */
   async createProposal(input: ProposalCreateInput): Promise<MissionControlProposal> {
     await this.expireStale();
+    // M8 instruction ledger: a citing card (respondsTo) closes the row the
+    // moment the card is created — the instruction was answered. Applies to
+    // every proposal kind (send/spawn/meta) and every origin that cites one
+    // (in practice: commander-origin cards).
+    if (input.respondsTo) {
+      this.store.closeInstruction(input.respondsTo, "cardId");
+    }
     const { allowPairKey: _allowPairKey, ...record } = input;
     const proposal: MissionControlProposal = {
       id: generateProposalId(),

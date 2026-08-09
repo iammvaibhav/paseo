@@ -113,6 +113,7 @@ export const ja: TranslationResources = {
       muteVoice: "音声をミュート",
       dictation: "音声入力",
       interruptBeforeVoice: "音声モードを開始する前にエージェントを中断してください",
+      commanderVoice: "コマンダーボイス",
     },
     attachments: {
       addImage: "画像を追加",
@@ -1888,6 +1889,9 @@ export const ja: TranslationResources = {
       hindsightSecondaryBank: "recall バンク（セカンダリ）",
       hindsightSecondaryBankHint:
         "fleet_recall が参照する読み取り専用のセカンダリバンク。空にすると無効になります。",
+      voiceNodeUrl: "音声ノードURL",
+      voiceNodeUrlHint:
+        "コマンダーボイスサーバー（例: ws://127.0.0.1:8787/ws）。空にするとMission Controlのコンポーザーでコマンダーボイスが非表示になります。",
     },
     general: {
       title: "一般",

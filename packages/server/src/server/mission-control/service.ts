@@ -7,6 +7,7 @@ import type {
 } from "../agent/agent-manager.js";
 import type { AgentStorage, StoredAgentRecord } from "../agent/agent-storage.js";
 import type { AgentStreamEvent } from "../agent/agent-sdk-types.js";
+import type { AgentAttachment } from "@getpaseo/protocol/messages";
 import type { AgentTimelineRow } from "../agent/agent-timeline-store-types.js";
 import { dispatchLocalPromptMode } from "../agent/tools/paseo-tools.js";
 import { formatSystemNotificationPrompt } from "../agent/agent-prompt.js";
@@ -15,6 +16,7 @@ import type { SessionOutboundMessage } from "../messages.js";
 import type {
   MissionControlCentralConfig,
   MissionControlEvent,
+  MissionControlInstruction,
   MissionControlLifecycleAction,
   MissionControlMetaPlan,
   MissionControlMode,
@@ -111,6 +113,19 @@ const NUDGE_BACKOFF_CAP_MS = 30 * 60 * 1000;
  * ever flagging a healthy one.
  */
 const STEER_DELIVERY_VERIFY_MS = 90_000;
+/**
+ * M8 mailbox: speculative auto-recall budget. When a user/voice instruction
+ * is delivered to the Commander, the daemon fires a hindsight recall with the
+ * raw instruction text IN PARALLEL with delivery under this hard, constant
+ * budget. Within budget → a 'Possibly related (auto-recall):' block rides the
+ * envelope; timeout / unconfigured / error → attach nothing and deliver
+ * regardless (a late result is dropped — no late steers). The budget is the
+ * ONLY thing that can delay the envelope, and it is bounded and constant.
+ */
+const SPECULATIVE_RECALL_BUDGET_MS = 600;
+/** Auto-recall block caps: ≤3 one-liners, each memory text truncated. */
+const SPECULATIVE_RECALL_MAX_LINES = 3;
+const SPECULATIVE_RECALL_TEXT_CAP = 120;
 /**
  * Commander watchdog: the Commander is excluded from stall nudges/escalation
  * by design, so a Commander looping on a failing tool looks frozen forever.
@@ -365,6 +380,16 @@ export interface MissionControlServiceOptions {
     workspaceId?: string | null;
     cwd?: string | null;
   }) => Promise<MissionControlRunPlacement>;
+  /**
+   * M8 mailbox: hand the speculative-recall block (when one resolved within
+   * budget) to the CommanderSnapshotInjector, which appends it to the NEXT
+   * snapshot dispatch. The idle delivery path sets it immediately before
+   * starting the run, so the fresh snapshot ahead of the message carries the
+   * block; machinery turns never set it (never trigger recall). Absent →
+   * idle deliveries simply skip the auto-recall block (the ledger block
+   * still rides the snapshot).
+   */
+  setPendingInstructionEnvelope?: (block: string | null) => void;
 }
 
 export interface MissionControlServiceConfig {
@@ -501,6 +526,7 @@ export class MissionControlService {
   private readonly metaFromProposal: MissionControlServiceOptions["metaFromProposal"];
   private readonly metaApplyRemote: MissionControlServiceOptions["metaApplyRemote"];
   private readonly resolveRunPlacement: MissionControlServiceOptions["resolveRunPlacement"];
+  private readonly setPendingInstructionEnvelope: MissionControlServiceOptions["setPendingInstructionEnvelope"];
   readonly approvals: MissionControlApprovals;
   // M6 context architecture: run-record assembly, rollup cache, hindsight sink.
   private readonly rollupCache = new RollupCache();
@@ -616,6 +642,7 @@ export class MissionControlService {
     this.metaFromProposal = options.metaFromProposal;
     this.metaApplyRemote = options.metaApplyRemote;
     this.resolveRunPlacement = options.resolveRunPlacement;
+    this.setPendingInstructionEnvelope = options.setPendingInstructionEnvelope;
     this.bootedAtMs = Date.now();
     this.store = new MissionControlStore({ paseoHome: options.paseoHome, logger: this.logger });
     this.lifecycleLog = new TurnLifecycleLog({
@@ -870,7 +897,7 @@ export class MissionControlService {
       );
       return null;
     }
-    return this.emitEvent({
+    const event = await this.emitEvent({
       agentId: commanderId,
       kind: input.kind,
       source: "system",
@@ -881,6 +908,14 @@ export class MissionControlService {
         : {}),
       ...("answer" in input && input.answer ? { answer: input.answer } : {}),
     });
+    // M8 instruction ledger: a citing card (respondsTo) closes the row.
+    const respondsTo =
+      (input.kind === "clarification" ? input.clarification?.respondsTo : undefined) ??
+      (input.kind === "answer" ? input.answer?.respondsTo : undefined);
+    if (respondsTo) {
+      this.closeInstructionForCard(respondsTo);
+    }
+    return event;
   }
 
   subscribeReviewState(listener: ReviewStateListener): () => void {
@@ -1045,6 +1080,210 @@ export class MissionControlService {
     }
     this.logger.info({ agentId, adoptedAt }, "mission_control.commander_adopted");
     return adoptedAt;
+  }
+
+  // ==========================================================================
+  // M8 mailbox: ONE delivery path for every message to the Commander
+  // (docs/commander.md "The mailbox"). Chat (app composer), voice
+  // (commander_dispatch), and machinery (dispatchMachineryTurn) all land
+  // here or on the same dispatchLocalPromptMode primitive. Rule: commander
+  // idle → normal run; commander mid-turn → omp live-steer (the native steer
+  // path — NEVER replaceRunning) wrapping the message in the ack-and-fold
+  // envelope. The daemon owns the envelope, so chat and voice get identical
+  // semantics.
+  // ==========================================================================
+
+  /**
+   * Deliver a user/voice instruction to the Commander through the mailbox.
+   * Opens a ledger row, fires the speculative auto-recall (bounded, in
+   * parallel), then:
+   *  - busy → steer with the envelope: 'New instruction (#<id>)…' + the open
+   *    instruction list + the auto-recall block (when within budget).
+   *  - idle → the plain message starts a fresh run (never replaceRunning);
+   *    the snapshot seam ahead of it appends the ledger block + the pending
+   *    auto-recall block to the fresh snapshot, so the turn sees both
+   *    regenerated per turn.
+   * The client's dispatchMode is IGNORED for Commander targets — there is no
+   * queueing and no interrupt here (session.ts routes commander-targeted
+   * sends through this method).
+   */
+  async deliverCommanderInstruction(input: {
+    text: string;
+    source: "chat" | "voice";
+    /** Composer attachments (descriptors; the daemon resolves them into the
+     *  prompt). The envelope text rides them like any fleet send. */
+    attachments?: AgentAttachment[];
+  }): Promise<
+    { ok: true; instructionId: string; deliveredAs: "run" | "steer" } | { ok: false; error: string }
+  > {
+    const commanderId = await this.resolveCommanderAgentId();
+    if (!commanderId) {
+      return { ok: false, error: "No Commander agent on this host" };
+    }
+    const instruction = this.store.openInstruction({ text: input.text, source: input.source });
+    // Speculative auto-recall (user-approved design): fire the dual-bank
+    // recall with the raw instruction text, in parallel with delivery, under
+    // a hard constant budget. Within budget → the block rides the envelope;
+    // timeout / unconfigured / error → nothing is attached and delivery is
+    // never delayed beyond the budget (a late result is dropped — no late
+    // steers). fleet_recall (the Commander's own tool) is untouched.
+    const recallBlock = await this.buildSpeculativeRecallBlock(input.text);
+    const busy = this.agentManager.hasInFlightRun(commanderId);
+    if (busy) {
+      const envelope = [
+        `New instruction (${instruction.id}). Acknowledge it in one line, fold it into your open work, prioritize user-facing asks, then continue.`,
+        this.formatOpenInstructionsBlock(),
+        recallBlock,
+      ]
+        .filter((block): block is string => block !== null && block.length > 0)
+        .join("\n\n");
+      await dispatchLocalPromptMode({
+        agentManager: this.agentManager,
+        agentStorage: this.agentStorage,
+        agentId: commanderId,
+        prompt: envelope,
+        attachments: input.attachments,
+        mode: "steer",
+        classification: "instruction",
+        replaceOrigin: "machinery",
+        recordStopOrigin: (agentId, origin) => this.store.recordStopOrigin(agentId, origin),
+        logger: this.logger,
+        // The Commander's own turn loop is covered by the dormant-turn
+        // detector (machinery turns arm nothing here either); the mailbox
+        // steer never marks the Commander undelivered.
+        onOutOfBandSteer: () => {
+          this.armSteerDeliveryVerification(commanderId, undefined);
+        },
+      });
+      this.logger.info(
+        { instructionId: instruction.id, source: input.source },
+        "mission_control.mailbox.steered",
+      );
+      return { ok: true, instructionId: instruction.id, deliveredAs: "steer" };
+    }
+    // Idle: hand the recall block (if any) to the snapshot injector so the
+    // fresh snapshot ahead of this run carries it alongside the ledger block.
+    this.setPendingInstructionEnvelope?.(recallBlock || null);
+    await dispatchLocalPromptMode({
+      agentManager: this.agentManager,
+      agentStorage: this.agentStorage,
+      agentId: commanderId,
+      prompt: input.text.trim(),
+      attachments: input.attachments,
+      mode: "steer",
+      classification: "instruction",
+      recordStopOrigin: (agentId, origin) => this.store.recordStopOrigin(agentId, origin),
+      logger: this.logger,
+    });
+    this.logger.info(
+      { instructionId: instruction.id, source: input.source },
+      "mission_control.mailbox.ran",
+    );
+    return { ok: true, instructionId: instruction.id, deliveredAs: "run" };
+  }
+
+  /**
+   * M8 ledger: every retained instruction row, newest first (the verbose
+   * thread's open list + close affordance reads this).
+   */
+  listInstructions(): MissionControlInstruction[] {
+    return this.store.listInstructions();
+  }
+
+  /**
+   * M8 ledger: manual close from the verbose thread affordance
+   * (mission_control.instructions.close). Idempotent: closing an unknown or
+   * already-closed row is a no-op success (the app re-lists and the row
+   * simply disappears from the open set).
+   */
+  async closeInstruction(
+    instructionId: string,
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    this.store.closeInstruction(instructionId, "manual");
+    return { ok: true };
+  }
+
+  /**
+   * M8 ledger block for the per-turn envelope: 'Open instructions:' with the
+   * open rows, regenerated per turn like the snapshot — never accreted. Empty
+   * string when nothing is open. `excludeId` (optional) skips a row that is
+   * about to be listed by its own 'New instruction' line (not used — the
+   * ledger block lists the new row too, since the envelope is the whole
+   * picture; kept for future callers).
+   */
+  formatOpenInstructionsBlock(_excludeId?: string): string {
+    const open = this.store.listOpenInstructions();
+    if (open.length === 0) {
+      return "";
+    }
+    const lines = open.map((instruction) => {
+      const oneLine = instruction.text.replace(/\s+/g, " ").trim();
+      return `- ${instruction.id}: ${oneLine}`;
+    });
+    return `Open instructions:\n${lines.join("\n")}`;
+  }
+
+  /**
+   * Close the ledger row a citing card answers (respondsTo), closedBy
+   * "cardId". A no-op for unknown/already-closed ids. Called when the
+   * Commander emits a proposal, clarification, or answer card carrying
+   * respondsTo.
+   */
+  closeInstructionForCard(respondsTo: string): void {
+    const closed = this.store.closeInstruction(respondsTo, "cardId");
+    if (closed) {
+      this.logger.info(
+        { instructionId: respondsTo, closedBy: "cardId" },
+        "mission_control.instructions.closed_by_card",
+      );
+    }
+  }
+
+  /**
+   * Speculative auto-recall: race the dual-bank hindsight recall (with
+   * attribution) against the hard constant budget and format ≤3 one-liners
+   * when it wins. Null on timeout / unconfigured / error — callers attach
+   * nothing and deliver regardless (the budget bounds any delay; a late
+   * result is dropped, never a late steer).
+   */
+  private async buildSpeculativeRecallBlock(text: string): Promise<string | null> {
+    const recallPromise = this.hindsightRecall(text, SPECULATIVE_RECALL_MAX_LINES);
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), SPECULATIVE_RECALL_BUDGET_MS);
+    });
+    let result: HindsightRecallResult | null;
+    try {
+      result = await Promise.race([recallPromise, timeout]);
+    } catch (error) {
+      this.logger.debug({ err: error }, "mission_control.mailbox.auto_recall_error");
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!result || !result.ok || result.matches.length === 0) {
+      this.logger.debug({}, "mission_control.mailbox.auto_recall_empty");
+      return null;
+    }
+    // The dual-bank recall enriches omp matches with Paseo-agent attribution
+    // (service.attributeRecallMatches) — the declared result type predates
+    // the enrichment, so narrow here.
+    const matches = result.matches as Array<
+      HindsightRecallMatch & { attribution?: RecallMatchAttribution }
+    >;
+    const lines = matches.slice(0, SPECULATIVE_RECALL_MAX_LINES).map((match) => {
+      const memoryText = match.text
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, SPECULATIVE_RECALL_TEXT_CAP);
+      const attribution = match.attribution
+        ? ` (${match.attribution.agentName || match.attribution.agentId}${
+            match.attribution.workspaceId ? `, ${match.attribution.workspaceId}` : ""
+          })`
+        : "";
+      return `- ${memoryText}${attribution} [${match.bank}]`;
+    });
+    return `Possibly related (auto-recall):\n${lines.join("\n")}`;
   }
 
   /**

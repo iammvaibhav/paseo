@@ -19,6 +19,8 @@ import type {
 } from "../workspace-registry.js";
 import type { ArchiveResult } from "../workspace-archive-service.js";
 import { areEquivalentPaths } from "../../utils/path.js";
+import { COMMANDER_ADOPTED_AT_LABEL } from "./commander-contract.js";
+import { hasMissionControlLabels } from "./naming.js";
 
 /**
  * M5 meta actions: the daemon-side executor for the Commander's `fleet_meta`
@@ -184,7 +186,10 @@ export interface MetaActionsDependencies
   serverId: string;
   hostName: string;
   logger: Logger;
-  agentManager: Pick<AgentManager, "getAgent" | "moveAgentWorkspace" | "updateAgentMetadata">;
+  agentManager: Pick<
+    AgentManager,
+    "getAgent" | "moveAgentWorkspace" | "updateAgentMetadata" | "setLabels"
+  >;
   agentStorage: Pick<AgentStorage, "get" | "list">;
   workspaceRegistry: Pick<WorkspaceRegistry, "get" | "update" | "upsert" | "list">;
   projectRegistry: Pick<
@@ -506,6 +511,33 @@ async function validatePromoteWorkspace(
   return { ok: true };
 }
 
+async function validateAdoptAgent(
+  deps: MetaActionsLookupDependencies,
+  plan: MissionControlMetaPlan,
+): Promise<MetaActionValidationResult> {
+  const targetId = requireTargetId(plan);
+  if (!targetId) {
+    return { ok: false, error: "adopt_agent requires a targetId (agent id)" };
+  }
+  const agent = await resolveAgentRecord(deps, targetId);
+  if (!agent) {
+    return { ok: false, error: `Agent ${targetId} not found` };
+  }
+  if (agent.record.archivedAt) {
+    return { ok: false, error: `Agent ${targetId} is archived` };
+  }
+  // Mission-control machinery (the Commander, verifiers) is never adopted —
+  // "this is my agent, you take care of it" applies to fleet workers.
+  const labels = agent.live ? deps.agentManager.getAgent(targetId)?.labels : agent.record.labels;
+  if (labels && hasMissionControlLabels(labels)) {
+    return {
+      ok: false,
+      error: `Agent ${targetId} is mission-control machinery; it cannot be adopted`,
+    };
+  }
+  return { ok: true };
+}
+
 /**
  * Host-independent plan SHAPE validation: required identifying fields and
  * path rules (create_project absolute destination). No registry lookups — safe
@@ -570,6 +602,12 @@ export async function validateMetaPlanShape(
       }
       return { ok: true };
     }
+    case "adopt_agent": {
+      if (!requireTargetId(plan)) {
+        return { ok: false, error: "adopt_agent requires a targetId (agent id)" };
+      }
+      return { ok: true };
+    }
   }
 }
 
@@ -609,6 +647,8 @@ export async function validateMetaPlan(
       return validateMoveAgent(deps, plan);
     case "promote_workspace":
       return validatePromoteWorkspace(deps, plan);
+    case "adopt_agent":
+      return validateAdoptAgent(deps, plan);
   }
 }
 
@@ -849,6 +889,50 @@ async function applyPromoteWorkspace(
 }
 
 /**
+ * M8 adopt_agent: stamp paseo.commander-adopted-at on the target agent (live
+ * + stored — agentManager.setLabels merges into the live snapshot and
+ * persists to the stored record through the same write path the approvals
+ * deliver hook uses) WITHOUT sending any message. "This is my agent, you
+ * take care of it": adoption flips the target into verifier scope
+ * "commander" and follow-up machinery turns. First adoption wins (idempotent
+ * — an already-stamped agent stays stamped, never re-stamped).
+ */
+async function applyAdoptAgent(
+  deps: MetaActionsDependencies,
+  plan: MissionControlMetaPlan,
+): Promise<MetaPlanActionResult> {
+  const agentId = plan.targetId!;
+  const live = deps.agentManager.getAgent(agentId);
+  const storedLabels = live
+    ? live.labels
+    : ((await deps.agentStorage.get(agentId).catch(() => null))?.labels ?? {});
+  const existing = storedLabels[COMMANDER_ADOPTED_AT_LABEL];
+  if (typeof existing === "string" && existing.trim().length > 0) {
+    logMetaEvent(deps, plan, "mission_control.meta.adopt_agent_already_adopted", {
+      agentId,
+      adoptedAt: existing,
+    });
+    return { ok: true, summary: `Agent ${agentId} was already adopted (${existing})` };
+  }
+  const adoptedAt = new Date().toISOString();
+  try {
+    await deps.agentManager.setLabels(agentId, { [COMMANDER_ADOPTED_AT_LABEL]: adoptedAt });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: `Failed to stamp adoption on agent ${agentId}: ${message}` };
+  }
+  const after = await resolveAgentRecord(deps, agentId);
+  if (after && !after.live) {
+    await safeEmitStoredAgentUpdate(deps, after.record);
+  }
+  logMetaEvent(deps, plan, "mission_control.meta.adopt_agent_applied", {
+    agentId,
+    adoptedAt,
+  });
+  return { ok: true, summary: `Adopted agent ${agentId} (no message sent)` };
+}
+
+/**
  * Apply a validated meta plan: the action switch. Logs every applied action
  * loudly (module mission-control, component meta) with the full plan so the
  * audit trail shows exactly what the Commander did and when.
@@ -880,6 +964,8 @@ export async function applyMetaPlan(
       return applyMoveAgent(deps, plan);
     case "promote_workspace":
       return applyPromoteWorkspace(deps, plan);
+    case "adopt_agent":
+      return applyAdoptAgent(deps, plan);
   }
 }
 

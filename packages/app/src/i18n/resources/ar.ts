@@ -113,6 +113,7 @@ export const ar: TranslationResources = {
       muteVoice: "كتم الصوت",
       dictation: "الإملاء",
       interruptBeforeVoice: "قم بمقاطعة الوكيل قبل بدء الوضع الصوتي",
+      commanderVoice: "صوت القائد",
     },
     attachments: {
       addImage: "أضف صورة",
@@ -1870,6 +1871,9 @@ export const ar: TranslationResources = {
       hindsightBankHint: "البنك الذي يكتب إليه Paseo سجلات التشغيل.",
       hindsightSecondaryBank: "بنك الاستدعاء (ثانوي)",
       hindsightSecondaryBankHint: "بنك ثانوي للقراءة فقط يستشيره fleet_recall. تركه فارغًا يعطّله.",
+      voiceNodeUrl: "عنوان عقدة الصوت",
+      voiceNodeUrlHint:
+        "خادم صوت القائد (مثال: ws://127.0.0.1:8787/ws). تركه فارغًا يخفي صوت القائد في محرر Mission Control.",
     },
     general: {
       title: "عام",

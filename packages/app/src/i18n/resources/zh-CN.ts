@@ -113,6 +113,7 @@ export const zhCN: TranslationResources = {
       muteVoice: "静音",
       dictation: "听写",
       interruptBeforeVoice: "启动语音模式前请先中断 Agent",
+      commanderVoice: "指挥官语音",
     },
     attachments: {
       addImage: "添加图片",
@@ -1849,6 +1850,9 @@ export const zhCN: TranslationResources = {
       hindsightBankHint: "Paseo 写入运行记录的库。",
       hindsightSecondaryBank: "召回库（辅助）",
       hindsightSecondaryBankHint: "fleet_recall 查询的只读辅助库。留空将禁用。",
+      voiceNodeUrl: "语音节点 URL",
+      voiceNodeUrlHint:
+        "指挥官语音服务器（例如 ws://127.0.0.1:8787/ws）。留空会在 Mission Control 编辑器里隐藏指挥官语音。",
     },
     general: {
       title: "通用",

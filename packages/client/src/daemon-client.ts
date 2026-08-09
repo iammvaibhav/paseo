@@ -343,6 +343,9 @@ export interface SendMessageOptions {
   // Delivery semantics for outbound prompts (fleet_send_prompt modes):
   // steer / interrupt / queue. Absent = interrupt for wire compat.
   dispatchMode?: "steer" | "interrupt" | "queue";
+  // M8 mailbox source attribution: "voice" marks a Commander Voice dispatch
+  // so the daemon's instruction ledger records source:voice. Absent = chat.
+  source?: "chat" | "voice";
 }
 
 export interface AgentAttentionRequiredNotification {
@@ -656,6 +659,14 @@ type MissionControlProposalsCreatePayload = Extract<
 type MissionControlLifecycleSetPayload = Extract<
   SessionOutboundMessage,
   { type: "mission_control.lifecycle.set.response" }
+>["payload"];
+type MissionControlInstructionsListPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.instructions.list.response" }
+>["payload"];
+type MissionControlInstructionsClosePayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.instructions.close.response" }
 >["payload"];
 type MissionControlMediaFetchPayload = Extract<
   SessionOutboundMessage,
@@ -3256,6 +3267,7 @@ export class DaemonClient {
       ...(options?.images ? { images: options.images } : {}),
       ...(options?.attachments ? { attachments: options.attachments } : {}),
       ...(options?.dispatchMode ? { dispatchMode: options.dispatchMode } : {}),
+      ...(options?.source ? { source: options.source } : {}),
     });
     const payload = await this.sendRequest({
       requestId,
@@ -5974,6 +5986,39 @@ export class DaemonClient {
         action: options.action,
       },
       responseType: "mission_control.lifecycle.set.response",
+    });
+  }
+
+  /**
+   * M8 instruction ledger: list every instruction row (open + closed, newest
+   * first). The Commander thread renders the open rows (verbose mode shows
+   * the manual-close affordance).
+   */
+  async missionControlInstructionsList(
+    requestId?: string,
+  ): Promise<MissionControlInstructionsListPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "mission_control.instructions.list.request" },
+      responseType: "mission_control.instructions.list.response",
+    });
+  }
+
+  /**
+   * M8 instruction ledger: manually close an open instruction row
+   * (verbose-only thread affordance). closedBy "manual".
+   */
+  async missionControlInstructionsClose(options: {
+    instructionId: string;
+    requestId?: string;
+  }): Promise<MissionControlInstructionsClosePayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "mission_control.instructions.close.request",
+        instructionId: options.instructionId,
+      },
+      responseType: "mission_control.instructions.close.response",
     });
   }
 
