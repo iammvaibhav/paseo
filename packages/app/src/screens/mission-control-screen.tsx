@@ -45,7 +45,11 @@ import { launchCommander } from "@/mission-control/launch";
 import { MISSION_CONTROL_LABEL_KEY, MISSION_CONTROL_LABEL_VALUE } from "@/mission-control/labels";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isWeb } from "@/constants/platform";
-import { CommanderVoicePanel, resolveComposerVoiceVariant } from "@/mission-control/voice";
+import {
+  CommanderVoicePanel,
+  normalizeVoiceNodeUrl,
+  resolveComposerVoiceVariant,
+} from "@/mission-control/voice";
 
 type CompactPanel = "thread" | "board";
 
@@ -372,7 +376,10 @@ export function MissionControlScreen(): ReactElement {
             />
           </View>
           {isCommanderVoiceOpen && composerVoiceVariant === "commander" && voiceNodeUrl ? (
-            <CommanderVoicePanel url={voiceNodeUrl} onClose={handleCloseCommanderVoice} />
+            <CommanderVoicePanel
+              url={normalizeVoiceNodeUrl(voiceNodeUrl) ?? voiceNodeUrl}
+              onClose={handleCloseCommanderVoice}
+            />
           ) : null}
         </>
       );
