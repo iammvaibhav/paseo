@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import type {
@@ -7,7 +7,7 @@ import type {
 } from "@getpaseo/protocol/mission-control/types";
 import { useFetchQuery } from "@/data/query";
 import { useLocalDaemonServerId } from "@/hooks/use-is-local-daemon";
-import { loadCommanderHostServerId } from "@/mission-control/launch";
+import { useToast } from "@/contexts/toast-context";
 import { useHostRuntimeClient, useHostRuntimeIsConnected, useHosts } from "@/runtime/host-runtime";
 
 export function missionControlCentralConfigQueryKey(serverId: string | null) {
@@ -135,11 +135,31 @@ export interface MissionControlCentralConfigState {
 }
 
 /**
- * Resolves the host whose daemon holds the canonical central Mission Control
- * config: the saved commander-host preference first, then the local daemon,
- * then the first known host. The config is stored on the commander host, so
- * reads/writes must target it; the fallbacks keep the settings screen usable
- * before a commander host has ever been picked.
+ * Thrown when a central-config write was forwarded to the designated
+ * commander host but that host was unreachable. The daemon never applied the
+ * write locally (it must not fork central config), so the app surfaces this
+ * as a distinct "commander host unreachable" error (toast + inline) instead
+ * of a generic failure — never silent.
+ */
+export class CommanderHostUnreachableError extends Error {
+  readonly commanderHost: string;
+
+  constructor(commanderHost: string, message: string) {
+    super(message);
+    this.name = "CommanderHostUnreachableError";
+    this.commanderHost = commanderHost;
+  }
+}
+
+/**
+ * Resolves the host whose daemon this app talks to for the central Mission
+ * Control config: the LOCAL daemon when connected, else the first known host.
+ * No saved-commander-host preference is needed anymore — the daemons route
+ * central-config writes themselves (the commander host owns central-config;
+ * every other host forwards patches to it over peering and replicates the
+ * result), so ANY connected host serves reads and accepts writes. The
+ * fallbacks keep the settings screen usable before a commander host has ever
+ * been picked (standalone mode: every host keeps its own config).
  */
 export function useMissionControlCentralConfigHost(): {
   serverId: string | null;
@@ -147,30 +167,13 @@ export function useMissionControlCentralConfigHost(): {
 } {
   const hosts = useHosts();
   const localServerId = useLocalDaemonServerId();
-  const [savedServerId, setSavedServerId] = useState<string | null | undefined>(undefined);
-
-  useEffect(() => {
-    let cancelled = false;
-    void loadCommanderHostServerId().then((id) => {
-      if (!cancelled) {
-        setSavedServerId(id);
-      }
-      return id;
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   return useMemo(() => {
-    if (savedServerId === undefined) {
-      return { serverId: null, resolving: true };
-    }
     const known = (id: string | null): string | null =>
       id && hosts.some((host) => host.serverId === id) ? id : null;
-    const serverId = known(savedServerId) ?? known(localServerId) ?? hosts[0]?.serverId ?? null;
+    const serverId = known(localServerId) ?? hosts[0]?.serverId ?? null;
     return { serverId, resolving: false };
-  }, [hosts, localServerId, savedServerId]);
+  }, [hosts, localServerId]);
 }
 
 export function useMissionControlCentralConfig(): MissionControlCentralConfigState {
@@ -202,6 +205,13 @@ export function useMissionControlCentralConfig(): MissionControlCentralConfigSta
       }
       const result = await client.missionControlConfigPatch(patch);
       if (!result.ok) {
+        if (result.unreachableCommanderHost) {
+          throw new CommanderHostUnreachableError(
+            result.unreachableCommanderHost,
+            result.error ??
+              `Commander host "${result.unreachableCommanderHost}" is unreachable; Mission Control settings were not saved.`,
+          );
+        }
         throw new Error(result.error ?? "Failed to update Mission Control config");
       }
       queryClient.setQueryData(queryKey, result.config);
@@ -216,6 +226,13 @@ export function useMissionControlCentralConfig(): MissionControlCentralConfigSta
       }
       const result = await client.missionControlModeSet(mode);
       if (!result.ok) {
+        if (result.unreachableCommanderHost) {
+          throw new CommanderHostUnreachableError(
+            result.unreachableCommanderHost,
+            result.error ??
+              `Commander host "${result.unreachableCommanderHost}" is unreachable; the mode was not changed.`,
+          );
+        }
         throw new Error(result.error ?? "Failed to set Mission Control mode");
       }
       queryClient.setQueryData(queryKey, (current: MissionControlCentralConfig | undefined) =>
@@ -243,6 +260,7 @@ export function useMissionControlMode(): {
   setMode: (mode: MissionControlMode) => Promise<void>;
 } {
   const [isUpdating, setIsUpdating] = useState(false);
+  const toast = useToast();
   const { config, isLoading, setMode } = useMissionControlCentralConfig();
 
   const handleSetMode = useCallback(
@@ -250,11 +268,17 @@ export function useMissionControlMode(): {
       setIsUpdating(true);
       try {
         await setMode(mode);
+      } catch (caught) {
+        // Never silent: a mode change that failed to reach the commander
+        // host surfaces as a toast (the toggle itself has no error slot).
+        const message = caught instanceof Error ? caught.message : String(caught);
+        toast.error(message);
+        throw caught;
       } finally {
         setIsUpdating(false);
       }
     },
-    [setMode],
+    [setMode, toast],
   );
 
   return {

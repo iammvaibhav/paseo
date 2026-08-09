@@ -115,6 +115,7 @@ import type {
 import type { MutableDaemonConfig, MutableDaemonConfigPatch } from "@getpaseo/protocol/messages";
 import type {
   MissionControlCentralConfig,
+  MissionControlMetaPlan,
   MissionControlMode,
 } from "@getpaseo/protocol/mission-control/types";
 import { isRelayClientWebSocketUrl } from "@getpaseo/protocol/daemon-endpoints";
@@ -623,6 +624,10 @@ type MissionControlContextFetchPayload = Extract<
 type MissionControlSearchPayload = Extract<
   SessionOutboundMessage,
   { type: "mission_control.search.response" }
+>["payload"];
+type MissionControlMetaApplyPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.meta.apply.response" }
 >["payload"];
 type MissionControlConfigGetPayload = Extract<
   SessionOutboundMessage,
@@ -5810,6 +5815,25 @@ export class DaemonClient {
   }
 
   /**
+   * Apply a fleet meta action on this daemon (mission_control.meta.apply):
+   * the Commander-host metaFromProposal path routes an approved meta-kind
+   * proposal whose metaPlan.serverId names THIS host as a peer here. The
+   * daemon re-validates the plan against its own registries and applies it
+   * (the single cross-host apply hop — the proposal card stays on the
+   * commander host). Mirrors fleet_create_agent's peer path.
+   */
+  async fleetMetaApply(
+    metaPlan: MissionControlMetaPlan,
+    requestId?: string,
+  ): Promise<MissionControlMetaApplyPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "mission_control.meta.apply.request", metaPlan },
+      responseType: "mission_control.meta.apply.response",
+    });
+  }
+
+  /**
    * Read the central Mission Control config (fleet policy stored on the
    * commander host). The responding daemon resolves defaults server-side, so
    * every key of the returned config is present.
@@ -5834,6 +5858,26 @@ export class DaemonClient {
       requestId,
       message: { type: "mission_control.config.patch.request", patch },
       responseType: "mission_control.config.patch.response",
+    });
+  }
+
+  /**
+   * Push a FULL central-config snapshot to a peer daemon
+   * (mission_control.config.replica). One-way sync message — there is NO
+   * response pair (unlike the .request/.response RPCs): the receiving daemon
+   * replaces its local central-config.json + in-memory store, last-writer-wins.
+   * Used by the commander host to replicate every patch to peers and to
+   * sync-on-connect when a peer comes online. Fire-and-forget: failures (not
+   * connected) throw like any other send; callers gate on peer online state.
+   */
+  missionControlConfigReplica(
+    config: MissionControlCentralConfig,
+    options?: { from?: string },
+  ): void {
+    this.sendSessionMessage({
+      type: "mission_control.config.replica",
+      ...(options?.from ? { from: options.from } : {}),
+      config,
     });
   }
 

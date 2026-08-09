@@ -19,6 +19,7 @@ import {
   type FileTransferFrame,
 } from "@getpaseo/protocol/binary-frames/index";
 import { isSessionRpcAllowed, Session } from "./session.js";
+import type { MissionControlService } from "./mission-control/service.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
 import { StructuredAgentFallbackError } from "./agent/agent-response-loop.js";
 import type { StoredAgentRecord } from "./agent/agent-storage.js";
@@ -321,6 +322,8 @@ interface SessionForTestOptions {
   serverId?: SessionOptions["serverId"];
   daemonVersion?: SessionOptions["daemonVersion"];
   daemonRuntimeConfig?: SessionOptions["daemonRuntimeConfig"];
+  missionControlService?: SessionOptions["missionControlService"];
+  peerManager?: SessionOptions["peerManager"];
   downloadTokenStore?: SessionOptions["downloadTokenStore"];
   messages?: unknown[];
   targetedMessages?: Array<{ source: object; message: SessionOutboundMessage }>;
@@ -426,6 +429,8 @@ function createSessionForTest(options: SessionForTestOptions = {}): Session {
     serverId: options.serverId,
     daemonVersion: options.daemonVersion,
     daemonRuntimeConfig: options.daemonRuntimeConfig,
+    missionControlService: options.missionControlService,
+    peerManager: options.peerManager,
     scopes: options.scopes ?? ["*"],
   };
   return new Session(sessionOptions);
@@ -5900,5 +5905,176 @@ describe("send_agent_message dispatch modes", () => {
     expect(String(response?.error)).toContain("replace");
     // No queue fallback: the prompt was never streamed as a deferred run.
     expect(streamAgent).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================================
+// Wave 2: central-config ownership + replication (wire dispatch). The daemon
+// that receives mission_control.config.patch routes it through the service's
+// ownership logic (owner applies + replicates; non-owner forwards); peers
+// receive mission_control.config.replica and replace their local snapshot.
+// These tests pin the SESSION mapping (dispatch + response payloads); the
+// routing/forwarding/replication contract itself is tested at the service
+// level in mission-control/config-replication.test.ts.
+// ============================================================================
+
+describe("mission control central config wire dispatch", () => {
+  test("mission_control.config.replica dispatches to the service replica handler", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const applyCentralConfigReplica = vi.fn(async () => undefined);
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        applyCentralConfigReplica,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.config.replica",
+      from: "commander-a",
+      config: { statusNudgeSeconds: 480, mode: "auto" },
+    });
+
+    // Fire-and-forget: applied, never answered with a response.
+    expect(applyCentralConfigReplica).toHaveBeenCalledWith({
+      statusNudgeSeconds: 480,
+      mode: "auto",
+    });
+    expect(messages).toEqual([]);
+  });
+
+  test("mission_control.config.patch through the session returns the routed result incl. unreachableCommanderHost", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const patchCentralConfigRouted = vi.fn(async () => ({
+      ok: false,
+      error:
+        'Commander host "commander-a" is unreachable (unreachable); central config was NOT updated',
+      unreachableCommanderHost: "commander-a",
+      config: { statusNudgeSeconds: 300 },
+    }));
+    const getCentralConfig = vi.fn(() => ({}));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        patchCentralConfigRouted,
+        getCentralConfig,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.config.patch.request",
+      requestId: "req-config-patch",
+      patch: { statusNudgeSeconds: 600 },
+    });
+
+    expect(patchCentralConfigRouted).toHaveBeenCalledWith({ statusNudgeSeconds: 600 });
+    expect(messages).toEqual([
+      {
+        type: "mission_control.config.patch.response",
+        payload: {
+          requestId: "req-config-patch",
+          config: { statusNudgeSeconds: 300 },
+          ok: false,
+          error: expect.stringContaining("commander-a") as unknown as string,
+          unreachableCommanderHost: "commander-a",
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.config.patch through the session returns ok:true with the resolved config", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const patchCentralConfigRouted = vi.fn(async () => ({
+      ok: true,
+      config: { statusNudgeSeconds: 600, silenceNudgeSeconds: 90 },
+    }));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        patchCentralConfigRouted,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.config.patch.request",
+      requestId: "req-config-patch-ok",
+      patch: { statusNudgeSeconds: 600 },
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.config.patch.response",
+        payload: {
+          requestId: "req-config-patch-ok",
+          config: { statusNudgeSeconds: 600, silenceNudgeSeconds: 90 },
+          ok: true,
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.mode.set through the session surfaces an unreachable commander host", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const setModeRouted = vi.fn(async () => ({
+      ok: false,
+      error:
+        'Commander host "commander-a" unreachable: round-trip failed; central config was NOT updated',
+      unreachableCommanderHost: "commander-a",
+      config: {},
+    }));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        setModeRouted,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.mode.set.request",
+      requestId: "req-mode-set",
+      mode: "auto",
+    });
+
+    expect(setModeRouted).toHaveBeenCalledWith("auto");
+    expect(messages).toEqual([
+      {
+        type: "mission_control.mode.set.response",
+        payload: {
+          requestId: "req-mode-set",
+          ok: false,
+          error: expect.stringContaining("commander-a") as unknown as string,
+          unreachableCommanderHost: "commander-a",
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.config.get stays a local read (replicas keep every host in sync)", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const getCentralConfig = vi.fn(() => ({
+      statusNudgeSeconds: 480,
+      commanderHost: "commander-a",
+    }));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        getCentralConfig,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.config.get.request",
+      requestId: "req-config-get",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.config.get.response",
+        payload: {
+          requestId: "req-config-get",
+          config: { statusNudgeSeconds: 480, commanderHost: "commander-a" },
+        },
+      },
+    ]);
   });
 });

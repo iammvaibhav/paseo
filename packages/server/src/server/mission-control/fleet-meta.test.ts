@@ -240,4 +240,116 @@ describe("buildFleetMetaProposalInput", () => {
       expect(input.classification).toBe("normal");
     }
   });
+
+  test("a peer-targeted plan is only shape-validated — the local registries are never consulted", async () => {
+    // "ws-on-macbook" does NOT exist in the local lookup; a registry check
+    // would refuse the plan. The target's registries live on the peer, so the
+    // gate must accept the validated shape and let the APPLY validate there.
+    const input = await buildFleetMetaProposalInput({
+      serverId: "server-local",
+      hostName: "dev-host",
+      hostAlias: "vaibhav-dev",
+      peerManager: fakePeerManager(),
+      lookup: buildLookup(),
+      metaPlan: plan({
+        action: "rename_workspace",
+        serverId: "macbook",
+        targetId: "ws-on-macbook",
+        newValue: "Lab",
+      }),
+    });
+    expect(input.kind).toBe("meta");
+    expect(input.metaPlan).toMatchObject({
+      action: "rename_workspace",
+      serverId: "macbook",
+      targetId: "ws-on-macbook",
+      newValue: "Lab",
+    });
+    // The card message names the host the action applies to.
+    expect(input.message).toContain("on macbook");
+  });
+
+  test("a peer-targeted create_project still shape-checks the destination", async () => {
+    await expect(
+      buildFleetMetaProposalInput({
+        serverId: "server-local",
+        peerManager: fakePeerManager(),
+        lookup: buildLookup(),
+        metaPlan: plan({
+          action: "create_project",
+          serverId: "macbook",
+          destination: "relative/path",
+        }),
+      }),
+    ).rejects.toThrow("destination must be an absolute path");
+  });
+
+  test("an unknown serverId is a validation refusal before the gate (no proposal)", async () => {
+    await expect(
+      buildFleetMetaProposalInput({
+        serverId: "server-local",
+        hostName: "dev-host",
+        hostAlias: "vaibhav-dev",
+        peerManager: fakePeerManager(),
+        lookup: buildLookup(),
+        metaPlan: plan({
+          action: "rename_workspace",
+          serverId: "ghost",
+          targetId: "ws-a",
+          newValue: "x",
+        }),
+      }),
+    ).rejects.toThrow('Host "ghost" is not a configured peer or this host');
+  });
+
+  test("this daemon's own aliases (serverId / hostAlias) keep the full local validation path", async () => {
+    const lookup = buildLookup();
+    // serverId match → local registry validation (target must exist locally).
+    await expect(
+      buildFleetMetaProposalInput({
+        serverId: "server-local",
+        hostName: "dev-host",
+        hostAlias: "vaibhav-dev",
+        peerManager: fakePeerManager(),
+        lookup,
+        metaPlan: plan({
+          action: "rename_workspace",
+          serverId: "server-local",
+          targetId: "ws-ghost",
+          newValue: "x",
+        }),
+      }),
+    ).rejects.toThrow("Workspace ws-ghost not found");
+    // hostAlias match → same local path; the plan's alias never reaches the
+    // fleet map (a peer named like the alias must not win over this host).
+    const input = await buildFleetMetaProposalInput({
+      serverId: "server-local",
+      hostName: "dev-host",
+      hostAlias: "vaibhav-dev",
+      peerManager: fakePeerManager(),
+      lookup,
+      metaPlan: plan({
+        action: "rename_workspace",
+        serverId: "vaibhav-dev",
+        targetId: "ws-a",
+        newValue: "Lab",
+      }),
+    });
+    expect(input.metaPlan).toMatchObject({ serverId: "vaibhav-dev" });
+    // The card names this host by its fleet-facing alias (only "local" is
+    // never rendered — the fleet tools' never-render-local spec).
+    expect(input.message).toContain("Rename workspace");
+    expect(input.message).toContain("on vaibhav-dev");
+  });
 });
+
+/** Fleet map with one online peer "macbook" (mirrors the peer-manager). */
+function fakePeerManager() {
+  return {
+    getPeerStatus: (name: string) =>
+      name === "macbook"
+        ? { name: "macbook", url: "tcp://macbook:6767", state: "online", lastSeenAt: null }
+        : null,
+    getPeerClient: () => null,
+  };
+}

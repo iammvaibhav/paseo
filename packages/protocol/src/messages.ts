@@ -79,12 +79,15 @@ import {
   MissionControlConfigGetResponseSchema,
   MissionControlConfigPatchRequestSchema,
   MissionControlConfigPatchResponseSchema,
+  MissionControlConfigReplicaSchema,
   MissionControlCommanderResetRequestSchema,
   MissionControlCommanderResetResponseSchema,
   MissionControlSearchRequestSchema,
   MissionControlSearchResponseSchema,
   MissionControlMediaFetchRequestSchema,
   MissionControlMediaFetchResponseSchema,
+  MissionControlMetaApplyRequestSchema,
+  MissionControlMetaApplyResponseSchema,
 } from "./mission-control/types.js";
 export {
   MissionControlEventSchema,
@@ -108,6 +111,7 @@ export {
   MissionControlProposalsCreateResponseSchema,
   MissionControlCommanderResetRequestSchema,
   MissionControlCommanderResetResponseSchema,
+  MissionControlConfigReplicaSchema,
   type MissionControlEvent,
   type MissionControlEventKind,
   type MissionControlProof,
@@ -125,6 +129,7 @@ export {
   type MissionControlSearchMatch,
   type MissionControlMediaFetchRequest,
   type MissionControlMediaFetchResponse,
+  type MissionControlConfigReplica,
 } from "./mission-control/types.js";
 import {
   LoopRunRequestSchema,
@@ -3056,9 +3061,11 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   MissionControlModeSetRequestSchema,
   MissionControlConfigGetRequestSchema,
   MissionControlConfigPatchRequestSchema,
+  MissionControlConfigReplicaSchema,
   MissionControlCommanderResetRequestSchema,
   MissionControlSearchRequestSchema,
   MissionControlMediaFetchRequestSchema,
+  MissionControlMetaApplyRequestSchema,
 ]);
 
 export type SessionInboundMessage = z.infer<typeof SessionInboundMessageSchema>;
@@ -6010,6 +6017,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   MissionControlCommanderResetResponseSchema,
   MissionControlSearchResponseSchema,
   MissionControlMediaFetchResponseSchema,
+  MissionControlMetaApplyResponseSchema,
   DaemonUpdateProgressMessageSchema,
   DaemonUpdateResponseSchema,
 ]);

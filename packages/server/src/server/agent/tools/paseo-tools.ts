@@ -4680,6 +4680,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         buildProposal: () =>
           buildFleetMetaProposalInput({
             serverId: serverId ?? "",
+            hostAlias: options.hostAlias,
+            peerManager: peerManager ?? null,
             metaPlan: args.metaPlan,
             lookup: {
               agentManager,

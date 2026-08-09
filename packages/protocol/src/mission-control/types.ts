@@ -199,6 +199,12 @@ export const MissionControlProposalSchema = z.object({
   // targetId/targetLabel + newValue/destination; the app renders it as a
   // meta card, never as a message send.
   metaPlan: MissionControlMetaPlanSchema.optional(),
+  // Set on a meta-kind proposal once the action APPLIED: the resolved host
+  // the action ran on ("local" or the peer name), stamped by the gate after
+  // applyMetaFromProposal routes it (cross-host meta applies hop to the peer;
+  // the card must record where the change actually happened). Additive —
+  // absent on older records and on failures.
+  metaAppliedOnHost: z.string().optional(),
   // Set on a spawn proposal once the spawn executed (approve or auto mode).
   spawnedAgentId: z.string().optional(),
   // Verifier-origin attribution: the ephemeral verifier agent driving this
@@ -482,6 +488,10 @@ export const MissionControlModeSetResponseSchema = z.object({
     requestId: z.string(),
     ok: z.boolean(),
     error: z.string().optional(),
+    // Additive: mirrors MissionControlConfigPatchResponseSchema — set when a
+    // non-owner host forwarded the mode change to the designated commander
+    // host and it was unreachable (the change was NOT applied anywhere).
+    unreachableCommanderHost: z.string().optional(),
   }),
 });
 export type MissionControlModeSetResponse = z.infer<typeof MissionControlModeSetResponseSchema>;
@@ -587,11 +597,38 @@ export const MissionControlConfigPatchResponseSchema = z.object({
     config: MissionControlCentralConfigSchema,
     ok: z.boolean(),
     error: z.string().optional(),
+    // Additive: set when the receiving daemon is NOT the designated commander
+    // host, forwarded the patch to it, and the commander host was unreachable.
+    // The patch is never applied locally in that case (the daemon must not
+    // fork central config); the app surfaces this as a distinct
+    // "commander host unreachable" error instead of a generic failure.
+    unreachableCommanderHost: z.string().optional(),
   }),
 });
 export type MissionControlConfigPatchResponse = z.infer<
   typeof MissionControlConfigPatchResponseSchema
 >;
+
+// ============================================================================
+// Central-config replication (commander host -> peers). One-way sync message,
+// NOT a request/response pair: the commander host pushes a full snapshot after
+// every patch (and on peer connect, sync-on-connect); the receiving daemon
+// replaces its local central-config.json + in-memory store (last-writer-wins)
+// so every host's consumers (stall detector, hindsight writer, verifier) read
+// the same fleet policy. Additive wire message; older daemons that never send
+// it are unaffected, and a daemon that cannot handle it would simply not
+// parse it (the session dispatcher must exist on the receiving side).
+// ============================================================================
+
+export const MissionControlConfigReplicaSchema = z.object({
+  type: z.literal("mission_control.config.replica"),
+  // Sender host identity for logging; additive.
+  from: z.string().optional(),
+  // FULL central-config snapshot (all keys optional on the wire; the sender
+  // sends its resolved config). Receivers replace, never merge.
+  config: MissionControlCentralConfigSchema,
+});
+export type MissionControlConfigReplica = z.infer<typeof MissionControlConfigReplicaSchema>;
 
 // ============================================================================
 // v3 Commander reset: archive the current Commander (old conversation stays in
@@ -773,3 +810,39 @@ export const MissionControlMediaFetchResponseSchema = z.object({
 export type MissionControlMediaFetchResponse = z.infer<
   typeof MissionControlMediaFetchResponseSchema
 >;
+
+// ============================================================================
+// v5 cross-host meta apply: the Commander-host daemon routes an approved
+// meta-kind proposal (fleet_meta) whose metaPlan.serverId names a PEER to
+// that peer over this RPC instead of applying on the commander host. The
+// receiving daemon re-validates the plan against ITS OWN registries and
+// applies it there; only the APPLY hops — the proposal/card lives on the
+// commander host (gate unchanged). Mirrors the fleet_create_agent peer path
+// (peer-manager getPeerClient → correlated session request).
+// ============================================================================
+
+export const MissionControlMetaApplyRequestSchema = z.object({
+  type: z.literal("mission_control.meta.apply.request"),
+  requestId: z.string(),
+  // The validated-shape meta plan as the Commander sent it (schema-validated
+  // at the tool boundary). The receiving daemon validates it against its own
+  // registries before applying — never trusts it blindly.
+  metaPlan: MissionControlMetaPlanSchema,
+});
+export type MissionControlMetaApplyRequest = z.infer<typeof MissionControlMetaApplyRequestSchema>;
+
+export const MissionControlMetaApplyResponseSchema = z.object({
+  type: z.literal("mission_control.meta.apply.response"),
+  payload: z.object({
+    requestId: z.string(),
+    ok: z.boolean(),
+    error: z.string().optional(),
+    summary: z.string().optional(),
+    // The applying daemon's own identity, so the commander's audit trail can
+    // record WHERE the action actually ran (peer name → server id / host
+    // name). Additive; absent on failure.
+    serverId: z.string().optional(),
+    hostName: z.string().optional(),
+  }),
+});
+export type MissionControlMetaApplyResponse = z.infer<typeof MissionControlMetaApplyResponseSchema>;

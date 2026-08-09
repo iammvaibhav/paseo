@@ -4,6 +4,7 @@ import { describe, expect, test } from "vitest";
 import type { PaseoToolCatalog } from "../../tools/types.js";
 import type { OmpNoTurnScheduler, OmpProviderIdleScheduler } from "./agent.js";
 import type { OmpUsagePollScheduler } from "./usage-poller.js";
+import { TOOL_ALLOWLIST_CONFIG_OVERLAY } from "./runtime.js";
 import { OmpHarness } from "./test-utils/omp-harness.js";
 
 class ManualIdleScheduler implements OmpProviderIdleScheduler {
@@ -147,6 +148,27 @@ describe("OMP agent client and session", () => {
       modeId: "write",
       argv: ["omp", "--mode", "rpc-ui", "--approval-mode", "write"],
     });
+  });
+
+  test("allowlist session launch drops builtins and pins the harness-utility config overlay", async () => {
+    const omp = new OmpHarness();
+    await omp.start(
+      {
+        toolAllowlist: ["fleet_list_agents", "fleet_create_agent", "clarify"],
+        modeId: "full",
+      },
+      createToolCatalog(),
+    );
+
+    const argv = omp.launchConfiguration().argv;
+    expect(argv).toContain("--no-tools");
+    expect(argv).not.toContain("--tools");
+    // learn/manage_skill (autolearn), checkpoint/rewind (checkpoint) and tts
+    // (speechgen) are not builtins — --no-tools cannot remove them; the
+    // --config overlay pins their gates off.
+    const configIndex = argv.indexOf("--config");
+    expect(configIndex).toBeGreaterThan(-1);
+    expect(argv[configIndex + 1]).toBe(TOOL_ALLOWLIST_CONFIG_OVERLAY);
   });
 
   test("passes --thinking when a thinking option is provided", async () => {

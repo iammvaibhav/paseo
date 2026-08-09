@@ -154,9 +154,13 @@ export interface MissionControlApprovalsOptions {
    * execution path for both. Failures log loudly and never bounce a resolved
    * proposal back to pending (same contract as the spawn hook). Optional so
    * the gate works without a meta executor; absent → meta proposals resolve
-   * with an error.
+   * with an error. `metaAppliedOnHost` (additive) names the resolved host the
+   * action ran on ("local" or the peer name) — stamped on the proposal record
+   * so the card's event detail shows where the change actually happened.
    */
-  applyMeta?: (proposal: Proposal) => Promise<{ ok: true } | { ok: false; error: string }>;
+  applyMeta?: (
+    proposal: Proposal,
+  ) => Promise<{ ok: true; metaAppliedOnHost?: string } | { ok: false; error: string }>;
   /**
    * Push a proposal-card event (kind "proposal"). Status changes append a new
    * event superseding the previous one for the same proposal. Returns the
@@ -468,14 +472,22 @@ export class MissionControlApprovals {
         );
         return { ok: false, error: result.error };
       }
-      await this.store.putProposal(proposal);
-      await this.publish(proposal);
+      // The apply may have ROUTED to a peer (cross-host meta action): stamp
+      // the resolved host on the record so the card's event detail shows
+      // where the change actually happened, never a misleading local echo.
+      const applied: Proposal = {
+        ...proposal,
+        ...(result.metaAppliedOnHost ? { metaAppliedOnHost: result.metaAppliedOnHost } : {}),
+      };
+      await this.store.putProposal(applied);
+      await this.publish(applied);
       this.logger.info(
         {
           component: "approvals",
           proposalId: proposal.id,
           origin: proposal.origin,
           action: proposal.metaPlan?.action,
+          ...(result.metaAppliedOnHost ? { metaAppliedOnHost: result.metaAppliedOnHost } : {}),
           status: "sent",
         },
         "mission_control.approvals.meta_applied",

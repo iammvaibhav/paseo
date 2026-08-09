@@ -50,6 +50,20 @@ function commanderRecord(agentId: string): StoredAgentRecord {
   } as unknown as StoredAgentRecord;
 }
 
+function workerAgent(agentId: string, labels: Record<string, string> = {}): ManagedAgent {
+  return {
+    id: agentId,
+    provider: "omp",
+    cwd: "/tmp",
+    lifecycle: "idle",
+    labels,
+    internal: false,
+    attention: { requiresAttention: false, attentionReason: null },
+    pendingPermissions: new Map(),
+    session: { isRuntimeAlive: () => true },
+  } as unknown as ManagedAgent;
+}
+
 describe("MissionControlService reset + machinery turns", () => {
   let dir: string;
   let service: MissionControlService;
@@ -58,7 +72,7 @@ describe("MissionControlService reset + machinery turns", () => {
   async function createService(
     options: {
       resetCommander?: () => Promise<{ ok: true; agentId: string } | { ok: false; error: string }>;
-      getAgent?: () => ManagedAgent | null;
+      getAgent?: (agentId: string) => ManagedAgent | null;
       listAgents?: () => ManagedAgent[];
       storedAgents?: StoredAgentRecord[];
     } = {},
@@ -248,5 +262,225 @@ describe("MissionControlService reset + machinery turns", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(dispatchLocalPromptModeMock).not.toHaveBeenCalled();
+  });
+
+  test("a dispatched agent's finished event triggers a follow-up machinery turn in ASK mode", async () => {
+    await createService({
+      storedAgents: [commanderRecord("commander-1")],
+      getAgent: (agentId) =>
+        agentId === "commander-1"
+          ? commanderAgent("commander-1")
+          : workerAgent("worker-1", { "paseo.parent-agent-id": "commander-1" }),
+    });
+    service.publishEvent({
+      agentId: "worker-1",
+      kind: "finished",
+      source: "system",
+      severity: "info",
+      headline: "Finished",
+    });
+    await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(1));
+    const call = dispatchLocalPromptModeMock.mock.calls[0]?.[0];
+    expect(call).toMatchObject({
+      agentId: "commander-1",
+      mode: "steer",
+      classification: "machinery",
+      replaceOrigin: "machinery",
+    });
+    expect(call?.prompt).toContain("[finished] Finished");
+    // The follow-up tail carries the decision rule, not the needs-you ack rule.
+    expect(call?.prompt).toContain("follow-up on a worker you dispatched");
+    expect(call?.prompt).toContain("(a) propose a follow-up action");
+    expect(call?.prompt).toContain("(b) post_answer");
+    expect(call?.prompt).toContain("(c) nothing when the feed card already says it all");
+    expect(call?.prompt).not.toContain("reply with a single short acknowledgment token");
+  });
+
+  test("a dispatched agent's finished event triggers a follow-up machinery turn in AUTO mode", async () => {
+    await createService({
+      storedAgents: [commanderRecord("commander-1")],
+      getAgent: (agentId) =>
+        agentId === "commander-1"
+          ? commanderAgent("commander-1")
+          : workerAgent("worker-1", { "paseo.parent-agent-id": "commander-1" }),
+    });
+    await service.setMode("auto");
+    service.publishEvent({
+      agentId: "worker-1",
+      kind: "finished",
+      source: "system",
+      severity: "info",
+      headline: "Finished",
+    });
+    await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(1));
+    expect(dispatchLocalPromptModeMock.mock.calls[0]?.[0]?.prompt).toContain("[finished] Finished");
+  });
+
+  test("a dispatched agent's failed and interrupted events also trigger follow-up turns in ASK mode", async () => {
+    await createService({
+      storedAgents: [commanderRecord("commander-1")],
+      getAgent: (agentId) =>
+        agentId === "commander-1"
+          ? commanderAgent("commander-1")
+          : workerAgent("worker-1", { "paseo.parent-agent-id": "commander-1" }),
+    });
+    service.publishEvent({
+      agentId: "worker-1",
+      kind: "failed",
+      source: "system",
+      severity: "attention",
+      headline: "Failed with an error",
+    });
+    await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(1));
+    expect(dispatchLocalPromptModeMock.mock.calls[0]?.[0]?.prompt).toContain("[failed]");
+    // A new run (started bumps the epoch) earns a fresh slot for the next
+    // terminal kind.
+    service.publishEvent({
+      agentId: "worker-1",
+      kind: "started",
+      source: "system",
+      severity: "info",
+      headline: "Started",
+    });
+    service.publishEvent({
+      agentId: "worker-1",
+      kind: "interrupted",
+      source: "system",
+      severity: "info",
+      headline: "Interrupted by you",
+    });
+    await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(2));
+    expect(dispatchLocalPromptModeMock.mock.calls[1]?.[0]?.prompt).toContain("[interrupted]");
+  });
+
+  test("a non-dispatched agent's finished event stays silent in ASK mode", async () => {
+    await createService({ storedAgents: [commanderRecord("commander-1")] });
+    service.publishEvent({
+      agentId: "worker-1",
+      kind: "finished",
+      source: "system",
+      severity: "info",
+      headline: "Finished",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(dispatchLocalPromptModeMock).not.toHaveBeenCalled();
+  });
+
+  test("an adopted agent's terminal event triggers a follow-up turn", async () => {
+    await createService({
+      storedAgents: [commanderRecord("commander-1")],
+      getAgent: (agentId) =>
+        agentId === "commander-1"
+          ? commanderAgent("commander-1")
+          : workerAgent("worker-1", { "paseo.commander-adopted-at": "2026-08-08T00:00:00.000Z" }),
+    });
+    service.publishEvent({
+      agentId: "worker-1",
+      kind: "finished",
+      source: "system",
+      severity: "info",
+      headline: "Finished",
+    });
+    await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(1));
+  });
+
+  test("a follow-up turn carries the worker's last report headline and the verdict line", async () => {
+    await createService({
+      storedAgents: [commanderRecord("commander-1")],
+      getAgent: (agentId) =>
+        agentId === "commander-1"
+          ? commanderAgent("commander-1")
+          : workerAgent("worker-1", { "paseo.parent-agent-id": "commander-1" }),
+    });
+    await service.setMode("auto");
+    await service.reportSelfStatus("worker-1", {
+      status: "working",
+      headline: "Root cause found",
+      kind: "milestone",
+    });
+    await service.setReviewState("worker-1", "done", {
+      verdict: { by: "user", summary: "Marked done", at: new Date().toISOString() },
+    });
+    await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(1));
+    const prompt = dispatchLocalPromptModeMock.mock.calls[0]?.[0]?.prompt;
+    expect(prompt).toContain("[verdict] Marked done");
+    expect(prompt).toContain('Last report: "Root cause found"');
+    expect(prompt).toContain("Verdict: Marked done (by user)");
+  });
+
+  test("verdicts on a dispatched agent trigger once per run epoch", async () => {
+    await createService({
+      storedAgents: [commanderRecord("commander-1")],
+      getAgent: (agentId) =>
+        agentId === "commander-1"
+          ? commanderAgent("commander-1")
+          : workerAgent("worker-1", { "paseo.parent-agent-id": "commander-1" }),
+    });
+    service.publishEvent({
+      agentId: "worker-1",
+      kind: "verdict",
+      source: "verifier",
+      severity: "info",
+      headline: "Done — insufficient",
+      detail: "proofs missing",
+    });
+    await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(1));
+    // A verifier retry posting another insufficient verdict in the same epoch
+    // must not re-alert the Commander.
+    service.publishEvent({
+      agentId: "worker-1",
+      kind: "verdict",
+      source: "verifier",
+      severity: "info",
+      headline: "Done — insufficient",
+      detail: "still missing",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("terminal follow-up turns are rate-limited to one per agent run epoch", async () => {
+    await createService({
+      storedAgents: [commanderRecord("commander-1")],
+      getAgent: (agentId) =>
+        agentId === "commander-1"
+          ? commanderAgent("commander-1")
+          : workerAgent("worker-1", { "paseo.parent-agent-id": "commander-1" }),
+    });
+    await service.setMode("auto");
+    service.publishEvent({
+      agentId: "worker-1",
+      kind: "finished",
+      source: "system",
+      severity: "info",
+      headline: "Finished",
+    });
+    await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(1));
+    // Same epoch: a second terminal event must not re-alert.
+    service.publishEvent({
+      agentId: "worker-1",
+      kind: "failed",
+      source: "system",
+      severity: "attention",
+      headline: "Failed with an error",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(1);
+    // A new run (started bumps the epoch) earns a fresh follow-up turn.
+    service.publishEvent({
+      agentId: "worker-1",
+      kind: "started",
+      source: "system",
+      severity: "info",
+      headline: "Started",
+    });
+    service.publishEvent({
+      agentId: "worker-1",
+      kind: "finished",
+      source: "system",
+      severity: "info",
+      headline: "Finished",
+    });
+    await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(2));
   });
 });

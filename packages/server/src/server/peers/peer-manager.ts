@@ -71,6 +71,14 @@ export interface PeerManagerOptions {
   peers: PeerConfig[];
   logger: Logger;
   appVersion?: string;
+  /**
+   * Called whenever a peer connection transitions to online (hello complete).
+   * Used for central-config sync-on-connect: the commander host pushes its
+   * current snapshot to the peer that just connected so a fresh or
+   * restarted peer never serves stale fleet policy. The callback receives
+   * the peer's configured name.
+   */
+  onPeerOnline?: (peerName: string) => void;
 }
 
 interface PeerConnection {
@@ -84,10 +92,12 @@ export class PeerManager {
   private readonly peers: PeerConnection[] = [];
   private readonly logger: Logger;
   private readonly appVersion: string | undefined;
+  private readonly onPeerOnline: ((peerName: string) => void) | undefined;
 
   constructor(options: PeerManagerOptions) {
     this.logger = options.logger.child({ module: "peers" });
     this.appVersion = options.appVersion;
+    this.onPeerOnline = options.onPeerOnline;
     for (const config of options.peers) {
       this.peers.push(this.createPeer(config));
     }
@@ -163,5 +173,10 @@ export class PeerManager {
       lastSeenAt: new Date().toISOString(),
     };
     this.logger.info({ peer: peer.config.name, serverId }, "Peer online");
+    try {
+      this.onPeerOnline?.(peer.config.name);
+    } catch (error) {
+      this.logger.warn({ err: error, peer: peer.config.name }, "Peer online hook failed");
+    }
   }
 }

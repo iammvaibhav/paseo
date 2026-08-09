@@ -2679,6 +2679,11 @@ export class OmpAgentClient implements AgentClient {
       config.internal !== true &&
       !hasSignificantLaunchEnv(launchContext?.env) &&
       !config.systemPrompt?.trim() &&
+      // An allowlist is launch-fixed: pooled processes boot without the
+      // tool-restriction flags and the --config overlay (appendOmpLaunchArgs),
+      // and claims re-target over RPC only — they can never gain the
+      // restriction after the fact. Allowlist sessions must cold start.
+      !config.toolAllowlist?.length &&
       typeof model === "string" &&
       model.includes("/");
     if (poolEligible) {

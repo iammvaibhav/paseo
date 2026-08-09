@@ -2065,6 +2065,7 @@ export class Session {
     (msg) => this.dispatchMissionControlCommanderMessage(msg),
     (msg) => this.dispatchMissionControlSearchMessage(msg),
     (msg) => this.dispatchMissionControlMediaMessage(msg),
+    (msg) => this.dispatchMissionControlMetaMessage(msg),
     (msg) => this.dispatchMiscMessage(msg),
   ];
 
@@ -2279,10 +2280,21 @@ export class Session {
       if (!this.missionControlService) {
         throw new Error("Mission Control is not enabled on this host");
       }
-      await this.missionControlService.setMode(msg.mode);
+      // Ownership-aware: the designated commander host applies + replicates;
+      // every other host forwards the mode change to it over peering (and
+      // reports an explicit error when it is unreachable — never applies
+      // locally, never silently succeeds).
+      const result = await this.missionControlService.setModeRouted(msg.mode);
       this.emit({
         type: "mission_control.mode.set.response",
-        payload: { requestId: msg.requestId, ok: true },
+        payload: {
+          requestId: msg.requestId,
+          ok: result.ok,
+          ...(result.ok ? {} : { error: result.error }),
+          ...(result.ok || !result.unreachableCommanderHost
+            ? {}
+            : { unreachableCommanderHost: result.unreachableCommanderHost }),
+        },
       });
     } catch (error) {
       this.emit({
@@ -2304,6 +2316,8 @@ export class Session {
         return this.handleMissionControlConfigGetRequest(msg);
       case "mission_control.config.patch.request":
         return this.handleMissionControlConfigPatchRequest(msg);
+      case "mission_control.config.replica":
+        return this.handleMissionControlConfigReplica(msg);
       default:
         return undefined;
     }
@@ -2321,6 +2335,29 @@ export class Session {
     });
   }
 
+  /**
+   * Replica receive path (commander host -> this peer): full snapshot replace
+   * (last-writer-wins) into central-config.json + the in-memory store so this
+   * host's consumers (stall detector, hindsight writer, verifier) see the new
+   * fleet policy live. Fire-and-forget (no response pair); failures are
+   * logged, never surfaced to a caller.
+   */
+  private async handleMissionControlConfigReplica(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.config.replica" }>,
+  ): Promise<void> {
+    if (!this.missionControlService) {
+      return;
+    }
+    try {
+      await this.missionControlService.applyCentralConfigReplica(msg.config);
+    } catch (error) {
+      this.sessionLogger.warn(
+        { err: error, from: msg.from ?? null },
+        "Failed to apply central mission control config replica",
+      );
+    }
+  }
+
   private async handleMissionControlConfigPatchRequest(
     msg: Extract<SessionInboundMessage, { type: "mission_control.config.patch.request" }>,
   ): Promise<void> {
@@ -2328,10 +2365,23 @@ export class Session {
       if (!this.missionControlService) {
         throw new Error("Mission Control is not enabled on this host");
       }
-      const config = await this.missionControlService.patchCentralConfig(msg.patch);
+      // Ownership-aware: the designated commander host applies + persists +
+      // replicates to every peer; any other host forwards the patch to the
+      // commander host over peering and returns ITS response (explicit
+      // unreachableCommanderHost error when it cannot be reached — never
+      // apply locally, never silently succeed).
+      const result = await this.missionControlService.patchCentralConfigRouted(msg.patch);
       this.emit({
         type: "mission_control.config.patch.response",
-        payload: { requestId: msg.requestId, config, ok: true },
+        payload: {
+          requestId: msg.requestId,
+          config: result.config,
+          ok: result.ok,
+          ...(result.ok ? {} : { error: result.error }),
+          ...(result.ok || !result.unreachableCommanderHost
+            ? {}
+            : { unreachableCommanderHost: result.unreachableCommanderHost }),
+        },
       });
     } catch (error) {
       this.emit({
@@ -2393,6 +2443,41 @@ export class Session {
       default:
         return undefined;
     }
+  }
+
+  private dispatchMissionControlMetaMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    switch (msg.type) {
+      case "mission_control.meta.apply.request":
+        return this.handleMissionControlMetaApplyRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  /**
+   * Cross-host meta apply (mission_control.meta.apply): the commander host
+   * forwards an approved meta-kind proposal whose metaPlan.serverId names
+   * THIS host as a peer. Re-validate the plan against this daemon's own
+   * registries and apply it here — only the APPLY hops; the proposal card
+   * lives on the commander host. The response carries this daemon's own
+   * identity so the commander's audit trail records where the action ran.
+   */
+  private async handleMissionControlMetaApplyRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.meta.apply.request" }>,
+  ): Promise<void> {
+    const result = this.missionControlService
+      ? await this.missionControlService.applyMetaRemote(msg.metaPlan)
+      : { ok: false as const, error: "Mission Control is not enabled on this host" };
+    this.emit({
+      type: "mission_control.meta.apply.response",
+      payload: {
+        requestId: msg.requestId,
+        ok: result.ok,
+        ...(result.ok
+          ? { summary: result.summary, serverId: this.serverId, hostName: this.hostName }
+          : { error: result.error }),
+      },
+    });
   }
 
   private async handleMissionControlMediaFetchRequest(

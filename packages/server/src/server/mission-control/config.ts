@@ -188,6 +188,32 @@ export class CentralMissionControlConfigStore {
   async setMode(mode: MissionControlMode): Promise<ResolvedMissionControlCentralConfig> {
     return this.patch({ mode });
   }
+
+  /**
+   * Full snapshot replace (replica path): overwrite stored config + persist,
+   * last-writer-wins. Used when this host receives a
+   * mission_control.config.replica from the commander host — the receiver
+   * never merges (the snapshot is authoritative) and never re-pushes (that
+   * would loop). The in-memory store updates so every consumer (stall
+   * detector, hindsight writer, verifier) sees the new fleet policy live.
+   */
+  async replace(
+    snapshot: MissionControlCentralConfig,
+  ): Promise<ResolvedMissionControlCentralConfig> {
+    this.config = pickCentralConfigKeys(snapshot as Record<string, unknown>);
+    try {
+      await writeJsonFileAtomic(join(this.dir, CENTRAL_CONFIG_FILENAME), this.config);
+    } catch (error) {
+      this.logger.error({ err: error }, "Failed to persist central mission control config replica");
+      throw error;
+    }
+    const resolved = this.get();
+    this.logger.info(
+      { component: "config", from: "replica", keys: Object.keys(this.config) },
+      "mission_control.config.replica_applied",
+    );
+    return resolved;
+  }
 }
 
 const CENTRAL_CONFIG_KEYS: readonly (keyof ResolvedMissionControlCentralConfig)[] = [

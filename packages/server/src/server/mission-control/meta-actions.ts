@@ -3,8 +3,10 @@ import { homedir } from "node:os";
 
 import type { Logger } from "pino";
 
+import type { DaemonClient } from "@getpaseo/client";
 import type {
   MissionControlMetaPlan,
+  MissionControlPeerStatus,
   MissionControlProposal,
 } from "@getpaseo/protocol/mission-control/types";
 import type { AgentManager } from "../agent/agent-manager.js";
@@ -28,6 +30,16 @@ import { areEquivalentPaths } from "../../utils/path.js";
  * "meta". Destructive actions (archives) are classified destructive by the
  * tool so the gate always asks, even in auto mode.
  *
+ * Cross-host routing: `metaPlan.serverId` names the host the action applies
+ * to ("local" or a peer name). Local targets validate + apply against THIS
+ * daemon's registries; peer targets are FORWARDED over peering
+ * (mission_control.meta.apply → fleetMetaApply on the peer), and the PEER
+ * validates the plan against ITS OWN registries and applies there. The
+ * proposal card always lives on the commander host (gate unchanged) — only
+ * the apply hops. Unknown hosts are refused before the gate (the fleet_meta
+ * tool) and again at apply (the fleet map may change while a card sits
+ * pending).
+ *
  * Placement rules honored here (docs/commander.md "Placement doctrine"):
  *  - `promote_workspace` requires the source workspace to live in the
  *    per-host `experiments` project (root `~/experiments` by convention,
@@ -37,7 +49,8 @@ import { areEquivalentPaths } from "../../utils/path.js";
  *  - `move_agent` refuses running agents (workspace attribution is stable
  *    while a run is in flight) and archived agents, and refuses archived or
  *    missing target workspaces. Cross-host moves are refused by construction:
- *    both ids are resolved against THIS host's registries.
+ *    both ids are resolved against THIS host's registries (a peer move
+ *    targets the peer via its own serverId, so it validates there).
  *
  * The executor mutates the registries directly, so connected sessions observe
  * project/workspace changes through their registry-mutation subscriptions
@@ -143,8 +156,31 @@ export interface MetaActionsLookupDependencies {
   projectRegistry: Pick<ProjectRegistry, "get" | "list">;
 }
 
+/**
+ * The daemon-to-daemon client surface host resolution + peer routing need.
+ * The real PeerManager satisfies this structurally (peers/peer-manager.ts);
+ * tests hand it a fake without a PeerManager instance.
+ */
+export interface MetaPeerManager {
+  getPeerStatus(name: string): MissionControlPeerStatus | null;
+  getPeerClient(name: string): DaemonClient | null;
+}
+
+/**
+ * The host-identity + fleet-map lookups `resolveMetaTargetHost` needs.
+ * `hostName`/`hostAlias` are optional: the tool catalog (fleet_meta) has the
+ * daemon's serverId + hostAlias but no OS hostname; bootstrap has all three.
+ */
+export interface MetaTargetResolutionDependencies {
+  serverId: string;
+  hostName?: string;
+  hostAlias?: string | null;
+  peerManager?: MetaPeerManager | null;
+}
+
 /** What every action needs from the live daemon to validate and apply. */
-export interface MetaActionsDependencies extends MetaActionsLookupDependencies {
+export interface MetaActionsDependencies
+  extends MetaActionsLookupDependencies, MetaTargetResolutionDependencies {
   serverId: string;
   hostName: string;
   logger: Logger;
@@ -180,6 +216,54 @@ export interface MetaActionsDependencies extends MetaActionsLookupDependencies {
 export type MetaActionValidationResult = { ok: true } | { ok: false; error: string };
 
 export type MetaPlanActionResult = { ok: true; summary: string } | { ok: false; error: string };
+
+/**
+ * Where a meta plan's `serverId` resolves. "local" means apply on THIS daemon
+ * against its own registries; "peer" means forward the plan to that peer over
+ * peering (fleetMetaApply), which validates against ITS registries and
+ * applies there. The proposal/card always lives on the commander host — only
+ * the apply hops.
+ */
+export type ResolvedMetaTarget =
+  | { ok: true; kind: "local"; label: string }
+  | { ok: true; kind: "peer"; peerName: string; label: string }
+  | { ok: false; error: string };
+
+/**
+ * Resolve a meta plan's target host (`metaPlan.serverId`) through the same
+ * fleet map the fleet tools use (peer-manager), accepting the aliases the
+ * Commander writes:
+ *   - absent / "local"              → this daemon
+ *   - this daemon's serverId / hostName / hostAlias → this daemon
+ *   - a peer name from the fleet map → that peer
+ * Anything else is an unknown host (refused before the gate by
+ * buildFleetMetaProposalInput, and refused at apply by applyMetaFromProposal —
+ * belt and suspenders, the fleet map may change while a proposal sits
+ * pending).
+ */
+export function resolveMetaTargetHost(
+  deps: MetaTargetResolutionDependencies,
+  serverId: string | undefined,
+): ResolvedMetaTarget {
+  const raw = serverId?.trim() || "local";
+  if (raw === "local") {
+    return { ok: true, kind: "local", label: "local" };
+  }
+  if (raw === deps.serverId) {
+    return { ok: true, kind: "local", label: raw };
+  }
+  if (deps.hostName && raw === deps.hostName) {
+    return { ok: true, kind: "local", label: raw };
+  }
+  if (deps.hostAlias?.trim() && raw === deps.hostAlias.trim()) {
+    return { ok: true, kind: "local", label: raw };
+  }
+  const peerStatus = deps.peerManager?.getPeerStatus(raw) ?? null;
+  if (peerStatus) {
+    return { ok: true, kind: "peer", peerName: peerStatus.name, label: peerStatus.name };
+  }
+  return { ok: false, error: `Host "${raw}" is not a configured peer or this host` };
+}
 
 function requireTargetId(plan: MissionControlMetaPlan): string {
   const targetId = plan.targetId?.trim();
@@ -423,6 +507,73 @@ async function validatePromoteWorkspace(
 }
 
 /**
+ * Host-independent plan SHAPE validation: required identifying fields and
+ * path rules (create_project absolute destination). No registry lookups — safe
+ * to run on the commander host even when the plan targets a peer whose
+ * registries live elsewhere. Runs before the registry checks in
+ * `validateMetaPlan` (local applies) and alone at the gate for peer targets
+ * (the target host re-validates the full plan against ITS registries at
+ * apply time).
+ */
+export async function validateMetaPlanShape(
+  plan: MissionControlMetaPlan,
+): Promise<MetaActionValidationResult> {
+  switch (plan.action) {
+    case "rename_project":
+    case "rename_workspace":
+    case "rename_agent_title": {
+      if (!requireTargetId(plan)) {
+        return { ok: false, error: `${plan.action} requires a targetId` };
+      }
+      if (!requireNewValue(plan)) {
+        return { ok: false, error: `${plan.action} requires a non-empty newValue` };
+      }
+      return { ok: true };
+    }
+    case "archive_project":
+    case "archive_workspace":
+    case "archive_agent": {
+      if (!requireTargetId(plan)) {
+        return { ok: false, error: `${plan.action} requires a targetId` };
+      }
+      return { ok: true };
+    }
+    case "create_project": {
+      const destination = requireDestination(plan);
+      if (!destination) {
+        return { ok: false, error: "create_project requires a destination (project root path)" };
+      }
+      // The destination becomes the on-disk project root. A relative path
+      // would silently resolve against the daemon's cwd (and ~ never
+      // expands), so it must be absolute — the Commander passes an explicit
+      // absolute root.
+      if (!isAbsolute(destination)) {
+        return {
+          ok: false,
+          error: `create_project destination must be an absolute path (got "${destination}")`,
+        };
+      }
+      return { ok: true };
+    }
+    case "move_agent": {
+      if (!requireTargetId(plan)) {
+        return { ok: false, error: "move_agent requires a targetId (agent id)" };
+      }
+      if (!requireDestination(plan)) {
+        return { ok: false, error: "move_agent requires a destination (target workspace id)" };
+      }
+      return { ok: true };
+    }
+    case "promote_workspace": {
+      if (!requireTargetId(plan)) {
+        return { ok: false, error: "promote_workspace requires a targetId (workspace id)" };
+      }
+      return { ok: true };
+    }
+  }
+}
+
+/**
  * Validate a meta plan against live fleet state. Every refusal path returns a
  * human-readable error WITHOUT mutating anything; the fleet_meta tool runs
  * this before routing through the approval gate, and applyMetaPlan runs it
@@ -433,6 +584,12 @@ export async function validateMetaPlan(
   deps: MetaActionsLookupDependencies,
   plan: MissionControlMetaPlan,
 ): Promise<MetaActionValidationResult> {
+  // Shape first: field presence + path rules are host-independent and fail
+  // fast before any registry lookup.
+  const shape = await validateMetaPlanShape(plan);
+  if (!shape.ok) {
+    return shape;
+  }
   switch (plan.action) {
     case "rename_project":
       return validateRenameProject(deps, plan);
@@ -742,16 +899,42 @@ async function safeEmitStoredAgentUpdate(
 
 /**
  * The approvals-gate entry point: apply the meta plan carried by an approved
- * meta-kind proposal. Fails loudly with a plain error so the gate logs it and
- * never bounces the proposal back to pending (the same contract as spawn).
+ * meta-kind proposal. Resolves the plan's target host (metaPlan.serverId)
+ * through the fleet map and routes:
+ *   - local (absent / "local" / this daemon's own ids) → apply against THIS
+ *     daemon's registries;
+ *   - a peer → forward the validated-shape plan over peering
+ *     (mission_control.meta.apply → fleetMetaApply); the PEER re-validates
+ *     against ITS registries and applies there. Only the apply hops — the
+ *     proposal/card stays on this (commander) host, gate unchanged.
+ * Unknown hosts are refused (the fleet map may have changed since the gate).
+ * Fails loudly with a plain error so the gate logs it and never bounces the
+ * proposal back to pending (the same contract as spawn).
  */
 export async function applyMetaFromProposal(
   deps: MetaActionsDependencies,
   proposal: MissionControlProposal,
-): Promise<{ ok: true } | { ok: false; error: string }> {
+): Promise<{ ok: true; metaAppliedOnHost?: string } | { ok: false; error: string }> {
   const plan = proposal.metaPlan;
   if (!plan) {
     return { ok: false, error: "Meta proposal has no meta plan" };
+  }
+  const target = resolveMetaTargetHost(deps, plan.serverId);
+  if (!target.ok) {
+    deps.logger.error(
+      {
+        module: "mission-control",
+        component: "meta",
+        proposalId: proposal.id,
+        action: plan.action,
+        error: target.error,
+      },
+      "mission_control.meta.target_host_unknown",
+    );
+    return { ok: false, error: target.error };
+  }
+  if (target.kind === "peer") {
+    return applyMetaPlanOnPeer(deps, plan, proposal.id, target);
   }
   const result = await applyMetaPlan(deps, plan);
   if (!result.ok) {
@@ -762,11 +945,90 @@ export async function applyMetaFromProposal(
       module: "mission-control",
       component: "meta",
       proposalId: proposal.id,
+      targetHost: target.label,
       summary: result.summary,
     },
     "mission_control.meta.proposal_applied",
   );
-  return { ok: true };
+  return { ok: true, metaAppliedOnHost: target.label };
+}
+
+/**
+ * Peer branch of applyMetaFromProposal: forward the validated-shape plan to
+ * the target host over peering (mirrors the fleet_create_agent peer path —
+ * getPeerClient → correlated session RPC). The peer validates the plan
+ * against ITS OWN registries and applies; the result carries the peer's
+ * identity so this host's audit trail records where the action ran.
+ */
+async function applyMetaPlanOnPeer(
+  deps: MetaActionsDependencies,
+  plan: MissionControlMetaPlan,
+  proposalId: string,
+  target: Extract<ResolvedMetaTarget, { ok: true; kind: "peer" }>,
+): Promise<{ ok: true; metaAppliedOnHost?: string } | { ok: false; error: string }> {
+  const peerStatus = deps.peerManager?.getPeerStatus(target.peerName) ?? null;
+  if (!peerStatus || peerStatus.state !== "online") {
+    const error = `Host "${target.peerName}" is not an online peer`;
+    deps.logger.error(
+      { module: "mission-control", component: "meta", proposalId, peer: target.peerName, error },
+      "mission_control.meta.peer_unreachable",
+    );
+    return { ok: false, error };
+  }
+  const client = deps.peerManager?.getPeerClient(target.peerName) ?? null;
+  if (!client) {
+    const error = `Host "${target.peerName}" has no peer client`;
+    deps.logger.error(
+      { module: "mission-control", component: "meta", proposalId, peer: target.peerName, error },
+      "mission_control.meta.peer_client_unavailable",
+    );
+    return { ok: false, error };
+  }
+  try {
+    const payload = await client.fleetMetaApply(plan);
+    if (!payload.ok) {
+      const error = payload.error ?? `Meta apply on "${target.peerName}" failed`;
+      deps.logger.error(
+        {
+          module: "mission-control",
+          component: "meta",
+          proposalId,
+          peer: target.peerName,
+          action: plan.action,
+          error,
+        },
+        "mission_control.meta.proposal_applied_peer_failed",
+      );
+      return { ok: false, error };
+    }
+    deps.logger.info(
+      {
+        module: "mission-control",
+        component: "meta",
+        proposalId,
+        targetHost: target.peerName,
+        targetServerId: payload.serverId,
+        targetHostName: payload.hostName,
+        action: plan.action,
+        summary: payload.summary,
+      },
+      "mission_control.meta.proposal_applied",
+    );
+    return { ok: true, metaAppliedOnHost: target.peerName };
+  } catch (error) {
+    const message = `fleet meta apply failed: ${String(error)}`;
+    deps.logger.error(
+      {
+        module: "mission-control",
+        component: "meta",
+        proposalId,
+        peer: target.peerName,
+        err: error,
+      },
+      "mission_control.meta.proposal_applied_peer_error",
+    );
+    return { ok: false, error: message };
+  }
 }
 
 /** True when the action must always ask (destructive), even in auto mode. */

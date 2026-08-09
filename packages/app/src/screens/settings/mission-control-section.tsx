@@ -30,6 +30,7 @@ import { Switch } from "@/components/ui/switch";
 import { SettingsSection } from "@/screens/settings/settings-section";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useLocalDaemonServerId } from "@/hooks/use-is-local-daemon";
+import { useToast } from "@/contexts/toast-context";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { buildSelectableProviderSelectorProviders } from "@/provider-selection/provider-selection";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
@@ -525,6 +526,7 @@ export function MissionControlSection(): ReactElement {
   const { hostServerId, resolvingHost, config, isLoading, patchConfig } =
     useMissionControlCentralConfig();
   const [error, setError] = useState<string | null>(null);
+  const toast = useToast();
   const localServerId = useLocalDaemonServerId();
 
   const hostnameByServerId = useMemo(() => {
@@ -600,10 +602,15 @@ export function MissionControlSection(): ReactElement {
         await patchConfig(updates);
         setError(null);
       } catch (caught) {
-        setError(caught instanceof Error ? caught.message : String(caught));
+        const message = caught instanceof Error ? caught.message : String(caught);
+        setError(message);
+        // Never silent: a failed central-config write (commander host
+        // unreachable after forwarding, or a rejected patch) must surface as
+        // a toast AND the inline error above.
+        toast.error(message);
       }
     },
-    [patchConfig],
+    [patchConfig, toast],
   );
 
   const handleCommanderHostSelect = useCallback(

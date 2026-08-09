@@ -1,12 +1,20 @@
 import { describe, expect, test } from "vitest";
+import pino from "pino";
+import { Writable } from "node:stream";
 import { createTestLogger } from "../../test-utils/test-logger.js";
-import type { MissionControlMetaPlan } from "@getpaseo/protocol/mission-control/types";
+import type { DaemonClient } from "@getpaseo/client";
+import type {
+  MissionControlMetaPlan,
+  MissionControlProposal,
+} from "@getpaseo/protocol/mission-control/types";
 import type { StoredAgentRecord } from "../agent/agent-storage.js";
 import type { PersistedProjectRecord, PersistedWorkspaceRecord } from "../workspace-registry.js";
 import {
+  applyMetaFromProposal,
   applyMetaPlan,
   moveAgentToWorkspace,
   resolveExperimentsProject,
+  resolveMetaTargetHost,
   type MetaActionsDependencies,
 } from "./meta-actions.js";
 
@@ -718,5 +726,324 @@ describe("promote_workspace", () => {
     const h = build({ projects: [project()] });
     const resolved = await resolveExperimentsProject(h.deps);
     expect(resolved?.projectId).toBe("prj-experiments");
+  });
+});
+
+function metaProposal(metaPlan: MissionControlMetaPlan): MissionControlProposal {
+  return {
+    id: "mcp_test_1",
+    createdAt: new Date().toISOString(),
+    origin: "commander",
+    serverId: "server-local",
+    targetAgentId: "",
+    message: "Meta action",
+    deliveryMode: "interrupt",
+    reason: "Commander meta action",
+    classification: "normal",
+    status: "sent",
+    kind: "meta",
+    metaPlan,
+  };
+}
+
+/** pino logger that captures structured lines so tests can assert the audit
+ *  trail (requirement: apply results carry the target host in the log). */
+function captureLogger(): {
+  logger: ReturnType<typeof createTestLogger>;
+  lines: Array<Record<string, unknown>>;
+} {
+  const lines: Array<Record<string, unknown>> = [];
+  const destination = new Writable({
+    write(chunk: Buffer, _encoding: string, callback: () => void) {
+      try {
+        lines.push(JSON.parse(chunk.toString()) as Record<string, unknown>);
+      } catch {
+        // ignore partial frames
+      }
+      callback();
+    },
+  });
+  const logger = pino({ level: "info" }, destination);
+  return { logger, lines };
+}
+
+function appliedLogLines(lines: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  return lines.filter(
+    (line) => line.msg === "mission_control.meta.proposal_applied" && line.targetHost,
+  );
+}
+
+interface FakePeerHarness {
+  peerManager: NonNullable<MetaActionsDependencies["peerManager"]>;
+  /** The plans the fake peer transport received (nothing applies locally). */
+  forwarded: MissionControlMetaPlan[];
+  /** Reply the fake peer returns; override to exercise failure paths. */
+  reply: (plan: MissionControlMetaPlan) => {
+    ok: boolean;
+    error?: string;
+    summary?: string;
+    serverId?: string;
+    hostName?: string;
+  };
+}
+
+/** Fake peer transport: online peer "macbook" with a recordable apply RPC. */
+function fakePeerHarness(overrides: Partial<FakePeerHarness> = {}): FakePeerHarness {
+  const forwarded: MissionControlMetaPlan[] = [];
+  const harness: FakePeerHarness = {
+    forwarded,
+    reply: () => ({
+      ok: true,
+      summary: "Applied on macbook",
+      serverId: "server-macbook",
+      hostName: "macbook.local",
+    }),
+    peerManager: null as unknown as FakePeerHarness["peerManager"],
+  };
+  harness.peerManager = {
+    getPeerStatus: (name: string) =>
+      name === "macbook"
+        ? { name: "macbook", url: "tcp://macbook:6767", state: "online", lastSeenAt: null }
+        : null,
+    getPeerClient: (name: string) =>
+      name === "macbook"
+        ? ({
+            fleetMetaApply: async (plan: MissionControlMetaPlan) => {
+              forwarded.push(plan);
+              return {
+                requestId: "req-meta-apply",
+                ...harness.reply(plan),
+              };
+            },
+          } as unknown as DaemonClient)
+        : null,
+  };
+  Object.assign(harness, overrides);
+  return harness;
+}
+
+describe("resolveMetaTargetHost (serverId → host resolution)", () => {
+  const deps = {
+    serverId: "server-local",
+    hostName: "dev-host",
+    hostAlias: "vaibhav-dev",
+  };
+
+  test("absent serverId and 'local' resolve to this host", () => {
+    expect(resolveMetaTargetHost(deps, undefined)).toMatchObject({ ok: true, kind: "local" });
+    expect(resolveMetaTargetHost(deps, "local")).toMatchObject({ ok: true, kind: "local" });
+    expect(resolveMetaTargetHost(deps, "  local  ")).toMatchObject({ ok: true, kind: "local" });
+  });
+
+  test("this daemon's own ids (serverId, hostName, hostAlias) resolve to this host", () => {
+    expect(resolveMetaTargetHost(deps, "server-local")).toMatchObject({ ok: true, kind: "local" });
+    expect(resolveMetaTargetHost(deps, "dev-host")).toMatchObject({ ok: true, kind: "local" });
+    expect(resolveMetaTargetHost(deps, "vaibhav-dev")).toMatchObject({ ok: true, kind: "local" });
+    // Whitespace around the alias is trimmed like the config value.
+    expect(resolveMetaTargetHost(deps, " vaibhav-dev ")).toMatchObject({ ok: true, kind: "local" });
+  });
+
+  test("a peer name from the fleet map resolves to that peer", () => {
+    const peerManager = fakePeerHarness().peerManager;
+    expect(resolveMetaTargetHost({ ...deps, peerManager }, "macbook")).toMatchObject({
+      ok: true,
+      kind: "peer",
+      peerName: "macbook",
+    });
+  });
+
+  test("an unknown host is refused", () => {
+    expect(resolveMetaTargetHost(deps, "ghost")).toMatchObject({
+      ok: false,
+      error: 'Host "ghost" is not a configured peer or this host',
+    });
+    // No fleet map at all: only local/this-host ids resolve.
+    const noFleet = resolveMetaTargetHost({ ...deps, peerManager: null }, "macbook");
+    expect(noFleet).toMatchObject({ ok: false });
+  });
+});
+
+describe("applyMetaFromProposal routing (target host decides where the apply runs)", () => {
+  test("local target (absent serverId) applies locally and records the host", async () => {
+    const h = build();
+    const { logger, lines } = captureLogger();
+    h.deps.logger = logger;
+    const result = await applyMetaFromProposal(
+      h.deps,
+      metaProposal({ action: "rename_workspace", targetId: "ws-a", newValue: "Lab" }),
+    );
+    expect(result).toMatchObject({ ok: true, metaAppliedOnHost: "local" });
+    expect(h.workspaces.get("ws-a")?.title).toBe("Lab");
+    // The audit-trail log names the host the action ran on.
+    const applied = appliedLogLines(lines);
+    expect(applied).toHaveLength(1);
+    expect(applied[0].targetHost).toBe("local");
+  });
+
+  test("'local' and this daemon's own serverId apply locally (existing behavior pinned)", async () => {
+    const h = build();
+    const explicitLocal = await applyMetaFromProposal(
+      h.deps,
+      metaProposal({
+        action: "rename_workspace",
+        serverId: "local",
+        targetId: "ws-a",
+        newValue: "A",
+      }),
+    );
+    expect(explicitLocal).toMatchObject({ ok: true, metaAppliedOnHost: "local" });
+
+    const byServerId = await applyMetaFromProposal(
+      h.deps,
+      metaProposal({
+        action: "rename_workspace",
+        serverId: "server-local",
+        targetId: "ws-a",
+        newValue: "B",
+      }),
+    );
+    // The plan named this daemon by its server id — that IS the applied host.
+    expect(byServerId).toMatchObject({ ok: true, metaAppliedOnHost: "server-local" });
+    expect(h.workspaces.get("ws-a")?.title).toBe("B");
+  });
+
+  test("a hostAlias naming this daemon applies locally", async () => {
+    const h = build();
+    h.deps.hostAlias = "vaibhav-dev";
+    const result = await applyMetaFromProposal(
+      h.deps,
+      metaProposal({
+        action: "rename_workspace",
+        serverId: "vaibhav-dev",
+        targetId: "ws-a",
+        newValue: "Aliased",
+      }),
+    );
+    // The plan named this daemon by its fleet-facing alias — the applied host.
+    expect(result).toMatchObject({ ok: true, metaAppliedOnHost: "vaibhav-dev" });
+    expect(h.workspaces.get("ws-a")?.title).toBe("Aliased");
+  });
+
+  test("peer target routes the whole apply to the peer — nothing applies locally", async () => {
+    const h = build();
+    const { logger, lines } = captureLogger();
+    h.deps.logger = logger;
+    const { peerManager, forwarded } = fakePeerHarness();
+    h.deps.peerManager = peerManager;
+    // The plan's target exists LOCALLY too — a routing bug would rename the
+    // local workspace instead of forwarding (the live incident: a create
+    // aimed at a peer landed in the commander's own registry).
+    const plan: MissionControlMetaPlan = {
+      action: "rename_workspace",
+      serverId: "macbook",
+      targetId: "ws-a",
+      newValue: "Renamed on macbook",
+    };
+    const result = await applyMetaFromProposal(h.deps, metaProposal(plan));
+    expect(result).toMatchObject({ ok: true, metaAppliedOnHost: "macbook" });
+    // Forwarded verbatim (validated shape), never applied against local state.
+    expect(forwarded).toEqual([plan]);
+    expect(h.workspaces.get("ws-a")?.title).toBeNull();
+    // The commander's audit-trail log names the PEER the action ran on.
+    const applied = appliedLogLines(lines);
+    expect(applied).toHaveLength(1);
+    expect(applied[0].targetHost).toBe("macbook");
+    expect(applied[0].targetServerId).toBe("server-macbook");
+    expect(applied[0].targetHostName).toBe("macbook.local");
+  });
+
+  test("peer target routes create_project to the peer (the live incident)", async () => {
+    const h = build({ projects: [] });
+    const { peerManager, forwarded } = fakePeerHarness();
+    h.deps.peerManager = peerManager;
+    const plan: MissionControlMetaPlan = {
+      action: "create_project",
+      serverId: "macbook",
+      destination: "/Users/vaibhav/new-work",
+      newValue: "new-work",
+    };
+    const result = await applyMetaFromProposal(h.deps, metaProposal(plan));
+    expect(result).toMatchObject({ ok: true, metaAppliedOnHost: "macbook" });
+    expect(forwarded).toEqual([plan]);
+    // The commander's own registry must NOT gain the project.
+    expect(h.mkdirCalls).toEqual([]);
+    expect(h.projects.size).toBe(0);
+  });
+
+  test("unknown host is refused with a plain error and nothing applies", async () => {
+    const h = build();
+    const result = await applyMetaFromProposal(
+      h.deps,
+      metaProposal({
+        action: "rename_workspace",
+        serverId: "ghost",
+        targetId: "ws-a",
+        newValue: "x",
+      }),
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'Host "ghost" is not a configured peer or this host',
+    });
+    expect(h.workspaces.get("ws-a")?.title).toBeNull();
+  });
+
+  test("an offline peer is refused (the proposal stays pending for a retry)", async () => {
+    const h = build();
+    h.deps.peerManager = {
+      getPeerStatus: (name: string) =>
+        name === "macbook"
+          ? { name: "macbook", url: "tcp://macbook:6767", state: "unreachable", lastSeenAt: null }
+          : null,
+      getPeerClient: () => null,
+    };
+    const result = await applyMetaFromProposal(
+      h.deps,
+      metaProposal({
+        action: "create_project",
+        serverId: "macbook",
+        destination: "/Users/vaibhav/new-work",
+      }),
+    );
+    expect(result).toMatchObject({ ok: false, error: 'Host "macbook" is not an online peer' });
+  });
+
+  test("a peer-side validation/apply failure surfaces as a plain error", async () => {
+    const h = build();
+    const { peerManager } = fakePeerHarness({
+      reply: () => ({ ok: false, error: "Project prj-ghost not found" }),
+    });
+    h.deps.peerManager = peerManager;
+    const result = await applyMetaFromProposal(
+      h.deps,
+      metaProposal({
+        action: "archive_project",
+        serverId: "macbook",
+        targetId: "prj-ghost",
+      }),
+    );
+    expect(result).toMatchObject({ ok: false, error: "Project prj-ghost not found" });
+    expect(h.archivedWorkspaceIds).toEqual([]);
+  });
+
+  test("a transport error on the peer hop surfaces as a plain error", async () => {
+    const h = build();
+    const { peerManager } = fakePeerHarness({
+      reply: () => {
+        throw new Error("peer went away");
+      },
+    });
+    h.deps.peerManager = peerManager;
+    const result = await applyMetaFromProposal(
+      h.deps,
+      metaProposal({
+        action: "rename_workspace",
+        serverId: "macbook",
+        targetId: "ws-a",
+        newValue: "x",
+      }),
+    );
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining("peer went away") });
+    expect(h.workspaces.get("ws-a")?.title).toBeNull();
   });
 });

@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 import type {
   OmpAgentMessage,
   OmpModel,
@@ -13,6 +15,19 @@ import type {
   OmpThinkingLevel,
 } from "./rpc-types.js";
 import type { ProviderRuntimeSettings } from "../../provider-launch-config.js";
+
+/**
+ * Config overlay that pins omp's harness-utility feature gates off
+ * (allowlist-overlay.yml). omp registers learn/manage_skill (autolearn),
+ * checkpoint/rewind (checkpoint) and the SDK-injected tts custom tool
+ * (speechgen) OUTSIDE the builtin catalog, so `--no-tools`/`--tools` cannot
+ * remove them; the overlay forces the gates off for sessions that carry a
+ * toolAllowlist. Loaded via `--config`, which outranks the user's global
+ * config.yml for this process only.
+ */
+export const TOOL_ALLOWLIST_CONFIG_OVERLAY = fileURLToPath(
+  new URL("./allowlist-overlay.yml", import.meta.url),
+);
 
 export interface OmpRuntimeLaunch {
   cwd: string;
@@ -170,6 +185,15 @@ function appendOmpLaunchArgs(
     } else {
       argv.push("--no-tools");
     }
+    // Harness-utility tools leak past `--no-tools`/`--tools` because they are
+    // not builtins: learn/manage_skill register when autolearn.enabled,
+    // checkpoint/rewind when checkpoint.enabled, and the SDK injects the tts
+    // custom tool whenever speechgen.enabled (no whitelist check at all — see
+    // omp sdk.ts). Pin those gates off with a --config overlay so an
+    // allowlist session exposes exactly its allowlisted tools (live incident:
+    // the Commander session exposed manage_skill/learn/rewind/tts and called
+    // tts twice despite --no-tools).
+    argv.push("--config", TOOL_ALLOWLIST_CONFIG_OVERLAY);
   }
 }
 

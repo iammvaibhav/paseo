@@ -130,7 +130,7 @@ import type { LocalSpeechProviderConfig } from "./speech/providers/local/config.
 import type { RequestedSpeechProviders } from "./speech/speech-types.js";
 import { createSpeechService } from "./speech/speech-runtime.js";
 import { AgentManager } from "./agent/agent-manager.js";
-import { AgentStorage } from "./agent/agent-storage.js";
+import { AgentStorage, type StoredAgentRecord } from "./agent/agent-storage.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
 import { createAgentMcpServer } from "./agent/mcp-server.js";
 import {
@@ -231,7 +231,11 @@ import {
   type CreateAgentCommandDependencies,
 } from "./agent/create-agent/create.js";
 import { archiveAgentCommand, cancelAgentRunCommand } from "./agent/lifecycle-command.js";
-import { applyMetaFromProposal } from "./mission-control/meta-actions.js";
+import {
+  applyMetaFromProposal,
+  applyMetaPlan,
+  type MetaActionsDependencies,
+} from "./mission-control/meta-actions.js";
 import { CreateAgentLifecycleDispatch } from "./agent/create-agent-lifecycle-dispatch.js";
 import {
   HubRelationshipController,
@@ -1757,6 +1761,48 @@ export async function createPaseoDaemon(
       missionControlService.setReviewState(agentId, state, options),
     publish: (input) => missionControlService.publishEvent(input),
   });
+
+  // The meta-actions executor deps, shared by the commander-host hook
+  // (metaFromProposal — local apply + peer routing) and the peer hook
+  // (metaApplyRemote — applies a forwarded plan against THIS daemon's
+  // registries). hostAlias + peerManager feed resolveMetaTargetHost so the
+  // plan's serverId resolves through the same fleet map the fleet tools use.
+  // Built lazily (a factory): the peer manager is constructed AFTER the
+  // service in bootstrap, so the fleet map must resolve at apply time, not at
+  // service construction.
+  // Hoisted once: several mission-control consumers need this host's alias.
+  const missionControlHostAlias = daemonConfigStore.get().missionControl?.hostAlias?.trim() || null;
+  const metaActionsDeps = (): MetaActionsDependencies => ({
+    serverId,
+    hostName: getHostname(),
+    hostAlias: missionControlHostAlias,
+    logger,
+    agentManager,
+    agentStorage,
+    workspaceRegistry,
+    projectRegistry,
+    archiveWorkspace: archiveWorkspaceByIdExternal,
+    archiveAgent: (agentId: string) =>
+      archiveAgentCommand({ agentManager, agentStorage, logger }, agentId),
+    mkdirp: async (dirPath: string) => {
+      await mkdir(dirPath, { recursive: true });
+    },
+    emitStoredAgentUpdate: async (record: StoredAgentRecord) => {
+      await Promise.all(
+        (wsServer?.listTrustedSessions() ?? []).map((session) =>
+          session.emitAgentUpdateForExternalMutation(record),
+        ),
+      );
+    },
+    peerManager: peerManager ?? null,
+  });
+
+  // Hoisted peer-manager slot: constructed later in bootstrap (after the
+  // MissionControlService), but the service's central-config routing needs a
+  // lazy reference to it (forward patches to the commander host, push
+  // replicas to peers, sync-on-connect). The closure reads the slot at call
+  // time, so the eventual assignment below is always visible.
+  let peerManager: PeerManager | null = null;
   missionControlService = new MissionControlService({
     paseoHome: config.paseoHome,
     logger,
@@ -1765,6 +1811,10 @@ export async function createPaseoDaemon(
     daemonConfigStore,
     serverId,
     hostName: getHostname(),
+    // Central-config ownership resolution + replication: the peer manager is
+    // constructed AFTER the service, so resolve it lazily.
+    hostAlias: missionControlHostAlias,
+    peerManager: () => peerManager,
     broadcast: (message) => wsServer?.broadcast(wrapSessionMessage(message)),
     centralConfig: centralMissionControlConfig,
     presence: createMissionControlPresenceSource({
@@ -1782,7 +1832,7 @@ export async function createPaseoDaemon(
         centralConfig: () => centralMissionControlConfig.get(),
         paseoHome: config.paseoHome,
         hostName: getHostname(),
-        hostAlias: daemonConfigStore.get().missionControl?.hostAlias?.trim() || null,
+        hostAlias: missionControlHostAlias,
         workspaceRegistry,
         createCommanderWorkspace: async (cwd, title) =>
           workspaceProvisioning.createWorkspaceForDirectory(cwd, title),
@@ -1837,36 +1887,19 @@ export async function createPaseoDaemon(
     // Execute a commander-origin meta-kind proposal (fleet_meta in ask mode
     // and auto mode): apply the fleet meta action described by metaPlan
     // (rename/archive project·workspace·agent, create project, move agent,
-    // promote workspace) against this daemon's live registries. Shared with
-    // the agent.workspace.move RPC via moveAgentToWorkspace. Stored-agent
-    // updates (closed records — live agents flow through agent_state) fan out
-    // to every trusted session's agent_update service.
-    metaFromProposal: (proposal) =>
-      applyMetaFromProposal(
-        {
-          serverId,
-          hostName: getHostname(),
-          logger,
-          agentManager,
-          agentStorage,
-          workspaceRegistry,
-          projectRegistry,
-          archiveWorkspace: archiveWorkspaceByIdExternal,
-          archiveAgent: (agentId) =>
-            archiveAgentCommand({ agentManager, agentStorage, logger }, agentId),
-          mkdirp: async (dirPath) => {
-            await mkdir(dirPath, { recursive: true });
-          },
-          emitStoredAgentUpdate: async (record) => {
-            await Promise.all(
-              (wsServer?.listTrustedSessions() ?? []).map((session) =>
-                session.emitAgentUpdateForExternalMutation(record),
-              ),
-            );
-          },
-        },
-        proposal,
-      ),
+    // promote workspace). Cross-host routing lives in applyMetaFromProposal:
+    // local targets apply against THIS daemon's registries; peer targets
+    // (metaPlan.serverId names a peer) are forwarded over peering and applied
+    // on the PEER (metaApplyRemote below). Stored-agent updates (closed
+    // records — live agents flow through agent_state) fan out to every
+    // trusted session's agent_update service.
+    metaFromProposal: (proposal) => applyMetaFromProposal(metaActionsDeps(), proposal),
+    // Peer branch of the meta apply: the commander host forwards an approved
+    // meta-kind proposal whose metaPlan.serverId names THIS host as a peer
+    // (mission_control.meta.apply). Re-validate against this daemon's own
+    // registries and apply here — only the APPLY hops; the proposal card
+    // stays on the commander host.
+    metaApplyRemote: (metaPlan) => applyMetaPlan(metaActionsDeps(), metaPlan),
     // M6 run records: resolve the workspace/project attribution frozen into a
     // run record at assembly time (live registries; falls back to the cwd →
     // workspace path when the agent carries no workspaceId).
@@ -1913,7 +1946,7 @@ export async function createPaseoDaemon(
     centralConfig: () => centralMissionControlConfig.get(),
     paseoHome: config.paseoHome,
     hostName: getHostname(),
-    hostAlias: daemonConfigStore.get().missionControl?.hostAlias?.trim() || null,
+    hostAlias: missionControlHostAlias,
     workspaceRegistry,
     createCommanderWorkspace: async (cwd, title) =>
       workspaceProvisioning.createWorkspaceForDirectory(cwd, title),
@@ -1993,10 +2026,20 @@ export async function createPaseoDaemon(
     "Tunnel manager initialized",
   );
 
-  const peerManager: PeerManager = new PeerManager({
+  peerManager = new PeerManager({
     peers: loadPersistedConfig(config.paseoHome).peers ?? [],
     logger,
     appVersion: daemonVersion,
+    // Sync-on-connect: when a peer comes online, the commander host pushes
+    // its current central-config snapshot so the peer never serves stale
+    // fleet policy (fresh join or restart alike).
+    onPeerOnline: (peerName) => {
+      void missionControlService
+        ?.syncCentralConfigToPeer(peerName)
+        .catch((error) =>
+          logger.warn({ err: error, peer: peerName }, "Central config sync-on-connect failed"),
+        );
+    },
   });
 
   const webhookService = new WebhookService({
@@ -2079,7 +2122,7 @@ export async function createPaseoDaemon(
     missionControlService,
     verifierDispatcher,
     serverId,
-    hostAlias: daemonConfigStore.get().missionControl?.hostAlias?.trim() || null,
+    hostAlias: missionControlHostAlias,
     paseoHome: config.paseoHome,
     worktreesRoot: config.worktreesRoot,
     callerAgentId: runtime.callerAgentId,
@@ -2320,7 +2363,7 @@ export async function createPaseoDaemon(
     speechService.stop();
     await missionControlService.stop().catch(() => undefined);
     await scheduleService.stop().catch(() => undefined);
-    await peerManager.close().catch(() => undefined);
+    await peerManager?.close().catch(() => undefined);
     await tunnelManager.stop().catch(() => undefined);
     await relayRuntime?.stop().catch(() => undefined);
     if (wsServer) {
