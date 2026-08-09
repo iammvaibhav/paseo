@@ -1891,6 +1891,17 @@ export const ptBR: TranslationResources = {
       terminals: "Terminais",
       host: "Visão geral",
     },
+    missionControl: {
+      memory: "Memória",
+      hindsightUrl: "URL do Hindsight",
+      hindsightUrlHint:
+        "URL base da API do Hindsight. Vazia desativa a memória da frota (gravação de registros de execução e recall).",
+      hindsightBank: "Banco de gravação",
+      hindsightBankHint: "Banco onde o Paseo grava os registros de execução.",
+      hindsightSecondaryBank: "Banco de recall (secundário)",
+      hindsightSecondaryBankHint:
+        "Banco secundário somente leitura consultado pelo fleet_recall. Vazio o desativa.",
+    },
     general: {
       title: "Geral",
       browserData: {

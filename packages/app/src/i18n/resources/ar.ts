@@ -1861,6 +1861,16 @@ export const ar: TranslationResources = {
       terminals: "Terminals",
       host: "نظرة عامة",
     },
+    missionControl: {
+      memory: "الذاكرة",
+      hindsightUrl: "رابط Hindsight",
+      hindsightUrlHint:
+        "عنوان API الأساسي لـ Hindsight. تركه فارغًا يعطّل ذاكرة الأسطول (كتابة سجلات التشغيل والاستدعاء).",
+      hindsightBank: "بنك الكتابة",
+      hindsightBankHint: "البنك الذي يكتب إليه Paseo سجلات التشغيل.",
+      hindsightSecondaryBank: "بنك الاستدعاء (ثانوي)",
+      hindsightSecondaryBankHint: "بنك ثانوي للقراءة فقط يستشيره fleet_recall. تركه فارغًا يعطّله.",
+    },
     general: {
       title: "عام",
       browserData: {

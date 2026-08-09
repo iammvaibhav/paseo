@@ -1878,6 +1878,17 @@ export const ja: TranslationResources = {
       terminals: "ターミナル",
       host: "概要",
     },
+    missionControl: {
+      memory: "メモリ",
+      hindsightUrl: "Hindsight URL",
+      hindsightUrlHint:
+        "Hindsight API のベース URL。空にするとフリートメモリ（実行記録の書き込みと recall）が無効になります。",
+      hindsightBank: "書き込みバンク",
+      hindsightBankHint: "Paseo が実行記録を書き込むバンク。",
+      hindsightSecondaryBank: "recall バンク（セカンダリ）",
+      hindsightSecondaryBankHint:
+        "fleet_recall が参照する読み取り専用のセカンダリバンク。空にすると無効になります。",
+    },
     general: {
       title: "一般",
       browserData: {

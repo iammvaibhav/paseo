@@ -1841,6 +1841,15 @@ export const zhCN: TranslationResources = {
       terminals: "Terminals",
       host: "概览",
     },
+    missionControl: {
+      memory: "记忆",
+      hindsightUrl: "Hindsight URL",
+      hindsightUrlHint: "Hindsight API 基础 URL。留空将禁用集群记忆（运行记录写入和召回）。",
+      hindsightBank: "写入库",
+      hindsightBankHint: "Paseo 写入运行记录的库。",
+      hindsightSecondaryBank: "召回库（辅助）",
+      hindsightSecondaryBankHint: "fleet_recall 查询的只读辅助库。留空将禁用。",
+    },
     general: {
       title: "通用",
       browserData: {

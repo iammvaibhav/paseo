@@ -1872,6 +1872,17 @@ export const ko: TranslationResources = {
       terminals: "터미널",
       host: "개요",
     },
+    missionControl: {
+      memory: "메모리",
+      hindsightUrl: "Hindsight URL",
+      hindsightUrlHint:
+        "Hindsight API 기본 URL입니다. 비워 두면 플릿 메모리(실행 기록 쓰기 및 recall)가 비활성화됩니다.",
+      hindsightBank: "쓰기 뱅크",
+      hindsightBankHint: "Paseo가 실행 기록을 쓰는 뱅크입니다.",
+      hindsightSecondaryBank: "recall 뱅크(보조)",
+      hindsightSecondaryBankHint:
+        "fleet_recall이 참조하는 읽기 전용 보조 뱅크입니다. 비워 두면 비활성화됩니다.",
+    },
     general: {
       title: "일반",
       browserData: {

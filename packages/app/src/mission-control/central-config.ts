@@ -42,6 +42,14 @@ export interface ResolvedMissionControlCentralConfig {
   // daemon's resolved central config). Stall nudges unaffected.
   commanderToWorkerMode: "steer" | "interrupt" | "queue";
   verifierToWorkerMode: "steer" | "interrupt" | "queue";
+  // Hindsight fleet memory (M6 context architecture). hindsightUrl null =
+  // disabled (run records stay local; fleet_recall degrades to "memory
+  // unavailable"). hindsightBank is the bank run records are written to and
+  // recalled over; hindsightSecondaryBank is the read-only secondary recall
+  // source (omp), null = no secondary source.
+  hindsightUrl: string | null;
+  hindsightBank: string;
+  hindsightSecondaryBank: string | null;
 }
 
 const RESOLVED_DEFAULTS: ResolvedMissionControlCentralConfig = {
@@ -62,7 +70,32 @@ const RESOLVED_DEFAULTS: ResolvedMissionControlCentralConfig = {
   dormantTurnSeconds: 300,
   commanderToWorkerMode: "interrupt",
   verifierToWorkerMode: "interrupt",
+  hindsightUrl: null,
+  hindsightBank: "paseo-fleet",
+  hindsightSecondaryBank: "omp",
 };
+
+// Grouped knob resolution (mirrors the server's resolveNullableStringKnobs
+// split in mission-control/config.ts): each group owns its defaults so the
+// composer stays a flat spread.
+function resolveStallTimingKnobs(config: MissionControlCentralConfig) {
+  const statusNudgeSeconds = config.statusNudgeSeconds ?? config.nudgeSeconds ?? 300;
+  return {
+    silenceNudgeSeconds: config.silenceNudgeSeconds ?? 120,
+    statusNudgeSeconds,
+    escalateSeconds: config.escalateSeconds ?? 300,
+    dormantTurnSeconds: config.dormantTurnSeconds ?? 300,
+  };
+}
+
+function resolveMemoryKnobs(config: MissionControlCentralConfig) {
+  const hindsightUrl = config.hindsightUrl ?? null;
+  return {
+    hindsightUrl,
+    hindsightBank: config.hindsightBank ?? "paseo-fleet",
+    hindsightSecondaryBank: config.hindsightSecondaryBank ?? "omp",
+  };
+}
 
 export function resolveMissionControlCentralConfig(
   config: MissionControlCentralConfig | null | undefined,
@@ -82,12 +115,10 @@ export function resolveMissionControlCentralConfig(
     namingTheme: config.namingTheme ?? "mixed",
     hideAgentNames: config.hideAgentNames ?? false,
     defaultDispatchHost: config.defaultDispatchHost ?? null,
-    silenceNudgeSeconds: config.silenceNudgeSeconds ?? 120,
-    statusNudgeSeconds: config.statusNudgeSeconds ?? config.nudgeSeconds ?? 300,
-    escalateSeconds: config.escalateSeconds ?? 300,
-    dormantTurnSeconds: config.dormantTurnSeconds ?? 300,
     commanderToWorkerMode: config.commanderToWorkerMode ?? "interrupt",
     verifierToWorkerMode: config.verifierToWorkerMode ?? "interrupt",
+    ...resolveStallTimingKnobs(config),
+    ...resolveMemoryKnobs(config),
   };
 }
 

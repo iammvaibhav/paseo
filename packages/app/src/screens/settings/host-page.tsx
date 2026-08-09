@@ -1430,7 +1430,9 @@ function MissionControlCard({ serverId }: { serverId: string }) {
   const host = useHostProfile(serverId);
   const { config, patchConfig } = useDaemonConfig(serverId);
   const missionControl = config?.missionControl;
-  const enabled = missionControl?.enabled === true;
+  // Server semantics: enabled unless explicitly false (commander-boot.ts checks
+  // `=== false`). Render the same default so an unset key reads as ON.
+  const enabled = missionControl?.enabled !== false;
   const hostAlias = missionControl?.hostAlias ?? "";
   const hostGlyph = normalizeHostGlyphOverride(missionControl?.hostGlyph);
   const glyphInitials = hostGlyph?.initials ?? "";

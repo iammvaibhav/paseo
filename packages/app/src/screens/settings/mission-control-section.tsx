@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useRef, useState, type ReactElement } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Pressable,
   Text,
@@ -188,6 +189,69 @@ function NumberRow({
         accessibilityLabel={title}
         testID={testID}
         style={styles.numberInput}
+      />
+    </View>
+  );
+}
+
+/**
+ * Central-config free-text row (same commit flow as NumberRow). Empty input
+ * commits null for nullable keys (e.g. hindsightUrl: empty = memory disabled)
+ * and skips the patch for non-nullable keys (write bank keeps its default).
+ */
+function TextRow({
+  title,
+  hint,
+  value,
+  onCommit,
+  testID,
+  isCompact,
+  first = false,
+  nullable = false,
+}: {
+  title: string;
+  hint: string;
+  value: string | null;
+  onCommit: (next: string | null) => void;
+  testID: string;
+  isCompact: boolean;
+  first?: boolean;
+  nullable?: boolean;
+}) {
+  const draftRef = useRef<string | null>(null);
+  const handleChange = useCallback((text: string) => {
+    draftRef.current = text;
+  }, []);
+  const handleCommit = useCallback(() => {
+    const draft = draftRef.current;
+    draftRef.current = null;
+    if (draft === null) {
+      return;
+    }
+    const trimmed = draft.trim();
+    if (trimmed === (value ?? "")) {
+      return;
+    }
+    onCommit(trimmed === "" && nullable ? null : trimmed);
+  }, [nullable, onCommit, value]);
+  return (
+    <View style={[settingsStyles.row, first ? null : settingsStyles.rowBorder]}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>{title}</Text>
+        <Text style={settingsStyles.rowHint}>{hint}</Text>
+      </View>
+      <FormTextInput
+        size={isCompact ? "md" : "sm"}
+        initialValue={value ?? ""}
+        resetKey={value ?? ""}
+        onChangeText={handleChange}
+        onSubmitEditing={handleCommit}
+        onBlur={handleCommit}
+        autoCapitalize="none"
+        autoCorrect={false}
+        accessibilityLabel={title}
+        testID={testID}
+        style={styles.textInput}
       />
     </View>
   );
@@ -454,6 +518,7 @@ function ModelOverrideRow({
  * central key is edited here.
  */
 export function MissionControlSection(): ReactElement {
+  const { t } = useTranslation();
   const isCompact = useIsCompactFormFactor();
   const hosts = useHosts();
   const sessions = useSessionStore((state) => state.sessions);
@@ -629,6 +694,22 @@ export function MissionControlSection(): ReactElement {
     (next: "steer" | "interrupt" | "queue") => void patch({ verifierToWorkerMode: next }),
     [patch],
   );
+  const handleHindsightUrlCommit = useCallback(
+    (next: string | null) => void patch({ hindsightUrl: next }),
+    [patch],
+  );
+  const handleHindsightBankCommit = useCallback(
+    (next: string | null) => {
+      if (next !== null && next !== "") {
+        void patch({ hindsightBank: next });
+      }
+    },
+    [patch],
+  );
+  const handleHindsightSecondaryBankCommit = useCallback(
+    (next: string | null) => void patch({ hindsightSecondaryBank: next }),
+    [patch],
+  );
 
   if (resolvingHost || isLoading) {
     return (
@@ -786,6 +867,38 @@ export function MissionControlSection(): ReactElement {
         </View>
       </SettingsSection>
 
+      <SettingsSection title={t("settings.missionControl.memory")}>
+        <View style={settingsStyles.card}>
+          <TextRow
+            title={t("settings.missionControl.hindsightUrl")}
+            hint={t("settings.missionControl.hindsightUrlHint")}
+            value={config.hindsightUrl}
+            onCommit={handleHindsightUrlCommit}
+            testID="mission-control-settings-hindsight-url"
+            isCompact={isCompact}
+            first
+            nullable
+          />
+          <TextRow
+            title={t("settings.missionControl.hindsightBank")}
+            hint={t("settings.missionControl.hindsightBankHint")}
+            value={config.hindsightBank}
+            onCommit={handleHindsightBankCommit}
+            testID="mission-control-settings-hindsight-bank"
+            isCompact={isCompact}
+          />
+          <TextRow
+            title={t("settings.missionControl.hindsightSecondaryBank")}
+            hint={t("settings.missionControl.hindsightSecondaryBankHint")}
+            value={config.hindsightSecondaryBank}
+            onCommit={handleHindsightSecondaryBankCommit}
+            testID="mission-control-settings-hindsight-secondary-bank"
+            isCompact={isCompact}
+            nullable
+          />
+        </View>
+      </SettingsSection>
+
       <SettingsSection title="Stall detection">
         <View style={settingsStyles.card}>
           <NumberRow
@@ -898,6 +1011,9 @@ const styles = StyleSheet.create((theme) => ({
   },
   numberInput: {
     width: 88,
+  },
+  textInput: {
+    width: 220,
   },
   instructionsInput: {
     marginTop: theme.spacing[3],

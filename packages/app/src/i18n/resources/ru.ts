@@ -1896,6 +1896,17 @@ export const ru: TranslationResources = {
       terminals: "Terminals",
       host: "Обзор",
     },
+    missionControl: {
+      memory: "Память",
+      hindsightUrl: "URL Hindsight",
+      hindsightUrlHint:
+        "Базовый URL API Hindsight. Пустое значение отключает память флота (запись журналов запуска и recall).",
+      hindsightBank: "Банк записи",
+      hindsightBankHint: "Банк, в который Paseo записывает журналы запуска.",
+      hindsightSecondaryBank: "Банк recall (вторичный)",
+      hindsightSecondaryBankHint:
+        "Вторичный банк только для чтения, используемый fleet_recall. Пустое значение отключает его.",
+    },
     general: {
       title: "Общий",
       browserData: {

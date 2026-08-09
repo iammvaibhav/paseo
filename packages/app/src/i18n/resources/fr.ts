@@ -1909,6 +1909,17 @@ export const fr: TranslationResources = {
       terminals: "Terminals",
       host: "Aperçu",
     },
+    missionControl: {
+      memory: "Mémoire",
+      hindsightUrl: "URL de Hindsight",
+      hindsightUrlHint:
+        "URL de base de l'API Hindsight. Vide pour désactiver la mémoire de la flotte (écriture des journaux d'exécution et recall).",
+      hindsightBank: "Banque d'écriture",
+      hindsightBankHint: "Banque où Paseo écrit les journaux d'exécution.",
+      hindsightSecondaryBank: "Banque de recall (secondaire)",
+      hindsightSecondaryBankHint:
+        "Banque secondaire en lecture seule consultée par fleet_recall. Vide pour désactiver.",
+    },
     general: {
       title: "Général",
       browserData: {

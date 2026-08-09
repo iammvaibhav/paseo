@@ -1873,6 +1873,17 @@ export const en = {
       terminals: "Terminals",
       host: "Overview",
     },
+    missionControl: {
+      memory: "Memory",
+      hindsightUrl: "Hindsight URL",
+      hindsightUrlHint:
+        "Hindsight API base URL. Empty disables fleet memory (run-record writes and recall).",
+      hindsightBank: "Write bank",
+      hindsightBankHint: "Bank Paseo writes run records to.",
+      hindsightSecondaryBank: "Recall bank (secondary)",
+      hindsightSecondaryBankHint:
+        "Read-only secondary bank consulted by fleet_recall. Empty disables.",
+    },
     general: {
       title: "General",
       browserData: {
