@@ -142,6 +142,10 @@ describe("M6 Hindsight fleet bank client", () => {
           occurredStart: null,
           documentId: "paseo-run:agent-1:1",
           tags: ["host:work-server", "agent:Rusty"],
+          bank: "paseo-fleet-dev",
+          sessionId: null,
+          entities: null,
+          metadata: null,
         },
       ],
     });
@@ -161,6 +165,49 @@ describe("M6 Hindsight fleet bank client", () => {
     if (!unavailable.ok) {
       expect(unavailable.reason).toBe("memory unavailable");
     }
+  });
+
+  test("recall parses omp-bank metadata.session_id and entities into matches", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({
+        results: [
+          {
+            id: "019fd71d-f429-7000-8bf2-fc42ae0e8271",
+            text: "The view agents produced nothing, and the assistant fixed the clipping bug at its root.",
+            type: "experience",
+            entities: ["view agents", "clipping bug"],
+            context: "omp",
+            occurred_start: "2026-08-06T15:34:35.866000+00:00",
+            document_id: "019fd71d-f429-7000-8bf2-fc42ae0e8271",
+            metadata: { session_id: "019fd71d-f429-7000-8bf2-fc42ae0e8271" },
+            tags: ["project:stackmod"],
+          },
+        ],
+      }),
+    ) as unknown as typeof fetch;
+    const client = new HindsightClient({ logger: createTestLogger(), fetchImpl });
+    const result = await client.recall({
+      url: "http://hindsight.test:8890",
+      bank: "omp",
+      query: "clipping bug",
+    });
+    expect(result).toEqual({
+      ok: true,
+      matches: [
+        {
+          id: "019fd71d-f429-7000-8bf2-fc42ae0e8271",
+          text: "The view agents produced nothing, and the assistant fixed the clipping bug at its root.",
+          context: "omp",
+          occurredStart: "2026-08-06T15:34:35.866000+00:00",
+          documentId: "019fd71d-f429-7000-8bf2-fc42ae0e8271",
+          tags: ["project:stackmod"],
+          bank: "omp",
+          sessionId: "019fd71d-f429-7000-8bf2-fc42ae0e8271",
+          entities: ["view agents", "clipping bug"],
+          metadata: { session_id: "019fd71d-f429-7000-8bf2-fc42ae0e8271" },
+        },
+      ],
+    });
   });
 
   test("HindsightClient.isEnabled gates on a non-empty configured URL", () => {

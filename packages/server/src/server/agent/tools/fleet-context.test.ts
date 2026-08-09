@@ -84,6 +84,16 @@ function createHarness(options: HarnessOptions = {}) {
           occurredStart: null,
           documentId: "paseo-run:agent-1:1",
           tags: ["host:local", "agent:Rusty"],
+          bank: "paseo-fleet",
+          sessionId: null,
+          entities: null,
+          metadata: null,
+          attribution: {
+            agentId: "agent-1",
+            agentName: "Rusty",
+            agentTitle: "Rusty",
+            workspaceId: "ws-1",
+          },
         },
       ].slice(0, limit),
     })),
@@ -117,11 +127,32 @@ describe("M6 Commander context tools", () => {
     const result = await catalog.executeTool("fleet_recall", { query: "auth bug", limit: 3 });
     const content = result.structuredContent as {
       ok: boolean;
-      matches: Array<{ text: string; documentId: string }>;
+      matches: Array<{
+        text: string;
+        documentId: string;
+        bank: string;
+        sessionId: string | null;
+        entities: string[] | null;
+        attribution?: {
+          agentId: string;
+          agentName: string;
+          agentTitle: string;
+          workspaceId: string | null;
+        };
+      }>;
     };
     expect(content.ok).toBe(true);
     expect(content.matches[0].text).toBe("Rusty: auth bug");
     expect(content.matches[0].documentId).toBe("paseo-run:agent-1:1");
+    // The source-bank tag and omp-style session attribution pass through.
+    expect(content.matches[0].bank).toBe("paseo-fleet");
+    expect(content.matches[0].sessionId).toBeNull();
+    expect(content.matches[0].attribution).toEqual({
+      agentId: "agent-1",
+      agentName: "Rusty",
+      agentTitle: "Rusty",
+      workspaceId: "ws-1",
+    });
     expect(missionControlService.hindsightRecall).toHaveBeenCalledWith("auth bug", 3);
   });
 

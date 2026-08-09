@@ -51,8 +51,12 @@ export interface ResolvedMissionControlCentralConfig {
   // disabled (run records stay local; fleet_recall degrades to "memory
   // unavailable"). hindsightBank names the bank to write/recall (default
   // "paseo-fleet"; the omp bank stays read-only, never written).
+  // hindsightSecondaryBank names an ADDITIONAL read-only bank fleet_recall
+  // consults behind the primary (default "omp": transcript memories). Null =
+  // no secondary source; it is never written to.
   hindsightUrl: string | null;
   hindsightBank: string;
+  hindsightSecondaryBank: string | null;
 }
 
 export const DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG: ResolvedMissionControlCentralConfig = {
@@ -77,6 +81,7 @@ export const DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG: ResolvedMissionControlCentr
   verifierToWorkerMode: "interrupt",
   hindsightUrl: null,
   hindsightBank: "paseo-fleet",
+  hindsightSecondaryBank: "omp",
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -205,6 +210,7 @@ const CENTRAL_CONFIG_KEYS: readonly (keyof ResolvedMissionControlCentralConfig)[
   "verifierToWorkerMode",
   "hindsightUrl",
   "hindsightBank",
+  "hindsightSecondaryBank",
 ];
 
 function pickCentralConfigKeys(value: Record<string, unknown>): MissionControlCentralConfig {
@@ -221,7 +227,12 @@ function pickCentralConfigKeys(value: Record<string, unknown>): MissionControlCe
 
 type NullableStringKnobs = Pick<
   ResolvedMissionControlCentralConfig,
-  "commanderHost" | "commanderModel" | "verifierModel" | "defaultDispatchHost" | "hindsightUrl"
+  | "commanderHost"
+  | "commanderModel"
+  | "verifierModel"
+  | "defaultDispatchHost"
+  | "hindsightUrl"
+  | "hindsightSecondaryBank"
 >;
 
 /** The optional model overrides and host designations: string-or-null knobs. */
@@ -234,7 +245,15 @@ function resolveNullableStringKnobs(
   const verifierModel = stored.verifierModel ?? defaults.verifierModel;
   const defaultDispatchHost = stored.defaultDispatchHost ?? defaults.defaultDispatchHost;
   const hindsightUrl = stored.hindsightUrl ?? defaults.hindsightUrl;
-  return { commanderHost, commanderModel, verifierModel, defaultDispatchHost, hindsightUrl };
+  const hindsightSecondaryBank = stored.hindsightSecondaryBank ?? defaults.hindsightSecondaryBank;
+  return {
+    commanderHost,
+    commanderModel,
+    verifierModel,
+    defaultDispatchHost,
+    hindsightUrl,
+    hindsightSecondaryBank,
+  };
 }
 
 function resolveCentralConfig(

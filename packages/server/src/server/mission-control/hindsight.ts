@@ -21,6 +21,18 @@ export interface HindsightRecallMatch {
   occurredStart: string | null;
   documentId: string | null;
   tags: string[] | null;
+  /** The bank this match was recalled from (source attribution for merged recalls). */
+  bank: string;
+  /**
+   * omp-bank extras: transcript memories carry the omp session id (the SAME
+   * id Paseo stores in an agent's persistence handle, so matches are
+   * attributable to agents) plus `entities` naming agents/workspaces. Null on
+   * fleet-bank run records, which instead carry a `paseo-run:*` documentId.
+   */
+  sessionId: string | null;
+  entities: string[] | null;
+  /** Raw recall metadata passthrough (omp memories carry `{ session_id }`). */
+  metadata: Record<string, unknown> | null;
 }
 
 export type HindsightRecallResult =
@@ -122,7 +134,9 @@ export class HindsightClient {
         },
       );
       const rawResults = Array.isArray(response.results) ? response.results : [];
-      const matches = rawResults.slice(0, input.limit ?? 5).map(toRecallMatch);
+      const matches = rawResults
+        .slice(0, input.limit ?? 5)
+        .map((value) => Object.assign(toRecallMatch(value), { bank: input.bank }));
       return { ok: true, matches };
     } catch (error) {
       this.logFailureThrottled("mission_control.hindsight.recall_failed", error);
@@ -182,10 +196,20 @@ function toRecallMatch(value: unknown): HindsightRecallMatch {
       occurredStart: null,
       documentId: null,
       tags: null,
+      bank: "",
+      sessionId: null,
+      entities: null,
+      metadata: null,
     };
   }
   const tags = Array.isArray(value["tags"])
     ? value["tags"].filter((t): t is string => typeof t === "string")
+    : null;
+  const metadata = isRecord(value["metadata"]) ? value["metadata"] : null;
+  const sessionId =
+    metadata !== null && typeof metadata["session_id"] === "string" ? metadata["session_id"] : null;
+  const entities = Array.isArray(value["entities"])
+    ? value["entities"].filter((e): e is string => typeof e === "string")
     : null;
   return {
     id: typeof value["id"] === "string" ? value["id"] : "unknown",
@@ -194,6 +218,10 @@ function toRecallMatch(value: unknown): HindsightRecallMatch {
     occurredStart: typeof value["occurred_start"] === "string" ? value["occurred_start"] : null,
     documentId: typeof value["document_id"] === "string" ? value["document_id"] : null,
     tags,
+    bank: "",
+    sessionId,
+    entities,
+    metadata,
   };
 }
 

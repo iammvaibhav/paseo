@@ -62,7 +62,11 @@ import {
   type ProjectRollup,
   type WorkspaceRollup,
 } from "./rollups.js";
-import { HindsightClient, type HindsightRecallResult } from "./hindsight.js";
+import {
+  HindsightClient,
+  type HindsightRecallMatch,
+  type HindsightRecallResult,
+} from "./hindsight.js";
 
 const STALL_SWEEP_INTERVAL_MS = 30_000;
 const DAILY_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -338,6 +342,87 @@ export type ReviewStateListener = (
   agentId: string,
   record: MissionControlReviewStateRecord,
 ) => void;
+
+// ==========================================================================
+// fleet_recall: primary + secondary bank merge and omp session-id
+// attribution. Pure helpers (unit-testable without a service instance);
+// MissionControlService.hindsightRecall wires them together.
+// ==========================================================================
+
+/**
+ * Attribution resolved locally for a recall match carrying an omp
+ * `metadata.session_id`: the Paseo agent whose persistence handle stores that
+ * session id. Present only when a live agent or stored record matched.
+ */
+export interface RecallMatchAttribution {
+  agentId: string;
+  agentName: string;
+  agentTitle: string;
+  workspaceId: string | null;
+}
+
+/**
+ * The minimal identity slice the resolver needs. Both live agents
+ * (ManagedAgent) and stored records (StoredAgentRecord) satisfy this shape;
+ * callers map persistence.sessionId onto it explicitly.
+ */
+export interface RecallAttributionSource {
+  id: string;
+  sessionId: string | null;
+  name?: string;
+  title?: string | null;
+  shortDescription?: string;
+  workspaceId?: string | null;
+}
+
+/**
+ * Merge a primary and (best-effort) secondary recall: primary matches first,
+ * then secondary, overall limit respected. A failed primary IS the failure
+ * (the bank contract stands); a failed secondary degrades silently to the
+ * primary's matches.
+ */
+export function mergeRecallResults(
+  primary: HindsightRecallResult,
+  secondary: HindsightRecallResult | null,
+  limit: number,
+): HindsightRecallResult {
+  if (!primary.ok) {
+    return primary;
+  }
+  const matches = [
+    ...primary.matches,
+    ...(secondary !== null && secondary.ok ? secondary.matches : []),
+  ].slice(0, limit);
+  return { ok: true, matches };
+}
+
+/**
+ * Resolve an omp session id to a Paseo agent. Live agents win over stored
+ * records (freshest state); either way the match is on the persistence
+ * handle's sessionId — the same id omp stamps on bank recall results. Returns
+ * null when no agent record carries the session id (the caller passes the raw
+ * session_id/entities through so the Commander can fleet_search it).
+ */
+export function resolveRecallAttribution(
+  sessionId: string,
+  liveAgents: RecallAttributionSource[],
+  storedRecords: RecallAttributionSource[],
+): RecallMatchAttribution | null {
+  const source =
+    liveAgents.find((agent) => agent.sessionId === sessionId) ??
+    storedRecords.find((record) => record.sessionId === sessionId);
+  if (!source) {
+    return null;
+  }
+  const agentTitle = source.title ?? source.shortDescription ?? source.name;
+  const agentName = source.name ?? agentTitle;
+  return {
+    agentId: source.id,
+    agentName: agentName ?? source.id,
+    agentTitle: agentTitle ?? source.id,
+    workspaceId: source.workspaceId ?? null,
+  };
+}
 
 export class MissionControlService {
   private readonly logger: Logger;
@@ -1011,20 +1096,91 @@ export class MissionControlService {
   }
 
   /**
-   * Semantic recall over the configured fleet bank. Never blocks and never
-   * throws: when the bank is unconfigured or unreachable the caller gets
-   * { ok: false, reason: "memory unavailable" }.
+   * Semantic recall over the configured fleet bank, plus (when configured)
+   * the read-only secondary omp bank. Never blocks and never throws: when
+   * the bank is unconfigured or unreachable the caller gets
+   * { ok: false, reason: "memory unavailable" }. Results are merged primary
+   * first with the overall limit respected; a secondary failure degrades
+   * silently to the primary's matches. Every match carrying an omp
+   * `metadata.session_id` is attributed to the Paseo agent whose persistence
+   * handle stores that session id (live agents first, then stored records).
    */
   async hindsightRecall(query: string, limit = 5): Promise<HindsightRecallResult> {
     const config = this.centralConfig.get();
     if (!HindsightClient.isEnabled(config.hindsightUrl)) {
       return { ok: false, reason: "memory unavailable", error: "hindsight is not configured" };
     }
-    return this.hindsightClient.recall({
-      url: config.hindsightUrl,
-      bank: config.hindsightBank,
-      query,
-      limit,
+    const secondaryBank = config.hindsightSecondaryBank?.trim();
+    const [primary, secondary] = await Promise.all([
+      this.hindsightClient.recall({
+        url: config.hindsightUrl,
+        bank: config.hindsightBank,
+        query,
+        limit,
+      }),
+      secondaryBank
+        ? this.hindsightClient.recall({
+            url: config.hindsightUrl,
+            bank: secondaryBank,
+            query,
+            limit,
+          })
+        : Promise.resolve(null),
+    ]);
+    const merged = mergeRecallResults(primary, secondary, limit);
+    if (!merged.ok) {
+      return merged;
+    }
+    return { ok: true, matches: await this.attributeRecallMatches(merged.matches) };
+  }
+
+  /**
+   * Enrich recall matches whose `sessionId` (the omp session id on the bank
+   * memory's metadata) resolves to a Paseo agent: live agents first, then
+   * stored records, both matched on the persistence handle's sessionId.
+   * Unresolved matches pass through untouched (raw session_id/tags/entities
+   * stay on the wire for the Commander to fleet_search).
+   */
+  private async attributeRecallMatches(
+    matches: HindsightRecallMatch[],
+  ): Promise<Array<HindsightRecallMatch & { attribution?: RecallMatchAttribution }>> {
+    const sessionIds = matches
+      .map((match) => match.sessionId)
+      .filter((sessionId): sessionId is string => sessionId !== null);
+    if (sessionIds.length === 0) {
+      return matches;
+    }
+    const liveAgents: RecallAttributionSource[] = this.agentManager.listAgents().map((agent) => ({
+      id: agent.id,
+      sessionId: agent.persistence?.sessionId ?? null,
+      name: agent.name,
+      shortDescription: agent.shortDescription,
+      workspaceId: agent.workspaceId,
+    }));
+    const storedRecords: RecallAttributionSource[] = (await this.agentStorage.list()).map(
+      (record) => ({
+        id: record.id,
+        sessionId: record.persistence?.sessionId ?? null,
+        name: record.name,
+        title: record.title ?? null,
+        shortDescription: record.shortDescription,
+        workspaceId: record.workspaceId,
+      }),
+    );
+    const attributionBySessionId = new Map<string, RecallMatchAttribution>();
+    for (const sessionId of new Set(sessionIds)) {
+      const attribution = resolveRecallAttribution(sessionId, liveAgents, storedRecords);
+      if (attribution) {
+        attributionBySessionId.set(sessionId, attribution);
+      }
+    }
+    if (attributionBySessionId.size === 0) {
+      return matches;
+    }
+    return matches.map((match) => {
+      const attribution =
+        match.sessionId !== null ? attributionBySessionId.get(match.sessionId) : undefined;
+      return attribution ? { ...match, attribution } : match;
     });
   }
 

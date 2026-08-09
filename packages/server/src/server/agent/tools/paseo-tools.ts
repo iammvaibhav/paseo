@@ -4698,8 +4698,11 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       title: "Recall prior fleet work from memory",
       description:
         "Semantic recall over the fleet memory bank (Hindsight): run records written when agents finish — briefs, " +
-        "report histories, decisions, verdicts. THE lookup for 'which agent was that' and for pulling related prior " +
-        "work into a brief. When the bank is unconfigured or unreachable this returns " +
+        "report histories, decisions, verdicts — plus transcript memories from the read-only omp bank when configured. " +
+        "THE lookup for 'which agent was that' and for pulling related prior work into a brief. Results are tagged with " +
+        "their source `bank` ('paseo-fleet' run records vs 'omp' transcript memories); omp memories carry a sessionId " +
+        "(raw, passthrough) plus an `attribution` block naming the Paseo agent when its persistence handle matches, and " +
+        "`entities` naming agents/workspaces for unmatched ones. When the bank is unconfigured or unreachable this returns " +
         '{ok:false, reason:"memory unavailable"} — fall back to fleet_search / fleet_get_agent_activity, never guess. ' +
         "Read-only; never approval-gated.",
       inputSchema: {
@@ -4725,10 +4728,30 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           .array(
             z.object({
               text: z.string(),
+              // Source bank of the memory: the fleet bank (run records) or
+              // the secondary omp bank (transcript memories).
+              bank: z.string().optional(),
               context: z.string().nullable().optional(),
               occurredStart: z.string().nullable().optional(),
               documentId: z.string().nullable().optional(),
               tags: z.array(z.string()).nullable().optional(),
+              // omp-bank memories: raw passthrough so unresolved matches can
+              // be fleet_searched. sessionId = the omp session id (same id as
+              // an agent's persistence handle); entities name agents/workspaces.
+              sessionId: z.string().nullable().optional(),
+              entities: z.array(z.string()).nullable().optional(),
+              metadata: z.record(z.string(), z.unknown()).nullable().optional(),
+              // Local attribution when the session id resolved to a Paseo
+              // agent (live or stored). Absent = unresolved — use the raw
+              // session_id/entities and fleet_search.
+              attribution: z
+                .object({
+                  agentId: z.string(),
+                  agentName: z.string(),
+                  agentTitle: z.string(),
+                  workspaceId: z.string().nullable(),
+                })
+                .optional(),
             }),
           )
           .optional(),

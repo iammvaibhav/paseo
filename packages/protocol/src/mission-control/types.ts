@@ -548,6 +548,11 @@ export const MissionControlCentralConfigSchema = z.object({
   // records are written to and recalled over (default "paseo-fleet").
   hindsightUrl: z.string().nullable().optional(),
   hindsightBank: z.string().optional(),
+  // Read-only secondary recall source: the omp hindsight bank (transcript
+  // memories, default "omp"). fleet_recall consults it additively behind the
+  // primary bank; it is NEVER written to — the write path stays pointed at
+  // hindsightBank only. Null disables the secondary source.
+  hindsightSecondaryBank: z.string().nullable().optional(),
 });
 export type MissionControlCentralConfig = z.infer<typeof MissionControlCentralConfigSchema>;
 
