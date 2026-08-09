@@ -932,3 +932,81 @@ export const MissionControlMetaApplyResponseSchema = z.object({
   }),
 });
 export type MissionControlMetaApplyResponse = z.infer<typeof MissionControlMetaApplyResponseSchema>;
+
+// ============================================================================
+// Cross-host spawn apply: the Commander-host spawn executor (spawnFromProposal)
+// routes an approved spawn-kind proposal (fleet_create_agent) whose plan
+// targets a PEER over this RPC instead of creating on the commander host. The
+// receiving daemon validates the plan's cwd contract (absolute-only) against
+// ITS OWN filesystem, creates the cwd with mkdir recursive when missing, and
+// creates the agent in ITS OWN registry — the mkdir happens on the target
+// host, never the commander's. Only the APPLY hops; the proposal/card stays on
+// the commander host (gate unchanged). Mirrors mission_control.meta.apply and
+// the fleet_create_agent peer path.
+// ============================================================================
+
+export const MissionControlSpawnApplyRequestSchema = z.object({
+  type: z.literal("mission_control.spawn.apply.request"),
+  requestId: z.string(),
+  // The spawn plan as the Commander sent it (schema-validated at the tool
+  // boundary; the commander also stamped paseo.parent-agent-id so the label
+  // persists in the TARGET host's registry). The receiving daemon re-checks
+  // the cwd contract against its own filesystem before creating.
+  spawnPlan: MissionControlProposalSpawnPlanSchema,
+});
+export type MissionControlSpawnApplyRequest = z.infer<typeof MissionControlSpawnApplyRequestSchema>;
+
+export const MissionControlSpawnApplyResponseSchema = z.object({
+  type: z.literal("mission_control.spawn.apply.response"),
+  payload: z.object({
+    requestId: z.string(),
+    ok: z.boolean(),
+    // The created agent id on the applying host. Present when ok.
+    agentId: z.string().optional(),
+    // The applying host's refusal/error. Present when !ok.
+    error: z.string().optional(),
+  }),
+});
+export type MissionControlSpawnApplyResponse = z.infer<
+  typeof MissionControlSpawnApplyResponseSchema
+>;
+
+// ============================================================================
+// Cross-host terminal-event forwarding: a NON-commander host forwards a
+// terminal mission-control event (finished/failed/interrupted, plus verdict)
+// for an agent it knows the Commander dispatched (labeled
+// paseo.parent-agent-id or paseo.commander-adopted-at) to the commander host
+// over peering. The commander host ingests the event into the machinery-turn
+// gate ONLY — the worker's labels ride the payload so the gate can decide
+// without a local record of the worker — and NEVER writes the forwarded event
+// into its own events store (the feed aggregates per-host via the app).
+// Machinery is advisory: an unreachable commander host is a warn + drop on
+// the forwarding side, no retry queue in v1.
+// ============================================================================
+
+export const MissionControlEventForwardRequestSchema = z.object({
+  type: z.literal("mission_control.event.forward.request"),
+  requestId: z.string(),
+  // The terminal event exactly as the forwarding host emitted it.
+  event: MissionControlEventSchema,
+  // The worker's labels at forward time. The commander host's
+  // isDispatchedByCommander gate reads paseo.parent-agent-id /
+  // paseo.commander-adopted-at from these (its own agentManager/storage have
+  // no record of a peer-host worker).
+  labels: z.record(z.string(), z.string()).nullable(),
+});
+export type MissionControlEventForwardRequest = z.infer<
+  typeof MissionControlEventForwardRequestSchema
+>;
+
+export const MissionControlEventForwardResponseSchema = z.object({
+  type: z.literal("mission_control.event.forward.response"),
+  payload: z.object({
+    requestId: z.string(),
+    ok: z.boolean(),
+    error: z.string().optional(),
+  }),
+});
+export type MissionControlEventForwardResponse = z.infer<
+  typeof MissionControlEventForwardResponseSchema
+>;

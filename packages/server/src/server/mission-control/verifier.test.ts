@@ -25,6 +25,7 @@ const BASE_CENTRAL_CONFIG: VerifierCentralConfig = {
   verifierConcurrency: 3,
   evaluationScope: "commander",
   verifierToWorkerMode: "steer",
+  mode: "auto",
 };
 
 const VERIFIER_MD = `---
@@ -96,6 +97,7 @@ async function createHarness(overrides?: {
   central?: Partial<VerifierCentralConfig>;
   autoApprove?: boolean;
   readyForReview?: Array<{ agentId: string; title: string; at: string }>;
+  hostAlias?: string | null;
 }): Promise<Harness> {
   const dir = await mkdtemp(join(tmpdir(), "mc-verifier-"));
   const store = new MissionControlStore({ paseoHome: dir, logger: createTestLogger() });
@@ -125,6 +127,7 @@ async function createHarness(overrides?: {
     logger: createTestLogger(),
     serverId: "server-1",
     hostName: "test-host",
+    ...(overrides?.hostAlias !== undefined ? { hostAlias: overrides.hostAlias } : {}),
     agentManager: {
       subscribe: (callback) => {
         managerListener = callback;
@@ -662,6 +665,41 @@ describe("MissionControlVerifierDispatcher", () => {
     expect(autoHarness.steers[0].prompt).toContain("send proof now");
     autoHarness.dispatcher.stop();
     await rm(autoHarness.dir, { recursive: true, force: true });
+  });
+
+  test("ask-mode spawn proposal card copy uses the worker name and host alias, never raw ids", async () => {
+    const askHarness = await createHarness({ central: { mode: "ask" }, hostAlias: "work server" });
+    askHarness.setWorker(makeCommander());
+    askHarness.setWorker(makeWorker("worker-1", { "paseo.parent-agent-id": "commander-1" }));
+    askHarness.dispatcher.start();
+    askHarness.emitReviewState("worker-1", "ready");
+    await vi.waitFor(() => expect(askHarness.proposals.length).toBe(1), WAIT);
+
+    const proposal = askHarness.proposals[0];
+    expect(proposal.kind).toBe("spawn");
+    expect(proposal.spawnPlan?.title).toBe("Verifier · Name-worker-1");
+    const summary = proposal.spawnPlan?.summary ?? "";
+    // Normal-mode card copy: the worker's NAME and the host ALIAS. The raw
+    // worker agentId and the OS hostname belong in the verbose payload only.
+    expect(summary).toContain("Spawn a verifier to audit Name-worker-1 on work server");
+    expect(summary).not.toContain("test-host");
+    expect(summary).not.toContain("(worker-1");
+    expect(summary).not.toMatch(/\([^)]*\)/);
+
+    // Fallback: no alias configured → the hostname is the display label.
+    const fallbackHarness = await createHarness({ central: { mode: "ask" } });
+    fallbackHarness.setWorker(makeCommander());
+    fallbackHarness.setWorker(makeWorker("worker-2", { "paseo.parent-agent-id": "commander-1" }));
+    fallbackHarness.dispatcher.start();
+    fallbackHarness.emitReviewState("worker-2", "ready");
+    await vi.waitFor(() => expect(fallbackHarness.proposals.length).toBe(1), WAIT);
+    expect(fallbackHarness.proposals[0].spawnPlan?.summary).toContain("on test-host");
+    expect(fallbackHarness.proposals[0].spawnPlan?.summary).not.toMatch(/\([^)]*\)/);
+    fallbackHarness.dispatcher.stop();
+    await rm(fallbackHarness.dir, { recursive: true, force: true });
+
+    askHarness.dispatcher.stop();
+    await rm(askHarness.dir, { recursive: true, force: true });
   });
 
   test("insufficient verdict without contact creates the proof-demand proposal", async () => {

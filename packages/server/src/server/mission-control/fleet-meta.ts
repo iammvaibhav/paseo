@@ -151,4 +151,4 @@ export function classifyFleetMetaAction(
   return isDestructiveMetaAction(metaPlan.action) ? "destructive" : "normal";
 }
 
-export { isDestructiveMetaAction, resolveExperimentsProject };
+export { isDestructiveMetaAction, resolveExperimentsProject, resolveMetaTargetHost };

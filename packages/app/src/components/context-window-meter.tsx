@@ -204,8 +204,7 @@ export function ContextWindowMeter({
             height={svgSize}
             viewBox={`0 0 ${svgSize} ${svgSize}`}
             style={styles.svg}
-            accessibilityElementsHidden
-            importantForAccessibility="no-hide-descendants"
+            aria-hidden
           >
             <Circle
               cx={center}

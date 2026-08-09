@@ -987,8 +987,7 @@ function DesktopSidebar({
   );
   return (
     <Animated.View
-      accessibilityElementsHidden={!active}
-      importantForAccessibility={active ? "auto" : "no-hide-descendants"}
+      aria-hidden={!active}
       pointerEvents={active ? "auto" : "none"}
       style={desktopSidebarStyle}
     >

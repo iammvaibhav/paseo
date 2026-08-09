@@ -357,8 +357,13 @@ function FeedCardBody({
     hideAgentNames,
   );
 
+  // hover.md separate-inner-Pressable doctrine: the frame is a plain View
+  // (hover tracker, card geometry, testID), the "Open agent" press lives on a
+  // SEPARATE inner Pressable, and the interactive meta row / proof sections
+  // render as SIBLINGS of that Pressable — a button role must never wrap
+  // another button role (React nesting + hydration error, BUG-8).
   return (
-    <Pressable
+    <View
       style={[
         styles.card,
         isBlocker && styles.cardBlocker,
@@ -370,26 +375,30 @@ function FeedCardBody({
       ]}
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
-      onPress={onOpenAgent}
-      accessibilityRole="button"
-      accessibilityLabel={`Open agent ${agentChipLabel}`}
       testID={`mission-control-feed-card-${event.kind}`}
     >
       <View style={styles.iconSlot}>{eventIcon(event)}</View>
       <View style={styles.content}>
-        <Text style={styles.title} numberOfLines={1}>
-          {title}
-        </Text>
-        {headline ? (
-          <Text style={styles.headline} numberOfLines={2}>
-            {headline}
+        <Pressable
+          onPress={onOpenAgent}
+          accessibilityRole="button"
+          accessibilityLabel={`Open agent ${agentChipLabel}`}
+          testID="mission-control-feed-card-open"
+        >
+          <Text style={styles.title} numberOfLines={1}>
+            {title}
           </Text>
-        ) : null}
-        {detail ? (
-          <Text style={styles.detail} numberOfLines={3}>
-            {detail}
-          </Text>
-        ) : null}
+          {headline ? (
+            <Text style={styles.headline} numberOfLines={2}>
+              {headline}
+            </Text>
+          ) : null}
+          {detail ? (
+            <Text style={styles.detail} numberOfLines={3}>
+              {detail}
+            </Text>
+          ) : null}
+        </Pressable>
         <FeedCardMetaRow
           event={event}
           agentChipLabel={agentChipLabel}
@@ -401,7 +410,7 @@ function FeedCardBody({
           <ProofSections proofs={event.proof} serverId={event.serverId} />
         ) : null}
       </View>
-    </Pressable>
+    </View>
   );
 }
 

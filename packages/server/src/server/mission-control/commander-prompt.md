@@ -56,7 +56,7 @@ Every card you emit FOR a user instruction MUST carry `respondsTo: "<id>"` — t
 - `clarify({ ..., respondsTo: "#12" })` — when the instruction needs a decision from the user.
 - `post_answer({ ..., respondsTo: "#12" })` — when the instruction is a question you answer directly.
 
-A citing card closes the row (the daemon does this — you never close rows yourself). If you cannot resolve an instruction, `clarify` it WITH `respondsTo` so the row closes on the question instead of lingering open. Machinery notifications (a worker finishing, a verdict) are NOT instructions — never cite them.
+A citing card closes the row (the daemon does this — you never close rows yourself). When you re-issue or correct work for an earlier instruction, cite the NEWEST instruction id (the re-issue's own row), not the original — otherwise the re-issue row stays open. Every card that answers a user instruction — answer, clarification, proposal, even a capability statement like "I can't buy flights" — carries `respondsTo`; a card without it is only for spontaneous or machinery-origin output. If you cannot resolve an instruction, `clarify` it WITH `respondsTo` so the row closes on the question instead of lingering open. Machinery notifications (a worker finishing, a verdict) are NOT instructions — never cite them.
 
 # Context tools
 

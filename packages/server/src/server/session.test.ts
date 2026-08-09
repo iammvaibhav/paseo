@@ -6195,3 +6195,183 @@ describe("mission control instruction-ledger RPC round trips", () => {
     ]);
   });
 });
+
+// ============================================================================
+// Cross-host spawn apply (mission_control.spawn.apply): the commander host
+// forwards an approved spawn-kind proposal whose plan targets THIS host as a
+// peer. THIS daemon validates the cwd contract against its own filesystem,
+// creates the absolute cwd with mkdir recursive when missing, and creates the
+// agent in its own registry — the mkdir happens here, never on the commander's
+// disk. Only the APPLY hops; the proposal card stays on the commander host.
+// ============================================================================
+
+describe("mission control spawn apply wire dispatch", () => {
+  test("mission_control.spawn.apply.request routes the plan to the service and emits the response", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const applySpawnRemote = vi.fn(async () => ({ ok: true as const, agentId: "worker-1" }));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        applySpawnRemote,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.spawn.apply.request",
+      requestId: "req-spawn-apply",
+      spawnPlan: {
+        host: "peer-a",
+        provider: "omp",
+        summary: "Spawn a worker on peer-a",
+        cwd: "/tmp/peer-campaign",
+        labels: { "paseo.parent-agent-id": "commander-1" },
+      },
+    });
+
+    expect(applySpawnRemote).toHaveBeenCalledWith(
+      expect.objectContaining({
+        host: "peer-a",
+        provider: "omp",
+        labels: { "paseo.parent-agent-id": "commander-1" },
+      }),
+    );
+    expect(messages).toEqual([
+      {
+        type: "mission_control.spawn.apply.response",
+        payload: { requestId: "req-spawn-apply", ok: true, agentId: "worker-1" },
+      },
+    ]);
+  });
+
+  test("mission_control.spawn.apply.request surfaces the target host's refusal", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const applySpawnRemote = vi.fn(async () => ({
+      ok: false as const,
+      error: 'Spawn cwd must be an absolute path (got "relative/path")',
+    }));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        applySpawnRemote,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.spawn.apply.request",
+      requestId: "req-spawn-refused",
+      spawnPlan: { host: "peer-a", provider: "omp", summary: "Spawn", cwd: "relative/path" },
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.spawn.apply.response",
+        payload: {
+          requestId: "req-spawn-refused",
+          ok: false,
+          error: 'Spawn cwd must be an absolute path (got "relative/path")',
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.spawn.apply.request reports an error without a service", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({ messages, missionControlService: undefined });
+
+    await session.handleMessage({
+      type: "mission_control.spawn.apply.request",
+      requestId: "req-spawn-none",
+      spawnPlan: { host: "peer-a", provider: "omp", summary: "Spawn" },
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.spawn.apply.response",
+        payload: {
+          requestId: "req-spawn-none",
+          ok: false,
+          error: "Mission Control is not enabled on this host",
+        },
+      },
+    ]);
+  });
+});
+
+// ============================================================================
+// Cross-host terminal-event ingest (mission_control.event.forward): a
+// NON-commander host forwards a terminal event (finished/failed/interrupted
+// or verdict) for one of ITS commander-dispatched workers. The worker's
+// labels ride the payload so THIS (commander) host's machinery-turn gate can
+// decide without a local record. The event is NEVER written to this host's
+// events store — only the gate consumes it.
+// ============================================================================
+
+describe("mission control event forward wire dispatch", () => {
+  test("mission_control.event.forward.request routes the event + labels to the service and emits the response", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const ingestForwardedEvent = vi.fn(async () => ({ ok: true as const }));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        ingestForwardedEvent,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.event.forward.request",
+      requestId: "req-event-fwd",
+      event: {
+        id: "mce_fwd_1",
+        agentId: "worker-1",
+        kind: "finished",
+        source: "system",
+        severity: "info",
+        headline: "Finished",
+        ts: "2026-08-09T00:00:00.000Z",
+      },
+      labels: { "paseo.parent-agent-id": "commander-1" },
+    });
+
+    expect(ingestForwardedEvent).toHaveBeenCalledWith({
+      event: expect.objectContaining({ agentId: "worker-1", kind: "finished" }),
+      labels: { "paseo.parent-agent-id": "commander-1" },
+    });
+    expect(messages).toEqual([
+      {
+        type: "mission_control.event.forward.response",
+        payload: { requestId: "req-event-fwd", ok: true },
+      },
+    ]);
+  });
+
+  test("mission_control.event.forward.request reports an error without a service", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({ messages, missionControlService: undefined });
+
+    await session.handleMessage({
+      type: "mission_control.event.forward.request",
+      requestId: "req-event-fwd-none",
+      event: {
+        id: "mce_fwd_2",
+        agentId: "worker-1",
+        kind: "failed",
+        source: "system",
+        severity: "attention",
+        headline: "Failed",
+        ts: "2026-08-09T00:00:00.000Z",
+      },
+      labels: null,
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.event.forward.response",
+        payload: {
+          requestId: "req-event-fwd-none",
+          ok: false,
+          error: "Mission Control is not enabled on this host",
+        },
+      },
+    ]);
+  });
+});

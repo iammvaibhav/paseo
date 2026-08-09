@@ -1552,6 +1552,10 @@ export class VoiceAssistantWebSocketServer {
       status: "server_info",
       serverId: this.serverId,
       hostname: getHostname(),
+      // Additive (v0.1.X): advertise this host's missionControl.hostAlias so a
+      // central-config commanderHost designation naming the alias resolves.
+      missionControlHostAlias:
+        this.daemonConfigStore.get().missionControl?.hostAlias?.trim() || undefined,
       version: this.daemonVersion,
       // COMPAT(desktopManaged): added in v0.1.X, remove optional parsing after 2027-01-16.
       desktopManaged: this.daemonRuntimeConfig?.desktopManaged === true,

@@ -74,8 +74,12 @@ function parsePositiveInt(raw: string | null): number | null {
   return parsed;
 }
 
-function hostMatchValue(host: HostProfile, hostname: string | null): string {
-  return hostname ?? host.label;
+function hostMatchValue(
+  host: HostProfile,
+  hostname: string | null,
+  hostAlias: string | null,
+): string {
+  return hostAlias ?? hostname ?? host.label;
 }
 
 interface DropdownRowOption<T extends string> {
@@ -537,15 +541,24 @@ export function MissionControlSection(): ReactElement {
     return map;
   }, [sessions]);
 
+  const hostAliasByServerId = useMemo(() => {
+    const map = new Map<string, string | null>();
+    for (const [serverId, session] of Object.entries(sessions)) {
+      map.set(serverId, session.serverInfo?.missionControlHostAlias ?? null);
+    }
+    return map;
+  }, [sessions]);
+
   const commanderHostServerId = useMemo(
     () =>
       resolveCommanderHostServerId({
         commanderHost: config?.commanderHost ?? null,
         hosts,
         hostnameByServerId,
+        hostAliasByServerId,
         localServerId,
       }),
-    [config?.commanderHost, hostnameByServerId, hosts, localServerId],
+    [config?.commanderHost, hostAliasByServerId, hostnameByServerId, hosts, localServerId],
   );
 
   const commanderHostLabel = useMemo(() => {
@@ -557,19 +570,55 @@ export function MissionControlSection(): ReactElement {
       (h) =>
         h.serverId === commanderHostServerId ||
         h.label === rawHost ||
-        hostnameByServerId.get(h.serverId) === rawHost,
+        hostnameByServerId.get(h.serverId) === rawHost ||
+        hostAliasByServerId.get(h.serverId) === rawHost,
     );
     return host?.label ?? rawHost;
-  }, [config?.commanderHost, commanderHostServerId, hostnameByServerId, hosts]);
+  }, [
+    config?.commanderHost,
+    commanderHostServerId,
+    hostAliasByServerId,
+    hostnameByServerId,
+    hosts,
+  ]);
 
   const hostOptions = useMemo(
     () =>
       hosts.map((host) => ({
-        value: hostMatchValue(host, hostnameByServerId.get(host.serverId) ?? null),
+        value: hostMatchValue(
+          host,
+          hostnameByServerId.get(host.serverId) ?? null,
+          hostAliasByServerId.get(host.serverId) ?? null,
+        ),
         label: host.label,
       })),
-    [hostnameByServerId, hosts],
+    [hostAliasByServerId, hostnameByServerId, hosts],
   );
+
+  // The dropdown shows the option value of the RESOLVED host (alias-first),
+  // so a stored designation that names a hostname/alias/label still renders
+  // its host's label and highlights the matching option without rewriting the
+  // stored value until the user picks.
+  const commanderHostOptionValue = useMemo(() => {
+    if (!commanderHostServerId) {
+      return config?.commanderHost ?? null;
+    }
+    const host = hosts.find((h) => h.serverId === commanderHostServerId);
+    if (!host) {
+      return config?.commanderHost ?? null;
+    }
+    return hostMatchValue(
+      host,
+      hostnameByServerId.get(host.serverId) ?? null,
+      hostAliasByServerId.get(host.serverId) ?? null,
+    );
+  }, [
+    commanderHostServerId,
+    config?.commanderHost,
+    hostAliasByServerId,
+    hostnameByServerId,
+    hosts,
+  ]);
   const namingThemeOptions = useMemo(
     () =>
       MISSION_CONTROL_NAMING_THEMES.map((theme) => ({
@@ -778,7 +827,7 @@ export function MissionControlSection(): ReactElement {
           <DropdownRow
             title="Commander host"
             hint="The host that runs the fleet Commander. Only this designated host ensures it; None means no host does until you pick one."
-            value={config.commanderHost}
+            value={commanderHostOptionValue}
             options={hostOptions}
             onSelect={handleCommanderHostSelect}
             testID="mission-control-settings-commander-host"
@@ -957,8 +1006,7 @@ export function MissionControlSection(): ReactElement {
         </View>
       </SettingsSection>
 
-      {!hostOptions.some((option) => option.value === config.commanderHost) &&
-      config.commanderHost !== null ? (
+      {commanderHostServerId === null && config.commanderHost !== null ? (
         <Text style={styles.staleValue}>
           Commander host “{config.commanderHost}” is not one of the connected hosts.
         </Text>

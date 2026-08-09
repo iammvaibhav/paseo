@@ -504,6 +504,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
     updateSessionServerInfo(serverId, {
       serverId: serverInfo.serverId,
       hostname: serverInfo.hostname,
+      missionControlHostAlias: serverInfo.missionControlHostAlias ?? null,
       version: serverInfo.version,
       ...(serverInfo.desktopManaged !== undefined
         ? { desktopManaged: serverInfo.desktopManaged }
@@ -843,6 +844,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
         updateSessionServerInfo(serverId, {
           serverId: serverInfo.serverId,
           hostname: serverInfo.hostname,
+          missionControlHostAlias: serverInfo.missionControlHostAlias ?? null,
           version: serverInfo.version,
           ...(serverInfo.desktopManaged !== undefined
             ? { desktopManaged: serverInfo.desktopManaged }

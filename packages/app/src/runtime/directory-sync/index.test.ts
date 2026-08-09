@@ -127,6 +127,7 @@ describe("DirectorySync session readiness", () => {
     store.updateSessionServerInfo(serverId, {
       serverId,
       hostname: null,
+      missionControlHostAlias: null,
       version: "test",
       features: { workspaceMultiplicity: true },
     });
@@ -145,6 +146,7 @@ describe("DirectorySync session readiness", () => {
     store.updateSessionServerInfo(serverId, {
       serverId,
       hostname: null,
+      missionControlHostAlias: null,
       version: "test",
       features: { workspaceMultiplicity: true, projectList: true },
     });
@@ -193,6 +195,7 @@ describe("DirectorySync session readiness", () => {
     store.updateSessionServerInfo(serverId, {
       serverId,
       hostname: null,
+      missionControlHostAlias: null,
       version: "test",
       features: { workspaceMultiplicity: true },
     });
@@ -261,6 +264,7 @@ describe("DirectorySync session readiness", () => {
     store.updateSessionServerInfo(serverId, {
       serverId,
       hostname: null,
+      missionControlHostAlias: null,
       version: "test",
       features: { workspaceMultiplicity: true },
     });

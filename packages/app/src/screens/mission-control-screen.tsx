@@ -119,12 +119,15 @@ export function MissionControlScreen(): ReactElement {
   const composerVoiceVariant = resolveComposerVoiceVariant({ isWeb, voiceNodeUrl });
   const [isCommanderVoiceOpen, setIsCommanderVoiceOpen] = useState(false);
   const { clearPointTs, setClearViewPoint } = useClearViewPoint();
-  const serverInfoByServerId = useSessionStore(
+  const hostInfoByServerId = useSessionStore(
     useShallow((state) =>
       Object.fromEntries(
         Object.entries(state.sessions).map(([serverId, session]) => [
           serverId,
-          session.serverInfo?.hostname ?? null,
+          {
+            hostname: session.serverInfo?.hostname ?? null,
+            hostAlias: session.serverInfo?.missionControlHostAlias ?? null,
+          },
         ]),
       ),
     ),
@@ -134,8 +137,9 @@ export function MissionControlScreen(): ReactElement {
   // designation is required, never defaulted (live incident: null commanderHost
   // made every host boot-ensure its own Commander). No designation → no host is
   // selected and the empty state points at Mission Control settings. The
-  // central value is the daemon hostname (or host label), so resolve it to a
-  // connected host by serverId first, then by the host's server_info hostname.
+  // central value is the daemon hostname, missionControl.hostAlias, or host
+  // label, so resolve it to a connected host by serverId first, then by the
+  // host's server_info hostname/alias.
   const centralCommanderHost = missionControlConfig?.commanderHost ?? null;
   const selectedServerId = useMemo(() => {
     if (!centralCommanderHost) {
@@ -146,10 +150,15 @@ export function MissionControlScreen(): ReactElement {
       return direct.serverId;
     }
     return (
-      hosts.find((host) => serverInfoByServerId[host.serverId] === centralCommanderHost)
-        ?.serverId ?? null
+      hosts.find((host) => {
+        const info = hostInfoByServerId[host.serverId];
+        return (
+          info?.hostname === centralCommanderHost ||
+          (info?.hostAlias !== null && info?.hostAlias === centralCommanderHost)
+        );
+      })?.serverId ?? null
     );
-  }, [centralCommanderHost, hosts, serverInfoByServerId]);
+  }, [centralCommanderHost, hostInfoByServerId, hosts]);
 
   // v3 feature gate: the split view (collapsible thread + inspector) exists
   // only when the commander host advertises missionControlV3. One gate, here.

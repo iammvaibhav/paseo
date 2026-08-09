@@ -82,13 +82,19 @@ function createFakePeerHarness(
   return { client, peerManager };
 }
 
-function createCatalog(peerManager: PeerManager, agentManager?: AgentManager) {
+function createCatalog(
+  peerManager: PeerManager,
+  agentManager?: AgentManager,
+  hostIdentity: { serverId?: string; hostAlias?: string | null } = {},
+) {
   return createPaseoToolCatalog({
     agentManager: agentManager ?? ({} as unknown as AgentManager),
     agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
     providerSnapshotManager: createProviderSnapshotManagerStub()
       .manager as unknown as ProviderSnapshotManager,
     peerManager,
+    serverId: hostIdentity.serverId,
+    hostAlias: hostIdentity.hostAlias,
     logger: createTestLogger(),
   });
 }
@@ -127,6 +133,26 @@ describe("fleet_get_agent_activity tool", () => {
     await expect(
       catalog.executeTool("fleet_get_agent_activity", {
         host: "local",
+        agentId: "agent-1",
+      }),
+    ).rejects.toThrow(/not found/i);
+    expect(client.fetchAgentTimeline).not.toHaveBeenCalled();
+  });
+
+  test("the daemon's own hostAlias resolves to the local branch, never the peer proxy", async () => {
+    const { client, peerManager } = createFakePeerHarness();
+    const catalog = createCatalog(
+      peerManager,
+      { getAgent: () => null } as unknown as AgentManager,
+      { serverId: "srv__alpha", hostAlias: "alpha" },
+    );
+
+    // Own alias (the world snapshot teaches the Commander these) must route
+    // to the local branch exactly like "local" — same shared resolver the
+    // spawn and meta executors use.
+    await expect(
+      catalog.executeTool("fleet_get_agent_activity", {
+        host: "alpha",
         agentId: "agent-1",
       }),
     ).rejects.toThrow(/not found/i);

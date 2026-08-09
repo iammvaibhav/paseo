@@ -51,6 +51,7 @@ function createServerInfo(): DaemonServerInfo {
   return {
     serverId: "server-1",
     hostname: "host",
+    missionControlHostAlias: null,
     version: "1.0.0",
     capabilities: {
       voice: {

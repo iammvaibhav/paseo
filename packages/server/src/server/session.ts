@@ -2066,6 +2066,8 @@ export class Session {
     (msg) => this.dispatchMissionControlSearchMessage(msg),
     (msg) => this.dispatchMissionControlMediaMessage(msg),
     (msg) => this.dispatchMissionControlMetaMessage(msg),
+    (msg) => this.dispatchMissionControlSpawnMessage(msg),
+    (msg) => this.dispatchMissionControlEventForwardMessage(msg),
     (msg) => this.dispatchMiscMessage(msg),
   ];
 
@@ -2496,6 +2498,28 @@ export class Session {
     }
   }
 
+  private dispatchMissionControlSpawnMessage(
+    msg: SessionInboundMessage,
+  ): Promise<void> | undefined {
+    switch (msg.type) {
+      case "mission_control.spawn.apply.request":
+        return this.handleMissionControlSpawnApplyRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  private dispatchMissionControlEventForwardMessage(
+    msg: SessionInboundMessage,
+  ): Promise<void> | undefined {
+    switch (msg.type) {
+      case "mission_control.event.forward.request":
+        return this.handleMissionControlEventForwardRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
   /**
    * Cross-host meta apply (mission_control.meta.apply): the commander host
    * forwards an approved meta-kind proposal whose metaPlan.serverId names
@@ -2518,6 +2542,59 @@ export class Session {
         ...(result.ok
           ? { summary: result.summary, serverId: this.serverId, hostName: this.hostName }
           : { error: result.error }),
+      },
+    });
+  }
+
+  /**
+   * Cross-host spawn apply (mission_control.spawn.apply): the commander host
+   * forwards an approved spawn-kind proposal whose plan targets THIS host as
+   * a peer. THIS daemon validates the plan's cwd contract against its own
+   * filesystem, creates the absolute cwd with mkdir recursive when missing,
+   * and creates the agent in its own registry — the mkdir happens here, never
+   * on the commander's disk. Only the APPLY hops; the proposal card lives on
+   * the commander host.
+   */
+  private async handleMissionControlSpawnApplyRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.spawn.apply.request" }>,
+  ): Promise<void> {
+    const result = this.missionControlService
+      ? await this.missionControlService.applySpawnRemote(msg.spawnPlan)
+      : { ok: false as const, error: "Mission Control is not enabled on this host" };
+    this.emit({
+      type: "mission_control.spawn.apply.response",
+      payload: {
+        requestId: msg.requestId,
+        ok: result.ok,
+        ...(result.ok ? { agentId: result.agentId } : { error: result.error }),
+      },
+    });
+  }
+
+  /**
+   * Cross-host terminal-event ingest (mission_control.event.forward): a
+   * NON-commander host forwards a terminal event (finished/failed/interrupted
+   * or verdict) for one of ITS commander-dispatched workers. The worker's
+   * labels ride the payload, so THIS (commander) host's machinery-turn gate
+   * can decide without a local record. The event is NEVER written to this
+   * host's events store (the feed aggregates per-host via the app) — only the
+   * gate consumes it.
+   */
+  private async handleMissionControlEventForwardRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.event.forward.request" }>,
+  ): Promise<void> {
+    const result = this.missionControlService
+      ? await this.missionControlService.ingestForwardedEvent({
+          event: msg.event,
+          labels: msg.labels ?? null,
+        })
+      : { ok: false as const, error: "Mission Control is not enabled on this host" };
+    this.emit({
+      type: "mission_control.event.forward.response",
+      payload: {
+        requestId: msg.requestId,
+        ok: result.ok,
+        ...(!result.ok ? { error: result.error } : {}),
       },
     });
   }

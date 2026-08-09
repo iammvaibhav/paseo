@@ -127,6 +127,7 @@ vi.stubGlobal("React", React);
 vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
 
 const { cardRunPosition, deriveFeedCardText, FeedCard } = await import("./feed-card");
+const { ComposerToolbarGlyph } = await import("@/composer/agent-controls/glyph");
 
 function event(overrides: Partial<FeedCardEvent> = {}): FeedCardEvent {
   return {
@@ -244,6 +245,55 @@ describe("FeedCard", () => {
         ?.getAttribute("data-size"),
     ).toBe("sm");
     expect(card?.textContent).not.toContain("MacBook-Pro-89.local");
+  });
+
+  it("does not nest button roles: the agent chip is not inside another button", () => {
+    // BUG-8: FeedCardBody used to be a Pressable (button role) wrapping the
+    // meta row's agent-chip Pressable → "button cannot be a descendant of
+    // button" + hydration error on web. The body frame is now a plain View
+    // with a separate "Open agent" pressable; the chip is a sibling.
+    act(() =>
+      root?.render(<FeedCard event={event({ kind: "started", headline: "Started running" })} />),
+    );
+    const buttons = Array.from(container?.querySelectorAll('[role="button"]') ?? []);
+    expect(buttons.length).toBeGreaterThanOrEqual(2);
+    for (const button of buttons) {
+      // closest() includes the element itself — check the ancestor chain only.
+      const ancestor = button.parentElement?.closest('[role="button"]') ?? null;
+      expect(ancestor, "button must not nest a button").toBeNull();
+    }
+    // The chip keeps its own pressable identity.
+    expect(
+      container?.querySelector('[data-testid="mission-control-feed-agent-chip"]'),
+    ).not.toBeNull();
+  });
+
+  it("does not leak RN-only accessibility props into the DOM", () => {
+    // BUG-8 companion: accessibilityElementsHidden / importantForAccessibility
+    // are not consumed by react-native-web 0.21 — they reached the DOM and
+    // tripped React's unknown-prop warning. aria-hidden is the cross-platform
+    // form (RN core maps it natively, rnw renders it as the DOM attribute).
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      act(() => root?.render(<FeedCard event={event()} />));
+      // Shared composer glyph chip: the exact component the MC screen rendered
+      // with the leaked props.
+      act(() =>
+        root?.render(
+          <ComposerToolbarGlyph size={16}>
+            <span />
+          </ComposerToolbarGlyph>,
+        ),
+      );
+      expect(container?.querySelector("[accessibilityelementshidden]")).toBeNull();
+      expect(container?.querySelector("[importantforaccessibility]")).toBeNull();
+      expect(container?.querySelector('[aria-hidden="true"]')).not.toBeNull();
+      expect(
+        errorSpy.mock.calls.some((args) => String(args[0]).includes("React does not recognize")),
+      ).toBe(false);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it("renders a user-interrupted run as a distinct non-error card", () => {
@@ -633,8 +683,10 @@ describe("FeedCard verdict drill-in", () => {
     });
     const card = container?.querySelector('[data-testid="mission-control-feed-card-verdict"]');
     expect(card).not.toBeNull();
+    const openSurface = card?.querySelector('[data-testid="mission-control-feed-card-open"]');
+    expect(openSurface).not.toBeNull();
     act(() => {
-      card?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      openSurface?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(openInspectorAgentMock).toHaveBeenCalledWith({
       serverId: "server-1",
@@ -649,8 +701,9 @@ describe("FeedCard verdict drill-in", () => {
       );
     });
     const card = container?.querySelector('[data-testid="mission-control-feed-card-verdict"]');
+    const openSurface = card?.querySelector('[data-testid="mission-control-feed-card-open"]');
     act(() => {
-      card?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      openSurface?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(openInspectorAgentMock).toHaveBeenCalledWith({
       serverId: "server-1",

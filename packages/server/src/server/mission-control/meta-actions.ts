@@ -254,13 +254,17 @@ export function resolveMetaTargetHost(
   if (raw === "local") {
     return { ok: true, kind: "local", label: "local" };
   }
-  if (raw === deps.serverId) {
+  // Own identity compares case-insensitively: the Commander echoes fleet
+  // labels verbatim, and the machine/alias casing must never turn this
+  // daemon into an "unknown host". Peer names stay exact (config values).
+  const rawLower = raw.toLowerCase();
+  if (deps.serverId.trim().toLowerCase() === rawLower) {
     return { ok: true, kind: "local", label: raw };
   }
-  if (deps.hostName && raw === deps.hostName) {
+  if (deps.hostName?.trim().toLowerCase() === rawLower) {
     return { ok: true, kind: "local", label: raw };
   }
-  if (deps.hostAlias?.trim() && raw === deps.hostAlias.trim()) {
+  if (deps.hostAlias?.trim().toLowerCase() === rawLower) {
     return { ok: true, kind: "local", label: raw };
   }
   const peerStatus = deps.peerManager?.getPeerStatus(raw) ?? null;

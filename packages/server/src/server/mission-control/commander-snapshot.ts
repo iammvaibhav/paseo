@@ -57,20 +57,36 @@ export interface CommanderSnapshotInjectorOptions {
  *   immediately before the delivered message, so it is a distinct timeline row
  *   (the app renders any user row starting with the envelope as machinery; a
  *   snapshot glued into the user's own row would hide their message). The
- *   dispatch rides a unique clientMessageId so the row is staged at turn start
- *   — it survives the delivered message's replacement of the snapshot turn.
+ *   dispatch rides a unique clientMessageId so the row is staged synchronously
+ *   at turn start — the row is committed to the timeline no matter what
+ *   happens to the turn.
+ * - The MODEL sees the fresh snapshot only when the turn carrying it is not
+ *   cancelled before the provider processes the prompt. Delivery is therefore
+ *   join-don't-replace: the mailbox idle path dispatches the snapshot turn via
+ *   `dispatchSnapshotTurn` and then STEERS the delivered message into that
+ *   in-flight turn (the native omp steer — the same path the busy branch
+ *   uses), so the snapshot prompt and the message ride one live turn.
+ *   Replacing the snapshot turn instead (the plain-run fallback when no
+ *   snapshot turn is in flight) cancels it, and the provider session drops the
+ *   cancelled prompt — the timeline row survives, the model never sees the
+ *   fresh fleet state (M10).
  * - Supersede-in-place: the previous snapshot row is retracted via
  *   `removeTimelineRows` — the same retraction primitive CommanderAckDrop uses
  *   on omp timelines — before the fresh snapshot is dispatched. Rows are
  *   matched by the WORLD_SNAPSHOT_MARKER stamp, so the launch-time first
  *   message is superseded too.
  * - The snapshot turn's own reply is a machinery turn: a pure-ack "ok" is
- *   retracted by the composed CommanderAckDrop (one-shot arm, cleared if the
- *   delivered message's replace cancels the snapshot turn first).
+ *   retracted by the composed CommanderAckDrop (one-shot arm). When the
+ *   mailbox steers the user message into the turn, the reply becomes REAL
+ *   content — the ack-drop is disarmed, and `disarm()` also drops a turn
+ *   already being tracked.
  * - Busy Commander (a turn already in flight, e.g. a native steer or an
  *   interrupt): a new run cannot start, so injection is skipped and logged —
  *   the running turn already carries the previous snapshot row in context.
  *   Documented as the busy-path exception; the next idle turn re-injects.
+ * - Machinery path (replaceRunning:false callers) waits for the snapshot turn
+ *   to settle before the delivered run starts, so the machinery turn's own
+ *   context carries the fresh snapshot.
  */
 export class CommanderSnapshotInjector {
   private readonly agentManager: CommanderSnapshotInjectorOptions["agentManager"];
@@ -120,10 +136,17 @@ export class CommanderSnapshotInjector {
    * dispatch a fresh snapshot as its own machinery message, so the delivered
    * message's turn sees current fleet state. Returns the prompt unchanged —
    * injection is a separate dispatch, never an edit of the user's message.
-   * `replaceRunning` mirrors the delivered message's startAgentRun option:
-   * false (queue/machinery path) waits for the snapshot turn to settle so the
-   * delivered run can start after it; true (user path) lets the delivered run
-   * replace the snapshot turn once its row is staged.
+   *
+   * The mailbox idle delivery path does NOT ride this seam: it calls
+   * `dispatchSnapshotTurn` explicitly and then steers the delivered message
+   * into the in-flight snapshot turn (join-don't-replace — see the class
+   * doc). This seam serves the remaining startAgentRun deliveries:
+   * `replaceRunning: false` (the machinery-turn path) waits for the snapshot
+   * turn to settle so the delivered run can start after it;
+   * `replaceRunning: true` (the plain-run fallback) lets the delivered run
+   * replace the snapshot turn once its row is staged — the provider drops the
+   * cancelled prompt, so that path never guarantees the model saw the fresh
+   * snapshot.
    */
   async beforeTurn(input: {
     agentId: string;
@@ -150,40 +173,69 @@ export class CommanderSnapshotInjector {
       this.ackDrop.arm();
       return;
     }
-    this.attach(input.agentId);
-    // Adoption must settle BEFORE the supersede below: the previous snapshot
-    // rows (launch first message, or rows from before this daemon process)
-    // are only known once the timeline has been read. Fire-and-forget would
-    // race the retraction and leave stale snapshot rows behind.
-    await this.adoptSnapshotRows(input.agentId);
-    if (this.agentManager.hasInFlightRun(input.agentId)) {
-      // A turn is already in flight (native steer, interrupt replace): a
-      // snapshot run cannot start. The running turn already carries the
-      // previous snapshot row in context; skip and let the next idle turn
-      // re-inject. (Busy-path exception — documented in the class doc.)
-      this.logger.debug(
-        { agentId: input.agentId },
-        "mission_control.snapshot.skipped_busy_commander",
-      );
-      return;
-    }
-    await this.supersedePreviousSnapshots(input.agentId);
-    try {
-      await this.dispatchSnapshot(input.agentId);
-    } catch (error) {
-      // The snapshot is advisory: a failed injection must never fail the
-      // message itself. The delivered turn simply runs on the previous row.
-      this.logger.warn(
-        { err: error, agentId: input.agentId },
-        "mission_control.snapshot.dispatch_failed",
-      );
-      return;
-    }
-    if (input.replaceRunning === false) {
+    const dispatched = await this.dispatchFreshSnapshotOrSkip(input.agentId);
+    if (dispatched && input.replaceRunning === false) {
       // The caller will not replace the snapshot turn (machinery-turn path,
       // queue dispatch): wait for it to settle so the caller's run can start.
       await this.waitForSnapshotSettlement(input.agentId);
     }
+  }
+
+  /**
+   * M10 mailbox idle path: dispatch a fresh snapshot turn NOW and report
+   * whether a snapshot turn is in flight for the caller to steer the
+   * delivered message into (the same native steer the busy path uses — the
+   * only delivery that keeps the snapshot prompt in the provider session).
+   * Returns false when nothing is in flight:
+   * - a busy Commander (skip, logged — the running turn carries the prior
+   *   row), or
+   * - a failed dispatch (advisory — logged, never failing the message), or
+   * - a turn that already settled (a fast model answered the ack before the
+   *   caller could steer).
+   * Callers fall back to the plain delivery path, whose seam re-injects a
+   * fresh snapshot ahead of the run.
+   */
+  async dispatchSnapshotTurn(agentId: string): Promise<boolean> {
+    if (await this.dispatchFreshSnapshotOrSkip(agentId)) {
+      // In flight right after dispatch — unless a very fast model already
+      // settled the ack turn (then the caller falls back to a plain run,
+      // whose seam re-injects a fresh snapshot ahead of it).
+      return this.agentManager.hasInFlightRun(agentId);
+    }
+    return false;
+  }
+
+  /**
+   * Shared dispatch core for the seam and `dispatchSnapshotTurn`: attach,
+   * adopt the current snapshot rows, skip a busy Commander, supersede the
+   * stale rows, and dispatch the fresh snapshot as its own turn. Returns
+   * whether a snapshot was dispatched (the caller decides what in-flight
+   * means for its own delivery). Adoption must settle BEFORE the supersede:
+   * the previous snapshot rows (launch first message, or rows from before
+   * this daemon process) are only known once the timeline has been read.
+   * Fire-and-forget would race the retraction and leave stale rows behind.
+   */
+  private async dispatchFreshSnapshotOrSkip(agentId: string): Promise<boolean> {
+    this.attach(agentId);
+    await this.adoptSnapshotRows(agentId);
+    if (this.agentManager.hasInFlightRun(agentId)) {
+      // A turn is already in flight (native steer, interrupt replace): a
+      // snapshot run cannot start. The running turn already carries the
+      // previous snapshot row in context; skip and let the next idle turn
+      // re-inject. (Busy-path exception — documented in the class doc.)
+      this.logger.debug({ agentId }, "mission_control.snapshot.skipped_busy_commander");
+      return false;
+    }
+    await this.supersedePreviousSnapshots(agentId);
+    try {
+      await this.dispatchSnapshot(agentId);
+    } catch (error) {
+      // The snapshot is advisory: a failed injection must never fail the
+      // message itself. The delivered turn simply runs on the previous row.
+      this.logger.warn({ err: error, agentId }, "mission_control.snapshot.dispatch_failed");
+      return false;
+    }
+    return true;
   }
 
   /**
@@ -268,10 +320,18 @@ export class CommanderSnapshotInjector {
    * Dispatch the fresh snapshot as its own standalone machinery message. The
    * ack-drop is armed before dispatch so the snapshot turn's pure-ack reply
    * is retracted (one-shot: if the delivered message replaces this turn, the
-   * cancel clears the arm and the message's turn is never classified). The
-   * dispatch rides a unique clientMessageId so the row is staged synchronously
-   * at turn start — a delivered message that replaces this turn (user path)
-   * cannot race the row out of the timeline.
+   * cancel clears the arm and the message's turn is never classified; if the
+   * mailbox steers the user message into the turn, the steer disarms the
+   * ack-drop so the turn's real reply is kept).
+   *
+   * The dispatch rides a unique clientMessageId so the row is staged
+   * synchronously at turn start — the row is committed to the timeline no
+   * matter what happens to the turn. The row alone does NOT guarantee the
+   * model saw the snapshot: a turn that is replaced before the provider
+   * processes its prompt is dropped from the provider session (M10 — the
+   * launch-pack staleness). Model-visible delivery is the CALLER's contract:
+   * steer into the in-flight turn (mailbox idle) or wait for settlement
+   * (replaceRunning:false callers).
    *
    * M8 mailbox: the snapshot body appends the per-turn 'Open instructions:'
    * ledger block (regenerated per turn, never accreted) and, when an idle

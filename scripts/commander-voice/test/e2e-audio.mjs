@@ -203,7 +203,7 @@ const preMadePcm = process.env.E2E_TTS_PCM;
 if (preMadePcm) {
   tts = { pcm: await readFile(preMadePcm), source: "pre-made (gemini-2.5-flash-preview-tts)" };
   ttsNotes.push(`TTS: using pre-synthesized PCM from ${preMadePcm}`);
-} else if (fishKey) {
+} else if (process.env.FISH_AUDIO_API_KEY) {
   try {
     tts = synthesizeWithFish(COMMAND);
     ttsNotes.push("fish.audio: success");

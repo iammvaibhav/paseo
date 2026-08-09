@@ -336,6 +336,10 @@ export interface AgentFileExplorerState {
 export interface DaemonServerInfo {
   serverId: string;
   hostname: string | null;
+  // The daemon's missionControl.hostAlias (trimmed; null when unset/unknown),
+  // advertised via server_info so a central-config commanderHost designation
+  // naming the alias resolves to this host.
+  missionControlHostAlias: string | null;
   version: string | null;
   desktopManaged?: boolean;
   capabilities?: ServerCapabilities;
@@ -742,6 +746,7 @@ function isSessionServerInfoUnchanged(input: {
   currentServerInfo: SessionState["serverInfo"] | undefined;
   nextHostname: string | null;
   nextVersion: string | null;
+  nextMissionControlHostAlias: string | null;
   nextDesktopManaged: boolean | undefined;
   nextCapabilities: ServerCapabilities | undefined;
   nextFeatures: ServerInfoStatusPayload["features"] | undefined;
@@ -751,16 +756,19 @@ function isSessionServerInfoUnchanged(input: {
     currentServerInfo,
     nextHostname,
     nextVersion,
+    nextMissionControlHostAlias,
     nextDesktopManaged,
     nextCapabilities,
     nextFeatures,
   } = input;
   const prevHostname = currentServerInfo?.hostname?.trim() || null;
   const prevVersion = currentServerInfo?.version?.trim() || null;
+  const prevMissionControlHostAlias = currentServerInfo?.missionControlHostAlias?.trim() || null;
   return (
     currentServerInfo?.serverId === input.nextServerId &&
     prevHostname === nextHostname &&
     prevVersion === nextVersion &&
+    prevMissionControlHostAlias === nextMissionControlHostAlias &&
     currentServerInfo?.desktopManaged === nextDesktopManaged &&
     areServerCapabilitiesEqual(currentServerInfo?.capabilities, nextCapabilities) &&
     areServerInfoFeaturesEqual(currentServerInfo?.features, nextFeatures)
@@ -932,6 +940,7 @@ export const useSessionStore = create<SessionStore>()(
 
           const nextHostname = info.hostname?.trim() || null;
           const nextVersion = info.version?.trim() || null;
+          const nextMissionControlHostAlias = info.missionControlHostAlias?.trim() || null;
           const nextDesktopManaged = info.desktopManaged;
           const nextCapabilities = info.capabilities;
           const nextFeatures = info.features;
@@ -941,6 +950,7 @@ export const useSessionStore = create<SessionStore>()(
               currentServerInfo: session.serverInfo,
               nextHostname,
               nextVersion,
+              nextMissionControlHostAlias,
               nextDesktopManaged,
               nextCapabilities,
               nextFeatures,
@@ -959,6 +969,7 @@ export const useSessionStore = create<SessionStore>()(
                 serverInfo: {
                   serverId: info.serverId,
                   hostname: nextHostname,
+                  missionControlHostAlias: nextMissionControlHostAlias,
                   version: nextVersion,
                   ...(nextDesktopManaged !== undefined
                     ? { desktopManaged: nextDesktopManaged }

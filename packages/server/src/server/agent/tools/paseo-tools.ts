@@ -112,6 +112,7 @@ import { hasMissionControlLabels } from "../../mission-control/naming.js";
 import {
   classifyFleetMetaAction,
   buildFleetMetaProposalInput,
+  resolveMetaTargetHost,
 } from "../../mission-control/fleet-meta.js";
 import {
   MISSION_CONTROL_LABEL_KEY,
@@ -994,6 +995,19 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   // identifier the UI still resolves). Never the raw hostname — results and
   // the model's echo of them must read as fleet aliases, not machine names.
   const hostLabel = options.hostAlias?.trim() || "local";
+  // Fleet-tool host normalization: "local", this daemon's own serverId /
+  // hostname / hostAlias (case-insensitive trim — the world snapshot teaches
+  // the Commander the aliases) all route to the LOCAL branch of a fleet tool;
+  // a peer name routes to the peer client. One shared resolver with the meta
+  // executor and the spawn executor (resolveMetaTargetHost) — never a second
+  // fleet map interpretation.
+  const isFleetLocalTarget = (host: string): boolean => {
+    const resolved = resolveMetaTargetHost(
+      { serverId: serverId ?? "", hostAlias: options.hostAlias, peerManager: peerManager ?? null },
+      host,
+    );
+    return resolved.ok && resolved.kind === "local";
+  };
   const childLogger = logger.child({ module: "agent", component: "paseo-tool-catalog" });
   const callerContext = callerAgentId ? (resolveCallerContext?.(callerAgentId) ?? null) : null;
 
@@ -1129,7 +1143,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   const collectHostInvocableModels = async (host: string): Promise<string[]> => {
     try {
       let entries: Array<{ provider: string; models?: Array<{ id?: string | null }> }>;
-      if (host === "local") {
+      if (isFleetLocalTarget(host)) {
         // wait:false — never warm up providers (spawning binaries) on an
         // error path; the snapshot is advisory for the correction hint.
         entries = await providerSnapshotManager.listProviders({ wait: false });
@@ -4207,7 +4221,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         });
         return { content: [], structuredContent: ensureValidJson(structuredContent) };
       }
-      if (host === "local") {
+      if (isFleetLocalTarget(host)) {
         const { cwd: _cwd, ...localArgs } = args;
         return toCatalog().executeTool("create_agent", localArgs, context);
       }
@@ -4282,7 +4296,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       },
     },
     async ({ host, agentId, limit }) => {
-      if (host === "local") {
+      if (isFleetLocalTarget(host)) {
         const local = await toCatalog().executeTool("get_agent_activity", { agentId, limit });
         const parsed = z
           .object({
@@ -4614,7 +4628,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           structuredContent: ensureValidJson({ success: true, deliveryMode: effectiveMode }),
         };
       }
-      if (host === "local") {
+      if (isFleetLocalTarget(host)) {
         const deliveredAs = await dispatchLocalPromptMode({
           agentManager,
           agentStorage,

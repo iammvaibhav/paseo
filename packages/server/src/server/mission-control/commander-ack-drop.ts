@@ -192,9 +192,16 @@ export class CommanderAckDrop {
     this.armedAtMs = Date.now();
   }
 
-  /** Cancel an armed dispatch that did not start a turn. */
+  /**
+   * Stop ack-classification: clears a pending arm AND drops a machinery turn
+   * already being tracked. Used when the turn is no longer machinery-only —
+   * the mailbox steers the user message into the snapshot turn, so its reply
+   * is real content, never a retractable ack — and when a dispatch failed
+   * before its turn started.
+   */
   disarm(): void {
     this.armed = false;
+    this.turn = null;
   }
 
   private handleStream(event: Extract<AgentManagerEvent, { type: "agent_stream" }>): void {

@@ -843,6 +843,18 @@ describe("resolveMetaTargetHost (serverId → host resolution)", () => {
     expect(resolveMetaTargetHost(deps, " vaibhav-dev ")).toMatchObject({ ok: true, kind: "local" });
   });
 
+  test("own identity matches case-insensitively (the Commander echoes fleet labels verbatim)", () => {
+    // Own alias / hostname / serverId in any casing still resolve to THIS
+    // host — a casing drift must never turn the daemon into an unknown host.
+    expect(resolveMetaTargetHost(deps, "SERVER-LOCAL")).toMatchObject({ ok: true, kind: "local" });
+    expect(resolveMetaTargetHost(deps, "Dev-Host")).toMatchObject({ ok: true, kind: "local" });
+    expect(resolveMetaTargetHost(deps, "VAIBHAV-DEV")).toMatchObject({ ok: true, kind: "local" });
+    expect(resolveMetaTargetHost(deps, "  Vaibhav-Dev  ")).toMatchObject({
+      ok: true,
+      kind: "local",
+    });
+  });
+
   test("a peer name from the fleet map resolves to that peer", () => {
     const peerManager = fakePeerHarness().peerManager;
     expect(resolveMetaTargetHost({ ...deps, peerManager }, "macbook")).toMatchObject({

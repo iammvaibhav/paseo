@@ -103,6 +103,10 @@ describe("model-options", () => {
       ["server-1", "macbook.local"],
       ["server-2", "iammvaibhav"],
     ]);
+    const hostAliasMap = new Map<string, string | null>([
+      ["server-1", "work-mac"],
+      ["server-2", null],
+    ]);
 
     it("resolves hostname match", () => {
       expect(
@@ -110,9 +114,61 @@ describe("model-options", () => {
           commanderHost: "iammvaibhav",
           hosts,
           hostnameByServerId: hostnameMap,
+          hostAliasByServerId: hostAliasMap,
           localServerId: "server-1",
         }),
       ).toBe("server-2");
+    });
+
+    it("resolves missionControlHostAlias match (BUG-5)", () => {
+      expect(
+        resolveCommanderHostServerId({
+          commanderHost: "work-mac",
+          hosts,
+          hostnameByServerId: hostnameMap,
+          hostAliasByServerId: hostAliasMap,
+          localServerId: "server-1",
+        }),
+      ).toBe("server-1");
+    });
+
+    it("leaves no-alias hosts resolvable via hostname while a stray alias matches nothing", () => {
+      const noAliases = new Map<string, string | null>([
+        ["server-1", null],
+        ["server-2", null],
+      ]);
+      // server-2 has no alias: it still resolves through its hostname.
+      expect(
+        resolveCommanderHostServerId({
+          commanderHost: "iammvaibhav",
+          hosts,
+          hostnameByServerId: hostnameMap,
+          hostAliasByServerId: noAliases,
+          localServerId: "server-1",
+        }),
+      ).toBe("server-2");
+      // An alias that no connected host advertises resolves to nothing.
+      expect(
+        resolveCommanderHostServerId({
+          commanderHost: "work-mac",
+          hosts,
+          hostnameByServerId: hostnameMap,
+          hostAliasByServerId: noAliases,
+          localServerId: "server-1",
+        }),
+      ).toBeNull();
+    });
+
+    it("matches alias case-sensitively like isDesignatedCommanderHost", () => {
+      expect(
+        resolveCommanderHostServerId({
+          commanderHost: "WORK-MAC",
+          hosts,
+          hostnameByServerId: hostnameMap,
+          hostAliasByServerId: hostAliasMap,
+          localServerId: "server-1",
+        }),
+      ).toBeNull();
     });
 
     it("resolves direct serverId match", () => {
@@ -121,6 +177,7 @@ describe("model-options", () => {
           commanderHost: "server-1",
           hosts,
           hostnameByServerId: hostnameMap,
+          hostAliasByServerId: hostAliasMap,
           localServerId: "server-1",
         }),
       ).toBe("server-1");
@@ -132,6 +189,7 @@ describe("model-options", () => {
           commanderHost: "local",
           hosts,
           hostnameByServerId: hostnameMap,
+          hostAliasByServerId: hostAliasMap,
           localServerId: "server-1",
         }),
       ).toBe("server-1");
@@ -143,6 +201,7 @@ describe("model-options", () => {
           commanderHost: "unknown-box",
           hosts,
           hostnameByServerId: hostnameMap,
+          hostAliasByServerId: hostAliasMap,
           localServerId: "server-1",
         }),
       ).toBeNull();
@@ -154,6 +213,7 @@ describe("model-options", () => {
           commanderHost: null,
           hosts,
           hostnameByServerId: hostnameMap,
+          hostAliasByServerId: hostAliasMap,
           localServerId: "server-1",
         }),
       ).toBeNull();

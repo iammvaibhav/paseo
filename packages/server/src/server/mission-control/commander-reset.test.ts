@@ -7,8 +7,9 @@ import type { AgentManager, AgentManagerEvent, ManagedAgent } from "../agent/age
 import type { AgentStorage, StoredAgentRecord } from "../agent/agent-storage.js";
 import type { DaemonConfigStore } from "../daemon-config-store.js";
 import { dispatchLocalPromptMode } from "../agent/tools/paseo-tools.js";
-import { MissionControlService } from "./service.js";
+import { MissionControlService, type MissionControlServiceOptions } from "./service.js";
 import { createMissionControlPresenceSource } from "./presence.js";
+import { executeSpawnProposal } from "./spawn-executor.js";
 
 vi.mock("../agent/tools/paseo-tools.js", () => ({
   dispatchLocalPromptMode: vi.fn(async () => "steer"),
@@ -72,6 +73,7 @@ describe("MissionControlService reset + machinery turns", () => {
   async function createService(
     options: {
       resetCommander?: () => Promise<{ ok: true; agentId: string } | { ok: false; error: string }>;
+      spawnFromProposal?: MissionControlServiceOptions["spawnFromProposal"];
       getAgent?: (agentId: string) => ManagedAgent | null;
       listAgents?: () => ManagedAgent[];
       storedAgents?: StoredAgentRecord[];
@@ -102,6 +104,7 @@ describe("MissionControlService reset + machinery turns", () => {
         readStopOrigin: () => null,
       }),
       resetCommander: options.resetCommander,
+      ...(options.spawnFromProposal ? { spawnFromProposal: options.spawnFromProposal } : {}),
     });
     await service.start();
   }
@@ -482,5 +485,71 @@ describe("MissionControlService reset + machinery turns", () => {
       headline: "Finished",
     });
     await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(2));
+  });
+
+  test("BUG-4: a Commander-approved spawn stamps paseo.parent-agent-id and the worker's finished event passes the dispatch gate", async () => {
+    // Full loop through the REAL spawn executor: approve a commander-origin
+    // spawn-kind proposal → the executor stamps paseo.parent-agent-id =
+    // commander-1 on the created plan → the stamped worker's finished event
+    // clears isDispatchedByCommander and dispatches the machinery turn.
+    let createdLabels: Record<string, string> = {};
+    await createService({
+      storedAgents: [commanderRecord("commander-1")],
+      getAgent: (agentId) =>
+        agentId === "commander-1"
+          ? commanderAgent("commander-1")
+          : workerAgent("worker-1", createdLabels),
+      spawnFromProposal: (proposal) =>
+        executeSpawnProposal(proposal.spawnPlan!, {
+          host: {
+            serverId: "test-server",
+            hostName: "test-host",
+            hostAlias: null,
+            peerManager: null,
+          },
+          stampCommanderParentLabel: proposal.origin === "commander",
+          resolveCommanderAgentId: () => service.getCommanderAgentId(),
+          mkdirp: async () => undefined,
+          createLocally: async (plan) => {
+            createdLabels = plan.labels ?? {};
+            return { ok: true as const, agentId: "worker-1" };
+          },
+          createOnPeer: async () => ({ ok: false as const, error: "no peer in this test" }),
+        }),
+    });
+    const proposal = await service.approvals.createProposal({
+      origin: "commander",
+      serverId: "test-server",
+      targetAgentId: "",
+      message: "Spawn a worker",
+      deliveryMode: "interrupt",
+      reason: "Commander spawn",
+      classification: "normal",
+      kind: "spawn",
+      spawnPlan: { provider: "omp", summary: "Spawn a worker", host: "local" },
+    });
+    expect(proposal.status).toBe("pending");
+    await service.respondProposal({ proposalId: proposal.id, action: "approve" });
+    expect(service.getProposal(proposal.id)?.status).toBe("sent");
+    expect(service.getProposal(proposal.id)?.spawnedAgentId).toBe("worker-1");
+    // The executor stamped the label on the create (BUG-4).
+    expect(createdLabels).toMatchObject({ "paseo.parent-agent-id": "commander-1" });
+    // ASK mode: only Commander-dispatched agents earn a follow-up machinery
+    // turn on terminal events. The stamped worker must clear the gate.
+    service.publishEvent({
+      agentId: "worker-1",
+      kind: "finished",
+      source: "system",
+      severity: "info",
+      headline: "Finished",
+    });
+    await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(1));
+    const call = dispatchLocalPromptModeMock.mock.calls[0]?.[0];
+    expect(call).toMatchObject({
+      agentId: "commander-1",
+      mode: "steer",
+      classification: "machinery",
+    });
+    expect(call?.prompt).toContain("follow-up on a worker you dispatched");
   });
 });

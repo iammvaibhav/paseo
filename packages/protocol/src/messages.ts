@@ -88,6 +88,10 @@ import {
   MissionControlMediaFetchResponseSchema,
   MissionControlMetaApplyRequestSchema,
   MissionControlMetaApplyResponseSchema,
+  MissionControlSpawnApplyRequestSchema,
+  MissionControlSpawnApplyResponseSchema,
+  MissionControlEventForwardRequestSchema,
+  MissionControlEventForwardResponseSchema,
   MissionControlInstructionsListRequestSchema,
   MissionControlInstructionsListResponseSchema,
   MissionControlInstructionsCloseRequestSchema,
@@ -3075,6 +3079,8 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   MissionControlSearchRequestSchema,
   MissionControlMediaFetchRequestSchema,
   MissionControlMetaApplyRequestSchema,
+  MissionControlSpawnApplyRequestSchema,
+  MissionControlEventForwardRequestSchema,
   MissionControlInstructionsListRequestSchema,
   MissionControlInstructionsCloseRequestSchema,
 ]);
@@ -3201,15 +3207,11 @@ export const ServerCapabilitiesSchema = z
   })
   .passthrough();
 
-const ServerInfoHostnameSchema = z.unknown().transform((value): string | null => {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-});
-
-const ServerInfoVersionSchema = z.unknown().transform((value): string | null => {
+// Optional trimmed-string field on server_info: unknown junk normalizes to
+// null, whitespace-only values to null, so absent/legacy payloads stay
+// parseable. Shared by hostname, version, and missionControlHostAlias
+// (additive v0.1.X: absent on older daemons, never required).
+const ServerInfoOptionalStringSchema = z.unknown().transform((value): string | null => {
   if (typeof value !== "string") {
     return null;
   }
@@ -3235,8 +3237,11 @@ export const ServerInfoStatusPayloadSchema = z
   .object({
     status: z.literal("server_info"),
     serverId: z.string().trim().min(1),
-    hostname: ServerInfoHostnameSchema.optional(),
-    version: ServerInfoVersionSchema.optional(),
+    hostname: ServerInfoOptionalStringSchema.optional(),
+    // The daemon's missionControl.hostAlias (trimmed; null when unset), so the
+    // app can resolve a central-config commanderHost that designates the alias.
+    missionControlHostAlias: ServerInfoOptionalStringSchema.optional(),
+    version: ServerInfoOptionalStringSchema.optional(),
     // COMPAT(desktopManaged): added in v0.1.X, remove optional parsing after 2027-01-16.
     desktopManaged: z.boolean().optional(),
     capabilities: ServerCapabilitiesFromUnknownSchema.optional(),
@@ -6029,6 +6034,8 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   MissionControlSearchResponseSchema,
   MissionControlMediaFetchResponseSchema,
   MissionControlMetaApplyResponseSchema,
+  MissionControlSpawnApplyResponseSchema,
+  MissionControlEventForwardResponseSchema,
   MissionControlInstructionsListResponseSchema,
   MissionControlInstructionsCloseResponseSchema,
   DaemonUpdateProgressMessageSchema,

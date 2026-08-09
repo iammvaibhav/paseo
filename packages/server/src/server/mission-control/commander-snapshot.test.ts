@@ -52,6 +52,8 @@ interface Harness {
   push: (event: AgentManagerEvent) => void;
   logs: LogRecord[];
   buildSnapshot: Mock;
+  /** Flip whether the Commander is mid-run (post-dispatch in-flight checks). */
+  setInFlight: (value: boolean) => void;
 }
 
 /** Fixture: a commander-labeled agent (the injection target). */
@@ -96,6 +98,8 @@ function makeHarness(options: {
   agent: ManagedAgent | null;
   busy?: boolean;
   timelineRows?: SnapshotTimelineRow[];
+  /** M8 ledger block builder wired into the injector (default: none). */
+  instructionLedgerBlock?: () => string;
 }): Harness {
   const subscribers: Array<(event: AgentManagerEvent) => void> = [];
   const removeTimelineRows = vi.fn(async () => undefined);
@@ -105,9 +109,15 @@ function makeHarness(options: {
     at: new Date().toISOString(),
     block: `${WORLD_SNAPSHOT_MARKER}${new Date().toISOString()}\n# Fleet map\n- local`,
   }));
+  // Mutable: the snapshot's own dispatch flips the Commander in-flight, and
+  // `dispatchSnapshotTurn` reports the post-dispatch state.
+  let inFlight = Boolean(options.busy);
+  const setInFlight = (value: boolean): void => {
+    inFlight = value;
+  };
   const agentManager = {
     getAgent: (id: string) => (options.agent?.id === id ? options.agent : null),
-    hasInFlightRun: () => Boolean(options.busy),
+    hasInFlightRun: vi.fn(() => inFlight),
     subscribe: vi.fn((callback: (event: AgentManagerEvent) => void) => {
       subscribers.push(callback);
       return () => {
@@ -127,6 +137,9 @@ function makeHarness(options: {
     agentManager,
     logger,
     buildSnapshot,
+    ...(options.instructionLedgerBlock
+      ? { buildInstructionLedgerBlock: options.instructionLedgerBlock }
+      : {}),
   });
   return {
     injector,
@@ -139,6 +152,7 @@ function makeHarness(options: {
     },
     logs,
     buildSnapshot,
+    setInFlight,
   };
 }
 
@@ -314,5 +328,80 @@ describe("CommanderSnapshotInjector", () => {
     const harness = makeHarness({ agent: commanderAgent("commander-1") });
     harness.injector.armLaunchTurn("commander-1");
     expect(harness.injector.ackDrop.isArmed).toBe(true);
+  });
+
+  test("dispatchSnapshotTurn dispatches a fresh snapshot and reports the turn in flight", async () => {
+    const harness = makeHarness({ agent: commanderAgent("commander-1") });
+    // The snapshot run starts → the Commander is now mid-turn: the mailbox
+    // idle path must steer the message into THIS turn, never replace it.
+    startAgentRunMock.mockImplementation(async () => {
+      harness.setInFlight(true);
+      return { outOfBand: false };
+    });
+    const inFlight = await harness.injector.dispatchSnapshotTurn("commander-1");
+    expect(inFlight).toBe(true);
+    expect(startAgentRunMock).toHaveBeenCalledTimes(1);
+    const [, agentId, prompt, , options] = (startAgentRunMock.mock.calls[0] ?? []) as [
+      unknown,
+      string,
+      string,
+      unknown,
+      { replaceRunning: boolean; runOptions: { clientMessageId: string } },
+    ];
+    expect(agentId).toBe("commander-1");
+    // The model-visible sequence starts with the fresh snapshot prompt.
+    expect(prompt).toMatch(/^<paseo-system>\n# Fleet state as of /);
+    expect(options.replaceRunning).toBe(false);
+  });
+
+  test("dispatchSnapshotTurn skips a busy Commander: no dispatch, no in-flight turn", async () => {
+    const harness = makeHarness({ agent: commanderAgent("commander-1"), busy: true });
+    const inFlight = await harness.injector.dispatchSnapshotTurn("commander-1");
+    expect(inFlight).toBe(false);
+    expect(startAgentRunMock).not.toHaveBeenCalled();
+    expect(
+      harness.logs.some(
+        (record) => record.message === "mission_control.snapshot.skipped_busy_commander",
+      ),
+    ).toBe(true);
+  });
+
+  test("dispatchSnapshotTurn reports no turn when the dispatch fails (advisory)", async () => {
+    const harness = makeHarness({ agent: commanderAgent("commander-1") });
+    startAgentRunMock.mockRejectedValueOnce(new Error("provider closed"));
+    const inFlight = await harness.injector.dispatchSnapshotTurn("commander-1");
+    // The snapshot is advisory: the message must still be delivered by the
+    // caller's fallback, never failed by the injection.
+    expect(inFlight).toBe(false);
+    expect(
+      harness.logs.some((record) => record.message === "mission_control.snapshot.dispatch_failed"),
+    ).toBe(true);
+  });
+
+  test("dispatchSnapshotTurn reports no turn when the snapshot already settled (fast model)", async () => {
+    const harness = makeHarness({ agent: commanderAgent("commander-1") });
+    // startAgentRun resolves but no turn is in flight afterwards — a very
+    // fast model already completed the ack turn before the caller could
+    // steer; the caller falls back to the plain run.
+    const inFlight = await harness.injector.dispatchSnapshotTurn("commander-1");
+    expect(inFlight).toBe(false);
+    expect(startAgentRunMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("dispatchSnapshotTurn rides the ledger and staged recall blocks in the snapshot body", async () => {
+    const harness = makeHarness({
+      agent: commanderAgent("commander-1"),
+      instructionLedgerBlock: () => "Open instructions:\n- #1: is staging ready?",
+    });
+    harness.injector.setPendingInstructionEnvelope(
+      "Possibly related (auto-recall):\n- staging box is provisioned [paseo-fleet-dev]",
+    );
+    await harness.injector.dispatchSnapshotTurn("commander-1");
+    const [, , prompt] = (startAgentRunMock.mock.calls[0] ?? []) as [unknown, string, string];
+    // The steered message carries no ledger/recall of its own — the snapshot
+    // body the turn starts with already holds both blocks.
+    expect(prompt).toContain("Open instructions:\n- #1: is staging ready?");
+    expect(prompt).toContain("Possibly related (auto-recall):");
+    expect(prompt).toContain("reply with a single short acknowledgment token");
   });
 });

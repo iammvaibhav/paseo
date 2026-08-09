@@ -81,6 +81,10 @@ export function formatServerInfoSection(serverInfo: ServerInfoStatusPayload | nu
   return formatDiagnosticSection("Server info", [
     { label: "Server ID", value: serverInfo.serverId },
     { label: "Hostname", value: serverInfo.hostname ?? "unknown" },
+    {
+      label: "Mission control alias",
+      value: serverInfo.missionControlHostAlias ?? "unknown",
+    },
     { label: "Version", value: serverInfo.version ?? "unknown" },
     {
       label: "Desktop managed",

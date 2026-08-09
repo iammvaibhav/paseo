@@ -107,7 +107,13 @@ export class ProposalDeliveryAborted extends Error {
 export interface ResolveProposalInput {
   proposalId: string;
   action: "approve" | "deny";
-  /** Message rewrite before send (approve with edits). */
+  /**
+   * Message rewrite before send (approve with edits). On DENY, non-empty
+   * text is a revision the user attached to the denial: it must never be
+   * silent — it is delivered back to the Commander, which re-proposes
+   * (docs/commander.md: "Edit sends your changes back to the Commander,
+   * which re-proposes").
+   */
   editedMessage?: string;
   /** Grant allow-pair: the rest of this verifier<->worker exchange auto-approves. */
   allowPair?: boolean;
@@ -175,6 +181,17 @@ export interface MissionControlApprovalsOptions {
    * emitted event so the caller can track supersede chains.
    */
   publishProposalEvent: (proposal: MissionControlProposal) => Promise<{ id: string }>;
+  /**
+   * EDGE (deny-with-revision): deliver a denied proposal's attached revision
+   * back to the Commander through the mailbox delivery path (the same path
+   * chat uses, source "chat"), so the ledger opens a row and the Commander
+   * re-proposes a fresh card (docs/commander.md: "Edit sends your changes
+   * back to the Commander, which re-proposes"). Called exactly once per
+   * deny that carried non-empty editedMessage text; plain denies never call
+   * it. Absent → the revision is dropped with a warn log (the deny still
+   * resolves — never fail the resolution on delivery).
+   */
+  deliverDenyRevision?: (input: { proposal: Proposal; revision: string }) => Promise<void>;
 }
 
 export type ProposalChangeListener = (proposal: MissionControlProposal) => void;
@@ -244,6 +261,7 @@ export class MissionControlApprovals {
   private readonly spawn: MissionControlApprovalsOptions["spawn"];
   private readonly applyMeta: MissionControlApprovalsOptions["applyMeta"];
   private readonly publishProposalEvent: MissionControlApprovalsOptions["publishProposalEvent"];
+  private readonly deliverDenyRevision: MissionControlApprovalsOptions["deliverDenyRevision"];
   private readonly allowPairs = new Set<string>();
   private readonly listeners = new Set<ProposalChangeListener>();
 
@@ -256,6 +274,7 @@ export class MissionControlApprovals {
     this.spawn = options.spawn;
     this.applyMeta = options.applyMeta;
     this.publishProposalEvent = options.publishProposalEvent;
+    this.deliverDenyRevision = options.deliverDenyRevision;
   }
 
   /**
@@ -387,6 +406,32 @@ export class MissionControlApprovals {
       },
       "mission_control.approvals.proposal_denied",
     );
+    // EDGE: a deny WITH a revision (deny + editedMessage) must never be
+    // silent — the edit goes back to the Commander, which re-proposes a
+    // fresh card. Delivery is advisory to the resolution: a failure logs
+    // loudly and the deny still resolves.
+    const revision = input.editedMessage?.trim();
+    if (revision) {
+      if (this.deliverDenyRevision) {
+        try {
+          await this.deliverDenyRevision({ proposal, revision });
+          this.logger.info(
+            { component: "approvals", proposalId: proposal.id },
+            "mission_control.approvals.deny_revision_delivered",
+          );
+        } catch (error) {
+          this.logger.warn(
+            { err: error, component: "approvals", proposalId: proposal.id },
+            "mission_control.approvals.deny_revision_delivery_failed",
+          );
+        }
+      } else {
+        this.logger.warn(
+          { component: "approvals", proposalId: proposal.id },
+          "mission_control.approvals.deny_revision_dropped_no_delivery_path",
+        );
+      }
+    }
     return { ok: true };
   }
 

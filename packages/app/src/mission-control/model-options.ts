@@ -120,17 +120,22 @@ export function filterProvidersToInvocableStrings(
 }
 
 /**
- * Resolves `config.commanderHost` (a stored hostname, label, serverId, or "local")
- * to the matching `HostProfile` serverId.
+ * Resolves `config.commanderHost` (a stored hostname, missionControl.hostAlias,
+ * label, serverId, or "local") to the matching `HostProfile` serverId.
+ * Matching mirrors server-side `isDesignatedCommanderHost`: the central value
+ * is trimmed and compared case-sensitively; a host's alias matches only when
+ * non-null. The label fallback is app-side (the settings picker's last resort).
  */
 export function resolveCommanderHostServerId(input: {
   commanderHost: string | null;
   hosts: readonly HostProfile[];
   hostnameByServerId: Map<string, string | null>;
+  hostAliasByServerId: Map<string, string | null>;
   localServerId: string | null;
 }): string | null {
-  const { commanderHost, hosts, hostnameByServerId, localServerId } = input;
-  if (!commanderHost) {
+  const { hosts, hostnameByServerId, hostAliasByServerId, localServerId } = input;
+  const commanderHost = input.commanderHost?.trim() || null;
+  if (commanderHost === null) {
     return null;
   }
 
@@ -149,6 +154,16 @@ export function resolveCommanderHostServerId(input: {
   const byHostname = hosts.find((h) => hostnameByServerId.get(h.serverId) === commanderHost);
   if (byHostname) {
     return byHostname.serverId;
+  }
+
+  // Mirrors isDesignatedCommanderHost: null alias never matches; otherwise
+  // exact (case-sensitive) equality on the trimmed value.
+  const byHostAlias = hosts.find((h) => {
+    const alias = hostAliasByServerId.get(h.serverId);
+    return alias !== null && alias === commanderHost;
+  });
+  if (byHostAlias) {
+    return byHostAlias.serverId;
   }
 
   const byLabel = hosts.find((h) => h.label === commanderHost);

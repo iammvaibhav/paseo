@@ -21,6 +21,7 @@ import type {
   MissionControlMetaPlan,
   MissionControlMode,
   MissionControlProposal,
+  MissionControlProposalSpawnPlan,
   MissionControlReportStatusInput,
 } from "@getpaseo/protocol/mission-control/types";
 import type { PeerManager } from "../peers/peer-manager.js";
@@ -364,6 +365,22 @@ export interface MissionControlServiceOptions {
     metaPlan: MissionControlMetaPlan,
   ) => Promise<{ ok: true; summary: string } | { ok: false; error: string }>;
   /**
+   * Apply a spawn plan against THIS daemon's registries, reached over peering:
+   * the commander-host spawn executor routes an approved spawn-kind proposal
+   * whose plan targets this host as a peer here (mission_control.spawn.apply
+   * → fleetSpawnApply). The receiving daemon validates the plan's cwd
+   * contract against its own filesystem, creates the absolute cwd with mkdir
+   * recursive when missing, and creates the agent in ITS OWN registry — the
+   * mkdir happens on the target host, never the commander's. The plan arrives
+   * with paseo.parent-agent-id already stamped by the commander, so the label
+   * persists in this host's registry. Only the APPLY hops (the proposal card
+   * stays on the commander host). Wired by bootstrap; absent → the spawn
+   * apply RPC reports an error.
+   */
+  spawnApplyRemote?: (
+    spawnPlan: MissionControlProposalSpawnPlan,
+  ) => Promise<{ ok: true; agentId: string } | { ok: false; error: string }>;
+  /**
    * Archive the current Commander and spawn a fresh one with a new context
    * pack (mission_control.commander.reset). Wired by bootstrap with the full
    * commander-boot machinery; absent → the reset RPC reports an error.
@@ -384,12 +401,26 @@ export interface MissionControlServiceOptions {
    * M8 mailbox: hand the speculative-recall block (when one resolved within
    * budget) to the CommanderSnapshotInjector, which appends it to the NEXT
    * snapshot dispatch. The idle delivery path sets it immediately before
-   * starting the run, so the fresh snapshot ahead of the message carries the
-   * block; machinery turns never set it (never trigger recall). Absent →
-   * idle deliveries simply skip the auto-recall block (the ledger block
-   * still rides the snapshot).
+   * dispatching the snapshot turn, so the fresh snapshot carries the block;
+   * machinery turns never set it (never trigger recall). Absent → idle
+   * deliveries simply skip the auto-recall block (the ledger block still
+   * rides the snapshot).
    */
   setPendingInstructionEnvelope?: (block: string | null) => void;
+  /**
+   * M10 mailbox: dispatch a fresh Commander snapshot turn NOW (the
+   * injector's dispatchSnapshotTurn) and report whether a snapshot turn is
+   * in flight for the idle delivery path to steer the delivered message
+   * into. Absent → the idle path falls back to the plain-run delivery (its
+   * seam still injects a snapshot ahead of the run).
+   */
+  dispatchSnapshotTurn?: (agentId: string) => Promise<boolean>;
+  /**
+   * M10 mailbox: disarm the snapshot turn's ack-drop after the idle delivery
+   * path steered the user message into it — the turn's reply is now the
+   * Commander's real answer, never a retractable machinery ack.
+   */
+  disarmSnapshotAckDrop?: () => void;
 }
 
 export interface MissionControlServiceConfig {
@@ -525,8 +556,11 @@ export class MissionControlService {
   private readonly spawnFromProposal: MissionControlServiceOptions["spawnFromProposal"];
   private readonly metaFromProposal: MissionControlServiceOptions["metaFromProposal"];
   private readonly metaApplyRemote: MissionControlServiceOptions["metaApplyRemote"];
+  private readonly spawnApplyRemote: MissionControlServiceOptions["spawnApplyRemote"];
   private readonly resolveRunPlacement: MissionControlServiceOptions["resolveRunPlacement"];
   private readonly setPendingInstructionEnvelope: MissionControlServiceOptions["setPendingInstructionEnvelope"];
+  private readonly dispatchSnapshotTurn: MissionControlServiceOptions["dispatchSnapshotTurn"];
+  private readonly disarmSnapshotAckDrop: MissionControlServiceOptions["disarmSnapshotAckDrop"];
   readonly approvals: MissionControlApprovals;
   // M6 context architecture: run-record assembly, rollup cache, hindsight sink.
   private readonly rollupCache = new RollupCache();
@@ -641,8 +675,11 @@ export class MissionControlService {
     this.spawnFromProposal = options.spawnFromProposal;
     this.metaFromProposal = options.metaFromProposal;
     this.metaApplyRemote = options.metaApplyRemote;
+    this.spawnApplyRemote = options.spawnApplyRemote;
     this.resolveRunPlacement = options.resolveRunPlacement;
     this.setPendingInstructionEnvelope = options.setPendingInstructionEnvelope;
+    this.dispatchSnapshotTurn = options.dispatchSnapshotTurn;
+    this.disarmSnapshotAckDrop = options.disarmSnapshotAckDrop;
     this.bootedAtMs = Date.now();
     this.store = new MissionControlStore({ paseoHome: options.paseoHome, logger: this.logger });
     this.lifecycleLog = new TurnLifecycleLog({
@@ -738,6 +775,32 @@ export class MissionControlService {
       publishProposalEvent: async (proposal) => {
         const event = await this.emitProposalEvent(proposal);
         return { id: event.id };
+      },
+      // EDGE: a deny WITH a revision (deny + editedMessage) goes back to the
+      // Commander through the mailbox — the same path chat uses (source
+      // "chat"), so the ledger opens a row and the Commander re-proposes a
+      // fresh card (docs/commander.md: "Edit sends your changes back to the
+      // Commander, which re-proposes"). Never silent: a missing Commander or
+      // a failed delivery logs loudly; the deny itself has already resolved.
+      deliverDenyRevision: async ({ proposal, revision }) => {
+        const commanderId = await this.resolveCommanderAgentId();
+        if (!commanderId) {
+          this.logger.warn(
+            { component: "approvals", proposalId: proposal.id },
+            "mission_control.approvals.deny_revision_no_commander",
+          );
+          return;
+        }
+        const result = await this.deliverCommanderInstruction({
+          text: `Your proposal ${proposal.id} was denied with this revision: ${revision}`,
+          source: "chat",
+        });
+        if (!result.ok) {
+          this.logger.warn(
+            { component: "approvals", proposalId: proposal.id, error: result.error },
+            "mission_control.approvals.deny_revision_delivery_failed",
+          );
+        }
       },
       // Single spawn execution path for spawn-kind proposals (approve or auto
       // mode): verifier spawns continue in the dispatcher; Commander spawns
@@ -1026,6 +1089,17 @@ export class MissionControlService {
     return { ok: true, proposalId: proposal.id };
   }
 
+  /**
+   * The Commander's agent id (the agent labeled paseo.mission-control=
+   * commander), if one exists on this host. Public accessor the spawn
+   * executor uses to stamp paseo.parent-agent-id on spawned workers at
+   * execution time (survives restarts — reads storage first, like the
+   * internal resolver).
+   */
+  async getCommanderAgentId(): Promise<string | null> {
+    return this.resolveCommanderAgentId();
+  }
+
   /** The Commander is the agent labeled paseo.mission-control=commander. */
   private async resolveCommanderAgentId(): Promise<string | null> {
     for (const record of await this.agentStorage.list()) {
@@ -1087,10 +1161,13 @@ export class MissionControlService {
   // (docs/commander.md "The mailbox"). Chat (app composer), voice
   // (commander_dispatch), and machinery (dispatchMachineryTurn) all land
   // here or on the same dispatchLocalPromptMode primitive. Rule: commander
-  // idle → normal run; commander mid-turn → omp live-steer (the native steer
-  // path — NEVER replaceRunning) wrapping the message in the ack-and-fold
-  // envelope. The daemon owns the envelope, so chat and voice get identical
-  // semantics.
+  // idle → a fresh snapshot turn is dispatched first, then the message is
+  // STEERED into that in-flight turn (join-don't-replace — a replace would
+  // cancel the snapshot turn and the provider would drop the prompt, so the
+  // model never sees the fresh fleet state); commander mid-turn → omp
+  // live-steer (the native steer path — NEVER replaceRunning) wrapping the
+  // message in the ack-and-fold envelope. The daemon owns the envelope, so
+  // chat and voice get identical semantics.
   // ==========================================================================
 
   /**
@@ -1099,10 +1176,12 @@ export class MissionControlService {
    * parallel), then:
    *  - busy → steer with the envelope: 'New instruction (#<id>)…' + the open
    *    instruction list + the auto-recall block (when within budget).
-   *  - idle → the plain message starts a fresh run (never replaceRunning);
-   *    the snapshot seam ahead of it appends the ledger block + the pending
-   *    auto-recall block to the fresh snapshot, so the turn sees both
-   *    regenerated per turn.
+   *  - idle → dispatch a fresh snapshot as its own turn first, then STEER
+   *    the message into that in-flight turn (the snapshot body carries the
+   *    ledger block + the pending auto-recall block, so the steered text is
+   *    the plain message). No snapshot turn in flight (settled fast / busy
+   *    skip / failed dispatch) → the plain-run fallback, whose seam
+   *    re-injects a snapshot ahead of the run.
    * The client's dispatchMode is IGNORED for Commander targets — there is no
    * queueing and no interrupt here (session.ts routes commander-targeted
    * sends through this method).
@@ -1162,8 +1241,53 @@ export class MissionControlService {
       return { ok: true, instructionId: instruction.id, deliveredAs: "steer" };
     }
     // Idle: hand the recall block (if any) to the snapshot injector so the
-    // fresh snapshot ahead of this run carries it alongside the ledger block.
+    // fresh snapshot carries it alongside the ledger block.
     this.setPendingInstructionEnvelope?.(recallBlock || null);
+    // M10: dispatch the fresh snapshot as its OWN turn first, then STEER the
+    // message into the in-flight snapshot turn — the same native steer the
+    // busy branch uses (proven to reach the provider session). The plain-run
+    // delivery below starts the user run with replaceRunning, which CANCELS
+    // the snapshot turn; the provider then drops the cancelled prompt, so
+    // the model never sees the fresh fleet state — the timeline row alone
+    // cannot carry it (the launch-pack staleness).
+    const snapshotInFlight = (await this.dispatchSnapshotTurn?.(commanderId)) ?? false;
+    if (snapshotInFlight) {
+      // The snapshot turn exists to carry this message: the ledger and
+      // auto-recall blocks already ride the snapshot body, so the steered
+      // text is the plain message — never the 'New instruction (#N).
+      // Acknowledge…' mid-turn wrapper (that wrapper belongs to steers into
+      // a turn whose primary ask is NOT this message).
+      await dispatchLocalPromptMode({
+        agentManager: this.agentManager,
+        agentStorage: this.agentStorage,
+        agentId: commanderId,
+        prompt: input.text.trim(),
+        attachments: input.attachments,
+        mode: "steer",
+        classification: "instruction",
+        replaceOrigin: "machinery",
+        recordStopOrigin: (agentId, origin) => this.store.recordStopOrigin(agentId, origin),
+        logger: this.logger,
+        // Mirrors the busy branch: the Commander's own turn loop is covered
+        // by the dormant-turn detector; the mailbox steer never marks the
+        // Commander undelivered (armed with no proposal — a no-op).
+        onOutOfBandSteer: () => {
+          this.armSteerDeliveryVerification(commanderId, undefined);
+        },
+      });
+      // The turn the message just joined is no longer a machinery ack turn:
+      // its reply is the Commander's answer to the user — never retracted.
+      this.disarmSnapshotAckDrop?.();
+      this.logger.info(
+        { instructionId: instruction.id, source: input.source },
+        "mission_control.mailbox.ran",
+      );
+      return { ok: true, instructionId: instruction.id, deliveredAs: "run" };
+    }
+    // No snapshot turn in flight to steer into (already settled — a fast
+    // model — or none was dispatched: busy skip / dispatch failure): the
+    // plain-run fallback. Its seam re-injects a fresh snapshot ahead of the
+    // run (advisory — a failed injection never fails the message).
     await dispatchLocalPromptMode({
       agentManager: this.agentManager,
       agentStorage: this.agentStorage,
@@ -1316,6 +1440,24 @@ export class MissionControlService {
       return { ok: false, error: "Meta executor is not available on this host" };
     }
     return this.metaApplyRemote(metaPlan);
+  }
+
+  /**
+   * Apply a spawn plan against THIS daemon's registries, reached over peering
+   * (mission_control.spawn.apply — the commander host forwards an approved
+   * spawn-kind proposal whose plan targets this host as a peer). THIS host
+   * validates the cwd contract against its own filesystem, creates the
+   * absolute cwd with mkdir recursive when missing, and creates the agent in
+   * its own registry (the mkdir happens here, never on the commander's disk).
+   * Absent wiring → an error result (never a throw).
+   */
+  async applySpawnRemote(
+    spawnPlan: MissionControlProposalSpawnPlan,
+  ): Promise<{ ok: true; agentId: string } | { ok: false; error: string }> {
+    if (!this.spawnApplyRemote) {
+      return { ok: false, error: "Spawn executor is not available on this host" };
+    }
+    return this.spawnApplyRemote(spawnPlan);
   }
 
   listProposals(): MissionControlProposal[] {
@@ -3356,6 +3498,13 @@ export class MissionControlService {
     // events and verdicts (both modes) — the fresh world snapshot rides the
     // same turn via the CommanderSnapshotInjector's beforeAgentRun seam.
     this.maybeDispatchMachineryTurn(event);
+    // M9 cross-host follow-through: when THIS daemon is NOT the commander
+    // host, a terminal event for one of its commander-dispatched workers can
+    // never reach the commander host's machinery-turn gate locally (that host
+    // has no record of a peer-host worker). Forward the event over peering so
+    // the commander host runs the gate with the worker's labels from the
+    // payload.
+    this.maybeForwardTerminalEventToCommander(event);
     return event;
   }
 
@@ -3376,12 +3525,17 @@ export class MissionControlService {
    * (any action the Commander takes becomes a gated proposal card, so the
    * follow-up is safe), auto mode dispatches everything that qualifies.
    */
-  private async shouldDispatchMachineryTurn(event: MissionControlEvent): Promise<boolean> {
+  private async shouldDispatchMachineryTurn(
+    event: MissionControlEvent,
+    labelsOverride?: Record<string, string> | null,
+  ): Promise<boolean> {
     if (event.kind === "blocked" || event.kind === "stalled") {
       return true;
     }
     if (event.kind === "verdict") {
-      if (await this.isDispatchedByCommander(event.agentId)) {
+      if (
+        await this.isDispatchedByLabels(labelsOverride ?? (await this.agentLabels(event.agentId)))
+      ) {
         return true;
       }
       // Verdict-insufficient: the item stays needs-you (ready/none). A
@@ -3391,7 +3545,9 @@ export class MissionControlService {
       return review?.reviewState === "ready" || review?.reviewState === "none";
     }
     if (event.kind === "finished" || event.kind === "failed" || event.kind === "interrupted") {
-      return await this.isDispatchedByCommander(event.agentId);
+      return await this.isDispatchedByLabels(
+        labelsOverride ?? (await this.agentLabels(event.agentId)),
+      );
     }
     return false;
   }
@@ -3410,8 +3566,11 @@ export class MissionControlService {
    * already reached the feed, and the event is never re-queued (payloads are
    * computed at delivery).
    */
-  private maybeDispatchMachineryTurn(event: MissionControlEvent): void {
-    void this.runMachineryTurnGate(event).catch((error) => {
+  private maybeDispatchMachineryTurn(
+    event: MissionControlEvent,
+    labelsOverride?: Record<string, string> | null,
+  ): void {
+    void this.runMachineryTurnGate(event, labelsOverride).catch((error) => {
       // centralConfig reads and the dispatched check can throw pre-
       // initialization; never let the event emission path fail on the
       // machinery-turn side effect.
@@ -3422,11 +3581,16 @@ export class MissionControlService {
     });
   }
 
-  private async runMachineryTurnGate(event: MissionControlEvent): Promise<void> {
-    if (!(await this.shouldDispatchMachineryTurn(event))) {
+  private async runMachineryTurnGate(
+    event: MissionControlEvent,
+    labelsOverride?: Record<string, string> | null,
+  ): Promise<void> {
+    if (!(await this.shouldDispatchMachineryTurn(event, labelsOverride))) {
       return;
     }
-    const dispatched = await this.isDispatchedByCommander(event.agentId);
+    const dispatched = await this.isDispatchedByLabels(
+      labelsOverride ?? (await this.agentLabels(event.agentId)),
+    );
     if (this.centralConfig.get().mode !== "auto" && !dispatched) {
       return;
     }
@@ -3451,8 +3615,17 @@ export class MissionControlService {
    * survive reloads and agent restarts — same fallback as the Commander
    * identity check).
    */
-  private async isDispatchedByCommander(agentId: string): Promise<boolean> {
-    const labels = await this.agentLabels(agentId);
+  /**
+   * Whether the given worker labels mark the agent as Commander-dispatched:
+   * spawned via fleet_create_agent (label paseo.parent-agent-id pointing at a
+   * Commander-labeled agent) or adopted via a delivered fleet_send_prompt
+   * (paseo.commander-adopted-at). Used by the local gate with the worker's
+   * OWN labels AND by the forwarded-event gate with the labels that rode the
+   * mission_control.event.forward payload (the commander host has no local
+   * record of a peer-host worker, but the parent check still resolves — the
+   * parent is the commander agent, which lives HERE).
+   */
+  private async isDispatchedByLabels(labels: Record<string, string> | null): Promise<boolean> {
     const parentAgentId = getParentAgentIdFromLabels(labels);
     if (parentAgentId) {
       const parentLabels = await this.agentLabels(parentAgentId);
@@ -3577,6 +3750,103 @@ export class MissionControlService {
       }
     }
     return null;
+  }
+
+  // --- M9 cross-host event forwarding (docs/commander.md "Runtime model") ---
+
+  /**
+   * Forward a terminal event to the commander host over peering
+   * (mission_control.event.forward) when THIS daemon is NOT the commander
+   * host and the event's agent is one the Commander dispatched (labeled
+   * paseo.parent-agent-id or paseo.commander-adopted-at — the parent record
+   * lives on the commander host, so presence is the forward-side test). The
+   * commander host runs its machinery-turn gate with the worker's labels from
+   * the payload (it has no local record of a peer-host worker). Fire-and-
+   * forget and advisory: an unreachable commander host is a warn + drop,
+   * never a retry queue in v1.
+   */
+  private maybeForwardTerminalEventToCommander(event: MissionControlEvent): void {
+    void this.runForwardTerminalEventToCommander(event).catch((error) => {
+      this.logger.warn(
+        { err: error, eventId: event.id, kind: event.kind },
+        "mission_control.event_forward.gate_failed",
+      );
+    });
+  }
+
+  private async runForwardTerminalEventToCommander(event: MissionControlEvent): Promise<void> {
+    if (
+      event.kind !== "finished" &&
+      event.kind !== "failed" &&
+      event.kind !== "interrupted" &&
+      event.kind !== "verdict"
+    ) {
+      return;
+    }
+    const designated = this.centralConfig.get().commanderHost?.trim() || null;
+    if (designated === null || this.isThisCommanderHost(designated)) {
+      return;
+    }
+    const labels = await this.agentLabels(event.agentId);
+    if (!labels || !hasCommanderDispatchMarker(labels)) {
+      return;
+    }
+    await this.forwardEventToCommander(designated, event, labels);
+  }
+
+  private async forwardEventToCommander(
+    commanderHost: string,
+    event: MissionControlEvent,
+    labels: Record<string, string>,
+  ): Promise<void> {
+    const peerManager = this.resolvePeerManager();
+    const peerStatus = peerManager?.getPeerStatus(commanderHost) ?? null;
+    const peerClient = peerManager?.getPeerClient(commanderHost) ?? null;
+    if (!peerStatus || peerStatus.state !== "online" || !peerClient) {
+      // Machinery is advisory: unreachable commander host → warn + drop.
+      this.logger.warn(
+        {
+          commanderHost,
+          state: peerStatus?.state ?? "not-configured",
+          eventId: event.id,
+          kind: event.kind,
+          agentId: event.agentId,
+        },
+        "mission_control.event_forward.commander_unreachable",
+      );
+      return;
+    }
+    try {
+      const payload = await peerClient.missionControlEventForward({ event, labels });
+      if (!payload.ok) {
+        this.logger.warn(
+          { commanderHost, eventId: event.id, error: payload.error },
+          "mission_control.event_forward.rejected",
+        );
+      }
+    } catch (error) {
+      this.logger.warn(
+        { err: error, commanderHost, eventId: event.id },
+        "mission_control.event_forward.failed",
+      );
+    }
+  }
+
+  /**
+   * Ingest a terminal event forwarded by a NON-commander host over peering
+   * (mission_control.event.forward — the session handler routes here). The
+   * worker's labels ride the payload so the machinery-turn gate can decide
+   * without a local record of the worker (the parent-commander check still
+   * resolves: the parent is the commander agent, which lives HERE). The event
+   * is NEVER written to this host's events store — the feed aggregates
+   * per-host via the app — and never re-broadcast; only the gate consumes it.
+   */
+  async ingestForwardedEvent(input: {
+    event: MissionControlEvent;
+    labels: Record<string, string> | null;
+  }): Promise<{ ok: true } | { ok: false; error: string }> {
+    this.maybeDispatchMachineryTurn(input.event, input.labels ?? {});
+    return { ok: true };
   }
 
   /** Proposal cards ride the feed as kind:"proposal" events. */
@@ -3774,6 +4044,20 @@ function isMachineryRow(event: AgentStreamEvent): boolean {
 function isToolTerminalRow(event: AgentStreamEvent): boolean {
   return (
     event.type === "timeline" && event.item.type === "tool_call" && event.item.status !== "running"
+  );
+}
+
+/**
+ * Forward-side dispatched-worker test (M9): the worker carries
+ * paseo.parent-agent-id (its parent record — the commander agent — lives on
+ * the commander host, so presence is the test here, not a parent-labels
+ * lookup) or paseo.commander-adopted-at. The commander host re-checks with
+ * the full gate (parent labels resolve there).
+ */
+function hasCommanderDispatchMarker(labels: Record<string, string>): boolean {
+  return (
+    getParentAgentIdFromLabels(labels) !== null ||
+    typeof labels[COMMANDER_ADOPTED_AT_LABEL] === "string"
   );
 }
 

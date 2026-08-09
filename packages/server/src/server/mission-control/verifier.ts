@@ -212,6 +212,12 @@ export interface MissionControlVerifierDispatcherOptions {
   agentStorage: VerifierAgentStorage;
   serverId: string;
   hostName: string;
+  /**
+   * This host's Mission Control alias (daemon config missionControl.hostAlias,
+   * trimmed; null when unset). Card copy shows the alias and falls back to the
+   * hostname only when no alias is set — raw ids never appear in card copy.
+   */
+  hostAlias?: string | null;
   /** Central settings (mission-control/config.ts). Read live on every decision. */
   getCentralConfig: () => VerifierCentralConfig;
   subscribeReviewState: (
@@ -405,6 +411,8 @@ export class MissionControlVerifierDispatcher {
   private readonly agentStorage: VerifierAgentStorage;
   private readonly serverId: string;
   private readonly hostName: string;
+  /** Display label for this host in card copy: alias when set, hostname otherwise. */
+  private readonly hostLabel: string;
   private readonly getCentralConfig: MissionControlVerifierDispatcherOptions["getCentralConfig"];
   private readonly subscribeReviewState: MissionControlVerifierDispatcherOptions["subscribeReviewState"];
   private readonly getReadyForReview: MissionControlVerifierDispatcherOptions["getReadyForReview"];
@@ -437,6 +445,7 @@ export class MissionControlVerifierDispatcher {
     this.agentStorage = options.agentStorage;
     this.serverId = options.serverId;
     this.hostName = options.hostName;
+    this.hostLabel = options.hostAlias?.trim() || options.hostName;
     this.getCentralConfig = options.getCentralConfig;
     this.subscribeReviewState = options.subscribeReviewState;
     this.getReadyForReview = options.getReadyForReview;
@@ -724,9 +733,12 @@ export class MissionControlVerifierDispatcher {
           provider: "omp",
           model: model === "host-default" ? undefined : model,
           title: `Verifier · ${entry.title}`,
-          summary: `Spawn a verifier to audit ${worker?.name ?? entry.title} (${
-            entry.agentId
-          }) on ${this.hostName} — model ${model}.`,
+          // Normal-mode card copy: the worker's NAME/title and this host's
+          // ALIAS (hostname only when no alias). The raw worker agentId and
+          // OS hostname stay in the verbose proposal payload, never the card.
+          summary: `Spawn a verifier to audit ${worker?.name ?? entry.title} on ${
+            this.hostLabel
+          } — model ${model}.`,
         },
       });
       run.phase = "awaiting-spawn";

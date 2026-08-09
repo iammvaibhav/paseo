@@ -230,6 +230,21 @@ describe("CommanderAckDrop", () => {
     expect(removeTimelineRows).not.toHaveBeenCalled();
   });
 
+  test("disarm() drops a turn already being tracked (a steer joined the machinery turn)", async () => {
+    const { ackDrop, push, removeTimelineRows } = makeHarness();
+    ackDrop.arm();
+    push(turnStarted("turn-snapshot"));
+    // The mailbox steers the user message into the snapshot turn: its reply
+    // is now the Commander's real answer — disarm must stop classification
+    // mid-turn, even though the arm was already consumed at turn start.
+    ackDrop.disarm();
+    push(assistantMessage("ok", 20));
+    push(turnCompleted("turn-snapshot"));
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(removeTimelineRows).not.toHaveBeenCalled();
+  });
+
   test("retracts multi-clause context-pack boot acknowledgments", async () => {
     const { ackDrop, push, removeTimelineRows } = makeHarness();
     ackDrop.arm();

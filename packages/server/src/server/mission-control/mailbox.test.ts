@@ -60,11 +60,20 @@ describe("M8 mailbox: instruction delivery + speculative auto-recall", () => {
   let logger: pino.Logger;
   let setPendingInstructionEnvelope: Mock;
   let hasInFlightRun: Mock;
+  let dispatchSnapshotTurn: Mock;
+  let disarmSnapshotAckDrop: Mock;
 
-  async function createService(options: { busy?: boolean } = {}): Promise<void> {
+  async function createService(
+    options: { busy?: boolean; snapshotInFlight?: boolean } = {},
+  ): Promise<void> {
     logger = createMockLogger();
     hasInFlightRun = vi.fn(() => options.busy === true);
     setPendingInstructionEnvelope = vi.fn();
+    // Default: the snapshot turn is in flight after dispatch (the normal
+    // idle case — the message is steered into it). `snapshotInFlight: false`
+    // exercises the fallback (settled fast / busy skip / dispatch failure).
+    dispatchSnapshotTurn = vi.fn(async () => options.snapshotInFlight !== false);
+    disarmSnapshotAckDrop = vi.fn();
     service = new MissionControlService({
       paseoHome: dir,
       logger,
@@ -90,6 +99,8 @@ describe("M8 mailbox: instruction delivery + speculative auto-recall", () => {
         readStopOrigin: () => null,
       }),
       setPendingInstructionEnvelope,
+      dispatchSnapshotTurn,
+      disarmSnapshotAckDrop,
     });
     await service.start();
   }
@@ -148,6 +159,9 @@ describe("M8 mailbox: instruction delivery + speculative auto-recall", () => {
     expect(call?.prompt).toContain("- deploy the fleet to staging [omp]");
     // Idle-path staging only happens for idle deliveries — a busy steer never stages.
     expect(setPendingInstructionEnvelope).not.toHaveBeenCalled();
+    // The busy path steers into the running turn; it never dispatches a
+    // snapshot turn of its own (the running turn carries the prior row).
+    expect(dispatchSnapshotTurn).not.toHaveBeenCalled();
   });
 
   test("an idle delivery within budget hands the recall block to the snapshot seam", async () => {
@@ -175,12 +189,66 @@ describe("M8 mailbox: instruction delivery + speculative auto-recall", () => {
     });
 
     expect(result).toEqual({ ok: true, instructionId: "#1", deliveredAs: "run" });
-    // The plain message starts the run; the recall block rides the NEXT snapshot.
+    // The snapshot turn is dispatched first; the recall block rides it (the
+    // steered message itself carries no envelope blocks).
     expect(dispatchLocalPromptModeMock.mock.calls[0]?.[0]?.prompt).toBe("is staging ready?");
     expect(setPendingInstructionEnvelope).toHaveBeenCalledTimes(1);
     const staged = setPendingInstructionEnvelope.mock.calls[0]?.[0] as string;
     expect(staged).toContain("Possibly related (auto-recall):");
     expect(staged).toContain("- staging box is provisioned [paseo-fleet-dev]");
+  });
+
+  test("idle delivery steers the message into the in-flight snapshot turn (M10: no replace-running user run)", async () => {
+    await createService({ busy: false, snapshotInFlight: true });
+    vi.spyOn(service, "hindsightRecall").mockResolvedValue({ ok: true, matches: [] });
+
+    const result = await service.deliverCommanderInstruction({
+      text: "is staging ready?",
+      source: "voice",
+    });
+
+    expect(result).toEqual({ ok: true, instructionId: "#1", deliveredAs: "run" });
+    // Snapshot turn dispatched FIRST…
+    expect(dispatchSnapshotTurn).toHaveBeenCalledWith("commander-1");
+    // …then the message steered into that same turn — the native steer mode
+    // (never a startAgentRun with replaceRunning:true while it is in flight).
+    const call = dispatchLocalPromptModeMock.mock.calls[0]?.[0];
+    expect(call).toMatchObject({
+      agentId: "commander-1",
+      mode: "steer",
+      classification: "instruction",
+    });
+    // The turn's PRIMARY ask: plain message text, no mid-turn acknowledge
+    // wrapper (the snapshot body already carries ledger + recall blocks).
+    expect(call?.prompt).toBe("is staging ready?");
+    expect(call?.prompt).not.toContain("New instruction (#1)");
+    expect(call?.prompt).not.toContain("Acknowledge it in one line");
+    // Ordering: the snapshot dispatch precedes the steer.
+    expect(dispatchSnapshotTurn.mock.invocationCallOrder[0]).toBeLessThan(
+      dispatchLocalPromptModeMock.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
+    );
+    // The joined turn's reply is real content: the ack-drop is disarmed.
+    expect(disarmSnapshotAckDrop).toHaveBeenCalledTimes(1);
+  });
+
+  test("idle delivery falls back to the plain run when no snapshot turn is in flight", async () => {
+    // No turn in flight after dispatch: already settled (fast model), busy
+    // skip, or a failed dispatch — all fall back identically, and the
+    // message is ALWAYS still delivered (the snapshot is advisory).
+    await createService({ busy: false, snapshotInFlight: false });
+    vi.spyOn(service, "hindsightRecall").mockResolvedValue({ ok: true, matches: [] });
+
+    const result = await service.deliverCommanderInstruction({
+      text: "is staging ready?",
+      source: "voice",
+    });
+
+    expect(result).toEqual({ ok: true, instructionId: "#1", deliveredAs: "run" });
+    expect(dispatchSnapshotTurn).toHaveBeenCalledWith("commander-1");
+    const call = dispatchLocalPromptModeMock.mock.calls[0]?.[0];
+    expect(call?.prompt).toBe("is staging ready?");
+    // No steer joined a snapshot turn — nothing to disarm.
+    expect(disarmSnapshotAckDrop).not.toHaveBeenCalled();
   });
 
   test("a recall past the hard budget never delays delivery and attaches nothing", async () => {
@@ -226,7 +294,48 @@ describe("M8 mailbox: instruction delivery + speculative auto-recall", () => {
     expect(call).toMatchObject({ classification: "machinery" });
     expect(recallSpy).not.toHaveBeenCalled();
     expect(setPendingInstructionEnvelope).not.toHaveBeenCalled();
+    // The machinery path is unchanged: it rides the startAgentRun seam (its
+    // replaceRunning:false settlement wait) and never dispatches a snapshot
+    // turn through the mailbox's idle path.
+    expect(dispatchSnapshotTurn).not.toHaveBeenCalled();
     // The machinery path opens no instruction ledger row either.
     expect(service.listInstructions()).toEqual([]);
+  });
+
+  test("a deny with a revision delivers one mailbox instruction citing the proposal id (never silent)", async () => {
+    await createService({ busy: false, snapshotInFlight: true });
+    vi.spyOn(service, "hindsightRecall").mockResolvedValue({ ok: true, matches: [] });
+    const proposal = await service.approvals.createProposal({
+      origin: "commander",
+      serverId: "test-server",
+      targetAgentId: "worker-1",
+      message: "Spawn beta-tmp-summarizer on beta: summarize /tmp",
+      deliveryMode: "interrupt",
+      reason: "Placement",
+      classification: "normal",
+    });
+    const result = await service.approvals.resolveProposal({
+      proposalId: proposal.id,
+      action: "deny",
+      editedMessage: "Run it on gamma instead.",
+    });
+    expect(result).toEqual({ ok: true });
+    expect(service.approvals.getProposal(proposal.id)?.status).toBe("denied");
+    // Exactly ONE mailbox instruction carries the revision back to the
+    // Commander — the same delivery path chat uses.
+    const revisionCalls = dispatchLocalPromptModeMock.mock.calls.filter(
+      (call) =>
+        typeof call[0]?.prompt === "string" &&
+        call[0].prompt.includes("was denied with this revision"),
+    );
+    expect(revisionCalls).toHaveLength(1);
+    expect(revisionCalls[0]?.[0]?.prompt).toBe(
+      `Your proposal ${proposal.id} was denied with this revision: Run it on gamma instead.`,
+    );
+    // The ledger opens a row for the revision so the Commander re-proposes.
+    const instructions = service.listInstructions();
+    expect(instructions).toHaveLength(1);
+    expect(instructions[0].text).toContain(proposal.id);
+    expect(instructions[0].source).toBe("chat");
   });
 });

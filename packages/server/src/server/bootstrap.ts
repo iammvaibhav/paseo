@@ -236,6 +236,11 @@ import {
   applyMetaPlan,
   type MetaActionsDependencies,
 } from "./mission-control/meta-actions.js";
+import {
+  executeSpawnProposal,
+  spawnOnThisHost,
+  type SpawnExecutorDependencies,
+} from "./mission-control/spawn-executor.js";
 import { CreateAgentLifecycleDispatch } from "./agent/create-agent-lifecycle-dispatch.js";
 import {
   HubRelationshipController,
@@ -292,9 +297,15 @@ function createTerminalActivityUrl(listenTarget: ListenTarget | null): string | 
 type SpawnProposalResult = { ok: true; agentId: string } | { ok: false; error: string };
 
 /**
- * Fleet-host branch of spawnFromProposal: create the agent through the peer
- * client. Lifted out of the MissionControlService wiring so the closure stays
- * within the complexity budget.
+ * Fleet-host branch of executeSpawnProposal: forward the prepared spawn plan
+ * to the peer over the mission_control.spawn.apply RPC (fleetSpawnApply). The
+ * PEER validates the cwd contract against its own filesystem, creates the
+ * absolute cwd with mkdir recursive when missing, and creates the agent in
+ * ITS OWN registry — the mkdir happens on the target host, never here. The
+ * plan already carries the commander's paseo.parent-agent-id stamp, so the
+ * label persists in the target's registry. Lifted out of the
+ * MissionControlService wiring so the closure stays within the complexity
+ * budget.
  */
 async function spawnProposalOnPeer(
   peerManager: PeerManager | null | undefined,
@@ -310,24 +321,14 @@ async function spawnProposalOnPeer(
     return { ok: false, error: `Host "${host}" has no peer client` };
   }
   try {
-    const snapshot = await peerClient.createAgent({
-      // The peer create RPC is the SESSION create path, which looks up
-      // `provider` as a plain provider id and takes `model` separately. The
-      // MCP create path (spawnProposalLocally) splits "provider/model"
-      // itself; passing the combined string here made every peer spawn fail
-      // with "Provider provider/model is not configured" on the target host.
-      provider: plan.provider,
-      ...(plan.model ? { model: plan.model } : {}),
-      cwd: plan.cwd ?? ".",
-      ...(plan.workspaceId ? { workspaceId: plan.workspaceId } : {}),
-      ...(plan.initialPrompt ? { initialPrompt: plan.initialPrompt } : {}),
-      ...(plan.title ? { title: plan.title } : {}),
-      ...(plan.labels ? { labels: plan.labels } : {}),
-      ...(plan.mode ? { modeId: plan.mode } : {}),
-      ...(plan.thinking ? { thinkingOptionId: plan.thinking } : {}),
-      ...(plan.features ? { featureValues: plan.features } : {}),
-    });
-    return { ok: true, agentId: snapshot.id };
+    const payload = await peerClient.fleetSpawnApply(plan);
+    if (!payload.ok) {
+      return { ok: false, error: payload.error ?? `Fleet spawn on "${host}" failed` };
+    }
+    if (!payload.agentId) {
+      return { ok: false, error: `Fleet spawn on "${host}" returned no agent id` };
+    }
+    return { ok: true, agentId: payload.agentId };
   } catch (error) {
     return { ok: false, error: `fleet spawn failed: ${String(error)}` };
   }
@@ -1158,6 +1159,11 @@ export async function createPaseoDaemon(
       status: "server_info",
       serverId,
       hostname: getHostname(),
+      // Additive (v0.1.X); missionControlHostAlias is hoisted before the
+      // verifier dispatcher (~1741) and initialized before the server starts
+      // listening (see httpServer.listen below), so this request-time closure
+      // read is safe.
+      missionControlHostAlias: missionControlHostAlias || undefined,
       version: daemonVersion,
       listen: formatListenTarget(boundListenTarget ?? listenTarget),
     });
@@ -1729,14 +1735,18 @@ export async function createPaseoDaemon(
   });
   // Hoisted: the verifier dispatcher and the presence source capture the
   // service in closures that run only after boot, but TypeScript needs the
-  // binding declared before those initializers reference it.
+  // binding declared before those initializers reference it. The host alias
+  // (hoisted here) feeds verifier spawn card copy: cards show the alias and
+  // fall back to the hostname only when no alias is set.
   let missionControlService: MissionControlService;
+  const missionControlHostAlias = daemonConfigStore.get().missionControl?.hostAlias?.trim() || null;
   const verifierDispatcher = new MissionControlVerifierDispatcher({
     logger,
     agentManager,
     agentStorage,
     serverId,
     hostName: getHostname(),
+    hostAlias: missionControlHostAlias,
     getCentralConfig: () => missionControlService.getCentralConfig(),
     subscribeReviewState: (callback) =>
       missionControlService.subscribeReviewState((agentId, record) =>
@@ -1774,8 +1784,6 @@ export async function createPaseoDaemon(
   // Built lazily (a factory): the peer manager is constructed AFTER the
   // service in bootstrap, so the fleet map must resolve at apply time, not at
   // service construction.
-  // Hoisted once: several mission-control consumers need this host's alias.
-  const missionControlHostAlias = daemonConfigStore.get().missionControl?.hostAlias?.trim() || null;
   const metaActionsDeps = (): MetaActionsDependencies => ({
     serverId,
     hostName: getHostname(),
@@ -1807,6 +1815,29 @@ export async function createPaseoDaemon(
   // replicas to peers, sync-on-connect). The closure reads the slot at call
   // time, so the eventual assignment below is always visible.
   let peerManager: PeerManager | null = null;
+  // Shared spawn executor deps (spawnFromProposal + the peer spawn apply
+  // hook): host identity + fleet map for own-alias resolution (own
+  // hostAlias/serverId/hostname → local), the commander id for the
+  // paseo.parent-agent-id stamp, and the local/peer create branches. Built
+  // lazily (a factory): the peer manager and the service are constructed
+  // after this point, so the fleet map and commander id resolve at execution
+  // time, not at service construction.
+  const spawnExecutorDeps = (stampCommanderParentLabel: boolean): SpawnExecutorDependencies => ({
+    host: {
+      serverId,
+      hostName: getHostname(),
+      hostAlias: missionControlHostAlias,
+      peerManager: peerManager ?? null,
+    },
+    stampCommanderParentLabel,
+    resolveCommanderAgentId: () => missionControlService.getCommanderAgentId(),
+    mkdirp: async (dirPath: string) => {
+      await mkdir(dirPath, { recursive: true });
+    },
+    createLocally: (spawnPlan, providerModel) =>
+      spawnProposalLocally(createAgent, spawnPlan, providerModel),
+    createOnPeer: (peerName, spawnPlan) => spawnProposalOnPeer(peerManager, peerName, spawnPlan),
+  });
   missionControlService = new MissionControlService({
     paseoHome: config.paseoHome,
     logger,
@@ -1827,9 +1858,15 @@ export async function createPaseoDaemon(
     }),
     // M8 mailbox: the idle delivery path hands the speculative auto-recall
     // block (within budget) to the snapshot injector so the fresh snapshot
-    // ahead of the run carries it alongside the ledger block.
+    // carries it alongside the ledger block. M10: the idle path dispatches
+    // the snapshot turn explicitly (dispatchSnapshotTurn) and then steers
+    // the message into it, disarming the ack-drop (the joined turn's reply
+    // is real content, never a retractable machinery ack).
     setPendingInstructionEnvelope: (block) =>
       commanderSnapshotInjector?.setPendingInstructionEnvelope(block),
+    dispatchSnapshotTurn: (agentId) =>
+      commanderSnapshotInjector?.dispatchSnapshotTurn(agentId) ?? Promise.resolve(false),
+    disarmSnapshotAckDrop: () => commanderSnapshotInjector?.ackDrop.disarm(),
     verifier: verifierDispatcher,
     resetCommander: () =>
       resetCommander({
@@ -1867,10 +1904,15 @@ export async function createPaseoDaemon(
         },
       }),
     // Execute a commander-origin spawn-kind proposal (fleet_create_agent in
-    // ask mode): reconstruct the create from the proposal's spawnPlan. Local
-    // hosts use the create-agent command; peers spawn through the fleet
-    // client. This is the single execution path for approved spawn proposals
-    // (survives daemon restarts — the plan rides the persisted proposal).
+    // ask mode): reconstruct the create from the proposal's spawnPlan. Host
+    // resolution, commander parent-label stamping, and cwd creation all live
+    // in the spawn executor (spawn-executor.ts): the plan's host resolves
+    // through the shared fleet map (own hostAlias/serverId/hostname → local,
+    // peer name → peer), local hosts create here (absolute cwd mkdir'd
+    // first), peers are forwarded over mission_control.spawn.apply (the PEER
+    // creates the cwd on its own disk). This is the single execution path for
+    // approved spawn proposals (survives daemon restarts — the plan rides the
+    // persisted proposal).
     // M6: the '# Prior work in this workspace' block is appended HERE (the
     // spawn plan application point) so BOTH the ask path (proposal approved
     // later) and the auto path (auto-approved) enrich the brief at execution
@@ -1885,13 +1927,7 @@ export async function createPaseoDaemon(
         findWorkspaceIdForCwd: findWorkspaceIdForCwdExternal,
         getWorkspaceRollup: (workspaceId) => missionControlService.getWorkspaceRollup(workspaceId),
       });
-      const providerModel = enriched.model
-        ? `${enriched.provider}/${enriched.model}`
-        : enriched.provider;
-      if (enriched.host && enriched.host !== "local") {
-        return spawnProposalOnPeer(peerManager, enriched.host, enriched);
-      }
-      return spawnProposalLocally(createAgent, enriched, providerModel);
+      return executeSpawnProposal(enriched, spawnExecutorDeps(proposal.origin === "commander"));
     },
     // Execute a commander-origin meta-kind proposal (fleet_meta in ask mode
     // and auto mode): apply the fleet meta action described by metaPlan
@@ -1909,6 +1945,16 @@ export async function createPaseoDaemon(
     // registries and apply here — only the APPLY hops; the proposal card
     // stays on the commander host.
     metaApplyRemote: (metaPlan) => applyMetaPlan(metaActionsDeps(), metaPlan),
+    // Peer branch of the spawn apply: the commander host forwards an approved
+    // spawn-kind proposal whose plan targets THIS host as a peer
+    // (mission_control.spawn.apply). THIS host validates the cwd contract
+    // against its own filesystem, creates the absolute cwd with mkdir
+    // recursive when missing, and creates the agent in its own registry —
+    // the mkdir happens here (the target host), never on the commander's
+    // disk. The plan arrives with paseo.parent-agent-id already stamped by
+    // the commander, so the label persists in this host's registry. Only the
+    // APPLY hops; the proposal card stays on the commander host.
+    spawnApplyRemote: (spawnPlan) => spawnOnThisHost(spawnPlan, spawnExecutorDeps(false)),
     // M6 run records: resolve the workspace/project attribution frozen into a
     // run record at assembly time (live registries; falls back to the cwd →
     // workspace path when the agent carries no workspaceId).

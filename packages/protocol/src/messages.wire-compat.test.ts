@@ -94,6 +94,39 @@ describe("wire schema compatibility", () => {
     });
   });
 
+  test("server info accepts missionControlHostAlias with and without the field", () => {
+    // With the field: trimmed, junk normalized to null, never required.
+    expect(
+      ServerInfoStatusPayloadSchema.parse({
+        status: "server_info",
+        serverId: "alias-server",
+        missionControlHostAlias: "  fleet-lead  ",
+        features: {},
+      }),
+    ).toMatchObject({
+      status: "server_info",
+      serverId: "alias-server",
+      missionControlHostAlias: "fleet-lead",
+      features: {},
+    });
+    expect(
+      ServerInfoStatusPayloadSchema.parse({
+        status: "server_info",
+        serverId: "alias-server",
+        missionControlHostAlias: 42,
+        features: {},
+      }).missionControlHostAlias,
+    ).toBeNull();
+    // Without the field: absent, so old daemons and old payloads stay valid.
+    expect(
+      ServerInfoStatusPayloadSchema.parse({
+        status: "server_info",
+        serverId: "plain-server",
+        features: {},
+      }).missionControlHostAlias,
+    ).toBeUndefined();
+  });
+
   test("assistant timeline message ids are optional on the wire", () => {
     expect(
       AgentTimelineItemPayloadSchema.parse({

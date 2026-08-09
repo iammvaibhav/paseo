@@ -1826,6 +1826,7 @@ describe("HostRuntimeStore", () => {
     sessionStore.updateSessionServerInfo(host.serverId, {
       serverId: host.serverId,
       hostname: null,
+      missionControlHostAlias: null,
       version: "0.1.96",
     });
     store.syncHosts([host]);
@@ -1899,6 +1900,7 @@ describe("HostRuntimeStore", () => {
     sessionStore.updateSessionServerInfo(host.serverId, {
       serverId: host.serverId,
       hostname: null,
+      missionControlHostAlias: null,
       version: "0.1.96",
     });
     sessionStore.setAgents(
@@ -2184,6 +2186,7 @@ describe("HostRuntimeStore", () => {
     useSessionStore.getState().updateSessionServerInfo(host.serverId, {
       serverId: host.serverId,
       hostname: null,
+      missionControlHostAlias: null,
       version: "test",
     });
     await fakeClient.waitForFetches(1);
@@ -2488,6 +2491,7 @@ describe("HostRuntimeStore", () => {
     sessionStore.updateSessionServerInfo(host.serverId, {
       serverId: host.serverId,
       hostname: null,
+      missionControlHostAlias: null,
       version: null,
       features: { canonicalSubmittedPrompts: true },
     });
@@ -2634,6 +2638,7 @@ describe("HostRuntimeStore", () => {
     sessionStore.updateSessionServerInfo(host.serverId, {
       serverId: host.serverId,
       hostname: null,
+      missionControlHostAlias: null,
       version: "0.1.105",
       features: { forgeSearch: false },
     });

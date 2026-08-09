@@ -115,8 +115,10 @@ import type {
 import type { MutableDaemonConfig, MutableDaemonConfigPatch } from "@getpaseo/protocol/messages";
 import type {
   MissionControlCentralConfig,
+  MissionControlEvent,
   MissionControlMetaPlan,
   MissionControlMode,
+  MissionControlProposalSpawnPlan,
 } from "@getpaseo/protocol/mission-control/types";
 import { isRelayClientWebSocketUrl } from "@getpaseo/protocol/daemon-endpoints";
 import type { WebhookAuth, WebhookFilter, WebhookTarget } from "@getpaseo/protocol/webhook/types";
@@ -631,6 +633,14 @@ type MissionControlSearchPayload = Extract<
 type MissionControlMetaApplyPayload = Extract<
   SessionOutboundMessage,
   { type: "mission_control.meta.apply.response" }
+>["payload"];
+type MissionControlSpawnApplyPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.spawn.apply.response" }
+>["payload"];
+type MissionControlEventForwardPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.event.forward.response" }
 >["payload"];
 type MissionControlConfigGetPayload = Extract<
   SessionOutboundMessage,
@@ -5842,6 +5852,53 @@ export class DaemonClient {
       requestId,
       message: { type: "mission_control.meta.apply.request", metaPlan },
       responseType: "mission_control.meta.apply.response",
+    });
+  }
+
+  /**
+   * Apply a spawn plan on this daemon (mission_control.spawn.apply): the
+   * Commander-host spawn executor routes an approved spawn-kind proposal
+   * (fleet_create_agent) whose plan targets THIS host as a peer here. The
+   * daemon validates the plan's cwd contract against its own filesystem,
+   * creates the absolute cwd with mkdir recursive when missing, and creates
+   * the agent in ITS OWN registry — the mkdir happens on the target host,
+   * never the commander's. The commander already stamped paseo.parent-agent-id
+   * on the plan, so the label persists in this host's registry. Mirrors
+   * fleetMetaApply; only the APPLY hops (the proposal card stays on the
+   * commander host).
+   */
+  async fleetSpawnApply(
+    spawnPlan: MissionControlProposalSpawnPlan,
+    requestId?: string,
+  ): Promise<MissionControlSpawnApplyPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "mission_control.spawn.apply.request", spawnPlan },
+      responseType: "mission_control.spawn.apply.response",
+    });
+  }
+
+  /**
+   * Forward a terminal mission-control event to the commander host
+   * (mission_control.event.forward): a NON-commander host emits this when one
+   * of its commander-dispatched workers (labeled paseo.parent-agent-id /
+   * paseo.commander-adopted-at) finishes, fails, is interrupted, or receives
+   * a verdict. The commander host ingests the event into the machinery-turn
+   * gate ONLY — the worker's labels ride the payload so the gate can decide
+   * without a local record — and never writes it into its events store.
+   */
+  async missionControlEventForward(
+    input: { event: MissionControlEvent; labels: Record<string, string> | null },
+    requestId?: string,
+  ): Promise<MissionControlEventForwardPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: {
+        type: "mission_control.event.forward.request",
+        event: input.event,
+        labels: input.labels,
+      },
+      responseType: "mission_control.event.forward.response",
     });
   }
 
