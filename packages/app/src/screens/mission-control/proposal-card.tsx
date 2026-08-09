@@ -15,7 +15,11 @@ import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { useToast } from "@/contexts/toast-context";
 import { HostGlyph } from "@/components/host-glyph";
 import { useLiveTimeAgo } from "@/hooks/use-compact-time-ago";
-import { resolveSessionAgent } from "@/utils/agent-snapshots";
+import {
+  deriveProposalCardIdentity,
+  resolveAgentIdentityAcrossSessions,
+  resolveOpaqueAgentLabel,
+} from "./proposal-card-identity";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
 import type { Theme } from "@/styles/theme";
 import type { CardRunPosition, FeedCardEvent } from "@/screens/mission-control/feed-card";
@@ -34,6 +38,7 @@ interface SubmitProposalResponseParams {
   proposalId: string;
   action: "approve" | "deny";
   editedMessage?: string;
+  reason?: string;
   allowPair: boolean;
   t: TFunction;
 }
@@ -44,6 +49,7 @@ async function submitProposalResponse({
   proposalId,
   action,
   editedMessage,
+  reason,
   allowPair,
   t,
 }: SubmitProposalResponseParams): Promise<void> {
@@ -55,6 +61,7 @@ async function submitProposalResponse({
     proposalId,
     action,
     ...(editedMessage !== undefined ? { editedMessage } : {}),
+    ...(reason !== undefined ? { reason } : {}),
     ...(allowPair ? { allowPair: true } : {}),
   });
   if (!result.ok) {
@@ -74,6 +81,10 @@ interface ProposalCardActionsProps {
   onApprove: () => void;
   onOpenEdit: () => void;
   onDeny: () => void;
+  isDenyReasonOpen: boolean;
+  denyReason: string;
+  onDenyReasonChange: (value: string) => void;
+  onCancelDenyReason: () => void;
   error: string | null;
   resolvedStatus: string;
 }
@@ -94,9 +105,97 @@ function ProposalCardActions({
   onApprove,
   onOpenEdit,
   onDeny,
+  isDenyReasonOpen,
+  denyReason,
+  onDenyReasonChange,
+  onCancelDenyReason,
   error,
   resolvedStatus,
 }: ProposalCardActionsProps): ReactElement {
+  let pendingActions: ReactElement;
+  if (isEditing) {
+    pendingActions = (
+      <>
+        <Button
+          variant="default"
+          size="sm"
+          onPress={onSendEdit}
+          disabled={isResponding}
+          loading={isResponding}
+          testID="mission-control-proposal-send"
+        >
+          Send
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          onPress={onCancelEdit}
+          disabled={isResponding}
+          testID="mission-control-proposal-cancel-edit"
+        >
+          Cancel
+        </Button>
+      </>
+    );
+  } else if (isDenyReasonOpen) {
+    pendingActions = (
+      <>
+        <Button
+          variant="ghost"
+          size="sm"
+          onPress={onDeny}
+          disabled={isResponding}
+          loading={isResponding}
+          testID="mission-control-proposal-deny"
+        >
+          Deny
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          onPress={onCancelDenyReason}
+          disabled={isResponding}
+          testID="mission-control-proposal-cancel-deny-reason"
+        >
+          Cancel
+        </Button>
+      </>
+    );
+  } else {
+    pendingActions = (
+      <>
+        <Button
+          variant="default"
+          size="sm"
+          onPress={onApprove}
+          disabled={isResponding}
+          loading={isResponding}
+          testID="mission-control-proposal-approve"
+        >
+          Approve
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onPress={onOpenEdit}
+          disabled={isResponding}
+          testID="mission-control-proposal-edit"
+        >
+          Edit
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onPress={onDeny}
+          disabled={isResponding}
+          testID="mission-control-proposal-deny"
+        >
+          Deny
+        </Button>
+      </>
+    );
+  }
+
   return (
     <>
       {showAllowPair ? (
@@ -112,62 +211,21 @@ function ProposalCardActions({
       ) : null}
 
       {isPending ? (
-        <View style={styles.actionsRow}>
-          {isEditing ? (
-            <>
-              <Button
-                variant="default"
-                size="sm"
-                onPress={onSendEdit}
-                disabled={isResponding}
-                loading={isResponding}
-                testID="mission-control-proposal-send"
-              >
-                Send
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                onPress={onCancelEdit}
-                disabled={isResponding}
-                testID="mission-control-proposal-cancel-edit"
-              >
-                Cancel
-              </Button>
-            </>
-          ) : (
-            <>
-              <Button
-                variant="default"
-                size="sm"
-                onPress={onApprove}
-                disabled={isResponding}
-                loading={isResponding}
-                testID="mission-control-proposal-approve"
-              >
-                Approve
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onPress={onOpenEdit}
-                disabled={isResponding}
-                testID="mission-control-proposal-edit"
-              >
-                Edit
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onPress={onDeny}
-                disabled={isResponding}
-                testID="mission-control-proposal-deny"
-              >
-                Deny
-              </Button>
-            </>
-          )}
-        </View>
+        <>
+          {isDenyReasonOpen ? (
+            <View style={styles.denyReasonRow}>
+              <SettingsTextArea
+                accessibilityLabel="Deny reason"
+                value={denyReason}
+                onChangeText={onDenyReasonChange}
+                placeholder="Reason (optional)"
+                testID="mission-control-proposal-deny-reason-input"
+                style={styles.denyReasonInput}
+              />
+            </View>
+          ) : null}
+          <View style={styles.actionsRow}>{pendingActions}</View>
+        </>
       ) : (
         <Text style={styles.resolvedLabel}>{resolvedStatus}</Text>
       )}
@@ -271,15 +329,17 @@ export function ProposalCard({
   const toast = useToast();
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState(proposal.message);
+  const [isDenyReasonOpen, setIsDenyReasonOpen] = useState(false);
+  const [denyReason, setDenyReason] = useState("");
   const [allowPair, setAllowPair] = useState(false);
   const [isResponding, setIsResponding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isPayloadExpanded, setIsPayloadExpanded] = useState(true);
-  const liveAgent = useSessionStore((state) =>
-    event.serverId && event.agentId
-      ? resolveSessionAgent(state.sessions[event.serverId], event.agentId)
-      : null,
-  );
+  // Every host session (agents + agentDetails, incl. peer hosts and archived
+  // agents): app-composed chrome resolves opaque stored ids across the whole
+  // fleet, not just the card's own host. The selector returns the sessions
+  // record reference, which only changes when sessions change.
+  const sessions = useSessionStore((state) => state.sessions);
   // Workspace titles for plan chips resolve from the live session store like
   // every other surface (title ?? name); the id is a record key, never a
   // display label. Selecting the map reference keeps the card reactive to
@@ -296,17 +356,31 @@ export function ProposalCard({
     [sessionWorkspaces],
   );
   const hideAgentNames = useMissionControlCentralConfig().config?.hideAgentNames === true;
-  // Emit-time snapshot: recorded cards never render the live title. Only the
-  // name chip may read live identity (names are write-once).
-  const agentTitle = event.agentTitle;
-  const agentChipLabel = hideAgentNames ? agentTitle : (liveAgent?.name ?? event.agentTitle);
+  // App-composed chrome: the stored title snapshot stays the card copy unless
+  // it is an opaque agent id (the daemon's title fallback for unnamed
+  // subjects) — those resolve to the record's own label / live fleet identity
+  // across ALL host sessions / the neutral fallback, never a raw UUID. Only
+  // the name chip may read live identity (names are write-once).
+  const { title: agentTitle, agentChipLabel } = deriveProposalCardIdentity(
+    event,
+    proposal,
+    sessions,
+    hideAgentNames,
+  );
+  const resolveAgentLabel = useCallback(
+    (rawAgent: string) =>
+      resolveOpaqueAgentLabel(rawAgent, [event.agentId, proposal.targetAgentId], (agentId) =>
+        resolveAgentIdentityAcrossSessions(sessions, agentId),
+      ),
+    [event.agentId, proposal.targetAgentId, sessions],
+  );
   const timestamp = new Date(event.ts);
   // Live relative time via the shared ticker; the label ages in place without
   // re-rendering the card or the list.
   const timeAgo = useLiveTimeAgo(timestamp);
 
   const respond = useCallback(
-    async (action: "approve" | "deny", editedMessage?: string) => {
+    async (action: "approve" | "deny", editedMessage?: string, reason?: string) => {
       if (isResponding) {
         return;
       }
@@ -318,10 +392,13 @@ export function ProposalCard({
           proposalId: proposal.id,
           action,
           editedMessage,
+          reason,
           allowPair,
           t,
         });
         setIsEditing(false);
+        setIsDenyReasonOpen(false);
+        setDenyReason("");
         onResolved?.(proposal.id, action === "approve" ? "sent" : "denied");
       } catch (caught) {
         const message = caught instanceof Error ? caught.message : String(caught);
@@ -346,8 +423,22 @@ export function ProposalCard({
   }, [respond]);
 
   const handleDeny = useCallback(() => {
-    void respond("deny");
-  }, [respond]);
+    // First press reveals the optional reason field; the second press submits
+    // (empty reason = plain deny, skippable).
+    if (!isDenyReasonOpen) {
+      setError(null);
+      setIsDenyReasonOpen(true);
+      return;
+    }
+    const trimmed = denyReason.trim();
+    void respond("deny", undefined, trimmed.length > 0 ? trimmed : undefined);
+  }, [denyReason, isDenyReasonOpen, respond]);
+
+  const handleCancelDenyReason = useCallback(() => {
+    setError(null);
+    setIsDenyReasonOpen(false);
+    setDenyReason("");
+  }, []);
 
   const handleOpenEdit = useCallback(() => {
     setDraft(proposal.message);
@@ -435,7 +526,7 @@ export function ProposalCard({
         </View>
 
         {(() => {
-          const chips = resolvePlanChips(proposal, t, resolveWorkspaceTitle);
+          const chips = resolvePlanChips(proposal, t, resolveWorkspaceTitle, resolveAgentLabel);
           if (chips.length === 0) return null;
           return (
             <View style={styles.planChipsRow} testID="mission-control-proposal-chips">
@@ -509,6 +600,10 @@ export function ProposalCard({
           onApprove={handleApprove}
           onOpenEdit={handleOpenEdit}
           onDeny={handleDeny}
+          isDenyReasonOpen={isDenyReasonOpen}
+          denyReason={denyReason}
+          onDenyReasonChange={setDenyReason}
+          onCancelDenyReason={handleCancelDenyReason}
           error={error}
           resolvedStatus={proposal.status}
         />
@@ -608,6 +703,16 @@ const styles = StyleSheet.create((theme) => ({
   },
   messageInput: {
     minHeight: 80,
+    borderRadius: theme.borderRadius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface0,
+  },
+  denyReasonRow: {
+    marginTop: theme.spacing[1],
+  },
+  denyReasonInput: {
+    minHeight: 48,
     borderRadius: theme.borderRadius.md,
     borderWidth: 1,
     borderColor: theme.colors.border,

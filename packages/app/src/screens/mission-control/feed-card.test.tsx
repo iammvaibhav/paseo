@@ -7,34 +7,47 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent } from "@/stores/session-store";
 type FeedCardEvent = import("./feed-card").FeedCardEvent;
 
-const { liveAgent, theme, openInspectorAgentMock } = vi.hoisted(() => ({
-  liveAgent: {
+const { liveAgent, theme, openInspectorAgentMock, sessionsState } = vi.hoisted(() => {
+  const liveAgentLocal = {
     id: "agent-1",
     name: "Worker One",
     title: "Repair mission control cards",
     shortDescription: "Polishing the shared card anatomy",
-  },
-  theme: {
-    spacing: { 1: 4, 2: 8, 3: 12, 4: 16 },
-    borderRadius: { none: 0, sm: 2, md: 6, full: 9999 },
-    borderWidth: { 0: 0, 1: 1, 2: 2 },
-    fontFamily: { ui: "system-ui", code: "monospace" },
-    fontWeight: { normal: "400", medium: "500", semibold: "600" },
-    fontSize: { xs: 12, sm: 14 },
-    colors: {
-      accent: "#20744a",
-      border: "#333333",
-      foreground: "#ffffff",
-      foregroundMuted: "#aaaaaa",
-      foregroundExtraMuted: "#777777",
-      surface0: "#111111",
-      surface1: "#222222",
-      surface2: "#333333",
-      statusDanger: "#d8847b",
+  };
+  return {
+    liveAgent: liveAgentLocal,
+    theme: {
+      spacing: { 1: 4, 2: 8, 3: 12, 4: 16 },
+      borderRadius: { none: 0, sm: 2, md: 6, full: 9999 },
+      borderWidth: { 0: 0, 1: 1, 2: 2 },
+      fontFamily: { ui: "system-ui", code: "monospace" },
+      fontWeight: { normal: "400", medium: "500", semibold: "600" },
+      fontSize: { xs: 12, sm: 14 },
+      colors: {
+        accent: "#20744a",
+        border: "#333333",
+        foreground: "#ffffff",
+        foregroundMuted: "#aaaaaa",
+        foregroundExtraMuted: "#777777",
+        surface0: "#111111",
+        surface1: "#222222",
+        surface2: "#333333",
+        statusDanger: "#d8847b",
+      },
     },
-  },
-  openInspectorAgentMock: vi.fn(),
-}));
+    openInspectorAgentMock: vi.fn(),
+    // The session store mock reads this live object so tests can seed peer /
+    // archived / empty session shapes per test.
+    sessionsState: {
+      sessions: {
+        "server-1": {
+          agents: new Map([["agent-1", liveAgentLocal]]),
+          agentDetails: new Map(),
+        },
+      },
+    },
+  };
+});
 
 vi.mock("react-native-unistyles", () => ({
   StyleSheet: {
@@ -81,15 +94,7 @@ vi.mock("@/contexts/toast-context", () => ({
   useToast: () => ({ error: () => {}, show: () => {}, copied: () => {} }),
 }));
 vi.mock("@/stores/session-store", () => ({
-  useSessionStore: (selector: (state: unknown) => unknown) =>
-    selector({
-      sessions: {
-        "server-1": {
-          agents: new Map([["agent-1", liveAgent]]),
-          agentDetails: new Map(),
-        },
-      },
-    }),
+  useSessionStore: (selector: (state: unknown) => unknown) => selector(sessionsState),
 }));
 vi.mock("@/screens/mission-control/inspector-store", () => ({
   useInspectorStore: { getState: () => ({ openInspectorAgent: openInspectorAgentMock }) },
@@ -118,7 +123,9 @@ vi.mock("@/components/ui/status-badge", () => ({
 }));
 vi.mock("@/components/ui/switch", () => ({ Switch: () => <input type="checkbox" /> }));
 vi.mock("react-i18next", () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({
+    t: (key: string, opts?: { label?: string }) => (opts?.label ? `${key}:${opts.label}` : key),
+  }),
   initReactI18next: { type: "3rdParty", init: () => {} },
 }));
 vi.mock("./proofs/proof-sections", () => ({ ProofSections: () => null }));
@@ -882,5 +889,200 @@ describe("Proposal Card v2, ClarificationCard, and AnswerCard", () => {
     expect(
       container?.querySelector('[data-testid="mission-control-answer-headline"]')?.textContent,
     ).toBe("Fleet Overview");
+  });
+});
+
+const UUID_A = "442c01b4-25ff-42f8-9e6b-0dbd722d2611";
+const UUID_B = "d7050531-e19d-4ac3-8593-4ebcd8400692";
+
+function seedSessions(sessions: Record<string, unknown>): void {
+  sessionsState.sessions = sessions as typeof sessionsState.sessions;
+}
+
+describe("Proposal card identity hygiene (normal mode)", () => {
+  let root: Root | null = null;
+  let container: HTMLElement | null = null;
+
+  beforeEach(() => {
+    seedSessions({
+      "server-1": {
+        agents: new Map([["agent-1", liveAgent]]),
+        agentDetails: new Map(),
+      },
+    });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root?.unmount());
+    container?.remove();
+    root = null;
+    container = null;
+  });
+
+  it("resolves an opaque UUID title/byline from a peer host's session, never rendering the UUID", () => {
+    seedSessions({
+      "server-1": { agents: new Map([["agent-1", liveAgent]]), agentDetails: new Map() },
+      // The subject lives on a peer host the card's own host does not know.
+      "server-2": {
+        agents: new Map([[UUID_B, { ...liveAgent, id: UUID_B, name: "Peer Worker" }]]),
+        agentDetails: new Map(),
+      },
+    });
+    const adoptEvent = event({
+      kind: "proposal",
+      headline: "Proposal sent",
+      agentId: UUID_B,
+      agentTitle: UUID_B,
+      proposal: {
+        id: "proposal-adopt-peer",
+        createdAt: new Date().toISOString(),
+        origin: "commander",
+        serverId: "server-1",
+        targetAgentId: UUID_B,
+        message: `Adopt agent ${UUID_B} (take over its lifecycle, no message sent) on beta`,
+        deliveryMode: "interrupt",
+        reason: "Adoption",
+        classification: "normal",
+        status: "sent",
+        kind: "meta",
+        metaPlan: { action: "adopt_agent", serverId: "beta", targetId: UUID_B },
+      },
+    });
+
+    act(() => root?.render(<FeedCard event={adoptEvent} />));
+    const card = container?.querySelector('[data-testid="mission-control-proposal-card"]');
+    const messageText =
+      container?.querySelector('[data-testid="mission-control-proposal-message"]')?.textContent ??
+      "";
+    // The app-composed chrome (title + byline) resolves the peer alias…
+    const chromeText = (card?.textContent ?? "").replace(messageText, "");
+    expect(chromeText).toContain("Peer Worker");
+    expect(chromeText).not.toContain(UUID_B);
+    // …while the stored meta summary stays exact (the UUID remains reachable).
+    expect(messageText).toContain(UUID_B);
+  });
+
+  it("falls back to a neutral Agent label when the id is unknown, never a UUID", () => {
+    seedSessions({
+      "server-1": { agents: new Map([["agent-1", liveAgent]]), agentDetails: new Map() },
+    });
+    const adoptEvent = event({
+      kind: "proposal",
+      headline: "Proposal sent",
+      agentId: UUID_B,
+      agentTitle: UUID_B,
+      proposal: {
+        id: "proposal-adopt-unknown",
+        createdAt: new Date().toISOString(),
+        origin: "commander",
+        serverId: "server-1",
+        targetAgentId: UUID_B,
+        message: `Adopt agent ${UUID_B} (take over its lifecycle, no message sent) on beta`,
+        deliveryMode: "interrupt",
+        reason: "Adoption",
+        classification: "normal",
+        status: "sent",
+        kind: "meta",
+        metaPlan: { action: "adopt_agent", serverId: "beta", targetId: UUID_B },
+      },
+    });
+
+    act(() => root?.render(<FeedCard event={adoptEvent} />));
+    const card = container?.querySelector('[data-testid="mission-control-proposal-card"]');
+    const messageText =
+      container?.querySelector('[data-testid="mission-control-proposal-message"]')?.textContent ??
+      "";
+    const chromeText = (card?.textContent ?? "").replace(messageText, "");
+    expect(chromeText).toContain("Agent");
+    expect(chromeText).not.toContain(UUID_B);
+  });
+
+  it("prefers the record's non-opaque metaPlan.targetLabel over a missing session", () => {
+    seedSessions({
+      "server-1": { agents: new Map([["agent-1", liveAgent]]), agentDetails: new Map() },
+    });
+    const adoptEvent = event({
+      kind: "proposal",
+      headline: "Proposal sent",
+      agentId: "06f2859e-dfb7-4715-9434-2467e6cd3069",
+      agentTitle: "06f2859e-dfb7-4715-9434-2467e6cd3069",
+      proposal: {
+        id: "proposal-adopt-label",
+        createdAt: new Date().toISOString(),
+        origin: "commander",
+        serverId: "server-1",
+        targetAgentId: "06f2859e-dfb7-4715-9434-2467e6cd3069",
+        message:
+          "Adopt agent R2A-PEER-worker-beta (Eden) (take over its lifecycle, no message sent) on beta",
+        deliveryMode: "interrupt",
+        reason: "Adoption",
+        classification: "normal",
+        status: "sent",
+        kind: "meta",
+        metaPlan: {
+          action: "adopt_agent",
+          serverId: "beta",
+          targetId: "06f2859e-dfb7-4715-9434-2467e6cd3069",
+          targetLabel: "R2A-PEER-worker-beta (Eden)",
+        },
+      },
+    });
+
+    act(() => root?.render(<FeedCard event={adoptEvent} />));
+    const card = container?.querySelector('[data-testid="mission-control-proposal-card"]');
+    expect(card?.textContent).toContain("R2A-PEER-worker-beta (Eden)");
+    expect(card?.textContent).not.toContain("06f2859e-dfb7-4715-9434-2467e6cd3069");
+  });
+
+  it("resolves `New agent: Verifier · <uuid>` plan chips to the alias and keeps the summary exact", () => {
+    seedSessions({
+      "server-1": {
+        agents: new Map([
+          ["agent-1", liveAgent],
+          [UUID_A, { ...liveAgent, id: UUID_A, name: "Aero", title: "Aero" }],
+        ]),
+        agentDetails: new Map(),
+      },
+    });
+    const verifierEvent = event({
+      kind: "proposal",
+      headline: "Proposal (verifier): Verifier spawn",
+      agentId: UUID_A,
+      agentTitle: "Aero",
+      proposal: {
+        id: "proposal-verifier-1",
+        createdAt: new Date().toISOString(),
+        origin: "verifier",
+        serverId: "server-1",
+        targetAgentId: UUID_A,
+        message: `Spawn a Mission Control verifier to audit "${UUID_A}" against its launch brief and evidence.`,
+        deliveryMode: "interrupt",
+        reason: "Verifier spawn",
+        classification: "normal",
+        status: "pending",
+        kind: "spawn",
+        spawnPlan: {
+          provider: "omp",
+          title: `Verifier · ${UUID_A}`,
+          summary: `Spawn a verifier to audit ${UUID_A} on alpha — model @verifier.`,
+        },
+      },
+    });
+
+    act(() => root?.render(<FeedCard event={verifierEvent} />));
+    const card = container?.querySelector('[data-testid="mission-control-proposal-card"]');
+    const chips = container?.querySelector('[data-testid="mission-control-proposal-chips"]');
+    // The app-composed chip resolves the opaque spawn title to the alias.
+    expect(chips?.textContent).toContain("Verifier · Aero");
+    expect(chips?.textContent).not.toContain(UUID_A);
+    // The stored summary stays exact — the UUID remains in the payload body.
+    expect(
+      container?.querySelector('[data-testid="mission-control-proposal-message"]')?.textContent,
+    ).toContain(UUID_A);
+    // The resolved title stays the worker's snapshot name, not the UUID.
+    expect(card?.textContent).toContain("Aero");
   });
 });

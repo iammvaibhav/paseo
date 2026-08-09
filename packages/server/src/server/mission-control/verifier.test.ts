@@ -63,6 +63,10 @@ function makeTimelineRow(seq: number, text: string): AgentTimelineRow {
   };
 }
 
+/** The spawn-kind proposals (verifier spawns gated in ask mode). */
+const spawnProposals = (harness: Harness): VerifierProposal[] =>
+  harness.proposals.filter((proposal) => proposal.kind === "spawn");
+
 interface PendingTurn {
   resolve: (result: AgentRunResult) => void;
   reject: (error: Error) => void;
@@ -98,11 +102,35 @@ async function createHarness(overrides?: {
   autoApprove?: boolean;
   readyForReview?: Array<{ agentId: string; title: string; at: string }>;
   hostAlias?: string | null;
+  /** Verifier spawn proposals persisted to the durable store BEFORE the
+   * dispatcher is constructed — simulates proposals surviving a daemon
+   * restart, which the boot reconciliation must not duplicate. */
+  pendingSpawns?: Array<{ targetAgentId: string; status?: "pending" | "sent" }>;
 }): Promise<Harness> {
   const dir = await mkdtemp(join(tmpdir(), "mc-verifier-"));
   const store = new MissionControlStore({ paseoHome: dir, logger: createTestLogger() });
   await store.initialize();
   await writeFile(join(dir, "verifier-agent.md"), VERIFIER_MD);
+  for (const seed of overrides?.pendingSpawns ?? []) {
+    await store.putProposal({
+      id: `mcp_seed_${seed.targetAgentId}`,
+      createdAt: "2026-08-09T00:00:00.000Z",
+      origin: "verifier",
+      serverId: "server-1",
+      targetAgentId: seed.targetAgentId,
+      message: `Spawn a Mission Control verifier to audit ${seed.targetAgentId} against its brief and evidence.`,
+      deliveryMode: "interrupt",
+      reason: "Verifier spawn",
+      classification: "normal",
+      status: seed.status ?? "pending",
+      kind: "spawn",
+      spawnPlan: {
+        provider: "omp",
+        title: `Verifier · ${seed.targetAgentId}`,
+        summary: `Spawn a verifier to audit ${seed.targetAgentId}`,
+      },
+    });
+  }
 
   const published: Array<Omit<MissionControlAppendInput, "agentTitle">> = [];
   const created: Array<{ config: Record<string, unknown>; options: Record<string, unknown> }> = [];
@@ -178,13 +206,17 @@ async function createHarness(overrides?: {
         ...input,
       };
       proposals.push(proposal);
-      // Mirror the real approvals module: on "sent" it delivers the message
-      // to the target agent before publishing the change event.
+      // Mirror the real approvals module: the record is persisted to the
+      // durable store (so a later dispatcher instance can dedupe against it),
+      // and on "sent" the message is delivered to the target agent before the
+      // change event.
+      await store.putProposal({ ...proposal, createdAt: new Date().toISOString() });
       if (proposal.status === "sent") {
         steers.push({ agentId: proposal.targetAgentId, prompt: proposal.message });
       }
       return proposal;
     },
+    listProposals: () => store.listProposals(),
     onProposalChange: (callback) => {
       proposalListener = callback;
       return () => {
@@ -700,6 +732,212 @@ describe("MissionControlVerifierDispatcher", () => {
 
     askHarness.dispatcher.stop();
     await rm(askHarness.dir, { recursive: true, force: true });
+  });
+
+  test("ask mode: pending spawn proposals do not reserve concurrency slots", async () => {
+    // The live bug: with cap=1 and three ready items, the first pending
+    // proposal held the only slot, so the other two items never even got a
+    // proposal and the queue was blocked until someone approved/denied.
+    harness.setCentral({ mode: "ask", verifierConcurrency: 1 });
+    for (const id of ["worker-a", "worker-b", "worker-c"]) {
+      harness.setWorker(makeWorker(id, { "paseo.parent-agent-id": "commander-1" }));
+    }
+    harness.emitReviewState("worker-a", "ready");
+    harness.emitReviewState("worker-b", "ready");
+    harness.emitReviewState("worker-c", "ready");
+
+    // Every eligible ready item gets its own deduplicated proposal…
+    await vi.waitFor(() => expect(spawnProposals(harness).length).toBe(3), WAIT);
+    // …while zero verifiers are spawned: the cap bounds running verifiers,
+    // not approval cards.
+    expect(harness.created.length).toBe(0);
+  });
+
+  test("ask mode: approvals beyond the active cap queue and start on slot release", async () => {
+    harness.setCentral({ mode: "ask", verifierConcurrency: 1 });
+    harness.setWorker(makeWorker("worker-a", { "paseo.parent-agent-id": "commander-1" }));
+    harness.setWorker(makeWorker("worker-b", { "paseo.parent-agent-id": "commander-1" }));
+    harness.emitReviewState("worker-a", "ready");
+    harness.emitReviewState("worker-b", "ready");
+    await vi.waitFor(() => expect(spawnProposals(harness).length).toBe(2), WAIT);
+    expect(harness.created.length).toBe(0);
+
+    // Approve A: a slot is free, so it spawns immediately with its agentId.
+    const approvedA = await harness.dispatcher.approveVerifierSpawn(spawnProposals(harness)[0]);
+    expect(approvedA).toEqual({ ok: true, agentId: "verifier-1" });
+    await vi.waitFor(() => expect(harness.created.length).toBe(1), WAIT);
+
+    // Approve B while A holds the only slot: queued — ok without agentId,
+    // and no second verifier spawns yet.
+    const approvedB = await harness.dispatcher.approveVerifierSpawn(spawnProposals(harness)[1]);
+    expect(approvedB).toEqual({ ok: true });
+    expect(harness.created.length).toBe(1);
+
+    // A's verdict releases the slot; the queued approved spawn starts.
+    await harness.dispatcher.handleSubmitVerdict("verifier-1", {
+      result: "done",
+      summary: "All proofs present",
+    });
+    await vi.waitFor(() => expect(harness.created.length).toBe(2), WAIT);
+    expect(harness.created[1].options.initialTitle).toContain("worker-b");
+  });
+
+  test("ask mode: a pending proposal does not block later proposals", async () => {
+    harness.setCentral({ mode: "ask", verifierConcurrency: 1 });
+    harness.setWorker(makeWorker("worker-a", { "paseo.parent-agent-id": "commander-1" }));
+    harness.setWorker(makeWorker("worker-b", { "paseo.parent-agent-id": "commander-1" }));
+    harness.emitReviewState("worker-a", "ready");
+    await vi.waitFor(() => expect(spawnProposals(harness).length).toBe(1), WAIT);
+    expect(harness.created.length).toBe(0);
+
+    // worker-a's proposal stays pending (never approved); worker-b still gets
+    // its own proposal because pending cards hold no active slot.
+    harness.emitReviewState("worker-b", "ready");
+    await vi.waitFor(() => expect(spawnProposals(harness).length).toBe(2), WAIT);
+    expect(harness.created.length).toBe(0);
+  });
+
+  test("restart: a persisted pending spawn proposal is the durable dedupe source, settled and unrelated targets still get theirs", async () => {
+    // A previous daemon life persisted a PENDING verifier spawn proposal for
+    // worker-a and a SETTLED ("sent") one for worker-c. This fresh dispatcher
+    // instance starts with empty in-memory run maps — only the durable store
+    // knows worker-a's spawn is still awaiting approval, so boot
+    // reconciliation must not re-propose it.
+    const restartHarness = await createHarness({
+      central: { mode: "ask" },
+      readyForReview: [
+        { agentId: "worker-a", title: "A", at: "2026-08-09T01:00:00.000Z" },
+        { agentId: "worker-b", title: "B", at: "2026-08-09T01:00:00.000Z" },
+        { agentId: "worker-c", title: "C", at: "2026-08-09T01:00:00.000Z" },
+      ],
+      pendingSpawns: [
+        { targetAgentId: "worker-a", status: "pending" },
+        { targetAgentId: "worker-c", status: "sent" },
+      ],
+    });
+    restartHarness.setWorker(makeCommander());
+    for (const id of ["worker-a", "worker-b", "worker-c"]) {
+      restartHarness.setWorker(makeWorker(id, { "paseo.parent-agent-id": "commander-1" }));
+    }
+    restartHarness.dispatcher.start();
+
+    // worker-a is NOT re-proposed (its pending spawn survives the restart);
+    // worker-b (never proposed) and worker-c (its proposal is settled, so it
+    // must not suppress a future attempt) each get their own new proposal.
+    // No verifier spawns yet: pending cards still hold no concurrency slots.
+    await vi.waitFor(() => expect(spawnProposals(restartHarness).length).toBe(2), WAIT);
+    expect(
+      spawnProposals(restartHarness)
+        .map((proposal) => proposal.targetAgentId)
+        .sort(),
+    ).toEqual(["worker-b", "worker-c"]);
+    expect(restartHarness.created.length).toBe(0);
+
+    // The durable store shows exactly ONE verifier spawn proposal for
+    // worker-a — the seeded pending one, no duplicate — while worker-b and
+    // worker-c's new proposals were persisted.
+    const storedSpawns = restartHarness.store
+      .listProposals()
+      .filter((proposal) => proposal.origin === "verifier" && proposal.kind === "spawn");
+    expect(storedSpawns.filter((proposal) => proposal.targetAgentId === "worker-a")).toHaveLength(
+      1,
+    );
+    expect(storedSpawns.filter((proposal) => proposal.targetAgentId === "worker-b")).toHaveLength(
+      1,
+    );
+    expect(storedSpawns.filter((proposal) => proposal.targetAgentId === "worker-c")).toHaveLength(
+      2, // the seeded sent one + the fresh pending one
+    );
+
+    // The surviving pending proposal is fully wired: approving it spawns the
+    // verifier through the normal path instead of erroring on a missing run.
+    const seededA = restartHarness.store
+      .listProposals()
+      .find((proposal) => proposal.targetAgentId === "worker-a");
+    expect(seededA).toBeDefined();
+    await expect(restartHarness.dispatcher.approveVerifierSpawn(seededA!)).resolves.toEqual({
+      ok: true,
+      agentId: "verifier-1",
+    });
+    await vi.waitFor(() => expect(restartHarness.created.length).toBe(1), WAIT);
+
+    restartHarness.dispatcher.stop();
+    await awaitStoreWrites(restartHarness.store);
+    await rm(restartHarness.dir, { recursive: true, force: true });
+  });
+
+  test("ask mode: denying a pending proposal leaves the others and the slots intact", async () => {
+    harness.setCentral({ mode: "ask", verifierConcurrency: 1 });
+    for (const id of ["worker-a", "worker-b", "worker-c"]) {
+      harness.setWorker(makeWorker(id, { "paseo.parent-agent-id": "commander-1" }));
+    }
+    harness.emitReviewState("worker-a", "ready");
+    harness.emitReviewState("worker-b", "ready");
+    harness.emitReviewState("worker-c", "ready");
+    await vi.waitFor(() => expect(spawnProposals(harness).length).toBe(3), WAIT);
+    expect(harness.created.length).toBe(0);
+
+    const [proposalA, proposalB, proposalC] = spawnProposals(harness);
+
+    // Deny A: run/dedupe state is removed, no slot is released (none was
+    // held), and B and C's proposals stay resolvable.
+    harness.emitProposalChange({ ...proposalA, status: "denied" });
+    await vi.waitFor(() => expect(harness.published.length).toBe(1), WAIT);
+    expect(harness.published[0]).toMatchObject({
+      agentId: "worker-a",
+      kind: "blocked",
+      severity: "blocker",
+      headline: "Verifier spawn denied — needs your review",
+    });
+    expect(harness.created.length).toBe(0);
+    // The denied proposal no longer resolves to a run.
+    await expect(harness.dispatcher.approveVerifierSpawn(proposalA)).resolves.toEqual({
+      ok: false,
+      error: "No verifier spawn is awaiting this proposal",
+    });
+
+    // B still approves and spawns immediately — the slot accounting is intact.
+    const approvedB = await harness.dispatcher.approveVerifierSpawn(proposalB);
+    expect(approvedB).toEqual({ ok: true, agentId: "verifier-1" });
+    await vi.waitFor(() => expect(harness.created.length).toBe(1), WAIT);
+    expect(harness.created[0].options.initialTitle).toContain("worker-b");
+
+    // C's proposal also resolves: queued behind B, started by B's verdict.
+    const approvedC = await harness.dispatcher.approveVerifierSpawn(proposalC);
+    expect(approvedC).toEqual({ ok: true });
+    expect(harness.created.length).toBe(1);
+    await harness.dispatcher.handleSubmitVerdict("verifier-1", {
+      result: "done",
+      summary: "ok",
+    });
+    await vi.waitFor(() => expect(harness.created.length).toBe(2), WAIT);
+    expect(harness.created[1].options.initialTitle).toContain("worker-c");
+  });
+
+  test("ask mode: review-state change cancels a queued approved spawn without freeing a slot", async () => {
+    harness.setCentral({ mode: "ask", verifierConcurrency: 1 });
+    harness.setWorker(makeWorker("worker-a", { "paseo.parent-agent-id": "commander-1" }));
+    harness.setWorker(makeWorker("worker-b", { "paseo.parent-agent-id": "commander-1" }));
+    harness.emitReviewState("worker-a", "ready");
+    harness.emitReviewState("worker-b", "ready");
+    await vi.waitFor(() => expect(spawnProposals(harness).length).toBe(2), WAIT);
+
+    // A runs; B's approval queues behind the only active slot.
+    await harness.dispatcher.approveVerifierSpawn(spawnProposals(harness)[0]);
+    await vi.waitFor(() => expect(harness.created.length).toBe(1), WAIT);
+    await harness.dispatcher.approveVerifierSpawn(spawnProposals(harness)[1]);
+    expect(harness.created.length).toBe(1);
+
+    // The user settles worker-b: the not-yet-spawned approved entry is
+    // removed, so B never starts even after A's verdict frees the slot.
+    harness.emitReviewState("worker-b", "done");
+    await harness.dispatcher.handleSubmitVerdict("verifier-1", {
+      result: "done",
+      summary: "ok",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(harness.created.length).toBe(1);
+    expect(harness.runs.length).toBe(1);
   });
 
   test("insufficient verdict without contact creates the proof-demand proposal", async () => {

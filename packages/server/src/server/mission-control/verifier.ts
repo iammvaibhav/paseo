@@ -5,7 +5,10 @@ import { fileURLToPath } from "node:url";
 import type { Logger } from "pino";
 import YAML from "yaml";
 import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
-import type { MissionControlEvent } from "@getpaseo/protocol/mission-control/types";
+import type {
+  MissionControlEvent,
+  MissionControlProposal,
+} from "@getpaseo/protocol/mission-control/types";
 import type { AgentManagerEvent, ManagedAgent } from "../agent/agent-manager.js";
 import type {
   AgentRunOptions,
@@ -28,8 +31,12 @@ import type { MissionControlAppendInput, MissionControlFetchOptions } from "./st
  * persisted ready list at boot), respects `evaluationScope`, caps concurrent
  * verifiers at `verifierConcurrency` (default 3), and spawns each verifier in
  * the item's context: launch brief, full report_status history, attached
- * proofs, tagged user messages, worker agentId + host. No transcripts, no
- * timeline tools — the verifier session gets exactly two tools:
+ * proofs, tagged user messages, worker agentId + host. The cap bounds RUNNING
+ * verifier agents: pending ask-mode spawn proposals hold no concurrency slot,
+ * so every eligible ready item gets its own deduplicated proposal, and an
+ * approval that finds the cap busy is FIFO-queued and starts as soon as a
+ * verdict/failure releases a slot. No transcripts, no timeline tools — the
+ * verifier session gets exactly two tools:
  *
  * - contact_worker { message }: routes through the approval gate as a
  *   verifier-origin proposal; once sent, the message is delivered to the
@@ -167,6 +174,21 @@ export interface VerifierProposal {
   verifierAgentId?: string;
 }
 
+/**
+ * Proposal statuses that settle a verifier spawn attempt. A spawn proposal in
+ * any OTHER status ("pending", and defensively "approved") is unresolved: it
+ * is the durable dedupe source that suppresses a duplicate proposal for the
+ * same worker, while a settled proposal never suppresses a future attempt.
+ */
+const VERIFIER_SPAWN_SETTLED_STATUSES: Record<VerifierProposal["status"], boolean> = {
+  pending: false,
+  approved: false,
+  sent: true,
+  denied: true,
+  expired: true,
+  undelivered: true,
+};
+
 export interface VerifierCreateProposalInput {
   origin: "verifier";
   serverId: string;
@@ -228,6 +250,11 @@ export interface MissionControlVerifierDispatcherOptions {
   fetchEvents: (options?: MissionControlFetchOptions) => MissionControlEvent[];
   listMessageTags: () => VerifierTaggedMessage[];
   createProposal: (input: VerifierCreateProposalInput) => Promise<VerifierProposal>;
+  /** Durable proposal store read (survives daemon restarts). The dedupe
+   * source for verifier spawn proposals: the in-memory run maps start empty
+   * at boot, so a still-pending spawn proposal for the same target worker is
+   * found here, not in process-local state. */
+  listProposals: () => MissionControlProposal[];
   onProposalChange: (callback: (proposal: VerifierProposal) => void) => () => void;
   subscribeSelfReports: (callback: (event: MissionControlEvent) => void) => () => void;
   /**
@@ -265,6 +292,10 @@ interface VerifierRun {
   attempt: number;
   verifierAgentId: string | null;
   phase: VerifierRunPhase;
+  /** True while this run holds a concurrency slot. Pending ask-mode spawn
+   * proposals hold NO slot; the slot is acquired only when the approved
+   * spawn actually starts and released by every terminal path. */
+  slotHeld: boolean;
   /** True once the verifier called contact_worker (exonerates submit_verdict "insufficient"). */
   contactedWorker: boolean;
   /** True once a verdict was recorded; guards the review-state handler against its own done. */
@@ -419,6 +450,7 @@ export class MissionControlVerifierDispatcher {
   private readonly fetchEvents: MissionControlVerifierDispatcherOptions["fetchEvents"];
   private readonly listMessageTags: MissionControlVerifierDispatcherOptions["listMessageTags"];
   private readonly createProposal: MissionControlVerifierDispatcherOptions["createProposal"];
+  private readonly listProposals: MissionControlVerifierDispatcherOptions["listProposals"];
   private readonly onProposalChange: MissionControlVerifierDispatcherOptions["onProposalChange"];
   private readonly subscribeSelfReports: MissionControlVerifierDispatcherOptions["subscribeSelfReports"];
   private readonly setReviewState: MissionControlVerifierDispatcherOptions["setReviewState"];
@@ -432,6 +464,10 @@ export class MissionControlVerifierDispatcher {
   private readonly exchangesByProposal = new Map<string, VerifierRun>();
   /** Spawn-kind proposals awaiting approval: proposalId → run (ask mode). */
   private readonly spawnsByProposal = new Map<string, VerifierRun>();
+  /** Approved-but-waiting spawns: FIFO of runs whose approval found the
+   * active cap busy. Each keeps phase "awaiting-spawn" with slotHeld=false
+   * until the shared pump reserves a slot and starts it. */
+  private readonly pendingApprovedSpawns: Array<VerifierRun> = [];
   /** Worker→verifier reply proposals awaiting approval: proposalId → run. */
   private readonly replyProposalsByProposal = new Map<string, VerifierRun>();
   private inFlight = 0;
@@ -452,6 +488,7 @@ export class MissionControlVerifierDispatcher {
     this.fetchEvents = options.fetchEvents;
     this.listMessageTags = options.listMessageTags;
     this.createProposal = options.createProposal;
+    this.listProposals = options.listProposals;
     this.onProposalChange = options.onProposalChange;
     this.subscribeSelfReports = options.subscribeSelfReports;
     this.setReviewState = options.setReviewState;
@@ -492,6 +529,8 @@ export class MissionControlVerifierDispatcher {
     this.runsByVerifier.clear();
     this.runsByWorker.clear();
     this.exchangesByProposal.clear();
+    this.spawnsByProposal.clear();
+    this.pendingApprovedSpawns.length = 0;
     this.queuedOrActive.clear();
     this.queue.length = 0;
     this.started = false;
@@ -672,13 +711,39 @@ export class MissionControlVerifierDispatcher {
   private pumpQueue(): void {
     const config = this.getCentralConfig();
     const cap = Math.max(1, Math.floor(config.verifierConcurrency) || 1);
-    // The slot is reserved synchronously so a burst of ready items cannot
-    // over-spawn while the first spawn awaits its scope check.
-    while (this.inFlight < cap && this.queue.length > 0) {
+    const askMode = config.mode === "ask";
+    // Approved-but-waiting spawns take priority over creating new proposal
+    // cards: drain the FIFO into whatever active slots are free.
+    while (this.inFlight < cap && this.pendingApprovedSpawns.length > 0) {
+      const run = this.pendingApprovedSpawns.shift()!;
+      const entry: VerifierReadyItem & { attempt: number } = { ...run.item, attempt: run.attempt };
+      this.reserveSlot(run);
+      void this.performSpawn(run, entry).catch((error) => {
+        this.logger.warn(
+          { err: error, workerAgentId: run.item.agentId },
+          "verifier.spawn.approved_failed",
+        );
+        void this.failSpawnFor(entry, error);
+      });
+    }
+    // Ready items. Auto mode reserves a slot synchronously so a burst cannot
+    // over-spawn while the first spawn awaits its scope check. Ask mode holds
+    // NO slot for a pending proposal — the cap bounds running verifiers, not
+    // approval cards — so every eligible ready item drains into its own
+    // deduplicated proposal regardless of how many verifiers are running.
+    while (this.queue.length > 0) {
+      if (!askMode && this.inFlight >= cap) {
+        break;
+      }
       const entry = this.queue.shift()!;
-      this.inFlight += 1;
-      void this.spawnVerifier(entry).catch((error) => {
-        this.inFlight = Math.max(0, this.inFlight - 1);
+      const slotHeld = !askMode;
+      if (slotHeld) {
+        this.inFlight += 1;
+      }
+      void this.spawnVerifier(entry, slotHeld).catch((error) => {
+        if (slotHeld) {
+          this.inFlight = Math.max(0, this.inFlight - 1);
+        }
         this.logger.error(
           { err: error, workerAgentId: entry.agentId },
           "verifier.spawn_unexpected_error",
@@ -688,19 +753,45 @@ export class MissionControlVerifierDispatcher {
     }
   }
 
-  private async spawnVerifier(entry: VerifierReadyItem & { attempt: number }): Promise<void> {
-    if (!(await this.isInScope(entry.agentId, entry.at))) {
-      this.inFlight = Math.max(0, this.inFlight - 1);
-      this.queuedOrActive.delete(entry.agentId);
-      this.logger.debug({ workerAgentId: entry.agentId }, "verifier.out_of_scope");
-      this.pumpQueue();
-      return;
+  /**
+   * Durable dedupe source for verifier spawn proposals: the newest unresolved
+   * verifier-origin spawn proposal targeting `agentId`, if any. Reads the
+   * persisted proposal store — not the in-memory run maps, which start empty
+   * after a restart — so boot reconciliation and ready-state handling cannot
+   * re-propose a verifier spawn that is still awaiting approval. Settled
+   * proposals (sent/denied/expired/undelivered) never suppress a future
+   * attempt.
+   */
+  private findPendingVerifierSpawn(targetAgentId: string): MissionControlProposal | null {
+    let newest: MissionControlProposal | null = null;
+    for (const proposal of this.listProposals()) {
+      if (
+        proposal.origin !== "verifier" ||
+        proposal.kind !== "spawn" ||
+        proposal.targetAgentId !== targetAgentId ||
+        VERIFIER_SPAWN_SETTLED_STATUSES[proposal.status]
+      ) {
+        continue;
+      }
+      if (!newest || proposal.createdAt > newest.createdAt) {
+        newest = proposal;
+      }
     }
+    return newest;
+  }
+
+  private async spawnVerifier(
+    entry: VerifierReadyItem & { attempt: number },
+    slotHeld: boolean,
+  ): Promise<void> {
+    // The run is created up front so the (provisional) auto-mode slot is
+    // attached to it and every release goes through releaseSlot.
     const run: VerifierRun = {
       item: { agentId: entry.agentId, title: entry.title, at: entry.at },
       attempt: entry.attempt,
       verifierAgentId: null,
       phase: "spawning",
+      slotHeld,
       contactedWorker: false,
       verdictDone: false,
       pendingProposalId: null,
@@ -708,6 +799,12 @@ export class MissionControlVerifierDispatcher {
       timer: null,
       disposed: false,
     };
+    if (!(await this.isInScope(entry.agentId, entry.at))) {
+      this.queuedOrActive.delete(entry.agentId);
+      this.releaseSlot(run);
+      this.logger.debug({ workerAgentId: entry.agentId }, "verifier.out_of_scope");
+      return;
+    }
     this.runsByWorker.set(entry.agentId, run);
 
     const config = this.getCentralConfig();
@@ -715,49 +812,81 @@ export class MissionControlVerifierDispatcher {
       // Ask-mode gate (user decision: "apart from nudge, everything should
       // require my approval in ask mode. Spinning up a new agent as well,
       // everything."): the verifier spawn itself is a proposal. Approved →
-      // performSpawn; denied → the item stays ready-for-review with a
-      // Needs-you card. Auto mode skips the proposal and spawns as today.
+      // performSpawn (now, or queued behind the active cap); denied → the
+      // item stays ready-for-review with a Needs-you card. Auto mode skips
+      // the proposal and spawns as today.
+      //
+      // Restart dedupe: a still-pending spawn proposal for this worker (from
+      // a previous daemon life) is the durable dedupe source — the in-memory
+      // maps are empty after a restart. Adopt it instead of creating a
+      // duplicate: approval and denial flow through the same
+      // handleProposalChange / approveVerifierSpawn machinery as a proposal
+      // created this lifetime.
+      const existing = this.findPendingVerifierSpawn(entry.agentId);
+      if (existing) {
+        run.phase = "awaiting-spawn";
+        run.pendingProposalId = existing.id;
+        this.spawnsByProposal.set(existing.id, run);
+        this.logger.info(
+          { workerAgentId: entry.agentId, proposalId: existing.id, status: existing.status },
+          "verifier.spawn.already_pending",
+        );
+        return;
+      }
       const model =
         resolveVerifierModel(readOmpModelRoles(), config.verifierModel ?? null) ?? "host-default";
       const worker = this.agentManager.getAgent(entry.agentId) ?? null;
-      const proposal = await this.createProposal({
-        origin: "verifier",
-        serverId: this.serverId,
-        targetAgentId: entry.agentId,
-        message: `Spawn a Mission Control verifier to audit "${entry.title}" against its launch brief and evidence.`,
-        deliveryMode: "interrupt",
-        reason: "Verifier spawn",
-        classification: "normal",
-        kind: "spawn",
-        spawnPlan: {
-          provider: "omp",
-          model: model === "host-default" ? undefined : model,
-          title: `Verifier · ${entry.title}`,
-          // Normal-mode card copy: the worker's NAME/title and this host's
-          // ALIAS (hostname only when no alias). The raw worker agentId and
-          // OS hostname stay in the verbose proposal payload, never the card.
-          summary: `Spawn a verifier to audit ${worker?.name ?? entry.title} on ${
-            this.hostLabel
-          } — model ${model}.`,
-        },
-      });
-      run.phase = "awaiting-spawn";
-      run.pendingProposalId = proposal.id;
-      this.spawnsByProposal.set(proposal.id, run);
-      this.logger.info(
-        { workerAgentId: entry.agentId, proposalId: proposal.id, status: proposal.status },
-        "verifier.spawn.proposed",
-      );
-      if (proposal.status === "sent") {
-        // Auto mode would not have gated; a granted spawn cannot be exempt in
-        // ask mode — "sent" here only happens when mode flipped between the
-        // read and the create. Resolve immediately.
-        this.spawnsByProposal.delete(proposal.id);
-        try {
-          await this.performSpawn(run, entry);
-        } catch (error) {
-          await this.failSpawnFor(entry, error);
+      try {
+        const proposal = await this.createProposal({
+          origin: "verifier",
+          serverId: this.serverId,
+          targetAgentId: entry.agentId,
+          message: `Spawn a Mission Control verifier to audit "${entry.title}" against its launch brief and evidence.`,
+          deliveryMode: "interrupt",
+          reason: "Verifier spawn",
+          classification: "normal",
+          kind: "spawn",
+          spawnPlan: {
+            provider: "omp",
+            model: model === "host-default" ? undefined : model,
+            title: `Verifier · ${entry.title}`,
+            // Normal-mode card copy: the worker's NAME/title and this host's
+            // ALIAS (hostname only when no alias). The raw worker agentId and
+            // OS hostname stay in the verbose proposal payload, never the card.
+            summary: `Spawn a verifier to audit ${worker?.name ?? entry.title} on ${
+              this.hostLabel
+            } — model ${model}.`,
+          },
+        });
+        run.phase = "awaiting-spawn";
+        run.pendingProposalId = proposal.id;
+        this.spawnsByProposal.set(proposal.id, run);
+        this.logger.info(
+          { workerAgentId: entry.agentId, proposalId: proposal.id, status: proposal.status },
+          "verifier.spawn.proposed",
+        );
+        if (proposal.status === "sent") {
+          // Auto mode would not have gated; a granted spawn cannot be exempt
+          // in ask mode — "sent" here only happens when mode flipped between
+          // the read and the create. The approvals module already delivered,
+          // so resolve like an approval: reserve-or-queue.
+          this.spawnsByProposal.delete(proposal.id);
+          run.pendingProposalId = null;
+          if (!this.tryReserveSlot(run)) {
+            return;
+          }
+          try {
+            await this.performSpawn(run, entry);
+          } catch (error) {
+            await this.failSpawnFor(entry, error);
+          }
         }
+      } catch (error) {
+        // Proposal creation failed: drop the run's dedupe state so the
+        // retry can re-enqueue, then fall through to the shared failure path.
+        this.queuedOrActive.delete(entry.agentId);
+        this.runsByWorker.delete(entry.agentId);
+        await this.failSpawnFor(entry, error);
       }
       return;
     }
@@ -772,6 +901,10 @@ export class MissionControlVerifierDispatcher {
    * Continue a spawn-kind verifier proposal once the user approves it (or auto
    * mode auto-sent it). Wired as the approvals module's spawn hook for
    * verifier-origin proposals (service.ts).
+   *
+   * The active cap is reserved synchronously (no await between check and
+   * reserve), so concurrent approvals can never exceed it: the first approval
+   * takes the free slot and the rest queue.
    */
   async approveVerifierSpawn(
     proposal: VerifierProposal,
@@ -781,10 +914,21 @@ export class MissionControlVerifierDispatcher {
       return { ok: false, error: "No verifier spawn is awaiting this proposal" };
     }
     this.spawnsByProposal.delete(proposal.id);
+    run.pendingProposalId = null;
     const entry: VerifierReadyItem & { attempt: number } = {
       ...run.item,
       attempt: run.attempt,
     };
+    if (!this.tryReserveSlot(run)) {
+      // Every active slot is busy: FIFO the approved spawn; a verdict or
+      // failure releases a slot and the pump starts it. agentId is omitted
+      // so the approvals module treats this as queued.
+      this.logger.info(
+        { workerAgentId: run.item.agentId, proposalId: proposal.id },
+        "verifier.spawn.queued",
+      );
+      return { ok: true };
+    }
     try {
       const spawned = await this.performSpawn(run, entry);
       return { ok: true, agentId: spawned };
@@ -796,6 +940,19 @@ export class MissionControlVerifierDispatcher {
       await this.failSpawnFor(entry, error);
       return { ok: false, error: `verifier spawn failed: ${String(error)}` };
     }
+  }
+
+  /** Reserve an active slot for an approved spawn when the cap allows; else
+   * FIFO-queue it. Reservation is synchronous, so the cap is never exceeded
+   * by concurrent approvals. */
+  private tryReserveSlot(run: VerifierRun): boolean {
+    const cap = Math.max(1, Math.floor(this.getCentralConfig().verifierConcurrency) || 1);
+    if (this.inFlight >= cap) {
+      this.pendingApprovedSpawns.push(run);
+      return false;
+    }
+    this.reserveSlot(run);
+    return true;
   }
 
   /** Create the verifier agent and start its audit turn (post-approval). */
@@ -828,9 +985,9 @@ export class MissionControlVerifierDispatcher {
       );
       verifierAgentId = agent.id;
     } catch (error) {
-      this.inFlight = Math.max(0, this.inFlight - 1);
       this.queuedOrActive.delete(entry.agentId);
       this.runsByWorker.delete(entry.agentId);
+      this.releaseSlot(run);
       this.logger.warn(
         { err: error, workerAgentId: entry.agentId, attempt: entry.attempt },
         "verifier.spawn_failed",
@@ -924,7 +1081,7 @@ export class MissionControlVerifierDispatcher {
     run.phase = "failed";
     this.clearRunTimer(run);
     this.unregisterRun(run);
-    this.releaseSlot();
+    this.releaseSlot(run);
     this.logger.warn(
       {
         workerAgentId: run.item.agentId,
@@ -953,7 +1110,6 @@ export class MissionControlVerifierDispatcher {
         ...(run.verifierAgentId ? { verifierAgentId: run.verifierAgentId } : {}),
       });
     }
-    this.pumpQueue();
   }
 
   private async failRunFor(
@@ -986,29 +1142,50 @@ export class MissionControlVerifierDispatcher {
     }
     run.phase = "failed";
     this.clearRunTimer(run);
+    // A queued approved spawn (approval accepted while the cap was busy) must
+    // never start after the review state settled: drop it from the FIFO. It
+    // held no slot, so nothing is released by the removal.
+    const queuedIndex = this.pendingApprovedSpawns.indexOf(run);
+    if (queuedIndex !== -1) {
+      this.pendingApprovedSpawns.splice(queuedIndex, 1);
+    }
     this.unregisterRun(run);
-    this.releaseSlot();
+    this.releaseSlot(run);
     this.logger.info(
       { workerAgentId: run.item.agentId, verifierAgentId: run.verifierAgentId, reason },
       "verifier.cancelled",
     );
     this.disposeVerifierSession(run);
-    this.pumpQueue();
   }
 
   private async closeRun(run: VerifierRun): Promise<void> {
     run.phase = "closed";
     this.clearRunTimer(run);
     this.unregisterRun(run);
-    this.releaseSlot();
+    this.releaseSlot(run);
     // The session archive is deferred so the final tool response flushes to
     // the model before the omp session is torn down.
     this.disposeVerifierSession(run, VERIFIER_DISPOSE_DELAY_MS);
-    this.pumpQueue();
   }
 
-  private releaseSlot(): void {
-    this.inFlight = Math.max(0, this.inFlight - 1);
+  /** Idempotent slot acquire; every run-attached acquire goes through here. */
+  private reserveSlot(run: VerifierRun): void {
+    if (run.slotHeld) {
+      return;
+    }
+    run.slotHeld = true;
+    this.inFlight += 1;
+  }
+
+  /** Idempotent slot release: only a slot actually held by the run is freed.
+   * Frees pump so a queued approved spawn can start; callers must not release
+   * twice (a pending proposal that never held a slot is a safe no-op). */
+  private releaseSlot(run: VerifierRun): void {
+    if (run.slotHeld) {
+      run.slotHeld = false;
+      this.inFlight = Math.max(0, this.inFlight - 1);
+    }
+    this.pumpQueue();
   }
 
   private unregisterRun(run: VerifierRun): void {
@@ -1204,9 +1381,12 @@ export class MissionControlVerifierDispatcher {
         proposal.status === "undelivered"
       ) {
         this.spawnsByProposal.delete(proposal.id);
-        this.inFlight = Math.max(0, this.inFlight - 1);
-        this.queuedOrActive.delete(spawnRun.item.agentId);
-        this.runsByWorker.delete(spawnRun.item.agentId);
+        spawnRun.pendingProposalId = null;
+        // Pending proposals never held an active slot (the cap bounds running
+        // verifiers, not approval cards): deny only removes the run and its
+        // dedupe state. releaseSlot is a no-op here and still pumps.
+        this.unregisterRun(spawnRun);
+        this.releaseSlot(spawnRun);
         this.logger.info(
           {
             workerAgentId: spawnRun.item.agentId,
@@ -1223,7 +1403,6 @@ export class MissionControlVerifierDispatcher {
           headline: "Verifier spawn denied — needs your review",
           detail: `The verifier spawn was ${proposal.status} by the user; the item stays ready for review.`,
         });
-        this.pumpQueue();
       }
       return;
     }

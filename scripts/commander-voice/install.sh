@@ -114,6 +114,15 @@ write_env_file() {
     ws_url="ws://127.0.0.1:6767/ws"
   fi
 
+  # Deploy-provided secrets win; capture them BEFORE sourcing the old env file
+  # (sourcing assigns PASEO_PASSWORD/GEMINI_API_KEY and would otherwise clobber
+  # the caller's values with the saved ones). Chain for the password:
+  # explicit PASEO_COMMANDER_VOICE_PASSWORD → PASEO_PASSWORD (deploy's normal
+  # password channel, forwarded to both the local and remote installers) → the
+  # password saved in the previous env file.
+  local deploy_password="${PASEO_COMMANDER_VOICE_PASSWORD:-${PASEO_PASSWORD:-}}"
+  local deploy_gemini="${GEMINI_API_KEY:-}"
+
   # Preserve previously written secrets unless this run overrides them.
   local prev_password="" prev_gemini="" prev_tls_key="" prev_tls_cert=""
   if [[ -f "$ENV_FILE" ]]; then
@@ -125,14 +134,23 @@ write_env_file() {
     prev_tls_cert="${TLS_CERT_PATH:-}"
   fi
 
-  local password="${PASEO_COMMANDER_VOICE_PASSWORD:-$prev_password}"
-  local gemini="${GEMINI_API_KEY:-$prev_gemini}"
+  local password="${deploy_password:-$prev_password}"
+  local gemini="${deploy_gemini:-$prev_gemini}"
   local tls_key="${COMMANDER_VOICE_TLS_KEY_PATH:-$prev_tls_key}"
   local tls_cert="${COMMANDER_VOICE_TLS_CERT_PATH:-$prev_tls_cert}"
 
+  # No-lockout guard: a voice node without the daemon password cannot
+  # authenticate (the daemon rejects it every ~30s). Never write a password-less
+  # env over one that has a password (the chain above already preserves the
+  # saved one), and never proceed to start a service that would be locked out:
+  # fail the write and let main() skip the install with a loud warning.
   if [[ -z "$password" ]]; then
-    warn "No daemon password available (set PASEO_COMMANDER_VOICE_PASSWORD on deploy);"
-    warn "the voice node will start but cannot authenticate to the daemon."
+    warn "No daemon password available: PASEO_COMMANDER_VOICE_PASSWORD and PASEO_PASSWORD"
+    warn "are unset on this deploy and $ENV_FILE has no saved password."
+    warn "Skipping Commander Voice install — the node would start locked out of the daemon."
+    warn "Re-run deploy with PASEO_PASSWORD (or PASEO_COMMANDER_VOICE_PASSWORD) set to activate."
+    rm -f "${ENV_FILE}.tmp"
+    return 1
   fi
 
   # Single-quote values so the env file survives dotenv-style sourcing.
@@ -280,8 +298,14 @@ verify_listening() {
 
 main() {
   require_host_kind
+  # The env file gates the install: without a daemon password there is nothing
+  # to run (a locked-out node would hammer the daemon's auth every 30s). The
+  # deploy job stays green (exit 0) — the warnings above are loud in the log.
+  if ! write_env_file; then
+    log "Skipping Commander Voice service deploy (no daemon password — see warnings above)"
+    exit 0
+  fi
   install_deps
-  write_env_file
   write_wrapper
   case "$(uname -s)" in
     Darwin) deploy_macos_service ;;

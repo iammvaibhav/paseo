@@ -16,6 +16,7 @@ import { useSessionStore } from "@/stores/session-store";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
 import type { Theme } from "@/styles/theme";
 import type { CardRunPosition, FeedCardEvent } from "./feed-card";
+import { filterClarificationOptions } from "./clarification-card-options";
 
 const ThemedHelpCircle = withUnistyles(HelpCircle);
 const iconMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
@@ -95,6 +96,11 @@ export function ClarificationCard({
     return null;
   }
 
+  const clickableOptions = filterClarificationOptions(
+    clarification.options,
+    clarification.allowFreeText,
+  );
+
   return (
     <View
       style={[
@@ -144,9 +150,9 @@ export function ClarificationCard({
           </Text>
         ) : (
           <>
-            {clarification.options.length > 0 ? (
+            {clickableOptions.length > 0 ? (
               <View style={styles.optionsRow}>
-                {clarification.options.map((opt, idx) => (
+                {clickableOptions.map((opt, idx) => (
                   <Button
                     key={opt}
                     variant="outline"

@@ -5979,13 +5979,15 @@ export class DaemonClient {
 
   /**
    * Respond to a pending proposal (approval gate): approve (optionally with an
-   * edited message) or deny. allowPair auto-approves the rest of a
+   * edited message) or deny (optionally with a reason that is delivered back
+   * to the Commander). allowPair auto-approves the rest of a
    * verifier<->worker exchange.
    */
   async missionControlProposalsRespond(options: {
     proposalId: string;
     action: "approve" | "deny";
     editedMessage?: string;
+    reason?: string;
     allowPair?: boolean;
     requestId?: string;
   }): Promise<MissionControlProposalsRespondPayload> {
@@ -5996,6 +5998,7 @@ export class DaemonClient {
         proposalId: options.proposalId,
         action: options.action,
         ...(options.editedMessage !== undefined ? { editedMessage: options.editedMessage } : {}),
+        ...(options.reason !== undefined ? { reason: options.reason } : {}),
         ...(options.allowPair === true ? { allowPair: true } : {}),
       },
       responseType: "mission_control.proposals.respond.response",

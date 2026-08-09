@@ -31,6 +31,8 @@ import type { StreamItem } from "@/types/stream";
 import type { Theme } from "@/styles/theme";
 import { useAggregatedMissionControlEvents } from "@/hooks/use-aggregated-mission-control-events";
 import { ProposalCard } from "@/screens/mission-control/proposal-card";
+import { useMissionControlVerbose } from "@/mission-control/use-mission-control-verbose";
+import { filterMissionControlInspectorStream } from "./inspector-stream-filter";
 import { useInspectorStore, type InspectorTarget } from "./inspector-store";
 
 const EMPTY_STREAM_ITEMS: StreamItem[] = [];
@@ -68,6 +70,7 @@ export function MissionControlInspector({
   const isCompact = useIsCompactFormFactor();
   const insets = useSafeAreaInsets();
   const toast = useToast();
+  const [verbose] = useMissionControlVerbose();
   const { serverId, agentId } = target;
 
   const agent = useSessionStore((state) => {
@@ -88,6 +91,14 @@ export function MissionControlInspector({
   );
   const streamHead = useSessionStore(
     (state) => state.sessions[serverId]?.agentStreamHead.get(agentId) ?? EMPTY_STREAM_ITEMS,
+  );
+  const visibleStreamItems = useMemo(
+    () => filterMissionControlInspectorStream(streamItems, verbose),
+    [streamItems, verbose],
+  );
+  const visibleStreamHead = useMemo(
+    () => filterMissionControlInspectorStream(streamHead, verbose),
+    [streamHead, verbose],
   );
   const turnPresentation = useSessionStore(
     useShallow((state) => selectAgentTurnPresentation(state.sessions[serverId], agentId)),
@@ -366,8 +377,8 @@ export function MissionControlInspector({
           agentId={agentId}
           serverId={serverId}
           context={streamContext}
-          streamItems={streamItems}
-          streamHead={streamHead}
+          streamItems={visibleStreamItems}
+          streamHead={visibleStreamHead}
           pendingPermissions={pendingPermissions}
           pendingMessageSubmissions={pendingMessageSubmissions}
           turnPresentation={turnPresentation}

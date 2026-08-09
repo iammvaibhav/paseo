@@ -35,6 +35,10 @@ import { InspectorRail } from "@/mission-control/inspector-rail";
 import { MissionControlModeToggle } from "@/mission-control/mode-toggle";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
 import { useMissionControlVerbose } from "@/mission-control/use-mission-control-verbose";
+import {
+  resolveCommanderServerId,
+  useHostInfoByServerId,
+} from "@/screens/mission-control/commander-host";
 import { useClearViewPoint } from "@/mission-control/clear-view";
 import { useAggregatedMissionControlEvents } from "@/hooks/use-aggregated-mission-control-events";
 import { getHostRuntimeStore, useHosts } from "@/runtime/host-runtime";
@@ -119,19 +123,7 @@ export function MissionControlScreen(): ReactElement {
   const composerVoiceVariant = resolveComposerVoiceVariant({ isWeb, voiceNodeUrl });
   const [isCommanderVoiceOpen, setIsCommanderVoiceOpen] = useState(false);
   const { clearPointTs, setClearViewPoint } = useClearViewPoint();
-  const hostInfoByServerId = useSessionStore(
-    useShallow((state) =>
-      Object.fromEntries(
-        Object.entries(state.sessions).map(([serverId, session]) => [
-          serverId,
-          {
-            hostname: session.serverInfo?.hostname ?? null,
-            hostAlias: session.serverInfo?.missionControlHostAlias ?? null,
-          },
-        ]),
-      ),
-    ),
-  );
+  const hostInfoByServerId = useHostInfoByServerId();
 
   // The Commander lives ONLY on the host designated in the central config:
   // designation is required, never defaulted (live incident: null commanderHost
@@ -141,24 +133,10 @@ export function MissionControlScreen(): ReactElement {
   // label, so resolve it to a connected host by serverId first, then by the
   // host's server_info hostname/alias.
   const centralCommanderHost = missionControlConfig?.commanderHost ?? null;
-  const selectedServerId = useMemo(() => {
-    if (!centralCommanderHost) {
-      return null;
-    }
-    const direct = hosts.find((host) => host.serverId === centralCommanderHost);
-    if (direct) {
-      return direct.serverId;
-    }
-    return (
-      hosts.find((host) => {
-        const info = hostInfoByServerId[host.serverId];
-        return (
-          info?.hostname === centralCommanderHost ||
-          (info?.hostAlias !== null && info?.hostAlias === centralCommanderHost)
-        );
-      })?.serverId ?? null
-    );
-  }, [centralCommanderHost, hostInfoByServerId, hosts]);
+  const selectedServerId = useMemo(
+    () => resolveCommanderServerId(centralCommanderHost, hosts, hostInfoByServerId),
+    [centralCommanderHost, hostInfoByServerId, hosts],
+  );
 
   // v3 feature gate: the split view (collapsible thread + inspector) exists
   // only when the commander host advertises missionControlV3. One gate, here.

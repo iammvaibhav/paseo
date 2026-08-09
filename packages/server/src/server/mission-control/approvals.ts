@@ -115,6 +115,12 @@ export interface ResolveProposalInput {
    * which re-proposes").
    */
   editedMessage?: string;
+  /**
+   * Optional user-attached reason for the denial. Delivered back to the
+   * Commander with the deny-outcome notification on commander-origin
+   * proposals; whitespace-only text is treated as absent (plain deny).
+   */
+  reason?: string;
   /** Grant allow-pair: the rest of this verifier<->worker exchange auto-approves. */
   allowPair?: boolean;
 }
@@ -182,16 +188,24 @@ export interface MissionControlApprovalsOptions {
    */
   publishProposalEvent: (proposal: MissionControlProposal) => Promise<{ id: string }>;
   /**
-   * EDGE (deny-with-revision): deliver a denied proposal's attached revision
-   * back to the Commander through the mailbox delivery path (the same path
-   * chat uses, source "chat"), so the ledger opens a row and the Commander
-   * re-proposes a fresh card (docs/commander.md: "Edit sends your changes
-   * back to the Commander, which re-proposes"). Called exactly once per
-   * deny that carried non-empty editedMessage text; plain denies never call
-   * it. Absent → the revision is dropped with a warn log (the deny still
-   * resolves — never fail the resolution on delivery).
+   * Deliver a denied proposal's outcome back to the Commander through the
+   * mailbox delivery path (the same path chat uses, source "chat"), so the
+   * ledger opens a row and the Commander reacts (docs/commander.md: "Edit
+   * sends your changes back to the Commander, which re-proposes"). Called
+   * exactly once per deny that either (a) carried non-empty editedMessage
+   * text (the revision goes back so the Commander re-proposes) or (b) denied
+   * a commander-origin proposal (the Commander learns the denial, with the
+   * optional `reason` appended). `revision` keeps precedence over `reason`:
+   * when both are present, a single call carries both. Plain denies of
+   * non-commander-origin proposals never call it. Absent → the outcome is
+   * dropped with a warn log (the deny still resolves — never fail the
+   * resolution on delivery).
    */
-  deliverDenyRevision?: (input: { proposal: Proposal; revision: string }) => Promise<void>;
+  deliverDenyOutcome?: (input: {
+    proposal: Proposal;
+    revision?: string;
+    reason?: string;
+  }) => Promise<void>;
 }
 
 export type ProposalChangeListener = (proposal: MissionControlProposal) => void;
@@ -261,7 +275,7 @@ export class MissionControlApprovals {
   private readonly spawn: MissionControlApprovalsOptions["spawn"];
   private readonly applyMeta: MissionControlApprovalsOptions["applyMeta"];
   private readonly publishProposalEvent: MissionControlApprovalsOptions["publishProposalEvent"];
-  private readonly deliverDenyRevision: MissionControlApprovalsOptions["deliverDenyRevision"];
+  private readonly deliverDenyOutcome: MissionControlApprovalsOptions["deliverDenyOutcome"];
   private readonly allowPairs = new Set<string>();
   private readonly listeners = new Set<ProposalChangeListener>();
 
@@ -274,7 +288,7 @@ export class MissionControlApprovals {
     this.spawn = options.spawn;
     this.applyMeta = options.applyMeta;
     this.publishProposalEvent = options.publishProposalEvent;
-    this.deliverDenyRevision = options.deliverDenyRevision;
+    this.deliverDenyOutcome = options.deliverDenyOutcome;
   }
 
   /**
@@ -406,29 +420,40 @@ export class MissionControlApprovals {
       },
       "mission_control.approvals.proposal_denied",
     );
-    // EDGE: a deny WITH a revision (deny + editedMessage) must never be
-    // silent — the edit goes back to the Commander, which re-proposes a
-    // fresh card. Delivery is advisory to the resolution: a failure logs
-    // loudly and the deny still resolves.
+    // EDGE: a deny that carries a revision (deny + editedMessage) or that
+    // denies a commander-origin proposal must never be silent — the outcome
+    // goes back to the Commander, which re-proposes (revision) or learns the
+    // denial (reason). One delivery per deny even when both are present;
+    // plain denies of non-commander-origin proposals stay silent. Delivery
+    // is advisory to the resolution: a failure logs loudly and the deny
+    // still resolves.
     const revision = input.editedMessage?.trim();
-    if (revision) {
-      if (this.deliverDenyRevision) {
+    const reason = input.reason?.trim();
+    if (revision || proposal.origin === "commander") {
+      const outcome: { proposal: Proposal; revision?: string; reason?: string } = { proposal };
+      if (revision) {
+        outcome.revision = revision;
+      }
+      if (reason) {
+        outcome.reason = reason;
+      }
+      if (this.deliverDenyOutcome) {
         try {
-          await this.deliverDenyRevision({ proposal, revision });
+          await this.deliverDenyOutcome(outcome);
           this.logger.info(
-            { component: "approvals", proposalId: proposal.id },
-            "mission_control.approvals.deny_revision_delivered",
+            { component: "approvals", proposalId: proposal.id, origin: proposal.origin },
+            "mission_control.approvals.deny_outcome_delivered",
           );
         } catch (error) {
           this.logger.warn(
             { err: error, component: "approvals", proposalId: proposal.id },
-            "mission_control.approvals.deny_revision_delivery_failed",
+            "mission_control.approvals.deny_outcome_delivery_failed",
           );
         }
       } else {
         this.logger.warn(
           { component: "approvals", proposalId: proposal.id },
-          "mission_control.approvals.deny_revision_dropped_no_delivery_path",
+          "mission_control.approvals.deny_outcome_dropped_no_delivery_path",
         );
       }
     }

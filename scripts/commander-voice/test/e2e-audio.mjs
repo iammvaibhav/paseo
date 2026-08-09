@@ -15,6 +15,10 @@ import { startVoiceServer } from "../server.js";
 const OUT_DIR = process.env.E2E_OUT_DIR || "/tmp/commander-voice-e2e";
 const PROXY_PORT = Number(process.env.PROXY_PORT || 8801);
 const COMMAND = "what is the fleet status";
+// Trailing silence appended after the TTS PCM so the Live API's speech
+// detector sees the utterance end. VoiceE2E: ~4s utterances intermittently
+// fail ASR at 900ms and reliably pass at 2.5s.
+const VAD_TRAILING_SILENCE_MS = 2500;
 const E2E_PROMPT =
   "You are a terse voice relay for the Commander. When asked for the fleet status, call fleet_status " +
   "and read its result aloud in one sentence. Keep every reply under 20 words.";
@@ -243,7 +247,7 @@ await browser.waitFor((m) => m.type === "setupAck", "setupAck");
 
 // Stream the utterance as audio + trailing silence for VAD. The Live API's
 // speech detector needs mic-like cadence (small paced chunks), not one blob.
-const stream = Buffer.concat([silenceMs(400), tts.pcm, silenceMs(900)]);
+const stream = Buffer.concat([silenceMs(400), tts.pcm, silenceMs(VAD_TRAILING_SILENCE_MS)]);
 const chunkBytes = Math.round(RATE * 0.16) * 2; // 160ms per chunk
 for (let off = 0; off < stream.length; off += chunkBytes) {
   browser.ws.send(stream.subarray(off, off + chunkBytes));

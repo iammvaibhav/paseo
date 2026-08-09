@@ -868,6 +868,7 @@ deploy_local_commander_voice() {
   fi
   log "Deploying local Commander Voice node"
   PASEO_HOME="$LOCAL_PASEO_HOME" \
+    PASEO_PASSWORD="${PASEO_PASSWORD:-}" \
     PASEO_COMMANDER_VOICE_PASSWORD="${PASEO_COMMANDER_VOICE_PASSWORD:-}" \
     GEMINI_API_KEY="${GEMINI_API_KEY:-}" \
     bash "$ROOT_DIR/scripts/commander-voice/install.sh" local
@@ -1010,6 +1011,15 @@ start_parallel_job() {
   log "→ starting job '$name' (log: $logf)"
   (
     set -euo pipefail
+    # Close every inherited descriptor above stdio (agent pipes, stray sockets,
+    # a sibling job's command-substitution pipe, ...) so a job can never hold
+    # a pipe write-end open that another job's reader is waiting on — that
+    # keeps EOF semantics local to each job. fd 255 is bash's own script fd,
+    # leave it alone.
+    local _fd
+    for _fd in {3..254}; do
+      eval "exec ${_fd}>&-"
+    done
     "$@"
   ) >>"$logf" 2>&1 &
   PARALLEL_PIDS+=("$!")
@@ -1020,6 +1030,35 @@ start_parallel_job() {
 wait_for_parallel_jobs() {
   local fail=0
   local i pid name logf status
+  # Belt: a background reporter logs every 60s which jobs are STILL pending.
+  # A future wedge is then visible in the log (who is stuck, since when)
+  # instead of a silent hang. Runs in the background so the sequential waits
+  # below keep their exact original semantics (no artificial delay when jobs
+  # finish quickly). Liveness is `ps` process state, NOT `kill -0`: finished
+  # children sit as unreaped zombies while this shell is blocked inside wait,
+  # and `kill -0` would report them as still pending. The list is recomputed
+  # at log time, so the report only ever names jobs that are still alive.
+  # The reporter is killed and reaped once the last wait returns.
+  local heart
+  (
+    local hnames
+    while :; do
+      sleep 60
+      hnames=""
+      for i in "${!PARALLEL_PIDS[@]}"; do
+        pid="${PARALLEL_PIDS[$i]}"
+        # shellcheck disable=SC2009
+        st="$(ps -o stat= -p "$pid" 2>/dev/null || true)"
+        if [[ -n "$st" && "$st" != *Z* ]]; then
+          hnames+=" ${PARALLEL_NAMES[$i]}"
+        fi
+      done
+      if [[ -n "$hnames" ]]; then
+        log "still waiting for job(s):${hnames}"
+      fi
+    done
+  ) &
+  heart=$!
   for i in "${!PARALLEL_PIDS[@]}"; do
     pid="${PARALLEL_PIDS[$i]}"
     name="${PARALLEL_NAMES[$i]}"
@@ -1034,6 +1073,8 @@ wait_for_parallel_jobs() {
       tail -n 50 "$logf" 2>/dev/null || true
     fi
   done
+  kill "$heart" 2>/dev/null || true
+  wait "$heart" 2>/dev/null || true
   PARALLEL_PIDS=()
   PARALLEL_NAMES=()
   PARALLEL_LOGS=()
@@ -1304,6 +1345,10 @@ TUNNEL_PROVIDER='$tunnel_provider'
 # values are fine — the nudge then skips instead of failing the deploy).
 PASEO_NUDGE_URL='${PASEO_NUDGE_URL:-}'
 PASEO_NUDGE_PASSWORD='${PASEO_NUDGE_PASSWORD:-${PASEO_PASSWORD:-}}'
+# Daemon password for the Commander Voice node env file on this host. Same
+# channel as the nudge password: interpolated from the Mac's env at heredoc
+# time, so the remote voice node authenticates instead of being locked out.
+PASEO_PASSWORD='${PASEO_PASSWORD:-}'
 
 log() {
   printf '\n[%s:%s] %s\n' "\$(date '+%H:%M:%S')" '$host' "\$*"
@@ -1579,7 +1624,11 @@ deploy_commander_voice() {
   log "Deploying Commander Voice node"
   # The daemon password travels over ssh stdin (never argv/logs) and lands in
   # ~/.config/commander-voice/env chmod 600 on the host; unset keeps existing.
+  # PASEO_PASSWORD was interpolated into this script's env at heredoc time from
+  # the Mac's env (same channel as PASEO_NUDGE_PASSWORD) — without it the node
+  # is locked out of the daemon.
   PASEO_HOME="\$PASEO_HOME" \
+    PASEO_PASSWORD="\$PASEO_PASSWORD" \
     PASEO_COMMANDER_VOICE_PASSWORD='${PASEO_COMMANDER_VOICE_PASSWORD:-}' \
     GEMINI_API_KEY='${GEMINI_API_KEY:-}' \
     bash scripts/commander-voice/install.sh '$host'

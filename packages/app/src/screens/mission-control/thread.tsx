@@ -49,6 +49,7 @@ import {
 } from "./thread-classification";
 import { MutedSystemRow } from "./muted-system-row";
 import { isPaseoSystemMessage, PaseoSystemRow } from "./paseo-system-row";
+import { commanderUserMessageText } from "./thread-instruction-envelope";
 import { PaseoAgentLinkProvider } from "@/components/markdown/paseo-agent-link";
 import { parseHistoryAskAgentOpenUrl } from "@/history-ask/open-agent-link-parse";
 import { useInspectorStore } from "@/screens/mission-control/inspector-store";
@@ -177,12 +178,16 @@ function CommanderMessageRow({
           <PaseoSystemRow text={item.text} timestamp={item.timestamp.getTime()} />
         ) : null;
       }
+      // Busy Commander instruction envelopes ("New instruction (#N). Acknowledge
+      // it in one line, …" + the ledger + the auto-recall block) are steered
+      // prompts, not conversation: normal mode shows only the instruction text
+      // the envelope carries; verbose keeps the full machinery verbatim.
       return (
         <UserMessage
           serverId={serverId}
           agentId={agentId}
           messageId={item.messageId}
-          message={item.text}
+          message={commanderUserMessageText(item.text, verbose)}
           images={item.images}
           attachments={item.attachments}
           timestamp={item.timestamp.getTime()}

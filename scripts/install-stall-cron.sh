@@ -78,8 +78,58 @@ install_crontab() {
   if ! crontab -l 2>/dev/null | grep -vE 'paseo-stall-check|stall-check\.mjs' >"$tmp"; then
     :
   fi
-  if ! { cat "$tmp"; printf '%s\n' "$marker"; printf '%s\n' "$cron_line"; } | crontab -; then
-    warn "crontab write failed"
+
+  # Idempotence + wedge guard: `crontab -l` only READS the schedule and never
+  # blocks, but the WRITE (`crontab file`) can hang indefinitely — on macOS the
+  # setuid crontab binary blocks in a TCC Full Disk Access prompt when no one
+  # answers it (deploy's 2026-08-09 run wedged exactly there: crontab never
+  # returned, so the deploy job's command substitution never saw EOF). The
+  # stall check is a safety net whose whole contract is "the schedule exists":
+  # if the managed entry is already installed, do not touch the scheduler at all.
+  if crontab -l 2>/dev/null | grep -qxF "$cron_line"; then
+    echo "$cron_line"
+    return 0
+  fi
+
+  # Assemble the full new crontab in a temp FILE and hand the FILE to crontab.
+  # Never pipe stdin to `crontab -`: its EOF depends on every holder of the
+  # pipe's write end closing, and a stray inherited fd (a subshell, another
+  # concurrent deploy job) wedges the reader. stdin is redirected explicitly
+  # so crontab never sees a caller pipe either.
+  { cat "$tmp"; printf '%s\n' "$marker"; printf '%s\n' "$cron_line"; } >>"$tmp"
+
+  # Bounded write. The setuid crontab cannot be signalled from here once the
+  # OS wedges it (uid 0 after setuid exec; also invisible to ps), so run it
+  # through a uid-matched bash wrapper and bound the WAIT: on timeout we warn
+  # and degrade (exit 0) instead of wedging the deploy. The orphaned crontab,
+  # if it is wedged, finishes on its own when/if the prompt is answered — with
+  # the same content, so it is harmless and idempotent.
+  #
+  # crontab's stdio is redirected to /dev/null INSIDE the wrapper: if the
+  # wrapper is killed and crontab is orphaned, it must not keep this script's
+  # stdout pipe open. A caller capturing our output (deploy runs
+  # `line="$(bash install-stall-cron.sh …)"`) blocks until EVERY holder of the
+  # pipe's write end closes — an orphan holding fd 1 would wedge the caller
+  # even after we exit. This is the exact EOF hazard that wedged the 2026-08-09
+  # deploy (install-stall-cron never closed the caller's pipe).
+  local deadline cpid status
+  deadline=$(( $(date +%s) + 20 ))
+  bash -c 'crontab "$1" < /dev/null > /dev/null 2>&1; exit $?' _ "$tmp" &
+  cpid=$!
+  status=0
+  while kill -0 "$cpid" 2>/dev/null; do
+    if [[ "$(date +%s)" -ge "$deadline" ]]; then
+      kill "$cpid" 2>/dev/null || true
+      wait "$cpid" 2>/dev/null || true
+      warn "crontab install did not finish within 20s (scheduler blocked — e.g. an unanswered macOS TCC prompt); leaving the previous schedule in place"
+      echo "$cron_line"
+      return 0
+    fi
+    sleep 1
+  done
+  wait "$cpid" || status=$?
+  if [[ "$status" -ne 0 ]]; then
+    warn "crontab write failed (exit $status)"
     return 1
   fi
 

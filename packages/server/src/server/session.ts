@@ -2295,6 +2295,7 @@ export class Session {
           proposalId: msg.proposalId,
           action: msg.action,
           editedMessage: msg.editedMessage,
+          reason: msg.reason,
           allowPair: msg.allowPair,
         })
       : { ok: false as const, error: "Mission Control is not enabled on this host" };

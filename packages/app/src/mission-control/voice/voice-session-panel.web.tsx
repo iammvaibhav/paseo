@@ -8,22 +8,18 @@ import {
   type CommanderVoiceServerFrame,
 } from "./commander-voice-client";
 import { createVoiceAudioSession, type VoiceAudioSession } from "./voice-audio";
+import {
+  appendTranscript,
+  frameToTranscript,
+  type TranscriptEntry,
+  type TranscriptKind,
+} from "./voice-transcript";
 
 export interface CommanderVoicePanelProps {
   /** Normalized voice node URL (ws://host:port/ws). */
   url: string;
   onClose: () => void;
 }
-
-type TranscriptKind = "heard" | "spoken" | "tool" | "announcement" | "system";
-
-interface TranscriptEntry {
-  id: number;
-  kind: TranscriptKind;
-  text: string;
-}
-
-const MAX_TRANSCRIPT_ENTRIES = 200;
 
 const STATUS_LABELS: Record<CommanderVoiceClientState | "mic", string> = {
   idle: "Disconnected",
@@ -34,25 +30,11 @@ const STATUS_LABELS: Record<CommanderVoiceClientState | "mic", string> = {
   mic: "Microphone unavailable",
 };
 
-function appendTranscript(
-  entries: TranscriptEntry[],
-  nextId: number,
-  kind: TranscriptKind,
-  text: string,
-): { entries: TranscriptEntry[]; nextId: number } {
-  const merged = [...entries, { id: nextId, kind, text }];
-  if (merged.length > MAX_TRANSCRIPT_ENTRIES) {
-    merged.splice(0, merged.length - MAX_TRANSCRIPT_ENTRIES);
-  }
-  return { entries: merged, nextId: nextId + 1 };
-}
-
 type StyleKey = Exclude<keyof typeof styles, "useVariants">;
 
 const ENTRY_STYLE_BY_KIND: Record<TranscriptKind, StyleKey> = {
   heard: "entryHeard",
   spoken: "entrySpoken",
-  tool: "entryTool",
   announcement: "entryAnnouncement",
   system: "entrySystem",
 };
@@ -99,14 +81,9 @@ export function CommanderVoicePanel({ url, onClose }: CommanderVoicePanelProps):
       url,
       handlers: {
         onFrame: (frame: CommanderVoiceServerFrame) => {
-          if (frame.type === "inputText" && frame.text) {
-            pushEntry("heard", frame.text);
-          } else if (frame.type === "text" && frame.text) {
-            pushEntry("spoken", frame.text);
-          } else if (frame.type === "toolLog") {
-            pushEntry("tool", `${frame.name}(${JSON.stringify(frame.args ?? {})})`);
-          } else if (frame.type === "injected" && frame.text) {
-            pushEntry("announcement", frame.text);
+          const entry = frameToTranscript(frame);
+          if (entry) {
+            pushEntry(entry.kind, entry.text);
           }
         },
         onAudio: (pcm16) => audio.playPcm(pcm16),
@@ -159,7 +136,7 @@ export function CommanderVoicePanel({ url, onClose }: CommanderVoicePanelProps):
 
   const handleAskUpdates = useCallback(() => {
     if (clientRef.current?.sendText("Any updates?")) {
-      pushEntry("spoken", "Any updates?");
+      pushEntry("heard", "Any updates?");
     }
   }, [pushEntry]);
 
@@ -332,11 +309,6 @@ const styles = StyleSheet.create((theme: Theme) => ({
   },
   entrySpoken: {
     color: theme.colors.accent,
-  },
-  entryTool: {
-    color: theme.colors.foregroundMuted,
-    fontFamily: theme.fontFamily.mono,
-    fontSize: theme.fontSize.xs,
   },
   entryAnnouncement: {
     color: theme.colors.success,

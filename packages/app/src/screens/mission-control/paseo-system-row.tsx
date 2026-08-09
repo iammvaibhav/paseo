@@ -79,6 +79,19 @@ function paseoEntryListKey(entry: PaseoSystemEntry): string {
     .join("\u0001");
 }
 
+function withOccurrenceKeys<T>(
+  items: readonly T[],
+  keyOf: (item: T) => string,
+): Array<{ key: string; item: T }> {
+  const occurrences = new Map<string, number>();
+  return items.map((item) => {
+    const base = keyOf(item);
+    const occurrence = occurrences.get(base) ?? 0;
+    occurrences.set(base, occurrence + 1);
+    return { key: `${base}\u0001${occurrence}`, item };
+  });
+}
+
 /**
  * Parse a `<paseo-system>` envelope into digest entries.
  *
@@ -156,6 +169,14 @@ interface PaseoSystemRowProps {
  */
 export function PaseoSystemRow({ text, timestamp }: PaseoSystemRowProps): ReactElement {
   const parsed = useMemo(() => parsePaseoSystemMessage(text), [text]);
+  const keyedEntries = useMemo(
+    () => withOccurrenceKeys(parsed.entries, paseoEntryListKey),
+    [parsed.entries],
+  );
+  const keyedBodyLines = useMemo(
+    () => withOccurrenceKeys(parsed.bodyLines, (line) => line),
+    [parsed.bodyLines],
+  );
 
   const countLabel = parsed.count !== null ? `${parsed.count}` : "";
   const label = parsed.isDigest
@@ -174,12 +195,12 @@ export function PaseoSystemRow({ text, timestamp }: PaseoSystemRowProps): ReactE
         </Text>
       </View>
       <View style={styles.body}>
-        {parsed.entries.map((entry) => (
-          <PaseoSystemEntryRow key={paseoEntryListKey(entry)} entry={entry} />
+        {keyedEntries.map(({ key, item }) => (
+          <PaseoSystemEntryRow key={key} entry={item} />
         ))}
-        {parsed.bodyLines.map((line) => (
-          <Text key={line} style={styles.bodyLine}>
-            {line}
+        {keyedBodyLines.map(({ key, item }) => (
+          <Text key={key} style={styles.bodyLine}>
+            {item}
           </Text>
         ))}
       </View>

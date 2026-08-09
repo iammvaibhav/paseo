@@ -96,7 +96,11 @@ export function workspaceChip(
 }
 
 /** Chip for the agent the proposal targets, or the agent it would spawn. */
-export function agentChip(proposal: MissionControlProposal, t: TFunction): ChipInfo | null {
+export function agentChip(
+  proposal: MissionControlProposal,
+  t: TFunction,
+  resolveAgentLabel?: (rawAgent: string) => string | null,
+): ChipInfo | null {
   const spawnPlan = proposal.spawnPlan;
   const labels = spawnPlan?.labels;
   const rawAgent = spawnPlan?.title ?? labels?.agent ?? rawSpawnField(spawnPlan, labels, "agent");
@@ -109,11 +113,15 @@ export function agentChip(proposal: MissionControlProposal, t: TFunction): ChipI
   }
   if (rawAgent) {
     const isSpawn = proposal.kind === "spawn";
+    // Opaque raw agent labels (verifier spawn titles like
+    // "Verifier · <uuid>") resolve to the fleet alias or the neutral
+    // fallback; display copy passes through untouched.
+    const label = resolveAgentLabel?.(rawAgent) ?? rawAgent;
     return {
       key: isSpawn ? "newAgent" : "agent",
       label: isSpawn
-        ? t("missionControl.proposal.chips.newAgent", { label: rawAgent })
-        : t("missionControl.proposal.chips.agent", { label: rawAgent }),
+        ? t("missionControl.proposal.chips.newAgent", { label })
+        : t("missionControl.proposal.chips.agent", { label }),
     };
   }
   return null;
@@ -123,6 +131,7 @@ export function resolvePlanChips(
   proposal: MissionControlProposal,
   t: TFunction,
   resolveWorkspaceTitle?: WorkspaceTitleResolver,
+  resolveAgentLabel?: (rawAgent: string) => string | null,
 ): ChipInfo[] {
   const chips: ChipInfo[] = [];
   const project = projectChip(proposal, t);
@@ -133,7 +142,7 @@ export function resolvePlanChips(
   if (workspace) {
     chips.push(workspace);
   }
-  const agent = agentChip(proposal, t);
+  const agent = agentChip(proposal, t, resolveAgentLabel);
   if (agent) {
     chips.push(agent);
   }

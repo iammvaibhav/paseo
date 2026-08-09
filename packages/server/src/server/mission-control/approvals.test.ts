@@ -36,7 +36,7 @@ interface Harness {
     classification?: "machinery" | "instruction";
   }>;
   published: MissionControlProposal[];
-  denyRevisions: Array<{ proposalId: string; revision: string }>;
+  denyOutcomes: Array<{ proposalId: string; revision?: string; reason?: string }>;
 }
 
 async function build(overrides?: {
@@ -45,7 +45,7 @@ async function build(overrides?: {
   stoppedBy?: (agentId: string) => "user" | "machinery" | "system" | null;
   spawn?: MissionControlApprovalsOptions["spawn"];
   applyMeta?: MissionControlApprovalsOptions["applyMeta"];
-  deliverDenyRevision?: MissionControlApprovalsOptions["deliverDenyRevision"];
+  deliverDenyOutcome?: MissionControlApprovalsOptions["deliverDenyOutcome"];
 }): Promise<Harness> {
   const dir = await mkdtemp(join(tmpdir(), "mc-approvals-"));
   const store = new MissionControlStore({ paseoHome: dir, logger: createTestLogger() });
@@ -61,7 +61,7 @@ async function build(overrides?: {
     mode: overrides?.mode ?? "ask",
     delivered: [],
     published: [],
-    denyRevisions: [],
+    denyOutcomes: [],
   };
   harness.approvals = new MissionControlApprovals({
     store,
@@ -77,11 +77,15 @@ async function build(overrides?: {
       harness.published.push(proposal);
       return { id: `mce_${harness.published.length}` };
     },
-    ...(overrides?.deliverDenyRevision
-      ? { deliverDenyRevision: overrides.deliverDenyRevision }
+    ...(overrides?.deliverDenyOutcome
+      ? { deliverDenyOutcome: overrides.deliverDenyOutcome }
       : {
-          deliverDenyRevision: async (input) => {
-            harness.denyRevisions.push({ proposalId: input.proposal.id, revision: input.revision });
+          deliverDenyOutcome: async (input) => {
+            harness.denyOutcomes.push({
+              proposalId: input.proposal.id,
+              ...(input.revision !== undefined ? { revision: input.revision } : {}),
+              ...(input.reason !== undefined ? { reason: input.reason } : {}),
+            });
           },
         }),
   });
@@ -159,8 +163,8 @@ describe("MissionControlApprovals ask mode", () => {
       expect(harness.approvals.getProposal(proposal.id)?.message).toBe(
         "Edited: show me the test diff.",
       );
-      // Approve-with-rewrite is untouched: no deny-revision delivery.
-      expect(harness.denyRevisions).toHaveLength(0);
+      // Approve-with-rewrite is untouched: no deny-outcome delivery.
+      expect(harness.denyOutcomes).toHaveLength(0);
     } finally {
       await teardown(harness);
     }
@@ -172,8 +176,9 @@ describe("MissionControlApprovals ask mode", () => {
       const proposal = await harness.approvals.createProposal(baseInput());
       await harness.approvals.resolveProposal({ proposalId: proposal.id, action: "deny" });
       expect(harness.delivered).toHaveLength(0);
-      // A plain deny (no revision attached) delivers nothing to anyone.
-      expect(harness.denyRevisions).toHaveLength(0);
+      // A plain deny of a non-commander-origin proposal delivers nothing to
+      // anyone (deny-outcome notifications are commander-origin only).
+      expect(harness.denyOutcomes).toHaveLength(0);
       expect(harness.approvals.getProposal(proposal.id)?.status).toBe("denied");
     } finally {
       await teardown(harness);
@@ -196,12 +201,95 @@ describe("MissionControlApprovals ask mode", () => {
       expect(harness.delivered).toHaveLength(0);
       // …but the attached revision goes back to the Commander, exactly once,
       // trimmed (docs/commander.md: Edit re-proposes).
-      expect(harness.denyRevisions).toEqual([
+      expect(harness.denyOutcomes).toEqual([
         {
           proposalId: proposal.id,
           revision: "Run it on gamma instead, with the summaries saved to /tmp.",
         },
       ]);
+    } finally {
+      await teardown(harness);
+    }
+  });
+
+  test("a deny with a reason delivers exactly one deny-outcome to the Commander with the reason", async () => {
+    const harness = await build({ mode: "ask" });
+    try {
+      const proposal = await harness.approvals.createProposal(
+        baseInput({ origin: "commander", targetAgentId: "worker-1" }),
+      );
+      await harness.approvals.resolveProposal({
+        proposalId: proposal.id,
+        action: "deny",
+        reason: "  Run it on gamma instead.  ",
+      });
+      expect(harness.approvals.getProposal(proposal.id)?.status).toBe("denied");
+      // The reason goes back to the Commander, exactly once, trimmed; no
+      // revision is attached, so the outcome carries the reason only.
+      expect(harness.denyOutcomes).toEqual([
+        { proposalId: proposal.id, reason: "Run it on gamma instead." },
+      ]);
+    } finally {
+      await teardown(harness);
+    }
+  });
+
+  test("a plain deny of a commander-origin proposal delivers the no-reason deny outcome (never silent)", async () => {
+    const harness = await build({ mode: "ask" });
+    try {
+      const proposal = await harness.approvals.createProposal(
+        baseInput({ origin: "commander", targetAgentId: "worker-1" }),
+      );
+      await harness.approvals.resolveProposal({ proposalId: proposal.id, action: "deny" });
+      expect(harness.approvals.getProposal(proposal.id)?.status).toBe("denied");
+      // The Commander must learn the denial even without a reason — exactly
+      // one outcome carrying neither revision nor reason.
+      expect(harness.denyOutcomes).toEqual([{ proposalId: proposal.id }]);
+      expect(harness.delivered).toHaveLength(0);
+    } finally {
+      await teardown(harness);
+    }
+  });
+
+  test("deny with a revision AND a reason delivers ONE combined deny-outcome", async () => {
+    const harness = await build({ mode: "ask" });
+    try {
+      const proposal = await harness.approvals.createProposal(
+        baseInput({ origin: "commander", targetAgentId: "worker-1" }),
+      );
+      await harness.approvals.resolveProposal({
+        proposalId: proposal.id,
+        action: "deny",
+        editedMessage: "Run it on gamma instead.",
+        reason: "Beta has no headroom.",
+      });
+      expect(harness.approvals.getProposal(proposal.id)?.status).toBe("denied");
+      // One delivery carrying BOTH — never two notifications.
+      expect(harness.denyOutcomes).toEqual([
+        {
+          proposalId: proposal.id,
+          revision: "Run it on gamma instead.",
+          reason: "Beta has no headroom.",
+        },
+      ]);
+    } finally {
+      await teardown(harness);
+    }
+  });
+
+  test("a deny with a reason on a non-commander-origin proposal stays silent", async () => {
+    const harness = await build({ mode: "ask" });
+    try {
+      const proposal = await harness.approvals.createProposal(baseInput());
+      await harness.approvals.resolveProposal({
+        proposalId: proposal.id,
+        action: "deny",
+        reason: "Not relevant to the Commander.",
+      });
+      expect(harness.approvals.getProposal(proposal.id)?.status).toBe("denied");
+      // Deny-outcome notifications are commander-origin only.
+      expect(harness.denyOutcomes).toHaveLength(0);
+      expect(harness.delivered).toHaveLength(0);
     } finally {
       await teardown(harness);
     }
@@ -217,7 +305,7 @@ describe("MissionControlApprovals ask mode", () => {
         editedMessage: "   ",
       });
       expect(harness.approvals.getProposal(proposal.id)?.status).toBe("denied");
-      expect(harness.denyRevisions).toHaveLength(0);
+      expect(harness.denyOutcomes).toHaveLength(0);
       expect(harness.delivered).toHaveLength(0);
     } finally {
       await teardown(harness);
@@ -227,7 +315,7 @@ describe("MissionControlApprovals ask mode", () => {
   test("a failed deny-revision delivery never fails the deny resolution", async () => {
     const harness = await build({
       mode: "ask",
-      deliverDenyRevision: async () => {
+      deliverDenyOutcome: async () => {
         throw new Error("mailbox down");
       },
     });

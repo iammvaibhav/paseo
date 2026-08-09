@@ -431,6 +431,11 @@ export const MissionControlProposalsRespondRequestSchema = z.object({
   action: z.enum(["approve", "deny"]),
   // Optional message rewrite before send (approve with edits).
   editedMessage: z.string().optional(),
+  // Optional user-attached deny reason, delivered back to the Commander with
+  // the deny-outcome notification (commander-origin proposals only).
+  // Skippable — absent/empty = plain deny. Additive: an old app omits it and
+  // an old daemon strips it (both keep parsing).
+  reason: z.string().optional(),
   // Grant allow-pair: the rest of this verifier<->worker exchange auto-approves.
   allowPair: z.boolean().optional(),
 });

@@ -50,6 +50,7 @@ import {
   MISSION_CONTROL_LABEL_KEY,
   MISSION_CONTROL_LABEL_VALUE,
 } from "./commander-contract.js";
+import { CommanderInstructionTracker } from "./commander-instruction-tracker.js";
 import { isDesignatedCommanderHost } from "./commander-boot.js";
 import type { MissionControlPresenceSource } from "./presence.js";
 import {
@@ -135,6 +136,14 @@ const SPECULATIVE_RECALL_TEXT_CAP = 120;
  * Card only — the Commander is never nudged or interrupted.
  */
 const COMMANDER_TOOL_LOOP_THRESHOLD = 3;
+
+/**
+ * Synthetic instruction-answer card caps: the headline follows the event
+ * convention (≤ 120 chars, plain language) and the body is the Commander's
+ * turn prose, bounded so a long reply never balloons the feed card.
+ */
+const SYNTHETIC_ANSWER_HEADLINE_CAP = 120;
+const SYNTHETIC_ANSWER_BODY_CAP = 2000;
 
 /**
  * Effective nudge interval for a trigger after `priorNudges` nudges of that
@@ -597,6 +606,16 @@ export class MissionControlService {
     string,
     { toolName: string; consecutive: number; lastError: string; cardSent: boolean }
   >();
+  /**
+   * Per-Commander instruction-ledger fallback: ids staged by the mailbox
+   * right after their ledger rows open, plus the current turn's assistant-row
+   * window, so a turn completion that answered in plain prose (no citing
+   * post_answer / clarify / proposal card) still closes its ledger rows via
+   * synthesized answer cards. Keyed by commander agent id — a Commander reset
+   * archives the old id and spawns a fresh one; tracker state must not leak
+   * across. Entries are deleted at window finalize.
+   */
+  private readonly commanderInstructionTrackers = new Map<string, CommanderInstructionTracker>();
   private readonly reviewStateListeners = new Set<ReviewStateListener>();
   private readonly selfReportListeners = new Set<(event: MissionControlEvent) => void>();
   /** First observation of a dead-runtime running record (periodic scan). */
@@ -776,29 +795,45 @@ export class MissionControlService {
         const event = await this.emitProposalEvent(proposal);
         return { id: event.id };
       },
-      // EDGE: a deny WITH a revision (deny + editedMessage) goes back to the
-      // Commander through the mailbox — the same path chat uses (source
-      // "chat"), so the ledger opens a row and the Commander re-proposes a
-      // fresh card (docs/commander.md: "Edit sends your changes back to the
-      // Commander, which re-proposes"). Never silent: a missing Commander or
-      // a failed delivery logs loudly; the deny itself has already resolved.
-      deliverDenyRevision: async ({ proposal, revision }) => {
+      // EDGE: a denied proposal must never be silent when it carries a
+      // revision (deny + editedMessage) or when it was commander-origin — the
+      // outcome goes back to the Commander through the mailbox (the same path
+      // chat uses, source "chat"), so the ledger opens a row and the
+      // Commander reacts (docs/commander.md: "Edit sends your changes back to
+      // the Commander, which re-proposes"). One delivery per deny: a revision
+      // keeps precedence and the reason rides along in the same message.
+      // Never silent: a missing Commander or a failed delivery logs loudly;
+      // the deny itself has already resolved.
+      deliverDenyOutcome: async ({ proposal, revision, reason }) => {
         const commanderId = await this.resolveCommanderAgentId();
         if (!commanderId) {
           this.logger.warn(
             { component: "approvals", proposalId: proposal.id },
-            "mission_control.approvals.deny_revision_no_commander",
+            "mission_control.approvals.deny_outcome_no_commander",
           );
           return;
         }
+        let text: string;
+        if (revision) {
+          text = `Your proposal ${proposal.id} was denied with this revision: ${revision}`;
+          if (reason) {
+            text += `; reason: ${reason}`;
+          }
+        } else {
+          const summary = proposal.message.slice(0, 80);
+          text = `Your proposal ${proposal.id} (${summary}) was denied`;
+          if (reason) {
+            text += `; reason: ${reason}`;
+          }
+        }
         const result = await this.deliverCommanderInstruction({
-          text: `Your proposal ${proposal.id} was denied with this revision: ${revision}`,
+          text,
           source: "chat",
         });
         if (!result.ok) {
           this.logger.warn(
             { component: "approvals", proposalId: proposal.id, error: result.error },
-            "mission_control.approvals.deny_revision_delivery_failed",
+            "mission_control.approvals.deny_outcome_delivery_failed",
           );
         }
       },
@@ -1036,6 +1071,7 @@ export class MissionControlService {
     proposalId: string;
     action: "approve" | "deny";
     editedMessage?: string;
+    reason?: string;
     allowPair?: boolean;
   }): Promise<{ ok: true } | { ok: false; error: string }> {
     return this.approvals.resolveProposal(input);
@@ -1200,63 +1236,105 @@ export class MissionControlService {
       return { ok: false, error: "No Commander agent on this host" };
     }
     const instruction = this.store.openInstruction({ text: input.text, source: input.source });
-    // Speculative auto-recall (user-approved design): fire the dual-bank
-    // recall with the raw instruction text, in parallel with delivery, under
-    // a hard constant budget. Within budget → the block rides the envelope;
-    // timeout / unconfigured / error → nothing is attached and delivery is
-    // never delayed beyond the budget (a late result is dropped — no late
-    // steers). fleet_recall (the Commander's own tool) is untouched.
-    const recallBlock = await this.buildSpeculativeRecallBlock(input.text);
+    // Instruction-ledger fallback: stage the id BEFORE any async dispatch so
+    // a turn completion that answers in prose alone still closes this row via
+    // a synthesized answer card. Rolled back if delivery fails (the row itself
+    // stays open — the instruction never reached a turn, so it is neither
+    // delivered nor answered). A busy steer joins the in-flight turn: its
+    // completion must cover this id even when no turn_started is observed.
     const busy = this.agentManager.hasInFlightRun(commanderId);
-    if (busy) {
-      const envelope = [
-        `New instruction (${instruction.id}). Acknowledge it in one line, fold it into your open work, prioritize user-facing asks, then continue.`,
-        this.formatOpenInstructionsBlock(),
-        recallBlock,
-      ]
-        .filter((block): block is string => block !== null && block.length > 0)
-        .join("\n\n");
-      await dispatchLocalPromptMode({
-        agentManager: this.agentManager,
-        agentStorage: this.agentStorage,
-        agentId: commanderId,
-        prompt: envelope,
-        attachments: input.attachments,
-        mode: "steer",
-        classification: "instruction",
-        replaceOrigin: "machinery",
-        recordStopOrigin: (agentId, origin) => this.store.recordStopOrigin(agentId, origin),
-        logger: this.logger,
-        // The Commander's own turn loop is covered by the dormant-turn
-        // detector (machinery turns arm nothing here either); the mailbox
-        // steer never marks the Commander undelivered.
-        onOutOfBandSteer: () => {
-          this.armSteerDeliveryVerification(commanderId, undefined);
-        },
-      });
-      this.logger.info(
-        { instructionId: instruction.id, source: input.source },
-        "mission_control.mailbox.steered",
-      );
-      return { ok: true, instructionId: instruction.id, deliveredAs: "steer" };
-    }
-    // Idle: hand the recall block (if any) to the snapshot injector so the
-    // fresh snapshot carries it alongside the ledger block.
-    this.setPendingInstructionEnvelope?.(recallBlock || null);
-    // M10: dispatch the fresh snapshot as its OWN turn first, then STEER the
-    // message into the in-flight snapshot turn — the same native steer the
-    // busy branch uses (proven to reach the provider session). The plain-run
-    // delivery below starts the user run with replaceRunning, which CANCELS
-    // the snapshot turn; the provider then drops the cancelled prompt, so
-    // the model never sees the fresh fleet state — the timeline row alone
-    // cannot carry it (the launch-pack staleness).
-    const snapshotInFlight = (await this.dispatchSnapshotTurn?.(commanderId)) ?? false;
-    if (snapshotInFlight) {
-      // The snapshot turn exists to carry this message: the ledger and
-      // auto-recall blocks already ride the snapshot body, so the steered
-      // text is the plain message — never the 'New instruction (#N).
-      // Acknowledge…' mid-turn wrapper (that wrapper belongs to steers into
-      // a turn whose primary ask is NOT this message).
+    const unstageInstruction = this.commanderInstructionTracker(commanderId).stage(
+      [instruction.id],
+      { intoActiveTurn: busy },
+    );
+    try {
+      // Speculative auto-recall (user-approved design): fire the dual-bank
+      // recall with the raw instruction text, in parallel with delivery, under
+      // a hard constant budget. Within budget → the block rides the envelope;
+      // timeout / unconfigured / error → nothing is attached and delivery is
+      // never delayed beyond the budget (a late result is dropped — no late
+      // steers). fleet_recall (the Commander's own tool) is untouched.
+      const recallBlock = await this.buildSpeculativeRecallBlock(input.text);
+      if (busy) {
+        const envelope = [
+          `New instruction (${instruction.id}). Acknowledge it in one line, fold it into your open work, prioritize user-facing asks, then continue.`,
+          this.formatOpenInstructionsBlock(),
+          recallBlock,
+        ]
+          .filter((block): block is string => block !== null && block.length > 0)
+          .join("\n\n");
+        await dispatchLocalPromptMode({
+          agentManager: this.agentManager,
+          agentStorage: this.agentStorage,
+          agentId: commanderId,
+          prompt: envelope,
+          attachments: input.attachments,
+          mode: "steer",
+          classification: "instruction",
+          replaceOrigin: "machinery",
+          recordStopOrigin: (agentId, origin) => this.store.recordStopOrigin(agentId, origin),
+          logger: this.logger,
+          // The Commander's own turn loop is covered by the dormant-turn
+          // detector (machinery turns arm nothing here either); the mailbox
+          // steer never marks the Commander undelivered.
+          onOutOfBandSteer: () => {
+            this.armSteerDeliveryVerification(commanderId, undefined);
+          },
+        });
+        this.logger.info(
+          { instructionId: instruction.id, source: input.source },
+          "mission_control.mailbox.steered",
+        );
+        return { ok: true, instructionId: instruction.id, deliveredAs: "steer" };
+      }
+      // Idle: hand the recall block (if any) to the snapshot injector so the
+      // fresh snapshot carries it alongside the ledger block.
+      this.setPendingInstructionEnvelope?.(recallBlock || null);
+      // M10: dispatch the fresh snapshot as its OWN turn first, then STEER the
+      // message into the in-flight snapshot turn — the same native steer the
+      // busy branch uses (proven to reach the provider session). The plain-run
+      // delivery below starts the user run with replaceRunning, which CANCELS
+      // the snapshot turn; the provider then drops the cancelled prompt, so
+      // the model never sees the fresh fleet state — the timeline row alone
+      // cannot carry it (the launch-pack staleness).
+      const snapshotInFlight = (await this.dispatchSnapshotTurn?.(commanderId)) ?? false;
+      if (snapshotInFlight) {
+        // The snapshot turn exists to carry this message: the ledger and
+        // auto-recall blocks already ride the snapshot body, so the steered
+        // text is the plain message — never the 'New instruction (#N).
+        // Acknowledge…' mid-turn wrapper (that wrapper belongs to steers into
+        // a turn whose primary ask is NOT this message).
+        await dispatchLocalPromptMode({
+          agentManager: this.agentManager,
+          agentStorage: this.agentStorage,
+          agentId: commanderId,
+          prompt: input.text.trim(),
+          attachments: input.attachments,
+          mode: "steer",
+          classification: "instruction",
+          replaceOrigin: "machinery",
+          recordStopOrigin: (agentId, origin) => this.store.recordStopOrigin(agentId, origin),
+          logger: this.logger,
+          // Mirrors the busy branch: the Commander's own turn loop is covered
+          // by the dormant-turn detector; the mailbox steer never marks the
+          // Commander undelivered (armed with no proposal — a no-op).
+          onOutOfBandSteer: () => {
+            this.armSteerDeliveryVerification(commanderId, undefined);
+          },
+        });
+        // The turn the message just joined is no longer a machinery ack turn:
+        // its reply is the Commander's answer to the user — never retracted.
+        this.disarmSnapshotAckDrop?.();
+        this.logger.info(
+          { instructionId: instruction.id, source: input.source },
+          "mission_control.mailbox.ran",
+        );
+        return { ok: true, instructionId: instruction.id, deliveredAs: "run" };
+      }
+      // No snapshot turn in flight to steer into (already settled — a fast
+      // model — or none was dispatched: busy skip / dispatch failure): the
+      // plain-run fallback. Its seam re-injects a fresh snapshot ahead of the
+      // run (advisory — a failed injection never fails the message).
       await dispatchLocalPromptMode({
         agentManager: this.agentManager,
         agentStorage: this.agentStorage,
@@ -1265,45 +1343,21 @@ export class MissionControlService {
         attachments: input.attachments,
         mode: "steer",
         classification: "instruction",
-        replaceOrigin: "machinery",
         recordStopOrigin: (agentId, origin) => this.store.recordStopOrigin(agentId, origin),
         logger: this.logger,
-        // Mirrors the busy branch: the Commander's own turn loop is covered
-        // by the dormant-turn detector; the mailbox steer never marks the
-        // Commander undelivered (armed with no proposal — a no-op).
-        onOutOfBandSteer: () => {
-          this.armSteerDeliveryVerification(commanderId, undefined);
-        },
       });
-      // The turn the message just joined is no longer a machinery ack turn:
-      // its reply is the Commander's answer to the user — never retracted.
-      this.disarmSnapshotAckDrop?.();
       this.logger.info(
         { instructionId: instruction.id, source: input.source },
         "mission_control.mailbox.ran",
       );
       return { ok: true, instructionId: instruction.id, deliveredAs: "run" };
+    } catch (error) {
+      // Delivery failed before the id reached a turn: forget the tracker
+      // state (the ledger row stays open — honest: never delivered, never
+      // answered; the per-turn envelope re-lists it for a later delivery).
+      unstageInstruction();
+      throw error;
     }
-    // No snapshot turn in flight to steer into (already settled — a fast
-    // model — or none was dispatched: busy skip / dispatch failure): the
-    // plain-run fallback. Its seam re-injects a fresh snapshot ahead of the
-    // run (advisory — a failed injection never fails the message).
-    await dispatchLocalPromptMode({
-      agentManager: this.agentManager,
-      agentStorage: this.agentStorage,
-      agentId: commanderId,
-      prompt: input.text.trim(),
-      attachments: input.attachments,
-      mode: "steer",
-      classification: "instruction",
-      recordStopOrigin: (agentId, origin) => this.store.recordStopOrigin(agentId, origin),
-      logger: this.logger,
-    });
-    this.logger.info(
-      { instructionId: instruction.id, source: input.source },
-      "mission_control.mailbox.ran",
-    );
-    return { ok: true, instructionId: instruction.id, deliveredAs: "run" };
   }
 
   /**
@@ -2406,6 +2460,17 @@ export class MissionControlService {
       });
   }
 
+  private trackCommanderInstructionIfApplicable(
+    agentId: string,
+    event: AgentStreamEvent,
+    seq?: number,
+  ): void {
+    const agent = this.agentManager.getAgent(agentId);
+    if (agent?.labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE) {
+      this.trackCommanderInstruction(agentId, event, seq);
+    }
+  }
+
   private handleAgentStream(
     agentId: string,
     event: AgentStreamEvent,
@@ -2426,6 +2491,12 @@ export class MissionControlService {
         this.lastActivityAtByAgent.set(agentId, now);
         this.steerVerifications.delete(agentId);
       }
+      // Instruction-ledger fallback: track the Commander's delivery window
+      // (turn_started / assistant rows / turn completion) so a turn that
+      // answers in plain prose — no citing card — still closes its ledger
+      // rows via synthesized answer cards. Only the Commander is tracked
+      // (verifier streams carry no staged ids and would no-op anyway).
+      this.trackCommanderInstructionIfApplicable(agentId, event, seq);
       return;
     }
     const tracking = this.stallTracking.get(agentId);
@@ -2701,6 +2772,118 @@ export class MissionControlService {
         detail: `${item.name} failed ${consecutive} times in a row this turn — last error: ${message.slice(0, 200)}`,
       });
     }
+  }
+
+  /**
+   * Instruction-ledger fallback window tracking for the Commander's stream
+   * (excluded-agent path, Commander only): turn_started binds staged ids to
+   * the turn and opens the assistant-row window; assistant_message rows
+   * accumulate in seq order (the ordered-join convention CommanderAckDrop
+   * uses); turn_completed finalizes the window; turn_failed/turn_canceled
+   * keep the ids pending for the next delivery/recovery window and never
+   * synthesize (a failed turn's prose is not a completed answer).
+   */
+  private trackCommanderInstruction(agentId: string, event: AgentStreamEvent, seq?: number): void {
+    const tracker = this.commanderInstructionTracker(agentId);
+    if (event.type === "turn_started") {
+      tracker.turnStarted();
+      return;
+    }
+    if (event.type === "timeline" && event.item.type === "assistant_message") {
+      if (seq !== undefined) {
+        tracker.assistantRow(seq, event.item.text);
+      }
+      return;
+    }
+    if (event.type === "turn_completed") {
+      this.finalizeCommanderInstructionWindow(agentId, tracker);
+      return;
+    }
+    if (event.type === "turn_failed" || event.type === "turn_canceled") {
+      tracker.fail();
+    }
+  }
+
+  /**
+   * turn_completed: synthesize one generic answer card per still-open tracked
+   * id through the SAME emitCommanderCard path the Commander's own
+   * post_answer/clarify tools use — event format, feed UI, and ledger closure
+   * stay one path. Ids a genuine citing card already closed (respondsTo →
+   * closeInstructionForCard) are filtered out against the store's open set at
+   * this point, so the fallback never duplicates a real card. Machinery turns
+   * and unrelated old ledger rows never enter the tracked set and are never
+   * touched.
+   */
+  private finalizeCommanderInstructionWindow(
+    agentId: string,
+    tracker: CommanderInstructionTracker,
+  ): void {
+    const snapshot = tracker.complete();
+    this.commanderInstructionTrackers.delete(agentId);
+    if (!snapshot) {
+      return;
+    }
+    const openIds = new Set(this.store.listOpenInstructions().map((instruction) => instruction.id));
+    const stillOpen = snapshot.ids.filter((id) => openIds.has(id));
+    if (stillOpen.length === 0) {
+      return;
+    }
+    void this.synthesizeCommanderAnswerCards(agentId, stillOpen, snapshot.text).catch((error) => {
+      this.logger.warn(
+        { err: error, agentId, component: "commander-card" },
+        "mission_control.instructions.synthetic_answer_failed",
+      );
+    });
+  }
+
+  /**
+   * Emit the synthetic answer cards for one finalized delivery window: one
+   * generic answer card per still-open tracked id, body = the turn's prose,
+   * respondsTo = the id (emitCommanderCard closes the ledger row). Headline
+   * follows the ledger's one-line style and the event's ≤120-char convention;
+   * body is capped so a long reply never balloons the feed card.
+   */
+  private async synthesizeCommanderAnswerCards(
+    agentId: string,
+    ids: string[],
+    text: string,
+  ): Promise<void> {
+    const byId = new Map(
+      this.store.listInstructions().map((instruction) => [instruction.id, instruction]),
+    );
+    for (const id of ids) {
+      const oneLine = (byId.get(id)?.text ?? "").replace(/\s+/g, " ").trim();
+      const headline = `Answer to ${id}${oneLine ? `: ${oneLine}` : ""}`.slice(
+        0,
+        SYNTHETIC_ANSWER_HEADLINE_CAP,
+      );
+      const event = await this.emitCommanderCard({
+        kind: "answer",
+        headline,
+        answer: {
+          kind: "generic",
+          headline,
+          body: text.slice(0, SYNTHETIC_ANSWER_BODY_CAP),
+          respondsTo: id,
+        },
+      });
+      if (event) {
+        this.logger.info(
+          { component: "commander-card", eventId: event.id, instructionId: id, agentId },
+          "mission_control.instructions.synthetic_answer",
+        );
+      }
+    }
+  }
+
+  /** The per-Commander tracker for an agent id, created on first use. */
+  private commanderInstructionTracker(agentId: string): CommanderInstructionTracker {
+    let tracker = this.commanderInstructionTrackers.get(agentId);
+    if (!tracker) {
+      tracker = new CommanderInstructionTracker();
+      this.commanderInstructionTrackers.set(agentId, tracker);
+    }
+    return tracker;
   }
 
   /**

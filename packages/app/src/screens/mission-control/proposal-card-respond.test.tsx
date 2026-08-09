@@ -78,7 +78,30 @@ vi.mock("@/components/host-glyph", () => ({
   ),
 }));
 vi.mock("@/components/settings-textarea", () => ({
-  SettingsTextArea: () => <textarea />,
+  SettingsTextArea: function SettingsTextArea({
+    value,
+    onChangeText,
+    testID,
+    placeholder,
+  }: {
+    value?: string;
+    onChangeText?: (text: string) => void;
+    testID?: string;
+    placeholder?: string;
+  }) {
+    const handleChange = React.useCallback(
+      (event: React.ChangeEvent<HTMLTextAreaElement>) => onChangeText?.(event.currentTarget.value),
+      [onChangeText],
+    );
+    return (
+      <textarea
+        data-testid={testID}
+        placeholder={placeholder}
+        value={value}
+        onChange={handleChange}
+      />
+    );
+  },
 }));
 vi.mock("@/components/ui/button", () => ({
   Button: ({
@@ -197,5 +220,132 @@ describe("ProposalCard respond failure surfacing", () => {
     expect(container?.textContent).toContain(
       "spawn failed: Error: Provider nope is not configured",
     );
+  });
+
+  it("deny reveals an optional reason input and sends the reason through", async () => {
+    respondMock.mockResolvedValue({ requestId: "req-deny-reason", ok: true });
+
+    act(() => {
+      root?.render(<ProposalCard proposal={proposal} event={event} />);
+    });
+
+    const denyButton = () =>
+      container?.querySelector(
+        '[data-testid="mission-control-proposal-deny"]',
+      ) as HTMLButtonElement;
+    expect(denyButton()).toBeTruthy();
+
+    // First press reveals the optional reason field; no RPC yet.
+    await act(async () => {
+      denyButton().click();
+    });
+    const reasonInput = container?.querySelector(
+      '[data-testid="mission-control-proposal-deny-reason-input"]',
+    ) as HTMLTextAreaElement;
+    expect(reasonInput).toBeTruthy();
+    expect(respondMock).not.toHaveBeenCalled();
+
+    // Type a reason into the revealed field (native setter so React's
+    // controlled-input tracker can't revert the DOM value).
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      setValue?.call(reasonInput, "Run it on gamma instead.");
+      reasonInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    // Second press submits the deny with the reason attached.
+    await act(async () => {
+      denyButton().click();
+    });
+    expect(respondMock).toHaveBeenCalledTimes(1);
+    expect(respondMock).toHaveBeenCalledWith({
+      proposalId: "mcp_approve_fail",
+      action: "deny",
+      reason: "Run it on gamma instead.",
+    });
+  });
+
+  it("skipping the reason (empty or whitespace) sends a plain deny", async () => {
+    respondMock.mockResolvedValue({ requestId: "req-deny-plain", ok: true });
+
+    act(() => {
+      root?.render(<ProposalCard proposal={proposal} event={event} />);
+    });
+
+    const denyButton = () =>
+      container?.querySelector(
+        '[data-testid="mission-control-proposal-deny"]',
+      ) as HTMLButtonElement;
+
+    // Reveal the reason field and type only whitespace (skippable).
+    await act(async () => {
+      denyButton().click();
+    });
+    const reasonInput = container?.querySelector(
+      '[data-testid="mission-control-proposal-deny-reason-input"]',
+    ) as HTMLTextAreaElement;
+    expect(reasonInput).toBeTruthy();
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      setValue?.call(reasonInput, "   ");
+      reasonInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await act(async () => {
+      denyButton().click();
+    });
+    // Whitespace-only reason is trimmed away: the RPC carries a plain deny
+    // with no reason key.
+    expect(respondMock).toHaveBeenCalledTimes(1);
+    expect(respondMock).toHaveBeenCalledWith({
+      proposalId: "mcp_approve_fail",
+      action: "deny",
+    });
+  });
+
+  it("cancel closes the reason field without sending", async () => {
+    respondMock.mockResolvedValue({ requestId: "req-deny-cancel", ok: true });
+
+    act(() => {
+      root?.render(<ProposalCard proposal={proposal} event={event} />);
+    });
+
+    const denyButton = () =>
+      container?.querySelector(
+        '[data-testid="mission-control-proposal-deny"]',
+      ) as HTMLButtonElement;
+    await act(async () => {
+      denyButton().click();
+    });
+    expect(
+      container?.querySelector('[data-testid="mission-control-proposal-deny-reason-input"]'),
+    ).toBeTruthy();
+
+    const cancelButton = container?.querySelector(
+      '[data-testid="mission-control-proposal-cancel-deny-reason"]',
+    ) as HTMLButtonElement;
+    expect(cancelButton).toBeTruthy();
+    await act(async () => {
+      cancelButton.click();
+    });
+
+    // The field is gone, the deny button is back to its reveal state, and no
+    // RPC was ever sent.
+    expect(
+      container?.querySelector('[data-testid="mission-control-proposal-deny-reason-input"]'),
+    ).toBeNull();
+    expect(respondMock).not.toHaveBeenCalled();
+    await act(async () => {
+      denyButton().click();
+    });
+    expect(
+      container?.querySelector('[data-testid="mission-control-proposal-deny-reason-input"]'),
+    ).toBeTruthy();
   });
 });

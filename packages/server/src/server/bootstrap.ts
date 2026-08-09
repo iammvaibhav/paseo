@@ -1769,6 +1769,10 @@ export async function createPaseoDaemon(
     fetchEvents: (options) => missionControlService.fetchEvents(options),
     listMessageTags: () => missionControlService.allMessageTags(),
     createProposal: (input) => missionControlService.approvals.createProposal(input),
+    // Durable proposal store read: the boot-time dedupe source for verifier
+    // spawn proposals (a still-pending spawn for the same worker must not be
+    // re-proposed after a restart).
+    listProposals: () => missionControlService.listProposals(),
     onProposalChange: (callback) => missionControlService.onProposalChange(callback),
     subscribeSelfReports: (callback) => missionControlService.subscribeSelfReports(callback),
     setReviewState: (agentId, state, options) =>
