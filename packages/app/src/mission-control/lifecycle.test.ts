@@ -297,11 +297,20 @@ describe("deriveAgentLifecycle — buckets", () => {
     expect(state.bucket).toBe("needs_you");
   });
 
-  it("puts agents with a pending proposal in needs_you", () => {
+  it("puts idle agents with a pending proposal in needs_you", () => {
     const state = derive(makeAgent(), [
       makeProposalEvent({ headline: "Proposal (verifier): proof demand", source: "verifier" }),
     ]);
     expect(state.bucket).toBe("needs_you");
+    expect(state.pendingProposalCount).toBe(1);
+  });
+
+  it("keeps a running agent in running even with a pending stall proposal", () => {
+    const state = derive(makeAgent({ status: "running" }), [
+      makeEvent({ kind: "started", headline: "Started running" }),
+      makeProposalEvent({ headline: "Proposal (stall): recovery", source: "system" }),
+    ]);
+    expect(state.bucket).toBe("running");
     expect(state.pendingProposalCount).toBe(1);
   });
 

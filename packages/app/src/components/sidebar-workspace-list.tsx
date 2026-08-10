@@ -75,6 +75,7 @@ import {
 import { useSidebarOrderStore } from "@/stores/sidebar-order-store";
 import { useSidebarViewStore } from "@/stores/sidebar-view-store";
 import { useShowShortcutBadges } from "@/hooks/use-show-shortcut-badges";
+import { useAppSettings } from "@/hooks/use-settings";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -1717,12 +1718,40 @@ function ProjectBlock({
   supportsPinningByServerId: ReadonlyMap<string, boolean>;
   onToggleWorkspacePin: ToggleSidebarWorkspacePin;
 }) {
+  const { settings } = useAppSettings();
+  const workspaceSort = settings.sidebarWorkspaceSort ?? "manual";
+  const orderedWorkspaces = useMemo(() => {
+    if (workspaceSort === "manual" || project.workspaces.length <= 1) {
+      return project.workspaces;
+    }
+    const decorated = project.workspaces.map((workspace, index) => {
+      const entry = workspaceEntriesByKey.get(workspace.workspaceKey);
+      const activityMs =
+        entry?.activityAt?.getTime() ??
+        entry?.statusEnteredAt?.getTime() ??
+        Number.NEGATIVE_INFINITY;
+      const createdMs = entry?.createdAt?.getTime() ?? Number.NEGATIVE_INFINITY;
+      return { workspace, index, activityMs, createdMs };
+    });
+    decorated.sort((left, right) => {
+      const primary =
+        workspaceSort === "created"
+          ? right.createdMs - left.createdMs
+          : right.activityMs - left.activityMs;
+      if (primary !== 0) {
+        return primary;
+      }
+      // Stable for unknown timestamps: keep the manual/store order.
+      return left.index - right.index;
+    });
+    return decorated.map((item) => item.workspace);
+  }, [project.workspaces, workspaceEntriesByKey, workspaceSort]);
   const {
     visibleItems: visibleWorkspaces,
     expanded: workspacesExpanded,
     canToggle: canToggleWorkspaces,
     toggleExpanded: toggleWorkspacesExpanded,
-  } = useLimitedSidebarGroup(project.workspaces);
+  } = useLimitedSidebarGroup(orderedWorkspaces);
   const rowModel = useMemo(
     () =>
       buildSidebarProjectRowModel({
@@ -1736,7 +1765,7 @@ function ProjectBlock({
   // Collapsed rows hide their workspace rows, so the project row carries the most urgent
   // status among them; expanded rows leave the signal to the child rows themselves.
   const aggregateStatusBucket = useSidebarProjectStatusBucket({
-    workspaces: project.workspaces,
+    workspaces: orderedWorkspaces,
     enabled: collapsed,
   });
 
@@ -1805,6 +1834,10 @@ function ProjectBlock({
     },
     [renderWorkspaceRow],
   );
+
+  const noopWorkspaceDragEnd = useCallback((_workspaces: SidebarWorkspacePlacement[]) => {
+    return;
+  }, []);
 
   const handleWorkspaceDragEnd = useCallback(
     (workspaces: SidebarWorkspacePlacement[]) => {
@@ -1883,10 +1916,10 @@ function ProjectBlock({
             data={visibleWorkspaces}
             keyExtractor={workspaceKeyExtractor}
             renderItem={renderWorkspace}
-            onDragEnd={handleWorkspaceDragEnd}
+            onDragEnd={workspaceSort === "manual" ? handleWorkspaceDragEnd : noopWorkspaceDragEnd}
             extraData={activeWorkspaceSelectionKey(activeWorkspaceSelection)}
             scrollEnabled={false}
-            useDragHandle
+            useDragHandle={workspaceSort === "manual"}
             nestable={useNestable}
             simultaneousGestureRef={parentGestureRef}
             gestureHostPresented={dragGestureHostPresented}

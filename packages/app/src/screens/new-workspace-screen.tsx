@@ -67,6 +67,10 @@ import { useKeyboardShiftStyle } from "@/hooks/use-keyboard-shift-style";
 import { useKeyboardActionHandler } from "@/hooks/use-keyboard-action-handler";
 import type { KeyboardActionId } from "@/keyboard/keyboard-action-dispatcher";
 import { useFormPreferences } from "@/hooks/use-form-preferences";
+import {
+  mergeIsolationPreference,
+  resolveEffectiveFormPreferences,
+} from "@/create-agent-preferences/preferences";
 import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
 import type { CreateAgentInitialValues } from "@/hooks/use-agent-form-state";
 import { generateMessageId } from "@/types/stream";
@@ -692,23 +696,42 @@ interface WorkspaceIsolationState {
 function useWorkspaceIsolation(input: {
   supportsMultiplicity: boolean;
   worktreeSupport: "supported" | "unsupported" | "unknown";
+  projectKey?: string | null;
 }): WorkspaceIsolationState {
-  const { supportsMultiplicity, worktreeSupport } = input;
-  // The last isolation choice is remembered alongside the other New Workspace
-  // form preferences (provider, model, mode). A manual in-screen pick overrides
-  // the remembered default until the screen remounts.
+  const { supportsMultiplicity, worktreeSupport, projectKey } = input;
+  // Isolation is remembered per project (byProject[projectKey].isolation) with
+  // a global fallback for older data / no project. A manual pick overrides the
+  // remembered default until the screen remounts or the project changes.
   const { preferences, updatePreferences } = useFormPreferences();
   const [manualIsolation, setManualIsolation] = useState<"local" | "worktree" | null>(null);
-  const isolation = manualIsolation ?? preferences.isolation ?? "local";
+  const [manualIsolationProjectKey, setManualIsolationProjectKey] = useState<string | null>(null);
+  const scopeKey =
+    typeof projectKey === "string" && projectKey.trim().length > 0 ? projectKey : null;
+  const effectivePreferences = useMemo(
+    () => resolveEffectiveFormPreferences(preferences, scopeKey ? { projectKey: scopeKey } : null),
+    [preferences, scopeKey],
+  );
+  const rememberedIsolation = effectivePreferences.isolation ?? "local";
+  const isolation =
+    manualIsolation !== null && manualIsolationProjectKey === scopeKey
+      ? manualIsolation
+      : rememberedIsolation;
   const canCreateWorktree = supportsMultiplicity && worktreeSupport !== "unsupported";
   const isWorktree = isolation === "worktree" && canCreateWorktree;
 
   const setIsolation = useCallback(
     (value: "local" | "worktree") => {
       setManualIsolation(value);
-      void updatePreferences({ isolation: value });
+      setManualIsolationProjectKey(scopeKey);
+      void updatePreferences((current) =>
+        mergeIsolationPreference({
+          preferences: current,
+          isolation: value,
+          scope: scopeKey ? { projectKey: scopeKey } : null,
+        }),
+      );
     },
-    [updatePreferences],
+    [scopeKey, updatePreferences],
   );
 
   return {
@@ -1745,8 +1768,8 @@ export function NewWorkspaceScreen({
     useWorkspaceIsolation({
       supportsMultiplicity: supportsWorkspaceMultiplicity,
       worktreeSupport,
+      projectKey: resolveSelectedProjectKey(selectedProject),
     });
-
   const branchSuggestionsQuery = useQuery({
     queryKey: [
       "branch-suggestions",

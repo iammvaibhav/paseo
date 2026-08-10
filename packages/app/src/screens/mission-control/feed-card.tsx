@@ -259,30 +259,24 @@ function FeedCardMetaRow({
   agentChipLabel,
   showOpenAffordance,
   timestamp,
-  onOpenAgent,
 }: {
   event: FeedCardEvent;
   agentChipLabel: string;
   showOpenAffordance: boolean;
   timestamp: Date;
-  onOpenAgent: () => void;
 }): ReactElement {
   // Live relative time: the shared ticker re-renders ONLY this label as it
   // ages (see useLiveTimeAgo), never the card or the list.
   const timeAgo = useLiveTimeAgo(timestamp);
   return (
     <View style={styles.metaRow}>
-      <Pressable
-        onPress={onOpenAgent}
-        accessibilityRole="button"
-        accessibilityLabel={`Open agent ${agentChipLabel}`}
-        style={styles.agentChip}
-        testID="mission-control-feed-agent-chip"
-      >
+      {/* Chip is chrome, not a nested button — the open control wraps this
+          row (BUG-8: button must never wrap button). */}
+      <View style={styles.agentChip} testID="mission-control-feed-agent-chip">
         <Text style={styles.agentChipText} numberOfLines={1}>
           {agentChipLabel}
         </Text>
-      </Pressable>
+      </View>
       <Text style={styles.metaSeparator}>·</Text>
       <HostGlyph
         serverId={event.serverId}
@@ -372,11 +366,10 @@ function FeedCardBody({
     hideAgentNames,
   );
 
-  // hover.md separate-inner-Pressable doctrine: the frame is a plain View
-  // (hover tracker, card geometry, testID), the "Open agent" press lives on a
-  // SEPARATE inner Pressable, and the interactive meta row / proof sections
-  // render as SIBLINGS of that Pressable — a button role must never wrap
-  // another button role (React nesting + hydration error, BUG-8).
+  // Whole-card open without nesting buttons (BUG-8 / hover.md): the frame is
+  // a plain View for hover geometry. One inner Pressable covers the non-
+  // interactive chrome (icon + text + meta). Proof section headers are real
+  // buttons and stay SIBLINGS of that Pressable so they never nest.
   return (
     <View
       style={[
@@ -392,14 +385,15 @@ function FeedCardBody({
       onPointerLeave={onPointerLeave}
       testID={`mission-control-feed-card-${event.kind}`}
     >
-      <View style={styles.iconSlot}>{eventIcon(event)}</View>
-      <View style={styles.content}>
-        <Pressable
-          onPress={onOpenAgent}
-          accessibilityRole="button"
-          accessibilityLabel={`Open agent ${agentChipLabel}`}
-          testID="mission-control-feed-card-open"
-        >
+      <Pressable
+        onPress={onOpenAgent}
+        accessibilityRole="button"
+        accessibilityLabel={`Open agent ${agentChipLabel}`}
+        style={styles.openAgentPressable}
+        testID="mission-control-feed-card-open"
+      >
+        <View style={styles.iconSlot}>{eventIcon(event)}</View>
+        <View style={styles.openAgentContent}>
           <Text style={styles.title} numberOfLines={1}>
             {title}
           </Text>
@@ -413,26 +407,29 @@ function FeedCardBody({
               {detail}
             </Text>
           ) : null}
-        </Pressable>
-        <FeedCardMetaRow
-          event={event}
-          agentChipLabel={agentChipLabel}
-          showOpenAffordance={showOpenAffordance}
-          timestamp={timestamp}
-          onOpenAgent={onOpenAgent}
-        />
-        {event.proof && event.proof.length > 0 ? (
+          <FeedCardMetaRow
+            event={event}
+            agentChipLabel={agentChipLabel}
+            showOpenAffordance={showOpenAffordance}
+            timestamp={timestamp}
+          />
+        </View>
+      </Pressable>
+      {event.proof && event.proof.length > 0 ? (
+        <View style={styles.proofsOutsideOpen}>
           <ProofSections proofs={event.proof} serverId={event.serverId} />
-        ) : null}
-      </View>
+        </View>
+      ) : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create((theme) => ({
   card: {
-    flexDirection: "row",
-    gap: theme.spacing[3],
+    // Column so the open chrome Pressable and sibling proof sections stack
+    // without nesting buttons (BUG-8). The open chrome itself is a row.
+    flexDirection: "column",
+    gap: theme.spacing[2],
     padding: theme.spacing[3],
     borderRadius: theme.borderRadius.md,
     borderWidth: 1,
@@ -478,6 +475,19 @@ const styles = StyleSheet.create((theme) => ({
     height: 20,
     alignItems: "center",
     justifyContent: "center",
+  },
+  openAgentPressable: {
+    flexDirection: "row",
+    gap: theme.spacing[3],
+    alignItems: "flex-start",
+  },
+  openAgentContent: {
+    flex: 1,
+    minWidth: 0,
+  },
+  proofsOutsideOpen: {
+    // Indent under the text column (icon slot 18 + gap 12).
+    marginLeft: 18 + theme.spacing[3],
   },
   content: {
     flex: 1,

@@ -28,6 +28,8 @@ function createWorkspace(
     name: input.name ?? "main",
     status: input.status ?? "done",
     statusEnteredAt: input.statusEnteredAt ?? null,
+    activityAt: input.activityAt ?? null,
+    createdAt: input.createdAt ?? null,
     archivingAt: input.archivingAt ?? null,
     diffStat: input.diffStat ?? null,
     scripts: input.scripts ?? [],
@@ -493,11 +495,13 @@ describe("normalizeWorkspaceDescriptor", () => {
       ...basePayload,
       archivingAt: null,
       statusEnteredAt: "2026-05-12T09:30:00.000Z",
+      activityAt: null,
     });
     const withNull = normalizeWorkspaceDescriptor({
       ...basePayload,
       archivingAt: null,
       statusEnteredAt: null,
+      activityAt: null,
     });
     const missing = normalizeWorkspaceDescriptor({
       ...basePayload,

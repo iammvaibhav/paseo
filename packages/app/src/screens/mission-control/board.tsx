@@ -532,20 +532,25 @@ function AgentRowIdentityPopover({
     if (!triggerRect) {
       return;
     }
-    // Below the row, inset like the old in-tree popover (left/right
-    // theme.spacing[2], gap theme.spacing[1]).
-    setPosition({ x: triggerRect.x + 8, y: triggerRect.y + triggerRect.height + 4 });
+    // Open to the LEFT of the board row (board is a right rail; left of the
+    // row is free space toward the feed). Width is fixed so left edge is
+    // trigger.x - width - gap.
+    const width = 240;
+    const gap = 8;
+    setPosition({
+      x: Math.max(8, triggerRect.x - width - gap),
+      y: triggerRect.y,
+    });
   }, [triggerRect]);
 
   const frameStyle = useMemo(() => {
-    const width = triggerRect ? Math.max(0, triggerRect.width - 16) : undefined;
     return {
       position: "absolute" as const,
       top: position?.y ?? -9999,
       left: position?.x ?? -9999,
-      ...(width !== undefined ? { width } : {}),
+      width: 240,
     };
-  }, [position?.x, position?.y, triggerRect]);
+  }, [position?.x, position?.y]);
 
   if (title === null && description === null) {
     return null;

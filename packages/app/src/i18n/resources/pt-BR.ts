@@ -1033,6 +1033,12 @@ export const ptBR: TranslationResources = {
         title: "Título",
         branch: "Nome da branch",
       },
+      workspaceSort: {
+        label: "Sort workspaces",
+        manual: "Manual",
+        activity: "Latest activity",
+        created: "Date created",
+      },
       show: {
         label: "Mostrar",
         host: "Host",

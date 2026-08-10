@@ -1021,6 +1021,12 @@ export const en = {
         title: "Title",
         branch: "Branch name",
       },
+      workspaceSort: {
+        label: "Sort workspaces",
+        manual: "Manual",
+        activity: "Latest activity",
+        created: "Date created",
+      },
       show: {
         label: "Show",
         host: "Host",

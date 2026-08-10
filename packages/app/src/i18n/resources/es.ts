@@ -1042,6 +1042,12 @@ export const es: TranslationResources = {
         title: "Título",
         branch: "Nombre de rama",
       },
+      workspaceSort: {
+        label: "Sort workspaces",
+        manual: "Manual",
+        activity: "Latest activity",
+        created: "Date created",
+      },
       show: {
         label: "Mostrar",
         host: "Host",

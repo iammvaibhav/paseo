@@ -1,3 +1,5 @@
+import { access } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import { z } from "zod";
 import type { Logger } from "pino";
 import type { AgentManager } from "../agent/agent-manager.js";
@@ -69,81 +71,13 @@ export async function runIdentityBackfill(
   }
 
   try {
-    const records = await options.agentStorage.list();
-    const closedAgents = records.filter(
-      (record) => record.lastStatus === "closed" && !record.shortDescription,
-    );
-    for (const record of closedAgents) {
-      if (budget <= 0) {
-        report.generationSkipped += 1;
-        continue;
-      }
-      const seed = buildDescriptionSeed(record);
-      if (!seed) {
-        report.generationSkipped += 1;
-        continue;
-      }
-      const description = await generateAgentShortDescription({
-        agentManager: options.agentManager,
-        cwd: record.cwd,
-        providerSnapshotManager: options.providerSnapshotManager,
-        workspaceGitService: options.workspaceGitService,
-        daemonConfig: options.readDaemonConfig(),
-        currentSelection: {
-          provider: record.provider,
-          model: record.config?.model ?? null,
-          thinkingOptionId: record.config?.thinkingOptionId ?? null,
-        },
-        seed,
-        logger,
-      });
-      if (description) {
-        await options.agentManager.setAgentShortDescription(record.id, description);
-        report.descriptionsGenerated += 1;
-      }
-      budget -= 1;
-    }
+    budget = await backfillMissingDescriptions({ options, logger, report, budget });
   } catch (error) {
     logger.warn({ err: error }, "Description backfill failed");
   }
 
   try {
-    const workspaces = await options.workspaceRegistry.list();
-    const agentsByWorkspace = groupAgentTitlesByWorkspace(await options.agentStorage.list());
-    for (const workspace of workspaces) {
-      if (budget <= 0) {
-        report.generationSkipped += 1;
-        continue;
-      }
-      // Untitled / auto-titled: null title (use derived displayName) or the
-      // derived name itself (never user-set). Matches WorkspaceAutoName's
-      // notion of a prompt-derived fallback title.
-      if (workspace.title && workspace.title !== workspace.displayName) {
-        continue;
-      }
-      const seed = agentsByWorkspace.get(workspace.workspaceId)?.pop();
-      if (!seed) {
-        continue;
-      }
-      const generated = await generateWorkspaceTitle({
-        agentManager: options.agentManager,
-        cwd: workspace.cwd,
-        providerSnapshotManager: options.providerSnapshotManager,
-        workspaceGitService: options.workspaceGitService,
-        daemonConfig: options.readDaemonConfig(),
-        seed,
-        logger,
-      });
-      if (generated?.title) {
-        await options.workspaceRegistry.upsert({
-          ...workspace,
-          title: generated.title,
-          updatedAt: new Date().toISOString(),
-        });
-        report.workspacesTitled += 1;
-      }
-      budget -= 1;
-    }
+    budget = await backfillMissingWorkspaceTitles({ options, logger, report, budget });
   } catch (error) {
     logger.warn({ err: error }, "Workspace title backfill failed");
   }
@@ -158,6 +92,113 @@ export async function runIdentityBackfill(
     "Identity backfill complete",
   );
   return report;
+}
+
+async function pathMissing(targetPath: string): Promise<boolean> {
+  try {
+    await access(targetPath, fsConstants.F_OK);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+async function backfillMissingDescriptions(input: {
+  options: IdentityBackfillOptions;
+  logger: Logger;
+  report: IdentityBackfillReport;
+  budget: number;
+}): Promise<number> {
+  const { options, logger, report } = input;
+  let budget = input.budget;
+  const records = await options.agentStorage.list();
+  const closedAgents = records.filter(
+    (record) => record.lastStatus === "closed" && !record.shortDescription,
+  );
+  for (const record of closedAgents) {
+    if (budget <= 0) {
+      report.generationSkipped += 1;
+      continue;
+    }
+    const seed = buildDescriptionSeed(record);
+    // Archived worktrees leave agent records pointing at gone paths. Spawning
+    // a structured-gen agent there only burns budget and floods the log.
+    if (!seed || (await pathMissing(record.cwd))) {
+      report.generationSkipped += 1;
+      continue;
+    }
+    const description = await generateAgentShortDescription({
+      agentManager: options.agentManager,
+      cwd: record.cwd,
+      providerSnapshotManager: options.providerSnapshotManager,
+      workspaceGitService: options.workspaceGitService,
+      daemonConfig: options.readDaemonConfig(),
+      currentSelection: {
+        provider: record.provider,
+        model: record.config?.model ?? null,
+        thinkingOptionId: record.config?.thinkingOptionId ?? null,
+      },
+      seed,
+      logger,
+    });
+    if (description) {
+      await options.agentManager.setAgentShortDescription(record.id, description);
+      report.descriptionsGenerated += 1;
+    }
+    budget -= 1;
+  }
+  return budget;
+}
+
+async function backfillMissingWorkspaceTitles(input: {
+  options: IdentityBackfillOptions;
+  logger: Logger;
+  report: IdentityBackfillReport;
+  budget: number;
+}): Promise<number> {
+  const { options, logger, report } = input;
+  let budget = input.budget;
+  const workspaces = await options.workspaceRegistry.list();
+  const agentsByWorkspace = groupAgentTitlesByWorkspace(await options.agentStorage.list());
+  for (const workspace of workspaces) {
+    if (budget <= 0) {
+      report.generationSkipped += 1;
+      continue;
+    }
+    // Untitled / auto-titled: null title (use derived displayName) or the
+    // derived name itself (never user-set). Matches WorkspaceAutoName's
+    // notion of a prompt-derived fallback title.
+    if (workspace.title && workspace.title !== workspace.displayName) {
+      continue;
+    }
+    const seed = agentsByWorkspace.get(workspace.workspaceId)?.pop();
+    if (!seed) {
+      continue;
+    }
+    if (await pathMissing(workspace.cwd)) {
+      report.generationSkipped += 1;
+      continue;
+    }
+    const generated = await generateWorkspaceTitle({
+      agentManager: options.agentManager,
+      cwd: workspace.cwd,
+      providerSnapshotManager: options.providerSnapshotManager,
+      workspaceGitService: options.workspaceGitService,
+      daemonConfig: options.readDaemonConfig(),
+      seed,
+      logger,
+    });
+    if (generated?.title) {
+      await options.workspaceRegistry.upsert({
+        ...workspace,
+        title: generated.title,
+        updatedAt: new Date().toISOString(),
+      });
+      report.workspacesTitled += 1;
+    }
+    budget -= 1;
+  }
+  return budget;
 }
 
 /** Seed description generation with the agent's stored task summary. */

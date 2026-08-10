@@ -94,6 +94,8 @@ function workspace(input: {
     name: input.name,
     status: input.status ?? "done",
     statusEnteredAt: null,
+    activityAt: null,
+    createdAt: null,
     archivingAt: null,
     diffStat: null,
     scripts: input.scripts ?? [],

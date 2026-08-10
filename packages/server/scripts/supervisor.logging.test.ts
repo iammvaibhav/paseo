@@ -142,7 +142,7 @@ describe("supervisor durable logging", () => {
     });
   });
 
-  test("writes supervised worker stdout and stderr to daemon.log", async () => {
+  test("keeps worker stdout and stderr out of the durable supervisor log", async () => {
     const result = await runSupervisorFixture({
       workerSource: `
         process.stdout.write('{"level":30,"msg":"worker-json-stdout"}\\n');
@@ -153,13 +153,14 @@ describe("supervisor durable logging", () => {
 
     expect(result.code).toBe(0);
     expect(result.signal).toBeNull();
-    expect(result.log).toContain('"worker-json-stdout"');
-    expect(result.log).toContain('"worker-json-stderr"');
+    // Worker owns daemon.log itself; supervisor only records its own lifecycle.
+    expect(result.log).not.toContain('"worker-json-stdout"');
+    expect(result.log).not.toContain('"worker-json-stderr"');
     expect(result.stdout).toContain('"worker-json-stdout"');
     expect(result.stderr).toContain('"worker-json-stderr"');
   });
 
-  test("preserves raw non-JSON stdout and stderr lines", async () => {
+  test("still surfaces raw worker stdout and stderr on the supervisor process", async () => {
     const result = await runSupervisorFixture({
       workerSource: `
         process.stdout.write('raw stdout line\\n');
@@ -168,8 +169,10 @@ describe("supervisor durable logging", () => {
       `,
     });
 
-    expect(result.log).toContain("raw stdout line\n");
-    expect(result.log).toContain("raw stderr line\n");
+    expect(result.log).not.toContain("raw stdout line\n");
+    expect(result.log).not.toContain("raw stderr line\n");
+    expect(result.stdout).toContain("raw stdout line\n");
+    expect(result.stderr).toContain("raw stderr line\n");
   });
 
   test("logs the worker shutdown reason before signaling the worker", async () => {

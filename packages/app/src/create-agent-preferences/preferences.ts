@@ -35,6 +35,9 @@ const providerPreferencesSchema = z.object({
 const selectionScopeSchema = z.object({
   provider: z.string().optional(),
   providerPreferences: z.record(z.string(), providerPreferencesSchema).optional(),
+  // Last isolation choice for this project (New workspace form). Global
+  // `isolation` remains the cross-project fallback for older data / no scope.
+  isolation: z.enum(["local", "worktree"]).optional(),
 });
 
 const favoriteModelSchema = z.object({
@@ -169,7 +172,9 @@ export function mergeProviderPreferences(args: {
 
 /**
  * Resolve the effective create-form selection for a workspace/project.
- * Order: workspace → project → global. Favorites and isolation stay global.
+ * Order: workspace → project → global. Favorites stay global. Isolation is
+ * project-scoped when a projectKey is known (so New workspace remembers the
+ * last worktree/local choice per project), then falls back to global.
  */
 export function resolveEffectiveFormPreferences(
   preferences: FormPreferences,
@@ -191,7 +196,40 @@ export function resolveEffectiveFormPreferences(
       ...projectSelection?.providerPreferences,
       ...workspaceSelection?.providerPreferences,
     },
+    isolation:
+      workspaceSelection?.isolation ?? projectSelection?.isolation ?? preferences.isolation,
   };
+}
+
+/**
+ * Persist isolation into the project scope (when known) and the global fallback.
+ * Workspace-level isolation is not stored — New workspace creates the workspace.
+ */
+export function mergeIsolationPreference(args: {
+  preferences: FormPreferences;
+  isolation: "local" | "worktree";
+  scope?: FormPreferenceScope | null;
+}): FormPreferences {
+  const { preferences, isolation, scope } = args;
+  const { projectKey } = normalizeFormPreferenceScope(scope);
+  let next: FormPreferences = {
+    ...preferences,
+    isolation,
+  };
+  if (projectKey) {
+    const existing = next.byProject?.[projectKey];
+    next = {
+      ...next,
+      byProject: {
+        ...next.byProject,
+        [projectKey]: {
+          ...existing,
+          isolation,
+        },
+      },
+    };
+  }
+  return next;
 }
 
 /**

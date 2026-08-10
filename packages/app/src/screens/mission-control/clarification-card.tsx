@@ -1,5 +1,5 @@
 import { useCallback, useState, type ReactElement } from "react";
-import { Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
 import { HelpCircle } from "lucide-react-native";
@@ -14,6 +14,7 @@ import { useLiveTimeAgo } from "@/hooks/use-compact-time-ago";
 import { resolveSessionAgent } from "@/utils/agent-snapshots";
 import { useSessionStore } from "@/stores/session-store";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
+import { useInspectorStore } from "@/screens/mission-control/inspector-store";
 import type { Theme } from "@/styles/theme";
 import type { CardRunPosition, FeedCardEvent } from "./feed-card";
 import { filterClarificationOptions } from "./clarification-card-options";
@@ -47,6 +48,12 @@ export function ClarificationCard({
   const agentChipLabel = hideAgentNames ? agentTitle : (liveAgent?.name ?? event.agentTitle);
   const timestamp = new Date(event.ts);
   const timeAgo = useLiveTimeAgo(timestamp);
+  const handleOpenAgent = useCallback(() => {
+    useInspectorStore.getState().openInspectorAgent({
+      serverId: event.serverId,
+      agentId: event.agentId,
+    });
+  }, [event.agentId, event.serverId]);
 
   const handleSelectOption = useCallback(
     async (option: string) => {
@@ -115,34 +122,41 @@ export function ClarificationCard({
         <ThemedHelpCircle size={14} uniProps={iconMapping} />
       </View>
       <View style={styles.content}>
-        <View style={styles.headerRow}>
-          <Text style={styles.originLabel}>{t("missionControl.clarification.title")}</Text>
-        </View>
-
-        <Text style={styles.agentTitle} numberOfLines={1}>
-          {agentTitle}
-        </Text>
-
-        <View style={styles.agentChipRow}>
-          <View style={styles.agentChip}>
-            <Text style={styles.agentChipText} numberOfLines={1}>
-              {agentChipLabel}
-            </Text>
+        <Pressable
+          onPress={handleOpenAgent}
+          accessibilityRole="button"
+          accessibilityLabel={`Open agent ${agentChipLabel}`}
+          style={styles.openAgentPressable}
+        >
+          <View style={styles.headerRow}>
+            <Text style={styles.originLabel}>{t("missionControl.clarification.title")}</Text>
           </View>
-          <Text style={styles.metaSeparator}>·</Text>
-          <HostGlyph
-            serverId={event.serverId}
-            label={event.serverLabel}
-            size="sm"
-            testID="mission-control-clarification-host-glyph"
-          />
-          <Text style={styles.metaSeparator}>·</Text>
-          <Text style={styles.timestamp}>{timeAgo}</Text>
-        </View>
 
-        <Text style={styles.questionText} testID="mission-control-clarification-question">
-          {clarification.question}
-        </Text>
+          <Text style={styles.agentTitle} numberOfLines={1}>
+            {agentTitle}
+          </Text>
+
+          <View style={styles.agentChipRow}>
+            <View style={styles.agentChip}>
+              <Text style={styles.agentChipText} numberOfLines={1}>
+                {agentChipLabel}
+              </Text>
+            </View>
+            <Text style={styles.metaSeparator}>·</Text>
+            <HostGlyph
+              serverId={event.serverId}
+              label={event.serverLabel}
+              size="sm"
+              testID="mission-control-clarification-host-glyph"
+            />
+            <Text style={styles.metaSeparator}>·</Text>
+            <Text style={styles.timestamp}>{timeAgo}</Text>
+          </View>
+
+          <Text style={styles.questionText} testID="mission-control-clarification-question">
+            {clarification.question}
+          </Text>
+        </Pressable>
 
         {answeredWith !== null ? (
           <Text style={styles.answeredLabel} testID="mission-control-clarification-answered">
@@ -235,6 +249,9 @@ const styles = StyleSheet.create((theme) => ({
   content: {
     flex: 1,
     minWidth: 0,
+    gap: theme.spacing[2],
+  },
+  openAgentPressable: {
     gap: theme.spacing[2],
   },
   headerRow: {

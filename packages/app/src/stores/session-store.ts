@@ -168,6 +168,10 @@ export interface WorkspaceDescriptor {
   pinnedAt?: string | null;
   status: WorkspaceDescriptorPayload["status"];
   statusEnteredAt: Date | null;
+  /** Best-effort last activity (wire `activityAt`); null when unknown. */
+  activityAt: Date | null;
+  /** Workspace record createdAt when the daemon sends it; null for older peers. */
+  createdAt: Date | null;
   archivingAt: string | null;
   diffStat: { additions: number; deletions: number } | null;
   scripts: WorkspaceDescriptorPayload["scripts"];
@@ -185,6 +189,12 @@ export function normalizeWorkspaceDescriptor(
     typeof statusEnteredAtRaw === "string" && statusEnteredAtRaw.length > 0
       ? new Date(statusEnteredAtRaw)
       : null;
+  const activityAtRaw = payload.activityAt;
+  const activityAt: Date | null =
+    typeof activityAtRaw === "string" && activityAtRaw.length > 0 ? new Date(activityAtRaw) : null;
+  const createdAtRaw = payload.createdAt;
+  const createdAt: Date | null =
+    typeof createdAtRaw === "string" && createdAtRaw.length > 0 ? new Date(createdAtRaw) : null;
   return {
     id: normalizeWorkspaceOpaqueId(payload.id) ?? payload.id,
     projectId: payload.projectId,
@@ -204,6 +214,8 @@ export function normalizeWorkspaceDescriptor(
     pinnedAt: payload.pinnedAt ?? null,
     status: payload.status,
     statusEnteredAt,
+    activityAt: activityAt && !Number.isNaN(activityAt.getTime()) ? activityAt : null,
+    createdAt: createdAt && !Number.isNaN(createdAt.getTime()) ? createdAt : null,
     archivingAt: payload.archivingAt ?? null,
     diffStat: payload.diffStat ?? null,
     scripts: (payload.scripts ?? []).map((s) => Object.assign({}, s)),

@@ -288,14 +288,16 @@ export function runSupervisor(options: SupervisorOptions): SupervisorController 
       writeLifecycleLog("Worker IPC channel disconnected");
     });
 
+    // Worker owns daemon.log (pino file destination). Do not tee stdout/stderr
+    // into the durable log: under log bursts the pipe backpressures, the worker
+    // event loop stalls, heartbeats stop, and this watchdog kills the daemon
+    // mid-request (workspace.create → client "Transport closed").
     child.stdout?.on("data", (chunk: Buffer) => {
       process.stdout.write(chunk);
-      writeDurableChunk(chunk);
     });
 
     child.stderr?.on("data", (chunk: Buffer) => {
       process.stderr.write(chunk);
-      writeDurableChunk(chunk);
     });
 
     child.on("message", (msg: unknown) => {

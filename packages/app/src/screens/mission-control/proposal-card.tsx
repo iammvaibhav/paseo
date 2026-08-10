@@ -22,6 +22,7 @@ import {
 } from "./proposal-card-identity";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
 import type { Theme } from "@/styles/theme";
+import { useInspectorStore } from "@/screens/mission-control/inspector-store";
 import type { CardRunPosition, FeedCardEvent } from "@/screens/mission-control/feed-card";
 
 export type ProposalResolvedStatus = "sent" | "denied";
@@ -468,6 +469,19 @@ export function ProposalCard({
     setIsPayloadExpanded((prev) => !prev);
   }, []);
 
+  const handleOpenAgent = useCallback(() => {
+    // Prefer the proposal's target agent (worker being nudged/spawned-on);
+    // fall back to the event agent (Commander/system card subject).
+    const agentId = (proposal.targetAgentId?.trim() || event.agentId || "").trim();
+    if (!agentId) {
+      return;
+    }
+    useInspectorStore.getState().openInspectorAgent({
+      serverId: event.serverId,
+      agentId,
+    });
+  }, [event.agentId, event.serverId, proposal.targetAgentId]);
+
   const originIcon = useMemo(() => {
     if (proposal.origin === "verifier") {
       return <ThemedShieldCheck size={14} uniProps={originIconMapping} />;
@@ -501,53 +515,74 @@ export function ProposalCard({
     >
       <View style={styles.iconSlot}>{originIcon}</View>
       <View style={styles.content}>
-        <View style={styles.headerRow}>
-          <Text style={styles.originLabel}>{originLabel(proposal.origin)}</Text>
-          {proposal.classification === "destructive" ? (
-            <StatusBadge label="Destructive" variant="error" />
-          ) : null}
-        </View>
-
-        <Text style={styles.agentTitle} numberOfLines={1}>
-          {agentTitle}
-        </Text>
-
-        <View style={styles.agentChipRow}>
-          <View style={styles.agentChip}>
-            <Text style={styles.agentChipText} numberOfLines={1}>
-              {agentChipLabel}
-            </Text>
+        <Pressable
+          onPress={handleOpenAgent}
+          accessibilityRole="button"
+          accessibilityLabel={`Open agent ${agentChipLabel}`}
+          style={styles.openAgentPressable}
+        >
+          <View style={styles.headerRow}>
+            <Text style={styles.originLabel}>{originLabel(proposal.origin)}</Text>
+            {proposal.classification === "destructive" ? (
+              <StatusBadge label="Destructive" variant="error" />
+            ) : null}
           </View>
-          <Text style={styles.metaSeparator}>·</Text>
-          <HostGlyph
-            serverId={event.serverId}
-            label={event.serverLabel}
-            size="sm"
-            testID="mission-control-proposal-host-glyph"
-          />
-          <Text style={styles.metaSeparator}>·</Text>
-          <Text style={styles.timestamp}>{timeAgo}</Text>
-        </View>
 
-        {(() => {
-          const chips = resolvePlanChips(proposal, t, resolveWorkspaceTitle, resolveAgentLabel);
-          if (chips.length === 0) return null;
-          return (
-            <View style={styles.planChipsRow} testID="mission-control-proposal-chips">
-              {chips.map((c) => (
-                <View key={c.key} style={styles.planChip}>
-                  <Text style={styles.planChipText}>{c.label}</Text>
-                </View>
-              ))}
-            </View>
-          );
-        })()}
-
-        {modelName ? (
-          <Text style={styles.modelLine} testID="mission-control-proposal-model">
-            {t("missionControl.proposal.model", { model: modelName })}
+          <Text style={styles.agentTitle} numberOfLines={1}>
+            {agentTitle}
           </Text>
-        ) : null}
+
+          <View style={styles.agentChipRow}>
+            <View style={styles.agentChip}>
+              <Text style={styles.agentChipText} numberOfLines={1}>
+                {agentChipLabel}
+              </Text>
+            </View>
+            <Text style={styles.metaSeparator}>·</Text>
+            <HostGlyph
+              serverId={event.serverId}
+              label={event.serverLabel}
+              size="sm"
+              testID="mission-control-proposal-host-glyph"
+            />
+            <Text style={styles.metaSeparator}>·</Text>
+            <Text style={styles.timestamp}>{timeAgo}</Text>
+          </View>
+
+          {(() => {
+            const chips = resolvePlanChips(proposal, t, resolveWorkspaceTitle, resolveAgentLabel);
+            if (chips.length === 0) return null;
+            return (
+              <View style={styles.planChipsRow} testID="mission-control-proposal-chips">
+                {chips.map((c) => (
+                  <View key={c.key} style={styles.planChip}>
+                    <Text style={styles.planChipText}>{c.label}</Text>
+                  </View>
+                ))}
+              </View>
+            );
+          })()}
+
+          {modelName ? (
+            <Text style={styles.modelLine} testID="mission-control-proposal-model">
+              {t("missionControl.proposal.model", { model: modelName })}
+            </Text>
+          ) : null}
+
+          {!isEditing ? (
+            <Text style={styles.message} testID="mission-control-proposal-message">
+              {proposal.metaPlan
+                ? getMetaSummary(proposal.metaPlan, t)
+                : (proposal.spawnPlan?.summary ?? proposal.message)}
+            </Text>
+          ) : null}
+
+          {proposal.reason ? (
+            <Text style={styles.reason} numberOfLines={3}>
+              {proposal.reason}
+            </Text>
+          ) : null}
+        </Pressable>
 
         {isEditing ? (
           <SettingsTextArea
@@ -558,18 +593,6 @@ export function ProposalCard({
             testID="mission-control-proposal-message-input"
             style={styles.messageInput}
           />
-        ) : (
-          <Text style={styles.message} testID="mission-control-proposal-message">
-            {proposal.metaPlan
-              ? getMetaSummary(proposal.metaPlan, t)
-              : (proposal.spawnPlan?.summary ?? proposal.message)}
-          </Text>
-        )}
-
-        {proposal.reason ? (
-          <Text style={styles.reason} numberOfLines={3}>
-            {proposal.reason}
-          </Text>
         ) : null}
 
         {verbose ? (
@@ -659,6 +682,9 @@ const styles = StyleSheet.create((theme) => ({
   content: {
     flex: 1,
     minWidth: 0,
+    gap: theme.spacing[2],
+  },
+  openAgentPressable: {
     gap: theme.spacing[2],
   },
   headerRow: {

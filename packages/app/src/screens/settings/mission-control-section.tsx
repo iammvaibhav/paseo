@@ -154,6 +154,7 @@ function NumberRow({
   testID,
   isCompact,
   first = false,
+  disabled = false,
 }: {
   title: string;
   hint: string;
@@ -162,12 +163,16 @@ function NumberRow({
   testID: string;
   isCompact: boolean;
   first?: boolean;
-}) {
+  disabled?: boolean;
+}): ReactElement {
   const draftRef = useRef<string | null>(null);
   const handleChange = useCallback((text: string) => {
     draftRef.current = text.replace(/[^0-9]/g, "");
   }, []);
   const handleCommit = useCallback(() => {
+    if (disabled) {
+      return;
+    }
     const raw = draftRef.current;
     draftRef.current = null;
     const parsed = parsePositiveInt(raw);
@@ -175,23 +180,24 @@ function NumberRow({
       return;
     }
     onCommit(parsed);
-  }, [onCommit, value]);
+  }, [disabled, onCommit, value]);
+  const accessibilityState = useMemo(() => ({ disabled }), [disabled]);
   return (
     <View style={[settingsStyles.row, first ? null : settingsStyles.rowBorder]}>
       <View style={settingsStyles.rowContent}>
-        <Text style={settingsStyles.rowTitle}>{title}</Text>
-        <Text style={settingsStyles.rowHint}>{hint}</Text>
+        <Text style={[settingsStyles.rowTitle, disabled && styles.disabledText]}>{title}</Text>
+        <Text style={[settingsStyles.rowHint, disabled && styles.disabledText]}>{hint}</Text>
       </View>
       <FormTextInput
         size={isCompact ? "md" : "sm"}
-        initialValue={String(value)}
-        resetKey={String(value)}
+        defaultValue={String(value)}
         onChangeText={handleChange}
-        onSubmitEditing={handleCommit}
         onBlur={handleCommit}
         keyboardType="number-pad"
         inputMode="numeric"
+        editable={!disabled}
         accessibilityLabel={title}
+        accessibilityState={accessibilityState}
         testID={testID}
         style={styles.numberInput}
       />
@@ -995,6 +1001,7 @@ export function MissionControlSection(): ReactElement {
             onCommit={handleSilenceNudgeSecondsCommit}
             testID="mission-control-settings-silence-nudge-seconds"
             isCompact={isCompact}
+            disabled={!config.stallDetectionEnabled}
           />
           <NumberRow
             title="Status nudge"
@@ -1003,6 +1010,7 @@ export function MissionControlSection(): ReactElement {
             onCommit={handleStatusNudgeSecondsCommit}
             testID="mission-control-settings-status-nudge-seconds"
             isCompact={isCompact}
+            disabled={!config.stallDetectionEnabled}
           />
           <NumberRow
             title="Escalate after"
@@ -1011,6 +1019,7 @@ export function MissionControlSection(): ReactElement {
             onCommit={handleEscalateSecondsCommit}
             testID="mission-control-settings-escalate-seconds"
             isCompact={isCompact}
+            disabled={!config.stallDetectionEnabled}
           />
           <NumberRow
             title="Dormant turn"
@@ -1019,6 +1028,7 @@ export function MissionControlSection(): ReactElement {
             onCommit={handleDormantTurnSecondsCommit}
             testID="mission-control-settings-dormant-turn-seconds"
             isCompact={isCompact}
+            disabled={!config.stallDetectionEnabled}
           />
         </View>
       </SettingsSection>
@@ -1112,5 +1122,8 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.statusDanger,
     fontSize: theme.fontSize.xs,
     marginTop: theme.spacing[1],
+  },
+  disabledText: {
+    opacity: 0.45,
   },
 }));

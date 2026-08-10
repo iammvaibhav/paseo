@@ -5,6 +5,7 @@ import {
   mergeProviderPreferences,
   mergeProviderPreferencesWithScope,
   parseFormPreferences,
+  mergeIsolationPreference,
   resolveEffectiveFormPreferences,
 } from "./preferences";
 import { FakeCreateAgentPreferenceStorage } from "./test-utils/fake-preference-storage";
@@ -327,5 +328,42 @@ describe("create agent preferences", () => {
 
   it("rejects an unknown launch target kind as invalid stored preferences", () => {
     expect(parseFormPreferences({ launchTarget: { kind: "shell" } })).toEqual({});
+  });
+});
+
+describe("project-scoped isolation", () => {
+  it("stores isolation under byProject and resolves it over global", () => {
+    const withProject = mergeIsolationPreference({
+      preferences: { isolation: "local" },
+      isolation: "worktree",
+      scope: { projectKey: "proj-a" },
+    });
+    expect(withProject.isolation).toBe("worktree");
+    expect(withProject.byProject?.["proj-a"]?.isolation).toBe("worktree");
+    expect(resolveEffectiveFormPreferences(withProject, { projectKey: "proj-a" }).isolation).toBe(
+      "worktree",
+    );
+    expect(resolveEffectiveFormPreferences(withProject, { projectKey: "proj-b" }).isolation).toBe(
+      "worktree",
+    ); // global fallback
+  });
+
+  it("keeps project isolation when another project is set", () => {
+    let prefs = mergeIsolationPreference({
+      preferences: {},
+      isolation: "worktree",
+      scope: { projectKey: "proj-a" },
+    });
+    prefs = mergeIsolationPreference({
+      preferences: prefs,
+      isolation: "local",
+      scope: { projectKey: "proj-b" },
+    });
+    expect(resolveEffectiveFormPreferences(prefs, { projectKey: "proj-a" }).isolation).toBe(
+      "worktree",
+    );
+    expect(resolveEffectiveFormPreferences(prefs, { projectKey: "proj-b" }).isolation).toBe(
+      "local",
+    );
   });
 });

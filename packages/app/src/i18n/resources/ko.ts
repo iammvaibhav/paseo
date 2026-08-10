@@ -1018,6 +1018,12 @@ export const ko: TranslationResources = {
         title: "제목",
         branch: "브랜치 이름",
       },
+      workspaceSort: {
+        label: "Sort workspaces",
+        manual: "Manual",
+        activity: "Latest activity",
+        created: "Date created",
+      },
       show: {
         label: "표시 항목",
         host: "호스트",

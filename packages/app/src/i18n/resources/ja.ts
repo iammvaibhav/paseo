@@ -1022,6 +1022,12 @@ export const ja: TranslationResources = {
         title: "タイトル",
         branch: "ブランチ名",
       },
+      workspaceSort: {
+        label: "Sort workspaces",
+        manual: "Manual",
+        activity: "Latest activity",
+        created: "Date created",
+      },
       show: {
         label: "表示項目",
         host: "ホスト",

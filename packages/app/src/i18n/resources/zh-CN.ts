@@ -1002,6 +1002,12 @@ export const zhCN: TranslationResources = {
         title: "标题",
         branch: "分支名称",
       },
+      workspaceSort: {
+        label: "Sort workspaces",
+        manual: "Manual",
+        activity: "Latest activity",
+        created: "Date created",
+      },
       show: {
         label: "显示",
         host: "主机",

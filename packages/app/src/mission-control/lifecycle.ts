@@ -226,16 +226,21 @@ function deriveLifecycleBucket(input: {
   // never the live directory stoppedBy, which the daemon may rewrite later.
   const userStopped = snapshotStoppedBy === "user";
 
-  if ((pendingPermission || failed || pendingProposalCount > 0) && !userStopped) {
-    // Live attention signals (permission / error / proposals) outrank running
-    // and the review fold — except when the USER performed the stop: nothing
-    // new needs them (spec "User-stopped ≠ Needs you"; the live bug was a
-    // user-stopped agent reading as Needs-you via these signals).
+  // Running outranks pending proposals: a live agent still belongs in
+  // Running even when Ask mode is holding a stall-recovery / verifier-spawn
+  // card. Pending permissions and failures still force Needs you — those
+  // need the user now. User-stopped remains excluded from Needs you.
+  if ((pendingPermission || failed) && !userStopped) {
     return { bucket: "needs_you", doneReason: null };
   }
   if (running) {
     // Reopen: any new run returns the agent to Running (spec "Lifecycle").
     return { bucket: "running", doneReason: null };
+  }
+  if (pendingProposalCount > 0 && !userStopped) {
+    // Idle/finished agents with pending proposals (verifier spawn, commander
+    // send, meta) sit in Needs you until Approve/Deny.
+    return { bucket: "needs_you", doneReason: null };
   }
   if (userStopped && reviewState === "none") {
     // User-stopped ≠ Needs you (spec "Lifecycle"): the user performed the

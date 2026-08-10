@@ -254,22 +254,23 @@ describe("FeedCard", () => {
     expect(card?.textContent).not.toContain("MacBook-Pro-89.local");
   });
 
-  it("does not nest button roles: the agent chip is not inside another button", () => {
-    // BUG-8: FeedCardBody used to be a Pressable (button role) wrapping the
-    // meta row's agent-chip Pressable → "button cannot be a descendant of
-    // button" + hydration error on web. The body frame is now a plain View
-    // with a separate "Open agent" pressable; the chip is a sibling.
+  it("makes the whole chrome the open control without nested buttons", () => {
+    // BUG-8: button must never wrap button. Open chrome (icon/text/meta) is
+    // one Pressable; agent chip is a View inside it; proof headers stay
+    // siblings of the open control when present.
     act(() =>
       root?.render(<FeedCard event={event({ kind: "started", headline: "Started running" })} />),
     );
     const buttons = Array.from(container?.querySelectorAll('[role="button"]') ?? []);
-    expect(buttons.length).toBeGreaterThanOrEqual(2);
+    expect(buttons.length).toBeGreaterThanOrEqual(1);
     for (const button of buttons) {
       // closest() includes the element itself — check the ancestor chain only.
       const ancestor = button.parentElement?.closest('[role="button"]') ?? null;
       expect(ancestor, "button must not nest a button").toBeNull();
     }
-    // The chip keeps its own pressable identity.
+    expect(
+      container?.querySelector('[data-testid="mission-control-feed-card-open"]'),
+    ).not.toBeNull();
     expect(
       container?.querySelector('[data-testid="mission-control-feed-agent-chip"]'),
     ).not.toBeNull();

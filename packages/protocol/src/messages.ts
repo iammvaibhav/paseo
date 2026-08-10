@@ -3653,6 +3653,9 @@ export const WorkspaceDescriptorPayloadSchema = z
       .nullish()
       .transform((value) => value ?? null),
     activityAt: z.string().nullable(),
+    // COMPAT(workspaceCreatedAt): added for sidebar sort-by-created. Old
+    // daemons omit it; clients treat missing as unknown and fall back.
+    createdAt: z.string().optional(),
     diffStat: z
       .object({
         additions: z.number(),
