@@ -33,10 +33,20 @@ export function BoardRail({
   const setBoardRailWidth = usePanelStore((state) => state.setBoardRailWidth);
 
   const startWidthRef = useRef(boardRailWidth);
+  const measuredWidthRef = useRef(boardRailWidth);
   const resizeWidth = useSharedValue(boardRailWidth);
   const [resizePressed, setResizePressed] = useState(false);
+  const [fixedAfterFlexDrag, setFixedAfterFlexDrag] = useState(false);
   const showResizeGrip = useCallback(() => setResizePressed(true), []);
   const hideResizeGrip = useCallback(() => setResizePressed(false), []);
+
+  const useFlexFill = flexFill && !fixedAfterFlexDrag;
+
+  useEffect(() => {
+    if (!flexFill) {
+      setFixedAfterFlexDrag(false);
+    }
+  }, [flexFill]);
 
   useEffect(() => {
     resizeWidth.value = boardRailWidth;
@@ -49,17 +59,34 @@ export function BoardRail({
     [setBoardRailWidth],
   );
 
+  const beginFlexFillDrag = useCallback(() => {
+    setFixedAfterFlexDrag(true);
+  }, []);
+
+  const handleLayout = useCallback((event: { nativeEvent: { layout: { width: number } } }) => {
+    const width = event.nativeEvent.layout.width;
+    if (width > 0) {
+      measuredWidthRef.current = width;
+    }
+  }, []);
+
   const resizeGesture = useMemo(
     () =>
       Gesture.Pan()
-        .enabled(!flexFill)
         .hitSlop({ left: 8, right: 8, top: 0, bottom: 0 })
         .onBegin(() => {
           scheduleOnRN(showResizeGrip);
         })
         .onStart(() => {
-          startWidthRef.current = boardRailWidth;
-          resizeWidth.value = boardRailWidth;
+          if (flexFill && !fixedAfterFlexDrag) {
+            const measured = measuredWidthRef.current;
+            startWidthRef.current = measured;
+            resizeWidth.value = measured;
+            runOnJS(beginFlexFillDrag)();
+          } else {
+            startWidthRef.current = boardRailWidth;
+            resizeWidth.value = boardRailWidth;
+          }
         })
         .onUpdate((event) => {
           // Dragging the rail's left edge left grows it (negative translation).
@@ -72,7 +99,16 @@ export function BoardRail({
         .onFinalize(() => {
           scheduleOnRN(hideResizeGrip);
         }),
-    [boardRailWidth, flexFill, handleResizeEnd, hideResizeGrip, resizeWidth, showResizeGrip],
+    [
+      beginFlexFillDrag,
+      boardRailWidth,
+      fixedAfterFlexDrag,
+      flexFill,
+      handleResizeEnd,
+      hideResizeGrip,
+      resizeWidth,
+      showResizeGrip,
+    ],
   );
 
   const animatedStyle = useAnimatedStyle(() => ({
@@ -81,7 +117,8 @@ export function BoardRail({
 
   return (
     <Animated.View
-      style={[styles.rail, animatedStyle, flexFill ? styles.railFill : null]}
+      onLayout={handleLayout}
+      style={[styles.rail, animatedStyle, useFlexFill ? styles.railFill : null]}
       testID={testID}
     >
       <SidebarResizeHandle

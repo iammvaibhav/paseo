@@ -120,10 +120,9 @@ export function MissionControlScreen(): ReactElement {
   const [recreatingArchivedId, setRecreatingArchivedId] = useState<string | null>(null);
   const [compactPanel, setCompactPanel] = useState<CompactPanel>("thread");
   const [threadCollapsed, setThreadCollapsed] = useState(false);
-  const { boardRailCollapsed, setBoardRailCollapsed, toggleBoardRailCollapsed } = usePanelStore(
+  const { boardRailCollapsed, toggleBoardRailCollapsed } = usePanelStore(
     useShallow((state) => ({
       boardRailCollapsed: state.boardRailCollapsed,
-      setBoardRailCollapsed: state.setBoardRailCollapsed,
       toggleBoardRailCollapsed: state.toggleBoardRailCollapsed,
     })),
   );
@@ -341,16 +340,6 @@ export function MissionControlScreen(): ReactElement {
   }, [commanderRef, resettingCommander, toast]);
 
   const inspectorTarget = useInspectorStore((state) => state.target);
-
-  // Opening an agent from the Commander thread / feed collapses the board so
-  // Commander + agent chat sit side by side. Manual re-expand is available via
-  // the header toggle.
-  useEffect(() => {
-    if (!v3Enabled || isCompact || !inspectorTarget) {
-      return;
-    }
-    setBoardRailCollapsed(true);
-  }, [inspectorTarget, isCompact, setBoardRailCollapsed, v3Enabled]);
 
   const composerCwd = commanderAgent?.cwd ?? "~";
   const composerContainerStyle = useMemo(() => ({ paddingBottom: insets.bottom }), [insets.bottom]);
@@ -654,7 +643,7 @@ export function MissionControlScreen(): ReactElement {
       <View style={styles.desktopBody}>
         {threadPane}
         {v3Enabled && inspectorTarget ? (
-          <InspectorRail flexFill={v3Enabled && (threadCollapsed || boardRailCollapsed)}>
+          <InspectorRail flexFill={v3Enabled && threadCollapsed}>
             <MissionControlInspector target={inspectorTarget} isFocused={isFocused} />
           </InspectorRail>
         ) : null}

@@ -22,7 +22,7 @@ import {
   type ViewStyle,
 } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { useIsCompactFormFactor } from "@/constants/layout";
+import { MAX_CONTENT_WIDTH, useIsCompactFormFactor } from "@/constants/layout";
 import { useMutation } from "@tanstack/react-query";
 import { Check, X } from "lucide-react-native";
 import { usePanelStore } from "@/stores/panel-store";
@@ -1526,9 +1526,10 @@ const stylesheet = StyleSheet.create((theme) => ({
   },
   contentWrapper: {
     width: "100%",
-    // Fill the available column (MC inspector / wide panes). A hard max
-    // width left empty gutters even when the rail had room to grow.
-    alignSelf: "stretch",
+    maxWidth: MAX_CONTENT_WIDTH,
+    // Web flex parents often ignore alignSelf centering; match the composer.
+    marginHorizontal: "auto",
+    alignSelf: "center",
     paddingHorizontal: theme.spacing[2],
   },
   listContentContainer: {
@@ -1548,7 +1549,10 @@ const stylesheet = StyleSheet.create((theme) => ({
   },
   streamItemWrapper: {
     width: "100%",
-    alignSelf: "stretch",
+    maxWidth: MAX_CONTENT_WIDTH,
+    // Web flex parents often ignore alignSelf centering; match the composer.
+    marginHorizontal: "auto",
+    alignSelf: "center",
     paddingHorizontal: theme.spacing[2],
   },
   emptyState: {

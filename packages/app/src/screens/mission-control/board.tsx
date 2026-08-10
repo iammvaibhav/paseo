@@ -61,7 +61,6 @@ import {
 } from "@/mission-control/row-menu";
 import { useArchiveAgent } from "@/hooks/use-archive-agent";
 import { useInspectorStore } from "./inspector-store";
-import { usePanelStore } from "@/stores/panel-store";
 import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
 import { useWorkspaceOpenState } from "@/mission-control/workspace-open-state";
 import { useCompactTimeAgo } from "@/hooks/use-compact-time-ago";
@@ -690,9 +689,6 @@ function AgentRowImpl({
   }, []);
 
   const handlePress = useCallback(() => {
-    // Board → agent: collapse the app left rail so Commander + agent chat
-    // can share the full width side by side.
-    usePanelStore.getState().closeDesktopAgentList();
     useInspectorStore.getState().openInspectorAgent({
       serverId: agent.serverId,
       agentId: agent.id,

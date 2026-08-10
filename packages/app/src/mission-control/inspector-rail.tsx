@@ -13,7 +13,7 @@ interface InspectorRailProps {
   /**
    * When true the rail grows to fill the row instead of its persisted fixed
    * width — used when the Commander thread collapses, so the inspector takes
-   * the freed width (spec: no dead space in any collapse combo).
+   * the freed width. A drag on the handle exits flex-fill into fixed width.
    */
   flexFill?: boolean;
 }
@@ -37,10 +37,24 @@ export function InspectorRail({
   const setInspectorWidth = usePanelStore((state) => state.setInspectorWidth);
 
   const startWidthRef = useRef(inspectorWidth);
+  // When the rail is flex-filling, the animated width is overridden. Capture
+  // the laid-out width so a drag can leave flex-fill and resume fixed sizing.
+  const measuredWidthRef = useRef(inspectorWidth);
   const resizeWidth = useSharedValue(inspectorWidth);
   const [resizePressed, setResizePressed] = useState(false);
+  // Sticky until the next flexFill cycle ends: once the user drags out of a
+  // flex-fill layout, keep fixed width so the handle remains usable.
+  const [fixedAfterFlexDrag, setFixedAfterFlexDrag] = useState(false);
   const showResizeGrip = useCallback(() => setResizePressed(true), []);
   const hideResizeGrip = useCallback(() => setResizePressed(false), []);
+
+  const useFlexFill = flexFill && !fixedAfterFlexDrag;
+
+  useEffect(() => {
+    if (!flexFill) {
+      setFixedAfterFlexDrag(false);
+    }
+  }, [flexFill]);
 
   useEffect(() => {
     resizeWidth.value = inspectorWidth;
@@ -53,17 +67,34 @@ export function InspectorRail({
     [setInspectorWidth],
   );
 
+  const beginFlexFillDrag = useCallback(() => {
+    setFixedAfterFlexDrag(true);
+  }, []);
+
+  const handleLayout = useCallback((event: { nativeEvent: { layout: { width: number } } }) => {
+    const width = event.nativeEvent.layout.width;
+    if (width > 0) {
+      measuredWidthRef.current = width;
+    }
+  }, []);
+
   const resizeGesture = useMemo(
     () =>
       Gesture.Pan()
-        .enabled(!flexFill)
         .hitSlop({ left: 8, right: 8, top: 0, bottom: 0 })
         .onBegin(() => {
           scheduleOnRN(showResizeGrip);
         })
         .onStart(() => {
-          startWidthRef.current = inspectorWidth;
-          resizeWidth.value = inspectorWidth;
+          if (flexFill && !fixedAfterFlexDrag) {
+            const measured = measuredWidthRef.current;
+            startWidthRef.current = measured;
+            resizeWidth.value = measured;
+            runOnJS(beginFlexFillDrag)();
+          } else {
+            startWidthRef.current = inspectorWidth;
+            resizeWidth.value = inspectorWidth;
+          }
         })
         .onUpdate((event) => {
           // Dragging the inspector's left edge left grows it (negative
@@ -77,7 +108,16 @@ export function InspectorRail({
         .onFinalize(() => {
           scheduleOnRN(hideResizeGrip);
         }),
-    [flexFill, handleResizeEnd, hideResizeGrip, inspectorWidth, resizeWidth, showResizeGrip],
+    [
+      beginFlexFillDrag,
+      fixedAfterFlexDrag,
+      flexFill,
+      handleResizeEnd,
+      hideResizeGrip,
+      inspectorWidth,
+      resizeWidth,
+      showResizeGrip,
+    ],
   );
 
   const animatedStyle = useAnimatedStyle(() => ({
@@ -86,7 +126,8 @@ export function InspectorRail({
 
   return (
     <Animated.View
-      style={[styles.rail, animatedStyle, flexFill ? styles.railFill : null]}
+      onLayout={handleLayout}
+      style={[styles.rail, animatedStyle, useFlexFill ? styles.railFill : null]}
       testID={testID}
     >
       <SidebarResizeHandle

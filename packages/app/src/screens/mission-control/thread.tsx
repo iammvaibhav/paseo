@@ -4,7 +4,7 @@ import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { ChevronDown } from "lucide-react-native";
 import type { Theme } from "@/styles/theme";
-import { useIsCompactFormFactor } from "@/constants/layout";
+import { MAX_CONTENT_WIDTH, useIsCompactFormFactor } from "@/constants/layout";
 import {
   ActivityLog,
   AssistantMessage,
@@ -696,14 +696,27 @@ const styles = StyleSheet.create((theme) => ({
   },
   listContent: {
     paddingVertical: theme.spacing[4],
-    // Fill the Commander column. Align with the composer edge at any width.
+    // Same centered content column as AgentStreamView's stream items and the
+    // Composer (MAX_CONTENT_WIDTH): the thread list and the composer box share
+    // one gutter, so message text and the composer edge align exactly as a
+    // workspace agent chat does, at any thread column width.
     width: "100%",
-    alignSelf: "stretch",
+    maxWidth: MAX_CONTENT_WIDTH,
+    marginHorizontal: "auto",
+    alignSelf: "center",
+    // Match AgentStreamView's horizontal gutters.
+    paddingHorizontal: {
+      xs: theme.spacing[3],
+      md: theme.spacing[4],
+    },
   },
-  // Web AnchoredList viewport is full-width; each row fills the column.
+  // Rows center themselves inside the platform viewport (the web strategy's
+  // scroll container is full-width; the native list centers via listContent).
   rowContent: {
     width: "100%",
-    alignSelf: "stretch",
+    maxWidth: MAX_CONTENT_WIDTH,
+    marginHorizontal: "auto",
+    alignSelf: "center",
   },
   newPill: {
     flexDirection: "row",

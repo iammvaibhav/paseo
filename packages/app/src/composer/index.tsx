@@ -19,7 +19,6 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { useIsCompactFormFactor } from "@/constants/layout";
 import { useShallow } from "zustand/shallow";
 import {
   ArrowUp,
@@ -36,7 +35,7 @@ import {
 } from "lucide-react-native";
 import * as Clipboard from "expo-clipboard";
 import Animated from "react-native-reanimated";
-import { FOOTER_HEIGHT } from "@/constants/layout";
+import { FOOTER_HEIGHT, MAX_CONTENT_WIDTH, useIsCompactFormFactor } from "@/constants/layout";
 import {
   AgentControls,
   DraftAgentControls,
@@ -2594,7 +2593,7 @@ const styles = StyleSheet.create((theme: Theme) => ({
   },
   inputAreaContent: {
     width: "100%",
-    // Fill the parent column; no artificial chat max width.
+    maxWidth: MAX_CONTENT_WIDTH,
     gap: theme.spacing[3],
   },
   messageInputContainer: {
