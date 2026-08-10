@@ -1046,6 +1046,8 @@ export class Session {
     this.hubExecutionController = options.hubExecutionAgents
       ? new HubExecutionController({
           agents: options.hubExecutionAgents,
+          validateAgentConfiguration: (input) =>
+            providerSnapshotManager.validateAgentConfiguration(input),
           send: (message) => this.emit(message),
         })
       : null;
@@ -2773,6 +2775,9 @@ export class Session {
   private dispatchHubExecutionMessage(msg: SessionInboundMessage): Promise<void> | undefined {
     if (msg.type === "hub.execution.agent.create.request") {
       return this.hubExecutionController?.createAgent(msg);
+    }
+    if (msg.type === "hub.execution.agent.validate.request") {
+      return this.hubExecutionController?.validateAgent(msg);
     }
     if (msg.type === "hub.execution.control.request") {
       return this.hubExecutionController?.controlExecution(msg);
