@@ -5,7 +5,14 @@ import { useMissionControlActive } from "@/screens/mission-control/focus-context
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
-import { MoreVertical, PanelLeftClose, PanelLeftOpen, Square } from "lucide-react-native";
+import {
+  MoreVertical,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
+  Square,
+} from "lucide-react-native";
 import type { Theme } from "@/styles/theme";
 import { Button } from "@/components/ui/button";
 import { SegmentedControl } from "@/components/ui/segmented-control";
@@ -48,6 +55,7 @@ import { useShallow } from "zustand/react/shallow";
 import { launchCommander } from "@/mission-control/launch";
 import { MISSION_CONTROL_LABEL_KEY, MISSION_CONTROL_LABEL_VALUE } from "@/mission-control/labels";
 import { useIsCompactFormFactor } from "@/constants/layout";
+import { usePanelStore } from "@/stores/panel-store";
 import { isWeb } from "@/constants/platform";
 import {
   CommanderVoicePanel,
@@ -62,6 +70,8 @@ const THREAD_STRIP_WIDTH = 40;
 const ThemedMoreVertical = withUnistyles(MoreVertical);
 const ThemedPanelLeftClose = withUnistyles(PanelLeftClose);
 const ThemedPanelLeftOpen = withUnistyles(PanelLeftOpen);
+const ThemedPanelRightClose = withUnistyles(PanelRightClose);
+const ThemedPanelRightOpen = withUnistyles(PanelRightOpen);
 const ThemedSquare = withUnistyles(Square);
 
 const foregroundMapping = (theme: Theme) => ({ color: theme.colors.foreground });
@@ -95,6 +105,8 @@ function findCommander(
   return null;
 }
 
+// Board + inspector collapse state adds a few branches past the default cap.
+// eslint-disable-next-line complexity -- MC desktop split layout
 export function MissionControlScreen(): ReactElement {
   const { t } = useTranslation();
   const isFocused = useMissionControlActive();
@@ -108,6 +120,13 @@ export function MissionControlScreen(): ReactElement {
   const [recreatingArchivedId, setRecreatingArchivedId] = useState<string | null>(null);
   const [compactPanel, setCompactPanel] = useState<CompactPanel>("thread");
   const [threadCollapsed, setThreadCollapsed] = useState(false);
+  const { boardRailCollapsed, setBoardRailCollapsed, toggleBoardRailCollapsed } = usePanelStore(
+    useShallow((state) => ({
+      boardRailCollapsed: state.boardRailCollapsed,
+      setBoardRailCollapsed: state.setBoardRailCollapsed,
+      toggleBoardRailCollapsed: state.toggleBoardRailCollapsed,
+    })),
+  );
   // One per-device verbose flag, shared with the agent chat's machinery
   // placeholder rendering (useMissionControlVerbose). The hook's second
   // return is the toggle (same semantics as the previous local handler).
@@ -323,6 +342,16 @@ export function MissionControlScreen(): ReactElement {
 
   const inspectorTarget = useInspectorStore((state) => state.target);
 
+  // Opening an agent from the Commander thread / feed collapses the board so
+  // Commander + agent chat sit side by side. Manual re-expand is available via
+  // the header toggle.
+  useEffect(() => {
+    if (!v3Enabled || isCompact || !inspectorTarget) {
+      return;
+    }
+    setBoardRailCollapsed(true);
+  }, [inspectorTarget, isCompact, setBoardRailCollapsed, v3Enabled]);
+
   const composerCwd = commanderAgent?.cwd ?? "~";
   const composerContainerStyle = useMemo(() => ({ paddingBottom: insets.bottom }), [insets.bottom]);
 
@@ -408,6 +437,10 @@ export function MissionControlScreen(): ReactElement {
     setThreadCollapsed((current) => !current);
   }, []);
   const collapseToggleState = useMemo(() => ({ expanded: !threadCollapsed }), [threadCollapsed]);
+  const boardCollapseToggleState = useMemo(
+    () => ({ expanded: !boardRailCollapsed }),
+    [boardRailCollapsed],
+  );
 
   const headerRightContent = useMemo(
     () => (
@@ -431,6 +464,27 @@ export function MissionControlScreen(): ReactElement {
                 <ThemedPanelLeftOpen size={16} uniProps={iconProps} />
               ) : (
                 <ThemedPanelLeftClose size={16} uniProps={iconProps} />
+              );
+            }}
+          </HeaderToggleButton>
+        ) : null}
+        {v3Enabled && !isCompact ? (
+          <HeaderToggleButton
+            onPress={toggleBoardRailCollapsed}
+            tooltipLabel={boardRailCollapsed ? "Expand board" : "Collapse board"}
+            tooltipKeys={[]}
+            tooltipSide="bottom"
+            accessibilityRole="button"
+            accessibilityLabel={boardRailCollapsed ? "Expand board" : "Collapse board"}
+            accessibilityState={boardCollapseToggleState}
+            testID="mission-control-board-collapse-toggle"
+          >
+            {({ hovered, pressed }) => {
+              const iconProps = hovered || pressed ? foregroundMapping : foregroundMutedMapping;
+              return boardRailCollapsed ? (
+                <ThemedPanelRightOpen size={16} uniProps={iconProps} />
+              ) : (
+                <ThemedPanelRightClose size={16} uniProps={iconProps} />
               );
             }}
           </HeaderToggleButton>
@@ -494,6 +548,8 @@ export function MissionControlScreen(): ReactElement {
       </View>
     ),
     [
+      boardCollapseToggleState,
+      boardRailCollapsed,
       collapseToggleState,
       commanderRef,
       commanderStatus,
@@ -506,6 +562,7 @@ export function MissionControlScreen(): ReactElement {
       isCompact,
       resettingCommander,
       threadCollapsed,
+      toggleBoardRailCollapsed,
       verbose,
       v3Enabled,
     ],
@@ -597,16 +654,18 @@ export function MissionControlScreen(): ReactElement {
       <View style={styles.desktopBody}>
         {threadPane}
         {v3Enabled && inspectorTarget ? (
-          <InspectorRail flexFill={v3Enabled && threadCollapsed}>
+          <InspectorRail flexFill={v3Enabled && (threadCollapsed || boardRailCollapsed)}>
             <MissionControlInspector target={inspectorTarget} isFocused={isFocused} />
           </InspectorRail>
         ) : null}
-        <BoardRail flexFill={v3Enabled && !inspectorTarget && threadCollapsed}>
-          <MissionControlBoard
-            hideAgentNames={hideAgentNames}
-            testID="mission-control-board-rail"
-          />
-        </BoardRail>
+        {boardRailCollapsed ? null : (
+          <BoardRail flexFill={v3Enabled && !inspectorTarget && threadCollapsed}>
+            <MissionControlBoard
+              hideAgentNames={hideAgentNames}
+              testID="mission-control-board-rail"
+            />
+          </BoardRail>
+        )}
       </View>
     </View>
   );

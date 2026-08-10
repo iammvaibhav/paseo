@@ -46,7 +46,9 @@ export const MAX_BOARD_RAIL_WIDTH = 480;
 // board rail readable.
 export const DEFAULT_INSPECTOR_WIDTH = 400;
 export const MIN_INSPECTOR_WIDTH = 280;
-export const MAX_INSPECTOR_WIDTH = 560;
+// No hard ceiling: inspector fills free space when the board is collapsed.
+// Soft default only; clamp uses a large upper bound so drag is unbounded in practice.
+export const MAX_INSPECTOR_WIDTH = 10_000;
 
 export interface PanelVisibilityState {
   isAgentListOpen: boolean;
@@ -253,6 +255,9 @@ function migratePanelLayoutDimensions(state: MigratablePanelState, version: numb
   }
   if (typeof state.inspectorWidth !== "number") {
     state.inspectorWidth = DEFAULT_INSPECTOR_WIDTH;
+  }
+  if (typeof state.boardRailCollapsed !== "boolean") {
+    state.boardRailCollapsed = false;
   }
 }
 

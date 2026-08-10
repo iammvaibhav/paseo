@@ -1221,12 +1221,28 @@ export const useSessionStore = create<SessionStore>()(
             agentId,
             transition,
           );
-          if (agentTurnLiveness === session.agentTurnLiveness) return prev;
+          const nextLiveness = agentTurnLiveness.get(agentId);
+          const becameIdle =
+            agentTurnLiveness !== session.agentTurnLiveness &&
+            (nextLiveness === undefined || nextLiveness.phase === "idle");
+          let messageSubmissions = session.messageSubmissions;
+          if (becameIdle && session.messageSubmissions.has(agentId)) {
+            // A closed turn means no in-flight send should keep the interrupt
+            // control latched. Drop residual submissions for this agent.
+            messageSubmissions = new Map(session.messageSubmissions);
+            messageSubmissions.delete(agentId);
+          }
+          if (
+            agentTurnLiveness === session.agentTurnLiveness &&
+            messageSubmissions === session.messageSubmissions
+          ) {
+            return prev;
+          }
           return {
             ...prev,
             sessions: {
               ...prev.sessions,
-              [serverId]: { ...session, agentTurnLiveness },
+              [serverId]: { ...session, agentTurnLiveness, messageSubmissions },
             },
           };
         });

@@ -4,7 +4,7 @@ import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { ChevronDown } from "lucide-react-native";
 import type { Theme } from "@/styles/theme";
-import { MAX_CONTENT_WIDTH, useIsCompactFormFactor } from "@/constants/layout";
+import { useIsCompactFormFactor } from "@/constants/layout";
 import {
   ActivityLog,
   AssistantMessage,
@@ -70,7 +70,15 @@ const BRACKET_PLUMBING_PATTERN = /^\[[a-z][a-z0-9_]*\]\s/;
 const OMP_NOTICE_SOURCES = new Set(["omp_notice", "omp_system_notice"]);
 
 function isPlumbingAssistantText(text: string): boolean {
-  return BRACKET_PLUMBING_PATTERN.test(text.trimStart());
+  const trimmed = text.trimStart();
+  // Raw post_answer tool echoes belong in answer cards, never as assistant prose.
+  if (trimmed.includes("<post_answer") || trimmed.startsWith("Answer to #")) {
+    // "Answer to #N:" headlines alone are fine; only hide when the body is raw tool XML.
+    if (trimmed.includes("<post_answer")) {
+      return true;
+    }
+  }
+  return BRACKET_PLUMBING_PATTERN.test(trimmed);
 }
 
 function isOmpNoticeToolCall(data: AgentToolCallData): boolean {
@@ -688,27 +696,14 @@ const styles = StyleSheet.create((theme) => ({
   },
   listContent: {
     paddingVertical: theme.spacing[4],
-    // Same centered content column as AgentStreamView's stream items and the
-    // Composer (MAX_CONTENT_WIDTH): the thread list and the composer box share
-    // one gutter, so message text and the composer edge align exactly as a
-    // workspace agent chat does, at any thread column width.
+    // Fill the Commander column. Align with the composer edge at any width.
     width: "100%",
-    maxWidth: MAX_CONTENT_WIDTH,
-    marginHorizontal: "auto",
-    alignSelf: "center",
-    // Match AgentStreamView's horizontal gutters.
-    paddingHorizontal: {
-      xs: theme.spacing[3],
-      md: theme.spacing[4],
-    },
+    alignSelf: "stretch",
   },
-  // Rows center themselves inside the platform viewport (the web strategy's
-  // scroll container is full-width; the native list centers via listContent).
+  // Web AnchoredList viewport is full-width; each row fills the column.
   rowContent: {
     width: "100%",
-    maxWidth: MAX_CONTENT_WIDTH,
-    marginHorizontal: "auto",
-    alignSelf: "center",
+    alignSelf: "stretch",
   },
   newPill: {
     flexDirection: "row",

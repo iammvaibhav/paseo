@@ -10,6 +10,7 @@ import { useSessionStore } from "@/stores/session-store";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
 import type { Theme } from "@/styles/theme";
 import type { CardRunPosition, FeedCardEvent } from "./feed-card";
+import { resolveAnswerCardDisplay } from "./answer-card-display";
 
 const ThemedMessageSquare = withUnistyles(MessageSquare);
 const iconMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
@@ -38,6 +39,12 @@ export function AnswerCard({ event, position = "only" }: AnswerCardProps): React
   if (!answer) {
     return null;
   }
+
+  const {
+    headline: displayHeadline,
+    body: displayBody,
+    fields: displayFields,
+  } = resolveAnswerCardDisplay(answer);
 
   const isAgentStatus = answer.kind === "agent_status";
 
@@ -84,18 +91,18 @@ export function AnswerCard({ event, position = "only" }: AnswerCardProps): React
         ) : null}
 
         <Text style={styles.headline} testID="mission-control-answer-headline">
-          {answer.headline}
+          {displayHeadline}
         </Text>
 
-        {answer.body ? (
+        {displayBody ? (
           <Text style={styles.body} testID="mission-control-answer-body">
-            {answer.body}
+            {displayBody}
           </Text>
         ) : null}
 
-        {answer.fields && answer.fields.length > 0 ? (
+        {displayFields && displayFields.length > 0 ? (
           <View style={styles.fieldsContainer} testID="mission-control-answer-fields">
-            {answer.fields.map((field) => (
+            {displayFields.map((field) => (
               <View key={field.label} style={styles.fieldRow}>
                 <Text style={styles.fieldLabel}>{field.label}:</Text>
                 <Text style={styles.fieldValue}>{field.value}</Text>

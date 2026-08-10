@@ -145,6 +145,17 @@ const COMMANDER_TOOL_LOOP_THRESHOLD = 3;
 const SYNTHETIC_ANSWER_HEADLINE_CAP = 120;
 const SYNTHETIC_ANSWER_BODY_CAP = 2000;
 
+/** Drop raw post_answer tool-call echoes from synthetic answer bodies. */
+function stripPostAnswerToolMarkup(text: string): string {
+  const withoutTags = text
+    .replace(/<post_answer\b[\s\S]*?(?:\/>|><\/post_answer>)/gi, " ")
+    .replace(/<\/?post_answer\b[^>]*>/gi, " ");
+  return withoutTags
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 /**
  * Effective nudge interval for a trigger after `priorNudges` nudges of that
  * trigger in the same run: base interval doubles per nudge (120 -> 240 ->
@@ -2866,7 +2877,7 @@ export class MissionControlService {
         answer: {
           kind: "generic",
           headline,
-          body: text.slice(0, SYNTHETIC_ANSWER_BODY_CAP),
+          body: stripPostAnswerToolMarkup(text).slice(0, SYNTHETIC_ANSWER_BODY_CAP),
           respondsTo: id,
         },
       });

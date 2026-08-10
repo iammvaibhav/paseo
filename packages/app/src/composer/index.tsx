@@ -36,7 +36,7 @@ import {
 } from "lucide-react-native";
 import * as Clipboard from "expo-clipboard";
 import Animated from "react-native-reanimated";
-import { FOOTER_HEIGHT, MAX_CONTENT_WIDTH } from "@/constants/layout";
+import { FOOTER_HEIGHT } from "@/constants/layout";
 import {
   AgentControls,
   DraftAgentControls,
@@ -2594,7 +2594,7 @@ const styles = StyleSheet.create((theme: Theme) => ({
   },
   inputAreaContent: {
     width: "100%",
-    maxWidth: MAX_CONTENT_WIDTH,
+    // Fill the parent column; no artificial chat max width.
     gap: theme.spacing[3],
   },
   messageInputContainer: {

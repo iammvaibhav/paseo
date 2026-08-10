@@ -107,6 +107,8 @@ export interface PanelState {
   explorerFilesSplitRatio: number;
   boardRailWidth: number;
   inspectorWidth: number;
+  /** Mission Control board rail collapsed (persisted). */
+  boardRailCollapsed: boolean;
 
   // Actions
   toggleFocusMode: () => void;
@@ -143,6 +145,8 @@ export interface PanelState {
   setExplorerFilesSplitRatio: (ratio: number) => void;
   setBoardRailWidth: (width: number) => void;
   setInspectorWidth: (width: number) => void;
+  setBoardRailCollapsed: (collapsed: boolean) => void;
+  toggleBoardRailCollapsed: () => void;
 }
 
 const DEFAULT_DESKTOP_OPEN = isWeb;
@@ -182,6 +186,7 @@ export const usePanelStore = create<PanelState>()(
       explorerFilesSplitRatio: DEFAULT_EXPLORER_FILES_SPLIT_RATIO,
       boardRailWidth: DEFAULT_BOARD_RAIL_WIDTH,
       inspectorWidth: DEFAULT_INSPECTOR_WIDTH,
+      boardRailCollapsed: false,
 
       toggleFocusMode: () =>
         set((state) => ({
@@ -337,6 +342,9 @@ export const usePanelStore = create<PanelState>()(
       setExplorerWidth: (width) => set({ explorerWidth: clampExplorerWidth(width) }),
       setBoardRailWidth: (width) => set({ boardRailWidth: clampBoardRailWidth(width) }),
       setInspectorWidth: (width) => set({ inspectorWidth: clampInspectorWidth(width) }),
+      setBoardRailCollapsed: (collapsed) => set({ boardRailCollapsed: collapsed }),
+      toggleBoardRailCollapsed: () =>
+        set((state) => ({ boardRailCollapsed: !state.boardRailCollapsed })),
       setExplorerSortOption: (option) => set({ explorerSortOption: option }),
       toggleExplorerShowHiddenFiles: () =>
         set((state) => ({ explorerShowHiddenFiles: !state.explorerShowHiddenFiles })),
@@ -349,7 +357,7 @@ export const usePanelStore = create<PanelState>()(
     }),
     {
       name: "panel-state",
-      version: 13,
+      version: 14,
       storage: createJSONStorage(() => AsyncStorage),
       migrate: (persistedState, version) =>
         migratePanelState(persistedState, version, { isWeb }) as unknown as PanelState,
@@ -368,6 +376,7 @@ export const usePanelStore = create<PanelState>()(
         explorerFilesSplitRatio: state.explorerFilesSplitRatio,
         boardRailWidth: state.boardRailWidth,
         inspectorWidth: state.inspectorWidth,
+        boardRailCollapsed: state.boardRailCollapsed,
       }),
     },
   ),
