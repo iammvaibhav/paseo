@@ -436,6 +436,9 @@ export interface MissionControlServiceConfig {
   retentionDays: number;
   /** Stall v2 thresholds, seconds mid-run. Central-config driven. */
   stall: {
+    /** Master switch: false skips silence/status nudges AND escalation;
+     *  dormant-turn recovery still runs as hard-wedge protection. */
+    enabled: boolean;
     silenceNudgeSeconds: number;
     statusNudgeSeconds: number;
     escalateSeconds: number;
@@ -2912,8 +2915,13 @@ export class MissionControlService {
       return;
     }
     const now = Date.now();
-    const { silenceNudgeSeconds, statusNudgeSeconds, escalateSeconds, dormantTurnSeconds } =
-      this.readConfig().stall;
+    const {
+      enabled,
+      silenceNudgeSeconds,
+      statusNudgeSeconds,
+      escalateSeconds,
+      dormantTurnSeconds,
+    } = this.readConfig().stall;
     const escalateMs = escalateSeconds * 1000;
     const dormantMs = dormantTurnSeconds * 1000;
     for (const [agentId, tracking] of this.stallTracking) {
@@ -2928,29 +2936,21 @@ export class MissionControlService {
       if (this.store.getStopOrigin(agentId) === "user") {
         continue;
       }
-      // One nudge per sweep. While a lapse is pending (nudgedAt set) only the
-      // trigger that started it may re-nudge — consecutive UNANSWERED nudges
-      // of the same trigger widen its effective interval (2x, 4x … capped at
-      // 30min), so a genuinely-silent run is nudged ever less often; a landed
-      // report_status clears the anchors and resets the counters, so a
-      // compliant agent is nudged again at the configured base interval.
-      this.maybeFireNudge(agentId, tracking, now, silenceNudgeSeconds, statusNudgeSeconds);
-      const respondedAfterNudge =
-        tracking.nudgedAt !== null &&
-        (tracking.lastStatusAt > tracking.nudgedAt || tracking.lastStreamAt > tracking.nudgedAt);
-      // One recovery proposal per lapse, shared across mechanisms: the stall
-      // escalation and the dormant-turn detector each fire only while the
-      // OTHER has not already recovered this lapse (escalatedAt /
-      // dormantRecoveredAt — both cleared on a landed report_status and on
-      // run end). A wedged loop must never stack recovery cards.
-      if (
-        tracking.nudgedAt !== null &&
-        tracking.escalatedAt === null &&
-        tracking.dormantRecoveredAt === null &&
-        !respondedAfterNudge &&
-        now - tracking.nudgedAt >= escalateMs
-      ) {
-        this.escalateStall(agentId, tracking, escalateSeconds);
+      // With stall detection disabled (central stallDetectionEnabled false)
+      // the daemon never asks agents for status updates: no silence/status
+      // nudges and no escalation (nudgedAt stays null, so the escalate
+      // branch below is inert). The dormant-turn detector still runs below —
+      // a wedged loop is a harness bug, not a status-ask, and stays covered.
+      if (enabled) {
+        this.runStallNudgeAndEscalate(
+          agentId,
+          tracking,
+          now,
+          silenceNudgeSeconds,
+          statusNudgeSeconds,
+          escalateSeconds,
+          escalateMs,
+        );
       }
       // Dormant-turn detector (the hard stop): a running agent with NO
       // timeline output for > dormantTurnSeconds AND no tool call in flight
@@ -2986,6 +2986,41 @@ export class MissionControlService {
    * unanswered lapses widen (2x, 4x …, capped at 30min); compliance (a
    * report_status clears the anchors + counters) returns to the base interval.
    */
+  private runStallNudgeAndEscalate(
+    agentId: string,
+    tracking: StallTracking,
+    now: number,
+    silenceNudgeSeconds: number,
+    statusNudgeSeconds: number,
+    escalateSeconds: number,
+    escalateMs: number,
+  ): void {
+    // One nudge per sweep. While a lapse is pending (nudgedAt set) only the
+    // trigger that started it may re-nudge — consecutive UNANSWERED nudges
+    // of the same trigger widen its effective interval (2x, 4x … capped at
+    // 30min), so a genuinely-silent run is nudged ever less often; a landed
+    // report_status clears the anchors and resets the counters, so a
+    // compliant agent is nudged again at the configured base interval.
+    this.maybeFireNudge(agentId, tracking, now, silenceNudgeSeconds, statusNudgeSeconds);
+    const respondedAfterNudge =
+      tracking.nudgedAt !== null &&
+      (tracking.lastStatusAt > tracking.nudgedAt || tracking.lastStreamAt > tracking.nudgedAt);
+    // One recovery proposal per lapse, shared across mechanisms: the stall
+    // escalation and the dormant-turn detector each fire only while the
+    // OTHER has not already recovered this lapse (escalatedAt /
+    // dormantRecoveredAt — both cleared on a landed report_status and on
+    // run end). A wedged loop must never stack recovery cards.
+    if (
+      tracking.nudgedAt !== null &&
+      tracking.escalatedAt === null &&
+      tracking.dormantRecoveredAt === null &&
+      !respondedAfterNudge &&
+      now - tracking.nudgedAt >= escalateMs
+    ) {
+      this.escalateStall(agentId, tracking, escalateSeconds);
+    }
+  }
+
   private maybeFireNudge(
     agentId: string,
     tracking: StallTracking,
@@ -4143,6 +4178,7 @@ export class MissionControlService {
       // v3: retention + stall thresholds are central-config driven.
       retentionDays: central.retentionDays,
       stall: {
+        enabled: central.stallDetectionEnabled,
         silenceNudgeSeconds: central.silenceNudgeSeconds,
         statusNudgeSeconds: central.statusNudgeSeconds,
         escalateSeconds: central.escalateSeconds,

@@ -2218,7 +2218,7 @@ export class AgentManager {
     await this.writeStoredMetadata(agentId, { shortDescription: normalized });
   }
 
-  async setLabels(agentId: string, labels: Record<string, string>): Promise<void> {
+  async setLabels(agentId: string, labels: AgentLabelPatch): Promise<void> {
     const agent = this.requireAgent(agentId);
     await this.writeLabels(agent.id, labels);
   }

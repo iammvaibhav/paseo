@@ -735,11 +735,15 @@ export function MissionControlSection(): ReactElement {
     [patch],
   );
   const handleDormantTurnSecondsCommit = useCallback(
-    (next: number | null) => {
+    (next: number) => {
       if (next !== null) {
         void patch({ dormantTurnSeconds: next });
       }
     },
+    [patch],
+  );
+  const handleStallDetectionEnabledChange = useCallback(
+    (next: boolean) => void patch({ stallDetectionEnabled: next }),
     [patch],
   );
   const handleCommanderToWorkerModeSelect = useCallback(
@@ -970,6 +974,20 @@ export function MissionControlSection(): ReactElement {
 
       <SettingsSection title="Stall detection">
         <View style={settingsStyles.card}>
+          <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+            <View style={settingsStyles.rowContent}>
+              <Text style={settingsStyles.rowTitle}>Enabled</Text>
+              <Text style={settingsStyles.rowHint}>
+                When off, Mission Control never asks agents for status updates.
+              </Text>
+            </View>
+            <Switch
+              value={config.stallDetectionEnabled}
+              onValueChange={handleStallDetectionEnabledChange}
+              accessibilityLabel="Stall detection enabled"
+              testID="mission-control-settings-stall-detection-enabled"
+            />
+          </View>
           <NumberRow
             title="Silence nudge"
             hint="Seconds of total silence (no output) before the agent is asked for a status."
@@ -977,7 +995,6 @@ export function MissionControlSection(): ReactElement {
             onCommit={handleSilenceNudgeSecondsCommit}
             testID="mission-control-settings-silence-nudge-seconds"
             isCompact={isCompact}
-            first
           />
           <NumberRow
             title="Status nudge"

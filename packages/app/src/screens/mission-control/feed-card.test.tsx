@@ -169,16 +169,16 @@ describe("FeedCard", () => {
     container = null;
   });
 
-  it("keeps title frozen from event snapshot while agent name chip stays live", () => {
+  it("uses the status headline as title and keeps the agent name on the chip", () => {
     expect(deriveFeedCardText(event(), liveAgent as Agent, false)).toEqual({
       agentChipLabel: "Worker One",
-      title: "Original event title",
-      headline: "Failed",
+      title: "Failed",
+      headline: null,
       detail: null,
     });
   });
 
-  it("uses the shortDescription snapshot on started cards", () => {
+  it("uses the shortDescription snapshot as title on started cards", () => {
     expect(
       deriveFeedCardText(
         event({
@@ -190,13 +190,13 @@ describe("FeedCard", () => {
         false,
       ),
     ).toMatchObject({
-      title: "Original event title",
-      headline: "Polishing the shared card anatomy",
+      title: "Polishing the shared card anatomy",
+      headline: "Started running",
       agentChipLabel: "Worker One",
     });
   });
 
-  it("falls back to the event headline on legacy started cards with no snapshot", () => {
+  it("falls back to the event headline as title on legacy started cards with no snapshot", () => {
     expect(
       deriveFeedCardText(
         event({ kind: "started", headline: "Started running" }),
@@ -204,8 +204,8 @@ describe("FeedCard", () => {
         false,
       ),
     ).toMatchObject({
-      title: "Original event title",
-      headline: "Started running",
+      title: "Started running",
+      headline: null,
       agentChipLabel: "Worker One",
     });
   });
@@ -243,7 +243,7 @@ describe("FeedCard", () => {
     act(() => root?.render(<FeedCard event={event()} />));
 
     const card = container?.querySelector('[data-testid="mission-control-feed-card-failed"]');
-    expect(card?.textContent).toContain("Original event title");
+    expect(card?.textContent).toContain("Failed");
     expect(card?.querySelector('[data-icon="CircleX"]')).not.toBeNull();
     expect(card?.querySelector('[data-testid="mission-control-feed-host-glyph"]')).not.toBeNull();
     expect(

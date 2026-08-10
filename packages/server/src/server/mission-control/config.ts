@@ -32,6 +32,10 @@ export interface ResolvedMissionControlCentralConfig {
   silenceNudgeSeconds: number;
   statusNudgeSeconds: number;
   escalateSeconds: number;
+  // Master switch for the stall machinery: when false the daemon never asks
+  // agents for status updates (no silence/status nudges, no escalation) — the
+  // dormant-turn detector still runs as hard-wedge protection.
+  stallDetectionEnabled: boolean;
   // Dormant-turn detector: seconds a running agent may sit with NO timeline
   // output AND no tool call in flight before the turn is treated as wedged
   // (omp loop-advance failure) and recovered via the interrupt path. Default
@@ -81,6 +85,7 @@ export const DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG: ResolvedMissionControlCentr
   silenceNudgeSeconds: 120,
   statusNudgeSeconds: 300,
   escalateSeconds: 300,
+  stallDetectionEnabled: true,
   dormantTurnSeconds: 300,
   commanderToWorkerMode: "interrupt",
   verifierToWorkerMode: "interrupt",
@@ -237,6 +242,7 @@ const CENTRAL_CONFIG_KEYS: readonly (keyof ResolvedMissionControlCentralConfig)[
   "silenceNudgeSeconds",
   "statusNudgeSeconds",
   "escalateSeconds",
+  "stallDetectionEnabled",
   "dormantTurnSeconds",
   "commanderToWorkerMode",
   "verifierToWorkerMode",
@@ -310,6 +316,7 @@ function resolveCentralConfig(
     statusNudgeSeconds:
       stored.statusNudgeSeconds ?? stored.nudgeSeconds ?? defaults.statusNudgeSeconds,
     escalateSeconds: stored.escalateSeconds ?? defaults.escalateSeconds,
+    stallDetectionEnabled: stored.stallDetectionEnabled ?? defaults.stallDetectionEnabled,
     dormantTurnSeconds: stored.dormantTurnSeconds ?? defaults.dormantTurnSeconds,
     commanderToWorkerMode: stored.commanderToWorkerMode ?? defaults.commanderToWorkerMode,
     verifierToWorkerMode: stored.verifierToWorkerMode ?? defaults.verifierToWorkerMode,

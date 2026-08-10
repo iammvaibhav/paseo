@@ -1495,10 +1495,10 @@ function MissionControlCard({ serverId }: { serverId: string }) {
     <View style={settingsStyles.card} testID="host-page-mission-control-card">
       <View style={settingsStyles.row}>
         <View style={settingsStyles.rowContent}>
-          <Text style={settingsStyles.rowTitle}>Enabled</Text>
+          <Text style={settingsStyles.rowTitle}>Mission Control on this host</Text>
           <Text style={settingsStyles.rowHint}>
-            Show this host on the Mission Control board. Fleet policy lives in the central Mission
-            Control settings.
+            When off, this host leaves the board and will not boot or keep a Commander even if
+            designated.
           </Text>
         </View>
         <Switch

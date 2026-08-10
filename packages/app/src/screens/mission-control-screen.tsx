@@ -230,6 +230,16 @@ export function MissionControlScreen(): ReactElement {
     [commander, selectedServerId],
   );
 
+  // Stop is only meaningful while the Commander agent is actually running.
+  // Lifecycle status lives on the session store's agent entry; the selector
+  // is narrow so the header only re-renders when the status changes.
+  const commanderStatus = useSessionStore((state) => {
+    if (!commanderRef) {
+      return null;
+    }
+    return state.sessions[commanderRef.serverId]?.agents.get(commanderRef.agentId)?.status ?? null;
+  });
+
   // Commander composer draft (spec "Composer drafts"): keyed by the commander
   // agent via the shared draft store, so text survives navigation like every
   // workspace tab (live bug: raw useState lost the draft on route changes).
@@ -239,7 +249,9 @@ export function MissionControlScreen(): ReactElement {
   const commanderDraft = useAgentInputDraft({ draftKey: commanderDraftKey });
 
   const handleStopCommander = useCallback(() => {
-    if (!commanderRef) {
+    // No-op unless the Commander agent is actually running: an idle or
+    // archived agent has no turn to cancel.
+    if (!commanderRef || commanderStatus !== "running") {
       return;
     }
     const client = getHostRuntimeStore().getClient(commanderRef.serverId);
@@ -253,7 +265,7 @@ export function MissionControlScreen(): ReactElement {
         testID: "mission-control-stop-failed-toast",
       });
     });
-  }, [commanderRef, toast]);
+  }, [commanderRef, commanderStatus, toast]);
 
   const handleOpenSettings = useCallback(() => {
     router.push("/settings/mission-control");
@@ -423,7 +435,7 @@ export function MissionControlScreen(): ReactElement {
             }}
           </HeaderToggleButton>
         ) : null}
-        {v3Enabled && commanderRef ? (
+        {v3Enabled && commanderRef && commanderStatus === "running" ? (
           <Button
             variant="ghost"
             size="xs"
@@ -484,6 +496,7 @@ export function MissionControlScreen(): ReactElement {
     [
       collapseToggleState,
       commanderRef,
+      commanderStatus,
       handleClearView,
       handleCollapseThread,
       handleOpenSettings,

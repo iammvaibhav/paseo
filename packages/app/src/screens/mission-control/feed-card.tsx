@@ -309,19 +309,34 @@ export function deriveFeedCardText(
   headline: string | null;
   detail: string | null;
 } {
-  // Title is frozen from the event snapshot at emit time (immutable card copy).
-  const title = event.agentTitle;
   // Agent name chip stays live (names are stable identity); its fallback is
   // the emit-time title snapshot, never the live title.
-  const agentChipLabel = hideAgentNames ? title : (liveAgent?.name ?? event.agentTitle);
+  const agentChipLabel = hideAgentNames ? event.agentTitle : (liveAgent?.name ?? event.agentTitle);
 
-  // Cards are immutable append-only snapshots: cards render from their stored
-  // snapshot, never from live agent identity updates. On started cards, the
-  // stored shortDescription snapshot (if present at emit time) is shown;
-  // legacy rows with no snapshot fall back to the event's own headline.
-  let headline: string | null = event.headline === title ? null : event.headline;
+  // Primary title is the update itself (status headline / short description),
+  // not the agent name — the chip below already carries the name. Fall back
+  // to agentTitle only when the event has no usable status text (legacy rows).
+  let statusTitle: string | null = null;
   if (event.kind === "started" && event.shortDescription) {
-    headline = event.shortDescription;
+    statusTitle = event.shortDescription;
+  } else if (event.headline?.trim()) {
+    statusTitle = event.headline;
+  }
+  let title = event.agentTitle;
+  if (statusTitle && statusTitle !== event.agentTitle && statusTitle !== agentChipLabel) {
+    title = statusTitle;
+  } else if (statusTitle) {
+    title = statusTitle;
+  }
+
+  // Secondary headline only when it still adds information beyond the title.
+  let headline: string | null = event.headline === title ? null : (event.headline ?? null);
+  if (event.kind === "started" && event.shortDescription) {
+    if (event.shortDescription === title) {
+      headline = event.headline && event.headline !== title ? event.headline : null;
+    } else {
+      headline = event.shortDescription;
+    }
   }
   return { agentChipLabel, title, headline, detail: event.detail ?? null };
 }

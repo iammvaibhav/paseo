@@ -272,6 +272,10 @@ function getMetaSummary(
       return t("missionControl.proposal.meta.moveAgent", { target, destination });
     case "promote_workspace":
       return t("missionControl.proposal.meta.promoteWorkspace", { target, destination });
+    case "adopt_agent":
+      return `Adopt agent ${target}`;
+    case "release_agent":
+      return `Release agent ${target} from Commander`;
     default:
       return target;
   }

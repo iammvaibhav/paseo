@@ -137,6 +137,8 @@ interface ChatAgentSelectedState extends ChatAgentStateShape {
   requiresAttention: boolean;
   attentionReason: Agent["attentionReason"] | null;
   providerUnavailable: boolean;
+  /** Live agent labels (e.g. paseo.commander-adopted-at for Commander-managed workers). */
+  labels: Record<string, string>;
 }
 
 const EMPTY_CHAT_AGENT_STATE: ChatAgentSelectedState = {
@@ -149,6 +151,7 @@ const EMPTY_CHAT_AGENT_STATE: ChatAgentSelectedState = {
   requiresAttention: false,
   attentionReason: null,
   providerUnavailable: false,
+  labels: {},
 };
 
 function selectChatAgentState(
@@ -179,6 +182,7 @@ function selectChatAgentState(
     requiresAttention: agent.requiresAttention ?? false,
     attentionReason: agent.attentionReason ?? null,
     providerUnavailable: agent.providerUnavailable === true,
+    labels: agent.labels ?? {},
   };
 }
 
@@ -1177,6 +1181,32 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
   onOpenWorkspaceFile?: (request: WorkspaceFileOpenRequest) => void;
 }) {
   const { t } = useTranslation();
+  const appToast = useToast();
+  const client = useHostRuntimeClient(serverId);
+  const isConnected = useHostRuntimeIsConnected(serverId);
+  const [isReleasing, setIsReleasing] = useState(false);
+  const adoptedAt = agentState.labels["paseo.commander-adopted-at"]?.trim() || null;
+  const handleReleaseFromCommander = useCallback(async () => {
+    if (!client || !isConnected || isReleasing || !agentId) {
+      return;
+    }
+    setIsReleasing(true);
+    try {
+      const result = await client.fleetMetaApply({
+        action: "release_agent",
+        serverId: "local",
+        targetId: agentId,
+        targetLabel: agentState.id ?? agentId,
+      });
+      if (!result.ok) {
+        throw new Error(result.error ?? "Failed to release agent from Commander");
+      }
+    } catch (error) {
+      appToast.error(toErrorMessage(error));
+    } finally {
+      setIsReleasing(false);
+    }
+  }, [agentId, agentState.id, appToast, client, isConnected, isReleasing]);
   const rawAgentInputDraft = useAgentInputDraft({
     draftKey: buildDraftStoreKey({
       serverId,
@@ -1260,6 +1290,26 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
       <View style={styles.root}>
         <FileDropZone style={styles.container} disabled={isArchivingCurrentAgent}>
           {contentContainer}
+
+          {adoptedAt && !agentState.archivedAt ? (
+            <SidebarCallout
+              title="Managed by Commander"
+              description="This agent was taken over by Mission Control. Release it to stop Commander management and verifier scope."
+              variant="default"
+              testID="agent-commander-managed-banner"
+              actions={[
+                {
+                  label: isReleasing ? "Releasing…" : "Release",
+                  onPress: () => {
+                    void handleReleaseFromCommander();
+                  },
+                  variant: "secondary",
+                  disabled: !isConnected || isReleasing,
+                  testID: "agent-commander-release",
+                },
+              ]}
+            />
+          ) : null}
 
           {agentState.providerUnavailable ? (
             <SidebarCallout

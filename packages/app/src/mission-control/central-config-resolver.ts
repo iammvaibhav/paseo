@@ -27,6 +27,10 @@ export interface ResolvedMissionControlCentralConfig {
   silenceNudgeSeconds: number;
   statusNudgeSeconds: number;
   escalateSeconds: number;
+  // Master switch for the stall machinery: when false the daemon never asks
+  // agents for status updates (no silence/status nudges, no escalation) — the
+  // dormant-turn detector still runs as hard-wedge protection.
+  stallDetectionEnabled: boolean;
   // Dormant-turn detector threshold (mirrors the daemon's resolved central
   // config): seconds a running agent may sit with no output AND no tool in
   // flight before the turn is treated as wedged and recovered.
@@ -64,6 +68,7 @@ const RESOLVED_DEFAULTS: ResolvedMissionControlCentralConfig = {
   silenceNudgeSeconds: 120,
   statusNudgeSeconds: 300,
   escalateSeconds: 300,
+  stallDetectionEnabled: true,
   dormantTurnSeconds: 300,
   commanderToWorkerMode: "interrupt",
   verifierToWorkerMode: "interrupt",
@@ -82,6 +87,7 @@ function resolveStallTimingKnobs(config: MissionControlCentralConfig) {
     silenceNudgeSeconds: config.silenceNudgeSeconds ?? 120,
     statusNudgeSeconds,
     escalateSeconds: config.escalateSeconds ?? 300,
+    stallDetectionEnabled: config.stallDetectionEnabled ?? true,
     dormantTurnSeconds: config.dormantTurnSeconds ?? 300,
   };
 }

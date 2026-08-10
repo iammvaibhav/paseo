@@ -542,6 +542,29 @@ async function validateAdoptAgent(
   return { ok: true };
 }
 
+async function validateReleaseAgent(
+  deps: MetaActionsLookupDependencies,
+  plan: MissionControlMetaPlan,
+): Promise<MetaActionValidationResult> {
+  const targetId = requireTargetId(plan);
+  if (!targetId) {
+    return { ok: false, error: "release_agent requires a targetId (agent id)" };
+  }
+  const agent = await resolveAgentRecord(deps, targetId);
+  if (!agent) {
+    return { ok: false, error: `Agent ${targetId} not found` };
+  }
+  if (agent.record.archivedAt) {
+    return { ok: false, error: `Agent ${targetId} is archived` };
+  }
+  const labels = agent.live ? deps.agentManager.getAgent(targetId)?.labels : agent.record.labels;
+  const adoptedAt = labels?.[COMMANDER_ADOPTED_AT_LABEL];
+  if (typeof adoptedAt !== "string" || adoptedAt.trim().length === 0) {
+    return { ok: false, error: `Agent ${targetId} is not adopted by the Commander` };
+  }
+  return { ok: true };
+}
+
 /**
  * Host-independent plan SHAPE validation: required identifying fields and
  * path rules (create_project absolute destination). No registry lookups — safe
@@ -568,9 +591,17 @@ export async function validateMetaPlanShape(
     }
     case "archive_project":
     case "archive_workspace":
-    case "archive_agent": {
+    case "archive_agent":
+    case "adopt_agent":
+    case "release_agent": {
       if (!requireTargetId(plan)) {
         return { ok: false, error: `${plan.action} requires a targetId` };
+      }
+      return { ok: true };
+    }
+    case "promote_workspace": {
+      if (!requireTargetId(plan)) {
+        return { ok: false, error: "promote_workspace requires a targetId (workspace id)" };
       }
       return { ok: true };
     }
@@ -597,18 +628,6 @@ export async function validateMetaPlanShape(
       }
       if (!requireDestination(plan)) {
         return { ok: false, error: "move_agent requires a destination (target workspace id)" };
-      }
-      return { ok: true };
-    }
-    case "promote_workspace": {
-      if (!requireTargetId(plan)) {
-        return { ok: false, error: "promote_workspace requires a targetId (workspace id)" };
-      }
-      return { ok: true };
-    }
-    case "adopt_agent": {
-      if (!requireTargetId(plan)) {
-        return { ok: false, error: "adopt_agent requires a targetId (agent id)" };
       }
       return { ok: true };
     }
@@ -653,6 +672,8 @@ export async function validateMetaPlan(
       return validatePromoteWorkspace(deps, plan);
     case "adopt_agent":
       return validateAdoptAgent(deps, plan);
+    case "release_agent":
+      return validateReleaseAgent(deps, plan);
   }
 }
 
@@ -937,6 +958,30 @@ async function applyAdoptAgent(
 }
 
 /**
+ * M8b release_agent: clear paseo.commander-adopted-at so the Commander stops
+ * managing the worker (verifier scope "commander" no longer includes it).
+ * Requires the stamp to already be present (validateReleaseAgent enforces).
+ */
+async function applyReleaseAgent(
+  deps: MetaActionsDependencies,
+  plan: MissionControlMetaPlan,
+): Promise<MetaPlanActionResult> {
+  const agentId = plan.targetId!;
+  try {
+    await deps.agentManager.setLabels(agentId, { [COMMANDER_ADOPTED_AT_LABEL]: null });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: `Failed to release agent ${agentId}: ${message}` };
+  }
+  const after = await resolveAgentRecord(deps, agentId);
+  if (after && !after.live) {
+    await safeEmitStoredAgentUpdate(deps, after.record);
+  }
+  logMetaEvent(deps, plan, "mission_control.meta.release_agent_applied", { agentId });
+  return { ok: true, summary: `Released agent ${agentId} from Commander management` };
+}
+
+/**
  * Apply a validated meta plan: the action switch. Logs every applied action
  * loudly (module mission-control, component meta) with the full plan so the
  * audit trail shows exactly what the Commander did and when.
@@ -970,6 +1015,8 @@ export async function applyMetaPlan(
       return applyPromoteWorkspace(deps, plan);
     case "adopt_agent":
       return applyAdoptAgent(deps, plan);
+    case "release_agent":
+      return applyReleaseAgent(deps, plan);
   }
 }
 

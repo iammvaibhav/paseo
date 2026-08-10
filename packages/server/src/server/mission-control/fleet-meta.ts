@@ -74,6 +74,8 @@ function describeMetaPlan(plan: MissionControlMetaPlan): string {
         return `Promote workspace ${target} to its own project`;
       case "adopt_agent":
         return `Adopt agent ${target} (take over its lifecycle, no message sent)`;
+      case "release_agent":
+        return `Release agent ${target} from Commander management`;
     }
   })();
   // The card must read as fleet-wide: a non-local target names the host it
@@ -128,7 +130,8 @@ export async function buildFleetMetaProposalInput(
     metaPlan.action === "rename_agent_title" ||
     metaPlan.action === "archive_agent" ||
     metaPlan.action === "move_agent" ||
-    metaPlan.action === "adopt_agent";
+    metaPlan.action === "adopt_agent" ||
+    metaPlan.action === "release_agent";
   const targetAgentId = agentTargeted ? (metaPlan.targetId?.trim() ?? "") : "";
   return {
     origin: "commander",

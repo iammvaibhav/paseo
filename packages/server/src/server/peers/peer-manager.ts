@@ -86,6 +86,45 @@ interface PeerConnection {
   client: DaemonClient;
   status: MissionControlPeerStatus;
   serverId: string | null;
+  /** Peer daemon's own hostname (server_info), captured at setPeerOnline. */
+  hostname: string | null;
+  /** Peer daemon's missionControl.hostAlias (server_info), captured at setPeerOnline. */
+  missionControlHostAlias: string | null;
+}
+
+/**
+ * Pure peer-identity matcher (exported for unit tests): resolves a
+ * commanderHost-style designation to the peer's configured name. Mirrors
+ * isDesignatedCommanderHost semantics — trimmed, case-sensitive, alias only
+ * when non-null — and matches (in order): configured name, serverId,
+ * hostname, missionControl hostAlias. Runtime-only: a stored designation
+ * that names a peer's hostname/alias (e.g. "vaibhav-dev" naming the peer
+ * iammvaibhav) resolves without rewriting central config.
+ */
+export function resolvePeerIdentityName(
+  peers: readonly PeerIdentity[],
+  name: string,
+): string | null {
+  const trimmed = name.trim();
+  if (trimmed === "") {
+    return null;
+  }
+  const peer =
+    peers.find((p) => p.config.name === trimmed) ??
+    peers.find((p) => p.serverId === trimmed) ??
+    peers.find((p) => p.hostname === trimmed) ??
+    peers.find(
+      (p) => p.missionControlHostAlias !== null && p.missionControlHostAlias === trimmed,
+    ) ??
+    null;
+  return peer?.config.name ?? null;
+}
+
+export interface PeerIdentity {
+  config: { name: string };
+  serverId: string | null;
+  hostname: string | null;
+  missionControlHostAlias: string | null;
 }
 
 export class PeerManager {
@@ -112,12 +151,30 @@ export class PeerManager {
     return this.peers.map((peer) => ({ ...peer.status }));
   }
 
+  /**
+   * Resolve a commanderHost-style designation (peer name, serverId, peer
+   * hostname, or missionControl hostAlias) to the peer's configured name, or
+   * null when nothing matches. Runtime-only: a stored designation naming a
+   * peer's hostname/alias resolves without rewriting central config.
+   */
+  resolvePeerName(name: string): string | null {
+    return resolvePeerIdentityName(this.peers, name);
+  }
+
   getPeerStatus(name: string): MissionControlPeerStatus | null {
-    return this.peers.find((peer) => peer.config.name === name)?.status ?? null;
+    return this.findPeer(name)?.status ?? null;
   }
 
   getPeerClient(name: string): DaemonClient | null {
-    return this.peers.find((peer) => peer.config.name === name)?.client ?? null;
+    return this.findPeer(name)?.client ?? null;
+  }
+
+  private findPeer(name: string): PeerConnection | null {
+    const resolved = this.resolvePeerName(name);
+    if (resolved === null) {
+      return null;
+    }
+    return this.peers.find((peer) => peer.config.name === resolved) ?? null;
   }
 
   async close(): Promise<void> {
@@ -149,6 +206,8 @@ export class PeerManager {
         lastSeenAt: null,
       },
       serverId: null,
+      hostname: null,
+      missionControlHostAlias: null,
     };
 
     client.subscribeConnectionStatus((state) => {
@@ -164,8 +223,11 @@ export class PeerManager {
   }
 
   private setPeerOnline(peer: PeerConnection): void {
-    const serverId = peer.client.getLastServerInfoMessage()?.serverId ?? null;
+    const serverInfo = peer.client.getLastServerInfoMessage();
+    const serverId = serverInfo?.serverId ?? null;
     peer.serverId = serverId;
+    peer.hostname = serverInfo?.hostname ?? null;
+    peer.missionControlHostAlias = serverInfo?.missionControlHostAlias ?? null;
     peer.status = {
       name: peer.config.name,
       url: peer.config.url,

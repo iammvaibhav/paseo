@@ -162,6 +162,9 @@ export const MissionControlProposalMetaPlanActionSchema = z.enum([
   // (live + stored) so the Commander takes over its lifecycle ("this is my
   // agent, you take care of it"). Normal classification, gated like the rest.
   "adopt_agent",
+  // M8b: release an adopted agent back to the fleet — clears the
+  // paseo.commander-adopted-at stamp so the Commander stops managing it.
+  "release_agent",
 ]);
 export type MissionControlProposalMetaPlanAction = z.infer<
   typeof MissionControlProposalMetaPlanActionSchema
@@ -622,6 +625,10 @@ export const MissionControlCentralConfigSchema = z.object({
   statusNudgeSeconds: z.number().optional(),
   nudgeSeconds: z.number().optional(),
   escalateSeconds: z.number().optional(),
+  // Master switch for the stall machinery: when false the daemon never asks
+  // agents for status updates (no silence/status nudges, no escalation) — the
+  // dormant-turn detector still runs as hard-wedge protection.
+  stallDetectionEnabled: z.boolean().optional(),
   // Dormant-turn detector: seconds a running agent may sit with NO timeline
   // output AND no tool call in flight before the turn is treated as wedged
   // (omp loop-advance failure) and recovered via the interrupt path. Default
