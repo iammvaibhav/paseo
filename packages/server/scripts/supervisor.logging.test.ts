@@ -14,6 +14,8 @@ async function runSupervisorFixture(options: {
   workerSource: string;
   restartOnCrash?: boolean;
   timeoutMs?: number;
+  workerHeartbeatTimeoutMs?: number;
+  probeWorkerHealthSource?: string;
 }): Promise<{
   code: number | null;
   signal: NodeJS.Signals | null;
@@ -41,6 +43,12 @@ async function runSupervisorFixture(options: {
         workerEnv: process.env,
         workerExecArgv: [],
         restartOnCrash: ${JSON.stringify(options.restartOnCrash ?? false)},
+        ${
+          options.workerHeartbeatTimeoutMs === undefined
+            ? ""
+            : `workerHeartbeatTimeoutMs: ${JSON.stringify(options.workerHeartbeatTimeoutMs)},`
+        }
+        ${options.probeWorkerHealthSource ?? ""}
         logFile: {
           path: ${JSON.stringify(logPath)},
           rotate: { maxSize: "1m", maxFiles: 2 },
@@ -214,6 +222,8 @@ describe("supervisor durable logging", () => {
   test("tolerates a transient seven-second heartbeat pause", async () => {
     const result = await runSupervisorFixture({
       timeoutMs: 10_000,
+      // Production default is 45s; keep this fixture short.
+      workerHeartbeatTimeoutMs: 15_000,
       workerSource: `
         import { existsSync, writeFileSync } from "node:fs";
 
@@ -244,6 +254,45 @@ describe("supervisor durable logging", () => {
     expect(result.log).not.toContain('"msg":"Worker heartbeat timed out; restarting worker"');
   }, 10_000);
 
+  test("keeps a worker alive when health probe succeeds during heartbeat silence", async () => {
+    const result = await runSupervisorFixture({
+      timeoutMs: 12_000,
+      workerHeartbeatTimeoutMs: 2_000,
+      probeWorkerHealthSource: `
+        probeWorkerHealth: async () => true,
+      `,
+      workerSource: `
+        import { existsSync, writeFileSync } from "node:fs";
+
+        const marker = process.argv[1] + ".started";
+        if (!existsSync(marker)) {
+          writeFileSync(marker, "started");
+          let heartbeatCount = 0;
+          const heartbeat = setInterval(() => {
+            process.send?.({ type: "paseo:worker-heartbeat" });
+            heartbeatCount += 1;
+            if (heartbeatCount === 2) clearInterval(heartbeat);
+          }, 100);
+          process.send?.({ type: "paseo:ready", listen: "127.0.0.1:6767" });
+          setTimeout(() => {
+            process.send?.({ type: "paseo:shutdown", reason: "health_probe_kept_worker" });
+          }, 6_000);
+          setInterval(() => {}, 1_000);
+        } else {
+          process.send?.({ type: "paseo:shutdown", reason: "unexpected_health_restart" });
+          setInterval(() => {}, 1_000);
+        }
+      `,
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.signal).toBeNull();
+    expect(result.log).toContain('"reason":"health_probe_kept_worker"');
+    expect(result.log).not.toContain('"reason":"unexpected_health_restart"');
+    expect(result.log).toContain('"msg":"Worker heartbeat delayed but health ok; keeping worker"');
+    expect(result.log).not.toContain('"msg":"Worker heartbeat timed out; restarting worker"');
+  }, 15_000);
+
   test.skipIf(isPlatform("win32"))(
     "forces shutdown when a worker ignores SIGTERM",
     async () => {
@@ -270,7 +319,9 @@ describe("supervisor durable logging", () => {
     "restarts a worker that stops heartbeating",
     async () => {
       const result = await runSupervisorFixture({
-        timeoutMs: 35_000,
+        timeoutMs: 20_000,
+        // Keep the kill path test fast; production default is 45s.
+        workerHeartbeatTimeoutMs: 3_000,
         workerSource: `
           import { existsSync, writeFileSync } from "node:fs";
 
@@ -298,7 +349,7 @@ describe("supervisor durable logging", () => {
       expect(result.log).toContain('"msg":"Worker did not exit after SIGTERM; forcing SIGKILL"');
       expect(result.log).toContain('"signal":"SIGKILL"');
     },
-    40_000,
+    30_000,
   );
 
   test.skipIf(isPlatform("win32"))(
