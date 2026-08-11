@@ -50,7 +50,7 @@
  * whole plan; rejected rows are simply deleted before applying.
  */
 
-import { DaemonClient } from "@getpaseo/client";
+import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { spawn } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";

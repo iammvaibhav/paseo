@@ -30,7 +30,7 @@
  * the script exits 0 so a nudge problem can NEVER fail a deploy.
  */
 
-import { DaemonClient } from "@getpaseo/client";
+import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { WebSocket } from "ws";

@@ -7,7 +7,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { WebSocket } from "ws";
-import { DaemonClient } from "@getpaseo/client";
+import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 
 import { startVoiceServer } from "../server.js";
 import { classifyEvent } from "../lib/daemon.js";

@@ -2,7 +2,7 @@
 // subscription, the announce-policy event filter, and the capped update buffer.
 // All fleet effects go through @getpaseo/client against the built workspace
 // dist (same pattern as scripts/mc-backfill.mjs).
-import { DaemonClient } from "@getpaseo/client";
+import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { WebSocket } from "ws";
 
 const MISSION_CONTROL_LABEL_KEY = "paseo.mission-control";
