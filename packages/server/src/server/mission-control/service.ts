@@ -47,6 +47,7 @@ import {
 } from "./approvals.js";
 import {
   COMMANDER_ADOPTED_AT_LABEL,
+  COMMANDER_TOOL_ALLOWLIST,
   MISSION_CONTROL_LABEL_KEY,
   MISSION_CONTROL_LABEL_VALUE,
 } from "./commander-contract.js";
@@ -145,11 +146,53 @@ const COMMANDER_TOOL_LOOP_THRESHOLD = 3;
 const SYNTHETIC_ANSWER_HEADLINE_CAP = 120;
 const SYNTHETIC_ANSWER_BODY_CAP = 2000;
 
-/** Drop raw post_answer tool-call echoes from synthetic answer bodies. */
-function stripPostAnswerToolMarkup(text: string): string {
-  const withoutTags = text
-    .replace(/<post_answer\b[\s\S]*?(?:\/>|><\/post_answer>)/gi, " ")
-    .replace(/<\/?post_answer\b[^>]*>/gi, " ");
+/**
+ * Commander tools a weak model can echo as literal XML instead of invoking.
+ * The allowlist is the authoritative catalog, so a new tool is covered the
+ * moment it is added there.
+ */
+const LEAKABLE_TOOL_NAMES: readonly string[] = COMMANDER_TOOL_ALLOWLIST;
+
+/**
+ * Mutating tools: when one of these leaks as text, NOTHING happened on the
+ * fleet. The turn must not be treated as an answer.
+ */
+const MUTATING_TOOL_NAMES: readonly string[] = [
+  "fleet_create_agent",
+  "fleet_send_prompt",
+  "fleet_meta",
+];
+
+function leakedToolPattern(names: readonly string[]): RegExp {
+  return new RegExp(`<\\/?(?:${names.join("|")})\\b`, "i");
+}
+
+/** Tool names this turn wrote as literal markup instead of calling. */
+export function detectLeakedToolCalls(text: string): string[] {
+  return LEAKABLE_TOOL_NAMES.filter((name) => new RegExp(`<\\/?${name}\\b`, "i").test(text));
+}
+
+/** True when the turn leaked a side-effectful tool call as text. */
+export function hasLeakedMutatingToolCall(text: string): boolean {
+  return leakedToolPattern(MUTATING_TOOL_NAMES).test(text);
+}
+
+/**
+ * Drop raw tool-call echoes from card bodies. Covers every Commander tool, not
+ * just post_answer: any of them can be emitted as text by a model that fails
+ * native function calling, and raw markup must never reach the feed.
+ */
+function stripLeakedToolMarkup(text: string): string {
+  let withoutTags = text;
+  for (const name of LEAKABLE_TOOL_NAMES) {
+    withoutTags = withoutTags
+      // Paired element: the inner text is tool arguments, not prose.
+      .replace(new RegExp(`<${name}\\b[^>]*>[\\s\\S]*?<\\/${name}\\s*>`, "gi"), " ")
+      // Self-closing element.
+      .replace(new RegExp(`<${name}\\b[^>]*\\/>`, "gi"), " ")
+      // Any stray opening/closing tag left behind.
+      .replace(new RegExp(`<\\/?${name}\\b[^>]*>`, "gi"), " ");
+  }
   return withoutTags
     .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
@@ -1242,6 +1285,14 @@ export class MissionControlService {
     /** Composer attachments (descriptors; the daemon resolves them into the
      *  prompt). The envelope text rides them like any fleet send. */
     attachments?: AgentAttachment[];
+    /**
+     * The client's optimistic message id (the local user_message's
+     * clientMessageId). Threaded onto the daemon-appended timeline row so the
+     * client reconciliation merges it with the optimistic bubble instead of
+     * rendering a duplicate. Absent (older clients) → no dedupe, exactly as
+     * before.
+     */
+    messageId?: string;
   }): Promise<
     { ok: true; instructionId: string; deliveredAs: "run" | "steer" } | { ok: false; error: string }
   > {
@@ -1285,6 +1336,7 @@ export class MissionControlService {
           attachments: input.attachments,
           mode: "steer",
           classification: "instruction",
+          messageId: input.messageId,
           replaceOrigin: "machinery",
           recordStopOrigin: (agentId, origin) => this.store.recordStopOrigin(agentId, origin),
           logger: this.logger,
@@ -1326,6 +1378,7 @@ export class MissionControlService {
           attachments: input.attachments,
           mode: "steer",
           classification: "instruction",
+          messageId: input.messageId,
           replaceOrigin: "machinery",
           recordStopOrigin: (agentId, origin) => this.store.recordStopOrigin(agentId, origin),
           logger: this.logger,
@@ -1357,6 +1410,7 @@ export class MissionControlService {
         attachments: input.attachments,
         mode: "steer",
         classification: "instruction",
+        messageId: input.messageId,
         recordStopOrigin: (agentId, origin) => this.store.recordStopOrigin(agentId, origin),
         logger: this.logger,
       });
@@ -2842,12 +2896,60 @@ export class MissionControlService {
     if (stillOpen.length === 0) {
       return;
     }
+    // A model that fails native function calling writes the call as literal
+    // markup. Nothing ran on the fleet, so synthesizing an answer card here
+    // would close the instruction and report work that never happened. Surface
+    // the failed dispatch instead and leave the row open.
+    if (hasLeakedMutatingToolCall(snapshot.text)) {
+      void this.reportLeakedToolDispatch(agentId, stillOpen, snapshot.text).catch((error) => {
+        this.logger.warn(
+          { err: error, agentId, component: "commander-card" },
+          "mission_control.instructions.leaked_tool_report_failed",
+        );
+      });
+      return;
+    }
     void this.synthesizeCommanderAnswerCards(agentId, stillOpen, snapshot.text).catch((error) => {
       this.logger.warn(
         { err: error, agentId, component: "commander-card" },
         "mission_control.instructions.synthetic_answer_failed",
       );
     });
+  }
+
+  /**
+   * Record a dispatch the Commander only *wrote* instead of calling: emit one
+   * failure card naming the leaked tools so the feed shows the instruction was
+   * not carried out, and leave the ledger row open so it still reads as
+   * unanswered.
+   */
+  private async reportLeakedToolDispatch(
+    agentId: string,
+    ids: string[],
+    text: string,
+  ): Promise<void> {
+    const leaked = detectLeakedToolCalls(text);
+    const headline = `Dispatch not sent: Commander wrote ${
+      leaked.length > 0 ? leaked.join(", ") : "a tool call"
+    } as text`.slice(0, SYNTHETIC_ANSWER_HEADLINE_CAP);
+    const event = await this.emitEvent({
+      agentId,
+      kind: "failed",
+      source: "system",
+      severity: "attention",
+      headline,
+      detail: stripLeakedToolMarkup(text).slice(0, SYNTHETIC_ANSWER_BODY_CAP),
+    });
+    this.logger.warn(
+      {
+        component: "commander-card",
+        eventId: event.id,
+        agentId,
+        instructionIds: ids,
+        leakedTools: leaked,
+      },
+      "mission_control.instructions.leaked_tool_dispatch",
+    );
   }
 
   /**
@@ -2877,7 +2979,7 @@ export class MissionControlService {
         answer: {
           kind: "generic",
           headline,
-          body: stripPostAnswerToolMarkup(text).slice(0, SYNTHETIC_ANSWER_BODY_CAP),
+          body: stripLeakedToolMarkup(text).slice(0, SYNTHETIC_ANSWER_BODY_CAP),
           respondsTo: id,
         },
       });

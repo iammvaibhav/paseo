@@ -15,6 +15,7 @@ You are the main agent. Subagents are a normal execution mechanism for bounded i
 - Comments: use judiciously. Comment non-obvious intent, invariants, and edge cases.
 - Do not vomit comments.
 - Do not put chat decisions, deliberation, or “we decided X in conversation” into code comments.
+- Always use ASD-STE100 Simplified Technical English when you talk to me/write documentation/write comments.
 
 ## Delegation gate (decide first)
 

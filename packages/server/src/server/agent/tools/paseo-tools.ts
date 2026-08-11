@@ -5276,6 +5276,8 @@ async function dispatchInterrupt(params: {
   classification: AgentTimelineUserMessageClassification;
   replaceOrigin?: "user" | "machinery";
   recordStopOrigin?: (agentId: string, origin: "user" | "machinery") => void;
+  /** Client optimistic message id; rides the run so the echoed user row carries it. */
+  messageId?: string;
   logger: Logger;
 }): Promise<"interrupt"> {
   const {
@@ -5286,6 +5288,7 @@ async function dispatchInterrupt(params: {
     classification,
     replaceOrigin,
     recordStopOrigin,
+    messageId,
     logger,
   } = params;
   // Interrupt turns echo the submitted prompt as a user row naturally; stamp
@@ -5302,9 +5305,30 @@ async function dispatchInterrupt(params: {
     agentId,
     prompt: promptWithAttachments,
     replaceOrigin,
+    messageId,
     logger,
   });
   return "interrupt";
+}
+
+/**
+ * Run options for a dispatched prompt: the superseding origin and the client's
+ * optimistic message id, omitted entirely when neither applies so callers keep
+ * the previous "no runOptions" shape.
+ */
+function dispatchRunOptions(input: {
+  replaceOrigin?: "user" | "machinery";
+  messageId?: string;
+}): { runOptions: { replaceOrigin?: "user" | "machinery"; clientMessageId?: string } } | undefined {
+  if (!input.replaceOrigin && !input.messageId) {
+    return undefined;
+  }
+  return {
+    runOptions: {
+      ...(input.replaceOrigin ? { replaceOrigin: input.replaceOrigin } : {}),
+      ...(input.messageId ? { clientMessageId: input.messageId } : {}),
+    },
+  };
 }
 
 export async function dispatchLocalPromptMode(params: {
@@ -5314,6 +5338,14 @@ export async function dispatchLocalPromptMode(params: {
   prompt: string;
   mode: "steer" | "interrupt" | "queue";
   attachments?: AgentAttachment[];
+  /**
+   * The client's optimistic message id (the local user_message's
+   * clientMessageId). Every user row this dispatch records or echoes carries
+   * it so the client reconciles the row with its optimistic bubble — one row,
+   * not two. Absent (older clients, machinery dispatches) → no dedupe,
+   * exactly as before.
+   */
+  messageId?: string;
   /**
    * How the delivered prompt classifies on the agent's OWN timeline row:
    * "machinery" (status asks — stall nudges) vs "instruction" (Commander
@@ -5347,7 +5379,8 @@ export async function dispatchLocalPromptMode(params: {
   onOutOfBandSteer?: () => void;
   logger: Logger;
 }): Promise<"steer" | "interrupt" | "queue" | "steer-interrupt"> {
-  const { agentManager, agentStorage, agentId, prompt, mode, attachments, logger } = params;
+  const { agentManager, agentStorage, agentId, prompt, mode, attachments, messageId, logger } =
+    params;
   const classification = params.classification ?? "instruction";
   const replaceOrigin = params.replaceOrigin;
   const recordStopOrigin = params.recordStopOrigin;
@@ -5361,6 +5394,7 @@ export async function dispatchLocalPromptMode(params: {
       classification,
       replaceOrigin,
       recordStopOrigin,
+      messageId,
       logger,
     });
   }
@@ -5386,6 +5420,11 @@ export async function dispatchLocalPromptMode(params: {
           type: "user_message",
           text: steerText,
           classification,
+          // The steer runs inside the provider runtime, so this appended row
+          // is the ONLY daemon-side record of the prompt. Carry the client's
+          // optimistic message id so the client reconciles this row with its
+          // optimistic bubble instead of rendering a duplicate.
+          ...(messageId ? { clientMessageId: messageId } : {}),
         });
         // Honest delivery: handled means the provider accepted the prompt —
         // NOT that the agent will act on it (a wedged omp loop can swallow
@@ -5410,6 +5449,7 @@ export async function dispatchLocalPromptMode(params: {
         agentId,
         prompt: promptWithAttachments,
         replaceOrigin,
+        messageId,
         logger,
       });
       return "steer";
@@ -5423,7 +5463,7 @@ export async function dispatchLocalPromptMode(params: {
     recordStopOrigin?.(agentId, replaceOrigin ?? "machinery");
     await startAgentRun(agentManager, agentId, promptWithAttachments, logger, {
       replaceRunning: true,
-      runOptions: replaceOrigin ? { replaceOrigin } : undefined,
+      ...dispatchRunOptions({ replaceOrigin, messageId }),
     });
     return "steer-interrupt";
   }
@@ -5439,6 +5479,7 @@ export async function dispatchLocalPromptMode(params: {
   }
   await startAgentRun(agentManager, agentId, promptWithAttachments, logger, {
     replaceRunning: false,
+    ...dispatchRunOptions({ messageId }),
   });
   return "queue";
 }

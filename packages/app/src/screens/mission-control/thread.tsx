@@ -5,6 +5,7 @@ import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { ChevronDown } from "lucide-react-native";
 import type { Theme } from "@/styles/theme";
 import { MAX_CONTENT_WIDTH, useIsCompactFormFactor } from "@/constants/layout";
+import { containsLeakedToolMarkup } from "./answer-card-display";
 import {
   ActivityLog,
   AssistantMessage,
@@ -71,12 +72,10 @@ const OMP_NOTICE_SOURCES = new Set(["omp_notice", "omp_system_notice"]);
 
 function isPlumbingAssistantText(text: string): boolean {
   const trimmed = text.trimStart();
-  // Raw post_answer tool echoes belong in answer cards, never as assistant prose.
-  if (trimmed.includes("<post_answer") || trimmed.startsWith("Answer to #")) {
-    // "Answer to #N:" headlines alone are fine; only hide when the body is raw tool XML.
-    if (trimmed.includes("<post_answer")) {
-      return true;
-    }
+  // A raw tool-call tag is never prose: it is a model that failed native
+  // function calling. Cards carry the outcome, so hide the markup here.
+  if (containsLeakedToolMarkup(trimmed)) {
+    return true;
   }
   return BRACKET_PLUMBING_PATTERN.test(trimmed);
 }

@@ -1221,28 +1221,18 @@ export const useSessionStore = create<SessionStore>()(
             agentId,
             transition,
           );
-          const nextLiveness = agentTurnLiveness.get(agentId);
-          const becameIdle =
-            agentTurnLiveness !== session.agentTurnLiveness &&
-            (nextLiveness === undefined || nextLiveness.phase === "idle");
-          let messageSubmissions = session.messageSubmissions;
-          if (becameIdle && session.messageSubmissions.has(agentId)) {
-            // A closed turn means no in-flight send should keep the interrupt
-            // control latched. Drop residual submissions for this agent.
-            messageSubmissions = new Map(session.messageSubmissions);
-            messageSubmissions.delete(agentId);
-          }
-          if (
-            agentTurnLiveness === session.agentTurnLiveness &&
-            messageSubmissions === session.messageSubmissions
-          ) {
+          // A submission stays active until its canonical row arrives — see the
+          // "message submission ordering" invariant. Turn liveness alone never
+          // settles it: an idle snapshot lands between a send and the turn
+          // opening, and a stream_close can precede the canonical row.
+          if (agentTurnLiveness === session.agentTurnLiveness) {
             return prev;
           }
           return {
             ...prev,
             sessions: {
               ...prev.sessions,
-              [serverId]: { ...session, agentTurnLiveness, messageSubmissions },
+              [serverId]: { ...session, agentTurnLiveness },
             },
           };
         });

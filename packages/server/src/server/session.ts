@@ -8053,6 +8053,10 @@ export class Session {
         const mailboxResult = await this.missionControlService.deliverCommanderInstruction({
           text: msg.text,
           source: msg.source ?? "chat",
+          // The composer's optimistic message id: threaded through the mailbox
+          // so the daemon-appended timeline row carries the same clientMessageId
+          // the client reconciliation compares (one row, not two).
+          ...(msg.messageId ? { messageId: msg.messageId } : {}),
           ...(msg.attachments && msg.attachments.length > 0
             ? { attachments: msg.attachments }
             : {}),
