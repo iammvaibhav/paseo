@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import type { DaemonClient } from "@getpaseo/client";
+import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type {
   MissionControlCentralConfig,
   MissionControlContextAgentSummary,

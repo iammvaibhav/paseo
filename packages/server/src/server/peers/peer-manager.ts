@@ -1,4 +1,5 @@
-import { DaemonClient, type WebSocketLike } from "@getpaseo/client";
+import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
+import type { WebSocketLike } from "@getpaseo/client/internal/daemon-client-transport-types";
 import type { MissionControlPeerStatus } from "@getpaseo/protocol/mission-control/types";
 import {
   buildDaemonWebSocketUrl,

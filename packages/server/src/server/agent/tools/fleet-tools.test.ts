@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import { createTestLogger } from "../../../test-utils/test-logger.js";
 import { createProviderSnapshotManagerStub } from "../../test-utils/session-stubs.js";
-import type { DaemonClient } from "@getpaseo/client";
+import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { AgentManager } from "../agent-manager.js";
 import type { AgentStorage } from "../agent-storage.js";
 import type { ProviderSnapshotManager } from "../provider-snapshot-manager.js";

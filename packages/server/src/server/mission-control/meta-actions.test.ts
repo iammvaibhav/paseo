@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import pino from "pino";
 import { Writable } from "node:stream";
 import { createTestLogger } from "../../test-utils/test-logger.js";
-import type { DaemonClient } from "@getpaseo/client";
+import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type {
   MissionControlMetaPlan,
   MissionControlProposal,

@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { extname, isAbsolute, resolve } from "node:path";
-import type { DaemonClient } from "@getpaseo/client";
+import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { Logger } from "pino";
 import type { MissionControlPeerStatus } from "@getpaseo/protocol/mission-control/types";
 

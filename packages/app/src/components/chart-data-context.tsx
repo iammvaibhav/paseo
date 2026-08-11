@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useMemo, type ReactNode } from "react";
-import type { DaemonClient } from "@getpaseo/client";
+import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { assertWorkspaceRelativePath, parseChartRows, type ChartRow } from "./chart-data-source";
 
 /** Reads rows for a workspace-relative path, or throws with a displayable message. */

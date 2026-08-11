@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { DaemonClient } from "@getpaseo/client";
+import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { ensureValidJson } from "../../json-utils.js";
 import type { Logger } from "pino";
 

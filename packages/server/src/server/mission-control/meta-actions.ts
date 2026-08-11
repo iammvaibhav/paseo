@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 
 import type { Logger } from "pino";
 
-import type { DaemonClient } from "@getpaseo/client";
+import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type {
   MissionControlMetaPlan,
   MissionControlPeerStatus,
