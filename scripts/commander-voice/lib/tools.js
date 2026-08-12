@@ -6,7 +6,7 @@ export const TOOL_DECLARATIONS = [
   {
     name: "fleet_status",
     description:
-      "Get a spoken-friendly summary of the fleet: how many agents are running, idle, errored or closed, which need your attention, how many proposals await approval, and the Commander's state. No Commander involved; instant.",
+      "Get a spoken summary of agents on the connected host: how many are running or starting, idle, errored or closed, which need your attention, how many proposals await approval, and the Commander's state. Counts are local to this host. For fleet-wide or per-agent status, use commander_dispatch. No Commander involved; instant.",
     parameters: {
       type: "OBJECT",
       properties: {},

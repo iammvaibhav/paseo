@@ -114,11 +114,18 @@ export class DaemonConnection {
     return pool[0];
   }
 
-  /** fleet_status: deterministic board summary. No Commander involved. */
+  /**
+   * fleet_status: deterministic board summary of THIS host. The daemon agent
+   * fetch is local only, so the spoken line says so. Scope "active" mirrors
+   * the board: non-archived agents on live workspaces. Board semantics count
+   * initializing as running; the starting subset is named so the count never
+   * silently drops it. Fleet-wide questions go to commander_dispatch, which
+   * has Commander fleet context. No Commander involved here.
+   */
   async fetchFleetStatus() {
     const sinceTs = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
     const [agentsRes, eventsRes, commander] = await Promise.all([
-      this.client.fetchAgents({}),
+      this.client.fetchAgents({ scope: "active" }),
       this.client.missionControlEventsFetch({ sinceTs }),
       this.findCommanderAgent(),
     ]);
@@ -134,9 +141,17 @@ export class DaemonConnection {
     const pending = eventsRes.events.filter(
       (e) => e.kind === "proposal" && (e.proposal?.status ?? "pending") === "pending",
     );
-    const lines = [
-      `${buckets.running} agents running, ${buckets.idle} idle, ${buckets.error} errored, ${buckets.closed} closed`,
-    ];
+    const running = buckets.running + buckets.initializing;
+    const statusParts = [`${running} agents running`];
+    if (buckets.initializing > 0) {
+      statusParts.push(`${buckets.initializing} still starting`);
+    }
+    statusParts.push(
+      `${buckets.idle} idle`,
+      `${buckets.error} errored`,
+      `${buckets.closed} closed`,
+    );
+    const lines = [`On this host: ${statusParts.join(", ")}`];
     if (needsYou.length > 0) {
       lines.push(`${needsYou.length} need your attention: ${needsYou.join(", ")}`);
     }

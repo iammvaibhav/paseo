@@ -59,5 +59,6 @@ export function loadConfig() {
     updateBufferCap: Number(process.env.UPDATE_BUFFER_CAP || 64),
     tlsKeyPath: process.env.TLS_KEY_PATH || null,
     tlsCertPath: process.env.TLS_CERT_PATH || null,
+    sessionLogDir: process.env.VOICE_SESSION_LOG_DIR || null,
   };
 }

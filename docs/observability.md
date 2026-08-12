@@ -48,6 +48,7 @@ Recovery sends a prompt, which carries interrupt semantics: it cancels the parke
 | `~/.omp/stats.db` (`messages`, `tool_calls`)          | The same per-call telemetry, normalized and queryable by model/provider/folder                                                                 | Ingests **lazily** via a `file_offsets` cursor. Observed 5 hours stale. Useless for live debugging, good for distributions      |
 | `$PASEO_HOME/daemon.log`                              | Daemon-side agent lifecycle, RPC failures                                                                                                      | Single file, no retained history — a 30-minute-old incident can already be gone. Do not plan forensics around it                |
 | `$PASEO_HOME/mission-control/events.jsonl`            | Self-reported status feed, stall proposals, verdicts                                                                                           | Only what agents and machinery chose to report                                                                                  |
+| `$PASEO_HOME/commander-voice/sessions/*.jsonl`        | Structured voice session events (`tool.call`, `tool.result`, `gemini.close`, `resume.*`)                                                       | See [docs/commander-voice.md](commander-voice.md#observability-session-jsonl-logs) for log format and debugging details         |
 
 A useful distribution query, since `stats.db` is the only place these are aggregated:
 

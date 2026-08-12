@@ -244,17 +244,13 @@ export function CommanderVoicePanel({ url, onClose }: CommanderVoicePanelProps):
 
 const styles = StyleSheet.create((theme: Theme) => ({
   container: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    zIndex: 10,
     backgroundColor: theme.colors.surface1,
     borderTopWidth: theme.borderWidth[1],
     borderTopColor: theme.colors.border,
     padding: theme.spacing[3],
     gap: theme.spacing[2],
-    maxHeight: 320,
+    height: 220,
+    flexShrink: 0,
   },
   header: {
     flexDirection: "row",
