@@ -348,6 +348,14 @@ export interface CompactionTimelineItem {
  */
 export type AgentTimelineUserMessageClassification = "machinery" | "instruction";
 
+export interface AgentTaskItem {
+  text: string;
+  completed: boolean;
+  id?: string;
+  status?: "pending" | "in_progress" | "completed";
+  activeForm?: string;
+}
+
 export type AgentTimelineItem =
   | {
       type: "user_message";
@@ -359,7 +367,7 @@ export type AgentTimelineItem =
   | { type: "assistant_message"; text: string; messageId?: string }
   | { type: "reasoning"; text: string }
   | ToolCallTimelineItem
-  | { type: "todo"; items: { text: string; completed: boolean }[] }
+  | { type: "todo"; items: AgentTaskItem[] }
   | { type: "error"; message: string }
   | CompactionTimelineItem;
 

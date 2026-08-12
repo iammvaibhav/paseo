@@ -13,7 +13,7 @@ import {
   parseSidebarRowItems,
   type SidebarRowItems,
 } from "@/components/sidebar/display-preferences/row-items";
-import { THEME_TO_UNISTYLES, type ThemeName } from "@/styles/theme";
+import { THEME_OPTIONS, type ThemePreference } from "@/styles/theme";
 
 export const APP_SETTINGS_KEY = "@paseo:app-settings";
 export const APP_SETTINGS_QUERY_KEY = ["app-settings"];
@@ -31,7 +31,7 @@ export type ToolCallDetailLevel = "overview" | "detailed";
 export type PlannotatorFeedbackMode = "auto-send" | "compose";
 export type DefaultFileOpener = "paseo" | "vscode-web" | "plannotator";
 
-const VALID_THEMES = new Set<string>([...Object.keys(THEME_TO_UNISTYLES), "auto"]);
+const VALID_THEMES = new Set<string>(THEME_OPTIONS.map((option) => option.name));
 const VALID_SERVICE_URL_BEHAVIORS = new Set<ServiceUrlBehavior>(["ask", "in-app", "external"]);
 const VALID_WORKSPACE_TITLE_SOURCES = new Set<WorkspaceTitleSource>(["title", "branch"]);
 const VALID_SIDEBAR_WORKSPACE_TRAILINGS = new Set<SidebarWorkspaceTrailing>([
@@ -63,7 +63,7 @@ export const MAX_CODE_FONT_SIZE = 22; // line-height 1.5×22=33 stays safe
 export const MAX_FONT_FAMILY_LENGTH = 200;
 
 export interface AppSettings {
-  theme: ThemeName | "auto";
+  theme: ThemePreference;
   language: AppLanguage;
   sendBehavior: SendBehavior;
   serviceUrlBehavior: ServiceUrlBehavior;

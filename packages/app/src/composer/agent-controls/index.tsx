@@ -9,6 +9,8 @@ import {
   type RefObject,
 } from "react";
 import { useTranslation } from "react-i18next";
+import { router } from "expo-router";
+import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import {
   View,
   Text,
@@ -41,11 +43,8 @@ import { filterSelectableModels } from "@/provider-selection/model-catalog";
 import { useSessionStore } from "@/stores/session-store";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import {
-  buildFavoriteModelKey,
   mergeProviderPreferencesWithScope,
   resolveEffectiveFormPreferences,
-  resolveFavoriteModels,
-  toggleFavoriteModel,
   useFormPreferences,
   type FormPreferenceScope,
 } from "@/hooks/use-form-preferences";
@@ -95,6 +94,12 @@ import {
   useWorkspaceAttachmentsStore,
 } from "@/attachments/workspace-attachments-store";
 import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
+import {
+  useAgentProfilePicker,
+  type AgentProfileApplyTarget,
+  type AgentProfilePicker,
+} from "@/agent-profiles";
+import { buildSettingsHostSectionRoute } from "@/utils/host-routes";
 
 interface AgentControlOption {
   id: string;
@@ -143,8 +148,9 @@ interface ControlledAgentControlsProps {
   disabled?: boolean;
   isModelLoading?: boolean;
   modelSelectorProviders?: ProviderSelectorProvider[];
-  favoriteKeys?: Set<string>;
-  onToggleFavoriteModel?: (provider: string, modelId: string) => void;
+  agentProfiles?: AgentProfilePicker | null;
+  onApplyAgentProfile?: (profileId: string) => void;
+  onEditAgentProfiles?: () => void;
   features?: AgentFeature[];
   onSetFeature?: (featureId: string, value: unknown) => void;
   onDropdownClose?: () => void;
@@ -278,6 +284,119 @@ function toThinkingControlOptions(options: AgentControlOption[] | undefined): Ag
   }));
 }
 
+/**
+ * The picker's edit shortcut. Agent profiles are host config, so it lands on the
+ * host settings section that owns the list.
+ */
+function useEditAgentProfilesNavigation(
+  serverId: string | null,
+  isSupported: boolean,
+): (() => void) | undefined {
+  const handleEdit = useCallback(() => {
+    if (!serverId) return;
+    router.push(buildSettingsHostSectionRoute(serverId, "agents"));
+  }, [serverId]);
+  return serverId && isSupported ? handleEdit : undefined;
+}
+
+/** Profiles applicable to a live agent (single provider process). */
+function useAgentBoundProfiles(serverId: string, agentId: string, agentProvider?: AgentProvider) {
+  const profileProviders = useMemo(() => (agentProvider ? [agentProvider] : []), [agentProvider]);
+  const profileTarget = useMemo<AgentProfileApplyTarget>(
+    () => ({ kind: "agent", agentId }),
+    [agentId],
+  );
+  const agentProfiles = useAgentProfilePicker({
+    serverId,
+    availableProviders: profileProviders,
+    target: profileTarget,
+  });
+  const handleEditAgentProfiles = useEditAgentProfilesNavigation(serverId, agentProfiles !== null);
+  return { agentProfiles, handleEditAgentProfiles };
+}
+
+function useLiveAgentPreferenceHandlers(args: {
+  agentId: string;
+  agentProvider?: AgentProvider;
+  activeModelId?: string | null;
+  client: DaemonClient | null;
+  preferenceScope: FormPreferenceScope | null;
+  toast: ReturnType<typeof useToast>;
+  updatePreferences: ReturnType<typeof useFormPreferences>["updatePreferences"];
+}) {
+  const {
+    agentId,
+    agentProvider,
+    activeModelId,
+    client,
+    preferenceScope,
+    toast,
+    updatePreferences,
+  } = args;
+
+  const handleSelectThinkingOption = useCallback(
+    (thinkingOptionId: string) => {
+      if (!client || !agentProvider) {
+        return;
+      }
+      if (activeModelId) {
+        void updatePreferences((current) =>
+          mergeProviderPreferencesWithScope({
+            preferences: current,
+            provider: agentProvider,
+            updates: {
+              model: activeModelId,
+              thinkingByModel: {
+                [activeModelId]: thinkingOptionId,
+              },
+            },
+            scope: preferenceScope,
+          }),
+        ).catch((error) => {
+          console.warn("[AgentControls] persist thinking preference failed", error);
+        });
+      }
+      void client
+        .setAgentThinkingOption(agentId, thinkingOptionId)
+        .then((notice) => showProviderNoticeToast(toast, notice))
+        .catch((error: unknown) => {
+          console.warn("[AgentControls] setAgentThinkingOption failed", error);
+          toast.error(toErrorMessage(error));
+        });
+    },
+    [activeModelId, agentId, agentProvider, client, preferenceScope, toast, updatePreferences],
+  );
+
+  const handleSetFeature = useCallback(
+    (featureId: string, value: unknown) => {
+      if (!client || !agentProvider) {
+        return;
+      }
+      void updatePreferences((current) =>
+        mergeProviderPreferencesWithScope({
+          preferences: current,
+          provider: agentProvider,
+          updates: {
+            featureValues: {
+              [featureId]: value,
+            },
+          },
+          scope: preferenceScope,
+        }),
+      ).catch((error: unknown) => {
+        console.warn("[AgentControls] persist feature preference failed", error);
+      });
+      void client.setAgentFeature(agentId, featureId, value).catch((error: unknown) => {
+        console.warn("[AgentControls] setAgentFeature failed", error);
+        toast.error(toErrorMessage(error));
+      });
+    },
+    [agentId, agentProvider, client, preferenceScope, toast, updatePreferences],
+  );
+
+  return { handleSelectThinkingOption, handleSetFeature };
+}
+
 function buildFallbackModelSelectorProviders(
   provider: string,
   modelOptions: AgentControlOption[] | undefined,
@@ -292,7 +411,7 @@ function buildFallbackModelSelectorProviders(
       modelSelection: {
         kind: "models",
         rows: modelOptions.map((option) => ({
-          favoriteKey: buildFavoriteModelKey({ provider, modelId: option.id }),
+          favoriteKey: `${provider}:${option.id}`,
           provider,
           providerLabel: provider,
           modelId: option.id,
@@ -506,8 +625,9 @@ function ControlledAgentControls({
   disabled = false,
   isModelLoading = false,
   modelSelectorProviders,
-  favoriteKeys = new Set<string>(),
-  onToggleFavoriteModel,
+  agentProfiles = null,
+  onApplyAgentProfile,
+  onEditAgentProfiles,
   features,
   onSetFeature,
   onDropdownClose,
@@ -750,12 +870,13 @@ function ControlledAgentControls({
             selectedThinkingOptionId={selectedThinkingOptionId}
             features={features}
             onSetFeature={onSetFeature}
-            onToggleFavoriteModel={onToggleFavoriteModel}
+            onApplyAgentProfile={onApplyAgentProfile}
+            onEditAgentProfiles={onEditAgentProfiles}
             onDropdownClose={onDropdownClose}
             onModelSelectorOpen={onModelSelectorOpen}
             onRetryModelProvider={onRetryModelProvider}
             isRetryingModelProvider={isRetryingModelProvider}
-            favoriteKeys={favoriteKeys}
+            agentProfiles={agentProfiles}
             disabled={disabled}
             isModelLoading={isModelLoading}
             canSelectProvider={canSelectProvider}
@@ -796,12 +917,13 @@ function ControlledAgentControls({
             selectedThinkingOptionId={selectedThinkingOptionId}
             features={features}
             onSetFeature={onSetFeature}
-            onToggleFavoriteModel={onToggleFavoriteModel}
+            onApplyAgentProfile={onApplyAgentProfile}
+            onEditAgentProfiles={onEditAgentProfiles}
             onDropdownClose={onDropdownClose}
             onModelSelectorOpen={onModelSelectorOpen}
             onRetryModelProvider={onRetryModelProvider}
             isRetryingModelProvider={isRetryingModelProvider}
-            favoriteKeys={favoriteKeys}
+            agentProfiles={agentProfiles}
             disabled={disabled}
             isModelLoading={isModelLoading}
             canSelectModel={canSelectModel}
@@ -838,12 +960,13 @@ interface DesktopAgentControlsContentProps {
   selectedThinkingOptionId?: string;
   features?: AgentFeature[];
   onSetFeature?: (featureId: string, value: unknown) => void;
-  onToggleFavoriteModel?: (provider: string, modelId: string) => void;
+  onApplyAgentProfile?: (profileId: string) => void;
+  onEditAgentProfiles?: () => void;
   onDropdownClose?: () => void;
   onModelSelectorOpen?: () => void;
   onRetryModelProvider?: (provider: AgentProvider) => void;
   isRetryingModelProvider: boolean;
-  favoriteKeys: Set<string>;
+  agentProfiles: AgentProfilePicker | null;
   disabled: boolean;
   isModelLoading: boolean;
   canSelectProvider: boolean;
@@ -897,12 +1020,13 @@ function DesktopAgentControlsContent(props: DesktopAgentControlsContentProps) {
     selectedThinkingOptionId,
     features,
     onSetFeature,
-    onToggleFavoriteModel,
+    onApplyAgentProfile,
+    onEditAgentProfiles,
     onDropdownClose,
     onModelSelectorOpen,
     onRetryModelProvider,
     isRetryingModelProvider,
-    favoriteKeys,
+    agentProfiles,
     disabled,
     isModelLoading,
     canSelectProvider,
@@ -983,8 +1107,9 @@ function DesktopAgentControlsContent(props: DesktopAgentControlsContentProps) {
                 selectedProvider={provider}
                 selectedModel={selectedModelId ?? ""}
                 onSelect={handleDesktopModelSelect}
-                favoriteKeys={favoriteKeys}
-                onToggleFavorite={onToggleFavoriteModel}
+                profiles={agentProfiles}
+                onApplyProfile={onApplyAgentProfile}
+                onEditProfiles={onEditAgentProfiles}
                 isLoading={isModelLoading}
                 disabled={modelDisabled}
                 onOpen={onModelSelectorOpen}
@@ -1101,12 +1226,13 @@ interface SheetAgentControlsContentProps {
   selectedThinkingOptionId?: string;
   features?: AgentFeature[];
   onSetFeature?: (featureId: string, value: unknown) => void;
-  onToggleFavoriteModel?: (provider: string, modelId: string) => void;
+  onApplyAgentProfile?: (profileId: string) => void;
+  onEditAgentProfiles?: () => void;
   onDropdownClose?: () => void;
   onModelSelectorOpen?: () => void;
   onRetryModelProvider?: (provider: AgentProvider) => void;
   isRetryingModelProvider: boolean;
-  favoriteKeys: Set<string>;
+  agentProfiles: AgentProfilePicker | null;
   disabled: boolean;
   isModelLoading: boolean;
   canSelectModel: boolean;
@@ -1141,12 +1267,13 @@ function SheetAgentControlsContent(props: SheetAgentControlsContentProps) {
     selectedThinkingOptionId,
     features,
     onSetFeature,
-    onToggleFavoriteModel,
+    onApplyAgentProfile,
+    onEditAgentProfiles,
     onDropdownClose,
     onModelSelectorOpen,
     onRetryModelProvider,
     isRetryingModelProvider,
-    favoriteKeys,
+    agentProfiles,
     disabled,
     isModelLoading,
     canSelectModel,
@@ -1238,8 +1365,9 @@ function SheetAgentControlsContent(props: SheetAgentControlsContentProps) {
       selectedProvider={provider}
       selectedModel={selectedModelId ?? ""}
       onSelect={handleSheetModelSelect}
-      favoriteKeys={favoriteKeys}
-      onToggleFavorite={onToggleFavoriteModel}
+      profiles={agentProfiles}
+      onApplyProfile={onApplyAgentProfile}
+      onEditProfiles={onEditAgentProfiles}
       isLoading={isModelLoading}
       disabled={modelDisabled}
       onOpen={onModelSelectorOpen}
@@ -1501,6 +1629,8 @@ function ThinkingComboboxOption({
   );
 }
 
+// Cross-provider fork (fork) + agent profiles (upstream) keep this control dense.
+// eslint-disable-next-line complexity -- live agent controls orchestrate many surfaces
 export const AgentControls = memo(function AgentControls({
   agentId,
   serverId,
@@ -1556,15 +1686,6 @@ export const AgentControls = memo(function AgentControls({
   const modelOptions = useMemo<AgentControlOption[]>(() => {
     return (models ?? []).map((model) => ({ id: model.id, label: model.label }));
   }, [models]);
-  const favoriteKeys = useMemo(
-    () =>
-      new Set(
-        resolveFavoriteModels(preferences, serverId).map((favorite) =>
-          buildFavoriteModelKey(favorite),
-        ),
-      ),
-    [preferences, serverId],
-  );
 
   const thinkingOptions = useMemo<AgentControlOption[]>(() => {
     return (modelSelection.thinkingOptions ?? []).map((option) => ({
@@ -1764,76 +1885,21 @@ export const AgentControls = memo(function AgentControls({
     [handleSelectProviderAndModel],
   );
 
-  const handleToggleFavoriteModel = useCallback(
-    (provider: string, modelId: string) => {
-      void updatePreferences((current) =>
-        toggleFavoriteModel({ preferences: current, provider, modelId, serverId }),
-      ).catch((error) => {
-        console.warn("[AgentControls] toggle favorite model failed", error);
-      });
-    },
-    [serverId, updatePreferences],
+  const { agentProfiles, handleEditAgentProfiles } = useAgentBoundProfiles(
+    serverId,
+    agentId,
+    agentProvider,
   );
 
-  const handleSelectThinkingOption = useCallback(
-    (thinkingOptionId: string) => {
-      if (!client || !agentProvider) {
-        return;
-      }
-      if (activeModelId) {
-        void updatePreferences((current) =>
-          mergeProviderPreferencesWithScope({
-            preferences: current,
-            provider: agentProvider,
-            updates: {
-              model: activeModelId,
-              thinkingByModel: {
-                [activeModelId]: thinkingOptionId,
-              },
-            },
-            scope: preferenceScope,
-          }),
-        ).catch((error) => {
-          console.warn("[AgentControls] persist thinking preference failed", error);
-        });
-      }
-      void client
-        .setAgentThinkingOption(agentId, thinkingOptionId)
-        .then((notice) => showProviderNoticeToast(toast, notice))
-        .catch((error) => {
-          console.warn("[AgentControls] setAgentThinkingOption failed", error);
-          toast.error(toErrorMessage(error));
-        });
-    },
-    [activeModelId, agentId, agentProvider, client, preferenceScope, toast, updatePreferences],
-  );
-
-  const handleSetFeature = useCallback(
-    (featureId: string, value: unknown) => {
-      if (!client || !agentProvider) {
-        return;
-      }
-      void updatePreferences((current) =>
-        mergeProviderPreferencesWithScope({
-          preferences: current,
-          provider: agentProvider,
-          updates: {
-            featureValues: {
-              [featureId]: value,
-            },
-          },
-          scope: preferenceScope,
-        }),
-      ).catch((error) => {
-        console.warn("[AgentControls] persist feature preference failed", error);
-      });
-      void client.setAgentFeature(agentId, featureId, value).catch((error) => {
-        console.warn("[AgentControls] setAgentFeature failed", error);
-        toast.error(toErrorMessage(error));
-      });
-    },
-    [agentId, agentProvider, client, preferenceScope, toast, updatePreferences],
-  );
+  const { handleSelectThinkingOption, handleSetFeature } = useLiveAgentPreferenceHandlers({
+    agentId,
+    agentProvider,
+    activeModelId,
+    client,
+    preferenceScope,
+    toast,
+    updatePreferences,
+  });
 
   useAgentControlCommandCenterActions({
     sourceId: `agent:${serverId}:${agentId}`,
@@ -1885,8 +1951,9 @@ export const AgentControls = memo(function AgentControls({
       selectedModelId={modelSelection.activeModelId ?? undefined}
       onSelectModel={handleSelectSameProviderModel}
       onSelectProviderAndModel={handleSelectProviderAndModel}
-      favoriteKeys={favoriteKeys}
-      onToggleFavoriteModel={handleToggleFavoriteModel}
+      agentProfiles={agentProfiles}
+      onApplyAgentProfile={agentProfiles?.applyProfile}
+      onEditAgentProfiles={handleEditAgentProfiles}
       thinkingOptions={thinkingOptions.length > 1 ? thinkingOptions : undefined}
       selectedThinkingOptionId={modelSelection.selectedThinkingId ?? undefined}
       onSelectThinkingOption={handleSelectThinkingOption}
@@ -1908,7 +1975,7 @@ export const AgentControls = memo(function AgentControls({
 export function DraftAgentControls({
   providerDefinitions,
   selectedProvider,
-  onSelectProvider: _onSelectProvider,
+  onSelectProvider,
   modeOptions,
   selectedMode,
   onSelectMode,
@@ -1932,19 +1999,9 @@ export function DraftAgentControls({
   modelSelectorServerId = null,
   isCompactLayout,
 }: DraftAgentControlsProps) {
-  const { preferences, updatePreferences } = useFormPreferences();
   const mappedThinkingOptions = useMemo<AgentControlOption[]>(() => {
     return toThinkingControlOptions(thinkingOptions);
   }, [thinkingOptions]);
-  const favoriteKeys = useMemo(
-    () =>
-      new Set(
-        resolveFavoriteModels(preferences, modelSelectorServerId).map((favorite) =>
-          buildFavoriteModelKey(favorite),
-        ),
-      ),
-    [modelSelectorServerId, preferences],
-  );
 
   const effectiveSelectedThinkingOption =
     selectedThinkingOptionId || mappedThinkingOptions[0]?.id || undefined;
@@ -1958,20 +2015,39 @@ export function DraftAgentControls({
     [models],
   );
 
-  const handleToggleFavorite = useCallback(
-    (provider: string, modelId: string) => {
-      void updatePreferences((current) =>
-        toggleFavoriteModel({
-          preferences: current,
-          provider,
-          modelId,
-          serverId: modelSelectorServerId,
-        }),
-      ).catch((error) => {
-        console.warn("[DraftAgentControls] toggle favorite model failed", error);
-      });
-    },
-    [modelSelectorServerId, updatePreferences],
+  // The draft form is the one surface that can switch provider, so every profile
+  // the host can actually run is offered here.
+  const profileProviders = useMemo(
+    () => modelSelectorProviders.map((entry) => entry.id),
+    [modelSelectorProviders],
+  );
+  const profileTarget = useMemo<AgentProfileApplyTarget>(
+    () => ({
+      kind: "draft",
+      controls: {
+        selectProvider: onSelectProvider,
+        selectProviderAndModel: onSelectProviderAndModel,
+        selectMode: onSelectMode,
+        selectThinkingOption: onSelectThinkingOption,
+        setFeature: onSetFeature,
+      },
+    }),
+    [
+      onSelectMode,
+      onSelectProvider,
+      onSelectProviderAndModel,
+      onSelectThinkingOption,
+      onSetFeature,
+    ],
+  );
+  const agentProfiles = useAgentProfilePicker({
+    serverId: modelSelectorServerId,
+    availableProviders: profileProviders,
+    target: profileTarget,
+  });
+  const handleEditAgentProfiles = useEditAgentProfilesNavigation(
+    modelSelectorServerId,
+    agentProfiles !== null,
   );
 
   const modeControl = useMemo<AgentModeControlValue | null>(
@@ -1998,8 +2074,9 @@ export function DraftAgentControls({
       onSelectModel={onSelectModel}
       onSelectProviderAndModel={onSelectProviderAndModel}
       isModelLoading={isAllModelsLoading}
-      favoriteKeys={favoriteKeys}
-      onToggleFavoriteModel={handleToggleFavorite}
+      agentProfiles={agentProfiles}
+      onApplyAgentProfile={agentProfiles?.applyProfile}
+      onEditAgentProfiles={handleEditAgentProfiles}
       thinkingOptions={mappedThinkingOptions.length > 0 ? mappedThinkingOptions : undefined}
       selectedThinkingOptionId={effectiveSelectedThinkingOption}
       onSelectThinkingOption={onSelectThinkingOption}

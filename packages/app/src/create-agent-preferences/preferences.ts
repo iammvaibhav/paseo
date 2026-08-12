@@ -53,8 +53,10 @@ const launchTargetSchema = z.discriminatedUnion("kind", [
 const formPreferencesSchema = z.object({
   provider: z.string().optional(),
   providerPreferences: z.record(z.string(), providerPreferencesSchema).optional(),
-  // COMPAT(globalFavoriteModels): pre-host-scoped favorites. Used as a fallback
-  // until a host has its own list written under favoriteModelsByHost.
+  // COMPAT(agentProfileFavoriteMigration / globalFavoriteModels): favourites
+  // were removed in v0.3.2 in favour of agent profiles. Keep the legacy payload
+  // (and this fork's host-scoped list) alive until every capable host has had a
+  // chance to import it; ordinary preference writes must not erase it first.
   favoriteModels: z.array(favoriteModelSchema).optional(),
   favoriteModelsByHost: z.record(z.string(), z.array(favoriteModelSchema)).optional(),
   isolation: z.enum(["local", "worktree"]).optional(),

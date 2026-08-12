@@ -1071,7 +1071,7 @@ export function FileExplorerPane({
   }
 
   return (
-<View
+    <View
       {...{
         onContextMenu: (event: { preventDefault?: () => void }) => event.preventDefault?.(),
       }}
@@ -1086,25 +1086,25 @@ export function FileExplorerPane({
           selectedEntryPath={selectedEntryPath}
           onUploaded={handleDropUploaded}
         />
-      <FileExplorerPaneContent
-        error={error}
-        showInitialLoading={showInitialLoading}
-        showBackFromError={showBackFromError}
-        listRows={listRows}
-        onNewEntryAtRoot={fsEntryOpsEnabled ? handleNewEntry : undefined}
-        currentSortLabel={currentSortLabel}
-        isRefreshFetching={isRefreshFetching}
-        treeListRef={treeListRef}
-        scrollbar={scrollbar}
-        renderTreeRow={renderTreeRow}
-        handleSortCycle={handleSortCycle}
-        handleToggleHiddenFiles={handleToggleHiddenFiles}
-        handleRefresh={handleRefresh}
-        handleBackFromError={handleBackFromError}
-        handleRetry={handleRetry}
-        sortTriggerStyle={sortTriggerStyle}
-        iconButtonStyle={iconButtonStyle}
-      />
+        <FileExplorerPaneContent
+          error={error}
+          showInitialLoading={showInitialLoading}
+          showBackFromError={showBackFromError}
+          listRows={listRows}
+          onNewEntryAtRoot={fsEntryOpsEnabled ? handleNewEntry : undefined}
+          currentSortLabel={currentSortLabel}
+          isRefreshFetching={isRefreshFetching}
+          treeListRef={treeListRef}
+          scrollbar={scrollbar}
+          renderTreeRow={renderTreeRow}
+          handleSortCycle={handleSortCycle}
+          handleToggleHiddenFiles={handleToggleHiddenFiles}
+          handleRefresh={handleRefresh}
+          handleBackFromError={handleBackFromError}
+          handleRetry={handleRetry}
+          sortTriggerStyle={sortTriggerStyle}
+          iconButtonStyle={iconButtonStyle}
+        />
       </FileDropZone>
     </View>
   );

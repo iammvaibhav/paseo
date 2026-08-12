@@ -395,10 +395,14 @@ export interface SetupFinishNotificationParams {
   logger: Logger;
 }
 
+type FinishNotificationReason = "finished" | "errored" | "needs permission" | "was closed";
+
+const FINISH_NOTIFICATION_MESSAGE_LIMIT = 4000;
+
 interface FinishNotificationBodyInput {
   childAgentId: string;
   title: string;
-  reason: "finished" | "errored" | "needs permission";
+  reason: FinishNotificationReason;
   lastAssistantMessage: string | null;
   permissionRequest?: AgentPermissionRequest;
 }
@@ -420,8 +424,12 @@ function formatFinishNotificationBody(params: FinishNotificationBodyInput): stri
       )}\n</permission-request>`,
     );
   }
-  const lastAssistantMessage = params.lastAssistantMessage?.trim();
+  let lastAssistantMessage = params.lastAssistantMessage?.trim();
   if (lastAssistantMessage) {
+    if (lastAssistantMessage.length > FINISH_NOTIFICATION_MESSAGE_LIMIT) {
+      const omitted = lastAssistantMessage.length - FINISH_NOTIFICATION_MESSAGE_LIMIT;
+      lastAssistantMessage = `${lastAssistantMessage.slice(0, FINISH_NOTIFICATION_MESSAGE_LIMIT)}\n[truncated ${omitted} chars; use get_agent_activity for the full response]`;
+    }
     sections.push(`<agent-response>\n${lastAssistantMessage}\n</agent-response>`);
   }
   return sections.join("\n\n");
@@ -454,7 +462,7 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
   }
 
   async function notify(
-    reason: "finished" | "errored" | "needs permission",
+    reason: FinishNotificationReason,
     permissionRequest?: AgentPermissionRequest,
   ): Promise<void> {
     const callerRecord = await agentStorage.get(callerAgentId);
@@ -486,10 +494,7 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
     });
   }
 
-  function notifySafely(
-    reason: "finished" | "errored" | "needs permission",
-    options: NotifySafelyOptions = {},
-  ): void {
+  function notifySafely(reason: FinishNotificationReason, options: NotifySafelyOptions = {}): void {
     if (stopped) return;
     if (options.terminal ?? true) stop();
     notificationQueue = notificationQueue
@@ -529,7 +534,7 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
           return;
         }
         if (event.agent.lifecycle === "closed") {
-          stop();
+          notifySafely("was closed");
           return;
         }
         return;

@@ -218,6 +218,7 @@ function CommanderMessageRow({
           workspaceRoot={workspaceRoot}
           serverId={serverId}
           client={client}
+          phase="complete"
         />
       );
     case "thought":
@@ -235,7 +236,7 @@ function CommanderMessageRow({
     case "tool_call":
       return renderThreadToolCall(item, verbose, agentNames, resolveHost);
     case "todo_list":
-      return verbose ? <TodoListCard items={item.items} /> : null;
+      return verbose ? <TodoListCard items={item.items} activity={item.activity} /> : null;
     case "activity_log":
       return verbose ? (
         <ActivityLog

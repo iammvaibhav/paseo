@@ -10,7 +10,7 @@ import {
   createSetAgentInitializing,
   refreshAgentInitializationTimeout,
 } from "@/hooks/use-agent-initialization";
-import { generateMessageId, type StreamItem } from "@/types/stream";
+import type { StreamItem } from "@/types/stream";
 import {
   createSessionAgentStreamReducerQueue,
   deriveAgentStreamTurnLiveness,
@@ -43,7 +43,6 @@ import type { AudioPlaybackSource } from "@/voice/audio-engine-types";
 import {
   selectAgentTimelineState,
   useSessionStore,
-  type MessageEntry,
   type SessionState,
 } from "@/stores/session-store";
 import { useWorkspaceSetupStore } from "@/stores/workspace-setup-store";
@@ -72,7 +71,6 @@ import { revalidateSessionAfterResume } from "@/contexts/session-resume-revalida
 // Re-export types from session-store and draft-store for backward compatibility
 export type { DraftInput } from "@/stores/draft-store";
 export type {
-  MessageEntry,
   Agent,
   ExplorerEntry,
   ExplorerFile,
@@ -295,30 +293,6 @@ function finalizeTimelineApplication(input: {
   }
 }
 
-function applyToolResultToMessages(
-  toolCallId: string,
-  result: unknown,
-): (prev: MessageEntry[]) => MessageEntry[] {
-  return (prev) =>
-    prev.map((msg) =>
-      msg.type === "tool_call" && msg.id === toolCallId
-        ? { ...msg, result, status: "completed" as const }
-        : msg,
-    );
-}
-
-function applyToolErrorToMessages(
-  toolCallId: string,
-  error: unknown,
-): (prev: MessageEntry[]) => MessageEntry[] {
-  return (prev) =>
-    prev.map((msg) =>
-      msg.type === "tool_call" && msg.id === toolCallId
-        ? { ...msg, error, status: "failed" as const }
-        : msg,
-    );
-}
-
 function notifyVoiceAbortFailure(
   data: Extract<SessionOutboundMessage, { type: "activity_log" }>["payload"],
   notifyError: (message: string) => void,
@@ -362,8 +336,6 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
 
   // Zustand store actions
   const setIsPlayingAudio = useSessionStore((state) => state.setIsPlayingAudio);
-  const setMessages = useSessionStore((state) => state.setMessages);
-  const setCurrentAssistantMessage = useSessionStore((state) => state.setCurrentAssistantMessage);
   const setAgentStreamTail = useSessionStore((state) => state.setAgentStreamTail);
   const setAgentStreamHead = useSessionStore((state) => state.setAgentStreamHead);
   const setAgentStreamState = useSessionStore((state) => state.setAgentStreamState);
@@ -962,98 +934,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
 
     const unsubActivity = client.on("activity_log", (message) => {
       if (message.type !== "activity_log") return;
-      const data = message.payload;
-      if (data.type === "system" && data.content.includes("Transcribing")) {
-        return;
-      }
-
-      if (data.type === "tool_call" && data.metadata) {
-        const toolCallId =
-          typeof data.metadata.toolCallId === "string" ? data.metadata.toolCallId : "";
-        const toolName = typeof data.metadata.toolName === "string" ? data.metadata.toolName : "";
-        const args = data.metadata.arguments;
-
-        setMessages(serverId, (prev) => [
-          ...prev,
-          {
-            type: "tool_call",
-            id: toolCallId,
-            timestamp: Date.now(),
-            toolName,
-            args,
-            status: "executing",
-          },
-        ]);
-        return;
-      }
-
-      if (data.type === "tool_result" && data.metadata) {
-        const toolCallId =
-          typeof data.metadata.toolCallId === "string" ? data.metadata.toolCallId : "";
-        const result = data.metadata.result;
-
-        const applyToolResult = applyToolResultToMessages(toolCallId, result);
-        setMessages(serverId, applyToolResult);
-        return;
-      }
-
-      if (data.type === "error" && data.metadata && "toolCallId" in data.metadata) {
-        const toolCallId =
-          typeof data.metadata.toolCallId === "string" ? data.metadata.toolCallId : "";
-        const error = data.metadata.error;
-
-        const applyToolError = applyToolErrorToMessages(toolCallId, error);
-        setMessages(serverId, applyToolError);
-      }
-
-      notifyVoiceAbortFailure(data, toast.error);
-
-      let activityType: "system" | "info" | "success" | "error" = "info";
-      if (data.type === "error") activityType = "error";
-
-      if (data.type === "transcript") {
-        setMessages(serverId, (prev) => [
-          ...prev,
-          {
-            type: "user",
-            id: generateMessageId(),
-            timestamp: Date.now(),
-            message: data.content,
-          },
-        ]);
-        return;
-      }
-
-      if (data.type === "assistant") {
-        setMessages(serverId, (prev) => [
-          ...prev,
-          {
-            type: "assistant",
-            id: generateMessageId(),
-            timestamp: Date.now(),
-            message: data.content,
-          },
-        ]);
-        setCurrentAssistantMessage(serverId, "");
-        return;
-      }
-
-      setMessages(serverId, (prev) => [
-        ...prev,
-        {
-          type: "activity",
-          id: generateMessageId(),
-          timestamp: Date.now(),
-          activityType,
-          message: data.content,
-          metadata: data.metadata,
-        },
-      ]);
-    });
-
-    const unsubChunk = client.on("assistant_chunk", (message) => {
-      if (message.type !== "assistant_chunk") return;
-      setCurrentAssistantMessage(serverId, (prev) => prev + message.payload.chunk);
+      notifyVoiceAbortFailure(message.payload, toast.error);
     });
 
     const unsubTranscription = client.on("transcription_result", (message) => {
@@ -1061,11 +942,6 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
 
       const transcriptText = message.payload.text.trim();
       voiceRuntime?.onTranscriptionResult(serverId, transcriptText);
-      if (!transcriptText) {
-        return;
-      }
-
-      setCurrentAssistantMessage(serverId, "");
     });
 
     const unsubVoiceInputState = client.on("voice_input_state", (message) => {
@@ -1108,7 +984,6 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       unsubPermissionResolved();
       unsubAudioOutput();
       unsubActivity();
-      unsubChunk();
       unsubTranscription();
       unsubVoiceInputState();
       unsubTerminalAttention();
@@ -1119,8 +994,6 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
     queryClient,
     serverId,
     setIsPlayingAudio,
-    setMessages,
-    setCurrentAssistantMessage,
     setAgentStreamTail,
     setAgentStreamHead,
     setAgentStreamState,

@@ -23,9 +23,6 @@ import {
   useCallback,
   createContext,
   useContext,
-  isValidElement,
-  Children,
-  cloneElement,
 } from "react";
 import type { ComponentType, ReactNode } from "react";
 import type MarkdownIt from "markdown-it";
@@ -41,7 +38,10 @@ import {
   ChevronDown,
   Check,
   CheckSquare,
+  CircleDot,
   Copy,
+  Plus,
+  RotateCcw,
   TriangleAlertIcon,
   Scissors,
   MicVocal,
@@ -67,7 +67,7 @@ import {
   createMathRenderRules,
   type MarkdownStyles,
 } from "@/components/markdown/renderer";
-import type { TodoEntry, UserMessageImageAttachment } from "@/types/stream";
+import type { TaskActivity, TodoEntry, UserMessageImageAttachment } from "@/types/stream";
 import type { AgentAttachment } from "@getpaseo/protocol/messages";
 import type { ToolCallDetail } from "@getpaseo/protocol/agent-types";
 import { buildToolCallPresentation } from "@/tool-calls/presentation";
@@ -76,10 +76,12 @@ import { getMarkdownListMarker, getMarkdownListSpacing } from "@/utils/markdown-
 import { markdownNodeContainsType } from "@/utils/markdown-ast";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import { HighlightedCodeBlock } from "@/components/highlighted-code-block";
-
 import { renderRichFence } from "@/components/markdown/rich-fence";
 import { ChartDataProvider } from "@/components/chart-data-context";
+import { MarkdownFenceBlock } from "@/components/markdown/fence";
+import type { MarkdownPhase } from "@/components/markdown/fence/types";
 import { splitMarkdownBlocks } from "@/utils/split-markdown-blocks";
+import { colorMarkdownLinkChildren } from "@/components/markdown/link-children";
 import { createAssistantMarkdownParser } from "@/utils/assistant-markdown-parser";
 import { formatDuration, formatMessageTimestamp } from "@/utils/time";
 import { writeMarkdownToRichClipboard } from "@/utils/rich-clipboard";
@@ -755,6 +757,7 @@ interface AssistantMessageProps {
   serverId?: string;
   client?: DaemonClient | null;
   spacing?: "default" | "compactTop" | "compactBottom" | "compactBoth";
+  phase: MarkdownPhase;
 }
 
 export const assistantMessageStylesheet = StyleSheet.create((theme) => ({
@@ -1466,6 +1469,7 @@ export const AssistantMessage = memo(function AssistantMessage({
   serverId,
   client,
   spacing = "default",
+  phase,
 }: AssistantMessageProps) {
   const markdownParser = useMemo(() => {
     const parser = createAssistantMarkdownParser();
@@ -1733,10 +1737,11 @@ export const AssistantMessage = memo(function AssistantMessage({
           return richFence;
         }
         return (
-          <HighlightedCodeBlock
+          <MarkdownFenceBlock
             key={node.key}
             code={node.content}
-            language={node.sourceInfo}
+            info={node.sourceInfo}
+            phase={phase}
             inheritedStyles={inheritedStyles}
             textStyle={styles.fence}
           />
@@ -1894,13 +1899,7 @@ export const AssistantMessage = memo(function AssistantMessage({
           source={getMarkdownLinkSource(node)}
           style={styles.link}
         >
-          {Children.map(children, (child) => {
-            if (!isValidElement(child)) return child;
-            const childProps = child.props as { style?: StyleProp<TextStyle> };
-            return cloneElement(child, {
-              style: [childProps.style, { color: styles.link.color }],
-            } as Partial<{ style: StyleProp<TextStyle> }>);
-          })}
+          {colorMarkdownLinkChildren(children, styles.link.color)}
         </AssistantMarkdownLink>
       ),
       image: (
@@ -1933,11 +1932,11 @@ export const AssistantMessage = memo(function AssistantMessage({
       },
       ...createMathRenderRules(),
     };
-  }, [client, fileLinkActions, markdownParser, occurrenceKey, serverId, workspaceRoot]);
+  }, [client, fileLinkActions, markdownParser, occurrenceKey, phase, serverId, workspaceRoot]);
 
   const blocks = useMemo(() => splitMarkdownBlocks(message), [message]);
   const keyedBlocks = useMemo(
-    () => blocks.map((block, index) => ({ key: `${index}:${block.slice(0, 32)}`, block })),
+    () => blocks.map((block, index) => ({ key: `block:${index}`, block })),
     [blocks],
   );
 
@@ -2288,15 +2287,32 @@ export const CompactionMarker = memo(function CompactionMarker({
 
 interface TodoListCardProps {
   items: TodoEntry[];
+  activity: TaskActivity;
   disableOuterSpacing?: boolean;
 }
 
 interface TodoListItemRowProps {
   text: string;
   completed: boolean;
+  status?: TodoEntry["status"];
 }
 
-function TodoListItemRow({ text, completed }: TodoListItemRowProps) {
+function taskActivityIcon(activity: TaskActivity) {
+  switch (activity.type) {
+    case "added":
+      return Plus;
+    case "started":
+      return CircleDot;
+    case "completed":
+      return Check;
+    case "reopened":
+      return RotateCcw;
+    default:
+      return CheckSquare;
+  }
+}
+
+function TodoListItemRow({ text, completed, status }: TodoListItemRowProps) {
   const badgeStyle = useMemo(
     () => [
       todoListCardStylesheet.radioBadge,
@@ -2312,7 +2328,9 @@ function TodoListItemRow({ text, completed }: TodoListItemRowProps) {
   );
   return (
     <View style={todoListCardStylesheet.itemRow}>
-      <View style={badgeStyle}>
+      <View
+        style={[badgeStyle, status === "in_progress" && todoListCardStylesheet.radioBadgeActive]}
+      >
         {completed ? (
           <ThemedTodoCheckIcon size={12} uniProps={primaryForegroundColorMapping} />
         ) : null}
@@ -2348,6 +2366,12 @@ const todoListCardStylesheet = StyleSheet.create((theme) => ({
   radioBadgeComplete: {
     opacity: 0.95,
   },
+  radioBadgeActive: {
+    borderWidth: 2,
+    borderColor: theme.colors.primary,
+    backgroundColor: "transparent",
+    opacity: 1,
+  },
   itemText: {
     flex: 1,
     color: theme.colors.foreground,
@@ -2365,12 +2389,23 @@ const todoListCardStylesheet = StyleSheet.create((theme) => ({
 
 export const TodoListCard = memo(function TodoListCard({
   items,
+  activity,
   disableOuterSpacing,
 }: TodoListCardProps) {
   const { t } = useTranslation();
   const [isExpanded, setIsExpanded] = useState(false);
-
-  const nextTask = useMemo(() => items.find((item) => !item.completed)?.text, [items]);
+  const activityDisplay = useMemo(() => {
+    if (activity.type === "created") {
+      return {
+        label: t("message.todo.activity.created", { count: activity.count }),
+        secondaryLabel: undefined,
+      };
+    }
+    return {
+      label: t(`message.todo.activity.${activity.type}`),
+      secondaryLabel: activity.task,
+    };
+  }, [activity, t]);
 
   const handleToggle = useCallback(() => {
     setIsExpanded((prev) => !prev);
@@ -2384,7 +2419,12 @@ export const TodoListCard = memo(function TodoListCard({
             <Text style={todoListCardStylesheet.emptyText}>{t("message.todo.empty")}</Text>
           ) : (
             items.map((item) => (
-              <TodoListItemRow key={item.text} text={item.text} completed={item.completed} />
+              <TodoListItemRow
+                key={item.id ?? item.text}
+                text={item.text}
+                completed={item.completed}
+                status={item.status}
+              />
             ))
           )}
         </View>
@@ -2394,9 +2434,9 @@ export const TodoListCard = memo(function TodoListCard({
 
   return (
     <ExpandableBadge
-      label={t("message.todo.title")}
-      secondaryLabel={nextTask}
-      icon={CheckSquare}
+      label={activityDisplay.label}
+      secondaryLabel={activityDisplay.secondaryLabel}
+      icon={taskActivityIcon(activity)}
       isExpanded={isExpanded}
       onToggle={handleToggle}
       renderDetails={renderDetails}
