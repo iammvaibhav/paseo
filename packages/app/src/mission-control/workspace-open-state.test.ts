@@ -43,9 +43,9 @@ function snapshot(input: {
 }
 
 describe("selectWorkspaceOpenState", () => {
-  it('reports an archived ("done") workspace as archived, not unavailable', () => {
+  it("reports a workspace being archived as archived, not unavailable", () => {
     const state = snapshot({
-      workspace: createWorkspace({ id: WORKSPACE_ID, status: "done" }),
+      workspace: createWorkspace({ id: WORKSPACE_ID, archivingAt: "2026-08-01T00:00:00.000Z" }),
       hasHydratedWorkspaces: true,
     });
     expect(selectWorkspaceOpenState(state, SERVER_ID, WORKSPACE_ID)).toEqual({
@@ -102,6 +102,24 @@ describe("selectWorkspaceOpenState", () => {
       isArchivedOrMissing: false,
     });
     expect(selectWorkspaceOpenState(state, SERVER_ID, null)).toEqual({
+      isArchived: false,
+      isUnavailable: false,
+      isArchivedOrMissing: false,
+    });
+  });
+});
+
+describe("selectWorkspaceOpenState idle vs archived", () => {
+  it("does not call an idle workspace archived", () => {
+    // The daemon stamps `archivingAt: null, status: "done"` on a quiet
+    // workspace; "done" means no active work. Treating it as archived put an
+    // Archived banner on every live agent in an idle workspace.
+    const state = snapshot({
+      workspace: createWorkspace({ id: WORKSPACE_ID, status: "done", archivingAt: null }),
+      hasHydratedWorkspaces: true,
+    });
+
+    expect(selectWorkspaceOpenState(state, SERVER_ID, WORKSPACE_ID)).toEqual({
       isArchived: false,
       isUnavailable: false,
       isArchivedOrMissing: false,

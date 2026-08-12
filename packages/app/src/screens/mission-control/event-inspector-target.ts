@@ -77,5 +77,20 @@ export function resolveCardEventAgentServerId(
 ): string {
   const hosts = getHostRuntimeStore().getHosts();
   const hostInfoByServerId = buildHostInfoByServerId(useSessionStore.getState().sessions);
-  return resolveEventAgentServerId(event, hosts, hostInfoByServerId, hostAliases);
+  const resolvedServerId = resolveEventAgentServerId(event, hosts, hostInfoByServerId, hostAliases);
+  // Diagnostics — the resolution that decides which host the inspector opens
+  // the spawned agent against. Bound: fires ONCE PER SPAWN-CARD PRESS (a user
+  // action), never from render or subscription, and only for spawn-kind cards
+  // (non-spawn resolutions are trivial and were never buggy). This is the log
+  // that would have shown the wrong-host fallback (plan host unresolvable →
+  // emitting Commander host chosen) that rendered the agent as a raw UUID.
+  if (event.proposal?.kind === "spawn") {
+    console.warn("[EventInspectorTarget] spawn card host resolution", {
+      serverId: event.serverId,
+      spawnPlanHost: event.proposal?.spawnPlan?.host?.trim() || null,
+      spawnedOnServerIdPresent: Boolean(event.proposal?.spawnedOnServerId?.trim()),
+      resolvedServerId,
+    });
+  }
+  return resolvedServerId;
 }

@@ -41,8 +41,8 @@ export interface WorkspaceOpenState {
  * Shared "would this workspace open dead-end?" check for Mission Control
  * surfaces (board row menu, inspector header). Mirrors the app's missing-state
  * machinery (resolveWorkspaceSelectionStatus / useWorkspaceExists): a synced
- * host that no longer lists the workspace, or a workspace in the archived
- * ("done") bucket, cannot host a live workspace tab.
+ * host that no longer lists the workspace, or a workspace being archived,
+ * cannot host a live workspace tab.
  */
 export function selectWorkspaceOpenState(
   state: SessionsSnapshot,
@@ -54,7 +54,12 @@ export function selectWorkspaceOpenState(
   }
   const workspace = selectWorkspace(state, serverId, workspaceId);
   if (workspace !== null) {
-    const isArchived = workspace.status === "done";
+    // `status: "done"` is the daemon's IDLE default for a quiet workspace —
+    // it stamps `archivingAt: null, status: "done"` at creation and the
+    // sidebar upgrades it to "running" when an agent is active. Reading it as
+    // archived labelled every idle workspace, and every agent inside it,
+    // Archived. `archivingAt` is the real archive signal.
+    const isArchived = workspace.archivingAt !== null;
     return { isArchived, isUnavailable: false, isArchivedOrMissing: isArchived };
   }
   const hasHydratedWorkspaces = selectHasHydratedWorkspaces(state, serverId);

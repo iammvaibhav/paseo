@@ -81,6 +81,26 @@ export function MissionControlInspector({
     return resolveSessionAgent(session, agentId);
   });
 
+  // Diagnostics: when the inspector targets an agent that CANNOT be resolved
+  // on the resolved host, it renders the raw agentId as its label (live bug:
+  // a spawn card opened the inspector against the wrong host and the agent
+  // resolved to nothing). Bound: the effect deps are the resolved target, so
+  // this fires only when the target (or its resolution outcome) changes —
+  // never per render/frame. An agent that resolves later (session hydration)
+  // simply does not log. `sessionExists` distinguishes the two failure modes:
+  // a wrong-host lookup (no session for the resolved serverId) vs a session
+  // that exists but carries no such agent record.
+  useEffect(() => {
+    if (agent !== null) {
+      return;
+    }
+    console.warn("[MissionControlInspector] target agent not in store", {
+      serverId,
+      agentId,
+      sessionExists: Boolean(useSessionStore.getState().sessions[serverId]),
+    });
+  }, [agent, agentId, serverId]);
+
   const { isArchived: workspaceIsArchived, isArchivedOrMissing: workspaceArchivedOrMissing } =
     useWorkspaceOpenState(serverId, agent?.workspaceId);
 

@@ -499,54 +499,81 @@ export class MissionControlApprovals {
     };
   }
 
+  /**
+   * Spawn-kind proposal: create the NEW agent described by spawnPlan
+   * instead of delivering a message. Extracted from send() so the spawn
+   * placement bookkeeping does not push the dispatcher past its
+   * complexity budget.
+   */
+  private async sendSpawnProposal(
+    proposal: Proposal,
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    // Spawn-kind proposal: create the NEW agent described by spawnPlan
+    // (Commander/verifier spawns) instead of delivering a message. Single
+    // execution path for approve and auto mode. Failures log loudly and
+    // NEVER write a "sent" record (a spawn that did not run must not read
+    // as applied) — they surface to the caller so the respond RPC carries
+    // the error back to the app. In ask mode the pending record survives,
+    // so the card keeps its Approve affordance for a retry; in auto mode no
+    // record is written. Live bug: the failure was swallowed (resolve
+    // reported ok:true, record left pending) and Approve looked dead.
+    if (!this.spawn) {
+      this.logger.error(
+        { proposalId: proposal.id, origin: proposal.origin },
+        "mission_control.approvals.spawn_unavailable",
+      );
+      return { ok: false, error: "Spawn executor is not available" };
+    }
+    const result = await this.spawn(proposal);
+    if (!result.ok) {
+      this.logger.error(
+        { proposalId: proposal.id, origin: proposal.origin, error: result.error },
+        "mission_control.approvals.spawn_failed",
+      );
+      return { ok: false, error: result.error };
+    }
+    const updated: Proposal = {
+      ...proposal,
+      ...(result.agentId ? { spawnedAgentId: result.agentId } : {}),
+      // The serverId of the host the spawn RAN on (this daemon or the peer;
+      // the card's own serverId is the EMITTING host and may differ — the
+      // app opens the spawned agent against the stamped host).
+      ...(result.serverId ? { spawnedOnServerId: result.serverId } : {}),
+    };
+    await this.store.putProposal(updated);
+    await this.publish(updated);
+    if (result.agentId) {
+      this.logger.info(
+        {
+          proposalId: proposal.id,
+          agentId: result.agentId,
+          // Where the spawn actually landed: the card's own serverId is the
+          // EMITTING host (the Commander's) and differs for peer-routed
+          // spawns — `serverId` is the executing host's, the same value
+          // stamped onto the proposal as spawnedOnServerId, which is what
+          // the app opens the spawned agent against.
+          serverId: result.serverId,
+          origin: proposal.origin,
+          // Placement inputs, one line per spawn: the host the plan NAMED
+          // ("local" when absent), and the workspace + cwd the agent was
+          // created in — so a wrong-host open and its fallback are
+          // answerable from this line alone. Fires once per successful
+          // spawn execution (the single approve/auto path), never per
+          // render.
+          targetHost: proposal.spawnPlan?.host?.trim() || "local",
+          workspaceId: proposal.spawnPlan?.workspaceId,
+          cwd: proposal.spawnPlan?.cwd,
+        },
+        "mission_control.approvals.spawned",
+      );
+    }
+    return { ok: true };
+    return { ok: true };
+  }
+
   private async send(proposal: Proposal): Promise<{ ok: true } | { ok: false; error: string }> {
     if (proposal.kind === "spawn") {
-      // Spawn-kind proposal: create the NEW agent described by spawnPlan
-      // (Commander/verifier spawns) instead of delivering a message. Single
-      // execution path for approve and auto mode. Failures log loudly and
-      // NEVER write a "sent" record (a spawn that did not run must not read
-      // as applied) — they surface to the caller so the respond RPC carries
-      // the error back to the app. In ask mode the pending record survives,
-      // so the card keeps its Approve affordance for a retry; in auto mode no
-      // record is written. Live bug: the failure was swallowed (resolve
-      // reported ok:true, record left pending) and Approve looked dead.
-      if (!this.spawn) {
-        this.logger.error(
-          { proposalId: proposal.id, origin: proposal.origin },
-          "mission_control.approvals.spawn_unavailable",
-        );
-        return { ok: false, error: "Spawn executor is not available" };
-      }
-      const result = await this.spawn(proposal);
-      if (!result.ok) {
-        this.logger.error(
-          { proposalId: proposal.id, origin: proposal.origin, error: result.error },
-          "mission_control.approvals.spawn_failed",
-        );
-        return { ok: false, error: result.error };
-      }
-      const updated: Proposal = {
-        ...proposal,
-        ...(result.agentId ? { spawnedAgentId: result.agentId } : {}),
-        // The serverId of the host the spawn RAN on (this daemon or the peer;
-        // the card's own serverId is the EMITTING host and may differ — the
-        // app opens the spawned agent against the stamped host).
-        ...(result.serverId ? { spawnedOnServerId: result.serverId } : {}),
-      };
-      await this.store.putProposal(updated);
-      await this.publish(updated);
-      if (result.agentId) {
-        this.logger.info(
-          {
-            proposalId: proposal.id,
-            agentId: result.agentId,
-            serverId: result.serverId,
-            origin: proposal.origin,
-          },
-          "mission_control.approvals.spawned",
-        );
-      }
-      return { ok: true };
+      return this.sendSpawnProposal(proposal);
     }
     if (proposal.kind === "meta") {
       // Meta-kind proposal: apply the fleet meta action described by

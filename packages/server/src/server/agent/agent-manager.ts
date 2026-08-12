@@ -1971,12 +1971,30 @@ export class AgentManager {
     if (!registry) {
       return;
     }
+    const parentWorkspaceId = (await registry.get(parentAgentId))?.workspaceId ?? null;
     const records = await registry.list();
     for (const record of records) {
       if (record.archivedAt) {
         continue;
       }
       if (record.labels?.[PARENT_AGENT_ID_LABEL] !== parentAgentId) {
+        continue;
+      }
+      // Only a child sharing the parent's workspace is a subagent of it. A
+      // child in another workspace is an independent worker that merely
+      // records who dispatched it — Mission Control stamps this label on
+      // every Commander spawn, and cascading there archived live fleet agents
+      // whenever the Commander was archived or recreated.
+      if (parentWorkspaceId && record.workspaceId && record.workspaceId !== parentWorkspaceId) {
+        this.logger.info(
+          {
+            parentAgentId,
+            childAgentId: record.id,
+            parentWorkspaceId,
+            childWorkspaceId: record.workspaceId,
+          },
+          "agent.archive.cascade_skipped_cross_workspace_child",
+        );
         continue;
       }
       if (this.agents.has(record.id)) {
