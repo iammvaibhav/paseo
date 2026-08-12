@@ -5,10 +5,6 @@ import { createStream as createRotatingFileStream } from "rotating-file-stream";
 import { signalProcessTree } from "../src/utils/tree-kill.js";
 
 const WORKER_HEARTBEAT_INTERVAL_MS = 1_000;
-// Kill only after this long without a worker heartbeat. Create/checkout on large
-// repos (stackmod) routinely runs 12-27s; a 15s kill false-restarts mid-request.
-const WORKER_HEARTBEAT_TIMEOUT_MS = 45_000;
-const WORKER_HEALTH_PROBE_TIMEOUT_MS = 1_500;
 const WORKER_TERMINATION_GRACE_MS = 10_000;
 
 interface SupervisorLogFileOptions {
@@ -37,10 +33,6 @@ interface SupervisorHeartbeatMessage {
   type: "paseo:supervisor-heartbeat";
 }
 
-interface WorkerHeartbeatMessage {
-  type: "paseo:worker-heartbeat";
-}
-
 interface SupervisorOptions {
   name: string;
   startupMessage: string;
@@ -54,14 +46,6 @@ interface SupervisorOptions {
     env?: NodeJS.ProcessEnv;
   } | null;
   onWorkerReady?: (message: { listen: string }) => Promise<void> | void;
-  /**
-   * Optional liveness probe used when IPC heartbeats go quiet. Defaults to
-   * GET /api/health on the worker listen target. Returning true keeps the
-   * worker alive (IPC can lag under load while the daemon is still serving).
-   */
-  probeWorkerHealth?: (listen: string) => Promise<boolean>;
-  /** Test seam: override the IPC heartbeat kill threshold (default 45s). */
-  workerHeartbeatTimeoutMs?: number;
   restartOnCrash?: boolean;
   onSupervisorExit?: () => Promise<void> | void;
   logFile?: SupervisorLogFileOptions;
@@ -104,55 +88,6 @@ function parseLifecycleMessage(msg: unknown): WorkerLifecycleMessage | null {
   return null;
 }
 
-function isWorkerHeartbeatMessage(msg: unknown): msg is WorkerHeartbeatMessage {
-  return (
-    typeof msg === "object" &&
-    msg !== null &&
-    "type" in msg &&
-    (msg as { type?: unknown }).type === "paseo:worker-heartbeat"
-  );
-}
-
-function resolveWorkerHealthUrl(listen: string): string | null {
-  const trimmed = listen.trim();
-  if (!trimmed) {
-    return null;
-  }
-  // TCP listen targets are "host:port". Prefer loopback so a bound 0.0.0.0 port
-  // is still probeable from the supervisor process.
-  if (trimmed.includes(":") && !trimmed.startsWith("/") && !trimmed.includes("://")) {
-    const lastColon = trimmed.lastIndexOf(":");
-    const port = Number(trimmed.slice(lastColon + 1));
-    if (Number.isInteger(port) && port > 0 && port <= 65535) {
-      return `http://127.0.0.1:${port}/api/health`;
-    }
-  }
-  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
-    return `${trimmed.replace(/\/$/, "")}/api/health`;
-  }
-  return null;
-}
-
-async function defaultProbeWorkerHealth(listen: string): Promise<boolean> {
-  const url = resolveWorkerHealthUrl(listen);
-  if (!url) {
-    return false;
-  }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), WORKER_HEALTH_PROBE_TIMEOUT_MS);
-  try {
-    const response = await fetch(url, {
-      method: "GET",
-      signal: controller.signal,
-    });
-    return response.ok;
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 function toRotatingFileStreamSize(size: string): string {
   const trimmed = size.trim();
   const match = trimmed.match(/^(\d+)\s*([bBkKmMgG])?$/);
@@ -180,7 +115,6 @@ function createSupervisorLogStream(options: SupervisorLogFileOptions | undefined
 
 export function runSupervisor(options: SupervisorOptions): SupervisorController {
   const restartOnCrash = options.restartOnCrash ?? false;
-  const workerHeartbeatTimeoutMs = options.workerHeartbeatTimeoutMs ?? WORKER_HEARTBEAT_TIMEOUT_MS;
   const workerArgs = options.workerArgs ?? process.argv.slice(2);
   const workerEnv = options.workerEnv ?? process.env;
   const workerExecArgv = options.workerExecArgv ?? ["--import", "tsx"];
@@ -302,10 +236,6 @@ export function runSupervisor(options: SupervisorOptions): SupervisorController 
     }
 
     const currentChild = child;
-    let lastWorkerHeartbeatAt = Date.now();
-    let workerListen: string | null = null;
-    let healthProbeInFlight = false;
-    const probeWorkerHealth = options.probeWorkerHealth ?? defaultProbeWorkerHealth;
     const heartbeat = setInterval(() => {
       const message: SupervisorHeartbeatMessage = { type: "paseo:supervisor-heartbeat" };
       if (currentChild.connected) {
@@ -322,90 +252,27 @@ export function runSupervisor(options: SupervisorOptions): SupervisorController 
     }, WORKER_HEARTBEAT_INTERVAL_MS);
     heartbeat.unref();
 
-    const workerWatchdog = setInterval(() => {
-      if (child !== currentChild || restarting || shuttingDown || healthProbeInFlight) {
-        return;
-      }
-      const heartbeatAgeMs = Date.now() - lastWorkerHeartbeatAt;
-      if (heartbeatAgeMs < workerHeartbeatTimeoutMs) {
-        return;
-      }
-
-      // IPC heartbeats are best-effort. Under Git/agent load the worker event
-      // loop or IPC backlog can delay process.send while the daemon is still
-      // healthy. Probe /api/health before killing so workspace.create and
-      // checkout_status are not aborted by a false worker_heartbeat_timeout.
-      if (workerListen) {
-        healthProbeInFlight = true;
-        void probeWorkerHealth(workerListen)
-          .then((healthy) => {
-            if (child !== currentChild || restarting || shuttingDown) {
-              return undefined;
-            }
-            if (healthy) {
-              writeLifecycleLog("Worker heartbeat delayed but health ok; keeping worker", {
-                heartbeatAgeMs: Date.now() - lastWorkerHeartbeatAt,
-                supervisorPid: process.pid,
-                workerPid: currentChild.pid ?? null,
-                listen: workerListen,
-              });
-              lastWorkerHeartbeatAt = Date.now();
-              return undefined;
-            }
-            writeLifecycleLog("Worker heartbeat timed out; restarting worker", {
-              heartbeatAgeMs: Date.now() - lastWorkerHeartbeatAt,
-              supervisorPid: process.pid,
-              workerPid: currentChild.pid ?? null,
-              healthProbe: "failed",
-              listen: workerListen,
-            });
-            requestRestart("worker_heartbeat_timeout");
-            return undefined;
-          })
-          .finally(() => {
-            healthProbeInFlight = false;
-          });
-        return;
-      }
-
-      writeLifecycleLog("Worker heartbeat timed out; restarting worker", {
-        heartbeatAgeMs,
-        supervisorPid: process.pid,
-        workerPid: currentChild.pid ?? null,
-        healthProbe: "unavailable",
-      });
-      requestRestart("worker_heartbeat_timeout");
-    }, WORKER_HEARTBEAT_INTERVAL_MS);
-    workerWatchdog.unref();
-
     child.on("disconnect", () => {
       writeLifecycleLog("Worker IPC channel disconnected");
     });
 
-    // Worker owns daemon.log (pino file destination). Do not tee stdout/stderr
-    // into the durable log: under log bursts the pipe backpressures, the worker
-    // event loop stalls, heartbeats stop, and this watchdog kills the daemon
-    // mid-request (workspace.create → client "Transport closed").
     child.stdout?.on("data", (chunk: Buffer) => {
       process.stdout.write(chunk);
+      writeDurableChunk(chunk);
     });
 
     child.stderr?.on("data", (chunk: Buffer) => {
       process.stderr.write(chunk);
+      writeDurableChunk(chunk);
     });
 
     child.on("message", (msg: unknown) => {
-      if (isWorkerHeartbeatMessage(msg)) {
-        lastWorkerHeartbeatAt = Date.now();
-        return;
-      }
       const lifecycleMessage = parseLifecycleMessage(msg);
       if (!lifecycleMessage) {
         return;
       }
 
       if (lifecycleMessage.type === "paseo:ready") {
-        workerListen = lifecycleMessage.listen;
         writeLifecycleLog("Worker ready", { listen: lifecycleMessage.listen });
         Promise.resolve(options.onWorkerReady?.({ listen: lifecycleMessage.listen })).catch(
           (error) => {
@@ -430,7 +297,6 @@ export function runSupervisor(options: SupervisorOptions): SupervisorController 
 
     child.on("exit", (code, signal) => {
       clearInterval(heartbeat);
-      clearInterval(workerWatchdog);
       clearForceKillTimer();
       const exitDescriptor = describeExit(code, signal);
       writeLifecycleLog("Worker exited", { code, signal, exit: exitDescriptor });

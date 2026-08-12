@@ -10,18 +10,10 @@ import { resolveSupervisorLogFile } from "./supervisor-log-config.js";
 const repoRoot = path.resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const supervisorPath = fileURLToPath(new URL("./supervisor.ts", import.meta.url));
 
-interface SupervisorSuspension {
-  afterMs: number;
-  durationMs: number;
-}
-
 async function runSupervisorFixture(options: {
   workerSource: string;
   restartOnCrash?: boolean;
-  suspension?: SupervisorSuspension;
   timeoutMs?: number;
-  workerHeartbeatTimeoutMs?: number;
-  probeWorkerHealthSource?: string;
 }): Promise<{
   code: number | null;
   signal: NodeJS.Signals | null;
@@ -49,12 +41,6 @@ async function runSupervisorFixture(options: {
         workerEnv: process.env,
         workerExecArgv: [],
         restartOnCrash: ${JSON.stringify(options.restartOnCrash ?? false)},
-        ${
-          options.workerHeartbeatTimeoutMs === undefined
-            ? ""
-            : `workerHeartbeatTimeoutMs: ${JSON.stringify(options.workerHeartbeatTimeoutMs)},`
-        }
-        ${options.probeWorkerHealthSource ?? ""}
         logFile: {
           path: ${JSON.stringify(logPath)},
           rotate: { maxSize: "1m", maxFiles: 2 },
@@ -66,22 +52,9 @@ async function runSupervisorFixture(options: {
   const startedAt = Date.now();
   const child = spawn(process.execPath, ["--import", "tsx", runnerPath], {
     cwd: repoRoot,
-    detached: options.suspension !== undefined,
     env: { ...process.env },
     stdio: ["ignore", "pipe", "pipe"],
   });
-
-  if (options.suspension) {
-    const supervisorPid = child.pid;
-    if (supervisorPid === undefined) {
-      throw new Error("Supervisor fixture did not start");
-    }
-    const { afterMs, durationMs } = options.suspension;
-    setTimeout(() => {
-      process.kill(-supervisorPid, "SIGSTOP");
-      setTimeout(() => process.kill(-supervisorPid, "SIGCONT"), durationMs);
-    }, afterMs);
-  }
 
   let stdout = "";
   let stderr = "";
@@ -169,7 +142,7 @@ describe("supervisor durable logging", () => {
     });
   });
 
-  test("keeps worker stdout and stderr out of the durable supervisor log", async () => {
+  test("writes supervised worker stdout and stderr to daemon.log", async () => {
     const result = await runSupervisorFixture({
       workerSource: `
         process.stdout.write('{"level":30,"msg":"worker-json-stdout"}\\n');
@@ -180,14 +153,13 @@ describe("supervisor durable logging", () => {
 
     expect(result.code).toBe(0);
     expect(result.signal).toBeNull();
-    // Worker owns daemon.log itself; supervisor only records its own lifecycle.
-    expect(result.log).not.toContain('"worker-json-stdout"');
-    expect(result.log).not.toContain('"worker-json-stderr"');
+    expect(result.log).toContain('"worker-json-stdout"');
+    expect(result.log).toContain('"worker-json-stderr"');
     expect(result.stdout).toContain('"worker-json-stdout"');
     expect(result.stderr).toContain('"worker-json-stderr"');
   });
 
-  test("still surfaces raw worker stdout and stderr on the supervisor process", async () => {
+  test("preserves raw non-JSON stdout and stderr lines", async () => {
     const result = await runSupervisorFixture({
       workerSource: `
         process.stdout.write('raw stdout line\\n');
@@ -196,10 +168,8 @@ describe("supervisor durable logging", () => {
       `,
     });
 
-    expect(result.log).not.toContain("raw stdout line\n");
-    expect(result.log).not.toContain("raw stderr line\n");
-    expect(result.stdout).toContain("raw stdout line\n");
-    expect(result.stderr).toContain("raw stderr line\n");
+    expect(result.log).toContain("raw stdout line\n");
+    expect(result.log).toContain("raw stderr line\n");
   });
 
   test("logs the worker shutdown reason before signaling the worker", async () => {
@@ -219,48 +189,21 @@ describe("supervisor durable logging", () => {
     expect(result.log).toContain('"workerPid":');
   });
 
-  test("keeps a worker alive while heartbeats continue", async () => {
+  test("does not restart a worker based on heartbeat absence", async () => {
     const result = await runSupervisorFixture({
-      timeoutMs: 10_000,
-      workerSource: `
-        setInterval(() => {
-          process.send?.({ type: "paseo:worker-heartbeat" });
-        }, 250);
-        setTimeout(() => {
-          process.send?.({ type: "paseo:shutdown", reason: "healthy_heartbeat_test_complete" });
-        }, 6000);
-      `,
-    });
-
-    expect(result.code).toBe(0);
-    expect(result.signal).toBeNull();
-    expect(result.log).toContain('"reason":"healthy_heartbeat_test_complete"');
-    expect(result.log).not.toContain('"msg":"Worker heartbeat timed out; restarting worker"');
-  }, 10_000);
-
-  test("tolerates a transient seven-second heartbeat pause", async () => {
-    const result = await runSupervisorFixture({
-      timeoutMs: 10_000,
-      // Production default is 45s; keep this fixture short.
-      workerHeartbeatTimeoutMs: 15_000,
+      timeoutMs: 20_000,
       workerSource: `
         import { existsSync, writeFileSync } from "node:fs";
 
         const marker = process.argv[1] + ".started";
         if (!existsSync(marker)) {
           writeFileSync(marker, "started");
-          let heartbeatCount = 0;
-          const heartbeat = setInterval(() => {
-            process.send?.({ type: "paseo:worker-heartbeat" });
-            heartbeatCount += 1;
-            if (heartbeatCount === 3) clearInterval(heartbeat);
-          }, 100);
           setTimeout(() => {
-            process.send?.({ type: "paseo:shutdown", reason: "heartbeat_pause_tolerated" });
-          }, 7_000);
+            process.send?.({ type: "paseo:shutdown", reason: "silent_worker_test_complete" });
+          }, 16_000);
           setInterval(() => {}, 1_000);
         } else {
-          process.send?.({ type: "paseo:shutdown", reason: "unexpected_heartbeat_restart" });
+          process.send?.({ type: "paseo:shutdown", reason: "unexpected_silent_worker_restart" });
           setInterval(() => {}, 1_000);
         }
       `,
@@ -268,83 +211,10 @@ describe("supervisor durable logging", () => {
 
     expect(result.code).toBe(0);
     expect(result.signal).toBeNull();
-    expect(result.log).toContain('"reason":"heartbeat_pause_tolerated"');
-    expect(result.log).not.toContain('"reason":"unexpected_heartbeat_restart"');
+    expect(result.log).toContain('"reason":"silent_worker_test_complete"');
+    expect(result.log).not.toContain('"reason":"unexpected_silent_worker_restart"');
     expect(result.log).not.toContain('"msg":"Worker heartbeat timed out; restarting worker"');
-  }, 10_000);
-
-  test("keeps a worker alive when health probe succeeds during heartbeat silence", async () => {
-    const result = await runSupervisorFixture({
-      timeoutMs: 12_000,
-      workerHeartbeatTimeoutMs: 2_000,
-      probeWorkerHealthSource: `
-        probeWorkerHealth: async () => true,
-      `,
-      workerSource: `
-        import { existsSync, writeFileSync } from "node:fs";
-
-        const marker = process.argv[1] + ".started";
-        if (!existsSync(marker)) {
-          writeFileSync(marker, "started");
-          let heartbeatCount = 0;
-          const heartbeat = setInterval(() => {
-            process.send?.({ type: "paseo:worker-heartbeat" });
-            heartbeatCount += 1;
-            if (heartbeatCount === 2) clearInterval(heartbeat);
-          }, 100);
-          process.send?.({ type: "paseo:ready", listen: "127.0.0.1:6767" });
-          setTimeout(() => {
-            process.send?.({ type: "paseo:shutdown", reason: "health_probe_kept_worker" });
-          }, 6_000);
-          setInterval(() => {}, 1_000);
-        } else {
-          process.send?.({ type: "paseo:shutdown", reason: "unexpected_health_restart" });
-          setInterval(() => {}, 1_000);
-        }
-      `,
-    });
-
-    expect(result.code).toBe(0);
-    expect(result.signal).toBeNull();
-    expect(result.log).toContain('"reason":"health_probe_kept_worker"');
-    expect(result.log).not.toContain('"reason":"unexpected_health_restart"');
-    expect(result.log).toContain('"msg":"Worker heartbeat delayed but health ok; keeping worker"');
-    expect(result.log).not.toContain('"msg":"Worker heartbeat timed out; restarting worker"');
-  }, 15_000);
-
-  test.skipIf(isPlatform("win32"))(
-    "keeps a healthy worker alive after the host resumes from sleep",
-    async () => {
-      const result = await runSupervisorFixture({
-        suspension: { afterMs: 1_000, durationMs: 16_000 },
-        timeoutMs: 25_000,
-        workerSource: `
-          import { existsSync, writeFileSync } from "node:fs";
-
-          const marker = process.argv[1] + ".started";
-          if (!existsSync(marker)) {
-            writeFileSync(marker, "started");
-            setInterval(() => {
-              process.send?.({ type: "paseo:worker-heartbeat" });
-            }, 250);
-            setTimeout(() => {
-              process.send?.({ type: "paseo:shutdown", reason: "sleep_resume_test_complete" });
-            }, 17_000);
-          } else {
-            process.send?.({ type: "paseo:shutdown", reason: "unexpected_sleep_restart" });
-          }
-          setInterval(() => {}, 1_000);
-        `,
-      });
-
-      expect(result.code).toBe(0);
-      expect(result.signal).toBeNull();
-      expect(result.log).toContain('"reason":"sleep_resume_test_complete"');
-      expect(result.log).not.toContain('"reason":"unexpected_sleep_restart"');
-      expect(result.log).not.toContain('"msg":"Worker heartbeat timed out; restarting worker"');
-    },
-    30_000,
-  );
+  }, 25_000);
 
   test.skipIf(isPlatform("win32"))(
     "forces shutdown when a worker ignores SIGTERM",
@@ -365,44 +235,6 @@ describe("supervisor durable logging", () => {
       expect(result.log).toContain('"signal":"SIGKILL"');
     },
     20_000,
-  );
-
-  // POSIX-only: the watchdog uses SIGKILL after its graceful shutdown window.
-  test.skipIf(isPlatform("win32"))(
-    "restarts a worker that stops heartbeating",
-    async () => {
-      const result = await runSupervisorFixture({
-        timeoutMs: 20_000,
-        // Keep the kill path test fast; production default is 45s.
-        workerHeartbeatTimeoutMs: 3_000,
-        workerSource: `
-          import { existsSync, writeFileSync } from "node:fs";
-
-          const marker = process.argv[1] + ".started";
-          if (!existsSync(marker)) {
-            writeFileSync(marker, "started");
-            let heartbeatCount = 0;
-            const heartbeat = setInterval(() => {
-              process.send?.({ type: "paseo:worker-heartbeat" });
-              heartbeatCount += 1;
-              if (heartbeatCount === 3) clearInterval(heartbeat);
-            }, 100);
-            process.on("SIGTERM", () => {});
-            setInterval(() => {}, 1000);
-          } else {
-            process.send?.({ type: "paseo:shutdown", reason: "watchdog_test_complete" });
-            setInterval(() => {}, 1000);
-          }
-        `,
-      });
-
-      expect(result.code).toBe(0);
-      expect(result.signal).toBeNull();
-      expect(result.log).toContain('"msg":"Worker heartbeat timed out; restarting worker"');
-      expect(result.log).toContain('"msg":"Worker did not exit after SIGTERM; forcing SIGKILL"');
-      expect(result.log).toContain('"signal":"SIGKILL"');
-    },
-    30_000,
   );
 
   test.skipIf(isPlatform("win32"))(
