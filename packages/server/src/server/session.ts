@@ -2526,7 +2526,9 @@ export class Session {
    * filesystem, creates the absolute cwd with mkdir recursive when missing,
    * and creates the agent in its own registry — the mkdir happens here, never
    * on the commander's disk. Only the APPLY hops; the proposal card lives on
-   * the commander host.
+   * the commander host. The response carries this daemon's own serverId so
+   * the commander's audit trail can record where the spawn actually ran
+   * (mirrors mission_control.meta.apply).
    */
   private async handleMissionControlSpawnApplyRequest(
     msg: Extract<SessionInboundMessage, { type: "mission_control.spawn.apply.request" }>,
@@ -2539,7 +2541,9 @@ export class Session {
       payload: {
         requestId: msg.requestId,
         ok: result.ok,
-        ...(result.ok ? { agentId: result.agentId } : { error: result.error }),
+        ...(result.ok
+          ? { agentId: result.agentId, serverId: this.serverId }
+          : { error: result.error }),
       },
     });
   }

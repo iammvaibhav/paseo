@@ -171,7 +171,10 @@ function eventIcon(event: FeedCardEvent): ReactElement {
   }
 }
 
-function openEventAgent(event: FeedCardEvent): void {
+function openEventAgent(
+  event: FeedCardEvent,
+  hostAliases?: Readonly<Record<string, string>>,
+): void {
   // Verifier-attributed cards (verdict, verification-failed, verifier-origin
   // proposal) open the VERIFIER's thread in the inspector: verifiers are
   // hidden from board buckets but reachable from their cards, and the thread
@@ -181,7 +184,7 @@ function openEventAgent(event: FeedCardEvent): void {
   // named by spawnPlan.host (cross-host spawns, see
   // resolveEventAgentServerId).
   useInspectorStore.getState().openInspectorAgent({
-    serverId: resolveCardEventAgentServerId(event),
+    serverId: resolveCardEventAgentServerId(event, hostAliases),
     agentId: event.verifierAgentId ?? event.agentId,
   });
 }
@@ -214,6 +217,7 @@ export function FeedCard({
 
   const handlePointerEnter = useCallback(() => setIsHovered(true), []);
   const handlePointerLeave = useCallback(() => setIsHovered(false), []);
+  const centralConfig = useMissionControlCentralConfig().config;
   const handleOpenAgent = useCallback(() => openEventAgent(event), [event]);
   const timestamp = new Date(event.ts);
   // The daemon now stamps names onto MC events, but events recorded before
@@ -224,7 +228,7 @@ export function FeedCard({
       ? resolveSessionAgent(state.sessions[event.serverId], event.agentId)
       : null,
   );
-  const hideAgentNames = useMissionControlCentralConfig().config?.hideAgentNames === true;
+  const hideAgentNames = centralConfig?.hideAgentNames === true;
 
   if (event.kind === "proposal" && event.proposal) {
     if (!verbose && isVerboseOnlyProposalEvent(event)) {

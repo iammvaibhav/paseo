@@ -155,3 +155,34 @@ describe("useHostInfoByServerId", () => {
     );
   });
 });
+
+describe("resolveCommanderServerId host naming", () => {
+  const hosts = [{ serverId: "srv_local" }, { serverId: "srv_peer" }];
+  const info = {
+    srv_local: { hostname: "MacBook-Pro-89.local", hostAlias: "MacBook" },
+    srv_peer: { hostname: "blrofc3", hostAlias: "Work/Bangalore office Server" },
+  };
+
+  it("matches a host alias regardless of case", () => {
+    // The fleet map names the host "macbook"; the host's own alias is
+    // "MacBook". An exact comparison resolved nothing and the caller silently
+    // fell back to the wrong host.
+    expect(resolveCommanderServerId("macbook", hosts, info)).toBe("srv_local");
+  });
+
+  it("matches a hostname regardless of case and surrounding space", () => {
+    expect(resolveCommanderServerId("  BLROFC3 ", hosts, info)).toBe("srv_peer");
+  });
+
+  it("resolves through the central alias map when no self-reported name matches", () => {
+    expect(
+      resolveCommanderServerId("office server", hosts, info, {
+        srv_peer: "office server",
+      }),
+    ).toBe("srv_peer");
+  });
+
+  it("returns null when nothing matches", () => {
+    expect(resolveCommanderServerId("unknown-host", hosts, info)).toBeNull();
+  });
+});

@@ -20,17 +20,84 @@ const hostInfoByServerId: HostInfoByServerId = {
   "srv-macbook": { hostname: "macbook.local", hostAlias: "macbook" },
 };
 
-function spawnCard(input: { serverId?: string; host?: string | null }): SpawnHostCarryingEvent {
+function spawnCard(input: {
+  serverId?: string;
+  host?: string | null;
+  spawnedOnServerId?: string | null;
+}): SpawnHostCarryingEvent {
   return {
     serverId: input.serverId ?? "srv-commander",
     proposal: {
       kind: "spawn",
       ...(input.host !== undefined ? { spawnPlan: { host: input.host } } : {}),
+      ...(input.spawnedOnServerId !== undefined
+        ? { spawnedOnServerId: input.spawnedOnServerId }
+        : {}),
     },
   };
 }
 
 describe("resolveEventAgentServerId", () => {
+  it("prefers the stamped spawnedOnServerId over the spawn plan host alias", () => {
+    expect(
+      resolveEventAgentServerId(
+        spawnCard({ host: "macbook", spawnedOnServerId: "srv-exec" }),
+        hosts,
+        hostInfoByServerId,
+      ),
+    ).toBe("srv-exec");
+  });
+
+  it("prefers the stamped spawnedOnServerId even when the alias would resolve elsewhere", () => {
+    expect(
+      resolveEventAgentServerId(
+        spawnCard({ host: "ghost", spawnedOnServerId: "srv-exec" }),
+        hosts,
+        hostInfoByServerId,
+      ),
+    ).toBe("srv-exec");
+  });
+
+  it('prefers the stamped spawnedOnServerId over "local" spawn plans (stamp is ground truth)', () => {
+    expect(
+      resolveEventAgentServerId(
+        spawnCard({ host: "local", spawnedOnServerId: "srv-macbook" }),
+        hosts,
+        hostInfoByServerId,
+      ),
+    ).toBe("srv-macbook");
+  });
+
+  it("prefers the stamped spawnedOnServerId over the emitting host", () => {
+    expect(
+      resolveEventAgentServerId(
+        spawnCard({ spawnedOnServerId: "srv-exec" }),
+        hosts,
+        hostInfoByServerId,
+      ),
+    ).toBe("srv-exec");
+  });
+
+  it("falls back to alias resolution when the stamp is absent or blank", () => {
+    expect(
+      resolveEventAgentServerId(spawnCard({ host: "macbook" }), hosts, hostInfoByServerId),
+    ).toBe("srv-macbook");
+    expect(
+      resolveEventAgentServerId(
+        spawnCard({ host: "macbook", spawnedOnServerId: "  " }),
+        hosts,
+        hostInfoByServerId,
+      ),
+    ).toBe("srv-macbook");
+    expect(
+      resolveEventAgentServerId(
+        spawnCard({ host: "macbook", spawnedOnServerId: null }),
+        hosts,
+        hostInfoByServerId,
+      ),
+    ).toBe("srv-macbook");
+  });
+
   it("resolves a spawn plan host alias to the connected host", () => {
     expect(
       resolveEventAgentServerId(spawnCard({ host: "macbook" }), hosts, hostInfoByServerId),

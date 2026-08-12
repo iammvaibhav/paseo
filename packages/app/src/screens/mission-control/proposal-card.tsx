@@ -361,7 +361,8 @@ export function ProposalCard({
     },
     [sessionWorkspaces],
   );
-  const hideAgentNames = useMissionControlCentralConfig().config?.hideAgentNames === true;
+  const centralConfig = useMissionControlCentralConfig().config;
+  const hideAgentNames = centralConfig?.hideAgentNames === true;
   // App-composed chrome: the stored title snapshot stays the card copy unless
   // it is an opaque agent id (the daemon's title fallback for unnamed
   // subjects) — those resolve to the record's own label / live fleet identity

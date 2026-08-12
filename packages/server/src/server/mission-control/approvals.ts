@@ -161,11 +161,14 @@ export interface MissionControlApprovalsOptions {
    * Execute a spawn-kind proposal (kind === "spawn"): create the NEW agent the
    * proposal describes. Runs on approve (user-approved pending card) and on
    * auto-send in auto mode — the single execution path for both. Returns the
-   * spawned agent id so the proposal can record it (spawnedAgentId).
+   * spawned agent id so the proposal can record it (spawnedAgentId), and the
+   * executing host's serverId (`serverId`, additive) so the proposal can
+   * record where the spawn actually ran (spawnedOnServerId — the card's
+   * event.serverId is the EMITTING host, which may differ for peer spawns).
    */
   spawn?: (
     proposal: Proposal,
-  ) => Promise<{ ok: true; agentId?: string } | { ok: false; error: string }>;
+  ) => Promise<{ ok: true; agentId?: string; serverId?: string } | { ok: false; error: string }>;
   /**
    * Execute a meta-kind proposal (kind === "meta"): apply the fleet meta
    * action the proposal describes (rename/archive project·workspace·agent,
@@ -525,12 +528,21 @@ export class MissionControlApprovals {
       const updated: Proposal = {
         ...proposal,
         ...(result.agentId ? { spawnedAgentId: result.agentId } : {}),
+        // The serverId of the host the spawn RAN on (this daemon or the peer;
+        // the card's own serverId is the EMITTING host and may differ — the
+        // app opens the spawned agent against the stamped host).
+        ...(result.serverId ? { spawnedOnServerId: result.serverId } : {}),
       };
       await this.store.putProposal(updated);
       await this.publish(updated);
       if (result.agentId) {
         this.logger.info(
-          { proposalId: proposal.id, agentId: result.agentId, origin: proposal.origin },
+          {
+            proposalId: proposal.id,
+            agentId: result.agentId,
+            serverId: result.serverId,
+            origin: proposal.origin,
+          },
           "mission_control.approvals.spawned",
         );
       }

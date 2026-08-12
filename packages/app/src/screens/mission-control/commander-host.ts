@@ -41,15 +41,27 @@ export interface CommanderHostLike {
 }
 
 /**
- * Resolves the central-config commanderHost designation to a connected host's
- * serverId: by serverId first, then by server_info hostname, then by
- * missionControlHostAlias. Designation is required, never defaulted: no
+ * Resolves a host designation (central-config commanderHost, or a spawn plan's
+ * target host) to a connected host's serverId: by serverId, then the central
+ * `hostAliases` map, then server_info hostname, then missionControlHostAlias.
+ *
+ * Name matching is case- and whitespace-insensitive. The fleet map the
+ * Commander writes from takes its names from the central `hostAliases` map
+ * ("macbook"), while a host's own `missionControl.hostAlias` is free text
+ * ("MacBook"); an exact comparison silently failed to resolve and callers fell
+ * back to the wrong host. Designation is required, never defaulted: no
  * designation → null (no host is selected).
  */
+function normalizeHostName(value: string | null | undefined): string | null {
+  const trimmed = value?.trim().toLowerCase();
+  return trimmed ? trimmed : null;
+}
+
 export function resolveCommanderServerId(
   centralCommanderHost: string | null,
   hosts: readonly CommanderHostLike[],
   hostInfoByServerId: Readonly<HostInfoByServerId>,
+  hostAliases?: Readonly<Record<string, string>>,
 ): string | null {
   if (!centralCommanderHost) {
     return null;
@@ -58,12 +70,19 @@ export function resolveCommanderServerId(
   if (direct) {
     return direct.serverId;
   }
+  const target = normalizeHostName(centralCommanderHost);
+  if (!target) {
+    return null;
+  }
   return (
     hosts.find((host) => {
       const info = hostInfoByServerId[host.serverId];
+      // The central alias map is the fleet's own naming, so it wins over the
+      // host's self-reported alias.
       return (
-        info?.hostname === centralCommanderHost ||
-        (info?.hostAlias !== null && info?.hostAlias === centralCommanderHost)
+        normalizeHostName(hostAliases?.[host.serverId]) === target ||
+        normalizeHostName(info?.hostname) === target ||
+        normalizeHostName(info?.hostAlias) === target
       );
     })?.serverId ?? null
   );

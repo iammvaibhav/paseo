@@ -31,9 +31,26 @@ import { resolveMetaTargetHost, type MetaTargetResolutionDependencies } from "./
  * isDispatchedByCommander() is false and the finished-event machinery
  * follow-up is silently gated. The peer-routed plan carries the stamped label
  * over the wire, so the TARGET host persists it in ITS registry.
+ *
+ * Every successful spawn also returns the serverId of the host that actually
+ * ran it (spawnedOnServerId): local spawns carry this daemon's serverId, peer
+ * spawns the peer's (from the spawn.apply response, which the applying daemon
+ * stamps with its own identity — mirroring mission_control.meta.apply). The
+ * approvals gate stamps it onto the proposal so the app opens the spawned
+ * agent against the executing host, never the card's emitting host (the
+ * Commander's).
  */
 
-export type SpawnExecutorResult = { ok: true; agentId: string } | { ok: false; error: string };
+/**
+ * A spawn attempt result. Every SUCCESSFUL spawn records the serverId of the
+ * host that actually created the agent — this daemon for local spawns, the
+ * peer for peer-routed spawns (the commander's audit trail stamps it onto the
+ * proposal as spawnedOnServerId so the app opens the agent against the right
+ * host, never the emitting Commander host).
+ */
+export type SpawnExecutorResult =
+  | { ok: true; agentId: string; serverId?: string }
+  | { ok: false; error: string };
 
 export interface SpawnExecutorDependencies {
   /**
@@ -55,7 +72,8 @@ export interface SpawnExecutorDependencies {
    * Create the agent on THIS host (the local create-agent command). Receives
    * the fully prepared plan — absolute cwd already ensured, labels already
    * stamped — and the split "provider/model" string the local MCP create
-   * path consumes.
+   * path consumes. The ok result carries THIS host's serverId (the host the
+   * spawn actually ran on).
    */
   createLocally: (
     plan: MissionControlProposalSpawnPlan,
@@ -64,7 +82,8 @@ export interface SpawnExecutorDependencies {
   /**
    * Route the prepared plan to a PEER (the peer apply RPC
    * mission_control.spawn.apply). The peer validates + mkdirs + creates on
-   * ITS host; this host never touches the peer's filesystem.
+   * ITS host; this host never touches the peer's filesystem. The ok result
+   * carries the PEER's serverId (the host the spawn actually ran on).
    */
   createOnPeer: (
     peerName: string,
@@ -94,7 +113,9 @@ export function validateSpawnCwd(
  * Commander-side execution of an approved spawn proposal: stamp the parent
  * label, resolve the plan's host through the shared fleet map (own alias →
  * local), enforce the cwd contract, then dispatch — local hosts create here
- * (mkdir first), peers are forwarded (the peer mkdirs on its own disk).
+ * (mkdir first), peers are forwarded (the peer mkdirs on its own disk). The
+ * ok result carries the serverId of the host the spawn RAN on (this daemon
+ * or the peer), so the caller can stamp spawnedOnServerId on the proposal.
  */
 export async function executeSpawnProposal(
   plan: MissionControlProposalSpawnPlan,
@@ -122,7 +143,9 @@ export async function executeSpawnProposal(
  * mission_control.spawn.apply): THIS host validates the cwd contract against
  * its own filesystem, creates the absolute cwd, and creates the agent in its
  * own registry — the mkdir happens here, never on the commander's disk. Also
- * the local branch of executeSpawnProposal.
+ * the local branch of executeSpawnProposal. The ok result passes through
+ * createLocally's serverId (THIS host's — the host the spawn actually ran
+ * on).
  */
 export async function spawnOnThisHost(
   plan: MissionControlProposalSpawnPlan,

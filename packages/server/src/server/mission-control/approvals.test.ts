@@ -836,7 +836,7 @@ describe("MissionControlApprovals ask-mode gating per action class", () => {
       },
       spawn: async (proposal) => {
         spawned = proposal;
-        return { ok: true, agentId: "spawned-42" };
+        return { ok: true, agentId: "spawned-42", serverId: "server-exec" };
       },
     });
     try {
@@ -857,6 +857,10 @@ describe("MissionControlApprovals ask-mode gating per action class", () => {
       expect(spawned?.id).toBe(proposal.id);
       expect(approvals.getProposal(proposal.id)?.status).toBe("sent");
       expect(approvals.getProposal(proposal.id)?.spawnedAgentId).toBe("spawned-42");
+      // The executing host's serverId rides the spawn result onto the record:
+      // the card's own serverId ("server-1") is the EMITTING host, which can
+      // differ for peer-routed spawns — the stamp is what the app must open.
+      expect(approvals.getProposal(proposal.id)?.spawnedOnServerId).toBe("server-exec");
       expect(delivered).toHaveLength(0);
     } finally {
       await awaitStoreWrites(store);
@@ -909,7 +913,7 @@ describe("MissionControlApprovals ask-mode gating per action class", () => {
     const spawn = vi
       .fn()
       .mockResolvedValueOnce({ ok: false as const, error: "boom" })
-      .mockResolvedValueOnce({ ok: true as const, agentId: "spawned-42" });
+      .mockResolvedValueOnce({ ok: true as const, agentId: "spawned-42", serverId: "server-exec" });
     const harness = await build({ mode: "ask", spawn });
     try {
       const proposal = await harness.approvals.createProposal({
@@ -939,6 +943,7 @@ describe("MissionControlApprovals ask-mode gating per action class", () => {
       expect(spawn).toHaveBeenCalledTimes(2);
       expect(harness.approvals.getProposal(proposal.id)?.status).toBe("sent");
       expect(harness.approvals.getProposal(proposal.id)?.spawnedAgentId).toBe("spawned-42");
+      expect(harness.approvals.getProposal(proposal.id)?.spawnedOnServerId).toBe("server-exec");
     } finally {
       await teardown(harness);
     }

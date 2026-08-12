@@ -6285,6 +6285,7 @@ describe("mission control spawn apply wire dispatch", () => {
     const applySpawnRemote = vi.fn(async () => ({ ok: true as const, agentId: "worker-1" }));
     const session = createSessionForTest({
       messages,
+      serverId: "srv-test",
       missionControlService: {
         applySpawnRemote,
       } as unknown as MissionControlService,
@@ -6312,7 +6313,14 @@ describe("mission control spawn apply wire dispatch", () => {
     expect(messages).toEqual([
       {
         type: "mission_control.spawn.apply.response",
-        payload: { requestId: "req-spawn-apply", ok: true, agentId: "worker-1" },
+        // serverId: the applying daemon's own identity, so the commander's
+        // audit trail records WHERE the spawn ran (spawnedOnServerId).
+        payload: {
+          requestId: "req-spawn-apply",
+          ok: true,
+          agentId: "worker-1",
+          serverId: "srv-test",
+        },
       },
     ]);
   });

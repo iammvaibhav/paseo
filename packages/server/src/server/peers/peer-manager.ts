@@ -170,6 +170,17 @@ export class PeerManager {
     return this.findPeer(name)?.client ?? null;
   }
 
+  /**
+   * The peer daemon's own serverId (captured from its server_info at hello),
+   * or null when the peer has never completed the hello handshake. Mission
+   * Control uses it to record WHERE a peer-routed spawn actually ran
+   * (spawnedOnServerId on the proposal), so the app can open the spawned
+   * agent against the executing host, never the Commander's.
+   */
+  getPeerServerId(name: string): string | null {
+    return this.findPeer(name)?.serverId ?? null;
+  }
+
   private findPeer(name: string): PeerConnection | null {
     const resolved = this.resolvePeerName(name);
     if (resolved === null) {

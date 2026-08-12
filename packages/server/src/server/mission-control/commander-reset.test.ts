@@ -512,7 +512,7 @@ describe("MissionControlService reset + machinery turns", () => {
           mkdirp: async () => undefined,
           createLocally: async (plan) => {
             createdLabels = plan.labels ?? {};
-            return { ok: true as const, agentId: "worker-1" };
+            return { ok: true as const, agentId: "worker-1", serverId: "test-server" };
           },
           createOnPeer: async () => ({ ok: false as const, error: "no peer in this test" }),
         }),

@@ -63,8 +63,16 @@ function buildDeps(overrides: Partial<SpawnExecutorDependencies> = {}): SpawnExe
     stampCommanderParentLabel: true,
     resolveCommanderAgentId: async () => "commander-1",
     mkdirp: async () => undefined,
-    createLocally: vi.fn(async () => ({ ok: true as const, agentId: "worker-local" })),
-    createOnPeer: vi.fn(async () => ({ ok: true as const, agentId: "worker-peer" })),
+    createLocally: vi.fn(async () => ({
+      ok: true as const,
+      agentId: "worker-local",
+      serverId: "srv__alpha",
+    })),
+    createOnPeer: vi.fn(async () => ({
+      ok: true as const,
+      agentId: "worker-peer",
+      serverId: "srv-macbook",
+    })),
     ...overrides,
   };
 }
@@ -210,14 +218,18 @@ describe("spawnOnThisHost (the peer apply path: the TARGET host mkdirs)", () => 
     const mkdirp = vi.fn(async (p: string) => {
       await mkdir(p, { recursive: true });
     });
-    const createLocally = vi.fn(async () => ({ ok: true as const, agentId: "worker-peer" }));
+    const createLocally = vi.fn(async () => ({
+      ok: true as const,
+      agentId: "worker-peer",
+      serverId: "srv-macbook",
+    }));
     const plan = spawnPlan({
       host: "macbook",
       cwd: missing,
       labels: { "paseo.parent-agent-id": "commander-1" },
     });
     const result = await spawnOnThisHost(plan, { mkdirp, createLocally });
-    expect(result).toMatchObject({ ok: true, agentId: "worker-peer" });
+    expect(result).toMatchObject({ ok: true, agentId: "worker-peer", serverId: "srv-macbook" });
     // The mkdir happened on the target host's disk (fs receipt).
     await expect(access(missing)).resolves.toBeUndefined();
     // The create ran against THIS host's registry with the plan's labels — the
@@ -232,7 +244,11 @@ describe("spawnOnThisHost (the peer apply path: the TARGET host mkdirs)", () => 
   });
 
   test("a relative cwd is refused by the target host too", async () => {
-    const createLocally = vi.fn(async () => ({ ok: true as const, agentId: "x" }));
+    const createLocally = vi.fn(async () => ({
+      ok: true as const,
+      agentId: "x",
+      serverId: "srv-macbook",
+    }));
     const result = await spawnOnThisHost(spawnPlan({ cwd: "relative" }), {
       mkdirp: async () => undefined,
       createLocally,
@@ -242,7 +258,11 @@ describe("spawnOnThisHost (the peer apply path: the TARGET host mkdirs)", () => 
   });
 
   test("an absent cwd creates without a directory (the default cwd resolves downstream)", async () => {
-    const createLocally = vi.fn(async () => ({ ok: true as const, agentId: "x" }));
+    const createLocally = vi.fn(async () => ({
+      ok: true as const,
+      agentId: "x",
+      serverId: "srv-macbook",
+    }));
     const mkdirp = vi.fn(async () => undefined);
     const result = await spawnOnThisHost(spawnPlan({}), { mkdirp, createLocally });
     expect(result).toMatchObject({ ok: true });
@@ -250,12 +270,63 @@ describe("spawnOnThisHost (the peer apply path: the TARGET host mkdirs)", () => 
   });
 });
 
-describe("BUG-4: paseo.parent-agent-id stamping at execution time", () => {
-  test("a commander-origin spawn stamps the commander id on the LOCAL create", async () => {
-    const createLocally = vi.fn(async () => ({ ok: true as const, agentId: "worker-local" }));
+describe("spawnedOnServerId (the executing host's serverId)", () => {
+  test("a LOCAL spawn returns this daemon's own serverId", async () => {
+    const deps = buildDeps();
+    const result = await executeSpawnProposal(spawnPlan({ host: "local" }), deps);
+    expect(result).toMatchObject({ ok: true, agentId: "worker-local", serverId: "srv__alpha" });
+  });
+
+  test("a PEER-routed spawn returns the peer's serverId", async () => {
+    const deps = buildDeps();
+    const result = await executeSpawnProposal(spawnPlan({ host: "macbook" }), deps);
+    expect(result).toMatchObject({ ok: true, agentId: "worker-peer", serverId: "srv-macbook" });
+  });
+
+  test("spawnOnThisHost (the peer apply path) returns the TARGET host's serverId", async () => {
+    const createLocally = vi.fn(async () => ({
+      ok: true as const,
+      agentId: "worker-peer",
+      serverId: "srv-macbook",
+    }));
+    const result = await spawnOnThisHost(spawnPlan({ host: "macbook" }), {
+      mkdirp: async () => undefined,
+      createLocally,
+    });
+    expect(result).toMatchObject({ ok: true, agentId: "worker-peer", serverId: "srv-macbook" });
+  });
+
+  test("a failed spawn carries no serverId", async () => {
+    const createLocally = vi.fn(async () => ({ ok: false as const, error: "boom" }));
     const deps = buildDeps({
       createLocally,
-      createOnPeer: vi.fn(async () => ({ ok: true as const, agentId: "x" })),
+      createOnPeer: vi.fn(async () => ({ ok: false as const, error: "boom" })),
+    });
+    expect(await executeSpawnProposal(spawnPlan({ host: "local" }), deps)).toMatchObject({
+      ok: false,
+      error: "boom",
+    });
+    expect(await executeSpawnProposal(spawnPlan({ host: "macbook" }), deps)).toMatchObject({
+      ok: false,
+      error: "boom",
+    });
+  });
+});
+
+describe("BUG-4: paseo.parent-agent-id stamping at execution time", () => {
+  test("a commander-origin spawn stamps the commander id on the LOCAL create", async () => {
+    const createLocally = vi.fn(async () => ({
+      ok: true as const,
+      agentId: "worker-local",
+      serverId: "srv__alpha",
+    }));
+    const deps = buildDeps({
+      createLocally,
+      createOnPeer: vi.fn(async () => ({
+        ok: true as const,
+        agentId: "x",
+        serverId: "srv-macbook",
+      })),
     });
     await executeSpawnProposal(
       spawnPlan({ host: "local", labels: { "custom.label": "kept" } }),
@@ -270,10 +341,18 @@ describe("BUG-4: paseo.parent-agent-id stamping at execution time", () => {
   });
 
   test("a commander-origin spawn carries the stamp to the PEER create (the target persists it)", async () => {
-    const createOnPeer = vi.fn(async () => ({ ok: true as const, agentId: "worker-peer" }));
+    const createOnPeer = vi.fn(async () => ({
+      ok: true as const,
+      agentId: "worker-peer",
+      serverId: "srv-macbook",
+    }));
     const deps = buildDeps({
       createOnPeer,
-      createLocally: vi.fn(async () => ({ ok: true as const, agentId: "x" })),
+      createLocally: vi.fn(async () => ({
+        ok: true as const,
+        agentId: "x",
+        serverId: "srv__alpha",
+      })),
     });
     await executeSpawnProposal(spawnPlan({ host: "macbook", labels: {} }), deps);
     expect(createOnPeer).toHaveBeenCalledWith(
@@ -285,14 +364,22 @@ describe("BUG-4: paseo.parent-agent-id stamping at execution time", () => {
   });
 
   test("non-commander (verifier) spawns are never stamped", async () => {
-    const createLocally = vi.fn(async () => ({ ok: true as const, agentId: "x" }));
+    const createLocally = vi.fn(async () => ({
+      ok: true as const,
+      agentId: "x",
+      serverId: "srv__alpha",
+    }));
     const deps = buildDeps({ stampCommanderParentLabel: false, createLocally });
     await executeSpawnProposal(spawnPlan({ host: "local", labels: {} }), deps);
     expect(createLocally).toHaveBeenCalledWith(expect.objectContaining({ labels: {} }), "omp");
   });
 
   test("an unresolvable commander id skips the stamp without failing the spawn", async () => {
-    const createLocally = vi.fn(async () => ({ ok: true as const, agentId: "x" }));
+    const createLocally = vi.fn(async () => ({
+      ok: true as const,
+      agentId: "x",
+      serverId: "srv__alpha",
+    }));
     const deps = buildDeps({ resolveCommanderAgentId: async () => null, createLocally });
     const result = await executeSpawnProposal(spawnPlan({ host: "local" }), deps);
     expect(result).toMatchObject({ ok: true });

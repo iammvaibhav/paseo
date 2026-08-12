@@ -750,7 +750,7 @@ export PATH=$(printf %q "$path_env")
 export NVM_DIR="\${NVM_DIR:-\$HOME/.nvm}"
 # shellcheck disable=SC1091
 [ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
-exec $cli_cmd daemon restart --home $(printf %q "$home")
+exec $cli_cmd daemon restart --web-ui --home $(printf %q "$home")
 EOF
   )"
 
@@ -775,7 +775,7 @@ export PATH=$(printf %q "$path_env")
 export NVM_DIR="\${NVM_DIR:-\$HOME/.nvm}"
 # shellcheck disable=SC1091
 [ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
-exec $cli_cmd daemon start --home $(printf %q "$home")
+exec $cli_cmd daemon start --web-ui --home $(printf %q "$home")
 EOF
   )"
   # After a failed restart, old_pid may already be dead; accept any healthy pid.

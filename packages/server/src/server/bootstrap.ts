@@ -292,7 +292,15 @@ function createTerminalActivityUrl(listenTarget: ListenTarget | null): string | 
   ).toString();
 }
 
-type SpawnProposalResult = { ok: true; agentId: string } | { ok: false; error: string };
+/**
+ * A spawn attempt result. Every successful spawn records the serverId of the
+ * host that actually created the agent — this daemon for local spawns, the
+ * peer for peer-routed spawns — so the approvals gate can stamp
+ * spawnedOnServerId onto the proposal.
+ */
+type SpawnProposalResult =
+  | { ok: true; agentId: string; serverId?: string }
+  | { ok: false; error: string };
 
 /**
  * Fleet-host branch of executeSpawnProposal: forward the prepared spawn plan
@@ -326,7 +334,17 @@ async function spawnProposalOnPeer(
     if (!payload.agentId) {
       return { ok: false, error: `Fleet spawn on "${host}" returned no agent id` };
     }
-    return { ok: true, agentId: payload.agentId };
+    // COMPAT(spawnApplyServerId): added in v0.3.1, remove after 2027-02-12
+    // once the daemon floor always sends serverId in spawn.apply responses.
+    return {
+      ok: true,
+      agentId: payload.agentId,
+      // An older peer reports no serverId; leave the stamp absent rather
+      // than guessing, and the app falls back to alias resolution.
+      ...((payload.serverId ?? peerManager.getPeerServerId(host))
+        ? { serverId: payload.serverId ?? (peerManager.getPeerServerId(host) as string) }
+        : {}),
+    };
   } catch (error) {
     return { ok: false, error: `fleet spawn failed: ${String(error)}` };
   }
@@ -334,6 +352,8 @@ async function spawnProposalOnPeer(
 
 /**
  * Local branch of spawnFromProposal: reconstruct the create from the plan.
+ * `serverId` is THIS daemon's own identity — the host the spawn actually ran
+ * on — which the approvals gate stamps onto the proposal (spawnedOnServerId).
  */
 async function spawnProposalLocally(
   createAgent: (
@@ -341,6 +361,7 @@ async function spawnProposalLocally(
   ) => ReturnType<typeof createAgentCommand>,
   plan: MissionControlProposalSpawnPlan,
   providerModel: string,
+  serverId: string,
 ): Promise<SpawnProposalResult> {
   try {
     const result = await createAgent({
@@ -358,7 +379,7 @@ async function spawnProposalLocally(
       background: plan.background ?? true,
       notifyOnFinish: false,
     });
-    return { ok: true, agentId: result.snapshot.id };
+    return { ok: true, agentId: result.snapshot.id, serverId };
   } catch (error) {
     return { ok: false, error: `spawn failed: ${String(error)}` };
   }
@@ -1832,7 +1853,7 @@ export async function createPaseoDaemon(
       await mkdir(dirPath, { recursive: true });
     },
     createLocally: (spawnPlan, providerModel) =>
-      spawnProposalLocally(createAgent, spawnPlan, providerModel),
+      spawnProposalLocally(createAgent, spawnPlan, providerModel, serverId),
     createOnPeer: (peerName, spawnPlan) => spawnProposalOnPeer(peerManager, peerName, spawnPlan),
   });
   missionControlService = new MissionControlService({

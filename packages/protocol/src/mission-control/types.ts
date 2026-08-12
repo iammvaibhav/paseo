@@ -214,6 +214,13 @@ export const MissionControlProposalSchema = z.object({
   metaAppliedOnHost: z.string().optional(),
   // Set on a spawn proposal once the spawn executed (approve or auto mode).
   spawnedAgentId: z.string().optional(),
+  // The serverId of the HOST the spawn actually ran on, stamped by the
+  // executor at execution time (this daemon for local spawns, the peer for
+  // peer-routed spawns). The card's event.serverId is the EMITTING host (the
+  // Commander's), which can differ — the app opens the spawned agent against
+  // the stamped host, never the emitter. Additive — absent on older records,
+  // on failures, and whenever the executing host is unknown.
+  spawnedOnServerId: z.string().optional(),
   // Verifier-origin attribution: the ephemeral verifier agent driving this
   // proposal/exchange, so the app can drill from the card into its thread.
   verifierAgentId: z.string().optional(),
@@ -975,6 +982,10 @@ export const MissionControlSpawnApplyResponseSchema = z.object({
     ok: z.boolean(),
     // The created agent id on the applying host. Present when ok.
     agentId: z.string().optional(),
+    // The applying daemon's own serverId, so the commander's audit trail can
+    // record WHERE the spawn actually ran (stamped onto the proposal as
+    // spawnedOnServerId). Additive; absent on failure and from older daemons.
+    serverId: z.string().optional(),
     // The applying host's refusal/error. Present when !ok.
     error: z.string().optional(),
   }),
