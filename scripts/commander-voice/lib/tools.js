@@ -100,7 +100,7 @@ const READ_TOOL_DECLARATIONS = [
     name: "fleet_recall",
     description:
       "Semantic recall over fleet memory: run records, decisions, verdicts. THE lookup for " +
-      "'which agent was that'. Read-only. If the voice node reports recall unavailable, route " +
+      "'which agent was that'. Read-only. If recall reports memory unavailable, route " +
       "the question through commander_dispatch (relay) — the Commander holds the memory bank.",
     parameters: {
       ...OBJECT,
@@ -122,7 +122,7 @@ const READ_TOOL_DECLARATIONS = [
     description:
       "Fetch run records and workspace/project rollups from the mission-control store: pass " +
       "agentId, workspaceId, or projectId (or nothing for the most recent records). Read-only. " +
-      "If the voice node reports it unavailable, route through commander_dispatch (relay).",
+      "If the store is empty or unavailable, route through commander_dispatch (relay).",
     parameters: {
       ...OBJECT,
       properties: {
@@ -136,9 +136,11 @@ const READ_TOOL_DECLARATIONS = [
   {
     name: "tag_message",
     description:
-      "Attribute the current user turn to the agents it concerns (audit trail). Voice cannot " +
-      "tag from this node — the Commander tags messages it dispatches. Prefer commander_dispatch " +
-      "when attribution matters.",
+      "Attribute the current voice user turn to the agents it concerns (audit trail). The " +
+      "daemon tags the latest voice-mirrored user message on the Commander thread — the same " +
+      "record the Commander's tag_message tool writes, read by the Verifier when auditing. " +
+      "Call it once per handled user turn that names specific agents; fleet-wide remarks tag " +
+      "all active roster ids. Never tag digest notifications.",
     parameters: {
       ...OBJECT,
       properties: {

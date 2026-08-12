@@ -100,6 +100,14 @@ import {
   MissionControlInstructionsCloseResponseSchema,
   MissionControlVoiceMirrorRequestSchema,
   MissionControlVoiceMirrorResponseSchema,
+  MissionControlRecallRequestSchema,
+  MissionControlRecallResponseSchema,
+  MissionControlContextRecordsRequestSchema,
+  MissionControlContextRecordsResponseSchema,
+  MissionControlTagMessageRequestSchema,
+  MissionControlTagMessageResponseSchema,
+  MissionControlPeerTimelineRequestSchema,
+  MissionControlPeerTimelineResponseSchema,
 } from "./mission-control/types.js";
 export {
   MissionControlEventSchema,
@@ -142,6 +150,18 @@ export {
   type MissionControlMediaFetchRequest,
   type MissionControlMediaFetchResponse,
   type MissionControlConfigReplica,
+  type MissionControlRecallMatch,
+  type MissionControlRecallRequest,
+  type MissionControlRecallResponse,
+  type MissionControlContextRecordsRequest,
+  type MissionControlContextRecordsResponse,
+  type MissionControlContextRunRecord,
+  type MissionControlContextWorkspaceRollup,
+  type MissionControlContextProjectRollup,
+  type MissionControlTagMessageRequest,
+  type MissionControlTagMessageResponse,
+  type MissionControlPeerTimelineRequest,
+  type MissionControlPeerTimelineResponse,
 } from "./mission-control/types.js";
 import {
   LoopRunRequestSchema,
@@ -3237,6 +3257,10 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   MissionControlInstructionsListRequestSchema,
   MissionControlInstructionsCloseRequestSchema,
   MissionControlVoiceMirrorRequestSchema,
+  MissionControlRecallRequestSchema,
+  MissionControlContextRecordsRequestSchema,
+  MissionControlTagMessageRequestSchema,
+  MissionControlPeerTimelineRequestSchema,
 ]);
 
 export type SessionInboundMessage = z.infer<typeof SessionInboundMessageSchema>;
@@ -6303,6 +6327,10 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   MissionControlInstructionsListResponseSchema,
   MissionControlInstructionsCloseResponseSchema,
   MissionControlVoiceMirrorResponseSchema,
+  MissionControlRecallResponseSchema,
+  MissionControlContextRecordsResponseSchema,
+  MissionControlTagMessageResponseSchema,
+  MissionControlPeerTimelineResponseSchema,
   DaemonUpdateProgressMessageSchema,
   DaemonUpdateResponseSchema,
 ]);

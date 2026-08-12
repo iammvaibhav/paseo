@@ -669,6 +669,22 @@ type MissionControlMediaFetchPayload = Extract<
   SessionOutboundMessage,
   { type: "mission_control.media.fetch.response" }
 >["payload"];
+type MissionControlRecallPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.recall.response" }
+>["payload"];
+type MissionControlContextRecordsPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.context.records.response" }
+>["payload"];
+type MissionControlTagMessagePayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.tag_message.response" }
+>["payload"];
+type MissionControlPeerTimelinePayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.peer.timeline.response" }
+>["payload"];
 export type FetchAgentTimelinePayload = FetchAgentTimelineResponseMessage["payload"];
 export type AgentForkContextPayload = AgentForkContextResponseMessage["payload"];
 
@@ -5957,6 +5973,101 @@ export class DaemonClient {
         kind: input.kind,
       },
       responseType: "mission_control.voice.mirror.response",
+    });
+  }
+
+  /**
+   * M11 voice fleet_recall (mission_control.recall): semantic recall over
+   * the configured Hindsight fleet memory bank — the same service call the
+   * Commander's fleet_recall tool makes. The voice node has no MCP catalog,
+   * so it reads over this thin session RPC. Degrades to ok:false with
+   * reason "memory unavailable" when the bank is unconfigured/unreachable.
+   */
+  async missionControlRecall(input: {
+    query: string;
+    limit?: number;
+    requestId?: string;
+  }): Promise<MissionControlRecallPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: input.requestId,
+      message: {
+        type: "mission_control.recall.request",
+        query: input.query,
+        ...(typeof input.limit === "number" ? { limit: input.limit } : {}),
+      },
+      responseType: "mission_control.recall.response",
+    });
+  }
+
+  /**
+   * M11 voice fleet_context (mission_control.context.records): deterministic
+   * run records plus the matching workspace/project rollup from the local
+   * mission-control store. Selector semantics match the Commander's
+   * fleet_context tool (agentId / workspaceId / projectId / none).
+   */
+  async missionControlContextRecords(input: {
+    agentId?: string;
+    workspaceId?: string;
+    projectId?: string;
+    requestId?: string;
+  }): Promise<MissionControlContextRecordsPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: input.requestId,
+      message: {
+        type: "mission_control.context.records.request",
+        ...(input.agentId !== undefined ? { agentId: input.agentId } : {}),
+        ...(input.workspaceId !== undefined ? { workspaceId: input.workspaceId } : {}),
+        ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
+      },
+      responseType: "mission_control.context.records.response",
+    });
+  }
+
+  /**
+   * M11 voice tag_message (mission_control.tag_message): attribute the
+   * latest voice-mirrored user message on the Commander thread to the given
+   * agent ids — the same tag record the Commander's tag_message tool writes
+   * (the Verifier reads these tags when auditing a worker). messageText pins
+   * the tag to the most recent Commander user message whose text equals it.
+   */
+  async missionControlTagMessage(input: {
+    agentIds: string[];
+    messageText?: string;
+    requestId?: string;
+  }): Promise<MissionControlTagMessagePayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: input.requestId,
+      message: {
+        type: "mission_control.tag_message.request",
+        agentIds: input.agentIds,
+        ...(input.messageText !== undefined ? { messageText: input.messageText } : {}),
+      },
+      responseType: "mission_control.tag_message.response",
+    });
+  }
+
+  /**
+   * M11 voice peer fleet_get_agent_activity (mission_control.peer.timeline):
+   * read a peer host's agent timeline over peering (this daemon hops to the
+   * peer) and get back the same curated summary the Commander's
+   * fleet_get_agent_activity peer branch produces. Local reads keep using
+   * fetchAgentTimeline directly.
+   */
+  async missionControlPeerTimeline(input: {
+    host: string;
+    agentId: string;
+    limit?: number;
+    requestId?: string;
+  }): Promise<MissionControlPeerTimelinePayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: input.requestId,
+      message: {
+        type: "mission_control.peer.timeline.request",
+        host: input.host,
+        agentId: input.agentId,
+        ...(typeof input.limit === "number" && input.limit > 0 ? { limit: input.limit } : {}),
+      },
+      responseType: "mission_control.peer.timeline.response",
     });
   }
 
