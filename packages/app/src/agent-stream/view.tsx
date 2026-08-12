@@ -108,6 +108,7 @@ import type { Theme } from "@/styles/theme";
 import { recordRenderProfileReasons } from "@/utils/render-profiler";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import type { WorkspaceDraftForkSource } from "@/workspace-tabs/model";
+import type { SelectionAskConfig } from "@/selection-ask/use-selection-ask";
 
 function renderLiveAuxiliaryNode(input: {
   pendingPermissions: ReactNode;
@@ -263,6 +264,11 @@ export interface AgentStreamViewProps {
     progressKey: string | null;
     onLoadOlder: () => boolean | Promise<boolean>;
   };
+  /**
+   * Enables the selection Ask popover (web): selecting stream text offers
+   * Add to composer / Ask. Null or absent keeps the stream copy-only.
+   */
+  selectionAsk?: SelectionAskConfig | null;
 }
 
 const AGENT_CAPABILITY_FLAG_KEYS: (keyof AgentCapabilityFlags)[] = [
@@ -324,6 +330,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       onOpenWorkspaceFile,
       readOnly = false,
       historyPagination,
+      selectionAsk = null,
     },
     ref,
   ) {
@@ -1053,7 +1060,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
 
     return (
       <ToolCallSheetProvider>
-        <AssistantSelectionCopySurface style={stylesheet.container}>
+        <AssistantSelectionCopySurface style={stylesheet.container} selectionAsk={selectionAsk}>
           <MessageOuterSpacingProvider disableOuterSpacing>
             <AnchoredList
               strategy={streamRenderStrategy}
@@ -1209,6 +1216,7 @@ function agentStreamViewPropsEqual(
   if (!historyPaginationPropsEqual(left.historyPagination, right.historyPagination)) {
     reasons.push("historyPagination");
   }
+  if (left.selectionAsk !== right.selectionAsk) reasons.push("selectionAsk");
   recordRenderProfileReasons(`AgentStreamView:${right.agentId}`, reasons);
   return reasons.length === 0;
 }

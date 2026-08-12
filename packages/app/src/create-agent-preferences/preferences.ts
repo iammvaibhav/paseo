@@ -32,12 +32,22 @@ const providerPreferencesSchema = z.object({
   featureValues: z.record(z.string(), z.unknown()).optional(),
 });
 
+const selectionAskSchema = z.object({
+  provider: z.string().optional(),
+  model: z.string().optional(),
+  thinkingOptionId: z.string().optional(),
+});
+
 const selectionScopeSchema = z.object({
   provider: z.string().optional(),
   providerPreferences: z.record(z.string(), providerPreferencesSchema).optional(),
   // Last isolation choice for this project (New workspace form). Global
   // `isolation` remains the cross-project fallback for older data / no scope.
   isolation: z.enum(["local", "worktree"]).optional(),
+  // Per-project model preference for the selection Ask popover. Lives under
+  // the project scope so every project remembers its own Ask model; there is
+  // deliberately no global fallback (the source agent's model seeds defaults).
+  selectionAsk: selectionAskSchema.optional(),
 });
 
 const favoriteModelSchema = z.object({
@@ -71,6 +81,7 @@ export type ProviderPreferences = z.infer<typeof providerPreferencesSchema>;
 export type FormSelectionScope = z.infer<typeof selectionScopeSchema>;
 export type FormPreferences = z.infer<typeof formPreferencesSchema>;
 export type LaunchTarget = z.infer<typeof launchTargetSchema>;
+export type SelectionAskModelPreference = z.infer<typeof selectionAskSchema>;
 
 export const DEFAULT_FORM_PREFERENCES: FormPreferences = {};
 
@@ -232,6 +243,77 @@ export function mergeIsolationPreference(args: {
     };
   }
   return next;
+}
+
+function normalizeSelectionAskValue(value: string | null | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function applySelectionAskField(
+  next: SelectionAskModelPreference,
+  key: keyof SelectionAskModelPreference,
+  value: string | null | undefined,
+): void {
+  if (value === undefined) {
+    // Key absent from the update — preserve the stored value.
+    return;
+  }
+  const normalized = normalizeSelectionAskValue(value);
+  if (normalized !== undefined) {
+    next[key] = normalized;
+  } else {
+    // Key present but empty — clear the stored value.
+    delete next[key];
+  }
+}
+
+/**
+ * Remember the selection Ask model choice for a project. Absent fields are
+ * preserved from any existing choice; a field passed as an empty string clears
+ * that stored field.
+ */
+export function mergeSelectionAskPreference(args: {
+  preferences: FormPreferences;
+  selectionAsk: SelectionAskModelPreference;
+  scope?: FormPreferenceScope | null;
+}): FormPreferences {
+  const { preferences, selectionAsk } = args;
+  const { projectKey } = normalizeFormPreferenceScope(args.scope);
+  if (!projectKey) {
+    return preferences;
+  }
+  const existing = preferences.byProject?.[projectKey];
+  const next: SelectionAskModelPreference = { ...existing?.selectionAsk };
+  applySelectionAskField(next, "provider", selectionAsk.provider);
+  applySelectionAskField(next, "model", selectionAsk.model);
+  applySelectionAskField(next, "thinkingOptionId", selectionAsk.thinkingOptionId);
+  return {
+    ...preferences,
+    byProject: {
+      ...preferences.byProject,
+      [projectKey]: {
+        ...existing,
+        selectionAsk: next,
+      },
+    },
+  };
+}
+
+/**
+ * Resolve the remembered selection Ask model for a project. Falls back to the
+ * global provider/model selection when the project has no Ask-specific choice,
+ * so a user who never touched the popover still gets a sensible model.
+ */
+export function resolveEffectiveSelectionAskPreference(
+  preferences: FormPreferences,
+  scope?: FormPreferenceScope | null,
+): SelectionAskModelPreference {
+  const { projectKey } = normalizeFormPreferenceScope(scope);
+  if (!projectKey) {
+    return {};
+  }
+  return preferences.byProject?.[projectKey]?.selectionAsk ?? {};
 }
 
 /**

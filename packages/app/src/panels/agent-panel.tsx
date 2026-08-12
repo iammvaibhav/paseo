@@ -111,6 +111,7 @@ import { applyLegacyDaemonWorkspaceOwnership } from "@/workspace/legacy-daemon-w
 import type { WorkspaceFileOpenRequest } from "@/workspace/file-open";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
 import { deriveSidebarStateBucket } from "@/utils/sidebar-agent-state";
+import { SelectionAsksList } from "@/selection-ask/asks-list";
 import { buildDraftAgentSetup, type ClientSlashCommand } from "@/client-slash-commands";
 
 interface ChatAgentStateShape {
@@ -1416,6 +1417,24 @@ const AgentStreamSection = memo(function AgentStreamSection({
     return new Map(pendingPermissionList.map((permission) => [permission.key, permission]));
   }, [pendingPermissionList]);
 
+  const selectionAskConfig = useMemo(
+    () =>
+      agentId
+        ? {
+            serverId,
+            sourceAgentId: agent.id,
+            cwd: agent.cwd,
+            workspaceId: agent.workspaceId ?? null,
+            projectKey: agent.projectPlacement?.projectKey ?? null,
+            defaultProvider: agent.provider ?? null,
+            defaultModel: agent.model ?? null,
+            defaultThinkingOptionId:
+              agent.effectiveThinkingOptionId ?? agent.thinkingOptionId ?? null,
+          }
+        : null,
+    [agent, agentId, serverId],
+  );
+
   return (
     <AgentStreamView
       ref={streamViewRef}
@@ -1430,6 +1449,7 @@ const AgentStreamSection = memo(function AgentStreamSection({
       pendingMessageSubmissions={pendingMessageSubmissions}
       turnPresentation={turnPresentation}
       onOpenWorkspaceFile={onOpenWorkspaceFile}
+      selectionAsk={selectionAskConfig}
     />
   );
 });
@@ -1724,6 +1744,7 @@ function ActiveAgentComposer({
 
   return (
     <ReanimatedAnimated.View style={inputAreaStyle} onLayout={onInputAreaLayout}>
+      <SelectionAsksList serverId={serverId} agentId={agentId} />
       <AgentTaskList serverId={serverId} agentId={agentId} />
       <SubagentsTrack
         rows={subagentRows}

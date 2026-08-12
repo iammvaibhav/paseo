@@ -206,29 +206,11 @@ export interface SendPromptToAgentParams {
 
 export interface StartCreatedAgentInitialPromptParams {
   agentManager: AgentManager;
-  agentStorage: AgentStorage;
   agentId: string;
   snapshot?: ManagedAgent;
   prompt: AgentPromptInput | null;
   runOptions?: AgentRunOptions;
   logger: Logger;
-}
-
-/**
- * One line prepended to a newly created agent's first prompt envelope so the
- * agent knows its own identity ("what's the status of the task involving X"
- * is answerable by the agent itself and by the Commander). Provider-agnostic:
- * applied here, the single dispatch chokepoint shared by every create surface
- * (Session/WS, MCP, CLI-through-MCP).
- */
-export function buildAgentIdentityEnvelope(input: {
-  name?: string;
-  title?: string | null;
-}): string {
-  if (!input.name) {
-    return "";
-  }
-  return `Your agent name is ${input.name}; task title: ${input.title ?? "(untitled)"}. Paseo tracks you by this identity.`;
 }
 
 const AGENT_RUN_START_TIMEOUT_MS = 15_000;
@@ -343,32 +325,10 @@ export async function startCreatedAgentInitialPrompt(
     return currentSnapshot;
   }
 
-  // Identity injection: tell the created agent its own name/title before its
-  // first turn. Reads the persisted record (name is stamped at registration,
-  // before the initial prompt is dispatched).
-  let prompt = params.prompt;
-  try {
-    const record = await params.agentStorage.get(params.agentId);
-    const identityLine = buildAgentIdentityEnvelope({
-      name: record?.name ?? currentSnapshot.name,
-      title: record?.title ?? currentSnapshot.config.title,
-    });
-    if (identityLine) {
-      prompt = Array.isArray(prompt)
-        ? [{ type: "text", text: `${identityLine}\n` }, ...prompt]
-        : `${identityLine}\n${prompt}`;
-    }
-  } catch (error) {
-    params.logger.warn(
-      { err: error, agentId: params.agentId },
-      "Failed to inject agent identity into initial prompt",
-    );
-  }
-
   const dispatchResult = await startAgentRun(
     params.agentManager,
     params.agentId,
-    prompt,
+    params.prompt,
     params.logger,
     {
       runOptions: params.runOptions,
