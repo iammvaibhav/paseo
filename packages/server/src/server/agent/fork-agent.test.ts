@@ -305,6 +305,39 @@ test("native fork carries user overrides and current mode over config mode", asy
   expect(handle.metadata).toMatchObject({ model: "omp/other", modeId: "omp-code" });
 });
 
+test("uses an explicit title override instead of deriving one from the prompt", async () => {
+  const scenario = createForkScenario();
+
+  await scenario.fork({ title: "Ask: what does this variable do?" });
+
+  const config = scenario.createAgent.mock.calls[0]?.[0] as AgentSessionConfig;
+  expect(config.title).toBe("Ask: what does this variable do?");
+  const options = scenario.createAgent.mock.calls[0]?.[2];
+  expect(options?.initialTitle).toBe("Ask: what does this variable do?");
+});
+
+test("native fork honors an explicit title override", async () => {
+  const sessionFile = createSessionFile("native-title-session.jsonl");
+  const scenario = createForkScenario({
+    persistence: { provider: "omp", sessionId: "omp-session-1", nativeHandle: sessionFile },
+  });
+
+  await scenario.fork({ title: "Ask: why is this here?" });
+
+  const [handle, overrides, , options] = scenario.resumeAgentFromPersistence.mock
+    .calls[0] as unknown as [
+    AgentPersistenceHandle,
+    Partial<AgentSessionConfig>,
+    string | undefined,
+    { workspaceId?: string; initialTitle?: string | null },
+  ];
+  expect(overrides.title).toBe("Ask: why is this here?");
+  expect(options.initialTitle).toBe("Ask: why is this here?");
+  // The fork's handle metadata stays provider-config only; the title travels
+  // as the resumed agent's initialTitle.
+  expect(handle.metadata?.title).toBeUndefined();
+});
+
 test("falls back to snapshot when an OMP source's session file is missing", async () => {
   const missingFile = path.join(tmpdir(), "fork-agent-omp-missing", "gone.jsonl");
   const scenario = createForkScenario({
