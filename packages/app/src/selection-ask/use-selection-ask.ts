@@ -415,6 +415,24 @@ export function useSelectionAsk(config: SelectionAskConfig): SelectionAskState {
     return useReopenAskStore.subscribe(handleReopenAskRequest);
   }, [handleReopenAskRequest]);
 
+  // The asks list dismisses (archives) an ask that may be open in this popover.
+  // Consume the dismiss request targeting this source agent and close the
+  // popover when the archived ask is the one currently open. Requests for
+  // other asks (or when no ask is open) are consumed and dropped.
+  const handleAskDismissRequest = useCallback(() => {
+    const request = useReopenAskStore.getState().consumeAskDismiss(config.sourceAgentId);
+    if (!request || request.askAgentId !== askAgentId) {
+      return;
+    }
+    dismiss();
+  }, [askAgentId, config.sourceAgentId, dismiss]);
+
+  useEffect(() => {
+    // Deliver a dismiss published before this host mounted, then keep listening.
+    handleAskDismissRequest();
+    return useReopenAskStore.subscribe(handleAskDismissRequest);
+  }, [handleAskDismissRequest]);
+
   const addToComposer = useCallback(() => {
     if (!selection) {
       return;

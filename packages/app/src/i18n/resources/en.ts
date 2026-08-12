@@ -1753,6 +1753,11 @@ export const en = {
     archiveFinishedAction: "Archive finished subagents",
     archiveFinishedTooltip: "Archive finished",
   },
+  selectionAsks: {
+    archiveAction: "Archive {{label}}",
+    archiveTooltip: "Archive ask",
+    clearAll: "Clear all asks",
+  },
   panels: {
     draft: {
       newAgent: "New Agent",

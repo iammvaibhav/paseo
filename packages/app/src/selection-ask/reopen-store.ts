@@ -26,8 +26,16 @@ export interface ReopenAskRequest {
   anchorRect?: ReopenAskAnchorRect | null;
 }
 
+export interface DismissAskRequest {
+  /** Agent whose panel hosts the asks list; its popover host consumes the request. */
+  sourceAgentId: string;
+  /** The ask agent to dismiss from the popover (archived while open). */
+  askAgentId: string;
+}
+
 interface ReopenAskState {
   request: ReopenAskRequest | null;
+  dismissRequest: DismissAskRequest | null;
   /**
    * The source-chat DOM Range captured when each ask was started, keyed by ask
    * agent id. Kept here (not in the popover) so it survives the popover being
@@ -37,6 +45,14 @@ interface ReopenAskState {
   requestReopenAsk: (request: ReopenAskRequest) => void;
   /** Returns and clears the pending request when it targets `sourceAgentId`, else null. */
   consumeReopenAsk: (sourceAgentId: string) => ReopenAskRequest | null;
+  /**
+   * Publishes a dismiss request for an ask the asks list just archived; the
+   * popover host for the matching source agent consumes it and closes the
+   * popover when that ask is the one currently open.
+   */
+  requestAskDismiss: (request: DismissAskRequest) => void;
+  /** Returns and clears the pending dismiss when it targets `sourceAgentId`, else null. */
+  consumeAskDismiss: (sourceAgentId: string) => DismissAskRequest | null;
   /** Records the source selection for an ask, dropping ranges whose DOM is gone. */
   recordAskSelectionRange: (askAgentId: string, range: Range) => void;
   /** Returns and clears the stored selection range for an ask, if any. */
@@ -45,6 +61,7 @@ interface ReopenAskState {
 
 export const useReopenAskStore = create<ReopenAskState>((set, get) => ({
   request: null,
+  dismissRequest: null,
   selectionRanges: new Map(),
   requestReopenAsk: (request) => set({ request }),
   consumeReopenAsk: (sourceAgentId) => {
@@ -54,6 +71,15 @@ export const useReopenAskStore = create<ReopenAskState>((set, get) => ({
     }
     set({ request: null });
     return request;
+  },
+  requestAskDismiss: (request) => set({ dismissRequest: request }),
+  consumeAskDismiss: (sourceAgentId) => {
+    const { dismissRequest } = get();
+    if (!dismissRequest || dismissRequest.sourceAgentId !== sourceAgentId) {
+      return null;
+    }
+    set({ dismissRequest: null });
+    return dismissRequest;
   },
   recordAskSelectionRange: (askAgentId, range) => {
     const { selectionRanges } = get();

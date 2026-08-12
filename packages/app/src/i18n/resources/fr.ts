@@ -1789,6 +1789,11 @@ export const fr: TranslationResources = {
     archiveFinishedAction: "Archiver les sous-agents terminés",
     archiveFinishedTooltip: "Archiver les terminés",
   },
+  selectionAsks: {
+    archiveAction: "Archiver {{label}}",
+    archiveTooltip: "Archiver la question",
+    clearAll: "Effacer toutes les questions",
+  },
   panels: {
     draft: {
       newAgent: "Nouvel agent",

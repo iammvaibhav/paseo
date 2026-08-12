@@ -1771,6 +1771,11 @@ export const ptBR: TranslationResources = {
     archiveFinishedAction: "Arquivar subagentes concluídos",
     archiveFinishedTooltip: "Arquivar concluídos",
   },
+  selectionAsks: {
+    archiveAction: "Arquivar {{label}}",
+    archiveTooltip: "Arquivar pergunta",
+    clearAll: "Limpar todas as perguntas",
+  },
   panels: {
     draft: {
       newAgent: "Novo Agente",

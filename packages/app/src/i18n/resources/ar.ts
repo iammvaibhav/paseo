@@ -1741,6 +1741,11 @@ export const ar: TranslationResources = {
     archiveFinishedAction: "أرشفة الوكلاء الفرعيين المكتملين",
     archiveFinishedTooltip: "أرشفة المكتملين",
   },
+  selectionAsks: {
+    archiveAction: "أرشفة {{label}}",
+    archiveTooltip: "أرشفة السؤال",
+    clearAll: "مسح جميع الأسئلة",
+  },
   panels: {
     draft: {
       newAgent: "وكيل جديد",
