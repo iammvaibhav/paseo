@@ -187,6 +187,13 @@ function CommanderMessageRow({
 }: CommanderMessageRowProps): ReactElement | null {
   switch (item.kind) {
     case "user_message":
+      // Voice-mirrored pure Q&A rows (heard utterances mirrored into the
+      // Commander thread by the voice mirror RPC) are quiet: normal mode
+      // renders nothing, verbose shows the spoken words. "dispatch" mirror
+      // rows stay visible — they asked the fleet to do something.
+      if (item.voiceMirrorKind === "qa" && !verbose) {
+        return null;
+      }
       // `<paseo-system>` envelopes (fleet digests, schedule fires, notify-on-
       // finish) are pure machinery duplicating the cards — normal mode never
       // renders them; verbose shows the parsed digest/context as an expanded

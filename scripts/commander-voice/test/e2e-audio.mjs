@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Commander Voice — E2E audio proof. Synthesizes a spoken command, streams the
 // PCM into the Gemini Live session through the voice proxy, captures the audio
-// + transcript reply, and asserts fleet_status was called. Artifacts land in
+// + transcript reply, and asserts fleet_list_agents was called. Artifacts land in
 // /tmp/commander-voice-e2e/.
 //
 // TTS: fish.audio when FISH_AUDIO_API_KEY is set and has credit; otherwise the
@@ -20,7 +20,7 @@ const COMMAND = "what is the fleet status";
 // fail ASR at 900ms and reliably pass at 2.5s.
 const VAD_TRAILING_SILENCE_MS = 2500;
 const E2E_PROMPT =
-  "You are a terse voice relay for the Commander. When asked for the fleet status, call fleet_status " +
+  "You are a terse voice relay for the Commander. When asked for the fleet status, call fleet_list_agents " +
   "and read its result aloud in one sentence. Keep every reply under 20 words.";
 
 // --- TTS -------------------------------------------------------------------
@@ -256,8 +256,8 @@ for (let off = 0; off < stream.length; off += chunkBytes) {
 console.log(`streamed ${stream.length} bytes of PCM audio (mic cadence, ${RATE}Hz)`);
 
 const toolLog = await browser.waitFor(
-  (m) => m.type === "toolLog" && m.name === "fleet_status",
-  "fleet_status toolLog",
+  (m) => m.type === "toolLog" && m.name === "fleet_list_agents",
+  "fleet_list_agents toolLog",
   180_000,
 );
 console.log("TOOL CALLED:", toolLog.name);

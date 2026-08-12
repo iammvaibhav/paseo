@@ -641,6 +641,10 @@ type MissionControlModeSetPayload = Extract<
   SessionOutboundMessage,
   { type: "mission_control.mode.set.response" }
 >["payload"];
+type MissionControlVoiceMirrorPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.voice.mirror.response" }
+>["payload"];
 type MissionControlProposalsRespondPayload = Extract<
   SessionOutboundMessage,
   { type: "mission_control.proposals.respond.response" }
@@ -5926,6 +5930,33 @@ export class DaemonClient {
       requestId,
       message: { type: "mission_control.mode.set.request", mode },
       responseType: "mission_control.mode.set.response",
+    });
+  }
+
+  /**
+   * M9 voice dialogue mirror (mission_control.voice.mirror): append one voice
+   * turn (a heard user utterance or a spoken reply) to the Commander thread
+   * WITHOUT running a Commander model turn. The Commander thread is the
+   * system of record for dialogue; the voice node calls this after every
+   * heard/spoken turn so text Commander always has what was said. kind "qa"
+   * = pure Q&A (the app hides the row unless verbose); "dispatch" = the turn
+   * asked the fleet to do something (visible).
+   */
+  async missionControlVoiceMirror(input: {
+    role: "user" | "assistant";
+    text: string;
+    kind: "qa" | "dispatch";
+    requestId?: string;
+  }): Promise<MissionControlVoiceMirrorPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: input.requestId,
+      message: {
+        type: "mission_control.voice.mirror.request",
+        role: input.role,
+        text: input.text,
+        kind: input.kind,
+      },
+      responseType: "mission_control.voice.mirror.response",
     });
   }
 

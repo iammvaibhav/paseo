@@ -1985,6 +1985,9 @@ export const es: TranslationResources = {
       voiceNodeUrl: "URL del nodo de voz",
       voiceNodeUrlHint:
         "Servidor de Voz del Comandante (p. ej. ws://127.0.0.1:8787/ws). Vacío oculta la voz del Comandante en el compositor de Mission Control.",
+      voiceMode: "Voice tool mode",
+      voiceModeHint:
+        "Relay = voice reads like Commander but routes every change through commander_dispatch. Direct = voice holds the full Commander tool surface, approval-gated. Applies to new voice sessions.",
     },
     metadataGeneration: {
       title: "Generación de metadatos",

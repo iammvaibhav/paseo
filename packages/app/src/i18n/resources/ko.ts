@@ -1952,6 +1952,9 @@ export const ko: TranslationResources = {
       voiceNodeUrl: "음성 노드 URL",
       voiceNodeUrlHint:
         "커맨더 음성 서버(예: ws://127.0.0.1:8787/ws). 비워 두면 Mission Control 작성기에서 커맨더 음성이 숨겨집니다.",
+      voiceMode: "Voice tool mode",
+      voiceModeHint:
+        "Relay = voice reads like Commander but routes every change through commander_dispatch. Direct = voice holds the full Commander tool surface, approval-gated. Applies to new voice sessions.",
     },
     metadataGeneration: {
       title: "메타데이터 생성",

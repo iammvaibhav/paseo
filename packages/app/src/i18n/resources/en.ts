@@ -1953,6 +1953,9 @@ export const en = {
       voiceNodeUrl: "Voice node URL",
       voiceNodeUrlHint:
         "Commander Voice server (e.g. ws://127.0.0.1:8787/ws). Empty hides Commander Voice in the Mission Control composer.",
+      voiceMode: "Voice tool mode",
+      voiceModeHint:
+        "Relay = voice reads like Commander but routes every change through commander_dispatch. Direct = voice holds the full Commander tool surface, approval-gated. Applies to new voice sessions.",
     },
     metadataGeneration: {
       title: "Metadata generation",

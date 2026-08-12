@@ -1958,6 +1958,9 @@ export const ja: TranslationResources = {
       voiceNodeUrl: "音声ノードURL",
       voiceNodeUrlHint:
         "コマンダーボイスサーバー（例: ws://127.0.0.1:8787/ws）。空にするとMission Controlのコンポーザーでコマンダーボイスが非表示になります。",
+      voiceMode: "Voice tool mode",
+      voiceModeHint:
+        "Relay = voice reads like Commander but routes every change through commander_dispatch. Direct = voice holds the full Commander tool surface, approval-gated. Applies to new voice sessions.",
     },
     metadataGeneration: {
       title: "メタデータ生成",

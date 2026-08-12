@@ -1976,6 +1976,9 @@ export const ru: TranslationResources = {
       voiceNodeUrl: "URL голосового узла",
       voiceNodeUrlHint:
         "Сервер голоса командира (например, ws://127.0.0.1:8787/ws). Пустое значение скрывает голос командира в редакторе Mission Control.",
+      voiceMode: "Voice tool mode",
+      voiceModeHint:
+        "Relay = voice reads like Commander but routes every change through commander_dispatch. Direct = voice holds the full Commander tool surface, approval-gated. Applies to new voice sessions.",
     },
     metadataGeneration: {
       title: "Создание метаданных",

@@ -668,6 +668,12 @@ export const MissionControlCentralConfigSchema = z.object({
   // connects to it over WS for the Mission Control composer's Commander
   // Voice button. Null/empty = the feature is hidden in the app.
   voiceNodeUrl: z.string().nullable().optional(),
+  // M9 voice tool surface: "relay" (default) declares only the shared read
+  // tools plus commander_dispatch/proposal_respond/pending_updates —
+  // mutations route through the Commander; "direct" declares the full
+  // Commander allowlist and mirrors every call into the Commander thread.
+  // Applies to NEW voice sessions; an open session keeps its start mode.
+  voiceMode: z.enum(["relay", "direct"]).optional(),
   // Lifecycle-tracking gates: which agent classes emit Mission Control
   // lifecycle events (started/finished/failed cards, run records, review
   // states). The Commander itself is never tracked; root agents are always
@@ -741,6 +747,50 @@ export const MissionControlConfigReplicaSchema = z.object({
   config: MissionControlCentralConfigSchema,
 });
 export type MissionControlConfigReplica = z.infer<typeof MissionControlConfigReplicaSchema>;
+
+// ============================================================================
+// M9 voice dialogue mirror: append a voice turn to the Commander thread
+// WITHOUT running a Commander model turn. The Commander thread is the system
+// of record for dialogue; every heard user utterance and every spoken reply
+// is mirrored here so text Commander always has what you said and what voice
+// answered. Append-only: the service finds the Commander agent and appends a
+// user_message or assistant_message timeline row; no turn is started, no
+// snapshot is dispatched, nothing is classified as an instruction.
+// kind "qa" = pure Q&A that produced no fleet side effect (the app hides
+// these rows unless verbose so the chat stays readable); kind "dispatch" =
+// the turn asked the fleet to do something (relay commander_dispatch or a
+// direct mutation) and stays visible like any other turn.
+// ============================================================================
+
+export const MissionControlVoiceMirrorKindSchema = z.enum(["qa", "dispatch"]);
+export type MissionControlVoiceMirrorKind = z.infer<typeof MissionControlVoiceMirrorKindSchema>;
+
+export const MissionControlVoiceMirrorRequestSchema = z.object({
+  type: z.literal("mission_control.voice.mirror.request"),
+  requestId: z.string(),
+  // The role of the mirrored row on the Commander thread.
+  role: z.enum(["user", "assistant"]),
+  // The heard user utterance or the spoken reply (summary text, not audio).
+  text: z.string(),
+  // Whether the turn produced a fleet side effect (see above).
+  kind: MissionControlVoiceMirrorKindSchema,
+});
+export type MissionControlVoiceMirrorRequest = z.infer<
+  typeof MissionControlVoiceMirrorRequestSchema
+>;
+
+export const MissionControlVoiceMirrorResponseSchema = z.object({
+  type: z.literal("mission_control.voice.mirror.response"),
+  payload: z.object({
+    requestId: z.string(),
+    ok: z.boolean(),
+    // Set when the mirror failed (no Commander agent on this host, etc.).
+    error: z.string().optional(),
+  }),
+});
+export type MissionControlVoiceMirrorResponse = z.infer<
+  typeof MissionControlVoiceMirrorResponseSchema
+>;
 
 // ============================================================================
 // v3 Commander reset: archive the current Commander (old conversation stays in

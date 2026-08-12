@@ -1919,6 +1919,9 @@ export const zhCN: TranslationResources = {
       voiceNodeUrl: "语音节点 URL",
       voiceNodeUrlHint:
         "指挥官语音服务器（例如 ws://127.0.0.1:8787/ws）。留空会在 Mission Control 编辑器里隐藏指挥官语音。",
+      voiceMode: "Voice tool mode",
+      voiceModeHint:
+        "Relay = voice reads like Commander but routes every change through commander_dispatch. Direct = voice holds the full Commander tool surface, approval-gated. Applies to new voice sessions.",
     },
     metadataGeneration: {
       title: "元数据生成",

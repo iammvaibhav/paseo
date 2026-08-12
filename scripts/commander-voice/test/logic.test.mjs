@@ -21,7 +21,7 @@ const DEV_WS = process.env.PASEO_WS_URL || "ws://127.0.0.1:6768/ws";
 const DEV_PASSWORD = process.env.PASEO_PASSWORD || "vaibhav123";
 
 const HARNESS_PROMPT =
-  "You are a terse voice relay for the Commander. When asked for the fleet status, call fleet_status " +
+  "You are a terse voice relay for the Commander. When asked for the fleet status, call fleet_list_agents " +
   "and read its result aloud in one sentence. When asked to dispatch something, call commander_dispatch " +
   "with the raw user message verbatim. When the user asks for updates, call pending_updates. " +
   "When a proposal announcement includes a proposal id and the user approves or denies it, call " +
@@ -191,21 +191,29 @@ test("announce-policy filter classifies events", () => {
   assert.equal(classifyEvent({ kind: "answer", severity: "info", headline: "x" }), "waiting");
 });
 
-test("fleet_status executor returns a deterministic spoken summary", async () => {
-  const result = await executeTool("fleet_status", {}, { daemon: voiceServer.daemon });
-  assert.ok(result.result, "fleet_status returns a result");
-  assert.match(result.result, /agents running/);
-  assert.match(result.result, /Commander/);
+test("fleet_list_agents executor returns a roster digest", async () => {
+  const result = await executeTool(
+    "fleet_list_agents",
+    {},
+    {
+      daemon: voiceServer.daemon,
+      voiceMode: "relay",
+    },
+  );
+  assert.ok(result.result, "fleet_list_agents returns a result");
+  assert.match(result.result, /On /, "roster names its host");
+  assert.match(result.result, /\(/, "roster rows carry statuses");
 });
 
-test("text turn drives the model to call fleet_status (Live API path)", async () => {
+test("text turn drives the model to call fleet_list_agents (Live API path)", async () => {
   const client = new VoiceClient();
   await client.init();
   client.send({ type: "text", text: "what is the fleet status?" });
-  const toolLog = await client.waitFor((m) => m.type === "toolLog" && m.name === "fleet_status", {
-    label: "fleet_status toolLog",
-  });
-  assert.equal(toolLog.name, "fleet_status");
+  const toolLog = await client.waitFor(
+    (m) => m.type === "toolLog" && m.name === "fleet_list_agents",
+    { label: "fleet_list_agents toolLog" },
+  );
+  assert.equal(toolLog.name, "fleet_list_agents");
   await client.waitFor(() => client.audioBytes > 500, {
     label: "spoken reply audio",
     timeoutMs: 60_000,
@@ -287,13 +295,14 @@ test("proposal_respond flips the proposal on the dev daemon", async () => {
   assert.equal(record.status, "denied");
 });
 
-test("routine events buffer silently and pending_updates drains them", async () => {
+test("routine events never inject and unrelated ones never buffer", async () => {
   const client = new VoiceClient();
   await client.init();
   const injectedBefore = client.framesOf("injected").length;
 
   // Spawn a fresh omp fixture agent: its run emits started/finished (routine,
-  // info) events that must buffer silently, never inject.
+  // info) events. They must not inject, and — because the fixture is not this
+  // session's work — they must be dropped, never buffered.
   const created = await control.createAgent({
     title: `voice-fixture-${Date.now()}`,
     provider: "omp",
@@ -304,18 +313,19 @@ test("routine events buffer silently and pending_updates drains them", async () 
   });
   const fixtureId = created.id;
 
-  // Wait until the events landed server-side, then give the proxy a beat to
-  // (incorrectly) inject them if it were going to.
+  // Wait until the finished event actually exists on the daemon (the harness
+  // must not assert on events that never arrived).
   const deadline = Date.now() + 90_000;
-  let drained = null;
+  let finishedEvent = null;
   while (Date.now() < deadline) {
-    drained = await executeTool("pending_updates", {}, { daemon: voiceServer.daemon });
-    if (/Finished/.test(drained.result)) {
+    const events = await control.missionControlEventsFetch({ limit: 500 });
+    finishedEvent = events.events.find((e) => e.agentId === fixtureId && e.kind === "finished");
+    if (finishedEvent) {
       break;
     }
     await new Promise((r) => setTimeout(r, 1500));
   }
-  assert.match(drained.result, /Finished/, "pending_updates digest mentions the finished event");
+  assert.ok(finishedEvent, "fixture finished event exists on the dev daemon");
 
   const injectedAfter = client.framesOf("injected").length;
   assert.equal(
@@ -327,6 +337,36 @@ test("routine events buffer silently and pending_updates drains them", async () 
 
   // Fixture hygiene: archive the throwaway agent.
   await control.archiveAgent(fixtureId);
+});
+
+test("only session-correlated events enter the silent buffer", () => {
+  const daemon = voiceServer.daemon;
+  daemon.buffer = []; // deterministic start; tests run sequentially
+
+  // An unrelated agent's routine event is dropped, never buffered.
+  daemon.handleEvent({
+    id: "mce_unrelated",
+    ts: new Date().toISOString(),
+    kind: "finished",
+    severity: "info",
+    headline: "Unrelated agent finished",
+    agentId: "some-other-agent",
+  });
+  assert.equal(daemon.buffer.length, 0, "unrelated routine events are dropped");
+
+  // A session-correlated agent's routine event buffers and drains.
+  daemon.correlateAgent("session-agent-1");
+  daemon.handleEvent({
+    id: "mce_correlated",
+    ts: new Date().toISOString(),
+    kind: "finished",
+    severity: "info",
+    headline: "Session agent finished",
+    agentId: "session-agent-1",
+  });
+  assert.equal(daemon.buffer.length, 1, "session-correlated events buffer");
+  const digest = daemon.drainUpdates();
+  assert.match(digest, /Session agent finished/, "pending_updates drains correlated events");
 });
 
 test("'any updates?' drains the buffer through the model (Live API path)", async () => {

@@ -9,9 +9,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 
 import { loadConfig } from "./lib/config.js";
-import { VOICE_SYSTEM_PROMPT } from "./lib/voice-prompt.js";
+import { buildVoiceSystemPrompt } from "./lib/voice-prompt.js";
 import { DaemonConnection } from "./lib/daemon.js";
-import { TOOL_DECLARATIONS, executeTool } from "./lib/tools.js";
+import { getToolDeclarations, executeTool } from "./lib/tools.js";
 import { createSessionLogger, truncateValue } from "./lib/session-log.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -56,11 +56,15 @@ class VoiceSession {
     this.daemon = daemon;
     this.config = config;
     this.model = model;
+    this.voiceMode = config.voiceMode === "direct" ? "direct" : "relay";
     this.geminiWs = null;
     this.isConnecting = false;
     this.isSetupDone = false;
     this.pendingClientMessages = [];
-    this.systemInstruction = VOICE_SYSTEM_PROMPT;
+    // The mode pick is fixed at session setup (docs: an open session keeps
+    // the mode it started with until End). The client init message may
+    // override the prompt text (test harness), never the tool surface.
+    this.systemInstruction = buildVoiceSystemPrompt(this.voiceMode);
     this.resumeHandle = null;
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 5;
@@ -69,9 +73,17 @@ class VoiceSession {
     this.recentTurns = [];
     this.reconnectTimer = null;
     this.isExplicitClose = false;
+    // Mirror dedup: track the last mirrored text per role so repeated
+    // transcription deliveries do not append duplicate rows.
+    this.lastMirroredText = { user: "", assistant: "" };
+    this._mirrorSkipLogged = false;
     this.logger = createSessionLogger({ sessionId, logDir: this.config.sessionLogDir });
     this.logger.log("client.connect", {});
-    this.logger.log("session.start", { model: this.model, voiceName: this.config.voiceName });
+    this.logger.log("session.start", {
+      model: this.model,
+      voiceName: this.config.voiceName,
+      voiceMode: this.voiceMode,
+    });
   }
 
   isReady() {
@@ -114,6 +126,7 @@ class VoiceSession {
       this.logger.log("gemini.setup", {
         model: this.model,
         voiceName: this.config.voiceName,
+        voiceMode: this.voiceMode,
         resumeHandle: this.resumeHandle || undefined,
       });
       const setupMsg = {
@@ -129,7 +142,7 @@ class VoiceSession {
             },
           },
           systemInstruction: { parts: [{ text: this.systemInstruction }] },
-          tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
+          tools: [{ functionDeclarations: getToolDeclarations(this.voiceMode) }],
           sessionResumption: this.resumeHandle ? { handle: this.resumeHandle } : {},
         },
       };
@@ -297,6 +310,35 @@ class VoiceSession {
     }
   }
 
+  /**
+   * Mirror a heard user turn or spoken reply into the Commander thread
+   * (best-effort; no-ops until the daemon's mirror RPC lands). Pure Q&A uses
+   * kind "qa" (hidden in the feed unless verbose); dispatch turns are already
+   * recorded by commander_dispatch itself, so the session mirror stays "qa".
+   */
+  mirrorTurn(role, text) {
+    const trimmed = (text || "").trim();
+    if (!trimmed) return;
+    if (this.lastMirroredText[role] === trimmed) return; // duplicate delivery
+    this.lastMirroredText[role] = trimmed;
+    this.daemon
+      .mirrorVoiceTurn({ role, text: trimmed, kind: "qa" })
+      .then((outcome) => {
+        if (outcome?.ok) {
+          this.logger.log("mirror.ok", { role, kind: "qa" });
+        } else if (outcome?.error && !this._mirrorSkipLogged) {
+          // The mirror RPC may not be deployed yet; log the absence once per
+          // session, not on every turn.
+          this._mirrorSkipLogged = true;
+          this.logger.log("mirror.skipped", { role, kind: "qa", error: outcome.error });
+        }
+        return undefined;
+      })
+      .catch((err) => {
+        this.logger.log("mirror.error", { role, kind: "qa", error: err.message });
+      });
+  }
+
   reinjectCompactContext() {
     if (this.recentTurns.length === 0) return;
     const contextSummary = this.recentTurns
@@ -321,7 +363,10 @@ class VoiceSession {
       this.logger.log("tool.call", { name: call.name, args: call.args, callId: call.id });
       let toolResult;
       try {
-        toolResult = await executeTool(call.name, call.args, { daemon: this.daemon });
+        toolResult = await executeTool(call.name, call.args, {
+          daemon: this.daemon,
+          voiceMode: this.voiceMode,
+        });
       } catch (error) {
         toolResult = { error: `Executor failed: ${error.message}` };
       }
@@ -347,10 +392,12 @@ class VoiceSession {
     // unknown frame types.
     if (serverContent.inputTranscription?.text) {
       this.recordTurn("user", serverContent.inputTranscription.text);
+      this.mirrorTurn("user", serverContent.inputTranscription.text);
       this.sendJson({ type: "inputText", text: serverContent.inputTranscription.text });
     }
     if (serverContent.outputTranscription?.text) {
       this.recordTurn("model", serverContent.outputTranscription.text);
+      this.mirrorTurn("assistant", serverContent.outputTranscription.text);
       this.sendJson({ type: "text", text: serverContent.outputTranscription.text });
     }
     if (serverContent.modelTurn?.parts) {
@@ -487,6 +534,15 @@ export async function startVoiceServer(overrides = {}) {
     await daemon.connect();
     daemonReady = true;
     console.log(`Paseo daemon connected: ${config.paseoWsUrl}`);
+    // Central config wins over the env/default when it publishes voiceMode
+    // (best-effort; the daemon may not carry the field yet).
+    const centralMode = await daemon.fetchVoiceMode();
+    if (centralMode) {
+      config.voiceMode = centralMode;
+      console.log(`Commander Voice mode (central config): ${centralMode}`);
+    } else {
+      console.log(`Commander Voice mode (env/default): ${config.voiceMode}`);
+    }
   } catch (error) {
     console.error(`Paseo daemon connection failed (${config.paseoWsUrl}): ${error.message}`);
   }

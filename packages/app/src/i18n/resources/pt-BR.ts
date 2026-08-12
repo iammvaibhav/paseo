@@ -1971,6 +1971,9 @@ export const ptBR: TranslationResources = {
       voiceNodeUrl: "URL do nó de voz",
       voiceNodeUrlHint:
         "Servidor de Voz do Comandante (ex.: ws://127.0.0.1:8787/ws). Vazio oculta a voz do Comandante no composer do Mission Control.",
+      voiceMode: "Voice tool mode",
+      voiceModeHint:
+        "Relay = voice reads like Commander but routes every change through commander_dispatch. Direct = voice holds the full Commander tool surface, approval-gated. Applies to new voice sessions.",
     },
     metadataGeneration: {
       title: "Geração de metadados",

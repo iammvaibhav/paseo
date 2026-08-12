@@ -66,6 +66,11 @@ export interface ResolvedMissionControlCentralConfig {
   // Voice in the Mission Control composer and where to connect. Null/empty =
   // feature hidden.
   voiceNodeUrl: string | null;
+  // M9 voice tool surface: "relay" (default) = shared read tools +
+  // commander_dispatch/proposal_respond/pending_updates only, mutations via
+  // the Commander; "direct" = full Commander allowlist, every call mirrored.
+  // Applies to NEW voice sessions; an open session keeps its start mode.
+  voiceMode: "relay" | "direct";
   // Lifecycle-tracking gates: which agent classes emit Mission Control
   // lifecycle events. The Commander itself is never tracked; root agents are
   // always tracked. Defaults: all three classes tracked.
@@ -99,6 +104,7 @@ export const DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG: ResolvedMissionControlCentr
   hindsightBank: "paseo-fleet",
   hindsightSecondaryBank: "omp",
   voiceNodeUrl: null,
+  voiceMode: "relay",
   trackCommanderWorkers: true,
   trackVerifiers: true,
   trackSubagents: true,
@@ -259,6 +265,7 @@ const CENTRAL_CONFIG_KEYS: readonly (keyof ResolvedMissionControlCentralConfig)[
   "hindsightBank",
   "hindsightSecondaryBank",
   "voiceNodeUrl",
+  "voiceMode",
   "trackCommanderWorkers",
   "trackVerifiers",
   "trackSubagents",
@@ -310,31 +317,51 @@ function resolveNullableStringKnobs(
   };
 }
 
+type BooleanKnobs = Pick<
+  ResolvedMissionControlCentralConfig,
+  | "hideAgentNames"
+  | "stallDetectionEnabled"
+  | "trackCommanderWorkers"
+  | "trackVerifiers"
+  | "trackSubagents"
+>;
+
+/** The on/off tracking toggles: boolean knobs. */
+function resolveBooleanKnobs(
+  stored: MissionControlCentralConfig,
+  defaults: ResolvedMissionControlCentralConfig,
+): BooleanKnobs {
+  return {
+    hideAgentNames: stored.hideAgentNames ?? defaults.hideAgentNames,
+    stallDetectionEnabled: stored.stallDetectionEnabled ?? defaults.stallDetectionEnabled,
+    trackCommanderWorkers: stored.trackCommanderWorkers ?? defaults.trackCommanderWorkers,
+    trackVerifiers: stored.trackVerifiers ?? defaults.trackVerifiers,
+    trackSubagents: stored.trackSubagents ?? defaults.trackSubagents,
+  };
+}
+
 function resolveCentralConfig(
   stored: MissionControlCentralConfig,
 ): ResolvedMissionControlCentralConfig {
   const defaults = DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG;
   return {
     ...resolveNullableStringKnobs(stored, defaults),
+    ...resolveBooleanKnobs(stored, defaults),
     commanderInstructions: stored.commanderInstructions ?? defaults.commanderInstructions,
     verifierConcurrency: stored.verifierConcurrency ?? defaults.verifierConcurrency,
     evaluationScope: stored.evaluationScope ?? defaults.evaluationScope,
     mode: stored.mode ?? defaults.mode,
     retentionDays: stored.retentionDays ?? defaults.retentionDays,
     namingTheme: stored.namingTheme ?? defaults.namingTheme,
-    hideAgentNames: stored.hideAgentNames ?? defaults.hideAgentNames,
     silenceNudgeSeconds: stored.silenceNudgeSeconds ?? defaults.silenceNudgeSeconds,
     // Legacy fallback: pre-rename files carry status cadence as nudgeSeconds.
     statusNudgeSeconds:
       stored.statusNudgeSeconds ?? stored.nudgeSeconds ?? defaults.statusNudgeSeconds,
     escalateSeconds: stored.escalateSeconds ?? defaults.escalateSeconds,
-    stallDetectionEnabled: stored.stallDetectionEnabled ?? defaults.stallDetectionEnabled,
     dormantTurnSeconds: stored.dormantTurnSeconds ?? defaults.dormantTurnSeconds,
     commanderToWorkerMode: stored.commanderToWorkerMode ?? defaults.commanderToWorkerMode,
     verifierToWorkerMode: stored.verifierToWorkerMode ?? defaults.verifierToWorkerMode,
     hindsightBank: stored.hindsightBank ?? defaults.hindsightBank,
-    trackCommanderWorkers: stored.trackCommanderWorkers ?? defaults.trackCommanderWorkers,
-    trackVerifiers: stored.trackVerifiers ?? defaults.trackVerifiers,
-    trackSubagents: stored.trackSubagents ?? defaults.trackSubagents,
+    voiceMode: stored.voiceMode ?? defaults.voiceMode,
   };
 }

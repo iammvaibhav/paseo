@@ -680,6 +680,13 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         if (item.classification === "machinery") {
           return verbose ? <MachineryMessageRow timestamp={item.timestamp.getTime()} /> : null;
         }
+        // Voice-mirrored pure Q&A rows (heard utterances mirrored into the
+        // Commander thread by the voice mirror RPC) are quiet: verbose mode
+        // shows the spoken words, normal mode renders nothing. "dispatch"
+        // mirror rows stay visible — they asked the fleet to do something.
+        if (item.voiceMirrorKind === "qa" && !verbose) {
+          return null;
+        }
         // `<paseo-system>` envelopes (fleet digests, schedule fires, notify-on-
         // finish) are system-injected context, not user prose: render them as
         // the same collapsed divider the Mission Control thread uses so the
@@ -712,6 +719,12 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
 
     const renderAssistantMessageItem = useCallback(
       (layoutItem: StreamLayoutItem, item: Extract<StreamItem, { kind: "assistant_message" }>) => {
+        // Voice-mirrored pure Q&A replies (spoken answers mirrored into the
+        // Commander thread) are quiet like their user rows: verbose mode
+        // shows the spoken answer, normal mode renders nothing.
+        if (item.voiceMirrorKind === "qa" && !verbose) {
+          return null;
+        }
         return (
           <AssistantFileLinkResolverProvider
             client={client}
@@ -733,7 +746,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           </AssistantFileLinkResolverProvider>
         );
       },
-      [agentId, client, handleInlinePathPress, resolvedServerId, toast, workspaceRoot],
+      [agentId, client, handleInlinePathPress, resolvedServerId, toast, verbose, workspaceRoot],
     );
 
     const renderThoughtItem = useCallback(

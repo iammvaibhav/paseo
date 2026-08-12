@@ -98,6 +98,8 @@ import {
   MissionControlInstructionsListResponseSchema,
   MissionControlInstructionsCloseRequestSchema,
   MissionControlInstructionsCloseResponseSchema,
+  MissionControlVoiceMirrorRequestSchema,
+  MissionControlVoiceMirrorResponseSchema,
 } from "./mission-control/types.js";
 export {
   MissionControlEventSchema,
@@ -836,11 +838,17 @@ export const AgentTimelineItemPayloadSchema: z.ZodType<AgentTimelineItem, unknow
     // Machinery-originated prompt classification (stall status-ask nudges vs
     // Commander/Verifier instructions). Absent = instruction (visible).
     classification: z.enum(["machinery", "instruction"]).optional(),
+    // M9 voice dialogue mirror marker: rows appended to the Commander thread
+    // by the voice mirror RPC. "qa" = pure Q&A (hidden unless verbose);
+    // "dispatch" = the turn asked the fleet to do something (visible).
+    voiceMirrorKind: z.enum(["qa", "dispatch"]).optional(),
   }),
   z.object({
     type: z.literal("assistant_message"),
     text: z.string(),
     messageId: z.string().optional(),
+    // M9 voice dialogue mirror marker (same semantics as the user row).
+    voiceMirrorKind: z.enum(["qa", "dispatch"]).optional(),
   }),
   z.object({
     type: z.literal("reasoning"),
@@ -3228,6 +3236,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   MissionControlEventForwardRequestSchema,
   MissionControlInstructionsListRequestSchema,
   MissionControlInstructionsCloseRequestSchema,
+  MissionControlVoiceMirrorRequestSchema,
 ]);
 
 export type SessionInboundMessage = z.infer<typeof SessionInboundMessageSchema>;
@@ -6293,6 +6302,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   MissionControlEventForwardResponseSchema,
   MissionControlInstructionsListResponseSchema,
   MissionControlInstructionsCloseResponseSchema,
+  MissionControlVoiceMirrorResponseSchema,
   DaemonUpdateProgressMessageSchema,
   DaemonUpdateResponseSchema,
 ]);

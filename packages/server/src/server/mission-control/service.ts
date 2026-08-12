@@ -1196,6 +1196,48 @@ export class MissionControlService {
     return id;
   }
 
+  /**
+   * M9 voice dialogue mirror: append ONE voice turn to the Commander thread
+   * as a plain timeline row WITHOUT running a Commander model turn. Every
+   * heard user utterance (role "user") and every spoken reply (role
+   * "assistant") is mirrored here so text Commander always has what you said
+   * and what voice answered. Append-only: no instruction is opened, no
+   * snapshot is dispatched, no turn is started. kind "qa" = pure Q&A (the
+   * app hides the row unless verbose); "dispatch" = the turn asked the fleet
+   * to do something (visible like any other turn).
+   */
+  async mirrorVoiceTurn(input: {
+    role: "user" | "assistant";
+    text: string;
+    kind: "qa" | "dispatch";
+  }): Promise<{ ok: true } | { ok: false; error: string }> {
+    const commanderId = await this.resolveCommanderAgentId();
+    if (!commanderId) {
+      return { ok: false, error: "No Commander agent on this host" };
+    }
+    try {
+      await this.agentManager.appendTimelineItem(commanderId, {
+        type: input.role === "user" ? "user_message" : "assistant_message",
+        text: input.text.trim(),
+        voiceMirrorKind: input.kind,
+      });
+      this.logger.debug(
+        { commanderId, role: input.role, kind: input.kind },
+        "mission_control.voice.mirror_appended",
+      );
+      return { ok: true };
+    } catch (error) {
+      this.logger.warn(
+        { err: error, commanderId, role: input.role, kind: input.kind },
+        "mission_control.voice.mirror_failed",
+      );
+      return {
+        ok: false,
+        error: getErrorMessageOr(error, "Failed to mirror voice turn into the Commander thread"),
+      };
+    }
+  }
+
   /** The Commander is the agent labeled paseo.mission-control=commander. */
   private async resolveCommanderAgentId(): Promise<string | null> {
     for (const record of await this.agentStorage.list()) {

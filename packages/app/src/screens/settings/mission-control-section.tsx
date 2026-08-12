@@ -651,6 +651,14 @@ export function MissionControlSection(): ReactElement {
     [],
   );
 
+  const voiceModeOptions = useMemo<DropdownRowOption<"relay" | "direct">[]>(
+    () => [
+      { value: "relay", label: "Relay" },
+      { value: "direct", label: "Direct" },
+    ],
+    [],
+  );
+
   const patch = useCallback(
     async (updates: Partial<MissionControlCentralConfig>) => {
       try {
@@ -790,6 +798,10 @@ export function MissionControlSection(): ReactElement {
   );
   const handleVoiceNodeUrlCommit = useCallback(
     (next: string | null) => void patch({ voiceNodeUrl: next }),
+    [patch],
+  );
+  const handleVoiceModeSelect = useCallback(
+    (next: "relay" | "direct") => void patch({ voiceMode: next }),
     [patch],
   );
 
@@ -986,6 +998,14 @@ export function MissionControlSection(): ReactElement {
             testID="mission-control-settings-voice-node-url"
             isCompact={isCompact}
             nullable
+          />
+          <DropdownRow
+            title={t("settings.missionControl.voiceMode")}
+            hint={t("settings.missionControl.voiceModeHint")}
+            value={config.voiceMode}
+            options={voiceModeOptions}
+            onSelect={handleVoiceModeSelect}
+            testID="mission-control-settings-voice-mode"
           />
         </View>
       </SettingsSection>

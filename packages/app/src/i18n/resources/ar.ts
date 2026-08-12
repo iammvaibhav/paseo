@@ -1940,6 +1940,9 @@ export const ar: TranslationResources = {
       voiceNodeUrl: "عنوان عقدة الصوت",
       voiceNodeUrlHint:
         "خادم صوت القائد (مثال: ws://127.0.0.1:8787/ws). تركه فارغًا يخفي صوت القائد في محرر Mission Control.",
+      voiceMode: "Voice tool mode",
+      voiceModeHint:
+        "Relay = voice reads like Commander but routes every change through commander_dispatch. Direct = voice holds the full Commander tool surface, approval-gated. Applies to new voice sessions.",
     },
     metadataGeneration: {
       title: "إنشاء البيانات الوصفية",
