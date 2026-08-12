@@ -324,9 +324,11 @@ export class DaemonConnection {
   }
 
   /**
-   * fleet_get_agent_activity: curated timeline summary for one agent on the
-   * connected host. Read-only; does not poke the live agent (not a nudge).
-   * Peer-host reads need Commander (no peerManager here) — say so clearly.
+   * fleet_get_agent_activity: curated timeline summary for one agent. Local
+   * hosts read the timeline directly; PEER hosts hop through the daemon's
+   * mission_control.peer.timeline session RPC (the daemon proxies to the
+   * peer over peering, exactly like the Commander's fleet_get_agent_activity
+   * peer branch). Read-only; does not poke the live agent (not a nudge).
    */
   async fleetGetAgentActivity({ host, agentId, limit }) {
     if (!agentId) {
@@ -334,9 +336,17 @@ export class DaemonConnection {
     }
     const hostLabel = this.hostAlias ?? "local";
     if (host && host !== "local" && host !== hostLabel) {
-      return {
-        error: `fleet_get_agent_activity cannot read host "${host}" from the voice node; use commander_dispatch to have the Commander read it.`,
-      };
+      // Peer host: the daemon owns the peering hop (the voice node has no
+      // peerManager), so ask it over the peer timeline RPC.
+      const payload = await this.client.missionControlPeerTimeline({
+        host,
+        agentId,
+        ...(typeof limit === "number" && limit > 0 ? { limit } : {}),
+      });
+      if (!payload.ok) {
+        return { error: payload.error ?? `Cannot read host "${host}" from the voice node` };
+      }
+      return { result: payload.content ?? "No activity to display." };
     }
     const payload = await this.client.fetchAgentTimeline(agentId, {
       direction: "tail",
@@ -407,36 +417,114 @@ export class DaemonConnection {
   }
 
   /**
-   * fleet_recall: semantic recall over fleet memory. The voice node has no
-   * recall RPC — tell the model the Commander path instead of failing.
+   * fleet_recall: semantic recall over fleet memory — the same
+   * MissionControlService.hindsightRecall the Commander's fleet_recall tool
+   * calls, over the mission_control.recall session RPC. Returns a
+   * spoken-friendly digest of the matches; when the bank is unconfigured or
+   * unreachable the daemon answers ok:false reason "memory unavailable" and
+   * the caller should route the question through commander_dispatch.
    */
-  async fleetRecall() {
+  async fleetRecall({ query, limit = 5 } = {}) {
+    if (!query || !String(query).trim()) {
+      return { error: "fleet_recall requires a query" };
+    }
+    const payload = await this.client.missionControlRecall({ query, limit });
+    if (!payload.ok) {
+      return {
+        error: `fleet_recall is unavailable (${payload.reason ?? "unknown reason"}); use commander_dispatch to have the Commander recall it.`,
+      };
+    }
+    const matches = payload.matches ?? [];
+    if (matches.length === 0) {
+      return { result: `No memories match "${query}".` };
+    }
+    const lines = matches.slice(0, limit).map((match) => {
+      const attribution = match.attribution;
+      const name = attribution
+        ? attribution.agentTitle || attribution.agentName || attribution.agentId
+        : null;
+      const source = match.bank === "paseo-fleet" ? "run record" : "transcript memory";
+      const when = match.occurredStart ? ` (${String(match.occurredStart).slice(0, 10)})` : "";
+      const prefix = name ? `${name}: ` : "";
+      const text = String(match.text || "")
+        .replace(/\s+/g, " ")
+        .trim();
+      return `${prefix}${text || source}${when}`;
+    });
     return {
-      error:
-        "fleet_recall is not available from the voice node; use commander_dispatch to have the Commander recall it.",
+      result: `${matches.length} ${matches.length === 1 ? "memory" : "memories"}: ${lines.join(", ")}.`,
     };
   }
 
   /**
-   * fleet_context: run records / workspace-project rollups. Same story as
-   * fleet_recall: no client RPC from the voice node.
+   * fleet_context: run records / workspace-project rollups from the local
+   * mission-control store, over the mission_control.context.records session
+   * RPC — the same service calls the Commander's fleet_context tool makes.
+   * Returns a spoken-friendly summary of the records and rollup.
    */
-  async fleetContext() {
-    return {
-      error:
-        "fleet_context is not available from the voice node; use commander_dispatch to have the Commander fetch it.",
-    };
+  async fleetContext({ agentId, workspaceId, projectId } = {}) {
+    const payload = await this.client.missionControlContextRecords({
+      ...(agentId ? { agentId } : {}),
+      ...(workspaceId ? { workspaceId } : {}),
+      ...(projectId ? { projectId } : {}),
+    });
+    if (!payload.ok) {
+      return {
+        error: `fleet_context is unavailable (${payload.error ?? "unknown reason"}); use commander_dispatch to have the Commander fetch it.`,
+      };
+    }
+    const records = payload.runRecords ?? [];
+    const lines = [];
+    const rollup = payload.workspaceRollup ?? payload.projectRollup;
+    if (rollup) {
+      const label =
+        rollup.kind === "workspace"
+          ? (rollup.workspaceTitle ?? rollup.workspaceId)
+          : (rollup.projectName ?? rollup.projectId);
+      const openCount = rollup.runs.reduce(
+        (count, run) => count + (run.open.length > 0 ? 1 : 0),
+        0,
+      );
+      lines.push(
+        `${rollup.kind} "${label}": ${rollup.runs.length} run${rollup.runs.length === 1 ? "" : "s"}${openCount > 0 ? `, ${openCount} with open items` : ""}`,
+      );
+    }
+    const recordLines = records.slice(0, 5).map((record) => {
+      const name = record.agentTitle || record.agentName || record.agentId;
+      const brief = record.brief
+        ? ` — ${String(record.brief).replace(/\s+/g, " ").trim().slice(0, 120)}`
+        : "";
+      return `${name} (${record.outcome})${brief}`;
+    });
+    if (recordLines.length > 0) {
+      lines.push(recordLines.join(". "));
+    }
+    if (lines.length === 0) {
+      return { result: "No run records in the mission-control store yet." };
+    }
+    return { result: lines.join(". ") + "." };
   }
 
   /**
-   * tag_message: attribute the current user turn to agents. Voice has no
-   * agent-scoped session to tag from; the Commander tags on dispatch.
+   * tag_message: attribute the current voice user turn to agents, over the
+   * mission_control.tag_message session RPC. The daemon tags the latest
+   * voice-mirrored user message on the Commander thread (the same tag record
+   * the Commander's tag_message tool writes; the Verifier reads these tags).
    */
-  async tagMessage() {
-    return {
-      error:
-        "tag_message is not available from the voice node; the Commander tags messages it dispatches.",
-    };
+  async tagMessage({ agentIds, messageText } = {}) {
+    if (!Array.isArray(agentIds) || agentIds.length === 0) {
+      return { error: "tag_message requires agentIds" };
+    }
+    const payload = await this.client.missionControlTagMessage({
+      agentIds,
+      ...(messageText ? { messageText } : {}),
+    });
+    if (payload.ok) {
+      return {
+        result: `Tagged the current user turn to ${agentIds.length} agent${agentIds.length === 1 ? "" : "s"}.`,
+      };
+    }
+    return { error: payload.error ?? "tag_message failed" };
   }
 
   // --- Control tools ---------------------------------------------------------

@@ -1127,3 +1127,235 @@ export const MissionControlEventForwardResponseSchema = z.object({
 export type MissionControlEventForwardResponse = z.infer<
   typeof MissionControlEventForwardResponseSchema
 >;
+
+// ============================================================================
+// M11 voice read RPCs (fleet_recall / fleet_context / tag_message / peer
+// timeline): the voice node connects to ONE daemon (no peerManager) and calls
+// these thin session RPCs; the daemon runs the same MissionControlService
+// methods and peer hops the Commander MCP tools use, and returns
+// spoken-friendly payloads. Read-only except tag_message, which records a
+// message tag exactly like the Commander's tag_message tool. Additive wire
+// messages; older daemons that never send them are unaffected.
+// ============================================================================
+
+/**
+ * One semantic-recall match, same shape the Commander's fleet_recall tool
+ * returns (service.hindsightRecall output serialized). `attribution` is
+ * present when the match's omp session id resolved to a Paseo agent.
+ */
+export const MissionControlRecallMatchSchema = z.object({
+  id: z.string(),
+  text: z.string(),
+  context: z.string().nullable(),
+  occurredStart: z.string().nullable(),
+  documentId: z.string().nullable(),
+  tags: z.array(z.string()).nullable(),
+  /** Source bank: "paseo-fleet" (run records) or "omp" (transcript memories). */
+  bank: z.string(),
+  sessionId: z.string().nullable(),
+  entities: z.array(z.string()).nullable(),
+  /** Raw recall metadata passthrough (omp memories carry `{ session_id }`). */
+  metadata: z.record(z.string(), z.unknown()).nullable(),
+  attribution: z
+    .object({
+      agentId: z.string(),
+      agentName: z.string(),
+      agentTitle: z.string(),
+      workspaceId: z.string().nullable(),
+    })
+    .optional(),
+});
+export type MissionControlRecallMatch = z.infer<typeof MissionControlRecallMatchSchema>;
+
+export const MissionControlRecallRequestSchema = z.object({
+  type: z.literal("mission_control.recall.request"),
+  requestId: z.string(),
+  query: z.string().min(1),
+  limit: z.number().int().positive().max(20).optional(),
+});
+export type MissionControlRecallRequest = z.infer<typeof MissionControlRecallRequestSchema>;
+
+export const MissionControlRecallResponseSchema = z.object({
+  type: z.literal("mission_control.recall.response"),
+  payload: z.object({
+    requestId: z.string(),
+    ok: z.boolean(),
+    // Set when !ok ("memory unavailable" when hindsight is unconfigured).
+    reason: z.string().optional(),
+    matches: z.array(MissionControlRecallMatchSchema).optional(),
+  }),
+});
+export type MissionControlRecallResponse = z.infer<typeof MissionControlRecallResponseSchema>;
+
+// Wire shapes for fleet_context run records and workspace/project rollups.
+// Mirrors the Commander's fleet_context output schema (paseo-tools.ts) so the
+// voice digest formats the same data the Commander sees.
+
+export const MissionControlContextRunReportSchema = z.object({
+  ts: z.string(),
+  kind: z.string(),
+  headline: z.string(),
+  detail: z.string().optional(),
+  reportKind: z.string().optional(),
+});
+export type MissionControlContextRunReport = z.infer<typeof MissionControlContextRunReportSchema>;
+
+export const MissionControlContextRunProofSchema = z.object({
+  kind: z.string(),
+  label: z.string().optional(),
+  url: z.string().optional(),
+  path: z.string().optional(),
+  excerpt: z.string().optional(),
+});
+export type MissionControlContextRunProof = z.infer<typeof MissionControlContextRunProofSchema>;
+
+export const MissionControlContextRunVerdictSchema = z.object({
+  by: z.enum(["verifier", "user"]),
+  summary: z.string(),
+  at: z.string(),
+  verdict: z.string().optional(),
+  verifierAgentId: z.string().optional(),
+});
+export type MissionControlContextRunVerdict = z.infer<typeof MissionControlContextRunVerdictSchema>;
+
+export const MissionControlContextRunRecordSchema = z.object({
+  id: z.string(),
+  agentId: z.string(),
+  agentName: z.string(),
+  agentTitle: z.string(),
+  hostAlias: z.string(),
+  serverId: z.string(),
+  workspaceId: z.string().nullable(),
+  workspaceTitle: z.string().nullable(),
+  projectId: z.string().nullable(),
+  projectName: z.string().nullable(),
+  runEpoch: z.number(),
+  startedAt: z.string(),
+  endedAt: z.string(),
+  outcome: z.string(),
+  brief: z.string().nullable(),
+  reports: z.array(MissionControlContextRunReportSchema),
+  verdict: MissionControlContextRunVerdictSchema.nullable(),
+  proofs: z.array(MissionControlContextRunProofSchema),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type MissionControlContextRunRecord = z.infer<typeof MissionControlContextRunRecordSchema>;
+
+export const MissionControlContextRollupEntrySchema = z.object({
+  agentId: z.string(),
+  agentName: z.string(),
+  endedAt: z.string(),
+  outcome: z.string(),
+  brief: z.string().nullable(),
+  decisions: z.array(z.string()),
+  open: z.array(z.string()),
+  verdict: z.string().nullable(),
+});
+export type MissionControlContextRollupEntry = z.infer<
+  typeof MissionControlContextRollupEntrySchema
+>;
+
+export const MissionControlContextWorkspaceRollupSchema = z.object({
+  kind: z.literal("workspace"),
+  workspaceId: z.string(),
+  workspaceTitle: z.string().nullable(),
+  projectId: z.string().nullable(),
+  projectName: z.string().nullable(),
+  updatedAt: z.string(),
+  runs: z.array(MissionControlContextRollupEntrySchema),
+});
+export type MissionControlContextWorkspaceRollup = z.infer<
+  typeof MissionControlContextWorkspaceRollupSchema
+>;
+
+export const MissionControlContextProjectRollupSchema = z.object({
+  kind: z.literal("project"),
+  projectId: z.string(),
+  projectName: z.string().nullable(),
+  updatedAt: z.string(),
+  runs: z.array(MissionControlContextRollupEntrySchema),
+});
+export type MissionControlContextProjectRollup = z.infer<
+  typeof MissionControlContextProjectRollupSchema
+>;
+
+export const MissionControlContextRecordsRequestSchema = z.object({
+  type: z.literal("mission_control.context.records.request"),
+  requestId: z.string(),
+  agentId: z.string().optional(),
+  workspaceId: z.string().optional(),
+  projectId: z.string().optional(),
+});
+export type MissionControlContextRecordsRequest = z.infer<
+  typeof MissionControlContextRecordsRequestSchema
+>;
+
+export const MissionControlContextRecordsResponseSchema = z.object({
+  type: z.literal("mission_control.context.records.response"),
+  payload: z.object({
+    requestId: z.string(),
+    ok: z.boolean(),
+    runRecords: z.array(MissionControlContextRunRecordSchema),
+    workspaceRollup: MissionControlContextWorkspaceRollupSchema.optional(),
+    projectRollup: MissionControlContextProjectRollupSchema.optional(),
+    // Set when !ok (e.g. Mission Control disabled on this host).
+    error: z.string().optional(),
+  }),
+});
+export type MissionControlContextRecordsResponse = z.infer<
+  typeof MissionControlContextRecordsResponseSchema
+>;
+
+export const MissionControlTagMessageRequestSchema = z.object({
+  type: z.literal("mission_control.tag_message.request"),
+  requestId: z.string(),
+  agentIds: z.array(z.string().min(1)).min(1),
+  // Optional override: when set, the tag is recorded against the most recent
+  // Commander user message whose text matches this exact value (the
+  // voice-mirrored utterance). Absent = tag the newest voice-mirrored (or
+  // plain) Commander user message, exactly like the Commander's tag_message.
+  messageText: z.string().optional(),
+});
+export type MissionControlTagMessageRequest = z.infer<typeof MissionControlTagMessageRequestSchema>;
+
+export const MissionControlTagMessageResponseSchema = z.object({
+  type: z.literal("mission_control.tag_message.response"),
+  payload: z.object({
+    requestId: z.string(),
+    ok: z.boolean(),
+    error: z.string().optional(),
+  }),
+});
+export type MissionControlTagMessageResponse = z.infer<
+  typeof MissionControlTagMessageResponseSchema
+>;
+
+export const MissionControlPeerTimelineRequestSchema = z.object({
+  type: z.literal("mission_control.peer.timeline.request"),
+  requestId: z.string(),
+  // Peer host name from the daemon peers config ("local" is not valid here —
+  // local activity goes through the regular fetchAgentTimeline path).
+  host: z.string().min(1),
+  agentId: z.string().min(1),
+  limit: z.number().int().positive().optional(),
+});
+export type MissionControlPeerTimelineRequest = z.infer<
+  typeof MissionControlPeerTimelineRequestSchema
+>;
+
+export const MissionControlPeerTimelineResponseSchema = z.object({
+  type: z.literal("mission_control.peer.timeline.response"),
+  payload: z.object({
+    requestId: z.string(),
+    ok: z.boolean(),
+    // Curated timeline summary text (same curation as the Commander's
+    // fleet_get_agent_activity peer branch).
+    content: z.string().optional(),
+    updateCount: z.number().int().optional(),
+    error: z.string().optional(),
+  }),
+});
+export type MissionControlPeerTimelineResponse = z.infer<
+  typeof MissionControlPeerTimelineResponseSchema
+>;

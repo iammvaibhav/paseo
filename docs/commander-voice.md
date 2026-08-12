@@ -303,7 +303,7 @@ Every card that answers a user instruction carries respondsTo when the envelope 
 4. ~~Mirror every heard user turn and spoken reply into the Commander thread; hide pure Q&A in UI unless verbose~~ (landed).
 5. ~~Mission Control setting `voiceMode: relay | direct` (default relay)~~ (landed).
 6. Evaluate on real sessions: answer correctness vs Commander text, mutation latency, quietness, mirror fidelity (can you continue by typing after a long voice session?).
-7. Optional: deeper direct executors for `fleet_recall` / `fleet_context` / `tag_message` when client APIs exist; peer-host activity proxy without Commander.
+7. ~~Deeper direct executors for `fleet_recall` / `fleet_context` / `tag_message` when client APIs exist; peer-host activity proxy without Commander~~ (landed: `mission_control.recall` / `context.records` / `tag_message` / `peer.timeline` session RPCs).
 
 Do not delete relay until direct has proven approval safety and the Commander chat still reads as one coherent log.
 

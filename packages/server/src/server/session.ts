@@ -46,7 +46,7 @@ import {
   supportsDiskTimeline,
   tryReadProviderTimelineFromDisk,
 } from "./agent/provider-disk-history.js";
-import type { ImportedTimelineEntry } from "./agent/agent-sdk-types.js";
+import type { ImportedTimelineEntry, AgentTimelineItem } from "./agent/agent-sdk-types.js";
 import {
   sendPromptToAgent,
   startAgentRun,
@@ -112,10 +112,11 @@ import {
 import {
   projectTimelineRows,
   selectProjectedTimelinePage,
+  selectItemsByProjectedLimit,
   type TimelineProjectionEntry,
   type TimelineProjectionMode,
 } from "./agent/timeline-projection.js";
-import { buildAgentForkContextAttachment } from "./agent/activity-curator.js";
+import { buildAgentForkContextAttachment, curateAgentActivity } from "./agent/activity-curator.js";
 import type { AgentPromptInput } from "./agent/agent-sdk-types.js";
 import { buildAgentPrompt } from "./agent/prompt-attachments.js";
 import type { StructuredGenerationDaemonConfig } from "./agent/structured-generation-providers.js";
@@ -184,6 +185,7 @@ import {
 } from "./mission-control/commander-contract.js";
 import { resolveMissionControlMediaFetch } from "./mission-control/media.js";
 import { moveAgentToWorkspace } from "./mission-control/meta-actions.js";
+import { resolveCommanderUserMessage } from "./mission-control/tagging.js";
 import { PlannotatorSession } from "./session/plannotator/plannotator-session.js";
 import { ScheduleSession } from "./session/schedule/schedule-session.js";
 import { ProviderCatalogSession } from "./session/provider/provider-catalog-session.js";
@@ -607,6 +609,36 @@ function sessionRequestId(message: SessionInboundMessage): string | null {
     return message.payload.requestId;
   }
   return null;
+}
+
+/**
+ * Shared selection/curation for the M11 peer-timeline RPC, mirroring the
+ * Commander's fleet_get_agent_activity peer branch (paseo-tools.ts
+ * curateActivitySummary): projected-count limit over the fetched items, then
+ * the same activity curator, with a spoken-friendly count header.
+ */
+function curateVoicePeerActivitySummary(input: { timeline: AgentTimelineItem[]; limit?: number }): {
+  updateCount: number;
+  content: string;
+} {
+  const selection = selectItemsByProjectedLimit({
+    items: input.timeline,
+    direction: "tail",
+    limit: input.limit ?? 0,
+  });
+  const curatedContent = curateAgentActivity(selection.items);
+  const { totalProjected, shownProjected } = selection;
+
+  const noun = totalProjected === 1 ? "activity" : "activities";
+  const countHeader =
+    input.limit && shownProjected < totalProjected
+      ? `Showing ${shownProjected} of ${totalProjected} ${noun} (limited to ${input.limit})`
+      : `Showing all ${totalProjected} ${noun}`;
+
+  return {
+    updateCount: input.timeline.length,
+    content: `${countHeader}\n\n${curatedContent}`,
+  };
 }
 
 interface AgentTimelineProjectionSelection {
@@ -2036,6 +2068,7 @@ export class Session {
     (msg) => this.dispatchMissionControlModeMessage(msg),
     (msg) => this.dispatchMissionControlConfigMessage(msg),
     (msg) => this.dispatchMissionControlVoiceMessage(msg),
+    (msg) => this.dispatchMissionControlVoiceReadsMessage(msg),
     (msg) => this.dispatchMissionControlCommanderMessage(msg),
     (msg) => this.dispatchMissionControlSearchMessage(msg),
     (msg) => this.dispatchMissionControlMediaMessage(msg),
@@ -2462,6 +2495,230 @@ export class Session {
           requestId: msg.requestId,
           ok: false,
           error: getErrorMessageOr(error, "Failed to mirror voice turn into the Commander thread"),
+        },
+      });
+    }
+  }
+
+  /**
+   * M11 voice read RPCs (mission_control.recall / context.records /
+   * tag_message / peer.timeline): the voice node (scripts/commander-voice)
+   * connects to ONE daemon — it has no peerManager and no MCP tool catalog —
+   * so these thin session RPCs expose the same MissionControlService reads
+   * the Commander's fleet tools use, plus the peer timeline hop
+   * fleet_get_agent_activity performs for non-local hosts.
+   */
+  private dispatchMissionControlVoiceReadsMessage(
+    msg: SessionInboundMessage,
+  ): Promise<void> | undefined {
+    switch (msg.type) {
+      case "mission_control.recall.request":
+        return this.handleMissionControlRecallRequest(msg);
+      case "mission_control.context.records.request":
+        return this.handleMissionControlContextRecordsRequest(msg);
+      case "mission_control.tag_message.request":
+        return this.handleMissionControlTagMessageRequest(msg);
+      case "mission_control.peer.timeline.request":
+        return this.handleMissionControlPeerTimelineRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  /**
+   * M11 fleet_recall for the voice node: semantic recall over the configured
+   * Hindsight bank(s) — exactly what the Commander's fleet_recall tool calls
+   * (service.hindsightRecall). Degrades to { ok:false, reason:"memory
+   * unavailable" } when the bank is unconfigured or unreachable; the voice
+   * node advises routing the question through commander_dispatch then.
+   */
+  private async handleMissionControlRecallRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.recall.request" }>,
+  ): Promise<void> {
+    try {
+      if (!this.missionControlService) {
+        throw new Error("Mission Control is not enabled on this host");
+      }
+      const result = await this.missionControlService.hindsightRecall(msg.query, msg.limit ?? 5);
+      this.emit({
+        type: "mission_control.recall.response",
+        payload: {
+          requestId: msg.requestId,
+          ok: result.ok,
+          ...(result.ok ? { matches: result.matches } : { reason: result.reason }),
+        },
+      });
+    } catch {
+      this.emit({
+        type: "mission_control.recall.response",
+        payload: {
+          requestId: msg.requestId,
+          ok: false,
+          reason: "memory unavailable",
+        },
+      });
+    }
+  }
+
+  /**
+   * M11 fleet_context for the voice node: deterministic run records plus the
+   * matching workspace/project rollup from the local mission-control store.
+   * Selector semantics match the Commander's fleet_context tool: agentId →
+   * that agent's latest runs, workspaceId → workspace rollup + its runs,
+   * projectId → project rollup + its runs, nothing → most recent fleet-wide.
+   */
+  private async handleMissionControlContextRecordsRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.context.records.request" }>,
+  ): Promise<void> {
+    try {
+      if (!this.missionControlService) {
+        throw new Error("Mission Control is not enabled on this host");
+      }
+      const all = this.missionControlService.getRunRecords();
+      let runRecords = all;
+      let workspaceRollup: ReturnType<MissionControlService["getWorkspaceRollup"]> | undefined;
+      let projectRollup: ReturnType<MissionControlService["getProjectRollup"]> | undefined;
+      if (msg.agentId) {
+        runRecords = all.filter((record) => record.agentId === msg.agentId).slice(0, 5);
+      } else if (msg.workspaceId) {
+        runRecords = all.filter((record) => record.workspaceId === msg.workspaceId).slice(0, 5);
+        workspaceRollup =
+          this.missionControlService.getWorkspaceRollup(msg.workspaceId) ?? undefined;
+      } else if (msg.projectId) {
+        runRecords = all.filter((record) => record.projectId === msg.projectId).slice(0, 5);
+        projectRollup = this.missionControlService.getProjectRollup(msg.projectId) ?? undefined;
+      } else {
+        runRecords = all.slice(0, 10);
+      }
+      this.emit({
+        type: "mission_control.context.records.response",
+        payload: {
+          requestId: msg.requestId,
+          ok: true,
+          runRecords,
+          ...(workspaceRollup ? { workspaceRollup } : {}),
+          ...(projectRollup ? { projectRollup } : {}),
+        },
+      });
+    } catch (error) {
+      this.emit({
+        type: "mission_control.context.records.response",
+        payload: {
+          requestId: msg.requestId,
+          ok: false,
+          runRecords: [],
+          error: getErrorMessageOr(error, "Failed to fetch Mission Control run records"),
+        },
+      });
+    }
+  }
+
+  /**
+   * M11 tag_message for the voice node: attribute the latest voice-mirrored
+   * user message on the Commander thread to the given agent ids — the same
+   * record the Commander's tag_message tool writes (the Verifier reads these
+   * tags when auditing a worker). The tag always lands on the COMMANDER's
+   * timeline: the voice node has no agent-scoped session, and every heard
+   * utterance is mirrored there (role "user"). `messageText` (when set) pins
+   * the tag to the most recent Commander user message whose text equals it.
+   */
+  private async handleMissionControlTagMessageRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.tag_message.request" }>,
+  ): Promise<void> {
+    try {
+      if (!this.missionControlService) {
+        throw new Error("Mission Control is not enabled on this host");
+      }
+      const commanderId = await this.missionControlService.getCommanderAgentId();
+      if (!commanderId) {
+        throw new Error("No Commander agent on this host");
+      }
+      const message = resolveCommanderUserMessage(this.agentManager, commanderId);
+      if (!message) {
+        throw new Error("No user message found to tag on the Commander thread");
+      }
+      if (msg.messageText && message.text !== msg.messageText) {
+        // The caller pinned a specific utterance; fall back to scanning the
+        // timeline for it (the newest matching row is the one to tag).
+        const timeline = this.agentManager.getTimeline(commanderId);
+        const pinned = [...timeline]
+          .toReversed()
+          .find(
+            (item): item is Extract<AgentTimelineItem, { type: "user_message" }> =>
+              item.type === "user_message" && item.text === msg.messageText,
+          );
+        if (!pinned) {
+          throw new Error(`No Commander user message matching "${msg.messageText}" found to tag`);
+        }
+        this.missionControlService.recordMessageTags({
+          messageId: pinned.messageId ?? pinned.clientMessageId ?? message.messageId,
+          agentIds: [...new Set(msg.agentIds)],
+          ts: new Date().toISOString(),
+          text: msg.messageText,
+        });
+      } else {
+        this.missionControlService.recordMessageTags({
+          messageId: message.messageId,
+          agentIds: [...new Set(msg.agentIds)],
+          ts: new Date().toISOString(),
+          text: message.text,
+        });
+      }
+      this.emit({
+        type: "mission_control.tag_message.response",
+        payload: { requestId: msg.requestId, ok: true },
+      });
+    } catch (error) {
+      this.emit({
+        type: "mission_control.tag_message.response",
+        payload: {
+          requestId: msg.requestId,
+          ok: false,
+          error: getErrorMessageOr(error, "Failed to tag the user message"),
+        },
+      });
+    }
+  }
+
+  /**
+   * M11 fleet_get_agent_activity(peer) for the voice node: proxy the agent's
+   * timeline from the named peer host over peering and return the same
+   * curated summary the Commander's fleet_get_agent_activity peer branch
+   * produces. Local reads keep using the regular fetchAgentTimeline path.
+   */
+  private async handleMissionControlPeerTimelineRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.peer.timeline.request" }>,
+  ): Promise<void> {
+    try {
+      const client = this.peerManager?.getPeerClient(msg.host) ?? null;
+      if (!client) {
+        throw new Error(`Host "${msg.host}" is not a configured peer`);
+      }
+      const payload = await client.fetchAgentTimeline(msg.agentId, {
+        direction: "tail",
+        ...(typeof msg.limit === "number" && msg.limit > 0 ? { limit: msg.limit } : {}),
+      });
+      if (payload.error) {
+        throw new Error(payload.error);
+      }
+      const timeline = payload.entries.map((entry) => entry.item);
+      const summary = curateVoicePeerActivitySummary({ timeline, limit: msg.limit });
+      this.emit({
+        type: "mission_control.peer.timeline.response",
+        payload: {
+          requestId: msg.requestId,
+          ok: true,
+          content: summary.content,
+          updateCount: summary.updateCount,
+        },
+      });
+    } catch (error) {
+      this.emit({
+        type: "mission_control.peer.timeline.response",
+        payload: {
+          requestId: msg.requestId,
+          ok: false,
+          error: getErrorMessageOr(error, "Failed to read the peer agent's timeline"),
         },
       });
     }

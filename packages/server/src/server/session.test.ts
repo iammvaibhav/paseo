@@ -6676,3 +6676,348 @@ describe("mission control event forward wire dispatch", () => {
     ]);
   });
 });
+
+// ============================================================================
+// M11 voice read RPCs (mission_control.recall / context.records /
+// tag_message / peer.timeline): the voice node connects to ONE daemon (no
+// peerManager, no MCP catalog) and reads over these thin session RPCs. These
+// tests pin the SESSION mapping — the daemon runs the same
+// MissionControlService calls the Commander's fleet tools use, and hops to
+// peers over peering for fleet_get_agent_activity(peer).
+// ============================================================================
+
+describe("mission control voice read RPCs wire dispatch", () => {
+  test("mission_control.recall.request routes to hindsightRecall and answers with matches", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const hindsightRecall = vi.fn(async () => ({
+      ok: true as const,
+      matches: [
+        {
+          id: "mem_1",
+          text: "Pia fixed the auth bug",
+          context: null,
+          occurredStart: "2026-08-01T00:00:00.000Z",
+          documentId: "paseo-run:mcr_pia_1",
+          tags: ["project:acme"],
+          bank: "paseo-fleet",
+          sessionId: null,
+          entities: null,
+          metadata: null,
+        },
+      ],
+    }));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        hindsightRecall,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.recall.request",
+      requestId: "req-recall-1",
+      query: "who fixed the auth bug",
+      limit: 3,
+    });
+
+    expect(hindsightRecall).toHaveBeenCalledWith("who fixed the auth bug", 3);
+    expect(messages).toEqual([
+      {
+        type: "mission_control.recall.response",
+        payload: {
+          requestId: "req-recall-1",
+          ok: true,
+          matches: [expect.objectContaining({ id: "mem_1", bank: "paseo-fleet" })],
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.recall.request defaults the limit and surfaces memory unavailable", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const hindsightRecall = vi.fn(async () => ({
+      ok: false as const,
+      reason: "memory unavailable" as const,
+      error: "hindsight is not configured",
+    }));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        hindsightRecall,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.recall.request",
+      requestId: "req-recall-2",
+      query: "anything",
+    });
+
+    expect(hindsightRecall).toHaveBeenCalledWith("anything", 5);
+    expect(messages).toEqual([
+      {
+        type: "mission_control.recall.response",
+        payload: { requestId: "req-recall-2", ok: false, reason: "memory unavailable" },
+      },
+    ]);
+  });
+
+  test("mission_control.context.records.request with agentId filters the run records", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const getRunRecords = vi.fn(() => [
+      {
+        id: "mcr_agent-a_1",
+        agentId: "agent-a",
+        agentName: "archimedes",
+        agentTitle: "Archimedes",
+        hostAlias: "local",
+        serverId: "srv-1",
+        workspaceId: "wks_1",
+        workspaceTitle: "Payments work",
+        projectId: "prj_1",
+        projectName: "Acme",
+        runEpoch: 1,
+        startedAt: "2026-08-01T00:00:00.000Z",
+        endedAt: "2026-08-01T01:00:00.000Z",
+        outcome: "finished",
+        brief: "Fix the auth bug",
+        reports: [],
+        verdict: null,
+        proofs: [],
+        createdAt: "2026-08-01T00:00:00.000Z",
+        updatedAt: "2026-08-01T02:00:00.000Z",
+      },
+    ]);
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        getRunRecords,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.context.records.request",
+      requestId: "req-ctx-1",
+      agentId: "agent-a",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.context.records.response",
+        payload: {
+          requestId: "req-ctx-1",
+          ok: true,
+          runRecords: [expect.objectContaining({ agentId: "agent-a", outcome: "finished" })],
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.context.records.request with workspaceId includes the workspace rollup", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const getRunRecords = vi.fn(() => []);
+    const getWorkspaceRollup = vi.fn(() => ({
+      kind: "workspace" as const,
+      workspaceId: "wks_1",
+      workspaceTitle: "Payments work",
+      projectId: "prj_1",
+      projectName: "Acme",
+      updatedAt: "2026-08-01T02:00:00.000Z",
+      runs: [
+        {
+          agentId: "agent-a",
+          agentName: "archimedes",
+          endedAt: "2026-08-01T01:00:00.000Z",
+          outcome: "finished",
+          brief: null,
+          decisions: [],
+          open: [],
+          verdict: null,
+        },
+      ],
+    }));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        getRunRecords,
+        getWorkspaceRollup,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.context.records.request",
+      requestId: "req-ctx-2",
+      workspaceId: "wks_1",
+    });
+
+    expect(getWorkspaceRollup).toHaveBeenCalledWith("wks_1");
+    expect(messages).toEqual([
+      {
+        type: "mission_control.context.records.response",
+        payload: {
+          requestId: "req-ctx-2",
+          ok: true,
+          runRecords: [],
+          workspaceRollup: expect.objectContaining({ kind: "workspace", workspaceId: "wks_1" }),
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.context.records.request errors without a service", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({ messages, missionControlService: undefined });
+
+    await session.handleMessage({
+      type: "mission_control.context.records.request",
+      requestId: "req-ctx-none",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.context.records.response",
+        payload: {
+          requestId: "req-ctx-none",
+          ok: false,
+          runRecords: [],
+          error: expect.stringContaining("Mission Control is not enabled") as unknown as string,
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.tag_message.request tags the latest Commander user message", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const recordMessageTags = vi.fn();
+    const getCommanderAgentId = vi.fn(async () => "commander-1");
+    const getTimeline = vi.fn(() => [
+      { type: "user_message", text: "check on Archimedes", voiceMirrorKind: "qa" },
+    ]);
+    const session = createSessionForTest({
+      messages,
+      agentManager: { getTimeline },
+      missionControlService: {
+        recordMessageTags,
+        getCommanderAgentId,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.tag_message.request",
+      requestId: "req-tag-1",
+      agentIds: ["agent-a", "agent-b"],
+    });
+
+    expect(recordMessageTags).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentIds: ["agent-a", "agent-b"],
+        text: "check on Archimedes",
+      }),
+    );
+    expect(messages).toEqual([
+      {
+        type: "mission_control.tag_message.response",
+        payload: { requestId: "req-tag-1", ok: true },
+      },
+    ]);
+  });
+
+  test("mission_control.tag_message.request reports an error when no user message exists", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const getCommanderAgentId = vi.fn(async () => "commander-1");
+    const getTimeline = vi.fn(() => [{ type: "assistant_message", text: "I'm on it" }]);
+    const session = createSessionForTest({
+      messages,
+      agentManager: { getTimeline },
+      missionControlService: {
+        getCommanderAgentId,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.tag_message.request",
+      requestId: "req-tag-none",
+      agentIds: ["agent-a"],
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.tag_message.response",
+        payload: {
+          requestId: "req-tag-none",
+          ok: false,
+          error: expect.stringContaining("No user message found to tag") as unknown as string,
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.peer.timeline.request hops to the peer and returns the curated summary", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const fetchAgentTimeline = vi.fn(async () => ({
+      entries: [
+        { item: { type: "user_message", text: "do the thing" } },
+        { item: { type: "assistant_message", text: "done" } },
+      ],
+    }));
+    const peerManager = {
+      getPeerClient: vi.fn((name: string) => (name === "macbook" ? { fetchAgentTimeline } : null)),
+    };
+    const session = createSessionForTest({
+      messages,
+      peerManager: peerManager as unknown as SessionOptions["peerManager"],
+    });
+
+    await session.handleMessage({
+      type: "mission_control.peer.timeline.request",
+      requestId: "req-peer-1",
+      host: "macbook",
+      agentId: "agent-a",
+      limit: 10,
+    });
+
+    expect(fetchAgentTimeline).toHaveBeenCalledWith("agent-a", {
+      direction: "tail",
+      limit: 10,
+    });
+    expect(messages).toEqual([
+      {
+        type: "mission_control.peer.timeline.response",
+        payload: {
+          requestId: "req-peer-1",
+          ok: true,
+          content: expect.stringContaining("do the thing") as unknown as string,
+          updateCount: 2,
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.peer.timeline.request surfaces an unconfigured peer", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({
+      messages,
+      peerManager: {
+        getPeerClient: vi.fn(() => null),
+      } as unknown as SessionOptions["peerManager"],
+    });
+
+    await session.handleMessage({
+      type: "mission_control.peer.timeline.request",
+      requestId: "req-peer-2",
+      host: "not-a-peer",
+      agentId: "agent-a",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.peer.timeline.response",
+        payload: {
+          requestId: "req-peer-2",
+          ok: false,
+          error: 'Host "not-a-peer" is not a configured peer',
+        },
+      },
+    ]);
+  });
+});
