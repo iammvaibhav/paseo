@@ -87,6 +87,7 @@ import {
 } from "./daemon/daemon-manager.js";
 import {
   createQuitLifecycle,
+  registerExternalQuitSignals,
   stopDesktopManagedDaemonOnQuitIfNeeded,
 } from "./daemon/quit-lifecycle.js";
 import { runDesktopStartup } from "./desktop-startup.js";
@@ -1153,6 +1154,7 @@ app.on("before-quit", () => {
   void plannotatorProxyManager?.closeAll();
   stopOmpStatsFleet();
 });
+registerExternalQuitSignals({ signals: process, quit: () => app.quit() });
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
