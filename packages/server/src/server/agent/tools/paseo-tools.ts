@@ -1,3 +1,4 @@
+import { basename, resolve as resolvePath } from "node:path";
 import { z } from "zod";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { ensureValidJson } from "../../json-utils.js";
@@ -88,12 +89,17 @@ import {
   updateAgentCommand,
 } from "../lifecycle-command.js";
 import type { ForgeService } from "../../../services/forge-service.js";
+import type { ProjectCheckoutLitePayload } from "@getpaseo/protocol/messages";
 import type { WorkspaceGitService } from "../../workspace-git-service.js";
-import type {
-  PersistedWorkspaceRecord,
-  ProjectRegistry,
-  WorkspaceRegistry,
+import {
+  resolveProjectDisplayName,
+  resolveWorkspaceDisplayName,
+  type PersistedWorkspaceRecord,
+  type ProjectRegistry,
+  type WorkspaceRegistry,
 } from "../../workspace-registry.js";
+import { resolveWorkspaceIdForPath } from "../../resolve-workspace-id-for-path.js";
+import { deriveWorkspaceDisplayName } from "../../workspace-registry-model.js";
 import { resolveWorktreeSourceCwd } from "../../workspace-source.js";
 import type { WorkspaceScriptsService } from "../../session/workspace-scripts/workspace-scripts-service.js";
 import {
@@ -152,7 +158,7 @@ export interface PaseoToolHostDependencies {
   github?: ForgeService;
   workspaceGitService?: Pick<
     WorkspaceGitService,
-    "getSnapshot" | "listWorktrees" | "resolveRepoRoot"
+    "getSnapshot" | "listWorktrees" | "resolveRepoRoot" | "getCheckout"
   >;
   findWorkspaceIdForCwd?: ArchiveDependencies["findWorkspaceIdForCwd"];
   listActiveWorkspaces?: ArchiveDependencies["listActiveWorkspaces"];
@@ -4069,6 +4075,152 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     return peerManager.getPeerClient(host);
   };
 
+  /** Best-effort checkout read; never fails proposal creation. */
+  const readWorkspaceCheckoutLite = async (
+    cwd: string,
+  ): Promise<ProjectCheckoutLitePayload | undefined> => {
+    try {
+      return await options.workspaceGitService?.getCheckout(cwd);
+    } catch (error) {
+      childLogger.warn(
+        { err: error, cwd },
+        "Failed to read checkout for a Commander spawn proposal label",
+      );
+      return undefined;
+    }
+  };
+
+  /**
+   * The name a freshly minted workspace at `cwd` would get, mirroring the
+   * provisioning path (createWorkspaceForDirectory → initialWorkspacePlacement
+   * → deriveWorkspaceDisplayName → resolveWorkspaceName): the checked-out
+   * branch when on one, else the cwd's last path segment. When the cwd
+   * already maps to a known workspace, that workspace's real name (title
+   * wins) is preferred — the fresh mint shares the same checkout facts.
+   */
+  const resolveNewWorkspaceDisplayName = async (cwd: string): Promise<string> => {
+    if (options.workspaceRegistry) {
+      const mapped = resolveWorkspaceIdForPath(cwd, await options.workspaceRegistry.list());
+      if (mapped) {
+        const workspace = await options.workspaceRegistry.get(mapped);
+        if (workspace && !workspace.archivedAt) {
+          return resolveWorkspaceDisplayName(workspace);
+        }
+      }
+    }
+    const checkout = await readWorkspaceCheckoutLite(cwd);
+    if (checkout) {
+      // Same derivation the provisioning path uses (branch when on one, else
+      // the cwd's last path segment — deriveWorkspaceDisplayName's fallback).
+      return deriveWorkspaceDisplayName({ cwd, checkout });
+    }
+    const segments = cwd.replace(/\\/g, "/").split("/").filter(Boolean);
+    return segments[segments.length - 1] ?? cwd;
+  };
+
+  /**
+   * The project a freshly minted workspace at `cwd` would join, mirroring the
+   * provisioning path (findOrCreateProjectForDirectory): the exact cwd root's
+   * existing project is reused when present (existing `project` label),
+   * otherwise a project named after the cwd's basename would be created
+   * (`newProject` label).
+   */
+  const resolveNewWorkspaceProjectLabel = async (
+    cwd: string,
+  ): Promise<{ key: "project" | "newProject"; name: string }> => {
+    if (options.workspaceRegistry && options.projectRegistry) {
+      const mapped = resolveWorkspaceIdForPath(cwd, await options.workspaceRegistry.list());
+      if (mapped) {
+        const workspace = await options.workspaceRegistry.get(mapped);
+        // Only an exact cwd match reuses the mapped project — find-or-create
+        // keys on the root path, so a nested cwd would mint its own project.
+        if (workspace && !workspace.archivedAt && resolvePath(workspace.cwd) === resolvePath(cwd)) {
+          const project = await options.projectRegistry.get(workspace.projectId);
+          if (project && !project.archivedAt) {
+            return { key: "project", name: resolveProjectDisplayName(project) };
+          }
+        }
+      }
+    }
+    return { key: "newProject", name: basename(resolvePath(cwd)) || cwd };
+  };
+
+  /**
+   * Resolve human-readable workspace/project labels for a Commander spawn
+   * proposal at proposal-creation time, so the card renders names instead of
+   * raw `wks_…` ids — even when the target workspace lives on another host
+   * (the client's session-store lookup cannot see a peer's workspaces, so the
+   * payload must be self-contained).
+   *
+   * Existing workspace (`workspaceId`): the workspace display name and its
+   * project's name. New workspace (cwd only): the name the minted workspace
+   * would get (see resolveNewWorkspaceDisplayName) plus the project it would
+   * join. Peer targets resolve over the peer RPC (fetchWorkspaces) — the
+   * local registries cannot see a peer's workspaces; a name is never
+   * fabricated, so when nothing resolves the label is left absent and the
+   * chips fall back to the raw payload fields.
+   */
+  const resolveCommanderSpawnLabels = async (input: {
+    host: string;
+    cwd?: string;
+    workspaceId?: string;
+  }): Promise<Record<string, string> | undefined> => {
+    const { host, cwd, workspaceId } = input;
+    const labels: Record<string, string> = {};
+    if (isFleetLocalTarget(host)) {
+      if (workspaceId) {
+        const workspace = options.workspaceRegistry
+          ? await options.workspaceRegistry.get(workspaceId)
+          : undefined;
+        if (workspace && !workspace.archivedAt) {
+          labels.workspace = resolveWorkspaceDisplayName(workspace);
+          const project = options.projectRegistry
+            ? await options.projectRegistry.get(workspace.projectId)
+            : undefined;
+          if (project && !project.archivedAt) {
+            labels.project = resolveProjectDisplayName(project);
+          }
+        }
+      } else if (cwd) {
+        labels.newWorkspace = await resolveNewWorkspaceDisplayName(cwd);
+        const projectLabel = await resolveNewWorkspaceProjectLabel(cwd);
+        labels[projectLabel.key] = projectLabel.name;
+      }
+    } else {
+      // Peer target: the local registries cannot resolve the peer's workspace.
+      let client: DaemonClient | null = null;
+      try {
+        client = resolveFleetHost(host);
+      } catch (error) {
+        childLogger.warn(
+          { err: error, host },
+          "Peer unavailable; leaving Commander spawn proposal labels unresolved",
+        );
+      }
+      if (client && workspaceId) {
+        try {
+          const payload = await client.fetchWorkspaces({ page: { limit: 200 } });
+          const entry = payload.entries.find((candidate) => candidate.id === workspaceId);
+          if (entry) {
+            // `name` carries the resolved title-or-derived name; `title` is
+            // the raw override (null when derived) — mirror resolveWorkspaceName.
+            labels.workspace = entry.title?.trim() || entry.name;
+            labels.project = entry.projectDisplayName;
+          }
+        } catch (error) {
+          childLogger.warn(
+            { err: error, host, workspaceId },
+            "Failed to resolve peer workspace label for a Commander spawn proposal",
+          );
+        }
+      }
+      // New workspace on a peer: the name derives from the peer's own checkout
+      // (branch), which this daemon cannot know without fabricating — the
+      // label stays absent and the chips fall back to the raw payload fields.
+    }
+    return Object.keys(labels).length > 0 ? labels : undefined;
+  };
+
   registerTool(
     "fleet_list_agents",
     {
@@ -4194,6 +4346,15 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         // proposal whose card shows what would be created (host, provider/
         // model, brief); approving (or auto mode) executes the spawn via the
         // approvals spawn hook (bootstrap spawnFromProposal).
+        // Resolve human workspace/project labels at proposal time so the card
+        // renders names (authoritative, cross-host correct) instead of raw
+        // `wks_…` ids; caller-supplied labels pass through untouched.
+        const resolvedSpawnLabels = await resolveCommanderSpawnLabels({
+          host,
+          cwd,
+          workspaceId,
+        });
+        const spawnLabels = { ...labels, ...resolvedSpawnLabels };
         const gated = await runCommanderGatedAction({
           toolName: "fleet_create_agent",
           toolInput: args,
@@ -4206,7 +4367,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
               initialPrompt,
               cwd,
               workspaceId,
-              labels,
+              labels: Object.keys(spawnLabels).length > 0 ? spawnLabels : undefined,
               settings,
               ...(args.respondsTo ? { respondsTo: args.respondsTo } : {}),
             }),

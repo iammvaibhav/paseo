@@ -1499,6 +1499,10 @@ export async function createPaseoDaemon(
     providerSnapshotManager,
     createPaseoWorktree: createPaseoWorktreeForTools,
     ensureWorkspaceForCreate: ensureWorkspaceForCreateAndBroadcastExternal,
+    getWorkspace: async (workspaceId) => {
+      const record = await workspaceRegistry?.get(workspaceId);
+      return record ? { cwd: record.cwd, archivedAt: record.archivedAt } : null;
+    },
   };
   const createAgent = (input: Parameters<typeof createAgentCommand>[1]) =>
     createAgentCommand(createAgentCommandDependencies, input);

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { TFunction } from "i18next";
 import type { MissionControlProposal } from "@getpaseo/protocol/mission-control/types";
-import { resolveWorkspaceChipLabel, workspaceChip } from "./proposal-card-chips";
+import { projectChip, resolveWorkspaceChipLabel, workspaceChip } from "./proposal-card-chips";
 import {
   deriveProposalCardIdentity,
   nonOpaqueMetaTargetLabel,
@@ -26,7 +26,14 @@ function spawnProposal(overrides: {
   workspaceId?: string;
   workspaceLabel?: string;
   newWorkspace?: string;
+  projectLabel?: string;
+  newProject?: string;
 }): MissionControlProposal {
+  const labels: Record<string, string> = {};
+  if (overrides.workspaceLabel) labels.workspace = overrides.workspaceLabel;
+  if (overrides.newWorkspace) labels.newWorkspace = overrides.newWorkspace;
+  if (overrides.projectLabel) labels.project = overrides.projectLabel;
+  if (overrides.newProject) labels.newProject = overrides.newProject;
   return {
     id: "mcp_1",
     createdAt: "2026-08-09T00:00:00.000Z",
@@ -44,8 +51,7 @@ function spawnProposal(overrides: {
       provider: "omp/opencode-zen/deepseek-v4-flash-free",
       summary: "Spawn test agent",
       ...(overrides.workspaceId ? { workspaceId: overrides.workspaceId } : {}),
-      ...(overrides.workspaceLabel ? { labels: { workspace: overrides.workspaceLabel } } : {}),
-      ...(overrides.newWorkspace ? { labels: { newWorkspace: overrides.newWorkspace } } : {}),
+      ...(Object.keys(labels).length > 0 ? { labels } : {}),
     },
   };
 }
@@ -105,6 +111,55 @@ describe("workspaceChip", () => {
 
   it("returns null when the proposal carries no workspace", () => {
     expect(workspaceChip(spawnProposal({}), t)).toBeNull();
+  });
+});
+
+describe("spawnPlan payload labels (daemon-resolved, self-contained)", () => {
+  it("renders the payload workspace label over the raw workspace id (existing workspace)", () => {
+    const chip = workspaceChip(
+      spawnProposal({
+        workspaceId: "wks_04bc75ed85cadbbe",
+        workspaceLabel: "Paseo Agent Infrastructure and Latency",
+      }),
+      t,
+    );
+    expect(chip).toEqual({
+      key: "workspace",
+      label: "Workspace: Paseo Agent Infrastructure and Latency",
+    });
+  });
+
+  it("keeps the shortened raw id only when no label is resolvable", () => {
+    const chip = workspaceChip(spawnProposal({ workspaceId: "wks_04bc75ed85cadbbe" }), t);
+    expect(chip?.label).toBe("Workspace: wks_04bc75ed85ca…");
+  });
+
+  it("renders the suggested new-workspace name from the payload", () => {
+    const chip = workspaceChip(spawnProposal({ newWorkspace: "vaibhav/customizations" }), t);
+    expect(chip).toEqual({ key: "newWorkspace", label: "New workspace: vaibhav/customizations" });
+  });
+
+  it("renders the project chip for an existing workspace's project", () => {
+    const chip = projectChip(
+      spawnProposal({
+        workspaceLabel: "Paseo Agent Infrastructure and Latency",
+        projectLabel: "remote:github.com/iammvaibhav/paseo",
+      }),
+      t,
+    );
+    expect(chip).toEqual({
+      key: "project",
+      label: "Project: remote:github.com/iammvaibhav/paseo",
+    });
+  });
+
+  it("renders the new-project chip for a workspace-creating spawn", () => {
+    const chip = projectChip(spawnProposal({ newProject: "paseo" }), t);
+    expect(chip).toEqual({ key: "newProject", label: "New project: paseo" });
+  });
+
+  it("returns null when the proposal carries no project", () => {
+    expect(projectChip(spawnProposal({}), t)).toBeNull();
   });
 });
 
