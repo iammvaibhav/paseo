@@ -92,6 +92,13 @@ export type UserMessageImageAttachment = AttachmentMetadata;
  */
 export type UserMessageClassification = "machinery" | "instruction";
 
+/**
+ * M9 voice dialogue mirror marker on user/assistant rows appended by the
+ * voice mirror RPC. "qa" = pure Q&A (the chat hides the row unless verbose);
+ * "dispatch" = the turn asked the fleet to do something (visible).
+ */
+export type VoiceMirrorKind = "qa" | "dispatch";
+
 export interface UserMessageItem {
   kind: "user_message";
   id: string;
@@ -101,6 +108,7 @@ export interface UserMessageItem {
   messageId?: string;
   timelineCursor?: TimelinePosition;
   classification?: UserMessageClassification;
+  voiceMirrorKind?: VoiceMirrorKind;
   text: string;
   timestamp: Date;
   images?: UserMessageImageAttachment[];
@@ -113,6 +121,7 @@ export interface UserMessageInput {
   messageId?: string;
   timelineCursor?: TimelinePosition;
   classification?: UserMessageClassification;
+  voiceMirrorKind?: VoiceMirrorKind;
   text: string;
   timestamp: Date;
   images?: UserMessageImageAttachment[];
@@ -131,6 +140,7 @@ export function createUserMessage(input: UserMessageInput): UserMessageItem {
     ...(input.messageId ? { messageId: input.messageId } : {}),
     ...(input.timelineCursor ? { timelineCursor: input.timelineCursor } : {}),
     ...(input.classification ? { classification: input.classification } : {}),
+    ...(input.voiceMirrorKind ? { voiceMirrorKind: input.voiceMirrorKind } : {}),
     text: input.text,
     timestamp: input.timestamp,
     ...(input.images && input.images.length > 0 ? { images: input.images } : {}),
@@ -692,6 +702,7 @@ export interface AssistantMessageItem {
   id: string;
   messageId?: string;
   timelineCursor?: TimelinePosition;
+  voiceMirrorKind?: VoiceMirrorKind;
   text: string;
   timestamp: Date;
   blockGroupId?: string;
@@ -855,6 +866,7 @@ function appendUserMessage(
   clientMessageId?: string,
   timelineCursor?: TimelinePosition,
   classification?: UserMessageClassification,
+  voiceMirrorKind?: VoiceMirrorKind,
 ): StreamItem[] {
   const { chunk, hasContent } = normalizeChunk(text);
   if (!hasContent) {
@@ -868,10 +880,45 @@ function appendUserMessage(
     messageId,
     timelineCursor,
     classification,
+    voiceMirrorKind,
     text: chunk,
     timestamp,
   });
   return upsertUserMessage(state, nextItem);
+}
+
+/** True when the chunk extends the trailing assistant row: same message id
+ * (or no message id) and not a discrete voice-mirror turn. Narrows `last`
+ * to an assistant row when true. */
+function canCoalesceAssistantChunk(
+  last: StreamItem | undefined,
+  voiceMirrorKind: VoiceMirrorKind | undefined,
+  messageId: string | undefined,
+): last is AssistantMessageItem {
+  return (
+    last?.kind === "assistant_message" &&
+    !voiceMirrorKind &&
+    (messageId === undefined || last.messageId === messageId)
+  );
+}
+
+/** True when a live chunk extends an assistant row one further back, past a
+ * submitted user row that followed it during interrupt. Narrows `secondLast`
+ * to an assistant row when true. */
+function canExtendAssistantAcrossUserRow(
+  last: StreamItem | undefined,
+  secondLast: StreamItem | undefined,
+  source: StreamUpdateSource,
+  voiceMirrorKind: VoiceMirrorKind | undefined,
+  messageId: string | undefined,
+): secondLast is AssistantMessageItem {
+  return (
+    source === "live" &&
+    !voiceMirrorKind &&
+    last?.kind === "user_message" &&
+    secondLast?.kind === "assistant_message" &&
+    (messageId === undefined || secondLast.messageId === messageId)
+  );
 }
 
 function appendAssistantMessage(
@@ -882,6 +929,7 @@ function appendAssistantMessage(
   messageId?: string,
   reservedItemIds?: ReadonlySet<string>,
   timelineCursor?: TimelinePosition,
+  voiceMirrorKind?: VoiceMirrorKind,
 ): StreamItem[] {
   const { chunk, hasContent } = normalizeChunk(text);
   if (!chunk) {
@@ -889,11 +937,7 @@ function appendAssistantMessage(
   }
 
   const last = state[state.length - 1];
-  const shouldAppendToLast =
-    last &&
-    last.kind === "assistant_message" &&
-    (messageId === undefined || last.messageId === messageId);
-  if (shouldAppendToLast) {
+  if (canCoalesceAssistantChunk(last, voiceMirrorKind, messageId)) {
     const updated: AssistantMessageItem = {
       ...last,
       text: `${last.text}${chunk}`,
@@ -906,12 +950,7 @@ function appendAssistantMessage(
   // A submitted user row can follow the streaming assistant during interrupt.
   // In that case, look one row further back for the assistant to extend.
   const secondLast = state[state.length - 2];
-  if (
-    source === "live" &&
-    last?.kind === "user_message" &&
-    secondLast?.kind === "assistant_message" &&
-    (messageId === undefined || secondLast.messageId === messageId)
-  ) {
+  if (canExtendAssistantAcrossUserRow(last, secondLast, source, voiceMirrorKind, messageId)) {
     const updated: AssistantMessageItem = {
       ...secondLast,
       text: `${secondLast.text}${chunk}`,
@@ -932,6 +971,7 @@ function appendAssistantMessage(
     id: entryId,
     ...(messageId ? { messageId } : {}),
     ...(timelineCursor ? { timelineCursor } : {}),
+    ...(voiceMirrorKind ? { voiceMirrorKind } : {}),
     text: chunk,
     timestamp,
   };
@@ -1432,6 +1472,7 @@ function reduceTimelineEvent(
           item.clientMessageId,
           timelineCursor,
           item.classification,
+          item.voiceMirrorKind,
         ),
       );
     case "assistant_message":
@@ -1444,6 +1485,7 @@ function reduceTimelineEvent(
           item.messageId,
           reservedItemIds,
           timelineCursor,
+          item.voiceMirrorKind,
         ),
       );
     case "reasoning":
@@ -1809,6 +1851,7 @@ function applyCanonicalUserMessageEvent(params: {
     messageId: event.item.messageId,
     clientMessageId: event.item.clientMessageId,
     classification: event.item.classification,
+    voiceMirrorKind: event.item.voiceMirrorKind,
     timelineCursor,
     text: normalized.chunk,
     timestamp,

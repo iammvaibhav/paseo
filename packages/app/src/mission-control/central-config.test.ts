@@ -27,3 +27,28 @@ describe("resolveMissionControlCentralConfig voiceNodeUrl (M9 knob)", () => {
     });
   });
 });
+
+describe("resolveMissionControlCentralConfig voiceMode (M9 knob)", () => {
+  it("defaults voiceMode to relay when unset", () => {
+    expect(resolveMissionControlCentralConfig({}).voiceMode).toBe("relay");
+    expect(resolveMissionControlCentralConfig(null).voiceMode).toBe("relay");
+  });
+
+  it("resolves a stored voiceMode (settings dropdown patch round-trips)", () => {
+    const resolved = resolveMissionControlCentralConfig({ voiceMode: "direct" });
+    expect(resolved.voiceMode).toBe("direct");
+  });
+
+  it("keeps unrelated keys intact when voiceMode is present", () => {
+    const resolved = resolveMissionControlCentralConfig({
+      commanderHost: "iammvaibhav",
+      voiceNodeUrl: "ws://127.0.0.1:8787/ws",
+      voiceMode: "direct",
+    });
+    expect(resolved).toMatchObject({
+      commanderHost: "iammvaibhav",
+      voiceNodeUrl: "ws://127.0.0.1:8787/ws",
+      voiceMode: "direct",
+    });
+  });
+});

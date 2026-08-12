@@ -17,22 +17,34 @@ flowchart LR
     Daemon -->|mission_control_event push| Proxy
 ```
 
-Four tools, no more: `fleet_status` (instant board summary), `commander_dispatch`
-(ack immediately, never await the turn), `proposal_respond` (same RPC as the
-app's cards), `pending_updates` (drain the update buffer).
+Two modes, chosen at session setup (`voiceMode`, default `relay`; env
+`VOICE_MODE`, overridden by the Mission Control central config when it
+publishes one):
+
+- **relay** — shared read tools (`fleet_list_agents`, `fleet_get_agent_activity`,
+  `fleet_search`, `fleet_recall`, `fleet_context`, `tag_message`) plus
+  `commander_dispatch` (ack immediately, never await the turn),
+  `proposal_respond` (same RPC as the app's cards), and `pending_updates`
+  (drain the update buffer). No mutating tool is declared; every fleet change
+  goes through the Commander.
+- **direct** — the full Commander allowlist plus `proposal_respond` and
+  `pending_updates`; mutating executors route through the daemon proposal gate
+  so every side effect is still approval-gated.
 
 Announce policy (in the voice system prompt + the proxy's event filter): only
 proposal events and needs-you blockers are injected into the live session and
-spoken; everything else (started, finished, milestones, verdicts) queues
-silently into a capped ring buffer drained by `pending_updates`. Destructive
-proposals repeat the classification aloud and require an explicit
-"yes, approve".
+spoken; everything else is buffered only when it belongs to this session's work
+(agents this session dispatched to or steered, proposals it created) and is
+otherwise dropped. `pending_updates` is pull-only. Destructive proposals repeat
+the classification aloud and require an explicit "yes, approve". Every heard
+user turn and spoken reply is mirrored into the Commander thread
+(`voiceMirrorKind: "qa"`) so text Commander keeps the dialogue.
 
 ## Files
 
 - `server.js` — HTTP + WS proxy (browser <-> Gemini Live), announce policy wiring.
 - `lib/daemon.js` — daemon connection, event filter, update buffer.
-- `lib/tools.js` — the four tool declarations + executors.
+- `lib/tools.js` — mode-aware tool declarations + executors.
 - `lib/voice-prompt.js` — the voice system prompt.
 - `lib/config.js` — env config; GEMINI_API_KEY resolved at launch (env, else
   ssh iammvaibhav:/home/ubuntu/llm-gateway/.env, never committed).
@@ -62,6 +74,8 @@ PORT=8787 PASEO_WS_URL=ws://127.0.0.1:6767/ws \
 ```
 
 Optional env: `HOST`, `VOICE_NAME` (default Puck), `GEMINI_MODEL`,
+`VOICE_MODE` (default `relay`; `direct` declares the full Commander allowlist —
+the Mission Control central config overrides it when it publishes one),
 `UPDATE_BUFFER_CAP` (default 64), `TLS_KEY_PATH`/`TLS_CERT_PATH` (plain HTTP
 is fine for dev; localhost is a secure context for the mic). `PORT` defaults
 to 8787, `HOST` to 0.0.0.0. TLS: when both `TLS_KEY_PATH` and `TLS_CERT_PATH`
@@ -107,15 +121,15 @@ node --test test/logic.test.mjs     # text-mode harness, no microphone
 node test/e2e-audio.mjs             # audio proof: TTS -> Live -> tool call
 ```
 
-Logic harness asserts: the announce-policy filter; the fleet_status executor;
-a text turn drives the Live model to call `fleet_status` (audio reply
-streamed); `commander_dispatch` lands on the Commander's timeline; a proposal
-push produces an injected spoken turn; `proposal_respond` flips the proposal
-in the dev store; routine started/finished events buffer silently and
-`pending_updates` drains them.
+Logic harness asserts: the announce-policy filter; the fleet_list_agents
+executor; a text turn drives the Live model to call `fleet_list_agents` (audio
+reply streamed); `commander_dispatch` lands on the Commander's timeline; a
+proposal push produces an injected spoken turn; `proposal_respond` flips the
+proposal in the dev store; routine started/finished events never inject and
+unrelated ones never buffer (only session-correlated events do).
 
 The audio proof synthesizes "what is the fleet status" (fish.audio if credited,
 else gemini-2.5-flash-preview-tts, else macOS `say`), streams it into the Live
 session with mic cadence (160 ms chunks, 30 ms apart — the Live speech
-detector ignores blobs), asserts `fleet_status` was called, and saves audio +
-transcript under `/tmp/commander-voice-e2e/`.
+detector ignores blobs), asserts `fleet_list_agents` was called, and saves
+audio + transcript under `/tmp/commander-voice-e2e/`.

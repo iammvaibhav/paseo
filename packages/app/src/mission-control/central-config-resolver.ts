@@ -51,6 +51,11 @@ export interface ResolvedMissionControlCentralConfig {
   // commander-voice). The Mission Control composer shows Commander Voice only
   // when this is set; null/empty = feature hidden.
   voiceNodeUrl: string | null;
+  // M9 voice tool surface: "relay" (default) = shared read tools plus
+  // commander_dispatch/proposal_respond/pending_updates, mutations via the
+  // Commander; "direct" = full Commander allowlist, every call mirrored.
+  // Applies to NEW voice sessions; an open session keeps its start mode.
+  voiceMode: "relay" | "direct";
   // Lifecycle-tracking gates (mirror the daemon's resolved central config):
   // which agent classes emit Mission Control lifecycle events. The Commander
   // itself is never tracked; root agents are always tracked.
@@ -82,6 +87,7 @@ const RESOLVED_DEFAULTS: ResolvedMissionControlCentralConfig = {
   hindsightBank: "paseo-fleet",
   hindsightSecondaryBank: "omp",
   voiceNodeUrl: null,
+  voiceMode: "relay",
   trackCommanderWorkers: true,
   trackVerifiers: true,
   trackSubagents: true,
@@ -113,6 +119,7 @@ function resolveMemoryKnobs(config: MissionControlCentralConfig) {
 function resolveVoiceKnobs(config: MissionControlCentralConfig) {
   return {
     voiceNodeUrl: config.voiceNodeUrl ?? null,
+    voiceMode: config.voiceMode ?? "relay",
   };
 }
 

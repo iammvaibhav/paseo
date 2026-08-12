@@ -56,8 +56,14 @@ export function loadConfig() {
     geminiApiKey: resolveGeminiApiKey(),
     geminiModel: process.env.GEMINI_MODEL || "models/gemini-3.1-flash-live-preview",
     voiceName: process.env.VOICE_NAME || "Puck",
+    // voiceMode: "relay" (default) routes every mutating intent through
+    // commander_dispatch; "direct" declares the full Commander allowlist.
+    // Central config (mission_control.config.get) overrides this after
+    // connect when it carries voiceMode.
+    voiceMode: process.env.VOICE_MODE === "direct" ? "direct" : "relay",
     updateBufferCap: Number(process.env.UPDATE_BUFFER_CAP || 64),
     tlsKeyPath: process.env.TLS_KEY_PATH || null,
     tlsCertPath: process.env.TLS_CERT_PATH || null,
+    sessionLogDir: process.env.VOICE_SESSION_LOG_DIR || null,
   };
 }

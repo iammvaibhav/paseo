@@ -2035,6 +2035,7 @@ export class Session {
     (msg) => this.dispatchMissionControlProposalsMessage(msg),
     (msg) => this.dispatchMissionControlModeMessage(msg),
     (msg) => this.dispatchMissionControlConfigMessage(msg),
+    (msg) => this.dispatchMissionControlVoiceMessage(msg),
     (msg) => this.dispatchMissionControlCommanderMessage(msg),
     (msg) => this.dispatchMissionControlSearchMessage(msg),
     (msg) => this.dispatchMissionControlMediaMessage(msg),
@@ -2410,6 +2411,57 @@ export class Session {
           config: this.missionControlService?.getCentralConfig() ?? {},
           ok: false,
           error: getErrorMessageOr(error, "Failed to patch Mission Control config"),
+        },
+      });
+    }
+  }
+
+  private dispatchMissionControlVoiceMessage(
+    msg: SessionInboundMessage,
+  ): Promise<void> | undefined {
+    switch (msg.type) {
+      case "mission_control.voice.mirror.request":
+        return this.handleMissionControlVoiceMirrorRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  /**
+   * M9 voice dialogue mirror (mission_control.voice.mirror): append a heard
+   * user utterance or a spoken voice reply to the Commander thread WITHOUT
+   * running a Commander model turn. The Commander thread is the system of
+   * record for dialogue; mirroring keeps text Commander up to date with what
+   * was decided by mouth. The service appends a plain timeline row — no
+   * instruction is opened, no snapshot is dispatched.
+   */
+  private async handleMissionControlVoiceMirrorRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.voice.mirror.request" }>,
+  ): Promise<void> {
+    try {
+      if (!this.missionControlService) {
+        throw new Error("Mission Control is not enabled on this host");
+      }
+      const result = await this.missionControlService.mirrorVoiceTurn({
+        role: msg.role,
+        text: msg.text,
+        kind: msg.kind,
+      });
+      this.emit({
+        type: "mission_control.voice.mirror.response",
+        payload: {
+          requestId: msg.requestId,
+          ok: result.ok,
+          ...(result.ok ? {} : { error: result.error }),
+        },
+      });
+    } catch (error) {
+      this.emit({
+        type: "mission_control.voice.mirror.response",
+        payload: {
+          requestId: msg.requestId,
+          ok: false,
+          error: getErrorMessageOr(error, "Failed to mirror voice turn into the Commander thread"),
         },
       });
     }

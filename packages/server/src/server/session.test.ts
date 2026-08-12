@@ -6161,6 +6161,107 @@ describe("mission control central config wire dispatch", () => {
   });
 });
 
+// ============================================================================
+// M9 voice dialogue mirror (wire dispatch): the session routes
+// mission_control.voice.mirror.request to the service's append-only mirror
+// and answers with ok/error. The service contract (append WITHOUT a model
+// turn) is tested at the service level in mission-control/voice-mirror.test;
+// these tests pin the SESSION mapping.
+// ============================================================================
+
+describe("mission control voice mirror wire dispatch", () => {
+  test("mission_control.voice.mirror.request dispatches with role/text/kind and answers ok", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const mirrorVoiceTurn = vi.fn(async () => ({ ok: true }));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        mirrorVoiceTurn,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.voice.mirror.request",
+      requestId: "req-voice-mirror-1",
+      role: "user",
+      text: "What is Archimedes doing?",
+      kind: "qa",
+    });
+
+    expect(mirrorVoiceTurn).toHaveBeenCalledWith({
+      role: "user",
+      text: "What is Archimedes doing?",
+      kind: "qa",
+    });
+    expect(messages).toEqual([
+      {
+        type: "mission_control.voice.mirror.response",
+        payload: { requestId: "req-voice-mirror-1", ok: true },
+      },
+    ]);
+  });
+
+  test("mission_control.voice.mirror.request surfaces a service error", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const mirrorVoiceTurn = vi.fn(async () => ({
+      ok: false,
+      error: "No Commander agent on this host",
+    }));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        mirrorVoiceTurn,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.voice.mirror.request",
+      requestId: "req-voice-mirror-2",
+      role: "assistant",
+      text: "Archimedes is working on the fleet health check.",
+      kind: "qa",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.voice.mirror.response",
+        payload: {
+          requestId: "req-voice-mirror-2",
+          ok: false,
+          error: "No Commander agent on this host",
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.voice.mirror.request errors when Mission Control is disabled", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({
+      messages,
+      missionControlService: undefined,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.voice.mirror.request",
+      requestId: "req-voice-mirror-3",
+      role: "user",
+      text: "nudge Pia",
+      kind: "dispatch",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.voice.mirror.response",
+        payload: {
+          requestId: "req-voice-mirror-3",
+          ok: false,
+          error: expect.stringContaining("Mission Control is not enabled") as unknown as string,
+        },
+      },
+    ]);
+  });
+});
+
 describe("mission control instruction-ledger RPC round trips", () => {
   test("mission_control.instructions.list returns the service's ledger rows", async () => {
     const messages: SessionOutboundMessage[] = [];

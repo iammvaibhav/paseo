@@ -131,6 +131,27 @@ describe("CentralMissionControlConfigStore stall knobs", () => {
     expect(reloaded.get().voiceNodeUrl).toBe("ws://127.0.0.1:8787/ws");
   });
 
+  test("voiceMode defaults relay and round-trips direct through patch and reload", async () => {
+    const store = new CentralMissionControlConfigStore({
+      paseoHome: dir,
+      logger: createTestLogger(),
+    });
+    await store.initialize();
+    expect(store.get().voiceMode).toBe("relay");
+
+    const patched = await store.patch({ voiceMode: "direct" });
+    expect(patched.voiceMode).toBe("direct");
+    // Unpatched keys keep defaults.
+    expect(patched.voiceNodeUrl).toBeNull();
+
+    const reloaded = new CentralMissionControlConfigStore({
+      paseoHome: dir,
+      logger: createTestLogger(),
+    });
+    await reloaded.initialize();
+    expect(reloaded.get().voiceMode).toBe("direct");
+  });
+
   test("initialize is idempotent: a second call never re-reads the file", async () => {
     const store = new CentralMissionControlConfigStore({
       paseoHome: dir,

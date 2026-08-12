@@ -9,9 +9,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 
 import { loadConfig } from "./lib/config.js";
-import { VOICE_SYSTEM_PROMPT } from "./lib/voice-prompt.js";
+import { buildVoiceSystemPrompt } from "./lib/voice-prompt.js";
 import { DaemonConnection } from "./lib/daemon.js";
-import { TOOL_DECLARATIONS, executeTool } from "./lib/tools.js";
+import { getToolDeclarations, executeTool } from "./lib/tools.js";
+import { createSessionLogger, truncateValue } from "./lib/session-log.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -50,16 +51,39 @@ async function resolveModelId(apiKey) {
 }
 
 class VoiceSession {
-  constructor({ clientWs, daemon, config, model }) {
+  constructor({ clientWs, daemon, config, model, sessionId }) {
     this.clientWs = clientWs;
     this.daemon = daemon;
     this.config = config;
     this.model = model;
+    this.voiceMode = config.voiceMode === "direct" ? "direct" : "relay";
     this.geminiWs = null;
     this.isConnecting = false;
     this.isSetupDone = false;
     this.pendingClientMessages = [];
-    this.systemInstruction = VOICE_SYSTEM_PROMPT;
+    // The mode pick is fixed at session setup (docs: an open session keeps
+    // the mode it started with until End). The client init message may
+    // override the prompt text (test harness), never the tool surface.
+    this.systemInstruction = buildVoiceSystemPrompt(this.voiceMode);
+    this.resumeHandle = null;
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 5;
+    this.isReconnecting = false;
+    this.wasResuming = false;
+    this.recentTurns = [];
+    this.reconnectTimer = null;
+    this.isExplicitClose = false;
+    // Mirror dedup: track the last mirrored text per role so repeated
+    // transcription deliveries do not append duplicate rows.
+    this.lastMirroredText = { user: "", assistant: "" };
+    this._mirrorSkipLogged = false;
+    this.logger = createSessionLogger({ sessionId, logDir: this.config.sessionLogDir });
+    this.logger.log("client.connect", {});
+    this.logger.log("session.start", {
+      model: this.model,
+      voiceName: this.config.voiceName,
+      voiceMode: this.voiceMode,
+    });
   }
 
   isReady() {
@@ -92,11 +116,19 @@ class VoiceSession {
   initGeminiConnection() {
     if (this.geminiWs || this.isConnecting) return;
     this.isConnecting = true;
+    this.wasResuming = Boolean(this.resumeHandle);
 
     const url = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${this.config.geminiApiKey}`;
     this.geminiWs = new WebSocket(url);
 
     this.geminiWs.on("open", () => {
+      this.isConnecting = false;
+      this.logger.log("gemini.setup", {
+        model: this.model,
+        voiceName: this.config.voiceName,
+        voiceMode: this.voiceMode,
+        resumeHandle: this.resumeHandle || undefined,
+      });
       const setupMsg = {
         setup: {
           model: this.model,
@@ -105,9 +137,13 @@ class VoiceSession {
             speechConfig: {
               voiceConfig: { prebuiltVoiceConfig: { voiceName: this.config.voiceName } },
             },
+            contextWindowCompression: {
+              slidingWindow: {},
+            },
           },
           systemInstruction: { parts: [{ text: this.systemInstruction }] },
-          tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
+          tools: [{ functionDeclarations: getToolDeclarations(this.voiceMode) }],
+          sessionResumption: this.resumeHandle ? { handle: this.resumeHandle } : {},
         },
       };
       this.geminiWs.send(JSON.stringify(setupMsg));
@@ -117,6 +153,20 @@ class VoiceSession {
       try {
         const msg = JSON.parse(raw.toString());
 
+        if (msg.sessionResumptionUpdate) {
+          const update = msg.sessionResumptionUpdate;
+          if (update.newHandle && update.resumable !== false) {
+            this.resumeHandle = update.newHandle;
+          }
+        }
+
+        if (msg.goAway) {
+          this.logger.log("gemini.goAway", {
+            code: msg.goAway.code,
+            reason: msg.goAway.reason,
+            timeLeft: msg.goAway.timeLeft,
+          });
+        }
         if (msg.setupComplete) {
           this.handleSetupComplete();
           return;
@@ -137,24 +187,105 @@ class VoiceSession {
 
     this.geminiWs.on("error", (err) => {
       console.error("Gemini WSS session error:", err.message);
-      if (this.clientWs.readyState === WebSocket.OPEN) {
-        this.clientWs.close();
-      }
+      this.logger.log("gemini.error", { error: err.message });
+      this.handleGeminiDisconnect("error", err.message);
     });
 
     this.geminiWs.on("close", (code, reason) => {
-      console.log(`Gemini WSS session closed: ${code} ${reason.toString()}`);
+      const reasonStr = reason ? reason.toString() : "";
+      console.log(`Gemini WSS session closed: ${code} ${reasonStr}`);
+      this.logger.log("gemini.close", { code, reason: reasonStr });
+      this.handleGeminiDisconnect("close", `${code} ${reasonStr}`.trim());
+    });
+  }
+
+  handleGeminiDisconnect(kind, detail) {
+    this.isConnecting = false;
+    this.isSetupDone = false;
+    if (this.geminiWs) {
+      this.geminiWs.removeAllListeners();
+      this.geminiWs = null;
+    }
+
+    if (this.isExplicitClose) return;
+
+    if (this.clientWs.readyState !== WebSocket.OPEN) {
+      this.close("client_closed");
+      return;
+    }
+
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      this.logger.log("resume.fail", {
+        attempts: this.reconnectAttempts,
+        reason: "max_attempts_exceeded",
+        lastDetail: detail,
+      });
+      this.logger.log("session.end", { reason: "max_reconnect_attempts_exceeded" });
+      this.sendJson({
+        type: "system",
+        message: "Voice session lost after maximum reconnect attempts.",
+      });
+      this.close("max_reconnect_attempts_exceeded");
       if (this.clientWs.readyState === WebSocket.OPEN) {
         this.clientWs.close();
       }
+      return;
+    }
+
+    if (this.wasResuming) {
+      this.logger.log("resume.fail", {
+        attempts: this.reconnectAttempts + 1,
+        handle: this.resumeHandle,
+        reason: "resume_handle_rejected",
+      });
+      this.resumeHandle = null;
+    }
+
+    this.reconnectAttempts++;
+    const delayMs = Math.min(1000 * Math.pow(2, this.reconnectAttempts - 1), 10000);
+
+    this.logger.log("resume.attempt", {
+      attempt: this.reconnectAttempts,
+      handle: this.resumeHandle || null,
+      delayMs,
+      disconnectKind: kind,
+      disconnectDetail: detail,
     });
+
+    this.sendJson({
+      type: "system",
+      message: `Reconnecting voice session (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`,
+    });
+
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.clientWs.readyState === WebSocket.OPEN && !this.isExplicitClose) {
+        this.initGeminiConnection();
+      }
+    }, delayMs);
   }
 
   /** Gemini setupComplete: mark the session ready, then drain messages the
    * browser sent while the Live connection was still being established. */
   handleSetupComplete() {
     this.isSetupDone = true;
+    const wasReconnect = this.reconnectAttempts > 0;
+    if (wasReconnect) {
+      this.logger.log("resume.success", {
+        attempt: this.reconnectAttempts,
+        resumed: this.wasResuming,
+      });
+      this.reconnectAttempts = 0;
+    }
+    this.logger.log("gemini.setupComplete", { resumed: this.wasResuming });
     this.sendJson({ type: "setupAck" });
+
+    if (wasReconnect && !this.wasResuming) {
+      this.reinjectCompactContext();
+    }
+    this.wasResuming = false;
+
     while (this.pendingClientMessages.length > 0) {
       const item = this.pendingClientMessages.shift();
       if (item.parsed) {
@@ -165,17 +296,88 @@ class VoiceSession {
     }
   }
 
+  recordTurn(role, text) {
+    if (!text || !text.trim()) return;
+    const trimmed = text.trim();
+    const last = this.recentTurns[this.recentTurns.length - 1];
+    if (last && last.role === role) {
+      last.text += " " + trimmed;
+    } else {
+      this.recentTurns.push({ role, text: trimmed });
+    }
+    if (this.recentTurns.length > 10) {
+      this.recentTurns.shift();
+    }
+  }
+
+  /**
+   * Mirror a heard user turn or spoken reply into the Commander thread
+   * (best-effort; no-ops until the daemon's mirror RPC lands). Pure Q&A uses
+   * kind "qa" (hidden in the feed unless verbose); dispatch turns are already
+   * recorded by commander_dispatch itself, so the session mirror stays "qa".
+   */
+  mirrorTurn(role, text) {
+    const trimmed = (text || "").trim();
+    if (!trimmed) return;
+    if (this.lastMirroredText[role] === trimmed) return; // duplicate delivery
+    this.lastMirroredText[role] = trimmed;
+    this.daemon
+      .mirrorVoiceTurn({ role, text: trimmed, kind: "qa" })
+      .then((outcome) => {
+        if (outcome?.ok) {
+          this.logger.log("mirror.ok", { role, kind: "qa" });
+        } else if (outcome?.error && !this._mirrorSkipLogged) {
+          // The mirror RPC may not be deployed yet; log the absence once per
+          // session, not on every turn.
+          this._mirrorSkipLogged = true;
+          this.logger.log("mirror.skipped", { role, kind: "qa", error: outcome.error });
+        }
+        return undefined;
+      })
+      .catch((err) => {
+        this.logger.log("mirror.error", { role, kind: "qa", error: err.message });
+      });
+  }
+
+  reinjectCompactContext() {
+    if (this.recentTurns.length === 0) return;
+    const contextSummary = this.recentTurns
+      .map((turn) => `${turn.role === "user" ? "User" : "Assistant"}: ${turn.text}`)
+      .join("\n");
+    const prompt = `[System note: The voice connection was restarted. Here is a brief transcript of the recent conversation:\n${contextSummary}\nPlease continue seamlessly.]`;
+
+    if (this.geminiWs?.readyState === WebSocket.OPEN) {
+      this.geminiWs.send(
+        JSON.stringify({
+          realtimeInput: { text: prompt },
+        }),
+      );
+    }
+  }
+
   /** Execute every function call the model made and reply with the results. */
   async handleToolCalls(functionCalls) {
     const functionResponses = [];
     for (const call of functionCalls) {
       this.sendJson({ type: "toolLog", name: call.name, args: call.args });
+      this.logger.log("tool.call", { name: call.name, args: call.args, callId: call.id });
       let toolResult;
       try {
-        toolResult = await executeTool(call.name, call.args, { daemon: this.daemon });
+        toolResult = await executeTool(call.name, call.args, {
+          daemon: this.daemon,
+          voiceMode: this.voiceMode,
+        });
       } catch (error) {
         toolResult = { error: `Executor failed: ${error.message}` };
       }
+      const ok = !toolResult.error;
+      const summary = truncateValue(ok ? toolResult.result : toolResult.error, 500);
+      this.logger.log("tool.result", {
+        name: call.name,
+        callId: call.id,
+        ok,
+        ...(ok ? { summary } : { error: toolResult.error }),
+      });
       functionResponses.push({ name: call.name, id: call.id, response: toolResult });
     }
     if (this.geminiWs?.readyState === WebSocket.OPEN) {
@@ -189,9 +391,13 @@ class VoiceSession {
     // renders "heard" lines from this. Additive: the standalone page ignores
     // unknown frame types.
     if (serverContent.inputTranscription?.text) {
+      this.recordTurn("user", serverContent.inputTranscription.text);
+      this.mirrorTurn("user", serverContent.inputTranscription.text);
       this.sendJson({ type: "inputText", text: serverContent.inputTranscription.text });
     }
     if (serverContent.outputTranscription?.text) {
+      this.recordTurn("model", serverContent.outputTranscription.text);
+      this.mirrorTurn("assistant", serverContent.outputTranscription.text);
       this.sendJson({ type: "text", text: serverContent.outputTranscription.text });
     }
     if (serverContent.modelTurn?.parts) {
@@ -221,6 +427,7 @@ class VoiceSession {
         JSON.stringify({ realtimeInput: { text: `Context Update: ${parsed.text}` } }),
       );
     } else if (parsed.type === "text" && parsed.text) {
+      this.recordTurn("user", parsed.text);
       this.geminiWs.send(
         JSON.stringify({
           clientContent: {
@@ -281,11 +488,19 @@ class VoiceSession {
     }
   }
 
-  close() {
+  close(reason = "closed") {
+    this.isExplicitClose = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.geminiWs?.readyState === WebSocket.OPEN) {
       this.geminiWs.close();
     }
     this.geminiWs = null;
+    this.logger.log("client.close", {});
+    this.logger.log("session.end", { reason });
+    this.logger.close();
   }
 }
 
@@ -319,6 +534,15 @@ export async function startVoiceServer(overrides = {}) {
     await daemon.connect();
     daemonReady = true;
     console.log(`Paseo daemon connected: ${config.paseoWsUrl}`);
+    // Central config wins over the env/default when it publishes voiceMode
+    // (best-effort; the daemon may not carry the field yet).
+    const centralMode = await daemon.fetchVoiceMode();
+    if (centralMode) {
+      config.voiceMode = centralMode;
+      console.log(`Commander Voice mode (central config): ${centralMode}`);
+    } else {
+      console.log(`Commander Voice mode (env/default): ${config.voiceMode}`);
+    }
   } catch (error) {
     console.error(`Paseo daemon connection failed (${config.paseoWsUrl}): ${error.message}`);
   }
@@ -361,7 +585,7 @@ export async function startVoiceServer(overrides = {}) {
     });
     clientWs.on("close", () => {
       sessions.delete(session);
-      session.close();
+      session.close("client_disconnected");
       console.log("browser session closed");
     });
     clientWs.on("error", (err) => {

@@ -399,6 +399,13 @@ export interface CompactionTimelineItem {
  */
 export type AgentTimelineUserMessageClassification = "machinery" | "instruction";
 
+/**
+ * M9 voice dialogue mirror marker on timeline rows appended by the voice
+ * mirror RPC. "qa" = pure Q&A (the app hides the row unless verbose);
+ * "dispatch" = the turn asked the fleet to do something (visible).
+ */
+export type AgentTimelineVoiceMirrorKind = "qa" | "dispatch";
+
 export type AgentTimelineItem =
   | {
       type: "user_message";
@@ -406,8 +413,14 @@ export type AgentTimelineItem =
       messageId?: string;
       clientMessageId?: string;
       classification?: AgentTimelineUserMessageClassification;
+      voiceMirrorKind?: AgentTimelineVoiceMirrorKind;
     }
-  | { type: "assistant_message"; text: string; messageId?: string }
+  | {
+      type: "assistant_message";
+      text: string;
+      messageId?: string;
+      voiceMirrorKind?: AgentTimelineVoiceMirrorKind;
+    }
   | { type: "reasoning"; text: string }
   | ToolCallTimelineItem
   | { type: "todo"; items: AgentTaskItem[] }
