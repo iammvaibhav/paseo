@@ -542,6 +542,12 @@ export class MissionControlStore {
    * two rules never share a predicate.
    */
   wouldCoalesce(agentId: string, kind: MissionControlEventKind): boolean {
+    // Commander interaction cards never coalesce (see supersessionFor) — the
+    // predicate must answer what append would actually do, not what the
+    // chain head looks like.
+    if (kind === "answer" || kind === "clarification") {
+      return false;
+    }
     const previous = this.previousEventFor(agentId, kind);
     if (previous === undefined || this.ackedEventIds.has(previous.id)) {
       return false;
@@ -622,6 +628,14 @@ export class MissionControlStore {
     input: MissionControlAppendInput,
     runEpoch: number,
   ): { superseded: MissionControlEvent | undefined; isProposal: boolean } {
+    // Commander interaction cards ("answer" / "clarification") are content TO
+    // the user — each one is its own card and a later card must never hide an
+    // earlier one the user may not have read. The (agentId, kind) coalescing
+    // chain exists for status cards (a later report supersedes the previous
+    // unacked one); interaction cards skip it entirely.
+    if (input.kind === "answer" || input.kind === "clarification") {
+      return { superseded: undefined, isProposal: false };
+    }
     // Proposal cards supersede in place: each status change for the same
     // proposal id supersedes the proposal's previous card, regardless of ack
     // state or run boundary (the app always shows the latest card for a
