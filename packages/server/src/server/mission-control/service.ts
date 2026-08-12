@@ -25,8 +25,9 @@ import type {
   MissionControlReportStatusInput,
 } from "@getpaseo/protocol/mission-control/types";
 import type { PeerManager } from "../peers/peer-manager.js";
-import { PARENT_AGENT_ID_LABEL, getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
-import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
+import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
+import { MISSION_CONTROL_LABEL_PREFIX } from "@getpaseo/protocol/mission-control/system-owned";
+import { MISSION_CONTROL_VERIFIER_LABEL_VALUE } from "./verifier.js";
 import { getErrorMessageOr } from "@getpaseo/protocol/error-utils";
 import { hasMissionControlLabels } from "./naming.js";
 import {
@@ -1190,7 +1191,9 @@ export class MissionControlService {
    * internal resolver).
    */
   async getCommanderAgentId(): Promise<string | null> {
-    return this.resolveCommanderAgentId();
+    const id = await this.resolveCommanderAgentId();
+    this.commanderAgentIdCache = id;
+    return id;
   }
 
   /** The Commander is the agent labeled paseo.mission-control=commander. */
@@ -2206,6 +2209,8 @@ export class MissionControlService {
       this.commanderToolLoops.delete(agent.id);
     }
     if (this.isExcludedAgent(agent)) {
+      // Lifecycle-untracked: the Commander itself and non-verifier machinery
+      // (or a class the user gated off). They never emit MC lifecycle events.
       this.excludedAgentIds.add(agent.id);
       return;
     }
@@ -2232,21 +2237,7 @@ export class MissionControlService {
         this.runStartedAtByAgent.set(agent.id, runStartedAt);
         const lastStatusAt = this.lastStatusAtByAgent.get(agent.id) ?? runStartedAt;
         this.lastStatusAtByAgent.set(agent.id, lastStatusAt);
-        this.stallTracking.set(agent.id, {
-          lastStreamAt: runStartedAt,
-          lastStatusAt,
-          nudgedAt: null,
-          lastNudgeAt: null,
-          lastNudgeTrigger: null,
-          silenceNudges: 0,
-          statusNudges: 0,
-          escalatedAt: null,
-          deadSince: null,
-          healed: false,
-          runStartedAt,
-          lastTurnStartedAt: null,
-          dormantRecoveredAt: null,
-        });
+        this.armStallTracking(agent, runStartedAt, lastStatusAt);
         this.logger.info(
           { component: "turn-lifecycle", agentId: agent.id, provider: agent.provider },
           "agent.run.started",
@@ -2380,7 +2371,8 @@ export class MissionControlService {
    * Reuses the per-agent timeline buffer and the store's self-report feed
    * (the verifier's own context pack reads the same records), so no new
    * persistence is introduced. A conversational session never satisfies it:
-   * without report_status history a finished turn produces no audit.
+   * a chat also carries user messages, so without report_status history a
+   * finished turn produces no audit.
    */
   private hasAuditableRun(agentId: string): boolean {
     const rows = this.timelineRows.get(agentId) ?? [];
@@ -2547,8 +2539,9 @@ export class MissionControlService {
   ): void {
     const now = Date.now();
     if (this.excludedAgentIds.has(agentId) || this.isExcludedAgent(null, agentId)) {
-      // Excluded agents (MC-labeled: Commander, verifiers) never reach the
-      // stall machinery — so the Commander tool-loop watchdog runs here.
+      // Lifecycle-untracked agents (the Commander, non-verifier machinery,
+      // or a gated-off class) never reach the stall machinery — so the
+      // Commander tool-loop watchdog runs here.
       this.trackCommanderToolLoop(agentId, event);
       // Commander stream events still satisfy a pending steer verification
       // (a steer to the Commander must be verified like any other): record
@@ -3562,8 +3555,13 @@ export class MissionControlService {
         live !== null && live.lifecycle !== "closed" && live.session?.isRuntimeAlive?.() !== false;
       if (hasLiveRuntime) {
         this.recordDeadSince.delete(record.id);
-        this.adoptSurvivingRun(record);
-        adopted += 1;
+        // Boot adoption arms the stall nudges; verifiers and plain subagents
+        // are never stall-tracked (legitimate silence), so only stall-tracked
+        // classes adopt.
+        if (this.isStallTracked(live)) {
+          this.adoptSurvivingRun(record);
+          adopted += 1;
+        }
         continue;
       }
       if (this.recordDeadSince.get(record.id) === undefined) {
@@ -3683,10 +3681,105 @@ export class MissionControlService {
     );
   }
 
+  private commanderAgentIdCache: string | null | undefined = undefined;
+
+  /** The Commander's agent id, cached for the sync classification path. */
+  private cachedCommanderAgentId(): string | null {
+    if (this.commanderAgentIdCache === undefined) {
+      this.commanderAgentIdCache = null;
+      void this.resolveCommanderAgentId()
+        .then((id) => {
+          this.commanderAgentIdCache = id;
+          return id;
+        })
+        .catch(() => {
+          this.commanderAgentIdCache = null;
+        });
+    }
+    return this.commanderAgentIdCache;
+  }
+
+  private classifyAgent(agent: {
+    internal?: boolean;
+    labels: Record<string, string>;
+  }): McTrackingClass {
+    if (agent.internal) {
+      return "never";
+    }
+    return classifyAgentLabels(agent.labels, this.cachedCommanderAgentId());
+  }
+
+  /**
+   * Whether the agent participates in Mission Control lifecycle events
+   * (started/finished/failed cards, run records, review states). Verifier,
+   * Commander-worker, and subagent classes read the central-config gates;
+   * the Commander and other machinery are never tracked; root agents always.
+   */
+  private isLifecycleTracked(agent: {
+    internal?: boolean;
+    labels: Record<string, string>;
+  }): boolean {
+    switch (this.classifyAgent(agent)) {
+      case "never":
+        return false;
+      case "verifier":
+        return this.centralConfig.get().trackVerifiers;
+      case "commander-worker":
+        return this.centralConfig.get().trackCommanderWorkers;
+      case "subagent":
+        return this.centralConfig.get().trackSubagents;
+      case "root":
+        return true;
+    }
+  }
+
+  /**
+   * Whether the agent participates in the stall machinery (nudges, the
+   * dormant-turn detector, dead-runtime reconciliation). Root agents and
+   * Commander workers are stall-tracked; verifiers and plain subagents are
+   * not — their turns have legitimate silence (a verifier reads a worker
+   * timeline; a subagent answers to its parent), so MC must not nudge or
+   * wedge-recover them.
+   */
+  private isStallTracked(agent: { internal?: boolean; labels: Record<string, string> }): boolean {
+    const cls = this.classifyAgent(agent);
+    if (cls === "root") {
+      return true;
+    }
+    return cls === "commander-worker" && this.centralConfig.get().trackCommanderWorkers;
+  }
+
+  /**
+   * Arm the stall machinery for a run start. Only stall-tracked classes
+   * (root agents, Commander workers) get nudges and the dormant-turn
+   * detector; verifiers and plain subagents have legitimate silence and must
+   * never be nudged or wedge-recovered by MC.
+   */
+  private armStallTracking(agent: ManagedAgent, runStartedAt: number, lastStatusAt: number): void {
+    if (!this.isStallTracked(agent)) {
+      return;
+    }
+    this.stallTracking.set(agent.id, {
+      lastStreamAt: runStartedAt,
+      lastStatusAt,
+      nudgedAt: null,
+      lastNudgeAt: null,
+      lastNudgeTrigger: null,
+      silenceNudges: 0,
+      statusNudges: 0,
+      escalatedAt: null,
+      deadSince: null,
+      healed: false,
+      runStartedAt,
+      lastTurnStartedAt: null,
+      dormantRecoveredAt: null,
+    });
+  }
+
   private isExcludedAgent(agent?: ManagedAgent | null, agentId?: string): boolean {
     const candidate = agent ?? (agentId ? this.agentManager.getAgent(agentId) : null);
     if (candidate) {
-      return candidate.internal === true || hasExclusionLabels(candidate.labels);
+      return !this.isLifecycleTracked(candidate);
     }
     return false;
   }
@@ -4393,11 +4486,37 @@ function hasCommanderDispatchMarker(labels: Record<string, string>): boolean {
   );
 }
 
-function hasExclusionLabels(labels: Record<string, string>): boolean {
-  // System-owned (Commander/verifiers/machinery) via the one shared
-  // predicate; History Ask parentage is a separate exclusion signal.
-  if (isSystemOwnedAgentLabels(labels)) {
-    return true;
+/**
+ * Why an agent participates in Mission Control lifecycle events. The
+ * Commander itself and non-verifier machinery (monitors, build-hash stamps)
+ * are never tracked; root agents always; verifiers, Commander workers, and
+ * plain subagents per the central-config gates.
+ */
+export type McTrackingClass = "never" | "verifier" | "commander-worker" | "subagent" | "root";
+
+/**
+ * Pure label classification. `commanderAgentId` is the host's Commander id
+ * (cached by the service): a parent-labeled agent whose parent IS the
+ * Commander is a Commander worker; any other parent makes it a subagent.
+ */
+export function classifyAgentLabels(
+  labels: Record<string, string>,
+  commanderAgentId: string | null,
+): McTrackingClass {
+  if (labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE) {
+    return "never"; // the Commander itself
   }
-  return PARENT_AGENT_ID_LABEL in labels;
+  if (labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_VERIFIER_LABEL_VALUE) {
+    return "verifier";
+  }
+  if (Object.keys(labels).some((key) => key.startsWith(`${MISSION_CONTROL_LABEL_PREFIX}.`))) {
+    return "never"; // other machinery (monitors, build-hash stamps)
+  }
+  const parentAgentId = getParentAgentIdFromLabels(labels);
+  if (parentAgentId) {
+    return commanderAgentId !== null && parentAgentId === commanderAgentId
+      ? "commander-worker"
+      : "subagent";
+  }
+  return "root";
 }

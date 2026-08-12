@@ -6380,6 +6380,124 @@ describe("mission control spawn apply wire dispatch", () => {
 });
 
 // ============================================================================
+// Cross-host spawn-label resolution (mission_control.spawn_labels.resolve):
+// the Commander host asks THIS daemon (a peer target of a Commander spawn) to
+// resolve the human-readable workspace/project labels for the spawn proposal
+// card. Read-only; the target's own registries and checkout facts answer.
+// ============================================================================
+
+describe("mission control spawn labels resolve wire dispatch", () => {
+  test("resolves a new-workspace cwd to branch + project labels from this daemon's registries", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const getCheckout = vi.fn().mockResolvedValue({
+      cwd: "/home/ubuntu/new-thing",
+      isGit: true,
+      currentBranch: "feature/alpha",
+      remoteUrl: "git@github.com:acme/new-thing.git",
+      worktreeRoot: "/home/ubuntu/new-thing",
+      isPaseoOwnedWorktree: false,
+      mainRepoRoot: "/home/ubuntu/new-thing",
+    });
+    const session = createSessionForTest({
+      messages,
+      workspaceGitService: { getCheckout },
+    });
+
+    await session.handleMessage({
+      type: "mission_control.spawn_labels.resolve.request",
+      requestId: "req-labels-new-ws",
+      cwd: "/home/ubuntu/new-thing",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.spawn_labels.resolve.response",
+        payload: {
+          requestId: "req-labels-new-ws",
+          labels: { newWorkspace: "feature/alpha", newProject: "new-thing" },
+        },
+      },
+    ]);
+  });
+
+  test("resolves an existing workspaceId to its display name and project", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({
+      messages,
+      workspaceRegistry: {
+        get: vi.fn().mockResolvedValue({
+          workspaceId: "wks_ws",
+          projectId: "prj_project",
+          cwd: "/repo",
+          kind: "local_checkout",
+          displayName: "main",
+          title: "Payments work",
+          branch: null,
+          worktreeRoot: null,
+          baseBranch: null,
+          isPaseoOwnedWorktree: false,
+          mainRepoRoot: null,
+          createdAt: "2026-08-01T00:00:00.000Z",
+          updatedAt: "2026-08-01T00:00:00.000Z",
+          archivedAt: null,
+          autoArchivedChangeRequestUrl: null,
+          pinnedAt: null,
+        }),
+        list: vi.fn().mockResolvedValue([]),
+      },
+      projectRegistry: {
+        get: vi.fn().mockResolvedValue({
+          projectId: "prj_project",
+          rootPath: "/repo/payments",
+          kind: "git",
+          displayName: "payments",
+          projectKey: null,
+          customName: "Acme Payments",
+          customIconRevision: null,
+          description: null,
+          createdAt: "2026-08-01T00:00:00.000Z",
+          updatedAt: "2026-08-01T00:00:00.000Z",
+          archivedAt: null,
+        }),
+      },
+    });
+
+    await session.handleMessage({
+      type: "mission_control.spawn_labels.resolve.request",
+      requestId: "req-labels-existing",
+      workspaceId: "wks_ws",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.spawn_labels.resolve.response",
+        payload: {
+          requestId: "req-labels-existing",
+          labels: { workspace: "Payments work", project: "Acme Payments" },
+        },
+      },
+    ]);
+  });
+
+  test("an input with neither cwd nor workspaceId resolves an empty labels payload, never an error", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({ messages });
+
+    await session.handleMessage({
+      type: "mission_control.spawn_labels.resolve.request",
+      requestId: "req-labels-none",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.spawn_labels.resolve.response",
+        payload: { requestId: "req-labels-none" },
+      },
+    ]);
+  });
+});
+
+// ============================================================================
 // Cross-host terminal-event ingest (mission_control.event.forward): a
 // NON-commander host forwards a terminal event (finished/failed/interrupted
 // or verdict) for one of ITS commander-dispatched workers. The worker's

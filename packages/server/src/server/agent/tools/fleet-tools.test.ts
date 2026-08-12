@@ -889,6 +889,45 @@ describe("approval-gate wrap point (runCommanderGatedAction)", () => {
     });
   });
 
+  test("fleet_create_agent into a NEW workspace on a peer resolves labels over the peer RPC", async () => {
+    const createProposal = vi.fn(async () => ({
+      id: "mcp_new_ws",
+      status: "pending",
+      kind: "spawn",
+    }));
+    const missionControlService = createMissionControlServiceStub({
+      approvals: { createProposal },
+    });
+    // The peer knows its own checkout facts; the Commander host must ask it
+    // (mission_control.spawn_labels.resolve) instead of leaving the card
+    // unnamed — the regression this guards against.
+    const { peerManager } = createFakePeerHarness({
+      client: {
+        missionControlSpawnLabelsResolve: vi.fn(async () => ({
+          labels: { newWorkspace: "feature/alpha", newProject: "new-thing" },
+        })),
+      },
+    });
+    const catalog = createCommanderCatalog({ missionControlService, peerManager });
+    const result = await catalog.executeTool("fleet_create_agent", {
+      host: "macbook",
+      provider: "codex/gpt-5.4",
+      cwd: "/home/ubuntu/new-thing",
+      initialPrompt: "run the backtest",
+      title: "backtest",
+    });
+    expect(createProposal).toHaveBeenCalledTimes(1);
+    expect(createProposal.mock.calls[0][0].spawnPlan).toMatchObject({
+      host: "macbook",
+      cwd: "/home/ubuntu/new-thing",
+      labels: { newWorkspace: "feature/alpha", newProject: "new-thing" },
+    });
+    expect(result.structuredContent).toMatchObject({
+      agentId: null,
+      status: "pending-approval",
+    });
+  });
+
   test("fleet_send_prompt routes the Commander send through approvals.createProposal", async () => {
     const createProposal = vi.fn(async () => ({
       id: "mcp_2",

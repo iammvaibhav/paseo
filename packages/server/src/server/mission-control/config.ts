@@ -66,6 +66,12 @@ export interface ResolvedMissionControlCentralConfig {
   // Voice in the Mission Control composer and where to connect. Null/empty =
   // feature hidden.
   voiceNodeUrl: string | null;
+  // Lifecycle-tracking gates: which agent classes emit Mission Control
+  // lifecycle events. The Commander itself is never tracked; root agents are
+  // always tracked. Defaults: all three classes tracked.
+  trackCommanderWorkers: boolean;
+  trackVerifiers: boolean;
+  trackSubagents: boolean;
 }
 
 export const DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG: ResolvedMissionControlCentralConfig = {
@@ -93,6 +99,9 @@ export const DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG: ResolvedMissionControlCentr
   hindsightBank: "paseo-fleet",
   hindsightSecondaryBank: "omp",
   voiceNodeUrl: null,
+  trackCommanderWorkers: true,
+  trackVerifiers: true,
+  trackSubagents: true,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -250,6 +259,9 @@ const CENTRAL_CONFIG_KEYS: readonly (keyof ResolvedMissionControlCentralConfig)[
   "hindsightBank",
   "hindsightSecondaryBank",
   "voiceNodeUrl",
+  "trackCommanderWorkers",
+  "trackVerifiers",
+  "trackSubagents",
 ];
 
 function pickCentralConfigKeys(value: Record<string, unknown>): MissionControlCentralConfig {
@@ -321,5 +333,8 @@ function resolveCentralConfig(
     commanderToWorkerMode: stored.commanderToWorkerMode ?? defaults.commanderToWorkerMode,
     verifierToWorkerMode: stored.verifierToWorkerMode ?? defaults.verifierToWorkerMode,
     hindsightBank: stored.hindsightBank ?? defaults.hindsightBank,
+    trackCommanderWorkers: stored.trackCommanderWorkers ?? defaults.trackCommanderWorkers,
+    trackVerifiers: stored.trackVerifiers ?? defaults.trackVerifiers,
+    trackSubagents: stored.trackSubagents ?? defaults.trackSubagents,
   };
 }

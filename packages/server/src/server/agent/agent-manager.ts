@@ -849,6 +849,13 @@ export class AgentManager {
   private readonly registry?: AgentStorage;
   private readonly durableTimelineStore?: AgentTimelineStore;
   private readonly previousStatuses = new Map<string, AgentLifecycleStatus>();
+  /**
+   * Agent ids whose canceled turn must not latch "finished" attention: a user
+   * stop emits turn_canceled (running→idle) and the failure follows. The id
+   * is registered by onStreamTurnCanceled and consumed by the finished latch
+   * in checkAndSetAttention; a new turn clears it.
+   */
+  private readonly cancelAttentionSuppressed = new Set<string>();
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly agentRegistrationTasks = new Set<Promise<void>>();
   private readonly inFlightAgentCloses = new Map<string, Promise<void>>();
@@ -4446,6 +4453,13 @@ export class AgentManager {
         options?.fromHistory === true,
       );
     }
+    if (event.type === "turn_canceled") {
+      // A canceled turn must not latch "finished" attention: its running→idle
+      // hop (here or in finalizeForegroundTurn) is a stop, not a finish — the
+      // failure that follows owns the terminal story. Consumed by the finished
+      // latch in checkAndSetAttention; cleared on the next turn start.
+      this.cancelAttentionSuppressed.add(agent.id);
+    }
 
     const flags: StreamEventFlags = { shouldDispatchEvent: true, shouldNotifyWaiters: true };
 
@@ -4886,6 +4900,9 @@ export class AgentManager {
       },
       "agent.manager.turn.started",
     );
+    // Any new turn clears a pending cancel-suppression: the next completion
+    // must latch "finished" normally.
+    this.cancelAttentionSuppressed.delete(agent.id);
     if (isForegroundEvent) {
       flags.shouldDispatchEvent = false;
       flags.shouldNotifyWaiters = false;
@@ -5167,23 +5184,10 @@ export class AgentManager {
       return;
     }
 
-    // Skip if already requires attention
-    if (agent.attention.requiresAttention) {
-      return;
-    }
-
-    // Check if agent transitioned from running to idle (finished)
-    if (previousStatus === "running" && currentStatus === "idle") {
-      agent.attention = {
-        requiresAttention: true,
-        attentionReason: "finished",
-        attentionTimestamp: new Date(),
-      };
-      this.broadcastAgentAttention(agent, "finished");
-      return;
-    }
-
-    // Check if agent entered error state
+    // Error transition runs BEFORE the requiresAttention bail: a user stop
+    // produces turn_canceled (running→idle, latching "finished") followed by
+    // turn_failed (→error). The error must upgrade that stale latch, or the
+    // record keeps claiming a clean finish with lastStatus "error".
     if (previousStatus !== "error" && currentStatus === "error") {
       agent.attention = {
         requiresAttention: true,
@@ -5191,6 +5195,30 @@ export class AgentManager {
         attentionTimestamp: new Date(),
       };
       this.broadcastAgentAttention(agent, "error");
+      return;
+    }
+
+    // Skip if already requires attention
+    if (agent.attention.requiresAttention) {
+      return;
+    }
+
+    // Check if agent transitioned from running to idle (finished)
+    if (previousStatus === "running" && currentStatus === "idle") {
+      // A canceled turn (user stop) must not latch "finished": the failure
+      // event that follows owns the terminal story, and the board reads the
+      // latch to tell a finish from a stop. onStreamTurnCanceled registers
+      // the id here so the canceled→idle hop stays silent.
+      if (this.cancelAttentionSuppressed.has(agent.id)) {
+        this.cancelAttentionSuppressed.delete(agent.id);
+        return;
+      }
+      agent.attention = {
+        requiresAttention: true,
+        attentionReason: "finished",
+        attentionTimestamp: new Date(),
+      };
+      this.broadcastAgentAttention(agent, "finished");
       return;
     }
   }

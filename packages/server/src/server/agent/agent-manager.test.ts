@@ -1986,6 +1986,147 @@ test("cancelAgentRun force-cancels a foreground turn when the provider session i
   }
 });
 
+test("a canceled turn never latches finished attention; the follow-up failure latches error", async () => {
+  // A user stop produces turn_canceled (running→idle) and the failure follows.
+  // The canceled→idle hop must not read as a clean finish, or the board would
+  // show "Finished"/Ready for a stop and the record would pair lastStatus
+  // "error" with attentionReason "finished" (Barbara-class records).
+  const fixture = await createControlledInterruptFixture({
+    name: "cancel-suppresses-finished-attention",
+    agentId: "00000000-0000-4000-8000-000000000312",
+    turnId: "cancel-then-fail-turn",
+    interrupt: async () => {
+      // Acknowledge the abort without a provider terminal; the cancel path
+      // force-settles with a synthesized turn_canceled (idle).
+    },
+  });
+  const attentionReasons: Array<"finished" | "error" | "permission"> = [];
+  fixture.manager.setAgentAttentionCallback(({ reason }) => attentionReasons.push(reason));
+
+  try {
+    await fixture.startForegroundRun();
+    await expect(fixture.manager.cancelAgentRun(fixture.agentId)).resolves.toEqual({
+      status: "settled",
+    });
+    await fixture.manager.flush();
+    // The canceled→idle hop must not read as a clean finish.
+    expect(attentionReasons).not.toContain("finished");
+    expect(fixture.manager.getAgent(fixture.agentId)).toMatchObject({
+      lifecycle: "idle",
+      attention: { requiresAttention: false },
+    });
+
+    // The provider's follow-up failure settles the terminal story as error.
+    fixture.session.pushEvent({
+      type: "turn_failed",
+      provider: "codex",
+      turnId: "cancel-then-fail-turn-followup",
+      error: "Interrupted by user (stopReason=aborted)",
+    });
+    await fixture.manager.flush();
+    expect(fixture.manager.getAgent(fixture.agentId)).toMatchObject({
+      lifecycle: "error",
+      attention: { requiresAttention: true, attentionReason: "error" },
+    });
+    expect(attentionReasons).toContain("error");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("an error transition upgrades a latched finished attention", async () => {
+  // A cancel-then-fail sequence (or any run that completes then fails) must
+  // not leave the record claiming a clean finish: lastStatus "error" paired
+  // with attentionReason "finished" misleads every attention consumer.
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-attention-upgrade-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+
+  class CompleteThenFailSession extends TestAgentSession {
+    private attempt = 0;
+
+    override async startTurn(): Promise<{ turnId: string }> {
+      this.attempt += 1;
+      const attempt = this.attempt;
+      const turnId = `hybrid-turn-${attempt}`;
+      setTimeout(() => {
+        this.pushEvent({ type: "turn_started", provider: this.provider, turnId });
+        if (attempt === 1) {
+          this.pushEvent({ type: "turn_completed", provider: this.provider, turnId });
+        } else {
+          this.pushEvent({
+            type: "turn_failed",
+            provider: this.provider,
+            error: "boom-after-finish",
+            turnId,
+          });
+        }
+      }, 0);
+      return { turnId };
+    }
+  }
+
+  class CompleteThenFailClient implements AgentClient {
+    readonly provider = "codex" as const;
+    readonly capabilities = TEST_CAPABILITIES;
+
+    async isAvailable(): Promise<boolean> {
+      return true;
+    }
+
+    async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      return new CompleteThenFailSession(config);
+    }
+
+    async resumeSession(config?: Partial<AgentSessionConfig>): Promise<AgentSession> {
+      return new CompleteThenFailSession({
+        provider: "codex",
+        cwd: config?.cwd ?? process.cwd(),
+      });
+    }
+  }
+
+  const manager = new AgentManager({
+    clients: { codex: new CompleteThenFailClient() },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000313",
+  });
+
+  const agent = await manager.createAgent(
+    {
+      provider: "codex",
+      cwd: workdir,
+      title: "Finish-then-fail attention test",
+    },
+    undefined,
+    { workspaceId: undefined },
+  );
+
+  try {
+    await manager.runAgent(agent.id, "complete once");
+    await manager.flush();
+    // First turn completed: finished latched.
+    expect(manager.getAgent(agent.id)).toMatchObject({
+      attention: { requiresAttention: true, attentionReason: "finished" },
+    });
+
+    await expect(manager.runAgent(agent.id, "fail now")).rejects.toThrow("boom-after-finish");
+    await manager.flush();
+    // The error transition must upgrade the stale finished latch.
+    expect(manager.getAgent(agent.id)).toMatchObject({
+      lifecycle: "error",
+      attention: { requiresAttention: true, attentionReason: "error" },
+    });
+    const persisted = await storage.get(agent.id);
+    expect(persisted?.lastStatus).toBe("error");
+    expect(persisted?.attentionReason).toBe("error");
+  } finally {
+    await manager.closeAgent(agent.id);
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
 test("listProviderAvailability uses registered client keys, including custom providers", async () => {
   const customClient: AgentClient = {
     provider: "zai",

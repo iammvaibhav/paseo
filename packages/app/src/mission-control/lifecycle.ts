@@ -216,15 +216,21 @@ function deriveLifecycleBucket(input: {
   reviewState: LifecycleReviewState;
   pendingProposalCount: number;
   snapshotStoppedBy: "user" | "machinery" | "system" | null;
+  /** No MC events at all — history predates tracking or was excluded. */
+  hasEvents: boolean;
 }): { bucket: LifecycleBucket; doneReason: LifecycleDoneReason | null } {
-  const { agent, reviewState, pendingProposalCount, snapshotStoppedBy } = input;
+  const { agent, reviewState, pendingProposalCount, snapshotStoppedBy, hasEvents } = input;
   const pendingPermission =
     (agent.pendingPermissionCount ?? 0) > 0 || agent.attentionReason === "permission";
   const failed = agent.status === "error" || agent.attentionReason === "error";
   const running = agent.status === "running" || agent.status === "initializing";
   // Recorded stop origin (who stopped the LAST run, per its terminal event) —
   // never the live directory stoppedBy, which the daemon may rewrite later.
-  const userStopped = snapshotStoppedBy === "user";
+  // Exception: an agent with NO events has no terminal event snapshot. The
+  // live directory stoppedBy (the MC store's stop origin at the wire
+  // boundary) is then the only record of who stopped the last run — without
+  // it, a user stop predating lifecycle tracking reads as Needs you forever.
+  const userStopped = snapshotStoppedBy === "user" || (!hasEvents && agent.stoppedBy === "user");
 
   // Running outranks pending proposals: a live agent still belongs in
   // Running even when Ask mode is holding a stall-recovery / verifier-spawn
@@ -291,6 +297,7 @@ export function deriveAgentLifecycle(input: {
     reviewState: fold.reviewState,
     pendingProposalCount: fold.pendingProposalCount,
     snapshotStoppedBy: fold.snapshotStoppedBy,
+    hasEvents: fold.lastEventAt !== null,
   });
 
   return {

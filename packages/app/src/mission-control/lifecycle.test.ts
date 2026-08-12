@@ -375,6 +375,32 @@ describe("deriveAgentLifecycle — user-stopped ≠ Needs you", () => {
     });
   });
 
+  it("falls back to the live stoppedBy for a user-stopped agent with no events", () => {
+    // Excluded/untracked history: a stopped Commander worker (parent label)
+    // never produced MC events, so no event snapshot carries stoppedBy. The
+    // live directory stoppedBy (the MC store's stop origin) is the only
+    // record of the stop — without it the row would read Needs you forever.
+    const state = derive(
+      makeAgent({ status: "error", attentionReason: "finished", stoppedBy: "user" }),
+      [],
+    );
+    expect(state).toMatchObject({
+      bucket: "done",
+      doneReason: "stopped-by-user",
+      reviewState: "none",
+    });
+  });
+
+  it("keeps an event-less, never-stopped error agent in needs_you", () => {
+    const state = derive(makeAgent({ status: "error", stoppedBy: null }), []);
+    expect(state).toMatchObject({ bucket: "needs_you", doneReason: null });
+  });
+
+  it("keeps an event-less, never-stopped idle agent dormant", () => {
+    const state = derive(makeAgent({ stoppedBy: null }), []);
+    expect(state).toMatchObject({ bucket: "dormant", doneReason: null });
+  });
+
   it("makes a user stop outrank pending proposals and finished attention", () => {
     // The live Needs-you manifestation: after the stop the attention still
     // reads finished and/or a proposal card is pending. The user performed the

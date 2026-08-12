@@ -33,6 +33,27 @@ export function isSystemOwnedAgentLabels(labels: Record<string, string> | undefi
 }
 
 /**
+ * The board-visibility predicate: which system-owned agents are hidden from
+ * Mission Control surfaces. Only the Commander itself and non-verifier
+ * machinery (monitors, build-hash stamps) are hidden. Verifiers are tracked
+ * like any worker — their spin-up and completion show as lifecycle events —
+ * so the verifier label is explicitly NOT hidden.
+ */
+export function isCommanderOrMachineryLabels(labels: Record<string, string> | undefined): boolean {
+  if (!labels) {
+    return false;
+  }
+  const direct = labels[MISSION_CONTROL_LABEL_PREFIX];
+  if (direct === "commander") {
+    return true;
+  }
+  if (direct === "verifier") {
+    return false;
+  }
+  return Object.keys(labels).some((key) => key.startsWith(`${MISSION_CONTROL_LABEL_PREFIX}.`));
+}
+
+/**
  * The Commander's home directory, as a path segment under the daemon's paseo
  * home: `<paseoHome>/commander` (`~/.paseo/commander` in the standard layout
  * where paseoHome = `~/.paseo`). Reserved — boot creates it if missing and

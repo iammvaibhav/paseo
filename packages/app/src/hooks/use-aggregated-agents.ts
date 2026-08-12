@@ -1,7 +1,7 @@
 import { useMemo, useCallback, useRef, useSyncExternalStore } from "react";
 import equal from "fast-deep-equal";
 import { useShallow } from "zustand/shallow";
-import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
+import { isCommanderOrMachineryLabels } from "@getpaseo/protocol/mission-control/system-owned";
 import { useSessionStore } from "@/stores/session-store";
 import type { AgentDirectoryEntry } from "@/types/agent-directory";
 import type { Agent } from "@/stores/session-store";
@@ -53,10 +53,12 @@ export function useAggregatedAgents(options?: {
   const daemons = useHosts();
   const runtime = getHostRuntimeStore();
   const includeArchived = options?.includeArchived ?? false;
-  // Mission Control verbose is THE debug gate: system-owned agents (Commander,
-  // verifiers, machinery) are hidden from every list/board/badge surface while
-  // it is OFF, and visible everywhere when it is ON. One filter here so no
-  // surface keeps its own variant.
+  // Mission Control verbose is THE debug gate: the Commander itself and
+  // non-verifier machinery (monitors, build-hash stamps) are hidden from
+  // every list/board/badge surface while it is OFF, and visible everywhere
+  // when it is ON. Verifiers, Commander workers, and subagents are tracked —
+  // their lifecycle shows on the board like any root agent. One filter here
+  // so no surface keeps its own variant.
   const [verbose] = useMissionControlVerbose();
   const runtimeVersion = useSyncExternalStore(
     (onStoreChange) => runtime.subscribeAll(onStoreChange),
@@ -103,7 +105,7 @@ export function useAggregatedAgents(options?: {
         if (!includeArchived && agent.archivedAt) {
           continue;
         }
-        if (!verbose && isSystemOwnedAgentLabels(agent.labels)) {
+        if (!verbose && isCommanderOrMachineryLabels(agent.labels)) {
           continue;
         }
         const nextAgent = toAggregatedAgent(agent, serverId, serverLabel);

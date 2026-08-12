@@ -177,6 +177,7 @@ import {
   remapLegacyCommanderCreateCwd,
 } from "./mission-control/commander-boot.js";
 import { buildCommanderLaunchConfig, buildLocalContextPayload } from "./mission-control/context.js";
+import { resolveLocalSpawnLabels } from "./mission-control/spawn-labels.js";
 import {
   MISSION_CONTROL_LABEL_KEY,
   MISSION_CONTROL_LABEL_VALUE,
@@ -2038,6 +2039,7 @@ export class Session {
     (msg) => this.dispatchMissionControlSearchMessage(msg),
     (msg) => this.dispatchMissionControlMediaMessage(msg),
     (msg) => this.dispatchMissionControlMetaMessage(msg),
+    (msg) => this.dispatchMissionControlSpawnLabelsMessage(msg),
     (msg) => this.dispatchMissionControlSpawnMessage(msg),
     (msg) => this.dispatchMissionControlEventForwardMessage(msg),
     (msg) => this.dispatchMiscMessage(msg),
@@ -2471,6 +2473,17 @@ export class Session {
     }
   }
 
+  private dispatchMissionControlSpawnLabelsMessage(
+    msg: SessionInboundMessage,
+  ): Promise<void> | undefined {
+    switch (msg.type) {
+      case "mission_control.spawn_labels.resolve.request":
+        return this.handleMissionControlSpawnLabelsResolveRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
   private dispatchMissionControlSpawnMessage(
     msg: SessionInboundMessage,
   ): Promise<void> | undefined {
@@ -2515,6 +2528,37 @@ export class Session {
         ...(result.ok
           ? { summary: result.summary, serverId: this.serverId, hostName: this.hostName }
           : { error: result.error }),
+      },
+    });
+  }
+
+  /**
+   * Cross-host spawn-label resolution (mission_control.spawn_labels.resolve):
+   * the Commander host asks THIS daemon (a peer target of a Commander spawn)
+   * to resolve the human-readable workspace/project labels for the spawn
+   * proposal card. A spawn into a NEW workspace (cwd without workspaceId)
+   * derives its name from this host's own checkout (branch) and registries —
+   * facts the commander host cannot see — so the card renders the exact name
+   * instead of nothing. Read-only; never registers anything. Mirrors
+   * mission_control.meta.apply's peer hop.
+   */
+  private async handleMissionControlSpawnLabelsResolveRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.spawn_labels.resolve.request" }>,
+  ): Promise<void> {
+    const labels = await resolveLocalSpawnLabels(
+      {
+        workspaceRegistry: this.workspaceRegistry,
+        projectRegistry: this.projectRegistry,
+        workspaceGitService: this.workspaceGitService,
+        logger: this.sessionLogger,
+      },
+      { cwd: msg.cwd, workspaceId: msg.workspaceId },
+    );
+    this.emit({
+      type: "mission_control.spawn_labels.resolve.response",
+      payload: {
+        requestId: msg.requestId,
+        ...(labels ? { labels } : {}),
       },
     });
   }

@@ -712,6 +712,18 @@ export function MissionControlSection(): ReactElement {
     (next: boolean) => void patch({ hideAgentNames: next }),
     [patch],
   );
+  const handleTrackCommanderWorkersChange = useCallback(
+    (next: boolean) => void patch({ trackCommanderWorkers: next }),
+    [patch],
+  );
+  const handleTrackVerifiersChange = useCallback(
+    (next: boolean) => void patch({ trackVerifiers: next }),
+    [patch],
+  );
+  const handleTrackSubagentsChange = useCallback(
+    (next: boolean) => void patch({ trackSubagents: next }),
+    [patch],
+  );
   const handleDefaultDispatchHostSelect = useCallback(
     (next: string) => void patch({ defaultDispatchHost: next }),
     [patch],
@@ -975,6 +987,53 @@ export function MissionControlSection(): ReactElement {
             isCompact={isCompact}
             nullable
           />
+        </View>
+      </SettingsSection>
+
+      <SettingsSection title="Lifecycle tracking">
+        <View style={settingsStyles.card}>
+          <View style={[settingsStyles.row, settingsStyles.rowBorder, { paddingTop: 14 }]}>
+            <View style={settingsStyles.rowContent}>
+              <Text style={settingsStyles.rowTitle}>Commander workers</Text>
+              <Text style={settingsStyles.rowHint}>
+                Lifecycle cards, run records, and review states for agents the Commander spawns.
+              </Text>
+            </View>
+            <Switch
+              value={config.trackCommanderWorkers}
+              onValueChange={handleTrackCommanderWorkersChange}
+              accessibilityLabel="Track Commander workers"
+              testID="mission-control-settings-track-commander-workers"
+            />
+          </View>
+          <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+            <View style={settingsStyles.rowContent}>
+              <Text style={settingsStyles.rowTitle}>Verifiers</Text>
+              <Text style={settingsStyles.rowHint}>
+                Show when a verifier spins up and completes its audit.
+              </Text>
+            </View>
+            <Switch
+              value={config.trackVerifiers}
+              onValueChange={handleTrackVerifiersChange}
+              accessibilityLabel="Track verifiers"
+              testID="mission-control-settings-track-verifiers"
+            />
+          </View>
+          <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+            <View style={settingsStyles.rowContent}>
+              <Text style={settingsStyles.rowTitle}>Subagents</Text>
+              <Text style={settingsStyles.rowHint}>
+                Lifecycle cards for agents spawned by other agents.
+              </Text>
+            </View>
+            <Switch
+              value={config.trackSubagents}
+              onValueChange={handleTrackSubagentsChange}
+              accessibilityLabel="Track subagents"
+              testID="mission-control-settings-track-subagents"
+            />
+          </View>
         </View>
       </SettingsSection>
 

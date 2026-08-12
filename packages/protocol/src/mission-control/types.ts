@@ -668,6 +668,13 @@ export const MissionControlCentralConfigSchema = z.object({
   // connects to it over WS for the Mission Control composer's Commander
   // Voice button. Null/empty = the feature is hidden in the app.
   voiceNodeUrl: z.string().nullable().optional(),
+  // Lifecycle-tracking gates: which agent classes emit Mission Control
+  // lifecycle events (started/finished/failed cards, run records, review
+  // states). The Commander itself is never tracked; root agents are always
+  // tracked. Defaults: all three classes tracked.
+  trackCommanderWorkers: z.boolean().optional(),
+  trackVerifiers: z.boolean().optional(),
+  trackSubagents: z.boolean().optional(),
 });
 export type MissionControlCentralConfig = z.infer<typeof MissionControlCentralConfigSchema>;
 
@@ -951,6 +958,43 @@ export const MissionControlMetaApplyResponseSchema = z.object({
   }),
 });
 export type MissionControlMetaApplyResponse = z.infer<typeof MissionControlMetaApplyResponseSchema>;
+
+// ============================================================================
+// Cross-host spawn-label resolution: the Commander-host daemon resolves a
+// spawn proposal's human-readable workspace/project labels on the host the
+// spawn TARGETS when that host is a peer. A spawn into a NEW workspace (cwd
+// without workspaceId) derives its name from the target's own checkout
+// (branch) and registries — facts only the target daemon has — so the
+// commander host asks the peer instead of leaving the card unnamed. Read-only;
+// never registers anything. Mirrors mission_control.meta.apply's peer hop.
+// ============================================================================
+
+export const MissionControlSpawnLabelsResolveRequestSchema = z.object({
+  type: z.literal("mission_control.spawn_labels.resolve.request"),
+  requestId: z.string(),
+  // The cwd the spawn would mint a workspace at (new workspace), or the
+  // workspaceId of the existing target. Exactly one is expected, but both are
+  // optional so unknown inputs degrade to an empty labels payload.
+  cwd: z.string().optional(),
+  workspaceId: z.string().optional(),
+});
+export type MissionControlSpawnLabelsResolveRequest = z.infer<
+  typeof MissionControlSpawnLabelsResolveRequestSchema
+>;
+
+export const MissionControlSpawnLabelsResolveResponseSchema = z.object({
+  type: z.literal("mission_control.spawn_labels.resolve.response"),
+  payload: z.object({
+    requestId: z.string(),
+    // Same shape as the spawnPlan.labels slot: `workspace`/`project` for an
+    // existing target, `newWorkspace`/`newProject` (or `project`) for a
+    // freshly minted one. Absent when nothing resolves — never fabricated.
+    labels: z.record(z.string(), z.string()).optional(),
+  }),
+});
+export type MissionControlSpawnLabelsResolveResponse = z.infer<
+  typeof MissionControlSpawnLabelsResolveResponseSchema
+>;
 
 // ============================================================================
 // Cross-host spawn apply: the Commander-host spawn executor (spawnFromProposal)

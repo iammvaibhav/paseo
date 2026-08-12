@@ -613,6 +613,10 @@ type MissionControlMetaApplyPayload = Extract<
   SessionOutboundMessage,
   { type: "mission_control.meta.apply.response" }
 >["payload"];
+type MissionControlSpawnLabelsResolvePayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.spawn_labels.resolve.response" }
+>["payload"];
 type MissionControlSpawnApplyPayload = Extract<
   SessionOutboundMessage,
   { type: "mission_control.spawn.apply.response" }
@@ -5800,6 +5804,26 @@ export class DaemonClient {
       requestId,
       message: { type: "mission_control.spawn.apply.request", spawnPlan },
       responseType: "mission_control.spawn.apply.response",
+    });
+  }
+
+  /**
+   * Resolve human-readable workspace/project labels for a Commander spawn
+   * proposal on THIS daemon (mission_control.spawn_labels.resolve): the
+   * Commander host asks a PEER whose registries and checkout facts it cannot
+   * see. A spawn into a NEW workspace (cwd without workspaceId) derives its
+   * name from the target's own checkout (branch) and registries; an existing
+   * workspaceId resolves the workspace and project display names. Read-only —
+   * never registers anything.
+   */
+  async missionControlSpawnLabelsResolve(
+    input: { cwd?: string; workspaceId?: string },
+    requestId?: string,
+  ): Promise<MissionControlSpawnLabelsResolvePayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "mission_control.spawn_labels.resolve.request", ...input },
+      responseType: "mission_control.spawn_labels.resolve.response",
     });
   }
 

@@ -51,6 +51,12 @@ export interface ResolvedMissionControlCentralConfig {
   // commander-voice). The Mission Control composer shows Commander Voice only
   // when this is set; null/empty = feature hidden.
   voiceNodeUrl: string | null;
+  // Lifecycle-tracking gates (mirror the daemon's resolved central config):
+  // which agent classes emit Mission Control lifecycle events. The Commander
+  // itself is never tracked; root agents are always tracked.
+  trackCommanderWorkers: boolean;
+  trackVerifiers: boolean;
+  trackSubagents: boolean;
 }
 
 const RESOLVED_DEFAULTS: ResolvedMissionControlCentralConfig = {
@@ -76,6 +82,9 @@ const RESOLVED_DEFAULTS: ResolvedMissionControlCentralConfig = {
   hindsightBank: "paseo-fleet",
   hindsightSecondaryBank: "omp",
   voiceNodeUrl: null,
+  trackCommanderWorkers: true,
+  trackVerifiers: true,
+  trackSubagents: true,
 };
 
 // Grouped knob resolution (mirrors the server's resolveNullableStringKnobs
@@ -127,6 +136,9 @@ export function resolveMissionControlCentralConfig(
     defaultDispatchHost: config.defaultDispatchHost ?? null,
     commanderToWorkerMode: config.commanderToWorkerMode ?? "interrupt",
     verifierToWorkerMode: config.verifierToWorkerMode ?? "interrupt",
+    trackCommanderWorkers: config.trackCommanderWorkers ?? true,
+    trackVerifiers: config.trackVerifiers ?? true,
+    trackSubagents: config.trackSubagents ?? true,
     ...resolveStallTimingKnobs(config),
     ...resolveMemoryKnobs(config),
     ...resolveVoiceKnobs(config),
