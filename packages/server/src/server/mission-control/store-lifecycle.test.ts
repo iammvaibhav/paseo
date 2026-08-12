@@ -464,6 +464,63 @@ describe("MissionControlStore run-scoped coalescing", () => {
     expect(store.fetchEvents().find((event) => event.id === sent.id)).toBeDefined();
   });
 
+  test("Commander interaction cards never coalesce: each answer stays live", async () => {
+    const first = await store.append({
+      agentId: "commander-1",
+      agentTitle: "Commander",
+      kind: "answer",
+      source: "system",
+      severity: "info",
+      headline: "Turing is the only agent running",
+      answer: { kind: "generic", headline: "Turing is the only agent running" },
+    });
+    const second = await store.append({
+      agentId: "commander-1",
+      agentTitle: "Commander",
+      kind: "answer",
+      source: "system",
+      severity: "info",
+      headline: "Beta deploy finished",
+      answer: { kind: "generic", headline: "Beta deploy finished" },
+    });
+    // Same agent, same kind, same run, unacked — a status card would be
+    // superseded here. An answer card is content, not a status update.
+    expect(second.supersedesId).toBeUndefined();
+    expect(second.coalescedCount).toBeUndefined();
+    expect(store.wouldCoalesce("commander-1", "answer")).toBe(false);
+    // Both cards render in the default feed (newest first).
+    const answers = store.fetchEvents().filter((event) => event.kind === "answer");
+    expect(answers.map((event) => event.id)).toEqual([second.id, first.id]);
+  });
+
+  test("clarification cards never coalesce either", async () => {
+    const first = await store.append({
+      agentId: "commander-1",
+      agentTitle: "Commander",
+      kind: "clarification",
+      source: "system",
+      severity: "info",
+      headline: "Which host?",
+      clarification: { question: "Which host?", options: ["beta", "gamma"], allowFreeText: false },
+    });
+    const second = await store.append({
+      agentId: "commander-1",
+      agentTitle: "Commander",
+      kind: "clarification",
+      source: "system",
+      severity: "info",
+      headline: "Which workspace?",
+      clarification: {
+        question: "Which workspace?",
+        options: ["payments", "experiments"],
+        allowFreeText: false,
+      },
+    });
+    expect(second.supersedesId).toBeUndefined();
+    const cards = store.fetchEvents().filter((event) => event.kind === "clarification");
+    expect(cards.map((event) => event.id)).toEqual([second.id, first.id]);
+  });
+
   test("a daemon restart breaks pre-restart chains: a run spanning a restart inherits nothing", async () => {
     const report = await selfReportedCompletion("agent-1");
     const finish = await runEndFinish("agent-1");

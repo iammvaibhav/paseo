@@ -623,11 +623,9 @@ describe("M8 mailbox: instruction delivery + speculative auto-recall", () => {
     await vi.waitFor(() => {
       expect(allInstructionsClosed()).toBe(true);
     });
-    // All three cards are retained; the store coalesces the unacked same-kind
-    // chain, so count with includeSuperseded.
-    const answerEvents = service
-      .fetchEvents({ includeSuperseded: true })
-      .filter((event) => event.kind === "answer");
+    // Answer cards are content TO the user and never coalesce: all three are
+    // retained and visible in the default feed (no supersession).
+    const answerEvents = service.fetchEvents().filter((event) => event.kind === "answer");
     expect(answerEvents).toHaveLength(3);
     expect(answerEvents.map((event) => event.answer?.respondsTo).sort()).toEqual([
       "#1",
