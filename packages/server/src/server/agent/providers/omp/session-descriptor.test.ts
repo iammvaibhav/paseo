@@ -1,9 +1,10 @@
-import { mkdtemp, mkdir, utimes, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, mkdir, readFile, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
 
 import {
+  cloneOmpSessionFile,
   listOmpImportableSessions,
   readOmpImportSessionConfig,
   resolveOmpSessionFile,
@@ -161,5 +162,26 @@ describe("OMP session descriptor", () => {
 
     const resolved = await resolveOmpSessionFile(invalidPath, { homeDir: home });
     expect(resolved).toBe(realPath);
+  });
+
+  test("cloneOmpSessionFile creates an independent, byte-identical copy in the same directory", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paseo-omp-session-clone-"));
+    const source = path.join(
+      root,
+      "2026-08-04T00-00-00-000Z_019f0000-0000-7000-8000-000000000001.jsonl",
+    );
+    const line = JSON.stringify({ type: "session", id: "s1", timestamp: "2026-08-04", cwd: root });
+    await writeFile(source, `${line}\n`.repeat(10), "utf8");
+
+    const clone = await cloneOmpSessionFile(source);
+    // Fresh uniquely-named file in the same directory, never the source path.
+    expect(clone).not.toBe(source);
+    expect(path.dirname(clone)).toBe(path.dirname(source));
+    expect(clone).toMatch(/\.jsonl$/u);
+    // Byte-identical content (reflink or plain-copy fallback both deliver this).
+    await expect(readFile(clone, "utf8")).resolves.toBe(await readFile(source, "utf8"));
+    // The clone owns its history: appending to it must not touch the source.
+    await appendFile(clone, '{"type":"session_info","name":"fork"}\n', "utf8");
+    expect(await readFile(source, "utf8")).not.toContain("fork");
   });
 });

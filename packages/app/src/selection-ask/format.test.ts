@@ -1,11 +1,32 @@
 import { describe, expect, it } from "vitest";
+import type { StreamItem } from "@/types/stream";
 import {
   SELECTION_ASK_INTRO,
+  buildAskThreadMessages,
   buildSelectionAskBlock,
   buildSelectionAskPrompt,
   buildSelectionAskTitle,
   quoteSelection,
 } from "./format";
+
+function userMessage(id: string, text: string): StreamItem {
+  return { kind: "user_message", id, text, timestamp: new Date(0) };
+}
+
+function assistantMessage(
+  id: string,
+  text: string,
+  extra: { messageId?: string; blockGroupId?: string } = {},
+): StreamItem {
+  return {
+    kind: "assistant_message",
+    id,
+    text,
+    timestamp: new Date(0),
+    ...(extra.messageId ? { messageId: extra.messageId } : {}),
+    ...(extra.blockGroupId ? { blockGroupId: extra.blockGroupId } : {}),
+  };
+}
 
 describe("quoteSelection", () => {
   it("quotes every line of a multi-line selection", () => {
@@ -96,5 +117,88 @@ describe("buildSelectionAskTitle", () => {
   it("returns null when question and selection are both blank", () => {
     expect(buildSelectionAskTitle({ question: "   ", selection: "\n  \n" })).toBeNull();
     expect(buildSelectionAskTitle({})).toBeNull();
+  });
+});
+
+describe("buildAskThreadMessages", () => {
+  it("keeps every user and assistant row in order, including follow-ups", () => {
+    const tail = [
+      userMessage("prompt", "what is this?"),
+      assistantMessage("a1", "first answer"),
+      userMessage("follow-up", "and this part?"),
+      assistantMessage("a2", "second answer"),
+    ];
+    expect(buildAskThreadMessages(tail, [])).toEqual([
+      { id: "prompt", role: "user", text: "what is this?" },
+      { id: "a1", role: "assistant", text: "first answer" },
+      { id: "follow-up", role: "user", text: "and this part?" },
+      { id: "a2", role: "assistant", text: "second answer" },
+    ]);
+  });
+
+  it("drops tool calls and thoughts", () => {
+    const tail: StreamItem[] = [
+      userMessage("prompt", "hi"),
+      { kind: "tool_call", id: "t1", timestamp: new Date(0) } as StreamItem,
+      assistantMessage("a1", "answer"),
+      { kind: "thought", id: "th1", text: "hmm", status: "ready", timestamp: new Date(0) },
+    ];
+    expect(buildAskThreadMessages(tail, [])).toEqual([
+      { id: "prompt", role: "user", text: "hi" },
+      { id: "a1", role: "assistant", text: "answer" },
+    ]);
+  });
+
+  it("merges a streaming head continuation into the trailing assistant row", () => {
+    const tail = [userMessage("prompt", "hi"), assistantMessage("a1", "Hel")];
+    const head = [assistantMessage("a1-live", "Hello world")];
+    expect(buildAskThreadMessages(tail, head)).toEqual([
+      { id: "prompt", role: "user", text: "hi" },
+      { id: "a1", role: "assistant", text: "Hello world" },
+    ]);
+  });
+
+  it("appends a new head assistant row when it is not a continuation", () => {
+    const tail = [userMessage("prompt", "hi"), assistantMessage("a1", "first")];
+    const head = [assistantMessage("a2-live", "second")];
+    expect(buildAskThreadMessages(tail, head)).toEqual([
+      { id: "prompt", role: "user", text: "hi" },
+      { id: "a1", role: "assistant", text: "first" },
+      { id: "a2-live", role: "assistant", text: "second" },
+    ]);
+  });
+
+  it("merges resumed streams with a matching provider message id", () => {
+    const tail = [
+      userMessage("prompt", "hi"),
+      assistantMessage("a1", "partial", { messageId: "m1" }),
+    ];
+    const head = [assistantMessage("a1-live", "partial, then more", { messageId: "m1" })];
+    expect(buildAskThreadMessages(tail, head)).toEqual([
+      { id: "prompt", role: "user", text: "hi" },
+      { id: "a1", role: "assistant", text: "partial, then more" },
+    ]);
+  });
+
+  it("joins block-group rows (promoted blocks plus the live head block) into one reply", () => {
+    const tail = [
+      userMessage("prompt", "hi"),
+      assistantMessage("b1", "First block", { blockGroupId: "g1" }),
+      assistantMessage("b2", "Second block", { blockGroupId: "g1" }),
+    ];
+    const head = [assistantMessage("b3-live", "Third block", { blockGroupId: "g1" })];
+    expect(buildAskThreadMessages(tail, head)).toEqual([
+      { id: "prompt", role: "user", text: "hi" },
+      {
+        id: "b1",
+        role: "assistant",
+        text: "First block\n\nSecond block\n\nThird block",
+      },
+    ]);
+  });
+
+  it("returns an empty thread for an empty stream", () => {
+    expect(buildAskThreadMessages([], [])).toEqual([]);
+    expect(buildAskThreadMessages(undefined, undefined)).toEqual([]);
   });
 });

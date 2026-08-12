@@ -15,7 +15,6 @@ import {
   ChevronDown,
   CornerDownLeft,
   ExternalLink,
-  LoaderCircle,
   MessageSquareQuote,
   X,
 } from "lucide-react-native";
@@ -25,6 +24,7 @@ import { CombinedModelSelector } from "@/components/combined-model-selector";
 import { Button } from "@/components/ui/button";
 import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
 import { getOverlayRoot, OVERLAY_Z } from "@/lib/overlay-root";
+import { MarkdownRenderer } from "@/components/markdown/renderer";
 import { SyncedLoader } from "@/components/synced-loader";
 import type { Theme } from "@/styles/theme";
 import { quoteSelection } from "./format";
@@ -45,11 +45,9 @@ const ThemedMessageSquareQuote = withUnistyles(MessageSquareQuote);
 const ThemedChevronDown = withUnistyles(ChevronDown);
 const ThemedCornerDownLeft = withUnistyles(CornerDownLeft);
 const ThemedExternalLink = withUnistyles(ExternalLink);
-const ThemedLoaderCircle = withUnistyles(LoaderCircle);
 const ThemedX = withUnistyles(X);
 
 const foregroundMutedMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
-const accentBrightMapping = (theme: Theme) => ({ color: theme.colors.accentBright });
 const accentForegroundMapping = (theme: Theme) => ({ color: theme.colors.accentForeground });
 
 const ThemedTextInput = withUnistyles(TextInput, (theme) => ({
@@ -239,7 +237,7 @@ const SelectionAskPopover = forwardRef<HTMLDivElement, SelectionAskPopoverProps>
     return createPortal(
       <div ref={ref} style={popoverStyle}>
         <View style={styles.popoverCard} onLayout={handleLayout}>
-          {ask.askAgentId ? (
+          {ask.askAgentId || ask.isStartingAsk ? (
             <SelectionAskAnswerBody
               ask={ask}
               onInternalOverlayOpenChange={onInternalOverlayOpenChange}
@@ -347,30 +345,18 @@ function SelectionAskAnswerBody({
   ask: SelectionAskState;
   onInternalOverlayOpenChange: (open: boolean) => void;
 }) {
-  let statusDotStyle = statusDotStyles.idle;
-  let statusLabelStyle = statusLabelStyles.idle;
-  if (ask.askStatus === "running") {
-    statusDotStyle = statusDotStyles.running;
-    statusLabelStyle = statusLabelStyles.running;
-  } else if (ask.askStatus === "error") {
-    statusDotStyle = statusDotStyles.error;
-    statusLabelStyle = statusLabelStyles.error;
-  }
+  const scrollViewRef = useRef<ScrollView>(null);
+  const lastMessageCountRef = useRef(0);
+  const messageCount = ask.askMessages.length;
 
-  const statusLabel = useMemo(() => {
-    if (ask.askStatus === "running") {
-      return "Running";
+  // Keep the newest message in view when a new row lands (follow-up or a new
+  // reply); streaming text chunks into the last row do not fight the user.
+  useEffect(() => {
+    if (messageCount > lastMessageCountRef.current) {
+      scrollViewRef.current?.scrollToEnd({ animated: true });
     }
-    if (ask.askStatus === "error") {
-      return "Error";
-    }
-    return ask.askStatus ? "Idle" : "Starting…";
-  }, [ask.askStatus]);
-
-  // While the fork is starting or running there is nothing to read yet — show
-  // the synced activity loader instead of a lone ellipsis. Once text arrives
-  // (streamed via the head/tail stream) it renders in place of the loader.
-  const isWaitingForAnswer = !ask.askAnswer && (ask.isAskRunning || ask.askStatus == null);
+    lastMessageCountRef.current = messageCount;
+  }, [messageCount]);
 
   const handleFollowUpKey = useCallback(
     (event: { nativeEvent: { key: string } }) => {
@@ -386,26 +372,41 @@ function SelectionAskAnswerBody({
     [],
   );
 
+  // The loader lives in the title bar only: a SyncedLoader next to the title
+  // while the fork is starting (status not yet known) or running. The body
+  // never shows an activity loader.
+  const showHeaderLoader = ask.isAskRunning || ask.askStatus == null;
+
   return (
     <>
       <View style={styles.popoverHeader}>
-        <View style={[styles.statusDot, statusDotStyle]} />
         <Text style={styles.popoverTitle} numberOfLines={1}>
           {ask.askTitle ?? "Ask"}
         </Text>
-        <Text style={[styles.statusLabel, statusLabelStyle]}>{statusLabel}</Text>
-        <View style={styles.headerSpacer} />
-        {ask.askStatus === "running" ? (
-          <ThemedLoaderCircle size={13} uniProps={accentBrightMapping} />
+        {showHeaderLoader ? (
+          <ThemedSyncedLoader size={13} uniProps={foregroundMutedMapping} />
         ) : null}
-        <Pressable
-          onPress={ask.openInTab}
-          style={styles.headerIconButton}
-          accessibilityRole="button"
-          accessibilityLabel="Open ask in tab"
-        >
-          <ThemedExternalLink size={13} uniProps={foregroundMutedMapping} />
-        </Pressable>
+        <View style={styles.headerSpacer} />
+        {ask.canJumpToSelection ? (
+          <Pressable
+            onPress={ask.jumpToSelection}
+            style={styles.jumpToSelectionChip}
+            accessibilityRole="button"
+            accessibilityLabel="Jump to selection in chat"
+          >
+            <Text style={styles.jumpToSelectionText}>Jump to chat</Text>
+          </Pressable>
+        ) : null}
+        {ask.askAgentId ? (
+          <Pressable
+            onPress={ask.openInTab}
+            style={styles.headerIconButton}
+            accessibilityRole="button"
+            accessibilityLabel="Open ask in tab"
+          >
+            <ThemedExternalLink size={13} uniProps={foregroundMutedMapping} />
+          </Pressable>
+        ) : null}
         <Pressable
           onPress={ask.dismiss}
           style={styles.headerIconButton}
@@ -416,13 +417,26 @@ function SelectionAskAnswerBody({
         </Pressable>
       </View>
       <View style={[styles.answerScroller, { maxHeight: ANSWER_MAX_HEIGHT }]}>
-        <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator>
-          {isWaitingForAnswer ? (
-            <View style={styles.answerLoader}>
-              <ThemedSyncedLoader size={14} uniProps={foregroundMutedMapping} />
-            </View>
+        <ScrollView
+          ref={scrollViewRef}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator
+          contentContainerStyle={styles.answerContent}
+        >
+          {messageCount === 0 ? (
+            <Text style={styles.answerEmptyText}>Waiting…</Text>
           ) : (
-            <Text style={styles.answerText}>{ask.askAnswer || "…"}</Text>
+            ask.askMessages.map((message) =>
+              message.role === "user" ? (
+                <View key={message.id} style={styles.userBubble}>
+                  <Text style={styles.userBubbleText}>{message.text}</Text>
+                </View>
+              ) : (
+                <View key={message.id} style={styles.assistantMessage}>
+                  <MarkdownRenderer text={message.text} compact enableHtmlish={false} />
+                </View>
+              ),
+            )
           )}
         </ScrollView>
       </View>
@@ -443,7 +457,7 @@ function SelectionAskAnswerBody({
         <Button
           variant="default"
           size="sm"
-          disabled={ask.followUp.trim().length === 0 || ask.isSendingFollowUp}
+          disabled={!ask.askAgentId || ask.followUp.trim().length === 0 || ask.isSendingFollowUp}
           loading={ask.isSendingFollowUp}
           onPress={ask.sendFollowUp}
           leftIcon={sendIcon}
@@ -611,13 +625,18 @@ const styles = StyleSheet.create((theme) => ({
     padding: 3,
     borderRadius: theme.borderRadius.sm,
   },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: theme.colors.accentBright,
+  jumpToSelectionChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: theme.colors.surface2,
+    borderRadius: theme.borderRadius.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
   },
-  statusLabel: {
+  jumpToSelectionText: {
+    color: theme.colors.foregroundMuted,
     fontSize: 11,
   },
   quotePreview: {
@@ -687,14 +706,30 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: 6,
     maxHeight: ANSWER_MAX_HEIGHT,
   },
-  answerLoader: {
-    alignItems: "center",
+  answerContent: {
+    gap: 8,
+  },
+  answerEmptyText: {
+    color: theme.colors.foregroundExtraMuted,
+    fontSize: 12,
+    textAlign: "center",
     paddingVertical: 8,
   },
-  answerText: {
+  userBubble: {
+    alignSelf: "flex-end",
+    maxWidth: "92%",
+    backgroundColor: theme.colors.surface3,
+    borderRadius: theme.borderRadius.md,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+  },
+  userBubbleText: {
     color: theme.colors.foreground,
     fontSize: 12,
-    lineHeight: 18,
+    lineHeight: 17,
+  },
+  assistantMessage: {
+    alignSelf: "stretch",
   },
   followUpRow: {
     flexDirection: "row",
@@ -718,32 +753,5 @@ const styles = StyleSheet.create((theme) => ({
   errorText: {
     color: theme.colors.destructive,
     fontSize: 12,
-  },
-}));
-
-// Split on purpose: the dot is a filled circle (backgroundColor only), the
-// label is text (color only). Applying both to both rendered a filled box
-// behind the status text.
-const statusDotStyles = StyleSheet.create((theme) => ({
-  running: {
-    backgroundColor: theme.colors.accentBright,
-  },
-  error: {
-    backgroundColor: theme.colors.destructive,
-  },
-  idle: {
-    backgroundColor: theme.colors.foregroundExtraMuted,
-  },
-}));
-
-const statusLabelStyles = StyleSheet.create((theme) => ({
-  running: {
-    color: theme.colors.accentBright,
-  },
-  error: {
-    color: theme.colors.destructive,
-  },
-  idle: {
-    color: theme.colors.foregroundExtraMuted,
   },
 }));

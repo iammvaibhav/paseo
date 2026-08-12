@@ -16,14 +16,19 @@ import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { buildSelectableProviderSelectorProviders } from "@/provider-selection/provider-selection";
 import { getHostRuntimeStore, useHostRuntimeClient } from "@/runtime/host-runtime";
 import { useSessionStore, type Agent } from "@/stores/session-store";
-import type { StreamItem } from "@/types/stream";
 import { buildDraftStoreKey } from "@/stores/draft-keys";
 import { useDraftStore } from "@/stores/draft-store";
 import { planTimelineTailFetch } from "@/timeline/timeline-sync-plan";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
 import { toErrorMessage } from "@/utils/error-messages";
 import { emitComposerPrefill } from "@/workspace/plannotator-feedback";
-import { buildSelectionAskBlock, buildSelectionAskPrompt, buildSelectionAskTitle } from "./format";
+import {
+  buildAskThreadMessages,
+  buildSelectionAskBlock,
+  buildSelectionAskPrompt,
+  buildSelectionAskTitle,
+  type AskMessage,
+} from "./format";
 import { useReopenAskStore } from "./reopen-store";
 
 /**
@@ -63,19 +68,6 @@ export interface AnchorRect {
 export interface ThinkingOptionEntry {
   id: string;
   label: string;
-}
-
-function latestAssistantMessageText(items: readonly StreamItem[] | undefined): string | null {
-  if (!items) {
-    return null;
-  }
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    const item = items[index];
-    if (item.kind === "assistant_message") {
-      return item.text;
-    }
-  }
-  return null;
 }
 
 function toThinkingOptionEntries(
@@ -135,11 +127,15 @@ export interface SelectionAskState extends SelectionAskModelState {
   askAgentId: string | null;
   askTitle: string | null;
   askStatus: Agent["status"] | null;
-  askAnswer: string;
+  askMessages: AskMessage[];
   isAskRunning: boolean;
   isStartingAsk: boolean;
   isSendingFollowUp: boolean;
   error: string | null;
+  /** Whether a "Jump to chat" target exists and is still attached to the DOM. */
+  canJumpToSelection: boolean;
+  /** Scrolls the source chat's selection into view; no-op when the range is gone. */
+  jumpToSelection: () => void;
   showSelection: (input: { markdown: string; range: Range }) => void;
   recomputeAnchorRect: () => void;
   addToComposer: () => void;
@@ -191,6 +187,10 @@ export function useSelectionAsk(config: SelectionAskConfig): SelectionAskState {
   const [selectedThinkingOptionId, setSelectedThinkingOptionId] = useState<string | null>(null);
   const seededPrefsRef = useRef(false);
   const selectionRangeRef = useRef<Range | null>(null);
+  // The source-chat selection captured when the ask was started, restored on
+  // reopen so the popover can offer "Jump to chat". Distinct from
+  // selectionRangeRef (which anchors the popover in compose mode).
+  const [jumpRange, setJumpRange] = useState<Range | null>(null);
 
   const providerSnapshot = useProvidersSnapshot(config.serverId, {
     enabled: selection !== null,
@@ -342,10 +342,15 @@ export function useSelectionAsk(config: SelectionAskConfig): SelectionAskState {
       selectionRangeRef.current = input.range;
       setSelection({ markdown: input.markdown, range: input.range });
       setAnchorRect(readSelectionAskAnchorRect(input.range));
+      setJumpRange(null);
       // A fresh selection starts back in compose mode; the previous ask's popover
       // (if any) is replaced rather than stacked.
       clearAskTimelineSubscription();
       setAskAgentId(null);
+      // An ask started against the previous selection may still be in flight;
+      // its result is dropped by startAsk's stale-range guard, so compose mode
+      // must not inherit the pending state.
+      setIsStartingAsk(false);
       setComment("");
       setFollowUp("");
       setError(null);
@@ -364,8 +369,10 @@ export function useSelectionAsk(config: SelectionAskConfig): SelectionAskState {
     selectionRangeRef.current = null;
     setSelection(null);
     setAnchorRect(null);
+    setJumpRange(null);
     clearAskTimelineSubscription();
     setAskAgentId(null);
+    setIsStartingAsk(false);
     setComment("");
     setFollowUp("");
     setError(null);
@@ -384,6 +391,10 @@ export function useSelectionAsk(config: SelectionAskConfig): SelectionAskState {
     setSelection(null);
     setAnchorRect(request.anchorRect ?? fallbackReopenAnchorRect());
     setAskAgentId(request.askAgentId);
+    // Restore the source-chat selection captured when the ask was started, so
+    // "Jump to chat" can scroll it back into view while it is still attached
+    // to the DOM. The popover itself stays anchored at the clicked row.
+    setJumpRange(useReopenAskStore.getState().consumeAskSelectionRange(request.askAgentId));
     setComment("");
     setFollowUp("");
     setError(null);
@@ -436,6 +447,7 @@ export function useSelectionAsk(config: SelectionAskConfig): SelectionAskState {
     if (!selection || !client) {
       return;
     }
+    const startedRange = selectionRangeRef.current;
     setIsStartingAsk(true);
     setError(null);
     try {
@@ -474,7 +486,24 @@ export function useSelectionAsk(config: SelectionAskConfig): SelectionAskState {
         labels,
         overrides,
       });
+      // The popover may have been dismissed or re-anchored to a fresh
+      // selection while the fork RPC was in flight. The fork still runs on
+      // the server, but it is orphaned: never resurrect it over the new
+      // state (its timeline subscription and stream would leak into the new
+      // selection's popover).
+      if (selectionRangeRef.current !== startedRange) {
+        return;
+      }
       setAskAgentId(result.agentId);
+      // Remember the source selection for this ask so a later reopen from the
+      // asks list can offer "Jump to chat" while the range is still live.
+      if (
+        startedRange &&
+        typeof document !== "undefined" &&
+        document.contains(startedRange.startContainer)
+      ) {
+        useReopenAskStore.getState().recordAskSelectionRange(result.agentId, startedRange);
+      }
       // Make the fresh fork's timeline visible, the same way the agent panel
       // does when an agent opens: register it with the focused timeline sync
       // (selective subscription + catch-up fetches) and fetch its tail so the
@@ -490,7 +519,9 @@ export function useSelectionAsk(config: SelectionAskConfig): SelectionAskState {
         .fetchAgentTimeline(config.serverId, result.agentId, planTimelineTailFetch())
         .catch(() => undefined);
     } catch (caught) {
-      setError(toErrorMessage(caught));
+      if (selectionRangeRef.current === startedRange) {
+        setError(toErrorMessage(caught));
+      }
     } finally {
       setIsStartingAsk(false);
     }
@@ -527,7 +558,9 @@ export function useSelectionAsk(config: SelectionAskConfig): SelectionAskState {
       return;
     }
     navigateToAgent({ serverId: config.serverId, agentId: askAgentId });
-  }, [askAgentId, config.serverId]);
+    // The popover's job is done once the ask opens as a real tab.
+    dismiss();
+  }, [askAgentId, config.serverId, dismiss]);
 
   const askAgent = useSessionStore((state) =>
     askAgentId ? state.sessions[config.serverId]?.agents.get(askAgentId) : undefined,
@@ -538,10 +571,27 @@ export function useSelectionAsk(config: SelectionAskConfig): SelectionAskState {
   const askHead = useSessionStore((state) =>
     askAgentId ? state.sessions[config.serverId]?.agentStreamHead.get(askAgentId) : undefined,
   );
-  const askAnswer = useMemo(
-    () => latestAssistantMessageText(askHead) ?? latestAssistantMessageText(askStream) ?? "",
+  const askMessages = useMemo(
+    () => buildAskThreadMessages(askStream, askHead),
     [askHead, askStream],
   );
+
+  const canJumpToSelection = useMemo(() => {
+    const range = jumpRange;
+    return (
+      range !== null && typeof document !== "undefined" && document.contains(range.startContainer)
+    );
+  }, [jumpRange]);
+
+  const jumpToSelection = useCallback(() => {
+    const range = jumpRange;
+    if (!range || typeof document === "undefined" || !document.contains(range.startContainer)) {
+      return;
+    }
+    const node = range.startContainer;
+    const element = node.nodeType === Node.TEXT_NODE ? node.parentElement : (node as Element);
+    element?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [jumpRange]);
 
   return {
     selection,
@@ -553,11 +603,13 @@ export function useSelectionAsk(config: SelectionAskConfig): SelectionAskState {
     askAgentId,
     askTitle: askAgent?.title ?? askAgent?.name ?? null,
     askStatus: askAgent?.status ?? null,
-    askAnswer,
+    askMessages,
     isAskRunning: askAgent?.status === "running",
     isStartingAsk,
     isSendingFollowUp,
     error,
+    canJumpToSelection,
+    jumpToSelection,
     showSelection,
     recomputeAnchorRect,
     addToComposer,
