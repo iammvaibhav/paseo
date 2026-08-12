@@ -66,9 +66,12 @@ export interface ForkAgentResult {
 export async function forkAgentToSibling(input: ForkAgentInput): Promise<ForkAgentResult> {
   const source = await resolveSourceAgent(input);
   // A provisional title derived from the fork's first prompt keeps the new tab
-  // from being an exact duplicate of the source title.
+  // from being an exact duplicate of the source title. The caller can pin an
+  // explicit title via `overrides.title` (e.g. the selection-ask popover
+  // derives one from the user's question); when both are absent the prompt's
+  // first line wins.
   const { provisionalTitle } = resolveCreateAgentTitles({
-    configTitle: null,
+    configTitle: input.overrides?.title ?? null,
     initialPrompt: input.text,
   });
 

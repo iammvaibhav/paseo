@@ -1,24 +1,26 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   Pressable,
+  ScrollView,
   Text,
   View,
   type PressableStateCallbackType,
   type ViewStyle,
 } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { ChevronDown, ChevronRight, ExternalLink } from "lucide-react-native";
+import { ChevronDown, ChevronRight } from "lucide-react-native";
 import { isSelectionAskAgent } from "@getpaseo/protocol/agent-labels";
 import { useShallow } from "zustand/shallow";
 import { useSessionStore, type Agent } from "@/stores/session-store";
+import { MAX_CONTENT_WIDTH } from "@/constants/layout";
 import type { Theme } from "@/styles/theme";
-import { navigateToAgent } from "@/utils/navigate-to-agent";
+import { useReopenAskStore } from "./reopen-store";
 
 const EMPTY_ASKS: Agent[] = [];
+const ASKS_LIST_MAX_HEIGHT = 200;
 
 const ThemedChevronDown = withUnistyles(ChevronDown);
 const ThemedChevronRight = withUnistyles(ChevronRight);
-const ThemedExternalLink = withUnistyles(ExternalLink);
 
 const foregroundMutedMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
@@ -68,9 +70,11 @@ function selectSelectionAsks(
 }
 
 /**
- * Collapsed "Asks (N)" strip above the composer's task list. Lists the side
+ * Collapsed "Asks (N)" card above the composer's task list. Lists the side
  * asks forked from this agent (agents labeled paseo.selection-ask whose parent
- * is the current agent); hidden entirely when there are none.
+ * is the current agent); hidden entirely when there are none. Clicking a row
+ * reopens the selection Ask popover for that ask in answer mode; opening the
+ * ask in its own tab is available from the popover's header button instead.
  */
 export function SelectionAsksList({ serverId, agentId }: { serverId: string; agentId: string }) {
   const [expanded, setExpanded] = useState(false);
@@ -80,59 +84,87 @@ export function SelectionAsksList({ serverId, agentId }: { serverId: string; age
 
   const toggle = useCallback(() => setExpanded((current) => !current), []);
 
+  const surfaceStyle = useMemo(
+    () => [styles.surface, expanded && styles.surfaceExpanded],
+    [expanded],
+  );
+
   const headerStyle = useCallback(
-    ({ pressed, hovered }: PressableStateCallbackType & { hovered?: boolean }) => [
-      styles.header,
+    ({ pressed, hovered }: PressableStateCallbackType) => [
+      styles.headerToggle,
       (pressed || hovered) && styles.headerActive,
     ],
     [],
   );
 
-  const headerAccessibilityState = useMemo(() => ({ expanded }), [expanded]);
-
-  const handleOpenAsk = useCallback(
-    (askAgentId: string) => {
-      navigateToAgent({ serverId, agentId: askAgentId });
-    },
-    [serverId],
+  const headerContainerStyle = useMemo(
+    () => [styles.header, expanded ? styles.headerDivider : styles.headerCollapsed],
+    [expanded],
   );
+
+  const headerAccessibilityState = useMemo(() => ({ expanded }), [expanded]);
 
   if (asks.length === 0) {
     return null;
   }
 
   return (
-    <View style={styles.container}>
-      <Pressable
-        onPress={toggle}
-        style={headerStyle}
-        accessibilityRole="button"
-        accessibilityState={headerAccessibilityState}
-        testID="selection-asks-header"
-      >
-        {expanded ? (
-          <ThemedChevronDown size={13} uniProps={foregroundMutedMapping} />
-        ) : (
-          <ThemedChevronRight size={13} uniProps={foregroundMutedMapping} />
-        )}
-        <Text style={styles.headerLabel}>Asks ({asks.length})</Text>
-      </Pressable>
-      {expanded ? (
-        <View style={styles.list}>
-          {asks.map((askAgent) => (
-            <SelectionAsksRow key={askAgent.id} agent={askAgent} onOpen={handleOpenAsk} />
-          ))}
+    <View style={styles.outer} testID="selection-asks-list">
+      <View style={styles.track}>
+        <View style={surfaceStyle}>
+          <View style={headerContainerStyle}>
+            <Pressable
+              onPress={toggle}
+              style={headerStyle}
+              accessibilityRole="button"
+              accessibilityState={headerAccessibilityState}
+              testID="selection-asks-header"
+            >
+              {expanded ? (
+                <ThemedChevronDown size={12} uniProps={foregroundMutedMapping} />
+              ) : (
+                <ThemedChevronRight size={12} uniProps={foregroundMutedMapping} />
+              )}
+              <Text style={styles.headerLabel}>Asks ({asks.length})</Text>
+            </Pressable>
+          </View>
+          {expanded ? (
+            <ScrollView
+              style={styles.scroll}
+              contentContainerStyle={styles.scrollContent}
+              showsVerticalScrollIndicator={false}
+              nestedScrollEnabled
+            >
+              {asks.map((askAgent) => (
+                <SelectionAsksRow key={askAgent.id} agent={askAgent} sourceAgentId={agentId} />
+              ))}
+            </ScrollView>
+          ) : null}
         </View>
-      ) : null}
+      </View>
     </View>
   );
 }
 
-function SelectionAsksRow({ agent, onOpen }: { agent: Agent; onOpen: (agentId: string) => void }) {
+function SelectionAsksRow({ agent, sourceAgentId }: { agent: Agent; sourceAgentId: string }) {
   const title = agent.title ?? agent.name ?? "Ask";
-  const handleOpen = useCallback(() => onOpen(agent.id), [agent.id, onOpen]);
+  const rowRef = useRef<View>(null);
+  const handleOpen = useCallback(() => {
+    const element = rowRef.current;
+    if (element) {
+      element.measureInWindow((x, y, width, height) => {
+        useReopenAskStore.getState().requestReopenAsk({
+          sourceAgentId,
+          askAgentId: agent.id,
+          anchorRect: { top: y, left: x, width, height },
+        });
+      });
+    } else {
+      useReopenAskStore.getState().requestReopenAsk({ sourceAgentId, askAgentId: agent.id });
+    }
+  }, [agent.id, sourceAgentId]);
   const rowStyle = useCallback(
-    ({ pressed, hovered }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed, hovered }: PressableStateCallbackType) => [
       styles.row,
       (pressed || hovered) && styles.rowActive,
     ],
@@ -140,63 +172,104 @@ function SelectionAsksRow({ agent, onOpen }: { agent: Agent; onOpen: (agentId: s
   );
 
   return (
-    <Pressable
-      onPress={handleOpen}
-      style={rowStyle}
-      accessibilityRole="button"
-      accessibilityLabel={`Open ask ${title}`}
-      testID={`selection-asks-row-${agent.id}`}
-    >
-      <View style={[styles.statusDot, getAskStatusStyle(agent.status)]} />
-      <Text style={styles.rowLabel} numberOfLines={1}>
-        {title}
-      </Text>
-      <ThemedExternalLink size={12} uniProps={foregroundMutedMapping} />
-    </Pressable>
+    <View ref={rowRef} collapsable={false}>
+      <Pressable
+        onPress={handleOpen}
+        style={rowStyle}
+        accessibilityRole="button"
+        accessibilityLabel={`Open ask ${title}`}
+        testID={`selection-asks-row-${agent.id}`}
+      >
+        <View style={[styles.statusDot, getAskStatusStyle(agent.status)]} />
+        <Text style={styles.rowLabel} numberOfLines={1}>
+          {title}
+        </Text>
+      </Pressable>
+    </View>
   );
 }
 
 const styles = StyleSheet.create((theme) => ({
-  container: {
-    paddingHorizontal: 12,
-    paddingTop: 4,
+  outer: {
+    width: "100%",
+    alignItems: "center",
+    paddingHorizontal: theme.spacing[4],
+    paddingTop: theme.spacing[1],
+  },
+  track: {
+    width: "100%",
+    maxWidth: MAX_CONTENT_WIDTH,
+    marginBottom: -theme.spacing[4],
+  },
+  surface: {
+    alignSelf: "stretch",
+    backgroundColor: theme.colors.surface1,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.borderAccent,
+    borderBottomWidth: 0,
+    borderTopLeftRadius: theme.borderRadius["2xl"],
+    borderTopRightRadius: theme.borderRadius["2xl"],
+    overflow: "hidden",
+  },
+  surfaceExpanded: {
+    paddingBottom: theme.spacing[4],
   },
   header: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
-    paddingVertical: 4,
-    paddingHorizontal: 6,
-    borderRadius: theme.borderRadius.sm,
-    alignSelf: "flex-start",
+  },
+  headerToggle: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    paddingLeft: theme.spacing[3],
+    paddingRight: theme.spacing[1],
+    paddingVertical: theme.spacing[2],
+  },
+  headerCollapsed: {
+    paddingBottom: theme.spacing[4],
   },
   headerActive: {
     backgroundColor: theme.colors.surface2,
   },
-  headerLabel: {
-    color: theme.colors.foregroundMuted,
-    fontSize: 12,
-    fontWeight: "600",
+  headerDivider: {
+    borderBottomWidth: theme.borderWidth[1],
+    borderBottomColor: theme.colors.border,
   },
-  list: {
-    gap: 2,
-    paddingTop: 2,
+  headerLabel: {
+    flexShrink: 1,
+    minWidth: 0,
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foregroundMuted,
+  },
+  scroll: {
+    maxHeight: ASKS_LIST_MAX_HEIGHT,
+  },
+  scrollContent: {
+    paddingVertical: theme.spacing[1],
   },
   row: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingVertical: 4,
-    paddingHorizontal: 6,
-    borderRadius: theme.borderRadius.sm,
+    gap: theme.spacing[2],
+    paddingHorizontal: theme.spacing[3],
+    paddingVertical: theme.spacing[2],
   },
   rowActive: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    paddingHorizontal: theme.spacing[3],
+    paddingVertical: theme.spacing[2],
     backgroundColor: theme.colors.surface2,
   },
   rowLabel: {
-    color: theme.colors.foreground,
-    fontSize: 12,
     flex: 1,
+    minWidth: 0,
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foreground,
   },
   statusDot: {
     width: 7,

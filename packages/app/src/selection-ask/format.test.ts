@@ -3,6 +3,7 @@ import {
   SELECTION_ASK_INTRO,
   buildSelectionAskBlock,
   buildSelectionAskPrompt,
+  buildSelectionAskTitle,
   quoteSelection,
 } from "./format";
 
@@ -65,5 +66,35 @@ describe("buildSelectionAskPrompt", () => {
   it("trims the question", () => {
     const prompt = buildSelectionAskPrompt({ selection: "s", question: "  why?  " });
     expect(prompt).toContain("\n....\nwhy?");
+  });
+});
+
+describe("buildSelectionAskTitle", () => {
+  it("prefixes the user's question with Ask:", () => {
+    expect(buildSelectionAskTitle({ question: "what does this mean?", selection: "x" })).toBe(
+      "Ask: what does this mean?",
+    );
+  });
+
+  it("falls back to the first non-empty selection line when there is no question", () => {
+    expect(buildSelectionAskTitle({ selection: "const x = 10;\nconst y = 20;" })).toBe(
+      "const x = 10;",
+    );
+  });
+
+  it("collapses whitespace and clamps long titles", () => {
+    const title = buildSelectionAskTitle({
+      question: "  explain   this   ",
+      selection: "x",
+    });
+    expect(title).toBe("Ask: explain this");
+    const long = buildSelectionAskTitle({ question: "q".repeat(200) });
+    expect(long?.length).toBeLessThanOrEqual(60);
+    expect(long).toBe(`Ask: ${"q".repeat(55)}`);
+  });
+
+  it("returns null when question and selection are both blank", () => {
+    expect(buildSelectionAskTitle({ question: "   ", selection: "\n  \n" })).toBeNull();
+    expect(buildSelectionAskTitle({})).toBeNull();
   });
 });

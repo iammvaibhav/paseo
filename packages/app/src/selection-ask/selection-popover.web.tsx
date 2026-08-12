@@ -25,6 +25,7 @@ import { CombinedModelSelector } from "@/components/combined-model-selector";
 import { Button } from "@/components/ui/button";
 import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
 import { getOverlayRoot, OVERLAY_Z } from "@/lib/overlay-root";
+import { SyncedLoader } from "@/components/synced-loader";
 import type { Theme } from "@/styles/theme";
 import { quoteSelection } from "./format";
 import {
@@ -39,6 +40,7 @@ const POPOVER_MARGIN = 8;
 const ANSWER_MAX_HEIGHT = 320;
 const QUOTE_PREVIEW_MAX_HEIGHT = 96;
 
+const ThemedSyncedLoader = withUnistyles(SyncedLoader);
 const ThemedMessageSquareQuote = withUnistyles(MessageSquareQuote);
 const ThemedChevronDown = withUnistyles(ChevronDown);
 const ThemedCornerDownLeft = withUnistyles(CornerDownLeft);
@@ -176,7 +178,7 @@ function SelectionAskPopoverHostInner({
   return (
     <div ref={containerRef} style={containerStyle}>
       {children}
-      {ask.selection && ask.anchorRect ? (
+      {ask.anchorRect ? (
         <SelectionAskPopover
           ref={popoverRef}
           anchorRect={ask.anchorRect}
@@ -345,11 +347,14 @@ function SelectionAskAnswerBody({
   ask: SelectionAskState;
   onInternalOverlayOpenChange: (open: boolean) => void;
 }) {
-  let statusStyle = statusStyles.idle;
+  let statusDotStyle = statusDotStyles.idle;
+  let statusLabelStyle = statusLabelStyles.idle;
   if (ask.askStatus === "running") {
-    statusStyle = statusStyles.running;
+    statusDotStyle = statusDotStyles.running;
+    statusLabelStyle = statusLabelStyles.running;
   } else if (ask.askStatus === "error") {
-    statusStyle = statusStyles.error;
+    statusDotStyle = statusDotStyles.error;
+    statusLabelStyle = statusLabelStyles.error;
   }
 
   const statusLabel = useMemo(() => {
@@ -361,6 +366,11 @@ function SelectionAskAnswerBody({
     }
     return ask.askStatus ? "Idle" : "Starting…";
   }, [ask.askStatus]);
+
+  // While the fork is starting or running there is nothing to read yet — show
+  // the synced activity loader instead of a lone ellipsis. Once text arrives
+  // (streamed via the head/tail stream) it renders in place of the loader.
+  const isWaitingForAnswer = !ask.askAnswer && (ask.isAskRunning || ask.askStatus == null);
 
   const handleFollowUpKey = useCallback(
     (event: { nativeEvent: { key: string } }) => {
@@ -379,11 +389,11 @@ function SelectionAskAnswerBody({
   return (
     <>
       <View style={styles.popoverHeader}>
-        <View style={[styles.statusDot, statusStyle]} />
+        <View style={[styles.statusDot, statusDotStyle]} />
         <Text style={styles.popoverTitle} numberOfLines={1}>
           {ask.askTitle ?? "Ask"}
         </Text>
-        <Text style={[styles.statusLabel, statusStyle]}>{statusLabel}</Text>
+        <Text style={[styles.statusLabel, statusLabelStyle]}>{statusLabel}</Text>
         <View style={styles.headerSpacer} />
         {ask.askStatus === "running" ? (
           <ThemedLoaderCircle size={13} uniProps={accentBrightMapping} />
@@ -407,7 +417,13 @@ function SelectionAskAnswerBody({
       </View>
       <View style={[styles.answerScroller, { maxHeight: ANSWER_MAX_HEIGHT }]}>
         <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator>
-          <Text style={styles.answerText}>{ask.askAnswer || "…"}</Text>
+          {isWaitingForAnswer ? (
+            <View style={styles.answerLoader}>
+              <ThemedSyncedLoader size={14} uniProps={foregroundMutedMapping} />
+            </View>
+          ) : (
+            <Text style={styles.answerText}>{ask.askAnswer || "…"}</Text>
+          )}
         </ScrollView>
       </View>
       <SelectionAskModelControls
@@ -569,9 +585,11 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     padding: 10,
     gap: 8,
-    shadowColor: theme.colors.foreground,
-    shadowOpacity: 0.14,
-    shadowRadius: 16,
+    // Always a black drop shadow — `theme.colors.foreground` is white in dark
+    // mode and renders as a white glow. The border carries the theme contrast.
+    shadowColor: "#000",
+    shadowOpacity: 0.35,
+    shadowRadius: 18,
     shadowOffset: { width: 0, height: 6 },
     elevation: 8,
   },
@@ -669,6 +687,10 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: 6,
     maxHeight: ANSWER_MAX_HEIGHT,
   },
+  answerLoader: {
+    alignItems: "center",
+    paddingVertical: 8,
+  },
   answerText: {
     color: theme.colors.foreground,
     fontSize: 12,
@@ -699,17 +721,29 @@ const styles = StyleSheet.create((theme) => ({
   },
 }));
 
-const statusStyles = StyleSheet.create((theme) => ({
+// Split on purpose: the dot is a filled circle (backgroundColor only), the
+// label is text (color only). Applying both to both rendered a filled box
+// behind the status text.
+const statusDotStyles = StyleSheet.create((theme) => ({
   running: {
     backgroundColor: theme.colors.accentBright,
-    color: theme.colors.accentBright,
   },
   error: {
     backgroundColor: theme.colors.destructive,
-    color: theme.colors.destructive,
   },
   idle: {
     backgroundColor: theme.colors.foregroundExtraMuted,
+  },
+}));
+
+const statusLabelStyles = StyleSheet.create((theme) => ({
+  running: {
+    color: theme.colors.accentBright,
+  },
+  error: {
+    color: theme.colors.destructive,
+  },
+  idle: {
     color: theme.colors.foregroundExtraMuted,
   },
 }));
