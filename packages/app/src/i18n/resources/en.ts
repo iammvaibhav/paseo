@@ -322,6 +322,8 @@ export const en = {
       archivedBanner: "Archived",
       workspaceArchived:
         "This agent's workspace is archived, so it cannot be opened in the workspace view.",
+      workspaceUnavailable:
+        "This agent's workspace isn't available on this host, so it cannot be opened in the workspace view.",
     },
     proposal: {
       origin: {

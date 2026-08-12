@@ -326,6 +326,8 @@ export const ptBR: TranslationResources = {
       archivedBanner: "Arquivado",
       workspaceArchived:
         "O espaço de trabalho deste agente está arquivado, portanto não pode ser aberto na visualização de espaço de trabalho.",
+      workspaceUnavailable:
+        "This agent's workspace isn't available on this host, so it cannot be opened in the workspace view.",
     },
     proposal: {
       origin: {

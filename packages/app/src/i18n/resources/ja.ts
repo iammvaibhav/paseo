@@ -326,6 +326,8 @@ export const ja: TranslationResources = {
       archivedBanner: "アーカイブ済み",
       workspaceArchived:
         "このエージェントのワークスペースはアーカイブされているため、ワークスペースビューで開くことはできません。",
+      workspaceUnavailable:
+        "This agent's workspace isn't available on this host, so it cannot be opened in the workspace view.",
     },
     proposal: {
       origin: {

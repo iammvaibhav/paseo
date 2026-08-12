@@ -93,9 +93,18 @@ vi.mock("@/constants/layout", () => ({ useIsCompactFormFactor: () => false }));
 vi.mock("@/contexts/toast-context", () => ({
   useToast: () => ({ error: () => {}, show: () => {}, copied: () => {} }),
 }));
-vi.mock("@/stores/session-store", () => ({
-  useSessionStore: (selector: (state: unknown) => unknown) => selector(sessionsState),
-}));
+vi.mock("@/stores/session-store", () => {
+  // The components under test subscribe via the hook-shaped selector; the
+  // cross-host inspector-target resolver reads the store imperatively
+  // (getState().sessions) at press time, so the mock needs both surfaces.
+  const useSessionStoreMock = ((selector: (state: unknown) => unknown) =>
+    selector(sessionsState)) as unknown as {
+    (selector: (state: unknown) => unknown): unknown;
+    getState: () => unknown;
+  };
+  useSessionStoreMock.getState = () => sessionsState;
+  return { useSessionStore: useSessionStoreMock };
+});
 vi.mock("@/screens/mission-control/inspector-store", () => ({
   useInspectorStore: { getState: () => ({ openInspectorAgent: openInspectorAgentMock }) },
 }));
@@ -103,7 +112,7 @@ vi.mock("@/mission-control/central-config", () => ({
   useMissionControlCentralConfig: () => ({ config: { hideAgentNames: false } }),
 }));
 vi.mock("@/runtime/host-runtime", () => ({
-  getHostRuntimeStore: () => ({ getClient: () => null }),
+  getHostRuntimeStore: () => ({ getClient: () => null, getHosts: () => [] }),
 }));
 vi.mock("@/components/host-glyph", () => ({
   HostGlyph: ({ label, size, testID }: { label: string; size: string; testID: string }) => (

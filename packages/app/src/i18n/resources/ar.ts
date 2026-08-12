@@ -322,6 +322,8 @@ export const ar: TranslationResources = {
     inspector: {
       archivedBanner: "مؤرشف",
       workspaceArchived: "مساحة عمل هذا الوكيل مؤرشفة، لذا لا يمكن فتحها في عرض مساحة العمل.",
+      workspaceUnavailable:
+        "This agent's workspace isn't available on this host, so it cannot be opened in the workspace view.",
     },
     proposal: {
       origin: {

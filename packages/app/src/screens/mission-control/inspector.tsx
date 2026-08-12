@@ -81,10 +81,8 @@ export function MissionControlInspector({
     return resolveSessionAgent(session, agentId);
   });
 
-  const { isArchivedOrMissing: workspaceArchivedOrMissing } = useWorkspaceOpenState(
-    serverId,
-    agent?.workspaceId,
-  );
+  const { isArchived: workspaceIsArchived, isArchivedOrMissing: workspaceArchivedOrMissing } =
+    useWorkspaceOpenState(serverId, agent?.workspaceId);
 
   const streamItems = useSessionStore(
     (state) => state.sessions[serverId]?.agentStreamTail.get(agentId) ?? EMPTY_STREAM_ITEMS,
@@ -240,10 +238,10 @@ export function MissionControlInspector({
   const secondaryLabel = agent?.name && agent?.title ? agent.title : null;
   const isArchived = agent ? Boolean(agent.archivedAt) : false;
   // Archived banner state: the agent itself is archived, or its workspace is
-  // archived/absent (opening it would dead-end on the missing-workspace
-  // redirect), so the inspector labels the row instead of pretending it is
-  // live work.
-  const showArchivedBanner = isArchived || workspaceArchivedOrMissing;
+  // in the archived ("done") bucket. A workspace that merely is NOT listed on
+  // this host is unavailable (often a wrong-host lookup), not archived — it
+  // must never label the agent Archived.
+  const showArchivedBanner = isArchived || workspaceIsArchived;
   const composerCwd = agent?.cwd ?? "~";
   const composerContainerStyle = useMemo(() => ({ paddingBottom: insets.bottom }), [insets.bottom]);
 
@@ -265,6 +263,16 @@ export function MissionControlInspector({
   const openInWorkspaceTrailing = useMemo(
     () => <ThemedArrowUpRight size={14} uniProps={arrowUpRightMutedMapping} />,
     [],
+  );
+  // Why "Open in workspace" is disabled: the workspace is archived ("done"),
+  // or the host's synced directory simply no longer lists it (unavailable).
+  // Distinct copy — an absent workspace is not an archived one.
+  const openInWorkspaceBlockedReason = useMemo(
+    () =>
+      workspaceIsArchived
+        ? t("missionControl.inspector.workspaceArchived")
+        : t("missionControl.inspector.workspaceUnavailable"),
+    [t, workspaceIsArchived],
   );
   // Archived workspace: navigating would dead-end on the missing-workspace
   // redirect, so the affordance degrades — disabled with an explanation
@@ -291,13 +299,16 @@ export function MissionControlInspector({
           <View collapsable={false}>{button}</View>
         </TooltipTrigger>
         <TooltipContent side="bottom" align="end" offset={8}>
-          <Text style={styles.openTooltipText}>
-            {t("missionControl.inspector.workspaceArchived")}
-          </Text>
+          <Text style={styles.openTooltipText}>{openInWorkspaceBlockedReason}</Text>
         </TooltipContent>
       </Tooltip>
     );
-  }, [handleOpenInWorkspace, openInWorkspaceTrailing, t, workspaceArchivedOrMissing]);
+  }, [
+    handleOpenInWorkspace,
+    openInWorkspaceBlockedReason,
+    openInWorkspaceTrailing,
+    workspaceArchivedOrMissing,
+  ]);
 
   // Desktop close: the inspector is an embedded pane, not a navigation — the X
   // clears the inspected agent (target → null unmounts the pane). Width prefs

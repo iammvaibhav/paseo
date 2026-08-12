@@ -31,6 +31,7 @@ import { resolveSessionAgent } from "@/utils/agent-snapshots";
 import { useInspectorStore } from "@/screens/mission-control/inspector-store";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
 import { isVerboseOnlyProposalEvent, ProposalCard } from "./proposal-card";
+import { resolveCardEventAgentServerId } from "./event-inspector-target";
 import { ClarificationCard } from "./clarification-card";
 import { AnswerCard } from "./answer-card";
 import { useLiveTimeAgo } from "@/hooks/use-compact-time-ago";
@@ -175,8 +176,12 @@ function openEventAgent(event: FeedCardEvent): void {
   // proposal) open the VERIFIER's thread in the inspector: verifiers are
   // hidden from board buckets but reachable from their cards, and the thread
   // shows the verifier<->worker exchange plus the pending approval cards.
+  // The serverId resolves the card's agent to its REAL host: a card emitted
+  // on the Commander's host may describe an agent that runs on the host
+  // named by spawnPlan.host (cross-host spawns, see
+  // resolveEventAgentServerId).
   useInspectorStore.getState().openInspectorAgent({
-    serverId: event.serverId,
+    serverId: resolveCardEventAgentServerId(event),
     agentId: event.verifierAgentId ?? event.agentId,
   });
 }

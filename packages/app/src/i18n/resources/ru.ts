@@ -325,6 +325,8 @@ export const ru: TranslationResources = {
       archivedBanner: "Архивирован",
       workspaceArchived:
         "Рабочее пространство этого агента заархивировано, поэтому его нельзя открыть в представлении рабочего пространства.",
+      workspaceUnavailable:
+        "This agent's workspace isn't available on this host, so it cannot be opened in the workspace view.",
     },
     proposal: {
       origin: {

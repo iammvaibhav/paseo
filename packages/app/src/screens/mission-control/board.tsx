@@ -695,10 +695,8 @@ function AgentRowImpl({
     });
   }, [agent.id, agent.serverId]);
 
-  const { isArchivedOrMissing: workspaceArchivedOrMissing } = useWorkspaceOpenState(
-    agent.serverId,
-    agent.workspaceId,
-  );
+  const { isArchived: workspaceIsArchived, isArchivedOrMissing: workspaceArchivedOrMissing } =
+    useWorkspaceOpenState(agent.serverId, agent.workspaceId);
   const handleOpenInWorkspace = useCallback(() => {
     if (workspaceArchivedOrMissing) {
       return;
@@ -763,9 +761,13 @@ function AgentRowImpl({
     () => (isSystemOwned ? menuActions.filter((action) => action !== "archive") : menuActions),
     [isSystemOwned, menuActions],
   );
-  const openBlockedTooltip = workspaceArchivedOrMissing
-    ? t("missionControl.inspector.workspaceArchived")
-    : null;
+  // Why "Open in workspace" is blocked: the workspace is archived ("done"),
+  // or the host's synced directory simply no longer lists it (unavailable) —
+  // distinct copy, an absent workspace is not an archived one.
+  const openBlockedTooltipKey = workspaceIsArchived
+    ? "missionControl.inspector.workspaceArchived"
+    : "missionControl.inspector.workspaceUnavailable";
+  const openBlockedTooltip = workspaceArchivedOrMissing ? t(openBlockedTooltipKey) : null;
 
   return (
     <View

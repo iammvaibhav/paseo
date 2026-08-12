@@ -22,6 +22,7 @@ import {
 } from "./proposal-card-identity";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
 import type { Theme } from "@/styles/theme";
+import { resolveCardEventAgentServerId } from "@/screens/mission-control/event-inspector-target";
 import { useInspectorStore } from "@/screens/mission-control/inspector-store";
 import type { CardRunPosition, FeedCardEvent } from "@/screens/mission-control/feed-card";
 
@@ -470,17 +471,30 @@ export function ProposalCard({
   }, []);
 
   const handleOpenAgent = useCallback(() => {
-    // Prefer the proposal's target agent (worker being nudged/spawned-on);
-    // fall back to the event agent (Commander/system card subject).
-    const agentId = (proposal.targetAgentId?.trim() || event.agentId || "").trim();
+    // The card's subject: for a spawn-kind proposal the SPAWNED agent (the
+    // agent the card created) once executed — commander spawns carry an empty
+    // targetAgentId, so spawnedAgentId is the only way to reach the worker.
+    // Otherwise the proposal's target agent (worker being nudged), falling
+    // back to the event agent (Commander/system card subject).
+    const agentId = (
+      proposal.spawnedAgentId?.trim() ||
+      proposal.targetAgentId?.trim() ||
+      event.agentId ||
+      ""
+    ).trim();
     if (!agentId) {
       return;
     }
+    // Cross-host attribution: the card is emitted on the Commander's host,
+    // but a spawned agent runs on the host named by spawnPlan.host. Resolve
+    // the agent's REAL host so the inspector finds its session/workspace — a
+    // wrong-host lookup reads as "missing" and false-labels the agent
+    // Archived.
     useInspectorStore.getState().openInspectorAgent({
-      serverId: event.serverId,
+      serverId: resolveCardEventAgentServerId(event),
       agentId,
     });
-  }, [event.agentId, event.serverId, proposal.targetAgentId]);
+  }, [event, proposal.spawnedAgentId, proposal.targetAgentId]);
 
   const originIcon = useMemo(() => {
     if (proposal.origin === "verifier") {

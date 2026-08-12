@@ -322,6 +322,8 @@ export const zhCN: TranslationResources = {
     inspector: {
       archivedBanner: "已归档",
       workspaceArchived: "此 Agent 的工作区已归档，无法在工作区视图中打开。",
+      workspaceUnavailable:
+        "This agent's workspace isn't available on this host, so it cannot be opened in the workspace view.",
     },
     proposal: {
       origin: {

@@ -1,4 +1,14 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+// React is imported by name because this file is compiled with the classic JSX
+// transform under vitest; without it the thread cannot mount in tests.
+import React, {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactElement,
+} from "react";
 import { Platform, Pressable, Text, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
@@ -23,6 +33,7 @@ import {
   type StreamViewportHandle,
 } from "@/agent-stream/strategy";
 import { resolveStreamRenderStrategy } from "@/agent-stream/strategy-resolver";
+import { TurnFooter } from "@/agent-stream/turn-footer";
 import {
   AssistantFileLinkResolverProvider,
   normalizeInlinePathTarget,
@@ -33,7 +44,7 @@ import { ToolCallSheetProvider } from "@/components/tool-call-sheet";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import { useHostRuntimeClient, useHosts } from "@/runtime/host-runtime";
 import { useDaemonConfig } from "@/hooks/use-daemon-config";
-import { useSessionStore } from "@/stores/session-store";
+import { selectAgentTurnPresentation, useSessionStore } from "@/stores/session-store";
 import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
 import type { AgentToolCallData, StreamItem } from "@/types/stream";
 import {
@@ -321,6 +332,25 @@ export function MissionControlThread({
   );
   const workspaceRoot = commanderAgent?.cwd?.trim() || "";
 
+  // M1 activity indicator: reuse the workspace agent chat's running-turn
+  // affordance (TurnFooter → SyncedLoader + LiveElapsed) for the Commander.
+  // `selectAgentTurnPresentation(...).isActive` is live while a turn is open
+  // OR a submission is pending — exactly "thinking or running" — and it clears
+  // when the turn ends. Each subscription returns a primitive (boolean /
+  // Date|null), so zustand's Object.is comparison keeps the thread from
+  // re-rendering while the turn streams; the loader animation and the elapsed
+  // tick are self-contained (reanimated UI clock / isolated LiveElapsed timer).
+  const commanderTurnActive = useSessionStore((state) =>
+    commander
+      ? selectAgentTurnPresentation(state.sessions[commander.serverId], commander.agentId).isActive
+      : false,
+  );
+  const commanderTurnStartedAt = useSessionStore((state) =>
+    commander
+      ? selectAgentTurnPresentation(state.sessions[commander.serverId], commander.agentId).startedAt
+      : null,
+  );
+
   const resolveHost = useCommanderHostResolver(commander);
   const toast = useToast();
   const handleInlinePathPress = useStableEvent((target: InlinePathTarget) => {
@@ -572,6 +602,28 @@ export function MissionControlThread({
       return <View style={styles.rowContent}>{row}</View>;
     },
   );
+  // The turn footer renders at the thread's live head (the bottom of the
+  // conversation, directly above the composer) exactly where the workspace
+  // agent chat shows its working indicator. It is normal-mode UI — an
+  // activity affordance, never machinery detail — so it shows regardless of
+  // `verbose`. host={null} keeps the completed-turn fork footer inert: the
+  // Commander thread has no fork surface, and with isRunning set the footer
+  // renders only the shared WorkingIndicator (loader + live elapsed).
+  const turnFooterNode = useMemo(() => {
+    if (!commander || !commanderTurnActive) {
+      return null;
+    }
+    return (
+      <TurnFooter
+        isRunning
+        inFlightTurnStartedAt={commanderTurnStartedAt}
+        host={null}
+        strategy={streamStrategy}
+        supportsTimelineCursor={false}
+      />
+    );
+  }, [commander, commanderTurnActive, commanderTurnStartedAt, streamStrategy]);
+
   const renderers = useMemo<StreamSegmentRenderers<ThreadRow>>(() => {
     // Referenced so the memo re-creates when verbose flips (same pattern as
     // use-aggregated-agents' runtimeVersion): the web strategy memoizes
@@ -579,14 +631,16 @@ export function MissionControlThread({
     // renderers or mounted rows keep the stale gate until new data lands. The
     // stable event ref already points at this render's closure, so re-created
     // renderers render with the fresh verbose value immediately — no remount.
+    // `turnFooterNode` is in the deps so the live-head working indicator
+    // mounts/unmounts exactly when the Commander's turn opens/closes.
     void verbose;
     return {
       renderHistoryVirtualizedRow: (item, index, items) => renderThreadRow(item, index, items),
       renderHistoryMountedRow: (item, index, items) => renderThreadRow(item, index, items),
       renderLiveHeadRow: (item, index, items) => renderThreadRow(item, index, items),
-      renderLiveAuxiliary: () => null,
+      renderLiveAuxiliary: () => turnFooterNode,
     };
-  }, [renderThreadRow, verbose]);
+  }, [renderThreadRow, turnFooterNode, verbose]);
 
   const keyExtractor = useCallback((row: ThreadRow) => {
     return row.kind === "event" ? `event:${row.event.id}` : `cmd:${row.item.id}`;
