@@ -82,6 +82,7 @@ import {
 } from "../agent-prompt.js";
 import { buildAgentPrompt, renderPromptAttachmentAsText } from "../prompt-attachments.js";
 import { resolveCommanderUserMessage } from "../../mission-control/tagging.js";
+import { stripAgentNamePrefix } from "../../mission-control/spawn-title.js";
 import { respondToAgentPermission } from "../permission-response.js";
 import {
   archiveAgentCommand,
@@ -870,7 +871,9 @@ function buildCommanderSpawnPlan(input: CommanderSpawnPlanInput): MissionControl
     host,
     provider,
     ...(model ? { model } : {}),
-    ...(title ? { title } : {}),
+    // The daemon owns agent identity; a name the Commander prefixed onto the
+    // title would show up beside the assigned chip as a second name.
+    ...(title ? { title: stripAgentNamePrefix(title) ?? title } : {}),
     summary,
     ...(initialPrompt ? { initialPrompt } : {}),
     ...(cwd ? { cwd } : {}),

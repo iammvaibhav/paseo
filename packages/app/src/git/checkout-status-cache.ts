@@ -32,6 +32,14 @@ export async function fetchCheckoutStatus({
 }): Promise<CheckoutStatusPayload> {
   const payload = await client.getCheckoutStatus(cwd);
   expireStaleDiffModeOverrides({ serverId, cwd, isDirty: payload.isGit && payload.isDirty });
+  if (payload.error) {
+    // The daemon reports a transient snapshot failure (busy git, cold target,
+    // index lock) as a successful payload with `error` set. Throw instead of
+    // caching it: React Query then retries with backoff and keeps the last
+    // known-good status, so the workspace header actions (Create PR, open in
+    // editor, ...) don't get disabled until the next push or reconnect.
+    throw new Error(payload.error.message);
+  }
   return payload;
 }
 
