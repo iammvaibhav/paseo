@@ -137,9 +137,12 @@ class VoiceSession {
             speechConfig: {
               voiceConfig: { prebuiltVoiceConfig: { voiceName: this.config.voiceName } },
             },
-            contextWindowCompression: {
-              slidingWindow: {},
-            },
+          },
+          // Top-level setup field; Gemini rejects it under generation_config
+          // with 1007 "Cannot find field" (docs: BidiGenerateContentSetup has
+          // contextWindowCompression as a sibling of generationConfig).
+          contextWindowCompression: {
+            slidingWindow: {},
           },
           systemInstruction: { parts: [{ text: this.systemInstruction }] },
           tools: [{ functionDeclarations: getToolDeclarations(this.voiceMode) }],
