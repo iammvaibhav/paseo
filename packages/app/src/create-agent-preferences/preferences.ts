@@ -44,9 +44,10 @@ const selectionScopeSchema = z.object({
   // Last isolation choice for this project (New workspace form). Global
   // `isolation` remains the cross-project fallback for older data / no scope.
   isolation: z.enum(["local", "worktree"]).optional(),
-  // Per-project model preference for the selection Ask popover. Lives under
-  // the project scope so every project remembers its own Ask model; there is
-  // deliberately no global fallback (the source agent's model seeds defaults).
+  // Model preference for the selection Ask popover. Lives under every
+  // applicable scope (workspace, project, global) and resolves workspace >
+  // project > global, matching composer persistence. The source agent's model
+  // seeds the popover only when no scope has a remembered choice.
   selectionAsk: selectionAskSchema.optional(),
 });
 
@@ -72,6 +73,9 @@ const formPreferencesSchema = z.object({
   isolation: z.enum(["local", "worktree"]).optional(),
   byWorkspace: z.record(z.string(), selectionScopeSchema).optional(),
   byProject: z.record(z.string(), selectionScopeSchema).optional(),
+  // Global fallback for the selection Ask popover model; used when no
+  // workspace or project scope has a remembered choice.
+  selectionAsk: selectionAskSchema.optional(),
   // What the New workspace composer submits to: the chat agent (default) or a
   // terminal profile. See `@/new-workspace-launch` for resolution/fallback.
   launchTarget: launchTargetSchema.optional(),
@@ -269,9 +273,11 @@ function applySelectionAskField(
 }
 
 /**
- * Remember the selection Ask model choice for a project. Absent fields are
- * preserved from any existing choice; a field passed as an empty string clears
- * that stored field.
+ * Remember the selection Ask model choice across every applicable scope,
+ * matching composer persistence: workspace (when known), project (when
+ * known), and the global fallback. Absent fields are preserved from any
+ * existing choice; a field passed as an empty string clears that stored field
+ * in every scope it lands in.
  */
 export function mergeSelectionAskPreference(args: {
   preferences: FormPreferences;
@@ -279,41 +285,76 @@ export function mergeSelectionAskPreference(args: {
   scope?: FormPreferenceScope | null;
 }): FormPreferences {
   const { preferences, selectionAsk } = args;
-  const { projectKey } = normalizeFormPreferenceScope(args.scope);
-  if (!projectKey) {
-    return preferences;
-  }
-  const existing = preferences.byProject?.[projectKey];
-  const next: SelectionAskModelPreference = { ...existing?.selectionAsk };
-  applySelectionAskField(next, "provider", selectionAsk.provider);
-  applySelectionAskField(next, "model", selectionAsk.model);
-  applySelectionAskField(next, "thinkingOptionId", selectionAsk.thinkingOptionId);
-  return {
+  const { workspaceId, projectKey } = normalizeFormPreferenceScope(args.scope);
+
+  const globalNext: SelectionAskModelPreference = { ...preferences.selectionAsk };
+  applySelectionAskField(globalNext, "provider", selectionAsk.provider);
+  applySelectionAskField(globalNext, "model", selectionAsk.model);
+  applySelectionAskField(globalNext, "thinkingOptionId", selectionAsk.thinkingOptionId);
+
+  let next: FormPreferences = {
     ...preferences,
-    byProject: {
-      ...preferences.byProject,
-      [projectKey]: {
-        ...existing,
-        selectionAsk: next,
-      },
-    },
+    selectionAsk: globalNext,
   };
+
+  if (projectKey) {
+    const existing = next.byProject?.[projectKey];
+    const projectNext: SelectionAskModelPreference = { ...existing?.selectionAsk };
+    applySelectionAskField(projectNext, "provider", selectionAsk.provider);
+    applySelectionAskField(projectNext, "model", selectionAsk.model);
+    applySelectionAskField(projectNext, "thinkingOptionId", selectionAsk.thinkingOptionId);
+    next = {
+      ...next,
+      byProject: {
+        ...next.byProject,
+        [projectKey]: {
+          ...existing,
+          selectionAsk: projectNext,
+        },
+      },
+    };
+  }
+
+  if (workspaceId) {
+    const existing = next.byWorkspace?.[workspaceId];
+    const workspaceNext: SelectionAskModelPreference = { ...existing?.selectionAsk };
+    applySelectionAskField(workspaceNext, "provider", selectionAsk.provider);
+    applySelectionAskField(workspaceNext, "model", selectionAsk.model);
+    applySelectionAskField(workspaceNext, "thinkingOptionId", selectionAsk.thinkingOptionId);
+    next = {
+      ...next,
+      byWorkspace: {
+        ...next.byWorkspace,
+        [workspaceId]: {
+          ...existing,
+          selectionAsk: workspaceNext,
+        },
+      },
+    };
+  }
+
+  return next;
 }
 
 /**
- * Resolve the remembered selection Ask model for a project. Falls back to the
- * global provider/model selection when the project has no Ask-specific choice,
- * so a user who never touched the popover still gets a sensible model.
+ * Resolve the remembered selection Ask model for a workspace/project. Order:
+ * workspace → project → global (matches resolveEffectiveFormPreferences). The
+ * global fallback is the last resort, so a user who never touched the popover
+ * in a scope still gets a sensible model.
  */
 export function resolveEffectiveSelectionAskPreference(
   preferences: FormPreferences,
   scope?: FormPreferenceScope | null,
 ): SelectionAskModelPreference {
-  const { projectKey } = normalizeFormPreferenceScope(scope);
-  if (!projectKey) {
-    return {};
-  }
-  return preferences.byProject?.[projectKey]?.selectionAsk ?? {};
+  const { workspaceId, projectKey } = normalizeFormPreferenceScope(scope);
+  const workspaceSelection = workspaceId ? preferences.byWorkspace?.[workspaceId] : undefined;
+  const projectSelection = projectKey ? preferences.byProject?.[projectKey] : undefined;
+  return (
+    workspaceSelection?.selectionAsk ??
+    projectSelection?.selectionAsk ??
+    preferences.selectionAsk ??
+    {}
+  );
 }
 
 /**

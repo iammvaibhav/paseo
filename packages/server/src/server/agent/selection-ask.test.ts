@@ -16,7 +16,7 @@ describe("buildSelectionAskPrompt", () => {
     });
 
     expect(prompt).toBe(
-      `This is a side ask from a selection in the parent chat. Only answer and make no changes unless the user asks to.\n\n> const x = 10;\n\n....\nWhat does this variable do?`,
+      `You are answering a side ask about a selection from the parent chat.\nOnly answer the question. Do not make any changes unless the user explicitly asks you to.\n\nSelected text from the parent chat:\n> const x = 10;\n\nQuestion about that selection:\nWhat does this variable do?`,
     );
   });
 
@@ -27,7 +27,7 @@ describe("buildSelectionAskPrompt", () => {
     });
 
     expect(prompt).toBe(
-      `This is a side ask from a selection in the parent chat. Only answer and make no changes unless the user asks to.\n\n> function foo() {\n>   return 42;\n> }\n\n....\nCan you explain this function?`,
+      `You are answering a side ask about a selection from the parent chat.\nOnly answer the question. Do not make any changes unless the user explicitly asks you to.\n\nSelected text from the parent chat:\n> function foo() {\n>   return 42;\n> }\n\nQuestion about that selection:\nCan you explain this function?`,
     );
   });
 });

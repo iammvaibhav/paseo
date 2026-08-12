@@ -11,7 +11,7 @@ import {
   resolveEffectiveSelectionAskPreference,
   type SelectionAskModelPreference,
 } from "@/create-agent-preferences/preferences";
-import { createAgentPreferencesService } from "@/create-agent-preferences/service";
+import { useFormPreferences } from "@/hooks/use-form-preferences";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { buildSelectableProviderSelectorProviders } from "@/provider-selection/provider-selection";
 import { getHostRuntimeStore, useHostRuntimeClient } from "@/runtime/host-runtime";
@@ -185,7 +185,10 @@ export function useSelectionAsk(config: SelectionAskConfig): SelectionAskState {
   const [selectedProvider, setSelectedProvider] = useState("");
   const [selectedModel, setSelectedModel] = useState("");
   const [selectedThinkingOptionId, setSelectedThinkingOptionId] = useState<string | null>(null);
-  const seededPrefsRef = useRef(false);
+  // Scope key the model selection was last seeded for. Re-seeding happens once
+  // per scope so a late-arriving workspaceId/projectKey is honored, while a
+  // later preference update never clobbers the in-popover choice.
+  const seededPrefsScopeRef = useRef<string | null>(null);
   const selectionRangeRef = useRef<Range | null>(null);
   // The source-chat selection captured when the ask was started, restored on
   // reopen so the popover can offer "Jump to chat". Distinct from
@@ -209,33 +212,40 @@ export function useSelectionAsk(config: SelectionAskConfig): SelectionAskState {
     }),
     [config.projectKey, config.workspaceId],
   );
+  const preferenceScopeKey = `${preferenceScope.workspaceId ?? ""}\u0000${preferenceScope.projectKey ?? ""}`;
 
-  // Seed the model selection once: remembered per-project choice wins over the
-  // source agent's current model.
+  const { preferences, isLoading: isPreferencesLoading, updatePreferences } = useFormPreferences();
+
+  // Seed the model selection once per scope: the remembered choice
+  // (workspace > project > global) wins over the source agent's current
+  // model. Waiting for the reactive preferences to load keeps the remembered
+  // model from being skipped while the query is still in flight, and seeding
+  // again when the scope key changes honors a workspaceId/projectKey that
+  // arrives after mount instead of locking in an empty-scope default.
   useEffect(() => {
-    if (seededPrefsRef.current) {
+    if (isPreferencesLoading || seededPrefsScopeRef.current === preferenceScopeKey) {
       return;
     }
-    seededPrefsRef.current = true;
-    void createAgentPreferencesService.load().then((preferences) => {
-      const remembered = resolveEffectiveSelectionAskPreference(preferences, preferenceScope);
-      setSelectedProvider(remembered.provider ?? config.defaultProvider ?? "");
-      setSelectedModel(remembered.model ?? config.defaultModel ?? "");
-      setSelectedThinkingOptionId(
-        remembered.thinkingOptionId ?? config.defaultThinkingOptionId ?? null,
-      );
-      return undefined;
-    });
+    seededPrefsScopeRef.current = preferenceScopeKey;
+    const remembered = resolveEffectiveSelectionAskPreference(preferences, preferenceScope);
+    setSelectedProvider(remembered.provider ?? config.defaultProvider ?? "");
+    setSelectedModel(remembered.model ?? config.defaultModel ?? "");
+    setSelectedThinkingOptionId(
+      remembered.thinkingOptionId ?? config.defaultThinkingOptionId ?? null,
+    );
   }, [
     config.defaultModel,
     config.defaultProvider,
     config.defaultThinkingOptionId,
+    isPreferencesLoading,
     preferenceScope,
+    preferenceScopeKey,
+    preferences,
   ]);
 
   const persistSelectionAskPreference = useCallback(
     (next: SelectionAskModelPreference) => {
-      void createAgentPreferencesService.update((current) =>
+      void updatePreferences((current) =>
         mergeSelectionAskPreference({
           preferences: current,
           selectionAsk: next,
@@ -243,7 +253,7 @@ export function useSelectionAsk(config: SelectionAskConfig): SelectionAskState {
         }),
       );
     },
-    [preferenceScope],
+    [preferenceScope, updatePreferences],
   );
 
   const handleSelectModel = useCallback(
@@ -575,9 +585,11 @@ export function useSelectionAsk(config: SelectionAskConfig): SelectionAskState {
     if (!askAgentId) {
       return;
     }
-    navigateToAgent({ serverId: config.serverId, agentId: askAgentId });
-    // The popover's job is done once the ask opens as a real tab.
+    // Dismiss before navigating: the popover's job is done once the ask opens
+    // as a real tab, and dismissing first guarantees the host is torn down
+    // (timeline subscription released) even if the route change unmounts it.
     dismiss();
+    navigateToAgent({ serverId: config.serverId, agentId: askAgentId });
   }, [askAgentId, config.serverId, dismiss]);
 
   const askAgent = useSessionStore((state) =>

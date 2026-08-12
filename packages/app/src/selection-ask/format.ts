@@ -1,10 +1,12 @@
 /**
  * Pure formatting helpers for the selection Ask feature.
  *
- * The quote block is the `> …` blockquote form of the selected markdown; the
- * `....` divider separates the quote from the user's own words in both the
- * composer block and the side-ask first prompt. Kept DOM-free so the exact
- * strings are unit-testable.
+ * The quote block is the `> …` blockquote form of the selected markdown. The
+ * composer block separates quote and comment with a `....` divider; the
+ * side-ask first prompt instead labels each part ("Selected text from the
+ * parent chat:" / "Question about that selection:") so the model can tell the
+ * selection from the question. Kept DOM-free so the exact strings are
+ * unit-testable.
  */
 
 import type { AssistantMessageItem, StreamItem } from "@/types/stream";
@@ -81,7 +83,12 @@ export function buildAskThreadMessages(
 }
 
 export const SELECTION_ASK_INTRO =
-  "This is a side ask from a selection in the parent chat. Only answer and make no changes unless the user asks to.";
+  "You are answering a side ask about a selection from the parent chat.\n" +
+  "Only answer the question. Do not make any changes unless the user explicitly asks you to.";
+
+/** Appended when a selection exists but no question was provided yet. */
+export const SELECTION_ASK_NO_QUESTION =
+  "No question yet. Answer based on the selection alone, or wait for the user to ask a question about it.";
 
 /** Title length cap, matching the server's derived-title clamp. */
 const MAX_SELECTION_ASK_TITLE_CHARS = 60;
@@ -147,26 +154,32 @@ export function buildSelectionAskBlock(input: { selection: string; comment?: str
 /**
  * The first prompt a side-ask agent runs with:
  *
- *     This is a side ask from a selection in the parent chat. Only answer and
- *     make no changes unless the user asks to.
+ *     You are answering a side ask about a selection from the parent chat.
+ *     Only answer the question. Do not make any changes unless the user
+ *     explicitly asks you to.
  *
+ *     Selected text from the parent chat:
  *     > selection
  *
- *     ....
+ *     Question about that selection:
  *     question
  *
- * Question and selection are each optional; every non-empty part keeps its
- * place so the prompt reads naturally with whatever the user supplied.
+ * Selection and question are each optional and each labeled, so the model can
+ * tell the quoted source text apart from the user's question. A selection
+ * without a question gets a note telling the model to answer from the
+ * selection alone or wait for the question.
  */
 export function buildSelectionAskPrompt(input: { selection: string; question?: string }): string {
   const quote = quoteSelection(input.selection);
   const question = input.question?.trim() ?? "";
   const parts = [SELECTION_ASK_INTRO];
   if (quote) {
-    parts.push(quote);
+    parts.push(`Selected text from the parent chat:\n${quote}`);
   }
   if (question) {
-    parts.push(quote ? `....\n${question}` : question);
+    parts.push(`Question about that selection:\n${question}`);
+  } else if (quote) {
+    parts.push(SELECTION_ASK_NO_QUESTION);
   }
   return parts.join("\n\n");
 }
