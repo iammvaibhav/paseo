@@ -18,12 +18,14 @@ import {
   MessageSquareQuote,
   X,
 } from "lucide-react-native";
+import { usePathname } from "expo-router";
 import type { AgentProvider } from "@getpaseo/protocol/agent-types";
 import { createAssistantSelectionClipboardContent } from "@/assistant-selection-copy/content.web";
 import { CombinedModelSelector } from "@/components/combined-model-selector";
 import { Button } from "@/components/ui/button";
 import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
 import { getOverlayRoot, OVERLAY_Z } from "@/lib/overlay-root";
+import { usePaneFocus } from "@/panels/pane-context";
 import { MarkdownRenderer } from "@/components/markdown/renderer";
 import { SyncedLoader } from "@/components/synced-loader";
 import type { Theme } from "@/styles/theme";
@@ -88,6 +90,27 @@ function SelectionAskPopoverHostInner({
   // outside pointerdowns must not dismiss the popover — the overlay's own
   // backdrop handles clicks outside it first.
   const internalOverlayOpenRef = useRef(0);
+  // True while this host's popover is actually open. Every dismiss path is
+  // guarded by it: dismissing a closed popover would still clear the shared
+  // selection-ask timeline source, wiping a sibling host's open popover (e.g.
+  // two agent tabs in a split view).
+  const popoverOpenRef = useRef(false);
+  popoverOpenRef.current = ask.anchorRect !== null;
+  // Focus tracking for the focusin net: remembers whether focus was last seen
+  // inside the popover, so focus leaving it (Tab, focus restore, clicking a
+  // non-focusable surface outside) dismisses while portaled internal overlays
+  // never do.
+  const focusInsidePopoverRef = useRef(false);
+  const wasPaneFocusedRef = useRef(false);
+  const previousPathnameRef = useRef<string | null>(null);
+
+  // The popover is anchored to a workspace pane; the pane-focus context is the
+  // same source agent-panel reads (`isInteractive`). Dismissing on the focused
+  // -> unfocused transition covers clicking another pane, switching tabs, and
+  // the workspace route losing focus. Clicking inside the portaled popover
+  // never changes pane focus, so this only fires on genuine focus loss.
+  const { isInteractive } = usePaneFocus();
+  const pathname = usePathname();
 
   const handleInternalOverlayOpenChange = useCallback((open: boolean) => {
     internalOverlayOpenRef.current = Math.max(0, internalOverlayOpenRef.current + (open ? 1 : -1));
@@ -118,7 +141,7 @@ function SelectionAskPopoverHostInner({
   // the popover (comment input, model selector) never dismisses.
   const handlePointerDown = useCallback(
     (event: PointerEvent) => {
-      if (internalOverlayOpenRef.current > 0) {
+      if (!popoverOpenRef.current || internalOverlayOpenRef.current > 0) {
         return;
       }
       const popoverElement = popoverRef.current;
@@ -132,9 +155,50 @@ function SelectionAskPopoverHostInner({
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (event.key === "Escape" && popoverOpenRef.current) {
         ask.dismiss();
       }
+    },
+    [ask],
+  );
+
+  // Dismiss when the window loses focus (switching apps, clicking browser
+  // chrome) and when the tab becomes hidden (new tab, minimized).
+  const handleWindowBlur = useCallback(() => {
+    if (popoverOpenRef.current) {
+      ask.dismiss();
+    }
+  }, [ask]);
+
+  const handleVisibilityChange = useCallback(() => {
+    if (document.visibilityState === "hidden" && popoverOpenRef.current) {
+      ask.dismiss();
+    }
+  }, [ask]);
+
+  // Net for dismissals pointerdown misses: focus moving out of the popover via
+  // keyboard or programmatic focus changes. Focus inside the popover arms the
+  // check; focus handed to a popover-internal overlay disarms it (the overlay
+  // owns focus while open and its backdrop handles outside clicks).
+  const handleFocusIn = useCallback(
+    (event: FocusEvent) => {
+      const popoverElement = popoverRef.current;
+      const targetInside =
+        popoverElement !== null &&
+        event.target instanceof Node &&
+        popoverElement.contains(event.target);
+      if (targetInside) {
+        focusInsidePopoverRef.current = true;
+        return;
+      }
+      if (internalOverlayOpenRef.current > 0) {
+        focusInsidePopoverRef.current = false;
+        return;
+      }
+      if (focusInsidePopoverRef.current && popoverOpenRef.current) {
+        ask.dismiss();
+      }
+      focusInsidePopoverRef.current = false;
     },
     [ask],
   );
@@ -154,15 +218,63 @@ function SelectionAskPopoverHostInner({
     window.addEventListener("pointerdown", handlePointerDown, true);
     window.addEventListener("mouseup", handleMouseUp, true);
     window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("blur", handleWindowBlur);
+    window.addEventListener("focusin", handleFocusIn, true);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       window.removeEventListener("pointerdown", handlePointerDown, true);
       window.removeEventListener("mouseup", handleMouseUp, true);
       window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("blur", handleWindowBlur);
+      window.removeEventListener("focusin", handleFocusIn, true);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       if (scrollFrameRef.current !== null) {
         cancelAnimationFrame(scrollFrameRef.current);
       }
     };
-  }, [handleKeyDown, handleMouseUp, handlePointerDown]);
+  }, [
+    handleFocusIn,
+    handleKeyDown,
+    handleMouseUp,
+    handlePointerDown,
+    handleVisibilityChange,
+    handleWindowBlur,
+  ]);
+
+  // Dismiss when the pane/workspace the popover is anchored to loses focus.
+  useEffect(() => {
+    const wasFocused = wasPaneFocusedRef.current;
+    wasPaneFocusedRef.current = isInteractive;
+    if (wasFocused && !isInteractive && popoverOpenRef.current) {
+      ask.dismiss();
+    }
+  }, [ask, isInteractive]);
+
+  // Dismiss on any route change (open-in-tab, sidebar, workspace switch,
+  // browser back/forward) — expo-router re-renders this host with the new
+  // pathname. The openInTab button dismisses first, so by the time the route
+  // lands the popover is already closed and this is a no-op.
+  useEffect(() => {
+    if (previousPathnameRef.current === null) {
+      previousPathnameRef.current = pathname;
+      return;
+    }
+    if (previousPathnameRef.current !== pathname) {
+      previousPathnameRef.current = pathname;
+      if (popoverOpenRef.current) {
+        ask.dismiss();
+      }
+    }
+  }, [ask, pathname]);
+
+  // A closed popover must not inherit stale "focus was inside" state — e.g.
+  // reopened in answer mode (no autofocus), where the next outside focusin
+  // would otherwise count as a focus-leave and dismiss immediately.
+  useEffect(() => {
+    if (!ask.anchorRect) {
+      focusInsidePopoverRef.current = false;
+    }
+  }, [ask.anchorRect]);
 
   useEffect(() => {
     const container = containerRef.current;

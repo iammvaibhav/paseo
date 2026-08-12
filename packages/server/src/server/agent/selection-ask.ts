@@ -15,16 +15,20 @@ export interface BuildSelectionAskLabelsInput {
 
 export function buildSelectionAskPrompt(input: BuildSelectionAskPromptInput): string {
   const quotedSelection = input.selection
+    .trim()
     .split("\n")
     .map((line) => `> ${line}`)
     .join("\n");
 
-  return `This is a side ask from a selection in the parent chat. Only answer and make no changes unless the user asks to.
-
-${quotedSelection}
-
-....
-${input.question}`;
+  const parts = [
+    `You are answering a side ask about a selection from the parent chat.
+Only answer the question. Do not make any changes unless the user explicitly asks you to.`,
+  ];
+  if (quotedSelection) {
+    parts.push(`Selected text from the parent chat:\n${quotedSelection}`);
+  }
+  parts.push(`Question about that selection:\n${input.question}`);
+  return parts.join("\n\n");
 }
 
 export function buildSelectionAskLabels(

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { StreamItem } from "@/types/stream";
 import {
   SELECTION_ASK_INTRO,
+  SELECTION_ASK_NO_QUESTION,
   buildAskThreadMessages,
   buildSelectionAskBlock,
   buildSelectionAskPrompt,
@@ -69,24 +70,28 @@ describe("buildSelectionAskBlock", () => {
 });
 
 describe("buildSelectionAskPrompt", () => {
-  it("builds the full side-ask prompt with intro, quote, divider, and question", () => {
+  it("builds the full side-ask prompt with intro, labeled selection, and labeled question", () => {
     const prompt = buildSelectionAskPrompt({ selection: "the selected part", question: "why?" });
-    expect(prompt).toBe(`${SELECTION_ASK_INTRO}\n\n> the selected part\n\n....\nwhy?`);
+    expect(prompt).toBe(
+      `${SELECTION_ASK_INTRO}\n\nSelected text from the parent chat:\n> the selected part\n\nQuestion about that selection:\nwhy?`,
+    );
   });
 
-  it("keeps the intro and quote when the question is blank", () => {
+  it("labels the selection and notes the missing question when the question is blank", () => {
     const prompt = buildSelectionAskPrompt({ selection: "the selected part" });
-    expect(prompt).toBe(`${SELECTION_ASK_INTRO}\n\n> the selected part`);
+    expect(prompt).toBe(
+      `${SELECTION_ASK_INTRO}\n\nSelected text from the parent chat:\n> the selected part\n\n${SELECTION_ASK_NO_QUESTION}`,
+    );
   });
 
-  it("keeps the intro and question when the selection is blank", () => {
+  it("keeps the intro and labeled question when the selection is blank", () => {
     const prompt = buildSelectionAskPrompt({ selection: "", question: "just asking" });
-    expect(prompt).toBe(`${SELECTION_ASK_INTRO}\n\njust asking`);
+    expect(prompt).toBe(`${SELECTION_ASK_INTRO}\n\nQuestion about that selection:\njust asking`);
   });
 
   it("trims the question", () => {
     const prompt = buildSelectionAskPrompt({ selection: "s", question: "  why?  " });
-    expect(prompt).toContain("\n....\nwhy?");
+    expect(prompt).toContain("\nQuestion about that selection:\nwhy?");
   });
 });
 
