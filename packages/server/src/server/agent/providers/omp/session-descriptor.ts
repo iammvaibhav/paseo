@@ -1,5 +1,6 @@
+import { randomUUID } from "node:crypto";
 import type { Dirent } from "node:fs";
-import { open, readdir, readFile, stat } from "node:fs/promises";
+import { copyFile, open, readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -477,6 +478,20 @@ function extractMessageText(content: unknown): string | null {
     .join("\n\n")
     .trim();
   return text || null;
+}
+
+/**
+ * Clone an OMP session JSONL to a fresh, uniquely-named file in the same
+ * directory, using omp's own session naming convention (`<stamp>_<uuid>.jsonl`).
+ * Used to fork an agent without touching the source's session file: the copy
+ * owns the fork's history, and omp appends to it from then on. The source file
+ * must already exist; callers resolve it first (see {@link resolveOmpSessionFile}).
+ */
+export async function cloneOmpSessionFile(sessionFile: string): Promise<string> {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const clonePath = path.join(path.dirname(sessionFile), `${stamp}_${randomUUID()}.jsonl`);
+  await copyFile(sessionFile, clonePath);
+  return clonePath;
 }
 
 /**

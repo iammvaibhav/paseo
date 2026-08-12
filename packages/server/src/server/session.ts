@@ -7925,6 +7925,7 @@ export class Session {
               },
             }
           : {}),
+        ...(msg.labels ? { labels: msg.labels } : {}),
         ...(msg.overrides ? { overrides: msg.overrides } : {}),
         logger: this.sessionLogger,
       });
@@ -7938,9 +7939,10 @@ export class Session {
           requestId: msg.requestId,
           sourceAgentId: msg.sourceAgentId,
           agentId: result.agentId,
-          // Fork is always a chat-history snapshot now; the field stays on the
-          // wire for old clients that read it.
-          strategy: "snapshot",
+          // "native" cloned the provider's session file and resumed from the
+          // copy; "snapshot" rendered the daemon timeline into a chat-history
+          // attachment. The field stays on the wire for old clients either way.
+          strategy: result.strategy,
           agent: snapshot ? await this.buildAgentPayload(snapshot) : null,
           error: null,
         },

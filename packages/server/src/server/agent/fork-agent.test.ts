@@ -1,3 +1,7 @@
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
 import { expect, test, vi } from "vitest";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
@@ -6,6 +10,7 @@ import { AgentStorage } from "./agent-storage.js";
 import { forkAgentToSibling } from "./fork-agent.js";
 import { wrapSessionProvider } from "./provider-registry.js";
 import type {
+  AgentPersistenceHandle,
   AgentPromptInput,
   AgentSession,
   AgentSessionConfig,
@@ -45,15 +50,36 @@ function timelineRow(seq: number, item: AgentTimelineItem): AgentTimelineRow {
   return { seq, timestamp: `2026-07-30T10:20:3${seq}.400Z`, item };
 }
 
-function createForkScenario() {
+/** A real OMP session JSONL on disk (large enough to not read as a stub). */
+function createSessionFile(fileName: string): string {
+  const dir = mkdtempSync(path.join(tmpdir(), "fork-agent-omp-"));
+  const file = path.join(dir, fileName);
+  const sessionLine = JSON.stringify({
+    type: "session",
+    id: "omp-session-1",
+    cwd: "/tmp/project",
+    timestamp: "2026-08-12T00:00:00.000Z",
+  });
+  writeFileSync(file, sessionLine + "\n" + "x".repeat(3000) + "\n");
+  return file;
+}
+
+function createForkScenario(options?: {
+  provider?: string;
+  persistence?: AgentPersistenceHandle | null;
+  currentModeId?: string | null;
+}) {
+  const provider = options?.provider ?? "omp";
   const source: ManagedAgent = Object.create(null);
   Reflect.set(source, "id", "source-agent");
-  Reflect.set(source, "provider", "omp");
+  Reflect.set(source, "provider", provider);
   Reflect.set(source, "lifecycle", "running");
   Reflect.set(source, "cwd", "/tmp/project");
   Reflect.set(source, "workspaceId", "wks_1");
+  Reflect.set(source, "labels", { surface: "workspace" });
+  Reflect.set(source, "currentModeId", options?.currentModeId ?? "omp-build");
   Reflect.set(source, "config", {
-    provider: "omp",
+    provider,
     cwd: "/tmp/project",
     title: "Source",
     systemPrompt: "be terse",
@@ -63,10 +89,11 @@ function createForkScenario() {
     providerOptions: { approval_policy: "never", fallbackModel: "sonnet" },
   });
   Reflect.set(source, "session", createWrappedSourceSession());
+  Reflect.set(source, "persistence", options?.persistence ?? null);
 
   const forked: ManagedAgent = Object.create(null);
   Reflect.set(forked, "id", "forked-agent");
-  Reflect.set(forked, "provider", "omp");
+  Reflect.set(forked, "provider", provider);
   Reflect.set(forked, "lifecycle", "idle");
 
   const resumeAgentFromPersistence = vi.fn(async () => forked);
@@ -113,13 +140,14 @@ function createForkScenario() {
   );
 
   return {
-    fork: (overrides?: Partial<AgentSessionConfig>) =>
+    fork: (overrides?: Partial<AgentSessionConfig>, labels?: Record<string, string>) =>
       forkAgentToSibling({
         agentManager,
         agentStorage,
         sourceAgentId: "source-agent",
         text: "continue from here",
         ...(overrides ? { overrides } : {}),
+        ...(labels ? { labels } : {}),
         logger: createTestLogger(),
       }),
     firstTurnPrompt: (): AgentPromptInput => streamAgent.mock.calls[0]?.[1] as AgentPromptInput,
@@ -128,21 +156,24 @@ function createForkScenario() {
   };
 }
 
-test("forks into a brand-new agent in the source's workspace", async () => {
+test("forks into a brand-new agent in the source's workspace via snapshot without persistence", async () => {
   const scenario = createForkScenario();
 
-  await expect(scenario.fork()).resolves.toEqual({ agentId: "forked-agent" });
+  await expect(scenario.fork()).resolves.toEqual({
+    agentId: "forked-agent",
+    strategy: "snapshot",
+  });
   expect(scenario.createAgent).toHaveBeenCalledWith(
     expect.objectContaining({ provider: "omp", cwd: "/tmp/project", internal: false }),
     undefined,
     expect.objectContaining({ workspaceId: "wks_1" }),
   );
-  // A fork never resumes or branches the provider-side session: the history
-  // travels as an attachment, so nothing depends on a provider fork primitive.
+  // Without a durable provider session file, the history travels as an
+  // attachment: nothing depends on a provider fork primitive.
   expect(scenario.resumeAgentFromPersistence).not.toHaveBeenCalled();
 });
 
-test("carries the source's chat history on the fork's first turn", async () => {
+test("carries the source's chat history on the fork's first turn via snapshot", async () => {
   const scenario = createForkScenario();
 
   await scenario.fork();
@@ -191,4 +222,156 @@ test("drops provider-specific config when the fork switches provider", async () 
   // OMP's model/mode/thinking and providerOptions would be nonsense here.
   expect(config.thinkingOptionId).toBeUndefined();
   expect(config.providerOptions).toBeUndefined();
+});
+
+test("forks an OMP source with a session file by cloning and resuming natively", async () => {
+  const sessionFile = createSessionFile(
+    "2026-08-12T00-00-00-000Z_019f0000-0000-7000-8000-000000000001.jsonl",
+  );
+  const scenario = createForkScenario({
+    persistence: { provider: "omp", sessionId: "omp-session-1", nativeHandle: sessionFile },
+  });
+
+  await expect(scenario.fork()).resolves.toEqual({
+    agentId: "forked-agent",
+    strategy: "native",
+  });
+
+  // The fork resumes from a COPY of the source's session file...
+  expect(scenario.resumeAgentFromPersistence).toHaveBeenCalledTimes(1);
+  const [handle, overrides, agentId, options] = scenario.resumeAgentFromPersistence.mock
+    .calls[0] as unknown as [
+    AgentPersistenceHandle,
+    Partial<AgentSessionConfig>,
+    string | undefined,
+    { workspaceId?: string; initialTitle?: string | null; labels?: Record<string, string> },
+  ];
+  expect(handle.provider).toBe("omp");
+  expect(handle.sessionId).toBe("omp-session-1");
+  expect(handle.nativeHandle).not.toBe(sessionFile);
+  expect(handle.nativeHandle).toMatch(/\.jsonl$/);
+  expect(handle.nativeHandle).toBeDefined();
+  // ...and the copy is a real, identical session file that owns the fork's history.
+  expect(existsSync(handle.nativeHandle as string)).toBe(true);
+  expect(readFileSync(handle.nativeHandle as string)).toEqual(readFileSync(sessionFile));
+  expect(handle.metadata).toMatchObject({
+    cwd: "/tmp/project",
+    model: "omp/default",
+    modeId: "omp-build",
+    thinkingOptionId: "omp-high",
+    systemPrompt: "be terse",
+  });
+  expect(overrides).toMatchObject({
+    provider: "omp",
+    cwd: "/tmp/project",
+    model: "omp/default",
+    thinkingOptionId: "omp-high",
+    modeId: "omp-build",
+    internal: false,
+    title: "continue from here",
+  });
+  expect(agentId).toBeUndefined();
+  expect(options).toMatchObject({
+    workspaceId: "wks_1",
+    initialTitle: "continue from here",
+  });
+  expect(options.labels).toBeUndefined();
+
+  // The native path never creates a fresh session and the first turn is only
+  // the caller's text — no chat-history attachment.
+  expect(scenario.createAgent).not.toHaveBeenCalled();
+  const prompt = scenario.firstTurnPrompt();
+  expect(prompt).toBe("continue from here");
+});
+
+test("native fork carries user overrides and current mode over config mode", async () => {
+  const sessionFile = createSessionFile("native-override-session.jsonl");
+  const scenario = createForkScenario({
+    persistence: { provider: "omp", sessionId: "omp-session-1", nativeHandle: sessionFile },
+    currentModeId: "omp-code",
+  });
+
+  await scenario.fork({ provider: "omp", model: "omp/other", thinkingOptionId: "omp-low" });
+
+  const [handle, overrides] = scenario.resumeAgentFromPersistence.mock.calls[0] as unknown as [
+    AgentPersistenceHandle,
+    Partial<AgentSessionConfig>,
+  ];
+  expect(overrides).toMatchObject({
+    model: "omp/other",
+    thinkingOptionId: "omp-low",
+    modeId: "omp-code",
+  });
+  expect(handle.metadata).toMatchObject({ model: "omp/other", modeId: "omp-code" });
+});
+
+test("falls back to snapshot when an OMP source's session file is missing", async () => {
+  const missingFile = path.join(tmpdir(), "fork-agent-omp-missing", "gone.jsonl");
+  const scenario = createForkScenario({
+    persistence: { provider: "omp", sessionId: "omp-session-1", nativeHandle: missingFile },
+  });
+
+  await expect(scenario.fork()).resolves.toEqual({
+    agentId: "forked-agent",
+    strategy: "snapshot",
+  });
+  expect(scenario.createAgent).toHaveBeenCalledTimes(1);
+  expect(scenario.resumeAgentFromPersistence).not.toHaveBeenCalled();
+});
+
+test("falls back to snapshot when the fork switches away from OMP", async () => {
+  const sessionFile = createSessionFile("native-switch-away-session.jsonl");
+  const scenario = createForkScenario({
+    persistence: { provider: "omp", sessionId: "omp-session-1", nativeHandle: sessionFile },
+  });
+
+  await scenario.fork({ provider: "claude", model: "opus" });
+
+  expect(scenario.createAgent).toHaveBeenCalledTimes(1);
+  expect(scenario.resumeAgentFromPersistence).not.toHaveBeenCalled();
+});
+
+test("falls back to snapshot for a non-OMP source even with a persistence handle", async () => {
+  const scenario = createForkScenario({
+    provider: "claude",
+    persistence: {
+      provider: "claude",
+      sessionId: "claude-session-1",
+      nativeHandle: "/tmp/some-thread.jsonl",
+    },
+  });
+
+  await expect(scenario.fork()).resolves.toEqual({
+    agentId: "forked-agent",
+    strategy: "snapshot",
+  });
+  expect(scenario.createAgent).toHaveBeenCalledTimes(1);
+  expect(scenario.resumeAgentFromPersistence).not.toHaveBeenCalled();
+});
+
+test("native fork passes custom labels when provided without inheriting source labels", async () => {
+  const sessionFile = createSessionFile("native-labels-session.jsonl");
+  const scenario = createForkScenario({
+    persistence: { provider: "omp", sessionId: "omp-session-1", nativeHandle: sessionFile },
+  });
+
+  await scenario.fork(undefined, {
+    "paseo.selection-ask": "1",
+    "paseo.parent-agent-id": "source-agent",
+  });
+
+  const options = scenario.resumeAgentFromPersistence.mock.calls[0]?.[3];
+  expect(options?.labels).toEqual({
+    "paseo.selection-ask": "1",
+    "paseo.parent-agent-id": "source-agent",
+  });
+});
+
+test("snapshot fork passes custom labels when provided", async () => {
+  const scenario = createForkScenario();
+
+  await scenario.fork(undefined, { "paseo.selection-ask": "1" });
+
+  const options = scenario.createAgent.mock.calls[0]?.[2];
+  expect(options?.labels).toEqual({ "paseo.selection-ask": "1" });
 });

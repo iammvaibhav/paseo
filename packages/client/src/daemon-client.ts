@@ -748,6 +748,7 @@ export interface ForkAgentOptions extends SendMessageOptions {
   boundaryMessageId?: string;
   // Config the fork should run with when the fork composer changed it.
   overrides?: Partial<AgentSessionConfig>;
+  labels?: Record<string, string>;
 }
 
 /** Wire fields for the fork boundary, omitting anchors the caller did not supply. */
@@ -3162,6 +3163,7 @@ export class DaemonClient {
       ...(options?.attachments ? { attachments: options.attachments } : {}),
       ...buildForkRequestBoundary(options),
       ...(options?.overrides ? { overrides: options.overrides } : {}),
+      ...(options?.labels ? { labels: options.labels } : {}),
     });
     const payload = await this.sendRequest({
       requestId,

@@ -1788,6 +1788,7 @@ export const AgentForkRequestMessageSchema = z.object({
   // Config the fork composer submitted with, when it differs from the source
   // agent (the user changed model/mode/thinking before forking).
   overrides: AgentSessionConfigSchema.partial().optional(),
+  labels: z.record(z.string(), z.string()).optional(),
   requestId: z.string(),
 });
 
