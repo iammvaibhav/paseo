@@ -1745,6 +1745,11 @@ export const ko: TranslationResources = {
     archiveFinishedAction: "완료된 하위 에이전트 보관",
     archiveFinishedTooltip: "아카이브 완료",
   },
+  selectionAsks: {
+    archiveAction: "{{label}} 보관",
+    archiveTooltip: "질문 보관",
+    clearAll: "모든 질문 지우기",
+  },
   panels: {
     draft: {
       newAgent: "새 에이전트",

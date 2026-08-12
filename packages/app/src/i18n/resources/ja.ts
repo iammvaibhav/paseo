@@ -1751,6 +1751,11 @@ export const ja: TranslationResources = {
     archiveFinishedAction: "完了したサブエージェントをアーカイブ",
     archiveFinishedTooltip: "完了した項目をアーカイブ",
   },
+  selectionAsks: {
+    archiveAction: "{{label}}をアーカイブ",
+    archiveTooltip: "質問をアーカイブ",
+    clearAll: "すべての質問をクリア",
+  },
   panels: {
     draft: {
       newAgent: "新しいエージェント",

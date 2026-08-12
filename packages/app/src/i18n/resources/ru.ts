@@ -1769,6 +1769,11 @@ export const ru: TranslationResources = {
     archiveFinishedAction: "Архивировать завершенные субагенты",
     archiveFinishedTooltip: "Архивировать завершенные",
   },
+  selectionAsks: {
+    archiveAction: "Архив {{label}}",
+    archiveTooltip: "Архивировать вопрос",
+    clearAll: "Очистить все вопросы",
+  },
   panels: {
     draft: {
       newAgent: "Новый агент",

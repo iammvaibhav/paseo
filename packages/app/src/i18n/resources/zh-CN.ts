@@ -1714,6 +1714,11 @@ export const zhCN: TranslationResources = {
     archiveFinishedAction: "归档已完成的 subagent",
     archiveFinishedTooltip: "归档已完成项",
   },
+  selectionAsks: {
+    archiveAction: "归档 {{label}}",
+    archiveTooltip: "归档问题",
+    clearAll: "清除所有问题",
+  },
   panels: {
     draft: {
       newAgent: "新建 Agent",

@@ -8,21 +8,27 @@ import {
   type ViewStyle,
 } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { ChevronDown, ChevronRight } from "lucide-react-native";
+import { Archive, ChevronDown, ChevronRight } from "lucide-react-native";
+import { useTranslation } from "react-i18next";
 import { isSelectionAskAgent } from "@getpaseo/protocol/agent-labels";
 import { useShallow } from "zustand/shallow";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useIsCompactFormFactor, MAX_CONTENT_WIDTH } from "@/constants/layout";
+import { isNative } from "@/constants/platform";
+import { useArchiveAgent } from "@/hooks/use-archive-agent";
 import { useSessionStore, type Agent } from "@/stores/session-store";
-import { MAX_CONTENT_WIDTH } from "@/constants/layout";
 import type { Theme } from "@/styles/theme";
 import { useReopenAskStore } from "./reopen-store";
 
 const EMPTY_ASKS: Agent[] = [];
 const ASKS_LIST_MAX_HEIGHT = 200;
 
+const ThemedArchive = withUnistyles(Archive);
 const ThemedChevronDown = withUnistyles(ChevronDown);
 const ThemedChevronRight = withUnistyles(ChevronRight);
 
 const foregroundMutedMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+const foregroundMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 
 const statusStyles = StyleSheet.create((theme) => ({
   running: {
@@ -75,14 +81,34 @@ function selectSelectionAsks(
  * is the current agent); hidden entirely when there are none. Clicking a row
  * reopens the selection Ask popover for that ask in answer mode; opening the
  * ask in its own tab is available from the popover's header button instead.
+ * Rows offer the same hover archive affordance as the subagents track, and the
+ * expanded header offers "Clear all" to archive every listed ask at once.
  */
 export function SelectionAsksList({ serverId, agentId }: { serverId: string; agentId: string }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const asks = useSessionStore(
     useShallow((state) => selectSelectionAsks(state, serverId, agentId)),
   );
+  const { archiveAgent } = useArchiveAgent();
 
   const toggle = useCallback(() => setExpanded((current) => !current), []);
+
+  const handleClearAll = useCallback(() => {
+    for (const askAgent of asks) {
+      // Archiving removes each ask from the list; if it was open in the
+      // selection Ask popover, ask the host to dismiss it.
+      void archiveAgent({ serverId, agentId: askAgent.id })
+        .then(() => {
+          useReopenAskStore.getState().requestAskDismiss({
+            sourceAgentId: agentId,
+            askAgentId: askAgent.id,
+          });
+          return undefined;
+        })
+        .catch(() => undefined);
+    }
+  }, [agentId, archiveAgent, asks, serverId]);
 
   const surfaceStyle = useMemo(
     () => [styles.surface, expanded && styles.surfaceExpanded],
@@ -127,6 +153,17 @@ export function SelectionAsksList({ serverId, agentId }: { serverId: string; age
               )}
               <Text style={styles.headerLabel}>Asks ({asks.length})</Text>
             </Pressable>
+            {expanded ? (
+              <View style={styles.headerAction}>
+                <SelectionAskActionButton
+                  accessibilityLabel={t("selectionAsks.clearAll")}
+                  testID="selection-asks-clear-all"
+                  tooltipLabel={t("selectionAsks.clearAll")}
+                  visible
+                  onPress={handleClearAll}
+                />
+              </View>
+            ) : null}
           </View>
           {expanded ? (
             <ScrollView
@@ -136,7 +173,12 @@ export function SelectionAsksList({ serverId, agentId }: { serverId: string; age
               nestedScrollEnabled
             >
               {asks.map((askAgent) => (
-                <SelectionAsksRow key={askAgent.id} agent={askAgent} sourceAgentId={agentId} />
+                <SelectionAsksRow
+                  key={askAgent.id}
+                  agent={askAgent}
+                  serverId={serverId}
+                  sourceAgentId={agentId}
+                />
               ))}
             </ScrollView>
           ) : null}
@@ -146,9 +188,22 @@ export function SelectionAsksList({ serverId, agentId }: { serverId: string; age
   );
 }
 
-function SelectionAsksRow({ agent, sourceAgentId }: { agent: Agent; sourceAgentId: string }) {
+function SelectionAsksRow({
+  agent,
+  serverId,
+  sourceAgentId,
+}: {
+  agent: Agent;
+  serverId: string;
+  sourceAgentId: string;
+}) {
+  const { t } = useTranslation();
   const title = agent.title ?? agent.name ?? "Ask";
   const rowRef = useRef<View>(null);
+  const isCompact = useIsCompactFormFactor();
+  const [hovered, setHovered] = useState(false);
+  const { archiveAgent } = useArchiveAgent();
+
   const handleOpen = useCallback(() => {
     const element = rowRef.current;
     if (element) {
@@ -163,29 +218,104 @@ function SelectionAsksRow({ agent, sourceAgentId }: { agent: Agent; sourceAgentI
       useReopenAskStore.getState().requestReopenAsk({ sourceAgentId, askAgentId: agent.id });
     }
   }, [agent.id, sourceAgentId]);
-  const rowStyle = useCallback(
-    ({ pressed, hovered }: PressableStateCallbackType) => [
-      styles.row,
-      (pressed || hovered) && styles.rowActive,
-    ],
-    [],
-  );
+
+  const handleArchivePress = useCallback(() => {
+    // Archiving removes the ask from the list; if it was open in the selection
+    // Ask popover, ask the host to dismiss it.
+    void archiveAgent({ serverId, agentId: agent.id })
+      .then(() => {
+        useReopenAskStore.getState().requestAskDismiss({
+          sourceAgentId,
+          askAgentId: agent.id,
+        });
+        return undefined;
+      })
+      .catch(() => undefined);
+  }, [agent.id, archiveAgent, serverId, sourceAgentId]);
+
+  const handlePointerEnter = useCallback(() => setHovered(true), []);
+  const handlePointerLeave = useCallback(() => setHovered(false), []);
+  // Same affordance as the subagents track: the archive action is always
+  // visible on touch/compact surfaces and appears on hover elsewhere.
+  const actionsAlwaysVisible = isNative || isCompact;
+  const actionsVisible = actionsAlwaysVisible || hovered;
 
   return (
-    <View ref={rowRef} collapsable={false}>
+    // Wrapper View handles hover so moving the pointer between the row and
+    // the archive button doesn't drop the hover state.
+    <View
+      ref={rowRef}
+      collapsable={false}
+      onPointerEnter={handlePointerEnter}
+      onPointerLeave={handlePointerLeave}
+    >
       <Pressable
         onPress={handleOpen}
-        style={rowStyle}
         accessibilityRole="button"
         accessibilityLabel={`Open ask ${title}`}
         testID={`selection-asks-row-${agent.id}`}
       >
-        <View style={[styles.statusDot, getAskStatusStyle(agent.status)]} />
-        <Text style={styles.rowLabel} numberOfLines={1}>
-          {title}
-        </Text>
+        {({ pressed }) => (
+          <View style={hovered || pressed ? styles.rowActive : styles.row}>
+            <View style={[styles.statusDot, getAskStatusStyle(agent.status)]} />
+            <Text style={styles.rowLabel} numberOfLines={1}>
+              {title}
+            </Text>
+            <View
+              style={actionsVisible ? styles.actionClusterVisible : styles.actionClusterHidden}
+              pointerEvents={actionsVisible ? "auto" : "none"}
+            >
+              <SelectionAskActionButton
+                accessibilityLabel={t("selectionAsks.archiveAction", { label: title })}
+                testID={`selection-asks-row-archive-${agent.id}`}
+                tooltipLabel={t("selectionAsks.archiveTooltip")}
+                visible={actionsVisible}
+                onPress={handleArchivePress}
+              />
+            </View>
+          </View>
+        )}
       </Pressable>
     </View>
+  );
+}
+
+function SelectionAskActionButton({
+  accessibilityLabel,
+  testID,
+  tooltipLabel,
+  visible,
+  onPress,
+}: {
+  accessibilityLabel: string;
+  testID: string;
+  tooltipLabel: string;
+  visible: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
+      <TooltipTrigger asChild disabled={!visible}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={accessibilityLabel}
+          testID={testID}
+          onPress={onPress}
+          style={styles.actionButton}
+          hitSlop={8}
+        >
+          {({ hovered, pressed }) => (
+            <ThemedArchive
+              size={14}
+              uniProps={hovered || pressed ? foregroundMapping : foregroundMutedMapping}
+            />
+          )}
+        </Pressable>
+      </TooltipTrigger>
+      <TooltipContent side="top" align="center" offset={8}>
+        <Text style={styles.tooltipText}>{tooltipLabel}</Text>
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -227,6 +357,9 @@ const styles = StyleSheet.create((theme) => ({
     paddingLeft: theme.spacing[3],
     paddingRight: theme.spacing[1],
     paddingVertical: theme.spacing[2],
+  },
+  headerAction: {
+    paddingRight: theme.spacing[2],
   },
   headerCollapsed: {
     paddingBottom: theme.spacing[4],
@@ -275,5 +408,26 @@ const styles = StyleSheet.create((theme) => ({
     width: 7,
     height: 7,
     borderRadius: 4,
+  },
+  actionClusterVisible: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+    opacity: 1,
+  },
+  actionClusterHidden: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+    opacity: 0,
+  },
+  actionButton: {
+    padding: theme.spacing[1],
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  tooltipText: {
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foreground,
   },
 }));
