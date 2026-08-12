@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Dirent } from "node:fs";
+import { constants as fsConstants, type Dirent } from "node:fs";
 import { copyFile, open, readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -486,11 +486,24 @@ function extractMessageText(content: unknown): string | null {
  * Used to fork an agent without touching the source's session file: the copy
  * owns the fork's history, and omp appends to it from then on. The source file
  * must already exist; callers resolve it first (see {@link resolveOmpSessionFile}).
+ *
+ * The clone asks for a copy-on-write reflink (APFS and other CoW filesystems)
+ * so forking a long session is O(1) instead of a byte-for-byte read+write of
+ * the whole JSONL — the fork RPC's latency is dominated by the provider resume
+ * that follows, not the file copy. Filesystems that cannot reflink fall back
+ * to a plain copy; either way the clone is a fully independent file that omp
+ * can append to.
  */
 export async function cloneOmpSessionFile(sessionFile: string): Promise<string> {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const clonePath = path.join(path.dirname(sessionFile), `${stamp}_${randomUUID()}.jsonl`);
-  await copyFile(sessionFile, clonePath);
+  try {
+    await copyFile(sessionFile, clonePath, fsConstants.COPYFILE_FICLONE);
+  } catch {
+    // Reflink unsupported (or a partial-clone edge case): plain copy. The
+    // destination is truncated before copying, so any partial clone is replaced.
+    await copyFile(sessionFile, clonePath);
+  }
   return clonePath;
 }
 

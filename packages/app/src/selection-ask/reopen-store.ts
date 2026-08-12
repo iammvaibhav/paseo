@@ -28,13 +28,24 @@ export interface ReopenAskRequest {
 
 interface ReopenAskState {
   request: ReopenAskRequest | null;
+  /**
+   * The source-chat DOM Range captured when each ask was started, keyed by ask
+   * agent id. Kept here (not in the popover) so it survives the popover being
+   * dismissed and can power the reopened popover's "Jump to chat" control.
+   */
+  selectionRanges: Map<string, Range>;
   requestReopenAsk: (request: ReopenAskRequest) => void;
   /** Returns and clears the pending request when it targets `sourceAgentId`, else null. */
   consumeReopenAsk: (sourceAgentId: string) => ReopenAskRequest | null;
+  /** Records the source selection for an ask, dropping ranges whose DOM is gone. */
+  recordAskSelectionRange: (askAgentId: string, range: Range) => void;
+  /** Returns and clears the stored selection range for an ask, if any. */
+  consumeAskSelectionRange: (askAgentId: string) => Range | null;
 }
 
 export const useReopenAskStore = create<ReopenAskState>((set, get) => ({
   request: null,
+  selectionRanges: new Map(),
   requestReopenAsk: (request) => set({ request }),
   consumeReopenAsk: (sourceAgentId) => {
     const { request } = get();
@@ -43,5 +54,31 @@ export const useReopenAskStore = create<ReopenAskState>((set, get) => ({
     }
     set({ request: null });
     return request;
+  },
+  recordAskSelectionRange: (askAgentId, range) => {
+    const { selectionRanges } = get();
+    const next = new Map(selectionRanges);
+    if (typeof document !== "undefined") {
+      for (const [storedId, stored] of next) {
+        // Detached ranges pin dead DOM nodes forever; drop them on write so
+        // the store only ever holds live targets.
+        if (stored !== range && !document.contains(stored.startContainer)) {
+          next.delete(storedId);
+        }
+      }
+    }
+    next.set(askAgentId, range);
+    set({ selectionRanges: next });
+  },
+  consumeAskSelectionRange: (askAgentId) => {
+    const { selectionRanges } = get();
+    const range = selectionRanges.get(askAgentId);
+    if (!range) {
+      return null;
+    }
+    const next = new Map(selectionRanges);
+    next.delete(askAgentId);
+    set({ selectionRanges: next });
+    return range;
   },
 }));
