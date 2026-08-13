@@ -10,6 +10,7 @@ import {
 import type { AgentProviderRuntimeSettingsMap } from "./agent/provider-launch-config.js";
 import { ensurePrivateFile, writePrivateFileAtomicSync } from "./private-files.js";
 import { AgentProfileSchema, TerminalProfileSchema } from "@getpaseo/protocol/messages";
+import { ComposerPreferencesSchema } from "@getpaseo/protocol/composer-preferences";
 import { PaseoServicePortAllocationSchema } from "@getpaseo/protocol/paseo-config-schema";
 import { PeerConfigSchema } from "./peers/types.js";
 
@@ -358,6 +359,7 @@ export const PersistedConfigSchema = z
         appendSystemPrompt: z.string().optional(),
         terminalProfiles: z.array(TerminalProfileSchema).optional(),
         agentProfiles: z.array(AgentProfileSchema).optional(),
+        composerPreferences: ComposerPreferencesSchema.optional(),
         cors: z
           .object({
             allowedOrigins: z.array(z.string()).optional(),

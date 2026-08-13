@@ -361,6 +361,9 @@ function mergeMutableConfigIntoPersistedConfig(params: {
         ? { terminalProfiles: mutable.terminalProfiles }
         : {}),
       ...(mutable.agentProfiles !== undefined ? { agentProfiles: mutable.agentProfiles } : {}),
+      ...(mutable.composerPreferences !== undefined
+        ? { composerPreferences: mutable.composerPreferences }
+        : {}),
     },
     agents: nextAgents,
   } as PersistedConfig;

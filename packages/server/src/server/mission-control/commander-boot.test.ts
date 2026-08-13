@@ -1319,12 +1319,13 @@ describe("remapLegacyCommanderCreateCwd", () => {
 });
 
 describe("Commander build-hash contract", () => {
-  test("the tool allowlist pins exactly the eleven tools (6 fleet + clarify + post_answer + fleet_meta + 2 context)", () => {
+  test("the tool allowlist pins exactly the twelve tools (the Commander's full catalog surface)", () => {
     // The hash covers prompt + allowlist, so a tool landing here without the
     // paseo-tools registration (or vice versa) must fail this pin — the
     // allowlist is the Commander's full catalog surface.
     expect([...COMMANDER_TOOL_ALLOWLIST]).toEqual([
       "fleet_list_agents",
+      "fleet_list_models",
       "fleet_create_agent",
       "fleet_send_prompt",
       "fleet_get_agent_activity",

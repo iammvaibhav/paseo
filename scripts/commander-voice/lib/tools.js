@@ -6,9 +6,16 @@
 //         pending_updates (no mutating tools declared — the model cannot call
 //         what it cannot see; every fleet change goes through Commander).
 // direct: the full Commander allowlist + proposal_respond + pending_updates.
-//         Mutating executors route through the daemon proposal gate
-//         (mission_control.proposals.create), mirroring the Commander's own
-//         approval flow, so every side effect is still approval-gated.
+//         Mutating executors ride the daemon's tool catalog, whose
+//         Commander-gated implementations own the proposal gate — the same
+//         approval flow as the Commander, so every side effect is still
+//         approval-gated and lands as a card.
+//
+// Every fleet_* executor executes through the daemon catalog
+// (mission_control.tools.execute -> createPaseoToolCatalog().executeTool), the
+// SAME code path the Commander uses — voice never reimplements a fleet tool,
+// only shapes the catalog result for speech. commander_dispatch /
+// proposal_respond / pending_updates are the only local executors.
 //
 // Tool names/descriptions mirror the Commander contract (packages/server ...
 // paseo-tools.ts); keep the two in sync when the allowlist changes.
@@ -42,6 +49,24 @@ const READ_TOOL_DECLARATIONS = [
         limit: {
           type: "NUMBER",
           description: "Maximum roster rows to return (default 50).",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "fleet_list_models",
+    description:
+      "List invocable provider/model strings and the default worker model for ONE host " +
+      "(default 'local'). Call it before spawning: fleet_create_agent's provider is always a " +
+      "'provider/model' string, and the default worker model is what a spawn without a " +
+      "user-named model uses. Never ask the user for a provider or model.",
+    parameters: {
+      ...OBJECT,
+      properties: {
+        host: {
+          type: "STRING",
+          description: "Target host: a peer name from the daemon peers config, or 'local'.",
         },
       },
       required: [],
@@ -227,7 +252,10 @@ const DIRECT_CONTROL_DECLARATIONS = [
         },
         provider: {
           type: "STRING",
-          description: "Provider/model, e.g. omp/provider/model.",
+          description:
+            "Provider/model, e.g. omp/provider/model. Call fleet_list_models first for the " +
+            "host's default worker model and use it when the user did not name a model. " +
+            "Never ask the user for a provider or model.",
         },
         initialPrompt: { type: "STRING", description: "The agent's initial prompt / brief." },
         title: { type: "STRING", description: "Optional agent title." },
@@ -294,10 +322,10 @@ const DIRECT_CONTROL_DECLARATIONS = [
         options: {
           type: "ARRAY",
           items: { type: "STRING" },
-          description: "Optional discrete options.",
+          description: "Discrete options (1-8).",
         },
       },
-      required: ["question"],
+      required: ["question", "options"],
     },
   },
   {
@@ -310,6 +338,10 @@ const DIRECT_CONTROL_DECLARATIONS = [
       ...OBJECT,
       properties: {
         headline: { type: "STRING", description: "One-line answer headline." },
+        kind: {
+          type: "STRING",
+          description: '"generic" or "agent_status" (about one agent; default "generic").',
+        },
         body: { type: "STRING", description: "Optional longer answer body." },
       },
       required: ["headline"],
@@ -337,9 +369,14 @@ export function getToolDeclarations(voiceMode) {
 export const TOOL_DECLARATIONS = getToolDeclarations("relay");
 
 // --- Per-tool executors -----------------------------------------------------
+// Every fleet_* executor runs through the daemon catalog
+// (mission_control.tools.execute -> createPaseoToolCatalog().executeTool), the
+// SAME code path the Commander uses. Voice never reimplements a fleet tool;
+// it only shapes the catalog's result for speech. Only commander_dispatch,
+// proposal_respond, and pending_updates stay local (voice-specific protocol).
 
-async function executeFleetListAgents(daemon, argsObj) {
-  return { result: await daemon.fleetListAgents(argsObj) };
+function executeFleetListAgents(daemon, argsObj) {
+  return daemon.fleetListAgents(argsObj);
 }
 
 function executeFleetGetAgentActivity(daemon, argsObj) {
@@ -360,6 +397,31 @@ function executeFleetContext(daemon, argsObj) {
 
 function executeTagMessage(daemon, argsObj) {
   return daemon.tagMessage(argsObj);
+}
+
+async function executeFleetListModels(daemon, argsObj) {
+  const result = await daemon.executeCatalogTool("fleet_list_models", argsObj);
+  if (!result.ok) {
+    return { error: result.error ?? "fleet_list_models failed" };
+  }
+  const sc = result.structuredContent ?? {};
+  const host = sc.host || "local";
+  const defaultWorkerModel = sc.defaultWorkerModel ?? null;
+  const modelLines = [];
+  for (const [provider, models] of Object.entries(sc.models ?? {})) {
+    if (provider === "omp.modelRoles") {
+      // Role -> model mappings are the omp internal notation, never a
+      // spawnable provider string; the default worker model already resolved
+      // them. Skip so the model never echoes a bare role as a provider.
+      continue;
+    }
+    modelLines.push(`${provider}: ${Array.isArray(models) ? models.join(", ") : String(models)}`);
+  }
+  const head = defaultWorkerModel
+    ? `Default worker model on ${host}: ${defaultWorkerModel}.`
+    : `No default worker model on ${host}.`;
+  const body = modelLines.length > 0 ? ` Models: ${modelLines.join("; ")}.` : "";
+  return { result: `${head}${body}` };
 }
 
 async function executeCommanderDispatch(daemon, argsObj, mode) {
@@ -406,44 +468,56 @@ async function executeFleetCreateAgent(daemon, argsObj, mode) {
   if (!host || !provider || !initialPrompt) {
     return { error: "fleet_create_agent requires host, provider, and initialPrompt" };
   }
-  const brief = [
-    `Spawn ${provider} agent${title ? ` titled "${title}"` : ""} on ${host}`,
-    cwd ? ` at ${cwd}` : "",
-    workspaceId ? ` in workspace ${workspaceId}` : "",
-  ].join("");
-  const outcome = await daemon.proposeDirectAction({
-    toolName: "fleet_create_agent",
-    message: `${brief}. Brief: ${initialPrompt}`,
-    reason: "voice direct spawn",
+  // The catalog's Commander-gated spawn: creates the approval proposal
+  // (ask mode) or the agent (auto mode). Voice just relays the outcome.
+  const result = await daemon.executeCatalogTool("fleet_create_agent", {
+    host,
+    provider,
+    initialPrompt,
+    ...(title ? { title } : {}),
+    ...(cwd ? { cwd } : {}),
+    ...(workspaceId ? { workspaceId } : {}),
   });
-  if (outcome.ok) {
-    return {
-      result: `Spawn proposal ${outcome.proposalId} created for approval. It will run once approved.`,
-    };
+  if (!result.ok) {
+    return { error: result.error ?? "fleet_create_agent failed" };
   }
-  return { error: outcome.error };
+  const sc = result.structuredContent ?? {};
+  if (typeof sc.guidance === "string" && sc.guidance) {
+    return { result: sc.guidance };
+  }
+  if (sc.agentId) {
+    return { result: `Agent ${sc.agentId} created on ${host}.` };
+  }
+  return { result: "Spawn request created." };
 }
 
 async function executeFleetSendPrompt(daemon, argsObj, mode) {
   if (mode !== "direct") {
     return { error: "fleet_send_prompt is not declared in relay mode" };
   }
-  const { agentId, prompt } = argsObj;
-  if (!agentId || !prompt) {
-    return { error: "fleet_send_prompt requires agentId and prompt" };
+  const { host, agentId, prompt, mode: deliveryMode } = argsObj;
+  if (!host || !agentId || !prompt) {
+    return { error: "fleet_send_prompt requires host, agentId, and prompt" };
   }
-  const outcome = await daemon.proposeDirectAction({
-    toolName: "fleet_send_prompt",
-    message: prompt,
-    reason: "voice direct send",
-    targetAgentId: agentId,
+  const result = await daemon.executeCatalogTool("fleet_send_prompt", {
+    host,
+    agentId,
+    prompt,
+    ...(deliveryMode ? { mode: deliveryMode } : {}),
   });
-  if (outcome.ok) {
+  if (!result.ok) {
+    return { error: result.error ?? "fleet_send_prompt failed" };
+  }
+  const sc = result.structuredContent ?? {};
+  if (typeof sc.guidance === "string" && sc.guidance) {
+    return { result: sc.guidance };
+  }
+  if (sc.success === true) {
     return {
-      result: `Send proposal ${outcome.proposalId} created for approval. It will deliver once approved.`,
+      result: `Delivered to the agent${sc.deliveryMode ? ` (${sc.deliveryMode})` : ""}.`,
     };
   }
-  return { error: outcome.error };
+  return { result: "Send request created." };
 }
 
 async function executeFleetMeta(daemon, argsObj, mode) {
@@ -454,34 +528,62 @@ async function executeFleetMeta(daemon, argsObj, mode) {
   if (!plan || !plan.action) {
     return { error: "fleet_meta requires metaPlan.action" };
   }
-  const target = plan.targetLabel || plan.targetId || "";
-  const change = [target, plan.newValue, plan.destination].filter(Boolean).join(" -> ");
-  const outcome = await daemon.proposeDirectAction({
-    toolName: "fleet_meta",
-    message: `Meta action ${plan.action}${change ? ` on ${change}` : ""}`,
-    reason: "voice direct meta",
-  });
-  if (outcome.ok) {
-    return {
-      result: `Meta proposal ${outcome.proposalId} created for approval.`,
-    };
+  const result = await daemon.executeCatalogTool("fleet_meta", { metaPlan: plan });
+  if (!result.ok) {
+    return { error: result.error ?? "fleet_meta failed" };
   }
-  return { error: outcome.error };
+  const sc = result.structuredContent ?? {};
+  if (sc.ok === true && sc.proposalId) {
+    return sc.status === "sent"
+      ? { result: `Meta action ${plan.action} sent (proposal ${sc.proposalId}).` }
+      : { result: `Meta proposal ${sc.proposalId} created for approval.` };
+  }
+  if (sc.ok === true) {
+    return { result: `Meta action ${plan.action} done.` };
+  }
+  return { result: "Meta request created." };
 }
 
-function executeClarify(daemon, argsObj, mode) {
+async function executeClarify(daemon, argsObj, mode) {
   if (mode !== "direct") {
     return { error: "clarify is not declared in relay mode" };
   }
-  // Voice has no card UI — the model asks in speech.
+  const question = typeof argsObj.question === "string" ? argsObj.question : "";
+  if (!question) {
+    return { error: "clarify requires a question" };
+  }
+  const result = await daemon.executeCatalogTool("clarify", {
+    question,
+    ...(Array.isArray(argsObj.options) && argsObj.options.length > 0
+      ? { options: argsObj.options }
+      : {}),
+  });
+  if (!result.ok) {
+    return { error: result.error ?? "clarify failed" };
+  }
+  // The catalog recorded the clarification card for the record; voice has no
+  // card UI, so the model asks in speech.
   return {
     result: "Ask the user the question directly in your spoken reply and wait for their answer.",
   };
 }
 
-function executePostAnswer(daemon, argsObj, mode) {
+async function executePostAnswer(daemon, argsObj, mode) {
   if (mode !== "direct") {
     return { error: "post_answer is not declared in relay mode" };
+  }
+  const headline = typeof argsObj.headline === "string" ? argsObj.headline : "";
+  if (!headline) {
+    return { error: "post_answer requires a headline" };
+  }
+  const result = await daemon.executeCatalogTool("post_answer", {
+    headline,
+    kind: typeof argsObj.kind === "string" ? argsObj.kind : "generic",
+    ...(typeof argsObj.agentId === "string" ? { agentId: argsObj.agentId } : {}),
+    ...(typeof argsObj.body === "string" ? { body: argsObj.body } : {}),
+  });
+  if (!result.ok) {
+    return { error: result.error ?? "post_answer failed" };
   }
   // The mirror already records every spoken reply on the Commander thread.
   return { result: "Speak the answer briefly; the voice mirror records it for the record." };
@@ -490,6 +592,7 @@ function executePostAnswer(daemon, argsObj, mode) {
 /** Tool name -> executor, matching the declared tool surface above. */
 const TOOL_HANDLERS = {
   fleet_list_agents: executeFleetListAgents,
+  fleet_list_models: executeFleetListModels,
   fleet_get_agent_activity: executeFleetGetAgentActivity,
   fleet_search: executeFleetSearch,
   fleet_recall: executeFleetRecall,

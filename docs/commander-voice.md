@@ -32,18 +32,19 @@ The voice node runs on the commander host next to the daemon. It holds the Gemin
 
 ### Shared read tools (both modes — same as Commander)
 
-Imported from the Commander contract / tool catalog. Do not hand-maintain a voice-only list.
+Imported from the Commander contract / tool catalog. Do not hand-maintain a voice-only list. Every fleet tool executes through the daemon's tool catalog (`mission_control.tools.execute` → `createPaseoToolCatalog().executeTool`), the **same code path the Commander uses** — voice shapes the catalog's result for speech and never reimplements a roster, timeline, search, recall, or gated action.
 
-| Tool                       | Purpose                                                                                                                                                                                                   |
-| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `fleet_list_agents`        | Roster across hosts (status, titles, hosts).                                                                                                                                                              |
-| `fleet_get_agent_activity` | Curated **timeline summary** for one agent on a host — recent projected messages from stored activity. **Read-only.** Does **not** poke the live agent or ask it for a fresh report; it is not a “nudge”. |
-| `fleet_search`             | Find agents by what they worked on.                                                                                                                                                                       |
-| `fleet_recall`             | Semantic recall over fleet memory.                                                                                                                                                                        |
-| `fleet_context`            | Run records / workspace·project rollups.                                                                                                                                                                  |
-| `tag_message`              | Attribute the current user turn to agents (audits).                                                                                                                                                       |
+| Tool                       | Purpose                                                                                                                                                                                                                              |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `fleet_list_agents`        | Roster across hosts (status, titles, hosts). Voice speaks a digest: bucket counts per host — needs-you (requiresAttention or error), running, idle — led by "Across N hosts: X running, Y needs you, Z idle. Idle is not needs-you." |
+| `fleet_list_models`        | Invocable provider/model strings + the default worker model for one host. Use before spawning so voice never asks the user for a provider or model.                                                                                  |
+| `fleet_get_agent_activity` | Curated **timeline summary** for one agent on a host — recent projected messages from stored activity. **Read-only.** Does **not** poke the live agent or ask it for a fresh report; it is not a “nudge”.                            |
+| `fleet_search`             | Find agents by what they worked on.                                                                                                                                                                                                  |
+| `fleet_recall`             | Semantic recall over fleet memory.                                                                                                                                                                                                   |
+| `fleet_context`            | Run records / workspace·project rollups.                                                                                                                                                                                             |
+| `tag_message`              | Attribute the current user turn to agents (audits).                                                                                                                                                                                  |
 
-There is **no** `fleet_status`. Aggregate status is `fleet_list_agents` (count/filter in the model). Host-local status tools are banned.
+There is **no** `fleet_status`. Aggregate status is `fleet_list_agents` (count/filter in the model). Host-local status tools are banned. "Needs me" is needs-you (requiresAttention or error status) — **never idle**.
 
 **Read vs nudge (fresh status):**
 
@@ -82,6 +83,7 @@ Full Commander allowlist **plus** `proposal_respond` and `pending_updates`. Muta
 ### Why this parity
 
 - Same read tools → same answers whether you type to Commander or speak to voice.
+- Both execute the fleet tools through the daemon's catalog (`mission_control.tools.execute`) → **one implementation** of every fleet tool; voice only shapes catalog results for speech.
 - Relay mutations only via Commander → one placement doctrine, one approval surface.
 - Direct reuses the same contract package → when tools change, both modes change.
 
@@ -231,11 +233,17 @@ Quiet policy:
   (fleet_list_agents / fleet_search / fleet_get_agent_activity / …). Do not use pending_updates for that.
 - When the user wants a **fresh** status from a live agent (nudge / "ask them"), that is a send:
   relay → commander_dispatch; direct → fleet_send_prompt. fleet_get_agent_activity is not a nudge.
+- When the user asks what "needs you" or needs attention, that is needs-you: agents with
+  requiresAttention or an error status. Idle is NOT needs-you — never count idle agents as needing you.
+- Never ask the user for a provider or model. If a spawn is needed and the user named no model,
+  use the host's default worker model from fleet_list_models (relay: pass the intent to
+  commander_dispatch and let Commander use the default).
 - Never volunteer that something finished, started, or reported unless they asked for updates
   or it is the direct answer to their last question.
 
 Lookups (always tools, never memory):
-- Who is running / status → fleet_list_agents
+- Who is running / what needs you / status → fleet_list_agents (needs-you = requiresAttention or error, never idle)
+- Which provider/model to spawn with → fleet_list_models (use the host's default worker model)
 - What is agent X doing (recorded) → fleet_list_agents then fleet_get_agent_activity
   (timeline summary already stored — not a live ping)
 - Fresh status from agent X → send path above, not activity alone
@@ -257,6 +265,8 @@ For any work that changes the fleet — spawn, steer, rename, archive, move, sch
 call commander_dispatch with the user's intent in plain language. Acknowledge with a short
 "on it" and stop. Do not wait for the Commander turn. Results arrive later; only surface them
 when the user asks for generic updates or when a proposal needs their decision.
+Never ask the user which provider or model to use: Commander owns placement and the host's
+default worker model. Dispatch the intent as-is when the user named none.
 ```
 
 (No deny-list: mutating tools are simply not in the tool surface.)
@@ -273,6 +283,10 @@ You hold the same fleet tools as the Commander. Placement doctrine (spoken form)
 4. Follow-up on existing work → same workspace as the change.
 5. No project → experiments on that host, or propose a new project if substantial.
 6. One agent per unit of work.
+
+Never ask the user for a provider or model. Before a spawn, call fleet_list_models for the
+target host and pass its default worker model as fleet_create_agent's provider; only when the
+user named a model, pass exactly that (host defaults to 'local' unless the user named a host).
 
 Mutating tools are approval-gated. Call them; do not pretend they already ran.
 When you need a decision only the user can make, call clarify.
@@ -304,6 +318,7 @@ Every card that answers a user instruction carries respondsTo when the envelope 
 5. ~~Mission Control setting `voiceMode: relay | direct` (default relay)~~ (landed).
 6. Evaluate on real sessions: answer correctness vs Commander text, mutation latency, quietness, mirror fidelity (can you continue by typing after a long voice session?).
 7. ~~Deeper direct executors for `fleet_recall` / `fleet_context` / `tag_message` when client APIs exist; peer-host activity proxy without Commander~~ (landed: `mission_control.recall` / `context.records` / `tag_message` / `peer.timeline` session RPCs).
+8. ~~One catalog path for fleet tools: Voice `fleet_*` (reads and direct-mode mutators) execute `mission_control.tools.execute` → `createPaseoToolCatalog().executeTool`, the same code path as Commander; the voice-local roster/timeline fetches and the session RPCs from (7) are removed~~ (landed: M12).
 
 Do not delete relay until direct has proven approval safety and the Commander chat still reads as one coherent log.
 

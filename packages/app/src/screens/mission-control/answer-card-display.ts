@@ -10,6 +10,7 @@ const LEAKABLE_TOOL_NAMES = [
   "fleet_send_prompt",
   "fleet_meta",
   "fleet_list_agents",
+  "fleet_list_models",
   "fleet_get_agent_activity",
   "fleet_search",
   "fleet_recall",

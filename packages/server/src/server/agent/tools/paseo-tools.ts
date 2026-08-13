@@ -112,6 +112,9 @@ import { MissionControlSearchMatchSchema } from "@getpaseo/protocol/mission-cont
 import type { MissionControlProposalSpawnPlan } from "@getpaseo/protocol/mission-control/types";
 import { MissionControlMetaPlanSchema } from "@getpaseo/protocol/mission-control/types";
 import type { MissionControlMetaPlan } from "@getpaseo/protocol/mission-control/types";
+import { MissionControlModelsSchema } from "@getpaseo/protocol/mission-control/types";
+import type { MissionControlModels } from "@getpaseo/protocol/mission-control/types";
+import type { ComposerPreferences } from "@getpaseo/protocol/composer-preferences";
 import { hasMissionControlLabels } from "../../mission-control/naming.js";
 import {
   classifyFleetMetaAction,
@@ -133,6 +136,7 @@ import {
   type FleetSearchTier3Runner,
 } from "../../mission-control/search.js";
 import type { MissionControlService } from "../../mission-control/service.js";
+import { buildLocalModels, resolveDefaultWorkerModel } from "../../mission-control/context.js";
 import type { MissionControlVerifierDispatcher } from "../../mission-control/verifier.js";
 import { MissionControlReportStatusInputSchema } from "@getpaseo/protocol/mission-control/types";
 import type { MissionControlEvent } from "@getpaseo/protocol/mission-control/types";
@@ -773,10 +777,17 @@ function collectReportStatusHeadlines(
 /**
  * The agent's most recent non-system user message (roster enrichment).
  * System-injected envelopes (digests, notifications) are never user messages;
- * closed agents without a buffered timeline report null.
+ * closed agents without a buffered timeline report null. Stored (non-live)
+ * agents have no live timeline to read — enrichment is best-effort
+ * ("when one is known"), so they report null instead of failing the roster.
  */
 function lastUserMessageFor(agentManager: AgentManager, agentId: string): string | null {
-  const timeline = agentManager.getTimeline(agentId);
+  let timeline: AgentTimelineItem[];
+  try {
+    timeline = agentManager.getTimeline(agentId);
+  } catch {
+    return null;
+  }
   for (let index = timeline.length - 1; index >= 0; index--) {
     const item = timeline[index];
     if (item.type !== "user_message") {
@@ -4277,6 +4288,61 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       return {
         content: [],
         structuredContent: ensureValidJson({ agents: agents.slice(0, limit) }),
+      };
+    },
+  );
+
+  registerTool(
+    "fleet_list_models",
+    {
+      title: "List models on a host",
+      description:
+        "List the invocable provider/model strings available on a host ('local' or a peer name), plus that host's " +
+        "default worker model — the composer's last provider/model pick (daemon.composerPreferences) when set, else " +
+        "the omp task role resolved to an invocable provider/model, falling back to the first available model when " +
+        "the role's model is missing from the snapshot. host is optional and defaults to this daemon. Read-only; never gated.",
+      inputSchema: {
+        host: z
+          .string()
+          .optional()
+          .describe(
+            "Target host: a peer name from the daemon peers config, or 'local' for this daemon. Omitted → this daemon.",
+          ),
+      },
+      outputSchema: {
+        host: z.string(),
+        models: MissionControlModelsSchema,
+        defaultWorkerModel: z.string().nullable(),
+      },
+    },
+    async ({ host }) => {
+      const target = host?.trim() || "local";
+      const local = isFleetLocalTarget(target);
+      let models: MissionControlModels;
+      let composerPreferences: ComposerPreferences | undefined;
+      if (local) {
+        // Same models + default-worker derivation the world snapshot uses —
+        // one implementation shared by the Commander and Voice. The composer's
+        // last pick (daemon.composerPreferences) outranks the omp task role.
+        models = await buildLocalModels({ providerSnapshotManager });
+        composerPreferences = daemonConfigStore?.get().composerPreferences;
+      } else {
+        const client = resolveFleetHost(target);
+        if (!client) {
+          throw new Error(`Host "${target}" is not a configured peer`);
+        }
+        const payload = await client.missionControlContextFetch();
+        models = payload.models;
+        composerPreferences = payload.composerPreferences;
+      }
+      const { invocable } = resolveDefaultWorkerModel(models, composerPreferences);
+      return {
+        content: [],
+        structuredContent: ensureValidJson({
+          host: local ? hostLabel : target,
+          models,
+          defaultWorkerModel: invocable,
+        }),
       };
     },
   );

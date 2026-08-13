@@ -7021,3 +7021,277 @@ describe("mission control voice read RPCs wire dispatch", () => {
     ]);
   });
 });
+
+describe("mission control tools.execute RPC wire dispatch", () => {
+  function catalogFor(
+    toolName: string,
+    executeTool: (...args: unknown[]) => unknown,
+    options?: { missingTool?: boolean },
+  ) {
+    const tool = options?.missingTool ? undefined : { name: toolName };
+    return {
+      tools: new Map([[toolName, { name: toolName }]]),
+      getTool: (name: string) => (name === toolName ? tool : undefined),
+      executeTool,
+    };
+  }
+
+  test("runs an allowlisted tool through the catalog factory and returns its output", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const executeTool = vi.fn(async () => ({
+      content: [],
+      structuredContent: {
+        agents: [
+          {
+            id: "agent-a",
+            title: "Archimedes",
+            host: "local",
+            status: "running",
+            requiresAttention: true,
+          },
+          {
+            id: "agent-b",
+            title: "Ada",
+            host: "macbook",
+            status: "idle",
+            requiresAttention: false,
+          },
+        ],
+      },
+    }));
+    const createPaseoToolCatalog = vi.fn(async () => catalogFor("fleet_list_agents", executeTool));
+    const session = createSessionForTest({
+      messages,
+      agentManager: { createPaseoToolCatalog },
+    });
+
+    await session.handleMessage({
+      type: "mission_control.tools.execute.request",
+      requestId: "req-exec-1",
+      name: "fleet_list_agents",
+      args: { statuses: ["running"] },
+    });
+
+    // The catalog is built with the Commander identity + voice tools so
+    // label-gated fleet tools behave exactly as they do for the Commander.
+    expect(createPaseoToolCatalog).toHaveBeenCalledWith({
+      callerLabels: { "paseo.mission-control": "commander" },
+      enableVoiceTools: true,
+    });
+    expect(executeTool).toHaveBeenCalledWith("fleet_list_agents", { statuses: ["running"] });
+    expect(messages).toEqual([
+      {
+        type: "mission_control.tools.execute.response",
+        payload: {
+          requestId: "req-exec-1",
+          ok: true,
+          name: "fleet_list_agents",
+          structuredContent: {
+            agents: [
+              expect.objectContaining({ id: "agent-a", requiresAttention: true }),
+              expect.objectContaining({ id: "agent-b", status: "idle" }),
+            ],
+          },
+        },
+      },
+    ]);
+  });
+
+  test("joins text content blocks into the content field", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const executeTool = vi.fn(async () => ({
+      content: [
+        { type: "text", text: "Across 1 host:" },
+        { type: "text", text: "1 running, 0 needs you." },
+      ],
+    }));
+    const session = createSessionForTest({
+      messages,
+      agentManager: {
+        createPaseoToolCatalog: vi.fn(async () => catalogFor("fleet_list_agents", executeTool)),
+      },
+    });
+
+    await session.handleMessage({
+      type: "mission_control.tools.execute.request",
+      requestId: "req-exec-2",
+      name: "fleet_list_agents",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.tools.execute.response",
+        payload: {
+          requestId: "req-exec-2",
+          ok: true,
+          name: "fleet_list_agents",
+          content: "Across 1 host:\n1 running, 0 needs you.",
+        },
+      },
+    ]);
+  });
+
+  test("rejects an unknown tool without running it", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const executeTool = vi.fn();
+    const createPaseoToolCatalog = vi.fn(async () =>
+      catalogFor("fleet_list_agents", executeTool, { missingTool: true }),
+    );
+    const session = createSessionForTest({
+      messages,
+      agentManager: { createPaseoToolCatalog },
+    });
+
+    await session.handleMessage({
+      type: "mission_control.tools.execute.request",
+      requestId: "req-exec-3",
+      name: "fleet_list_models",
+    });
+
+    expect(executeTool).not.toHaveBeenCalled();
+    expect(messages).toEqual([
+      {
+        type: "mission_control.tools.execute.response",
+        payload: {
+          requestId: "req-exec-3",
+          ok: false,
+          name: "fleet_list_models",
+          error: "Unknown Paseo tool: fleet_list_models",
+        },
+      },
+    ]);
+  });
+
+  test("rejects a name off the Commander allowlist without building the catalog", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const createPaseoToolCatalog = vi.fn();
+    const session = createSessionForTest({
+      messages,
+      agentManager: { createPaseoToolCatalog },
+    });
+
+    await session.handleMessage({
+      type: "mission_control.tools.execute.request",
+      requestId: "req-exec-4",
+      name: "bash",
+    });
+
+    expect(createPaseoToolCatalog).not.toHaveBeenCalled();
+    expect(messages).toEqual([
+      {
+        type: "mission_control.tools.execute.response",
+        payload: {
+          requestId: "req-exec-4",
+          ok: false,
+          name: "bash",
+          error: 'Tool "bash" is not on the Commander allowlist',
+        },
+      },
+    ]);
+  });
+
+  test("surfaces catalog execution failures as ok:false + error", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const executeTool = vi.fn(async () => {
+      throw new Error("hindsight is not configured");
+    });
+    const createPaseoToolCatalog = vi.fn(async () => catalogFor("fleet_recall", executeTool));
+    const session = createSessionForTest({
+      messages,
+      agentManager: { createPaseoToolCatalog },
+    });
+
+    await session.handleMessage({
+      type: "mission_control.tools.execute.request",
+      requestId: "req-exec-5",
+      name: "fleet_recall",
+      args: { query: "auth" },
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.tools.execute.response",
+        payload: {
+          requestId: "req-exec-5",
+          ok: false,
+          name: "fleet_recall",
+          error: "hindsight is not configured",
+        },
+      },
+    ]);
+  });
+
+  test("reports a missing catalog factory as an unknown tool", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const createPaseoToolCatalog = vi.fn(async () => null);
+    const session = createSessionForTest({
+      messages,
+      agentManager: { createPaseoToolCatalog },
+    });
+
+    await session.handleMessage({
+      type: "mission_control.tools.execute.request",
+      requestId: "req-exec-6",
+      name: "fleet_list_agents",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.tools.execute.response",
+        payload: {
+          requestId: "req-exec-6",
+          ok: false,
+          name: "fleet_list_agents",
+          error: "Unknown Paseo tool: fleet_list_agents",
+        },
+      },
+    ]);
+  });
+
+  test("acts AS the Commander: passes callerAgentId when a Commander agent exists", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const executeTool = vi.fn(async () => ({ content: [], structuredContent: { ok: true } }));
+    const createPaseoToolCatalog = vi.fn(async () => catalogFor("tag_message", executeTool));
+    const session = createSessionForTest({
+      messages,
+      // The catalog's caller-scoped paths require a LIVE commander (readable
+      // timeline/config) — resolveCommanderAgentId scans the live registry.
+      agentManager: {
+        listAgents: vi.fn(() => [
+          {
+            id: "commander-1",
+            labels: { "paseo.mission-control": "commander" },
+          },
+        ]),
+        createPaseoToolCatalog,
+      },
+    });
+
+    await session.handleMessage({
+      type: "mission_control.tools.execute.request",
+      requestId: "req-exec-7",
+      name: "tag_message",
+      args: { agentIds: ["agent-a"] },
+    });
+
+    // Voice runs AS the Commander: agent-scoped tools (tag_message) get the
+    // Commander's callerAgentId so they can act on the Commander thread.
+    expect(createPaseoToolCatalog).toHaveBeenCalledWith({
+      callerLabels: { "paseo.mission-control": "commander" },
+      callerAgentId: "commander-1",
+      enableVoiceTools: true,
+    });
+    expect(executeTool).toHaveBeenCalledWith("tag_message", { agentIds: ["agent-a"] });
+    expect(messages).toEqual([
+      {
+        type: "mission_control.tools.execute.response",
+        payload: {
+          requestId: "req-exec-7",
+          ok: true,
+          name: "tag_message",
+          structuredContent: { ok: true },
+        },
+      },
+    ]);
+  });
+});

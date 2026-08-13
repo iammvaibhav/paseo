@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ComposerPreferencesSchema } from "../composer-preferences.js";
 
 // Mission Control fleet events: deterministic transition cards from the daemon
 // detectors plus summarizer judgment cards. One shared shape for the feed, the
@@ -933,6 +934,10 @@ export const MissionControlContextFetchResponseSchema = z.object({
     // This host's own missionControl.hostAlias so the Commander assembles the
     // fleet map from per-host declarations. Old daemons omit it → host name.
     hostAlias: z.string().optional(),
+    // This host's own composer last-pick (daemon.composerPreferences), so the
+    // Commander/Voice derive a per-host fleet_list_models default from the
+    // host's own pick. Old daemons omit it → task-role fallback.
+    composerPreferences: ComposerPreferencesSchema.optional(),
   }),
 });
 export type MissionControlContextFetchResponse = z.infer<
@@ -1358,4 +1363,48 @@ export const MissionControlPeerTimelineResponseSchema = z.object({
 });
 export type MissionControlPeerTimelineResponse = z.infer<
   typeof MissionControlPeerTimelineResponseSchema
+>;
+
+// ============================================================================
+// M12 ONE catalog path for fleet tools: the Voice node and the Commander both
+// execute named fleet tools through the daemon's Paseo tool catalog
+// (mission_control.tools.execute). The session builds the catalog with the
+// Commander identity (callerLabels paseo.mission-control=commander, voice
+// tools enabled) so label-gated fleet tools behave exactly as they do for the
+// Commander; the COMMANDER_TOOL_ALLOWLIST gates which names the RPC runs —
+// Voice still decides which names Gemini sees. Pure zod schemas (no
+// transform) so the AOT validator regen stays mechanical.
+// ============================================================================
+
+export const MissionControlToolsExecuteRequestSchema = z.object({
+  type: z.literal("mission_control.tools.execute.request"),
+  requestId: z.string(),
+  // The Paseo fleet tool name (fleet_list_agents, fleet_recall, ...).
+  name: z.string(),
+  // Tool arguments; the catalog validates them against the tool's input
+  // schema at execution time.
+  args: z.record(z.string(), z.unknown()).optional(),
+});
+export type MissionControlToolsExecuteRequest = z.infer<
+  typeof MissionControlToolsExecuteRequestSchema
+>;
+
+export const MissionControlToolsExecuteResponseSchema = z.object({
+  type: z.literal("mission_control.tools.execute.response"),
+  payload: z.object({
+    requestId: z.string(),
+    ok: z.boolean(),
+    name: z.string(),
+    // The tool's structured output (JSON-safe — catalog tools emit
+    // ensureValidJson content). Absent when the tool produced none or the
+    // execution failed.
+    structuredContent: z.record(z.string(), z.unknown()).optional(),
+    // The tool's text content blocks joined (fleet tools usually return
+    // structuredContent with empty content).
+    content: z.string().optional(),
+    error: z.string().optional(),
+  }),
+});
+export type MissionControlToolsExecuteResponse = z.infer<
+  typeof MissionControlToolsExecuteResponseSchema
 >;

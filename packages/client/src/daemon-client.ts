@@ -685,6 +685,10 @@ type MissionControlPeerTimelinePayload = Extract<
   SessionOutboundMessage,
   { type: "mission_control.peer.timeline.response" }
 >["payload"];
+type MissionControlToolsExecutePayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.tools.execute.response" }
+>["payload"];
 export type FetchAgentTimelinePayload = FetchAgentTimelineResponseMessage["payload"];
 export type AgentForkContextPayload = AgentForkContextResponseMessage["payload"];
 
@@ -6068,6 +6072,30 @@ export class DaemonClient {
         ...(typeof input.limit === "number" && input.limit > 0 ? { limit: input.limit } : {}),
       },
       responseType: "mission_control.peer.timeline.response",
+    });
+  }
+
+  /**
+   * M12 execute a Commander-allowlisted Paseo fleet tool on the daemon's own
+   * catalog (mission_control.tools.execute) — the ONE catalog path the Voice
+   * node and the Commander share. The daemon builds a Commander-identity
+   * catalog (label-gated fleet tools behave exactly as they do for the
+   * Commander) and runs catalog.executeTool(name, args); names outside
+   * COMMANDER_TOOL_ALLOWLIST are refused server-side.
+   */
+  async missionControlToolsExecute(input: {
+    name: string;
+    args?: Record<string, unknown>;
+    requestId?: string;
+  }): Promise<MissionControlToolsExecutePayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: input.requestId,
+      message: {
+        type: "mission_control.tools.execute.request",
+        name: input.name,
+        ...(input.args ? { args: input.args } : {}),
+      },
+      responseType: "mission_control.tools.execute.response",
     });
   }
 

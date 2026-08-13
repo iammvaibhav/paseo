@@ -214,7 +214,11 @@ export function useSelectionAsk(config: SelectionAskConfig): SelectionAskState {
   );
   const preferenceScopeKey = `${preferenceScope.workspaceId ?? ""}\u0000${preferenceScope.projectKey ?? ""}`;
 
-  const { preferences, isLoading: isPreferencesLoading, updatePreferences } = useFormPreferences();
+  const {
+    preferences,
+    isLoading: isPreferencesLoading,
+    updatePreferences,
+  } = useFormPreferences(config.serverId);
 
   // Seed the model selection once per scope: the remembered choice
   // (workspace > project > global) wins over the source agent's current

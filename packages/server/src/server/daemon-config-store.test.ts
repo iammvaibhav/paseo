@@ -131,6 +131,85 @@ describe("DaemonConfigStore", () => {
     expect(store.get().agentProfiles).toHaveLength(1);
   });
 
+  test("patch round-trips composer preferences through the strictly-parsed persisted config", () => {
+    const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-daemon-config-store-"));
+    tempDirs.push(paseoHome);
+    const store = new DaemonConfigStore(paseoHome, {
+      relay: { enabled: false },
+      mcp: { injectIntoAgents: false },
+      browserTools: { enabled: false },
+      providers: {},
+      metadataGeneration: { providers: [] },
+      autoArchiveAfterMerge: false,
+      enableTerminalAgentHooks: false,
+      appendSystemPrompt: "",
+    });
+
+    store.patch({
+      composerPreferences: {
+        provider: "claude",
+        providerPreferences: {
+          claude: { model: "claude-opus-5", mode: "plan" },
+        },
+        byWorkspace: {
+          ws_1: {
+            provider: "codex",
+            providerPreferences: { codex: { model: "gpt-5.4", mode: "build" } },
+          },
+        },
+        byProject: {
+          proj_1: {
+            provider: "opencode",
+            providerPreferences: {
+              opencode: { model: "opencode-zen/deepseek-v4-flash-free" },
+            },
+          },
+        },
+      },
+    });
+
+    expect(loadPersistedConfig(paseoHome).daemon?.composerPreferences).toEqual({
+      provider: "claude",
+      providerPreferences: {
+        claude: { model: "claude-opus-5", mode: "plan" },
+      },
+      byWorkspace: {
+        ws_1: {
+          provider: "codex",
+          providerPreferences: { codex: { model: "gpt-5.4", mode: "build" } },
+        },
+      },
+      byProject: {
+        proj_1: {
+          provider: "opencode",
+          providerPreferences: {
+            opencode: { model: "opencode-zen/deepseek-v4-flash-free" },
+          },
+        },
+      },
+    });
+    expect(store.get().composerPreferences).toEqual({
+      provider: "claude",
+      providerPreferences: {
+        claude: { model: "claude-opus-5", mode: "plan" },
+      },
+      byWorkspace: {
+        ws_1: {
+          provider: "codex",
+          providerPreferences: { codex: { model: "gpt-5.4", mode: "build" } },
+        },
+      },
+      byProject: {
+        proj_1: {
+          provider: "opencode",
+          providerPreferences: {
+            opencode: { model: "opencode-zen/deepseek-v4-flash-free" },
+          },
+        },
+      },
+    });
+  });
+
   test("patch replaces the whole agent profile list rather than merging entries", () => {
     const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-daemon-config-store-"));
     tempDirs.push(paseoHome);
