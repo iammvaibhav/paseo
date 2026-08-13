@@ -14,6 +14,19 @@
 /** The label-key prefix marking system-owned agents (commander, verifier, machinery). */
 export const MISSION_CONTROL_LABEL_PREFIX = "paseo.mission-control";
 
+/** The label value marking the Commander itself (direct `paseo.mission-control`). */
+export const MISSION_CONTROL_COMMANDER_LABEL_VALUE = "commander";
+
+/**
+ * True when the labels mark the Commander itself (direct `paseo.mission-control`
+ * = "commander"). Narrower than `isCommanderOrMachineryLabels`: verifiers and
+ * other machinery (monitors, build-hash stamps) are not the Commander. Used to
+ * recognize Commander-dispatched workers, whose parent record is the Commander.
+ */
+export function isCommanderLabels(labels: Record<string, string> | undefined): boolean {
+  return labels?.[MISSION_CONTROL_LABEL_PREFIX] === MISSION_CONTROL_COMMANDER_LABEL_VALUE;
+}
+
 /**
  * True when the labels carry ANY `paseo.mission-control` key — the
  * commander, verifiers, and machinery artifacts. A bare `undefined` (an
@@ -44,7 +57,7 @@ export function isCommanderOrMachineryLabels(labels: Record<string, string> | un
     return false;
   }
   const direct = labels[MISSION_CONTROL_LABEL_PREFIX];
-  if (direct === "commander") {
+  if (direct === MISSION_CONTROL_COMMANDER_LABEL_VALUE) {
     return true;
   }
   if (direct === "verifier") {

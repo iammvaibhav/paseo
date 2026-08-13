@@ -3,6 +3,7 @@ import { View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { usePathname } from "expo-router";
 import { HostRouteBootstrapBoundary } from "@/components/host-route-bootstrap-boundary";
+import { TitlebarDragRegionEnabled } from "@/components/desktop/titlebar-drag-region";
 import { useLatchedBoolean } from "@/hooks/use-latched-boolean";
 import { MissionControlActiveContext } from "@/screens/mission-control/focus-context";
 import { MissionControlScreen } from "@/screens/mission-control-screen";
@@ -35,9 +36,15 @@ export function MissionControlPersistent(): ReactElement | null {
       testID="mission-control-persistent-layer"
     >
       <MissionControlActiveContext.Provider value={active}>
-        <HostRouteBootstrapBoundary>
-          <MissionControlScreen />
-        </HostRouteBootstrapBoundary>
+        {/* The hidden layer must not declare drag regions: Blink collects
+            -webkit-app-region from the whole layout tree regardless of
+            opacity/pointer-events, so the MC header's drag band would sit on
+            top of — and eat clicks from — every other screen's header. */}
+        <TitlebarDragRegionEnabled enabled={active}>
+          <HostRouteBootstrapBoundary>
+            <MissionControlScreen />
+          </HostRouteBootstrapBoundary>
+        </TitlebarDragRegionEnabled>
       </MissionControlActiveContext.Provider>
     </View>
   );

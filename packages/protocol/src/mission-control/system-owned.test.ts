@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   COMMANDER_HOME_DIR_SEGMENT,
+  isCommanderLabels,
   isCommanderOrMachineryLabels,
   isSystemOwnedAgentLabels,
 } from "./system-owned.js";
@@ -82,5 +83,20 @@ describe("isCommanderOrMachineryLabels truth table", () => {
 describe("COMMANDER_HOME_DIR_SEGMENT", () => {
   test("is the reserved commander home segment under the paseo home", () => {
     expect(COMMANDER_HOME_DIR_SEGMENT).toBe("commander");
+  });
+});
+
+describe("isCommanderLabels truth table", () => {
+  test("matches only the Commander itself", () => {
+    expect(isCommanderLabels({ "paseo.mission-control": "commander" })).toBe(true);
+    expect(isCommanderLabels(undefined)).toBe(false);
+    expect(isCommanderLabels({})).toBe(false);
+  });
+
+  test("verifiers, machinery, and user agents are not the Commander", () => {
+    expect(isCommanderLabels({ "paseo.mission-control": "verifier" })).toBe(false);
+    expect(isCommanderLabels({ "paseo.mission-control.build-hash": "abc123" })).toBe(false);
+    expect(isCommanderLabels({ "paseo.parent-agent-id": "agent-1" })).toBe(false);
+    expect(isCommanderLabels({ project: "payments" })).toBe(false);
   });
 });

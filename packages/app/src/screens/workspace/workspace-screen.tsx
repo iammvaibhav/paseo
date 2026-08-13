@@ -337,6 +337,23 @@ function decodeSegment(value: string): string {
   }
 }
 
+/**
+ * Resolve the agent and its parent record from the session for a tab-close
+ * policy decision. The parent is only resolvable when it lives on this host;
+ * a parent id pointing at an agent on another host (a Commander-dispatched
+ * worker) resolves to null, which the close policy treats as a root agent.
+ */
+function resolveAgentCloseContext(serverId: string | null | undefined, agentId: string) {
+  const sessionAgents = serverId
+    ? useSessionStore.getState().sessions[serverId]?.agents
+    : undefined;
+  const agent = sessionAgents?.get(agentId) ?? null;
+  const parentAgent = agent?.parentAgentId
+    ? (sessionAgents?.get(agent.parentAgentId) ?? null)
+    : null;
+  return { agent, parentAgent };
+}
+
 function useSyncWorkspaceActiveBrowser(input: {
   workspaceLayout: WorkspaceLayout | null;
   isRouteFocused: boolean;
@@ -2996,9 +3013,8 @@ function WorkspaceScreenContent({
           return;
         }
 
-        const agent =
-          useSessionStore.getState().sessions[normalizedServerId]?.agents?.get(agentId) ?? null;
-        let closePolicy = resolveCloseAgentTabPolicy(agent);
+        const { agent, parentAgent } = resolveAgentCloseContext(normalizedServerId, agentId);
+        let closePolicy = resolveCloseAgentTabPolicy(agent, parentAgent);
         const isRunning = agent?.status === "running";
 
         if (isRunning && closePolicy.kind === "archive-on-close") {
@@ -3025,9 +3041,11 @@ function WorkspaceScreenContent({
             await sessionClient.updateAgent(agentId, {
               labels: { [getOpenAgentTabLabel(clientId)]: "false" },
             });
-            const latestAgent =
-              useSessionStore.getState().sessions[normalizedServerId]?.agents?.get(agentId) ?? null;
-            closePolicy = resolveCloseAgentTabPolicy(latestAgent);
+            const { agent: latestAgent, parentAgent: latestParent } = resolveAgentCloseContext(
+              normalizedServerId,
+              agentId,
+            );
+            closePolicy = resolveCloseAgentTabPolicy(latestAgent, latestParent);
           } catch (error) {
             console.error("[WorkspaceScreen] Failed to close subagent tab", { error, agentId });
             toast.error(t("workspace.tabs.toasts.failedToCloseAgent"));
@@ -3276,8 +3294,10 @@ function WorkspaceScreenContent({
       }
 
       const groups = classifyBulkClosableTabs(tabsToClose, (agentId) => {
-        const agent = useSessionStore.getState().sessions[normalizedServerId]?.agents?.get(agentId);
-        return resolveCloseAgentTabPolicy(agent).kind === "layout-only" ? "layout-only" : "archive";
+        const { agent, parentAgent } = resolveAgentCloseContext(normalizedServerId, agentId);
+        return resolveCloseAgentTabPolicy(agent, parentAgent).kind === "layout-only"
+          ? "layout-only"
+          : "archive";
       });
       const modifiedCount = tabsToClose.filter(
         (tab) =>
@@ -3314,9 +3334,11 @@ function WorkspaceScreenContent({
           await client.updateAgent(agentId, {
             labels: { [getOpenAgentTabLabel(clientId)]: "false" },
           });
-          const latestAgent =
-            useSessionStore.getState().sessions[normalizedServerId]?.agents?.get(agentId) ?? null;
-          if (resolveCloseAgentTabPolicy(latestAgent).kind === "archive-on-close") {
+          const { agent: latestAgent, parentAgent: latestParent } = resolveAgentCloseContext(
+            normalizedServerId,
+            agentId,
+          );
+          if (resolveCloseAgentTabPolicy(latestAgent, latestParent).kind === "archive-on-close") {
             await archiveAgent({ serverId: normalizedServerId, agentId });
           }
         },

@@ -179,7 +179,9 @@ These are two distinct concepts that used to be conflated:
 
 Closing a tab on a **root agent** still archives — the tab is the agent's home, so closing it means "I'm done with this agent." A confirm dialog protects against archiving a running agent by accident.
 
-Closing a tab on a **subagent** (any agent with `parentAgentId`) is **layout-only**. The app clears the current client's open-tab label before removing the tab. Another client's open tab remains protected. The agent stays unarchived and stays in its parent's track, so a later parent archive cascades to it when no client still has it open. The user can re-open the tab from the track at any time. Single and bulk tab close apply the same policy.
+Closing a tab on a **nested subagent** is **layout-only**: its parent record resolves on the same host, so the agent reports through it. The app clears the current client's open-tab label before removing the tab. Another client's open tab remains protected. The agent stays unarchived and stays in its parent's track, so a later parent archive cascades to it when no client still has it open. The user can re-open the tab from the track at any time. Single and bulk tab close apply the same policy.
+
+`parentAgentId` alone does not make an agent a subagent. The close policy treats an agent as a root unless its parent record resolves to a non-Commander agent in the same workspace. Commander-dispatched workers carry `paseo.parent-agent-id` pointing at the Commander; whether that record resolves here (the Commander runs on this host) or never resolves (it runs elsewhere), the worker is a root agent, so closing its tab archives it like any other root.
 
 The asymmetry is intentional: a subagent's persistent relationship lives in the parent's track. Same-workspace subagents are not auto-opened as tabs; the user opens one from that track when needed. A cross-workspace subagent is also auto-opened as a tab in its own workspace so opening that workspace does not appear empty. It remains in the parent's track until it is actually detached.
 
@@ -232,7 +234,7 @@ To keep the agent alive but remove it from the parent's track, use **detach**. T
 The decision was to **decouple "close tab" from "archive" only for subagents**, rather than universally:
 
 - **Closing a tab on a root agent still archives** — preserves the existing UX users are trained on
-- **Closing a tab on a subagent is layout-only** — fixes the lossy "click to read, close to dismiss view, lose the row" flow
+- **Closing a tab on a nested subagent is layout-only** — fixes the lossy "click to read, close to dismiss view, lose the row" flow
 - **Archive button on track rows** — gives subagents an explicit lifecycle gesture in their home surface
 - **Detach button on track rows** — lets a subagent continue independently without killing its work
 - **Cascade archive on parent** — keeps subagents from leaking when the parent is archived
