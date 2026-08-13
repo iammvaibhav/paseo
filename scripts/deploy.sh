@@ -1049,6 +1049,11 @@ REPO_DIR="\$HOME/$MACBOOK_REPO_DIR"
 
 log() { printf '\n[%s:macbook] %s\n' "\$(date '+%H:%M:%S')" "\$*"; }
 
+# Non-interactive ssh shell has no node on PATH; source nvm before any npm step.
+export NVM_DIR="\${NVM_DIR:-\$HOME/.nvm}"
+[ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
+nvm use "\$NODE_VERSION" >/dev/null 2>&1 || nvm install "\$NODE_VERSION" >/dev/null
+
 cd "\$REPO_DIR"
 log "git sync to origin/\$BRANCH"
 git fetch origin --prune
