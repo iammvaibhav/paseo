@@ -228,11 +228,17 @@ Do day-to-day work on this branch, not on `main`.
 
 |                 |                                                                                                    |
 | --------------- | -------------------------------------------------------------------------------------------------- |
-| **How**         | `./scripts/deploy.sh` from the repo root                                                           |
+| **How**         | `./scripts/deploy.sh` from the repo root (or `/home/ubuntu/paseo` on iammvaibhav)                  |
 | **Daemon home** | `~/.paseo` locally; `/home/vaibhav/.paseo` (blrofc3), `/home/ubuntu/.paseo` (iammvaibhav)          |
 | **Port**        | **6767** (production-style host daemon — what the desktop app and remotes use)                     |
 | **Desktop**     | Unsigned build → **quit → `rm -rf` → `cp -R` → `open` `/Applications/Paseo.app`** (not Paseo Test) |
 | **Not this**    | `npm run dev` / port **6768** / `.dev/paseo-home` is checkout hot-reload only, not deploy          |
+
+**Orchestrator modes** (auto-detected by `uname -s`):
+
+- **MacBook (macOS)** — as before: local = MacBook (daemon restart + desktop build/install), remotes = `blrofc3` + `iammvaibhav`.
+- **iammvaibhav (Linux)** — the current home of the migrated `paseo` project. Local = iammvaibhav (daemon build/restart + nudge + services); remotes = `blrofc3` (WireGuard); the **MacBook is a desktop-only job** (`job-macbook-desktop`): deploy ssh's to it (alias `macbook` = `10.7.0.2`), git-syncs the checkout (non-clobbering: dirty/diverged → skip), and runs `PASEO_DESKTOP_ONLY=1` to build → quit → replace → relaunch `Paseo.app`. The job is reachability-gated and **never fatal** — if the MacBook is down or its checkout is dirty, iammvaibhav + blrofc3 still deploy.
+- **The MacBook daemon is deliberately NOT restarted by iammvaibhav deploys** — `paseo-dev` agents on the Mac stay untouched until the migration is complete. Its desktop app still talks to the local daemon; iammvaibhav shows up via peering.
 
 #### Agents MUST treat deploy as fire-and-forget
 
@@ -287,12 +293,12 @@ ssh iammvaibhav 'PATH="$HOME/.local/bin:$PATH" paseo daemon start --home "$HOME/
 ### Day-to-day flow
 
 1. Commit changes on `vaibhav/customizations` (or let deploy auto-commit).
-2. Run `./scripts/deploy.sh` from the repo root — **this is the deploy path.** (Self-detaches; tail `~/.paseo/deploy-logs/latest.log`.)
+2. Run `./scripts/deploy.sh` from the repo root — **this is the deploy path.** (Self-detaches; tail `~/.paseo/deploy-logs/latest.log`.) Today the deploy normally runs **from iammvaibhav** (`ssh iammvaibhav 'cd /home/ubuntu/paseo && ./scripts/deploy.sh'` with `PASEO_PASSWORD` set for the nudge).
 
 The script:
 
-1. **Local Mac** — auto-commits any uncommitted changes (commit message written by the `claude` CLI on **Haiku 4.5**, falling back to a timestamp; if pre-commit fails, **Grok 4.5 high** fixes lint/format/typecheck and commits), fetches `upstream`, fast-forwards `origin/main` to `upstream/main`, **merges** `upstream/main` into the custom branch (on conflict, `grok` at **Grok 4.5 / `high` effort** resolves markers, stages, fixes pre-commit checks, and completes the merge commit — streaming its output), then **pushes** to `origin`. After the push, post-deploy work runs **in parallel**: each remote host, local daemon restart (after a local `build:server`), local code-server, and the **desktop app** build then install via the formal loop below. Skip desktop with `PASEO_BUILD_DESKTOP=0`; retarget with `PASEO_DESKTOP_APP` (COMPAT: `PASEO_DESKTOP_TEST_APP`). Local server compile is not parallel with the desktop build (both write `packages/*/dist`). Models are overridable via `PASEO_COMMIT_MSG_MODEL` / `PASEO_CONFLICT_MODEL` / `PASEO_CONFLICT_EFFORT` / `PASEO_CONFLICT_MAX_TURNS`. A merge commit is used deliberately (simpler + one-pass resolution); linear history is not preserved.
-2. **`blrofc3`** and **`iammvaibhav`** — each is a parallel post-push job: repoints `origin` to the fork if still on `getpaseo/paseo`, checks out `vaibhav/customizations` from `origin`, installs deps when `package.json` / lockfile changed, builds, and restarts each host's `~/.paseo` daemon.
+1. **Git phase (on the orchestrator host)** — auto-commits any uncommitted changes (commit message written by the `claude` CLI on **Haiku 4.5**, falling back to a timestamp; if pre-commit fails, **Grok 4.5 high** fixes lint/format/typecheck and commits), fetches `upstream`, fast-forwards `origin/main` to `upstream/main`, fast-forwards to whatever `origin/$BRANCH` already has (never force-reverts another host's push), **merges** `upstream/main` into the custom branch (on conflict, `grok` at **Grok 4.5 / `high` effort** resolves markers, stages, fixes pre-commit checks, and completes the merge commit — streaming its output), then **pushes** to `origin`. After the push, post-deploy work runs **in parallel**: each remote host, local daemon restart (after a local `build:server`), local code-server, and the **desktop app** build then install via the formal loop below (on the MacBook, either locally or via the ssh job). Skip desktop with …
+2. **Remotes** — each is a parallel post-push job: repoints `origin` to the fork if still on `getpaseo/paseo`, checks out `vaibhav/customizations` from `origin`, installs deps when `package.json` / lockfile changed, builds, and restarts the host's `~/.paseo` daemon (with the self-wake nudge). From the MacBook the remotes are `blrofc3` + `iammvaibhav`; from iammvaibhav the remote is `blrofc3` (via WireGuard) plus the MacBook desktop job.
 
 No longer requires a clean working tree — uncommitted changes are auto-committed first. The auto-commit runs the pre-commit hook (lint/format/typecheck), so a quality failure aborts the sync before anything is pushed.
 
