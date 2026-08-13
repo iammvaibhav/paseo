@@ -204,6 +204,64 @@ describe("OMP CLI runtime", () => {
     expect(eventTypes).toEqual(["agent_end"]);
   });
 
+  test("accepts omp 17.2+ stream error, toolcall, and turn_end frames", async () => {
+    const child = createOmpChild();
+    const warnings: Array<{ msg: string }> = [];
+    const logger = pino(
+      { level: "warn" },
+      {
+        write(line: string) {
+          warnings.push(JSON.parse(line) as { msg: string });
+        },
+      },
+    );
+    const session = await createRuntime(child, [], logger).startSession({
+      cwd: "/workspace/project",
+    });
+    const eventTypes: string[] = [];
+    session.onEvent((event) => eventTypes.push(event.type));
+
+    // omp 17.2+ streams model-stream failures as message_update frames with
+    // assistantMessageEvent.type "error". These used to fail schema
+    // validation and vanish (omp.rpc.schema_drop), erasing the error trail.
+    child.stdout.write(
+      `${JSON.stringify({
+        type: "message_update",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "partial" }],
+          errorMessage: "upstream stream failed",
+          stopReason: "error",
+        },
+        assistantMessageEvent: {
+          type: "error",
+          reason: "error",
+          error: { role: "assistant", content: [{ type: "text", text: "boom" }] },
+        },
+      })}\n`,
+    );
+    // toolcall deltas and the turn_end frame belong to the same contract.
+    child.stdout.write(
+      `${JSON.stringify({
+        type: "message_update",
+        message: { role: "assistant", content: [{ type: "text", text: "" }] },
+        assistantMessageEvent: { type: "toolcall_delta", delta: '{"id":' },
+      })}\n`,
+    );
+    child.stdout.write(
+      `${JSON.stringify({
+        type: "turn_end",
+        message: { role: "assistant", content: [{ type: "text", text: "done" }] },
+        toolResults: [],
+      })}\n`,
+    );
+
+    await vi.waitFor(() => expect(eventTypes).toHaveLength(3));
+
+    expect(warnings).toEqual([]);
+    expect(eventTypes).toEqual(["message_update", "message_update", "turn_end"]);
+  });
+
   test("lists commands through get_available_commands", async () => {
     const child = createOmpChild();
     const commandTypes: string[] = [];

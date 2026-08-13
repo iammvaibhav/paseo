@@ -270,12 +270,29 @@ export const OmpAssistantMessageEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("text_end") }).passthrough(),
   z.object({ type: z.literal("thinking_start") }).passthrough(),
   z.object({ type: z.literal("thinking_end") }).passthrough(),
+  z.object({ type: z.literal("image_end") }).passthrough(),
+  z.object({ type: z.literal("toolcall_start") }).passthrough(),
+  z.object({ type: z.literal("toolcall_delta"), delta: z.string().optional() }).passthrough(),
+  z.object({ type: z.literal("toolcall_end") }).passthrough(),
+  z
+    .object({
+      type: z.literal("error"),
+      reason: z.enum(["aborted", "error"]).optional(),
+    })
+    .passthrough(),
   z.object({ type: z.literal("done") }).passthrough(),
 ]);
 
 export const OmpAgentSessionEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("agent_start") }).passthrough(),
   z.object({ type: z.literal("turn_start") }).passthrough(),
+  z
+    .object({
+      type: z.literal("turn_end"),
+      message: OmpAgentMessageSchema.optional(),
+      toolResults: z.array(OmpAgentMessageSchema).optional(),
+    })
+    .passthrough(),
   z.object({ type: z.literal("message_start"), message: OmpAgentMessageSchema }).passthrough(),
   z.object({ type: z.literal("message_end"), message: OmpAgentMessageSchema }).passthrough(),
   z

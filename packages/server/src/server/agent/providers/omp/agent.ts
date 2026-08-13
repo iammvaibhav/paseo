@@ -2261,6 +2261,29 @@ export class OmpAgentSession implements AgentSession {
           text: event.assistantMessageEvent.delta ?? "",
         },
       });
+      return;
+    }
+    if (event.assistantMessageEvent.type === "error") {
+      // omp 17.2+ streams model-stream failures as message_update events with
+      // assistantMessageEvent.type "error". These used to fail schema
+      // validation and vanish (omp.rpc.schema_drop), leaving a stalled turn
+      // with no error trail. Surface them so the timeline shows why the
+      // stream stopped.
+      const errorMessage =
+        event.message.role === "assistant" ? event.message.errorMessage : undefined;
+      this.emit({
+        type: "timeline",
+        provider: this.provider,
+        turnId,
+        item: {
+          type: "error",
+          message:
+            errorMessage?.slice(0, 64 * 1024) ??
+            (event.assistantMessageEvent.reason === "aborted"
+              ? "Agent turn aborted by the provider"
+              : "Agent model stream failed"),
+        },
+      });
     }
   }
 
