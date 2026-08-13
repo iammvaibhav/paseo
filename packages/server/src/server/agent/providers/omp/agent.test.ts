@@ -228,6 +228,38 @@ describe("OMP agent client and session", () => {
     expect(omp.completedTurnCount()).toBe(1);
   });
 
+  test("surfaces omp 17.2+ stream error events as timeline errors", async () => {
+    const omp = new OmpHarness();
+    await omp.start();
+
+    // omp 17.2+ reports a failing model stream as a message_update whose
+    // assistantMessageEvent.type is "error". The daemon used to drop these
+    // frames at the schema boundary, leaving a stalled turn with no trail.
+    const runtime = omp.runtime();
+    runtime.beginTurn();
+    runtime.emit({
+      type: "message_update",
+      message: {
+        role: "assistant",
+        content: [],
+        errorMessage: "upstream stream failed",
+        stopReason: "error",
+      },
+      assistantMessageEvent: {
+        type: "error",
+        reason: "error",
+        error: { role: "assistant", content: [] },
+      },
+    });
+    runtime.finishTurn();
+    await waitForImmediate();
+
+    expect(omp.timeline()).toContainEqual({
+      type: "error",
+      message: "upstream stream failed",
+    });
+  });
+
   test("streams OMP advisor messages as distinct tool-call blocks", async () => {
     const omp = new OmpHarness();
     await omp.start();
