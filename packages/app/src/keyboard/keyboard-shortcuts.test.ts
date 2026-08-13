@@ -494,19 +494,8 @@ describe("keyboard-shortcuts", () => {
       context: { isMac: false, focusScope: "message-input" },
     },
     {
-      name: "does not interrupt agent when terminal is focused",
+      name: "does not bind Escape to interrupt the agent",
       event: { key: "Escape", code: "Escape" },
-      context: { focusScope: "terminal" },
-    },
-    {
-      name: "does not interrupt agent when command center is open",
-      event: { key: "Escape", code: "Escape" },
-      context: { commandCenterOpen: true },
-    },
-    {
-      name: "does not interrupt agent from the message input",
-      event: { key: "Escape", code: "Escape" },
-      context: { focusScope: "message-input" },
     },
     {
       name: "does not bind pane shortcuts on non-mac platforms",

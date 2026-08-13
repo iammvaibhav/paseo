@@ -9,7 +9,7 @@ import {
   persistAttachmentFromFileUri,
 } from "@/attachments/service";
 import { collectRetainedAttachmentIds } from "@/attachments/gc-retention";
-import { useCreateFlowStore } from "@/stores/create-flow-store";
+import { useCreateFlowStore, type PendingCreateAttempt } from "@/stores/create-flow-store";
 import { useSessionStore, type SessionState } from "@/stores/session-store";
 import { useWorkspaceAttachmentsStore } from "@/attachments/workspace-attachments-store";
 import {
@@ -31,6 +31,14 @@ import { migrateDraftInput, migratePersistedState, type MigrateLegacyImages } fr
 import { createDraftPersistStorage } from "./persistence";
 
 export type { DraftInput, DraftLifecycleState } from "./state";
+
+/**
+ * Reads a store's state without throwing when the store has not hydrated yet.
+ * Attachment GC can run before a store is mounted, so every access is guarded.
+ */
+function storeState<T>(store: { getState?: () => T } | null | undefined): T | undefined {
+  return store?.getState?.();
+}
 
 interface DraftStoreActions {
   getDraftInput: (draftKey: string) => DraftInput | undefined;
@@ -136,24 +144,18 @@ async function runAttachmentGc(): Promise<void> {
   });
 
   const referencedIds = new Set<string>();
-  for (const id of useDraftStore.getState().collectActiveAttachmentIds()) {
+  const draftStoreState = storeState(useDraftStore);
+  for (const id of draftStoreState?.collectActiveAttachmentIds() ?? []) {
     referencedIds.add(id);
   }
   for (const id of collectRetainedAttachmentIds()) {
     referencedIds.add(id);
   }
 
-  const pendingByDraftId = useCreateFlowStore.getState().pendingByDraftId;
-  for (const pendingCreate of Object.values(pendingByDraftId)) {
-    if (pendingCreate.lifecycle !== "active" || !pendingCreate.images) {
-      continue;
-    }
-    for (const image of pendingCreate.images) {
-      referencedIds.add(image.id);
-    }
-  }
+  const pendingByDraftId = storeState(useCreateFlowStore)?.pendingByDraftId ?? {};
+  collectPendingCreateAttachmentIds(pendingByDraftId, referencedIds);
 
-  const sessions = useSessionStore.getState().sessions;
+  const sessions = storeState(useSessionStore)?.sessions ?? {};
   for (const session of Object.values(sessions)) {
     collectQueuedMessageAttachmentIds(session, referencedIds);
     collectStreamUserImageIds(session.agentStreamTail, referencedIds);
@@ -163,7 +165,7 @@ async function runAttachmentGc(): Promise<void> {
   // Browser-element screenshots live in the workspace attachment store, not in
   // drafts, so collect their ids here to keep them from being garbage collected
   // before the user sends the message.
-  const attachmentsByScope = useWorkspaceAttachmentsStore.getState().attachmentsByScope;
+  const attachmentsByScope = storeState(useWorkspaceAttachmentsStore)?.attachmentsByScope ?? {};
   for (const attachments of Object.values(attachmentsByScope)) {
     for (const attachment of attachments) {
       if (attachment.kind === "browser_element" && attachment.attachment.screenshot) {
@@ -190,6 +192,20 @@ function collectQueuedMessageAttachmentIds(
           referencedIds.add(attachment.metadata.id);
         }
       }
+    }
+  }
+}
+
+function collectPendingCreateAttachmentIds(
+  pendingByDraftId: Record<string, PendingCreateAttempt>,
+  referencedIds: Set<string>,
+): void {
+  for (const pendingCreate of Object.values(pendingByDraftId)) {
+    if (pendingCreate.lifecycle !== "active" || !pendingCreate.images) {
+      continue;
+    }
+    for (const image of pendingCreate.images) {
+      referencedIds.add(image.id);
     }
   }
 }
