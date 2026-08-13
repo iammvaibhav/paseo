@@ -764,6 +764,9 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: 12,
     lineHeight: 17,
     fontFamily: theme.fontFamily.mono,
+    flexShrink: 1,
+    minWidth: 0,
+    overflowWrap: "anywhere",
   },
   commentInput: {
     backgroundColor: theme.colors.surface2,
@@ -820,6 +823,12 @@ const styles = StyleSheet.create((theme) => ({
   },
   answerContent: {
     gap: 8,
+    // Keep the scroll content at the scroller width: without minWidth: 0 an
+    // unbreakable token (long code identifier) makes the flex column lay out
+    // wider than the panel and every line past the edge gets clipped by the
+    // ScrollView's hidden overflow-x.
+    minWidth: 0,
+    width: "100%",
   },
   answerEmptyText: {
     color: theme.colors.foregroundExtraMuted,
@@ -830,6 +839,7 @@ const styles = StyleSheet.create((theme) => ({
   userBubble: {
     alignSelf: "flex-end",
     maxWidth: "92%",
+    minWidth: 0,
     backgroundColor: theme.colors.surface3,
     borderRadius: theme.borderRadius.md,
     paddingHorizontal: 8,
@@ -839,9 +849,12 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foreground,
     fontSize: 12,
     lineHeight: 17,
+    flexShrink: 1,
+    overflowWrap: "anywhere",
   },
   assistantMessage: {
     alignSelf: "stretch",
+    minWidth: 0,
   },
   followUpRow: {
     flexDirection: "row",

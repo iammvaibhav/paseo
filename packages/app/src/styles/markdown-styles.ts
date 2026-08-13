@@ -172,6 +172,12 @@ export function createMarkdownStyles(theme: Theme) {
       borderWidth: 0,
       fontFamily: theme.fontFamily.mono,
       fontSize: theme.fontSize.code,
+      // Unbreakable code tokens widen a wrapping paragraph's min-content and
+      // overflow narrow containers; let them break anywhere so prose and code
+      // stay inside the panel instead of clipping at the right edge.
+      flexShrink: 1,
+      minWidth: 0,
+      overflowWrap: "anywhere",
     },
 
     code_block: {
@@ -183,6 +189,9 @@ export function createMarkdownStyles(theme: Theme) {
       fontFamily: theme.fontFamily.mono,
       fontSize: theme.fontSize.code,
       marginVertical: theme.spacing[2],
+      flexShrink: 1,
+      minWidth: 0,
+      overflowWrap: "anywhere",
     },
 
     fence: {
@@ -196,6 +205,9 @@ export function createMarkdownStyles(theme: Theme) {
       fontFamily: theme.fontFamily.mono,
       fontSize: theme.fontSize.code,
       marginVertical: theme.spacing[3],
+      flexShrink: 1,
+      minWidth: 0,
+      overflowWrap: "anywhere",
     },
 
     pre: {
