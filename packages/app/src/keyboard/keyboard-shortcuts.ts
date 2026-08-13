@@ -1040,10 +1040,9 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
   {
     id: "agent-interrupt",
     action: "agent.interrupt",
-    combo: "Escape",
-    when: { commandCenter: false, terminal: false },
-    preventDefault: false,
-    stopPropagation: false,
+    // No default combo: Escape must never stop the running agent. The action
+    // stays rebindable from Settings -> Keyboard shortcuts.
+    combo: "",
     help: {
       id: "agent-interrupt",
       section: "agent-input",
