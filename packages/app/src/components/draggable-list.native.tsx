@@ -119,6 +119,8 @@ export function DraggableList<T>({
       scrollEnabled={scrollEnabled}
       extraData={extraData}
       simultaneousHandlers={simultaneousHandlers}
+      // @ts-expect-error patched prop (patches/react-native-draggable-flatlist+4.0.3.patch);
+      // missing from published types when the patch is not applied in this install.
       dragGestureHostPresented={gestureHostPresented}
       // Higher activation distance reduces accidental drag capture while nested
       // lists are inside a scroll container.
