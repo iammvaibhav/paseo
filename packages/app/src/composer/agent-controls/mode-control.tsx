@@ -274,7 +274,7 @@ export function useLiveAgentModeControl(
     compareAvailableModes,
   );
   const client = useSessionStore((state) => state.sessions[serverId]?.client ?? null);
-  const { updatePreferences } = useFormPreferences();
+  const { updatePreferences } = useFormPreferences(serverId);
   const toast = useToast();
   const { entries: snapshotEntries } = useProvidersSnapshot(serverId, { cwd: slice?.cwd });
 

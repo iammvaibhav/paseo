@@ -1639,7 +1639,7 @@ export const AgentControls = memo(function AgentControls({
   isCompactLayout,
 }: AgentControlsProps) {
   const { t } = useTranslation();
-  const { preferences, updatePreferences } = useFormPreferences();
+  const { preferences, updatePreferences } = useFormPreferences(serverId);
   const agent = useSessionStore(
     useShallow((state) => selectAgentControlsSlice(state, serverId, agentId)),
   );

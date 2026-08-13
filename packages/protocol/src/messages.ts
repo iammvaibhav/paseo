@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ComposerPreferencesSchema } from "./composer-preferences.js";
 import { TerminalActivitySchema } from "./terminal-activity.js";
 import { CLIENT_CAPS } from "./client-capabilities.js";
 import { AGENT_LIFECYCLE_STATUSES } from "./agent-lifecycle.js";
@@ -108,6 +109,8 @@ import {
   MissionControlTagMessageResponseSchema,
   MissionControlPeerTimelineRequestSchema,
   MissionControlPeerTimelineResponseSchema,
+  MissionControlToolsExecuteRequestSchema,
+  MissionControlToolsExecuteResponseSchema,
 } from "./mission-control/types.js";
 export {
   MissionControlEventSchema,
@@ -162,6 +165,10 @@ export {
   type MissionControlTagMessageResponse,
   type MissionControlPeerTimelineRequest,
   type MissionControlPeerTimelineResponse,
+  MissionControlToolsExecuteRequestSchema,
+  MissionControlToolsExecuteResponseSchema,
+  type MissionControlToolsExecuteRequest,
+  type MissionControlToolsExecuteResponse,
 } from "./mission-control/types.js";
 import {
   LoopRunRequestSchema,
@@ -400,6 +407,7 @@ export const MutableDaemonConfigSchema = z
     terminalProfiles: z.array(TerminalProfileSchema).optional(),
     missionControl: MutableMissionControlConfigSchema.optional(),
     agentProfiles: z.array(AgentProfileSchema).optional(),
+    composerPreferences: ComposerPreferencesSchema.optional(),
   })
   .passthrough();
 
@@ -419,6 +427,7 @@ export const MutableDaemonConfigPatchSchema = z
     terminalProfiles: z.array(TerminalProfileSchema).optional(),
     missionControl: MutableMissionControlConfigSchema.partial().optional(),
     agentProfiles: z.array(AgentProfileSchema).optional(),
+    composerPreferences: ComposerPreferencesSchema.optional(),
   })
   .partial()
   .passthrough();
@@ -3261,6 +3270,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   MissionControlContextRecordsRequestSchema,
   MissionControlTagMessageRequestSchema,
   MissionControlPeerTimelineRequestSchema,
+  MissionControlToolsExecuteRequestSchema,
 ]);
 
 export type SessionInboundMessage = z.infer<typeof SessionInboundMessageSchema>;
@@ -6331,6 +6341,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   MissionControlContextRecordsResponseSchema,
   MissionControlTagMessageResponseSchema,
   MissionControlPeerTimelineResponseSchema,
+  MissionControlToolsExecuteResponseSchema,
   DaemonUpdateProgressMessageSchema,
   DaemonUpdateResponseSchema,
 ]);

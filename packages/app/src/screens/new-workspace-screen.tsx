@@ -697,12 +697,13 @@ function useWorkspaceIsolation(input: {
   supportsMultiplicity: boolean;
   worktreeSupport: "supported" | "unsupported" | "unknown";
   projectKey?: string | null;
+  serverId?: string | null;
 }): WorkspaceIsolationState {
-  const { supportsMultiplicity, worktreeSupport, projectKey } = input;
+  const { supportsMultiplicity, worktreeSupport, projectKey, serverId } = input;
   // Isolation is remembered per project (byProject[projectKey].isolation) with
   // a global fallback for older data / no project. A manual pick overrides the
   // remembered default until the screen remounts or the project changes.
-  const { preferences, updatePreferences } = useFormPreferences();
+  const { preferences, updatePreferences } = useFormPreferences(serverId);
   const [manualIsolation, setManualIsolation] = useState<"local" | "worktree" | null>(null);
   const [manualIsolationProjectKey, setManualIsolationProjectKey] = useState<string | null>(null);
   const scopeKey =
@@ -1632,7 +1633,7 @@ export function NewWorkspaceScreen({
   // something in this screen, so the async preferences load doesn't race a
   // frozen useState initializer.
   const { preferences: formPreferences, updatePreferences: updateFormPreferences } =
-    useFormPreferences();
+    useFormPreferences(selectedServerId);
   const { config: daemonConfig } = useDaemonConfig(selectedServerId);
   const terminalProfiles: readonly TerminalProfile[] = useMemo(
     () => resolveTerminalProfiles(daemonConfig?.terminalProfiles),
@@ -1769,6 +1770,7 @@ export function NewWorkspaceScreen({
       supportsMultiplicity: supportsWorkspaceMultiplicity,
       worktreeSupport,
       projectKey: resolveSelectedProjectKey(selectedProject),
+      serverId: selectedServerId,
     });
   const branchSuggestionsQuery = useQuery({
     queryKey: [

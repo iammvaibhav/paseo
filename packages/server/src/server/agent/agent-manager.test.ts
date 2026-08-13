@@ -2593,6 +2593,40 @@ test("createAgent passes native Paseo tools through launch context without inter
   });
 });
 
+test("createPaseoToolCatalog wraps the factory for non-agent callers", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-test-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+
+  const fleetCatalog: PaseoToolCatalog = {
+    tools: new Map(),
+    getTool: () => undefined,
+    executeTool: async () => {
+      throw new Error("No tools registered in test catalog");
+    },
+  };
+  const factory = vi.fn(() => fleetCatalog);
+  const manager = new AgentManager({
+    clients: {},
+    registry: storage,
+    logger,
+    paseoToolCatalogFactory: factory,
+  });
+
+  const runtime = {
+    callerLabels: { "paseo.mission-control": "commander" },
+    enableVoiceTools: true,
+  };
+  const catalog = await manager.createPaseoToolCatalog(runtime);
+  expect(catalog).toBe(fleetCatalog);
+  expect(factory).toHaveBeenCalledWith(runtime);
+
+  // A missing factory (Paseo tools disabled) resolves to null, never throws.
+  const bare = new AgentManager({ clients: {}, registry: storage, logger });
+  expect(await bare.createPaseoToolCatalog()).toBeNull();
+  expect(await bare.createPaseoToolCatalog({ callerAgentId: "voice-1" })).toBeNull();
+});
+
 test("createAgent allows best-effort internal MCP when the provider session reports no support", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-test-"));
   const storagePath = join(workdir, "agents");

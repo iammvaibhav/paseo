@@ -41,6 +41,68 @@ export function classifyEvent(event) {
   return "buffer";
 }
 
+/**
+ * Spoken digest for fleet_list_agents catalog rows (each row carries host,
+ * status, and optionally requiresAttention). Buckets:
+ * - needs-you: requiresAttention === true OR status "error" (attention
+ *   outranks the lifecycle, matching the board's Needs-you bucket).
+ * - running: status "running".
+ * - idle: everything else. Idle is explicitly NOT needs-you.
+ * Groups by host, leads with fleet-wide counts, then names per host so the
+ * model can answer follow-ups ("which ones need me?").
+ */
+export function buildFleetRosterDigest(agents) {
+  const rows = Array.isArray(agents) ? agents : [];
+  if (rows.length === 0) {
+    return "No agents in the fleet.";
+  }
+  const byHost = new Map();
+  for (const agent of rows) {
+    const host = agent.host || "unknown";
+    if (!byHost.has(host)) {
+      byHost.set(host, []);
+    }
+    byHost.get(host).push(agent);
+  }
+  const count = (list) => {
+    let running = 0;
+    let needsYou = 0;
+    let idle = 0;
+    for (const a of list) {
+      if (a.requiresAttention === true || a.status === "error") {
+        needsYou += 1;
+      } else if (a.status === "running") {
+        running += 1;
+      } else {
+        idle += 1;
+      }
+    }
+    return { running, needsYou, idle };
+  };
+  const total = { running: 0, needsYou: 0, idle: 0 };
+  const hostParts = [];
+  for (const [host, list] of byHost) {
+    const bucket = count(list);
+    total.running += bucket.running;
+    total.needsYou += bucket.needsYou;
+    total.idle += bucket.idle;
+    const label = (a) => {
+      const name = a.title || a.name || a.id;
+      if (a.requiresAttention === true || a.status === "error") {
+        return `${name} (needs you)`;
+      }
+      return a.status === "running" ? `${name} (running)` : `${name} (idle)`;
+    };
+    hostParts.push(`On ${host}: ${list.map(label).join(", ")}.`);
+  }
+  const hosts = byHost.size;
+  const lead =
+    `Across ${hosts} ${hosts === 1 ? "host" : "hosts"}: ${total.running} running, ` +
+    `${total.needsYou} ${total.needsYou === 1 ? "needs" : "need"} you, ` +
+    `${total.idle} idle. Idle is not needs-you.`;
+  return `${lead} ${hostParts.join(" ")}`;
+}
+
 export class DaemonConnection {
   constructor(options) {
     this.url = options.url;
@@ -57,9 +119,6 @@ export class DaemonConnection {
     // else is dropped.
     this.correlatedAgentIds = new Set();
     this.correlatedProposalIds = new Set();
-    // Host alias of the connected daemon, resolved from the context fetch so
-    // fleet_get_agent_activity can accept it as "local" spelling.
-    this.hostAlias = null;
     this.client = new DaemonClient({
       url: this.url,
       clientId: this.clientId,
@@ -218,196 +277,76 @@ export class DaemonConnection {
     return pool[0];
   }
 
-  // --- Shared read tools (both modes) ---------------------------------------
+  // --- Catalog tool execution (the single fleet code path) -------------------
 
   /**
-   * fleet_list_agents: roster across hosts. The voice node connects to ONE
-   * daemon (no peerManager), so this is best-effort: live agents from the
-   * connected host, peer host status from peers.list, and the cross-host
-   * recentAgents from the context fetch when the daemon provides them.
-   * Returns a spoken-friendly digest; the model reads it aloud.
+   * Execute a Commander fleet tool through the daemon's tool catalog over the
+   * mission_control.tools.execute session RPC. The daemon runs the SAME
+   * createPaseoToolCatalog().executeTool(name, args) the Commander uses, so
+   * voice and Commander share every roster, timeline, search, recall, and
+   * gated-action implementation — the voice node never reimplements a fleet
+   * tool. Returns the catalog result ({ ok, structuredContent, content,
+   * error }), or { ok: false, error } when the RPC itself failed.
    */
-  async fleetListAgents({ includeArchived = false, sinceHours = 48, statuses, limit = 50 } = {}) {
-    // Best-effort: the daemon context fetch also carries the host alias and
-    // a cross-host roster the local fetch cannot see.
-    const { hostAlias, recentAgents } = await this.fetchHostContext();
-
-    const filter = { includeArchived: Boolean(includeArchived) };
-    if (Array.isArray(statuses) && statuses.length > 0) {
-      filter.statuses = statuses;
-    }
-    const agentsRes = await this.client.fetchAgents({ scope: "active", filter });
-    const local = agentsRes.entries
-      .map((e) => e.agent)
-      .filter((a) => includeArchived || !a.archivedAt);
-    const seen = new Set(local.map((a) => a.id));
-    const rows = local.slice(0, limit).map((a) => {
-      seen.add(a.id);
-      return `${a.title || a.name || a.id} (${a.status})`;
-    });
-
-    // Cross-host roster from the context fetch, deduped against local rows.
-    const remote = this.buildRemoteRows(recentAgents, seen);
-    // Peer hosts: state only (we cannot read a peer's agents without a
-    // peerManager — that is what commander_dispatch is for).
-    const peers = await this.fetchPeerStates();
-    const lines = this.buildRosterLines(rows, remote, hostAlias, peers, limit);
-    // sinceHours is accepted for Commander parity but the voice node has no
-    // history window over the wire; keep the parameter for call compatibility.
-    void sinceHours;
-    return lines.join(". ") + ".";
-  }
-
-  /** Daemon context fetch (host alias + cross-host recentAgents); optional. */
-  async fetchHostContext() {
-    let hostAlias = this.hostAlias ?? "local";
-    let recentAgents = [];
+  async executeCatalogTool(name, args = {}) {
+    let payload;
     try {
-      const ctx = await this.client.missionControlContextFetch();
-      if (ctx.hostAlias) {
-        hostAlias = ctx.hostAlias;
-        this.hostAlias = hostAlias;
-      }
-      recentAgents = ctx.recentAgents ?? [];
-    } catch {
-      // context fetch is optional; fall through to the local roster
+      payload = await this.client.missionControlToolsExecute({ name, args });
+    } catch (err) {
+      return { ok: false, error: `Catalog tool ${name} failed: ${err.message}` };
     }
-    return { hostAlias, recentAgents };
-  }
-
-  /** Peer host states from peers.list; optional. */
-  async fetchPeerStates() {
-    try {
-      const peersPayload = await this.client.missionControlPeersList();
-      return peersPayload.peers ?? [];
-    } catch {
-      // peers.list is optional
-      return [];
-    }
-  }
-
-  /** Cross-host roster rows from the context fetch, deduped against local. */
-  buildRemoteRows(recentAgents, seen) {
-    const remote = new Map(); // host -> rows
-    for (const r of recentAgents) {
-      if (seen.has(r.agentId) || !r.agentId) {
-        continue;
-      }
-      seen.add(r.agentId);
-      const host = r.hostServerId || "remote";
-      if (!remote.has(host)) {
-        remote.set(host, []);
-      }
-      remote.get(host).push(`${r.title || r.name || r.agentId} (${r.status || "unknown"})`);
-    }
-    return remote;
-  }
-
-  /** Spoken-friendly digest lines: local host, remote hosts, peer states. */
-  buildRosterLines(rows, remote, hostAlias, peers, limit) {
-    const lines = [];
-    if (rows.length > 0) {
-      lines.push(`On ${hostAlias}: ${rows.join(", ")}`);
-    } else {
-      lines.push(`On ${hostAlias}: no agents`);
-    }
-    for (const [host, hostRows] of remote) {
-      lines.push(`On ${host}: ${hostRows.slice(0, limit).join(", ")}`);
-    }
-    if (peers.length > 0) {
-      const peerLines = peers.map((p) =>
-        p.state === "online" ? `${p.name} online` : `${p.name} unreachable`,
-      );
-      lines.push(`Peers: ${peerLines.join(", ")}`);
-    }
-    return lines;
-  }
-
-  /**
-   * fleet_get_agent_activity: curated timeline summary for one agent. Local
-   * hosts read the timeline directly; PEER hosts hop through the daemon's
-   * mission_control.peer.timeline session RPC (the daemon proxies to the
-   * peer over peering, exactly like the Commander's fleet_get_agent_activity
-   * peer branch). Read-only; does not poke the live agent (not a nudge).
-   */
-  async fleetGetAgentActivity({ host, agentId, limit }) {
-    if (!agentId) {
-      return { error: "fleet_get_agent_activity requires agentId" };
-    }
-    const hostLabel = this.hostAlias ?? "local";
-    if (host && host !== "local" && host !== hostLabel) {
-      // Peer host: the daemon owns the peering hop (the voice node has no
-      // peerManager), so ask it over the peer timeline RPC.
-      const payload = await this.client.missionControlPeerTimeline({
-        host,
-        agentId,
-        ...(typeof limit === "number" && limit > 0 ? { limit } : {}),
-      });
-      if (!payload.ok) {
-        return { error: payload.error ?? `Cannot read host "${host}" from the voice node` };
-      }
-      return { result: payload.content ?? "No activity to display." };
-    }
-    const payload = await this.client.fetchAgentTimeline(agentId, {
-      direction: "tail",
-      ...(typeof limit === "number" && limit > 0 ? { limit } : {}),
-    });
-    if (payload.error) {
-      return { error: payload.error };
-    }
-    const timeline = payload.entries.map((entry) => entry.item);
-    const summary = this.curateActivity(timeline, limit);
     return {
-      result: `${summary.content}`,
+      ok: payload?.ok === true,
+      structuredContent: payload?.structuredContent ?? {},
+      content: typeof payload?.content === "string" ? payload.content : "",
+      error: payload?.error,
     };
   }
 
-  /** Compact spoken-friendly activity digest (same spirit as the server's
-   * curateAgentActivity, kept local to avoid a server-package dependency). */
-  curateActivity(timeline, limit) {
-    const items = typeof limit === "number" && limit > 0 ? timeline.slice(-limit) : timeline;
-    const lines = [];
-    for (const item of items) {
-      const text = item.text ? String(item.text).trim() : "";
-      if (item.type === "user_message" && text) {
-        lines.push(`[User] ${text}`);
-      } else if (item.type === "assistant_message" && text) {
-        lines.push(text);
-      } else if (item.type === "error") {
-        lines.push(`[Error] ${item.message ?? text}`);
-      } else if (item.type === "tool_call") {
-        lines.push(`[Tool call] ${item.detail?.name ?? item.name ?? ""}`);
-      } else if (item.type === "compaction") {
-        lines.push("[Compacted]");
-      } else if (item.type === "todo") {
-        lines.push("[Tasks]");
-      } else if (text) {
-        lines.push(text);
-      }
+  // --- Shared read tools (both modes) ---------------------------------------
+
+  /**
+   * fleet_list_agents: the Commander roster tool, executed in the daemon's
+   * catalog (cross-host roster, per-agent status + report headlines). Voice
+   * only shapes the spoken digest — the roster itself is the catalog's.
+   */
+  async fleetListAgents(args = {}) {
+    const result = await this.executeCatalogTool("fleet_list_agents", args);
+    if (!result.ok) {
+      return { error: result.error ?? "fleet_list_agents failed" };
     }
-    const shown = lines.length;
-    const total = timeline.length;
-    const header = `Showing ${shown} of ${total} activities`;
-    if (lines.length === 0) {
-      return { updateCount: total, content: `${header}: no activity to display.` };
-    }
-    return { updateCount: total, content: `${header}: ${lines.join(" | ")}.` };
+    return { result: buildFleetRosterDigest(result.structuredContent.agents) };
   }
 
-  /** fleet_search: find agents by what they worked on (connected host). */
-  async fleetSearch({ query, limit = 20, deep = false }) {
-    if (!query || !String(query).trim()) {
-      return { error: "fleet_search requires a query" };
+  /**
+   * fleet_get_agent_activity: the Commander activity tool, executed in the
+   * catalog (curated timeline summary for one agent, local or peer host).
+   * The catalog returns the curated summary in structuredContent.content.
+   */
+  async fleetGetAgentActivity(args = {}) {
+    const result = await this.executeCatalogTool("fleet_get_agent_activity", args);
+    if (!result.ok) {
+      return { error: result.error ?? "fleet_get_agent_activity failed" };
     }
-    const payload = await this.client.missionControlSearch({ query, limit, deep });
-    if (payload.error) {
-      return { error: payload.error };
+    const content = result.structuredContent?.content;
+    if (typeof content === "string" && content.trim()) {
+      return { result: content };
     }
-    const matches = payload.matches ?? [];
+    return { result: "No activity to display." };
+  }
+
+  /** fleet_search: the Commander search tool, executed in the catalog. */
+  async fleetSearch(args = {}) {
+    const result = await this.executeCatalogTool("fleet_search", args);
+    if (!result.ok) {
+      return { error: result.error ?? "fleet_search failed" };
+    }
+    const matches = result.structuredContent?.matches ?? [];
+    const query = args.query ?? "";
     if (matches.length === 0) {
       return { result: `No matches for "${query}".` };
     }
-    const lines = matches.slice(0, limit).map((m) => {
+    const lines = matches.slice(0, args.limit ?? 20).map((m) => {
       const name = m.name || m.agentId;
       const host = m.host && m.host !== "local" ? ` on ${m.host}` : "";
       const when = m.ts ? ` (${String(m.ts).slice(0, 10)})` : "";
@@ -417,28 +356,26 @@ export class DaemonConnection {
   }
 
   /**
-   * fleet_recall: semantic recall over fleet memory — the same
-   * MissionControlService.hindsightRecall the Commander's fleet_recall tool
-   * calls, over the mission_control.recall session RPC. Returns a
-   * spoken-friendly digest of the matches; when the bank is unconfigured or
-   * unreachable the daemon answers ok:false reason "memory unavailable" and
-   * the caller should route the question through commander_dispatch.
+   * fleet_recall: the Commander recall tool, executed in the catalog (same
+   * MissionControlService.hindsightRecall). When the bank is unconfigured the
+   * catalog answers ok:false reason "memory unavailable" and the caller
+   * should route the question through commander_dispatch.
    */
-  async fleetRecall({ query, limit = 5 } = {}) {
-    if (!query || !String(query).trim()) {
-      return { error: "fleet_recall requires a query" };
-    }
-    const payload = await this.client.missionControlRecall({ query, limit });
-    if (!payload.ok) {
+  async fleetRecall(args = {}) {
+    const result = await this.executeCatalogTool("fleet_recall", args);
+    if (!result.ok) {
       return {
-        error: `fleet_recall is unavailable (${payload.reason ?? "unknown reason"}); use commander_dispatch to have the Commander recall it.`,
+        error:
+          result.error ??
+          `fleet_recall is unavailable (${result.structuredContent?.reason ?? "unknown reason"}); use commander_dispatch to have the Commander recall it.`,
       };
     }
-    const matches = payload.matches ?? [];
+    const matches = result.structuredContent?.matches ?? [];
+    const query = args.query ?? "";
     if (matches.length === 0) {
       return { result: `No memories match "${query}".` };
     }
-    const lines = matches.slice(0, limit).map((match) => {
+    const lines = matches.slice(0, args.limit ?? 5).map((match) => {
       const attribution = match.attribution;
       const name = attribution
         ? attribution.agentTitle || attribution.agentName || attribution.agentId
@@ -457,31 +394,28 @@ export class DaemonConnection {
   }
 
   /**
-   * fleet_context: run records / workspace-project rollups from the local
-   * mission-control store, over the mission_control.context.records session
-   * RPC — the same service calls the Commander's fleet_context tool makes.
-   * Returns a spoken-friendly summary of the records and rollup.
+   * fleet_context: the Commander context tool, executed in the catalog (run
+   * records / workspace-project rollups from the mission-control store).
    */
-  async fleetContext({ agentId, workspaceId, projectId } = {}) {
-    const payload = await this.client.missionControlContextRecords({
-      ...(agentId ? { agentId } : {}),
-      ...(workspaceId ? { workspaceId } : {}),
-      ...(projectId ? { projectId } : {}),
-    });
-    if (!payload.ok) {
+  async fleetContext(args = {}) {
+    const result = await this.executeCatalogTool("fleet_context", args);
+    if (!result.ok) {
       return {
-        error: `fleet_context is unavailable (${payload.error ?? "unknown reason"}); use commander_dispatch to have the Commander fetch it.`,
+        error:
+          result.error ??
+          `fleet_context is unavailable (${result.structuredContent?.error ?? "unknown reason"}); use commander_dispatch to have the Commander fetch it.`,
       };
     }
-    const records = payload.runRecords ?? [];
+    const sc = result.structuredContent ?? {};
+    const records = sc.runRecords ?? [];
     const lines = [];
-    const rollup = payload.workspaceRollup ?? payload.projectRollup;
+    const rollup = sc.workspaceRollup ?? sc.projectRollup;
     if (rollup) {
       const label =
         rollup.kind === "workspace"
           ? (rollup.workspaceTitle ?? rollup.workspaceId)
           : (rollup.projectName ?? rollup.projectId);
-      const openCount = rollup.runs.reduce(
+      const openCount = (rollup.runs ?? []).reduce(
         (count, run) => count + (run.open.length > 0 ? 1 : 0),
         0,
       );
@@ -506,25 +440,21 @@ export class DaemonConnection {
   }
 
   /**
-   * tag_message: attribute the current voice user turn to agents, over the
-   * mission_control.tag_message session RPC. The daemon tags the latest
-   * voice-mirrored user message on the Commander thread (the same tag record
-   * the Commander's tag_message tool writes; the Verifier reads these tags).
+   * tag_message: the Commander tag tool, executed in the catalog (the daemon
+   * tags the latest voice-mirrored user message on the Commander thread; the
+   * Verifier reads these tags).
    */
-  async tagMessage({ agentIds, messageText } = {}) {
-    if (!Array.isArray(agentIds) || agentIds.length === 0) {
+  async tagMessage(args = {}) {
+    if (!Array.isArray(args.agentIds) || args.agentIds.length === 0) {
       return { error: "tag_message requires agentIds" };
     }
-    const payload = await this.client.missionControlTagMessage({
-      agentIds,
-      ...(messageText ? { messageText } : {}),
-    });
-    if (payload.ok) {
+    const result = await this.executeCatalogTool("tag_message", args);
+    if (result.ok && result.structuredContent?.recorded === true) {
       return {
-        result: `Tagged the current user turn to ${agentIds.length} agent${agentIds.length === 1 ? "" : "s"}.`,
+        result: `Tagged the current user turn to ${args.agentIds.length} agent${args.agentIds.length === 1 ? "" : "s"}.`,
       };
     }
-    return { error: payload.error ?? "tag_message failed" };
+    return { error: result.error ?? "tag_message failed" };
   }
 
   // --- Control tools ---------------------------------------------------------
@@ -548,26 +478,10 @@ export class DaemonConnection {
   }
 
   /**
-   * Direct-mode mutating tools: route through the same proposal gate as the
-   * Commander (mission_control.proposals.create) so every fleet side effect
-   * is approval-gated and lands as a card. The created proposal id is
-   * correlated so its status changes buffer.
+   * Direct-mode mutating tools route through the daemon's catalog
+   * (executeCatalogTool), whose Commander-gated implementations own the
+   * proposal gate — the voice node has no second gated-action path.
    */
-  async proposeDirectAction({ toolName, message, reason, targetAgentId }) {
-    const created = await this.client.missionControlProposalsCreate({
-      message,
-      reason: reason ?? `voice direct ${toolName}`,
-      ...(targetAgentId ? { targetAgentId } : {}),
-    });
-    if (!created.ok) {
-      return { ok: false, error: created.error || "proposal creation failed" };
-    }
-    this.correlateProposal(created.proposalId);
-    if (targetAgentId) {
-      this.correlateAgent(targetAgentId);
-    }
-    return { ok: true, proposalId: created.proposalId };
-  }
 
   /** proposal_respond: the same RPC the app's proposal cards use. */
   async respondProposal({ proposalId, action, editedMessage }) {

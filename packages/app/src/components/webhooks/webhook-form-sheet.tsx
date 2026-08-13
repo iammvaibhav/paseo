@@ -245,7 +245,7 @@ function OpenWebhookFormSheet({
     useMemo(() => selectWebhookHosts(hostProfiles), [hostProfiles]),
     equal,
   );
-  const { preferences, updatePreferences } = useFormPreferences();
+  const { preferences, updatePreferences } = useFormPreferences(serverId);
   const projectTargets = useMemo(() => buildScheduleProjectTargets(projects), [projects]);
   const snapshot = useMemo(
     () =>

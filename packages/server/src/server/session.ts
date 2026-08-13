@@ -180,6 +180,7 @@ import {
 import { buildCommanderLaunchConfig, buildLocalContextPayload } from "./mission-control/context.js";
 import { resolveLocalSpawnLabels } from "./mission-control/spawn-labels.js";
 import {
+  COMMANDER_TOOL_ALLOWLIST,
   MISSION_CONTROL_LABEL_KEY,
   MISSION_CONTROL_LABEL_VALUE,
 } from "./mission-control/commander-contract.js";
@@ -298,6 +299,14 @@ function errorToFriendlyMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
   return "Unknown error";
+}
+
+/**
+ * Narrow an unknown value to a JSON-ish plain record (the wire shape of
+ * Paseo tool structuredContent). Arrays and null are not records.
+ */
+function asPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function resolveSubscriptionId(
@@ -2069,6 +2078,7 @@ export class Session {
     (msg) => this.dispatchMissionControlConfigMessage(msg),
     (msg) => this.dispatchMissionControlVoiceMessage(msg),
     (msg) => this.dispatchMissionControlVoiceReadsMessage(msg),
+    (msg) => this.dispatchMissionControlToolsMessage(msg),
     (msg) => this.dispatchMissionControlCommanderMessage(msg),
     (msg) => this.dispatchMissionControlSearchMessage(msg),
     (msg) => this.dispatchMissionControlMediaMessage(msg),
@@ -2722,6 +2732,117 @@ export class Session {
         },
       });
     }
+  }
+
+  private dispatchMissionControlToolsMessage(
+    msg: SessionInboundMessage,
+  ): Promise<void> | undefined {
+    switch (msg.type) {
+      case "mission_control.tools.execute.request":
+        return this.handleMissionControlToolsExecuteRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  /**
+   * M12 ONE catalog path for fleet tools (mission_control.tools.execute):
+   * the Voice node connects to ONE daemon and executes named fleet tools
+   * through the daemon's Paseo tool catalog — the same catalog the Commander
+   * runs, no second implementation. The catalog is built with the Commander
+   * identity (callerLabels paseo.mission-control=commander, voice tools
+   * enabled) so label-gated fleet tools behave exactly as they do for the
+   * Commander. COMMANDER_TOOL_ALLOWLIST gates WHICH names this RPC will run;
+   * Voice still decides which names Gemini sees. Unknown or off-allowlist
+   * names are refused before the catalog is touched.
+   */
+  private async handleMissionControlToolsExecuteRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.tools.execute.request" }>,
+  ): Promise<void> {
+    try {
+      if (!COMMANDER_TOOL_ALLOWLIST.includes(msg.name)) {
+        this.emit({
+          type: "mission_control.tools.execute.response",
+          payload: {
+            requestId: msg.requestId,
+            ok: false,
+            name: msg.name,
+            error: `Tool "${msg.name}" is not on the Commander allowlist`,
+          },
+        });
+        return;
+      }
+      // Voice acts AS the Commander: resolve the live Commander agent so
+      // agent-scoped tools (tag_message) can run — the voice-mirrored user
+      // messages live on the Commander thread. Absent Commander → no
+      // callerAgentId; those tools degrade with their own agent-scoped error.
+      const commanderAgentId = await this.resolveCommanderAgentId();
+      const catalog = await this.agentManager.createPaseoToolCatalog({
+        callerLabels: { [MISSION_CONTROL_LABEL_KEY]: MISSION_CONTROL_LABEL_VALUE },
+        ...(commanderAgentId ? { callerAgentId: commanderAgentId } : {}),
+        enableVoiceTools: true,
+      });
+      if (!catalog || !catalog.getTool(msg.name)) {
+        this.emit({
+          type: "mission_control.tools.execute.response",
+          payload: {
+            requestId: msg.requestId,
+            ok: false,
+            name: msg.name,
+            error: `Unknown Paseo tool: ${msg.name}`,
+          },
+        });
+        return;
+      }
+      const result = await catalog.executeTool(msg.name, msg.args ?? {});
+      const structuredContent = asPlainRecord(result.structuredContent)
+        ? result.structuredContent
+        : undefined;
+      const content =
+        result.content
+          .map((block) => (typeof block.text === "string" ? block.text : ""))
+          .filter((text) => text.length > 0)
+          .join("\n") || undefined;
+      this.emit({
+        type: "mission_control.tools.execute.response",
+        payload: {
+          requestId: msg.requestId,
+          ok: !result.isError,
+          name: msg.name,
+          ...(structuredContent ? { structuredContent } : {}),
+          ...(content ? { content } : {}),
+          ...(result.isError ? { error: content ?? "Paseo tool reported a failure" } : {}),
+        },
+      });
+    } catch (error) {
+      this.emit({
+        type: "mission_control.tools.execute.response",
+        payload: {
+          requestId: msg.requestId,
+          ok: false,
+          name: msg.name,
+          error: getErrorMessageOr(error, "Failed to execute tool"),
+        },
+      });
+    }
+  }
+
+  /**
+   * The host's LIVE Commander agent id — the registered agent labeled
+   * paseo.mission-control=commander. The catalog's caller-scoped paths
+   * (list_agents cwd inheritance, tag_message timeline read) require a
+   * registered agent with a readable timeline/config — a stored record that
+   * is not live has neither, so only live agents qualify. Absent a live
+   * Commander, callerAgentId is omitted: label-gated fleet tools still run,
+   * and caller-scoped ones (tag_message) degrade with their own errors.
+   */
+  private async resolveCommanderAgentId(): Promise<string | null> {
+    for (const agent of this.agentManager.listAgents()) {
+      if (agent.labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE) {
+        return agent.id;
+      }
+    }
+    return null;
   }
 
   private dispatchMissionControlCommanderMessage(

@@ -43,6 +43,7 @@ const COMMANDER_MODEL_PREFERENCES_KEY = "@paseo:mission-control-commander-model"
  */
 export const COMMANDER_TOOL_ALLOWLIST = [
   "fleet_list_agents",
+  "fleet_list_models",
   "fleet_create_agent",
   "fleet_send_prompt",
   "fleet_get_agent_activity",
@@ -51,6 +52,8 @@ export const COMMANDER_TOOL_ALLOWLIST = [
   "clarify",
   "post_answer",
   "fleet_meta",
+  "fleet_recall",
+  "fleet_context",
 ] as const;
 
 interface CommanderModelMemory {

@@ -12,6 +12,7 @@ import type {
   MissionControlInventoryProjectWorkspace,
   MissionControlModels,
 } from "@getpaseo/protocol/mission-control/types";
+import type { ComposerPreferences } from "@getpaseo/protocol/composer-preferences";
 import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
 import type { Logger } from "pino";
 import YAML from "yaml";
@@ -46,6 +47,8 @@ export interface MissionControlContextPayload {
   recentAgents: MissionControlContextAgentSummary[];
   /** This host's own missionControl.hostAlias declaration, if set. */
   hostAlias?: string;
+  /** This host's composer last-pick (daemon.composerPreferences), if set. */
+  composerPreferences?: ComposerPreferences;
 }
 
 export interface LocalInventoryInput {
@@ -298,8 +301,16 @@ export async function buildLocalContextPayload(
   ]);
   // Spec: the fleet map assembles aliases from each host's own declaration —
   // this host's missionControl.hostAlias. Never a hardcoded machine list.
-  const hostAlias = input.daemonConfigStore.get().missionControl?.hostAlias?.trim() || undefined;
-  return { inventory, models, recentAgents, ...(hostAlias ? { hostAlias } : {}) };
+  const daemonConfig = input.daemonConfigStore.get();
+  const hostAlias = daemonConfig.missionControl?.hostAlias?.trim() || undefined;
+  const composerPreferences = daemonConfig.composerPreferences;
+  return {
+    inventory,
+    models,
+    recentAgents,
+    ...(hostAlias ? { hostAlias } : {}),
+    ...(composerPreferences ? { composerPreferences } : {}),
+  };
 }
 
 export interface FleetHostContext {
@@ -643,30 +654,103 @@ export function buildHostModelsSection(models: MissionControlModels, label: stri
   return `## ${label}\n${lines.join("\n")}`;
 }
 
+export interface DefaultWorkerModelResolution {
+  /** The invocable provider/model string to spawn with, or null when the host has none. */
+  invocable: string | null;
+  /** How the default was derived, for the snapshot line's parenthetical. */
+  note: string | null;
+}
+
 /**
- * The Commander's spawn default for a host: the omp `task` role model in
- * invocable form. When the task role's model is missing from the host's
- * snapshot (live case: role default referencing a model the host does not
- * have), fall back to the first invocable model and say so — a default the
- * Commander can actually spawn with beats an unavailable one.
+ * The Commander's spawn default for a host: the composer's remembered last
+ * provider/model pick (daemon.composerPreferences, resolved workspace →
+ * project → global like the app's resolveEffectiveFormPreferences) in
+ * invocable form, falling back to the omp `task` role model. When the task
+ * role's model is missing from the host's snapshot (live case: role default
+ * referencing a model the host does not have), fall back to the first
+ * invocable model — a default the Commander can actually spawn with beats an
+ * unavailable one. Structured so the world snapshot renderer and the
+ * fleet_list_models catalog tool share ONE derivation (exported for
+ * paseo-tools and tests).
  */
-function buildDefaultWorkerModelLine(models: MissionControlModels): string | null {
+export function resolveDefaultWorkerModel(
+  models: MissionControlModels,
+  composerPreferences?: ComposerPreferences | null,
+  scope?: { workspaceId?: string | null; projectKey?: string | null } | null,
+): DefaultWorkerModelResolution {
+  const composerPick = resolveComposerDefaultModel(composerPreferences, scope);
+  if (composerPick) {
+    return { invocable: composerPick, note: "composer last pick" };
+  }
   const firstAvailable = firstInvocableModel(models);
   const taskRole = (models[OMP_MODEL_ROLES_KEY] ?? [])
     .map(parseRoleEntry)
     .find((entry): entry is { role: string; model: string } => entry?.role === "task");
   if (!taskRole) {
-    return firstAvailable ? `- default worker model: ${firstAvailable}` : null;
+    return { invocable: firstAvailable, note: null };
   }
   const { model } = splitOmpEffortSuffix(taskRole.model);
   const resolved = resolveRoleInvocable(models, model);
   if (resolved) {
-    return `- default worker model: ${resolved.invocable} (omp task role)`;
+    return { invocable: resolved.invocable, note: "omp task role" };
   }
   if (firstAvailable) {
-    return `- default worker model: ${firstAvailable} (omp task role "${model}" is not available on this host; using first available model)`;
+    return {
+      invocable: firstAvailable,
+      note: `omp task role "${model}" is not available on this host; using first available model`,
+    };
   }
-  return `- default worker model: none (omp task role "${model}" is not available on this host)`;
+  return { invocable: null, note: `omp task role "${model}" is not available on this host` };
+}
+
+/**
+ * The composer's remembered pick as an invocable `${provider}/${model}` string,
+ * or null when there is none. Mirrors the app's resolveEffectiveFormPreferences
+ * scope resolution for provider + providerPreferences: workspace wins over
+ * project wins over the global fallback, per provider.
+ */
+function composerScopeSelection(
+  preferences: ComposerPreferences,
+  scope: { workspaceId?: string | null; projectKey?: string | null } | null | undefined,
+) {
+  const workspaceId = scope?.workspaceId?.trim() || "";
+  const projectKey = scope?.projectKey?.trim() || "";
+  return {
+    workspace: workspaceId ? preferences.byWorkspace?.[workspaceId] : undefined,
+    project: projectKey ? preferences.byProject?.[projectKey] : undefined,
+  };
+}
+
+function resolveComposerDefaultModel(
+  preferences: ComposerPreferences | null | undefined,
+  scope: { workspaceId?: string | null; projectKey?: string | null } | null | undefined,
+): string | null {
+  if (!preferences) {
+    return null;
+  }
+  const { workspace, project } = composerScopeSelection(preferences, scope);
+  const provider = workspace?.provider ?? project?.provider ?? preferences.provider;
+  if (!provider) {
+    return null;
+  }
+  const model =
+    workspace?.providerPreferences?.[provider]?.model ??
+    project?.providerPreferences?.[provider]?.model ??
+    preferences.providerPreferences?.[provider]?.model;
+  if (!model) {
+    return null;
+  }
+  return `${provider}/${model}`;
+}
+
+function buildDefaultWorkerModelLine(models: MissionControlModels): string | null {
+  const { invocable, note } = resolveDefaultWorkerModel(models);
+  if (!invocable) {
+    return note ? `- default worker model: none (${note})` : null;
+  }
+  return note
+    ? `- default worker model: ${invocable} (${note})`
+    : `- default worker model: ${invocable}`;
 }
 
 /** First invocable provider/model string in the snapshot, if any. */

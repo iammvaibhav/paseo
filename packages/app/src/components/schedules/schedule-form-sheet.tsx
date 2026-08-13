@@ -247,7 +247,7 @@ function OpenScheduleFormSheet({
     useMemo(() => selectScheduleHosts(hostProfiles), [hostProfiles]),
     equal,
   );
-  const { preferences, updatePreferences } = useFormPreferences();
+  const { preferences, updatePreferences } = useFormPreferences(serverId);
   const projectTargets = useMemo(() => buildScheduleProjectTargets(projects), [projects]);
   const timezone = useMemo(getDeviceTimeZone, []);
   const snapshot = useMemo(

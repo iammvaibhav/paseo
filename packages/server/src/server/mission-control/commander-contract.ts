@@ -40,12 +40,16 @@ export const COMMANDER_ADOPTED_AT_LABEL = "paseo.commander-adopted-at";
  * the Hindsight fleet memory bank; degrades to "memory unavailable" when the
  * bank is unreachable) and `fleet_context` (run records / workspace+project
  * rollups from the local store) — never gated, never side effects.
+ * M7 adds `fleet_list_models` (per-host invocable model lists + each host's
+ * default worker model, so a spawn never needs the user to name a model) —
+ * read-only, never gated.
  * Mirrors the app-side launch allowlist. The omp provider launches with
  * `--no-tools` for this list (no builtin names), dropping the omp `task`
  * subagent tool entirely.
  */
 export const COMMANDER_TOOL_ALLOWLIST: readonly string[] = [
   "fleet_list_agents",
+  "fleet_list_models",
   "fleet_create_agent",
   "fleet_send_prompt",
   "fleet_get_agent_activity",

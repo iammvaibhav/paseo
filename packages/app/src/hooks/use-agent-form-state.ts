@@ -223,7 +223,30 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
     preferenceScope = null,
   } = options;
 
-  const { preferences, isLoading: isPreferencesLoading, updatePreferences } = useFormPreferences();
+  const [{ form: formState, userModified, resolution }, dispatch] = useReducer(
+    resolveAgentForm,
+    initialServerId,
+    (serverId) => ({
+      form: {
+        serverId,
+        provider: null,
+        modeId: "",
+        model: "",
+        thinkingOptionId: "",
+        workingDir: "",
+      },
+      userModified: INITIAL_USER_MODIFIED,
+      resolution: INITIAL_AGENT_FORM_RESOLUTION,
+    }),
+  );
+
+  // Host-aware: the composer targets a specific daemon, so its last pick syncs
+  // with that daemon's composerPreferences (config.json) via get/patchDaemonConfig.
+  const {
+    preferences,
+    isLoading: isPreferencesLoading,
+    updatePreferences,
+  } = useFormPreferences(formState.serverId);
   const preferenceOverlayRef = useRef(new OptimisticFormPreferences(preferences));
   const preferenceScopeKey = useMemo(
     () => buildPreferenceScopeKey(preferenceScope),
@@ -258,23 +281,6 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
   const daemons = useHosts();
 
   const validServerIds = useMemo(() => new Set(daemons.map((d) => d.serverId)), [daemons]);
-
-  const [{ form: formState, userModified, resolution }, dispatch] = useReducer(
-    resolveAgentForm,
-    initialServerId,
-    (serverId) => ({
-      form: {
-        serverId,
-        provider: null,
-        modeId: "",
-        model: "",
-        thinkingOptionId: "",
-        workingDir: "",
-      },
-      userModified: INITIAL_USER_MODIFIED,
-      resolution: INITIAL_AGENT_FORM_RESOLUTION,
-    }),
-  );
 
   const reducerStateRef = useRef({ form: formState, userModified });
   useEffect(() => {

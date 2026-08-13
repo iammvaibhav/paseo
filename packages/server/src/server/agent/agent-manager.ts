@@ -74,7 +74,11 @@ import { invokeRewindCapability, type RewindMode } from "./rewind/rewind.js";
 import { isSystemInjectedEnvelope } from "./agent-prompt.js";
 import { stripInternalPaseoMcpServer, withRuntimePaseoMcpServer } from "./runtime-mcp-config.js";
 import { resolveCreateAgentTitles } from "./create-agent-title.js";
-import type { PaseoToolCatalogFactory } from "./tools/types.js";
+import type {
+  PaseoToolCatalog,
+  PaseoToolCatalogFactory,
+  PaseoToolRuntimeContext,
+} from "./tools/types.js";
 import {
   ProviderSubagentStore,
   type ProviderSubagentDescriptor,
@@ -990,6 +994,28 @@ export class AgentManager {
 
   setPaseoToolCatalogFactory(factory: PaseoToolCatalogFactory | null): void {
     this.paseoToolCatalogFactory = factory;
+  }
+
+  /**
+   * Build a Paseo tool catalog for a NON-agent caller (the session RPC front:
+   * mission_control.tools.execute, used by the Voice node and Commander).
+   * The daemon's paseoToolCatalogFactory is normally invoked per agent
+   * session at build time with that agent's identity; callers that are not
+   * agents pass an explicit runtime context instead (callerLabels
+   * paseo.mission-control=commander + enableVoiceTools, so label-gated fleet
+   * tools behave exactly as they do for the Commander). Returns null when the
+   * daemon never registered a factory (Paseo tools disabled) — the caller
+   * reports the tool as unavailable. Errors propagate: a broken factory is a
+   * real failure, not a silent "no tools".
+   */
+  async createPaseoToolCatalog(
+    runtime?: PaseoToolRuntimeContext,
+  ): Promise<PaseoToolCatalog | null> {
+    const factory = this.paseoToolCatalogFactory;
+    if (!factory) {
+      return null;
+    }
+    return await factory(runtime ?? {});
   }
 
   /**

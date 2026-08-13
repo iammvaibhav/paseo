@@ -21,15 +21,23 @@ Two modes, chosen at session setup (`voiceMode`, default `relay`; env
 `VOICE_MODE`, overridden by the Mission Control central config when it
 publishes one):
 
-- **relay** — shared read tools (`fleet_list_agents`, `fleet_get_agent_activity`,
-  `fleet_search`, `fleet_recall`, `fleet_context`, `tag_message`) plus
-  `commander_dispatch` (ack immediately, never await the turn),
-  `proposal_respond` (same RPC as the app's cards), and `pending_updates`
-  (drain the update buffer). No mutating tool is declared; every fleet change
-  goes through the Commander.
+- **relay** — shared read tools (`fleet_list_agents`, `fleet_list_models`,
+  `fleet_get_agent_activity`, `fleet_search`, `fleet_recall`, `fleet_context`,
+  `tag_message`) plus `commander_dispatch` (ack immediately, never await the
+  turn), `proposal_respond` (same RPC as the app's cards), and
+  `pending_updates` (drain the update buffer). No mutating tool is declared;
+  every fleet change goes through the Commander.
 - **direct** — the full Commander allowlist plus `proposal_respond` and
-  `pending_updates`; mutating executors route through the daemon proposal gate
-  so every side effect is still approval-gated.
+  `pending_updates`; mutating executors ride the daemon's tool catalog, whose
+  Commander-gated implementations own the approval gate, so every side effect
+  is still approval-gated.
+
+Every `fleet_*` tool — reads and direct-mode mutators alike — executes through
+the daemon's tool catalog (`mission_control.tools.execute` →
+`createPaseoToolCatalog().executeTool`), the same code path the Commander
+uses. The voice node never reimplements a roster, timeline, search, recall, or
+gated action; it only shapes the catalog result for speech (a spoken digest
+for `fleet_list_agents` that counts needs-you vs running vs idle per host).
 
 Announce policy (in the voice system prompt + the proxy's event filter): only
 proposal events and needs-you blockers are injected into the live session and
@@ -121,12 +129,15 @@ node --test test/logic.test.mjs     # text-mode harness, no microphone
 node test/e2e-audio.mjs             # audio proof: TTS -> Live -> tool call
 ```
 
-Logic harness asserts: the announce-policy filter; the fleet_list_agents
-executor; a text turn drives the Live model to call `fleet_list_agents` (audio
-reply streamed); `commander_dispatch` lands on the Commander's timeline; a
-proposal push produces an injected spoken turn; `proposal_respond` flips the
-proposal in the dev store; routine started/finished events never inject and
-unrelated ones never buffer (only session-correlated events do).
+Logic harness asserts: the announce-policy filter; the fleet*list_agents
+digest (needs-you = requiresAttention or error, idle is NOT needs-you) and
+catalog routing (every fleet*\* executor runs `mission_control.tools.execute`
+by tool name — no second implementation); a text turn drives the Live model to
+call `fleet_list_agents` (audio reply streamed); `commander_dispatch` lands on
+the Commander's timeline; a proposal push produces an injected spoken turn;
+`proposal_respond` flips the proposal in the dev store; routine
+started/finished events never inject and unrelated ones never buffer (only
+session-correlated events do).
 
 The audio proof synthesizes "what is the fleet status" (fish.audio if credited,
 else gemini-2.5-flash-preview-tts, else macOS `say`), streams it into the Live

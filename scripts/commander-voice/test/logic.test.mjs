@@ -10,7 +10,7 @@ import { WebSocket } from "ws";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 
 import { startVoiceServer } from "../server.js";
-import { classifyEvent } from "../lib/daemon.js";
+import { classifyEvent, buildFleetRosterDigest, DaemonConnection } from "../lib/daemon.js";
 import { executeTool } from "../lib/tools.js";
 
 const require = createRequire(import.meta.url);
@@ -191,6 +191,193 @@ test("announce-policy filter classifies events", () => {
   assert.equal(classifyEvent({ kind: "answer", severity: "info", headline: "x" }), "waiting");
 });
 
+test("fleet_list_agents digest counts needs-you vs idle from catalog-shaped rows", () => {
+  const agents = [
+    { id: "a1", title: "Alpha", host: "macbook", status: "running" },
+    { id: "a2", title: "Beta", host: "macbook", status: "idle", requiresAttention: true },
+    { id: "a3", title: "Gamma", host: "macbook", status: "idle" },
+    { id: "a4", title: "Delta", host: "server-2", status: "error" },
+    { id: "a5", title: "Epsilon", host: "server-2", status: "running" },
+  ];
+  const digest = buildFleetRosterDigest(agents);
+  assert.match(
+    digest,
+    /Across 2 hosts: 2 running, 2 need you, 1 idle\. Idle is not needs-you\./,
+    "leads with fleet-wide bucket counts",
+  );
+  assert.match(
+    digest,
+    /On macbook: Alpha \(running\), Beta \(needs you\), Gamma \(idle\)\./,
+    "groups by host with per-agent buckets",
+  );
+  assert.match(digest, /On server-2: Delta \(needs you\), Epsilon \(running\)\./);
+  // Idle is NOT needs-you: Gamma stays idle despite the fleet having needs-you rows.
+  assert.match(digest, /Gamma \(idle\)/);
+  assert.doesNotMatch(digest, /Gamma \(needs you\)/);
+});
+
+test("fleet_list_agents digest handles singular hosts and empty rosters", () => {
+  assert.equal(buildFleetRosterDigest([]), "No agents in the fleet.");
+  assert.equal(buildFleetRosterDigest(null), "No agents in the fleet.");
+  const digest = buildFleetRosterDigest([
+    { id: "a1", title: "Solo", host: "local", status: "idle" },
+  ]);
+  assert.match(digest, /Across 1 host: 0 running, 0 need you, 1 idle\. Idle is not needs-you\./);
+  assert.match(digest, /On local: Solo \(idle\)\./);
+});
+
+test("daemon fleet read methods execute catalog tools by name (no second implementation)", async () => {
+  const calls = [];
+  const client = {
+    missionControlToolsExecute: async ({ name, args }) => {
+      calls.push({ name, args });
+      const structuredContent =
+        name === "tag_message"
+          ? { recorded: true }
+          : name === "fleet_recall"
+            ? { ok: true, matches: [] }
+            : name === "fleet_context"
+              ? { runRecords: [], ok: true }
+              : name === "fleet_search"
+                ? { matches: [] }
+                : { agents: [] };
+      return { ok: true, name, structuredContent, content: "" };
+    },
+  };
+  const daemon = Object.create(DaemonConnection.prototype);
+  daemon.client = client;
+
+  const roster = await daemon.fleetListAgents({ statuses: ["running"] });
+  assert.deepEqual(calls.at(-1), {
+    name: "fleet_list_agents",
+    args: { statuses: ["running"] },
+  });
+  assert.match(roster.result, /No agents in the fleet\./);
+
+  const activity = await daemon.fleetGetAgentActivity({ host: "local", agentId: "a1", limit: 5 });
+  assert.deepEqual(calls.at(-1), {
+    name: "fleet_get_agent_activity",
+    args: { host: "local", agentId: "a1", limit: 5 },
+  });
+  assert.equal(activity.result, "No activity to display.");
+
+  const search = await daemon.fleetSearch({ query: "archimedes" });
+  assert.deepEqual(calls.at(-1), { name: "fleet_search", args: { query: "archimedes" } });
+  assert.match(search.result, /No matches for "archimedes"\./);
+
+  const recall = await daemon.fleetRecall({ query: "decision" });
+  assert.deepEqual(calls.at(-1), { name: "fleet_recall", args: { query: "decision" } });
+  assert.match(recall.result, /No memories match "decision"\./);
+
+  const context = await daemon.fleetContext({ agentId: "a1" });
+  assert.deepEqual(calls.at(-1), { name: "fleet_context", args: { agentId: "a1" } });
+  assert.match(context.result, /No run records in the mission-control store yet\./);
+
+  const tagged = await daemon.tagMessage({ agentIds: ["a1"] });
+  assert.deepEqual(calls.at(-1), { name: "tag_message", args: { agentIds: ["a1"] } });
+  assert.match(tagged.result, /Tagged the current user turn to 1 agent\./);
+
+  const models = await daemon.executeCatalogTool("fleet_list_models", { host: "local" });
+  assert.deepEqual(calls.at(-1), {
+    name: "fleet_list_models",
+    args: { host: "local" },
+  });
+  assert.equal(models.ok, true);
+});
+
+test("fleet_list_models executor returns the default worker model", async () => {
+  const daemon = {
+    executeCatalogTool: async (name) => {
+      assert.equal(name, "fleet_list_models");
+      return {
+        ok: true,
+        structuredContent: {
+          host: "macbook",
+          models: {
+            omp: ["opencode-zen/deepseek-v4-flash-free", "anthropic/claude-sonnet-4"],
+            "omp.modelRoles": ["task: opencode-zen/deepseek-v4-flash-free"],
+          },
+          defaultWorkerModel: "opencode-zen/deepseek-v4-flash-free",
+        },
+        content: "",
+      };
+    },
+  };
+  const result = await executeTool("fleet_list_models", { host: "macbook" }, { daemon });
+  assert.match(
+    result.result,
+    /Default worker model on macbook: opencode-zen\/deepseek-v4-flash-free\./,
+  );
+  assert.match(
+    result.result,
+    /omp: opencode-zen\/deepseek-v4-flash-free, anthropic\/claude-sonnet-4/,
+  );
+  assert.doesNotMatch(
+    result.result,
+    /omp\.modelRoles/,
+    "role mapping is never echoed as a provider",
+  );
+});
+
+test("direct-mode mutating executors ride the catalog gate", async () => {
+  const calls = [];
+  const daemon = {
+    executeCatalogTool: async (name, args) => {
+      calls.push({ name, args });
+      if (name === "fleet_create_agent") {
+        return {
+          ok: true,
+          structuredContent: {
+            agentId: null,
+            type: "omp",
+            status: "pending-approval",
+            guidance:
+              "Spawn request sent for approval (proposal mcp_1). The agent will be created once approved.",
+          },
+          content: "",
+        };
+      }
+      if (name === "fleet_meta") {
+        return {
+          ok: true,
+          structuredContent: { ok: true, status: "pending", proposalId: "mcp_2" },
+          content: "",
+        };
+      }
+      return { ok: true, structuredContent: {}, content: "" };
+    },
+  };
+  const spawned = await executeTool(
+    "fleet_create_agent",
+    { host: "local", provider: "omp/x", initialPrompt: "do it" },
+    { daemon, voiceMode: "direct" },
+  );
+  assert.deepEqual(calls.at(-1), {
+    name: "fleet_create_agent",
+    args: { host: "local", provider: "omp/x", initialPrompt: "do it" },
+  });
+  assert.match(spawned.result, /proposal mcp_1/);
+
+  const meta = await executeTool(
+    "fleet_meta",
+    { metaPlan: { action: "rename", targetLabel: "glowing-otter", newValue: "archimedes" } },
+    { daemon, voiceMode: "direct" },
+  );
+  assert.deepEqual(calls.at(-1), {
+    name: "fleet_meta",
+    args: { metaPlan: { action: "rename", targetLabel: "glowing-otter", newValue: "archimedes" } },
+  });
+  assert.match(meta.result, /Meta proposal mcp_2 created for approval\./);
+
+  // Relay mode still refuses mutating tools.
+  const relayed = await executeTool(
+    "fleet_create_agent",
+    { host: "local", provider: "omp/x", initialPrompt: "do it" },
+    { daemon, voiceMode: "relay" },
+  );
+  assert.match(relayed.error, /not declared in relay mode/);
+});
+
 test("fleet_list_agents executor returns a roster digest", async () => {
   const result = await executeTool(
     "fleet_list_agents",
@@ -201,7 +388,9 @@ test("fleet_list_agents executor returns a roster digest", async () => {
     },
   );
   assert.ok(result.result, "fleet_list_agents returns a result");
-  assert.match(result.result, /On /, "roster names its host");
+  assert.match(result.result, /Across \d+ host/, "digest leads with fleet-wide counts");
+  assert.match(result.result, /Idle is not needs-you/, "digest distinguishes idle from needs-you");
+  assert.match(result.result, /On /, "roster names its hosts");
   assert.match(result.result, /\(/, "roster rows carry statuses");
 });
 
