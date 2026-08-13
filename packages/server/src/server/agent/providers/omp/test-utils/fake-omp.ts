@@ -285,7 +285,7 @@ export class FakeOmpSession implements OmpRuntimeSession {
     return this.messages;
   }
 
-  async getAvailableModels(_timeoutMs?: number): Promise<OmpModel[]> {
+  async getAvailableModels(_timeoutMs?: number | null): Promise<OmpModel[]> {
     return this.models;
   }
 

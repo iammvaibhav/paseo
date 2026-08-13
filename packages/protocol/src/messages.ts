@@ -4658,6 +4658,7 @@ export const ReadProjectConfigResponseMessageSchema = z.object({
       ok: z.literal(true),
       config: PaseoConfigRawSchema.nullable(),
       revision: PaseoConfigRevisionSchema.nullable(),
+      hasUncommittedWorktreeSetupChanges: z.boolean().optional(),
     }),
     z.object({
       requestId: z.string(),
@@ -4679,6 +4680,7 @@ export const WriteProjectConfigResponseMessageSchema = z.object({
       ok: z.literal(true),
       config: PaseoConfigRawSchema,
       revision: PaseoConfigRevisionSchema,
+      hasUncommittedWorktreeSetupChanges: z.boolean().optional(),
     }),
     z.object({
       requestId: z.string(),

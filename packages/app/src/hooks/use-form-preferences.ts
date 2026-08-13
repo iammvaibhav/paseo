@@ -22,6 +22,7 @@ import {
 } from "@/create-agent-preferences/service";
 import { useDaemonConfig } from "@/hooks/use-daemon-config";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
+import type { ComposerPreferences } from "@getpaseo/protocol/composer-preferences";
 
 const FORM_PREFERENCES_QUERY_KEY = ["form-preferences"];
 
@@ -124,7 +125,10 @@ export function useFormPreferences(serverId?: string | null): UseFormPreferences
         return undefined;
       }
       if (hasPreferencesData(local)) {
-        void clientRef.current.patchDaemonConfig({ composerPreferences: local });
+        // Protocol schema is `.passthrough()` (index signatures); app FormPreferences is strict.
+        void clientRef.current.patchDaemonConfig({
+          composerPreferences: local as ComposerPreferences,
+        });
       }
       return undefined;
     });
@@ -140,7 +144,9 @@ export function useFormPreferences(serverId?: string | null): UseFormPreferences
       const currentClient = clientRef.current;
       if (serverIdRef.current && currentClient) {
         try {
-          await currentClient.patchDaemonConfig({ composerPreferences: next });
+          await currentClient.patchDaemonConfig({
+            composerPreferences: next as ComposerPreferences,
+          });
         } catch (error) {
           // Local write already succeeded and the UI is committed to `next`;
           // the daemon mirror is best-effort and re-syncs on the next connect.

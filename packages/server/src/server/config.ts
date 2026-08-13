@@ -618,6 +618,7 @@ export function loadConfig(
     voiceLlmProviderExplicit: voiceLlm.providerExplicit,
     voiceLlmModel: voiceLlm.model,
     agentProviderSettings: extractAgentProviderSettings(providerOverrides),
+    providerCatalogRefreshTimeoutMs: persisted.agents?.catalogRefreshTimeoutMs,
     metadataGeneration: persisted.agents?.metadataGeneration,
     missionControl: persisted.missionControl,
     providerOverrides,

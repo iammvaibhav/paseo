@@ -3,6 +3,7 @@ import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { Pressable, Text, TextInput, View } from "react-native";
 import { router } from "expo-router";
+import { useFocusEffect } from "@react-navigation/native";
 import { StyleSheet } from "react-native-unistyles";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, MoreVertical, Pencil, Plus } from "lucide-react-native";
@@ -200,6 +201,12 @@ function ProjectSettingsBody({
     queryFn: () => client.readProjectConfig(selectedHost.repoRoot),
     retry: false,
   });
+  const refetchProjectConfig = readQuery.refetch;
+  useFocusEffect(
+    useCallback(() => {
+      void refetchProjectConfig();
+    }, [refetchProjectConfig]),
+  );
 
   const data = readQuery.data;
   const supportsCustomIcon = useHostFeature(selectedHost.serverId, "projectCustomIcon");
@@ -242,6 +249,8 @@ function ProjectSettingsBody({
   );
   const loadedConfig: PaseoConfigRaw | null = data?.ok ? (data.config ?? {}) : null;
   const loadedRevision: PaseoConfigRevision | null = data?.ok ? data.revision : null;
+  const hasUncommittedWorktreeSetupChanges =
+    data?.ok === true && data.hasUncommittedWorktreeSetupChanges === true;
   const readError: ProjectConfigRpcError | null = data && !data.ok ? data.error : null;
 
   const handleReload = useCallback(() => {
@@ -292,6 +301,7 @@ function ProjectSettingsBody({
         readQuery,
         loadedConfig,
         loadedRevision,
+        hasUncommittedWorktreeSetupChanges,
         readError,
         selectedHost,
         queryKey,
@@ -307,6 +317,7 @@ interface RenderContentInput {
   readQuery: ReturnType<typeof useQuery<ReadProjectConfigData>>;
   loadedConfig: PaseoConfigRaw | null;
   loadedRevision: PaseoConfigRevision | null;
+  hasUncommittedWorktreeSetupChanges: boolean;
   readError: ProjectConfigRpcError | null;
   selectedHost: ProjectHostEntry;
   queryKey: readonly [string, string, string];
@@ -319,6 +330,7 @@ function renderContent({
   readQuery,
   loadedConfig,
   loadedRevision,
+  hasUncommittedWorktreeSetupChanges,
   readError,
   selectedHost,
   queryKey,
@@ -360,6 +372,7 @@ function renderContent({
       key={formKey}
       baseConfig={loadedConfig}
       revision={loadedRevision}
+      hasUncommittedWorktreeSetupChanges={hasUncommittedWorktreeSetupChanges}
       repoRoot={selectedHost.repoRoot}
       queryKey={queryKey}
       client={client}
@@ -440,6 +453,7 @@ function errorToDetail(error: unknown): string | null {
 interface ProjectConfigFormProps {
   baseConfig: PaseoConfigRaw;
   revision: PaseoConfigRevision | null;
+  hasUncommittedWorktreeSetupChanges: boolean;
   repoRoot: string;
   queryKey: readonly [string, string, string];
   client: DaemonClient;
@@ -449,6 +463,7 @@ interface ProjectConfigFormProps {
 function ProjectConfigForm({
   baseConfig,
   revision,
+  hasUncommittedWorktreeSetupChanges,
   repoRoot,
   queryKey,
   client,
@@ -481,6 +496,11 @@ function ProjectConfigForm({
           revision: result.revision,
           requestId: "local-cache",
           repoRoot,
+          ...(result.hasUncommittedWorktreeSetupChanges === undefined
+            ? {}
+            : {
+                hasUncommittedWorktreeSetupChanges: result.hasUncommittedWorktreeSetupChanges,
+              }),
         });
         setWriteError(null);
         queryClient.invalidateQueries({ queryKey: ["projects"] });
@@ -662,6 +682,13 @@ function ProjectConfigForm({
           testID="worktree-setup-section"
           trailing={setupDocsLink}
         >
+          {hasUncommittedWorktreeSetupChanges ? (
+            <Alert
+              variant="warning"
+              title={t("settings.project.worktree.uncommittedTitle")}
+              description={t("settings.project.worktree.uncommittedDescription")}
+            />
+          ) : null}
           <SettingsTextAreaCard
             testID="worktree-setup-input"
             accessibilityLabel={t("settings.project.worktree.setupAccessibility")}

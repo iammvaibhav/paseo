@@ -45,6 +45,7 @@ export interface OmpRuntimeLaunch {
 
 export interface OmpStartSessionInput {
   cwd: string;
+  signal?: AbortSignal;
   env?: Record<string, string>;
   protocolMode?: "rpc" | "rpc-ui";
   model?: string;
@@ -69,7 +70,7 @@ export interface OmpRuntimeSession {
   abort(timeoutMs?: number): Promise<void>;
   getState(): Promise<OmpSessionState>;
   getMessages(): Promise<OmpAgentMessage[]>;
-  getAvailableModels(timeoutMs?: number): Promise<OmpModel[]>;
+  getAvailableModels(timeoutMs?: number | null): Promise<OmpModel[]>;
   setModel(provider: string, modelId: string): Promise<OmpModel>;
   setThinkingLevel(level: OmpThinkingLevel): Promise<void>;
   /**

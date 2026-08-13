@@ -25,20 +25,56 @@ export interface FormPreferenceScope {
   projectKey?: string | null;
 }
 
-const providerPreferencesSchema = z.object({
+const featureValuesSchema = z.record(z.string(), z.union([z.boolean(), z.string(), z.null()]));
+
+export interface ProviderPreferences {
+  model?: string;
+  mode?: string;
+  thinkingByModel?: Record<string, string>;
+  featureValues?: Record<string, unknown>;
+}
+
+export type LaunchTarget = { kind: "chat" } | { kind: "terminal"; profileId: string };
+
+export interface SelectionAskModelPreference {
+  provider?: string;
+  model?: string;
+  thinkingOptionId?: string;
+}
+
+export interface FormSelectionScope {
+  provider?: string;
+  providerPreferences?: Record<string, ProviderPreferences>;
+  isolation?: "local" | "worktree";
+  selectionAsk?: SelectionAskModelPreference;
+}
+
+export interface FormPreferences {
+  provider?: string;
+  providerPreferences?: Record<string, ProviderPreferences>;
+  favoriteModels?: Array<{ provider: string; modelId: string }>;
+  favoriteModelsByHost?: Record<string, Array<{ provider: string; modelId: string }>>;
+  isolation?: "local" | "worktree";
+  byWorkspace?: Record<string, FormSelectionScope>;
+  byProject?: Record<string, FormSelectionScope>;
+  selectionAsk?: SelectionAskModelPreference;
+  launchTarget?: LaunchTarget;
+}
+
+const providerPreferencesSchema: z.ZodType<ProviderPreferences> = z.strictObject({
   model: z.string().optional(),
   mode: z.string().optional(),
   thinkingByModel: z.record(z.string(), z.string()).optional(),
-  featureValues: z.record(z.string(), z.unknown()).optional(),
+  featureValues: featureValuesSchema.optional(),
 });
 
-const selectionAskSchema = z.object({
+const selectionAskSchema: z.ZodType<SelectionAskModelPreference> = z.strictObject({
   provider: z.string().optional(),
   model: z.string().optional(),
   thinkingOptionId: z.string().optional(),
 });
 
-const selectionScopeSchema = z.object({
+const selectionScopeSchema: z.ZodType<FormSelectionScope> = z.strictObject({
   provider: z.string().optional(),
   providerPreferences: z.record(z.string(), providerPreferencesSchema).optional(),
   // Last isolation choice for this project (New workspace form). Global
@@ -51,17 +87,17 @@ const selectionScopeSchema = z.object({
   selectionAsk: selectionAskSchema.optional(),
 });
 
-const favoriteModelSchema = z.object({
+const favoriteModelSchema = z.strictObject({
   provider: z.string(),
   modelId: z.string(),
 });
 
-const launchTargetSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("chat") }),
-  z.object({ kind: z.literal("terminal"), profileId: z.string() }),
+const launchTargetSchema: z.ZodType<LaunchTarget> = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("chat") }),
+  z.strictObject({ kind: z.literal("terminal"), profileId: z.string() }),
 ]);
 
-const formPreferencesSchema = z.object({
+export const FormPreferencesSchema = z.strictObject({
   provider: z.string().optional(),
   providerPreferences: z.record(z.string(), providerPreferencesSchema).optional(),
   // COMPAT(agentProfileFavoriteMigration / globalFavoriteModels): favourites
@@ -79,18 +115,50 @@ const formPreferencesSchema = z.object({
   // What the New workspace composer submits to: the chat agent (default) or a
   // terminal profile. See `@/new-workspace-launch` for resolution/fallback.
   launchTarget: launchTargetSchema.optional(),
+}) satisfies z.ZodType<FormPreferences>;
+
+const LegacyProviderPreferencesSchema = z.strictObject({
+  model: z.string().optional(),
+  mode: z.string().optional(),
+  thinkingOptionId: z.string().optional(),
 });
 
-export type ProviderPreferences = z.infer<typeof providerPreferencesSchema>;
-export type FormSelectionScope = z.infer<typeof selectionScopeSchema>;
-export type FormPreferences = z.infer<typeof formPreferencesSchema>;
-export type LaunchTarget = z.infer<typeof launchTargetSchema>;
-export type SelectionAskModelPreference = z.infer<typeof selectionAskSchema>;
+const LegacyFormPreferencesSchema = z
+  .strictObject({
+    workingDir: z.string().optional(),
+    provider: z.string().optional(),
+    serverId: z.string().optional(),
+    providerPreferences: z.record(z.string(), LegacyProviderPreferencesSchema).optional(),
+  })
+  .transform(({ provider, providerPreferences }): FormPreferences => {
+    const migratedProviderPreferences: Record<string, ProviderPreferences> = {};
+    for (const [providerId, legacy] of Object.entries(providerPreferences ?? {})) {
+      const model = legacy.model;
+      migratedProviderPreferences[providerId] = {
+        ...(model !== undefined ? { model } : {}),
+        ...(legacy.mode !== undefined ? { mode: legacy.mode } : {}),
+        ...(model !== undefined && legacy.thinkingOptionId !== undefined
+          ? { thinkingByModel: { [model]: legacy.thinkingOptionId } }
+          : {}),
+      };
+    }
+    return {
+      ...(provider !== undefined ? { provider } : {}),
+      ...(providerPreferences !== undefined
+        ? { providerPreferences: migratedProviderPreferences }
+        : {}),
+    };
+  });
+
+export const StoredFormPreferencesSchema: z.ZodType<FormPreferences> = z.union([
+  FormPreferencesSchema,
+  LegacyFormPreferencesSchema,
+]);
 
 export const DEFAULT_FORM_PREFERENCES: FormPreferences = {};
 
 export function parseFormPreferences(value: unknown): FormPreferences {
-  const result = formPreferencesSchema.safeParse(value);
+  const result = StoredFormPreferencesSchema.safeParse(value);
   return result.success ? result.data : DEFAULT_FORM_PREFERENCES;
 }
 
@@ -421,6 +489,7 @@ export function mergeCreateAgentSelectionPreferences(args: {
   const modelId = args.modelId?.trim() ?? "";
   const modeId = args.modeId?.trim() ?? "";
   const thinkingOptionId = args.thinkingOptionId?.trim() ?? "";
+  const featureValues = featureValuesSchema.safeParse(args.featureValues);
 
   return mergeProviderPreferencesWithScope({
     preferences: args.preferences,
@@ -429,7 +498,7 @@ export function mergeCreateAgentSelectionPreferences(args: {
       model: modelId || undefined,
       mode: modeId || undefined,
       ...(modelId && thinkingOptionId ? { thinkingByModel: { [modelId]: thinkingOptionId } } : {}),
-      ...(args.featureValues ? { featureValues: args.featureValues } : {}),
+      ...(featureValues.success ? { featureValues: featureValues.data } : {}),
     },
     scope: args.scope,
   });

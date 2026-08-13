@@ -27,6 +27,7 @@ interface ExecCommandOptions extends ExternalEnvOptions {
   timeout?: number;
   maxBuffer?: number;
   shell?: boolean | string;
+  signal?: AbortSignal;
   /**
    * Passed through to spawn when set. `execFile` always pipes stdin, which
    * leaves interactive CLIs (e.g. `omp -p`) waiting for an EOF they never get.
@@ -84,6 +85,7 @@ export function spawnProcess(
     ...spawnOptions,
     env: childEnv,
     shell,
+    signal: options?.signal,
     windowsHide: true,
   });
 }
@@ -121,6 +123,7 @@ export async function execCommand(
     timeout: options?.timeout,
     maxBuffer: options?.maxBuffer,
     shell,
+    signal: options?.signal,
     windowsHide: true,
   }) as Promise<ExecCommandResult>;
 }
@@ -150,6 +153,7 @@ function execCommandCollectOutput(
     cwd: options.cwd,
     env: childEnv,
     shell,
+    signal: options.signal,
     windowsHide: true,
     stdio: options.stdio,
   });
