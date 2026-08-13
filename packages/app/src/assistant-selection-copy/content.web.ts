@@ -56,9 +56,19 @@ turndown.addRule("compactListItem", {
   },
 });
 
-export function createAssistantSelectionClipboardContent(
+interface AssistantSelectionContext {
+  range: Range;
+  message: Element;
+}
+
+/**
+ * The selection this module owns: exactly one non-collapsed range with both
+ * endpoints inside the same assistant message. Anything else copies with the
+ * browser default.
+ */
+function getAssistantSelectionContext(
   selection: Selection | null,
-): MarkdownClipboardContent | null {
+): AssistantSelectionContext | null {
   if (!selection || selection.rangeCount !== 1 || selection.isCollapsed) {
     return null;
   }
@@ -70,13 +80,25 @@ export function createAssistantSelectionClipboardContent(
     return null;
   }
 
-  const partialCode = createPartialCodeContent(range, startMessage);
+  return { range, message: startMessage };
+}
+
+export function createAssistantSelectionClipboardContent(
+  selection: Selection | null,
+): MarkdownClipboardContent | null {
+  const context = getAssistantSelectionContext(selection);
+  if (!context) {
+    return null;
+  }
+  const { range, message } = context;
+
+  const partialCode = createPartialCodeContent(range, message);
   if (partialCode) {
     return partialCode;
   }
 
   const container = document.createElement("div");
-  const selected = cloneMarkdownSelection(range, startMessage);
+  const selected = cloneMarkdownSelection(range, message);
   container.append(selected);
   restoreMarkdownElements(container);
 
@@ -86,6 +108,28 @@ export function createAssistantSelectionClipboardContent(
   }
   const content = createMarkdownClipboardContent(markdown);
   return { ...content, html: flattenClipboardListMarkup(content.html) };
+}
+
+/**
+ * The plain-text half of the same selection: the rendered text with none of the
+ * Markdown syntax. `Cmd/Ctrl+C` copies this; the Markdown source is the
+ * `Cmd/Ctrl+Shift+C` path.
+ *
+ * The live selection reflects the rendered message's CSS, so `toString()`
+ * matches what the user sees: block elements become line breaks and code keeps
+ * its `white-space: pre` newlines. A detached re-render cannot say the same
+ * without the app's stylesheet.
+ */
+export function createAssistantSelectionPlainText(selection: Selection | null): string | null {
+  const context = getAssistantSelectionContext(selection);
+  if (!context) {
+    return null;
+  }
+
+  // Trailing whitespace would hand a terminal an extra executable line when a
+  // code line is the last thing copied.
+  const text = (selection?.toString() ?? "").replace(/[ \t\r\n]+$/, "");
+  return text || null;
 }
 
 /**
