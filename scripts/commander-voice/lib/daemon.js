@@ -103,6 +103,71 @@ export function buildFleetRosterDigest(agents) {
   return `${lead} ${hostParts.join(" ")}`;
 }
 
+/**
+ * Spoken digest for fleet_list_inventory catalog hosts (each host carries
+ * host, reachable, and projects with workspaces). Title-first, never raw ids:
+ * with no query it leads with fleet-wide counts then names projects per host;
+ * with a query it leads with the matches (project title + host + id + its
+ * workspaces) so the model can act on the resolved name; no match says so and
+ * lists host names so the model can retry without guessing.
+ */
+export function buildFleetInventoryDigest(hosts, query) {
+  const rows = Array.isArray(hosts) ? hosts : [];
+  const normalizedQuery = typeof query === "string" ? query.trim() : "";
+  const hostsWithProjects = rows.filter((host) => (host.projects ?? []).length > 0);
+  const totalProjects = rows.reduce((count, host) => count + (host.projects ?? []).length, 0);
+  const totalWorkspaces = rows.reduce(
+    (count, host) =>
+      count +
+      (host.projects ?? []).reduce((n, project) => n + (project.workspaces ?? []).length, 0),
+    0,
+  );
+
+  if (normalizedQuery) {
+    const lines = [];
+    for (const host of hostsWithProjects) {
+      for (const project of host.projects) {
+        const workspaces = project.workspaces ?? [];
+        const workspaceText =
+          workspaces.length > 0 ? ` Workspaces: ${workspaces.map((w) => w.title).join(", ")}.` : "";
+        lines.push(
+          `Closest to "${normalizedQuery}": project ${project.title} on ${host.host} (id ${project.id}).${workspaceText}`,
+        );
+      }
+    }
+    if (lines.length > 0) {
+      return lines.join(" ");
+    }
+    const hostNames = rows.map((host) => host.host).filter(Boolean);
+    return hostNames.length > 0
+      ? `No match for "${normalizedQuery}". Hosts: ${hostNames.join(", ")}.`
+      : `No match for "${normalizedQuery}".`;
+  }
+
+  if (totalProjects === 0) {
+    const hostCount = rows.length;
+    return `Across ${hostCount} ${hostCount === 1 ? "host" : "hosts"}: no projects or workspaces.`;
+  }
+  const hostParts = hostsWithProjects.map((host) => {
+    const projectParts = host.projects.map((project) => {
+      const workspaces = project.workspaces ?? [];
+      if (workspaces.length === 0) {
+        return `project ${project.title}`;
+      }
+      return `project ${project.title} (${workspaces.length} ${
+        workspaces.length === 1 ? "workspace" : "workspaces"
+      }: ${workspaces.map((w) => w.title).join(", ")})`;
+    });
+    return `On ${host.host}: ${projectParts.join(", ")}.`;
+  });
+  const hostCount = rows.length;
+  return (
+    `Across ${hostCount} ${hostCount === 1 ? "host" : "hosts"}: ${totalProjects} project${
+      totalProjects === 1 ? "" : "s"
+    }, ${totalWorkspaces} workspace${totalWorkspaces === 1 ? "" : "s"}. ` + hostParts.join(" ")
+  );
+}
+
 export class DaemonConnection {
   constructor(options) {
     this.url = options.url;
@@ -316,6 +381,20 @@ export class DaemonConnection {
       return { error: result.error ?? "fleet_list_agents failed" };
     }
     return { result: buildFleetRosterDigest(result.structuredContent.agents) };
+  }
+
+  /**
+   * fleet_list_inventory: the Commander catalog tool for hosts, projects, and
+   * workspaces (optional fuzzy query / host filter), executed in the daemon's
+   * catalog. Voice shapes the spoken digest — titles first, ids only when the
+   * query matched and the id is needed to act.
+   */
+  async fleetListInventory(args = {}) {
+    const result = await this.executeCatalogTool("fleet_list_inventory", args);
+    if (!result.ok) {
+      return { error: result.error ?? "fleet_list_inventory failed" };
+    }
+    return { result: buildFleetInventoryDigest(result.structuredContent.hosts, args.query) };
   }
 
   /**

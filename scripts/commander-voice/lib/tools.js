@@ -25,6 +25,32 @@ const OBJECT = { type: "OBJECT" };
 /** Shared read tools — same list in both modes. */
 const READ_TOOL_DECLARATIONS = [
   {
+    name: "fleet_list_inventory",
+    description:
+      "List hosts, projects, and workspaces across the fleet, optionally filtered by a spoken " +
+      "name. THE resolve-first tool: when the user names a project, workspace, or host, call it " +
+      "with that name as query and match by title — a name is never assumed to be a host. " +
+      "Empty query returns the full inventory. Read-only; instant.",
+    parameters: {
+      ...OBJECT,
+      properties: {
+        query: {
+          type: "STRING",
+          description:
+            "Fuzzy filter: case-insensitive match against project title/id, workspace " +
+            "title/id/cwd, host name/alias. Omit for the full inventory.",
+        },
+        host: {
+          type: "STRING",
+          description:
+            "Restrict to one host: a peer name from the daemon peers config, or 'local'. " +
+            "Omitted → all hosts.",
+        },
+      },
+      required: [],
+    },
+  },
+  {
     name: "fleet_list_agents",
     description:
       "List agents across hosts: status, title, and host for each, newest first. Roster only — " +
@@ -375,6 +401,10 @@ export const TOOL_DECLARATIONS = getToolDeclarations("relay");
 // it only shapes the catalog's result for speech. Only commander_dispatch,
 // proposal_respond, and pending_updates stay local (voice-specific protocol).
 
+function executeFleetListInventory(daemon, argsObj) {
+  return daemon.fleetListInventory(argsObj);
+}
+
 function executeFleetListAgents(daemon, argsObj) {
   return daemon.fleetListAgents(argsObj);
 }
@@ -591,6 +621,7 @@ async function executePostAnswer(daemon, argsObj, mode) {
 
 /** Tool name -> executor, matching the declared tool surface above. */
 const TOOL_HANDLERS = {
+  fleet_list_inventory: executeFleetListInventory,
   fleet_list_agents: executeFleetListAgents,
   fleet_list_models: executeFleetListModels,
   fleet_get_agent_activity: executeFleetGetAgentActivity,

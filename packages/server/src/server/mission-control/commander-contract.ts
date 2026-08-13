@@ -43,6 +43,9 @@ export const COMMANDER_ADOPTED_AT_LABEL = "paseo.commander-adopted-at";
  * M7 adds `fleet_list_models` (per-host invocable model lists + each host's
  * default worker model, so a spawn never needs the user to name a model) —
  * read-only, never gated.
+ * M8 adds `fleet_list_inventory` (hosts + projects + workspaces with an
+ * optional fuzzy name filter, the catalog lookup for resolving a spoken name
+ * before acting) — read-only, never gated.
  * Mirrors the app-side launch allowlist. The omp provider launches with
  * `--no-tools` for this list (no builtin names), dropping the omp `task`
  * subagent tool entirely.
@@ -50,6 +53,7 @@ export const COMMANDER_ADOPTED_AT_LABEL = "paseo.commander-adopted-at";
 export const COMMANDER_TOOL_ALLOWLIST: readonly string[] = [
   "fleet_list_agents",
   "fleet_list_models",
+  "fleet_list_inventory",
   "fleet_create_agent",
   "fleet_send_prompt",
   "fleet_get_agent_activity",
