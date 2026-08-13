@@ -24,6 +24,20 @@
 #   ./scripts/deploy.sh            # full sync + deploy (local + remotes)
 #   ./scripts/deploy.sh --help     # show arguments and env variables
 #
+# Orchestrator modes (auto-detected by `uname -s`):
+#   macOS (MacBook)   — as before: local = MacBook (daemon + desktop build/install),
+#                       remotes = blrofc3 + iammvaibhav.
+#   Linux (iammvaibhav) — local = iammvaibhav (daemon restart + nudge + services),
+#                       remotes = blrofc3 (WireGuard). The MacBook is a desktop-only
+#                       target: the job ssh's in (PASEO_MACBOOK_HOST, default
+#                       "macbook" = 10.7.0.2), git-syncs the checkout, and runs
+#                       PASEO_DESKTOP_ONLY=1 to build/quit/replace/relaunch Paseo.app.
+#                       The MacBook job is reachability-gated and NEVER fatal — if
+#                       the MacBook is down or its checkout is dirty/diverged,
+#                       iammvaibhav + remotes still deploy. The MacBook daemon is
+#                       deliberately NOT restarted (paseo-dev agents stay untouched
+#                       until the migration is complete).
+#
 # Overrides:
 #   PASEO_CUSTOM_BRANCH=vaibhav/customizations
 #   PASEO_NODE_VERSION=22
@@ -85,13 +99,29 @@ ORIGIN_REMOTE="${PASEO_ORIGIN_REMOTE:-origin}"
 FORK_REPO="${PASEO_FORK_REPO:-git@github.com:iammvaibhav/paseo.git}"
 LOCAL_PASEO_HOME="${PASEO_LOCAL_HOME:-$HOME/.paseo}"
 REMOTE_REPO_DIR="${PASEO_REMOTE_REPO_DIR:-paseo}"
+# Orchestrator mode: macOS = MacBook (desktop local), Linux = iammvaibhav (desktop
+# driven over ssh). Everything else falls back to the Darwin path.
+ORCHESTRATOR_OS="$(uname -s)"
+IS_MAC_ORCHESTRATOR=0
+if [[ "$ORCHESTRATOR_OS" == "Darwin" ]]; then
+  IS_MAC_ORCHESTRATOR=1
+fi
+
 # Allow a space-separated subset, e.g. PASEO_REMOTE_HOSTS="blrofc3"
 if [[ -n "${PASEO_REMOTE_HOSTS:-}" ]]; then
   # shellcheck disable=SC2206
   REMOTE_HOSTS=(${PASEO_REMOTE_HOSTS})
-else
+elif [[ "$IS_MAC_ORCHESTRATOR" == "1" ]]; then
   REMOTE_HOSTS=(blrofc3 iammvaibhav)
+else
+  # iammvaibhav orchestrator: blrofc3 is the only full remote; the MacBook is a
+  # desktop-only job (macbook_desktop_job), reachability-gated and non-fatal.
+  REMOTE_HOSTS=(blrofc3)
 fi
+
+# MacBook desktop host (used only when deploy runs on iammvaibhav).
+MACBOOK_HOST="${PASEO_MACBOOK_HOST:-macbook}"
+MACBOOK_REPO_DIR="${PASEO_MACBOOK_REPO_DIR:-paseo}"
 
 # Commit messages stay on claude (Haiku). Conflict resolution + pre-commit repair
 # use the grok CLI at high reasoning effort (Grok 4.5 High).
@@ -547,6 +577,15 @@ sync_local_git() {
   fi
 
   git -C "$ROOT_DIR" checkout "$BRANCH"
+
+  # Fast-forward to whatever the fork already has (e.g. commits pushed from the
+  # MacBook) so this deploy never force-reverts work done on another host.
+  if ! git -C "$ROOT_DIR" merge --ff-only "refs/remotes/$ORIGIN_REMOTE/$BRANCH" >/dev/null 2>&1; then
+    if ! git -C "$ROOT_DIR" merge-base --is-ancestor "$BRANCH" "refs/remotes/$ORIGIN_REMOTE/$BRANCH" >/dev/null 2>&1; then
+      die "Local $BRANCH diverged from $ORIGIN_REMOTE/$BRANCH — resolve manually (git merge $ORIGIN_REMOTE/$BRANCH) before deploying"
+    fi
+    log "Local $BRANCH already up to date with $ORIGIN_REMOTE/$BRANCH"
+  fi
   update_origin_main
   merge_upstream
   log "Pushing $BRANCH to $ORIGIN_REMOTE (force-with-lease)"
@@ -990,6 +1029,85 @@ build_desktop_app() {
   install_desktop_app "$built" "$DESKTOP_APP"
 }
 
+# --- MacBook desktop job (iammvaibhav orchestrator) ----------------------------
+# The desktop app builds only on macOS, so when deploy runs from iammvaibhav the
+# MacBook is driven over ssh (WireGuard 10.7.0.2; ssh alias "macbook"). The job is
+# reachability-gated and NEVER fails the deploy: if the MacBook is down, or its
+# checkout is dirty/diverged, iammvaibhav + remotes still deploy. The MacBook
+# daemon is deliberately left alone here — paseo-dev agents stay untouched until
+# the migration to iammvaibhav is complete (opt in later by running deploy on the
+# MacBook itself, which restarts its own daemon as before).
+
+# Remote script body: safe git sync + nested desktop-only deploy (foreground so the
+# exit code propagates; PASEO_DESKTOP_ONLY=1 already does build → quit → rm → cp → open).
+macbook_desktop_body() {
+  cat <<EOF
+set -euo pipefail
+BRANCH='$BRANCH'
+NODE_VERSION='$NODE_VERSION'
+REPO_DIR="\$HOME/$MACBOOK_REPO_DIR"
+
+log() { printf '\n[%s:macbook] %s\n' "\$(date '+%H:%M:%S')" "\$*"; }
+
+cd "\$REPO_DIR"
+log "git sync to origin/\$BRANCH"
+git fetch origin --prune
+if ! git show-ref --verify --quiet "refs/remotes/origin/\$BRANCH"; then
+  log "origin/\$BRANCH not found on MacBook — skipping desktop build"
+  exit 1
+fi
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  log "MacBook checkout has uncommitted changes — skipping desktop build (commit or stash, then run: PASEO_DESKTOP_ONLY=1 ./scripts/deploy.sh)"
+  exit 1
+fi
+git checkout -q "\$BRANCH" 2>/dev/null || git checkout -q -B "\$BRANCH" "origin/\$BRANCH"
+if ! git merge --ff-only "origin/\$BRANCH" >/dev/null 2>&1; then
+  log "MacBook checkout diverged from origin/\$BRANCH — skipping desktop build (run: git merge origin/\$BRANCH, then PASEO_DESKTOP_ONLY=1 ./scripts/deploy.sh)"
+  exit 1
+fi
+log "MacBook checkout at \$(git rev-parse --short HEAD)"
+
+# Reinstall deps when the lockfile changed since the last sync.
+sync_ref_file="\$HOME/.paseo-sync-ref"
+prev="" cur
+cur="\$(git rev-parse HEAD)"
+if [[ -f "\$sync_ref_file" ]]; then
+  prev="\$(cat "\$sync_ref_file")"
+fi
+if [[ -z "\$prev" ]] || git diff "\$prev" "\$cur" --name-only | grep -Eq '^(package-lock\\.json|package\\.json)$'; then
+  log "Installing npm dependencies"
+  npm install
+fi
+echo "\$cur" > "\$sync_ref_file"
+
+log "Building + installing desktop app (PASEO_DESKTOP_ONLY=1, foreground)"
+export PASEO_DESKTOP_ONLY=1
+export PASEO_DEPLOY_FOREGROUND=1
+./scripts/deploy.sh
+EOF
+}
+
+macbook_desktop_job() {
+  if [[ "${PASEO_SKIP_MACBOOK:-0}" == "1" ]]; then
+    log "Skipping MacBook desktop job (PASEO_SKIP_MACBOOK=1)"
+    return 0
+  fi
+  if [[ "${PASEO_BUILD_DESKTOP:-1}" == "0" ]]; then
+    log "Skipping MacBook desktop build (PASEO_BUILD_DESKTOP=0)"
+    return 0
+  fi
+  if ! ssh -o BatchMode=yes -o ConnectTimeout=8 "$MACBOOK_HOST" 'true' 2>/dev/null; then
+    log "MacBook ($MACBOOK_HOST) unreachable — skipping desktop build/install; iammvaibhav + remotes still deploy"
+    return 0
+  fi
+  log "MacBook reachable — git sync + desktop build/install via PASEO_DESKTOP_ONLY=1"
+  if ssh -o BatchMode=yes "$MACBOOK_HOST" "bash -s" < <(macbook_desktop_body); then
+    log "MacBook desktop build/install complete"
+  else
+    log "MacBook desktop job FAILED — deploy continues (see job log); rebuild manually on the MacBook with PASEO_DESKTOP_ONLY=1"
+  fi
+}
+
 # --- Parallel post-push deploy jobs ------------------------------------------------
 # After git is pushed, local daemon work, desktop build, and each remote host are
 # independent enough to overlap. Jobs log to /tmp/paseo-deploy-<name>.log so their
@@ -1119,6 +1237,11 @@ run_parallel_post_push_deploy() {
       rprovider="$(remote_tunnel_provider "$host")"
       start_parallel_job "remote-${host}" remote_host_job "$host" "$rhome" "$rprovider"
     done
+    # iammvaibhav orchestrator: the MacBook is a desktop-only target (build +
+    # install of Paseo.app), gated on reachability and never fatal.
+    if [[ "$IS_MAC_ORCHESTRATOR" != "1" ]]; then
+      start_parallel_job "macbook-desktop" macbook_desktop_job
+    fi
   else
     log "Skipping remotes (PASEO_SKIP_REMOTES=1)"
   fi
@@ -1142,7 +1265,10 @@ run_parallel_post_push_deploy() {
     fi
 
     # Safe now: daemon process is up (modules already loaded). Desktop can clean+rebuild.
-    start_parallel_job "desktop" build_desktop_app
+    # Only on the MacBook orchestrator — on iammvaibhav the desktop is a remote job.
+    if [[ "$IS_MAC_ORCHESTRATOR" == "1" ]]; then
+      start_parallel_job "desktop" build_desktop_app
+    fi
   else
     log "Skipping local post-push jobs (PASEO_SKIP_LOCAL=1)"
   fi
@@ -1788,6 +1914,13 @@ Usage:
 
 Takes no positional arguments; behavior is controlled by env variables.
 
+Orchestrator (auto-detected by `uname -s`):
+  macOS (MacBook)     local = MacBook (daemon + desktop build/install),
+                      remotes = blrofc3 + iammvaibhav.
+  Linux (iammvaibhav) local = iammvaibhav (daemon + services),
+                      remotes = blrofc3; MacBook = desktop-only ssh job
+                      (reachability-gated, non-fatal, MacBook daemon untouched).
+
 What a full run does (local Mac):
   0. Self-detaches into a new session (unless PASEO_DEPLOY_FOREGROUND=1) and writes
      durable logs under ~/.paseo/deploy-logs/ (latest.log → current run)
@@ -1799,6 +1932,7 @@ What a full run does (local Mac):
   4. Push branch to $ORIGIN_REMOTE
   5. Post-push in parallel: each remote host, local daemon restart (+ server build first),
      local code-server, and desktop app build/install to $DESKTOP_APP then relaunch
+     (desktop via the MacBook ssh job when deploying from iammvaibhav)
 Then remotes are ${REMOTE_HOSTS[*]} (each gets its own parallel job).
 
 Daemon restarts (local + remote) always run in a NEW session so cancelling an agent
@@ -1806,12 +1940,15 @@ tool mid-wait cannot leave stop-without-start. The whole deploy is also detached
 default for the same reason — agents should \`tail -f ~/.paseo/deploy-logs/latest.log\`.
 
 Scope flags (set to 1 unless noted):
-  PASEO_SKIP_LOCAL                 Skip the local Mac entirely (remotes only)
+  PASEO_SKIP_LOCAL                 Skip the local host entirely (remotes only)
   PASEO_SKIP_REMOTES              Skip all remote hosts (local only)
   PASEO_REMOTE_HOSTS             Space-separated remote subset (default: ${REMOTE_HOSTS[*]})
-  PASEO_SKIP_DAEMON              Skip local Mac daemon build/restart (desktop still builds)
+  PASEO_SKIP_DAEMON              Skip local daemon build/restart (desktop still builds)
   PASEO_SKIP_REMOTE_DAEMON       Skip remote daemon build/restart (remotes still pull git +
                                    code-server/plannotator; default is to rebuild remotes)
+  PASEO_SKIP_MACBOOK             Skip the MacBook desktop job (iammvaibhav orchestrator)
+  PASEO_MACBOOK_HOST             ssh alias/IP for the MacBook (default: $MACBOOK_HOST)
+  PASEO_MACBOOK_REPO_DIR         repo dir name under \$HOME on the MacBook (default: $MACBOOK_REPO_DIR)
   PASEO_SKIP_CODE_SERVER         Skip code-server deploy everywhere
   PASEO_SKIP_CODE_SERVER_EXTENSION  Skip installing the paseo-bridge extension
   PASEO_SKIP_PLANNOTATOR         Skip plannotator binary deploy everywhere
@@ -1847,10 +1984,10 @@ Other:
   PASEO_LOCAL_HOME               Local daemon home (default: $LOCAL_PASEO_HOME)
 
 Per-host code-server install (run on a single machine):
-  ./scripts/code-server/install.sh <local|${REMOTE_HOSTS[0]}|${REMOTE_HOSTS[1]}>
+  ./scripts/code-server/install.sh <local|blrofc3|iammvaibhav>
 
 Per-host Commander Voice install (run on a single machine):
-  ./scripts/commander-voice/install.sh <local|${REMOTE_HOSTS[0]}|${REMOTE_HOSTS[1]}>
+  ./scripts/commander-voice/install.sh <local|blrofc3|iammvaibhav>
   (secrets come from PASEO_COMMANDER_VOICE_PASSWORD / GEMINI_API_KEY env vars)
 
 Examples:
@@ -1887,6 +2024,9 @@ main() {
   # App-only: no git, remotes, daemon, or code-server — just desktop build + install.
   if [[ "${PASEO_DESKTOP_ONLY:-0}" == "1" ]]; then
     log "Desktop-only deploy (PASEO_DESKTOP_ONLY=1) → $DESKTOP_APP"
+    if [[ "$IS_MAC_ORCHESTRATOR" != "1" ]]; then
+      die "PASEO_DESKTOP_ONLY=1 requires macOS — the desktop app builds only on the MacBook (deploy drives it there via the macbook-desktop job)"
+    fi
     ensure_node
     if [[ "${PASEO_BUILD_DESKTOP:-1}" == "0" ]]; then
       die "PASEO_DESKTOP_ONLY=1 requires desktop build (unset PASEO_BUILD_DESKTOP=0)"
