@@ -10,7 +10,12 @@ import { WebSocket } from "ws";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 
 import { startVoiceServer } from "../server.js";
-import { classifyEvent, buildFleetRosterDigest, DaemonConnection } from "../lib/daemon.js";
+import {
+  classifyEvent,
+  buildFleetRosterDigest,
+  buildFleetInventoryDigest,
+  DaemonConnection,
+} from "../lib/daemon.js";
 import { executeTool } from "../lib/tools.js";
 
 const require = createRequire(import.meta.url);
@@ -226,6 +231,85 @@ test("fleet_list_agents digest handles singular hosts and empty rosters", () => 
   assert.match(digest, /On local: Solo \(idle\)\./);
 });
 
+test("fleet_list_inventory digest uses titles and leads with the project, not the host, when the query is a project name", () => {
+  const hosts = [
+    {
+      host: "macbook",
+      reachable: true,
+      projects: [
+        {
+          id: "prj_paseo",
+          title: "Paseo",
+          workspaces: [
+            { id: "wks_evil", title: "evil-toad", kind: "worktree", cwd: "/x/evil-toad" },
+            { id: "wks_charming", title: "charming-seal", kind: "worktree", cwd: "/x/charming" },
+          ],
+        },
+      ],
+    },
+  ];
+  const digest = buildFleetInventoryDigest(hosts, "paseo");
+  assert.match(
+    digest,
+    /Closest to "paseo": project Paseo on macbook \(id prj_paseo\)\. Workspaces: evil-toad, charming-seal\./,
+    "project title first, host after, ids only for the project, workspace titles never raw ids",
+  );
+  assert.doesNotMatch(digest, /On paseo/, "the query is never treated as a host");
+  assert.doesNotMatch(digest, /wks_evil/, "raw workspace ids never surface in speech");
+});
+
+test("fleet_list_inventory digest reports no match and lists host names", () => {
+  const hosts = [
+    { host: "macbook", reachable: true, projects: [] },
+    { host: "local", reachable: true, projects: [] },
+  ];
+  const digest = buildFleetInventoryDigest(hosts, "stackmod");
+  assert.match(digest, /No match for "stackmod"\. Hosts: macbook, local\./);
+});
+
+test("fleet_list_inventory digest leads with fleet-wide counts without a query", () => {
+  const hosts = [
+    {
+      host: "macbook",
+      reachable: true,
+      projects: [
+        {
+          id: "prj_paseo",
+          title: "Paseo",
+          workspaces: [
+            { id: "wks_evil", title: "evil-toad", kind: "worktree", cwd: "/x/evil-toad" },
+            { id: "wks_charming", title: "charming-seal", kind: "worktree", cwd: "/x/charming" },
+          ],
+        },
+      ],
+    },
+    {
+      host: "local",
+      reachable: true,
+      projects: [
+        {
+          id: "prj_cmd",
+          title: "commander",
+          workspaces: [{ id: "wks_cmd", title: "Commander", kind: "directory", cwd: "/y" }],
+        },
+      ],
+    },
+  ];
+  const digest = buildFleetInventoryDigest(hosts);
+  assert.match(
+    digest,
+    /Across 2 hosts: 2 projects, 3 workspaces\./,
+    "leads with fleet-wide counts",
+  );
+  assert.match(
+    digest,
+    /On macbook: project Paseo \(2 workspaces: evil-toad, charming-seal\)\./,
+    "names projects and workspaces by title per host",
+  );
+  assert.match(digest, /On local: project commander \(1 workspace: Commander\)\./);
+  assert.doesNotMatch(digest, /prj_|wks_/, "raw ids never surface in speech");
+});
+
 test("daemon fleet read methods execute catalog tools by name (no second implementation)", async () => {
   const calls = [];
   const client = {
@@ -240,7 +324,30 @@ test("daemon fleet read methods execute catalog tools by name (no second impleme
               ? { runRecords: [], ok: true }
               : name === "fleet_search"
                 ? { matches: [] }
-                : { agents: [] };
+                : name === "fleet_list_inventory"
+                  ? {
+                      hosts: [
+                        {
+                          host: "local",
+                          reachable: true,
+                          projects: [
+                            {
+                              id: "prj_paseo",
+                              title: "Paseo",
+                              workspaces: [
+                                {
+                                  id: "wks_evil",
+                                  title: "evil-toad",
+                                  kind: "worktree",
+                                  cwd: "/x/evil-toad",
+                                },
+                              ],
+                            },
+                          ],
+                        },
+                      ],
+                    }
+                  : { agents: [] };
       return { ok: true, name, structuredContent, content: "" };
     },
   };
@@ -283,6 +390,17 @@ test("daemon fleet read methods execute catalog tools by name (no second impleme
     args: { host: "local" },
   });
   assert.equal(models.ok, true);
+
+  const inventory = await daemon.fleetListInventory({ query: "paseo" });
+  assert.deepEqual(calls.at(-1), {
+    name: "fleet_list_inventory",
+    args: { query: "paseo" },
+  });
+  assert.match(
+    inventory.result,
+    /Closest to "paseo": project Paseo on local \(id prj_paseo\)\. Workspaces: evil-toad\./,
+    "the daemon shapes the catalog inventory into a spoken digest",
+  );
 });
 
 test("fleet_list_models executor returns the default worker model", async () => {

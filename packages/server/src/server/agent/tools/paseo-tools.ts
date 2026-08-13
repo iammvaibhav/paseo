@@ -136,7 +136,11 @@ import {
   type FleetSearchTier3Runner,
 } from "../../mission-control/search.js";
 import type { MissionControlService } from "../../mission-control/service.js";
-import { buildLocalModels, resolveDefaultWorkerModel } from "../../mission-control/context.js";
+import {
+  buildFleetContextData,
+  buildLocalModels,
+  resolveDefaultWorkerModel,
+} from "../../mission-control/context.js";
 import type { MissionControlVerifierDispatcher } from "../../mission-control/verifier.js";
 import { MissionControlReportStatusInputSchema } from "@getpaseo/protocol/mission-control/types";
 import type { MissionControlEvent } from "@getpaseo/protocol/mission-control/types";
@@ -626,6 +630,27 @@ function matchesHistorySearch(query: string, target: HistorySearchTarget): boole
     .map((value) => value.trim().toLowerCase())
     .filter((value) => value.length > 0);
   return tokens.every((token) => fields.some((field) => field.includes(token)));
+}
+
+/**
+ * Token filter for fleet_list_inventory, same convention as
+ * matchesHistorySearch: every whitespace-separated token must appear as a
+ * case-insensitive substring in at least one of the candidate fields (project
+ * title/id, workspace title/id/cwd, host name/alias). A caller passes the
+ * already-lowercased tokens so the query is normalized once.
+ */
+function matchesFleetInventoryQuery(
+  tokens: readonly string[],
+  ...fields: Array<string | null | undefined>
+): boolean {
+  const haystack = fields
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim().toLowerCase())
+    .filter((value) => value.length > 0);
+  if (haystack.length === 0) {
+    return false;
+  }
+  return tokens.every((token) => haystack.some((field) => field.includes(token)));
 }
 
 function resolveTerminalKeyToken(key: string, literal: boolean): string {
@@ -4342,6 +4367,150 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           host: local ? hostLabel : target,
           models,
           defaultWorkerModel: invocable,
+        }),
+      };
+    },
+  );
+
+  registerTool(
+    "fleet_list_inventory",
+    {
+      title: "List fleet hosts, projects, and workspaces",
+      description:
+        "List every project and workspace across this daemon and its peers, grouped by host. " +
+        "query is a case-insensitive fuzzy filter (project title/id, workspace title/id/cwd, host " +
+        "name/alias) for resolving a spoken name before acting — a name is never assumed to be a " +
+        "host. host restricts to one peer name or 'local'; omitted = every host. Unreachable hosts " +
+        "appear with reachable:false and an empty project list. Read-only; never gated.",
+      inputSchema: {
+        query: z
+          .string()
+          .optional()
+          .describe(
+            "Fuzzy filter: case-insensitive substring/token match against project title, project id, " +
+              "workspace title, workspace id, cwd, host name, and host alias. Omitted → full inventory.",
+          ),
+        host: z
+          .string()
+          .optional()
+          .describe(
+            "Restrict to one host: a peer name from the daemon peers config, or 'local'. Omitted → all hosts.",
+          ),
+      },
+      outputSchema: {
+        hosts: z.array(
+          z.object({
+            host: z.string(),
+            reachable: z.boolean(),
+            projects: z.array(
+              z.object({
+                id: z.string(),
+                title: z.string(),
+                workspaces: z.array(
+                  z.object({
+                    id: z.string(),
+                    title: z.string(),
+                    kind: z.string(),
+                    cwd: z.string(),
+                  }),
+                ),
+              }),
+            ),
+          }),
+        ),
+      },
+    },
+    async ({ query, host }) => {
+      // One shared fleet assembly — the same buildFleetContextData the
+      // Commander snapshot uses, so the inventory is never fetched twice.
+      const context = await buildFleetContextData({
+        agentManager,
+        agentStorage,
+        workspaceRegistry: (options.workspaceRegistry ?? { list: async () => [] }) as Pick<
+          WorkspaceRegistry,
+          "list"
+        >,
+        projectRegistry: (options.projectRegistry ?? { list: async () => [] }) as Pick<
+          ProjectRegistry,
+          "list"
+        >,
+        providerSnapshotManager,
+        ...(peerManager ? { peerManager } : {}),
+        daemonConfigStore:
+          daemonConfigStore ?? ({ get: () => ({}) } as unknown as Pick<DaemonConfigStore, "get">),
+        serverId: serverId ?? "",
+        // machineName is fleet-map display only and never surfaced by this
+        // tool; the alias-or-local label stands in for the hostname.
+        hostName: hostLabel,
+        logger,
+      });
+
+      const tokens = (query ?? "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+      const hasQuery = tokens.length > 0;
+
+      let hosts = context.hosts;
+      if (host) {
+        const target = host.trim();
+        if (isFleetLocalTarget(target)) {
+          hosts = hosts.filter((entry) => entry.hostName === "local");
+        } else {
+          const peer = hosts.filter((entry) => entry.hostName === target);
+          if (peer.length === 0) {
+            throw new Error(`Host "${target}" is not a configured peer`);
+          }
+          hosts = peer;
+        }
+      }
+
+      return {
+        content: [],
+        structuredContent: ensureValidJson({
+          hosts: hosts.map((entry) => {
+            const hostHit =
+              hasQuery && matchesFleetInventoryQuery(tokens, entry.hostName, entry.alias);
+            const projects: Array<{
+              id: string;
+              title: string;
+              workspaces: Array<{ id: string; title: string; kind: string; cwd: string }>;
+            }> = [];
+            for (const project of entry.inventory.projects) {
+              const projectHit = matchesFleetInventoryQuery(tokens, project.title, project.id);
+              const workspaceHit = project.workspaces.some((workspace) =>
+                matchesFleetInventoryQuery(tokens, workspace.title, workspace.id, workspace.cwd),
+              );
+              if (hasQuery && !hostHit && !projectHit && !workspaceHit) {
+                continue;
+              }
+              // A host or project hit keeps the project whole (its workspaces
+              // are the answer); a workspace-only hit narrows to the match.
+              const workspaces =
+                hostHit || projectHit
+                  ? project.workspaces
+                  : project.workspaces.filter((workspace) =>
+                      matchesFleetInventoryQuery(
+                        tokens,
+                        workspace.title,
+                        workspace.id,
+                        workspace.cwd,
+                      ),
+                    );
+              projects.push({
+                id: project.id,
+                title: project.title,
+                workspaces: workspaces.map((workspace) => ({
+                  id: workspace.id,
+                  title: workspace.title,
+                  kind: workspace.kind,
+                  cwd: workspace.cwd,
+                })),
+              });
+            }
+            return {
+              host: entry.hostName === "local" ? (entry.alias ?? "local") : entry.hostName,
+              reachable: entry.reachable,
+              projects,
+            };
+          }),
         }),
       };
     },

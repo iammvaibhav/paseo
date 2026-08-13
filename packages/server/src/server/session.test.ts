@@ -7097,6 +7097,58 @@ describe("mission control tools.execute RPC wire dispatch", () => {
     ]);
   });
 
+  test("accepts fleet_list_inventory on the Commander allowlist (catalog resolve-first tool)", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const executeTool = vi.fn(async () => ({
+      content: [],
+      structuredContent: {
+        hosts: [
+          {
+            host: "local",
+            reachable: true,
+            projects: [
+              {
+                id: "prj_paseo",
+                title: "Paseo",
+                workspaces: [{ id: "wks_evil", title: "evil-toad", kind: "worktree", cwd: "/x" }],
+              },
+            ],
+          },
+        ],
+      },
+    }));
+    const session = createSessionForTest({
+      messages,
+      agentManager: {
+        createPaseoToolCatalog: vi.fn(async () => catalogFor("fleet_list_inventory", executeTool)),
+      },
+    });
+
+    await session.handleMessage({
+      type: "mission_control.tools.execute.request",
+      requestId: "req-exec-inv",
+      name: "fleet_list_inventory",
+      args: { query: "paseo" },
+    });
+
+    // The allowlist gate must pass the new name through to the catalog — the
+    // Voice node resolves spoken names through this RPC.
+    expect(executeTool).toHaveBeenCalledWith("fleet_list_inventory", { query: "paseo" });
+    expect(messages).toEqual([
+      {
+        type: "mission_control.tools.execute.response",
+        payload: {
+          requestId: "req-exec-inv",
+          ok: true,
+          name: "fleet_list_inventory",
+          structuredContent: {
+            hosts: [expect.objectContaining({ host: "local", reachable: true })],
+          },
+        },
+      },
+    ]);
+  });
+
   test("joins text content blocks into the content field", async () => {
     const messages: SessionOutboundMessage[] = [];
     const executeTool = vi.fn(async () => ({
