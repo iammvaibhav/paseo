@@ -1073,9 +1073,9 @@ fi
 log "MacBook checkout at \$(git rev-parse --short HEAD)"
 
 # Reinstall deps when the lockfile changed since the last sync.
-sync_ref_file="$HOME/.paseo-sync-ref"
+sync_ref_file="\$HOME/.paseo-sync-ref"
 prev=""
-cur="$(git rev-parse HEAD)"
+cur="\$(git rev-parse HEAD)"
 if [[ -f "\$sync_ref_file" ]]; then
   prev="\$(cat "\$sync_ref_file")"
 fi
