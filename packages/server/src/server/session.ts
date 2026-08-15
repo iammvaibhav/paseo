@@ -3159,6 +3159,7 @@ export class Session {
         },
       });
     }
+  }
 
   private dispatchPluginMessage(msg: SessionInboundMessage): Promise<void> | undefined {
     if (msg.type === "plugin.list.request") {

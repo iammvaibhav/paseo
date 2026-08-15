@@ -806,7 +806,7 @@ function createInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDae
  * request builds a fresh server + transport torn down when the response
  * closes.
  */
-function mountAgentMcpEndpoint(input: {
+function _mountAgentMcpEndpoint(input: {
   app: express.Express;
   config: PaseoDaemonConfig;
   agentMcpAuthToken: string;
@@ -1044,7 +1044,7 @@ function resolveServiceProxyPublicBaseUrl(config: PaseoDaemonConfig): string | n
   return config.serviceProxy?.publicBaseUrl ? config.serviceProxy.publicBaseUrl : null;
 }
 
-function resolveConfiguredHostnames(config: PaseoDaemonConfig): PaseoDaemonConfig["hostnames"] {
+function _resolveConfiguredHostnames(config: PaseoDaemonConfig): PaseoDaemonConfig["hostnames"] {
   return config.hostnames ?? config.allowedHosts;
 }
 
