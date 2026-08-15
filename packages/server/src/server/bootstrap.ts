@@ -150,6 +150,7 @@ import {
 } from "./workspace-registry.js";
 import { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { ScheduleService } from "./schedule/service.js";
+import { IdleCloseOmpService } from "./idle-close/index.js";
 import { MissionControlService } from "./mission-control/service.js";
 import type { MissionControlProposalSpawnPlan } from "@getpaseo/protocol/mission-control/types";
 import { buildWorldSnapshot } from "./mission-control/context.js";
@@ -608,6 +609,8 @@ export interface PaseoDaemonConfig {
     maxProcessConcurrency: number;
   };
   autoArchiveAfterMerge?: boolean;
+  // Close idle OMP processes after this many seconds; 0 turns the sweep off.
+  ompIdleCloseAfterSeconds?: number;
   enableTerminalAgentHooks?: boolean;
   appendSystemPrompt?: string;
   terminalProfiles?: TerminalProfile[];
@@ -761,6 +764,7 @@ function createInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDae
       providers: config.metadataGeneration?.providers ?? [],
     },
     autoArchiveAfterMerge: config.autoArchiveAfterMerge ?? false,
+    ompIdleCloseAfterSeconds: config.ompIdleCloseAfterSeconds ?? 1800,
     enableTerminalAgentHooks: config.enableTerminalAgentHooks ?? false,
     appendSystemPrompt: config.appendSystemPrompt ?? "",
     ...(config.missionControl ? { missionControl: config.missionControl } : {}),
@@ -1708,6 +1712,12 @@ export async function createPaseoDaemon(
     archiveWorkspace: archiveScheduleWorkspaceExternal,
   });
   await scheduleService.start();
+  const idleCloseOmpService = new IdleCloseOmpService({
+    agentManager,
+    daemonConfigStore,
+    logger,
+  });
+  idleCloseOmpService.start();
   agentManager.setAgentArchivedCallback(async (agentId) => {
     try {
       await scheduleService.completeForAgent(agentId);
@@ -2425,6 +2435,7 @@ export async function createPaseoDaemon(
     await hubRelationships.stop();
     workspaceReconciliation.dispose();
     scriptHealthMonitor.stop();
+    idleCloseOmpService.stop();
     // Freeze both ingress and registration before taking the agent closure snapshot.
     wsServer?.prepareForShutdown();
     agentManager.prepareForShutdown();

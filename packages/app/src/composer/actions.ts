@@ -17,6 +17,7 @@ import type { MessageDispatchMode } from "@/composer/types";
 import type { MessageSubmissionRejectionOutcome } from "@/composer/submission/model";
 import type { PickedImageAttachmentInput } from "@/hooks/image-attachment-picker";
 import { i18n } from "@/i18n/i18next";
+import { beginAgentLoaderSpan } from "@/utils/agent-loader-span";
 
 export interface QueuedComposerMessage {
   id: string;
@@ -170,6 +171,7 @@ export function cancelComposerAgent(input: CancelComposerAgentInput): Promise<vo
 
 export interface DispatchComposerAgentMessageInput {
   client: ComposerSendClient;
+  serverId?: string;
   agentId: string;
   text: string;
   attachments: ComposerAttachment[];
@@ -210,6 +212,9 @@ export async function dispatchComposerAgentMessage(
       attachments: wirePayload.attachments,
     });
     input.submission.begin(input.agentId, userMessage);
+  }
+  if (input.serverId) {
+    beginAgentLoaderSpan(input.serverId, input.agentId, "send");
   }
   try {
     const imagesData = await input.encodeImages(wirePayload.images);

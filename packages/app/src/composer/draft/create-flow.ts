@@ -9,6 +9,11 @@ import { useCreateFlowStore } from "@/stores/create-flow-store";
 import { handoffCreatedAgentMessageSubmission } from "@/composer/submission/writer";
 import { useSessionStore } from "@/stores/session-store";
 import {
+  beginPendingAgentLoaderSpan,
+  clearPendingAgentLoaderSpan,
+  resolvePendingAgentLoaderSpan,
+} from "@/utils/agent-loader-span";
+import {
   createUserMessage,
   generateMessageId,
   type StreamItem,
@@ -216,6 +221,7 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
         attachments: attempt.attachments,
         cwd,
       });
+      beginPendingAgentLoaderSpan(pendingServerId, attempt.clientMessageId, "create");
 
       try {
         const createResult = await createRequest({
@@ -227,6 +233,11 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
         });
 
         if (createResult.agentId) {
+          resolvePendingAgentLoaderSpan(
+            pendingServerId,
+            attempt.clientMessageId,
+            createResult.agentId,
+          );
           updatePendingAgentId({ draftId, agentId: createResult.agentId });
           handoffCreatedAgentMessageSubmission(
             pendingServerId,
@@ -240,6 +251,8 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
             }),
           );
           markPendingCreateLifecycle({ draftId, lifecycle: "sent" });
+        } else {
+          clearPendingAgentLoaderSpan(pendingServerId, attempt.clientMessageId);
         }
 
         await onCreateSuccess({ result: createResult.result, attempt });
@@ -248,6 +261,7 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
           error instanceof Error ? error : new Error(t("composer.errors.failedToCreateAgent"));
         dispatch({ type: "CREATE_FAILED", message: resolved.message });
         markPendingCreateLifecycle({ draftId, lifecycle: "abandoned" });
+        clearPendingAgentLoaderSpan(pendingServerId, attempt.clientMessageId);
         clearPendingCreateAttempt({ draftId });
         onCreateError?.(resolved);
         throw error;

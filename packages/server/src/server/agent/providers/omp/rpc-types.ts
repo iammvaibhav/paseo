@@ -548,6 +548,11 @@ export const OmpRpcCommandSchema = z.discriminatedUnion("type", [
     level: OmpThinkingLevelSchema,
   }),
   z.object({ ...OmpCommandBase, type: z.literal("new_session") }),
+  z.object({
+    ...OmpCommandBase,
+    type: z.literal("switch_session"),
+    sessionPath: z.string(),
+  }),
   z.object({ ...OmpCommandBase, type: z.literal("get_session_stats") }),
   z.object({ ...OmpCommandBase, type: z.literal("get_available_commands") }),
   z.object({

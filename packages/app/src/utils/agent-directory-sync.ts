@@ -9,6 +9,7 @@ import { acceptAgentDirectoryUpdate } from "@/utils/agent-directory-update-polic
 import { buildDraftStoreKey } from "@/stores/draft-keys";
 import { useDraftStore } from "@/stores/draft-store";
 import { getInitDeferred, getInitKey, rejectInitDeferred } from "@/utils/agent-initialization";
+import { completeAgentLoaderSpan } from "@/utils/agent-loader-span";
 
 type AgentDirectoryFetchEntry = FetchAgentsEntry;
 export type AgentDirectoryDelta = Extract<
@@ -54,6 +55,11 @@ function upsertAgentDirectoryReplica(
   const acceptedAgent = upsertAgentReplica(serverId, agent);
   if (acceptedAgent.archivedAt) {
     clearArchiveAgentPending({ queryClient, serverId, agentId: acceptedAgent.id });
+  }
+  // The loader (create/resume/send) is replaced by the Stop control once the
+  // agent lifecycle reaches running. Complete the span on that flip.
+  if (previousAgent?.status !== "running" && acceptedAgent.status === "running") {
+    completeAgentLoaderSpan(serverId, acceptedAgent.id);
   }
   replaceAgentPendingPermissions(serverId, acceptedAgent);
   useSessionStore.getState().setAgentLastActivity(acceptedAgent.id, acceptedAgent.lastActivityAt);

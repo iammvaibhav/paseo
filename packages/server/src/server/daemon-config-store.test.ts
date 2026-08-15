@@ -75,6 +75,7 @@ describe("DaemonConfigStore", () => {
       autoArchiveAfterMerge: false,
       enableTerminalAgentHooks: false,
       appendSystemPrompt: "",
+      ompIdleCloseAfterSeconds: 1800,
     });
     const changes: unknown[] = [];
     store.onFieldChange("relay.enabled", (value) => changes.push(value));
@@ -97,6 +98,7 @@ describe("DaemonConfigStore", () => {
       autoArchiveAfterMerge: false,
       enableTerminalAgentHooks: false,
       appendSystemPrompt: "",
+      ompIdleCloseAfterSeconds: 1800,
     });
 
     store.patch({
@@ -222,6 +224,7 @@ describe("DaemonConfigStore", () => {
       autoArchiveAfterMerge: false,
       enableTerminalAgentHooks: false,
       appendSystemPrompt: "",
+      ompIdleCloseAfterSeconds: 1800,
       agentProfiles: [
         { id: "a", name: "Keep", provider: "claude" },
         { id: "b", name: "Drop", provider: "codex" },
@@ -246,6 +249,7 @@ describe("DaemonConfigStore", () => {
       autoArchiveAfterMerge: false,
       enableTerminalAgentHooks: false,
       appendSystemPrompt: "",
+      ompIdleCloseAfterSeconds: 1800,
     });
     store.onFieldChange("relay.enabled", (enabled) => {
       if (enabled === true) {
@@ -274,6 +278,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
       { relayEnabledMutable: false },
@@ -306,6 +311,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
       { relayEnabledMutable: false },
@@ -353,6 +359,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
     );
@@ -413,6 +420,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
     );
@@ -461,6 +469,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
     );
@@ -523,6 +532,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
     );
@@ -574,6 +584,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
     );
@@ -600,6 +611,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
     );
@@ -626,6 +638,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
     );
@@ -657,6 +670,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
     );
@@ -685,6 +699,7 @@ describe("DaemonConfigStore", () => {
         metadataGeneration: { providers: [] },
         autoArchiveAfterMerge: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
     );
@@ -709,6 +724,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
     );
@@ -751,6 +767,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
     );
@@ -776,6 +793,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
     );
@@ -800,6 +818,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
     );
@@ -852,6 +871,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
         metadataGeneration: { providers: [{ provider: "claude", model: "haiku" }] },
       },
       undefined,
@@ -876,6 +896,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
         metadataGeneration: { providers: [] },
       },
       undefined,

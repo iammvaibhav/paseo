@@ -94,6 +94,11 @@ export class FakeOmp implements OmpRuntime {
     }
     return session;
   }
+
+  /** Every spawned session, in launch order. Test helper for pool claims. */
+  allSessions(): FakeOmpSession[] {
+    return [...this.sessions];
+  }
 }
 
 export class FakeOmpSession implements OmpRuntimeSession {
@@ -104,6 +109,7 @@ export class FakeOmpSession implements OmpRuntimeSession {
   readonly subagentMessageRequests: FakeOmpSubagentMessagesSelector[] = [];
   readonly setModelRequests: Array<{ provider: string; modelId: string }> = [];
   readonly setThinkingLevelRequests: OmpThinkingLevel[] = [];
+  readonly switchSessionRequests: string[] = [];
   readonly handoffRequests: Array<{ customInstructions?: string }> = [];
   readonly steerRequests: Array<{ message: string; imageCount: number }> = [];
   readonly followUpRequests: Array<{ message: string; imageCount: number }> = [];
@@ -181,6 +187,15 @@ export class FakeOmpSession implements OmpRuntimeSession {
       throw new Error("Agent is already processing");
     }
     this.prompts.push({ message, imageCount: images?.length ?? 0 });
+    const moveMatch = /^\/move\s+(.+)$/.exec(message.trim());
+    if (moveMatch?.[1]) {
+      const nextDir = moveMatch[1];
+      const currentFile = this.state.sessionFile ?? "/tmp/omp-session";
+      const slash = currentFile.lastIndexOf("/");
+      const name = slash === -1 ? currentFile : currentFile.slice(slash + 1);
+      this.state = { ...this.state, sessionFile: `${nextDir.replace(/\/$/, "")}/${name}` };
+      return this.promptAck;
+    }
     this.promptWaiters.shift()?.();
     const heldPrompt = this.nextHeldPrompt;
     if (heldPrompt) {
@@ -299,6 +314,11 @@ export class FakeOmpSession implements OmpRuntimeSession {
 
   async setThinkingLevel(level: OmpThinkingLevel): Promise<void> {
     this.setThinkingLevelRequests.push(level);
+  }
+
+  async switchSession(sessionPath: string): Promise<void> {
+    this.switchSessionRequests.push(sessionPath);
+    this.state = { ...this.state, sessionFile: sessionPath };
   }
 
   async getSessionStats(): Promise<OmpSessionStats> {

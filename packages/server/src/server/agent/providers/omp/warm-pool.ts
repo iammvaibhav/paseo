@@ -27,8 +27,8 @@ const WARM_POOL_SEED_FILE = "omp-warm-pool.json";
 
 /**
  * How often the pool reconciles itself against its invariant (drop dead idle
- * processes, refill tracked keys). Short enough that a process dying between
- * creates is replaced before the next create arrives.
+ * processes, refill). Short enough that a process dying between creates is
+ * replaced before the next create arrives.
  */
 const WARM_POOL_MAINTAIN_INTERVAL_MS = 15_000;
 /**
@@ -38,19 +38,11 @@ const WARM_POOL_MAINTAIN_INTERVAL_MS = 15_000;
  */
 const WARM_POOL_LIVENESS_TIMEOUT_MS = 2_000;
 /**
- * How many idle processes each key keeps. Two, so a create that consumes one
+ * How many idle processes the pool keeps. Two, so a create that consumes one
  * still leaves a warm process for the create right behind it (and for the
  * window before the replacement finishes booting).
  */
 const WARM_POOL_TARGET_IDLE = 2;
-/**
- * How many distinct launch keys (mode + launch flags + system prompt) stay
- * warm at once. Workspaces are NOT part of a key — a pooled process is moved
- * to the target workspace at claim time — so this only spans genuinely
- * different launches, and the pool costs at most MAX_KEYS * TARGET_IDLE
- * processes (~300MB each).
- */
-const WARM_POOL_MAX_KEYS = 2;
 /**
  * Budget for re-targeting a pooled process to the claiming workspace. The move
  * itself measures ~30ms; this only bounds a wedged process so it costs the
@@ -103,11 +95,12 @@ function sleep(ms: number): Promise<void> {
  * are fixed at spawn, so only those form the pool key. Workspace is not a key
  * dimension: any pooled process can serve any workspace.
  *
- * The pool maintains an invariant rather than filling opportunistically: each
- * of the WARM_POOL_MAX_KEYS most recently used keys keeps WARM_POOL_TARGET_IDLE
- * live idle processes, reconciled every WARM_POOL_MAINTAIN_INTERVAL_MS (drop
- * processes that stopped answering, top up the rest). Failures never surface
- * to callers: claim returns null and the caller cold-starts.
+ * The pool maintains an invariant rather than filling opportunistically: it
+ * keeps WARM_POOL_TARGET_IDLE live idle processes of the most recent launch
+ * shape, reconciled every WARM_POOL_MAINTAIN_INTERVAL_MS (drop processes that
+ * stopped answering, top up the rest). A claim for a different launch shape
+ * retires the old processes and refills. Failures never surface to callers:
+ * claim returns null and the caller cold-starts.
  */
 export interface OmpWarmPoolInput {
   cwd: string;
@@ -138,22 +131,18 @@ interface WarmEntry {
   throwawayPath: string | null;
 }
 
-interface TrackedKey {
-  input: OmpWarmPoolInput;
-  usedAt: number;
-}
-
 export class OmpWarmPool {
   private readonly runtime: OmpRuntime;
   private readonly logger: Logger;
   private readonly entries: WarmEntry[] = [];
   private readonly filling = new Map<string, Promise<void>[]>();
   /**
-   * Keys seen recently, newest-first by `usedAt`. The maintenance loop keeps
-   * WARM_POOL_TARGET_IDLE live idle processes for each of the most recent
-   * WARM_POOL_MAX_KEYS keys.
+   * The launch shape the pool currently warms toward, set by the seed at boot
+   * and by every claim. The pool keeps WARM_POOL_TARGET_IDLE live idle
+   * processes of exactly this shape; a claim for a different shape retires the
+   * old processes and refills.
    */
-  private readonly trackedKeys = new Map<string, TrackedKey>();
+  private trackedInput: OmpWarmPoolInput | null = null;
   /**
    * Key primed from the persisted seed at boot, before any create proved what
    * the daemon actually launches. Dropped as soon as a real claim confirms or
@@ -194,7 +183,7 @@ export class OmpWarmPool {
   /** Boot the seed's launch shape so the first create of this daemon is warm. */
   private async primeFromSeed(): Promise<void> {
     const seed = await this.readSeed();
-    if (!seed || this.closed || this.entries.length > 0 || this.trackedKeys.size > 0) {
+    if (!seed || this.closed || this.entries.length > 0 || this.trackedInput) {
       return;
     }
     // A workspace can disappear between restarts; the spawn directory is only
@@ -206,7 +195,7 @@ export class OmpWarmPool {
     const key = keyFor(input);
     this.provisionalKey = key;
     this.seededKey = key;
-    this.trackedKeys.set(key, { input, usedAt: Date.now() });
+    this.trackedInput = input;
     this.fill(input);
     this.logger.info({ cwd: input.cwd, modeId: input.modeId }, "OMP warm pool priming from seed");
   }
@@ -258,13 +247,8 @@ export class OmpWarmPool {
     if (provisional === claimedKey) {
       return;
     }
-    this.trackedKeys.delete(provisional);
-    const stale = this.entries.filter((entry) => entry.key === provisional);
-    if (stale.length === 0) {
-      return;
-    }
-    const survivors = this.entries.filter((entry) => entry.key !== provisional);
-    this.entries.splice(0, this.entries.length, ...survivors);
+    const stale = this.entries.splice(0);
+    this.trackedInput = null;
     for (const entry of stale) {
       void this.dispose(entry);
     }
@@ -276,12 +260,9 @@ export class OmpWarmPool {
       return;
     }
     await this.dropDeadEntries();
-    this.evictKeysBeyondBudget();
-    for (const key of this.keysWithinBudget()) {
-      const tracked = this.trackedKeys.get(key);
-      if (tracked) {
-        this.fill(tracked.input);
-      }
+    const tracked = this.trackedInput;
+    if (tracked) {
+      this.fill(tracked);
     }
   }
 
@@ -307,37 +288,6 @@ export class OmpWarmPool {
     this.logger.info({ dead: dead.length }, "OMP warm pool dropped unresponsive idle processes");
   }
 
-  /** Keys we keep warm: the most recently used ones, capped for memory. */
-  private keysWithinBudget(): string[] {
-    return [...this.trackedKeys.entries()]
-      .sort(([, left], [, right]) => right.usedAt - left.usedAt)
-      .slice(0, WARM_POOL_MAX_KEYS)
-      .map(([key]) => key);
-  }
-
-  /**
-   * Retire keys that fell out of the budget: forget them and close any idle
-   * process still held for them. Claims never evict another key's process —
-   * only this bounded, least-recently-used retirement does.
-   */
-  private evictKeysBeyondBudget(): void {
-    const keep = new Set(this.keysWithinBudget());
-    for (const key of this.trackedKeys.keys()) {
-      if (!keep.has(key)) {
-        this.trackedKeys.delete(key);
-      }
-    }
-    const retired = this.entries.filter((entry) => !keep.has(entry.key));
-    if (retired.length === 0) {
-      return;
-    }
-    const survivors = this.entries.filter((entry) => keep.has(entry.key));
-    this.entries.splice(0, this.entries.length, ...survivors);
-    for (const entry of retired) {
-      void this.dispose(entry);
-    }
-  }
-
   /**
    * Hand off a booted, idle process for a create matching `input`, or null
    * when no live idle process is available. The process is moved to the
@@ -352,12 +302,22 @@ export class OmpWarmPool {
     const cwd = path.resolve(input.cwd);
     this.settleProvisionalKey(key);
     this.persistSeed(input, key);
-    this.trackedKeys.set(key, { input, usedAt: Date.now() });
+    // One bucket: a claim for a different launch shape retires the processes
+    // booted for the old shape and refills for the new one.
+    const tracked = this.trackedInput;
+    this.trackedInput = input;
+    if (tracked && keyFor(tracked) !== key) {
+      const stale = this.entries.splice(0);
+      for (const entry of stale) {
+        void this.dispose(entry);
+      }
+      this.logger.info({ disposed: stale.length }, "OMP warm pool retired stale launch shape");
+    }
 
     for (;;) {
       // Prefer a process already sitting in the target workspace: that claim
       // costs nothing at all. Otherwise take any process of this key and move
-      // it. Entries of other keys must survive.
+      // it.
       let index = this.entries.findIndex((entry) => entry.key === key && entry.cwd === cwd);
       if (index === -1) {
         index = this.entries.findIndex((entry) => entry.key === key);

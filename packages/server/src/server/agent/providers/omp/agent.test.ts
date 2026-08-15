@@ -662,17 +662,49 @@ describe("OMP agent client and session", () => {
     });
   });
 
-  test("resumes an OMP session and replays its history", async () => {
+  test("resumes an OMP session from the warm pool via switch_session", async () => {
+    const omp = new OmpHarness();
+    await omp.start({ model: "opencode-zen/deepseek-v4-flash-free" });
+
+    await omp.resume(
+      {
+        user: { id: "user-history", text: "continue the audit" },
+        assistant: { id: "assistant-history", text: "audit context restored" },
+      },
+      { cwd: "/workspace/resumed", model: "opencode-zen/deepseek-v4-flash-free" },
+    );
+
+    expect(omp.switchSessionRequests()).toEqual([
+      expect.stringMatching(/[\\/]paseo-omp-resume-.*[\\/]session\.jsonl$/),
+    ]);
+    await expect(omp.history()).resolves.toEqual([
+      { type: "user_message", text: "continue the audit", messageId: "user-history" },
+      {
+        type: "assistant_message",
+        text: "audit context restored",
+        messageId: "assistant-history",
+      },
+    ]);
+  });
+
+  test("cold-starts a resume when the session carries a tool allowlist", async () => {
     const omp = new OmpHarness();
     await omp.resume(
       {
         user: { id: "user-history", text: "continue the audit" },
         assistant: { id: "assistant-history", text: "audit context restored" },
       },
-      { cwd: "/workspace/resumed", modeId: "ask", thinkingOptionId: "high" },
+      {
+        cwd: "/workspace/resumed",
+        modeId: "ask",
+        thinkingOptionId: "high",
+        toolAllowlist: ["read"],
+      },
     );
 
-    expect(omp.launchConfiguration()).toEqual({
+    expect(omp.latestLaunchHasSessionFlag()).toBe(true);
+    expect(omp.switchSessionRequests()).toEqual([]);
+    expect(omp.latestLaunchConfiguration()).toEqual({
       cwd: "/workspace/resumed",
       protocolMode: "rpc-ui",
       modeId: "ask",
@@ -687,16 +719,12 @@ describe("OMP agent client and session", () => {
         "high",
         "--session",
         expect.stringMatching(/[\\/]paseo-omp-resume-.*[\\/]session\.jsonl$/),
+        "--tools",
+        "read",
+        "--config",
+        expect.any(String),
       ],
     });
-    await expect(omp.history()).resolves.toEqual([
-      { type: "user_message", text: "continue the audit", messageId: "user-history" },
-      {
-        type: "assistant_message",
-        text: "audit context restored",
-        messageId: "assistant-history",
-      },
-    ]);
   });
 
   test("maps permissions and sends the selected OMP response", async () => {

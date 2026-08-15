@@ -404,6 +404,9 @@ export const MutableDaemonConfigSchema = z
     autoArchiveAfterMerge: z.boolean().default(false),
     enableTerminalAgentHooks: z.boolean().default(false),
     appendSystemPrompt: z.string().default(""),
+    // Close idle OMP processes after this many seconds; 0 turns the sweep off.
+    // Optional so old clients and typed fixtures stay valid; runtime default is 1800.
+    ompIdleCloseAfterSeconds: z.number().int().min(0).optional(),
     terminalProfiles: z.array(TerminalProfileSchema).optional(),
     missionControl: MutableMissionControlConfigSchema.optional(),
     agentProfiles: z.array(AgentProfileSchema).optional(),
@@ -424,6 +427,7 @@ export const MutableDaemonConfigPatchSchema = z
     autoArchiveAfterMerge: z.boolean().optional(),
     enableTerminalAgentHooks: z.boolean().optional(),
     appendSystemPrompt: z.string().optional(),
+    ompIdleCloseAfterSeconds: z.number().int().min(0).optional(),
     terminalProfiles: z.array(TerminalProfileSchema).optional(),
     missionControl: MutableMissionControlConfigSchema.partial().optional(),
     agentProfiles: z.array(AgentProfileSchema).optional(),

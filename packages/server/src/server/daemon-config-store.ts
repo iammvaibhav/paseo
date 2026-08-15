@@ -355,6 +355,7 @@ function mergeMutableConfigIntoPersistedConfig(params: {
         enabled: browserToolsEnabled,
       },
       autoArchiveAfterMerge: mutable.autoArchiveAfterMerge,
+      ompIdleCloseAfterSeconds: mutable.ompIdleCloseAfterSeconds,
       enableTerminalAgentHooks: mutable.enableTerminalAgentHooks,
       appendSystemPrompt: mutable.appendSystemPrompt,
       ...(mutable.terminalProfiles !== undefined

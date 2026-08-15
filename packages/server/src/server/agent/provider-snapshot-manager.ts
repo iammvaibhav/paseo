@@ -465,6 +465,15 @@ export class ProviderSnapshotManager {
       mutableProviders,
     );
     this.providerRegistry = this.buildRegistry();
+    // Clients materialized under the old registry (warm pools, background
+    // processes) must shut down before being replaced, or their resources
+    // stay alive after the rebuild orphaned them. extraClients are injected
+    // and owned by the caller — leave them alone.
+    const extraClients = new Set(Object.values(this.extraClients));
+    const retiredClients = Object.values(this.providerClients).filter(
+      (client): client is AgentClient => client !== undefined && !extraClients.has(client),
+    );
+    void shutdownAgentClients(retiredClients, this.logger);
     this.providerClients = { ...this.extraClients } as Record<AgentProvider, AgentClient>;
 
     for (const cwd of this.snapshots.keys()) {

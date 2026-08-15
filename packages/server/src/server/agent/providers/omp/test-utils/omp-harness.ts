@@ -145,6 +145,37 @@ export class OmpHarness {
     };
   }
 
+  switchSessionRequests(): string[] {
+    return this.omp.allSessions().flatMap((session) => session.switchSessionRequests);
+  }
+
+  recordedLaunchCount(): number {
+    return this.omp.recordedLaunches.length;
+  }
+
+  latestLaunchHasSessionFlag(): boolean {
+    const launch = this.omp.recordedLaunches.at(-1);
+    return Boolean(launch?.session);
+  }
+
+  latestLaunchConfiguration(): {
+    cwd: string;
+    protocolMode?: string;
+    modeId?: string;
+    session?: string;
+    argv: string[];
+  } {
+    const launch = this.omp.recordedLaunches.at(-1);
+    if (!launch) throw new Error("OMP harness has not launched");
+    return {
+      cwd: launch.cwd,
+      protocolMode: launch.protocolMode,
+      modeId: launch.modeId,
+      ...(launch.session ? { session: launch.session } : {}),
+      argv: launch.argv,
+    };
+  }
+
   registeredHostTools() {
     return this.omp.latestSession().hostToolSetRequests;
   }
