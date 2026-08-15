@@ -138,6 +138,20 @@ CONFLICT_MAX_TURNS="${PASEO_CONFLICT_MAX_TURNS:-80}"
 DESKTOP_APP="${PASEO_DESKTOP_APP:-${PASEO_DESKTOP_TEST_APP:-/Applications/Paseo.app}}"
 # Durable deploy logs (survive agent tool cancel; agents should tail these).
 DEPLOY_LOG_ROOT="${PASEO_DEPLOY_LOG_DIR:-$HOME/.paseo/deploy-logs}"
+# Detached/non-interactive shells do not source bashrc, so PASEO_PASSWORD is
+# usually missing here even when it is set for login. Load it from a host-local
+# file that is never committed. Existing env wins.
+load_deploy_env() {
+  local file="${PASEO_DEPLOY_ENV_FILE:-${LOCAL_PASEO_HOME}/deploy.env}"
+  if [[ -f "$file" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$file"
+    set +a
+  fi
+}
+load_deploy_env
+
 
 # Desktop-only mode: skip git sync, remotes, daemon, code-server, plannotator, settings.
 # Just ensure_node → build unsigned desktop → quit → rm -rf → cp -R → open.
@@ -849,6 +863,18 @@ deploy_nudge_run() {
     node "$ROOT_DIR/scripts/deploy-nudge.mjs" "$@"
 }
 
+warn_if_nudge_password_missing() {
+  if [[ "${PASEO_DEPLOY_NUDGE:-1}" == "0" ]]; then
+    return 0
+  fi
+  if [[ -n "${PASEO_NUDGE_PASSWORD:-${PASEO_PASSWORD:-}}" ]]; then
+    return 0
+  fi
+  log "WARNING: PASEO_PASSWORD unset — snapshot/nudge will skip (Password required)."
+  log "Write PASEO_PASSWORD=… into ${LOCAL_PASEO_HOME}/deploy.env (chmod 600) on this host."
+}
+
+
 restart_local_daemon() {
   # Require built artifacts so start does not race a half-written dist/.
   if [[ ! -f "$ROOT_DIR/packages/cli/dist/index.js" ]]; then
@@ -865,6 +891,7 @@ restart_local_daemon() {
   # them after the health check passes (only reached when restart succeeded).
   local nudge_file=""
   if deploy_nudge_enabled; then
+    warn_if_nudge_password_missing
     nudge_file="${PASEO_DEPLOY_RUN_DIR:-/tmp}/deploy-nudge-local.json"
     log "Snapshotting running agents before local daemon restart (nudge: $nudge_file)"
     deploy_nudge_run --snapshot "$nudge_file" || true
@@ -1667,6 +1694,19 @@ except Exception:
   # Never fails the deploy (the script exits 0 on failure; || true too).
   nudge_file=""
   if [[ '${PASEO_DEPLOY_NUDGE:-1}' != "0" ]]; then
+    # Host-local file wins when the orchestrator did not interpolate a password
+    # (non-interactive deploy never has bashrc). Existing env still wins.
+    if [[ -z "\$PASEO_NUDGE_PASSWORD" && -z "\$PASEO_PASSWORD" && -f "\$PASEO_HOME/deploy.env" ]]; then
+      set -a
+      # shellcheck disable=SC1091
+      . "\$PASEO_HOME/deploy.env"
+      set +a
+      PASEO_NUDGE_PASSWORD="\${PASEO_NUDGE_PASSWORD:-\$PASEO_PASSWORD}"
+    fi
+    if [[ -z "\$PASEO_NUDGE_PASSWORD" && -z "\$PASEO_PASSWORD" ]]; then
+      log "WARNING: PASEO_PASSWORD unset — snapshot/nudge will skip (Password required)."
+      log "Write PASEO_PASSWORD=… into \$PASEO_HOME/deploy.env (chmod 600) on this host."
+    fi
     nudge_file="\$PASEO_HOME/deploy-nudge-remote.json"
     log "Snapshotting running agents before daemon restart (nudge: \$nudge_file)"
     PASEO_NUDGE_URL="\$PASEO_NUDGE_URL" \
@@ -1942,7 +1982,7 @@ Then remotes are ${REMOTE_HOSTS[*]} (each gets its own parallel job).
 
 Daemon restarts (local + remote) always run in a NEW session so cancelling an agent
 tool mid-wait cannot leave stop-without-start. The whole deploy is also detached by
-default for the same reason — agents should \`tail -f ~/.paseo/deploy-logs/latest.log\`.
+default so waiting for health/desktop cannot be killed by tool cancel.
 
 Scope flags (set to 1 unless noted):
   PASEO_SKIP_LOCAL                 Skip the local host entirely (remotes only)
@@ -1950,7 +1990,7 @@ Scope flags (set to 1 unless noted):
   PASEO_REMOTE_HOSTS             Space-separated remote subset (default: ${REMOTE_HOSTS[*]})
   PASEO_SKIP_DAEMON              Skip local daemon build/restart (desktop still builds)
   PASEO_SKIP_REMOTE_DAEMON       Skip remote daemon build/restart (remotes still pull git +
-                                   code-server/plannotator; default is to rebuild remotes)
+                                   code-server/plannotator; default is to rebuild, then restart)
   PASEO_SKIP_MACBOOK             Skip the MacBook desktop job (iammvaibhav orchestrator)
   PASEO_MACBOOK_HOST             ssh alias/IP for the MacBook (default: $MACBOOK_HOST)
   PASEO_MACBOOK_REPO_DIR         repo dir name under \$HOME on the MacBook (default: $MACBOOK_REPO_DIR)
@@ -1972,6 +2012,13 @@ Commander Voice (M9) secrets — written ONCE into ~/.config/commander-voice/env
 (chmod 600) on every host; never committed. Unset = keep the existing value:
   PASEO_COMMANDER_VOICE_PASSWORD  daemon password for the voice node
   GEMINI_API_KEY                  Gemini Live API key for the voice node
+
+Daemon password for snapshot/nudge (never committed):
+  ~/.paseo/deploy.env             host-local KEY=value; chmod 600. Detached
+                                  deploy does not source bashrc, so put
+                                  PASEO_PASSWORD here or the nudge skips.
+  PASEO_DEPLOY_ENV_FILE           override path for that file
+  PASEO_PASSWORD / PASEO_NUDGE_PASSWORD  existing env still wins over the file
 
 Model selection:
   PASEO_COMMIT_MSG_MODEL          claude model for auto-commit messages (default: $COMMIT_MSG_MODEL)
