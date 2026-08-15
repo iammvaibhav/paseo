@@ -18,6 +18,7 @@ export interface SessionsSnapshot {
     string,
     {
       hasHydratedWorkspaces?: boolean;
+      hasWorkspaceDirectorySnapshot?: boolean;
       workspaces: Map<string, WorkspaceDescriptor>;
       projects?: Map<string, ProjectDescriptor>;
       agents?: Map<string, Agent>;
@@ -139,6 +140,18 @@ export function selectHydratedWorkspaceServerIds(
   serverIds: readonly string[],
 ): string[] {
   return serverIds.filter((serverId) => state.sessions[serverId]?.hasHydratedWorkspaces === true);
+}
+
+export function selectWorkspaceDirectoryServerIds(
+  state: SessionsSnapshot,
+  serverIds: readonly string[],
+): string[] {
+  return serverIds.filter((serverId) => {
+    const session = state.sessions[serverId];
+    return (
+      session?.hasHydratedWorkspaces === true || session?.hasWorkspaceDirectorySnapshot === true
+    );
+  });
 }
 
 export function selectWorkspaceStructureProjects(

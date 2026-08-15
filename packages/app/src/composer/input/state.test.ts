@@ -174,7 +174,7 @@ describe("dictation transcript behavior", () => {
       isAgentRunning: false,
       sendsOutOfBand: false,
       onQueue: undefined,
-      onChangeText: (text) => actions.push(`change:${text}`),
+      replaceText: (text) => actions.push(`replace:${text}`),
       onSubmit: (payload) => actions.push(`submit:${payload.text}`),
       attachments: [],
       cwd: "/repo",
@@ -182,7 +182,7 @@ describe("dictation transcript behavior", () => {
     });
 
     expect(actions).toEqual([
-      "change:typed context spoken prompt",
+      "replace:typed context spoken prompt",
       "submit:typed context spoken prompt",
     ]);
   });

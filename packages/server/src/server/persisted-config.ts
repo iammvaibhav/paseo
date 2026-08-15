@@ -9,7 +9,12 @@ import {
 } from "./agent/provider-launch-config.js";
 import type { AgentProviderRuntimeSettingsMap } from "./agent/provider-launch-config.js";
 import { ensurePrivateFile, writePrivateFileAtomicSync } from "./private-files.js";
-import { AgentProfileSchema, TerminalProfileSchema } from "@getpaseo/protocol/messages";
+import {
+  AgentProfileSchema,
+  PluginIdSchema,
+  PluginSourceSchema,
+  TerminalProfileSchema,
+} from "@getpaseo/protocol/messages";
 import { ComposerPreferencesSchema } from "@getpaseo/protocol/composer-preferences";
 import { PaseoServicePortAllocationSchema } from "@getpaseo/protocol/paseo-config-schema";
 import { PeerConfigSchema } from "./peers/types.js";
@@ -429,6 +434,8 @@ export const PersistedConfigSchema = z
       .optional(),
 
     providers: ProvidersSchema.optional(),
+    pluginsEnabled: z.boolean().optional(),
+    plugins: z.record(PluginIdSchema, PluginSourceSchema).optional(),
     worktrees: WorktreesConfigSchema.optional(),
     agents: z
       .object({

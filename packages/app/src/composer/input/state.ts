@@ -69,7 +69,7 @@ interface DictationTranscriptContext {
   isAgentRunning: boolean;
   onQueue: ((payload: MessagePayload) => void) | undefined;
   onSubmit: (payload: MessagePayload) => void;
-  onChangeText: (text: string) => void;
+  replaceText: (text: string) => void;
   attachments: MessagePayload["attachments"];
   cwd: string;
   autoSend: boolean;
@@ -81,11 +81,11 @@ export function applyDictationTranscript(text: string, ctx: DictationTranscriptC
   const nextValue = `${ctx.value}${shouldPad ? " " : ""}${text}`;
 
   if (!ctx.autoSend) {
-    ctx.onChangeText(nextValue);
+    ctx.replaceText(nextValue);
     return;
   }
 
-  ctx.onChangeText(nextValue);
+  ctx.replaceText(nextValue);
 
   if (
     ctx.defaultSendBehavior === "queue" &&
@@ -94,7 +94,7 @@ export function applyDictationTranscript(text: string, ctx: DictationTranscriptC
     ctx.onQueue
   ) {
     ctx.onQueue({ text: nextValue, attachments: ctx.attachments, cwd: ctx.cwd });
-    ctx.onChangeText("");
+    ctx.replaceText("");
     return;
   }
 

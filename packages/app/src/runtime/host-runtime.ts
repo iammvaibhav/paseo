@@ -61,6 +61,8 @@ import { resolveComposerAttachmentSubmitFormat } from "@/composer/attachments/su
 import { encodeImages } from "@/utils/encode-images";
 import { DirectorySync, type RefreshAgentDirectoryResult } from "@/runtime/directory-sync";
 import { ReplicaCache } from "@/runtime/replica-cache";
+import { replicaCacheStorage } from "@/runtime/replica-cache/storage";
+import { projectIconCache } from "@/projects/icon-cache";
 import { nativePerformanceTrace } from "@/performance/native-trace";
 import { revokePushNotifications } from "@/push-notifications";
 import { createAppWebSocketFactory } from "./websocket-factory";
@@ -1387,7 +1389,7 @@ export class HostRuntimeStore {
   }) {
     this.deps = input?.deps ?? createDefaultDeps();
     this.storage = input?.storage ?? AsyncStorage;
-    this.replicaCache = new ReplicaCache(this.storage);
+    this.replicaCache = new ReplicaCache(input?.storage ?? replicaCacheStorage);
     this.revokePushNotifications = input?.revokePushNotifications ?? revokePushNotifications;
   }
 
@@ -1486,7 +1488,8 @@ export class HostRuntimeStore {
       }
       this.hosts = profiles;
       this.replicaCache.setHosts(profiles.map((profile) => profile.serverId));
-      await this.replicaCache.restore();
+      projectIconCache.setHosts(profiles.map((profile) => profile.serverId));
+      await Promise.all([this.replicaCache.restore(), projectIconCache.restore()]);
       this.syncHosts(profiles);
       void syncBrowserEditorInsecureOrigins(profiles);
     } catch (error) {
@@ -1624,14 +1627,19 @@ export class HostRuntimeStore {
     rekeyMap(this.connectionStatusStartedAtByServer, oldServerId, newServerId);
     rekeyMap(this.directoryBootstrapInFlight, oldServerId, newServerId);
     this.replicaCache.reconcileServerId(oldServerId, newServerId);
+    projectIconCache.reconcileServerId(oldServerId, newServerId);
     this.directorySyncByServer.get(oldServerId)?.dispose();
     this.directorySyncByServer.delete(oldServerId);
-    const directory = new DirectorySync(newServerId, {
-      onAgentStoppedRunning: (agentId) => this.drainQueuedAgentMessage(newServerId, agentId),
-      markAgentLoading: () => controller.markAgentDirectorySyncLoading(),
-      markAgentReady: () => controller.markAgentDirectorySyncReady(),
-      markAgentError: (error) => controller.markAgentDirectorySyncError(error),
-    });
+    const directory = new DirectorySync(
+      newServerId,
+      {
+        onAgentStoppedRunning: (agentId) => this.drainQueuedAgentMessage(newServerId, agentId),
+        markAgentLoading: () => controller.markAgentDirectorySyncLoading(),
+        markAgentReady: () => controller.markAgentDirectorySyncReady(),
+        markAgentError: (error) => controller.markAgentDirectorySyncError(error),
+      },
+      this.replicaCache,
+    );
     this.directorySyncByServer.set(newServerId, directory);
     controller.adoptReconciledServerId(newServerId);
     const snapshot = controller.getSnapshot();
@@ -2019,6 +2027,7 @@ export class HostRuntimeStore {
     },
   ): void {
     this.replicaCache.setHosts(hosts.map((host) => host.serverId));
+    projectIconCache.setHosts(hosts.map((host) => host.serverId));
     const nextIds = new Set(hosts.map((host) => host.serverId));
     for (const [serverId, controller] of this.controllers) {
       if (nextIds.has(serverId)) {
@@ -2055,12 +2064,17 @@ export class HostRuntimeStore {
       this.controllers.set(host.serverId, controller);
       this.directorySyncByServer.set(
         host.serverId,
-        new DirectorySync(host.serverId, {
-          onAgentStoppedRunning: (agentId) => this.drainQueuedAgentMessage(host.serverId, agentId),
-          markAgentLoading: () => controller.markAgentDirectorySyncLoading(),
-          markAgentReady: () => controller.markAgentDirectorySyncReady(),
-          markAgentError: (error) => controller.markAgentDirectorySyncError(error),
-        }),
+        new DirectorySync(
+          host.serverId,
+          {
+            onAgentStoppedRunning: (agentId) =>
+              this.drainQueuedAgentMessage(host.serverId, agentId),
+            markAgentLoading: () => controller.markAgentDirectorySyncLoading(),
+            markAgentReady: () => controller.markAgentDirectorySyncReady(),
+            markAgentError: (error) => controller.markAgentDirectorySyncError(error),
+          },
+          this.replicaCache,
+        ),
       );
       const initialSnapshot = controller.getSnapshot();
       this.lastConnectionStatusByServer.set(host.serverId, initialSnapshot.connectionStatus);
@@ -2341,22 +2355,6 @@ export class HostRuntimeStore {
       }
       void this.refreshAgentDirectory({ serverId }).catch(() => undefined);
     }
-  }
-
-  markAgentDirectorySyncLoading(serverId: string): void {
-    this.controllers.get(serverId)?.markAgentDirectorySyncLoading();
-  }
-
-  markAgentDirectorySyncReady(serverId: string): void {
-    this.controllers.get(serverId)?.markAgentDirectorySyncReady();
-  }
-
-  markAgentDirectorySyncError(serverId: string, error: string): void {
-    this.controllers.get(serverId)?.markAgentDirectorySyncError(error);
-  }
-
-  markAgentDirectorySyncIdle(serverId: string): void {
-    this.controllers.get(serverId)?.markAgentDirectorySyncIdle();
   }
 
   private emit(serverId: string): void {

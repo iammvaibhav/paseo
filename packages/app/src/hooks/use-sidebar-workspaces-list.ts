@@ -2,7 +2,10 @@ import { useCallback, useEffect, useMemo } from "react";
 import { useStoreWithEqualityFn } from "zustand/traditional";
 import { useCreateFlowStore } from "@/stores/create-flow-store";
 import { useSessionStore } from "@/stores/session-store";
-import { useHydratedWorkspaceServerIds } from "@/stores/session-store-hooks";
+import {
+  useHydratedWorkspaceServerIds,
+  useWorkspaceDirectoryServerIds,
+} from "@/stores/session-store-hooks";
 import { workspaceEqualityFns } from "@/stores/session-store-hooks/selectors";
 import { useHostProjects } from "@/projects/host-projects";
 import { getHostRuntimeStore, useHostRegistryLoaded, useHosts } from "@/runtime/host-runtime";
@@ -133,13 +136,17 @@ export function useSidebarWorkspacesList(options?: {
   const persistedProjectOrder = useSidebarOrderStore((state) => state.projectOrder ?? EMPTY_ORDER);
 
   const hydratedServerIds = useHydratedWorkspaceServerIds(serverIds);
+  const directoryServerIds = useWorkspaceDirectoryServerIds(serverIds);
 
-  // Mission Control verbose mode exposes system-owned workspaces (the
-  // Commander's home + machinery-only workspaces) in the sidebar for
-  // on-demand inspection; normal mode hides them (same flag the MC screen
-  // toggles — never a second preference).
+  // Mission Control system-owned workspaces stay hidden by default so the
+  // project list doesn't grow a "Mission Control" project the user never
+  // created. Flip Settings → Mission Control → Show system workspaces to
+  // surface them (and the per-run history ask agents) for debugging. This is a
+  // second preference key so it never collides with the main MC enabled
+  // toggle (which would otherwise clear the verbose flag when flipped off as
+  // a second preference).
   const [missionControlVerbose] = useMissionControlVerbose();
-  const hostProjects = useHostProjects(hydratedServerIds, {
+  const hostProjects = useHostProjects(directoryServerIds, {
     hideSystemOwnedWorkspaces: !missionControlVerbose,
   });
 

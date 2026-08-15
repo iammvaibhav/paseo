@@ -1,4 +1,5 @@
 import type { TranslationResources } from "./en";
+import { pluginSettings } from "./plugin-settings";
 
 export const fr: TranslationResources = {
   common: {
@@ -629,6 +630,8 @@ export const fr: TranslationResources = {
         screenshotCopied: "Capture d'écran copiée dans le presse-papiers",
         elementCopied: "Élément copié dans le presse-papiers",
         screenshotFailed: "Impossible de copier la capture",
+        selectorLoading: "Attendez la fin du chargement de la page",
+        selectorFailed: "Impossible de démarrer le sélecteur d’élément",
       },
       annotate: {
         title: "Annoter l'élément",
@@ -1789,6 +1792,7 @@ export const fr: TranslationResources = {
     archiveTooltip: "Sous-agent d'archivage",
     archiveFinishedAction: "Archiver les sous-agents terminés",
     archiveFinishedTooltip: "Archiver les terminés",
+    archiveFinishedRetry: "Réessayer ({{failed}}/{{total}})",
   },
   selectionAsks: {
     archiveAction: "Archiver {{label}}",
@@ -1975,6 +1979,7 @@ export const fr: TranslationResources = {
       providers: "Fournisseurs",
       usage: "Utilisation",
       terminals: "Terminals",
+      plugins: "Plugins",
       host: "Aperçu",
     },
     missionControl: {
@@ -1994,6 +1999,7 @@ export const fr: TranslationResources = {
       voiceModeHint:
         "Relay = voice reads like Commander but routes every change through commander_dispatch. Direct = voice holds the full Commander tool surface, approval-gated. Applies to new voice sessions.",
     },
+    plugins: pluginSettings.fr,
     metadataGeneration: {
       title: "Génération de métadonnées",
       description:

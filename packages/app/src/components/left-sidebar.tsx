@@ -85,6 +85,7 @@ import type { ShortcutKey } from "@/utils/format-shortcut";
 import { SidebarAgentListSkeleton } from "./sidebar-agent-list-skeleton";
 import { SidebarCalloutSlot } from "./sidebar-callout-slot";
 import { SidebarWorkspaceList } from "./sidebar-workspace-list";
+import { PluginSidebarItems } from "@/plugins";
 
 type SidebarTheme = ReturnType<typeof useUnistyles>["theme"];
 
@@ -816,6 +817,7 @@ function MobileSidebar({
             testID="sidebar-webhooks"
             variant="compact"
           />
+          <PluginSidebarItems onBeforeNavigate={closeSidebar} />
         </View>
         <WindowChromeSafeArea placement="inline" style={styles.mobileCloseButtonRow}>
           <Pressable
@@ -1058,6 +1060,7 @@ function DesktopSidebar({
               testID="sidebar-webhooks"
               variant="compact"
             />
+            <PluginSidebarItems />
           </View>
         </View>
 

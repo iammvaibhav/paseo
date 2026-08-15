@@ -95,7 +95,7 @@ import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 import type { Theme } from "@/styles/theme";
 import {
-  useHideFinishedProviderSubagents,
+  useArchiveFinishedSubagents,
   useArchiveSubagent,
   useDetachSubagent,
   useSubagentsForParent,
@@ -1219,7 +1219,9 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
   // when only toast state changes (which does not affect any draft field).
   const {
     text,
-    setText,
+    editText,
+    replaceText,
+    textReplacementKey,
     attachments,
     setAttachments,
     clear,
@@ -1230,7 +1232,9 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
   const agentInputDraft = useMemo(
     (): AgentInputDraft => ({
       text,
-      setText,
+      editText,
+      replaceText,
+      textReplacementKey,
       attachments,
       setAttachments,
       clear,
@@ -1240,7 +1244,9 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
     }),
     [
       text,
-      setText,
+      editText,
+      replaceText,
+      textReplacementKey,
       attachments,
       setAttachments,
       clear,
@@ -1288,7 +1294,10 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
   const contentContainer = <View style={styles.contentContainer}>{streamContent}</View>;
 
   return (
-    <RewindComposerRestoreProvider text={agentInputDraft.text} setText={agentInputDraft.setText}>
+    <RewindComposerRestoreProvider
+      text={agentInputDraft.text}
+      setText={agentInputDraft.replaceText}
+    >
       <View style={styles.root}>
         <FileDropZone style={styles.container} disabled={isArchivingCurrentAgent}>
           {contentContainer}
@@ -1586,9 +1595,10 @@ function ActiveAgentComposer({
   );
   const handleArchiveSubagent = useArchiveSubagent({ serverId });
   const handleDetachSubagent = useDetachSubagent({ serverId });
-  const handleHideFinishedProviderSubagents = useHideFinishedProviderSubagents({
+  const archiveFinishedSubagents = useArchiveFinishedSubagents({
     serverId,
     parentAgentId: agentId,
+    rows: subagentRows,
   });
   const workspaceAttachmentScopeKey = useWorkspaceAttachmentScopeKey({
     serverId,
@@ -1751,7 +1761,8 @@ function ActiveAgentComposer({
         onOpenSubagent={handleOpenSubagent}
         onOpenProviderSubagent={handleOpenProviderSubagent}
         onArchiveSubagent={handleArchiveSubagent}
-        onArchiveFinished={handleHideFinishedProviderSubagents}
+        onArchiveFinished={archiveFinishedSubagents.archiveFinished}
+        archiveFinishedStatus={archiveFinishedSubagents.status}
         onDetachSubagent={canDetachSubagents ? handleDetachSubagent : undefined}
       />
       <Composer
@@ -1761,7 +1772,8 @@ function ActiveAgentComposer({
         externalKeyboardShift
         isPaneFocused={isPaneFocused}
         value={agentInputDraft.text}
-        onChangeText={agentInputDraft.setText}
+        onChangeText={agentInputDraft.editText}
+        textReplacementKey={agentInputDraft.textReplacementKey}
         attachments={agentInputDraft.attachments}
         attachmentScopeKeys={attachmentScopeKeys}
         onOpenWorkspaceAttachment={handleOpenWorkspaceAttachment}

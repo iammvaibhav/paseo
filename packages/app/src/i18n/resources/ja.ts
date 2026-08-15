@@ -1,4 +1,5 @@
 import type { TranslationResources } from "./en";
+import { pluginSettings } from "./plugin-settings";
 
 export const ja: TranslationResources = {
   common: {
@@ -629,6 +630,8 @@ export const ja: TranslationResources = {
         screenshotCopied: "スクリーンショットをクリップボードにコピーしました",
         elementCopied: "要素をクリップボードにコピーしました",
         screenshotFailed: "スクリーンショットをコピーできませんでした",
+        selectorLoading: "ページの読み込みが完了するまでお待ちください",
+        selectorFailed: "要素セレクターを開始できませんでした",
       },
       annotate: {
         title: "要素に注釈を付ける",
@@ -1758,6 +1761,7 @@ export const ja: TranslationResources = {
     archiveTooltip: "サブエージェントをアーカイブ",
     archiveFinishedAction: "完了したサブエージェントをアーカイブ",
     archiveFinishedTooltip: "完了した項目をアーカイブ",
+    archiveFinishedRetry: "再試行 ({{failed}}/{{total}})",
   },
   selectionAsks: {
     archiveAction: "{{label}}をアーカイブ",
@@ -1944,6 +1948,7 @@ export const ja: TranslationResources = {
       providers: "プロバイダー",
       usage: "使用状況",
       terminals: "ターミナル",
+      plugins: "プラグイン",
       host: "概要",
     },
     missionControl: {
@@ -1963,6 +1968,7 @@ export const ja: TranslationResources = {
       voiceModeHint:
         "Relay = voice reads like Commander but routes every change through commander_dispatch. Direct = voice holds the full Commander tool surface, approval-gated. Applies to new voice sessions.",
     },
+    plugins: pluginSettings.ja,
     metadataGeneration: {
       title: "メタデータ生成",
       description:

@@ -277,7 +277,7 @@ export function WorkspaceDraftAgentTab({
   const draftOnSetFeature = composerState.agentControls.onSetFeature;
 
   const clearDraftInput = draftInput.clear;
-  const setDraftText = draftInput.setText;
+  const replaceDraftText = draftInput.replaceText;
   const setDraftAttachments = draftInput.setAttachments;
   const pendingAutoSubmit = useWorkspaceDraftSubmissionStore((state) => {
     const pending = state.pendingByDraftId[draftId] ?? null;
@@ -513,7 +513,7 @@ export function WorkspaceDraftAgentTab({
       return;
     }
     autoSubmitKeyRef.current = submitKey;
-    setDraftText("");
+    replaceDraftText("");
     setDraftAttachments([]);
     const preparedAttempt =
       initialCreateAttempt?.clientMessageId === submission.clientMessageId
@@ -530,7 +530,7 @@ export function WorkspaceDraftAgentTab({
           cwd: submission.cwd,
         });
     void createPromise.catch(() => {
-      setDraftText(submission.text);
+      replaceDraftText(submission.text);
       setDraftAttachments(composerWorkspaceAttachment.userAttachmentsOnly(submission.attachments));
       autoSubmitKeyRef.current = null;
     });
@@ -543,7 +543,7 @@ export function WorkspaceDraftAgentTab({
     isReadyForPendingAutoSubmit,
     serverId,
     setDraftAttachments,
-    setDraftText,
+    replaceDraftText,
     workspaceId,
   ]);
 
@@ -625,7 +625,8 @@ export function WorkspaceDraftAgentTab({
           isSubmitLoading={isSubmitting}
           blurOnSubmit={true}
           value={draftInput.text}
-          onChangeText={draftInput.setText}
+          onChangeText={draftInput.editText}
+          textReplacementKey={draftInput.textReplacementKey}
           attachments={draftInput.attachments}
           attachmentScopeKeys={attachmentScopeKeys}
           onOpenWorkspaceAttachment={handleOpenWorkspaceAttachment}

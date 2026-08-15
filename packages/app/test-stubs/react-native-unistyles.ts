@@ -8,6 +8,10 @@ const testTheme = {
     statusDanger: "#b91c1c",
     statusWarning: "#d97706",
     statusMerged: "#7c3aed",
+    accent: "#2563eb",
+    accentForeground: "#ffffff",
+    destructive: "#dc2626",
+    destructiveForeground: "#ffffff",
     surface1: "#fafafa",
     surface2: "#f4f4f5",
     surface3: "#e4e4e7",
@@ -38,8 +42,15 @@ const testTheme = {
       meta: "#6e7781",
       heading: "#0550ae",
       link: "#0a3069",
+    borderAccent: "#a1a1aa",
+    palette: {
+      amber: { 500: "#f59e0b" },
+      blue: { 300: "#93c5fd" },
+      red: { 300: "#fca5a5" },
+      white: "#ffffff",
     },
   },
+  borderWidth: { 1: 1 },
   spacing: [0, 4, 8, 12, 16, 20, 24, 28, 32],
   fontFamily: {
     ui: "system-ui",
@@ -96,6 +107,8 @@ const testTheme = {
       elevation: 8,
     },
   },
+  iconSize: { sm: 16 },
+  opacity: { 50: 0.5 },
 };
 
 type StyleFactory<T> = (theme: typeof testTheme) => T;

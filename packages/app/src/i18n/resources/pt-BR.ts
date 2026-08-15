@@ -1,4 +1,5 @@
 import type { TranslationResources } from "./en";
+import { pluginSettings } from "./plugin-settings";
 
 export const ptBR: TranslationResources = {
   common: {
@@ -629,6 +630,8 @@ export const ptBR: TranslationResources = {
         screenshotCopied: "Captura copiada para a área de transferência",
         elementCopied: "Elemento copiado para a área de transferência",
         screenshotFailed: "Não foi possível copiar a captura",
+        selectorLoading: "Aguarde o carregamento da página terminar",
+        selectorFailed: "Não foi possível iniciar o seletor de elemento",
       },
       annotate: {
         title: "Anotar elemento",
@@ -1771,6 +1774,7 @@ export const ptBR: TranslationResources = {
     archiveTooltip: "Arquivar subagente",
     archiveFinishedAction: "Arquivar subagentes concluídos",
     archiveFinishedTooltip: "Arquivar concluídos",
+    archiveFinishedRetry: "Tentar novamente ({{failed}}/{{total}})",
   },
   selectionAsks: {
     archiveAction: "Arquivar {{label}}",
@@ -1957,6 +1961,7 @@ export const ptBR: TranslationResources = {
       providers: "Provedores",
       usage: "Uso",
       terminals: "Terminais",
+      plugins: "Plugins",
       host: "Visão geral",
     },
     missionControl: {
@@ -1976,6 +1981,7 @@ export const ptBR: TranslationResources = {
       voiceModeHint:
         "Relay = voice reads like Commander but routes every change through commander_dispatch. Direct = voice holds the full Commander tool surface, approval-gated. Applies to new voice sessions.",
     },
+    plugins: pluginSettings["pt-BR"],
     metadataGeneration: {
       title: "Geração de metadados",
       description:
