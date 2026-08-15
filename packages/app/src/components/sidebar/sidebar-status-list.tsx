@@ -882,114 +882,113 @@ function StatusWorkspaceRowInnerContent({
   return (
     <>
       <SidebarWorkspaceRowFrame workspace={workspace} isDragging={isDragging}>
-      {({ isHovered, contextMenuOpen, onContextMenuOpenChange, hoverHandlers }) => {
-        const showShortcut = showShortcutBadge && shortcutNumber !== null;
-        const {
-          showTrailing,
-          showKebab: showKebabInSlot,
-          showScrim,
-          renderSlot,
-          reserveSlotWidth,
-        } = resolveTrailingActionVisibility({
-          workspace,
-          trailing,
-          hasArchiveAction: Boolean(onArchive),
-          isHovered,
-          isTouchPlatform,
-          showShortcut,
-        });
-        const workspaceRowStyle = getStatusWorkspaceRowStyle({
-          isPressed,
-          selected,
-          isHovered,
-          inStatusGroup,
-          isDragging,
-        });
-        const backdrop = getSidebarRowBackdrop({ isDragging, isPressed, selected, isHovered });
-        return (
-          <View
-            {...dragAttributes}
-            {...dragHandleProps?.listeners}
-            ref={dragHandleProps?.setActivatorNodeRef as unknown as Ref<View>}
-            style={styles.workspaceRowContainer}
-            {...hoverHandlers}
-          >
-            <SidebarWorkspaceContextMenu
-              contextMenuOpen={contextMenuOpen}
-              onContextMenuOpenChange={onContextMenuOpenChange}
-              workspace={workspace}
-              leadingProjectName={projectName}
-              hostBadgeLabel={hostBadge?.label}
-              serviceSummary={serviceSummary}
-              workspaceKey={workspace.workspaceKey}
-              onCopyPath={onCopyPath}
-              onCopyBranchName={onCopyBranchName}
-              onRename={onRename}
-              onMarkAsRead={onMarkAsRead}
-                    onAskHistory={onAskHistory}
-              onArchive={onArchive}
-              archiveLabel={archiveLabel}
-              archiveStatus={archiveStatus}
-              archivePendingLabel={archivePendingLabel}
-              archiveShortcutKeys={archiveShortcutKeys}
-              isPinned={isPinned}
-              onTogglePin={onTogglePin}
-              openInFileManagerPath={workspace.workspaceDirectory}
-              disabled={isArchiving}
-              accessibilityRole="button"
-              accessibilityState={accessibilityState}
-              style={workspaceRowStyle}
-              highlightStyle={styles.workspaceRowPressed}
-              onPressIn={handlePressIn}
-              onTouchMove={moveDragPress}
-              onPressOut={handlePressOut}
-              onPress={handlePress}
-              testID={`sidebar-workspace-row-${workspace.workspaceKey}`}
+        {({ isHovered, contextMenuOpen, onContextMenuOpenChange, hoverHandlers }) => {
+          const showShortcut = showShortcutBadge && shortcutNumber !== null;
+          const {
+            showTrailing,
+            showKebab: showKebabInSlot,
+            showScrim,
+            renderSlot,
+            reserveSlotWidth,
+          } = resolveTrailingActionVisibility({
+            workspace,
+            trailing,
+            hasArchiveAction: Boolean(onArchive),
+            isHovered,
+            isTouchPlatform,
+            showShortcut,
+          });
+          const workspaceRowStyle = getStatusWorkspaceRowStyle({
+            isPressed,
+            selected,
+            isHovered,
+            inStatusGroup,
+            isDragging,
+          });
+          const backdrop = getSidebarRowBackdrop({ isDragging, isPressed, selected, isHovered });
+          return (
+            <View
+              {...dragAttributes}
+              {...dragHandleProps?.listeners}
+              ref={dragHandleProps?.setActivatorNodeRef as unknown as Ref<View>}
+              style={styles.workspaceRowContainer}
+              {...hoverHandlers}
             >
-              <SidebarWorkspaceRowContent
+              <SidebarWorkspaceContextMenu
+                contextMenuOpen={contextMenuOpen}
+                onContextMenuOpenChange={onContextMenuOpenChange}
                 workspace={workspace}
-                hostBadge={hostBadge}
                 leadingProjectName={projectName}
-                leadingProjectIconDataUri={projectIconDataUri}
+                hostBadgeLabel={hostBadge?.label}
                 serviceSummary={serviceSummary}
-                backdrop={backdrop}
-                isHovered={isHovered}
-                isLoading={isArchiving}
-                shortcutNumber={shortcutNumber}
-                showShortcutBadge={showShortcutBadge}
-                reserveIdleStatusIndicatorSpace={reserveIdleStatusIndicatorSpace}
-                agentsToggle={agentsToggle}
+                workspaceKey={workspace.workspaceKey}
+                onCopyPath={onCopyPath}
+                onCopyBranchName={onCopyBranchName}
+                onRename={onRename}
+                onMarkAsRead={onMarkAsRead}
+                onAskHistory={onAskHistory}
+                onArchive={onArchive}
+                archiveLabel={archiveLabel}
+                archiveStatus={archiveStatus}
+                archivePendingLabel={archivePendingLabel}
+                archiveShortcutKeys={archiveShortcutKeys}
+                isPinned={isPinned}
+                onTogglePin={onTogglePin}
+                openInFileManagerPath={workspace.workspaceDirectory}
+                disabled={isArchiving}
+                accessibilityRole="button"
+                accessibilityState={accessibilityState}
+                style={workspaceRowStyle}
+                highlightStyle={styles.workspaceRowPressed}
+                onPressIn={handlePressIn}
+                onTouchMove={moveDragPress}
+                onPressOut={handlePressOut}
+                onPress={handlePress}
+                testID={`sidebar-workspace-row-${workspace.workspaceKey}`}
               >
-                {renderSlot ? (
-                  <StatusWorkspaceActionSlot
-                    workspace={workspace}
-                    backdrop={backdrop}
-                    trailing={trailing}
-                    showBase={showTrailing}
-                    showKebab={showKebabInSlot}
-                    showScrim={showScrim}
-                    reserveSlotWidth={reserveSlotWidth}
-                    isPinned={isPinned}
-                    onTogglePin={onTogglePin}
-                    onCopyPath={onCopyPath}
-                    onCopyBranchName={onCopyBranchName}
-                    onRename={onRename}
-                    onMarkAsRead={onMarkAsRead}
-                    onAskHistory={onAskHistory}
-                    onAskHistory={onAskHistory}
-                    onArchive={onArchive}
-                    archiveLabel={archiveLabel}
-                    archiveStatus={archiveStatus}
-                    archivePendingLabel={archivePendingLabel}
-                    archiveShortcutKeys={archiveShortcutKeys}
-                  />
-                ) : null}
-              </SidebarWorkspaceRowContent>
-            </SidebarWorkspaceContextMenu>
-          </View>
-        );
-      }}
-    </SidebarWorkspaceRowFrame>
+                <SidebarWorkspaceRowContent
+                  workspace={workspace}
+                  hostBadge={hostBadge}
+                  leadingProjectName={projectName}
+                  leadingProjectIconDataUri={projectIconDataUri}
+                  serviceSummary={serviceSummary}
+                  backdrop={backdrop}
+                  isHovered={isHovered}
+                  isLoading={isArchiving}
+                  shortcutNumber={shortcutNumber}
+                  showShortcutBadge={showShortcutBadge}
+                  reserveIdleStatusIndicatorSpace={reserveIdleStatusIndicatorSpace}
+                  agentsToggle={agentsToggle}
+                >
+                  {renderSlot ? (
+                    <StatusWorkspaceActionSlot
+                      workspace={workspace}
+                      backdrop={backdrop}
+                      trailing={trailing}
+                      showBase={showTrailing}
+                      showKebab={showKebabInSlot}
+                      showScrim={showScrim}
+                      reserveSlotWidth={reserveSlotWidth}
+                      isPinned={isPinned}
+                      onTogglePin={onTogglePin}
+                      onCopyPath={onCopyPath}
+                      onCopyBranchName={onCopyBranchName}
+                      onRename={onRename}
+                      onMarkAsRead={onMarkAsRead}
+                      onAskHistory={onAskHistory}
+                      onArchive={onArchive}
+                      archiveLabel={archiveLabel}
+                      archiveStatus={archiveStatus}
+                      archivePendingLabel={archivePendingLabel}
+                      archiveShortcutKeys={archiveShortcutKeys}
+                    />
+                  ) : null}
+                </SidebarWorkspaceRowContent>
+              </SidebarWorkspaceContextMenu>
+            </View>
+          );
+        }}
+      </SidebarWorkspaceRowFrame>
       {expanded && hasAgents ? (
         <SidebarWorkspaceAgentsSection workspace={workspace} agents={sortedAgents} />
       ) : null}
@@ -1021,6 +1020,7 @@ function StatusWorkspaceActionSlot({
   workspace: SidebarWorkspaceEntry;
   backdrop: SidebarSurfaceBackdrop;
   trailing: SidebarWorkspaceTrailing;
+  onAskHistory?: () => void;
   showBase: boolean;
   showKebab: boolean;
   showScrim: boolean;
@@ -1055,7 +1055,7 @@ function StatusWorkspaceActionSlot({
             onCopyBranchName={onCopyBranchName}
             onRename={onRename}
             onMarkAsRead={onMarkAsRead}
-                    onAskHistory={onAskHistory}
+            onAskHistory={onAskHistory}
             onArchive={onArchive}
             archiveLabel={archiveLabel}
             archiveStatus={archiveStatus}

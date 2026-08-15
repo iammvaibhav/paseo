@@ -42,6 +42,7 @@ import * as Clipboard from "expo-clipboard";
 import {
   ExternalLink,
   GitPullRequest,
+  MessageCircleQuestion,
   Settings,
   MoreVertical,
   Plus,
@@ -169,6 +170,7 @@ const ThemedPlus = withUnistyles(Plus);
 const ThemedMoreVertical = withUnistyles(MoreVertical);
 const ThemedTrash2 = withUnistyles(Trash2);
 const ThemedSettings = withUnistyles(Settings);
+const ThemedMessageCircleQuestion = withUnistyles(MessageCircleQuestion);
 
 const foregroundColorMapping = (theme: Theme) => ({
   color: theme.colors.foreground,
@@ -427,6 +429,7 @@ const prBadgeStyles = StyleSheet.create((theme) => ({
 }));
 
 function ProjectRowTrailingActions({
+  project,
   projectViewKey,
   displayName,
   worktreeTarget,
@@ -439,6 +442,7 @@ function ProjectRowTrailingActions({
   onRemoveProject,
   removeProjectStatus,
 }: {
+  project: SidebarProjectEntry;
   projectViewKey: string;
   displayName: string;
   worktreeTarget: SidebarProjectHostTarget | null;
@@ -469,7 +473,9 @@ function ProjectRowTrailingActions({
           pointerEvents={actionsVisible ? "auto" : "none"}
         >
           <ProjectKebabMenu
+            project={project}
             projectViewKey={projectViewKey}
+            projectName={displayName}
             settingsTarget={settingsTarget}
             projectPath={projectPath}
             onRemoveProject={onRemoveProject}
@@ -497,13 +503,17 @@ function renderKebabTriggerIcon({ hovered }: { hovered?: boolean }) {
 }
 
 function ProjectKebabMenu({
+  project,
   projectViewKey,
+  projectName,
   settingsTarget,
   projectPath,
   onRemoveProject,
   removeProjectStatus,
 }: {
+  project: SidebarProjectEntry;
   projectViewKey: string;
+  projectName: string;
   settingsTarget: { serverId: string; projectId: string } | null;
   projectPath: string;
   onRemoveProject: () => void;
@@ -524,7 +534,9 @@ function ProjectKebabMenu({
       <DropdownMenuContent align="end" width={220} sheetTitle={t("sidebar.project.actions.menu")}>
         <ProjectMenuItems
           surface="dropdown"
+          project={project}
           projectViewKey={projectViewKey}
+          projectName={projectName}
           settingsTarget={settingsTarget}
           projectPath={projectPath}
           onRemoveProject={onRemoveProject}
@@ -552,14 +564,18 @@ function ProjectMenuItem({
 
 function ProjectMenuItems({
   surface,
+  project,
   projectViewKey,
+  projectName,
   settingsTarget,
   projectPath,
   onRemoveProject,
   removeProjectStatus,
 }: {
   surface: ProjectMenuSurface;
+  project: SidebarProjectEntry;
   projectViewKey: string;
+  projectName: string;
   settingsTarget: { serverId: string; projectId: string } | null;
   projectPath: string;
   onRemoveProject: () => void;
@@ -733,7 +749,10 @@ function WorkspaceRowRightGroup({
           <SidebarWorkspaceTrailingActionBase visible={showTrailing}>
             <SidebarWorkspaceTrailingContent workspace={workspace} trailing={trailing} />
           </SidebarWorkspaceTrailingActionBase>
-          <SidebarWorkspaceTrailingActionOverlay visible={kebab.showKebab} scrim={showScrim}>
+          <SidebarWorkspaceTrailingActionOverlay
+            visible={kebab.showKebab}
+            scrimBackdrop={showScrim ? backdrop : undefined}
+          >
             {onArchive ? (
               <SidebarWorkspaceMenu
                 {...kebab.menuProps}
@@ -1018,6 +1037,7 @@ function ProjectHeaderRow({
         </View>
       </View>
       <ProjectRowTrailingActions
+        project={project}
         projectViewKey={project.viewKey}
         displayName={displayName}
         worktreeTarget={worktreeTarget}
@@ -1093,7 +1113,9 @@ function ProjectHeaderRow({
       >
         <ProjectMenuItems
           surface="context"
+          project={project}
           projectViewKey={project.viewKey}
+          projectName={displayName}
           settingsTarget={settingsTarget}
           projectPath={projectPath}
           onRemoveProject={onRemoveProject}

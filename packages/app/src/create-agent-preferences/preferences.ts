@@ -222,7 +222,7 @@ function applyProviderPreferenceUpdates(
 function mergeProviderPreferencesIntoSelection(args: {
   selection: FormSelectionScope | undefined;
   provider: AgentProvider;
-  updates: Partial<ProviderPreferences>;
+  updates: Omit<Partial<ProviderPreferences>, "mode"> & { mode?: string | null };
 }): FormSelectionScope {
   const existingProviderPreferences = args.selection?.providerPreferences ?? {};
   const existing = existingProviderPreferences[args.provider] ?? {};
@@ -434,7 +434,7 @@ export function resolveEffectiveSelectionAskPreference(
 export function mergeProviderPreferencesWithScope(args: {
   preferences: FormPreferences;
   provider: AgentProvider;
-  updates: Partial<ProviderPreferences>;
+  updates: Omit<Partial<ProviderPreferences>, "mode"> & { mode?: string | null };
   scope?: FormPreferenceScope | null;
 }): FormPreferences {
   const { preferences, provider, updates, scope } = args;
@@ -571,6 +571,8 @@ export function toggleFavoriteModel(args: {
       [hostId]: nextFavorites,
     },
   };
+}
+
 export function applyAgentProfilePreferences(args: {
   preferences: FormPreferences;
   previousProvider: AgentProvider | null;

@@ -500,20 +500,6 @@ function isBridgeWebviewReady(
   return Boolean(webview && domReady && (!showChrome || host?.contains(webview)));
 }
 
-function destroyWebviewSelector(webview: ElectronWebview): void {
-  void executeWebviewJavaScript(
-    webview,
-    "if(window.__paseoSelector) window.__paseoSelector.destroy();",
-  ).catch(ignoreWebviewJavaScriptError);
-}
-
-function clearWebviewSelector(webview: ElectronWebview): void {
-  void executeWebviewJavaScript(
-    webview,
-    "if(window.__paseoSelector) window.__paseoSelector.destroy(); window.__paseoSelectorResult = null;",
-  ).catch(ignoreWebviewJavaScriptError);
-}
-
 interface BrowserAnnotationMarker {
   index: number;
   selector: string;
@@ -817,6 +803,7 @@ export function BrowserPane({
   const webviewRef = useRef<ElectronWebview | null>(null);
   const webviewHostRef = useRef<HTMLDivElement | null>(null);
   const webviewClipRef = useRef<HTMLElement | null>(null);
+  const domReadyRef = useRef(false);
   const urlInputRef = useRef<WebTextInput | null>(null);
   const initialUrlRef = useRef(browser?.url ?? "https://example.com");
   const browserIdRef = useRef(browserId);

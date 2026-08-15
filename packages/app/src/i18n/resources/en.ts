@@ -1961,6 +1961,7 @@ export const en = {
       voiceMode: "Voice tool mode",
       voiceModeHint:
         "Relay = voice reads like Commander but routes every change through commander_dispatch. Direct = voice holds the full Commander tool surface, approval-gated. Applies to new voice sessions.",
+    },
     plugins: {
       title: "Plugins",
       trustedTitle: "Plugins are trusted code",

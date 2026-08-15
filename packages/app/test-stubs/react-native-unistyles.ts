@@ -16,9 +16,7 @@ const testTheme = {
     surface2: "#f4f4f5",
     surface3: "#e4e4e7",
     border: "#e4e4e7",
-    accent: "#2563eb",
     accentMuted: "#93c5fd",
-    destructive: "#b91c1c",
     diffAddition: "#15803d",
     diffDeletion: "#b91c1c",
     syntax: {
@@ -42,6 +40,7 @@ const testTheme = {
       meta: "#6e7781",
       heading: "#0550ae",
       link: "#0a3069",
+    },
     borderAccent: "#a1a1aa",
     palette: {
       amber: { 500: "#f59e0b" },
@@ -50,7 +49,6 @@ const testTheme = {
       white: "#ffffff",
     },
   },
-  borderWidth: { 1: 1 },
   spacing: [0, 4, 8, 12, 16, 20, 24, 28, 32],
   fontFamily: {
     ui: "system-ui",

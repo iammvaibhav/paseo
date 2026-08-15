@@ -18,6 +18,7 @@ const RESIDENT_VIEWPORT_HEIGHT = 800;
 const residentWebviewsByBrowserId = new Map<string, HTMLElement>();
 const residentSurfacesByBrowserId = new Map<string, HTMLElement>();
 const residentWebviewSizesByBrowserId = new Map<string, { width: number; height: number }>();
+const readyResidentWebviews = new WeakSet<HTMLElement>();
 
 interface PersistentBrowserWebview {
   wrapper: HTMLElement;

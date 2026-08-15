@@ -167,9 +167,9 @@ export function useAgentInputDraft(input: UseAgentInputDraftInput): AgentInputDr
       if (payload.draftKey !== draftKey) {
         return;
       }
-      setText(payload.text);
+      replaceText(payload.text);
     });
-  }, [draftKey, setText]);
+  }, [draftKey, replaceText]);
 
   const lockedWorkingDir = composerOptions?.lockedWorkingDir?.trim() ?? "";
   useEffect(() => {

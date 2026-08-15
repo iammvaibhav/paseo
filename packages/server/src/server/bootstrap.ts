@@ -757,6 +757,7 @@ function resolveExpressTrustProxySetting(config: PaseoDaemonConfig): true | stri
   return config.trustedProxies ?? ["loopback"];
 }
 
+// eslint-disable-next-line complexity -- large config field projection
 function createInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDaemonConfig {
   const providers = config.providerOverrides ?? {};
 
@@ -797,139 +798,6 @@ function createInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDae
   }
 
   return initialConfig;
-}
-
-/**
- * Agent control plane MCP endpoint (POST/GET/DELETE on /mcp/agents). The
- * route is exempt from the daemon-password middleware and authenticates with
- * the injected capability token or a valid daemon password. Stateless: each
- * request builds a fresh server + transport torn down when the response
- * closes.
- */
-function _mountAgentMcpEndpoint(input: {
-  app: express.Express;
-  config: PaseoDaemonConfig;
-  agentMcpAuthToken: string;
-  logger: Logger;
-  createAgentToolHostDependencies: (runtime: PaseoToolRuntimeContext) => PaseoToolHostDependencies;
-}): void {
-  const { app, config, agentMcpAuthToken, logger, createAgentToolHostDependencies } = input;
-  const mcpEnabled = config.mcpEnabled ?? true;
-  if (!mcpEnabled) {
-    logger.info("Agent MCP HTTP endpoint disabled");
-    return;
-  }
-  const agentMcpRoute = "/mcp/agents";
-
-  const createAgentMcpSession = async (callerAgentId?: string) => {
-    const agentMcpServer = await createAgentMcpServer(
-      createAgentToolHostDependencies({ callerAgentId }),
-    );
-
-    // Stateless mode: each HTTP request builds a fresh server + transport that is
-    // torn down when the response closes, so no per-session state is retained between
-    // requests. The agent control plane only lists and calls tools, neither of which
-    // needs cross-request state, so sessions would only pin memory for the life of the
-    // daemon (agents that exit without a clean DELETE never get reaped).
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-      // NOTE: We enforce a Vite-like host allowlist at the app/websocket layer.
-      // StreamableHTTPServerTransport's built-in check requires exact Host header matches.
-      enableDnsRebindingProtection: false,
-    });
-    Object.assign(transport, {
-      onerror: (err: Error) => {
-        logger.error({ err }, "Agent MCP transport error");
-      },
-    });
-
-    await agentMcpServer.connect(transport);
-    return { server: agentMcpServer, transport };
-  };
-
-  const runAgentMcpRequest = async (req: express.Request, res: express.Response): Promise<void> => {
-    // This route is exempt from the global daemon-password middleware, so it
-    // authenticates here using the injected capability token (or a valid
-    // daemon password). Without this, a password-protected daemon would be
-    // wide open on its agent control plane.
-    if (
-      !(await isAgentMcpRequestAuthorized({
-        password: config.auth?.password,
-        capabilityToken: agentMcpAuthToken,
-        authorizationHeader: req.header("authorization"),
-      }))
-    ) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-    if (config.mcpDebug) {
-      logger.debug(
-        {
-          method: req.method,
-          url: req.originalUrl,
-          sessionId: req.header("mcp-session-id"),
-          authorization: req.header("authorization") ? REDACTED_LOG_VALUE : undefined,
-          body: summarizeAgentMcpDebugBody(req.body),
-        },
-        "Agent MCP request",
-      );
-    }
-    try {
-      // Stateless: GET (standalone SSE) and DELETE (session termination) have no
-      // meaning without sessions. The MCP client tolerates 405 on the GET stream
-      // and never issues a DELETE because it is never handed a session id.
-      if (req.method !== "POST") {
-        res.status(405).json({
-          jsonrpc: "2.0",
-          error: {
-            code: -32000,
-            message: "Method not allowed",
-          },
-          id: null,
-        });
-        return;
-      }
-      const callerAgentIdRaw = req.query.callerAgentId;
-      let callerAgentId: string | undefined;
-      if (typeof callerAgentIdRaw === "string") {
-        callerAgentId = callerAgentIdRaw;
-      } else if (Array.isArray(callerAgentIdRaw) && typeof callerAgentIdRaw[0] === "string") {
-        callerAgentId = callerAgentIdRaw[0];
-      }
-      const { server, transport } = await createAgentMcpSession(callerAgentId);
-      res.on("close", () => {
-        void transport.close();
-        void server.close();
-      });
-
-      await transport.handleRequest(
-        req as unknown as IncomingMessage,
-        res as unknown as ServerResponse,
-        req.body,
-      );
-    } catch (err) {
-      logger.error({ err }, "Failed to handle Agent MCP request");
-      if (!res.headersSent) {
-        res.status(500).json({
-          jsonrpc: "2.0",
-          error: {
-            code: -32603,
-            message: "Internal MCP server error",
-          },
-          id: null,
-        });
-      }
-    }
-  };
-
-  const handleAgentMcpRequest: express.RequestHandler = (req, res) => {
-    void runAgentMcpRequest(req, res);
-  };
-
-  app.post(agentMcpRoute, handleAgentMcpRequest);
-  app.get(agentMcpRoute, handleAgentMcpRequest);
-  app.delete(agentMcpRoute, handleAgentMcpRequest);
-  logger.info({ route: agentMcpRoute }, "Agent MCP server mounted on main app");
 }
 
 /**
@@ -1044,10 +912,7 @@ function resolveServiceProxyPublicBaseUrl(config: PaseoDaemonConfig): string | n
   return config.serviceProxy?.publicBaseUrl ? config.serviceProxy.publicBaseUrl : null;
 }
 
-function _resolveConfiguredHostnames(config: PaseoDaemonConfig): PaseoDaemonConfig["hostnames"] {
-  return config.hostnames ?? config.allowedHosts;
-}
-
+// eslint-disable-next-line complexity -- daemon bootstrap orchestration
 export async function createPaseoDaemon(
   config: PaseoDaemonConfig,
   rootLogger: Logger,

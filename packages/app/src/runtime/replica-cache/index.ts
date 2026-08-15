@@ -485,6 +485,8 @@ function serializeAgentCapabilities(capabilities: Agent["capabilities"]) {
       ? { supportsRewindBoth: capabilities.supportsRewindBoth }
       : {}),
   };
+}
+
 function serializeProjectPlacement(agent: Agent): StoredAgent["projectPlacement"] {
   return agent.projectPlacement ?? null;
 }

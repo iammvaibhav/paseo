@@ -3,7 +3,6 @@ import type { AgentPermissionRequest } from "@getpaseo/protocol/agent-types";
 import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
 import type { Agent, SessionState } from "@/stores/session-store";
 import type { ActiveTurnIdentity } from "@/timeline/turn-liveness";
-import type { Agent } from "@/stores/session-store";
 
 function normalizeActiveTurn(
   snapshot: AgentSnapshotPayload,

@@ -428,7 +428,8 @@ export function MissionControlInspector({
             serverId={serverId}
             isPaneFocused={isFocused}
             value={agentDraft.text}
-            onChangeText={agentDraft.setText}
+            onChangeText={agentDraft.editText}
+            textReplacementKey={agentDraft.textReplacementKey}
             attachments={agentDraft.attachments}
             onChangeAttachments={agentDraft.setAttachments}
             cwd={composerCwd}

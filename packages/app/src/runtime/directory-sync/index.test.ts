@@ -145,6 +145,7 @@ describe("DirectorySync session readiness", () => {
       serverId,
       hostname: null,
       version: "test",
+      missionControlHostAlias: null,
       features: { directorySync: true, workspaceMultiplicity: true },
     });
 
@@ -256,6 +257,7 @@ describe("DirectorySync session readiness", () => {
       serverId,
       hostname: null,
       version: "test",
+      missionControlHostAlias: null,
       features: { workspaceMultiplicity: true, projectList: true, directorySync: true },
     });
     client.projectResult = {
