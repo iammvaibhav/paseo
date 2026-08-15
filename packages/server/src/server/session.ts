@@ -3767,6 +3767,17 @@ export class Session {
           payload: { requestId: msg.requestId },
         });
         return;
+      case "client.telemetry.loader_span.report":
+        this.sessionLogger.info(
+          {
+            agentId: msg.agentId,
+            path: msg.path,
+            totalMs: msg.totalMs,
+            startedAt: msg.startedAt,
+          },
+          "client.loader.span",
+        );
+        return;
     }
   }
 

@@ -1718,6 +1718,20 @@ export const DictationStreamCancelMessageSchema = z.object({
   dictationId: z.string(),
 });
 
+/**
+ * Client-side loader observability: one fire-and-forget report per agent
+ * start (create/resume/send) measured from the user's click until the agent
+ * lifecycle flips to "running". No response; the daemon logs it next to its
+ * own omp.runtime.acquire records so a slow start has one timeline.
+ */
+export const ClientLoaderSpanReportMessageSchema = z.object({
+  type: z.literal("client.telemetry.loader_span.report"),
+  agentId: z.string(),
+  path: z.enum(["create", "resume", "send"]),
+  totalMs: z.number().int().nonnegative(),
+  startedAt: z.number().int().nonnegative(),
+});
+
 const GitSetupOptionsSchema = z.object({
   baseBranch: z.string().optional(),
   createNewBranch: z.boolean().optional(),
@@ -3237,6 +3251,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   DictationStreamChunkMessageSchema,
   DictationStreamFinishMessageSchema,
   DictationStreamCancelMessageSchema,
+  ClientLoaderSpanReportMessageSchema,
   CreateAgentRequestMessageSchema,
   ListProviderModelsRequestMessageSchema,
   ListProviderModesRequestMessageSchema,
@@ -3593,6 +3608,8 @@ export const ServerInfoStatusPayloadSchema = z
         pushTokenRevocation: z.boolean().optional(),
         // COMPAT(plugins): added in v0.3.0, remove gate after 2027-08-07.
         plugins: z.boolean().optional(),
+        // COMPAT(loaderSpanReport): added in v0.4.0, remove gate after 2027-08-15.
+        loaderSpanReport: z.boolean().optional(),
         // COMPAT(pluginManagement): added in v0.4.0, remove gate after 2027-08-14.
         pluginManagement: z.boolean().optional(),
         // COMPAT(terminalRestoreModes): added in v0.1.81, remove gate after 2026-11-23.
@@ -6830,6 +6847,7 @@ export type DictationStreamStartMessage = z.infer<typeof DictationStreamStartMes
 export type DictationStreamChunkMessage = z.infer<typeof DictationStreamChunkMessageSchema>;
 export type DictationStreamFinishMessage = z.infer<typeof DictationStreamFinishMessageSchema>;
 export type DictationStreamCancelMessage = z.infer<typeof DictationStreamCancelMessageSchema>;
+export type ClientLoaderSpanReportMessage = z.infer<typeof ClientLoaderSpanReportMessageSchema>;
 export type CreateAgentRequestMessage = z.infer<typeof CreateAgentRequestMessageSchema>;
 export type AgentAttachment = z.infer<typeof AgentAttachmentSchema>;
 export type ForgeChangeRequestAttachment = z.infer<typeof ForgeChangeRequestAttachmentSchema>;

@@ -3727,6 +3727,26 @@ export class DaemonClient {
     });
   }
 
+  /**
+   * Fire-and-forget client-side loader span (click -> running). The daemon
+   * logs it next to its own omp.runtime.acquire records. Send when the
+   * server advertises features.loaderSpanReport; old daemons reject the type.
+   */
+  sendLoaderSpanReport(input: {
+    agentId: string;
+    path: "create" | "resume" | "send";
+    totalMs: number;
+    startedAt: number;
+  }): void {
+    this.sendSessionMessageStrict({
+      type: "client.telemetry.loader_span.report",
+      agentId: input.agentId,
+      path: input.path,
+      totalMs: input.totalMs,
+      startedAt: input.startedAt,
+    });
+  }
+
   async finishDictationStream(
     dictationId: string,
     finalSeq: number,

@@ -92,7 +92,9 @@ export function clearPendingAgentLoaderSpan(serverId: string, pendingId: string)
 
 /**
  * Log the completed loader span for an agent whose lifecycle just flipped to
- * running. Idempotent; no-op when no span is active.
+ * running. Idempotent; no-op when no span is active. Reports to the daemon
+ * (which persists it in daemon.log) when the host advertises the feature;
+ * console always gets the line so desktop devtools still show it.
  */
 export function completeAgentLoaderSpan(serverId: string, agentId: string): void {
   const key = agentSpanKey(serverId, agentId);
@@ -101,10 +103,21 @@ export function completeAgentLoaderSpan(serverId: string, agentId: string): void
     return;
   }
   activeSpans.delete(key);
+  const totalMs = Date.now() - span.startedAt;
+  const startedAt = span.startedAt;
   console.info("[AgentLoader]", "agent.loader.complete", {
     path: span.path,
-    totalMs: Date.now() - span.startedAt,
+    totalMs,
     serverId,
     agentId,
   });
+  const session = useSessionStore.getState().sessions[serverId];
+  if (session?.serverInfo?.features?.loaderSpanReport === true && session.client) {
+    session.client.sendLoaderSpanReport({
+      agentId,
+      path: span.path,
+      totalMs,
+      startedAt,
+    });
+  }
 }
