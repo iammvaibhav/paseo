@@ -4709,6 +4709,7 @@ export class Session {
 
     let createdWorktreeForCleanup: CreatePaseoWorktreeWorkflowResult | null = null;
     let createdAgentId: string | null = null;
+    const createStartedAt = Date.now();
     try {
       const requestedCwd = resolve(config.cwd);
       const needsRequestedDirectory =
@@ -4729,6 +4730,7 @@ export class Session {
         this.daemonConfigStore.get().missionControl?.hostAlias?.trim() || null,
         firstAgentContext,
       );
+      const intentStartedAt = Date.now();
       const createdWorktree = await this.createAgentLifecycleDispatch.createWorktreeForRequest({
         cwd: config.cwd,
         target: worktree,
@@ -4741,6 +4743,7 @@ export class Session {
         createdWorktree,
         workspacePromptTitle,
       });
+      const intentMs = Date.now() - intentStartedAt;
       const resolvedCwd = resolve(resolvedIntent.config.cwd);
       if (!(await this.filesystem.isDirectory(resolvedCwd))) {
         throw new Error(`Working directory does not exist or is not a directory: ${resolvedCwd}`);
@@ -4752,6 +4755,7 @@ export class Session {
         initialPrompt,
       );
 
+      const createCommandStartedAt = Date.now();
       const { snapshot, liveSnapshot } = await createAgentCommand(
         {
           agentManager: this.agentManager,
@@ -4781,6 +4785,21 @@ export class Session {
         },
       );
       createdAgentId = snapshot.id;
+      const createCommandMs = Date.now() - createCommandStartedAt;
+      const totalMs = Date.now() - createStartedAt;
+      const timingPayload = {
+        agentId: snapshot.id,
+        provider: snapshot.provider,
+        transport: "relay",
+        intentMs,
+        createCommandMs,
+        totalMs,
+      };
+      if (totalMs >= 1_000) {
+        this.sessionLogger.warn(timingPayload, "agent.create.session_slow");
+      } else {
+        this.sessionLogger.info(timingPayload, "agent.create.session");
+      }
       await this.agentUpdates.forwardLiveAgent(snapshot);
       if (resolvedIntent.createdDirectoryWorkspace && trimmedPrompt) {
         this.workspaceAutoName.scheduleForDirectory(

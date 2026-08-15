@@ -5557,9 +5557,24 @@ export class AgentManager {
 
     const shouldResolveDefaultModel = options.resolveDefaultModel ?? true;
     if (shouldResolveDefaultModel && !normalized.model) {
+      const modelResolveStartedAt = Date.now();
       const defaultModelId = await this.resolveDefaultModelId(normalized);
+      const modelResolveMs = Date.now() - modelResolveStartedAt;
       if (defaultModelId) {
         normalized.model = defaultModelId;
+      }
+      const modelFields = {
+        provider: normalized.provider,
+        cwd: normalized.cwd,
+        model: normalized.model ?? null,
+        modelResolveMs,
+      };
+      // Info normally; warn when a catalog fetch took >=1s (a cold omp boot
+      // used only to resolve the default model because the create carried none).
+      if (modelResolveMs >= 1_000) {
+        this.logger.warn(modelFields, "agent.create.resolve_default_model_slow");
+      } else {
+        this.logger.info(modelFields, "agent.create.resolve_default_model");
       }
     }
 

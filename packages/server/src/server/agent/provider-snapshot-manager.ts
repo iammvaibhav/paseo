@@ -425,14 +425,16 @@ export class ProviderSnapshotManager {
   async resolveCreateConfig(
     input: ResolveProviderCreateConfigOptions,
   ): Promise<ResolvedProviderCreateConfig> {
+    const readyStartedAt = Date.now();
     const entry = await this.getReadyProvider({
       cwd: input.cwd,
       provider: input.provider,
       wait: true,
     });
+    const readyMs = Date.now() - readyStartedAt;
     const definition = this.requireProvider(input.provider);
     const parent = input.parent ? this.resolveParent(input.parent) : null;
-    return definition.resolveCreateConfig({
+    const resolved = definition.resolveCreateConfig({
       provider: input.provider,
       requestedMode: input.requestedMode,
       featureValues: input.featureValues,
@@ -440,6 +442,21 @@ export class ProviderSnapshotManager {
       unattended: input.unattended || parent?.isUnattended === true,
       availableModes: entry.modes ?? [],
     });
+    // How long the create waited for the provider snapshot (a cold catalog
+    // fetch when the snapshot was missing/stale) before mode resolution.
+    // Info normally; warn when the wait was >=1s.
+    const timingFields = {
+      provider: input.provider,
+      cwd: input.cwd,
+      readyMs,
+      status: entry.status,
+    };
+    if (readyMs >= 1_000) {
+      this.logger.warn(timingFields, "provider.resolve_create_config_slow");
+    } else {
+      this.logger.info(timingFields, "provider.resolve_create_config");
+    }
+    return resolved;
   }
 
   async getProviderDiagnostic(provider: AgentProvider): Promise<ProviderDiagnosticResult> {

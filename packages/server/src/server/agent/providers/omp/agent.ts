@@ -3006,6 +3006,7 @@ export class OmpAgentClient implements AgentClient {
     context?: ProviderRefreshContext,
   ): Promise<ProviderCatalog> {
     const launchMode = this.resolveLaunchMode(undefined);
+    const fetchStartedAt = Date.now();
     let runtimeSession: OmpRuntimeSession | undefined;
     let closePromise: Promise<void> | undefined;
     const closeSession = () => {
@@ -3016,6 +3017,7 @@ export class OmpAgentClient implements AgentClient {
     const handleAbort = () => void closeSession().catch(() => undefined);
     context?.signal.addEventListener("abort", handleAbort, { once: true });
     try {
+      const runtimeStartStartedAt = Date.now();
       await runProviderRefreshActivity(context, "runtime.start", async () => {
         runtimeSession = await this.runtime.startSession({
           cwd: options.scope === "global" ? homedir() : options.cwd,
@@ -3026,8 +3028,10 @@ export class OmpAgentClient implements AgentClient {
         });
         if (context?.signal.aborted) await closeSession();
       });
+      const runtimeStartMs = Date.now() - runtimeStartStartedAt;
       if (!runtimeSession) throw new Error("OMP catalog runtime did not start");
       const catalogSession = runtimeSession;
+      const modelsStartedAt = Date.now();
       const models = transformOmpModels(
         (
           await runProviderRefreshActivity(context, "get_available_models", () =>
@@ -3035,6 +3039,23 @@ export class OmpAgentClient implements AgentClient {
           )
         ).map((model) => mapOmpModel(model, this.provider)),
       );
+      const modelsMs = Date.now() - modelsStartedAt;
+      const totalMs = Date.now() - fetchStartedAt;
+      const timingFields = {
+        provider: this.provider,
+        scope: options.scope,
+        cwd: options.scope === "global" ? homedir() : options.cwd,
+        modeId: launchMode.modeId,
+        runtimeStartMs,
+        modelsMs,
+        totalMs,
+      };
+      // Info normally; warn when the fetch is slow (>=1s: a cold omp boot).
+      if (totalMs >= 1_000) {
+        this.logger.warn(timingFields, "omp.catalog.fetch_slow");
+      } else {
+        this.logger.info(timingFields, "omp.catalog.fetch");
+      }
       return { models, modes: [...OMP_MODES] };
     } finally {
       context?.signal.removeEventListener("abort", handleAbort);
