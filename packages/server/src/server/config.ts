@@ -507,6 +507,7 @@ function resolveProfileLists(persisted: ReturnType<typeof loadPersistedConfig>) 
   return {
     terminalProfiles: persisted.daemon?.terminalProfiles,
     agentProfiles: persisted.daemon?.agentProfiles,
+    ompIdleCloseAfterSeconds: persisted.daemon?.ompIdleCloseAfterSeconds ?? 1800,
   };
 }
 
@@ -549,6 +550,7 @@ export function loadConfig(
     mcpInjectIntoAgents,
     browserToolsEnabled,
     autoArchiveAfterMerge,
+    ompIdleCloseAfterSeconds,
     appendSystemPrompt,
     terminalProfiles,
     agentProfiles,
@@ -591,6 +593,7 @@ export function loadConfig(
     browserToolsEnabled,
     git: resolveGitProcessConfig(env, persisted),
     autoArchiveAfterMerge,
+    ompIdleCloseAfterSeconds,
     enableTerminalAgentHooks: persisted.daemon?.enableTerminalAgentHooks ?? false,
     appendSystemPrompt,
     terminalProfiles,

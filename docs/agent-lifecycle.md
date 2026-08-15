@@ -24,6 +24,9 @@ primed.
 Idle agents remain resident indefinitely. Runtime closure happens only through an explicit lifecycle
 action such as archive, replacement, reload, workspace teardown, or daemon shutdown.
 
+OMP process residency, the create-only warm pool, and why idle-release
+cannot reclaim a pooled process today: [omp-process-efficiency.md](./omp-process-efficiency.md).
+
 A provider runtime can still die on its own — crash, OOM kill, host suspend. Work the agent parked
 inside that process dies with it: Claude Code's background Bash shells, `Monitor` watches, and
 workflows all live in the CLI process, and the completion notification that would have woken the

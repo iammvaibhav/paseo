@@ -78,6 +78,12 @@ export interface OmpRuntimeSession {
    * to hand a booted process to a new agent create.
    */
   newSession(): Promise<void>;
+  /**
+   * Attach an existing session file to the running process, replacing its
+   * current session. Used by resume to hand a claimed warm process the
+   * persisted session.
+   */
+  switchSession(sessionPath: string): Promise<void>;
   getSessionStats(): Promise<OmpSessionStats>;
   getCommands(): Promise<OmpRpcSlashCommand[]>;
   setSubagentSubscription(level: OmpSubagentSubscriptionLevel): Promise<void>;

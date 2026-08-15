@@ -318,6 +318,7 @@ export function HostWorkspacesPage({ serverId }: { serverId: string }) {
       {isConnected ? (
         <SettingsSection title={t("settings.hostSections.workspaces")}>
           <AutoArchiveMergedWorkspacesCard serverId={serverId} />
+          <IdleCloseOmpCard serverId={serverId} />
         </SettingsSection>
       ) : (
         <View style={[settingsStyles.card, styles.emptyCard]}>
@@ -1202,6 +1203,77 @@ function AutoArchiveMergedWorkspacesCard({ serverId }: { serverId: string }) {
           onValueChange={handleValueChange}
           accessibilityLabel="Archive merged PR workspaces"
           testID="host-page-auto-archive-merged-workspaces-switch"
+        />
+      </View>
+    </View>
+  );
+}
+
+function parseIdleCloseMinutes(raw: string | null): number | null {
+  if (raw === null) {
+    return null;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+  return parsed;
+}
+
+// The daemon stores the timeout in seconds; the card edits minutes so the
+// field matches the hint. 0 turns the sweep off.
+const DEFAULT_IDLE_CLOSE_MINUTES = 30;
+
+function IdleCloseOmpCard({ serverId }: { serverId: string }) {
+  const isConnected = useHostRuntimeIsConnected(serverId);
+  const isCompact = useIsCompactFormFactor();
+  const { config, patchConfig } = useDaemonConfig(serverId);
+  const minutes = Math.round(
+    (config?.ompIdleCloseAfterSeconds ?? DEFAULT_IDLE_CLOSE_MINUTES * 60) / 60,
+  );
+
+  const draftRef = useRef<string | null>(null);
+  const handleChange = useCallback((text: string) => {
+    draftRef.current = text.replace(/[^0-9]/g, "");
+  }, []);
+  const handleCommit = useCallback(() => {
+    const raw = draftRef.current;
+    draftRef.current = null;
+    const parsed = parseIdleCloseMinutes(raw);
+    if (parsed === null || parsed === minutes) {
+      return;
+    }
+    void patchConfig({ ompIdleCloseAfterSeconds: parsed * 60 }).catch((error) => {
+      console.error("[HostPage] Failed to update idle close timeout", error);
+      Alert.alert(
+        "Unable to update agents",
+        error instanceof Error ? error.message : String(error),
+      );
+    });
+  }, [minutes, patchConfig]);
+
+  if (!isConnected) return null;
+
+  return (
+    <View style={settingsStyles.card} testID="host-page-idle-close-omp-card">
+      <View style={settingsStyles.row}>
+        <View style={settingsStyles.rowContent}>
+          <Text style={settingsStyles.rowTitle}>Close idle OMP processes</Text>
+          <Text style={settingsStyles.rowHint}>
+            Close idle OMP processes after this many minutes; the next send resumes from the warm
+            pool. 0 turns this off.
+          </Text>
+        </View>
+        <FormTextInput
+          size={isCompact ? "md" : "sm"}
+          defaultValue={String(minutes)}
+          onChangeText={handleChange}
+          onBlur={handleCommit}
+          keyboardType="number-pad"
+          inputMode="numeric"
+          accessibilityLabel="Idle close minutes"
+          testID="host-page-idle-close-omp-minutes"
+          style={styles.numberInput}
         />
       </View>
     </View>
@@ -2374,6 +2446,9 @@ const styles = StyleSheet.create((theme) => ({
   },
   mcAliasInput: {
     width: 160,
+  },
+  numberInput: {
+    width: 88,
   },
   glyphColorSwatches: {
     flexDirection: "row",

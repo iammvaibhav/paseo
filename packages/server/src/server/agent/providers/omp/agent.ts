@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { setImmediate as waitForImmediate, setTimeout as delay } from "node:timers/promises";
 import type { Logger } from "pino";
@@ -171,6 +172,25 @@ const OMP_BACKGROUND_ABORT_TIMEOUT_MS = 30_000;
 interface OmpPromptPayload {
   text: string;
   images?: OmpImageContent[];
+}
+
+interface OmpAcquireTiming {
+  claimMs?: number;
+  switchMs?: number;
+  newSessionMs?: number;
+  setModelMs?: number;
+  bootMs?: number;
+  totalMs: number;
+}
+
+interface OmpAcquireLogInput {
+  purpose: "create" | "resume";
+  source: "pool" | "cold";
+  poolHit: boolean;
+  timing: OmpAcquireTiming;
+  cwd: string;
+  modeId: string;
+  sessionBytes?: number;
 }
 
 interface OmpModelReference {
@@ -2675,6 +2695,7 @@ export class OmpAgentClient implements AgentClient {
   ): Promise<OmpRuntimeSession> {
     const thinking = normalizeOmpThinkingOption(config.thinkingOptionId) ?? undefined;
     const model = config.model;
+    const acquireStartedAt = Date.now();
     const poolEligible =
       config.internal !== true &&
       !hasSignificantLaunchEnv(launchContext?.env) &&
@@ -2687,6 +2708,7 @@ export class OmpAgentClient implements AgentClient {
       typeof model === "string" &&
       model.includes("/");
     if (poolEligible) {
+      const claimStartedAt = Date.now();
       const pooled = await this.warmPool.claim({
         cwd: config.cwd,
         modeId: launchMode.modeId,
@@ -2697,11 +2719,28 @@ export class OmpAgentClient implements AgentClient {
       if (pooled) {
         try {
           const slash = model.indexOf("/");
+          const newSessionStartedAt = Date.now();
           await pooled.newSession();
+          const newSessionMs = Date.now() - newSessionStartedAt;
+          const setModelStartedAt = Date.now();
           await pooled.setModel(model.slice(0, slash), model.slice(slash + 1));
           if (thinking) {
             await pooled.setThinkingLevel(thinking);
           }
+          const setModelMs = Date.now() - setModelStartedAt;
+          this.logAcquire({
+            purpose: "create",
+            source: "pool",
+            poolHit: true,
+            timing: {
+              claimMs: Date.now() - claimStartedAt,
+              newSessionMs,
+              setModelMs,
+              totalMs: Date.now() - acquireStartedAt,
+            },
+            cwd: config.cwd,
+            modeId: launchMode.modeId,
+          });
           return pooled;
         } catch (error) {
           // The handoff left the pooled process in an unknown state; close it
@@ -2714,7 +2753,8 @@ export class OmpAgentClient implements AgentClient {
         }
       }
     }
-    return this.runtime.startSession({
+    const coldStartedAt = Date.now();
+    const runtimeSession = await this.runtime.startSession({
       cwd: config.cwd,
       protocolMode: "rpc-ui",
       model: config.model,
@@ -2727,6 +2767,18 @@ export class OmpAgentClient implements AgentClient {
       toolAllowlist: config.toolAllowlist,
       env: launchContext?.env,
     });
+    this.logAcquire({
+      purpose: "create",
+      source: "cold",
+      poolHit: false,
+      timing: {
+        bootMs: Date.now() - coldStartedAt,
+        totalMs: Date.now() - acquireStartedAt,
+      },
+      cwd: config.cwd,
+      modeId: launchMode.modeId,
+    });
+    return runtimeSession;
   }
 
   async resumeSession(
@@ -2744,13 +2796,11 @@ export class OmpAgentClient implements AgentClient {
     const resumeConfig = buildResumeConfig(persistenceMetadata, overrides, this.provider);
 
     const launchMode = this.resolveLaunchMode(resumeConfig.modeId);
-    const runtimeSession = await this.runtime.startSession(
-      buildResumeStartInput({
-        resumeConfig,
-        sessionFile,
-        launchContext,
-        launchMode,
-      }),
+    const runtimeSession = await this.acquireResumeRuntimeSession(
+      resumeConfig,
+      sessionFile,
+      launchContext,
+      launchMode,
     );
     try {
       const paseoTools = filterPaseoToolsByAllowlist(
@@ -2780,6 +2830,150 @@ export class OmpAgentClient implements AgentClient {
     } catch (error) {
       await runtimeSession.close().catch(() => undefined);
       throw error;
+    }
+  }
+
+  /**
+   * Acquire the omp process backing a resumed agent: hand off a matching warm
+   * process when pool-eligible (claim + switch_session), otherwise cold-start
+   * with --session. Eligibility is the same as create: no per-agent system
+   * prompt, no significant env, no tool allowlist, and a resolvable model.
+   */
+  private async acquireResumeRuntimeSession(
+    resumeConfig: OmpResumeConfig,
+    sessionFile: string,
+    launchContext: AgentLaunchContext | undefined,
+    launchMode: { modeId: string; extraArgs: string[] },
+  ): Promise<OmpRuntimeSession> {
+    const acquireStartedAt = Date.now();
+    const model = resumeConfig.model;
+    const poolEligible =
+      resumeConfig.config.internal !== true &&
+      !hasSignificantLaunchEnv(launchContext?.env) &&
+      !resumeConfig.config.systemPrompt?.trim() &&
+      // An allowlist is launch-fixed (see startRuntimeSession): allowlist
+      // resumes must cold start.
+      !resumeConfig.config.toolAllowlist?.length &&
+      typeof model === "string" &&
+      model.includes("/");
+    if (poolEligible) {
+      const claimStartedAt = Date.now();
+      const pooled = await this.warmPool.claim({
+        cwd: resumeConfig.cwd,
+        modeId: launchMode.modeId,
+        extraArgs: launchMode.extraArgs,
+        systemPrompt: this.composeResumeLaunchSystemPrompt(resumeConfig) ?? "",
+        env: launchContext?.env,
+      });
+      if (pooled) {
+        try {
+          const switchStartedAt = Date.now();
+          await pooled.switchSession(sessionFile);
+          const switchMs = Date.now() - switchStartedAt;
+          const setModelStartedAt = Date.now();
+          const slash = model.indexOf("/");
+          await pooled.setModel(model.slice(0, slash), model.slice(slash + 1));
+          const thinking = normalizeOmpThinkingOption(resumeConfig.thinkingOptionId) ?? undefined;
+          if (thinking) {
+            await pooled.setThinkingLevel(thinking);
+          }
+          const setModelMs = Date.now() - setModelStartedAt;
+          this.logAcquire({
+            purpose: "resume",
+            source: "pool",
+            poolHit: true,
+            timing: {
+              claimMs: Date.now() - claimStartedAt,
+              switchMs,
+              setModelMs,
+              totalMs: Date.now() - acquireStartedAt,
+            },
+            cwd: resumeConfig.cwd,
+            modeId: launchMode.modeId,
+            sessionBytes: await this.sessionBytes(sessionFile),
+          });
+          return pooled;
+        } catch (error) {
+          // The handoff left the pooled process in an unknown state; close it
+          // and fall back to a cold launch rather than risk a broken agent.
+          this.logger.warn(
+            { err: error, provider: this.provider },
+            "OMP warm pool resume handoff failed; cold starting",
+          );
+          await pooled.close().catch(() => undefined);
+        }
+      }
+    }
+    const coldStartedAt = Date.now();
+    const runtimeSession = await this.runtime.startSession(
+      buildResumeStartInput({
+        resumeConfig,
+        sessionFile,
+        launchContext,
+        launchMode,
+      }),
+    );
+    this.logAcquire({
+      purpose: "resume",
+      source: "cold",
+      poolHit: false,
+      timing: {
+        bootMs: Date.now() - coldStartedAt,
+        totalMs: Date.now() - acquireStartedAt,
+      },
+      cwd: resumeConfig.cwd,
+      modeId: launchMode.modeId,
+      sessionBytes: await this.sessionBytes(sessionFile),
+    });
+    return runtimeSession;
+  }
+
+  /**
+   * The launch system prompt of a resume: replace mode uses the per-agent
+   * prompt verbatim, append mode layers it under the daemon append prompt.
+   * Mirrors buildResumeStartInput so the pool claim's key matches a cold
+   * --session launch of the same config.
+   */
+  private composeResumeLaunchSystemPrompt(resumeConfig: OmpResumeConfig): string | undefined {
+    if (resumeConfig.config.systemPromptMode === "replace") {
+      return resumeConfig.config.systemPrompt?.trim() || undefined;
+    }
+    return composeSystemPromptParts(
+      resumeConfig.config.systemPrompt,
+      resumeConfig.config.daemonAppendSystemPrompt,
+    );
+  }
+
+  /**
+   * One structured acquire record per create/resume so warm vs cold is
+   * observable. Info normally; warn when the whole acquire took >= 1s (a pool
+   * hit that slow is a regression, a cold start that slow is the baseline).
+   */
+  private logAcquire(input: OmpAcquireLogInput): void {
+    const fields: Record<string, unknown> = {
+      purpose: input.purpose,
+      source: input.source,
+      poolHit: input.poolHit,
+      ...input.timing,
+      cwd: input.cwd,
+      modeId: input.modeId,
+    };
+    if (input.sessionBytes !== undefined) {
+      fields.sessionBytes = input.sessionBytes;
+    }
+    if (input.timing.totalMs >= 1_000) {
+      this.logger.warn(fields, "omp.runtime.acquire");
+    } else {
+      this.logger.info(fields, "omp.runtime.acquire");
+    }
+  }
+
+  private async sessionBytes(sessionFile: string): Promise<number | undefined> {
+    try {
+      const fileStat = await stat(sessionFile);
+      return fileStat.size;
+    } catch {
+      return undefined;
     }
   }
 

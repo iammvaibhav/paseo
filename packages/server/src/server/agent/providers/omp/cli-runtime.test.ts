@@ -300,6 +300,22 @@ describe("OMP CLI runtime", () => {
     ]);
   });
 
+  test("wraps OMP switch_session", async () => {
+    const child = createOmpChild();
+    const commands: Record<string, unknown>[] = [];
+    replyToCommands(child, (command) => {
+      commands.push(command);
+      return undefined;
+    });
+    const session = await createRuntime(child).startSession({ cwd: "/workspace/project" });
+
+    await session.switchSession("/tmp/session.jsonl");
+
+    expect(commands.map(withoutRequestId)).toEqual([
+      { type: "switch_session", sessionPath: "/tmp/session.jsonl" },
+    ]);
+  });
+
   test("accepts the empty prompt acknowledgement emitted by OMP 17", async () => {
     const child = createOmpChild();
     replyToCommands(child, () => undefined);
