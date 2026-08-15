@@ -32,59 +32,22 @@ function readBundledSelfReportPrompt(): string {
 }
 
 /**
- * The agent's current Mission Control identity, known at spawn time. Values
- * mirror the stored agent record fields the report_status tool updates:
- * title → record.title, description → record.shortDescription. Absent fields
- * mean "never set".
- */
-export interface SelfReportIdentitySeed {
-  title?: string | null;
-  description?: string | null;
-}
-
-/**
- * The per-agent identity seed appended to the self-report paragraph: the
- * agent's CURRENT title/description (or an explicit "unset" note), so it can
- * compare-and-decide before its next report_status. Built per-agent at spawn,
- * because the append is built per-agent.
- */
-export function buildSelfReportIdentitySeed(identity?: SelfReportIdentitySeed): string {
-  const title = identity?.title?.trim();
-  const description = identity?.description?.trim();
-  if (!title && !description) {
-    return (
-      "Your current identity is unset: you have no title or description yet. " +
-      "Your status reports should include a fresh description of what you are doing NOW, and refine title if it is a raw user prompt or spawn seed."
-    );
-  }
-  const lines = ["Your current identity (persisted on your agent record):"];
-  if (title) {
-    lines.push(`- Title: ${title}`);
-  }
-  if (description) {
-    lines.push(`- Description: ${description}`);
-  }
-  lines.push(
-    "Include a fresh description on status reports so your current activity is up to date, and refine title if it is still a raw prompt or spawn seed.",
-  );
-  return lines.join("\n");
-}
-
-/**
  * The self-report paragraph for an agent's system prompt, or null when it must
  * be omitted: the kill-switch is off, or the agent is mission-control-labeled
- * (the Commander and monitors do not self-report). When included, the agent's
- * current identity (as known at spawn) is seeded right after the paragraph so
- * the agent can compare-and-decide; `currentIdentity` omitted or empty yields
- * an explicit "not set yet" note.
+ * (the Commander and monitors do not self-report).
+ *
+ * The paragraph is static — it never embeds the agent's title/description.
+ * The identity seed used to be appended here per-agent, which made the
+ * composed daemon append prompt (and therefore the OMP warm-pool key) differ
+ * per agent and thrash the pool. The agent still owns its title/description;
+ * they ride on report_status and the feed, not the system prompt.
  */
 export function buildSelfReportSystemPrompt(
   labels: Record<string, string>,
   enabled: boolean,
-  currentIdentity?: SelfReportIdentitySeed,
 ): string | null {
   if (!enabled || hasMissionControlLabels(labels)) {
     return null;
   }
-  return `${MISSION_CONTROL_SELF_REPORT_PROMPT}\n\n${buildSelfReportIdentitySeed(currentIdentity)}`;
+  return MISSION_CONTROL_SELF_REPORT_PROMPT;
 }

@@ -5660,42 +5660,19 @@ export class AgentManager {
         mcpAuthToken: this.mcpAuthToken,
       }),
       labels ?? {},
-      await this.readAgentIdentitySeed(agentId),
     );
     return { storedConfig, launchConfig };
-  }
-
-  /**
-   * The agent's current Mission Control identity (title + short description)
-   * as known at spawn time, for seeding into the appended self-report prompt.
-   * Mirrors the stored record fields report_status updates; a fresh agent has
-   * no record yet, so every field is null ("unset").
-   */
-  private async readAgentIdentitySeed(agentId: string): Promise<{
-    title?: string | null;
-    description?: string | null;
-  }> {
-    if (!this.registry) {
-      return {};
-    }
-    const record = await this.registry.get(agentId);
-    return {
-      title: record?.title ?? null,
-      description: record?.shortDescription ?? null,
-    };
   }
 
   private applyDaemonAppendSystemPrompt(
     config: AgentSessionConfig,
     labels: Record<string, string>,
-    currentIdentity?: { title?: string | null; description?: string | null },
   ): AgentSessionConfig {
     const next = { ...config };
     delete next.daemonAppendSystemPrompt;
     const selfReportPrompt = buildSelfReportSystemPrompt(
       labels,
       this.missionControlSelfReportEnabled,
-      currentIdentity,
     );
     const daemonAppendSystemPrompt = [this.appendSystemPrompt.trim(), selfReportPrompt]
       .filter((part): part is string => Boolean(part))

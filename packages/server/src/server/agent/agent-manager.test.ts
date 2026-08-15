@@ -3916,7 +3916,7 @@ test("reloadAgentSession preserves current title when config title is unset", as
   expect(afterReload?.config?.title).toBeUndefined();
 });
 
-test("reloadAgentSession seeds the agent's current title and description into the appended self-report prompt", async () => {
+test("reloadAgentSession keeps the static self-report append (no per-agent identity seed)", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-reload-identity-seed-"));
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
@@ -3941,20 +3941,18 @@ test("reloadAgentSession seeds the agent's current title and description into th
   await manager.setTitle(snapshot.id, "Fix auth");
   await manager.setAgentShortDescription(snapshot.id, "Reproducing the login failure");
 
-  const seededAppend = buildSelfReportSystemPrompt({}, true, {
-    title: "Fix auth",
-    description: "Reproducing the login failure",
-  });
+  // The append is static: no identity seed, so every pool-eligible agent
+  // shares the same composed prompt (and the same OMP warm-pool key).
+  const staticAppend = buildSelfReportSystemPrompt({}, true);
   const firstConfig = client.createdConfigs[0];
-  // A fresh agent has no record at spawn: the append says the identity is unset.
-  expect(firstConfig?.daemonAppendSystemPrompt).toBe(buildSelfReportSystemPrompt({}, true));
+  expect(firstConfig?.daemonAppendSystemPrompt).toBe(staticAppend);
 
   await manager.reloadAgentSession(snapshot.id);
 
-  // The reloaded session's append carries the CURRENT identity from the record
-  // (reload resumes through the persistence handle, recorded in resumeOverrides).
+  // Reload does not change the append either — title/description changes must
+  // never re-key the pool.
   const reloadedConfig = client.resumeOverrides.at(-1);
-  expect(reloadedConfig?.daemonAppendSystemPrompt).toBe(seededAppend);
+  expect(reloadedConfig?.daemonAppendSystemPrompt).toBe(staticAppend);
 });
 
 test("reloadAgentSession re-derives the Commander launch contract for commander-labeled agents", async () => {

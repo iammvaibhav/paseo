@@ -25,13 +25,14 @@ async function awaitStoreWrites(store: MissionControlStore): Promise<void> {
 }
 
 describe("buildSelfReportSystemPrompt", () => {
-  test("returns the paragraph plus the unset-identity seed for a normal agent when enabled", () => {
+  test("returns the static self-report paragraph for a normal agent when enabled", () => {
     const prompt = buildSelfReportSystemPrompt({}, true);
     expect(prompt).not.toBeNull();
     expect(prompt).toContain(MISSION_CONTROL_SELF_REPORT_PROMPT);
-    // No identity known yet: the seed says so explicitly.
-    expect(prompt).toContain("no title or description yet");
-    expect(prompt).toContain("include a fresh description of what you are doing NOW");
+    // The paragraph is static: it never embeds per-agent identity, so the
+    // composed daemon append (and the OMP warm-pool key) is identical for
+    // every pool-eligible agent.
+    expect(prompt).toBe(MISSION_CONTROL_SELF_REPORT_PROMPT);
     expect(MISSION_CONTROL_SELF_REPORT_PROMPT.length).toBeGreaterThan(0);
   });
 
@@ -58,16 +59,12 @@ describe("buildSelfReportSystemPrompt", () => {
     expect(prompt).toContain("Send title and description with your report_status");
   });
 
-  test("seeds the agent's current title and description into the built prompt", () => {
-    const prompt = buildSelfReportSystemPrompt({}, true, {
-      title: "Fix auth",
-      description: "Reproducing the login failure",
-    });
-    expect(prompt).not.toBeNull();
-    expect(prompt).toContain("- Title: Fix auth");
-    expect(prompt).toContain("- Description: Reproducing the login failure");
-    // Identity guidance so status reports stay up to date.
-    expect(prompt).toContain("Include a fresh description on status reports");
+  test("never embeds the agent's title or description", () => {
+    const prompt = buildSelfReportSystemPrompt({}, true);
+    expect(prompt).not.toContain("- Title:");
+    expect(prompt).not.toContain("- Description:");
+    expect(prompt).not.toContain("Your current identity");
+    expect(prompt).not.toContain("no title or description yet");
   });
 
   test("returns null for a mission-control-labeled agent", () => {
