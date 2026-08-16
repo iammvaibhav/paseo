@@ -1780,7 +1780,7 @@ function ActiveAgentComposer({
         onChangeAttachments={agentInputDraft.setAttachments}
         cwd={cwd}
         clearDraft={agentInputDraft.clear}
-        autoFocus={isPaneFocused}
+        autoFocus
         autoFocusKey={String(agentInputDraft.attachmentFocusRequestId)}
         isSubmitLoading={isSubmitLoading}
         onAttentionInputFocus={onAttentionInputFocus}

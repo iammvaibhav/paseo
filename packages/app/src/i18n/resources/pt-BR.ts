@@ -1101,6 +1101,8 @@ export const ptBR: TranslationResources = {
       },
       show: {
         label: "Mostrar",
+        branch: "Branch",
+        project: "Projeto",
         host: "Host",
         changeRequest: "Pull request",
         checks: "Verificações",
@@ -1565,6 +1567,7 @@ export const ptBR: TranslationResources = {
     defaultModel: "Padrão",
     profiles: "Perfis",
     providers: "Provedores",
+    model: "Modelo",
     editProfiles: "Editar",
     editProfilesLabel: "Editar perfis de agente",
     createProfile: "Criar perfil",

@@ -3,6 +3,7 @@ import { useStoreWithEqualityFn } from "zustand/traditional";
 import { useSidebarOrderStore } from "@/stores/sidebar-order-store";
 import {
   composeWorkspaceStructure,
+  createWorkspaceStructureProjectsSelector,
   selectHasHydratedWorkspaces,
   selectHydratedWorkspaceServerIds,
   selectWorkspaceDirectoryServerIds,
@@ -16,7 +17,6 @@ import {
   selectWorkspaceKeys,
   selectWorkspaceOrderByScope,
   selectWorkspaceStatusesForBadges,
-  selectWorkspaceStructureProjects,
   workspaceEqualityFns,
   type WorkspaceStructure,
 } from "./selectors";
@@ -105,9 +105,13 @@ export function useWorkspaceStructure(
   options?: { hideSystemOwnedWorkspaces?: boolean },
 ): WorkspaceStructure {
   const { hideSystemOwnedWorkspaces = true } = options ?? {};
+  const selectProjects = useMemo(
+    () => createWorkspaceStructureProjectsSelector(serverIds, { hideSystemOwnedWorkspaces }),
+    [hideSystemOwnedWorkspaces, serverIds],
+  );
   const projects = useStoreWithEqualityFn(
     useSessionStore,
-    (state) => selectWorkspaceStructureProjects(state, serverIds, { hideSystemOwnedWorkspaces }),
+    selectProjects,
     workspaceEqualityFns.deep,
   );
   const projectOrder = useStoreWithEqualityFn(
