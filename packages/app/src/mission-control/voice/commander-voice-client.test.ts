@@ -82,6 +82,10 @@ describe("parseCommanderVoiceFrame", () => {
     expect(parseCommanderVoiceFrame('{"type":"setupAck"}')).toEqual({ type: "setupAck" });
   });
 
+  it("parses interrupt and turnComplete frames", () => {
+    expect(parseCommanderVoiceFrame('{"type":"interrupt"}')).toEqual({ type: "interrupt" });
+    expect(parseCommanderVoiceFrame('{"type":"turnComplete"}')).toEqual({ type: "turnComplete" });
+  });
   it("parses output text (spoken ack) and input text (what it heard)", () => {
     expect(parseCommanderVoiceFrame('{"type":"text","text":"on it"}')).toEqual({
       type: "text",

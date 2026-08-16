@@ -9,7 +9,7 @@ import { createRequire } from "node:module";
 import { WebSocket } from "ws";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 
-import { startVoiceServer } from "../server.js";
+import { startVoiceServer, VoiceSession } from "../server.js";
 import {
   classifyEvent,
   buildFleetRosterDigest,
@@ -174,6 +174,34 @@ test.after(async () => {
   if (voiceServer) {
     await voiceServer.close();
   }
+});
+
+test("fake Gemini serverContent produces interrupt and turnComplete frames", () => {
+  const sent = [];
+  const fakeClientWs = {
+    readyState: WebSocket.OPEN,
+    send(data) {
+      sent.push(JSON.parse(data));
+    },
+  };
+  const session = new VoiceSession({
+    clientWs: fakeClientWs,
+    daemon: { mirrorVoiceTurn: async () => ({ ok: true }) },
+    config: { voiceMode: "relay", sessionLogDir: null },
+    model: "models/gemini-3.1-flash-live-preview",
+    sessionId: "test-session",
+  });
+
+  session.handleServerContent({ interrupted: true });
+  assert.deepEqual(sent, [{ type: "interrupt" }]);
+
+  sent.length = 0;
+  session.handleServerContent({ turnComplete: true });
+  assert.deepEqual(sent, [{ type: "turnComplete" }]);
+
+  sent.length = 0;
+  session.handleServerContent({ generationComplete: true });
+  assert.deepEqual(sent, [{ type: "turnComplete" }]);
 });
 
 test("announce-policy filter classifies events", () => {

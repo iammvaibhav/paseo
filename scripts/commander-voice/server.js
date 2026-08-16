@@ -50,7 +50,7 @@ async function resolveModelId(apiKey) {
   return chosen.startsWith("models/") ? chosen : `models/${chosen}`;
 }
 
-class VoiceSession {
+export class VoiceSession {
   constructor({ clientWs, daemon, config, model, sessionId }) {
     this.clientWs = clientWs;
     this.daemon = daemon;
@@ -404,6 +404,12 @@ class VoiceSession {
       for (const part of serverContent.modelTurn.parts) {
         this.handleModelTurnPart(part);
       }
+    }
+    if (serverContent.interrupted) {
+      this.sendJson({ type: "interrupt" });
+    }
+    if (serverContent.turnComplete || serverContent.generationComplete) {
+      this.sendJson({ type: "turnComplete" });
     }
   }
 

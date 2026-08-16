@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
-import { Pressable, ScrollView, Text, View, type StyleProp, type ViewStyle } from "react-native";
-import { StyleSheet } from "react-native-unistyles";
+import {
+  Pressable,
+  ScrollView,
+  Text,
+  TextInput,
+  View,
+  type StyleProp,
+  type ViewStyle,
+} from "react-native";
+import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { Theme } from "@/styles/theme";
 import {
   CommanderVoiceClient,
@@ -50,16 +58,21 @@ const DOT_TONE_BY_STATE: Record<
   error: "dotError",
 };
 
+const ThemedTextInput = withUnistyles(TextInput, (theme: Theme) => ({
+  placeholderTextColor: theme.colors.foregroundMuted,
+}));
+
 export function CommanderVoicePanel({ url, onClose }: CommanderVoicePanelProps): ReactElement {
   const clientRef = useRef<CommanderVoiceClient | null>(null);
   const audioRef = useRef<VoiceAudioSession | null>(null);
+  const isSuppressedRef = useRef(false);
   const nextIdRef = useRef(0);
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [clientState, setClientState] = useState<CommanderVoiceClientState>("idle");
   const [statusText, setStatusText] = useState(STATUS_LABELS.connecting);
   const [isMicOn, setIsMicOn] = useState(false);
+  const [inputText, setInputText] = useState("");
   const scrollRef = useRef<ScrollView | null>(null);
-
   const pushEntry = useCallback((kind: TranscriptKind, text: string) => {
     const id = nextIdRef.current;
     nextIdRef.current += 1;
@@ -81,13 +94,21 @@ export function CommanderVoicePanel({ url, onClose }: CommanderVoicePanelProps):
       url,
       handlers: {
         onFrame: (frame: CommanderVoiceServerFrame) => {
+          if (frame.type === "interrupt") {
+            audioRef.current?.flushPlayback();
+          } else if (frame.type === "turnComplete") {
+            isSuppressedRef.current = false;
+          }
           const entry = frameToTranscript(frame);
           if (entry) {
             pushEntry(entry.kind, entry.text);
           }
         },
-        onAudio: (pcm16) => audio.playPcm(pcm16),
-        onStateChange: handleStateChange,
+        onAudio: (pcm16) => {
+          if (!isSuppressedRef.current) {
+            audio.playPcm(pcm16);
+          }
+        },
         onError: (message) => {
           setStatusText(message);
           pushEntry("system", message);
@@ -140,13 +161,28 @@ export function CommanderVoicePanel({ url, onClose }: CommanderVoicePanelProps):
     }
   }, [pushEntry]);
 
+  const handleStop = useCallback(() => {
+    isSuppressedRef.current = true;
+    audioRef.current?.flushPlayback();
+  }, []);
+
+  const handleSendInput = useCallback(() => {
+    const trimmed = inputText.trim();
+    if (!trimmed) {
+      return;
+    }
+    if (clientRef.current?.sendText(trimmed)) {
+      pushEntry("heard", trimmed);
+      setInputText("");
+    }
+  }, [inputText, pushEntry]);
+
   const handleEnd = useCallback(() => {
     clientRef.current?.close();
     audioRef.current?.stop();
     setIsMicOn(false);
     onClose();
   }, [onClose]);
-
   const isReady = clientState === "ready";
   const dotTone: StyleProp<ViewStyle> = styles[DOT_TONE_BY_STATE[clientState]];
 
@@ -171,6 +207,24 @@ export function CommanderVoicePanel({ url, onClose }: CommanderVoicePanelProps):
     ],
     [isReady],
   );
+  const stopButtonStyle = useCallback(
+    ({ pressed }: { pressed: boolean }) => [
+      styles.button,
+      styles.buttonStop,
+      !isReady && styles.buttonDisabled,
+      pressed && styles.buttonPressed,
+    ],
+    [isReady],
+  );
+
+  const sendButtonStyle = useCallback(
+    ({ pressed }: { pressed: boolean }) => [
+      styles.button,
+      (!isReady || !inputText.trim()) && styles.buttonDisabled,
+      pressed && styles.buttonPressed,
+    ],
+    [isReady, inputText],
+  );
 
   const endButtonStyle = useCallback(
     ({ pressed }: { pressed: boolean }) => [
@@ -180,7 +234,6 @@ export function CommanderVoicePanel({ url, onClose }: CommanderVoicePanelProps):
     ],
     [],
   );
-
   return (
     <View style={styles.container} testID="commander-voice-panel">
       <View style={styles.header}>
@@ -208,6 +261,29 @@ export function CommanderVoicePanel({ url, onClose }: CommanderVoicePanelProps):
           </Text>
         ) : null}
       </ScrollView>
+      <View style={styles.inputRow}>
+        <ThemedTextInput
+          style={styles.input}
+          placeholder="Type context, a UID, or an instruction…"
+          value={inputText}
+          onChangeText={setInputText}
+          onSubmitEditing={handleSendInput}
+          editable={isReady}
+          returnKeyType="send"
+          accessibilityLabel="Type context, a UID, or an instruction"
+          testID="commander-voice-input"
+        />
+        <Pressable
+          onPress={handleSendInput}
+          disabled={!isReady || !inputText.trim()}
+          style={sendButtonStyle}
+          accessibilityRole="button"
+          accessibilityLabel="Send text"
+          testID="commander-voice-send"
+        >
+          <Text style={styles.buttonLabel}>Send</Text>
+        </Pressable>
+      </View>
       <View style={styles.controls}>
         <Pressable
           onPress={handleToggleMic}
@@ -227,6 +303,16 @@ export function CommanderVoicePanel({ url, onClose }: CommanderVoicePanelProps):
           testID="commander-voice-updates"
         >
           <Text style={styles.buttonLabel}>Any updates?</Text>
+        </Pressable>
+        <Pressable
+          onPress={handleStop}
+          disabled={!isReady}
+          style={stopButtonStyle}
+          accessibilityRole="button"
+          accessibilityLabel="Stop playback"
+          testID="commander-voice-stop"
+        >
+          <Text style={[styles.buttonLabel, styles.buttonStopLabel]}>Stop</Text>
         </Pressable>
         <Pressable
           onPress={handleEnd}
@@ -249,7 +335,7 @@ const styles = StyleSheet.create((theme: Theme) => ({
     borderTopColor: theme.colors.border,
     padding: theme.spacing[3],
     gap: theme.spacing[2],
-    height: 220,
+    height: 260,
     flexShrink: 0,
   },
   header: {
@@ -320,6 +406,23 @@ const styles = StyleSheet.create((theme: Theme) => ({
     color: theme.colors.foregroundMuted,
     fontStyle: "italic",
   },
+  inputRow: {
+    flexDirection: "row",
+    gap: theme.spacing[2],
+    alignItems: "center",
+  },
+  input: {
+    flex: 1,
+    height: 32,
+    backgroundColor: theme.colors.surface0,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.md,
+    paddingHorizontal: theme.spacing[2],
+    fontFamily: theme.fontFamily.ui,
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foreground,
+  },
   controls: {
     flexDirection: "row",
     gap: theme.spacing[2],
@@ -337,6 +440,12 @@ const styles = StyleSheet.create((theme: Theme) => ({
   },
   buttonDisabled: {
     opacity: 0.4,
+  },
+  buttonStop: {
+    borderColor: theme.colors.destructive,
+  },
+  buttonStopLabel: {
+    color: theme.colors.destructive,
   },
   buttonEnd: {
     marginLeft: "auto",
