@@ -277,6 +277,49 @@ The supervisor rotates `daemon.log`. Persisted `log.file.rotate` settings in
 `PASEO_LOG_ROTATE_SIZE` and `PASEO_LOG_ROTATE_COUNT` env vars override the
 defaults. The default rotation is `10m` x `3` files everywhere.
 
+#### Complete agent-start span (click to running)
+
+When an agent feels slow to start, reconstruct the full span from the client
+click to the lifecycle flip. The pieces live in `daemon.log` (create phases,
+pool claim, turn start) plus two off-daemon sources: the omp process log
+(`~/.omp/logs/omp.<pid>.log`, model/account init) and the Hindsight service
+(docker logs on the host running it, recall cost).
+
+One record per phase, all keyed by `agentId` or `cwd`:
+
+| Line                                           | Level       | Read it for                                                                                                                |
+| ---------------------------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `client.loader.span`                           | info        | Client-side click→running total (`path`, `totalMs`, `startedAt`). Sent only when `features.loaderSpanReport` is advertised |
+| `agent.create.session` / `_slow`               | info / warn | Create request total with `intentMs` + `createCommandMs` (session handler)                                                 |
+| `provider.resolve_create_config` / `_slow`     | info / warn | `readyMs` — wait for the provider snapshot before mode resolution                                                          |
+| `agent.create.resolve_default_model` / `_slow` | info / warn | `modelResolveMs` — cold omp catalog fetch when the create carried no model                                                 |
+| `omp.catalog.fetch` / `_slow`                  | info / warn | Catalog fetch split: `runtimeStartMs` (cold omp boot) vs `modelsMs` (model list RPC)                                       |
+| `omp.runtime.acquire`                          | info / warn | Pool claim: `poolHit`, `claimMs`, `newSessionMs`, `setModelMs`, or cold `bootMs`/`totalMs`                                 |
+| `agent.turn.dispatched` / `_slow`              | info / warn | `startTurnMs` — provider handshake before the agent shows as running                                                       |
+| `agent.manager.turn.started`                   | info        | Lifecycle flip to running — what the UI loader waits for                                                                   |
+
+Reconstruct with one grep over `$PASEO_HOME/daemon.log` (all lines carry
+`agentId` except the provider-snapshot ones, which carry `cwd`):
+
+```bash
+AGENT=7c905568-275c-495b-81e5-26922384bc7f
+grep -E "$AGENT|client.loader.span" "$PASEO_HOME/daemon.log" | tail -20
+```
+
+Then add the off-daemon legs for the same window:
+
+- **omp process** (model/account init, first-prompt warm-up):
+  `grep -E "account-routing|Computer tool" ~/.omp/logs/omp.*.log | grep "12:48"`
+- **Hindsight recall** (per-prompt memory fetch): on the host running the
+  Hindsight container, `docker logs hindsight --since <start> --until <end>` and
+  read the `[RECALL omp]` block. The `Complete:` line carries total seconds.
+
+Known cost shape (measured on this fleet): create request ~150-850ms (pool hit
+~60ms; the rest is session work), hindsight recall ~200-570ms on the first
+prompt of a fresh process (autoRecall), model-client/account init ~50-150ms,
+then TTFT. A cold `resolve_default_model` (no model in the create request)
+adds a full cold omp boot (~700ms) before the claim.
+
 ### Git process pressure
 
 If Git refreshes consume too much CPU, disk, or antivirus capacity, especially on Windows, reduce
