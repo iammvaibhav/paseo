@@ -233,10 +233,12 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
         });
 
         if (createResult.agentId) {
+          const createdSnapshot = createResult.result as { status?: string } | null | undefined;
           resolvePendingAgentLoaderSpan(
             pendingServerId,
             attempt.clientMessageId,
             createResult.agentId,
+            createdSnapshot?.status === "running",
           );
           updatePendingAgentId({ draftId, agentId: createResult.agentId });
           handoffCreatedAgentMessageSubmission(

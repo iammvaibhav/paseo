@@ -66,11 +66,19 @@ export function beginPendingAgentLoaderSpan(
   activeSpans.set(key, { path, startedAt: Date.now() });
 }
 
-/** Move a pending span onto the created agent id, keeping the start time. */
+/**
+ * Move a pending span onto the created agent id, keeping the start time.
+ * `alreadyRunning` is the status carried by the create response: the daemon
+ * sends agent_created after waitForAgentRunStart, so it is normally true and
+ * the span completes here — the directory-sync flip (previous !== running &&
+ * accepted === running) will never fire for a response that already says
+ * running.
+ */
 export function resolvePendingAgentLoaderSpan(
   serverId: string,
   pendingId: string,
   agentId: string,
+  alreadyRunning?: boolean,
 ): void {
   const pendingKey = pendingSpanKey(serverId, pendingId);
   const span = activeSpans.get(pendingKey);
@@ -83,6 +91,9 @@ export function resolvePendingAgentLoaderSpan(
     return;
   }
   activeSpans.set(agentKey, span);
+  if (alreadyRunning) {
+    completeAgentLoaderSpan(serverId, agentId);
+  }
 }
 
 /** Discard a pending span, e.g. after a failed create. */

@@ -354,7 +354,7 @@ export function WorkspaceSetupDialog() {
           clearPendingAgentLoaderSpan(serverId, pendingSpanId);
           throw error;
         }
-        resolvePendingAgentLoaderSpan(serverId, pendingSpanId, agent.id);
+        resolvePendingAgentLoaderSpan(serverId, pendingSpanId, agent.id, agent.status === "running");
 
         if (!getIsStillActive()) {
           return;
