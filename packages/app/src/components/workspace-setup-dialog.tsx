@@ -15,6 +15,12 @@ import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-
 import { normalizeWorkspaceDescriptor, useSessionStore } from "@/stores/session-store";
 import { useWorkspaceSetupStore } from "@/stores/workspace-setup-store";
 import { normalizeAgentSnapshot } from "@/utils/agent-snapshots";
+import {
+  beginPendingAgentLoaderSpan,
+  clearPendingAgentLoaderSpan,
+  resolvePendingAgentLoaderSpan,
+} from "@/utils/agent-loader-span";
+import { generateMessageId } from "@/types/stream";
 import { applyLegacyDaemonWorkspaceOwnership } from "@/workspace/legacy-daemon-workspaces";
 import { encodeImages } from "@/utils/encode-images";
 import { toErrorMessage } from "@/utils/error-messages";
@@ -325,17 +331,30 @@ export function WorkspaceSetupDialog() {
           workspaceId: ensuredWorkspace.id,
           workspaceDirectory: ensuredWorkspace.workspaceDirectory,
         });
-        const agent = await connectedClient.createAgent(
-          buildCreateAgentOptions({
-            composerState,
-            text,
-            attachments: wirePayload.attachments,
-            encodedImages: encodedImages ?? null,
-            workspaceDirectory,
-            workspaceId: ensuredWorkspace.id,
-            provider: composerState.selectedProvider,
-          }),
-        );
+        // The loader span starts at the create request (not the dialog open) so
+        // the measured window is click-to-running for this surface, matching
+        // the composer draft flow. Resolved onto the real agent id on success,
+        // cleared on failure so a dead span never lingers.
+        const pendingSpanId = generateMessageId();
+        beginPendingAgentLoaderSpan(serverId, pendingSpanId, "create");
+        let agent: Awaited<ReturnType<DaemonClient["createAgent"]>>;
+        try {
+          agent = await connectedClient.createAgent(
+            buildCreateAgentOptions({
+              composerState,
+              text,
+              attachments: wirePayload.attachments,
+              encodedImages: encodedImages ?? null,
+              workspaceDirectory,
+              workspaceId: ensuredWorkspace.id,
+              provider: composerState.selectedProvider,
+            }),
+          );
+        } catch (error) {
+          clearPendingAgentLoaderSpan(serverId, pendingSpanId);
+          throw error;
+        }
+        resolvePendingAgentLoaderSpan(serverId, pendingSpanId, agent.id);
 
         if (!getIsStillActive()) {
           return;
