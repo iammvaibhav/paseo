@@ -1478,19 +1478,27 @@ export class AgentManager {
     agentId: string | undefined,
     options: CreateAgentOptions,
   ): Promise<ManagedAgent> {
+    const createStartedAt = Date.now();
     this.assertAcceptingAgentRegistrations();
     const resolvedAgentId = validateAgentId(agentId ?? this.idFactory(), "createAgent");
+    const deleteStateStartedAt = Date.now();
     await this.deleteAgentState(resolvedAgentId);
+    const deleteStateMs = Date.now() - deleteStateStartedAt;
+    const prepareStartedAt = Date.now();
     const { storedConfig, launchConfig } = await this.prepareSessionConfig(
       config,
       resolvedAgentId,
       options.labels,
       options?.env,
     );
+    const prepareMs = Date.now() - prepareStartedAt;
     this.requireEnabledProvider(storedConfig.provider);
+    const clientReadyStartedAt = Date.now();
     const client = await this.requireAvailableClient({
       provider: storedConfig.provider,
     });
+    const clientReadyMs = Date.now() - clientReadyStartedAt;
+    const launchContextStartedAt = Date.now();
     const launchContext = await this.buildLaunchContext(
       resolvedAgentId,
       client,
@@ -1499,21 +1507,48 @@ export class AgentManager {
       options.labels,
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
+    const launchContextMs = Date.now() - launchContextStartedAt;
     const createOptions = this.buildCreateSessionOptions(options);
 
     try {
+      const sessionStartedAt = Date.now();
       const session = await client.createSession(
         providerLaunchConfig,
         launchContext,
         createOptions,
       );
+      const sessionMs = Date.now() - sessionStartedAt;
       await this.requireExternalMcpSupport(session, storedConfig);
-      return await this.registerSession(session, storedConfig, resolvedAgentId, {
+      const registered = await this.registerSession(session, storedConfig, resolvedAgentId, {
         labels: options.labels,
         initialTitle: options.initialTitle,
         workspaceId: options.workspaceId,
         owner: options.owner,
       });
+      // Phase split for the create path between resolveCreateConfig (create.ts)
+      // and the pool claim: deleteAgentState, prepareSessionConfig (incl. model
+      // resolution), provider availability probe, launch context build, provider
+      // createSession (the pool claim itself is logged separately as
+      // omp.runtime.acquire), and agent registration. Info normally; warn when
+      // the whole create took >=1s.
+      const totalMs = Date.now() - createStartedAt;
+      const timingFields = {
+        agentId: resolvedAgentId,
+        provider: storedConfig.provider,
+        deleteStateMs,
+        prepareMs,
+        clientReadyMs,
+        launchContextMs,
+        sessionMs,
+        registerMs: totalMs - sessionMs,
+        totalMs,
+      };
+      if (totalMs >= 1_000) {
+        this.logger.warn(timingFields, "agent.create.manager_slow");
+      } else {
+        this.logger.info(timingFields, "agent.create.manager");
+      }
+      return registered;
     } catch (error) {
       // A spawn whose provider process launch failed must not look like a
       // running (or vanished) agent. The provider creation was attempted but

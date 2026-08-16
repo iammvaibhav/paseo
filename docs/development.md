@@ -292,7 +292,8 @@ One record per phase, all keyed by `agentId` or `cwd`:
 | `client.loader.span`                           | info        | Client-side click→running total (`path`, `totalMs`, `startedAt`). Sent only when `features.loaderSpanReport` is advertised |
 | `agent.create.session` / `_slow`               | info / warn | Create request total with `intentMs` + `createCommandMs` (session handler)                                                 |
 | `provider.resolve_create_config` / `_slow`     | info / warn | `readyMs` — wait for the provider snapshot before mode resolution                                                          |
-| `agent.create.resolve_default_model` / `_slow` | info / warn | `modelResolveMs` — cold omp catalog fetch when the create carried no model                                                 |
+| `agent.create.resolve_default_model` / `_slow`      | info / warn | `modelResolveMs` — cold omp catalog fetch when the create carried no model                              |
+| `agent.create.manager` / `_slow`                    | info / warn | Phase split inside AgentManager.createAgent: `deleteStateMs`, `prepareMs` (session config incl. model), `clientReadyMs` (provider probe), `launchContextMs`, `sessionMs` (pool claim), `registerMs` |
 | `omp.catalog.fetch` / `_slow`                  | info / warn | Catalog fetch split: `runtimeStartMs` (cold omp boot) vs `modelsMs` (model list RPC)                                       |
 | `omp.runtime.acquire`                          | info / warn | Pool claim: `poolHit`, `claimMs`, `newSessionMs`, `setModelMs`, or cold `bootMs`/`totalMs`                                 |
 | `agent.turn.dispatched` / `_slow`              | info / warn | `startTurnMs` — provider handshake before the agent shows as running                                                       |
