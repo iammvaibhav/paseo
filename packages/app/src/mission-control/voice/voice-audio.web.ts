@@ -16,16 +16,16 @@ export interface VoiceAudioSession {
   /** Stop capture only; playback keeps working (the Live session stays live). */
   stopMic(): void;
   playPcm(pcm16: ArrayBuffer): void;
+  flushPlayback(): void;
   stop(): void;
 }
-
 export function createVoiceAudioSession(): VoiceAudioSession {
   let audioCtx: AudioContext | null = null;
   let micStream: MediaStream | null = null;
   let scriptProcessor: ScriptProcessorNode | null = null;
   let nextStartTime = 0;
   let micStarting = false;
-
+  const activeSources: AudioBufferSourceNode[] = [];
   async function startMic(onAudioChunk: (pcm16: ArrayBuffer) => void): Promise<void> {
     if (micStream || micStarting) {
       return;
@@ -91,6 +91,14 @@ export function createVoiceAudioSession(): VoiceAudioSession {
     const source = audioCtx.createBufferSource();
     source.buffer = audioBuffer;
     source.connect(audioCtx.destination);
+    const onEnded = () => {
+      const idx = activeSources.indexOf(source);
+      if (idx !== -1) {
+        activeSources.splice(idx, 1);
+      }
+    };
+    source.addEventListener("ended", onEnded, { once: true });
+    activeSources.push(source);
     const now = audioCtx.currentTime;
     if (nextStartTime < now) {
       nextStartTime = now;
@@ -99,6 +107,18 @@ export function createVoiceAudioSession(): VoiceAudioSession {
     nextStartTime += audioBuffer.duration;
   }
 
+  function flushPlayback(): void {
+    for (let i = activeSources.length - 1; i >= 0; i--) {
+      const source = activeSources[i];
+      try {
+        source.stop();
+      } catch {
+        // Ignore if already stopped
+      }
+    }
+    activeSources.length = 0;
+    nextStartTime = 0;
+  }
   function stopMic(): void {
     scriptProcessor?.disconnect();
     scriptProcessor = null;
@@ -108,6 +128,7 @@ export function createVoiceAudioSession(): VoiceAudioSession {
 
   function stop(): void {
     stopMic();
+    flushPlayback();
     if (audioCtx) {
       void audioCtx.close();
       audioCtx = null;
@@ -115,5 +136,5 @@ export function createVoiceAudioSession(): VoiceAudioSession {
     nextStartTime = 0;
   }
 
-  return { startMic, stopMic, playPcm, stop };
+  return { startMic, stopMic, playPcm, flushPlayback, stop };
 }

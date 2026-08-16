@@ -10,6 +10,7 @@ export interface VoiceAudioSession {
   /** Stop capture only; playback keeps working (the Live session stays live). */
   stopMic(): void;
   playPcm(pcm16: ArrayBuffer): void;
+  flushPlayback(): void;
   stop(): void;
 }
 
@@ -20,6 +21,7 @@ export function createVoiceAudioSession(): VoiceAudioSession {
     },
     stopMic() {},
     playPcm() {},
+    flushPlayback() {},
     stop() {},
   };
 }

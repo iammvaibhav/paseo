@@ -61,6 +61,8 @@ export function frameToTranscript(
       return frame.text ? { kind: "announcement", text: frame.text } : null;
     case "toolLog":
     case "setupAck":
+    case "interrupt":
+    case "turnComplete":
       return null;
   }
 }

@@ -125,8 +125,42 @@
         cursor: pointer;
         white-space: nowrap;
       }
-      .btn-secondary:hover {
+      .btn-secondary:hover:not(:disabled) {
         background: #475569;
+      }
+      .btn-secondary:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+      .btn-danger {
+        border: 1px solid var(--danger);
+        color: var(--danger);
+        background: transparent;
+      }
+      .btn-danger:hover:not(:disabled) {
+        background: rgba(239, 68, 68, 0.15);
+      }
+      .input-row {
+        display: flex;
+        gap: 0.5rem;
+      }
+      .input-row input {
+        flex: 1;
+        background: rgba(15, 23, 42, 0.6);
+        border: 1px solid var(--border);
+        border-radius: 0.5rem;
+        padding: 0.6rem 0.8rem;
+        color: var(--text);
+        font-family: inherit;
+        font-size: 0.9rem;
+      }
+      .input-row input:focus {
+        outline: none;
+        border-color: var(--accent);
+      }
+      .input-row input:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
       }
       .transcript-box {
         background: rgba(15, 23, 42, 0.8);
@@ -242,11 +276,21 @@
         <span id="statusText">Disconnected</span>
       </div>
 
+      <div class="input-row">
+        <input
+          type="text"
+          id="textInput"
+          placeholder="Type context, a UID, or an instruction…"
+          disabled
+        />
+        <button id="sendBtn" class="btn-secondary" disabled>Send</button>
+      </div>
+
       <div class="controls">
         <button id="toggleBtn" class="btn">Start Conversation</button>
         <button id="updatesBtn" class="btn-secondary" disabled>Any updates?</button>
+        <button id="stopBtn" class="btn-secondary btn-danger" disabled>Stop</button>
       </div>
-
       <div id="transcript" class="transcript-box">
         <p class="system">
           Click "Start Conversation", then talk. "Any updates?" drains the update buffer.
@@ -257,6 +301,9 @@
     <script>
       const toggleBtn = document.getElementById("toggleBtn");
       const updatesBtn = document.getElementById("updatesBtn");
+      const stopBtn = document.getElementById("stopBtn");
+      const sendBtn = document.getElementById("sendBtn");
+      const textInput = document.getElementById("textInput");
       const statusDot = document.getElementById("statusDot");
       const statusText = document.getElementById("statusText");
       const transcript = document.getElementById("transcript");
@@ -268,7 +315,20 @@
       let scriptProcessor = null;
       let nextStartTime = 0;
       let isConnected = false;
+      let isSuppressed = false;
+      let activeSources = [];
       let currentTextSpan = null;
+
+      function flushPlayback() {
+        for (const source of activeSources) {
+          try {
+            source.onended = null;
+            source.stop();
+          } catch (e) {}
+        }
+        activeSources = [];
+        nextStartTime = 0;
+      }
 
       function setStatus(text, state) {
         statusText.textContent = text;
@@ -321,9 +381,31 @@
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
         ws.send(JSON.stringify({ type: "text", text }));
       }
+      function handleSendInput() {
+        const text = textInput.value.trim();
+        if (!text) return;
+        sendText(text);
+        resetTranscriptCurrent();
+        const p = document.createElement("p");
+        p.innerHTML = "<strong>You: </strong><span></span>";
+        p.querySelector("span").textContent = text;
+        transcript.appendChild(p);
+        transcript.scrollTop = transcript.scrollHeight;
+        textInput.value = "";
+      }
 
       updatesBtn.addEventListener("click", () => sendText("Any updates?"));
-
+      stopBtn.addEventListener("click", () => {
+        isSuppressed = true;
+        flushPlayback();
+      });
+      sendBtn.addEventListener("click", handleSendInput);
+      textInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          handleSendInput();
+        }
+      });
       toggleBtn.addEventListener("click", () => {
         if (isConnected) {
           stopSession();
@@ -381,11 +463,26 @@
                 toggleBtn.textContent = "Stop Session";
                 toggleBtn.classList.add("active");
                 updatesBtn.disabled = false;
+                stopBtn.disabled = false;
+                sendBtn.disabled = false;
+                textInput.disabled = false;
                 isConnected = true;
                 addSystemMessage('Session started. Speak or ask "any updates?".');
                 startMicProcessing();
+              } else if (data.type === "interrupt") {
+                flushPlayback();
+                resetTranscriptCurrent();
+              } else if (data.type === "turnComplete") {
+                isSuppressed = false;
               } else if (data.type === "text") {
                 addTranscriptText(data.text);
+              } else if (data.type === "inputText") {
+                resetTranscriptCurrent();
+                const p = document.createElement("p");
+                p.innerHTML = "<strong>You: </strong><span></span>";
+                p.querySelector("span").textContent = data.text;
+                transcript.appendChild(p);
+                transcript.scrollTop = transcript.scrollHeight;
               } else if (data.type === "toolLog") {
                 addToolBadge(data.name, data.args);
               } else if (data.type === "injected") {
@@ -395,7 +492,9 @@
               console.error("JSON parse error:", e);
             }
           } else if (event.data instanceof ArrayBuffer) {
-            playPcmAudio(event.data);
+            if (!isSuppressed) {
+              playPcmAudio(event.data);
+            }
           }
         };
 
@@ -438,6 +537,11 @@
         const source = audioCtx.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(audioCtx.destination);
+        source.onended = () => {
+          const idx = activeSources.indexOf(source);
+          if (idx !== -1) activeSources.splice(idx, 1);
+        };
+        activeSources.push(source);
         const now = audioCtx.currentTime;
         if (nextStartTime < now) nextStartTime = now;
         source.start(nextStartTime);
@@ -446,8 +550,13 @@
 
       function stopSession() {
         isConnected = false;
+        isSuppressed = false;
+        flushPlayback();
         resetTranscriptCurrent();
         updatesBtn.disabled = true;
+        stopBtn.disabled = true;
+        sendBtn.disabled = true;
+        textInput.disabled = true;
         if (scriptProcessor) {
           scriptProcessor.disconnect();
           scriptProcessor = null;

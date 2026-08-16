@@ -9,11 +9,12 @@
  *   client → server: {type:"init"}[, {type:"text", text}] + binary PCM16 audio
  *   server → client: {type:"setupAck"} | {type:"text", text} |
  *                    {type:"inputText", text} | {type:"toolLog", name, args} |
- *                    {type:"injected", text, event?} + binary PCM16 audio
+ *                    {type:"injected", text, event?} | {type:"interrupt"} |
+ *                    {type:"turnComplete"} + binary PCM16 audio
  */
 
 export interface CommanderVoiceServerFrame {
-  type: "setupAck" | "text" | "inputText" | "toolLog" | "injected";
+  type: "setupAck" | "text" | "inputText" | "toolLog" | "injected" | "interrupt" | "turnComplete";
   /** Output transcription / spoken ack (kind "text") or user speech (kind "inputText"). */
   text?: string;
   /** Tool invocation observed server-side (kind "toolLog"). */
@@ -74,6 +75,10 @@ export function parseCommanderVoiceFrame(
   switch (type) {
     case "setupAck":
       return { type: "setupAck" };
+    case "interrupt":
+      return { type: "interrupt" };
+    case "turnComplete":
+      return { type: "turnComplete" };
     case "text":
     case "inputText":
       return { type, text: String((parsed as { text?: unknown }).text ?? "") };
