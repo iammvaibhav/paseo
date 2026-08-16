@@ -523,6 +523,7 @@ export interface SessionOptions {
   daemonConfigStore: DaemonConfigStore;
   pluginRuntime?: {
     listPlugins(): import("@getpaseo/protocol/messages").PluginListItem[];
+    getLogs(pluginId: string): import("@getpaseo/protocol/messages").PluginLogEntry[];
     installDirectory(input: {
       path: string;
       id?: string;
@@ -3166,6 +3167,18 @@ export class Session {
       this.emit({
         type: "plugin.list.response",
         payload: { requestId: msg.requestId, plugins: this.pluginRuntime?.listPlugins() ?? [] },
+      });
+      return undefined;
+    }
+    if (msg.type === "plugin.logs.get.request") {
+      if (!this.pluginRuntime) throw new Error("Plugin service is unavailable");
+      this.emit({
+        type: "plugin.logs.get.response",
+        payload: {
+          requestId: msg.requestId,
+          pluginId: msg.pluginId,
+          entries: this.pluginRuntime.getLogs(msg.pluginId),
+        },
       });
       return undefined;
     }
