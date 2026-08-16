@@ -60,6 +60,12 @@ PASEO_DEV_SEED_HOME=/path/to/home npm run dev # seed from a different source hom
 PASEO_DEV_RESET_HOME=1 npm run dev            # clear and reseed the derived worktree home
 ```
 
+### Fast worktrees (shared node_modules)
+
+Worktree setup (`paseo.json` → `scripts/worktree-setup.mjs`) does not run `npm ci` in every worktree. When the worktree's `package-lock.json` matches the source checkout's, it symlinks the source checkout's `node_modules` (root and per-package) into the worktree — setup takes seconds and adds ~0 disk per worktree. When the lockfile differs (the branch changed dependencies), it falls back to a real `npm ci` and that worktree becomes independent.
+
+Ownership rule: **the source checkout owns `node_modules`.** Never run `npm install` / `npm ci` inside a worktree — it rewrites the shared tree and breaks every other worktree sharing it. Change dependencies on the branch, then re-run the worktree setup (it detects the lockfile change and installs fresh); or install in the source checkout. Existing worktrees that already have a real `node_modules` keep it and stay independent.
+
 ### Daemon endpoints
 
 - Stable daemon launched by the desktop app: `localhost:6767`.
