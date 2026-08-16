@@ -249,40 +249,47 @@ function compactOwnedPaths(paths: readonly string[], owners: readonly string[]):
 }
 
 function pickSupportedPatchFields(patch: MutableDaemonConfigPatch): SupportedMutableConfigPatch {
-  return {
-    ...(patch.relay?.enabled !== undefined ? { relay: { enabled: patch.relay.enabled } } : {}),
-    ...(patch.mcp?.injectIntoAgents !== undefined
-      ? { mcp: { injectIntoAgents: patch.mcp.injectIntoAgents } }
-      : {}),
-    ...(patch.browserTools?.enabled !== undefined
-      ? { browserTools: { enabled: patch.browserTools.enabled } }
-      : {}),
-    ...(patch.providers !== undefined ? { providers: patch.providers } : {}),
-    ...(patch.removeProviders !== undefined ? { removeProviders: patch.removeProviders } : {}),
-    ...(patch.metadataGeneration?.providers !== undefined
-      ? { metadataGeneration: { providers: patch.metadataGeneration.providers } }
-      : {}),
-    ...(patch.autoArchiveAfterMerge !== undefined
-      ? { autoArchiveAfterMerge: patch.autoArchiveAfterMerge }
-      : {}),
-    ...(patch.enableTerminalAgentHooks !== undefined
-      ? { enableTerminalAgentHooks: patch.enableTerminalAgentHooks }
-      : {}),
-    ...(patch.appendSystemPrompt !== undefined
-      ? { appendSystemPrompt: patch.appendSystemPrompt }
-      : {}),
-    ...(patch.terminalProfiles !== undefined ? { terminalProfiles: patch.terminalProfiles } : {}),
-    ...(patch.agentProfiles !== undefined ? { agentProfiles: patch.agentProfiles } : {}),
-    ...(patch.pluginsEnabled !== undefined ? { pluginsEnabled: patch.pluginsEnabled } : {}),
-    ...(patch.plugins !== undefined ? { plugins: patch.plugins } : {}),
-    ...(patch.missionControl !== undefined ? { missionControl: patch.missionControl } : {}),
-    ...(patch.ompIdleCloseAfterSeconds !== undefined
-      ? { ompIdleCloseAfterSeconds: patch.ompIdleCloseAfterSeconds }
-      : {}),
-    ...(patch.composerPreferences !== undefined
-      ? { composerPreferences: patch.composerPreferences }
-      : {}),
-  };
+  return { ...pickCorePatchFields(patch), ...pickExtendedPatchFields(patch) };
+}
+
+function pickCorePatchFields(patch: MutableDaemonConfigPatch): SupportedMutableConfigPatch {
+  const out: SupportedMutableConfigPatch = {};
+  if (patch.relay?.enabled !== undefined) out.relay = { enabled: patch.relay.enabled };
+  if (patch.mcp?.injectIntoAgents !== undefined) {
+    out.mcp = { injectIntoAgents: patch.mcp.injectIntoAgents };
+  }
+  if (patch.browserTools?.enabled !== undefined) {
+    out.browserTools = { enabled: patch.browserTools.enabled };
+  }
+  if (patch.providers !== undefined) out.providers = patch.providers;
+  if (patch.removeProviders !== undefined) out.removeProviders = patch.removeProviders;
+  if (patch.metadataGeneration?.providers !== undefined) {
+    out.metadataGeneration = { providers: patch.metadataGeneration.providers };
+  }
+  if (patch.autoArchiveAfterMerge !== undefined) {
+    out.autoArchiveAfterMerge = patch.autoArchiveAfterMerge;
+  }
+  if (patch.enableTerminalAgentHooks !== undefined) {
+    out.enableTerminalAgentHooks = patch.enableTerminalAgentHooks;
+  }
+  return out;
+}
+
+function pickExtendedPatchFields(patch: MutableDaemonConfigPatch): SupportedMutableConfigPatch {
+  const out: SupportedMutableConfigPatch = {};
+  if (patch.appendSystemPrompt !== undefined) out.appendSystemPrompt = patch.appendSystemPrompt;
+  if (patch.terminalProfiles !== undefined) out.terminalProfiles = patch.terminalProfiles;
+  if (patch.agentProfiles !== undefined) out.agentProfiles = patch.agentProfiles;
+  if (patch.pluginsEnabled !== undefined) out.pluginsEnabled = patch.pluginsEnabled;
+  if (patch.plugins !== undefined) out.plugins = patch.plugins;
+  if (patch.missionControl !== undefined) out.missionControl = patch.missionControl;
+  if (patch.ompIdleCloseAfterSeconds !== undefined) {
+    out.ompIdleCloseAfterSeconds = patch.ompIdleCloseAfterSeconds;
+  }
+  if (patch.composerPreferences !== undefined) {
+    out.composerPreferences = patch.composerPreferences;
+  }
+  return out;
 }
 
 export function applyMutableProviderConfigToOverrides(

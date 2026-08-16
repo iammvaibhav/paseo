@@ -210,6 +210,18 @@ flowchart TB
 
 Without (3), typing after a long voice session would leave Commander blind to what you already decided by mouth. That is unacceptable.
 
+## Advanced session options (voice, thinking, VAD)
+
+Per-session Live knobs, visible in the app's voice panel **only in Mission Control verbose mode** (the same per-device debug flag as the feed). Values apply to the next voice session; an open session keeps the options it started with. Env defaults on the voice node: `VOICE_NAME`, `GEMINI_THINKING_LEVEL`, `GEMINI_VAD_START_SENSITIVITY` / `GEMINI_VAD_END_SENSITIVITY` / `GEMINI_VAD_SILENCE_MS`.
+
+| Option   | Live setup field                                 | Values (verified 2026-08 on `gemini-3.1-flash-live-preview`)                                                                                                                                                                       |
+| -------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Voice    | `generationConfig.speechConfig`                  | `Puck` (default), `Charon`, `Kore`, `Zephyr`, `Fenrir`, `Aoede`, `Leda`, `Orus`, `Nova`. `Asteria` is rejected (close 1007).                                                                                                       |
+| Thinking | `generationConfig.thinkingConfig.thinkingLevel`  | `minimal` (model default) / `low` / `medium` / `high`. Higher = more reasoning, longer to first token, billed thinking tokens.                                                                                                     |
+| VAD      | `realtimeInputConfig.automaticActivityDetection` | `startOfSpeechSensitivity` (`START_SENSITIVITY_HIGH`/`_LOW`), `endOfSpeechSensitivity` (`END_SENSITIVITY_HIGH`/`_LOW`), `silenceDurationMs` (1–5000). Wire enum constants only — the API rejects `"HIGH"`/`"LOW"` with close 1007. |
+
+The client sends these in the `init` frame (`voiceName`, `thinkingLevel`, `vad`); the node validates against the lists above and drops anything invalid (see `scripts/commander-voice/lib/session-options.js`). The Gemini Live model comparison note applies: async (`NON_BLOCKING`) function calling is a Gemini 2.5 Flash Live feature — on 3.1 the setup accepts the field but calling stays synchronous, and the model can emit duplicate tool calls before the first response arrives (observed in `test/nonblocking-test.mjs`), so mutating call dedupe is a node-side concern.
+
 ## System prompts
 
 Two prompts, both short, spoken-first. They are **not** a paste of `commander-prompt.md`. Commander is card-grammar + snapshot-trust; voice is tool-first + quiet.

@@ -352,6 +352,18 @@ export class OmpWarmPool {
   }
 
   /**
+   * True while the pool holds at least one idle process. A process here only
+   * ever got here by booting to `ready`, so presence is a stronger
+   * availability proof than the `which -a` + `--version` probe. `isAvailable`
+   * uses this to skip the ~700ms probe when the pool can serve; a stale entry
+   * is dropped by the claim's liveness check, so an over-optimistic true is
+   * still correct.
+   */
+  hasIdleProcess(): boolean {
+    return !this.closed && this.entries.length > 0;
+  }
+
+  /**
    * Move an idle process to another workspace with omp's `/move` command.
    * omp relocates the session file, reloads settings/plugins and re-derives
    * project rules for the new cwd. Completion is observed as the session file

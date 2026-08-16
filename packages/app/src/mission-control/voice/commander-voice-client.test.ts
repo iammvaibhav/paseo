@@ -146,6 +146,30 @@ describe("frame encoding", () => {
     );
   });
 
+  it("encodes init with session options (voice, thinking, VAD)", () => {
+    expect(
+      encodeInitFrame({
+        voiceName: "Nova",
+        thinkingLevel: "high",
+        vad: { startOfSpeechSensitivity: "START_SENSITIVITY_LOW", silenceDurationMs: 1200 },
+      }),
+    ).toBe(
+      '{"type":"init","voiceName":"Nova","thinkingLevel":"high","vad":{"startOfSpeechSensitivity":"START_SENSITIVITY_LOW","silenceDurationMs":1200}}',
+    );
+  });
+
+  it("encodes init merging system instruction with session options", () => {
+    expect(encodeInitFrame({ systemInstruction: "  direct persona  ", voiceName: "Kore" })).toBe(
+      '{"type":"init","systemInstruction":"direct persona","voiceName":"Kore"}',
+    );
+  });
+
+  it("omits empty session option fields", () => {
+    expect(encodeInitFrame({ voiceName: "", thinkingLevel: undefined, vad: {} })).toBe(
+      '{"type":"init"}',
+    );
+  });
+
   it("encodes text intents", () => {
     expect(encodeTextFrame("Any updates?")).toBe('{"type":"text","text":"Any updates?"}');
   });
@@ -196,6 +220,25 @@ describe("CommanderVoiceClient lifecycle", () => {
     expect(client.state).toBe("ready");
     expect(onStateChange).toHaveBeenCalledWith("ready");
     expect(onFrame).toHaveBeenCalledWith({ type: "setupAck" });
+  });
+
+  it("sends session options in the init frame on open", () => {
+    const socket = new MockSocket();
+    const client = new CommanderVoiceClient({
+      url: "ws://127.0.0.1:8787/ws",
+      wsFactory: () => socket,
+      sessionOptions: {
+        voiceName: "Nova",
+        thinkingLevel: "high",
+        vad: { silenceDurationMs: 800 },
+      },
+    });
+    client.connect();
+    socket.open();
+    expect(socket.sent[0]).toEqual({
+      type: "text",
+      data: '{"type":"init","voiceName":"Nova","thinkingLevel":"high","vad":{"silenceDurationMs":800}}',
+    });
   });
 
   it("routes JSON frames to onFrame and binary audio to onAudio", () => {

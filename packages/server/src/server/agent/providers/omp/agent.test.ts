@@ -1,5 +1,5 @@
 import { setImmediate as waitForImmediate } from "node:timers/promises";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import type { PaseoToolCatalog } from "../../tools/types.js";
 import type { OmpNoTurnScheduler, OmpProviderIdleScheduler } from "./agent.js";
@@ -685,6 +685,22 @@ describe("OMP agent client and session", () => {
         messageId: "assistant-history",
       },
     ]);
+  });
+
+  test("isAvailable() reports available from a warm pool without probing the binary", async () => {
+    // The configured command does not exist, so the which/--version probe
+    // would fail. A pool entry proves the binary works (it booted to ready),
+    // so availability must come from the pool, not the probe.
+    const omp = new OmpHarness({
+      runtimeSettings: { command: { mode: "replace", argv: ["/nonexistent/omp"] } },
+    });
+    // Pool-eligible create: claims, then fills the pool behind the claim.
+    await omp.start({ model: "opencode-zen/deepseek-v4-flash-free" });
+    // Fill is async (fire-and-forget behind the claim); wait for the pool to
+    // hold an idle process, then availability must be true via the pool.
+    await vi.waitFor(async () => {
+      await expect(omp.isAvailable()).resolves.toBe(true);
+    });
   });
 
   test("cold-starts a resume when the session carries a tool allowlist", async () => {

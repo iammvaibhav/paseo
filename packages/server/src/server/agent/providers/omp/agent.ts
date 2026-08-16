@@ -3089,6 +3089,14 @@ export class OmpAgentClient implements AgentClient {
   }
 
   async isAvailable(): Promise<boolean> {
+    // The warm pool is the availability gate: an idle process here booted to
+    // `ready`, which proves the binary works — stronger evidence than the
+    // `which -a` + `omp --version` probe (~700ms Bun boot on a cold cache).
+    // Skip the probe whenever the pool can serve; a stale entry is dropped by
+    // the claim's liveness check, so an over-optimistic true is still correct.
+    if (this.warmPool.hasIdleProcess()) {
+      return true;
+    }
     try {
       const launch = await this.resolveOmpLaunch();
       const availability = await checkProviderLaunchAvailable(launch);

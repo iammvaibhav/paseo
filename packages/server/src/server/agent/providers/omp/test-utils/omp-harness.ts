@@ -15,6 +15,7 @@ import type { PaseoToolCatalog } from "../../../tools/types.js";
 import {
   OmpAgentClient,
   OmpAgentSession,
+  type OmpAgentClientOptions,
   type OmpNoTurnScheduler,
   type OmpProviderIdleScheduler,
 } from "../agent.js";
@@ -71,11 +72,13 @@ export class OmpHarness {
       providerIdleScheduler?: OmpProviderIdleScheduler;
       noTurnScheduler?: OmpNoTurnScheduler;
       usagePollScheduler?: OmpUsagePollScheduler;
+      runtimeSettings?: OmpAgentClientOptions["runtimeSettings"];
     } = {},
   ) {
     this.client = new OmpAgentClient({
       logger: pino({ level: "silent" }),
       runtime: this.omp,
+      runtimeSettings: options.runtimeSettings,
       providerIdleScheduler: options.providerIdleScheduler,
       noTurnScheduler: options.noTurnScheduler,
       usagePollScheduler: options.usagePollScheduler,
@@ -87,6 +90,10 @@ export class OmpHarness {
   }
   getSession(): OmpAgentSession {
     return this.requireSession();
+  }
+
+  isAvailable(): Promise<boolean> {
+    return this.client.isAvailable();
   }
 
   failEventSubscription(error: Error): void {

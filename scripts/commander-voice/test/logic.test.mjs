@@ -340,42 +340,38 @@ test("fleet_list_inventory digest leads with fleet-wide counts without a query",
 
 test("daemon fleet read methods execute catalog tools by name (no second implementation)", async () => {
   const calls = [];
+  const structuredByTool = {
+    tag_message: { recorded: true },
+    fleet_recall: { ok: true, matches: [] },
+    fleet_context: { runRecords: [], ok: true },
+    fleet_search: { matches: [] },
+    fleet_list_inventory: {
+      hosts: [
+        {
+          host: "local",
+          reachable: true,
+          projects: [
+            {
+              id: "prj_paseo",
+              title: "Paseo",
+              workspaces: [
+                {
+                  id: "wks_evil",
+                  title: "evil-toad",
+                  kind: "worktree",
+                  cwd: "/x/evil-toad",
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  };
   const client = {
     missionControlToolsExecute: async ({ name, args }) => {
       calls.push({ name, args });
-      const structuredContent =
-        name === "tag_message"
-          ? { recorded: true }
-          : name === "fleet_recall"
-            ? { ok: true, matches: [] }
-            : name === "fleet_context"
-              ? { runRecords: [], ok: true }
-              : name === "fleet_search"
-                ? { matches: [] }
-                : name === "fleet_list_inventory"
-                  ? {
-                      hosts: [
-                        {
-                          host: "local",
-                          reachable: true,
-                          projects: [
-                            {
-                              id: "prj_paseo",
-                              title: "Paseo",
-                              workspaces: [
-                                {
-                                  id: "wks_evil",
-                                  title: "evil-toad",
-                                  kind: "worktree",
-                                  cwd: "/x/evil-toad",
-                                },
-                              ],
-                            },
-                          ],
-                        },
-                      ],
-                    }
-                  : { agents: [] };
+      const structuredContent = structuredByTool[name] ?? { agents: [] };
       return { ok: true, name, structuredContent, content: "" };
     },
   };

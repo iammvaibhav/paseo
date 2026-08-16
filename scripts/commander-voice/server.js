@@ -9,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 
 import { loadConfig } from "./lib/config.js";
+import { buildLiveSetupPayload, normalizeSessionOptions } from "./lib/session-options.js";
 import { buildVoiceSystemPrompt } from "./lib/voice-prompt.js";
 import { DaemonConnection } from "./lib/daemon.js";
 import { getToolDeclarations, executeTool } from "./lib/tools.js";
@@ -61,9 +62,14 @@ export class VoiceSession {
     this.isConnecting = false;
     this.isSetupDone = false;
     this.pendingClientMessages = [];
-    // The mode pick is fixed at session setup (docs: an open session keeps
-    // the mode it started with until End). The client init message may
-    // override the prompt text (test harness), never the tool surface.
+    // Session options: env defaults, overridable per session by the client
+    // init frame (voiceName / thinkingLevel / vad). The mode pick is fixed at
+    // session setup (docs: an open session keeps the mode it started with
+    // until End). The client init message may also override the prompt text
+    // (test harness), never the tool surface.
+    this.voiceName = config.voiceName;
+    this.thinkingLevel = config.thinkingLevel ?? null;
+    this.vad = config.vad ?? null;
     this.systemInstruction = buildVoiceSystemPrompt(this.voiceMode);
     this.resumeHandle = null;
     this.reconnectAttempts = 0;
@@ -81,8 +87,10 @@ export class VoiceSession {
     this.logger.log("client.connect", {});
     this.logger.log("session.start", {
       model: this.model,
-      voiceName: this.config.voiceName,
+      voiceName: this.voiceName,
       voiceMode: this.voiceMode,
+      thinkingLevel: this.thinkingLevel || undefined,
+      vad: this.vad || undefined,
     });
   }
 
@@ -125,29 +133,24 @@ export class VoiceSession {
       this.isConnecting = false;
       this.logger.log("gemini.setup", {
         model: this.model,
-        voiceName: this.config.voiceName,
+        voiceName: this.voiceName,
         voiceMode: this.voiceMode,
+        thinkingLevel: this.thinkingLevel || undefined,
+        vad: this.vad || undefined,
         resumeHandle: this.resumeHandle || undefined,
       });
       const setupMsg = {
-        setup: {
+        setup: buildLiveSetupPayload({
           model: this.model,
-          generationConfig: {
-            responseModalities: ["AUDIO"],
-            speechConfig: {
-              voiceConfig: { prebuiltVoiceConfig: { voiceName: this.config.voiceName } },
-            },
+          options: {
+            voiceName: this.voiceName,
+            thinkingLevel: this.thinkingLevel,
+            vad: this.vad,
           },
-          // Top-level setup field; Gemini rejects it under generation_config
-          // with 1007 "Cannot find field" (docs: BidiGenerateContentSetup has
-          // contextWindowCompression as a sibling of generationConfig).
-          contextWindowCompression: {
-            slidingWindow: {},
-          },
-          systemInstruction: { parts: [{ text: this.systemInstruction }] },
+          systemInstruction: this.systemInstruction,
           tools: [{ functionDeclarations: getToolDeclarations(this.voiceMode) }],
-          sessionResumption: this.resumeHandle ? { handle: this.resumeHandle } : {},
-        },
+          resumeHandle: this.resumeHandle || undefined,
+        }),
       };
       this.geminiWs.send(JSON.stringify(setupMsg));
     });
@@ -475,8 +478,18 @@ export class VoiceSession {
 
     if (parsed) {
       if (parsed.type === "init") {
+        const options = normalizeSessionOptions(parsed);
         if (typeof parsed.systemInstruction === "string" && parsed.systemInstruction.trim()) {
           this.systemInstruction = parsed.systemInstruction;
+        }
+        if (options.voiceName) {
+          this.voiceName = options.voiceName;
+        }
+        if (options.thinkingLevel) {
+          this.thinkingLevel = options.thinkingLevel;
+        }
+        if (options.vad) {
+          this.vad = options.vad;
         }
         this.initGeminiConnection();
         return;

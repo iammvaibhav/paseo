@@ -3,6 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { normalizeSessionOptions } from "./session-options.js";
 
 const require = createRequire(import.meta.url);
 
@@ -47,6 +48,18 @@ export function resolveGeminiApiKey() {
 const CLIENT_APP_VERSION = require("../../../packages/client/package.json").version;
 
 export function loadConfig() {
+  // Session options (voice name, thinking level, VAD) come from env; the
+  // client init frame can override them per session. Invalid values are
+  // dropped by normalizeSessionOptions — the node falls back to defaults.
+  const envOptions = normalizeSessionOptions({
+    voiceName: process.env.VOICE_NAME,
+    thinkingLevel: process.env.GEMINI_THINKING_LEVEL,
+    vad: {
+      startOfSpeechSensitivity: process.env.GEMINI_VAD_START_SENSITIVITY,
+      endOfSpeechSensitivity: process.env.GEMINI_VAD_END_SENSITIVITY,
+      silenceDurationMs: process.env.GEMINI_VAD_SILENCE_MS,
+    },
+  });
   return {
     port: Number(process.env.PORT || 8787),
     host: process.env.HOST || "0.0.0.0",
@@ -55,7 +68,9 @@ export function loadConfig() {
     paseoClientVersion: process.env.PASEO_CLIENT_VERSION || CLIENT_APP_VERSION,
     geminiApiKey: resolveGeminiApiKey(),
     geminiModel: process.env.GEMINI_MODEL || "models/gemini-3.1-flash-live-preview",
-    voiceName: process.env.VOICE_NAME || "Puck",
+    voiceName: envOptions.voiceName ?? "Puck",
+    thinkingLevel: envOptions.thinkingLevel ?? null,
+    vad: envOptions.vad ?? null,
     // voiceMode: "relay" (default) routes every mutating intent through
     // commander_dispatch; "direct" declares the full Commander allowlist.
     // Central config (mission_control.config.get) overrides this after

@@ -6,12 +6,30 @@
  *
  * Wire protocol (additive to the standalone page's, per
  * scripts/commander-voice/README.md):
- *   client → server: {type:"init"}[, {type:"text", text}] + binary PCM16 audio
+ *   client → server: {type:"init", systemInstruction?, voiceName?,
+ *                     thinkingLevel?, vad?}[, {type:"text", text}] +
+ *                     binary PCM16 audio
  *   server → client: {type:"setupAck"} | {type:"text", text} |
  *                    {type:"inputText", text} | {type:"toolLog", name, args} |
  *                    {type:"injected", text, event?} | {type:"interrupt"} |
  *                    {type:"turnComplete"} + binary PCM16 audio
  */
+
+/** Per-session Live options the voice node applies at Gemini setup. */
+export interface CommanderVoiceInitOptions {
+  systemInstruction?: string;
+  /** Verified Live voices: Puck, Charon, Kore, Zephyr, Fenrir, Aoede, Leda, Orus, Nova. */
+  voiceName?: string;
+  /** Gemini 3 thinking depth (default on the model: minimal). */
+  thinkingLevel?: "minimal" | "low" | "medium" | "high";
+  /** Live API VAD tuning (realtimeInputConfig.automaticActivityDetection).
+   *  Sensitivities use the wire enum constants — the API rejects "HIGH"/"LOW". */
+  vad?: {
+    startOfSpeechSensitivity?: "START_SENSITIVITY_HIGH" | "START_SENSITIVITY_LOW";
+    endOfSpeechSensitivity?: "END_SENSITIVITY_HIGH" | "END_SENSITIVITY_LOW";
+    silenceDurationMs?: number;
+  };
+}
 
 export interface CommanderVoiceServerFrame {
   type: "setupAck" | "text" | "inputText" | "toolLog" | "injected" | "interrupt" | "turnComplete";
@@ -99,11 +117,22 @@ export function parseCommanderVoiceFrame(
   }
 }
 
-export function encodeInitFrame(systemInstruction?: string): string {
-  return JSON.stringify({
-    type: "init",
-    ...(systemInstruction?.trim() ? { systemInstruction: systemInstruction.trim() } : {}),
-  });
+export function encodeInitFrame(options?: string | CommanderVoiceInitOptions): string {
+  const opts = typeof options === "string" ? { systemInstruction: options } : (options ?? {});
+  const frame: Record<string, unknown> = { type: "init" };
+  if (opts.systemInstruction?.trim()) {
+    frame.systemInstruction = opts.systemInstruction.trim();
+  }
+  if (opts.voiceName) {
+    frame.voiceName = opts.voiceName;
+  }
+  if (opts.thinkingLevel) {
+    frame.thinkingLevel = opts.thinkingLevel;
+  }
+  if (opts.vad && Object.keys(opts.vad).length > 0) {
+    frame.vad = opts.vad;
+  }
+  return JSON.stringify(frame);
 }
 
 export function encodeTextFrame(text: string): string {
@@ -135,7 +164,7 @@ export class CommanderVoiceClient {
   private readonly url: string;
   private readonly handlers: CommanderVoiceClientHandlers;
   private readonly wsFactory: (url: string) => CommanderVoiceSocket;
-  private readonly systemInstruction: string | undefined;
+  private readonly sessionOptions: CommanderVoiceInitOptions;
   private ws: CommanderVoiceSocket | null = null;
   private currentState: CommanderVoiceClientState = "idle";
   private closedByUs = false;
@@ -146,13 +175,18 @@ export class CommanderVoiceClient {
     handlers?: CommanderVoiceClientHandlers;
     wsFactory?: (url: string) => CommanderVoiceSocket;
     systemInstruction?: string;
+    /** Per-session Live options sent in the init frame (voice, thinking, VAD). */
+    sessionOptions?: CommanderVoiceInitOptions;
   }) {
     this.url = options.url;
     this.handlers = options.handlers ?? {};
     this.wsFactory =
       options.wsFactory ??
       ((targetUrl: string) => new WebSocket(targetUrl) as unknown as CommanderVoiceSocket);
-    this.systemInstruction = options.systemInstruction;
+    this.sessionOptions = {
+      ...options.sessionOptions,
+      systemInstruction: options.sessionOptions?.systemInstruction ?? options.systemInstruction,
+    };
   }
 
   get state(): CommanderVoiceClientState {
@@ -179,7 +213,7 @@ export class CommanderVoiceClient {
       () => {
         // Send init first; audio/text may follow immediately — the voice node
         // queues client messages until the Gemini session is set up.
-        ws.send(encodeInitFrame(this.systemInstruction));
+        ws.send(encodeInitFrame(this.sessionOptions));
       },
       { signal },
     );

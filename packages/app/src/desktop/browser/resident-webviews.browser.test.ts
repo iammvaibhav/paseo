@@ -8,7 +8,6 @@ import {
   getResidentBrowserWebview,
   hidePersistentBrowserWebview,
   isBrowserWebviewDomReady,
-  isResidentBrowserWebviewReady,
   prepareBrowserWebview,
   presentBrowserWebview,
   rememberBrowserWebviewSize,

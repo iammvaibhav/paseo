@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import {
   Pressable,
   ScrollView,
@@ -10,9 +10,11 @@ import {
 } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { Theme } from "@/styles/theme";
+import { useMissionControlVerbose } from "@/mission-control/use-mission-control-verbose";
 import {
   CommanderVoiceClient,
   type CommanderVoiceClientState,
+  type CommanderVoiceInitOptions,
   type CommanderVoiceServerFrame,
 } from "./commander-voice-client";
 import { createVoiceAudioSession, type VoiceAudioSession } from "./voice-audio";
@@ -62,6 +64,42 @@ const ThemedTextInput = withUnistyles(TextInput, (theme: Theme) => ({
   placeholderTextColor: theme.colors.foregroundMuted,
 }));
 
+/** Live voices verified against the API (Asteria is rejected with close 1007). */
+const VOICE_OPTIONS = [
+  "Puck",
+  "Charon",
+  "Kore",
+  "Zephyr",
+  "Fenrir",
+  "Aoede",
+  "Leda",
+  "Orus",
+  "Nova",
+] as const;
+
+const THINKING_OPTIONS = ["minimal", "low", "medium", "high"] as const;
+
+function OptionChip({
+  label,
+  selected,
+  onPress,
+}: {
+  label: string;
+  selected: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={[styles.chip, selected && styles.chipSelected]}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+    >
+      <Text style={[styles.chipLabel, selected && styles.chipLabelSelected]}>{label}</Text>
+    </Pressable>
+  );
+}
+
 export function CommanderVoicePanel({ url, onClose }: CommanderVoicePanelProps): ReactElement {
   const clientRef = useRef<CommanderVoiceClient | null>(null);
   const audioRef = useRef<VoiceAudioSession | null>(null);
@@ -73,6 +111,78 @@ export function CommanderVoicePanel({ url, onClose }: CommanderVoicePanelProps):
   const [isMicOn, setIsMicOn] = useState(false);
   const [inputText, setInputText] = useState("");
   const scrollRef = useRef<ScrollView | null>(null);
+  // Mission Control verbose is the debug gate: the advanced session options
+  // below are visible only while it is ON (per-device flag, same as the feed).
+  const [verbose] = useMissionControlVerbose();
+  // Advanced session options (verbose-only): voice, thinking level, VAD.
+  // Applied at client construction — they take effect on the next session.
+  const [voiceName, setVoiceName] = useState("");
+  const [thinkingLevel, setThinkingLevel] = useState<
+    CommanderVoiceInitOptions["thinkingLevel"] | ""
+  >("");
+  const [vadStart, setVadStart] = useState<"START_SENSITIVITY_HIGH" | "START_SENSITIVITY_LOW" | "">(
+    "",
+  );
+  const [vadEnd, setVadEnd] = useState<"END_SENSITIVITY_HIGH" | "END_SENSITIVITY_LOW" | "">("");
+  const [vadSilence, setVadSilence] = useState("");
+  const sessionOptionsRef = useRef<CommanderVoiceInitOptions>({});
+  sessionOptionsRef.current = {
+    ...(voiceName ? { voiceName } : {}),
+    ...(thinkingLevel ? { thinkingLevel } : {}),
+    vad: {
+      ...(vadStart ? { startOfSpeechSensitivity: vadStart } : {}),
+      ...(vadEnd ? { endOfSpeechSensitivity: vadEnd } : {}),
+      ...(vadSilence.trim() ? { silenceDurationMs: Number(vadSilence) } : {}),
+    },
+  };
+  // Chip lists are memoized so every onPress is a stable identity (the
+  // eslint react-perf rule rejects inline closures in JSX props).
+  const voiceChips = useMemo(
+    () => [
+      { label: "Default", selected: voiceName === "", onPress: () => setVoiceName("") },
+      ...VOICE_OPTIONS.map((voice) => ({
+        label: voice,
+        selected: voiceName === voice,
+        onPress: () => setVoiceName(voice),
+      })),
+    ],
+    [voiceName],
+  );
+  const thinkingChips = useMemo(
+    () => [
+      { label: "Default", selected: thinkingLevel === "", onPress: () => setThinkingLevel("") },
+      ...THINKING_OPTIONS.map((level) => ({
+        label: level,
+        selected: thinkingLevel === level,
+        onPress: () => setThinkingLevel(level),
+      })),
+    ],
+    [thinkingLevel],
+  );
+  const vadStartChips = useMemo(
+    () =>
+      (["", "START_SENSITIVITY_HIGH", "START_SENSITIVITY_LOW"] as const).map((sensitivity) => ({
+        label:
+          sensitivity === ""
+            ? "Start: default"
+            : `Start: ${sensitivity.endsWith("HIGH") ? "high" : "low"}`,
+        selected: vadStart === sensitivity,
+        onPress: () => setVadStart(sensitivity),
+      })),
+    [vadStart],
+  );
+  const vadEndChips = useMemo(
+    () =>
+      (["", "END_SENSITIVITY_HIGH", "END_SENSITIVITY_LOW"] as const).map((sensitivity) => ({
+        label:
+          sensitivity === ""
+            ? "End: default"
+            : `End: ${sensitivity.endsWith("HIGH") ? "high" : "low"}`,
+        selected: vadEnd === sensitivity,
+        onPress: () => setVadEnd(sensitivity),
+      })),
+    [vadEnd],
+  );
   const pushEntry = useCallback((kind: TranscriptKind, text: string) => {
     const id = nextIdRef.current;
     nextIdRef.current += 1;
@@ -114,6 +224,7 @@ export function CommanderVoicePanel({ url, onClose }: CommanderVoicePanelProps):
           pushEntry("system", message);
         },
       },
+      sessionOptions: sessionOptionsRef.current,
     });
     clientRef.current = client;
     client.connect();
@@ -235,7 +346,10 @@ export function CommanderVoicePanel({ url, onClose }: CommanderVoicePanelProps):
     [],
   );
   return (
-    <View style={styles.container} testID="commander-voice-panel">
+    <View
+      style={[styles.container, verbose ? styles.containerAdvanced : null]}
+      testID="commander-voice-panel"
+    >
       <View style={styles.header}>
         <View style={[styles.dot, dotTone]} />
         <Text style={styles.title} numberOfLines={1}>
@@ -284,6 +398,64 @@ export function CommanderVoicePanel({ url, onClose }: CommanderVoicePanelProps):
           <Text style={styles.buttonLabel}>Send</Text>
         </Pressable>
       </View>
+      {verbose ? (
+        <View style={styles.advanced} testID="commander-voice-advanced">
+          <Text style={styles.advancedTitle}>Advanced (applies next session)</Text>
+          <Text style={styles.advancedLabel}>Voice</Text>
+          <View style={styles.chipRow}>
+            {voiceChips.map((chip) => (
+              <OptionChip
+                key={chip.label}
+                label={chip.label}
+                selected={chip.selected}
+                onPress={chip.onPress}
+              />
+            ))}
+          </View>
+          <Text style={styles.advancedLabel}>Thinking level</Text>
+          <View style={styles.chipRow}>
+            {thinkingChips.map((chip) => (
+              <OptionChip
+                key={chip.label}
+                label={chip.label}
+                selected={chip.selected}
+                onPress={chip.onPress}
+              />
+            ))}
+          </View>
+          <Text style={styles.advancedLabel}>VAD</Text>
+          <View style={styles.chipRow}>
+            {vadStartChips.map((chip) => (
+              <OptionChip
+                key={chip.label}
+                label={chip.label}
+                selected={chip.selected}
+                onPress={chip.onPress}
+              />
+            ))}
+            {vadEndChips.map((chip) => (
+              <OptionChip
+                key={chip.label}
+                label={chip.label}
+                selected={chip.selected}
+                onPress={chip.onPress}
+              />
+            ))}
+          </View>
+          <View style={styles.chipRow}>
+            <Text style={styles.advancedLabel}>Silence (ms)</Text>
+            <ThemedTextInput
+              style={styles.silenceInput}
+              value={vadSilence}
+              onChangeText={setVadSilence}
+              placeholder="default"
+              keyboardType="numeric"
+              accessibilityLabel="VAD silence duration in milliseconds"
+              testID="commander-voice-vad-silence"
+            />
+          </View>
+        </View>
+      ) : null}
       <View style={styles.controls}>
         <Pressable
           onPress={handleToggleMic}
@@ -337,6 +509,9 @@ const styles = StyleSheet.create((theme: Theme) => ({
     gap: theme.spacing[2],
     height: 260,
     flexShrink: 0,
+  },
+  containerAdvanced: {
+    height: 520,
   },
   header: {
     flexDirection: "row",
@@ -457,6 +632,62 @@ const styles = StyleSheet.create((theme: Theme) => ({
     fontFamily: theme.fontFamily.ui,
     fontSize: theme.fontSize.sm,
     fontWeight: theme.fontWeight.medium,
+    color: theme.colors.foreground,
+  },
+  advanced: {
+    gap: theme.spacing[1],
+    borderTopWidth: theme.borderWidth[1],
+    borderTopColor: theme.colors.border,
+    paddingTop: theme.spacing[2],
+  },
+  advancedTitle: {
+    fontFamily: theme.fontFamily.ui,
+    fontSize: theme.fontSize.xs,
+    fontWeight: theme.fontWeight.semibold,
+    color: theme.colors.foregroundMuted,
+  },
+  advancedLabel: {
+    fontFamily: theme.fontFamily.ui,
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foregroundMuted,
+    alignSelf: "center",
+  },
+  chipRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: theme.spacing[1],
+    alignItems: "center",
+  },
+  chip: {
+    paddingVertical: 2,
+    paddingHorizontal: theme.spacing[2],
+    borderRadius: theme.borderRadius.md,
+    backgroundColor: theme.colors.surface2,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.border,
+  },
+  chipSelected: {
+    backgroundColor: theme.colors.accent,
+    borderColor: theme.colors.accent,
+  },
+  chipLabel: {
+    fontFamily: theme.fontFamily.ui,
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foreground,
+  },
+  chipLabelSelected: {
+    color: theme.colors.background,
+  },
+  silenceInput: {
+    width: 96,
+    height: 26,
+    backgroundColor: theme.colors.surface0,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.md,
+    paddingHorizontal: theme.spacing[2],
+    fontFamily: theme.fontFamily.ui,
+    fontSize: theme.fontSize.xs,
     color: theme.colors.foreground,
   },
 }));
