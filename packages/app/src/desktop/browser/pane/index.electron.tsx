@@ -1066,6 +1066,10 @@ export function BrowserPane({
       });
     };
     const handleDomReady = () => {
+      // Regression fix: the persistent-webview refactor dropped this line, so
+      // any load while the pane is mounted left domReadyRef false forever and
+      // every bridge-open fell back to a reload after a 20s wait.
+      domReadyRef.current = true;
       syncNavigationState();
       // The previous page's overlay is gone after a load; re-apply markers for
       // the freshly loaded document.
