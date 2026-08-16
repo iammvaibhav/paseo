@@ -12,7 +12,7 @@ import {
   createAssistantSelectionPlainText,
 } from "./content.web";
 import { getDefaultMarkdownClipboardEnvironment } from "@/utils/rich-clipboard-default-environment";
-import { writeRichClipboardContent } from "@/utils/rich-clipboard";
+import { type MarkdownClipboardContent, writeRichClipboardContent } from "@/utils/rich-clipboard";
 import {
   SelectionAskPopoverHost,
   type SelectionAskPopoverHostProps,
@@ -51,18 +51,39 @@ export function AssistantSelectionCopySurface({
       if (!(event.metaKey || event.ctrlKey) || !event.shiftKey) {
         return;
       }
-      const content = createAssistantSelectionClipboardContent(window.getSelection());
-      if (!content) {
+      const armGuard = () => {
+        markdownCopyJustHandledRef.current = true;
+        // A copy event from the same key press (engines that fire one for the
+        // shifted combo) runs before timers, so this clears the guard afterwards.
+        window.setTimeout(() => {
+          markdownCopyJustHandledRef.current = false;
+        }, 0);
+      };
+
+      const selection = window.getSelection();
+      let content: MarkdownClipboardContent | null = null;
+      try {
+        content = createAssistantSelectionClipboardContent(selection);
+      } catch (error) {
+        console.warn("[assistant-selection-copy] Markdown copy failed", error);
+      }
+      if (content) {
+        event.preventDefault();
+        armGuard();
+        void writeRichClipboardContent(content, getDefaultMarkdownClipboardEnvironment());
+        return;
+      }
+
+      // Fall back so the shortcut never silently copies nothing: rendered
+      // message text when the selection is in a message, otherwise the raw
+      // selection.
+      const plainText = createAssistantSelectionPlainText(selection) ?? selection?.toString() ?? "";
+      if (!plainText) {
         return;
       }
       event.preventDefault();
-      markdownCopyJustHandledRef.current = true;
-      // A copy event from the same key press (engines that fire one for the
-      // shifted combo) runs before timers, so this clears the guard afterwards.
-      window.setTimeout(() => {
-        markdownCopyJustHandledRef.current = false;
-      }, 0);
-      void writeRichClipboardContent(content, getDefaultMarkdownClipboardEnvironment());
+      armGuard();
+      void getDefaultMarkdownClipboardEnvironment().writePlainText(plainText);
     };
     window.addEventListener("keydown", handleKeyDown, true);
     return () => {
