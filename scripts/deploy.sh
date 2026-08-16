@@ -910,8 +910,15 @@ deploy_local_code_server() {
     log "Skipping local code-server deploy (PASEO_SKIP_CODE_SERVER=1)"
     return
   fi
-  log "Deploying local code-server"
-  bash "$ROOT_DIR/scripts/code-server/install.sh" local
+  # iammvaibhav orchestrator (Linux): this machine IS iammvaibhav, and the MacBook
+  # desktop opens VS Code Web at http://iammvaibhav:8765. "local" would bind
+  # 127.0.0.1 only and break that — deploy the iammvaibhav config (WireGuard bind).
+  local host_kind="local"
+  if [[ "$IS_MAC_ORCHESTRATOR" != "1" ]]; then
+    host_kind="iammvaibhav"
+  fi
+  log "Deploying local code-server (host kind: $host_kind)"
+  bash "$ROOT_DIR/scripts/code-server/install.sh" "$host_kind"
 }
 
 deploy_local_plannotator() {
