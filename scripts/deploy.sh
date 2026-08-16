@@ -1276,13 +1276,16 @@ run_parallel_post_push_deploy() {
       rprovider="$(remote_tunnel_provider "$host")"
       start_parallel_job "remote-${host}" remote_host_job "$host" "$rhome" "$rprovider"
     done
-    # iammvaibhav orchestrator: the MacBook is a desktop-only target (build +
-    # install of Paseo.app), gated on reachability and never fatal.
-    if [[ "$IS_MAC_ORCHESTRATOR" != "1" ]]; then
-      start_parallel_job "macbook-desktop" macbook_desktop_job
-    fi
   else
     log "Skipping remotes (PASEO_SKIP_REMOTES=1)"
+  fi
+
+  # iammvaibhav orchestrator: the MacBook is a desktop-only target (build +
+  # install of Paseo.app), gated on reachability and never fatal. Outside the
+  # remotes gate so app-only deploys (PASEO_SKIP_REMOTES=1) still ship the
+  # desktop build; PASEO_SKIP_MACBOOK=1 is the dedicated opt-out.
+  if [[ "$IS_MAC_ORCHESTRATOR" != "1" ]]; then
+    start_parallel_job "macbook-desktop" macbook_desktop_job
   fi
 
   if [[ "${PASEO_SKIP_LOCAL:-0}" != "1" ]]; then
