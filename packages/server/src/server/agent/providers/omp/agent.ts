@@ -28,6 +28,8 @@ import {
   type AgentSlashCommand,
   type AgentStreamEvent,
   type AgentTimelineItem,
+  type SteerActiveTurnOptions,
+  type SteerResult,
   type FetchCatalogOptions,
   type ImportableProviderSession,
   type ImportProviderSessionContext,
@@ -1139,6 +1141,24 @@ export class OmpAgentSession implements AgentSession {
     })();
 
     return { turnId };
+  }
+  async steerActiveTurn(
+    prompt: AgentPromptInput,
+    options: SteerActiveTurnOptions,
+  ): Promise<SteerResult> {
+    if (this.closed) {
+      return { status: "unavailable" };
+    }
+    if (typeof prompt === "string" && this.parseSlashCommandInput(prompt)) {
+      return { status: "unavailable" };
+    }
+    if (!this.activeTurnId || this.activeTurnId !== options.expectedTurnId) {
+      return { status: "unavailable" };
+    }
+
+    const payload = convertPromptInput(prompt, { model: this.state.model });
+    this.runtimeSession.steer(payload.text, payload.images);
+    return { status: "accepted" };
   }
 
   subscribe(callback: (event: AgentStreamEvent) => void): () => void {

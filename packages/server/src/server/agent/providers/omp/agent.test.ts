@@ -341,8 +341,8 @@ describe("OMP agent client and session", () => {
       },
     ]);
     expect(scheduler.activePollCount()).toBe(1);
-    omp.runtime().abortError = new Error("abort unavailable");
-    await expect(omp.interrupt()).rejects.toThrow("abort unavailable");
+    omp.runtime().abortError = new Error("Request timed out for abort");
+    await expect(omp.interrupt()).rejects.toThrow("Request timed out for abort");
     expect(scheduler.activePollCount()).toBe(1);
     omp.runtime().abortError = null;
     await omp.interrupt();
@@ -1068,5 +1068,60 @@ describe("OMP agent client and session", () => {
         contextWindowUsedTokens: 149_000,
       },
     });
+  });
+  test("steerActiveTurn delegates to runtimeSession.steer when turn matches", async () => {
+    const omp = new OmpHarness();
+    await omp.start();
+    const runtime = omp.runtime();
+    const promptStarted = runtime.nextPrompt();
+    const { turnId } = await omp.requireSession().startTurn("initial prompt");
+    await promptStarted;
+    runtime.beginTurn();
+
+    const result = await omp.requireSession().steerActiveTurn?.("steered message", {
+      expectedTurnId: turnId,
+    });
+
+    expect(result).toEqual({ status: "accepted" });
+    expect(runtime.steerRequests).toEqual([{ message: "steered message", imageCount: 0 }]);
+  });
+
+  test("steerActiveTurn returns unavailable when turnId does not match or idle", async () => {
+    const omp = new OmpHarness();
+    await omp.start();
+    const runtime = omp.runtime();
+    const promptStarted = runtime.nextPrompt();
+    const { turnId } = await omp.requireSession().startTurn("initial prompt");
+    await promptStarted;
+    runtime.beginTurn();
+
+    const wrongTurnResult = await omp.requireSession().steerActiveTurn?.("steered message", {
+      expectedTurnId: "wrong-turn-id",
+    });
+    expect(wrongTurnResult).toEqual({ status: "unavailable" });
+
+    runtime.finishTurn();
+    await waitForImmediate();
+    await waitForImmediate();
+
+    const idleResult = await omp.requireSession().steerActiveTurn?.("steered message", {
+      expectedTurnId: turnId,
+    });
+    expect(idleResult).toEqual({ status: "unavailable" });
+  });
+
+  test("steerActiveTurn returns unavailable for slash commands", async () => {
+    const omp = new OmpHarness();
+    await omp.start();
+    const runtime = omp.runtime();
+    const promptStarted = runtime.nextPrompt();
+    const { turnId } = await omp.requireSession().startTurn("initial prompt");
+    await promptStarted;
+    runtime.beginTurn();
+
+    const slashResult = await omp.requireSession().steerActiveTurn?.("/compact", {
+      expectedTurnId: turnId,
+    });
+    expect(slashResult).toEqual({ status: "unavailable" });
   });
 });
