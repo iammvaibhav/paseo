@@ -234,3 +234,42 @@ describe("draft fork source tab identity", () => {
     ).toBe(false);
   });
 });
+
+describe("plugin panel tab identity", () => {
+  it("normalizes exact workspace and agent context", () => {
+    expect(
+      normalizeWorkspaceTabTarget({
+        kind: "plugin",
+        pluginId: " review ",
+        panelId: " details ",
+        context: "agent",
+        agentId: " agent-1 ",
+      }),
+    ).toEqual({
+      kind: "plugin",
+      pluginId: "review",
+      panelId: "details",
+      context: "agent",
+      agentId: "agent-1",
+    });
+  });
+
+  it("gives workspace and agent instances distinct stable ids", () => {
+    const workspace = buildDeterministicWorkspaceTabId({
+      kind: "plugin",
+      pluginId: "review",
+      panelId: "details",
+      context: "workspace",
+    });
+    const agent = buildDeterministicWorkspaceTabId({
+      kind: "plugin",
+      pluginId: "review",
+      panelId: "details",
+      context: "agent",
+      agentId: "agent-1",
+    });
+
+    expect(workspace).toBe("plugin_workspace_6_review_7_details");
+    expect(agent).toBe("plugin_agent_6_review_7_details_7_agent-1");
+  });
+});
