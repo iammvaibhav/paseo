@@ -80,7 +80,7 @@ import { useVoiceOptional } from "@/contexts/voice-context";
 import { useAppSettings } from "@/hooks/use-settings";
 import { useToast } from "@/contexts/toast-context";
 import { toErrorMessage } from "@/utils/error-messages";
-import { AgentTaskList } from "@/composer/task-list";
+import { AgentTracks } from "@/panels/agent-tracks";
 import { useCreateFlowStore } from "@/stores/create-flow-store";
 import { buildDraftStoreKey, generateDraftId } from "@/stores/draft-keys";
 import { usePanelStore } from "@/stores/panel-store";
@@ -94,13 +94,6 @@ import {
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 import type { Theme } from "@/styles/theme";
-import {
-  useArchiveFinishedSubagents,
-  useArchiveSubagent,
-  useDetachSubagent,
-  useSubagentsForParent,
-} from "@/subagents";
-import { SubagentsTrack } from "@/subagents/track";
 import type { PendingPermission } from "@/types/shared";
 import type { StreamItem } from "@/types/stream";
 import { getInitDeferred, getInitKey } from "@/utils/agent-initialization";
@@ -109,7 +102,6 @@ import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/sys
 import { storeFetchedAgentDetail } from "@/utils/hydrate-fetched-agent";
 import { applyLegacyDaemonWorkspaceOwnership } from "@/workspace/legacy-daemon-workspaces";
 import type { WorkspaceFileOpenRequest } from "@/workspace/file-open";
-import { navigateToAgent } from "@/utils/navigate-to-agent";
 import { deriveSidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { SelectionAsksList } from "@/selection-ask/asks-list";
 import { buildDraftAgentSetup, type ClientSlashCommand } from "@/client-slash-commands";
@@ -1291,8 +1283,15 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
       />
     </RenderProfile>
   );
+  // The tracks float at the foot of the transcript, inside the same transform the composer uses,
+  // so the pills sit on its top edge with the timeline running under them. They follow the
+  // composer: an archived or archiving agent has none, and its children can no longer be acted on.
+  const hasComposer = !agentState.archivedAt && !isArchivingCurrentAgent;
   const streamContent = (
-    <ReanimatedAnimated.View style={animatedContentStyle}>{streamSection}</ReanimatedAnimated.View>
+    <ReanimatedAnimated.View style={animatedContentStyle}>
+      {streamSection}
+      {hasComposer ? <AgentTracks serverId={serverId} agentId={agentId} /> : null}
+    </ReanimatedAnimated.View>
   );
   const contentContainer = <View style={styles.contentContainer}>{streamContent}</View>;
 
@@ -1572,37 +1571,11 @@ function ActiveAgentComposer({
     { initialIsBelow: isCompactFormFactor },
   );
   const paneContext = usePaneContext();
-  const { workspaceId, tabId, retargetCurrentTab, openTab } = paneContext;
+  const { workspaceId, tabId, retargetCurrentTab } = paneContext;
   const { archiveAgent } = useArchiveAgent();
   const closeWorkspaceTab = useWorkspaceLayoutStore((state) => state.closeTab);
   const hideWorkspaceAgent = useWorkspaceLayoutStore((state) => state.hideAgent);
   const unpinWorkspaceAgent = useWorkspaceLayoutStore((state) => state.unpinAgent);
-  const subagentRows = useSubagentsForParent({
-    serverId,
-    parentAgentId: agentId,
-  });
-  const canDetachSubagents = useSessionStore(
-    (state) => state.sessions[serverId]?.serverInfo?.features?.agentDetach === true,
-  );
-  const handleOpenSubagent = useCallback(
-    (subagentId: string) => {
-      navigateToAgent({ serverId, agentId: subagentId });
-    },
-    [serverId],
-  );
-  const handleOpenProviderSubagent = useCallback(
-    (parentAgentId: string, subagentId: string) => {
-      openTab({ kind: "provider_subagent", parentAgentId, subagentId });
-    },
-    [openTab],
-  );
-  const handleArchiveSubagent = useArchiveSubagent({ serverId });
-  const handleDetachSubagent = useDetachSubagent({ serverId });
-  const archiveFinishedSubagents = useArchiveFinishedSubagents({
-    serverId,
-    parentAgentId: agentId,
-    rows: subagentRows,
-  });
   const workspaceAttachmentScopeKey = useWorkspaceAttachmentScopeKey({
     serverId,
     cwd,
@@ -1758,16 +1731,6 @@ function ActiveAgentComposer({
   return (
     <ReanimatedAnimated.View style={inputAreaStyle} onLayout={onInputAreaLayout}>
       <SelectionAsksList serverId={serverId} agentId={agentId} />
-      <AgentTaskList serverId={serverId} agentId={agentId} />
-      <SubagentsTrack
-        rows={subagentRows}
-        onOpenSubagent={handleOpenSubagent}
-        onOpenProviderSubagent={handleOpenProviderSubagent}
-        onArchiveSubagent={handleArchiveSubagent}
-        onArchiveFinished={archiveFinishedSubagents.archiveFinished}
-        archiveFinishedStatus={archiveFinishedSubagents.status}
-        onDetachSubagent={canDetachSubagents ? handleDetachSubagent : undefined}
-      />
       <Composer
         agentId={agentId}
         serverId={serverId}

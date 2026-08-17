@@ -429,7 +429,6 @@ export const ar: TranslationResources = {
       title: "المهام",
       empty: "لا توجد مهام حتى الآن.",
       tasksProgress: "{{completed}}/{{total}} مهام",
-      tasksProgressCurrent: "{{completed}}/{{total}} مهام · {{task}}",
       activity: {
         created: "تم إنشاء {{count}} مهام",
         added: "أُضيفت",
@@ -1746,12 +1745,14 @@ export const ar: TranslationResources = {
     backdrop: "خلفية القائمة",
   },
   subagents: {
+    title: "الوكلاء الفرعيون",
+    pillLabelOne: "وكيل فرعي واحد",
+    pillLabelMany: "{{count}} وكلاء فرعيين",
     detachAction: "فصل {{label}}",
     detachTooltip: "فصل الوكيل الفرعي",
     archiveAction: "أرشيف{{label}}",
     archiveTooltip: "أرشفة الوكيل الفرعي",
     archiveFinishedAction: "أرشفة الوكلاء الفرعيين المكتملين",
-    archiveFinishedTooltip: "أرشفة المكتملين",
     archiveFinishedRetry: "إعادة المحاولة ({{failed}}/{{total}})",
   },
   selectionAsks: {

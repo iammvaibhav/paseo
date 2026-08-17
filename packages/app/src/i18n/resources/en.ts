@@ -428,7 +428,6 @@ export const en = {
       title: "Tasks",
       empty: "No tasks yet.",
       tasksProgress: "{{completed}}/{{total}} tasks",
-      tasksProgressCurrent: "{{completed}}/{{total}} tasks · {{task}}",
       activity: {
         created: "Created {{count}} tasks",
         added: "Added",
@@ -1757,12 +1756,14 @@ export const en = {
     backdrop: "Menu backdrop",
   },
   subagents: {
+    title: "Subagents",
+    pillLabelOne: "1 subagent",
+    pillLabelMany: "{{count}} subagents",
     detachAction: "Detach {{label}}",
     detachTooltip: "Detach subagent",
     archiveAction: "Archive {{label}}",
     archiveTooltip: "Archive subagent",
     archiveFinishedAction: "Archive finished subagents",
-    archiveFinishedTooltip: "Archive finished",
     archiveFinishedRetry: "Retry ({{failed}}/{{total}})",
   },
   selectionAsks: {
