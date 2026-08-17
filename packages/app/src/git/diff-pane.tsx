@@ -132,6 +132,7 @@ import { usePublishWorkingDiffAttachment, useWorkingDiff } from "@/git/use-worki
 import { DiffTooLargeState } from "@/git/diff-too-large-state";
 import { openDesktopTarget, useDesktopOpenTargets } from "@/workspace/desktop-open-targets";
 
+import type { GitAction, GitActionId, GitActions } from "@/git/policy";
 export type { GitActionId, GitAction, GitActions } from "@/git/policy";
 
 export function resolveDiffLayout(
@@ -1578,6 +1579,12 @@ interface GitDiffPaneProps {
   enabled?: boolean;
   host: "explorer" | "panel";
   onOpenFile?: (path: string) => void;
+  /**
+   * Optional submodule switcher rendered beside the branch switcher in the
+   * pane header. The explorer sidebar renders its own picker in the sidebar
+   * header, so only pane-hosted diff surfaces pass one.
+   */
+  submodulePicker?: ReactNode;
   /**
    * Opens the file's git diff in VS Code Web; absent when it isn't configured.
    * `baseRef` is the pane's comparison base, or null while showing uncommitted
@@ -3107,6 +3114,50 @@ function useDiffTabNavigation({
   };
 }
 
+interface ChangesHeaderProps {
+  currentBranchName: string | null;
+  serverId: string;
+  workspaceId: string | null | undefined;
+  cwd: string;
+  isGit: boolean;
+  isMobile: boolean;
+  submodulePicker?: ReactNode;
+  gitActions: GitActions;
+}
+
+function ChangesHeader({
+  currentBranchName,
+  serverId,
+  workspaceId,
+  cwd,
+  isGit,
+  isMobile,
+  submodulePicker,
+  gitActions,
+}: ChangesHeaderProps) {
+  if (!isGit || (!currentBranchName && !isMobile && !submodulePicker)) {
+    return null;
+  }
+  return (
+    <View style={styles.header} testID="changes-header">
+      <View style={styles.headerLeading}>
+        {currentBranchName || isMobile ? (
+          <BranchSwitcher
+            currentBranchName={currentBranchName}
+            serverId={serverId}
+            workspaceId={workspaceId ?? cwd}
+            workspaceDirectory={cwd}
+            isGitCheckout={isGit}
+            testID="changes-branch-switcher"
+          />
+        ) : null}
+        {submodulePicker}
+      </View>
+      {isMobile ? <GitActionsSplitButton gitActions={gitActions} /> : null}
+    </View>
+  );
+}
+
 export function GitDiffPane({
   serverId,
   workspaceId,
@@ -3116,6 +3167,7 @@ export function GitDiffPane({
   onOpenFile,
   onOpenDiff,
   onAddToChat,
+  submodulePicker,
 }: GitDiffPaneProps) {
   const { settings: appSettings } = useAppSettings();
   const { t } = useTranslation();
@@ -3461,19 +3513,16 @@ export function GitDiffPane({
       }}
       style={styles.container}
     >
-      {isGit && (currentBranchName || isMobile) ? (
-        <View style={styles.header} testID="changes-header">
-          <BranchSwitcher
-            currentBranchName={currentBranchName}
-            serverId={serverId}
-            workspaceId={workspaceId ?? cwd}
-            workspaceDirectory={cwd}
-            isGitCheckout={isGit}
-            testID="changes-branch-switcher"
-          />
-          {isMobile ? <GitActionsSplitButton gitActions={gitActions} /> : null}
-        </View>
-      ) : null}
+      <ChangesHeader
+        currentBranchName={currentBranchName}
+        serverId={serverId}
+        workspaceId={workspaceId}
+        cwd={cwd}
+        isGit={isGit}
+        isMobile={isMobile}
+        submodulePicker={submodulePicker}
+        gitActions={gitActions}
+      />
 
       {isGit ? (
         <View style={styles.diffStatusContainer}>
@@ -3561,6 +3610,13 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing[2],
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
+  },
+  headerLeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    flexShrink: 1,
+    minWidth: 0,
   },
   diffStatusContainer: {
     height: WORKSPACE_SECONDARY_HEADER_HEIGHT,

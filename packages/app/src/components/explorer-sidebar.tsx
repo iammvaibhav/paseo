@@ -29,9 +29,8 @@ import { RetainedPanelActivity } from "@/components/retained-panel";
 import { getIsElectron } from "@/constants/platform";
 import { SidebarResizeHandle } from "@/components/sidebar-resize-handle";
 import { resolveDesktopExplorerWidth } from "@/components/desktop-sidebar-layout";
-import { findSubmodule, useSubmodulesQuery } from "@/git/use-submodules-query";
+import { useSubmoduleContext } from "@/git/submodule-context";
 import { SubmodulePicker } from "@/git/submodule-picker";
-import { resolveSelectedSubmoduleForCheckout } from "@/stores/explorer-submodule-memory";
 import {
   SIDEBAR_RESIZE_ACTIVATION_OFFSET,
   SIDEBAR_RESIZE_FAIL_OFFSET,
@@ -423,51 +422,6 @@ function resolveEffectiveTab(
   return requested === "pr" && !showPrTab ? "changes" : requested;
 }
 
-function useSubmoduleContext({
-  serverId,
-  workspaceRoot,
-  isGit,
-  isOpen,
-}: {
-  serverId: string;
-  workspaceRoot: string;
-  isGit: boolean;
-  isOpen: boolean;
-}) {
-  const storedSubmodule = usePanelStore((state) =>
-    resolveSelectedSubmoduleForCheckout({
-      serverId,
-      cwd: workspaceRoot,
-      selectedSubmoduleByCheckout: state.selectedSubmoduleByCheckout,
-    }),
-  );
-  const setSelectedSubmoduleForCheckout = usePanelStore(
-    (state) => state.setSelectedSubmoduleForCheckout,
-  );
-  const { submodules, hasSubmodules, isResolved } = useSubmodulesQuery({
-    serverId,
-    cwd: workspaceRoot,
-    enabled: isGit && isOpen,
-  });
-  // The remembered submodule survives until the checkout proves it is gone;
-  // holding it through the initial fetch avoids a root -> submodule flip that
-  // would make the diff and PR panes fetch the superproject first.
-  const selectedSubmodule =
-    storedSubmodule && isResolved && !findSubmodule(submodules, storedSubmodule)
-      ? null
-      : storedSubmodule;
-  const setSelectedSubmodule = useCallback(
-    (submodulePath: string | null) => {
-      setSelectedSubmoduleForCheckout({ serverId, cwd: workspaceRoot, submodulePath });
-    },
-    [serverId, setSelectedSubmoduleForCheckout, workspaceRoot],
-  );
-  const effectiveCwd = useMemo(
-    () => (selectedSubmodule ? `${workspaceRoot}/${selectedSubmodule}` : workspaceRoot),
-    [workspaceRoot, selectedSubmodule],
-  );
-  return { effectiveCwd, submodules, hasSubmodules, selectedSubmodule, setSelectedSubmodule };
-}
 function ExplorerContentArea({
   showHostFiles,
   resolvedTab,
@@ -595,7 +549,7 @@ function ExplorerSidebarContent({
   const hasRightWindowControls = useHasOwnedWindowChromeObstruction("top-right");
   const [showHostFiles, setShowHostFiles] = useState(false);
 
-  const submoduleState = useSubmoduleContext({ serverId, workspaceRoot, isGit, isOpen });
+  const submoduleState = useSubmoduleContext({ serverId, workspaceRoot, isGit, enabled: isOpen });
   const { effectiveCwd, submodules, hasSubmodules, selectedSubmodule, setSelectedSubmodule } =
     submoduleState;
 
