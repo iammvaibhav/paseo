@@ -97,6 +97,7 @@ export const ja: TranslationResources = {
       interruptAgent: "エージェントを中断",
       queueMessage: "メッセージをキューに追加",
       sendAndInterrupt: "送信して中断",
+      sendAndSteer: "送信して指示を追加",
       sendMessage: "メッセージを送信",
       queue: "キュー",
       send: "送信",
@@ -693,6 +694,7 @@ export const ja: TranslationResources = {
         renameAgent: "エージェントの名前を変更",
       },
       actions: {
+        newTab: "新しいタブ",
         newAgent: "新しいエージェント",
         newTerminal: "新しいターミナル",
         preparingTerminal: "ターミナルタブを準備中",
@@ -701,6 +703,9 @@ export const ja: TranslationResources = {
         exitFocusMode: "フォーカスモードを終了",
         splitRight: "右にペインを分割",
         splitDown: "下にペインを分割",
+        changes: "変更",
+        files: "ファイル",
+        pullRequest: "プルリクエスト",
         terminalProfilesMenu: "ターミナルプロファイル",
         editTerminalProfiles: "プロファイルを編集…",
         pinTarget: "ピン留め",
@@ -1806,6 +1811,18 @@ export const ja: TranslationResources = {
         reloadMessage: "ローカルの変更は失われます。",
       },
     },
+    files: {
+      label: "ファイル",
+      subtitle: "ワークスペースのファイル",
+      tooltip: "ワークスペースのファイルを参照",
+    },
+    pullRequest: {
+      label: "プルリクエスト",
+      subtitle: "プルリクエストの詳細",
+      emptyTitle: "プルリクエストはまだありません",
+      emptyDescription:
+        "このチェックアウトのプルリクエストを作成すると、ここに詳細が表示されます。",
+    },
     diff: {
       changesLabel: "変更",
       changesSubtitle: "作業ツリーの差分",
@@ -2009,8 +2026,8 @@ export const ja: TranslationResources = {
         },
         options: {
           interrupt: "中断",
+          steer: "指示",
           queue: "キュー",
-          steer: "ステアリング",
         },
       },
       serviceUrls: {

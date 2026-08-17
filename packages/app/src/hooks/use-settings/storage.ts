@@ -1,4 +1,5 @@
 import { isSyntaxThemeId, type SyntaxThemeId } from "@getpaseo/highlight";
+import type { ActiveTurnBehavior } from "@getpaseo/protocol/messages";
 import type { QueryClient } from "@tanstack/react-query";
 import type { DesktopSettings } from "@/desktop/settings/desktop-settings";
 import { parseAppLanguage, type AppLanguage } from "@/i18n/locales";
@@ -21,7 +22,7 @@ export const APP_SETTINGS_KEY = "@paseo:app-settings";
 export const APP_SETTINGS_QUERY_KEY = ["app-settings"];
 const LEGACY_SETTINGS_KEY = "@paseo:settings";
 
-export type SendBehavior = "interrupt" | "queue" | "steer";
+export type SendBehavior = ActiveTurnBehavior | "queue";
 export type ReleaseChannel = "stable" | "beta";
 export type ServiceUrlBehavior = "ask" | "in-app" | "external";
 export type WorkspaceTitleSource = "title" | "branch";
@@ -112,7 +113,7 @@ const StoredAppSettingsSchema = z.strictObject({
   language: z
     .enum(["system", "ar", "en", "es", "fr", "ja", "ko", "pt-BR", "ru", "zh-CN"])
     .optional(),
-  sendBehavior: z.enum(["interrupt", "queue", "steer"]).optional(),
+  sendBehavior: z.enum(["interrupt", "steer", "queue"]).optional(),
   serviceUrlBehavior: z.enum(["ask", "in-app", "external"]).optional(),
   terminalScrollbackLines: z.union([z.number(), z.string()]).optional(),
   useLegacyTerminalRenderer: z.boolean().optional(),

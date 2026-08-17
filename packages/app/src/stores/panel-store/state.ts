@@ -32,9 +32,9 @@ export const MIN_EXPLORER_SIDEBAR_WIDTH = 280;
 // Upper bound is intentionally generous; desktop resizing enforces a min-chat-width constraint.
 export const MAX_EXPLORER_SIDEBAR_WIDTH = 2000;
 
-export const DEFAULT_EXPLORER_FILES_SPLIT_RATIO = 0.38;
-export const MIN_EXPLORER_FILES_SPLIT_RATIO = 0.2;
-export const MAX_EXPLORER_FILES_SPLIT_RATIO = 0.8;
+export const DEFAULT_TREE_RAIL_WIDTH = 320;
+export const MIN_TREE_RAIL_WIDTH = 200;
+export const MAX_TREE_RAIL_WIDTH = 600;
 
 // Mission Control board rail (drag-resizable, persisted). Default matches the
 // rail's historic hardcoded width; bounds keep the thread column readable.
@@ -94,8 +94,8 @@ export function clampInspectorWidth(width: number): number {
   return clampNumber(width, MIN_INSPECTOR_WIDTH, MAX_INSPECTOR_WIDTH);
 }
 
-export function clampExplorerFilesSplitRatio(ratio: number): number {
-  return clampNumber(ratio, MIN_EXPLORER_FILES_SPLIT_RATIO, MAX_EXPLORER_FILES_SPLIT_RATIO);
+export function clampTreeRailWidth(width: number): number {
+  return clampNumber(width, MIN_TREE_RAIL_WIDTH, MAX_TREE_RAIL_WIDTH);
 }
 
 export function selectPanelVisibility(
@@ -206,7 +206,7 @@ export const PanelPersistedStateSchema = z.strictObject({
   desktop: DesktopSidebarStorageSchema.optional(),
   explorerTab: ExplorerTabSchema.optional(),
   explorerTabByCheckout: z.record(z.string(), ExplorerTabSchema).optional(),
-  selectedSubmoduleByCheckout: z.record(z.string(), z.string()).optional(),
+  selectedSubmoduleByCheckout: z.record(z.string(), z.unknown()).optional(),
   expandedPathsByWorkspace: z.record(z.string(), z.array(z.string())).optional(),
   diffExpandedPathsByWorkspace: z.record(z.string(), z.array(z.string())).optional(),
   diffCollapsedFoldersByWorkspace: z.record(z.string(), z.array(z.string())).optional(),
@@ -215,12 +215,16 @@ export const PanelPersistedStateSchema = z.strictObject({
   explorerSortOption: z.enum(["name", "modified", "size"]).optional(),
   explorerShowHiddenFiles: z.boolean().optional(),
   explorerFilesSplitRatio: z.number().optional(),
+  treeRailWidth: z.number().optional(),
   boardRailWidth: z.number().optional(),
   inspectorWidth: z.number().optional(),
   boardRailCollapsed: z.boolean().optional(),
 });
 
-type MigratablePanelState = z.infer<typeof PanelPersistedStateSchema> & {
+type MigratablePanelState = Omit<
+  z.infer<typeof PanelPersistedStateSchema>,
+  "selectedSubmoduleByCheckout"
+> & {
   selectedSubmoduleByCheckout?: Record<string, string>;
   boardRailWidth?: number;
   inspectorWidth?: number;
@@ -230,11 +234,6 @@ type MigratablePanelState = z.infer<typeof PanelPersistedStateSchema> & {
 function migratePanelV2Explorer(state: MigratablePanelState, isWeb: boolean): void {
   if (isWeb && typeof state.explorerWidth === "number" && state.explorerWidth === 400) {
     state.explorerWidth = DEFAULT_EXPLORER_SIDEBAR_WIDTH;
-  }
-  if (typeof state.explorerFilesSplitRatio !== "number") {
-    state.explorerFilesSplitRatio = DEFAULT_EXPLORER_FILES_SPLIT_RATIO;
-  } else {
-    state.explorerFilesSplitRatio = clampExplorerFilesSplitRatio(state.explorerFilesSplitRatio);
   }
 }
 
@@ -325,13 +324,28 @@ function migratePanelWorkspaceExpansionMaps(state: MigratablePanelState, version
   }
 }
 
+function migrateTreeRailWidth(state: MigratablePanelState, version: number): void {
+  if (version < 13 || typeof state.treeRailWidth !== "number") {
+    delete state.explorerFilesSplitRatio;
+    state.treeRailWidth = DEFAULT_TREE_RAIL_WIDTH;
+    return;
+  }
+  state.treeRailWidth = clampTreeRailWidth(state.treeRailWidth);
+}
+
 export function migratePanelState(
   persistedState: unknown,
   version: number,
   options: { isWeb: boolean },
 ): MigratablePanelState {
   const result = PanelPersistedStateSchema.safeParse(persistedState);
-  const state: MigratablePanelState = result.success ? result.data : {};
+  const rawState = (result.success ? result.data : {}) as z.infer<typeof PanelPersistedStateSchema>;
+  const state: MigratablePanelState = {
+    ...rawState,
+    selectedSubmoduleByCheckout: sanitizeSelectedSubmoduleByCheckout(
+      rawState.selectedSubmoduleByCheckout,
+    ),
+  };
   const { isWeb } = options;
 
   if (version < 2) {
@@ -355,6 +369,7 @@ export function migratePanelState(
   if (typeof state.explorerShowHiddenFiles !== "boolean") {
     state.explorerShowHiddenFiles = true;
   }
+  migrateTreeRailWidth(state, version);
   if (version < 12) {
     // Compact panel position is transient UI state. Cold starts always begin
     // at content, regardless of what an older version persisted.

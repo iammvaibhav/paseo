@@ -97,6 +97,7 @@ export const ru: TranslationResources = {
       interruptAgent: "Агент прерываний",
       queueMessage: "Сообщение в очереди",
       sendAndInterrupt: "Отправить и прервать",
+      sendAndSteer: "Отправить и направить",
       sendMessage: "Отправить сообщение",
       queue: "Очередь",
       send: "Отправлять",
@@ -692,6 +693,7 @@ export const ru: TranslationResources = {
         renameAgent: "Переименовать агента",
       },
       actions: {
+        newTab: "Новая вкладка",
         newAgent: "Новый агент",
         newTerminal: "Новый терминал",
         preparingTerminal: "Подготовка вкладки терминала",
@@ -700,6 +702,9 @@ export const ru: TranslationResources = {
         exitFocusMode: "Выйти из режима фокусировки",
         splitRight: "Разделить панель справа",
         splitDown: "Разделить панель вниз",
+        changes: "Изменения",
+        files: "Файлы",
+        pullRequest: "Запрос на слияние",
         terminalProfilesMenu: "Terminal profiles",
         editTerminalProfiles: "Edit profiles…",
         pinTarget: "Закрепить",
@@ -1824,6 +1829,18 @@ export const ru: TranslationResources = {
         reloadMessage: "Локальные изменения будут потеряны.",
       },
     },
+    files: {
+      label: "Файлы",
+      subtitle: "Файлы рабочего пространства",
+      tooltip: "Просмотр файлов рабочего пространства",
+    },
+    pullRequest: {
+      label: "Запрос на слияние",
+      subtitle: "Сведения о запросе на слияние",
+      emptyTitle: "Запроса на слияние пока нет",
+      emptyDescription:
+        "Создайте запрос на слияние для этой рабочей копии, чтобы увидеть здесь его сведения.",
+    },
     diff: {
       changesLabel: "Изменения",
       changesSubtitle: "Различия рабочего дерева",
@@ -2028,8 +2045,8 @@ export const ru: TranslationResources = {
         },
         options: {
           interrupt: "Прерывать",
+          steer: "Направить",
           queue: "Очередь",
-          steer: "Направлять",
         },
       },
       serviceUrls: {

@@ -94,6 +94,7 @@ export const en = {
       interruptAgent: "Interrupt agent",
       queueMessage: "Queue message",
       sendAndInterrupt: "Send and interrupt",
+      sendAndSteer: "Send and steer",
       sendMessage: "Send message",
       queue: "Queue",
       send: "Send",
@@ -686,6 +687,7 @@ export const en = {
         renameAgent: "Rename agent",
       },
       actions: {
+        newTab: "New tab",
         newAgent: "New agent",
         newTerminal: "New terminal",
         preparingTerminal: "Preparing terminal tab",
@@ -694,6 +696,9 @@ export const en = {
         exitFocusMode: "Exit focus mode",
         splitRight: "Split pane right",
         splitDown: "Split pane down",
+        changes: "Changes",
+        files: "Files",
+        pullRequest: "Pull request",
         terminalProfilesMenu: "Terminal profiles",
         editTerminalProfiles: "Edit profiles…",
         pinTarget: "Pin",
@@ -1800,6 +1805,17 @@ export const en = {
         reloadMessage: "Your local changes will be lost.",
       },
     },
+    files: {
+      label: "Files",
+      subtitle: "Workspace files",
+      tooltip: "Browse workspace files",
+    },
+    pullRequest: {
+      label: "Pull request",
+      subtitle: "Pull request details",
+      emptyTitle: "No pull request yet",
+      emptyDescription: "Create a pull request for this checkout to see its details here.",
+    },
     diff: {
       changesLabel: "Changes",
       changesSubtitle: "Working tree diff",
@@ -2060,8 +2076,8 @@ export const en = {
         },
         options: {
           interrupt: "Interrupt",
-          queue: "Queue",
           steer: "Steer",
+          queue: "Queue",
         },
       },
       serviceUrls: {

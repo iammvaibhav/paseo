@@ -97,6 +97,7 @@ export const ko: TranslationResources = {
       interruptAgent: "에이전트 중단",
       queueMessage: "메시지 대기열에 추가",
       sendAndInterrupt: "보내고 중단",
+      sendAndSteer: "보내고 지시 추가",
       sendMessage: "메시지 보내기",
       queue: "대기열",
       send: "보내기",
@@ -690,6 +691,7 @@ export const ko: TranslationResources = {
         renameAgent: "에이전트 이름 변경",
       },
       actions: {
+        newTab: "새 탭",
         newAgent: "새 에이전트",
         newTerminal: "새 터미널",
         preparingTerminal: "터미널 탭 준비 중",
@@ -698,6 +700,9 @@ export const ko: TranslationResources = {
         exitFocusMode: "집중 모드 종료",
         splitRight: "창을 오른쪽으로 분할",
         splitDown: "창을 아래로 분할",
+        changes: "변경 사항",
+        files: "파일",
+        pullRequest: "풀 리퀘스트",
         terminalProfilesMenu: "터미널 프로필",
         editTerminalProfiles: "프로필 편집…",
         pinTarget: "고정",
@@ -1800,6 +1805,17 @@ export const ko: TranslationResources = {
       },
       notFoundOnHost: "File not found on the host: {{path}}",
     },
+    files: {
+      label: "파일",
+      subtitle: "워크스페이스 파일",
+      tooltip: "워크스페이스 파일 탐색",
+    },
+    pullRequest: {
+      label: "풀 리퀘스트",
+      subtitle: "풀 리퀘스트 세부 정보",
+      emptyTitle: "아직 풀 리퀘스트가 없습니다",
+      emptyDescription: "이 체크아웃에 풀 리퀘스트를 만들면 세부 정보가 여기에 표시됩니다.",
+    },
     diff: {
       changesLabel: "변경 사항",
       changesSubtitle: "작업 트리 diff",
@@ -2005,8 +2021,8 @@ export const ko: TranslationResources = {
         },
         options: {
           interrupt: "중단",
+          steer: "지시",
           queue: "대기열",
-          steer: "스티어링",
         },
       },
       serviceUrls: {

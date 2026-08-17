@@ -78,9 +78,9 @@ import {
   buildWebhooksRoute,
   buildSessionsRoute,
   buildSettingsAddHostRoute,
-  buildSettingsHostSectionRoute,
   buildSettingsRoute,
 } from "@/utils/host-routes";
+import { openHostOverview } from "@/navigation/settings-navigation";
 import type { ShortcutKey } from "@/utils/format-shortcut";
 import { SidebarAgentListSkeleton } from "./sidebar-agent-list-skeleton";
 import { SidebarCalloutSlot } from "./sidebar-callout-slot";
@@ -218,13 +218,13 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
   const handleOpenHostSettingsMobile = useCallback(
     (serverId: string) => {
       showMobileAgent();
-      router.push(buildSettingsHostSectionRoute(serverId, "connections"));
+      openHostOverview(serverId);
     },
     [showMobileAgent],
   );
 
   const handleOpenHostSettingsDesktop = useCallback((serverId: string) => {
-    router.push(buildSettingsHostSectionRoute(serverId, "connections"));
+    openHostOverview(serverId);
   }, []);
 
   const handleHomeMobile = useCallback(() => {

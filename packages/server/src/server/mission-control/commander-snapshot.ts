@@ -33,6 +33,7 @@ export interface CommanderSnapshotInjectorOptions {
     | "streamAgent"
     | "reloadAgentSession"
     | "beforeAgentRun"
+    | "steerOrReplaceActiveTurn"
   >;
   logger: Logger;
   /** Build the current world snapshot (mission-control/context). */

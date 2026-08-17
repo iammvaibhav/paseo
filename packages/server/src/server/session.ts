@@ -8396,21 +8396,26 @@ export class Session {
             hasOlder: selectedTimeline.hasOlder,
             hasNewer: selectedTimeline.hasNewer,
             ...(msg.mergeWindow === true ? { mergeWindow: true } : {}),
-            entries: selectedTimeline.entries.map((entry) => ({
-              provider: providerId,
-              item: entry.item,
-              timestamp: entry.timestamp,
-              seqStart: entry.seqStart,
-              seqEnd: entry.seqEnd,
-              sourceSeqRanges: entry.sourceSeqRanges,
-              collapsed: (
-                source
-                  ? this.supportsForSource(CLIENT_CAPS.reasoningMergeEnum, source)
-                  : this.supports(CLIENT_CAPS.reasoningMergeEnum)
-              )
-                ? entry.collapsed
-                : entry.collapsed.filter((value) => value !== "reasoning_merge"),
-            })),
+            entries: selectedTimeline.entries.map((entry) => {
+              const payloadEntry = {
+                provider: providerId,
+                item: entry.item,
+                timestamp: entry.timestamp,
+                seqStart: entry.seqStart,
+                seqEnd: entry.seqEnd,
+                sourceSeqRanges: entry.sourceSeqRanges,
+                turnId: undefined as string | undefined,
+                collapsed: (
+                  source
+                    ? this.supportsForSource(CLIENT_CAPS.reasoningMergeEnum, source)
+                    : this.supports(CLIENT_CAPS.reasoningMergeEnum)
+                )
+                  ? entry.collapsed
+                  : entry.collapsed.filter((value) => value !== "reasoning_merge"),
+              };
+              payloadEntry.turnId = entry.turnId;
+              return payloadEntry;
+            }),
             error: null,
           },
         },
@@ -8720,51 +8725,9 @@ export class Session {
     msg: Extract<SessionInboundMessage, { type: "send_agent_message_request" }>,
     agentId: string,
     prompt: AgentPromptInput,
-  ): Promise<{ outOfBand: boolean }> {
-    if (msg.dispatchMode === "steer") {
-      // Steer: deliver against the live turn without canceling it. An idle
-      // agent just runs the prompt (there is nothing to steer). A busy agent
-      // gets the native out-of-band steer when the provider has one — OMP
-      // accepts the text wrapped as `/steer …` and redirects the live turn.
-      // Busy on a provider WITHOUT a native steer path (or a structured prompt
-      // with attachments) falls back to an INTERRUPT (replaceRunning) — a
-      // steer's value is timely delivery, and queue-until-idle can sit for
-      // tens of minutes (matches dispatchLocalPromptMode's rule).
-      const busy = this.agentManager.hasInFlightRun(agentId);
-      if (busy) {
-        const steerPrompt = typeof prompt === "string" ? `/steer ${prompt}` : prompt;
-        if (steerPrompt !== prompt && this.agentManager.tryRunOutOfBand(agentId, steerPrompt)) {
-          return { outOfBand: true };
-        }
-        // Native steer could not be delivered (provider without a steer path,
-        // or a "running" record whose runtime is dead): escalate to an
-        // interrupt-style send (fresh run, replaceRunning) — never queue.
-        // A refused replace surfaces the error; a dead runtime is force-cancelled
-        // so the fresh run takes over.
-        return sendPromptToAgent({
-          agentManager: this.agentManager,
-          agentStorage: this.agentStorage,
-          agentId,
-          prompt,
-          replaceOrigin: "user",
-          messageId: msg.messageId,
-          logger: this.sessionLogger,
-        });
-      }
-      // No live in-flight run (idle agent, or a stored-only record whose
-      // runtime is gone): start a fresh run via the full send path — which
-      // loads the agent from storage first — never queue. The message is a
-      // USER prompt starting a run, not a supersede, so no stop origin.
-      return sendPromptToAgent({
-        agentManager: this.agentManager,
-        agentStorage: this.agentStorage,
-        agentId,
-        prompt,
-        replaceOrigin: "user",
-        messageId: msg.messageId,
-        logger: this.sessionLogger,
-      });
-    }
+  ): Promise<{ disposition: "out_of_band" | "steered" | "turn_started" }> {
+    const activeTurnBehavior =
+      msg.activeTurnBehavior ?? (msg.dispatchMode === "steer" ? "steer" : "interrupt");
     if (msg.dispatchMode === "queue") {
       // Queue: wait for idle first, then stream without replacing.
       await this.waitForAgentIdle(agentId);
@@ -8772,8 +8735,6 @@ export class Session {
         replaceRunning: false,
       });
     }
-    // Default (interrupt) send: sending new work replaces the in-flight run
-    // without recording a stop origin.
     return sendPromptToAgent({
       agentManager: this.agentManager,
       agentStorage: this.agentStorage,
@@ -8781,6 +8742,7 @@ export class Session {
       prompt,
       replaceOrigin: "user",
       messageId: msg.messageId,
+      activeTurnBehavior,
       logger: this.sessionLogger,
     });
   }
@@ -8863,11 +8825,12 @@ export class Session {
         {
           agentId,
           messageId: msg.messageId,
+          activeTurnBehavior: msg.activeTurnBehavior,
           textPrefix: msg.text.slice(0, 80),
         },
         "agent.session.send_agent_message",
       );
-      let dispatchResult: { outOfBand: boolean };
+      let dispatchResult: { disposition: "out_of_band" | "steered" | "turn_started" };
       try {
         dispatchResult = await this.dispatchAgentMessageRun(msg, agentId, prompt);
       } catch (error) {
@@ -8885,7 +8848,7 @@ export class Session {
         return;
       }
 
-      if (dispatchResult.outOfBand) {
+      if (dispatchResult.disposition !== "turn_started") {
         this.emit({
           type: "send_agent_message_response",
           payload: {

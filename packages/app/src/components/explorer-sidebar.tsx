@@ -13,19 +13,10 @@ import { Gesture } from "react-native-gesture-handler";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { HardDrive, X } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
-import {
-  formatPrTabLabel,
-  PullRequestPane,
-  PullRequestPaneError,
-  PullRequestPaneSkeleton,
-  PullRequestTabIcon,
-  usePrPaneData,
-} from "@/git/pull-request-panel";
-import { useCheckoutGitActionsStore } from "@/git/actions-store";
+import { formatPrTabLabel, PullRequestTabIcon, usePrPaneData } from "@/git/pull-request-panel";
 import type { Forge } from "@/git/forge";
 import type { UsePrPaneDataResult } from "@/git/pull-request-panel/use-data";
 import { usePanelStore, selectIsFileExplorerOpen, type ExplorerTab } from "@/stores/panel-store";
-import { useToast } from "@/contexts/toast-context";
 import { useCloseFileExplorerGesture } from "@/mobile-panels/gestures";
 import { MobilePanelOverlay } from "@/mobile-panels/presentation";
 import { HEADER_INNER_HEIGHT } from "@/constants/layout";
@@ -37,7 +28,6 @@ import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
 import { RetainedPanelActivity } from "@/components/retained-panel";
 import { getIsElectron } from "@/constants/platform";
 import { SidebarResizeHandle } from "@/components/sidebar-resize-handle";
-import { buildWorkspaceAttachmentScopeKey } from "@/attachments/workspace-attachments-store";
 import { resolveDesktopExplorerWidth } from "@/components/desktop-sidebar-layout";
 import { findSubmodule, useSubmodulesQuery } from "@/git/use-submodules-query";
 import { SubmodulePicker } from "@/git/submodule-picker";
@@ -46,11 +36,8 @@ import {
   SIDEBAR_RESIZE_ACTIVATION_OFFSET,
   SIDEBAR_RESIZE_FAIL_OFFSET,
 } from "@/components/sidebar-resize-handle-layout";
-import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
-import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
-import { resolveFocusedChatTarget } from "@/composer/focused-chat-target";
-import { createWorkspaceFileAttachment } from "@/attachments/workspace-file";
-import { useDraftStore } from "@/stores/draft-store";
+import { PullRequestContent } from "@/panels/pull-request";
+import { useAddFileToChat } from "@/panels/use-add-file-to-chat";
 
 function logExplorerSidebar(_event: string, _details: Record<string, unknown>): void {}
 
@@ -481,46 +468,6 @@ function useSubmoduleContext({
   );
   return { effectiveCwd, submodules, hasSubmodules, selectedSubmodule, setSelectedSubmodule };
 }
-
-/**
- * Shared add-to-chat state for the changes/files panes: both expose an "add file
- * to chat" action that attaches the file to the focused chat's composer.
- * Available only when a workspace with a focused chat is available.
- */
-function useAddFileToChat({
-  serverId,
-  workspaceId,
-}: {
-  serverId: string;
-  workspaceId?: string | null;
-}) {
-  const workspaceKey = workspaceId
-    ? buildWorkspaceTabPersistenceKey({ serverId, workspaceId })
-    : null;
-  const layout = useWorkspaceLayoutStore((state) =>
-    workspaceKey ? state.layoutByWorkspace[workspaceKey] : undefined,
-  );
-  const focusTab = useWorkspaceLayoutStore((state) => state.focusTab);
-  const focusedChat = useMemo(
-    () => resolveFocusedChatTarget({ serverId, layout }),
-    [serverId, layout],
-  );
-  const addFile = useCallback(
-    (filePath: string) => {
-      if (!focusedChat || !workspaceKey) {
-        return;
-      }
-      void useDraftStore.getState().attachWorkspaceFile({
-        draftKey: focusedChat.draftKey,
-        attachment: createWorkspaceFileAttachment({ path: filePath }),
-      });
-      focusTab(workspaceKey, focusedChat.tabId);
-    },
-    [focusTab, focusedChat, workspaceKey],
-  );
-  return { addFile, canAddToChat: focusedChat !== null };
-}
-
 function ExplorerContentArea({
   showHostFiles,
   resolvedTab,
@@ -534,8 +481,6 @@ function ExplorerContentArea({
   onOpenDiff,
   onOpenHostFile,
   prPane,
-  workspaceAttachmentScopeKey,
-  onPrRetry,
 }: {
   showHostFiles: boolean;
   resolvedTab: ExplorerTab;
@@ -549,8 +494,6 @@ function ExplorerContentArea({
   onOpenDiff?: (filePath: string, baseRef: string | null) => void;
   onOpenHostFile: (filePath: string) => void;
   prPane: UsePrPaneDataResult;
-  workspaceAttachmentScopeKey: string;
-  onPrRetry: () => void;
 }) {
   const { addFile, canAddToChat } = useAddFileToChat({ serverId, workspaceId });
   // The changes and files panes are rooted at the selected submodule, so the
@@ -603,6 +546,7 @@ function ExplorerContentArea({
     <View style={styles.contentArea} testID="explorer-content-area">
       {resolvedTab === "changes" && (
         <GitDiffPane
+          host="explorer"
           serverId={serverId}
           workspaceId={workspaceId}
           cwd={effectiveCwd}
@@ -622,12 +566,11 @@ function ExplorerContentArea({
         />
       )}
       {resolvedTab === "pr" && (
-        <PrTabContent
+        <PullRequestContent
           serverId={serverId}
+          workspaceId={workspaceId}
           cwd={effectiveCwd}
           prPane={prPane}
-          workspaceAttachmentScopeKey={workspaceAttachmentScopeKey}
-          onRetry={onPrRetry}
         />
       )}
     </View>
@@ -649,7 +592,6 @@ function ExplorerSidebarContent({
 }: SidebarContentProps) {
   const { theme } = useUnistyles();
   const { t } = useTranslation();
-  const toast = useToast();
   const hasRightWindowControls = useHasOwnedWindowChromeObstruction("top-right");
   const [showHostFiles, setShowHostFiles] = useState(false);
 
@@ -680,16 +622,6 @@ function ExplorerSidebarContent({
       onOpenHostFile?.(filePath.startsWith("/") ? filePath : `/${filePath}`);
     },
     [onOpenHostFile],
-  );
-  const refreshGitActions = useCheckoutGitActionsStore((s) => s.refresh);
-  const handlePrRetry = useCallback(() => {
-    refreshGitActions({ serverId, cwd: effectiveCwd }).catch((error) => {
-      toast.error(error instanceof Error ? error.message : t("workspace.git.diff.failedRefresh"));
-    });
-  }, [refreshGitActions, serverId, t, toast, effectiveCwd]);
-  const workspaceAttachmentScopeKey = useMemo(
-    () => buildWorkspaceAttachmentScopeKey({ serverId, workspaceId, cwd: effectiveCwd }),
-    [serverId, workspaceId, effectiveCwd],
   );
 
   return (
@@ -761,43 +693,9 @@ function ExplorerSidebarContent({
         onOpenDiff={onOpenDiff}
         onOpenHostFile={handleOpenHostFile}
         prPane={prPane}
-        workspaceAttachmentScopeKey={workspaceAttachmentScopeKey}
-        onPrRetry={handlePrRetry}
       />
     </View>
   );
-}
-
-interface PrTabContentProps {
-  serverId: string;
-  cwd: string;
-  prPane: UsePrPaneDataResult;
-  workspaceAttachmentScopeKey: string;
-  onRetry: () => void;
-}
-
-function PrTabContent({
-  serverId,
-  cwd,
-  prPane,
-  workspaceAttachmentScopeKey,
-  onRetry,
-}: PrTabContentProps) {
-  if (prPane.data) {
-    return (
-      <PullRequestPane
-        serverId={serverId}
-        cwd={cwd}
-        data={prPane.data}
-        activityLoading={prPane.activityLoading}
-        workspaceAttachmentScopeKey={workspaceAttachmentScopeKey}
-      />
-    );
-  }
-  if (prPane.error) {
-    return <PullRequestPaneError onRetry={onRetry} />;
-  }
-  return <PullRequestPaneSkeleton />;
 }
 
 // Static styles for Animated.Views — must NOT use Unistyles dynamic theme to

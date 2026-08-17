@@ -1,9 +1,12 @@
 import type { TFunction } from "i18next";
+import type { SendBehavior } from "@/hooks/use-settings/storage";
 
 export function resolveSubmitAccessibilityLabel(input: {
   submitButtonAccessibilityLabel: string | undefined;
   canPressLoadingButton: boolean;
   defaultActionQueues: boolean;
+  defaultSendBehavior: SendBehavior;
+  /** Out-of-band commands (fork) run against the live turn without canceling it. */
   sendsOutOfBand: boolean;
   isAgentRunning: boolean;
   t: TFunction;
@@ -14,7 +17,11 @@ export function resolveSubmitAccessibilityLabel(input: {
   // An out-of-band command runs against the live turn without canceling it, so
   // "send and interrupt" would be wrong even while the agent is running.
   if (input.isAgentRunning && !input.sendsOutOfBand) {
-    return input.t("composer.input.sendAndInterrupt");
+    return input.t(
+      input.defaultSendBehavior === "steer"
+        ? "composer.input.sendAndSteer"
+        : "composer.input.sendAndInterrupt",
+    );
   }
   return input.t("composer.input.sendMessage");
 }

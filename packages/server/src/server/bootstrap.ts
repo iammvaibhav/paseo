@@ -130,6 +130,7 @@ import type { LocalSpeechProviderConfig } from "./speech/providers/local/config.
 import type { RequestedSpeechProviders } from "./speech/speech-types.js";
 import { createSpeechService } from "./speech/speech-runtime.js";
 import { AgentManager } from "./agent/agent-manager.js";
+import { FileAgentTimelineStore } from "./agent/file-agent-timeline-store.js";
 import { AgentStorage, type StoredAgentRecord } from "./agent/agent-storage.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
 import { createAgentMcpServer } from "./agent/mcp-server.js";
@@ -1131,6 +1132,7 @@ export async function createPaseoDaemon(
   serviceProxyListenTarget = resolveServiceProxyListenTarget(config.serviceProxy);
 
   const agentStorage = new AgentStorage(config.agentStoragePath, logger);
+  const timelineStore = new FileAgentTimelineStore(path.join(config.paseoHome, "agent-timelines"));
   const projectRegistry = new FileBackedProjectRegistry(
     path.join(config.paseoHome, "projects", "projects.json"),
     logger,
@@ -1204,6 +1206,7 @@ export async function createPaseoDaemon(
   // no-op until constructed.
   let commanderSnapshotInjector: CommanderSnapshotInjector | null = null;
   const agentManager: AgentManager = new AgentManager({
+    durableTimelineStore: timelineStore,
     clients: initialAgentManagerState.clients,
     providerDefinitions: initialAgentManagerState.providerDefinitions,
     registry: agentStorage,

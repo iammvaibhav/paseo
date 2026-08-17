@@ -7,6 +7,7 @@ import {
 import {
   buildOpenFileExplorerPatch,
   buildToggleFileExplorerPatch,
+  DEFAULT_TREE_RAIL_WIDTH,
   migratePanelState,
   selectIsAgentListOpen,
   selectIsFileExplorerOpen,
@@ -135,6 +136,13 @@ describe("panel-store migration", () => {
     expect(state.selectedSubmoduleByCheckout).toEqual({
       "server-1::/tmp/repo": "packages/vendor",
     });
+  });
+
+  it("replaces the dead explorer split ratio with the shared tree rail width", () => {
+    const state = migratePanelState({ explorerFilesSplitRatio: 0.5 }, 12, { isWeb: false });
+
+    expect(state.explorerFilesSplitRatio).toBeUndefined();
+    expect(state.treeRailWidth).toBe(DEFAULT_TREE_RAIL_WIDTH);
   });
 
   it("drops persisted compact panel state so cold starts return to content", () => {

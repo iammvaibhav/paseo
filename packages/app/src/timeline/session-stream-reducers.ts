@@ -126,6 +126,7 @@ interface TimelineResponseEntry {
   sourceSeqRanges?: TimelineSeqRange[];
   collapsed?: string[];
   provider: string;
+  turnId?: string;
   item: Record<string, unknown>;
   timestamp: string;
 }
@@ -1281,6 +1282,7 @@ export function processTimelineResponse(
       type: "timeline",
       provider: entry.provider,
       item: entry.item,
+      ...(entry.turnId ? { turnId: entry.turnId } : {}),
     } as AgentStreamEventPayload,
     timestamp: new Date(entry.timestamp),
   }));

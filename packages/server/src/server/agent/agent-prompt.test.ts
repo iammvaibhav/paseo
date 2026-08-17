@@ -357,7 +357,6 @@ test("a prompt does not reload a live or unreportable runtime", async () => {
   await silent.send();
   expect(silent.reloadAgentSession).not.toHaveBeenCalled();
 });
-
 test("finish notifications tell the parent the child's last assistant message", async () => {
   const scenario = createFinishNotificationScenario({
     childLastAssistantMessage: "Implemented the cleanup and all checks pass.",

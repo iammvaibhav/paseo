@@ -123,26 +123,17 @@ import {
   useEnableBuiltInDaemonOption,
 } from "@/desktop/hooks/use-enable-built-in-daemon-option";
 import {
-  buildOpenProjectRoute,
   buildSettingsHostSectionRoute,
   buildSettingsSectionRoute,
   type HostSectionSlug,
   type SettingsSectionSlug,
 } from "@/utils/host-routes";
-import {
-  navigateToLastWorkspace,
-  useLastWorkspaceSelection,
-} from "@/stores/navigation-active-workspace-store";
+import { useLastWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
+import { returnFromSettings, type SettingsView } from "@/navigation/settings-navigation";
 
 // ---------------------------------------------------------------------------
 // View model
 // ---------------------------------------------------------------------------
-
-export type SettingsView =
-  | { kind: "root" }
-  | { kind: "section"; section: SettingsSectionSlug }
-  | { kind: "host"; serverId: string; section: HostSectionSlug }
-  | { kind: "project"; serverId: string; projectId: string };
 
 interface SidebarSectionItem {
   id: SettingsSectionSlug;
@@ -203,12 +194,6 @@ const HOST_SECTION_ITEMS: HostSectionItem[] = [
   { id: "plugins", labelKey: "settings.hostSections.plugins", icon: Blocks },
 ];
 
-const SEND_BEHAVIOR_DESCRIPTION_KEYS: Record<SendBehavior, string> = {
-  interrupt: "settings.general.defaultSend.descriptions.interrupt",
-  steer: "settings.general.defaultSend.descriptions.steer",
-  queue: "settings.general.defaultSend.descriptions.queue",
-};
-
 function renderHostSettingsContent(
   view: Extract<SettingsView, { kind: "host" }>,
   onHostRemoved: () => void,
@@ -262,8 +247,8 @@ function selectedSidebarItemStyle({ hovered }: PressableStateCallbackType & { ho
 function getSendBehaviorOptions(t: TFunction) {
   return [
     { value: "interrupt" as const, label: t("settings.general.defaultSend.options.interrupt") },
-    { value: "queue" as const, label: t("settings.general.defaultSend.options.queue") },
     { value: "steer" as const, label: t("settings.general.defaultSend.options.steer") },
+    { value: "queue" as const, label: t("settings.general.defaultSend.options.queue") },
   ];
 }
 
@@ -354,7 +339,7 @@ function GeneralSection({
   const { t, i18n } = useTranslation();
   const activeLocale = getActiveLocale(i18n.language);
   const sendBehaviorOptions = useMemo(() => getSendBehaviorOptions(t), [t]);
-  const sendBehaviorDescriptionKey = SEND_BEHAVIOR_DESCRIPTION_KEYS[settings.sendBehavior];
+  const sendBehaviorDescriptionKey = `settings.general.defaultSend.descriptions.${settings.sendBehavior}`;
   const selectedLanguageOption = LANGUAGE_OPTIONS.find(
     (option) => option.value === settings.language,
   );
@@ -1380,29 +1365,13 @@ export default function SettingsScreen({ view, openAddHostIntent = null }: Setti
     }
   }, [isCompactLayout, router]);
 
-  const handleBackToRoot = useCallback(() => {
-    if (router.canGoBack()) {
-      router.back();
-    } else {
-      router.replace("/settings");
-    }
-  }, [router]);
-
-  const detailProjectServerId = view.kind === "project" ? view.serverId : null;
   const handleBackFromDetail = useCallback(() => {
-    if (detailProjectServerId) {
-      router.navigate(buildSettingsHostSectionRoute(detailProjectServerId, "projects"));
-      return;
-    }
-    handleBackToRoot();
-  }, [detailProjectServerId, handleBackToRoot, router]);
+    returnFromSettings(view);
+  }, [view]);
 
   const handleBackToWorkspace = useCallback(() => {
-    if (navigateToLastWorkspace()) {
-      return;
-    }
-    router.replace(buildOpenProjectRoute());
-  }, [router]);
+    returnFromSettings({ kind: "root" });
+  }, []);
 
   const detailHeader = ((): {
     title: string;
@@ -1430,7 +1399,14 @@ export default function SettingsScreen({ view, openAddHostIntent = null }: Setti
       return renderHostSettingsContent(view, handleHostRemoved);
     }
     if (view.kind === "project") {
-      return <ProjectSettingsScreen serverId={view.serverId} projectId={view.projectId} />;
+      return (
+        <ProjectSettingsScreen
+          serverId={view.serverId}
+          projectId={view.projectId}
+          onBackToProjects={handleBackFromDetail}
+          showBackToProjects={!isCompactLayout}
+        />
+      );
     }
     if (view.kind === "section") {
       switch (view.section) {
