@@ -62,10 +62,115 @@ describe("classifyThreadRow", () => {
     expect(classifyThreadRow(row, true)).toBe("card");
   });
 
-  it("classifies an ordinary event card in both modes", () => {
-    const row: ThreadRow = { kind: "event", event: event(), ts: 1_752_000_000_000 };
+  it("classifies a blocked needs-you card in both modes", () => {
+    const row: ThreadRow = {
+      kind: "event",
+      event: event({ kind: "blocked", severity: "blocker", headline: "Waiting for permission" }),
+      ts: 1_752_000_000_000,
+    };
+    // Blocked is NOT in the skip list (spec 07): a blocker is a needs-you
+    // card for the user and stays visible in normal mode.
     expect(classifyThreadRow(row, false)).toBe("card");
     expect(classifyThreadRow(row, true)).toBe("card");
+  });
+
+  it("skips machinery status kinds in normal mode and renders them in verbose mode", () => {
+    const kinds = [
+      "started",
+      "finished",
+      "milestone",
+      "finding",
+      "interrupted",
+      "diverged",
+      "stalled",
+      "failed",
+    ] as const;
+    for (const kind of kinds) {
+      const row: ThreadRow = { kind: "event", event: event({ kind }), ts: 1_752_000_000_000 };
+      expect(classifyThreadRow(row, false)).toBe("skip");
+      expect(classifyThreadRow(row, true)).toBe("card");
+    }
+  });
+
+  it("skips a state-only verdict card in normal mode and renders it in verbose mode", () => {
+    const row: ThreadRow = {
+      kind: "event",
+      event: event({ kind: "verdict", stateOnly: true, headline: "Marked done" }),
+      ts: 1_752_000_000_000,
+    };
+    expect(classifyThreadRow(row, false)).toBe("skip");
+    expect(classifyThreadRow(row, true)).toBe("card");
+  });
+
+  it("renders a verdict-insufficient card (no stateOnly stamp) in both modes", () => {
+    const row: ThreadRow = {
+      kind: "event",
+      event: event({ kind: "verdict", headline: "Done — insufficient", detail: "proofs missing" }),
+      ts: 1_752_000_000_000,
+    };
+    // The item stays needs-you: the card is a decision, never hidden.
+    expect(classifyThreadRow(row, false)).toBe("card");
+    expect(classifyThreadRow(row, true)).toBe("card");
+  });
+
+  it("renders proposals in both modes when they are not machinery stall nudges", () => {
+    const row: ThreadRow = {
+      kind: "event",
+      event: event({
+        kind: "proposal",
+        severity: "blocker",
+        headline: "Proposal (commander): needs your review",
+        proposal: {
+          id: "proposal-card",
+          createdAt: new Date().toISOString(),
+          origin: "commander",
+          serverId: "server-1",
+          targetAgentId: "agent-1",
+          message: "Approve the spawn?",
+          deliveryMode: "interrupt",
+          reason: "Needs a decision",
+          classification: "normal",
+          status: "pending",
+        },
+      }),
+      ts: 1_752_000_000_000,
+    };
+    expect(classifyThreadRow(row, false)).toBe("card");
+    expect(classifyThreadRow(row, true)).toBe("card");
+  });
+
+  it("renders clarification and answer cards in both modes", () => {
+    for (const kind of ["clarification", "answer"] as const) {
+      const row: ThreadRow = {
+        kind: "event",
+        event: event({ kind }),
+        ts: 1_752_000_000_000,
+      };
+      expect(classifyThreadRow(row, false)).toBe("card");
+      expect(classifyThreadRow(row, true)).toBe("card");
+    }
+  });
+
+  it("verbose mode renders every event kind", () => {
+    const kinds = [
+      "started",
+      "finished",
+      "failed",
+      "blocked",
+      "stalled",
+      "milestone",
+      "finding",
+      "diverged",
+      "proposal",
+      "verdict",
+      "interrupted",
+      "clarification",
+      "answer",
+    ] as const;
+    for (const kind of kinds) {
+      const row: ThreadRow = { kind: "event", event: event({ kind }), ts: 1_752_000_000_000 };
+      expect(classifyThreadRow(row, true)).toBe("card");
+    }
   });
 
   it("classifies commander rows (messages, tool calls) as gap in both modes", () => {

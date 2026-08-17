@@ -99,6 +99,8 @@ import {
   MissionControlInstructionsListResponseSchema,
   MissionControlInstructionsCloseRequestSchema,
   MissionControlInstructionsCloseResponseSchema,
+  MissionControlInstructionsOpenRequestSchema,
+  MissionControlInstructionsOpenResponseSchema,
   MissionControlVoiceMirrorRequestSchema,
   MissionControlVoiceMirrorResponseSchema,
   MissionControlRecallRequestSchema,
@@ -1076,6 +1078,11 @@ export const AgentSnapshotPayloadSchema = z.object({
   // crash, watchdog/boot heal) is Interrupted and lands in Needs-you.
   // Optional for wire back-compat: old daemons simply omit it.
   stoppedBy: z.enum(["user", "machinery", "system"]).optional(),
+  // Canonical Mission Control lifecycle bucket (spec 01), computed
+  // daemon-side from stored state (agent record + review-state.json +
+  // proposal index). Additive; absent on payloads from daemons predating the
+  // field (clients degrade to their own derivation).
+  bucket: z.enum(["needs_you", "running", "ready", "done", "idle"]).optional(),
   archivedAt: z.string().nullable().optional(),
   providerUnavailable: z.boolean().optional(),
 });
@@ -1092,6 +1099,16 @@ export const AgentListItemPayloadSchema = z.object({
   effectiveThinkingOptionId: z.string().nullable().optional(),
   status: AgentStatusSchema,
   cwd: z.string(),
+  // Mission Control roster identity + placement (spec 03): every fleet tool
+  // result names the typed ids of the entities it lists, so a model can act
+  // on bare ids. Additive for wire back-compat — older daemons/clients omit
+  // them and degrade to their own resolution.
+  workspaceId: z.string().optional(),
+  projectId: z.string().optional(),
+  serverId: z.string().optional(),
+  name: z.string().optional(),
+  description: z.string().optional(),
+  bucket: z.enum(["needs_you", "running", "ready", "done", "idle"]).optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
   lastUserMessageAt: z.string().nullable(),
@@ -3419,6 +3436,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   MissionControlEventForwardRequestSchema,
   MissionControlInstructionsListRequestSchema,
   MissionControlInstructionsCloseRequestSchema,
+  MissionControlInstructionsOpenRequestSchema,
   MissionControlVoiceMirrorRequestSchema,
   MissionControlRecallRequestSchema,
   MissionControlContextRecordsRequestSchema,
@@ -6644,6 +6662,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   MissionControlEventForwardResponseSchema,
   MissionControlInstructionsListResponseSchema,
   MissionControlInstructionsCloseResponseSchema,
+  MissionControlInstructionsOpenResponseSchema,
   MissionControlVoiceMirrorResponseSchema,
   MissionControlRecallResponseSchema,
   MissionControlContextRecordsResponseSchema,

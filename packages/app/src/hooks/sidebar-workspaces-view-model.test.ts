@@ -916,11 +916,12 @@ describe("deriveProjectStatusBucket", () => {
                 status: "running",
                 archivedAt: new Date(2_000),
               }),
+              agent({ id: "parent", workspaceId: "ws-1", status: "idle" }),
               agent({
                 id: "subagent",
                 workspaceId: "ws-1",
                 status: "running",
-                parentAgentId: "a1",
+                parentAgentId: "parent",
               }),
             ],
           }),

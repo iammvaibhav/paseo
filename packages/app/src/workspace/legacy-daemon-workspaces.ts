@@ -4,9 +4,9 @@ import type {
   FetchAgentsOptions,
 } from "@getpaseo/client/internal/daemon-client";
 import {
-  deriveAgentStateBucket,
-  getWorkspaceStateBucketPriority,
-} from "@getpaseo/protocol/agent-state-bucket";
+  deriveSidebarStateBucket,
+  getSidebarStateBucketPriority,
+} from "@/utils/sidebar-agent-state";
 import type {
   Agent,
   DaemonServerInfo,
@@ -280,11 +280,12 @@ export function buildLegacyWorkspaces(
   const workspaces = new Map<string, WorkspaceDescriptor>();
   for (const entry of entries) {
     const workspaceId = entry.agent.workspaceId ?? resolveLegacyWorkspaceId(entry);
-    const status = deriveAgentStateBucket({
+    const status = deriveSidebarStateBucket({
+      bucket: entry.agent.bucket,
       status: entry.agent.status,
       pendingPermissionCount: entry.agent.pendingPermissions.length,
-      requiresAttention: entry.agent.requiresAttention,
       attentionReason: entry.agent.attentionReason,
+      stoppedBy: entry.agent.stoppedBy,
     });
     const statusEnteredAt = parseLegacyAgentTimestamp(entry);
     const existing = workspaces.get(workspaceId);
@@ -292,9 +293,7 @@ export function buildLegacyWorkspaces(
       workspaces.set(workspaceId, createLegacyWorkspace(entry, status, statusEnteredAt));
       continue;
     }
-    if (
-      getWorkspaceStateBucketPriority(status) < getWorkspaceStateBucketPriority(existing.status)
-    ) {
+    if (getSidebarStateBucketPriority(status) < getSidebarStateBucketPriority(existing.status)) {
       workspaces.set(workspaceId, {
         ...existing,
         status,

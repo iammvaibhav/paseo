@@ -11,7 +11,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { loadConfig } from "./lib/config.js";
 import { buildLiveSetupPayload, normalizeSessionOptions } from "./lib/session-options.js";
 import { buildVoiceSystemPrompt } from "./lib/voice-prompt.js";
-import { DaemonConnection } from "./lib/daemon.js";
+import { DaemonConnection, formatOpenInstructionsLine } from "./lib/daemon.js";
 import { getToolDeclarations, executeTool } from "./lib/tools.js";
 import { createSessionLogger, truncateValue } from "./lib/session-log.js";
 
@@ -83,6 +83,11 @@ export class VoiceSession {
     // transcription deliveries do not append duplicate rows.
     this.lastMirroredText = { user: "", assistant: "" };
     this._mirrorSkipLogged = false;
+    // Voice P0 instruction ledger (spec 05): one ledger row per final user
+    // utterance; the session tracks its open row ids so the "Open: #12 …"
+    // line resurfaces every turn until a citing card closes the row.
+    this.openInstructionIds = new Set();
+    this.utteranceSeen = false;
     this.logger = createSessionLogger({ sessionId, logDir: this.config.sessionLogDir });
     this.logger.log("client.connect", {});
     this.logger.log("session.start", {
@@ -103,14 +108,26 @@ export class VoiceSession {
     if (!this.isReady()) {
       return false;
     }
-    const idHint =
-      event.kind === "proposal" && event.proposal?.id ? ` — proposal id ${event.proposal.id}` : "";
-    const text = `[announcement] ${event.headline}${idHint}${event.detail ? ` — ${event.detail}` : ""}`;
+    // Monitored-scope terminal events (spec 03) read "title + final headline";
+    // the title is never spoken as an id, only as the identity label.
+    const titleHint =
+      event.agentTitle &&
+      (event.kind === "finished" || event.kind === "blocked" || event.kind === "failed")
+        ? `${event.agentTitle}: `
+        : "";
+    const text = `[announcement] ${titleHint}${event.headline}${event.detail ? ` — ${event.detail}` : ""}`;
     this.geminiWs.send(JSON.stringify({ realtimeInput: { text } }));
     this.sendJson({
       type: "injected",
       text: event.headline,
-      event: { id: event.id, kind: event.kind, severity: event.severity },
+      event: {
+        id: event.id,
+        kind: event.kind,
+        severity: event.severity,
+        ...(event.proposal?.id ? { proposalId: event.proposal.id } : {}),
+        ...(event.agentId ? { agentId: event.agentId } : {}),
+        ...(event.agentTitle ? { agentTitle: event.agentTitle } : {}),
+      },
     });
     return true;
   }
@@ -345,6 +362,62 @@ export class VoiceSession {
       });
   }
 
+  /**
+   * Voice P0 instruction ledger (spec 05): open one ledger row per final
+   * user utterance, keep the id in the session's open set, and inject the
+   * still-open rows into the next model turn ("Open: #12 …"). Best-effort —
+   * an RPC failure never breaks the voice turn: the utterance still reaches
+   * the model through the mirror/dispatch path.
+   */
+  async handleFinalUtterance(text) {
+    const trimmed = (text || "").trim();
+    if (!trimmed) return;
+    try {
+      const opened = await this.daemon.openInstruction(trimmed);
+      for (const row of opened.instructions) {
+        this.openInstructionIds.add(row.id);
+      }
+    } catch (err) {
+      this.logger.log("ledger.open.error", { error: err.message });
+    }
+    await this.injectOpenInstructions();
+  }
+
+  /**
+   * Refresh the session's open rows against the daemon ledger (a citing
+   * card closes a row on the daemon — emit-time close), then inject the
+   * "Open: #12 … — #13 …" line into the Live session so the model cites the
+   * ids on its cards. Unclosed rows resurface every turn — nothing silently
+   * drops.
+   */
+  async injectOpenInstructions() {
+    if (this.openInstructionIds.size === 0) return;
+    if (this.geminiWs?.readyState !== WebSocket.OPEN) return;
+    const line = await this.buildOpenInstructionsLine();
+    if (!line) return;
+    this.geminiWs.send(JSON.stringify({ realtimeInput: { text: line } }));
+  }
+
+  /**
+   * The "Open: …" line for this session's still-open rows, for the
+   * pending_updates digest. Empty string when nothing is open — the digest
+   * then stays as-is. Daemon RPC failures degrade to the empty line (the
+   * buffer digest still drains).
+   */
+  async buildOpenInstructionsLine() {
+    if (this.openInstructionIds.size === 0) return "";
+    try {
+      const listed = await this.daemon.listInstructions();
+      const rows = (listed.instructions ?? []).filter(
+        (row) => this.openInstructionIds.has(row.id) && row.status === "open",
+      );
+      return formatOpenInstructionsLine(rows);
+    } catch (err) {
+      this.logger.log("ledger.list.error", { error: err.message });
+      return "";
+    }
+  }
+
   reinjectCompactContext() {
     if (this.recentTurns.length === 0) return;
     const contextSummary = this.recentTurns
@@ -372,12 +445,16 @@ export class VoiceSession {
         toolResult = await executeTool(call.name, call.args, {
           daemon: this.daemon,
           voiceMode: this.voiceMode,
+          // Voice P0 ledger: pending_updates appends this session's
+          // still-open instruction rows to its digest so nothing silently
+          // drops. Empty string when nothing is open.
+          getOpenInstructionsLine: () => this.buildOpenInstructionsLine(),
         });
       } catch (error) {
         toolResult = { error: `Executor failed: ${error.message}` };
       }
       const ok = !toolResult.error;
-      const summary = truncateValue(ok ? toolResult.result : toolResult.error, 500);
+      const summary = truncateValue(ok ? (toolResult.spoken ?? "") : toolResult.error, 500);
       this.logger.log("tool.result", {
         name: call.name,
         callId: call.id,
@@ -400,6 +477,13 @@ export class VoiceSession {
       this.recordTurn("user", serverContent.inputTranscription.text);
       this.mirrorTurn("user", serverContent.inputTranscription.text);
       this.sendJson({ type: "inputText", text: serverContent.inputTranscription.text });
+      // Voice P0 ledger: open one row per final user utterance (the Live API
+      // may redeliver the same transcription; utteranceSeen dedupes within
+      // the utterance, reset when the model's turn ends below).
+      if (!this.utteranceSeen) {
+        this.utteranceSeen = true;
+        void this.handleFinalUtterance(serverContent.inputTranscription.text);
+      }
     }
     if (serverContent.outputTranscription?.text) {
       this.recordTurn("model", serverContent.outputTranscription.text);
@@ -412,9 +496,12 @@ export class VoiceSession {
       }
     }
     if (serverContent.interrupted) {
+      this.utteranceSeen = false;
       this.sendJson({ type: "interrupt" });
     }
     if (serverContent.turnComplete || serverContent.generationComplete) {
+      // The model's turn ended — the next transcription is a new utterance.
+      this.utteranceSeen = false;
       this.sendJson({ type: "turnComplete" });
     }
   }
@@ -440,6 +527,10 @@ export class VoiceSession {
       );
     } else if (parsed.type === "text" && parsed.text) {
       this.recordTurn("user", parsed.text);
+      if (!this.utteranceSeen) {
+        this.utteranceSeen = true;
+        void this.handleFinalUtterance(parsed.text);
+      }
       this.geminiWs.send(
         JSON.stringify({
           clientContent: {

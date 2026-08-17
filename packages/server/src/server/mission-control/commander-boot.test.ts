@@ -1319,10 +1319,12 @@ describe("remapLegacyCommanderCreateCwd", () => {
 });
 
 describe("Commander build-hash contract", () => {
-  test("the tool allowlist pins exactly the thirteen tools (the Commander's full catalog surface)", () => {
+  test("the tool allowlist pins exactly the twenty-five tools (the Commander's full catalog surface)", () => {
     // The hash covers prompt + allowlist, so a tool landing here without the
     // paseo-tools registration (or vice versa) must fail this pin — the
-    // allowlist is the Commander's full catalog surface.
+    // allowlist is the Commander's full catalog surface. The legacy fleet_meta
+    // alias is deliberately NOT on the allowlist (04 meta split — the 11 flat
+    // per-action tools replace it; the alias stays registered for MCP).
     expect([...COMMANDER_TOOL_ALLOWLIST]).toEqual([
       "fleet_list_agents",
       "fleet_list_models",
@@ -1334,9 +1336,21 @@ describe("Commander build-hash contract", () => {
       "tag_message",
       "clarify",
       "post_answer",
-      "fleet_meta",
+      "fleet_rename_project",
+      "fleet_rename_workspace",
+      "fleet_rename_agent_title",
+      "fleet_archive_project",
+      "fleet_archive_workspace",
+      "fleet_archive_agent",
+      "fleet_create_project",
+      "fleet_move_agent",
+      "fleet_promote_workspace",
+      "fleet_adopt_agent",
+      "fleet_release_agent",
       "fleet_recall",
       "fleet_context",
+      "fleet_agent_status",
+      "fleet_monitor",
     ]);
   });
 

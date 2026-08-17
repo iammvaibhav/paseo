@@ -17,7 +17,7 @@ describe("hasLeakedMutatingToolCall", () => {
   it("is true for a leaked dispatch that never ran", () => {
     expect(hasLeakedMutatingToolCall('<fleet_create_agent host="local" />')).toBe(true);
     expect(hasLeakedMutatingToolCall('<fleet_send_prompt agentId="a" />')).toBe(true);
-    expect(hasLeakedMutatingToolCall('<fleet_meta action="rename_agent_title" />')).toBe(true);
+    expect(hasLeakedMutatingToolCall('<fleet_rename_agent_title agentId="a" />')).toBe(true);
   });
 
   it("is false for a leaked read-only or answer tool", () => {

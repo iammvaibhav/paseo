@@ -107,7 +107,7 @@ export interface VerifierCentralConfig {
   verifierModel?: string | null;
   verifierConcurrency: number;
   evaluationScope: "commander" | "all";
-  // Delivery mode for verifier → worker contacts (contact_worker and the
+  trackVerifiers?: boolean;
   // post-verdict proof demand). Resolved from the fleet central setting
   // verifierToWorkerMode (default "interrupt"); stall nudges are unaffected.
   verifierToWorkerMode: "steer" | "interrupt" | "queue";
@@ -138,7 +138,9 @@ export interface VerifierProposal {
   deliveryMode: "steer" | "interrupt" | "queue";
   reason: string;
   classification: "normal" | "destructive";
-  status: "pending" | "approved" | "denied" | "sent" | "expired" | "undelivered";
+  status: "pending" | "approved" | "denied" | "sent" | "expired" | "undelivered" | "failed";
+  /** Approvals-store passthrough; verbose-only machinery rows. */
+  timelineClassification?: "machinery" | "instruction";
   allowPair?: boolean;
   /** "send" (default) | "spawn" | "meta" — spawn creates a new agent; meta
    * applies a fleet meta action. The dispatcher only produces send/spawn;
@@ -187,6 +189,7 @@ const VERIFIER_SPAWN_SETTLED_STATUSES: Record<VerifierProposal["status"], boolea
   denied: true,
   expired: true,
   undelivered: true,
+  failed: true,
 };
 
 export interface VerifierCreateProposalInput {
@@ -1239,7 +1242,11 @@ export class MissionControlVerifierDispatcher {
    * as the marker), so the comparison is a plain string compare.
    */
   private async isInScope(workerAgentId: string, readyAt: string): Promise<boolean> {
-    const scope = this.getCentralConfig().evaluationScope;
+    const config = this.getCentralConfig();
+    if (config.trackVerifiers === false) {
+      return false;
+    }
+    const scope = config.evaluationScope;
     if (scope === "all") {
       return true;
     }

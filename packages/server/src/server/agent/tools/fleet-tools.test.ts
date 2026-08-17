@@ -8,6 +8,13 @@ import type { ProviderSnapshotManager } from "../provider-snapshot-manager.js";
 import type { PeerManager } from "../../peers/peer-manager.js";
 import type { MissionControlService } from "../../mission-control/service.js";
 import { createPaseoToolCatalog, dispatchLocalPromptMode } from "./paseo-tools.js";
+import {
+  MISSION_CONTROL_LABEL_KEY,
+  MISSION_CONTROL_LABEL_VALUE,
+} from "../../mission-control/commander-contract.js";
+
+/** UUID-shaped agent id for fleet_send_prompt tests (agentId is the UUID family). */
+const SEND_AGENT_UUID = "5f3c0f4e-9b2a-4d6c-8e7a-1b2c3d4e5f6a";
 
 /** Canned fetch_agent_timeline response payload. */
 function peerTimelinePayload(): Record<string, unknown> {
@@ -207,8 +214,8 @@ describe("fleet_list_agents roster enrichment", () => {
             id: "peer-agent-1",
             provider: "omp",
             cwd: "/tmp",
-            createdAt: "2026-08-08T00:00:00.000Z",
-            updatedAt: "2026-08-08T00:00:00.000Z",
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
             status: "idle",
             title: "Peer agent",
           },
@@ -259,8 +266,8 @@ describe("fleet_list_agents roster enrichment", () => {
             id: "peer-agent-1",
             provider: "omp",
             cwd: "/tmp",
-            createdAt: "2026-08-08T00:00:00.000Z",
-            updatedAt: "2026-08-08T00:00:00.000Z",
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
             status: "idle",
             title: "Peer agent",
           },
@@ -338,7 +345,7 @@ describe("fleet_send_prompt mode", () => {
     await expect(
       catalog.executeTool("fleet_send_prompt", {
         host: "macbook",
-        agentId: "peer-agent-1",
+        agentId: SEND_AGENT_UUID,
         prompt: "hello",
         mode: "steer",
       }),
@@ -346,7 +353,7 @@ describe("fleet_send_prompt mode", () => {
     await expect(
       catalog.executeTool("fleet_send_prompt", {
         host: "macbook",
-        agentId: "peer-agent-1",
+        agentId: SEND_AGENT_UUID,
         prompt: "hello",
       }),
     ).resolves.toMatchObject({
@@ -355,7 +362,7 @@ describe("fleet_send_prompt mode", () => {
     await expect(
       catalog.executeTool("fleet_send_prompt", {
         host: "macbook",
-        agentId: "peer-agent-1",
+        agentId: SEND_AGENT_UUID,
         prompt: "hello",
         mode: "replace",
       }),
@@ -380,20 +387,20 @@ describe("fleet_send_prompt mode", () => {
     // Omitted mode → the fleet commanderToWorkerMode setting (queue).
     await catalog.executeTool("fleet_send_prompt", {
       host: "macbook",
-      agentId: "peer-agent-1",
+      agentId: SEND_AGENT_UUID,
       prompt: "follow up",
     });
-    expect(client.sendAgentMessage).toHaveBeenLastCalledWith("peer-agent-1", "follow up", {
+    expect(client.sendAgentMessage).toHaveBeenLastCalledWith(SEND_AGENT_UUID, "follow up", {
       dispatchMode: "queue",
     });
     // An explicit mode from the Commander always wins (steer for additive).
     await catalog.executeTool("fleet_send_prompt", {
       host: "macbook",
-      agentId: "peer-agent-1",
+      agentId: SEND_AGENT_UUID,
       prompt: "add a note",
       mode: "steer",
     });
-    expect(client.sendAgentMessage).toHaveBeenLastCalledWith("peer-agent-1", "add a note", {
+    expect(client.sendAgentMessage).toHaveBeenLastCalledWith(SEND_AGENT_UUID, "add a note", {
       dispatchMode: "steer",
     });
   });
@@ -403,11 +410,11 @@ describe("fleet_send_prompt mode", () => {
     const catalog = createCatalog(peerManager);
     const result = await catalog.executeTool("fleet_send_prompt", {
       host: "macbook",
-      agentId: "peer-agent-1",
+      agentId: SEND_AGENT_UUID,
       prompt: "steer the turn",
       mode: "steer",
     });
-    expect(client.sendAgentMessage).toHaveBeenCalledWith("peer-agent-1", "steer the turn", {
+    expect(client.sendAgentMessage).toHaveBeenCalledWith(SEND_AGENT_UUID, "steer the turn", {
       dispatchMode: "steer",
     });
     expect(result.structuredContent).toEqual({ success: true, deliveryMode: "steer" });
@@ -436,14 +443,14 @@ describe("fleet_send_prompt mode", () => {
 
     const result = await catalog.executeTool("fleet_send_prompt", {
       host: "local",
-      agentId: "agent-1",
+      agentId: SEND_AGENT_UUID,
       prompt: "focus on tests",
       mode: "steer",
     });
-    expect(tryRunOutOfBand).toHaveBeenCalledWith("agent-1", "/steer focus on tests");
+    expect(tryRunOutOfBand).toHaveBeenCalledWith(SEND_AGENT_UUID, "/steer focus on tests");
     expect(streamAgent).not.toHaveBeenCalled();
     expect(appendTimelineItem).toHaveBeenCalledWith(
-      "agent-1",
+      SEND_AGENT_UUID,
       expect.objectContaining({ type: "user_message", text: "focus on tests" }),
     );
     expect(result.structuredContent).toEqual({ success: true, deliveryMode: "steer" });
@@ -470,13 +477,13 @@ describe("fleet_send_prompt mode", () => {
 
     const result = await catalog.executeTool("fleet_send_prompt", {
       host: "local",
-      agentId: "agent-1",
+      agentId: SEND_AGENT_UUID,
       prompt: "add a note about the fix",
       mode: "steer",
     });
     // The native steer records no row in Paseo's timeline; the instruction is
     // appended as a classified user row (absent classification = instruction).
-    expect(appendTimelineItem).toHaveBeenCalledWith("agent-1", {
+    expect(appendTimelineItem).toHaveBeenCalledWith(SEND_AGENT_UUID, {
       type: "user_message",
       text: "add a note about the fix",
       classification: "instruction",
@@ -564,7 +571,7 @@ describe("fleet_send_prompt mode", () => {
 
     const result = await catalog.executeTool("fleet_send_prompt", {
       host: "local",
-      agentId: "agent-1",
+      agentId: SEND_AGENT_UUID,
       prompt: "follow up",
       mode: "steer",
     });
@@ -572,10 +579,14 @@ describe("fleet_send_prompt mode", () => {
     // a steer's value is timely delivery, queue-until-idle can sit for tens of
     // minutes. startAgentRun still probes out-of-band with the plain prompt
     // (declined), then replaces.
-    expect(tryRunOutOfBand).not.toHaveBeenCalledWith("agent-1", "/steer follow up", undefined);
+    expect(tryRunOutOfBand).not.toHaveBeenCalledWith(
+      SEND_AGENT_UUID,
+      "/steer follow up",
+      undefined,
+    );
     // The steer fallback is a machinery dispatch (Commander/Verifier): the
     // superseded run keeps the failure treatment, never a user interruption.
-    expect(replaceAgentRun).toHaveBeenCalledWith("agent-1", "follow up", {
+    expect(replaceAgentRun).toHaveBeenCalledWith(SEND_AGENT_UUID, "follow up", {
       replaceOrigin: "machinery",
     });
     // The caller is told the truth: this was a steer request delivered as an
@@ -597,7 +608,7 @@ describe("fleet_send_prompt mode", () => {
     await expect(
       catalog.executeTool("fleet_send_prompt", {
         host: "macbook",
-        agentId: "peer-agent-1",
+        agentId: SEND_AGENT_UUID,
         prompt: "read my notes",
         attachments: [uploadedFile],
       }),
@@ -607,7 +618,7 @@ describe("fleet_send_prompt mode", () => {
     await expect(
       catalog.executeTool("fleet_send_prompt", {
         host: "macbook",
-        agentId: "peer-agent-1",
+        agentId: SEND_AGENT_UUID,
         prompt: "read my notes",
         attachments: [{ type: "mystery_attachment", payload: "x" }],
       }),
@@ -630,12 +641,12 @@ describe("fleet_send_prompt mode", () => {
     ];
     await catalog.executeTool("fleet_send_prompt", {
       host: "macbook",
-      agentId: "peer-agent-1",
+      agentId: SEND_AGENT_UUID,
       prompt: "review this PR",
       mode: "steer",
       attachments,
     });
-    expect(client.sendAgentMessage).toHaveBeenCalledWith("peer-agent-1", "review this PR", {
+    expect(client.sendAgentMessage).toHaveBeenCalledWith(SEND_AGENT_UUID, "review this PR", {
       dispatchMode: "steer",
       attachments,
     });
@@ -670,7 +681,7 @@ describe("fleet_send_prompt mode", () => {
     ];
     const result = await catalog.executeTool("fleet_send_prompt", {
       host: "local",
-      agentId: "agent-1",
+      agentId: SEND_AGENT_UUID,
       prompt: "read my notes",
       mode: "steer",
       attachments,
@@ -678,7 +689,7 @@ describe("fleet_send_prompt mode", () => {
     // The prompt becomes structured blocks: the user text plus the attachment
     // block (descriptor only — no file bytes cross the model boundary here).
     expect(streamAgent).toHaveBeenCalledWith(
-      "agent-1",
+      SEND_AGENT_UUID,
       [
         { type: "text", text: "read my notes" },
         {
@@ -940,7 +951,7 @@ describe("approval-gate wrap point (runCommanderGatedAction)", () => {
     const catalog = createCommanderCatalog({ missionControlService });
     const result = await catalog.executeTool("fleet_send_prompt", {
       host: "local",
-      agentId: "worker-1",
+      agentId: SEND_AGENT_UUID,
       prompt: "continue the backtest",
       mode: "steer",
     });
@@ -948,7 +959,7 @@ describe("approval-gate wrap point (runCommanderGatedAction)", () => {
     expect(createProposal.mock.calls[0][0]).toMatchObject({
       origin: "commander",
       serverId: "host-a",
-      targetAgentId: "worker-1",
+      targetAgentId: SEND_AGENT_UUID,
       message: "continue the backtest",
       deliveryMode: "steer",
       reason: "Commander send",
@@ -973,7 +984,7 @@ describe("approval-gate wrap point (runCommanderGatedAction)", () => {
     const catalog = createCommanderCatalog({ missionControlService });
     const result = await catalog.executeTool("fleet_send_prompt", {
       host: "local",
-      agentId: "worker-1",
+      agentId: SEND_AGENT_UUID,
       prompt: "continue",
     });
     expect(result.structuredContent).toEqual({ success: true, deliveryMode: "interrupt" });
@@ -1017,9 +1028,482 @@ describe("approval-gate wrap point (runCommanderGatedAction)", () => {
     await expect(
       catalog.executeTool("fleet_send_prompt", {
         host: "local",
-        agentId: "worker-1",
+        agentId: SEND_AGENT_UUID,
         prompt: "continue",
       }),
     ).rejects.toThrow("store write failed");
+  });
+});
+
+// ============================================================================
+// Spec 03: roster field presence, call-time mutation validation, and dedupe.
+// ============================================================================
+
+describe("fleet_list_agents roster fields (spec 03)", () => {
+  test("rows carry workspaceId/projectId/serverId/name/description/bucket", async () => {
+    const { peerManager } = createFakePeerHarness({
+      statuses: [{ name: "macbook", state: "online", lastSeenAt: null }],
+    });
+    (peerManager as unknown as { getPeerServerId: unknown }).getPeerServerId = (name: string) =>
+      name === "macbook" ? "srv_peer" : null;
+    const catalog = createPaseoToolCatalog({
+      agentManager: {
+        listAgents: () => [],
+        getRegisteredProviderIds: () => ["omp"],
+        getTimeline: () => [],
+      } as unknown as AgentManager,
+      agentStorage: {
+        get: async () => null,
+        list: async () => [
+          {
+            id: "local-agent-uuid-0001",
+            provider: "omp",
+            cwd: "/tmp/local",
+            workspaceId: "wks_local",
+            labels: {},
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            lastStatus: "idle",
+            title: "Local agent",
+            name: "local-name",
+            shortDescription: "local desc",
+          },
+        ],
+      } as unknown as AgentStorage,
+      workspaceRegistry: {
+        get: async () => null,
+        list: async () => [
+          { workspaceId: "wks_local", projectId: "prj_local", displayName: "Local" },
+        ],
+      } as unknown as AgentStorage,
+      providerSnapshotManager: createProviderSnapshotManagerStub()
+        .manager as unknown as ProviderSnapshotManager,
+      peerManager,
+      serverId: "srv_local",
+      hostAlias: "work server",
+      logger: createTestLogger(),
+    });
+
+    const result = await catalog.executeTool("fleet_list_agents", { limit: 50 });
+    const agents = (result.structuredContent as { agents: Array<Record<string, unknown>> }).agents;
+    const local = agents.find((agent) => agent.id === "local-agent-uuid-0001");
+    expect(local).toMatchObject({
+      workspaceId: "wks_local",
+      projectId: "prj_local",
+      serverId: "srv_local",
+      name: "local-name",
+      description: "local desc",
+      host: "work server",
+    });
+  });
+
+  test("peer rows restore workspaceId/name/description/bucket from the snapshot and add serverId", async () => {
+    const { client, peerManager } = createFakePeerHarness();
+    (peerManager as unknown as { getPeerServerId: unknown }).getPeerServerId = (name: string) =>
+      name === "macbook" ? "srv_peer" : null;
+    client.fetchAgents = vi.fn(async () => ({
+      entries: [
+        {
+          agent: {
+            id: SEND_AGENT_UUID,
+            provider: "omp",
+            cwd: "/tmp",
+            workspaceId: "wks_peer",
+            name: "peer-name",
+            shortDescription: "peer desc",
+            bucket: "ready",
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            status: "idle",
+            title: "Peer agent",
+          },
+        },
+      ],
+      page: { limit: 200 },
+    }));
+    client.missionControlEventsFetch = vi.fn(async () => ({ requestId: "req", events: [] }));
+    const catalog = createCatalog(peerManager, {
+      listAgents: () => [],
+      getRegisteredProviderIds: () => [],
+      getTimeline: () => [],
+    } as unknown as AgentManager);
+
+    const result = await catalog.executeTool("fleet_list_agents", { limit: 50 });
+    const agents = (result.structuredContent as { agents: Array<Record<string, unknown>> }).agents;
+    expect(agents[0]).toMatchObject({
+      id: SEND_AGENT_UUID,
+      host: "macbook",
+      workspaceId: "wks_peer",
+      name: "peer-name",
+      description: "peer desc",
+      bucket: "ready",
+      serverId: "srv_peer",
+    });
+  });
+
+  test("bucket filter keeps only matching rows; query resolves fuzzy agent names", async () => {
+    const { client, peerManager } = createFakePeerHarness();
+    client.fetchAgents = vi.fn(async () => ({
+      entries: [
+        {
+          agent: {
+            id: SEND_AGENT_UUID,
+            provider: "omp",
+            cwd: "/tmp",
+            name: "backtest-runner",
+            bucket: "running",
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            status: "running",
+            title: "Backtest",
+          },
+        },
+      ],
+      page: { limit: 200 },
+    }));
+    client.missionControlEventsFetch = vi.fn(async () => ({ requestId: "req", events: [] }));
+    const catalog = createCatalog(peerManager, {
+      listAgents: () => [],
+      getRegisteredProviderIds: () => [],
+      getTimeline: () => [],
+    } as unknown as AgentManager);
+
+    const result = await catalog.executeTool("fleet_list_agents", {
+      bucket: "running",
+      query: "backtest",
+      limit: 50,
+    });
+    const agents = (result.structuredContent as { agents: Array<Record<string, unknown>> }).agents;
+    expect(agents).toHaveLength(1);
+    expect(agents[0].id).toBe(SEND_AGENT_UUID);
+
+    const mismatch = await catalog.executeTool("fleet_list_agents", {
+      bucket: "needs_you",
+      limit: 50,
+    });
+    expect(
+      (mismatch.structuredContent as { agents: Array<Record<string, unknown>> }).agents,
+    ).toHaveLength(0);
+  });
+});
+
+describe("fleet_create_agent call-time validation (spec 03)", () => {
+  function createCommanderWithWorkspaces(overrides: Record<string, unknown> = {}) {
+    const missionControlService = createMissionControlServiceStub(overrides);
+    const catalog = createPaseoToolCatalog({
+      agentManager: {} as unknown as AgentManager,
+      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+      workspaceRegistry: {
+        get: async (id: string) =>
+          id === "wks_a0fd1234567890abcd"
+            ? { workspaceId: "wks_a0fd1234567890abcd", projectId: "prj_1", archivedAt: null }
+            : null,
+        list: async () => [
+          {
+            workspaceId: "wks_a0fd1234567890abcd",
+            projectId: "prj_1",
+            displayName: "Experiments",
+            archivedAt: null,
+          },
+          {
+            workspaceId: "wks_arch99999999999999",
+            projectId: "prj_1",
+            displayName: "Old",
+            archivedAt: "2026-01-01T00:00:00Z",
+          },
+        ],
+      } as unknown as AgentStorage,
+      providerSnapshotManager: createProviderSnapshotManagerStub()
+        .manager as unknown as ProviderSnapshotManager,
+      callerAgentId: "commander-1",
+      callerLabels: { "paseo.mission-control": "commander" },
+      serverId: "host-a",
+      missionControlService,
+      logger: createTestLogger(),
+    });
+    return { catalog, missionControlService };
+  }
+
+  test("rejects an unknown workspace at call time listing live candidates", async () => {
+    const { catalog } = createCommanderWithWorkspaces();
+    await expect(
+      catalog.executeTool("fleet_create_agent", {
+        host: "local",
+        workspaceId: "wks_bogus99999999999999",
+        provider: "codex/gpt-5.4",
+        initialPrompt: "run",
+        title: "backtest",
+      }),
+    ).rejects.toThrow(
+      /workspace not found: wks_bogus99999999999999 is not a live workspace on host "local"; available workspaces: wks_a0fd… 'Experiments'/,
+    );
+  });
+
+  test("rejects a relative cwd at call time before any proposal", async () => {
+    const { missionControlService, catalog } = createCommanderWithWorkspaces();
+    await expect(
+      catalog.executeTool("fleet_create_agent", {
+        host: "local",
+        cwd: "relative/path",
+        provider: "codex/gpt-5.4",
+        initialPrompt: "run",
+        title: "backtest",
+      }),
+    ).rejects.toThrow(/Spawn cwd must be an absolute path/);
+    expect(missionControlService.approvals.createProposal).not.toHaveBeenCalled();
+  });
+});
+
+describe("mutation dedupe (spec 03)", () => {
+  test("duplicate spawn while pending returns the existing proposalId with 'already pending'", async () => {
+    const createProposal = vi.fn(async () => ({ id: "mcp_d1", status: "pending", kind: "spawn" }));
+    const missionControlService = createMissionControlServiceStub({
+      approvals: { createProposal },
+      getProposal: (id: string) => (id === "mcp_d1" ? { id: "mcp_d1", status: "pending" } : null),
+    });
+    const catalog = createCommanderCatalog({ missionControlService });
+    const args = {
+      host: "local",
+      cwd: "/tmp",
+      provider: "codex/gpt-5.4",
+      initialPrompt: "run the backtest",
+      title: "backtest",
+    };
+    const first = await catalog.executeTool("fleet_create_agent", args);
+    expect(first.structuredContent).toMatchObject({
+      agentId: null,
+      status: "pending-approval",
+      proposalId: "mcp_d1",
+    });
+    const second = await catalog.executeTool("fleet_create_agent", args);
+    expect(second.structuredContent).toMatchObject({
+      agentId: null,
+      status: "pending-approval",
+      proposalId: "mcp_d1",
+    });
+    expect(String(second.structuredContent.guidance)).toContain("already pending");
+    expect(createProposal).toHaveBeenCalledTimes(1);
+  });
+
+  test("duplicate send while pending returns the existing proposalId", async () => {
+    const createProposal = vi.fn(async () => ({ id: "mcp_d2", status: "pending", kind: "send" }));
+    const missionControlService = createMissionControlServiceStub({
+      approvals: { createProposal },
+      getProposal: (id: string) => (id === "mcp_d2" ? { id: "mcp_d2", status: "pending" } : null),
+    });
+    const catalog = createCommanderCatalog({ missionControlService });
+    const args = {
+      host: "local",
+      agentId: SEND_AGENT_UUID,
+      prompt: "continue the backtest",
+      mode: "steer",
+    };
+    const first = await catalog.executeTool("fleet_send_prompt", args);
+    expect(first.structuredContent).toMatchObject({
+      success: false,
+      proposalId: "mcp_d2",
+    });
+    const second = await catalog.executeTool("fleet_send_prompt", args);
+    expect(second.structuredContent).toMatchObject({ proposalId: "mcp_d2" });
+    expect(String(second.structuredContent.guidance)).toContain("already pending");
+    expect(createProposal).toHaveBeenCalledTimes(1);
+  });
+
+  test("dedupe releases once the prior proposal resolves", async () => {
+    const createProposal = vi.fn(async () => ({ id: "mcp_d3", status: "pending", kind: "spawn" }));
+    let proposalStatus = "pending";
+    const missionControlService = createMissionControlServiceStub({
+      approvals: { createProposal },
+      getProposal: (id: string) =>
+        id === "mcp_d3" ? { id: "mcp_d3", status: proposalStatus } : null,
+    });
+    const catalog = createCommanderCatalog({ missionControlService });
+    const args = {
+      host: "local",
+      cwd: "/tmp",
+      provider: "codex/gpt-5.4",
+      initialPrompt: "run the backtest",
+      title: "backtest",
+    };
+    await catalog.executeTool("fleet_create_agent", args);
+    // The proposal resolved (approved/sent): a new identical call creates a
+    // fresh proposal instead of deduping onto the resolved one.
+    proposalStatus = "sent";
+    const retry = await catalog.executeTool("fleet_create_agent", args);
+    expect(retry.structuredContent).toMatchObject({ proposalId: "mcp_d3" });
+    expect(createProposal).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("fleet_send_prompt agentId contract (spec 03)", () => {
+  test("rejects a non-UUID agentId at call time with resolver guidance", async () => {
+    const { peerManager } = createFakePeerHarness();
+    const catalog = createCatalog(peerManager);
+    await expect(
+      catalog.executeTool("fleet_send_prompt", {
+        host: "local",
+        agentId: "Backtest Worker",
+        prompt: "hi",
+      }),
+    ).rejects.toThrow(
+      /agentId must be a UUID .* got "Backtest Worker".* call fleet_list_agents\(query\)/,
+    );
+    await expect(
+      catalog.executeTool("fleet_send_prompt", {
+        host: "local",
+        agentId: "mcp_01HXYZ",
+        prompt: "hi",
+      }),
+    ).rejects.toThrow(/agentId must be a UUID/);
+  });
+
+  test("unknown UUID-shaped agent lists nearest matches and the resolver", async () => {
+    const { peerManager } = createFakePeerHarness();
+    const catalog = createPaseoToolCatalog({
+      agentManager: {
+        listAgents: () => [
+          {
+            id: SEND_AGENT_UUID,
+            name: "backtest-runner",
+            title: "Backtest",
+          },
+        ],
+        getRegisteredProviderIds: () => [],
+      } as unknown as AgentManager,
+      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+      providerSnapshotManager: createProviderSnapshotManagerStub()
+        .manager as unknown as ProviderSnapshotManager,
+      peerManager,
+      logger: createTestLogger(),
+    });
+    await expect(
+      catalog.executeTool("fleet_send_prompt", {
+        agentId: "00000000-0000-4000-8000-000000000000",
+        prompt: "hi",
+      }),
+    ).rejects.toThrow(
+      /not found on any reachable host.*Nearest agents on this host: 'backtest-runner'.*fleet_list_agents\(query\)/,
+    );
+  });
+});
+
+describe("list_agents stored roster (Mission Control caller)", () => {
+  /** Minimal stored-agent record (the fields list_agents' stored path reads). */
+  function storedRecord(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      id: "stored-finished-1",
+      provider: "claude",
+      cwd: "/srv/fleet/worker-ws",
+      workspaceId: "wks_worker",
+      createdAt: "2026-08-16T00:00:00.000Z",
+      updatedAt: "2026-08-16T01:00:00.000Z",
+      lastActivityAt: "2026-08-16T01:00:00.000Z",
+      lastUserMessageAt: null,
+      title: "Finished Worker",
+      labels: {},
+      lastStatus: "closed",
+      config: { modeId: "full-access", model: "haiku" },
+      persistence: null,
+      requiresAttention: false,
+      attentionReason: null,
+      attentionTimestamp: null,
+      internal: false,
+      ...overrides,
+    };
+  }
+
+  /** Catalog built the way the Voice node / Commander sees it: caller labels
+   * paseo.mission-control=commander, callerAgentId = the live Commander. */
+  function createCommanderStoredRosterCatalog(
+    overrides: {
+      agentManager?: Partial<AgentManager>;
+      agentStorage?: Partial<AgentStorage>;
+    } = {},
+  ) {
+    const agentManager = {
+      listAgents: () => [],
+      getRegisteredProviderIds: () => ["claude", "omp"],
+      getAgent: () => null,
+      getTimeline: () => {
+        throw new Error("no timeline in unit test");
+      },
+      ...overrides.agentManager,
+    } as unknown as AgentManager;
+    const agentStorage = {
+      get: async () => null,
+      list: async () => [],
+      ...overrides.agentStorage,
+    } as unknown as AgentStorage;
+    return createPaseoToolCatalog({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createProviderSnapshotManagerStub()
+        .manager as unknown as ProviderSnapshotManager,
+      callerAgentId: "commander-0000-0000-0000-000000000001",
+      callerLabels: { [MISSION_CONTROL_LABEL_KEY]: MISSION_CONTROL_LABEL_VALUE },
+      peerManager: undefined,
+      logger: createTestLogger(),
+    });
+  }
+
+  test("stored finished agent with a registered provider appears for the Commander caller", async () => {
+    const catalog = createCommanderStoredRosterCatalog({
+      agentStorage: {
+        list: async () => [storedRecord()],
+      },
+    });
+
+    const result = await catalog.executeTool("list_agents", {});
+    expect(result.structuredContent).toMatchObject({
+      agents: [
+        {
+          id: "stored-finished-1",
+          title: "Finished Worker",
+          provider: "claude",
+          status: "closed",
+          cwd: "/srv/fleet/worker-ws",
+        },
+      ],
+    });
+
+    // fleet_list_agents routes through list_agents — the stored row must
+    // survive the enrichment pass too.
+    const fleet = await catalog.executeTool("fleet_list_agents", {});
+    const rows = fleet.structuredContent as { agents: Array<{ id: string; host: string }> };
+    expect(rows.agents.map((row) => row.id)).toEqual(["stored-finished-1"]);
+    expect(rows.agents[0]?.host).toBe("local");
+  });
+
+  test("stored agent with a genuinely unregistered provider stays hidden unless includeArchived", async () => {
+    const catalog = createCommanderStoredRosterCatalog({
+      agentStorage: {
+        list: async () => [
+          storedRecord({ id: "stored-gone-provider", provider: "ancient-provider" }),
+        ],
+      },
+    });
+
+    const defaultResult = await catalog.executeTool("list_agents", {});
+    expect(defaultResult.structuredContent).toMatchObject({ agents: [] });
+
+    const archivedResult = await catalog.executeTool("list_agents", { includeArchived: true });
+    expect(archivedResult.structuredContent).toMatchObject({
+      agents: [{ id: "stored-gone-provider" }],
+    });
+  });
+
+  test("explicit cwd still scopes a Commander-caller list_agents", async () => {
+    const catalog = createCommanderStoredRosterCatalog({
+      agentStorage: {
+        list: async () => [
+          storedRecord({ id: "in-ws", cwd: "/srv/fleet/worker-ws" }),
+          storedRecord({ id: "other-ws", cwd: "/srv/elsewhere" }),
+        ],
+      },
+    });
+
+    const result = await catalog.executeTool("list_agents", { cwd: "/srv/fleet" });
+    const rows = result.structuredContent as { agents: Array<{ id: string }> };
+    expect(rows.agents.map((row) => row.id)).toEqual(["in-ws"]);
   });
 });

@@ -73,20 +73,59 @@ export type ThreadRow =
   | { kind: "commander"; item: StreamItem; ts: number };
 
 /**
+ * Machinery status kinds normal (non-verbose) mode hides (spec 07 "Chat vs
+ * board routing"): the chat carries only decisions; these render board/feed
+ * rail only. `blocked` is deliberately NOT here — a blocker is a needs-you
+ * card for the user and stays visible; `stalled` (nudge escalation) is
+ * machinery noise and hides.
+ */
+const NORMAL_MODE_SKIP_KINDS: ReadonlySet<FeedCardEvent["kind"]> = new Set([
+  "started",
+  "finished",
+  "milestone",
+  "finding",
+  "interrupted",
+  "diverged",
+  "stalled",
+  "failed",
+]);
+
+/**
  * Classifies a thread row for card-run derivation: event rows render as cards
- * ("card"); verbose-only machinery hidden by normal mode renders nothing and
- * takes no height ("skip") — transparent to runs so the cards around it stay
- * visually adjacent; commander rows (messages, tool calls) render visible
- * content and break runs ("gap").
+ * ("card"); rows hidden by normal mode render nothing and take no height
+ * ("skip") — transparent to runs so the cards around it stay visually
+ * adjacent; commander rows (messages, tool calls) render visible content and
+ * break runs ("gap").
+ *
+ * Normal (non-verbose) mode shows only decisions: proposals (except machinery
+ * stall status-ask nudges), clarifications, answers, blocked needs-you cards,
+ * and verdict-insufficient cards. Status kinds (started | finished |
+ * milestone | finding | interrupted | diverged | stalled | failed) and
+ * state-only verdict cards (the item resolved) are board/feed-rail only.
+ * Verbose renders every event (existing behavior).
  */
 export function classifyThreadRow(row: ThreadRow, verbose: boolean): CardRunRowClass {
   if (row.kind !== "event") {
     return "gap";
   }
+  if (verbose) {
+    return "card";
+  }
+  if (row.event.kind === "proposal") {
+    return isVerboseOnlyProposalEvent(row.event) ? "skip" : "card";
+  }
   if (row.event.kind === "clarification" || row.event.kind === "answer") {
     return "card";
   }
-  if (!verbose && isVerboseOnlyProposalEvent(row.event)) {
+  if (row.event.kind === "blocked") {
+    return "card";
+  }
+  if (row.event.kind === "verdict") {
+    // State-only verdicts resolved the item; verdict-insufficient (no stamp)
+    // stays a decision card.
+    return row.event.stateOnly === true ? "skip" : "card";
+  }
+  if (NORMAL_MODE_SKIP_KINDS.has(row.event.kind)) {
     return "skip";
   }
   return "card";

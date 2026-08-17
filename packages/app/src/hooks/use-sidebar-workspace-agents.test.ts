@@ -150,6 +150,38 @@ describe("buildSidebarWorkspaceAgents", () => {
     });
     expect(entry.createdAt.getTime()).toBe(new Date("2026-01-01T00:00:00.000Z").getTime());
   });
+
+  test("prefers the daemon-owned canonical bucket over payload fields", () => {
+    const agents = new Map([
+      [
+        "a1",
+        {
+          ...agent({ id: "a1", workspaceId: "ws-1" }),
+          status: "running" as const,
+          pendingPermissions: [{ id: "p1" } as never],
+          bucket: "ready" as const,
+        },
+      ],
+    ]);
+    const [entry] = buildSidebarWorkspaceAgents(agents, "ws-1");
+    expect(entry.statusBucket).toBe("attention");
+  });
+
+  test("maps a finished agent to the review dot, not the needs_input alert", () => {
+    const agents = new Map([
+      [
+        "a1",
+        {
+          ...agent({ id: "a1", workspaceId: "ws-1" }),
+          status: "idle" as const,
+          requiresAttention: true,
+          attentionReason: "finished" as const,
+        },
+      ],
+    ]);
+    const [entry] = buildSidebarWorkspaceAgents(agents, "ws-1");
+    expect(entry.statusBucket).toBe("attention");
+  });
 });
 
 describe("sortSidebarWorkspaceAgents", () => {

@@ -36,7 +36,7 @@ The Commander is one durable conversation, but the model behind it is stateless 
 
 The world snapshot is the hot set: hosts + aliases, the project/workspace index with one-line descriptions, agents active in the last 24 hours bucketed by lifecycle, invocable models, and routing defaults. A few KB, computed at turn start, stamped with its own timestamp. The system prompt stays byte-stable so the prompt cache holds; the snapshot rides inside the turn.
 
-**No digests.** The Commander's context never receives "this started, this stopped" event streams. Integrating events into current state is the daemon's job, and the snapshot is the result. When the machinery needs the Commander to act on an event — a stall escalation in Auto mode, a verdict that needs routing — it triggers a machinery turn carrying that event plus a fresh snapshot, through the same assembly path as a user turn. Nothing queued can rot, because the payload is computed at delivery.
+**No digests.** The Commander's context never receives "this started, this stopped" event streams. Integrating events into current state is the daemon's job, and the snapshot is the result. When the machinery needs the Commander to act on an event — a decision-carrying blocked/stalled event, a verdict that needs routing — it triggers a machinery turn carrying that event plus a fresh snapshot, through the same assembly path as a user turn. Nothing queued can rot, because the payload is computed at delivery.
 
 ## The mailbox (delivery and follow-through)
 
@@ -44,8 +44,8 @@ The Commander is an actor: one identity, one sequential turn loop, a mailbox eve
 
 - **Always accept.** Every inbound message — user chat, voice dispatch, machinery event — delivers immediately. Idle → a turn starts. Mid-turn → omp live-steer with an envelope: acknowledge in one line, fold the instruction into open work, prioritize the user, continue. Nothing cancels a running turn; nothing waits for one.
 - **The instruction ledger.** The daemon (not the model) records every user/voice instruction as a ledger row (id, text, open/closed). The per-turn envelope re-lists open rows the way the snapshot re-lists fleet state, so compaction can never lose an instruction. Rows close when the Commander emits a card citing the instruction (`respondsTo` on proposals/answers/clarifications); verbose mode exposes a manual close.
-- **Follow-through.** Terminal events (finished, failed, interrupted) and verdicts of agents the Commander dispatched or adopted enter the same mailbox as machinery turns — in both modes; Ask mode stays safe because any follow-up action becomes a gated proposal. The Commander then proposes a follow-up, posts an answer card, or stays silent.
-- **Adoption.** Dispatched = spawned by the Commander (`paseo.parent-agent-id`) or adopted (`paseo.commander-adopted-at`). Adoption happens on the first delivered `fleet_send_prompt`, or explicitly via the `adopt_agent` meta action — "take care of this agent" stamps the label without messaging the worker.
+- **Follow-through.** Verdicts of agents the Commander dispatched or adopted enter the same mailbox as machinery turns — in both modes; Ask mode stays safe because any follow-up action becomes a gated proposal. Terminal events (finished, failed, interrupted), started, and milestones never reach the mailbox: they are board/feed-rail only, and blocked/stalled reach the Commander only when a decision card attaches (spec 07). The Commander then proposes a follow-up, posts an answer card, or stays silent.
+- **Adoption.** Dispatched = spawned by the Commander (`paseo.parent-agent-id`) or adopted (`paseo.commander-adopted-at`). Adoption happens on the first delivered `fleet_send_prompt`, or explicitly via `fleet_adopt_agent` — "take care of this agent" stamps the label without messaging the worker.
 
 ## Interaction grammar
 
@@ -94,12 +94,13 @@ Agents rarely work in isolation; new work builds on prior agents' decisions. Raw
 
 Messages between agents (`fleet_send_prompt`, hub) are notes, not context transfer — same model as Claude Code's cross-session messaging: a message is text one agent writes to another; moving a conversation means forking it.
 
-## Identity: names are permanent
+## Identity: names and titles are permanent, description lives
 
 - An agent's **name** (the fun name) is assigned once at creation and never changes. Names exist so a human can identify an agent across the board, the feed, transcripts, and memory — a name that mutates breaks every past reference to it.
+- The **title** is written once at registration (`explicit ?? first prompt line ?? derived stub`) and then **frozen**: `report_status.title` is accepted only as a backfill when the record has none, and ignored afterwards (the tool result says "title is fixed; description updated"). The only rename path is `fleet_rename_agent_title` — a deliberate meta action, never an agent's self-report.
+- The **description** is the living layer — "what I'm doing right now", a fresh 2-3 sentences (~400 chars) on every `report_status`; the daemon nags when a record lacks one. Board rows render title as the key line, name as the identity chip, description on hover.
 - Changing the naming theme affects **new agents only**. There is no re-mapping of existing names, no rename RPC for named agents, no backfill that touches an already-named agent.
 - Collision resistance comes from pool size, not renaming: generation draws from a combinatorial pool (qualifier + name) large enough that per-host uniqueness checks almost never collide, with the host glyph disambiguating across hosts.
-- The **title** is the living layer — it tracks the agent's current theme and may be rewritten by the agent itself on genuine divergence. The **description** is the freshest layer — "what I'm doing right now", updated on every report. Name never moves; title moves rarely; description moves constantly.
 
 ## The Commander's own footprint
 
@@ -107,24 +108,30 @@ The Commander lives in a reserved home (`~/.paseo/commander`) inside a system wo
 
 ## Tools
 
-Current surface (all mutating tools route through the approval gate):
+The full catalog (25 tools; every mutating tool routes through the approval gate). Ids are fleet-wide: tools accept bare ids — agent UUID, `prj_*`, `wks_*`, `mcp_*` — and the commander host resolves them through the fleet id index; `host` is an optional hint, never a required routing key (spec 02).
 
-| Tool                       | Purpose                                               |
-| -------------------------- | ----------------------------------------------------- |
-| `fleet_list_agents`        | Roster across hosts                                   |
-| `fleet_create_agent`       | Spawn a worker on a host (gated)                      |
-| `fleet_send_prompt`        | Message/steer a worker (gated)                        |
-| `fleet_get_agent_activity` | One agent's curated timeline                          |
-| `fleet_search`             | Find agents by what they worked on                    |
-| `tag_message`              | Attribute your messages to agents for verifier audits |
+| Tool                                                                                         | Purpose                                                                                                                                                                                                                                             |
+| -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | -------- |
+| `fleet_list_agents`                                                                          | Roster across hosts. Rows carry the server-computed `bucket`, `workspaceId`/`projectId`/`serverId`, name, title, description, and last report headlines; filter by `bucket` (closed enum) or fuzzy `query`.                                         |
+| `fleet_list_models`                                                                          | Invocable provider/model strings + the default worker model per host. Use before spawning.                                                                                                                                                          |
+| `fleet_list_inventory`                                                                       | Hosts → projects → workspaces (`prj_*`/`wks_*` ids, cwd), optional fuzzy query. THE resolve-first tool: act only on returned ids, never on a spoken name.                                                                                           |
+| `fleet_get_agent_activity`                                                                   | One agent's curated timeline. Read-only — never pokes the agent.                                                                                                                                                                                    |
+| `fleet_search`                                                                               | Find agents by what they worked on (tiered: deterministic context, transcript scan, History Ask when `deep`).                                                                                                                                       |
+| `fleet_recall`                                                                               | Semantic recall over the fleet memory bank (run records).                                                                                                                                                                                           |
+| `fleet_context`                                                                              | Run records / workspace·project rollups for brief enrichment.                                                                                                                                                                                       |
+| `fleet_agent_status`                                                                         | One-call "how is X doing": identity, canonical bucket, lastStatus, running turn, last report. `fresh: true` steers a status-ask (user-invisible machinery envelope, ≤60s wait) — the only mid-run status mechanism, fires only on explicit request. |
+| `fleet_monitor`                                                                              | Session-scoped watches (`start`/`stop`/`status`, `fleet` or per-agent). Terminal events announce for the watched scope; never blocks the conversation.                                                                                              |
+| `fleet_create_agent`                                                                         | Spawn a worker on a host (gated). Placement: `workspaceId` present → host derived via the index; no placement → `host` required (a new worktree must land somewhere).                                                                               |
+| `fleet_send_prompt`                                                                          | Message/steer a worker (gated; `mode: steer                                                                                                                                                                                                         | interrupt | queue`). |
+| `fleet_rename_project` / `fleet_rename_workspace` / `fleet_rename_agent_title`               | Meta renames (gated). `fleet_rename_agent_title` is the ONLY path that changes a frozen title.                                                                                                                                                      |
+| `fleet_archive_project` / `fleet_archive_workspace` / `fleet_archive_agent`                  | Meta archives (gated; destructive → always ask).                                                                                                                                                                                                    |
+| `fleet_create_project`                                                                       | `{ host, path, title? }` — host required, a new path must land somewhere.                                                                                                                                                                           |
+| `fleet_move_agent` / `fleet_promote_workspace` / `fleet_adopt_agent` / `fleet_release_agent` | Meta moves / adoption (gated). `fleet_adopt_agent` = "take care of this agent" without messaging it.                                                                                                                                                |
+| `tag_message`                                                                                | Attribute your messages to agents for verifier audits.                                                                                                                                                                                              |
+| `clarify` / `post_answer`                                                                    | The two answer-card tools.                                                                                                                                                                                                                          |
 
-Target additions, in roadmap order:
+The legacy `fleet_meta` tool stays registered as a `COMPAT(fleet-meta-alias)` (remove after 2026-10-01) for external/MCP callers; it is NOT in the allowlist — the Commander uses the 11 flat tools above. Time-and-triggers (schedules, webhooks, one-shot deferred runs) are still not tools.
 
-| Tool                                                                                                  | Purpose                                                                                                                        |
-| ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `fleet_meta` (rename/archive project·workspace·agent, move agent, promote experiment, create project) | The meta tasks. Moving an agent between workspaces needs a new daemon RPC — it does not exist today.                           |
-| `fleet_recall`                                                                                        | Semantic recall over the fleet memory bank (run records)                                                                       |
-| `fleet_context`                                                                                       | Fetch run records / workspace rollups for brief enrichment                                                                     |
-| Schedules + webhooks CRUD, one-shot deferred runs                                                     | Time and triggers. One-shot = a schedule with `maxRuns: 1`, surfaced as its own tool so "in three hours" needs no cron syntax. |
+**Fail fast, dedupe, error contract** (spec 03): every mutation validates at call time — id family shape, live existence via the index, absolute `cwd`, peer reachability — before building a proposal; approval-time checks stay as the second line. An identical mutation while the previous is pending/in-flight returns the existing `proposalId` with `guidance: "already pending"`. Every rejection names the offending field, the expected id family/enum, and live candidates when known (an unknown agent → nearest matches + "call fleet_list_agents(query)"; a host-hint mismatch → the actual host). No bare "invalid input" — the model self-corrects in one step.
 
 The tool allowlist stays explicit and hash-versioned; drift recreates the Commander session. A capability that isn't a tool doesn't exist — the Commander never shells out, never improvises.

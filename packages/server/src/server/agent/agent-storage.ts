@@ -58,6 +58,10 @@ const STORED_AGENT_SCHEMA = z.object({
   // so records written by older daemons still parse.
   name: z.string().optional(),
   shortDescription: z.string().optional(),
+  // Spec 06 tier-3 fallback: set when shortDescription was auto-derived from
+  // the last assistant message (deterministic, no LLM). Additive; absent on
+  // agent-written descriptions.
+  shortDescriptionAutoDerived: z.boolean().optional(),
   labels: z.record(z.string(), z.string()).default({}),
   lastStatus: AgentStatusSchema.default("closed"),
   lastModeId: z.string().nullable().optional(),
@@ -129,6 +133,12 @@ function preserveStoredIdentityFields(
   }
   if (record.shortDescription === undefined && existing?.shortDescription !== undefined) {
     record.shortDescription = existing.shortDescription;
+  }
+  if (
+    record.shortDescriptionAutoDerived === undefined &&
+    existing?.shortDescriptionAutoDerived !== undefined
+  ) {
+    record.shortDescriptionAutoDerived = existing.shortDescriptionAutoDerived;
   }
   if (existing && existing.archivedAt !== undefined) {
     record.archivedAt = existing.archivedAt;

@@ -162,3 +162,10 @@ export type {
   HindsightRecallMatch,
   HindsightRecallResult,
 } from "./hindsight.js";
+export { FleetIdIndex, createFleetIdIndex, inferIdKind, formatShortId } from "./fleet-id-index.js";
+export type {
+  FleetIdKind,
+  FleetIdResolution,
+  FleetIdIndexDependencies,
+  PeerSnapshotEntry,
+} from "./fleet-id-index.js";

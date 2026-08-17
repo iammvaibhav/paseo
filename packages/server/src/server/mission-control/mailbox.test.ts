@@ -324,6 +324,8 @@ describe("M8 mailbox: instruction delivery + speculative auto-recall", () => {
     await createService({ busy: false });
     const recallSpy = vi.spyOn(service, "hindsightRecall");
     await service.setMode("auto");
+    // A blocked event only wakes the Commander when it carries a decision
+    // card (spec 07); attach a pending proposal so the machinery turn fires.
     service.publishEvent({
       agentId: "worker-1",
       kind: "blocked",
@@ -331,6 +333,18 @@ describe("M8 mailbox: instruction delivery + speculative auto-recall", () => {
       severity: "blocker",
       headline: "Waiting for permission",
       detail: "needs a decision",
+      proposal: {
+        id: "mcp-mailbox-nudge",
+        createdAt: new Date().toISOString(),
+        origin: "commander",
+        serverId: "test-server",
+        targetAgentId: "worker-1",
+        message: "Proceed with the plan?",
+        deliveryMode: "interrupt",
+        reason: "Needs a decision",
+        classification: "normal",
+        status: "pending",
+      },
     });
     await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(1));
     const call = dispatchLocalPromptModeMock.mock.calls[0]?.[0];

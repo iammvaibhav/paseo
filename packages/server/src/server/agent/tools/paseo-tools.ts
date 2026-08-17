@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isAbsolute } from "node:path";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { ensureValidJson } from "../../json-utils.js";
 import type { Logger } from "pino";
@@ -119,7 +120,10 @@ import { hasMissionControlLabels } from "../../mission-control/naming.js";
 import {
   classifyFleetMetaAction,
   buildFleetMetaProposalInput,
+  buildSplitMetaProposalInput,
+  formatMetaToolOutcome,
   resolveMetaTargetHost,
+  type SplitMetaToolArgs,
 } from "../../mission-control/fleet-meta.js";
 import {
   MISSION_CONTROL_LABEL_KEY,
@@ -141,11 +145,14 @@ import {
   buildLocalModels,
   resolveDefaultWorkerModel,
 } from "../../mission-control/context.js";
+import type { WorkspaceRollup, ProjectRollup } from "../../mission-control/rollups.js";
 import type { MissionControlVerifierDispatcher } from "../../mission-control/verifier.js";
 import { MissionControlReportStatusInputSchema } from "@getpaseo/protocol/mission-control/types";
 import type { MissionControlEvent } from "@getpaseo/protocol/mission-control/types";
 import type { MissionControlProposal } from "@getpaseo/protocol/mission-control/types";
 import type { ProposalCreateInput } from "../../mission-control/approvals.js";
+import { validateSpawnCwd } from "../../mission-control/spawn-executor.js";
+import { FleetIdIndex } from "../../mission-control/fleet-id-index.js";
 import type {
   PaseoToolCatalog,
   PaseoToolConfig,
@@ -229,6 +236,7 @@ export interface PaseoToolHostDependencies {
    * verifier-only tools contact_worker and submit_verdict.
    */
   verifierDispatcher?: MissionControlVerifierDispatcher | null;
+  fleetIdIndex?: FleetIdIndex | null;
   logger: Logger;
 }
 
@@ -653,6 +661,24 @@ function matchesFleetInventoryQuery(
   return tokens.every((token) => haystack.some((field) => field.includes(token)));
 }
 
+/** Agent id family: a bare UUID (fleet-unique). Titles and mcp_ ids never match. */
+const AGENT_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Compact display id for candidate listings, e.g. "wks_a0fd…". */
+function shortFleetId(id: string): string {
+  return id.length > 8 ? `${id.slice(0, 8)}…` : id;
+}
+
+/**
+ * Spec 03 mutation dedupe window, shared at module scope: the daemon builds a
+ * fresh catalog per fleet-tool RPC (voice/Commander requests), so per-catalog
+ * state would reset between back-to-back calls. One map per daemon process
+ * keeps the window alive until the prior proposal resolves. Entries are
+ * evicted lazily by sweepResolvedMutations (proposal-status check) at the
+ * start of every mutating call.
+ */
+const fleetMutationWindow = new Map<string, { proposalId: string | null; inFlight: boolean }>();
+
 function resolveTerminalKeyToken(key: string, literal: boolean): string {
   if (literal) {
     return key;
@@ -990,6 +1016,7 @@ async function formatSpawnProposalOutcome(input: {
       agentId: null,
       type: cleanProvider,
       status: "pending-approval",
+      proposalId: proposal.id,
       guidance: `Spawn request sent for approval (proposal ${proposal.id}). The agent will be created once approved.`,
     };
   }
@@ -1012,8 +1039,68 @@ async function formatSpawnProposalOutcome(input: {
     agentId: null,
     type: cleanProvider,
     status: "sent",
+    proposalId: proposal.id,
     guidance: `Spawn request sent (proposal ${proposal.id}).`,
   };
+}
+
+/**
+ * The catalog's default fleet-id index: resolves ids against the local
+ * registries and cached peer snapshots, with a fleet-context-backed refresh.
+ * Callers may inject their own index via options.fleetIdIndex instead.
+ */
+function buildCatalogFleetIdIndex(
+  options: PaseoToolHostDependencies,
+  hostLabel: string,
+): FleetIdIndex {
+  const {
+    agentManager,
+    agentStorage,
+    missionControlService,
+    peerManager,
+    providerSnapshotManager,
+    daemonConfigStore,
+    serverId,
+    logger,
+  } = options;
+  return new FleetIdIndex({
+    agentStorage,
+    agentManager,
+    workspaceRegistry: options.workspaceRegistry,
+    projectRegistry: options.projectRegistry,
+    missionControlService,
+    peerManager,
+    fleetContext: async () =>
+      buildFleetContextData({
+        agentManager,
+        agentStorage,
+        workspaceRegistry: (options.workspaceRegistry ?? { list: async () => [] }) as Pick<
+          WorkspaceRegistry,
+          "list"
+        >,
+        projectRegistry: (options.projectRegistry ?? { list: async () => [] }) as Pick<
+          ProjectRegistry,
+          "list"
+        >,
+        providerSnapshotManager,
+        ...(peerManager ? { peerManager } : {}),
+        daemonConfigStore:
+          daemonConfigStore ?? ({ get: () => ({}) } as unknown as Pick<DaemonConfigStore, "get">),
+        serverId: serverId ?? "",
+        hostName: hostLabel,
+        logger,
+      }),
+    logger,
+  });
+}
+
+/** The caller agent's voice context (null when the caller is not a voice
+ * session or no resolver is wired). */
+function resolveCatalogCallerContext(
+  callerAgentId: string | undefined,
+  resolveCallerContext: ((callerAgentId: string) => VoiceCallerContext | null) | undefined,
+): VoiceCallerContext | null {
+  return callerAgentId ? (resolveCallerContext?.(callerAgentId) ?? null) : null;
 }
 
 export function createPaseoToolCatalog(options: PaseoToolHostDependencies): PaseoToolCatalog {
@@ -1052,8 +1139,15 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     );
     return resolved.ok && resolved.kind === "local";
   };
+  const hostsMatch = (hostA: string, hostB: string): boolean => {
+    if (isFleetLocalTarget(hostA) && isFleetLocalTarget(hostB)) {
+      return true;
+    }
+    return hostA.trim().toLowerCase() === hostB.trim().toLowerCase();
+  };
+  const fleetIdIndex = options.fleetIdIndex ?? buildCatalogFleetIdIndex(options, hostLabel);
   const childLogger = logger.child({ module: "agent", component: "paseo-tool-catalog" });
-  const callerContext = callerAgentId ? (resolveCallerContext?.(callerAgentId) ?? null) : null;
+  const callerContext = resolveCatalogCallerContext(callerAgentId, resolveCallerContext);
 
   /**
    * Ask-mode gate for Commander actions (user decision: everything is gated in
@@ -1117,6 +1211,94 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         "mission_control.commander_gated_action_failed",
       );
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  };
+
+  /**
+   * 04 — the shared Commander-caller path for the 11 split meta tools (and
+   * the fleet_meta COMPAT alias): every tool resolves its bare id, builds the
+   * identical metaPlan proposal payload (buildSplitMetaProposalInput), and
+   * routes through the SAME approval gate as the old fleet_meta — destructive
+   * archives always ask. Output shape {ok, status, proposalId?, guidance?}.
+   */
+  const runMetaGate = async (input: SplitMetaToolArgs & { toolName: string }) => {
+    if (!isCommanderCaller || !missionControlService) {
+      throw new Error(`${input.toolName} requires a Commander caller`);
+    }
+    const metaWorkspaceRegistry = options.workspaceRegistry;
+    const metaProjectRegistry = options.projectRegistry;
+    if (!metaWorkspaceRegistry || !metaProjectRegistry) {
+      throw new Error(
+        `${input.toolName} is unavailable: workspace/project registries are not configured on this daemon`,
+      );
+    }
+    // Dedupe (spec 03 — same discipline as fleet_create_agent and
+    // fleet_send_prompt): an identical meta mutation while the prior is
+    // pending (ask-mode proposal) or still in-flight returns the existing
+    // proposal id with guidance "already pending" instead of creating a
+    // second proposal. Models legitimately emit the same mutation twice in
+    // one turn (parallel tool calls); without this the duplicate opens two
+    // cards for one intent.
+    sweepResolvedMutations();
+    const dedupeKey = `meta\u0000${input.toolName}\u0000${normalizeMutationArgs(input)}`;
+    const pendingMutation = findPendingMutation(dedupeKey);
+    if (pendingMutation) {
+      const existingProposalId = pendingMutation.proposalId;
+      if (existingProposalId) {
+        return {
+          content: [],
+          structuredContent: ensureValidJson({
+            ok: true,
+            status: "pending",
+            proposalId: existingProposalId,
+            guidance: `Meta action already pending (proposal ${existingProposalId}); no duplicate created.`,
+          }),
+        };
+      }
+      throw new Error("Meta action already in flight; wait for its result.");
+    }
+    pendingMutations.set(dedupeKey, { proposalId: null, inFlight: true });
+    try {
+      const gated = await runCommanderGatedAction({
+        toolName: input.toolName,
+        toolInput: input,
+        // The metaPlan carries the destructive classification too (the builder
+        // sets it from the action); this hook keeps the old fleet_meta's
+        // explicit destructive declaration as the authoritative source.
+        classify: () => classifyFleetMetaAction({ action: input.action } as MissionControlMetaPlan),
+        buildProposal: () =>
+          buildSplitMetaProposalInput(
+            {
+              serverId: serverId ?? "",
+              hostAlias: options.hostAlias,
+              peerManager: peerManager ?? null,
+              lookup: {
+                agentManager,
+                agentStorage,
+                workspaceRegistry: metaWorkspaceRegistry,
+                projectRegistry: metaProjectRegistry,
+              },
+              resolveFleetId: (id) => fleetIdIndex.resolveFleetId(id),
+              hostLabel,
+            },
+            input,
+          ),
+      });
+      if (!gated.ok) {
+        throw new Error(gated.error);
+      }
+      const tracked = pendingMutations.get(dedupeKey);
+      if (tracked) {
+        tracked.inFlight = false;
+        tracked.proposalId = gated.proposal.id;
+      }
+      return {
+        content: [],
+        structuredContent: ensureValidJson(formatMetaToolOutcome(gated.proposal)),
+      };
+    } catch (error) {
+      pendingMutations.delete(dedupeKey);
+      throw error;
     }
   };
 
@@ -2737,7 +2919,13 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       },
     },
     async ({ includeArchived = false, cwd, sinceHours = 48, statuses, limit = 50 }) => {
-      const callerCwd = callerAgentId ? resolveCallerAgent()?.cwd : undefined;
+      // The Commander runs the whole fleet from its own reserved home
+      // workspace (`.paseo/commander`); scoping the roster to the caller's
+      // cwd subtree would hide every fleet agent that lives elsewhere — the
+      // roster, digest, and voice queries all route through this tool as the
+      // Commander. Only an explicit `cwd` argument filters; regular
+      // (non-Commander) agents still default to their own workspace subtree.
+      const callerCwd = callerAgentId && !isCommanderCaller ? resolveCallerAgent()?.cwd : undefined;
       const requestedCwd = cwd?.trim() ? expandUserPath(cwd) : callerCwd;
       const statusFilter = statuses && statuses.length > 0 ? new Set(statuses) : null;
       const sinceMs = Date.now() - sinceHours * 60 * 60 * 1000;
@@ -3940,11 +4128,12 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         'Silence between milestones; never send progress updates. "completed" means conclusively done — everything asked, finished; any doubt, ' +
         'cut short, or still in discussion: report "inconclusive", never "completed". Completion claims should carry proofs. ' +
         "Prefer hub-wait over sleep/timeout polling loops. Rate limited to one report per minute per agent. " +
-        "Optional title/description maintain YOUR identity on the agent record: title is your current main theme, kept stable — retitle only " +
-        "when the work's theme genuinely diverges (a decision-kind report, or once at completion); description is a living 2-3 sentence " +
-        "'what this agent is doing now', replaced (never appended) whenever it materially changes, under ~400 characters. Send " +
-        "title/description only when changing them; omitting them leaves them untouched. The result echoes your stored title/description " +
-        "only when they drifted from what you sent (changed externally); otherwise no identity fields are returned.",
+        "Identity rules: description is a living 2-3 sentence 'what this agent is doing now' — send a FRESH description on EVERY report " +
+        "(replaced, never appended, under ~400 characters); the daemon nags when your record lacks one. Title is WRITE-ONCE: your record " +
+        "already has one (frozen at registration) — never resend or retitle it; a title sent when the record has one is ignored with the " +
+        "notice 'title is fixed; description updated', and the only rename path is fleet_rename_agent_title. Send title ONLY as backfill " +
+        "when the daemon tells you the record has none. The result echoes your stored title/description only when they drifted from what " +
+        "you sent (changed externally), and carries a notice when your title was ignored or your description is missing.",
       inputSchema: MissionControlReportStatusInputSchema.extend({
         headline: z
           .string()
@@ -3956,6 +4145,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         eventId: z.string().optional(),
         reason: z.string().optional(),
         error: z.string().optional(),
+        // Additive guidance: frozen-title notice or missing-description nag.
+        notice: z.string().optional(),
         // Drift-only identity echo: the agent's stored title and short
         // description (null when never set), present ONLY when they differ
         // from what the agent just sent — someone else changed them. Absent
@@ -3988,6 +4179,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         structuredContent: ensureValidJson({
           ok: true,
           eventId: result.event.id,
+          // Additive guidance: frozen-title notice / missing-description nag.
+          ...(result.notice ? { notice: result.notice } : {}),
           // Drift-only identity echo: present only when the stored identity
           // differs from what the agent sent (external drift).
           ...(result.identity.title !== undefined ? { title: result.identity.title } : {}),
@@ -4004,10 +4197,20 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       host: z
         .string()
         .min(1)
+        .optional()
         .describe(
-          "Target host: a peer name from the daemon peers config, or 'local' for this daemon.",
+          "Target host: a peer name from the daemon peers config, or 'local' for this daemon. " +
+            "Optional when workspaceId is provided (derived from the workspace); required when workspaceId is omitted.",
         ),
       ...canonicalTopLevelInputSchema,
+      workspaceId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Existing workspace id (wks_…) to place the agent in — fleet-wide, no host needed. " +
+            "When provided, host is derived automatically.",
+        ),
       cwd: z
         .string()
         .optional()
@@ -4032,7 +4235,24 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       .max(24 * 30)
       .optional()
       .default(48),
-    statuses: z.array(AgentStatusEnum).optional(),
+    statuses: z
+      .array(z.enum(["initializing", "idle", "running", "error", "closed"]))
+      .optional()
+      .describe(
+        "Filter to these agent lifecycle statuses: initializing, idle, running, error, closed.",
+      ),
+    bucket: z
+      .enum(["needs_you", "running", "ready", "done", "idle"])
+      .optional()
+      .describe(
+        "Filter to rows in this lifecycle bucket (closed enum): needs_you, running, ready, done, idle.",
+      ),
+    query: z
+      .string()
+      .optional()
+      .describe(
+        "Fuzzy agent-name resolution: case-insensitive token/substring match against agent name, title, and id. Omitted → all agents.",
+      ),
     limit: z.number().int().positive().max(200).optional().default(50),
   };
 
@@ -4137,6 +4357,221 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     return peerManager.getPeerClient(host);
   };
 
+  /** The hosts this daemon knows, for host-hint mismatch errors (spec 03). */
+  const knownFleetHostsText = (): string => {
+    const peers = peerManager?.getPeerStatuses().map((status) => status.name) ?? [];
+    return ["local", ...peers].join(", ");
+  };
+
+  // Dedupe (spec 03): an identical mutation (same tool + normalized args)
+  // while the prior is pending (ask-mode proposal) or still in-flight returns
+  // the existing proposal id with guidance "already pending" instead of
+  // creating a second proposal. The window lasts until the prior proposal
+  // resolves to a terminal status. The window map is module-scoped so every
+  // catalog instance (the Commander session and per-request voice RPC
+  // catalogs) shares one dedupe window per daemon process.
+  const pendingMutations = fleetMutationWindow;
+
+  /** Canonical key for mutation args: trimmed strings, undefined/null dropped, keys sorted. */
+  const normalizeMutationArgs = (value: unknown): string => {
+    if (typeof value === "string") {
+      return JSON.stringify(value.trim());
+    }
+    if (Array.isArray(value)) {
+      return `[${value.map(normalizeMutationArgs).join(",")}]`;
+    }
+    if (value && typeof value === "object") {
+      const entries = Object.entries(value as Record<string, unknown>)
+        .filter(([, entry]) => entry !== undefined && entry !== null && entry !== "")
+        .sort(([keyA], [keyB]) => keyA.localeCompare(keyB))
+        .map(([key, entry]) => `${JSON.stringify(key)}:${normalizeMutationArgs(entry)}`);
+      return `{${entries.join(",")}}`;
+    }
+    return JSON.stringify(value);
+  };
+
+  /** The tracked proposal's status, or null when the service cannot verify it. */
+  const resolveTrackedProposalStatus = (proposalId: string): string | null => {
+    if (typeof missionControlService?.getProposal !== "function") {
+      return null;
+    }
+    return missionControlService.getProposal(proposalId)?.status ?? null;
+  };
+
+  /** Drop entries whose proposal resolved (or whose in-flight call finished). */
+  const sweepResolvedMutations = (): void => {
+    for (const [key, entry] of pendingMutations) {
+      if (entry.inFlight) {
+        continue;
+      }
+      if (!entry.proposalId) {
+        pendingMutations.delete(key);
+        continue;
+      }
+      if (resolveTrackedProposalStatus(entry.proposalId) !== "pending") {
+        pendingMutations.delete(key);
+      }
+    }
+  };
+
+  /** The tracked mutation for a key while its proposal is still pending. */
+  const findPendingMutation = (key: string): { proposalId: string | null } | null => {
+    const entry = pendingMutations.get(key);
+    if (!entry) {
+      return null;
+    }
+    if (entry.inFlight) {
+      return entry;
+    }
+    if (entry.proposalId) {
+      if (resolveTrackedProposalStatus(entry.proposalId) === "pending") {
+        return entry;
+      }
+    }
+    pendingMutations.delete(key);
+    return null;
+  };
+
+  /**
+   * Error-contract guidance for a UUID-shaped but unknown agent (spec 03):
+   * the rejection names live candidates on this host and the resolver tool,
+   * so the model self-corrects in one step.
+   */
+  const buildUnknownAgentError = async (agentId: string): Promise<string> => {
+    const candidates: string[] = [];
+    try {
+      for (const agent of agentManager.listAgents()) {
+        if (agent.id === agentId) {
+          continue;
+        }
+        candidates.push(agent.name ?? agent.id);
+        if (candidates.length >= 3) {
+          break;
+        }
+      }
+    } catch {
+      // Candidate collection is best-effort; never mask the unknown-agent error.
+    }
+    if (candidates.length < 3) {
+      try {
+        const records = await agentStorage.list();
+        for (const record of records) {
+          if (record.internal || record.id === agentId || candidates.length >= 3) {
+            continue;
+          }
+          candidates.push(record.name ?? record.title ?? record.id);
+        }
+      } catch {
+        // Best-effort, same as above.
+      }
+    }
+    const nearest =
+      candidates.length > 0
+        ? ` Nearest agents on this host: ${candidates.map((name) => `'${name}'`).join(", ")}.`
+        : "";
+    return (
+      `Agent ${shortFleetId(agentId)} not found on any reachable host.` +
+      `${nearest} Call fleet_list_agents(query) to resolve the agent id.`
+    );
+  };
+
+  /**
+   * Call-time spawn-target validation (spec 03): the workspace must be a live
+   * wks_* on the resolved host, cwd must be absolute, and the peer reachable —
+   * all BEFORE a proposal is created, so a bad spawn is rejected with
+   * candidates the model can act on in one step. The approval-time checks
+   * (spawn-executor / create-agent) stay as the second line of defense.
+   */
+  const buildLiveWorkspaceCandidates = async (
+    registry: Pick<WorkspaceRegistry, "list">,
+  ): Promise<string> => {
+    const workspaces = await registry.list();
+    const live = workspaces.filter((workspace) => !workspace.archivedAt);
+    if (live.length === 0) {
+      return "no live workspaces on this host";
+    }
+    return live
+      .map((workspace) => `${shortFleetId(workspace.workspaceId)} '${workspace.displayName}'`)
+      .join(", ");
+  };
+
+  const validateSpawnTargetAtCallTime = async (input: {
+    host: string;
+    cwd?: string;
+    workspaceId?: string;
+    workspaceRegistry: Pick<WorkspaceRegistry, "get" | "list"> | null;
+  }): Promise<void> => {
+    const { host, cwd, workspaceId } = input;
+    const cwdCheck = validateSpawnCwd(cwd);
+    if (!cwdCheck.ok) {
+      throw new Error(cwdCheck.error);
+    }
+    if (!isFleetLocalTarget(host)) {
+      // Peer target: reachability throws for offline/unconfigured hosts; the
+      // workspace must be live on the peer's own registry.
+      const client = resolveFleetHost(host);
+      if (!client) {
+        throw new Error(
+          `Host "${host}" is not a configured peer; this daemon knows: ${knownFleetHostsText()}`,
+        );
+      }
+      if (!workspaceId) {
+        return;
+      }
+      const payload = await client.fetchWorkspaces({ page: { limit: 200 } });
+      const entry = payload.entries.find((candidate) => candidate.id === workspaceId);
+      if (!entry) {
+        const live = payload.entries.filter((candidate) => !candidate.archivingAt);
+        const candidates =
+          live.length > 0
+            ? live
+                .map(
+                  (candidate) =>
+                    `${shortFleetId(candidate.id)} '${candidate.title ?? candidate.name}'`,
+                )
+                .join(", ")
+            : "no live workspaces on this host";
+        throw new Error(
+          `workspace not found: ${workspaceId} is not a live workspace on host "${host}"; available workspaces: ${candidates}`,
+        );
+      }
+      if (entry.archivingAt) {
+        const live = payload.entries.filter((candidate) => !candidate.archivingAt);
+        throw new Error(
+          `workspace ${workspaceId} is archived; pick a live workspace on host "${host}": ${
+            live.length > 0
+              ? live
+                  .map(
+                    (candidate) =>
+                      `${shortFleetId(candidate.id)} '${candidate.title ?? candidate.name}'`,
+                  )
+                  .join(", ")
+              : "none"
+          }`,
+        );
+      }
+      return;
+    }
+    if (!workspaceId) {
+      return;
+    }
+    const registry = input.workspaceRegistry;
+    if (!registry) {
+      return;
+    }
+    const workspace = await registry.get(workspaceId);
+    if (!workspace) {
+      const candidates = await buildLiveWorkspaceCandidates(registry);
+      throw new Error(
+        `workspace not found: ${workspaceId} is not a live workspace on host "${hostLabel}"; available workspaces: ${candidates}`,
+      );
+    }
+    if (workspace.archivedAt) {
+      const candidates = await buildLiveWorkspaceCandidates(registry);
+      throw new Error(`workspace ${workspaceId} is archived; pick a live workspace: ${candidates}`);
+    }
+  };
+
   /**
    * Resolve human-readable workspace/project labels for a Commander spawn
    * proposal at proposal-creation time, so the card renders names instead of
@@ -4233,7 +4668,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         agents: z.array(fleetAgentListItemSchema),
       },
     },
-    async ({ includeArchived = false, sinceHours = 48, statuses, limit = 50 }) => {
+    async ({ includeArchived = false, sinceHours = 48, statuses, bucket, query, limit = 50 }) => {
       const localResult = await toCatalog().executeTool("list_agents", {
         includeArchived,
         sinceHours,
@@ -4246,7 +4681,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       // Roster enrichment: each row gains the agent's last report_status
       // headlines (cap 5, oldest -> newest) and its last non-system user
       // message when one is known. Local rows read the local store + live
-      // timeline; peer rows fetch one events payload per host.
+      // timeline; peer rows fetch one events payload per host. Placement
+      // (workspaceId/projectId/serverId) rides on the snapshot restore;
+      // projectId and serverId resolve from the host registries below.
       const localReports = collectReportStatusHeadlines(missionControlService?.fetchEvents() ?? []);
       const agents: Array<
         AgentListItemPayload & {
@@ -4255,18 +4692,66 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           lastUserMessage?: string | null;
         }
       > = [];
-      for (const agent of localAgents) {
-        const reports = localReports.get(agent.id);
-        agents.push({
-          ...agent,
-          host: hostLabel,
-          ...(reports ? { reportStatus: reports } : {}),
-          lastUserMessage: lastUserMessageFor(agentManager, agent.id),
-        });
+      // workspaceId -> projectId for LOCAL rows (the workspace registry the
+      // agent actually lives in; peer rows resolve projectId via the resolver).
+      let localWorkspaceProject: Map<string, string> | null = null;
+      if (options.workspaceRegistry) {
+        const workspaces = await options.workspaceRegistry.list();
+        localWorkspaceProject = new Map(
+          workspaces.map((workspace) => [workspace.workspaceId, workspace.projectId]),
+        );
       }
-
-      if (peerManager) {
+      const localServerId = serverId ?? "";
+      // Canonical lifecycle bucket (spec 03): the snapshot pipeline stamps it
+      // once the owning daemon computes it; until then (or when the service is
+      // unavailable) the row simply omits it — a bucket filter never matches
+      // a bucket-less row. This fallback covers local rows when the snapshot
+      // pipeline has not stamped one yet.
+      const getLocalBucket =
+        typeof missionControlService?.getLifecycleBucket === "function"
+          ? (agentId: string) => missionControlService.getLifecycleBucket(agentId)
+          : null;
+      // Local rows: roster enrichment (report headlines, last user message),
+      // project attribution from the local workspace registry, serverId, and
+      // the canonical bucket fallback when the snapshot pipeline has not
+      // stamped one yet.
+      const appendLocalRosterRows = async (): Promise<void> => {
+        for (const agent of localAgents) {
+          const reports = localReports.get(agent.id);
+          const extra: Record<string, unknown> = {};
+          if (agent.workspaceId && localWorkspaceProject?.has(agent.workspaceId)) {
+            extra.projectId = localWorkspaceProject.get(agent.workspaceId);
+          }
+          if (localServerId) {
+            extra.serverId = localServerId;
+          }
+          if (!agent.bucket && getLocalBucket) {
+            extra.bucket = await getLocalBucket(agent.id);
+          }
+          if (reports) {
+            extra.reportStatus = reports;
+          }
+          agents.push({
+            ...agent,
+            host: hostLabel,
+            ...extra,
+            lastUserMessage: lastUserMessageFor(agentManager, agent.id),
+          });
+        }
+      };
+      // Peer rows: one events payload per host for the report-status
+      // headlines, plus the peer's serverId when the peer map knows it.
+      const appendPeerRosterRows = async (): Promise<void> => {
+        if (!peerManager) {
+          return;
+        }
         const sinceMs = Date.now() - sinceHours * 60 * 60 * 1000;
+        // Peer host identity: the serverId of the host each agent runs on
+        // (absent when the peer map does not know it yet — additive).
+        const getPeerServerId =
+          typeof peerManager.getPeerServerId === "function"
+            ? (name: string) => peerManager.getPeerServerId(name)
+            : null;
         for (const peerStatus of peerManager.getPeerStatuses()) {
           if (peerStatus.state !== "online") {
             continue;
@@ -4293,10 +4778,12 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
                 "Failed to fetch peer report_status events",
               );
             }
+            const peerServerId = getPeerServerId?.(peerStatus.name) ?? null;
             for (const agent of peerAgents) {
               const reports = peerReports.get(agent.id);
               agents.push({
                 ...agent,
+                ...(peerServerId ? { serverId: peerServerId } : {}),
                 ...(reports ? { reportStatus: reports } : {}),
               });
             }
@@ -4307,12 +4794,26 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
             );
           }
         }
-      }
+      };
+      await appendLocalRosterRows();
+      await appendPeerRosterRows();
 
-      agents.sort(compareAgentListItems);
+      // Roster filters (spec 03): an optional lifecycle bucket (closed enum)
+      // and a fuzzy agent-name query — the resolver for spoken agent names.
+      // Rows without a bucket (pre-bucket daemons) never match a bucket filter.
+      const queryTokens = (query ?? "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+      const hasQuery = queryTokens.length > 0;
+      const filtered = agents
+        .filter((agent) => !bucket || agent.bucket === bucket)
+        .filter(
+          (agent) =>
+            !hasQuery || matchesFleetInventoryQuery(queryTokens, agent.name, agent.title, agent.id),
+        );
+
+      filtered.sort(compareAgentListItems);
       return {
         content: [],
-        structuredContent: ensureValidJson({ agents: agents.slice(0, limit) }),
+        structuredContent: ensureValidJson({ agents: filtered.slice(0, limit) }),
       };
     },
   );
@@ -4377,11 +4878,14 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     {
       title: "List fleet hosts, projects, and workspaces",
       description:
-        "List every project and workspace across this daemon and its peers, grouped by host. " +
+        "THE resolver: resolve any spoken project/workspace name before acting; act only on returned ids. " +
+        "Lists every project and workspace across this daemon and its peers, grouped by host. " +
         "query is a case-insensitive fuzzy filter (project title/id, workspace title/id/cwd, host " +
-        "name/alias) for resolving a spoken name before acting — a name is never assumed to be a " +
+        "name/alias) for resolving a spoken name — a name is never assumed to be a " +
         "host. host restricts to one peer name or 'local'; omitted = every host. Unreachable hosts " +
-        "appear with reachable:false and an empty project list. Read-only; never gated.",
+        "appear with reachable:false and an empty project list. Every workspace row carries its " +
+        "wks_ id, its prj_ project id, and its cwd path (a path is never emitted as an id). " +
+        "Read-only; never gated.",
       inputSchema: {
         query: z
           .string()
@@ -4456,7 +4960,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         } else {
           const peer = hosts.filter((entry) => entry.hostName === target);
           if (peer.length === 0) {
-            throw new Error(`Host "${target}" is not a configured peer`);
+            throw new Error(
+              `Host "${target}" is not a configured peer; this daemon knows: ${knownFleetHostsText()}`,
+            );
           }
           hosts = peer;
         }
@@ -4521,9 +5027,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     {
       title: "Create agent on a host",
       description:
-        "Create an agent on a specific host in the fleet. host is a peer name from the daemon peers config, or 'local' for this daemon. " +
-        "Requires provider/model (for example codex/gpt-5.4) and an initial prompt. " +
-        "When targeting a peer, cwd or workspaceId is required to place the agent on that host.",
+        "Create an agent on a specific host in the fleet, or place it in an existing workspace fleet-wide. " +
+        "When workspaceId is present, host is optional and derived from the workspace via the fleet index. " +
+        "When workspaceId is omitted, host is required (a new worktree must land somewhere). " +
+        "Requires provider/model (for example codex/gpt-5.4) and an initial prompt.",
       inputSchema: fleetCreateAgentInputSchema,
       outputSchema: {
         agentId: z.string(),
@@ -4535,11 +5042,87 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         availableModes: z.array(ProviderModeSchema),
         lastMessage: z.string().nullable().optional(),
         permission: AgentPermissionRequestPayloadSchema.nullable().optional(),
+        // Approval-flow outcome (spec 03): the proposal id when a spawn is
+        // pending (or deduplicated onto an existing one) and self-correcting
+        // guidance. Additive.
+        proposalId: z.string().optional(),
+        guidance: z.string().optional(),
       },
     },
     async (args, context) => {
-      const { host, cwd, workspaceId, provider, initialPrompt, title, labels, settings } = args;
-      if (isCommanderCaller && missionControlService) {
+      const {
+        host: rawHost,
+        cwd,
+        workspaceId,
+        provider,
+        initialPrompt,
+        title,
+        labels,
+        settings,
+      } = args;
+      // Resolve the spawn's target host: when workspaceId is present, host is
+      // optional and derived from the workspace via the fleet index (a host
+      // hint is validated against the workspace's actual host); otherwise the
+      // host is required.
+      const resolveSpawnTargetHost = async (): Promise<string> => {
+        if (workspaceId) {
+          const resolution = await fleetIdIndex.resolveFleetId(workspaceId);
+          if (rawHost) {
+            if (resolution.kind !== "unknown" && !hostsMatch(rawHost, resolution.host)) {
+              const actualHost = resolution.host === "local" ? hostLabel : resolution.host;
+              throw new Error(
+                `Workspace "${workspaceId}" is on host "${actualHost}", not "${rawHost}"`,
+              );
+            }
+            return rawHost;
+          }
+          if (resolution.kind === "unknown") {
+            throw new Error(resolution.guidance);
+          }
+          return resolution.host;
+        }
+        if (!rawHost) {
+          throw new Error(
+            "host is required when workspaceId is omitted (a new worktree must land on a specific host)",
+          );
+        }
+        return rawHost;
+      };
+      const host = await resolveSpawnTargetHost();
+      // Fail fast (spec 03): the spawn target is validated at call time —
+      // the workspace must be a live wks_* on the resolved host (candidates
+      // listed on rejection), cwd absolute, and the peer reachable — before
+      // any proposal is created. Approval-time checks stay as the second line.
+      await validateSpawnTargetAtCallTime({
+        host,
+        cwd,
+        workspaceId,
+        workspaceRegistry: options.workspaceRegistry ?? null,
+      });
+      // The Commander path routes the spawn through the approval gate as a
+      // proposal (ask mode) or executes it (auto mode), with same-spawn
+      // dedupe while the prior is pending or in-flight.
+      const runCommanderSpawnGate = async (): Promise<PaseoToolResult> => {
+        // Dedupe (spec 03): an identical spawn while the prior is pending or
+        // in-flight returns the existing proposal id with guidance
+        // "already pending" instead of creating a second proposal.
+        sweepResolvedMutations();
+        const dedupeKey = `fleet_create_agent\u0000${normalizeMutationArgs(args)}`;
+        const pendingMutation = findPendingMutation(dedupeKey);
+        if (pendingMutation) {
+          const existingProposalId = pendingMutation.proposalId;
+          return {
+            content: [],
+            structuredContent: ensureValidJson({
+              agentId: null,
+              type: provider.split("/")[0] || provider,
+              status: "pending-approval",
+              ...(existingProposalId ? { proposalId: existingProposalId } : {}),
+              guidance: `Spawn already pending${existingProposalId ? ` (proposal ${existingProposalId})` : ""}; no duplicate created.`,
+            }),
+          };
+        }
+        pendingMutations.set(dedupeKey, { proposalId: null, inFlight: true });
         // Ask-mode gate (user decision: everything gated except the nudge —
         // including spawning a new agent). The spawn becomes a spawn-kind
         // proposal whose card shows what would be created (host, provider/
@@ -4548,101 +5131,124 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         // Resolve human workspace/project labels at proposal time so the card
         // renders names (authoritative, cross-host correct) instead of raw
         // `wks_…` ids; caller-supplied labels pass through untouched.
-        const resolvedSpawnLabels = await resolveCommanderSpawnLabels({
-          host,
-          cwd,
-          workspaceId,
-        });
-        const spawnLabels = { ...labels, ...resolvedSpawnLabels };
-        const gated = await runCommanderGatedAction({
-          toolName: "fleet_create_agent",
-          toolInput: args,
-          buildProposal: () =>
-            buildCommanderSpawnProposalInput({
-              serverId: serverId ?? "",
-              host,
-              provider,
-              title,
-              initialPrompt,
-              cwd,
-              workspaceId,
-              labels: Object.keys(spawnLabels).length > 0 ? spawnLabels : undefined,
-              settings,
-              ...(args.respondsTo ? { respondsTo: args.respondsTo } : {}),
-            }),
-        });
-        if (!gated.ok) {
-          throw new Error(gated.error);
+        try {
+          const resolvedSpawnLabels = await resolveCommanderSpawnLabels({
+            host,
+            cwd,
+            workspaceId,
+          });
+          const spawnLabels = { ...labels, ...resolvedSpawnLabels };
+          const gated = await runCommanderGatedAction({
+            toolName: "fleet_create_agent",
+            toolInput: args,
+            buildProposal: () =>
+              buildCommanderSpawnProposalInput({
+                serverId: serverId ?? "",
+                host,
+                provider,
+                title,
+                initialPrompt,
+                cwd,
+                workspaceId,
+                labels: Object.keys(spawnLabels).length > 0 ? spawnLabels : undefined,
+                settings,
+                ...(args.respondsTo ? { respondsTo: args.respondsTo } : {}),
+              }),
+          });
+          if (!gated.ok) {
+            throw new Error(gated.error);
+          }
+          const tracked = pendingMutations.get(dedupeKey);
+          if (tracked) {
+            tracked.inFlight = false;
+            tracked.proposalId = gated.proposal.id;
+          }
+          const structuredContent = await formatSpawnProposalOutcome({
+            proposal: gated.proposal,
+            agentManager,
+            agentStorage,
+          });
+          return { content: [], structuredContent: ensureValidJson(structuredContent) };
+        } catch (error) {
+          pendingMutations.delete(dedupeKey);
+          throw error;
         }
-        const structuredContent = await formatSpawnProposalOutcome({
-          proposal: gated.proposal,
-          agentManager,
-          agentStorage,
-        });
-        return { content: [], structuredContent: ensureValidJson(structuredContent) };
+      };
+      if (isCommanderCaller && missionControlService) {
+        return runCommanderSpawnGate();
       }
       if (isFleetLocalTarget(host)) {
         const { cwd: _cwd, ...localArgs } = args;
         return toCatalog().executeTool("create_agent", localArgs, context);
       }
-      const client = resolveFleetHost(host);
-      if (!client) {
-        throw new Error(`Host "${host}" is not a configured peer`);
-      }
-      if (!cwd && !workspaceId) {
-        throw new Error(`cwd or workspaceId is required to place the agent on host "${host}"`);
-      }
-      const providerSlash = provider.indexOf("/");
-      const snapshot = await client.createAgent({
-        // The peer create RPC is the SESSION create path: `provider` must be
-        // a plain provider id with `model` passed separately (the local
-        // create_agent path splits "provider/model" itself). Passing the
-        // combined string made every peer spawn fail with "Provider
-        // provider/model is not configured" on the target host.
-        provider: providerSlash > 0 ? provider.slice(0, providerSlash) : provider,
-        ...(providerSlash > 0 ? { model: provider.slice(providerSlash + 1) } : {}),
-        cwd: cwd ?? ".",
-        workspaceId,
-        initialPrompt,
-        title,
-        labels,
-        ...(settings?.modeId ? { modeId: settings.modeId } : {}),
-        ...(settings?.thinkingOptionId ? { thinkingOptionId: settings.thinkingOptionId } : {}),
-        ...(settings?.features ? { featureValues: settings.features } : {}),
-      });
-      return {
-        content: [],
-        structuredContent: ensureValidJson({
-          agentId: snapshot.id,
-          type: snapshot.provider,
-          status: snapshot.status,
-          cwd: snapshot.cwd,
-          ...(snapshot.workspaceId ? { workspaceId: snapshot.workspaceId } : {}),
-          currentModeId: snapshot.currentModeId,
-          availableModes: snapshot.availableModes,
-          lastMessage: null,
-          permission: sanitizePermissionRequest(snapshot.pendingPermissions[0] ?? null),
-        }),
+      // Peer create path: the peer create RPC is the SESSION create path —
+      // `provider` must be a plain provider id with `model` passed separately
+      // (the local create_agent path splits "provider/model" itself).
+      const createAgentOnPeerHost = async (): Promise<PaseoToolResult> => {
+        const client = resolveFleetHost(host);
+        if (!client) {
+          throw new Error(
+            `Host "${host}" is not a configured peer; this daemon knows: ${knownFleetHostsText()}`,
+          );
+        }
+        if (!cwd && !workspaceId) {
+          throw new Error(`cwd or workspaceId is required to place the agent on host "${host}"`);
+        }
+        const providerSlash = provider.indexOf("/");
+        const snapshot = await client.createAgent({
+          provider: providerSlash > 0 ? provider.slice(0, providerSlash) : provider,
+          ...(providerSlash > 0 ? { model: provider.slice(providerSlash + 1) } : {}),
+          cwd: cwd ?? ".",
+          workspaceId,
+          initialPrompt,
+          title,
+          labels,
+          ...(settings?.modeId ? { modeId: settings.modeId } : {}),
+          ...(settings?.thinkingOptionId ? { thinkingOptionId: settings.thinkingOptionId } : {}),
+          ...(settings?.features ? { featureValues: settings.features } : {}),
+        });
+        return {
+          content: [],
+          structuredContent: ensureValidJson({
+            agentId: snapshot.id,
+            type: snapshot.provider,
+            status: snapshot.status,
+            cwd: snapshot.cwd,
+            ...(snapshot.workspaceId ? { workspaceId: snapshot.workspaceId } : {}),
+            currentModeId: snapshot.currentModeId,
+            availableModes: snapshot.availableModes,
+            lastMessage: null,
+            permission: sanitizePermissionRequest(snapshot.pendingPermissions[0] ?? null),
+          }),
+        };
       };
+      return createAgentOnPeerHost();
     },
   );
 
   registerTool(
     "fleet_get_agent_activity",
     {
-      title: "Get agent activity on a host",
+      title: "Get agent activity",
       description:
         "Return recent agent timeline entries as a curated summary, on this daemon ('local') or a peer host. " +
+        "agentId is fleet-wide; host is optional and resolved automatically via the fleet index. " +
         "Same shape as the local get_agent_activity tool; proxied over peering so the Commander can read any " +
         "worker's timeline from its own host.",
       inputSchema: {
+        agentId: z
+          .string()
+          .describe(
+            "Agent UUID from fleet_list_agents/fleet_search data — fleet-wide, no host needed.",
+          ),
         host: z
           .string()
           .min(1)
+          .optional()
           .describe(
-            "Target host: a peer name from the daemon peers config, or 'local' for this daemon.",
+            "Optional host hint: a peer name from the daemon peers config, or 'local' for this daemon. " +
+              "When omitted, resolved automatically via the fleet index.",
           ),
-        agentId: z.string(),
         limit: z
           .number()
           .optional()
@@ -4656,7 +5262,21 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       },
     },
     async ({ host, agentId, limit }) => {
-      if (isFleetLocalTarget(host)) {
+      let targetHost = host;
+      if (targetHost) {
+        const resolution = await fleetIdIndex.resolveFleetId(agentId);
+        if (resolution.kind !== "unknown" && !hostsMatch(targetHost, resolution.host)) {
+          const actualHost = resolution.host === "local" ? hostLabel : resolution.host;
+          throw new Error(`Agent "${agentId}" is on host "${actualHost}", not "${targetHost}"`);
+        }
+      } else {
+        const resolution = await fleetIdIndex.resolveFleetId(agentId);
+        if (resolution.kind === "unknown") {
+          throw new Error(resolution.guidance);
+        }
+        targetHost = resolution.host;
+      }
+      if (isFleetLocalTarget(targetHost)) {
         const local = await toCatalog().executeTool("get_agent_activity", { agentId, limit });
         const parsed = z
           .object({
@@ -4668,9 +5288,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           .parse(local.structuredContent);
         return { content: [], structuredContent: ensureValidJson(parsed) };
       }
-      const client = resolveFleetHost(host);
+      const client = resolveFleetHost(targetHost);
       if (!client) {
-        throw new Error(`Host "${host}" is not a configured peer`);
+        throw new Error(`Host "${targetHost}" is not a configured peer`);
       }
       const payload = await client.fetchAgentTimeline(agentId, {
         direction: "tail",
@@ -4896,21 +5516,28 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   registerTool(
     "fleet_send_prompt",
     {
-      title: "Send agent prompt on a host",
+      title: "Send agent prompt",
       description:
-        "Send a task to an agent on a specific host in the fleet. host is a peer name from the daemon peers config, or 'local' for this daemon. " +
+        "Send a task to an agent across the fleet. agentId is fleet-wide; host is optional and resolved " +
+        "automatically via the fleet index. " +
         'mode controls delivery to a busy agent: "steer" injects into the live turn without cancelling (OMP live-steer; a busy non-OMP ' +
         'agent is interrupted so the message lands promptly), "queue" waits for the agent to idle before streaming, "interrupt" cancels ' +
         "the running turn and replaces it with this prompt. Omit mode to use the fleet commanderToWorkerMode central setting " +
         '(default "interrupt"); an explicit mode always overrides it — prefer "steer" for additive, non-urgent instructions.',
       inputSchema: {
+        agentId: z
+          .string()
+          .describe(
+            "Agent UUID from fleet_list_agents/fleet_search data — fleet-wide, no host needed.",
+          ),
         host: z
           .string()
           .min(1)
+          .optional()
           .describe(
-            "Target host: a peer name from the daemon peers config, or 'local' for this daemon.",
+            "Optional host hint: a peer name from the daemon peers config, or 'local' for this daemon. " +
+              "When omitted, resolved automatically via the fleet index.",
           ),
-        agentId: z.string(),
         prompt: z.string(),
         mode: z
           .enum(["steer", "interrupt", "queue"])
@@ -4939,9 +5566,44 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       outputSchema: {
         success: z.boolean(),
         deliveryMode: z.enum(["steer", "interrupt", "queue", "steer-interrupt"]),
+        // Approval-flow outcome (spec 03): the proposal id when a send is
+        // pending (or deduplicated onto an existing one) and guidance.
+        // Additive.
+        proposalId: z.string().optional(),
+        guidance: z.string().optional(),
       },
     },
     async ({ host, agentId, prompt, mode, attachments, respondsTo }) => {
+      // Fail fast (spec 03): agentId is the UUID agent id family — a title or
+      // an mcp_ proposal id is never an agent. Reject at call time with
+      // guidance so the model self-corrects in one step.
+      if (!AGENT_UUID_PATTERN.test(agentId)) {
+        throw new Error(
+          `agentId must be a UUID (the agent id from fleet_list_agents/fleet_search data); got "${agentId}". ` +
+            "Titles and proposal ids are not agent ids — call fleet_list_agents(query) to resolve.",
+        );
+      }
+      // Resolve the agent's target host: the id is authoritative, host is a
+      // hint to validate against (never a routing key); unknown ids name live
+      // candidates so the model can pick the right agent (spec 03 contract).
+      const resolveSendTargetHost = async (): Promise<string> => {
+        if (host) {
+          const resolution = await fleetIdIndex.resolveFleetId(agentId);
+          if (resolution.kind !== "unknown" && !hostsMatch(host, resolution.host)) {
+            const actualHost = resolution.host === "local" ? hostLabel : resolution.host;
+            throw new Error(`Agent "${agentId}" is on host "${actualHost}", not "${host}"`);
+          }
+          return host;
+        }
+        const resolution = await fleetIdIndex.resolveFleetId(agentId);
+        if (resolution.kind === "unknown") {
+          // UUID-shaped but unknown anywhere: name live candidates so the
+          // model can pick the right agent (spec 03 error contract).
+          throw new Error(await buildUnknownAgentError(agentId));
+        }
+        return resolution.host;
+      };
+      const targetHost = await resolveSendTargetHost();
       // The Commander's default comes from the fleet central setting
       // commanderToWorkerMode (default "interrupt" — a fleet direction change
       // is time-sensitive and queue-until-idle can sit for tens of minutes).
@@ -4949,69 +5611,130 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       // choose "steer" for additive, non-urgent instructions.
       const effectiveMode =
         mode ?? missionControlService?.getCentralConfig().commanderToWorkerMode ?? "interrupt";
-      if (isCommanderCaller && missionControlService) {
-        // Ask-mode gate (user decision: everything gated except the nudge).
-        // The send becomes a proposal; auto mode delivers immediately via the
-        // approvals module, ask mode waits for Approve/Edit/Deny.
-        const gated = await runCommanderGatedAction({
-          toolName: "fleet_send_prompt",
-          toolInput: { host, agentId, prompt, mode, attachments },
-          buildProposal: () => ({
-            origin: "commander",
-            serverId: serverId ?? "",
-            targetAgentId: agentId,
-            message: prompt,
-            deliveryMode: effectiveMode,
-            reason: "Commander send",
-            classification: "normal",
-            timelineClassification: "instruction",
-            ...(respondsTo ? { respondsTo } : {}),
-          }),
-        });
-        if (!gated.ok) {
-          throw new Error(gated.error);
-        }
-        const proposal = gated.proposal;
-        if (proposal.status === "pending") {
+      // The Commander path routes the send through the approval gate as a
+      // proposal (ask mode) or delivers immediately (auto mode), with
+      // same-send dedupe while the prior is pending or in-flight.
+      const runCommanderSendGate = async (): Promise<PaseoToolResult> => {
+        // Dedupe (spec 03): an identical send while the prior is pending or
+        // in-flight returns the existing proposal id with guidance
+        // "already pending" instead of creating a second proposal.
+        sweepResolvedMutations();
+        const dedupeKey = `fleet_send_prompt\u0000${normalizeMutationArgs({
+          host: targetHost,
+          agentId,
+          prompt,
+          mode,
+          attachments,
+          respondsTo,
+        })}`;
+        const pendingMutation = findPendingMutation(dedupeKey);
+        if (pendingMutation) {
+          const existingProposalId = pendingMutation.proposalId;
           return {
             content: [],
             structuredContent: ensureValidJson({
               success: false,
               deliveryMode: effectiveMode,
-              guidance: `Send request sent for approval (proposal ${proposal.id}). It will be delivered once approved.`,
+              ...(existingProposalId ? { proposalId: existingProposalId } : {}),
+              guidance: `Send already pending${existingProposalId ? ` (proposal ${existingProposalId})` : ""}; no duplicate created.`,
             }),
           };
         }
-        // Auto mode: approvals already delivered the message.
-        return {
-          content: [],
-          structuredContent: ensureValidJson({ success: true, deliveryMode: effectiveMode }),
-        };
-      }
-      if (isFleetLocalTarget(host)) {
-        const deliveredAs = await dispatchLocalPromptMode({
-          agentManager,
-          agentStorage,
-          agentId,
-          prompt,
-          mode: effectiveMode,
-          attachments,
-          // A Commander/Verifier dispatch superseding a busy worker's run is
-          // machinery-originated — the superseded run must keep the failure
-          // treatment, never read as a user interruption.
-          replaceOrigin: "machinery",
-          recordStopOrigin: (stopAgentId, origin) =>
-            missionControlService?.recordStopOrigin(stopAgentId, origin),
-          logger: childLogger,
-        });
+        pendingMutations.set(dedupeKey, { proposalId: null, inFlight: true });
+        // Ask-mode gate (user decision: everything gated except the nudge).
+        // The send becomes a proposal; auto mode delivers immediately via the
+        // approvals module, ask mode waits for Approve/Edit/Deny.
+        try {
+          const gated = await runCommanderGatedAction({
+            toolName: "fleet_send_prompt",
+            toolInput: { host: targetHost, agentId, prompt, mode, attachments },
+            buildProposal: () => ({
+              origin: "commander",
+              // The proposal's serverId is the host the Commander (origin)
+              // runs on — same contract as fleet_create_agent's spawn
+              // proposal. `targetHost` is the delivery target, encoded by
+              // targetAgentId; storing the "local" alias here would drop the
+              // originating host identity from the approval card.
+              serverId: serverId ?? "",
+              targetAgentId: agentId,
+              message: prompt,
+              deliveryMode: effectiveMode,
+              reason: "Commander send",
+              classification: "normal",
+              timelineClassification: "instruction",
+              ...(respondsTo ? { respondsTo } : {}),
+            }),
+          });
+          if (!gated.ok) {
+            throw new Error(gated.error);
+          }
+          const tracked = pendingMutations.get(dedupeKey);
+          if (tracked) {
+            tracked.inFlight = false;
+            tracked.proposalId = gated.proposal.id;
+          }
+          const proposal = gated.proposal;
+          if (proposal.status === "pending") {
+            return {
+              content: [],
+              structuredContent: ensureValidJson({
+                success: false,
+                deliveryMode: effectiveMode,
+                proposalId: proposal.id,
+                guidance: `Send request sent for approval (proposal ${proposal.id}). It will be delivered once approved.`,
+              }),
+            };
+          }
+          // Auto mode: approvals already delivered the message.
+          return {
+            content: [],
+            structuredContent: ensureValidJson({ success: true, deliveryMode: effectiveMode }),
+          };
+        } catch (error) {
+          pendingMutations.delete(dedupeKey);
+          throw error;
+        }
+      };
+      // Local dispatch: a Commander/Verifier dispatch superseding a busy
+      // worker's run is machinery-originated — the superseded run must keep
+      // the failure treatment, never read as a user interruption.
+      const dispatchLocalPrompt = async (): Promise<PaseoToolResult> => {
+        let deliveredAs: string;
+        try {
+          deliveredAs = await dispatchLocalPromptMode({
+            agentManager,
+            agentStorage,
+            agentId,
+            prompt,
+            mode: effectiveMode,
+            attachments,
+            replaceOrigin: "machinery",
+            recordStopOrigin: (stopAgentId, origin) =>
+              missionControlService?.recordStopOrigin(stopAgentId, origin),
+            logger: childLogger,
+          });
+        } catch (error) {
+          if (error instanceof Error && error.message.includes(`Agent ${agentId} not found`)) {
+            throw new Error(await buildUnknownAgentError(agentId), { cause: error });
+          }
+          throw error;
+        }
         return {
           content: [],
           structuredContent: ensureValidJson({ success: true, deliveryMode: deliveredAs }),
         };
+      };
+      if (isCommanderCaller && missionControlService) {
+        return runCommanderSendGate();
       }
-      const client = resolveFleetHost(host);
+      if (isFleetLocalTarget(targetHost)) {
+        return dispatchLocalPrompt();
+      }
+      const client = resolveFleetHost(targetHost);
       if (!client) {
-        throw new Error(`Host "${host}" is not a configured peer`);
+        throw new Error(
+          `Host "${targetHost}" is not a configured peer; this daemon knows: ${knownFleetHostsText()}`,
+        );
       }
       await client.sendAgentMessage(agentId, prompt, {
         dispatchMode: effectiveMode,
@@ -5024,34 +5747,72 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     },
   );
 
+  // 04 — the 11 split meta tools share one output contract (same as the old
+  // fleet_meta) and the M8 respondsTo ledger field.
+  const META_TOOL_OUTPUT_SCHEMA = {
+    ok: z.boolean(),
+    status: z.enum(["pending", "sent"]).optional(),
+    proposalId: z.string().optional(),
+    guidance: z.string().optional(),
+    error: z.string().optional(),
+  };
+  const META_RESPONDS_TO_DESCRIPTION =
+    "M8 instruction ledger: the open instruction id this dispatch answers (e.g. '#12'). " +
+    "The envelope lists open ids; cite one on every card you emit for a user instruction.";
+  const PROJECT_ID_SCHEMA = z
+    .string()
+    .regex(
+      /^prj_[0-9a-f]{16}$/,
+      "projectId must be a project id (prj_ + 16 hex) from fleet_list_inventory data — fleet-wide, no host needed",
+    );
+  const WORKSPACE_ID_SCHEMA = z
+    .string()
+    .regex(
+      /^wks_[0-9a-f]{16}$/,
+      "workspaceId must be a workspace id (wks_ + 16 hex) from fleet_list_inventory data — fleet-wide, no host needed",
+    );
+  const AGENT_ID_SCHEMA = z
+    .string()
+    .regex(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+      "agentId must be an agent UUID from fleet_list_agents/fleet_search data — fleet-wide, no host needed",
+    );
+  const HOST_HINT_SCHEMA = z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Optional host hint: a peer name from the daemon peers config, or 'local' for this daemon. " +
+        "When omitted, resolved automatically via the fleet index.",
+    );
+  const PROJECT_PATH_SCHEMA = z
+    .string()
+    .refine(
+      (value) => isAbsolute(value),
+      "path must be an absolute filesystem path (e.g. /home/user/project) where the project root will be created",
+    );
+
+  // COMPAT(fleet-meta-alias): added in v0.x (04 meta split), remove after
+  // 2026-10-01. External callers (older Commander prompts, MCP) still send the
+  // full metaPlan shape; keep this alias registered so they keep working, but
+  // it is superseded by the 11 flat per-action tools below. Same internals:
+  // buildFleetMetaProposalInput + the same approval gate.
   registerTool(
     "fleet_meta",
     {
-      title: "Fleet meta actions",
+      title: "Fleet meta actions (deprecated)",
       description:
-        "Apply a fleet meta action: rename/archive a project, workspace, or agent (agent TITLE only — names are " +
-        "permanent), create a project, move an agent to another workspace, or promote an experiment workspace " +
-        "(a workspace in the per-host experiments project) to its own project. " +
-        "Every action routes through the approval gate — archive actions always ask, even in auto mode. " +
-        "metaPlan: { action, serverId?, targetId?, targetLabel?, newValue?, destination? }. " +
-        'serverId names the host the action applies to ("local" or a peer name); destination is the target ' +
-        "workspace id for move_agent/promote_workspace and the project root path for create_project.",
+        "Deprecated alias — use the per-action tools: fleet_rename_project, fleet_rename_workspace, " +
+        "fleet_rename_agent_title, fleet_archive_project, fleet_archive_workspace, fleet_archive_agent, " +
+        "fleet_create_project, fleet_move_agent, fleet_promote_workspace, fleet_adopt_agent, " +
+        "fleet_release_agent. Accepts the legacy metaPlan shape: { action, serverId?, targetId?, " +
+        "targetLabel?, newValue?, destination? }. Every action routes through the approval gate — " +
+        "archive actions always ask, even in auto mode.",
       inputSchema: {
         metaPlan: MissionControlMetaPlanSchema,
-        respondsTo: z
-          .string()
-          .optional()
-          .describe(
-            "M8 instruction ledger: the open instruction id this dispatch answers (e.g. '#12'). The envelope lists open ids; cite one on every card you emit for a user instruction.",
-          ),
+        respondsTo: z.string().optional().describe(META_RESPONDS_TO_DESCRIPTION),
       },
-      outputSchema: {
-        ok: z.boolean(),
-        status: z.enum(["pending", "sent"]).optional(),
-        proposalId: z.string().optional(),
-        guidance: z.string().optional(),
-        error: z.string().optional(),
-      },
+      outputSchema: META_TOOL_OUTPUT_SCHEMA,
     },
     async (args: { metaPlan: MissionControlMetaPlan; respondsTo?: string }) => {
       if (!isCommanderCaller || !missionControlService) {
@@ -5095,28 +5856,313 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       if (!gated.ok) {
         throw new Error(gated.error);
       }
-      const proposal = gated.proposal;
-      if (proposal.status === "pending") {
-        return {
-          content: [],
-          structuredContent: ensureValidJson({
-            ok: true,
-            status: "pending",
-            proposalId: proposal.id,
-            guidance: `Meta action sent for approval (proposal ${proposal.id}). It will be applied once approved.`,
-          }),
-        };
-      }
       return {
         content: [],
-        structuredContent: ensureValidJson({
-          ok: true,
-          status: "sent",
-          proposalId: proposal.id,
-          guidance: `Meta action applied (proposal ${proposal.id}).`,
-        }),
+        structuredContent: ensureValidJson(formatMetaToolOutcome(gated.proposal)),
       };
     },
+  );
+
+  registerTool(
+    "fleet_rename_project",
+    {
+      title: "Rename a project",
+      description:
+        "Rename a project across the fleet. projectId is a prj_ id from fleet_list_inventory — " +
+        "fleet-wide, no host needed. Approval-gated; creates a proposal card the user approves.",
+      inputSchema: {
+        projectId: PROJECT_ID_SCHEMA,
+        title: z.string().min(1).describe("The new project name."),
+        host: HOST_HINT_SCHEMA,
+        respondsTo: z.string().optional().describe(META_RESPONDS_TO_DESCRIPTION),
+      },
+      outputSchema: META_TOOL_OUTPUT_SCHEMA,
+    },
+    async ({ projectId, title, host, respondsTo }) =>
+      runMetaGate({
+        toolName: "fleet_rename_project",
+        action: "rename_project",
+        kind: "project",
+        targetId: projectId,
+        newValue: title,
+        host,
+        respondsTo,
+      }),
+  );
+
+  registerTool(
+    "fleet_rename_workspace",
+    {
+      title: "Rename a workspace",
+      description:
+        "Rename a workspace across the fleet. workspaceId is a wks_ id from fleet_list_inventory — " +
+        "fleet-wide, no host needed. Approval-gated; creates a proposal card the user approves.",
+      inputSchema: {
+        workspaceId: WORKSPACE_ID_SCHEMA,
+        title: z.string().min(1).describe("The new workspace name."),
+        host: HOST_HINT_SCHEMA,
+        respondsTo: z.string().optional().describe(META_RESPONDS_TO_DESCRIPTION),
+      },
+      outputSchema: META_TOOL_OUTPUT_SCHEMA,
+    },
+    async ({ workspaceId, title, host, respondsTo }) =>
+      runMetaGate({
+        toolName: "fleet_rename_workspace",
+        action: "rename_workspace",
+        kind: "workspace",
+        targetId: workspaceId,
+        newValue: title,
+        host,
+        respondsTo,
+      }),
+  );
+
+  registerTool(
+    "fleet_rename_agent_title",
+    {
+      title: "Rename an agent's title",
+      description:
+        "Change an agent's TITLE across the fleet (agent names are write-once and never touched). " +
+        "agentId is an agent UUID from fleet_list_agents/fleet_search data — fleet-wide, no host needed. " +
+        "Approval-gated; creates a proposal card the user approves.",
+      inputSchema: {
+        agentId: AGENT_ID_SCHEMA,
+        title: z.string().min(1).describe("The new agent title."),
+        host: HOST_HINT_SCHEMA,
+        respondsTo: z.string().optional().describe(META_RESPONDS_TO_DESCRIPTION),
+      },
+      outputSchema: META_TOOL_OUTPUT_SCHEMA,
+    },
+    async ({ agentId, title, host, respondsTo }) =>
+      runMetaGate({
+        toolName: "fleet_rename_agent_title",
+        action: "rename_agent_title",
+        kind: "agent",
+        targetId: agentId,
+        newValue: title,
+        host,
+        respondsTo,
+      }),
+  );
+
+  registerTool(
+    "fleet_archive_project",
+    {
+      title: "Archive a project",
+      description:
+        "Archive a project across the fleet (its workspaces and their agents archive with it). " +
+        "projectId is a prj_ id from fleet_list_inventory — fleet-wide, no host needed. " +
+        "DESTRUCTIVE: always asks the user, even in auto mode.",
+      inputSchema: {
+        projectId: PROJECT_ID_SCHEMA,
+        host: HOST_HINT_SCHEMA,
+        respondsTo: z.string().optional().describe(META_RESPONDS_TO_DESCRIPTION),
+      },
+      outputSchema: META_TOOL_OUTPUT_SCHEMA,
+    },
+    async ({ projectId, host, respondsTo }) =>
+      runMetaGate({
+        toolName: "fleet_archive_project",
+        action: "archive_project",
+        kind: "project",
+        targetId: projectId,
+        host,
+        respondsTo,
+      }),
+  );
+
+  registerTool(
+    "fleet_archive_workspace",
+    {
+      title: "Archive a workspace",
+      description:
+        "Archive a workspace across the fleet (its agents archive with it). workspaceId is a wks_ id " +
+        "from fleet_list_inventory — fleet-wide, no host needed. DESTRUCTIVE: always asks the user, " +
+        "even in auto mode.",
+      inputSchema: {
+        workspaceId: WORKSPACE_ID_SCHEMA,
+        host: HOST_HINT_SCHEMA,
+        respondsTo: z.string().optional().describe(META_RESPONDS_TO_DESCRIPTION),
+      },
+      outputSchema: META_TOOL_OUTPUT_SCHEMA,
+    },
+    async ({ workspaceId, host, respondsTo }) =>
+      runMetaGate({
+        toolName: "fleet_archive_workspace",
+        action: "archive_workspace",
+        kind: "workspace",
+        targetId: workspaceId,
+        host,
+        respondsTo,
+      }),
+  );
+
+  registerTool(
+    "fleet_archive_agent",
+    {
+      title: "Archive an agent",
+      description:
+        "Archive an agent across the fleet. agentId is an agent UUID from fleet_list_agents/fleet_search " +
+        "data — fleet-wide, no host needed. DESTRUCTIVE: always asks the user, even in auto mode.",
+      inputSchema: {
+        agentId: AGENT_ID_SCHEMA,
+        host: HOST_HINT_SCHEMA,
+        respondsTo: z.string().optional().describe(META_RESPONDS_TO_DESCRIPTION),
+      },
+      outputSchema: META_TOOL_OUTPUT_SCHEMA,
+    },
+    async ({ agentId, host, respondsTo }) =>
+      runMetaGate({
+        toolName: "fleet_archive_agent",
+        action: "archive_agent",
+        kind: "agent",
+        targetId: agentId,
+        host,
+        respondsTo,
+      }),
+  );
+
+  registerTool(
+    "fleet_create_project",
+    {
+      title: "Create a project",
+      description:
+        "Create a project at an absolute root path on a host. host is REQUIRED — the new project root " +
+        "must land somewhere (a peer name from the daemon peers config, or 'local'). Approval-gated; " +
+        "creates a proposal card the user approves.",
+      inputSchema: {
+        host: z
+          .string()
+          .min(1)
+          .describe(
+            "Target host: a peer name from the daemon peers config, or 'local' for this daemon.",
+          ),
+        path: PROJECT_PATH_SCHEMA,
+        title: z
+          .string()
+          .optional()
+          .describe("Optional project display name (defaults to the root path's basename)."),
+        respondsTo: z.string().optional().describe(META_RESPONDS_TO_DESCRIPTION),
+      },
+      outputSchema: META_TOOL_OUTPUT_SCHEMA,
+    },
+    async ({ host, path, title, respondsTo }) =>
+      runMetaGate({
+        toolName: "fleet_create_project",
+        action: "create_project",
+        kind: "create-project",
+        host,
+        destination: path,
+        newValue: title,
+        respondsTo,
+      }),
+  );
+
+  registerTool(
+    "fleet_move_agent",
+    {
+      title: "Move an agent to another workspace",
+      description:
+        "Move an agent to another workspace (same host — cross-host moves are refused). agentId is an " +
+        "agent UUID from fleet_list_agents/fleet_search data; workspaceId is a wks_ id from " +
+        "fleet_list_inventory — both fleet-wide, no host needed. Refuses running agents. Approval-gated; " +
+        "creates a proposal card the user approves.",
+      inputSchema: {
+        agentId: AGENT_ID_SCHEMA,
+        workspaceId: WORKSPACE_ID_SCHEMA,
+        host: HOST_HINT_SCHEMA,
+        respondsTo: z.string().optional().describe(META_RESPONDS_TO_DESCRIPTION),
+      },
+      outputSchema: META_TOOL_OUTPUT_SCHEMA,
+    },
+    async ({ agentId, workspaceId, host, respondsTo }) =>
+      runMetaGate({
+        toolName: "fleet_move_agent",
+        action: "move_agent",
+        kind: "agent",
+        targetId: agentId,
+        destination: workspaceId,
+        host,
+        respondsTo,
+      }),
+  );
+
+  registerTool(
+    "fleet_promote_workspace",
+    {
+      title: "Promote an experiment workspace to its own project",
+      description:
+        "Promote a workspace in the per-host experiments project (~/experiments) to its own project. " +
+        "workspaceId is a wks_ id from fleet_list_inventory — fleet-wide, no host needed. Approval-gated; " +
+        "creates a proposal card the user approves.",
+      inputSchema: {
+        workspaceId: WORKSPACE_ID_SCHEMA,
+        host: HOST_HINT_SCHEMA,
+        respondsTo: z.string().optional().describe(META_RESPONDS_TO_DESCRIPTION),
+      },
+      outputSchema: META_TOOL_OUTPUT_SCHEMA,
+    },
+    async ({ workspaceId, host, respondsTo }) =>
+      runMetaGate({
+        toolName: "fleet_promote_workspace",
+        action: "promote_workspace",
+        kind: "workspace",
+        targetId: workspaceId,
+        host,
+        respondsTo,
+      }),
+  );
+
+  registerTool(
+    "fleet_adopt_agent",
+    {
+      title: "Adopt an agent",
+      description:
+        "Adopt an agent: stamp it as Commander-managed (paseo.commander-adopted-at) so the verifier " +
+        "audits its work — no message is sent. agentId is an agent UUID from fleet_list_agents/fleet_search " +
+        "data — fleet-wide, no host needed. Approval-gated; creates a proposal card the user approves.",
+      inputSchema: {
+        agentId: AGENT_ID_SCHEMA,
+        host: HOST_HINT_SCHEMA,
+        respondsTo: z.string().optional().describe(META_RESPONDS_TO_DESCRIPTION),
+      },
+      outputSchema: META_TOOL_OUTPUT_SCHEMA,
+    },
+    async ({ agentId, host, respondsTo }) =>
+      runMetaGate({
+        toolName: "fleet_adopt_agent",
+        action: "adopt_agent",
+        kind: "agent",
+        targetId: agentId,
+        host,
+        respondsTo,
+      }),
+  );
+
+  registerTool(
+    "fleet_release_agent",
+    {
+      title: "Release an agent",
+      description:
+        "Release an adopted agent: clear the Commander-management stamp so the verifier no longer " +
+        "includes it. agentId is an agent UUID from fleet_list_agents/fleet_search data — fleet-wide, " +
+        "no host needed. Approval-gated; creates a proposal card the user approves.",
+      inputSchema: {
+        agentId: AGENT_ID_SCHEMA,
+        host: HOST_HINT_SCHEMA,
+        respondsTo: z.string().optional().describe(META_RESPONDS_TO_DESCRIPTION),
+      },
+      outputSchema: META_TOOL_OUTPUT_SCHEMA,
+    },
+    async ({ agentId, host, respondsTo }) =>
+      runMetaGate({
+        toolName: "fleet_release_agent",
+        action: "release_agent",
+        kind: "agent",
+        targetId: agentId,
+        host,
+        respondsTo,
+      }),
   );
 
   registerTool(
@@ -5208,14 +6254,25 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       title: "Fetch run records and workspace/project rollups",
       description:
         "Fetch deterministic run records (brief + report history + verdict + proofs) and workspace/project rollups " +
-        "from the local mission-control store. Pass agentId for that agent's latest runs, workspaceId for the " +
+        "from the mission-control store. Pass agentId for that agent's latest runs, workspaceId for the " +
         "workspace rollup + its run records, projectId for the project rollup + its run records, or nothing for the " +
-        "most recent records fleet-wide. Use this to warm a worker's brief with prior context — spawned workers already " +
-        "receive the '# Prior work in this workspace' block automatically. Read-only; never approval-gated.",
+        "most recent records fleet-wide. All ids are fleet-wide and routed automatically via the fleet index. " +
+        "Use this to warm a worker's brief with prior context — spawned workers already receive the '# Prior work in this workspace' block automatically. Read-only; never approval-gated.",
       inputSchema: {
-        workspaceId: z.string().optional(),
-        projectId: z.string().optional(),
-        agentId: z.string().optional(),
+        workspaceId: z
+          .string()
+          .optional()
+          .describe("Workspace id (wks_…) — fleet-wide, no host needed."),
+        projectId: z
+          .string()
+          .optional()
+          .describe("Project id (prj_…) — fleet-wide, no host needed."),
+        agentId: z
+          .string()
+          .optional()
+          .describe(
+            "Agent UUID from fleet_list_agents/fleet_search data — fleet-wide, no host needed.",
+          ),
       },
       outputSchema: {
         runRecords: z.array(runRecordSchema),
@@ -5224,36 +6281,334 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       },
     },
     async (args: { workspaceId?: string; projectId?: string; agentId?: string }) => {
-      if (!missionControlService) {
+      const targetId = args.agentId ?? args.workspaceId ?? args.projectId;
+      let targetHost = "local";
+      if (targetId) {
+        const resolution = await fleetIdIndex.resolveFleetId(targetId);
+        if (resolution.kind !== "unknown") {
+          targetHost = resolution.host;
+        }
+      }
+      if (isFleetLocalTarget(targetHost)) {
+        if (!missionControlService) {
+          return {
+            content: [],
+            structuredContent: ensureValidJson({
+              ok: false,
+              error: "Mission Control is not enabled on this host",
+            }),
+          };
+        }
+        const all = missionControlService.getRunRecords();
+        let runRecords = all;
+        let workspaceRollup: WorkspaceRollup | undefined;
+        let projectRollup: ProjectRollup | undefined;
+        if (args.agentId) {
+          runRecords = all.filter((record) => record.agentId === args.agentId).slice(0, 5);
+        } else if (args.workspaceId) {
+          runRecords = all.filter((record) => record.workspaceId === args.workspaceId).slice(0, 5);
+          workspaceRollup = missionControlService.getWorkspaceRollup(args.workspaceId) ?? undefined;
+        } else if (args.projectId) {
+          runRecords = all.filter((record) => record.projectId === args.projectId).slice(0, 5);
+          projectRollup = missionControlService.getProjectRollup(args.projectId) ?? undefined;
+        } else {
+          runRecords = all.slice(0, 10);
+        }
+        return {
+          content: [],
+          structuredContent: ensureValidJson({
+            runRecords,
+            ...(workspaceRollup ? { workspaceRollup } : {}),
+            ...(projectRollup ? { projectRollup } : {}),
+          }),
+        };
+      }
+
+      const client = resolveFleetHost(targetHost);
+      if (!client) {
+        throw new Error(`Host "${targetHost}" is not a configured peer`);
+      }
+      const payload = await client.missionControlContextRecords(args);
+      if (!payload.ok) {
         return {
           content: [],
           structuredContent: ensureValidJson({
             ok: false,
-            error: "Mission Control is not enabled on this host",
+            error: payload.error ?? "Failed to fetch Mission Control context records from peer",
           }),
         };
-      }
-      const all = missionControlService.getRunRecords();
-      let runRecords = all;
-      let workspaceRollup: import("../../mission-control/rollups.js").WorkspaceRollup | undefined;
-      let projectRollup: import("../../mission-control/rollups.js").ProjectRollup | undefined;
-      if (args.agentId) {
-        runRecords = all.filter((record) => record.agentId === args.agentId).slice(0, 5);
-      } else if (args.workspaceId) {
-        runRecords = all.filter((record) => record.workspaceId === args.workspaceId).slice(0, 5);
-        workspaceRollup = missionControlService.getWorkspaceRollup(args.workspaceId) ?? undefined;
-      } else if (args.projectId) {
-        runRecords = all.filter((record) => record.projectId === args.projectId).slice(0, 5);
-        projectRollup = missionControlService.getProjectRollup(args.projectId) ?? undefined;
-      } else {
-        runRecords = all.slice(0, 10);
       }
       return {
         content: [],
         structuredContent: ensureValidJson({
-          runRecords,
-          ...(workspaceRollup ? { workspaceRollup } : {}),
-          ...(projectRollup ? { projectRollup } : {}),
+          runRecords: payload.runRecords,
+          ...(payload.workspaceRollup ? { workspaceRollup: payload.workspaceRollup } : {}),
+          ...(payload.projectRollup ? { projectRollup: payload.projectRollup } : {}),
+        }),
+      };
+    },
+  );
+
+  registerTool(
+    "fleet_agent_status",
+    {
+      title: "Check on one agent",
+      description:
+        "One call answers 'how is X doing': record identity (name, title, description), the canonical lifecycle " +
+        "bucket, lastStatus, running-turn info, the last report_status headline/detail/ts, and workspaceId/" +
+        "projectId/host. fresh:true steers the agent to post a fresh report_status (user-invisible machinery " +
+        "envelope) and waits up to 60s for it; on timeout it returns the stale data with fresh:false and a note. " +
+        "The only mid-run status mechanism — fires only on explicit request. Read-only; never approval-gated.",
+      inputSchema: {
+        agentId: z
+          .string()
+          .describe(
+            "Agent UUID from fleet_list_agents/fleet_search data — fleet-wide, no host needed.",
+          ),
+        fresh: z
+          .boolean()
+          .optional()
+          .default(false)
+          .describe(
+            "Steer the agent for a fresh report_status and wait up to 60s. Only on explicit request.",
+          ),
+        host: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            "Optional host hint: a peer name from the daemon peers config, or 'local' for this daemon. " +
+              "Omitted → resolved via the fleet index.",
+          ),
+      },
+      outputSchema: {
+        agentId: z.string(),
+        name: z.string().nullable(),
+        title: z.string().nullable(),
+        description: z.string().nullable(),
+        bucket: z.enum(["needs_you", "running", "ready", "done", "idle"]),
+        lastStatus: z.string().nullable(),
+        running: z
+          .object({
+            lifecycle: z.string(),
+            activeTurnId: z.string().nullable(),
+            activeTurnStartedAt: z.string().nullable(),
+            modeId: z.string().nullable(),
+            pendingPermissionCount: z.number(),
+          })
+          .nullable(),
+        lastReport: z
+          .object({
+            headline: z.string(),
+            detail: z.string().nullable(),
+            ts: z.string(),
+            reportKind: z.string().nullable(),
+          })
+          .nullable(),
+        workspaceId: z.string().nullable(),
+        projectId: z.string().nullable(),
+        host: z.string(),
+        fresh: z.boolean(),
+        note: z.string().optional(),
+      },
+    },
+    async ({
+      agentId,
+      fresh = false,
+      host,
+    }: {
+      agentId: string;
+      fresh?: boolean;
+      host?: string;
+    }) => {
+      if (!missionControlService) {
+        throw new Error("Mission Control is not enabled on this host");
+      }
+      // Resolve the agent's host via the fleet index (spec 02): the id is
+      // authoritative, host is a hint to validate against, never a routing key.
+      const resolution = await fleetIdIndex.resolveFleetId(agentId);
+      if (resolution.kind === "unknown") {
+        throw new Error(resolution.guidance);
+      }
+      const targetHost = resolution.host;
+      if (host !== undefined) {
+        if (!hostsMatch(targetHost, host)) {
+          const actualHost = targetHost === "local" ? hostLabel : targetHost;
+          throw new Error(`Agent "${agentId}" is on host "${actualHost}", not "${host}"`);
+        }
+      }
+      if (!isFleetLocalTarget(targetHost)) {
+        const actualHost = targetHost === "local" ? hostLabel : targetHost;
+        throw new Error(
+          `Agent "${agentId}" is on host "${actualHost}" (a peer). fleet_agent_status reads the local ` +
+            "daemon's mission-control store; run it against that daemon (or use fleet_list_agents to " +
+            "see its roster row here).",
+        );
+      }
+      const record = await missionControlService.getAgentStatusRecord(agentId);
+      // Project attribution: resolve the workspace's project via the local
+      // registry when available (absent registry → projectId stays null).
+      let projectId: string | null = null;
+      if (record.workspaceId && options.workspaceRegistry) {
+        try {
+          const workspace = await options.workspaceRegistry.get(record.workspaceId);
+          projectId = workspace?.projectId ?? null;
+        } catch {
+          // Registry hiccup: projectId is additive, never a hard failure.
+        }
+      }
+      if (!fresh) {
+        return {
+          content: [],
+          structuredContent: ensureValidJson({
+            ...record,
+            projectId,
+            host: hostLabel,
+            fresh: false,
+          }),
+        };
+      }
+      // fresh:true — arm the report listener BEFORE the steer so no report
+      // can slip between subscription and delivery, then wait bounded 60s.
+      const freshReportPromise = waitForFreshAgentReport(
+        missionControlService,
+        agentId,
+        FRESH_STATUS_WAIT_TIMEOUT_MS,
+      );
+      const steer = await missionControlService.requestFreshStatusSteer(agentId);
+      if (!steer.ok) {
+        return {
+          content: [],
+          structuredContent: ensureValidJson({
+            ...record,
+            projectId,
+            host: hostLabel,
+            fresh: false,
+            note: `status-ask not delivered: ${steer.error}`,
+          }),
+        };
+      }
+      const freshReport = await freshReportPromise;
+      if (!freshReport) {
+        return {
+          content: [],
+          structuredContent: ensureValidJson({
+            ...record,
+            projectId,
+            host: hostLabel,
+            fresh: false,
+            note: `No fresh report_status within ${Math.round(FRESH_STATUS_WAIT_TIMEOUT_MS / 1000)}s; showing the last known status.`,
+          }),
+        };
+      }
+      return {
+        content: [],
+        structuredContent: ensureValidJson({
+          ...record,
+          projectId,
+          host: hostLabel,
+          fresh: true,
+          lastReport: {
+            headline: freshReport.headline,
+            detail: freshReport.detail ?? null,
+            ts: freshReport.ts,
+            reportKind: freshReport.reportKind ?? null,
+          },
+        }),
+      };
+    },
+  );
+
+  registerTool(
+    "fleet_monitor",
+    {
+      title: "Watch agents for terminal events",
+      description:
+        "Session-scoped subscriptions over Mission Control events for THIS voice/Commander session: " +
+        "start/stop/status watches. scope 'fleet' watches every agent; scope 'agent' watches one agentId " +
+        "(start repeatedly for several). Passive: announcements arrive as notifications between your " +
+        "utterances (queued while you are mid-turn) — zero polling, never blocks conversation. Announce " +
+        "policy: proposals and clarifications always; blocked/error/finished for watched scope only; " +
+        "started and mid-run milestones never. status lists this session's active subscriptions with ids. " +
+        "Read-only and session-scoped; never approval-gated.",
+      inputSchema: {
+        action: z
+          .enum(["start", "stop", "status"])
+          .describe("start adds a watch; stop removes it; status lists this session's watches."),
+        scope: z
+          .enum(["fleet", "agent"])
+          .describe("'fleet': every agent; 'agent': the named agentId."),
+        agentId: z
+          .string()
+          .optional()
+          .describe("Agent UUID from fleet_list_agents data; required when scope is 'agent'."),
+        host: z
+          .string()
+          .min(1)
+          .optional()
+          .describe("Optional host hint for the watched agent (peer name or 'local')."),
+      },
+      outputSchema: {
+        ok: z.boolean(),
+        action: z.enum(["start", "stop", "status"]).optional(),
+        subscriptions: z.array(
+          z.object({
+            scope: z.enum(["fleet", "agent"]),
+            agentId: z.string().optional(),
+            host: z.string().optional(),
+            startedAt: z.string(),
+          }),
+        ),
+      },
+    },
+    async (
+      input: {
+        action: "start" | "stop" | "status";
+        scope: "fleet" | "agent";
+        agentId?: string;
+        host?: string;
+      },
+      context,
+    ) => {
+      if (!missionControlService) {
+        throw new Error("Mission Control is not enabled on this host");
+      }
+      const sessionKey = context.sessionKey ?? callerAgentId;
+      if (!sessionKey) {
+        throw new Error(
+          "fleet_monitor requires a session context: run it from a voice session or the Commander",
+        );
+      }
+      if (input.action === "start" && input.scope === "agent") {
+        // Error contract: an agent-scope watch must name a REAL agent — the
+        // fleet index resolves it (or returns candidates + resolver guidance).
+        const resolution = await fleetIdIndex.resolveFleetId(input.agentId ?? "");
+        if (resolution.kind === "unknown") {
+          throw new Error(resolution.guidance);
+        }
+        if (input.host !== undefined && !hostsMatch(resolution.host, input.host)) {
+          const actualHost = resolution.host === "local" ? hostLabel : resolution.host;
+          throw new Error(
+            `Agent "${input.agentId}" is on host "${actualHost}", not "${input.host}"`,
+          );
+        }
+      }
+      const result = missionControlService.monitorFleet({
+        action: input.action,
+        scope: input.scope,
+        agentId: input.agentId,
+        host: input.host,
+        sessionKey,
+      });
+      if (!result.ok) {
+        throw new Error(result.error);
+      }
+      return {
+        content: [],
+        structuredContent: ensureValidJson({
+          ok: true,
+          action: result.action,
+          subscriptions: result.subscriptions,
         }),
       };
     },
@@ -5581,6 +6936,39 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
 // How long fleet_send_prompt mode "queue" waits for a busy agent's in-flight
 // run to settle before giving up with an actionable error.
 const FLEET_QUEUE_WAIT_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * How long fleet_agent_status fresh:true waits for the steered agent's
+ * report_status to land (spec 03: bounded 60s) before returning the stale
+ * data with fresh:false.
+ */
+const FRESH_STATUS_WAIT_TIMEOUT_MS = 60_000;
+
+/**
+ * Bounded wait for the agent's next self-sourced report event. The listener
+ * is armed BEFORE the status-ask steer goes out so no report can slip
+ * between subscription and delivery; a timeout resolves null (the caller
+ * falls back to stale data + fresh:false note).
+ */
+function waitForFreshAgentReport(
+  missionControlService: MissionControlService,
+  agentId: string,
+  timeoutMs: number,
+): Promise<MissionControlEvent | null> {
+  const { promise, resolve } = Promise.withResolvers<MissionControlEvent | null>();
+  const unsubscribe = missionControlService.subscribeSelfReports((event) => {
+    if (event.agentId === agentId) {
+      unsubscribe();
+      resolve(event);
+    }
+  });
+  const timer = setTimeout(() => {
+    unsubscribe();
+    resolve(null);
+  }, timeoutMs);
+  timer.unref?.();
+  return promise;
+}
 
 /**
  * Bounded wait for an agent's in-flight run to settle (queue mode). Polls the

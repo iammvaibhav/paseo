@@ -35,7 +35,6 @@ export function buildSubagentRowPresentationData(row: SubagentRow): SubagentRowP
     titleState: label ? "ready" : "loading",
     statusBucket: deriveSidebarStateBucket({
       status,
-      requiresAttention: false,
     }),
   };
 }

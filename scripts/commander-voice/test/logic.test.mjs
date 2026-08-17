@@ -234,29 +234,39 @@ test("fleet_list_agents digest counts needs-you vs idle from catalog-shaped rows
   ];
   const digest = buildFleetRosterDigest(agents);
   assert.match(
-    digest,
-    /Across 2 hosts: 2 running, 2 need you, 1 idle\. Idle is not needs-you\./,
+    digest.spoken,
+    /Across 2 hosts: 2 need you, 2 running, 0 ready, 0 done, 1 idle\. Idle is not needs-you\./,
     "leads with fleet-wide bucket counts",
   );
   assert.match(
-    digest,
+    digest.spoken,
     /On macbook: Alpha \(running\), Beta \(needs you\), Gamma \(idle\)\./,
     "groups by host with per-agent buckets",
   );
-  assert.match(digest, /On server-2: Delta \(needs you\), Epsilon \(running\)\./);
+  assert.match(digest.spoken, /On server-2: Delta \(needs you\), Epsilon \(running\)\./);
   // Idle is NOT needs-you: Gamma stays idle despite the fleet having needs-you rows.
-  assert.match(digest, /Gamma \(idle\)/);
-  assert.doesNotMatch(digest, /Gamma \(needs you\)/);
+  assert.match(digest.spoken, /Gamma \(idle\)/);
+  assert.doesNotMatch(digest.spoken, /Gamma \(needs you\)/);
+  assert.equal(digest.data.agents.length, 5);
 });
 
 test("fleet_list_agents digest handles singular hosts and empty rosters", () => {
-  assert.equal(buildFleetRosterDigest([]), "No agents in the fleet.");
-  assert.equal(buildFleetRosterDigest(null), "No agents in the fleet.");
+  assert.deepEqual(buildFleetRosterDigest([]), {
+    spoken: "No agents in the fleet.",
+    data: { agents: [] },
+  });
+  assert.deepEqual(buildFleetRosterDigest(null), {
+    spoken: "No agents in the fleet.",
+    data: { agents: [] },
+  });
   const digest = buildFleetRosterDigest([
     { id: "a1", title: "Solo", host: "local", status: "idle" },
   ]);
-  assert.match(digest, /Across 1 host: 0 running, 0 need you, 1 idle\. Idle is not needs-you\./);
-  assert.match(digest, /On local: Solo \(idle\)\./);
+  assert.match(
+    digest.spoken,
+    /Across 1 host: 0 need you, 0 running, 0 ready, 0 done, 1 idle\. Idle is not needs-you\./,
+  );
+  assert.match(digest.spoken, /On local: Solo \(idle\)\./);
 });
 
 test("fleet_list_inventory digest uses titles and leads with the project, not the host, when the query is a project name", () => {
@@ -278,12 +288,14 @@ test("fleet_list_inventory digest uses titles and leads with the project, not th
   ];
   const digest = buildFleetInventoryDigest(hosts, "paseo");
   assert.match(
-    digest,
-    /Closest to "paseo": project Paseo on macbook \(id prj_paseo\)\. Workspaces: evil-toad, charming-seal\./,
-    "project title first, host after, ids only for the project, workspace titles never raw ids",
+    digest.spoken,
+    /Closest to "paseo": project Paseo on macbook\. Workspaces: evil-toad, charming-seal\./,
+    "project title first, host after, workspace titles never raw ids",
   );
-  assert.doesNotMatch(digest, /On paseo/, "the query is never treated as a host");
-  assert.doesNotMatch(digest, /wks_evil/, "raw workspace ids never surface in speech");
+  assert.doesNotMatch(digest.spoken, /On paseo/, "the query is never treated as a host");
+  assert.doesNotMatch(digest.spoken, /wks_evil/, "raw workspace ids never surface in speech");
+  assert.doesNotMatch(digest.spoken, /prj_paseo/, "raw project ids never surface in speech");
+  assert.equal(digest.data.hosts[0].projects[0].id, "prj_paseo");
 });
 
 test("fleet_list_inventory digest reports no match and lists host names", () => {
@@ -292,7 +304,7 @@ test("fleet_list_inventory digest reports no match and lists host names", () => 
     { host: "local", reachable: true, projects: [] },
   ];
   const digest = buildFleetInventoryDigest(hosts, "stackmod");
-  assert.match(digest, /No match for "stackmod"\. Hosts: macbook, local\./);
+  assert.match(digest.spoken, /No match for "stackmod"\. Hosts: macbook, local\./);
 });
 
 test("fleet_list_inventory digest leads with fleet-wide counts without a query", () => {
@@ -325,17 +337,17 @@ test("fleet_list_inventory digest leads with fleet-wide counts without a query",
   ];
   const digest = buildFleetInventoryDigest(hosts);
   assert.match(
-    digest,
+    digest.spoken,
     /Across 2 hosts: 2 projects, 3 workspaces\./,
     "leads with fleet-wide counts",
   );
   assert.match(
-    digest,
+    digest.spoken,
     /On macbook: project Paseo \(2 workspaces: evil-toad, charming-seal\)\./,
     "names projects and workspaces by title per host",
   );
-  assert.match(digest, /On local: project commander \(1 workspace: Commander\)\./);
-  assert.doesNotMatch(digest, /prj_|wks_/, "raw ids never surface in speech");
+  assert.match(digest.spoken, /On local: project commander \(1 workspace: Commander\)\./);
+  assert.doesNotMatch(digest.spoken, /prj_|wks_/, "raw ids never surface in speech");
 });
 
 test("daemon fleet read methods execute catalog tools by name (no second implementation)", async () => {
@@ -383,30 +395,30 @@ test("daemon fleet read methods execute catalog tools by name (no second impleme
     name: "fleet_list_agents",
     args: { statuses: ["running"] },
   });
-  assert.match(roster.result, /No agents in the fleet\./);
+  assert.match(roster.spoken, /No agents in the fleet\./);
 
   const activity = await daemon.fleetGetAgentActivity({ host: "local", agentId: "a1", limit: 5 });
   assert.deepEqual(calls.at(-1), {
     name: "fleet_get_agent_activity",
     args: { host: "local", agentId: "a1", limit: 5 },
   });
-  assert.equal(activity.result, "No activity to display.");
+  assert.equal(activity.spoken, "No activity to display.");
 
   const search = await daemon.fleetSearch({ query: "archimedes" });
   assert.deepEqual(calls.at(-1), { name: "fleet_search", args: { query: "archimedes" } });
-  assert.match(search.result, /No matches for "archimedes"\./);
+  assert.match(search.spoken, /No matches for "archimedes"\./);
 
   const recall = await daemon.fleetRecall({ query: "decision" });
   assert.deepEqual(calls.at(-1), { name: "fleet_recall", args: { query: "decision" } });
-  assert.match(recall.result, /No memories match "decision"\./);
+  assert.match(recall.spoken, /No memories match "decision"\./);
 
   const context = await daemon.fleetContext({ agentId: "a1" });
   assert.deepEqual(calls.at(-1), { name: "fleet_context", args: { agentId: "a1" } });
-  assert.match(context.result, /No run records in the mission-control store yet\./);
+  assert.match(context.spoken, /No run records in the mission-control store yet\./);
 
   const tagged = await daemon.tagMessage({ agentIds: ["a1"] });
   assert.deepEqual(calls.at(-1), { name: "tag_message", args: { agentIds: ["a1"] } });
-  assert.match(tagged.result, /Tagged the current user turn to 1 agent\./);
+  assert.match(tagged.spoken, /Tagged the current user turn to 1 agent\./);
 
   const models = await daemon.executeCatalogTool("fleet_list_models", { host: "local" });
   assert.deepEqual(calls.at(-1), {
@@ -421,10 +433,11 @@ test("daemon fleet read methods execute catalog tools by name (no second impleme
     args: { query: "paseo" },
   });
   assert.match(
-    inventory.result,
-    /Closest to "paseo": project Paseo on local \(id prj_paseo\)\. Workspaces: evil-toad\./,
+    inventory.spoken,
+    /Closest to "paseo": project Paseo on local\. Workspaces: evil-toad\./,
     "the daemon shapes the catalog inventory into a spoken digest",
   );
+  assert.equal(inventory.data.hosts[0].projects[0].id, "prj_paseo");
 });
 
 test("fleet_list_models executor returns the default worker model", async () => {
@@ -447,15 +460,15 @@ test("fleet_list_models executor returns the default worker model", async () => 
   };
   const result = await executeTool("fleet_list_models", { host: "macbook" }, { daemon });
   assert.match(
-    result.result,
+    result.spoken,
     /Default worker model on macbook: opencode-zen\/deepseek-v4-flash-free\./,
   );
   assert.match(
-    result.result,
+    result.spoken,
     /omp: opencode-zen\/deepseek-v4-flash-free, anthropic\/claude-sonnet-4/,
   );
   assert.doesNotMatch(
-    result.result,
+    result.spoken,
     /omp\.modelRoles/,
     "role mapping is never echoed as a provider",
   );
@@ -479,7 +492,7 @@ test("direct-mode mutating executors ride the catalog gate", async () => {
           content: "",
         };
       }
-      if (name === "fleet_meta") {
+      if (name === "fleet_rename_agent_title") {
         return {
           ok: true,
           structuredContent: { ok: true, status: "pending", proposalId: "mcp_2" },
@@ -498,18 +511,20 @@ test("direct-mode mutating executors ride the catalog gate", async () => {
     name: "fleet_create_agent",
     args: { host: "local", provider: "omp/x", initialPrompt: "do it" },
   });
-  assert.match(spawned.result, /proposal mcp_1/);
+  assert.match(spawned.spoken, /Spawn request sent for approval/);
+  assert.equal(spawned.data.proposalId, "mcp_1");
 
   const meta = await executeTool(
-    "fleet_meta",
-    { metaPlan: { action: "rename", targetLabel: "glowing-otter", newValue: "archimedes" } },
+    "fleet_rename_agent_title",
+    { agentId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", title: "archimedes" },
     { daemon, voiceMode: "direct" },
   );
   assert.deepEqual(calls.at(-1), {
-    name: "fleet_meta",
-    args: { metaPlan: { action: "rename", targetLabel: "glowing-otter", newValue: "archimedes" } },
+    name: "fleet_rename_agent_title",
+    args: { agentId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", title: "archimedes" },
   });
-  assert.match(meta.result, /Meta proposal mcp_2 created for approval\./);
+  assert.match(meta.spoken, /Meta proposal created for approval\./);
+  assert.equal(meta.data.proposalId, "mcp_2");
 
   // Relay mode still refuses mutating tools.
   const relayed = await executeTool(
@@ -697,7 +712,8 @@ test("only session-correlated events enter the silent buffer", () => {
   });
   assert.equal(daemon.buffer.length, 1, "session-correlated events buffer");
   const digest = daemon.drainUpdates();
-  assert.match(digest, /Session agent finished/, "pending_updates drains correlated events");
+  assert.match(digest.spoken, /Session agent finished/, "pending_updates drains correlated events");
+  assert.equal(digest.data.entries[0].agentId, "session-agent-1");
 });
 
 test("'any updates?' drains the buffer through the model (Live API path)", async () => {

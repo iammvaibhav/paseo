@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AggregatedAgent } from "@/hooks/use-aggregated-agents";
+import { deriveLifecycleBucket as deriveCanonicalLifecycleBucket } from "@getpaseo/protocol/agent-state-bucket";
 import type {
   MissionControlEvent,
   MissionControlProposal,
@@ -12,6 +13,7 @@ import {
   lifecycleRowVisible,
   parseVerdictEvent,
   rowActivityMs,
+  selectCanonicalLifecycleBucket,
   sortLifecycleRows,
   toLifecycleRow,
 } from "./lifecycle";
@@ -41,7 +43,7 @@ function makeAgent(overrides: Partial<AggregatedAgent> = {}): AggregatedAgent {
     labels: {},
     projectPlacement: null,
     ...overrides,
-  };
+  } as AggregatedAgent;
 }
 
 function makeEvent(overrides: Partial<MissionControlEvent>): MissionControlEvent {
@@ -83,8 +85,54 @@ function makeProposalEvent(
   });
 }
 
+function stampCanonicalBucket(
+  agent: AggregatedAgent,
+  events: MissionControlEvent[],
+): AggregatedAgent {
+  if (agent.bucket) {
+    return agent;
+  }
+  let reviewState: "none" | "ready" | "done" | "cleared" = "none";
+  let stopOrigin = agent.stoppedBy ?? null;
+  let pendingProposalCount = 0;
+  for (const event of events) {
+    if (event.stoppedBy !== undefined) {
+      stopOrigin = event.stoppedBy;
+    }
+    if (event.kind === "proposal" && event.proposal?.status === "pending") {
+      pendingProposalCount += 1;
+    }
+    if (event.kind === "started") {
+      reviewState = "none";
+      stopOrigin = event.stoppedBy ?? null;
+    } else if (event.kind === "finished") {
+      reviewState = "ready";
+    } else {
+      const verdict = parseVerdictEvent(event);
+      if (verdict) reviewState = verdict.reviewState;
+    }
+  }
+  return {
+    ...agent,
+    bucket: deriveCanonicalLifecycleBucket({
+      pendingPermissionCount: agent.pendingPermissionCount ?? 0,
+      pendingProposalCount,
+      attentionReason: agent.attentionReason ?? null,
+      lastStatus: agent.status,
+      running: agent.status === "running" || agent.status === "initializing",
+      reviewState,
+      stopOrigin,
+    }),
+  };
+}
+
 function derive(agent: AggregatedAgent, events: MissionControlEvent[]) {
-  return deriveAgentLifecycle({ agent, events, now: NOW, retentionMs: RETENTION_MS });
+  return deriveAgentLifecycle({
+    agent: stampCanonicalBucket(agent, events),
+    events,
+    now: NOW,
+    retentionMs: RETENTION_MS,
+  });
 }
 
 describe("parseVerdictEvent", () => {
@@ -126,6 +174,21 @@ describe("parseVerdictEvent", () => {
       makeEvent({ kind: "verdict", source: "system", headline: "Cleared", detail: "Cleared" }),
     );
     expect(parsed).toMatchObject({ reviewState: "cleared", verdict: { by: "user" } });
+  });
+
+  it("recognizes the daemon's aged-out verdict", () => {
+    const parsed = parseVerdictEvent(
+      makeEvent({
+        kind: "verdict",
+        source: "system",
+        headline: "Done — aged-out",
+        detail: "aged-out",
+      }),
+    );
+    expect(parsed).toMatchObject({
+      reviewState: "done",
+      verdict: { by: "user", summary: "aged-out", reason: "aged-out" },
+    });
   });
 
   it("returns null for non-verdict events", () => {
@@ -213,6 +276,29 @@ describe("deriveAgentLifecycle — review state fold", () => {
 });
 
 describe("deriveAgentLifecycle — emit-time identity snapshots", () => {
+  it("snapshots the new name, title, and description event fields", () => {
+    const terminalEvent = {
+      ...makeEvent({ kind: "finished", headline: "Finished", agentTitle: "Fix auth" }),
+      agentName: "Quill",
+      agentDescription: "Repaired token refresh and added coverage",
+    } as MissionControlEvent;
+    const state = derive(makeAgent(), [terminalEvent]);
+    expect(state).toMatchObject({
+      snapshotTitle: "Fix auth",
+      snapshotName: "Quill",
+      snapshotShortDescription: "Repaired token refresh and added coverage",
+    });
+  });
+
+  it("falls back to the legacy snapshotTitle event field", () => {
+    const legacyEvent = {
+      ...makeEvent({ kind: "finished", headline: "Finished" }),
+      agentTitle: undefined,
+      snapshotTitle: "Legacy recorded title",
+    } as unknown as MissionControlEvent;
+    expect(derive(makeAgent(), [legacyEvent]).snapshotTitle).toBe("Legacy recorded title");
+  });
+
   it("snapshots the newest event's title as the recorded identity", () => {
     // The board's Done/Ready/Dormant rows render this snapshot, never the
     // live directory title (which the daemon may rewrite later).
@@ -283,6 +369,17 @@ describe("deriveAgentLifecycle — emit-time identity snapshots", () => {
 });
 
 describe("deriveAgentLifecycle — buckets", () => {
+  it("uses the server canonical bucket instead of the event fold", () => {
+    const state = derive(makeAgent({ status: "running", bucket: "done" }), [
+      makeEvent({ kind: "started", headline: "Started running" }),
+    ]);
+    expect(state).toMatchObject({ bucket: "done", reviewState: "none" });
+  });
+
+  it("maps the server idle bucket to the board's dormant section", () => {
+    expect(selectCanonicalLifecycleBucket(makeAgent({ bucket: "idle" }))).toBe("dormant");
+  });
+
   it("puts permission-blocked agents in needs_you even while running", () => {
     const state = derive(makeAgent({ status: "running", pendingPermissionCount: 1 }), [
       makeEvent({ kind: "started", headline: "Started running" }),
@@ -305,12 +402,12 @@ describe("deriveAgentLifecycle — buckets", () => {
     expect(state.pendingProposalCount).toBe(1);
   });
 
-  it("keeps a running agent in running even with a pending stall proposal", () => {
+  it("uses the canonical needs_you bucket for a running agent with a pending proposal", () => {
     const state = derive(makeAgent({ status: "running" }), [
       makeEvent({ kind: "started", headline: "Started running" }),
       makeProposalEvent({ headline: "Proposal (stall): recovery", source: "system" }),
     ]);
-    expect(state.bucket).toBe("running");
+    expect(state.bucket).toBe("needs_you");
     expect(state.pendingProposalCount).toBe(1);
   });
 
@@ -459,14 +556,18 @@ describe("deriveAgentLifecycle — user-stopped ≠ Needs you", () => {
     expect(state).toMatchObject({ bucket: "running", doneReason: null, reviewState: "none" });
   });
 
-  it("does not re-derive done after the user-stopped row is cleared", () => {
-    // Clear is bookkeeping on the server; the stop origin snapshot itself is
-    // not cleared there, so the cleared reviewState must outrank the marker.
+  it("keeps a cleared user-stopped row done while the stop origin remains", () => {
+    // The canonical contract treats a user stop as the terminal story while
+    // its stop origin remains, including after review bookkeeping is cleared.
     const state = derive(makeAgent({ requiresAttention: true, attentionReason: "finished" }), [
       makeEvent({ kind: "finished", headline: "Finished", stoppedBy: "user" }),
       makeEvent({ kind: "verdict", source: "system", headline: "Cleared", detail: "Cleared" }),
     ]);
-    expect(state).toMatchObject({ bucket: "dormant", doneReason: null, reviewState: "cleared" });
+    expect(state).toMatchObject({
+      bucket: "done",
+      doneReason: "stopped-by-user",
+      reviewState: "cleared",
+    });
   });
 
   it("keeps verdict-done semantics when a verdict lands after a user stop", () => {

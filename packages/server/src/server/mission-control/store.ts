@@ -100,6 +100,11 @@ export interface MissionControlObservation {
 export interface MissionControlAppendInput {
   agentId: string;
   agentTitle: string;
+  // Spec 06 identity triad: additive snapshots resolved at emit time by the
+  // service (name = fleet chip, title = work title, description = living
+  // short description). Optional so legacy callers keep working.
+  agentName?: string;
+  agentDescription?: string;
   shortDescription?: string;
   kind: MissionControlEventKind;
   source: "system" | "summarizer" | "self" | "autopilot" | "verifier";
@@ -117,6 +122,8 @@ export interface MissionControlAppendInput {
   reportKind?: MissionControlEvent["reportKind"];
   // Stop origin snapshotted at emit time (additive; see the event schema).
   stoppedBy?: MissionControlEvent["stoppedBy"];
+  // State-only verdict cards (spec 07): the app skips them in normal mode.
+  stateOnly?: MissionControlEvent["stateOnly"];
 }
 
 export interface MissionControlFetchOptions {
@@ -144,6 +151,7 @@ export interface MissionControlVerdict {
 
 export interface MissionControlReviewStateRecord {
   reviewState: MissionControlReviewStateValue;
+  updatedAt: string | null;
   doneAt: string | null;
   clearedAt: string | null;
   verdict: MissionControlVerdict | null;
@@ -151,6 +159,7 @@ export interface MissionControlReviewStateRecord {
 
 export const EMPTY_REVIEW_STATE: MissionControlReviewStateRecord = {
   reviewState: "none",
+  updatedAt: null,
   doneAt: null,
   clearedAt: null,
   verdict: null,
@@ -727,6 +736,7 @@ export class MissionControlStore {
       case "done":
         next = {
           reviewState: "done",
+          updatedAt: now,
           doneAt: now,
           clearedAt: null,
           verdict: options?.verdict ?? current.verdict,
@@ -735,16 +745,17 @@ export class MissionControlStore {
       case "cleared":
         next = {
           reviewState: "cleared",
+          updatedAt: now,
           doneAt: current.doneAt,
           clearedAt: now,
           verdict: current.verdict,
         };
         break;
       case "ready":
-        next = { ...EMPTY_REVIEW_STATE, reviewState: "ready" };
+        next = { ...EMPTY_REVIEW_STATE, reviewState: "ready", updatedAt: now };
         break;
       case "none":
-        next = { ...EMPTY_REVIEW_STATE };
+        next = { ...EMPTY_REVIEW_STATE, updatedAt: now };
         break;
     }
     this.reviewStateByAgent.set(agentId, next);
@@ -806,6 +817,39 @@ export class MissionControlStore {
       }
     }
     return expired;
+  }
+  /**
+   * One-time boot sweep: expire pending proposals whose target agent run is
+   * long gone (target agent is not running).
+   */
+  async expireOrphanedPendingProposals(
+    isAgentRunning: (agentId: string) => boolean,
+  ): Promise<MissionControlProposal[]> {
+    const expired: MissionControlProposal[] = [];
+    for (const proposal of this.proposalsById.values()) {
+      if (proposal.status !== "pending") {
+        continue;
+      }
+      if (proposal.targetAgentId && !isAgentRunning(proposal.targetAgentId)) {
+        const updated: MissionControlProposal = { ...proposal, status: "expired" };
+        await this.putProposal(updated);
+        expired.push(updated);
+      }
+    }
+    return expired;
+  }
+
+  /**
+   * Pending (not expired/failed/denied/sent) proposal count for a target agent.
+   */
+  countPendingProposalsForAgent(agentId: string): number {
+    let count = 0;
+    for (const proposal of this.proposalsById.values()) {
+      if (proposal.targetAgentId === agentId && proposal.status === "pending") {
+        count += 1;
+      }
+    }
+    return count;
   }
 
   // ==========================================================================
@@ -1194,6 +1238,7 @@ function parseReviewStateRecord(value: unknown): MissionControlReviewStateRecord
   ) {
     return null;
   }
+  const updatedAt = typeof value["updatedAt"] === "string" ? value["updatedAt"] : null;
   const doneAt = typeof value["doneAt"] === "string" ? value["doneAt"] : null;
   const clearedAt = typeof value["clearedAt"] === "string" ? value["clearedAt"] : null;
   let verdict: MissionControlVerdict | null = null;
@@ -1214,7 +1259,7 @@ function parseReviewStateRecord(value: unknown): MissionControlReviewStateRecord
       verdict = { by, summary, at, ...(verifierAgentId ? { verifierAgentId } : {}) };
     }
   }
-  return { reviewState, doneAt, clearedAt, verdict };
+  return { reviewState, updatedAt, doneAt, clearedAt, verdict };
 }
 
 function parseMessageTag(value: unknown): MissionControlMessageTag | null {

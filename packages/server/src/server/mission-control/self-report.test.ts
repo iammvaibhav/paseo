@@ -49,14 +49,15 @@ describe("buildSelfReportSystemPrompt", () => {
 
   test("paragraph carries the title/description ownership rules", () => {
     const prompt = MISSION_CONTROL_SELF_REPORT_PROMPT;
-    // The agent owns its identity; title is refined, description kept fresh.
+    // Spec 06: title is write-once and FROZEN (never resent); description is
+    // living and replaced on EVERY report.
     expect(prompt).toContain("title");
     expect(prompt).toContain("description");
-    expect(prompt).toContain("initial guess");
-    expect(prompt).toContain('"decision" or "completed" report');
-    expect(prompt).toContain("fresh description");
+    expect(prompt).toContain("FROZEN");
+    expect(prompt).toContain("title is fixed; description updated");
+    expect(prompt).toContain("fleet_rename_agent_title");
+    expect(prompt).toContain("FRESH description on EVERY report");
     expect(prompt).toContain("~400 characters");
-    expect(prompt).toContain("Send title and description with your report_status");
   });
 
   test("never embeds the agent's title or description", () => {
@@ -241,12 +242,46 @@ describe("MissionControlService.reportSelfStatus", () => {
     expect(bare.event.reportKind).toBeUndefined();
   });
 
-  test("title/description updates flow through the identity path", async () => {
-    // The update lands on the record, so the agent's own values are current:
-    // the result must NOT restate them (no identity echo).
+  test("description replaces on every report; a set title is frozen and ignored", async () => {
+    // The record already has a title (frozen at registration, spec 06): the
+    // agent's title write is IGNORED (backfill only when unset) and the
+    // result notices "title is fixed; description updated". The description
+    // is living and replaces.
     getStoredAgent.mockResolvedValue({
       title: "Pipeline rename",
       shortDescription: "Decided on the new pipeline shape",
+    });
+    const result = await service.reportSelfStatus("agent-1", {
+      status: "working",
+      kind: "decision",
+      headline: "Renamed the pipeline",
+      title: "Renamed again",
+      description: "Decided on the new pipeline shape",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(updateAgentMetadata).toHaveBeenCalledWith(
+      "agent-1",
+      expect.objectContaining({ shortDescription: "Decided on the new pipeline shape" }),
+    );
+    // The frozen title never reaches the record; the echo tells the agent
+    // the stored (frozen) title so it stops resending it.
+    expect(updateAgentMetadata.mock.calls[0][1].title).toBeUndefined();
+    expect(result.notice).toContain("title is fixed; description updated");
+    expect(result.identity).toEqual({ title: "Pipeline rename" });
+  });
+
+  test("a title accepted as backfill when the record has none", async () => {
+    // No title on record: the agent's title is the backfill that fills it.
+    // The mock storage is stateful so the backfill write sticks.
+    getStoredAgent.mockResolvedValue({
+      shortDescription: "Decided on the new pipeline shape",
+    });
+    updateAgentMetadata.mockImplementation(async (agentId: string, updates: object) => {
+      const stored = await getStoredAgent(agentId);
+      getStoredAgent.mockResolvedValue({ ...stored, ...updates });
     });
     const result = await service.reportSelfStatus("agent-1", {
       status: "working",
@@ -266,12 +301,13 @@ describe("MissionControlService.reportSelfStatus", () => {
         shortDescription: "Decided on the new pipeline shape",
       }),
     );
+    expect(result.notice).toBeUndefined();
     expect(result.identity).toEqual({});
   });
 
   test("echoes stored identity only when it drifted from what the agent sent", async () => {
-    // External drift: the record holds a different title than the agent just
-    // sent (backfill/user/another surface overwrote it, or the write failed).
+    // The title is frozen at "Legacy title": a differing title send is
+    // ignored, and the echo tells the agent the stored (frozen) value.
     getStoredAgent.mockResolvedValue({
       title: "Legacy title",
       shortDescription: "Legacy description",
@@ -286,8 +322,8 @@ describe("MissionControlService.reportSelfStatus", () => {
     if (!result.ok) {
       return;
     }
-    // Only the drifted title echoes (with the stored value); the description
-    // was not sent, so it stays silent even though the record holds one.
+    // The frozen title echoes (with the stored value); the description was
+    // not sent, so it stays silent even though the record holds one.
     expect(result.identity).toEqual({ title: "Legacy title" });
   });
 

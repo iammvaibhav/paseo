@@ -43,11 +43,11 @@ export interface MissionControlLifecycleResult {
 }
 
 /**
- * The board's data model: every agent on every host with its derived
+ * The board's data model: every agent on every host with its server-owned
  * lifecycle position (Needs you → Running → Ready for review → Done, plus
- * Dormant), sourced from the agent directory + the mission-control event
- * feed. Row objects are identity-preserved across renders so memoized rows
- * skip re-rendering when nothing about them changed.
+ * Dormant). Mission-control events supply row chips/cards and recorded
+ * identity only. Row objects are identity-preserved across renders so
+ * memoized rows skip re-rendering when nothing about them changed.
  */
 export function useMissionControlLifecycle(
   options?: MissionControlLifecycleOptions,

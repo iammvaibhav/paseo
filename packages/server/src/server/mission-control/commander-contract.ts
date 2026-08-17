@@ -46,6 +46,8 @@ export const COMMANDER_ADOPTED_AT_LABEL = "paseo.commander-adopted-at";
  * M8 adds `fleet_list_inventory` (hosts + projects + workspaces with an
  * optional fuzzy name filter, the catalog lookup for resolving a spoken name
  * before acting) — read-only, never gated.
+ * M13 adds `fleet_agent_status` (read-only one-call status) and
+ * `fleet_monitor` (session-scoped watches) — see the allowlist entries below.
  * Mirrors the app-side launch allowlist. The omp provider launches with
  * `--no-tools` for this list (no builtin names), dropping the omp `task`
  * subagent tool entirely.
@@ -61,9 +63,26 @@ export const COMMANDER_TOOL_ALLOWLIST: readonly string[] = [
   "tag_message",
   "clarify",
   "post_answer",
-  "fleet_meta",
+  // 04 meta split: the flat per-action tools replace fleet_meta (the legacy
+  // fleet_meta alias stays registered for MCP/older callers, see paseo-tools).
+  "fleet_rename_project",
+  "fleet_rename_workspace",
+  "fleet_rename_agent_title",
+  "fleet_archive_project",
+  "fleet_archive_workspace",
+  "fleet_archive_agent",
+  "fleet_create_project",
+  "fleet_move_agent",
+  "fleet_promote_workspace",
+  "fleet_adopt_agent",
+  "fleet_release_agent",
   "fleet_recall",
   "fleet_context",
+  // M13 status + monitor: fleet_agent_status (one-call "how is X doing" —
+  // read-only) and fleet_monitor (session-scoped start/stop/status watches
+  // over Mission Control events — read-only-ish, never gated).
+  "fleet_agent_status",
+  "fleet_monitor",
 ];
 
 /**

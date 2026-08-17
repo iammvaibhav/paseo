@@ -8,7 +8,7 @@ import type { AgentStorage } from "../agent/agent-storage.js";
 import type { AgentTimelineItem } from "../agent/agent-sdk-types.js";
 import type { MissionControlProposal } from "@getpaseo/protocol/mission-control/types";
 import type { DaemonConfigStore } from "../daemon-config-store.js";
-import { MissionControlService, nudgeBackoffMs } from "./service.js";
+import { MissionControlService } from "./service.js";
 import type { MissionControlApprovals } from "./approvals.js";
 import type { CentralMissionControlConfigStore } from "./config.js";
 import { MissionControlStore } from "./store.js";
@@ -41,26 +41,7 @@ function runningAgent(agentId: string, overrides: Partial<ManagedAgent> = {}): M
   } as unknown as ManagedAgent;
 }
 
-describe("nudgeBackoffMs (exponential per-trigger backoff)", () => {
-  test("doubles the base interval per prior nudge", () => {
-    expect(nudgeBackoffMs(120, 0)).toBe(120_000);
-    expect(nudgeBackoffMs(120, 1)).toBe(240_000);
-    expect(nudgeBackoffMs(120, 2)).toBe(480_000);
-    expect(nudgeBackoffMs(120, 3)).toBe(960_000);
-    // 120 * 2^4 = 1920s would exceed the 30min cap.
-    expect(nudgeBackoffMs(120, 4)).toBe(1_800_000);
-    expect(nudgeBackoffMs(300, 1)).toBe(600_000);
-    expect(nudgeBackoffMs(300, 2)).toBe(1_200_000);
-  });
-
-  test("caps at 30 minutes", () => {
-    expect(nudgeBackoffMs(120, 5)).toBe(30 * 60_000); // 3840s would exceed
-    expect(nudgeBackoffMs(120, 10)).toBe(30 * 60_000);
-    expect(nudgeBackoffMs(300, 4)).toBe(30 * 60_000); // 4800s would exceed
-  });
-});
-
-describe("MissionControlService stall v2 + watchdog", () => {
+describe("MissionControlService stall machinery (dormant-turn recovery + watchdog)", () => {
   let dir: string;
   let service: MissionControlService;
   let store: MissionControlStore;
@@ -163,33 +144,6 @@ describe("MissionControlService stall v2 + watchdog", () => {
     tracking.lastStreamAt = Date.now() - ms;
   }
 
-  /** Backdate the report_status-cadence clock (nudge timer). */
-  function setStatusSilence(agentId: string, ms: number): void {
-    const tracking = (
-      service as unknown as {
-        stallTracking: Map<string, { lastStatusAt: number }>;
-      }
-    ).stallTracking.get(agentId);
-    if (!tracking) {
-      throw new Error(`no stall tracking for ${agentId}`);
-    }
-    tracking.lastStatusAt = Date.now() - ms;
-  }
-
-  /** Backdate the nudge send times (escalation + spacing anchors). */
-  function setNudgeAge(agentId: string, ms: number): void {
-    const tracking = (
-      service as unknown as {
-        stallTracking: Map<string, { nudgedAt: number | null; lastNudgeAt: number | null }>;
-      }
-    ).stallTracking.get(agentId);
-    if (!tracking) {
-      throw new Error(`no stall tracking for ${agentId}`);
-    }
-    tracking.nudgedAt = Date.now() - ms;
-    tracking.lastNudgeAt = Date.now() - ms;
-  }
-
   function sweep(): void {
     (service as unknown as { sweepStalled(): void }).sweepStalled();
   }
@@ -198,90 +152,6 @@ describe("MissionControlService stall v2 + watchdog", () => {
   async function flushBroadcasts(): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
-
-  test("cadence trigger fires at statusNudgeSeconds while timeline streams", () => {
-    startRunning("agent-1");
-    // Continuous timeline activity resets the silence trigger but must NOT
-    // reset the cadence trigger.
-    streamTimeline("agent-1", { type: "assistant_message", text: "busy" });
-    streamTimeline("agent-1", { type: "assistant_message", text: "still busy" });
-    setStatusSilence("agent-1", 301_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(1);
-    expect(createProposal).toHaveBeenCalledWith(
-      expect.objectContaining({
-        origin: "stall",
-        serverId: "test-server",
-        targetAgentId: "agent-1",
-        deliveryMode: "steer",
-        classification: "normal",
-        // The status-ask steer bypasses the approval gate in both modes.
-        forceSend: true,
-        reason: "No report_status for >300s mid-run",
-      }),
-    );
-    expect(createProposal.mock.calls[0][0].message).toBe(
-      "You've been quiet for a while. Post a one-line report_status summarizing where you are, then continue.",
-    );
-    // No escalation fired alongside the nudge (it just landed).
-    expect(
-      broadcast.mock.calls.some(
-        (call: unknown[]) => (call[0] as { event?: { kind?: string } }).event?.kind === "stalled",
-      ),
-    ).toBe(false);
-  });
-
-  test("silence trigger fires at silenceNudgeSeconds with fresh cadence", () => {
-    startRunning("agent-1");
-    // No timeline output at all for >120s: the silence trigger nudges even
-    // though the cadence (report_status) is fresh.
-    setSilence("agent-1", 121_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(1);
-    expect(createProposal).toHaveBeenCalledWith(
-      expect.objectContaining({
-        origin: "stall",
-        deliveryMode: "steer",
-        forceSend: true,
-        reason: "No timeline output for >120s mid-run",
-      }),
-    );
-    // Escalation is response-based and only follows a nudge; it just fired.
-    expect(
-      broadcast.mock.calls.some(
-        (call: unknown[]) => (call[0] as { event?: { kind?: string } }).event?.kind === "stalled",
-      ),
-    ).toBe(false);
-  });
-
-  test("stall nudges stay native steer and auto-sent regardless of delivery-mode settings", async () => {
-    // Even with both commander/verifier → worker delivery modes set to
-    // interrupt (and queue), the stall status-ask nudge is untouched: it
-    // stays a native steer, forceSend (no approval in either mode).
-    const centralConfig = (
-      service as unknown as { centralConfig: CentralMissionControlConfigStore }
-    ).centralConfig;
-    await centralConfig.patch({
-      commanderToWorkerMode: "interrupt",
-      verifierToWorkerMode: "queue",
-    });
-
-    startRunning("agent-1");
-    setSilence("agent-1", 121_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(1);
-    expect(createProposal).toHaveBeenCalledWith(
-      expect.objectContaining({
-        origin: "stall",
-        targetAgentId: "agent-1",
-        deliveryMode: "steer",
-        classification: "normal",
-        // The status-ask steer bypasses the approval gate in both modes.
-        forceSend: true,
-        reason: "No timeline output for >120s mid-run",
-      }),
-    );
-  });
 
   function streamToolCall(
     agentId: string,
@@ -430,251 +300,6 @@ describe("MissionControlService stall v2 + watchdog", () => {
     await flushBroadcasts();
     expect(blockedEvents()).toHaveLength(0);
     expect(createProposal).not.toHaveBeenCalled();
-  });
-
-  test("one nudge per sweep; both triggers due → silence wins, next lapse widens", () => {
-    startRunning("agent-1");
-    // Fully silent run: both triggers are due, but only the first (silence)
-    // fires — at most one nudge per sweep.
-    setSilence("agent-1", 121_000);
-    setStatusSilence("agent-1", 301_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(1);
-    expect(createProposal.mock.calls[0][0].reason).toBe("No timeline output for >120s mid-run");
-    // The unanswered lapse re-nudges only once the widened silence interval
-    // (2x = 240s) has elapsed since the last nudge.
-    setSilence("agent-1", 241_000);
-    setStatusSilence("agent-1", 601_000);
-    setNudgeAge("agent-1", 241_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(2);
-    expect(createProposal.mock.calls[1][0].reason).toBe("No timeline output for >120s mid-run");
-  });
-
-  test("consecutive unanswered lapses widen: nudge → no answer → next fires at 2x", () => {
-    startRunning("agent-1");
-    setStatusSilence("agent-1", 301_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(1);
-
-    // No report_status lands: the next nudge needs the widened 2x interval
-    // (600s) — a 301s lapse is still below it.
-    setStatusSilence("agent-1", 301_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(1);
-
-    // Timeline activity resets the silence timer but NOT the cadence counter:
-    // still no nudge at 301s.
-    streamTimeline("agent-1", { type: "assistant_message", text: "still here" });
-    setStatusSilence("agent-1", 301_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(1);
-
-    // Past the widened interval since the last nudge: the second unanswered
-    // lapse fires at 2x (600s).
-    setNudgeAge("agent-1", 601_000);
-    setStatusSilence("agent-1", 601_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(2);
-  });
-
-  test("compliance resets backoff: nudge → report_status → next lapse fires at the configured 1x", async () => {
-    startRunning("agent-1");
-    setStatusSilence("agent-1", 301_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(1);
-
-    // The agent answers the nudge with a report_status: both timers restart
-    // AND the backoff counters reset. The next cadence nudge fires at the
-    // CONFIGURED interval (300s), not the widened 2x (600s) — compliance is
-    // never punished with a wider cadence.
-    const result = await service.reportSelfStatus("agent-1", {
-      status: "working",
-      kind: "progress",
-      headline: "still here",
-    });
-    expect(result.ok).toBe(true);
-    // Below the base interval: nothing yet.
-    setStatusSilence("agent-1", 200_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(1);
-    // At the base 1x interval: the second nudge fires.
-    setStatusSilence("agent-1", 301_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(2);
-  });
-
-  test("three consecutive unanswered lapses fire at 4x; cap covered by nudgeBackoffMs units", () => {
-    startRunning("agent-1");
-    setStatusSilence("agent-1", 301_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(1); // 1x = 300s
-    setNudgeAge("agent-1", 601_000);
-    setStatusSilence("agent-1", 601_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(2); // 2x = 600s
-    // The 4x interval (1200s) has not elapsed since the last nudge: no nudge.
-    setNudgeAge("agent-1", 601_000);
-    setStatusSilence("agent-1", 601_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(2);
-    setNudgeAge("agent-1", 1201_000);
-    setStatusSilence("agent-1", 1201_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(3); // 4x = 1200s
-  });
-
-  test("silence trigger widens on unanswered lapses; a report_status returns it to base", async () => {
-    startRunning("agent-1");
-    // First silence lapse: nudge at 120s.
-    setSilence("agent-1", 121_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(1);
-    expect(createProposal.mock.calls[0][0].reason).toBe("No timeline output for >120s mid-run");
-
-    // Unanswered second lapse: fires only at the widened 2x (240s).
-    setSilence("agent-1", 121_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(1);
-    setNudgeAge("agent-1", 241_000);
-    setSilence("agent-1", 241_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(2);
-    expect(createProposal.mock.calls[1][0].reason).toBe("No timeline output for >120s mid-run");
-
-    // A report_status resets the silence counter: the next silence lapse
-    // fires at the base 120s again, not the widened 480s.
-    await service.reportSelfStatus("agent-1", {
-      status: "working",
-      kind: "progress",
-      headline: "still here",
-    });
-    setSilence("agent-1", 121_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(3);
-    expect(createProposal.mock.calls[2][0].reason).toBe("No timeline output for >120s mid-run");
-  });
-
-  test("a user prompt resets nudge backoff", () => {
-    startRunning("agent-1");
-    // Two consecutive UNANSWERED silence lapses: interval widened to 2x.
-    setSilence("agent-1", 121_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(1);
-    setNudgeAge("agent-1", 241_000);
-    setSilence("agent-1", 241_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(2);
-    // The third consecutive unanswered lapse needs 4x (480s): 241s is not
-    // enough.
-    setNudgeAge("agent-1", 241_000);
-    setSilence("agent-1", 241_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(2);
-
-    // ...until a user prompt resets the counters: 120s is enough again.
-    streamTimeline("agent-1", { type: "user_message", text: "keep going" });
-    setSilence("agent-1", 121_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(3);
-  });
-
-  test("recovers with an interrupt proposal when the nudged agent stays silent", async () => {
-    startRunning("agent-1");
-    setStatusSilence("agent-1", 301_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(1);
-
-    // >escalateSeconds after the nudge with no response at all (no
-    // report_status, no timeline rows): recovery interrupt + stalled event.
-    setStatusSilence("agent-1", 601_000);
-    setSilence("agent-1", 601_000);
-    setNudgeAge("agent-1", 301_000);
-    sweep();
-    await flushBroadcasts();
-    expect(createProposal).toHaveBeenCalledTimes(2);
-    expect(createProposal).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        origin: "stall",
-        serverId: "test-server",
-        targetAgentId: "agent-1",
-        deliveryMode: "interrupt",
-        classification: "normal",
-        reason: expect.stringContaining("300"),
-      }),
-    );
-    expect(createProposal.mock.calls[1][0].message).toBe(
-      "Continue whatever you were working on and post a one-line report_status.",
-    );
-    const stalledEvents = broadcast.mock.calls
-      .map((call) => call[0])
-      .filter((message: { type?: string; event?: { kind?: string } }) => {
-        return message?.type === "mission_control_event" && message.event?.kind === "stalled";
-      });
-    expect(stalledEvents).toHaveLength(1);
-    expect(stalledEvents[0].event.headline).toContain("5 min");
-
-    // Once per lapse: a further sweep does not re-recover or re-nudge.
-    sweep();
-    await flushBroadcasts();
-    expect(createProposal).toHaveBeenCalledTimes(2);
-    expect(
-      broadcast.mock.calls.filter(
-        (call: unknown[]) =>
-          (call[0] as { type?: string; event?: { kind?: string } })?.type ===
-            "mission_control_event" &&
-          (call[0] as { event?: { kind?: string } }).event?.kind === "stalled",
-      ),
-    ).toHaveLength(1);
-  });
-
-  test("a response to the nudge prevents escalation", async () => {
-    startRunning("agent-1");
-    setStatusSilence("agent-1", 301_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(1);
-
-    // The agent answers with a timeline row: responsive, so no recovery even
-    // past the escalation window.
-    streamTimeline("agent-1", { type: "assistant_message", text: "on it" });
-    setNudgeAge("agent-1", 301_000);
-    sweep();
-    await flushBroadcasts();
-    expect(createProposal).toHaveBeenCalledTimes(1);
-    expect(
-      broadcast.mock.calls.some(
-        (call: unknown[]) => (call[0] as { event?: { kind?: string } }).event?.kind === "stalled",
-      ),
-    ).toBe(false);
-
-    // A report_status starts a fresh lapse: the nudge guard clears (but a
-    // timeline row does not), so the next status silence re-nudges at the
-    // CONFIGURED interval (300s) — compliance reset the backoff counter.
-    const result = await service.reportSelfStatus("agent-1", {
-      status: "working",
-      kind: "progress",
-      headline: "made progress",
-    });
-    expect(result.ok).toBe(true);
-    setStatusSilence("agent-1", 301_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(2);
-  });
-
-  test("user-stopped agents are never nudged or recovered", async () => {
-    startRunning("agent-1");
-    store.recordStopOrigin("agent-1", "user");
-    setStatusSilence("agent-1", 301_000);
-    setSilence("agent-1", 301_000);
-    setNudgeAge("agent-1", 301_000);
-    sweep();
-    await flushBroadcasts();
-    expect(createProposal).not.toHaveBeenCalled();
-    expect(
-      broadcast.mock.calls.some(
-        (call: unknown[]) => (call[0] as { event?: { kind?: string } }).event?.kind === "stalled",
-      ),
-    ).toBe(false);
   });
 
   test("watchdog self-heals a dead-runtime running record after 2 minutes", async () => {
@@ -914,16 +539,16 @@ describe("MissionControlService stall v2 + watchdog", () => {
     ]);
     await (service as unknown as { runWatchdog(): Promise<void> }).runWatchdog();
 
-    // Adopted: trackers seeded from lastActivityAt, both triggers armed.
-    // Test seam: reach the private stall-tracking map (unchecked by design).
+    // Adopted: the tracker seeds the dormant-turn silence clock from
+    // lastActivityAt. Test seam: reach the private stall-tracking map
+    // (unchecked by design).
     const stallTracking = (
       service as unknown as {
-        stallTracking: Map<string, { lastStatusAt: number; lastStreamAt: number }>;
+        stallTracking: Map<string, { lastStreamAt: number }>;
       }
     ).stallTracking;
     const tracking = stallTracking.get("agent-1");
     expect(tracking).toBeDefined();
-    expect(tracking?.lastStatusAt).toBe(Date.parse(lastActivityAt));
     expect(tracking?.lastStreamAt).toBe(Date.parse(lastActivityAt));
     // Adoption is NOT a heal: the record stays running, origin untouched.
     expect(upsertRecord).not.toHaveBeenCalled();
@@ -938,20 +563,11 @@ describe("MissionControlService stall v2 + watchdog", () => {
       expect.stringContaining("adopt"),
     );
 
-    // The seeded timers arm the triggers: the pre-restart run has been quiet
-    // for >statusNudgeSeconds, so the first sweep nudges (status-ask steer,
-    // verbose-only).
+    // Spec 06: NO wall-clock status nudges — a 30-minute-quiet adopted run
+    // sweeps to zero status-ask steers (the terminal-state guarantee is the
+    // only status-ask, and it fires at run end, never on a timer).
     sweep();
-    expect(createProposal).toHaveBeenCalledTimes(1);
-    expect(createProposal).toHaveBeenCalledWith(
-      expect.objectContaining({
-        origin: "stall",
-        targetAgentId: "agent-1",
-        deliveryMode: "steer",
-        forceSend: true,
-        verboseOnly: true,
-      }),
-    );
+    expect(createProposal).not.toHaveBeenCalled();
   });
 
   test("boot heal of a dead pre-restart run is unchanged (dead runs heal, never adopt)", async () => {
@@ -1020,44 +636,6 @@ describe("MissionControlService stall v2 + watchdog", () => {
     expect(stallTracking.has("agent-1")).toBe(false);
   });
 
-  test("status-ask nudge card is verbose-only; the hard escalation stays a normal card", async () => {
-    // Drive the REAL approvals (not the stub) so proposal events actually
-    // broadcast with their verbose classification.
-    (service as unknown as { approvals: unknown }).approvals = realApprovals;
-    startRunning("agent-1");
-    setStatusSilence("agent-1", 301_000);
-    sweep();
-    await flushBroadcasts();
-    const proposalEvents = broadcast.mock.calls
-      .map((call: unknown[]) => (call[0] as { event?: { kind?: string } })?.event)
-      .filter((event) => event?.kind === "proposal");
-    // The status-ask steer: verbose-only card, machinery audit trail kept.
-    const nudgeEvent = proposalEvents.at(-1);
-    expect(nudgeEvent?.proposal?.deliveryMode).toBe("steer");
-    expect(nudgeEvent?.verboseOnly).toBe(true);
-    expect(nudgeEvent?.proposal?.verboseOnly).toBe(true);
-    // Classify at the source: the nudge's timeline row on the agent's own
-    // chat is machinery (auditable; rendered as a muted placeholder).
-    expect(nudgeEvent?.proposal?.timelineClassification).toBe("machinery");
-
-    // The hard escalation (interrupt, approval-gated in Ask) is a
-    // NORMAL-mode card: no verboseOnly. Backdate every clock so the agent
-    // has produced NO response after the nudge (fresh status timestamps
-    // would count as a response).
-    setStatusSilence("agent-1", 601_000);
-    setSilence("agent-1", 601_000);
-    setNudgeAge("agent-1", 301_000);
-    sweep();
-    await flushBroadcasts();
-    const escalationEvents = broadcast.mock.calls
-      .map((call: unknown[]) => (call[0] as { event?: { kind?: string } })?.event)
-      .filter((event) => event?.kind === "proposal");
-    const escalationEvent = escalationEvents[escalationEvents.length - 1];
-    expect(escalationEvent?.proposal?.deliveryMode).toBe("interrupt");
-    expect(escalationEvent?.verboseOnly).toBeUndefined();
-    expect(escalationEvent?.proposal?.verboseOnly).toBeUndefined();
-  });
-
   test("a user stop expires pending machinery proposals for the agent", async () => {
     startRunning("agent-1");
     service.recordStopOrigin("agent-1", "user");
@@ -1072,34 +650,23 @@ describe("MissionControlService stall v2 + watchdog", () => {
     startRunning("agent-1");
     const tracking = (
       service as unknown as {
-        stallTracking: Map<
-          string,
-          {
-            lastStreamAt: number;
-            silenceNudges: number;
-            statusNudges: number;
-          }
-        >;
+        stallTracking: Map<string, { lastStreamAt: number }>;
       }
     ).stallTracking.get("agent-1");
     if (!tracking) {
       throw new Error("no stall tracking for agent-1");
     }
     setSilence("agent-1", 30_000);
-    tracking.silenceNudges = 2;
-    tracking.statusNudges = 1;
     const before = tracking.lastStreamAt;
 
-    // The nudge's own recorded row must not reset the silence clock, count as
-    // a response (escalation), or reset the backoff counters.
+    // The status-ask steer's own recorded row must not reset the dormant-turn
+    // silence clock (it is the tracker's prompt, not agent activity).
     streamTimeline("agent-1", {
       type: "user_message",
-      text: "You've been quiet for a while. Post a one-line report_status.",
+      text: "Your run ended without a report_status. Post a one-line report_status.",
       classification: "machinery",
     });
     expect(tracking.lastStreamAt).toBe(before);
-    expect(tracking.silenceNudges).toBe(2);
-    expect(tracking.statusNudges).toBe(1);
 
     // A machinery-delivered INSTRUCTION (Commander/Verifier direction) IS
     // activity: the agent was told something new.
@@ -1109,8 +676,6 @@ describe("MissionControlService stall v2 + watchdog", () => {
       classification: "instruction",
     });
     expect(tracking.lastStreamAt).toBeGreaterThan(before);
-    expect(tracking.silenceNudges).toBe(0);
-    expect(tracking.statusNudges).toBe(0);
   });
 
   test("machinery dispatch aborts for a user-stopped agent: proposal expires, steer never sent", async () => {
@@ -1312,23 +877,6 @@ describe("MissionControlService stall v2 + watchdog", () => {
   // Dormant-turn detector (the hard stop) + honest steer delivery
   // ==========================================================================
 
-  /**
-   * Patch the central stall knobs so ONLY the dormant detector can fire:
-   * nudges/escalation are parked at an hour so a backdated silence clock
-   * cannot produce a nudge that muddies the assertion.
-   */
-  async function parkNudgesAndEscalation(): Promise<void> {
-    const centralConfig = (
-      service as unknown as { centralConfig: CentralMissionControlConfigStore }
-    ).centralConfig;
-    await centralConfig.patch({
-      silenceNudgeSeconds: 3600,
-      statusNudgeSeconds: 3600,
-      escalateSeconds: 3600,
-      dormantTurnSeconds: 300,
-    });
-  }
-
   function stalledCards(): Array<{ headline?: string }> {
     return broadcast.mock.calls
       .map((call: unknown[]) => (call[0] as { type?: string; event?: { kind?: string } })?.event)
@@ -1336,7 +884,6 @@ describe("MissionControlService stall v2 + watchdog", () => {
   }
 
   test("dormant turn (open run, no tool in flight, no output past threshold) is detected and recovered", async () => {
-    await parkNudgesAndEscalation();
     startRunning("agent-1");
     setSilence("agent-1", 301_000);
     sweep();
@@ -1365,7 +912,6 @@ describe("MissionControlService stall v2 + watchdog", () => {
   });
 
   test("an agent inside a long declared tool call is never flagged dormant", async () => {
-    await parkNudgesAndEscalation();
     startRunning("agent-1");
     // A 30-minute `hub wait` — an unmatched running tool_call row. The
     // in-flight set is the server-side mirror of omp's tool_execution_start.
@@ -1403,7 +949,6 @@ describe("MissionControlService stall v2 + watchdog", () => {
   });
 
   test("a turn boundary closes stale in-flight tool rows", async () => {
-    await parkNudgesAndEscalation();
     startRunning("agent-1");
     streamToolCall("agent-1", "call-wait", "running");
     // The run is interrupted mid-tool: the runtime may never emit the tool's
@@ -1423,40 +968,6 @@ describe("MissionControlService stall v2 + watchdog", () => {
     sweep();
     await flushBroadcasts();
     expect(createProposal).toHaveBeenCalledTimes(1);
-  });
-
-  test("a nudge's own machinery row never resets its escalation clock (the net that catches the wedge)", async () => {
-    startRunning("agent-1");
-    setStatusSilence("agent-1", 301_000);
-    sweep();
-    expect(createProposal).toHaveBeenCalledTimes(1); // the status-ask nudge
-
-    // The nudge's own machinery-classified row lands on the agent's timeline
-    // (the verbose-mode audit placeholder). It must NOT count as a response,
-    // reset the silence clock, or reset the backoff counters — otherwise a
-    // wedged agent's escalation is forever reset by its own nudges (live
-    // incident: three nudges vanished while Paseo reported success because
-    // each nudge's own row reset the escalation window).
-    streamTimeline("agent-1", {
-      type: "user_message",
-      text: "You've been quiet for a while. Post a one-line report_status.",
-      classification: "machinery",
-    });
-    setStatusSilence("agent-1", 601_000);
-    setSilence("agent-1", 601_000);
-    setNudgeAge("agent-1", 301_000);
-    sweep();
-    await flushBroadcasts();
-
-    // Escalation STILL fires at escalateSeconds: recovery interrupt + stalled.
-    expect(createProposal).toHaveBeenCalledTimes(2);
-    expect(createProposal.mock.calls[1][0]).toMatchObject({
-      origin: "stall",
-      targetAgentId: "agent-1",
-      deliveryMode: "interrupt",
-      reason: expect.stringContaining("300"),
-    });
-    expect(stalledCards()).toHaveLength(1);
   });
 
   test("steer reported handled but producing no activity is marked undelivered and escalated", async () => {
@@ -1711,40 +1222,6 @@ describe("MissionControlService stall v2 + watchdog", () => {
     );
     await flushBroadcasts();
     expect(store.getStopOrigin("agent-1")).toBeNull();
-  });
-
-  test("status-report clock keeps firing across user messages and only resets on report_status", async () => {
-    startRunning("agent-1");
-    // Backdate status clock past 300s:
-    setStatusSilence("agent-1", 301_000);
-    // User message arrives (replace):
-    startRunning(
-      "agent-1",
-      runningAgent("agent-1", { pendingReplacement: true, pendingReplacementOrigin: "user" }),
-    );
-    // Silence clock reset via timeline stream, but status clock must NOT reset:
-    streamTimeline("agent-1", { type: "assistant_message", text: "working on new prompt" });
-    sweep();
-    // Status nudge STILL fires despite user message and new run replace:
-    expect(createProposal).toHaveBeenCalledTimes(1);
-    expect(createProposal).toHaveBeenCalledWith(
-      expect.objectContaining({
-        origin: "stall",
-        deliveryMode: "steer",
-        reason: "No report_status for >300s mid-run",
-      }),
-    );
-
-    // Calling report_status resets the status-report clock:
-    createProposal.mockClear();
-    const res = await service.reportSelfStatus("agent-1", {
-      status: "working",
-      kind: "progress",
-      headline: "reported status",
-    });
-    expect(res.ok).toBe(true);
-    sweep();
-    expect(createProposal).not.toHaveBeenCalled();
   });
 
   test("agent with running subagent is not marked finished/ready-for-review until subagents terminalize", async () => {

@@ -580,9 +580,14 @@ export function MissionControlThread({
   }, []);
 
   const renderThreadRow = useStableEvent(
-    (item: ThreadRow, index: number, items: ThreadRow[]): ReactElement => {
+    (item: ThreadRow, index: number, items: ThreadRow[]): ReactElement | null => {
       // Fresh per render: `verbose` only changes via the header toggle.
       const classifyRow = (row: ThreadRow): CardRunRowClass => classifyThreadRow(row, verbose);
+      // Skip rows render nothing and take no height (spec 07): normal mode
+      // hides machinery status cards and state-only verdicts.
+      if (item.kind === "event" && classifyRow(item) === "skip") {
+        return null;
+      }
       const row =
         item.kind === "event" ? (
           <FeedCard

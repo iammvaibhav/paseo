@@ -198,8 +198,9 @@ function selectAgentDescriptor(
   name: string | null;
   status: Agent["status"] | null;
   pendingPermissionCount: number;
-  requiresAttention: boolean;
   attentionReason: Agent["attentionReason"];
+  stoppedBy: Agent["stoppedBy"];
+  bucket: Agent["bucket"];
   isTurnActive: boolean;
 } {
   const session = state.sessions[serverId];
@@ -210,8 +211,9 @@ function selectAgentDescriptor(
     name: agent?.name ?? null,
     status: agent?.status ?? null,
     pendingPermissionCount: agent?.pendingPermissions.length ?? 0,
-    requiresAttention: agent?.requiresAttention ?? false,
     attentionReason: agent?.attentionReason ?? null,
+    stoppedBy: agent?.stoppedBy ?? null,
+    bucket: agent?.bucket,
     isTurnActive: selectAgentTurnPresentation(session, agentId).isActive,
   };
 }
@@ -319,10 +321,11 @@ function useAgentPanelDescriptor(
     icon,
     statusBucket: descriptorState.status
       ? deriveSidebarStateBucket({
+          bucket: descriptorState.bucket,
           status: descriptorState.isTurnActive ? "running" : descriptorState.status,
           pendingPermissionCount: descriptorState.pendingPermissionCount,
-          requiresAttention: descriptorState.requiresAttention,
           attentionReason: descriptorState.attentionReason,
+          stoppedBy: descriptorState.stoppedBy,
         })
       : null,
   };

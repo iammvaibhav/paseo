@@ -29,7 +29,9 @@ import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
 import { MISSION_CONTROL_LABEL_PREFIX } from "@getpaseo/protocol/mission-control/system-owned";
 import { MISSION_CONTROL_VERIFIER_LABEL_VALUE } from "./verifier.js";
 import { getErrorMessageOr } from "@getpaseo/protocol/error-utils";
+import { deriveLifecycleBucket, type LifecycleBucket } from "@getpaseo/protocol/agent-state-bucket";
 import { hasMissionControlLabels } from "./naming.js";
+import { resolveMetaTargetHost } from "./meta-actions.js";
 import {
   MissionControlStore,
   generateProposalId,
@@ -85,6 +87,8 @@ const RESTART_GRACE_MS = 60_000;
 // Watchdog: record still says running but the provider runtime is dead for
 // this long before self-healing the record to error.
 const WATCHDOG_DEAD_RUNTIME_MS = 2 * 60_000;
+/** Tier-3 fallback description cap (mirrors the ~400-char self-report rule). */
+const AUTO_DERIVED_DESCRIPTION_CHARS = 400;
 const TIMELINE_BUFFER_CAP = 2000;
 const SELF_REPORT_RATE_LIMIT_MS = 60_000;
 /** Hindsight written-key set cap (guards unbounded memory; keys are run-scoped). */
@@ -105,8 +109,14 @@ const RUN_RECORD_FINALIZING_KINDS: Record<MissionControlEventKind, boolean> = {
   clarification: false,
   answer: false,
 };
-/** Exponential-backoff ceiling for nudge intervals: 30 minutes. */
-const NUDGE_BACKOFF_CAP_MS = 30 * 60 * 1000;
+/**
+ * The run-end event kinds (spec 06 terminal-state guarantee): finished,
+ * error (failed), and machinery interrupt. "interrupted" with a USER stop
+ * origin is excluded by the guarantee at apply time.
+ */
+function isTerminalEventKind(kind: MissionControlEventKind): boolean {
+  return kind === "finished" || kind === "failed" || kind === "interrupted";
+}
 /**
  * Honest-steer-delivery verification window: after an out-of-band steer
  * (`tryRunOutOfBand` reported handled), the agent must produce timeline
@@ -154,14 +164,105 @@ const SYNTHETIC_ANSWER_BODY_CAP = 2000;
  */
 const LEAKABLE_TOOL_NAMES: readonly string[] = COMMANDER_TOOL_ALLOWLIST;
 
+// ============================================================================
+// fleet_monitor (spec 03): session-scoped watch shapes + the announce-policy
+// matching. The policy (proposal/clarification always; blocked/error/finished
+// for monitored scope; started/milestones/verdicts never; mid-run milestones
+// parked P3) is pinned here so the daemon registry and the voice node apply
+// the same table.
+// ============================================================================
+
+export type MonitorScope = "fleet" | "agent";
+
+export interface MonitorWatch {
+  scope: MonitorScope;
+  /** Agent UUID for agent-scope watches; absent for fleet scope. */
+  agentId?: string;
+  /** Optional host hint (peer name or "local"); advisory, never a routing key. */
+  host?: string;
+  /** ISO timestamp when the watch started. */
+  startedAt: string;
+}
+
+/** Terminal/blocked event kinds that announce for MONITORED scope (spec 03). */
+export const MONITOR_ANNOUNCE_KINDS: readonly MissionControlEventKind[] = [
+  "blocked",
+  "failed",
+  "finished",
+];
+
+/** Whether an event kind qualifies for a monitored-scope announcement. */
+export function isMonitorAnnounceKind(kind: MissionControlEventKind): boolean {
+  return MONITOR_ANNOUNCE_KINDS.includes(kind);
+}
+
+/**
+ * Spec 03 announce-policy match: does this watch announce this event?
+ * proposal/clarification always (independent of the monitor); blocked/failed/
+ * finished only for monitored scope; everything else never.
+ */
+export function monitorWatchMatchesEvent(watch: MonitorWatch, event: MissionControlEvent): boolean {
+  if (event.kind === "proposal" || event.kind === "clarification") {
+    return true;
+  }
+  if (!isMonitorAnnounceKind(event.kind)) {
+    return false;
+  }
+  if (watch.scope === "fleet") {
+    return true;
+  }
+  return watch.agentId !== undefined && watch.agentId === event.agentId;
+}
+
+/** Running-turn info carried by fleet_agent_status (spec 03). */
+export interface AgentStatusRunningTurn {
+  lifecycle: string;
+  activeTurnId: string | null;
+  activeTurnStartedAt: string | null;
+  modeId: string | null;
+  pendingPermissionCount: number;
+}
+
+/** The agent's last self-sourced report_status (headline/detail/ts). */
+export interface AgentStatusLastReport {
+  headline: string;
+  detail: string | null;
+  ts: string;
+  reportKind: string | null;
+}
+
+/** One-agent status record for fleet_agent_status (spec 03). */
+export interface AgentStatusRecord {
+  agentId: string;
+  name: string | null;
+  title: string | null;
+  description: string | null;
+  bucket: LifecycleBucket;
+  lastStatus: string | null;
+  running: AgentStatusRunningTurn | null;
+  lastReport: AgentStatusLastReport | null;
+  workspaceId: string | null;
+}
+
 /**
  * Mutating tools: when one of these leaks as text, NOTHING happened on the
- * fleet. The turn must not be treated as an answer.
+ * fleet. The turn must not be treated as an answer. 04 meta split: the 11
+ * flat per-action tools replace fleet_meta here too.
  */
 const MUTATING_TOOL_NAMES: readonly string[] = [
   "fleet_create_agent",
   "fleet_send_prompt",
-  "fleet_meta",
+  "fleet_rename_project",
+  "fleet_rename_workspace",
+  "fleet_rename_agent_title",
+  "fleet_archive_project",
+  "fleet_archive_workspace",
+  "fleet_archive_agent",
+  "fleet_create_project",
+  "fleet_move_agent",
+  "fleet_promote_workspace",
+  "fleet_adopt_agent",
+  "fleet_release_agent",
 ];
 
 function leakedToolPattern(names: readonly string[]): RegExp {
@@ -198,20 +299,6 @@ function stripLeakedToolMarkup(text: string): string {
     .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-}
-
-/**
- * Effective nudge interval for a trigger after `priorNudges` nudges of that
- * trigger in the same run: base interval doubles per nudge (120 -> 240 ->
- * 480 ...), capped at 30 minutes. Reset by a user prompt or run end.
- * Exported so the backoff math is unit-testable without a service.
- */
-export function nudgeBackoffMs(baseSeconds: number, priorNudges: number): number {
-  const baseMs = baseSeconds * 1000;
-  if (priorNudges <= 0) {
-    return Math.min(baseMs, NUDGE_BACKOFF_CAP_MS);
-  }
-  return Math.min(baseMs * 2 ** priorNudges, NUDGE_BACKOFF_CAP_MS);
 }
 
 /** Best-effort text of a tool-call failure, for the Commander watchdog. */
@@ -299,36 +386,9 @@ function isProviderRejectionError(message: string): boolean {
 }
 
 interface StallTracking {
-  /** Last timeline activity (any stream event). Escalation's "no response at
-   *  all" check uses this — a timeline row after the nudge counts as a
-   *  response. */
+  /** Last timeline activity (any stream event). The dormant-turn detector's
+   *  "no output" clock. */
   lastStreamAt: number;
-  /** Last report_status landing; run start counts as the origin. The nudge
-   *  timer keys to this ONLY — timeline rows do not reset it. */
-  lastStatusAt: number;
-  /** When the current lapse's FIRST status-ask steer was sent (either
-   *  trigger). The escalation window ("no response for escalateSeconds after
-   *  ANY nudge") anchors here — re-nudges within the lapse do not restart it.
-   *  Cleared when a report_status lands or the run ends. */
-  nudgedAt: number | null;
-  /** When the MOST RECENT status-ask steer was sent (either trigger). The
-   *  consecutive-nudge spacing anchor: a trigger re-fires only once its
-   *  effective (backed-off) interval has elapsed since this. */
-  lastNudgeAt: number | null;
-  /** Trigger that sent the last nudge. While a lapse is pending (nudgedAt
-   *  set) ONLY this trigger may re-nudge — consecutive unanswered nudges of
-   *  the same trigger widen; the other trigger waits for a fresh lapse. */
-  lastNudgeTrigger: "silence" | "status" | null;
-  /** Silence-trigger nudges sent this run (backoff counter). Widens the
-   *  silence interval on consecutive UNANSWERED lapses; a landed report_status
-   *  (compliance), a user prompt, or run end resets it to the base. */
-  silenceNudges: number;
-  /** Cadence-trigger nudges sent this run (backoff counter). Same discipline
-   *  as silenceNudges: widen only on consecutive unanswered lapses. */
-  statusNudges: number;
-  /** When the recovery interrupt was proposed (ms epoch); null until then.
-   *  One recovery per lapse; cleared with the nudge guard on report_status. */
-  escalatedAt: number | null;
   /** First sweep time the provider runtime was observed dead; null while alive. */
   deadSince: number | null;
   /** Watchdog already self-healed this run; skip re-healing until lifecycle change. */
@@ -339,8 +399,8 @@ interface StallTracking {
   lastTurnStartedAt: number | null;
   /** Dormant-turn detector: the recovery interrupt was already proposed for
    *  this run (once per run — a wedged loop must not re-card every sweep).
-   *  Cleared with the nudge guard on report_status (a landed self-report
-   *  proves the loop advanced) and reset on a new run. */
+   *  Cleared on a landed report_status (a self-report proves the loop
+   *  advanced) and reset on a new run. */
   dormantRecoveredAt: number | null;
 }
 
@@ -485,6 +545,16 @@ export interface MissionControlServiceOptions {
    * Commander's real answer, never a retractable machinery ack.
    */
   disarmSnapshotAckDrop?: () => void;
+  /**
+   * F2: a reviewState change re-buckets the agent (spec 01 precedence) but
+   * produces no agent lifecycle mutation, so connected clients would hold a
+   * stale bucket until the next fetch. Live agents re-emit state through the
+   * manager (the same broadcast path lifecycle changes use); a closed/stored
+   * agent has no live state, and the daemon-level fan-out to every session's
+   * agent_update stream lives in bootstrap (this hook). Absent → the stored
+   * push is skipped (tests without the hook keep their current behavior).
+   */
+  onReviewStateChanged?: (agentId: string) => void;
 }
 
 export interface MissionControlServiceConfig {
@@ -516,7 +586,13 @@ export interface SelfReportIdentity {
 }
 
 export type SelfReportResult =
-  | { ok: true; event: MissionControlEvent; identity: Partial<SelfReportIdentity> }
+  | {
+      ok: true;
+      event: MissionControlEvent;
+      identity: Partial<SelfReportIdentity>;
+      /** Additive guidance: frozen title notice, missing-description nag. */
+      notice?: string;
+    }
   | { ok: false; reason: "excluded" | "rate_limited"; message: string };
 
 export type ReviewStateListener = (
@@ -628,6 +704,7 @@ export class MissionControlService {
   private readonly setPendingInstructionEnvelope: MissionControlServiceOptions["setPendingInstructionEnvelope"];
   private readonly dispatchSnapshotTurn: MissionControlServiceOptions["dispatchSnapshotTurn"];
   private readonly disarmSnapshotAckDrop: MissionControlServiceOptions["disarmSnapshotAckDrop"];
+  private readonly onReviewStateChanged: MissionControlServiceOptions["onReviewStateChanged"];
   readonly approvals: MissionControlApprovals;
   // M6 context architecture: run-record assembly, rollup cache, hindsight sink.
   private readonly rollupCache = new RollupCache();
@@ -676,6 +753,10 @@ export class MissionControlService {
   private readonly commanderInstructionTrackers = new Map<string, CommanderInstructionTracker>();
   private readonly reviewStateListeners = new Set<ReviewStateListener>();
   private readonly selfReportListeners = new Set<(event: MissionControlEvent) => void>();
+  /** fleet_monitor subscriptions keyed by session (voice daemon session id or
+   * Commander turn context). Sessions manage their own watches independently;
+   * a session with no entries is simply absent. */
+  private readonly monitorWatchesBySession = new Map<string, MonitorWatch[]>();
   /** First observation of a dead-runtime running record (periodic scan). */
   private readonly recordDeadSince = new Map<string, number>();
   /**
@@ -721,10 +802,32 @@ export class MissionControlService {
     { proposalId: string; armedAt: number }
   >();
   /**
-   * Time of the agent's last report_status call. Preserved across run
-   * replacements and restarts (only reportSelfStatus updates it).
+   * Terminal-state guarantee (spec 06): agents whose run just ended with
+   * zero self-sourced reports and already received the one status-ask steer
+   * for this finish chain. While marked, the NEXT silent terminal
+   * transition applies the deterministic description fallback instead of
+   * steering again — the steer is never repeated and never time-based.
+   * Cleared when a self-report lands, when the user stops the run, or when
+   * the fallback applies.
    */
-  private readonly lastStatusAtByAgent = new Map<string, number>();
+  private readonly terminalAskPending = new Set<string>();
+  /**
+   * Per-run finished-event dedupe (spec 01 change 1): the manager's
+   * onAgentFinished fires on every clean running→idle transition; the key
+   * (agentId + run start) keeps the finished event + markReadyForReview to
+   * exactly one emission per run. Keyed by run start, so entries are
+   * implicitly bounded and never need clearing.
+   */
+  private readonly cleanFinishedRuns = new Set<string>();
+  /**
+   * Per-run user-stop terminal-event dedupe (F1): a user-origin cancel of a
+   * running turn emits exactly ONE "interrupted" event per run epoch —
+   * either the running→non-running lifecycle hop in handleAgentState or the
+   * turn_failed error-card path (whichever lands first). Keyed by run start,
+   * so entries are implicitly bounded and never need clearing (same
+   * convention as cleanFinishedRuns).
+   */
+  private readonly userStopTerminalEvents = new Set<string>();
   /** Active running subagent ids per parent agent. */
   private readonly runningSubagentsByAgent = new Map<string, Set<string>>();
   /** Agents whose finished attention arrived while subagents were still running. */
@@ -757,6 +860,7 @@ export class MissionControlService {
     this.setPendingInstructionEnvelope = options.setPendingInstructionEnvelope;
     this.dispatchSnapshotTurn = options.dispatchSnapshotTurn;
     this.disarmSnapshotAckDrop = options.disarmSnapshotAckDrop;
+    this.onReviewStateChanged = options.onReviewStateChanged;
     this.bootedAtMs = Date.now();
     this.store = new MissionControlStore({ paseoHome: options.paseoHome, logger: this.logger });
     this.lifecycleLog = new TurnLifecycleLog({
@@ -801,7 +905,21 @@ export class MissionControlService {
         if (this.store.getStopOrigin(input.agentId) === "user") {
           throw new ProposalDeliveryAborted(input.agentId, "user_stopped");
         }
-        // Same delivery semantics as fleet_send_prompt: busy omp turns are
+        const isLocal =
+          Boolean(this.agentManager.getAgent(input.agentId)) ||
+          Boolean(await this.agentStorage.get(input.agentId).catch(() => null));
+        if (!isLocal) {
+          const peerManager = this.resolvePeerManager();
+          const targetPeerName = await this.resolvePeerDeliveryTarget(
+            peerManager,
+            input.agentId,
+            input.proposal?.serverId,
+          );
+          if (targetPeerName) {
+            await this.tryDeliverToPeer(peerManager, input, targetPeerName);
+            return;
+          }
+        }
         // live-steered out-of-band (/steer, instant, non-cancelling); idle
         // agents run normally. A busy provider WITHOUT a native steer path is
         // interrupted (replaceRunning) — a steer's value is timely delivery,
@@ -959,6 +1077,8 @@ export class MissionControlService {
       void this.store.prune(this.readConfig().retentionDays).catch((error) => {
         this.logger.warn({ err: error }, "Failed to prune mission control events");
       });
+      // Spec 01 ready aging: same daily cadence as the prune sweep.
+      this.sweepReadyAging(Date.now());
     }, DAILY_PRUNE_INTERVAL_MS);
     void this.verifier?.start();
   }
@@ -1016,6 +1136,33 @@ export class MissionControlService {
       await this.emitVerdictEvent({ agentId, verdict: options.verdict });
     }
     this.notifyReviewState(agentId);
+  }
+
+  /**
+   * Spec 01 ready aging: reviewState "ready" rows whose updatedAt is older
+   * than readyAgeOutDays (central config, default 3) age to done with the
+   * "aged-out" verdict (board chip; state-only verdict card). Runs on the
+   * daily prune cadence; never touches agents. readyAgeOutDays <= 0 disables
+   * aging (explicit opt-out).
+   */
+  sweepReadyAging(now = Date.now()): void {
+    const readyAgeOutDays = this.centralConfig.get().readyAgeOutDays;
+    if (!Number.isFinite(readyAgeOutDays) || readyAgeOutDays <= 0) {
+      return;
+    }
+    const cutoffMs = now - readyAgeOutDays * 24 * 60 * 60 * 1000;
+    for (const [agentId, record] of this.store.getReviewStates()) {
+      if (record.reviewState !== "ready") {
+        continue;
+      }
+      const updatedAt = record.updatedAt ? Date.parse(record.updatedAt) : Number.NaN;
+      if (!Number.isFinite(updatedAt) || updatedAt >= cutoffMs) {
+        continue;
+      }
+      void this.setReviewState(agentId, "done", {
+        verdict: { by: "user", summary: "aged-out", at: new Date(now).toISOString() },
+      });
+    }
   }
 
   /** Fire-and-forget feed card emission (verifier retry-exhaustion cards). */
@@ -1257,6 +1404,45 @@ export class MissionControlService {
   }
 
   /**
+   * Fleet-wide Commander identity for agent classification on PEER hosts
+   * (spec 06 terminal guarantee over the fleet): the local commander first;
+   * on a peer host with no local Commander, ask the designated commander
+   * host over peering for its commander-labeled agent. Without this, a
+   * commander-dispatched worker running on a peer (parent label = the
+   * commander's id) classifies as a plain subagent, and the terminal
+   * status-ask steer never fires for it. Advisory: any failure → null (the
+   * classification degrades to today's subagent behavior).
+   *
+   * Distinct from resolveCommanderAgentId (local-only): dispatch targets must
+   * be local agents, so the remote id is only ever used for classification.
+   */
+  private async resolveFleetCommanderAgentId(): Promise<string | null> {
+    const local = await this.resolveCommanderAgentId();
+    if (local) {
+      return local;
+    }
+    const designated = this.centralConfig.get().commanderHost?.trim() || null;
+    if (designated === null || this.isThisCommanderHost(designated)) {
+      return null;
+    }
+    const peerManager = this.resolvePeerManager();
+    const peerStatus = peerManager?.getPeerStatus(designated) ?? null;
+    const peerClient = peerManager?.getPeerClient(designated) ?? null;
+    if (!peerStatus || peerStatus.state !== "online" || !peerClient) {
+      return null;
+    }
+    try {
+      const roster = await peerClient.fetchAgents({
+        filter: { labels: { [MISSION_CONTROL_LABEL_KEY]: MISSION_CONTROL_LABEL_VALUE } },
+        page: { limit: 200 },
+      });
+      return roster.entries.find((entry) => Boolean(entry.agent?.id))?.agent?.id ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Commander adoption: a delivered commander-origin send (fleet_send_prompt)
    * marks the target as Commander-owned so verifier scope "commander" audits
    * it. The marker is the ISO timestamp of the FIRST adoption — the moment
@@ -1471,6 +1657,18 @@ export class MissionControlService {
       unstageInstruction();
       throw error;
     }
+  }
+
+  /**
+   * M8 ledger (voice P0): open one ledger row for a final voice utterance
+   * WITHOUT dispatching a Commander turn. The voice node calls this on every
+   * final user-utterance transcription; the model cites the returned id via
+   * respondsTo on cards and emit-time close closes the row. Shares the
+   * deliverCommanderInstruction open path (store.openInstruction) — one row
+   * per utterance, no intent splitting.
+   */
+  openInstruction(input: { text: string; source: "chat" | "voice" }): MissionControlInstruction {
+    return this.store.openInstruction({ text: input.text, source: input.source });
   }
 
   /**
@@ -1744,6 +1942,80 @@ export class MissionControlService {
     return typeof option === "function" ? option() : (option ?? null);
   }
 
+  /**
+   * Resolve the peer hosting a non-local delivery target: first via the
+   * proposal's serverId (resolveMetaTargetHost), then by scanning online
+   * peers' agent rosters for the id. Returns the peer name or null.
+   */
+  private async resolvePeerDeliveryTarget(
+    peerManager: PeerManager | null,
+    agentId: string,
+    serverId: string | null | undefined,
+  ): Promise<string | null> {
+    if (serverId) {
+      const target = resolveMetaTargetHost(
+        { serverId: this.serverId, hostAlias: this.hostAlias, peerManager },
+        serverId,
+      );
+      if (target.ok && target.kind === "peer") {
+        return target.peerName;
+      }
+    }
+    if (!peerManager) {
+      return null;
+    }
+    for (const peerStatus of peerManager.getPeerStatuses() ?? []) {
+      if (peerStatus.state !== "online") {
+        continue;
+      }
+      const client = peerManager.getPeerClient(peerStatus.name);
+      if (!client) {
+        continue;
+      }
+      try {
+        const res = await client.fetchAgents({
+          filter: { includeArchived: true },
+          page: { limit: 200 },
+        });
+        if (res.entries.some((entry) => entry.agent.id === agentId)) {
+          return peerStatus.name;
+        }
+      } catch {
+        // ignore
+      }
+    }
+    return null;
+  }
+
+  /** Deliver a proposal message over peering to an online peer host, then
+   * apply commander adoption for commander-origin sends. Throws when the
+   * peer is unreachable or has no client. */
+  private async tryDeliverToPeer(
+    peerManager: PeerManager | null,
+    input: {
+      agentId: string;
+      message: string;
+      deliveryMode: "steer" | "interrupt" | "queue";
+      proposal?: { origin?: string } | null;
+    },
+    targetPeerName: string,
+  ): Promise<void> {
+    const peerStatus = peerManager?.getPeerStatus(targetPeerName) ?? null;
+    if (!peerStatus || peerStatus.state !== "online") {
+      throw new Error(`Host "${targetPeerName}" is not an online peer`);
+    }
+    const peerClient = peerManager?.getPeerClient(targetPeerName) ?? null;
+    if (!peerClient) {
+      throw new Error(`Host "${targetPeerName}" has no peer client`);
+    }
+    await peerClient.sendAgentMessage(input.agentId, input.message, {
+      dispatchMode: input.deliveryMode,
+    });
+    if (input.proposal?.origin === "commander") {
+      await this.recordCommanderAdoption(input.agentId);
+    }
+  }
+
   private async applyCentralConfigPatchAsOwner(
     patch: MissionControlCentralConfigPatch,
   ): Promise<CentralConfigWriteResult> {
@@ -1936,6 +2208,389 @@ export class MissionControlService {
     );
   }
 
+  // ==========================================================================
+  // M13 fleet_monitor subscriptions (spec 03): session-scoped watches over
+  // mission_control_event. The registry is the subscription plumbing —
+  // fleet-wide and any number of per-agent watches coexist per session,
+  // independent start/stop, status lists. Announcements themselves ride the
+  // existing mission_control_event broadcast: the voice node holds the
+  // session's monitored set (synced from this registry) and applies the
+  // announce policy (proposal/clarification always; blocked/error/finished
+  // for monitored scope) as a passive listener — zero polling.
+  // ==========================================================================
+
+  /**
+   * start/stop/status a monitor subscription for one session (voice daemon
+   * session id, or a Commander turn context). Agent-scope watches require an
+   * agentId; the caller (fleet_monitor tool) validates the id resolves via
+   * the fleet index before calling. start is idempotent per (scope, agentId);
+   * stop removes the matching watch; status returns the current list.
+   */
+  monitorFleet(input: {
+    action: "start" | "stop" | "status";
+    scope: MonitorScope;
+    agentId?: string;
+    host?: string;
+    sessionKey: string;
+  }):
+    | { ok: true; action: "start" | "stop" | "status"; subscriptions: MonitorWatch[] }
+    | { ok: false; error: string } {
+    const { action, scope, agentId, host, sessionKey } = input;
+    if (action !== "start" && action !== "stop" && action !== "status") {
+      return {
+        ok: false,
+        error: `action must be one of: "start", "stop", "status"; got "${String(action)}"`,
+      };
+    }
+    if (scope !== "fleet" && scope !== "agent") {
+      return {
+        ok: false,
+        error: `scope must be one of: "fleet", "agent"; got "${String(scope)}"`,
+      };
+    }
+    if (
+      action === "start" &&
+      scope === "agent" &&
+      (typeof agentId !== "string" || agentId.trim().length === 0)
+    ) {
+      return {
+        ok: false,
+        error: `scope "agent" requires agentId (an agent UUID from fleet_list_agents); scope "fleet" takes no agentId`,
+      };
+    }
+    const watches = this.monitorWatchesBySession.get(sessionKey) ?? [];
+    if (action === "start") {
+      const watch: MonitorWatch = {
+        scope,
+        ...(agentId !== undefined && agentId.trim().length > 0 ? { agentId: agentId.trim() } : {}),
+        ...(host !== undefined && host.trim().length > 0 ? { host: host.trim() } : {}),
+        startedAt: new Date().toISOString(),
+      };
+      const exists = watches.some(
+        (existing) =>
+          existing.scope === watch.scope &&
+          (watch.agentId === undefined || existing.agentId === watch.agentId),
+      );
+      if (!exists) {
+        watches.push(watch);
+        this.monitorWatchesBySession.set(sessionKey, watches);
+      }
+      return { ok: true, action, subscriptions: [...watches] };
+    }
+    if (action === "stop") {
+      const next = watches.filter(
+        (existing) =>
+          existing.scope !== scope ||
+          (scope === "agent" && agentId !== undefined && existing.agentId !== agentId),
+      );
+      if (next.length !== watches.length) {
+        this.monitorWatchesBySession.set(sessionKey, next);
+      }
+      return { ok: true, action, subscriptions: [...next] };
+    }
+    return { ok: true, action, subscriptions: [...watches] };
+  }
+
+  /** The session's current monitor subscriptions (empty when none). */
+  getMonitorSubscriptions(sessionKey: string): MonitorWatch[] {
+    return [...(this.monitorWatchesBySession.get(sessionKey) ?? [])];
+  }
+
+  /**
+   * Canonical lifecycle bucket (spec 01) for one agent, computed from stored
+   * state via the shared deriveLifecycleBucket — the same function the roster
+   * and fleet_list_agents rows use (BucketCore). Never a client event fold.
+   */
+  async getLifecycleBucket(agentId: string): Promise<LifecycleBucket> {
+    const record = await this.agentStorage.get(agentId);
+    const live = this.agentManager.getAgent(agentId);
+    const pendingProposalCount = this.approvals
+      .listProposals()
+      .filter(
+        (proposal) => proposal.targetAgentId === agentId && proposal.status === "pending",
+      ).length;
+    const attentionReason =
+      live?.attention?.requiresAttention === true
+        ? live.attention.attentionReason
+        : (record?.attentionReason ?? null);
+    const reviewState = this.store.getReviewState(agentId).reviewState;
+    return deriveLifecycleBucket({
+      pendingPermissionCount: live ? live.pendingPermissions.size : 0,
+      pendingProposalCount,
+      attentionReason: attentionReason ?? null,
+      lastStatus: record?.lastStatus ?? null,
+      running: live?.lifecycle === "running" || live?.lifecycle === "initializing",
+      reviewState,
+      stopOrigin: this.store.getStopOrigin(agentId),
+    });
+  }
+
+  /**
+   * One-agent status record for fleet_agent_status: identity, lifecycle
+   * bucket, last lifecycle status, running-turn info, and the last
+   * self-sourced report_status. The tool resolves host/projectId via the
+   * fleet index + workspace registry (not owned by this service).
+   */
+  async getAgentStatusRecord(agentId: string): Promise<AgentStatusRecord> {
+    const [record, live, bucket] = await Promise.all([
+      this.agentStorage.get(agentId),
+      Promise.resolve(this.agentManager.getAgent(agentId)),
+      this.getLifecycleBucket(agentId),
+    ]);
+    const lastReport = this.lastSelfReportEvent(agentId);
+    return {
+      agentId,
+      ...this.resolveStatusIdentity(record, live),
+      bucket,
+      lastStatus: record?.lastStatus ?? null,
+      running: this.buildStatusRunningInfo(live),
+      lastReport: this.buildStatusLastReport(lastReport),
+    };
+  }
+
+  /** The identity fields of a status record, resolved live-first (the live
+   * agent's current state outranks the stored record). */
+  private resolveStatusIdentity(
+    record: StoredAgentRecord | null,
+    live: ManagedAgent | null,
+  ): Pick<AgentStatusRecord, "name" | "title" | "description" | "workspaceId"> {
+    return {
+      name: record?.name ?? live?.name ?? null,
+      title: record?.title ?? live?.config?.title ?? null,
+      description: record?.shortDescription ?? live?.shortDescription ?? null,
+      workspaceId: record?.workspaceId ?? live?.workspaceId ?? null,
+    };
+  }
+
+  /** Running-turn info from the live agent (null when not running). */
+  private buildStatusRunningInfo(live: ManagedAgent | null): AgentStatusRunningTurn | null {
+    if (!live) {
+      return null;
+    }
+    return {
+      lifecycle: live.lifecycle,
+      activeTurnId: live.activeTurnId,
+      activeTurnStartedAt: live.activeTurnStartedAt ? live.activeTurnStartedAt.toISOString() : null,
+      modeId: live.currentModeId,
+      pendingPermissionCount: live.pendingPermissions.size,
+    };
+  }
+
+  /** The last self-report as the status record's report section (null when
+   * the agent has never self-reported). */
+  private buildStatusLastReport(
+    lastReport: MissionControlEvent | null,
+  ): AgentStatusLastReport | null {
+    if (!lastReport) {
+      return null;
+    }
+    return {
+      headline: lastReport.headline,
+      detail: lastReport.detail ?? null,
+      ts: lastReport.ts,
+      reportKind: lastReport.reportKind ?? null,
+    };
+  }
+
+  /**
+   * The status-ask steer for fleet_agent_status fresh:true (the only
+   * mid-run status mechanism; fires only on explicit request). Shares the
+   * canonical status-ask envelope with the terminal-state guarantee
+   * (createStatusAskProposal). Machinery envelope: user-invisible card
+   * (verboseOnly), machinery timeline row, and the <paseo-system> wrap the
+   * timeline renderer hides. forceSend: a status-ask never sits pending for
+   * approval.
+   */
+  async requestFreshStatusSteer(
+    agentId: string,
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    try {
+      await this.createStatusAskProposal(
+        agentId,
+        "fleet_agent_status fresh:true — explicit status request",
+        "Status request: post a one-line report_status describing where you are right now.",
+      );
+      return { ok: true };
+    } catch (error) {
+      this.logger.warn(
+        { err: error, component: "monitor", agentId },
+        "mission_control.fresh_status_steer_failed",
+      );
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  /**
+   * The canonical status-ask steer (spec 06): an auto-sent, machinery
+   * envelope — user-invisible card (verboseOnly), machinery-classified
+   * timeline row, and the <paseo-system> wrap both timeline renderers hide
+   * in normal mode (verbose shows it). forceSend: a status-ask never sits
+   * pending for approval. Shared by the terminal-state guarantee and
+   * fleet_agent_status fresh:true.
+   */
+  private createStatusAskProposal(agentId: string, reason: string, message: string): Promise<void> {
+    return this.approvals
+      .createProposal({
+        origin: "stall",
+        serverId: this.serverId,
+        targetAgentId: agentId,
+        message: formatSystemNotificationPrompt(message),
+        deliveryMode: "steer",
+        reason,
+        classification: "normal",
+        forceSend: true,
+        verboseOnly: true,
+        timelineClassification: "machinery",
+      })
+      .then(() => undefined);
+  }
+
+  // ==========================================================================
+  // Terminal-state guarantee (spec 06): the only automatic status-ask
+  // ==========================================================================
+
+  /**
+   * Terminal-state guarantee: when a run ends — finished, error, or a
+   * machinery interrupt (never a user stop) — with zero self-sourced
+   * report_status this run, the agent is steered exactly ONCE for its
+   * status; the steer is never repeated and never time-based. Called from
+   * emitEvent for system-source terminal events, BEFORE the event snapshot
+   * resolves, so the finished card carries the tier-3 fallback description
+   * when it applies. Self-source terminal events (a completed report_status)
+   * are tier 1 by construction and never reach here.
+   *
+   * Description tiers (no LLM):
+   *   1. Agent self-reports — the normal case; nothing to do.
+   *   2. Zero self-reports this run → one status-ask steer.
+   *   3. The steer's own run still produced nothing → deterministic
+   *      fallback: first line of the last assistant message, flagged
+   *      auto-derived on the record.
+   *
+   * Blocked-on-permission is never nudged: the turn is suspended, not over,
+   * and its announcements use the blocked headline + last known description.
+   */
+  private async maybeApplyTerminalStatusGuarantee(agentId: string): Promise<void> {
+    // Only stall-tracked classes (root + Commander workers) get the
+    // status-ask: verifiers and plain subagents have legitimate silence.
+    const live = this.agentManager.getAgent(agentId);
+    if (!live || !this.isStallTracked(live)) {
+      return;
+    }
+    // A user stop is the user's own interruption, not a silent run: never
+    // ask (and the user took over, so any pending ask chain is moot).
+    if (this.store.getStopOrigin(agentId) === "user") {
+      this.terminalAskPending.delete(agentId);
+      return;
+    }
+    // Blocked-on-permission: the turn is suspended, not over. Its
+    // announcements use the blocked headline + last known description;
+    // never nudge it. Read the LIVE pending-permission state: the
+    // blockedByAgent set is cleared by the agent_state handler, which can
+    // race the run-end finished callback (a permission approval's turn-end
+    // stream can beat the daemon's post-approval emitState), so the stale
+    // set entry would wrongly suppress the terminal steer.
+    if ((live.pendingPermissions?.size ?? 0) > 0) {
+      return;
+    }
+    const runStart = this.runStartedAtByAgent.get(agentId);
+    if (runStart === undefined) {
+      return;
+    }
+    // Tier 1: the agent self-reported this run — no ask; a landed report
+    // also ends any pending ask chain from an earlier run.
+    if (this.hasSelfSourcedReportSince(agentId, runStart)) {
+      this.terminalAskPending.delete(agentId);
+      return;
+    }
+    if (this.terminalAskPending.has(agentId)) {
+      // The status-ask steer already went out for this finish chain and the
+      // agent still produced nothing: tier 3 — deterministic fallback, never
+      // a second steer.
+      this.terminalAskPending.delete(agentId);
+      await this.applyDeterministicDescription(agentId);
+      return;
+    }
+    // Tier 2: exactly one status-ask steer per finish chain.
+    this.terminalAskPending.add(agentId);
+    this.createStatusAskProposal(
+      agentId,
+      "Run ended without a report_status",
+      "Your run ended without a report_status. Post a one-line report_status summarizing what you did and where you are, then continue.",
+    ).catch((error: unknown) => {
+      this.logger.warn(
+        { err: error, component: "stall", agentId },
+        "Failed to create terminal status-ask steer",
+      );
+    });
+  }
+
+  /** Any self-sourced event at/after the run start (the tier-1 predicate). */
+  private hasSelfSourcedReportSince(agentId: string, sinceMs: number): boolean {
+    return this.store
+      .fetchEvents({ includeSuperseded: true })
+      .some(
+        (event) =>
+          event.agentId === agentId && event.source === "self" && Date.parse(event.ts) >= sinceMs,
+      );
+  }
+
+  /**
+   * Tier-3 deterministic fallback (no LLM): shortDescription = first line of
+   * the last assistant message, flagged auto-derived on the stored record.
+   * Never throws — a missing timeline or a failed write logs and degrades
+   * silently (the steer run's own cards already carry the headline).
+   */
+  private async applyDeterministicDescription(agentId: string): Promise<void> {
+    const rows = this.timelineRows.get(agentId) ?? [];
+    let lastAssistantText: string | null = null;
+    for (const row of rows) {
+      if (row.item.type === "assistant_message") {
+        lastAssistantText = row.item.text;
+      }
+    }
+    const firstLine = lastAssistantText
+      ?.split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line.length > 0);
+    if (!firstLine) {
+      return;
+    }
+    const clamped = firstLine.slice(0, AUTO_DERIVED_DESCRIPTION_CHARS).trim();
+    if (!clamped) {
+      return;
+    }
+    await this.applyIdentityUpdate(agentId, { description: clamped });
+    try {
+      const record = await this.agentStorage.get(agentId);
+      if (record && record.shortDescription === clamped) {
+        await this.agentStorage.upsert({
+          ...record,
+          shortDescriptionAutoDerived: true,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    } catch (error) {
+      this.logger.warn(
+        { err: error, agentId },
+        "Failed to flag auto-derived description on the stored record",
+      );
+    }
+    this.logger.info({ component: "turn-lifecycle", agentId }, "agent.description.auto_derived");
+  }
+
+  /** The agent's most recent self-sourced report event (null when none). */
+  private lastSelfReportEvent(agentId: string): MissionControlEvent | null {
+    let latest: MissionControlEvent | null = null;
+    for (const event of this.store.fetchEvents({ includeSuperseded: true })) {
+      if (event.agentId === agentId && event.source === "self") {
+        if (!latest || event.ts > latest.ts) {
+          latest = event;
+        }
+      }
+    }
+    return latest;
+  }
+
   /**
    * Semantic recall over the configured fleet bank, plus (when configured)
    * the read-only secondary omp bank. Never blocks and never throws: when
@@ -2065,65 +2720,117 @@ export class MissionControlService {
           "Rate limited: one self-report per minute per agent. Fold this update into your previous report or wait before reporting again.",
       };
     }
-    const event = await this.emitEvent({
-      agentId,
-      kind,
-      source: "self",
-      severity,
-      headline: input.headline,
-      // Keep the original report_status kind on the card so the app can icon
-      // progress vs milestone vs finding vs fix vs decision distinctly even
-      // though the feed collapses them onto the milestone/finding card kinds.
-      ...(reportKind !== undefined ? { reportKind } : {}),
-      ...(input.detail ? { detail: input.detail } : {}),
-      ...(input.proofs && input.proofs.length > 0 ? { proof: input.proofs } : {}),
-    });
-    // A landed report_status resets BOTH nudge timers (silence + cadence) and
-    // clears the outstanding-nudge guard + escalation lapse. Timeline
-    // activity deliberately only resets the silence timer.
+    // Title freeze (spec 06): report_status.title is accepted ONLY as
+    // backfill while the record has no title; afterwards it is ignored — the
+    // only rename path is fleet_rename_agent_title. Description is living and
+    // replaces on every report. Applied BEFORE the event emit so the report's
+    // own card carries the identity triad (agentName + agentDescription) with
+    // the description it just wrote.
+    const recordBefore = await this.agentStorage.get(agentId).catch(() => null);
+    const recordHasTitle = (recordBefore?.title?.trim() ?? "") !== "";
+    const titleAccepted = input.title !== undefined && !recordHasTitle;
+    if (input.title !== undefined || input.description !== undefined) {
+      await this.applyIdentityUpdate(agentId, {
+        ...(titleAccepted ? { title: input.title } : {}),
+        ...(input.description !== undefined ? { description: input.description } : {}),
+      });
+    }
+    const event = await this.emitEvent(
+      this.buildSelfReportEventInput(agentId, input, kind, severity, reportKind),
+    );
+    // A landed self-report proves the turn loop advanced: the dormant-turn
+    // recovery latch clears (a fresh dormancy gets a fresh recovery). Timeline
+    // activity resets the silence clock too.
     const tracking = this.stallTracking.get(agentId);
     if (tracking) {
-      tracking.lastStatusAt = Date.now();
       tracking.lastStreamAt = Date.now();
-      tracking.nudgedAt = null;
-      tracking.lastNudgeAt = null;
-      tracking.lastNudgeTrigger = null;
-      tracking.escalatedAt = null;
-      // A landed self-report proves the turn loop advanced: the dormant-turn
-      // recovery latch clears (a fresh dormancy gets a fresh recovery).
       tracking.dormantRecoveredAt = null;
-      // Compliance breaks the consecutive-unanswered streak: backoff widens
-      // only on unanswered nudges, so a report_status returns both triggers
-      // to their configured base intervals.
-      tracking.silenceNudges = 0;
-      tracking.statusNudges = 0;
     }
-    this.lastStatusAtByAgent.set(agentId, Date.now());
     this.store.updateObservation(agentId, {
       lastSelfReportTs: event.ts,
       lastSelfReportRunEpoch: event.runEpoch ?? observation.runEpoch,
     });
-    if (input.title !== undefined || input.description !== undefined) {
-      await this.applyIdentityUpdate(agentId, {
-        ...(input.title !== undefined ? { title: input.title } : {}),
-        ...(input.description !== undefined ? { description: input.description } : {}),
-      });
-    }
     // Echo the agent's identity in the tool result ONLY when it drifted from
     // what the agent just sent — someone else changed it (backfill, the user,
     // another surface) or the write silently failed. The echo exists to
     // correct external drift, not to restate what the agent just told us.
     const identity = await this.readSelfReportIdentity(agentId, input);
+    // Result notices (additive): a frozen title tells the agent its title
+    // write was ignored; a record still lacking a description nags the agent
+    // to include one (the description is the Commander's live context).
+    const notices = await this.collectSelfReportNotices(agentId, input, recordHasTitle);
+    const notice = notices.length > 0 ? notices.join("; ") : undefined;
     if (input.status === "completed") {
-      // Ready-for-review accrues only from rollout onward; pre-rollout agents
-      // stay dormant even when a finish event predates the rollout marker.
-      if (this.store.getRolloutTs() !== null) {
-        await this.store.setReviewState(agentId, "ready");
-        this.notifyReviewState(agentId);
-        // M6: the completed run finalizes its record via the ready transition.
-        void this.finalizeRunRecord(agentId, this.currentRunEpoch(agentId));
+      await this.applyCompletedSelfReport(agentId);
+    }
+    this.dispatchSelfReportEvent(event, agentId);
+    return { ok: true, event, identity, ...(notice ? { notice } : {}) };
+  }
+
+  /** The append input for a self-sourced report event, carrying the original
+   * report_status kind (so the app can icon progress vs milestone vs finding
+   * vs fix vs decision distinctly even though the feed collapses them onto
+   * the milestone/finding card kinds) plus detail and proofs when present. */
+  private buildSelfReportEventInput(
+    agentId: string,
+    input: MissionControlReportStatusInput,
+    kind: MissionControlAppendInput["kind"],
+    severity: MissionControlAppendInput["severity"],
+    reportKind: MissionControlReportStatusInput["kind"] | undefined,
+  ): Omit<MissionControlAppendInput, "agentTitle"> {
+    return {
+      agentId,
+      kind,
+      source: "self",
+      severity,
+      headline: input.headline,
+      ...(reportKind !== undefined ? { reportKind } : {}),
+      ...(input.detail ? { detail: input.detail } : {}),
+      ...(input.proofs && input.proofs.length > 0 ? { proof: input.proofs } : {}),
+    };
+  }
+
+  /** Result notices appended to a self-report: a frozen title tells the agent
+   * its title write was ignored; a record still lacking a description nags
+   * the agent to include one (the description is the Commander's live
+   * context). */
+  private async collectSelfReportNotices(
+    agentId: string,
+    input: MissionControlReportStatusInput,
+    recordHasTitle: boolean,
+  ): Promise<string[]> {
+    const notices: string[] = [];
+    if (input.title !== undefined && recordHasTitle) {
+      notices.push("title is fixed; description updated");
+    }
+    if (input.description === undefined) {
+      const recordAfter = await this.agentStorage.get(agentId).catch(() => null);
+      if (!(recordAfter?.shortDescription?.trim() ?? "")) {
+        notices.push(
+          "description is missing on your agent record — include a 2-3 sentence `description` in your next report_status so the Commander has your live context",
+        );
       }
     }
+    return notices;
+  }
+
+  /** A landed "completed" self-report marks the agent ready-for-review
+   * (post-rollout only) and finalizes its run record via the ready
+   * transition. */
+  private async applyCompletedSelfReport(agentId: string): Promise<void> {
+    // Ready-for-review accrues only from rollout onward; pre-rollout agents
+    // stay dormant even when a finish event predates the rollout marker.
+    if (this.store.getRolloutTs() !== null) {
+      await this.store.setReviewState(agentId, "ready");
+      this.notifyReviewState(agentId);
+      // M6: the completed run finalizes its record via the ready transition.
+      void this.finalizeRunRecord(agentId, this.currentRunEpoch(agentId));
+    }
+  }
+
+  /** Fan the landed event out to every self-report listener; a listener
+   * failure never breaks the report. */
+  private dispatchSelfReportEvent(event: MissionControlEvent, agentId: string): void {
     for (const listener of this.selfReportListeners) {
       try {
         listener(event);
@@ -2131,7 +2838,6 @@ export class MissionControlService {
         this.logger.warn({ err: error, agentId }, "mission_control.self_report_listener_failed");
       }
     }
-    return { ok: true, event, identity };
   }
 
   /**
@@ -2244,6 +2950,35 @@ export class MissionControlService {
     }
   }
 
+  /**
+   * Spec 01 change 1 (wired by bootstrap): the manager notifies Mission
+   * Control directly on a clean running→idle transition — finishes no longer
+   * latch a "finished" attention, so this is the ONLY clean-finish signal.
+   * Emits the finished event and marks ready-for-review exactly once per run
+   * (deduped by run start). Excluded classes (the Commander, verifiers,
+   * untracked machinery) never emit lifecycle events.
+   */
+  handleAgentFinished(params: { agentId: string }): void {
+    const agent = this.agentManager.getAgent(params.agentId);
+    if (!agent || this.isExcludedAgent(agent)) {
+      return;
+    }
+    const runStartedAt = this.runStartedAtByAgent.get(agent.id);
+    const key = `${agent.id}:${runStartedAt ?? "unseen-run"}`;
+    if (this.cleanFinishedRuns.has(key)) {
+      return;
+    }
+    this.cleanFinishedRuns.add(key);
+    void this.emitEvent({
+      agentId: agent.id,
+      kind: "finished",
+      source: "system",
+      severity: "info",
+      headline: "Finished",
+    });
+    void this.markReadyForReview(agent.id);
+  }
+
   private handleAgentState(agent: ManagedAgent): void {
     if (agent.lifecycle !== "running") {
       // A run boundary (idle, closed, archived) invalidates any in-turn
@@ -2277,9 +3012,7 @@ export class MissionControlService {
         // kept past run end because stallTracking is torn down at the run
         // boundary BEFORE the finished-attention handler consults it.
         this.runStartedAtByAgent.set(agent.id, runStartedAt);
-        const lastStatusAt = this.lastStatusAtByAgent.get(agent.id) ?? runStartedAt;
-        this.lastStatusAtByAgent.set(agent.id, lastStatusAt);
-        this.armStallTracking(agent, runStartedAt, lastStatusAt);
+        this.armStallTracking(agent, runStartedAt);
         this.logger.info(
           { component: "turn-lifecycle", agentId: agent.id, provider: agent.provider },
           "agent.run.started",
@@ -2331,6 +3064,13 @@ export class MissionControlService {
         agentId: agent.id,
         lifecycle: agent.lifecycle,
       });
+      // F1: a USER-origin stop of this run (cancel with no follow-up) ends
+      // through the silent turn_canceled hop — no attention latch, no other
+      // card — so the board would fold only the 'started' event and lose the
+      // stoppedBy:'user' snapshot its 'Stopped by you' chip reads
+      // (lifecycle.ts resolveDoneReason). Emit the terminal interrupted card
+      // exactly once per run epoch.
+      this.emitUserStopInterruptedIfApplicable(agent);
     }
 
     if (agent.attention.requiresAttention) {
@@ -2620,20 +3360,11 @@ export class MissionControlService {
     }
     if (tracking) {
       if (!machineryRow) {
-        // Machinery-originated rows (the status-ask nudge's own timeline
+        // Machinery-originated rows (the status-ask steer's own timeline
         // placeholder) are the tracker's prompts, never agent activity: they
-        // must not reset the silence clock, count as a response to a nudge
-        // for escalation, or reset the backoff counters. Any other timeline
-        // activity resets the silence-trigger clock (and counts as a
-        // response to a nudge for escalation) but does NOT reset the
-        // cadence-trigger clock or the outstanding-nudge guard: only a
-        // report_status landing does that. A user prompt resets the nudge
-        // backoff counters.
+        // must not reset the dormant-turn silence clock. Any other timeline
+        // activity does.
         tracking.lastStreamAt = now;
-        if (event.type === "timeline" && event.item.type === "user_message") {
-          tracking.silenceNudges = 0;
-          tracking.statusNudges = 0;
-        }
         this.stalledByAgent.delete(agentId);
       }
     }
@@ -3038,81 +3769,44 @@ export class MissionControlService {
   }
 
   /**
-   * Stall v2 (two nudge triggers + recovery):
-   * - Eligibility: running agents only (stallTracking is deleted when a run
-   *   leaves "running"); user-stopped agents are never nudged or recovered.
-   * - Silence trigger: NO timeline output at all for silenceNudgeSeconds.
-   * - Cadence trigger: no report_status for statusNudgeSeconds even with
-   *   timeline flowing. Whichever fires first sends the SAME status-ask
-   *   steer (forceSend, no approval in either mode), recorded auto-sent,
-   *   verbose-only card. report_status resets both timers AND both backoff
-   *   counters; timeline resets only the silence timer.
-   * - Consecutive-lapse backoff: a trigger re-fires on the next lapse spaced
-   *   by its effective interval — unanswered nudges widen it (2x, 4x …,
-   *   capped at 30min) so a genuinely-silent run is nagged ever less often;
-   *   a landed report_status (compliance) returns both triggers to their
-   *   configured base interval. At most one nudge per sweep.
-   * - Escalation = recovery: if, >escalateSeconds after ANY nudge, the agent
-   *   produced NO response at all (no report_status AND no new timeline
-   *   rows), propose an interrupt that starts a fresh run. Approval-gated
-   *   normally (ask: Needs-you card; auto: sends; presence/user-stop force
-   *   ask). A stalled event is emitted either way.
+   * Stall sweep (spec 06): NO wall-clock status nudges — the silence (120s)
+   * and cadence (300s) status-ask steers are deleted, and with them the
+   * escalation path that hung off an unanswered nudge. The terminal-state
+   * guarantee (maybeApplyTerminalStatusGuarantee) is the ONLY automatic
+   * status-ask and fires at run-end transitions, never on a timer. What
+   * remains here is failure recovery, not status:
+   * - Dormant-turn detector: a running agent with NO timeline output for
+   *   > dormantTurnSeconds AND no tool call in flight has a wedged turn —
+   *   omp's loop failed to advance (live incident: agent 3a71c7bb sat 26
+   *   minutes with an unprocessed user message and NOTHING in flight). A
+   *   DECLARED tool call (an unmatched running tool_call row, e.g. a
+   *   30-minute `hub wait`) is WORKING and never flagged. A pending
+   *   permission is in-flight too (the agent is blocked on the user, not
+   *   wedged).
+   * - The dead-runtime watchdog lives in runWatchdog (unchanged).
+   * `stallDetectionEnabled` remains as the config master switch for this
+   * machinery; the status-ask path it used to gate no longer exists.
    */
   private sweepStalled(): void {
     if (this.inRestartGrace()) {
       return;
     }
     const now = Date.now();
-    const {
-      enabled,
-      silenceNudgeSeconds,
-      statusNudgeSeconds,
-      escalateSeconds,
-      dormantTurnSeconds,
-    } = this.readConfig().stall;
-    const escalateMs = escalateSeconds * 1000;
+    const { dormantTurnSeconds } = this.readConfig().stall;
     const dormantMs = dormantTurnSeconds * 1000;
     for (const [agentId, tracking] of this.stallTracking) {
       if (this.stalledByAgent.has(agentId)) {
         continue;
       }
-      // Healed runs are dead (record -> error); never nudged or escalated.
+      // Healed runs are dead (record -> error); never recovered again.
       if (tracking.healed) {
         continue;
       }
-      // User-stopped runs are Done; never ask or recover them.
+      // User-stopped runs are Done; never recover them.
       if (this.store.getStopOrigin(agentId) === "user") {
         continue;
       }
-      // With stall detection disabled (central stallDetectionEnabled false)
-      // the daemon never asks agents for status updates: no silence/status
-      // nudges and no escalation (nudgedAt stays null, so the escalate
-      // branch below is inert). The dormant-turn detector still runs below —
-      // a wedged loop is a harness bug, not a status-ask, and stays covered.
-      if (enabled) {
-        this.runStallNudgeAndEscalate(
-          agentId,
-          tracking,
-          now,
-          silenceNudgeSeconds,
-          statusNudgeSeconds,
-          escalateSeconds,
-          escalateMs,
-        );
-      }
-      // Dormant-turn detector (the hard stop): a running agent with NO
-      // timeline output for > dormantTurnSeconds AND no tool call in flight
-      // has a wedged turn — omp's loop failed to advance (live incident:
-      // agent 3a71c7bb sat 26 minutes with an unprocessed user message and
-      // NOTHING in flight — no request, no tool — because the loop never
-      // stepped after skipping a wait-tool). A DECLARED tool call (an
-      // unmatched running tool_call row, e.g. a 30-minute `hub wait`) is
-      // WORKING and never flagged: the distinguishing signal is "no
-      // unmatched in-flight tool call" (inFlightToolsByAgent empty). A
-      // pending permission is in-flight too (the agent is blocked on the
-      // user, not wedged).
       if (
-        tracking.escalatedAt === null &&
         tracking.dormantRecoveredAt === null &&
         (this.inFlightToolsByAgent.get(agentId)?.size ?? 0) === 0 &&
         !this.blockedByAgent.has(agentId) &&
@@ -3124,170 +3818,6 @@ export class MissionControlService {
     // Honest steer delivery: confirm out-of-band steers produced real agent
     // activity within the verification window.
     this.sweepSteerVerifications(now);
-  }
-
-  /**
-   * Decide and fire at most one nudge for a tracked agent (or none). Called
-   * once per sweep per agent. While a lapse is pending only the trigger that
-   * started it may re-nudge; a re-nudge fires only once its effective
-   * (backed-off) interval has elapsed since the last nudge — consecutive
-   * unanswered lapses widen (2x, 4x …, capped at 30min); compliance (a
-   * report_status clears the anchors + counters) returns to the base interval.
-   */
-  private runStallNudgeAndEscalate(
-    agentId: string,
-    tracking: StallTracking,
-    now: number,
-    silenceNudgeSeconds: number,
-    statusNudgeSeconds: number,
-    escalateSeconds: number,
-    escalateMs: number,
-  ): void {
-    // One nudge per sweep. While a lapse is pending (nudgedAt set) only the
-    // trigger that started it may re-nudge — consecutive UNANSWERED nudges
-    // of the same trigger widen its effective interval (2x, 4x … capped at
-    // 30min), so a genuinely-silent run is nudged ever less often; a landed
-    // report_status clears the anchors and resets the counters, so a
-    // compliant agent is nudged again at the configured base interval.
-    this.maybeFireNudge(agentId, tracking, now, silenceNudgeSeconds, statusNudgeSeconds);
-    const respondedAfterNudge =
-      tracking.nudgedAt !== null &&
-      (tracking.lastStatusAt > tracking.nudgedAt || tracking.lastStreamAt > tracking.nudgedAt);
-    // One recovery proposal per lapse, shared across mechanisms: the stall
-    // escalation and the dormant-turn detector each fire only while the
-    // OTHER has not already recovered this lapse (escalatedAt /
-    // dormantRecoveredAt — both cleared on a landed report_status and on
-    // run end). A wedged loop must never stack recovery cards.
-    if (
-      tracking.nudgedAt !== null &&
-      tracking.escalatedAt === null &&
-      tracking.dormantRecoveredAt === null &&
-      !respondedAfterNudge &&
-      now - tracking.nudgedAt >= escalateMs
-    ) {
-      this.escalateStall(agentId, tracking, escalateSeconds);
-    }
-  }
-
-  private maybeFireNudge(
-    agentId: string,
-    tracking: StallTracking,
-    now: number,
-    silenceNudgeSeconds: number,
-    statusNudgeSeconds: number,
-  ): void {
-    const silenceDue =
-      now - tracking.lastStreamAt >= nudgeBackoffMs(silenceNudgeSeconds, tracking.silenceNudges);
-    const statusDue =
-      now - tracking.lastStatusAt >= nudgeBackoffMs(statusNudgeSeconds, tracking.statusNudges);
-    const lapseOwner = tracking.nudgedAt === null ? null : tracking.lastNudgeTrigger;
-    const silenceEligible = lapseOwner === null || lapseOwner === "silence";
-    const statusEligible = lapseOwner === null || lapseOwner === "status";
-    if ((silenceDue && silenceEligible) || (statusDue && statusEligible)) {
-      const lastNudgeAge =
-        tracking.lastNudgeAt === null ? Number.POSITIVE_INFINITY : now - tracking.lastNudgeAt;
-      if (
-        silenceDue &&
-        silenceEligible &&
-        lastNudgeAge >= nudgeBackoffMs(silenceNudgeSeconds, tracking.silenceNudges)
-      ) {
-        this.fireStallNudge(agentId, tracking, silenceNudgeSeconds, "silence");
-      } else if (
-        statusDue &&
-        statusEligible &&
-        lastNudgeAge >= nudgeBackoffMs(statusNudgeSeconds, tracking.statusNudges)
-      ) {
-        this.fireStallNudge(agentId, tracking, statusNudgeSeconds, "status");
-      }
-    }
-  }
-
-  /** Status-ask steer, sent directly; recorded as an auto-sent proposal. */
-  private fireStallNudge(
-    agentId: string,
-    tracking: StallTracking,
-    nudgeSeconds: number,
-    trigger: "silence" | "status",
-  ): void {
-    tracking.lastNudgeAt = Date.now();
-    tracking.lastNudgeTrigger = trigger;
-    if (tracking.nudgedAt === null) {
-      // Escalation anchor: the FIRST nudge of the lapse. Re-nudges within the
-      // lapse (consecutive unanswered, widened spacing) do not restart the
-      // escalation window.
-      tracking.nudgedAt = Date.now();
-    }
-    if (trigger === "silence") {
-      tracking.silenceNudges += 1;
-    } else {
-      tracking.statusNudges += 1;
-    }
-    const reason =
-      trigger === "silence"
-        ? `No timeline output for >${nudgeSeconds}s mid-run`
-        : `No report_status for >${nudgeSeconds}s mid-run`;
-    this.logger.warn(
-      {
-        component: "stall",
-        agentId,
-        trigger,
-        triggerSeconds: nudgeSeconds,
-        nudgeCount: trigger === "silence" ? tracking.silenceNudges : tracking.statusNudges,
-      },
-      "Stall nudge sent (status-ask steer)",
-    );
-    void this.approvals
-      .createProposal({
-        origin: "stall",
-        serverId: this.serverId,
-        targetAgentId: agentId,
-        message:
-          "You've been quiet for a while. Post a one-line report_status summarizing where you are, then continue.",
-        deliveryMode: "steer",
-        reason,
-        classification: "normal",
-        forceSend: true,
-        // Nudges are machinery, not user-facing: the status-ask steer card
-        // renders in verbose mode only (spec "Stall detection v2 + watchdog"
-        // → "Nudges are machinery"). The audit trail (auto-sent proposal +
-        // log) is kept; the app hides the card in the normal feed.
-        verboseOnly: true,
-        // The steer records a machinery-classified row on the agent's own
-        // timeline (auditable; rendered as a muted one-line placeholder in
-        // verbose mode, never the raw nudge text).
-        timelineClassification: "machinery",
-      })
-      .catch((error: unknown) => {
-        this.logger.warn(
-          { err: error, component: "stall", agentId },
-          "Failed to create stall nudge proposal",
-        );
-      });
-  }
-
-  /**
-   * Recovery: the nudged agent gave no response at all for escalateSeconds.
-   * An interrupt starts a fresh run (also recovering a dead provider
-   * process); the stalled event is emitted regardless of gate outcome.
-   */
-  private escalateStall(agentId: string, tracking: StallTracking, escalateSeconds: number): void {
-    tracking.escalatedAt = Date.now();
-    const minutes = Math.round(escalateSeconds / 60);
-    void this.emitEvent({
-      agentId,
-      kind: "stalled",
-      source: "system",
-      severity: "attention",
-      headline: `Stalled (no response for ${minutes} min)`,
-    });
-    this.fireRecoveryProposal(
-      agentId,
-      `No response for >${escalateSeconds}s after the status-ask nudge`,
-    );
-    this.logger.warn(
-      { component: "stall", agentId, escalateSeconds },
-      "Stall escalated; recovery proposal created",
-    );
   }
 
   /**
@@ -3495,7 +4025,7 @@ export class MissionControlService {
         });
       }
       const tracking = this.stallTracking.get(agentId);
-      if (tracking && tracking.escalatedAt === null && tracking.dormantRecoveredAt === null) {
+      if (tracking && tracking.dormantRecoveredAt === null) {
         tracking.dormantRecoveredAt = now;
         void this.emitEvent({
           agentId,
@@ -3560,9 +4090,9 @@ export class MissionControlService {
         );
         continue;
       }
+      // Healed: the record flipped to error; the sweep skips healed runs and
+      // the dormant detector never double-cards this run.
       tracking.healed = true;
-      tracking.nudgedAt = now;
-      tracking.escalatedAt = now;
     }
     await this.reconcileRunningRecords(now);
   }
@@ -3659,13 +4189,6 @@ export class MissionControlService {
     this.runStartedAtByAgent.set(record.id, seededAt);
     this.stallTracking.set(record.id, {
       lastStreamAt: seededAt,
-      lastStatusAt: seededAt,
-      nudgedAt: null,
-      lastNudgeAt: null,
-      lastNudgeTrigger: null,
-      silenceNudges: 0,
-      statusNudges: 0,
-      escalatedAt: null,
       deadSince: null,
       healed: false,
       runStartedAt: seededAt,
@@ -3681,7 +4204,6 @@ export class MissionControlService {
       },
       "Boot adoption: adopted a surviving running run into stall tracking",
     );
-    this.lastStatusAtByAgent.set(record.id, seededAt);
   }
 
   /**
@@ -3725,11 +4247,13 @@ export class MissionControlService {
 
   private commanderAgentIdCache: string | null | undefined = undefined;
 
-  /** The Commander's agent id, cached for the sync classification path. */
+  /** The Commander's agent id, cached for the sync classification path.
+   * Fleet-wide: on a peer host this resolves the designated commander host's
+   * commander over peering (see resolveFleetCommanderAgentId). */
   private cachedCommanderAgentId(): string | null {
     if (this.commanderAgentIdCache === undefined) {
       this.commanderAgentIdCache = null;
-      void this.resolveCommanderAgentId()
+      void this.resolveFleetCommanderAgentId()
         .then((id) => {
           this.commanderAgentIdCache = id;
           return id;
@@ -3793,23 +4317,18 @@ export class MissionControlService {
 
   /**
    * Arm the stall machinery for a run start. Only stall-tracked classes
-   * (root agents, Commander workers) get nudges and the dormant-turn
-   * detector; verifiers and plain subagents have legitimate silence and must
-   * never be nudged or wedge-recovered by MC.
+   * (root agents, Commander workers) participate in the dormant-turn
+   * detector and dead-runtime watchdog; verifiers and plain subagents have
+   * legitimate silence and must never be wedge-recovered by MC. Spec 06:
+   * the status-ask nudges are gone — the terminal-state guarantee is the
+   * only status-ask and lives outside this tracker.
    */
-  private armStallTracking(agent: ManagedAgent, runStartedAt: number, lastStatusAt: number): void {
+  private armStallTracking(agent: ManagedAgent, runStartedAt: number): void {
     if (!this.isStallTracked(agent)) {
       return;
     }
     this.stallTracking.set(agent.id, {
       lastStreamAt: runStartedAt,
-      lastStatusAt,
-      nudgedAt: null,
-      lastNudgeAt: null,
-      lastNudgeTrigger: null,
-      silenceNudges: 0,
-      statusNudges: 0,
-      escalatedAt: null,
       deadSince: null,
       healed: false,
       runStartedAt,
@@ -3860,6 +4379,71 @@ export class MissionControlService {
   }
 
   /**
+   * F1: the terminal board card for a USER-origin stop of a running turn.
+   * A cancel produces a running→idle hop (turn_canceled) with no attention
+   * latch, so nothing else would emit — the board folds only the 'started'
+   * card and loses the stoppedBy:'user' snapshot its 'Stopped by you' chip
+   * reads (lifecycle.ts resolveDoneReason). Emits the interrupted event with
+   * the stop origin snapshotted (source system; the machinery-turn gate
+   * already excludes interrupted from chat, spec 07). Exactly once per run
+   * epoch — the shared dedupe also covers the turn_failed error-card path,
+   * whichever lands first.
+   */
+  private emitUserStopInterrupted(agentId: string): void {
+    const runStartedAt = this.runStartedAtByAgent.get(agentId);
+    const key = `${agentId}:${runStartedAt ?? "unseen-run"}`;
+    if (this.userStopTerminalEvents.has(key)) {
+      return;
+    }
+    this.userStopTerminalEvents.add(key);
+    this.logger.info(
+      { component: "turn-lifecycle", agentId, origin: "user" },
+      "agent.run.stopped_by_user",
+    );
+    void this.emitEvent({
+      agentId,
+      kind: "interrupted",
+      source: "system",
+      severity: "info",
+      headline: "Interrupted by you",
+    });
+  }
+
+  /**
+   * F1 gate, called from handleAgentState's run-end branch. Only the SILENT
+   * user stop qualifies: runs that ended with an attention latch keep their
+   * existing cards (a clean finish owns its story; an error run goes through
+   * classifyRunTerminal — interrupted only for the user-abort signature,
+   * failed otherwise), a USER replace (interrupt-and-send) stays silent (the
+   * superseded run's abort is machinery noise and the new run's own started
+   * card is the story), and machinery/system stops never match the user
+   * origin. The clean-finished guard keeps a run that genuinely finished
+   * (the clean running→idle latch fired before the stop landed) from also
+   * reading as user-stopped.
+   */
+  private emitUserStopInterruptedIfApplicable(agent: ManagedAgent): void {
+    if (this.store.getStopOrigin(agent.id) !== "user") {
+      return;
+    }
+    // Runs that ended with an attention latch keep their existing cards.
+    if (agent.attention.requiresAttention) {
+      const reason = agent.attention.attentionReason;
+      if (reason === "finished" || reason === "error") {
+        return;
+      }
+    }
+    if (agent.pendingReplacement === true || (agent.pendingReplacementOrigin ?? null) !== null) {
+      return;
+    }
+    const runStartedAt = this.runStartedAtByAgent.get(agent.id);
+    const finishedKey = `${agent.id}:${runStartedAt ?? "unseen-run"}`;
+    if (this.cleanFinishedRuns.has(finishedKey)) {
+      return;
+    }
+    this.emitUserStopInterrupted(agent.id);
+  }
+
+  /**
    * The feed card for a run that ended in an error state.
    */
   private emitRunTerminalErrorCard(
@@ -3872,6 +4456,16 @@ export class MissionControlService {
       return;
     }
     const interrupted = classification === "interrupted";
+    // F1: dedupe against the lifecycle-hop emission — a user stop whose abort
+    // also surfaces as turn_failed must still produce exactly one card.
+    if (interrupted) {
+      const runStartedAt = this.runStartedAtByAgent.get(agentId);
+      const key = `${agentId}:${runStartedAt ?? "unseen-run"}`;
+      if (this.userStopTerminalEvents.has(key)) {
+        return;
+      }
+      this.userStopTerminalEvents.add(key);
+    }
     void this.emitEvent({
       agentId,
       kind: interrupted ? "interrupted" : "failed",
@@ -3939,6 +4533,16 @@ export class MissionControlService {
   private async emitEvent(
     input: Omit<MissionControlAppendInput, "agentTitle">,
   ): Promise<MissionControlEvent> {
+    // Terminal-state guarantee (spec 06): a system-source run-end event for a
+    // silent run fires the one status-ask steer — or, when the steer's own
+    // run also produced nothing, applies the deterministic description
+    // fallback — BEFORE the identity snapshot resolves so the finished card
+    // carries the tier-3 description when it applies. Self-source terminal
+    // events (a completed report_status) are tier 1 by construction.
+    if (isTerminalEventKind(input.kind) && input.source !== "self") {
+      await this.maybeApplyTerminalStatusGuarantee(input.agentId);
+    }
+    const agentName = await this.resolveAgentName(input.agentId);
     const agentTitle = await this.resolveAgentTitle(input.agentId);
     const shortDescription =
       input.shortDescription ?? (await this.resolveAgentShortDescription(input.agentId));
@@ -3948,7 +4552,10 @@ export class MissionControlService {
     const event = await this.store.append({
       ...input,
       agentTitle,
-      ...(shortDescription ? { shortDescription } : {}),
+      ...(agentName ? { agentName } : {}),
+      ...(shortDescription
+        ? { shortDescription, agentDescription: input.agentDescription ?? shortDescription }
+        : {}),
       ...(stoppedBy ? { stoppedBy } : {}),
     });
     this.broadcast({
@@ -3958,11 +4565,13 @@ export class MissionControlService {
     // M6 run records: a run-end or verdict event finalizes the run's record.
     this.maybeAssembleRunRecordForEvent(event);
     // M3 runtime model: the feed keeps the event; the Commander no longer
-    // receives event streams as chat. Needs-you events (blocked /
-    // stalled-escalation / verdict-insufficient) trigger a machinery turn,
-    // and Commander-dispatched agents additionally trigger one on terminal
-    // events and verdicts (both modes) — the fresh world snapshot rides the
-    // same turn via the CommanderSnapshotInjector's beforeAgentRun seam.
+    // receives event streams as chat. Chat carries only decisions (spec 07):
+    // blocked/stalled events trigger a machinery turn only when they carry a
+    // decision card (pending proposal or clarification), verdict-insufficient
+    // keeps routing, and terminal events (finished / failed / interrupted)
+    // never wake the Commander — the board/feed rail carries the outcome. The
+    // fresh world snapshot rides the same turn via the
+    // CommanderSnapshotInjector's beforeAgentRun seam.
     this.maybeDispatchMachineryTurn(event);
     // M9 cross-host follow-through: when THIS daemon is NOT the commander
     // host, a terminal event for one of its commander-dispatched workers can
@@ -3977,26 +4586,30 @@ export class MissionControlService {
   // --- M3 machinery turns (docs/commander.md "Runtime model") ---
 
   /**
-   * Event kinds that qualify for a machinery turn, mode aside. Blocked
-   * (permission / verification-failed / tool-loop) and stalled (escalation,
-   * dormant-turn, steer-undelivered, self-heal) always qualify. For agents
-   * the Commander DISPATCHED (spawned via fleet_create_agent or adopted via
-   * a delivered fleet_send_prompt), terminal events (finished / failed /
-   * interrupted) and verdicts ALSO qualify — the dispatch → finish →
-   * follow-up loop closes only when the Commander hears the outcome, in ask
-   * and auto alike. Non-dispatched agents keep the narrow rules: verdict
-   * cards qualify only when the verdict does NOT resolve the item (ready /
-   * none) — a completion needs no routing. The mode gate lives in
-   * runMachineryTurnGate: ask mode dispatches only dispatched-agent events
-   * (any action the Commander takes becomes a gated proposal card, so the
-   * follow-up is safe), auto mode dispatches everything that qualifies.
+   * Event kinds that qualify for a machinery turn, mode aside. Chat carries
+   * only decisions (spec 07): blocked (permission / verification-failed /
+   * tool-loop) and stalled (escalation, dormant-turn, steer-undelivered,
+   * self-heal) qualify ONLY when the event carries a decision card — a
+   * pending proposal or a clarification; a plain blocked/stalled stays
+   * board+badge only. Verdict-insufficient (the verdict does NOT resolve the
+   * item — review state ready/none) keeps routing, and a verdict on a
+   * Commander-DISPATCHED agent (spawned via fleet_create_agent or adopted
+   * via a delivered fleet_send_prompt) still qualifies. Terminal events
+   * (finished / failed / interrupted) NEVER qualify — even for dispatched
+   * agents; the board/feed rail carries the outcome. started / milestone /
+   * finding never qualify. The mode gate lives in runMachineryTurnGate: ask
+   * mode dispatches only dispatched-agent events (any action the Commander
+   * takes becomes a gated proposal card, so the follow-up is safe), auto
+   * mode dispatches everything that qualifies.
    */
   private async shouldDispatchMachineryTurn(
     event: MissionControlEvent,
     labelsOverride?: Record<string, string> | null,
   ): Promise<boolean> {
     if (event.kind === "blocked" || event.kind === "stalled") {
-      return true;
+      // Board + badge only; chat only when the event carries a decision card
+      // (pending proposal or clarification).
+      return event.clarification !== undefined || event.proposal?.status === "pending";
     }
     if (event.kind === "verdict") {
       if (
@@ -4010,11 +4623,6 @@ export class MissionControlService {
       const review = this.store.getReviewState(event.agentId);
       return review?.reviewState === "ready" || review?.reviewState === "none";
     }
-    if (event.kind === "finished" || event.kind === "failed" || event.kind === "interrupted") {
-      return await this.isDispatchedByLabels(
-        labelsOverride ?? (await this.agentLabels(event.agentId)),
-      );
-    }
     return false;
   }
 
@@ -4024,13 +4632,13 @@ export class MissionControlService {
    * only Commander-dispatched-agent events (a machinery turn is safe there
    * because any action the Commander takes becomes a gated proposal card);
    * non-dispatched events stay AUTO-mode-only (noise control). Follow-up
-   * turns (terminal events + verdicts on dispatched agents) are rate-limited
-   * to one per agent per run epoch. The fresh world snapshot rides the same
-   * delivery automatically — the delivered message goes through
-   * startAgentRun, whose beforeAgentRun seam runs the CommanderSnapshot
-   * Injector first. Failures are logged, never surfaced: the event card
-   * already reached the feed, and the event is never re-queued (payloads are
-   * computed at delivery).
+   * turns (verdicts on dispatched agents) are rate-limited to one per agent
+   * per run epoch; decision-carrying blocked/stalled events never claim a
+   * slot. The fresh world snapshot rides the same delivery automatically —
+   * the delivered message goes through startAgentRun, whose beforeAgentRun
+   * seam runs the CommanderSnapshot Injector first. Failures are logged,
+   * never surfaced: the event card already reached the feed, and the event
+   * is never re-queued (payloads are computed at delivery).
    */
   private maybeDispatchMachineryTurn(
     event: MissionControlEvent,
@@ -4114,24 +4722,18 @@ export class MissionControlService {
   }
 
   /**
-   * One follow-up machinery turn per agent per run epoch: terminal events
-   * share one slot per epoch, verdicts another (a verifier retry posting a
-   * second insufficient verdict must not re-alert the Commander). Claims the
-   * slot before dispatch — one attempt per epoch, mirroring the run-record
-   * dedupe state. The classic needs-you triggers (blocked/stalled) keep their
-   * own guards and never claim a slot.
+   * One follow-up machinery turn per agent per run epoch for verdicts (a
+   * verifier retry posting a second insufficient verdict must not re-alert
+   * the Commander). Terminal events no longer qualify (spec 07) so they never
+   * reach the slot claim; decision-carrying blocked/stalled events keep their
+   * own guards and never claim a slot. Claims the slot before dispatch — one
+   * attempt per epoch, mirroring the run-record dedupe state.
    */
   private claimMachineryTurnSlot(event: MissionControlEvent): boolean {
-    if (
-      event.kind !== "finished" &&
-      event.kind !== "failed" &&
-      event.kind !== "interrupted" &&
-      event.kind !== "verdict"
-    ) {
+    if (event.kind !== "verdict") {
       return true;
     }
-    const namespace = event.kind === "verdict" ? "verdict" : "terminal";
-    const key = `${event.agentId}:${event.runEpoch ?? 0}:${namespace}`;
+    const key = `${event.agentId}:${event.runEpoch ?? 0}:verdict`;
     if (this.machineryTurnedRunEpochs.has(key)) {
       return false;
     }
@@ -4366,6 +4968,12 @@ export class MissionControlService {
       severity: "info",
       headline,
       detail: input.verdict.summary,
+      // Every card emitted here resolved the item's review state (done /
+      // cleared — the lifecycle only posts verdict cards on such
+      // transitions): the card is state-only, so the app skips it in normal
+      // (non-verbose) mode (spec 07). Verdict-insufficient cards (item stays
+      // needs-you) never come through this path and carry no flag.
+      stateOnly: true,
       // Verifier-origin drill-in: the card opens the verifier's thread
       // (verifiers stay hidden from board buckets but are reachable here).
       ...(input.verdict.verifierAgentId ? { verifierAgentId: input.verdict.verifierAgentId } : {}),
@@ -4381,17 +4989,63 @@ export class MissionControlService {
         this.logger.warn({ err: error, agentId }, "mission_control.review_state_listener_failed");
       }
     }
+    this.pushAgentStateAfterReviewChange(agentId);
   }
 
+  /**
+   * F2: a reviewState change re-buckets the agent (spec 01 precedence) but
+   * produces no agent lifecycle mutation, so connected clients would hold a
+   * stale bucket field (fetch_agents payload / board sections / sidebar
+   * badge) until the next fetch. Push a fresh agent state/upsert so the
+   * recomputed bucket lands immediately:
+   * - LIVE agents re-emit state through the manager (the same agent_state
+   *   broadcast path lifecycle changes use — every session's agent_update
+   *   subscription forwards it with the bucket re-attached at the wire).
+   * - CLOSED/STORED agents have no live state; the bootstrap-wired hook fans
+   *   the stored-record upsert equivalent out to every trusted session.
+   */
+  private pushAgentStateAfterReviewChange(agentId: string): void {
+    const agent = this.agentManager.getAgent(agentId);
+    if (agent) {
+      if (agent.internal) {
+        return;
+      }
+      try {
+        this.agentManager.notifyAgentState(agentId);
+      } catch (error) {
+        this.logger.warn({ err: error, agentId }, "mission_control.review_state_state_push_failed");
+      }
+      return;
+    }
+    try {
+      this.onReviewStateChanged?.(agentId);
+    } catch (error) {
+      this.logger.warn({ err: error, agentId }, "mission_control.review_state_stored_push_failed");
+    }
+  }
+
+  /**
+   * The event-card title (spec 06): the record's written-once WORK title
+   * first — the board's key line reads it; the fleet name stays the chip
+   * (resolveAgentName), never the card title.
+   */
   private async resolveAgentTitle(agentId: string): Promise<string> {
-    // Mission Control gives every agent a fleet-wide name; prefer it over the
-    // task-derived title so feed cards and digest entries read as identities.
+    const record = await this.agentStorage.get(agentId).catch(() => null);
+    if (record?.title) {
+      return record.title;
+    }
+    const live = this.agentManager.getAgent(agentId);
+    return live?.name ?? record?.name ?? agentId;
+  }
+
+  /** The fleet name snapshot for event cards (additive agentName field). */
+  private async resolveAgentName(agentId: string): Promise<string | undefined> {
     const live = this.agentManager.getAgent(agentId);
     if (live?.name) {
       return live.name;
     }
-    const record = await this.agentStorage.get(agentId);
-    return record?.name ?? record?.title ?? agentId;
+    const record = await this.agentStorage.get(agentId).catch(() => null);
+    return record?.name ?? undefined;
   }
 
   private async resolveAgentShortDescription(agentId: string): Promise<string | undefined> {
@@ -4488,7 +5142,7 @@ function mapReportStatus(input: MissionControlReportStatusInput): {
 }
 
 /**
- * A machinery-originated user row (the status-ask nudge's own timeline
+ * A machinery-originated user row (the status-ask steer's own timeline
  * placeholder) is the tracker's prompt, never agent activity. Used by the
  * stream handler for the silence clock, steer verification, and the dormant
  * detector's "no timeline output" signal alike.

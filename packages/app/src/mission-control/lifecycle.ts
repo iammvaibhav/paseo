@@ -4,11 +4,9 @@ import type { MissionControlEvent } from "@getpaseo/protocol/mission-control/typ
 /**
  * Mission Control board lifecycle (spec: "Lifecycle").
  *
- * Pure derivation from the agent directory + the aggregated mission-control
- * event feed. reviewState is folded from each agent's events oldest→newest:
- * a started run reopens the lifecycle, a finished run moves to ready-for-
- * review, and verdict cards mark done/cleared. All of this is kept pure so
- * the board, the sidebar badge, and the tests share one model.
+ * The board bucket comes from the daemon's canonical agent payload. The event
+ * feed is folded only for row metadata (verdict/status chips, recorded
+ * identity, and activity timestamps), never for bucket placement.
  */
 
 export type LifecycleBucket = "needs_you" | "running" | "ready" | "done" | "dormant";
@@ -22,6 +20,8 @@ export interface LifecycleVerdict {
   by: "verifier" | "user";
   summary: string;
   at: string;
+  /** Machine verdict emitted by the Ready aging sweep. */
+  reason?: "aged-out";
 }
 
 export interface AgentLifecycleState {
@@ -53,6 +53,7 @@ export interface AgentLifecycleState {
    * rows render live identity instead (they are current state, not history).
    */
   snapshotTitle: string | null;
+  snapshotName: string | null;
   snapshotShortDescription: string | null;
   /**
    * Stop origin snapshotted at the last run's terminal event (who cancelled
@@ -84,6 +85,7 @@ export const LIFECYCLE_BUCKET_LABELS: Record<LifecycleBucket, string> = {
 const VERIFIER_DONE_PREFIX = "Done — ";
 const MARKED_DONE_HEADLINE = "Marked done";
 const CLEARED_HEADLINE = "Cleared";
+const AGED_OUT_VERDICT = "aged-out";
 
 function eventTimeMs(event: MissionControlEvent): number {
   const ts = Date.parse(event.ts);
@@ -114,21 +116,27 @@ export function parseVerdictEvent(
     };
   }
   if (event.headline.startsWith(VERIFIER_DONE_PREFIX)) {
+    const summary = event.detail ?? event.headline.slice(VERIFIER_DONE_PREFIX.length);
     return {
       reviewState: "done",
       verdict: {
-        by: "verifier",
-        summary: event.detail ?? event.headline.slice(VERIFIER_DONE_PREFIX.length),
+        by: event.source === "verifier" ? "verifier" : "user",
+        summary,
         at: event.ts,
+        ...(summary.toLowerCase() === AGED_OUT_VERDICT ? { reason: AGED_OUT_VERDICT } : {}),
       },
     };
   }
+  const summary = event.detail ?? event.headline;
   return {
     reviewState: "done",
     verdict: {
       by: event.source === "verifier" ? "verifier" : "user",
-      summary: event.detail ?? event.headline,
+      summary,
       at: event.ts,
+      ...(summary.toLowerCase() === AGED_OUT_VERDICT || event.headline.toLowerCase() === "aged out"
+        ? { reason: AGED_OUT_VERDICT }
+        : {}),
     },
   };
 }
@@ -140,8 +148,20 @@ interface LifecycleFold {
   lastEventAt: number | null;
   pendingProposalCount: number;
   snapshotTitle: string | null;
+  snapshotName: string | null;
   snapshotShortDescription: string | null;
   snapshotStoppedBy: "user" | "machinery" | "system" | null;
+}
+
+type EventWithIdentitySnapshots = MissionControlEvent & {
+  /** Persisted by pre-triad event writers. */
+  snapshotTitle?: string;
+  agentName?: string;
+  agentDescription?: string;
+};
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 /** Fold one agent's events (ascending) into lifecycle bookkeeping. */
@@ -152,6 +172,7 @@ function foldLifecycleEvents(events: readonly MissionControlEvent[]): LifecycleF
   let lastEventAt: number | null = null;
   let pendingProposalCount = 0;
   let snapshotTitle: string | null = null;
+  let snapshotName: string | null = null;
   let snapshotShortDescription: string | null = null;
   let snapshotStoppedBy: "user" | "machinery" | "system" | null = null;
 
@@ -160,11 +181,24 @@ function foldLifecycleEvents(events: readonly MissionControlEvent[]): LifecycleF
     if (lastEventAt === null || tsMs > lastEventAt) {
       lastEventAt = tsMs;
     }
-    // Identity snapshots: every event carries the agent's emit-time title;
-    // shortDescription and stoppedBy are stamped when present. Newest wins.
-    snapshotTitle = event.agentTitle;
-    if (event.shortDescription !== undefined) {
-      snapshotShortDescription = event.shortDescription;
+    // Identity snapshots: new events stamp name/title/description separately.
+    // Old persisted events used snapshotTitle + shortDescription. Keep the last
+    // value carried for each field when a mixed-version feed is folded.
+    const identityEvent = event as EventWithIdentitySnapshots;
+    const eventTitle =
+      nonEmptyString(identityEvent.agentTitle) ?? nonEmptyString(identityEvent.snapshotTitle);
+    if (eventTitle !== null) {
+      snapshotTitle = eventTitle;
+    }
+    const eventName = nonEmptyString(identityEvent.agentName);
+    if (eventName !== null) {
+      snapshotName = eventName;
+    }
+    const eventDescription =
+      nonEmptyString(identityEvent.agentDescription) ??
+      nonEmptyString(identityEvent.shortDescription);
+    if (eventDescription !== null) {
+      snapshotShortDescription = eventDescription;
     }
     if (event.stoppedBy !== undefined) {
       snapshotStoppedBy = event.stoppedBy;
@@ -206,68 +240,42 @@ function foldLifecycleEvents(events: readonly MissionControlEvent[]): LifecycleF
     lastEventAt,
     pendingProposalCount,
     snapshotTitle,
+    snapshotName,
     snapshotShortDescription,
     snapshotStoppedBy,
   };
 }
 
-function deriveLifecycleBucket(input: {
-  agent: AggregatedAgent;
-  reviewState: LifecycleReviewState;
-  pendingProposalCount: number;
-  snapshotStoppedBy: "user" | "machinery" | "system" | null;
-  /** No MC events at all — history predates tracking or was excluded. */
-  hasEvents: boolean;
-}): { bucket: LifecycleBucket; doneReason: LifecycleDoneReason | null } {
-  const { agent, reviewState, pendingProposalCount, snapshotStoppedBy, hasEvents } = input;
-  const pendingPermission =
-    (agent.pendingPermissionCount ?? 0) > 0 || agent.attentionReason === "permission";
-  const failed = agent.status === "error" || agent.attentionReason === "error";
-  const running = agent.status === "running" || agent.status === "initializing";
-  // Recorded stop origin (who stopped the LAST run, per its terminal event) —
-  // never the live directory stoppedBy, which the daemon may rewrite later.
-  // Exception: an agent with NO events has no terminal event snapshot. The
-  // live directory stoppedBy (the MC store's stop origin at the wire
-  // boundary) is then the only record of who stopped the last run — without
-  // it, a user stop predating lifecycle tracking reads as Needs you forever.
-  const userStopped = snapshotStoppedBy === "user" || (!hasEvents && agent.stoppedBy === "user");
+/**
+ * Read the daemon-owned lifecycle decision from the aggregated agent payload.
+ * `idle` is the server spelling for the board's hidden-by-default Dormant row.
+ */
+export function selectCanonicalLifecycleBucket(agent: AggregatedAgent): LifecycleBucket {
+  switch (agent.bucket) {
+    case "needs_you":
+    case "running":
+    case "ready":
+    case "done":
+      return agent.bucket;
+    case "idle":
+      return "dormant";
+  }
+}
 
-  // Running outranks pending proposals: a live agent still belongs in
-  // Running even when Ask mode is holding a stall-recovery / verifier-spawn
-  // card. Pending permissions and failures still force Needs you — those
-  // need the user now. User-stopped remains excluded from Needs you.
-  if ((pendingPermission || failed) && !userStopped) {
-    return { bucket: "needs_you", doneReason: null };
-  }
-  if (running) {
-    // Reopen: any new run returns the agent to Running (spec "Lifecycle").
-    return { bucket: "running", doneReason: null };
-  }
-  if (pendingProposalCount > 0 && !userStopped) {
-    // Idle/finished agents with pending proposals (verifier spawn, commander
-    // send, meta) sit in Needs you until Approve/Deny.
-    return { bucket: "needs_you", doneReason: null };
-  }
-  if (userStopped && reviewState === "none") {
-    // User-stopped ≠ Needs you (spec "Lifecycle"): the user performed the
-    // stop, nothing needs them — Done with a "Stopped by you" marker. If the
-    // agent actually finished (reviewState "ready"), was marked done, or cleared,
-    // those terminal review states take precedence without the stopped chip.
-    return { bucket: "done", doneReason: "stopped-by-user" };
-  }
-  if (reviewState === "done") {
-    // reviewState outranks the agent's finished attention: the daemon does not
-    // clear requiresAttention on a verdict, so a done agent would otherwise
-    // keep reading as ready-for-review.
-    return { bucket: "done", doneReason: null };
-  }
-  if (reviewState === "ready") {
-    // Ready accrues only from server-recorded lifecycle (finished events /
-    // reportSelfStatus completed) — spec: pre-rollout idle agents are Dormant,
-    // never retroactively "Ready for review".
-    return { bucket: "ready", doneReason: null };
-  }
-  return { bucket: "dormant", doneReason: null };
+function resolveDoneReason(input: {
+  agent: AggregatedAgent;
+  bucket: LifecycleBucket;
+  reviewState: LifecycleReviewState;
+  snapshotStoppedBy: "user" | "machinery" | "system" | null;
+  hasEvents: boolean;
+}): LifecycleDoneReason | null {
+  const userStopped =
+    input.snapshotStoppedBy === "user" || (!input.hasEvents && input.agent.stoppedBy === "user");
+  return input.bucket === "done" &&
+    userStopped &&
+    (input.reviewState === "none" || input.reviewState === "cleared")
+    ? "stopped-by-user"
+    : null;
 }
 
 /**
@@ -292,25 +300,27 @@ export function deriveAgentLifecycle(input: {
   });
 
   const fold = foldLifecycleEvents(ordered);
-  const derived = deriveLifecycleBucket({
+  const bucket = selectCanonicalLifecycleBucket(agent);
+  const doneReason = resolveDoneReason({
     agent,
+    bucket,
     reviewState: fold.reviewState,
-    pendingProposalCount: fold.pendingProposalCount,
     snapshotStoppedBy: fold.snapshotStoppedBy,
     hasEvents: fold.lastEventAt !== null,
   });
 
   return {
-    bucket: derived.bucket,
+    bucket,
     reviewState: fold.reviewState,
     verdict: fold.verdict,
-    doneReason: derived.doneReason,
+    doneReason,
     lastReportHeadline: fold.lastReportHeadline,
     lastEventAt: fold.lastEventAt,
     pendingProposalCount: fold.pendingProposalCount,
-    dormant: derived.bucket === "dormant",
+    dormant: bucket === "dormant",
     withinWindow: agent.lastActivityAt.getTime() >= now - retentionMs,
     snapshotTitle: fold.snapshotTitle,
+    snapshotName: fold.snapshotName,
     snapshotShortDescription: fold.snapshotShortDescription,
     snapshotStoppedBy: fold.snapshotStoppedBy,
   };

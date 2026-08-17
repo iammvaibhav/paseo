@@ -75,7 +75,7 @@ import {
 import { invokeRewindCapability, type RewindMode } from "./rewind/rewind.js";
 import { isSystemInjectedEnvelope } from "./agent-prompt.js";
 import { stripInternalPaseoMcpServer, withRuntimePaseoMcpServer } from "./runtime-mcp-config.js";
-import { resolveCreateAgentTitles } from "./create-agent-title.js";
+import { deriveFallbackAgentTitle, resolveCreateAgentTitles } from "./create-agent-title.js";
 import type {
   PaseoToolCatalog,
   PaseoToolCatalogFactory,
@@ -304,6 +304,7 @@ export type AgentAttentionCallback = (params: {
   provider: AgentProvider;
   reason: "finished" | "error" | "permission";
 }) => void;
+export type AgentFinishedCallback = (params: { agentId: string; provider: AgentProvider }) => void;
 
 export type AgentArchivedCallback = (agentId: string) => Promise<void> | void;
 
@@ -351,6 +352,7 @@ export interface AgentManagerOptions {
   idFactory?: () => string;
   registry?: AgentStorage;
   onAgentAttention?: AgentAttentionCallback;
+  onAgentFinished?: AgentFinishedCallback;
   /**
    * Called once per brand-new agent (no stored record yet) at registration,
    * before the first snapshot persists. The daemon naming service uses it to
@@ -896,6 +898,7 @@ export class AgentManager {
   private missionControlSelfReportEnabled: boolean;
   private resolveCommanderLaunchContract: AgentManagerOptions["resolveCommanderLaunchContract"];
   private onAgentAttention?: AgentAttentionCallback;
+  private onAgentFinished?: AgentFinishedCallback;
   private onAgentArchived?: AgentArchivedCallback;
   private onAgentCreated?: AgentManagerOptions["onAgentCreated"];
   private onWorkspaceStateMayHaveChanged?: (params: { cwd: string }) => void;
@@ -944,6 +947,7 @@ export class AgentManager {
     this.registry = options?.registry;
     this.durableTimelineStore = options?.durableTimelineStore;
     this.onAgentAttention = options?.onAgentAttention;
+    this.onAgentFinished = options?.onAgentFinished;
     this.onAgentCreated = options?.onAgentCreated;
     this.onWorkspaceStateMayHaveChanged = options?.onWorkspaceStateMayHaveChanged;
     this.beforeAgentRunCallback = options?.beforeAgentRun;
@@ -998,6 +1002,9 @@ export class AgentManager {
 
   setAgentAttentionCallback(callback: AgentAttentionCallback): void {
     this.onAgentAttention = callback;
+  }
+  setAgentFinishedCallback(callback: AgentFinishedCallback): void {
+    this.onAgentFinished = callback;
   }
 
   setAgentArchivedCallback(callback: AgentArchivedCallback): void {
@@ -2505,11 +2512,26 @@ export class AgentManager {
   }
 
   async clearAgentAttention(agentId: string): Promise<void> {
-    const agent = this.requireAgent(agentId);
-    if (agent.attention.requiresAttention) {
-      agent.attention = { requiresAttention: false };
-      await this.persistSnapshot(agent);
-      this.emitState(agent, { persist: false });
+    const liveAgent = this.agents.get(agentId);
+    if (liveAgent) {
+      if (liveAgent.attention.requiresAttention) {
+        liveAgent.attention = { requiresAttention: false };
+        await this.persistSnapshot(liveAgent);
+        this.emitState(liveAgent, { persist: false });
+      }
+      return;
+    }
+    const registry = this.registry;
+    if (registry) {
+      const record = await registry.get(agentId);
+      if (record && record.requiresAttention) {
+        await registry.upsert({
+          ...record,
+          requiresAttention: false,
+          attentionReason: null,
+          attentionTimestamp: null,
+        });
+      }
     }
   }
 
@@ -4274,20 +4296,27 @@ export class AgentManager {
     );
   }
 
+  /**
+   * The title stamped on registration (spec 06): an existing record's title
+   * wins on resume/reload; otherwise explicit config title, then the
+   * caller's provisional title (first prompt line, fork seed, imported
+   * title), then a deterministic derived stub. NEVER null — the persisted
+   * record's title is written once and never nulled.
+   */
   private async resolveInitialPersistedTitle(
     agentId: string,
     config: AgentSessionConfig,
     fallbackTitle: string | null,
-  ): Promise<string | null> {
+  ): Promise<string> {
     const existing = await this.registry?.get(agentId);
-    if (existing) {
-      return existing.title ?? null;
+    if (existing?.title) {
+      return existing.title;
     }
     const explicitTitle =
       typeof config.title === "string" && config.title.trim().length > 0
         ? config.title.trim()
         : null;
-    return explicitTitle ?? fallbackTitle;
+    return explicitTitle ?? fallbackTitle ?? deriveFallbackAgentTitle();
   }
 
   private async persistSnapshot(
@@ -5087,6 +5116,13 @@ export class AgentManager {
   ): void {
     const hadPendingPermissions = agent.pendingPermissions.size > 0;
     agent.pendingPermissions.set(event.request.id, event.request);
+    // Permission requests latch record attention (spec 01 change 2); cleared
+    // when pending permissions drain in onStreamPermissionResolved.
+    agent.attention = {
+      requiresAttention: true,
+      attentionReason: "permission",
+      attentionTimestamp: new Date(),
+    };
     if (!hadPendingPermissions && !agent.internal) {
       this.broadcastAgentAttention(agent, "permission");
     }
@@ -5101,6 +5137,13 @@ export class AgentManager {
   }): void {
     const { agent, event, options, flags } = params;
     agent.pendingPermissions.delete(event.requestId);
+    if (
+      agent.pendingPermissions.size === 0 &&
+      agent.attention.requiresAttention &&
+      agent.attention.attentionReason === "permission"
+    ) {
+      agent.attention = { requiresAttention: false };
+    }
     if (!options?.fromHistory && agent.inFlightPermissionResponses.has(event.requestId)) {
       agent.bufferedPermissionResolutions.set(event.requestId, event);
       flags.shouldDispatchEvent = false;
@@ -5125,6 +5168,13 @@ export class AgentManager {
           resolution: { behavior: "deny", message },
         });
       }
+    }
+    if (
+      agent.pendingPermissions.size === 0 &&
+      agent.attention.requiresAttention &&
+      agent.attention.attentionReason === "permission"
+    ) {
+      agent.attention = { requiresAttention: false };
     }
   }
 
@@ -5348,20 +5398,21 @@ export class AgentManager {
 
     // Check if agent transitioned from running to idle (finished)
     if (previousStatus === "running" && currentStatus === "idle") {
-      // A canceled turn (user stop) must not latch "finished": the failure
+      // A canceled turn (user stop) must not trigger finish: the failure
       // event that follows owns the terminal story, and the board reads the
-      // latch to tell a finish from a stop. onStreamTurnCanceled registers
+      // stop origin to tell a finish from a stop. onStreamTurnCanceled registers
       // the id here so the canceled→idle hop stays silent.
       if (this.cancelAttentionSuppressed.has(agent.id)) {
         this.cancelAttentionSuppressed.delete(agent.id);
         return;
       }
-      agent.attention = {
-        requiresAttention: true,
-        attentionReason: "finished",
-        attentionTimestamp: new Date(),
-      };
-      this.broadcastAgentAttention(agent, "finished");
+      // Finish no longer latches requiresAttention (spec 01 change 1). Clean
+      // running→idle transitions notify Mission Control directly so the
+      // finished event and markReadyForReview fire without attention noise.
+      this.onAgentFinished?.({
+        agentId: agent.id,
+        provider: agent.provider,
+      });
       return;
     }
   }

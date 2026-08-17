@@ -82,6 +82,9 @@ PORT=8787 PASEO_WS_URL=ws://127.0.0.1:6767/ws \
 ```
 
 Optional env: `HOST`, `VOICE_NAME` (default Puck), `GEMINI_MODEL`,
+`GEMINI_THINKING_LEVEL` (`minimal`|`low`|`medium`|`high`; unset = the model's
+default, `minimal`), `GEMINI_VAD_START_SENSITIVITY`/`GEMINI_VAD_END_SENSITIVITY`
+(`HIGH`|`LOW`) and `GEMINI_VAD_SILENCE_MS` (VAD tuning),
 `VOICE_MODE` (default `relay`; `direct` declares the full Commander allowlist —
 the Mission Control central config overrides it when it publishes one),
 `UPDATE_BUFFER_CAP` (default 64), `TLS_KEY_PATH`/`TLS_CERT_PATH` (plain HTTP
@@ -89,6 +92,12 @@ is fine for dev; localhost is a secure context for the mic). `PORT` defaults
 to 8787, `HOST` to 0.0.0.0. TLS: when both `TLS_KEY_PATH` and `TLS_CERT_PATH`
 are set the node serves HTTPS + WSS; the browser page then connects over
 `wss://` automatically.
+
+The client init frame can override the session options per session:
+`{type:"init", systemInstruction?, voiceName?, thinkingLevel?, vad?}`
+(validated by `lib/session-options.js`; invalid fields are dropped). The app's
+voice panel exposes these as advanced controls while Mission Control verbose
+mode is on; they apply at the next session start.
 
 ## Service (commander host)
 

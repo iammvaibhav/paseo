@@ -1,51 +1,106 @@
 import { describe, expect, it } from "vitest";
 import {
   aggregateSidebarStateBuckets,
+  deriveSidebarLifecycleBucket,
   deriveSidebarStateBucket,
   type SidebarStateBucket,
 } from "./sidebar-agent-state";
 
-describe("deriveSidebarStateBucket", () => {
-  it("prioritizes pending permissions as needs_input", () => {
-    expect(
-      deriveSidebarStateBucket({
-        status: "idle",
-        pendingPermissionCount: 1,
-        requiresAttention: false,
-        attentionReason: null,
-      }),
-    ).toBe("needs_input");
+describe("deriveSidebarLifecycleBucket", () => {
+  it("prefers the daemon-owned canonical bucket when present", () => {
+    expect(deriveSidebarLifecycleBucket({ bucket: "ready", status: "running" })).toBe("ready");
   });
 
-  it("keeps legacy permission attention in needs_input", () => {
-    expect(
-      deriveSidebarStateBucket({
-        status: "idle",
-        pendingPermissionCount: 0,
-        requiresAttention: true,
-        attentionReason: "permission",
-      }),
-    ).toBe("needs_input");
+  it("maps a pending permission to needs_you", () => {
+    expect(deriveSidebarLifecycleBucket({ status: "idle", pendingPermissionCount: 1 })).toBe(
+      "needs_you",
+    );
   });
 
-  it("treats unread finished agents as attention", () => {
+  it("maps legacy permission attention to needs_you", () => {
+    expect(deriveSidebarLifecycleBucket({ status: "idle", attentionReason: "permission" })).toBe(
+      "needs_you",
+    );
+  });
+
+  it("maps an errored agent to needs_you even while running", () => {
+    expect(deriveSidebarLifecycleBucket({ status: "error", attentionReason: "error" })).toBe(
+      "needs_you",
+    );
+  });
+
+  it("keeps a running agent in running", () => {
+    expect(deriveSidebarLifecycleBucket({ status: "running" })).toBe("running");
+  });
+
+  it("counts initializing agents as running", () => {
+    expect(deriveSidebarLifecycleBucket({ status: "initializing" })).toBe("running");
+  });
+
+  it("maps a finished run to ready for review", () => {
+    expect(deriveSidebarLifecycleBucket({ status: "idle", attentionReason: "finished" })).toBe(
+      "ready",
+    );
+  });
+
+  it("maps a user-stopped agent to done", () => {
+    expect(deriveSidebarLifecycleBucket({ status: "idle", stoppedBy: "user" })).toBe("done");
+  });
+
+  it("maps a user-stopped finished agent to done, not ready", () => {
     expect(
-      deriveSidebarStateBucket({
+      deriveSidebarLifecycleBucket({
         status: "idle",
-        pendingPermissionCount: 0,
-        requiresAttention: true,
         attentionReason: "finished",
+        stoppedBy: "user",
       }),
-    ).toBe("attention");
+    ).toBe("done");
   });
 
-  it("does not count initializing agents as running", () => {
+  it("maps an idle agent with no run history to idle", () => {
+    expect(deriveSidebarLifecycleBucket({ status: "idle" })).toBe("idle");
+  });
+
+  it("ignores finished attention on an old daemon record without a user stop when running", () => {
+    // A finished attention latch on a restarted run: the run wins.
+    expect(deriveSidebarLifecycleBucket({ status: "running", attentionReason: "finished" })).toBe(
+      "running",
+    );
+  });
+});
+
+describe("deriveSidebarStateBucket", () => {
+  it("maps needs_you to the needs_input alert", () => {
+    expect(deriveSidebarStateBucket({ status: "idle", pendingPermissionCount: 1 })).toBe(
+      "needs_input",
+    );
+    expect(deriveSidebarStateBucket({ status: "error" })).toBe("needs_input");
+  });
+
+  it("maps running to running", () => {
+    expect(deriveSidebarStateBucket({ status: "running" })).toBe("running");
+  });
+
+  it("maps ready to the review attention dot", () => {
+    expect(deriveSidebarStateBucket({ status: "idle", attentionReason: "finished" })).toBe(
+      "attention",
+    );
+    expect(deriveSidebarStateBucket({ bucket: "ready", status: "idle" })).toBe("attention");
+  });
+
+  it("maps done and idle to done styling", () => {
+    expect(deriveSidebarStateBucket({ status: "idle", stoppedBy: "user" })).toBe("done");
+    expect(deriveSidebarStateBucket({ status: "idle" })).toBe("done");
+    expect(deriveSidebarStateBucket({ bucket: "done", status: "idle" })).toBe("done");
+    expect(deriveSidebarStateBucket({ bucket: "idle", status: "idle" })).toBe("done");
+  });
+
+  it("lets the daemon-owned bucket override payload fields", () => {
     expect(
       deriveSidebarStateBucket({
-        status: "initializing",
-        pendingPermissionCount: 0,
-        requiresAttention: false,
-        attentionReason: null,
+        bucket: "idle",
+        status: "running",
+        pendingPermissionCount: 1,
       }),
     ).toBe("done");
   });

@@ -26,6 +26,7 @@ export interface ResolvedMissionControlCentralConfig {
   evaluationScope: "commander" | "all";
   mode: "ask" | "auto";
   retentionDays: number;
+  readyAgeOutDays: number;
   namingTheme: string;
   hideAgentNames: boolean;
   defaultDispatchHost: string | null;
@@ -91,6 +92,7 @@ export const DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG: ResolvedMissionControlCentr
   mode: "ask",
   retentionDays: 30,
   namingTheme: "mixed",
+  readyAgeOutDays: 3,
   hideAgentNames: false,
   defaultDispatchHost: null,
   silenceNudgeSeconds: 120,
@@ -252,6 +254,7 @@ const CENTRAL_CONFIG_KEYS: readonly (keyof ResolvedMissionControlCentralConfig)[
   "mode",
   "retentionDays",
   "namingTheme",
+  "readyAgeOutDays",
   "hideAgentNames",
   "defaultDispatchHost",
   "silenceNudgeSeconds",
@@ -353,6 +356,7 @@ function resolveCentralConfig(
     mode: stored.mode ?? defaults.mode,
     retentionDays: stored.retentionDays ?? defaults.retentionDays,
     namingTheme: stored.namingTheme ?? defaults.namingTheme,
+    readyAgeOutDays: stored.readyAgeOutDays ?? defaults.readyAgeOutDays,
     silenceNudgeSeconds: stored.silenceNudgeSeconds ?? defaults.silenceNudgeSeconds,
     // Legacy fallback: pre-rename files carry status cadence as nudgeSeconds.
     statusNudgeSeconds:

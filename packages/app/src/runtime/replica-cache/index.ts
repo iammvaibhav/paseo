@@ -179,6 +179,7 @@ const StoredAgentSnapshotSchema = z.strictObject({
   requiresAttention: z.boolean().optional(),
   attentionReason: z.enum(["finished", "error", "permission"]).nullable().optional(),
   attentionTimestamp: IsoDateSchema.nullable().optional(),
+  bucket: z.enum(["needs_you", "running", "ready", "done", "idle"]).nullable().optional(),
   archivedAt: IsoDateSchema.nullable().optional(),
 });
 
@@ -525,6 +526,7 @@ function serializeAgent(agent: Agent): StoredAgent {
     attentionReason: agent.attentionReason ?? null,
     attentionTimestamp: agent.attentionTimestamp?.toISOString() ?? null,
     ...(agent.stoppedBy ? { stoppedBy: agent.stoppedBy } : {}),
+    ...(agent.bucket ? { bucket: agent.bucket } : {}),
     archivedAt: agent.archivedAt?.toISOString() ?? null,
   };
   return {
@@ -536,7 +538,10 @@ function serializeAgent(agent: Agent): StoredAgent {
 
 function deserializeAgent(serverId: string, stored: StoredAgent): Agent {
   return {
-    ...normalizeAgentSnapshot(stored.snapshot, serverId),
+    ...normalizeAgentSnapshot(
+      { ...stored.snapshot, bucket: stored.snapshot.bucket ?? undefined },
+      serverId,
+    ),
     lastActivityAt: new Date(stored.lastActivityAt),
     projectPlacement: stored.projectPlacement,
   };

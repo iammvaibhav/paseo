@@ -284,7 +284,7 @@ describe("buildLocalRecentAgents roster filter", () => {
       const ids = summaries.map((agent) => agent.agentId).sort();
       expect(ids).toEqual(["agent-review", "agent-running"]);
       expect(summaries.find((a) => a.agentId === "agent-running")?.status).toBe("running");
-      expect(summaries.find((a) => a.agentId === "agent-review")?.status).toBe("ready for review");
+      expect(summaries.find((a) => a.agentId === "agent-review")?.status).toBe("ready");
     } finally {
       vi.useRealTimers();
     }
@@ -347,7 +347,11 @@ describe("buildLocalRecentAgents roster filter", () => {
         live: [
           // "blocked" is not a stored status: needs-you comes from the live
           // attention flag (attention outranks the running lifecycle).
-          { id: "agent-blocked", lifecycle: "idle", attention: { requiresAttention: true } },
+          {
+            id: "agent-blocked",
+            lifecycle: "idle",
+            attention: { requiresAttention: true, attentionReason: "error" },
+          },
           { id: "agent-running", lifecycle: "running" },
         ],
         reviewStates: new Map<string, MissionControlReviewStateRecord>([
@@ -362,7 +366,7 @@ describe("buildLocalRecentAgents roster filter", () => {
       });
       const summaries = await buildLocalRecentAgents(deps);
       const byId = new Map(summaries.map((agent) => [agent.agentId, agent]));
-      expect(byId.get("agent-blocked")?.status).toBe("needs you");
+      expect(byId.get("agent-blocked")?.status).toBe("needs_you");
       expect(byId.get("agent-running")?.status).toBe("running");
       expect(byId.get("agent-done")?.status).toBe("done");
       expect(byId.get("agent-idle")?.status).toBe("idle");
@@ -380,12 +384,12 @@ describe("buildLocalRecentAgents roster filter", () => {
           {
             id: "agent-running",
             lifecycle: "running",
-            attention: { requiresAttention: true },
+            attention: { requiresAttention: true, attentionReason: "error" },
           },
         ],
       });
       const summaries = await buildLocalRecentAgents(deps);
-      expect(summaries.find((a) => a.agentId === "agent-running")?.status).toBe("needs you");
+      expect(summaries.find((a) => a.agentId === "agent-running")?.status).toBe("needs_you");
     } finally {
       vi.useRealTimers();
     }

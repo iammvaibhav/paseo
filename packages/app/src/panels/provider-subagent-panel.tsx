@@ -60,7 +60,7 @@ function useProviderSubagentDescriptor(
     statusBucket: descriptor
       ? deriveSidebarStateBucket({
           status: providerSubagentLifecycleStatus(descriptor.status),
-          requiresAttention: descriptor.status === "failed",
+          attentionReason: descriptor.status === "failed" ? "error" : null,
         })
       : null,
   };

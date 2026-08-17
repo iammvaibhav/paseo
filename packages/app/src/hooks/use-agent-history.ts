@@ -11,6 +11,7 @@ import type { AggregatedAgent } from "@/hooks/use-aggregated-agents";
 import { getHostRuntimeStore, isHostRuntimeConnected, useHosts } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
 import { buildAgentDirectoryState } from "@/utils/agent-directory-sync";
+import { deriveSidebarLifecycleBucket } from "@/utils/sidebar-agent-state";
 import { agentHistoryQueryKey, allAgentHistoryQueryKey } from "./agent-history-query-key";
 
 const AGENT_HISTORY_PAGE_LIMIT = 200;
@@ -144,6 +145,13 @@ export async function fetchAgentHistoryPage(input: {
       requiresAttention: agent.requiresAttention,
       attentionReason: agent.attentionReason,
       attentionTimestamp: agent.attentionTimestamp ?? null,
+      bucket: deriveSidebarLifecycleBucket({
+        bucket: agent.bucket,
+        status: agent.status,
+        pendingPermissionCount: agent.pendingPermissions.length,
+        attentionReason: agent.attentionReason,
+        stoppedBy: agent.stoppedBy,
+      }),
       archivedAt: agent.archivedAt ?? null,
       createdAt: agent.createdAt,
       labels: agent.labels,

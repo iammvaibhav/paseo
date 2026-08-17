@@ -263,9 +263,7 @@ const MAX_INACTIVE_PER_PROJECT = 5;
  * - Recently active (within grace period but not truly active) are limited to MAX_INACTIVE_PER_PROJECT
  */
 function isAgentTrulyActive(agent: AggregatedAgent): boolean {
-  return (
-    agent.status === "running" || agent.requiresAttention || (agent.pendingPermissionCount ?? 0) > 0
-  );
+  return agent.bucket === "needs_you" || agent.bucket === "running";
 }
 
 function partitionAgentsByActivity(

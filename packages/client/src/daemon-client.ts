@@ -668,6 +668,10 @@ type MissionControlInstructionsClosePayload = Extract<
   SessionOutboundMessage,
   { type: "mission_control.instructions.close.response" }
 >["payload"];
+type MissionControlInstructionsOpenPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.instructions.open.response" }
+>["payload"];
 type MissionControlMediaFetchPayload = Extract<
   SessionOutboundMessage,
   { type: "mission_control.media.fetch.response" }
@@ -6338,6 +6342,28 @@ export class DaemonClient {
         instructionId: options.instructionId,
       },
       responseType: "mission_control.instructions.close.response",
+    });
+  }
+
+  /**
+   * M8 instruction ledger (voice P0): open one ledger row per final voice
+   * utterance. The voice node calls this on each final transcription; the
+   * model cites the returned ids via respondsTo on cards and emit-time close
+   * closes the rows. One row per utterance, no intent splitting.
+   */
+  async missionControlInstructionsOpen(options: {
+    text: string;
+    source?: "chat" | "voice";
+    requestId?: string;
+  }): Promise<MissionControlInstructionsOpenPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "mission_control.instructions.open.request",
+        text: options.text,
+        ...(options.source ? { source: options.source } : {}),
+      },
+      responseType: "mission_control.instructions.open.response",
     });
   }
 

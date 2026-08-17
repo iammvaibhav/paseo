@@ -700,6 +700,7 @@ export interface PaseoDaemon {
   serviceProxy: ServiceProxySubsystem;
   scriptRuntimeStore: WorkspaceScriptRuntimeStore;
   browserToolsBroker: BrowserToolsBroker;
+  missionControlService?: MissionControlService;
   start(): Promise<void>;
   stop(): Promise<void>;
   getListenTarget(): ListenTarget | null;
@@ -1938,9 +1939,41 @@ export async function createPaseoDaemon(
         projectName: project ? resolveProjectDisplayName(project) : null,
       };
     },
+    // F2: a reviewState change (verdict / mark-done / clear / reopen /
+    // aged-out sweep / completed report) re-buckets the agent but produces
+    // no lifecycle mutation. Live agents re-emit state inside the service
+    // (agent_state → every session's agent_update subscription); a
+    // CLOSED/STORED agent has no live state, so fan the stored-record
+    // upsert out to every trusted session here — the same external-mutation
+    // path meta-actions use, with the recomputed bucket attached at the
+    // session's wire boundary (enrichStoredPayload).
+    onReviewStateChanged: (agentId) => {
+      void (async () => {
+        const record = await agentStorage.get(agentId).catch(() => null);
+        if (!record) {
+          return;
+        }
+        await Promise.all(
+          (wsServer?.listTrustedSessions() ?? []).map((session) =>
+            session.emitAgentUpdateForExternalMutation(record),
+          ),
+        );
+      })().catch((error) => {
+        logger.warn({ err: error, agentId }, "mission_control.review_state_stored_push_failed");
+      });
+    },
   });
   await missionControlService.start();
   logger.info({ elapsed: elapsed() }, "Mission control service initialized");
+
+  // Spec 01 change 1: clean running→idle transitions notify Mission Control
+  // directly — finishes no longer latch a "finished" attention, so this
+  // setter is the ONLY clean-finish signal. The manager is constructed
+  // before the service; the setter is safe to call any time after both exist
+  // (the service dedupes per run and excludes untracked classes itself).
+  agentManager.setAgentFinishedCallback(({ agentId }) => {
+    missionControlService.handleAgentFinished({ agentId });
+  });
 
   // Boot-ensure the fleet Commander (spec: daemon boot creates it when this
   // host is the designated commander host and none exists). Fire-and-forget:
@@ -2532,6 +2565,7 @@ export async function createPaseoDaemon(
     serviceProxy,
     scriptRuntimeStore,
     browserToolsBroker,
+    missionControlService,
     start,
     stop,
     getListenTarget: () => boundListenTarget,

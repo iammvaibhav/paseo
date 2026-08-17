@@ -868,12 +868,9 @@ describe("MissionControlApprovals ask-mode gating per action class", () => {
     }
   });
 
-  test("a failed spawn surfaces its error and never writes a sent record", async () => {
-    // Regression: the live "Approve does nothing" bug. The respond RPC
-    // returned ok:true while the spawn executor failed, so the app showed
-    // nothing. The approve must now return ok:false with the executor error so
-    // the app can surface it (toast), and the store must never claim the
-    // spawn applied ("sent") for a spawn that did not run.
+  test("a failed spawn surfaces its error and marks the proposal failed", async () => {
+    // Spec 01 change 5: approve-failure marks the proposal failed (terminal,
+    // additive status alongside expired), never leaves pending.
     const spawn = vi.fn(async () => ({ ok: false as const, error: "fleet spawn failed: boom" }));
     const harness = await build({ mode: "ask", spawn });
     try {
@@ -896,24 +893,16 @@ describe("MissionControlApprovals ask-mode gating per action class", () => {
       });
       expect(result).toEqual({ ok: false, error: "fleet spawn failed: boom" });
       expect(spawn).toHaveBeenCalledTimes(1);
-      // No "sent" record: the pending record survives so the card keeps its
-      // Approve affordance for a retry, but the failure is no longer silent.
-      expect(harness.approvals.getProposal(proposal.id)?.status).toBe("pending");
-      expect(harness.published.map((p) => p.status)).toEqual(["pending"]);
+      // Terminal failure: proposal status is marked failed.
+      expect(harness.approvals.getProposal(proposal.id)?.status).toBe("failed");
+      expect(harness.published.map((p) => p.status)).toEqual(["pending", "failed"]);
     } finally {
       await teardown(harness);
     }
   });
 
-  test("a failed spawn stays pending and a retry re-attempts the spawn (visible errors, no lie)", async () => {
-    // The click-loop half of the regression: the failure used to be silent
-    // (ok:true, nothing visible). Now each attempt surfaces the error to the
-    // caller while the card stays pending; once the executor succeeds the
-    // proposal records sent + spawnedAgentId.
-    const spawn = vi
-      .fn()
-      .mockResolvedValueOnce({ ok: false as const, error: "boom" })
-      .mockResolvedValueOnce({ ok: true as const, agentId: "spawned-42", serverId: "server-exec" });
+  test("a failed proposal is terminal and cannot be re-approved", async () => {
+    const spawn = vi.fn().mockResolvedValueOnce({ ok: false as const, error: "boom" });
     const harness = await build({ mode: "ask", spawn });
     try {
       const proposal = await harness.approvals.createProposal({
@@ -933,17 +922,14 @@ describe("MissionControlApprovals ask-mode gating per action class", () => {
         action: "approve",
       });
       expect(first).toEqual({ ok: false, error: "boom" });
-      expect(harness.approvals.getProposal(proposal.id)?.status).toBe("pending");
+      expect(harness.approvals.getProposal(proposal.id)?.status).toBe("failed");
 
       const second = await harness.approvals.resolveProposal({
         proposalId: proposal.id,
         action: "approve",
       });
-      expect(second).toEqual({ ok: true });
-      expect(spawn).toHaveBeenCalledTimes(2);
-      expect(harness.approvals.getProposal(proposal.id)?.status).toBe("sent");
-      expect(harness.approvals.getProposal(proposal.id)?.spawnedAgentId).toBe("spawned-42");
-      expect(harness.approvals.getProposal(proposal.id)?.spawnedOnServerId).toBe("server-exec");
+      expect(second).toEqual({ ok: false, error: "Proposal already failed" });
+      expect(spawn).toHaveBeenCalledTimes(1);
     } finally {
       await teardown(harness);
     }
@@ -968,7 +954,7 @@ describe("MissionControlApprovals ask-mode gating per action class", () => {
         action: "approve",
       });
       expect(result).toEqual({ ok: false, error: "Spawn executor is not available" });
-      expect(harness.approvals.getProposal(proposal.id)?.status).toBe("pending");
+      expect(harness.approvals.getProposal(proposal.id)?.status).toBe("failed");
     } finally {
       await teardown(harness);
     }

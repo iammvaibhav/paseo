@@ -23,6 +23,7 @@ function makeRow(bucket: LifecycleRow["bucket"]): LifecycleRow {
     dormant: bucket === "dormant",
     withinWindow: true,
     snapshotTitle: null,
+    snapshotName: null,
     snapshotShortDescription: null,
     snapshotStoppedBy: null,
     sortTime: 0,

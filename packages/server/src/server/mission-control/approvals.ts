@@ -408,7 +408,15 @@ export class MissionControlApprovals {
       // The send result carries execution failures (spawn/meta/delivery) back
       // to the RPC caller so the app can surface them — a failed spawn must
       // never read as a successful approve.
-      return this.send(updated);
+      const sendResult = await this.send(updated);
+      if (!sendResult.ok) {
+        // Spec 01 change 5: approve-failure marks the proposal failed (terminal,
+        // additive status alongside expired), never leaves pending.
+        const failed: MissionControlProposal = { ...proposal, status: "failed" };
+        await this.store.putProposal(failed);
+        await this.publish(failed);
+      }
+      return sendResult;
     }
     const updated: MissionControlProposal = { ...proposal, status: "denied" };
     await this.store.putProposal(updated);
@@ -649,11 +657,9 @@ export class MissionControlApprovals {
         );
         return { ok: false, error: error instanceof Error ? error.message : String(error) };
       }
-      // Delivery failed: the proposal returns to pending so the card keeps its
-      // Approve affordance and the user can retry — never record "sent" for a
-      // message that did not reach the agent. The failure still surfaces to
-      // the caller so the app can explain why the approve did not deliver.
-      proposal.status = "pending";
+      // Spec 01 change 5: approve-failure marks the proposal failed (terminal,
+      // additive status alongside expired), never leaves pending.
+      proposal.status = "failed";
       await this.store.putProposal(proposal);
       await this.publish(proposal);
       this.logger.error(

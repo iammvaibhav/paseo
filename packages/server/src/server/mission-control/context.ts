@@ -1,3 +1,4 @@
+import { deriveLifecycleBucket, type LifecycleBucket } from "@getpaseo/protocol/agent-state-bucket";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -78,6 +79,10 @@ export interface LocalRecentAgentsInput {
    * Lazy mission-control events, for each agent's last self-reported headline.
    * Absent → roster lines omit the headline.
    */
+  /** Lazy stop-origin lookup. */
+  getStopOrigin?: (agentId: string) => "user" | "machinery" | "system" | null;
+  /** Lazy pending-proposal count lookup. */
+  getPendingProposalCount?: (agentId: string) => number;
   getReportEvents?: () => MissionControlEvent[] | null;
 }
 
@@ -194,6 +199,8 @@ export async function buildLocalRecentAgents(
       reviewStates?.get(record.id)?.reviewState,
       headlineByAgent.get(record.id),
       input.serverId,
+      input.getStopOrigin?.(record.id) ?? null,
+      input.getPendingProposalCount?.(record.id) ?? 0,
     );
     if (summary) {
       summaries.push(summary);
@@ -229,10 +236,21 @@ function collectLatestSelfReports(
 /** One roster row for an agent active in the window, bucketed by lifecycle, else null. */
 function summarizeRecentAgent(
   record: StoredAgentRecord,
-  live: { lifecycle: string; attention?: { requiresAttention?: boolean } } | undefined,
+  live:
+    | {
+        lifecycle: string;
+        attention?: {
+          requiresAttention?: boolean;
+          attentionReason?: "finished" | "error" | "permission" | null;
+        };
+        pendingPermissions?: { size: number };
+      }
+    | undefined,
   reviewState: MissionControlReviewStateValue | undefined,
   report: { headline: string; at: string } | undefined,
   serverId: string,
+  stopOrigin: "user" | "machinery" | "system" | null = null,
+  pendingProposalCount = 0,
 ): MissionControlContextAgentSummary | null {
   // The roster age is real user-visible activity: the latest self-report when
   // there is one, else the last user message. Never record.updatedAt — boot,
@@ -241,7 +259,7 @@ function summarizeRecentAgent(
   // timestamps). With neither a report nor a user message, the age is omitted
   // from the roster line rather than showing a boot-stamped one.
   const lastActivityAt = report ? report.at : record.lastUserMessageAt;
-  const running = live?.lifecycle === "running";
+  const running = live?.lifecycle === "running" || live?.lifecycle === "initializing";
   if (!running && lastActivityAt) {
     const parsed = Date.parse(lastActivityAt);
     if (!Number.isNaN(parsed) && Date.now() - parsed > ROSTER_ACTIVITY_WINDOW_MS) {
@@ -251,7 +269,7 @@ function summarizeRecentAgent(
     // No real-activity signal at all: not active, not in the snapshot.
     return null;
   }
-  const status = lifecycleBucket(record, live, reviewState);
+  const status = lifecycleBucket(record, live, reviewState, stopOrigin, pendingProposalCount);
   return {
     agentId: record.id,
     hostServerId: serverId,
@@ -265,30 +283,40 @@ function summarizeRecentAgent(
 }
 
 /**
- * The snapshot's lifecycle bucket for an agent: needs-you (blocked/failed/
- * awaiting input — a live attention flag or a failed/blocked last status),
- * running, ready for review, done, or idle. Bucket precedence: needs-you first
- * (attention outranks the running lifecycle, matching the board's Needs-you
- * bucket), then running, then ready, then done, then idle.
+ * The snapshot's canonical lifecycle bucket for an agent (spec 01).
+ * Computed via the protocol's canonical deriveLifecycleBucket function.
  */
 function lifecycleBucket(
   record: StoredAgentRecord,
-  live: { lifecycle: string; attention?: { requiresAttention?: boolean } } | undefined,
+  live:
+    | {
+        lifecycle: string;
+        attention?: {
+          requiresAttention?: boolean;
+          attentionReason?: "finished" | "error" | "permission" | null;
+        };
+        pendingPermissions?: { size: number };
+      }
+    | undefined,
   reviewState: MissionControlReviewStateValue | undefined,
-): string {
-  if (live?.attention?.requiresAttention === true || record.lastStatus === "error") {
-    return "needs you";
-  }
-  if (live?.lifecycle === "running") {
-    return "running";
-  }
-  if (reviewState === "ready") {
-    return "ready for review";
-  }
-  if (reviewState === "done") {
-    return "done";
-  }
-  return "idle";
+  stopOrigin: "user" | "machinery" | "system" | null = null,
+  pendingProposalCount = 0,
+): LifecycleBucket {
+  const pendingPermissionCount = live?.pendingPermissions?.size ?? 0;
+  const attentionReason = live?.attention?.requiresAttention
+    ? (live.attention.attentionReason ?? null)
+    : null;
+  const lastStatus = live ? live.lifecycle : (record.lastStatus ?? null);
+  const running = live ? live.lifecycle === "running" || live.lifecycle === "initializing" : false;
+  return deriveLifecycleBucket({
+    pendingPermissionCount,
+    pendingProposalCount,
+    attentionReason,
+    lastStatus,
+    running,
+    reviewState: reviewState ?? "none",
+    stopOrigin,
+  });
 }
 
 export async function buildLocalContextPayload(
@@ -358,6 +386,10 @@ export interface FleetContextDependencies {
    */
   getReviewStates?: () => ReadonlyMap<string, MissionControlReviewStateRecord> | null;
   /** Lazy mission-control events, for each agent's last self-reported headline. */
+  /** Lazy stop-origin lookup. */
+  getStopOrigin?: (agentId: string) => "user" | "machinery" | "system" | null;
+  /** Lazy pending-proposal count lookup. */
+  getPendingProposalCount?: (agentId: string) => number;
   getReportEvents?: () => MissionControlEvent[] | null;
   serverId: string;
   hostName: string;
@@ -767,6 +799,12 @@ function firstInvocableModel(models: MissionControlModels): string | null {
   return null;
 }
 
+/** Roster status labels for the world snapshot (spec 01 bucket wording). */
+const ROSTER_STATUS_LABELS: Record<string, string> = {
+  needs_you: "needs you",
+  ready: "ready for review",
+};
+
 function buildRosterSection(context: FleetContextData): string {
   const entries: Array<{ line: string; at: number }> = [];
   for (const host of context.hosts) {
@@ -777,7 +815,8 @@ function buildRosterSection(context: FleetContextData): string {
         ? `${identity || agent.agentId}: "${headline}"`
         : identity || agent.agentId;
       const age = agent.lastActivityAt ? formatAge(agent.lastActivityAt) : null;
-      const status = agent.status ?? "idle";
+      const rawStatus = agent.status ?? "idle";
+      const status = ROSTER_STATUS_LABELS[rawStatus] ?? rawStatus;
       const atMs = agent.lastActivityAt ? Date.parse(agent.lastActivityAt) : NaN;
       entries.push({
         line: `- ${detail} — ${status}${age ? `, ${age} ago` : ""} — ${hostLabel(host)} (paseo://h/${agent.hostServerId}/agent/${agent.agentId})`,

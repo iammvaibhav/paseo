@@ -1117,6 +1117,12 @@ export class Session {
       emit: (message) => this.emit(message),
       enrichAgentPayload: (payload) => this.enrichAgentPayload(payload),
       buildStoredAgentPayload: (record) => this.buildStoredAgentPayload(record),
+      // F2: stored-record upserts ride the same wire enrichment as live
+      // pushes so a mission-control lifecycle change re-stamps the bucket on
+      // closed agents too (the fetch_agents snapshot attaches it; the stored
+      // push must not lag it). Enrichment failures fall back to the built
+      // payload inside the service.
+      enrichStoredPayload: (payload) => this.enrichAgentPayload(payload),
       isProviderVisibleToClient: (provider) => this.isProviderVisibleToClient(provider),
       buildProjectPlacementForWorkspaceId: (workspaceId) =>
         this.buildProjectPlacementForWorkspaceId(workspaceId),
@@ -1945,7 +1951,22 @@ export class Session {
     payload.title = storedRecord?.title ?? null;
     payload.archivedAt = storedRecord?.archivedAt ?? null;
     this.attachStopOrigin(payload);
+    await this.attachLifecycleBucket(payload);
     return payload;
+  }
+
+  private async attachLifecycleBucket(payload: AgentSnapshotPayload): Promise<void> {
+    if (!this.missionControlService) {
+      return;
+    }
+    try {
+      const bucket = await this.missionControlService.getLifecycleBucket(payload.id);
+      if (bucket) {
+        payload.bucket = bucket;
+      }
+    } catch {
+      // Degrade gracefully
+    }
   }
 
   /**
@@ -2264,6 +2285,8 @@ export class Session {
         return this.handleMissionControlInstructionsListRequest(msg);
       case "mission_control.instructions.close.request":
         return this.handleMissionControlInstructionsCloseRequest(msg);
+      case "mission_control.instructions.open.request":
+        return this.handleMissionControlInstructionsOpenRequest(msg);
       default:
         return undefined;
     }
@@ -2282,6 +2305,32 @@ export class Session {
       payload: {
         requestId: msg.requestId,
         instructions: this.missionControlService?.listInstructions() ?? [],
+      },
+    });
+  }
+
+  /**
+   * M8 instruction ledger (voice P0): open one ledger row per final voice
+   * utterance. The voice node calls this on each final transcription; the
+   * model cites the returned id via respondsTo on cards and emit-time close
+   * closes the row. One row per utterance — the daemon does not attempt
+   * intent splitting. Rows surface to the Commander only when a dispatch
+   * delivers them (deliverCommanderInstruction opens its own row there).
+   */
+  private async handleMissionControlInstructionsOpenRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.instructions.open.request" }>,
+  ): Promise<void> {
+    const instructions = this.missionControlService
+      ? [this.missionControlService.openInstruction({ text: msg.text, source: msg.source })]
+      : [];
+    this.emit({
+      type: "mission_control.instructions.open.response",
+      payload: {
+        requestId: msg.requestId,
+        instructions: instructions.map((instruction) => ({
+          id: instruction.id,
+          text: instruction.text,
+        })),
       },
     });
   }
@@ -2848,7 +2897,12 @@ export class Session {
         });
         return;
       }
-      const result = await catalog.executeTool(msg.name, msg.args ?? {});
+      const result = await catalog.executeTool(msg.name, msg.args ?? {}, {
+        // Session-scoped tools (fleet_monitor) key subscriptions on the
+        // daemon session id — the voice node's connection, stable per voice
+        // node process.
+        sessionKey: this.sessionId,
+      });
       const structuredContent = asPlainRecord(result.structuredContent)
         ? result.structuredContent
         : undefined;
@@ -5803,18 +5857,23 @@ export class Session {
     const registryRecords = await this.agentStorage.list();
     const liveIds = new Set(agentSnapshots.map((a) => a.id));
     const registeredProviderIds = new Set(this.agentManager.getRegisteredProviderIds());
-    const persistedAgents = registryRecords
-      .filter((record) => !liveIds.has(record.id) && !record.internal)
-      // Keep raw-record filters ahead of projection; seeded homes can carry thousands of archived agents.
-      .filter((record) => includeArchived || !record.archivedAt)
-      .filter((record) => labelEntries.every(([key, value]) => record.labels?.[key] === value))
-      .filter(
-        (record) =>
-          filter?.includeUnavailablePersisted === true ||
-          isStoredAgentProviderAvailable(record, registeredProviderIds),
-      )
-      .map((record) => this.buildStoredAgentPayload(record, registeredProviderIds));
-
+    const persistedAgents = await Promise.all(
+      registryRecords
+        .filter((record) => !liveIds.has(record.id) && !record.internal)
+        // Keep raw-record filters ahead of projection; seeded homes can carry thousands of archived agents.
+        .filter((record) => includeArchived || !record.archivedAt)
+        .filter((record) => labelEntries.every(([key, value]) => record.labels?.[key] === value))
+        .filter(
+          (record) =>
+            filter?.includeUnavailablePersisted === true ||
+            isStoredAgentProviderAvailable(record, registeredProviderIds),
+        )
+        .map(async (record) => {
+          const payload = this.buildStoredAgentPayload(record, registeredProviderIds);
+          await this.attachLifecycleBucket(payload);
+          return payload;
+        }),
+    );
     let agents = [...liveAgents, ...persistedAgents];
 
     agents = agents.filter((agent) => this.isProviderVisibleToClient(agent.provider));

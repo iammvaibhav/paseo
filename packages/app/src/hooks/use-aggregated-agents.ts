@@ -5,12 +5,16 @@ import { isCommanderOrMachineryLabels } from "@getpaseo/protocol/mission-control
 import { useSessionStore } from "@/stores/session-store";
 import type { AgentDirectoryEntry } from "@/types/agent-directory";
 import type { Agent } from "@/stores/session-store";
+import type { LifecycleBucket } from "@getpaseo/protocol/agent-state-bucket";
 import { useMissionControlVerbose } from "@/mission-control/use-mission-control-verbose";
+import { deriveSidebarLifecycleBucket } from "@/utils/sidebar-agent-state";
 import { getHostRuntimeStore, useHosts } from "@/runtime/host-runtime";
 
 export interface AggregatedAgent extends AgentDirectoryEntry {
   serverId: string;
   serverLabel: string;
+  /** Canonical lifecycle bucket; payload field or old-daemon fallback. */
+  bucket: LifecycleBucket;
 }
 
 export interface AggregatedAgentsResult {
@@ -40,6 +44,13 @@ function toAggregatedAgent(agent: Agent, serverId: string, serverLabel: string):
     attentionReason: agent.attentionReason,
     attentionTimestamp: agent.attentionTimestamp,
     stoppedBy: agent.stoppedBy ?? null,
+    bucket: deriveSidebarLifecycleBucket({
+      bucket: agent.bucket,
+      status: agent.status,
+      pendingPermissionCount: agent.pendingPermissions.length,
+      attentionReason: agent.attentionReason,
+      stoppedBy: agent.stoppedBy,
+    }),
     archivedAt: agent.archivedAt,
     createdAt: agent.createdAt,
     labels: agent.labels,

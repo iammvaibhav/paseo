@@ -57,10 +57,11 @@ export function buildSidebarWorkspaceAgents(
       name: agent.name ?? null,
       model: agent.model ?? null,
       statusBucket: deriveSidebarStateBucket({
+        bucket: agent.bucket,
         status: agent.status,
         pendingPermissionCount: agent.pendingPermissions.length,
-        requiresAttention: agent.requiresAttention,
         attentionReason: agent.attentionReason,
+        stoppedBy: agent.stoppedBy,
       }),
       requiresAttention: Boolean(agent.requiresAttention),
       createdAt: agent.createdAt,

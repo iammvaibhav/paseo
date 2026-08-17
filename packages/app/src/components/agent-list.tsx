@@ -289,8 +289,7 @@ function SessionRow({
     () => <Archive size={theme.fontSize.xs} color={theme.colors.foregroundMuted} />,
     [theme.fontSize.xs, theme.colors.foregroundMuted],
   );
-  const showDesktopAttention =
-    !isMobile && showAttentionIndicator && Boolean(agent.requiresAttention);
+  const showDesktopAttention = !isMobile && showAttentionIndicator && agent.bucket === "needs_you";
 
   const showWorkspacePrefix = !isMobile && !isRedundantWorkspaceName(workspaceName, agent);
 
@@ -394,7 +393,7 @@ function SessionRow({
       <SessionRowTrailingAttention
         isMobile={isMobile}
         showAttentionIndicator={showAttentionIndicator}
-        requiresAttention={agent.requiresAttention}
+        requiresAttention={agent.bucket === "needs_you"}
       />
     </Pressable>
   );

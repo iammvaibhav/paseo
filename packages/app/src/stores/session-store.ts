@@ -24,6 +24,7 @@ import {
 import type { PendingPermission } from "@/types/shared";
 import type { ComposerAttachment } from "@/attachments/types";
 import type { AgentLifecycleStatus } from "@getpaseo/protocol/agent-lifecycle";
+import type { LifecycleBucket as CanonicalLifecycleBucket } from "@getpaseo/protocol/agent-state-bucket";
 import type {
   AgentPermissionRequest,
   AgentFeature,
@@ -105,6 +106,8 @@ export interface Agent {
   attentionTimestamp?: Date | null;
   /** Mission Control stop origin for the agent's last run (v3.1). */
   stoppedBy?: "user" | "machinery" | "system" | null;
+  /** Daemon-owned Mission Control lifecycle bucket. */
+  bucket?: CanonicalLifecycleBucket;
   archivedAt?: Date | null;
   parentAgentId: string | null;
   labels: Record<string, string>;
@@ -2030,6 +2033,7 @@ export const useSessionStore = create<SessionStore>()(
             attentionReason: agent.attentionReason ?? null,
             attentionTimestamp: agent.attentionTimestamp ?? null,
             stoppedBy: agent.stoppedBy ?? null,
+            bucket: agent.bucket,
             createdAt: agent.createdAt,
             labels: agent.labels,
           });

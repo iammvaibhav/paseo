@@ -3,11 +3,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type pino from "pino";
+import type {
+  MissionControlEventKind,
+  MissionControlProposal,
+} from "@getpaseo/protocol/mission-control/types";
 import type { AgentManager, AgentManagerEvent, ManagedAgent } from "../agent/agent-manager.js";
 import type { AgentStorage, StoredAgentRecord } from "../agent/agent-storage.js";
 import type { DaemonConfigStore } from "../daemon-config-store.js";
 import { dispatchLocalPromptMode } from "../agent/tools/paseo-tools.js";
 import { MissionControlService, type MissionControlServiceOptions } from "./service.js";
+import type { MissionControlAppendInput } from "./store.js";
 import { createMissionControlPresenceSource } from "./presence.js";
 import { executeSpawnProposal } from "./spawn-executor.js";
 
@@ -63,6 +68,50 @@ function workerAgent(agentId: string, labels: Record<string, string> = {}): Mana
     pendingPermissions: new Map(),
     session: { isRuntimeAlive: () => true },
   } as unknown as ManagedAgent;
+}
+
+/** A pending decision proposal attached to a blocked/stalled event. */
+function pendingDecisionProposal(targetAgentId: string): MissionControlProposal {
+  return {
+    id: "mcp-gate-matrix",
+    createdAt: new Date().toISOString(),
+    origin: "commander",
+    serverId: "test-server",
+    targetAgentId,
+    message: "Proceed with the plan?",
+    deliveryMode: "interrupt",
+    reason: "Needs a decision",
+    classification: "normal",
+    status: "pending",
+  };
+}
+
+/** Minimal publish payload for a gate-matrix event kind. */
+function plainGateEvent(
+  kind: MissionControlEventKind,
+): Omit<MissionControlAppendInput, "agentTitle"> {
+  let severity: "blocker" | "attention" | "info";
+  if (kind === "blocked") {
+    severity = "blocker";
+  } else if (kind === "failed" || kind === "stalled") {
+    severity = "attention";
+  } else {
+    severity = "info";
+  }
+  return {
+    agentId: "worker-1",
+    kind,
+    source: "system",
+    severity,
+    headline: `Event ${kind}`,
+  };
+}
+
+/** A blocked/stalled event carrying a pending-proposal decision card. */
+function decisionCardGateEvent(
+  kind: "blocked" | "stalled",
+): Omit<MissionControlAppendInput, "agentTitle"> {
+  return { ...plainGateEvent(kind), proposal: pendingDecisionProposal("worker-1") };
 }
 
 describe("MissionControlService reset + machinery turns", () => {
@@ -125,6 +174,48 @@ describe("MissionControlService reset + machinery turns", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
+  /**
+   * Runs one gate combination in a fresh service and asserts the expected
+   * dispatch outcome, then stops the service so the next combo starts clean.
+   */
+  async function gateOutcome(input: {
+    mode: "ask" | "auto";
+    dispatched: boolean;
+    reviewState?: "ready" | "done";
+    event: Omit<MissionControlAppendInput, "agentTitle">;
+    expectDispatch: boolean;
+  }): Promise<void> {
+    await createService({
+      storedAgents: [commanderRecord("commander-1")],
+      getAgent: (agentId) =>
+        agentId === "commander-1"
+          ? commanderAgent("commander-1")
+          : workerAgent(
+              "worker-1",
+              input.dispatched ? { "paseo.parent-agent-id": "commander-1" } : {},
+            ),
+    });
+    if (input.mode === "auto") {
+      await service.setMode("auto");
+    }
+    if (input.reviewState) {
+      await service.setReviewState("worker-1", input.reviewState);
+    }
+    service.publishEvent(input.event);
+    if (input.expectDispatch) {
+      await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalled());
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(dispatchLocalPromptModeMock).not.toHaveBeenCalled();
+    }
+    await service.stop();
+    const internals = service as unknown as {
+      store: { appendTail: Promise<void>; persistTail: Promise<void> };
+    };
+    await Promise.all([internals.store.appendTail, internals.store.persistTail]);
+    dispatchLocalPromptModeMock.mockClear();
+  }
+
   test("resetCommander delegates to the injected machinery and returns its result", async () => {
     const resetCommander = vi.fn(async () => ({ ok: true as const, agentId: "commander-new" }));
     await createService({ resetCommander });
@@ -139,7 +230,7 @@ describe("MissionControlService reset + machinery turns", () => {
     expect(result).toEqual({ ok: false, error: "Commander reset is not available on this host" });
   });
 
-  test("an AUTO-mode blocked event dispatches a machinery turn to the Commander", async () => {
+  test("an AUTO-mode blocked event without a decision card never dispatches a machinery turn", async () => {
     await createService({ storedAgents: [commanderRecord("commander-1")] });
     await service.setMode("auto");
     service.publishEvent({
@@ -149,6 +240,24 @@ describe("MissionControlService reset + machinery turns", () => {
       severity: "blocker",
       headline: "Waiting for permission",
       detail: "needs a decision",
+    });
+    // Board + badge only (spec 07): a plain blocked event carries no decision
+    // card, so the Commander is not consulted.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(dispatchLocalPromptModeMock).not.toHaveBeenCalled();
+  });
+
+  test("an AUTO-mode blocked event carrying a pending proposal dispatches a machinery turn", async () => {
+    await createService({ storedAgents: [commanderRecord("commander-1")] });
+    await service.setMode("auto");
+    service.publishEvent({
+      agentId: "worker-1",
+      kind: "blocked",
+      source: "system",
+      severity: "blocker",
+      headline: "Waiting for permission",
+      detail: "needs a decision",
+      proposal: pendingDecisionProposal("worker-1"),
     });
     await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(1));
     const call = dispatchLocalPromptModeMock.mock.calls[0]?.[0];
@@ -162,6 +271,25 @@ describe("MissionControlService reset + machinery turns", () => {
     expect(call?.prompt).toContain("paseo://h/test-server/agent/worker-1");
     expect(call?.prompt).toContain("reply with a single short acknowledgment token");
     expect(call?.prompt).toContain("needs a decision");
+  });
+
+  test("a blocked event carrying a clarification dispatches a machinery turn in AUTO mode", async () => {
+    await createService({ storedAgents: [commanderRecord("commander-1")] });
+    await service.setMode("auto");
+    service.publishEvent({
+      agentId: "worker-1",
+      kind: "blocked",
+      source: "system",
+      severity: "blocker",
+      headline: "Waiting for permission",
+      clarification: {
+        question: "Approve the override?",
+        options: ["Yes", "No"],
+        allowFreeText: false,
+      },
+    });
+    await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(1));
+    expect(dispatchLocalPromptModeMock.mock.calls[0]?.[0]?.prompt).toContain("[blocked]");
   });
 
   test("ASK mode emits no machinery turn for a blocked event", async () => {
@@ -192,7 +320,7 @@ describe("MissionControlService reset + machinery turns", () => {
     expect(dispatchLocalPromptModeMock).not.toHaveBeenCalled();
   });
 
-  test("AUTO mode dispatches a machinery turn for a stalled escalation", async () => {
+  test("an AUTO-mode stalled event without a decision card never dispatches", async () => {
     await createService({ storedAgents: [commanderRecord("commander-1")] });
     await service.setMode("auto");
     service.publishEvent({
@@ -201,6 +329,22 @@ describe("MissionControlService reset + machinery turns", () => {
       source: "system",
       severity: "attention",
       headline: "Stalled (no response for 5 min)",
+    });
+    // Board + badge only: the stalled card carries no decision card.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(dispatchLocalPromptModeMock).not.toHaveBeenCalled();
+  });
+
+  test("an AUTO-mode stalled event carrying a pending proposal dispatches", async () => {
+    await createService({ storedAgents: [commanderRecord("commander-1")] });
+    await service.setMode("auto");
+    service.publishEvent({
+      agentId: "worker-1",
+      kind: "stalled",
+      source: "system",
+      severity: "attention",
+      headline: "Stalled (no response for 5 min)",
+      proposal: pendingDecisionProposal("worker-1"),
     });
     await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(1));
     expect(dispatchLocalPromptModeMock.mock.calls[0]?.[0]?.prompt).toContain(
@@ -267,109 +411,43 @@ describe("MissionControlService reset + machinery turns", () => {
     expect(dispatchLocalPromptModeMock).not.toHaveBeenCalled();
   });
 
-  test("a dispatched agent's finished event triggers a follow-up machinery turn in ASK mode", async () => {
-    await createService({
-      storedAgents: [commanderRecord("commander-1")],
-      getAgent: (agentId) =>
-        agentId === "commander-1"
-          ? commanderAgent("commander-1")
-          : workerAgent("worker-1", { "paseo.parent-agent-id": "commander-1" }),
-    });
-    service.publishEvent({
-      agentId: "worker-1",
-      kind: "finished",
-      source: "system",
-      severity: "info",
-      headline: "Finished",
-    });
-    await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(1));
-    const call = dispatchLocalPromptModeMock.mock.calls[0]?.[0];
-    expect(call).toMatchObject({
-      agentId: "commander-1",
-      mode: "steer",
-      classification: "machinery",
-      replaceOrigin: "machinery",
-    });
-    expect(call?.prompt).toContain("[finished] Finished");
-    // The follow-up tail carries the decision rule, not the needs-you ack rule.
-    expect(call?.prompt).toContain("follow-up on a worker you dispatched");
-    expect(call?.prompt).toContain("(a) propose a follow-up action");
-    expect(call?.prompt).toContain("(b) post_answer");
-    expect(call?.prompt).toContain("(c) nothing when the feed card already says it all");
-    expect(call?.prompt).not.toContain("reply with a single short acknowledgment token");
+  test("terminal events never dispatch, even for Commander-dispatched agents, in ASK or AUTO mode", async () => {
+    // finished / failed / interrupted stop dispatching (spec 07): the
+    // board/feed rail carries the outcome, the Commander is not consulted —
+    // regardless of how the agent was started or the mode.
+    for (const mode of ["ask", "auto"] as const) {
+      for (const dispatched of [false, true]) {
+        await createService({
+          storedAgents: [commanderRecord("commander-1")],
+          getAgent: (agentId) =>
+            agentId === "commander-1"
+              ? commanderAgent("commander-1")
+              : workerAgent(
+                  "worker-1",
+                  dispatched ? { "paseo.parent-agent-id": "commander-1" } : {},
+                ),
+        });
+        if (mode === "auto") {
+          await service.setMode("auto");
+        }
+        for (const kind of ["finished", "failed", "interrupted"] as const) {
+          service.publishEvent({
+            agentId: "worker-1",
+            kind,
+            source: "system",
+            severity: kind === "failed" ? "attention" : "info",
+            headline: kind === "failed" ? "Failed with an error" : "Finished",
+          });
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(dispatchLocalPromptModeMock).not.toHaveBeenCalled();
+        await service.stop();
+        dispatchLocalPromptModeMock.mockClear();
+      }
+    }
   });
 
-  test("a dispatched agent's finished event triggers a follow-up machinery turn in AUTO mode", async () => {
-    await createService({
-      storedAgents: [commanderRecord("commander-1")],
-      getAgent: (agentId) =>
-        agentId === "commander-1"
-          ? commanderAgent("commander-1")
-          : workerAgent("worker-1", { "paseo.parent-agent-id": "commander-1" }),
-    });
-    await service.setMode("auto");
-    service.publishEvent({
-      agentId: "worker-1",
-      kind: "finished",
-      source: "system",
-      severity: "info",
-      headline: "Finished",
-    });
-    await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(1));
-    expect(dispatchLocalPromptModeMock.mock.calls[0]?.[0]?.prompt).toContain("[finished] Finished");
-  });
-
-  test("a dispatched agent's failed and interrupted events also trigger follow-up turns in ASK mode", async () => {
-    await createService({
-      storedAgents: [commanderRecord("commander-1")],
-      getAgent: (agentId) =>
-        agentId === "commander-1"
-          ? commanderAgent("commander-1")
-          : workerAgent("worker-1", { "paseo.parent-agent-id": "commander-1" }),
-    });
-    service.publishEvent({
-      agentId: "worker-1",
-      kind: "failed",
-      source: "system",
-      severity: "attention",
-      headline: "Failed with an error",
-    });
-    await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(1));
-    expect(dispatchLocalPromptModeMock.mock.calls[0]?.[0]?.prompt).toContain("[failed]");
-    // A new run (started bumps the epoch) earns a fresh slot for the next
-    // terminal kind.
-    service.publishEvent({
-      agentId: "worker-1",
-      kind: "started",
-      source: "system",
-      severity: "info",
-      headline: "Started",
-    });
-    service.publishEvent({
-      agentId: "worker-1",
-      kind: "interrupted",
-      source: "system",
-      severity: "info",
-      headline: "Interrupted by you",
-    });
-    await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(2));
-    expect(dispatchLocalPromptModeMock.mock.calls[1]?.[0]?.prompt).toContain("[interrupted]");
-  });
-
-  test("a non-dispatched agent's finished event stays silent in ASK mode", async () => {
-    await createService({ storedAgents: [commanderRecord("commander-1")] });
-    service.publishEvent({
-      agentId: "worker-1",
-      kind: "finished",
-      source: "system",
-      severity: "info",
-      headline: "Finished",
-    });
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(dispatchLocalPromptModeMock).not.toHaveBeenCalled();
-  });
-
-  test("an adopted agent's terminal event triggers a follow-up turn", async () => {
+  test("an adopted agent's terminal event never triggers a follow-up turn", async () => {
     await createService({
       storedAgents: [commanderRecord("commander-1")],
       getAgent: (agentId) =>
@@ -384,7 +462,8 @@ describe("MissionControlService reset + machinery turns", () => {
       severity: "info",
       headline: "Finished",
     });
-    await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(dispatchLocalPromptModeMock).not.toHaveBeenCalled();
   });
 
   test("a follow-up turn carries the worker's last report headline and the verdict line", async () => {
@@ -442,7 +521,7 @@ describe("MissionControlService reset + machinery turns", () => {
     expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(1);
   });
 
-  test("terminal follow-up turns are rate-limited to one per agent run epoch", async () => {
+  test("terminal events never claim the follow-up slot (only verdicts do)", async () => {
     await createService({
       storedAgents: [commanderRecord("commander-1")],
       getAgent: (agentId) =>
@@ -451,6 +530,8 @@ describe("MissionControlService reset + machinery turns", () => {
           : workerAgent("worker-1", { "paseo.parent-agent-id": "commander-1" }),
     });
     await service.setMode("auto");
+    // Terminal events no longer dispatch (spec 07), so they neither fire nor
+    // consume the per-epoch slot; a verdict after them still dispatches once.
     service.publishEvent({
       agentId: "worker-1",
       kind: "finished",
@@ -458,8 +539,6 @@ describe("MissionControlService reset + machinery turns", () => {
       severity: "info",
       headline: "Finished",
     });
-    await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(1));
-    // Same epoch: a second terminal event must not re-alert.
     service.publishEvent({
       agentId: "worker-1",
       kind: "failed",
@@ -468,30 +547,36 @@ describe("MissionControlService reset + machinery turns", () => {
       headline: "Failed with an error",
     });
     await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(dispatchLocalPromptModeMock).not.toHaveBeenCalled();
+    service.publishEvent({
+      agentId: "worker-1",
+      kind: "verdict",
+      source: "verifier",
+      severity: "info",
+      headline: "Done — insufficient",
+      detail: "proofs missing",
+    });
+    await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(1));
+    // A second verdict in the same epoch is still deduped.
+    service.publishEvent({
+      agentId: "worker-1",
+      kind: "verdict",
+      source: "verifier",
+      severity: "info",
+      headline: "Done — insufficient",
+      detail: "still missing",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
     expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(1);
-    // A new run (started bumps the epoch) earns a fresh follow-up turn.
-    service.publishEvent({
-      agentId: "worker-1",
-      kind: "started",
-      source: "system",
-      severity: "info",
-      headline: "Started",
-    });
-    service.publishEvent({
-      agentId: "worker-1",
-      kind: "finished",
-      source: "system",
-      severity: "info",
-      headline: "Finished",
-    });
-    await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(2));
   });
 
-  test("BUG-4: a Commander-approved spawn stamps paseo.parent-agent-id and the worker's finished event passes the dispatch gate", async () => {
+  test("BUG-4: a Commander-approved spawn stamps paseo.parent-agent-id and the worker's verdict passes the dispatch gate", async () => {
     // Full loop through the REAL spawn executor: approve a commander-origin
     // spawn-kind proposal → the executor stamps paseo.parent-agent-id =
-    // commander-1 on the created plan → the stamped worker's finished event
+    // commander-1 on the created plan → the stamped worker's verdict event
     // clears isDispatchedByCommander and dispatches the machinery turn.
+    // (Terminal events no longer dispatch — spec 07 — so the gate is proven
+    // with the verdict, which still routes for dispatched agents.)
     let createdLabels: Record<string, string> = {};
     await createService({
       storedAgents: [commanderRecord("commander-1")],
@@ -534,14 +619,24 @@ describe("MissionControlService reset + machinery turns", () => {
     expect(service.getProposal(proposal.id)?.spawnedAgentId).toBe("worker-1");
     // The executor stamped the label on the create (BUG-4).
     expect(createdLabels).toMatchObject({ "paseo.parent-agent-id": "commander-1" });
-    // ASK mode: only Commander-dispatched agents earn a follow-up machinery
-    // turn on terminal events. The stamped worker must clear the gate.
+    // ASK mode: terminal events never dispatch, but the stamped worker's
+    // verdict must clear the dispatched gate and trigger the follow-up turn.
     service.publishEvent({
       agentId: "worker-1",
       kind: "finished",
       source: "system",
       severity: "info",
       headline: "Finished",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(dispatchLocalPromptModeMock).not.toHaveBeenCalled();
+    service.publishEvent({
+      agentId: "worker-1",
+      kind: "verdict",
+      source: "verifier",
+      severity: "info",
+      headline: "Done — insufficient",
+      detail: "proofs missing",
     });
     await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(1));
     const call = dispatchLocalPromptModeMock.mock.calls[0]?.[0];
@@ -551,5 +646,132 @@ describe("MissionControlService reset + machinery turns", () => {
       classification: "machinery",
     });
     expect(call?.prompt).toContain("follow-up on a worker you dispatched");
+  });
+
+  describe("spec 07 machinery-turn gate matrix", () => {
+    // Event kinds that NEVER trigger a machinery turn in any mode or
+    // dispatch state: status cards, terminal events, and cards to the user.
+    const neverKinds: MissionControlEventKind[] = [
+      "started",
+      "finished",
+      "failed",
+      "milestone",
+      "finding",
+      "diverged",
+      "interrupted",
+      "proposal",
+      "clarification",
+      "answer",
+      "blocked",
+      "stalled",
+    ];
+
+    for (const kind of neverKinds) {
+      test(`${kind} never dispatches (dispatched/hand-started × ask/auto)`, async () => {
+        for (const mode of ["ask", "auto"] as const) {
+          for (const dispatched of [false, true]) {
+            await gateOutcome({
+              mode,
+              dispatched,
+              event: plainGateEvent(kind),
+              expectDispatch: false,
+            });
+          }
+        }
+      });
+    }
+
+    for (const kind of ["blocked", "stalled"] as const) {
+      test(`${kind} with a pending proposal dispatches except in ask mode for hand-started agents`, async () => {
+        await gateOutcome({
+          mode: "ask",
+          dispatched: false,
+          event: decisionCardGateEvent(kind),
+          expectDispatch: false,
+        });
+        await gateOutcome({
+          mode: "ask",
+          dispatched: true,
+          event: decisionCardGateEvent(kind),
+          expectDispatch: true,
+        });
+        await gateOutcome({
+          mode: "auto",
+          dispatched: false,
+          event: decisionCardGateEvent(kind),
+          expectDispatch: true,
+        });
+        await gateOutcome({
+          mode: "auto",
+          dispatched: true,
+          event: decisionCardGateEvent(kind),
+          expectDispatch: true,
+        });
+      });
+
+      test(`${kind} with a clarification dispatches except in ask mode for hand-started agents`, async () => {
+        const event: Omit<MissionControlAppendInput, "agentTitle"> = {
+          ...plainGateEvent(kind),
+          clarification: {
+            question: "Approve the override?",
+            options: ["Yes", "No"],
+            allowFreeText: false,
+          },
+        };
+        await gateOutcome({ mode: "ask", dispatched: false, event, expectDispatch: false });
+        await gateOutcome({ mode: "ask", dispatched: true, event, expectDispatch: true });
+        await gateOutcome({ mode: "auto", dispatched: false, event, expectDispatch: true });
+        await gateOutcome({ mode: "auto", dispatched: true, event, expectDispatch: true });
+      });
+    }
+
+    test("verdicts on dispatched agents dispatch in both modes", async () => {
+      await gateOutcome({
+        mode: "ask",
+        dispatched: true,
+        event: plainGateEvent("verdict"),
+        expectDispatch: true,
+      });
+      await gateOutcome({
+        mode: "auto",
+        dispatched: true,
+        event: plainGateEvent("verdict"),
+        expectDispatch: true,
+      });
+    });
+
+    test("verdict-insufficient (item unresolved) dispatches in auto mode only for hand-started agents", async () => {
+      await gateOutcome({
+        mode: "ask",
+        dispatched: false,
+        reviewState: "ready",
+        event: plainGateEvent("verdict"),
+        expectDispatch: false,
+      });
+      await gateOutcome({
+        mode: "auto",
+        dispatched: false,
+        reviewState: "ready",
+        event: plainGateEvent("verdict"),
+        expectDispatch: true,
+      });
+    });
+
+    test("a state-resolving verdict (item done) never dispatches for hand-started agents", async () => {
+      await gateOutcome({
+        mode: "ask",
+        dispatched: false,
+        reviewState: "done",
+        event: plainGateEvent("verdict"),
+        expectDispatch: false,
+      });
+      await gateOutcome({
+        mode: "auto",
+        dispatched: false,
+        reviewState: "done",
+        event: plainGateEvent("verdict"),
+        expectDispatch: false,
+      });
+    });
   });
 });

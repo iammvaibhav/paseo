@@ -17,6 +17,7 @@ export type AgentDirectoryEntry = Pick<
   | "attentionReason"
   | "attentionTimestamp"
   | "stoppedBy"
+  | "bucket"
   | "archivedAt"
   | "createdAt"
   | "labels"

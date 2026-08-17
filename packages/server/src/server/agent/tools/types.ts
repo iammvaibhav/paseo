@@ -3,6 +3,12 @@ import type { z } from "zod";
 export interface PaseoToolExecutionContext {
   signal?: AbortSignal;
   sendUpdate?: (update: PaseoToolResult) => void;
+  /**
+   * Session-scoped tools (fleet_monitor) key their subscriptions on this.
+   * The session RPC front passes the daemon session id; agent callers fall
+   * back to their callerAgentId. Absent → the tool degrades gracefully.
+   */
+  sessionKey?: string;
 }
 
 export interface PaseoToolResult {

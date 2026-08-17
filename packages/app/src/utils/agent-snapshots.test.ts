@@ -36,6 +36,7 @@ function createSnapshot(
     persistence: input.persistence ?? null,
     title: input.title ?? null,
     labels: (input.labels ?? {}) as AgentSnapshotPayload["labels"],
+    ...(input.bucket ? { bucket: input.bucket } : {}),
     ...(input.providerUnavailable === undefined
       ? {}
       : { providerUnavailable: input.providerUnavailable }),
@@ -121,6 +122,13 @@ describe("normalizeAgentSnapshot", () => {
 
     expect(unavailable.providerUnavailable).toBe(true);
     expect(available.providerUnavailable).toBe(false);
+  });
+
+  it("round-trips the daemon-owned lifecycle bucket", () => {
+    const agent = normalizeAgentSnapshot(createSnapshot({ bucket: "ready" }), "server-1");
+
+    expect(agent.bucket).toBe("ready");
+    expect(projectAgentSnapshot(agent).bucket).toBe("ready");
   });
 });
 

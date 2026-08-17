@@ -70,7 +70,18 @@ const READ_TOOL_DECLARATIONS = [
         statuses: {
           type: "ARRAY",
           items: { type: "STRING" },
-          description: "Filter to these agent statuses (running, idle, error, closed, ...).",
+          description:
+            "Filter to these agent lifecycle statuses: initializing, idle, running, error, closed.",
+        },
+        bucket: {
+          type: "STRING",
+          description:
+            "Filter to this lifecycle bucket (closed enum): needs_you, running, ready, done, idle.",
+        },
+        query: {
+          type: "STRING",
+          description:
+            "Fuzzy agent-name resolution: case-insensitive match against agent name, title, or id. Use it to resolve a spoken agent name.",
         },
         limit: {
           type: "NUMBER",
@@ -204,6 +215,34 @@ const READ_TOOL_DECLARATIONS = [
       required: ["agentIds"],
     },
   },
+  {
+    name: "fleet_agent_status",
+    description:
+      "One-call status for ONE agent: identity (name, title, description), lifecycle bucket, last " +
+      "status, running-turn info, the last report_status headline/detail/time, and " +
+      "workspace/project/host. fresh:true steers the agent to post a fresh report_status and waits " +
+      "up to 60s (returns the last known status with fresh:false on timeout). Use it when the user " +
+      "asks how a specific agent is doing. Read-only.",
+    parameters: {
+      ...OBJECT,
+      properties: {
+        agentId: {
+          type: "STRING",
+          description: "The agent UUID from fleet_list_agents.",
+        },
+        fresh: {
+          type: "BOOLEAN",
+          description:
+            "Steer the agent for a fresh report_status and wait up to 60s. Only on explicit request.",
+        },
+        host: {
+          type: "STRING",
+          description: "Optional host hint: a peer name from the daemon peers config, or 'local'.",
+        },
+      },
+      required: ["agentId"],
+    },
+  },
 ];
 
 /** Relay-only control tools. */
@@ -240,7 +279,8 @@ const RELAY_CONTROL_DECLARATIONS = [
       properties: {
         proposalId: {
           type: "STRING",
-          description: "The proposal id, e.g. mcp_... from the announcement.",
+          description:
+            "The proposal id (mcp_...) — take it verbatim from a tool result's data or from pending_updates entries; never guess it.",
         },
         action: { type: "STRING", description: '"approve" or "deny".' },
         editedMessage: {
@@ -258,6 +298,40 @@ const RELAY_CONTROL_DECLARATIONS = [
       "that arrived while the user was not asking. Returns a spoken digest. Use ONLY when the " +
       "user asks for generic updates ('any updates?') — for a specific agent, use the read tools.",
     parameters: { ...OBJECT, properties: {}, required: [] },
+  },
+  {
+    name: "fleet_monitor",
+    description:
+      "Watch agents and get told when they finish, fail, or block. Session-scoped: start/stop/status " +
+      "watches over Mission Control events for THIS voice session. scope 'fleet' watches every agent; " +
+      "scope 'agent' watches one agentId (start repeatedly for several). Announcements arrive as spoken " +
+      "notifications between turns (queued while the user is mid-turn) — never poll. Proposals and " +
+      "clarifications are always announced; blocked/error/finished only for watched scope; started and " +
+      "mid-run milestones never. status lists active subscriptions. Use it when the user asks to be " +
+      "told when something finishes or needs them.",
+    parameters: {
+      ...OBJECT,
+      properties: {
+        action: {
+          type: "STRING",
+          description:
+            '"start" adds a watch, "stop" removes it, "status" lists this session\'s watches.',
+        },
+        scope: {
+          type: "STRING",
+          description: '"fleet" (every agent) or "agent" (the named agentId).',
+        },
+        agentId: {
+          type: "STRING",
+          description: "The agent UUID from fleet_list_agents; required when scope is 'agent'.",
+        },
+        host: {
+          type: "STRING",
+          description: "Optional host hint: a peer name from the daemon peers config, or 'local'.",
+        },
+      },
+      required: ["action", "scope"],
+    },
   },
 ];
 
@@ -319,20 +393,253 @@ const DIRECT_CONTROL_DECLARATIONS = [
     },
   },
   {
-    name: "fleet_meta",
+    name: "fleet_rename_project",
     description:
-      "Apply a fleet meta action (rename/archive a project, workspace, or agent; create a " +
-      "project; move an agent; promote an experiment workspace). Approval-gated; archives always " +
-      "ask. metaPlan: { action, targetId?, targetLabel?, newValue?, destination? }.",
+      "Rename a project. projectId is a prj_ id from fleet_list_inventory — fleet-wide, no host " +
+      "needed. Approval-gated: creates a proposal the user must approve.",
     parameters: {
       ...OBJECT,
       properties: {
-        metaPlan: {
-          type: "OBJECT",
-          description: "The meta action plan: action, targetId/targetLabel, newValue, destination.",
+        projectId: {
+          type: "STRING",
+          description: "Project id (prj_ + 16 hex) from fleet_list_inventory data.",
+        },
+        title: { type: "STRING", description: "The new project name." },
+        host: {
+          type: "STRING",
+          description:
+            "Optional host hint: a peer name or 'local'. Omitted → resolved via the fleet index.",
         },
       },
-      required: ["metaPlan"],
+      required: ["projectId", "title"],
+    },
+  },
+  {
+    name: "fleet_rename_workspace",
+    description:
+      "Rename a workspace. workspaceId is a wks_ id from fleet_list_inventory — fleet-wide, no " +
+      "host needed. Approval-gated: creates a proposal the user must approve.",
+    parameters: {
+      ...OBJECT,
+      properties: {
+        workspaceId: {
+          type: "STRING",
+          description: "Workspace id (wks_ + 16 hex) from fleet_list_inventory data.",
+        },
+        title: { type: "STRING", description: "The new workspace name." },
+        host: {
+          type: "STRING",
+          description:
+            "Optional host hint: a peer name or 'local'. Omitted → resolved via the fleet index.",
+        },
+      },
+      required: ["workspaceId", "title"],
+    },
+  },
+  {
+    name: "fleet_rename_agent_title",
+    description:
+      "Change an agent's TITLE (agent names are write-once, never touched). agentId is an agent " +
+      "UUID from fleet_list_agents — fleet-wide, no host needed. Approval-gated: creates a " +
+      "proposal the user must approve.",
+    parameters: {
+      ...OBJECT,
+      properties: {
+        agentId: {
+          type: "STRING",
+          description: "Agent UUID from fleet_list_agents/fleet_search data.",
+        },
+        title: { type: "STRING", description: "The new agent title." },
+        host: {
+          type: "STRING",
+          description:
+            "Optional host hint: a peer name or 'local'. Omitted → resolved via the fleet index.",
+        },
+      },
+      required: ["agentId", "title"],
+    },
+  },
+  {
+    name: "fleet_archive_project",
+    description:
+      "Archive a project (its workspaces and their agents archive with it). projectId is a prj_ " +
+      "id from fleet_list_inventory — fleet-wide, no host needed. DESTRUCTIVE: always asks the " +
+      "user, even in auto mode.",
+    parameters: {
+      ...OBJECT,
+      properties: {
+        projectId: {
+          type: "STRING",
+          description: "Project id (prj_ + 16 hex) from fleet_list_inventory data.",
+        },
+        host: {
+          type: "STRING",
+          description:
+            "Optional host hint: a peer name or 'local'. Omitted → resolved via the fleet index.",
+        },
+      },
+      required: ["projectId"],
+    },
+  },
+  {
+    name: "fleet_archive_workspace",
+    description:
+      "Archive a workspace (its agents archive with it). workspaceId is a wks_ id from " +
+      "fleet_list_inventory — fleet-wide, no host needed. DESTRUCTIVE: always asks the user, " +
+      "even in auto mode.",
+    parameters: {
+      ...OBJECT,
+      properties: {
+        workspaceId: {
+          type: "STRING",
+          description: "Workspace id (wks_ + 16 hex) from fleet_list_inventory data.",
+        },
+        host: {
+          type: "STRING",
+          description:
+            "Optional host hint: a peer name or 'local'. Omitted → resolved via the fleet index.",
+        },
+      },
+      required: ["workspaceId"],
+    },
+  },
+  {
+    name: "fleet_archive_agent",
+    description:
+      "Archive an agent. agentId is an agent UUID from fleet_list_agents — fleet-wide, no host " +
+      "needed. DESTRUCTIVE: always asks the user, even in auto mode.",
+    parameters: {
+      ...OBJECT,
+      properties: {
+        agentId: {
+          type: "STRING",
+          description: "Agent UUID from fleet_list_agents/fleet_search data.",
+        },
+        host: {
+          type: "STRING",
+          description:
+            "Optional host hint: a peer name or 'local'. Omitted → resolved via the fleet index.",
+        },
+      },
+      required: ["agentId"],
+    },
+  },
+  {
+    name: "fleet_create_project",
+    description:
+      "Create a project at an absolute root path. host is REQUIRED — the new project root must " +
+      "land somewhere (a peer name or 'local'). Approval-gated: creates a proposal the user must " +
+      "approve.",
+    parameters: {
+      ...OBJECT,
+      properties: {
+        host: {
+          type: "STRING",
+          description: "Target host: a peer name from the daemon peers config, or 'local'.",
+        },
+        path: {
+          type: "STRING",
+          description: "Absolute filesystem path where the project root will be created.",
+        },
+        title: {
+          type: "STRING",
+          description: "Optional project display name (defaults to the root path's basename).",
+        },
+      },
+      required: ["host", "path"],
+    },
+  },
+  {
+    name: "fleet_move_agent",
+    description:
+      "Move an agent to another workspace (same host; cross-host moves are refused). agentId is " +
+      "an agent UUID from fleet_list_agents; workspaceId is a wks_ id from fleet_list_inventory — " +
+      "both fleet-wide, no host needed. Refuses running agents. Approval-gated: creates a " +
+      "proposal the user must approve.",
+    parameters: {
+      ...OBJECT,
+      properties: {
+        agentId: {
+          type: "STRING",
+          description: "Agent UUID from fleet_list_agents/fleet_search data.",
+        },
+        workspaceId: {
+          type: "STRING",
+          description: "Workspace id (wks_ + 16 hex) from fleet_list_inventory data.",
+        },
+        host: {
+          type: "STRING",
+          description:
+            "Optional host hint: a peer name or 'local'. Omitted → resolved via the fleet index.",
+        },
+      },
+      required: ["agentId", "workspaceId"],
+    },
+  },
+  {
+    name: "fleet_promote_workspace",
+    description:
+      "Promote a workspace in the per-host experiments project (~/experiments) to its own " +
+      "project. workspaceId is a wks_ id from fleet_list_inventory — fleet-wide, no host needed. " +
+      "Approval-gated: creates a proposal the user must approve.",
+    parameters: {
+      ...OBJECT,
+      properties: {
+        workspaceId: {
+          type: "STRING",
+          description: "Workspace id (wks_ + 16 hex) from fleet_list_inventory data.",
+        },
+        host: {
+          type: "STRING",
+          description:
+            "Optional host hint: a peer name or 'local'. Omitted → resolved via the fleet index.",
+        },
+      },
+      required: ["workspaceId"],
+    },
+  },
+  {
+    name: "fleet_adopt_agent",
+    description:
+      "Adopt an agent: stamp it as Commander-managed so the verifier audits its work — no " +
+      "message is sent. agentId is an agent UUID from fleet_list_agents — fleet-wide, no host " +
+      "needed. Approval-gated: creates a proposal the user must approve.",
+    parameters: {
+      ...OBJECT,
+      properties: {
+        agentId: {
+          type: "STRING",
+          description: "Agent UUID from fleet_list_agents/fleet_search data.",
+        },
+        host: {
+          type: "STRING",
+          description:
+            "Optional host hint: a peer name or 'local'. Omitted → resolved via the fleet index.",
+        },
+      },
+      required: ["agentId"],
+    },
+  },
+  {
+    name: "fleet_release_agent",
+    description:
+      "Release an adopted agent: clear the Commander-management stamp so the verifier no longer " +
+      "includes it. agentId is an agent UUID from fleet_list_agents — fleet-wide, no host needed. " +
+      "Approval-gated: creates a proposal the user must approve.",
+    parameters: {
+      ...OBJECT,
+      properties: {
+        agentId: {
+          type: "STRING",
+          description: "Agent UUID from fleet_list_agents/fleet_search data.",
+        },
+        host: {
+          type: "STRING",
+          description:
+            "Optional host hint: a peer name or 'local'. Omitted → resolved via the fleet index.",
+        },
+      },
+      required: ["agentId"],
     },
   },
   {
@@ -350,6 +657,11 @@ const DIRECT_CONTROL_DECLARATIONS = [
           items: { type: "STRING" },
           description: "Discrete options (1-8).",
         },
+        allowFreeText: {
+          type: "BOOLEAN",
+          description:
+            "Allow a free-text answer in addition to the options (true only when no option set can cover the answer space; default false).",
+        },
       },
       required: ["question", "options"],
     },
@@ -366,9 +678,34 @@ const DIRECT_CONTROL_DECLARATIONS = [
         headline: { type: "STRING", description: "One-line answer headline." },
         kind: {
           type: "STRING",
-          description: '"generic" or "agent_status" (about one agent; default "generic").',
+          description: '"agent_status" (about one agent) or "generic"; default "generic".',
+        },
+        agentId: {
+          type: "STRING",
+          description:
+            "The agent the answer is about; required when kind is agent_status. The agent id from fleet_list_agents data.",
         },
         body: { type: "STRING", description: "Optional longer answer body." },
+        fields: {
+          type: "ARRAY",
+          items: {
+            type: "OBJECT",
+            properties: {
+              label: { type: "STRING", description: "Field label (state, host, last report...)." },
+              value: {
+                type: "STRING",
+                description: "Field value; label the value, never paste raw ids.",
+              },
+            },
+            required: ["label", "value"],
+          },
+          description: "Optional labeled rows for a structured answer (max 12).",
+        },
+        respondsTo: {
+          type: "STRING",
+          description:
+            "The open instruction id this answer responds to (e.g. '#12'); the envelope lists open ids.",
+        },
       },
       required: ["headline"],
     },
@@ -429,6 +766,126 @@ function executeTagMessage(daemon, argsObj) {
   return daemon.tagMessage(argsObj);
 }
 
+const BUCKET_LABELS = {
+  needs_you: "needs you",
+  running: "running",
+  ready: "ready for review",
+  done: "done",
+  idle: "idle",
+};
+
+/** The spoken status line for a fleet_agent_status payload (ids never spoken). */
+function buildAgentStatusSpoken(sc) {
+  const name = sc.title || sc.name || (sc.agentId ? sc.agentId.slice(0, 7) : "the agent");
+  const bucket = BUCKET_LABELS[sc.bucket] ?? sc.bucket ?? "unknown";
+  const host = sc.host && sc.host !== "local" ? ` on ${sc.host}` : "";
+  const report = sc.lastReport ? ` Last report: ${sc.lastReport.headline}.` : "";
+  let freshNote = "";
+  if (sc.fresh === true) {
+    freshNote = " Fresh report received.";
+  } else if (sc.note) {
+    freshNote = ` ${sc.note}`;
+  }
+  return `${name} is ${bucket}${host}.${report}${freshNote}`;
+}
+
+/** The typed data payload for a fleet_agent_status result (ids verbatim). */
+function buildAgentStatusData(sc, agentId) {
+  return {
+    agentId: sc.agentId ?? agentId,
+    name: sc.name ?? null,
+    title: sc.title ?? null,
+    bucket: sc.bucket ?? null,
+    lastStatus: sc.lastStatus ?? null,
+    lastReport: sc.lastReport ?? null,
+    host: sc.host ?? null,
+    workspaceId: sc.workspaceId ?? null,
+    projectId: sc.projectId ?? null,
+    fresh: sc.fresh === true,
+  };
+}
+
+/** fleet_agent_status: read-only, executed in the daemon catalog. */
+async function executeFleetAgentStatus(daemon, argsObj) {
+  const agentId = typeof argsObj.agentId === "string" ? argsObj.agentId : "";
+  if (!agentId) {
+    return { error: "fleet_agent_status requires agentId" };
+  }
+  const result = await daemon.executeCatalogTool("fleet_agent_status", {
+    agentId,
+    ...(argsObj.fresh === true ? { fresh: true } : {}),
+    ...(typeof argsObj.host === "string" && argsObj.host ? { host: argsObj.host } : {}),
+  });
+  if (!result.ok) {
+    return { error: result.error ?? "fleet_agent_status failed" };
+  }
+  const sc = result.structuredContent ?? {};
+  return {
+    spoken: buildAgentStatusSpoken(sc),
+    data: buildAgentStatusData(sc, agentId),
+  };
+}
+
+/**
+ * fleet_monitor: session-scoped watches, executed in the daemon catalog. The
+ * catalog's registry is authoritative per session; the returned subscription
+ * list reconciles this connection's announce engine (monitored agents / fleet
+ * scope) so the broadcast listener announces exactly the watched scope.
+ */
+async function executeFleetMonitor(daemon, argsObj) {
+  const action = typeof argsObj.action === "string" ? argsObj.action : "";
+  const scope = typeof argsObj.scope === "string" ? argsObj.scope : "";
+  if (!action || !scope) {
+    return { error: "fleet_monitor requires action and scope" };
+  }
+  const result = await daemon.executeCatalogTool("fleet_monitor", {
+    action,
+    scope,
+    ...(typeof argsObj.agentId === "string" && argsObj.agentId ? { agentId: argsObj.agentId } : {}),
+    ...(typeof argsObj.host === "string" && argsObj.host ? { host: argsObj.host } : {}),
+  });
+  if (!result.ok) {
+    return { error: result.error ?? "fleet_monitor failed" };
+  }
+  const sc = result.structuredContent ?? {};
+  const subscriptions = Array.isArray(sc.subscriptions) ? sc.subscriptions : [];
+  // Reconcile the local announce engine with the daemon's authoritative
+  // registry so the broadcast listener announces exactly the watched scope.
+  daemon.syncMonitorSubscriptions(subscriptions);
+  const describe = (sub) =>
+    sub.scope === "fleet" ? "the whole fleet" : `agent ${String(sub.agentId).slice(0, 7)}`;
+  if (action === "status") {
+    return {
+      spoken:
+        subscriptions.length === 0
+          ? "You are not monitoring anything right now."
+          : `Monitoring ${subscriptions.map(describe).join(", ")}. Terminal events for watched agents will be announced.`,
+      data: { subscriptions },
+    };
+  }
+  if (action === "start") {
+    const added = subscriptions.filter((sub) =>
+      scope === "fleet" ? sub.scope === "fleet" : sub.agentId === argsObj.agentId,
+    );
+    return {
+      spoken:
+        added.length === 0
+          ? `Already monitoring ${scope === "fleet" ? "the whole fleet" : `agent ${String(argsObj.agentId).slice(0, 7)}`}.`
+          : `Now monitoring ${added.map(describe).join(", ")}. I'll tell you when they finish, fail, or need you.`,
+      data: { subscriptions },
+    };
+  }
+  const stoppedLabel =
+    scope === "fleet" ? "the whole fleet" : `agent ${String(argsObj.agentId).slice(0, 7)}`;
+  return {
+    spoken:
+      subscriptions.length > 0
+        ? `Stopped monitoring ${stoppedLabel}. Still monitoring ${subscriptions.map(describe).join(", ")}.`
+        : "Stopped. You are not monitoring anything now.",
+    data: { subscriptions },
+  };
+}
+
 async function executeFleetListModels(daemon, argsObj) {
   const result = await daemon.executeCatalogTool("fleet_list_models", argsObj);
   if (!result.ok) {
@@ -451,7 +908,10 @@ async function executeFleetListModels(daemon, argsObj) {
     ? `Default worker model on ${host}: ${defaultWorkerModel}.`
     : `No default worker model on ${host}.`;
   const body = modelLines.length > 0 ? ` Models: ${modelLines.join("; ")}.` : "";
-  return { result: `${head}${body}` };
+  return {
+    spoken: `${head}${body}`,
+    data: { host, defaultWorkerModel },
+  };
 }
 
 async function executeCommanderDispatch(daemon, argsObj, mode) {
@@ -464,7 +924,10 @@ async function executeCommanderDispatch(daemon, argsObj, mode) {
   }
   const outcome = await daemon.dispatch(message);
   if (outcome.ok) {
-    return { result: "Dispatched to the Commander — on it." };
+    return {
+      spoken: "Dispatched to the Commander — on it.",
+      data: { agentId: outcome.agentId ?? null },
+    };
   }
   return { error: outcome.error };
 }
@@ -480,21 +943,60 @@ async function executeProposalRespond(daemon, argsObj) {
   const outcome = await daemon.respondProposal({ proposalId, action, editedMessage });
   if (outcome.ok) {
     return {
-      result: `Proposal ${proposalId} ${action === "approve" ? "approved" : "denied"}.`,
+      spoken: `Proposal ${action === "approve" ? "approved" : "denied"}.`,
+      data: { proposalId, action },
     };
   }
   return { error: outcome.error };
 }
 
-function executePendingUpdates(daemon) {
-  return { result: daemon.drainUpdates() };
+async function executePendingUpdates(daemon, argsObj, mode, ctx) {
+  const digest = daemon.drainUpdates();
+  // Voice P0 ledger (spec 05): still-open instruction rows ride the digest
+  // so nothing silently drops ("Open: #12 spawn worker in paseo — #13 …").
+  const openLine =
+    typeof ctx?.getOpenInstructionsLine === "function"
+      ? ((await ctx.getOpenInstructionsLine()) ?? "")
+      : "";
+  if (!openLine) {
+    return digest;
+  }
+  const spoken = digest.spoken ? `${digest.spoken} ${openLine}.` : `${openLine}.`;
+  return { spoken, data: { ...digest.data, openInstructions: openLine } };
+}
+
+/** The proposal id embedded in a spawn outcome's structured fields or its
+ * guidance copy ("(proposal mcp_…)"), null when the spawn was not gated. */
+function extractSpawnProposalId(sc) {
+  if (typeof sc.proposalId === "string" && sc.proposalId) {
+    return sc.proposalId;
+  }
+  if (typeof sc.guidance === "string") {
+    return (sc.guidance.match(/\(proposal (mcp_[A-Za-z0-9]+)\)/) ?? [])[1] ?? null;
+  }
+  return null;
+}
+
+/** The spoken line for a gated spawn outcome: the cleaned guidance when the
+ * catalog supplied one, else the pending/plain status line. */
+function buildSpawnProposalSpoken(sc) {
+  if (typeof sc.guidance === "string" && sc.guidance) {
+    return (
+      sc.guidance.replace(/\(proposal (mcp_[A-Za-z0-9]+)\)\s*/, "").trim() ||
+      "Spawn request sent for approval."
+    );
+  }
+  if (sc.status === "pending-approval") {
+    return "Spawn request sent for approval.";
+  }
+  return "Spawn request sent.";
 }
 
 async function executeFleetCreateAgent(daemon, argsObj, mode) {
   if (mode !== "direct") {
     return { error: "fleet_create_agent is not declared in relay mode" };
   }
-  const { host, provider, initialPrompt, title, cwd, workspaceId } = argsObj;
+  const { host, provider, initialPrompt, title, cwd, workspaceId, respondsTo } = argsObj;
   if (!host || !provider || !initialPrompt) {
     return { error: "fleet_create_agent requires host, provider, and initialPrompt" };
   }
@@ -507,25 +1009,36 @@ async function executeFleetCreateAgent(daemon, argsObj, mode) {
     ...(title ? { title } : {}),
     ...(cwd ? { cwd } : {}),
     ...(workspaceId ? { workspaceId } : {}),
+    // M8 ledger: citing the open instruction id closes the row (spec 05).
+    ...(typeof respondsTo === "string" && respondsTo ? { respondsTo } : {}),
   });
   if (!result.ok) {
     return { error: result.error ?? "fleet_create_agent failed" };
   }
   const sc = result.structuredContent ?? {};
-  if (typeof sc.guidance === "string" && sc.guidance) {
-    return { result: sc.guidance };
+  // The catalog embeds the proposal id in its guidance copy ("(proposal
+  // mcp_…)") and does not carry it as a structured field yet — extract it so
+  // data carries the id while the spoken guidance keeps no raw id.
+  const proposalId = extractSpawnProposalId(sc);
+  if (proposalId) {
+    return { spoken: buildSpawnProposalSpoken(sc), data: { proposalId } };
   }
   if (sc.agentId) {
-    return { result: `Agent ${sc.agentId} created on ${host}.` };
+    return {
+      spoken: `Agent created on ${host}.`,
+      data: {
+        agentId: sc.agentId,
+        ...(sc.workspaceId ? { workspaceId: sc.workspaceId } : {}),
+      },
+    };
   }
-  return { result: "Spawn request created." };
+  return { spoken: "Spawn request created.", data: {} };
 }
-
 async function executeFleetSendPrompt(daemon, argsObj, mode) {
   if (mode !== "direct") {
     return { error: "fleet_send_prompt is not declared in relay mode" };
   }
-  const { host, agentId, prompt, mode: deliveryMode } = argsObj;
+  const { host, agentId, prompt, mode: deliveryMode, respondsTo } = argsObj;
   if (!host || !agentId || !prompt) {
     return { error: "fleet_send_prompt requires host, agentId, and prompt" };
   }
@@ -534,44 +1047,66 @@ async function executeFleetSendPrompt(daemon, argsObj, mode) {
     agentId,
     prompt,
     ...(deliveryMode ? { mode: deliveryMode } : {}),
+    // M8 ledger: citing the open instruction id closes the row (spec 05).
+    ...(typeof respondsTo === "string" && respondsTo ? { respondsTo } : {}),
   });
   if (!result.ok) {
     return { error: result.error ?? "fleet_send_prompt failed" };
   }
   const sc = result.structuredContent ?? {};
   if (typeof sc.guidance === "string" && sc.guidance) {
-    return { result: sc.guidance };
+    return { spoken: sc.guidance, data: { agentId: agentId ?? null } };
   }
   if (sc.success === true) {
     return {
-      result: `Delivered to the agent${sc.deliveryMode ? ` (${sc.deliveryMode})` : ""}.`,
+      spoken: `Delivered to the agent${sc.deliveryMode ? ` (${sc.deliveryMode})` : ""}.`,
+      data: { agentId: agentId ?? null, deliveryMode: sc.deliveryMode ?? null },
     };
   }
-  return { result: "Send request created." };
+  return { spoken: "Send request created.", data: { agentId: agentId ?? null } };
 }
 
-async function executeFleetMeta(daemon, argsObj, mode) {
+/** The 11 split meta tools (04): one shared executor — each rides the daemon's
+ * catalog (same Commander-gated approval flow, same proposal gate), shaped for
+ * speech with the dual-channel {spoken, data} contract (ids never spoken). */
+const META_SPLIT_TOOL_NAMES = [
+  "fleet_rename_project",
+  "fleet_rename_workspace",
+  "fleet_rename_agent_title",
+  "fleet_archive_project",
+  "fleet_archive_workspace",
+  "fleet_archive_agent",
+  "fleet_create_project",
+  "fleet_move_agent",
+  "fleet_promote_workspace",
+  "fleet_adopt_agent",
+  "fleet_release_agent",
+];
+
+async function executeFleetMetaSplit(daemon, argsObj, mode, toolName) {
   if (mode !== "direct") {
-    return { error: "fleet_meta is not declared in relay mode" };
+    return { error: `${toolName} is not declared in relay mode` };
   }
-  const plan = argsObj.metaPlan;
-  if (!plan || !plan.action) {
-    return { error: "fleet_meta requires metaPlan.action" };
-  }
-  const result = await daemon.executeCatalogTool("fleet_meta", { metaPlan: plan });
+  const result = await daemon.executeCatalogTool(toolName, {
+    ...argsObj,
+    // M8 ledger: citing the open instruction id closes the row (spec 05).
+    ...(typeof argsObj.respondsTo === "string" && argsObj.respondsTo
+      ? { respondsTo: argsObj.respondsTo }
+      : {}),
+  });
   if (!result.ok) {
-    return { error: result.error ?? "fleet_meta failed" };
+    return { error: result.error ?? `${toolName} failed` };
   }
   const sc = result.structuredContent ?? {};
   if (sc.ok === true && sc.proposalId) {
     return sc.status === "sent"
-      ? { result: `Meta action ${plan.action} sent (proposal ${sc.proposalId}).` }
-      : { result: `Meta proposal ${sc.proposalId} created for approval.` };
+      ? { spoken: "Meta action applied.", data: { proposalId: sc.proposalId } }
+      : { spoken: "Meta proposal created for approval.", data: { proposalId: sc.proposalId } };
   }
   if (sc.ok === true) {
-    return { result: `Meta action ${plan.action} done.` };
+    return { spoken: "Meta request created.", data: {} };
   }
-  return { result: "Meta request created." };
+  return { spoken: "Meta request created.", data: {} };
 }
 
 async function executeClarify(daemon, argsObj, mode) {
@@ -587,17 +1122,23 @@ async function executeClarify(daemon, argsObj, mode) {
     ...(Array.isArray(argsObj.options) && argsObj.options.length > 0
       ? { options: argsObj.options }
       : {}),
+    ...(typeof argsObj.allowFreeText === "boolean" ? { allowFreeText: argsObj.allowFreeText } : {}),
+    // M8 ledger: citing the open instruction id closes the row (spec 05).
+    ...(typeof argsObj.respondsTo === "string" && argsObj.respondsTo
+      ? { respondsTo: argsObj.respondsTo }
+      : {}),
   });
   if (!result.ok) {
     return { error: result.error ?? "clarify failed" };
   }
   // The catalog recorded the clarification card for the record; voice has no
   // card UI, so the model asks in speech.
+  const sc = result.structuredContent ?? {};
   return {
-    result: "Ask the user the question directly in your spoken reply and wait for their answer.",
+    spoken: "Ask the user the question directly in your spoken reply and wait for their answer.",
+    data: { eventId: sc.eventId ?? null },
   };
 }
-
 async function executePostAnswer(daemon, argsObj, mode) {
   if (mode !== "direct") {
     return { error: "post_answer is not declared in relay mode" };
@@ -611,14 +1152,24 @@ async function executePostAnswer(daemon, argsObj, mode) {
     kind: typeof argsObj.kind === "string" ? argsObj.kind : "generic",
     ...(typeof argsObj.agentId === "string" ? { agentId: argsObj.agentId } : {}),
     ...(typeof argsObj.body === "string" ? { body: argsObj.body } : {}),
+    ...(Array.isArray(argsObj.fields) && argsObj.fields.length > 0
+      ? { fields: argsObj.fields }
+      : {}),
+    // M8 ledger: citing the open instruction id closes the row (spec 05).
+    ...(typeof argsObj.respondsTo === "string" && argsObj.respondsTo
+      ? { respondsTo: argsObj.respondsTo }
+      : {}),
   });
   if (!result.ok) {
     return { error: result.error ?? "post_answer failed" };
   }
   // The mirror already records every spoken reply on the Commander thread.
-  return { result: "Speak the answer briefly; the voice mirror records it for the record." };
+  const sc = result.structuredContent ?? {};
+  return {
+    spoken: "Speak the answer briefly; the voice mirror records it for the record.",
+    data: { eventId: sc.eventId ?? null },
+  };
 }
-
 /** Tool name -> executor, matching the declared tool surface above. */
 const TOOL_HANDLERS = {
   fleet_list_inventory: executeFleetListInventory,
@@ -628,13 +1179,23 @@ const TOOL_HANDLERS = {
   fleet_search: executeFleetSearch,
   fleet_recall: executeFleetRecall,
   fleet_context: executeFleetContext,
+  fleet_agent_status: executeFleetAgentStatus,
   tag_message: executeTagMessage,
   commander_dispatch: executeCommanderDispatch,
   proposal_respond: executeProposalRespond,
   pending_updates: executePendingUpdates,
+  fleet_monitor: executeFleetMonitor,
   fleet_create_agent: executeFleetCreateAgent,
   fleet_send_prompt: executeFleetSendPrompt,
-  fleet_meta: executeFleetMeta,
+  ...Object.fromEntries(
+    META_SPLIT_TOOL_NAMES.map((name) => [
+      name,
+      (daemon, argsObj, mode) => executeFleetMetaSplit(daemon, argsObj, mode, name),
+    ]),
+  ),
+  // Legacy alias: the daemon keeps fleet_meta registered for older callers
+  // (see paseo-tools); route it through the same split executor.
+  fleet_meta: (daemon, argsObj, mode) => executeFleetMetaSplit(daemon, argsObj, mode, "fleet_meta"),
   clarify: executeClarify,
   post_answer: executePostAnswer,
 };
@@ -649,5 +1210,5 @@ export async function executeTool(name, args, ctx) {
   if (!handler) {
     return { error: `Unknown tool: ${name}` };
   }
-  return handler(daemon, argsObj, mode);
+  return handler(daemon, argsObj, mode, ctx);
 }

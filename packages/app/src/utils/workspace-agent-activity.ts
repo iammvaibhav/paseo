@@ -35,10 +35,11 @@ export function buildWorkspaceAgentActivityIndex(
     latestActivityAtByWorkspaceId.set(agent.workspaceId, enteredAt);
 
     const status = deriveSidebarStateBucket({
+      bucket: agent.bucket,
       status: agent.status,
       pendingPermissionCount: agent.pendingPermissions.length,
-      requiresAttention: agent.requiresAttention,
       attentionReason: agent.attentionReason,
+      stoppedBy: agent.stoppedBy,
     });
     activityByWorkspaceId.set(agent.workspaceId, {
       agentId: agent.id,

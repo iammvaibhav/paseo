@@ -266,8 +266,9 @@ describe("M9 cross-host terminal-event forwarding", () => {
     service.publishEvent(terminalEvent("finished"));
     await flushAsync();
     expect(client.missionControlEventForward).not.toHaveBeenCalled();
-    // The local machinery turn still fires (this host owns the Commander).
-    await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(1));
+    // Terminal events never wake the Commander (spec 07) — the local gate
+    // keeps the feed card board/feed-rail only.
+    expect(dispatchLocalPromptModeMock).not.toHaveBeenCalled();
   });
 
   test("an unreachable commander host is a warn + drop, never a throw", async () => {
@@ -287,7 +288,7 @@ describe("M9 cross-host terminal-event forwarding", () => {
     );
   });
 
-  test("the commander host ingests a forwarded event and dispatches the machinery turn with the payload labels", async () => {
+  test("the commander host ingests a forwarded verdict and dispatches the machinery turn with the payload labels", async () => {
     const { peerManager } = createPeerHarness();
     await createService({
       hostName: "host-a",
@@ -298,9 +299,10 @@ describe("M9 cross-host terminal-event forwarding", () => {
     });
     // A peer-host worker the commander host has NO local record of: the labels
     // ride the payload and must carry the gate (parent check resolves — the
-    // parent IS the local commander agent).
+    // parent IS the local commander agent). Verdicts still route for
+    // dispatched agents (spec 07); terminal events no longer do.
     const result = await service.ingestForwardedEvent({
-      event: terminalEvent("finished"),
+      event: terminalEvent("verdict"),
       labels: { "paseo.parent-agent-id": "commander-1" },
     });
     expect(result).toMatchObject({ ok: true });

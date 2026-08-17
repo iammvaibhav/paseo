@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   deriveAgentStateBucket,
+  deriveLifecycleBucket,
   getAgentStatusPriority,
   getWorkspaceStateBucketPriority,
+  type LifecycleBucketInput,
 } from "./agent-state-bucket.js";
 
 describe("deriveAgentStateBucket", () => {
@@ -88,5 +90,117 @@ describe("getAgentStatusPriority", () => {
     expect(permission).toBeLessThan(
       getAgentStatusPriority({ status: "running", pendingPermissionCount: 0 }),
     );
+  });
+});
+
+describe("deriveLifecycleBucket — canonical lifecycle buckets (spec 01)", () => {
+  function baseInput(overrides: Partial<LifecycleBucketInput> = {}): LifecycleBucketInput {
+    return {
+      pendingPermissionCount: 0,
+      pendingProposalCount: 0,
+      attentionReason: null,
+      lastStatus: "idle",
+      running: false,
+      reviewState: "none",
+      stopOrigin: null,
+      ...overrides,
+    };
+  }
+
+  it("idle, no run history -> idle", () => {
+    expect(deriveLifecycleBucket(baseInput())).toBe("idle");
+  });
+
+  it("running -> running", () => {
+    expect(deriveLifecycleBucket(baseInput({ running: true, lastStatus: "running" }))).toBe(
+      "running",
+    );
+  });
+
+  it("permission requested (live pendingPermissionCount > 0) -> needs_you", () => {
+    expect(deriveLifecycleBucket(baseInput({ running: true, pendingPermissionCount: 1 }))).toBe(
+      "needs_you",
+    );
+  });
+
+  it("permission requested (attentionReason permission) -> needs_you", () => {
+    expect(deriveLifecycleBucket(baseInput({ attentionReason: "permission" }))).toBe("needs_you");
+  });
+
+  it("error (lastStatus error) -> needs_you", () => {
+    expect(deriveLifecycleBucket(baseInput({ lastStatus: "error" }))).toBe("needs_you");
+  });
+
+  it("error (attentionReason error) -> needs_you", () => {
+    expect(deriveLifecycleBucket(baseInput({ attentionReason: "error" }))).toBe("needs_you");
+  });
+
+  it("pending proposal -> needs_you", () => {
+    expect(deriveLifecycleBucket(baseInput({ pendingProposalCount: 1 }))).toBe("needs_you");
+  });
+
+  it("clean finish (reviewState ready) -> ready", () => {
+    expect(deriveLifecycleBucket(baseInput({ reviewState: "ready" }))).toBe("ready");
+  });
+
+  it("finish + verdict done -> done", () => {
+    expect(deriveLifecycleBucket(baseInput({ reviewState: "done" }))).toBe("done");
+  });
+
+  it("finish + aged out (reviewState done) -> done", () => {
+    expect(deriveLifecycleBucket(baseInput({ reviewState: "done" }))).toBe("done");
+  });
+
+  it("user-stop, no review -> done (stopped-by-user)", () => {
+    expect(deriveLifecycleBucket(baseInput({ stopOrigin: "user", reviewState: "none" }))).toBe(
+      "done",
+    );
+  });
+
+  it("user-stop with reviewState cleared -> done", () => {
+    expect(deriveLifecycleBucket(baseInput({ stopOrigin: "user", reviewState: "cleared" }))).toBe(
+      "done",
+    );
+  });
+
+  it("user-stop then new run -> running", () => {
+    expect(
+      deriveLifecycleBucket(
+        baseInput({ stopOrigin: "user", running: true, lastStatus: "running" }),
+      ),
+    ).toBe("running");
+  });
+
+  it("delegated worker finish -> ready", () => {
+    expect(deriveLifecycleBucket(baseInput({ reviewState: "ready" }))).toBe("ready");
+  });
+
+  it("second finish after verdict -> ready (re-marked)", () => {
+    expect(deriveLifecycleBucket(baseInput({ reviewState: "ready" }))).toBe("ready");
+  });
+
+  it("COMPAT(finished-attention): old records with attentionReason finished do NOT drive needs_you", () => {
+    expect(
+      deriveLifecycleBucket(baseInput({ attentionReason: "finished", reviewState: "ready" })),
+    ).toBe("ready");
+    expect(
+      deriveLifecycleBucket(baseInput({ attentionReason: "finished", reviewState: "done" })),
+    ).toBe("done");
+    expect(
+      deriveLifecycleBucket(baseInput({ attentionReason: "finished", reviewState: "none" })),
+    ).toBe("idle");
+  });
+
+  it("user-stop excludes rule 1 so error/permission/proposals do not land stopped agent in needs_you", () => {
+    expect(
+      deriveLifecycleBucket(
+        baseInput({
+          stopOrigin: "user",
+          lastStatus: "error",
+          attentionReason: "error",
+          reviewState: "none",
+        }),
+      ),
+    ).toBe("done");
   });
 });

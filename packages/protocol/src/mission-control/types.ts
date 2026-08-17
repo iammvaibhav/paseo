@@ -77,7 +77,11 @@ export const MissionControlReportStatusInputSchema = z.object({
   headline: z.string(), // <= 120 chars, plain language
   detail: z.string().optional(), // 1-2 sentences
   kind: MissionControlReportKindSchema.optional(),
-  title: z.string().optional(), // ONLY when the agent decides its title changed
+  // Title is write-once (spec 06): accepted only as BACKFILL when the agent
+  // record has no title yet; afterwards the daemon ignores it and the tool
+  // result says "title is fixed". The only rename path is
+  // fleet_rename_agent_title.
+  title: z.string().optional(),
   description: z.string().optional(), // living 2-3 sentence description, ~400 chars (same rule)
   proofs: z.array(MissionControlProofSchema).optional(),
 });
@@ -191,7 +195,7 @@ export const MissionControlProposalSchema = z.object({
   deliveryMode: MissionControlDeliveryModeSchema,
   reason: z.string(),
   classification: z.enum(["normal", "destructive"]),
-  status: z.enum(["pending", "approved", "denied", "sent", "expired", "undelivered"]),
+  status: z.enum(["pending", "approved", "denied", "sent", "expired", "undelivered", "failed"]),
   // "send" (default, absent = send): deliver `message` to the target agent.
   // "spawn": create a NEW agent described by spawnPlan instead of sending.
   // "meta": apply a fleet meta action (rename/archive/move/create/promote)
@@ -251,6 +255,14 @@ export const MissionControlEventSchema = z.object({
   seq: z.number().optional(),
   agentId: z.string(),
   agentTitle: z.string(),
+  // The fleet NAME snapshot at emit time (additive; absent on pre-upgrade
+  // rows). Distinct from the work title (agentTitle): the name stays the
+  // chip identity, the title is the board's key line.
+  agentName: z.string().optional(),
+  // The living description snapshot at emit time (additive; absent on legacy
+  // rows). Emitted alongside the legacy shortDescription alias so cards
+  // snapshot the spec's identity triad (name, title, description) explicitly.
+  agentDescription: z.string().optional(),
   // Living short description snapshot frozen at emit time (immutable card copy).
   // Optional for wire/record back-compat: legacy rows without it fall back to headline.
   shortDescription: z.string().optional(),
@@ -336,6 +348,12 @@ export const MissionControlEventSchema = z.object({
   // directory stoppedBy. Additive; absent when no stop was in effect at emit
   // time (a fresh run clears the origin before its `started` event).
   stoppedBy: z.enum(["user", "machinery", "system"]).optional(),
+  // State-only verdict card (kind "verdict"): the verdict resolved the item's
+  // review state (done/cleared) — pure state transition, no decision pending.
+  // The app skips these in normal (non-verbose) mode (spec 07 thread
+  // classification); verdict-insufficient cards (item stays needs-you) carry
+  // no flag and always render. Additive; absent on legacy rows.
+  stateOnly: z.boolean().optional(),
 });
 export type MissionControlEvent = z.infer<typeof MissionControlEventSchema>;
 
@@ -565,6 +583,33 @@ export type MissionControlInstructionsCloseResponse = z.infer<
   typeof MissionControlInstructionsCloseResponseSchema
 >;
 
+export const MissionControlInstructionsOpenRequestSchema = z.object({
+  type: z.literal("mission_control.instructions.open.request"),
+  requestId: z.string(),
+  // Verbatim final user-utterance transcript text (daemon-capped).
+  text: z.string(),
+  // Ledger source for the opened row. The voice node always sends "voice";
+  // defaulting keeps the field optional on the wire (older callers).
+  source: MissionControlInstructionSourceSchema.default("voice"),
+});
+export type MissionControlInstructionsOpenRequest = z.infer<
+  typeof MissionControlInstructionsOpenRequestSchema
+>;
+
+export const MissionControlInstructionsOpenResponseSchema = z.object({
+  type: z.literal("mission_control.instructions.open.response"),
+  payload: z.object({
+    requestId: z.string(),
+    // The opened ledger rows — one per utterance, no intent splitting. The
+    // model cites these ids via respondsTo on cards; emit-time close closes
+    // the rows.
+    instructions: z.array(z.object({ id: z.string(), text: z.string() })),
+  }),
+});
+export type MissionControlInstructionsOpenResponse = z.infer<
+  typeof MissionControlInstructionsOpenResponseSchema
+>;
+
 // ============================================================================
 // v3 ask/auto mode toggle (Mission Control screen header, RPC-backed).
 // ============================================================================
@@ -619,6 +664,9 @@ export const MissionControlCentralConfigSchema = z.object({
   mode: MissionControlModeSchema.optional(),
   // Event retention window for pruning.
   retentionDays: z.number().optional(),
+  // Days before a reviewState="ready" agent is automatically marked "done"
+  // with verdict "aged-out" by the daily sweep (spec 01). Default 3.
+  readyAgeOutDays: z.number().optional(),
   // Fleet naming theme; re-map is broadcast on switch.
   namingTheme: z.string().optional(),
   // Hide agent name chips, leaving titles.

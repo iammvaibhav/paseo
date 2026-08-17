@@ -88,16 +88,18 @@ const COMMAND_CENTER_SNAP_POINTS = ["60%", "90%"];
 const KEYBOARD_SHOULD_PERSIST_TAPS = "always" as const;
 const DEFAULT_CATEGORY_RESULT_LIMIT = 5;
 
+const BUCKET_SORT_RANK: Record<AggregatedAgent["bucket"], number> = {
+  needs_you: 0,
+  running: 1,
+  ready: 2,
+  done: 3,
+  idle: 4,
+};
+
 function sortAgents(left: AggregatedAgent, right: AggregatedAgent): number {
-  const leftNeedsInput = (left.pendingPermissionCount ?? 0) > 0 ? 1 : 0;
-  const rightNeedsInput = (right.pendingPermissionCount ?? 0) > 0 ? 1 : 0;
-  if (leftNeedsInput !== rightNeedsInput) return rightNeedsInput - leftNeedsInput;
-  const leftAttention = left.requiresAttention ? 1 : 0;
-  const rightAttention = right.requiresAttention ? 1 : 0;
-  if (leftAttention !== rightAttention) return rightAttention - leftAttention;
-  const leftRunning = left.status === "running" ? 1 : 0;
-  const rightRunning = right.status === "running" ? 1 : 0;
-  if (leftRunning !== rightRunning) return rightRunning - leftRunning;
+  const leftRank = BUCKET_SORT_RANK[left.bucket];
+  const rightRank = BUCKET_SORT_RANK[right.bucket];
+  if (leftRank !== rightRank) return rightRank - leftRank;
   return right.lastActivityAt.getTime() - left.lastActivityAt.getTime();
 }
 
@@ -423,8 +425,9 @@ function ResultContent({ result }: { result: CommandCenterResult }) {
         <View style={styles.rowMain}>
           <View style={styles.iconSlot}>
             <AgentStatusDot
+              bucket={agent.bucket}
               status={agent.status}
-              requiresAttention={agent.requiresAttention}
+              attentionReason={agent.attentionReason}
               showInactive
             />
           </View>

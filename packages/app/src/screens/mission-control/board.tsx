@@ -13,6 +13,7 @@ import {
   FlatList,
   Modal,
   Platform,
+  Pressable,
   StatusBar,
   Text,
   View,
@@ -26,12 +27,15 @@ import {
   CircleCheck,
   CircleDot,
   CircleX,
+  ChevronDown,
+  ChevronRight,
   Copy,
   ExternalLink,
   Square,
 } from "lucide-react-native";
 import type { Theme } from "@/styles/theme";
 import { Button } from "@/components/ui/button";
+import { StatusBadge } from "@/components/ui/status-badge";
 import { Switch } from "@/components/ui/switch";
 import {
   ContextMenu,
@@ -76,6 +80,8 @@ const ThemedCircleAlert = withUnistyles(CircleAlert);
 const ThemedCircleCheck = withUnistyles(CircleCheck);
 const ThemedCircleDot = withUnistyles(CircleDot);
 const ThemedCircleX = withUnistyles(CircleX);
+const ThemedChevronDown = withUnistyles(ChevronDown);
+const ThemedChevronRight = withUnistyles(ChevronRight);
 const ThemedArchive = withUnistyles(Archive);
 const ThemedCopy = withUnistyles(Copy);
 const ThemedExternalLink = withUnistyles(ExternalLink);
@@ -119,7 +125,7 @@ function rowIconAndColor(row: LifecycleRow) {
 }
 
 type BoardItem =
-  | { kind: "bucket"; bucket: LifecycleBucket; label: string }
+  | { kind: "bucket"; bucket: LifecycleBucket; label: string; count: number }
   | { kind: "agent"; row: LifecycleRow }
   | { kind: "offlineHost"; serverId: string; label: string };
 
@@ -173,6 +179,7 @@ export function MissionControlBoard({
   hideAgentNames?: boolean;
 } = {}) {
   const [showAll, setShowAll] = useState(false);
+  const [doneExpanded, setDoneExpanded] = useState(false);
   const centralConfig = useMissionControlCentralConfig();
   const resolvedHideAgentNames = hideAgentNames || centralConfig.config?.hideAgentNames === true;
   const { groups } = useMissionControlLifecycle({
@@ -183,6 +190,10 @@ export function MissionControlBoard({
   const serverIds = useMemo(() => hosts.map((host) => host.serverId), [hosts]);
   const connectionStatuses = useHostRuntimeConnectionStatuses(serverIds);
 
+  const readyRows = useMemo(
+    () => groups.find((group) => group.bucket === "ready")?.rows ?? [],
+    [groups],
+  );
   const doneRows = useMemo(
     () => groups.find((group) => group.bucket === "done")?.rows ?? [],
     [groups],
@@ -198,6 +209,19 @@ export function MissionControlBoard({
     }
   }, [doneRows]);
 
+  const handleMoveAllReadyToDone = useCallback(() => {
+    // Confirm-free bookkeeping: each agent uses the existing mark-done RPC.
+    for (const row of readyRows) {
+      void setAgentLifecycle(row.agent.serverId, row.agent.id, "done").catch(() => {
+        // A failed mark leaves that row in Ready; successful pushes reconcile.
+      });
+    }
+  }, [readyRows]);
+
+  const handleToggleDone = useCallback(() => {
+    setDoneExpanded((expanded) => !expanded);
+  }, []);
+
   const items = useMemo<BoardItem[]>(() => {
     const boardItems: BoardItem[] = [];
     for (const group of groups) {
@@ -205,9 +229,12 @@ export function MissionControlBoard({
         kind: "bucket",
         bucket: group.bucket,
         label: LIFECYCLE_BUCKET_LABELS[group.bucket],
+        count: group.rows.length,
       });
-      for (const row of group.rows) {
-        boardItems.push({ kind: "agent", row });
+      if (group.bucket !== "done" || doneExpanded) {
+        for (const row of group.rows) {
+          boardItems.push({ kind: "agent", row });
+        }
       }
     }
     for (const host of hosts) {
@@ -217,7 +244,7 @@ export function MissionControlBoard({
       boardItems.push({ kind: "offlineHost", serverId: host.serverId, label: host.label });
     }
     return boardItems;
-  }, [connectionStatuses, groups, hosts]);
+  }, [connectionStatuses, doneExpanded, groups, hosts]);
 
   const renderItem = useCallback(
     ({ item }: { item: BoardItem }) => {
@@ -227,6 +254,12 @@ export function MissionControlBoard({
             key={itemKey(item)}
             bucket={item.bucket}
             label={item.label}
+            count={item.count}
+            isExpanded={item.bucket === "done" ? doneExpanded : null}
+            onToggle={item.bucket === "done" ? handleToggleDone : null}
+            onMoveAll={
+              item.bucket === "ready" && readyRows.length > 0 ? handleMoveAllReadyToDone : null
+            }
             onClearAll={item.bucket === "done" && doneRows.length > 0 ? handleClearAll : null}
           />
         );
@@ -252,7 +285,15 @@ export function MissionControlBoard({
         />
       );
     },
-    [doneRows.length, handleClearAll, resolvedHideAgentNames],
+    [
+      doneExpanded,
+      doneRows.length,
+      handleClearAll,
+      handleMoveAllReadyToDone,
+      handleToggleDone,
+      readyRows.length,
+      resolvedHideAgentNames,
+    ],
   );
 
   return (
@@ -282,25 +323,70 @@ export function MissionControlBoard({
 function BucketHeader({
   bucket,
   label,
+  count,
+  isExpanded,
+  onToggle,
+  onMoveAll,
   onClearAll,
 }: {
   bucket: LifecycleBucket;
   label: string;
+  count: number;
+  isExpanded: boolean | null;
+  onToggle: (() => void) | null;
+  onMoveAll: (() => void) | null;
   onClearAll: (() => void) | null;
 }) {
+  const accessibilityState = useMemo(
+    () => (isExpanded === null ? undefined : { expanded: isExpanded }),
+    [isExpanded],
+  );
+  const headerLabel = isExpanded === null ? label : `${label} (${count})`;
   return (
     <View style={styles.bucketHeaderRow}>
-      <Text style={styles.bucketHeader}>{label}</Text>
-      {onClearAll ? (
-        <Button
-          variant="ghost"
-          size="xs"
-          onPress={onClearAll}
-          testID={`mission-control-clear-${bucket}`}
+      {onToggle ? (
+        <Pressable
+          onPress={onToggle}
+          accessibilityRole="button"
+          accessibilityLabel={`${isExpanded ? "Collapse" : "Expand"} ${label}`}
+          accessibilityState={accessibilityState}
+          style={styles.bucketHeaderToggle}
+          testID={`mission-control-toggle-${bucket}`}
         >
-          Clear all
-        </Button>
-      ) : null}
+          {isExpanded ? (
+            <ThemedChevronDown size={12} uniProps={mutedColorMapping} />
+          ) : (
+            <ThemedChevronRight size={12} uniProps={mutedColorMapping} />
+          )}
+          <Text style={styles.bucketHeader}>{headerLabel}</Text>
+        </Pressable>
+      ) : (
+        <View style={styles.bucketHeaderStatic}>
+          <Text style={styles.bucketHeader}>{headerLabel}</Text>
+        </View>
+      )}
+      <View style={styles.bucketHeaderActions}>
+        {onMoveAll ? (
+          <Button
+            variant="ghost"
+            size="xs"
+            onPress={onMoveAll}
+            testID="mission-control-move-all-ready-to-done"
+          >
+            Move all Ready → Done
+          </Button>
+        ) : null}
+        {onClearAll ? (
+          <Button
+            variant="ghost"
+            size="xs"
+            onPress={onClearAll}
+            testID={`mission-control-clear-${bucket}`}
+          >
+            Clear all
+          </Button>
+        ) : null}
+      </View>
     </View>
   );
 }
@@ -311,12 +397,12 @@ function BucketHeader({
 function AgentRowTextContent({
   row,
   keyLine,
-  showNameChip,
+  nameChip,
   headline,
 }: {
   row: LifecycleRow;
   keyLine: string;
-  showNameChip: boolean;
+  nameChip: string | null;
   headline: string | null;
 }): ReactElement {
   const isDone = row.bucket === "done";
@@ -346,10 +432,11 @@ function AgentRowTextContent({
             </Text>
           </View>
         ) : null}
-        {showNameChip ? (
+        {row.verdict?.reason === "aged-out" ? <StatusBadge label="Aged out" /> : null}
+        {nameChip ? (
           <View style={styles.nameChip}>
             <Text numberOfLines={1} style={styles.nameChipText}>
-              {row.agent.name}
+              {nameChip}
             </Text>
           </View>
         ) : null}
@@ -359,7 +446,7 @@ function AgentRowTextContent({
           </Text>
         ) : null}
       </View>
-      {isDone && row.verdict ? (
+      {isDone && row.verdict && row.verdict.reason !== "aged-out" ? (
         <Text numberOfLines={1} style={styles.verdictLine}>
           {row.verdict.summary}
         </Text>
@@ -618,27 +705,39 @@ function deriveRowIdentity(row: LifecycleRow, hideAgentNames: boolean) {
   const { agent } = row;
   const isRecorded = row.bucket === "done" || row.bucket === "ready" || row.bucket === "dormant";
   const keyLine = isRecorded
-    ? (row.snapshotTitle ?? agent.name ?? agent.id)
+    ? (row.snapshotTitle ?? agent.title ?? agent.name ?? agent.id)
     : (agent.title ?? agent.name ?? agent.id);
-  const showNameChip = agent.name !== null && agent.name !== keyLine && !hideAgentNames;
-  // On done rows the verdict line already carries the summary; a headline that
-  // is literally the same text (user "Marked done"/"Cleared" cards) would read
-  // as a duplicated line.
-  const headline =
-    row.lastReportHeadline !== null &&
-    row.bucket === "done" &&
-    row.verdict !== null &&
-    row.lastReportHeadline === row.verdict.summary
-      ? null
-      : row.lastReportHeadline;
-  // Hover-popover identity follows the same recorded/live split: recorded
-  // rows show the shortDescription snapshot (falling back to the event
-  // headline), live rows the live shortDescription.
+  const identityName = isRecorded ? (row.snapshotName ?? agent.name ?? null) : (agent.name ?? null);
+  const nameChip = deriveRowNameChip(identityName, keyLine, hideAgentNames);
+  const headline = deriveRowHeadline(row);
   const identityDescription = isRecorded
     ? (row.snapshotShortDescription ?? headline)
     : (agent.shortDescription ?? headline);
-  const popoverTitle = isRecorded ? row.snapshotTitle : agent.title;
-  return { keyLine, showNameChip, headline, identityDescription, popoverTitle };
+  const popoverTitle = isRecorded ? (row.snapshotTitle ?? keyLine) : (agent.title ?? keyLine);
+  return { keyLine, nameChip, headline, identityDescription, popoverTitle };
+}
+
+/** The name chip is the identity name only when it differs from the key line
+ * and agent names are not hidden (redundant chips never render). */
+function deriveRowNameChip(
+  identityName: string | null,
+  keyLine: string,
+  hideAgentNames: boolean,
+): string | null {
+  return identityName !== null && identityName !== keyLine && !hideAgentNames ? identityName : null;
+}
+
+/** On done rows the verdict line already carries the summary; a headline that
+ * is literally the same text (user "Marked done"/"Cleared" cards) would read
+ * as a duplicated line, so it is suppressed. */
+function deriveRowHeadline(row: LifecycleRow): string | null {
+  const suppressedByVerdict =
+    row.verdict?.reason === "aged-out" ||
+    (row.lastReportHeadline !== null &&
+      row.bucket === "done" &&
+      row.verdict !== null &&
+      row.lastReportHeadline === row.verdict.summary);
+  return suppressedByVerdict ? null : row.lastReportHeadline;
 }
 
 const MemoizedAgentRow = memo(AgentRowImpl);
@@ -743,7 +842,7 @@ function AgentRowImpl({
     });
   }, [agent.id, agent.serverId, archiveAgent]);
 
-  const { keyLine, showNameChip, headline, identityDescription, popoverTitle } = deriveRowIdentity(
+  const { keyLine, nameChip, headline, identityDescription, popoverTitle } = deriveRowIdentity(
     row,
     hideAgentNames,
   );
@@ -790,7 +889,7 @@ function AgentRowImpl({
             <AgentRowTextContent
               row={row}
               keyLine={keyLine}
-              showNameChip={showNameChip}
+              nameChip={nameChip}
               headline={headline}
             />
             {timeLabel ? <Text style={styles.rowTime}>{timeLabel}</Text> : null}
@@ -868,13 +967,27 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "space-between",
     paddingRight: theme.spacing[2],
   },
+  bucketHeaderToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+    paddingHorizontal: theme.spacing[3],
+    paddingTop: theme.spacing[3],
+    paddingBottom: theme.spacing[1],
+  },
+  bucketHeaderStatic: {
+    paddingHorizontal: theme.spacing[3],
+    paddingTop: theme.spacing[3],
+    paddingBottom: theme.spacing[1],
+  },
+  bucketHeaderActions: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
   bucketHeader: {
     fontSize: theme.fontSize.xs,
     fontWeight: theme.fontWeight.normal,
     color: theme.colors.foregroundMuted,
-    paddingHorizontal: theme.spacing[3],
-    paddingTop: theme.spacing[3],
-    paddingBottom: theme.spacing[1],
     userSelect: "none",
   },
   agentRow: {

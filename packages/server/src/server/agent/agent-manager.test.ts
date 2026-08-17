@@ -2037,10 +2037,9 @@ test("a canceled turn never latches finished attention; the follow-up failure la
   }
 });
 
-test("an error transition upgrades a latched finished attention", async () => {
-  // A cancel-then-fail sequence (or any run that completes then fails) must
-  // not leave the record claiming a clean finish: lastStatus "error" paired
-  // with attentionReason "finished" misleads every attention consumer.
+test("a completed turn does not latch attention; subsequent failure latches error attention", async () => {
+  // Spec 01 change 1: clean finish stops latching attention. A subsequent
+  // run failure latches error attention as expected.
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-attention-upgrade-"));
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
@@ -2109,20 +2108,20 @@ test("an error transition upgrades a latched finished attention", async () => {
   try {
     await manager.runAgent(agent.id, "complete once");
     await manager.flush();
-    // First turn completed: finished latched.
+    // First turn completed: clean finish no longer latches attention (spec 01 change 1).
     expect(manager.getAgent(agent.id)).toMatchObject({
-      attention: { requiresAttention: true, attentionReason: "finished" },
+      lifecycle: "idle",
+      attention: { requiresAttention: false },
     });
 
     await expect(manager.runAgent(agent.id, "fail now")).rejects.toThrow("boom-after-finish");
     await manager.flush();
-    // The error transition must upgrade the stale finished latch.
+    // The error transition latches error attention.
     expect(manager.getAgent(agent.id)).toMatchObject({
       lifecycle: "error",
       attention: { requiresAttention: true, attentionReason: "error" },
     });
     const persisted = await storage.get(agent.id);
-    expect(persisted?.lastStatus).toBe("error");
     expect(persisted?.attentionReason).toBe("error");
   } finally {
     await manager.closeAgent(agent.id);
@@ -4779,8 +4778,8 @@ test("archiveAgent does not cascade to a detached former child", async () => {
   expect((await storage.get(child.id))?.archivedAt).toBeFalsy();
 });
 
-test("runAgent persists finished attention and idle status without an external snapshot subscriber", async () => {
-  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-finished-attention-"));
+test("runAgent persists idle status without finished attention (spec 01 change 1)", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-run-persist-"));
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
@@ -4789,14 +4788,13 @@ test("runAgent persists finished attention and idle status without an external s
     },
     registry: storage,
     logger,
-    idFactory: () => "00000000-0000-4000-8000-000000000134",
   });
 
   const snapshot = await manager.createAgent(
     {
       provider: "codex",
       cwd: workdir,
-      title: "Finished attention test",
+      title: "Run agent persistence test",
     },
     undefined,
     { workspaceId: undefined },
@@ -4807,9 +4805,7 @@ test("runAgent persists finished attention and idle status without an external s
 
   const persisted = await storage.get(snapshot.id);
   expect(persisted?.lastStatus).toBe("idle");
-  expect(persisted?.requiresAttention).toBe(true);
-  expect(persisted?.attentionReason).toBe("finished");
-  expect(persisted?.attentionTimestamp).toEqual(expect.any(String));
+  expect(persisted?.requiresAttention).toBeFalsy();
 });
 
 test("archiveSnapshot clears persisted attention and normalizes running status", async () => {
@@ -8655,7 +8651,11 @@ test("permission request notifies once without forcing unread attention state", 
 
   const withPermissionPending = manager.getAgent(agent.id);
   expect(withPermissionPending?.pendingPermissions.size).toBe(1);
-  expect(withPermissionPending?.attention).toEqual({ requiresAttention: false });
+  // Spec 01 change 2: permission requests latch record attention.
+  expect(withPermissionPending?.attention).toMatchObject({
+    requiresAttention: true,
+    attentionReason: "permission",
+  });
 
   // Release permission resolution and drain the rest of the stream
   releasePermissionResolution.resolve();
@@ -8663,9 +8663,10 @@ test("permission request notifies once without forcing unread attention state", 
     // no-op
   }
 
+  // Attention clears when permissions drain
+  expect(manager.getAgent(agent.id)?.attention).toEqual({ requiresAttention: false });
   expect(attentionReasons).toContain("permission");
 });
-
 test("respondToPermission updates currentModeId after plan approval", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-test-"));
   const storagePath = join(workdir, "agents");
