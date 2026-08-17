@@ -4234,7 +4234,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       .positive()
       .max(24 * 30)
       .optional()
-      .default(48),
+      .describe(
+        "Recency window in hours. Defaults to 48 for the plain roster; calls with bucket or query default to the full 30-day retention so filtered counts and name resolution are complete.",
+      ),
     statuses: z
       .array(z.enum(["initializing", "idle", "running", "error", "closed"]))
       .optional()
@@ -4666,14 +4668,26 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       inputSchema: fleetListAgentsInputSchema,
       outputSchema: {
         agents: z.array(fleetAgentListItemSchema),
+        // Closed loop: the applied recency window and the pre-limit match
+        // count ride the result so answers never state a windowed count as
+        // fleet truth.
+        appliedSinceHours: z.number(),
+        totalMatches: z.number(),
       },
     },
-    async ({ includeArchived = false, sinceHours = 48, statuses, bucket, query, limit = 50 }) => {
+    async ({ includeArchived = false, sinceHours, statuses, bucket, query, limit = 50 }) => {
+      // Bucket and query calls are deterministic lookups over the whole
+      // retained fleet; the 48h recency default is only for the plain
+      // roster. A silent window here once turned 21 ready agents into a
+      // spoken "13 agents ready for review".
+      const effectiveSinceHours = sinceHours ?? (bucket || query ? 24 * 30 : 48);
+      // Post-hoc filters (bucket/query) must see the full candidate set, so
+      // filtered calls fetch the local roster at its cap, not the caller cap.
       const localResult = await toCatalog().executeTool("list_agents", {
         includeArchived,
-        sinceHours,
+        sinceHours: effectiveSinceHours,
         statuses,
-        limit,
+        limit: bucket || query ? 200 : limit,
       });
       const localAgents = z
         .object({ agents: z.array(AgentListItemPayloadSchema) })
@@ -4745,7 +4759,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         if (!peerManager) {
           return;
         }
-        const sinceMs = Date.now() - sinceHours * 60 * 60 * 1000;
+        const sinceMs = Date.now() - effectiveSinceHours * 60 * 60 * 1000;
         // Peer host identity: the serverId of the host each agent runs on
         // (absent when the peer map does not know it yet — additive).
         const getPeerServerId =
@@ -4813,7 +4827,11 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       filtered.sort(compareAgentListItems);
       return {
         content: [],
-        structuredContent: ensureValidJson({ agents: filtered.slice(0, limit) }),
+        structuredContent: ensureValidJson({
+          agents: filtered.slice(0, limit),
+          appliedSinceHours: effectiveSinceHours,
+          totalMatches: filtered.length,
+        }),
       };
     },
   );

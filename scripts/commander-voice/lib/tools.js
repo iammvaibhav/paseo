@@ -65,7 +65,8 @@ const READ_TOOL_DECLARATIONS = [
         },
         sinceHours: {
           type: "NUMBER",
-          description: "Only agents updated in the last N hours (default 48).",
+          description:
+            "Only agents updated in the last N hours. Default 48 for the plain roster; bucket/query calls default to the full 30-day retention so filtered counts are complete. Results carry appliedSinceHours + totalMatches.",
         },
         statuses: {
           type: "ARRAY",

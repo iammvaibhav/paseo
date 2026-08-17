@@ -1185,6 +1185,67 @@ describe("fleet_list_agents roster fields (spec 03)", () => {
       (mismatch.structuredContent as { agents: Array<Record<string, unknown>> }).agents,
     ).toHaveLength(0);
   });
+
+  test("bucket calls widen the recency window to full retention and stamp appliedSinceHours/totalMatches", async () => {
+    const fiveDaysAgo = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+    const { client, peerManager } = createFakePeerHarness();
+    client.fetchAgents = vi.fn(async () => ({
+      entries: [
+        {
+          agent: {
+            id: SEND_AGENT_UUID,
+            provider: "omp",
+            cwd: "/tmp",
+            name: "old-ready-worker",
+            bucket: "ready",
+            createdAt: fiveDaysAgo,
+            updatedAt: fiveDaysAgo,
+            status: "closed",
+            title: "Old ready worker",
+          },
+        },
+      ],
+      page: { limit: 200 },
+    }));
+    client.missionControlEventsFetch = vi.fn(async () => ({ requestId: "req", events: [] }));
+    const catalog = createCatalog(peerManager, {
+      listAgents: () => [],
+      getRegisteredProviderIds: () => [],
+      getTimeline: () => [],
+    } as unknown as AgentManager);
+
+    // Plain roster keeps the 48h default: the 5-day-old row is out of window.
+    const plain = await catalog.executeTool("fleet_list_agents", { limit: 50 });
+    const plainPayload = plain.structuredContent as {
+      agents: Array<Record<string, unknown>>;
+      appliedSinceHours: number;
+      totalMatches: number;
+    };
+    expect(plainPayload.agents).toHaveLength(0);
+    expect(plainPayload.appliedSinceHours).toBe(48);
+
+    // A bucket call is a deterministic lookup: it must see the whole
+    // retained fleet, not a silently windowed subset.
+    const ready = await catalog.executeTool("fleet_list_agents", { bucket: "ready", limit: 50 });
+    const readyPayload = ready.structuredContent as {
+      agents: Array<Record<string, unknown>>;
+      appliedSinceHours: number;
+      totalMatches: number;
+    };
+    expect(readyPayload.agents.map((agent) => agent.id)).toEqual([SEND_AGENT_UUID]);
+    expect(readyPayload.appliedSinceHours).toBe(24 * 30);
+    expect(readyPayload.totalMatches).toBe(1);
+
+    // An explicit sinceHours always wins, even with a bucket filter.
+    const explicit = await catalog.executeTool("fleet_list_agents", {
+      bucket: "ready",
+      sinceHours: 48,
+      limit: 50,
+    });
+    expect(
+      (explicit.structuredContent as { agents: Array<Record<string, unknown>> }).agents,
+    ).toHaveLength(0);
+  });
 });
 
 describe("fleet_create_agent call-time validation (spec 03)", () => {
