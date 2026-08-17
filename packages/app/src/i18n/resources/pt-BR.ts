@@ -1786,6 +1786,10 @@ export const ptBR: TranslationResources = {
     archiveFinishedRetry: "Tentar novamente ({{failed}}/{{total}})",
   },
   selectionAsks: {
+    title: "Perguntas",
+    pillLabelOne: "1 pergunta",
+    pillLabelMany: "{{count}} perguntas",
+    openAction: "Abrir pergunta {{label}}",
     archiveAction: "Arquivar {{label}}",
     archiveTooltip: "Arquivar pergunta",
     clearAll: "Limpar todas as perguntas",

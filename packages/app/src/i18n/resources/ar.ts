@@ -1756,6 +1756,10 @@ export const ar: TranslationResources = {
     archiveFinishedRetry: "إعادة المحاولة ({{failed}}/{{total}})",
   },
   selectionAsks: {
+    title: "أسئلة",
+    pillLabelOne: "سؤال واحد",
+    pillLabelMany: "{{count}} أسئلة",
+    openAction: "فتح السؤال {{label}}",
     archiveAction: "أرشفة {{label}}",
     archiveTooltip: "أرشفة السؤال",
     clearAll: "مسح جميع الأسئلة",

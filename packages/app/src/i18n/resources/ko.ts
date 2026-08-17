@@ -1767,6 +1767,10 @@ export const ko: TranslationResources = {
     archiveFinishedRetry: "다시 시도 ({{failed}}/{{total}})",
   },
   selectionAsks: {
+    title: "질문",
+    pillLabelOne: "질문 1개",
+    pillLabelMany: "질문 {{count}}개",
+    openAction: "{{label}} 열기",
     archiveAction: "{{label}} 보관",
     archiveTooltip: "질문 보관",
     clearAll: "모든 질문 지우기",

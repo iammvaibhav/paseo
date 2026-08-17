@@ -158,7 +158,7 @@ function readSelectionAskAnchorRect(range: Range): AnchorRect {
 const REOPEN_FALLBACK_WIDTH = 380;
 const REOPEN_FALLBACK_MARGIN = 24;
 
-// The asks list normally anchors a reopened popover at the clicked row; this
+// The asks track normally anchors a reopened popover at the clicked row; this
 // is the defensive fallback when no row rect is available.
 function fallbackReopenAnchorRect(): AnchorRect {
   if (typeof window === "undefined") {
@@ -392,7 +392,7 @@ export function useSelectionAsk(config: SelectionAskConfig): SelectionAskState {
     setError(null);
   }, [clearAskTimelineSubscription]);
 
-  // The asks list reopens the popover through the reopen store: consume the
+  // The asks track reopens the popover through the reopen store: consume the
   // request targeting this source agent, open in answer mode anchored at the
   // clicked row, and register the ask's timeline like a freshly started ask so
   // its status and stream stay live.
@@ -429,7 +429,7 @@ export function useSelectionAsk(config: SelectionAskConfig): SelectionAskState {
     return useReopenAskStore.subscribe(handleReopenAskRequest);
   }, [handleReopenAskRequest]);
 
-  // The asks list dismisses (archives) an ask that may be open in this popover.
+  // The asks track dismisses (archives) an ask that may be open in this popover.
   // Consume the dismiss request targeting this source agent and close the
   // popover when the archived ask is the one currently open. Requests for
   // other asks (or when no ask is open) are consumed and dropped.
@@ -528,7 +528,7 @@ export function useSelectionAsk(config: SelectionAskConfig): SelectionAskState {
       }
       setAskAgentId(result.agentId);
       // Remember the source selection for this ask so a later reopen from the
-      // asks list can offer "Jump to chat" while the range is still live.
+      // asks track can offer "Jump to chat" while the range is still live.
       if (
         startedRange &&
         typeof document !== "undefined" &&

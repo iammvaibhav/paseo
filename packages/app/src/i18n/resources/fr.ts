@@ -1804,6 +1804,10 @@ export const fr: TranslationResources = {
     archiveFinishedRetry: "Réessayer ({{failed}}/{{total}})",
   },
   selectionAsks: {
+    title: "Questions",
+    pillLabelOne: "1 question",
+    pillLabelMany: "{{count}} questions",
+    openAction: "Ouvrir la question {{label}}",
     archiveAction: "Archiver {{label}}",
     archiveTooltip: "Archiver la question",
     clearAll: "Effacer toutes les questions",

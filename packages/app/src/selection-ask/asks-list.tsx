@@ -1,56 +1,32 @@
-import { useCallback, useMemo, useRef, useState } from "react";
-import {
-  Pressable,
-  ScrollView,
-  Text,
-  View,
-  type PressableStateCallbackType,
-  type ViewStyle,
-} from "react-native";
-import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { Archive, ChevronDown, ChevronRight } from "lucide-react-native";
+import { useCallback, useRef, type ReactElement } from "react";
+import { Pressable, Text, View } from "react-native";
+import { Archive } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
+import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { isSelectionAskAgent } from "@getpaseo/protocol/agent-labels";
 import { useShallow } from "zustand/shallow";
+import { ComposerTrackPill, ComposerTrackRow } from "@/composer/tracks";
+import { useMenuContext } from "@/components/ui/menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { useIsCompactFormFactor, MAX_CONTENT_WIDTH } from "@/constants/layout";
+import { useIsCompactFormFactor } from "@/constants/layout";
 import { isNative } from "@/constants/platform";
 import { useArchiveAgent } from "@/hooks/use-archive-agent";
 import { useSessionStore, type Agent } from "@/stores/session-store";
 import type { Theme } from "@/styles/theme";
+import { deriveSidebarStateBucket, type SidebarStateBucket } from "@/utils/sidebar-agent-state";
+import { STATUS_INDICATOR_FILLED_DOT_SIZE } from "@/utils/status-indicator-geometry";
 import { useReopenAskStore } from "./reopen-store";
+import { aggregateAskStatusBucket, resolveAskTitle } from "./track-presentation";
 
 const EMPTY_ASKS: Agent[] = [];
-const ASKS_LIST_MAX_HEIGHT = 200;
+const ROW_ICON_SIZE = 14;
 
 const ThemedArchive = withUnistyles(Archive);
-const ThemedChevronDown = withUnistyles(ChevronDown);
-const ThemedChevronRight = withUnistyles(ChevronRight);
 
-const foregroundMutedMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
-const foregroundMapping = (theme: Theme) => ({ color: theme.colors.foreground });
-
-const statusStyles = StyleSheet.create((theme) => ({
-  running: {
-    backgroundColor: theme.colors.accentBright,
-  },
-  error: {
-    backgroundColor: theme.colors.destructive,
-  },
-  idle: {
-    backgroundColor: theme.colors.foregroundExtraMuted,
-  },
-}));
-
-function getAskStatusStyle(status: Agent["status"]): ViewStyle {
-  if (status === "running") {
-    return statusStyles.running;
-  }
-  if (status === "error") {
-    return statusStyles.error;
-  }
-  return statusStyles.idle;
-}
+const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
+const foregroundMutedColorMapping = (theme: Theme) => ({
+  color: theme.colors.foregroundMuted,
+});
 
 function selectSelectionAsks(
   state: ReturnType<typeof useSessionStore.getState>,
@@ -76,28 +52,27 @@ function selectSelectionAsks(
 }
 
 /**
- * Collapsed "Asks (N)" card above the composer's task list. Lists the side
- * asks forked from this agent (agents labeled paseo.selection-ask whose parent
- * is the current agent); hidden entirely when there are none. Clicking a row
- * reopens the selection Ask popover for that ask in answer mode; opening the
- * ask in its own tab is available from the popover's header button instead.
- * Rows offer the same hover archive affordance as the subagents track, and the
- * expanded header offers "Clear all" to archive every listed ask at once.
+ * Asks forked from this agent, as a pill on the composer track bar. Hidden
+ * when there are none. A row reopens the selection Ask popover in answer mode;
+ * the popover header still owns "open in its own tab". Archive matches the
+ * subagents track: hover on desktop, always visible on touch, and a Clear all
+ * row at the foot of the panel.
  */
-export function SelectionAsksList({ serverId, agentId }: { serverId: string; agentId: string }) {
+export function SelectionAsksList({
+  serverId,
+  agentId,
+}: {
+  serverId: string;
+  agentId: string;
+}): ReactElement | null {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(false);
   const asks = useSessionStore(
     useShallow((state) => selectSelectionAsks(state, serverId, agentId)),
   );
   const { archiveAgent } = useArchiveAgent();
 
-  const toggle = useCallback(() => setExpanded((current) => !current), []);
-
   const handleClearAll = useCallback(() => {
     for (const askAgent of asks) {
-      // Archiving removes each ask from the list; if it was open in the
-      // selection Ask popover, ask the host to dismiss it.
       void archiveAgent({ serverId, agentId: askAgent.id })
         .then(() => {
           useReopenAskStore.getState().requestAskDismiss({
@@ -110,81 +85,61 @@ export function SelectionAsksList({ serverId, agentId }: { serverId: string; age
     }
   }, [agentId, archiveAgent, asks, serverId]);
 
-  const surfaceStyle = useMemo(
-    () => [styles.surface, expanded && styles.surfaceExpanded],
-    [expanded],
-  );
-
-  const headerStyle = useCallback(
-    ({ pressed, hovered }: PressableStateCallbackType) => [
-      styles.headerToggle,
-      (pressed || hovered) && styles.headerActive,
-    ],
-    [],
-  );
-
-  const headerContainerStyle = useMemo(
-    () => [styles.header, expanded ? styles.headerDivider : styles.headerCollapsed],
-    [expanded],
-  );
-
-  const headerAccessibilityState = useMemo(() => ({ expanded }), [expanded]);
-
   if (asks.length === 0) {
     return null;
   }
 
+  const pillLabel =
+    asks.length === 1
+      ? t("selectionAsks.pillLabelOne")
+      : t("selectionAsks.pillLabelMany", { count: asks.length });
+
   return (
-    <View style={styles.outer} testID="selection-asks-list">
-      <View style={styles.track}>
-        <View style={surfaceStyle}>
-          <View style={headerContainerStyle}>
-            <Pressable
-              onPress={toggle}
-              style={headerStyle}
-              accessibilityRole="button"
-              accessibilityState={headerAccessibilityState}
-              testID="selection-asks-header"
-            >
-              {expanded ? (
-                <ThemedChevronDown size={12} uniProps={foregroundMutedMapping} />
-              ) : (
-                <ThemedChevronRight size={12} uniProps={foregroundMutedMapping} />
-              )}
-              <Text style={styles.headerLabel}>Asks ({asks.length})</Text>
-            </Pressable>
-            {expanded ? (
-              <View style={styles.headerAction}>
-                <SelectionAskActionButton
-                  accessibilityLabel={t("selectionAsks.clearAll")}
-                  testID="selection-asks-clear-all"
-                  tooltipLabel={t("selectionAsks.clearAll")}
-                  visible
-                  onPress={handleClearAll}
-                />
-              </View>
-            ) : null}
-          </View>
-          {expanded ? (
-            <ScrollView
-              style={styles.scroll}
-              contentContainerStyle={styles.scrollContent}
-              showsVerticalScrollIndicator={false}
-              nestedScrollEnabled
-            >
-              {asks.map((askAgent) => (
-                <SelectionAsksRow
-                  key={askAgent.id}
-                  agent={askAgent}
-                  serverId={serverId}
-                  sourceAgentId={agentId}
-                />
-              ))}
-            </ScrollView>
-          ) : null}
-        </View>
-      </View>
-    </View>
+    <ComposerTrackPill
+      testID="selection-asks-header"
+      label={pillLabel}
+      panelTitle={t("selectionAsks.title")}
+      statusBucket={aggregateAskStatusBucket(asks)}
+    >
+      {asks.map((askAgent) => (
+        <SelectionAsksRow
+          key={askAgent.id}
+          agent={askAgent}
+          serverId={serverId}
+          sourceAgentId={agentId}
+        />
+      ))}
+      <ClearAllRow onPress={handleClearAll} />
+    </ComposerTrackPill>
+  );
+}
+
+function ClearAllRow({ onPress }: { onPress: () => void }): ReactElement {
+  const { t } = useTranslation();
+
+  const renderRow = useCallback(
+    ({ active }: { active: boolean }) => (
+      <>
+        <ThemedArchive
+          size={ROW_ICON_SIZE}
+          uniProps={active ? foregroundColorMapping : foregroundMutedColorMapping}
+        />
+        <Text style={styles.rowLabel} numberOfLines={1}>
+          {t("selectionAsks.clearAll")}
+        </Text>
+      </>
+    ),
+    [t],
+  );
+
+  return (
+    <ComposerTrackRow
+      accessibilityLabel={t("selectionAsks.clearAll")}
+      testID="selection-asks-clear-all"
+      onPress={onPress}
+    >
+      {renderRow}
+    </ComposerTrackRow>
   );
 }
 
@@ -196,32 +151,43 @@ function SelectionAsksRow({
   agent: Agent;
   serverId: string;
   sourceAgentId: string;
-}) {
+}): ReactElement {
   const { t } = useTranslation();
-  const title = agent.title ?? agent.name ?? "Ask";
+  const title = resolveAskTitle(agent);
   const rowRef = useRef<View>(null);
   const isCompact = useIsCompactFormFactor();
-  const [hovered, setHovered] = useState(false);
   const { archiveAgent } = useArchiveAgent();
+  const { setOpen } = useMenuContext("SelectionAsksRow");
+  const actionsAlwaysVisible = isNative || isCompact;
+  const statusBucket = deriveSidebarStateBucket({
+    bucket: agent.bucket,
+    status: agent.status,
+    pendingPermissionCount: agent.pendingPermissions.length,
+    attentionReason: agent.attentionReason,
+    stoppedBy: agent.stoppedBy,
+  });
 
   const handleOpen = useCallback(() => {
     const element = rowRef.current;
     if (element) {
       element.measureInWindow((x, y, width, height) => {
+        setOpen(false);
         useReopenAskStore.getState().requestReopenAsk({
           sourceAgentId,
           askAgentId: agent.id,
           anchorRect: { top: y, left: x, width, height },
         });
       });
-    } else {
-      useReopenAskStore.getState().requestReopenAsk({ sourceAgentId, askAgentId: agent.id });
+      return;
     }
-  }, [agent.id, sourceAgentId]);
+    setOpen(false);
+    useReopenAskStore.getState().requestReopenAsk({
+      sourceAgentId,
+      askAgentId: agent.id,
+    });
+  }, [agent.id, setOpen, sourceAgentId]);
 
   const handleArchivePress = useCallback(() => {
-    // Archiving removes the ask from the list; if it was open in the selection
-    // Ask popover, ask the host to dismiss it.
     void archiveAgent({ serverId, agentId: agent.id })
       .then(() => {
         useReopenAskStore.getState().requestAskDismiss({
@@ -233,54 +199,66 @@ function SelectionAsksRow({
       .catch(() => undefined);
   }, [agent.id, archiveAgent, serverId, sourceAgentId]);
 
-  const handlePointerEnter = useCallback(() => setHovered(true), []);
-  const handlePointerLeave = useCallback(() => setHovered(false), []);
-  // Same affordance as the subagents track: the archive action is always
-  // visible on touch/compact surfaces and appears on hover elsewhere.
-  const actionsAlwaysVisible = isNative || isCompact;
-  const actionsVisible = actionsAlwaysVisible || hovered;
+  const renderRow = useCallback(
+    ({ active }: { active: boolean }) => (
+      <>
+        <View style={[styles.statusDot, statusDotStyle(statusBucket)]} />
+        <Text style={styles.rowLabel} numberOfLines={1}>
+          {title}
+        </Text>
+        <AskRowActions
+          rowId={agent.id}
+          displayLabel={title}
+          visible={actionsAlwaysVisible || active}
+          onArchivePress={handleArchivePress}
+        />
+      </>
+    ),
+    [actionsAlwaysVisible, agent.id, handleArchivePress, statusBucket, title],
+  );
 
   return (
-    // Wrapper View handles hover so moving the pointer between the row and
-    // the archive button doesn't drop the hover state.
-    <View
-      ref={rowRef}
-      collapsable={false}
-      onPointerEnter={handlePointerEnter}
-      onPointerLeave={handlePointerLeave}
-    >
-      <Pressable
-        onPress={handleOpen}
-        accessibilityRole="button"
-        accessibilityLabel={`Open ask ${title}`}
+    <View ref={rowRef} collapsable={false}>
+      <ComposerTrackRow
+        accessibilityLabel={t("selectionAsks.openAction", { label: title })}
         testID={`selection-asks-row-${agent.id}`}
+        onPress={handleOpen}
       >
-        {({ pressed }) => (
-          <View style={hovered || pressed ? styles.rowActive : styles.row}>
-            <View style={[styles.statusDot, getAskStatusStyle(agent.status)]} />
-            <Text style={styles.rowLabel} numberOfLines={1}>
-              {title}
-            </Text>
-            <View
-              style={actionsVisible ? styles.actionClusterVisible : styles.actionClusterHidden}
-              pointerEvents={actionsVisible ? "auto" : "none"}
-            >
-              <SelectionAskActionButton
-                accessibilityLabel={t("selectionAsks.archiveAction", { label: title })}
-                testID={`selection-asks-row-archive-${agent.id}`}
-                tooltipLabel={t("selectionAsks.archiveTooltip")}
-                visible={actionsVisible}
-                onPress={handleArchivePress}
-              />
-            </View>
-          </View>
-        )}
-      </Pressable>
+        {renderRow}
+      </ComposerTrackRow>
     </View>
   );
 }
 
-function SelectionAskActionButton({
+function AskRowActions({
+  rowId,
+  displayLabel,
+  visible,
+  onArchivePress,
+}: {
+  rowId: string;
+  displayLabel: string;
+  visible: boolean;
+  onArchivePress: () => void;
+}): ReactElement {
+  const { t } = useTranslation();
+  return (
+    <View
+      style={visible ? styles.actionClusterVisible : styles.actionClusterHidden}
+      pointerEvents={visible ? "auto" : "none"}
+    >
+      <AskActionButton
+        accessibilityLabel={t("selectionAsks.archiveAction", { label: displayLabel })}
+        testID={`selection-asks-row-archive-${rowId}`}
+        tooltipLabel={t("selectionAsks.archiveTooltip")}
+        visible={visible}
+        onPress={onArchivePress}
+      />
+    </View>
+  );
+}
+
+function AskActionButton({
   accessibilityLabel,
   testID,
   tooltipLabel,
@@ -292,7 +270,7 @@ function SelectionAskActionButton({
   tooltipLabel: string;
   visible: boolean;
   onPress: () => void;
-}) {
+}): ReactElement {
   return (
     <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
       <TooltipTrigger asChild disabled={!visible}>
@@ -306,8 +284,8 @@ function SelectionAskActionButton({
         >
           {({ hovered, pressed }) => (
             <ThemedArchive
-              size={14}
-              uniProps={hovered || pressed ? foregroundMapping : foregroundMutedMapping}
+              size={ROW_ICON_SIZE}
+              uniProps={hovered || pressed ? foregroundColorMapping : foregroundMutedColorMapping}
             />
           )}
         </Pressable>
@@ -319,95 +297,49 @@ function SelectionAskActionButton({
   );
 }
 
+function statusDotStyle(bucket: SidebarStateBucket) {
+  switch (bucket) {
+    case "needs_input":
+      return styles.dotNeedsInput;
+    case "failed":
+      return styles.dotFailed;
+    case "running":
+      return styles.dotRunning;
+    case "attention":
+      return styles.dotAttention;
+    case "done":
+      return styles.dotDone;
+  }
+}
+
 const styles = StyleSheet.create((theme) => ({
-  outer: {
-    width: "100%",
-    alignItems: "center",
-    paddingHorizontal: theme.spacing[4],
-    paddingTop: theme.spacing[1],
-  },
-  track: {
-    width: "100%",
-    maxWidth: MAX_CONTENT_WIDTH,
-    marginBottom: -theme.spacing[4],
-  },
-  surface: {
-    alignSelf: "stretch",
-    backgroundColor: theme.colors.surface1,
-    borderWidth: theme.borderWidth[1],
-    borderColor: theme.colors.borderAccent,
-    borderBottomWidth: 0,
-    borderTopLeftRadius: theme.borderRadius["2xl"],
-    borderTopRightRadius: theme.borderRadius["2xl"],
-    overflow: "hidden",
-  },
-  surfaceExpanded: {
-    paddingBottom: theme.spacing[4],
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  headerToggle: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[2],
-    paddingLeft: theme.spacing[3],
-    paddingRight: theme.spacing[1],
-    paddingVertical: theme.spacing[2],
-  },
-  headerAction: {
-    paddingRight: theme.spacing[2],
-  },
-  headerCollapsed: {
-    paddingBottom: theme.spacing[4],
-  },
-  headerActive: {
-    backgroundColor: theme.colors.surface2,
-  },
-  headerDivider: {
-    borderBottomWidth: theme.borderWidth[1],
-    borderBottomColor: theme.colors.border,
-  },
-  headerLabel: {
-    flexShrink: 1,
-    minWidth: 0,
-    fontSize: theme.fontSize.xs,
-    color: theme.colors.foregroundMuted,
-  },
-  scroll: {
-    maxHeight: ASKS_LIST_MAX_HEIGHT,
-  },
-  scrollContent: {
-    paddingVertical: theme.spacing[1],
-  },
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[2],
-    paddingHorizontal: theme.spacing[3],
-    paddingVertical: theme.spacing[2],
-  },
-  rowActive: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[2],
-    paddingHorizontal: theme.spacing[3],
-    paddingVertical: theme.spacing[2],
-    backgroundColor: theme.colors.surface2,
-  },
   rowLabel: {
-    flex: 1,
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: "auto",
     minWidth: 0,
     fontSize: theme.fontSize.sm,
     color: theme.colors.foreground,
   },
   statusDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
+    width: STATUS_INDICATOR_FILLED_DOT_SIZE,
+    height: STATUS_INDICATOR_FILLED_DOT_SIZE,
+    borderRadius: theme.borderRadius.full,
+  },
+  dotNeedsInput: {
+    backgroundColor: theme.colors.statusDotWarning,
+  },
+  dotFailed: {
+    backgroundColor: theme.colors.statusDotDanger,
+  },
+  dotRunning: {
+    backgroundColor: theme.colors.statusDotRunning,
+  },
+  dotAttention: {
+    backgroundColor: theme.colors.statusDotSuccess,
+  },
+  dotDone: {
+    backgroundColor: theme.colors.border,
   },
   actionClusterVisible: {
     flexDirection: "row",

@@ -1,6 +1,7 @@
 import { memo, useCallback, type ReactElement } from "react";
 import { AgentTaskList } from "@/composer/task-list";
 import { ComposerTrackBar } from "@/composer/tracks";
+import { SelectionAsksList } from "@/selection-ask/asks-list";
 import { usePaneContext } from "@/panels/pane-context";
 import { useSessionStore } from "@/stores/session-store";
 import {
@@ -13,8 +14,8 @@ import { SubagentsTrack } from "@/subagents/track";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
 
 /**
- * The pane's trackers — its subagents and its task list — as a row of pills over the foot of
- * the transcript.
+ * The pane's trackers — its subagents, its asks, and its task list — as a row
+ * of pills over the foot of the transcript.
  *
  * It is mounted inside the transcript's animated container rather than above the composer, and
  * that placement is the whole design: the pills paint over the timeline, so scrolled content
@@ -22,7 +23,8 @@ import { navigateToAgent } from "@/utils/navigate-to-agent";
  * transform the composer does, so the pills stay glued to its top edge while the keyboard moves.
  *
  * Its state was living in the composer only because that is where it used to render. None of it
- * is composer state — a subagent row opens a tab, the task list reads the agent's stream.
+ * is composer state — a subagent row opens a tab, an ask row reopens the selection popover, the
+ * task list reads the agent's stream.
  */
 export const AgentTracks = memo(function AgentTracks({
   serverId,
@@ -68,6 +70,7 @@ export const AgentTracks = memo(function AgentTracks({
         archiveFinishedStatus={archiveFinishedSubagents.status}
         onDetachSubagent={canDetachSubagents ? detachSubagent : undefined}
       />
+      <SelectionAsksList serverId={serverId} agentId={agentId} />
       <AgentTaskList serverId={serverId} agentId={agentId} />
     </ComposerTrackBar>
   );

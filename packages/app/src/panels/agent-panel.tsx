@@ -103,7 +103,6 @@ import { storeFetchedAgentDetail } from "@/utils/hydrate-fetched-agent";
 import { applyLegacyDaemonWorkspaceOwnership } from "@/workspace/legacy-daemon-workspaces";
 import type { WorkspaceFileOpenRequest } from "@/workspace/file-open";
 import { deriveSidebarStateBucket } from "@/utils/sidebar-agent-state";
-import { SelectionAsksList } from "@/selection-ask/asks-list";
 import { buildDraftAgentSetup, type ClientSlashCommand } from "@/client-slash-commands";
 
 interface ChatAgentStateShape {
@@ -1730,7 +1729,6 @@ function ActiveAgentComposer({
 
   return (
     <ReanimatedAnimated.View style={inputAreaStyle} onLayout={onInputAreaLayout}>
-      <SelectionAsksList serverId={serverId} agentId={agentId} />
       <Composer
         agentId={agentId}
         serverId={serverId}

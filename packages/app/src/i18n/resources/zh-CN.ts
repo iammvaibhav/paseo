@@ -1736,6 +1736,10 @@ export const zhCN: TranslationResources = {
     archiveFinishedRetry: "重试 ({{failed}}/{{total}})",
   },
   selectionAsks: {
+    title: "提问",
+    pillLabelOne: "1 个提问",
+    pillLabelMany: "{{count}} 个提问",
+    openAction: "打开提问 {{label}}",
     archiveAction: "归档 {{label}}",
     archiveTooltip: "归档问题",
     clearAll: "清除所有问题",

@@ -1800,6 +1800,10 @@ export const es: TranslationResources = {
     archiveFinishedRetry: "Reintentar ({{failed}}/{{total}})",
   },
   selectionAsks: {
+    title: "Preguntas",
+    pillLabelOne: "1 pregunta",
+    pillLabelMany: "{{count}} preguntas",
+    openAction: "Abrir pregunta {{label}}",
     archiveAction: "Archivar {{label}}",
     archiveTooltip: "Archivar pregunta",
     clearAll: "Borrar todas las preguntas",

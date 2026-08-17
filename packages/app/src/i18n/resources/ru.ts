@@ -1791,6 +1791,10 @@ export const ru: TranslationResources = {
     archiveFinishedRetry: "Повторить ({{failed}}/{{total}})",
   },
   selectionAsks: {
+    title: "Вопросы",
+    pillLabelOne: "1 вопрос",
+    pillLabelMany: "{{count}} вопросов",
+    openAction: "Открыть вопрос {{label}}",
     archiveAction: "Архив {{label}}",
     archiveTooltip: "Архивировать вопрос",
     clearAll: "Очистить все вопросы",

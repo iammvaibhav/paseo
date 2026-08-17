@@ -1767,6 +1767,10 @@ export const en = {
     archiveFinishedRetry: "Retry ({{failed}}/{{total}})",
   },
   selectionAsks: {
+    title: "Asks",
+    pillLabelOne: "1 ask",
+    pillLabelMany: "{{count}} asks",
+    openAction: "Open ask {{label}}",
     archiveAction: "Archive {{label}}",
     archiveTooltip: "Archive ask",
     clearAll: "Clear all asks",

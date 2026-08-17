@@ -1773,6 +1773,10 @@ export const ja: TranslationResources = {
     archiveFinishedRetry: "再試行 ({{failed}}/{{total}})",
   },
   selectionAsks: {
+    title: "質問",
+    pillLabelOne: "質問 1 件",
+    pillLabelMany: "質問 {{count}} 件",
+    openAction: "{{label}}を開く",
     archiveAction: "{{label}}をアーカイブ",
     archiveTooltip: "質問をアーカイブ",
     clearAll: "すべての質問をクリア",

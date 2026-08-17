@@ -1,13 +1,13 @@
 import { create } from "zustand";
 
 /**
- * Reopen requests from the asks list to the selection Ask popover host.
+ * Reopen requests from the asks track to the selection Ask popover host.
  *
- * The collapsed asks list (SelectionAsksList) lives in the composer area while
- * the popover host wraps the stream, so prop drilling a click between them is
- * not viable. Instead the list publishes a request here and the popover host
- * for the matching source agent consumes (and clears) it, reopening the
- * popover in answer mode for that ask.
+ * The asks pill lives on the composer track bar while the popover host wraps
+ * the stream, so prop drilling a click between them is not viable. Instead
+ * the track publishes a request here and the popover host for the matching
+ * source agent consumes (and clears) it, reopening the popover in answer
+ * mode for that ask.
  */
 
 export interface ReopenAskAnchorRect {
@@ -18,7 +18,7 @@ export interface ReopenAskAnchorRect {
 }
 
 export interface ReopenAskRequest {
-  /** Agent whose panel hosts the asks list; its popover host consumes the request. */
+  /** Agent whose panel hosts the asks track; its popover host consumes the request. */
   sourceAgentId: string;
   /** The ask agent to reopen in answer mode. */
   askAgentId: string;
@@ -27,7 +27,7 @@ export interface ReopenAskRequest {
 }
 
 export interface DismissAskRequest {
-  /** Agent whose panel hosts the asks list; its popover host consumes the request. */
+  /** Agent whose panel hosts the asks track; its popover host consumes the request. */
   sourceAgentId: string;
   /** The ask agent to dismiss from the popover (archived while open). */
   askAgentId: string;
@@ -46,7 +46,7 @@ interface ReopenAskState {
   /** Returns and clears the pending request when it targets `sourceAgentId`, else null. */
   consumeReopenAsk: (sourceAgentId: string) => ReopenAskRequest | null;
   /**
-   * Publishes a dismiss request for an ask the asks list just archived; the
+   * Publishes a dismiss request for an ask the asks track just archived; the
    * popover host for the matching source agent consumes it and closes the
    * popover when that ask is the one currently open.
    */
