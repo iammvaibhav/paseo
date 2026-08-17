@@ -1825,8 +1825,10 @@ print_help() {
 Paseo deploy — sync the custom fork branch and deploy across local + remote hosts.
 
 Usage:
-  ./scripts/deploy.sh                 Full run: auto-commit, merge upstream,
-                                      push, build + restart daemon, deploy code-server.
+  ./scripts/deploy.sh                 Full run: merge upstream, push, build +
+                                      restart daemon, deploy code-server.
+                                      Requires a committed tree (see
+                                      PASEO_DEPLOY_COMMIT_MESSAGE).
   ./scripts/deploy.sh -h | --help     Show this help.
 
 Takes no positional arguments; behavior is controlled by env variables.
