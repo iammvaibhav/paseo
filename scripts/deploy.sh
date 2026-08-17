@@ -31,7 +31,8 @@
 #                       remotes = blrofc3 (WireGuard). The MacBook is a desktop-only
 #                       target: the job ssh's in (PASEO_MACBOOK_HOST, default
 #                       "macbook" = 10.7.0.2), git-syncs the checkout, and runs
-#                       PASEO_DESKTOP_ONLY=1 to build/quit/replace/relaunch Paseo.app.
+#                       PASEO_DESKTOP_ONLY=1 to build → backup Paseo.app as
+#                       Paseo (Orig).app → quit → replace → relaunch Paseo.app.
 #                       The MacBook job is reachability-gated and NEVER fatal — if
 #                       the MacBook is down or its checkout is dirty/diverged,
 #                       iammvaibhav + remotes still deploy. The MacBook daemon is
@@ -61,7 +62,7 @@
 #                                     #   chmod 600 on each host, unset = keep existing)
 #   GEMINI_API_KEY=...                # Gemini Live key for the voice node env file
 #   PASEO_BUILD_DESKTOP=0             # skip building the desktop app (built by default)
-#   PASEO_DESKTOP_ONLY=1              # ONLY build/install/relaunch desktop (no git/remotes/daemon)
+#   PASEO_DESKTOP_ONLY=1              # ONLY desktop (from Linux: MacBook job; from macOS: local build)
 #   PASEO_DESKTOP_APP=...             # install path (default /Applications/Paseo.app)
 #   PASEO_DESKTOP_TEST_APP=...        # COMPAT alias for PASEO_DESKTOP_APP
 #   PASEO_DEPLOY_FOREGROUND=1         # do not self-detach (interactive / debug)
@@ -130,12 +131,11 @@ CONFLICT_MODEL="${PASEO_CONFLICT_MODEL:-grok-4.5}"
 CONFLICT_EFFORT="${PASEO_CONFLICT_EFFORT:-high}"
 CONFLICT_MAX_TURNS="${PASEO_CONFLICT_MAX_TURNS:-80}"
 
-# Desktop install target for this personal fork.
-# Default: /Applications/Paseo.app — we do NOT use "Paseo Test.app". Dock/Spotlight
-# stay on the same name; the installed app is already an ad-hoc custom build, not a
-# signed production binary we need to preserve side-by-side.
-# COMPAT(PASEO_DESKTOP_TEST_APP): old override name; prefer PASEO_DESKTOP_APP.
+# Desktop install targets for this personal fork. Paseo.app keeps the dock and
+# Spotlight identity. Paseo (Orig).app is a one-time fallback created before
+# the first replacement. Paseo Test.app is not part of this deploy path.
 DESKTOP_APP="${PASEO_DESKTOP_APP:-${PASEO_DESKTOP_TEST_APP:-/Applications/Paseo.app}}"
+DESKTOP_ORIG_APP="${PASEO_DESKTOP_ORIG_APP:-/Applications/Paseo (Orig).app}"
 # Durable deploy logs (survive agent tool cancel; agents should tail these).
 DEPLOY_LOG_ROOT="${PASEO_DEPLOY_LOG_DIR:-$HOME/.paseo/deploy-logs}"
 # Detached/non-interactive shells do not source bashrc, so PASEO_PASSWORD is
@@ -979,12 +979,12 @@ install_stall_cron() {
 #   • Dangerous: `cp -R` *onto* an existing bundle (merge) mixes signatures/files
 #     → dyld Team ID crashes. Always `rm -rf` then `cp -R`.
 #
-# Canonical loop (what deploy does every time):
 #   1. build unsigned (~2 min)
-#   2. quit running app
-#   3. rm -rf /Applications/Paseo.app
-#   4. cp -R packages/desktop/release/mac-*/Paseo.app /Applications/Paseo.app
-#   5. open /Applications/Paseo.app
+#   2. copy the current /Applications/Paseo.app to /Applications/Paseo (Orig).app
+#   3. quit running app
+#   4. rm -rf /Applications/Paseo.app
+#   5. cp -R packages/desktop/release/mac-*/Paseo.app /Applications/Paseo.app
+#   6. open /Applications/Paseo.app
 # ---------------------------------------------------------------------------
 
 quit_desktop_app() {
@@ -1013,7 +1013,27 @@ quit_desktop_app() {
   fi
 }
 
-# Install a built .app bundle over $DESKTOP_APP: quit → rm -rf → cp -R → open.
+# Snapshot the installed app as Paseo (Orig) before the first replacement.
+# Never overwrite it: Orig is the fallback, not the previous custom build.
+backup_desktop_app() {
+  local dest="$1"
+  local orig="${2:-$DESKTOP_ORIG_APP}"
+
+  if [[ -d "$orig" ]]; then
+    log "Orig backup already exists: $orig"
+    return 0
+  fi
+  if [[ ! -d "$dest" ]]; then
+    log "No existing $dest — skipping Orig backup"
+    return 0
+  fi
+
+  log "Preserving original app: $dest → $orig"
+  cp -R "$dest" "$orig"
+  log "Orig backup written: $orig"
+}
+
+# Install a built .app bundle over $DESKTOP_APP: backup Orig → quit → rm -rf → cp -R → open.
 # Never merge onto an existing bundle.
 install_desktop_app() {
   local built="$1"
@@ -1022,6 +1042,8 @@ install_desktop_app() {
   if [[ ! -d "$built" ]]; then
     die "install_desktop_app: built app missing: $built"
   fi
+
+  backup_desktop_app "$dest" "$DESKTOP_ORIG_APP"
 
   log "Desktop install: quit → rm -rf → cp -R → open ($built → $dest)"
   quit_desktop_app "$dest"
@@ -1072,14 +1094,16 @@ build_desktop_app() {
 # the migration to iammvaibhav is complete (opt in later by running deploy on the
 # MacBook itself, which restarts its own daemon as before).
 
-# Remote script body: safe git sync + nested desktop-only deploy (foreground so the
-# exit code propagates; PASEO_DESKTOP_ONLY=1 already does build → quit → rm → cp → open).
+# Remote script body: safe git sync + nested desktop-only deploy (foreground so
+# the exit code propagates; nested deploy owns build → backup → replace → open).
 macbook_desktop_body() {
   cat <<EOF
 set -euo pipefail
 BRANCH='$BRANCH'
 NODE_VERSION='$NODE_VERSION'
 REPO_DIR="\$HOME/$MACBOOK_REPO_DIR"
+DESKTOP_APP='$DESKTOP_APP'
+DESKTOP_ORIG_APP='$DESKTOP_ORIG_APP'
 
 log() { printf '\n[%s:macbook] %s\n' "\$(date '+%H:%M:%S')" "\$*"; }
 
@@ -1122,6 +1146,8 @@ echo "\$cur" > "\$sync_ref_file"
 log "Building + installing desktop app (PASEO_DESKTOP_ONLY=1, foreground)"
 export PASEO_DESKTOP_ONLY=1
 export PASEO_DEPLOY_FOREGROUND=1
+export PASEO_DESKTOP_APP="\$DESKTOP_APP"
+export PASEO_DESKTOP_ORIG_APP="\$DESKTOP_ORIG_APP"
 ./scripts/deploy.sh
 EOF
 }
@@ -1136,14 +1162,20 @@ macbook_desktop_job() {
     return 0
   fi
   if ! ssh -o BatchMode=yes -o ConnectTimeout=8 "$MACBOOK_HOST" 'true' 2>/dev/null; then
-    log "MacBook ($MACBOOK_HOST) unreachable — skipping desktop build/install; iammvaibhav + remotes still deploy"
+    log "MacBook ($MACBOOK_HOST) unreachable — skipping desktop build/install"
+    if [[ "${PASEO_REQUIRE_MACBOOK:-0}" == "1" ]]; then
+      return 1
+    fi
     return 0
   fi
   log "MacBook reachable — git sync + desktop build/install via PASEO_DESKTOP_ONLY=1"
   if ssh -o BatchMode=yes "$MACBOOK_HOST" "bash -s" < <(macbook_desktop_body); then
     log "MacBook desktop build/install complete"
   else
-    log "MacBook desktop job FAILED — deploy continues (see job log); rebuild manually on the MacBook with PASEO_DESKTOP_ONLY=1"
+    log "MacBook desktop job FAILED — rebuild manually on the MacBook with PASEO_DESKTOP_ONLY=1"
+    if [[ "${PASEO_REQUIRE_MACBOOK:-0}" == "1" ]]; then
+      return 1
+    fi
   fi
 }
 
@@ -2010,9 +2042,11 @@ Scope flags (set to 1 unless noted):
   PASEO_SKIP_STALL_CRON          Skip installing the stall-check cron entry on every host
   PASEO_SKIP_COMMANDER_VOICE     Skip Commander Voice node deploy everywhere
   PASEO_BUILD_DESKTOP=0            Skip the desktop app build (built by default)
-  PASEO_DESKTOP_ONLY=1             ONLY desktop build/install/relaunch (no git/remotes/daemon)
+  PASEO_DESKTOP_ONLY=1             ONLY desktop: local build on macOS; commit/push +
+                                   MacBook build on Linux. Preserves the first
+                                   replaced app as $DESKTOP_ORIG_APP.
   PASEO_DESKTOP_APP=<path>         Desktop install path (default: $DESKTOP_APP)
-  PASEO_DESKTOP_TEST_APP=<path>    COMPAT alias for PASEO_DESKTOP_APP
+  PASEO_DESKTOP_ORIG_APP=<path>    One-time fallback copy (default: $DESKTOP_ORIG_APP)
   PASEO_DEPLOY_FOREGROUND=1        Stay attached (no self-detach; for interactive debug)
   PASEO_DEPLOY_LOG_DIR=<path>      Durable log root (default: $DEPLOY_LOG_ROOT)
   PASEO_SYNC_CODE_SERVER_USER_DATA  Also rsync code-server User/ + extensions/ to remotes
@@ -2083,17 +2117,26 @@ main() {
     log "Continuing detached deploy (log: $PASEO_DEPLOY_LOG)"
   fi
 
-  # App-only: no git, remotes, daemon, or code-server — just desktop build + install.
+  # App-only: no other remotes, daemon, or services.
+  # macOS builds locally. Linux commits/pushes first, then requires the MacBook job.
   if [[ "${PASEO_DESKTOP_ONLY:-0}" == "1" ]]; then
     log "Desktop-only deploy (PASEO_DESKTOP_ONLY=1) → $DESKTOP_APP"
-    if [[ "$IS_MAC_ORCHESTRATOR" != "1" ]]; then
-      die "PASEO_DESKTOP_ONLY=1 requires macOS — the desktop app builds only on the MacBook (deploy drives it there via the macbook-desktop job)"
-    fi
-    ensure_node
     if [[ "${PASEO_BUILD_DESKTOP:-1}" == "0" ]]; then
       die "PASEO_DESKTOP_ONLY=1 requires desktop build (unset PASEO_BUILD_DESKTOP=0)"
     fi
-    build_desktop_app
+    if [[ "$IS_MAC_ORCHESTRATOR" == "1" ]]; then
+      ensure_node
+      build_desktop_app
+    else
+      log "Linux orchestrator — committing/pushing, then delegating to the MacBook"
+      ensure_fork_remotes
+      ensure_node
+      autocommit_local_changes
+      sync_local_git
+      if ! PASEO_REQUIRE_MACBOOK=1 macbook_desktop_job; then
+        die "Desktop-only deploy failed on the MacBook"
+      fi
+    fi
     log "Desktop-only deploy complete"
     if [[ -n "${PASEO_DEPLOY_LOG:-}" ]]; then
       log "Full log: $PASEO_DEPLOY_LOG"

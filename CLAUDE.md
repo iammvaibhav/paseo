@@ -229,18 +229,18 @@ Do day-to-day work on this branch, not on `main`.
 
 **Always consult and run [`scripts/deploy.sh`](scripts/deploy.sh) for deploy.** Do not freestyle multi-host sync, remote restarts, or “just restart the daemon” with ad-hoc commands unless you are deliberately debugging a single host.
 
-|                 |                                                                                                    |
-| --------------- | -------------------------------------------------------------------------------------------------- |
-| **How**         | `./scripts/deploy.sh` from the repo root (or `/home/ubuntu/paseo` on iammvaibhav)                  |
-| **Daemon home** | `~/.paseo` locally; `/home/vaibhav/.paseo` (blrofc3), `/home/ubuntu/.paseo` (iammvaibhav)          |
-| **Port**        | **6767** (production-style host daemon — what the desktop app and remotes use)                     |
-| **Desktop**     | Unsigned build → **quit → `rm -rf` → `cp -R` → `open` `/Applications/Paseo.app`** (not Paseo Test) |
-| **Not this**    | `npm run dev` / port **6768** / `.dev/paseo-home` is checkout hot-reload only, not deploy          |
+|                 |                                                                                                                    |
+| --------------- | ------------------------------------------------------------------------------------------------------------------ |
+| **How**         | `./scripts/deploy.sh` from the repo root (or `/home/ubuntu/paseo` on iammvaibhav)                                  |
+| **Daemon home** | `~/.paseo` locally; `/home/vaibhav/.paseo` (blrofc3), `/home/ubuntu/.paseo` (iammvaibhav)                          |
+| **Port**        | **6767** (production-style host daemon — what the desktop app and remotes use)                                     |
+| **Desktop**     | Unsigned build → one-time `Paseo (Orig)` backup → **quit → `rm -rf` → `cp -R` → `open` `/Applications/Paseo.app`** |
+| **Not this**    | `npm run dev` / port **6768** / `.dev/paseo-home` is checkout hot-reload only, not deploy                          |
 
 **Orchestrator modes** (auto-detected by `uname -s`):
 
 - **MacBook (macOS)** — as before: local = MacBook (daemon restart + desktop build/install), remotes = `blrofc3` + `iammvaibhav`.
-- **iammvaibhav (Linux)** — the current home of the migrated `paseo` project. Local = iammvaibhav (daemon build/restart + nudge + services); remotes = `blrofc3` (WireGuard); the **MacBook is a desktop-only job** (`job-macbook-desktop`): deploy ssh's to it (alias `macbook` = `10.7.0.2`), git-syncs the checkout (non-clobbering: dirty/diverged → skip), and runs `PASEO_DESKTOP_ONLY=1` to build → quit → replace → relaunch `Paseo.app`. The job is reachability-gated and **never fatal** — if the MacBook is down or its checkout is dirty, iammvaibhav + blrofc3 still deploy.
+- **iammvaibhav (Linux)** — the current home of the migrated `paseo` project. Local = iammvaibhav (daemon build/restart + nudge + services); remotes = `blrofc3` (WireGuard); the **MacBook is a desktop-only job** (`job-macbook-desktop`): deploy ssh's to it (alias `macbook` = `10.7.0.2`), git-syncs the checkout (non-clobbering: dirty/diverged → skip), and runs `PASEO_DESKTOP_ONLY=1` to build → preserve the first replaced app as `Paseo (Orig).app` → quit → replace → relaunch `Paseo.app`. The job is reachability-gated and **never fatal** during a full deploy. `PASEO_DESKTOP_ONLY=1` from Linux commits and pushes the local branch, then requires this MacBook job to succeed.
 - **The MacBook daemon is deliberately NOT restarted by iammvaibhav deploys** — `paseo-dev` agents on the Mac stay untouched until the migration is complete. Its desktop app still talks to the local daemon; iammvaibhav shows up via peering.
 
 #### Agents MUST treat deploy as fire-and-forget
@@ -308,13 +308,12 @@ No longer requires a clean working tree — uncommitted changes are auto-committ
 
 #### Desktop install (this fork) — formal contract
 
-**Do you need Paseo Test?** No. `/Applications/Paseo.app` is already an ad-hoc custom build, not a signed production app we must protect. `Paseo Test.app` only matters if you keep a signed release side-by-side (upstream-doc default). **This fork always replaces `Paseo.app`.**
+`/Applications/Paseo.app` is the daily custom build. Before deploy replaces it for the first time, deploy copies it to `/Applications/Paseo (Orig).app`. Later deploys never overwrite `Paseo (Orig).app`, so it remains a fallback when a custom build fails. `Paseo Test.app` is not part of this fork's deploy path.
 
-| Layout                            | When                                                                                       |
-| --------------------------------- | ------------------------------------------------------------------------------------------ |
-| Replace `/Applications/Paseo.app` | **Daily custom-fork use** — dock/Spotlight stay the same (what deploy does)                |
-| Paseo (Orig) + replace Paseo      | Only if you still have a signed release to keep (manual; not deploy)                       |
-| `Paseo Test.app`                  | Safer default in **upstream** docs when you must not touch a signed app — **not our path** |
+| Layout                                   | When                                                                         |
+| ---------------------------------------- | ---------------------------------------------------------------------------- |
+| `Paseo (Orig).app` + replace `Paseo.app` | **Every deploy path** — create Orig once, then preserve it and replace Paseo |
+| `Paseo Test.app`                         | Not used by this fork's deploy                                               |
 
 **Can you replace while the window is open?** Partially:
 
@@ -329,7 +328,9 @@ No longer requires a clean working tree — uncommitted changes are auto-committ
 CSC_IDENTITY_AUTO_DISCOVERY=false npm run build:desktop -- \
   -c.mac.notarize=false -c.mac.hardenedRuntime=false -p never
 
-# 2) quit → replace → open  (never merge onto an existing .app)
+# 2) preserve fallback once → quit → replace → open
+test -d "/Applications/Paseo (Orig).app" || \
+  cp -R /Applications/Paseo.app "/Applications/Paseo (Orig).app"
 osascript -e 'tell application "Paseo" to quit'
 rm -rf /Applications/Paseo.app
 cp -R packages/desktop/release/mac-arm64/Paseo.app /Applications/Paseo.app
@@ -371,6 +372,6 @@ The daemon system prompt is version-controlled at [`scripts/paseo-system-prompt.
 
 Never run bare `npm run build:desktop` locally — it hangs on notarization, and an ad-hoc build with hardened runtime crashes at launch (dyld "different Team IDs"). Use the unsigned flags above (or let `./scripts/deploy.sh` do it).
 
-**Agents: do not invent install paths.** Always the formal loop in **Desktop install (this fork)** above: target **`/Applications/Paseo.app`**, **quit → `rm -rf` → `cp -R` → `open`**. Never `Paseo Test.app` for day-to-day deploy. Never `cp -R` onto an existing bundle without deleting first. Prefer `./scripts/deploy.sh` (or `PASEO_SKIP_REMOTES=1` for local-only) so build + install stay one path.
+**Agents: do not invent install paths.** Always use the formal loop above: target **`/Applications/Paseo.app`**, preserve **`/Applications/Paseo (Orig).app`** once, then **quit → `rm -rf` → `cp -R` → `open`**. Never use `Paseo Test.app` for day-to-day deploy. Never `cp -R` onto an existing bundle without deleting first. Prefer `./scripts/deploy.sh` so build + install stay one path.
 
-**App-only changes** (UI only): `PASEO_SKIP_REMOTES=1 PASEO_SKIP_DAEMON=1 ./scripts/deploy.sh` still builds/installs desktop via the same contract.
+**App-only changes:** `PASEO_DESKTOP_ONLY=1 ./scripts/deploy.sh` builds locally on macOS. On iammvaibhav Linux it commits and pushes the branch, then runs the required MacBook desktop job without touching daemons, other remotes, or services.
