@@ -6300,6 +6300,7 @@ export class DaemonClient {
   async missionControlLifecycleSet(options: {
     serverId: string;
     agentId: string;
+    agentIds?: string[];
     action: "done" | "clear" | "reopen";
     requestId?: string;
   }): Promise<MissionControlLifecycleSetPayload> {
@@ -6309,6 +6310,7 @@ export class DaemonClient {
         type: "mission_control.lifecycle.set.request",
         serverId: options.serverId,
         agentId: options.agentId,
+        ...(options.agentIds ? { agentIds: options.agentIds } : {}),
         action: options.action,
       },
       responseType: "mission_control.lifecycle.set.response",

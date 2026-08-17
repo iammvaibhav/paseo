@@ -556,16 +556,17 @@ describe("deriveAgentLifecycle — user-stopped ≠ Needs you", () => {
     expect(state).toMatchObject({ bucket: "running", doneReason: null, reviewState: "none" });
   });
 
-  it("keeps a cleared user-stopped row done while the stop origin remains", () => {
-    // The canonical contract treats a user stop as the terminal story while
-    // its stop origin remains, including after review bookkeeping is cleared.
+  it("hides a cleared user-stopped row from Done", () => {
+    // Clear is persisted acknowledgment: the stop origin may still be
+    // "user", but reviewState "cleared" removes the row from Done (idle /
+    // dormant). A new run is what clears the origin itself.
     const state = derive(makeAgent({ requiresAttention: true, attentionReason: "finished" }), [
       makeEvent({ kind: "finished", headline: "Finished", stoppedBy: "user" }),
       makeEvent({ kind: "verdict", source: "system", headline: "Cleared", detail: "Cleared" }),
     ]);
     expect(state).toMatchObject({
-      bucket: "done",
-      doneReason: "stopped-by-user",
+      bucket: "dormant",
+      doneReason: null,
       reviewState: "cleared",
     });
   });

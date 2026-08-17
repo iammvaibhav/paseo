@@ -37,14 +37,15 @@ export interface LifecycleBucketInput {
 
 /**
  * Precedence (first match wins; a user stop excludes rule 1 so a stopped
- * agent never reads "needs you" — the user's stop is the terminal story):
+ * agent never reads "needs you" — the user's stop is the terminal story
+ * until they Clear it or a new run starts):
  * 1. needs_you — pendingPermissionCount>0 | attentionReason=="permission"
  *    | lastStatus=="error" | attentionReason=="error" | pendingProposalCount>0
  * 2. running — running
- * 3. done — stopOrigin=="user" && reviewState ∈ {"none","cleared"}
+ * 3. done — stopOrigin=="user" && reviewState=="none"
  * 4. done — reviewState=="done"
  * 5. ready — reviewState=="ready"
- * 6. idle
+ * 6. idle — includes reviewState=="cleared" (Clear removes the row)
  */
 export function deriveLifecycleBucket(input: LifecycleBucketInput): LifecycleBucket {
   const userStopped = input.stopOrigin === "user";
@@ -62,7 +63,7 @@ export function deriveLifecycleBucket(input: LifecycleBucketInput): LifecycleBuc
   if (input.running) {
     return "running";
   }
-  if (userStopped && (input.reviewState === "none" || input.reviewState === "cleared")) {
+  if (userStopped && input.reviewState === "none") {
     return "done";
   }
   if (input.reviewState === "done") {

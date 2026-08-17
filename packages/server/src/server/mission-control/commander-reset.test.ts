@@ -380,6 +380,37 @@ describe("MissionControlService reset + machinery turns", () => {
     expect(dispatchLocalPromptModeMock).not.toHaveBeenCalled();
   });
 
+  test("a state-only verdict never wakes the Commander, even for a dispatched agent", async () => {
+    await createService({
+      storedAgents: [commanderRecord("commander-1")],
+      getAgent: (agentId) =>
+        agentId === "commander-1"
+          ? commanderAgent("commander-1")
+          : workerAgent("worker-1", { "paseo.parent-agent-id": "commander-1" }),
+    });
+    await service.setMode("auto");
+    service.publishEvent({
+      agentId: "worker-1",
+      kind: "verdict",
+      source: "system",
+      severity: "info",
+      headline: "Marked done",
+      detail: "Marked done",
+      stateOnly: true,
+    });
+    service.publishEvent({
+      agentId: "worker-1",
+      kind: "verdict",
+      source: "system",
+      severity: "info",
+      headline: "Cleared",
+      detail: "Cleared",
+      stateOnly: true,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(dispatchLocalPromptModeMock).not.toHaveBeenCalled();
+  });
+
   test("an event about the Commander itself never dispatches a machinery turn", async () => {
     await createService({
       storedAgents: [commanderRecord("commander-1")],
@@ -480,14 +511,19 @@ describe("MissionControlService reset + machinery turns", () => {
       headline: "Root cause found",
       kind: "milestone",
     });
-    await service.setReviewState("worker-1", "done", {
-      verdict: { by: "user", summary: "Marked done", at: new Date().toISOString() },
+    service.publishEvent({
+      agentId: "worker-1",
+      kind: "verdict",
+      source: "verifier",
+      severity: "info",
+      headline: "Done — insufficient",
+      detail: "proofs missing",
     });
     await vi.waitFor(() => expect(dispatchLocalPromptModeMock).toHaveBeenCalledTimes(1));
     const prompt = dispatchLocalPromptModeMock.mock.calls[0]?.[0]?.prompt;
-    expect(prompt).toContain("[verdict] Marked done");
+    expect(prompt).toContain("[verdict] Done — insufficient");
     expect(prompt).toContain('Last report: "Root cause found"');
-    expect(prompt).toContain("Verdict: Marked done (by user)");
+    expect(prompt).toContain("Verdict: proofs missing");
   });
 
   test("verdicts on a dispatched agent trigger once per run epoch", async () => {

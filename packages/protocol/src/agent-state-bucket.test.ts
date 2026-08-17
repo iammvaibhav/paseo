@@ -157,9 +157,9 @@ describe("deriveLifecycleBucket — canonical lifecycle buckets (spec 01)", () =
     );
   });
 
-  it("user-stop with reviewState cleared -> done", () => {
+  it("user-stop with reviewState cleared -> idle", () => {
     expect(deriveLifecycleBucket(baseInput({ stopOrigin: "user", reviewState: "cleared" }))).toBe(
-      "done",
+      "idle",
     );
   });
 

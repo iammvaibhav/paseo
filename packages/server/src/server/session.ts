@@ -2362,6 +2362,7 @@ export class Session {
     const result = this.missionControlService
       ? await this.missionControlService.setLifecycle({
           agentId: msg.agentId,
+          ...(msg.agentIds ? { agentIds: msg.agentIds } : {}),
           action: msg.action,
         })
       : { ok: false as const, error: "Mission Control is not enabled on this host" };

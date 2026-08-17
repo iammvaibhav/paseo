@@ -271,9 +271,7 @@ function resolveDoneReason(input: {
 }): LifecycleDoneReason | null {
   const userStopped =
     input.snapshotStoppedBy === "user" || (!input.hasEvents && input.agent.stoppedBy === "user");
-  return input.bucket === "done" &&
-    userStopped &&
-    (input.reviewState === "none" || input.reviewState === "cleared")
+  return input.bucket === "done" && userStopped && input.reviewState === "none"
     ? "stopped-by-user"
     : null;
 }

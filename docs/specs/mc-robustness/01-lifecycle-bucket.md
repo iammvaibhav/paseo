@@ -49,10 +49,10 @@ Precedence (first match wins; user-stop excludes 1):
 1. `needs_you` — pendingPermissionCount>0 | attentionReason=="permission"
    | lastStatus=="error" | attentionReason=="error" | pendingProposalCount>0
 2. `running` — running
-3. `done` — stopOrigin=="user" && reviewState ∈ {"none","cleared"} ("Stopped by you")
+3. `done` — stopOrigin=="user" && reviewState=="none" ("Stopped by you")
 4. `done` — reviewState=="done"
 5. `ready` — reviewState=="ready"
-6. `idle`
+6. `idle` — includes reviewState=="cleared" (Clear removes the row)
 
 Computed **server-side from stored state** (agent record + review-state.json +
 proposal index), never from a truncated client event fold. The server exposes
@@ -128,6 +128,7 @@ Unit-test the canonical function with every row of this event→bucket table:
 | finish + verdict done            | done                   |
 | finish + aged out                | done                   |
 | user-stop, no review             | done (stopped-by-user) |
+| user-stop + Clear                | idle                   |
 | user-stop then new run           | running                |
 | delegated worker finish          | ready                  |
 | second finish after verdict      | ready (re-marked)      |

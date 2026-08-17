@@ -144,15 +144,45 @@ async function setAgentLifecycle(
   serverId: string,
   agentId: string,
   action: "done" | "clear",
+  extraAgentIds?: string[],
 ): Promise<void> {
   const client = getHostRuntimeStore().getClient(serverId);
   if (!client) {
     return;
   }
-  const payload = await client.missionControlLifecycleSet({ serverId, agentId, action });
+  const payload = await client.missionControlLifecycleSet({
+    serverId,
+    agentId,
+    ...(extraAgentIds && extraAgentIds.length > 0 ? { agentIds: extraAgentIds } : {}),
+    action,
+  });
   if (!payload.ok) {
     throw new Error(payload.error ?? "Failed to update agent");
   }
+}
+
+async function setAgentsLifecycle(
+  rows: readonly LifecycleRow[],
+  action: "done" | "clear",
+): Promise<void> {
+  const idsByServer = new Map<string, string[]>();
+  for (const row of rows) {
+    const ids = idsByServer.get(row.agent.serverId);
+    if (ids) {
+      ids.push(row.agent.id);
+    } else {
+      idsByServer.set(row.agent.serverId, [row.agent.id]);
+    }
+  }
+  await Promise.all(
+    [...idsByServer.entries()].map(([serverId, agentIds]) => {
+      const [agentId, ...extraAgentIds] = agentIds;
+      if (!agentId) {
+        return Promise.resolve();
+      }
+      return setAgentLifecycle(serverId, agentId, action, extraAgentIds);
+    }),
+  );
 }
 
 async function clearAgentLifecycle(serverId: string, agentId: string): Promise<void> {
@@ -200,22 +230,17 @@ export function MissionControlBoard({
   );
 
   const handleClearAll = useCallback(() => {
-    // Clear every Done row on its own host. Fire-and-forget per agent; the
-    // "Cleared" verdict cards push back and refresh the board.
-    for (const row of doneRows) {
-      void clearAgentLifecycle(row.agent.serverId, row.agent.id).catch(() => {
-        // A failed clear leaves the row in Done; the next push reconciles.
-      });
-    }
+    // One RPC per host. The "Cleared" verdict cards push back and refresh
+    // the board; a failed host leaves its rows in Done.
+    void setAgentsLifecycle(doneRows, "clear").catch(() => {
+      // Partial failure is reconciled by the next push.
+    });
   }, [doneRows]);
 
   const handleMoveAllReadyToDone = useCallback(() => {
-    // Confirm-free bookkeeping: each agent uses the existing mark-done RPC.
-    for (const row of readyRows) {
-      void setAgentLifecycle(row.agent.serverId, row.agent.id, "done").catch(() => {
-        // A failed mark leaves that row in Ready; successful pushes reconcile.
-      });
-    }
+    void setAgentsLifecycle(readyRows, "done").catch(() => {
+      // Partial failure is reconciled by the next push.
+    });
   }, [readyRows]);
 
   const handleToggleDone = useCallback(() => {

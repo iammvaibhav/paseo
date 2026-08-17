@@ -335,6 +335,31 @@ describe("MissionControlService lifecycle push", () => {
     expect(notifyAgentState).toHaveBeenCalledTimes(3);
   });
 
+  test("clearing a user-stopped agent leaves the Done bucket", async () => {
+    getRecord.mockImplementation(async (agentId: string) => storedRecord(agentId));
+    store.recordStopOrigin("agent-1", "user");
+    expect(await service.getLifecycleBucket("agent-1")).toBe("done");
+
+    const result = await service.setLifecycle({ agentId: "agent-1", action: "clear" });
+    expect(result).toEqual({ ok: true });
+    expect(store.getReviewState("agent-1").reviewState).toBe("cleared");
+    expect(await service.getLifecycleBucket("agent-1")).toBe("idle");
+  });
+
+  test("setLifecycle applies one action to every listed agent", async () => {
+    getRecord.mockImplementation(async (agentId: string) => storedRecord(agentId));
+    const result = await service.setLifecycle({
+      agentId: "agent-1",
+      agentIds: ["agent-2", "agent-1"],
+      action: "done",
+    });
+    expect(result).toEqual({ ok: true });
+    expect(store.getReviewState("agent-1").reviewState).toBe("done");
+    expect(store.getReviewState("agent-2").reviewState).toBe("done");
+    expect(onReviewStateChanged).toHaveBeenCalledWith("agent-1");
+    expect(onReviewStateChanged).toHaveBeenCalledWith("agent-2");
+  });
+
   test("a verdict via setReviewState (verifier / aging sweep) pushes too", async () => {
     liveAgent = runningAgent("agent-1", { lifecycle: "idle" });
 

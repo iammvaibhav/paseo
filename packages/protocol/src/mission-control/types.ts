@@ -421,6 +421,8 @@ export type MissionControlPeersListResponse = z.infer<typeof MissionControlPeers
 // ============================================================================
 // v3 lifecycle: mark done / clear / reopen. reviewState is persisted in the
 // mission-control store; verdict records who closed the item and why.
+// agentIds is additive: one RPC can apply the same action to every listed
+// agent (Clear all / Mark all done). Absent → single agentId, old clients.
 // ============================================================================
 
 export const MissionControlLifecycleActionSchema = z.enum(["done", "clear", "reopen"]);
@@ -431,6 +433,7 @@ export const MissionControlLifecycleSetRequestSchema = z.object({
   requestId: z.string(),
   serverId: z.string(), // host the agent runs on
   agentId: z.string(),
+  agentIds: z.array(z.string()).optional(),
   action: MissionControlLifecycleActionSchema,
 });
 export type MissionControlLifecycleSetRequest = z.infer<

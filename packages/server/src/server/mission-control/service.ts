@@ -1232,37 +1232,59 @@ export class MissionControlService {
    * mission_control.lifecycle.set: mark done / clear / reopen. Done writes
    * reviewState=done + a user verdict and emits a verdict card; clear removes
    * from the Done display; reopen resets so the next run re-enters the
-   * lifecycle.
+   * lifecycle. agentIds applies the same action to every listed agent in
+   * one call (Clear all / Mark all done); agentId is always included.
    */
   async setLifecycle(input: {
     agentId: string;
+    agentIds?: string[];
     action: MissionControlLifecycleAction;
   }): Promise<{ ok: true } | { ok: false; error: string }> {
-    const agent = await this.agentStorage.get(input.agentId);
+    const seen = new Set<string>();
+    const ids: string[] = [];
+    for (const id of [input.agentId, ...(input.agentIds ?? [])]) {
+      if (id.length === 0 || seen.has(id)) {
+        continue;
+      }
+      seen.add(id);
+      ids.push(id);
+    }
+    const results = await Promise.all(
+      ids.map((agentId) => this.applyLifecycleAction(agentId, input.action)),
+    );
+    const firstError = results.find((result) => !result.ok);
+    return firstError ?? { ok: true };
+  }
+
+  private async applyLifecycleAction(
+    agentId: string,
+    action: MissionControlLifecycleAction,
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    const agent = await this.agentStorage.get(agentId);
     if (!agent) {
-      return { ok: false, error: `Agent ${input.agentId} not found` };
+      return { ok: false, error: `Agent ${agentId} not found` };
     }
     const now = new Date().toISOString();
-    switch (input.action) {
+    switch (action) {
       case "done": {
         const verdict: MissionControlVerdict = { by: "user", summary: "Marked done", at: now };
-        await this.store.setReviewState(input.agentId, "done", { verdict });
-        await this.emitVerdictEvent({ agentId: input.agentId, verdict });
-        this.notifyReviewState(input.agentId);
+        await this.store.setReviewState(agentId, "done", { verdict });
+        await this.emitVerdictEvent({ agentId, verdict });
+        this.notifyReviewState(agentId);
         return { ok: true };
       }
       case "clear": {
-        await this.store.setReviewState(input.agentId, "cleared");
+        await this.store.setReviewState(agentId, "cleared");
         await this.emitVerdictEvent({
-          agentId: input.agentId,
+          agentId,
           verdict: { by: "user", summary: "Cleared", at: now },
         });
-        this.notifyReviewState(input.agentId);
+        this.notifyReviewState(agentId);
         return { ok: true };
       }
       case "reopen": {
-        await this.store.setReviewState(input.agentId, "none");
-        this.notifyReviewState(input.agentId);
+        await this.store.setReviewState(agentId, "none");
+        this.notifyReviewState(agentId);
         return { ok: true };
       }
     }
@@ -4592,13 +4614,15 @@ export class MissionControlService {
    * self-heal) qualify ONLY when the event carries a decision card — a
    * pending proposal or a clarification; a plain blocked/stalled stays
    * board+badge only. Verdict-insufficient (the verdict does NOT resolve the
-   * item — review state ready/none) keeps routing, and a verdict on a
-   * Commander-DISPATCHED agent (spawned via fleet_create_agent or adopted
-   * via a delivered fleet_send_prompt) still qualifies. Terminal events
-   * (finished / failed / interrupted) NEVER qualify — even for dispatched
-   * agents; the board/feed rail carries the outcome. started / milestone /
-   * finding never qualify. The mode gate lives in runMachineryTurnGate: ask
-   * mode dispatches only dispatched-agent events (any action the Commander
+   * item — review state ready/none, and the card is not state-only) keeps
+   * routing. State-only verdicts (user Mark done / Clear, verifier-done,
+   * aged-out) already resolved the item — the board moved, the world
+   * snapshot carries the new bucket on the next user turn, and the
+   * Commander is not consulted. Terminal events (finished / failed /
+   * interrupted) NEVER qualify — even for dispatched agents; the
+   * board/feed rail carries the outcome. started / milestone / finding
+   * never qualify. The mode gate lives in runMachineryTurnGate: ask mode
+   * dispatches only dispatched-agent events (any action the Commander
    * takes becomes a gated proposal card, so the follow-up is safe), auto
    * mode dispatches everything that qualifies.
    */
@@ -4612,14 +4636,17 @@ export class MissionControlService {
       return event.clarification !== undefined || event.proposal?.status === "pending";
     }
     if (event.kind === "verdict") {
+      // User Mark done / Clear and verifier-done cards stamp stateOnly.
+      // They resolved the item; do not wake the Commander to acknowledge
+      // board bookkeeping. Verdict-insufficient cards carry no flag.
+      if (event.stateOnly === true) {
+        return false;
+      }
       if (
         await this.isDispatchedByLabels(labelsOverride ?? (await this.agentLabels(event.agentId)))
       ) {
         return true;
       }
-      // Verdict-insufficient: the item stays needs-you (ready/none). A
-      // done/cleared verdict resolves the item — the Commander is not
-      // consulted about completions.
       const review = this.store.getReviewState(event.agentId);
       return review?.reviewState === "ready" || review?.reviewState === "none";
     }
