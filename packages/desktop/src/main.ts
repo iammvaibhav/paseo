@@ -1,7 +1,8 @@
 process.emitWarning = (() => {}) as typeof process.emitWarning;
 
 import log from "electron-log/main";
-log.transports.console.level = "info";
+import { configureDesktopProcessLogging } from "./desktop-log.js";
+configureDesktopProcessLogging(log);
 log.initialize({ spyRendererConsole: true });
 
 import { inheritLoginShellEnv } from "./login-shell-env.js";

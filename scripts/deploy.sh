@@ -132,8 +132,8 @@ CONFLICT_EFFORT="${PASEO_CONFLICT_EFFORT:-high}"
 CONFLICT_MAX_TURNS="${PASEO_CONFLICT_MAX_TURNS:-80}"
 
 # Desktop install targets for this personal fork. Paseo.app keeps the dock and
-# Spotlight identity. Paseo (Orig).app is a one-time fallback created before
-# the first replacement. Paseo Test.app is not part of this deploy path.
+# Spotlight identity. Paseo (Orig).app is replaced with the currently installed
+# app before each replacement. Paseo Test.app is not part of this deploy path.
 DESKTOP_APP="${PASEO_DESKTOP_APP:-${PASEO_DESKTOP_TEST_APP:-/Applications/Paseo.app}}"
 DESKTOP_ORIG_APP="${PASEO_DESKTOP_ORIG_APP:-/Applications/Paseo (Orig).app}"
 # Durable deploy logs (survive agent tool cancel; agents should tail these).
@@ -1013,22 +1013,19 @@ quit_desktop_app() {
   fi
 }
 
-# Snapshot the installed app as Paseo (Orig) before the first replacement.
-# Never overwrite it: Orig is the fallback, not the previous custom build.
+# Snapshot the installed app as Paseo (Orig) before deleting it. Replace any
+# older Orig so the fallback is always the build that this deploy replaced.
 backup_desktop_app() {
   local dest="$1"
   local orig="${2:-$DESKTOP_ORIG_APP}"
 
-  if [[ -d "$orig" ]]; then
-    log "Orig backup already exists: $orig"
-    return 0
-  fi
   if [[ ! -d "$dest" ]]; then
     log "No existing $dest — skipping Orig backup"
     return 0
   fi
 
-  log "Preserving original app: $dest → $orig"
+  log "Backing up current app: $dest → $orig"
+  rm -rf "$orig"
   cp -R "$dest" "$orig"
   log "Orig backup written: $orig"
 }
@@ -2043,10 +2040,10 @@ Scope flags (set to 1 unless noted):
   PASEO_SKIP_COMMANDER_VOICE     Skip Commander Voice node deploy everywhere
   PASEO_BUILD_DESKTOP=0            Skip the desktop app build (built by default)
   PASEO_DESKTOP_ONLY=1             ONLY desktop: local build on macOS; commit/push +
-                                   MacBook build on Linux. Preserves the first
-                                   replaced app as $DESKTOP_ORIG_APP.
+                                   MacBook build on Linux. Copies the replaced
+                                   app to $DESKTOP_ORIG_APP.
   PASEO_DESKTOP_APP=<path>         Desktop install path (default: $DESKTOP_APP)
-  PASEO_DESKTOP_ORIG_APP=<path>    One-time fallback copy (default: $DESKTOP_ORIG_APP)
+  PASEO_DESKTOP_ORIG_APP=<path>    Previous-build fallback (default: $DESKTOP_ORIG_APP)
   PASEO_DEPLOY_FOREGROUND=1        Stay attached (no self-detach; for interactive debug)
   PASEO_DEPLOY_LOG_DIR=<path>      Durable log root (default: $DEPLOY_LOG_ROOT)
   PASEO_SYNC_CODE_SERVER_USER_DATA  Also rsync code-server User/ + extensions/ to remotes
