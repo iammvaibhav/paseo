@@ -271,6 +271,7 @@ Interactive / debug (stay attached): `PASEO_DEPLOY_FOREGROUND=1 ./scripts/deploy
 2. **Never set `PASEO_DEPLOY_DETACHED` / `PASEO_DEPLOY_DETACH_TOKEN` yourself.** They are internal child-only. `deploy.sh` only trusts a child that holds the per-run detach token file + is a session leader; leaked env from a previous run always re-detaches.
 3. **Never long-wait on deploy in the tool.** Launch, read the printed log path / pid, then poll `~/.paseo/deploy-logs/latest.log` (or the job logs) with short commands.
 4. **Nudge needs `~/.paseo/deploy.env`.** Detached deploy does not source bashrc. Put `PASEO_PASSWORD=…` in `~/.paseo/deploy.env` (chmod 600) on every host or snapshot/nudge skips with `Password required`.
+5. **You own the git history.** Deploy never writes a commit subject and never resolves a conflict. A dirty tree stops it unless you pass `PASEO_DEPLOY_COMMIT_MESSAGE="<subject>"`; a conflicting `upstream/main` merge stops it with the merge left in progress. Read the error, commit or resolve yourself, then relaunch deploy.
 
 The script builds server packages, restarts host daemons with **`--home …/.paseo`**, and syncs remotes. Local/remote **daemon** restarts are **new-session detached** (not plain `nohup` — on macOS that still dies with a cancelled agent tool mid-restart) and must observe a **new PID + `/api/health`**. Restarts use the **built CLI** (`~/.local/bin/paseo` / `packages/cli/dist`), never `npx tsx` mid-build. On failure, deploy tries a detached **`daemon start` recovery** before aborting. The **whole deploy** is also detached by default so waiting for health/desktop cannot be killed by tool cancel.
 
@@ -296,15 +297,15 @@ ssh iammvaibhav 'PATH="$HOME/.local/bin:$PATH" paseo daemon start --home "$HOME/
 
 ### Day-to-day flow
 
-1. Commit changes on `vaibhav/customizations` (or let deploy auto-commit).
+1. Commit changes on `vaibhav/customizations` yourself, or pass `PASEO_DEPLOY_COMMIT_MESSAGE="<subject>"` so deploy commits them with that subject.
 2. Run `./scripts/deploy.sh` from the repo root — **this is the deploy path.** (Self-detaches; tail `~/.paseo/deploy-logs/latest.log`.) Today the deploy normally runs **from iammvaibhav** (`ssh iammvaibhav 'cd /home/ubuntu/paseo && ./scripts/deploy.sh'` with `PASEO_PASSWORD` set for the nudge).
 
 The script:
 
-1. **Git phase (on the orchestrator host)** — auto-commits any uncommitted changes (commit message written by the `claude` CLI on **Haiku 4.5**, falling back to a timestamp; if pre-commit fails, **Grok 4.5 high** fixes lint/format/typecheck and commits), fetches `upstream`, fast-forwards `origin/main` to `upstream/main`, fast-forwards to whatever `origin/$BRANCH` already has (never force-reverts another host's push), **merges** `upstream/main` into the custom branch (on conflict, `grok` at **Grok 4.5 / `high` effort** resolves markers, stages, fixes pre-commit checks, and completes the merge commit — streaming its output), then **pushes** to `origin`. After the push, post-deploy work runs **in parallel**: each remote host, local daemon restart (after a local `build:server`), local code-server, and the **desktop app** build then install via the formal loop below (on the MacBook, either locally or via the ssh job). Skip desktop with …
+1. **Git phase (on the orchestrator host)** — requires a committed tree: an uncommitted tree stops the deploy unless `PASEO_DEPLOY_COMMIT_MESSAGE` supplies the subject, in which case deploy stages everything and commits it (the pre-commit hook still gates lint/format/typecheck). It then fetches `upstream`, fast-forwards `origin/main` to `upstream/main`, fast-forwards to whatever `origin/$BRANCH` already has (never force-reverts another host's push), **merges** `upstream/main` into the custom branch, then **pushes** to `origin`. A merge conflict stops the deploy: the merge is left in progress, the conflicted files and the resolve-then-re-run steps are printed, and nothing is pushed. After the push, post-deploy work runs **in parallel**: each remote host, local daemon restart (after a local `build:server`), local code-server, and the **desktop app** build then install via the formal loop below (on the MacBook, either locally or via the ssh job).
 2. **Remotes** — each is a parallel post-push job: repoints `origin` to the fork if still on `getpaseo/paseo`, checks out `vaibhav/customizations` from `origin`, installs deps when `package.json` / lockfile changed, builds, and restarts the host's `~/.paseo` daemon (with the self-wake nudge). From the MacBook the remotes are `blrofc3` + `iammvaibhav`; from iammvaibhav the remote is `blrofc3` (via WireGuard) plus the MacBook desktop job.
 
-No longer requires a clean working tree — uncommitted changes are auto-committed first. The auto-commit runs the pre-commit hook (lint/format/typecheck), so a quality failure aborts the sync before anything is pushed.
+No model is in this path. The commit subject comes from the caller and conflict resolution is the caller's job, so deploy never invents history or guesses a merge. An in-progress merge in the checkout also stops the deploy before it fetches anything.
 
 #### Desktop install (this fork) — formal contract
 

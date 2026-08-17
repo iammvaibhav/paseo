@@ -2,11 +2,11 @@
 # Sync the custom Paseo branch across local + remote dev hosts.
 #
 # Local workflow (fork-based):
-#   1. Auto-commit any uncommitted changes (claude message; on pre-commit failure,
-#      grok fixes checks and commits)
+#   1. Require a committed tree: commit uncommitted work yourself, or pass
+#      PASEO_DEPLOY_COMMIT_MESSAGE=... to commit it with that subject
 #   2. Fetch upstream, mirror origin/main ← upstream/main (fast-forward)
-#   3. Merge upstream/main into the custom branch; on conflict, grok resolves,
-#      stages, fixes pre-commit checks, and completes the merge commit
+#   3. Merge upstream/main into the custom branch; on conflict deploy STOPS and
+#      leaves the merge in progress for the caller to resolve, then re-run
 #   4. Push the branch to origin (iammvaibhav/paseo fork)
 #   5. In parallel (after the push):
 #        - each remote host (git pull + build + daemon + code-server)
@@ -69,10 +69,8 @@
 #   PASEO_DEPLOY_LOG_DIR=...          # durable log root (default ~/.paseo/deploy-logs)
 #   PASEO_SYNC_CODE_SERVER_USER_DATA=1  # also rsync User/ + extensions/ local → remotes
 #   CODE_SERVER_VERSION=4.127.0       # pin code-server; omit for latest
-#   PASEO_COMMIT_MSG_MODEL=...        # claude model for auto-commit messages (default Haiku 4.5)
-#   PASEO_CONFLICT_MODEL=...          # grok model for conflict/commit fix (default grok-4.5)
-#   PASEO_CONFLICT_EFFORT=high        # effort for conflict/commit fix (low|medium|high|xhigh|max)
-#   PASEO_CONFLICT_MAX_TURNS=80       # max agent turns for conflict/commit fix
+#   PASEO_DEPLOY_COMMIT_MESSAGE=...   # subject used to commit a dirty tree; unset and
+#                                     #   dirty means deploy stops and asks you to commit
 #
 # Detach + logs:
 #   By default deploy re-launches itself in a NEW session (start_new_session) so an
@@ -124,12 +122,9 @@ fi
 MACBOOK_HOST="${PASEO_MACBOOK_HOST:-macbook}"
 MACBOOK_REPO_DIR="${PASEO_MACBOOK_REPO_DIR:-paseo}"
 
-# Commit messages stay on claude (Haiku). Conflict resolution + pre-commit repair
-# use the grok CLI at high reasoning effort (Grok 4.5 High).
-COMMIT_MSG_MODEL="${PASEO_COMMIT_MSG_MODEL:-claude-haiku-4-5-20251001}"
-CONFLICT_MODEL="${PASEO_CONFLICT_MODEL:-grok-4.5}"
-CONFLICT_EFFORT="${PASEO_CONFLICT_EFFORT:-high}"
-CONFLICT_MAX_TURNS="${PASEO_CONFLICT_MAX_TURNS:-80}"
+# This script never authors git history. No model writes a commit subject and no
+# model resolves a merge conflict: both stop the deploy so the caller decides.
+DEPLOY_COMMIT_MESSAGE="${PASEO_DEPLOY_COMMIT_MESSAGE:-}"
 
 # Desktop install targets for this personal fork. Paseo.app keeps the dock and
 # Spotlight identity. Paseo (Orig).app is replaced with the currently installed
@@ -328,173 +323,40 @@ ensure_node() {
   log "Using Node $(node -v) (npm $(npm -v))"
 }
 
-generate_commit_message() {
-  # A claude-written subject line from the staged diff, falling back to a
-  # timestamped message when the claude CLI is unavailable or errors.
-  local fallback
-  fallback="chore: sync $(date '+%Y-%m-%d %H:%M:%S')"
-  if ! command -v claude >/dev/null 2>&1; then
-    printf '%s\n' "$fallback"
-    return
-  fi
-  local msg
-  msg="$(
-    {
-      git -C "$ROOT_DIR" diff --cached --stat
-      echo
-      git -C "$ROOT_DIR" diff --cached | head -c 12000
-    } | claude -p --model "$COMMIT_MSG_MODEL" 'Write a single concise git commit subject line (imperative mood, under 72 chars, no body, no surrounding quotes or backticks) summarizing this staged diff. Output only the subject line.' 2>/dev/null | head -n1)"
-  msg="${msg#\"}"
-  msg="${msg%\"}"
-  msg="${msg#\`}"
-  msg="${msg%\`}"
-  if [[ -n "$msg" ]]; then
-    printf '%s\n' "$msg"
-  else
-    printf '%s\n' "$fallback"
-  fi
-}
-
-# Run a headless grok agent with streaming NDJSON → human output.
-# Args: log_path, prompt
-run_grok_agent() {
-  local log_path="$1"
-  local prompt="$2"
-  if ! command -v grok >/dev/null 2>&1; then
-    die "grok CLI was not found (needed for automated fix/commit)."
-  fi
-  if ! command -v python3 >/dev/null 2>&1; then
-    die "python3 was not found (needed to stream grok output)."
-  fi
-  local stream_filter="$ROOT_DIR/scripts/stream-grok-ndjson.py"
-  if [[ ! -f "$stream_filter" ]]; then
-    die "Missing $stream_filter (needed to stream grok output)."
-  fi
-  log "Streaming agent output (raw NDJSON also saved to $log_path):"
-  (
-    cd "$ROOT_DIR" || exit 1
-    set -o pipefail
-    grok \
-      --model "$CONFLICT_MODEL" \
-      --effort "$CONFLICT_EFFORT" \
-      --always-approve \
-      --max-turns "$CONFLICT_MAX_TURNS" \
-      --output-format streaming-json \
-      -p "$prompt" 2>&1 \
-      | python3 -u "$stream_filter" "$log_path"
-  )
-}
-
 # True when a merge is in progress (MERGE_HEAD exists).
 merge_in_progress() {
   [[ -f "$ROOT_DIR/.git/MERGE_HEAD" ]]
 }
 
-# Stage everything and ensure no conflict markers / unmerged paths remain.
-stage_and_verify_no_conflicts() {
-  git -C "$ROOT_DIR" add -A
-  if git -C "$ROOT_DIR" diff --cached --check 2>/dev/null | grep -qi "conflict marker"; then
-    return 1
-  fi
-  if [[ -n "$(git -C "$ROOT_DIR" diff --name-only --diff-filter=U)" ]]; then
-    return 1
-  fi
-  return 0
-}
-
-# When a plain `git commit` fails (almost always pre-commit lint/format/typecheck),
-# hand the tree to grok to fix and complete the commit.
-fix_precommit_and_commit() {
-  local mode="$1" # "autocommit" | "merge"
-  local commit_msg="${2:-}"
-  local log_path="/tmp/paseo-${mode}-fix.log"
-  local prompt
-
-  if [[ "$mode" == "merge" ]]; then
-    prompt="You are finishing an in-progress git merge of ${UPSTREAM_REMOTE}/main into branch '${BRANCH}' in ${ROOT_DIR}.
-
-Conflicts should already be resolved (or nearly so). Your job:
-1. Ensure every conflict marker (<<<<<<<, =======, >>>>>>>) is gone.
-2. Stage all resolved files: git add -A
-3. Run pre-commit quality checks and FIX any failures:
-   - npm run format   (or npm run format:files -- <paths>)
-   - npm run lint -- <paths> when needed
-   - npm run typecheck (or package-scoped typecheck)
-4. Complete the merge with: git commit --no-edit
-   (uses the existing MERGE_MSG; do not invent a new subject)
-5. Keep iterating until git commit succeeds and MERGE_HEAD is gone.
-
-Rules:
-- Do NOT git merge --abort, force-push, reset --hard, or rewrite history.
-- Preserve this fork's customizations while keeping upstream changes.
-- Prefer targeted format/lint on changed files over full-repo rewrites.
-- When done, the repo must no longer be in a merging state."
-  else
-    prompt="You are finishing an auto-commit of local changes on branch '${BRANCH}' in ${ROOT_DIR}.
-
-Desired commit subject (use exactly this message):
-${commit_msg}
-
-Your job:
-1. Stage relevant changes: git add -A (or a sensible subset if something must stay untracked)
-2. Run pre-commit quality checks and FIX any failures:
-   - npm run format / format:files
-   - npm run lint
-   - npm run typecheck
-3. Commit with: git commit -m $(printf '%q' "$commit_msg")
-4. Keep iterating until the commit succeeds.
-
-Rules:
-- Do NOT force-push, reset --hard, or rewrite history.
-- Prefer targeted fixes over broad refactors.
-- When done, git status should show a clean worktree (or only intentional leftovers)."
-  fi
-
-  log "Pre-commit/commit failed; asking grok ($CONFLICT_MODEL, effort=$CONFLICT_EFFORT) to fix checks and complete the ${mode} commit"
-  if ! run_grok_agent "$log_path" "$prompt"; then
-    die "grok ${mode} fix failed; resolve manually. Log: $log_path"
-  fi
-
-  if [[ "$mode" == "merge" ]]; then
-    if merge_in_progress; then
-      # Agent may have fixed files but not committed — try once more.
-      if stage_and_verify_no_conflicts && git -C "$ROOT_DIR" commit --no-edit; then
-        log "Merge commit created after agent fix"
-        return
-      fi
-      die "Still merging after agent fix; resolve manually (git status). Log: $log_path"
-    fi
-    log "Merge commit completed by agent"
-    return
-  fi
-
-  # autocommit: ensure something was committed or tree is clean enough
-  if [[ -n "$(git -C "$ROOT_DIR" status --porcelain)" ]]; then
-    # One script-side retry if agent fixed hooks but didn't commit.
-    if [[ -n "$(git -C "$ROOT_DIR" diff --cached --name-only)" ]] \
-      && git -C "$ROOT_DIR" commit -m "$commit_msg"; then
-      log "Auto-commit created after agent fix"
-      return
-    fi
-    die "Uncommitted changes remain after agent fix; resolve manually. Log: $log_path"
-  fi
-  log "Auto-commit completed by agent"
-}
-
-autocommit_local_changes() {
+# A dirty tree is either committed by the caller beforehand, or committed here with
+# a subject the caller supplied. Deploy never invents one.
+commit_local_changes() {
   if [[ -z "$(git -C "$ROOT_DIR" status --porcelain)" ]]; then
     return
   fi
-  log "Uncommitted changes found; committing before sync"
+  if [[ -z "$DEPLOY_COMMIT_MESSAGE" ]]; then
+    printf 'error: uncommitted changes in %s — deploy stopped.\n' "$ROOT_DIR" >&2
+    git -C "$ROOT_DIR" status --short >&2
+    cat >&2 <<EOF
+
+Commit them yourself (you know what changed), then re-run deploy:
   git -C "$ROOT_DIR" add -A
-  local msg
-  msg="$(generate_commit_message)"
-  log "Commit message: $msg"
-  # Runs the pre-commit hook (lint/format/typecheck). On failure, grok fixes and commits.
-  if git -C "$ROOT_DIR" commit -m "$msg"; then
+  git -C "$ROOT_DIR" commit -m "<subject>"
+  $0
+
+Or hand deploy a subject to commit them with:
+  PASEO_DEPLOY_COMMIT_MESSAGE="<subject>" $0
+EOF
+    exit 1
+  fi
+  log "Committing uncommitted changes: $DEPLOY_COMMIT_MESSAGE"
+  git -C "$ROOT_DIR" add -A
+  if git -C "$ROOT_DIR" commit -m "$DEPLOY_COMMIT_MESSAGE"; then
     return
   fi
-  fix_precommit_and_commit "autocommit" "$msg"
+  # The pre-commit hook (format/lint/typecheck) rejected the tree; its output is
+  # above. Fixing quality failures is the caller's job, not the script's.
+  die "pre-commit checks failed for the commit — fix them, commit, then re-run deploy"
 }
 
 ensure_fork_remotes() {
@@ -518,38 +380,6 @@ update_origin_main() {
   fi
 }
 
-resolve_conflicts_with_agent() {
-  local files
-  files="$(git -C "$ROOT_DIR" diff --name-only --diff-filter=U)"
-  local count
-  count="$(printf '%s\n' "$files" | grep -c . || true)"
-  local log_path="/tmp/paseo-merge-resolve.log"
-  log "Resolving $count conflicted file(s) with grok $CONFLICT_MODEL (effort=$CONFLICT_EFFORT) in one pass:"
-  printf '  - %s\n' $files
-
-  # Agent resolves markers, stages, fixes pre-commit hooks, and completes the merge commit.
-  local prompt
-  prompt="You are resolving the conflicts from 'git merge ${UPSTREAM_REMOTE}/main' into the custom fork branch '${BRANCH}' in ${ROOT_DIR}.
-
-Do ALL of the following in one session:
-1. Edit EVERY conflicted file to remove ALL conflict markers (<<<<<<<, =======, >>>>>>>) and produce a correct merge that keeps upstream's changes while preserving this fork's customizations.
-2. Stage everything: git add -A
-3. Run pre-commit quality checks and FIX failures (npm run format / lint / typecheck as needed; use targeted paths when possible).
-4. Complete the merge with: git commit --no-edit
-5. Iterate until the merge commit succeeds and MERGE_HEAD is gone.
-
-Conflicted files:$(printf ' %s' $files)
-
-Rules:
-- Do NOT git merge --abort, force-push, reset --hard, or rewrite published history.
-- Leave no conflict markers behind.
-- Prefer targeted format/lint over full-repo thrash."
-
-  if ! run_grok_agent "$log_path" "$prompt"; then
-    die "grok conflict resolution failed; resolve manually (git merge --abort to bail). Log: $log_path"
-  fi
-}
-
 merge_upstream() {
   log "Merging $UPSTREAM_REMOTE/main into $BRANCH"
   if git -C "$ROOT_DIR" merge --no-edit "$UPSTREAM_REMOTE/main"; then
@@ -557,31 +387,34 @@ merge_upstream() {
     return
   fi
 
-  # Conflicts: agent resolves, stages, fixes checks, and should create the merge commit.
-  resolve_conflicts_with_agent
-
-  if ! merge_in_progress; then
-    log "Merge commit created by agent"
-    return
+  # Conflicts belong to the caller. The merge is deliberately left in progress so
+  # the resolution happens in place and deploy only has to be re-run afterwards.
+  local conflicted
+  conflicted="$(git -C "$ROOT_DIR" diff --name-only --diff-filter=U)"
+  printf 'error: merge of %s/main into %s hit conflicts — deploy stopped.\n' \
+    "$UPSTREAM_REMOTE" "$BRANCH" >&2
+  if [[ -n "$conflicted" ]]; then
+    printf 'conflicted files:\n' >&2
+    # shellcheck disable=SC2086
+    printf '  %s\n' $conflicted >&2
+  else
+    printf 'the merge failed with no unmerged paths; see the git output above.\n' >&2
   fi
+  cat >&2 <<EOF
 
-  # Agent may have fixed files without committing — finish on the script side first.
-  if ! stage_and_verify_no_conflicts; then
-    log "Conflicts or markers remain; asking agent to finish"
-    fix_precommit_and_commit "merge"
-    return
-  fi
-
-  if git -C "$ROOT_DIR" commit --no-edit; then
-    log "Merge commit created"
-    return
-  fi
-
-  # Pre-commit hook failed after a clean stage — agent fixes checks and commits.
-  fix_precommit_and_commit "merge"
+The merge is left in progress on purpose. Resolve it, then re-run deploy:
+  1. edit each conflicted file and remove every conflict marker
+  2. git -C "$ROOT_DIR" add -A
+  3. git -C "$ROOT_DIR" commit --no-edit
+  4. $0
+EOF
+  exit 1
 }
 
 sync_local_git() {
+  if merge_in_progress; then
+    die "a merge is already in progress in $ROOT_DIR — finish it (resolve, git add -A, git commit --no-edit), then re-run deploy"
+  fi
   log "Fetching $UPSTREAM_REMOTE and $ORIGIN_REMOTE"
   git -C "$ROOT_DIR" fetch "$UPSTREAM_REMOTE" --prune
   git -C "$ROOT_DIR" fetch "$ORIGIN_REMOTE" --prune
@@ -2008,11 +1841,10 @@ Orchestrator (auto-detected by `uname -s`):
 What a full run does (local Mac):
   0. Self-detaches into a new session (unless PASEO_DEPLOY_FOREGROUND=1) and writes
      durable logs under ~/.paseo/deploy-logs/ (latest.log → current run)
-  1. Auto-commit uncommitted changes (message via claude; on pre-commit failure,
-     grok fixes checks and commits)
+  1. Require a committed tree (or commit it with PASEO_DEPLOY_COMMIT_MESSAGE)
   2. Fetch upstream, fast-forward origin/main to upstream/main
-  3. Merge $UPSTREAM_REMOTE/main into '$BRANCH' (on conflict, grok resolves, stages,
-     fixes pre-commit checks, and completes the merge commit — streaming output)
+  3. Merge $UPSTREAM_REMOTE/main into '$BRANCH' (on conflict: stop, leave the merge
+     in progress, and print the resolve-then-re-run steps)
   4. Push branch to $ORIGIN_REMOTE
   5. Post-push in parallel: each remote host, local daemon restart (+ server build first),
      local code-server, and desktop app build/install to $DESKTOP_APP then relaunch
@@ -2061,11 +1893,10 @@ Daemon password for snapshot/nudge (never committed):
   PASEO_DEPLOY_ENV_FILE           override path for that file
   PASEO_PASSWORD / PASEO_NUDGE_PASSWORD  existing env still wins over the file
 
-Model selection:
-  PASEO_COMMIT_MSG_MODEL          claude model for auto-commit messages (default: $COMMIT_MSG_MODEL)
-  PASEO_CONFLICT_MODEL           grok model for conflict/commit fix (default: $CONFLICT_MODEL)
-  PASEO_CONFLICT_EFFORT          Reasoning effort for conflict/commit fix (default: $CONFLICT_EFFORT)
-  PASEO_CONFLICT_MAX_TURNS       Max agent turns for conflict/commit fix (default: $CONFLICT_MAX_TURNS)
+Git history (authored by the caller, never by this script):
+  PASEO_DEPLOY_COMMIT_MESSAGE     Subject used to commit a dirty tree. Unset while dirty
+                                  means deploy stops and asks you to commit. Merge
+                                  conflicts always stop deploy: resolve, commit, re-run.
 
 Other:
   CODE_SERVER_VERSION            Pin code-server version (omit for latest)
@@ -2128,7 +1959,7 @@ main() {
       log "Linux orchestrator — committing/pushing, then delegating to the MacBook"
       ensure_fork_remotes
       ensure_node
-      autocommit_local_changes
+      commit_local_changes
       sync_local_git
       if ! PASEO_REQUIRE_MACBOOK=1 macbook_desktop_job; then
         die "Desktop-only deploy failed on the MacBook"
@@ -2145,7 +1976,7 @@ main() {
   if [[ "${PASEO_SKIP_LOCAL:-0}" != "1" ]]; then
     ensure_fork_remotes
     ensure_node
-    autocommit_local_changes
+    commit_local_changes
     sync_local_git
   elif [[ "${PASEO_SKIP_REMOTES:-0}" != "1" ]]; then
     # Remotes-only still needs the branch on origin; local git may already be pushed.
