@@ -269,11 +269,14 @@ function executeTimelineSideEffects(input: {
   sideEffects: TimelineReducerSideEffect[];
   agentId: string;
   recoverTimelineGap: (agentId: string, cursor: { epoch: string; endSeq: number }) => void;
+  recoverTimelineBaseline: (agentId: string) => void;
 }): void {
-  const { sideEffects, agentId, recoverTimelineGap } = input;
+  const { sideEffects, agentId, recoverTimelineGap, recoverTimelineBaseline } = input;
   for (const effect of sideEffects) {
     if (effect.type === "catch_up") {
       recoverTimelineGap(agentId, effect.cursor);
+    } else if (effect.type === "rebaseline") {
+      recoverTimelineBaseline(agentId);
     }
   }
 }
@@ -414,6 +417,10 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
     },
     [],
   );
+
+  const recoverTimelineBaseline = useCallback((agentId: string) => {
+    viewedTimelineSyncRef.current?.recoverBaseline(agentId);
+  }, []);
 
   const handleAppResumed = useCallback(
     (awayMs: number) => {
@@ -656,6 +663,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
         sideEffects: result.sideEffects,
         agentId,
         recoverTimelineGap,
+        recoverTimelineBaseline,
       });
 
       finalizeTimelineApplication({
@@ -671,6 +679,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       applyAgentTimelineResponseState,
       markAgentHistorySynchronized,
       recoverTimelineGap,
+      recoverTimelineBaseline,
       serverId,
       setAgentStreamState,
       setAgentTimelineHasNewer,
@@ -769,6 +778,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       setAgentStreamState,
       setAgentTimelineCursor,
       recoverTimelineGap,
+      recoverTimelineBaseline,
     });
 
     const unsubAgentStream = client.on("agent_stream", (message) => {
@@ -1045,6 +1055,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
     setPendingPermissions,
     notifyAgentAttention,
     recoverTimelineGap,
+    recoverTimelineBaseline,
     applyWorkspaceSetupProgress,
     applyTimelineResponse,
     updateSessionServerInfo,

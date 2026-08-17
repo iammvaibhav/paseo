@@ -122,7 +122,12 @@ export interface FleetSearchTier3Runner {
 export interface FleetSearchHostDeps {
   agentManager: Pick<
     AgentManager,
-    "getAgent" | "getTimeline" | "fetchTimeline" | "hasTimeline" | "seedTimelineFromItems"
+    | "getAgent"
+    | "getTimeline"
+    | "fetchTimeline"
+    | "hasTimeline"
+    | "seedTimelineForRehydrate"
+    | "seedTimelineFromItems"
   >;
   agentStorage: Pick<AgentStorage, "list">;
   /** Report_status history (tier 1 "reports"). Absent → reports skipped. */
@@ -461,23 +466,25 @@ async function loadTimelineRows(
   if (deps.agentManager.hasTimeline(record.id)) {
     return deps.agentManager.fetchTimeline(record.id, { direction: "tail", limit: 0 }).rows;
   }
-  const sessionId = record.persistence?.sessionId;
-  if (sessionId && supportsDiskTimeline(record.provider)) {
-    const diskItems = await tryReadProviderTimelineFromDisk(
-      {
-        provider: record.provider,
-        cwd: record.cwd,
-        sessionId,
-        ...(typeof record.persistence?.nativeHandle === "string"
-          ? { nativeHandle: record.persistence.nativeHandle }
-          : {}),
-      },
-      { logger: deps.logger },
-    );
-    if (diskItems && diskItems.length > 0) {
-      deps.agentManager.seedTimelineFromItems(record.id, diskItems);
-      return deps.agentManager.fetchTimeline(record.id, { direction: "tail", limit: 0 }).rows;
+  const seeded = await deps.agentManager.seedTimelineForRehydrate(record.id, async () => {
+    const sessionId = record.persistence?.sessionId;
+    if (sessionId && supportsDiskTimeline(record.provider)) {
+      return await tryReadProviderTimelineFromDisk(
+        {
+          provider: record.provider,
+          cwd: record.cwd,
+          sessionId,
+          ...(typeof record.persistence?.nativeHandle === "string"
+            ? { nativeHandle: record.persistence.nativeHandle }
+            : {}),
+        },
+        { logger: deps.logger },
+      );
     }
+    return null;
+  });
+  if (seeded) {
+    return deps.agentManager.fetchTimeline(record.id, { direction: "tail", limit: 0 }).rows;
   }
   return null;
 }

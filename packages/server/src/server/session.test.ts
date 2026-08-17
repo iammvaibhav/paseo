@@ -5713,7 +5713,7 @@ describe("unavailable provider agent handling", () => {
       getAgent: vi.fn().mockReturnValue(null),
       getRegisteredProviderIds: vi.fn().mockReturnValue(["codex", "opencode"]),
       hasTimeline: vi.fn().mockReturnValue(false),
-      seedTimelineFromDurable: vi.fn().mockResolvedValue(false),
+      seedTimelineForRehydrate: vi.fn().mockResolvedValue(false),
       seedTimelineFromItems: vi.fn(),
       fetchTimeline: vi.fn().mockReturnValue({
         epoch: "epoch-1",
@@ -5784,7 +5784,7 @@ describe("unavailable provider agent handling", () => {
       ),
       getRegisteredProviderIds: vi.fn().mockReturnValue(["codex", "omp"]),
       hasTimeline: vi.fn().mockReturnValue(false),
-      seedTimelineFromDurable: vi.fn().mockResolvedValue(false),
+      seedTimelineForRehydrate: vi.fn().mockResolvedValue(false),
       seedTimelineFromItems: vi.fn(),
       fetchTimeline: vi.fn().mockReturnValue({
         epoch: "epoch-1",

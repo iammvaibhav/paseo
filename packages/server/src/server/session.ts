@@ -46,7 +46,7 @@ import {
   supportsDiskTimeline,
   tryReadProviderTimelineFromDisk,
 } from "./agent/provider-disk-history.js";
-import type { ImportedTimelineEntry, AgentTimelineItem } from "./agent/agent-sdk-types.js";
+import type { AgentTimelineItem } from "./agent/agent-sdk-types.js";
 import {
   sendPromptToAgent,
   startAgentRun,
@@ -5193,28 +5193,25 @@ export class Session {
     if (this.agentManager.hasTimeline(agentId)) {
       return;
     }
-    const sessionId = record.persistence?.sessionId;
-    let diskItems: ImportedTimelineEntry[] | null = null;
-    if (sessionId && supportsDiskTimeline(record.provider)) {
-      diskItems = await tryReadProviderTimelineFromDisk(
-        {
-          provider: record.provider,
-          cwd: record.cwd,
-          sessionId,
-          ...(typeof record.persistence?.nativeHandle === "string"
-            ? { nativeHandle: record.persistence.nativeHandle }
-            : {}),
-        },
-        { logger: this.sessionLogger },
-      );
-    }
-    if (diskItems && diskItems.length > 0) {
-      this.agentManager.seedTimelineFromItems(agentId, diskItems);
-    } else {
-      await this.agentManager.seedTimelineFromDurable(agentId);
-      if (!this.agentManager.hasTimeline(agentId)) {
-        this.agentManager.seedTimelineFromItems(agentId, []);
+    const seeded = await this.agentManager.seedTimelineForRehydrate(agentId, async () => {
+      const sessionId = record.persistence?.sessionId;
+      if (sessionId && supportsDiskTimeline(record.provider)) {
+        return await tryReadProviderTimelineFromDisk(
+          {
+            provider: record.provider,
+            cwd: record.cwd,
+            sessionId,
+            ...(typeof record.persistence?.nativeHandle === "string"
+              ? { nativeHandle: record.persistence.nativeHandle }
+              : {}),
+          },
+          { logger: this.sessionLogger },
+        );
       }
+      return null;
+    });
+    if (!seeded && !this.agentManager.hasTimeline(agentId)) {
+      this.agentManager.seedTimelineFromItems(agentId, []);
     }
   }
   private async handleRefreshAgentRequest(
@@ -8261,12 +8258,11 @@ export class Session {
     const registeredProviderIds = new Set(this.agentManager.getRegisteredProviderIds());
     const providerAvailable = isStoredAgentProviderAvailable(record, registeredProviderIds);
 
-    const sessionId = record.persistence?.sessionId;
-    if (
-      sessionId &&
-      supportsDiskTimeline(record.provider) &&
-      !this.agentManager.hasTimeline(agentId)
-    ) {
+    await this.agentManager.seedTimelineForRehydrate(agentId, async () => {
+      const sessionId = record.persistence?.sessionId;
+      if (!sessionId || !supportsDiskTimeline(record.provider)) {
+        return null;
+      }
       const diskItems = await tryReadProviderTimelineFromDisk(
         {
           provider: record.provider,
@@ -8279,7 +8275,6 @@ export class Session {
         { logger: this.sessionLogger },
       );
       if (diskItems && diskItems.length > 0) {
-        this.agentManager.seedTimelineFromItems(agentId, diskItems);
         this.sessionLogger.info(
           {
             agentId,
@@ -8289,11 +8284,8 @@ export class Session {
           "Seeded agent timeline from provider disk history",
         );
       }
-    }
-
-    if (!this.agentManager.hasTimeline(agentId)) {
-      await this.agentManager.seedTimelineFromDurable(agentId);
-    }
+      return diskItems;
+    });
 
     // History-only answer when we already have a timeline, or when the provider
     // is gone and we can only surface the stored agent snapshot.

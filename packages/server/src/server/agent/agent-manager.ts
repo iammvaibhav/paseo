@@ -1466,7 +1466,8 @@ export class AgentManager {
     if (!this.durableTimelineStore) {
       return false;
     }
-    const rows = await this.durableTimelineStore.getCommittedRows(agentId);
+    const snapshot = await this.durableTimelineStore.getCommittedSnapshot(agentId);
+    const rows = snapshot.rows;
     if (rows.length === 0) {
       return false;
     }
@@ -1474,8 +1475,33 @@ export class AgentManager {
       rows,
       nextSeq: rows[rows.length - 1]!.seq + 1,
       timestamp: new Date().toISOString(),
+      epoch: snapshot.epoch,
     });
     return true;
+  }
+
+  /**
+   * Seed the timeline for a rehydrate in the authoritative order: the durable
+   * document first, provider disk history only when the durable document has
+   * no rows. The durable document owns the canonical epoch and sequence, so
+   * disk history can never renumber a populated timeline. Returns true when
+   * rows were seeded.
+   */
+  async seedTimelineForRehydrate(
+    agentId: string,
+    readDiskItems: () => Promise<readonly ImportedTimelineEntry[] | null>,
+  ): Promise<boolean> {
+    if (this.timelineStore.has(agentId) && this.timelineStore.getItems(agentId).length > 0) {
+      return true;
+    }
+    if (await this.seedTimelineFromDurable(agentId)) {
+      return true;
+    }
+    const diskItems = await readDiskItems();
+    if (diskItems && diskItems.length > 0) {
+      return this.seedTimelineFromItems(agentId, diskItems);
+    }
+    return false;
   }
 
   hasTimeline(agentId: string): boolean {

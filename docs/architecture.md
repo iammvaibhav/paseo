@@ -309,7 +309,8 @@ initializing → idle ⇄ running
 `ManagedAgent` is a discriminated union over those lifecycle tags. Notes:
 
 - **AgentManager** is the source of truth for agent state and broadcasts updates to all subscribers
-- Timeline sequence allocation is append-only with epochs (each run starts a new epoch). The one
+- Timeline sequence allocation is append-only within an epoch. The epoch changes only when rows are
+  renumbered, never on rehydration — see [docs/timeline-sync.md](timeline-sync.md). The one
   permitted in-place enrichment adds a provider message id to the manager-owned row for an accepted
   prompt; it preserves the row's sequence, content, and timestamp. Storage uses sequence numbers for
   client-side dedup; the default fetch page is 200 items.

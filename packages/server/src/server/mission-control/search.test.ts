@@ -106,10 +106,16 @@ function buildDeps(options: TestDepsOptions = {}): {
       rows: timeline.fetch(agentId),
     }),
     hasTimeline: (agentId: string) => timeline.has(agentId),
+    seedTimelineForRehydrate: vi.fn(async () => false),
     seedTimelineFromItems: vi.fn(() => true),
   } as unknown as Pick<
     AgentManager,
-    "getAgent" | "getTimeline" | "fetchTimeline" | "hasTimeline" | "seedTimelineFromItems"
+    | "getAgent"
+    | "getTimeline"
+    | "fetchTimeline"
+    | "hasTimeline"
+    | "seedTimelineForRehydrate"
+    | "seedTimelineFromItems"
   >;
 
   const deps: FleetSearchHostDeps = {

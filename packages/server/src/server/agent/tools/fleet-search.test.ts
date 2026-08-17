@@ -73,6 +73,7 @@ function createHarness(options: CatalogHarnessOptions = {}) {
       rows: timeline.fetch(agentId),
     }),
     hasTimeline: (agentId: string) => timeline.has(agentId),
+    seedTimelineForRehydrate: vi.fn(async () => false),
     seedTimelineFromItems: vi.fn(() => true),
   } as unknown as AgentManager;
 

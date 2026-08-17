@@ -128,7 +128,11 @@ export class FileAgentTimelineStore implements AgentTimelineStore {
 
   async getCommittedSnapshot(agentId: string): Promise<AgentTimelineSnapshot> {
     const document = await this.getDocument(agentId);
-    return { rows: document.rows.map(cloneRow), historyComplete: document.historyComplete };
+    return {
+      rows: document.rows.map(cloneRow),
+      historyComplete: document.historyComplete,
+      epoch: document.epoch,
+    };
   }
 
   async getLastItem(agentId: string): Promise<AgentTimelineItem | null> {

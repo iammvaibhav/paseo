@@ -41,6 +41,25 @@ describe("FileAgentTimelineStore", () => {
     ).toBeUndefined();
   });
 
+  it("surfaces the document epoch from the committed snapshot and ignores an incoming one", async () => {
+    const directory = await storeDirectory();
+    await writeJsonFileAtomic(
+      filePath(directory, "agent"),
+      document([{ seq: 1, timestamp: "2026-01-01T00:00:00.000Z", item: user("old") }], 2),
+    );
+    const store = new FileAgentTimelineStore(directory);
+    expect((await store.getCommittedSnapshot("agent")).epoch).toBe("epoch-1");
+
+    await store.replaceCommittedSnapshot("agent", {
+      rows: [{ seq: 1, timestamp: "2026-01-01T00:00:00.000Z", item: user("old") }],
+      historyComplete: true,
+      epoch: "incoming-epoch",
+    });
+    expect((await new FileAgentTimelineStore(directory).getCommittedSnapshot("agent")).epoch).toBe(
+      "epoch-1",
+    );
+  });
+
   it("treats existing rows as incomplete until an atomic history snapshot commits", async () => {
     const directory = await storeDirectory();
     const store = new FileAgentTimelineStore(directory);
@@ -53,6 +72,7 @@ describe("FileAgentTimelineStore", () => {
     expect(await new FileAgentTimelineStore(directory).getCommittedSnapshot("agent")).toEqual({
       rows: [row],
       historyComplete: true,
+      epoch: expect.any(String),
     });
   });
 

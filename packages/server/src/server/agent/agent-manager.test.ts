@@ -74,7 +74,7 @@ test("marks a fresh agent canonical timeline complete", async () => {
     agentId = agent.id;
     expect(
       await new FileAgentTimelineStore(timelineDirectory).getCommittedSnapshot(agent.id),
-    ).toEqual({ rows: [], historyComplete: true });
+    ).toEqual({ rows: [], historyComplete: true, epoch: expect.any(String) });
   } finally {
     if (agentId) await manager.closeAgent(agentId).catch(() => undefined);
     rmSync(workdir, { recursive: true, force: true });
@@ -133,6 +133,110 @@ test("restores durable canonical turn membership when an agent is reopened", asy
     await second.closeAgent(created.id);
   } finally {
     await storage.flush().catch(() => undefined);
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("seedTimelineFromDurable reuses the durable epoch and nextSeq after a rehydrate", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-rehydrate-epoch-"));
+  const durablePath = join(workdir, "agent-timelines");
+  try {
+    const durable = new FileAgentTimelineStore(durablePath);
+    await durable.appendCommitted("agent", {
+      type: "user_message",
+      text: "one",
+      clientMessageId: "one-client",
+    });
+    await durable.appendCommitted("agent", {
+      type: "user_message",
+      text: "two",
+      clientMessageId: "two-client",
+    });
+    const snapshot = await durable.getCommittedSnapshot("agent");
+    expect(snapshot.rows.map((row) => row.seq)).toEqual([1, 2]);
+
+    const manager = new AgentManager({
+      clients: { codex: new TestAgentClient() },
+      durableTimelineStore: new FileAgentTimelineStore(durablePath),
+      logger,
+    });
+    await expect(manager.seedTimelineFromDurable("agent")).resolves.toBe(true);
+    const fetched = manager.fetchTimeline("agent", { direction: "tail", limit: 0 });
+    expect(fetched.epoch).toBe(snapshot.epoch);
+    expect(fetched.window.nextSeq).toBe(3);
+    expect(fetched.rows.map((row) => row.seq)).toEqual([1, 2]);
+    expect(fetched.rows.map((row) => row.item)).toEqual([
+      { type: "user_message", text: "one", clientMessageId: "one-client" },
+      { type: "user_message", text: "two", clientMessageId: "two-client" },
+    ]);
+  } finally {
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("seedTimelineForRehydrate prefers the durable document over provider disk history", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-rehydrate-durable-first-"));
+  const durablePath = join(workdir, "agent-timelines");
+  try {
+    const durable = new FileAgentTimelineStore(durablePath);
+    await durable.appendCommitted("agent", {
+      type: "user_message",
+      text: "durable",
+      clientMessageId: "durable-client",
+    });
+    const snapshot = await durable.getCommittedSnapshot("agent");
+
+    const manager = new AgentManager({
+      clients: { codex: new TestAgentClient() },
+      durableTimelineStore: new FileAgentTimelineStore(durablePath),
+      logger,
+    });
+    let diskReads = 0;
+    const seeded = await manager.seedTimelineForRehydrate("agent", async () => {
+      diskReads += 1;
+      return [
+        {
+          item: { type: "user_message", text: "disk", clientMessageId: "disk-client" },
+          timestamp: "2026-01-01T00:00:00.000Z",
+        },
+      ];
+    });
+    expect(seeded).toBe(true);
+    expect(diskReads).toBe(0);
+    const fetched = manager.fetchTimeline("agent", { direction: "tail", limit: 0 });
+    expect(fetched.epoch).toBe(snapshot.epoch);
+    expect(fetched.window.nextSeq).toBe(2);
+    expect(fetched.rows.map((row) => row.seq)).toEqual([1]);
+    expect(fetched.rows.map((row) => row.item)).toEqual([
+      { type: "user_message", text: "durable", clientMessageId: "durable-client" },
+    ]);
+  } finally {
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("seedTimelineForRehydrate seeds from provider disk history when the durable document is empty", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-rehydrate-disk-fallback-"));
+  const durablePath = join(workdir, "agent-timelines");
+  try {
+    const manager = new AgentManager({
+      clients: { codex: new TestAgentClient() },
+      durableTimelineStore: new FileAgentTimelineStore(durablePath),
+      logger,
+    });
+    const seeded = await manager.seedTimelineForRehydrate("agent", async () => [
+      {
+        item: { type: "user_message", text: "disk", clientMessageId: "disk-client" },
+        timestamp: "2026-01-01T00:00:00.000Z",
+      },
+    ]);
+    expect(seeded).toBe(true);
+    const fetched = manager.fetchTimeline("agent", { direction: "tail", limit: 0 });
+    expect(fetched.rows.map((row) => row.seq)).toEqual([1]);
+    expect(fetched.rows.map((row) => row.item)).toEqual([
+      { type: "user_message", text: "disk", clientMessageId: "disk-client" },
+    ]);
+  } finally {
     rmSync(workdir, { recursive: true, force: true });
   }
 });
@@ -399,6 +503,7 @@ test("retries an interrupted initial history hydration after reopen without a du
     ).toEqual({
       rows: [],
       historyComplete: false,
+      epoch: expect.any(String),
     });
     await first.closeAgent(created.id);
     first = null;
@@ -448,6 +553,7 @@ test("retries an interrupted initial history hydration after reopen without a du
     ).toEqual({
       rows,
       historyComplete: true,
+      epoch: expect.any(String),
     });
   } finally {
     if (first && agentId) await first.closeAgent(agentId).catch(() => undefined);

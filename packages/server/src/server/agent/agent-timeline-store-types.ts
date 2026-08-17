@@ -36,6 +36,7 @@ export interface AgentTimelineWindow {
 export interface AgentTimelineSnapshot {
   rows: AgentTimelineRow[];
   historyComplete: boolean;
+  readonly epoch?: string;
 }
 
 export interface AgentTimelineFetchResult {

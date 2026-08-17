@@ -3727,7 +3727,7 @@ describe("processAgentStreamEvent", () => {
     });
   });
 
-  it("drops stale timeline event", () => {
+  it("drops a stale timeline event and requests a re-baseline", () => {
     const existingCursor: TimelineCursor = {
       epoch: "epoch-1",
       startSeq: 1,
@@ -3745,10 +3745,10 @@ describe("processAgentStreamEvent", () => {
     expect(result.cursorChanged).toBe(false);
     expect(result.changedTail).toBe(false);
     expect(result.changedHead).toBe(false);
-    expect(result.sideEffects).toEqual([]);
+    expect(result.sideEffects).toEqual([{ type: "rebaseline" }]);
   });
 
-  it("drops timeline event with epoch mismatch", () => {
+  it("drops a timeline event from a rotated epoch and requests a re-baseline", () => {
     const existingCursor: TimelineCursor = {
       epoch: "epoch-1",
       startSeq: 1,
@@ -3766,7 +3766,28 @@ describe("processAgentStreamEvent", () => {
     expect(result.cursorChanged).toBe(false);
     expect(result.changedTail).toBe(false);
     expect(result.changedHead).toBe(false);
-    expect(result.sideEffects).toEqual([]);
+    expect(result.sideEffects).toEqual([{ type: "rebaseline" }]);
+  });
+
+  it("re-baselines after an epoch rotation mid-turn with a seq far above 1", () => {
+    const existingCursor: TimelineCursor = {
+      epoch: "epoch-1",
+      startSeq: 1,
+      endSeq: 1458,
+    };
+
+    const result = processAgentStreamEvent({
+      ...baseStreamInput,
+      event: makeTimelineEvent("rotated turn output"),
+      seq: 1619,
+      epoch: "epoch-2",
+      currentCursor: existingCursor,
+    });
+
+    expect(result.cursorChanged).toBe(false);
+    expect(result.changedTail).toBe(false);
+    expect(result.changedHead).toBe(false);
+    expect(result.sideEffects).toEqual([{ type: "rebaseline" }]);
   });
 
   it("resets visible timeline when a new epoch starts at seq 1", () => {
@@ -4281,6 +4302,38 @@ describe("processAgentStreamEvents", () => {
     expect(finalAssistantItems[0]?.text).toBe(
       "Call-site API — exactly one primitive. Not gateValue, not filterEnum.",
     );
+  });
+
+  it("emits one rebaseline effect per dropped event of a rotated epoch burst", () => {
+    const existingCursor: TimelineCursor = {
+      epoch: "epoch-1",
+      startSeq: 1,
+      endSeq: 100,
+    };
+
+    const result = processAgentStreamEvents({
+      events: [101, 102, 103, 104].map((seq) => ({
+        event: makeTimelineEvent(`rotated ${seq}`),
+        seq,
+        epoch: "epoch-2",
+        timestamp: new Date(1000 + seq),
+      })),
+      currentTail: [],
+      currentHead: [],
+      currentCursor: existingCursor,
+      hasAuthoritativeBaseline: true,
+    });
+
+    expect(result.changedTail).toBe(false);
+    expect(result.changedHead).toBe(false);
+    expect(result.cursorChanged).toBe(false);
+    expect(result.cursor).toEqual(existingCursor);
+    expect(result.sideEffects).toEqual([
+      { type: "rebaseline" },
+      { type: "rebaseline" },
+      { type: "rebaseline" },
+      { type: "rebaseline" },
+    ]);
   });
 });
 

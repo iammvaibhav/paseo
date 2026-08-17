@@ -764,10 +764,10 @@ async function peekAgentActivity(input: {
     throw new Error(`Agent ${input.agentId} not found`);
   }
 
-  if (!input.agentManager.hasTimeline(input.agentId)) {
+  const seeded = await input.agentManager.seedTimelineForRehydrate(input.agentId, async () => {
     const sessionId = record.persistence?.sessionId;
     if (sessionId && supportsDiskTimeline(record.provider)) {
-      const diskItems = await tryReadProviderTimelineFromDisk(
+      return await tryReadProviderTimelineFromDisk(
         {
           provider: record.provider,
           cwd: record.cwd,
@@ -778,13 +778,11 @@ async function peekAgentActivity(input: {
         },
         { logger: input.logger },
       );
-      if (diskItems && diskItems.length > 0) {
-        input.agentManager.seedTimelineFromItems(input.agentId, diskItems);
-      }
     }
-    if (!input.agentManager.hasTimeline(input.agentId)) {
-      input.agentManager.seedTimelineFromItems(input.agentId, []);
-    }
+    return null;
+  });
+  if (!seeded && !input.agentManager.hasTimeline(input.agentId)) {
+    input.agentManager.seedTimelineFromItems(input.agentId, []);
   }
 
   const rows = input.agentManager.fetchTimeline(input.agentId, {
