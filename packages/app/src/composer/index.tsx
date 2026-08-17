@@ -1666,6 +1666,10 @@ function ComposerContentImpl({
   );
   const beginAgentCancellation = useSessionStore((state) => state.beginAgentCancellation);
   const settleAgentCancellation = useSessionStore((state) => state.settleAgentCancellation);
+  const applyAgentTurnLiveness = useSessionStore((state) => state.applyAgentTurnLiveness);
+  const rejectAgentMessageSubmission = useSessionStore(
+    (state) => state.rejectAgentMessageSubmission,
+  );
   const isAgentRunning = hasActiveTurn;
   const hasAgent = agentState.status !== null;
 
@@ -1991,15 +1995,24 @@ function ComposerContentImpl({
         }
       })
       .finally(() => {
+        const session = useSessionStore.getState().sessions[serverId];
+        for (const submission of session?.messageSubmissions.get(targetAgentId) ?? []) {
+          if (!submission.providerAcknowledged) {
+            rejectAgentMessageSubmission(serverId, targetAgentId, submission.clientMessageId);
+          }
+        }
+        applyAgentTurnLiveness(serverId, targetAgentId, { type: "destructive_close" });
         settleAgentCancellation(serverId, targetAgentId, requestId);
       });
     messageInputRef.current?.focus();
   }, [
+    applyAgentTurnLiveness,
     beginAgentCancellation,
     client,
     isAgentRunning,
     isCancellingAgent,
     isConnected,
+    rejectAgentMessageSubmission,
     serverId,
     settleAgentCancellation,
   ]);

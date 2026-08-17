@@ -45,7 +45,7 @@ import { getDesktopHost } from "@/desktop/host";
 import { collectBrowserEditorOrigins } from "@/workspace/browser-editor-url";
 import { CLIENT_CAPS } from "@getpaseo/protocol/client-capabilities";
 import { BROWSER_AUTOMATION_COMMAND_NAMES } from "@getpaseo/protocol/browser-automation/rpc-schemas";
-import { useSessionStore } from "@/stores/session-store";
+import { selectAgentTurnPresentation, useSessionStore } from "@/stores/session-store";
 import { useWorkspaceSetupStore } from "@/stores/workspace-setup-store";
 import { invalidateCheckoutGitQueriesForServer } from "@/git/query-keys";
 import { queryClient } from "@/data/query-client";
@@ -165,6 +165,7 @@ export interface HostRuntimeControllerDeps {
     host: HostProfile;
     connection: HostConnection;
     timeoutMs?: number;
+    clientId?: string;
   }) => Promise<{
     client: DaemonClient;
     serverId: string;
@@ -480,6 +481,23 @@ function probeIntervalForConnection(
   return PROBE_MAX_BACKOFF_MS;
 }
 
+function allocateProbeClientId(stableClientId: string): string {
+  const suffix =
+    globalThis.crypto && typeof globalThis.crypto.randomUUID === "function"
+      ? globalThis.crypto.randomUUID().replace(/-/g, "").slice(0, 12)
+      : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  return `${stableClientId}:probe:${suffix}`;
+}
+
+function hostHasOpenTurn(serverId: string): boolean {
+  const session = useSessionStore.getState().sessions[serverId];
+  if (!session) return false;
+  for (const agentId of session.agents.keys()) {
+    if (selectAgentTurnPresentation(session, agentId).isActive) return true;
+  }
+  return false;
+}
+
 function createDefaultDeps(): HostRuntimeControllerDeps {
   const browserHostAvailable =
     typeof getDesktopHost()?.browser?.executeAutomationCommand === "function";
@@ -543,10 +561,11 @@ function createDefaultDeps(): HostRuntimeControllerDeps {
         },
       });
     },
-    connectToDaemon: ({ host, connection, timeoutMs }) =>
+    connectToDaemon: ({ host, connection, timeoutMs, clientId }) =>
       connectToDaemon(connection, {
         ...(host.serverId ? { serverId: host.serverId } : {}),
         ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        ...(clientId ? { clientId } : {}),
         capabilities: appCapabilities,
         trace: nativePerformanceTrace,
       }),
@@ -926,6 +945,9 @@ export class HostRuntimeController {
       }
 
       if (this.switchCandidateHitCount >= ADAPTIVE_SWITCH_CONSECUTIVE_PROBES) {
+        if (hostHasOpenTurn(this.host.serverId)) {
+          return;
+        }
         this.switchCandidateConnectionId = null;
         this.switchCandidateHitCount = 0;
         await this.switchToConnection({
@@ -962,6 +984,7 @@ export class HostRuntimeController {
               const { client, serverId } = await this.deps.connectToDaemon({
                 host: this.host,
                 connection,
+                clientId: allocateProbeClientId("cid"),
               });
               if (serverId !== this.host.serverId) {
                 if (isPlaceholderServerId(this.host.serverId) && this.onReconcileServerId) {

@@ -347,11 +347,19 @@ describe("cancelComposerAgent", () => {
     expect(input.client.canceledIds).toEqual([]);
   });
 
-  it("does nothing when disconnected or the client is null", () => {
+  it("resolves without a daemon call when disconnected so the composer can settle", async () => {
     const input = baseInput();
-    expect(cancelComposerAgent({ ...input, isConnected: false })).toBeNull();
-    expect(cancelComposerAgent({ ...input, client: null })).toBeNull();
+    const result = cancelComposerAgent({ ...input, isConnected: false });
+    expect(result).not.toBeNull();
+    await result;
     expect(input.client.canceledIds).toEqual([]);
+  });
+
+  it("resolves without a daemon call when the client is null", async () => {
+    const input = baseInput();
+    const result = cancelComposerAgent({ ...input, client: null });
+    expect(result).not.toBeNull();
+    await result;
   });
 });
 

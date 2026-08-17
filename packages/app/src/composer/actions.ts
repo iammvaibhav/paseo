@@ -163,7 +163,9 @@ export interface CancelComposerAgentInput {
 
 export function cancelComposerAgent(input: CancelComposerAgentInput): Promise<void> | null {
   if (!input.isAgentRunning || input.isCancellingAgent) return null;
-  if (!input.isConnected || !input.client) return null;
+  if (!input.client || !input.isConnected) {
+    return Promise.resolve();
+  }
   try {
     return Promise.resolve(input.client.cancelAgent(input.agentId));
   } catch (error) {
