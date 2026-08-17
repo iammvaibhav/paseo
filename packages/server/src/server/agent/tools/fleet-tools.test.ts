@@ -315,8 +315,8 @@ describe("fleet_list_agents roster enrichment", () => {
             provider: "omp",
             cwd: "/tmp",
             labels: {},
-            createdAt: "2026-08-01T00:00:00Z",
-            updatedAt: "2026-08-01T00:00:00Z",
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
             lastStatus: "closed",
             title: "Local agent",
           },
@@ -1186,8 +1186,9 @@ describe("fleet_list_agents roster fields (spec 03)", () => {
     ).toHaveLength(0);
   });
 
-  test("bucket calls widen the recency window to full retention and stamp appliedSinceHours/totalMatches", async () => {
+  test("plain roster always shows actionable buckets, trims bulk rows, and stamps fleet-truth bucketCounts", async () => {
     const fiveDaysAgo = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+    const OLD_IDLE_UUID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
     const { client, peerManager } = createFakePeerHarness();
     client.fetchAgents = vi.fn(async () => ({
       entries: [
@@ -1204,6 +1205,19 @@ describe("fleet_list_agents roster fields (spec 03)", () => {
             title: "Old ready worker",
           },
         },
+        {
+          agent: {
+            id: OLD_IDLE_UUID,
+            provider: "omp",
+            cwd: "/tmp",
+            name: "old-idle-worker",
+            bucket: "idle",
+            createdAt: fiveDaysAgo,
+            updatedAt: fiveDaysAgo,
+            status: "closed",
+            title: "Old idle worker",
+          },
+        },
       ],
       page: { limit: 200 },
     }));
@@ -1214,37 +1228,51 @@ describe("fleet_list_agents roster fields (spec 03)", () => {
       getTimeline: () => [],
     } as unknown as AgentManager);
 
-    // Plain roster keeps the 48h default: the 5-day-old row is out of window.
+    // Plain roster: the 5-day-old READY row always shows (actionable bucket);
+    // the 5-day-old IDLE row is trimmed by the 48h bulk window. bucketCounts
+    // still counts both — fleet truth is never windowed.
     const plain = await catalog.executeTool("fleet_list_agents", { limit: 50 });
     const plainPayload = plain.structuredContent as {
       agents: Array<Record<string, unknown>>;
       appliedSinceHours: number;
       totalMatches: number;
+      bucketCounts: Record<string, number>;
     };
-    expect(plainPayload.agents).toHaveLength(0);
+    expect(plainPayload.agents.map((agent) => agent.id)).toEqual([SEND_AGENT_UUID]);
     expect(plainPayload.appliedSinceHours).toBe(48);
+    expect(plainPayload.totalMatches).toBe(1);
+    expect(plainPayload.bucketCounts).toEqual({ ready: 1, idle: 1 });
 
-    // A bucket call is a deterministic lookup: it must see the whole
-    // retained fleet, not a silently windowed subset.
-    const ready = await catalog.executeTool("fleet_list_agents", { bucket: "ready", limit: 50 });
-    const readyPayload = ready.structuredContent as {
+    // A bucket call is a deterministic lookup: unwindowed over retention.
+    const idle = await catalog.executeTool("fleet_list_agents", { bucket: "idle", limit: 50 });
+    const idlePayload = idle.structuredContent as {
       agents: Array<Record<string, unknown>>;
       appliedSinceHours: number;
-      totalMatches: number;
     };
-    expect(readyPayload.agents.map((agent) => agent.id)).toEqual([SEND_AGENT_UUID]);
-    expect(readyPayload.appliedSinceHours).toBe(24 * 30);
-    expect(readyPayload.totalMatches).toBe(1);
+    expect(idlePayload.agents.map((agent) => agent.id)).toEqual([OLD_IDLE_UUID]);
+    expect(idlePayload.appliedSinceHours).toBe(24 * 30);
 
-    // An explicit sinceHours always wins, even with a bucket filter.
+    // An explicit sinceHours windows every row, even actionable buckets.
     const explicit = await catalog.executeTool("fleet_list_agents", {
       bucket: "ready",
       sinceHours: 48,
       limit: 50,
     });
-    expect(
-      (explicit.structuredContent as { agents: Array<Record<string, unknown>> }).agents,
-    ).toHaveLength(0);
+    // Test-local cast: catalog output is loosely typed in this suite.
+    const explicitPayload = explicit.structuredContent as {
+      agents: Array<Record<string, unknown>>;
+    };
+    expect(explicitPayload.agents).toHaveLength(0);
+
+    // A statuses call is also a deterministic lookup: unwindowed.
+    const closed = await catalog.executeTool("fleet_list_agents", {
+      statuses: ["closed"],
+      limit: 50,
+    });
+    const closedPayload = closed.structuredContent as {
+      agents: Array<Record<string, unknown>>;
+    };
+    expect(closedPayload.agents).toHaveLength(2);
   });
 });
 

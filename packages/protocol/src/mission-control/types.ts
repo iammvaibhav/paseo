@@ -982,6 +982,10 @@ export const MissionControlContextFetchResponseSchema = z.object({
     // This host's own missionControl.hostAlias so the Commander assembles the
     // fleet map from per-host declarations. Old daemons omit it → host name.
     hostAlias: z.string().optional(),
+    // Full-fleet lifecycle bucket counts on this host (no recency window), so
+    // the Commander's snapshot states true totals even when the roster rows
+    // are windowed. Old daemons omit it.
+    bucketCounts: z.record(z.string(), z.number()).optional(),
     // This host's own composer last-pick (daemon.composerPreferences), so the
     // Commander/Voice derive a per-host fleet_list_models default from the
     // host's own pick. Old daemons omit it → task-role fallback.

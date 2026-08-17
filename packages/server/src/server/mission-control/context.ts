@@ -46,6 +46,8 @@ export interface MissionControlContextPayload {
   inventory: MissionControlInventory;
   models: MissionControlModels;
   recentAgents: MissionControlContextAgentSummary[];
+  /** Full-fleet lifecycle bucket counts on this host — no recency window. */
+  bucketCounts?: Record<string, number>;
   /** This host's own missionControl.hostAlias declaration, if set. */
   hostAlias?: string;
   /** This host's composer last-pick (daemon.composerPreferences), if set. */
@@ -170,16 +172,21 @@ export async function buildLocalModels(input: LocalModelsInput): Promise<Mission
 }
 
 /**
- * Agents active in the last 24 hours for the world snapshot's roster, bucketed
- * by lifecycle (running / needs-you / ready / done / idle), with identity
- * fields (name/title/living description), the last self-reported headline, and
- * last-activity time for the age column. Running agents always qualify (the
- * hot set); other buckets must show activity within the window. The Commander
- * and other system-owned agents are excluded — they are not fleet work.
+ * The local roster data: agents active in the last 24 hours (bucketed by
+ * lifecycle, with identity fields, last self-reported headline, and
+ * last-activity time), plus full-fleet bucket counts with NO window — the
+ * snapshot states true totals even though its rows are recency-trimmed.
+ * Running agents always qualify for rows (the hot set). The Commander and
+ * other system-owned agents are excluded — they are not fleet work.
  */
-export async function buildLocalRecentAgents(
+export interface LocalRosterData {
+  agents: MissionControlContextAgentSummary[];
+  bucketCounts: Record<string, number>;
+}
+
+export async function buildLocalRosterData(
   input: LocalRecentAgentsInput,
-): Promise<MissionControlContextAgentSummary[]> {
+): Promise<LocalRosterData> {
   const [records, live, reviewStates, events] = await Promise.all([
     input.agentStorage.list(),
     Promise.resolve(input.agentManager.listAgents()),
@@ -189,18 +196,31 @@ export async function buildLocalRecentAgents(
   const liveById = new Map(live.map((agent) => [agent.id, agent]));
   const headlineByAgent = collectLatestSelfReports(events ?? []);
   const summaries: MissionControlContextAgentSummary[] = [];
+  const bucketCounts: Record<string, number> = {};
   for (const record of records) {
     if (record.archivedAt || record.internal === true || isSystemOwnedAgentLabels(record.labels)) {
       continue;
     }
+    const liveAgent = liveById.get(record.id);
+    const reviewState = reviewStates?.get(record.id)?.reviewState;
+    const stopOrigin = input.getStopOrigin?.(record.id) ?? null;
+    const pendingProposalCount = input.getPendingProposalCount?.(record.id) ?? 0;
+    const bucket = lifecycleBucket(
+      record,
+      liveAgent,
+      reviewState,
+      stopOrigin,
+      pendingProposalCount,
+    );
+    bucketCounts[bucket] = (bucketCounts[bucket] ?? 0) + 1;
     const summary = summarizeRecentAgent(
       record,
-      liveById.get(record.id),
-      reviewStates?.get(record.id)?.reviewState,
+      liveAgent,
+      reviewState,
       headlineByAgent.get(record.id),
       input.serverId,
-      input.getStopOrigin?.(record.id) ?? null,
-      input.getPendingProposalCount?.(record.id) ?? 0,
+      stopOrigin,
+      pendingProposalCount,
     );
     if (summary) {
       summaries.push(summary);
@@ -213,7 +233,13 @@ export async function buildLocalRecentAgents(
     }),
   );
   summaries.sort((a, b) => (updatedAtMs.get(b.agentId) ?? 0) - (updatedAtMs.get(a.agentId) ?? 0));
-  return summaries.slice(0, ROSTER_LIMIT);
+  return { agents: summaries.slice(0, ROSTER_LIMIT), bucketCounts };
+}
+
+export async function buildLocalRecentAgents(
+  input: LocalRecentAgentsInput,
+): Promise<MissionControlContextAgentSummary[]> {
+  return (await buildLocalRosterData(input)).agents;
 }
 
 /** Latest self-reported headline per agent, keyed by agentId. */
@@ -322,10 +348,10 @@ function lifecycleBucket(
 export async function buildLocalContextPayload(
   input: LocalContextInput,
 ): Promise<MissionControlContextPayload> {
-  const [inventory, models, recentAgents] = await Promise.all([
+  const [inventory, models, roster] = await Promise.all([
     buildLocalInventory(input),
     buildLocalModels(input),
-    buildLocalRecentAgents(input),
+    buildLocalRosterData(input),
   ]);
   // Spec: the fleet map assembles aliases from each host's own declaration —
   // this host's missionControl.hostAlias. Never a hardcoded machine list.
@@ -335,7 +361,8 @@ export async function buildLocalContextPayload(
   return {
     inventory,
     models,
-    recentAgents,
+    recentAgents: roster.agents,
+    bucketCounts: roster.bucketCounts,
     ...(hostAlias ? { hostAlias } : {}),
     ...(composerPreferences ? { composerPreferences } : {}),
   };
@@ -351,6 +378,8 @@ export interface FleetHostContext {
   inventory: MissionControlInventory;
   models: MissionControlModels;
   recentAgents: MissionControlContextAgentSummary[];
+  /** Full-fleet bucket counts on this host; absent for old/unreachable peers. */
+  bucketCounts?: Record<string, number>;
 }
 
 export interface FleetContextData {
@@ -460,6 +489,7 @@ export async function buildFleetContextData(
       inventory: payload?.inventory ?? { projects: [] },
       models: payload?.models ?? {},
       recentAgents: payload?.recentAgents ?? [],
+      ...(payload?.bucketCounts ? { bucketCounts: payload.bucketCounts } : {}),
     });
   }
 
@@ -504,6 +534,7 @@ async function fetchPeerContextPayload(
     inventory: response.inventory,
     models: response.models,
     recentAgents: response.recentAgents,
+    ...(response.bucketCounts ? { bucketCounts: response.bucketCounts } : {}),
     ...(response.hostAlias ? { hostAlias: response.hostAlias } : {}),
   };
 }
@@ -805,7 +836,34 @@ const ROSTER_STATUS_LABELS: Record<string, string> = {
   ready: "ready for review",
 };
 
+/**
+ * Fleet-truth bucket totals summed over every reachable host that reports
+ * them (no recency window), rendered ahead of the windowed roster rows so
+ * the Commander never states a windowed count as the fleet total.
+ */
+function buildBucketTotalsLine(context: FleetContextData): string | null {
+  const totals: Record<string, number> = {};
+  let reported = false;
+  for (const host of context.hosts) {
+    if (!host.bucketCounts) {
+      continue;
+    }
+    reported = true;
+    for (const [bucket, count] of Object.entries(host.bucketCounts)) {
+      totals[bucket] = (totals[bucket] ?? 0) + count;
+    }
+  }
+  if (!reported) {
+    return null;
+  }
+  const parts = ["needs_you", "running", "ready", "done", "idle"]
+    .filter((bucket) => (totals[bucket] ?? 0) > 0)
+    .map((bucket) => `${ROSTER_STATUS_LABELS[bucket] ?? bucket} ${totals[bucket]}`);
+  return `- Fleet totals (full retention): ${parts.length > 0 ? parts.join(", ") : "none"}`;
+}
+
 function buildRosterSection(context: FleetContextData): string {
+  const totalsLine = buildBucketTotalsLine(context);
   const entries: Array<{ line: string; at: number }> = [];
   for (const host of context.hosts) {
     for (const agent of host.recentAgents) {
@@ -824,11 +882,14 @@ function buildRosterSection(context: FleetContextData): string {
       });
     }
   }
+  const header = totalsLine ? `# Roster\n${totalsLine}` : "# Roster";
   if (entries.length === 0) {
-    return "# Roster\n- (no running or ready-for-review agents)";
+    return totalsLine
+      ? `${header}\n- (no agents active in the last 24h; totals above are the full fleet)`
+      : `${header}\n- (no running or ready-for-review agents)`;
   }
   entries.sort((left, right) => right.at - left.at);
-  return `# Roster\n${entries
+  return `${header}\n${entries
     .slice(0, ROSTER_LIMIT)
     .map((entry) => entry.line)
     .join("\n")}`;

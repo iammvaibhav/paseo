@@ -4235,7 +4235,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       .max(24 * 30)
       .optional()
       .describe(
-        "Recency window in hours. Defaults to 48 for the plain roster; calls with bucket or query default to the full 30-day retention so filtered counts and name resolution are complete.",
+        "Explicit recency window in hours; windows every returned row. Omitted: filtered calls (bucket/statuses/query) are unwindowed over the 30-day retention; the plain roster always shows needs_you/running/ready and trims done/idle rows to 48h.",
       ),
     statuses: z
       .array(z.enum(["initializing", "idle", "running", "error", "closed"]))
@@ -4664,30 +4664,39 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       title: "List agents across hosts",
       description:
         "List agents on this daemon and every reachable peer host, tagged with the host each agent runs on. " +
-        "Unreachable hosts are omitted; use mission_control.peers.list or the board for host status.",
+        "Unreachable hosts are omitted; use mission_control.peers.list or the board for host status. " +
+        "bucketCounts is always fleet truth over the full 30-day retention. Filtered calls (bucket/statuses/query) " +
+        "return unwindowed rows; the plain roster always shows needs_you/running/ready rows and trims done/idle rows to 48h.",
       inputSchema: fleetListAgentsInputSchema,
       outputSchema: {
         agents: z.array(fleetAgentListItemSchema),
-        // Closed loop: the applied recency window and the pre-limit match
-        // count ride the result so answers never state a windowed count as
-        // fleet truth.
+        // Closed loop: the applied row window, the pre-limit match count, and
+        // full-retention bucket counts ride the result so answers never state
+        // a windowed count as fleet truth.
         appliedSinceHours: z.number(),
         totalMatches: z.number(),
+        bucketCounts: z.record(z.string(), z.number()),
       },
     },
     async ({ includeArchived = false, sinceHours, statuses, bucket, query, limit = 50 }) => {
-      // Bucket and query calls are deterministic lookups over the whole
-      // retained fleet; the 48h recency default is only for the plain
-      // roster. A silent window here once turned 21 ready agents into a
-      // spoken "13 agents ready for review".
-      const effectiveSinceHours = sinceHours ?? (bucket || query ? 24 * 30 : 48);
-      // Post-hoc filters (bucket/query) must see the full candidate set, so
-      // filtered calls fetch the local roster at its cap, not the caller cap.
+      // One window model for every roster surface (user decision 2026-08-17):
+      // - The candidate set is ALWAYS the full 30-day retention, so the
+      //   payload's `bucketCounts` is fleet truth on every call.
+      // - Filtered calls (bucket/statuses/query) are deterministic lookups:
+      //   rows are unwindowed unless the caller passes sinceHours.
+      // - The plain roster windows only the collapsible buckets: needs_you/
+      //   running/ready rows always show; done/idle rows only from the last
+      //   48h. (A silent 48h window on a bucket call once turned 21 ready
+      //   agents into a spoken "13 agents ready for review".)
+      const RETENTION_HOURS = 24 * 30;
+      const PLAIN_BULK_WINDOW_HOURS = 48;
+      const isFiltered = Boolean(bucket || query || (statuses && statuses.length > 0));
+      // Statuses filter is applied post-hoc (not at fetch) so bucketCounts
+      // never shrinks to the caller's status subset.
       const localResult = await toCatalog().executeTool("list_agents", {
         includeArchived,
-        sinceHours: effectiveSinceHours,
-        statuses,
-        limit: bucket || query ? 200 : limit,
+        sinceHours: RETENTION_HOURS,
+        limit: 200,
       });
       const localAgents = z
         .object({ agents: z.array(AgentListItemPayloadSchema) })
@@ -4759,7 +4768,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         if (!peerManager) {
           return;
         }
-        const sinceMs = Date.now() - effectiveSinceHours * 60 * 60 * 1000;
+        const sinceMs = Date.now() - RETENTION_HOURS * 60 * 60 * 1000;
         // Peer host identity: the serverId of the host each agent runs on
         // (absent when the peer map does not know it yet — additive).
         const getPeerServerId =
@@ -4779,7 +4788,6 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
               client,
               peerName: peerStatus.name,
               includeArchived,
-              statuses,
               sinceMs,
             });
             let peerReports = new Map<string, string[]>();
@@ -4812,25 +4820,57 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       await appendLocalRosterRows();
       await appendPeerRosterRows();
 
-      // Roster filters (spec 03): an optional lifecycle bucket (closed enum)
-      // and a fuzzy agent-name query — the resolver for spoken agent names.
-      // Rows without a bucket (pre-bucket daemons) never match a bucket filter.
+      // Roster filters (spec 03): raw statuses, an optional lifecycle bucket
+      // (closed enum), and a fuzzy agent-name query — the resolver for spoken
+      // agent names. Rows without a bucket (pre-bucket daemons) never match a
+      // bucket filter and are absent from bucketCounts.
       const queryTokens = (query ?? "").trim().toLowerCase().split(/\s+/).filter(Boolean);
       const hasQuery = queryTokens.length > 0;
+      const statusFilter = statuses && statuses.length > 0 ? new Set<string>(statuses) : null;
+      // Fleet truth: bucket counts over the whole retained candidate set,
+      // before any caller filter or row window.
+      const bucketCounts: Record<string, number> = {};
+      for (const agent of agents) {
+        if (agent.bucket) {
+          bucketCounts[agent.bucket] = (bucketCounts[agent.bucket] ?? 0) + 1;
+        }
+      }
+      const rowWindowHours = sinceHours ?? (isFiltered ? RETENTION_HOURS : PLAIN_BULK_WINDOW_HOURS);
+      const rowCutoffMs = Date.now() - rowWindowHours * 60 * 60 * 1000;
+      const withinWindow = (updatedAt: string): boolean => Date.parse(updatedAt) >= rowCutoffMs;
+      // Buckets you act on are never windowed out of a plain roster; only the
+      // collapsible bulk (done/idle/bucketless) rows are recency-trimmed.
+      const ALWAYS_SHOWN_BUCKETS: Record<string, true> = {
+        needs_you: true,
+        running: true,
+        ready: true,
+      };
       const filtered = agents
+        .filter((agent) => !statusFilter || statusFilter.has(agent.status))
         .filter((agent) => !bucket || agent.bucket === bucket)
         .filter(
           (agent) =>
             !hasQuery || matchesFleetInventoryQuery(queryTokens, agent.name, agent.title, agent.id),
-        );
+        )
+        .filter((agent) => {
+          if (sinceHours !== undefined || isFiltered) {
+            // Explicit window, or a deterministic lookup (default: unwindowed).
+            return withinWindow(agent.updatedAt);
+          }
+          return (
+            (agent.bucket && ALWAYS_SHOWN_BUCKETS[agent.bucket] === true) ||
+            withinWindow(agent.updatedAt)
+          );
+        });
 
       filtered.sort(compareAgentListItems);
       return {
         content: [],
         structuredContent: ensureValidJson({
           agents: filtered.slice(0, limit),
-          appliedSinceHours: effectiveSinceHours,
+          appliedSinceHours: rowWindowHours,
           totalMatches: filtered.length,
+          bucketCounts,
         }),
       };
     },

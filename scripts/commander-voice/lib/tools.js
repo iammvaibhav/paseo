@@ -66,7 +66,7 @@ const READ_TOOL_DECLARATIONS = [
         sinceHours: {
           type: "NUMBER",
           description:
-            "Only agents updated in the last N hours. Default 48 for the plain roster; bucket/query calls default to the full 30-day retention so filtered counts are complete. Results carry appliedSinceHours + totalMatches.",
+            "Explicit recency window in hours (windows every row). Omit it: filtered calls (bucket/statuses/query) see the full 30-day retention; the plain roster always shows needs_you/running/ready and trims done/idle rows to 48h. Results carry appliedSinceHours, totalMatches, and full-retention bucketCounts.",
         },
         statuses: {
           type: "ARRAY",
