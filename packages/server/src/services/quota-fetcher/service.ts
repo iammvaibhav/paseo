@@ -10,13 +10,8 @@ export interface ProviderUsageServiceOptions {
   fetch?: ProviderApiFetch;
   cacheTtlMs?: number;
   now?: () => number;
-  // Background refresh cadence while agents run vs. when the daemon is idle.
-  // Injectable for tests; defaults to 60s running / 15min idle.
-  refreshCadenceMs?: { running: number; idle: number };
-  // True while any agent is running; the scheduler re-arms at the matching cadence.
-  hasRunningAgent?: () => boolean;
-  // Called after every completed fresh fetch (scheduled, client-triggered, or
-  // RPC force-refresh) so the owner can push the updated usage to clients.
+  // Called after every completed fresh fetch (client-triggered or RPC
+  // force-refresh) so the owner can push the updated usage to clients.
   onUsageRefreshed?: (result: ProviderUsageListResult) => void;
   // Dynamic enablement resolver: consulted per refresh so config toggles apply live.
   isFetcherEnabled?: (fetcher: ProviderUsageFetcher) => boolean;
@@ -28,21 +23,16 @@ export interface ProviderUsageListResult {
 }
 
 const DEFAULT_PROVIDER_USAGE_CACHE_TTL_MS = 5 * 60 * 1000;
-const DEFAULT_REFRESH_CADENCE_MS = { running: 60_000, idle: 900_000 };
 
 export class ProviderUsageService {
   private readonly logger: Logger;
   private readonly fetchers: ProviderUsageFetcher[];
   private readonly cacheTtlMs: number;
-  private readonly refreshCadenceMs: { running: number; idle: number };
-  private readonly hasRunningAgent: () => boolean;
   private readonly onUsageRefreshed: (result: ProviderUsageListResult) => void;
   private readonly isFetcherEnabled: (fetcher: ProviderUsageFetcher) => boolean;
   private readonly now: () => number;
   private cached: { fetchedAtMs: number; result: ProviderUsageListResult } | null = null;
   private inFlight: Promise<ProviderUsageListResult> | null = null;
-  private refreshTimer: NodeJS.Timeout | null = null;
-  private lastRunningState: boolean | null = null;
   private enablementChangedDuringFetch = false;
   private disposed = false;
   constructor(options: ProviderUsageServiceOptions) {
@@ -54,8 +44,6 @@ export class ProviderUsageService {
         fetch: options.fetch,
       });
     this.cacheTtlMs = options.cacheTtlMs ?? DEFAULT_PROVIDER_USAGE_CACHE_TTL_MS;
-    this.refreshCadenceMs = options.refreshCadenceMs ?? DEFAULT_REFRESH_CADENCE_MS;
-    this.hasRunningAgent = options.hasRunningAgent ?? (() => false);
     this.onUsageRefreshed = options.onUsageRefreshed ?? (() => {});
     this.isFetcherEnabled = options.isFetcherEnabled ?? (() => true);
     this.now = options.now ?? Date.now;
@@ -93,35 +81,6 @@ export class ProviderUsageService {
   }
 
   /**
-   * Starts the background refresh loop. The next refresh fires after the cadence
-   * matching the current running-agent state, and re-arms on each completed fetch.
-   */
-  start(): void {
-    if (this.refreshTimer || this.disposed) {
-      return;
-    }
-    this.lastRunningState = this.hasRunningAgent();
-    this.armRefreshTimer();
-  }
-
-  /**
-   * The daemon's running-agent state may have changed (an agent started or
-   * stopped). Re-arms the timer only when the boolean state actually flipped,
-   * so per-agent state events during a run never postpone the refresh.
-   */
-  notifyAgentStatusChanged(): void {
-    if (this.disposed || this.refreshTimer === null) {
-      return;
-    }
-    const running = this.hasRunningAgent();
-    if (running === this.lastRunningState) {
-      return;
-    }
-    this.lastRunningState = running;
-    this.armRefreshTimer();
-  }
-
-  /**
    * A client connected. Fetch fresh usage now when the cache is empty or stale
    * so the newly opened app gets pushed data quickly; the refresh broadcast
    * reaches every connected client.
@@ -152,33 +111,6 @@ export class ProviderUsageService {
 
   dispose(): void {
     this.disposed = true;
-    if (this.refreshTimer) {
-      clearTimeout(this.refreshTimer);
-      this.refreshTimer = null;
-    }
-  }
-
-  private armRefreshTimer(): void {
-    if (this.refreshTimer) {
-      clearTimeout(this.refreshTimer);
-      this.refreshTimer = null;
-    }
-    const delayMs = this.hasRunningAgent()
-      ? this.refreshCadenceMs.running
-      : this.refreshCadenceMs.idle;
-    const timer = setTimeout(() => {
-      this.refreshTimer = null;
-      void this.runScheduledRefresh();
-    }, delayMs);
-    timer.unref?.();
-    this.refreshTimer = timer;
-  }
-
-  private async runScheduledRefresh(): Promise<void> {
-    await this.listUsage({ forceRefresh: true });
-    if (!this.disposed) {
-      this.armRefreshTimer();
-    }
   }
 
   private async fetchFreshUsage(nowMs: number): Promise<ProviderUsageListResult> {

@@ -617,7 +617,6 @@ export class VoiceAssistantWebSocketServer {
   private unsubscribeSpeechReadiness: (() => void) | null = null;
   private unsubscribeDaemonConfigChange: (() => void) | null = null;
   private readonly providerUsageService: ProviderUsageService;
-  private unsubscribeProviderUsageAgentEvents: (() => void) | null = null;
   private unsubscribeTerminalActivity: (() => void) | null = null;
   private readonly browserToolsBroker: BrowserToolsBroker | null;
   private readonly hubRelationships: HubRelationshipManagement | null;
@@ -744,23 +743,12 @@ export class VoiceAssistantWebSocketServer {
       }) ?? null;
     this.providerUsageService = new ProviderUsageService({
       logger: this.logger,
-      hasRunningAgent: () =>
-        this.agentManager.listAgents().some((agent) => agent.lifecycle === "running"),
       onUsageRefreshed: (result) => this.broadcastProviderUsageUpdated(result),
       isFetcherEnabled: (fetcher) => {
         const agentProviderIds = fetcher.agentProviderIds ?? [fetcher.providerId];
         return agentProviderIds.some((id) => this.providerSnapshotManager.isProviderEnabled(id));
       },
     });
-    this.providerUsageService.start();
-    this.unsubscribeProviderUsageAgentEvents = this.agentManager.subscribe(
-      (event) => {
-        if (event.type === "agent_state") {
-          this.providerUsageService.notifyAgentStatusChanged();
-        }
-      },
-      { replayState: false },
-    );
 
     const unsubscribeProviderConfig = attachMutableProviderConfigOwner({
       store: this.daemonConfigStore,
@@ -1101,8 +1089,6 @@ export class VoiceAssistantWebSocketServer {
     this.unsubscribeDaemonConfigChange = null;
     this.unsubscribeTerminalActivity?.();
     this.unsubscribeTerminalActivity = null;
-    this.unsubscribeProviderUsageAgentEvents?.();
-    this.unsubscribeProviderUsageAgentEvents = null;
     this.providerUsageService.dispose();
     if (this.runtimeMetricsInterval) {
       clearInterval(this.runtimeMetricsInterval);

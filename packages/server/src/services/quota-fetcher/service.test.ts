@@ -397,63 +397,6 @@ describe("ProviderUsageService", () => {
     expect(updated.providers.map((p) => p.providerId).sort()).toEqual(["codex", "omp-claude"]);
   });
 
-  it("refreshes on a 60s cadence while an agent runs and 15min when idle", async () => {
-    vi.useFakeTimers();
-    let service: ProviderUsageService | null = null;
-    try {
-      let running = true;
-      let calls = 0;
-      service = new ProviderUsageService({
-        logger: createLogger(),
-        now: () => Date.parse("2026-06-19T00:00:00.000Z"),
-        hasRunningAgent: () => running,
-        fetchers: [
-          {
-            providerId: "claude",
-            displayName: "Claude",
-            fetchUsage: async () => {
-              calls += 1;
-              return {
-                providerId: "claude",
-                displayName: "Claude",
-                status: "available",
-                planLabel: "Max 20x",
-                windows: [],
-              };
-            },
-          },
-        ],
-      });
-      service.start();
-
-      // Running agent: the refresh fires at 60s, not before.
-      await vi.advanceTimersByTimeAsync(59_999);
-      expect(calls).toBe(0);
-      await vi.advanceTimersByTimeAsync(1);
-      expect(calls).toBe(1);
-
-      // The last agent stops: cadence extends to 15min, so 60s later nothing
-      // fires and the next refresh lands at the 15min mark.
-      running = false;
-      service.notifyAgentStatusChanged();
-      await vi.advanceTimersByTimeAsync(60_000);
-      expect(calls).toBe(1);
-      await vi.advanceTimersByTimeAsync(15 * 60_000 - 60_000 - 1);
-      expect(calls).toBe(1);
-      await vi.advanceTimersByTimeAsync(1);
-      expect(calls).toBe(2);
-
-      // An agent starts again: the pending idle timer is re-armed to 60s.
-      running = true;
-      service.notifyAgentStatusChanged();
-      await vi.advanceTimersByTimeAsync(60_000);
-      expect(calls).toBe(3);
-    } finally {
-      service?.dispose();
-      vi.useRealTimers();
-    }
-  });
-
   it("reports every completed fresh fetch to onUsageRefreshed", async () => {
     const refreshed: ProviderUsageListResult[] = [];
     let calls = 0;
