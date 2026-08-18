@@ -295,6 +295,101 @@ describe("ProviderUsageService", () => {
     expect(firstResult).toBe(secondResult);
     expect(calls).toBe(1);
   });
+  it("filters fetchers based on isFetcherEnabled resolver and refreshes on enablement change", async () => {
+    let claudeCalls = 0;
+    let codexCalls = 0;
+    let ompCalls = 0;
+
+    const enabledProviders = new Set(["omp"]);
+    const service = new ProviderUsageService({
+      logger: createLogger(),
+      now: () => Date.parse("2026-06-19T00:00:00.000Z"),
+      isFetcherEnabled: (fetcher) => {
+        const ids = fetcher.agentProviderIds ?? [fetcher.providerId];
+        return ids.some((id) => enabledProviders.has(id));
+      },
+      fetchers: [
+        {
+          providerId: "claude",
+          agentProviderIds: ["claude"],
+          displayName: "Claude",
+          fetchUsage: async () => {
+            claudeCalls += 1;
+            return {
+              providerId: "claude",
+              displayName: "Claude",
+              status: "available",
+              planLabel: "Pro",
+              windows: [],
+              balances: [],
+              details: [],
+              error: null,
+            };
+          },
+        },
+        {
+          providerId: "codex",
+          agentProviderIds: ["codex"],
+          displayName: "Codex",
+          fetchUsage: async () => {
+            codexCalls += 1;
+            return {
+              providerId: "codex",
+              displayName: "Codex",
+              status: "available",
+              planLabel: "Plus",
+              windows: [],
+              balances: [],
+              details: [],
+              error: null,
+            };
+          },
+        },
+        {
+          providerId: "omp",
+          agentProviderIds: ["omp"],
+          displayName: "OMP",
+          fetchUsage: async () => {
+            ompCalls += 1;
+            return {
+              providerId: "omp-claude",
+              groupId: "omp-claude",
+              displayName: "Claude",
+              status: "available",
+              planLabel: "Pro",
+              windows: [],
+              balances: [],
+              details: [],
+              error: null,
+              sourceLabel: "via OMP",
+            };
+          },
+        },
+      ],
+    });
+
+    const result = await service.listUsage();
+    expect(claudeCalls).toBe(0);
+    expect(codexCalls).toBe(0);
+    expect(ompCalls).toBe(1);
+    expect(result.providers).toHaveLength(1);
+    expect(result.providers[0]).toMatchObject({
+      providerId: "omp-claude",
+      displayName: "Claude",
+      sourceLabel: "via OMP",
+    });
+
+    // Dynamically enable codex, notify enablement changed, and re-fetch
+    enabledProviders.add("codex");
+    service.notifyProviderEnablementChanged();
+
+    const updated = await service.listUsage();
+    expect(claudeCalls).toBe(0);
+    expect(codexCalls).toBe(1);
+    expect(ompCalls).toBe(2);
+    expect(updated.providers).toHaveLength(2);
+    expect(updated.providers.map((p) => p.providerId).sort()).toEqual(["codex", "omp-claude"]);
+  });
 
   it("refreshes on a 60s cadence while an agent runs and 15min when idle", async () => {
     vi.useFakeTimers();
@@ -1073,7 +1168,7 @@ describe("real provider usage fetchers", () => {
       "https://auth.x.ai::test-user-id": {
         key: "nested_jwt_token",
         refresh_token: "rt_nested",
-        expires_at: "2026-08-01T00:00:00Z",
+        expires_at: new Date(Date.now() + 3_600_000).toISOString(),
         user_id: "test-user-id",
         email: "user@example.com",
       },

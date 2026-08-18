@@ -314,6 +314,7 @@ async function readClaudeKeychainCredentials(): Promise<unknown | null> {
 
 export class ClaudeQuotaProvider implements ProviderUsageFetcher {
   readonly providerId = "claude";
+  readonly agentProviderIds: readonly string[] = ["claude"];
   readonly displayName = "Claude";
 
   private readonly logger: Logger;

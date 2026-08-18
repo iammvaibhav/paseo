@@ -279,6 +279,7 @@ interface KimiQuotaProviderOptions {
 
 export class KimiQuotaProvider implements ProviderUsageFetcher {
   readonly providerId = "kimi";
+  readonly agentProviderIds: readonly string[] = ["kimi"];
   readonly displayName = "Kimi";
 
   private readonly logger: Logger;
