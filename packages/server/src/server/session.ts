@@ -31,7 +31,11 @@ import type { TerminalActivity } from "@getpaseo/protocol/terminal-activity";
 import type { BinaryFrame } from "@getpaseo/protocol/binary-frames/index";
 import { CursorError } from "./pagination/cursor.js";
 import { SortablePager, type SortSpec } from "./pagination/sortable-pager.js";
-import { describeAgentHistoryMatches, rankAgentHistoryCandidates } from "./agent-history-search.js";
+import {
+  describeAgentHistoryMatches,
+  rankAgentHistoryWithTranscripts,
+} from "./agent-history-search.js";
+import type { TranscriptSearchService } from "./search/service.js";
 import type { SpeechToTextProvider, TextToSpeechProvider } from "./speech/speech-provider.js";
 import type { TurnDetectionProvider } from "./speech/turn-detection-provider.js";
 import {
@@ -512,6 +516,7 @@ export interface SessionOptions {
   webhookService?: WebhookService | null;
   peerManager?: PeerManager | null;
   missionControlService?: MissionControlService | null;
+  transcriptSearch?: TranscriptSearchService | null;
   checkoutDiffManager: CheckoutDiffManager;
   github?: ForgeService;
   createAgentMcpTransport?: AgentMcpTransportFactory;
@@ -845,6 +850,7 @@ export class Session {
   private readonly webhookSession: WebhookSession;
   private readonly peerManager: PeerManager | null;
   private readonly missionControlService: MissionControlService | null;
+  private readonly transcriptSearch: TranscriptSearchService | null;
   private readonly serverId: string;
   private readonly hostName: string;
   private readonly plannotatorSession: PlannotatorSession;
@@ -885,6 +891,7 @@ export class Session {
       webhookService,
       peerManager,
       missionControlService,
+      transcriptSearch,
       checkoutDiffManager,
       github,
       renameCurrentBranch,
@@ -1032,6 +1039,7 @@ export class Session {
     this.plannotatorSession = customSessions.plannotatorSession;
     this.peerManager = orNull(peerManager);
     this.missionControlService = orNull(missionControlService);
+    this.transcriptSearch = orNull(transcriptSearch);
     this.serverId = serverId ?? "local";
     this.hostName = hostName ?? osHostname();
     this.providerCatalogSession = new ProviderCatalogSession({
@@ -6255,8 +6263,12 @@ export class Session {
       filter,
     });
 
-    const ranked = rankAgentHistoryCandidates(search, allEntries, (left, right) =>
-      this.agentsPager.compare(left.agent, right.agent, sort),
+    const transcriptHits = this.transcriptSearch?.search(search) ?? [];
+    const ranked = rankAgentHistoryWithTranscripts(
+      search,
+      allEntries,
+      transcriptHits,
+      (left, right) => this.agentsPager.compare(left.agent, right.agent, sort),
     );
 
     const limit = page?.limit ?? 200;
@@ -6266,6 +6278,7 @@ export class Session {
       Object.assign({}, result.candidate, {
         searchScore: result.searchScore,
         searchMatches: describeAgentHistoryMatches(search, result.candidate),
+        ...(result.searchSnippet ? { searchSnippet: result.searchSnippet } : {}),
       }),
     );
 

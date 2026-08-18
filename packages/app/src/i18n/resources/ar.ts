@@ -289,6 +289,7 @@ export const ar: TranslationResources = {
       loadMore: "تحميل المزيد",
       tryAgain: "Try again",
       back: "Back",
+      askAboutThis: "اسأل عن هذا",
       clearSearch: "مسح البحث",
     },
   },

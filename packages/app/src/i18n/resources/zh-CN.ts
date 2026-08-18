@@ -289,6 +289,7 @@ export const zhCN: TranslationResources = {
       loadMore: "加载更多",
       tryAgain: "Try again",
       back: "Back",
+      askAboutThis: "询问此事",
       clearSearch: "清除搜索",
     },
   },

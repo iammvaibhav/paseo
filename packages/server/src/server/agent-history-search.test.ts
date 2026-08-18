@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   type AgentHistorySearchCandidate,
+  TRANSCRIPT_SCORE_OFFSET,
   describeAgentHistoryMatches,
   rankAgentHistoryCandidates,
+  rankAgentHistoryWithTranscripts,
   scoreAgentHistoryCandidate,
 } from "./agent-history-search.js";
 
@@ -191,5 +193,52 @@ describe("describeAgentHistoryMatches", () => {
     expect(
       describeAgentHistoryMatches("rosetta", candidate({ title: "customer billing" })),
     ).toEqual([]);
+  });
+});
+
+describe("rankAgentHistoryWithTranscripts", () => {
+  it("ranks a title hit above a transcript-only hit and keeps both snippets", () => {
+    const titled = candidate({ title: "stripe billing" });
+    const bodyOnly = candidate({ title: "unrelated work" });
+    const ranked = rankAgentHistoryWithTranscripts(
+      "stripe",
+      [titled, bodyOnly],
+      [
+        { agentId: bodyOnly.agent.id, rank: -8, snippet: "opened the stripe webhook" },
+        { agentId: titled.agent.id, rank: -1, snippet: "stripe in the body too" },
+      ],
+      byUpdatedAtDesc,
+    );
+    expect(ranked.map((result) => result.candidate.agent.title)).toEqual([
+      "stripe billing",
+      "unrelated work",
+    ]);
+    expect(ranked[0].searchSnippet).toBe("stripe in the body too");
+    expect(ranked[1].searchSnippet).toBe("opened the stripe webhook");
+    expect(ranked[0].searchScore).toBeLessThan(TRANSCRIPT_SCORE_OFFSET);
+    expect(ranked[1].searchScore).toBe(TRANSCRIPT_SCORE_OFFSET - 8);
+  });
+
+  it("still returns a transcript-only match when names miss", () => {
+    const bodyOnly = candidate({ title: "refactor auth" });
+    const ranked = rankAgentHistoryWithTranscripts(
+      "stripe",
+      [bodyOnly],
+      [{ agentId: bodyOnly.agent.id, rank: -3, snippet: "opened the stripe webhook" }],
+      byUpdatedAtDesc,
+    );
+    expect(ranked).toHaveLength(1);
+    expect(ranked[0].searchSnippet).toBe("opened the stripe webhook");
+    expect(ranked[0].searchScore).toBe(TRANSCRIPT_SCORE_OFFSET - 3);
+  });
+
+  it("ignores FTS hits whose agent is not in the candidate set", () => {
+    const ranked = rankAgentHistoryWithTranscripts(
+      "stripe",
+      [candidate({ title: "unrelated" })],
+      [{ agentId: "ghost", rank: -99, snippet: "stripe" }],
+      byUpdatedAtDesc,
+    );
+    expect(ranked).toEqual([]);
   });
 });

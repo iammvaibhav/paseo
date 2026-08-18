@@ -1,6 +1,9 @@
 # History Ask
 
-Client-first **agentic history search**. Launch a normal allow-all agent with a structured brief so it can search past Paseo agents and native provider transcripts on the host. There is **no** full-text index, embeddings service, or Command Center integration.
+Fast full-text History search is the front door: one box on the History screen
+ranks session names and indexed transcripts together (including archived
+sessions). History Ask is the fallback when that index finds nothing, or when
+you want a summarization agent instead of a ranked list.
 
 This is a custom-fork feature (`vaibhav/customizations`).
 
@@ -8,7 +11,8 @@ This is a custom-fork feature (`vaibhav/customizations`).
 
 | Piece               | Behavior                                                                                        |
 | ------------------- | ----------------------------------------------------------------------------------------------- |
-| **Metadata filter** | History → Agents tab fuzzy-filters title / provider / cwd / labels                              |
+| **History search**  | History → Agents tab searches titles **and** transcripts via an FTS5 index                      |
+| **Empty-state Ask** | Zero FTS hits keep "No sessions match" / Clear search, plus **Ask about this** (prefills Ask)   |
 | **Agentic Ask**     | History → Ask tab (or project/workspace ⋮ → **Ask history…**) launches an agent                 |
 | **Scope**           | Workspace (one cwd), project (all non-archived workspaces on a host), or host-wide              |
 | **Jobs**            | Labeled with `paseo.history-ask=1`; listed under History → Ask; open like normal history agents |

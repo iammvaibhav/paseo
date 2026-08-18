@@ -291,6 +291,7 @@ export const ru: TranslationResources = {
       loadMore: "Загрузить больше",
       tryAgain: "Try again",
       back: "Back",
+      askAboutThis: "Спросить об этом",
       clearSearch: "Очистить поиск",
     },
   },

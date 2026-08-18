@@ -365,6 +365,7 @@ describe("translation resources", () => {
     expect(en.sessions.title).toBe("History");
     expect(en.sessions.empty).toBe("No sessions yet");
     expect(en.sessions.actions.loadMore).toBe("Load more");
+    expect(en.sessions.actions.askAboutThis).toBe("Ask about this");
     expect(en.agentList.fallbackTitle).toBe("New session");
     expect(en.agentList.dateSections.today).toBe("Today");
     expect(en.agentList.dateSections.older).toBe("Older");

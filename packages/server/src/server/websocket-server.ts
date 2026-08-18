@@ -15,6 +15,7 @@ import type { ScheduleService } from "./schedule/service.js";
 import type { WebhookService } from "./webhook/service.js";
 import type { PeerManager } from "./peers/peer-manager.js";
 import type { MissionControlService } from "./mission-control/service.js";
+import type { TranscriptSearchService } from "./search/service.js";
 import type { CheckoutDiffManager, CheckoutDiffMetrics } from "./checkout-diff-manager.js";
 import type { DaemonConfigStore, MutableDaemonConfig } from "./daemon-config-store.js";
 import {
@@ -622,6 +623,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly hubRelationships: HubRelationshipManagement | null;
   private readonly peerManager: PeerManager | null;
   private readonly missionControlService: MissionControlService | null;
+  private transcriptSearch: TranscriptSearchService | null = null;
   private readonly browserToolsRegistrations = new Map<string, BrowserToolsRegistration>();
   private connectionLifecycle: "starting" | "accepting" | "stopping" = "accepting";
   /** COMPAT(plannotator): true when plannotator binary is resolvable at daemon start. */
@@ -1075,6 +1077,10 @@ export class VoiceAssistantWebSocketServer {
     this.connectionLifecycle = "stopping";
   }
 
+  setTranscriptSearch(service: TranscriptSearchService | null): void {
+    this.transcriptSearch = service;
+  }
+
   public beginAcceptingConnections(): void {
     if (this.connectionLifecycle === "starting") {
       this.connectionLifecycle = "accepting";
@@ -1475,6 +1481,7 @@ export class VoiceAssistantWebSocketServer {
       webhookService: this.webhookService,
       peerManager: this.peerManager,
       missionControlService: this.missionControlService,
+      transcriptSearch: this.transcriptSearch,
       checkoutDiffManager: this.checkoutDiffManager,
       github: this.github,
       workspaceGitService: this.workspaceGitService,

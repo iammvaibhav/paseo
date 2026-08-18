@@ -287,6 +287,7 @@ export const en = {
       loadMore: "Load more",
       tryAgain: "Try again",
       back: "Back",
+      askAboutThis: "Ask about this",
       clearSearch: "Clear search",
     },
   },

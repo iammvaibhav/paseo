@@ -292,6 +292,7 @@ export const ja: TranslationResources = {
       loadMore: "さらに読み込む",
       tryAgain: "Try again",
       back: "Back",
+      askAboutThis: "これについて質問",
       clearSearch: "検索をクリア",
     },
   },

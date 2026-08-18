@@ -4221,6 +4221,9 @@ const AgentDirectoryResponseEntrySchema = z.object({
   // anyway; sending it keeps the client from re-deriving a second opinion that
   // could disagree with the ranking it is explaining.
   searchMatches: z.array(AgentSearchMatchSchema).optional(),
+  // Excerpt from a transcript match. Optional so old clients ignore it; do not
+  // add "transcript" to AgentSearchMatchFieldSchema — that enum would fail parse.
+  searchSnippet: z.string().optional(),
   // COMPAT(directorySync): sequence of this latest directory projection.
   syncSeq: z.number().int().positive().optional(),
 });

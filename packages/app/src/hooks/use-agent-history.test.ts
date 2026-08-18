@@ -86,6 +86,7 @@ function historyEntry(input: {
   title?: string | null;
   archivedAt?: string | null;
   searchScore?: number;
+  searchSnippet?: string;
 }): FetchAgentHistoryEntry {
   return {
     agent: {
@@ -136,6 +137,7 @@ function historyEntry(input: {
       },
     },
     ...(input.searchScore === undefined ? {} : { searchScore: input.searchScore }),
+    ...(input.searchSnippet === undefined ? {} : { searchSnippet: input.searchSnippet }),
   };
 }
 
@@ -312,6 +314,31 @@ describe("fetchAgentHistoryPage", () => {
 
     expect(client.calls[0]?.search).toBe("stripe");
     expect(page.searchScoreByAgentKey).toEqual({ "server-1:match": 1000 });
+  });
+
+  it("keeps a transcript snippet keyed by server and agent", async () => {
+    const client = createClient([
+      historyPayload({
+        entries: [
+          historyEntry({
+            id: "match",
+            cwd: "/tmp/a",
+            updatedAt: "2026-08-01T00:00:00.000Z",
+            searchScore: 1000,
+            searchSnippet: "opened the stripe webhook",
+          }),
+        ],
+      }),
+    ]);
+    const page = await fetchAgentHistoryPage({
+      client,
+      serverId: "server-1",
+      cursor: null,
+      search: "stripe",
+    });
+    expect(page.searchSnippetsByAgentKey).toEqual({
+      "server-1:match": "opened the stripe webhook",
+    });
   });
 
   it("keeps per-host scores apart when two hosts issue the same agent id", async () => {

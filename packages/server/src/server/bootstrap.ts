@@ -131,6 +131,7 @@ import type { RequestedSpeechProviders } from "./speech/speech-types.js";
 import { createSpeechService } from "./speech/speech-runtime.js";
 import { AgentManager } from "./agent/agent-manager.js";
 import { FileAgentTimelineStore } from "./agent/file-agent-timeline-store.js";
+import { createTranscriptSearchService } from "./search/service.js";
 import { AgentStorage, type StoredAgentRecord } from "./agent/agent-storage.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
 import { createAgentMcpServer } from "./agent/mcp-server.js";
@@ -1247,6 +1248,13 @@ export async function createPaseoDaemon(
   );
   await agentStorage.initialize();
   logger.info({ elapsed: elapsed() }, "Agent storage initialized");
+  const transcriptSearch = await createTranscriptSearchService({
+    paseoHome: config.paseoHome,
+    agentStorage,
+    timelineStore,
+    logger,
+  });
+  transcriptSearch?.start();
   await bootstrapWorkspaceRegistries({
     serverId,
     paseoHome: config.paseoHome,
@@ -1984,6 +1992,7 @@ export async function createPaseoDaemon(
   // (the service dedupes per run and excludes untracked classes itself).
   agentManager.setAgentFinishedCallback(({ agentId }) => {
     missionControlService.handleAgentFinished({ agentId });
+    transcriptSearch?.scheduleReindex(agentId);
   });
 
   // Boot-ensure the fleet Commander (spec: daemon boot creates it when this
@@ -2472,6 +2481,7 @@ export async function createPaseoDaemon(
               pluginRuntime,
               orchestrationSkills,
             );
+            wsServer.setTranscriptSearch(transcriptSearch);
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();
             wsServer.beginAcceptingConnections();
@@ -2517,6 +2527,7 @@ export async function createPaseoDaemon(
       speechService.start();
       scriptHealthMonitor.start();
     } catch (error) {
+      transcriptSearch?.stop();
       await pluginRuntime.stopAllPlugins().catch(() => undefined);
       await serviceProxy.stopStandalone().catch(() => undefined);
       if (mainStarted) {
@@ -2552,6 +2563,7 @@ export async function createPaseoDaemon(
     if (wsServer) {
       await wsServer.close();
     }
+    transcriptSearch?.stop();
     await serviceProxy.stopStandalone();
     // Force-drop remaining sockets so httpServer.close() resolves promptly.
     // We've already closed wsServer (which sent ws-layer close frames) and

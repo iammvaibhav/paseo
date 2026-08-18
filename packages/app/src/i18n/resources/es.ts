@@ -292,6 +292,7 @@ export const es: TranslationResources = {
       loadMore: "Cargar más",
       tryAgain: "Try again",
       back: "Back",
+      askAboutThis: "Preguntar sobre esto",
       clearSearch: "Borrar búsqueda",
     },
   },

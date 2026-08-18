@@ -44,6 +44,7 @@ interface AgentListProps {
    * typo tiers match characters the eye would not find on its own.
    */
   searchMatchesByAgentKey?: Record<string, AgentSearchMatch[]>;
+  searchSnippetsByAgentKey?: Record<string, string>;
   /**
    * Renders one flat list in the given order instead of grouping by day. Day
    * headings claim the list is chronological, which is a lie once the caller
@@ -218,6 +219,7 @@ function isRedundantWorkspaceName(workspaceName: string, agent: AggregatedAgent)
 function SessionRow({
   agent,
   searchMatches,
+  searchSnippet,
   isMobile,
   selectedAgentId,
   showAttentionIndicator,
@@ -227,6 +229,7 @@ function SessionRow({
 }: {
   agent: AggregatedAgent;
   searchMatches?: readonly AgentSearchMatch[];
+  searchSnippet?: string;
   isMobile: boolean;
   selectedAgentId?: string;
   showAttentionIndicator: boolean;
@@ -309,6 +312,15 @@ function SessionRow({
             showDesktopAttention={showDesktopAttention}
           />
         </View>
+        {searchSnippet ? (
+          <Text
+            style={styles.sessionSnippet}
+            numberOfLines={1}
+            testID={`agent-row-snippet-${agent.serverId}-${agent.id}`}
+          >
+            {searchSnippet}
+          </Text>
+        ) : null}
         {isMobile ? (
           <View style={styles.rowMetaRow}>
             <HighlightedText
@@ -392,6 +404,7 @@ export function AgentList({
   showAttentionIndicator = true,
   showHostColumn = false,
   searchMatchesByAgentKey,
+  searchSnippetsByAgentKey,
   flat = false,
 }: AgentListProps) {
   const { theme } = useUnistyles();
@@ -509,6 +522,7 @@ export function AgentList({
         <SessionRow
           agent={item.agent}
           searchMatches={searchMatchesByAgentKey?.[item.key]}
+          searchSnippet={searchSnippetsByAgentKey?.[item.key]}
           isMobile={isMobile}
           selectedAgentId={selectedAgentId}
           showAttentionIndicator={showAttentionIndicator}
@@ -523,6 +537,7 @@ export function AgentList({
       handleAgentPress,
       isMobile,
       searchMatchesByAgentKey,
+      searchSnippetsByAgentKey,
       selectedAgentId,
       showAttentionIndicator,
       showHostColumn,
@@ -710,6 +725,11 @@ const styles = StyleSheet.create((theme) => ({
   sessionMetaText: {
     maxWidth: "100%",
     fontSize: theme.fontSize.base,
+    color: theme.colors.foregroundMuted,
+  },
+  sessionSnippet: {
+    maxWidth: "100%",
+    fontSize: theme.fontSize.sm,
     color: theme.colors.foregroundMuted,
   },
   sessionMetaSeparator: {

@@ -34,6 +34,8 @@ export interface AgentHistoryResult {
   isSearchTruncated: boolean;
   /** Where the query matched each row, keyed by `serverId:agentId`. */
   searchMatchesByAgentKey: Record<string, AgentSearchMatch[]>;
+  /** Transcript excerpt for a body hit, keyed like `searchMatchesByAgentKey`. */
+  searchSnippetsByAgentKey: Record<string, string>;
   /** Hosts that failed while others succeeded. The list still renders. */
   hostErrors: AgentHistoryHostError[];
   refreshAll: () => Promise<void>;
@@ -52,6 +54,7 @@ export interface AgentHistoryPage {
   searchScoreByAgentKey: Record<string, number>;
   /** Where the query matched in each row, keyed like `searchScoreByAgentKey`. */
   searchMatchesByAgentKey: Record<string, AgentSearchMatch[]>;
+  searchSnippetsByAgentKey: Record<string, string>;
   pageInfo: FetchAgentHistoryPageInfo;
   /** More matched this host's query than its page could hold. */
   isSearchTruncated: boolean;
@@ -84,6 +87,7 @@ interface AgentHistoryBatchPage {
   agents: AggregatedAgent[];
   searchScoreByAgentKey: Record<string, number>;
   searchMatchesByAgentKey: Record<string, AgentSearchMatch[]>;
+  searchSnippetsByAgentKey: Record<string, string>;
   pageInfoByServerId: Record<string, FetchAgentHistoryPageInfo>;
   hostErrors: AgentHistoryHostError[];
   /** Set only under a query: more sessions matched than this page can hold. */
@@ -115,6 +119,7 @@ export async function fetchAgentHistoryPage(input: {
   });
   const searchScoreByAgentKey: Record<string, number> = {};
   const searchMatchesByAgentKey: Record<string, AgentSearchMatch[]> = {};
+  const searchSnippetsByAgentKey: Record<string, string> = {};
   for (const entry of payload.entries) {
     const key = agentHistoryRowKey({ serverId: input.serverId, id: entry.agent.id });
     if (entry.searchScore !== undefined) {
@@ -123,11 +128,17 @@ export async function fetchAgentHistoryPage(input: {
     if (entry.searchMatches && entry.searchMatches.length > 0) {
       searchMatchesByAgentKey[key] = entry.searchMatches;
     }
+    // Optional on the wire; old protocol dist types omit it, so read structurally.
+    const snippet = (entry as { searchSnippet?: string }).searchSnippet;
+    if (snippet) {
+      searchSnippetsByAgentKey[key] = snippet;
+    }
   }
 
   return {
     searchScoreByAgentKey,
     searchMatchesByAgentKey,
+    searchSnippetsByAgentKey,
     isSearchTruncated: payload.searchTruncated === true,
     agents: Array.from(agents.values(), (agent) => ({
       id: agent.id,
@@ -282,6 +293,10 @@ export async function fetchAgentHistoryBatch(input: {
     {},
     ...pages.map(({ page }) => page.searchMatchesByAgentKey),
   ) as Record<string, AgentSearchMatch[]>;
+  const searchSnippetsByAgentKey = Object.assign(
+    {},
+    ...pages.map(({ page }) => page.searchSnippetsByAgentKey),
+  ) as Record<string, string>;
   // Truncation has two independent sources: one host overflowed its own page,
   // or several hosts each fit but their union does not. Two hosts returning 150
   // matches apiece are both complete and still add up to more than the merge
@@ -295,6 +310,7 @@ export async function fetchAgentHistoryBatch(input: {
       : sortByLatestActivity(agents),
     searchScoreByAgentKey,
     searchMatchesByAgentKey,
+    searchSnippetsByAgentKey,
     pageInfoByServerId,
     hostErrors,
     ...(input.search ? { isSearchTruncated: truncated } : {}),
@@ -451,6 +467,14 @@ export function useAgentHistory(options: {
       ) as Record<string, AgentSearchMatch[]>,
     [data?.pages],
   );
+  const searchSnippetsByAgentKey = useMemo(
+    () =>
+      Object.assign(
+        {},
+        ...(data?.pages ?? []).map((page) => page.searchSnippetsByAgentKey),
+      ) as Record<string, string>,
+    [data?.pages],
+  );
   const hostErrors = useMemo(
     () => collectAgentHistoryHostErrors({ pages: data?.pages ?? [], unreachableHosts }),
     [data?.pages, unreachableHosts],
@@ -469,6 +493,7 @@ export function useAgentHistory(options: {
     isSearchSupported,
     isSearchTruncated,
     searchMatchesByAgentKey,
+    searchSnippetsByAgentKey,
     hostErrors,
     refreshAll,
     loadMore,

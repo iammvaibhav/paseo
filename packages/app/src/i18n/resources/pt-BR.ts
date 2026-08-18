@@ -292,6 +292,7 @@ export const ptBR: TranslationResources = {
       loadMore: "Carregar mais",
       tryAgain: "Try again",
       back: "Back",
+      askAboutThis: "Perguntar sobre isto",
       clearSearch: "Limpar busca",
     },
   },

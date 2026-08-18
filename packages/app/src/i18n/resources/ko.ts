@@ -290,6 +290,7 @@ export const ko: TranslationResources = {
       loadMore: "더 불러오기",
       tryAgain: "Try again",
       back: "Back",
+      askAboutThis: "이 내용 물어보기",
       clearSearch: "검색 지우기",
     },
   },

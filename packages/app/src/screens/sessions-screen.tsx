@@ -126,6 +126,7 @@ function SessionsScreenContent() {
     isSearchSupported,
     isSearchTruncated,
     searchMatchesByAgentKey,
+    searchSnippetsByAgentKey,
     hostErrors,
     loadMore,
     refreshAll,
@@ -160,6 +161,11 @@ function SessionsScreenContent() {
   }, [refreshAll]);
 
   const handleClearSearch = useCallback(() => setSearchInput(""), []);
+  const askAboutSearch = useHistoryAskStore((state) => state.askAboutSearch);
+  const handleAskAboutThis = useCallback(() => {
+    if (!search) return;
+    askAboutSearch(search);
+  }, [askAboutSearch, search]);
 
   // Mission Control verbose is THE debug gate: system-owned agents (Commander,
   // verifiers, machinery) are hidden from History while it is OFF and shown
@@ -264,9 +270,11 @@ function SessionsScreenContent() {
           isLoadingMore={isLoadingMore}
           isSearchTruncated={isSearchTruncated}
           searchMatchesByAgentKey={isSearching ? searchMatchesByAgentKey : undefined}
+          searchSnippetsByAgentKey={isSearching ? searchSnippetsByAgentKey : undefined}
           onRefresh={handleRefresh}
           onLoadMore={loadMore}
           onClearSearch={handleClearSearch}
+          onAskAboutThis={handleAskAboutThis}
         />
       ) : (
         <SessionsAskTab
@@ -299,9 +307,11 @@ function SessionsAgentsTab(input: {
   isLoadingMore: boolean;
   isSearchTruncated: boolean;
   searchMatchesByAgentKey?: Record<string, AgentSearchMatch[]>;
+  searchSnippetsByAgentKey?: Record<string, string>;
   onRefresh: () => void;
   onLoadMore: () => void;
   onClearSearch: () => void;
+  onAskAboutThis: () => void;
 }): ReactElement {
   const { t } = useTranslation();
   const emptyText = resolveEmptyText({
@@ -360,9 +370,14 @@ function SessionsAgentsTab(input: {
       <View style={styles.emptyContainer} testID="sessions-empty">
         <Text style={styles.emptyText}>{emptyText}</Text>
         {input.isSearching ? (
-          <Button variant="ghost" onPress={input.onClearSearch}>
-            {t("sessions.actions.clearSearch")}
-          </Button>
+          <>
+            <Button testID="sessions-ask-about-this" onPress={input.onAskAboutThis}>
+              {t("sessions.actions.askAboutThis")}
+            </Button>
+            <Button variant="ghost" onPress={input.onClearSearch}>
+              {t("sessions.actions.clearSearch")}
+            </Button>
+          </>
         ) : (
           <Button variant="ghost" leftIcon={ChevronLeft} onPress={handleBack}>
             {t("sessions.actions.back")}
@@ -382,6 +397,7 @@ function SessionsAgentsTab(input: {
       showAttentionIndicator={false}
       showHostColumn
       searchMatchesByAgentKey={input.searchMatchesByAgentKey}
+      searchSnippetsByAgentKey={input.searchSnippetsByAgentKey}
       flat={input.isSearching}
     />
   );
@@ -416,8 +432,16 @@ function SessionsAskTab({
 }): ReactElement {
   const { t } = useTranslation();
   const toast = useToast();
+  const pendingQuestion = useHistoryAskStore((state) => state.pendingQuestion);
+  const consumePendingQuestion = useHistoryAskStore((state) => state.consumePendingQuestion);
   const [askQuestion, setAskQuestion] = useState("");
   const [isLaunching, setIsLaunching] = useState(false);
+
+  useEffect(() => {
+    if (!pendingQuestion) return;
+    setAskQuestion(pendingQuestion);
+    consumePendingQuestion();
+  }, [pendingQuestion, consumePendingQuestion]);
 
   // Launch cwd is internal only (createAgent requires a directory). Host-wide
   // History Ask does not show or offer cwd selection — search scope is the host.
