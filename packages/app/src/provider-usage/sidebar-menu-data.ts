@@ -78,8 +78,10 @@ function isBackedByEnabledProvider(
 }
 
 /**
- * One account can be visible through more than one host. Keep the freshest copy so the footer
- * presents one account list instead of leaking host topology into the UI.
+ * One account can be visible through more than one host. Keep a single copy so the footer
+ * presents one account list instead of leaking host topology into the UI. When copies collide,
+ * prefer (a) the card with native metadata (groupId/accountEmail), then (b) the card with MORE
+ * usage windows — the rich direct-API card over a CLI-shaped card — then (c) the freshest.
  */
 export function mergeProviderUsageReports(
   reports: readonly HostProviderUsageReport[],
@@ -101,15 +103,7 @@ export function mergeProviderUsageReports(
       const key = `${usage.groupId}::${usage.accountEmail ?? ""}`;
       const fetchedAt = effectiveFetchedAt(sourceUsage, report.view.payload.fetchedAt);
       const current = merged.get(key);
-      if (current) {
-        if (current.nativeMetadataCount > normalized.nativeMetadataCount) continue;
-        if (
-          current.nativeMetadataCount === normalized.nativeMetadataCount &&
-          fetchedAtMillis(current.fetchedAt) >= fetchedAtMillis(fetchedAt)
-        ) {
-          continue;
-        }
-      }
+      if (current && !candidateBeatsCurrent(current, normalized, fetchedAt)) continue;
 
       merged.set(key, {
         usage: usage.fetchedAt ? usage : { ...usage, fetchedAt },
@@ -129,6 +123,25 @@ export function mergeProviderUsageReports(
   return Array.from(merged.values(), ({ usage }) => usage).filter(
     (usage) => usage.accountEmail || !groupsWithEmail.has(usage.groupId ?? usage.providerId),
   );
+}
+
+// Collision order: native group/email metadata first (new daemons over old), then
+// more windows (a direct-API summary, e.g. weekly + 5h Antigravity, beats a
+// CLI-shaped card with daily bars), then freshest fetch.
+function candidateBeatsCurrent(
+  current: { usage: ProviderUsage; fetchedAt: string; nativeMetadataCount: number },
+  candidate: NormalizedProviderUsage,
+  candidateFetchedAt: string,
+): boolean {
+  if (current.nativeMetadataCount !== candidate.nativeMetadataCount) {
+    return candidate.nativeMetadataCount > current.nativeMetadataCount;
+  }
+  const currentWindowCount = current.usage.windows.length;
+  const candidateWindowCount = candidate.usage.windows.length;
+  if (currentWindowCount !== candidateWindowCount) {
+    return candidateWindowCount > currentWindowCount;
+  }
+  return fetchedAtMillis(candidateFetchedAt) > fetchedAtMillis(current.fetchedAt);
 }
 
 /**

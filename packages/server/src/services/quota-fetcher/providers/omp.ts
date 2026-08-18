@@ -39,14 +39,30 @@ const XAI_BILLING_HEADERS = {
   Accept: "application/json",
   "X-XAI-Token-Auth": "xai-grok-cli",
 } as const;
+// Google installed-app OAuth client embedded in OMP's own `omp` binary for the
+// google-antigravity flow (bundle helpers `hz3`/`Oz3`: auth via accounts.google.com,
+// refresh via oauth2.googleapis.com/token, scopes cloud-platform/cclog/experiments).
+// Paseo reuses the same client so a refreshed access token carries exactly the
+// scopes the Cloud Code quota summary endpoint needs.
+const GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token";
+const GOOGLE_ANTIGRAVITY_CLIENT_ID =
+  "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
+// Google "installed app" OAuth client credential (RFC 8252 §8.5: not confidential —
+// it ships inside every omp/Antigravity client binary; allowlisted in GitHub
+// secret scanning as a known false positive).
+const GOOGLE_ANTIGRAVITY_CLIENT_SECRET = "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";
 
-// OMP owns the credentials stored in agent.db, and its OAuth refresh tokens rotate
-// on every use: calling a token endpoint ourselves would revoke the refresh token
-// OMP has persisted and break OMP's own refresh (and the OMP CLI, which reads the
-// same db). Paseo therefore NEVER refreshes OMP credentials — `omp usage --json`
-// runs first, refreshes internally, and persists the rotated tokens for us. A stored
-// access token is used only while it is still valid; once expired (or rejected with
-// 401) the account card falls back to CLI report data, or reports the expiry.
+// OMP owns the credentials stored in agent.db, and most of its OAuth refresh tokens
+// rotate on every use (xAI/Anthropic/OpenAI/Cursor): calling a token endpoint
+// ourselves would revoke the refresh token OMP has persisted and break OMP's own
+// refresh (and the OMP CLI, which reads the same db). Paseo therefore NEVER refreshes
+// those credentials — `omp usage --json` runs first, refreshes internally, and
+// persists the rotated tokens for us. google-antigravity is the one exception:
+// Google's installed-app OAuth refresh tokens do NOT rotate (the token endpoint
+// returns no new refresh_token), so refreshing that one in memory is safe and cannot
+// invalidate what OMP persists. A stored access token is used only while it is still
+// valid; once expired (or rejected with 401) the account card falls back to CLI
+// report data, or reports the expiry.
 const OMP_TOKEN_SKEW_MS = 30_000;
 const OMP_TOKEN_EXPIRED_ERROR = "Token expired — will recover when OMP refreshes it";
 const OMP_REAUTH_ERROR = "Token expired — re-authenticate in OMP";
@@ -1044,7 +1060,14 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
     );
     const displayName = identity.displayName;
 
-    const { token } = this.resolveAccountAccessToken(account);
+    let { token, expired } = this.resolveAccountAccessToken(account);
+    if (!token && expired && account.disabledCause === null) {
+      // google-antigravity only: Google refresh tokens do not rotate, so an in-memory
+      // refresh is safe — the fresh access token is used for this fetch only and is
+      // never written back to agent.db. On failure we fall through to the CLI-card /
+      // unavailable-card fallbacks below, exactly like every other provider.
+      token = await this.refreshGoogleAntigravityToken(account);
+    }
     if (!token) return null;
 
     const projectId = account.projectId;
@@ -1088,6 +1111,43 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
       }
     }
     return null;
+  }
+
+  /**
+   * google-antigravity-only in-memory token refresh. Google's installed-app OAuth
+   * refresh tokens do NOT rotate — the token endpoint returns no new refresh_token —
+   * so refreshing here cannot revoke the refresh token OMP has persisted in agent.db
+   * (unlike xAI/Anthropic/OpenAI/Cursor, whose refresh tokens are single-use). The
+   * refreshed access token is used for this fetch only and is never written back.
+   * Any failure returns null so the caller falls back to the CLI card.
+   */
+  private async refreshGoogleAntigravityToken(account: OmpStoredAccount): Promise<string | null> {
+    if (!account.refreshToken) return null;
+    try {
+      const res = await fetchProviderApi(this.fetchApi, GOOGLE_OAUTH_TOKEN_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id: GOOGLE_ANTIGRAVITY_CLIENT_ID,
+          client_secret: GOOGLE_ANTIGRAVITY_CLIENT_SECRET,
+          refresh_token: account.refreshToken,
+          grant_type: "refresh_token",
+        }),
+      });
+      if (!res.ok) {
+        this.logger.debug({ status: res.status }, "OMP Antigravity token refresh rejected");
+        return null;
+      }
+      const parsed = (await res.json()) as { access_token?: unknown };
+      if (typeof parsed.access_token !== "string" || parsed.access_token.length === 0) {
+        this.logger.debug({}, "OMP Antigravity token refresh returned no access token");
+        return null;
+      }
+      return parsed.access_token;
+    } catch (error) {
+      this.logger.debug({ err: error }, "OMP Antigravity token refresh failed");
+      return null;
+    }
   }
 
   private async fetchXaiCredits(token: string): Promise<Response> {

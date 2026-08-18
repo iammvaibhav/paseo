@@ -261,6 +261,168 @@ describe("OmpQuotaProvider", () => {
     expect(fetchMock).toHaveBeenCalled();
   });
 
+  it("refreshes an expired google-antigravity token in memory and uses the direct quota summary", async () => {
+    if (!(await canRunSqlite3())) return;
+
+    const dir = mkdtempSync(join(tmpdir(), "omp-usage-"));
+    tempDirs.push(dir);
+    const dbPath = join(dir, "agent.db");
+    await createOauthCredentialDb(dbPath, "google-antigravity", {
+      access: "agy-expired-access-token",
+      refresh: "agy-refresh-token",
+      expires: Date.now() - 60_000,
+      email: "user@example.com",
+      projectId: "proj-1",
+    });
+
+    const requestedUrls: string[] = [];
+    const refreshBodies: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requestedUrls.push(url);
+      if (url === "https://oauth2.googleapis.com/token") {
+        refreshBodies.push(String(init?.body));
+        return jsonResponse({ access_token: "agy-fresh-access-token", expires_in: 3599 });
+      }
+      return jsonResponse({
+        groups: [
+          {
+            displayName: "Gemini Models",
+            buckets: [
+              { bucketId: "gemini-weekly", window: "weekly", remainingFraction: 0.946 },
+              { bucketId: "gemini-5h", window: "5h", remainingFraction: 0.9869 },
+            ],
+          },
+          {
+            displayName: "Claude and GPT models",
+            buckets: [
+              { bucketId: "3p-weekly", window: "weekly", remainingFraction: 0.9877 },
+              { bucketId: "3p-5h", window: "5h", remainingFraction: 1 },
+            ],
+          },
+        ],
+      });
+    });
+
+    const provider = new OmpQuotaProvider({
+      logger: createTestLogger(),
+      fetch: fetchMock as unknown as typeof fetch,
+      agentDbPath: dbPath,
+      usageCommandRunner: async () => ({
+        stdout: JSON.stringify({ reports: [] }),
+        stderr: "",
+      }),
+    });
+
+    const usage = await provider.fetchUsage();
+    const cards = Array.isArray(usage) ? usage : [usage];
+    const antigravity = cards.find((card) => card.providerId === "omp-antigravity");
+    expect(antigravity).toMatchObject({
+      providerId: "omp-antigravity",
+      displayName: "Antigravity",
+      status: "available",
+    });
+    expect(antigravity?.windows).toHaveLength(4);
+
+    // The Google token endpoint was called exactly once, with the discovered
+    // client pair and the OMP-stored refresh token.
+    expect(
+      requestedUrls.filter((url) => url === "https://oauth2.googleapis.com/token"),
+    ).toHaveLength(1);
+    expect(refreshBodies).toHaveLength(1);
+    expect(refreshBodies[0]).toContain(
+      "client_id=1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
+    );
+    expect(refreshBodies[0]).toContain("grant_type=refresh_token");
+    expect(refreshBodies[0]).toContain("refresh_token=agy-refresh-token");
+    // Rotating-token providers must never be touched.
+    expect(
+      requestedUrls.some((url) => url.includes("auth.x.ai") || url.includes("auth.openai.com")),
+    ).toBe(false);
+    expect(requestedUrls.some((url) => url.includes("platform.claude.com"))).toBe(false);
+  });
+
+  it("falls back to the CLI card when the google-antigravity refresh fails", async () => {
+    if (!(await canRunSqlite3())) return;
+
+    const dir = mkdtempSync(join(tmpdir(), "omp-usage-"));
+    tempDirs.push(dir);
+    const dbPath = join(dir, "agent.db");
+    await createOauthCredentialDb(dbPath, "google-antigravity", {
+      access: "agy-expired-access-token",
+      refresh: "agy-refresh-token",
+      expires: Date.now() - 60_000,
+      email: "user@example.com",
+      projectId: "proj-1",
+    });
+
+    const requestedUrls: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requestedUrls.push(url);
+      if (url === "https://oauth2.googleapis.com/token") {
+        return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const provider = new OmpQuotaProvider({
+      logger: createTestLogger(),
+      fetch: fetchMock as unknown as typeof fetch,
+      agentDbPath: dbPath,
+      usageCommandRunner: async () => ({
+        stdout: JSON.stringify({
+          generatedAt: Date.now(),
+          reports: [
+            {
+              provider: "google-antigravity",
+              fetchedAt: Date.now(),
+              limits: [
+                {
+                  id: "google-antigravity:google:default:daily",
+                  label: "Usage (Google)",
+                  amount: { usedFraction: 0.1, unit: "percent" },
+                  window: { id: "daily", label: "Daily", resetsAt: Date.now() + 86_400_000 },
+                },
+                {
+                  id: "google-antigravity:openai:default:daily",
+                  label: "Usage (OpenAI)",
+                  amount: { usedFraction: 0.2, unit: "percent" },
+                  window: { id: "daily", label: "Daily", resetsAt: Date.now() + 86_400_000 },
+                },
+                {
+                  id: "google-antigravity:anthropic:default:daily",
+                  label: "Usage (Anthropic)",
+                  amount: { usedFraction: 0.3, unit: "percent" },
+                  window: { id: "daily", label: "Daily", resetsAt: Date.now() + 86_400_000 },
+                },
+              ],
+              metadata: { email: "user@example.com", projectId: "proj-1" },
+            },
+          ],
+        }),
+        stderr: "",
+      }),
+    });
+
+    const usage = await provider.fetchUsage();
+    const cards = Array.isArray(usage) ? usage : [usage];
+    const antigravity = cards.find((card) => card.providerId === "omp-antigravity");
+    expect(antigravity).toMatchObject({
+      providerId: "omp-antigravity",
+      displayName: "Antigravity",
+      status: "available",
+    });
+    // CLI fallback shape: three short-window daily bars, not the 4-window summary.
+    expect(antigravity?.windows).toHaveLength(3);
+    expect(antigravity?.windows?.every((window) => window.id.endsWith(":daily"))).toBe(true);
+    // One refresh attempt, then no direct summary fetch (token stayed unusable).
+    expect(
+      requestedUrls.filter((url) => url === "https://oauth2.googleapis.com/token"),
+    ).toHaveLength(1);
+    expect(requestedUrls.some((url) => url.includes("retrieveUserQuotaSummary"))).toBe(false);
+  });
+
   it("falls back to Cursor dashboard API using OMP-stored Cursor auth", async () => {
     if (!(await canRunSqlite3())) return;
 
