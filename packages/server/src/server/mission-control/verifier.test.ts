@@ -475,6 +475,24 @@ describe("MissionControlVerifierDispatcher", () => {
     await rm(allHarness.dir, { recursive: true, force: true });
   });
 
+  test("selection-ask agents are never verified, whatever the scope", async () => {
+    // Commander scope: a ready selection-ask worker must not spawn a verifier.
+    harness.setWorker(makeWorker("ask-1", { "paseo.selection-ask": "1" }));
+    harness.emitReviewState("ask-1", "ready");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(harness.created.length).toBe(0);
+
+    // All scope: the skip is unconditional, not just a commander-scope rule.
+    const allHarness = await createHarness({ central: { evaluationScope: "all" } });
+    allHarness.setWorker(makeWorker("ask-2", { "paseo.selection-ask": "1" }));
+    allHarness.dispatcher.start();
+    allHarness.emitReviewState("ask-2", "ready");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(allHarness.created.length).toBe(0);
+    allHarness.dispatcher.stop();
+    await rm(allHarness.dir, { recursive: true, force: true });
+  });
+
   test("boot reconciliation re-enqueues persisted ready items", async () => {
     const reconHarness = await createHarness({
       readyForReview: [

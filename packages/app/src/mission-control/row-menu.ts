@@ -13,15 +13,17 @@ export type BoardRowMenuAction =
   | "archive";
 
 export function resolveBoardRowMenuActions(row: LifecycleRow): BoardRowMenuAction[] {
+  if (row.bucket === "ready") {
+    // Ready rows lead with Mark done, then open/copy/archive (spec).
+    return ["mark-done", "open", "copy-reference", "archive"];
+  }
   const actions: BoardRowMenuAction[] = ["open", "copy-reference"];
   if (row.bucket === "running") {
     // Running rows show Stop instead of Archive (spec).
     actions.push("stop");
     return actions;
   }
-  if (row.bucket === "ready") {
-    actions.push("mark-done");
-  } else if (row.bucket === "done") {
+  if (row.bucket === "done") {
     actions.push("clear");
   }
   actions.push("archive");

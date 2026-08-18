@@ -72,6 +72,8 @@ import { selectIsFileExplorerOpen, usePanelStore } from "@/stores/panel-store";
 import { type ExplorerCheckoutContext } from "@/stores/explorer-checkout-context";
 import { traceInstant } from "@/performance/native-trace";
 import { useSessionStore, type WorkspaceDescriptor } from "@/stores/session-store";
+import { resolveSessionAgent } from "@/utils/agent-snapshots";
+import { deriveSidebarLifecycleBucket } from "@/utils/sidebar-agent-state";
 import {
   collectAllTabs,
   createDefaultLayout,
@@ -616,8 +618,40 @@ function MobileWorkspaceTabOption({
   onCloseOtherTabs: (tabId: string) => Promise<void> | void;
 }) {
   const { t } = useTranslation();
+  const tabAgent = useSessionStore((state) =>
+    tab.target.kind === "agent"
+      ? resolveSessionAgent(state.sessions[normalizedServerId], tab.target.agentId)
+      : null,
+  );
+  const markDoneClient = useSessionStore(
+    (state) => state.sessions[normalizedServerId]?.client ?? null,
+  );
+  const showMarkDone =
+    tabAgent !== null &&
+    deriveSidebarLifecycleBucket({
+      bucket: tabAgent.bucket,
+      status: tabAgent.status,
+      pendingPermissionCount: tabAgent.pendingPermissions.length,
+      attentionReason: tabAgent.attentionReason,
+      stoppedBy: tabAgent.stoppedBy,
+    }) === "ready";
+  const handleMarkDone = useCallback(() => {
+    if (tab.target.kind !== "agent" || !markDoneClient) {
+      return;
+    }
+    void markDoneClient
+      .missionControlLifecycleSet({
+        serverId: normalizedServerId,
+        agentId: tab.target.agentId,
+        action: "done",
+      })
+      .catch(() => {
+        // Best-effort bookkeeping; a failed set leaves the agent Ready.
+      });
+  }, [markDoneClient, normalizedServerId, tab.target]);
   const tabMenuLabels = useMemo<WorkspaceTabMenuLabels>(
     () => ({
+      markDone: t("workspace.tabs.menu.markDone"),
       copyResumeCommand: t("workspace.tabs.menu.copyResumeCommand"),
       copyAgentId: t("workspace.tabs.menu.copyAgentId"),
       copyTerminalId: t("workspace.tabs.menu.copyTerminalId"),
@@ -641,6 +675,8 @@ function MobileWorkspaceTabOption({
     index: tabIndex,
     tabCount,
     menuTestIDBase,
+    showMarkDone,
+    onMarkDone: handleMarkDone,
     onCopyResumeCommand,
     onCopyAgentId,
     onCopyTerminalId,

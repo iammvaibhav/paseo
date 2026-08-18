@@ -675,6 +675,7 @@ export const ptBR: TranslationResources = {
       },
       menu: {
         openFor: "Abrir menu de {{label}}",
+        markDone: "Marcar como concluído",
         copyResumeCommand: "Copiar comando de retomada",
         copyAgentId: "Copiar ID do agente",
         copyTerminalId: "Copiar ID do terminal",

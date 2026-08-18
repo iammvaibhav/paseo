@@ -244,6 +244,8 @@ interface AgentState {
   pendingPermissionCount?: number;
   requiresAttention?: boolean;
   attentionReason?: AgentSnapshotPayload["attentionReason"];
+  bucket?: AgentSnapshotPayload["bucket"];
+  stoppedBy?: AgentSnapshotPayload["stoppedBy"];
 }
 
 function createAgent(
@@ -251,6 +253,8 @@ function createAgent(
 ) {
   const pendingPermissionCount = input.pendingPermissionCount ?? 0;
   return {
+    ...(input.bucket ? { bucket: input.bucket } : {}),
+    ...(input.stoppedBy ? { stoppedBy: input.stoppedBy } : {}),
     id: input.id,
     provider: "codex",
     cwd: input.cwd,
@@ -310,6 +314,76 @@ describe("WorkspaceDirectory", () => {
     });
 
     await expect(workspace.workspaceStatus()).resolves.toBe("running");
+  });
+
+  test("errored agent without a user stop surfaces workspace needs_input, not failed", async () => {
+    const workspace = new WorkspaceStatus();
+
+    workspace.hasRootAgent({
+      id: "agent-error",
+      status: "error",
+      requiresAttention: true,
+      attentionReason: "error",
+    });
+
+    await expect(workspace.workspaceStatus()).resolves.toBe("needs_input");
+  });
+
+  test("user-stopped errored agent surfaces workspace done, not red", async () => {
+    const workspace = new WorkspaceStatus();
+
+    workspace.hasRootAgent({
+      id: "agent-stopped",
+      status: "error",
+      requiresAttention: true,
+      attentionReason: "error",
+      stoppedBy: "user",
+    });
+
+    await expect(workspace.workspaceStatus()).resolves.toBe("done");
+  });
+
+  test("user-stopped errored agent with canonical bucket needs_you still maps to needs_input", async () => {
+    const workspace = new WorkspaceStatus();
+
+    // Daemon-owned bucket wins when present: a stale needs_you with a user
+    // stop still reads as needs_input at the workspace level.
+    workspace.hasRootAgent({
+      id: "agent-stopped-bucketed",
+      status: "error",
+      stoppedBy: "user",
+      bucket: "needs_you",
+    });
+
+    await expect(workspace.workspaceStatus()).resolves.toBe("needs_input");
+  });
+
+  test("ready agent surfaces workspace attention", async () => {
+    const workspace = new WorkspaceStatus();
+
+    workspace.hasRootAgent({ id: "agent-ready", status: "idle", bucket: "ready" });
+
+    await expect(workspace.workspaceStatus()).resolves.toBe("attention");
+  });
+
+  test("finished run without a user stop surfaces workspace attention", async () => {
+    const workspace = new WorkspaceStatus();
+
+    workspace.hasRootAgent({
+      id: "agent-finished",
+      status: "idle",
+      attentionReason: "finished",
+    });
+
+    await expect(workspace.workspaceStatus()).resolves.toBe("attention");
+  });
+
+  test("idle root agent surfaces workspace done", async () => {
+    const workspace = new WorkspaceStatus();
+
+    workspace.hasRootAgent({ id: "agent-idle", status: "idle" });
+
+    await expect(workspace.workspaceStatus()).resolves.toBe("done");
   });
 
   test("same-cwd workspaces attribute agent status only to the owner", async () => {

@@ -288,6 +288,20 @@ export function isPendingProposalEvent(event: FeedCardEvent): boolean {
   return event.kind === "proposal" && event.proposal?.status === "pending";
 }
 
+export function isPendingProposalForAgent(
+  event: FeedCardEvent,
+  agentId: string,
+  serverId?: string,
+): boolean {
+  if (serverId !== undefined && event.serverId !== serverId) {
+    return false;
+  }
+  return (
+    isPendingProposalEvent(event) &&
+    (event.agentId === agentId || event.proposal?.targetAgentId === agentId)
+  );
+}
+
 // Shared with thread row classification (classifyThreadRow): verbose-only
 // stall nudges are "skip" in normal mode. Re-export keeps feed-card's
 // `import ... from "./proposal-card"` unchanged.

@@ -21,6 +21,8 @@ export interface SidebarAgentBucketInput {
   pendingPermissionCount?: number;
   attentionReason?: AgentAttentionReason;
   stoppedBy?: "user" | "machinery" | "system" | null;
+  /** Stored review state when the caller can see it; otherwise derived. */
+  reviewState?: "none" | "ready" | "done" | "cleared";
 }
 
 /** Canonical bucket to the shared sidebar/workspace visual vocabulary. */
@@ -37,14 +39,18 @@ const LIFECYCLE_TO_SIDEBAR: Record<LifecycleBucket, SidebarStateBucket> = {
  * the spec-01 derivation over the payload fields (older daemons omit the
  * field). reviewState and the proposal index are server-side state the client
  * payload cannot see: a finished run with no recorded user stop reads as
- * ready for review, and everything else without recorded state is idle.
+ * ready for review, and everything else without recorded state is idle. A
+ * caller that DOES see the stored reviewState may pass it explicitly; it wins
+ * over the attention-derived guess (so e.g. a user-stopped run whose
+ * reviewState was cleared reads as done, not needs_you).
  */
 export function deriveSidebarLifecycleBucket(input: SidebarAgentBucketInput): LifecycleBucket {
   if (input.bucket) {
     return input.bucket;
   }
   const userStopped = input.stoppedBy === "user";
-  const reviewState = input.attentionReason === "finished" && !userStopped ? "ready" : "none";
+  const reviewState =
+    input.reviewState ?? (input.attentionReason === "finished" && !userStopped ? "ready" : "none");
   return deriveLifecycleBucket({
     pendingPermissionCount: input.pendingPermissionCount ?? 0,
     pendingProposalCount: 0,

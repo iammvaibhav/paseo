@@ -670,6 +670,7 @@ export const zhCN: TranslationResources = {
       },
       menu: {
         openFor: "打开 {{label}} 的菜单",
+        markDone: "标记为已完成",
         copyResumeCommand: "复制恢复命令",
         copyAgentId: "复制 Agent ID",
         copyTerminalId: "复制 Terminal ID",

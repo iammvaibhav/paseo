@@ -57,6 +57,22 @@ describe("deriveSidebarLifecycleBucket", () => {
     ).toBe("done");
   });
 
+  it("prefers an explicit reviewState over the attention-derived guess", () => {
+    // The Barbara bug: an errored agent stopped by the user with a cleared
+    // reviewState must read as done (the user's stop is the terminal story),
+    // not needs_you from the error.
+    expect(
+      deriveSidebarLifecycleBucket({ status: "error", stoppedBy: "user", reviewState: "none" }),
+    ).toBe("done");
+    expect(
+      deriveSidebarLifecycleBucket({
+        status: "idle",
+        attentionReason: "finished",
+        reviewState: "done",
+      }),
+    ).toBe("done");
+  });
+
   it("maps an idle agent with no run history to idle", () => {
     expect(deriveSidebarLifecycleBucket({ status: "idle" })).toBe("idle");
   });

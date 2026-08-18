@@ -7,8 +7,9 @@ import type {
   WorkspaceDescriptorPayload,
 } from "./messages.js";
 import {
-  deriveAgentStateBucket,
+  deriveLifecycleBucket,
   getWorkspaceStateBucketPriority,
+  lifecycleBucketToWorkspaceStatus,
   type WorkspaceStateBucket,
 } from "@getpaseo/protocol/agent-state-bucket";
 import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
@@ -370,14 +371,7 @@ export class WorkspaceDirectory {
       if (!isWorkspaceRoot && agent.status !== "running") {
         continue;
       }
-      const bucket = isWorkspaceRoot
-        ? deriveAgentStateBucket({
-            status: agent.status,
-            pendingPermissionCount: agent.pendingPermissions?.length ?? 0,
-            requiresAttention: agent.requiresAttention,
-            attentionReason: agent.attentionReason ?? null,
-          })
-        : "running";
+      const bucket = isWorkspaceRoot ? deriveWorkspaceRootStatusBucket(agent) : "running";
 
       const workspaceId = workspaceAgent.workspaceId;
       if (!workspaceId) {
@@ -519,15 +513,7 @@ export class WorkspaceDirectory {
     winningBucket: WorkspaceStateBucket,
   ): string | null {
     const agentTimestamps = contributingAgents
-      .filter((agent) => {
-        const derived = deriveAgentStateBucket({
-          status: agent.status,
-          pendingPermissionCount: agent.pendingPermissions?.length ?? 0,
-          requiresAttention: agent.requiresAttention,
-          attentionReason: agent.attentionReason ?? null,
-        });
-        return derived === winningBucket;
-      })
+      .filter((agent) => deriveWorkspaceRootStatusBucket(agent) === winningBucket)
       .map((agent) => {
         // Prefer attentionTimestamp when the agent has attention set — this is
         // the most accurate "entered current status" signal.
@@ -718,4 +704,34 @@ function resolveWorkspaceRootAgent(
     seen.add(parentAgentId);
     current = parent;
   }
+}
+
+/**
+ * Workspace visual bucket for a workspace-root agent. Prefers the canonical
+ * daemon-owned lifecycle bucket (`agent.bucket`, spec 01) when present; older
+ * daemons omit it, so fall back to deriving the lifecycle bucket from the
+ * payload fields (status, permissions, attentionReason, stoppedBy) exactly
+ * like the client's old-daemon fallback. `reviewState` lives server-side in
+ * review-state.json and is not on the snapshot payload: the only client-visible
+ * review state — a finished run with no recorded user stop — is read as ready.
+ * Never derives workspace `failed`: an errored agent is `needs_input` unless a
+ * user stop makes the user's stop the terminal story (`done`).
+ */
+function deriveWorkspaceRootStatusBucket(agent: AgentSnapshotPayload): WorkspaceStateBucket {
+  if (agent.bucket) {
+    return lifecycleBucketToWorkspaceStatus(agent.bucket);
+  }
+  const userStopped = agent.stoppedBy === "user";
+  const reviewState = agent.attentionReason === "finished" && !userStopped ? "ready" : "none";
+  return lifecycleBucketToWorkspaceStatus(
+    deriveLifecycleBucket({
+      pendingPermissionCount: agent.pendingPermissions?.length ?? 0,
+      pendingProposalCount: 0,
+      attentionReason: agent.attentionReason ?? null,
+      lastStatus: agent.status,
+      running: agent.status === "running" || agent.status === "initializing",
+      reviewState,
+      stopOrigin: agent.stoppedBy ?? null,
+    }),
+  );
 }

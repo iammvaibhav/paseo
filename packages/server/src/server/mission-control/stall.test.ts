@@ -638,12 +638,14 @@ describe("MissionControlService stall machinery (dormant-turn recovery + watchdo
 
   test("a user stop expires pending machinery proposals for the agent", async () => {
     startRunning("agent-1");
-    service.recordStopOrigin("agent-1", "user");
+    // The user-originated run start itself expires stale proposals.
     expect(expirePendingForAgent).toHaveBeenCalledWith("agent-1");
+    service.recordStopOrigin("agent-1", "user");
+    expect(expirePendingForAgent).toHaveBeenCalledTimes(2);
     // Non-user origins never expire proposals.
     service.recordStopOrigin("agent-1", null);
     service.recordStopOrigin("agent-1", "system");
-    expect(expirePendingForAgent).toHaveBeenCalledTimes(1);
+    expect(expirePendingForAgent).toHaveBeenCalledTimes(2);
   });
 
   test("a machinery-classified row is the tracker's own prompt, never agent activity", async () => {
