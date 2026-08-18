@@ -2533,8 +2533,9 @@ export async function createPaseoDaemon(
     await agentStorage.flush().catch(() => undefined);
     await providerSnapshotManager.shutdown();
     terminalManager.killAll();
-    speechService.stop();
+    await speechService.stop();
     await missionControlService.stop().catch(() => undefined);
+
     await scheduleService.stop().catch(() => undefined);
     await peerManager?.close().catch(() => undefined);
     await tunnelManager.stop().catch(() => undefined);

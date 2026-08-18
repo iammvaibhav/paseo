@@ -1059,7 +1059,7 @@ const styles = StyleSheet.create((theme) => {
       color: theme.colors.foreground,
     },
     readonlyTextSm: {
-      fontSize: theme.fontSize.sm,
+      fontSize: theme.fontSize.base,
     },
     readonlyTextMd: {
       fontSize: theme.fontSize.base,
@@ -1080,7 +1080,7 @@ const styles = StyleSheet.create((theme) => {
     },
     submitError: {
       color: theme.colors.palette.red[300],
-      fontSize: theme.fontSize.xs,
+      fontSize: theme.fontSize.sm,
     },
     providerIcon: {
       color: theme.colors.foregroundMuted,

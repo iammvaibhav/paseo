@@ -78,11 +78,14 @@ import { useMissionControlVerbose } from "@/mission-control/use-mission-control-
 import {
   CompletedTurnFooterRow,
   TurnFooter,
+  TURN_FOOTER_BOTTOM_SPACING,
   type AssistantTurnForkHandler,
   type InFlightTurnForkHandler,
   type TurnContentStrategy,
 } from "./turn-footer";
 import type { AssistantTurnForkBoundary } from "./turn-boundary";
+import { resolveBottomOverlayTailInset } from "./bottom-overlay-inset";
+
 import { layoutStream, type StreamLayoutItem } from "./layout";
 import {
   type BottomAnchorLocalRequest,
@@ -115,8 +118,9 @@ import type { FeedCardEvent } from "@/screens/mission-control/feed-card";
 function renderLiveAuxiliaryNode(input: {
   pendingPermissions: ReactNode;
   turnFooter: ReactNode;
+  bottomOverlayInset: number;
 }): ReactNode {
-  if (!input.pendingPermissions && !input.turnFooter) {
+  if (!input.pendingPermissions && !input.turnFooter && input.bottomOverlayInset === 0) {
     return null;
   }
   return (
@@ -127,8 +131,16 @@ function renderLiveAuxiliaryNode(input: {
           <View style={stylesheet.listHeaderContent}>{input.pendingPermissions}</View>
         </View>
       ) : null}
+      {input.bottomOverlayInset > 0 ? (
+        <BottomOverlayInset height={input.bottomOverlayInset} />
+      ) : null}
     </>
   );
+}
+
+function BottomOverlayInset({ height }: { height: number }) {
+  const style = useMemo(() => ({ height }), [height]);
+  return <View style={style} />;
 }
 
 function renderPendingPermissionsNode(input: {
@@ -264,6 +276,8 @@ export interface AgentStreamViewProps {
   turnPresentation: TurnPresentation;
   routeBottomAnchorRequest?: BottomAnchorRouteRequest | null;
   isAuthoritativeHistoryReady?: boolean;
+  /** Tail space required by a transparent overlay rendered at the bottom edge. */
+  bottomOverlayTailClearance?: number;
   toast?: ToastApi | null;
   onOpenWorkspaceFile?: (request: WorkspaceFileOpenRequest) => void;
   readOnly?: boolean;
@@ -337,6 +351,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       turnPresentation,
       routeBottomAnchorRequest = null,
       isAuthoritativeHistoryReady = true,
+      bottomOverlayTailClearance = 0,
       toast,
       onOpenWorkspaceFile,
       readOnly = false,
@@ -1050,11 +1065,18 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         }),
     );
     const renderLiveAuxiliary = useCallback<StreamSegmentRenderers["renderLiveAuxiliary"]>(() => {
+      const existingTailSpacing =
+        auxiliary.turnFooter && !auxiliary.pendingPermissions ? TURN_FOOTER_BOTTOM_SPACING : 0;
+      const bottomOverlayInset = resolveBottomOverlayTailInset({
+        requiredTailClearance: bottomOverlayTailClearance,
+        existingTailSpacing,
+      });
       return renderLiveAuxiliaryNode({
         pendingPermissions: auxiliary.pendingPermissions,
         turnFooter: auxiliary.turnFooter,
+        bottomOverlayInset,
       });
-    }, [auxiliary.pendingPermissions, auxiliary.turnFooter]);
+    }, [auxiliary.pendingPermissions, auxiliary.turnFooter, bottomOverlayTailClearance]);
 
     const renderers = useMemo<StreamSegmentRenderers>(
       () => ({
@@ -1611,7 +1633,7 @@ const stylesheet = StyleSheet.create((theme) => ({
   },
   syncingIndicatorText: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
+    fontSize: theme.fontSize.base,
   },
   invertedWrapper: {
     transform: [{ scaleY: -1 }],
@@ -1619,7 +1641,7 @@ const stylesheet = StyleSheet.create((theme) => ({
   },
   emptyStateText: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
+    fontSize: theme.fontSize.base,
     textAlign: "center",
   },
 }));
@@ -1640,7 +1662,7 @@ const permissionStyles = StyleSheet.create((theme) => ({
     color: theme.colors.foreground,
   },
   description: {
-    fontSize: theme.fontSize.sm,
+    fontSize: theme.fontSize.base,
     lineHeight: 20,
     color: theme.colors.foregroundMuted,
   },
@@ -1648,10 +1670,10 @@ const permissionStyles = StyleSheet.create((theme) => ({
     gap: theme.spacing[2],
   },
   sectionTitle: {
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
   },
   question: {
-    fontSize: theme.fontSize.sm,
+    fontSize: theme.fontSize.base,
     marginTop: theme.spacing[1],
     marginBottom: theme.spacing[1],
     color: theme.colors.foregroundMuted,
@@ -1687,7 +1709,7 @@ const permissionStyles = StyleSheet.create((theme) => ({
     gap: theme.spacing[2],
   },
   optionText: {
-    fontSize: theme.fontSize.sm,
+    fontSize: theme.fontSize.base,
     fontWeight: theme.fontWeight.normal,
     color: theme.colors.foregroundMuted,
   },

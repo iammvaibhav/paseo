@@ -360,7 +360,7 @@ export const sidebarWorkspaceRowStyles = StyleSheet.create((theme) => ({
   },
   shortcutBadgeText: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
     fontWeight: theme.fontWeight.medium,
     lineHeight: 14,
   },
@@ -576,7 +576,7 @@ const styles = StyleSheet.create((theme) => ({
   // to the meta row, so it takes the full width the trailing slot leaves behind.
   workspaceBranchText: {
     color: theme.colors.foreground,
-    fontSize: theme.fontSize.sm,
+    fontSize: theme.fontSize.base,
     fontWeight: "400",
     lineHeight: 20,
     opacity: 0.76,

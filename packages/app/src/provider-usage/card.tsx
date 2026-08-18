@@ -155,7 +155,7 @@ const styles = StyleSheet.create((theme) => ({
   name: {
     flexShrink: 1,
     color: theme.colors.foreground,
-    fontSize: theme.fontSize.sm,
+    fontSize: theme.fontSize.base,
   },
   identity: {
     minWidth: 0,
@@ -188,7 +188,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   statusLabel: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
   },
   bars: {
     gap: theme.spacing[3],
@@ -204,19 +204,19 @@ const styles = StyleSheet.create((theme) => ({
   detailLabel: {
     flexShrink: 1,
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
   },
   detailValue: {
     color: theme.colors.foreground,
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
   },
   error: {
     color: theme.colors.palette.red[300],
-    fontSize: theme.fontSize.xs,
-    lineHeight: theme.fontSize.xs * 1.4,
+    fontSize: theme.fontSize.sm,
+    lineHeight: theme.fontSize.sm * 1.4,
   },
   footer: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
   },
 }));

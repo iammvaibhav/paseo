@@ -512,15 +512,18 @@ export const SPACING = {
 } as const;
 
 export const FONT_SIZE = {
+  // `xs` was dropped from the upstream ramp when the appearance base size landed,
+  // but the fork's Mission Control surfaces still reference it; keep it as a
+  // synonym of the smallest ramp step so both sides typecheck.
   xs: 12,
   code: 12,
-  sm: 14,
-  base: 16,
-  lg: 18,
-  xl: 20,
-  "2xl": 22,
-  "3xl": 26,
-  "4xl": 34,
+  sm: 12,
+  base: 14,
+  lg: 16,
+  xl: 18,
+  "2xl": 20,
+  "3xl": 22,
+  "4xl": 26,
 } as const;
 
 export const LINE_HEIGHT = {

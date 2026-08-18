@@ -7,9 +7,11 @@ import invariant from "tiny-invariant";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { useIsCompactFormFactor, WORKSPACE_SECONDARY_HEADER_HEIGHT } from "@/constants/layout";
 import { isWeb } from "@/constants/platform";
-import { DiffLayoutToggle, GitDiffPane, resolveDiffLayout, SharedDiffView } from "@/git/diff-pane";
+import { DiffDocument } from "@/git/diff-document";
+import { ChangesSurface, DiffLayoutToggle, resolveDiffLayout } from "@/git/diff-pane";
 import { useSubmoduleContext } from "@/git/submodule-context";
 import { SubmodulePicker } from "@/git/submodule-picker";
+
 import { useCommitDiffFiles } from "@/git/use-diff-files";
 import { useChangesPreferences } from "@/hooks/use-changes-preferences";
 import { useAppSettings } from "@/hooks/use-settings";
@@ -46,10 +48,6 @@ function useDiffPanelPreferences() {
   const toggleHideWhitespace = useCallback(() => {
     void updatePreferences({ hideWhitespace: !preferences.hideWhitespace });
   }, [preferences.hideWhitespace, updatePreferences]);
-  const toggleViewMode = useCallback(() => {
-    void updatePreferences({ viewMode: preferences.viewMode === "flat" ? "tree" : "flat" });
-  }, [preferences.viewMode, updatePreferences]);
-
   return {
     preferences,
     isCompact,
@@ -58,7 +56,6 @@ function useDiffPanelPreferences() {
     toggleLayout,
     toggleWrapLines,
     toggleHideWhitespace,
-    toggleViewMode,
   };
 }
 
@@ -129,13 +126,15 @@ function WorkingDiffPanel() {
 
   return (
     <View style={styles.container} testID="working-diff-panel">
-      <GitDiffPane
+      <ChangesSurface
         serverId={serverId}
         workspaceId={workspaceId}
         cwd={effectiveCwd}
         enabled={isActive}
         host="panel"
         submodulePicker={submodulePicker}
+        focusPath={target.focusPath}
+        focusRequestId={target.focusRequestId}
         onOpenFile={handleOpenFile}
         onAddToChat={canAddToChat ? handleAddToChat : undefined}
       />
@@ -177,7 +176,7 @@ function CommitDiffPanel() {
     body = <PanelState message={t("panels.diff.empty")} testID="commit-diff-empty" />;
   } else {
     body = (
-      <SharedDiffView
+      <DiffDocument
         files={files}
         displayPreferences={panelPreferences.displayPreferences}
         mode={mode}

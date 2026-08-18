@@ -336,7 +336,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   identityText: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
     lineHeight: 16,
     flexShrink: 1,
   },
@@ -345,7 +345,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   separator: {
     color: theme.colors.foregroundExtraMuted,
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
     lineHeight: 16,
     flexShrink: 0,
   },
@@ -359,19 +359,19 @@ const styles = StyleSheet.create((theme) => ({
   },
   serviceName: {
     color: theme.colors.statusSuccess,
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
     lineHeight: 16,
     flexShrink: 1,
   },
   serviceNameUnhealthy: {
     color: theme.colors.statusDanger,
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
     lineHeight: 16,
     flexShrink: 1,
   },
   prText: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
     lineHeight: 16,
     flexShrink: 0,
   },
@@ -386,26 +386,26 @@ const styles = StyleSheet.create((theme) => ({
   },
   prTextHovered: {
     color: theme.colors.foreground,
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
     lineHeight: 16,
     flexShrink: 0,
   },
   // Matches the indicator — see COLOR_MAPPINGS in check-indicator.tsx.
   checksTextPassed: {
     color: theme.colors.statusSuccess,
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
     lineHeight: 16,
     flexShrink: 0,
   },
   checksTextFailed: {
     color: theme.colors.statusDanger,
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
     lineHeight: 16,
     flexShrink: 0,
   },
   checksTextRunning: {
     color: theme.colors.statusWarning,
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
     lineHeight: 16,
     flexShrink: 0,
   },

@@ -16,7 +16,7 @@ import type { Theme } from "@/styles/theme";
 import type { SubagentRow } from "./select";
 import type { ArchiveFinishedStatus } from "./use-archive-finished";
 import {
-  aggregateSubagentStatusBucket,
+  buildSubagentPillPresentation,
   buildSubagentRowPresentationData,
   countFinishedSubagents,
 } from "./track-presentation";
@@ -71,19 +71,16 @@ export function SubagentsTrack({
     return null;
   }
 
-  const pillLabel =
-    rows.length === 1
-      ? t("subagents.pillLabelOne")
-      : t("subagents.pillLabelMany", { count: rows.length });
+  const pill = buildSubagentPillPresentation(t, rows);
   const finishedCount = countFinishedSubagents(rows);
   const showArchiveFinished = finishedCount > 0 || isArchivingFinished || isArchiveFinishedFailed;
 
   return (
     <ComposerTrackPill
       testID="subagents-track-header"
-      label={pillLabel}
+      label={pill.label}
       panelTitle={t("subagents.title")}
-      statusBucket={aggregateSubagentStatusBucket(rows)}
+      statusBucket={pill.statusBucket}
     >
       {rows.map((row) => (
         <SubagentsTrackRow
@@ -155,6 +152,9 @@ function ArchiveFinishedRow({
       accessibilityLabel={t("subagents.archiveFinishedAction")}
       testID="subagents-track-archive-finished"
       disabled={disabled}
+      // Progress and the retry count land on this row, so the panel is where the result of
+      // pressing it shows up. Dismissing would hide the thing the press produces.
+      closeOnSelect={false}
       onPress={onPress}
     >
       {renderRow}
@@ -338,7 +338,7 @@ const styles = StyleSheet.create((theme) => ({
     flexShrink: 1,
     flexBasis: "auto",
     minWidth: 0,
-    fontSize: theme.fontSize.sm,
+    fontSize: theme.fontSize.base,
     color: theme.colors.foreground,
   },
   // Trailing metadata — provider context on a subagent row, progress on the archive row. No width
@@ -347,7 +347,7 @@ const styles = StyleSheet.create((theme) => ({
   rowTrailing: {
     flexShrink: 2,
     minWidth: 0,
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
     color: theme.colors.foregroundMuted,
   },
   actionClusterVisible: {
@@ -368,7 +368,7 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "center",
   },
   tooltipText: {
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
     color: theme.colors.foreground,
   },
 }));

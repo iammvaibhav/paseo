@@ -28,7 +28,7 @@ const foregroundMutedColorMapping = (theme: Theme) => ({
   color: theme.colors.foregroundMuted,
 });
 
-function selectSelectionAsks(
+export function selectSelectionAsks(
   state: ReturnType<typeof useSessionStore.getState>,
   serverId: string,
   agentId: string,

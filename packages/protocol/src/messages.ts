@@ -3971,7 +3971,7 @@ const WorkspaceGitRuntimePayloadSchema = z
   .optional()
   .nullable();
 
-const WorkspaceGitHubRuntimePayloadSchema = z
+export const WorkspaceGitHubRuntimePayloadSchema = z
   .object({
     featuresEnabled: z.boolean().optional(),
     pullRequest: z

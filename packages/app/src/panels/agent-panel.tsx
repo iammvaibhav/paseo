@@ -26,7 +26,9 @@ import { FileDropZone } from "@/components/file-drop/file-drop-zone";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { SidebarCallout } from "@/components/sidebar-callout";
 import { Composer } from "@/composer";
+import { resolveComposerTrackTailClearance } from "@/composer/pill-styles";
 import { formatProviderLabel } from "@/utils/provider-label";
+
 import { getActiveMessageSubmissions } from "@/composer/submission/model";
 import { RewindComposerRestoreProvider } from "@/components/rewind/composer-restore";
 import { getProviderIcon } from "@/components/provider-icons";
@@ -81,7 +83,9 @@ import { useVoiceOptional } from "@/contexts/voice-context";
 import { useAppSettings } from "@/hooks/use-settings";
 import { useToast } from "@/contexts/toast-context";
 import { toErrorMessage } from "@/utils/error-messages";
-import { AgentTracks } from "@/panels/agent-tracks";
+import { AgentTracks, hasAgentTracks } from "@/panels/agent-tracks";
+import { selectSelectionAsks } from "@/selection-ask/asks-list";
+
 import { useCreateFlowStore } from "@/stores/create-flow-store";
 import { buildDraftStoreKey, generateDraftId } from "@/stores/draft-keys";
 import { usePanelStore } from "@/stores/panel-store";
@@ -96,7 +100,8 @@ import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 import type { Theme } from "@/styles/theme";
 import type { PendingPermission } from "@/types/shared";
-import type { StreamItem } from "@/types/stream";
+import type { StreamItem, TodoEntry } from "@/types/stream";
+import { useArchiveFinishedSubagents, useSubagentsForParent } from "@/subagents";
 import { getInitDeferred, getInitKey } from "@/utils/agent-initialization";
 import { normalizeAgentSnapshot, resolveSessionAgent } from "@/utils/agent-snapshots";
 import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
@@ -1206,6 +1211,30 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
       setIsReleasing(false);
     }
   }, [agentId, agentState.id, appToast, client, isConnected, isReleasing]);
+  const isCompactFormFactor = useIsCompactFormFactor();
+  const composerTrackTailClearance = resolveComposerTrackTailClearance(isCompactFormFactor);
+  const subagentRows = useSubagentsForParent({ serverId, parentAgentId: agentId });
+  const tasks = useSessionStore((state): TodoEntry[] | undefined =>
+    state.sessions[serverId]?.agentTasks.get(agentId),
+  );
+  const selectionAsks = useSessionStore(
+    useShallow((state) => selectSelectionAsks(state, serverId, agentId)),
+  );
+  const archiveFinishedSubagents = useArchiveFinishedSubagents({
+    serverId,
+    parentAgentId: agentId,
+    rows: subagentRows,
+  });
+  const hasActiveComposer = !agentState.archivedAt && !isArchivingCurrentAgent;
+  const showAgentTracks =
+    hasActiveComposer &&
+    hasAgentTracks({
+      subagentRows,
+      tasks,
+      archiveFinishedStatus: archiveFinishedSubagents.status,
+      hasSelectionAsks: selectionAsks.length > 0,
+    });
+
   const rawAgentInputDraft = useAgentInputDraft({
     draftKey: buildDraftStoreKey({
       serverId,
@@ -1252,20 +1281,6 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
       composerState,
     ],
   );
-  const streamSection = (
-    <RenderProfile id={`AgentStreamSection:${agentId}`}>
-      <AgentStreamSection
-        streamViewRef={streamViewRef}
-        serverId={serverId}
-        agentId={agentId}
-        agent={effectiveAgent}
-        routeBottomAnchorRequest={routeBottomAnchorRequest}
-        hasAppliedAuthoritativeHistory={hasAppliedAuthoritativeHistory}
-        toast={toastApi}
-        onOpenWorkspaceFile={onOpenWorkspaceFile}
-      />
-    </RenderProfile>
-  );
   const composerSection = (
     <RenderProfile id={`AgentComposerSection:${agentId}`}>
       <AgentComposerSection
@@ -1285,14 +1300,31 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
       />
     </RenderProfile>
   );
-  // The tracks float at the foot of the transcript, inside the same transform the composer uses,
-  // so the pills sit on its top edge with the timeline running under them. They follow the
-  // composer: an archived or archiving agent has none, and its children can no longer be acted on.
-  const hasComposer = !agentState.archivedAt && !isArchivingCurrentAgent;
   const streamContent = (
     <ReanimatedAnimated.View style={animatedContentStyle}>
-      {streamSection}
-      {hasComposer ? <AgentTracks serverId={serverId} agentId={agentId} /> : null}
+      <RenderProfile id={`AgentStreamSection:${agentId}`}>
+        <AgentStreamSection
+          streamViewRef={streamViewRef}
+          serverId={serverId}
+          agentId={agentId}
+          agent={effectiveAgent}
+          routeBottomAnchorRequest={routeBottomAnchorRequest}
+          hasAppliedAuthoritativeHistory={hasAppliedAuthoritativeHistory}
+          bottomOverlayTailClearance={showAgentTracks ? composerTrackTailClearance : 0}
+          toast={toastApi}
+          onOpenWorkspaceFile={onOpenWorkspaceFile}
+        />
+      </RenderProfile>
+      {showAgentTracks ? (
+        <AgentTracks
+          serverId={serverId}
+          agentId={agentId}
+          subagentRows={subagentRows}
+          tasks={tasks}
+          archiveFinishedStatus={archiveFinishedSubagents.status}
+          onArchiveFinished={archiveFinishedSubagents.archiveFinished}
+        />
+      ) : null}
     </ReanimatedAnimated.View>
   );
   const contentContainer = <View style={styles.contentContainer}>{streamContent}</View>;
@@ -1373,6 +1405,7 @@ const AgentStreamSection = memo(function AgentStreamSection({
   agent,
   routeBottomAnchorRequest,
   hasAppliedAuthoritativeHistory,
+  bottomOverlayTailClearance,
   toast,
   onOpenWorkspaceFile,
 }: {
@@ -1382,6 +1415,7 @@ const AgentStreamSection = memo(function AgentStreamSection({
   agent: AgentScreenAgent;
   routeBottomAnchorRequest: RouteBottomAnchorRequest;
   hasAppliedAuthoritativeHistory: boolean;
+  bottomOverlayTailClearance: number;
   toast: ReturnType<typeof useToastHost>["api"];
   onOpenWorkspaceFile?: (request: WorkspaceFileOpenRequest) => void;
 }) {
@@ -1471,6 +1505,7 @@ const AgentStreamSection = memo(function AgentStreamSection({
       pendingProposals={pendingProposals}
       routeBottomAnchorRequest={routeBottomAnchorRequest}
       isAuthoritativeHistoryReady={hasAppliedAuthoritativeHistory}
+      bottomOverlayTailClearance={bottomOverlayTailClearance}
       toast={toast}
       pendingMessageSubmissions={pendingMessageSubmissions}
       turnPresentation={turnPresentation}
@@ -1893,13 +1928,13 @@ const styles = StyleSheet.create((theme) => ({
     zIndex: 50,
   },
   archivingTitle: {
-    fontSize: theme.fontSize.lg,
+    fontSize: theme.fontSize.base,
     fontWeight: theme.fontWeight.semibold,
     color: theme.colors.foreground,
     textAlign: "center",
   },
   archivingSubtitle: {
-    fontSize: theme.fontSize.sm,
+    fontSize: theme.fontSize.base,
     color: theme.colors.foregroundMuted,
     textAlign: "center",
   },
@@ -1926,14 +1961,14 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "center",
   },
   errorText: {
-    fontSize: theme.fontSize.lg,
+    fontSize: theme.fontSize.base,
     color: theme.colors.foregroundMuted,
     textAlign: "center",
   },
   statusText: {
     marginTop: theme.spacing[2],
     textAlign: "center",
-    fontSize: theme.fontSize.sm,
+    fontSize: theme.fontSize.base,
     color: theme.colors.foregroundMuted,
   },
   offlineTitle: {
@@ -1943,12 +1978,12 @@ const styles = StyleSheet.create((theme) => ({
     textAlign: "center",
   },
   offlineDescription: {
-    fontSize: theme.fontSize.sm,
+    fontSize: theme.fontSize.base,
     color: theme.colors.foregroundMuted,
     textAlign: "center",
   },
   offlineDetails: {
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
     color: theme.colors.foregroundMuted,
     textAlign: "center",
   },

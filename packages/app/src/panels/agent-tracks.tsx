@@ -5,12 +5,13 @@ import { SelectionAsksList } from "@/selection-ask/asks-list";
 import { usePaneContext } from "@/panels/pane-context";
 import { useSessionStore } from "@/stores/session-store";
 import {
-  useArchiveFinishedSubagents,
+  type ArchiveFinishedStatus,
   useArchiveSubagent,
   useDetachSubagent,
-  useSubagentsForParent,
+  type SubagentRow,
 } from "@/subagents";
 import { SubagentsTrack } from "@/subagents/track";
+import type { TodoEntry } from "@/types/stream";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
 
 /**
@@ -25,27 +26,29 @@ import { navigateToAgent } from "@/utils/navigate-to-agent";
  * Its state was living in the composer only because that is where it used to render. None of it
  * is composer state — a subagent row opens a tab, an ask row reopens the selection popover, the
  * task list reads the agent's stream.
+
  */
 export const AgentTracks = memo(function AgentTracks({
   serverId,
   agentId,
+  subagentRows,
+  tasks,
+  archiveFinishedStatus,
+  onArchiveFinished,
 }: {
   serverId: string;
   agentId: string;
-}): ReactElement {
+  subagentRows: SubagentRow[];
+  tasks: TodoEntry[] | undefined;
+  archiveFinishedStatus: ArchiveFinishedStatus;
+  onArchiveFinished: () => void;
+}): ReactElement | null {
   const { openTab } = usePaneContext();
-  const subagentRows = useSubagentsForParent({ serverId, parentAgentId: agentId });
   const canDetachSubagents = useSessionStore(
     (state) => state.sessions[serverId]?.serverInfo?.features?.agentDetach === true,
   );
   const archiveSubagent = useArchiveSubagent({ serverId });
   const detachSubagent = useDetachSubagent({ serverId });
-  const archiveFinishedSubagents = useArchiveFinishedSubagents({
-    serverId,
-    parentAgentId: agentId,
-    rows: subagentRows,
-  });
-
   const handleOpenSubagent = useCallback(
     (subagentId: string) => {
       navigateToAgent({ serverId, agentId: subagentId });
@@ -59,6 +62,10 @@ export const AgentTracks = memo(function AgentTracks({
     [openTab],
   );
 
+  if (!hasAgentTracks({ subagentRows, tasks, archiveFinishedStatus })) {
+    return null;
+  }
+
   return (
     <ComposerTrackBar>
       <SubagentsTrack
@@ -66,12 +73,31 @@ export const AgentTracks = memo(function AgentTracks({
         onOpenSubagent={handleOpenSubagent}
         onOpenProviderSubagent={handleOpenProviderSubagent}
         onArchiveSubagent={archiveSubagent}
-        onArchiveFinished={archiveFinishedSubagents.archiveFinished}
-        archiveFinishedStatus={archiveFinishedSubagents.status}
+        onArchiveFinished={onArchiveFinished}
+        archiveFinishedStatus={archiveFinishedStatus}
         onDetachSubagent={canDetachSubagents ? detachSubagent : undefined}
       />
       <SelectionAsksList serverId={serverId} agentId={agentId} />
-      <AgentTaskList serverId={serverId} agentId={agentId} />
+      <AgentTaskList tasks={tasks} />
     </ComposerTrackBar>
   );
 });
+
+export function hasAgentTracks({
+  subagentRows,
+  tasks,
+  archiveFinishedStatus,
+  hasSelectionAsks = false,
+}: {
+  subagentRows: readonly SubagentRow[];
+  tasks: readonly TodoEntry[] | undefined;
+  archiveFinishedStatus: ArchiveFinishedStatus;
+  hasSelectionAsks?: boolean;
+}): boolean {
+  return (
+    subagentRows.length > 0 ||
+    Boolean(tasks?.length) ||
+    archiveFinishedStatus.kind !== "idle" ||
+    hasSelectionAsks
+  );
+}
