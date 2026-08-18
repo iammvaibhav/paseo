@@ -398,6 +398,218 @@ describe("OmpQuotaProvider", () => {
       status: "unavailable",
     });
   });
+
+  it("maps multiple accounts per provider from omp usage --json to distinct cards with groupId and accountEmail", async () => {
+    const provider = new OmpQuotaProvider({
+      logger: createTestLogger(),
+      usageCommandRunner: async () => ({
+        stdout: JSON.stringify({
+          generatedAt: Date.now(),
+          reports: [
+            {
+              provider: "cursor",
+              fetchedAt: Date.now(),
+              limits: [
+                {
+                  id: "cursor:usd:individual-auto",
+                  label: "Auto usage",
+                  amount: { used: 4.5, limit: 20, unit: "usd" },
+                },
+              ],
+              metadata: { email: "alice@example.com" },
+            },
+            {
+              provider: "cursor",
+              fetchedAt: Date.now(),
+              limits: [
+                {
+                  id: "cursor:usd:individual-auto",
+                  label: "Auto usage",
+                  amount: { used: 12.0, limit: 50, unit: "usd" },
+                },
+              ],
+              metadata: { email: "bob@example.com" },
+            },
+          ],
+        }),
+        stderr: "",
+      }),
+      agentDbPath: join(tmpdir(), "missing-omp-agent.db"),
+    });
+
+    const usage = await provider.fetchUsage();
+    expect(Array.isArray(usage)).toBe(true);
+    if (!Array.isArray(usage)) throw new Error("expected multi-account cards");
+
+    expect(usage).toHaveLength(2);
+    expect(usage[0]).toMatchObject({
+      providerId: "omp-cursor:alice@example.com",
+      groupId: "omp-cursor",
+      accountEmail: "alice@example.com",
+      displayName: "OMP · Cursor — alice@example.com",
+      status: "available",
+    });
+    expect(usage[1]).toMatchObject({
+      providerId: "omp-cursor:bob@example.com",
+      groupId: "omp-cursor",
+      accountEmail: "bob@example.com",
+      displayName: "OMP · Cursor — bob@example.com",
+      status: "available",
+    });
+  });
+
+  it("fetches multiple Grok Build accounts from agent.db with token refresh and emits per-account cards", async () => {
+    if (!(await canRunSqlite3())) return;
+
+    const dir = mkdtempSync(join(tmpdir(), "omp-usage-"));
+    tempDirs.push(dir);
+    const dbPath = join(dir, "agent.db");
+
+    // Account 1: valid token
+    await createOauthCredentialDb(dbPath, "grok-build", {
+      access: "grok_live_token_1",
+      expires: Date.now() + 600_000,
+      email: "alice@example.com",
+      accountId: "acc-1",
+    });
+
+    // Account 2: expired token with refresh_token
+    await createOauthCredentialDb(dbPath, "grok-build", {
+      access: "grok_expired_token_2",
+      refresh: "grok_refresh_token_2",
+      expires: Date.now() - 60_000,
+      email: "bob@example.com",
+      accountId: "acc-2",
+    });
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("https://auth.x.ai/oauth2/token")) {
+        return jsonResponse({
+          access_token: "grok_refreshed_token_2",
+          expires_in: 3600,
+        });
+      }
+      if (url.includes("https://cli-chat-proxy.grok.com/v1/billing?format=credits")) {
+        const auth = (init?.headers as Record<string, string>)?.Authorization;
+        if (auth === "Bearer grok_live_token_1") {
+          return jsonResponse({
+            config: {
+              creditUsagePercent: 30,
+              isUnifiedBillingUser: true,
+            },
+          });
+        }
+        if (auth === "Bearer grok_refreshed_token_2") {
+          return jsonResponse({
+            config: {
+              creditUsagePercent: 75,
+              isUnifiedBillingUser: true,
+            },
+          });
+        }
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const provider = new OmpQuotaProvider({
+      logger: createTestLogger(),
+      fetch: fetchMock as unknown as typeof fetch,
+      agentDbPath: dbPath,
+      usageCommandRunner: async () => ({
+        stdout: JSON.stringify({ reports: [] }),
+        stderr: "",
+      }),
+    });
+
+    const usage = await provider.fetchUsage();
+    expect(Array.isArray(usage)).toBe(true);
+    if (!Array.isArray(usage)) throw new Error("expected multi-account cards");
+
+    const cards = usage.sort((a, b) => (a.accountEmail ?? "").localeCompare(b.accountEmail ?? ""));
+    expect(cards).toHaveLength(2);
+
+    expect(cards[0]).toMatchObject({
+      providerId: "omp-grok-build:alice@example.com",
+      groupId: "omp-grok-build",
+      accountEmail: "alice@example.com",
+      displayName: "OMP · Grok Build — alice@example.com",
+      status: "available",
+      windows: [expect.objectContaining({ id: "weekly_credits", usedPct: 30 })],
+    });
+
+    expect(cards[1]).toMatchObject({
+      providerId: "omp-grok-build:bob@example.com",
+      groupId: "omp-grok-build",
+      accountEmail: "bob@example.com",
+      displayName: "OMP · Grok Build — bob@example.com",
+      status: "available",
+      windows: [expect.objectContaining({ id: "weekly_credits", usedPct: 75 })],
+    });
+  });
+
+  it("isolates account failures so failed accounts show error while valid accounts succeed", async () => {
+    if (!(await canRunSqlite3())) return;
+
+    const dir = mkdtempSync(join(tmpdir(), "omp-usage-"));
+    tempDirs.push(dir);
+    const dbPath = join(dir, "agent.db");
+
+    // Account 1: valid
+    await createOauthCredentialDb(dbPath, "grok-build", {
+      access: "grok_good_token",
+      expires: Date.now() + 600_000,
+      email: "good@example.com",
+    });
+
+    // Account 2: expired without refresh token -> fails
+    await createOauthCredentialDb(dbPath, "grok-build", {
+      access: "grok_bad_token",
+      expires: Date.now() - 60_000,
+      email: "bad@example.com",
+    });
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("https://cli-chat-proxy.grok.com/v1/billing?format=credits")) {
+        return jsonResponse({
+          config: {
+            creditUsagePercent: 50,
+            isUnifiedBillingUser: true,
+          },
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const provider = new OmpQuotaProvider({
+      logger: createTestLogger(),
+      fetch: fetchMock as unknown as typeof fetch,
+      agentDbPath: dbPath,
+      usageCommandRunner: async () => ({
+        stdout: JSON.stringify({ reports: [] }),
+        stderr: "",
+      }),
+    });
+
+    const usage = await provider.fetchUsage();
+    expect(Array.isArray(usage)).toBe(true);
+    if (!Array.isArray(usage)) throw new Error("expected multi-account cards");
+
+    expect(usage).toHaveLength(2);
+    const good = usage.find((c) => c.accountEmail === "good@example.com");
+    const bad = usage.find((c) => c.accountEmail === "bad@example.com");
+
+    expect(good).toMatchObject({
+      providerId: "omp-grok-build:good@example.com",
+      status: "available",
+      windows: [expect.objectContaining({ usedPct: 50 })],
+    });
+    expect(bad).toMatchObject({
+      providerId: "omp-grok-build:bad@example.com",
+      status: "error",
+    });
+  });
 });
 
 function jsonResponse(body: unknown): Response {
@@ -407,7 +619,23 @@ function jsonResponse(body: unknown): Response {
   });
 }
 
+interface StatementSyncLike {
+  run(...params: unknown[]): void;
+}
+interface DatabaseSyncLike {
+  prepare(sql: string): StatementSyncLike;
+  close(): void;
+}
+interface NodeSqliteModule {
+  DatabaseSync: new (path: string, options?: { readOnly?: boolean }) => DatabaseSyncLike;
+}
+
 async function canRunSqlite3(): Promise<boolean> {
+  try {
+    const sqliteSpecifier: string = "node:sqlite";
+    await import(sqliteSpecifier);
+    return true;
+  } catch {}
   try {
     await execFileAsync("sqlite3", ["-version"], { timeout: 2_000 });
     return true;
@@ -421,18 +649,48 @@ async function createOauthCredentialDb(
   provider: string,
   data: Record<string, unknown>,
 ): Promise<void> {
+  const sqliteSpecifier: string = "node:sqlite";
+  try {
+    const { DatabaseSync } = (await import(sqliteSpecifier)) as unknown as NodeSqliteModule;
+    const db = new DatabaseSync(dbPath);
+    db.prepare(
+      "CREATE TABLE IF NOT EXISTS auth_credentials (provider TEXT, data TEXT, updated_at INTEGER, identity_key TEXT, disabled_cause TEXT);",
+    ).run();
+    db.prepare("INSERT INTO auth_credentials (provider, data, updated_at) VALUES (?, ?, ?);").run(
+      provider,
+      JSON.stringify(data),
+      Date.now(),
+    );
+    db.close();
+    return;
+  } catch {}
+
   const payload = JSON.stringify(data).replaceAll("'", "''");
   const sql = [
-    "CREATE TABLE auth_credentials (provider TEXT, data TEXT, updated_at INTEGER);",
+    "CREATE TABLE IF NOT EXISTS auth_credentials (provider TEXT, data TEXT, updated_at INTEGER, identity_key TEXT, disabled_cause TEXT);",
     `INSERT INTO auth_credentials (provider, data, updated_at) VALUES ('${provider}', '${payload}', ${Date.now()});`,
   ].join("");
   await execFileAsync("sqlite3", [dbPath, sql], { timeout: 2_000 });
 }
 
 async function createEmptyAuthDb(dbPath: string): Promise<void> {
+  const sqliteSpecifier: string = "node:sqlite";
+  try {
+    const { DatabaseSync } = (await import(sqliteSpecifier)) as unknown as NodeSqliteModule;
+    const db = new DatabaseSync(dbPath);
+    db.prepare(
+      "CREATE TABLE IF NOT EXISTS auth_credentials (provider TEXT, data TEXT, updated_at INTEGER, identity_key TEXT, disabled_cause TEXT);",
+    ).run();
+    db.close();
+    return;
+  } catch {}
+
   await execFileAsync(
     "sqlite3",
-    [dbPath, "CREATE TABLE auth_credentials (provider TEXT, data TEXT, updated_at INTEGER);"],
+    [
+      dbPath,
+      "CREATE TABLE IF NOT EXISTS auth_credentials (provider TEXT, data TEXT, updated_at INTEGER, identity_key TEXT, disabled_cause TEXT);",
+    ],
     { timeout: 2_000 },
   );
 }

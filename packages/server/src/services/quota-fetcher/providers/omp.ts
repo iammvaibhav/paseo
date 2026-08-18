@@ -21,7 +21,12 @@ import {
   usedPctOf,
   windowFromUsedPct,
 } from "../usage.js";
-
+import {
+  refreshClaudeOAuthToken,
+  refreshCodexOAuthToken,
+  refreshXaiOAuthToken,
+  type RefreshedOAuthToken,
+} from "../token-refresh.js";
 const execFileAsync = promisify(execFile);
 const OMP_SQLITE_TIMEOUT_MS = 2_000;
 const OMP_USAGE_TIMEOUT_MS = 20_000;
@@ -41,16 +46,22 @@ const XAI_BILLING_HEADERS = {
   "X-XAI-Token-Auth": "xai-grok-cli",
 } as const;
 
-const OmpOauthCredentialDataSchema = z.object({
-  access: z.string().optional(),
-  access_token: z.string().optional(),
-  expires: ApiNumberSchema.optional(),
-  expiresAt: ApiNumberSchema.optional(),
-  email: z.string().optional(),
-  accountId: z.string().optional(),
-  projectId: z.string().optional(),
-  project_id: z.string().optional(),
-});
+const OmpOauthCredentialDataSchema = z
+  .object({
+    access: z.string().optional(),
+    access_token: z.string().optional(),
+    refresh: z.string().optional(),
+    refresh_token: z.string().optional(),
+    expires: ApiNumberSchema.optional(),
+    expiresAt: ApiNumberSchema.optional(),
+    email: z.string().optional(),
+    accountId: z.string().optional(),
+    projectId: z.string().optional(),
+    project_id: z.string().optional(),
+    orgName: z.string().optional(),
+    orgId: z.string().optional(),
+  })
+  .passthrough();
 
 const OmpUsageAmountSchema = z
   .object({
@@ -188,6 +199,20 @@ interface OmpProviderIdentity {
   displayName: string;
 }
 
+export interface OmpStoredAccount {
+  provider: string;
+  token: string | null;
+  refreshToken: string | null;
+  expiresAtMs: number | null;
+  email: string | null;
+  accountId: string | null;
+  projectId: string | null;
+  orgName: string | null;
+  orgId: string | null;
+  identityKey: string | null;
+  identity: string;
+}
+
 const OMP_PROVIDER_IDENTITIES: Record<string, OmpProviderIdentity> = {
   "xai-oauth": { providerId: "omp", displayName: "OMP · SuperGrok" },
   "grok-build": { providerId: "omp-grok-build", displayName: "OMP · Grok Build" },
@@ -199,7 +224,6 @@ const OMP_PROVIDER_IDENTITIES: Record<string, OmpProviderIdentity> = {
   },
   "openai-codex": { providerId: "omp-codex", displayName: "OMP · Codex" },
 };
-
 function resolveOmpAgentDbPath(homeDir: string, override?: string): string | null {
   if (override) return override;
   const fromEnv = process.env["OMP_HOME"]?.trim();
@@ -222,6 +246,129 @@ function resolveOmpIdentity(provider: string): OmpProviderIdentity {
   };
 }
 
+function formatOmpDisplayName(
+  baseDisplayName: string,
+  emailOrIdentity: string | null,
+  isMultiAccount: boolean,
+): string {
+  if (isMultiAccount && emailOrIdentity) {
+    return `${baseDisplayName} — ${emailOrIdentity}`;
+  }
+  return baseDisplayName;
+}
+
+function resolveOmpCardIds(
+  baseProviderId: string,
+  emailOrIdentity: string | null,
+  isMultiAccount: boolean,
+): { providerId: string; groupId: string } {
+  const groupId = baseProviderId;
+  const providerId =
+    isMultiAccount && emailOrIdentity ? `${baseProviderId}:${emailOrIdentity}` : baseProviderId;
+  return { providerId, groupId };
+}
+
+function groupCliReportsByProvider(
+  reports: z.infer<typeof OmpUsageReportSchema>[],
+): Map<string, z.infer<typeof OmpUsageReportSchema>[]> {
+  const byProvider = new Map<string, z.infer<typeof OmpUsageReportSchema>[]>();
+  for (const report of reports) {
+    const list = byProvider.get(report.provider) ?? [];
+    list.push(report);
+    byProvider.set(report.provider, list);
+  }
+  return byProvider;
+}
+
+function markAccountCovered(
+  coveredAccounts: Map<string, Set<string>>,
+  provider: string,
+  identity: string,
+): void {
+  const set = coveredAccounts.get(provider) ?? new Set<string>();
+  set.add(identity);
+  coveredAccounts.set(provider, set);
+}
+
+function mapCliReportsToCards(
+  cliReportsByProvider: Map<string, z.infer<typeof OmpUsageReportSchema>[]>,
+  isProviderMultiAccount: (provider: string) => boolean,
+): {
+  cards: ProviderUsage[];
+  coveredAccounts: Map<string, Set<string>>;
+  pendingAgyCliCards: Map<string, ProviderUsage>;
+} {
+  const cards: ProviderUsage[] = [];
+  const coveredAccounts = new Map<string, Set<string>>();
+  const pendingAgyCliCards = new Map<string, ProviderUsage>();
+
+  for (const [provider, reports] of cliReportsByProvider.entries()) {
+    const isMulti = isProviderMultiAccount(provider);
+    for (const [index, report] of reports.entries()) {
+      const card = mapOmpReportToUsage(report, { isMultiAccount: isMulti, reportIndex: index });
+      if (!card) continue;
+
+      const email =
+        typeof report.metadata?.email === "string" ? report.metadata.email.trim() : null;
+      const accountId =
+        typeof report.metadata?.accountId === "string" ? report.metadata.accountId.trim() : null;
+      const identity = email || accountId || `account-${index + 1}`;
+      markAccountCovered(coveredAccounts, provider, identity);
+      if (email) markAccountCovered(coveredAccounts, provider, email);
+
+      if (provider === "google-antigravity") {
+        pendingAgyCliCards.set(card.providerId, card);
+      } else {
+        cards.push(card);
+      }
+    }
+  }
+
+  return { cards, coveredAccounts, pendingAgyCliCards };
+}
+
+function grokBuildErrorCard(input: {
+  providerId: string;
+  groupId: string;
+  accountEmail: string | undefined;
+  displayName: string;
+  error: string;
+}): ProviderUsage {
+  return {
+    providerId: input.providerId,
+    groupId: input.groupId,
+    accountEmail: input.accountEmail,
+    displayName: input.displayName,
+    status: "error",
+    planLabel: null,
+    windows: [],
+    balances: [],
+    details: input.accountEmail
+      ? [{ id: "account_email", label: "Account", value: input.accountEmail }]
+      : [],
+    error: input.error,
+    sourceLabel: "Grok Build via OMP auth",
+  };
+}
+
+function expiryErrorForProvider(provider: string): string {
+  if (provider === "openai-codex") return "OpenAI access token expired";
+  if (provider === "anthropic") return "Anthropic access token expired";
+  if (provider === "grok-build" || provider === "xai-oauth") return "xAI access token expired";
+  return "Access token expired";
+}
+
+/**
+ * First non-nullish value trimmed; an empty/whitespace value stops the chain
+ * (mirrors `a ?? b` then `.trim() || null` semantics used across credential fields).
+ */
+function coalesceString(...values: (string | null | undefined)[]): string | null {
+  for (const value of values) {
+    if (value == null) continue;
+    return value.trim() || null;
+  }
+  return null;
+}
 function percentWindow(input: {
   id: string;
   label: string;
@@ -370,8 +517,10 @@ function antigravityBucketWindow(
 function mapAntigravityQuotaSummary(
   summary: z.infer<typeof AntigravityQuotaSummarySchema>,
   email: string | null,
+  providerId: string,
+  groupId: string,
+  displayName: string,
 ): ProviderUsage | null {
-  const identity = resolveOmpIdentity("google-antigravity");
   const windows: ProviderUsageWindow[] = [];
   const details: ProviderUsageDetail[] = [];
 
@@ -387,8 +536,10 @@ function mapAntigravityQuotaSummary(
   if (windows.length === 0) return null;
 
   return {
-    providerId: identity.providerId,
-    displayName: identity.displayName,
+    providerId,
+    groupId,
+    accountEmail: email ?? undefined,
+    displayName,
     status: "available",
     planLabel: null,
     windows,
@@ -399,7 +550,10 @@ function mapAntigravityQuotaSummary(
   };
 }
 
-function mapOmpReportToUsage(report: z.infer<typeof OmpUsageReportSchema>): ProviderUsage | null {
+function mapOmpReportToUsage(
+  report: z.infer<typeof OmpUsageReportSchema>,
+  options: { isMultiAccount: boolean; reportIndex: number },
+): ProviderUsage | null {
   const identity = resolveOmpIdentity(report.provider);
   const windows: ProviderUsageWindow[] = [];
   const balances: ProviderUsageBalance[] = [];
@@ -410,10 +564,14 @@ function mapOmpReportToUsage(report: z.infer<typeof OmpUsageReportSchema>): Prov
     appendOmpLimit(limit, isSuperGrok, windows, balances);
   }
 
+  const email = typeof report.metadata?.email === "string" ? report.metadata.email.trim() : null;
+  const accountId =
+    typeof report.metadata?.accountId === "string" ? report.metadata.accountId.trim() : null;
+  const orgName =
+    typeof report.metadata?.orgName === "string" ? report.metadata.orgName.trim() : null;
+
   // Keep SuperGrok card lean: no account/org detail rows.
   if (!isSuperGrok) {
-    const email = typeof report.metadata?.email === "string" ? report.metadata.email : null;
-    const orgName = typeof report.metadata?.orgName === "string" ? report.metadata.orgName : null;
     if (email) details.push({ id: "account_email", label: "Account", value: email });
     if (orgName) details.push({ id: "org_name", label: "Org", value: orgName });
   }
@@ -422,9 +580,23 @@ function mapOmpReportToUsage(report: z.infer<typeof OmpUsageReportSchema>): Prov
     return null;
   }
 
+  const emailOrIdentity = email || accountId || `account-${options.reportIndex + 1}`;
+  const { providerId, groupId } = resolveOmpCardIds(
+    identity.providerId,
+    emailOrIdentity,
+    options.isMultiAccount,
+  );
+  const displayName = formatOmpDisplayName(
+    identity.displayName,
+    emailOrIdentity,
+    options.isMultiAccount,
+  );
+
   return {
-    providerId: identity.providerId,
-    displayName: identity.displayName,
+    providerId,
+    groupId,
+    accountEmail: email ?? undefined,
+    displayName,
     status: "available",
     planLabel: resolveOmpPlanLabel(report.metadata),
     windows,
@@ -503,6 +675,81 @@ function extractJsonObject(stdout: string): unknown {
     return JSON.parse(trimmed.slice(start, end + 1));
   }
 }
+interface StatementSyncLike {
+  all(...params: unknown[]): Record<string, unknown>[];
+}
+interface DatabaseSyncLike {
+  prepare(sql: string): StatementSyncLike;
+  close(): void;
+}
+interface NodeSqliteModule {
+  DatabaseSync: new (path: string, options?: { readOnly?: boolean }) => DatabaseSyncLike;
+}
+
+interface RawAuthCredentialRow {
+  provider: string;
+  data: string;
+  identity_key?: string | null;
+}
+
+async function queryOmpAuthCredentials(
+  dbPath: string,
+  logger: Logger,
+): Promise<RawAuthCredentialRow[]> {
+  try {
+    const sqliteSpecifier: string = "node:sqlite";
+    const sqlite = (await import(sqliteSpecifier)) as unknown as NodeSqliteModule;
+    let db: DatabaseSyncLike | undefined;
+    try {
+      db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
+      const stmt = db.prepare(
+        "SELECT provider, data, identity_key FROM auth_credentials WHERE disabled_cause IS NULL OR disabled_cause = '' ORDER BY updated_at DESC",
+      );
+      const rows = stmt.all() as unknown as RawAuthCredentialRow[];
+      return rows;
+    } finally {
+      db?.close();
+    }
+  } catch (err) {
+    logger.debug({ err }, "node:sqlite query failed, falling back to sqlite3 CLI");
+  }
+
+  try {
+    const { stdout } = await execFileAsync(
+      "sqlite3",
+      [
+        "-json",
+        dbPath,
+        "SELECT provider, data, identity_key FROM auth_credentials WHERE disabled_cause IS NULL OR disabled_cause = '' ORDER BY updated_at DESC;",
+      ],
+      { timeout: OMP_SQLITE_TIMEOUT_MS },
+    );
+    const raw = stdout.trim();
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed as RawAuthCredentialRow[];
+  } catch (err) {
+    try {
+      const { stdout } = await execFileAsync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT json_group_array(json_object('provider', provider, 'data', data, 'identity_key', identity_key)) FROM auth_credentials WHERE disabled_cause IS NULL OR disabled_cause = '' ORDER BY updated_at DESC;",
+        ],
+        { timeout: OMP_SQLITE_TIMEOUT_MS },
+      );
+      const raw = stdout.trim();
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed as RawAuthCredentialRow[];
+      }
+    } catch {
+      logger.debug({ err, dbPath }, "OMP agent.db read failed via sqlite3 CLI");
+    }
+  }
+
+  return [];
+}
 
 export class OmpQuotaProvider implements ProviderUsageFetcher {
   readonly providerId = "omp";
@@ -538,8 +785,8 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
     const pushUsage = (usage: ProviderUsage | null | undefined) => {
       if (!usage) return;
       if (seen.has(usage.providerId)) return;
-      if (usage.status !== "available") return;
       if (
+        usage.status === "available" &&
         usage.windows.length === 0 &&
         (usage.balances?.length ?? 0) === 0 &&
         (usage.details?.length ?? 0) === 0
@@ -550,28 +797,59 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
       usages.push(usage);
     };
 
-    const antigravitySummary = await this.fetchAntigravityUsageFromOmpAuth();
+    const storedAccounts = await this.readAllOmpAccounts();
+    const cliReports = await this.fetchFromOmpUsageReports();
+    const cliReportsByProvider = groupCliReportsByProvider(cliReports);
+    const providerAccountCounts = this.computeProviderAccountCounts(
+      storedAccounts,
+      cliReportsByProvider,
+    );
+    const isProviderMultiAccount = (provider: string): boolean => {
+      return (providerAccountCounts.get(provider) ?? 0) > 1;
+    };
 
-    for (const usage of await this.fetchFromOmpUsageCommand()) {
-      // Prefer Cloud Code's weekly/5h summary over OMP CLI's daily backend counters.
-      if (usage.providerId === "omp-antigravity" && antigravitySummary) continue;
-      pushUsage(usage);
+    const { cards, coveredAccounts, pendingAgyCliCards } = mapCliReportsToCards(
+      cliReportsByProvider,
+      isProviderMultiAccount,
+    );
+    for (const card of cards) {
+      pushUsage(card);
     }
 
-    if (antigravitySummary) {
-      pushUsage(antigravitySummary);
-    }
+    // Antigravity: try direct Cloud Code summary per account, falling back to the
+    // CLI card for any account the direct fetch misses.
+    await this.pushAntigravityCards(
+      storedAccounts,
+      pendingAgyCliCards,
+      isProviderMultiAccount,
+      pushUsage,
+    );
 
-    // OMP currently authenticates Cursor but does not expose a usage endpoint through
-    // `omp usage`. Fall back to Cursor's dashboard API using the stored OMP credential.
-    if (!seen.has("omp-cursor")) {
-      pushUsage(await this.fetchCursorUsageFromOmpAuth());
-    }
-
-    // If the CLI path failed entirely, keep SuperGrok via the original SQLite+billing path.
-    if (!seen.has("omp")) {
-      pushUsage(await this.fetchSuperGrokUsageFromOmpAuth());
-    }
+    // Direct-API fallbacks for stored accounts the CLI did not report on.
+    await this.pushFallbackAccountCards(
+      storedAccounts.get("cursor") ?? [],
+      isProviderMultiAccount("cursor"),
+      coveredAccounts,
+      "cursor",
+      (account, multi) => this.fetchCursorUsageForAccount(account, multi),
+      pushUsage,
+    );
+    await this.pushFallbackAccountCards(
+      storedAccounts.get("xai-oauth") ?? [],
+      isProviderMultiAccount("xai-oauth"),
+      coveredAccounts,
+      "xai-oauth",
+      (account, multi) => this.fetchSuperGrokUsageForAccount(account, multi),
+      pushUsage,
+    );
+    await this.pushFallbackAccountCards(
+      storedAccounts.get("grok-build") ?? [],
+      isProviderMultiAccount("grok-build"),
+      coveredAccounts,
+      "grok-build",
+      (account, multi) => this.fetchGrokBuildUsageForAccount(account, multi),
+      pushUsage,
+    );
 
     if (usages.length === 0) {
       return unavailableUsage(this);
@@ -579,28 +857,54 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
     return usages.length === 1 ? usages[0]! : usages;
   }
 
-  private async fetchFromOmpUsageCommand(): Promise<ProviderUsage[]> {
+  private async fetchFromOmpUsageReports(): Promise<z.infer<typeof OmpUsageReportSchema>[]> {
     try {
       const { stdout } = await this.usageCommandRunner({
         args: ["usage", "--json"],
         timeoutMs: OMP_USAGE_TIMEOUT_MS,
       });
       const parsed = OmpUsageJsonSchema.parse(extractJsonObject(stdout));
-      const usages: ProviderUsage[] = [];
-      for (const report of parsed.reports ?? []) {
-        const usage = mapOmpReportToUsage(report);
-        if (usage) usages.push(usage);
-      }
-      return usages;
+      return parsed.reports ?? [];
     } catch (error) {
       this.logger.debug({ err: error }, "OMP usage CLI fetch failed");
       return [];
     }
   }
 
-  private async fetchCursorUsageFromOmpAuth(): Promise<ProviderUsage | null> {
-    const token = await this.readOmpOauthAccessToken("cursor");
-    if (!token) return null;
+  private async fetchCursorUsageForAccount(
+    account: OmpStoredAccount,
+    isMultiAccount: boolean,
+  ): Promise<ProviderUsage | null> {
+    const identity = resolveOmpIdentity("cursor");
+    const emailOrIdentity = account.email || account.accountId || account.identity;
+    const { providerId, groupId } = resolveOmpCardIds(
+      identity.providerId,
+      emailOrIdentity,
+      isMultiAccount,
+    );
+    const displayName = formatOmpDisplayName(identity.displayName, emailOrIdentity, isMultiAccount);
+
+    const { token, error: tokenError } = await this.resolveAccountAccessToken(account);
+    if (!token) {
+      if (tokenError && isMultiAccount) {
+        return {
+          providerId,
+          groupId,
+          accountEmail: account.email ?? undefined,
+          displayName,
+          status: "error",
+          planLabel: null,
+          windows: [],
+          balances: [],
+          details: account.email
+            ? [{ id: "account_email", label: "Account", value: account.email }]
+            : [],
+          error: tokenError,
+          sourceLabel: "Cursor via OMP auth",
+        };
+      }
+      return null;
+    }
 
     try {
       const res = await fetchProviderApi(this.fetchApi, CURSOR_USAGE_URL, {
@@ -637,15 +941,21 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
       }
 
       if (balances.length === 0) return null;
-      const identity = resolveOmpIdentity("cursor");
+      const details: ProviderUsageDetail[] = [];
+      if (account.email) {
+        details.push({ id: "account_email", label: "Account", value: account.email });
+      }
+
       return {
-        providerId: identity.providerId,
-        displayName: identity.displayName,
+        providerId,
+        groupId,
+        accountEmail: account.email ?? undefined,
+        displayName,
         status: "available",
         planLabel: null,
         windows: [],
         balances,
-        details: [],
+        details,
         error: null,
         sourceLabel: "Cursor via OMP auth",
       };
@@ -655,13 +965,23 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
     }
   }
 
-  private async fetchAntigravityUsageFromOmpAuth(): Promise<ProviderUsage | null> {
-    const credential = await this.readOmpOauthCredential("google-antigravity");
-    if (!credential) return null;
-    const token = (credential.access ?? credential.access_token)?.trim();
+  private async fetchAntigravityUsageForAccount(
+    account: OmpStoredAccount,
+    isMultiAccount: boolean,
+  ): Promise<ProviderUsage | null> {
+    const identity = resolveOmpIdentity("google-antigravity");
+    const emailOrIdentity = account.email || account.accountId || account.identity;
+    const { providerId, groupId } = resolveOmpCardIds(
+      identity.providerId,
+      emailOrIdentity,
+      isMultiAccount,
+    );
+    const displayName = formatOmpDisplayName(identity.displayName, emailOrIdentity, isMultiAccount);
+
+    const { token } = await this.resolveAccountAccessToken(account);
     if (!token) return null;
 
-    const projectId = (credential.projectId ?? credential.project_id)?.trim() || null;
+    const projectId = account.projectId;
     const body = projectId ? JSON.stringify({ project: projectId }) : JSON.stringify({});
 
     for (const url of ANTIGRAVITY_QUOTA_SUMMARY_URLS) {
@@ -683,7 +1003,13 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
           continue;
         }
         const summary = AntigravityQuotaSummarySchema.parse(await res.json());
-        const usage = mapAntigravityQuotaSummary(summary, credential.email?.trim() || null);
+        const usage = mapAntigravityQuotaSummary(
+          summary,
+          account.email,
+          providerId,
+          groupId,
+          displayName,
+        );
         if (usage) return usage;
       } catch (error) {
         this.logger.debug({ err: error, url }, "OMP Antigravity quota summary parse failed");
@@ -692,85 +1018,325 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
     return null;
   }
 
-  private async fetchSuperGrokUsageFromOmpAuth(): Promise<ProviderUsage | null> {
-    const token = await this.readOmpOauthAccessToken("xai-oauth");
-    if (!token) return null;
-
-    const headers = {
-      ...XAI_BILLING_HEADERS,
-      Authorization: `Bearer ${token}`,
-    };
-    const creditsRes = await fetchProviderApi(this.fetchApi, `${XAI_BILLING_BASE}?format=credits`, {
-      headers,
+  private async fetchXaiCreditsWithRefresh(
+    account: OmpStoredAccount,
+    token: string,
+  ): Promise<Response> {
+    let res = await fetchProviderApi(this.fetchApi, `${XAI_BILLING_BASE}?format=credits`, {
+      headers: { ...XAI_BILLING_HEADERS, Authorization: `Bearer ${token}` },
     });
-
-    if (!creditsRes.ok) {
-      this.logger.debug({ creditsStatus: creditsRes.status }, "OMP SuperGrok usage fetch failed");
-      return null;
+    if (res.status === 401 && account.refreshToken) {
+      const refreshed = await refreshXaiOAuthToken(this.fetchApi, account.refreshToken);
+      if (refreshed) {
+        account.token = refreshed.accessToken;
+        account.refreshToken = refreshed.refreshToken ?? account.refreshToken;
+        account.expiresAtMs = refreshed.expiresAtMs;
+        res = await fetchProviderApi(this.fetchApi, `${XAI_BILLING_BASE}?format=credits`, {
+          headers: {
+            ...XAI_BILLING_HEADERS,
+            Authorization: `Bearer ${refreshed.accessToken}`,
+          },
+        });
+      }
     }
-
-    const windows: ProviderUsageWindow[] = [];
-    let planLabel: string | null = "SuperGrok";
-
-    try {
-      const parsed = parseCreditsPayload(await creditsRes.json());
-      windows.push(...parsed.windows);
-      if (parsed.planLabel) planLabel = parsed.planLabel;
-    } catch (error) {
-      this.logger.debug({ err: error }, "OMP SuperGrok credits payload parse failed");
-    }
-
-    if (windows.length === 0) {
-      return null;
-    }
-
-    return {
-      providerId: "omp",
-      displayName: "OMP · SuperGrok",
-      status: "available",
-      planLabel,
-      windows,
-      balances: [],
-      details: [],
-      error: null,
-      sourceLabel: "SuperGrok via OMP auth",
-    };
+    return res;
   }
 
-  private async readOmpOauthCredential(
-    provider: string,
-  ): Promise<z.infer<typeof OmpOauthCredentialDataSchema> | null> {
-    const dbPath = resolveOmpAgentDbPath(this.homeDir, this.agentDbPath);
-    if (!dbPath) return null;
+  private async fetchSuperGrokUsageForAccount(
+    account: OmpStoredAccount,
+    isMultiAccount: boolean,
+  ): Promise<ProviderUsage | null> {
+    const identity = resolveOmpIdentity("xai-oauth");
+    const emailOrIdentity = account.email || account.accountId || account.identity;
+    const { providerId, groupId } = resolveOmpCardIds(
+      identity.providerId,
+      emailOrIdentity,
+      isMultiAccount,
+    );
+    const displayName = formatOmpDisplayName(identity.displayName, emailOrIdentity, isMultiAccount);
+
+    const { token, error: tokenError } = await this.resolveAccountAccessToken(account);
+    if (!token) {
+      if (tokenError && isMultiAccount) {
+        return {
+          providerId,
+          groupId,
+          accountEmail: account.email ?? undefined,
+          displayName,
+          status: "error",
+          planLabel: null,
+          windows: [],
+          balances: [],
+          details: [],
+          error: tokenError,
+          sourceLabel: "SuperGrok via OMP auth",
+        };
+      }
+      return null;
+    }
 
     try {
-      const { stdout } = await execFileAsync(
-        "sqlite3",
-        [
-          dbPath,
-          `SELECT data FROM auth_credentials WHERE provider = '${provider.replaceAll("'", "''")}' ORDER BY updated_at DESC LIMIT 1;`,
-        ],
-        { timeout: OMP_SQLITE_TIMEOUT_MS },
-      );
-      const raw = stdout.trim();
-      if (!raw) return null;
-      const data = OmpOauthCredentialDataSchema.parse(JSON.parse(raw));
-      const token = (data.access ?? data.access_token)?.trim();
-      if (!token) return null;
-      const expiresAt = data.expires ?? data.expiresAt;
-      if (typeof expiresAt === "number" && Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
+      const creditsRes = await this.fetchXaiCreditsWithRefresh(account, token);
+      if (!creditsRes.ok) {
+        this.logger.debug({ creditsStatus: creditsRes.status }, "OMP SuperGrok usage fetch failed");
         return null;
       }
-      return data;
-    } catch (error) {
-      this.logger.debug({ err: error, dbPath, provider }, "OMP OAuth credential read failed");
+
+      const parsed = parseCreditsPayload(await creditsRes.json());
+      if (parsed.windows.length === 0) return null;
+
+      return {
+        providerId,
+        groupId,
+        accountEmail: account.email ?? undefined,
+        displayName,
+        status: "available",
+        planLabel: parsed.planLabel ?? "SuperGrok",
+        windows: parsed.windows,
+        balances: [],
+        details: [],
+        error: null,
+        sourceLabel: "SuperGrok via OMP auth",
+      };
+    } catch (err) {
+      this.logger.debug({ err }, "OMP SuperGrok credits fetch failed");
       return null;
     }
   }
 
-  private async readOmpOauthAccessToken(provider: string): Promise<string | null> {
-    const data = await this.readOmpOauthCredential(provider);
-    if (!data) return null;
-    return (data.access ?? data.access_token)?.trim() || null;
+  private async fetchGrokBuildUsageForAccount(
+    account: OmpStoredAccount,
+    isMultiAccount: boolean,
+  ): Promise<ProviderUsage> {
+    const identity = resolveOmpIdentity("grok-build");
+    const emailOrIdentity = account.email || account.accountId || account.identity;
+    const { providerId, groupId } = resolveOmpCardIds(
+      identity.providerId,
+      emailOrIdentity,
+      isMultiAccount,
+    );
+    const displayName = formatOmpDisplayName(identity.displayName, emailOrIdentity, isMultiAccount);
+
+    const { token, error: tokenError } = await this.resolveAccountAccessToken(account);
+    if (!token) {
+      return grokBuildErrorCard({
+        providerId,
+        groupId,
+        accountEmail: account.email ?? undefined,
+        displayName,
+        error: tokenError ?? "Grok Build authentication failed",
+      });
+    }
+
+    try {
+      const creditsRes = await this.fetchXaiCreditsWithRefresh(account, token);
+      if (!creditsRes.ok) {
+        return grokBuildErrorCard({
+          providerId,
+          groupId,
+          accountEmail: account.email ?? undefined,
+          displayName,
+          error: `Grok Build billing returned status ${creditsRes.status}`,
+        });
+      }
+
+      const parsed = parseCreditsPayload(await creditsRes.json());
+      const details: ProviderUsageDetail[] = [];
+      if (account.email) {
+        details.push({ id: "account_email", label: "Account", value: account.email });
+      }
+
+      return {
+        providerId,
+        groupId,
+        accountEmail: account.email ?? undefined,
+        displayName,
+        status: "available",
+        planLabel: parsed.planLabel ?? "Grok Build",
+        windows: parsed.windows,
+        balances: [],
+        details,
+        error: null,
+        sourceLabel: "Grok Build via OMP auth",
+      };
+    } catch (err) {
+      return grokBuildErrorCard({
+        providerId,
+        groupId,
+        accountEmail: account.email ?? undefined,
+        displayName,
+        error: `Grok Build billing fetch failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  private parseStoredAccountRow(row: RawAuthCredentialRow, index: number): OmpStoredAccount | null {
+    try {
+      const data = OmpOauthCredentialDataSchema.parse(JSON.parse(row.data));
+      const email = coalesceString(data.email);
+      const accountId = coalesceString(data.accountId);
+      const identityKeySuffix = coalesceString(row.identity_key?.replace(/^[^:]+:/, ""));
+      const expires = data.expires ?? data.expiresAt;
+      const expiresAtMs = typeof expires === "number" && Number.isFinite(expires) ? expires : null;
+      return {
+        provider: row.provider,
+        token: coalesceString(data.access, data.access_token),
+        refreshToken: coalesceString(data.refresh, data.refresh_token),
+        expiresAtMs,
+        email,
+        accountId,
+        projectId: coalesceString(data.projectId, data.project_id),
+        orgName: coalesceString(data.orgName),
+        orgId: coalesceString(data.orgId),
+        identityKey: row.identity_key ?? null,
+        identity: coalesceString(email, accountId, identityKeySuffix) ?? `account-${index + 1}`,
+      };
+    } catch (error) {
+      this.logger.debug(
+        { err: error, provider: row.provider },
+        "Failed to parse auth_credentials row",
+      );
+      return null;
+    }
+  }
+
+  private async readAllOmpAccounts(): Promise<Map<string, OmpStoredAccount[]>> {
+    const dbPath = resolveOmpAgentDbPath(this.homeDir, this.agentDbPath);
+    if (!dbPath) return new Map();
+
+    const rows = await queryOmpAuthCredentials(dbPath, this.logger);
+    const byProvider = new Map<string, OmpStoredAccount[]>();
+
+    for (const [index, row] of rows.entries()) {
+      const account = this.parseStoredAccountRow(row, index);
+      if (!account) continue;
+      const existing = byProvider.get(row.provider) ?? [];
+      existing.push(account);
+      byProvider.set(row.provider, existing);
+    }
+
+    return byProvider;
+  }
+
+  private computeProviderAccountCounts(
+    storedAccounts: Map<string, OmpStoredAccount[]>,
+    cliReportsByProvider: Map<string, z.infer<typeof OmpUsageReportSchema>[]>,
+  ): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const [provider, accounts] of storedAccounts.entries()) {
+      counts.set(provider, accounts.length);
+    }
+    for (const [provider, reports] of cliReportsByProvider.entries()) {
+      const prev = counts.get(provider) ?? 0;
+      counts.set(provider, Math.max(prev, reports.length));
+    }
+    return counts;
+  }
+
+  private isStoredAccountCovered(
+    coveredAccounts: Map<string, Set<string>>,
+    provider: string,
+    account: OmpStoredAccount,
+  ): boolean {
+    const emailOrIdentity = account.email || account.accountId || account.identity;
+    if (coveredAccounts.get(provider)?.has(emailOrIdentity)) return true;
+    return account.email ? (coveredAccounts.get(provider)?.has(account.email) ?? false) : false;
+  }
+
+  private async pushFallbackAccountCards(
+    accounts: OmpStoredAccount[],
+    isMultiAccount: boolean,
+    coveredAccounts: Map<string, Set<string>>,
+    provider: string,
+    fetchOne: (account: OmpStoredAccount, multi: boolean) => Promise<ProviderUsage | null>,
+    push: (usage: ProviderUsage | null | undefined) => void,
+  ): Promise<void> {
+    for (const account of accounts) {
+      if (this.isStoredAccountCovered(coveredAccounts, provider, account)) continue;
+      push(await fetchOne(account, isMultiAccount));
+    }
+  }
+
+  private async pushAntigravityCards(
+    storedAccounts: Map<string, OmpStoredAccount[]>,
+    pendingAgyCliCards: Map<string, ProviderUsage>,
+    isProviderMultiAccount: (provider: string) => boolean,
+    push: (usage: ProviderUsage | null | undefined) => void,
+  ): Promise<void> {
+    const agyAccounts = storedAccounts.get("google-antigravity") ?? [];
+    const isAgyMulti = isProviderMultiAccount("google-antigravity");
+    if (agyAccounts.length === 0) {
+      for (const card of pendingAgyCliCards.values()) {
+        push(card);
+      }
+      return;
+    }
+    for (const account of agyAccounts) {
+      const summary = await this.fetchAntigravityUsageForAccount(account, isAgyMulti);
+      if (summary) {
+        push(summary);
+        continue;
+      }
+      const emailOrIdentity = account.email || account.accountId || account.identity;
+      const { providerId } = resolveOmpCardIds("omp-antigravity", emailOrIdentity, isAgyMulti);
+      const cliCard = pendingAgyCliCards.get(providerId);
+      if (cliCard) {
+        push(cliCard);
+      }
+    }
+  }
+
+  private async tryRefreshAccountToken(
+    account: OmpStoredAccount,
+    refreshToken: string,
+  ): Promise<boolean> {
+    let refreshed: RefreshedOAuthToken | null = null;
+    if (account.provider === "grok-build" || account.provider === "xai-oauth") {
+      refreshed = await refreshXaiOAuthToken(this.fetchApi, refreshToken);
+    } else if (account.provider === "openai-codex") {
+      refreshed = await refreshCodexOAuthToken(this.fetchApi, refreshToken);
+    } else if (account.provider === "anthropic") {
+      refreshed = await refreshClaudeOAuthToken(this.fetchApi, refreshToken);
+    }
+    if (!refreshed) return false;
+    account.token = refreshed.accessToken;
+    account.refreshToken = refreshed.refreshToken ?? account.refreshToken;
+    account.expiresAtMs = refreshed.expiresAtMs;
+    return true;
+  }
+
+  private async resolveAccountAccessToken(
+    account: OmpStoredAccount,
+  ): Promise<{ token: string | null; error: string | null }> {
+    const now = Date.now();
+    const isPast = account.expiresAtMs !== null && account.expiresAtMs <= now;
+    const isNear = account.expiresAtMs !== null && account.expiresAtMs <= now + 60_000;
+
+    if (!isNear && account.token) {
+      return { token: account.token, error: null };
+    }
+
+    const hasRefreshFlow =
+      account.provider === "grok-build" ||
+      account.provider === "xai-oauth" ||
+      account.provider === "openai-codex" ||
+      account.provider === "anthropic";
+
+    if (hasRefreshFlow && account.refreshToken) {
+      const refreshed = await this.tryRefreshAccountToken(account, account.refreshToken);
+      if (refreshed) {
+        return { token: account.token, error: null };
+      }
+    }
+
+    if (!isPast && account.token) {
+      return { token: account.token, error: null };
+    }
+
+    if (isPast) {
+      return { token: null, error: expiryErrorForProvider(account.provider) };
+    }
+
+    return { token: null, error: "Missing access token" };
   }
 }

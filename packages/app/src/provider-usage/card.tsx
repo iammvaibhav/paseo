@@ -69,10 +69,21 @@ export function ProviderUsageCard({
   return (
     <View style={containerStyle}>
       <View style={styles.header}>
-        <ThemedProviderUsageIcon iconKey={usage.providerId} size={14} uniProps={mutedIconColor} />
-        <Text style={styles.name} numberOfLines={1}>
-          {usage.displayName}
-        </Text>
+        <ThemedProviderUsageIcon
+          iconKey={usage.groupId ?? usage.providerId}
+          size={14}
+          uniProps={mutedIconColor}
+        />
+        <View style={styles.identity}>
+          <Text style={styles.name} numberOfLines={1}>
+            {usage.displayName}
+          </Text>
+          {usage.accountEmail ? (
+            <Text style={styles.accountEmail} numberOfLines={1}>
+              {usage.accountEmail}
+            </Text>
+          ) : null}
+        </View>
         {usage.planLabel ? <StatusBadge label={usage.planLabel} variant="muted" /> : null}
         <View style={styles.headerSpacer} />
         {status ? (
@@ -145,6 +156,15 @@ const styles = StyleSheet.create((theme) => ({
     flexShrink: 1,
     color: theme.colors.foreground,
     fontSize: theme.fontSize.sm,
+  },
+  identity: {
+    minWidth: 0,
+    flexShrink: 1,
+    gap: theme.spacing[0.5],
+  },
+  accountEmail: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.xs,
   },
   headerSpacer: {
     flex: 1,

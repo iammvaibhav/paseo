@@ -149,7 +149,6 @@ export function ContextWindowMeter({
   const [isTooltipOpen, setIsTooltipOpen] = useState(false);
   const { view: providerUsageView, refresh: refreshProviderUsage } = useProviderUsage(
     serverId ?? null,
-    { enabled: isTooltipOpen },
   );
   const handleTooltipOpenChange = useCallback(
     (nextOpen: boolean) => {

@@ -3673,6 +3673,8 @@ export const ServerInfoStatusPayloadSchema = z
         workspaceFileEditing: z.boolean().optional(),
         // COMPAT(providerUsageList): added in v0.1.98, drop the gate when daemon floor >= v0.1.98.
         providerUsageList: z.boolean().optional(),
+        // Daemon pushes refreshed usage via provider.usage.updated. Added in v0.4.0.
+        providerUsagePush: z.boolean().optional(),
         // COMPAT(agentDetach): added in v0.1.98, remove gate after 2026-12-19 once daemon floor >= v0.1.98.
         agentDetach: z.boolean().optional(),
         // COMPAT(agentThinkingUpdate): added in v0.2.4, remove gate after 2027-01-28.
@@ -6054,6 +6056,11 @@ export const ProviderUsageDetailSchema = z.object({
 
 export const ProviderUsageSchema = z.object({
   providerId: z.string(),
+  // Account-agnostic provider identity for multi-account providers (e.g.
+  // "omp-grok-build"). Added in v0.4.0; absent for old daemons, fall back to providerId.
+  groupId: z.string().optional(),
+  // Account email when a provider reports multiple accounts; absent otherwise.
+  accountEmail: z.string().optional(),
   displayName: z.string(),
   status: ProviderUsageStatusSchema,
   planLabel: z.string().nullable(),
@@ -6070,6 +6077,16 @@ export const ProviderUsageListResponseMessageSchema = z.object({
   type: z.literal("provider.usage.list.response"),
   payload: z.object({
     requestId: z.string(),
+    fetchedAt: z.string(),
+    providers: z.array(ProviderUsageSchema),
+  }),
+});
+
+// Daemon push of refreshed usage; additive (v0.4.0), feature-gated via
+// server_info `providerUsagePush`. Same providers shape as provider.usage.list.response.
+export const ProviderUsageUpdatedMessageSchema = z.object({
+  type: z.literal("provider.usage.updated"),
+  payload: z.object({
     fetchedAt: z.string(),
     providers: z.array(ProviderUsageSchema),
   }),
@@ -6612,6 +6629,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   RefreshProvidersSnapshotResponseMessageSchema,
   ProviderDiagnosticResponseMessageSchema,
   ProviderUsageListResponseMessageSchema,
+  ProviderUsageUpdatedMessageSchema,
   ListCommandsResponseSchema,
   ListTerminalsResponseSchema,
   TerminalsChangedSchema,
@@ -6834,6 +6852,7 @@ export type ProviderUsageDetail = z.infer<typeof ProviderUsageDetailSchema>;
 export type ProviderUsageListResponseMessage = z.infer<
   typeof ProviderUsageListResponseMessageSchema
 >;
+export type ProviderUsageUpdatedMessage = z.infer<typeof ProviderUsageUpdatedMessageSchema>;
 export type ChatCreateResponse = z.infer<typeof ChatCreateResponseSchema>;
 export type ChatListResponse = z.infer<typeof ChatListResponseSchema>;
 export type ChatInspectResponse = z.infer<typeof ChatInspectResponseSchema>;

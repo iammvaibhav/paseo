@@ -86,7 +86,10 @@ import {
   type WebSocketRuntimeCounters,
   type WebSocketRuntimeDiagnosticSnapshot,
 } from "./websocket/runtime-metrics.js";
-import { ProviderUsageService } from "../services/quota-fetcher/service.js";
+import {
+  ProviderUsageService,
+  type ProviderUsageListResult,
+} from "../services/quota-fetcher/service.js";
 import { getProcessMemoryDiagnostics, getProcessUptimeSeconds } from "./process-diagnostics.js";
 import {
   CLIENT_SHUTDOWN_RPC_REASON,
@@ -614,6 +617,7 @@ export class VoiceAssistantWebSocketServer {
   private unsubscribeSpeechReadiness: (() => void) | null = null;
   private unsubscribeDaemonConfigChange: (() => void) | null = null;
   private readonly providerUsageService: ProviderUsageService;
+  private unsubscribeProviderUsageAgentEvents: (() => void) | null = null;
   private unsubscribeTerminalActivity: (() => void) | null = null;
   private readonly browserToolsBroker: BrowserToolsBroker | null;
   private readonly hubRelationships: HubRelationshipManagement | null;
@@ -763,7 +767,19 @@ export class VoiceAssistantWebSocketServer {
 
     this.providerUsageService = new ProviderUsageService({
       logger: this.logger,
+      hasRunningAgent: () =>
+        this.agentManager.listAgents().some((agent) => agent.lifecycle === "running"),
+      onUsageRefreshed: (result) => this.broadcastProviderUsageUpdated(result),
     });
+    this.providerUsageService.start();
+    this.unsubscribeProviderUsageAgentEvents = this.agentManager.subscribe(
+      (event) => {
+        if (event.type === "agent_state") {
+          this.providerUsageService.notifyAgentStatusChanged();
+        }
+      },
+      { replayState: false },
+    );
 
     this.plannotatorAvailable = detectPlannotatorAvailability(this.logger);
 
@@ -1078,6 +1094,9 @@ export class VoiceAssistantWebSocketServer {
     this.unsubscribeDaemonConfigChange = null;
     this.unsubscribeTerminalActivity?.();
     this.unsubscribeTerminalActivity = null;
+    this.unsubscribeProviderUsageAgentEvents?.();
+    this.unsubscribeProviderUsageAgentEvents = null;
+    this.providerUsageService.dispose();
     if (this.runtimeMetricsInterval) {
       clearInterval(this.runtimeMetricsInterval);
       this.runtimeMetricsInterval = null;
@@ -1610,6 +1629,7 @@ export class VoiceAssistantWebSocketServer {
     pending.identity.sessionId = connection.session.getSessionId();
     this.syncBrowserToolsClientRegistration(connection);
     this.sendToClient(ws, this.createServerInfoMessage());
+    this.providerUsageService.notifyClientConnected();
     connection.connectionLogger.info(
       {
         ...toConnectionLogFields(pending.identity),
@@ -1654,6 +1674,7 @@ export class VoiceAssistantWebSocketServer {
     pending.identity.sessionId = existing.session.getSessionId();
     this.syncBrowserToolsClientRegistration(existing);
     this.sendToClient(ws, this.createServerInfoMessage());
+    this.providerUsageService.notifyClientConnected();
     pending.connectionLogger.info(
       {
         ...toConnectionLogFields(pending.identity),
@@ -1745,6 +1766,8 @@ export class VoiceAssistantWebSocketServer {
         workspaceFileEditing: true,
         // COMPAT(providerUsageList): added in v0.1.98, drop the gate when daemon floor >= v0.1.98.
         providerUsageList: true,
+        // Daemon pushes refreshed usage via provider.usage.updated. Added in v0.4.0.
+        providerUsagePush: true,
         // COMPAT(agentDetach): added in v0.1.98, remove gate after 2026-12-19 once daemon floor >= v0.1.98.
         agentDetach: true,
         // COMPAT(agentThinkingUpdate): added in v0.2.4, remove gate after 2027-01-28.
@@ -1835,6 +1858,18 @@ export class VoiceAssistantWebSocketServer {
 
   private broadcastDaemonConfigChanged(config: MutableDaemonConfig): void {
     this.broadcast(this.createDaemonConfigChangedMessage(config));
+  }
+
+  private broadcastProviderUsageUpdated(result: ProviderUsageListResult): void {
+    this.broadcast(
+      wrapSessionMessage({
+        type: "provider.usage.updated",
+        payload: {
+          fetchedAt: result.fetchedAt,
+          providers: result.providers,
+        },
+      }),
+    );
   }
 
   private bindSocketHandlers(ws: WebSocketLike): void {
