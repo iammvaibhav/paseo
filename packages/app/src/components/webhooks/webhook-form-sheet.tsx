@@ -476,7 +476,6 @@ function WebhookFormFields({
           testID="webhook-name-input"
           accessibilityLabel="Webhook name"
           initialValue={state.name}
-          value={state.name}
           onChangeText={model.setName}
           placeholder="Optional"
           autoCapitalize="none"
@@ -499,7 +498,6 @@ function WebhookFormFields({
           testID="webhook-prompt-input"
           accessibilityLabel="Prompt template"
           initialValue={state.promptTemplate}
-          value={state.promptTemplate}
           onChangeText={model.setPromptTemplate}
           placeholder="Use {{payload.path}} to interpolate incoming fields"
           style={styles.multilineInput}
@@ -584,7 +582,6 @@ function WebhookFilterRuleRow({
         size={controlSize}
         accessibilityLabel="Filter path"
         initialValue={rule.path}
-        value={rule.path}
         onChangeText={handleChangePath}
         placeholder="Payload path (e.g. event.event_type)"
         autoCapitalize="none"
@@ -595,7 +592,6 @@ function WebhookFilterRuleRow({
         size={controlSize}
         accessibilityLabel="Filter value"
         initialValue={rule.equals}
-        value={rule.equals}
         onChangeText={handleChangeEquals}
         placeholder="Equals (e.g. incident.triggered)"
         autoCapitalize="none"
@@ -637,7 +633,6 @@ function WebhookAuthFields({
             testID="webhook-hmac-secret-input"
             accessibilityLabel="Signing secret"
             initialValue={state.hmacSecret}
-            value={state.hmacSecret}
             onChangeText={model.setHmacSecret}
             placeholder="Shared HMAC secret"
             autoCapitalize="none"

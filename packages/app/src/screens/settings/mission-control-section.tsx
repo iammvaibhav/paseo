@@ -190,7 +190,7 @@ function NumberRow({
       </View>
       <FormTextInput
         size={isCompact ? "md" : "sm"}
-        defaultValue={String(value)}
+        initialValue={String(value)}
         onChangeText={handleChange}
         onBlur={handleCommit}
         keyboardType="number-pad"

@@ -500,6 +500,7 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
       agentStorage,
       agentId: callerAgentId,
       prompt: formatSystemNotificationPrompt(body),
+      activeTurnBehavior: "steer",
       unarchive: false,
       logger,
     });

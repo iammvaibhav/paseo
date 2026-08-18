@@ -129,6 +129,7 @@ export interface WorkspaceDescriptor {
   name: string;
   title?: string | null;
   pinnedAt?: string | null;
+  labels?: string[];
   status: WorkspaceDescriptorPayload["status"];
   statusEnteredAt: Date | null;
   /** Best-effort last activity (wire `activityAt`); null when unknown. */
@@ -144,20 +145,18 @@ export interface WorkspaceDescriptor {
   project?: ProjectPlacementPayload;
 }
 
+function parseOptionalDate(raw: string | null | undefined): Date | null {
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  const value = new Date(raw);
+  return Number.isNaN(value.getTime()) ? null : value;
+}
+
 export function normalizeWorkspaceDescriptor(
   payload: WorkspaceDescriptorPayload,
 ): WorkspaceDescriptor {
-  const statusEnteredAtRaw = payload.statusEnteredAt;
-  const statusEnteredAt: Date | null =
-    typeof statusEnteredAtRaw === "string" && statusEnteredAtRaw.length > 0
-      ? new Date(statusEnteredAtRaw)
-      : null;
-  const activityAtRaw = payload.activityAt;
-  const activityAt: Date | null =
-    typeof activityAtRaw === "string" && activityAtRaw.length > 0 ? new Date(activityAtRaw) : null;
-  const createdAtRaw = payload.createdAt;
-  const createdAt: Date | null =
-    typeof createdAtRaw === "string" && createdAtRaw.length > 0 ? new Date(createdAtRaw) : null;
+  const statusEnteredAt = parseOptionalDate(payload.statusEnteredAt);
+  const activityAt = parseOptionalDate(payload.activityAt);
+  const createdAt = parseOptionalDate(payload.createdAt);
   return {
     id: normalizeWorkspaceOpaqueId(payload.id) ?? payload.id,
     projectId: payload.projectId,
@@ -175,10 +174,12 @@ export function normalizeWorkspaceDescriptor(
     name: payload.name,
     title: payload.title ?? null,
     pinnedAt: payload.pinnedAt ?? null,
+    // COMPAT(workspaceLabels): old daemons omit assignments.
+    labels: payload.labels ?? [],
     status: payload.status,
     statusEnteredAt,
-    activityAt: activityAt && !Number.isNaN(activityAt.getTime()) ? activityAt : null,
-    createdAt: createdAt && !Number.isNaN(createdAt.getTime()) ? createdAt : null,
+    activityAt,
+    createdAt,
     archivingAt: payload.archivingAt ?? null,
     diffStat: payload.diffStat ?? null,
     scripts: (payload.scripts ?? []).map((s) => Object.assign({}, s)),

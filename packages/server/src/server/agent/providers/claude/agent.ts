@@ -2279,7 +2279,8 @@ class ClaudeAgentSession implements AgentSession {
     if (this.resolveSlashCommandInvocation(prompt)) {
       return { status: "unavailable" };
     }
-    if (this.compacting || this.activeForegroundTurnId !== options.expectedTurnId) {
+    const activeTurnId = this.activeForegroundTurnId ?? this.autonomousTurn?.id;
+    if (this.compacting || activeTurnId !== options.expectedTurnId) {
       return { status: "unavailable" };
     }
 
@@ -2293,7 +2294,7 @@ class ClaudeAgentSession implements AgentSession {
     const message = this.toSdkUserMessage(prompt);
     message.priority = "next";
     if (
-      this.activeForegroundTurnId !== options.expectedTurnId ||
+      (this.activeForegroundTurnId ?? this.autonomousTurn?.id) !== options.expectedTurnId ||
       this.activeForegroundQuery !== query ||
       this.activeForegroundInput !== input ||
       this.query !== query ||
@@ -3492,6 +3493,8 @@ class ClaudeAgentSession implements AgentSession {
         this.syncTurnState("foreground turn terminal");
       } else if (this.autonomousTurn) {
         this.autonomousTurn = null;
+        this.activeForegroundQuery = null;
+        this.activeForegroundInput = null;
         this.activeTurnHasAssistantText = false;
         this.syncTurnState("autonomous turn terminal");
       }
@@ -3505,6 +3508,8 @@ class ClaudeAgentSession implements AgentSession {
     this.autonomousTurn = {
       id: this.createTurnId("autonomous"),
     };
+    this.activeForegroundQuery = this.query;
+    this.activeForegroundInput = this.input;
     this.activeTurnHasAssistantText = false;
     this.contextUsage.beginTurn();
     this.notifySubscribers({ type: "turn_started", provider: "claude" });
@@ -3517,6 +3522,8 @@ class ClaudeAgentSession implements AgentSession {
     }
     this.notifySubscribers({ type: "turn_completed", provider: "claude" });
     this.autonomousTurn = null;
+    this.activeForegroundQuery = null;
+    this.activeForegroundInput = null;
     this.activeTurnHasAssistantText = false;
     this.syncTurnState("autonomous turn completed");
   }
@@ -3983,24 +3990,26 @@ class ClaudeAgentSession implements AgentSession {
     message: SDKMessage,
     parentToolUseId: string,
   ): AgentStreamEvent[] {
+    const canonicalSubagentId = this.taskProtocolSource.resolveSubagentId(parentToolUseId);
     // Once a CLI announces its tasks it announces all of them, so a frame for one that was never
     // declared is work the filter already rejected — a workflow child, ambient housekeeping, a
     // grandchild announced in someone else's session. Attributing it anyway materializes exactly
     // what the filter prevents: a nameless descriptor stuck running, plus a timeline no surface
     // can open, both held for the session's lifetime.
-    if (
-      this.taskProtocolSource.announcesTasks &&
-      !this.taskProtocolSource.isDeclared(parentToolUseId)
-    ) {
+    if (this.taskProtocolSource.announcesTasks && !canonicalSubagentId) {
       return [];
     }
     // The child's own frames are the only place its model appears; the task protocol does not
     // announce it. Read per frame rather than snapshotting, since a provider can swap models
     // mid-flight on overload or refusal fallback.
     const runtimeEvents = foldSubagentObservations(
-      this.taskProtocolSource.observeSidechainFrame(message, parentToolUseId),
+      this.taskProtocolSource.observeSidechainFrame(
+        message,
+        canonicalSubagentId ?? parentToolUseId,
+      ),
     ).map((event): AgentStreamEvent => ({ type: "provider_subagent", provider: "claude", event }));
-    return [...runtimeEvents, ...this.sidechainTracker.handleMessage(message, parentToolUseId)];
+    const routedId = canonicalSubagentId ?? parentToolUseId;
+    return [...runtimeEvents, ...this.sidechainTracker.handleMessage(message, routedId)];
   }
 
   /**

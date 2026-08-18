@@ -118,6 +118,7 @@ export async function fanOutReconciledWorkspaceUpdates(input: {
 
 import { VoiceAssistantWebSocketServer } from "./websocket-server.js";
 import { WorkspaceSetupRuntime } from "./workspace-setup-runtime.js";
+import { createWorkspaceLabelService } from "./workspace-labels/index.js";
 import { createGitHubService } from "../services/github-service.js";
 import { createPaseoWorktree as createRegisteredPaseoWorktree } from "./paseo-worktree-service.js";
 import { createWorkspaceProvisioningService } from "./session/workspace-provisioning/workspace-provisioning-service.js";
@@ -1150,6 +1151,10 @@ export async function createPaseoDaemon(
     path.join(config.paseoHome, "projects", "workspaces.json"),
     logger,
   );
+  const workspaceLabelService = createWorkspaceLabelService({
+    paseoHome: config.paseoHome,
+    workspaceRegistry,
+  });
   const github = createGitHubService();
   const workspaceGitService = new WorkspaceGitServiceImpl({
     logger,
@@ -1264,6 +1269,7 @@ export async function createPaseoDaemon(
     workspaceGitService,
     logger,
   });
+  await workspaceLabelService.initialize();
   logger.info({ elapsed: elapsed() }, "Workspace registries bootstrapped");
   const teardownArchivedWorkspaceRuntime = (workspaceId: string): void => {
     scriptRuntimeStore.removeForWorkspace(workspaceId);
@@ -2480,6 +2486,7 @@ export async function createPaseoDaemon(
               workspaceSetupRuntime,
               pluginRuntime,
               orchestrationSkills,
+              workspaceLabelService,
             );
             wsServer.setTranscriptSearch(transcriptSearch);
             pluginRuntime.bindPaseoSessionHost(wsServer);

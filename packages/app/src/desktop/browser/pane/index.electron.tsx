@@ -10,7 +10,11 @@ import {
   createElement,
 } from "react";
 import { createPortal } from "react-dom";
-import { Pressable, Text, TextInput, View, type StyleProp, type ViewStyle } from "react-native";
+import { Pressable, Text, View, type StyleProp, type ViewStyle } from "react-native";
+import {
+  EditingTextInput as TextInput,
+  type EditingTextInputHandle,
+} from "@/components/ui/text-input";
 import {
   ArrowLeft,
   ArrowRight,
@@ -101,10 +105,6 @@ type ElectronWebview = HTMLElement & {
   focus?: () => void;
   addEventListener: (type: string, listener: EventListenerOrEventListenerObject) => void;
   removeEventListener: (type: string, listener: EventListenerOrEventListenerObject) => void;
-};
-
-type WebTextInput = TextInput & {
-  getNativeRef?: () => unknown;
 };
 
 interface BrowserElementAnnotation {
@@ -587,8 +587,10 @@ function clearAnnotationMarkers(webview: ElectronWebview): void {
   ).catch(ignoreWebviewJavaScriptError);
 }
 
-function getTextInputNativeElement(current: WebTextInput | null): HTMLInputElement | null {
-  const native = current?.getNativeRef?.() ?? current;
+function getTextInputNativeElement(
+  current: EditingTextInputHandle | null,
+): HTMLInputElement | null {
+  const native = current?.getNativeRef();
   return native instanceof HTMLInputElement ? native : null;
 }
 
@@ -807,7 +809,7 @@ export function BrowserPane({
   const webviewHostRef = useRef<HTMLDivElement | null>(null);
   const webviewClipRef = useRef<HTMLElement | null>(null);
   const domReadyRef = useRef(false);
-  const urlInputRef = useRef<WebTextInput | null>(null);
+  const urlInputRef = useRef<EditingTextInputHandle | null>(null);
   const initialUrlRef = useRef(browser?.url ?? "https://example.com");
   const browserIdRef = useRef(browserId);
   browserIdRef.current = browserId;
@@ -879,6 +881,7 @@ export function BrowserPane({
 
   useEffect(() => {
     const nextUrl = browser?.url ?? "https://example.com";
+    urlInputRef.current?.replaceText(nextUrl);
     setDraftUrl((current) => (current === nextUrl ? current : nextUrl));
   }, [browser?.url]);
 
@@ -1872,7 +1875,6 @@ export function BrowserPane({
               placeholderTextColor={theme.colors.foregroundMuted}
               ref={urlInputRef}
               style={urlInputStyle}
-              value={draftUrl}
             />
           </View>
           <View style={styles.chromeRight}>
@@ -2029,7 +2031,7 @@ function BrowserElementAnnotationCard({
           placeholder={t("workspace.browser.annotate.placeholder")}
           style={styles.annotationInput}
           uniProps={annotationInputMapping}
-          value={comment}
+          initialValue={comment}
         />
         <View style={styles.annotationActions}>
           <Button variant="ghost" size="sm" onPress={onCancel}>

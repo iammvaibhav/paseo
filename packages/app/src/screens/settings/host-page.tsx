@@ -1255,7 +1255,7 @@ function IdleCloseOmpCard({ serverId }: { serverId: string }) {
         </View>
         <FormTextInput
           size={isCompact ? "md" : "sm"}
-          defaultValue={String(minutes)}
+          initialValue={String(minutes)}
           onChangeText={handleChange}
           onBlur={handleCommit}
           keyboardType="number-pad"
