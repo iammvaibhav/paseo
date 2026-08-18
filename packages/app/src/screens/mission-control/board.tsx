@@ -514,64 +514,80 @@ function AgentRowMenuContent({
       width={240}
       testID={`mission-control-row-context-menu-${agentId}`}
     >
-      {menuActions.includes("open") ? (
-        <ContextMenuItem
-          leading={MENU_OPEN_ICON}
-          onSelect={onOpenInWorkspace}
-          disabled={openBlockedTooltip !== null}
-          tooltip={openBlockedTooltip ?? undefined}
-          testID={`mission-control-row-open-${agentId}`}
-        >
-          Open in workspace
-        </ContextMenuItem>
-      ) : null}
-      {menuActions.includes("copy-reference") ? (
-        <ContextMenuItem
-          leading={MENU_COPY_ICON}
-          onSelect={onCopyReference}
-          testID={`mission-control-row-copy-reference-${agentId}`}
-        >
-          Copy reference
-        </ContextMenuItem>
-      ) : null}
-      {menuActions.includes("stop") ? (
-        <ContextMenuItem
-          leading={MENU_STOP_ICON}
-          onSelect={onStop}
-          testID={`mission-control-row-stop-${agentId}`}
-        >
-          Stop
-        </ContextMenuItem>
-      ) : null}
-      {menuActions.includes("mark-done") ? (
-        <ContextMenuItem
-          leading={MENU_CIRCLE_CHECK_ICON}
-          onSelect={onMarkDone}
-          testID={`mission-control-row-mark-done-${agentId}`}
-        >
-          Mark done
-        </ContextMenuItem>
-      ) : null}
-      {menuActions.includes("clear") ? (
-        <ContextMenuItem
-          leading={MENU_CIRCLE_CHECK_ICON}
-          onSelect={onClear}
-          testID={`mission-control-row-clear-${agentId}`}
-        >
-          Clear
-        </ContextMenuItem>
-      ) : null}
-      {menuActions.includes("archive") ? (
-        <ContextMenuItem
-          leading={MENU_ARCHIVE_ICON}
-          onSelect={onArchive}
-          status={isArchiving ? "pending" : undefined}
-          pendingLabel="Archiving..."
-          testID={`mission-control-row-archive-${agentId}`}
-        >
-          Archive
-        </ContextMenuItem>
-      ) : null}
+      {menuActions.map((action) => {
+        switch (action) {
+          case "open":
+            return (
+              <ContextMenuItem
+                key={action}
+                leading={MENU_OPEN_ICON}
+                onSelect={onOpenInWorkspace}
+                disabled={openBlockedTooltip !== null}
+                tooltip={openBlockedTooltip ?? undefined}
+                testID={`mission-control-row-open-${agentId}`}
+              >
+                Open in workspace
+              </ContextMenuItem>
+            );
+          case "copy-reference":
+            return (
+              <ContextMenuItem
+                key={action}
+                leading={MENU_COPY_ICON}
+                onSelect={onCopyReference}
+                testID={`mission-control-row-copy-reference-${agentId}`}
+              >
+                Copy reference
+              </ContextMenuItem>
+            );
+          case "stop":
+            return (
+              <ContextMenuItem
+                key={action}
+                leading={MENU_STOP_ICON}
+                onSelect={onStop}
+                testID={`mission-control-row-stop-${agentId}`}
+              >
+                Stop
+              </ContextMenuItem>
+            );
+          case "mark-done":
+            return (
+              <ContextMenuItem
+                key={action}
+                leading={MENU_CIRCLE_CHECK_ICON}
+                onSelect={onMarkDone}
+                testID={`mission-control-row-mark-done-${agentId}`}
+              >
+                Mark done
+              </ContextMenuItem>
+            );
+          case "clear":
+            return (
+              <ContextMenuItem
+                key={action}
+                leading={MENU_CIRCLE_CHECK_ICON}
+                onSelect={onClear}
+                testID={`mission-control-row-clear-${agentId}`}
+              >
+                Clear
+              </ContextMenuItem>
+            );
+          case "archive":
+            return (
+              <ContextMenuItem
+                key={action}
+                leading={MENU_ARCHIVE_ICON}
+                onSelect={onArchive}
+                status={isArchiving ? "pending" : undefined}
+                pendingLabel="Archiving..."
+                testID={`mission-control-row-archive-${agentId}`}
+              >
+                Archive
+              </ContextMenuItem>
+            );
+        }
+      })}
     </ContextMenuContent>
   );
 }

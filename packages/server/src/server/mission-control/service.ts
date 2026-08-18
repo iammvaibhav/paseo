@@ -11,6 +11,7 @@ import type { AgentAttachment } from "@getpaseo/protocol/messages";
 import type { AgentTimelineRow } from "../agent/agent-timeline-store-types.js";
 import { dispatchLocalPromptMode } from "../agent/tools/paseo-tools.js";
 import { formatSystemNotificationPrompt } from "../agent/agent-prompt.js";
+import { archiveAgentCommand } from "../agent/lifecycle-command.js";
 import type { DaemonConfigStore } from "../daemon-config-store.js";
 import type { SessionOutboundMessage } from "../messages.js";
 import type {
@@ -1274,6 +1275,23 @@ export class MissionControlService {
         return { ok: true };
       }
       case "clear": {
+        // Archive first. Writing cleared before a failed archive would drop
+        // the row off the board while the agent stayed live (an orphan).
+        try {
+          await archiveAgentCommand(
+            {
+              agentManager: this.agentManager,
+              agentStorage: this.agentStorage,
+              logger: this.logger,
+            },
+            agentId,
+          );
+        } catch (error) {
+          return {
+            ok: false,
+            error: getErrorMessageOr(error, `Failed to archive agent ${agentId}`),
+          };
+        }
         await this.store.setReviewState(agentId, "cleared");
         await this.emitVerdictEvent({
           agentId,
@@ -2181,6 +2199,11 @@ export class MissionControlService {
     // dead — approving them later would restart a run the user stopped.
     if (origin === "user") {
       void this.approvals.expirePendingForAgent(agentId);
+      // A user stop also clears any leftover "ready": a stopped run must read
+      // as Done ("Stopped by you"), never as Ready awaiting review (a stale
+      // ready would otherwise beat the user-stop derivation).
+      void this.store.setReviewState(agentId, "none");
+      this.notifyReviewState(agentId);
     }
   }
 
@@ -2340,7 +2363,10 @@ export class MissionControlService {
       pendingPermissionCount: live ? live.pendingPermissions.size : 0,
       pendingProposalCount,
       attentionReason: attentionReason ?? null,
-      lastStatus: record?.lastStatus ?? null,
+      // The live lifecycle outranks the stored record: a live running agent
+      // must read as running even when the disk record still says error (or
+      // vice versa once the run has ended).
+      lastStatus: live ? live.lifecycle : (record?.lastStatus ?? null),
       running: live?.lifecycle === "running" || live?.lifecycle === "initializing",
       reviewState,
       stopOrigin: this.store.getStopOrigin(agentId),
@@ -3023,6 +3049,17 @@ export class MissionControlService {
         // describes who stopped the agent's LAST run ("user" would otherwise
         // stick to an agent that later ran and finished on its own).
         this.store.recordStopOrigin(agent.id, null);
+        // A user-originated new run (any run that is NOT a machinery
+        // supersede) resets the previous run's review lifecycle: a leftover
+        // "ready" must not carry into the fresh run, and pending proposals
+        // for the agent are stale — approving one would steer a run the user
+        // already moved past. Machinery replaces keep their proposals (the
+        // superseded run is a fleet-internal recovery, not a user decision).
+        if (agent.pendingReplacementOrigin !== "machinery") {
+          void this.store.setReviewState(agent.id, "none");
+          void this.approvals.expirePendingForAgent(agent.id);
+          this.notifyReviewState(agent.id);
+        }
         // A new run means any in-flight tool state from the previous run is
         // stale (a wedged/interrupted run may never have closed its tools).
         this.inFlightToolsByAgent.delete(agent.id);
@@ -3156,6 +3193,9 @@ export class MissionControlService {
    */
   private async markReadyForReview(agentId: string): Promise<void> {
     if (this.store.getRolloutTs() === null) {
+      return;
+    }
+    if (this.store.getStopOrigin(agentId) === "user") {
       return;
     }
     if (this.centralConfig.get().evaluationScope === "all" && !this.hasAuditableRun(agentId)) {

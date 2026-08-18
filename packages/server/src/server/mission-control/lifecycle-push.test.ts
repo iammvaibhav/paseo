@@ -75,6 +75,8 @@ describe("MissionControlService lifecycle push", () => {
   let notifyAgentState: ReturnType<typeof vi.fn>;
   let getRecord: ReturnType<typeof vi.fn>;
   let onReviewStateChanged: ReturnType<typeof vi.fn>;
+  let expirePendingForAgent: ReturnType<typeof vi.fn>;
+  let archiveAgent: ReturnType<typeof vi.fn>;
   let liveAgent: ManagedAgent | null;
 
   beforeEach(async () => {
@@ -86,6 +88,8 @@ describe("MissionControlService lifecycle push", () => {
     getRecord = vi.fn(async () => null);
     onReviewStateChanged = vi.fn();
     onEvent = null;
+    expirePendingForAgent = vi.fn(async () => undefined);
+    archiveAgent = vi.fn(async () => ({ archivedAt: new Date().toISOString() }));
     service = new MissionControlService({
       paseoHome: dir,
       logger: createMockLogger(),
@@ -93,6 +97,11 @@ describe("MissionControlService lifecycle push", () => {
         getAgent,
         notifyAgentState,
         updateAgentMetadata: vi.fn(async () => undefined),
+        hasInFlightRun: vi.fn(() => false),
+        cancelAgentRun: vi.fn(async () => ({ status: "not_running" })),
+        clearAgentAttention: vi.fn(async () => undefined),
+        archiveAgent,
+        archiveSnapshot: vi.fn(async () => storedRecord("agent-1")),
         subscribe: vi.fn((cb: (event: AgentManagerEvent) => void) => {
           onEvent = cb;
           return () => {};
@@ -118,7 +127,7 @@ describe("MissionControlService lifecycle push", () => {
     store = (service as unknown as { store: MissionControlStore }).store;
     (service as unknown as { approvals: Record<string, unknown> }).approvals = {
       createProposal: vi.fn(async () => ({ id: "mcp_test" })),
-      expirePendingForAgent: vi.fn(async () => undefined),
+      expirePendingForAgent,
       listProposals: vi.fn(() => []),
     };
   });
@@ -264,6 +273,8 @@ describe("MissionControlService lifecycle push", () => {
 
     expect(interruptedEvents()).toHaveLength(0);
     expect(events().filter((event) => event.kind === "finished")).toHaveLength(1);
+    expect(store.getReviewState("agent-1").reviewState).toBe("none");
+    expect(await service.getLifecycleBucket("agent-1")).toBe("done");
   });
 
   test("the interrupted event is excluded from the machinery-turn chat gate (spec 07)", async () => {
@@ -326,24 +337,46 @@ describe("MissionControlService lifecycle push", () => {
 
   test("clear and reopen also push (every reviewState change)", async () => {
     liveAgent = runningAgent("agent-1", { lifecycle: "idle" });
-    getRecord.mockResolvedValue(storedRecord("agent-1"));
+    getRecord.mockImplementation(async (agentId: string) =>
+      storedRecord(agentId, { archivedAt: "2026-01-02T00:00:00.000Z" }),
+    );
 
     await service.setLifecycle({ agentId: "agent-1", action: "done" });
     await service.setLifecycle({ agentId: "agent-1", action: "clear" });
     await service.setLifecycle({ agentId: "agent-1", action: "reopen" });
 
     expect(notifyAgentState).toHaveBeenCalledTimes(3);
+    // Clear archives the agent (the archive command re-reads the stored
+    // record after archiving).
+    expect(archiveAgent).toHaveBeenCalledWith("agent-1");
   });
 
-  test("clearing a user-stopped agent leaves the Done bucket", async () => {
-    getRecord.mockImplementation(async (agentId: string) => storedRecord(agentId));
+  test("clearing a user-stopped agent archives it (leaves the board)", async () => {
+    liveAgent = runningAgent("agent-1", { lifecycle: "idle" });
+    getRecord.mockImplementation(async (agentId: string) =>
+      storedRecord(agentId, { archivedAt: "2026-01-02T00:00:00.000Z" }),
+    );
     store.recordStopOrigin("agent-1", "user");
     expect(await service.getLifecycleBucket("agent-1")).toBe("done");
 
     const result = await service.setLifecycle({ agentId: "agent-1", action: "clear" });
     expect(result).toEqual({ ok: true });
+    // The agent leaves the active directory — Clear is archive, not just a
+    // reviewState flip that keeps the row on the board.
+    expect(archiveAgent).toHaveBeenCalledWith("agent-1");
     expect(store.getReviewState("agent-1").reviewState).toBe("cleared");
     expect(await service.getLifecycleBucket("agent-1")).toBe("idle");
+  });
+
+  test("a clear that fails to archive reports the error", async () => {
+    liveAgent = runningAgent("agent-1", { lifecycle: "idle" });
+    getRecord.mockResolvedValue(storedRecord("agent-1"));
+    archiveAgent.mockRejectedValue(new Error("provider refused archive"));
+
+    const result = await service.setLifecycle({ agentId: "agent-1", action: "clear" });
+    expect(result.ok).toBe(false);
+    expect(archiveAgent).toHaveBeenCalledWith("agent-1");
+    expect(store.getReviewState("agent-1").reviewState).not.toBe("cleared");
   });
 
   test("setLifecycle applies one action to every listed agent", async () => {
@@ -395,5 +428,65 @@ describe("MissionControlService lifecycle push", () => {
 
     expect(notifyAgentState).not.toHaveBeenCalled();
     expect(onReviewStateChanged).not.toHaveBeenCalled();
+  });
+
+  // ==========================================================================
+  // Lifecycle cutover writes (spec 01)
+  // ==========================================================================
+
+  test("a user-originated new run clears leftover reviewState and expires pending proposals", async () => {
+    await store.setReviewState("agent-1", "ready");
+    expirePendingForAgent.mockClear();
+
+    startRunning();
+
+    // The fresh run resets the previous run's review lifecycle: the leftover
+    // ready must not carry into the new run.
+    expect(store.getReviewState("agent-1").reviewState).toBe("none");
+    expect(expirePendingForAgent).toHaveBeenCalledWith("agent-1");
+  });
+
+  test("a machinery replace does not expire proposals or clear reviewState", async () => {
+    startRunning();
+    await store.setReviewState("agent-1", "ready");
+    expirePendingForAgent.mockClear();
+
+    // A machinery supersede of the in-flight run: the superseded run is a
+    // fleet-internal recovery, not a user decision — proposals survive.
+    liveAgent = runningAgent("agent-1", {
+      pendingReplacement: true,
+      pendingReplacementOrigin: "machinery",
+    });
+    onEvent?.({ type: "agent_state", agent: liveAgent });
+
+    expect(expirePendingForAgent).not.toHaveBeenCalled();
+    expect(store.getReviewState("agent-1").reviewState).toBe("ready");
+  });
+
+  test("a user stop clears leftover reviewState ready so the bucket reads Done", async () => {
+    startRunning();
+    // Leftover "ready" from an earlier finish would otherwise beat the
+    // user-stop derivation and read as Ready on the board.
+    await store.setReviewState("agent-1", "ready");
+
+    service.recordStopOrigin("agent-1", "user");
+    expect(store.getReviewState("agent-1").reviewState).toBe("none");
+
+    cancelRun();
+    await flush();
+    expect(await service.getLifecycleBucket("agent-1")).toBe("done");
+  });
+
+  test("live running beats a disk error record in the bucket", async () => {
+    getRecord.mockResolvedValue(storedRecord("agent-1", { lastStatus: "error" }));
+    liveAgent = runningAgent("agent-1");
+
+    // Live lifecycle wins: a live running agent is running even when the
+    // stored record still says error.
+    expect(await service.getLifecycleBucket("agent-1")).toBe("running");
+
+    // Without a live agent the disk error still derives needs_you.
+    liveAgent = null;
+    expect(await service.getLifecycleBucket("agent-1")).toBe("needs_you");
   });
 });

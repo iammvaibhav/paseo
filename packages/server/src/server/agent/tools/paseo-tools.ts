@@ -4123,8 +4123,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       title: "Report status",
       description:
         "Report status to Mission Control at major steps only: root cause found, a fix landed, tests green, blocked, direction changed, done. " +
-        'Silence between milestones; never send progress updates. "completed" means conclusively done — everything asked, finished; any doubt, ' +
-        'cut short, or still in discussion: report "inconclusive", never "completed". Completion claims should carry proofs. ' +
+        'Silence between milestones; never send progress updates. Send "completed" only when everything asked is conclusively done — back ' +
+        'completion claims with proofs. When you are blocked and want a Commander-thread card, send "blocked". Use the optional "kind" field ' +
+        "(finding, fix, milestone, decision, progress) to flavor the card. " +
         "Prefer hub-wait over sleep/timeout polling loops. Rate limited to one report per minute per agent. " +
         "Identity rules: description is a living 2-3 sentence 'what this agent is doing now' — send a FRESH description on EVERY report " +
         "(replaced, never appended, under ~400 characters); the daemon nags when your record lacks one. Title is WRITE-ONCE: your record " +

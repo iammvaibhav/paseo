@@ -172,6 +172,51 @@ function fallbackReopenAnchorRect(): AnchorRect {
   };
 }
 
+/** The lifecycle-set surface the ask reopen path needs (the board's
+ * `missionControlLifecycleSet` client method). */
+interface ReopenLifecycleSetClient {
+  missionControlLifecycleSet(options: {
+    serverId: string;
+    agentId: string;
+    action: "done";
+  }): Promise<{ ok: boolean; error?: string | null }>;
+}
+
+/**
+ * Reopening a finished selection-ask is a review action on a Done agent:
+ * bring its lifecycle back to done through the same path the board uses, so
+ * it stays a green Done row instead of resurrecting as ready-for-review.
+ * Only the ask reopen path calls this — a fresh compose (startAsk) never
+ * marks done. A running/initializing ask is left untouched (the user is
+ * actively composing with it), and an ask that is not in the session store
+ * is skipped. Never archives. Callers fire-and-forget: a failed lifecycle
+ * write must not break the reopen itself.
+ */
+export async function markReopenedAskDone(
+  serverId: string,
+  askAgentId: string,
+  getAgentStatus: (agentId: string) => Agent["status"] | undefined,
+  getClient: (serverId: string) => ReopenLifecycleSetClient | null = (id) =>
+    getHostRuntimeStore().getClient(id),
+): Promise<void> {
+  const status = getAgentStatus(askAgentId);
+  if (status === undefined || status === "running" || status === "initializing") {
+    return;
+  }
+  const client = getClient(serverId);
+  if (!client) {
+    return;
+  }
+  const payload = await client.missionControlLifecycleSet({
+    serverId,
+    agentId: askAgentId,
+    action: "done",
+  });
+  if (!payload.ok) {
+    throw new Error(payload.error ?? "Failed to update agent");
+  }
+}
+
 export function useSelectionAsk(config: SelectionAskConfig): SelectionAskState {
   const client = useHostRuntimeClient(config.serverId);
   const [selection, setSelection] = useState<ActiveSelection | null>(null);
@@ -405,6 +450,15 @@ export function useSelectionAsk(config: SelectionAskConfig): SelectionAskState {
     setSelection(null);
     setAnchorRect(request.anchorRect ?? fallbackReopenAnchorRect());
     setAskAgentId(request.askAgentId);
+    // Reopening a finished ask is a review action: mark it done again (same
+    // lifecycle path the board uses) unless it is still running/initializing.
+    // Fire-and-forget — a failed lifecycle write must not break the reopen.
+    void markReopenedAskDone(
+      config.serverId,
+      request.askAgentId,
+      (agentId) =>
+        useSessionStore.getState().sessions[config.serverId]?.agents.get(agentId)?.status,
+    ).catch(() => undefined);
     // Restore the source-chat selection captured when the ask was started, so
     // "Jump to chat" can scroll it back into view while it is still attached
     // to the DOM. The popover itself stays anchored at the clicked row.

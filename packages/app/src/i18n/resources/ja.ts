@@ -675,6 +675,7 @@ export const ja: TranslationResources = {
       },
       menu: {
         openFor: "{{label}}のメニューを開く",
+        markDone: "完了にする",
         copyResumeCommand: "再開コマンドをコピー",
         copyAgentId: "エージェントIDをコピー",
         copyTerminalId: "ターミナルIDをコピー",

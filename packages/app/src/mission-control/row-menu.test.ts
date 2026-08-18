@@ -60,11 +60,11 @@ describe("resolveBoardRowMenuActions", () => {
     ]);
   });
 
-  it("ready rows offer mark done and archive", () => {
+  it("ready rows lead with mark done, then open, copy reference, and archive", () => {
     expect(resolveBoardRowMenuActions(makeRow("ready"))).toEqual([
+      "mark-done",
       "open",
       "copy-reference",
-      "mark-done",
       "archive",
     ]);
   });

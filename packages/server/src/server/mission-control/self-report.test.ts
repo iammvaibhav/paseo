@@ -40,9 +40,11 @@ describe("buildSelfReportSystemPrompt", () => {
     const prompt = MISSION_CONTROL_SELF_REPORT_PROMPT;
     expect(prompt).toContain("report_status");
     expect(prompt).not.toContain("report_milestone");
-    // completed-vs-inconclusive discipline and hub-wait guidance per spec.
+    // completed/blocked discipline and hub-wait guidance per spec; the
+    // prompt never steers agents to working/inconclusive.
     expect(prompt).toContain("completed");
-    expect(prompt).toContain("inconclusive");
+    expect(prompt).toContain("blocked");
+    expect(prompt).not.toContain("inconclusive");
     expect(prompt).toContain("hub-wait");
     expect(prompt).toContain("proof");
   });

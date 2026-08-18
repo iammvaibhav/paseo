@@ -125,3 +125,21 @@ export function getAgentStatusPriority(input: AgentStateBucketInput): number {
   }
   return 4;
 }
+
+/**
+ * Map the canonical Mission Control lifecycle bucket to the workspace visual
+ * vocabulary (workspace rows / project badges). No lifecycle bucket maps to
+ * workspace `failed` — `failed` stays on the wire enum for compat only, and no
+ * agent contribution may produce it.
+ */
+const LIFECYCLE_TO_WORKSPACE_STATUS: Record<LifecycleBucket, WorkspaceStateBucket> = {
+  needs_you: "needs_input",
+  running: "running",
+  ready: "attention",
+  done: "done",
+  idle: "done",
+};
+
+export function lifecycleBucketToWorkspaceStatus(bucket: LifecycleBucket): WorkspaceStateBucket {
+  return LIFECYCLE_TO_WORKSPACE_STATUS[bucket];
+}

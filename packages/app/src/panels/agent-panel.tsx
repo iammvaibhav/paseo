@@ -42,6 +42,7 @@ import { COMPACT_FORM_FACTOR_WIDTH, useIsCompactFormFactor } from "@/constants/l
 import { isWeb } from "@/constants/platform";
 import { useAgentAttentionClear } from "@/hooks/use-agent-attention-clear";
 import { useAgentInitialization } from "@/hooks/use-agent-initialization";
+import { useAggregatedMissionControlEvents } from "@/hooks/use-aggregated-mission-control-events";
 import { useAgentInputDraft, type AgentInputDraft } from "@/composer/draft/input-draft";
 import {
   type AgentScreenAgent,
@@ -104,6 +105,7 @@ import { applyLegacyDaemonWorkspaceOwnership } from "@/workspace/legacy-daemon-w
 import type { WorkspaceFileOpenRequest } from "@/workspace/file-open";
 import { deriveSidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { buildDraftAgentSetup, type ClientSlashCommand } from "@/client-slash-commands";
+import { isPendingProposalForAgent } from "@/screens/mission-control/proposal-card";
 
 interface ChatAgentStateShape {
   serverId: string | null;
@@ -428,6 +430,7 @@ const EMPTY_STREAM_ITEMS: StreamItem[] = [];
 const EMPTY_MESSAGE_SUBMISSIONS = [] as const;
 const EMPTY_PENDING_PERMISSIONS = new Map<string, PendingPermission>();
 const EMPTY_PENDING_PERMISSION_LIST: PendingPermission[] = [];
+const EMPTY_PENDING_PROPOSALS = [] as const;
 
 type RouteBottomAnchorRequest = ReturnType<typeof deriveRouteBottomAnchorRequest>;
 
@@ -1426,6 +1429,18 @@ const AgentStreamSection = memo(function AgentStreamSection({
     }
     return new Map(pendingPermissionList.map((permission) => [permission.key, permission]));
   }, [pendingPermissionList]);
+  const { events: missionControlEvents } = useAggregatedMissionControlEvents({
+    enabled: Boolean(agentId),
+  });
+  const pendingProposals = useMemo(
+    () =>
+      agentId
+        ? missionControlEvents.filter((event) =>
+            isPendingProposalForAgent(event, agentId, serverId),
+          )
+        : EMPTY_PENDING_PROPOSALS,
+    [agentId, missionControlEvents, serverId],
+  );
 
   const selectionAskConfig = useMemo(
     () =>
@@ -1453,6 +1468,7 @@ const AgentStreamSection = memo(function AgentStreamSection({
       context={agent}
       streamItems={streamItems}
       pendingPermissions={pendingPermissions}
+      pendingProposals={pendingProposals}
       routeBottomAnchorRequest={routeBottomAnchorRequest}
       isAuthoritativeHistoryReady={hasAppliedAuthoritativeHistory}
       toast={toast}

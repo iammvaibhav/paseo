@@ -143,6 +143,7 @@ vi.stubGlobal("React", React);
 vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
 
 const { cardRunPosition, deriveFeedCardText, FeedCard } = await import("./feed-card");
+const { isPendingProposalForAgent } = await import("./proposal-card");
 const { ComposerToolbarGlyph } = await import("@/composer/agent-controls/glyph");
 
 function event(overrides: Partial<FeedCardEvent> = {}): FeedCardEvent {
@@ -160,6 +161,48 @@ function event(overrides: Partial<FeedCardEvent> = {}): FeedCardEvent {
     ...overrides,
   };
 }
+
+describe("isPendingProposalForAgent", () => {
+  const pendingProposalEvent = event({
+    agentId: "commander-agent",
+    kind: "proposal",
+    proposal: {
+      id: "proposal-target-filter",
+      createdAt: new Date().toISOString(),
+      origin: "commander",
+      serverId: "server-1",
+      targetAgentId: "worker-agent",
+      message: "Continue with the proposed change",
+      deliveryMode: "interrupt",
+      reason: "Approval required",
+      classification: "normal",
+      status: "pending",
+    },
+  });
+
+  it("matches pending proposals attributed to or targeting the opened agent", () => {
+    expect(isPendingProposalForAgent(pendingProposalEvent, "commander-agent")).toBe(true);
+    expect(isPendingProposalForAgent(pendingProposalEvent, "worker-agent")).toBe(true);
+    expect(isPendingProposalForAgent(pendingProposalEvent, "other-agent")).toBe(false);
+  });
+
+  it("rejects resolved proposals", () => {
+    expect(
+      isPendingProposalForAgent(
+        {
+          ...pendingProposalEvent,
+          proposal: { ...pendingProposalEvent.proposal!, status: "sent" },
+        },
+        "worker-agent",
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects pending proposals from a different host", () => {
+    expect(isPendingProposalForAgent(pendingProposalEvent, "worker-agent", "server-2")).toBe(false);
+    expect(isPendingProposalForAgent(pendingProposalEvent, "worker-agent", "server-1")).toBe(true);
+  });
+});
 
 describe("FeedCard", () => {
   let root: Root | null = null;
@@ -358,6 +401,9 @@ describe("FeedCard", () => {
     // The card renders the emit-time title snapshot, never the live title.
     expect(card?.textContent).toContain("Original event title");
     expect(card?.textContent).not.toContain("Repair mission control cards");
+    expect(card?.textContent).toContain("Approve");
+    expect(card?.textContent).toContain("Edit");
+    expect(card?.textContent).toContain("Deny");
     expect(card?.querySelector('[data-icon="Clock"]')).not.toBeNull();
     expect(
       card?.querySelector('[data-testid="mission-control-proposal-host-glyph"]'),

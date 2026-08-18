@@ -675,6 +675,7 @@ export const ru: TranslationResources = {
       },
       menu: {
         openFor: "Открыть меню для{{label}}",
+        markDone: "Отметить как выполненное",
         copyResumeCommand: "Копировать команду возобновления",
         copyAgentId: "Скопировать идентификатор агента",
         copyTerminalId: "Скопировать идентификатор терминала",

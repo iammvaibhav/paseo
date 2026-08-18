@@ -365,4 +365,119 @@ describe("buildWorkspaceTabMenuEntries", () => {
     expect(agentSeparator?.key).toBe("rename-separator");
     expect(terminalSeparator?.key).toBe("rename-separator");
   });
+
+  it("leads with mark done for a ready agent tab and invokes onMarkDone", () => {
+    const onMarkDone = vi.fn();
+    const entries = buildWorkspaceTabMenuEntries({
+      surface: "desktop",
+      tab: createAgentTab(),
+      index: 0,
+      tabCount: 1,
+      menuTestIDBase: "workspace-tab-context-agent_123",
+      showMarkDone: true,
+      onMarkDone,
+      onCopyResumeCommand: vi.fn(),
+      onCopyAgentId: vi.fn(),
+      onCopyTerminalId: vi.fn(),
+      onCopyFilePath: vi.fn(),
+      onReloadAgent: vi.fn(),
+      onRenameTab: vi.fn(),
+      onCloseTab: vi.fn(),
+      onCloseTabsBefore: vi.fn(),
+      onCloseTabsAfter: vi.fn(),
+      onCloseOtherTabs: vi.fn(),
+    });
+
+    const first = entries[0];
+    if (!first || first.kind !== "item") {
+      throw new Error("Mark done entry missing");
+    }
+    expect(first).toMatchObject({
+      kind: "item",
+      key: "mark-done",
+      label: "Mark done",
+      icon: "circle-check",
+      testID: "workspace-tab-context-agent_123-mark-done",
+    });
+    first.onSelect();
+    expect(onMarkDone).toHaveBeenCalledTimes(1);
+  });
+
+  it("omits mark done when the agent tab is not ready", () => {
+    const entries = buildWorkspaceTabMenuEntries({
+      surface: "desktop",
+      tab: createAgentTab(),
+      index: 0,
+      tabCount: 1,
+      menuTestIDBase: "workspace-tab-context-agent_123",
+      showMarkDone: false,
+      onMarkDone: vi.fn(),
+      onCopyResumeCommand: vi.fn(),
+      onCopyAgentId: vi.fn(),
+      onCopyTerminalId: vi.fn(),
+      onCopyFilePath: vi.fn(),
+      onReloadAgent: vi.fn(),
+      onRenameTab: vi.fn(),
+      onCloseTab: vi.fn(),
+      onCloseTabsBefore: vi.fn(),
+      onCloseTabsAfter: vi.fn(),
+      onCloseOtherTabs: vi.fn(),
+    });
+
+    expect(entries.some((entry) => entry.kind === "item" && entry.key === "mark-done")).toBe(false);
+    const labels = entries.filter((entry) => entry.kind === "item").map((entry) => entry.label);
+    expect(labels[0]).toBe("Copy resume command");
+  });
+
+  it("omits mark done when no callback is provided", () => {
+    const entries = buildWorkspaceTabMenuEntries({
+      surface: "mobile",
+      tab: createAgentTab(),
+      index: 0,
+      tabCount: 1,
+      menuTestIDBase: "workspace-tab-menu-agent_123",
+      showMarkDone: true,
+      onCopyResumeCommand: vi.fn(),
+      onCopyAgentId: vi.fn(),
+      onCopyTerminalId: vi.fn(),
+      onCopyFilePath: vi.fn(),
+      onReloadAgent: vi.fn(),
+      onRenameTab: vi.fn(),
+      onCloseTab: vi.fn(),
+      onCloseTabsBefore: vi.fn(),
+      onCloseTabsAfter: vi.fn(),
+      onCloseOtherTabs: vi.fn(),
+    });
+
+    expect(entries.some((entry) => entry.kind === "item" && entry.key === "mark-done")).toBe(false);
+  });
+
+  it("threads showMarkDone through the desktop tab actions builder", () => {
+    const onMarkDone = vi.fn();
+    const actions = buildWorkspaceDesktopTabActions({
+      tab: createAgentTab(),
+      index: 0,
+      tabCount: 1,
+      showMarkDone: true,
+      onMarkDone,
+      onCopyResumeCommand: vi.fn(),
+      onCopyAgentId: vi.fn(),
+      onCopyTerminalId: vi.fn(),
+      onCopyFilePath: vi.fn(),
+      onReloadAgent: vi.fn(),
+      onRenameTab: vi.fn(),
+      onCloseTab: vi.fn(),
+      onCloseTabsToLeft: vi.fn(),
+      onCloseTabsToRight: vi.fn(),
+      onCloseOtherTabs: vi.fn(),
+    });
+
+    const first = actions.menuEntries[0];
+    if (!first || first.kind !== "item") {
+      throw new Error("Mark done entry missing");
+    }
+    expect(first.key).toBe("mark-done");
+    first.onSelect();
+    expect(onMarkDone).toHaveBeenCalledTimes(1);
+  });
 });

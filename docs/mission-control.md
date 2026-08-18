@@ -60,7 +60,7 @@ Replaces `report_milestone` (clean cutover: tool renamed, schema extended, promp
 
 ```ts
 ReportStatusInput = {
-  status: "working" | "completed" | "inconclusive" | "blocked",
+  status: "working" | "completed" | "inconclusive" | "blocked",  // wire enum: working/inconclusive still parse (legacy clients); agents are steered to completed/blocked
   headline: string,        // <=120 chars, plain language
   detail?: string,         // 1-2 sentences
   kind?: "finding" | "fix" | "milestone" | "decision" | "progress",
@@ -81,7 +81,7 @@ Rules baked into the injected system-prompt appendix (daemon-side, rides the sam
 
 - Report at major steps only: root cause found, fix landed, tests green, blocked, direction changed, done. Silence between milestones.
 - **Title is write-once.** Set at registration (`explicit ?? first prompt line ?? derived stub`), then frozen: `report_status.title` is accepted only as a backfill when the record has none; afterwards the daemon ignores it and the tool result says "title is fixed; description updated". The only rename path is `fleet_rename_agent_title`.
-- `completed` means conclusively done — everything asked, finished. Any doubt, cut short, still in discussion: report `inconclusive`, never `completed`.
+- Send `completed` only when everything asked is conclusively done — nothing cut short, nothing still in discussion. When blocked, send `blocked` (posts a Commander-thread card). Use the optional `kind` (`finding` | `fix` | `milestone` | `decision` | `progress`) to flavor the card. The wire enum still accepts `working` / `inconclusive` for legacy clients, but the injected prompt and tool description never steer agents to them.
 - Claims of completion should carry proofs. The worker owns proving; verifiers will demand proof otherwise.
 - Prefer hub-wait over `sleep`/timeout polling loops (also added to Commander playbook and worker brief templates).
 - **Description = 2-3 sentences, under ~400 characters** (bound decision: the description is the Commander's context, so a little more is better). The server-side caps agree — the naming backfill accepts up to 400 chars (`DESCRIPTION_MAX_CHARS`).

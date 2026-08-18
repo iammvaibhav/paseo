@@ -670,6 +670,7 @@ export const ar: TranslationResources = {
       },
       menu: {
         openFor: "فتح القائمة لـ{{label}}",
+        markDone: "وضع علامة كمكتمل",
         copyResumeCommand: "نسخ أمر السيرة الذاتية",
         copyAgentId: "نسخ معرف الوكيل",
         copyTerminalId: "نسخ معرف المحطة",

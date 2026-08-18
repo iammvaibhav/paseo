@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Logger } from "pino";
 import YAML from "yaml";
-import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
+import { getParentAgentIdFromLabels, isSelectionAskAgent } from "@getpaseo/protocol/agent-labels";
 import type {
   MissionControlEvent,
   MissionControlProposal,
@@ -1246,11 +1246,17 @@ export class MissionControlVerifierDispatcher {
     if (config.trackVerifiers === false) {
       return false;
     }
+    const worker = this.agentManager.getAgent(workerAgentId) ?? null;
+    // Selection-ask agents are never audited, whatever the scope: their review
+    // lifecycle is user-driven (reopening a finished ask marks it done again;
+    // Clear archives it). They may still surface as ready (green) on the board.
+    if (await this.isSelectionAskWorker(workerAgentId, worker)) {
+      return false;
+    }
     const scope = config.evaluationScope;
     if (scope === "all") {
       return true;
     }
-    const worker = this.agentManager.getAgent(workerAgentId) ?? null;
     const parentAgentId = getParentAgentIdFromLabels(worker?.labels ?? {});
     if (parentAgentId && (await this.isCommander(parentAgentId))) {
       return true;
@@ -1262,6 +1268,17 @@ export class MissionControlVerifierDispatcher {
     // No retroactive audits: the ready moment must be strictly after the
     // take-over (equal = finished at the same instant → still the user's work).
     return readyAt > adoptedAt;
+  }
+
+  /** The selection-ask marker (paseo.selection-ask=1), live labels first, then
+   *  the durable stored record — the same fallback as the Commander identity
+   *  check, so closed asks stay out of scope across reloads. */
+  private async isSelectionAskWorker(
+    workerAgentId: string,
+    worker: ManagedAgent | null,
+  ): Promise<boolean> {
+    const labels = worker?.labels ?? (await this.agentStorage.get(workerAgentId))?.labels;
+    return isSelectionAskAgent({ labels: labels ?? {} });
   }
 
   /** The Commander adoption marker (ISO timestamp), live labels first, then

@@ -675,6 +675,7 @@ export const es: TranslationResources = {
       },
       menu: {
         openFor: "Menú abierto para{{label}}",
+        markDone: "Marcar como hecho",
         copyResumeCommand: "Copiar comando de reanudación",
         copyAgentId: "Copiar ID del agente",
         copyTerminalId: "Copiar ID del terminal",

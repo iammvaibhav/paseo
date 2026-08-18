@@ -14,9 +14,10 @@ import { hasMissionControlLabels } from "./naming.js";
  * Rules (docs/mission-control.md, Status reporting):
  * - Report at major steps only: root cause found, fix landed, tests green,
  *   blocked, direction changed, done. Silence between milestones.
- * - `completed` means conclusively done — everything asked, finished. Any
- *   doubt, cut short, still in discussion: report `inconclusive`, never
- *   `completed`.
+ * - Send `completed` only when everything asked is conclusively done; send
+ *   `blocked` when stuck (a Commander-thread card); `kind` flavors the card.
+ *   `working`/`inconclusive` still parse for legacy clients but are never
+ *   advertised to agents.
  * - Claims of completion should carry proofs; verifiers demand proof otherwise.
  * - Prefer hub-wait over `sleep`/timeout polling loops.
  * - The agent owns its title + description; both ride on report_status
