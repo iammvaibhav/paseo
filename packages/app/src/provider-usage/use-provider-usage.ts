@@ -1,37 +1,21 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
 import { providerUsageCopy } from "./copy";
-import type { ProviderUsageListPayload, ProviderUsageView } from "./types";
+import type { ProviderUsageSnapshot, ProviderUsageView } from "./types";
 
 export const PROVIDER_USAGE_STALE_TIME_MS = 5 * 60 * 1000;
-
-type ProviderUsageClient = Pick<DaemonClient, "listProviderUsage">;
 
 export function providerUsageQueryKey(serverId: string | null | undefined) {
   return ["providerUsage", serverId ?? ""] as const;
 }
 
-async function fetchProviderUsage(
-  client: ProviderUsageClient,
-  options?: { forceRefresh?: boolean },
-): Promise<ProviderUsageListPayload> {
-  return client.listProviderUsage(options?.forceRefresh ? { forceRefresh: true } : undefined);
-}
-
-interface UseProviderUsageOptions {
-  enabled?: boolean;
-}
-
-export function useProviderUsage(
-  serverId: string | null | undefined,
-  options: UseProviderUsageOptions = {},
-): {
+export function useProviderUsage(serverId: string | null | undefined): {
   view: ProviderUsageView;
   refresh: () => Promise<void>;
   canFetch: boolean;
+  isRefreshing: boolean;
 } {
   const queryClient = useQueryClient();
   const client = useHostRuntimeClient(serverId ?? "");
@@ -39,9 +23,11 @@ export function useProviderUsage(
   const supportsProviderUsage = useSessionStore(
     (state) => state.sessions[serverId ?? ""]?.serverInfo?.features?.providerUsageList === true,
   );
+  const supportsProviderUsagePush = useSessionStore(
+    (state) => state.sessions[serverId ?? ""]?.serverInfo?.features?.providerUsagePush === true,
+  );
   const queryKey = useMemo(() => providerUsageQueryKey(serverId), [serverId]);
   const canFetch = Boolean(serverId && client && isConnected && supportsProviderUsage);
-  const enabled = Boolean((options.enabled ?? true) && canFetch);
 
   const queryFn = useCallback(async () => {
     if (!client) {
@@ -49,18 +35,29 @@ export function useProviderUsage(
     }
     // Always force the daemon past its 5m cache so tooltip/settings refreshes
     // return live provider limits instead of a stale server snapshot.
-    return fetchProviderUsage(client, { forceRefresh: true });
+    return client.listProviderUsage({ forceRefresh: true });
   }, [client]);
 
+  // Not hover-gated: the cache is warm before a popover opens, so a freshly created
+  // agent tab renders plan usage on the first hover instead of a loading line.
   const query = useQuery({
     queryKey,
     queryFn,
-    enabled,
+    enabled: canFetch,
     staleTime: PROVIDER_USAGE_STALE_TIME_MS,
     refetchOnMount: true,
     refetchOnReconnect: false,
     refetchOnWindowFocus: false,
   });
+
+  useEffect(() => {
+    if (!client || !canFetch || !supportsProviderUsagePush) return;
+    // The daemon refreshes usage on its own schedule; fold pushes into the same cache
+    // entry the query owns so open popovers update without a round trip.
+    return client.on("provider.usage.updated", (message) => {
+      queryClient.setQueryData<ProviderUsageSnapshot>(queryKey, message.payload);
+    });
+  }, [canFetch, client, queryClient, queryKey, supportsProviderUsagePush]);
 
   const refresh = useCallback(async () => {
     if (!canFetch) return;
@@ -105,5 +102,5 @@ export function useProviderUsage(
     supportsProviderUsage,
   ]);
 
-  return { view, refresh, canFetch };
+  return { view, refresh, canFetch, isRefreshing: query.isFetching };
 }

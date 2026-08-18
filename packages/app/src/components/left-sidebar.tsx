@@ -39,6 +39,7 @@ import { HostPicker } from "@/components/hosts/host-picker";
 import { SidebarHeaderRow } from "@/components/sidebar/sidebar-header-row";
 import { SidebarDisplayPreferencesMenu } from "@/components/sidebar/display-preferences/menu";
 import { SidebarHelpMenu } from "@/components/sidebar/sidebar-help-menu";
+import { SidebarProviderUsageMenu } from "@/provider-usage/sidebar-menu";
 import { SidebarResizeHandle } from "@/components/sidebar-resize-handle";
 import { SyncedLoader } from "@/components/synced-loader";
 import { Shortcut } from "@/components/ui/shortcut";
@@ -679,6 +680,7 @@ function SidebarFooter({
           theme={theme}
         />
         <SidebarFleetStatsButton theme={theme} />
+        <SidebarProviderUsageMenu />
         <SidebarHelpMenu />
         <FooterIconButton
           onPress={handleSettings}

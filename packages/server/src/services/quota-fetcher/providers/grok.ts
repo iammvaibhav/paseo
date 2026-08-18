@@ -18,6 +18,7 @@ import {
   unavailableUsage,
   windowFromUsedPct,
 } from "../usage.js";
+import { refreshXaiOAuthToken } from "../token-refresh.js";
 
 const GROK_BILLING_BASE = "https://cli-chat-proxy.grok.com/v1/billing";
 const GROK_BILLING_HEADERS = {
@@ -79,15 +80,52 @@ interface GrokQuotaProviderOptions {
   homeDir?: string;
 }
 
-/** Resolve a Grok CLI token from ~/.grok/auth.json (legacy or current nested shape). */
-export function extractGrokTokenFromAuth(auth: unknown): string | null {
+export interface GrokAuthEntry {
+  accessToken: string;
+  refreshToken?: string;
+  expiresAtMs?: number;
+  email?: string;
+}
+
+function parseExpiresToMs(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value < 100_000_000_000 ? value * 1000 : value;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    const numeric = Number(trimmed);
+    if (Number.isFinite(numeric)) {
+      return numeric < 100_000_000_000 ? numeric * 1000 : numeric;
+    }
+    const parsed = Date.parse(trimmed);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+/** Build a GrokAuthEntry from a flat record holding either access_token or key. */
+function authEntryFromRecord(record: Record<string, unknown>): GrokAuthEntry | null {
+  const accessToken =
+    (typeof record["access_token"] === "string" && record["access_token"]) ||
+    (typeof record["key"] === "string" && record["key"]) ||
+    null;
+  if (!accessToken) return null;
+  const refreshToken =
+    typeof record["refresh_token"] === "string" && record["refresh_token"].length > 0
+      ? record["refresh_token"]
+      : undefined;
+  const expiresAtMs = parseExpiresToMs(record["expires_at"] ?? record["expires"]);
+  const email = typeof record["email"] === "string" ? record["email"] : undefined;
+  return { accessToken, refreshToken, expiresAtMs, email };
+}
+
+export function extractGrokAuth(auth: unknown): GrokAuthEntry | null {
   if (auth == null || typeof auth !== "object" || Array.isArray(auth)) return null;
   const record = auth as Record<string, unknown>;
 
-  const topLevel = record["access_token"];
-  if (typeof topLevel === "string" && topLevel.length > 0) {
-    return topLevel;
-  }
+  const topLevel = authEntryFromRecord(record);
+  if (topLevel) return topLevel;
 
   const entries = Object.entries(record);
   const preferred = entries.filter(([key]) => key.startsWith("https://auth.x.ai::"));
@@ -95,13 +133,16 @@ export function extractGrokTokenFromAuth(auth: unknown): string | null {
 
   for (const [, value] of candidates) {
     if (value == null || typeof value !== "object" || Array.isArray(value)) continue;
-    const nestedKey = (value as Record<string, unknown>)["key"];
-    if (typeof nestedKey === "string" && nestedKey.length > 0) {
-      return nestedKey;
-    }
+    const entry = authEntryFromRecord(value as Record<string, unknown>);
+    if (entry) return entry;
   }
 
   return null;
+}
+
+/** Resolve a Grok CLI token from ~/.grok/auth.json (legacy or current nested shape). */
+export function extractGrokTokenFromAuth(auth: unknown): string | null {
+  return extractGrokAuth(auth)?.accessToken ?? null;
 }
 
 function parseCreditsPayload(payload: unknown): {
@@ -160,6 +201,18 @@ function parseMonthlyBalances(payload: unknown): ProviderUsageBalance[] {
   ];
 }
 
+interface ReadGrokAuthResult {
+  entry: GrokAuthEntry | null;
+  error: string | null;
+}
+
+interface ParsedGrokBilling {
+  windows: ProviderUsageWindow[];
+  planLabel: string | null;
+  balances: ProviderUsageBalance[];
+  lastError: string | null;
+}
+
 export class GrokQuotaProvider implements ProviderUsageFetcher {
   readonly providerId = "grok";
   readonly displayName = "Grok";
@@ -175,25 +228,148 @@ export class GrokQuotaProvider implements ProviderUsageFetcher {
   }
 
   async fetchUsage(): Promise<ProviderUsage> {
-    const token =
-      process.env["GROK_API_KEY"] || process.env["GROK_TOKEN"] || (await this.readGrokToken());
+    const envToken = process.env["GROK_API_KEY"] || process.env["GROK_TOKEN"];
+    let token: string | null = envToken || null;
+    let authEntry: GrokAuthEntry | null = null;
+    let refreshAttempted = false;
+    let refreshFailed = false;
 
-    if (!token) return unavailableUsage(this);
+    if (!token) {
+      const resolved = await this.resolveAuthEntry();
+      if ("error" in resolved) {
+        return unavailableUsage({
+          providerId: this.providerId,
+          displayName: this.displayName,
+          error: resolved.error,
+        });
+      }
+      token = resolved.token;
+      authEntry = resolved.authEntry;
+      refreshAttempted = resolved.refreshAttempted;
+      refreshFailed = resolved.refreshFailed;
+    }
 
-    const headers = {
+    let headers = this.billingHeaders(token);
+    let [creditsRes, monthlyRes] = await this.fetchBillingResponses(headers);
+
+    // If 401 and we have a refresh token (and haven't refreshed yet), try refreshing once
+    if (creditsRes.status === 401 && authEntry?.refreshToken && !refreshAttempted) {
+      refreshAttempted = true;
+      const refreshedToken = await this.refreshGrokAuthToken(authEntry);
+      if (refreshedToken) {
+        token = refreshedToken;
+        headers = this.billingHeaders(refreshedToken);
+        [creditsRes, monthlyRes] = await this.fetchBillingResponses(headers);
+      } else {
+        refreshFailed = true;
+      }
+    }
+
+    const { windows, planLabel, balances, lastError } = await this.parseBillingResponses(
+      creditsRes,
+      monthlyRes,
+    );
+
+    if (windows.length === 0 && balances.length === 0) {
+      let finalError = lastError ?? "Grok usage unavailable";
+      if (refreshFailed) {
+        finalError = "Grok token expired and refresh failed (re-authentication required)";
+      }
+      return unavailableUsage({
+        providerId: this.providerId,
+        displayName: this.displayName,
+        error: finalError,
+      });
+    }
+
+    const details = authEntry?.email
+      ? [{ id: "account_email", label: "Account", value: authEntry.email }]
+      : [];
+
+    return {
+      providerId: this.providerId,
+      groupId: this.providerId,
+      accountEmail: authEntry?.email,
+      displayName: this.displayName,
+      status: "available",
+      planLabel,
+      windows,
+      balances,
+      details,
+      error: null,
+    };
+  }
+
+  private async resolveAuthEntry(): Promise<
+    | { token: string; authEntry: GrokAuthEntry; refreshAttempted: boolean; refreshFailed: boolean }
+    | { error: string | null }
+  > {
+    const readResult = await this.readGrokAuth();
+    if (!readResult.entry) {
+      return { error: readResult.error };
+    }
+    const authEntry = readResult.entry;
+    let token = authEntry.accessToken;
+    let refreshAttempted = false;
+    let refreshFailed = false;
+
+    const isExpired =
+      typeof authEntry.expiresAtMs === "number" && authEntry.expiresAtMs <= Date.now() + 60_000;
+
+    if (isExpired) {
+      if (!authEntry.refreshToken) {
+        return {
+          error: "Grok access token expired and no refresh token found in ~/.grok/auth.json",
+        };
+      }
+      refreshAttempted = true;
+      const refreshedToken = await this.refreshGrokAuthToken(authEntry);
+      if (refreshedToken) {
+        token = refreshedToken;
+      } else {
+        refreshFailed = true;
+      }
+    }
+
+    return { token, authEntry, refreshAttempted, refreshFailed };
+  }
+
+  private billingHeaders(token: string): Record<string, string> {
+    return {
       ...GROK_BILLING_HEADERS,
       Authorization: `Bearer ${token}`,
     };
+  }
 
+  private async fetchBillingResponses(
+    headers: Record<string, string>,
+  ): Promise<[Response, Response]> {
     // Prefer the SuperGrok weekly credits view used by XAI OAuth / Grok Build CLI.
     // Fall back to monthly absolute credits when credits format is unavailable.
-    const [creditsRes, monthlyRes] = await Promise.all([
+    return Promise.all([
       fetchProviderApi(this.fetchApi, `${GROK_BILLING_BASE}?format=credits`, { headers }),
       fetchProviderApi(this.fetchApi, GROK_BILLING_BASE, { headers }),
     ]);
+  }
 
+  private async refreshGrokAuthToken(authEntry: GrokAuthEntry): Promise<string | null> {
+    if (!authEntry.refreshToken) return null;
+    const refreshed = await refreshXaiOAuthToken(this.fetchApi, authEntry.refreshToken);
+    if (!refreshed) return null;
+    authEntry.accessToken = refreshed.accessToken;
+    authEntry.refreshToken = refreshed.refreshToken ?? authEntry.refreshToken;
+    authEntry.expiresAtMs = refreshed.expiresAtMs;
+    return refreshed.accessToken;
+  }
+
+  private async parseBillingResponses(
+    creditsRes: Response,
+    monthlyRes: Response,
+  ): Promise<ParsedGrokBilling> {
     let windows: ProviderUsageWindow[] = [];
     let planLabel: string | null = null;
+    let lastError: string | null = null;
+
     if (creditsRes.ok) {
       try {
         const parsed = parseCreditsPayload(await creditsRes.json());
@@ -204,6 +380,7 @@ export class GrokQuotaProvider implements ProviderUsageFetcher {
       }
     } else {
       this.logger.debug({ status: creditsRes.status }, "Grok credits usage fetch failed");
+      lastError = `Grok billing returned status ${creditsRes.status}`;
     }
 
     let balances: ProviderUsageBalance[] = [];
@@ -215,6 +392,9 @@ export class GrokQuotaProvider implements ProviderUsageFetcher {
       }
     } else {
       this.logger.debug({ status: monthlyRes.status }, "Grok monthly usage fetch failed");
+      if (!lastError) {
+        lastError = `Grok monthly billing returned status ${monthlyRes.status}`;
+      }
     }
 
     // Unified SuperGrok accounts surface weekly % as the primary meter; keep the
@@ -223,30 +403,24 @@ export class GrokQuotaProvider implements ProviderUsageFetcher {
       balances = [];
     }
 
-    if (windows.length === 0 && balances.length === 0) {
-      return unavailableUsage(this);
-    }
-
-    return {
-      providerId: this.providerId,
-      displayName: this.displayName,
-      status: "available",
-      planLabel,
-      windows,
-      balances,
-      details: [],
-      error: null,
-    };
+    return { windows, planLabel, balances, lastError };
   }
 
-  private async readGrokToken(): Promise<string | null> {
-    // homeDir override is for tests: Windows os.homedir() ignores $HOME (uses USERPROFILE).
+  private async readGrokAuth(): Promise<ReadGrokAuthResult> {
     const path = join(this.homeDir ?? homedir(), ".grok", "auth.json");
-    if (!existsSync(path)) return null;
+    if (!existsSync(path)) {
+      return { entry: null, error: "Grok auth missing (~/.grok/auth.json not found)" };
+    }
     try {
-      return extractGrokTokenFromAuth(JSON.parse(await fs.readFile(path, "utf8")));
+      const raw = await fs.readFile(path, "utf8");
+      const auth = JSON.parse(raw);
+      const entry = extractGrokAuth(auth);
+      if (!entry) {
+        return { entry: null, error: "No valid Grok credentials found in ~/.grok/auth.json" };
+      }
+      return { entry, error: null };
     } catch {
-      return null;
+      return { entry: null, error: "Failed to parse ~/.grok/auth.json" };
     }
   }
 }

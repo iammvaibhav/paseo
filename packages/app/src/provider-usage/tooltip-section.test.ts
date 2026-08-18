@@ -16,6 +16,10 @@ function usage(
   };
 }
 
+function providerIds(providers: ProviderUsage[]): string[] {
+  return providers.map((provider) => provider.providerId);
+}
+
 describe("matchProviderUsage", () => {
   const providers = [
     usage({ providerId: "omp", displayName: "OMP · SuperGrok" }),
@@ -26,55 +30,78 @@ describe("matchProviderUsage", () => {
   ];
 
   it("matches non-OMP providers exactly", () => {
-    expect(matchProviderUsage(providers, "claude")?.providerId).toBe("claude");
+    expect(providerIds(matchProviderUsage(providers, "claude"))).toEqual(["claude"]);
   });
 
   it("matches native Grok Build CLI sessions", () => {
-    expect(matchProviderUsage(providers, "grok", "grok-4.5")?.providerId).toBe("grok");
+    expect(providerIds(matchProviderUsage(providers, "grok", "grok-4.5"))).toEqual(["grok"]);
   });
 
   it("picks OMP Claude limits for Claude Fable models on OMP agents", () => {
-    expect(matchProviderUsage(providers, "omp", "anthropic/claude-fable-5")?.providerId).toBe(
+    expect(providerIds(matchProviderUsage(providers, "omp", "anthropic/claude-fable-5"))).toEqual([
       "omp-claude",
-    );
-    expect(matchProviderUsage(providers, "omp", "Claude Fable 5")?.providerId).toBe("omp-claude");
+    ]);
+    expect(providerIds(matchProviderUsage(providers, "omp", "Claude Fable 5"))).toEqual([
+      "omp-claude",
+    ]);
   });
 
   it("picks SuperGrok limits for Grok models on OMP agents", () => {
-    expect(matchProviderUsage(providers, "omp", "xai/grok-4.5")?.providerId).toBe("omp");
-    expect(matchProviderUsage(providers, "omp", "Grok 4.5")?.providerId).toBe("omp");
+    expect(providerIds(matchProviderUsage(providers, "omp", "xai/grok-4.5"))).toEqual(["omp"]);
+    expect(providerIds(matchProviderUsage(providers, "omp", "Grok 4.5"))).toEqual(["omp"]);
   });
 
-  it("picks Grok Build OMP card when present", () => {
-    const withGrokBuild = [
+  it("returns every account in the matched provider group", () => {
+    const withAccounts = [
       ...providers,
-      usage({ providerId: "omp-grok-build", displayName: "OMP · Grok Build" }),
+      usage({
+        providerId: "omp-grok-build:second",
+        groupId: "omp-grok-build",
+        accountEmail: "second@example.com",
+        displayName: "OMP · Grok Build",
+      }),
+      usage({
+        providerId: "omp-grok-build:first",
+        groupId: "omp-grok-build",
+        accountEmail: "first@example.com",
+        displayName: "OMP · Grok Build",
+      }),
     ];
-    expect(matchProviderUsage(withGrokBuild, "omp", "grok-build/grok-4.5")?.providerId).toBe(
-      "omp-grok-build",
-    );
+    expect(
+      matchProviderUsage(withAccounts, "omp", "grok-build/grok-4.5").map(
+        (provider) => provider.accountEmail,
+      ),
+    ).toEqual(["second@example.com", "first@example.com"]);
   });
 
-  it("falls back to native Grok usage when OMP SuperGrok card is missing", () => {
+  it("falls back to provider id prefixes for old daemons", () => {
+    const legacyAccounts = [
+      usage({ providerId: "grok-build:first", displayName: "Grok Build" }),
+      usage({ providerId: "grok-build:second", displayName: "Grok Build" }),
+    ];
+    expect(providerIds(matchProviderUsage(legacyAccounts, "grok-build"))).toEqual([
+      "grok-build:first",
+      "grok-build:second",
+    ]);
+  });
+
+  it("falls back to native Grok usage when OMP SuperGrok cards are missing", () => {
     const withoutOmpSuperGrok = providers.filter((entry) => entry.providerId !== "omp");
-    expect(matchProviderUsage(withoutOmpSuperGrok, "omp", "grok-build/grok-4.5")?.providerId).toBe(
+    expect(providerIds(matchProviderUsage(withoutOmpSuperGrok, "omp", "grok-4.5"))).toEqual([
       "grok",
-    );
-    expect(matchProviderUsage(withoutOmpSuperGrok, "omp", "grok-4.5")?.providerId).toBe("grok");
-    expect(matchProviderUsage(withoutOmpSuperGrok, "omp", "xai/grok-4.5")?.providerId).toBe("grok");
+    ]);
   });
 
-  it("does not show Claude usage for Grok models when SuperGrok cards are missing", () => {
+  it("does not show another family when Grok cards are missing", () => {
     const withoutGrokCards = providers.filter(
       (entry) => entry.providerId !== "omp" && entry.providerId !== "grok",
     );
-    expect(matchProviderUsage(withoutGrokCards, "omp", "grok-build/grok-4.5")).toBeNull();
-    expect(matchProviderUsage(withoutGrokCards, "omp", "Grok 4.5")).toBeNull();
+    expect(matchProviderUsage(withoutGrokCards, "omp", "Grok 4.5")).toEqual([]);
   });
 
-  it("picks Antigravity limits for Gemini/Antigravity models", () => {
+  it("picks Antigravity limits for Gemini models", () => {
     expect(
-      matchProviderUsage(providers, "omp", "google-antigravity/gemini-3.6-flash")?.providerId,
-    ).toBe("omp-antigravity");
+      providerIds(matchProviderUsage(providers, "omp", "google-antigravity/gemini-3.6-flash")),
+    ).toEqual(["omp-antigravity"]);
   });
 });

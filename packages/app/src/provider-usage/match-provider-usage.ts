@@ -43,8 +43,26 @@ const OMP_VENDOR_TO_PROVIDER: Record<string, string> = {
   "grok-build": "omp-grok-build",
 };
 
+function legacyProviderPrefix(providerId: string): string {
+  const delimiterIndex = providerId.search(/[:/#]/);
+  return delimiterIndex < 0 ? providerId : providerId.slice(0, delimiterIndex);
+}
+
+function usageMatchesProviderId(usage: ProviderUsage, providerId: string): boolean {
+  const normalizedProviderId = normalizeUsageKey(providerId);
+  const usageProviderId = normalizeUsageKey(usage.providerId);
+  const usageGroupId = normalizeUsageKey(usage.groupId);
+  return (
+    usageGroupId === normalizedProviderId ||
+    usageProviderId === normalizedProviderId ||
+    usageProviderId.startsWith(`${normalizedProviderId}:`) ||
+    usageProviderId.startsWith(`${normalizedProviderId}/`) ||
+    usageProviderId.startsWith(`${normalizedProviderId}#`)
+  );
+}
+
 function findUsageById(candidates: ProviderUsage[], providerId: string): ProviderUsage | null {
-  return candidates.find((usage) => normalizeUsageKey(usage.providerId) === providerId) ?? null;
+  return candidates.find((usage) => usageMatchesProviderId(usage, providerId)) ?? null;
 }
 
 function isGrokFamilyModel(modelKey: string): boolean {
@@ -126,7 +144,7 @@ function pickOmpUsageForModel(
  * authenticated OMP backend (`omp`, `omp-claude`, `omp-antigravity`, …). Prefer the
  * backend implied by the active model id, then fall back to the exact provider id.
  */
-export function matchProviderUsage(
+function resolvePrimaryUsage(
   providers: ProviderUsage[],
   activeProviderId: string | null | undefined,
   activeModelId?: string | null,
@@ -136,9 +154,7 @@ export function matchProviderUsage(
   const providerKey = normalizeUsageKey(activeProviderId);
   const modelKey = normalizeUsageKey(activeModelId);
 
-  const exact = providerKey
-    ? (providers.find((usage) => normalizeUsageKey(usage.providerId) === providerKey) ?? null)
-    : null;
+  const exact = providerKey ? findUsageById(providers, providerKey) : null;
 
   // Non-OMP providers keep the simple exact match.
   if (providerKey && providerKey !== "omp") {
@@ -165,4 +181,24 @@ export function matchProviderUsage(
   }
 
   return exact;
+}
+
+/** Resolve every subscription account belonging to the active model's provider group. */
+export function matchProviderUsage(
+  providers: ProviderUsage[],
+  activeProviderId: string | null | undefined,
+  activeModelId?: string | null,
+): ProviderUsage[] {
+  const primary = resolvePrimaryUsage(providers, activeProviderId, activeModelId);
+  if (!primary) return [];
+
+  const groupId = normalizeUsageKey(primary.groupId);
+  if (groupId) {
+    return providers.filter((usage) => normalizeUsageKey(usage.groupId) === groupId);
+  }
+
+  const providerPrefix = legacyProviderPrefix(normalizeUsageKey(primary.providerId));
+  return providers.filter(
+    (usage) => legacyProviderPrefix(normalizeUsageKey(usage.providerId)) === providerPrefix,
+  );
 }
