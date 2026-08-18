@@ -21,12 +21,6 @@ import {
   usedPctOf,
   windowFromUsedPct,
 } from "../usage.js";
-import {
-  refreshClaudeOAuthToken,
-  refreshCodexOAuthToken,
-  refreshXaiOAuthToken,
-  type RefreshedOAuthToken,
-} from "../token-refresh.js";
 const execFileAsync = promisify(execFile);
 const OMP_SQLITE_TIMEOUT_MS = 2_000;
 const OMP_USAGE_TIMEOUT_MS = 20_000;
@@ -45,6 +39,17 @@ const XAI_BILLING_HEADERS = {
   Accept: "application/json",
   "X-XAI-Token-Auth": "xai-grok-cli",
 } as const;
+
+// OMP owns the credentials stored in agent.db, and its OAuth refresh tokens rotate
+// on every use: calling a token endpoint ourselves would revoke the refresh token
+// OMP has persisted and break OMP's own refresh (and the OMP CLI, which reads the
+// same db). Paseo therefore NEVER refreshes OMP credentials — `omp usage --json`
+// runs first, refreshes internally, and persists the rotated tokens for us. A stored
+// access token is used only while it is still valid; once expired (or rejected with
+// 401) the account card falls back to CLI report data, or reports the expiry.
+const OMP_TOKEN_SKEW_MS = 30_000;
+const OMP_TOKEN_EXPIRED_ERROR = "Token expired — will recover when OMP refreshes it";
+const OMP_REAUTH_ERROR = "Token expired — re-authenticate in OMP";
 
 const OmpOauthCredentialDataSchema = z
   .object({
@@ -211,18 +216,22 @@ export interface OmpStoredAccount {
   orgId: string | null;
   identityKey: string | null;
   identity: string;
+  /** Set when OMP disabled the credential (e.g. after a failed refresh); its token must never be used. */
+  disabledCause: string | null;
 }
 
 const OMP_PROVIDER_IDENTITIES: Record<string, OmpProviderIdentity> = {
-  "xai-oauth": { providerId: "omp", displayName: "OMP · SuperGrok" },
-  "grok-build": { providerId: "omp-grok-build", displayName: "OMP · Grok Build" },
-  anthropic: { providerId: "omp-claude", displayName: "OMP · Claude" },
-  cursor: { providerId: "omp-cursor", displayName: "OMP · Cursor" },
+  "xai-oauth": { providerId: "omp", displayName: "SuperGrok" },
+  "grok-build": { providerId: "omp-grok-build", displayName: "Grok Build" },
+  anthropic: { providerId: "omp-claude", displayName: "Claude" },
+  cursor: { providerId: "omp-cursor", displayName: "Cursor" },
   "google-antigravity": {
     providerId: "omp-antigravity",
-    displayName: "OMP · Antigravity",
+    displayName: "Antigravity",
   },
-  "openai-codex": { providerId: "omp-codex", displayName: "OMP · Codex" },
+  "openai-codex": { providerId: "omp-codex", displayName: "Codex" },
+  "opencode-go": { providerId: "omp-opencode-go", displayName: "OpenCode Go" },
+  "opencode-zen": { providerId: "omp-opencode-zen", displayName: "OpenCode Zen" },
 };
 function resolveOmpAgentDbPath(homeDir: string, override?: string): string | null {
   if (override) return override;
@@ -237,26 +246,22 @@ function resolveOmpAgentDbPath(homeDir: string, override?: string): string | nul
   return null;
 }
 
+function titleCaseProvider(provider: string): string {
+  return provider
+    .split(/[-_\s]+/)
+    .filter((part) => part.length > 0)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
 function resolveOmpIdentity(provider: string): OmpProviderIdentity {
   const known = OMP_PROVIDER_IDENTITIES[provider];
   if (known) return known;
   return {
     providerId: `omp-${provider}`,
-    displayName: `OMP · ${provider}`,
+    displayName: titleCaseProvider(provider),
   };
 }
-
-function formatOmpDisplayName(
-  baseDisplayName: string,
-  emailOrIdentity: string | null,
-  isMultiAccount: boolean,
-): string {
-  if (isMultiAccount && emailOrIdentity) {
-    return `${baseDisplayName} — ${emailOrIdentity}`;
-  }
-  return baseDisplayName;
-}
-
 function resolveOmpCardIds(
   baseProviderId: string,
   emailOrIdentity: string | null,
@@ -347,15 +352,42 @@ function grokBuildErrorCard(input: {
       ? [{ id: "account_email", label: "Account", value: input.accountEmail }]
       : [],
     error: input.error,
-    sourceLabel: "Grok Build via OMP auth",
+    sourceLabel: "via OMP",
   };
 }
 
-function expiryErrorForProvider(provider: string): string {
-  if (provider === "openai-codex") return "OpenAI access token expired";
-  if (provider === "anthropic") return "Anthropic access token expired";
-  if (provider === "grok-build" || provider === "xai-oauth") return "xAI access token expired";
-  return "Access token expired";
+/** Card for a stored account whose credentials are expired/rejected and the CLI had no report. */
+function ompUnavailableCard(input: {
+  providerId: string;
+  groupId: string;
+  accountEmail: string | null | undefined;
+  displayName: string;
+  error: string;
+}): ProviderUsage {
+  return {
+    providerId: input.providerId,
+    groupId: input.groupId,
+    accountEmail: input.accountEmail ?? undefined,
+    displayName: input.displayName,
+    status: "unavailable",
+    planLabel: null,
+    windows: [],
+    balances: [],
+    details: input.accountEmail
+      ? [{ id: "account_email", label: "Account", value: input.accountEmail }]
+      : [],
+    error: input.error,
+    sourceLabel: "via OMP",
+  };
+}
+
+/** Disabled-credential message; a short `disabled_cause` is appended to explain why. */
+function disabledAccountError(disabledCause: string | null): string {
+  const trimmed = disabledCause?.trim();
+  if (trimmed && trimmed.length <= 80) {
+    return `Account disabled in OMP — re-authenticate (${trimmed})`;
+  }
+  return "Account disabled in OMP — re-authenticate";
 }
 
 /**
@@ -546,7 +578,7 @@ function mapAntigravityQuotaSummary(
     balances: [],
     details,
     error: null,
-    sourceLabel: "Antigravity via OMP auth",
+    sourceLabel: "via OMP",
   };
 }
 
@@ -586,11 +618,7 @@ function mapOmpReportToUsage(
     emailOrIdentity,
     options.isMultiAccount,
   );
-  const displayName = formatOmpDisplayName(
-    identity.displayName,
-    emailOrIdentity,
-    options.isMultiAccount,
-  );
+  const displayName = identity.displayName;
 
   return {
     providerId,
@@ -690,6 +718,7 @@ interface RawAuthCredentialRow {
   provider: string;
   data: string;
   identity_key?: string | null;
+  disabled_cause?: string | null;
 }
 
 async function queryOmpAuthCredentials(
@@ -703,7 +732,7 @@ async function queryOmpAuthCredentials(
     try {
       db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
       const stmt = db.prepare(
-        "SELECT provider, data, identity_key FROM auth_credentials WHERE disabled_cause IS NULL OR disabled_cause = '' ORDER BY updated_at DESC",
+        "SELECT provider, data, identity_key, disabled_cause FROM auth_credentials ORDER BY updated_at DESC",
       );
       const rows = stmt.all() as unknown as RawAuthCredentialRow[];
       return rows;
@@ -720,7 +749,7 @@ async function queryOmpAuthCredentials(
       [
         "-json",
         dbPath,
-        "SELECT provider, data, identity_key FROM auth_credentials WHERE disabled_cause IS NULL OR disabled_cause = '' ORDER BY updated_at DESC;",
+        "SELECT provider, data, identity_key, disabled_cause FROM auth_credentials ORDER BY updated_at DESC;",
       ],
       { timeout: OMP_SQLITE_TIMEOUT_MS },
     );
@@ -734,7 +763,7 @@ async function queryOmpAuthCredentials(
         "sqlite3",
         [
           dbPath,
-          "SELECT json_group_array(json_object('provider', provider, 'data', data, 'identity_key', identity_key)) FROM auth_credentials WHERE disabled_cause IS NULL OR disabled_cause = '' ORDER BY updated_at DESC;",
+          "SELECT json_group_array(json_object('provider', provider, 'data', data, 'identity_key', identity_key, 'disabled_cause', disabled_cause)) FROM auth_credentials ORDER BY updated_at DESC;",
         ],
         { timeout: OMP_SQLITE_TIMEOUT_MS },
       );
@@ -753,6 +782,7 @@ async function queryOmpAuthCredentials(
 
 export class OmpQuotaProvider implements ProviderUsageFetcher {
   readonly providerId = "omp";
+  readonly agentProviderIds: readonly string[] = ["omp"];
   readonly displayName = "OMP";
 
   private readonly logger: Logger;
@@ -798,7 +828,8 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
     };
 
     const storedAccounts = await this.readAllOmpAccounts();
-    const cliReports = await this.fetchFromOmpUsageReports();
+    const cliResult = await this.fetchFromOmpUsageReports();
+    const cliReports = cliResult.reports;
     const cliReportsByProvider = groupCliReportsByProvider(cliReports);
     const providerAccountCounts = this.computeProviderAccountCounts(
       storedAccounts,
@@ -807,6 +838,10 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
     const isProviderMultiAccount = (provider: string): boolean => {
       return (providerAccountCounts.get(provider) ?? 0) > 1;
     };
+    // When the CLI itself failed to authenticate a provider, its own refresh could
+    // not help either: tell the user to re-authenticate instead of to wait.
+    const expiredErrorFor = (provider: string): string =>
+      cliResult.authFailureProviders.has(provider) ? OMP_REAUTH_ERROR : OMP_TOKEN_EXPIRED_ERROR;
 
     const { cards, coveredAccounts, pendingAgyCliCards } = mapCliReportsToCards(
       cliReportsByProvider,
@@ -816,22 +851,36 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
       pushUsage(card);
     }
 
+    // Disabled accounts (OMP set a disabled_cause) must never vanish from the list
+    // or have their token used: surface an unavailable card unless the CLI reported
+    // fresh data for the account, in which case the CLI card wins.
+    await this.pushDisabledAccountCards(
+      storedAccounts,
+      coveredAccounts,
+      isProviderMultiAccount,
+      pushUsage,
+    );
+
     // Antigravity: try direct Cloud Code summary per account, falling back to the
     // CLI card for any account the direct fetch misses.
     await this.pushAntigravityCards(
       storedAccounts,
       pendingAgyCliCards,
       isProviderMultiAccount,
+      expiredErrorFor,
       pushUsage,
     );
 
-    // Direct-API fallbacks for stored accounts the CLI did not report on.
+    // Direct-API fallbacks for stored accounts the CLI did not report on. These run
+    // only with a still-valid token; on 401 they never refresh — the account card
+    // falls back to CLI report data, or reports the expiry.
     await this.pushFallbackAccountCards(
       storedAccounts.get("cursor") ?? [],
       isProviderMultiAccount("cursor"),
       coveredAccounts,
       "cursor",
-      (account, multi) => this.fetchCursorUsageForAccount(account, multi),
+      (account, multi) =>
+        this.fetchCursorUsageForAccount(account, multi, expiredErrorFor("cursor")),
       pushUsage,
     );
     await this.pushFallbackAccountCards(
@@ -839,7 +888,8 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
       isProviderMultiAccount("xai-oauth"),
       coveredAccounts,
       "xai-oauth",
-      (account, multi) => this.fetchSuperGrokUsageForAccount(account, multi),
+      (account, multi) =>
+        this.fetchSuperGrokUsageForAccount(account, multi, expiredErrorFor("xai-oauth")),
       pushUsage,
     );
     await this.pushFallbackAccountCards(
@@ -847,7 +897,8 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
       isProviderMultiAccount("grok-build"),
       coveredAccounts,
       "grok-build",
-      (account, multi) => this.fetchGrokBuildUsageForAccount(account, multi),
+      (account, multi) =>
+        this.fetchGrokBuildUsageForAccount(account, multi, expiredErrorFor("grok-build")),
       pushUsage,
     );
 
@@ -857,23 +908,35 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
     return usages.length === 1 ? usages[0]! : usages;
   }
 
-  private async fetchFromOmpUsageReports(): Promise<z.infer<typeof OmpUsageReportSchema>[]> {
+  private async fetchFromOmpUsageReports(): Promise<{
+    reports: z.infer<typeof OmpUsageReportSchema>[];
+    authFailureProviders: Set<string>;
+  }> {
     try {
       const { stdout } = await this.usageCommandRunner({
         args: ["usage", "--json"],
         timeoutMs: OMP_USAGE_TIMEOUT_MS,
       });
       const parsed = OmpUsageJsonSchema.parse(extractJsonObject(stdout));
-      return parsed.reports ?? [];
+      const authFailureProviders = new Set<string>();
+      for (const entry of parsed.accountsWithoutUsage ?? []) {
+        const record = entry as Record<string, unknown>;
+        const reportsAuthFailure = ["error", "reason", "message"].some(
+          (key) => typeof record[key] === "string" && (record[key] as string).trim().length > 0,
+        );
+        if (reportsAuthFailure) authFailureProviders.add(entry.provider);
+      }
+      return { reports: parsed.reports ?? [], authFailureProviders };
     } catch (error) {
       this.logger.debug({ err: error }, "OMP usage CLI fetch failed");
-      return [];
+      return { reports: [], authFailureProviders: new Set() };
     }
   }
 
   private async fetchCursorUsageForAccount(
     account: OmpStoredAccount,
     isMultiAccount: boolean,
+    expiredError: string,
   ): Promise<ProviderUsage | null> {
     const identity = resolveOmpIdentity("cursor");
     const emailOrIdentity = account.email || account.accountId || account.identity;
@@ -882,28 +945,21 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
       emailOrIdentity,
       isMultiAccount,
     );
-    const displayName = formatOmpDisplayName(identity.displayName, emailOrIdentity, isMultiAccount);
+    const displayName = identity.displayName;
 
-    const { token, error: tokenError } = await this.resolveAccountAccessToken(account);
-    if (!token) {
-      if (tokenError && isMultiAccount) {
-        return {
-          providerId,
-          groupId,
-          accountEmail: account.email ?? undefined,
-          displayName,
-          status: "error",
-          planLabel: null,
-          windows: [],
-          balances: [],
-          details: account.email
-            ? [{ id: "account_email", label: "Account", value: account.email }]
-            : [],
-          error: tokenError,
-          sourceLabel: "Cursor via OMP auth",
-        };
-      }
+    const { token, expired, disabled } = this.resolveAccountAccessToken(account);
+    if (disabled) {
+      // Emitted as an "Account disabled in OMP" card by pushDisabledAccountCards.
       return null;
+    }
+    if (!token) {
+      return ompUnavailableCard({
+        providerId,
+        groupId,
+        accountEmail: account.email,
+        displayName,
+        error: expired ? expiredError : OMP_REAUTH_ERROR,
+      });
     }
 
     try {
@@ -916,6 +972,16 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
         },
         body: JSON.stringify({}),
       });
+      if (res.status === 401) {
+        // Never refresh OMP-owned credentials; surface the rejection instead.
+        return ompUnavailableCard({
+          providerId,
+          groupId,
+          accountEmail: account.email,
+          displayName,
+          error: expiredError,
+        });
+      }
       if (!res.ok) {
         this.logger.debug({ status: res.status }, "OMP Cursor usage fetch failed");
         return null;
@@ -957,7 +1023,7 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
         balances,
         details,
         error: null,
-        sourceLabel: "Cursor via OMP auth",
+        sourceLabel: "via OMP",
       };
     } catch (error) {
       this.logger.debug({ err: error }, "OMP Cursor usage parse failed");
@@ -976,9 +1042,9 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
       emailOrIdentity,
       isMultiAccount,
     );
-    const displayName = formatOmpDisplayName(identity.displayName, emailOrIdentity, isMultiAccount);
+    const displayName = identity.displayName;
 
-    const { token } = await this.resolveAccountAccessToken(account);
+    const { token } = this.resolveAccountAccessToken(account);
     if (!token) return null;
 
     const projectId = account.projectId;
@@ -995,6 +1061,12 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
           },
           body,
         });
+        if (res.status === 401) {
+          // Never refresh OMP-owned credentials; the CLI-card fallback (or an
+          // unavailable card) below reports the rejection.
+          this.logger.debug({ status: res.status, url }, "OMP Antigravity token rejected");
+          return null;
+        }
         if (!res.ok) {
           this.logger.debug(
             { status: res.status, url },
@@ -1018,33 +1090,16 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
     return null;
   }
 
-  private async fetchXaiCreditsWithRefresh(
-    account: OmpStoredAccount,
-    token: string,
-  ): Promise<Response> {
-    let res = await fetchProviderApi(this.fetchApi, `${XAI_BILLING_BASE}?format=credits`, {
+  private async fetchXaiCredits(token: string): Promise<Response> {
+    return fetchProviderApi(this.fetchApi, `${XAI_BILLING_BASE}?format=credits`, {
       headers: { ...XAI_BILLING_HEADERS, Authorization: `Bearer ${token}` },
     });
-    if (res.status === 401 && account.refreshToken) {
-      const refreshed = await refreshXaiOAuthToken(this.fetchApi, account.refreshToken);
-      if (refreshed) {
-        account.token = refreshed.accessToken;
-        account.refreshToken = refreshed.refreshToken ?? account.refreshToken;
-        account.expiresAtMs = refreshed.expiresAtMs;
-        res = await fetchProviderApi(this.fetchApi, `${XAI_BILLING_BASE}?format=credits`, {
-          headers: {
-            ...XAI_BILLING_HEADERS,
-            Authorization: `Bearer ${refreshed.accessToken}`,
-          },
-        });
-      }
-    }
-    return res;
   }
 
   private async fetchSuperGrokUsageForAccount(
     account: OmpStoredAccount,
     isMultiAccount: boolean,
+    expiredError: string,
   ): Promise<ProviderUsage | null> {
     const identity = resolveOmpIdentity("xai-oauth");
     const emailOrIdentity = account.email || account.accountId || account.identity;
@@ -1053,30 +1108,35 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
       emailOrIdentity,
       isMultiAccount,
     );
-    const displayName = formatOmpDisplayName(identity.displayName, emailOrIdentity, isMultiAccount);
+    const displayName = identity.displayName;
 
-    const { token, error: tokenError } = await this.resolveAccountAccessToken(account);
-    if (!token) {
-      if (tokenError && isMultiAccount) {
-        return {
-          providerId,
-          groupId,
-          accountEmail: account.email ?? undefined,
-          displayName,
-          status: "error",
-          planLabel: null,
-          windows: [],
-          balances: [],
-          details: [],
-          error: tokenError,
-          sourceLabel: "SuperGrok via OMP auth",
-        };
-      }
+    const { token, expired, disabled } = this.resolveAccountAccessToken(account);
+    if (disabled) {
+      // Emitted as an "Account disabled in OMP" card by pushDisabledAccountCards.
       return null;
+    }
+    if (!token) {
+      return ompUnavailableCard({
+        providerId,
+        groupId,
+        accountEmail: account.email,
+        displayName,
+        error: expired ? expiredError : OMP_REAUTH_ERROR,
+      });
     }
 
     try {
-      const creditsRes = await this.fetchXaiCreditsWithRefresh(account, token);
+      const creditsRes = await this.fetchXaiCredits(token);
+      if (creditsRes.status === 401) {
+        // Never refresh OMP-owned credentials; surface the rejection instead.
+        return ompUnavailableCard({
+          providerId,
+          groupId,
+          accountEmail: account.email,
+          displayName,
+          error: expiredError,
+        });
+      }
       if (!creditsRes.ok) {
         this.logger.debug({ creditsStatus: creditsRes.status }, "OMP SuperGrok usage fetch failed");
         return null;
@@ -1096,7 +1156,7 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
         balances: [],
         details: [],
         error: null,
-        sourceLabel: "SuperGrok via OMP auth",
+        sourceLabel: "via OMP",
       };
     } catch (err) {
       this.logger.debug({ err }, "OMP SuperGrok credits fetch failed");
@@ -1107,7 +1167,8 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
   private async fetchGrokBuildUsageForAccount(
     account: OmpStoredAccount,
     isMultiAccount: boolean,
-  ): Promise<ProviderUsage> {
+    expiredError: string,
+  ): Promise<ProviderUsage | null> {
     const identity = resolveOmpIdentity("grok-build");
     const emailOrIdentity = account.email || account.accountId || account.identity;
     const { providerId, groupId } = resolveOmpCardIds(
@@ -1115,21 +1176,35 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
       emailOrIdentity,
       isMultiAccount,
     );
-    const displayName = formatOmpDisplayName(identity.displayName, emailOrIdentity, isMultiAccount);
+    const displayName = identity.displayName;
 
-    const { token, error: tokenError } = await this.resolveAccountAccessToken(account);
+    const { token, expired, disabled } = this.resolveAccountAccessToken(account);
+    if (disabled) {
+      // Emitted as an "Account disabled in OMP" card by pushDisabledAccountCards.
+      return null;
+    }
     if (!token) {
-      return grokBuildErrorCard({
+      return ompUnavailableCard({
         providerId,
         groupId,
-        accountEmail: account.email ?? undefined,
+        accountEmail: account.email,
         displayName,
-        error: tokenError ?? "Grok Build authentication failed",
+        error: expired ? expiredError : OMP_REAUTH_ERROR,
       });
     }
 
     try {
-      const creditsRes = await this.fetchXaiCreditsWithRefresh(account, token);
+      const creditsRes = await this.fetchXaiCredits(token);
+      if (creditsRes.status === 401) {
+        // Never refresh OMP-owned credentials; surface the rejection instead.
+        return ompUnavailableCard({
+          providerId,
+          groupId,
+          accountEmail: account.email,
+          displayName,
+          error: expiredError,
+        });
+      }
       if (!creditsRes.ok) {
         return grokBuildErrorCard({
           providerId,
@@ -1157,7 +1232,7 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
         balances: [],
         details,
         error: null,
-        sourceLabel: "Grok Build via OMP auth",
+        sourceLabel: "via OMP",
       };
     } catch (err) {
       return grokBuildErrorCard({
@@ -1190,6 +1265,7 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
         orgId: coalesceString(data.orgId),
         identityKey: row.identity_key ?? null,
         identity: coalesceString(email, accountId, identityKeySuffix) ?? `account-${index + 1}`,
+        disabledCause: coalesceString(row.disabled_cause),
       };
     } catch (error) {
       this.logger.debug(
@@ -1243,6 +1319,37 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
     return account.email ? (coveredAccounts.get(provider)?.has(account.email) ?? false) : false;
   }
 
+  private async pushDisabledAccountCards(
+    storedAccounts: Map<string, OmpStoredAccount[]>,
+    coveredAccounts: Map<string, Set<string>>,
+    isProviderMultiAccount: (provider: string) => boolean,
+    push: (usage: ProviderUsage | null | undefined) => void,
+  ): Promise<void> {
+    for (const [provider, accounts] of storedAccounts.entries()) {
+      const isMulti = isProviderMultiAccount(provider);
+      for (const account of accounts) {
+        if (account.disabledCause === null) continue;
+        if (this.isStoredAccountCovered(coveredAccounts, provider, account)) continue;
+        const identity = resolveOmpIdentity(provider);
+        const emailOrIdentity = account.email || account.accountId || account.identity;
+        const { providerId, groupId } = resolveOmpCardIds(
+          identity.providerId,
+          emailOrIdentity,
+          isMulti,
+        );
+        push(
+          ompUnavailableCard({
+            providerId,
+            groupId,
+            accountEmail: account.email,
+            displayName: identity.displayName,
+            error: disabledAccountError(account.disabledCause),
+          }),
+        );
+      }
+    }
+  }
+
   private async pushFallbackAccountCards(
     accounts: OmpStoredAccount[],
     isMultiAccount: boolean,
@@ -1261,6 +1368,7 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
     storedAccounts: Map<string, OmpStoredAccount[]>,
     pendingAgyCliCards: Map<string, ProviderUsage>,
     isProviderMultiAccount: (provider: string) => boolean,
+    expiredErrorFor: (provider: string) => string,
     push: (usage: ProviderUsage | null | undefined) => void,
   ): Promise<void> {
     const agyAccounts = storedAccounts.get("google-antigravity") ?? [];
@@ -1282,61 +1390,41 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
       const cliCard = pendingAgyCliCards.get(providerId);
       if (cliCard) {
         push(cliCard);
+        continue;
       }
+      push(
+        ompUnavailableCard({
+          providerId,
+          groupId: "omp-antigravity",
+          accountEmail: account.email,
+          displayName: resolveOmpIdentity("google-antigravity").displayName,
+          error: expiredErrorFor("google-antigravity"),
+        }),
+      );
     }
   }
 
-  private async tryRefreshAccountToken(
-    account: OmpStoredAccount,
-    refreshToken: string,
-  ): Promise<boolean> {
-    let refreshed: RefreshedOAuthToken | null = null;
-    if (account.provider === "grok-build" || account.provider === "xai-oauth") {
-      refreshed = await refreshXaiOAuthToken(this.fetchApi, refreshToken);
-    } else if (account.provider === "openai-codex") {
-      refreshed = await refreshCodexOAuthToken(this.fetchApi, refreshToken);
-    } else if (account.provider === "anthropic") {
-      refreshed = await refreshClaudeOAuthToken(this.fetchApi, refreshToken);
+  /**
+   * OMP-owned access tokens are used only while still valid (expiresAtMs in the
+   * future, with a small skew tolerance). There is deliberately no refresh path:
+   * OMP's refresh tokens rotate on use, so refreshing here would revoke the token
+   * OMP has persisted in agent.db and break OMP's own refresh. Disabled accounts
+   * never yield a token at all.
+   */
+  private resolveAccountAccessToken(account: OmpStoredAccount): {
+    token: string | null;
+    disabled: boolean;
+    expired: boolean;
+  } {
+    if (account.disabledCause !== null) {
+      return { token: null, disabled: true, expired: false };
     }
-    if (!refreshed) return false;
-    account.token = refreshed.accessToken;
-    account.refreshToken = refreshed.refreshToken ?? account.refreshToken;
-    account.expiresAtMs = refreshed.expiresAtMs;
-    return true;
-  }
-
-  private async resolveAccountAccessToken(
-    account: OmpStoredAccount,
-  ): Promise<{ token: string | null; error: string | null }> {
     const now = Date.now();
-    const isPast = account.expiresAtMs !== null && account.expiresAtMs <= now;
-    const isNear = account.expiresAtMs !== null && account.expiresAtMs <= now + 60_000;
-
-    if (!isNear && account.token) {
-      return { token: account.token, error: null };
+    const isExpired =
+      account.expiresAtMs !== null && account.expiresAtMs <= now + OMP_TOKEN_SKEW_MS;
+    if (account.token && !isExpired) {
+      return { token: account.token, disabled: false, expired: false };
     }
-
-    const hasRefreshFlow =
-      account.provider === "grok-build" ||
-      account.provider === "xai-oauth" ||
-      account.provider === "openai-codex" ||
-      account.provider === "anthropic";
-
-    if (hasRefreshFlow && account.refreshToken) {
-      const refreshed = await this.tryRefreshAccountToken(account, account.refreshToken);
-      if (refreshed) {
-        return { token: account.token, error: null };
-      }
-    }
-
-    if (!isPast && account.token) {
-      return { token: account.token, error: null };
-    }
-
-    if (isPast) {
-      return { token: null, error: expiryErrorForProvider(account.provider) };
-    }
-
-    return { token: null, error: "Missing access token" };
+    return { token: null, disabled: false, expired: isExpired };
   }
 }

@@ -43,10 +43,12 @@ export function ProviderUsageCard({
   usage,
   compact = false,
   listFetchedAt,
+  title,
 }: {
   usage: ProviderUsage;
   compact?: boolean;
   listFetchedAt?: string | null;
+  title?: string;
 }) {
   const status = statusText(usage);
   const footer = footerText(usage, listFetchedAt);
@@ -76,7 +78,7 @@ export function ProviderUsageCard({
         />
         <View style={styles.identity}>
           <Text style={styles.name} numberOfLines={1}>
-            {usage.displayName}
+            {title ?? usage.displayName}
           </Text>
           {usage.accountEmail ? (
             <Text style={styles.accountEmail} numberOfLines={1}>

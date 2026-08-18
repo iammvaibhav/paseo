@@ -100,7 +100,7 @@ describe("OmpQuotaProvider", () => {
 
     expect(byId["omp-claude"]).toMatchObject({
       providerId: "omp-claude",
-      displayName: "OMP · Claude",
+      displayName: "Claude",
       status: "available",
       sourceLabel: "via OMP",
     });
@@ -112,12 +112,12 @@ describe("OmpQuotaProvider", () => {
     );
     expect(byId["omp-antigravity"]).toMatchObject({
       providerId: "omp-antigravity",
-      displayName: "OMP · Antigravity",
+      displayName: "Antigravity",
       status: "available",
     });
     expect(byId["omp"]).toMatchObject({
       providerId: "omp",
-      displayName: "OMP · SuperGrok",
+      displayName: "SuperGrok",
       planLabel: "SuperGrok (unified)",
       status: "available",
       windows: [expect.objectContaining({ id: "xai-oauth:credits:1w", usedPct: 41 })],
@@ -228,9 +228,9 @@ describe("OmpQuotaProvider", () => {
     const antigravity = cards.find((card) => card.providerId === "omp-antigravity");
     expect(antigravity).toMatchObject({
       providerId: "omp-antigravity",
-      displayName: "OMP · Antigravity",
+      displayName: "Antigravity",
       status: "available",
-      sourceLabel: "Antigravity via OMP auth",
+      sourceLabel: "via OMP",
       details: [{ id: "account_email", label: "Account", value: "user@example.com" }],
     });
     expect(antigravity?.windows).toEqual(
@@ -300,9 +300,9 @@ describe("OmpQuotaProvider", () => {
 
     await expect(provider.fetchUsage()).resolves.toMatchObject({
       providerId: "omp-cursor",
-      displayName: "OMP · Cursor",
+      displayName: "Cursor",
       status: "available",
-      sourceLabel: "Cursor via OMP auth",
+      sourceLabel: "via OMP",
       balances: [
         expect.objectContaining({
           id: "plan_usage",
@@ -367,10 +367,10 @@ describe("OmpQuotaProvider", () => {
 
     await expect(provider.fetchUsage()).resolves.toMatchObject({
       providerId: "omp",
-      displayName: "OMP · SuperGrok",
+      displayName: "SuperGrok",
       status: "available",
       planLabel: "SuperGrok (unified)",
-      sourceLabel: "SuperGrok via OMP auth",
+      sourceLabel: "via OMP",
       windows: [expect.objectContaining({ id: "weekly_credits", usedPct: 23 })],
       details: [],
     });
@@ -446,19 +446,19 @@ describe("OmpQuotaProvider", () => {
       providerId: "omp-cursor:alice@example.com",
       groupId: "omp-cursor",
       accountEmail: "alice@example.com",
-      displayName: "OMP · Cursor — alice@example.com",
+      displayName: "Cursor",
       status: "available",
     });
     expect(usage[1]).toMatchObject({
       providerId: "omp-cursor:bob@example.com",
       groupId: "omp-cursor",
       accountEmail: "bob@example.com",
-      displayName: "OMP · Cursor — bob@example.com",
+      displayName: "Cursor",
       status: "available",
     });
   });
 
-  it("fetches multiple Grok Build accounts from agent.db with token refresh and emits per-account cards", async () => {
+  it("fetches multiple Grok Build accounts from agent.db and emits per-account cards", async () => {
     if (!(await canRunSqlite3())) return;
 
     const dir = mkdtempSync(join(tmpdir(), "omp-usage-"));
@@ -473,7 +473,7 @@ describe("OmpQuotaProvider", () => {
       accountId: "acc-1",
     });
 
-    // Account 2: expired token with refresh_token
+    // Account 2: expired token (refresh token present, but Paseo must never use it)
     await createOauthCredentialDb(dbPath, "grok-build", {
       access: "grok_expired_token_2",
       refresh: "grok_refresh_token_2",
@@ -482,28 +482,16 @@ describe("OmpQuotaProvider", () => {
       accountId: "acc-2",
     });
 
+    const requestedUrls: string[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.includes("https://auth.x.ai/oauth2/token")) {
-        return jsonResponse({
-          access_token: "grok_refreshed_token_2",
-          expires_in: 3600,
-        });
-      }
+      requestedUrls.push(url);
       if (url.includes("https://cli-chat-proxy.grok.com/v1/billing?format=credits")) {
         const auth = (init?.headers as Record<string, string>)?.Authorization;
         if (auth === "Bearer grok_live_token_1") {
           return jsonResponse({
             config: {
               creditUsagePercent: 30,
-              isUnifiedBillingUser: true,
-            },
-          });
-        }
-        if (auth === "Bearer grok_refreshed_token_2") {
-          return jsonResponse({
-            config: {
-              creditUsagePercent: 75,
               isUnifiedBillingUser: true,
             },
           });
@@ -533,7 +521,7 @@ describe("OmpQuotaProvider", () => {
       providerId: "omp-grok-build:alice@example.com",
       groupId: "omp-grok-build",
       accountEmail: "alice@example.com",
-      displayName: "OMP · Grok Build — alice@example.com",
+      displayName: "Grok Build",
       status: "available",
       windows: [expect.objectContaining({ id: "weekly_credits", usedPct: 30 })],
     });
@@ -542,10 +530,16 @@ describe("OmpQuotaProvider", () => {
       providerId: "omp-grok-build:bob@example.com",
       groupId: "omp-grok-build",
       accountEmail: "bob@example.com",
-      displayName: "OMP · Grok Build — bob@example.com",
-      status: "available",
-      windows: [expect.objectContaining({ id: "weekly_credits", usedPct: 75 })],
+      displayName: "Grok Build",
+      status: "unavailable",
+      windows: [],
+      error: "Token expired — will recover when OMP refreshes it",
     });
+
+    // Paseo must never call OAuth token endpoints with OMP-stored refresh tokens.
+    expect(requestedUrls.some((url) => url.includes("/oauth2/token"))).toBe(false);
+    expect(requestedUrls.some((url) => url.includes("auth.openai.com"))).toBe(false);
+    expect(requestedUrls.some((url) => url.includes("platform.claude.com"))).toBe(false);
   });
 
   it("isolates account failures so failed accounts show error while valid accounts succeed", async () => {
@@ -562,7 +556,7 @@ describe("OmpQuotaProvider", () => {
       email: "good@example.com",
     });
 
-    // Account 2: expired without refresh token -> fails
+    // Account 2: expired without refresh token -> unavailable
     await createOauthCredentialDb(dbPath, "grok-build", {
       access: "grok_bad_token",
       expires: Date.now() - 60_000,
@@ -607,8 +601,225 @@ describe("OmpQuotaProvider", () => {
     });
     expect(bad).toMatchObject({
       providerId: "omp-grok-build:bad@example.com",
-      status: "error",
+      status: "unavailable",
+      windows: [],
+      error: "Token expired — will recover when OMP refreshes it",
     });
+  });
+
+  it("never calls OAuth token endpoints when OMP-stored tokens are expired", async () => {
+    if (!(await canRunSqlite3())) return;
+
+    const dir = mkdtempSync(join(tmpdir(), "omp-usage-"));
+    tempDirs.push(dir);
+    const dbPath = join(dir, "agent.db");
+
+    // Every provider with a refresh-capable credential: expired, refresh token present.
+    await createOauthCredentialDb(dbPath, "xai-oauth", {
+      access: "xai_expired",
+      refresh: "xai_refresh",
+      expires: Date.now() - 60_000,
+      email: "super@example.com",
+    });
+    await createOauthCredentialDb(dbPath, "grok-build", {
+      access: "grok_expired",
+      refresh: "grok_refresh",
+      expires: Date.now() - 60_000,
+      email: "build@example.com",
+    });
+    await createOauthCredentialDb(dbPath, "openai-codex", {
+      access: "codex_expired",
+      refresh: "codex_refresh",
+      expires: Date.now() - 60_000,
+      email: "codex@example.com",
+    });
+    await createOauthCredentialDb(dbPath, "anthropic", {
+      access: "claude_expired",
+      refresh: "claude_refresh",
+      expires: Date.now() - 60_000,
+      email: "claude@example.com",
+    });
+
+    const requestedUrls: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      requestedUrls.push(String(input));
+      return new Response(null, { status: 404 });
+    });
+
+    const provider = new OmpQuotaProvider({
+      logger: createTestLogger(),
+      fetch: fetchMock as unknown as typeof fetch,
+      agentDbPath: dbPath,
+      usageCommandRunner: async () => ({
+        stdout: JSON.stringify({ reports: [], accountsWithoutUsage: [] }),
+        stderr: "",
+      }),
+    });
+
+    const usage = await provider.fetchUsage();
+    expect(Array.isArray(usage)).toBe(true);
+    if (!Array.isArray(usage)) throw new Error("expected cards");
+
+    const byId = Object.fromEntries(usage.map((card) => [card.providerId, card]));
+    expect(byId["omp"]).toMatchObject({
+      status: "unavailable",
+      error: "Token expired — will recover when OMP refreshes it",
+    });
+    expect(byId["omp-grok-build"]).toMatchObject({
+      status: "unavailable",
+      error: "Token expired — will recover when OMP refreshes it",
+    });
+
+    // No OAuth token endpoint may be called with OMP-stored refresh tokens.
+    expect(
+      requestedUrls.some((url) => url.includes("auth.x.ai") || url.includes("auth.openai.com")),
+    ).toBe(false);
+    expect(requestedUrls.some((url) => url.includes("platform.claude.com"))).toBe(false);
+  });
+
+  it("asks for re-authentication when the CLI also reports an auth failure", async () => {
+    if (!(await canRunSqlite3())) return;
+
+    const dir = mkdtempSync(join(tmpdir(), "omp-usage-"));
+    tempDirs.push(dir);
+    const dbPath = join(dir, "agent.db");
+
+    await createOauthCredentialDb(dbPath, "grok-build", {
+      access: "grok_expired",
+      refresh: "grok_refresh",
+      expires: Date.now() - 60_000,
+      email: "build@example.com",
+    });
+
+    const provider = new OmpQuotaProvider({
+      logger: createTestLogger(),
+      agentDbPath: dbPath,
+      usageCommandRunner: async () => ({
+        stdout: JSON.stringify({
+          reports: [],
+          accountsWithoutUsage: [
+            { provider: "grok-build", error: "refresh failed: invalid_grant" },
+          ],
+        }),
+        stderr: "",
+      }),
+    });
+
+    const usage = await provider.fetchUsage();
+    const cards = Array.isArray(usage) ? usage : [usage];
+
+    expect(cards[0]).toMatchObject({
+      providerId: "omp-grok-build",
+      status: "unavailable",
+      error: "Token expired — re-authenticate in OMP",
+    });
+  });
+
+  it("emits unavailable cards for disabled accounts without using their tokens", async () => {
+    if (!(await canRunSqlite3())) return;
+
+    const dir = mkdtempSync(join(tmpdir(), "omp-usage-"));
+    tempDirs.push(dir);
+    const dbPath = join(dir, "agent.db");
+
+    // Disabled grok-build: valid token + refresh token, but OMP disabled the row
+    // after its own refresh hit a revoked token. The token must never be used.
+    await createOauthCredentialDb(
+      dbPath,
+      "grok-build",
+      {
+        access: "grok_disabled_token",
+        refresh: "grok_disabled_refresh",
+        expires: Date.now() + 600_000,
+        email: "build@example.com",
+      },
+      "refresh token revoked",
+    );
+    // Disabled anthropic: no direct-API fetcher exists, but the card must still surface.
+    await createOauthCredentialDb(
+      dbPath,
+      "anthropic",
+      {
+        access: "claude_disabled_token",
+        refresh: "claude_disabled_refresh",
+        expires: Date.now() + 600_000,
+        email: "claude@example.com",
+      },
+      "user revoked",
+    );
+    // Disabled cursor WITH a CLI report: the CLI card wins (stay as-is).
+    await createOauthCredentialDb(
+      dbPath,
+      "cursor",
+      {
+        access: "cursor_disabled_token",
+        expires: Date.now() + 600_000,
+        email: "cursor@example.com",
+      },
+      "test disabled",
+    );
+
+    const requestedUrls: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      requestedUrls.push(String(input));
+      return new Response(null, { status: 404 });
+    });
+
+    const provider = new OmpQuotaProvider({
+      logger: createTestLogger(),
+      fetch: fetchMock as unknown as typeof fetch,
+      agentDbPath: dbPath,
+      usageCommandRunner: async () => ({
+        stdout: JSON.stringify({
+          generatedAt: Date.now(),
+          reports: [
+            {
+              provider: "cursor",
+              fetchedAt: Date.now(),
+              limits: [
+                {
+                  id: "cursor:usd:individual-auto",
+                  label: "Auto usage",
+                  amount: { used: 4.5, limit: 20, unit: "usd" },
+                },
+              ],
+              metadata: { email: "cursor@example.com" },
+            },
+          ],
+          accountsWithoutUsage: [],
+        }),
+        stderr: "",
+      }),
+    });
+
+    const usage = await provider.fetchUsage();
+    const cards = Array.isArray(usage) ? usage : [usage];
+    const byId = Object.fromEntries(cards.map((card) => [card.providerId, card]));
+
+    expect(byId["omp-grok-build"]).toMatchObject({
+      providerId: "omp-grok-build",
+      status: "unavailable",
+      error: "Account disabled in OMP — re-authenticate (refresh token revoked)",
+    });
+    expect(byId["omp-claude"]).toMatchObject({
+      providerId: "omp-claude",
+      status: "unavailable",
+      error: "Account disabled in OMP — re-authenticate (user revoked)",
+    });
+    // CLI-covered disabled account keeps its CLI card.
+    expect(byId["omp-cursor"]).toMatchObject({
+      providerId: "omp-cursor",
+      status: "available",
+      windows: [
+        expect.objectContaining({
+          id: "cursor:usd:individual-auto",
+          usedPct: expect.closeTo(22.5, 5),
+        }),
+      ],
+    });
+
+    // No billing or OAuth token endpoint may be called for disabled accounts.
+    expect(requestedUrls).toEqual([]);
   });
 });
 
@@ -648,6 +859,7 @@ async function createOauthCredentialDb(
   dbPath: string,
   provider: string,
   data: Record<string, unknown>,
+  disabledCause?: string,
 ): Promise<void> {
   const sqliteSpecifier: string = "node:sqlite";
   try {
@@ -656,19 +868,18 @@ async function createOauthCredentialDb(
     db.prepare(
       "CREATE TABLE IF NOT EXISTS auth_credentials (provider TEXT, data TEXT, updated_at INTEGER, identity_key TEXT, disabled_cause TEXT);",
     ).run();
-    db.prepare("INSERT INTO auth_credentials (provider, data, updated_at) VALUES (?, ?, ?);").run(
-      provider,
-      JSON.stringify(data),
-      Date.now(),
-    );
+    db.prepare(
+      "INSERT INTO auth_credentials (provider, data, updated_at, disabled_cause) VALUES (?, ?, ?, ?);",
+    ).run(provider, JSON.stringify(data), Date.now(), disabledCause ?? null);
     db.close();
     return;
   } catch {}
 
   const payload = JSON.stringify(data).replaceAll("'", "''");
+  const cause = disabledCause === undefined ? "NULL" : `'${disabledCause.replaceAll("'", "''")}'`;
   const sql = [
     "CREATE TABLE IF NOT EXISTS auth_credentials (provider TEXT, data TEXT, updated_at INTEGER, identity_key TEXT, disabled_cause TEXT);",
-    `INSERT INTO auth_credentials (provider, data, updated_at) VALUES ('${provider}', '${payload}', ${Date.now()});`,
+    `INSERT INTO auth_credentials (provider, data, updated_at, disabled_cause) VALUES ('${provider}', '${payload}', ${Date.now()}, ${cause});`,
   ].join("");
   await execFileAsync("sqlite3", [dbPath, sql], { timeout: 2_000 });
 }

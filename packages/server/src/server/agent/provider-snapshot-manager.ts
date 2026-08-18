@@ -295,6 +295,9 @@ export class ProviderSnapshotManager {
   hasProvider(provider: AgentProvider): boolean {
     return Object.prototype.hasOwnProperty.call(this.providerRegistry, provider);
   }
+  isProviderEnabled(provider: AgentProvider): boolean {
+    return this.providerRegistry[provider]?.enabled ?? false;
+  }
 
   getProviderLabel(provider: AgentProvider): string {
     return this.providerRegistry[provider]?.label ?? provider;

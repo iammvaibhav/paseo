@@ -18,6 +18,8 @@ export interface ProviderUsageServiceOptions {
   // Called after every completed fresh fetch (scheduled, client-triggered, or
   // RPC force-refresh) so the owner can push the updated usage to clients.
   onUsageRefreshed?: (result: ProviderUsageListResult) => void;
+  // Dynamic enablement resolver: consulted per refresh so config toggles apply live.
+  isFetcherEnabled?: (fetcher: ProviderUsageFetcher) => boolean;
 }
 
 export interface ProviderUsageListResult {
@@ -35,13 +37,14 @@ export class ProviderUsageService {
   private readonly refreshCadenceMs: { running: number; idle: number };
   private readonly hasRunningAgent: () => boolean;
   private readonly onUsageRefreshed: (result: ProviderUsageListResult) => void;
+  private readonly isFetcherEnabled: (fetcher: ProviderUsageFetcher) => boolean;
   private readonly now: () => number;
   private cached: { fetchedAtMs: number; result: ProviderUsageListResult } | null = null;
   private inFlight: Promise<ProviderUsageListResult> | null = null;
   private refreshTimer: NodeJS.Timeout | null = null;
   private lastRunningState: boolean | null = null;
+  private enablementChangedDuringFetch = false;
   private disposed = false;
-
   constructor(options: ProviderUsageServiceOptions) {
     this.logger = options.logger.child({ module: "provider-usage-service" });
     this.fetchers =
@@ -54,6 +57,7 @@ export class ProviderUsageService {
     this.refreshCadenceMs = options.refreshCadenceMs ?? DEFAULT_REFRESH_CADENCE_MS;
     this.hasRunningAgent = options.hasRunningAgent ?? (() => false);
     this.onUsageRefreshed = options.onUsageRefreshed ?? (() => {});
+    this.isFetcherEnabled = options.isFetcherEnabled ?? (() => true);
     this.now = options.now ?? Date.now;
   }
 
@@ -74,7 +78,13 @@ export class ProviderUsageService {
     const request = this.fetchFreshUsage(nowMs);
     this.inFlight = request;
     try {
-      return await request;
+      const result = await request;
+      if (this.enablementChangedDuringFetch) {
+        this.enablementChangedDuringFetch = false;
+        this.cached = null;
+        return await this.listUsage({ forceRefresh: true });
+      }
+      return result;
     } finally {
       if (this.inFlight === request) {
         this.inFlight = null;
@@ -123,6 +133,22 @@ export class ProviderUsageService {
     }
     void this.listUsage({ forceRefresh: true });
   }
+  /**
+   * The set of enabled providers has changed in configuration.
+   * Drops cached usage and triggers a fresh fetch so disabled provider cards
+   * disappear immediately and newly enabled ones are fetched and broadcast.
+   */
+  notifyProviderEnablementChanged(): void {
+    if (this.disposed) {
+      return;
+    }
+    this.cached = null;
+    if (this.inFlight) {
+      this.enablementChangedDuringFetch = true;
+      return;
+    }
+    void this.listUsage({ forceRefresh: true });
+  }
 
   dispose(): void {
     this.disposed = true;
@@ -156,11 +182,12 @@ export class ProviderUsageService {
   }
 
   private async fetchFreshUsage(nowMs: number): Promise<ProviderUsageListResult> {
-    const settled = await Promise.allSettled(this.fetchers.map((fetcher) => fetcher.fetchUsage()));
+    const activeFetchers = this.fetchers.filter((fetcher) => this.isFetcherEnabled(fetcher));
+    const settled = await Promise.allSettled(activeFetchers.map((fetcher) => fetcher.fetchUsage()));
     const fetchedAt = new Date(nowMs).toISOString();
     const providers: ProviderUsage[] = [];
     for (const [index, result] of settled.entries()) {
-      const fetcher = this.fetchers[index];
+      const fetcher = activeFetchers[index];
       if (result.status === "fulfilled") {
         const value = result.value;
         if (Array.isArray(value)) {

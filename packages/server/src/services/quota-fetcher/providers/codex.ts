@@ -91,6 +91,7 @@ function codexWindow(
 
 export class CodexQuotaProvider implements ProviderUsageFetcher {
   readonly providerId = "codex";
+  readonly agentProviderIds: readonly string[] = ["codex"];
   readonly displayName = "Codex";
 
   private readonly codexHome: string;

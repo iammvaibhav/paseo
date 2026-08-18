@@ -739,6 +739,26 @@ export class VoiceAssistantWebSocketServer {
       this.speech?.onReadinessChange((snapshot) => {
         this.publishSpeechReadiness(snapshot);
       }) ?? null;
+    this.providerUsageService = new ProviderUsageService({
+      logger: this.logger,
+      hasRunningAgent: () =>
+        this.agentManager.listAgents().some((agent) => agent.lifecycle === "running"),
+      onUsageRefreshed: (result) => this.broadcastProviderUsageUpdated(result),
+      isFetcherEnabled: (fetcher) => {
+        const agentProviderIds = fetcher.agentProviderIds ?? [fetcher.providerId];
+        return agentProviderIds.some((id) => this.providerSnapshotManager.isProviderEnabled(id));
+      },
+    });
+    this.providerUsageService.start();
+    this.unsubscribeProviderUsageAgentEvents = this.agentManager.subscribe(
+      (event) => {
+        if (event.type === "agent_state") {
+          this.providerUsageService.notifyAgentStatusChanged();
+        }
+      },
+      { replayState: false },
+    );
+
     const unsubscribeProviderConfig = attachMutableProviderConfigOwner({
       store: this.daemonConfigStore,
       providerSnapshotManager: this.providerSnapshotManager,
@@ -746,6 +766,7 @@ export class VoiceAssistantWebSocketServer {
     });
     const unsubscribeChange = this.daemonConfigStore.onChange((config) => {
       this.broadcastDaemonConfigChanged(config);
+      this.providerUsageService.notifyProviderEnablementChanged();
     });
     this.unsubscribeDaemonConfigChange = () => {
       unsubscribeProviderConfig();
@@ -764,23 +785,6 @@ export class VoiceAssistantWebSocketServer {
         this.logger.warn({ err, agentId: params.agentId }, "Failed to broadcast agent attention");
       });
     });
-
-    this.providerUsageService = new ProviderUsageService({
-      logger: this.logger,
-      hasRunningAgent: () =>
-        this.agentManager.listAgents().some((agent) => agent.lifecycle === "running"),
-      onUsageRefreshed: (result) => this.broadcastProviderUsageUpdated(result),
-    });
-    this.providerUsageService.start();
-    this.unsubscribeProviderUsageAgentEvents = this.agentManager.subscribe(
-      (event) => {
-        if (event.type === "agent_state") {
-          this.providerUsageService.notifyAgentStatusChanged();
-        }
-      },
-      { replayState: false },
-    );
-
     this.plannotatorAvailable = detectPlannotatorAvailability(this.logger);
 
     this.wss = this.createWebSocketServer(server, wsConfig, auth);

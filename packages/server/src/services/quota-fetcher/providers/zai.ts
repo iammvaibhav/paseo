@@ -24,6 +24,7 @@ interface ZaiQuotaProviderOptions {
 
 export class ZaiQuotaProvider implements ProviderUsageFetcher {
   readonly providerId = "zai";
+  readonly agentProviderIds: readonly string[] = ["zai"];
   readonly displayName = "Z.ai";
 
   private readonly logger: Logger;

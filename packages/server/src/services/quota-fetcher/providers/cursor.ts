@@ -159,6 +159,7 @@ async function readCursorTokenFromSqlite(homeDir: string, logger: Logger): Promi
 
 export class CursorQuotaProvider implements ProviderUsageFetcher {
   readonly providerId = "cursor";
+  readonly agentProviderIds: readonly string[] = ["cursor"];
   readonly displayName = "Cursor";
 
   private readonly logger: Logger;

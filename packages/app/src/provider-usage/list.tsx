@@ -25,9 +25,11 @@ function groupProviders(providers: ProviderUsage[]): ProviderUsage[] {
 export function ProviderUsageList({
   providers,
   listFetchedAt,
+  titleForUsage,
 }: {
   providers: ProviderUsage[];
   listFetchedAt?: string | null;
+  titleForUsage?: (usage: ProviderUsage) => string;
 }) {
   const groupedProviders = groupProviders(providers);
   return (
@@ -35,7 +37,11 @@ export function ProviderUsageList({
       {groupedProviders.map((usage, index) => (
         <Fragment key={`${usage.providerId}:${usage.accountEmail ?? ""}`}>
           {index > 0 ? <View style={styles.divider} /> : null}
-          <ProviderUsageCard usage={usage} listFetchedAt={listFetchedAt} />
+          <ProviderUsageCard
+            usage={usage}
+            listFetchedAt={listFetchedAt}
+            title={titleForUsage?.(usage)}
+          />
         </Fragment>
       ))}
     </View>

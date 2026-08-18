@@ -18,7 +18,6 @@ import {
   unavailableUsage,
   windowFromUsedPct,
 } from "../usage.js";
-import { refreshXaiOAuthToken } from "../token-refresh.js";
 
 const GROK_BILLING_BASE = "https://cli-chat-proxy.grok.com/v1/billing";
 const GROK_BILLING_HEADERS = {
@@ -215,6 +214,7 @@ interface ParsedGrokBilling {
 
 export class GrokQuotaProvider implements ProviderUsageFetcher {
   readonly providerId = "grok";
+  readonly agentProviderIds: readonly string[] = ["grok"];
   readonly displayName = "Grok";
 
   private readonly logger: Logger;
@@ -231,8 +231,6 @@ export class GrokQuotaProvider implements ProviderUsageFetcher {
     const envToken = process.env["GROK_API_KEY"] || process.env["GROK_TOKEN"];
     let token: string | null = envToken || null;
     let authEntry: GrokAuthEntry | null = null;
-    let refreshAttempted = false;
-    let refreshFailed = false;
 
     if (!token) {
       const resolved = await this.resolveAuthEntry();
@@ -245,24 +243,20 @@ export class GrokQuotaProvider implements ProviderUsageFetcher {
       }
       token = resolved.token;
       authEntry = resolved.authEntry;
-      refreshAttempted = resolved.refreshAttempted;
-      refreshFailed = resolved.refreshFailed;
     }
 
-    let headers = this.billingHeaders(token);
-    let [creditsRes, monthlyRes] = await this.fetchBillingResponses(headers);
+    const headers = this.billingHeaders(token);
+    const [creditsRes, monthlyRes] = await this.fetchBillingResponses(headers);
 
-    // If 401 and we have a refresh token (and haven't refreshed yet), try refreshing once
-    if (creditsRes.status === 401 && authEntry?.refreshToken && !refreshAttempted) {
-      refreshAttempted = true;
-      const refreshedToken = await this.refreshGrokAuthToken(authEntry);
-      if (refreshedToken) {
-        token = refreshedToken;
-        headers = this.billingHeaders(refreshedToken);
-        [creditsRes, monthlyRes] = await this.fetchBillingResponses(headers);
-      } else {
-        refreshFailed = true;
-      }
+    // The Grok CLI owns ~/.grok/auth.json and its refresh tokens rotate on every
+    // use: refreshing here would revoke the token the CLI has persisted and break
+    // its own refresh. A 401 is surfaced as an expired credential, never refreshed.
+    if (creditsRes.status === 401 || monthlyRes.status === 401) {
+      return unavailableUsage({
+        providerId: this.providerId,
+        displayName: this.displayName,
+        error: "Grok access token expired — re-authenticate in the Grok CLI",
+      });
     }
 
     const { windows, planLabel, balances, lastError } = await this.parseBillingResponses(
@@ -271,14 +265,10 @@ export class GrokQuotaProvider implements ProviderUsageFetcher {
     );
 
     if (windows.length === 0 && balances.length === 0) {
-      let finalError = lastError ?? "Grok usage unavailable";
-      if (refreshFailed) {
-        finalError = "Grok token expired and refresh failed (re-authentication required)";
-      }
       return unavailableUsage({
         providerId: this.providerId,
         displayName: this.displayName,
-        error: finalError,
+        error: lastError ?? "Grok usage unavailable",
       });
     }
 
@@ -301,37 +291,27 @@ export class GrokQuotaProvider implements ProviderUsageFetcher {
   }
 
   private async resolveAuthEntry(): Promise<
-    | { token: string; authEntry: GrokAuthEntry; refreshAttempted: boolean; refreshFailed: boolean }
-    | { error: string | null }
+    { token: string; authEntry: GrokAuthEntry } | { error: string | null }
   > {
     const readResult = await this.readGrokAuth();
     if (!readResult.entry) {
       return { error: readResult.error };
     }
     const authEntry = readResult.entry;
-    let token = authEntry.accessToken;
-    let refreshAttempted = false;
-    let refreshFailed = false;
 
     const isExpired =
       typeof authEntry.expiresAtMs === "number" && authEntry.expiresAtMs <= Date.now() + 60_000;
 
     if (isExpired) {
-      if (!authEntry.refreshToken) {
-        return {
-          error: "Grok access token expired and no refresh token found in ~/.grok/auth.json",
-        };
-      }
-      refreshAttempted = true;
-      const refreshedToken = await this.refreshGrokAuthToken(authEntry);
-      if (refreshedToken) {
-        token = refreshedToken;
-      } else {
-        refreshFailed = true;
-      }
+      // The Grok CLI owns these credentials and its refresh tokens rotate on use;
+      // Paseo must never refresh them, so an expired token is surfaced for the
+      // user to re-authenticate in the Grok CLI.
+      return {
+        error: "Grok access token expired — re-authenticate in the Grok CLI",
+      };
     }
 
-    return { token, authEntry, refreshAttempted, refreshFailed };
+    return { token: authEntry.accessToken, authEntry };
   }
 
   private billingHeaders(token: string): Record<string, string> {
@@ -350,16 +330,6 @@ export class GrokQuotaProvider implements ProviderUsageFetcher {
       fetchProviderApi(this.fetchApi, `${GROK_BILLING_BASE}?format=credits`, { headers }),
       fetchProviderApi(this.fetchApi, GROK_BILLING_BASE, { headers }),
     ]);
-  }
-
-  private async refreshGrokAuthToken(authEntry: GrokAuthEntry): Promise<string | null> {
-    if (!authEntry.refreshToken) return null;
-    const refreshed = await refreshXaiOAuthToken(this.fetchApi, authEntry.refreshToken);
-    if (!refreshed) return null;
-    authEntry.accessToken = refreshed.accessToken;
-    authEntry.refreshToken = refreshed.refreshToken ?? authEntry.refreshToken;
-    authEntry.expiresAtMs = refreshed.expiresAtMs;
-    return refreshed.accessToken;
   }
 
   private async parseBillingResponses(
