@@ -8,6 +8,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useIsCompactFormFactor } from "@/constants/layout";
+import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { useHosts } from "@/runtime/host-runtime";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { providerUsageCopy } from "./copy";
@@ -19,7 +21,6 @@ import {
   type HostProviderUsageReport,
   type ProviderUsageGroup,
 } from "./sidebar-menu-data";
-import type { ProviderUsageView } from "./types";
 import { useProviderUsage } from "./use-provider-usage";
 
 const ThemedGauge = withUnistyles(Gauge);
@@ -38,17 +39,21 @@ interface HostStatusSummary {
 
 function summarizeHostStatus(
   serverIds: readonly string[],
-  reports: ReadonlyMap<string, ProviderUsageView>,
+  reports: ReadonlyMap<string, HostProviderUsageReport>,
 ): HostStatusSummary {
   let loading = 0;
   let refreshing = 0;
   let failed = 0;
 
   for (const serverId of serverIds) {
-    const view = reports.get(serverId);
+    const report = reports.get(serverId);
+    const view = report?.view;
     if (!view || view.kind === "loading") loading += 1;
     else if (view.kind === "error") failed += 1;
-    else if (view.isRefreshing) refreshing += 1;
+    else {
+      if (report.enabledProviderIds === null) loading += 1;
+      if (view.isRefreshing) refreshing += 1;
+    }
   }
 
   return { loading, refreshing, failed };
@@ -72,10 +77,15 @@ function HostProviderUsageCollector({
   onReport: (report: HostProviderUsageReport) => void;
 }) {
   const { view, refresh } = useProviderUsage(serverId);
+  const { entries } = useProvidersSnapshot(serverId);
+  const enabledProviderIds = useMemo(
+    () => entries?.filter((entry) => entry.enabled).map((entry) => entry.provider) ?? null,
+    [entries],
+  );
 
   useEffect(() => {
-    onReport({ serverId, view });
-  }, [onReport, serverId, view]);
+    onReport({ serverId, view, enabledProviderIds });
+  }, [enabledProviderIds, onReport, serverId, view]);
 
   // Cached usage renders immediately; opening the panel only asks for fresher numbers.
   useEffect(() => {
@@ -131,12 +141,7 @@ function ProviderGroupChips({
   onSelect: (groupId: string) => void;
 }) {
   return (
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      style={styles.chipScroller}
-      contentContainerStyle={styles.chipRow}
-    >
+    <View style={styles.chipRow}>
       {groups.map((group) => (
         <ProviderGroupChip
           key={group.id}
@@ -145,25 +150,56 @@ function ProviderGroupChips({
           onSelect={onSelect}
         />
       ))}
+    </View>
+  );
+}
+
+function SelectedGroupCards({
+  group,
+  isCompact,
+}: {
+  group: ProviderUsageGroup;
+  isCompact: boolean;
+}) {
+  const list = (
+    <ProviderUsageList providers={group.providers} titleForUsage={cleanProviderUsageDisplayName} />
+  );
+  if (isCompact) return list;
+  return (
+    <ScrollView
+      style={styles.listScroll}
+      contentContainerStyle={styles.listScrollContent}
+      showsVerticalScrollIndicator
+    >
+      {list}
     </ScrollView>
   );
 }
 
 export function SidebarProviderUsageMenu() {
   const hosts = useHosts();
+  const isCompact = useIsCompactFormFactor();
   const serverIds = useMemo(() => hosts.map((host) => host.serverId), [hosts]);
   const [open, setOpen] = useState(false);
   const openRef = useRef(open);
   openRef.current = open;
   const [tooltipOpen, setTooltipOpen] = useState(false);
-  const [reports, setReports] = useState<ReadonlyMap<string, ProviderUsageView>>(() => new Map());
+  const [reports, setReports] = useState<ReadonlyMap<string, HostProviderUsageReport>>(
+    () => new Map(),
+  );
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
 
   const handleReport = useCallback((report: HostProviderUsageReport) => {
     setReports((current) => {
-      if (current.get(report.serverId) === report.view) return current;
+      const previous = current.get(report.serverId);
+      if (
+        previous?.view === report.view &&
+        previous.enabledProviderIds === report.enabledProviderIds
+      ) {
+        return current;
+      }
       const next = new Map(current);
-      next.set(report.serverId, report.view);
+      next.set(report.serverId, report);
       return next;
     });
   }, []);
@@ -171,8 +207,8 @@ export function SidebarProviderUsageMenu() {
   const readyReports = useMemo(
     () =>
       serverIds.flatMap((serverId) => {
-        const view = reports.get(serverId);
-        return view ? [{ serverId, view }] : [];
+        const report = reports.get(serverId);
+        return report ? [report] : [];
       }),
     [reports, serverIds],
   );
@@ -254,28 +290,26 @@ export function SidebarProviderUsageMenu() {
         align="end"
         offset={8}
         width={360}
-        maxHeight={560}
-        scrollable
         sheetTitle={providerUsageCopy.title}
         testID="sidebar-provider-usage-menu"
       >
-        <View style={styles.content}>
-          {selectedGroup ? (
-            <>
+        <View style={[styles.content, !isCompact && styles.popoverContent]}>
+          <View style={styles.header}>
+            {!isCompact ? <Text style={styles.title}>{providerUsageCopy.title}</Text> : null}
+            {selectedGroup ? (
               <ProviderGroupChips
                 groups={groups}
                 selectedGroupId={selectedGroup.id}
                 onSelect={setSelectedGroupId}
               />
-              <ProviderUsageList
-                providers={selectedGroup.providers}
-                titleForUsage={cleanProviderUsageDisplayName}
-              />
-            </>
+            ) : null}
+            {statusText ? <Text style={styles.hostStatus}>{statusText}</Text> : null}
+          </View>
+          {selectedGroup ? (
+            <SelectedGroupCards group={selectedGroup} isCompact={isCompact} />
           ) : (
             <Text style={styles.stateText}>{emptyState}</Text>
           )}
-          {statusText ? <Text style={styles.hostStatus}>{statusText}</Text> : null}
         </View>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -300,13 +334,29 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing[3],
     paddingVertical: theme.spacing[2],
   },
-  chipScroller: {
-    flexGrow: 0,
+  popoverContent: {
+    height: 480,
+  },
+  header: {
+    flexShrink: 0,
+    gap: theme.spacing[2],
+  },
+  title: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.base,
+    fontWeight: theme.fontWeight.medium,
   },
   chipRow: {
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
     gap: theme.spacing[1],
+  },
+  listScroll: {
+    flex: 1,
+  },
+  listScrollContent: {
+    paddingBottom: theme.spacing[1],
   },
   chip: {
     flexDirection: "row",
