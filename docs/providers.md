@@ -145,6 +145,8 @@ Kimi Code usage follows the CLI-managed credential file at `KIMI_CODE_HOME` or `
 
 OMP plan usage is multi-provider: the `omp` fetcher prefers `omp usage --json` and expands every authenticated OMP account with a usage report into separate cards (`omp`, `omp-claude`, `omp-antigravity`, `omp-codex`, …). Cursor is authenticated in OMP but currently has no `omp usage` endpoint, so the fetcher falls back to Cursor's dashboard API using the OMP-stored Cursor OAuth token. Antigravity is the opposite problem: `omp usage` _does_ report it, but only the short-window counters from `fetchAvailableModels` (often three ~0% "Daily" bars for Google/OpenAI/Anthropic). The AGY CLI's Models & Quota screen uses Cloud Code Assist `v1internal:retrieveUserQuotaSummary` instead, so the fetcher overrides `omp-antigravity` with that weekly + 5-hour summary using the OMP-stored `google-antigravity` OAuth token. If the CLI is unavailable, SuperGrok still falls back to reading `xai-oauth` from `~/.omp/agent/agent.db` (`OMP_HOME` override supported) and calling `cli-chat-proxy.grok.com/v1/billing`.
 
+Cursor usage reads the desktop `state.vscdb` token first, then `cursor-agent`'s `~/.config/cursor/auth.json`. Headless hosts only have the CLI file.
+
 ---
 
 ## ACP Provider Checklist
