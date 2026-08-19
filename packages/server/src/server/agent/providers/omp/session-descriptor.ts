@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants, type Dirent } from "node:fs";
-import { copyFile, open, readdir, readFile, stat } from "node:fs/promises";
+import { copyFile, open, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -480,6 +480,53 @@ function extractMessageText(content: unknown): string | null {
   return text || null;
 }
 
+export interface OmpSessionEntry {
+  type?: string;
+  id?: string;
+  parentId?: string | null;
+  timestamp?: string | number;
+  message?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export async function readActiveOmpEntryChain(
+  sessionFile: string,
+  activeEntryId?: string,
+): Promise<OmpSessionEntry[]> {
+  const content = await readFile(sessionFile, "utf8");
+  const entries = content.split("\n").flatMap((line) => {
+    if (!line.trim()) return [];
+    try {
+      const value = JSON.parse(line) as OmpSessionEntry;
+      return value && typeof value === "object" && typeof value.id === "string" ? [value] : [];
+    } catch {
+      return [];
+    }
+  });
+  if (entries.length === 0) return [];
+  const byId = new Map(entries.map((entry) => [entry.id!, entry]));
+  const parentIds = new Set(entries.flatMap((entry) => (entry.parentId ? [entry.parentId] : [])));
+  const leaves = entries.filter((entry) => !parentIds.has(entry.id!));
+  let current: OmpSessionEntry | undefined =
+    (activeEntryId ? byId.get(activeEntryId) : undefined) ?? leaves.at(-1) ?? entries.at(-1);
+  const chain: OmpSessionEntry[] = [];
+  const seen = new Set<string>();
+  while (current?.id && !seen.has(current.id)) {
+    chain.push(current);
+    seen.add(current.id);
+    current = current.parentId ? byId.get(current.parentId) : undefined;
+  }
+  return chain.toReversed();
+}
+
+export interface CloneOmpSessionFileOptions {
+  /**
+   * Number of user turns to include in the clone.
+   * When omitted or when the session has fewer user turns, the full session is cloned.
+   */
+  targetUserTurnCount?: number;
+}
+
 /**
  * Clone an OMP session JSONL to a fresh, uniquely-named file in the same
  * directory, using omp's own session naming convention (`<stamp>_<uuid>.jsonl`).
@@ -487,16 +534,26 @@ function extractMessageText(content: unknown): string | null {
  * owns the fork's history, and omp appends to it from then on. The source file
  * must already exist; callers resolve it first (see {@link resolveOmpSessionFile}).
  *
- * The clone asks for a copy-on-write reflink (APFS and other CoW filesystems)
- * so forking a long session is O(1) instead of a byte-for-byte read+write of
- * the whole JSONL — the fork RPC's latency is dominated by the provider resume
- * that follows, not the file copy. Filesystems that cannot reflink fall back
- * to a plain copy; either way the clone is a fully independent file that omp
- * can append to.
+ * When `targetUserTurnCount` is specified and the session has more turns, the
+ * active entry chain is sliced to that turn count. Otherwise, the clone asks
+ * for a copy-on-write reflink (APFS and other CoW filesystems) so forking a
+ * long session is O(1) instead of a byte-for-byte read+write of the whole JSONL.
  */
-export async function cloneOmpSessionFile(sessionFile: string): Promise<string> {
+export async function cloneOmpSessionFile(
+  sessionFile: string,
+  options?: CloneOmpSessionFileOptions,
+): Promise<string> {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const clonePath = path.join(path.dirname(sessionFile), `${stamp}_${randomUUID()}.jsonl`);
+
+  const targetUserTurnCount = options?.targetUserTurnCount;
+  if (targetUserTurnCount !== undefined) {
+    const sliced = await tryCloneOmpSessionFileBounded(sessionFile, clonePath, targetUserTurnCount);
+    if (sliced) {
+      return clonePath;
+    }
+  }
+
   try {
     await copyFile(sessionFile, clonePath, fsConstants.COPYFILE_FICLONE);
   } catch {
@@ -505,6 +562,61 @@ export async function cloneOmpSessionFile(sessionFile: string): Promise<string> 
     await copyFile(sessionFile, clonePath);
   }
   return clonePath;
+}
+
+async function tryCloneOmpSessionFileBounded(
+  sessionFile: string,
+  clonePath: string,
+  targetUserTurnCount: number,
+): Promise<boolean> {
+  const orderedChain = await readActiveOmpEntryChain(sessionFile).catch(() => []);
+  if (orderedChain.length === 0) {
+    return false;
+  }
+
+  const userEntries = orderedChain
+    .map((entry, index) => ({ index, entry }))
+    .filter((item) => item.entry.type === "message" && item.entry.message?.role === "user");
+
+  if (userEntries.length <= targetUserTurnCount) {
+    return false;
+  }
+
+  const cutIndex = userEntries[targetUserTurnCount]?.index ?? -1;
+  if (cutIndex <= 0) {
+    return false;
+  }
+
+  const slicedChain = orderedChain.slice(0, cutIndex);
+  const titleLine = await readLeadingTitleLine(sessionFile);
+  const outputLines: string[] = [];
+  if (titleLine) {
+    outputLines.push(titleLine);
+  }
+  for (const entry of slicedChain) {
+    outputLines.push(JSON.stringify(entry));
+  }
+  outputLines.push("");
+
+  await writeFile(clonePath, outputLines.join("\n"), "utf8");
+  return true;
+}
+
+async function readLeadingTitleLine(sessionFile: string): Promise<string | null> {
+  const handle = await open(sessionFile, "r").catch(() => null);
+  if (!handle) return null;
+  try {
+    const buffer = Buffer.alloc(HEAD_BYTES);
+    const { bytesRead } = await handle.read(buffer, 0, HEAD_BYTES, 0);
+    const chunk = buffer.subarray(0, bytesRead).toString("utf8");
+    const firstLine = chunk.split("\n")[0]?.trim();
+    if (firstLine?.startsWith('{"type":"title"')) {
+      return firstLine;
+    }
+    return null;
+  } finally {
+    await handle.close().catch(() => {});
+  }
 }
 
 /**
