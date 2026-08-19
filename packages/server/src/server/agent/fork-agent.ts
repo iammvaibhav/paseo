@@ -2,7 +2,7 @@ import { stat } from "node:fs/promises";
 
 import type { Logger } from "pino";
 
-import { buildAgentForkContextAttachment } from "./activity-curator.js";
+import { buildAgentForkContextAttachment, selectForkContextRows } from "./activity-curator.js";
 import type { AgentManager, ManagedAgent } from "./agent-manager.js";
 import { sendPromptToAgent } from "./agent-prompt.js";
 import type { AgentMetadata, AgentPromptInput, AgentSessionConfig } from "./agent-sdk-types.js";
@@ -54,10 +54,8 @@ export interface ForkAgentResult {
  *
  * Two strategies:
  * - native: the source is OMP with a durable session file. The file is copied
- *   to a fresh path and the fork resumes from the copy, so it keeps the
- *   provider's own history and cache. The copy carries the full session
- *   (append-only JSONL with completed turns); the boundary is best-effort and
- *   only honored on the snapshot path.
+ *   (or sliced to the requested boundary) to a fresh path and the fork resumes
+ *   from the copy, so it keeps the provider's own history and cache.
  * - snapshot: every other case (non-OMP source, provider switch, or no
  *   session file). A fresh session whose first prompt carries a chat-history
  *   text attachment rendered from the source timeline, sliced at exactly the
@@ -165,32 +163,23 @@ async function tryNativeSessionFork(params: {
   if (!handle || typeof handle.nativeHandle !== "string" || handle.nativeHandle.trim() === "") {
     return null;
   }
-  const rawHandle = handle.nativeHandle;
 
   // resolveOmpSessionFile finds the real file when the handle is a stub or
   // stale path; a file that still cannot be resolved has no durable session.
-  const resolvedFile = await resolveOmpSessionFile(rawHandle);
+  const resolvedFile = await resolveOmpSessionFile(handle.nativeHandle);
   const fileStat = await stat(resolvedFile).catch(() => null);
   if (!fileStat?.isFile() || fileStat.size === 0) {
     return null;
   }
 
-  const clonedFile = await cloneOmpSessionFile(resolvedFile);
+  const targetUserTurnCount = resolveForkTargetUserTurnCount(input);
+  const clonedFile = await cloneOmpSessionFile(
+    resolvedFile,
+    targetUserTurnCount !== undefined ? { targetUserTurnCount } : undefined,
+  );
   const forkConfig = buildNativeForkConfig({ input, source, provisionalTitle });
-  // Refresh the handle's metadata for the fork's config, mirroring the OMP
-  // session's own describePersistence field set (parsePersistenceMetadata
-  // consumes exactly these): resume merges handle metadata under the caller's
-  // config overrides, so the persisted handle can rebuild the fork
-  // faithfully after a daemon restart.
-  const metadata: AgentMetadata = {
-    cwd: forkConfig.cwd ?? source.cwd,
-    ...(forkConfig.model ? { model: forkConfig.model } : {}),
-    ...(forkConfig.thinkingOptionId ? { thinkingOptionId: forkConfig.thinkingOptionId } : {}),
-    ...(forkConfig.modeId ? { modeId: forkConfig.modeId } : {}),
-    ...(forkConfig.systemPrompt ? { systemPrompt: forkConfig.systemPrompt } : {}),
-    ...(forkConfig.systemPromptMode ? { systemPromptMode: forkConfig.systemPromptMode } : {}),
-    ...(forkConfig.toolAllowlist?.length ? { toolAllowlist: forkConfig.toolAllowlist } : {}),
-  };
+  const metadata = buildForkPersistenceMetadata(forkConfig, source.cwd);
+
   const resumed = await input.agentManager.resumeAgentFromPersistence(
     {
       provider: "omp",
@@ -207,6 +196,39 @@ async function tryNativeSessionFork(params: {
     },
   );
   return { agentId: resumed.id };
+}
+
+function resolveForkTargetUserTurnCount(input: ForkAgentInput): number | undefined {
+  if (!input.boundary?.cursor && !input.boundary?.messageId) {
+    return undefined;
+  }
+  const timeline = input.agentManager.fetchTimeline(input.sourceAgentId, {
+    direction: "tail",
+    limit: 0,
+  });
+  const selected = selectForkContextRows({
+    rows: timeline.rows,
+    cursorBoundary: input.boundary.cursor
+      ? { timelineEpoch: timeline.epoch, cursor: input.boundary.cursor }
+      : null,
+    boundaryMessageId: input.boundary.messageId,
+  });
+  return selected.items.filter((item) => item.type === "user_message").length;
+}
+
+function buildForkPersistenceMetadata(
+  forkConfig: Partial<AgentSessionConfig>,
+  defaultCwd: string,
+): AgentMetadata {
+  return {
+    cwd: forkConfig.cwd ?? defaultCwd,
+    ...(forkConfig.model ? { model: forkConfig.model } : {}),
+    ...(forkConfig.thinkingOptionId ? { thinkingOptionId: forkConfig.thinkingOptionId } : {}),
+    ...(forkConfig.modeId ? { modeId: forkConfig.modeId } : {}),
+    ...(forkConfig.systemPrompt ? { systemPrompt: forkConfig.systemPrompt } : {}),
+    ...(forkConfig.systemPromptMode ? { systemPromptMode: forkConfig.systemPromptMode } : {}),
+    ...(forkConfig.toolAllowlist?.length ? { toolAllowlist: forkConfig.toolAllowlist } : {}),
+  };
 }
 
 /**

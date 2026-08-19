@@ -7,7 +7,7 @@ import { expect, test, vi } from "vitest";
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import { AgentManager, type ManagedAgent } from "./agent-manager.js";
 import { AgentStorage } from "./agent-storage.js";
-import { forkAgentToSibling } from "./fork-agent.js";
+import { forkAgentToSibling, type ForkAgentBoundary } from "./fork-agent.js";
 import { wrapSessionProvider } from "./provider-registry.js";
 import type {
   AgentPersistenceHandle,
@@ -68,6 +68,7 @@ function createForkScenario(options?: {
   provider?: string;
   persistence?: AgentPersistenceHandle | null;
   currentModeId?: string | null;
+  timelineRows?: AgentTimelineRow[];
 }) {
   const provider = options?.provider ?? "omp";
   const source: ManagedAgent = Object.create(null);
@@ -113,7 +114,7 @@ function createForkScenario(options?: {
     "fetchTimeline",
     vi.fn(() => ({
       epoch: "epoch-1",
-      rows: [
+      rows: options?.timelineRows ?? [
         timelineRow(1, { type: "user_message", text: "first prompt" }),
         timelineRow(2, {
           type: "assistant_message",
@@ -140,12 +141,17 @@ function createForkScenario(options?: {
   );
 
   return {
-    fork: (overrides?: Partial<AgentSessionConfig>, labels?: Record<string, string>) =>
+    fork: (
+      overrides?: Partial<AgentSessionConfig>,
+      labels?: Record<string, string>,
+      boundary?: ForkAgentBoundary,
+    ) =>
       forkAgentToSibling({
         agentManager,
         agentStorage,
         sourceAgentId: "source-agent",
         text: "continue from here",
+        ...(boundary ? { boundary } : {}),
         ...(overrides ? { overrides } : {}),
         ...(labels ? { labels } : {}),
         logger: createTestLogger(),
@@ -282,6 +288,82 @@ test("forks an OMP source with a session file by cloning and resuming natively",
   expect(scenario.createAgent).not.toHaveBeenCalled();
   const prompt = scenario.firstTurnPrompt();
   expect(prompt).toBe("continue from here");
+});
+
+test("forks an OMP source natively with boundary slicing when boundary is provided", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "fork-agent-omp-bounded-"));
+  const sessionFile = path.join(dir, "multi-turn-session.jsonl");
+  const lines = [
+    JSON.stringify({ type: "title", v: 1, title: "Source Title" }),
+    JSON.stringify({ type: "session", id: "root", parentId: null, cwd: "/tmp/project" }),
+    JSON.stringify({
+      type: "message",
+      id: "user-1",
+      parentId: "root",
+      message: { role: "user", content: "turn 1 prompt" },
+    }),
+    JSON.stringify({
+      type: "message",
+      id: "assistant-1",
+      parentId: "user-1",
+      message: { role: "assistant", content: [{ type: "text", text: "turn 1 answer" }] },
+    }),
+    JSON.stringify({
+      type: "message",
+      id: "user-2",
+      parentId: "assistant-1",
+      message: { role: "user", content: "turn 2 prompt" },
+    }),
+    JSON.stringify({
+      type: "message",
+      id: "assistant-2",
+      parentId: "user-2",
+      message: { role: "assistant", content: [{ type: "text", text: "turn 2 answer" }] },
+    }),
+  ];
+  writeFileSync(sessionFile, lines.join("\n") + "\n");
+
+  const scenario = createForkScenario({
+    persistence: { provider: "omp", sessionId: "omp-session-1", nativeHandle: sessionFile },
+    timelineRows: [
+      timelineRow(1, { type: "user_message", text: "turn 1 prompt" }),
+      timelineRow(2, {
+        type: "assistant_message",
+        messageId: "assistant-1",
+        text: "turn 1 answer",
+      }),
+      timelineRow(3, { type: "user_message", text: "turn 2 prompt" }),
+      timelineRow(4, {
+        type: "assistant_message",
+        messageId: "assistant-2",
+        text: "turn 2 answer",
+      }),
+    ],
+  });
+
+  const result = await scenario.fork(undefined, undefined, {
+    cursor: { epoch: "epoch-1", seq: 2 },
+    messageId: "assistant-1",
+  });
+
+  expect(result).toEqual({
+    agentId: "forked-agent",
+    strategy: "native",
+  });
+
+  expect(scenario.resumeAgentFromPersistence).toHaveBeenCalledTimes(1);
+  const [handle] = scenario.resumeAgentFromPersistence.mock.calls[0] as unknown as [
+    AgentPersistenceHandle,
+  ];
+  expect(handle.nativeHandle).not.toBe(sessionFile);
+  expect(existsSync(handle.nativeHandle as string)).toBe(true);
+
+  const clonedContent = readFileSync(handle.nativeHandle as string, "utf8");
+  expect(clonedContent).toContain("turn 1 prompt");
+  expect(clonedContent).toContain("turn 1 answer");
+  // Turn 2 is omitted from the sliced clone
+  expect(clonedContent).not.toContain("turn 2 prompt");
+  expect(clonedContent).not.toContain("turn 2 answer");
 });
 
 test("native fork carries user overrides and current mode over config mode", async () => {
