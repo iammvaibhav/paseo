@@ -6,6 +6,7 @@ import {
   GitBranch,
   History,
   Home,
+  KanbanSquare,
   Plus,
   Radar,
   Search,
@@ -76,6 +77,7 @@ import {
   buildOpenProjectRoute,
   buildNewWorkspaceRoute,
   buildMissionControlRoute,
+  buildWorkRoute,
   buildSchedulesRoute,
   buildWebhooksRoute,
   buildSessionsRoute,
@@ -101,6 +103,7 @@ interface SidebarLabels {
   sessions: string;
   schedules: string;
   missionControl: string;
+  work: string;
   webhooks: string;
   closeSidebar: string;
 }
@@ -134,6 +137,8 @@ interface SidebarSharedProps {
   hasMissionControl: boolean;
   /** Two-segment badge: working + ready-for-review counts across all hosts. */
   missionControlBadges: readonly SidebarHeaderRowBadgeSegment[];
+  /** Any connected host advertises features.workBoard — gates the Work row. */
+  hasWork: boolean;
 }
 
 interface MobileSidebarProps extends SidebarSharedProps {
@@ -144,6 +149,7 @@ interface MobileSidebarProps extends SidebarSharedProps {
   handleViewSchedulesNavigate: () => void;
   handleViewWebhooksNavigate: () => void;
   handleViewMissionControlNavigate: () => void;
+  handleViewWorkNavigate: () => void;
 }
 
 interface DesktopSidebarProps extends SidebarSharedProps {
@@ -153,6 +159,7 @@ interface DesktopSidebarProps extends SidebarSharedProps {
   handleViewSchedules: () => void;
   handleViewWebhooks: () => void;
   handleViewMissionControl: () => void;
+  handleViewWork: () => void;
 }
 
 export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boolean }) {
@@ -258,9 +265,14 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
     router.push(buildMissionControlRoute());
   }, []);
 
+  const handleViewWorkNavigate = useCallback(() => {
+    router.push(buildWorkRoute());
+  }, []);
+
   const hosts = useHosts();
   const hostServerIds = useMemo(() => hosts.map((host) => host.serverId), [hosts]);
   const missionControlFeatureMap = useHostFeatureMap(hostServerIds, "missionControl");
+  const workFeatureMap = useHostFeatureMap(hostServerIds, "workBoard");
   const hostConnectionStatuses = useHostRuntimeConnectionStatuses(hostServerIds);
   const hasMissionControl = useMemo(
     () =>
@@ -270,6 +282,15 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
           missionControlFeatureMap.get(host.serverId) === true,
       ),
     [hostConnectionStatuses, hosts, missionControlFeatureMap],
+  );
+  const hasWork = useMemo(
+    () =>
+      hosts.some(
+        (host) =>
+          hostConnectionStatuses.get(host.serverId) === "online" &&
+          workFeatureMap.get(host.serverId) === true,
+      ),
+    [hostConnectionStatuses, hosts, workFeatureMap],
   );
   const { counts } = useMissionControlLifecycle({ enabled: hasMissionControl });
   const missionControlBadges = useMemo(
@@ -302,6 +323,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
       sessions: t("sidebar.sections.sessions"),
       schedules: t("sidebar.sections.schedules"),
       missionControl: t("sidebar.sections.missionControl"),
+      work: t("sidebar.sections.work"),
       webhooks: t("sidebar.sections.webhooks"),
       closeSidebar: t("sidebar.actions.closeSidebar"),
     }),
@@ -328,6 +350,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
     newWorkspaceKeys,
     hasMissionControl,
     missionControlBadges,
+    hasWork,
   };
 
   if (isCompactLayout) {
@@ -347,6 +370,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
           handleViewSchedulesNavigate={handleViewSchedulesNavigate}
           handleViewWebhooksNavigate={handleViewWebhooksNavigate}
           handleViewMissionControlNavigate={handleViewMissionControlNavigate}
+          handleViewWorkNavigate={handleViewWorkNavigate}
         />
       </RetainedPanelActivity>
     );
@@ -367,6 +391,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
         handleViewSchedules={handleViewSchedulesNavigate}
         handleViewWebhooks={handleViewWebhooksNavigate}
         handleViewMissionControl={handleViewMissionControlNavigate}
+        handleViewWork={handleViewWorkNavigate}
       />
     </RetainedPanelActivity>
   );
@@ -730,10 +755,12 @@ function MobileSidebar({
   closeSidebar,
   hasMissionControl,
   missionControlBadges,
+  hasWork,
   handleViewMoreNavigate,
   handleViewSchedulesNavigate,
   handleViewWebhooksNavigate,
   handleViewMissionControlNavigate,
+  handleViewWorkNavigate,
 }: MobileSidebarProps) {
   const pathname = usePathname();
   const hasActiveHostFilter = useSidebarViewStore((state) => state.hostFilters.length > 0);
@@ -741,6 +768,7 @@ function MobileSidebar({
   const isSchedulesActive = pathname.includes("/schedules");
   const isWebhooksActive = pathname.includes("/webhooks");
   const isMissionControlActive = pathname.includes("/mission-control");
+  const isWorkActive = pathname.includes("/work");
   const { gesture: closeGesture, gestureRef: closeGestureRef } = useCloseAgentListGesture();
   const dragGestureHostPresented = useIsMobilePanelPresented("agent-list");
 
@@ -763,6 +791,11 @@ function MobileSidebar({
     closeSidebar();
     handleViewMissionControlNavigate();
   }, [closeSidebar, handleViewMissionControlNavigate]);
+
+  const handleViewWork = useCallback(() => {
+    closeSidebar();
+    handleViewWorkNavigate();
+  }, [closeSidebar, handleViewWorkNavigate]);
 
   const handleWorkspacePress = useCallback(() => {
     closeSidebar();
@@ -793,6 +826,16 @@ function MobileSidebar({
             shortcutKeys={newWorkspaceKeys}
             onBeforeNavigate={closeSidebar}
           />
+          {hasWork ? (
+            <SidebarHeaderRow
+              icon={KanbanSquare}
+              label={labels.work}
+              onPress={handleViewWork}
+              isActive={isWorkActive}
+              testID="sidebar-work"
+              variant="compact"
+            />
+          ) : null}
           {hasMissionControl ? (
             <SidebarHeaderRow
               icon={Radar}
@@ -915,10 +958,12 @@ function DesktopSidebar({
   active,
   hasMissionControl,
   missionControlBadges,
+  hasWork,
   handleViewMore,
   handleViewSchedules,
   handleViewWebhooks,
   handleViewMissionControl,
+  handleViewWork,
 }: DesktopSidebarProps) {
   const ownsTopLeft = useOwnsWindowChromeCorner("top-left");
   const pathname = usePathname();
@@ -927,6 +972,7 @@ function DesktopSidebar({
   const isSchedulesActive = pathname.includes("/schedules");
   const isWebhooksActive = pathname.includes("/webhooks");
   const isMissionControlActive = pathname.includes("/mission-control");
+  const isWorkActive = pathname.includes("/work");
   const sidebarWidth = usePanelStore((state) => state.sidebarWidth);
   const setSidebarWidth = usePanelStore((state) => state.setSidebarWidth);
   const { width: viewportWidth } = useWindowDimensions();
@@ -1040,6 +1086,16 @@ function DesktopSidebar({
               variant="compact"
               shortcutKeys={newWorkspaceKeys}
             />
+            {hasWork ? (
+              <SidebarHeaderRow
+                icon={KanbanSquare}
+                label={labels.work}
+                onPress={handleViewWork}
+                isActive={isWorkActive}
+                testID="sidebar-work"
+                variant="compact"
+              />
+            ) : null}
             {hasMissionControl ? (
               <SidebarHeaderRow
                 icon={Radar}

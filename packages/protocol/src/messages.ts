@@ -115,6 +115,62 @@ import {
   MissionControlToolsExecuteRequestSchema,
   MissionControlToolsExecuteResponseSchema,
 } from "./mission-control/types.js";
+import {
+  WorkProjectListRequestSchema,
+  WorkItemListRequestSchema,
+  WorkItemGetRequestSchema,
+  WorkItemCreateRequestSchema,
+  WorkItemUpdateRequestSchema,
+  WorkItemDeleteRequestSchema,
+  WorkItemMoveRequestSchema,
+  WorkItemDispatchRequestSchema,
+  WorkCommentListRequestSchema,
+  WorkCommentCreateRequestSchema,
+  WorkActivityListRequestSchema,
+  WorkLabelListRequestSchema,
+  WorkLabelUpsertRequestSchema,
+  WorkLabelDeleteRequestSchema,
+  WorkPageListRequestSchema,
+  WorkPageGetRequestSchema,
+  WorkPageUpsertRequestSchema,
+  WorkPageDeleteRequestSchema,
+  WorkDraftListRequestSchema,
+  WorkDraftCreateRequestSchema,
+  WorkDraftPromoteRequestSchema,
+  WorkStickyListRequestSchema,
+  WorkStickyUpsertRequestSchema,
+  WorkStickyDeleteRequestSchema,
+  WorkViewListRequestSchema,
+  WorkViewUpsertRequestSchema,
+  WorkProjectListResponseSchema,
+  WorkItemListResponseSchema,
+  WorkItemGetResponseSchema,
+  WorkItemCreateResponseSchema,
+  WorkItemUpdateResponseSchema,
+  WorkItemDeleteResponseSchema,
+  WorkItemMoveResponseSchema,
+  WorkItemDispatchResponseSchema,
+  WorkCommentListResponseSchema,
+  WorkCommentCreateResponseSchema,
+  WorkActivityListResponseSchema,
+  WorkLabelListResponseSchema,
+  WorkLabelUpsertResponseSchema,
+  WorkLabelDeleteResponseSchema,
+  WorkPageListResponseSchema,
+  WorkPageGetResponseSchema,
+  WorkPageUpsertResponseSchema,
+  WorkPageDeleteResponseSchema,
+  WorkDraftListResponseSchema,
+  WorkDraftCreateResponseSchema,
+  WorkDraftPromoteResponseSchema,
+  WorkStickyListResponseSchema,
+  WorkStickyUpsertResponseSchema,
+  WorkStickyDeleteResponseSchema,
+  WorkViewListResponseSchema,
+  WorkViewUpsertResponseSchema,
+  WorkItemUpdatedMessageSchema,
+  WorkProjectUpdatedMessageSchema,
+} from "./work/types.js";
 export {
   MissionControlEventSchema,
   MissionControlEventKindSchema,
@@ -455,6 +511,12 @@ export const MutableDaemonConfigSchema = z
     skills: z.object({ selection: AgentSkillSelectionSchema.optional() }).strict().optional(),
     pluginsEnabled: z.boolean().optional(),
     plugins: z.record(PluginIdSchema, PluginSourceSchema).optional(),
+    work: z
+      .object({
+        autoPickupConcurrency: z.number().int().min(1).max(100).default(3),
+      })
+      .passthrough()
+      .optional(),
   })
   .passthrough();
 
@@ -478,6 +540,12 @@ export const MutableDaemonConfigPatchSchema = z
     composerPreferences: ComposerPreferencesSchema.optional(),
     pluginsEnabled: z.boolean().optional(),
     plugins: z.record(PluginIdSchema, PluginSourceSchema).optional(),
+    work: z
+      .object({
+        autoPickupConcurrency: z.number().int().min(1).max(100).optional(),
+      })
+      .passthrough()
+      .optional(),
   })
   .partial()
   .passthrough();
@@ -3566,8 +3634,33 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   MissionControlTagMessageRequestSchema,
   MissionControlPeerTimelineRequestSchema,
   MissionControlToolsExecuteRequestSchema,
+  WorkProjectListRequestSchema,
+  WorkItemListRequestSchema,
+  WorkItemGetRequestSchema,
+  WorkItemCreateRequestSchema,
+  WorkItemUpdateRequestSchema,
+  WorkItemDeleteRequestSchema,
+  WorkItemMoveRequestSchema,
+  WorkItemDispatchRequestSchema,
+  WorkCommentListRequestSchema,
+  WorkCommentCreateRequestSchema,
+  WorkActivityListRequestSchema,
+  WorkLabelListRequestSchema,
+  WorkLabelUpsertRequestSchema,
+  WorkLabelDeleteRequestSchema,
+  WorkPageListRequestSchema,
+  WorkPageGetRequestSchema,
+  WorkPageUpsertRequestSchema,
+  WorkPageDeleteRequestSchema,
+  WorkDraftListRequestSchema,
+  WorkDraftCreateRequestSchema,
+  WorkDraftPromoteRequestSchema,
+  WorkStickyListRequestSchema,
+  WorkStickyUpsertRequestSchema,
+  WorkStickyDeleteRequestSchema,
+  WorkViewListRequestSchema,
+  WorkViewUpsertRequestSchema,
 ]);
-
 export type SessionInboundMessage = z.infer<typeof SessionInboundMessageSchema>;
 
 // ============================================================================
@@ -3874,6 +3967,8 @@ export const ServerInfoStatusPayloadSchema = z
         agentProfiles: z.boolean().optional(),
         // COMPAT(agentConfigApply): added in v0.3.2, remove gate after 2027-02-11.
         agentConfigApply: z.boolean().optional(),
+        // COMPAT(workBoard): added in v0.5.0, remove after 2027-08-19.
+        workBoard: z.boolean().optional(),
       })
       .optional(),
   })
@@ -6927,6 +7022,34 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   MissionControlTagMessageResponseSchema,
   MissionControlPeerTimelineResponseSchema,
   MissionControlToolsExecuteResponseSchema,
+  WorkProjectListResponseSchema,
+  WorkItemListResponseSchema,
+  WorkItemGetResponseSchema,
+  WorkItemCreateResponseSchema,
+  WorkItemUpdateResponseSchema,
+  WorkItemDeleteResponseSchema,
+  WorkItemMoveResponseSchema,
+  WorkItemDispatchResponseSchema,
+  WorkCommentListResponseSchema,
+  WorkCommentCreateResponseSchema,
+  WorkActivityListResponseSchema,
+  WorkLabelListResponseSchema,
+  WorkLabelUpsertResponseSchema,
+  WorkLabelDeleteResponseSchema,
+  WorkPageListResponseSchema,
+  WorkPageGetResponseSchema,
+  WorkPageUpsertResponseSchema,
+  WorkPageDeleteResponseSchema,
+  WorkDraftListResponseSchema,
+  WorkDraftCreateResponseSchema,
+  WorkDraftPromoteResponseSchema,
+  WorkStickyListResponseSchema,
+  WorkStickyUpsertResponseSchema,
+  WorkStickyDeleteResponseSchema,
+  WorkViewListResponseSchema,
+  WorkViewUpsertResponseSchema,
+  WorkItemUpdatedMessageSchema,
+  WorkProjectUpdatedMessageSchema,
   DaemonUpdateProgressMessageSchema,
   DaemonUpdateResponseSchema,
 ]);
