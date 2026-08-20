@@ -91,6 +91,7 @@ export function buildWorkspaceTabSnapshot(input: {
   terminalsHydrated: boolean;
   knownTerminalIds: Iterable<string>;
   standaloneTerminalIds: Iterable<string>;
+  hasActivePendingTerminalCreate: boolean;
   hasActivePendingDraftCreate: boolean;
 }): WorkspaceTabSnapshot {
   return {
@@ -101,6 +102,7 @@ export function buildWorkspaceTabSnapshot(input: {
     knownAgentIds: input.agentVisibility.knownAgentIds,
     knownTerminalIds: input.knownTerminalIds,
     standaloneTerminalIds: input.standaloneTerminalIds,
+    hasActivePendingTerminalCreate: input.hasActivePendingTerminalCreate,
     hasActivePendingDraftCreate: input.hasActivePendingDraftCreate,
   };
 }

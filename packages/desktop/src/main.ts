@@ -52,6 +52,7 @@ import {
   registerBrowserEditorOriginIpc,
 } from "./features/browser-editor-origins.js";
 import { registerEditorTargetHandlers } from "./features/editor-targets/ipc.js";
+import { resolveAppIconPath } from "./features/stamped-icon.js";
 import { setupApplicationMenu } from "./features/menu.js";
 import {
   BROWSER_NEW_TAB_REQUEST_EVENT,
@@ -677,11 +678,15 @@ function getWindowIconCandidates(): string[] {
   }
   if (process.platform === "win32") {
     return [
+      path.resolve(__dirname, "../assets/icon-dev.png"),
       path.resolve(__dirname, "../assets/icon.ico"),
       path.resolve(__dirname, "../assets/icon.png"),
     ];
   }
-  return [path.resolve(__dirname, "../assets/icon.png")];
+  return [
+    path.resolve(__dirname, "../assets/icon-dev.png"),
+    path.resolve(__dirname, "../assets/icon.png"),
+  ];
 }
 
 function getWindowIconPath(): string | null {
@@ -689,12 +694,40 @@ function getWindowIconPath(): string | null {
   return candidates.find((candidate) => existsSync(candidate)) ?? null;
 }
 
-function applyAppIcon(): void {
+function getDevBuildLabel(): string | null {
+  if (app.isPackaged) {
+    return null;
+  }
+  return process.env.EXPO_PUBLIC_PASEO_DEV_BUILD_LABEL?.trim() || null;
+}
+
+let cachedEffectiveIconPath: string | null = null;
+
+async function getEffectiveAppIconPath(): Promise<string | null> {
+  if (cachedEffectiveIconPath !== null) {
+    return cachedEffectiveIconPath;
+  }
+  const baseIconPath = getWindowIconPath();
+  if (app.isPackaged || !baseIconPath) {
+    cachedEffectiveIconPath = baseIconPath;
+    return baseIconPath;
+  }
+  const devLabel = getDevBuildLabel();
+  cachedEffectiveIconPath = await resolveAppIconPath({
+    isPackaged: false,
+    baseIconPath,
+    devLabel,
+    cacheDir: app.getPath("userData"),
+  });
+  return cachedEffectiveIconPath;
+}
+
+async function applyAppIcon(): Promise<void> {
   if (process.platform !== "darwin") {
     return;
   }
 
-  const iconPath = getWindowIconPath();
+  const iconPath = await getEffectiveAppIconPath();
   if (!iconPath) {
     return;
   }
@@ -722,7 +755,7 @@ async function createWindow(
     restoreWindowState?: boolean;
   } = {},
 ): Promise<BrowserWindow> {
-  const iconPath = getWindowIconPath();
+  const iconPath = await getEffectiveAppIconPath();
   const systemTheme = resolveSystemWindowTheme();
 
   // Only the first window of a session restores and persists saved geometry.
@@ -1003,7 +1036,7 @@ async function bootstrap(): Promise<void> {
     return net.fetch(pathToFileURL(filePath).toString());
   });
 
-  applyAppIcon();
+  await applyAppIcon();
   setupApplicationMenu({
     onNewWindow: () => {
       void createWindow().catch((error) => {

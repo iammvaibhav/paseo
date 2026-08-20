@@ -1,22 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  View,
-  Text,
-  Pressable,
-  useWindowDimensions,
-  StyleSheet as RNStyleSheet,
-} from "react-native";
+import { useCallback, useMemo, useState } from "react";
+import { View, Text, Pressable } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Animated, { useAnimatedStyle, useSharedValue, runOnJS } from "react-native-reanimated";
-import { scheduleOnRN } from "react-native-worklets";
-import { Gesture } from "react-native-gesture-handler";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { HardDrive, X } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
-import { formatPrTabLabel, PullRequestTabIcon, usePrPaneData } from "@/git/pull-request-panel";
+import { formatPrTabLabel, PullRequestTabIcon } from "@/git/pull-request-panel";
 import type { Forge } from "@/git/forge";
-import type { UsePrPaneDataResult } from "@/git/pull-request-panel/use-data";
-import { usePanelStore, selectIsFileExplorerOpen, type ExplorerTab } from "@/stores/panel-store";
+import {
+  usePanelStore,
+  selectIsCompactFileExplorerOpen,
+  type ExplorerTab,
+} from "@/stores/panel-store";
 import { useCloseFileExplorerGesture } from "@/mobile-panels/gestures";
 import { MobilePanelOverlay } from "@/mobile-panels/presentation";
 import {
@@ -28,20 +22,14 @@ import { GitDiffPane } from "@/git/diff-pane";
 import { FileExplorerPane } from "./file-explorer-pane";
 import { useKeyboardShiftStyle } from "@/hooks/use-keyboard-shift-style";
 import { shouldUseCompactExplorerKeyboardPadding } from "@/hooks/keyboard-shift-policy";
-import { useHasOwnedWindowChromeObstruction, WindowChromeSafeArea } from "@/utils/desktop-window";
+import { WindowChromeSafeArea } from "@/utils/desktop-window";
 import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
 import { RetainedPanel, RetainedPanelActivity } from "@/components/retained-panel";
 import { getIsElectron } from "@/constants/platform";
 import { useMountedTabSet } from "@/screens/workspace/use-mounted-tab-set";
-
-import { SidebarResizeHandle } from "@/components/sidebar-resize-handle";
-import { resolveDesktopExplorerWidth } from "@/components/desktop-sidebar-layout";
 import { useSubmoduleContext } from "@/git/submodule-context";
 import { SubmodulePicker } from "@/git/submodule-picker";
-import {
-  SIDEBAR_RESIZE_ACTIVATION_OFFSET,
-  SIDEBAR_RESIZE_FAIL_OFFSET,
-} from "@/components/sidebar-resize-handle-layout";
+import { usePullRequestPanelAvailability } from "@/panels/pull-request-availability";
 import { PullRequestContent } from "@/panels/pull-request";
 import { useAddFileToChat } from "@/panels/use-add-file-to-chat";
 
@@ -91,7 +79,7 @@ export function CompactExplorerSidebar({
 }: ExplorerSidebarProps) {
   const { theme } = useUnistyles();
   const insets = useSafeAreaInsets();
-  const isOpen = usePanelStore((state) => selectIsFileExplorerOpen(state, { isCompact: true }));
+  const isOpen = usePanelStore(selectIsCompactFileExplorerOpen);
   const showMobileAgent = usePanelStore((state) => state.showMobileAgent);
   const { explorerTab, handleTabPress } = useExplorerSidebarSharedState({
     serverId,
@@ -158,127 +146,6 @@ export function CompactExplorerSidebar({
         />
       </MobilePanelOverlay>
     </RetainedPanelActivity>
-  );
-}
-
-export function ExplorerSidebar({
-  serverId,
-  workspaceId,
-  workspaceRoot,
-  isGit,
-  onOpenFile,
-  onOpenDiff,
-  onOpenHostFile,
-}: ExplorerSidebarProps) {
-  const insets = useSafeAreaInsets();
-  const explorerWidth = usePanelStore((state) => state.explorerWidth);
-  const setExplorerWidth = usePanelStore((state) => state.setExplorerWidth);
-  const isOpen = usePanelStore((state) => selectIsFileExplorerOpen(state, { isCompact: false }));
-  const closeDesktopFileExplorer = usePanelStore((state) => state.closeDesktopFileExplorer);
-  const { explorerTab, handleTabPress } = useExplorerSidebarSharedState({
-    serverId,
-    workspaceRoot,
-    isGit,
-  });
-  const { width: viewportWidth } = useWindowDimensions();
-  const visibleExplorerWidth = resolveDesktopExplorerWidth({
-    requestedWidth: explorerWidth,
-    viewportWidth,
-  });
-  const startWidthRef = useRef(visibleExplorerWidth);
-  const resizeWidth = useSharedValue(visibleExplorerWidth);
-  const [resizePressed, setResizePressed] = useState(false);
-  const showResizeGrip = useCallback(() => setResizePressed(true), []);
-  const hideResizeGrip = useCallback(() => setResizePressed(false), []);
-
-  useEffect(() => {
-    resizeWidth.value = visibleExplorerWidth;
-  }, [resizeWidth, visibleExplorerWidth]);
-
-  const handleDesktopClose = useCallback(() => {
-    logExplorerSidebar("handleClose", {
-      reason: "desktop-close-button",
-      isOpen,
-    });
-    closeDesktopFileExplorer();
-  }, [closeDesktopFileExplorer, isOpen]);
-
-  const resizeGesture = useMemo(
-    () =>
-      Gesture.Pan()
-        .enabled(true)
-        .hitSlop({ left: 8, right: 8, top: 0, bottom: 0 })
-        .onBegin(() => {
-          scheduleOnRN(showResizeGrip);
-        })
-        // See the left sidebar's gesture: horizontal intent only, with the start
-        // width anchored to the activation translation so the threshold is free.
-        .activeOffsetX([-SIDEBAR_RESIZE_ACTIVATION_OFFSET, SIDEBAR_RESIZE_ACTIVATION_OFFSET])
-        .failOffsetY([-SIDEBAR_RESIZE_FAIL_OFFSET, SIDEBAR_RESIZE_FAIL_OFFSET])
-        .onStart((event) => {
-          startWidthRef.current = visibleExplorerWidth + event.translationX;
-          resizeWidth.value = visibleExplorerWidth;
-        })
-        .onUpdate((event) => {
-          const newWidth = startWidthRef.current - event.translationX;
-          resizeWidth.value = resolveDesktopExplorerWidth({
-            requestedWidth: newWidth,
-            viewportWidth,
-          });
-        })
-        .onEnd(() => {
-          runOnJS(setExplorerWidth)(resizeWidth.value);
-        })
-        .onFinalize(() => {
-          scheduleOnRN(hideResizeGrip);
-        }),
-    [
-      hideResizeGrip,
-      resizeWidth,
-      setExplorerWidth,
-      showResizeGrip,
-      viewportWidth,
-      visibleExplorerWidth,
-    ],
-  );
-
-  const resizeAnimatedStyle = useAnimatedStyle(() => ({
-    width: resizeWidth.value,
-  }));
-  const desktopSidebarStyle = useMemo(
-    () => [explorerStaticStyles.desktopSidebar, resizeAnimatedStyle, { paddingTop: insets.top }],
-    [resizeAnimatedStyle, insets.top],
-  );
-
-  if (!isOpen) {
-    return null;
-  }
-
-  return (
-    <Animated.View style={desktopSidebarStyle}>
-      <View style={[styles.desktopSidebarBorder, { flex: 1 }]}>
-        <SidebarResizeHandle
-          edge="left"
-          gesture={resizeGesture}
-          pressed={resizePressed}
-          testID="explorer-sidebar-resize-handle"
-        />
-
-        <ExplorerSidebarContent
-          activeTab={explorerTab}
-          onTabPress={handleTabPress}
-          onClose={handleDesktopClose}
-          serverId={serverId}
-          workspaceId={workspaceId}
-          workspaceRoot={workspaceRoot}
-          isGit={isGit}
-          isOpen={isOpen}
-          onOpenFile={onOpenFile}
-          onOpenDiff={onOpenDiff}
-          onOpenHostFile={onOpenHostFile}
-        />
-      </View>
-    </Animated.View>
   );
 }
 
@@ -464,13 +331,9 @@ function ExplorerContentArea({
   onOpenFile?: (filePath: string) => void;
   onOpenDiff?: (filePath: string, baseRef: string | null) => void;
   onOpenHostFile: (filePath: string) => void;
-  prPane: UsePrPaneDataResult;
+  prPane: ReturnType<typeof usePullRequestPanelAvailability>["prPane"];
 }) {
   const { addFile, canAddToChat } = useAddFileToChat({ serverId, workspaceId });
-  // The changes and files panes are rooted at the selected submodule, so the
-  // paths they hand back are relative to it. Everything downstream — the
-  // workspace file tab, VS Code Web, chat attachments — resolves paths against
-  // the workspace root.
   const submodulePrefix = selectedSubmodule ? `${selectedSubmodule}/` : "";
   const handleOpenFile = useMemo(
     () =>
@@ -571,21 +434,20 @@ function ExplorerSidebarContent({
 }: SidebarContentProps) {
   const { theme } = useUnistyles();
   const { t } = useTranslation();
-  const hasRightWindowControls = useHasOwnedWindowChromeObstruction("top-right");
   const [showHostFiles, setShowHostFiles] = useState(false);
 
   const submoduleState = useSubmoduleContext({ serverId, workspaceRoot, isGit, enabled: isOpen });
   const { effectiveCwd, submodules, hasSubmodules, selectedSubmodule, setSelectedSubmodule } =
     submoduleState;
 
-  const canQueryPullRequest = isGit && Boolean(effectiveCwd);
-  const prPane = usePrPaneData({
+  const { prPane, showPullRequest: showPrTab } = usePullRequestPanelAvailability({
     serverId,
     cwd: effectiveCwd,
-    enabled: canQueryPullRequest && isOpen,
-    timelineEnabled: activeTab === "pr" && canQueryPullRequest && isOpen,
+    isGit,
+    requested: activeTab === "pr",
+    enabled: isOpen,
+    timelineEnabled: activeTab === "pr" && isOpen,
   });
-  const showPrTab = prPane.prNumber !== null || (activeTab === "pr" && prPane.isLoading);
   const resolvedTab = resolveEffectiveTab(activeTab, isGit, showPrTab);
   const prTabLabel = formatPrTabLabel(prPane.prNumber);
   const handleWorkspaceTabPress = useCallback(
@@ -615,7 +477,6 @@ function ExplorerSidebarContent({
 
   return (
     <View style={styles.sidebarContent} pointerEvents="auto">
-      {/* Header with tabs and close button */}
       <WindowChromeSafeArea
         placement="inline"
         horizontalPadding={theme.spacing[2]}
@@ -645,27 +506,23 @@ function ExplorerSidebarContent({
               onSelect={setSelectedSubmodule}
             />
           )}
-          {!hasRightWindowControls && (
-            <Pressable
-              onPress={onClose}
-              style={styles.closeButton}
-              testID="explorer-close"
-              nativeID="explorer-close"
-              accessible
-              accessibilityRole="button"
-              accessibilityLabel={t("workspace.tabs.explorer.close")}
-              hitSlop={8}
-            >
-              {({ hovered, pressed }) => (
-                <X
-                  size={18}
-                  color={
-                    hovered || pressed ? theme.colors.foreground : theme.colors.foregroundMuted
-                  }
-                />
-              )}
-            </Pressable>
-          )}
+          <Pressable
+            onPress={onClose}
+            style={styles.closeButton}
+            testID="explorer-close"
+            nativeID="explorer-close"
+            accessible
+            accessibilityRole="button"
+            accessibilityLabel={t("workspace.tabs.explorer.close")}
+            hitSlop={8}
+          >
+            {({ hovered, pressed }) => (
+              <X
+                size={18}
+                color={hovered || pressed ? theme.colors.foreground : theme.colors.foregroundMuted}
+              />
+            )}
+          </Pressable>
         </View>
       </WindowChromeSafeArea>
 
@@ -688,21 +545,7 @@ function ExplorerSidebarContent({
   );
 }
 
-// Static styles for Animated.Views — must NOT use Unistyles dynamic theme to
-// avoid the "Unable to find node on an unmounted component" crash when Unistyles
-// tries to patch the native node that Reanimated also manages.
-const explorerStaticStyles = RNStyleSheet.create({
-  desktopSidebar: {
-    position: "relative" as const,
-  },
-});
-
 const styles = StyleSheet.create((theme) => ({
-  desktopSidebarBorder: {
-    borderLeftWidth: 1,
-    borderLeftColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceSidebar,
-  },
   sidebarContent: {
     flex: 1,
     minHeight: 0,
