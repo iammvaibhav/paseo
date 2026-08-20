@@ -225,9 +225,14 @@ export interface AgentRunOptions {
   replaceOrigin?: "user" | "machinery";
 }
 
+export interface AgentSteerOptions extends AgentRunOptions {
+  /** Deny permissions that block this steer. An accepted steer must honor this contract. */
+  clearPendingPermissions?: boolean;
+}
+
 export type SteerResult = { status: "accepted" } | { status: "unavailable" };
 
-export interface SteerActiveTurnOptions extends AgentRunOptions {
+export interface SteerActiveTurnOptions extends AgentSteerOptions {
   expectedTurnId: string;
 }
 

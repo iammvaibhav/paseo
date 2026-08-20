@@ -105,6 +105,7 @@ import {
 } from "@/attachments/service";
 import { resolveAgentControlsMode } from "@/composer/agent-controls/mode";
 import { resolveComposerInputMode, type ComposerInputMode } from "@/composer/input-mode";
+import { resolveActiveSendBehavior } from "./input/state";
 import { useKeyboardShiftStyle } from "@/hooks/use-keyboard-shift-style";
 import { useKeyboardActionHandler } from "@/hooks/use-keyboard-action-handler";
 import type { KeyboardActionDefinition } from "@/keyboard/keyboard-action-dispatcher";
@@ -1671,6 +1672,20 @@ function ComposerContentImpl({
     (state) => state.rejectAgentMessageSubmission,
   );
   const isAgentRunning = hasActiveTurn;
+  // Queueing behind a permission prompt would strand the message: the turn is
+  // parked until the request is answered.
+  const hasPendingPermission = useSessionStore((state) => {
+    const pendingPermissions = state.sessions[serverId]?.pendingPermissions;
+    if (!pendingPermissions) return false;
+    for (const permission of pendingPermissions.values()) {
+      if (permission.agentId === agentId) return true;
+    }
+    return false;
+  });
+  const activeSendBehavior = resolveActiveSendBehavior(
+    appSettings.sendBehavior,
+    hasPendingPermission,
+  );
   const hasAgent = agentState.status !== null;
 
   // /steer and friends run against the live turn instead of starting one, so
@@ -2679,10 +2694,7 @@ function ComposerContentImpl({
                   voiceServerId={serverId}
                   voiceAgentId={agentId}
                   isAgentRunning={isAgentRunning}
-                  // M8 mailbox: the send-mode selector (interrupt/queue/steer)
-                  // stops applying to the Commander thread — the default action
-                  // is always a steer-capable immediate send.
-                  defaultSendBehavior={mailboxDelivery ? "steer" : appSettings.sendBehavior}
+                  defaultSendBehavior={mailboxDelivery ? "steer" : activeSendBehavior}
                   sendsOutOfBand={sendsOutOfBand}
                   onQueue={mailboxDelivery ? undefined : handleQueue}
                   onSubmitLoadingPress={submitLoadingPressHandler}

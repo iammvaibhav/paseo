@@ -5613,6 +5613,9 @@ export class Session {
         replaceOrigin: "user",
         messageId,
         runOptions,
+        // A typed or spoken message from the human answers any permission the
+        // agent is blocked on.
+        clearPendingPermissions: true,
         logger: this.sessionLogger,
       });
       return { ok: true };
@@ -9787,10 +9790,10 @@ export class Session {
       replaceOrigin: "user",
       messageId: msg.messageId,
       activeTurnBehavior,
+      clearPendingPermissions: true,
       logger: this.sessionLogger,
     });
   }
-
   private async handleSendAgentMessageRequest(
     msg: Extract<SessionInboundMessage, { type: "send_agent_message_request" }>,
   ): Promise<void> {

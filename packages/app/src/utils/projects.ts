@@ -26,6 +26,7 @@ export interface ProjectHostEntry {
   gitRuntime?: WorkspaceDescriptor["gitRuntime"];
   githubRuntime?: WorkspaceDescriptor["githubRuntime"];
   customIconRevision?: string | null;
+  iconRevision?: string;
 }
 
 export interface ProjectSummary {
@@ -96,6 +97,7 @@ interface HostGroup {
   isOnline: boolean;
   workspaces: WorkspaceDescriptor[];
   customIconRevision?: string | null;
+  iconRevision?: string;
   // Repo root for a project parent that has no workspaces yet. Without it the
   // host's repoRoot resolves to "" and the project reads as non-editable.
   fallbackRepoRoot: string;
@@ -174,6 +176,7 @@ function toHostEntry(group: HostGroup): ProjectHostEntry {
     gitRuntime: canonical?.gitRuntime,
     githubRuntime: canonical?.githubRuntime,
     customIconRevision: canonical?.projectCustomIconRevision ?? group.customIconRevision,
+    iconRevision: group.iconRevision,
   };
 }
 
@@ -239,6 +242,7 @@ function addHostProjects(
         isOnline: host.isOnline,
         workspaces: [],
         customIconRevision: placement.customIconRevision,
+        iconRevision: placement.iconRevision,
         fallbackRepoRoot: repoRootByProjectId.get(projectId) ?? "",
       });
     }
