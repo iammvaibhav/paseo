@@ -191,6 +191,9 @@ export type WorkItemHostEntry = z.infer<typeof WorkItemHostEntrySchema>;
 export const WorkProjectListRequestSchema = z.object({
   type: z.literal("work.project.list.request"),
   requestId: z.string(),
+  // When true the receiving host must not fan out to its own peers — stops
+  // circular peer fan-out where a fleet aggregator would recurse into peers.
+  localOnly: z.boolean().optional(),
 });
 export type WorkProjectListRequest = z.infer<typeof WorkProjectListRequestSchema>;
 
@@ -210,6 +213,9 @@ export const WorkItemListRequestSchema = z.object({
   type: z.literal("work.item.list.request"),
   projectKey: z.string().min(1),
   requestId: z.string(),
+  // When true the receiving host must not fan out to its own peers — stops
+  // circular peer fan-out where a fleet aggregator would recurse into peers.
+  localOnly: z.boolean().optional(),
 });
 export type WorkItemListRequest = z.infer<typeof WorkItemListRequestSchema>;
 

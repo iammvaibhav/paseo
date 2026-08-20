@@ -4119,7 +4119,9 @@ export class Session {
   private async handleWorkProjectListRequest(
     msg: Extract<SessionInboundMessage, { type: "work.project.list.request" }>,
   ): Promise<void> {
-    const result = this.workService ? await this.workService.listProjects() : { hosts: [] };
+    const result = this.workService
+      ? await this.workService.listProjects({ localOnly: msg.localOnly ?? false })
+      : { hosts: [] };
     this.emit({
       type: "work.project.list.response",
       payload: { requestId: msg.requestId, hosts: result.hosts },
@@ -4130,7 +4132,7 @@ export class Session {
     msg: Extract<SessionInboundMessage, { type: "work.item.list.request" }>,
   ): Promise<void> {
     const result = this.workService
-      ? await this.workService.listItems(msg.projectKey)
+      ? await this.workService.listItems(msg.projectKey, { localOnly: msg.localOnly ?? false })
       : { projectKey: msg.projectKey, hosts: [] };
     this.emit({
       type: "work.item.list.response",

@@ -4,7 +4,7 @@ import type { PeerManager } from "../peers/peer-manager.js";
 import type { WorkStore } from "./store.js";
 import type { WorkItemRecord } from "./model.js";
 import type { WorkProjectRecord } from "./model.js";
-
+import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 export interface WorkFleetDependencies {
   store: WorkStore;
   peerManager: PeerManager | null;
@@ -103,42 +103,29 @@ export class WorkFleet {
   }
 
   private async fetchPeerProjects(
-    client: {
-      workProjectList?: () => Promise<{
-        hosts: Array<{ host: string; reachable: boolean; projects: unknown[] }>;
-      }>;
-    },
+    client: DaemonClient,
     peerName: string,
   ): Promise<WorkProjectRecord[]> {
-    if (typeof client.workProjectList === "function") {
-      const response = await client.workProjectList();
-      if (Array.isArray(response.hosts)) {
-        const peerEntry = response.hosts.find((entry) => entry.host === peerName);
-        if (peerEntry !== undefined) return peerEntry.projects as WorkProjectRecord[];
-        if (response.hosts.length === 1) return response.hosts[0].projects as WorkProjectRecord[];
-        return response.hosts.flatMap((entry) => entry.projects as WorkProjectRecord[]);
-      }
+    const response = await client.workProjectList({ localOnly: true });
+    if (Array.isArray(response.hosts)) {
+      const peerEntry = response.hosts.find((entry) => entry.host === peerName);
+      if (peerEntry !== undefined) return peerEntry.projects as WorkProjectRecord[];
+      if (response.hosts.length === 1) return response.hosts[0].projects as WorkProjectRecord[];
+      return response.hosts.flatMap((entry) => entry.projects as WorkProjectRecord[]);
     }
     return [];
   }
 
   private async fetchPeerItems(
-    client: {
-      workItemList?: (input: { projectKey: string }) => Promise<{
-        projectKey: string;
-        hosts: Array<{ host: string; reachable: boolean; items: unknown[] }>;
-      }>;
-    },
+    client: DaemonClient,
     projectKey: string,
     peerName: string,
   ): Promise<WorkItemRecord[]> {
-    if (typeof client.workItemList === "function") {
-      const response = await client.workItemList({ projectKey });
-      if (Array.isArray(response.hosts)) {
-        const peerEntry = response.hosts.find((entry) => entry.host === peerName);
-        if (peerEntry !== undefined) return peerEntry.items as WorkItemRecord[];
-        return response.hosts.flatMap((entry) => entry.items as WorkItemRecord[]);
-      }
+    const response = await client.workItemList({ projectKey, localOnly: true });
+    if (Array.isArray(response.hosts)) {
+      const peerEntry = response.hosts.find((entry) => entry.host === peerName);
+      if (peerEntry !== undefined) return peerEntry.items as WorkItemRecord[];
+      return response.hosts.flatMap((entry) => entry.items as WorkItemRecord[]);
     }
     return [];
   }

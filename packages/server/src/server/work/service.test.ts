@@ -474,3 +474,183 @@ describe("WorkFleet aggregation — unreachable peer is reachable:false, never t
     await rm(dir, { recursive: true, force: true });
   });
 });
+
+describe("WorkService localOnly — never consults fleet, returns only local", () => {
+  it("listProjects({ localOnly: true }) never consults the fleet and returns only the local host entry", async () => {
+    const { dir, store, projectRegistry } = await freshArtifacts();
+    await store.ensureProject({
+      projectKey: "pk-localonly",
+      projectId: "pid-localonly",
+      displayName: "LocalOnly",
+    });
+
+    const fleet: unknown = {
+      listProjectsFleet: async () => {
+        throw new Error("fleet must not be called when localOnly is set");
+      },
+      listItemsFleet: async () => {
+        throw new Error("fleet must not be called when localOnly is set");
+      },
+    };
+
+    const svc = new WorkService({
+      store,
+      logger,
+      agentManager: agentManagerFake() as unknown as AgentManager,
+      missionControlService: null,
+      peerManager: peerManagerFakeEmpty() as unknown as PeerManager,
+      projectRegistry: projectRegistry as unknown as ProjectRegistry,
+      dispatcher: null,
+      fleet: fleet as WorkFleet,
+      hostName: "hosta",
+    });
+
+    const result = await svc.listProjects({ localOnly: true });
+    expect(result.hosts).toHaveLength(1);
+    expect(result.hosts[0]).toMatchObject({ host: "hosta", reachable: true });
+    expect(result.hosts[0].projects.length).toBeGreaterThanOrEqual(1);
+
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("listItems(projectKey, { localOnly: true }) never consults the fleet and returns only the local host entry", async () => {
+    const { dir, store, projectRegistry } = await freshArtifacts();
+    await store.ensureProject({
+      projectKey: "pk-localonly-items",
+      projectId: "pid-localonly-items",
+      displayName: "LocalOnly Items",
+    });
+    await store.createItem({
+      projectKey: "pk-localonly-items",
+      projectId: "pid-localonly-items",
+      title: "one",
+    });
+
+    const fleet: unknown = {
+      listProjectsFleet: async () => {
+        throw new Error("fleet must not be called when localOnly is set");
+      },
+      listItemsFleet: async () => {
+        throw new Error("fleet must not be called when localOnly is set");
+      },
+    };
+
+    const svc = new WorkService({
+      store,
+      logger,
+      agentManager: agentManagerFake() as unknown as AgentManager,
+      missionControlService: null,
+      peerManager: peerManagerFakeEmpty() as unknown as PeerManager,
+      projectRegistry: projectRegistry as unknown as ProjectRegistry,
+      dispatcher: null,
+      fleet: fleet as WorkFleet,
+      hostName: "hosta",
+    });
+
+    const result = await svc.listItems("pk-localonly-items", { localOnly: true });
+    expect(result.projectKey).toBe("pk-localonly-items");
+    expect(result.hosts).toHaveLength(1);
+    expect(result.hosts[0]).toMatchObject({ host: "hosta", reachable: true });
+    expect(result.hosts[0].items.length).toBeGreaterThanOrEqual(1);
+
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("a normal (non-localOnly) call still aggregates and represents an unreachable peer as reachable:false without throwing", async () => {
+    const store = {
+      listProjects: async () => [
+        {
+          projectKey: "pk-agg",
+          projectId: "pid-agg",
+          identifier: "AGG",
+          displayName: "Agg",
+          description: null,
+          nextSequenceId: 2,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          archivedAt: null,
+        },
+      ],
+      listItems: async () => [
+        {
+          id: "wit_agg",
+          projectKey: "pk-agg",
+          projectId: "pid-agg",
+          sequenceId: 1,
+          title: "agg item",
+          description: "",
+          priority: "none",
+          labelIds: [],
+          parentId: null,
+          sortOrder: 65535,
+          lane: "backlog",
+          assignment: null,
+          agentId: null,
+          agentHost: null,
+          closed: null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+      getProjectByKey: async (projectKey: string) => ({
+        projectKey,
+        identifier: projectKey === "pk-agg" ? "AGG" : projectKey.toUpperCase(),
+        displayName: "Agg",
+      }),
+      listChildren: async () => [],
+    } as unknown as WorkStore;
+
+    const peerManager = {
+      getPeerStatuses: () => [
+        { name: "peer-bad", state: "online", lastSeenAt: new Date().toISOString() },
+      ],
+      getPeerClient: () => ({
+        workProjectList: async () => {
+          throw new Error("peer boom");
+        },
+        workItemList: async () => {
+          throw new Error("peer boom");
+        },
+      }),
+    } as unknown as PeerManager;
+
+    const fleet = new WorkFleet({
+      store,
+      peerManager,
+      logger,
+      serverId: "local",
+      hostName: "hosta",
+    });
+
+    const svc = new WorkService({
+      store: store as unknown as WorkStore,
+      logger,
+      agentManager: agentManagerFake() as unknown as AgentManager,
+      missionControlService: null,
+      peerManager,
+      projectRegistry: projectRegistryFake(() => []) as unknown as ProjectRegistry,
+      dispatcher: null,
+      fleet,
+      hostName: "hosta",
+    });
+
+    await expect(svc.listProjects()).resolves.toEqual(
+      expect.objectContaining({
+        hosts: expect.arrayContaining([
+          expect.objectContaining({ host: "hosta", reachable: true }),
+          expect.objectContaining({ host: "peer-bad", reachable: false, projects: [] }),
+        ]),
+      }),
+    );
+
+    await expect(svc.listItems("pk-agg")).resolves.toEqual(
+      expect.objectContaining({
+        projectKey: "pk-agg",
+        hosts: expect.arrayContaining([
+          expect.objectContaining({ host: "hosta", reachable: true }),
+          expect.objectContaining({ host: "peer-bad", reachable: false, items: [] }),
+        ]),
+      }),
+    );
+  });
+});

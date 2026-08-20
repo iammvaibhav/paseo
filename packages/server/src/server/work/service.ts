@@ -283,8 +283,8 @@ export class WorkService {
   // Fleet reads
   // -------------------------------------------------------------------------
 
-  async listProjects(): Promise<{ hosts: WorkProjectHostEntry[] }> {
-    if (this.fleet) {
+  async listProjects(opts?: { localOnly?: boolean }): Promise<{ hosts: WorkProjectHostEntry[] }> {
+    if (!opts?.localOnly && this.fleet) {
       const hosts = await this.fleet.listProjectsFleet();
       return {
         hosts: hosts.map((entry) => ({
@@ -302,8 +302,11 @@ export class WorkService {
     };
   }
 
-  async listItems(projectKey: string): Promise<{ projectKey: string; hosts: WorkItemHostEntry[] }> {
-    if (this.fleet) {
+  async listItems(
+    projectKey: string,
+    opts?: { localOnly?: boolean },
+  ): Promise<{ projectKey: string; hosts: WorkItemHostEntry[] }> {
+    if (!opts?.localOnly && this.fleet) {
       const raw = await this.fleet.listItemsFleet(projectKey);
       const hosts = await Promise.all(
         raw.map(async (entry) => ({

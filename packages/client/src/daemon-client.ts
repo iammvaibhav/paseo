@@ -6113,20 +6113,41 @@ export class DaemonClient {
     });
   }
 
-  async workProjectList(requestId?: string): Promise<WorkProjectListResponse["payload"]> {
+  async workProjectList(requestId?: string): Promise<WorkProjectListResponse["payload"]>;
+  async workProjectList(input?: {
+    requestId?: string;
+    localOnly?: boolean;
+  }): Promise<WorkProjectListResponse["payload"]>;
+  async workProjectList(
+    input?: { requestId?: string; localOnly?: boolean } | string,
+  ): Promise<WorkProjectListResponse["payload"]> {
+    const opts = typeof input === "string" ? { requestId: input } : (input ?? {});
     return this.sendNamespacedCorrelatedSessionRequest<"work.project.list.response">({
-      requestId,
-      message: { type: "work.project.list.request" },
+      requestId: opts.requestId,
+      message: {
+        type: "work.project.list.request",
+        ...(opts.localOnly ? { localOnly: true } : {}),
+      },
+      // Bound per-peer fan-out so a slow peer cannot stall the whole fleet for 60s.
+      timeout: 10_000,
     });
   }
 
   async workItemList(input: {
     projectKey: string;
     requestId?: string;
+    localOnly?: boolean;
   }): Promise<WorkItemListResponse["payload"]> {
+    const { projectKey, requestId, localOnly } = input;
     return this.sendNamespacedCorrelatedSessionRequest<"work.item.list.response">({
-      requestId: input.requestId,
-      message: { type: "work.item.list.request", projectKey: input.projectKey },
+      requestId,
+      message: {
+        type: "work.item.list.request",
+        projectKey,
+        ...(localOnly ? { localOnly: true } : {}),
+      },
+      // Bound per-peer fan-out so a slow peer cannot stall the whole fleet for 60s.
+      timeout: 10_000,
     });
   }
 
