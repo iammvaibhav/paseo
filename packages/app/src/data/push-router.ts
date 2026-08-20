@@ -16,12 +16,7 @@ import {
   providersSnapshotQueryKey,
   providersSnapshotQueryRoot,
 } from "@/data/providers-snapshot";
-import {
-  workItemDetailQueryBaseKey,
-  workItemsQueryBaseKey,
-  workProjectsQueryBaseKey,
-} from "@/data/work";
-import { useSessionStore } from "@/stores/session-store";
+
 type ProvidersSnapshotUpdateMessage = Extract<
   SessionOutboundMessage,
   { type: "providers_snapshot_update" }
@@ -345,20 +340,6 @@ export function mountServerDataPushRouter(input: PushRouterInput): () => void {
       queryKey: missionControlEventsQueryKey(input.serverId),
     });
   });
-  function shouldInvalidateWorkForHost(sid: string): boolean {
-    return useSessionStore.getState().sessions[sid]?.serverInfo?.features?.workBoard === true;
-  }
-  const anyClient = input.client as unknown as { on: (t: string, h: () => void) => () => void };
-  const unsubscribeWorkItemUpdated = anyClient.on("work.item.updated", () => {
-    if (!shouldInvalidateWorkForHost(input.serverId)) return;
-    void input.queryClient.invalidateQueries({ queryKey: workItemsQueryBaseKey });
-    void input.queryClient.invalidateQueries({ queryKey: workItemDetailQueryBaseKey });
-  });
-  const unsubscribeWorkProjectUpdated = anyClient.on("work.project.updated", () => {
-    if (!shouldInvalidateWorkForHost(input.serverId)) return;
-    void input.queryClient.invalidateQueries({ queryKey: workProjectsQueryBaseKey });
-    void input.queryClient.invalidateQueries({ queryKey: workItemsQueryBaseKey });
-  });
   let reconnectSubscriptionRepairs = reconnectSubscriptionRepairsByServerId.get(input.serverId);
   if (!reconnectSubscriptionRepairs) {
     reconnectSubscriptionRepairs = new Set();
@@ -381,8 +362,6 @@ export function mountServerDataPushRouter(input: PushRouterInput): () => void {
     unsubscribeCheckoutDiffResponse();
     unsubscribeTerminalsChanged();
     unsubscribeMissionControlEvents();
-    unsubscribeWorkItemUpdated();
-    unsubscribeWorkProjectUpdated();
     for (const subscriptionId of activeCheckoutDiffSubscriptions.keys()) {
       unsubscribeCheckoutDiff(input.client, subscriptionId);
     }

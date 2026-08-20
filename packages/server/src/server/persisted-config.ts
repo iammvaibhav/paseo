@@ -102,12 +102,6 @@ const WorktreesConfigSchema = z
   })
   .strict();
 
-const WorkConfigSchema = z
-  .object({
-    autoPickupConcurrency: z.number().int().positive().optional(),
-  })
-  .strict();
-
 const BcryptHashSchema = z.string().regex(/^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/, {
   message: "Expected a bcrypt hash",
 });
@@ -464,7 +458,6 @@ export const PersistedConfigSchema = z
       .optional(),
 
     missionControl: MissionControlConfigSchema.optional(),
-    work: WorkConfigSchema.optional(),
 
     log: LogConfigSchema.optional(),
   })
