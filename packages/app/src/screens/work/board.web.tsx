@@ -34,6 +34,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
+import type { Theme } from "@/styles/theme";
 import { ToastContext } from "@/contexts/toast-context";
 import {
   isWorkColumnDroppable,
@@ -48,6 +49,7 @@ import type { WorkPriority } from "@getpaseo/protocol/work/types";
 import type { WorkItem } from "@getpaseo/protocol/work/types";
 import { openWorkItem as openWorkItemStore } from "@/screens/work/inspector-store";
 import * as WorkData from "@/data/work";
+import { useWorkProjectHost } from "@/data/work";
 
 import { WorkCard } from "./card";
 import { WorkColumn } from "./column";
@@ -378,11 +380,24 @@ function WorkItemCreateCard({
 
 function BoardEmptyState({ projectKey }: { projectKey: string | null }): ReactElement {
   const { t } = useTranslation();
+  const { isCapable, hostLabel } = useWorkProjectHost(projectKey);
   if (!projectKey) {
     return (
       <View style={styles.emptyCenter} testID="work-board-empty-no-project">
         <Text style={styles.muted}>{t("work.states.noProject")}</Text>
         <Text style={styles.hint}>{t("work.states.noProjectHint")}</Text>
+      </View>
+    );
+  }
+  if (isCapable === false) {
+    return (
+      <View testID="work-host-needs-update" style={styles.hostNeedsUpdate}>
+        <Text style={styles.hostNeedsUpdateTitle}>{t("work.host.needsUpdateTitle")}</Text>
+        <Text style={styles.hostNeedsUpdateHint}>
+          {hostLabel
+            ? t("work.host.needsUpdateDetail", { host: hostLabel })
+            : t("work.host.needsUpdateDetailGeneric")}
+        </Text>
       </View>
     );
   }
@@ -437,6 +452,8 @@ function BoardColumn({
     id: `column:${columnId}`,
     disabled: !droppable,
   });
+  const { isCapable } = useWorkProjectHost(projectKey);
+  const showCreate = isCapable !== false;
   const isBacklog = columnId === "backlog";
   return (
     <View ref={columnDropRef as unknown as Ref<View>} style={styles.columnDropTarget}>
@@ -447,7 +464,7 @@ function BoardColumn({
           strategy={verticalListSortingStrategy}
         >
           <View style={styles.columnBody}>
-            {isBacklog ? <WorkItemCreateCard projectKey={projectKey} /> : null}
+            {isBacklog && showCreate ? <WorkItemCreateCard projectKey={projectKey} /> : null}
             {items.map((item) => (
               <SortableWorkCard
                 key={item.id}
@@ -473,6 +490,7 @@ export function WorkBoard({
 }: WorkBoardProps): ReactElement {
   const { t } = useTranslation();
   const toast = useToastMaybe();
+  const { isCapable, hostLabel } = useWorkProjectHost(projectKey);
   const [activeId, setActiveId] = useState<string | null>(null);
 
   const byColumn = useWorkItemsByColumn(projectKey, injected);
@@ -600,6 +618,21 @@ export function WorkBoard({
     [byColumn, handleCrossColumnMove, handleSameColumnMove, resolveTargetColumn, t, toast],
   );
 
+  if (isCapable === false) {
+    return (
+      <View testID="work-board" style={styles.root}>
+        <View testID="work-host-needs-update" style={styles.hostNeedsUpdate}>
+          <Text style={styles.hostNeedsUpdateTitle}>{t("work.host.needsUpdateTitle")}</Text>
+          <Text style={styles.hostNeedsUpdateHint}>
+            {hostLabel
+              ? t("work.host.needsUpdateDetail", { host: hostLabel })
+              : t("work.host.needsUpdateDetailGeneric")}
+          </Text>
+        </View>
+      </View>
+    );
+  }
+
   const isEmptyBoard = WORK_COLUMN_IDS.every((col) => (byColumn[col] ?? []).length === 0);
 
   if (isEmptyBoard) {
@@ -662,7 +695,7 @@ function useToastMaybe(): { show: (msg: string) => void } | null {
   return ctx as unknown as { show: (msg: string) => void };
 }
 
-const styles = StyleSheet.create((theme) => ({
+const styles = StyleSheet.create((theme: Theme) => ({
   root: {
     flex: 1,
     backgroundColor: theme.colors.surfaceWorkspace,
@@ -802,5 +835,23 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     justifyContent: "flex-end",
     gap: theme.spacing[2],
+  },
+  hostNeedsUpdate: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: theme.spacing[6],
+    gap: theme.spacing[2],
+  },
+  hostNeedsUpdateTitle: {
+    fontSize: theme.fontSize.lg,
+    fontWeight: theme.fontWeight.medium,
+    color: theme.colors.foreground,
+    textAlign: "center",
+  },
+  hostNeedsUpdateHint: {
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foregroundMuted,
+    textAlign: "center",
   },
 }));

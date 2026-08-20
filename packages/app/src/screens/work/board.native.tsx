@@ -17,6 +17,9 @@ import {
 import type { WorkItem } from "@getpaseo/protocol/work/types";
 import { openWorkItem as openWorkItemStore } from "@/screens/work/inspector-store";
 import * as WorkData from "@/data/work";
+import { useWorkProjectHost } from "@/data/work";
+
+import type { Theme } from "@/styles/theme";
 
 import { WorkCard } from "./card";
 import { WorkColumn } from "./column";
@@ -200,6 +203,7 @@ export function WorkBoard({
   onOpenItem?: (itemId: string) => void;
 }): ReactElement {
   const { t } = useTranslation();
+  const { isCapable, hostLabel } = useWorkProjectHost(projectKey);
   const horizontalScroll = useHorizontalScrollOptional();
   const closeGestureRef = useFileExplorerCloseGestureRef();
   const scrollId = useId();
@@ -226,6 +230,21 @@ export function WorkBoard({
       closeGestureRef.current ? ({ simultaneousHandlers: closeGestureRef } as object) : undefined,
     [closeGestureRef],
   );
+
+  if (isCapable === false) {
+    return (
+      <View testID="work-board" style={styles.root}>
+        <View testID="work-host-needs-update" style={styles.hostNeedsUpdate}>
+          <Text style={styles.hostNeedsUpdateTitle}>{t("work.host.needsUpdateTitle")}</Text>
+          <Text style={styles.hostNeedsUpdateHint}>
+            {hostLabel
+              ? t("work.host.needsUpdateDetail", { host: hostLabel })
+              : t("work.host.needsUpdateDetailGeneric")}
+          </Text>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View testID="work-board" style={styles.root}>
@@ -268,7 +287,7 @@ function useToastMaybe(): { show: (msg: string) => void } | null {
   return ctx as unknown as { show: (msg: string) => void };
 }
 
-const styles = StyleSheet.create((theme) => ({
+const styles = StyleSheet.create((theme: Theme) => ({
   root: {
     flex: 1,
     backgroundColor: theme.colors.surfaceWorkspace,
@@ -292,5 +311,23 @@ const styles = StyleSheet.create((theme) => ({
   emptyText: {
     fontSize: 12,
     color: theme.colors.foregroundMuted,
+  },
+  hostNeedsUpdate: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: theme.spacing[6],
+    gap: theme.spacing[2],
+  },
+  hostNeedsUpdateTitle: {
+    fontSize: theme.fontSize.lg,
+    fontWeight: theme.fontWeight.medium,
+    color: theme.colors.foreground,
+    textAlign: "center",
+  },
+  hostNeedsUpdateHint: {
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foregroundMuted,
+    textAlign: "center",
   },
 }));

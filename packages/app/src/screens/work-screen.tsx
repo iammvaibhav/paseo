@@ -16,9 +16,24 @@ import { WorkInspector } from "@/screens/work/inspector";
 import { WorkProjectRail } from "@/screens/work/project-rail";
 import { useSelectedWorkProjectKey } from "@/screens/work/selection-store";
 import { useWorkInspectorTarget } from "@/screens/work/inspector-store";
+import { useWorkProjectHost } from "@/data/work";
 
-// Center view tabs. Labels come from i18n work.views.*
 type WorkView = "board" | "pages" | "drafts" | "stickies";
+
+function HostNeedsUpdateState({ projectKey }: { projectKey: string }): ReactElement {
+  const { t } = useTranslation();
+  const { hostLabel } = useWorkProjectHost(projectKey);
+  return (
+    <View style={styles.centerState} testID="work-host-needs-update">
+      <Text style={styles.centerStateTitle}>{t("work.host.needsUpdateTitle")}</Text>
+      <Text style={styles.centerStateHint}>
+        {hostLabel
+          ? t("work.host.needsUpdateDetail", { host: hostLabel })
+          : t("work.host.needsUpdateDetailGeneric")}
+      </Text>
+    </View>
+  );
+}
 
 function ActiveView({
   view,
@@ -27,8 +42,12 @@ function ActiveView({
   view: WorkView;
   projectKey: string | null;
 }): ReactElement {
+  const { isCapable } = useWorkProjectHost(projectKey);
   if (!projectKey) {
     return <EmptyProjectState />;
+  }
+  if (isCapable === false) {
+    return <HostNeedsUpdateState projectKey={projectKey} />;
   }
   switch (view) {
     case "board":
@@ -77,8 +96,6 @@ export function WorkScreen(): ReactElement {
 
   const header = useMemo(() => <MenuHeader title={t("work.screen.title")} />, [t]);
 
-  // Compact: inspector takes full screen when an item is open — mirrors
-  // mission-control-screen.tsx:577 inspector branch.
   if (isCompact) {
     if (inspectorTarget) {
       return (
@@ -90,7 +107,6 @@ export function WorkScreen(): ReactElement {
     return (
       <View style={styles.container} testID="work-screen">
         {header}
-        {/* Project picker instead of permanent rail on compact */}
         <View style={styles.compactRailWrap}>
           <WorkProjectRail compact />
         </View>
@@ -110,7 +126,6 @@ export function WorkScreen(): ReactElement {
     );
   }
 
-  // Desktop: three regions — rail | center | inspector
   return (
     <View style={styles.container} testID="work-screen">
       {header}
@@ -154,7 +169,6 @@ const styles = StyleSheet.create((theme: Theme) => ({
   },
   railColumn: {
     width: 260,
-    flexShrink: 0,
     borderRightWidth: 1,
     borderRightColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceSidebar,
@@ -162,9 +176,10 @@ const styles = StyleSheet.create((theme: Theme) => ({
   centerColumn: {
     flex: 1,
     minWidth: 0,
-    backgroundColor: theme.colors.surface0,
   },
   viewTabsRow: {
+    flexDirection: "row",
+    alignItems: "center",
     paddingHorizontal: theme.spacing[3],
     paddingVertical: theme.spacing[2],
     borderBottomWidth: 1,
@@ -176,29 +191,19 @@ const styles = StyleSheet.create((theme: Theme) => ({
   },
   inspectorColumn: {
     width: 380,
-    flexShrink: 0,
     borderLeftWidth: 1,
     borderLeftColor: theme.colors.border,
-    backgroundColor: theme.colors.surface1,
-  },
-  compactToggle: {
-    paddingHorizontal: theme.spacing[3],
-    paddingVertical: theme.spacing[2],
-  },
-  compactPicker: {
-    paddingHorizontal: theme.spacing[3],
-    paddingVertical: theme.spacing[2],
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
-  },
-  compactPickerLabel: {
-    fontSize: theme.fontSize.sm,
-    color: theme.colors.foregroundMuted,
+    backgroundColor: theme.colors.surface0,
   },
   compactRailWrap: {
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
-    maxHeight: 220,
+  },
+  compactToggle: {
+    paddingHorizontal: theme.spacing[3],
+    paddingVertical: theme.spacing[2],
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
   },
   compactBody: {
     flex: 1,
@@ -208,11 +213,11 @@ const styles = StyleSheet.create((theme: Theme) => ({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    padding: theme.spacing[6],
+    paddingHorizontal: theme.spacing[6],
     gap: theme.spacing[2],
   },
   centerStateTitle: {
-    fontSize: theme.fontSize.base,
+    fontSize: theme.fontSize.lg,
     fontWeight: theme.fontWeight.medium,
     color: theme.colors.foreground,
     textAlign: "center",

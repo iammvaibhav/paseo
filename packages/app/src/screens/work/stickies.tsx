@@ -9,6 +9,7 @@ import { EditingTextInput, type EditingTextInputHandle } from "@/components/ui/t
 import { isNative } from "@/constants/platform";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useWorkMutations, useWorkStickies } from "@/data/work";
+import { useWorkProjectHost } from "@/data/work";
 import { useSelectedWorkProjectKey } from "@/screens/work/selection-store";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import type { WorkSticky } from "@getpaseo/protocol/work/types";
@@ -259,10 +260,26 @@ export function WorkStickies(): ReactElement {
 
   const handleSelectNewColor = useCallback((value: string | null) => setNewColor(value), []);
 
+  const { isCapable: isCapableForGate, hostLabel: hostLabelForGate } =
+    useWorkProjectHost(projectKey);
+
   if (!projectKey) {
     return (
       <View testID="work-stickies" style={styles.center}>
         <Text style={styles.muted}>{t("work.states.noProject")}</Text>
+      </View>
+    );
+  }
+
+  if (isCapableForGate === false) {
+    return (
+      <View testID="work-host-needs-update" style={styles.center}>
+        <Text style={styles.error}>{t("work.host.needsUpdateTitle")}</Text>
+        <Text style={styles.muted}>
+          {hostLabelForGate
+            ? t("work.host.needsUpdateDetail", { host: hostLabelForGate })
+            : t("work.host.needsUpdateDetailGeneric")}
+        </Text>
       </View>
     );
   }

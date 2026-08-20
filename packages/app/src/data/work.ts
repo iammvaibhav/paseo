@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useMemo } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useFetchQuery } from "@/data/query";
+import { queryClient as sharedQueryClient } from "@/data/query-client";
 import {
   getHostRuntimeStore,
   useHostRuntimeConnectionStatuses,
   useHosts,
+  type HostRuntimeStore,
 } from "@/runtime/host-runtime";
+import { useHostFeatureMap } from "@/runtime/host-features";
 import { useSessionStore } from "@/stores/session-store";
+import type { HostProfile } from "@/types/host-connection";
 import { computeSortOrder, WORK_COLUMN_IDS } from "@getpaseo/protocol/work/state";
 import type { WorkColumnId } from "@getpaseo/protocol/work/state";
 import type {
@@ -25,6 +29,7 @@ import {
   useSelectedWorkProjectKey,
   setSelectedWorkProjectKey,
 } from "@/screens/work/selection-store";
+
 export const workProjectsQueryBaseKey = ["workProjects"] as const;
 export const workItemsQueryBaseKey = ["workItems"] as const;
 export const workItemDetailQueryBaseKey = ["workItemDetail"] as const;
@@ -39,22 +44,12 @@ function toErrorString(error: unknown): string | null {
   return String(error);
 }
 
-function getOnlineClientForMutation(): DaemonClient {
-  const runtime = getHostRuntimeStore();
-  const state = useSessionStore.getState();
-  const serverIds = Object.keys(state.sessions);
-  for (const sid of serverIds) {
-    const snap = runtime.getSnapshot(sid);
-    if (snap?.connectionStatus === "online") {
-      const c = runtime.getClient(sid);
-      if (c) return c;
-    }
+export class WorkHostResolutionError extends Error {
+  code = "work_host_unresolvable" as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkHostResolutionError";
   }
-  for (const sid of serverIds) {
-    const c = runtime.getClient(sid);
-    if (c) return c;
-  }
-  throw new Error("No connected host available");
 }
 
 function buildByColumn(items: WorkItem[]): Record<WorkColumnId, WorkItem[]> {
@@ -65,7 +60,6 @@ function buildByColumn(items: WorkItem[]): Record<WorkColumnId, WorkItem[]> {
   for (const item of items) {
     const col = item.column;
     if (col === "cancelled") continue;
-    // column is WorkColumnId | "cancelled" — only bucket WorkColumnIds
     if ((WORK_COLUMN_IDS as readonly string[]).includes(col)) {
       byColumn[col as WorkColumnId].push(item);
     }
@@ -76,85 +70,463 @@ function buildByColumn(items: WorkItem[]): Record<WorkColumnId, WorkItem[]> {
   return byColumn;
 }
 
+// Module-level maps: projectKey -> serverId (owning host). Populated by the
+// useWorkProjects fan-out; item/draft/page/sticky/view id maps are populated by
+// the per-project list queries so mutations resolve the owning host.
+const projectHostByKey = new Map<string, string>();
+const draftProjectById = new Map<string, string>();
+const pageProjectById = new Map<string, string>();
+const stickyProjectById = new Map<string, string>();
+const viewProjectById = new Map<string, string>();
+
+function normalizeHostKey(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+interface HostLabelIndexes {
+  labelByServerId: Map<string, string>;
+  serverIdByLowerLabel: Map<string, string>;
+  serverIdByLowerId: Map<string, string>;
+  hostnameByLower: Map<string, string>;
+}
+
+// Builds a normalized (case-insensitive) alias index over host profiles and
+// session server_info so "MacBook" (client profile label), "macbook" (daemon
+// peer name), and the daemon hostname all collapse onto one serverId.
+function buildHostLabelIndexes(hosts: readonly HostProfile[]): HostLabelIndexes {
+  const labelByServerId = new Map<string, string>();
+  const serverIdByLowerLabel = new Map<string, string>();
+  const serverIdByLowerId = new Map<string, string>();
+  const hostnameByLower = new Map<string, string>();
+  for (const host of hosts) {
+    labelByServerId.set(host.serverId, host.label);
+    serverIdByLowerLabel.set(normalizeHostKey(host.label), host.serverId);
+    serverIdByLowerId.set(normalizeHostKey(host.serverId), host.serverId);
+  }
+  const sessions = useSessionStore.getState().sessions;
+  for (const serverId of Object.keys(sessions)) {
+    const info = sessions[serverId]?.serverInfo;
+    const hostname = info?.hostname?.trim();
+    if (hostname) hostnameByLower.set(normalizeHostKey(hostname), serverId);
+    const advertisedServerId = info?.serverId?.trim();
+    if (advertisedServerId) serverIdByLowerId.set(normalizeHostKey(advertisedServerId), serverId);
+  }
+  return { labelByServerId, serverIdByLowerLabel, serverIdByLowerId, hostnameByLower };
+}
+
+function resolveServerIdForHostName(name: string, indexes: HostLabelIndexes): string | null {
+  const lower = normalizeHostKey(name);
+  return (
+    indexes.serverIdByLowerLabel.get(lower) ??
+    indexes.serverIdByLowerId.get(lower) ??
+    indexes.hostnameByLower.get(lower) ??
+    null
+  );
+}
+
+// De-duplicates host labels on the stable server identity (not the display
+// string) and prefers the client profile label over daemon peer names.
+function dedupeHostLabels(raw: string[], hosts: readonly HostProfile[]): string[] {
+  const indexes = buildHostLabelIndexes(hosts);
+  const seenServerIds = new Set<string>();
+  const seenNormalized = new Set<string>();
+  const result: string[] = [];
+  for (const name of raw) {
+    const trimmed = name.trim();
+    if (!trimmed) continue;
+    const lower = normalizeHostKey(trimmed);
+    const serverId = resolveServerIdForHostName(trimmed, indexes);
+    if (serverId) {
+      if (seenServerIds.has(serverId)) continue;
+      seenServerIds.add(serverId);
+      result.push(indexes.labelByServerId.get(serverId) ?? trimmed);
+    } else {
+      if (seenNormalized.has(lower)) continue;
+      result.push(trimmed);
+    }
+    seenNormalized.add(lower);
+  }
+  return result;
+}
+
+function resolveOwnerServerId(
+  entryHost: string,
+  indexes: HostLabelIndexes,
+  fallbackServerId: string,
+): string {
+  return resolveServerIdForHostName(entryHost, indexes) ?? fallbackServerId;
+}
+
+function getClientForServerId(serverId: string): DaemonClient {
+  const runtime = getHostRuntimeStore();
+  const snap = runtime.getSnapshot(serverId);
+  if (!snap || snap.connectionStatus !== "online") {
+    throw new WorkHostResolutionError(`Host ${serverId} is not connected`);
+  }
+  const client = runtime.getClient(serverId);
+  if (!client) {
+    throw new WorkHostResolutionError(`No client for host ${serverId}`);
+  }
+  const session = useSessionStore.getState().sessions[serverId];
+  if (session?.serverInfo?.features?.workBoard !== true) {
+    throw new WorkHostResolutionError(`Host ${serverId} needs update to use Work`);
+  }
+  return client;
+}
+
+function getClientForProjectKey(projectKey: string): DaemonClient {
+  const serverId = projectHostByKey.get(projectKey);
+  if (!serverId) {
+    throw new WorkHostResolutionError(
+      `Cannot resolve host for project ${projectKey}: project not found`,
+    );
+  }
+  return getClientForServerId(serverId);
+}
+
+function findProjectKeyForItemId(itemId: string): string | null {
+  const queries = sharedQueryClient.getQueriesData<{
+    items?: WorkItem[];
+    unreachableHosts?: string[];
+  }>({ queryKey: workItemsQueryBaseKey });
+  for (const [, data] of queries) {
+    if (!data || typeof data !== "object") continue;
+    const items = (data as unknown as { items?: WorkItem[] }).items;
+    if (!Array.isArray(items)) continue;
+    const found = items.find((it) => it.id === itemId);
+    if (found) return found.projectKey;
+  }
+  const detailQueries = sharedQueryClient.getQueriesData<WorkItemDetail | null>({
+    queryKey: workItemDetailQueryBaseKey,
+  });
+  for (const [, data] of detailQueries) {
+    if (!data || typeof data !== "object") continue;
+    const item = (data as unknown as WorkItemDetail | null)?.item;
+    if (item?.id === itemId) return item.projectKey;
+  }
+  return null;
+}
+
+function scanListForProjectKey<T extends { id: string; projectKey: string }>(
+  baseKey: readonly unknown[],
+  id: string,
+): string | null {
+  const queries = sharedQueryClient.getQueriesData<T[]>({ queryKey: baseKey });
+  for (const [, data] of queries) {
+    if (!Array.isArray(data)) continue;
+    const found = data.find((entry) => entry.id === id);
+    if (found) return found.projectKey;
+  }
+  return null;
+}
+
+function findProjectKeyForEntityId(id: string): string | null {
+  const fromMaps =
+    draftProjectById.get(id) ??
+    pageProjectById.get(id) ??
+    stickyProjectById.get(id) ??
+    viewProjectById.get(id);
+  if (fromMaps) return fromMaps;
+  return (
+    findProjectKeyForItemId(id) ??
+    scanListForProjectKey(workPagesQueryBaseKey, id) ??
+    scanListForProjectKey(workDraftsQueryBaseKey, id) ??
+    scanListForProjectKey(workStickiesQueryBaseKey, id) ??
+    scanListForProjectKey(workViewsQueryBaseKey, id)
+  );
+}
+
+function getClientForItemId(itemId: string): DaemonClient {
+  const projectKey = findProjectKeyForItemId(itemId);
+  if (!projectKey) {
+    throw new WorkHostResolutionError(`Cannot resolve host for item ${itemId}: item not found`);
+  }
+  return getClientForProjectKey(projectKey);
+}
+
+function getClientForEntityId(id: string, projectKeyHint?: string | null): DaemonClient {
+  if (projectKeyHint) {
+    const serverId = projectHostByKey.get(projectKeyHint);
+    if (serverId) return getClientForServerId(serverId);
+  }
+  const projectKey = findProjectKeyForEntityId(id);
+  if (projectKey) return getClientForProjectKey(projectKey);
+  if (projectKeyHint) return getClientForProjectKey(projectKeyHint);
+  throw new WorkHostResolutionError(`Cannot resolve host for entity ${id}: no project mapping`);
+}
+
+export function getWorkProjectHostServerId(projectKey: string): string | null {
+  return projectHostByKey.get(projectKey) ?? null;
+}
+
+export function useWorkProjectHost(projectKey: string | null): {
+  serverId: string | null;
+  isCapable: boolean | null;
+  hostLabel: string | null;
+} {
+  const hosts = useHosts();
+  const derivedServerId = projectKey ? (projectHostByKey.get(projectKey) ?? null) : null;
+  const sessions = useSessionStore((state) => state.sessions);
+  const hostLabel =
+    derivedServerId !== null
+      ? (hosts.find((host) => host.serverId === derivedServerId)?.label ?? derivedServerId)
+      : null;
+  const featureFlag =
+    derivedServerId !== null
+      ? sessions[derivedServerId]?.serverInfo?.features?.workBoard === true
+      : null;
+  const isCapable = featureFlag === null ? null : featureFlag === true;
+  return { serverId: derivedServerId, isCapable, hostLabel };
+}
+
+// ---------------------------------------------------------------------------
+// Per-host fleet reads
+// ---------------------------------------------------------------------------
+
+interface HostClassified {
+  unreachable: string[];
+  needsUpdate: string[];
+  capableHosts: HostProfile[];
+}
+
+// One pass classifies every host into: offline (unreachable), online but no
+// workBoard (needs update), and online + workBoard (capable). Never labels a
+// stale-but-online host as unreachable.
+function classifyHosts(
+  hosts: readonly HostProfile[],
+  runtime: HostRuntimeStore,
+  workFeatureMap: ReadonlyMap<string, boolean>,
+): HostClassified {
+  const unreachable: string[] = [];
+  const needsUpdate: string[] = [];
+  const capableHosts: HostProfile[] = [];
+  for (const host of hosts) {
+    const isOnline = runtime.getSnapshot(host.serverId)?.connectionStatus === "online";
+    if (!isOnline) {
+      unreachable.push(host.label ?? host.serverId);
+      continue;
+    }
+    if (workFeatureMap.get(host.serverId) !== true) {
+      needsUpdate.push(host.label ?? host.serverId);
+      continue;
+    }
+    capableHosts.push(host);
+  }
+  return { unreachable, needsUpdate, capableHosts };
+}
+
+interface ProjectEntryFromHost {
+  host: string;
+  project: WorkProject;
+}
+
+async function fetchProjectsFromHost(client: DaemonClient): Promise<{
+  entries: ProjectEntryFromHost[];
+  unreachable: string[];
+}> {
+  const payload = await (
+    client as unknown as {
+      workProjectList: () => Promise<{
+        hosts: Array<{ host: string; reachable: boolean; projects: WorkProject[] }>;
+      }>;
+    }
+  ).workProjectList();
+  const entries: ProjectEntryFromHost[] = [];
+  const unreachable: string[] = [];
+  for (const entry of payload.hosts ?? []) {
+    if (!entry.reachable) {
+      unreachable.push(entry.host);
+      continue;
+    }
+    for (const project of entry.projects ?? []) {
+      entries.push({ host: entry.host, project });
+    }
+  }
+  return { entries, unreachable };
+}
+
+async function fetchProjectsForHost(
+  runtime: HostRuntimeStore,
+  serverId: string,
+): Promise<{ entries: ProjectEntryFromHost[]; unreachable: string[]; ok: boolean }> {
+  const client = runtime.getClient(serverId) as DaemonClient | null;
+  if (!client) return { entries: [], unreachable: [], ok: false };
+  try {
+    const { entries, unreachable } = await fetchProjectsFromHost(client);
+    return { entries, unreachable, ok: true };
+  } catch {
+    return { entries: [], unreachable: [], ok: false };
+  }
+}
+
+interface ItemsFromHost {
+  items: WorkItem[];
+  unreachable: string[];
+}
+
+async function fetchItemsFromHost(
+  client: DaemonClient,
+  projectKey: string,
+): Promise<ItemsFromHost> {
+  const payload = await (
+    client as unknown as {
+      workItemList: (arg: { projectKey: string }) => Promise<{
+        projectKey: string;
+        hosts: Array<{ host: string; reachable: boolean; items: WorkItem[] }>;
+      }>;
+    }
+  ).workItemList({ projectKey });
+  const items: WorkItem[] = [];
+  const unreachable: string[] = [];
+  for (const entry of payload.hosts ?? []) {
+    if (!entry.reachable) {
+      unreachable.push(entry.host);
+      continue;
+    }
+    items.push(...(entry.items ?? []));
+  }
+  return { items, unreachable };
+}
+
+async function fetchItemsForProject(
+  runtime: HostRuntimeStore,
+  serverId: string,
+  projectKey: string,
+): Promise<{ items: WorkItem[]; unreachable: string[]; ok: boolean }> {
+  const client = runtime.getClient(serverId) as DaemonClient | null;
+  if (!client) return { items: [], unreachable: [], ok: false };
+  try {
+    const { items, unreachable } = await fetchItemsFromHost(client, projectKey);
+    return { items, unreachable, ok: true };
+  } catch {
+    return { items: [], unreachable: [], ok: false };
+  }
+}
+
+async function fetchDetailFromHost(
+  client: DaemonClient,
+  itemId: string,
+): Promise<WorkItemDetail | null> {
+  const payload = await (
+    client as unknown as {
+      workItemGet: (arg: { id: string }) => Promise<{ detail: WorkItemDetail | null }>;
+    }
+  ).workItemGet({ id: itemId });
+  return payload.detail ?? null;
+}
+
+async function fetchDetailFromServer(
+  runtime: HostRuntimeStore,
+  serverId: string,
+  itemId: string,
+): Promise<WorkItemDetail | null> {
+  const client = runtime.getClient(serverId) as DaemonClient | null;
+  if (!client) return null;
+  try {
+    return await fetchDetailFromHost(client, itemId);
+  } catch {
+    return null;
+  }
+}
+
+async function fetchRowsFromHost<T>(
+  runtime: HostRuntimeStore,
+  serverId: string,
+  projectKey: string,
+  fetcher: (client: DaemonClient, projectKey: string) => Promise<T[]>,
+): Promise<T[]> {
+  const client = runtime.getClient(serverId) as DaemonClient | null;
+  if (!client) return [];
+  try {
+    return await fetcher(client, projectKey);
+  } catch {
+    return [];
+  }
+}
+
+function rememberRowForRouting(
+  baseKey: readonly unknown[],
+  projectKey: string,
+  row: { id: string },
+): void {
+  if (baseKey === workPagesQueryBaseKey) pageProjectById.set(row.id, projectKey);
+  else if (baseKey === workDraftsQueryBaseKey) draftProjectById.set(row.id, projectKey);
+  else if (baseKey === workStickiesQueryBaseKey) stickyProjectById.set(row.id, projectKey);
+  else if (baseKey === workViewsQueryBaseKey) viewProjectById.set(row.id, projectKey);
+}
+
+// ---------------------------------------------------------------------------
+// Aggregated queries
+// ---------------------------------------------------------------------------
+
 export function useWorkProjects(): {
   projects: WorkProject[];
   unreachableHosts: string[];
+  hostsNeedingUpdate: string[];
   isLoading: boolean;
   error: string | null;
 } {
   const hosts = useHosts();
   const runtime = getHostRuntimeStore();
-  const serverIds = useMemo(() => hosts.map((h) => h.serverId), [hosts]);
+  const serverIds = useMemo(() => hosts.map((host) => host.serverId), [hosts]);
   const connectionStatuses = useHostRuntimeConnectionStatuses(serverIds);
   const connectionStatusKey = useMemo(
     () => serverIds.map((id) => connectionStatuses.get(id) ?? "connecting").join("|"),
     [connectionStatuses, serverIds],
   );
+  const workFeatureMap = useHostFeatureMap(serverIds, "workBoard");
+  const workFeatureKey = useMemo(
+    () => serverIds.map((id) => (workFeatureMap.get(id) === true ? "1" : "0")).join("|"),
+    [serverIds, workFeatureMap],
+  );
 
-  const query = useFetchQuery<{ projects: WorkProject[]; unreachableHosts: string[] }>({
+  const query = useFetchQuery<{
+    projects: WorkProject[];
+    unreachableHosts: string[];
+    hostsNeedingUpdate: string[];
+  }>({
     queryKey: [
       ...workProjectsQueryBaseKey,
       serverIds.join("|"),
       connectionStatusKey,
+      workFeatureKey,
     ] as unknown as readonly unknown[],
     dataShape: "list",
     staleTimeMs: 5_000,
     queryFn: async () => {
+      const classified = classifyHosts(hosts, runtime, workFeatureMap);
       const projectMap = new Map<string, WorkProject>();
-      const unreachable = new Set<string>();
-      let attemptedOnline = 0;
-      let anySuccess = false;
+      const nextProjectHost = new Map<string, string>();
+      const unreachableRaw = [...classified.unreachable];
+      const needsUpdateRaw = classified.needsUpdate;
+      const indexes = buildHostLabelIndexes(hosts);
 
       await Promise.all(
-        hosts.map(async (host) => {
-          const snap = runtime.getSnapshot(host.serverId);
-          const isOnline = snap?.connectionStatus === "online";
-          const client = runtime.getClient(host.serverId) as DaemonClient | null;
-          if (!isOnline || !client) return;
-          attemptedOnline += 1;
-          try {
-            const payload = await (
-              client as unknown as {
-                workProjectList: () => Promise<{
-                  hosts: Array<{ host: string; reachable: boolean; projects: WorkProject[] }>;
-                }>;
-              }
-            ).workProjectList();
-            anySuccess = true;
-            for (const entry of payload.hosts ?? []) {
-              if (!entry.reachable) {
-                unreachable.add(entry.host);
-                continue;
-              }
-              for (const p of entry.projects ?? []) {
-                if (!projectMap.has(p.projectKey)) {
-                  projectMap.set(p.projectKey, p);
-                }
-              }
-            }
-          } catch {
-            unreachable.add(host.label ?? host.serverId);
+        classified.capableHosts.map(async (host) => {
+          const result = await fetchProjectsForHost(runtime, host.serverId);
+          if (!result.ok) {
+            unreachableRaw.push(host.label ?? host.serverId);
+            return;
+          }
+          unreachableRaw.push(...result.unreachable);
+          for (const { host: entryHost, project } of result.entries) {
+            if (projectMap.has(project.projectKey)) continue;
+            projectMap.set(project.projectKey, project);
+            nextProjectHost.set(
+              project.projectKey,
+              resolveOwnerServerId(entryHost, indexes, host.serverId),
+            );
           }
         }),
       );
 
-      // If no online host attempted but there are settling hosts, keep loading state handled by caller via isLoading;
-      // Return empty with no error so UI shows loading.
-      if (attemptedOnline === 0) {
-        return { projects: [], unreachableHosts: [] };
-      }
-      // If all attempted hosts failed and no success, surface as error via throw
-      if (!anySuccess && unreachable.size === attemptedOnline && attemptedOnline > 0) {
-        // Return empty but caller will see error from throw alternative; we throw to trigger error state
-        // Instead return empty and let error be shown via query error if we throw
-        // Choose to throw so error string surfaces
-        // But to keep unreachableHosts, we throw with message and let hook map error
-        // Return empty projects and unreachable hosts without throwing — error will be null, unreachableHosts shown
-        // For strict spec: unreachable hosts are represented, not swallowed, not throwing
-      }
+      projectHostByKey.clear();
+      for (const [key, serverId] of nextProjectHost) projectHostByKey.set(key, serverId);
+
       return {
         projects: Array.from(projectMap.values()),
-        unreachableHosts: Array.from(unreachable),
+        unreachableHosts: dedupeHostLabels(unreachableRaw, hosts),
+        hostsNeedingUpdate: dedupeHostLabels(needsUpdateRaw, hosts),
       };
     },
   });
@@ -164,8 +536,11 @@ export function useWorkProjects(): {
     () => query.data?.unreachableHosts ?? [],
     [query.data?.unreachableHosts],
   );
+  const hostsNeedingUpdate = useMemo(
+    () => query.data?.hostsNeedingUpdate ?? [],
+    [query.data?.hostsNeedingUpdate],
+  );
 
-  // Default selection to first project once projects load
   const selectedKey = useSelectedWorkProjectKey();
   useEffect(() => {
     if (selectedKey) return;
@@ -177,6 +552,7 @@ export function useWorkProjects(): {
   return {
     projects,
     unreachableHosts,
+    hostsNeedingUpdate,
     isLoading: query.isLoading,
     error: toErrorString(query.error),
   };
@@ -186,76 +562,94 @@ export function useWorkItems(projectKey: string | null): {
   items: WorkItem[];
   byColumn: Record<WorkColumnId, WorkItem[]>;
   unreachableHosts: string[];
+  hostsNeedingUpdate: string[];
   isLoading: boolean;
   error: string | null;
 } {
   const hosts = useHosts();
   const runtime = getHostRuntimeStore();
-  const serverIds = useMemo(() => hosts.map((h) => h.serverId), [hosts]);
+  const serverIds = useMemo(() => hosts.map((host) => host.serverId), [hosts]);
   const connectionStatuses = useHostRuntimeConnectionStatuses(serverIds);
   const connectionStatusKey = useMemo(
     () => serverIds.map((id) => connectionStatuses.get(id) ?? "connecting").join("|"),
     [connectionStatuses, serverIds],
   );
+  const workFeatureMap = useHostFeatureMap(serverIds, "workBoard");
+  const workFeatureKey = useMemo(
+    () => serverIds.map((id) => (workFeatureMap.get(id) === true ? "1" : "0")).join("|"),
+    [serverIds, workFeatureMap],
+  );
 
   const enabled = projectKey !== null && projectKey.length > 0;
 
-  const query = useFetchQuery<{ items: WorkItem[]; unreachableHosts: string[] }>({
+  const query = useFetchQuery<{
+    items: WorkItem[];
+    unreachableHosts: string[];
+    hostsNeedingUpdate: string[];
+  }>({
     queryKey: [
       ...workItemsQueryBaseKey,
       projectKey ?? "__none__",
       serverIds.join("|"),
       connectionStatusKey,
+      workFeatureKey,
     ] as unknown as readonly unknown[],
     dataShape: "list",
     staleTimeMs: 5_000,
     queryFn: async () => {
-      if (!projectKey) return { items: [], unreachableHosts: [] };
+      if (!projectKey) return { items: [], unreachableHosts: [], hostsNeedingUpdate: [] };
+      const classified = classifyHosts(hosts, runtime, workFeatureMap);
+      const unreachableRaw = [...classified.unreachable];
+      const needsUpdateRaw = classified.needsUpdate;
       const itemMap = new Map<string, WorkItem>();
-      const unreachable = new Set<string>();
-      await Promise.all(
-        hosts.map(async (host) => {
-          const snap = runtime.getSnapshot(host.serverId);
-          const isOnline = snap?.connectionStatus === "online";
-          const client = runtime.getClient(host.serverId) as DaemonClient | null;
-          if (!isOnline || !client) return;
-          try {
-            const payload = await (
-              client as unknown as {
-                workItemList: (arg: { projectKey: string }) => Promise<{
-                  projectKey: string;
-                  hosts: Array<{ host: string; reachable: boolean; items: WorkItem[] }>;
-                }>;
-              }
-            ).workItemList({ projectKey });
-            for (const entry of payload.hosts ?? []) {
-              if (!entry.reachable) {
-                unreachable.add(entry.host);
-                continue;
-              }
-              for (const it of entry.items ?? []) {
-                if (!itemMap.has(it.id)) {
-                  itemMap.set(it.id, it);
-                }
-              }
-            }
-          } catch {
-            unreachable.add(host.label ?? host.serverId);
+      const owningServerId = projectHostByKey.get(projectKey) ?? null;
+      if (owningServerId) {
+        const snap = runtime.getSnapshot(owningServerId);
+        const isOnline = snap?.connectionStatus === "online";
+        const capable = workFeatureMap.get(owningServerId) === true;
+        if (isOnline && capable) {
+          const result = await fetchItemsForProject(runtime, owningServerId, projectKey);
+          unreachableRaw.push(...result.unreachable);
+          if (!result.ok) {
+            unreachableRaw.push(
+              hosts.find((host) => host.serverId === owningServerId)?.label ?? owningServerId,
+            );
           }
+          for (const item of result.items) itemMap.set(item.id, item);
+        }
+        return {
+          items: Array.from(itemMap.values()),
+          unreachableHosts: dedupeHostLabels(unreachableRaw, hosts),
+          hostsNeedingUpdate: dedupeHostLabels(needsUpdateRaw, hosts),
+        };
+      }
+      await Promise.all(
+        classified.capableHosts.map(async (host) => {
+          const result = await fetchItemsForProject(runtime, host.serverId, projectKey);
+          if (!result.ok) {
+            unreachableRaw.push(host.label ?? host.serverId);
+            return;
+          }
+          unreachableRaw.push(...result.unreachable);
+          for (const item of result.items) itemMap.set(item.id, item);
         }),
       );
-      return { items: Array.from(itemMap.values()), unreachableHosts: Array.from(unreachable) };
+      return {
+        items: Array.from(itemMap.values()),
+        unreachableHosts: dedupeHostLabels(unreachableRaw, hosts),
+        hostsNeedingUpdate: dedupeHostLabels(needsUpdateRaw, hosts),
+      };
     },
-    // When disabled, useFetchQuery expects queryFn optional? Provide enabled flag via queryFn returning empty but also disable via staleTime?
-    // useFetchQuery doesn't have enabled param in our wrapper; we gate by returning early and relying on queryFn anyway.
-    // To truly disable, we rely on caller: when projectKey null, data is empty and we don't want to fetch.
-    // Workaround: queryFn already returns empty; isLoading will be false after initial fetch.
   });
 
   const items = useMemo(() => query.data?.items ?? [], [query.data?.items]);
   const unreachableHosts = useMemo(
     () => query.data?.unreachableHosts ?? [],
     [query.data?.unreachableHosts],
+  );
+  const hostsNeedingUpdate = useMemo(
+    () => query.data?.hostsNeedingUpdate ?? [],
+    [query.data?.hostsNeedingUpdate],
   );
   const byColumn = useMemo(() => {
     if (!enabled) {
@@ -267,13 +661,21 @@ export function useWorkItems(projectKey: string | null): {
   }, [enabled, items]);
 
   if (!enabled) {
-    return { items: [], byColumn, unreachableHosts: [], isLoading: false, error: null };
+    return {
+      items: [],
+      byColumn,
+      unreachableHosts: [],
+      hostsNeedingUpdate: [],
+      isLoading: false,
+      error: null,
+    };
   }
 
   return {
     items,
     byColumn,
     unreachableHosts,
+    hostsNeedingUpdate,
     isLoading: query.isLoading,
     error: toErrorString(query.error),
   };
@@ -286,7 +688,7 @@ export function useWorkItemDetail(itemId: string | null): {
 } {
   const hosts = useHosts();
   const runtime = getHostRuntimeStore();
-  const serverIds = useMemo(() => hosts.map((h) => h.serverId), [hosts]);
+  const serverIds = useMemo(() => hosts.map((host) => host.serverId), [hosts]);
   const connectionStatuses = useHostRuntimeConnectionStatuses(serverIds);
   const connectionStatusKey = useMemo(
     () => serverIds.map((id) => connectionStatuses.get(id) ?? "connecting").join("|"),
@@ -306,22 +708,21 @@ export function useWorkItemDetail(itemId: string | null): {
     staleTimeMs: 5_000,
     queryFn: async () => {
       if (!itemId) return null;
-      // Try each online host sequentially; server forwards via fleetIdIndex if needed
+      const projectKey = findProjectKeyForItemId(itemId);
+      const owningServerId = projectKey ? (projectHostByKey.get(projectKey) ?? null) : null;
+      if (owningServerId) {
+        const detail = await fetchDetailFromServer(runtime, owningServerId, itemId);
+        if (detail) return detail;
+      }
       for (const host of hosts) {
-        const snap = runtime.getSnapshot(host.serverId);
-        const isOnline = snap?.connectionStatus === "online";
-        const client = runtime.getClient(host.serverId) as DaemonClient | null;
-        if (!isOnline || !client) continue;
-        try {
-          const payload = await (
-            client as unknown as {
-              workItemGet: (arg: { id: string }) => Promise<{ detail: WorkItemDetail | null }>;
-            }
-          ).workItemGet({ id: itemId });
-          if (payload.detail) return payload.detail;
-        } catch {
-          continue;
-        }
+        const isOnline = runtime.getSnapshot(host.serverId)?.connectionStatus === "online";
+        if (!isOnline) continue;
+        const capable =
+          useSessionStore.getState().sessions[host.serverId]?.serverInfo?.features?.workBoard ===
+          true;
+        if (!capable) continue;
+        const detail = await fetchDetailFromServer(runtime, host.serverId, itemId);
+        if (detail) return detail;
       }
       return null;
     },
@@ -338,18 +739,23 @@ export function useWorkItemDetail(itemId: string | null): {
   };
 }
 
-function useWorkListQuery<T>(
+function useWorkListQuery<T extends { id: string; projectKey: string }>(
   baseKey: readonly string[],
   projectKey: string | null,
   fetcher: (client: DaemonClient, projectKey: string) => Promise<T[]>,
 ): { rows: T[]; isLoading: boolean; error: string | null } {
   const hosts = useHosts();
   const runtime = getHostRuntimeStore();
-  const serverIds = useMemo(() => hosts.map((h) => h.serverId), [hosts]);
+  const serverIds = useMemo(() => hosts.map((host) => host.serverId), [hosts]);
   const connectionStatuses = useHostRuntimeConnectionStatuses(serverIds);
   const connectionStatusKey = useMemo(
     () => serverIds.map((id) => connectionStatuses.get(id) ?? "connecting").join("|"),
     [connectionStatuses, serverIds],
+  );
+  const workFeatureMap = useHostFeatureMap(serverIds, "workBoard");
+  const workFeatureKey = useMemo(
+    () => serverIds.map((id) => (workFeatureMap.get(id) === true ? "1" : "0")).join("|"),
+    [serverIds, workFeatureMap],
   );
   const enabled = projectKey !== null && projectKey.length > 0;
 
@@ -359,27 +765,34 @@ function useWorkListQuery<T>(
       projectKey ?? "__none__",
       serverIds.join("|"),
       connectionStatusKey,
+      workFeatureKey,
     ] as unknown as readonly unknown[],
     dataShape: "list",
     staleTimeMs: 5_000,
     queryFn: async () => {
       if (!projectKey) return [];
+      const owningServerId = projectHostByKey.get(projectKey) ?? null;
+      if (owningServerId) {
+        const snap = runtime.getSnapshot(owningServerId);
+        const isOnline = snap?.connectionStatus === "online";
+        const capable = workFeatureMap.get(owningServerId) === true;
+        if (!isOnline || !capable) return [];
+        const rows = await fetchRowsFromHost(runtime, owningServerId, projectKey, fetcher);
+        for (const row of rows) rememberRowForRouting(baseKey, projectKey, row);
+        return rows;
+      }
       const seen = new Map<string, T>();
+      const capableHosts = hosts.filter((host) => {
+        const snap = runtime.getSnapshot(host.serverId);
+        return snap?.connectionStatus === "online" && workFeatureMap.get(host.serverId) === true;
+      });
       await Promise.all(
-        hosts.map(async (host) => {
-          const snap = runtime.getSnapshot(host.serverId);
-          const isOnline = snap?.connectionStatus === "online";
-          const client = runtime.getClient(host.serverId) as DaemonClient | null;
-          if (!isOnline || !client) return;
-          try {
-            const rows = await fetcher(client, projectKey);
-            for (const r of rows) {
-              const id = (r as unknown as { id: string }).id;
-              if (id && !seen.has(id)) seen.set(id, r);
-              else if (!id) seen.set(`${host.serverId}:${Math.random()}`, r);
-            }
-          } catch {
-            // unreachable handled at higher level for items/projects; for pages etc just skip
+        capableHosts.map(async (host) => {
+          const rows = await fetchRowsFromHost(runtime, host.serverId, projectKey, fetcher);
+          for (const row of rows) {
+            if (seen.has(row.id)) continue;
+            seen.set(row.id, row);
+            rememberRowForRouting(baseKey, projectKey, row);
           }
         }),
       );
@@ -398,14 +811,18 @@ export function useWorkPages(projectKey: string | null): {
   isLoading: boolean;
   error: string | null;
 } {
-  return useWorkListQuery<WorkPage>(workPagesQueryBaseKey, projectKey, async (client, pk) => {
-    const payload = await (
-      client as unknown as {
-        workPageList: (arg: { projectKey: string }) => Promise<{ pages: WorkPage[] }>;
-      }
-    ).workPageList({ projectKey: pk });
-    return payload.pages ?? [];
-  });
+  return useWorkListQuery<WorkPage & { projectKey: string }>(
+    workPagesQueryBaseKey,
+    projectKey,
+    async (client, pk) => {
+      const payload = await (
+        client as unknown as {
+          workPageList: (arg: { projectKey: string }) => Promise<{ pages: WorkPage[] }>;
+        }
+      ).workPageList({ projectKey: pk });
+      return (payload.pages ?? []) as Array<WorkPage & { projectKey: string }>;
+    },
+  );
 }
 
 export function useWorkDrafts(projectKey: string | null): {
@@ -413,14 +830,18 @@ export function useWorkDrafts(projectKey: string | null): {
   isLoading: boolean;
   error: string | null;
 } {
-  return useWorkListQuery<WorkDraft>(workDraftsQueryBaseKey, projectKey, async (client, pk) => {
-    const payload = await (
-      client as unknown as {
-        workDraftList: (arg: { projectKey: string }) => Promise<{ drafts: WorkDraft[] }>;
-      }
-    ).workDraftList({ projectKey: pk });
-    return payload.drafts ?? [];
-  });
+  return useWorkListQuery<WorkDraft & { projectKey: string }>(
+    workDraftsQueryBaseKey,
+    projectKey,
+    async (client, pk) => {
+      const payload = await (
+        client as unknown as {
+          workDraftList: (arg: { projectKey: string }) => Promise<{ drafts: WorkDraft[] }>;
+        }
+      ).workDraftList({ projectKey: pk });
+      return (payload.drafts ?? []) as Array<WorkDraft & { projectKey: string }>;
+    },
+  );
 }
 
 export function useWorkStickies(projectKey: string | null): {
@@ -428,14 +849,18 @@ export function useWorkStickies(projectKey: string | null): {
   isLoading: boolean;
   error: string | null;
 } {
-  return useWorkListQuery<WorkSticky>(workStickiesQueryBaseKey, projectKey, async (client, pk) => {
-    const payload = await (
-      client as unknown as {
-        workStickyList: (arg: { projectKey: string }) => Promise<{ stickies: WorkSticky[] }>;
-      }
-    ).workStickyList({ projectKey: pk });
-    return payload.stickies ?? [];
-  });
+  return useWorkListQuery<WorkSticky & { projectKey: string }>(
+    workStickiesQueryBaseKey,
+    projectKey,
+    async (client, pk) => {
+      const payload = await (
+        client as unknown as {
+          workStickyList: (arg: { projectKey: string }) => Promise<{ stickies: WorkSticky[] }>;
+        }
+      ).workStickyList({ projectKey: pk });
+      return (payload.stickies ?? []) as Array<WorkSticky & { projectKey: string }>;
+    },
+  );
 }
 
 export function useWorkViews(projectKey: string | null): {
@@ -443,14 +868,18 @@ export function useWorkViews(projectKey: string | null): {
   isLoading: boolean;
   error: string | null;
 } {
-  return useWorkListQuery<WorkView>(workViewsQueryBaseKey, projectKey, async (client, pk) => {
-    const payload = await (
-      client as unknown as {
-        workViewList: (arg: { projectKey: string }) => Promise<{ views: WorkView[] }>;
-      }
-    ).workViewList({ projectKey: pk });
-    return payload.views ?? [];
-  });
+  return useWorkListQuery<WorkView & { projectKey: string }>(
+    workViewsQueryBaseKey,
+    projectKey,
+    async (client, pk) => {
+      const payload = await (
+        client as unknown as {
+          workViewList: (arg: { projectKey: string }) => Promise<{ views: WorkView[] }>;
+        }
+      ).workViewList({ projectKey: pk });
+      return (payload.views ?? []) as Array<WorkView & { projectKey: string }>;
+    },
+  );
 }
 
 export function useWorkMutations(): {
@@ -486,16 +915,17 @@ export function useWorkMutations(): {
   dispatchItem: (input: { id: string }) => Promise<void>;
   createComment: (input: { itemId: string; body: string }) => Promise<WorkComment | null>;
   upsertLabel: (input: {
+    projectKey: string;
     name: string;
     color?: string;
     newName?: string;
   }) => Promise<WorkLabel | null>;
-  deleteLabel: (input: { id: string }) => Promise<void>;
+  deleteLabel: (input: { id: string; projectKey?: string }) => Promise<void>;
   upsertPage: (input: {
     projectKey: string;
     page: { id?: string; title: string; body: string; parentId?: string | null };
   }) => Promise<WorkPage | null>;
-  deletePage: (input: { id: string }) => Promise<void>;
+  deletePage: (input: { id: string; projectKey?: string }) => Promise<void>;
   createDraft: (input: {
     projectKey: string;
     title: string;
@@ -510,7 +940,7 @@ export function useWorkMutations(): {
     projectKey: string;
     sticky: { id?: string; body: string };
   }) => Promise<WorkSticky | null>;
-  deleteSticky: (input: { id: string }) => Promise<void>;
+  deleteSticky: (input: { id: string; projectKey?: string }) => Promise<void>;
   upsertView: (input: {
     projectKey: string;
     view: { id?: string; name: string; filters?: unknown; groupBy?: unknown; orderBy?: unknown };
@@ -544,7 +974,7 @@ export function useWorkMutations(): {
       lane?: WorkItem["lane"];
       assignment?: WorkItem["assignment"];
     }): Promise<WorkItem | null> => {
-      const client = getOnlineClientForMutation();
+      const client = getClientForProjectKey(input.projectKey);
       const payload = await (
         client as unknown as {
           workItemCreate: (
@@ -582,7 +1012,7 @@ export function useWorkMutations(): {
         lane?: WorkItem["lane"];
       };
     }): Promise<WorkItem | null> => {
-      const client = getOnlineClientForMutation();
+      const client = getClientForItemId(input.id);
       const payload = await (
         client as unknown as {
           workItemUpdate: (
@@ -602,7 +1032,7 @@ export function useWorkMutations(): {
 
   const deleteItem = useCallback(
     async (input: { id: string }): Promise<void> => {
-      const client = getOnlineClientForMutation();
+      const client = getClientForItemId(input.id);
       const payload = await (
         client as unknown as {
           workItemDelete: (arg: unknown) => Promise<{ success: boolean; error?: string | null }>;
@@ -614,7 +1044,6 @@ export function useWorkMutations(): {
     [invalidateItems],
   );
 
-  // Optimistic moveItem
   type MoveCacheSnapshot = Array<[readonly unknown[], unknown]>;
   const moveMutation = useMutation<
     WorkItem | null,
@@ -632,7 +1061,7 @@ export function useWorkMutations(): {
         prevSortOrder: input.prevSortOrder,
         nextSortOrder: input.nextSortOrder,
       });
-      const client = getOnlineClientForMutation();
+      const client = getClientForItemId(input.itemId);
       const payload = await (
         client as unknown as {
           workItemMove: (arg: unknown) => Promise<{ item: WorkItem | null; error?: string | null }>;
@@ -654,7 +1083,6 @@ export function useWorkMutations(): {
         prevSortOrder: input.prevSortOrder,
         nextSortOrder: input.nextSortOrder,
       });
-      // Apply optimistic: update each cached aggregated items list
       for (const [key, data] of snapshot) {
         if (!data || typeof data !== "object") continue;
         const d = data as { items?: WorkItem[] };
@@ -692,7 +1120,7 @@ export function useWorkMutations(): {
 
   const dispatchItem = useCallback(
     async (input: { id: string }): Promise<void> => {
-      const client = getOnlineClientForMutation();
+      const client = getClientForItemId(input.id);
       const payload = await (
         client as unknown as {
           workItemDispatch: (arg: unknown) => Promise<{ error?: string | null }>;
@@ -706,7 +1134,7 @@ export function useWorkMutations(): {
 
   const createComment = useCallback(
     async (input: { itemId: string; body: string }): Promise<WorkComment | null> => {
-      const client = getOnlineClientForMutation();
+      const client = getClientForItemId(input.itemId);
       const payload = await (
         client as unknown as {
           workCommentCreate: (
@@ -726,20 +1154,27 @@ export function useWorkMutations(): {
 
   const upsertLabel = useCallback(
     async (input: {
+      projectKey: string;
       name: string;
       color?: string;
       newName?: string;
     }): Promise<WorkLabel | null> => {
-      const client = getOnlineClientForMutation();
+      const client = getClientForProjectKey(input.projectKey);
       const payload = await (
         client as unknown as {
           workLabelUpsert: (
             arg: unknown,
           ) => Promise<{ label: WorkLabel | null; error?: string | null }>;
         }
-      ).workLabelUpsert(input);
+      ).workLabelUpsert({
+        projectKey: input.projectKey,
+        label: {
+          name: input.name,
+          ...(input.color !== undefined ? { color: input.color } : {}),
+          ...(input.newName !== undefined ? { newName: input.newName } : {}),
+        },
+      });
       if (payload.error) throw new Error(payload.error);
-      // labels not yet queried separately; invalidate generically
       invalidateAllWork();
       return payload.label ?? null;
     },
@@ -747,8 +1182,8 @@ export function useWorkMutations(): {
   );
 
   const deleteLabel = useCallback(
-    async (input: { id: string }): Promise<void> => {
-      const client = getOnlineClientForMutation();
+    async (input: { id: string; projectKey?: string }): Promise<void> => {
+      const client = getClientForEntityId(input.id, input.projectKey ?? null);
       const payload = await (
         client as unknown as {
           workLabelDelete: (arg: unknown) => Promise<{ success: boolean; error?: string | null }>;
@@ -765,7 +1200,7 @@ export function useWorkMutations(): {
       projectKey: string;
       page: { id?: string; title: string; body: string; parentId?: string | null };
     }): Promise<WorkPage | null> => {
-      const client = getOnlineClientForMutation();
+      const client = getClientForProjectKey(input.projectKey);
       const payload = await (
         client as unknown as {
           workPageUpsert: (
@@ -784,8 +1219,8 @@ export function useWorkMutations(): {
   );
 
   const deletePage = useCallback(
-    async (input: { id: string }): Promise<void> => {
-      const client = getOnlineClientForMutation();
+    async (input: { id: string; projectKey?: string }): Promise<void> => {
+      const client = getClientForEntityId(input.id, input.projectKey ?? null);
       const payload = await (
         client as unknown as {
           workPageDelete: (arg: unknown) => Promise<{ success: boolean; error?: string | null }>;
@@ -807,7 +1242,7 @@ export function useWorkMutations(): {
       parentId?: string | null;
       assignment?: WorkItem["assignment"] | null;
     }): Promise<WorkDraft | null> => {
-      const client = getOnlineClientForMutation();
+      const client = getClientForProjectKey(input.projectKey);
       const payload = await (
         client as unknown as {
           workDraftCreate: (
@@ -832,7 +1267,7 @@ export function useWorkMutations(): {
 
   const promoteDraft = useCallback(
     async (input: { id: string }): Promise<WorkItem | null> => {
-      const client = getOnlineClientForMutation();
+      const client = getClientForEntityId(input.id);
       const payload = await (
         client as unknown as {
           workDraftPromote: (
@@ -853,7 +1288,7 @@ export function useWorkMutations(): {
       projectKey: string;
       sticky: { id?: string; body: string };
     }): Promise<WorkSticky | null> => {
-      const client = getOnlineClientForMutation();
+      const client = getClientForProjectKey(input.projectKey);
       const payload = await (
         client as unknown as {
           workStickyUpsert: (
@@ -872,8 +1307,8 @@ export function useWorkMutations(): {
   );
 
   const deleteSticky = useCallback(
-    async (input: { id: string }): Promise<void> => {
-      const client = getOnlineClientForMutation();
+    async (input: { id: string; projectKey?: string }): Promise<void> => {
+      const client = getClientForEntityId(input.id, input.projectKey ?? null);
       const payload = await (
         client as unknown as {
           workStickyDelete: (arg: unknown) => Promise<{ success: boolean; error?: string | null }>;
@@ -890,7 +1325,7 @@ export function useWorkMutations(): {
       projectKey: string;
       view: { id?: string; name: string; filters?: unknown; groupBy?: unknown; orderBy?: unknown };
     }): Promise<WorkView | null> => {
-      const client = getOnlineClientForMutation();
+      const client = getClientForProjectKey(input.projectKey);
       const payload = await (
         client as unknown as {
           workViewUpsert: (

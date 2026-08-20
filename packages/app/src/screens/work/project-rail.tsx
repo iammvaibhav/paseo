@@ -131,7 +131,7 @@ export function WorkProjectRail({ compact = false }: WorkProjectRailProps): Reac
   const { t } = useTranslation();
   const isCompact = useIsCompactFormFactor();
   const effectiveCompact = compact || isCompact;
-  const { projects, unreachableHosts, isLoading, error } = useWorkProjects();
+  const { projects, unreachableHosts, hostsNeedingUpdate, isLoading, error } = useWorkProjects();
   const selectedKey = useSelectedWorkProjectKey();
 
   const unreachableNotice =
@@ -144,6 +144,23 @@ export function WorkProjectRail({ compact = false }: WorkProjectRailProps): Reac
       </View>
     ) : null;
 
+  const needsUpdateNotice =
+    hostsNeedingUpdate.length > 0 ? (
+      <View style={styles.unreachableBanner} testID="work-rail-needs-update">
+        <Text style={styles.unreachableTitle}>{t("work.rail.needsUpdateHint")}</Text>
+        <Text style={styles.unreachableDetail} numberOfLines={2}>
+          {t("work.rail.needsUpdateDetail", { hosts: hostsNeedingUpdate.join(", ") })}
+        </Text>
+      </View>
+    ) : null;
+
+  const railNotices = (
+    <>
+      {unreachableNotice}
+      {needsUpdateNotice}
+    </>
+  );
+
   if (isLoading && projects.length === 0) {
     return (
       <View style={styles.container} testID="work-project-rail">
@@ -154,7 +171,7 @@ export function WorkProjectRail({ compact = false }: WorkProjectRailProps): Reac
           <LoadingSpinner color={styles.spinnerColor.color} size={14} />
           <Text style={styles.loadingText}>{t("work.rail.loading")}</Text>
         </View>
-        {unreachableNotice}
+        {railNotices}
       </View>
     );
   }
@@ -166,7 +183,7 @@ export function WorkProjectRail({ compact = false }: WorkProjectRailProps): Reac
           <Text style={styles.headerTitle}>{t("work.rail.title")}</Text>
         </View>
         <Text style={styles.errorText}>{error}</Text>
-        {unreachableNotice}
+        {railNotices}
         {projects.length === 0 ? <EmptyRail /> : null}
       </View>
     );
@@ -178,7 +195,7 @@ export function WorkProjectRail({ compact = false }: WorkProjectRailProps): Reac
         <View style={styles.headerRow}>
           <Text style={styles.headerTitle}>{t("work.rail.title")}</Text>
         </View>
-        {unreachableNotice}
+        {railNotices}
         <EmptyRail />
       </View>
     );
@@ -187,7 +204,7 @@ export function WorkProjectRail({ compact = false }: WorkProjectRailProps): Reac
   if (effectiveCompact) {
     return (
       <View style={styles.container} testID="work-project-rail">
-        {unreachableNotice}
+        {railNotices}
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -211,7 +228,7 @@ export function WorkProjectRail({ compact = false }: WorkProjectRailProps): Reac
       <View style={styles.headerRow}>
         <Text style={styles.headerTitle}>{t("work.rail.title")}</Text>
       </View>
-      {unreachableNotice}
+      {railNotices}
       <ScrollView
         style={styles.list}
         contentContainerStyle={styles.listContent}

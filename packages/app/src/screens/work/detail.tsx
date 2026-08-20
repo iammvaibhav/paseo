@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useRef, useState, type ReactElement } fro
 import { ScrollView, Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
-import { useWorkItemDetail, useWorkMutations } from "@/data/work";
+import { useWorkItemDetail, useWorkMutations, useWorkProjectHost } from "@/data/work";
 import { MarkdownRenderer } from "@/components/markdown/renderer";
 import { Button } from "@/components/ui/button";
 import { EditingTextInput, type EditingTextInputHandle } from "@/components/ui/text-input";
@@ -461,6 +461,8 @@ export function WorkDetail({ itemId, onClose }: WorkDetailProps): ReactElement {
   const { t } = useTranslation();
   const { detail, isLoading, error } = useWorkItemDetail(itemId);
   const { updateItem, createComment, dispatchItem, deleteItem } = useWorkMutations();
+  const detailProjectKey = detail?.item?.projectKey ?? null;
+  const { isCapable, hostLabel } = useWorkProjectHost(detailProjectKey);
 
   const item = detail?.item ?? null;
 
@@ -502,6 +504,20 @@ export function WorkDetail({ itemId, onClose }: WorkDetailProps): ReactElement {
   if (isLoading && !detail) return <WorkDetailLoading t={t} />;
   if (error) return <WorkDetailError error={error} />;
   if (!item || !detail) return <WorkDetailNotFound t={t} />;
+  if (isCapable === false) {
+    return (
+      <View testID="work-host-needs-update" style={styles.container}>
+        <View style={styles.hostNeedsUpdate}>
+          <Text style={styles.hostNeedsUpdateTitle}>{t("work.host.needsUpdateTitle")}</Text>
+          <Text style={styles.hostNeedsUpdateHint}>
+            {hostLabel
+              ? t("work.host.needsUpdateDetail", { host: hostLabel })
+              : t("work.host.needsUpdateDetailGeneric")}
+          </Text>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <ScrollView
@@ -723,5 +739,23 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     justifyContent: "flex-end",
     gap: theme.spacing[2],
+  },
+  hostNeedsUpdate: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: theme.spacing[6],
+    gap: theme.spacing[2],
+  },
+  hostNeedsUpdateTitle: {
+    fontSize: theme.fontSize.lg,
+    fontWeight: theme.fontWeight.medium,
+    color: theme.colors.foreground,
+    textAlign: "center",
+  },
+  hostNeedsUpdateHint: {
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foregroundMuted,
+    textAlign: "center",
   },
 }));

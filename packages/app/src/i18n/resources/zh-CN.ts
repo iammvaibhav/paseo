@@ -1452,6 +1452,11 @@ export const zhCN: TranslationResources = {
     empty: {
       selectProjectHint: "Choose a project from the rail to see its board",
     },
+    host: {
+      needsUpdateTitle: "This host needs updating to use Work",
+      needsUpdateDetail: "{{host}} needs updating to use Work",
+      needsUpdateDetailGeneric: "The host for this project needs updating to use Work",
+    },
     rail: {
       title: "Projects",
       loading: "Loading projects...",
@@ -1459,6 +1464,8 @@ export const zhCN: TranslationResources = {
       emptyHint: "A Paseo project needs a directory. Add one with Add project, then find it here.",
       unreachableHint: "Some hosts are unreachable",
       unreachableDetail: "Unreachable: {{hosts}}",
+      needsUpdateHint: "Some hosts need updating",
+      needsUpdateDetail: "Needs update: {{hosts}}",
       openCount: "{{count}} open",
     },
   },
