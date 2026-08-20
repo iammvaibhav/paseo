@@ -654,3 +654,291 @@ describe("WorkService localOnly — never consults fleet, returns only local", (
     );
   });
 });
+describe("WorkService cross-host wiring — peer payloads pass through unchanged", () => {
+  it("peer items keep their owning-host humanKey/bucket/subItemCount and never consult the local store for wiring", async () => {
+    // Peer payload already correctly wired on the owning host (MACBOOK-2, bucket, subItemCount).
+    // The aggregator must pass it through unchanged and must NOT call local store wiring helpers for it.
+    const peerWireItem = {
+      id: "wit_peer",
+      projectKey: "host:srv_UATl_VeSDsDe:/Users/vaibhav",
+      projectId: "pid-peer",
+      sequenceId: 2,
+      humanKey: "MACBOOK-2",
+      title: "peer item",
+      description: "",
+      priority: "none" as const,
+      labelIds: [],
+      parentId: null,
+      sortOrder: 65535,
+      lane: "backlog" as const,
+      assignment: null,
+      agentId: null,
+      agentHost: null,
+      closed: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      column: "backlog" as const,
+      bucket: "running" as const,
+      subItemCount: 3,
+    };
+
+    // Local store holds exactly one local project+item; a spy asserts the service
+    // never asks it about the peer's projectKey/children/bracket.
+    const localProjectRecord = {
+      projectKey: "pk-local",
+      projectId: "pid-local",
+      identifier: "LOCAL",
+      displayName: "Local",
+      description: null,
+      nextSequenceId: 2,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      archivedAt: null,
+    };
+    const localRawItem = {
+      id: "wit_local",
+      projectKey: "pk-local",
+      projectId: "pid-local",
+      sequenceId: 1,
+      title: "local item",
+      description: "",
+      priority: "none" as const,
+      labelIds: [],
+      parentId: null,
+      sortOrder: 65535,
+      lane: "backlog" as const,
+      assignment: null,
+      agentId: null,
+      agentHost: null,
+      closed: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    let getProjectByKeyCalls: string[] = [];
+    let listChildrenCalls: string[] = [];
+    const store = {
+      listProjects: async () => [localProjectRecord],
+      listItems: async () => [localRawItem],
+      getProjectByKey: async (key: string) => {
+        getProjectByKeyCalls.push(key);
+        if (key === "pk-local") return localProjectRecord;
+        throw new Error(`local store must not be consulted for peer projectKey ${key}`);
+      },
+      listChildren: async (parentId: string) => {
+        listChildrenCalls.push(parentId);
+        if (parentId === "wit_peer") {
+          throw new Error("local store must not be consulted for peer children");
+        }
+        return [];
+      },
+    } as unknown as WorkStore;
+
+    // Fleet stub returns discriminated entries: local = raw records, peer = already-wired payloads.
+    const fleet = {
+      listItemsFleet: async () => [
+        { host: "hosta", reachable: true, kind: "local" as const, items: [localRawItem] },
+        { host: "macbook", reachable: true, kind: "peer" as const, items: [peerWireItem] },
+      ],
+      listProjectsFleet: async () => [
+        {
+          host: "hosta",
+          reachable: true,
+          kind: "local" as const,
+          projects: [localProjectRecord],
+        },
+        {
+          host: "macbook",
+          reachable: true,
+          kind: "peer" as const,
+          projects: [
+            {
+              projectKey: "host:srv_UATl_VeSDsDe:/Users/vaibhav",
+              projectId: "pid-peer",
+              identifier: "MACBOOK",
+              displayName: "Macbook",
+              description: null,
+              nextSequenceId: 3,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+              archivedAt: null,
+            },
+          ],
+        },
+      ],
+    } as unknown as WorkFleet;
+
+    const svc = new WorkService({
+      store: store as unknown as WorkStore,
+      logger,
+      agentManager: agentManagerFake() as unknown as AgentManager,
+      missionControlService: null,
+      peerManager: peerManagerFakeEmpty() as unknown as PeerManager,
+      projectRegistry: projectRegistryFake(() => []) as unknown as ProjectRegistry,
+      dispatcher: null,
+      fleet,
+      hostName: "hosta",
+    });
+
+    // listItems: peer payload passes through verbatim; local is still wired.
+    const itemsRes = await svc.listItems("pk-local");
+    const peerHost = itemsRes.hosts.find((h) => h.host === "macbook");
+    expect(peerHost).toBeDefined();
+    expect(peerHost!.reachable).toBe(true);
+    expect(peerHost!.items).toHaveLength(1);
+    expect(peerHost!.items[0]).toEqual(peerWireItem);
+    expect(peerHost!.items[0].humanKey).toBe("MACBOOK-2");
+    expect(peerHost!.items[0].bucket).toBe("running");
+    expect(peerHost!.items[0].subItemCount).toBe(3);
+    // Reference identity also proves no re-wiring copy was made.
+    expect(peerHost!.items[0]).toBe(peerWireItem);
+
+    const localHost = itemsRes.hosts.find((h) => h.host === "hosta");
+    expect(localHost).toBeDefined();
+    expect(localHost!.reachable).toBe(true);
+    expect(localHost!.items).toHaveLength(1);
+    expect(localHost!.items[0].humanKey).toBe("LOCAL-1");
+
+    // listProjects: peer projects also pass through unchanged.
+    const projsRes = await svc.listProjects();
+    const peerProjHost = projsRes.hosts.find((h) => h.host === "macbook");
+    expect(peerProjHost).toBeDefined();
+    expect(peerProjHost!.projects[0].identifier).toBe("MACBOOK");
+
+    // Local store was only consulted for the local item's wiring, never for the peer.
+    expect(getProjectByKeyCalls).toEqual(["pk-local"]);
+    expect(listChildrenCalls).toEqual(["wit_local"]);
+    // Reset so later tests don't leak state through shared arrays (reassigned above but keep clean).
+    getProjectByKeyCalls = [];
+    listChildrenCalls = [];
+  });
+
+  it("unreachable peer stays reachable:false with empty list, local still wired", async () => {
+    const localProjectRecord = {
+      projectKey: "pk-local2",
+      projectId: "pid-local2",
+      identifier: "LOCAL",
+      displayName: "Local",
+      description: null,
+      nextSequenceId: 2,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      archivedAt: null,
+    };
+    const localRawItem = {
+      id: "wit_local2",
+      projectKey: "pk-local2",
+      projectId: "pid-local2",
+      sequenceId: 1,
+      title: "local item 2",
+      description: "",
+      priority: "none" as const,
+      labelIds: [],
+      parentId: null,
+      sortOrder: 65535,
+      lane: "backlog" as const,
+      assignment: null,
+      agentId: null,
+      agentHost: null,
+      closed: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const store = {
+      listProjects: async () => [localProjectRecord],
+      listItems: async () => [localRawItem],
+      getProjectByKey: async () => localProjectRecord,
+      listChildren: async () => [],
+    } as unknown as WorkStore;
+
+    const fleet = {
+      listItemsFleet: async () => [
+        { host: "hosta", reachable: true, kind: "local" as const, items: [localRawItem] },
+        { host: "peer-bad", reachable: false, kind: "peer" as const, items: [] },
+      ],
+      listProjectsFleet: async () => [
+        { host: "hosta", reachable: true, kind: "local" as const, projects: [localProjectRecord] },
+        { host: "peer-bad", reachable: false, kind: "peer" as const, projects: [] },
+      ],
+    } as unknown as WorkFleet;
+
+    const svc = new WorkService({
+      store: store as unknown as WorkStore,
+      logger,
+      agentManager: agentManagerFake() as unknown as AgentManager,
+      missionControlService: null,
+      peerManager: peerManagerFakeEmpty() as unknown as PeerManager,
+      projectRegistry: projectRegistryFake(() => []) as unknown as ProjectRegistry,
+      dispatcher: null,
+      fleet,
+      hostName: "hosta",
+    });
+
+    const itemsRes = await svc.listItems("pk-local2");
+    expect(itemsRes.hosts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ host: "hosta", reachable: true }),
+        expect.objectContaining({ host: "peer-bad", reachable: false, items: [] }),
+      ]),
+    );
+    // No throw, and local still wired correctly.
+    expect(itemsRes.hosts.find((h) => h.host === "hosta")!.items[0].humanKey).toBe("LOCAL-1");
+
+    const projsRes = await svc.listProjects();
+    expect(projsRes.hosts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ host: "hosta", reachable: true }),
+        expect.objectContaining({ host: "peer-bad", reachable: false, projects: [] }),
+      ]),
+    );
+  });
+
+  it("localOnly still bypasses fleet and wires local items without touching peers", async () => {
+    const { dir, store, projectRegistry } = await freshArtifacts();
+    await store.ensureProject({
+      projectKey: "pk-localonly-xhost",
+      projectId: "pid-localonly-xhost",
+      displayName: "LocalOnly XHost",
+    });
+    await store.createItem({
+      projectKey: "pk-localonly-xhost",
+      projectId: "pid-localonly-xhost",
+      title: "one",
+    });
+
+    const fleet: unknown = {
+      listProjectsFleet: async () => {
+        throw new Error("fleet must not be called when localOnly is set");
+      },
+      listItemsFleet: async () => {
+        throw new Error("fleet must not be called when localOnly is set");
+      },
+    };
+
+    const svc = new WorkService({
+      store,
+      logger,
+      agentManager: agentManagerFake() as unknown as AgentManager,
+      missionControlService: null,
+      peerManager: peerManagerFakeEmpty() as unknown as PeerManager,
+      projectRegistry: projectRegistry as unknown as ProjectRegistry,
+      dispatcher: null,
+      fleet: fleet as WorkFleet,
+      hostName: "hosta",
+    });
+
+    const itemsRes = await svc.listItems("pk-localonly-xhost", { localOnly: true });
+    expect(itemsRes.hosts).toHaveLength(1);
+    expect(itemsRes.hosts[0].host).toBe("hosta");
+    expect(itemsRes.hosts[0].items.length).toBeGreaterThanOrEqual(1);
+    // Wired locally: humanKey derived from local project identifier.
+    const localProject = await store.getProjectByKey("pk-localonly-xhost");
+    expect(itemsRes.hosts[0].items[0].humanKey).toBe(`${localProject!.identifier}-1`);
+
+    const projsRes = await svc.listProjects({ localOnly: true });
+    expect(projsRes.hosts).toHaveLength(1);
+    expect(projsRes.hosts[0].host).toBe("hosta");
+
+    await rm(dir, { recursive: true, force: true });
+  });
+});

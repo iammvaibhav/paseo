@@ -269,14 +269,35 @@ export class WorkService {
   private async toWire(item: WorkItemRecord): Promise<WorkItem> {
     const bucket = await this.getBucket(item.agentId ?? null);
     const project = await this.store.getProjectByKey(item.projectKey);
-    const humanKey = `${project?.identifier ?? item.projectKey.slice(0, 12).toUpperCase()}-${item.sequenceId}`;
+    // Local item should always have its project in the local store. If it does
+    // not, treat it as a programmer error rather than fabricating a key from
+    // the raw projectKey (which would give e.g. "HOST:SRV_UAT-2" instead of
+    // "MACBOOK-2" for cross-host items, and would hide the missing-project bug
+    // for genuinely local items).
+    if (!project) {
+      throw new Error(`work_item_missing_project:${item.projectKey}`);
+    }
+    const humanKey = `${project.identifier}-${item.sequenceId}`;
     const children = await this.store.listChildren(item.id);
     const subItemCount = children.length > 0 ? children.length : undefined;
     return toWorkItemPayload(item, bucket, humanKey, subItemCount);
   }
 
+  // toWire throws when a local item has lost its project record. That is a real
+  // defect, but one broken item must not blank the whole board, so drop it from
+  // the list and log instead of failing the response.
   private async toWireMany(items: WorkItemRecord[]): Promise<WorkItem[]> {
-    return Promise.all(items.map((item) => this.toWire(item)));
+    const wired = await Promise.all(
+      items.map(async (item) => {
+        try {
+          return await this.toWire(item);
+        } catch (error) {
+          this.logger.warn({ err: error, itemId: item.id }, "Skipped work item without a project");
+          return null;
+        }
+      }),
+    );
+    return wired.filter((item): item is WorkItem => item !== null);
   }
 
   // -------------------------------------------------------------------------
@@ -285,14 +306,23 @@ export class WorkService {
 
   async listProjects(opts?: { localOnly?: boolean }): Promise<{ hosts: WorkProjectHostEntry[] }> {
     if (!opts?.localOnly && this.fleet) {
-      const hosts = await this.fleet.listProjectsFleet();
-      return {
-        hosts: hosts.map((entry) => ({
+      const fleetHosts = await this.fleet.listProjectsFleet();
+      const hosts: WorkProjectHostEntry[] = fleetHosts.map((entry) => {
+        if (entry.kind === "local") {
+          return {
+            host: entry.host,
+            reachable: entry.reachable,
+            projects: entry.projects.map(toWorkProjectPayload),
+          };
+        }
+        // Peer entry already contains wire payloads from the owning host — pass through unchanged.
+        return {
           host: entry.host,
           reachable: entry.reachable,
-          projects: entry.projects.map(toWorkProjectPayload),
-        })),
-      };
+          projects: entry.projects,
+        };
+      });
+      return { hosts };
     }
     const projects = await this.store.listProjects();
     return {
@@ -308,12 +338,21 @@ export class WorkService {
   ): Promise<{ projectKey: string; hosts: WorkItemHostEntry[] }> {
     if (!opts?.localOnly && this.fleet) {
       const raw = await this.fleet.listItemsFleet(projectKey);
-      const hosts = await Promise.all(
-        raw.map(async (entry) => ({
-          host: entry.host,
-          reachable: entry.reachable,
-          items: entry.reachable ? await this.toWireMany(entry.items) : [],
-        })),
+      const hosts: WorkItemHostEntry[] = await Promise.all(
+        raw.map(async (entry) => {
+          if (!entry.reachable) {
+            return { host: entry.host, reachable: false as const, items: [] };
+          }
+          if (entry.kind === "peer") {
+            // Already wired by the owning host (correct humanKey/bucket/subItemCount) — must not re-derive against local store.
+            return { host: entry.host, reachable: true as const, items: entry.items };
+          }
+          return {
+            host: entry.host,
+            reachable: true as const,
+            items: await this.toWireMany(entry.items),
+          };
+        }),
       );
       return { projectKey, hosts };
     }
