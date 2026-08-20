@@ -24,6 +24,37 @@ const defaultResolveRequest = config.resolver.resolveRequest ?? resolve;
 // crawler behavior depends on the host Watchman build/capabilities, while the
 // node crawler is the path used when Watchman is absent.
 config.resolver.useWatchman = false;
+const workspaceRoot = path.resolve(projectRoot, "../..");
+const watchFolders = [projectRoot, workspaceRoot];
+const nodeModulesPaths = [
+  path.resolve(projectRoot, "node_modules"),
+  path.resolve(workspaceRoot, "node_modules"),
+];
+// A git worktree symlinks packages/app/node_modules into the source checkout,
+// so the real dependency tree sits outside projectRoot. Metro ignores files it
+// does not watch, so add the symlink target and every ancestor node_modules.
+function collectLinkedDependencyRoots(linkPath) {
+  if (!fs.existsSync(linkPath)) return [];
+  const real = fs.realpathSync(linkPath);
+  if (real === linkPath) return [];
+  const roots = [real, path.dirname(real)];
+  let curr = path.dirname(real);
+  while (curr && curr !== path.dirname(curr)) {
+    const candidate = path.join(curr, "node_modules");
+    if (candidate !== real && fs.existsSync(candidate)) roots.push(curr, candidate);
+    curr = path.dirname(curr);
+  }
+  return roots;
+}
+
+try {
+  for (const root of collectLinkedDependencyRoots(appNodeModulesRoot)) {
+    watchFolders.push(root);
+    if (path.basename(root) === "node_modules") nodeModulesPaths.push(root);
+  }
+} catch {}
+config.watchFolders = Array.from(new Set(watchFolders));
+config.resolver.nodeModulesPaths = Array.from(new Set(nodeModulesPaths));
 
 const escapedAppSrcRoot = appSrcRoot
   .split(path.sep)

@@ -232,6 +232,11 @@ import {
 import { createWebUiMiddleware } from "./web-ui.js";
 import { WorkspaceAutoName } from "./workspace-auto-name.js";
 import { createGitMutationService } from "./session/git-mutation/git-mutation-service.js";
+import { WorkStore } from "./work/store.js";
+import { WorkFleet } from "./work/fleet.js";
+import { WorkService } from "./work/service.js";
+import { WorkProjectMirror } from "./work/mirror.js";
+import { WorkDispatcher } from "./work/dispatcher.js";
 import { workspaceIdsOnCheckout } from "./workspace-directory.js";
 import { configureGitProcessPolicy } from "../utils/run-git-command.js";
 import { resolveGitProcessPolicy } from "../utils/git-process-scheduler.js";
@@ -2093,6 +2098,9 @@ export async function createPaseoDaemon(
     "Tunnel manager initialized",
   );
 
+  const workStore = new WorkStore({ paseoHome: config.paseoHome, logger });
+  await workStore.initialize();
+
   peerManager = new PeerManager({
     peers: loadPersistedConfig(config.paseoHome).peers ?? [],
     logger,
@@ -2107,6 +2115,42 @@ export async function createPaseoDaemon(
           logger.warn({ err: error, peer: peerName }, "Central config sync-on-connect failed"),
         );
     },
+  });
+
+  const autoPickupConcurrency =
+    (daemonConfigStore.get().work?.autoPickupConcurrency as number | undefined) ?? 3;
+  const workFleet = new WorkFleet({
+    store: workStore,
+    peerManager,
+    logger,
+    serverId,
+    hostName: getHostname(),
+  });
+  const workDispatcher = new WorkDispatcher({
+    store: workStore,
+    logger,
+    concurrency: autoPickupConcurrency,
+    approvals: missionControlService.approvals,
+    workspaces: workspaceRegistry,
+  });
+  const workProjectMirror = new WorkProjectMirror({ store: workStore, projectRegistry, logger });
+  const workService = new WorkService({
+    store: workStore,
+    logger,
+    agentManager,
+    missionControlService,
+    peerManager,
+    projectRegistry,
+    dispatcher: workDispatcher,
+    fleet: workFleet,
+    hostName: getHostname(),
+  });
+  workDispatcher.start();
+  workProjectMirror.start();
+  daemonConfigStore.onFieldChange("work.autoPickupConcurrency", (value) => {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      workDispatcher.setConcurrency(value);
+    }
   });
 
   const webhookService = new WebhookService({
@@ -2487,6 +2531,7 @@ export async function createPaseoDaemon(
               pluginRuntime,
               orchestrationSkills,
               workspaceLabelService,
+              workService,
             );
             wsServer.setTranscriptSearch(transcriptSearch);
             pluginRuntime.bindPaseoSessionHost(wsServer);
@@ -2562,6 +2607,8 @@ export async function createPaseoDaemon(
     terminalManager.killAll();
     await speechService.stop();
     await missionControlService.stop().catch(() => undefined);
+    workDispatcher.stop();
+    workProjectMirror.stop();
 
     await scheduleService.stop().catch(() => undefined);
     await peerManager?.close().catch(() => undefined);

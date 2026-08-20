@@ -152,6 +152,11 @@ import type { MissionControlEvent } from "@getpaseo/protocol/mission-control/typ
 import type { MissionControlProposal } from "@getpaseo/protocol/mission-control/types";
 import type { ProposalCreateInput } from "../../mission-control/approvals.js";
 import { validateSpawnCwd } from "../../mission-control/spawn-executor.js";
+import {
+  getWorkStore,
+  notAssignedStructuredContent,
+  resolveAssignedWorkItemId,
+} from "../../work/agent-tools.js";
 import { FleetIdIndex } from "../../mission-control/fleet-id-index.js";
 import type {
   PaseoToolCatalog,
@@ -4186,6 +4191,238 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           ...(result.identity.description !== undefined
             ? { description: result.identity.description }
             : {}),
+        }),
+      };
+    },
+  );
+  // ---------------------------------------------------------------------------
+  // Work — agent-facing tools for the assignee's own item.
+  // Each resolves the item from the caller's paseo.work-item-id label.
+  // No tool writes lane/column/status/bucket; the card moves when the agent
+  // does the work and calls report_status — bucket authority stays single.
+  // ---------------------------------------------------------------------------
+  const WORK_NOT_ASSIGNED_MESSAGE =
+    "This agent is not assigned to a work item (missing paseo.work-item-id label).";
+
+  const resolveWorkTarget = () => {
+    const assignedItemId = resolveAssignedWorkItemId({ agentManager, callerAgentId, callerLabels });
+    if (!assignedItemId) return null;
+    const workStore = getWorkStore(options.paseoHome, logger);
+    if (!workStore) return null;
+    return { workStore, itemId: assignedItemId };
+  };
+
+  const workNotAssignedResponse = (): PaseoToolResult => ({
+    content: [],
+    structuredContent: ensureValidJson({
+      ...notAssignedStructuredContent(),
+      message: WORK_NOT_ASSIGNED_MESSAGE,
+    }),
+  });
+
+  registerTool(
+    "work_item_get",
+    {
+      title: "Get my work item",
+      description:
+        "Read your assigned work item with comments, activity, and sub-items. Resolves the item from your own paseo.work-item-id label. Your board column is derived from your live bucket — move the card by doing the work and calling report_status; there is no tool to set a column.",
+      inputSchema: {},
+      outputSchema: {
+        assigned: z.boolean(),
+        item: z.unknown().nullable().optional(),
+        comments: z.array(z.unknown()).optional(),
+        activity: z.array(z.unknown()).optional(),
+        subItems: z.array(z.unknown()).optional(),
+        error: z.string().optional(),
+        message: z.string().optional(),
+        reason: z.string().optional(),
+      },
+    },
+    async () => {
+      const target = resolveWorkTarget();
+      if (!target) return workNotAssignedResponse();
+      const item = await target.workStore.getItem(target.itemId);
+      if (!item) {
+        return {
+          content: [],
+          structuredContent: ensureValidJson({
+            assigned: true as const,
+            item: null,
+            error: "work item not found",
+            message: `Assigned work item ${target.itemId} not found on this host.`,
+          }),
+        };
+      }
+      const [comments, activity, subItems] = await Promise.all([
+        target.workStore.listComments(item.id),
+        target.workStore.listActivity(item.id),
+        target.workStore.listChildren(item.id),
+      ]);
+      return {
+        content: [],
+        structuredContent: ensureValidJson({
+          assigned: true as const,
+          item,
+          comments,
+          activity,
+          subItems,
+        }),
+      };
+    },
+  );
+
+  registerTool(
+    "work_item_comment",
+    {
+      title: "Comment on my work item",
+      description:
+        "Post a markdown comment on your assigned work item. Author is recorded as agent with your agent id. Your board column is derived from your live bucket — move the card by doing the work and calling report_status; there is no tool to set a column.",
+      inputSchema: {
+        body: z.string().min(1).describe("Markdown body of the comment."),
+      },
+      outputSchema: {
+        assigned: z.boolean(),
+        comment: z.unknown().nullable().optional(),
+        error: z.string().optional(),
+        message: z.string().optional(),
+        reason: z.string().optional(),
+      },
+    },
+    async ({ body }) => {
+      const target = resolveWorkTarget();
+      if (!target) return workNotAssignedResponse();
+      const item = await target.workStore.getItem(target.itemId);
+      if (!item) {
+        return {
+          content: [],
+          structuredContent: ensureValidJson({
+            assigned: true as const,
+            comment: null,
+            error: "work item not found",
+            message: `Assigned work item ${target.itemId} not found on this host.`,
+          }),
+        };
+      }
+      const comment = await target.workStore.appendComment({
+        itemId: item.id,
+        projectKey: item.projectKey,
+        body: String(body),
+        authorKind: "agent",
+        authorId: callerAgentId ?? null,
+      });
+      return {
+        content: [],
+        structuredContent: ensureValidJson({ assigned: true as const, comment }),
+      };
+    },
+  );
+
+  registerTool(
+    "work_item_update",
+    {
+      title: "Update my work item",
+      description:
+        "Update your assigned work item's description, links, or proofs and tick acceptance criteria. Resolves the item from your own label. Your board column is derived from your live bucket — move the card by doing the work and calling report_status; there is no tool to set a column.",
+      inputSchema: {
+        description: z.string().optional().describe("New markdown description for the item."),
+      },
+      outputSchema: {
+        assigned: z.boolean(),
+        item: z.unknown().nullable().optional(),
+        error: z.string().optional(),
+        message: z.string().optional(),
+        reason: z.string().optional(),
+      },
+    },
+    async ({ description }) => {
+      const target = resolveWorkTarget();
+      if (!target) return workNotAssignedResponse();
+      const patch: Record<string, unknown> = {};
+      if (description !== undefined) patch.description = String(description);
+      if (Object.keys(patch).length === 0) {
+        return {
+          content: [],
+          isError: true,
+          structuredContent: ensureValidJson({
+            assigned: true as const,
+            item: null,
+            error: "no fields to update",
+            message: "Provide at least description to update.",
+          }),
+        };
+      }
+      const updated = await target.workStore.updateItem(target.itemId, (record) => ({
+        ...record,
+        ...(patch.description !== undefined ? { description: patch.description as string } : {}),
+      }));
+      if (!updated) {
+        return {
+          content: [],
+          structuredContent: ensureValidJson({
+            assigned: true as const,
+            item: null,
+            error: "work item not found",
+            message: `Assigned work item ${target.itemId} not found on this host.`,
+          }),
+        };
+      }
+      if (callerAgentId) {
+        const changedFields = Object.keys(patch).join(", ");
+        await target.workStore.appendActivity({
+          itemId: updated.id,
+          projectKey: updated.projectKey,
+          verb: "updated",
+          field: changedFields || null,
+          actorKind: "agent",
+          actorId: callerAgentId,
+        });
+      }
+      return {
+        content: [],
+        structuredContent: ensureValidJson({ assigned: true as const, item: updated }),
+      };
+    },
+  );
+
+  registerTool(
+    "work_item_list",
+    {
+      title: "List work items in my project",
+      description:
+        "List work items in your assigned item's project. Read-only. Resolves scope from your own paseo.work-item-id label. Your board column is derived from your live bucket — move your own card by doing the work and calling report_status; there is no tool to set a column.",
+      inputSchema: {},
+      outputSchema: {
+        assigned: z.boolean(),
+        items: z.array(z.unknown()).optional(),
+        projectKey: z.string().nullable().optional(),
+        error: z.string().optional(),
+        message: z.string().optional(),
+        reason: z.string().optional(),
+      },
+    },
+    async () => {
+      const target = resolveWorkTarget();
+      if (!target) return workNotAssignedResponse();
+      const item = await target.workStore.getItem(target.itemId);
+      if (!item) {
+        return {
+          content: [],
+          structuredContent: ensureValidJson({
+            assigned: true as const,
+            items: [],
+            projectKey: null,
+            error: "work item not found",
+            message: `Assigned work item ${target.itemId} not found on this host.`,
+          }),
+        };
+      }
+      const items = await target.workStore.listItems({ projectKey: item.projectKey });
+      return {
+        content: [],
+        structuredContent: ensureValidJson({
+          assigned: true as const,
+          items,
+          projectKey: item.projectKey,
         }),
       };
     },
