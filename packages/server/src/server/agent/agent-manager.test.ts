@@ -6431,14 +6431,14 @@ test("archiveSnapshot clears persisted attention and normalizes running status",
   const archivedRecord = await manager.archiveSnapshot(snapshot.id, archivedAt);
 
   expect(archivedRecord.archivedAt).toBe(archivedAt);
-  expect(archivedRecord.lastStatus).toBe("idle");
+  expect(archivedRecord.lastStatus).toBe("closed");
   expect(archivedRecord.requiresAttention).toBe(false);
   expect(archivedRecord.attentionReason).toBeNull();
   expect(archivedRecord.attentionTimestamp).toBeNull();
 
   const persisted = await storage.get(snapshot.id);
   expect(persisted?.archivedAt).toBe(archivedAt);
-  expect(persisted?.lastStatus).toBe("idle");
+  expect(persisted?.lastStatus).toBe("closed");
   expect(persisted?.requiresAttention).toBe(false);
   expect(persisted?.attentionReason).toBeNull();
   expect(persisted?.attentionTimestamp).toBeNull();
@@ -9882,7 +9882,7 @@ test("archiveAgent cascade archives off-memory children with the full archive co
 
   await manager.archiveAgent(parent.id);
 
-  expectArchivedAgentRecord(await storage.get(child.id), "idle");
+  expectArchivedAgentRecord(await storage.get(child.id), "closed");
 });
 
 test("archiveAgent cascade notifies subscribers for in-memory and off-memory children", async () => {

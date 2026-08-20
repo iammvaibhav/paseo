@@ -24,22 +24,85 @@ export function reconcileProviderHistory(
     canonicalIndex,
     used: false,
   }));
+
+  const identityMap = new Map<
+    string,
+    Array<{ row: AgentTimelineRow; canonicalIndex: number; used: boolean }>
+  >();
+  const structuralBuckets = new Map<
+    string,
+    Array<{ row: AgentTimelineRow; canonicalIndex: number; used: boolean }>
+  >();
+
+  for (let i = 0; i < remaining.length; i++) {
+    const candidate = remaining[i];
+    const item = candidate.row.item;
+    if (item.type === "user_message") {
+      const identities = [
+        item.clientMessageId,
+        item.messageId,
+        candidate.row.providerMessageId,
+      ].filter(Boolean) as string[];
+      for (const id of identities) {
+        let list = identityMap.get(id);
+        if (!list) {
+          list = [];
+          identityMap.set(id, list);
+        }
+        list.push(candidate);
+      }
+    }
+    const key = structuralKey(item);
+    let bucket = structuralBuckets.get(key);
+    if (!bucket) {
+      bucket = [];
+      structuralBuckets.set(key, bucket);
+    }
+    bucket.push(candidate);
+  }
+
   const structuralCounts = countStructuralOccurrences(canonicalRows, providerEntries);
+  let nextSequentialCanonicalIndex = 0;
+
   const providerRows = providerEntries.map((entry) => {
-    const match = takeMatch(remaining, entry.item, structuralCounts);
+    const match = takeMatchFast(
+      entry.item,
+      identityMap,
+      structuralBuckets,
+      structuralCounts,
+      () => {
+        while (
+          nextSequentialCanonicalIndex < remaining.length &&
+          remaining[nextSequentialCanonicalIndex].used
+        ) {
+          nextSequentialCanonicalIndex++;
+        }
+        return nextSequentialCanonicalIndex < remaining.length
+          ? remaining[nextSequentialCanonicalIndex]
+          : null;
+      },
+      () => {
+        nextSequentialCanonicalIndex++;
+      },
+    );
     return { entry, match };
   });
   const rows: AgentTimelineRow[] = [];
   const emittedCanonicalIndexes = new Set<number>();
+  let remainingScanIndex = 0;
 
   for (const { entry, match } of providerRows) {
     if (match) {
-      for (const candidate of remaining) {
-        if (candidate.canonicalIndex >= match.canonicalIndex) break;
+      while (
+        remainingScanIndex < remaining.length &&
+        remaining[remainingScanIndex].canonicalIndex < match.canonicalIndex
+      ) {
+        const candidate = remaining[remainingScanIndex];
         if (!emittedCanonicalIndexes.has(candidate.canonicalIndex)) {
           rows.push({ ...candidate.row });
           emittedCanonicalIndexes.add(candidate.canonicalIndex);
         }
+        remainingScanIndex++;
       }
       rows.push(
         match.transferProviderIdentity ? mergeMatchedRow(match.row, entry) : { ...match.row },
@@ -55,10 +118,12 @@ export function reconcileProviderHistory(
   }
 
   if (options?.mode !== "force") {
-    for (const candidate of remaining) {
+    while (remainingScanIndex < remaining.length) {
+      const candidate = remaining[remainingScanIndex];
       if (!emittedCanonicalIndexes.has(candidate.canonicalIndex)) {
         rows.push({ ...candidate.row });
       }
+      remainingScanIndex++;
     }
   }
   rows.forEach((row, index) => {
@@ -67,31 +132,73 @@ export function reconcileProviderHistory(
   return rows;
 }
 
-function takeMatch(
-  remaining: Array<{ row: AgentTimelineRow; canonicalIndex: number; used: boolean }>,
+function takeMatchFast(
   provider: AgentTimelineItem,
+  identityMap: Map<string, Array<{ row: AgentTimelineRow; canonicalIndex: number; used: boolean }>>,
+  structuralBuckets: Map<
+    string,
+    Array<{ row: AgentTimelineRow; canonicalIndex: number; used: boolean }>
+  >,
   structuralCounts: Map<string, { canonical: number; provider: number }>,
+  getNextSequentialCandidate: () => {
+    row: AgentTimelineRow;
+    canonicalIndex: number;
+    used: boolean;
+  } | null,
+  advanceSequentialCandidate: () => void,
 ): { row: AgentTimelineRow; canonicalIndex: number; transferProviderIdentity: boolean } | null {
-  const strong = remaining.find(
-    (candidate) => !candidate.used && hasSharedIdentity(candidate.row, provider),
-  );
-  const structural =
-    strong ??
-    remaining.find(
+  if (provider.type === "user_message") {
+    const identities = [provider.clientMessageId, provider.messageId].filter(Boolean) as string[];
+    for (const id of identities) {
+      const list = identityMap.get(id);
+      if (list) {
+        const strong = list.find(
+          (candidate) => !candidate.used && hasSharedIdentity(candidate.row, provider),
+        );
+        if (strong) {
+          strong.used = true;
+          return {
+            row: strong.row,
+            canonicalIndex: strong.canonicalIndex,
+            transferProviderIdentity: true,
+          };
+        }
+      }
+    }
+  }
+
+  const nextCandidate = getNextSequentialCandidate();
+  if (nextCandidate && structurallyMatches(nextCandidate.row.item, provider)) {
+    nextCandidate.used = true;
+    advanceSequentialCandidate();
+    const key = structuralKey(provider);
+    const counts = structuralCounts.get(key);
+    return {
+      row: nextCandidate.row,
+      canonicalIndex: nextCandidate.canonicalIndex,
+      transferProviderIdentity: counts?.canonical === 1 && counts?.provider === 1,
+    };
+  }
+
+  const key = structuralKey(provider);
+  const bucket = structuralBuckets.get(key);
+  if (bucket) {
+    const match = bucket.find(
       (candidate) => !candidate.used && structurallyMatches(candidate.row.item, provider),
     );
-  if (!structural) return null;
-  structural.used = true;
-  const key = structuralKey(provider);
-  const counts = structuralCounts.get(key);
-  return {
-    row: structural.row,
-    canonicalIndex: structural.canonicalIndex,
-    transferProviderIdentity:
-      strong !== undefined || (counts?.canonical === 1 && counts.provider === 1),
-  };
-}
+    if (match) {
+      match.used = true;
+      const counts = structuralCounts.get(key);
+      return {
+        row: match.row,
+        canonicalIndex: match.canonicalIndex,
+        transferProviderIdentity: counts?.canonical === 1 && counts?.provider === 1,
+      };
+    }
+  }
 
+  return null;
+}
 function mergeMatchedRow(
   canonical: AgentTimelineRow,
   provider: ProviderHistoryTimelineEntry,
