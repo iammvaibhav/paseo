@@ -55,14 +55,15 @@ const GOOGLE_ANTIGRAVITY_CLIENT_SECRET = "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";
 // OMP owns the credentials stored in agent.db, and most of its OAuth refresh tokens
 // rotate on every use (xAI/Anthropic/OpenAI/Cursor): calling a token endpoint
 // ourselves would revoke the refresh token OMP has persisted and break OMP's own
-// refresh (and the OMP CLI, which reads the same db). Paseo therefore NEVER refreshes
-// those credentials — `omp usage --json` runs first, refreshes internally, and
-// persists the rotated tokens for us. google-antigravity is the one exception:
-// Google's installed-app OAuth refresh tokens do NOT rotate (the token endpoint
-// returns no new refresh_token), so refreshing that one in memory is safe and cannot
-// invalidate what OMP persists. A stored access token is used only while it is still
-// valid; once expired (or rejected with 401) the account card falls back to CLI
-// report data, or reports the expiry.
+// refresh (and the OMP CLI, which reads the same db). Paseo never calls those
+// token endpoints. Before collecting usage, it asks `omp token` to refresh any
+// expired Grok Build credential so OMP owns the rotating-token write. The normal
+// `omp usage --json` path refreshes the other supported providers and persists
+// their rotated tokens. google-antigravity is the one exception: Google's
+// installed-app OAuth refresh tokens do not rotate (the token endpoint returns no
+// new refresh_token), so refreshing that one in memory is safe. A stored access
+// token is used only while it is still valid; once expired (or rejected with 401)
+// the account card falls back to CLI report data, or reports the expiry.
 const OMP_TOKEN_SKEW_MS = 30_000;
 const OMP_TOKEN_EXPIRED_ERROR = "Token expired — will recover when OMP refreshes it";
 const OMP_REAUTH_ERROR = "Token expired — re-authenticate in OMP";
@@ -209,7 +210,7 @@ interface OmpQuotaProviderOptions {
   agentDbPath?: string;
   /** Override home directory used to resolve ~/.omp (tests). */
   homeDir?: string;
-  /** Override `omp usage --json` runner (tests). */
+  /** Override OMP CLI command execution (tests). */
   usageCommandRunner?: OmpUsageCommandRunner;
   /** Override omp binary path (tests/local installs). */
   ompBinary?: string;
@@ -843,7 +844,9 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
       usages.push(usage);
     };
 
-    const storedAccounts = await this.readAllOmpAccounts();
+    let storedAccounts = await this.readAllOmpAccounts();
+    await this.refreshExpiredGrokBuildCredentials(storedAccounts.get("grok-build") ?? []);
+    storedAccounts = await this.readAllOmpAccounts();
     const cliResult = await this.fetchFromOmpUsageReports();
     const cliReports = cliResult.reports;
     const cliReportsByProvider = groupCliReportsByProvider(cliReports);
@@ -922,6 +925,30 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
       return unavailableUsage(this);
     }
     return usages.length === 1 ? usages[0]! : usages;
+  }
+
+  private async refreshExpiredGrokBuildCredentials(accounts: OmpStoredAccount[]): Promise<void> {
+    for (const [index, account] of accounts.entries()) {
+      if (
+        account.disabledCause !== null ||
+        account.refreshToken === null ||
+        (account.expiresAtMs !== null && account.expiresAtMs > Date.now() + OMP_TOKEN_SKEW_MS)
+      ) {
+        continue;
+      }
+
+      try {
+        await this.usageCommandRunner({
+          args: ["token", "grok-build", "--account", String(index + 1)],
+          timeoutMs: OMP_USAGE_TIMEOUT_MS,
+        });
+      } catch (error) {
+        this.logger.debug(
+          { err: error, account: account.identity },
+          "OMP Grok Build token refresh failed",
+        );
+      }
+    }
   }
 
   private async fetchFromOmpUsageReports(): Promise<{

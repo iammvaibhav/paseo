@@ -704,6 +704,58 @@ describe("OmpQuotaProvider", () => {
     expect(requestedUrls.some((url) => url.includes("platform.claude.com"))).toBe(false);
   });
 
+  it("asks OMP to refresh an expired Grok Build token before collecting usage", async () => {
+    if (!(await canRunSqlite3())) return;
+
+    const dir = mkdtempSync(join(tmpdir(), "omp-usage-"));
+    tempDirs.push(dir);
+    const dbPath = join(dir, "agent.db");
+    await createOauthCredentialDb(dbPath, "grok-build", {
+      access: "expired_token",
+      refresh: "refresh_token",
+      expires: Date.now() - 60_000,
+      email: "build@example.com",
+    });
+
+    const commands: string[][] = [];
+    const provider = new OmpQuotaProvider({
+      logger: createTestLogger(),
+      agentDbPath: dbPath,
+      usageCommandRunner: async ({ args }) => {
+        commands.push(args);
+        if (args[0] === "token") {
+          await updateOauthCredentialDb(dbPath, "grok-build", {
+            access: "fresh_token",
+            refresh: "rotated_refresh_token",
+            expires: Date.now() + 600_000,
+            email: "build@example.com",
+          });
+          return { stdout: "fresh_token", stderr: "" };
+        }
+        return { stdout: JSON.stringify({ reports: [] }), stderr: "" };
+      },
+      fetch: vi.fn(async (_input, init) => {
+        expect((init?.headers as Record<string, string>)?.Authorization).toBe("Bearer fresh_token");
+        return jsonResponse({
+          config: {
+            creditUsagePercent: 20,
+            isUnifiedBillingUser: true,
+          },
+        });
+      }) as unknown as typeof fetch,
+    });
+
+    await expect(provider.fetchUsage()).resolves.toMatchObject({
+      providerId: "omp-grok-build",
+      status: "available",
+      windows: [expect.objectContaining({ id: "weekly_credits", usedPct: 20 })],
+    });
+    expect(commands).toEqual([
+      ["token", "grok-build", "--account", "1"],
+      ["usage", "--json"],
+    ]);
+  });
+
   it("isolates account failures so failed accounts show error while valid accounts succeed", async () => {
     if (!(await canRunSqlite3())) return;
 
@@ -990,6 +1042,29 @@ function jsonResponse(body: unknown): Response {
     status: 200,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+async function updateOauthCredentialDb(
+  dbPath: string,
+  provider: string,
+  data: Record<string, unknown>,
+): Promise<void> {
+  const sqliteSpecifier: string = "node:sqlite";
+  try {
+    const { DatabaseSync } = (await import(sqliteSpecifier)) as unknown as NodeSqliteModule;
+    const db = new DatabaseSync(dbPath);
+    db.prepare("UPDATE auth_credentials SET data = ?, updated_at = ? WHERE provider = ?;").run(
+      JSON.stringify(data),
+      Date.now(),
+      provider,
+    );
+    db.close();
+    return;
+  } catch {}
+
+  const payload = JSON.stringify(data).replaceAll("'", "''");
+  const sql = `UPDATE auth_credentials SET data = '${payload}', updated_at = ${Date.now()} WHERE provider = '${provider}';`;
+  await execFileAsync("sqlite3", [dbPath, sql], { timeout: 2_000 });
 }
 
 interface StatementSyncLike {
