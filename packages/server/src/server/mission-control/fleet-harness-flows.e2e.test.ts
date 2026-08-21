@@ -89,8 +89,11 @@ function createSteerRespondingClients(): SteerClients {
   };
 }
 
+// DISABLED(temp): the end-of-run status ask is switched off in
+// mission-control/service.ts, so the steer-firing scenarios below are
+// skipped. Unskip together with the tier-2 block there.
 describe("06 terminal-state guarantee", () => {
-  test(
+  test.skip(
     "silent finish → exactly one machinery-envelope steer → report lands → description on record",
     { timeout: 240_000 },
     async () => {
@@ -187,7 +190,7 @@ describe("06 terminal-state guarantee", () => {
     }
   });
 
-  test(
+  test.skip(
     "mid-run silence produces zero steers; the run-end finish still steers exactly once",
     { timeout: 240_000 },
     async () => {

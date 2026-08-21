@@ -2558,18 +2558,20 @@ export class MissionControlService {
       await this.applyDeterministicDescription(agentId);
       return;
     }
+    // DISABLED(temp): end-of-run status ask switched off by user request
+    // (2026-08-21). Restore this block to re-enable the steer.
     // Tier 2: exactly one status-ask steer per finish chain.
-    this.terminalAskPending.add(agentId);
-    this.createStatusAskProposal(
-      agentId,
-      "Run ended without a report_status",
-      "Your run ended without a report_status. Post a one-line report_status summarizing what you did and where you are, then continue.",
-    ).catch((error: unknown) => {
-      this.logger.warn(
-        { err: error, component: "stall", agentId },
-        "Failed to create terminal status-ask steer",
-      );
-    });
+    // this.terminalAskPending.add(agentId);
+    // this.createStatusAskProposal(
+    //   agentId,
+    //   "Run ended without a report_status",
+    //   "Your run ended without a report_status. Post a one-line report_status summarizing what you did and where you are, then continue.",
+    // ).catch((error: unknown) => {
+    //   this.logger.warn(
+    //     { err: error, component: "stall", agentId },
+    //     "Failed to create terminal status-ask steer",
+    //   );
+    // });
   }
 
   /** Any self-sourced event at/after the run start (the tier-1 predicate). */
