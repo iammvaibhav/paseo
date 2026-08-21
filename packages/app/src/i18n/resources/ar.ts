@@ -101,6 +101,8 @@ export const ar: TranslationResources = {
       sendMessage: "أرسل رسالة",
       queue: "طابور",
       send: "يرسل",
+      forkToNewTab: "نسخ إلى تبويب جديد",
+      forkFailed: "فشل نسخ الوكيل",
     },
     cancel: {
       cancelingAgent: "وكيل الإلغاء",
@@ -118,6 +120,7 @@ export const ar: TranslationResources = {
       muteVoice: "كتم الصوت",
       dictation: "الإملاء",
       interruptBeforeVoice: "قم بمقاطعة الوكيل قبل بدء الوضع الصوتي",
+      commanderVoice: "صوت القائد",
     },
     attachments: {
       addImage: "أضف صورة",
@@ -169,6 +172,7 @@ export const ar: TranslationResources = {
       fallback: "مزود",
       select: "حدد مزود الوكيل",
     },
+    providerSwitched: "تم تغيير المزود إلى {{provider}}",
     thinking: {
       title: "التفكير",
       unknown: "مجهول",
@@ -235,16 +239,58 @@ export const ar: TranslationResources = {
       callout: "تمت أرشفة هذا الوكيل",
       unarchive: "إلغاء الأرشفة",
     },
+    providerUnavailable: {
+      callout: "This agent's provider is no longer available on this host.",
+      detail: "You can still read the history, or continue in a new draft with another provider.",
+      continueWithAnotherProvider: "Continue with another provider",
+    },
   },
   sessions: {
     title: "السجل",
     empty: "لا توجد جلسات بعد",
+    emptyForHost: "No sessions for this host",
+    loadError: "Unable to load sessions",
     noMatches: "لا توجد جلسات مطابقة",
     tooManyMatches: "نتائج كثيرة جدًا — ضيّق نطاق البحث",
     hostLoadFailed: "{{host}}: تعذر تحميل السجل",
     searchPlaceholder: "البحث في السجل",
+    tabs: {
+      agents: "Agents",
+      ask: "Ask",
+    },
+    search: {
+      placeholder: "Filter by title, provider, path…",
+      empty: "No sessions match this filter",
+    },
+    ask: {
+      placeholder: "Ask about past agent sessions…",
+      submit: "Ask",
+      jobsHeading: "Ask jobs",
+      jobsOpenHint: "Tap a job to open it. New asks open automatically.",
+      empty: "No History Ask jobs yet",
+      launched: "History Ask started — opening…",
+      scopeLabel: "Scope",
+      scopeUnknown: "Unknown scope",
+      scopeSelectHost: "Select a host",
+      scopeWorkspace: "Workspace · {{name}}",
+      scopeProject: "Project · {{name}}",
+      scopeHost: "Host · {{name}} (host-wide)",
+      needHostHint: "Ask runs on one host. Pick a host above — “All hosts” cannot launch.",
+      modelLabel: "Model",
+      modelPlaceholder: "Select model",
+      errors: {
+        noCwd:
+          "No working directory found on this host. Open a workspace, or ensure this host has history with a cwd.",
+        noScope: "Choose a host or open Ask from a project/workspace",
+        hostDisconnected: "Host is not connected",
+        launchFailed: "Failed to start History Ask",
+      },
+    },
     actions: {
       loadMore: "تحميل المزيد",
+      tryAgain: "Try again",
+      back: "Back",
+      askAboutThis: "اسأل عن هذا",
       clearSearch: "مسح البحث",
     },
   },
@@ -276,6 +322,53 @@ export const ar: TranslationResources = {
       archive: "أرشيف",
     },
   },
+  missionControl: {
+    inspector: {
+      archivedBanner: "مؤرشف",
+      workspaceArchived: "مساحة عمل هذا الوكيل مؤرشفة، لذا لا يمكن فتحها في عرض مساحة العمل.",
+      workspaceUnavailable:
+        "This agent's workspace isn't available on this host, so it cannot be opened in the workspace view.",
+    },
+    proposal: {
+      origin: {
+        verifier: "جهة اتصال المراجع",
+        commander: "القائد",
+        stall: "فحص التوقف",
+      },
+      chips: {
+        project: "المشروع: {{label}}",
+        workspace: "مساحة العمل: {{label}}",
+        agent: "الوكيل: {{label}}",
+        newProject: "مشروع جديد: {{label}}",
+        newWorkspace: "مساحة عمل جديدة: {{label}}",
+        newAgent: "وكيل جديد: {{label}}",
+      },
+      model: "النموذج: {{model}}",
+      payload: "الحمولة",
+      meta: {
+        renameProject: "إعادة تسمية المشروع {{target}} ← {{name}}",
+        renameWorkspace: "إعادة تسمية مساحة العمل {{target}} ← {{name}}",
+        renameAgentTitle: "إعادة تسمية عنوان الوكيل {{target}} ← {{name}}",
+        archiveProject: "أرشفة المشروع {{target}}",
+        archiveWorkspace: "أرشفة مساحة العمل {{target}}",
+        archiveAgent: "أرشفة الوكيل {{target}}",
+        createProject: "إنشاء مشروع {{target}}",
+        moveAgent: "نقل الوكيل {{target}} ← مساحة العمل {{destination}}",
+        promoteWorkspace: "ترقية {{target}} ← مشروع {{destination}}",
+      },
+    },
+    clarification: {
+      title: "توضيح",
+      send: "إرسال",
+      answerPlaceholder: "اكتب إجابتك...",
+      answered: "تمت الإجابة: {{answer}}",
+    },
+    answer: {
+      title: "إجابة",
+      agentStatus: "حالة الوكيل",
+      state: "الحالة",
+    },
+  },
   message: {
     diagram: {
       diagram: "مخطط",
@@ -295,6 +388,7 @@ export const ar: TranslationResources = {
       forkUnavailable: "حدّث المضيف لاستخدام هذا.",
       forkMissingWorkspace: "هذا الوكيل ليس في مساحة عمل.",
       forkFailed: "فشل تفريع المحادثة",
+      jumpToUserMessage: "الانتقال إلى رسالة المستخدم",
       openFile: "افتح الملف",
       copied: "منقول",
     },
@@ -450,6 +544,9 @@ export const ar: TranslationResources = {
       context: {
         size: "مقاس",
         modified: "معدل",
+        copyPath: "نسخ المسار",
+        download: "تحميل",
+        downloadAsZip: "Download as ZIP",
       },
       actions: {
         back: "خلف",
@@ -466,6 +563,11 @@ export const ar: TranslationResources = {
       states: {
         unavailable: "Workspace غير متوفر",
         loading: "جارٍ تحميل الملفات...",
+      },
+      drop: {
+        hostDisconnected: "Host is disconnected",
+        uploading: "Uploading {{count}} file(s)…",
+        uploaded: "Uploaded {{count}} file(s)",
       },
       errors: {
         failedToListDirectory: "فشل في سرد ​​الدليل",
@@ -569,6 +671,7 @@ export const ar: TranslationResources = {
       },
       menu: {
         openFor: "فتح القائمة لـ{{label}}",
+        markDone: "وضع علامة كمكتمل",
         copyResumeCommand: "نسخ أمر السيرة الذاتية",
         copyAgentId: "نسخ معرف الوكيل",
         copyTerminalId: "نسخ معرف المحطة",
@@ -902,6 +1005,7 @@ export const ar: TranslationResources = {
         openIn: "افتح مساحة العمل في{{target}}",
         openFileIn: "Open {{fileName}} in {{target}}",
         failedOpen: "فشل في فتح مساحة العمل",
+        noFile: "Select a Markdown file to open in Plannotator",
       },
       pr: {
         actions: {
@@ -1019,6 +1123,12 @@ export const ar: TranslationResources = {
         title: "العنوان",
         branch: "اسم الفرع",
       },
+      workspaceSort: {
+        label: "Sort workspaces",
+        manual: "Manual",
+        activity: "Latest activity",
+        created: "Date created",
+      },
       show: {
         label: "إظهار",
         branch: "الفرع",
@@ -1066,6 +1176,11 @@ export const ar: TranslationResources = {
       settings: "إعدادات",
       closeSidebar: "إغلاق الشريط الجانبي",
     },
+    fleetStats: {
+      label: "إحصاءات الأسطول",
+      collecting: "جارٍ جمع إحصاءات الأسطول…",
+      failed: "تعذر جمع إحصاءات الأسطول",
+    },
     help: {
       trigger: "المساعدة والدعم",
       sectionHelp: "المساعدة",
@@ -1080,6 +1195,10 @@ export const ar: TranslationResources = {
     sections: {
       sessions: "السجل",
       schedules: "الجداول",
+      missionControl: "Mission Control",
+      missionControlNeedsYou: "بحاجة إليك",
+      missionControlReady: "جاهز للمراجعة",
+      webhooks: "Webhooks",
     },
     worktreeSetup: {
       title: "إعداد البرامج النصية لشجرة العمل",
@@ -1095,6 +1214,7 @@ export const ar: TranslationResources = {
         openNewWindowFailed: "Couldn't open a new window",
         openFolder: "Open in file manager",
         openFolderFailed: "Couldn't open folder",
+        askHistory: "Ask history…",
         remove: "إزالة المشروع",
         removing: "جارٍ الإزالة...",
       },
@@ -1116,6 +1236,13 @@ export const ar: TranslationResources = {
       },
     },
     workspace: {
+      agents: {
+        count: "Agents ({{count}})",
+        expand: "Show agents",
+        collapse: "Hide agents",
+        sortByActivity: "Recent",
+        sortByCreated: "Created",
+      },
       status: {
         serviceRunning: "الخدمة {{name}} قيد التشغيل",
         serviceUnhealthy: "الخدمة {{name}} غير سليمة",
@@ -1132,6 +1259,7 @@ export const ar: TranslationResources = {
         rename: "إعادة تسمية مساحة العمل",
         pin: "تثبيت في الأعلى",
         unpin: "إلغاء التثبيت",
+        askHistory: "Ask history…",
         archive: "أرشيف",
         archiveWorkspace: "أرشفة مساحة العمل",
         hideFromSidebar: "إخفاء من الشريط الجانبي",
@@ -1688,6 +1816,15 @@ export const ar: TranslationResources = {
     archiveFinishedAction: "أرشفة الوكلاء الفرعيين المكتملين",
     archiveFinishedRetry: "إعادة المحاولة ({{failed}}/{{total}})",
   },
+  selectionAsks: {
+    title: "أسئلة",
+    pillLabelOne: "سؤال واحد",
+    pillLabelMany: "{{count}} أسئلة",
+    openAction: "فتح السؤال {{label}}",
+    archiveAction: "أرشفة {{label}}",
+    archiveTooltip: "أرشفة السؤال",
+    clearAll: "مسح جميع الأسئلة",
+  },
   panels: {
     draft: {
       newAgent: "وكيل جديد",
@@ -1695,6 +1832,7 @@ export const ar: TranslationResources = {
     },
     file: {
       directoryMissing: "لم يتم العثور على دليل Workspace.",
+      notFoundOnHost: "لم يتم العثور على الملف على المضيف: {{path}}",
       loading: "جارٍ تحميل الملف...",
       noPreview: "لا تتوفر معاينة",
       binaryPreviewUnavailable: "المعاينة الثنائية غير متاحة",
@@ -1790,6 +1928,7 @@ export const ar: TranslationResources = {
     title: "نافذة السياق",
     used: "تم استخدام{{percentage}}%",
     tokens: "رموز{{used}}/{{max}}",
+    tokensUnknown: "0 رموز (بانتظار الاستخدام)",
     sessionCost: "تكلفة الجلسة{{cost}}",
     accessibility: "تم استخدام نافذة السياق{{percentage}}%",
   },
@@ -1835,12 +1974,23 @@ export const ar: TranslationResources = {
       notifications: "الإشعارات",
       permissions: "الأذونات",
       diagnostics: "التشخيص",
+      missionControl: "Mission Control",
       about: "عن",
     },
     editor: {
       title: "المحرر",
       vimKeybindings: "اختصارات Vim",
       vimHint: "تنطبق على ملفات المصدر في الويب وسطح المكتب.",
+      defaultFileOpener: "Default file opener",
+      defaultFileOpenerHint:
+        "Used for normal file clicks. Plannotator supports document and configuration files; source files fall back to Paseo.",
+      defaultFileOpenerPaseo: "Paseo",
+      defaultFileOpenerVsCodeWeb: "VS Code Web",
+      defaultFileOpenerPlannotator: "Plannotator",
+      plannotatorFeedbackMode: "Plannotator feedback",
+      plannotatorFeedbackModeHint: "How annotation feedback is delivered to the linked agent.",
+      plannotatorFeedbackAutoSend: "Auto-send",
+      plannotatorFeedbackCompose: "Pre-fill composer",
     },
     notifications: {
       title: "الإشعارات",
@@ -1868,6 +2018,22 @@ export const ar: TranslationResources = {
       terminals: "Terminals",
       plugins: "Plugins",
       host: "نظرة عامة",
+    },
+    missionControl: {
+      memory: "الذاكرة",
+      hindsightUrl: "رابط Hindsight",
+      hindsightUrlHint:
+        "عنوان API الأساسي لـ Hindsight. تركه فارغًا يعطّل ذاكرة الأسطول (كتابة سجلات التشغيل والاستدعاء).",
+      hindsightBank: "بنك الكتابة",
+      hindsightBankHint: "البنك الذي يكتب إليه Paseo سجلات التشغيل.",
+      hindsightSecondaryBank: "بنك الاستدعاء (ثانوي)",
+      hindsightSecondaryBankHint: "بنك ثانوي للقراءة فقط يستشيره fleet_recall. تركه فارغًا يعطّله.",
+      voiceNodeUrl: "عنوان عقدة الصوت",
+      voiceNodeUrlHint:
+        "خادم صوت القائد (مثال: ws://127.0.0.1:8787/ws). تركه فارغًا يخفي صوت القائد في محرر Mission Control.",
+      voiceMode: "Voice tool mode",
+      voiceModeHint:
+        "Relay = voice reads like Commander but routes every change through commander_dispatch. Direct = voice holds the full Commander tool surface, approval-gated. Applies to new voice sessions.",
     },
     plugins: pluginSettings.ar,
     metadataGeneration: {
@@ -1902,14 +2068,14 @@ export const ar: TranslationResources = {
         descriptions: {
           interrupt:
             "عند تشغيل الوكيل، يوقف Enter التشغيل. Command/Ctrl+Enter يضيف إلى قائمة الانتظار.",
-          steer:
-            "عند تشغيل الوكيل، يوجّه Enter الجولة النشطة. يضيف Command/Ctrl+Enter إلى قائمة الانتظار.",
           queue: "عند تشغيل الوكيل، يضيف Enter إلى قائمة الانتظار. Command/Ctrl+Enter يرسل.",
+          steer:
+            "عند تشغيل الوكيل، يوجه Enter الوكيل — يكمل استدعاء الأداة الحالي، ويقرأ رسالتك، ثم يواصل. Command/Ctrl+Enter يوقف.",
         },
         options: {
           interrupt: "مقاطعة",
-          steer: "توجيه",
           queue: "طابور",
+          steer: "توجيه",
         },
       },
       serviceUrls: {
@@ -2351,6 +2517,26 @@ export const ar: TranslationResources = {
           placeholder: "بلدي Host",
           submit: "إعادة تسمية",
         },
+        sshHost: {
+          title: "مضيف SSH",
+          hint: "يتيح لـ «فتح في المحرر» فتح مساحات عمل هذا المضيف في Cursor أو VS Code عبر Remote SSH",
+          notConfigured: "غير مُكوَّن",
+          edit: "تحرير",
+          configure: "تكوين",
+          modalTitle: "مضيف SSH",
+          placeholder: "user@hostname أو اسم مستعار في إعدادات SSH",
+          submit: "حفظ",
+        },
+        browserEditorUrl: {
+          title: "VS Code Web URL",
+          hint: "Lets “Open → VS Code Web” open this host's workspaces in an in-app browser tab (code-server)",
+          notConfigured: "Not configured",
+          edit: "Edit",
+          configure: "Configure",
+          modalTitle: "VS Code Web URL",
+          placeholder: "http://hostname:8765",
+          submit: "Save",
+        },
         restart: {
           title: "إعادة تشغيل البرنامج الخفي",
           hint: "إعادة تشغيل عملية البرنامج الخفي. سيتم إعادة الاتصال بالتطبيق تلقائيًا",
@@ -2490,6 +2676,9 @@ export const ar: TranslationResources = {
         useAutomatic: "استخدام التلقائي",
         imageUrl: "رابط صورة أو موقع",
         save: "حفظ التغييرات",
+        description: "Description",
+        descriptionLabel: "Project description",
+        descriptionPlaceholder: "What this project is for",
         savedToast: "تم تحديث المشروع",
       },
       readFailures: {

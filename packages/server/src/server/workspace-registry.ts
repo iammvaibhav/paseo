@@ -35,6 +35,13 @@ const PersistedProjectRecordSchema = z.object({
     .nullable()
     .optional()
     .transform((value) => value ?? null),
+  // Living project description (v3): injected into the Commander context pack
+  // for routing; editable from the project edit sheet. Null = none.
+  description: z
+    .string()
+    .nullable()
+    .optional()
+    .transform((value) => value ?? null),
   createdAt: z.string(),
   updatedAt: z.string(),
   archivedAt: z.string().nullable(),
@@ -639,6 +646,7 @@ export function createPersistedProjectRecord(input: {
   customName?: string | null;
   projectKey?: string | null;
   customIconRevision?: string | null;
+  description?: string | null;
   createdAt: string;
   updatedAt: string;
   archivedAt?: string | null;
@@ -648,6 +656,7 @@ export function createPersistedProjectRecord(input: {
     customName: input.customName ?? null,
     projectKey: input.projectKey ?? null,
     customIconRevision: input.customIconRevision ?? null,
+    description: input.description ?? null,
     archivedAt: input.archivedAt ?? null,
   });
 }

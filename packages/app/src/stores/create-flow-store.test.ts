@@ -89,6 +89,28 @@ describe("create-flow-store", () => {
     expect(useCreateFlowStore.getState().pendingByDraftId["draft-1"]).toBeUndefined();
   });
 
+  it("keeps startVoiceMode handoffs until voice consumes them", () => {
+    useCreateFlowStore.getState().setPending({
+      draftId: "draft-voice",
+      serverId: "server-1",
+      agentId: null,
+      clientMessageId: "msg-voice",
+      text: "",
+      timestamp: Date.now(),
+      startVoiceMode: true,
+    });
+    useCreateFlowStore.getState().updateAgentId({ draftId: "draft-voice", agentId: "agent-1" });
+    useCreateFlowStore.getState().markLifecycle({ draftId: "draft-voice", lifecycle: "sent" });
+
+    useCreateFlowStore.getState().clearByAgent({ serverId: "server-1", agentId: "agent-1" });
+
+    expect(useCreateFlowStore.getState().pendingByDraftId["draft-voice"]).toMatchObject({
+      agentId: "agent-1",
+      lifecycle: "sent",
+      startVoiceMode: true,
+    });
+  });
+
   it("matches only active pending create flows for a draft and server", () => {
     useCreateFlowStore.getState().setPending({
       draftId: "draft-1",

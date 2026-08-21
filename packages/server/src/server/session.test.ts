@@ -19,6 +19,7 @@ import {
   type FileTransferFrame,
 } from "@getpaseo/protocol/binary-frames/index";
 import { isSessionRpcAllowed, Session } from "./session.js";
+import type { MissionControlService } from "./mission-control/service.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
 import { StructuredAgentFallbackError } from "./agent/agent-response-loop.js";
 import type { StoredAgentRecord } from "./agent/agent-storage.js";
@@ -51,6 +52,11 @@ import {
 } from "../services/github-service.js";
 import type { CheckDetails, ForgeService } from "../services/forge-service.js";
 import type { GitHubPullRequestStatusFacts } from "../services/github-facts.js";
+
+// An async generator that yields nothing, for stubbing startAgentRun's stream.
+function noopAgentStream() {
+  return (async function* () {})();
+}
 
 interface SessionHandlerInternals {
   interruptAgentIfRunning(agentId: string): Promise<void>;
@@ -120,6 +126,7 @@ test("cancel_agent_request reports refusal only through its response", async () 
   const messages: SessionOutboundMessage[] = [];
   const getAgent = vi
     .fn()
+    .mockReturnValueOnce({ id: agentId, provider: "codex", lifecycle: "running" })
     .mockReturnValueOnce({ id: agentId, provider: "codex", lifecycle: "running" })
     .mockReturnValue(null);
   const session = createSessionForTest({
@@ -316,6 +323,8 @@ interface SessionForTestOptions {
   serverId?: SessionOptions["serverId"];
   daemonVersion?: SessionOptions["daemonVersion"];
   daemonRuntimeConfig?: SessionOptions["daemonRuntimeConfig"];
+  missionControlService?: SessionOptions["missionControlService"];
+  peerManager?: SessionOptions["peerManager"];
   downloadTokenStore?: SessionOptions["downloadTokenStore"];
   pushNotifications?: SessionOptions["pushNotifications"];
   messages?: unknown[];
@@ -375,6 +384,7 @@ function createSessionForTest(options: SessionForTestOptions = {}): Session {
     agentManager: asAgentManager({
       listAgents: vi.fn(() => []),
       listProviderSubagentActivity: vi.fn(() => []),
+      getRegisteredProviderIds: vi.fn(() => []),
       subscribe: vi.fn(() => () => {}),
       ...options.agentManager,
     }),
@@ -426,6 +436,8 @@ function createSessionForTest(options: SessionForTestOptions = {}): Session {
     serverId: options.serverId,
     daemonVersion: options.daemonVersion,
     daemonRuntimeConfig: options.daemonRuntimeConfig,
+    missionControlService: options.missionControlService,
+    peerManager: options.peerManager,
     scopes: options.scopes ?? ["*"],
   };
   return new Session(sessionOptions);
@@ -1007,6 +1019,7 @@ describe("project command-center RPCs", () => {
               projectDisplayName: "new-project",
               projectCustomName: null,
               projectCustomIconRevision: null,
+              projectDescription: null,
               projectIconRevision: "automatic:none:v1",
               projectRootPath: directoryPath,
               projectKind: "non_git",
@@ -1443,6 +1456,7 @@ describe("agent detach RPC", () => {
       agentManager: {
         getAgent,
         detachAgent,
+        getRegisteredProviderIds: vi.fn().mockReturnValue(["codex"]),
       },
       agentStorage: {
         list: vi.fn().mockResolvedValue([]),
@@ -1494,6 +1508,172 @@ describe("agent detach RPC", () => {
         agentId: "child-agent",
         accepted: true,
         error: null,
+      },
+    });
+  });
+});
+
+describe("agent.workspace.move RPC", () => {
+  test("moves a stored agent and emits the response + agent_update", async () => {
+    const messages: unknown[] = [];
+    const workspaceSource = {
+      workspaceId: "workspace-source",
+      projectId: "project-source",
+      cwd: "/tmp/source",
+      kind: "directory" as const,
+      displayName: "Source",
+      title: null,
+      branch: null,
+      baseBranch: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      archivedAt: null,
+    };
+    const workspaceTarget = {
+      workspaceId: "workspace-target",
+      projectId: "project-target",
+      cwd: "/tmp/target",
+      kind: "directory" as const,
+      displayName: "Target",
+      title: null,
+      branch: null,
+      baseBranch: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      archivedAt: null,
+    };
+    const agentBefore = createStoredAgentRecord({
+      id: "moving-agent",
+      cwd: "/tmp/source",
+      workspaceId: "workspace-source",
+      title: "Moving",
+      name: "glowing-otter",
+    });
+    const agentAfter = createStoredAgentRecord({
+      ...agentBefore,
+      updatedAt: "2026-01-01T00:00:01.000Z",
+      workspaceId: "workspace-target",
+    });
+    const moveAgentWorkspace = vi.fn().mockResolvedValue(agentAfter);
+    const getAgent = vi.fn(() => null);
+
+    const session = createSessionForTest({
+      messages,
+      agentManager: {
+        getAgent,
+        moveAgentWorkspace,
+        getRegisteredProviderIds: vi.fn().mockReturnValue(["codex"]),
+      },
+      agentStorage: {
+        list: vi.fn().mockResolvedValue([]),
+        get: vi.fn().mockResolvedValue(agentBefore),
+      },
+      workspaceRegistry: {
+        get: vi.fn(async (workspaceId: string) =>
+          workspaceId === "workspace-source" ? workspaceSource : workspaceTarget,
+        ),
+        list: vi.fn().mockResolvedValue([workspaceSource, workspaceTarget]),
+      },
+      projectRegistry: {
+        get: vi.fn(async (projectId: string) =>
+          projectId === "project-target"
+            ? {
+                projectId: "project-target",
+                rootPath: "/tmp/target",
+                kind: "directory",
+                displayName: "Target",
+                customName: null,
+                createdAt: "2026-01-01T00:00:00.000Z",
+                updatedAt: "2026-01-01T00:00:00.000Z",
+                archivedAt: null,
+              }
+            : null,
+        ),
+        list: vi.fn().mockResolvedValue([]),
+      },
+    });
+
+    // Subscribe so the agent_update emission path is live.
+    await session.handleMessage({
+      type: "fetch_agents_request",
+      requestId: "subscribe-agents",
+      subscribe: { subscriptionId: "agents-sub" },
+    });
+    messages.splice(0);
+
+    await session.handleMessage({
+      type: "agent.workspace.move.request",
+      agentId: "moving-agent",
+      workspaceId: "workspace-target",
+      requestId: "move-1",
+    });
+
+    expect(getAgent).toHaveBeenCalledWith("moving-agent");
+    expect(moveAgentWorkspace).toHaveBeenCalledWith("moving-agent", "workspace-target");
+    expect(messages).toContainEqual({
+      type: "agent.workspace.move.response",
+      payload: {
+        requestId: "move-1",
+        agentId: "moving-agent",
+        workspaceId: "workspace-target",
+        accepted: true,
+        error: null,
+      },
+    });
+    expect(messages).toContainEqual({
+      type: "agent_update",
+      payload: {
+        kind: "upsert",
+        agent: expect.objectContaining({
+          id: "moving-agent",
+          workspaceId: "workspace-target",
+        }),
+        project: expect.anything(),
+      },
+    });
+  });
+
+  test("refuses a move to a missing workspace and answers accepted:false", async () => {
+    const messages: unknown[] = [];
+    const session = createSessionForTest({
+      messages,
+      agentManager: {
+        getAgent: vi.fn(() => null),
+        moveAgentWorkspace: vi.fn(),
+        getRegisteredProviderIds: vi.fn().mockReturnValue(["codex"]),
+      },
+      agentStorage: {
+        list: vi.fn().mockResolvedValue([]),
+        get: vi.fn().mockResolvedValue(
+          createStoredAgentRecord({
+            id: "moving-agent",
+            cwd: "/tmp/source",
+            workspaceId: "workspace-source",
+            title: "Moving",
+          }),
+        ),
+      },
+      workspaceRegistry: {
+        get: vi.fn().mockResolvedValue(null),
+        list: vi.fn().mockResolvedValue([]),
+      },
+    });
+
+    await session.handleMessage({
+      type: "agent.workspace.move.request",
+      agentId: "moving-agent",
+      workspaceId: "workspace-missing",
+      requestId: "move-2",
+    });
+
+    expect(messages).toContainEqual({
+      type: "agent.workspace.move.response",
+      payload: {
+        requestId: "move-2",
+        agentId: "moving-agent",
+        workspaceId: "workspace-missing",
+        accepted: false,
+        error: "Workspace workspace-missing not found on this host",
       },
     });
   });
@@ -5337,6 +5517,7 @@ test("project.list returns every active project descriptor", async () => {
             projectDisplayName: "acme/app",
             projectCustomName: null,
             projectCustomIconRevision: null,
+            projectDescription: null,
             projectIconRevision: "automatic:none:v1",
             projectRootPath: "/tmp/project-active",
             projectKind: "git",
@@ -5610,5 +5791,1858 @@ describe("agent config setters", () => {
         error: "thinking boom",
       },
     });
+  });
+});
+
+describe("unavailable provider agent handling", () => {
+  test("refresh_agent_request succeeds and emits stored snapshot when provider is unavailable", async () => {
+    const messages: unknown[] = [];
+    const agentRecord = {
+      id: "agent-unavailable-1",
+      provider: "claude",
+      cwd: "/tmp/test-repo",
+      createdAt: "2026-04-16T00:00:00.000Z",
+      updatedAt: "2026-04-16T00:00:00.000Z",
+      lastStatus: "closed",
+    };
+    const agentStorage = {
+      get: vi.fn().mockResolvedValue(agentRecord),
+      upsert: vi.fn().mockResolvedValue(undefined),
+    };
+    const providerSnapshotManager = {
+      listRegisteredProviderIds: vi.fn().mockReturnValue(["claude", "codex", "opencode"]),
+      on: vi.fn(),
+      off: vi.fn(),
+    };
+    const agentManager = {
+      getAgent: vi.fn().mockReturnValue(null),
+      // claude is a known provider (registered in the snapshot manager) but
+      // has no materialized client, so it is not spawnable on this daemon.
+      getRegisteredProviderIds: vi.fn().mockReturnValue(["codex", "opencode"]),
+      hasTimeline: vi.fn().mockReturnValue(true),
+      getTimeline: vi.fn().mockReturnValue([{ id: "t1" }]),
+      unarchiveSnapshot: vi.fn().mockResolvedValue(false),
+    };
+
+    const session = createSessionForTest({
+      agentStorage,
+      providerSnapshotManager,
+      agentManager,
+      messages,
+    });
+
+    await session.handleMessage({
+      type: "refresh_agent_request",
+      agentId: "agent-unavailable-1",
+      requestId: "req-refresh-unavail",
+    });
+
+    const updateMsg = messages.find((m) => m.type === "agent_update");
+    expect(updateMsg).toBeDefined();
+    expect(updateMsg.payload.agent.providerUnavailable).toBe(true);
+
+    const statusMsg = messages.find((m) => m.type === "status");
+    expect(statusMsg).toEqual({
+      type: "status",
+      payload: {
+        status: "agent_refreshed",
+        agentId: "agent-unavailable-1",
+        requestId: "req-refresh-unavail",
+        timelineSize: 1,
+      },
+    });
+  });
+
+  test("update_agent_request can switch an agent's provider", async () => {
+    const messages: unknown[] = [];
+    const updateAgentMetadata = vi.fn().mockResolvedValue(undefined);
+    const agentManager = {
+      updateAgentMetadata,
+      getAgent: vi.fn().mockReturnValue(null),
+    };
+    const agentStorage = {
+      get: vi.fn().mockResolvedValue({
+        id: "agent-unavailable-1",
+        provider: "codex",
+        cwd: "/tmp/test-repo",
+        createdAt: "2026-04-16T00:00:00.000Z",
+        updatedAt: "2026-04-16T00:00:00.000Z",
+        lastStatus: "closed",
+      }),
+    };
+    const session = createSessionForTest({
+      agentManager,
+      agentStorage,
+      messages,
+    });
+
+    await session.handleMessage({
+      type: "update_agent_request",
+      agentId: "agent-unavailable-1",
+      provider: "codex",
+      model: "gpt-4o",
+      requestId: "req-update-provider",
+    });
+    expect(updateAgentMetadata).toHaveBeenCalledWith("agent-unavailable-1", {
+      provider: "codex",
+      model: "gpt-4o",
+    });
+    expect(messages).toContainEqual({
+      type: "update_agent_response",
+      payload: {
+        requestId: "req-update-provider",
+        agentId: "agent-unavailable-1",
+        accepted: true,
+        error: null,
+      },
+    });
+  });
+
+  test("fetch_agent_timeline_request serves history-only when the provider is disabled", async () => {
+    const messages: unknown[] = [];
+    const agentRecord = {
+      id: "agent-unavailable-2",
+      provider: "claude",
+      cwd: "/tmp/test-repo",
+      createdAt: "2026-04-16T00:00:00.000Z",
+      updatedAt: "2026-04-16T00:00:00.000Z",
+      lastStatus: "closed",
+    };
+    const agentStorage = {
+      get: vi.fn().mockResolvedValue(agentRecord),
+    };
+    // The snapshot manager's registered list is every *known* provider: claude
+    // is included even though it is disabled on this daemon. The agent
+    // manager's client set is what can actually spawn, and claude is not in it.
+    // This divergence is the regression: availability must follow the client
+    // set, not the known-provider list.
+    const providerSnapshotManager = {
+      listRegisteredProviderIds: vi.fn().mockReturnValue(["claude", "codex", "opencode", "omp"]),
+      on: vi.fn(),
+      off: vi.fn(),
+    };
+    const agentManager = {
+      getAgent: vi.fn().mockReturnValue(null),
+      getRegisteredProviderIds: vi.fn().mockReturnValue(["codex", "opencode"]),
+      hasTimeline: vi.fn().mockReturnValue(false),
+      seedTimelineForRehydrate: vi.fn().mockResolvedValue(false),
+      seedTimelineFromItems: vi.fn(),
+      fetchTimeline: vi.fn().mockReturnValue({
+        epoch: "epoch-1",
+        direction: "tail",
+        reset: false,
+        staleCursor: false,
+        gap: false,
+        window: { minSeq: 0, maxSeq: 0, nextSeq: 0 },
+        hasOlder: false,
+        hasNewer: false,
+        rows: [],
+      }),
+    };
+
+    const session = createSessionForTest({
+      agentStorage,
+      agentManager,
+      providerSnapshotManager,
+      messages,
+    });
+
+    await session.handleMessage({
+      type: "fetch_agent_timeline_request",
+      agentId: "agent-unavailable-2",
+      requestId: "req-timeline-unavail",
+      direction: "tail",
+      projection: "projected",
+    });
+
+    const response = messages.find((m) => m.type === "fetch_agent_timeline_response");
+    expect(response).toBeDefined();
+    expect(response.payload.error).toBeNull();
+    expect(response.payload.agent).toMatchObject({
+      id: "agent-unavailable-2",
+      provider: "claude",
+      providerUnavailable: true,
+    });
+    // The history-only branch seeded an empty timeline instead of spawning.
+    expect(agentManager.seedTimelineFromItems).toHaveBeenCalledWith("agent-unavailable-2", []);
+  });
+
+  test("agent.fork.request passes the availability gate for a disabled-provider source", async () => {
+    const messages: unknown[] = [];
+    const agentRecord = {
+      id: "agent-unavailable-2",
+      provider: "claude",
+      cwd: "/tmp/test-repo",
+      workspaceId: "wks_fork",
+      createdAt: "2026-04-16T00:00:00.000Z",
+      updatedAt: "2026-04-16T00:00:00.000Z",
+      lastStatus: "closed",
+      title: "unavailable source",
+    };
+    // The fork lands on an available provider. The mock only needs the fields
+    // the fork pipeline touches before payload projection (`id` for the agent
+    // map, `provider` for startAgentRun's trace) — `buildAgentPayload` is
+    // stubbed below because this test targets the availability gate, not the
+    // payload shape.
+    const forkedAgent = { id: "forked-agent", provider: "omp" };
+    const agentStorage = {
+      get: vi.fn(async (agentId: string) =>
+        agentId === "agent-unavailable-2" ? agentRecord : null,
+      ),
+    };
+    const agentManager = {
+      getAgent: vi.fn((agentId: string) =>
+        agentId === "agent-unavailable-2" ? null : forkedAgent,
+      ),
+      getRegisteredProviderIds: vi.fn().mockReturnValue(["codex", "omp"]),
+      hasTimeline: vi.fn().mockReturnValue(false),
+      seedTimelineForRehydrate: vi.fn().mockResolvedValue(false),
+      seedTimelineFromItems: vi.fn(),
+      fetchTimeline: vi.fn().mockReturnValue({
+        epoch: "epoch-1",
+        direction: "tail",
+        reset: false,
+        staleCursor: false,
+        gap: false,
+        window: { minSeq: 0, maxSeq: 0, nextSeq: 0 },
+        hasOlder: false,
+        hasNewer: false,
+        rows: [],
+      }),
+      createAgent: vi.fn(async () => forkedAgent),
+      waitForAgentClose: vi.fn().mockResolvedValue(undefined),
+      tryRunOutOfBand: vi.fn().mockReturnValue(false),
+      hasInFlightRun: vi.fn().mockReturnValue(false),
+      beforeAgentRun: vi.fn().mockResolvedValue(undefined),
+      streamAgent: vi.fn(noopAgentStream),
+    };
+
+    const session = createSessionForTest({
+      agentStorage,
+      agentManager,
+      messages,
+    });
+    const internals = asSessionInternalsHelper<{
+      agentUpdates: { forwardLiveAgent: () => Promise<void> };
+      buildAgentPayload: (agent: { id?: string; provider?: string }) => Promise<unknown>;
+    }>(session);
+    // Neither surface is under test: the fork response just echoes the created
+    // agent back, and the update stream isn't what this test exercises.
+    internals.agentUpdates.forwardLiveAgent = async () => undefined;
+    internals.buildAgentPayload = async (agent) => ({ id: agent?.id, provider: agent?.provider });
+
+    await session.handleMessage({
+      type: "agent.fork.request",
+      sourceAgentId: "agent-unavailable-2",
+      text: "keep going",
+      requestId: "req-fork-unavail",
+      overrides: { provider: "omp" },
+    });
+
+    const response = messages.find((m) => m.type === "agent.fork.response");
+    expect(response).toBeDefined();
+    expect(response.payload.error).toBeNull();
+    expect(response.payload.agentId).toBe("forked-agent");
+    expect(response.payload.sourceAgentId).toBe("agent-unavailable-2");
+    expect(response.payload.agent).toMatchObject({ id: "forked-agent", provider: "omp" });
+    // Forking a source whose provider is unavailable must not fail before the
+    // fork is created.
+    expect(agentManager.createAgent).toHaveBeenCalledOnce();
+  });
+});
+
+describe("send_agent_message dispatch modes", () => {
+  const agentId = "11111111-1111-4111-8111-111111111111";
+
+  function createDispatchSession(agentManager: {
+    [K in keyof SessionOptions["agentManager"]]?: unknown;
+  }): { session: Session; messages: SessionOutboundMessage[] } {
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({
+      messages,
+      agentManager: {
+        listAgents: vi.fn(() => [{ id: agentId }]),
+        getAgent: vi.fn(() => ({ id: agentId, provider: "omp", lifecycle: "running" })),
+        tryRunOutOfBand: vi.fn(() => false),
+        hasInFlightRun: vi.fn(() => false),
+        streamAgent: vi.fn(noopAgentStream),
+        replaceAgentRun: vi.fn(noopAgentStream),
+        // The full send path (sendPromptToAgent -> ensureAgentLoaded) touches
+        // these on every dispatch that is not an out-of-band steer.
+        waitForAgentClose: vi.fn(async () => undefined),
+        getRegisteredProviderIds: vi.fn(() => ["omp"]),
+        // startAgentRun's per-turn pre-run seam (M2/M3 Commander snapshot
+        // injection): a no-op here — production's hook gates itself by agent
+        // labels, so these dispatch-mode tests never exercise it.
+        beforeAgentRun: vi.fn(async () => undefined),
+        ...agentManager,
+      },
+    });
+    return { session, messages };
+  }
+
+  function acceptedResponse(messages: SessionOutboundMessage[]) {
+    return messages.find((m) => m.type === "send_agent_message_response")?.payload;
+  }
+
+  test("steer to a busy agent with a native steer path runs out of band without cancelling", async () => {
+    const tryRunOutOfBand = vi.fn(() => true);
+    const replaceAgentRun = vi.fn(noopAgentStream);
+    const streamAgent = vi.fn(noopAgentStream);
+    const { session, messages } = createDispatchSession({
+      tryRunOutOfBand,
+      replaceAgentRun,
+      streamAgent,
+      hasInFlightRun: vi.fn(() => true),
+    });
+
+    await session.handleMessage({
+      type: "send_agent_message_request",
+      requestId: "req-steer-native",
+      agentId,
+      text: "fix the test",
+      dispatchMode: "steer",
+    });
+
+    // The daemon maps the user's steer to the native out-of-band `/steer …`
+    // path — the live turn is redirected, never cancelled.
+    expect(tryRunOutOfBand).toHaveBeenCalledWith(agentId, "/steer fix the test");
+    expect(replaceAgentRun).not.toHaveBeenCalled();
+    expect(streamAgent).not.toHaveBeenCalled();
+    expect(acceptedResponse(messages)).toMatchObject({
+      requestId: "req-steer-native",
+      accepted: true,
+    });
+  });
+
+  test("steer to a busy agent without a native steer path falls back to an interrupt", async () => {
+    const replaceAgentRun = vi.fn(noopAgentStream);
+    const streamAgent = vi.fn(noopAgentStream);
+    const { session, messages } = createDispatchSession({
+      tryRunOutOfBand: vi.fn(() => false),
+      replaceAgentRun,
+      streamAgent,
+      hasInFlightRun: vi.fn(() => true),
+    });
+
+    await session.handleMessage({
+      type: "send_agent_message_request",
+      requestId: "req-steer-fallback",
+      agentId,
+      text: "fix the test",
+      dispatchMode: "steer",
+    });
+
+    // No out-of-band handler (non-OMP provider): the running turn is replaced
+    // (replaceRunning) — a steer's value is timely delivery, not waiting.
+    expect(replaceAgentRun).toHaveBeenCalledTimes(1);
+    expect(streamAgent).not.toHaveBeenCalled();
+    expect(acceptedResponse(messages)).toMatchObject({
+      requestId: "req-steer-fallback",
+      accepted: true,
+    });
+  });
+
+  test("steer to an idle agent just runs the prompt", async () => {
+    const tryRunOutOfBand = vi.fn(() => false);
+    const streamAgent = vi.fn(noopAgentStream);
+    const replaceAgentRun = vi.fn(noopAgentStream);
+    const { session, messages } = createDispatchSession({
+      tryRunOutOfBand,
+      streamAgent,
+      replaceAgentRun,
+      hasInFlightRun: vi.fn(() => false),
+    });
+
+    await session.handleMessage({
+      type: "send_agent_message_request",
+      requestId: "req-steer-idle",
+      agentId,
+      text: "fix the test",
+      dispatchMode: "steer",
+    });
+
+    // Nothing to steer: the prompt starts a normal run, without the /steer
+    // prefix (startAgentRun still probes the plain prompt — harmless).
+    expect(tryRunOutOfBand).not.toHaveBeenCalledWith(agentId, "/steer fix the test");
+    expect(streamAgent).toHaveBeenCalledTimes(1);
+    expect(replaceAgentRun).not.toHaveBeenCalled();
+    expect(acceptedResponse(messages)).toMatchObject({
+      requestId: "req-steer-idle",
+      accepted: true,
+    });
+  });
+  test("steer to a stored agent with no in-flight run escalates to a fresh run instead of queueing", async () => {
+    const streamAgent = vi.fn(noopAgentStream);
+    const replaceAgentRun = vi.fn(noopAgentStream);
+    const { session, messages } = createDispatchSession({
+      tryRunOutOfBand: vi.fn(() => false),
+      streamAgent,
+      replaceAgentRun,
+      hasInFlightRun: vi.fn(() => false),
+    });
+
+    await session.handleMessage({
+      type: "send_agent_message_request",
+      requestId: "req-steer-phantom-escalate",
+      agentId,
+      text: "steer after restart",
+      dispatchMode: "steer",
+    });
+
+    // Steer with no in-flight run routes through the full send path (starts
+    // a fresh run) rather than queueing or failing raw.
+    expect(streamAgent).toHaveBeenCalledTimes(1);
+    expect(replaceAgentRun).not.toHaveBeenCalled();
+    expect(acceptedResponse(messages)).toMatchObject({
+      requestId: "req-steer-phantom-escalate",
+      accepted: true,
+    });
+  });
+
+  test("queue waits for idle and streams without replacing", async () => {
+    const streamAgent = vi.fn(noopAgentStream);
+    const replaceAgentRun = vi.fn(noopAgentStream);
+    const { session, messages } = createDispatchSession({
+      streamAgent,
+      replaceAgentRun,
+      hasInFlightRun: vi.fn(() => false),
+    });
+
+    await session.handleMessage({
+      type: "send_agent_message_request",
+      requestId: "req-queue",
+      agentId,
+      text: "whenever",
+      dispatchMode: "queue",
+    });
+
+    expect(replaceAgentRun).not.toHaveBeenCalled();
+    expect(streamAgent).toHaveBeenCalledTimes(1);
+    expect(acceptedResponse(messages)).toMatchObject({ requestId: "req-queue", accepted: true });
+  });
+
+  test("a default interrupt send to a busy agent replaces the run — never degrades to a queue", async () => {
+    // sendBehavior "interrupt" (or the default) sends WITHOUT dispatchMode;
+    // the daemon must take the replaceRunning path, never wait for idle.
+    const replaceAgentRun = vi.fn(noopAgentStream);
+    const streamAgent = vi.fn(noopAgentStream);
+    const { session, messages } = createDispatchSession({
+      replaceAgentRun,
+      streamAgent,
+      waitForAgentClose: vi.fn(async () => undefined),
+      waitForAgentRunStart: vi.fn(async () => undefined),
+      hasInFlightRun: vi.fn(() => true),
+    });
+
+    await session.handleMessage({
+      type: "send_agent_message_request",
+      requestId: "req-interrupt",
+      agentId,
+      text: "redirect me",
+    });
+
+    // The interrupt goes through startAgentRun({replaceRunning:true}) →
+    // replaceAgentRun with the USER's replace origin (so the superseded run
+    // reads as "Interrupted by you"). The queue path would have waited for
+    // idle and streamed without replacing — it must never be chosen here.
+    expect(replaceAgentRun).toHaveBeenCalledTimes(1);
+    expect(replaceAgentRun).toHaveBeenCalledWith(
+      agentId,
+      expect.any(String),
+      expect.objectContaining({ replaceOrigin: "user" }),
+    );
+    expect(streamAgent).not.toHaveBeenCalled();
+    expect(acceptedResponse(messages)).toMatchObject({
+      requestId: "req-interrupt",
+      accepted: true,
+    });
+  });
+
+  test("a refused replace on a busy agent surfaces the error — never silently queues", async () => {
+    // A run that will not terminate can refuse the interrupt. The send must
+    // FAIL LOUDLY (accepted: false with the reason), not silently fall back
+    // to queue-until-idle semantics.
+    const replaceAgentRun = vi.fn(async () => {
+      throw new Error("Cannot replace agent: active run cancellation was not acknowledged");
+    });
+    const streamAgent = vi.fn(noopAgentStream);
+    const { session, messages } = createDispatchSession({
+      replaceAgentRun,
+      streamAgent,
+      waitForAgentClose: vi.fn(async () => undefined),
+      hasInFlightRun: vi.fn(() => true),
+    });
+
+    await session.handleMessage({
+      type: "send_agent_message_request",
+      requestId: "req-refused",
+      agentId,
+      text: "redirect me",
+    });
+
+    const response = acceptedResponse(messages);
+    expect(response).toMatchObject({ requestId: "req-refused", accepted: false });
+    expect(String(response?.error)).toContain("replace");
+    // No queue fallback: the prompt was never streamed as a deferred run.
+    expect(streamAgent).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================================
+// Wave 2: central-config ownership + replication (wire dispatch). The daemon
+// that receives mission_control.config.patch routes it through the service's
+// ownership logic (owner applies + replicates; non-owner forwards); peers
+// receive mission_control.config.replica and replace their local snapshot.
+// These tests pin the SESSION mapping (dispatch + response payloads); the
+// routing/forwarding/replication contract itself is tested at the service
+// level in mission-control/config-replication.test.ts.
+// ============================================================================
+
+describe("mission control central config wire dispatch", () => {
+  test("mission_control.config.replica dispatches to the service replica handler", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const applyCentralConfigReplica = vi.fn(async () => undefined);
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        applyCentralConfigReplica,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.config.replica",
+      from: "commander-a",
+      config: { statusNudgeSeconds: 480, mode: "auto" },
+    });
+
+    // Fire-and-forget: applied, never answered with a response.
+    expect(applyCentralConfigReplica).toHaveBeenCalledWith({
+      statusNudgeSeconds: 480,
+      mode: "auto",
+    });
+    expect(messages).toEqual([]);
+  });
+
+  test("mission_control.config.patch through the session returns the routed result incl. unreachableCommanderHost", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const patchCentralConfigRouted = vi.fn(async () => ({
+      ok: false,
+      error:
+        'Commander host "commander-a" is unreachable (unreachable); central config was NOT updated',
+      unreachableCommanderHost: "commander-a",
+      config: { statusNudgeSeconds: 300 },
+    }));
+    const getCentralConfig = vi.fn(() => ({}));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        patchCentralConfigRouted,
+        getCentralConfig,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.config.patch.request",
+      requestId: "req-config-patch",
+      patch: { statusNudgeSeconds: 600 },
+    });
+
+    expect(patchCentralConfigRouted).toHaveBeenCalledWith({ statusNudgeSeconds: 600 });
+    expect(messages).toEqual([
+      {
+        type: "mission_control.config.patch.response",
+        payload: {
+          requestId: "req-config-patch",
+          config: { statusNudgeSeconds: 300 },
+          ok: false,
+          error: expect.stringContaining("commander-a") as unknown as string,
+          unreachableCommanderHost: "commander-a",
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.config.patch through the session returns ok:true with the resolved config", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const patchCentralConfigRouted = vi.fn(async () => ({
+      ok: true,
+      config: { statusNudgeSeconds: 600, silenceNudgeSeconds: 90 },
+    }));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        patchCentralConfigRouted,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.config.patch.request",
+      requestId: "req-config-patch-ok",
+      patch: { statusNudgeSeconds: 600 },
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.config.patch.response",
+        payload: {
+          requestId: "req-config-patch-ok",
+          config: { statusNudgeSeconds: 600, silenceNudgeSeconds: 90 },
+          ok: true,
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.mode.set through the session surfaces an unreachable commander host", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const setModeRouted = vi.fn(async () => ({
+      ok: false,
+      error:
+        'Commander host "commander-a" unreachable: round-trip failed; central config was NOT updated',
+      unreachableCommanderHost: "commander-a",
+      config: {},
+    }));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        setModeRouted,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.mode.set.request",
+      requestId: "req-mode-set",
+      mode: "auto",
+    });
+
+    expect(setModeRouted).toHaveBeenCalledWith("auto");
+    expect(messages).toEqual([
+      {
+        type: "mission_control.mode.set.response",
+        payload: {
+          requestId: "req-mode-set",
+          ok: false,
+          error: expect.stringContaining("commander-a") as unknown as string,
+          unreachableCommanderHost: "commander-a",
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.config.get stays a local read (replicas keep every host in sync)", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const getCentralConfig = vi.fn(() => ({
+      statusNudgeSeconds: 480,
+      commanderHost: "commander-a",
+    }));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        getCentralConfig,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.config.get.request",
+      requestId: "req-config-get",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.config.get.response",
+        payload: {
+          requestId: "req-config-get",
+          config: { statusNudgeSeconds: 480, commanderHost: "commander-a" },
+        },
+      },
+    ]);
+  });
+});
+
+// ============================================================================
+// M9 voice dialogue mirror (wire dispatch): the session routes
+// mission_control.voice.mirror.request to the service's append-only mirror
+// and answers with ok/error. The service contract (append WITHOUT a model
+// turn) is tested at the service level in mission-control/voice-mirror.test;
+// these tests pin the SESSION mapping.
+// ============================================================================
+
+describe("mission control voice mirror wire dispatch", () => {
+  test("mission_control.voice.mirror.request dispatches with role/text/kind and answers ok", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const mirrorVoiceTurn = vi.fn(async () => ({ ok: true }));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        mirrorVoiceTurn,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.voice.mirror.request",
+      requestId: "req-voice-mirror-1",
+      role: "user",
+      text: "What is Archimedes doing?",
+      kind: "qa",
+    });
+
+    expect(mirrorVoiceTurn).toHaveBeenCalledWith({
+      role: "user",
+      text: "What is Archimedes doing?",
+      kind: "qa",
+    });
+    expect(messages).toEqual([
+      {
+        type: "mission_control.voice.mirror.response",
+        payload: { requestId: "req-voice-mirror-1", ok: true },
+      },
+    ]);
+  });
+
+  test("mission_control.voice.mirror.request surfaces a service error", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const mirrorVoiceTurn = vi.fn(async () => ({
+      ok: false,
+      error: "No Commander agent on this host",
+    }));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        mirrorVoiceTurn,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.voice.mirror.request",
+      requestId: "req-voice-mirror-2",
+      role: "assistant",
+      text: "Archimedes is working on the fleet health check.",
+      kind: "qa",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.voice.mirror.response",
+        payload: {
+          requestId: "req-voice-mirror-2",
+          ok: false,
+          error: "No Commander agent on this host",
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.voice.mirror.request errors when Mission Control is disabled", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({
+      messages,
+      missionControlService: undefined,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.voice.mirror.request",
+      requestId: "req-voice-mirror-3",
+      role: "user",
+      text: "nudge Pia",
+      kind: "dispatch",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.voice.mirror.response",
+        payload: {
+          requestId: "req-voice-mirror-3",
+          ok: false,
+          error: expect.stringContaining("Mission Control is not enabled") as unknown as string,
+        },
+      },
+    ]);
+  });
+});
+
+describe("mission control instruction-ledger RPC round trips", () => {
+  test("mission_control.instructions.list returns the service's ledger rows", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const listInstructions = vi.fn(() => [
+      {
+        id: "#12",
+        text: "deploy the fleet",
+        ts: "2026-08-09T10:00:00.000Z",
+        status: "open" as const,
+        source: "chat" as const,
+      },
+    ]);
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        listInstructions,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.instructions.list.request",
+      requestId: "req-instr-list",
+    });
+
+    expect(listInstructions).toHaveBeenCalledTimes(1);
+    expect(messages).toEqual([
+      {
+        type: "mission_control.instructions.list.response",
+        payload: {
+          requestId: "req-instr-list",
+          instructions: [
+            {
+              id: "#12",
+              text: "deploy the fleet",
+              ts: "2026-08-09T10:00:00.000Z",
+              status: "open",
+              source: "chat",
+            },
+          ],
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.instructions.list degrades to an empty list without a service", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({ messages, missionControlService: undefined });
+
+    await session.handleMessage({
+      type: "mission_control.instructions.list.request",
+      requestId: "req-instr-list-none",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.instructions.list.response",
+        payload: { requestId: "req-instr-list-none", instructions: [] },
+      },
+    ]);
+  });
+
+  test("mission_control.instructions.close routes to the service and reports ok", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const closeInstruction = vi.fn(async () => ({ ok: true as const }));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        closeInstruction,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.instructions.close.request",
+      requestId: "req-instr-close",
+      instructionId: "#12",
+    });
+
+    expect(closeInstruction).toHaveBeenCalledWith("#12");
+    expect(messages).toEqual([
+      {
+        type: "mission_control.instructions.close.response",
+        payload: { requestId: "req-instr-close", ok: true },
+      },
+    ]);
+  });
+
+  test("mission_control.instructions.close reports an error without a service", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({ messages, missionControlService: undefined });
+
+    await session.handleMessage({
+      type: "mission_control.instructions.close.request",
+      requestId: "req-instr-close-none",
+      instructionId: "#12",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.instructions.close.response",
+        payload: {
+          requestId: "req-instr-close-none",
+          ok: false,
+          error: "Mission Control is not enabled on this host",
+        },
+      },
+    ]);
+  });
+});
+
+// ============================================================================
+// Cross-host spawn apply (mission_control.spawn.apply): the commander host
+// forwards an approved spawn-kind proposal whose plan targets THIS host as a
+// peer. THIS daemon validates the cwd contract against its own filesystem,
+// creates the absolute cwd with mkdir recursive when missing, and creates the
+// agent in its own registry — the mkdir happens here, never on the commander's
+// disk. Only the APPLY hops; the proposal card stays on the commander host.
+// ============================================================================
+
+describe("mission control spawn apply wire dispatch", () => {
+  test("mission_control.spawn.apply.request routes the plan to the service and emits the response", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const applySpawnRemote = vi.fn(async () => ({ ok: true as const, agentId: "worker-1" }));
+    const session = createSessionForTest({
+      messages,
+      serverId: "srv-test",
+      missionControlService: {
+        applySpawnRemote,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.spawn.apply.request",
+      requestId: "req-spawn-apply",
+      spawnPlan: {
+        host: "peer-a",
+        provider: "omp",
+        summary: "Spawn a worker on peer-a",
+        cwd: "/tmp/peer-campaign",
+        labels: { "paseo.parent-agent-id": "commander-1" },
+      },
+    });
+
+    expect(applySpawnRemote).toHaveBeenCalledWith(
+      expect.objectContaining({
+        host: "peer-a",
+        provider: "omp",
+        labels: { "paseo.parent-agent-id": "commander-1" },
+      }),
+    );
+    expect(messages).toEqual([
+      {
+        type: "mission_control.spawn.apply.response",
+        // serverId: the applying daemon's own identity, so the commander's
+        // audit trail records WHERE the spawn ran (spawnedOnServerId).
+        payload: {
+          requestId: "req-spawn-apply",
+          ok: true,
+          agentId: "worker-1",
+          serverId: "srv-test",
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.spawn.apply.request surfaces the target host's refusal", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const applySpawnRemote = vi.fn(async () => ({
+      ok: false as const,
+      error: 'Spawn cwd must be an absolute path (got "relative/path")',
+    }));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        applySpawnRemote,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.spawn.apply.request",
+      requestId: "req-spawn-refused",
+      spawnPlan: { host: "peer-a", provider: "omp", summary: "Spawn", cwd: "relative/path" },
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.spawn.apply.response",
+        payload: {
+          requestId: "req-spawn-refused",
+          ok: false,
+          error: 'Spawn cwd must be an absolute path (got "relative/path")',
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.spawn.apply.request reports an error without a service", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({ messages, missionControlService: undefined });
+
+    await session.handleMessage({
+      type: "mission_control.spawn.apply.request",
+      requestId: "req-spawn-none",
+      spawnPlan: { host: "peer-a", provider: "omp", summary: "Spawn" },
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.spawn.apply.response",
+        payload: {
+          requestId: "req-spawn-none",
+          ok: false,
+          error: "Mission Control is not enabled on this host",
+        },
+      },
+    ]);
+  });
+});
+
+// ============================================================================
+// Cross-host spawn-label resolution (mission_control.spawn_labels.resolve):
+// the Commander host asks THIS daemon (a peer target of a Commander spawn) to
+// resolve the human-readable workspace/project labels for the spawn proposal
+// card. Read-only; the target's own registries and checkout facts answer.
+// ============================================================================
+
+describe("mission control spawn labels resolve wire dispatch", () => {
+  test("resolves a new-workspace cwd to branch + project labels from this daemon's registries", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const getCheckout = vi.fn().mockResolvedValue({
+      cwd: "/home/ubuntu/new-thing",
+      isGit: true,
+      currentBranch: "feature/alpha",
+      remoteUrl: "git@github.com:acme/new-thing.git",
+      worktreeRoot: "/home/ubuntu/new-thing",
+      isPaseoOwnedWorktree: false,
+      mainRepoRoot: "/home/ubuntu/new-thing",
+    });
+    const session = createSessionForTest({
+      messages,
+      workspaceGitService: { getCheckout },
+    });
+
+    await session.handleMessage({
+      type: "mission_control.spawn_labels.resolve.request",
+      requestId: "req-labels-new-ws",
+      cwd: "/home/ubuntu/new-thing",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.spawn_labels.resolve.response",
+        payload: {
+          requestId: "req-labels-new-ws",
+          labels: { newWorkspace: "feature/alpha", newProject: "new-thing" },
+        },
+      },
+    ]);
+  });
+
+  test("resolves an existing workspaceId to its display name and project", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({
+      messages,
+      workspaceRegistry: {
+        get: vi.fn().mockResolvedValue({
+          workspaceId: "wks_ws",
+          projectId: "prj_project",
+          cwd: "/repo",
+          kind: "local_checkout",
+          displayName: "main",
+          title: "Payments work",
+          branch: null,
+          worktreeRoot: null,
+          baseBranch: null,
+          isPaseoOwnedWorktree: false,
+          mainRepoRoot: null,
+          createdAt: "2026-08-01T00:00:00.000Z",
+          updatedAt: "2026-08-01T00:00:00.000Z",
+          archivedAt: null,
+          autoArchivedChangeRequestUrl: null,
+          pinnedAt: null,
+        }),
+        list: vi.fn().mockResolvedValue([]),
+      },
+      projectRegistry: {
+        get: vi.fn().mockResolvedValue({
+          projectId: "prj_project",
+          rootPath: "/repo/payments",
+          kind: "git",
+          displayName: "payments",
+          projectKey: null,
+          customName: "Acme Payments",
+          customIconRevision: null,
+          description: null,
+          createdAt: "2026-08-01T00:00:00.000Z",
+          updatedAt: "2026-08-01T00:00:00.000Z",
+          archivedAt: null,
+        }),
+      },
+    });
+
+    await session.handleMessage({
+      type: "mission_control.spawn_labels.resolve.request",
+      requestId: "req-labels-existing",
+      workspaceId: "wks_ws",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.spawn_labels.resolve.response",
+        payload: {
+          requestId: "req-labels-existing",
+          labels: { workspace: "Payments work", project: "Acme Payments" },
+        },
+      },
+    ]);
+  });
+
+  test("an input with neither cwd nor workspaceId resolves an empty labels payload, never an error", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({ messages });
+
+    await session.handleMessage({
+      type: "mission_control.spawn_labels.resolve.request",
+      requestId: "req-labels-none",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.spawn_labels.resolve.response",
+        payload: { requestId: "req-labels-none" },
+      },
+    ]);
+  });
+});
+
+// ============================================================================
+// Cross-host terminal-event ingest (mission_control.event.forward): a
+// NON-commander host forwards a terminal event (finished/failed/interrupted
+// or verdict) for one of ITS commander-dispatched workers. The worker's
+// labels ride the payload so THIS (commander) host's machinery-turn gate can
+// decide without a local record. The event is NEVER written to this host's
+// events store — only the gate consumes it.
+// ============================================================================
+
+describe("mission control event forward wire dispatch", () => {
+  test("mission_control.event.forward.request routes the event + labels to the service and emits the response", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const ingestForwardedEvent = vi.fn(async () => ({ ok: true as const }));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        ingestForwardedEvent,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.event.forward.request",
+      requestId: "req-event-fwd",
+      event: {
+        id: "mce_fwd_1",
+        agentId: "worker-1",
+        kind: "finished",
+        source: "system",
+        severity: "info",
+        headline: "Finished",
+        ts: "2026-08-09T00:00:00.000Z",
+      },
+      labels: { "paseo.parent-agent-id": "commander-1" },
+    });
+
+    expect(ingestForwardedEvent).toHaveBeenCalledWith({
+      event: expect.objectContaining({ agentId: "worker-1", kind: "finished" }),
+      labels: { "paseo.parent-agent-id": "commander-1" },
+    });
+    expect(messages).toEqual([
+      {
+        type: "mission_control.event.forward.response",
+        payload: { requestId: "req-event-fwd", ok: true },
+      },
+    ]);
+  });
+
+  test("mission_control.event.forward.request reports an error without a service", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({ messages, missionControlService: undefined });
+
+    await session.handleMessage({
+      type: "mission_control.event.forward.request",
+      requestId: "req-event-fwd-none",
+      event: {
+        id: "mce_fwd_2",
+        agentId: "worker-1",
+        kind: "failed",
+        source: "system",
+        severity: "attention",
+        headline: "Failed",
+        ts: "2026-08-09T00:00:00.000Z",
+      },
+      labels: null,
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.event.forward.response",
+        payload: {
+          requestId: "req-event-fwd-none",
+          ok: false,
+          error: "Mission Control is not enabled on this host",
+        },
+      },
+    ]);
+  });
+});
+
+// ============================================================================
+// M11 voice read RPCs (mission_control.recall / context.records /
+// tag_message / peer.timeline): the voice node connects to ONE daemon (no
+// peerManager, no MCP catalog) and reads over these thin session RPCs. These
+// tests pin the SESSION mapping — the daemon runs the same
+// MissionControlService calls the Commander's fleet tools use, and hops to
+// peers over peering for fleet_get_agent_activity(peer).
+// ============================================================================
+
+describe("mission control voice read RPCs wire dispatch", () => {
+  test("mission_control.recall.request routes to hindsightRecall and answers with matches", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const hindsightRecall = vi.fn(async () => ({
+      ok: true as const,
+      matches: [
+        {
+          id: "mem_1",
+          text: "Pia fixed the auth bug",
+          context: null,
+          occurredStart: "2026-08-01T00:00:00.000Z",
+          documentId: "paseo-run:mcr_pia_1",
+          tags: ["project:acme"],
+          bank: "paseo-fleet",
+          sessionId: null,
+          entities: null,
+          metadata: null,
+        },
+      ],
+    }));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        hindsightRecall,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.recall.request",
+      requestId: "req-recall-1",
+      query: "who fixed the auth bug",
+      limit: 3,
+    });
+
+    expect(hindsightRecall).toHaveBeenCalledWith("who fixed the auth bug", 3);
+    expect(messages).toEqual([
+      {
+        type: "mission_control.recall.response",
+        payload: {
+          requestId: "req-recall-1",
+          ok: true,
+          matches: [expect.objectContaining({ id: "mem_1", bank: "paseo-fleet" })],
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.recall.request defaults the limit and surfaces memory unavailable", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const hindsightRecall = vi.fn(async () => ({
+      ok: false as const,
+      reason: "memory unavailable" as const,
+      error: "hindsight is not configured",
+    }));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        hindsightRecall,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.recall.request",
+      requestId: "req-recall-2",
+      query: "anything",
+    });
+
+    expect(hindsightRecall).toHaveBeenCalledWith("anything", 5);
+    expect(messages).toEqual([
+      {
+        type: "mission_control.recall.response",
+        payload: { requestId: "req-recall-2", ok: false, reason: "memory unavailable" },
+      },
+    ]);
+  });
+
+  test("mission_control.context.records.request with agentId filters the run records", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const getRunRecords = vi.fn(() => [
+      {
+        id: "mcr_agent-a_1",
+        agentId: "agent-a",
+        agentName: "archimedes",
+        agentTitle: "Archimedes",
+        hostAlias: "local",
+        serverId: "srv-1",
+        workspaceId: "wks_1",
+        workspaceTitle: "Payments work",
+        projectId: "prj_1",
+        projectName: "Acme",
+        runEpoch: 1,
+        startedAt: "2026-08-01T00:00:00.000Z",
+        endedAt: "2026-08-01T01:00:00.000Z",
+        outcome: "finished",
+        brief: "Fix the auth bug",
+        reports: [],
+        verdict: null,
+        proofs: [],
+        createdAt: "2026-08-01T00:00:00.000Z",
+        updatedAt: "2026-08-01T02:00:00.000Z",
+      },
+    ]);
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        getRunRecords,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.context.records.request",
+      requestId: "req-ctx-1",
+      agentId: "agent-a",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.context.records.response",
+        payload: {
+          requestId: "req-ctx-1",
+          ok: true,
+          runRecords: [expect.objectContaining({ agentId: "agent-a", outcome: "finished" })],
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.context.records.request with workspaceId includes the workspace rollup", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const getRunRecords = vi.fn(() => []);
+    const getWorkspaceRollup = vi.fn(() => ({
+      kind: "workspace" as const,
+      workspaceId: "wks_1",
+      workspaceTitle: "Payments work",
+      projectId: "prj_1",
+      projectName: "Acme",
+      updatedAt: "2026-08-01T02:00:00.000Z",
+      runs: [
+        {
+          agentId: "agent-a",
+          agentName: "archimedes",
+          endedAt: "2026-08-01T01:00:00.000Z",
+          outcome: "finished",
+          brief: null,
+          decisions: [],
+          open: [],
+          verdict: null,
+        },
+      ],
+    }));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        getRunRecords,
+        getWorkspaceRollup,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.context.records.request",
+      requestId: "req-ctx-2",
+      workspaceId: "wks_1",
+    });
+
+    expect(getWorkspaceRollup).toHaveBeenCalledWith("wks_1");
+    expect(messages).toEqual([
+      {
+        type: "mission_control.context.records.response",
+        payload: {
+          requestId: "req-ctx-2",
+          ok: true,
+          runRecords: [],
+          workspaceRollup: expect.objectContaining({ kind: "workspace", workspaceId: "wks_1" }),
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.context.records.request errors without a service", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({ messages, missionControlService: undefined });
+
+    await session.handleMessage({
+      type: "mission_control.context.records.request",
+      requestId: "req-ctx-none",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.context.records.response",
+        payload: {
+          requestId: "req-ctx-none",
+          ok: false,
+          runRecords: [],
+          error: expect.stringContaining("Mission Control is not enabled") as unknown as string,
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.tag_message.request tags the latest Commander user message", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const recordMessageTags = vi.fn();
+    const getCommanderAgentId = vi.fn(async () => "commander-1");
+    const getTimeline = vi.fn(() => [
+      { type: "user_message", text: "check on Archimedes", voiceMirrorKind: "qa" },
+    ]);
+    const session = createSessionForTest({
+      messages,
+      agentManager: { getTimeline },
+      missionControlService: {
+        recordMessageTags,
+        getCommanderAgentId,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.tag_message.request",
+      requestId: "req-tag-1",
+      agentIds: ["agent-a", "agent-b"],
+    });
+
+    expect(recordMessageTags).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentIds: ["agent-a", "agent-b"],
+        text: "check on Archimedes",
+      }),
+    );
+    expect(messages).toEqual([
+      {
+        type: "mission_control.tag_message.response",
+        payload: { requestId: "req-tag-1", ok: true },
+      },
+    ]);
+  });
+
+  test("mission_control.tag_message.request reports an error when no user message exists", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const getCommanderAgentId = vi.fn(async () => "commander-1");
+    const getTimeline = vi.fn(() => [{ type: "assistant_message", text: "I'm on it" }]);
+    const session = createSessionForTest({
+      messages,
+      agentManager: { getTimeline },
+      missionControlService: {
+        getCommanderAgentId,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.tag_message.request",
+      requestId: "req-tag-none",
+      agentIds: ["agent-a"],
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.tag_message.response",
+        payload: {
+          requestId: "req-tag-none",
+          ok: false,
+          error: expect.stringContaining("No user message found to tag") as unknown as string,
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.peer.timeline.request hops to the peer and returns the curated summary", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const fetchAgentTimeline = vi.fn(async () => ({
+      entries: [
+        { item: { type: "user_message", text: "do the thing" } },
+        { item: { type: "assistant_message", text: "done" } },
+      ],
+    }));
+    const peerManager = {
+      getPeerClient: vi.fn((name: string) => (name === "macbook" ? { fetchAgentTimeline } : null)),
+    };
+    const session = createSessionForTest({
+      messages,
+      peerManager: peerManager as unknown as SessionOptions["peerManager"],
+    });
+
+    await session.handleMessage({
+      type: "mission_control.peer.timeline.request",
+      requestId: "req-peer-1",
+      host: "macbook",
+      agentId: "agent-a",
+      limit: 10,
+    });
+
+    expect(fetchAgentTimeline).toHaveBeenCalledWith("agent-a", {
+      direction: "tail",
+      limit: 10,
+    });
+    expect(messages).toEqual([
+      {
+        type: "mission_control.peer.timeline.response",
+        payload: {
+          requestId: "req-peer-1",
+          ok: true,
+          content: expect.stringContaining("do the thing") as unknown as string,
+          updateCount: 2,
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.peer.timeline.request surfaces an unconfigured peer", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({
+      messages,
+      peerManager: {
+        getPeerClient: vi.fn(() => null),
+      } as unknown as SessionOptions["peerManager"],
+    });
+
+    await session.handleMessage({
+      type: "mission_control.peer.timeline.request",
+      requestId: "req-peer-2",
+      host: "not-a-peer",
+      agentId: "agent-a",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.peer.timeline.response",
+        payload: {
+          requestId: "req-peer-2",
+          ok: false,
+          error: 'Host "not-a-peer" is not a configured peer',
+        },
+      },
+    ]);
+  });
+});
+
+describe("mission control tools.execute RPC wire dispatch", () => {
+  function catalogFor(
+    toolName: string,
+    executeTool: (...args: unknown[]) => unknown,
+    options?: { missingTool?: boolean },
+  ) {
+    const tool = options?.missingTool ? undefined : { name: toolName };
+    return {
+      tools: new Map([[toolName, { name: toolName }]]),
+      getTool: (name: string) => (name === toolName ? tool : undefined),
+      executeTool,
+    };
+  }
+
+  test("runs an allowlisted tool through the catalog factory and returns its output", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const executeTool = vi.fn(async () => ({
+      content: [],
+      structuredContent: {
+        agents: [
+          {
+            id: "agent-a",
+            title: "Archimedes",
+            host: "local",
+            status: "running",
+            requiresAttention: true,
+          },
+          {
+            id: "agent-b",
+            title: "Ada",
+            host: "macbook",
+            status: "idle",
+            requiresAttention: false,
+          },
+        ],
+      },
+    }));
+    const createPaseoToolCatalog = vi.fn(async () => catalogFor("fleet_list_agents", executeTool));
+    const session = createSessionForTest({
+      messages,
+      agentManager: { createPaseoToolCatalog },
+    });
+
+    await session.handleMessage({
+      type: "mission_control.tools.execute.request",
+      requestId: "req-exec-1",
+      name: "fleet_list_agents",
+      args: { statuses: ["running"] },
+    });
+
+    // The catalog is built with the Commander identity + voice tools so
+    // label-gated fleet tools behave exactly as they do for the Commander.
+    expect(createPaseoToolCatalog).toHaveBeenCalledWith({
+      callerLabels: { "paseo.mission-control": "commander" },
+      enableVoiceTools: true,
+    });
+    expect(executeTool).toHaveBeenCalledWith("fleet_list_agents", { statuses: ["running"] });
+    expect(messages).toEqual([
+      {
+        type: "mission_control.tools.execute.response",
+        payload: {
+          requestId: "req-exec-1",
+          ok: true,
+          name: "fleet_list_agents",
+          structuredContent: {
+            agents: [
+              expect.objectContaining({ id: "agent-a", requiresAttention: true }),
+              expect.objectContaining({ id: "agent-b", status: "idle" }),
+            ],
+          },
+        },
+      },
+    ]);
+  });
+
+  test("accepts fleet_list_inventory on the Commander allowlist (catalog resolve-first tool)", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const executeTool = vi.fn(async () => ({
+      content: [],
+      structuredContent: {
+        hosts: [
+          {
+            host: "local",
+            reachable: true,
+            projects: [
+              {
+                id: "prj_paseo",
+                title: "Paseo",
+                workspaces: [{ id: "wks_evil", title: "evil-toad", kind: "worktree", cwd: "/x" }],
+              },
+            ],
+          },
+        ],
+      },
+    }));
+    const session = createSessionForTest({
+      messages,
+      agentManager: {
+        createPaseoToolCatalog: vi.fn(async () => catalogFor("fleet_list_inventory", executeTool)),
+      },
+    });
+
+    await session.handleMessage({
+      type: "mission_control.tools.execute.request",
+      requestId: "req-exec-inv",
+      name: "fleet_list_inventory",
+      args: { query: "paseo" },
+    });
+
+    // The allowlist gate must pass the new name through to the catalog — the
+    // Voice node resolves spoken names through this RPC.
+    expect(executeTool).toHaveBeenCalledWith("fleet_list_inventory", { query: "paseo" });
+    expect(messages).toEqual([
+      {
+        type: "mission_control.tools.execute.response",
+        payload: {
+          requestId: "req-exec-inv",
+          ok: true,
+          name: "fleet_list_inventory",
+          structuredContent: {
+            hosts: [expect.objectContaining({ host: "local", reachable: true })],
+          },
+        },
+      },
+    ]);
+  });
+
+  test("joins text content blocks into the content field", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const executeTool = vi.fn(async () => ({
+      content: [
+        { type: "text", text: "Across 1 host:" },
+        { type: "text", text: "1 running, 0 needs you." },
+      ],
+    }));
+    const session = createSessionForTest({
+      messages,
+      agentManager: {
+        createPaseoToolCatalog: vi.fn(async () => catalogFor("fleet_list_agents", executeTool)),
+      },
+    });
+
+    await session.handleMessage({
+      type: "mission_control.tools.execute.request",
+      requestId: "req-exec-2",
+      name: "fleet_list_agents",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.tools.execute.response",
+        payload: {
+          requestId: "req-exec-2",
+          ok: true,
+          name: "fleet_list_agents",
+          content: "Across 1 host:\n1 running, 0 needs you.",
+        },
+      },
+    ]);
+  });
+
+  test("rejects an unknown tool without running it", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const executeTool = vi.fn();
+    const createPaseoToolCatalog = vi.fn(async () =>
+      catalogFor("fleet_list_agents", executeTool, { missingTool: true }),
+    );
+    const session = createSessionForTest({
+      messages,
+      agentManager: { createPaseoToolCatalog },
+    });
+
+    await session.handleMessage({
+      type: "mission_control.tools.execute.request",
+      requestId: "req-exec-3",
+      name: "fleet_list_models",
+    });
+
+    expect(executeTool).not.toHaveBeenCalled();
+    expect(messages).toEqual([
+      {
+        type: "mission_control.tools.execute.response",
+        payload: {
+          requestId: "req-exec-3",
+          ok: false,
+          name: "fleet_list_models",
+          error: "Unknown Paseo tool: fleet_list_models",
+        },
+      },
+    ]);
+  });
+
+  test("rejects a name off the Commander allowlist without building the catalog", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const createPaseoToolCatalog = vi.fn();
+    const session = createSessionForTest({
+      messages,
+      agentManager: { createPaseoToolCatalog },
+    });
+
+    await session.handleMessage({
+      type: "mission_control.tools.execute.request",
+      requestId: "req-exec-4",
+      name: "bash",
+    });
+
+    expect(createPaseoToolCatalog).not.toHaveBeenCalled();
+    expect(messages).toEqual([
+      {
+        type: "mission_control.tools.execute.response",
+        payload: {
+          requestId: "req-exec-4",
+          ok: false,
+          name: "bash",
+          error: 'Tool "bash" is not on the Commander allowlist',
+        },
+      },
+    ]);
+  });
+
+  test("surfaces catalog execution failures as ok:false + error", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const executeTool = vi.fn(async () => {
+      throw new Error("hindsight is not configured");
+    });
+    const createPaseoToolCatalog = vi.fn(async () => catalogFor("fleet_recall", executeTool));
+    const session = createSessionForTest({
+      messages,
+      agentManager: { createPaseoToolCatalog },
+    });
+
+    await session.handleMessage({
+      type: "mission_control.tools.execute.request",
+      requestId: "req-exec-5",
+      name: "fleet_recall",
+      args: { query: "auth" },
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.tools.execute.response",
+        payload: {
+          requestId: "req-exec-5",
+          ok: false,
+          name: "fleet_recall",
+          error: "hindsight is not configured",
+        },
+      },
+    ]);
+  });
+
+  test("reports a missing catalog factory as an unknown tool", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const createPaseoToolCatalog = vi.fn(async () => null);
+    const session = createSessionForTest({
+      messages,
+      agentManager: { createPaseoToolCatalog },
+    });
+
+    await session.handleMessage({
+      type: "mission_control.tools.execute.request",
+      requestId: "req-exec-6",
+      name: "fleet_list_agents",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.tools.execute.response",
+        payload: {
+          requestId: "req-exec-6",
+          ok: false,
+          name: "fleet_list_agents",
+          error: "Unknown Paseo tool: fleet_list_agents",
+        },
+      },
+    ]);
+  });
+
+  test("acts AS the Commander: passes callerAgentId when a Commander agent exists", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const executeTool = vi.fn(async () => ({ content: [], structuredContent: { ok: true } }));
+    const createPaseoToolCatalog = vi.fn(async () => catalogFor("tag_message", executeTool));
+    const session = createSessionForTest({
+      messages,
+      // The catalog's caller-scoped paths require a LIVE commander (readable
+      // timeline/config) — resolveCommanderAgentId scans the live registry.
+      agentManager: {
+        listAgents: vi.fn(() => [
+          {
+            id: "commander-1",
+            labels: { "paseo.mission-control": "commander" },
+          },
+        ]),
+        createPaseoToolCatalog,
+      },
+    });
+
+    await session.handleMessage({
+      type: "mission_control.tools.execute.request",
+      requestId: "req-exec-7",
+      name: "tag_message",
+      args: { agentIds: ["agent-a"] },
+    });
+
+    // Voice runs AS the Commander: agent-scoped tools (tag_message) get the
+    // Commander's callerAgentId so they can act on the Commander thread.
+    expect(createPaseoToolCatalog).toHaveBeenCalledWith({
+      callerLabels: { "paseo.mission-control": "commander" },
+      callerAgentId: "commander-1",
+      enableVoiceTools: true,
+    });
+    expect(executeTool).toHaveBeenCalledWith("tag_message", { agentIds: ["agent-a"] });
+    expect(messages).toEqual([
+      {
+        type: "mission_control.tools.execute.response",
+        payload: {
+          requestId: "req-exec-7",
+          ok: true,
+          name: "tag_message",
+          structuredContent: { ok: true },
+        },
+      },
+    ]);
   });
 });

@@ -1,27 +1,25 @@
+import { Fragment } from "react";
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { ProviderUsageCard } from "./card";
 import { providerUsageCopy } from "./copy";
-import type { ProviderUsage, ProviderUsageView } from "./types";
+import { matchProviderUsage } from "./match-provider-usage";
+import type { ProviderUsageView } from "./types";
 
-function matchProvider(
-  providers: ProviderUsage[],
-  activeProviderId: string | null | undefined,
-): ProviderUsage | null {
-  if (!activeProviderId) return null;
-  const target = activeProviderId.toLowerCase();
-  return providers.find((usage) => usage.providerId.toLowerCase() === target) ?? null;
-}
+export { matchProviderUsage } from "./match-provider-usage";
 
-// Renders the active agent's provider usage inside the context-meter tooltip.
-// Returns nothing when the active provider has no usage entry, so the meter's
-// own context section stays the whole tooltip.
+// Renders plan usage inside the context-meter tooltip: every account of the active
+// model's provider group, or — when no provider can be resolved from the agent — every
+// known account, so the popover is never empty just because the agent has not reported
+// a model yet.
 export function ProviderUsageTooltipSection({
   view,
   activeProviderId,
+  activeModelId,
 }: {
   view: ProviderUsageView;
   activeProviderId: string | null | undefined;
+  activeModelId?: string | null;
 }) {
   if (view.kind === "loading") {
     return (
@@ -41,13 +39,32 @@ export function ProviderUsageTooltipSection({
     );
   }
 
-  const usage = matchProvider(view.payload.providers, activeProviderId);
-  if (!usage) return null;
+  const matched = matchProviderUsage(view.payload.providers, activeProviderId, activeModelId);
+  const providers = matched.length > 0 ? matched : view.payload.providers;
 
   return (
     <>
       <View style={styles.divider} />
-      <ProviderUsageCard usage={usage} compact />
+      <View style={styles.headingRow}>
+        <Text style={styles.heading}>{providerUsageCopy.title}</Text>
+        {view.isRefreshing ? (
+          <Text style={styles.refreshing}>{providerUsageCopy.refreshing}</Text>
+        ) : null}
+      </View>
+      {providers.length > 0 ? (
+        <View style={styles.list}>
+          {providers.map((usage, index) => (
+            // A provider group holds several subscriptions, so the provider id alone
+            // is not unique across cards.
+            <Fragment key={`${usage.providerId}:${usage.accountEmail ?? ""}`}>
+              {index > 0 ? <View style={styles.cardDivider} /> : null}
+              <ProviderUsageCard usage={usage} compact listFetchedAt={view.payload.fetchedAt} />
+            </Fragment>
+          ))}
+        </View>
+      ) : (
+        <Text style={styles.detail}>{providerUsageCopy.empty}</Text>
+      )}
     </>
   );
 }
@@ -61,6 +78,29 @@ const styles = StyleSheet.create((theme) => ({
     marginVertical: theme.spacing[2],
     // Cancel the tooltip content's horizontal padding so the rule spans edge to edge.
     marginHorizontal: -theme.spacing[2],
+  },
+  headingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: theme.spacing[2],
+    marginBottom: theme.spacing[2],
+  },
+  heading: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.xs,
+    fontWeight: theme.fontWeight.medium,
+  },
+  refreshing: {
+    color: theme.colors.foregroundExtraMuted,
+    fontSize: theme.fontSize.xs,
+  },
+  list: {
+    gap: theme.spacing[3],
+  },
+  cardDivider: {
+    height: 1,
+    backgroundColor: theme.colors.border,
   },
   detail: {
     color: theme.colors.foregroundMuted,

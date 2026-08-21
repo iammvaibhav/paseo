@@ -11,7 +11,7 @@ import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import type { SurfaceBackdrop } from "@/styles/surface-backdrop";
 import { getStatusDotColor } from "@/utils/status-dot-color";
 import { StatusRing } from "@/components/status-ring";
-import { getStatusRingOffset } from "@/components/status-ring/geometry";
+import { getStatusRingOffset, STATUS_RING_FRAME_SIZE } from "@/components/status-ring/geometry";
 import {
   STATUS_INDICATOR_ALERT_SIZE,
   STATUS_INDICATOR_DOT_SIZE,
@@ -147,9 +147,12 @@ export function WorkspaceTabIcon({
   else if (bucket === "attention") statusDotColor = styles.statusDotAttention.color;
   const showNeedsInputAlert = bucket === "needs_input";
   const Icon = presentation.icon;
+  // Give the status ring/dot room outside the 14px glyph so they don't
+  // cover the provider/tab letter (live bug: blue running ring sat on the T).
+  const frameSize = Math.max(size, STATUS_RING_FRAME_SIZE);
   const agentIconWrapperStyle = useMemo(
-    () => [styles.agentIconWrapper, { width: size, height: size }],
-    [size],
+    () => [styles.agentIconWrapper, { width: frameSize, height: frameSize }],
+    [frameSize],
   );
   const statusDotStyle = useMemo(
     () => [

@@ -21,6 +21,8 @@ export type AgentRunController = Pick<
   | "replaceAgentRun"
   | "steerOrReplaceActiveTurn"
   | "streamAgent"
+  | "reloadAgentSession"
+  | "beforeAgentRun"
 >;
 
 export interface StartAgentRunOptions {
@@ -90,8 +92,8 @@ export async function startAgentRun(
     {
       agentId,
       provider: snapshot?.provider,
-      providerSessionId: snapshot?.persistence?.sessionId ?? undefined,
-      turnId: snapshot?.activeForegroundTurnId ?? undefined,
+      providerSessionId: snapshot?.persistence?.sessionId,
+      turnId: snapshot?.activeForegroundTurnId,
       promptType: typeof prompt === "string" ? "string" : "structured",
       hasRunOptions: Boolean(options?.runOptions),
       replaceRunning: Boolean(options?.replaceRunning),
@@ -104,6 +106,20 @@ export async function startAgentRun(
   if (agentManager.tryRunOutOfBand(agentId, prompt, options?.runOptions)) {
     return { disposition: "out_of_band" };
   }
+  await recoverDeadProviderRuntime(agentManager, agentId, logger);
+  // Per-turn pre-run seam (Commander world-snapshot injection): the hook may
+  // dispatch its own machinery turn ahead of this prompt. Runs after the
+  // dead-runtime recovery so the injected turn starts on a live session, and
+  // after the out-of-band check so OOB commands never trigger injection.
+  // typeof-guarded so manager shims without the seam stay no-ops.
+  if (typeof agentManager.beforeAgentRun === "function") {
+    await agentManager.beforeAgentRun({
+      agentId,
+      prompt,
+      runOptions: options?.runOptions,
+      replaceRunning: options?.replaceRunning,
+    });
+  }
   const steered = await steerOrReplaceActiveRun(agentManager, agentId, prompt, options);
   if (steered?.disposition === "steered") {
     return steered;
@@ -115,7 +131,7 @@ export async function startAgentRun(
     {
       agentId,
       provider: snapshot?.provider,
-      providerSessionId: snapshot?.persistence?.sessionId ?? undefined,
+      providerSessionId: snapshot?.persistence?.sessionId,
       shouldReplace: replaced,
     },
     "agent.session.start_stream.iterator_returned",
@@ -129,7 +145,7 @@ export async function startAgentRun(
         {
           agentId,
           provider: snapshot?.provider,
-          providerSessionId: snapshot?.persistence?.sessionId ?? undefined,
+          providerSessionId: snapshot?.persistence?.sessionId,
         },
         "agent.session.iterator.drained",
       );
@@ -138,7 +154,7 @@ export async function startAgentRun(
         {
           agentId,
           provider: snapshot?.provider,
-          providerSessionId: snapshot?.persistence?.sessionId ?? undefined,
+          providerSessionId: snapshot?.persistence?.sessionId,
           err: error,
         },
         "agent.session.iterator.error",
@@ -147,6 +163,41 @@ export async function startAgentRun(
     }
   })();
   return { disposition: "turn_started" };
+}
+
+/**
+ * Reload a session whose provider runtime is gone, before the prompt is
+ * dispatched at it.
+ *
+ * A dead runtime used to be terminal: `startTurn` rejected, the turn failed
+ * with the provider's "process is closed" diagnostic, and every later prompt
+ * failed the same way until someone ran Reload agent by hand. Reloading here
+ * resumes the provider session from its persistence handle, keeps the timeline,
+ * and clears the sticky `running` lifecycle that made the composer spin over a
+ * runtime doing nothing.
+ *
+ * Recovery is best-effort: if the reload fails, the prompt still goes to the old
+ * session so the user gets the provider's real error instead of a reload error.
+ */
+async function recoverDeadProviderRuntime(
+  agentManager: AgentRunController,
+  agentId: string,
+  logger: Logger,
+): Promise<void> {
+  const snapshot = agentManager.getAgent(agentId);
+  const session = snapshot && "session" in snapshot ? snapshot.session : null;
+  if (!snapshot || session?.isRuntimeAlive?.() !== false) {
+    return;
+  }
+  logger.warn(
+    { agentId, provider: snapshot.provider, lifecycle: snapshot.lifecycle },
+    "agent.run.reloading_dead_provider_runtime",
+  );
+  try {
+    await agentManager.reloadAgentSession(agentId);
+  } catch (error) {
+    logger.warn({ err: error, agentId }, "agent.run.dead_provider_runtime_reload_failed");
+  }
 }
 
 /**
@@ -190,6 +241,13 @@ export interface SendPromptToAgentParams {
   messageId?: string;
   activeTurnBehavior?: ActiveTurnBehavior;
   runOptions?: AgentRunOptions;
+  /**
+   * Who supersedes the in-flight run when this prompt replaces one (user
+   * interrupt-and-send vs machinery dispatch). Rides the run options to
+   * replaceAgentRun so the superseded run's terminal failure can be treated
+   * as that party's interruption (see AgentRunOptions.replaceOrigin).
+   */
+  replaceOrigin?: "user" | "machinery";
   /** Optional mode to set on the agent before the run starts. */
   sessionMode?: string;
   /**
@@ -213,6 +271,11 @@ export interface StartCreatedAgentInitialPromptParams {
 }
 
 const AGENT_RUN_START_TIMEOUT_MS = 15_000;
+
+// Above this, "pressed send, nothing happened" is a real complaint rather than
+// normal provider handshake cost. Logged as a warn so it is greppable without
+// turning on trace.
+const SLOW_PROMPT_DISPATCH_MS = 1_500;
 
 export async function waitForAgentRunStartWithTimeout(
   agentManager: AgentManager,
@@ -243,35 +306,70 @@ export async function sendPromptToAgent(
   params: SendPromptToAgentParams,
 ): Promise<{ disposition: PromptDispatchDisposition }> {
   const unarchive = params.unarchive ?? true;
+  const startedAt = Date.now();
+  let unarchiveMs = 0;
+  let ensureLoadedMs = 0;
+  let setModeMs = 0;
 
   const record = await params.agentStorage.get(params.agentId);
+  const wasClosed = record?.lastStatus === "closed";
   if (record?.archivedAt) {
     if (!unarchive) {
       return { disposition: "turn_started" };
     }
+    const unarchiveStartedAt = Date.now();
     await unarchiveAgentState(params.agentStorage, params.agentManager, params.agentId);
+    unarchiveMs = Date.now() - unarchiveStartedAt;
   }
 
+  const ensureLoadedStartedAt = Date.now();
   await ensureAgentLoaded(params.agentId, {
     agentManager: params.agentManager,
     agentStorage: params.agentStorage,
     logger: params.logger,
   });
+  ensureLoadedMs = Date.now() - ensureLoadedStartedAt;
 
   if (params.sessionMode) {
+    const setModeStartedAt = Date.now();
     await params.agentManager.setAgentMode(params.agentId, params.sessionMode);
+    setModeMs = Date.now() - setModeStartedAt;
   }
 
-  const runOptions = params.messageId
-    ? { ...params.runOptions, clientMessageId: params.messageId }
-    : params.runOptions;
+  const runOptions: AgentRunOptions = {
+    ...params.runOptions,
+    ...(params.messageId ? { clientMessageId: params.messageId } : {}),
+    ...(params.replaceOrigin ? { replaceOrigin: params.replaceOrigin } : {}),
+  };
 
-  return await startAgentRun(params.agentManager, params.agentId, params.prompt, params.logger, {
-    replaceRunning: true,
-    activeTurnBehavior: params.activeTurnBehavior,
-    clearPendingPermissions: params.clearPendingPermissions,
-    runOptions,
-  });
+  const startRunStartedAt = Date.now();
+  try {
+    return await startAgentRun(params.agentManager, params.agentId, params.prompt, params.logger, {
+      replaceRunning: true,
+      activeTurnBehavior: params.activeTurnBehavior,
+      clearPendingPermissions: params.clearPendingPermissions,
+      runOptions,
+    });
+  } finally {
+    // "I pressed send and nothing happened for a while" is measured here.
+    // `startAgentRun` returns before the provider acknowledges the prompt, so
+    // the remaining latency to the spinner lives in `agent.turn.dispatched`.
+    const totalMs = Date.now() - startedAt;
+    const payload = {
+      agentId: params.agentId,
+      wasClosed,
+      unarchiveMs,
+      ensureLoadedMs,
+      setModeMs,
+      startRunMs: Date.now() - startRunStartedAt,
+      totalMs,
+    };
+    if (totalMs >= SLOW_PROMPT_DISPATCH_MS) {
+      params.logger.warn(payload, "agent.prompt.dispatch_slow");
+    } else {
+      params.logger.info(payload, "agent.prompt.dispatch");
+    }
+  }
 }
 
 export async function startCreatedAgentInitialPrompt(

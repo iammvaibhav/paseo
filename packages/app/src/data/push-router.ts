@@ -8,6 +8,8 @@ import { agentCommandsQueryRoot } from "@/hooks/agent-commands-query";
 import { orderCheckoutDiffFiles } from "@/git/diff-order";
 import { daemonConfigQueryKey } from "@/data/daemon-config";
 import { daemonPairingOfferQueryKey } from "@/data/daemon-pairing";
+import { missionControlEventsQueryKey } from "@/data/mission-control-events";
+import { missionControlInstructionsQueryKey } from "@/data/mission-control-instructions";
 import { providerSnapshotCache, type ProviderSnapshotCache } from "@/data/provider-snapshot-cache";
 import {
   normalizeProvidersSnapshotCwd,
@@ -31,7 +33,8 @@ type ServerDataEventType =
   | "checkout_diff_update"
   | "subscribe_checkout_diff_response"
   | "status"
-  | "terminals_changed";
+  | "terminals_changed"
+  | "mission_control_event";
 type CheckoutDiffResponsePayload = SubscribeCheckoutDiffResponseMessage["payload"];
 type CheckoutDiffCachePayload = Omit<CheckoutDiffResponsePayload, "subscriptionId">;
 type ListTerminalsPayload = ListTerminalsResponse["payload"];
@@ -130,6 +133,17 @@ const RECONNECT_REPAIR_POLICIES: ReconnectRepairPolicy[] = [
     invalidate: ({ queryClient, serverId }) => {
       void queryClient.invalidateQueries({
         predicate: (query) => isQueryForServer(query.queryKey, "terminals", serverId),
+      });
+    },
+  },
+  {
+    domain: "missionControlEvents",
+    invalidate: ({ queryClient, serverId }) => {
+      void queryClient.invalidateQueries({ queryKey: missionControlEventsQueryKey(serverId) });
+      // M8 instruction ledger: a citing card closes a row, so the ledger
+      // refreshes with the same push that refreshes the feed.
+      void queryClient.invalidateQueries({
+        queryKey: missionControlInstructionsQueryKey(serverId),
       });
     },
   },
@@ -320,6 +334,12 @@ export function mountServerDataPushRouter(input: PushRouterInput): () => void {
       message,
     });
   });
+  const unsubscribeMissionControlEvents = input.client.on("mission_control_event", () => {
+    // The feed refetches from the per-host store; a push just marks this host dirty.
+    void input.queryClient.invalidateQueries({
+      queryKey: missionControlEventsQueryKey(input.serverId),
+    });
+  });
   let reconnectSubscriptionRepairs = reconnectSubscriptionRepairsByServerId.get(input.serverId);
   if (!reconnectSubscriptionRepairs) {
     reconnectSubscriptionRepairs = new Set();
@@ -341,6 +361,7 @@ export function mountServerDataPushRouter(input: PushRouterInput): () => void {
     unsubscribeCheckoutDiffUpdate();
     unsubscribeCheckoutDiffResponse();
     unsubscribeTerminalsChanged();
+    unsubscribeMissionControlEvents();
     for (const subscriptionId of activeCheckoutDiffSubscriptions.keys()) {
       unsubscribeCheckoutDiff(input.client, subscriptionId);
     }

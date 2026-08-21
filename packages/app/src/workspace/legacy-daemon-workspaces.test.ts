@@ -172,6 +172,7 @@ describe("buildLegacyDaemonWorkspaceSnapshot", () => {
     store.updateSessionServerInfo(SERVER_ID, {
       serverId: SERVER_ID,
       hostname: null,
+      missionControlHostAlias: null,
       version: "0.1.96",
     });
     store.setWorkspaces(SERVER_ID, snapshot.workspaces);
@@ -204,6 +205,7 @@ describe("buildLegacyDaemonWorkspaceSnapshot", () => {
     store.updateSessionServerInfo(SERVER_ID, {
       serverId: SERVER_ID,
       hostname: null,
+      missionControlHostAlias: null,
       version: "0.1.96",
     });
     let cancelled = false;

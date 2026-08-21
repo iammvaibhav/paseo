@@ -54,6 +54,7 @@ describe("createBrowserRecord", () => {
       browserId: "b1",
       url: "http://localhost:8081",
       title: "",
+      chrome: "full",
       isLoading: false,
       canGoBack: false,
       canGoForward: false,
@@ -62,6 +63,17 @@ describe("createBrowserRecord", () => {
       viewport: { mode: "responsive" },
       createdAt: 1000,
     });
+  });
+
+  it("accepts embedded chrome for chrome-less surfaces", () => {
+    const record = createBrowserRecord({
+      browserId: "b1",
+      initialUrl: "http://blrofc3:8765",
+      chrome: "embedded",
+      now: 1000,
+    });
+
+    expect(record.chrome).toBe("embedded");
   });
 });
 

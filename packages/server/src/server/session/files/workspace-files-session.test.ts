@@ -1,5 +1,6 @@
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -487,6 +488,30 @@ describe("WorkspaceFilesSession", () => {
     expect(message.payload.size).toBe(11);
   });
 
+  test("issues a zip download token for a directory", async () => {
+    const cwd = makeDir("workspace-files-dir-token-");
+    mkdirSync(join(cwd, "docs"), { recursive: true });
+    writeFileSync(join(cwd, "docs", "a.md"), "a");
+    const { subsystem, emitted } = makeSubsystem();
+
+    await subsystem.handleFileDownloadTokenRequest({
+      type: "file_download_token_request",
+      cwd,
+      path: "docs",
+      requestId: "req-dir-token",
+    });
+
+    expect(emitted).toHaveLength(1);
+    const message = emitted[0];
+    if (message.type !== "file_download_token_response") {
+      throw new Error(`expected file_download_token_response, got ${message.type}`);
+    }
+    expect(message.payload.error).toBeNull();
+    expect(typeof message.payload.token).toBe("string");
+    expect(message.payload.fileName).toBe("docs.zip");
+    expect(message.payload.mimeType).toBe("application/zip");
+  });
+
   test("rejects an empty download-token cwd with an error envelope", async () => {
     const { subsystem, emitted } = makeSubsystem();
 
@@ -572,5 +597,53 @@ describe("WorkspaceFilesSession", () => {
     expect(readFileSync(join(paseoHome, "uploads", "upload_req-upload", "notes.txt"), "utf8")).toBe(
       "hello world",
     );
+  });
+
+  test("writes a dropped file into a scoped explorer directory", async () => {
+    const { subsystem, emitted } = makeSubsystem();
+    const workspace = makeDir("workspace-files-write-");
+    mkdirSync(join(workspace, "src"), { recursive: true });
+
+    subsystem.handleFileExplorerWriteRequest({
+      type: "file.explorer.write.request",
+      cwd: workspace,
+      directoryPath: "src",
+      fileName: "notes.txt",
+      mimeType: "text/plain",
+      size: 11,
+      modifiedAt: "2026-05-02T00:00:00.000Z",
+      requestId: "req-write",
+    });
+    await subsystem.handleFileTransferFrame(
+      uploadFrame({
+        opcode: FileTransferOpcode.FileBegin,
+        requestId: "req-write",
+        metadata: {
+          mime: "text/plain",
+          size: 11,
+          encoding: "binary",
+          modifiedAt: "2026-05-02T00:00:00.000Z",
+          fileName: "notes.txt",
+        },
+      }),
+    );
+    await subsystem.handleFileTransferFrame(
+      uploadFrame({
+        opcode: FileTransferOpcode.FileChunk,
+        requestId: "req-write",
+        payload: new TextEncoder().encode("hello world"),
+      }),
+    );
+    await subsystem.handleFileTransferFrame(
+      uploadFrame({ opcode: FileTransferOpcode.FileEnd, requestId: "req-write" }),
+    );
+
+    const message = emitted.find((entry) => entry.type === "file.explorer.write.response");
+    if (message?.type !== "file.explorer.write.response") {
+      throw new Error("expected a file.explorer.write.response message");
+    }
+    expect(message.payload.error).toBeNull();
+    expect(message.payload.path).toBe("src/notes.txt");
+    expect(readFileSync(join(workspace, "src", "notes.txt"), "utf8")).toBe("hello world");
   });
 });

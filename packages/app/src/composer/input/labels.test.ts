@@ -33,6 +33,7 @@ describe("composer input labels", () => {
         canPressLoadingButton: true,
         defaultActionQueues: false,
         defaultSendBehavior: "interrupt",
+        sendsOutOfBand: false,
         isAgentRunning: true,
         t,
       }),
@@ -43,6 +44,7 @@ describe("composer input labels", () => {
         canPressLoadingButton: false,
         defaultActionQueues: true,
         defaultSendBehavior: "queue",
+        sendsOutOfBand: false,
         isAgentRunning: true,
         t,
       }),
@@ -53,6 +55,7 @@ describe("composer input labels", () => {
         canPressLoadingButton: false,
         defaultActionQueues: false,
         defaultSendBehavior: "interrupt",
+        sendsOutOfBand: false,
         isAgentRunning: true,
         t,
       }),
@@ -63,6 +66,7 @@ describe("composer input labels", () => {
         canPressLoadingButton: false,
         defaultActionQueues: false,
         defaultSendBehavior: "steer",
+        sendsOutOfBand: false,
         isAgentRunning: true,
         t,
       }),
@@ -73,7 +77,22 @@ describe("composer input labels", () => {
         canPressLoadingButton: false,
         defaultActionQueues: false,
         defaultSendBehavior: "interrupt",
+        sendsOutOfBand: false,
         isAgentRunning: false,
+        t,
+      }),
+    ).toBe("Send message");
+  });
+
+  it("does not promise an interrupt for out-of-band commands", () => {
+    expect(
+      resolveSubmitAccessibilityLabel({
+        submitButtonAccessibilityLabel: undefined,
+        canPressLoadingButton: false,
+        defaultActionQueues: false,
+        defaultSendBehavior: "interrupt",
+        sendsOutOfBand: true,
+        isAgentRunning: true,
         t,
       }),
     ).toBe("Send message");
@@ -86,6 +105,7 @@ describe("composer input labels", () => {
         canPressLoadingButton: false,
         defaultActionQueues: false,
         defaultSendBehavior: "interrupt",
+        sendsOutOfBand: false,
         isAgentRunning: false,
         t,
       }),

@@ -1,8 +1,8 @@
 import type { AgentSnapshotPayload } from "@getpaseo/protocol/messages";
 import type { AgentPermissionRequest } from "@getpaseo/protocol/agent-types";
 import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
+import type { Agent, SessionState } from "@/stores/session-store";
 import type { ActiveTurnIdentity } from "@/timeline/turn-liveness";
-import type { Agent } from "@/stores/session-store";
 
 function normalizeActiveTurn(
   snapshot: AgentSnapshotPayload,
@@ -70,6 +70,7 @@ export function projectAgentSnapshot(agent: Agent): AgentSnapshotPayload {
     requiresAttention: agent.requiresAttention ?? false,
     attentionReason: agent.attentionReason ?? null,
     attentionTimestamp: agent.attentionTimestamp?.toISOString() ?? null,
+    ...(agent.bucket ? { bucket: agent.bucket } : {}),
     archivedAt: agent.archivedAt?.toISOString() ?? null,
   };
 }
@@ -109,16 +110,42 @@ export function normalizeAgentSnapshot(snapshot: AgentSnapshotPayload, serverId:
     lastUsage: snapshot.lastUsage,
     lastError: snapshot.lastError ?? null,
     title: snapshot.title ?? null,
+    name: snapshot.name ?? null,
+    shortDescription: snapshot.shortDescription ?? null,
     cwd: snapshot.cwd,
     workspaceId: snapshot.workspaceId,
     model: snapshot.model ?? null,
     features: snapshot.features,
     thinkingOptionId: snapshot.thinkingOptionId ?? null,
+    effectiveThinkingOptionId:
+      snapshot.effectiveThinkingOptionId ??
+      snapshot.runtimeInfo?.thinkingOptionId ??
+      snapshot.thinkingOptionId ??
+      null,
     requiresAttention: snapshot.requiresAttention ?? false,
     attentionReason: snapshot.attentionReason ?? null,
     attentionTimestamp,
+    stoppedBy: snapshot.stoppedBy ?? null,
+    bucket: snapshot.bucket,
     archivedAt,
     parentAgentId,
     labels: snapshot.labels,
+    providerUnavailable: snapshot.providerUnavailable === true,
   };
+}
+
+/**
+ * Resolve an agent snapshot from a session, spanning both directories.
+ *
+ * Active, project-placed agents live in `agents`; agents hydrated without a
+ * project placement (and archived ones) live in `agentDetails` — see
+ * `storeFetchedAgentDetail`. Callers that render or gate on an agent must
+ * consult both, otherwise a live agent looks statusless for the whole run.
+ */
+export function resolveSessionAgent(
+  session: Pick<SessionState, "agents" | "agentDetails"> | undefined,
+  agentId: string | undefined,
+): Agent | null {
+  if (!agentId) return null;
+  return session?.agents.get(agentId) ?? session?.agentDetails.get(agentId) ?? null;
 }

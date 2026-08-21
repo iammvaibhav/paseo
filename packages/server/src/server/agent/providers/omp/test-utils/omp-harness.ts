@@ -15,6 +15,7 @@ import type { PaseoToolCatalog } from "../../../tools/types.js";
 import {
   OmpAgentClient,
   OmpAgentSession,
+  type OmpAgentClientOptions,
   type OmpNoTurnScheduler,
   type OmpProviderIdleScheduler,
 } from "../agent.js";
@@ -71,11 +72,13 @@ export class OmpHarness {
       providerIdleScheduler?: OmpProviderIdleScheduler;
       noTurnScheduler?: OmpNoTurnScheduler;
       usagePollScheduler?: OmpUsagePollScheduler;
+      runtimeSettings?: OmpAgentClientOptions["runtimeSettings"];
     } = {},
   ) {
     this.client = new OmpAgentClient({
       logger: pino({ level: "silent" }),
       runtime: this.omp,
+      runtimeSettings: options.runtimeSettings,
       providerIdleScheduler: options.providerIdleScheduler,
       noTurnScheduler: options.noTurnScheduler,
       usagePollScheduler: options.usagePollScheduler,
@@ -84,6 +87,13 @@ export class OmpHarness {
 
   queueCommands(commands: OmpRpcSlashCommand[]): void {
     this.omp.queueCommands(commands);
+  }
+  getSession(): OmpAgentSession {
+    return this.requireSession();
+  }
+
+  isAvailable(): Promise<boolean> {
+    return this.client.isAvailable();
   }
 
   failEventSubscription(error: Error): void {
@@ -132,6 +142,37 @@ export class OmpHarness {
     argv: string[];
   } {
     const launch = this.omp.recordedLaunches[0];
+    if (!launch) throw new Error("OMP harness has not launched");
+    return {
+      cwd: launch.cwd,
+      protocolMode: launch.protocolMode,
+      modeId: launch.modeId,
+      ...(launch.session ? { session: launch.session } : {}),
+      argv: launch.argv,
+    };
+  }
+
+  switchSessionRequests(): string[] {
+    return this.omp.allSessions().flatMap((session) => session.switchSessionRequests);
+  }
+
+  recordedLaunchCount(): number {
+    return this.omp.recordedLaunches.length;
+  }
+
+  latestLaunchHasSessionFlag(): boolean {
+    const launch = this.omp.recordedLaunches.at(-1);
+    return Boolean(launch?.session);
+  }
+
+  latestLaunchConfiguration(): {
+    cwd: string;
+    protocolMode?: string;
+    modeId?: string;
+    session?: string;
+    argv: string[];
+  } {
+    const launch = this.omp.recordedLaunches.at(-1);
     if (!launch) throw new Error("OMP harness has not launched");
     return {
       cwd: launch.cwd,
@@ -204,6 +245,26 @@ export class OmpHarness {
     return { completion };
   }
 
+  /**
+   * OMP reports the turn as over without ever having reported it as started.
+   * The adapter has no `activeTurnStarted` to wait on, so this is the shape
+   * that used to drop the terminal event and hang the agent at `running`.
+   */
+  async startPromptWithAgentEndBeforeTurnStart(
+    input: string,
+    output: string,
+  ): Promise<{ completion: Promise<unknown> }> {
+    const session = this.requireSession();
+    const promptStarted = this.omp.latestSession().nextPrompt();
+    const completion = session.run(input);
+    await promptStarted;
+    const runtime = this.omp.latestSession();
+    runtime.acceptPrompt(input, "user-1");
+    runtime.streamAssistantText(output);
+    runtime.finishTurn();
+    return { completion };
+  }
+
   async runPromptAfterExtensionNotice(
     input: string,
     output: string,
@@ -245,6 +306,35 @@ export class OmpHarness {
     runtime.state = { ...runtime.state, ...providerState };
     runtime.finishTurn();
     return { completion: run };
+  }
+
+  async startPromptWithTerminalAssistantFailure(
+    input: string,
+    failure: Extract<OmpAgentMessage, { role: "assistant" }>,
+    providerState: { isStreaming: boolean; isCompacting: boolean } = {
+      isStreaming: true,
+      isCompacting: false,
+    },
+  ): Promise<{ completion: Promise<unknown> }> {
+    const session = this.requireSession();
+    const promptStarted = this.omp.latestSession().nextPrompt();
+    const completion = session.run(input);
+    await promptStarted;
+    const runtime = this.omp.latestSession();
+    runtime.beginTurn();
+    runtime.acceptPrompt(input, "user-1");
+    runtime.state = { ...runtime.state, ...providerState };
+    runtime.emit({ type: "message_end", message: failure });
+    runtime.finishTurn(failure);
+    return { completion };
+  }
+
+  failedTurnCount(): number {
+    return this.events.filter((event) => event.type === "turn_failed").length;
+  }
+
+  failedTurnErrors(): string[] {
+    return this.events.flatMap((event) => (event.type === "turn_failed" ? [event.error] : []));
   }
 
   waitForProviderStateChecks(count: number): Promise<void> {
@@ -382,6 +472,44 @@ export class OmpHarness {
     return { completedBeforeTurn, result: await run };
   }
 
+  /**
+   * Reproduces the false local-only race: OMP ack says local-only and the
+   * foreground turn completes, then the real native user echo arrives later on
+   * an autonomous turn after `activeClientMessageId` was cleared.
+   */
+  async runPromptAfterCompletedFalseLocalOnly(
+    input: string,
+    output: string,
+    clientMessageId: string,
+  ): Promise<{ completedBeforeNativeEcho: boolean; result: unknown }> {
+    const session = this.requireSession();
+    const runtime = this.omp.latestSession();
+    runtime.promptAck = { agentInvoked: false };
+    const promptStarted = runtime.nextPrompt();
+    const run = session.run(input, { clientMessageId });
+    let completed = false;
+    void run.then(
+      () => {
+        completed = true;
+        return undefined;
+      },
+      () => {
+        completed = true;
+        return undefined;
+      },
+    );
+    await promptStarted;
+    await waitForImmediate();
+    await waitForImmediate();
+    const completedBeforeNativeEcho = completed;
+    runtime.beginTurn();
+    runtime.acceptPrompt(input, "user-native-delayed");
+    runtime.streamAssistantText(output);
+    runtime.finishTurn();
+    await waitForImmediate();
+    return { completedBeforeNativeEcho, result: await run };
+  }
+
   async runAutonomousTurn(output: string): Promise<void> {
     const runtime = this.omp.latestSession();
     runtime.beginTurn();
@@ -408,6 +536,10 @@ export class OmpHarness {
 
   completedTurnCount(): number {
     return this.events.filter((event) => event.type === "turn_completed").length;
+  }
+
+  streamEvents(): AgentStreamEvent[] {
+    return [...this.events];
   }
 
   usageUpdates() {
@@ -442,6 +574,13 @@ export class OmpHarness {
     return await this.requireSession().listCommands();
   }
 
+  async runOutOfBand(prompt: string): Promise<boolean> {
+    const handler = this.requireSession().tryHandleOutOfBand(prompt);
+    if (!handler) return false;
+    await handler.run({ emit: (event) => this.events.push(event) });
+    return true;
+  }
+
   async setMode(modeId: string) {
     return await this.requireSession().setMode(modeId);
   }
@@ -472,6 +611,10 @@ export class OmpHarness {
 
   wasAborted(): boolean {
     return this.omp.latestSession().abortRequested;
+  }
+
+  failNextAbort(error: Error): void {
+    this.omp.latestSession().failNextAbort(error);
   }
 
   runtime() {
@@ -511,6 +654,10 @@ export class OmpHarness {
 
   isClosed(): boolean {
     return this.omp.latestSession().closed;
+  }
+
+  isRuntimeAlive(): boolean {
+    return this.requireSession().isRuntimeAlive();
   }
 
   async waitForSubscriptionFallback(): Promise<string[]> {

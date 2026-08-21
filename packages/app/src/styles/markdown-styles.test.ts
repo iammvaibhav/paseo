@@ -56,6 +56,29 @@ describe("createMarkdownStyles", () => {
     });
   });
 
+  it("lets inline and block code wrap so long tokens cannot widen narrow containers", () => {
+    const styles = createMarkdownStyles(darkTheme);
+    const compactStyles = createCompactMarkdownStyles(darkTheme);
+
+    for (const target of [styles, compactStyles]) {
+      expect(target.code_inline).toMatchObject({
+        flexShrink: 1,
+        minWidth: 0,
+        overflowWrap: "anywhere",
+      });
+      expect(target.code_block).toMatchObject({
+        flexShrink: 1,
+        minWidth: 0,
+        overflowWrap: "anywhere",
+      });
+      expect(target.fence).toMatchObject({
+        flexShrink: 1,
+        minWidth: 0,
+        overflowWrap: "anywhere",
+      });
+    }
+  });
+
   it("keeps assistant markdown text selectable on web", () => {
     const styles = createMarkdownStyles(darkTheme);
 

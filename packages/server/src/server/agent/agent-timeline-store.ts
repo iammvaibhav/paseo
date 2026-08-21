@@ -176,6 +176,52 @@ export class InMemoryAgentTimelineStore {
     return row ? cloneRow(row) : null;
   }
 
+  /**
+   * Oldest submitted user prompt that still lacks provider identity. Used when a
+   * provider echo arrives without `clientMessageId` (e.g. OMP false local-only
+   * race) so FIFO same-text submissions still reconcile correctly.
+   */
+  findOldestUnenrichedSubmittedUserMessageByText(
+    agentId: string,
+    text: string,
+  ): AgentTimelineRow | null {
+    const row = this.requireState(agentId).rows.find(
+      (candidate) =>
+        candidate.item.type === "user_message" &&
+        candidate.item.clientMessageId !== undefined &&
+        candidate.item.text === text &&
+        candidate.providerMessageId === undefined,
+    );
+    return row ? cloneRow(row) : null;
+  }
+
+  /**
+   * Remove committed rows by seq (e.g. digest ack-drop retraction). Returns the
+   * removed rows. Seq identity is preserved — late observers see a gap rather
+   * than renumbered rows, so cursors stay valid.
+   */
+  removeRows(agentId: string, seqs: readonly number[]): AgentTimelineRow[] {
+    if (seqs.length === 0) {
+      return [];
+    }
+    const state = this.requireState(agentId);
+    const drop = new Set(seqs);
+    const removed: AgentTimelineRow[] = [];
+    const remaining: AgentTimelineRow[] = [];
+    for (const row of state.rows) {
+      if (drop.has(row.seq)) {
+        removed.push(row);
+      } else {
+        remaining.push(row);
+      }
+    }
+    if (removed.length === 0) {
+      return [];
+    }
+    state.rows = remaining;
+    return removed.map(cloneRow);
+  }
+
   enrichSubmittedUserMessage(
     agentId: string,
     clientMessageId: string,

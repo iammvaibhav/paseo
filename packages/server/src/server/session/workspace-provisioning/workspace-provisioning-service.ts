@@ -316,11 +316,11 @@ export function createWorkspaceProvisioningService(deps: {
   ): Promise<string> {
     if (input.createdWorktree) return input.createdWorktree.workspace.workspaceId;
     if (input.requestedWorkspaceId) return input.requestedWorkspaceId;
-    return (
-      await createWorkspaceForDirectory(input.cwd, input.initialTitle, undefined, {
-        expectsInitialAgent: true,
-      })
-    ).workspaceId;
+    const existing = await findOrCreateWorkspaceForDirectory(input.cwd);
+    if (input.initialTitle && !existing.title) {
+      await workspaceRegistry.upsert({ ...existing, title: input.initialTitle.trim() });
+    }
+    return existing.workspaceId;
   }
 
   async function resolveRestoredAutoArchiveChangeRequestUrl(

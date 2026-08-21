@@ -12,6 +12,11 @@ import {
   type ProjectDescriptor,
   type WorkspaceDescriptor,
 } from "@/stores/session-store";
+import {
+  isSystemOwnedWorkspace,
+  type WorkspaceAgentForSidebar,
+} from "@/projects/workspace-structure";
+import { useMissionControlVerbose } from "@/mission-control/use-mission-control-verbose";
 import { buildProjects, type ProjectHost, type ProjectSummary } from "@/utils/projects";
 
 export interface ProjectHostError {
@@ -76,6 +81,7 @@ function toProjectHostRuntimeState(
 function selectProjectHostReplicas(
   hosts: readonly { serverId: string; label: string }[],
   enabled: boolean,
+  hideSystemOwnedWorkspaces: boolean,
 ): (state: ReturnType<typeof useSessionStore.getState>) => ProjectHostReplica[] {
   if (!enabled) {
     return () => EMPTY_PROJECT_HOST_REPLICAS;
@@ -83,10 +89,40 @@ function selectProjectHostReplicas(
   return (state) =>
     hosts.map((host) => {
       const session = state.sessions[host.serverId];
+      const allWorkspaces = session?.workspaces ?? undefined;
+      let workspaces: WorkspaceDescriptor[];
+      if (!allWorkspaces) {
+        workspaces = [];
+      } else if (!hideSystemOwnedWorkspaces) {
+        workspaces = Array.from(allWorkspaces.values());
+      } else {
+        // Mission Control verbose gate: system-owned workspaces (Commander's
+        // reserved home dir + machinery-only workspaces) are hidden from
+        // project lists and search-like pickers while verbose is OFF.
+        const agentsByWorkspaceId = new Map<string, WorkspaceAgentForSidebar[]>();
+        for (const agent of session?.agents?.values() ?? []) {
+          if (!agent.workspaceId) {
+            continue;
+          }
+          const existing = agentsByWorkspaceId.get(agent.workspaceId);
+          if (existing) {
+            existing.push(agent);
+          } else {
+            agentsByWorkspaceId.set(agent.workspaceId, [agent]);
+          }
+        }
+        workspaces = Array.from(allWorkspaces.values()).filter(
+          (workspace) =>
+            !isSystemOwnedWorkspace({
+              agentsInWorkspace: agentsByWorkspaceId.get(workspace.id) ?? [],
+              workspaceDirectory: workspace.workspaceDirectory,
+            }),
+        );
+      }
       return {
         serverId: host.serverId,
         serverName: host.label,
-        workspaces: Array.from(session?.workspaces.values() ?? []),
+        workspaces,
         projects: Array.from(session?.projects.values() ?? []),
       };
     });
@@ -95,6 +131,7 @@ function selectProjectHostReplicas(
 export function deriveProjectsFromReplica(input: {
   replicas: readonly ProjectHostReplica[];
   runtimeStates: readonly ProjectHostRuntimeState[];
+  hideSystemOwnedWorkspaces?: boolean;
 }): DerivedProjectsResult {
   const runtimeByServerId = new Map(
     input.runtimeStates.map((state) => [state.serverId, state] as const),
@@ -123,7 +160,13 @@ export function deriveProjectsFromReplica(input: {
   });
 
   return {
-    ...buildProjects({ hosts }),
+    ...buildProjects({
+      hosts,
+      // Same Mission Control verbose gate the replica selector applied — the
+      // grouped-project derivation must not re-hide system-owned workspaces
+      // when verbose is ON (its own default is "hidden").
+      hideSystemOwnedWorkspaces: input.hideSystemOwnedWorkspaces,
+    }),
     hostErrors,
     isLoading: input.runtimeStates.some((state) => state.isLoading),
     isFetching: input.runtimeStates.some((state) => state.isFetching),
@@ -164,19 +207,26 @@ export function useProjects(options: UseProjectsOptions = {}): UseProjectsResult
   const enabled = options.enabled ?? true;
   const hosts = useHosts();
   const runtime = getHostRuntimeStore();
+  const [verbose] = useMissionControlVerbose();
+  const hideSystemOwnedWorkspaces = !verbose;
   const serverIds = useMemo(
     () => (enabled ? hosts.map((host) => host.serverId) : []),
     [enabled, hosts],
   );
   const replicaSelector = useMemo(
-    () => selectProjectHostReplicas(hosts, enabled),
-    [enabled, hosts],
+    () => selectProjectHostReplicas(hosts, enabled, hideSystemOwnedWorkspaces),
+    [enabled, hideSystemOwnedWorkspaces, hosts],
   );
   const replicas = useStoreWithEqualityFn(useSessionStore, replicaSelector, equal);
   const runtimeStates = useProjectHostRuntimeStates(serverIds, enabled);
   const derived = useMemo(
-    () => deriveProjectsFromReplica({ replicas, runtimeStates }),
-    [replicas, runtimeStates],
+    () =>
+      deriveProjectsFromReplica({
+        replicas,
+        runtimeStates,
+        hideSystemOwnedWorkspaces,
+      }),
+    [hideSystemOwnedWorkspaces, replicas, runtimeStates],
   );
   const refetch = useCallback(() => {
     if (!enabled) return;

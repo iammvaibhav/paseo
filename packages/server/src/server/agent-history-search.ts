@@ -14,14 +14,13 @@ import {
 } from "@getpaseo/protocol/search/text-match";
 
 /**
- * History search ranks what the daemon already knows about a session: the four
- * names attached to it. Transcripts are deliberately out — they are unbounded,
- * and a partial-transcript index would answer "not found" for sessions that do
- * contain the phrase, which is worse than never claiming to search them.
+ * History search ranks session names first, then transcript hits from the
+ * FTS index. A title match still beats a body match; a body-only hit is how
+ * "search across everything" finds a PR URL that never made it into the title.
  *
- * Field order is the tie-break order. Workspace and agent titles are what
- * people actually recall; a project name matches every session in the repo, so
- * it ranks last and only decides ties.
+ * Field order is the tie-break order among names. Workspace and agent titles
+ * are what people actually recall; a project name matches every session in the
+ * repo, so it ranks last and only decides ties.
  */
 
 export interface AgentHistorySearchCandidate {
@@ -185,4 +184,72 @@ export function rankAgentHistoryCandidates<T extends AgentHistorySearchCandidate
     return compareTies(left.candidate, right.candidate);
   });
   return ranked;
+}
+
+/** Pushes transcript-only hits behind typical metadata scores (each < 10k). */
+export const TRANSCRIPT_SCORE_OFFSET = 10_000;
+
+export interface TranscriptHistoryHit {
+  agentId: string;
+  rank: number;
+  snippet: string;
+}
+
+export interface RankedAgentHistoryCandidateWithSnippet<
+  T extends AgentHistorySearchCandidate,
+> extends RankedAgentHistoryCandidate<T> {
+  searchSnippet?: string;
+}
+
+/**
+ * Union of the name ranker and FTS hits. Metadata score wins when both match;
+ * the snippet still rides along so the row can show why the body also hit.
+ * Transcript-only rows sort after names, then by bm25 (more negative is better).
+ * Hits whose agent is not in `candidates` are ignored — History already chose
+ * the set, including archived sessions.
+ */
+export function rankAgentHistoryWithTranscripts<T extends AgentHistorySearchCandidate>(
+  query: string,
+  candidates: readonly T[],
+  transcriptHits: readonly TranscriptHistoryHit[],
+  compareTies: (left: T, right: T) => number,
+): RankedAgentHistoryCandidateWithSnippet<T>[] {
+  const metadataRanked = rankAgentHistoryCandidates(query, candidates, compareTies);
+  const candidateById = new Map(candidates.map((candidate) => [candidate.agent.id, candidate]));
+  const snippetById = new Map<string, TranscriptHistoryHit>();
+  for (const hit of transcriptHits) {
+    if (!candidateById.has(hit.agentId) || snippetById.has(hit.agentId)) continue;
+    snippetById.set(hit.agentId, hit);
+  }
+
+  const ranked: RankedAgentHistoryCandidateWithSnippet<T>[] = [];
+  const seen = new Set<string>();
+  for (const row of metadataRanked) {
+    const id = row.candidate.agent.id;
+    seen.add(id);
+    const hit = snippetById.get(id);
+    ranked.push({
+      candidate: row.candidate,
+      searchScore: row.searchScore,
+      ...(hit?.snippet ? { searchSnippet: hit.snippet } : {}),
+    });
+  }
+
+  const transcriptOnly: RankedAgentHistoryCandidateWithSnippet<T>[] = [];
+  for (const hit of snippetById.values()) {
+    if (seen.has(hit.agentId)) continue;
+    const candidate = candidateById.get(hit.agentId);
+    if (!candidate) continue;
+    transcriptOnly.push({
+      candidate,
+      searchScore: TRANSCRIPT_SCORE_OFFSET + hit.rank,
+      ...(hit.snippet ? { searchSnippet: hit.snippet } : {}),
+    });
+  }
+  transcriptOnly.sort((left, right) => {
+    if (left.searchScore !== right.searchScore) return left.searchScore - right.searchScore;
+    return compareTies(left.candidate, right.candidate);
+  });
+
+  return [...ranked, ...transcriptOnly];
 }

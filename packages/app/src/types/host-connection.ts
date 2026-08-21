@@ -50,6 +50,14 @@ export interface HostProfile {
   lifecycle: HostLifecycle;
   connections: HostConnection[];
   preferredConnectionId: string | null;
+  /** SSH destination (`user@host` or ssh-config alias) used to open this host's workspaces in a local editor via Remote SSH. */
+  sshHost?: string;
+  /**
+   * Base URL of a VS Code Web / code-server instance on this host
+   * (e.g. `http://blrofc3:8765`). Used by “Open → VS Code Web” to open the
+   * workspace folder in an in-app browser tab.
+   */
+  browserEditorUrl?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -327,6 +335,8 @@ const StoredHostProfileSchema = z.strictObject({
   lifecycle: z.strictObject({}).optional(),
   connections: z.array(StoredHostConnectionSchema).min(1),
   preferredConnectionId: z.string().nullable().optional(),
+  sshHost: z.string().optional(),
+  browserEditorUrl: z.string().optional(),
   createdAt: z.string().datetime({ offset: true }).optional(),
   updatedAt: z.string().datetime({ offset: true }).optional(),
 });
@@ -401,6 +411,10 @@ export function normalizeStoredHostProfile(entry: unknown): HostProfile | null {
       ? record.preferredConnectionId
       : (connections[0]?.id ?? null);
 
+  const sshHost = typeof record.sshHost === "string" ? record.sshHost.trim() : "";
+  const browserEditorUrl =
+    typeof record.browserEditorUrl === "string" ? record.browserEditorUrl.trim() : "";
+
   return {
     serverId,
     label,
@@ -408,6 +422,8 @@ export function normalizeStoredHostProfile(entry: unknown): HostProfile | null {
     lifecycle: defaultLifecycle(),
     connections,
     preferredConnectionId,
+    ...(sshHost ? { sshHost } : {}),
+    ...(browserEditorUrl ? { browserEditorUrl } : {}),
     createdAt: record.createdAt ?? now,
     updatedAt: record.updatedAt ?? now,
   };

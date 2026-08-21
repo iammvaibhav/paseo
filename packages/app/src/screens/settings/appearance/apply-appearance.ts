@@ -31,6 +31,7 @@ export interface AppearanceInput {
 function scaleFontSize(uiBaseSize: number, codeSize: number): Theme["fontSize"] {
   const r = uiBaseSize / FONT_SIZE.base;
   return {
+    xs: Math.round(FONT_SIZE.xs * r),
     sm: Math.round(FONT_SIZE.sm * r),
     base: Math.round(FONT_SIZE.base * r),
     lg: Math.round(FONT_SIZE.lg * r),

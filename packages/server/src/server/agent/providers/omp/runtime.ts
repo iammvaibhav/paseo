@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 import type {
   OmpAgentMessage,
   OmpModel,
@@ -13,6 +15,19 @@ import type {
   OmpThinkingLevel,
 } from "./rpc-types.js";
 import type { ProviderRuntimeSettings } from "../../provider-launch-config.js";
+
+/**
+ * Config overlay that pins omp's harness-utility feature gates off
+ * (allowlist-overlay.yml). omp registers learn/manage_skill (autolearn),
+ * checkpoint/rewind (checkpoint) and the SDK-injected tts custom tool
+ * (speechgen) OUTSIDE the builtin catalog, so `--no-tools`/`--tools` cannot
+ * remove them; the overlay forces the gates off for sessions that carry a
+ * toolAllowlist. Loaded via `--config`, which outranks the user's global
+ * config.yml for this process only.
+ */
+export const TOOL_ALLOWLIST_CONFIG_OVERLAY = fileURLToPath(
+  new URL("./allowlist-overlay.yml", import.meta.url),
+);
 
 export interface OmpRuntimeLaunch {
   cwd: string;
@@ -39,6 +54,8 @@ export interface OmpStartSessionInput {
   session?: string;
   noSession?: boolean;
   systemPrompt?: string;
+  systemPromptMode?: "append" | "replace";
+  toolAllowlist?: string[];
   extraArgs?: string[];
 }
 
@@ -50,12 +67,24 @@ export interface OmpRuntimeSession {
   ): Promise<OmpPromptAck>;
   compact(customInstructions?: string): Promise<void>;
   setAutoCompaction(enabled: boolean): Promise<void>;
-  abort(): Promise<void>;
+  abort(timeoutMs?: number): Promise<void>;
   getState(): Promise<OmpSessionState>;
   getMessages(): Promise<OmpAgentMessage[]>;
   getAvailableModels(timeoutMs?: number | null): Promise<OmpModel[]>;
   setModel(provider: string, modelId: string): Promise<OmpModel>;
   setThinkingLevel(level: OmpThinkingLevel): Promise<void>;
+  /**
+   * Reset the session in place: mints a fresh session file in the process's
+   * session directory and clears conversational state. Used by the warm pool
+   * to hand a booted process to a new agent create.
+   */
+  newSession(): Promise<void>;
+  /**
+   * Attach an existing session file to the running process, replacing its
+   * current session. Used by resume to hand a claimed warm process the
+   * persisted session.
+   */
+  switchSession(sessionPath: string): Promise<void>;
   getSessionStats(): Promise<OmpSessionStats>;
   getCommands(): Promise<OmpRpcSlashCommand[]>;
   setSubagentSubscription(level: OmpSubagentSubscriptionLevel): Promise<void>;
@@ -143,9 +172,76 @@ function appendOmpLaunchArgs(
     argv.push("--session", session.session);
   }
   if (systemPrompt) {
-    argv.push("--append-system-prompt", systemPrompt);
+    // `--system-prompt` replaces omp's coding harness entirely (renders
+    // custom-system-prompt.md); `--append-system-prompt` layers under it.
+    if (session.systemPromptMode === "replace") {
+      argv.push("--system-prompt", systemPrompt);
+    } else {
+      argv.push("--append-system-prompt", systemPrompt);
+    }
+  }
+  if (session.toolAllowlist?.length) {
+    // omp's `--tools` is the selective allowlist, but it only accepts builtin
+    // tool names (validation at parse time throws on anything else). Paseo
+    // host tools are injected over RPC and filtered server-side; when the
+    // allowlist holds no builtin names, `--no-tools` drops every builtin so
+    // only the allowlisted host tools remain.
+    const builtinTools = session.toolAllowlist.filter((name) => OMP_BUILTIN_TOOL_NAMES.has(name));
+    if (builtinTools.length > 0) {
+      argv.push("--tools", builtinTools.join(","));
+    } else {
+      argv.push("--no-tools");
+    }
+    // Harness-utility tools leak past `--no-tools`/`--tools` because they are
+    // not builtins: learn/manage_skill register when autolearn.enabled,
+    // checkpoint/rewind when checkpoint.enabled, and the SDK injects the tts
+    // custom tool whenever speechgen.enabled (no whitelist check at all — see
+    // omp sdk.ts). Pin those gates off with a --config overlay so an
+    // allowlist session exposes exactly its allowlisted tools (live incident:
+    // the Commander session exposed manage_skill/learn/rewind/tts and called
+    // tts twice despite --no-tools).
+    argv.push("--config", TOOL_ALLOWLIST_CONFIG_OVERLAY);
   }
 }
+
+/**
+ * omp's builtin tool names (`--tools` accepts only these; mirrors
+ * `@oh-my-pi/pi-coding-agent/src/tools/builtin-names.ts`). Keep in sync when
+ * omp adds or removes a builtin.
+ */
+const OMP_BUILTIN_TOOL_NAMES = new Set([
+  "read",
+  "bash",
+  "edit",
+  "ast_grep",
+  "ast_edit",
+  "ask",
+  "debug",
+  "eval",
+  "github",
+  "glob",
+  "grep",
+  "lsp",
+  "inspect_image",
+  "browser",
+  "computer",
+  "checkpoint",
+  "rewind",
+  "security_scan",
+  "task",
+  "hub",
+  "todo",
+  "web_search",
+  "write",
+  "memory_edit",
+  "retain",
+  "recall",
+  "reflect",
+  "learn",
+  "manage_skill",
+  "yield",
+  "goal",
+]);
 
 function hasModeFlag(argv: string[]): boolean {
   for (let i = 0; i < argv.length; i += 1) {

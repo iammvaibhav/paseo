@@ -434,8 +434,24 @@ function mergeModelAdditions(
   );
 }
 
+/**
+ * Every optional `AgentSession` method the wrapper must mention. Skipping one is
+ * invisible at runtime — the property is just `undefined` and callers quietly
+ * take their fallback path. Requiring the key (while still allowing an
+ * `undefined` value) turns the next omission into a build error.
+ */
+type OptionalAgentSessionMethod = keyof {
+  [K in keyof AgentSession as undefined extends AgentSession[K]
+    ? NonNullable<AgentSession[K]> extends (...args: never[]) => unknown
+      ? K
+      : never
+    : never]: unknown;
+};
+
+type WrappedAgentSession = AgentSession & Record<OptionalAgentSessionMethod, unknown>;
+
 export function wrapSessionProvider(provider: AgentProvider, inner: AgentSession): AgentSession {
-  return {
+  const wrapped: WrappedAgentSession = {
     provider,
     id: inner.id,
     capabilities: inner.capabilities,
@@ -458,6 +474,7 @@ export function wrapSessionProvider(provider: AgentProvider, inner: AgentSession
     respondToPermission: (requestId, response) => inner.respondToPermission(requestId, response),
     describePersistence: () => mapPersistenceHandle(provider, inner.describePersistence()),
     interrupt: () => inner.interrupt(),
+    isRuntimeAlive: inner.isRuntimeAlive?.bind(inner),
     close: () => inner.close(),
     listCommands: inner.listCommands?.bind(inner),
     setModel: inner.setModel?.bind(inner),
@@ -467,7 +484,9 @@ export function wrapSessionProvider(provider: AgentProvider, inner: AgentSession
     revertFiles: inner.revertFiles?.bind(inner),
     revertBoth: inner.revertBoth?.bind(inner),
     tryHandleOutOfBand: inner.tryHandleOutOfBand?.bind(inner),
+    steerActiveTurn: inner.steerActiveTurn?.bind(inner),
   };
+  return wrapped;
 }
 
 function wrapClientProvider(

@@ -26,6 +26,8 @@ function createWorkspaceDescriptor(input: Partial<WorkspaceDescriptor> = {}): Wo
     diffStat: null,
     scripts: [],
     statusEnteredAt: null,
+    activityAt: null,
+    createdAt: null,
     ...input,
     archivingAt: input.archivingAt ?? null,
   };

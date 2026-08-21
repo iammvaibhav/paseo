@@ -193,6 +193,127 @@ describe("user message identity", () => {
       },
     ]);
   });
+
+  it("carries the machinery classification from a canonical timeline row", () => {
+    const timestamp = new Date("2026-07-27T10:00:00.000Z");
+    const result = applyStreamEvent({
+      tail: [],
+      head: [],
+      event: {
+        type: "timeline",
+        provider: "omp",
+        item: {
+          type: "user_message",
+          text: "You've been quiet for a while. Post a one-line report_status.",
+          classification: "machinery",
+        },
+      },
+      timestamp,
+    });
+
+    const user = [...result.tail, ...result.head].find(
+      (item): item is Extract<StreamItem, { kind: "user_message" }> => item.kind === "user_message",
+    );
+    expect(user).toMatchObject({
+      kind: "user_message",
+      text: "You've been quiet for a while. Post a one-line report_status.",
+      classification: "machinery",
+    });
+  });
+
+  it("treats an unclassified canonical row as an instruction (legacy safety: never hidden)", () => {
+    const result = applyStreamEvent({
+      tail: [],
+      head: [],
+      event: {
+        type: "timeline",
+        provider: "omp",
+        item: { type: "user_message", text: "Direction change: ship the fix.", messageId: "m-1" },
+      },
+      timestamp: new Date("2026-07-27T10:00:01.000Z"),
+    });
+
+    const user = [...result.tail, ...result.head].find(
+      (item): item is Extract<StreamItem, { kind: "user_message" }> => item.kind === "user_message",
+    );
+    expect(user?.text).toBe("Direction change: ship the fix.");
+    expect(user).not.toHaveProperty("classification");
+  });
+
+  it("carries the voiceMirrorKind from a canonical voice mirror user row", () => {
+    const timestamp = new Date("2026-08-12T10:00:00.000Z");
+    const result = applyStreamEvent({
+      tail: [],
+      head: [],
+      event: {
+        type: "timeline",
+        provider: "omp",
+        item: {
+          type: "user_message",
+          text: "What is Archimedes doing?",
+          voiceMirrorKind: "qa",
+        },
+      },
+      timestamp,
+    });
+
+    const user = [...result.tail, ...result.head].find(
+      (item): item is Extract<StreamItem, { kind: "user_message" }> => item.kind === "user_message",
+    );
+    expect(user).toMatchObject({
+      kind: "user_message",
+      text: "What is Archimedes doing?",
+      voiceMirrorKind: "qa",
+    });
+  });
+
+  it("carries the voiceMirrorKind on a voice mirror assistant row as its own row", () => {
+    const first = new Date("2026-08-12T10:00:01.000Z");
+    const second = new Date("2026-08-12T10:00:02.000Z");
+    const mirrorEvent = (timestamp: Date, text: string) =>
+      applyStreamEvent({
+        tail: [],
+        head: [],
+        event: {
+          type: "timeline",
+          provider: "omp",
+          item: { type: "assistant_message", text, voiceMirrorKind: "qa" },
+        },
+        timestamp,
+      });
+
+    // Two consecutive mirror replies are TWO discrete rows: a mirror row is
+    // never coalesced into a neighboring assistant row.
+    const firstResult = mirrorEvent(first, "Archimedes is working on the fleet health check.");
+    const secondResult = applyStreamEvent({
+      tail: firstResult.tail,
+      head: firstResult.head,
+      event: {
+        type: "timeline",
+        provider: "omp",
+        item: {
+          type: "assistant_message",
+          text: "Pia finished the stackmod migration.",
+          voiceMirrorKind: "qa",
+        },
+      },
+      timestamp: second,
+    });
+
+    const assistants = [...secondResult.tail, ...secondResult.head].filter(
+      (item): item is Extract<StreamItem, { kind: "assistant_message" }> =>
+        item.kind === "assistant_message",
+    );
+    expect(assistants).toHaveLength(2);
+    expect(assistants[0]).toMatchObject({
+      text: "Archimedes is working on the fleet health check.",
+      voiceMirrorKind: "qa",
+    });
+    expect(assistants[1]).toMatchObject({
+      text: "Pia finished the stackmod migration.",
+      voiceMirrorKind: "qa",
+    });
+  });
 });
 
 function assistantTimeline(

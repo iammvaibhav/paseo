@@ -24,6 +24,9 @@ primed.
 Idle agents remain resident indefinitely. Runtime closure happens only through an explicit lifecycle
 action such as archive, replacement, reload, workspace teardown, or daemon shutdown.
 
+OMP process residency, the create-only warm pool, and why idle-release
+cannot reclaim a pooled process today: [omp-process-efficiency.md](./omp-process-efficiency.md).
+
 A provider runtime can still die on its own — crash, OOM kill, host suspend. Work the agent parked
 inside that process dies with it: Claude Code's background Bash shells, `Monitor` watches, and
 workflows all live in the CLI process, and the completion notification that would have woken the
@@ -35,7 +38,48 @@ be in flight.
 
 ### Cancellation
 
-Cancellation changes lifecycle state only after the provider acknowledges the interrupt or emits a terminal turn event. If the interrupt is rejected or times out, the agent remains `running` with its active foreground turn intact. Follow-up actions such as replacement, reload, rewind, and Stop must report that failure instead of accepting work they cannot perform. Synthesizing a local cancellation without provider acknowledgment creates a split-brain session: Paseo accepts a new prompt while the provider still owns the previous foreground turn.
+Cancellation changes lifecycle state only after the provider acknowledges the interrupt or emits a terminal turn event. If the interrupt is rejected or times out while the provider may still own a live turn, the agent remains `running` with its active foreground turn intact. Follow-up actions such as replacement, reload, rewind, and Stop must report that failure instead of accepting work they cannot perform. Synthesizing a local cancellation without provider acknowledgment creates a split-brain session: Paseo accepts a new prompt while the provider still owns the previous foreground turn.
+
+Exception: when interrupt fails because the provider runtime is already dead (`process is closed` / `session is closed` / similar), there is no live provider turn left to split-brain with. Cancel force-settles the managed run to `idle` so sticky `running` zombies (for example after OMP was SIGTERM'd mid-turn) can be stopped, replaced, or reloaded.
+
+An adapter must not manufacture that exception by killing its own runtime. A provider that
+does not answer the interrupt inside the short interactive window is slow, not dead: OMP acks
+`abort` in tens of milliseconds when healthy, so the budget only lapses on an event-loop stall
+on a large context. The OMP adapter therefore keeps the process, retries the abort with a wider
+budget, and reports the refused stop; only a second Stop while the first abort is still
+unanswered force-closes.
+
+### Recovering a dead runtime
+
+A dead provider runtime is recoverable, not terminal. `startAgentRun`
+(`agent/agent-prompt.ts`) asks the session `isRuntimeAlive()` before dispatching and reloads it
+from its persistence handle when the answer is `false`, which resumes the provider session,
+keeps the timeline, and clears a sticky `running` lifecycle. Every prompt entrypoint — app, MCP,
+CLI, schedules, webhooks — goes through that funnel.
+
+Recover, do not report. A prompt that fails against a runtime Paseo already knows is gone reads
+as a broken agent: the composer shows a spinner for a turn that will never start, and the user's
+message is lost. Before this existed, one force-closed OMP process failed every following prompt
+with `OMP RPC process is closed` until someone ran Reload agent by hand. Reload failures still
+fall through to the provider's own error, because that error is the useful one.
+
+### Every turn must terminalize
+
+`lifecycle: "running"` is a latch. Nothing re-checks it. A provider adapter that starts a
+turn and never emits `turn_completed`/`turn_failed`/`turn_canceled` leaves the agent
+spinning forever with a complete timeline and an idle provider, recoverable only by an
+explicit Stop.
+
+A provider adapter MUST emit exactly one terminal event per turn it started, on every exit
+path including give-ups and error paths. If the provider stops reporting, emit a terminal
+event carrying the diagnostic. Where an adapter waits for the provider to report itself
+idle, give the wait a deadline and terminalize when it passes.
+
+The hard part is doing that without double-firing when a concurrent interrupt or a second
+`agent_end` settles the same cycle. The OMP adapter distinguishes the two with a
+`turnGeneration` counter (`providers/omp/agent.ts`) and logs
+`omp.turn.idle_wait_abandoned_terminalizing` when it has to synthesize the event. A warn
+there means the provider left a turn un-terminated and Paseo covered for it.
 
 ## Relationships
 
@@ -112,6 +156,23 @@ Provider session connection owns every process it spawns until the session is re
 `connect()` must dispose that process before rethrowing; the manager cannot clean up a session it never
 received.
 
+### Opening an archived agent from History
+
+The host's live agent directory is synced with `scope: "active"`, so archived agents never land in
+the session store on their own. The workspace tab reconcile
+(`reconcileWorkspaceTabs`) keeps an agent tab only if the agent is **active** (not `archivedAt`) or
+**pinned _and_ known** (present in `agents`/`agentDetails`). A cold archived agent is none of these,
+so a tab opened straight for it is pruned on the first reconcile and focus falls back to some other
+active agent in that workspace — the tab "opens the wrong agent."
+
+Opening an archived agent from the History list therefore does three things before navigating
+(`workspace/open-agent-from-history`): it `fetchAgent`s the record into `agentDetails` via
+`storeFetchedAgentDetail` (so reconcile counts it as **known**), it **unarchives immediately** via
+`refreshAgent` (same as the Unarchive control — so timeline init runs and history is visible without
+a second click), and it pins the tab (so reconcile **keeps** it until the active directory catches
+up). The archived callout remains as a fallback if unarchive fails. Because `agentDetails` is not
+persisted, the pin is ignored on the next app session and a still-archived tab does not reappear.
+
 ## Tabs vs archive
 
 These are two distinct concepts that used to be conflated:
@@ -123,7 +184,9 @@ These are two distinct concepts that used to be conflated:
 
 Closing a tab on a **root agent** still archives — the tab is the agent's home, so closing it means "I'm done with this agent." A confirm dialog protects against archiving a running agent by accident.
 
-Closing a tab on a **subagent** (any agent with `parentAgentId`) is **layout-only**. The app clears the current client's open-tab label before removing the tab. Another client's open tab remains protected. The agent stays unarchived and stays in its parent's track, so a later parent archive cascades to it when no client still has it open. The user can re-open the tab from the track at any time. Single and bulk tab close apply the same policy.
+Closing a tab on a **nested subagent** is **layout-only**: its parent record resolves on the same host, so the agent reports through it. The app clears the current client's open-tab label before removing the tab. Another client's open tab remains protected. The agent stays unarchived and stays in its parent's track, so a later parent archive cascades to it when no client still has it open. The user can re-open the tab from the track at any time. Single and bulk tab close apply the same policy.
+
+`parentAgentId` alone does not make an agent a subagent. The close policy treats an agent as a root unless its parent record resolves to a non-Commander agent in the same workspace. Commander-dispatched workers carry `paseo.parent-agent-id` pointing at the Commander; whether that record resolves here (the Commander runs on this host) or never resolves (it runs elsewhere), the worker is a root agent, so closing its tab archives it like any other root.
 
 The asymmetry is intentional: a subagent's persistent relationship lives in the parent's track. Same-workspace subagents are not auto-opened as tabs; the user opens one from that track when needed. A cross-workspace subagent is also auto-opened as a tab in its own workspace so opening that workspace does not appear empty. It remains in the parent's track until it is actually detached.
 
@@ -179,7 +242,7 @@ To keep the agent alive but remove it from the parent's track, use **detach**. T
 The decision was to **decouple "close tab" from "archive" only for subagents**, rather than universally:
 
 - **Closing a tab on a root agent still archives** — preserves the existing UX users are trained on
-- **Closing a tab on a subagent is layout-only** — fixes the lossy "click to read, close to dismiss view, lose the row" flow
+- **Closing a tab on a nested subagent is layout-only** — fixes the lossy "click to read, close to dismiss view, lose the row" flow
 - **Archive button on track rows** — gives subagents an explicit lifecycle gesture in their home surface
 - **Detach button on track rows** — lets a subagent continue independently without killing its work
 - **Cascade archive on parent** — keeps subagents from leaking when the parent is archived

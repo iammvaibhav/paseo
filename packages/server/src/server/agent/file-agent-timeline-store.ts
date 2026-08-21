@@ -126,9 +126,36 @@ export class FileAgentTimelineStore implements AgentTimelineStore {
     return (await this.getDocument(agentId)).rows.map(cloneRow);
   }
 
+  /**
+   * Read an on-disk timeline without minting an empty document. Search indexing
+   * needs the difference between "never written" and "written empty".
+   */
+  async tryReadExistingRows(agentId: string): Promise<AgentTimelineRow[] | null> {
+    const cached = this.documents.get(agentId);
+    if (cached) return cached.rows.map(cloneRow);
+    try {
+      const document = validateDocument(
+        JSON.parse(await fs.readFile(this.filePath(agentId), "utf8")),
+      );
+      this.documents.set(agentId, document);
+      return document.rows.map(cloneRow);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      return null;
+    }
+  }
+
+  filePathFor(agentId: string): string {
+    return this.filePath(agentId);
+  }
+
   async getCommittedSnapshot(agentId: string): Promise<AgentTimelineSnapshot> {
     const document = await this.getDocument(agentId);
-    return { rows: document.rows.map(cloneRow), historyComplete: document.historyComplete };
+    return {
+      rows: document.rows.map(cloneRow),
+      historyComplete: document.historyComplete,
+      epoch: document.epoch,
+    };
   }
 
   async getLastItem(agentId: string): Promise<AgentTimelineItem | null> {

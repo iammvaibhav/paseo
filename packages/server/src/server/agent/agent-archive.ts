@@ -24,7 +24,10 @@ export function buildArchivedAgentRecord(
 }
 
 function normalizeArchivedStatus(
-  status: StoredAgentRecord["lastStatus"],
+  _status: StoredAgentRecord["lastStatus"],
 ): StoredAgentRecord["lastStatus"] {
-  return status === "running" || status === "initializing" ? "idle" : status;
+  // An archived record is terminal by definition: it must never keep a busy
+  // (running/initializing) classification alive, nor an error/needs-you one
+  // — "closed" is the truthful status of an agent that left the directory.
+  return "closed";
 }

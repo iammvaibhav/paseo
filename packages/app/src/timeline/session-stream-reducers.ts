@@ -38,12 +38,12 @@ export interface TimelineCursor {
 
 export type TimelineReducerSideEffect =
   | { type: "catch_up"; cursor: { epoch: string; endSeq: number } }
-  | { type: "flush_pending_updates" };
+  | { type: "flush_pending_updates" }
+  | { type: "rebaseline" };
 
-export interface AgentStreamReducerSideEffect {
-  type: "catch_up";
-  cursor: { epoch: string; endSeq: number };
-}
+export type AgentStreamReducerSideEffect =
+  | { type: "catch_up"; cursor: { epoch: string; endSeq: number } }
+  | { type: "rebaseline" };
 
 // ---------------------------------------------------------------------------
 // processTimelineResponse
@@ -305,6 +305,7 @@ function deriveBootstrapTailTimelinePolicy({
   endCursor,
   isInitializing,
   hasActiveInitDeferred,
+  hasCursor,
 }: {
   direction: TimelineDirection;
   reset: boolean;
@@ -312,6 +313,7 @@ function deriveBootstrapTailTimelinePolicy({
   endCursor: { seq: number } | null;
   isInitializing: boolean;
   hasActiveInitDeferred: boolean;
+  hasCursor: boolean;
 }): {
   replace: boolean;
   catchUpCursor: { epoch: string; endSeq: number } | null;
@@ -320,8 +322,18 @@ function deriveBootstrapTailTimelinePolicy({
     return { replace: true, catchUpCursor: null };
   }
 
-  const isBootstrapTailInit = direction === "tail" && isInitializing && hasActiveInitDeferred;
-  if (!isBootstrapTailInit) {
+  // A tail page is the bounded end of the canonical timeline, never a delta, so
+  // it can only be appended when a cursor says what the tail already covers.
+  // Without one, whatever sits in the tail is unanchored — live events with no
+  // seq, or a replica-cache restore whose snapshot predated the first cursor —
+  // and the page already contains it. Appending instead of replacing leaves that
+  // prefix stranded above the rehydrated history: orphan thoughts and a second
+  // copy of the first prompt at the top of the chat. Background catch-up
+  // (viewed-timeline-sync) fetches a tail page without an init deferred, so the
+  // init flags alone don't cover this.
+  const isBootstrapTail =
+    direction === "tail" && (!hasCursor || (isInitializing && hasActiveInitDeferred));
+  if (!isBootstrapTail) {
     return { replace: false, catchUpCursor: null };
   }
 
@@ -1298,6 +1310,7 @@ export function processTimelineResponse(
     endCursor: payload.endCursor,
     isInitializing,
     hasActiveInitDeferred,
+    hasCursor: currentCursor !== undefined,
   });
   const replace = bootstrapPolicy.replace;
   const sideEffects: TimelineReducerSideEffect[] = [];
@@ -1553,6 +1566,16 @@ function processTimelineSequencingGate(input: {
       nextTimelineCursor: { epoch, startSeq: seq, endSeq: seq },
       cursorChanged: true,
       resetLiveTimeline: true,
+    };
+  }
+  if (decision === "drop_epoch" || decision === "drop_stale") {
+    // The daemon renumbered the timeline (epoch rotation or backwards rewind).
+    // The local cursor no longer matches the authoritative numbering, so a
+    // catch_up after it can never return the new rows. Re-baseline instead.
+    return {
+      ...base,
+      shouldApplyStreamEvent: false,
+      sideEffects: [{ type: "rebaseline" }],
     };
   }
   return {
@@ -1831,6 +1854,7 @@ export interface CreateSessionAgentStreamReducerQueueInput {
     state: (prev: Map<string, TimelineCursor>) => Map<string, TimelineCursor>,
   ) => void;
   recoverTimelineGap: (agentId: string, cursor: { epoch: string; endSeq: number }) => void;
+  recoverTimelineBaseline: (agentId: string) => void;
 }
 
 function scheduleAgentStreamReducerFlush(callback: () => void): number {
@@ -1844,7 +1868,13 @@ function cancelAgentStreamReducerFlush(id: number) {
 export function createSessionAgentStreamReducerQueue(
   input: CreateSessionAgentStreamReducerQueueInput,
 ): AgentStreamReducerQueue {
-  const { serverId, setAgentStreamState, setAgentTimelineCursor, recoverTimelineGap } = input;
+  const {
+    serverId,
+    setAgentStreamState,
+    setAgentTimelineCursor,
+    recoverTimelineGap,
+    recoverTimelineBaseline,
+  } = input;
 
   return createAgentStreamReducerQueue({
     getSnapshot: (agentId) => {
@@ -1908,6 +1938,8 @@ export function createSessionAgentStreamReducerQueue(
       for (const effect of sideEffects) {
         if (effect.type === "catch_up") {
           recoverTimelineGap(agentId, effect.cursor);
+        } else if (effect.type === "rebaseline") {
+          recoverTimelineBaseline(agentId);
         }
       }
     },

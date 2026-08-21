@@ -185,6 +185,7 @@ const StoredAgentSnapshotSchema = z.strictObject({
   requiresAttention: z.boolean().optional(),
   attentionReason: z.enum(["finished", "error", "permission"]).nullable().optional(),
   attentionTimestamp: IsoDateSchema.nullable().optional(),
+  bucket: z.enum(["needs_you", "running", "ready", "done", "idle"]).nullable().optional(),
   archivedAt: IsoDateSchema.nullable().optional(),
 });
 
@@ -477,6 +478,29 @@ function deserializeTimelineItem(item: StoredTimelineItem): StreamItem {
   }
 }
 
+function serializeAgentCapabilities(capabilities: Agent["capabilities"]) {
+  return {
+    supportsStreaming: capabilities.supportsStreaming,
+    supportsSessionPersistence: capabilities.supportsSessionPersistence,
+    ...(capabilities.supportsSessionListing !== undefined
+      ? { supportsSessionListing: capabilities.supportsSessionListing }
+      : {}),
+    supportsDynamicModes: capabilities.supportsDynamicModes,
+    supportsMcpServers: capabilities.supportsMcpServers,
+    supportsReasoningStream: capabilities.supportsReasoningStream,
+    supportsToolInvocations: capabilities.supportsToolInvocations,
+    ...(capabilities.supportsRewindConversation !== undefined
+      ? { supportsRewindConversation: capabilities.supportsRewindConversation }
+      : {}),
+    ...(capabilities.supportsRewindFiles !== undefined
+      ? { supportsRewindFiles: capabilities.supportsRewindFiles }
+      : {}),
+    ...(capabilities.supportsRewindBoth !== undefined
+      ? { supportsRewindBoth: capabilities.supportsRewindBoth }
+      : {}),
+  };
+}
+
 function serializeProjectPlacement(agent: Agent): StoredAgent["projectPlacement"] {
   return agent.projectPlacement ?? null;
 }
@@ -501,36 +525,21 @@ function serializeAgent(agent: Agent): StoredAgent {
           },
         }
       : {}),
-    capabilities: {
-      supportsStreaming: agent.capabilities.supportsStreaming,
-      supportsSessionPersistence: agent.capabilities.supportsSessionPersistence,
-      ...(agent.capabilities.supportsSessionListing !== undefined
-        ? { supportsSessionListing: agent.capabilities.supportsSessionListing }
-        : {}),
-      supportsDynamicModes: agent.capabilities.supportsDynamicModes,
-      supportsMcpServers: agent.capabilities.supportsMcpServers,
-      supportsReasoningStream: agent.capabilities.supportsReasoningStream,
-      supportsToolInvocations: agent.capabilities.supportsToolInvocations,
-      ...(agent.capabilities.supportsRewindConversation !== undefined
-        ? { supportsRewindConversation: agent.capabilities.supportsRewindConversation }
-        : {}),
-      ...(agent.capabilities.supportsRewindFiles !== undefined
-        ? { supportsRewindFiles: agent.capabilities.supportsRewindFiles }
-        : {}),
-      ...(agent.capabilities.supportsRewindBoth !== undefined
-        ? { supportsRewindBoth: agent.capabilities.supportsRewindBoth }
-        : {}),
-    },
+    capabilities: serializeAgentCapabilities(agent.capabilities),
     currentModeId: agent.currentModeId,
     availableModes: [],
     pendingPermissions: [],
     persistence: null,
     ...(agent.lastError ? { lastError: agent.lastError } : {}),
     title: agent.title,
+    ...(agent.name ? { name: agent.name } : {}),
+    ...(agent.shortDescription ? { shortDescription: agent.shortDescription } : {}),
     labels: agent.labels,
     requiresAttention: agent.requiresAttention ?? false,
     attentionReason: agent.attentionReason ?? null,
     attentionTimestamp: agent.attentionTimestamp?.toISOString() ?? null,
+    ...(agent.stoppedBy ? { stoppedBy: agent.stoppedBy } : {}),
+    ...(agent.bucket ? { bucket: agent.bucket } : {}),
     archivedAt: agent.archivedAt?.toISOString() ?? null,
   };
   return {
@@ -542,7 +551,10 @@ function serializeAgent(agent: Agent): StoredAgent {
 
 function deserializeAgent(serverId: string, stored: StoredAgent): Agent {
   return {
-    ...normalizeAgentSnapshot(stored.snapshot, serverId),
+    ...normalizeAgentSnapshot(
+      { ...stored.snapshot, bucket: stored.snapshot.bucket ?? undefined },
+      serverId,
+    ),
     lastActivityAt: new Date(stored.lastActivityAt),
     projectPlacement: stored.projectPlacement,
   };
@@ -566,6 +578,8 @@ function serializeWorkspace(workspace: WorkspaceDescriptor): StoredWorkspace {
     labels: workspace.labels,
     status: workspace.status,
     statusEnteredAt: workspace.statusEnteredAt?.toISOString() ?? null,
+    // Replica cache deliberately drops activity timestamps — they churn and
+    // blow the size budget without helping cold-start restore.
     activityAt: null,
     archivingAt: workspace.archivingAt,
     diffStat: workspace.diffStat,

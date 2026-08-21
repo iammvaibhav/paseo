@@ -66,6 +66,10 @@ import { useKeyboardShiftStyle } from "@/hooks/use-keyboard-shift-style";
 import { useKeyboardActionHandler } from "@/hooks/use-keyboard-action-handler";
 import type { KeyboardActionId } from "@/keyboard/keyboard-action-dispatcher";
 import { useFormPreferences } from "@/hooks/use-form-preferences";
+import {
+  mergeIsolationPreference,
+  resolveEffectiveFormPreferences,
+} from "@/create-agent-preferences/preferences";
 import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
 import type { CreateAgentInitialValues } from "@/hooks/use-agent-form-state";
 import { generateMessageId } from "@/types/stream";
@@ -692,23 +696,43 @@ interface WorkspaceIsolationState {
 function useWorkspaceIsolation(input: {
   supportsMultiplicity: boolean;
   worktreeSupport: "supported" | "unsupported" | "unknown";
+  projectKey?: string | null;
+  serverId?: string | null;
 }): WorkspaceIsolationState {
-  const { supportsMultiplicity, worktreeSupport } = input;
-  // The last isolation choice is remembered alongside the other New Workspace
-  // form preferences (provider, model, mode). A manual in-screen pick overrides
-  // the remembered default until the screen remounts.
-  const { preferences, updatePreferences } = useFormPreferences();
+  const { supportsMultiplicity, worktreeSupport, projectKey, serverId } = input;
+  // Isolation is remembered per project (byProject[projectKey].isolation) with
+  // a global fallback for older data / no project. A manual pick overrides the
+  // remembered default until the screen remounts or the project changes.
+  const { preferences, updatePreferences } = useFormPreferences(serverId);
   const [manualIsolation, setManualIsolation] = useState<"local" | "worktree" | null>(null);
-  const isolation = manualIsolation ?? preferences.isolation ?? "local";
+  const [manualIsolationProjectKey, setManualIsolationProjectKey] = useState<string | null>(null);
+  const scopeKey =
+    typeof projectKey === "string" && projectKey.trim().length > 0 ? projectKey : null;
+  const effectivePreferences = useMemo(
+    () => resolveEffectiveFormPreferences(preferences, scopeKey ? { projectKey: scopeKey } : null),
+    [preferences, scopeKey],
+  );
+  const rememberedIsolation = effectivePreferences.isolation ?? "local";
+  const isolation =
+    manualIsolation !== null && manualIsolationProjectKey === scopeKey
+      ? manualIsolation
+      : rememberedIsolation;
   const canCreateWorktree = supportsMultiplicity && worktreeSupport !== "unsupported";
   const isWorktree = isolation === "worktree" && canCreateWorktree;
 
   const setIsolation = useCallback(
     (value: "local" | "worktree") => {
       setManualIsolation(value);
-      void updatePreferences({ isolation: value });
+      setManualIsolationProjectKey(scopeKey);
+      void updatePreferences((current) =>
+        mergeIsolationPreference({
+          preferences: current,
+          isolation: value,
+          scope: scopeKey ? { projectKey: scopeKey } : null,
+        }),
+      );
     },
-    [updatePreferences],
+    [scopeKey, updatePreferences],
   );
 
   return {
@@ -968,9 +992,13 @@ function buildComposerConfig(input: {
   workspaceDirectory: string | null;
   sourceDirectory: string | null;
   initialSetup?: WorkspaceDraftTabSetup | null;
+  projectKey?: string | null;
 }): Parameters<typeof useAgentInputDraft>[0]["composer"] {
-  const { serverId, isConnected, workspaceDirectory, sourceDirectory, initialSetup } = input;
+  const { serverId, isConnected, workspaceDirectory, sourceDirectory, initialSetup, projectKey } =
+    input;
   const workingDir = workspaceDirectory || sourceDirectory || undefined;
+  const preferenceScope =
+    typeof projectKey === "string" && projectKey.length > 0 ? { projectKey } : null;
   return {
     initialServerId: serverId || null,
     initialValues: buildComposerInitialValues({ workingDir, initialSetup }),
@@ -978,7 +1006,17 @@ function buildComposerConfig(input: {
     isVisible: true,
     onlineServerIds: isConnected && serverId ? [serverId] : [],
     lockedWorkingDir: workingDir,
+    preferenceScope,
   };
+}
+
+function resolveSelectedProjectKey(
+  project: { projectKey: string | null } | null | undefined,
+): string | null {
+  if (!project) {
+    return null;
+  }
+  return project.projectKey;
 }
 
 function usePendingWorkspaceDraftSetup(
@@ -1595,7 +1633,7 @@ export function NewWorkspaceScreen({
   // something in this screen, so the async preferences load doesn't race a
   // frozen useState initializer.
   const { preferences: formPreferences, updatePreferences: updateFormPreferences } =
-    useFormPreferences();
+    useFormPreferences(selectedServerId);
   const { config: daemonConfig } = useDaemonConfig(selectedServerId);
   const terminalProfiles: readonly TerminalProfile[] = useMemo(
     () => resolveTerminalProfiles(daemonConfig?.terminalProfiles),
@@ -1669,6 +1707,7 @@ export function NewWorkspaceScreen({
       workspaceDirectory: workspace?.workspaceDirectory ?? null,
       sourceDirectory: selectedSourceDirectory,
       initialSetup: forkDraftSetup?.setup,
+      projectKey: resolveSelectedProjectKey(selectedProject),
     }),
   });
   const composerState = chatDraft.composerState;
@@ -1713,8 +1752,9 @@ export function NewWorkspaceScreen({
     useWorkspaceIsolation({
       supportsMultiplicity: supportsWorkspaceMultiplicity,
       worktreeSupport,
+      projectKey: resolveSelectedProjectKey(selectedProject),
+      serverId: selectedServerId,
     });
-
   const branchSuggestionsQuery = useQuery({
     queryKey: [
       "branch-suggestions",

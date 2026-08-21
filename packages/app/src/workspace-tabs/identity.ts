@@ -1,5 +1,9 @@
 import { normalizeWorkspaceFileLocation, workspaceFileLocationsEqual } from "@/workspace/file-open";
-import type { WorkspaceDraftTabSetup, WorkspaceTabTarget } from "@/workspace-tabs/model";
+import type {
+  WorkspaceDraftForkSource,
+  WorkspaceDraftTabSetup,
+  WorkspaceTabTarget,
+} from "@/workspace-tabs/model";
 
 export function normalizeWorkspaceTabTarget(
   value: WorkspaceTabTarget | null | undefined,
@@ -13,7 +17,13 @@ export function normalizeWorkspaceTabTarget(
       return null;
     }
     const setup = normalizeWorkspaceDraftTabSetup(value.setup);
-    return setup ? { kind: "draft", draftId, setup } : { kind: "draft", draftId };
+    const forkSource = normalizeWorkspaceDraftForkSource(value.forkSource);
+    return {
+      kind: "draft",
+      draftId,
+      ...(setup ? { setup } : {}),
+      ...(forkSource ? { forkSource } : {}),
+    };
   }
   if (value.kind === "agent") {
     const agentId = trimNonEmpty(value.agentId);
@@ -92,6 +102,45 @@ export function normalizeWorkspaceDraftTabSetup(
   };
 }
 
+export function normalizeWorkspaceDraftForkSource(
+  value: unknown,
+): WorkspaceDraftForkSource | undefined {
+  const record = isPlainRecord(value) ? value : null;
+  if (!record) {
+    return undefined;
+  }
+  const sourceAgentId = trimNonEmpty(
+    typeof record.sourceAgentId === "string" ? record.sourceAgentId : null,
+  );
+  if (!sourceAgentId) {
+    return undefined;
+  }
+  const boundaryMessageId = trimNonEmpty(
+    typeof record.boundaryMessageId === "string" ? record.boundaryMessageId : null,
+  );
+  const boundaryCursor = normalizeWorkspaceDraftForkBoundaryCursor(record.boundaryCursor);
+  return {
+    sourceAgentId,
+    ...(boundaryCursor ? { boundaryCursor } : {}),
+    ...(boundaryMessageId ? { boundaryMessageId } : {}),
+  };
+}
+
+function normalizeWorkspaceDraftForkBoundaryCursor(
+  value: unknown,
+): NonNullable<WorkspaceDraftForkSource["boundaryCursor"]> | undefined {
+  const record = isPlainRecord(value) ? value : null;
+  if (!record) {
+    return undefined;
+  }
+  const epoch = trimNonEmpty(typeof record.epoch === "string" ? record.epoch : null);
+  const seq =
+    typeof record.seq === "number" && Number.isInteger(record.seq) && record.seq >= 0
+      ? record.seq
+      : null;
+  return epoch && seq !== null ? { epoch, seq } : undefined;
+}
+
 export function workspaceTabTargetsEqual(
   left: WorkspaceTabTarget,
   right: WorkspaceTabTarget,
@@ -100,7 +149,11 @@ export function workspaceTabTargetsEqual(
     return false;
   }
   if (left.kind === "draft" && right.kind === "draft") {
-    return left.draftId === right.draftId && workspaceDraftTabSetupsEqual(left.setup, right.setup);
+    return (
+      left.draftId === right.draftId &&
+      workspaceDraftTabSetupsEqual(left.setup, right.setup) &&
+      workspaceDraftForkSourcesEqual(left.forkSource, right.forkSource)
+    );
   }
   if (left.kind === "agent" && right.kind === "agent") {
     return left.agentId === right.agentId;
@@ -165,6 +218,21 @@ function workspaceDraftTabSetupsEqual(
     left.model === right.model &&
     left.thinkingOptionId === right.thinkingOptionId &&
     recordsShallowEqual(left.featureValues, right.featureValues)
+  );
+}
+
+function workspaceDraftForkSourcesEqual(
+  left: WorkspaceDraftForkSource | undefined,
+  right: WorkspaceDraftForkSource | undefined,
+): boolean {
+  if (!left || !right) {
+    return left === right;
+  }
+  return (
+    left.sourceAgentId === right.sourceAgentId &&
+    left.boundaryMessageId === right.boundaryMessageId &&
+    left.boundaryCursor?.epoch === right.boundaryCursor?.epoch &&
+    left.boundaryCursor?.seq === right.boundaryCursor?.seq
   );
 }
 

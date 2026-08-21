@@ -62,7 +62,12 @@ import Animated, {
 import Svg, { Defs, LinearGradient as SvgLinearGradient, Rect, Stop } from "react-native-svg";
 import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
-import { MarkdownRenderer, type MarkdownStyles } from "@/components/markdown/renderer";
+import {
+  MarkdownRenderer,
+  addMathPlugin,
+  createMathRenderRules,
+  type MarkdownStyles,
+} from "@/components/markdown/renderer";
 import type { TaskActivity, TodoEntry, UserMessageImageAttachment } from "@/types/stream";
 import type { AgentAttachment } from "@getpaseo/protocol/messages";
 import type { ToolCallDetail } from "@getpaseo/protocol/agent-types";
@@ -72,6 +77,8 @@ import { getMarkdownListMarker, getMarkdownListSpacing } from "@/utils/markdown-
 import { markdownNodeContainsType } from "@/utils/markdown-ast";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import { HighlightedCodeBlock } from "@/components/highlighted-code-block";
+import { renderRichFence } from "@/components/markdown/rich-fence";
+import { ChartDataProvider } from "@/components/chart-data-context";
 import { MarkdownFenceBlock } from "@/components/markdown/fence";
 import type { MarkdownPhase } from "@/components/markdown/fence/types";
 import { splitMarkdownBlocks } from "@/utils/split-markdown-blocks";
@@ -108,7 +115,9 @@ import type { AgentCapabilityFlags } from "@getpaseo/protocol/agent-types";
 import { RewindMenu, type RewindMode } from "@/components/rewind/rewind-menu";
 import { useRewindAgentMutation } from "@/components/rewind/use-rewind-agent-mutation";
 import { AssistantForkMenu, type AssistantForkTarget } from "@/components/assistant-fork-menu";
+import { JumpToUserMessageButton } from "@/components/jump-to-user-message-button";
 import { useRetainedPanelActive } from "@/components/retained-panel";
+import { openHistoryAskAgentLink } from "@/history-ask/open-agent-link";
 import {
   markdownCopyDataSet,
   markdownCopyOrderedListDataSet,
@@ -571,6 +580,7 @@ interface AssistantTurnFooterProps {
   completedAt?: Date;
   durationMs?: number;
   onFork?: (target: AssistantForkTarget) => Promise<void> | void;
+  onJumpToUserMessage?: () => void;
 }
 
 const assistantTurnFooterStylesheet = StyleSheet.create((theme) => ({
@@ -616,6 +626,7 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
   completedAt,
   durationMs,
   onFork,
+  onJumpToUserMessage,
 }: AssistantTurnFooterProps) {
   const [hovered, setHovered] = useState(false);
   const [pressedReveal, setPressedReveal] = useState(false);
@@ -662,6 +673,7 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
     [onFork],
   );
   const canFork = Boolean(onFork);
+  const canJumpToUserMessage = Boolean(onJumpToUserMessage);
 
   return (
     <View style={assistantTurnFooterStylesheet.container}>
@@ -669,6 +681,9 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
         getContent={getContent}
         containerStyle={assistantTurnFooterStylesheet.copyButton}
       />
+      {canJumpToUserMessage && onJumpToUserMessage ? (
+        <JumpToUserMessageButton onPress={onJumpToUserMessage} />
+      ) : null}
       {canFork ? <AssistantForkMenu onFork={handleFork} /> : null}
       {durationLabel ? (
         <Pressable
@@ -1455,10 +1470,27 @@ export const AssistantMessage = memo(function AssistantMessage({
   spacing = "default",
   phase,
 }: AssistantMessageProps) {
-  const markdownParser = useMemo(createAssistantMarkdownParser, []);
+  const markdownParser = useMemo(() => {
+    const parser = createAssistantMarkdownParser();
+    addMathPlugin(parser);
+    const defaultValidateLink = parser.validateLink.bind(parser);
+    parser.validateLink = (url: string) => {
+      const lower = url.trim().toLowerCase();
+      if (lower.startsWith("paseo:")) {
+        return true;
+      }
+      return defaultValidateLink(url);
+    };
+    return parser;
+  }, []);
 
   const fileLinkActions = useAssistantFileLinkActions();
   const handleMarkdownLinkPress = useStableEvent((url: string) => {
+    // History Ask citations use paseo://h/{serverId}/agent/{agentId} deep links.
+    // Open those like History rows (workspace tab + unarchive) instead of file links.
+    if (openHistoryAskAgentLink(url)) {
+      return false;
+    }
     fileLinkActions.open({ href: url }, "side");
     // react-native-markdown-display opens the link itself when this returns true.
     // We already handled it above, so return false to avoid duplicate opens.
@@ -1698,16 +1730,22 @@ export const AssistantMessage = memo(function AssistantMessage({
         _parent: ASTNode[],
         styles: MarkdownStyles,
         inheritedStyles: TextStyle = {},
-      ) => (
-        <MarkdownFenceBlock
-          key={node.key}
-          code={node.content}
-          info={node.sourceInfo}
-          phase={phase}
-          inheritedStyles={inheritedStyles}
-          textStyle={styles.fence}
-        />
-      ),
+      ) => {
+        const richFence = renderRichFence(node);
+        if (richFence) {
+          return richFence;
+        }
+        return (
+          <MarkdownFenceBlock
+            key={node.key}
+            code={node.content}
+            info={node.sourceInfo}
+            phase={phase}
+            inheritedStyles={inheritedStyles}
+            textStyle={styles.fence}
+          />
+        );
+      },
       code_inline: (
         node: ASTNode,
         _children: ReactNode[],
@@ -1891,6 +1929,7 @@ export const AssistantMessage = memo(function AssistantMessage({
           />
         );
       },
+      ...createMathRenderRules(),
     };
   }, [client, fileLinkActions, markdownParser, occurrenceKey, phase, serverId, workspaceRoot]);
 
@@ -1911,7 +1950,7 @@ export const AssistantMessage = memo(function AssistantMessage({
     [spacing],
   );
 
-  return (
+  const assistantBlocks = (
     <View testID="assistant-message" style={assistantContainerStyle}>
       {keyedBlocks.map(({ key, block }, index) => (
         <AssistantMessageBlockContainer
@@ -1928,6 +1967,19 @@ export const AssistantMessage = memo(function AssistantMessage({
         </AssistantMessageBlockContainer>
       ))}
     </View>
+  );
+
+  // Charts that reference a workspace file read it through this host+cwd. Without
+  // the scope they fall back to demanding inline rows, which is the right answer
+  // wherever a message renders outside a workspace.
+  if (!client || !serverId || !workspaceRoot) {
+    return assistantBlocks;
+  }
+
+  return (
+    <ChartDataProvider client={client} serverId={serverId} cwd={workspaceRoot}>
+      {assistantBlocks}
+    </ChartDataProvider>
   );
 });
 
@@ -3033,6 +3085,10 @@ interface ToolCallProps {
   detail?: ToolCallDetail;
   cwd?: string;
   metadata?: Record<string, unknown>;
+  /** agentId → display name for fleet dispatch renderers (live identity join). */
+  agentNames?: Readonly<Record<string, string | undefined>>;
+  /** host → display alias resolver (maps "local" to host alias). */
+  resolveHost?: (host: string) => string;
   isLastInSequence?: boolean;
   disableOuterSpacing?: boolean;
   onInlineDetailsHoverChange?: (hovered: boolean) => void;
@@ -3052,6 +3108,8 @@ export const ToolCall = memo(function ToolCall({
   detail,
   cwd,
   metadata,
+  agentNames,
+  resolveHost,
   isLastInSequence = false,
   disableOuterSpacing,
   onInlineDetailsHoverChange,
@@ -3090,9 +3148,11 @@ export const ToolCall = memo(function ToolCall({
         detail: effectiveDetail,
         metadata,
         cwd,
+        agentNames,
+        resolveHost,
         resolveIcon: resolveToolCallIcon,
       }),
-    [toolName, status, error, effectiveDetail, metadata, cwd],
+    [toolName, status, error, effectiveDetail, metadata, cwd, agentNames, resolveHost],
   );
   const handleOpenFile = useMemo(() => {
     const openFilePath = presentation.openFilePath;
@@ -3111,6 +3171,7 @@ export const ToolCall = memo(function ToolCall({
         errorText: presentation.errorText,
         icon: presentation.icon,
         showLoadingSkeleton: presentation.isLoadingDetails,
+        toolName,
       });
     } else {
       setIsExpanded((prev) => !prev);
@@ -3124,6 +3185,7 @@ export const ToolCall = memo(function ToolCall({
     presentation.icon,
     presentation.isLoadingDetails,
     effectiveDetail,
+    toolName,
   ]);
 
   useEffect(() => {
@@ -3162,6 +3224,8 @@ export const ToolCall = memo(function ToolCall({
         errorText={presentation.errorText}
         maxHeight={maxDetailHeight}
         showLoadingSkeleton={presentation.isLoadingDetails}
+        toolName={toolName}
+        resolveHost={resolveHost}
       />
     );
   }, [
@@ -3169,7 +3233,9 @@ export const ToolCall = memo(function ToolCall({
     effectiveDetail,
     presentation.errorText,
     presentation.isLoadingDetails,
+    toolName,
     maxDetailHeight,
+    resolveHost,
   ]);
 
   if (presentation.isPlan && effectiveDetail?.type === "plan") {
@@ -3210,6 +3276,8 @@ function areToolCallPropsEqual(previous: ToolCallProps, next: ToolCallProps) {
   if (previous.detail !== next.detail) return false;
   if (previous.cwd !== next.cwd) return false;
   if (previous.metadata !== next.metadata) return false;
+  if (previous.agentNames !== next.agentNames) return false;
+  if (previous.resolveHost !== next.resolveHost) return false;
   if (previous.isLastInSequence !== next.isLastInSequence) return false;
   if (previous.disableOuterSpacing !== next.disableOuterSpacing) return false;
   if (previous.onOpenFilePath !== next.onOpenFilePath) return false;

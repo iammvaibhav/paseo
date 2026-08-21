@@ -42,9 +42,10 @@ import {
   createDesktopLocalDaemonTransportFactory,
 } from "@/desktop/daemon/desktop-daemon-transport";
 import { getDesktopHost } from "@/desktop/host";
+import { collectBrowserEditorOrigins } from "@/workspace/browser-editor-url";
 import { CLIENT_CAPS } from "@getpaseo/protocol/client-capabilities";
 import { BROWSER_AUTOMATION_COMMAND_NAMES } from "@getpaseo/protocol/browser-automation/rpc-schemas";
-import { useSessionStore } from "@/stores/session-store";
+import { selectAgentTurnPresentation, useSessionStore } from "@/stores/session-store";
 import { useWorkspaceSetupStore } from "@/stores/workspace-setup-store";
 import { invalidateCheckoutGitQueriesForServer } from "@/git/query-keys";
 import { queryClient } from "@/data/query-client";
@@ -69,6 +70,18 @@ import { createAppWebSocketFactory } from "./websocket-factory";
 export type HostRuntimeConnectionStatus = "idle" | "connecting" | "online" | "offline" | "error";
 export type HostRegistryStatus = "loading" | "ready";
 
+async function syncBrowserEditorInsecureOrigins(hosts: readonly HostProfile[]): Promise<void> {
+  const setOrigins = getDesktopHost()?.browserEditor?.setInsecureOrigins;
+  if (typeof setOrigins !== "function") {
+    return;
+  }
+  const origins = collectBrowserEditorOrigins(hosts.map((host) => host.browserEditorUrl));
+  try {
+    await setOrigins(origins);
+  } catch (error) {
+    console.warn("[HostRuntime] Failed to sync browser-editor insecure origins", error);
+  }
+}
 export type ActiveConnection =
   | { type: "directTcp"; endpoint: string; display: string }
   | { type: "directSocket"; endpoint: string; display: "socket" }
@@ -152,6 +165,7 @@ export interface HostRuntimeControllerDeps {
     host: HostProfile;
     connection: HostConnection;
     timeoutMs?: number;
+    clientId?: string;
   }) => Promise<{
     client: DaemonClient;
     serverId: string;
@@ -467,6 +481,23 @@ function probeIntervalForConnection(
   return PROBE_MAX_BACKOFF_MS;
 }
 
+function allocateProbeClientId(stableClientId: string): string {
+  const suffix =
+    globalThis.crypto && typeof globalThis.crypto.randomUUID === "function"
+      ? globalThis.crypto.randomUUID().replace(/-/g, "").slice(0, 12)
+      : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  return `${stableClientId}:probe:${suffix}`;
+}
+
+function hostHasOpenTurn(serverId: string): boolean {
+  const session = useSessionStore.getState().sessions[serverId];
+  if (!session) return false;
+  for (const agentId of session.agents.keys()) {
+    if (selectAgentTurnPresentation(session, agentId).isActive) return true;
+  }
+  return false;
+}
+
 function createDefaultDeps(): HostRuntimeControllerDeps {
   const browserHostAvailable =
     typeof getDesktopHost()?.browser?.executeAutomationCommand === "function";
@@ -530,10 +561,11 @@ function createDefaultDeps(): HostRuntimeControllerDeps {
         },
       });
     },
-    connectToDaemon: ({ host, connection, timeoutMs }) =>
+    connectToDaemon: ({ host, connection, timeoutMs, clientId }) =>
       connectToDaemon(connection, {
         ...(host.serverId ? { serverId: host.serverId } : {}),
         ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        ...(clientId ? { clientId } : {}),
         capabilities: appCapabilities,
         trace: nativePerformanceTrace,
       }),
@@ -913,6 +945,9 @@ export class HostRuntimeController {
       }
 
       if (this.switchCandidateHitCount >= ADAPTIVE_SWITCH_CONSECUTIVE_PROBES) {
+        if (hostHasOpenTurn(this.host.serverId)) {
+          return;
+        }
         this.switchCandidateConnectionId = null;
         this.switchCandidateHitCount = 0;
         await this.switchToConnection({
@@ -949,6 +984,7 @@ export class HostRuntimeController {
               const { client, serverId } = await this.deps.connectToDaemon({
                 host: this.host,
                 connection,
+                clientId: allocateProbeClientId("cid"),
               });
               if (serverId !== this.host.serverId) {
                 if (isPlaceholderServerId(this.host.serverId) && this.onReconcileServerId) {
@@ -1478,6 +1514,7 @@ export class HostRuntimeStore {
       projectIconCache.setHosts(profiles.map((profile) => profile.serverId));
       await Promise.all([this.replicaCache.restore(), projectIconCache.restore()]);
       this.syncHosts(profiles);
+      void syncBrowserEditorInsecureOrigins(profiles);
     } catch (error) {
       console.error("[HostRuntime] Failed to load host registry from storage", error);
     } finally {
@@ -1826,6 +1863,41 @@ export class HostRuntimeStore {
     );
     this.setHostsAndSync(next);
     await this.persistHosts();
+  }
+
+  async setHostSshHost(serverId: string, sshHost: string | null): Promise<void> {
+    const trimmed = sshHost?.trim() ?? "";
+    const next = this.hosts.map((h) => {
+      if (h.serverId !== serverId) {
+        return h;
+      }
+      const { sshHost: _previous, ...rest } = h;
+      return {
+        ...rest,
+        ...(trimmed ? { sshHost: trimmed } : {}),
+        updatedAt: new Date().toISOString(),
+      } satisfies HostProfile;
+    });
+    this.setHostsAndSync(next);
+    await this.persistHosts();
+  }
+
+  async setHostBrowserEditorUrl(serverId: string, browserEditorUrl: string | null): Promise<void> {
+    const trimmed = browserEditorUrl?.trim() ?? "";
+    const next = this.hosts.map((h) => {
+      if (h.serverId !== serverId) {
+        return h;
+      }
+      const { browserEditorUrl: _previous, ...rest } = h;
+      return {
+        ...rest,
+        ...(trimmed ? { browserEditorUrl: trimmed } : {}),
+        updatedAt: new Date().toISOString(),
+      } satisfies HostProfile;
+    });
+    this.setHostsAndSync(next);
+    await this.persistHosts();
+    await syncBrowserEditorInsecureOrigins(next);
   }
 
   async renameHost(serverId: string, label: string): Promise<void> {
@@ -2393,6 +2465,49 @@ export function useHostRuntimeConnectionStatus(serverId: string): HostRuntimeCon
   );
 }
 
+/**
+ * Builds the aggregate connection-status map for the given hosts.
+ *
+ * Lives at module scope (not inside the hook) so the React Compiler treats the
+ * call as opaque and keeps every argument — `version` included — in the
+ * auto-memo dep list. An in-hook `void version` read is dead-code-eliminated by
+ * the compiler (the value never feeds a visible computation), leaving
+ * `serverIds` as the only memo dep; with a stable serverIds array the map then
+ * freezes at the mount-time status and never reflects later transitions (the
+ * Mission Control board/sidebar gate on it). Here `version` keys the per-tick
+ * cache: when the store's aggregate version ticks, the map is rebuilt from
+ * fresh snapshots.
+ */
+let lastConnectionStatusMapBuild: {
+  store: HostRuntimeStore;
+  version: number;
+  key: string;
+  statuses: ReadonlyMap<string, HostRuntimeConnectionStatus>;
+} | null = null;
+
+function buildConnectionStatusMap(
+  store: HostRuntimeStore,
+  serverIds: readonly string[],
+  version: number,
+): ReadonlyMap<string, HostRuntimeConnectionStatus> {
+  const key = serverIds.join("\u0000");
+  const cached = lastConnectionStatusMapBuild;
+  if (
+    cached !== null &&
+    cached.store === store &&
+    cached.version === version &&
+    cached.key === key
+  ) {
+    return cached.statuses;
+  }
+  const statuses = new Map<string, HostRuntimeConnectionStatus>();
+  for (const serverId of serverIds) {
+    statuses.set(serverId, store.getSnapshot(serverId)?.connectionStatus ?? "connecting");
+  }
+  lastConnectionStatusMapBuild = { store, version, key, statuses };
+  return statuses;
+}
+
 export function useHostRuntimeConnectionStatuses(
   serverIds: readonly string[],
 ): ReadonlyMap<string, HostRuntimeConnectionStatus> {
@@ -2402,16 +2517,7 @@ export function useHostRuntimeConnectionStatuses(
     () => store.getVersion(),
     () => store.getVersion(),
   );
-
-  return useMemo(() => {
-    // The aggregate version is the reactivity trigger; re-read snapshots on every host tick.
-    void version;
-    const entries: Array<[string, HostRuntimeConnectionStatus]> = serverIds.map((serverId) => [
-      serverId,
-      store.getSnapshot(serverId)?.connectionStatus ?? "connecting",
-    ]);
-    return new Map(entries);
-  }, [serverIds, store, version]);
+  return buildConnectionStatusMap(store, serverIds, version);
 }
 
 export function useHostRuntimeLastError(serverId: string): string | null {
@@ -2497,6 +2603,8 @@ export interface HostMutations {
     label?: string,
   ) => Promise<HostProfile>;
   renameHost: (serverId: string, label: string) => Promise<void>;
+  setHostSshHost: (serverId: string, sshHost: string | null) => Promise<void>;
+  setHostBrowserEditorUrl: (serverId: string, browserEditorUrl: string | null) => Promise<void>;
   setHostColor: (serverId: string, color: HostColor) => Promise<void>;
   setHostBadgeDisplay: (serverId: string, badgeDisplay: HostBadgeDisplay) => Promise<void>;
   removeHost: (serverId: string) => Promise<void>;
@@ -2513,6 +2621,9 @@ export function useHostMutations(): HostMutations {
       upsertConnectionFromOffer: (offer, label) => store.upsertConnectionFromOffer(offer, label),
       upsertConnectionFromOfferUrl: (url, label) => store.upsertConnectionFromOfferUrl(url, label),
       renameHost: (serverId, label) => store.renameHost(serverId, label),
+      setHostSshHost: (serverId, sshHost) => store.setHostSshHost(serverId, sshHost),
+      setHostBrowserEditorUrl: (serverId, browserEditorUrl) =>
+        store.setHostBrowserEditorUrl(serverId, browserEditorUrl),
       setHostColor: (serverId, color) => store.setHostColor(serverId, color),
       setHostBadgeDisplay: (serverId, badgeDisplay) =>
         store.setHostBadgeDisplay(serverId, badgeDisplay),

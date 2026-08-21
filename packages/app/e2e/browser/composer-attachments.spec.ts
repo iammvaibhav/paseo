@@ -11,7 +11,6 @@ import {
   removeAttachmentPill,
   openImageLightbox,
   closeImageLightbox,
-  pressInterruptShortcut,
   expectComposerDraft,
   expectComposerDisabled,
   expectComposerEditable,
@@ -275,9 +274,7 @@ test.describe("Composer attachments", () => {
     }
   });
 
-  test("Escape interrupt cancels the running agent and preserves composer draft", async ({
-    page,
-  }) => {
+  test("Escape does not stop the running agent; the Stop button does", async ({ page }) => {
     test.setTimeout(120_000);
     const agent = await startRunningMockAgent(page, {
       prefix: "attach-interrupt-",
@@ -286,8 +283,16 @@ test.describe("Composer attachments", () => {
     });
     try {
       await fillComposerDraft(page, "preserve me");
-      await pressInterruptShortcut(page);
+      await page.keyboard.press("Escape");
 
+      // Escape must not interrupt the agent — the stop button stays visible
+      // and the draft is untouched.
+      await expect(page.getByRole("button", { name: "Stop agent", exact: true })).toBeVisible({
+        timeout: 10_000,
+      });
+      await expectComposerDraft(page, "preserve me");
+
+      await page.getByRole("button", { name: "Stop agent", exact: true }).click();
       await expectAgentIdle(page, 15_000);
       await expectComposerDraft(page, "preserve me");
     } finally {

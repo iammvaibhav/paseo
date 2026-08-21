@@ -4,6 +4,7 @@ import type { Logger } from "pino";
 import type { ProviderRuntimeSettings } from "../../provider-launch-config.js";
 import {
   JSONL_RPC_DEFAULT_TIMEOUT_MS,
+  JSONL_RPC_NO_TIMEOUT,
   JsonlRpcProcess,
   supportsJsonlRpcProtocolV2,
   type JsonlRpcLaunch,
@@ -47,6 +48,14 @@ const DEFAULT_OMP_COMMAND: [string, ...string[]] = [process.env.OMP_COMMAND ?? "
 const DEFAULT_COMMANDS_RPC_NAME = "get_available_commands";
 /** How long to wait for OMP's startup `ready` frame before failing startup. */
 const OMP_READY_TIMEOUT_MS = 10_000;
+
+/**
+ * OMP RPC timeout policy:
+ * - Control-plane / accept-and-stream (`prompt`, `get_state`, `abort`, …): default 30s
+ * - Blocking LLM jobs (`compact`, `handoff`): no wall-clock timeout — they finish on
+ *   response, process death, or session close (`JsonlRpcProcess.failAll` / `close`).
+ */
+const OMP_BLOCKING_JOB_TIMEOUT_MS = JSONL_RPC_NO_TIMEOUT;
 
 export interface OmpCliRuntimeOptions {
   logger: Logger;
@@ -93,7 +102,7 @@ export class OmpCliRuntime implements OmpRuntime {
     try {
       await negotiateOmpProtocolV2(process, this.options.logger);
       input.signal?.throwIfAborted();
-      return new OmpCliRuntimeSession(process, this.commandsRpcName);
+      return new OmpCliRuntimeSession(process, this.commandsRpcName, this.options.logger);
     } catch (error) {
       const startupError = error instanceof Error ? error : new Error(String(error));
       await process.close(startupError);
@@ -165,12 +174,28 @@ class OmpCliRuntimeSession implements OmpRuntimeSession {
   constructor(
     private readonly process: JsonlRpcProcess,
     private readonly commandsRpcName: "get_available_commands",
+    private readonly logger: Logger,
   ) {
     process.onMessage((message) => {
       const event = OmpRuntimeEventSchema.safeParse(message);
       if (event.success) {
         this.emit(event.data);
+        return;
       }
+      // A frame the daemon's schema rejects is dropped here with no other
+      // trace. If OMP emits an event type or field shape this daemon version
+      // does not know, an `agent_end` (or the whole tail of a turn) can vanish
+      // and leave the agent lifecycle stuck at running. Surface it.
+      this.logger.warn(
+        {
+          frameType: typeof message.type === "string" ? message.type : "<non-string type>",
+          frameKeys: Object.keys(message).slice(0, 12),
+          issue: event.error.issues
+            ?.slice(0, 3)
+            .map((issue) => `${issue.path.join(".")}: ${issue.message}`),
+        },
+        "omp.rpc.schema_drop",
+      );
     });
     process.onExit(({ error }) => {
       this.emit({ type: "process_exit", error: error.message });
@@ -198,18 +223,27 @@ class OmpCliRuntimeSession implements OmpRuntimeSession {
   }
 
   async compact(customInstructions?: string): Promise<void> {
-    await this.request({
-      type: "compact",
-      ...(customInstructions ? { customInstructions } : {}),
-    });
+    await this.request(
+      {
+        type: "compact",
+        ...(customInstructions ? { customInstructions } : {}),
+      },
+      OMP_BLOCKING_JOB_TIMEOUT_MS,
+    );
   }
 
   async setAutoCompaction(enabled: boolean): Promise<void> {
     await this.request({ type: "set_auto_compaction", enabled });
   }
 
-  async abort(): Promise<void> {
-    await this.request({ type: "abort" });
+  // The interactive stop path must resolve inside AgentManager's interrupt
+  // window (~2s), so the first abort gets a short ack budget. A miss does not
+  // mean OMP is dead — see OmpAgentSession.interrupt, which retries with a
+  // longer budget instead of killing a live process.
+  private static readonly ABORT_TIMEOUT_MS = 1_000;
+
+  async abort(timeoutMs = OmpCliRuntimeSession.ABORT_TIMEOUT_MS): Promise<void> {
+    await this.request({ type: "abort" }, timeoutMs);
   }
 
   async getState(): Promise<OmpSessionState> {
@@ -234,6 +268,14 @@ class OmpCliRuntimeSession implements OmpRuntimeSession {
 
   async setThinkingLevel(level: OmpThinkingLevel): Promise<void> {
     await this.request({ type: "set_thinking_level", level });
+  }
+
+  async newSession(): Promise<void> {
+    await this.request({ type: "new_session" });
+  }
+
+  async switchSession(sessionPath: string): Promise<void> {
+    await this.request({ type: "switch_session", sessionPath });
   }
 
   async getSessionStats(): Promise<OmpSessionStats> {
@@ -276,6 +318,35 @@ class OmpCliRuntimeSession implements OmpRuntimeSession {
   }
 
   async setHostTools(tools: OmpRpcHostToolDefinition[]): Promise<string[]> {
+    const requestedNames = tools.map((tool) => tool.name);
+    if (requestedNames.length === 0) {
+      return await this.requestSetHostTools(tools);
+    }
+    let registered = await this.requestSetHostTools(tools);
+    let missing = requestedNames.filter((name) => !new Set(registered).has(name));
+    if (missing.length === 0) {
+      return registered;
+    }
+    // A non-empty catalog must never register zero (or fewer) tools silently:
+    // the session would run without Paseo host tools while nothing logs why.
+    // Retry once — set_host_tools is idempotent (replaces the tool set) — then
+    // surface what is still missing so the failure stays loud either way.
+    this.logger.error(
+      { requested: requestedNames, registered, missing },
+      "OMP set_host_tools registered fewer tools than requested; retrying once",
+    );
+    registered = await this.requestSetHostTools(tools);
+    missing = requestedNames.filter((name) => !new Set(registered).has(name));
+    if (missing.length > 0) {
+      this.logger.error(
+        { requested: requestedNames, registered, stillMissing: missing },
+        "OMP set_host_tools still missing tools after retry",
+      );
+    }
+    return registered;
+  }
+
+  private async requestSetHostTools(tools: OmpRpcHostToolDefinition[]): Promise<string[]> {
     const data = OmpHostToolsResultSchema.parse(
       await this.request({ type: "set_host_tools", tools }),
     );
@@ -321,10 +392,13 @@ class OmpCliRuntimeSession implements OmpRuntimeSession {
   }
 
   async handoff(customInstructions?: string): Promise<void> {
-    await this.request({
-      type: "handoff",
-      ...(customInstructions ? { customInstructions } : {}),
-    });
+    await this.request(
+      {
+        type: "handoff",
+        ...(customInstructions ? { customInstructions } : {}),
+      },
+      OMP_BLOCKING_JOB_TIMEOUT_MS,
+    );
   }
 
   respondToExtensionUiRequest(

@@ -270,12 +270,29 @@ export const OmpAssistantMessageEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("text_end") }).passthrough(),
   z.object({ type: z.literal("thinking_start") }).passthrough(),
   z.object({ type: z.literal("thinking_end") }).passthrough(),
+  z.object({ type: z.literal("image_end") }).passthrough(),
+  z.object({ type: z.literal("toolcall_start") }).passthrough(),
+  z.object({ type: z.literal("toolcall_delta"), delta: z.string().optional() }).passthrough(),
+  z.object({ type: z.literal("toolcall_end") }).passthrough(),
+  z
+    .object({
+      type: z.literal("error"),
+      reason: z.enum(["aborted", "error"]).optional(),
+    })
+    .passthrough(),
   z.object({ type: z.literal("done") }).passthrough(),
 ]);
 
 export const OmpAgentSessionEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("agent_start") }).passthrough(),
   z.object({ type: z.literal("turn_start") }).passthrough(),
+  z
+    .object({
+      type: z.literal("turn_end"),
+      message: OmpAgentMessageSchema.optional(),
+      toolResults: z.array(OmpAgentMessageSchema).optional(),
+    })
+    .passthrough(),
   z.object({ type: z.literal("message_start"), message: OmpAgentMessageSchema }).passthrough(),
   z.object({ type: z.literal("message_end"), message: OmpAgentMessageSchema }).passthrough(),
   z
@@ -500,6 +517,11 @@ const OmpCommandBase = { id: z.string().optional() };
 export const OmpRpcCommandSchema = z.discriminatedUnion("type", [
   z.object({
     ...OmpCommandBase,
+    type: z.literal("negotiate_protocol"),
+    protocolVersion: z.number(),
+  }),
+  z.object({
+    ...OmpCommandBase,
     type: z.literal("prompt"),
     message: z.string(),
     images: z.array(OmpImageContentSchema).optional(),
@@ -524,6 +546,12 @@ export const OmpRpcCommandSchema = z.discriminatedUnion("type", [
     ...OmpCommandBase,
     type: z.literal("set_thinking_level"),
     level: OmpThinkingLevelSchema,
+  }),
+  z.object({ ...OmpCommandBase, type: z.literal("new_session") }),
+  z.object({
+    ...OmpCommandBase,
+    type: z.literal("switch_session"),
+    sessionPath: z.string(),
   }),
   z.object({ ...OmpCommandBase, type: z.literal("get_session_stats") }),
   z.object({ ...OmpCommandBase, type: z.literal("get_available_commands") }),
@@ -559,9 +587,13 @@ export const OmpModelsResultSchema = z
 export const OmpCommandsResultSchema = z
   .object({ commands: z.array(OmpRpcSlashCommandSchema).optional() })
   .passthrough();
-export const OmpHostToolsResultSchema = z
-  .object({ toolNames: z.array(z.string()).optional() })
-  .passthrough();
+/**
+ * set_host_tools must answer with the registered tool names. A success frame
+ * without `toolNames` (or with zero names for a non-empty request) is a
+ * registration failure — never pass it through silently, or the session ends
+ * up without Paseo host tools while nothing logs why.
+ */
+export const OmpHostToolsResultSchema = z.object({ toolNames: z.array(z.string()) }).passthrough();
 export const OmpBranchResultSchema = z
   .object({ text: z.string().optional(), cancelled: z.boolean().optional() })
   .passthrough();
@@ -569,6 +601,9 @@ export const OmpBranchMessagesResultSchema = z
   .object({
     messages: z.array(z.object({ entryId: z.string(), text: z.string() }).passthrough()).optional(),
   })
+  .passthrough();
+export const OmpNegotiateProtocolResultSchema = z
+  .object({ protocolVersion: z.number().optional() })
   .passthrough();
 
 export type OmpThinkingLevel = z.infer<typeof OmpThinkingLevelSchema>;

@@ -73,6 +73,8 @@ OMP is a first-class built-in provider, disabled by default. Its launch contract
 
 OMP supports native Paseo host tools. The adapter registers the full caller-scoped Paseo tool catalog directly with OMP, matching providers such as Claude that expose the full catalog through MCP. Serialize every OMP host definition with `loadMode: "essential"` so `create_agent`, `send_agent_prompt`, `wait_for_agent`, and related tools remain direct calls; omitting the field makes OMP mount non-built-in names under `xd://` instead. OMP's provider-managed task subagents are surfaced as Paseo subagents through `child_session` imports; the parent keeps the subagents track while the child runtime stays owned by OMP. Custom OMP profiles should extend `omp`; other Pi-compatible forks can still extend `pi`, override `command`, and set `params.sessionDir` to their JSONL session directory.
 
+OMP RPC caps every stdout frame at 1 MiB. Protocol v1 answers an oversized response by throwing the payload away and returning `RPC response exceeded the transport limit`, which is how a _successful_ snapcompact — megabytes of standing image frames in the compact result's `preserveData` — surfaced as a failed `/compact`. The `ready` handshake advertises `supportedProtocolVersions`; `OmpCliRuntimeSession` answers with `negotiate_protocol` for v2, and `JsonlRpcProcess` reassembles the `rpc_chunk` sequences v2 sends in place of truncated frames. OMP upgrades its encoder only after it has written that response, so anything it emits during startup is still v1-encoded. `compact` and `handoff` are blocking LLM jobs and get no wall-clock RPC timeout, matching Pi.
+
 Pi RPC extension UI dialog requests (`select`, `input`, `editor`, `confirm`) are bridged into Paseo question permissions and answered with `extension_ui_response`. Pi extensions such as `ask_user` may chain dialogs: for example, a `select` can be followed by an optional-comment `input`. When an `ask_user` tool call declares `allowComment: true`, Paseo presents the selection and optional comment as one question permission, answers Pi's initial `select` immediately, then auto-answers the follow-up optional `input` with the comment the user already supplied (or an empty string). Preserve placeholders and optional/skip semantics for standalone optional inputs so the app can still distinguish "skip this optional input" from "cancel the whole dialog." Fire-and-forget extension UI requests such as notifications are intentionally ignored by the provider adapter unless Paseo grows first-class UI for them.
 
 OpenCode MCP injection is dynamic and session-scoped. Call OpenCode's `mcp.add` endpoint with the MCP server config and do not follow it with `mcp.connect`; `connect` only toggles MCP servers already present in OpenCode's own config. New OpenCode versions return `McpServerNotFoundError`/404 for `connect` after a dynamic add because the server is not config-backed, while older versions silently swallowed the same missing-config path.
@@ -144,6 +146,8 @@ To add plan usage for a provider, add `packages/server/src/services/quota-fetche
 Keep the protocol shape provider-agnostic. Do not add provider-specific renderers for new limit windows; labels and generic bars should carry the UI. API responses should be parsed and normalized with Zod inside the fetcher, while the protocol boundary stays strict so old/new client compatibility is explicit.
 
 Kimi Code usage follows the CLI-managed credential file at `KIMI_CODE_HOME` or `~/.kimi-code/credentials/kimi-code.json`; do not probe the legacy `~/.kimi` path as the primary source for current Kimi Code installs.
+
+OMP plan usage is multi-provider: the `omp` fetcher prefers `omp usage --json` and expands every authenticated OMP account with a usage report into separate cards (`omp`, `omp-claude`, `omp-antigravity`, `omp-codex`, …). Cursor is authenticated in OMP but currently has no `omp usage` endpoint, so the fetcher falls back to Cursor's dashboard API using the OMP-stored Cursor OAuth token. Antigravity is the opposite problem: `omp usage` _does_ report it, but only the short-window counters from `fetchAvailableModels` (often three ~0% "Daily" bars for Google/OpenAI/Anthropic). The AGY CLI's Models & Quota screen uses Cloud Code Assist `v1internal:retrieveUserQuotaSummary` instead, so the fetcher overrides `omp-antigravity` with that weekly + 5-hour summary using the OMP-stored `google-antigravity` OAuth token. If the CLI is unavailable, SuperGrok still falls back to reading `xai-oauth` from `~/.omp/agent/agent.db` (`OMP_HOME` override supported) and calling `cli-chat-proxy.grok.com/v1/billing`.
 
 Cursor usage reads the desktop `state.vscdb` token first, then `cursor-agent`'s `~/.config/cursor/auth.json`. Headless hosts only have the CLI file.
 
@@ -452,6 +456,8 @@ interface AgentSession {
   setModel?(modelId: string | null): Promise<void>;
   setThinkingOption?(thinkingOptionId: string | null): Promise<void | AgentProviderNotice>;
   setFeature?(featureId: string, value: unknown): Promise<void>;
+  revertConversation?(input: { messageId: string }): Promise<void>;
+  isRuntimeAlive?(): boolean;
   tryHandleOutOfBand?(prompt: AgentPromptInput): {
     run(ctx: { emit: (event: AgentStreamEvent) => void }): Promise<void>;
   } | null;
@@ -459,6 +465,21 @@ interface AgentSession {
 ```
 
 `setMode` and `setThinkingOption` may return an `AgentProviderNotice` when the provider knows the change needs user-facing context. For example, providers that stage changes until the next turn should return an `info` notice while a turn is already running. The app renders the notice generically as a toast; provider-specific lifecycle behavior stays in the provider implementation.
+
+Every optional method also has to be forwarded in `wrapSessionProvider`
+(`agent/provider-registry.ts`), because that wrapper — not your class — is what the manager
+holds. A method the wrapper omits is simply `undefined` at every call site, and callers take
+their "provider can't do this" path without any error, so the hook looks healthy and is dead.
+The wrapper's `WrappedAgentSession` type makes a missing key a build error, so add the forward
+in the same change as the hook.
+
+`isRuntimeAlive` lets a provider report that its runtime is gone. Answer `false` once the
+session can no longer take work — a child process that exited, a connection that closed — and a
+prompt reloads the session from persistence instead of failing against it (see
+[agent-lifecycle.md](agent-lifecycle.md#cancellation)). Leave the hook off if you cannot tell;
+absent means "no signal", never "dead".
+
+A session that implements `tryHandleOutOfBand` must also mark the commands it intercepts as `delivery: "out_of_band"` in `listCommands`. That field is what tells the composer to send the command straight through while a turn is running instead of putting it in the queue — a queued `/steer` arrives after the turn it was meant to steer. Attachments turn a prompt into content blocks, which `tryHandleOutOfBand` rejects, so the composer treats a draft with attachments as an ordinary turn no matter what the command is.
 
 ### Steps
 
@@ -499,6 +520,24 @@ The E2E configs in `agent-configs.ts` expose two helpers:
 - `getAskModeConfig(provider)` -- returns config for a session that triggers permission requests
 
 Tests use `isProviderAvailable(provider)` to skip when the binary or credentials are missing, so CI will not fail for providers that are not installed.
+
+---
+
+## Rich tool payloads with no canonical detail
+
+`ToolCallDetail` (`packages/protocol/src/agent-types.ts`) is a closed wire union, and a tool that maps to none of its variants lands in `unknown`, where the app prints the whole envelope as JSON.
+
+**Do not add a variant for one provider's tool.** The union is a `z.discriminatedUnion` on the wire and `buildCanonicalDetailDisplay` throws on an unrecognized `type`, so a six-month-old app crashes on the tool-call row the moment a new daemon sends a new variant. That breaks the protocol contract in [protocol-compatibility.md](protocol-compatibility.md). A variant is worth it only when several providers produce the shape.
+
+For a single provider, keep the payload in `unknown` and recognize its shape in the app. The daemon already forwards the provider envelope verbatim, so a shape-keyed renderer also works against old hosts and stored history. Oh My Pi's `eval` is the worked example:
+
+- `packages/app/src/utils/eval-detail.ts` parses the notebook payload (`details.cells`, `jsonOutputs`, `images`) with zod and returns null for anything else. `ToolCallDetailsContent` only receives a detail, never the tool name, so recognition is by shape, not by name.
+- `packages/app/src/components/tool-call-details.tsx` renders a cell per entry: highlighted code, captured output, duration, exit code.
+- The collapsed badge summary comes from `buildUnknownDetailOverride` in `packages/protocol/src/tool-call-display.ts`, keyed on the tool name. Adding a name there is safe in both directions; adding a detail variant is not.
+
+Check what the envelope actually carries before mapping it. `eval` keeps `display()` values in `details.jsonOutputs` and images in `details.images` — neither appears in the text output, so a text-only mapping loses them silently.
+
+To get UI proof without the real provider, add a scenario to the mock provider (`packages/server/src/server/agent/providers/mock-load-test-agent.ts`) driven by a magic prompt, then drive it from an e2e spec. `emit an eval tool call` plus `packages/app/e2e/browser/eval-tool-call.spec.ts` is the pattern.
 
 ---
 

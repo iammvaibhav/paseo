@@ -26,6 +26,7 @@ export interface ToolCallSheetData {
   errorText?: string;
   icon: ToolCallIconComponent;
   showLoadingSkeleton?: boolean;
+  toolName?: string;
 }
 
 interface ToolCallSheetContextValue {
@@ -164,6 +165,7 @@ function ToolCallSheetContent({ data, onClose }: ToolCallSheetContentProps) {
           errorText={errorText}
           fillAvailableHeight
           showLoadingSkeleton={showLoadingSkeleton}
+          toolName={data.toolName}
         />
       </BottomSheetScrollView>
     </View>

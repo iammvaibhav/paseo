@@ -24,6 +24,7 @@ import {
 import type { PendingPermission } from "@/types/shared";
 import type { ComposerAttachment } from "@/attachments/types";
 import type { AgentLifecycleStatus } from "@getpaseo/protocol/agent-lifecycle";
+import type { LifecycleBucket as CanonicalLifecycleBucket } from "@getpaseo/protocol/agent-state-bucket";
 import type {
   AgentPermissionRequest,
   AgentFeature,
@@ -90,18 +91,28 @@ export interface Agent {
   lastUsage?: AgentUsage;
   lastError?: string | null;
   title: string | null;
+  // Optional like the wire payload: older daemons omit identity fields.
+  name?: string | null;
+  /** Living short description (report_status description refresh). */
+  shortDescription?: string | null;
   cwd: string;
   workspaceId?: string;
   model: string | null;
   features?: AgentFeature[];
   thinkingOptionId?: string | null;
+  effectiveThinkingOptionId?: string | null;
   requiresAttention?: boolean;
   attentionReason?: "finished" | "error" | "permission" | null;
   attentionTimestamp?: Date | null;
+  /** Mission Control stop origin for the agent's last run (v3.1). */
+  stoppedBy?: "user" | "machinery" | "system" | null;
+  /** Daemon-owned Mission Control lifecycle bucket. */
+  bucket?: CanonicalLifecycleBucket;
   archivedAt?: Date | null;
   parentAgentId: string | null;
   labels: Record<string, string>;
   projectPlacement?: ProjectPlacementPayload | null;
+  providerUnavailable?: boolean;
 }
 
 export interface WorkspaceDescriptor {
@@ -121,6 +132,10 @@ export interface WorkspaceDescriptor {
   labels?: string[];
   status: WorkspaceDescriptorPayload["status"];
   statusEnteredAt: Date | null;
+  /** Best-effort last activity (wire `activityAt`); null when unknown. */
+  activityAt: Date | null;
+  /** Workspace record createdAt when the daemon sends it; null for older peers. */
+  createdAt: Date | null;
   archivingAt: string | null;
   diffStat: { additions: number; deletions: number } | null;
   scripts: WorkspaceDescriptorPayload["scripts"];
@@ -130,14 +145,18 @@ export interface WorkspaceDescriptor {
   project?: ProjectPlacementPayload;
 }
 
+function parseOptionalDate(raw: string | null | undefined): Date | null {
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  const value = new Date(raw);
+  return Number.isNaN(value.getTime()) ? null : value;
+}
+
 export function normalizeWorkspaceDescriptor(
   payload: WorkspaceDescriptorPayload,
 ): WorkspaceDescriptor {
-  const statusEnteredAtRaw = payload.statusEnteredAt;
-  const statusEnteredAt: Date | null =
-    typeof statusEnteredAtRaw === "string" && statusEnteredAtRaw.length > 0
-      ? new Date(statusEnteredAtRaw)
-      : null;
+  const statusEnteredAt = parseOptionalDate(payload.statusEnteredAt);
+  const activityAt = parseOptionalDate(payload.activityAt);
+  const createdAt = parseOptionalDate(payload.createdAt);
   return {
     id: normalizeWorkspaceOpaqueId(payload.id) ?? payload.id,
     projectId: payload.projectId,
@@ -159,6 +178,8 @@ export function normalizeWorkspaceDescriptor(
     labels: payload.labels ?? [],
     status: payload.status,
     statusEnteredAt,
+    activityAt,
+    createdAt,
     archivingAt: payload.archivingAt ?? null,
     diffStat: payload.diffStat ?? null,
     scripts: (payload.scripts ?? []).map((s) => Object.assign({}, s)),
@@ -175,6 +196,7 @@ export interface ProjectDescriptor {
   projectDisplayName: string;
   projectCustomName: string | null;
   projectCustomIconRevision?: string | null;
+  projectDescription?: string | null;
   projectIconRevision?: string;
   projectRootPath: string;
   projectKind: WorkspaceDescriptorPayload["projectKind"];
@@ -189,6 +211,7 @@ export function normalizeProjectDescriptor(
     projectDisplayName: payload.projectDisplayName,
     projectCustomName: payload.projectCustomName ?? null,
     projectCustomIconRevision: payload.projectCustomIconRevision ?? null,
+    projectDescription: payload.projectDescription ?? null,
     projectIconRevision: payload.projectIconRevision,
     projectRootPath: payload.projectRootPath,
     projectKind: payload.projectKind,
@@ -291,6 +314,10 @@ export interface AgentFileExplorerState {
 export interface DaemonServerInfo {
   serverId: string;
   hostname: string | null;
+  // The daemon's missionControl.hostAlias (trimmed; null when unset/unknown),
+  // advertised via server_info so a central-config commanderHost designation
+  // naming the alias resolves to this host.
+  missionControlHostAlias: string | null;
   version: string | null;
   desktopManaged?: boolean;
   capabilities?: ServerCapabilities;
@@ -708,6 +735,7 @@ function isSessionServerInfoUnchanged(input: {
   currentServerInfo: SessionState["serverInfo"] | undefined;
   nextHostname: string | null;
   nextVersion: string | null;
+  nextMissionControlHostAlias: string | null;
   nextDesktopManaged: boolean | undefined;
   nextCapabilities: ServerCapabilities | undefined;
   nextFeatures: ServerInfoStatusPayload["features"] | undefined;
@@ -717,16 +745,19 @@ function isSessionServerInfoUnchanged(input: {
     currentServerInfo,
     nextHostname,
     nextVersion,
+    nextMissionControlHostAlias,
     nextDesktopManaged,
     nextCapabilities,
     nextFeatures,
   } = input;
   const prevHostname = currentServerInfo?.hostname?.trim() || null;
   const prevVersion = currentServerInfo?.version?.trim() || null;
+  const prevMissionControlHostAlias = currentServerInfo?.missionControlHostAlias?.trim() || null;
   return (
     currentServerInfo?.serverId === input.nextServerId &&
     prevHostname === nextHostname &&
     prevVersion === nextVersion &&
+    prevMissionControlHostAlias === nextMissionControlHostAlias &&
     currentServerInfo?.desktopManaged === nextDesktopManaged &&
     areServerCapabilitiesEqual(currentServerInfo?.capabilities, nextCapabilities) &&
     areServerInfoFeaturesEqual(currentServerInfo?.features, nextFeatures)
@@ -917,6 +948,7 @@ export const useSessionStore = create<SessionStore>()(
 
           const nextHostname = info.hostname?.trim() || null;
           const nextVersion = info.version?.trim() || null;
+          const nextMissionControlHostAlias = info.missionControlHostAlias?.trim() || null;
           const nextDesktopManaged = info.desktopManaged;
           const nextCapabilities = info.capabilities;
           const nextFeatures = info.features;
@@ -926,6 +958,7 @@ export const useSessionStore = create<SessionStore>()(
               currentServerInfo: session.serverInfo,
               nextHostname,
               nextVersion,
+              nextMissionControlHostAlias,
               nextDesktopManaged,
               nextCapabilities,
               nextFeatures,
@@ -944,6 +977,7 @@ export const useSessionStore = create<SessionStore>()(
                 serverInfo: {
                   serverId: info.serverId,
                   hostname: nextHostname,
+                  missionControlHostAlias: nextMissionControlHostAlias,
                   version: nextVersion,
                   ...(nextDesktopManaged !== undefined
                     ? { desktopManaged: nextDesktopManaged }
@@ -1143,7 +1177,13 @@ export const useSessionStore = create<SessionStore>()(
             agentId,
             transition,
           );
-          if (agentTurnLiveness === session.agentTurnLiveness) return prev;
+          // A submission stays active until its canonical row arrives — see the
+          // "message submission ordering" invariant. Turn liveness alone never
+          // settles it: an idle snapshot lands between a send and the turn
+          // opening, and a stream_close can precede the canonical row.
+          if (agentTurnLiveness === session.agentTurnLiveness) {
+            return prev;
+          }
           return {
             ...prev,
             sessions: {
@@ -1983,14 +2023,18 @@ export const useSessionStore = create<SessionStore>()(
             id: agent.id,
             serverId,
             title: agent.title ?? null,
+            name: agent.name ?? null,
             status: agent.status,
             lastActivityAt,
+            lastUserMessageAt: agent.lastUserMessageAt ?? null,
             cwd: agent.cwd,
             provider: agent.provider,
             pendingPermissionCount: agent.pendingPermissions.length,
             requiresAttention: agent.requiresAttention ?? false,
             attentionReason: agent.attentionReason ?? null,
             attentionTimestamp: agent.attentionTimestamp ?? null,
+            stoppedBy: agent.stoppedBy ?? null,
+            bucket: agent.bucket,
             createdAt: agent.createdAt,
             labels: agent.labels,
           });

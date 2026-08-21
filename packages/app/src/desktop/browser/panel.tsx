@@ -5,13 +5,23 @@ import invariant from "tiny-invariant";
 import { BrowserPane } from "@/desktop/browser/pane";
 import { usePaneContext, usePaneFocus } from "@/panels/pane-context";
 import type { PanelDescriptor, PanelIconProps, PanelRegistration } from "@/panels/panel-registry";
-import { useBrowserStore } from "@/desktop/browser/store";
+import { resolveBrowserChromeMode, useBrowserStore } from "@/desktop/browser/store";
 import { useWorkspaceDirectory } from "@/stores/session-store-hooks";
 
-function getBrowserLabel(input: { title: string; url: string }): string {
+function getBrowserLabel(input: {
+  title: string;
+  url: string;
+  chrome: "full" | "embedded" | "embedded-transient";
+}): string {
   const title = input.title.trim();
   if (title) {
     return title;
+  }
+  if (input.chrome === "embedded") {
+    return "VS Code Web";
+  }
+  if (input.chrome === "embedded-transient") {
+    return "Plannotator";
   }
 
   try {
@@ -20,6 +30,20 @@ function getBrowserLabel(input: { title: string; url: string }): string {
   } catch {
     return input.url;
   }
+}
+
+function getBrowserSubtitle(input: {
+  url: string;
+  chrome: "full" | "embedded" | "embedded-transient";
+}): string {
+  if (input.chrome === "embedded" || input.chrome === "embedded-transient") {
+    try {
+      return new URL(input.url).hostname || "";
+    } catch {
+      return "";
+    }
+  }
+  return input.url;
 }
 
 function createBrowserTabIcon(faviconUrl: string | null) {
@@ -41,12 +65,14 @@ function useBrowserPanelDescriptor(target: {
 }): PanelDescriptor {
   const browser = useBrowserStore((state) => state.browsersById[target.browserId] ?? null);
   const url = browser?.url ?? "https://example.com";
+  const chrome = resolveBrowserChromeMode(browser?.chrome);
   const icon = createBrowserTabIcon(browser?.faviconUrl ?? null);
-  const label = getBrowserLabel({ title: browser?.title ?? "", url });
+  const label = getBrowserLabel({ title: browser?.title ?? "", url, chrome });
+  const subtitle = getBrowserSubtitle({ url, chrome });
 
   return {
     label,
-    subtitle: url,
+    subtitle,
     tooltip: url || label,
     titleState: "ready",
     icon,
@@ -66,6 +92,10 @@ function BrowserPanel() {
       workspaceId={workspaceId}
       cwd={cwd}
       isInteractive={isInteractive}
+      // Must be tab-focused, not merely workspace-focused: persistent VS Code
+      // webviews are position:fixed and would otherwise stay painted over other
+      // tabs (including Plannotator) while retained off-screen.
+      isWorkspaceActive={isInteractive}
       onFocusPane={focusPane}
     />
   );

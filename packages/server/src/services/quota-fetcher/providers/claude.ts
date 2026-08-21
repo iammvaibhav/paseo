@@ -347,6 +347,7 @@ export async function readClaudeKeychainCredentials(
 
 export class ClaudeQuotaProvider implements ProviderUsageFetcher {
   readonly providerId = "claude";
+  readonly agentProviderIds: readonly string[] = ["claude"];
   readonly displayName = "Claude";
 
   private readonly logger: Logger;

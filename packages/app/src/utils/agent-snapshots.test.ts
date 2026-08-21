@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { AgentSnapshotPayload } from "@getpaseo/protocol/messages";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
-import { normalizeAgentSnapshot, projectAgentSnapshot } from "./agent-snapshots";
+import {
+  normalizeAgentSnapshot,
+  projectAgentSnapshot,
+  resolveSessionAgent,
+} from "./agent-snapshots";
 
 function createSnapshot(
   input: Partial<Omit<AgentSnapshotPayload, "labels">> & {
@@ -32,6 +36,10 @@ function createSnapshot(
     persistence: input.persistence ?? null,
     title: input.title ?? null,
     labels: (input.labels ?? {}) as AgentSnapshotPayload["labels"],
+    ...(input.bucket ? { bucket: input.bucket } : {}),
+    ...(input.providerUnavailable === undefined
+      ? {}
+      : { providerUnavailable: input.providerUnavailable }),
   };
 }
 
@@ -103,5 +111,68 @@ describe("normalizeAgentSnapshot", () => {
     expect(missing.parentAgentId).toBeNull();
     expect(empty.parentAgentId).toBeNull();
     expect(nonString.parentAgentId).toBeNull();
+  });
+
+  it("preserves providerUnavailable from the snapshot payload", () => {
+    const unavailable = normalizeAgentSnapshot(
+      createSnapshot({ providerUnavailable: true }),
+      "server-1",
+    );
+    const available = normalizeAgentSnapshot(createSnapshot(), "server-1");
+
+    expect(unavailable.providerUnavailable).toBe(true);
+    expect(available.providerUnavailable).toBe(false);
+  });
+
+  it("round-trips the daemon-owned lifecycle bucket", () => {
+    const agent = normalizeAgentSnapshot(createSnapshot({ bucket: "ready" }), "server-1");
+
+    expect(agent.bucket).toBe("ready");
+    expect(projectAgentSnapshot(agent).bucket).toBe("ready");
+  });
+});
+
+describe("resolveSessionAgent", () => {
+  function session(input: {
+    agents?: AgentSnapshotPayload[];
+    agentDetails?: AgentSnapshotPayload[];
+  }) {
+    const toMap = (snapshots: AgentSnapshotPayload[] = []) =>
+      new Map(
+        snapshots.map((snapshot) => [snapshot.id, normalizeAgentSnapshot(snapshot, "server-1")]),
+      );
+    return { agents: toMap(input.agents), agentDetails: toMap(input.agentDetails) };
+  }
+
+  it("resolves a running agent that only lives in agentDetails", () => {
+    // Active agents hydrated without a project placement land in `agentDetails`.
+    // The composer gates its Stop button on this status, so missing the fallback
+    // hid Stop for the entire run.
+    const resolved = resolveSessionAgent(
+      session({ agentDetails: [createSnapshot({ id: "agent-1", status: "running" })] }),
+      "agent-1",
+    );
+
+    expect(resolved?.status).toBe("running");
+  });
+
+  it("prefers the live directory when an agent is in both", () => {
+    const resolved = resolveSessionAgent(
+      session({
+        agents: [createSnapshot({ id: "agent-1", status: "running" })],
+        agentDetails: [createSnapshot({ id: "agent-1", status: "idle" })],
+      }),
+      "agent-1",
+    );
+
+    expect(resolved?.status).toBe("running");
+  });
+
+  it("returns null for an unknown agent, a missing id, and a missing session", () => {
+    const populated = session({ agents: [createSnapshot({ id: "agent-1" })] });
+
+    expect(resolveSessionAgent(populated, "agent-2")).toBeNull();
+    expect(resolveSessionAgent(populated, undefined)).toBeNull();
+    expect(resolveSessionAgent(undefined, "agent-1")).toBeNull();
   });
 });

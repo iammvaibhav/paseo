@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export type BrowserChromeMode = "full" | "embedded" | "embedded-transient";
+
 export type BrowserViewport =
   | { mode: "responsive" }
   | { mode: "fixed"; width: number; height: number };
@@ -10,6 +12,14 @@ export interface BrowserRecord {
   browserId: string;
   url: string;
   title: string;
+  /**
+   * `full` shows the in-pane toolbar + URL bar.
+   * `embedded` is chrome-less and uses the persistent webview lifecycle
+   *   (VS Code Web / code-server — one webview per origin, never detached).
+   * `embedded-transient` is chrome-less with normal create/destroy lifecycle
+   *   (Plannotator sessions — each review is a different port/origin).
+   */
+  chrome: BrowserChromeMode;
   isLoading: boolean;
   canGoBack: boolean;
   canGoForward: boolean;
@@ -17,6 +27,25 @@ export interface BrowserRecord {
   lastError: string | null;
   viewport: BrowserViewport;
   createdAt: number;
+}
+
+export function resolveBrowserChromeMode(
+  value: BrowserChromeMode | null | undefined,
+): BrowserChromeMode {
+  if (value === "embedded" || value === "embedded-transient") {
+    return value;
+  }
+  return "full";
+}
+
+/** Persistent origin-bound webview (VS Code Web). */
+export function isPersistentEmbeddedChrome(chrome: BrowserChromeMode): boolean {
+  return chrome === "embedded";
+}
+
+/** Any chrome-less mode (no toolbar / URL bar). */
+export function isChromeLessMode(chrome: BrowserChromeMode): boolean {
+  return chrome === "embedded" || chrome === "embedded-transient";
 }
 
 export type BrowserRecordPatch = Partial<Omit<BrowserRecord, "browserId" | "createdAt">>;
@@ -34,10 +63,13 @@ const BrowserViewportSchema = z.discriminatedUnion("mode", [
   }),
 ]);
 
+const BrowserChromeModeSchema = z.enum(["full", "embedded", "embedded-transient"]);
+
 const BrowserRecordSchema = z.strictObject({
   browserId: z.string(),
   url: z.string(),
   title: z.string(),
+  chrome: BrowserChromeModeSchema.optional().default("full"),
   isLoading: z.boolean(),
   canGoBack: z.boolean(),
   canGoForward: z.boolean(),
@@ -108,11 +140,13 @@ export function createBrowserRecord(input: {
   browserId: string;
   initialUrl: string | null | undefined;
   now: number;
+  chrome?: BrowserChromeMode | null;
 }): BrowserRecord {
   return {
     browserId: input.browserId,
     url: normalizeBrowserUrl(input.initialUrl),
     title: "",
+    chrome: resolveBrowserChromeMode(input.chrome),
     isLoading: false,
     canGoBack: false,
     canGoForward: false,
@@ -145,11 +179,13 @@ export function applyBrowserPatch<S extends BrowserIndexState>(
     ...patch,
     viewport: nextViewport,
     url: normalizeBrowserUrl(patch.url ?? existing.url),
+    chrome: resolveBrowserChromeMode(patch.chrome ?? existing.chrome),
   };
 
   if (
     nextRecord.url === existing.url &&
     nextRecord.title === existing.title &&
+    nextRecord.chrome === resolveBrowserChromeMode(existing.chrome) &&
     nextRecord.isLoading === existing.isLoading &&
     nextRecord.canGoBack === existing.canGoBack &&
     nextRecord.canGoForward === existing.canGoForward &&
@@ -192,7 +228,12 @@ export function sanitizeBrowsersForPersist(state: BrowserIndexState): {
     browsersById: Object.fromEntries(
       Object.entries(state.browsersById).map(([browserId, browser]) => [
         browserId,
-        { ...browser, isLoading: false, lastError: null },
+        {
+          ...browser,
+          chrome: resolveBrowserChromeMode(browser.chrome),
+          isLoading: false,
+          lastError: null,
+        },
       ]),
     ),
   };

@@ -244,6 +244,7 @@ function ProjectSettingsBody({
     () => ({
       projectName: selectedHost.projectName,
       projectCustomName: selectedHost.projectCustomName,
+      projectDescription: selectedHost.projectDescription ?? null,
       hasCustomIcon: customIconRevision !== null,
       currentIconDataUri: projectIconDataUri,
     }),
@@ -251,6 +252,7 @@ function ProjectSettingsBody({
       customIconRevision,
       projectIconDataUri,
       selectedHost.projectCustomName,
+      selectedHost.projectDescription,
       selectedHost.projectName,
     ],
   );

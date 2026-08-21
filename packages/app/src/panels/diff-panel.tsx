@@ -10,6 +10,9 @@ import { PaneContentToolbar } from "@/components/ui/pane-content-toolbar";
 import { isWeb } from "@/constants/platform";
 import { DiffDocument } from "@/git/diff-document";
 import { ChangesSurface, DiffLayoutToggle, resolveDiffLayout } from "@/git/diff-pane";
+import { useSubmoduleContext } from "@/git/submodule-context";
+import { SubmodulePicker } from "@/git/submodule-picker";
+
 import { useCommitDiffFiles } from "@/git/use-diff-files";
 import { useChangesPreferences } from "@/hooks/use-changes-preferences";
 import { useAppSettings } from "@/hooks/use-settings";
@@ -78,18 +81,50 @@ function PanelState({
 function WorkingDiffPanel() {
   const { t } = useTranslation();
   const { serverId, workspaceId, target, openFileInWorkspace } = usePaneContext();
+  const workspaceRoot = useWorkspaceDirectory(serverId, workspaceId);
   const [changesState, setChangesState] = usePanelState(changesStateSchema, defaultChangesState);
-  const cwd = useWorkspaceDirectory(serverId, workspaceId);
   const isActive = useRetainedPanelActive();
   const { addFile, canAddToChat } = useAddFileToChat({ serverId, workspaceId });
   invariant(target.kind === "working_diff", "WorkingDiffPanel requires working_diff target");
 
+  // The workspace Changes pane is a git surface, so the submodule context is
+  // always available. The picker lives in the diff header; switching the
+  // submodule re-roots the diff and the paths it hands back.
+  const { effectiveCwd, submodules, hasSubmodules, selectedSubmodule, setSelectedSubmodule } =
+    useSubmoduleContext({
+      serverId,
+      workspaceRoot: workspaceRoot ?? "",
+      isGit: true,
+      enabled: isActive && Boolean(workspaceRoot),
+    });
+  const submodulePrefix = selectedSubmodule ? `${selectedSubmodule}/` : "";
+
   const handleOpenFile = useCallback(
-    (path: string) => openFileInWorkspace({ location: { path }, disposition: "side" }),
-    [openFileInWorkspace],
+    (path: string) =>
+      openFileInWorkspace({
+        location: { path: path.startsWith("/") ? path : `${submodulePrefix}${path}` },
+        disposition: "side",
+      }),
+    [openFileInWorkspace, submodulePrefix],
+  );
+  const handleAddToChat = useCallback(
+    (path: string) => addFile(path.startsWith("/") ? path : `${submodulePrefix}${path}`),
+    [addFile, submodulePrefix],
   );
 
-  if (!cwd) {
+  const submodulePicker = useMemo(
+    () =>
+      hasSubmodules ? (
+        <SubmodulePicker
+          submodules={submodules}
+          selectedPath={selectedSubmodule}
+          onSelect={setSelectedSubmodule}
+        />
+      ) : undefined,
+    [hasSubmodules, selectedSubmodule, setSelectedSubmodule, submodules],
+  );
+
+  if (!workspaceRoot) {
     return <PanelState message={t("panels.diff.directoryMissing")} />;
   }
 
@@ -98,13 +133,14 @@ function WorkingDiffPanel() {
       <ChangesSurface
         serverId={serverId}
         workspaceId={workspaceId}
-        cwd={cwd}
+        cwd={effectiveCwd}
         enabled={isActive}
         host="panel"
+        submodulePicker={submodulePicker}
         focusPath={target.focusPath}
         focusRequestId={target.focusRequestId}
         onOpenFile={handleOpenFile}
-        onAddToChat={canAddToChat ? addFile : undefined}
+        onAddToChat={canAddToChat ? handleAddToChat : undefined}
         state={changesState}
         onStateChange={setChangesState}
       />

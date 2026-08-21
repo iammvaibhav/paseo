@@ -18,7 +18,9 @@ import { applyAgentProfilePreferences } from "@/create-agent-preferences/prefere
 import { useProvidersSnapshot } from "./use-providers-snapshot";
 import {
   useFormPreferences,
-  mergeProviderPreferences,
+  mergeProviderPreferencesWithScope,
+  resolveEffectiveFormPreferences,
+  type FormPreferenceScope,
   type FormPreferences,
 } from "./use-form-preferences";
 import {
@@ -41,6 +43,7 @@ import {
 import type { MaterializedAgentProfile } from "@/agent-profiles";
 
 export type { FormInitialValues } from "@/provider-selection/resolve-agent-form";
+export type { FormPreferenceScope } from "./use-form-preferences";
 
 export interface UseAgentFormStateOptions {
   initialServerId?: string | null;
@@ -49,6 +52,8 @@ export interface UseAgentFormStateOptions {
   isCreateFlow?: boolean;
   isTargetDaemonReady?: boolean;
   onlineServerIds?: string[];
+  /** Workspace/project scope for remembering the last selected model. */
+  preferenceScope?: FormPreferenceScope | null;
 }
 
 export interface UseAgentFormStateResult {
@@ -179,15 +184,16 @@ async function persistProviderPreferences(input: {
   provider: AgentProvider;
   formState: FormState;
   availableModels: AgentModelDefinition[] | null;
+  preferenceScope?: FormPreferenceScope | null;
   updatePreferences: (
     updates: Partial<FormPreferences> | ((current: FormPreferences) => FormPreferences),
   ) => Promise<FormPreferences>;
 }): Promise<void> {
-  const { provider, formState, availableModels, updatePreferences } = input;
+  const { provider, formState, availableModels, preferenceScope, updatePreferences } = input;
   const resolvedModel = resolveEffectiveModel(availableModels, formState.model);
   const modelId = resolvedModel?.id ?? formState.model;
   await updatePreferences((current) =>
-    mergeProviderPreferences({
+    mergeProviderPreferencesWithScope({
       preferences: current,
       provider,
       updates: {
@@ -197,8 +203,15 @@ async function persistProviderPreferences(input: {
           ? { thinkingByModel: { [modelId]: formState.thinkingOptionId } }
           : {}),
       },
+      scope: preferenceScope,
     }),
   );
+}
+
+function buildPreferenceScopeKey(scope: FormPreferenceScope | null | undefined): string {
+  const workspaceId = scope?.workspaceId?.trim() || "";
+  const projectKey = scope?.projectKey?.trim() || "";
+  return `${workspaceId}\n${projectKey}`;
 }
 
 export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAgentFormStateResult {
@@ -209,10 +222,42 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
     isCreateFlow = true,
     isTargetDaemonReady: _isTargetDaemonReady = true,
     onlineServerIds = [],
+    preferenceScope = null,
   } = options;
 
-  const { preferences, isLoading: isPreferencesLoading, updatePreferences } = useFormPreferences();
+  const [{ form: formState, userModified, resolution }, dispatch] = useReducer(
+    resolveAgentForm,
+    initialServerId,
+    (serverId) => ({
+      form: {
+        serverId,
+        provider: null,
+        modeId: "",
+        model: "",
+        thinkingOptionId: "",
+        workingDir: "",
+      },
+      userModified: INITIAL_USER_MODIFIED,
+      resolution: INITIAL_AGENT_FORM_RESOLUTION,
+    }),
+  );
+
+  // Host-aware: the composer targets a specific daemon, so its last pick syncs
+  // with that daemon's composerPreferences (config.json) via get/patchDaemonConfig.
+  const {
+    preferences,
+    isLoading: isPreferencesLoading,
+    updatePreferences,
+  } = useFormPreferences(formState.serverId);
   const preferenceOverlayRef = useRef(new OptimisticFormPreferences(preferences));
+  const preferenceScopeKey = useMemo(
+    () => buildPreferenceScopeKey(preferenceScope),
+    [preferenceScope],
+  );
+  const preferenceScopeRef = useRef(preferenceScope);
+  useEffect(() => {
+    preferenceScopeRef.current = preferenceScope;
+  }, [preferenceScope]);
 
   useEffect(() => {
     preferenceOverlayRef.current.reconcile(preferences);
@@ -239,22 +284,10 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
 
   const validServerIds = useMemo(() => new Set(daemons.map((d) => d.serverId)), [daemons]);
 
-  const [{ form: formState, userModified, resolution }, dispatch] = useReducer(
-    resolveAgentForm,
-    initialServerId,
-    (serverId) => ({
-      form: {
-        serverId,
-        provider: null,
-        modeId: "",
-        model: "",
-        thinkingOptionId: "",
-        workingDir: "",
-      },
-      userModified: INITIAL_USER_MODIFIED,
-      resolution: INITIAL_AGENT_FORM_RESOLUTION,
-    }),
-  );
+  const reducerStateRef = useRef({ form: formState, userModified });
+  useEffect(() => {
+    reducerStateRef.current = { form: formState, userModified };
+  }, [formState, userModified]);
 
   useEffect(() => {
     if (!isVisible) {
@@ -340,8 +373,13 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
     [initialValues, initialServerId],
   );
   const resolutionIntentKey = useMemo(
-    () => buildResolutionIntentKey(combinedInitialValues),
-    [combinedInitialValues],
+    () => `${buildResolutionIntentKey(combinedInitialValues)}\n${preferenceScopeKey}`,
+    [combinedInitialValues, preferenceScopeKey],
+  );
+
+  const effectivePreferences = useMemo(
+    () => resolveEffectiveFormPreferences(preferences, preferenceScope),
+    [preferences, preferenceScope],
   );
 
   useEffect(() => {
@@ -371,17 +409,17 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
     dispatch({
       type: "COMPLETE_RESOLUTION",
       initialValues: combinedInitialValues,
-      preferences,
+      preferences: effectivePreferences,
       providerModelsByProvider: snapshotProviderModelsByProvider,
       allowedProviderMap: snapshotResolvableProviderDefinitionMap,
     });
   }, [
     combinedInitialValues,
+    effectivePreferences,
     formState.serverId,
     isCreateFlow,
     isPreferencesLoading,
     isVisible,
-    preferences,
     resolution.status,
     snapshotEntries,
     snapshotProviderModelsByProvider,
@@ -446,6 +484,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
           updates: {
             model: nextModelId || undefined,
           },
+          scope: preferenceScopeRef.current,
         }),
       );
     },
@@ -522,6 +561,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
             updates: {
               mode: modeId || undefined,
             },
+            scope: preferenceScopeRef.current,
           }),
         );
       }
@@ -551,6 +591,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
             updates: {
               model: nextModelId || undefined,
             },
+            scope: preferenceScopeRef.current,
           }),
         );
       }
@@ -572,6 +613,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
                 [modelId]: thinkingOptionId,
               },
             },
+            scope: preferenceScopeRef.current,
           }),
         );
       }
@@ -610,6 +652,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
       provider: formState.provider,
       formState,
       availableModels,
+      preferenceScope: preferenceScopeRef.current,
       updatePreferences: updateCurrentPreferences,
     });
   }, [availableModels, formState, updateCurrentPreferences]);

@@ -44,6 +44,7 @@ export const cursorTarget: EditorTarget = {
       label: "Cursor",
       kind: "editor",
       icon: await runtime.loadIcon("cursor.png"),
+      supportsRemote: true,
     };
   },
   async isInstalled(runtime) {
@@ -65,5 +66,14 @@ export const cursorTarget: EditorTarget = {
       return;
     }
     throw new Error("Cursor is not installed");
+  },
+  async launchRemote(input, runtime) {
+    const command = runtime.resolveCommand(commands(runtime));
+    if (!command) {
+      throw new Error("Cursor is not installed");
+    }
+    const remoteArgs = ["--remote", `ssh-remote+${input.sshHost}`];
+    const args = input.cwd ? [...remoteArgs, input.cwd, input.path] : [...remoteArgs, input.path];
+    await runtime.spawnDetached({ command, args });
   },
 };

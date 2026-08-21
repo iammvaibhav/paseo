@@ -1,7 +1,7 @@
 {
   "worktree": {
     "setup": [
-      "npm ci",
+      "node ./scripts/worktree-setup.mjs",
       "node ./scripts/seed-ios-native-cache.mjs",
       "node ./scripts/seed-worktree-dev-state.mjs",
       "npm run build:server",
@@ -27,6 +27,9 @@
     },
     "typecheck": {
       "command": "npm run typecheck"
+    },
+    "build-desktop": {
+      "command": "CSC_IDENTITY_AUTO_DISCOVERY=false npm run build:desktop -- -c.mac.notarize=false -c.mac.hardenedRuntime=false"
     }
   }
 }

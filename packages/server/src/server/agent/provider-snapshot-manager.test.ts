@@ -19,6 +19,7 @@ import {
   resolveSnapshotCwd,
 } from "./provider-snapshot-manager.js";
 import { OpenCodeAgentClient } from "./providers/opencode-agent.js";
+import { OmpAgentClient } from "./providers/omp/agent.js";
 
 const TEST_CAPABILITIES = {
   supportsStreaming: false,
@@ -1396,6 +1397,30 @@ describe("ProviderSnapshotManager applyMutableProviderConfig", () => {
       expect(state.providerDefinitions.copilot).toMatchObject({ enabled: false });
       expect(state.clients.copilot).toBeUndefined();
     } finally {
+      manager.destroy();
+    }
+  });
+
+  test("shuts down retired provider clients when the registry is rebuilt", async () => {
+    const shutdown = vi.spyOn(OmpAgentClient.prototype, "shutdown").mockResolvedValue(undefined);
+    const manager = new ProviderSnapshotManager({
+      logger: createTestLogger(),
+      providerOverrides: {
+        claude: { enabled: false },
+        codex: { enabled: false },
+        copilot: { enabled: false },
+        opencode: { enabled: false },
+        pi: { enabled: false },
+        omp: { enabled: true },
+      },
+    });
+    try {
+      expect(manager.getAgentManagerProviderState().clients.omp).toBeInstanceOf(OmpAgentClient);
+      manager.applyMutableProviderConfig({ omp: { enabled: true } });
+      await Promise.resolve();
+      expect(shutdown).toHaveBeenCalled();
+    } finally {
+      shutdown.mockRestore();
       manager.destroy();
     }
   });

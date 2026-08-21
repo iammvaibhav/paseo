@@ -59,6 +59,15 @@ export interface AgentUpdatesServiceDeps {
   emit(message: SessionOutboundMessage): void;
   enrichAgentPayload(payload: AgentSnapshotPayload): Promise<AgentSnapshotPayload>;
   buildStoredAgentPayload(record: StoredAgentRecord): AgentSnapshotPayload;
+  /**
+   * F2: optional wire-boundary enrichment for STORED-record upserts
+   * (emitStoredRecord), mirroring the live path's enrichAgentPayload —
+   * session wires it to the same enrich so a stored push carries the
+   * recomputed lifecycle bucket / stop origin / identity fields its
+   * fetch_agents snapshot would. Absent → the built payload is emitted
+   * as-is (existing behavior). Failures fall back to the built payload.
+   */
+  enrichStoredPayload?: (payload: AgentSnapshotPayload) => Promise<AgentSnapshotPayload>;
   isProviderVisibleToClient(provider: string): boolean;
   buildProjectPlacementForWorkspaceId(workspaceId: string): Promise<ProjectPlacementPayload | null>;
   emitWorkspaceUpdateForWorkspaceId(workspaceId: string): Promise<void>;
@@ -244,7 +253,14 @@ export function createAgentUpdatesService(deps: AgentUpdatesServiceDeps): AgentU
   }
 
   async function emitStoredRecord(record: StoredAgentRecord): Promise<AgentSnapshotPayload> {
-    const payload = deps.buildStoredAgentPayload(record);
+    let payload = deps.buildStoredAgentPayload(record);
+    if (deps.enrichStoredPayload) {
+      try {
+        payload = await deps.enrichStoredPayload(payload);
+      } catch (error) {
+        deps.logger.warn({ err: error, agentId: payload.id }, "agent_update.stored_enrich_failed");
+      }
+    }
     const sub = subscription;
     if (!sub) {
       return payload;

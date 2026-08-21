@@ -15,7 +15,7 @@ import { GrokQuotaProvider } from "./providers/grok.js";
 import { KimiQuotaProvider } from "./providers/kimi.js";
 import { MiniMaxQuotaProvider } from "./providers/minimax.js";
 import { ZaiQuotaProvider } from "./providers/zai.js";
-import { ProviderUsageService } from "./service.js";
+import { ProviderUsageService, type ProviderUsageListResult } from "./service.js";
 
 function writeClaudeCredentials(
   dir: string,
@@ -215,6 +215,7 @@ describe("ProviderUsageService", () => {
           displayName: "GLM coding plan",
           status: "available",
           planLabel: "GLM coding plan",
+          fetchedAt: "2026-06-19T00:00:00.000Z",
           windows: [
             {
               id: "biweekly",
@@ -300,6 +301,153 @@ describe("ProviderUsageService", () => {
     expect(firstResult).toBe(secondResult);
     expect(calls).toBe(1);
   });
+  it("filters fetchers based on isFetcherEnabled resolver and refreshes on enablement change", async () => {
+    let claudeCalls = 0;
+    let codexCalls = 0;
+    let ompCalls = 0;
+
+    const enabledProviders = new Set(["omp"]);
+    const service = new ProviderUsageService({
+      logger: createLogger(),
+      now: () => Date.parse("2026-06-19T00:00:00.000Z"),
+      isFetcherEnabled: (fetcher) => {
+        const ids = fetcher.agentProviderIds ?? [fetcher.providerId];
+        return ids.some((id) => enabledProviders.has(id));
+      },
+      fetchers: [
+        {
+          providerId: "claude",
+          agentProviderIds: ["claude"],
+          displayName: "Claude",
+          fetchUsage: async () => {
+            claudeCalls += 1;
+            return {
+              providerId: "claude",
+              displayName: "Claude",
+              status: "available",
+              planLabel: "Pro",
+              windows: [],
+              balances: [],
+              details: [],
+              error: null,
+            };
+          },
+        },
+        {
+          providerId: "codex",
+          agentProviderIds: ["codex"],
+          displayName: "Codex",
+          fetchUsage: async () => {
+            codexCalls += 1;
+            return {
+              providerId: "codex",
+              displayName: "Codex",
+              status: "available",
+              planLabel: "Plus",
+              windows: [],
+              balances: [],
+              details: [],
+              error: null,
+            };
+          },
+        },
+        {
+          providerId: "omp",
+          agentProviderIds: ["omp"],
+          displayName: "OMP",
+          fetchUsage: async () => {
+            ompCalls += 1;
+            return {
+              providerId: "omp-claude",
+              groupId: "omp-claude",
+              displayName: "Claude",
+              status: "available",
+              planLabel: "Pro",
+              windows: [],
+              balances: [],
+              details: [],
+              error: null,
+              sourceLabel: "via OMP",
+            };
+          },
+        },
+      ],
+    });
+
+    const result = await service.listUsage();
+    expect(claudeCalls).toBe(0);
+    expect(codexCalls).toBe(0);
+    expect(ompCalls).toBe(1);
+    expect(result.providers).toHaveLength(1);
+    expect(result.providers[0]).toMatchObject({
+      providerId: "omp-claude",
+      displayName: "Claude",
+      sourceLabel: "via OMP",
+    });
+
+    // Dynamically enable codex, notify enablement changed, and re-fetch
+    enabledProviders.add("codex");
+    service.notifyProviderEnablementChanged();
+
+    const updated = await service.listUsage();
+    expect(claudeCalls).toBe(0);
+    expect(codexCalls).toBe(1);
+    expect(ompCalls).toBe(2);
+    expect(updated.providers).toHaveLength(2);
+    expect(updated.providers.map((p) => p.providerId).sort()).toEqual(["codex", "omp-claude"]);
+  });
+
+  it("reports every completed fresh fetch to onUsageRefreshed", async () => {
+    const refreshed: ProviderUsageListResult[] = [];
+    let calls = 0;
+    const service = new ProviderUsageService({
+      logger: createLogger(),
+      now: () => Date.parse("2026-06-19T00:00:00.000Z"),
+      onUsageRefreshed: (result) => {
+        refreshed.push(result);
+      },
+      fetchers: [
+        {
+          providerId: "claude",
+          displayName: "Claude",
+          fetchUsage: async () => {
+            calls += 1;
+            return {
+              providerId: "claude",
+              displayName: "Claude",
+              status: "available",
+              planLabel: "Max 20x",
+              windows: [],
+            };
+          },
+        },
+      ],
+    });
+
+    // A client connecting with an empty cache triggers a refresh that reports
+    // the fresh result (the owner broadcasts it to every client).
+    service.notifyClientConnected();
+    await vi.waitFor(() => expect(refreshed).toHaveLength(1));
+    expect(refreshed[0]).toEqual({
+      fetchedAt: "2026-06-19T00:00:00.000Z",
+      providers: [
+        {
+          providerId: "claude",
+          displayName: "Claude",
+          status: "available",
+          planLabel: "Max 20x",
+          windows: [],
+          fetchedAt: "2026-06-19T00:00:00.000Z",
+        },
+      ],
+    });
+
+    // A fresh cache means a later client connect does not refetch or rebroadcast.
+    service.notifyClientConnected();
+    await Promise.resolve();
+    expect(calls).toBe(1);
+    expect(refreshed).toHaveLength(1);
+  });
 
   it("isolates one provider error without dropping other providers", async () => {
     const service = new ProviderUsageService({
@@ -341,6 +489,7 @@ describe("ProviderUsageService", () => {
           displayName: "Codex",
           status: "available",
           planLabel: "Pro 20x",
+          fetchedAt: "2026-06-19T00:00:00.000Z",
           windows: [{ id: "weekly", label: "Weekly", usedPct: 29 }],
         },
       ],
@@ -895,6 +1044,10 @@ describe("real provider usage fetchers", () => {
               config: { monthlyLimit: { val: 0 }, used: { val: 0 } },
             }),
         ],
+        [
+          "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
+          () => jsonResponse({ config: {} }, 404),
+        ],
       ]),
     );
 
@@ -929,6 +1082,10 @@ describe("real provider usage fetchers", () => {
               },
             }),
         ],
+        [
+          "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
+          () => jsonResponse({ config: {} }, 404),
+        ],
       ]),
     );
 
@@ -948,20 +1105,88 @@ describe("real provider usage fetchers", () => {
     });
   });
 
+  it("fetches Grok SuperGrok weekly credits via format=credits", async () => {
+    process.env["GROK_API_KEY"] = "grok_test_token";
+    fetchApi = mockFetch(
+      new Map([
+        [
+          "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
+          () =>
+            jsonResponse({
+              config: {
+                currentPeriod: {
+                  type: "USAGE_PERIOD_TYPE_WEEKLY",
+                  start: "2026-08-04T17:56:58.122Z",
+                  end: "2026-08-11T17:56:58.122Z",
+                },
+                creditUsagePercent: 23,
+                productUsage: [{ product: "GrokBuild", usagePercent: 23 }],
+                isUnifiedBillingUser: true,
+              },
+            }),
+        ],
+        [
+          "https://cli-chat-proxy.grok.com/v1/billing",
+          () =>
+            jsonResponse({
+              config: {
+                monthlyLimit: { val: 15000 },
+                used: { val: 1066 },
+                billingPeriodStart: "2026-08-01T00:00:00+00:00",
+                billingPeriodEnd: "2026-09-01T00:00:00+00:00",
+              },
+            }),
+        ],
+      ]),
+    );
+
+    const grok = findProvider(await service().listUsage(), "grok");
+
+    expect(grok).toMatchObject({
+      status: "available",
+      planLabel: "SuperGrok (unified)",
+      windows: [
+        expect.objectContaining({
+          id: "weekly_credits",
+          label: "SuperGrok Weekly Credits",
+          usedPct: 23,
+          remainingPct: 77,
+          resetsAt: "2026-08-11T17:56:58.122Z",
+        }),
+      ],
+      balances: [],
+    });
+  });
+
   it("fetches Grok usage with nested ~/.grok/auth.json key token", async () => {
     writeGrokAuth(homeDir, {
       "https://auth.x.ai::test-user-id": {
         key: "nested_jwt_token",
         refresh_token: "rt_nested",
-        expires_at: "2026-08-01T00:00:00Z",
+        expires_at: new Date(Date.now() + 3_600_000).toISOString(),
         user_id: "test-user-id",
         email: "user@example.com",
       },
     });
 
     let authorization: string | null = null;
-    fetchApi = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+    const requestedUrls: string[] = [];
+    fetchApi = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      requestedUrls.push(url.toString());
       authorization = (init?.headers as Record<string, string> | undefined)?.Authorization ?? null;
+      if (url.toString().includes("format=credits")) {
+        return jsonResponse({
+          config: {
+            currentPeriod: {
+              type: "USAGE_PERIOD_TYPE_WEEKLY",
+              start: "2026-07-28T00:00:00Z",
+              end: "2026-08-04T00:00:00Z",
+            },
+            creditUsagePercent: 41,
+            isUnifiedBillingUser: true,
+          },
+        });
+      }
       return jsonResponse({
         config: {
           monthlyLimit: { val: 100 },
@@ -973,16 +1198,22 @@ describe("real provider usage fetchers", () => {
     const grok = findProvider(await service().listUsage(), "grok");
 
     expect(authorization).toBe("Bearer nested_jwt_token");
+    expect(requestedUrls).toEqual(
+      expect.arrayContaining([
+        "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
+        "https://cli-chat-proxy.grok.com/v1/billing",
+      ]),
+    );
     expect(grok).toMatchObject({
       status: "available",
-      balances: [
+      planLabel: "SuperGrok (unified)",
+      windows: [
         expect.objectContaining({
-          id: "monthly_credits",
-          used: 25,
-          remaining: 75,
-          limit: 100,
+          id: "weekly_credits",
+          usedPct: 41,
         }),
       ],
+      balances: [],
     });
   });
 
@@ -997,6 +1228,10 @@ describe("real provider usage fetchers", () => {
               config: { monthlyLimit: { val: 50 } },
               usage: { creditUsage: 10 },
             }),
+        ],
+        [
+          "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
+          () => jsonResponse({ config: {} }, 404),
         ],
       ]),
     );

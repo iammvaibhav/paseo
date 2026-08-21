@@ -1,6 +1,10 @@
 import { QueryClient, QueryObserver, skipToken } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
-import type { MutableDaemonConfig, SessionOutboundMessage } from "@getpaseo/protocol/messages";
+import type {
+  MissionControlEvent,
+  MutableDaemonConfig,
+  SessionOutboundMessage,
+} from "@getpaseo/protocol/messages";
 import { checkoutDiffQueryKey } from "@/git/query-keys";
 import { buildTerminalsQueryKey } from "@/screens/workspace/terminals/state";
 import { daemonConfigQueryKey } from "@/data/daemon-config";
@@ -29,7 +33,8 @@ type RouterMessage =
   | CheckoutDiffUpdateMessage
   | SubscribeCheckoutDiffResponseMessage
   | StatusMessage
-  | TerminalsChangedMessage;
+  | TerminalsChangedMessage
+  | { type: "mission_control_event"; event: MissionControlEvent };
 type RouterMessageType = RouterMessage["type"];
 type RouterHandler = (message: RouterMessage) => void;
 type RouterClient = Parameters<typeof mountServerDataPushRouter>[0]["client"];
@@ -63,6 +68,7 @@ function createFakeClient(config: { rejectCheckoutDiffSubscribe?: boolean } = {}
     subscribe_checkout_diff_response: [],
     status: [],
     terminals_changed: [],
+    mission_control_event: [],
   };
   const subscribeCheckoutDiffCalls: Array<{
     cwd: string;

@@ -19,7 +19,7 @@ import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { COMPOSER_PILL_CLEARANCE, composerPillStyles } from "./pill-styles";
 
 /**
- * The strip of pills where a pane's ambient trackers live — subagents and tasks today.
+ * The strip of pills where a pane's ambient trackers live — subagents, asks, and tasks.
  *
  * Everything in it is a pill: a count you can read without opening anything, and a panel behind
  * it for the detail. Trackers used to be stacked cards, so every one of them pushed the composer

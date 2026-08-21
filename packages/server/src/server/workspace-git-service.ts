@@ -77,7 +77,26 @@ export const WORKSPACE_GIT_OBSERVATION_REENSURE_INTERVAL_MS = 60_000;
 const FORGE_PR_STATUS_POLL_FAST_INTERVAL_MS = 20_000;
 const FORGE_PR_STATUS_POLL_SLOW_INTERVAL_MS = 120_000;
 const FORGE_PR_STATUS_POLL_ERROR_BACKOFF_CAP_MS = 300_000;
-const DEGRADED_GIT_POLL_INTERVAL_MS = 5_000;
+// A watcher-less fallback polls git state; 60s keeps the load bounded when
+// inotify is unavailable (5s × several workspaces × ~3 git commands each was a
+// command storm that saturated the daemon event loop on busy hosts).
+const DEGRADED_GIT_POLL_INTERVAL_MS = 60_000;
+/** Delay before re-subscribing after a transient (EINTR) watcher failure. */
+const WORKING_TREE_WATCH_RETRY_DELAY_MS = 10_000;
+/** Log the retry warn only once per this many consecutive retries. */
+const WORKING_TREE_WATCH_RETRY_LOG_EVERY = 6;
+
+function isTransientWatchError(error: unknown): boolean {
+  return error instanceof Error && /Interrupted system call|EINTR/i.test(error.message);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolveTimeout) => {
+    const timer = setTimeout(resolveTimeout, ms);
+    timer.unref?.();
+  });
+}
+
 // Keep whole workspace pipelines below the lower-level Git process pool so daemon control work
 // retains subprocess and event-loop headroom during large workspace reconciliation bursts.
 export const WORKSPACE_GIT_REFRESH_CONCURRENCY = 4;
@@ -454,6 +473,8 @@ interface WorkingTreeWatchTarget {
   recovery: WatchRecoveryState;
   listeners: Set<() => void>;
   closed: boolean;
+  /** Consecutive transient (EINTR) watcher failures; capped before degrading. */
+  watchRetries: number;
 }
 
 interface WatchRecoveryState {
@@ -1305,6 +1326,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       recovery: { attemptCount: 0, timer: null },
       listeners: new Set(),
       closed: false,
+      watchRetries: 0,
     };
 
     this.workingTreeWatchTargets.set(cwd, target);
@@ -1423,6 +1445,12 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
         target.watchPath,
         (error, events) => {
           if (error) {
+            // EINTR / Interrupted system call is transient — retry the
+            // subscription instead of permanently degrading to git polling.
+            if (isTransientWatchError(error)) {
+              void this.retryWorkingTreeSubscription(target);
+              return;
+            }
             if (watcherErrored) {
               return;
             }
@@ -1553,6 +1581,35 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     }
     this.notifyWorkingTreeChanged(target, "working-tree-watch-error");
     this.startWorkingTreeWatchFallback(target, reason);
+  }
+
+  /**
+   * A transient watcher failure (EINTR on the inotify poll — a signal such as
+   * SIGCHLD from a child process exit interrupted the syscall) is retried
+   * instead of degrading to git polling forever. EINTR is never fatal for
+   * poll(2), so the retry is unbounded: the degraded poll (60s) is the safety
+   * net while the subscription is down, and the watcher recovers on the next
+   * re-subscribe. The warn is rate-limited to avoid spam on hosts that signal
+   * the daemon frequently.
+   */
+  private async retryWorkingTreeSubscription(target: WorkingTreeWatchTarget): Promise<void> {
+    target.watchRetries += 1;
+    if (target.watchRetries % WORKING_TREE_WATCH_RETRY_LOG_EVERY === 1) {
+      this.logger.warn(
+        { cwd: target.cwd, retries: target.watchRetries },
+        "Working tree watcher hit a transient error; retrying subscription",
+      );
+    }
+    const subscription = target.subscription;
+    target.subscription = null;
+    if (subscription) {
+      await this.unsubscribeWatcherSubscription(subscription, target.watchPath);
+    }
+    await sleep(WORKING_TREE_WATCH_RETRY_DELAY_MS);
+    if (target.closed || target.fallbackPolling) {
+      return;
+    }
+    await this.startWorkingTreeSubscription(target);
   }
 
   private scheduleWorkingTreeWatchRecovery(target: WorkingTreeWatchTarget): void {

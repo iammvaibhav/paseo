@@ -98,6 +98,7 @@ export async function buildClientConfig(
   connection: HostConnection,
   serverId?: string,
   options?: {
+    clientId?: string;
     capabilities?: DaemonClientConfig["capabilities"];
     trace?: DaemonClientConfig["trace"];
   },
@@ -106,7 +107,7 @@ export async function buildClientConfig(
     "getClientId" | "resolveAppVersion" | "createLocalTransportFactory" | "buildLocalTransportUrl"
   > = defaultDaemonConnectionDependencies,
 ): Promise<DaemonClientConfig> {
-  const clientId = await deps.getClientId();
+  const clientId = options?.clientId ?? (await deps.getClientId());
   const localTransportFactory = deps.createLocalTransportFactory();
   const base = {
     clientId,
@@ -227,6 +228,7 @@ export function connectAndProbe(
 interface ProbeOptions {
   serverId?: string;
   timeoutMs?: number;
+  clientId?: string;
   capabilities?: DaemonClientConfig["capabilities"];
   trace?: DaemonClientConfig["trace"];
 }

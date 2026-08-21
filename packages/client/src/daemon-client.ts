@@ -26,6 +26,7 @@ import type {
   CreatePaseoWorktreeRequest,
   FileDownloadTokenResponse,
   FileUploadResponse,
+  FileExplorerWriteResponse,
   FileExplorerResponse,
   FileVersion,
   FileWriteResult,
@@ -39,6 +40,7 @@ import type {
   CheckoutMergeResponse,
   CheckoutMergeFromBaseResponse,
   CheckoutPullResponse,
+  CheckoutSubmodulesResponse,
   CheckoutPushResponse,
   CheckoutRefreshResponse,
   CheckoutPrCreateResponse,
@@ -122,7 +124,15 @@ import type {
   MutableDaemonConfig,
   MutableDaemonConfigPatch,
 } from "@getpaseo/protocol/messages";
+import type {
+  MissionControlCentralConfig,
+  MissionControlEvent,
+  MissionControlMetaPlan,
+  MissionControlMode,
+  MissionControlProposalSpawnPlan,
+} from "@getpaseo/protocol/mission-control/types";
 import { isRelayClientWebSocketUrl } from "@getpaseo/protocol/daemon-endpoints";
+import type { WebhookAuth, WebhookFilter, WebhookTarget } from "@getpaseo/protocol/webhook/types";
 import { terminalSubscriptionKey } from "@getpaseo/protocol/terminal-subscription-key";
 import {
   asUint8Array,
@@ -298,6 +308,10 @@ export type DaemonEvent =
       type: "providers_snapshot_update";
       payload: Extract<SessionOutboundMessage, { type: "providers_snapshot_update" }>["payload"];
     }
+  | {
+      type: "provider_usage_updated";
+      payload: Extract<SessionOutboundMessage, { type: "provider.usage.updated" }>["payload"];
+    }
   | { type: "error"; message: string };
 
 export type DaemonEventHandler = (event: DaemonEvent) => void;
@@ -343,6 +357,12 @@ export interface SendMessageOptions {
   activeTurnBehavior?: ActiveTurnBehavior;
   images?: Array<{ data: string; mimeType: string }>;
   attachments?: SendAgentMessageRequest["attachments"];
+  // Delivery semantics for outbound prompts (fleet_send_prompt modes):
+  // steer / interrupt / queue. Absent = interrupt for wire compat.
+  dispatchMode?: "steer" | "interrupt" | "queue";
+  // M8 mailbox source attribution: "voice" marks a Commander Voice dispatch
+  // so the daemon's instruction ledger records source:voice. Absent = chat.
+  source?: "chat" | "voice";
 }
 
 export interface AgentAttentionRequiredNotification {
@@ -399,6 +419,7 @@ type CheckoutCommitPayload = CheckoutCommitResponse["payload"];
 type CheckoutMergePayload = CheckoutMergeResponse["payload"];
 type CheckoutMergeFromBasePayload = CheckoutMergeFromBaseResponse["payload"];
 type CheckoutPullPayload = CheckoutPullResponse["payload"];
+type CheckoutSubmodulesPayload = CheckoutSubmodulesResponse["payload"];
 type CheckoutPushPayload = CheckoutPushResponse["payload"];
 type CheckoutRefreshPayload = CheckoutRefreshResponse["payload"];
 type CheckoutPrCreatePayload = CheckoutPrCreateResponse["payload"];
@@ -450,6 +471,18 @@ export interface FileUploadInput {
   chunkSize?: number;
 }
 export type FileUploadResult = FileUploadResponse["payload"];
+export type FileExplorerWriteResult = FileExplorerWriteResponse["payload"];
+
+export interface FileExplorerWriteInput {
+  cwd: string;
+  directoryPath?: string;
+  fileName: string;
+  mimeType: string;
+  bytes: Uint8Array | ArrayBuffer;
+  modifiedAt?: string;
+  requestId?: string;
+  chunkSize?: number;
+}
 type FileDownloadTokenPayload = FileDownloadTokenResponse["payload"];
 type ListProviderFeaturesPayload = ListProviderFeaturesResponseMessage["payload"];
 type ListProviderModelsPayload = ListProviderModelsResponseMessage["payload"];
@@ -540,6 +573,138 @@ type ScheduleUpdatePayload = Extract<
   SessionOutboundMessage,
   { type: "schedule/update/response" }
 >["payload"];
+type WebhookCreatePayload = Extract<
+  SessionOutboundMessage,
+  { type: "webhook/create/response" }
+>["payload"];
+type WebhookListPayload = Extract<
+  SessionOutboundMessage,
+  { type: "webhook/list/response" }
+>["payload"];
+type WebhookInspectPayload = Extract<
+  SessionOutboundMessage,
+  { type: "webhook/inspect/response" }
+>["payload"];
+type WebhookDeletePayload = Extract<
+  SessionOutboundMessage,
+  { type: "webhook/delete/response" }
+>["payload"];
+type WebhookUpdatePayload = Extract<
+  SessionOutboundMessage,
+  { type: "webhook/update/response" }
+>["payload"];
+type WebhookTestPayload = Extract<
+  SessionOutboundMessage,
+  { type: "webhook/test/response" }
+>["payload"];
+type WebhookConfigPayload = Extract<
+  SessionOutboundMessage,
+  { type: "webhook/config/response" }
+>["payload"];
+type MissionControlEventsFetchPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.events.fetch.response" }
+>["payload"];
+type MissionControlEventsAckPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.events.ack.response" }
+>["payload"];
+type MissionControlPeersListPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.peers.list.response" }
+>["payload"];
+type MissionControlContextFetchPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.context.fetch.response" }
+>["payload"];
+type MissionControlSearchPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.search.response" }
+>["payload"];
+type MissionControlMetaApplyPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.meta.apply.response" }
+>["payload"];
+type MissionControlSpawnLabelsResolvePayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.spawn_labels.resolve.response" }
+>["payload"];
+type MissionControlSpawnApplyPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.spawn.apply.response" }
+>["payload"];
+type MissionControlEventForwardPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.event.forward.response" }
+>["payload"];
+type MissionControlConfigGetPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.config.get.response" }
+>["payload"];
+type MissionControlConfigPatchPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.config.patch.response" }
+>["payload"];
+type MissionControlCommanderResetPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.commander.reset.response" }
+>["payload"];
+type MissionControlModeSetPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.mode.set.response" }
+>["payload"];
+type MissionControlVoiceMirrorPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.voice.mirror.response" }
+>["payload"];
+type MissionControlProposalsRespondPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.proposals.respond.response" }
+>["payload"];
+type MissionControlProposalsCreatePayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.proposals.create.response" }
+>["payload"];
+type MissionControlLifecycleSetPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.lifecycle.set.response" }
+>["payload"];
+type MissionControlInstructionsListPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.instructions.list.response" }
+>["payload"];
+type MissionControlInstructionsClosePayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.instructions.close.response" }
+>["payload"];
+type MissionControlInstructionsOpenPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.instructions.open.response" }
+>["payload"];
+type MissionControlMediaFetchPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.media.fetch.response" }
+>["payload"];
+type MissionControlRecallPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.recall.response" }
+>["payload"];
+type MissionControlContextRecordsPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.context.records.response" }
+>["payload"];
+type MissionControlTagMessagePayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.tag_message.response" }
+>["payload"];
+type MissionControlPeerTimelinePayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.peer.timeline.response" }
+>["payload"];
+type MissionControlToolsExecutePayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.tools.execute.response" }
+>["payload"];
 export type FetchAgentTimelinePayload = FetchAgentTimelineResponseMessage["payload"];
 export type AgentForkContextPayload = AgentForkContextResponseMessage["payload"];
 
@@ -614,6 +779,27 @@ export interface AgentForkContextOptions {
   boundaryCursor?: FetchAgentTimelineCursor;
   boundaryMessageId?: string;
   requestId?: string;
+}
+
+export interface ForkAgentOptions extends SendMessageOptions {
+  // Fork boundary: the assistant turn the fork's history ends at. Both absent
+  // means "fork everything up to now".
+  boundaryCursor?: FetchAgentTimelineCursor;
+  boundaryMessageId?: string;
+  // Config the fork should run with when the fork composer changed it.
+  overrides?: Partial<AgentSessionConfig>;
+  labels?: Record<string, string>;
+}
+
+/** Wire fields for the fork boundary, omitting anchors the caller did not supply. */
+function buildForkRequestBoundary(options: ForkAgentOptions | undefined): {
+  boundaryCursor?: FetchAgentTimelineCursor;
+  boundaryMessageId?: string;
+} {
+  return {
+    ...(options?.boundaryCursor ? { boundaryCursor: options.boundaryCursor } : {}),
+    ...(options?.boundaryMessageId ? { boundaryMessageId: options.boundaryMessageId } : {}),
+  };
 }
 
 type AgentRefreshedStatusPayload = z.infer<typeof AgentRefreshedStatusPayloadSchema>;
@@ -772,6 +958,34 @@ export interface UpdateScheduleOptions {
   newAgentConfig?: UpdateScheduleNewAgentConfig;
   maxRuns?: number | null;
   expiresAt?: string | null;
+  requestId?: string;
+}
+export interface CreateWebhookOptions {
+  target: WebhookTarget;
+  promptTemplate: string;
+  name?: string | null;
+  enabled?: boolean;
+  auth?: WebhookAuth | null;
+  filter?: WebhookFilter | null;
+  requestId?: string;
+}
+export interface WebhookRefOptions {
+  id: string;
+  requestId?: string;
+}
+export interface UpdateWebhookOptions {
+  id: string;
+  name?: string | null;
+  enabled?: boolean;
+  target?: WebhookTarget;
+  promptTemplate?: string;
+  auth?: WebhookAuth | null;
+  filter?: WebhookFilter | null;
+  requestId?: string;
+}
+export interface TestWebhookOptions {
+  id: string;
+  samplePayload?: string;
   requestId?: string;
 }
 export interface RenameBranchInput {
@@ -2593,16 +2807,31 @@ export class DaemonClient {
 
   async updateAgent(
     agentId: string,
-    updates: { name?: string; labels?: Record<string, string> },
+    updates: {
+      name?: string;
+      title?: string;
+      shortDescription?: string;
+      labels?: Record<string, string>;
+      provider?: string;
+      model?: string | null;
+      modeId?: string;
+    },
   ): Promise<void> {
     const requestId = this.createRequestId();
     const message = SessionInboundMessageSchema.parse({
       type: "update_agent_request",
       agentId,
       ...(updates.name !== undefined ? { name: updates.name } : {}),
+      ...(updates.title !== undefined ? { title: updates.title } : {}),
+      ...(updates.shortDescription !== undefined
+        ? { shortDescription: updates.shortDescription }
+        : {}),
       ...(updates.labels && Object.keys(updates.labels).length > 0
         ? { labels: updates.labels }
         : {}),
+      ...(updates.provider !== undefined ? { provider: updates.provider } : {}),
+      ...(updates.model !== undefined ? { model: updates.model } : {}),
+      ...(updates.modeId !== undefined ? { modeId: updates.modeId } : {}),
       requestId,
     });
     const payload = await this.sendRequest({
@@ -2642,6 +2871,26 @@ export class DaemonClient {
       throw new Error(payload.error ?? "renameProject rejected");
     }
     return { customName: payload.customName };
+  }
+
+  async setProjectDescription(
+    projectId: string,
+    description: string | null,
+    requestId?: string,
+  ): Promise<{ description: string | null }> {
+    const payload = await this.sendCorrelatedSessionRequest({
+      requestId,
+      message: {
+        type: "project.description.set.request",
+        projectId,
+        description,
+      },
+      responseType: "project.description.set.response",
+    });
+    if (!payload.accepted) {
+      throw new Error(payload.error ?? "setProjectDescription rejected");
+    }
+    return { description: payload.description };
   }
 
   async setProjectIcon(
@@ -3030,6 +3279,59 @@ export class DaemonClient {
     return payload;
   }
 
+  /**
+   * Fork a (typically running) source agent into a new sibling agent that
+   * inherits its history up to the fork boundary (the last completed turn when
+   * no boundary is given), then run `text` as the new agent's first turn. The
+   * history rides along as a chat-history attachment on that first turn; this
+   * resolves to the new agent's id plus its snapshot when the daemon sent one.
+   */
+  async forkAgent(
+    sourceAgentId: string,
+    text: string,
+    options?: ForkAgentOptions,
+  ): Promise<{
+    agentId: string;
+    agent: AgentSnapshotPayload | null;
+  }> {
+    const requestId = this.createRequestId();
+    const messageId = options?.messageId ?? crypto.randomUUID();
+    const message = SessionInboundMessageSchema.parse({
+      type: "agent.fork.request",
+      requestId,
+      sourceAgentId,
+      text,
+      ...(messageId ? { messageId } : {}),
+      ...(options?.images ? { images: options.images } : {}),
+      ...(options?.attachments ? { attachments: options.attachments } : {}),
+      ...buildForkRequestBoundary(options),
+      ...(options?.overrides ? { overrides: options.overrides } : {}),
+      ...(options?.labels ? { labels: options.labels } : {}),
+    });
+    const payload = await this.sendRequest({
+      requestId,
+      message,
+      timeout: 30000,
+      options: { skipQueue: true },
+      select: (msg) => {
+        if (msg.type !== "agent.fork.response") {
+          return null;
+        }
+        if (msg.payload.requestId !== requestId) {
+          return null;
+        }
+        return msg.payload;
+      },
+    });
+    if (payload.error || !payload.agentId) {
+      throw new Error(payload.error ?? "Fork failed");
+    }
+    return {
+      agentId: payload.agentId,
+      agent: payload.agent ?? null,
+    };
+  }
+
   // ============================================================================
   // Agent Interaction
   // ============================================================================
@@ -3050,6 +3352,8 @@ export class DaemonClient {
       ...(options?.activeTurnBehavior ? { activeTurnBehavior: options.activeTurnBehavior } : {}),
       ...(options?.images ? { images: options.images } : {}),
       ...(options?.attachments ? { attachments: options.attachments } : {}),
+      ...(options?.dispatchMode ? { dispatchMode: options.dispatchMode } : {}),
+      ...(options?.source ? { source: options.source } : {}),
     });
     const payload = await this.sendRequest({
       requestId,
@@ -3216,6 +3520,74 @@ export class DaemonClient {
     }
   }
 
+  async startPlannotatorSession(input: {
+    kind: "annotate";
+    path: string;
+    workspaceDir: string;
+    agentId?: string;
+    workspaceKey?: string;
+    remote?: boolean;
+  }): Promise<{ sessionId: string; port: number; url: string }> {
+    const requestId = this.createRequestId();
+    const message = SessionInboundMessageSchema.parse({
+      type: "plannotator.session.start.request",
+      requestId,
+      kind: input.kind,
+      path: input.path,
+      workspaceDir: input.workspaceDir,
+      ...(input.agentId ? { agentId: input.agentId } : {}),
+      ...(input.workspaceKey ? { workspaceKey: input.workspaceKey } : {}),
+      ...(input.remote !== undefined ? { remote: input.remote } : {}),
+    });
+    const payload = await this.sendRequest({
+      requestId,
+      message,
+      timeout: 30_000,
+      select: (msg) => {
+        if (msg.type !== "plannotator.session.start.response") {
+          return null;
+        }
+        if (msg.payload.requestId !== requestId) {
+          return null;
+        }
+        return msg.payload;
+      },
+    });
+    if (payload.error || !payload.sessionId || !payload.port || !payload.url) {
+      throw new Error(payload.error ?? "Failed to start Plannotator session");
+    }
+    return {
+      sessionId: payload.sessionId,
+      port: payload.port,
+      url: payload.url,
+    };
+  }
+
+  async stopPlannotatorSession(sessionId: string): Promise<void> {
+    const requestId = this.createRequestId();
+    const message = SessionInboundMessageSchema.parse({
+      type: "plannotator.session.stop.request",
+      requestId,
+      sessionId,
+    });
+    const payload = await this.sendRequest({
+      requestId,
+      message,
+      select: (msg) => {
+        if (msg.type !== "plannotator.session.stop.response") {
+          return null;
+        }
+        if (msg.payload.requestId !== requestId) {
+          return null;
+        }
+        return msg.payload;
+      },
+    });
+    if (payload.error) {
+      throw new Error(payload.error);
+    }
+  }
+
   async setAgentThinkingOption(
     agentId: string,
     thinkingOptionId: string | null,
@@ -3367,12 +3739,17 @@ export class DaemonClient {
   // Audio / Voice
   // ============================================================================
 
-  async setVoiceMode(enabled: boolean, agentId?: string): Promise<SetVoiceModePayload> {
+  async setVoiceMode(
+    enabled: boolean,
+    agentId?: string,
+    options?: { sendBehavior?: "interrupt" | "queue" },
+  ): Promise<SetVoiceModePayload> {
     const requestId = this.createRequestId();
     const message = SessionInboundMessageSchema.parse({
       type: "set_voice_mode",
       enabled,
       ...(agentId ? { agentId } : {}),
+      ...(options?.sendBehavior ? { sendBehavior: options.sendBehavior } : {}),
       requestId,
     });
     const response = await this.sendRequest({
@@ -3457,6 +3834,26 @@ export class DaemonClient {
       seq,
       audio,
       format,
+    });
+  }
+
+  /**
+   * Fire-and-forget client-side loader span (click -> running). The daemon
+   * logs it next to its own omp.runtime.acquire records. Send when the
+   * server advertises features.loaderSpanReport; old daemons reject the type.
+   */
+  sendLoaderSpanReport(input: {
+    agentId: string;
+    path: "create" | "resume" | "send";
+    totalMs: number;
+    startedAt: number;
+  }): void {
+    this.sendSessionMessageStrict({
+      type: "client.telemetry.loader_span.report",
+      agentId: input.agentId,
+      path: input.path,
+      totalMs: input.totalMs,
+      startedAt: input.startedAt,
     });
   }
 
@@ -3833,6 +4230,17 @@ export class DaemonClient {
         cwd,
       },
       responseType: "checkout_pull_response",
+    });
+  }
+
+  async checkoutSubmodules(cwd: string, requestId?: string): Promise<CheckoutSubmodulesPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: {
+        type: "checkout_submodules_request",
+        cwd,
+      },
+      responseType: "checkout_submodules_response",
     });
   }
 
@@ -4510,6 +4918,69 @@ export class DaemonClient {
     return responsePromise;
   }
 
+  async writeExplorerFile(input: FileExplorerWriteInput): Promise<FileExplorerWriteResult> {
+    const bytes = asUint8Array(input.bytes);
+    if (!bytes) {
+      throw new Error("File bytes are required.");
+    }
+    const cwd = input.cwd.trim();
+    if (!cwd) {
+      throw new Error("cwd is required.");
+    }
+    const resolvedRequestId = this.createRequestId(input.requestId);
+    const modifiedAt = input.modifiedAt ?? new Date().toISOString();
+    const directoryPath = input.directoryPath?.trim() || ".";
+    const responsePromise = this.sendCorrelatedRequest({
+      requestId: resolvedRequestId,
+      message: {
+        type: "file.explorer.write.request",
+        cwd,
+        directoryPath,
+        fileName: input.fileName,
+        mimeType: input.mimeType,
+        size: bytes.byteLength,
+        modifiedAt,
+        requestId: resolvedRequestId,
+      },
+      responseType: "file.explorer.write.response",
+      options: { skipQueue: true },
+    });
+
+    this.sendBinaryFrame(
+      encodeFileTransferFrame({
+        opcode: FileTransferOpcode.FileBegin,
+        requestId: resolvedRequestId,
+        metadata: {
+          mime: input.mimeType,
+          size: bytes.byteLength,
+          encoding: "binary",
+          modifiedAt,
+          fileName: input.fileName,
+        },
+      }),
+    );
+
+    const chunkSize = input.chunkSize ?? 1024 * 1024;
+    for (let offset = 0; offset < bytes.byteLength; offset += chunkSize) {
+      this.sendBinaryFrame(
+        encodeFileTransferFrame({
+          opcode: FileTransferOpcode.FileChunk,
+          requestId: resolvedRequestId,
+          payload: bytes.subarray(offset, Math.min(offset + chunkSize, bytes.byteLength)),
+        }),
+      );
+    }
+
+    this.sendBinaryFrame(
+      encodeFileTransferFrame({
+        opcode: FileTransferOpcode.FileEnd,
+        requestId: resolvedRequestId,
+      }),
+    );
+
+    return responsePromise;
+  }
+
   async requestDownloadToken(
     cwd: string,
     path: string,
@@ -4786,11 +5257,15 @@ export class DaemonClient {
     });
   }
 
-  async listProviderUsage(options?: { requestId?: string }): Promise<ProviderUsageListPayload> {
+  async listProviderUsage(options?: {
+    requestId?: string;
+    forceRefresh?: boolean;
+  }): Promise<ProviderUsageListPayload> {
     return this.sendNamespacedCorrelatedSessionRequest({
       requestId: options?.requestId,
       message: {
         type: "provider.usage.list.request",
+        ...(options?.forceRefresh ? { forceRefresh: true } : {}),
       },
     });
   }
@@ -5465,6 +5940,616 @@ export class DaemonClient {
     });
   }
 
+  async webhookCreate(options: CreateWebhookOptions): Promise<WebhookCreatePayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "webhook/create",
+        target: options.target,
+        promptTemplate: options.promptTemplate,
+        ...(options.name !== undefined ? { name: options.name } : {}),
+        ...(typeof options.enabled === "boolean" ? { enabled: options.enabled } : {}),
+        ...(options.auth !== undefined ? { auth: options.auth } : {}),
+        ...(options.filter !== undefined ? { filter: options.filter } : {}),
+      },
+      responseType: "webhook/create/response",
+    });
+  }
+
+  async webhookList(requestId?: string): Promise<WebhookListPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "webhook/list" },
+      responseType: "webhook/list/response",
+    });
+  }
+
+  async webhookInspect(options: WebhookRefOptions): Promise<WebhookInspectPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: { type: "webhook/inspect", webhookId: options.id },
+      responseType: "webhook/inspect/response",
+    });
+  }
+
+  async webhookDelete(options: WebhookRefOptions): Promise<WebhookDeletePayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: { type: "webhook/delete", webhookId: options.id },
+      responseType: "webhook/delete/response",
+    });
+  }
+
+  async webhookUpdate(options: UpdateWebhookOptions): Promise<WebhookUpdatePayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "webhook/update",
+        webhookId: options.id,
+        ...(options.name !== undefined ? { name: options.name } : {}),
+        ...(typeof options.enabled === "boolean" ? { enabled: options.enabled } : {}),
+        ...(options.target !== undefined ? { target: options.target } : {}),
+        ...(options.promptTemplate !== undefined ? { promptTemplate: options.promptTemplate } : {}),
+        ...(options.auth !== undefined ? { auth: options.auth } : {}),
+        ...(options.filter !== undefined ? { filter: options.filter } : {}),
+      },
+      responseType: "webhook/update/response",
+    });
+  }
+
+  async webhookTest(options: TestWebhookOptions): Promise<WebhookTestPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "webhook/test",
+        webhookId: options.id,
+        ...(options.samplePayload !== undefined ? { samplePayload: options.samplePayload } : {}),
+      },
+      responseType: "webhook/test/response",
+    });
+  }
+
+  async webhookConfig(requestId?: string): Promise<WebhookConfigPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "webhook/config" },
+      responseType: "webhook/config/response",
+    });
+  }
+
+  async missionControlEventsFetch(options?: {
+    sinceTs?: string;
+    beforeSeq?: number;
+    limit?: number;
+    requestId?: string;
+  }): Promise<MissionControlEventsFetchPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options?.requestId,
+      message: {
+        type: "mission_control.events.fetch.request",
+        ...(options?.sinceTs ? { sinceTs: options.sinceTs } : {}),
+        ...(typeof options?.beforeSeq === "number" ? { beforeSeq: options.beforeSeq } : {}),
+        ...(typeof options?.limit === "number" ? { limit: options.limit } : {}),
+      },
+      responseType: "mission_control.events.fetch.response",
+    });
+  }
+
+  async missionControlEventsAck(options: {
+    eventIds: string[];
+    requestId?: string;
+  }): Promise<MissionControlEventsAckPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "mission_control.events.ack.request",
+        eventIds: options.eventIds,
+      },
+      responseType: "mission_control.events.ack.response",
+    });
+  }
+
+  async missionControlPeersList(requestId?: string): Promise<MissionControlPeersListPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: {
+        type: "mission_control.peers.list.request",
+      },
+      responseType: "mission_control.peers.list.response",
+    });
+  }
+
+  async missionControlContextFetch(requestId?: string): Promise<MissionControlContextFetchPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: {
+        type: "mission_control.context.fetch.request",
+      },
+      responseType: "mission_control.context.fetch.response",
+    });
+  }
+
+  /**
+   * Run the tiered fleet search (mission_control.search) on a daemon. The
+   * Commander-host fleet_search tool proxies this to every online peer and
+   * merges the per-host results. Matches carry host: "local" from the daemon
+   * that ran them; the merging caller re-stamps peer rows with the peer name.
+   */
+  async missionControlSearch(options: {
+    query: string;
+    limit?: number;
+    deep?: boolean;
+    requestId?: string;
+  }): Promise<MissionControlSearchPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "mission_control.search.request",
+        query: options.query,
+        ...(typeof options.limit === "number" ? { limit: options.limit } : {}),
+        ...(options.deep === true ? { deep: true } : {}),
+      },
+      responseType: "mission_control.search.response",
+    });
+  }
+
+  /**
+   * Apply a fleet meta action on this daemon (mission_control.meta.apply):
+   * the Commander-host metaFromProposal path routes an approved meta-kind
+   * proposal whose metaPlan.serverId names THIS host as a peer here. The
+   * daemon re-validates the plan against its own registries and applies it
+   * (the single cross-host apply hop — the proposal card stays on the
+   * commander host). Mirrors fleet_create_agent's peer path.
+   */
+  async fleetMetaApply(
+    metaPlan: MissionControlMetaPlan,
+    requestId?: string,
+  ): Promise<MissionControlMetaApplyPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "mission_control.meta.apply.request", metaPlan },
+      responseType: "mission_control.meta.apply.response",
+    });
+  }
+
+  /**
+   * Apply a spawn plan on this daemon (mission_control.spawn.apply): the
+   * Commander-host spawn executor routes an approved spawn-kind proposal
+   * (fleet_create_agent) whose plan targets THIS host as a peer here. The
+   * daemon validates the plan's cwd contract against its own filesystem,
+   * creates the absolute cwd with mkdir recursive when missing, and creates
+   * the agent in ITS OWN registry — the mkdir happens on the target host,
+   * never the commander's. The commander already stamped paseo.parent-agent-id
+   * on the plan, so the label persists in this host's registry. Mirrors
+   * fleetMetaApply; only the APPLY hops (the proposal card stays on the
+   * commander host).
+   */
+  async fleetSpawnApply(
+    spawnPlan: MissionControlProposalSpawnPlan,
+    requestId?: string,
+  ): Promise<MissionControlSpawnApplyPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "mission_control.spawn.apply.request", spawnPlan },
+      responseType: "mission_control.spawn.apply.response",
+    });
+  }
+
+  /**
+   * Resolve human-readable workspace/project labels for a Commander spawn
+   * proposal on THIS daemon (mission_control.spawn_labels.resolve): the
+   * Commander host asks a PEER whose registries and checkout facts it cannot
+   * see. A spawn into a NEW workspace (cwd without workspaceId) derives its
+   * name from the target's own checkout (branch) and registries; an existing
+   * workspaceId resolves the workspace and project display names. Read-only —
+   * never registers anything.
+   */
+  async missionControlSpawnLabelsResolve(
+    input: { cwd?: string; workspaceId?: string },
+    requestId?: string,
+  ): Promise<MissionControlSpawnLabelsResolvePayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "mission_control.spawn_labels.resolve.request", ...input },
+      responseType: "mission_control.spawn_labels.resolve.response",
+    });
+  }
+
+  /**
+   * Forward a terminal mission-control event to the commander host
+   * (mission_control.event.forward): a NON-commander host emits this when one
+   * of its commander-dispatched workers (labeled paseo.parent-agent-id /
+   * paseo.commander-adopted-at) finishes, fails, is interrupted, or receives
+   * a verdict. The commander host ingests the event into the machinery-turn
+   * gate ONLY — the worker's labels ride the payload so the gate can decide
+   * without a local record — and never writes it into its events store.
+   */
+  async missionControlEventForward(
+    input: { event: MissionControlEvent; labels: Record<string, string> | null },
+    requestId?: string,
+  ): Promise<MissionControlEventForwardPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: {
+        type: "mission_control.event.forward.request",
+        event: input.event,
+        labels: input.labels,
+      },
+      responseType: "mission_control.event.forward.response",
+    });
+  }
+
+  /**
+   * Read the central Mission Control config (fleet policy stored on the
+   * commander host). The responding daemon resolves defaults server-side, so
+   * every key of the returned config is present.
+   */
+  async missionControlConfigGet(requestId?: string): Promise<MissionControlConfigGetPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "mission_control.config.get.request" },
+      responseType: "mission_control.config.get.response",
+    });
+  }
+
+  /**
+   * Patch the central Mission Control config. `patch` is partial; the daemon
+   * merges it and returns the resolved config.
+   */
+  async missionControlConfigPatch(
+    patch: Partial<MissionControlCentralConfig>,
+    requestId?: string,
+  ): Promise<MissionControlConfigPatchPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "mission_control.config.patch.request", patch },
+      responseType: "mission_control.config.patch.response",
+    });
+  }
+
+  /**
+   * Push a FULL central-config snapshot to a peer daemon
+   * (mission_control.config.replica). One-way sync message — there is NO
+   * response pair (unlike the .request/.response RPCs): the receiving daemon
+   * replaces its local central-config.json + in-memory store, last-writer-wins.
+   * Used by the commander host to replicate every patch to peers and to
+   * sync-on-connect when a peer comes online. Fire-and-forget: failures (not
+   * connected) throw like any other send; callers gate on peer online state.
+   */
+  missionControlConfigReplica(
+    config: MissionControlCentralConfig,
+    options?: { from?: string },
+  ): void {
+    this.sendSessionMessage({
+      type: "mission_control.config.replica",
+      ...(options?.from ? { from: options.from } : {}),
+      config,
+    });
+  }
+
+  /**
+   * Archive the current Commander and spawn a fresh one with a new context
+   * pack (mission_control.commander.reset). The old conversation stays in
+   * History. Mirrors the thread overflow "Reset Commander" action.
+   */
+  async missionControlCommanderReset(
+    requestId?: string,
+  ): Promise<MissionControlCommanderResetPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "mission_control.commander.reset.request" },
+      responseType: "mission_control.commander.reset.response",
+    });
+  }
+
+  /**
+   * Flip the approval gate between ask and auto mode. */
+  async missionControlModeSet(
+    mode: MissionControlMode,
+    requestId?: string,
+  ): Promise<MissionControlModeSetPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "mission_control.mode.set.request", mode },
+      responseType: "mission_control.mode.set.response",
+    });
+  }
+
+  /**
+   * M9 voice dialogue mirror (mission_control.voice.mirror): append one voice
+   * turn (a heard user utterance or a spoken reply) to the Commander thread
+   * WITHOUT running a Commander model turn. The Commander thread is the
+   * system of record for dialogue; the voice node calls this after every
+   * heard/spoken turn so text Commander always has what was said. kind "qa"
+   * = pure Q&A (the app hides the row unless verbose); "dispatch" = the turn
+   * asked the fleet to do something (visible).
+   */
+  async missionControlVoiceMirror(input: {
+    role: "user" | "assistant";
+    text: string;
+    kind: "qa" | "dispatch";
+    requestId?: string;
+  }): Promise<MissionControlVoiceMirrorPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: input.requestId,
+      message: {
+        type: "mission_control.voice.mirror.request",
+        role: input.role,
+        text: input.text,
+        kind: input.kind,
+      },
+      responseType: "mission_control.voice.mirror.response",
+    });
+  }
+
+  /**
+   * M11 voice fleet_recall (mission_control.recall): semantic recall over
+   * the configured Hindsight fleet memory bank — the same service call the
+   * Commander's fleet_recall tool makes. The voice node has no MCP catalog,
+   * so it reads over this thin session RPC. Degrades to ok:false with
+   * reason "memory unavailable" when the bank is unconfigured/unreachable.
+   */
+  async missionControlRecall(input: {
+    query: string;
+    limit?: number;
+    requestId?: string;
+  }): Promise<MissionControlRecallPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: input.requestId,
+      message: {
+        type: "mission_control.recall.request",
+        query: input.query,
+        ...(typeof input.limit === "number" ? { limit: input.limit } : {}),
+      },
+      responseType: "mission_control.recall.response",
+    });
+  }
+
+  /**
+   * M11 voice fleet_context (mission_control.context.records): deterministic
+   * run records plus the matching workspace/project rollup from the local
+   * mission-control store. Selector semantics match the Commander's
+   * fleet_context tool (agentId / workspaceId / projectId / none).
+   */
+  async missionControlContextRecords(input: {
+    agentId?: string;
+    workspaceId?: string;
+    projectId?: string;
+    requestId?: string;
+  }): Promise<MissionControlContextRecordsPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: input.requestId,
+      message: {
+        type: "mission_control.context.records.request",
+        ...(input.agentId !== undefined ? { agentId: input.agentId } : {}),
+        ...(input.workspaceId !== undefined ? { workspaceId: input.workspaceId } : {}),
+        ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
+      },
+      responseType: "mission_control.context.records.response",
+    });
+  }
+
+  /**
+   * M11 voice tag_message (mission_control.tag_message): attribute the
+   * latest voice-mirrored user message on the Commander thread to the given
+   * agent ids — the same tag record the Commander's tag_message tool writes
+   * (the Verifier reads these tags when auditing a worker). messageText pins
+   * the tag to the most recent Commander user message whose text equals it.
+   */
+  async missionControlTagMessage(input: {
+    agentIds: string[];
+    messageText?: string;
+    requestId?: string;
+  }): Promise<MissionControlTagMessagePayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: input.requestId,
+      message: {
+        type: "mission_control.tag_message.request",
+        agentIds: input.agentIds,
+        ...(input.messageText !== undefined ? { messageText: input.messageText } : {}),
+      },
+      responseType: "mission_control.tag_message.response",
+    });
+  }
+
+  /**
+   * M11 voice peer fleet_get_agent_activity (mission_control.peer.timeline):
+   * read a peer host's agent timeline over peering (this daemon hops to the
+   * peer) and get back the same curated summary the Commander's
+   * fleet_get_agent_activity peer branch produces. Local reads keep using
+   * fetchAgentTimeline directly.
+   */
+  async missionControlPeerTimeline(input: {
+    host: string;
+    agentId: string;
+    limit?: number;
+    requestId?: string;
+  }): Promise<MissionControlPeerTimelinePayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: input.requestId,
+      message: {
+        type: "mission_control.peer.timeline.request",
+        host: input.host,
+        agentId: input.agentId,
+        ...(typeof input.limit === "number" && input.limit > 0 ? { limit: input.limit } : {}),
+      },
+      responseType: "mission_control.peer.timeline.response",
+    });
+  }
+
+  /**
+   * M12 execute a Commander-allowlisted Paseo fleet tool on the daemon's own
+   * catalog (mission_control.tools.execute) — the ONE catalog path the Voice
+   * node and the Commander share. The daemon builds a Commander-identity
+   * catalog (label-gated fleet tools behave exactly as they do for the
+   * Commander) and runs catalog.executeTool(name, args); names outside
+   * COMMANDER_TOOL_ALLOWLIST are refused server-side.
+   */
+  async missionControlToolsExecute(input: {
+    name: string;
+    args?: Record<string, unknown>;
+    requestId?: string;
+  }): Promise<MissionControlToolsExecutePayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: input.requestId,
+      message: {
+        type: "mission_control.tools.execute.request",
+        name: input.name,
+        ...(input.args ? { args: input.args } : {}),
+      },
+      responseType: "mission_control.tools.execute.response",
+    });
+  }
+
+  /**
+   * Respond to a pending proposal (approval gate): approve (optionally with an
+   * edited message) or deny (optionally with a reason that is delivered back
+   * to the Commander). allowPair auto-approves the rest of a
+   * verifier<->worker exchange.
+   */
+  async missionControlProposalsRespond(options: {
+    proposalId: string;
+    action: "approve" | "deny";
+    editedMessage?: string;
+    reason?: string;
+    allowPair?: boolean;
+    requestId?: string;
+  }): Promise<MissionControlProposalsRespondPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "mission_control.proposals.respond.request",
+        proposalId: options.proposalId,
+        action: options.action,
+        ...(options.editedMessage !== undefined ? { editedMessage: options.editedMessage } : {}),
+        ...(options.reason !== undefined ? { reason: options.reason } : {}),
+        ...(options.allowPair === true ? { allowPair: true } : {}),
+      },
+      responseType: "mission_control.proposals.respond.response",
+    });
+  }
+
+  /**
+   * Emit a commander-origin proposal card (kind "proposal", classification
+   * normal) from the one-time naming backfill — the workspace rename
+   * proposals card. Always lands pending (never auto-sends); the target
+   * defaults to the Commander when omitted.
+   */
+  async missionControlProposalsCreate(options: {
+    message: string;
+    reason?: string;
+    targetAgentId?: string | null;
+    requestId?: string;
+  }): Promise<MissionControlProposalsCreatePayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "mission_control.proposals.create.request",
+        message: options.message,
+        ...(options.reason !== undefined ? { reason: options.reason } : {}),
+        ...(options.targetAgentId !== undefined ? { targetAgentId: options.targetAgentId } : {}),
+      },
+      responseType: "mission_control.proposals.create.response",
+    });
+  }
+
+  /** Mark done / clear / reopen an agent in the Mission Control lifecycle. */
+  async missionControlLifecycleSet(options: {
+    serverId: string;
+    agentId: string;
+    agentIds?: string[];
+    action: "done" | "clear" | "reopen";
+    requestId?: string;
+  }): Promise<MissionControlLifecycleSetPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "mission_control.lifecycle.set.request",
+        serverId: options.serverId,
+        agentId: options.agentId,
+        ...(options.agentIds ? { agentIds: options.agentIds } : {}),
+        action: options.action,
+      },
+      responseType: "mission_control.lifecycle.set.response",
+    });
+  }
+
+  /**
+   * M8 instruction ledger: list every instruction row (open + closed, newest
+   * first). The Commander thread renders the open rows (verbose mode shows
+   * the manual-close affordance).
+   */
+  async missionControlInstructionsList(
+    requestId?: string,
+  ): Promise<MissionControlInstructionsListPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "mission_control.instructions.list.request" },
+      responseType: "mission_control.instructions.list.response",
+    });
+  }
+
+  /**
+   * M8 instruction ledger: manually close an open instruction row
+   * (verbose-only thread affordance). closedBy "manual".
+   */
+  async missionControlInstructionsClose(options: {
+    instructionId: string;
+    requestId?: string;
+  }): Promise<MissionControlInstructionsClosePayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "mission_control.instructions.close.request",
+        instructionId: options.instructionId,
+      },
+      responseType: "mission_control.instructions.close.response",
+    });
+  }
+
+  /**
+   * M8 instruction ledger (voice P0): open one ledger row per final voice
+   * utterance. The voice node calls this on each final transcription; the
+   * model cites the returned ids via respondsTo on cards and emit-time close
+   * closes the rows. One row per utterance, no intent splitting.
+   */
+  async missionControlInstructionsOpen(options: {
+    text: string;
+    source?: "chat" | "voice";
+    requestId?: string;
+  }): Promise<MissionControlInstructionsOpenPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "mission_control.instructions.open.request",
+        text: options.text,
+        ...(options.source ? { source: options.source } : {}),
+      },
+      responseType: "mission_control.instructions.open.response",
+    });
+  }
+
+  /**
+   * Authenticated fetch of a proof file. host is "local" for this daemon or
+   * a peer name (the daemon proxies over peering). Size-capped + mime
+   * allowlisted server-side; the payload carries base64 content.
+   */
+  async missionControlMediaFetch(options: {
+    host: string;
+    path: string;
+    requestId?: string;
+  }): Promise<MissionControlMediaFetchPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "mission_control.media.fetch.request",
+        host: options.host,
+        path: options.path,
+      },
+      responseType: "mission_control.media.fetch.response",
+    });
+  }
+
   onTerminalStreamEvent(handler: (event: TerminalStreamEvent) => void): () => void {
     return this.terminalStreams.onEvent(handler);
   }
@@ -6089,6 +7174,11 @@ export class DaemonClient {
       case "providers_snapshot_update":
         return {
           type: "providers_snapshot_update",
+          payload: msg.payload,
+        };
+      case "provider.usage.updated":
+        return {
+          type: "provider_usage_updated",
           payload: msg.payload,
         };
       default:

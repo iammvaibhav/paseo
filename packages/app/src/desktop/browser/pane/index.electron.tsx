@@ -53,6 +53,11 @@ import { persistAttachmentFromDataUrl } from "@/attachments/service";
 import { WORKSPACE_SECONDARY_HEADER_HEIGHT } from "@/constants/layout";
 import { getOverlayRoot } from "@/lib/overlay-root";
 import {
+  buildBridgeCloseAllPath,
+  buildBridgeOpenPath,
+  buildBridgeRestorePath,
+} from "@/workspace/browser-editor-url";
+import {
   getDesktopHost,
   isElectronRuntime,
   type DesktopBrowserShortcutEvent,
@@ -64,13 +69,20 @@ import {
   RESPONSIVE_BROWSER_VIEWPORT,
   useBrowserStore,
 } from "@/desktop/browser/store";
+import { collectAllTabs, useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
+import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 import {
   applyInactiveBrowserWebviewViewport,
+  ensurePersistentBrowserWebview,
+  hidePersistentBrowserWebview,
+  isBrowserWebviewDomReady,
+  isResidentBrowserWebviewReady,
   prepareBrowserWebview,
   presentBrowserWebview,
   rememberBrowserWebviewSize,
   releaseResidentBrowserWebview,
   removeResidentBrowserWebview,
+  showPersistentBrowserWebview,
   takeResidentBrowserWebview,
 } from "../resident-webviews";
 import {
@@ -318,6 +330,178 @@ function executeWebviewJavaScript(webview: ElectronWebview, code: string): Promi
 }
 
 function ignoreWebviewJavaScriptError() {}
+
+interface BridgeOpenResult {
+  ok?: boolean;
+  status?: number;
+  error?: string;
+}
+
+interface BridgeRestoreResult extends BridgeOpenResult {
+  found?: boolean;
+  restored?: number;
+  failed?: number;
+}
+
+const SESSION_RESTORE_PENDING_ATTRIBUTE = "data-paseo-session-restore-pending";
+const SESSION_RESTORED_URL_ATTRIBUTE = "data-paseo-session-restored-url";
+
+/**
+ * Builds a guest-page script that asks the paseo-bridge code-server extension to
+ * open a file in place (no reload). The fetch is same-origin (reached through
+ * code-server's `/proxy/<port>/` reverse proxy). Resolves to a small status object
+ * — `{ ok, status }` on a response, `{ ok: false, error }` on a network failure —
+ * so the caller can log why it failed and fall back when the bridge is absent.
+ * Every value is JSON-encoded, so paths cannot break out of the script.
+ */
+function buildBridgeOpenScript(input: {
+  path: string;
+  line: number | null;
+  column: number | null;
+  mode: "file" | "diff";
+  baseRef: string | null;
+}): string {
+  const payload = {
+    path: input.path,
+    ...(input.line ? { line: input.line } : {}),
+    ...(input.column ? { column: input.column } : {}),
+    ...(input.mode === "diff" ? { mode: "diff" } : {}),
+    ...(input.baseRef ? { baseRef: input.baseRef } : {}),
+  };
+  return `(async () => {
+    const payload = ${JSON.stringify(payload)};
+    const folder = new URL(window.location.href).searchParams.get("folder");
+    if (folder) payload.folder = folder;
+    let lastError = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const r = await fetch(${JSON.stringify(buildBridgeOpenPath())}, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (r.status !== 503 || attempt === 2) {
+          return { ok: r.ok === true, status: r.status };
+        }
+      } catch (e) {
+        lastError = String(e && e.message ? e.message : e);
+        if (attempt === 2) return { ok: false, error: lastError };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    return { ok: false, error: lastError || "bridge unavailable" };
+  })()`;
+}
+
+function buildBridgeCloseAllScript(): string {
+  return `(async () => {
+    try {
+      const folder = new URL(window.location.href).searchParams.get("folder");
+      if (!folder) return { ok: false, error: "missing folder" };
+      const r = await fetch(${JSON.stringify(buildBridgeCloseAllPath())}, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ folder }),
+      });
+      return { ok: r.ok === true, status: r.status };
+    } catch (e) {
+      return { ok: false, error: String(e && e.message ? e.message : e) };
+    }
+  })()`;
+}
+
+function buildBridgeRestoreScript(): string {
+  return `(async () => {
+    const folder = new URL(window.location.href).searchParams.get("folder");
+    if (!folder) return { ok: false, error: "missing folder" };
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      try {
+        const r = await fetch(${JSON.stringify(buildBridgeRestorePath())}, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ folder }),
+        });
+        if (r.status !== 503 || attempt === 49) {
+          const body = await r.json().catch(() => ({}));
+          return { ok: r.ok === true, status: r.status, ...body };
+        }
+      } catch (e) {
+        if (attempt === 49) {
+          return { ok: false, error: String(e && e.message ? e.message : e) };
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    return { ok: false, error: "bridge unavailable" };
+  })()`;
+}
+
+function browserEditorFolder(url: string): string | null {
+  try {
+    return new URL(url).searchParams.get("folder");
+  } catch {
+    return null;
+  }
+}
+
+function restoreBrowserEditorSession(
+  webview: ElectronWebview,
+  expectedUrl: string | null | undefined,
+): void {
+  const currentUrl = webview.getURL?.() ?? webview.getAttribute("src") ?? "";
+  const currentFolder = browserEditorFolder(currentUrl);
+  const expectedFolder = expectedUrl ? browserEditorFolder(expectedUrl) : null;
+  if (
+    !currentUrl ||
+    !currentFolder ||
+    (expectedFolder !== null && currentFolder !== expectedFolder) ||
+    webview.getAttribute(SESSION_RESTORE_PENDING_ATTRIBUTE) === currentUrl ||
+    webview.getAttribute(SESSION_RESTORED_URL_ATTRIBUTE) === currentUrl
+  ) {
+    return;
+  }
+  webview.setAttribute(SESSION_RESTORE_PENDING_ATTRIBUTE, currentUrl);
+  void executeWebviewJavaScript(webview, buildBridgeRestoreScript())
+    .then((result) => {
+      const restoreResult = (result ?? {}) as BridgeRestoreResult;
+      if (restoreResult.ok === true) {
+        webview.setAttribute(SESSION_RESTORED_URL_ATTRIBUTE, currentUrl);
+        console.log(
+          `[paseo-bridge] session restore url=${currentUrl} found=${restoreResult.found} files=${restoreResult.restored ?? 0} failed=${restoreResult.failed ?? 0}`,
+        );
+      } else {
+        console.warn(
+          `[paseo-bridge] session restore failed url=${currentUrl} status=${restoreResult.status ?? "-"} error=${restoreResult.error ?? "-"}`,
+        );
+      }
+      return undefined;
+    })
+    .catch(ignoreWebviewJavaScriptError)
+    .finally(() => {
+      if (webview.getAttribute(SESSION_RESTORE_PENDING_ATTRIBUTE) === currentUrl) {
+        webview.removeAttribute(SESSION_RESTORE_PENDING_ATTRIBUTE);
+      }
+    });
+}
+
+function workspaceHasBrowserTab(workspaceKey: string, browserId: string): boolean {
+  const layout = useWorkspaceLayoutStore.getState().layoutByWorkspace[workspaceKey];
+  if (!layout) {
+    return false;
+  }
+  return collectAllTabs(layout.root).some(
+    (tab) => tab.target.kind === "browser" && tab.target.browserId === browserId,
+  );
+}
+
+function isBridgeWebviewReady(
+  webview: ElectronWebview | null,
+  domReady: boolean,
+  showChrome: boolean,
+  host: HTMLDivElement | null,
+): webview is ElectronWebview {
+  return Boolean(webview && domReady && (!showChrome || host?.contains(webview)));
+}
 
 interface BrowserAnnotationMarker {
   index: number;
@@ -585,6 +769,7 @@ export function BrowserPane({
   workspaceId,
   cwd,
   isInteractive,
+  isWorkspaceActive = true,
   onFocusPane,
 }: {
   browserId: string;
@@ -592,12 +777,27 @@ export function BrowserPane({
   workspaceId: string;
   cwd: string | null;
   isInteractive?: boolean;
+  isWorkspaceActive?: boolean;
   onFocusPane?: () => void;
 }) {
   const { theme } = useUnistyles();
   const { t } = useTranslation();
   const browser = useBrowserStore((state) => state.browsersById[browserId] ?? null);
+  // `embedded` = chrome-less + persistent webview (VS Code Web).
+  // `embedded-transient` = chrome-less + normal lifecycle (Plannotator).
+  // `full` = toolbar + resident lifecycle.
+  const chromeMode = browser?.chrome ?? "full";
+  const showChrome = chromeMode === "full";
+  const usePersistentWebview = chromeMode === "embedded";
   const updateBrowser = useBrowserStore((state) => state.updateBrowser);
+  const navigationRequest = useBrowserStore(
+    (state) => state.navigationRequestByBrowserId[browserId] ?? null,
+  );
+  const clearNavigationRequest = useBrowserStore((state) => state.clearNavigationRequest);
+  const bridgeOpenRequest = useBrowserStore(
+    (state) => state.bridgeOpenRequestByBrowserId[browserId] ?? null,
+  );
+  const clearBridgeOpenRequest = useBrowserStore((state) => state.clearBridgeOpenRequest);
   const setBrowserViewport = useBrowserStore((state) => state.setBrowserViewport);
   const browserViewport = browser?.viewport ?? RESPONSIVE_BROWSER_VIEWPORT;
   const browserViewportRef = useRef(browserViewport);
@@ -608,6 +808,7 @@ export function BrowserPane({
   const webviewRef = useRef<ElectronWebview | null>(null);
   const webviewHostRef = useRef<HTMLDivElement | null>(null);
   const webviewClipRef = useRef<HTMLElement | null>(null);
+  const domReadyRef = useRef(false);
   const urlInputRef = useRef<EditingTextInputHandle | null>(null);
   const initialUrlRef = useRef(browser?.url ?? "https://example.com");
   const browserIdRef = useRef(browserId);
@@ -635,6 +836,10 @@ export function BrowserPane({
   const workspaceAttachmentScopeKey = useMemo(
     () => buildBrowserAttachmentScopeKey({ cwd, serverId, workspaceId }),
     [cwd, serverId, workspaceId],
+  );
+  const workspaceKey = useMemo(
+    () => buildWorkspaceTabPersistenceKey({ serverId, workspaceId }),
+    [serverId, workspaceId],
   );
   const workspaceAttachments = useWorkspaceAttachments(workspaceAttachmentScopeKey ?? "");
   const setWorkspaceAttachments = useWorkspaceAttachmentsStore(
@@ -719,8 +924,18 @@ export function BrowserPane({
     }
   }, []);
 
+  // Mount + event wiring for resident and persistent webviews in one effect.
+  // eslint-disable-next-line complexity -- hybrid persistent/resident lifecycle
   useEffect(() => {
     if (!isElectronRuntime()) {
+      return;
+    }
+    // Inactive retained tabs must not keep a fixed-position persistent webview
+    // painted on screen (VS Code Web). Also skip mounting transient panes.
+    if (!isWorkspaceActive) {
+      if (usePersistentWebview) {
+        hidePersistentBrowserWebview(browserId);
+      }
       return;
     }
 
@@ -736,24 +951,32 @@ export function BrowserPane({
       initialUrlRef.current,
       browserErrorLabelsRef.current,
     );
-    const residentWebview = takeResidentBrowserWebview(browserId) as ElectronWebview | null;
-    const webview = residentWebview ?? (document.createElement("webview") as ElectronWebview);
+    const persistentWebview = usePersistentWebview
+      ? (ensurePersistentBrowserWebview({
+          browserId,
+          workspaceId,
+          url: initialUnsafeNavigationMessage ? "about:blank" : initialUrlRef.current,
+        }) as ElectronWebview | null)
+      : null;
+    const residentWebview = usePersistentWebview
+      ? null
+      : (takeResidentBrowserWebview(browserId) as ElectronWebview | null);
+    const webview =
+      persistentWebview ??
+      residentWebview ??
+      (document.createElement("webview") as ElectronWebview);
     webviewRef.current = webview;
-    if (!residentWebview) {
+    domReadyRef.current =
+      isBrowserWebviewDomReady(webview) || isResidentBrowserWebviewReady(webview);
+    if (!persistentWebview && !residentWebview) {
       prepareBrowserWebview(webview, {
         browserId,
         workspaceId,
         initialUrl: initialUnsafeNavigationMessage ? "about:blank" : initialUrlRef.current,
       });
     }
-    releaseResidentBrowserWebview(browserId, webview);
-    if (isPresentedRef.current) {
-      presentBrowserWebview(browserId, webview, host, clip, browserViewportRef.current);
-    } else {
-      applyInactiveBrowserWebviewViewport(browserId, webview, browserViewportRef.current);
-    }
     const sizeObserver =
-      typeof ResizeObserver === "undefined"
+      typeof ResizeObserver === "undefined" || usePersistentWebview
         ? null
         : new ResizeObserver(() => {
             if (!isPresentedRef.current) {
@@ -768,8 +991,20 @@ export function BrowserPane({
             );
             rememberResolvedBrowserWebviewSize(browserIdRef.current, webview);
           });
+    if (usePersistentWebview) {
+      // Persistent webviews stay on their fixed wrapper; only geometry updates.
+    } else {
+      releaseResidentBrowserWebview(browserId, webview);
+      if (isPresentedRef.current) {
+        presentBrowserWebview(browserId, webview, host, clip, browserViewportRef.current);
+      } else {
+        applyInactiveBrowserWebviewViewport(browserId, webview, browserViewportRef.current);
+      }
+    }
 
     const handleStartLoading = () => {
+      webview.removeAttribute(SESSION_RESTORED_URL_ATTRIBUTE);
+      domReadyRef.current = false;
       selectorControllerRef.current?.stopForWebview(webview);
       updateBrowser(browserId, { isLoading: true, lastError: null });
       syncNavigationState({ syncUrl: false });
@@ -837,12 +1072,19 @@ export function BrowserPane({
       });
     };
     const handleDomReady = () => {
+      // Regression fix: the persistent-webview refactor dropped this line, so
+      // any load while the pane is mounted left domReadyRef false forever and
+      // every bridge-open fell back to a reload after a 20s wait.
+      domReadyRef.current = true;
       syncNavigationState();
       // The previous page's overlay is gone after a load; re-apply markers for
       // the freshly loaded document.
       const markers = annotationMarkersRef.current;
       if (markers.length > 0) {
         applyAnnotationMarkers(webview, markers);
+      }
+      if (persistentWebview) {
+        restoreBrowserEditorSession(webview, browserRef.current?.url);
       }
     };
     const handleWebviewFocus = () => {
@@ -868,11 +1110,18 @@ export function BrowserPane({
     webview.addEventListener("focus", handleWebviewFocus);
     webview.addEventListener("mousedown", handleWebviewFocus);
 
-    if (isPresentedRef.current) {
-      rememberResolvedBrowserWebviewSize(browserId, webview);
+    if (persistentWebview) {
+      showPersistentBrowserWebview(browserId, host);
+      if (domReadyRef.current) {
+        restoreBrowserEditorSession(webview, browserRef.current?.url);
+      }
+    } else {
+      if (isPresentedRef.current) {
+        rememberResolvedBrowserWebviewSize(browserId, webview);
+      }
+      sizeObserver?.observe(host);
+      sizeObserver?.observe(clip);
     }
-    sizeObserver?.observe(host);
-    sizeObserver?.observe(clip);
     if (initialUnsafeNavigationMessage) {
       updateBrowserRef.current(browserIdRef.current, {
         isLoading: false,
@@ -893,13 +1142,26 @@ export function BrowserPane({
       webview.removeEventListener("dom-ready", handleDomReady);
       webview.removeEventListener("focus", handleWebviewFocus);
       webview.removeEventListener("mousedown", handleWebviewFocus);
-      const browserStillExists = Boolean(
-        useBrowserStore.getState().browsersById[browserIdRef.current],
-      );
-      if (browserStillExists) {
-        releaseResidentBrowserWebview(browserIdRef.current, webview);
+      if (persistentWebview) {
+        if (
+          workspaceKey !== null &&
+          !workspaceHasBrowserTab(workspaceKey, browserIdRef.current) &&
+          isBrowserWebviewDomReady(webview)
+        ) {
+          void executeWebviewJavaScript(webview, buildBridgeCloseAllScript()).catch(
+            ignoreWebviewJavaScriptError,
+          );
+        }
+        hidePersistentBrowserWebview(browserIdRef.current);
       } else {
-        removeResidentBrowserWebview(browserIdRef.current);
+        const browserStillExists = Boolean(
+          useBrowserStore.getState().browsersById[browserIdRef.current],
+        );
+        if (browserStillExists) {
+          releaseResidentBrowserWebview(browserIdRef.current, webview);
+        } else {
+          removeResidentBrowserWebview(browserIdRef.current);
+        }
       }
       selectorControllerRef.current?.stopForWebview(webview);
       if (webviewRef.current === webview) {
@@ -907,9 +1169,12 @@ export function BrowserPane({
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [browserId, onFocusPane]);
+  }, [browserId, isWorkspaceActive, onFocusPane, showChrome, usePersistentWebview, workspaceKey]);
 
   useEffect(() => {
+    if (usePersistentWebview) {
+      return;
+    }
     const webview = webviewRef.current;
     if (!webview) {
       return;
@@ -932,7 +1197,7 @@ export function BrowserPane({
     } else {
       rememberResolvedBrowserWebviewSize(browserId, webview);
     }
-  }, [browserId, browserViewport, isPresented]);
+  }, [browserId, browserViewport, isPresented, usePersistentWebview]);
 
   const navigate = useCallback(
     (nextUrl: string) => {
@@ -955,18 +1220,26 @@ export function BrowserPane({
         });
         return;
       }
-      if (webview?.loadURL) {
-        void webview.loadURL(normalizedUrl).catch((error: unknown) => {
-          const message = getLoadUrlRejectionMessage(error, browserErrorLabels.failedToLoad);
-          if (!message) {
-            return;
-          }
-          updateBrowserRef.current(browserIdRef.current, {
-            isLoading: false,
-            lastError: message,
+      // loadURL throws synchronously ("WebView must be attached to the DOM and
+      // the dom-ready event emitted") if the webview isn't ready yet. Only use it
+      // when dom-ready; otherwise (or if it still throws) fall back to `src`,
+      // which the webview loads once it attaches.
+      if (webview?.loadURL && domReadyRef.current) {
+        try {
+          void webview.loadURL(normalizedUrl).catch((error: unknown) => {
+            const message = getLoadUrlRejectionMessage(error, browserErrorLabels.failedToLoad);
+            if (!message) {
+              return;
+            }
+            updateBrowserRef.current(browserIdRef.current, {
+              isLoading: false,
+              lastError: message,
+            });
           });
-        });
-        return;
+          return;
+        } catch {
+          // Webview exposes loadURL but isn't attached/ready — fall through to src.
+        }
       }
       if (webview) {
         webview.setAttribute("src", normalizedUrl);
@@ -974,6 +1247,131 @@ export function BrowserPane({
     },
     [browserErrorLabels],
   );
+
+  useEffect(() => {
+    if (!navigationRequest) {
+      return;
+    }
+    if (!showChrome && !isWorkspaceActive) {
+      return;
+    }
+    navigate(navigationRequest.url);
+    clearNavigationRequest(browserId, navigationRequest.requestId);
+  }, [
+    browserId,
+    clearNavigationRequest,
+    isWorkspaceActive,
+    navigate,
+    navigationRequest,
+    showChrome,
+  ]);
+
+  useEffect(() => {
+    if (!bridgeOpenRequest) {
+      return;
+    }
+    if (!showChrome && !isWorkspaceActive) {
+      return;
+    }
+    const { path, line, column, mode, baseRef, fallbackUrl, requestId, targetWorkspaceKey } =
+      bridgeOpenRequest;
+    if (targetWorkspaceKey && targetWorkspaceKey !== workspaceKey) {
+      return;
+    }
+    let cancelled = false;
+    console.log(
+      `[paseo-bridge] ${mode} requested browserId=${browserId} req=${requestId} path=${path} domReady=${domReadyRef.current} hasWebview=${Boolean(
+        webviewRef.current,
+      )}`,
+    );
+
+    const runFallback = (reason: string) => {
+      console.warn(`[paseo-bridge] fallback (reload) path=${path} reason=${reason}`);
+      if (fallbackUrl) {
+        navigate(fallbackUrl);
+      }
+      clearBridgeOpenRequest(browserId, requestId);
+    };
+
+    void (async () => {
+      // Wait for the webview to attach + emit dom-ready before asking the guest
+      // to fetch the bridge — a freshly opened/adopted tab or a cold code-server
+      // boot isn't ready immediately. Falling back too early causes a reload.
+      const deadline = Date.now() + 20000;
+      while (Date.now() < deadline) {
+        if (cancelled) {
+          return;
+        }
+        const currentWebview = webviewRef.current;
+        if (
+          isBridgeWebviewReady(
+            currentWebview,
+            domReadyRef.current,
+            showChrome,
+            webviewHostRef.current,
+          )
+        ) {
+          break;
+        }
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 150);
+        });
+      }
+      if (cancelled) {
+        return;
+      }
+      const webview = webviewRef.current;
+      if (!isBridgeWebviewReady(webview, domReadyRef.current, showChrome, webviewHostRef.current)) {
+        // Never became ready — load the file the classic way (may reload).
+        runFallback("webview-not-ready");
+        return;
+      }
+      let result: BridgeOpenResult = {};
+      try {
+        result =
+          ((await executeWebviewJavaScript(
+            webview,
+            buildBridgeOpenScript({ path, line, column, mode, baseRef }),
+          )) as BridgeOpenResult | null) ?? {};
+      } catch (error) {
+        console.warn(`[paseo-bridge] executeJavaScript threw path=${path}`, error);
+        result = { ok: false, error: "executeJavaScript threw" };
+      }
+      if (cancelled) {
+        return;
+      }
+      console.log(
+        `[paseo-bridge] bridge fetch path=${path} ok=${result.ok} status=${result.status ?? "-"} error=${result.error ?? "-"}`,
+      );
+      if (result.ok === true) {
+        clearBridgeOpenRequest(browserId, requestId);
+        return;
+      }
+      if (result.status === 404) {
+        // The bridge reached VS Code and the path is not on disk. Reloading to the
+        // `?payload` URL would open a phantom blank editor named after it.
+        console.warn(`[paseo-bridge] file not found path=${path}`);
+        toastRef.current.error(t("workspace.file.notFoundOnHost", { path }));
+        clearBridgeOpenRequest(browserId, requestId);
+        return;
+      }
+      // Bridge unreachable / errored — fall back to a reload.
+      runFallback(`bridge-status-${result.status ?? "none"}`);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    browserId,
+    bridgeOpenRequest,
+    clearBridgeOpenRequest,
+    isWorkspaceActive,
+    navigate,
+    showChrome,
+    t,
+    workspaceKey,
+  ]);
 
   const handleBack = useCallback(() => {
     webviewRef.current?.goBack?.();
@@ -1434,100 +1832,101 @@ export function BrowserPane({
 
   return (
     <View style={styles.container}>
-      <View style={styles.chromeRow}>
-        <View style={styles.chromeLeft}>
-          <ToolbarButton
-            label={t("workspace.browser.controls.back")}
-            disabled={!browser?.canGoBack}
-            onPress={handleBack}
-            style={backIconButtonStyle}
-          >
-            <ArrowLeft size={16} color={theme.colors.foregroundMuted} />
-          </ToolbarButton>
-          <ToolbarButton
-            label={t("workspace.browser.controls.forward")}
-            disabled={!browser?.canGoForward}
-            onPress={handleForward}
-            style={forwardIconButtonStyle}
-          >
-            <ArrowRight size={16} color={theme.colors.foregroundMuted} />
-          </ToolbarButton>
-          <ToolbarButton
-            label={
-              browser?.isLoading
-                ? t("workspace.browser.controls.stopLoading")
-                : t("workspace.browser.controls.refresh")
-            }
-            onPress={handleRefresh}
-            style={baseIconButtonStyle}
-          >
-            <RotateCw size={16} color={theme.colors.foregroundMuted} />
-          </ToolbarButton>
-        </View>
-        <View style={styles.urlBarWrap}>
-          <TextInput
-            accessibilityLabel={t("workspace.browser.controls.browserUrl")}
-            autoCapitalize="none"
-            autoCorrect={false}
-            onChangeText={setDraftUrl}
-            onFocus={handleUrlBarFocus}
-            onSubmitEditing={handleNavigateDraftUrl}
-            placeholder={t("workspace.browser.controls.enterUrl")}
-            placeholderTextColor={theme.colors.foregroundMuted}
-            ref={urlInputRef}
-            style={urlInputStyle}
-            initialValue={draftUrl}
-          />
-        </View>
-        <View style={styles.chromeRight}>
-          <DeviceSizeMenu
-            selectedId={selectedDeviceSizeId}
-            onSelect={handleSelectDeviceSize}
-            triggerStyle={baseIconButtonStyle}
-          />
-          <ToolbarButton
-            label={t("workspace.browser.controls.openDevTools")}
-            onPress={handleOpenDevTools}
-            style={baseIconButtonStyle}
-          >
-            <Wrench size={16} color={theme.colors.foregroundMuted} />
-          </ToolbarButton>
-          <ToolbarButton
-            label={
-              selectorMode === "annotate"
-                ? t("workspace.browser.controls.cancelSelector")
-                : t("workspace.browser.controls.annotateElement")
-            }
-            active={selectorMode === "annotate"}
-            onPress={handleToggleElementSelector}
-            style={annotateIconButtonStyle}
-          >
-            <MousePointer2
-              size={16}
-              color={
-                selectorMode === "annotate" ? theme.colors.accent : theme.colors.foregroundMuted
+      {showChrome ? (
+        <View style={styles.chromeRow}>
+          <View style={styles.chromeLeft}>
+            <ToolbarButton
+              label={t("workspace.browser.controls.back")}
+              disabled={!browser?.canGoBack}
+              onPress={handleBack}
+              style={backIconButtonStyle}
+            >
+              <ArrowLeft size={16} color={theme.colors.foregroundMuted} />
+            </ToolbarButton>
+            <ToolbarButton
+              label={t("workspace.browser.controls.forward")}
+              disabled={!browser?.canGoForward}
+              onPress={handleForward}
+              style={forwardIconButtonStyle}
+            >
+              <ArrowRight size={16} color={theme.colors.foregroundMuted} />
+            </ToolbarButton>
+            <ToolbarButton
+              label={
+                browser?.isLoading
+                  ? t("workspace.browser.controls.stopLoading")
+                  : t("workspace.browser.controls.refresh")
               }
+              onPress={handleRefresh}
+              style={baseIconButtonStyle}
+            >
+              <RotateCw size={16} color={theme.colors.foregroundMuted} />
+            </ToolbarButton>
+          </View>
+          <View style={styles.urlBarWrap}>
+            <TextInput
+              accessibilityLabel={t("workspace.browser.controls.browserUrl")}
+              autoCapitalize="none"
+              autoCorrect={false}
+              onChangeText={setDraftUrl}
+              onFocus={handleUrlBarFocus}
+              onSubmitEditing={handleNavigateDraftUrl}
+              placeholder={t("workspace.browser.controls.enterUrl")}
+              placeholderTextColor={theme.colors.foregroundMuted}
+              ref={urlInputRef}
+              style={urlInputStyle}
             />
-          </ToolbarButton>
-          <ToolbarButton
-            label={
-              selectorMode === "screenshot"
-                ? t("workspace.browser.controls.cancelSelector")
-                : t("workspace.browser.controls.screenshotElement")
-            }
-            active={selectorMode === "screenshot"}
-            onPress={handleToggleScreenshot}
-            style={screenshotIconButtonStyle}
-          >
-            <Camera
-              size={16}
-              color={
-                selectorMode === "screenshot" ? theme.colors.accent : theme.colors.foregroundMuted
+          </View>
+          <View style={styles.chromeRight}>
+            <DeviceSizeMenu
+              selectedId={selectedDeviceSizeId}
+              onSelect={handleSelectDeviceSize}
+              triggerStyle={baseIconButtonStyle}
+            />
+            <ToolbarButton
+              label={t("workspace.browser.controls.openDevTools")}
+              onPress={handleOpenDevTools}
+              style={baseIconButtonStyle}
+            >
+              <Wrench size={16} color={theme.colors.foregroundMuted} />
+            </ToolbarButton>
+            <ToolbarButton
+              label={
+                selectorMode === "annotate"
+                  ? t("workspace.browser.controls.cancelSelector")
+                  : t("workspace.browser.controls.annotateElement")
               }
-            />
-          </ToolbarButton>
+              active={selectorMode === "annotate"}
+              onPress={handleToggleElementSelector}
+              style={annotateIconButtonStyle}
+            >
+              <MousePointer2
+                size={16}
+                color={
+                  selectorMode === "annotate" ? theme.colors.accent : theme.colors.foregroundMuted
+                }
+              />
+            </ToolbarButton>
+            <ToolbarButton
+              label={
+                selectorMode === "screenshot"
+                  ? t("workspace.browser.controls.cancelSelector")
+                  : t("workspace.browser.controls.screenshotElement")
+              }
+              active={selectorMode === "screenshot"}
+              onPress={handleToggleScreenshot}
+              style={screenshotIconButtonStyle}
+            >
+              <Camera
+                size={16}
+                color={
+                  selectorMode === "screenshot" ? theme.colors.accent : theme.colors.foregroundMuted
+                }
+              />
+            </ToolbarButton>
+          </View>
         </View>
-      </View>
+      ) : null}
       {browser?.lastError ? (
         <View style={styles.errorRow}>
           <Text numberOfLines={1} style={errorTextStyle}>

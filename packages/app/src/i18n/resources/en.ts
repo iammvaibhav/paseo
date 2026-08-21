@@ -98,6 +98,8 @@ export const en = {
       sendMessage: "Send message",
       queue: "Queue",
       send: "Send",
+      forkToNewTab: "Fork to new tab",
+      forkFailed: "Failed to fork agent",
     },
     cancel: {
       cancelingAgent: "Canceling agent",
@@ -115,6 +117,7 @@ export const en = {
       muteVoice: "Mute voice",
       dictation: "Dictation",
       interruptBeforeVoice: "Interrupt the agent before starting voice mode",
+      commanderVoice: "Commander Voice",
     },
     attachments: {
       addImage: "Add image",
@@ -166,6 +169,7 @@ export const en = {
       fallback: "Provider",
       select: "Select agent provider",
     },
+    providerSwitched: "Switched provider to {{provider}}",
     thinking: {
       title: "Thinking",
       unknown: "Unknown",
@@ -233,16 +237,58 @@ export const en = {
       callout: "This agent is archived",
       unarchive: "Unarchive",
     },
+    providerUnavailable: {
+      callout: "This agent's provider is no longer available on this host.",
+      detail: "You can still read the history, or continue in a new draft with another provider.",
+      continueWithAnotherProvider: "Continue with another provider",
+    },
   },
   sessions: {
     title: "History",
     empty: "No sessions yet",
+    emptyForHost: "No sessions for this host",
+    loadError: "Unable to load sessions",
     noMatches: "No sessions match",
     tooManyMatches: "Too many matches — narrow your search",
     hostLoadFailed: "{{host}}: Could not load history",
     searchPlaceholder: "Search history",
+    tabs: {
+      agents: "Agents",
+      ask: "Ask",
+    },
+    search: {
+      placeholder: "Filter by title, provider, path…",
+      empty: "No sessions match this filter",
+    },
+    ask: {
+      placeholder: "Ask about past agent sessions…",
+      submit: "Ask",
+      jobsHeading: "Ask jobs",
+      jobsOpenHint: "Tap a job to open it. New asks open automatically.",
+      empty: "No History Ask jobs yet",
+      launched: "History Ask started — opening…",
+      scopeLabel: "Scope",
+      scopeUnknown: "Unknown scope",
+      scopeSelectHost: "Select a host",
+      scopeWorkspace: "Workspace · {{name}}",
+      scopeProject: "Project · {{name}}",
+      scopeHost: "Host · {{name}} (host-wide)",
+      needHostHint: "Ask runs on one host. Pick a host above — “All hosts” cannot launch.",
+      modelLabel: "Model",
+      modelPlaceholder: "Select model",
+      errors: {
+        noScope: "Choose a host or open Ask from a project/workspace",
+        noCwd:
+          "Couldn't start Ask on this host (no session directory available yet). Open a workspace once, or try again after history loads.",
+        hostDisconnected: "Host is not connected",
+        launchFailed: "Failed to start History Ask",
+      },
+    },
     actions: {
       loadMore: "Load more",
+      tryAgain: "Try again",
+      back: "Back",
+      askAboutThis: "Ask about this",
       clearSearch: "Clear search",
     },
   },
@@ -274,6 +320,54 @@ export const en = {
       archive: "Archive",
     },
   },
+  missionControl: {
+    inspector: {
+      archivedBanner: "Archived",
+      workspaceArchived:
+        "This agent's workspace is archived, so it cannot be opened in the workspace view.",
+      workspaceUnavailable:
+        "This agent's workspace isn't available on this host, so it cannot be opened in the workspace view.",
+    },
+    proposal: {
+      origin: {
+        verifier: "Verifier contact",
+        commander: "Commander",
+        stall: "Stall check",
+      },
+      chips: {
+        project: "Project: {{label}}",
+        workspace: "Workspace: {{label}}",
+        agent: "Agent: {{label}}",
+        newProject: "New project: {{label}}",
+        newWorkspace: "New workspace: {{label}}",
+        newAgent: "New agent: {{label}}",
+      },
+      model: "Model: {{model}}",
+      payload: "Payload",
+      meta: {
+        renameProject: "Rename project {{target}} → {{name}}",
+        renameWorkspace: "Rename workspace {{target}} → {{name}}",
+        renameAgentTitle: "Rename agent {{target}} → {{name}}",
+        archiveProject: "Archive project {{target}}",
+        archiveWorkspace: "Archive workspace {{target}}",
+        archiveAgent: "Archive agent {{target}}",
+        createProject: "Create project {{target}}",
+        moveAgent: "Move agent {{target}} → workspace {{destination}}",
+        promoteWorkspace: "Promote {{target}} → project {{destination}}",
+      },
+    },
+    clarification: {
+      title: "Clarification",
+      send: "Send",
+      answerPlaceholder: "Type your answer...",
+      answered: "Answered: {{answer}}",
+    },
+    answer: {
+      title: "Answer",
+      agentStatus: "Agent status",
+      state: "State",
+    },
+  },
   message: {
     diagram: {
       diagram: "Diagram",
@@ -293,6 +387,7 @@ export const en = {
       forkUnavailable: "Update the host to use this.",
       forkMissingWorkspace: "This agent is not in a workspace.",
       forkFailed: "Failed to fork chat",
+      jumpToUserMessage: "Jump to user message",
       openFile: "Open file",
       copied: "Copied",
     },
@@ -448,6 +543,9 @@ export const en = {
       context: {
         size: "Size",
         modified: "Modified",
+        copyPath: "Copy path",
+        download: "Download",
+        downloadAsZip: "Download as ZIP",
       },
       actions: {
         back: "Back",
@@ -464,6 +562,11 @@ export const en = {
       states: {
         unavailable: "Workspace is unavailable",
         loading: "Loading files...",
+      },
+      drop: {
+        hostDisconnected: "Host is disconnected",
+        uploading: "Uploading {{count}} file(s)…",
+        uploaded: "Uploaded {{count}} file(s)",
       },
       errors: {
         failedToListDirectory: "Failed to list directory",
@@ -567,6 +670,7 @@ export const en = {
       },
       menu: {
         openFor: "Open menu for {{label}}",
+        markDone: "Mark done",
         copyResumeCommand: "Copy resume command",
         copyAgentId: "Copy agent id",
         copyTerminalId: "Copy terminal id",
@@ -911,6 +1015,7 @@ export const en = {
         openIn: "Open workspace in {{target}}",
         openFileIn: "Open {{fileName}} in {{target}}",
         failedOpen: "Failed to open workspace",
+        noFile: "Select a Markdown file to open in Plannotator",
       },
       pr: {
         actions: {
@@ -1028,6 +1133,12 @@ export const en = {
         title: "Title",
         branch: "Branch name",
       },
+      workspaceSort: {
+        label: "Sort workspaces",
+        manual: "Manual",
+        activity: "Latest activity",
+        created: "Date created",
+      },
       show: {
         label: "Show",
         branch: "Branch",
@@ -1075,6 +1186,11 @@ export const en = {
       settings: "Settings",
       closeSidebar: "Close sidebar",
     },
+    fleetStats: {
+      label: "Fleet stats",
+      collecting: "Collecting fleet stats…",
+      failed: "Could not collect fleet stats",
+    },
     help: {
       trigger: "Help and support",
       sectionHelp: "Help",
@@ -1089,6 +1205,10 @@ export const en = {
     sections: {
       sessions: "History",
       schedules: "Schedules",
+      missionControl: "Mission Control",
+      missionControlNeedsYou: "Needs you",
+      missionControlReady: "Ready for review",
+      webhooks: "Webhooks",
     },
     worktreeSetup: {
       title: "Set up worktree scripts",
@@ -1104,6 +1224,7 @@ export const en = {
         openNewWindowFailed: "Couldn't open a new window",
         openFolder: "Open in file manager",
         openFolderFailed: "Couldn't open folder",
+        askHistory: "Ask history…",
         remove: "Remove project",
         removing: "Removing...",
       },
@@ -1125,6 +1246,13 @@ export const en = {
       },
     },
     workspace: {
+      agents: {
+        count: "Agents ({{count}})",
+        expand: "Show agents",
+        collapse: "Hide agents",
+        sortByActivity: "Recent",
+        sortByCreated: "Created",
+      },
       status: {
         serviceRunning: "Service {{name}} running",
         serviceUnhealthy: "Service {{name}} unhealthy",
@@ -1141,6 +1269,7 @@ export const en = {
         rename: "Rename workspace",
         pin: "Pin to top",
         unpin: "Unpin",
+        askHistory: "Ask history…",
         archive: "Archive",
         archiveWorkspace: "Archive workspace",
         hideFromSidebar: "Hide from sidebar",
@@ -1698,6 +1827,15 @@ export const en = {
     archiveFinishedAction: "Archive finished subagents",
     archiveFinishedRetry: "Retry ({{failed}}/{{total}})",
   },
+  selectionAsks: {
+    title: "Asks",
+    pillLabelOne: "1 ask",
+    pillLabelMany: "{{count}} asks",
+    openAction: "Open ask {{label}}",
+    archiveAction: "Archive {{label}}",
+    archiveTooltip: "Archive ask",
+    clearAll: "Clear all asks",
+  },
   panels: {
     draft: {
       newAgent: "New Agent",
@@ -1705,6 +1843,7 @@ export const en = {
     },
     file: {
       directoryMissing: "Workspace directory not found.",
+      notFoundOnHost: "File not found on the host: {{path}}",
       loading: "Loading file...",
       noPreview: "No preview available",
       binaryPreviewUnavailable: "Binary preview unavailable",
@@ -1800,6 +1939,7 @@ export const en = {
     title: "Context window",
     used: "{{percentage}}% used",
     tokens: "{{used}} / {{max}} tokens",
+    tokensUnknown: "0 tokens (waiting for usage)",
     sessionCost: "Session cost {{cost}}",
     accessibility: "Context window {{percentage}}% used",
   },
@@ -1845,12 +1985,23 @@ export const en = {
       notifications: "Notifications",
       permissions: "Permissions",
       diagnostics: "Diagnostics",
+      missionControl: "Mission Control",
       about: "About",
     },
     editor: {
       title: "Editor",
       vimKeybindings: "Vim keybindings",
       vimHint: "Applies to source files on web and desktop.",
+      defaultFileOpener: "Default file opener",
+      defaultFileOpenerHint:
+        "Used for normal file clicks. Plannotator supports document and configuration files; source files fall back to Paseo.",
+      defaultFileOpenerPaseo: "Paseo",
+      defaultFileOpenerVsCodeWeb: "VS Code Web",
+      defaultFileOpenerPlannotator: "Plannotator",
+      plannotatorFeedbackMode: "Plannotator feedback",
+      plannotatorFeedbackModeHint: "How annotation feedback is delivered to the linked agent.",
+      plannotatorFeedbackAutoSend: "Auto-send",
+      plannotatorFeedbackCompose: "Pre-fill composer",
     },
     notifications: {
       title: "Notifications",
@@ -1878,6 +2029,23 @@ export const en = {
       terminals: "Terminals",
       plugins: "Plugins",
       host: "Overview",
+    },
+    missionControl: {
+      memory: "Memory",
+      hindsightUrl: "Hindsight URL",
+      hindsightUrlHint:
+        "Hindsight API base URL. Empty disables fleet memory (run-record writes and recall).",
+      hindsightBank: "Write bank",
+      hindsightBankHint: "Bank Paseo writes run records to.",
+      hindsightSecondaryBank: "Recall bank (secondary)",
+      hindsightSecondaryBankHint:
+        "Read-only secondary bank consulted by fleet_recall. Empty disables.",
+      voiceNodeUrl: "Voice node URL",
+      voiceNodeUrlHint:
+        "Commander Voice server (e.g. ws://127.0.0.1:8787/ws). Empty hides Commander Voice in the Mission Control composer.",
+      voiceMode: "Voice tool mode",
+      voiceModeHint:
+        "Relay = voice reads like Commander but routes every change through commander_dispatch. Direct = voice holds the full Commander tool surface, approval-gated. Applies to new voice sessions.",
     },
     plugins: {
       title: "Plugins",
@@ -1965,10 +2133,12 @@ export const en = {
       defaultSend: {
         label: "Default send",
         descriptions: {
-          interrupt: "When the agent is running, Enter interrupts. Command/Ctrl+Enter queues.",
+          interrupt:
+            "When the agent is running, Enter or spoken input interrupts. Command/Ctrl+Enter queues typed messages.",
+          queue:
+            "When the agent is running, Enter or spoken input queues. Command/Ctrl+Enter submits typed messages.",
           steer:
-            "When the agent is running, Enter steers the active turn. Command/Ctrl+Enter queues.",
-          queue: "When the agent is running, Enter queues. Command/Ctrl+Enter submits.",
+            "When the agent is running, Enter steers it — it finishes the current tool call, reads your message, then continues. Command/Ctrl+Enter interrupts.",
         },
         options: {
           interrupt: "Interrupt",
@@ -2420,6 +2590,26 @@ export const en = {
           placeholder: "My Host",
           submit: "Rename",
         },
+        sshHost: {
+          title: "SSH host",
+          hint: "Lets “Open in editor” open this host's workspaces in Cursor or VS Code over Remote SSH",
+          notConfigured: "Not configured",
+          edit: "Edit",
+          configure: "Configure",
+          modalTitle: "SSH host",
+          placeholder: "user@hostname or SSH config alias",
+          submit: "Save",
+        },
+        browserEditorUrl: {
+          title: "VS Code Web URL",
+          hint: "Lets “Open → VS Code Web” open this host's workspaces in an in-app browser tab (code-server)",
+          notConfigured: "Not configured",
+          edit: "Edit",
+          configure: "Configure",
+          modalTitle: "VS Code Web URL",
+          placeholder: "http://hostname:8765",
+          submit: "Save",
+        },
         restart: {
           title: "Restart daemon",
           hint: "Restarts the daemon process. The app will reconnect automatically",
@@ -2560,6 +2750,9 @@ export const en = {
         useAutomatic: "Use automatic",
         imageUrl: "Image or website URL",
         save: "Save changes",
+        description: "Description",
+        descriptionLabel: "Project description",
+        descriptionPlaceholder: "What this project is for",
         savedToast: "Project updated",
       },
       readFailures: {

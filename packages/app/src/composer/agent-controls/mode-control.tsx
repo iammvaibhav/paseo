@@ -19,7 +19,11 @@ import { useComposerControlLayout } from "@/composer/agent-controls/layout-conte
 import { AgentControlTrigger } from "@/composer/agent-controls/control";
 import { useSessionStore } from "@/stores/session-store";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
-import { mergeProviderPreferences, useFormPreferences } from "@/hooks/use-form-preferences";
+import {
+  mergeProviderPreferencesWithScope,
+  useFormPreferences,
+  type FormPreferenceScope,
+} from "@/hooks/use-form-preferences";
 import { resolveProviderDefinition } from "@/utils/provider-definitions";
 import { useToast } from "@/contexts/toast-context";
 import { toErrorMessage } from "@/utils/error-messages";
@@ -250,9 +254,16 @@ export function useLiveAgentModeControl(
     useShallow((state) => {
       const agent = state.sessions[serverId]?.agents?.get(agentId);
       if (!agent) return null;
+      const workspaceId = agent.workspaceId ?? null;
+      const workspace = workspaceId
+        ? (state.sessions[serverId]?.workspaces.get(workspaceId) ?? null)
+        : null;
+      const projectKey = workspace?.projectId ?? workspace?.project?.projectKey ?? null;
       return {
         provider: agent.provider,
         cwd: agent.cwd,
+        workspaceId,
+        projectKey,
         currentModeId: agent.currentModeId,
       };
     }),
@@ -263,9 +274,18 @@ export function useLiveAgentModeControl(
     compareAvailableModes,
   );
   const client = useSessionStore((state) => state.sessions[serverId]?.client ?? null);
-  const { updatePreferences } = useFormPreferences();
+  const { updatePreferences } = useFormPreferences(serverId);
   const toast = useToast();
   const { entries: snapshotEntries } = useProvidersSnapshot(serverId, { cwd: slice?.cwd });
+
+  const preferenceScope = useMemo<FormPreferenceScope | null>(() => {
+    const workspaceId = slice?.workspaceId?.trim() || null;
+    const projectKey = slice?.projectKey?.trim() || null;
+    if (!workspaceId && !projectKey) {
+      return null;
+    }
+    return { workspaceId, projectKey };
+  }, [slice?.projectKey, slice?.workspaceId]);
 
   const providerDefinitions = useMemo<AgentProviderDefinition[]>(() => {
     if (!slice?.provider) return [];
@@ -277,10 +297,11 @@ export function useLiveAgentModeControl(
     (modeId: string) => {
       if (!client || !slice?.provider) return;
       void updatePreferences((current) =>
-        mergeProviderPreferences({
+        mergeProviderPreferencesWithScope({
           preferences: current,
           provider: slice.provider,
           updates: { mode: modeId || undefined },
+          scope: preferenceScope,
         }),
       ).catch((error) => {
         console.warn("[AgentModeControl] persist mode preference failed", error);
@@ -293,7 +314,7 @@ export function useLiveAgentModeControl(
           toast.error(toErrorMessage(error));
         });
     },
-    [agentId, client, slice?.provider, toast, updatePreferences],
+    [agentId, client, preferenceScope, slice?.provider, toast, updatePreferences],
   );
 
   return useMemo(() => {

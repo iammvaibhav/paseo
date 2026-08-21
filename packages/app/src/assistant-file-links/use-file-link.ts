@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import type { OpenFileDisposition } from "@/workspace/file-open";
 import { openExternalUrl } from "@/utils/open-external-url";
+import { parseHistoryAskAgentOpenUrl } from "@/history-ask/open-agent-link-parse";
 import type { InlinePathTarget } from "./parse";
 import {
   useAssistantFileLinkResolverContext,
@@ -160,6 +161,22 @@ function openAssistantFileLink(input: {
   queryClient: ReturnType<typeof useQueryClient>;
   formatNoFileFoundMessage: (token: string) => string;
 }): void {
+  // History Ask citations: [Title](paseo://h/{serverId}/agent/{agentId}).
+  // Must not go through openExternalUrl (http/https only) — open like History rows.
+  // Dynamic import keeps this module free of expo-router for unit tests.
+  const href = input.source.href?.trim() ?? "";
+  const text = input.source.text?.trim() ?? "";
+  if (parseHistoryAskAgentOpenUrl(href) || (text.length > 0 && parseHistoryAskAgentOpenUrl(text))) {
+    const openUrl = parseHistoryAskAgentOpenUrl(href) ? href : text;
+    void import("@/history-ask/open-agent-link")
+      .then(({ openHistoryAskAgentLink }) => {
+        openHistoryAskAgentLink(openUrl);
+        return undefined;
+      })
+      .catch(() => undefined);
+    return;
+  }
+
   const capturedConfig = input.context.configRef.current;
   const capturedResolution = classifyForResolution(input.source, {
     workspaceRoot: capturedConfig.workspaceRoot,
@@ -222,6 +239,9 @@ function canOpenAssistantFileLink(
   source: AssistantFileLinkSource,
   workspaceRoot: string | undefined,
 ): boolean {
+  if (parseHistoryAskAgentOpenUrl(source.href) || parseHistoryAskAgentOpenUrl(source.text ?? "")) {
+    return true;
+  }
   const resolution = classifyForResolution(source, { workspaceRoot });
   return resolution.kind === "needsLookup" || resolution.value.kind !== "ignored";
 }

@@ -191,6 +191,38 @@ describe("loadAppSettingsFromStorage", () => {
     expect(result.workspaceTitleSource).toBe("branch");
   });
 
+  it("loads the configured default file opener", async () => {
+    const deps = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({ defaultFileOpener: "plannotator" }),
+      }),
+    });
+
+    const result = await loadAppSettingsFromStorage(deps);
+
+    expect(result.defaultFileOpener).toBe("plannotator");
+  });
+
+  it("migrates the previous markdown Plannotator switch", async () => {
+    const enabledDeps = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({ openMarkdownInPlannotator: true }),
+      }),
+    });
+    const disabledDeps = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({ openMarkdownInPlannotator: false }),
+      }),
+    });
+
+    await expect(loadAppSettingsFromStorage(enabledDeps)).resolves.toMatchObject({
+      defaultFileOpener: "plannotator",
+    });
+    await expect(loadAppSettingsFromStorage(disabledDeps)).resolves.toMatchObject({
+      defaultFileOpener: "vscode-web",
+    });
+  });
+
   it("drops an unknown workspace title source back to title", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({

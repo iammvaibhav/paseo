@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, type ReactElement } from "react";
+import { useState, useCallback, useMemo, type ReactElement, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { TreeRail } from "@/components/tree-rail";
@@ -57,7 +57,6 @@ import { useIsLocalDaemon } from "@/hooks/use-is-local-daemon";
 import { buildAbsoluteExplorerPath } from "@/utils/explorer-paths";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { GitActionsSplitButton } from "@/git/actions-split-button";
-import type { GitActions } from "@/git/policy";
 import { BranchSwitcher } from "@/components/branch-switcher";
 import { useGitActions } from "@/git/use-actions";
 import { GIT_ACTION_ICONS } from "@/git/action-icons";
@@ -83,6 +82,7 @@ import { usePublishWorkingDiffAttachment, useWorkingDiff } from "@/git/use-worki
 import { DiffTooLargeState } from "@/git/diff-too-large-state";
 import { openDesktopTarget, useDesktopOpenTargets } from "@/workspace/desktop-open-targets";
 
+import type { GitAction, GitActionId, GitActions } from "@/git/policy";
 export type { GitActionId, GitAction, GitActions } from "@/git/policy";
 
 export function resolveDiffLayout(
@@ -168,6 +168,18 @@ interface ChangesSurfaceProps {
   focusPath?: string;
   focusRequestId?: number;
   onOpenFile?: (path: string) => void;
+  /**
+   * Optional submodule switcher rendered beside the branch switcher in the
+   * pane header. The explorer sidebar renders its own picker in the sidebar
+   * header, so only pane-hosted diff surfaces pass one.
+   */
+  submodulePicker?: ReactNode;
+  /**
+   * Opens the file's git diff in VS Code Web; absent when it isn't configured.
+   * `baseRef` is the pane's comparison base, or null while showing uncommitted
+   * changes (then the diff is the working tree against HEAD).
+   */
+  onOpenDiff?: (path: string, baseRef: string | null) => void;
   onAddToChat?: (path: string) => void;
   state?: ChangesState;
   onStateChange?: (state: ChangesState) => void;
@@ -326,6 +338,7 @@ export function DiffModeMenu({
 
 interface ChangesToolbarProps {
   branchName: string | null;
+  submodulePicker?: ReactNode;
   allFilesCollapsed: boolean;
   canUseSplitLayout: boolean;
   changesTabOpen: boolean;
@@ -374,6 +387,7 @@ function ChangesToolbar(props: ChangesToolbarProps) {
     isMobile,
     selectedDiffStat,
     serverId,
+    submodulePicker,
     workspaceId,
     onSelectBase,
     onSelectUncommitted,
@@ -396,6 +410,7 @@ function ChangesToolbar(props: ChangesToolbarProps) {
           isGitCheckout
           testID="changes-branch-switcher"
         />
+        {submodulePicker}
         {!isMobile && selectedDiffStat ? (
           <DiffStat
             additions={selectedDiffStat.additions}
@@ -1015,7 +1030,9 @@ export function ChangesSurface({
   focusPath,
   focusRequestId,
   onOpenFile,
+  onOpenDiff,
   onAddToChat,
+  submodulePicker,
   state: changesState,
   onStateChange,
 }: ChangesSurfaceProps) {
@@ -1223,6 +1240,18 @@ export function ChangesSurface({
     },
     [downloadFile],
   );
+  // Pressing a changed file goes straight to VS Code Web's diff where the host
+  // has it: that is the review surface, so expanding the diff inline here (or
+  // focusing it in a Changes tab) would be a detour. The row only knows its
+  // path; the comparison base belongs to the pane.
+  const openDiffAtCurrentBase = useMemo(
+    () =>
+      onOpenDiff
+        ? (path: string) => onOpenDiff(path, diffMode === "base" ? (baseRef ?? null) : null)
+        : undefined,
+    [baseRef, diffMode, onOpenDiff],
+  );
+
   const handleDuplicatePath = useCallback(
     async (path: string) => {
       if (!client) {
@@ -1263,9 +1292,10 @@ export function ChangesSurface({
     () => ({
       kind: "working" as const,
       reviewActions,
-      onFilePress: onChangesFilePress,
+      onFilePress: openDiffAtCurrentBase ?? onChangesFilePress,
       focusPath: documentFocusRequest?.path,
       focusRequestId: documentFocusRequest?.revision,
+
       workspaceFileDragScope: workspaceId ? { serverId, workspaceId } : undefined,
       onOpenFile,
       onAddToChat,
@@ -1285,6 +1315,7 @@ export function ChangesSurface({
       serverId,
       workspaceId,
       onOpenFile,
+      openDiffAtCurrentBase,
       onAddToChat,
       handleCopyPath,
       handleCopyRelativePath,
@@ -1379,6 +1410,7 @@ export function ChangesSurface({
       {isGit ? (
         <ChangesToolbar
           branchName={currentBranchName}
+          submodulePicker={submodulePicker}
           allFilesCollapsed={allFilesCollapsed}
           canUseSplitLayout={canUseSplitLayout}
           changesTabOpen={changesTabOpen}
@@ -1432,6 +1464,9 @@ export function ChangesSurface({
     </View>
   );
 }
+// The fork's explorer sidebar and the upstream refactor name the same surface
+// differently; export both so every caller compiles.
+export const GitDiffPane = ChangesSurface;
 
 const styles = StyleSheet.create((theme) => ({
   container: {

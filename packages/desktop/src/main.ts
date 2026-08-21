@@ -1,7 +1,8 @@
 process.emitWarning = (() => {}) as typeof process.emitWarning;
 
 import log from "electron-log/main";
-log.transports.console.level = "info";
+import { configureDesktopProcessLogging } from "./desktop-log.js";
+configureDesktopProcessLogging(log);
 log.initialize({ spyRendererConsole: true });
 
 import { inheritLoginShellEnv } from "./login-shell-env.js";
@@ -46,6 +47,10 @@ import {
   ensureNotificationCenterRegistration,
 } from "./features/notifications.js";
 import { registerOpenerHandlers } from "./features/opener.js";
+import {
+  applyBrowserEditorInsecureOriginsAtStartup,
+  registerBrowserEditorOriginIpc,
+} from "./features/browser-editor-origins.js";
 import { registerEditorTargetHandlers } from "./features/editor-targets/ipc.js";
 import { resolveAppIconPath } from "./features/stamped-icon.js";
 import { setupApplicationMenu } from "./features/menu.js";
@@ -97,6 +102,8 @@ import {
   type AgentDeepLinkTarget,
 } from "@getpaseo/protocol/agent-deep-link";
 import { AgentNavigationInbox, parseAgentDeepLinkFromArgv } from "./agent-navigation.js";
+import { PlannotatorProxyManager } from "./features/plannotator-proxy.js";
+import { stopOmpStatsFleet } from "./features/omp-stats-fleet.js";
 
 const DEV_SERVER_URL = process.env.EXPO_DEV_URL ?? "http://localhost:8081";
 const APP_SCHEME = "paseo";
@@ -115,6 +122,8 @@ const bootstrapComplete = new Promise<void>((resolve) => {
   resolveBootstrapComplete = resolve;
 });
 let bootstrapIsComplete = false;
+const plannotatorProxyHosts = new Map<string, Electron.WebContents>();
+let plannotatorProxyManager: PlannotatorProxyManager | null = null;
 
 app.setName(APP_NAME);
 
@@ -161,6 +170,21 @@ function readActiveBrowserInput(
   }
   const browserId = typeof record.browserId === "string" ? record.browserId.trim() : null;
   return { workspaceId: record.workspaceId.trim(), browserId: browserId || null };
+}
+
+function readPlannotatorProxyInput(
+  input: unknown,
+): { browserId: string; remoteUrl: string } | null {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    return null;
+  }
+  const record = input as Record<string, unknown>;
+  const browserId = typeof record.browserId === "string" ? record.browserId.trim() : "";
+  const remoteUrl = typeof record.remoteUrl === "string" ? record.remoteUrl.trim() : "";
+  if (!browserId || !remoteUrl) {
+    return null;
+  }
+  return { browserId, remoteUrl };
 }
 
 const browserKeyboard = new BrowserKeyboard(getPaseoBrowserWebviewRegistry());
@@ -329,6 +353,11 @@ if (electronFlags) {
   log.info("[electron-flags]", electronFlags);
 }
 
+// VS Code Web over http://VPN-IP needs Chromium to treat those origins as
+// secure (service workers / webviews). Origins are written by the renderer
+// from each host's browserEditorUrl setting.
+applyBrowserEditorInsecureOriginsAtStartup();
+
 let pendingOpenProjectPath = parseOpenProjectPathFromArgv({
   argv: process.argv,
   isDefaultApp: process.defaultApp,
@@ -431,6 +460,8 @@ ipcMain.handle("paseo:browser:register-attached", (event, rawInput: unknown) => 
 ipcMain.handle("paseo:browser:unregister-workspace-browser", async (event, browserId: unknown) => {
   if (typeof browserId === "string" && browserId.trim().length > 0) {
     const normalizedBrowserId = browserId.trim();
+    plannotatorProxyHosts.delete(normalizedBrowserId);
+    await plannotatorProxyManager?.closeSession(normalizedBrowserId);
     const hasOtherHost = getPaseoBrowserWebviewRegistry().hasBrowserInOtherHostWindow(
       event.sender.id,
       normalizedBrowserId,
@@ -1019,8 +1050,46 @@ async function bootstrap(): Promise<void> {
   registerDialogHandlers();
   registerNotificationHandlers();
   registerOpenerHandlers();
+  registerBrowserEditorOriginIpc();
   registerEditorTargetHandlers();
   registerBrowserAutomationIpc();
+
+  plannotatorProxyManager = new PlannotatorProxyManager({
+    cacheDirectory: path.join(app.getPath("userData"), "plannotator-ui-cache"),
+    logger: log,
+    onSubmitted: (browserId) => {
+      const host = plannotatorProxyHosts.get(browserId);
+      if (!host || host.isDestroyed()) {
+        return;
+      }
+      host.send("paseo:event:plannotator-submitted", { browserId });
+    },
+  });
+  ipcMain.handle("paseo:browser:prepare-plannotator", async (event, rawInput: unknown) => {
+    const input = readPlannotatorProxyInput(rawInput);
+    if (!input || !plannotatorProxyManager) {
+      throw new Error("Invalid Plannotator proxy request");
+    }
+    const result = await plannotatorProxyManager.openSession(input);
+    plannotatorProxyHosts.set(input.browserId, event.sender);
+    return result;
+  });
+  ipcMain.handle("paseo:browser:release-plannotator", async (_event, browserId: unknown) => {
+    if (typeof browserId !== "string" || !browserId.trim() || !plannotatorProxyManager) {
+      return;
+    }
+    const normalizedBrowserId = browserId.trim();
+    plannotatorProxyHosts.delete(normalizedBrowserId);
+    await plannotatorProxyManager.closeSession(normalizedBrowserId);
+  });
+  void plannotatorProxyManager
+    .warmCache()
+    .then(() => log.info("[plannotator-proxy] local UI cache ready"))
+    .catch((error) => {
+      log.warn("[plannotator-proxy] local UI cache warmup failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
 
   // In-app "Open in new window": opens a window that lands on the given project
   // via the same open-project flow as a CLI launch (no move, no ownership).
@@ -1109,6 +1178,10 @@ const quitLifecycle = createQuitLifecycle({
 // electron-updater forwards this event through Electron's built-in autoUpdater.
 electronAutoUpdater.on("before-quit-for-update", quitLifecycle.handleBeforeQuitForUpdate);
 app.on("before-quit", quitLifecycle.handleBeforeQuit);
+app.on("before-quit", () => {
+  void plannotatorProxyManager?.closeAll();
+  stopOmpStatsFleet();
+});
 registerExternalQuitSignals({ signals: process, quit: () => app.quit() });
 
 app.on("window-all-closed", () => {

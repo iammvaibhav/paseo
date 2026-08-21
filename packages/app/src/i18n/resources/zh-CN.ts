@@ -101,6 +101,8 @@ export const zhCN: TranslationResources = {
       sendMessage: "发送消息",
       queue: "排队",
       send: "发送",
+      forkToNewTab: "复刻到新标签页",
+      forkFailed: "复刻代理失败",
     },
     cancel: {
       cancelingAgent: "正在取消 Agent",
@@ -118,6 +120,7 @@ export const zhCN: TranslationResources = {
       muteVoice: "静音",
       dictation: "听写",
       interruptBeforeVoice: "启动语音模式前请先中断 Agent",
+      commanderVoice: "指挥官语音",
     },
     attachments: {
       addImage: "添加图片",
@@ -169,6 +172,7 @@ export const zhCN: TranslationResources = {
       fallback: "Provider",
       select: "选择 Agent Provider",
     },
+    providerSwitched: "已将 Provider 切换为 {{provider}}",
     thinking: {
       title: "Thinking",
       unknown: "未知",
@@ -235,16 +239,58 @@ export const zhCN: TranslationResources = {
       callout: "此 Agent 已归档",
       unarchive: "取消归档",
     },
+    providerUnavailable: {
+      callout: "This agent's provider is no longer available on this host.",
+      detail: "You can still read the history, or continue in a new draft with another provider.",
+      continueWithAnotherProvider: "Continue with another provider",
+    },
   },
   sessions: {
     title: "历史",
     empty: "还没有会话",
+    emptyForHost: "No sessions for this host",
+    loadError: "Unable to load sessions",
     noMatches: "没有匹配的会话",
     tooManyMatches: "匹配过多 — 请缩小搜索范围",
     hostLoadFailed: "{{host}}：无法加载历史",
     searchPlaceholder: "搜索历史",
+    tabs: {
+      agents: "Agents",
+      ask: "Ask",
+    },
+    search: {
+      placeholder: "Filter by title, provider, path…",
+      empty: "No sessions match this filter",
+    },
+    ask: {
+      placeholder: "Ask about past agent sessions…",
+      submit: "Ask",
+      jobsHeading: "Ask jobs",
+      jobsOpenHint: "Tap a job to open it. New asks open automatically.",
+      empty: "No History Ask jobs yet",
+      launched: "History Ask started — opening…",
+      scopeLabel: "Scope",
+      scopeUnknown: "Unknown scope",
+      scopeSelectHost: "Select a host",
+      scopeWorkspace: "Workspace · {{name}}",
+      scopeProject: "Project · {{name}}",
+      scopeHost: "Host · {{name}} (host-wide)",
+      needHostHint: "Ask runs on one host. Pick a host above — “All hosts” cannot launch.",
+      modelLabel: "Model",
+      modelPlaceholder: "Select model",
+      errors: {
+        noCwd:
+          "No working directory found on this host. Open a workspace, or ensure this host has history with a cwd.",
+        noScope: "Choose a host or open Ask from a project/workspace",
+        hostDisconnected: "Host is not connected",
+        launchFailed: "Failed to start History Ask",
+      },
+    },
     actions: {
       loadMore: "加载更多",
+      tryAgain: "Try again",
+      back: "Back",
+      askAboutThis: "询问此事",
       clearSearch: "清除搜索",
     },
   },
@@ -276,6 +322,53 @@ export const zhCN: TranslationResources = {
       archive: "归档",
     },
   },
+  missionControl: {
+    inspector: {
+      archivedBanner: "已归档",
+      workspaceArchived: "此 Agent 的工作区已归档，无法在工作区视图中打开。",
+      workspaceUnavailable:
+        "This agent's workspace isn't available on this host, so it cannot be opened in the workspace view.",
+    },
+    proposal: {
+      origin: {
+        verifier: "验证者联系",
+        commander: "指挥官",
+        stall: "停滞检查",
+      },
+      chips: {
+        project: "项目: {{label}}",
+        workspace: "工作区: {{label}}",
+        agent: "Agent: {{label}}",
+        newProject: "新项目: {{label}}",
+        newWorkspace: "新工作区: {{label}}",
+        newAgent: "新 Agent: {{label}}",
+      },
+      model: "模型: {{model}}",
+      payload: "有效载荷",
+      meta: {
+        renameProject: "重命名项目 {{target}} → {{name}}",
+        renameWorkspace: "重命名工作区 {{target}} → {{name}}",
+        renameAgentTitle: "重命名 Agent 标题 {{target}} → {{name}}",
+        archiveProject: "归档项目 {{target}}",
+        archiveWorkspace: "归档工作区 {{target}}",
+        archiveAgent: "归档 Agent {{target}}",
+        createProject: "创建项目 {{target}}",
+        moveAgent: "移动 Agent {{target}} → 工作区 {{destination}}",
+        promoteWorkspace: "提升 {{target}} → 项目 {{destination}}",
+      },
+    },
+    clarification: {
+      title: "澄清",
+      send: "发送",
+      answerPlaceholder: "输入您的回答...",
+      answered: "已回答: {{answer}}",
+    },
+    answer: {
+      title: "回答",
+      agentStatus: "Agent 状态",
+      state: "状态",
+    },
+  },
   message: {
     diagram: {
       diagram: "图表",
@@ -295,6 +388,7 @@ export const zhCN: TranslationResources = {
       forkUnavailable: "请更新主机以使用此功能。",
       forkMissingWorkspace: "此 Agent 不在工作区中。",
       forkFailed: "分叉聊天失败",
+      jumpToUserMessage: "跳转到用户消息",
       openFile: "打开文件",
       copied: "已复制",
     },
@@ -450,6 +544,9 @@ export const zhCN: TranslationResources = {
       context: {
         size: "大小",
         modified: "修改时间",
+        copyPath: "复制路径",
+        download: "下载",
+        downloadAsZip: "Download as ZIP",
       },
       actions: {
         back: "返回",
@@ -466,6 +563,11 @@ export const zhCN: TranslationResources = {
       states: {
         unavailable: "Workspace 不可用",
         loading: "正在加载文件...",
+      },
+      drop: {
+        hostDisconnected: "Host is disconnected",
+        uploading: "Uploading {{count}} file(s)…",
+        uploaded: "Uploaded {{count}} file(s)",
       },
       errors: {
         failedToListDirectory: "列出目录失败",
@@ -569,6 +671,7 @@ export const zhCN: TranslationResources = {
       },
       menu: {
         openFor: "打开 {{label}} 的菜单",
+        markDone: "标记为已完成",
         copyResumeCommand: "复制恢复命令",
         copyAgentId: "复制 Agent ID",
         copyTerminalId: "复制 Terminal ID",
@@ -894,6 +997,7 @@ export const zhCN: TranslationResources = {
         openIn: "在 {{target}} 中打开 workspace",
         openFileIn: "在 {{target}} 中打开 {{fileName}}",
         failedOpen: "打开 workspace 失败",
+        noFile: "Select a Markdown file to open in Plannotator",
       },
       pr: {
         actions: {
@@ -1011,6 +1115,12 @@ export const zhCN: TranslationResources = {
         title: "标题",
         branch: "分支名称",
       },
+      workspaceSort: {
+        label: "Sort workspaces",
+        manual: "Manual",
+        activity: "Latest activity",
+        created: "Date created",
+      },
       show: {
         label: "显示",
         branch: "分支",
@@ -1058,6 +1168,11 @@ export const zhCN: TranslationResources = {
       settings: "设置",
       closeSidebar: "关闭侧边栏",
     },
+    fleetStats: {
+      label: "集群统计",
+      collecting: "正在收集集群统计…",
+      failed: "无法收集集群统计",
+    },
     help: {
       trigger: "帮助与支持",
       sectionHelp: "帮助",
@@ -1072,6 +1187,10 @@ export const zhCN: TranslationResources = {
     sections: {
       sessions: "历史",
       schedules: "计划",
+      missionControl: "Mission Control",
+      missionControlNeedsYou: "需要你处理",
+      missionControlReady: "待审查",
+      webhooks: "Webhooks",
     },
     worktreeSetup: {
       title: "设置 worktree scripts",
@@ -1086,6 +1205,7 @@ export const zhCN: TranslationResources = {
         openNewWindowFailed: "无法打开新窗口",
         openFolder: "Open in file manager",
         openFolderFailed: "Couldn't open folder",
+        askHistory: "Ask history…",
         remove: "移除 project",
         removing: "正在移除...",
       },
@@ -1106,6 +1226,13 @@ export const zhCN: TranslationResources = {
       },
     },
     workspace: {
+      agents: {
+        count: "Agents ({{count}})",
+        expand: "Show agents",
+        collapse: "Hide agents",
+        sortByActivity: "Recent",
+        sortByCreated: "Created",
+      },
       status: {
         serviceRunning: "服务 {{name}} 运行中",
         serviceUnhealthy: "服务 {{name}} 异常",
@@ -1122,6 +1249,7 @@ export const zhCN: TranslationResources = {
         rename: "重命名 workspace",
         pin: "置顶",
         unpin: "取消置顶",
+        askHistory: "Ask history…",
         archive: "归档",
         archiveWorkspace: "归档工作区",
         hideFromSidebar: "从侧边栏隐藏",
@@ -1668,6 +1796,15 @@ export const zhCN: TranslationResources = {
     archiveFinishedAction: "归档已完成的 subagent",
     archiveFinishedRetry: "重试 ({{failed}}/{{total}})",
   },
+  selectionAsks: {
+    title: "提问",
+    pillLabelOne: "1 个提问",
+    pillLabelMany: "{{count}} 个提问",
+    openAction: "打开提问 {{label}}",
+    archiveAction: "归档 {{label}}",
+    archiveTooltip: "归档问题",
+    clearAll: "清除所有问题",
+  },
   panels: {
     draft: {
       newAgent: "新建 Agent",
@@ -1675,6 +1812,7 @@ export const zhCN: TranslationResources = {
     },
     file: {
       directoryMissing: "未找到 workspace 目录。",
+      notFoundOnHost: "主机上未找到文件：{{path}}",
       loading: "正在加载文件...",
       noPreview: "没有可用预览",
       binaryPreviewUnavailable: "二进制预览不可用",
@@ -1770,6 +1908,7 @@ export const zhCN: TranslationResources = {
     title: "上下文窗口",
     used: "已使用 {{percentage}}%",
     tokens: "{{used}} / {{max}} tokens",
+    tokensUnknown: "0 token（等待用量）",
     sessionCost: "会话费用 {{cost}}",
     accessibility: "上下文窗口已使用 {{percentage}}%",
   },
@@ -1815,12 +1954,23 @@ export const zhCN: TranslationResources = {
       notifications: "通知",
       permissions: "权限",
       diagnostics: "诊断",
+      missionControl: "Mission Control",
       about: "关于",
     },
     editor: {
       title: "编辑器",
       vimKeybindings: "Vim 键位",
       vimHint: "适用于网页和桌面端的源文件。",
+      defaultFileOpener: "默认文件打开方式",
+      defaultFileOpenerHint:
+        "用于普通文件点击。Plannotator 支持文档和配置文件；源代码文件会改用 Paseo 打开。",
+      defaultFileOpenerPaseo: "Paseo",
+      defaultFileOpenerVsCodeWeb: "VS Code Web",
+      defaultFileOpenerPlannotator: "Plannotator",
+      plannotatorFeedbackMode: "Plannotator 反馈",
+      plannotatorFeedbackModeHint: "批注反馈如何发送给关联的 agent。",
+      plannotatorFeedbackAutoSend: "自动发送",
+      plannotatorFeedbackCompose: "预填输入框",
     },
     notifications: {
       title: "通知",
@@ -1848,6 +1998,21 @@ export const zhCN: TranslationResources = {
       terminals: "Terminals",
       plugins: "插件",
       host: "概览",
+    },
+    missionControl: {
+      memory: "记忆",
+      hindsightUrl: "Hindsight URL",
+      hindsightUrlHint: "Hindsight API 基础 URL。留空将禁用集群记忆（运行记录写入和召回）。",
+      hindsightBank: "写入库",
+      hindsightBankHint: "Paseo 写入运行记录的库。",
+      hindsightSecondaryBank: "召回库（辅助）",
+      hindsightSecondaryBankHint: "fleet_recall 查询的只读辅助库。留空将禁用。",
+      voiceNodeUrl: "语音节点 URL",
+      voiceNodeUrlHint:
+        "指挥官语音服务器（例如 ws://127.0.0.1:8787/ws）。留空会在 Mission Control 编辑器里隐藏指挥官语音。",
+      voiceMode: "Voice tool mode",
+      voiceModeHint:
+        "Relay = voice reads like Commander but routes every change through commander_dispatch. Direct = voice holds the full Commander tool surface, approval-gated. Applies to new voice sessions.",
     },
     plugins: pluginSettings["zh-CN"],
     metadataGeneration: {
@@ -1880,13 +2045,14 @@ export const zhCN: TranslationResources = {
         label: "默认发送",
         descriptions: {
           interrupt: "Agent 运行时，Enter 会中断。Command/Ctrl+Enter 会排队。",
-          steer: "Agent 运行时，Enter 会引导当前回合。Command/Ctrl+Enter 会排队。",
           queue: "Agent 运行时，Enter 会排队。Command/Ctrl+Enter 会提交。",
+          steer:
+            "Agent 运行时，Enter 会引导它——先完成当前工具调用，读取你的消息，然后继续。Command/Ctrl+Enter 会中断。",
         },
         options: {
           interrupt: "中断",
-          steer: "引导",
           queue: "排队",
+          steer: "引导",
         },
       },
       serviceUrls: {
@@ -2326,6 +2492,26 @@ export const zhCN: TranslationResources = {
           placeholder: "我的 Host",
           submit: "重命名",
         },
+        sshHost: {
+          title: "SSH 主机",
+          hint: "允许“在编辑器中打开”通过 Remote SSH 在 Cursor 或 VS Code 中打开此主机的工作区",
+          notConfigured: "未配置",
+          edit: "编辑",
+          configure: "配置",
+          modalTitle: "SSH 主机",
+          placeholder: "user@hostname 或 SSH 配置别名",
+          submit: "保存",
+        },
+        browserEditorUrl: {
+          title: "VS Code Web URL",
+          hint: "让“打开 → VS Code Web”在应用内浏览器标签页中打开此主机的工作区（code-server）",
+          notConfigured: "未配置",
+          edit: "编辑",
+          configure: "配置",
+          modalTitle: "VS Code Web URL",
+          placeholder: "http://hostname:8765",
+          submit: "保存",
+        },
         restart: {
           title: "重启 Daemon",
           hint: "重启 Daemon 进程。应用会自动重新连接",
@@ -2460,6 +2646,9 @@ export const zhCN: TranslationResources = {
         useAutomatic: "使用自动",
         imageUrl: "图片或网站 URL",
         save: "保存更改",
+        description: "Description",
+        descriptionLabel: "Project description",
+        descriptionPlaceholder: "What this project is for",
         savedToast: "Project 已更新",
       },
       readFailures: {

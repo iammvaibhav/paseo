@@ -3,6 +3,17 @@ import type { FirstAgentContext } from "@getpaseo/protocol/messages";
 
 const MAX_INITIAL_AGENT_TITLE_CHARS = Math.min(60, MAX_EXPLICIT_AGENT_TITLE_CHARS);
 
+/**
+ * Deterministic last-resort title for registrations with no explicit title
+ * and no usable first prompt line (internal/MCP creates without prompts).
+ * Spec 06: registration ALWAYS produces a title — `explicit ??
+ * first-prompt-line(60) ?? derived stub` — so the persisted record's title
+ * is never null.
+ */
+export function deriveFallbackAgentTitle(timestamp: Date = new Date()): string {
+  return `Agent started ${timestamp.toISOString()}`;
+}
+
 function deriveInitialAgentTitle(prompt: string): string | null {
   const firstContentLine = prompt
     .split(/\r?\n/)

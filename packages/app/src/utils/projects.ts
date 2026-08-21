@@ -17,6 +17,7 @@ export interface ProjectHostEntry {
   projectId: string;
   projectName: string;
   projectCustomName: string | null;
+  projectDescription: string | null;
   serverName: string;
   isOnline: boolean;
   repoRoot: string;
@@ -49,6 +50,13 @@ export interface ProjectHost {
 
 export interface BuildProjectsInput {
   hosts: ProjectHost[];
+  /**
+   * Mission Control verbose gate, forwarded to buildWorkspaceStructureProjects:
+   * system-owned workspaces (Commander home + machinery-only) stay hidden
+   * while verbose is OFF and show when it is ON. Defaults to hidden so
+   * non-MC callers never surface machinery.
+   */
+  hideSystemOwnedWorkspaces?: boolean;
 }
 
 export interface BuildProjectsResult {
@@ -84,6 +92,7 @@ interface HostGroup {
   projectId: string;
   projectName: string;
   projectCustomName: string | null;
+  projectDescription: string | null;
   serverName: string;
   isOnline: boolean;
   workspaces: WorkspaceDescriptor[];
@@ -104,25 +113,30 @@ interface ProjectGroup {
 function findProjectMetadata(
   host: ProjectHost,
   projectId: string,
-): { customName: string | null; displayName: string } | null {
+): { customName: string | null; displayName: string; description: string | null } | null {
   for (const project of host.projects) {
     if (project.projectId === projectId) {
       return {
         customName: project.projectCustomName ?? null,
         displayName: project.projectDisplayName,
+        description: project.projectDescription ?? null,
       };
     }
   }
   return null;
 }
 
-function buildHostProjectEntries(hosts: ProjectHost[]): HostProjectListItem[] {
+function buildHostProjectEntries(
+  hosts: ProjectHost[],
+  hideSystemOwnedWorkspaces: boolean,
+): HostProjectListItem[] {
   return buildWorkspaceStructureProjects({
     sessions: hosts.map((host) => ({
       serverId: host.serverId,
       projects: host.projects,
       workspaces: host.workspaces,
     })),
+    hideSystemOwnedWorkspaces,
   });
 }
 
@@ -153,6 +167,7 @@ function toHostEntry(group: HostGroup): ProjectHostEntry {
     projectId: group.projectId,
     projectName: group.projectName,
     projectCustomName: group.projectCustomName,
+    projectDescription: group.projectDescription,
     serverName: group.serverName,
     isOnline: group.isOnline,
     repoRoot,
@@ -222,6 +237,7 @@ function addHostProjects(
         projectId,
         projectName: customName?.displayName ?? hostProject.projectName,
         projectCustomName: customName?.customName ?? null,
+        projectDescription: customName?.description ?? null,
         serverName: host.serverName,
         isOnline: host.isOnline,
         workspaces: [],
@@ -253,8 +269,9 @@ function attachHostWorkspaces(
 }
 
 export function buildProjects(input: BuildProjectsInput): BuildProjectsResult {
+  const hideSystemOwnedWorkspaces = input.hideSystemOwnedWorkspaces ?? true;
   const groups = new Map<string, ProjectGroup>();
-  const projectEntries = buildHostProjectEntries(input.hosts);
+  const projectEntries = buildHostProjectEntries(input.hosts, hideSystemOwnedWorkspaces);
 
   for (const host of input.hosts) {
     const hostProjects = projectEntries.filter((project) =>

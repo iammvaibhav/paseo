@@ -10,6 +10,7 @@ import { useTranslation } from "react-i18next";
 import { View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import {
+  ArrowDownAZ,
   Captions,
   Circle,
   CircleCheck,
@@ -21,6 +22,8 @@ import {
   GitBranch,
   GitPullRequest,
   Globe,
+  GripVertical,
+  History,
   Server,
   Settings2,
   Tag,
@@ -35,7 +38,7 @@ import {
   MenuTrigger,
   type MenuPageDefinition,
 } from "@/components/ui/menu";
-import { HostStatusDot } from "@/components/host-status-dot";
+import { HostGlyph } from "@/components/host-glyph";
 import { isWeb } from "@/constants/platform";
 import { useHosts } from "@/runtime/host-runtime";
 import { useSidebarModel } from "@/components/sidebar/sidebar-model";
@@ -51,7 +54,7 @@ import {
   type SidebarGroupMode,
 } from "@/stores/sidebar-view-store";
 import { workspaceLabelKey, type WorkspaceLabelColor } from "@getpaseo/protocol/workspace-labels";
-import type { WorkspaceTitleSource } from "@/hooks/use-settings";
+import type { SidebarWorkspaceSort, WorkspaceTitleSource } from "@/hooks/use-settings";
 import { SIDEBAR_CHECKS_DISPLAYS, type SidebarChecksDisplay } from "./checks-display";
 import { useSidebarDisplayPreferences, type SidebarTrailingChoice } from "./model";
 import { SIDEBAR_ROW_ITEMS, type SidebarRowItem } from "./row-items";
@@ -120,10 +123,16 @@ const TRAILING_ICONS: Record<SidebarTrailingChoice, OptionIcon> = {
   timestamp: withUnistyles(Clock),
 };
 
+const WORKSPACE_SORT_ICONS: Record<SidebarWorkspaceSort, OptionIcon> = {
+  manual: withUnistyles(GripVertical),
+  activity: withUnistyles(History),
+  created: withUnistyles(ArrowDownAZ),
+};
+
 const GROUPING_MODES: readonly SidebarGroupMode[] = ["project", "status"];
 const TITLE_SOURCES: readonly WorkspaceTitleSource[] = ["title", "branch"];
 const TRAILING_CHOICES: readonly SidebarTrailingChoice[] = ["diff", "timestamp"];
-
+const WORKSPACE_SORTS: readonly SidebarWorkspaceSort[] = ["manual", "activity", "created"];
 const GROUPING_LABEL_KEYS: Record<SidebarGroupMode, string> = {
   project: "sidebar.display.grouping.project",
   status: "sidebar.display.grouping.status",
@@ -154,6 +163,11 @@ const TRAILING_LABEL_KEYS: Record<SidebarTrailingChoice, string> = {
   timestamp: "sidebar.display.show.timestamp",
 };
 
+const WORKSPACE_SORT_LABEL_KEYS: Record<SidebarWorkspaceSort, string> = {
+  manual: "sidebar.display.workspaceSort.manual",
+  activity: "sidebar.display.workspaceSort.activity",
+  created: "sidebar.display.workspaceSort.created",
+};
 /**
  * What the sidebar shows and how it is arranged.
  *
@@ -216,6 +230,20 @@ export function SidebarDisplayPreferencesMenu(): ReactElement {
             selectedValue={preferences.titleSource}
             onSelect={preferences.setTitleSource}
             testIDPrefix="sidebar-workspace-title-source"
+          />
+        ),
+      },
+      {
+        id: "workspaceSort",
+        title: t("sidebar.display.workspaceSort.label"),
+        content: (
+          <OptionList
+            values={WORKSPACE_SORTS}
+            icons={WORKSPACE_SORT_ICONS}
+            labelKeys={WORKSPACE_SORT_LABEL_KEYS}
+            selectedValue={preferences.workspaceSort}
+            onSelect={preferences.setWorkspaceSort}
+            testIDPrefix="sidebar-workspace-sort"
           />
         ),
       },
@@ -314,6 +342,13 @@ export function SidebarDisplayPreferencesMenu(): ReactElement {
             testID="sidebar-display-title-source"
           >
             {t("sidebar.display.titleSource.label")}
+          </MenuSubTrigger>
+          <MenuSubTrigger
+            id="workspaceSort"
+            value={t(WORKSPACE_SORT_LABEL_KEYS[preferences.workspaceSort])}
+            testID="sidebar-display-workspace-sort"
+          >
+            {t("sidebar.display.workspaceSort.label")}
           </MenuSubTrigger>
           <MenuSubTrigger id="show" testID="sidebar-display-show">
             {t("sidebar.display.show.label")}
@@ -734,10 +769,10 @@ function HostFilterItem({
   const leading = useMemo(
     () => (
       <View testID={`sidebar-host-filter-status-${serverId}`}>
-        <HostStatusDot serverId={serverId} />
+        <HostGlyph serverId={serverId} label={label} size={14} />
       </View>
     ),
-    [serverId],
+    [label, serverId],
   );
 
   return (

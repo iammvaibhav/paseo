@@ -24,11 +24,21 @@ import {
 import { AgentProfilesSection } from "@/agent-profiles";
 import { AgentSkillsSection } from "@/agent-skills";
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
+import { AdaptiveRenameModal } from "@/components/rename-modal";
 import { SettingsTextAreaCard } from "@/components/settings-textarea";
 import { Alert as InlineAlert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { StatusBadge, type StatusBadgeVariant } from "@/components/ui/status-badge";
 import { Switch } from "@/components/ui/switch";
+import { FormTextInput } from "@/components/ui/form-field";
+import { HostGlyph } from "@/components/host-glyph";
+import { normalizeHostGlyphOverride } from "@/components/host-glyph-model";
+import {
+  IDENTITY_COLOR_NAMES,
+  identityColor,
+  type IdentityColorName,
+} from "@/styles/identity-colors";
+import { useIsCompactFormFactor } from "@/constants/layout";
 import {
   ProfileDraft,
   TerminalProfileEditModal,
@@ -296,6 +306,7 @@ export function HostWorkspacesPage({ serverId }: { serverId: string }) {
       {isConnected ? (
         <SettingsSection title={t("settings.hostSections.workspaces")}>
           <AutoArchiveMergedWorkspacesCard serverId={serverId} />
+          <IdleCloseOmpCard serverId={serverId} />
         </SettingsSection>
       ) : (
         <View style={[settingsStyles.card, styles.emptyCard]}>
@@ -364,11 +375,157 @@ export function HostSettingsPage({
 
       <HostAppearanceSection host={host} />
 
+      <SettingsSection title="Mission Control">
+        <MissionControlCard serverId={serverId} />
+      </SettingsSection>
+
       {isLocalDaemon ? <LocalDaemonSection /> : null}
+
+      <BrowserEditorUrlCard host={host} />
+
+      {!isLocalDaemon ? <SshHostCard host={host} /> : null}
 
       {!isLocalDaemon ? <UpdateDaemonCard key={host.serverId} host={host} /> : null}
 
       <RemoveHostSection host={host} isLocalDaemon={isLocalDaemon} onRemoved={onHostRemoved} />
+    </View>
+  );
+}
+
+function BrowserEditorUrlCard({ host }: { host: HostProfile }) {
+  const { t } = useTranslation();
+  const { theme } = useUnistyles();
+  const { setHostBrowserEditorUrl } = useHostMutations();
+  const [isEditing, setIsEditing] = useState(false);
+
+  const browserEditorUrl = host.browserEditorUrl ?? "";
+
+  const handleSubmit = useCallback(
+    async (value: string) => {
+      await setHostBrowserEditorUrl(host.serverId, value);
+    },
+    [host.serverId, setHostBrowserEditorUrl],
+  );
+
+  const handleClear = useCallback(() => {
+    void setHostBrowserEditorUrl(host.serverId, null);
+  }, [host.serverId, setHostBrowserEditorUrl]);
+
+  const openEditor = useCallback(() => setIsEditing(true), []);
+  const closeEditor = useCallback(() => setIsEditing(false), []);
+
+  return (
+    <View style={settingsStyles.card} testID="host-page-browser-editor-url-card">
+      <View style={settingsStyles.row}>
+        <View style={settingsStyles.rowContent}>
+          <Text style={settingsStyles.rowTitle}>
+            {t("settings.host.daemon.browserEditorUrl.title")}
+          </Text>
+          <Text style={settingsStyles.rowHint}>
+            {browserEditorUrl || t("settings.host.daemon.browserEditorUrl.hint")}
+          </Text>
+        </View>
+        {browserEditorUrl ? (
+          <Pressable
+            onPress={handleClear}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={t("settings.host.daemon.browserEditorUrl.notConfigured")}
+            testID="host-page-browser-editor-url-clear-button"
+          >
+            <Trash2 size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />
+          </Pressable>
+        ) : null}
+        <Button
+          variant="outline"
+          size="sm"
+          onPress={openEditor}
+          testID="host-page-browser-editor-url-edit-button"
+        >
+          {browserEditorUrl
+            ? t("settings.host.daemon.browserEditorUrl.edit")
+            : t("settings.host.daemon.browserEditorUrl.configure")}
+        </Button>
+      </View>
+
+      <AdaptiveRenameModal
+        visible={isEditing}
+        title={t("settings.host.daemon.browserEditorUrl.modalTitle")}
+        initialValue={browserEditorUrl}
+        placeholder={t("settings.host.daemon.browserEditorUrl.placeholder")}
+        submitLabel={t("settings.host.daemon.browserEditorUrl.submit")}
+        onClose={closeEditor}
+        onSubmit={handleSubmit}
+        testID="host-page-browser-editor-url-modal"
+      />
+    </View>
+  );
+}
+
+function SshHostCard({ host }: { host: HostProfile }) {
+  const { t } = useTranslation();
+  const { theme } = useUnistyles();
+  const { setHostSshHost } = useHostMutations();
+  const [isEditing, setIsEditing] = useState(false);
+
+  const sshHost = host.sshHost ?? "";
+
+  const handleSubmit = useCallback(
+    async (value: string) => {
+      await setHostSshHost(host.serverId, value);
+    },
+    [host.serverId, setHostSshHost],
+  );
+
+  const handleClear = useCallback(() => {
+    void setHostSshHost(host.serverId, null);
+  }, [host.serverId, setHostSshHost]);
+
+  const openEditor = useCallback(() => setIsEditing(true), []);
+  const closeEditor = useCallback(() => setIsEditing(false), []);
+
+  return (
+    <View style={settingsStyles.card} testID="host-page-ssh-host-card">
+      <View style={settingsStyles.row}>
+        <View style={settingsStyles.rowContent}>
+          <Text style={settingsStyles.rowTitle}>{t("settings.host.daemon.sshHost.title")}</Text>
+          <Text style={settingsStyles.rowHint}>
+            {sshHost || t("settings.host.daemon.sshHost.hint")}
+          </Text>
+        </View>
+        {sshHost ? (
+          <Pressable
+            onPress={handleClear}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={t("settings.host.daemon.sshHost.notConfigured")}
+            testID="host-page-ssh-host-clear-button"
+          >
+            <Trash2 size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />
+          </Pressable>
+        ) : null}
+        <Button
+          variant="outline"
+          size="sm"
+          onPress={openEditor}
+          testID="host-page-ssh-host-edit-button"
+        >
+          {sshHost
+            ? t("settings.host.daemon.sshHost.edit")
+            : t("settings.host.daemon.sshHost.configure")}
+        </Button>
+      </View>
+
+      <AdaptiveRenameModal
+        visible={isEditing}
+        title={t("settings.host.daemon.sshHost.modalTitle")}
+        initialValue={sshHost}
+        placeholder={t("settings.host.daemon.sshHost.placeholder")}
+        submitLabel={t("settings.host.daemon.sshHost.submit")}
+        onClose={closeEditor}
+        onSubmit={handleSubmit}
+        testID="host-page-ssh-host-modal"
+      />
     </View>
   );
 }
@@ -1036,6 +1193,399 @@ function AutoArchiveMergedWorkspacesCard({ serverId }: { serverId: string }) {
           testID="host-page-auto-archive-merged-workspaces-switch"
         />
       </View>
+    </View>
+  );
+}
+
+function parseIdleCloseMinutes(raw: string | null): number | null {
+  if (raw === null) {
+    return null;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+  return parsed;
+}
+
+// The daemon stores the timeout in seconds; the card edits minutes so the
+// field matches the hint. 0 turns the sweep off.
+const DEFAULT_IDLE_CLOSE_MINUTES = 30;
+
+function IdleCloseOmpCard({ serverId }: { serverId: string }) {
+  const isConnected = useHostRuntimeIsConnected(serverId);
+  const isCompact = useIsCompactFormFactor();
+  const { config, patchConfig } = useDaemonConfig(serverId);
+  const configuredSeconds = config?.ompIdleCloseAfterSeconds;
+  const seconds =
+    typeof configuredSeconds === "number" ? configuredSeconds : DEFAULT_IDLE_CLOSE_MINUTES * 60;
+  const minutes = Math.round(seconds / 60);
+
+  const draftRef = useRef<string | null>(null);
+  const handleChange = useCallback((text: string) => {
+    draftRef.current = text.replace(/[^0-9]/g, "");
+  }, []);
+  const handleCommit = useCallback(() => {
+    const raw = draftRef.current;
+    draftRef.current = null;
+    const parsed = parseIdleCloseMinutes(raw);
+    if (parsed === null || parsed === minutes) {
+      return;
+    }
+    void patchConfig({ ompIdleCloseAfterSeconds: parsed * 60 }).catch((error) => {
+      console.error("[HostPage] Failed to update idle close timeout", error);
+      Alert.alert(
+        "Unable to update agents",
+        error instanceof Error ? error.message : String(error),
+      );
+    });
+  }, [minutes, patchConfig]);
+
+  if (!isConnected) return null;
+
+  return (
+    <View style={settingsStyles.card} testID="host-page-idle-close-omp-card">
+      <View style={settingsStyles.row}>
+        <View style={settingsStyles.rowContent}>
+          <Text style={settingsStyles.rowTitle}>Close idle OMP processes</Text>
+          <Text style={settingsStyles.rowHint}>
+            Close idle OMP processes after this many minutes; the next send resumes from the warm
+            pool. 0 turns this off.
+          </Text>
+        </View>
+        <FormTextInput
+          size={isCompact ? "md" : "sm"}
+          initialValue={String(minutes)}
+          onChangeText={handleChange}
+          onBlur={handleCommit}
+          keyboardType="number-pad"
+          inputMode="numeric"
+          accessibilityLabel="Idle close minutes"
+          testID="host-page-idle-close-omp-minutes"
+          style={styles.numberInput}
+        />
+      </View>
+    </View>
+  );
+}
+
+function reportMissionControlPatchError(error: unknown): void {
+  console.error("[HostPage] Failed to update mission control", error);
+  Alert.alert(
+    "Unable to update Mission Control",
+    error instanceof Error ? error.message : String(error),
+  );
+}
+
+function HostAliasRow({
+  label,
+  alias,
+  isCompact,
+  onCommit,
+}: {
+  label: string;
+  alias: string;
+  isCompact: boolean;
+  onCommit: (alias: string) => void;
+}) {
+  const draftRef = useRef<string | null>(null);
+  const handleChange = useCallback((text: string) => {
+    draftRef.current = text;
+  }, []);
+  const handleCommit = useCallback(() => {
+    const draft = draftRef.current;
+    draftRef.current = null;
+    if (draft === null || draft.trim() === alias) {
+      return;
+    }
+    onCommit(draft.trim());
+  }, [alias, onCommit]);
+  return (
+    <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle} numberOfLines={1}>
+          Alias for this machine
+        </Text>
+        <Text style={settingsStyles.rowHint}>Alias shown to the Commander for this host.</Text>
+      </View>
+      <FormTextInput
+        size={isCompact ? "md" : "sm"}
+        initialValue={alias}
+        resetKey={alias}
+        onChangeText={handleChange}
+        onSubmitEditing={handleCommit}
+        onBlur={handleCommit}
+        accessibilityLabel={`Alias for ${label}`}
+        testID="host-page-mission-control-alias"
+        style={styles.mcAliasInput}
+      />
+    </View>
+  );
+}
+
+function HostGlyphInitialsRow({
+  label,
+  initials,
+  isCompact,
+  onCommit,
+}: {
+  label: string;
+  initials: string;
+  isCompact: boolean;
+  onCommit: (initials: string) => void;
+}) {
+  const draftRef = useRef<string | null>(null);
+  const handleChange = useCallback((text: string) => {
+    draftRef.current = text;
+  }, []);
+  const handleCommit = useCallback(() => {
+    const draft = draftRef.current;
+    draftRef.current = null;
+    if (draft === null || draft.trim() === initials) {
+      return;
+    }
+    onCommit(draft.trim());
+  }, [initials, onCommit]);
+  return (
+    <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle} numberOfLines={1}>
+          Initials
+        </Text>
+        <Text style={settingsStyles.rowHint}>
+          1–2 characters on the host glyph; emoji allowed. Blank uses the alias.
+        </Text>
+      </View>
+      <FormTextInput
+        size={isCompact ? "md" : "sm"}
+        initialValue={initials}
+        resetKey={initials}
+        maxLength={4}
+        placeholder="Auto"
+        onChangeText={handleChange}
+        onSubmitEditing={handleCommit}
+        onBlur={handleCommit}
+        accessibilityLabel={`Glyph initials for ${label}`}
+        testID="host-page-mission-control-glyph-initials"
+        style={styles.mcAliasInput}
+      />
+    </View>
+  );
+}
+
+function GlyphColorSwatch({
+  name,
+  value,
+  label,
+  onCommit,
+}: {
+  name: IdentityColorName | null;
+  value: IdentityColorName | null;
+  label: string;
+  onCommit: (color: IdentityColorName | null) => void;
+}) {
+  const handlePress = useCallback(() => onCommit(name), [name, onCommit]);
+  const testID =
+    name === null
+      ? "host-page-mission-control-glyph-color-auto"
+      : `host-page-mission-control-glyph-color-${name}`;
+  const accessibilityLabel =
+    name === null ? `Auto color for ${label}` : `${name} color for ${label}`;
+  return (
+    <Pressable
+      onPress={handlePress}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      testID={testID}
+      style={[
+        styles.glyphColorSwatch,
+        name !== null && { backgroundColor: identityColor(name) },
+        value === name && styles.glyphColorSwatchSelected,
+      ]}
+    >
+      {name === null ? <View style={styles.glyphColorSwatchAuto} /> : null}
+    </Pressable>
+  );
+}
+
+function HostGlyphColorRow({
+  label,
+  value,
+  onCommit,
+}: {
+  label: string;
+  /** Selected identity color; null = deterministic default for this host. */
+  value: IdentityColorName | null;
+  onCommit: (color: IdentityColorName | null) => void;
+}) {
+  return (
+    <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle} numberOfLines={1}>
+          Color
+        </Text>
+        <Text style={settingsStyles.rowHint}>
+          Chip color from the app&apos;s identity palette; Auto keeps the deterministic color for
+          this host.
+        </Text>
+        <View style={styles.glyphColorSwatches}>
+          <GlyphColorSwatch name={null} value={value} label={label} onCommit={onCommit} />
+          {IDENTITY_COLOR_NAMES.map((name) => (
+            <GlyphColorSwatch
+              key={name}
+              name={name}
+              value={value}
+              label={label}
+              onCommit={onCommit}
+            />
+          ))}
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function HostGlyphSection({
+  serverId,
+  hostLabel,
+  initials,
+  color,
+  isCompact,
+  onInitialsCommit,
+  onColorCommit,
+}: {
+  serverId: string;
+  hostLabel: string;
+  initials: string;
+  color: IdentityColorName | null;
+  isCompact: boolean;
+  onInitialsCommit: (initials: string) => void;
+  onColorCommit: (color: IdentityColorName | null) => void;
+}) {
+  return (
+    <>
+      <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+        <View style={settingsStyles.rowContent}>
+          <Text style={settingsStyles.rowTitle} numberOfLines={1}>
+            Glyph
+          </Text>
+          <Text style={settingsStyles.rowHint}>
+            Host chip on the board and sidebar. Connection status shows as a ring when the host is
+            offline.
+          </Text>
+        </View>
+        <HostGlyph serverId={serverId} label={hostLabel} size={20} />
+      </View>
+      <HostGlyphInitialsRow
+        label={hostLabel}
+        initials={initials}
+        isCompact={isCompact}
+        onCommit={onInitialsCommit}
+      />
+      <HostGlyphColorRow label={hostLabel} value={color} onCommit={onColorCommit} />
+    </>
+  );
+}
+
+function MissionControlCard({ serverId }: { serverId: string }) {
+  const isConnected = useHostRuntimeIsConnected(serverId);
+  const isCompact = useIsCompactFormFactor();
+  const host = useHostProfile(serverId);
+  const { config, patchConfig } = useDaemonConfig(serverId);
+  const missionControl = config?.missionControl;
+  // Server semantics: enabled unless explicitly false (commander-boot.ts checks
+  // `=== false`). Render the same default so an unset key reads as ON.
+  const enabled = missionControl?.enabled !== false;
+  const hostAlias = missionControl?.hostAlias ?? "";
+  const hostGlyph = normalizeHostGlyphOverride(missionControl?.hostGlyph);
+  const glyphInitials = hostGlyph?.initials ?? "";
+  const glyphColor = (hostGlyph?.color as IdentityColorName | null) ?? null;
+
+  // The server replaces the whole missionControl object on patch, so every
+  // change re-sends the current values for the keys it does not touch.
+  const patchMissionControl = useCallback(
+    (updates: Record<string, unknown>) => {
+      void patchConfig({ missionControl: { ...config?.missionControl, ...updates } }).catch(
+        reportMissionControlPatchError,
+      );
+    },
+    [config?.missionControl, patchConfig],
+  );
+
+  const handleEnabledChange = useCallback(
+    (next: boolean) => {
+      patchMissionControl({ enabled: next });
+    },
+    [patchMissionControl],
+  );
+
+  const handleAliasCommit = useCallback(
+    (alias: string) => {
+      patchMissionControl({ hostAlias: alias });
+    },
+    [patchMissionControl],
+  );
+
+  // An emptied override is sent as `null` — not `{}` or `undefined`. The
+  // server's config merge recurses into objects (`{}` would merge into the old
+  // override) and JSON RPC serialization drops `undefined`, so only an explicit
+  // null reliably clears a previous hostGlyph.
+  const handleGlyphInitialsCommit = useCallback(
+    (initials: string) => {
+      const next = normalizeHostGlyphOverride({
+        ...hostGlyph,
+        initials: initials || undefined,
+      });
+      patchMissionControl({ hostGlyph: next ?? null });
+    },
+    [hostGlyph, patchMissionControl],
+  );
+
+  const handleGlyphColorCommit = useCallback(
+    (color: IdentityColorName | null) => {
+      const next = normalizeHostGlyphOverride({
+        ...hostGlyph,
+        color: color ?? undefined,
+      });
+      patchMissionControl({ hostGlyph: next ?? null });
+    },
+    [hostGlyph, patchMissionControl],
+  );
+
+  if (!isConnected) return null;
+
+  return (
+    <View style={settingsStyles.card} testID="host-page-mission-control-card">
+      <View style={settingsStyles.row}>
+        <View style={settingsStyles.rowContent}>
+          <Text style={settingsStyles.rowTitle}>Mission Control on this host</Text>
+          <Text style={settingsStyles.rowHint}>
+            When off, this host leaves the board and will not boot or keep a Commander even if
+            designated.
+          </Text>
+        </View>
+        <Switch
+          value={enabled}
+          onValueChange={handleEnabledChange}
+          accessibilityLabel="Mission Control enabled"
+          testID="host-page-mission-control-enabled"
+        />
+      </View>
+      <HostAliasRow
+        label={host?.label ?? serverId}
+        alias={hostAlias}
+        isCompact={isCompact}
+        onCommit={handleAliasCommit}
+      />
+      <HostGlyphSection
+        serverId={serverId}
+        hostLabel={host?.label ?? serverId}
+        initials={glyphInitials}
+        color={glyphColor}
+        isCompact={isCompact}
+        onInitialsCommit={handleGlyphInitialsCommit}
+        onColorCommit={handleGlyphColorCommit}
+      />
     </View>
   );
 }
@@ -1870,6 +2420,40 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     justifyContent: "flex-end",
     gap: theme.spacing[2],
+  },
+  mcAliasInput: {
+    width: 160,
+  },
+  numberInput: {
+    width: 88,
+  },
+  glyphColorSwatches: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: theme.spacing[1],
+    marginTop: theme.spacing[1.5],
+  },
+  // Fixed 2px border in both states so selecting a swatch never moves the row
+  // (design §11: changing state must not move the layout).
+  glyphColorSwatch: {
+    width: 22,
+    height: 22,
+    borderRadius: theme.borderRadius.full,
+    borderWidth: 2,
+    borderColor: theme.colors.border,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  glyphColorSwatchSelected: {
+    borderColor: theme.colors.foreground,
+  },
+  glyphColorSwatchAuto: {
+    width: 10,
+    height: 10,
+    borderRadius: theme.borderRadius.full,
+    borderWidth: 1,
+    borderColor: theme.colors.foregroundMuted,
+    alignSelf: "center",
   },
   emptyCard: {
     padding: theme.spacing[4],

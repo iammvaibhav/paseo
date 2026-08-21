@@ -76,8 +76,8 @@ interface ShortcutWhen {
   terminal?: false;
   /** false = disabled when command center is open */
   commandCenter?: false;
-  /** Allowed focus scope or scopes */
-  focusScope?: KeyboardFocusScope | readonly KeyboardFocusScope[];
+  /** Exact focus scope match */
+  focusScope?: KeyboardFocusScope;
 }
 
 type ShortcutPayloadDef =
@@ -247,7 +247,6 @@ const SHORTCUT_HELP_LABEL_KEYS: Record<string, string> = {
   "cycle-agent-mode": "settings.shortcuts.help.cycleAgentMode",
   "voice-toggle": "settings.shortcuts.help.toggleVoiceMode",
   "dictation-toggle": "settings.shortcuts.help.startStopDictation",
-  "agent-interrupt": "settings.shortcuts.help.interruptAgent",
   "voice-mute-toggle": "settings.shortcuts.help.muteUnmuteVoiceMode",
 };
 
@@ -1161,10 +1160,9 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
   {
     id: "agent-interrupt",
     action: "agent.interrupt",
-    combo: "Escape",
-    when: { commandCenter: false, focusScope: ["message-input", "other"] },
-    preventDefault: false,
-    stopPropagation: false,
+    // No default combo: Escape must never stop the running agent. The action
+    // stays rebindable from Settings -> Keyboard shortcuts.
+    combo: "",
     help: {
       id: "agent-interrupt",
       section: "agent-input",
@@ -1335,14 +1333,7 @@ export function matchesKeyboardShortcutContext(
   }
   if (when.terminal === false && context.focusScope === "terminal") return false;
   if (when.commandCenter === false && context.commandCenterOpen) return false;
-  if (
-    when.focusScope !== undefined &&
-    !(typeof when.focusScope === "string"
-      ? context.focusScope === when.focusScope
-      : when.focusScope.includes(context.focusScope))
-  ) {
-    return false;
-  }
+  if (when.focusScope !== undefined && context.focusScope !== when.focusScope) return false;
   return true;
 }
 

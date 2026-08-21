@@ -8,21 +8,30 @@ import {
 } from "react-native";
 import { ScrollView as GHScrollView } from "react-native-gesture-handler";
 import { StyleSheet } from "react-native-unistyles";
+import { Image as ExpoImage } from "expo-image";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import type { ToolCallDetail } from "@getpaseo/protocol/agent-types";
+import { fleetToolLeafName } from "@getpaseo/protocol/tool-call-display";
 import { buildLineDiff, parseUnifiedDiff, type DiffLine } from "@/utils/tool-call-parsers";
 import { highlightDiffLines } from "@/utils/diff-highlight";
 import { hasMeaningfulToolCallDetail } from "@/utils/tool-call-detail-state";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
 import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
 import { extensionFromPath, highlightToKeyedLines } from "@/utils/highlight-cache";
+import { parseEvalToolCallDetail, type EvalCell, type EvalDetailModel } from "@/utils/eval-detail";
+import { parseWebSearchToolCallDetail, type WebSearchDetailModel } from "@/utils/web-search-detail";
 import { HighlightedLines } from "./highlighted-content";
 import { DiffViewer } from "./diff-viewer";
 import { getCodeInsets } from "./code-insets";
 import { isWeb } from "@/constants/platform";
+import { FleetToolCallDetailBody } from "@/screens/mission-control/fleet-tool-details";
 
 const ScrollView = isWeb ? RNScrollView : GHScrollView;
+
+// expo-image is not a unistyles-aware component, so its box comes from the
+// parent View and it only fills that box.
+const EVAL_IMAGE_FILL = { position: "absolute", top: 0, left: 0, right: 0, bottom: 0 } as const;
 
 // ---- Content Component ----
 
@@ -32,6 +41,8 @@ interface ToolCallDetailsContentProps {
   maxHeight?: number;
   fillAvailableHeight?: boolean;
   showLoadingSkeleton?: boolean;
+  toolName?: string;
+  resolveHost?: (host: string) => string;
 }
 
 interface DetailStyles {
@@ -56,8 +67,10 @@ function resolveIsFullBleed(detail: ToolCallDetail | undefined): boolean {
 function resolveShouldFill(
   detail: ToolCallDetail | undefined,
   fillAvailableHeight: boolean,
+  isEval: boolean,
 ): boolean {
   if (!fillAvailableHeight) return false;
+  if (isEval) return true;
   const t = detail?.type;
   return t === "shell" || t === "edit" || t === "write" || t === "read" || t === "sub_agent";
 }
@@ -66,9 +79,10 @@ function useDetailStyles(
   detail: ToolCallDetail | undefined,
   resolvedMaxHeight: number | undefined,
   fillAvailableHeight: boolean,
+  isEval: boolean,
 ): DetailStyles {
   const isFullBleed = resolveIsFullBleed(detail);
-  const shouldFill = resolveShouldFill(detail, fillAvailableHeight);
+  const shouldFill = resolveShouldFill(detail, fillAvailableHeight, isEval);
   const codeBlockStyle = isFullBleed ? styles.fullBleedBlock : styles.diffContainer;
 
   const sectionFillStyle = useMemo(
@@ -177,6 +191,223 @@ function ShellDetailSection({ command, output, ds }: ShellDetailProps) {
           </ScrollView>
         </ScrollView>
       </View>
+    </View>
+  );
+}
+
+function EvalCellMeta({ cell }: { cell: EvalCell }) {
+  const parts: string[] = [];
+  if (cell.durationMs !== null) {
+    parts.push(
+      cell.durationMs >= 1000 ? `${(cell.durationMs / 1000).toFixed(1)}s` : `${cell.durationMs}ms`,
+    );
+  }
+  if (cell.exitCode !== null && cell.exitCode !== 0) {
+    parts.push(`exit ${cell.exitCode}`);
+  }
+  if (cell.status === "running" || cell.status === "pending") {
+    parts.push(cell.status);
+  }
+  if (parts.length === 0) {
+    return null;
+  }
+  return (
+    <Text style={[styles.evalMetaText, cell.status === "error" && styles.errorText]}>
+      {parts.join(" · ")}
+    </Text>
+  );
+}
+
+function EvalCellBlock({ cell }: { cell: EvalCell }) {
+  const keyedLines = useMemo(
+    () => highlightToKeyedLines(cell.code, cell.highlightExtension),
+    [cell.code, cell.highlightExtension],
+  );
+  return (
+    <View style={styles.evalCell}>
+      <View style={styles.evalCellHeader}>
+        <Text style={styles.evalLanguageText}>{cell.languageLabel}</Text>
+        {cell.title ? (
+          <Text style={styles.evalTitleText} numberOfLines={1}>
+            {cell.title}
+          </Text>
+        ) : null}
+        <View style={styles.evalHeaderSpacer} />
+        <EvalCellMeta cell={cell} />
+      </View>
+      <ScrollView
+        horizontal
+        nestedScrollEnabled
+        showsHorizontalScrollIndicator
+        contentContainerStyle={styles.codeHorizontalContent}
+      >
+        <View style={styles.codeLine} dataSet={CODE_SURFACE_DATASET}>
+          {keyedLines ? (
+            <HighlightedLines lines={keyedLines} />
+          ) : (
+            <Text selectable style={styles.scrollText}>
+              {cell.code}
+            </Text>
+          )}
+        </View>
+      </ScrollView>
+      {cell.output ? (
+        <View style={styles.evalOutput}>
+          <ScrollView
+            horizontal
+            nestedScrollEnabled
+            showsHorizontalScrollIndicator
+            contentContainerStyle={styles.codeHorizontalContent}
+          >
+            <View style={styles.codeLine} dataSet={CODE_SURFACE_DATASET}>
+              <Text selectable style={styles.scrollText}>
+                {cell.output}
+              </Text>
+            </View>
+          </ScrollView>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function EvalDetailSection({ model, ds }: { model: EvalDetailModel; ds: DetailStyles }) {
+  return (
+    <View style={ds.sectionFillStyle}>
+      <ScrollView
+        style={ds.codeVerticalScrollStyle}
+        contentContainerStyle={styles.evalStack}
+        nestedScrollEnabled
+        showsVerticalScrollIndicator
+      >
+        {model.notice ? <Text style={styles.evalNoticeText}>{model.notice}</Text> : null}
+        {model.cells.map((cell) => (
+          <EvalCellBlock key={cell.key} cell={cell} />
+        ))}
+        {model.displayOutputs.map((output, position) => (
+          <View key={output.key} style={styles.evalCell}>
+            <View style={styles.evalCellHeader}>
+              <Text style={styles.evalLanguageText}>{`display[${position + 1}]`}</Text>
+            </View>
+            <ScrollView
+              horizontal
+              nestedScrollEnabled
+              showsHorizontalScrollIndicator
+              contentContainerStyle={styles.codeHorizontalContent}
+            >
+              <View style={styles.codeLine} dataSet={CODE_SURFACE_DATASET}>
+                <Text selectable style={styles.scrollText}>
+                  {output.text}
+                </Text>
+              </View>
+            </ScrollView>
+          </View>
+        ))}
+        {model.images.map((image, position) => (
+          <View key={image.key} style={styles.evalCell}>
+            <View style={styles.evalCellHeader}>
+              <Text style={styles.evalLanguageText}>{`image[${position + 1}]`}</Text>
+            </View>
+            <View style={styles.evalImage}>
+              <ExpoImage
+                source={image.source}
+                style={EVAL_IMAGE_FILL}
+                contentFit="contain"
+                contentPosition="left"
+              />
+            </View>
+          </View>
+        ))}
+      </ScrollView>
+    </View>
+  );
+}
+function WebSearchDetailSection({ model, ds }: { model: WebSearchDetailModel; ds: DetailStyles }) {
+  return (
+    <View style={ds.sectionFillStyle}>
+      <ScrollView
+        style={ds.codeVerticalScrollStyle}
+        contentContainerStyle={styles.evalStack}
+        nestedScrollEnabled
+        showsVerticalScrollIndicator
+      >
+        <View style={styles.evalCell}>
+          <View style={styles.evalCellHeader}>
+            <Text style={styles.evalLanguageText}>query</Text>
+            <Text style={styles.evalTitleText} numberOfLines={2} selectable>
+              {model.query}
+            </Text>
+          </View>
+          {model.intent && model.intent !== model.query ? (
+            <View style={styles.webSearchIntentBox}>
+              <Text style={styles.evalLanguageText}>intent</Text>
+              <Text style={styles.plainText} selectable>
+                {model.intent}
+              </Text>
+            </View>
+          ) : null}
+        </View>
+
+        {model.webResults && model.webResults.length > 0 ? (
+          <View style={styles.evalCell}>
+            <View style={styles.evalCellHeader}>
+              <Text style={styles.evalLanguageText}>results</Text>
+            </View>
+            <View style={styles.webSearchResultsStack}>
+              {model.webResults.map((result, idx) => (
+                <View key={result.url || idx} style={styles.webSearchResultRow}>
+                  <Text selectable style={styles.webResultTitle}>
+                    {result.title || result.url}
+                  </Text>
+                  {result.url ? (
+                    <Text selectable style={styles.webResultUrl}>
+                      {result.url}
+                    </Text>
+                  ) : null}
+                  {result.snippet ? (
+                    <Text selectable style={styles.webResultSnippet}>
+                      {result.snippet}
+                    </Text>
+                  ) : null}
+                </View>
+              ))}
+            </View>
+          </View>
+        ) : null}
+
+        {model.content ? (
+          <View style={styles.evalCell}>
+            <View style={styles.evalCellHeader}>
+              <Text style={styles.evalLanguageText}>content</Text>
+            </View>
+            <ScrollView
+              horizontal
+              nestedScrollEnabled
+              showsHorizontalScrollIndicator
+              contentContainerStyle={styles.codeHorizontalContent}
+            >
+              <View style={styles.codeLine} dataSet={CODE_SURFACE_DATASET}>
+                <Text selectable style={styles.scrollText}>
+                  {model.content}
+                </Text>
+              </View>
+            </ScrollView>
+          </View>
+        ) : null}
+
+        {model.annotations && model.annotations.length > 0 ? (
+          <View style={styles.evalCell}>
+            <View style={styles.evalCellHeader}>
+              <Text style={styles.evalLanguageText}>annotations</Text>
+            </View>
+            <View style={styles.scrollContent}>
+              <Text selectable style={styles.scrollText} dataSet={CODE_SURFACE_DATASET}>
+                {model.annotations.join("\n\n")}
+              </Text>
+            </View>
+          </View>
+        ) : null}
+      </ScrollView>
     </View>
   );
 }
@@ -631,8 +862,16 @@ function buildDetailSections(
   diffLines: DiffLine[] | undefined,
   ds: DetailStyles,
   t: TFunction,
+  evalModel: EvalDetailModel | null,
+  webSearchModel: WebSearchDetailModel | null,
 ): ReactNode[] {
   if (!detail) return [];
+  if (evalModel) {
+    return [<EvalDetailSection key="eval" model={evalModel} ds={ds} />];
+  }
+  if (webSearchModel) {
+    return [<WebSearchDetailSection key="web-search" model={webSearchModel} ds={ds} />];
+  }
   if (detail.type === "shell") {
     return [
       <ShellDetailSection key="shell" command={detail.command} output={detail.output} ds={ds} />,
@@ -746,16 +985,46 @@ export function ToolCallDetailsContent({
   maxHeight,
   fillAvailableHeight = false,
   showLoadingSkeleton = false,
+  toolName,
+  resolveHost,
 }: ToolCallDetailsContentProps) {
   const { t } = useTranslation();
   const resolvedMaxHeight = fillAvailableHeight ? undefined : (maxHeight ?? 300);
-  const ds = useDetailStyles(detail, resolvedMaxHeight, fillAvailableHeight);
+  const evalModel = useMemo(() => parseEvalToolCallDetail(detail), [detail]);
+  const webSearchModel = useMemo(
+    () => parseWebSearchToolCallDetail(detail, toolName),
+    [detail, toolName],
+  );
+  const ds = useDetailStyles(
+    detail,
+    resolvedMaxHeight,
+    fillAvailableHeight,
+    evalModel !== null || webSearchModel !== null,
+  );
   const diffLines = useDiffLines(detail);
 
-  const sections: ReactNode[] = buildDetailSections(detail, diffLines, ds, t);
-
+  const sections: ReactNode[] = buildDetailSections(
+    detail,
+    diffLines,
+    ds,
+    t,
+    evalModel,
+    webSearchModel,
+  );
   if (errorText) {
     sections.push(<ErrorSection key="error" errorText={errorText} ds={ds} />);
+  }
+
+  // The fleet body renders ONLY for fleet dispatch tools. A JSX element is
+  // always truthy, so the old `toolName ? <FleetToolCallDetailBody/> : null`
+  // guard let `fleetBody !== null` pass for every tool call and swallowed the
+  // standard sections (thought cards expanded to an empty body).
+  const fleetBody =
+    toolName && fleetToolLeafName(toolName) ? (
+      <FleetToolCallDetailBody toolName={toolName} detail={detail} resolveHost={resolveHost} />
+    ) : null;
+  if (fleetBody !== null) {
+    return <View style={ds.fullBleedContainerStyle}>{fleetBody}</View>;
   }
 
   if (sections.length === 0) {
@@ -870,6 +1139,89 @@ const styles = StyleSheet.create((theme) => {
     },
     shellPrompt: {
       color: theme.colors.foregroundMuted,
+    },
+    evalStack: {
+      gap: theme.spacing[2],
+      paddingBottom: insets.extraBottom,
+    },
+    evalCell: {
+      borderWidth: theme.borderWidth[1],
+      borderColor: theme.colors.border,
+      borderRadius: theme.borderRadius.base,
+      overflow: "hidden",
+      backgroundColor: theme.colors.surface2,
+    },
+    evalCellHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: theme.spacing[2],
+      paddingHorizontal: theme.spacing[3],
+      paddingVertical: theme.spacing[2],
+      borderBottomWidth: theme.borderWidth[1],
+      borderBottomColor: theme.colors.border,
+    },
+    evalHeaderSpacer: {
+      flex: 1,
+    },
+    evalLanguageText: {
+      fontFamily: theme.fontFamily.mono,
+      fontSize: theme.fontSize.xs,
+      color: theme.colors.foregroundMuted,
+    },
+    evalTitleText: {
+      flexShrink: 1,
+      fontSize: theme.fontSize.xs,
+      color: theme.colors.foreground,
+    },
+    evalMetaText: {
+      fontFamily: theme.fontFamily.mono,
+      fontSize: theme.fontSize.xs,
+      color: theme.colors.foregroundMuted,
+    },
+    evalOutput: {
+      borderTopWidth: theme.borderWidth[1],
+      borderTopColor: theme.colors.border,
+      backgroundColor: theme.colors.surface1,
+    },
+    evalNoticeText: {
+      fontSize: theme.fontSize.xs,
+      color: theme.colors.foregroundMuted,
+    },
+    evalImage: {
+      width: "100%",
+      height: 220,
+      borderRadius: theme.borderRadius.base,
+      backgroundColor: theme.colors.surface2,
+    },
+    webSearchIntentBox: {
+      paddingHorizontal: theme.spacing[3],
+      paddingVertical: theme.spacing[2],
+      gap: theme.spacing[1],
+      borderTopWidth: theme.borderWidth[1],
+      borderTopColor: theme.colors.border,
+      backgroundColor: theme.colors.surface1,
+    },
+    webSearchResultsStack: {
+      padding: theme.spacing[3],
+      gap: theme.spacing[3],
+    },
+    webSearchResultRow: {
+      gap: theme.spacing[1],
+    },
+    webResultTitle: {
+      fontSize: theme.fontSize.sm,
+      fontWeight: theme.fontWeight.medium,
+      color: theme.colors.foreground,
+    },
+    webResultUrl: {
+      fontFamily: theme.fontFamily.mono,
+      fontSize: theme.fontSize.xs,
+      color: theme.colors.foregroundMuted,
+    },
+    webResultSnippet: {
+      fontSize: theme.fontSize.xs,
+      color: theme.colors.foreground,
+      lineHeight: 18,
     },
     subAgentSessionText: {
       fontFamily: theme.fontFamily.mono,

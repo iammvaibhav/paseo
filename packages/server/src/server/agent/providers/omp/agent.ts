@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { setImmediate as waitForImmediate, setTimeout as delay } from "node:timers/promises";
 import type { Logger } from "pino";
@@ -27,6 +28,8 @@ import {
   type AgentSlashCommand,
   type AgentStreamEvent,
   type AgentTimelineItem,
+  type SteerActiveTurnOptions,
+  type SteerResult,
   type FetchCatalogOptions,
   type ImportableProviderSession,
   type ImportProviderSessionContext,
@@ -47,7 +50,7 @@ import {
   type ResolvedProviderLaunch,
 } from "../../provider-launch-config.js";
 import { renderPromptAttachmentAsText } from "../../prompt-attachments.js";
-import { composeSystemPromptParts } from "../../system-prompt.js";
+import { composeSystemPromptParts, hasSignificantLaunchEnv } from "../../system-prompt.js";
 import {
   buildBinaryDiagnosticRows,
   buildCommandResolutionDiagnosticRows,
@@ -72,8 +75,13 @@ import { getUserMessageText } from "./message-history.js";
 import { mapOmpSystemNoticeToToolCall } from "./system-notice.js";
 import { materializeProviderImage } from "../provider-image-output.js";
 import { OmpCliRuntime } from "./cli-runtime.js";
-import { listOmpImportableSessions, readOmpImportSessionConfig } from "./session-descriptor.js";
+import {
+  listOmpImportableSessions,
+  readOmpImportSessionConfig,
+  resolveOmpSessionFile,
+} from "./session-descriptor.js";
 import type { OmpRuntime, OmpRuntimeSession, OmpStartSessionInput } from "./runtime.js";
+import { OmpWarmPool } from "./warm-pool.js";
 import type {
   OmpAgentSessionEvent,
   OmpAgentMessage,
@@ -153,9 +161,39 @@ export interface OmpNoTurnScheduler {
 // guarantees prompt_result waits for queued extension work.
 const OMP_NO_TURN_SETTLE_MS = 5_000;
 
+// Upper bound on waiting for OMP to report a promptable RPC loop after
+// agent_end. Generous because a large-context auto-compaction runs inside this
+// window; bounded because `isStreaming` can stay stuck true forever on some
+// terminal failures, and an unbounded wait means a permanently spinning agent.
+const PROVIDER_IDLE_WAIT_TIMEOUT_MS = 10 * 60_000;
+
+// Budget for the abort retry that runs after the interactive 1s ack window
+// lapses. Wide enough to outlast an event-loop stall on a large context, since
+// the alternative is killing an OMP process that is still working.
+const OMP_BACKGROUND_ABORT_TIMEOUT_MS = 30_000;
+
 interface OmpPromptPayload {
   text: string;
   images?: OmpImageContent[];
+}
+
+interface OmpAcquireTiming {
+  claimMs?: number;
+  switchMs?: number;
+  newSessionMs?: number;
+  setModelMs?: number;
+  bootMs?: number;
+  totalMs: number;
+}
+
+interface OmpAcquireLogInput {
+  purpose: "create" | "resume";
+  source: "pool" | "cold";
+  poolHit: boolean;
+  timing: OmpAcquireTiming;
+  cwd: string;
+  modeId: string;
+  sessionBytes?: number;
 }
 
 interface OmpModelReference {
@@ -169,6 +207,8 @@ interface OmpPersistenceMetadata {
   thinkingOptionId?: string;
   modeId?: string;
   systemPrompt?: string;
+  systemPromptMode?: "append" | "replace";
+  toolAllowlist?: string[];
 }
 
 interface StartTurnResult {
@@ -398,6 +438,10 @@ function parsePersistenceMetadata(metadata: AgentMetadata | undefined): OmpPersi
       : {}),
     ...(typeof metadata.modeId === "string" ? { modeId: metadata.modeId } : {}),
     ...(typeof metadata.systemPrompt === "string" ? { systemPrompt: metadata.systemPrompt } : {}),
+    ...(typeof metadata.systemPromptMode === "string"
+      ? { systemPromptMode: metadata.systemPromptMode as "append" | "replace" }
+      : {}),
+    ...(Array.isArray(metadata.toolAllowlist) ? { toolAllowlist: metadata.toolAllowlist } : {}),
   };
 }
 
@@ -424,6 +468,8 @@ function buildResumeConfig(
       thinkingOptionId,
       modeId,
       systemPrompt: overrideConfig.systemPrompt ?? metadata.systemPrompt,
+      systemPromptMode: overrideConfig.systemPromptMode ?? metadata.systemPromptMode,
+      toolAllowlist: overrideConfig.toolAllowlist ?? metadata.toolAllowlist,
     },
   };
 }
@@ -443,10 +489,15 @@ function buildResumeStartInput(input: {
     thinkingOptionId: normalizeOmpThinkingOption(input.resumeConfig.thinkingOptionId) ?? undefined,
     ...(input.launchMode.modeId ? { modeId: input.launchMode.modeId } : {}),
     ...(input.launchMode.extraArgs ? { extraArgs: input.launchMode.extraArgs } : {}),
-    systemPrompt: composeSystemPromptParts(
-      input.resumeConfig.config.systemPrompt,
-      input.resumeConfig.config.daemonAppendSystemPrompt,
-    ),
+    systemPrompt:
+      input.resumeConfig.config.systemPromptMode === "replace"
+        ? input.resumeConfig.config.systemPrompt?.trim() || undefined
+        : composeSystemPromptParts(
+            input.resumeConfig.config.systemPrompt,
+            input.resumeConfig.config.daemonAppendSystemPrompt,
+          ),
+    systemPromptMode: input.resumeConfig.config.systemPromptMode,
+    toolAllowlist: input.resumeConfig.config.toolAllowlist,
   };
 }
 
@@ -479,7 +530,8 @@ function resolveThinkingOptionId(
   cachedThinkingOptionId: string | null,
   sessionThinkingLevel: OmpThinkingLevel | undefined,
 ): OmpThinkingLevel | null {
-  const currentThinking = cachedThinkingOptionId ?? sessionThinkingLevel;
+  const currentThinking =
+    normalizeOmpThinkingOption(sessionThinkingLevel) ?? cachedThinkingOptionId;
   return normalizeOmpThinkingOption(currentThinking);
 }
 
@@ -518,9 +570,19 @@ function formatOmpErrorMessage(message: Extract<OmpAgentMessage, { role: "assist
   return details.length > 0 ? `${headline} (${details.join(", ")})` : headline;
 }
 
+function isTerminalOmpAssistantFailure(
+  message: Extract<OmpAgentMessage, { role: "assistant" }>,
+): boolean {
+  if (message.errorMessage?.trim()) {
+    return true;
+  }
+  const stopReason = message.stopReason?.trim().toLowerCase();
+  return stopReason === "error" || stopReason === "aborted";
+}
+
 function latestOmpErrorMessage(messages: OmpAgentMessage[]): string | null {
   const latestAssistant = messages.findLast((message) => message.role === "assistant");
-  if (!latestAssistant || !latestAssistant.errorMessage?.trim()) {
+  if (!latestAssistant || !isTerminalOmpAssistantFailure(latestAssistant)) {
     return null;
   }
   return formatOmpErrorMessage(latestAssistant);
@@ -528,6 +590,43 @@ function latestOmpErrorMessage(messages: OmpAgentMessage[]): string | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Restrict the Paseo host-tool catalog to the allowlisted names. The filtered
+ * catalog is what gets serialized to omp (the model never sees other tools)
+ * and what the host-tool router executes against (defense in depth).
+ */
+function filterPaseoToolsByAllowlist(
+  catalog: PaseoToolCatalog | undefined,
+  allowlist: string[] | undefined,
+): PaseoToolCatalog | undefined {
+  if (!catalog || !allowlist?.length) {
+    return catalog;
+  }
+  const allowed = new Set(allowlist);
+  const tools = new Map([...catalog.tools].filter(([name]) => allowed.has(name)));
+  if (tools.size === 0) {
+    // An allowlist that matches ZERO catalog tools is indistinguishable from
+    // no catalog: the session would launch --no-tools with nothing to serve
+    // (live incident: a Commander whose allowlist named tools the running
+    // build's catalog did not register came back with "Tool fleet_create_agent
+    // not found" and only memory/skill builtins, silently — the empty catalog
+    // was truthy so the warn below never fired). Returning undefined routes
+    // this into the existing loud "no Paseo host-tool catalog is available"
+    // warning instead of silently serving zero tools.
+    return undefined;
+  }
+  return {
+    tools,
+    getTool: (name) => tools.get(name),
+    executeTool: (name, input, context) => {
+      if (!allowed.has(name)) {
+        throw new Error(`Paseo tool not allowed: ${name}`);
+      }
+      return catalog.executeTool(name, input, context);
+    },
+  };
 }
 
 function optionalString(value: unknown): string | undefined {
@@ -848,10 +947,23 @@ export class OmpAgentSession implements AgentSession {
   private pendingCombinedAskUserResponse: PendingCombinedAskUserResponse | null = null;
   private activeTurnId: string | null = null;
   private activeClientMessageId: string | null = null;
+  /**
+   * Survives false local-only `completeTurn` so a delayed native user echo can
+   * still carry the submitted prompt's clientMessageId for timeline reconcile.
+   * Cleared when a native user message with that binding is emitted, or when the
+   * next `startTurn` replaces it.
+   */
+  private pendingClientMessageBinding: { clientMessageId: string; text: string } | null = null;
   private activeAssistantMessageId: string | null = null;
   private activeTurnTerminalAssistantMessage: OmpAgentMessage | null = null;
   private activeTurnStarted = false;
   private activeTurnHasUserMessage = false;
+  /**
+   * Bumped by `startTurn` and by every terminal turn emit. Lets the
+   * provider-idle wait detect that its cycle was settled (or superseded) by
+   * another path instead of guessing from the mutable turn fields.
+   */
+  private turnGeneration = 0;
   private activeNoTurnPromptText: string | null = null;
   private readonly pendingNoTurnOutputs: Array<{ turnId: string; message: string }> = [];
   private activePromptRequestId: string | null = null;
@@ -872,7 +984,16 @@ export class OmpAgentSession implements AgentSession {
   private readonly noTurnScheduler: OmpNoTurnScheduler;
   private readonly usagePoller: OmpUsagePoller;
   private closed = false;
+  // Set when the RPC child process is gone for good: an observed exit, or a
+  // force-close after a hung abort. Distinct from `closed`, which only covers
+  // teardown Paseo initiated — an OMP that crashes or is OOM-killed leaves
+  // `closed` false with nothing behind the session.
+  private runtimeExited = false;
   private live: boolean;
+  // True once an abort missed its short ack window while the RPC process was
+  // still alive. The next interrupt escalates to a force-close; a terminal turn
+  // event clears it.
+  private unackedAbort = false;
   private readonly emittedUserMessageIds = new Set<string>();
 
   constructor(options: OmpAgentSessionOptions) {
@@ -954,9 +1075,13 @@ export class OmpAgentSession implements AgentSession {
 
     const payload = convertPromptInput(prompt, { model: this.state.model });
     const turnId = randomUUID();
+    this.turnGeneration += 1;
     this.live = true;
     this.activeTurnId = turnId;
     this.activeClientMessageId = options?.clientMessageId ?? null;
+    this.pendingClientMessageBinding = options?.clientMessageId
+      ? { clientMessageId: options.clientMessageId, text: payload.text }
+      : null;
     this.activeAssistantMessageId = null;
     this.activeTurnTerminalAssistantMessage = null;
     this.activeTurnStarted = false;
@@ -998,7 +1123,7 @@ export class OmpAgentSession implements AgentSession {
         this.activeTurnTerminalAssistantMessage = null;
         this.clearNoTurnBuffers();
         if (isOmpRequestAbortError(error)) {
-          this.emit({
+          this.emitTurnTerminal({
             type: "turn_canceled",
             provider: this.provider,
             turnId,
@@ -1006,7 +1131,7 @@ export class OmpAgentSession implements AgentSession {
           });
           return;
         }
-        this.emit({
+        this.emitTurnTerminal({
           type: "turn_failed",
           provider: this.provider,
           turnId,
@@ -1016,6 +1141,24 @@ export class OmpAgentSession implements AgentSession {
     })();
 
     return { turnId };
+  }
+  async steerActiveTurn(
+    prompt: AgentPromptInput,
+    options: SteerActiveTurnOptions,
+  ): Promise<SteerResult> {
+    if (this.closed) {
+      return { status: "unavailable" };
+    }
+    if (typeof prompt === "string" && this.parseSlashCommandInput(prompt)) {
+      return { status: "unavailable" };
+    }
+    if (!this.activeTurnId || this.activeTurnId !== options.expectedTurnId) {
+      return { status: "unavailable" };
+    }
+
+    const payload = convertPromptInput(prompt, { model: this.state.model });
+    this.runtimeSession.steer(payload.text, payload.images);
+    return { status: "accepted" };
   }
 
   subscribe(callback: (event: AgentStreamEvent) => void): () => void {
@@ -1113,14 +1256,65 @@ export class OmpAgentSession implements AgentSession {
         ...(this.config.model ? { model: this.config.model } : {}),
         ...(this.config.thinkingOptionId ? { thinkingOptionId: this.config.thinkingOptionId } : {}),
         ...(this.currentModeId ? { modeId: this.currentModeId } : {}),
+        // The launch contract must survive a resume even when the resume
+        // overrides omit it: buildResumeConfig merges handle metadata under
+        // the overrides, so a session resumed with no overrides (or by a
+        // caller that dropped the contract fields) keeps the allowlist and
+        // replace-mode prompt instead of coming back with the default toolset
+        // (live incident: a recreated Commander lost its fleet_* tools on a
+        // resume variant that dropped systemPromptMode/toolAllowlist).
+        ...(this.config.systemPrompt ? { systemPrompt: this.config.systemPrompt } : {}),
+        ...(this.config.systemPromptMode ? { systemPromptMode: this.config.systemPromptMode } : {}),
+        ...(this.config.toolAllowlist?.length ? { toolAllowlist: this.config.toolAllowlist } : {}),
       },
     };
   }
 
   async interrupt(): Promise<void> {
     const turnId = this.activeTurnId;
-    await this.runtimeSession.abort();
-    if (turnId && this.activeTurnId === turnId) {
+    const unackedAbort = await this.abortForInterrupt(turnId);
+    if (unackedAbort) {
+      // The turn is still genuinely running, so leave it alone and surface the
+      // failed stop. AgentManager reports "refused" and the pending retry
+      // usually lands within a second; pressing Stop again escalates to a
+      // force-close.
+      throw unackedAbort;
+    }
+    try {
+      this.terminalizeActiveWork();
+      this.usagePoller.stopTurn();
+      if (turnId && this.activeTurnId === turnId) {
+        this.activeTurnId = null;
+        this.activeClientMessageId = null;
+        this.activeTurnStarted = false;
+        this.activeTurnHasUserMessage = false;
+        this.activeAssistantMessageId = null;
+        this.activeTurnTerminalAssistantMessage = null;
+        this.clearNoTurnBuffers();
+        this.emitTurnTerminal({
+          type: "turn_canceled",
+          provider: this.provider,
+          reason: "interrupted",
+          turnId,
+        });
+      } else if (!turnId && this.activeTurnId == null) {
+        // Lifecycle can remain "running" in AgentManager after the provider
+        // process dies with no active turn id. Emit a bare cancel so cancel
+        // settlement can clear the sticky busy state.
+        this.emitTurnTerminal({
+          type: "turn_canceled",
+          provider: this.provider,
+          reason: "interrupted",
+        });
+      }
+    } catch (error) {
+      // Interrupt must never throw: a dead OMP process is exactly when Stop
+      // needs to succeed and clear sticky running.
+      this.logger.warn(
+        { err: error, turnId: turnId ?? undefined },
+        "OMP interrupt failed; emitting forced cancel",
+      );
+      this.closed = true;
       this.terminalizeActiveWork();
       this.usagePoller.stopTurn();
       this.activeTurnId = null;
@@ -1130,13 +1324,85 @@ export class OmpAgentSession implements AgentSession {
       this.activeAssistantMessageId = null;
       this.activeTurnTerminalAssistantMessage = null;
       this.clearNoTurnBuffers();
-      this.emit({
+      this.emitTurnTerminal({
         type: "turn_canceled",
         provider: this.provider,
         reason: "interrupted",
-        turnId,
+        ...(turnId ? { turnId } : {}),
       });
     }
+  }
+
+  /**
+   * Sends `abort` for an interactive stop. Returns the error when the RPC
+   * process is alive but missed the short ack window; in every other case the
+   * runtime is already dead (or has just been force-closed here) and the caller
+   * proceeds to cancel the turn locally.
+   */
+  private async abortForInterrupt(turnId: string | null): Promise<unknown> {
+    try {
+      await this.runtimeSession.abort();
+      this.unackedAbort = false;
+      return undefined;
+    } catch (error) {
+      // A missed ack means "slow", not "dead". OMP answers abort in tens of
+      // milliseconds when healthy, so the 1s budget only lapses on an event-loop
+      // stall — a large context on a loaded host is enough. Force-closing here
+      // kills a session that is mid-turn, which is how a busy agent used to lose
+      // its OMP process and then reject every following prompt with "OMP RPC
+      // process is closed". Any other failure means the process really is gone.
+      const ackTimedOut = /request timed out for abort/i.test(toDiagnosticErrorMessage(error));
+      if (ackTimedOut && !this.unackedAbort) {
+        this.unackedAbort = true;
+        this.logger.warn(
+          { err: error, turnId: turnId ?? undefined },
+          "OMP abort did not acknowledge in time; retrying instead of closing",
+        );
+        this.retryAbortInBackground(turnId);
+        return error;
+      }
+      // Either the RPC process is already gone, or a previous abort is still
+      // unanswered and Stop was pressed again — a genuine hang. Force-close the
+      // RPC process so stop/replace can settle instead of refusing forever. Do
+      // not await the full tree-kill here: AgentManager only gives ~2s for
+      // interrupt() to acknowledge, and kill can take longer.
+      this.unackedAbort = false;
+      this.logger.warn(
+        { err: error, turnId: turnId ?? undefined },
+        "OMP abort failed during interrupt; forcing runtime close",
+      );
+      this.closed = true;
+      this.runtimeExited = true;
+      this.clearOmpSessionState();
+      void this.runtimeSession.close().catch((closeError: unknown) => {
+        this.logger.warn(
+          { err: closeError, turnId: turnId ?? undefined },
+          "OMP force-close after failed abort also failed",
+        );
+      });
+      return undefined;
+    }
+  }
+
+  private retryAbortInBackground(turnId: string | null): void {
+    void (async () => {
+      try {
+        await this.runtimeSession.abort(OMP_BACKGROUND_ABORT_TIMEOUT_MS);
+        this.unackedAbort = false;
+      } catch (error) {
+        if (this.closed) {
+          return;
+        }
+        this.logger.warn(
+          { err: error, turnId: turnId ?? undefined },
+          "OMP background abort retry failed",
+        );
+      }
+    })();
+  }
+
+  isRuntimeAlive(): boolean {
+    return !this.closed && !this.runtimeExited;
   }
 
   async revertConversation(input: { messageId: string }): Promise<void> {
@@ -1281,6 +1547,23 @@ export class OmpAgentSession implements AgentSession {
     }
   }
 
+  /**
+   * Every terminal turn event MUST go through here. `turnGeneration` is the
+   * "someone already settled the current provider cycle" token: the idle-wait
+   * loop captures it on entry so it can tell "another path terminalized this
+   * turn" from "I gave up silently". A silent give-up latches AgentManager at
+   * lifecycle=running forever with no way back except an explicit Stop.
+   */
+  private emitTurnTerminal(
+    event: Extract<AgentStreamEvent, { type: "turn_completed" | "turn_failed" | "turn_canceled" }>,
+  ): void {
+    this.turnGeneration += 1;
+    // The turn is over, so a lapsed abort ack from it must not make the next
+    // Stop escalate straight to a force-close.
+    this.unackedAbort = false;
+    this.emit(event);
+  }
+
   private currentTurnIdForEvent(): string | undefined {
     return this.activeTurnId ?? undefined;
   }
@@ -1333,11 +1616,29 @@ export class OmpAgentSession implements AgentSession {
     this.pendingNoTurnOutputs.splice(0, this.pendingNoTurnOutputs.length);
   }
 
+  private resolveClientMessageIdForUserText(text: string): string | null {
+    if (this.activeClientMessageId) {
+      return this.activeClientMessageId;
+    }
+    const pending = this.pendingClientMessageBinding;
+    if (pending && pending.text === text) {
+      return pending.clientMessageId;
+    }
+    return null;
+  }
+
+  private clearPendingClientMessageBinding(clientMessageId: string | null | undefined): void {
+    if (clientMessageId && this.pendingClientMessageBinding?.clientMessageId === clientMessageId) {
+      this.pendingClientMessageBinding = null;
+    }
+  }
+
   private emitBufferedNoTurnOutputs(turnId: string): void {
     const promptText = this.activeNoTurnPromptText;
     const outputs = this.pendingNoTurnOutputs.filter((output) => output.turnId === turnId);
     this.clearNoTurnBuffers();
     if (promptText) {
+      const clientMessageId = this.resolveClientMessageIdForUserText(promptText);
       this.emit({
         type: "timeline",
         provider: this.provider,
@@ -1345,7 +1646,7 @@ export class OmpAgentSession implements AgentSession {
         item: {
           type: "user_message",
           text: promptText,
-          ...(this.activeClientMessageId ? { clientMessageId: this.activeClientMessageId } : {}),
+          ...(clientMessageId ? { clientMessageId } : {}),
         },
       });
     }
@@ -1766,19 +2067,48 @@ export class OmpAgentSession implements AgentSession {
         // A resumed OMP process replays session events for pre-existing
         // conversation on startup; that content is delivered via
         // streamHistory, so replay must not re-enter the live timeline.
+        // The mid-turn variant is the dangerous one: live never became true
+        // (or flipped back) while a turn is active, so a terminal like
+        // agent_end would be swallowed and the lifecycle stays running.
+        if (this.activeTurnStarted) {
+          this.logger.warn(
+            {
+              eventType: event.type,
+              activeTurnStarted: this.activeTurnStarted,
+              activeTurnId: this.activeTurnId ?? null,
+            },
+            "omp.turn.session_event_outside_live_run",
+          );
+        }
         return;
       }
       this.handleSessionEvent(event);
       return;
     }
-    this.logger.debug({ event }, "Dropped unknown OMP runtime event");
+    this.logger.warn(
+      { eventType: (event as { type?: string }).type },
+      "Dropped unknown OMP runtime event",
+    );
   }
 
   private handleProcessExit(error: string): void {
+    this.runtimeExited = true;
     this.usagePoller.stopTurn();
     this.terminalizeActiveWork();
     this.subagentIndex.clear(this.runtimeSession);
     if (!this.activeTurnId) {
+      // A provider-started turn (agent_start with no Paseo turn id) leaves
+      // AgentManager running with nothing to settle it. Emit a bare terminal so
+      // a crashed OMP does not require a manual Stop. Suppressed once close()
+      // has run: that exit is expected and the agent is being torn down.
+      if (this.activeTurnStarted && !this.closed) {
+        this.activeTurnStarted = false;
+        this.activeTurnHasUserMessage = false;
+        this.activeTurnTerminalAssistantMessage = null;
+        this.clearNoTurnBuffers();
+        this.logger.warn({ error }, "omp.turn.process_exit_without_turn_id");
+        this.emitTurnTerminal({ type: "turn_failed", provider: this.provider, error });
+      }
       return;
     }
     const turnId = this.activeTurnId;
@@ -1788,7 +2118,7 @@ export class OmpAgentSession implements AgentSession {
     this.activeTurnHasUserMessage = false;
     this.activeTurnTerminalAssistantMessage = null;
     this.clearNoTurnBuffers();
-    this.emit({
+    this.emitTurnTerminal({
       type: "turn_failed",
       provider: this.provider,
       turnId,
@@ -1871,25 +2201,9 @@ export class OmpAgentSession implements AgentSession {
           },
         });
         return;
-      case "agent_end": {
-        const messages = event.messages ?? [];
-        let terminalMessages: OmpAgentMessage[] | null = null;
-        if (messages.some((message) => message.role === "assistant")) {
-          terminalMessages = messages;
-        } else if (this.activeTurnTerminalAssistantMessage) {
-          terminalMessages = [this.activeTurnTerminalAssistantMessage];
-        }
-        // OMP can end an internal extension-notice cycle before it starts the
-        // model turn for the same prompt. Ignore only cycles where neither the
-        // terminal payload nor the live stream contained an assistant message.
-        if (!terminalMessages) {
-          return;
-        }
-        // A state request is processed after OMP's RPC loop becomes promptable,
-        // so do not advertise Paseo idle until it reports that transition.
-        void this.completeTurnAfterProviderIdle(turnId, terminalMessages);
+      case "agent_end":
+        this.handleAgentEnd(event, turnId);
         return;
-      }
       default:
         return;
     }
@@ -1988,6 +2302,29 @@ export class OmpAgentSession implements AgentSession {
           text: event.assistantMessageEvent.delta ?? "",
         },
       });
+      return;
+    }
+    if (event.assistantMessageEvent.type === "error") {
+      // omp 17.2+ streams model-stream failures as message_update events with
+      // assistantMessageEvent.type "error". These used to fail schema
+      // validation and vanish (omp.rpc.schema_drop), leaving a stalled turn
+      // with no error trail. Surface them so the timeline shows why the
+      // stream stopped.
+      const errorMessage =
+        event.message.role === "assistant" ? event.message.errorMessage : undefined;
+      this.emit({
+        type: "timeline",
+        provider: this.provider,
+        turnId,
+        item: {
+          type: "error",
+          message:
+            errorMessage?.slice(0, 64 * 1024) ??
+            (event.assistantMessageEvent.reason === "aborted"
+              ? "Agent turn aborted by the provider"
+              : "Agent model stream failed"),
+        },
+      });
     }
   }
 
@@ -2007,6 +2344,19 @@ export class OmpAgentSession implements AgentSession {
       this.activeAssistantMessageId = null;
       if (turnId) {
         this.activeTurnTerminalAssistantMessage = event.message;
+      } else {
+        // No active turn id: this is a provider-initiated (autonomous) turn,
+        // or the turn binding was lost. The terminal assistant message is not
+        // recorded, so a later agent_end with an empty messages array cannot
+        // settle the turn through the fallback below. Debug-only here — the
+        // per-turn warning lives at agent_end (agent_end_without_assistant_message).
+        this.logger.debug(
+          {
+            activeTurnStarted: this.activeTurnStarted,
+            activeTurnId: this.activeTurnId ?? null,
+          },
+          "omp.turn.assistant_message_without_turn_id",
+        );
       }
       return;
     }
@@ -2040,7 +2390,7 @@ export class OmpAgentSession implements AgentSession {
     }
     const nativeMessage = event.message as OmpAgentMessage & { id?: unknown; entryId?: unknown };
     const messageId = readNativeMessageId(nativeMessage);
-    const clientMessageId = this.activeClientMessageId;
+    const clientMessageId = this.resolveClientMessageIdForUserText(text);
     const emitUserMessage = (resolvedMessageId?: string): void => {
       if (resolvedMessageId) {
         // OMP re-emits user message_end frames for entries it has already
@@ -2062,6 +2412,13 @@ export class OmpAgentSession implements AgentSession {
           ...(clientMessageId ? { clientMessageId } : {}),
         },
       });
+      // Native provider identity means the submitted prompt echo was observed;
+      // drop the binding so a later same-text autonomous user message does not
+      // inherit it. Keep the binding across false local-only buffered emits
+      // (no messageId) until this native echo arrives.
+      if (resolvedMessageId) {
+        this.clearPendingClientMessageBinding(clientMessageId);
+      }
     };
     if (messageId) {
       emitUserMessage(messageId);
@@ -2122,6 +2479,47 @@ export class OmpAgentSession implements AgentSession {
     });
   }
 
+  private handleAgentEnd(
+    event: Extract<OmpAgentSessionEvent, { type: "agent_end" }>,
+    turnId: string | undefined,
+  ): void {
+    const messages = event.messages ?? [];
+    let terminalMessages: OmpAgentMessage[] | null = null;
+    if (messages.some((message) => message.role === "assistant")) {
+      terminalMessages = messages;
+    } else if (this.activeTurnTerminalAssistantMessage) {
+      terminalMessages = [this.activeTurnTerminalAssistantMessage];
+    }
+    // OMP can end an internal extension-notice cycle before it starts the
+    // model turn for the same prompt. Ignore only cycles where neither the
+    // terminal payload nor the live stream contained an assistant message.
+    if (!terminalMessages) {
+      this.logger.debug(
+        {
+          turnId,
+          activeTurnStarted: this.activeTurnStarted,
+          activeTurnId: this.activeTurnId ?? null,
+          activeTurnTerminalAssistantMessage: this.activeTurnTerminalAssistantMessage !== null,
+          messageCount: messages.length,
+          messageRoles: messages.map((message) => message.role),
+        },
+        "omp.turn.agent_end_without_assistant_message",
+      );
+      return;
+    }
+    // Provider-idle waiting is for successful turns that still look busy
+    // (stream/compact flags lag). Terminal failures — especially Anthropic
+    // overloaded_error — can leave isStreaming stuck true forever. Fail
+    // closed immediately so the UI surfaces [System Error] and leaves running.
+    if (latestOmpErrorMessage(terminalMessages)) {
+      this.completeTurn(turnId, terminalMessages);
+      return;
+    }
+    // A state request is processed after OMP's RPC loop becomes promptable,
+    // so do not advertise Paseo idle until it reports that transition.
+    void this.completeTurnAfterProviderIdle(turnId, terminalMessages);
+  }
+
   private completeTurn(turnId: string | undefined, messages: OmpAgentMessage[]): void {
     this.activeTurnId = null;
     this.activeClientMessageId = null;
@@ -2133,7 +2531,7 @@ export class OmpAgentSession implements AgentSession {
     const errorMessage = latestOmpErrorMessage(messages);
     if (typeof errorMessage === "string" && errorMessage.length > 0) {
       this.usagePoller.stopTurn();
-      this.emit({
+      this.emitTurnTerminal({
         type: "turn_failed",
         provider: this.provider,
         turnId,
@@ -2142,7 +2540,7 @@ export class OmpAgentSession implements AgentSession {
       return;
     }
     const finalUsage = this.usagePoller.completeTurn(turnId);
-    this.emit({
+    this.emitTurnTerminal({
       type: "turn_completed",
       provider: this.provider,
       turnId,
@@ -2150,27 +2548,74 @@ export class OmpAgentSession implements AgentSession {
     void this.refreshAfterTurn(finalUsage);
   }
 
+  /**
+   * `agent_end` is OMP's only signal that a turn is over, and this wait is the
+   * only route from it to a terminal turn event. Bailing out without emitting
+   * one latches AgentManager at lifecycle=running with no tracked turn: the
+   * timeline is complete, the provider is idle, and the UI spins forever until
+   * someone presses Stop. So every exit terminalizes unless another path
+   * already did (turnGeneration moved) or the session is gone.
+   */
   private async completeTurnAfterProviderIdle(
     turnId: string | undefined,
     messages: OmpAgentMessage[],
   ): Promise<void> {
+    const generation = this.turnGeneration;
+    const startedAt = Date.now();
+    let lastState: OmpSessionState | null = null;
+    let stateError: unknown;
     while (!this.closed && this.activeTurnStarted && this.currentTurnIdForEvent() === turnId) {
       try {
         const state = await this.runtimeSession.getState();
         this.state = state;
+        lastState = state;
+        stateError = undefined;
         if (!state.isStreaming && !state.isCompacting) {
           this.completeTurn(turnId, messages);
           return;
         }
       } catch (error) {
+        stateError = error;
         this.logger.debug({ err: error }, "OMP state unavailable while waiting for provider idle");
+      }
+      if (Date.now() - startedAt >= PROVIDER_IDLE_WAIT_TIMEOUT_MS) {
+        break;
       }
       await this.providerIdleScheduler.waitForRetry();
     }
+    if (this.turnGeneration !== generation) {
+      return;
+    }
+    if (this.closed) {
+      this.logger.warn(
+        { turnId, waitedMs: Date.now() - startedAt },
+        "omp.turn.idle_wait_abandoned_closed",
+      );
+      return;
+    }
+    this.logger.warn(
+      {
+        turnId,
+        waitedMs: Date.now() - startedAt,
+        activeTurnStarted: this.activeTurnStarted,
+        activeTurnId: this.activeTurnId,
+        isStreaming: lastState?.isStreaming ?? null,
+        isCompacting: lastState?.isCompacting ?? null,
+        ...(stateError ? { err: stateError } : {}),
+      },
+      "omp.turn.idle_wait_abandoned_terminalizing",
+    );
+    this.completeTurn(turnId, messages);
   }
 
   private async refreshState(): Promise<void> {
     this.state = await this.runtimeSession.getState();
+    if (this.state.thinkingLevel) {
+      const normalized = normalizeOmpThinkingOption(this.state.thinkingLevel);
+      if (normalized) {
+        this.lastKnownThinkingOptionId = normalized;
+      }
+    }
   }
 
   private async refreshAfterTurn(finalUsage: Promise<void>): Promise<void> {
@@ -2191,6 +2636,7 @@ export class OmpAgentClient implements AgentClient {
   private readonly noTurnScheduler?: OmpNoTurnScheduler;
   private readonly usagePollScheduler?: OmpUsagePollScheduler;
   private readonly runtime: OmpRuntime;
+  private readonly warmPool: OmpWarmPool;
 
   constructor(options: OmpAgentClientOptions) {
     const { runtimeProviderParams, modelRoleParams } = resolveOmpProviderParams(
@@ -2214,6 +2660,8 @@ export class OmpAgentClient implements AgentClient {
     this.noTurnScheduler = options.noTurnScheduler;
     this.usagePollScheduler = options.usagePollScheduler;
     this.runtime = options.runtime ?? createRuntime(options.logger, runtimeSettings);
+    this.warmPool = new OmpWarmPool({ runtime: this.runtime, logger: this.logger });
+    this.warmPool.start();
   }
 
   private async configureNativePaseoTools(
@@ -2231,19 +2679,22 @@ export class OmpAgentClient implements AgentClient {
     launchContext?: AgentLaunchContext,
   ): Promise<AgentSession> {
     const launchMode = this.resolveLaunchMode(config.modeId);
-    const runtimeSession = await this.runtime.startSession({
-      cwd: config.cwd,
-      protocolMode: "rpc-ui",
-      model: config.model,
-      thinkingOptionId: normalizeOmpThinkingOption(config.thinkingOptionId) ?? undefined,
-      noSession: config.internal === true,
-      modeId: launchMode.modeId,
-      extraArgs: launchMode.extraArgs,
-      systemPrompt: composeSystemPromptParts(config.systemPrompt, config.daemonAppendSystemPrompt),
-      env: launchContext?.env,
-    });
+    const systemPrompt = this.composeLaunchSystemPrompt(config);
+    const paseoTools = filterPaseoToolsByAllowlist(launchContext?.paseoTools, config.toolAllowlist);
+    if (!paseoTools && config.toolAllowlist?.length) {
+      this.logger.warn(
+        { provider: this.provider, allowlist: config.toolAllowlist },
+        "Agent restricts tools to an allowlist but no Paseo host-tool catalog is available; only builtin/MCP tools will load",
+      );
+    }
+    const runtimeSession = await this.startRuntimeSession(
+      config,
+      launchContext,
+      launchMode,
+      systemPrompt,
+    );
     try {
-      await this.configureNativePaseoTools(runtimeSession, launchContext?.paseoTools);
+      await this.configureNativePaseoTools(runtimeSession, paseoTools);
       return new OmpAgentSession({
         runtimeSession,
         config,
@@ -2254,7 +2705,7 @@ export class OmpAgentClient implements AgentClient {
         providerIdleScheduler: this.providerIdleScheduler,
         noTurnScheduler: this.noTurnScheduler,
         usagePollScheduler: this.usagePollScheduler,
-        paseoTools: launchContext?.paseoTools,
+        paseoTools,
       });
     } catch (error) {
       await runtimeSession.close().catch(() => undefined);
@@ -2262,30 +2713,151 @@ export class OmpAgentClient implements AgentClient {
     }
   }
 
+  /**
+   * The system prompt handed to the omp process. Replace mode uses the
+   * per-agent prompt verbatim — the daemon append prompt is append-only and
+   * must not leak into a replaced harness.
+   */
+  private composeLaunchSystemPrompt(config: AgentSessionConfig): string | undefined {
+    if (config.systemPromptMode === "replace") {
+      return config.systemPrompt?.trim() || undefined;
+    }
+    return composeSystemPromptParts(config.systemPrompt, config.daemonAppendSystemPrompt);
+  }
+
+  /**
+   * Launch (or hand off from the warm pool) the omp process backing a new
+   * agent create. A pooled process is re-targeted to this create's workspace,
+   * model and thinking level over RPC, so only launch-fixed differences force
+   * a cold start: internal agents, per-create env, and custom system prompts.
+   */
+  private async startRuntimeSession(
+    config: AgentSessionConfig,
+    launchContext: AgentLaunchContext | undefined,
+    launchMode: { modeId: string; extraArgs: string[] },
+    systemPrompt: string | undefined,
+  ): Promise<OmpRuntimeSession> {
+    const thinking = normalizeOmpThinkingOption(config.thinkingOptionId) ?? undefined;
+    const model = config.model;
+    const acquireStartedAt = Date.now();
+    const poolEligible =
+      config.internal !== true &&
+      !hasSignificantLaunchEnv(launchContext?.env) &&
+      !config.systemPrompt?.trim() &&
+      // An allowlist is launch-fixed: pooled processes boot without the
+      // tool-restriction flags and the --config overlay (appendOmpLaunchArgs),
+      // and claims re-target over RPC only — they can never gain the
+      // restriction after the fact. Allowlist sessions must cold start.
+      !config.toolAllowlist?.length &&
+      typeof model === "string" &&
+      model.includes("/");
+    if (poolEligible) {
+      const claimStartedAt = Date.now();
+      const pooled = await this.warmPool.claim({
+        cwd: config.cwd,
+        modeId: launchMode.modeId,
+        extraArgs: launchMode.extraArgs,
+        systemPrompt: systemPrompt ?? "",
+        env: launchContext?.env,
+      });
+      if (pooled) {
+        try {
+          const slash = model.indexOf("/");
+          const newSessionStartedAt = Date.now();
+          await pooled.newSession();
+          const newSessionMs = Date.now() - newSessionStartedAt;
+          const setModelStartedAt = Date.now();
+          await pooled.setModel(model.slice(0, slash), model.slice(slash + 1));
+          if (thinking) {
+            await pooled.setThinkingLevel(thinking);
+          }
+          const setModelMs = Date.now() - setModelStartedAt;
+          this.logAcquire({
+            purpose: "create",
+            source: "pool",
+            poolHit: true,
+            timing: {
+              claimMs: Date.now() - claimStartedAt,
+              newSessionMs,
+              setModelMs,
+              totalMs: Date.now() - acquireStartedAt,
+            },
+            cwd: config.cwd,
+            modeId: launchMode.modeId,
+          });
+          return pooled;
+        } catch (error) {
+          // The handoff left the pooled process in an unknown state; close it
+          // and fall back to a cold launch rather than risk a broken agent.
+          this.logger.warn(
+            { err: error, provider: this.provider },
+            "OMP warm pool handoff failed; cold starting",
+          );
+          await pooled.close().catch(() => undefined);
+        }
+      }
+    }
+    const coldStartedAt = Date.now();
+    const runtimeSession = await this.runtime.startSession({
+      cwd: config.cwd,
+      protocolMode: "rpc-ui",
+      model: config.model,
+      thinkingOptionId: thinking,
+      noSession: config.internal === true,
+      modeId: launchMode.modeId,
+      extraArgs: launchMode.extraArgs,
+      systemPrompt,
+      systemPromptMode: config.systemPromptMode,
+      toolAllowlist: config.toolAllowlist,
+      env: launchContext?.env,
+    });
+    this.logAcquire({
+      purpose: "create",
+      source: "cold",
+      poolHit: false,
+      timing: {
+        bootMs: Date.now() - coldStartedAt,
+        totalMs: Date.now() - acquireStartedAt,
+      },
+      cwd: config.cwd,
+      modeId: launchMode.modeId,
+    });
+    return runtimeSession;
+  }
+
   async resumeSession(
     handle: AgentPersistenceHandle,
     overrides?: Partial<AgentSessionConfig>,
     launchContext?: AgentLaunchContext,
   ): Promise<AgentSession> {
-    const sessionFile = handle.nativeHandle;
-    if (!sessionFile) {
+    const rawSessionFile = handle.nativeHandle;
+    if (!rawSessionFile) {
       throw new Error("OMP resume requires a native session file handle");
     }
+    const sessionFile = await resolveOmpSessionFile(rawSessionFile);
 
     const persistenceMetadata = parsePersistenceMetadata(handle.metadata);
     const resumeConfig = buildResumeConfig(persistenceMetadata, overrides, this.provider);
 
     const launchMode = this.resolveLaunchMode(resumeConfig.modeId);
-    const runtimeSession = await this.runtime.startSession(
-      buildResumeStartInput({
-        resumeConfig,
-        sessionFile,
-        launchContext,
-        launchMode,
-      }),
+    const runtimeSession = await this.acquireResumeRuntimeSession(
+      resumeConfig,
+      sessionFile,
+      launchContext,
+      launchMode,
     );
     try {
-      await this.configureNativePaseoTools(runtimeSession, launchContext?.paseoTools);
+      const paseoTools = filterPaseoToolsByAllowlist(
+        launchContext?.paseoTools,
+        resumeConfig.config.toolAllowlist,
+      );
+      if (!paseoTools && resumeConfig.config.toolAllowlist?.length) {
+        this.logger.warn(
+          { provider: this.provider, allowlist: resumeConfig.config.toolAllowlist },
+          "Resumed agent restricts tools to an allowlist but no Paseo host-tool catalog is available; only builtin/MCP tools will load",
+        );
+      }
+      await this.configureNativePaseoTools(runtimeSession, paseoTools);
       return new OmpAgentSession({
         runtimeSession,
         config: resumeConfig.config,
@@ -2296,7 +2868,7 @@ export class OmpAgentClient implements AgentClient {
         providerIdleScheduler: this.providerIdleScheduler,
         noTurnScheduler: this.noTurnScheduler,
         usagePollScheduler: this.usagePollScheduler,
-        paseoTools: launchContext?.paseoTools,
+        paseoTools,
         live: false,
       });
     } catch (error) {
@@ -2305,11 +2877,156 @@ export class OmpAgentClient implements AgentClient {
     }
   }
 
+  /**
+   * Acquire the omp process backing a resumed agent: hand off a matching warm
+   * process when pool-eligible (claim + switch_session), otherwise cold-start
+   * with --session. Eligibility is the same as create: no per-agent system
+   * prompt, no significant env, no tool allowlist, and a resolvable model.
+   */
+  private async acquireResumeRuntimeSession(
+    resumeConfig: OmpResumeConfig,
+    sessionFile: string,
+    launchContext: AgentLaunchContext | undefined,
+    launchMode: { modeId: string; extraArgs: string[] },
+  ): Promise<OmpRuntimeSession> {
+    const acquireStartedAt = Date.now();
+    const model = resumeConfig.model;
+    const poolEligible =
+      resumeConfig.config.internal !== true &&
+      !hasSignificantLaunchEnv(launchContext?.env) &&
+      !resumeConfig.config.systemPrompt?.trim() &&
+      // An allowlist is launch-fixed (see startRuntimeSession): allowlist
+      // resumes must cold start.
+      !resumeConfig.config.toolAllowlist?.length &&
+      typeof model === "string" &&
+      model.includes("/");
+    if (poolEligible) {
+      const claimStartedAt = Date.now();
+      const pooled = await this.warmPool.claim({
+        cwd: resumeConfig.cwd,
+        modeId: launchMode.modeId,
+        extraArgs: launchMode.extraArgs,
+        systemPrompt: this.composeResumeLaunchSystemPrompt(resumeConfig) ?? "",
+        env: launchContext?.env,
+      });
+      if (pooled) {
+        try {
+          const switchStartedAt = Date.now();
+          await pooled.switchSession(sessionFile);
+          const switchMs = Date.now() - switchStartedAt;
+          const setModelStartedAt = Date.now();
+          const slash = model.indexOf("/");
+          await pooled.setModel(model.slice(0, slash), model.slice(slash + 1));
+          const thinking = normalizeOmpThinkingOption(resumeConfig.thinkingOptionId) ?? undefined;
+          if (thinking) {
+            await pooled.setThinkingLevel(thinking);
+          }
+          const setModelMs = Date.now() - setModelStartedAt;
+          this.logAcquire({
+            purpose: "resume",
+            source: "pool",
+            poolHit: true,
+            timing: {
+              claimMs: Date.now() - claimStartedAt,
+              switchMs,
+              setModelMs,
+              totalMs: Date.now() - acquireStartedAt,
+            },
+            cwd: resumeConfig.cwd,
+            modeId: launchMode.modeId,
+            sessionBytes: await this.sessionBytes(sessionFile),
+          });
+          return pooled;
+        } catch (error) {
+          // The handoff left the pooled process in an unknown state; close it
+          // and fall back to a cold launch rather than risk a broken agent.
+          this.logger.warn(
+            { err: error, provider: this.provider },
+            "OMP warm pool resume handoff failed; cold starting",
+          );
+          await pooled.close().catch(() => undefined);
+        }
+      }
+    }
+    const coldStartedAt = Date.now();
+    const runtimeSession = await this.runtime.startSession(
+      buildResumeStartInput({
+        resumeConfig,
+        sessionFile,
+        launchContext,
+        launchMode,
+      }),
+    );
+    this.logAcquire({
+      purpose: "resume",
+      source: "cold",
+      poolHit: false,
+      timing: {
+        bootMs: Date.now() - coldStartedAt,
+        totalMs: Date.now() - acquireStartedAt,
+      },
+      cwd: resumeConfig.cwd,
+      modeId: launchMode.modeId,
+      sessionBytes: await this.sessionBytes(sessionFile),
+    });
+    return runtimeSession;
+  }
+
+  /**
+   * The launch system prompt of a resume: replace mode uses the per-agent
+   * prompt verbatim, append mode layers it under the daemon append prompt.
+   * Mirrors buildResumeStartInput so the pool claim's key matches a cold
+   * --session launch of the same config.
+   */
+  private composeResumeLaunchSystemPrompt(resumeConfig: OmpResumeConfig): string | undefined {
+    if (resumeConfig.config.systemPromptMode === "replace") {
+      return resumeConfig.config.systemPrompt?.trim() || undefined;
+    }
+    return composeSystemPromptParts(
+      resumeConfig.config.systemPrompt,
+      resumeConfig.config.daemonAppendSystemPrompt,
+    );
+  }
+
+  /**
+   * One structured acquire record per create/resume so warm vs cold is
+   * observable. Info normally; warn when the whole acquire took >= 1s (a pool
+   * hit that slow is a regression, a cold start that slow is the baseline).
+   */
+  private logAcquire(input: OmpAcquireLogInput): void {
+    const fields: Record<string, unknown> = {
+      purpose: input.purpose,
+      source: input.source,
+      poolHit: input.poolHit,
+      ...input.timing,
+      cwd: input.cwd,
+      modeId: input.modeId,
+    };
+    if (input.sessionBytes !== undefined) {
+      fields.sessionBytes = input.sessionBytes;
+    }
+    if (input.timing.totalMs >= 1_000) {
+      this.logger.warn(fields, "omp.runtime.acquire");
+    } else {
+      this.logger.info(fields, "omp.runtime.acquire");
+    }
+  }
+
+  private async sessionBytes(sessionFile: string): Promise<number | undefined> {
+    try {
+      const fileStat = await stat(sessionFile);
+      return fileStat.size;
+    } catch {
+      return undefined;
+    }
+  }
+
   async fetchCatalog(
     options: FetchCatalogOptions,
     context?: ProviderRefreshContext,
   ): Promise<ProviderCatalog> {
     const launchMode = this.resolveLaunchMode(undefined);
+    const fetchStartedAt = Date.now();
     let runtimeSession: OmpRuntimeSession | undefined;
     let closePromise: Promise<void> | undefined;
     const closeSession = () => {
@@ -2320,6 +3037,7 @@ export class OmpAgentClient implements AgentClient {
     const handleAbort = () => void closeSession().catch(() => undefined);
     context?.signal.addEventListener("abort", handleAbort, { once: true });
     try {
+      const runtimeStartStartedAt = Date.now();
       await runProviderRefreshActivity(context, "runtime.start", async () => {
         runtimeSession = await this.runtime.startSession({
           cwd: options.scope === "global" ? homedir() : options.cwd,
@@ -2330,8 +3048,10 @@ export class OmpAgentClient implements AgentClient {
         });
         if (context?.signal.aborted) await closeSession();
       });
+      const runtimeStartMs = Date.now() - runtimeStartStartedAt;
       if (!runtimeSession) throw new Error("OMP catalog runtime did not start");
       const catalogSession = runtimeSession;
+      const modelsStartedAt = Date.now();
       const models = transformOmpModels(
         (
           await runProviderRefreshActivity(context, "get_available_models", () =>
@@ -2339,6 +3059,23 @@ export class OmpAgentClient implements AgentClient {
           )
         ).map((model) => mapOmpModel(model, this.provider)),
       );
+      const modelsMs = Date.now() - modelsStartedAt;
+      const totalMs = Date.now() - fetchStartedAt;
+      const timingFields = {
+        provider: this.provider,
+        scope: options.scope,
+        cwd: options.scope === "global" ? homedir() : options.cwd,
+        modeId: launchMode.modeId,
+        runtimeStartMs,
+        modelsMs,
+        totalMs,
+      };
+      // Info normally; warn when the fetch is slow (>=1s: a cold omp boot).
+      if (totalMs >= 1_000) {
+        this.logger.warn(timingFields, "omp.catalog.fetch_slow");
+      } else {
+        this.logger.info(timingFields, "omp.catalog.fetch");
+      }
       return { models, modes: [...OMP_MODES] };
     } finally {
       context?.signal.removeEventListener("abort", handleAbort);
@@ -2372,6 +3109,14 @@ export class OmpAgentClient implements AgentClient {
   }
 
   async isAvailable(): Promise<boolean> {
+    // The warm pool is the availability gate: an idle process here booted to
+    // `ready`, which proves the binary works — stronger evidence than the
+    // `which -a` + `omp --version` probe (~700ms Bun boot on a cold cache).
+    // Skip the probe whenever the pool can serve; a stale entry is dropped by
+    // the claim's liveness check, so an over-optimistic true is still correct.
+    if (this.warmPool.hasIdleProcess()) {
+      return true;
+    }
     try {
       const launch = await this.resolveOmpLaunch();
       const availability = await checkProviderLaunchAvailable(launch);
@@ -2434,7 +3179,18 @@ export class OmpAgentClient implements AgentClient {
     modeId: string;
     extraArgs: string[];
   } {
-    return resolveOmpLaunchMode(modeId, this.modelRoleParams);
+    try {
+      return resolveOmpLaunchMode(modeId, this.modelRoleParams);
+    } catch (error) {
+      // A stored modeId can outlive a provider switch (e.g. claude
+      // `bypassPermissions` persisted before the agent moved to omp). Fall
+      // back to the default mode instead of failing the launch outright.
+      this.logger.warn(
+        { err: error, modeId },
+        "Unsupported OMP mode; falling back to the default mode",
+      );
+      return resolveOmpLaunchMode(undefined, this.modelRoleParams);
+    }
   }
 
   private async resolveOmpLaunch(): Promise<ResolvedProviderLaunch> {
@@ -2442,5 +3198,13 @@ export class OmpAgentClient implements AgentClient {
       commandConfig: this.runtimeSettings?.command,
       defaultBinary: "omp",
     });
+  }
+
+  /**
+   * Release pool-owned processes at daemon shutdown. Called via
+   * AgentClient.shutdown (shutdownAgentClients) — must be idempotent.
+   */
+  async shutdown(): Promise<void> {
+    await this.warmPool.closeAll();
   }
 }

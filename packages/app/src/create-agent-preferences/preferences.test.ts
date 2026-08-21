@@ -4,7 +4,10 @@ import {
   applyAgentProfilePreferences,
   mergeCreateAgentSelectionPreferences,
   mergeProviderPreferences,
+  mergeProviderPreferencesWithScope,
   parseFormPreferences,
+  mergeIsolationPreference,
+  resolveEffectiveFormPreferences,
 } from "./preferences";
 import { FakeCreateAgentPreferenceStorage } from "./test-utils/fake-preference-storage";
 
@@ -248,6 +251,144 @@ describe("create agent preferences", () => {
     expect(parseFormPreferences({ provider: "codex", isolation: "sandbox" })).toEqual({});
   });
 
+  it("resolves workspace model over project and global", () => {
+    const preferences = {
+      provider: "claude",
+      providerPreferences: {
+        claude: { model: "global-model" },
+      },
+      byProject: {
+        "proj-a": {
+          provider: "claude",
+          providerPreferences: {
+            claude: { model: "project-model" },
+          },
+        },
+      },
+      byWorkspace: {
+        "ws-1": {
+          provider: "codex",
+          providerPreferences: {
+            codex: { model: "workspace-model" },
+          },
+        },
+      },
+    };
+
+    expect(
+      resolveEffectiveFormPreferences(preferences, {
+        workspaceId: "ws-1",
+        projectKey: "proj-a",
+      }),
+    ).toEqual({
+      ...preferences,
+      provider: "codex",
+      // Workspace provider wins; per-provider models layer global → project → workspace.
+      providerPreferences: {
+        claude: { model: "project-model" },
+        codex: { model: "workspace-model" },
+      },
+    });
+  });
+
+  it("falls back to project selection when the workspace has none", () => {
+    const preferences = {
+      provider: "claude",
+      providerPreferences: {
+        claude: { model: "global-model" },
+      },
+      byProject: {
+        "proj-a": {
+          provider: "codex",
+          providerPreferences: {
+            codex: { model: "project-model" },
+          },
+        },
+      },
+    };
+
+    expect(
+      resolveEffectiveFormPreferences(preferences, {
+        workspaceId: "ws-new",
+        projectKey: "proj-a",
+      }),
+    ).toEqual({
+      ...preferences,
+      provider: "codex",
+      providerPreferences: {
+        claude: { model: "global-model" },
+        codex: { model: "project-model" },
+      },
+    });
+  });
+
+  it("writes model selection into workspace, project, and global scopes", () => {
+    expect(
+      mergeProviderPreferencesWithScope({
+        preferences: {},
+        provider: "claude",
+        updates: { model: "claude-opus-4-6" },
+        scope: { workspaceId: "ws-1", projectKey: "proj-a" },
+      }),
+    ).toEqual({
+      provider: "claude",
+      providerPreferences: {
+        claude: { model: "claude-opus-4-6" },
+      },
+      byProject: {
+        "proj-a": {
+          provider: "claude",
+          providerPreferences: {
+            claude: { model: "claude-opus-4-6" },
+          },
+        },
+      },
+      byWorkspace: {
+        "ws-1": {
+          provider: "claude",
+          providerPreferences: {
+            claude: { model: "claude-opus-4-6" },
+          },
+        },
+      },
+    });
+  });
+
+  it("keeps sibling workspace selections isolated", () => {
+    const afterWorkspaceA = mergeProviderPreferencesWithScope({
+      preferences: {},
+      provider: "claude",
+      updates: { model: "opus" },
+      scope: { workspaceId: "ws-a", projectKey: "proj" },
+    });
+    const afterWorkspaceB = mergeProviderPreferencesWithScope({
+      preferences: afterWorkspaceA,
+      provider: "claude",
+      updates: { model: "sonnet" },
+      scope: { workspaceId: "ws-b", projectKey: "proj" },
+    });
+
+    expect(
+      resolveEffectiveFormPreferences(afterWorkspaceB, {
+        workspaceId: "ws-a",
+        projectKey: "proj",
+      }).providerPreferences?.claude?.model,
+    ).toBe("opus");
+    expect(
+      resolveEffectiveFormPreferences(afterWorkspaceB, {
+        workspaceId: "ws-b",
+        projectKey: "proj",
+      }).providerPreferences?.claude?.model,
+    ).toBe("sonnet");
+    // New workspace in the project inherits the last project-level choice.
+    expect(
+      resolveEffectiveFormPreferences(afterWorkspaceB, {
+        workspaceId: "ws-new",
+        projectKey: "proj",
+      }).providerPreferences?.claude?.model,
+    ).toBe("sonnet");
+  });
+
   it("persists and reloads a terminal launch target", async () => {
     const storage = new FakeCreateAgentPreferenceStorage();
     const preferences = new CreateAgentPreferencesService(storage);
@@ -275,5 +416,42 @@ describe("create agent preferences", () => {
 
   it("rejects an unknown launch target kind as invalid stored preferences", () => {
     expect(parseFormPreferences({ launchTarget: { kind: "shell" } })).toEqual({});
+  });
+});
+
+describe("project-scoped isolation", () => {
+  it("stores isolation under byProject and resolves it over global", () => {
+    const withProject = mergeIsolationPreference({
+      preferences: { isolation: "local" },
+      isolation: "worktree",
+      scope: { projectKey: "proj-a" },
+    });
+    expect(withProject.isolation).toBe("worktree");
+    expect(withProject.byProject?.["proj-a"]?.isolation).toBe("worktree");
+    expect(resolveEffectiveFormPreferences(withProject, { projectKey: "proj-a" }).isolation).toBe(
+      "worktree",
+    );
+    expect(resolveEffectiveFormPreferences(withProject, { projectKey: "proj-b" }).isolation).toBe(
+      "worktree",
+    ); // global fallback
+  });
+
+  it("keeps project isolation when another project is set", () => {
+    let prefs = mergeIsolationPreference({
+      preferences: {},
+      isolation: "worktree",
+      scope: { projectKey: "proj-a" },
+    });
+    prefs = mergeIsolationPreference({
+      preferences: prefs,
+      isolation: "local",
+      scope: { projectKey: "proj-b" },
+    });
+    expect(resolveEffectiveFormPreferences(prefs, { projectKey: "proj-a" }).isolation).toBe(
+      "worktree",
+    );
+    expect(resolveEffectiveFormPreferences(prefs, { projectKey: "proj-b" }).isolation).toBe(
+      "local",
+    );
   });
 });

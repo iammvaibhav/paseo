@@ -79,7 +79,9 @@ function ProviderUsageBody({
     );
   }
 
-  return <ProviderUsageList providers={view.payload.providers} />;
+  return (
+    <ProviderUsageList providers={view.payload.providers} listFetchedAt={view.payload.fetchedAt} />
+  );
 }
 
 const styles = StyleSheet.create((theme) => ({

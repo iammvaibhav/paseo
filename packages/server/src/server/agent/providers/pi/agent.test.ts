@@ -1735,12 +1735,14 @@ describe("PiRpcAgentClient", () => {
         description: "Manually compact the session context",
         argumentHint: "[instructions]",
         kind: "command",
+        delivery: "out_of_band",
       },
       {
         name: "autocompact",
         description: "Toggle automatic context compaction",
         argumentHint: "[on|off|toggle]",
         kind: "command",
+        delivery: "out_of_band",
       },
       { name: "review", description: "Review changes", argumentHint: "", kind: "command" },
       { name: "fix-tests", description: "Fix tests", argumentHint: "", kind: "command" },
@@ -1759,16 +1761,18 @@ describe("PiRpcAgentClient", () => {
       description: "Manually compact the session context",
       argumentHint: "[instructions]",
       kind: "command",
+      delivery: "out_of_band",
     });
     await expect(session.listCommands()).resolves.toContainEqual({
       name: "autocompact",
       description: "Toggle automatic context compaction",
       argumentHint: "[on|off|toggle]",
       kind: "command",
+      delivery: "out_of_band",
     });
   });
 
-  test("preserves known argument hints when RPC get_commands returns built-in slash commands", async () => {
+  test("preserves known argument hints and delivery when RPC get_commands returns built-in slash commands", async () => {
     const { pi, session } = await createSession();
     pi.latestSession().commands = [
       { name: "compact", description: "Compact from RPC", source: "extension" },
@@ -1781,12 +1785,14 @@ describe("PiRpcAgentClient", () => {
         description: "Compact from RPC",
         argumentHint: "[instructions]",
         kind: "command",
+        delivery: "out_of_band",
       },
       {
         name: "autocompact",
         description: "Auto compact from RPC",
         argumentHint: "[on|off|toggle]",
         kind: "command",
+        delivery: "out_of_band",
       },
     ]);
   });

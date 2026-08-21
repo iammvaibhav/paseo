@@ -19,6 +19,8 @@ const baseWorkspace: WorkspaceDescriptor = {
   status: "done",
   archivingAt: "2026-04-30T00:00:00.000Z",
   statusEnteredAt: null,
+  activityAt: null,
+  createdAt: null,
   diffStat: null,
   scripts: [],
 };

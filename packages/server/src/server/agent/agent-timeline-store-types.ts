@@ -36,6 +36,7 @@ export interface AgentTimelineWindow {
 export interface AgentTimelineSnapshot {
   rows: AgentTimelineRow[];
   historyComplete: boolean;
+  readonly epoch?: string;
 }
 
 export interface AgentTimelineFetchResult {
@@ -69,4 +70,9 @@ export interface AgentTimelineStore {
   bulkInsert(agentId: string, rows: readonly AgentTimelineRow[]): Promise<void>;
   replaceCommittedSnapshot(agentId: string, snapshot: AgentTimelineSnapshot): Promise<void>;
   updateCommittedRow(agentId: string, row: AgentTimelineRow): Promise<void>;
+  /**
+   * Retract committed rows by seq (digest ack-drop). Optional so stores that
+   * predate the method degrade to in-memory-only removal instead of failing.
+   */
+  removeCommittedRows?(agentId: string, seqs: readonly number[]): Promise<AgentTimelineRow[]>;
 }

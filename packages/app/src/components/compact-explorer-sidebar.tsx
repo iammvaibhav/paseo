@@ -2,9 +2,10 @@ import { useCallback, useMemo, useState } from "react";
 import { View, Text, Pressable } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
-import { X } from "lucide-react-native";
+import { HardDrive, X } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import { formatPrTabLabel, PullRequestTabIcon } from "@/git/pull-request-panel";
+import type { Forge } from "@/git/forge";
 import {
   usePanelStore,
   selectIsCompactFileExplorerOpen,
@@ -17,15 +18,17 @@ import {
   HEADER_INNER_HEIGHT_MOBILE,
   HEADER_TOP_PADDING_MOBILE,
 } from "@/constants/layout";
-import { ChangesSurface } from "@/git/diff-pane";
-import { changesStateSchema, defaultChangesState, type ChangesState } from "@/panels/changes/state";
+import { GitDiffPane } from "@/git/diff-pane";
 import { FileExplorerPane } from "./file-explorer-pane";
 import { useKeyboardShiftStyle } from "@/hooks/use-keyboard-shift-style";
 import { shouldUseCompactExplorerKeyboardPadding } from "@/hooks/keyboard-shift-policy";
 import { WindowChromeSafeArea } from "@/utils/desktop-window";
 import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
 import { RetainedPanel, RetainedPanelActivity } from "@/components/retained-panel";
+import { getIsElectron } from "@/constants/platform";
 import { useMountedTabSet } from "@/screens/workspace/use-mounted-tab-set";
+import { useSubmoduleContext } from "@/git/submodule-context";
+import { SubmodulePicker } from "@/git/submodule-picker";
 import { usePullRequestPanelAvailability } from "@/panels/pull-request-availability";
 import { PullRequestContent } from "@/panels/pull-request";
 import { useAddFileToChat } from "@/panels/use-add-file-to-chat";
@@ -38,6 +41,9 @@ interface ExplorerSidebarProps {
   workspaceRoot: string;
   isGit: boolean;
   onOpenFile?: (filePath: string) => void;
+  /** Fork-only: opens the file's git diff in VS Code Web (desktop only). */
+  onOpenDiff?: (filePath: string, baseRef: string | null) => void;
+  onOpenHostFile?: (filePath: string) => void;
 }
 
 interface ExplorerSidebarSharedState {
@@ -68,6 +74,8 @@ export function CompactExplorerSidebar({
   workspaceRoot,
   isGit,
   onOpenFile,
+  onOpenDiff,
+  onOpenHostFile,
 }: ExplorerSidebarProps) {
   const { theme } = useUnistyles();
   const insets = useSafeAreaInsets();
@@ -133,6 +141,8 @@ export function CompactExplorerSidebar({
           isGit={isGit}
           isOpen={isOpen}
           onOpenFile={onOpenFile}
+          onOpenDiff={onOpenDiff}
+          onOpenHostFile={onOpenHostFile}
         />
       </MobilePanelOverlay>
     </RetainedPanelActivity>
@@ -167,6 +177,109 @@ function ExplorerTabButton({
   );
 }
 
+function HostExplorerTabButton({
+  active,
+  label,
+  onPress,
+}: {
+  active: boolean;
+  label: string;
+  onPress: () => void;
+}) {
+  const { theme } = useUnistyles();
+  const accessibilityState = useMemo(() => ({ selected: active }), [active]);
+  const tabStyle = useMemo(() => [styles.tab, active && styles.tabActive], [active]);
+  const tabTextStyle = useMemo(() => [styles.tabText, active && styles.tabTextActive], [active]);
+
+  return (
+    <Pressable
+      testID="explorer-tab-host"
+      accessibilityRole="tab"
+      accessibilityState={accessibilityState}
+      style={tabStyle}
+      onPress={onPress}
+    >
+      <HardDrive
+        size={13}
+        color={active ? theme.colors.foreground : theme.colors.foregroundMuted}
+      />
+      <Text style={tabTextStyle}>{label}</Text>
+    </Pressable>
+  );
+}
+
+function ExplorerTabs({
+  resolvedTab,
+  isGit,
+  showPrTab,
+  showHostFiles,
+  hostEnabled,
+  changesLabel,
+  filesLabel,
+  hostLabel,
+  prTabLabel,
+  forge,
+  onTabPress,
+  onHostPress,
+}: {
+  resolvedTab: ExplorerTab;
+  isGit: boolean;
+  showPrTab: boolean;
+  showHostFiles: boolean;
+  hostEnabled: boolean;
+  changesLabel: string;
+  filesLabel: string;
+  hostLabel: string;
+  prTabLabel: string;
+  forge: Forge;
+  onTabPress: (tab: ExplorerTab) => void;
+  onHostPress: () => void;
+}) {
+  const { theme } = useUnistyles();
+  return (
+    <View style={styles.tabsContainer}>
+      {isGit && (
+        <ExplorerTabButton
+          tab="changes"
+          active={!showHostFiles && resolvedTab === "changes"}
+          label={changesLabel}
+          onTabPress={onTabPress}
+          testID="explorer-tab-changes"
+        />
+      )}
+      <ExplorerTabButton
+        tab="files"
+        active={!showHostFiles && resolvedTab === "files"}
+        label={filesLabel}
+        onTabPress={onTabPress}
+        testID="explorer-tab-files"
+      />
+      {hostEnabled ? (
+        <HostExplorerTabButton active={showHostFiles} label={hostLabel} onPress={onHostPress} />
+      ) : null}
+      {isGit && showPrTab && (
+        <ExplorerTabButton
+          tab="pr"
+          active={!showHostFiles && resolvedTab === "pr"}
+          label={prTabLabel}
+          onTabPress={onTabPress}
+          testID="explorer-tab-pr"
+        >
+          <PullRequestTabIcon
+            forge={forge}
+            size={13}
+            color={
+              !showHostFiles && resolvedTab === "pr"
+                ? theme.colors.foreground
+                : theme.colors.foregroundMuted
+            }
+          />
+        </ExplorerTabButton>
+      )}
+    </View>
+  );
+}
+
 interface SidebarContentProps {
   activeTab: ExplorerTab;
   onTabPress: (tab: ExplorerTab) => void;
@@ -177,6 +290,133 @@ interface SidebarContentProps {
   isGit: boolean;
   isOpen: boolean;
   onOpenFile?: (filePath: string) => void;
+  onOpenDiff?: (filePath: string, baseRef: string | null) => void;
+  onOpenHostFile?: (filePath: string) => void;
+}
+
+function resolveEffectiveTab(
+  activeTab: ExplorerTab,
+  isGit: boolean,
+  showPrTab: boolean,
+): ExplorerTab {
+  const requested: ExplorerTab =
+    !isGit && (activeTab === "changes" || activeTab === "pr") ? "files" : activeTab;
+  return requested === "pr" && !showPrTab ? "changes" : requested;
+}
+
+function ExplorerContentArea({
+  showHostFiles,
+  mountedTabIds,
+  resolvedTab,
+  serverId,
+  workspaceId,
+  effectiveCwd,
+  workspaceRoot,
+  selectedSubmodule,
+  isOpen,
+  onOpenFile,
+  onOpenDiff,
+  onOpenHostFile,
+  prPane,
+}: {
+  showHostFiles: boolean;
+  mountedTabIds: Set<string>;
+  resolvedTab: ExplorerTab;
+  serverId: string;
+  workspaceId?: string | null;
+  effectiveCwd: string;
+  workspaceRoot: string;
+  selectedSubmodule: string | null;
+  isOpen: boolean;
+  onOpenFile?: (filePath: string) => void;
+  onOpenDiff?: (filePath: string, baseRef: string | null) => void;
+  onOpenHostFile: (filePath: string) => void;
+  prPane: ReturnType<typeof usePullRequestPanelAvailability>["prPane"];
+}) {
+  const { addFile, canAddToChat } = useAddFileToChat({ serverId, workspaceId });
+  const submodulePrefix = selectedSubmodule ? `${selectedSubmodule}/` : "";
+  const handleOpenFile = useMemo(
+    () =>
+      onOpenFile
+        ? (filePath: string) =>
+            onOpenFile(filePath.startsWith("/") ? filePath : `${submodulePrefix}${filePath}`)
+        : undefined,
+    [onOpenFile, submodulePrefix],
+  );
+  const handleOpenDiff = useMemo(
+    () =>
+      onOpenDiff
+        ? (filePath: string, baseRef: string | null) =>
+            onOpenDiff(
+              filePath.startsWith("/") ? filePath : `${submodulePrefix}${filePath}`,
+              baseRef,
+            )
+        : undefined,
+    [onOpenDiff, submodulePrefix],
+  );
+  const onAddToChat = useMemo(
+    () =>
+      canAddToChat
+        ? (filePath: string) =>
+            addFile(filePath.startsWith("/") ? filePath : `${submodulePrefix}${filePath}`)
+        : undefined,
+    [addFile, canAddToChat, submodulePrefix],
+  );
+
+  if (showHostFiles) {
+    return (
+      <View style={styles.contentArea} testID="explorer-content-area">
+        <RetainedPanel active>
+          <FileExplorerPane
+            serverId={serverId}
+            workspaceId={null}
+            workspaceRoot="/"
+            onOpenFile={onOpenHostFile}
+          />
+        </RetainedPanel>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.contentArea} testID="explorer-content-area">
+      {mountedTabIds.has("changes") ? (
+        <RetainedPanel active={!showHostFiles && resolvedTab === "changes"}>
+          <GitDiffPane
+            host="explorer"
+            serverId={serverId}
+            workspaceId={workspaceId}
+            cwd={effectiveCwd}
+            enabled={isOpen}
+            onOpenFile={handleOpenFile}
+            onOpenDiff={handleOpenDiff}
+            onAddToChat={onAddToChat}
+          />
+        </RetainedPanel>
+      ) : null}
+      {mountedTabIds.has("files") ? (
+        <RetainedPanel active={!showHostFiles && resolvedTab === "files"}>
+          <FileExplorerPane
+            serverId={serverId}
+            workspaceId={workspaceId}
+            workspaceRoot={selectedSubmodule ? effectiveCwd : workspaceRoot}
+            onOpenFile={handleOpenFile}
+            onAddToChat={onAddToChat}
+          />
+        </RetainedPanel>
+      ) : null}
+      {mountedTabIds.has("pr") ? (
+        <RetainedPanel active={!showHostFiles && resolvedTab === "pr"}>
+          <PullRequestContent
+            serverId={serverId}
+            workspaceId={workspaceId}
+            cwd={effectiveCwd}
+            prPane={prPane}
+          />
+        </RetainedPanel>
+      ) : null}
+    </View>
+  );
 }
 
 function ExplorerSidebarContent({
@@ -189,21 +429,41 @@ function ExplorerSidebarContent({
   isGit,
   isOpen,
   onOpenFile,
+  onOpenDiff,
+  onOpenHostFile,
 }: SidebarContentProps) {
   const { theme } = useUnistyles();
   const { t } = useTranslation();
+  const [showHostFiles, setShowHostFiles] = useState(false);
+
+  const submoduleState = useSubmoduleContext({ serverId, workspaceRoot, isGit, enabled: isOpen });
+  const { effectiveCwd, submodules, hasSubmodules, selectedSubmodule, setSelectedSubmodule } =
+    submoduleState;
+
   const { prPane, showPullRequest: showPrTab } = usePullRequestPanelAvailability({
     serverId,
-    cwd: workspaceRoot,
+    cwd: effectiveCwd,
     isGit,
     requested: activeTab === "pr",
     enabled: isOpen,
-    timelineEnabled: activeTab === "pr",
+    timelineEnabled: activeTab === "pr" && isOpen,
   });
-  const requestedTab: ExplorerTab =
-    !isGit && (activeTab === "changes" || activeTab === "pr") ? "files" : activeTab;
-  const resolvedTab: ExplorerTab = requestedTab === "pr" && !showPrTab ? "changes" : requestedTab;
+  const resolvedTab = resolveEffectiveTab(activeTab, isGit, showPrTab);
   const prTabLabel = formatPrTabLabel(prPane.prNumber);
+  const handleWorkspaceTabPress = useCallback(
+    (tab: ExplorerTab) => {
+      setShowHostFiles(false);
+      onTabPress(tab);
+    },
+    [onTabPress],
+  );
+  const handleShowHostFiles = useCallback(() => setShowHostFiles(true), []);
+  const handleOpenHostFile = useCallback(
+    (filePath: string) => {
+      onOpenHostFile?.(filePath.startsWith("/") ? filePath : `/${filePath}`);
+    },
+    [onOpenHostFile],
+  );
   const availableTabs = useMemo<ExplorerTab[]>(() => {
     const tabs: ExplorerTab[] = isGit ? ["changes", "files"] : ["files"];
     if (isGit && showPrTab) tabs.push("pr");
@@ -217,7 +477,6 @@ function ExplorerSidebarContent({
 
   return (
     <View style={styles.sidebarContent} pointerEvents="auto">
-      {/* Header with tabs and close button */}
       <WindowChromeSafeArea
         placement="inline"
         horizontalPadding={theme.spacing[2]}
@@ -225,42 +484,28 @@ function ExplorerSidebarContent({
         testID="explorer-header"
       >
         <TitlebarDragRegion />
-        <View style={styles.tabsContainer}>
-          {isGit && (
-            <ExplorerTabButton
-              tab="changes"
-              active={resolvedTab === "changes"}
-              label={t("workspace.tabs.sidePanel.changes")}
-              onTabPress={onTabPress}
-              testID="explorer-tab-changes"
+        <ExplorerTabs
+          resolvedTab={resolvedTab}
+          isGit={isGit}
+          showPrTab={showPrTab}
+          showHostFiles={showHostFiles}
+          hostEnabled={getIsElectron() && Boolean(onOpenHostFile)}
+          changesLabel={t("workspace.tabs.explorer.changes")}
+          filesLabel={t("workspace.tabs.explorer.files")}
+          hostLabel={t("workspace.tabs.explorer.host", { defaultValue: "Host" })}
+          prTabLabel={prTabLabel}
+          forge={prPane.forge}
+          onTabPress={handleWorkspaceTabPress}
+          onHostPress={handleShowHostFiles}
+        />
+        <View style={styles.headerRightSection}>
+          {isGit && hasSubmodules && (
+            <SubmodulePicker
+              submodules={submodules}
+              selectedPath={selectedSubmodule}
+              onSelect={setSelectedSubmodule}
             />
           )}
-          <ExplorerTabButton
-            tab="files"
-            active={resolvedTab === "files"}
-            label={t("workspace.tabs.sidePanel.files")}
-            onTabPress={onTabPress}
-            testID="explorer-tab-files"
-          />
-          {isGit && showPrTab && (
-            <ExplorerTabButton
-              tab="pr"
-              active={resolvedTab === "pr"}
-              label={prTabLabel}
-              onTabPress={onTabPress}
-              testID="explorer-tab-pr"
-            >
-              <PullRequestTabIcon
-                forge={prPane.forge}
-                size={13}
-                color={
-                  resolvedTab === "pr" ? theme.colors.foreground : theme.colors.foregroundMuted
-                }
-              />
-            </ExplorerTabButton>
-          )}
-        </View>
-        <View style={styles.headerRightSection}>
           <Pressable
             onPress={onClose}
             style={styles.closeButton}
@@ -281,92 +526,24 @@ function ExplorerSidebarContent({
         </View>
       </WindowChromeSafeArea>
 
-      {/* Content based on active tab */}
-      <View style={styles.contentArea} testID="explorer-content-area">
-        {mountedTabIds.has("changes") ? (
-          <RetainedPanel active={resolvedTab === "changes"}>
-            <ChangedFilesPane
-              serverId={serverId}
-              workspaceId={workspaceId}
-              workspaceRoot={workspaceRoot}
-              isOpen={isOpen}
-              onOpenFile={onOpenFile}
-            />
-          </RetainedPanel>
-        ) : null}
-        {mountedTabIds.has("files") ? (
-          <RetainedPanel active={resolvedTab === "files"}>
-            <FilesPane
-              serverId={serverId}
-              workspaceId={workspaceId}
-              workspaceRoot={workspaceRoot}
-              onOpenFile={onOpenFile}
-            />
-          </RetainedPanel>
-        ) : null}
-        {mountedTabIds.has("pr") ? (
-          <RetainedPanel active={resolvedTab === "pr"}>
-            <PrTabContent
-              serverId={serverId}
-              workspaceId={workspaceId}
-              cwd={workspaceRoot}
-              prPane={prPane}
-            />
-          </RetainedPanel>
-        ) : null}
-      </View>
+      <ExplorerContentArea
+        showHostFiles={showHostFiles}
+        mountedTabIds={mountedTabIds}
+        resolvedTab={resolvedTab}
+        serverId={serverId}
+        workspaceId={workspaceId}
+        effectiveCwd={effectiveCwd}
+        workspaceRoot={workspaceRoot}
+        selectedSubmodule={selectedSubmodule}
+        isOpen={isOpen}
+        onOpenFile={onOpenFile}
+        onOpenDiff={onOpenDiff}
+        onOpenHostFile={handleOpenHostFile}
+        prPane={prPane}
+      />
     </View>
   );
 }
-
-function ChangedFilesPane({
-  serverId,
-  workspaceId,
-  workspaceRoot,
-  isOpen,
-  onOpenFile,
-}: Pick<
-  SidebarContentProps,
-  "serverId" | "workspaceId" | "workspaceRoot" | "isOpen" | "onOpenFile"
->) {
-  const { addFile, canAddToChat } = useAddFileToChat({ serverId, workspaceId });
-  const [changesState, setChangesState] = useState<ChangesState>(() =>
-    changesStateSchema.parse(defaultChangesState),
-  );
-  return (
-    <ChangesSurface
-      host="explorer"
-      serverId={serverId}
-      workspaceId={workspaceId}
-      cwd={workspaceRoot}
-      enabled={isOpen}
-      onOpenFile={onOpenFile}
-      onAddToChat={canAddToChat ? addFile : undefined}
-      state={changesState}
-      onStateChange={setChangesState}
-    />
-  );
-}
-
-function FilesPane({
-  serverId,
-  workspaceId,
-  workspaceRoot,
-  onOpenFile,
-}: Pick<SidebarContentProps, "serverId" | "workspaceId" | "workspaceRoot" | "onOpenFile">) {
-  const { addFile, canAddToChat } = useAddFileToChat({ serverId, workspaceId });
-  return (
-    <FileExplorerPane
-      serverId={serverId}
-      workspaceId={workspaceId}
-      workspaceRoot={workspaceRoot}
-      onOpenFile={onOpenFile}
-      onAddToChat={canAddToChat ? addFile : undefined}
-    />
-  );
-}
-
-const PrTabContent = PullRequestContent;
 
 const styles = StyleSheet.create((theme) => ({
   sidebarContent: {

@@ -339,6 +339,22 @@ export interface CompactionTimelineItem {
   preTokens?: number;
 }
 
+/**
+ * Who originated a user-role timeline row. Machinery delivers prompts into an
+ * agent's own chat (stall status-ask nudges, Commander/Verifier directions)
+ * and marks the row at the source so the agent chat can render it distinctly.
+ * Absent = "instruction" (a visible prompt) — real user messages and legacy
+ * rows are never hidden.
+ */
+export type AgentTimelineUserMessageClassification = "machinery" | "instruction";
+
+/**
+ * M9 voice dialogue mirror marker on timeline rows appended by the voice
+ * mirror RPC. "qa" = pure Q&A (the app hides the row unless verbose);
+ * "dispatch" = the turn asked the fleet to do something (visible).
+ */
+export type AgentTimelineVoiceMirrorKind = "qa" | "dispatch";
+
 export interface AgentTaskItem {
   text: string;
   completed: boolean;
@@ -348,8 +364,20 @@ export interface AgentTaskItem {
 }
 
 export type AgentTimelineItem =
-  | { type: "user_message"; text: string; messageId?: string; clientMessageId?: string }
-  | { type: "assistant_message"; text: string; messageId?: string }
+  | {
+      type: "user_message";
+      text: string;
+      messageId?: string;
+      clientMessageId?: string;
+      classification?: AgentTimelineUserMessageClassification;
+      voiceMirrorKind?: AgentTimelineVoiceMirrorKind;
+    }
+  | {
+      type: "assistant_message";
+      text: string;
+      messageId?: string;
+      voiceMirrorKind?: AgentTimelineVoiceMirrorKind;
+    }
   | { type: "reasoning"; text: string }
   | ToolCallTimelineItem
   | { type: "todo"; items: AgentTaskItem[] }
@@ -489,6 +517,8 @@ export interface AgentSessionConfig {
    * Mapped by each provider to its native instruction field.
    */
   systemPrompt?: string;
+  systemPromptMode?: "append" | "replace";
+  toolAllowlist?: string[];
   modeId?: string;
   model?: string;
   thinkingOptionId?: string;

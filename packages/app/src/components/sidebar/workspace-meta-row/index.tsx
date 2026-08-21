@@ -16,7 +16,8 @@ import {
   type WorkspaceLabelDefinition,
 } from "@getpaseo/protocol/workspace-labels";
 import type { HostBadgeModel } from "@/hosts/appearance";
-import { HostBadge, HOST_BADGE_ICON_SIZE } from "@/hosts/host-badge";
+import { HOST_BADGE_ICON_SIZE } from "@/hosts/host-badge";
+import { HostGlyph } from "@/components/host-glyph";
 import { WorkspaceLabelChip, WORKSPACE_LABEL_CHIP_INSET } from "@/workspace-labels/chip";
 import type { PrHint } from "@/git/pr-hint";
 import { getForgePresentation, normalizeForge } from "@/git/forge";
@@ -36,8 +37,9 @@ export {
 
 /**
  * One size for every glyph on the line. The items are peers — host, change request, CI,
- * running service — so a glyph that differs in size reads as a different rank. The host badge
- * owns the size because it is the one item that also appears off this line.
+ * running service — so a glyph that differs in size reads as a different rank. The host
+ * glyph draws at the same size as the row's other leading glyphs (the shared HostGlyph
+ * "small variant" contract: size variants live in the shared component).
  */
 const META_ICON_SIZE = HOST_BADGE_ICON_SIZE;
 
@@ -129,7 +131,7 @@ function MetaItemNode({
     return <IdentityItem kind="project" name={item.name} />;
   }
   if (item.kind === "host") {
-    return hostBadge ? <HostBadge badge={hostBadge} /> : null;
+    return hostBadge ? <HostMetaItem badge={hostBadge} /> : null;
   }
   if (item.kind === "changeRequest") {
     return <PullRequestItem hint={item.hint} />;
@@ -153,6 +155,30 @@ function IdentityItem({ kind, name }: { kind: "branch" | "project"; name: string
       <Text style={styles.identityText} numberOfLines={1}>
         {name}
       </Text>
+    </View>
+  );
+}
+
+/**
+ * The host on the workspace's line, drawn as the shared HostGlyph chip (spec:
+ * "one identity everywhere" — the same chip board rows and the host picker
+ * draw) with the host's name beside it when the user chose to show it. The
+ * chip carries the identity color + connection status; the tooltip carries
+ * the full host name, matching how board rows read.
+ */
+function HostMetaItem({ badge }: { badge: HostBadgeModel }): ReactNode {
+  return (
+    <View
+      style={styles.item}
+      testID={`host-badge-${badge.serverId}`}
+      accessibilityLabel={badge.label}
+    >
+      <HostGlyph serverId={badge.serverId} label={badge.label} size={META_ICON_SIZE} />
+      {badge.showLabel ? (
+        <Text style={styles.hostLabel} numberOfLines={1}>
+          {badge.label}
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -410,6 +436,15 @@ const styles = StyleSheet.create((theme) => ({
   prText: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
+    lineHeight: 16,
+    flexShrink: 0,
+  },
+  // The host name beside the glyph chip (HostBadgeModel.showLabel). Same
+  // secondary-text token as the line's other labels, and it yields before the
+  // service item when the line runs out of room.
+  hostLabel: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.xs,
     lineHeight: 16,
     flexShrink: 0,
   },

@@ -80,8 +80,7 @@ export function MobilePanelOverlay({
       >
         <View style={overlayStyle} pointerEvents={overlayPointerEvents}>
           <Pressable
-            accessibilityElementsHidden
-            importantForAccessibility="no-hide-descendants"
+            aria-hidden
             onPress={showMobileAgent}
             pointerEvents={isOpen ? "auto" : "none"}
             style={StyleSheet.absoluteFillObject}

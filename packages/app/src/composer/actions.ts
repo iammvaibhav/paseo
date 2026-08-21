@@ -14,9 +14,11 @@ import {
   type ComposerAttachmentSubmitFormat,
 } from "@/composer/attachments/submit";
 import { createUserMessage, generateMessageId, type UserMessageItem } from "@/types/stream";
+import type { MessageDispatchMode } from "@/composer/types";
 import type { MessageSubmissionRejectionOutcome } from "@/composer/submission/model";
 import type { PickedImageAttachmentInput } from "@/hooks/image-attachment-picker";
 import { i18n } from "@/i18n/i18next";
+import { beginAgentLoaderSpan } from "@/utils/agent-loader-span";
 
 export interface QueuedComposerMessage {
   id: string;
@@ -52,8 +54,9 @@ export interface ComposerSendClient {
       activeTurnBehavior?: ActiveTurnBehavior;
       images: Array<{ data: string; mimeType: string }>;
       attachments: ReturnType<typeof splitComposerAttachmentsForSubmit>["attachments"];
+      dispatchMode?: MessageDispatchMode;
     },
-  ) => Promise<void>;
+  ) => Promise<void | { outOfBand?: boolean }>;
   uploadFile: (input: { fileName: string; mimeType: string; bytes: Uint8Array }) => Promise<{
     requestId: string;
     file: {
@@ -160,7 +163,9 @@ export interface CancelComposerAgentInput {
 
 export function cancelComposerAgent(input: CancelComposerAgentInput): Promise<void> | null {
   if (!input.isAgentRunning || input.isCancellingAgent) return null;
-  if (!input.isConnected || !input.client) return null;
+  if (!input.client || !input.isConnected) {
+    return Promise.resolve();
+  }
   try {
     return Promise.resolve(input.client.cancelAgent(input.agentId));
   } catch (error) {
@@ -170,6 +175,7 @@ export function cancelComposerAgent(input: CancelComposerAgentInput): Promise<vo
 
 export interface DispatchComposerAgentMessageInput {
   client: ComposerSendClient;
+  serverId?: string;
   agentId: string;
   text: string;
   attachments: ComposerAttachment[];
@@ -180,6 +186,20 @@ export interface DispatchComposerAgentMessageInput {
   submission: MessageSubmissionWriter;
   activeTurnBehavior?: ActiveTurnBehavior;
   activeTurnId?: string;
+  /**
+   * Wire delivery semantics: "steer" delivers against the live turn (native
+   * OMP live-steer; interrupt fallback when the provider has no steer path),
+   * "queue" waits for idle, absent means interrupt.
+   */
+  dispatchMode?: MessageDispatchMode;
+  /**
+   * The daemon runs this prompt out of band, so it never records a user
+   * message for it. Providers echo what they accepted themselves — OMP re-emits
+   * the steered text as its own user entry — and an optimistic bubble on top of
+   * that shows the same message twice, once with the `/steer ` prefix and once
+   * without.
+   */
+  skipOptimisticUserMessage?: boolean;
 }
 
 export async function dispatchComposerAgentMessage(
@@ -189,17 +209,22 @@ export async function dispatchComposerAgentMessage(
     format: input.attachmentSubmitFormat,
   });
   const clientMessageId = generateMessageId();
-  const userMessage = createUserMessage({
-    clientMessageId,
-    text: input.text,
-    timestamp: new Date(),
-    images: wirePayload.images,
-    attachments: wirePayload.attachments,
-    ...(input.activeTurnBehavior === "steer" && input.activeTurnId
-      ? { turnId: input.activeTurnId }
-      : {}),
-  });
-  input.submission.begin(input.agentId, userMessage);
+  if (!input.skipOptimisticUserMessage) {
+    const userMessage = createUserMessage({
+      clientMessageId,
+      text: input.text,
+      timestamp: new Date(),
+      images: wirePayload.images,
+      attachments: wirePayload.attachments,
+      ...(input.activeTurnBehavior === "steer" && input.activeTurnId
+        ? { turnId: input.activeTurnId }
+        : {}),
+    });
+    input.submission.begin(input.agentId, userMessage);
+  }
+  if (input.serverId) {
+    beginAgentLoaderSpan(input.serverId, input.agentId, "send");
+  }
   try {
     const imagesData = await input.encodeImages(wirePayload.images);
     await input.client.sendAgentMessage(input.agentId, input.text, {
@@ -207,12 +232,54 @@ export async function dispatchComposerAgentMessage(
       ...(input.activeTurnBehavior ? { activeTurnBehavior: input.activeTurnBehavior } : {}),
       images: imagesData ?? [],
       attachments: wirePayload.attachments,
+      ...(input.dispatchMode ? { dispatchMode: input.dispatchMode } : {}),
     });
     input.submission.accept(input.agentId, clientMessageId);
   } catch (error) {
     input.submission.reject(input.agentId, clientMessageId);
     throw error;
   }
+}
+
+export interface ComposerForkClient {
+  forkAgent: (
+    sourceAgentId: string,
+    text: string,
+    options: {
+      messageId: string;
+      images: Array<{ data: string; mimeType: string }>;
+      attachments: ReturnType<typeof splitComposerAttachmentsForSubmit>["attachments"];
+    },
+  ) => Promise<{ agentId: string }>;
+}
+
+export interface ForkComposerAgentInput {
+  client: ComposerForkClient;
+  sourceAgentId: string;
+  text: string;
+  attachments: ComposerAttachment[];
+  encodeImages: (
+    images: AttachmentMetadata[],
+  ) => Promise<Array<{ data: string; mimeType: string }> | undefined>;
+}
+
+/**
+ * Fork the source agent into a new sibling agent seeded with history up to now,
+ * running `text` as its first turn. Unlike a normal send, this does NOT record a
+ * submitted message on the source agent's timeline — the message belongs to the
+ * newly created agent, which the caller opens in a new tab.
+ */
+export async function forkComposerAgent(
+  input: ForkComposerAgentInput,
+): Promise<{ agentId: string }> {
+  const wirePayload = splitComposerAttachmentsForSubmit(input.attachments);
+  const messageId = generateMessageId();
+  const imagesData = await input.encodeImages(wirePayload.images);
+  return await input.client.forkAgent(input.sourceAgentId, input.text, {
+    messageId,
+    images: imagesData ?? [],
+    attachments: wirePayload.attachments,
+  });
 }
 
 export interface QueueComposerMessageInput {
@@ -315,6 +382,56 @@ export async function sendQueuedComposerMessageNow(
         error instanceof Error
           ? error.message
           : (input.failedToSendMessage ?? i18n.t("composer.errors.failedToSend")),
+    };
+  }
+}
+
+export interface ForkQueuedComposerMessageInput {
+  agentId: string;
+  messageId: string;
+  queue: QueueWriter;
+  fork: (input: { text: string; attachments: ComposerAttachment[] }) => Promise<void>;
+  failedToForkMessage?: string;
+}
+
+export type ForkQueuedComposerMessageResult =
+  | { status: "missing" }
+  | { status: "forked" }
+  | { status: "failed"; errorMessage: string };
+
+/**
+ * Fork a queued message into a new sibling agent instead of letting it drain to
+ * the running agent. Removes it from the queue first (so it won't also be sent
+ * when the agent goes idle) and re-inserts it at the head if the fork fails.
+ */
+export async function forkQueuedComposerMessage(
+  input: ForkQueuedComposerMessageInput,
+): Promise<ForkQueuedComposerMessageResult> {
+  const item = input.queue.read(input.agentId).find((q) => q.id === input.messageId);
+  if (!item) return { status: "missing" };
+  input.queue.write((prev) => {
+    const next = new Map(prev);
+    next.set(
+      input.agentId,
+      (prev.get(input.agentId) ?? []).filter((q) => q.id !== input.messageId),
+    );
+    return next;
+  });
+  try {
+    await input.fork({ text: item.text, attachments: item.attachments });
+    return { status: "forked" };
+  } catch (error) {
+    input.queue.write((prev) => {
+      const next = new Map(prev);
+      next.set(input.agentId, [item, ...(prev.get(input.agentId) ?? [])]);
+      return next;
+    });
+    return {
+      status: "failed",
+      errorMessage:
+        error instanceof Error
+          ? error.message
+          : (input.failedToForkMessage ?? i18n.t("composer.errors.failedToSend")),
     };
   }
 }

@@ -46,6 +46,29 @@ function getPositiveFeatureInteger(value: unknown): number {
 const ONE_PIXEL_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl4Kj8AAAAASUVORK5CYII=";
 
+// A 480x200 line plot, so the eval detail renderer has a real image to lay out.
+const EVAL_PLOT_PNG_BASE64 =
+  "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";
+
 const CAPABILITIES: AgentCapabilityFlags = {
   supportsStreaming: true,
   supportsSessionPersistence: true,
@@ -332,6 +355,66 @@ function parseLargeAgentStreamPayloadPrompt(
   return {
     bytes: Math.min(bytes, 1_000_000),
     kind: kindValue,
+  };
+}
+
+function shouldEmitEvalToolCall(prompt: AgentPromptInput): boolean {
+  return /emit an eval tool call/i.test(promptToText(prompt));
+}
+
+/**
+ * A realistic Oh My Pi `eval` result. The tool has no canonical detail type, so
+ * the daemon forwards the provider envelope inside `unknown`; the app
+ * recognizes the notebook shape and renders a cell per entry. Covers the three
+ * things only this payload carries: `display()` values that never reach the
+ * text output, an inline image, and a failed cell.
+ */
+function buildEvalToolCallDetails(): Record<string, unknown> {
+  return {
+    language: "python",
+    languages: ["python"],
+    jsonOutputs: [["@getpaseo/app", "@getpaseo/protocol"]],
+    images: [{ type: "image", data: EVAL_PLOT_PNG_BASE64, mimeType: "image/png" }],
+    notice: "Ruby backend is disabled; ran the python kernel instead.",
+    cells: [
+      {
+        index: 0,
+        title: "load config",
+        language: "python",
+        code: [
+          "import json",
+          "from pathlib import Path",
+          "",
+          'data = json.loads(Path("package.json").read_text())',
+          'display(sorted(data["dependencies"])[:2])',
+          "print(f\"{len(data['dependencies'])} dependencies\")",
+        ].join("\n"),
+        output: "2 dependencies",
+        status: "complete",
+        exitCode: 0,
+        durationMs: 128,
+      },
+      {
+        index: 1,
+        title: "plot latency",
+        language: "python",
+        code: "plt.plot(latencies)\nplt.show()",
+        output: "(displayed 1 image; no text output)",
+        status: "complete",
+        exitCode: 0,
+        durationMs: 1840,
+      },
+      {
+        index: 2,
+        language: "python",
+        code: 'raise RuntimeError("kernel is busy")',
+        output:
+          'Traceback (most recent call last):\n  File "<cell>", line 1\nRuntimeError: kernel is busy',
+        status: "error",
+        exitCode: 1,
+        durationMs: 12,
+      },
+    ],
   };
 }
 
@@ -773,6 +856,8 @@ export class MockLoadTestAgentSession implements AgentSession {
         this.scheduleLargePayloadTurn(turn, largePayload);
       } else if (stress) {
         this.scheduleStressTurn(turn, stress);
+      } else if (shouldEmitEvalToolCall(prompt)) {
+        this.scheduleEvalToolCallTurn(turn);
       } else {
         this.schedule(turn, 0);
       }
@@ -1061,6 +1146,13 @@ export class MockLoadTestAgentSession implements AgentSession {
     turn.timer.unref?.();
   }
 
+  private scheduleEvalToolCallTurn(turn: ActiveTurn): void {
+    turn.timer = setTimeout(() => {
+      this.emitEvalToolCallTurn(turn);
+    }, 0);
+    turn.timer.unref?.();
+  }
+
   private scheduleSteeringReplayTurn(turn: ActiveTurn, shape: SteeringReplayShape): void {
     turn.timer = setTimeout(() => {
       if (this.activeTurn !== turn) return;
@@ -1276,6 +1368,69 @@ export class MockLoadTestAgentSession implements AgentSession {
       provider: this.provider,
       request,
       turnId: turn.turnId,
+    });
+  }
+
+  private emitEvalToolCallTurn(turn: ActiveTurn): void {
+    if (this.activeTurn !== turn) {
+      return;
+    }
+
+    this.clearTurnTimer(turn);
+    this.emitTurnStarted(turn);
+
+    const callId = `${turn.turnId}:eval`;
+    const args = {
+      language: "py",
+      code: 'import json\nprint(json.dumps({"ok": True}))',
+      title: "load config",
+    };
+    this.emitTimeline(
+      turn.turnId,
+      createToolCall({
+        callId,
+        name: "eval",
+        status: "running",
+        detail: { type: "unknown", input: args, output: null },
+      }),
+    );
+    this.emitTimeline(
+      turn.turnId,
+      createToolCall({
+        callId,
+        name: "eval",
+        status: "completed",
+        detail: {
+          type: "unknown",
+          input: args,
+          output: {
+            content: [{ type: "text", text: "2 dependencies" }],
+            details: buildEvalToolCallDetails(),
+            isError: false,
+          },
+        },
+      }),
+    );
+
+    this.activeTurn = null;
+    const usage = {
+      inputTokens: 1,
+      outputTokens: 1,
+      contextWindowUsedTokens: 1,
+      contextWindowMaxTokens: 128_000,
+    };
+    this.emit({
+      type: "turn_completed",
+      provider: this.provider,
+      turnId: turn.turnId,
+      usage,
+    });
+    turn.resolve({
+      sessionId: this.id,
+      finalText: "Emitted a synthetic eval tool call",
+      usage,
+      timeline: [],
+      canceled: false,
     });
   }
 

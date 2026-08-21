@@ -19,8 +19,10 @@ import { type AggregatedAgent } from "@/hooks/use-aggregated-agents";
 import { useSessionStore } from "@/stores/session-store";
 import { Archive, ChevronRight } from "lucide-react-native";
 import { getProviderIcon } from "@/components/provider-icons";
-import { navigateToAgent } from "@/utils/navigate-to-agent";
+import { openAgentFromHistory } from "@/workspace/open-agent-from-history";
 import { useArchiveAgent } from "@/hooks/use-archive-agent";
+import { isHistoryAskAgent } from "@/history-ask";
+import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
 import { HighlightedText } from "@/components/ui/highlighted-text";
 import { StatusBadge, type StatusBadgeVariant } from "@/components/ui/status-badge";
 import type { AgentSearchMatch } from "@getpaseo/protocol/messages";
@@ -42,6 +44,7 @@ interface AgentListProps {
    * typo tiers match characters the eye would not find on its own.
    */
   searchMatchesByAgentKey?: Record<string, AgentSearchMatch[]>;
+  searchSnippetsByAgentKey?: Record<string, string>;
   /**
    * Renders one flat list in the given order instead of grouping by day. Day
    * headings claim the list is chronological, which is a lie once the caller
@@ -205,9 +208,18 @@ function SessionRowTrailingAttention({
   );
 }
 
+function isRedundantWorkspaceName(workspaceName: string, agent: AggregatedAgent): boolean {
+  if (!workspaceName) return true;
+  if (isHistoryAskAgent(agent.labels)) return true;
+  if (workspaceName === agent.title || workspaceName.startsWith("Ask:")) return true;
+  if (agent.title && agent.title.startsWith(workspaceName)) return true;
+  return false;
+}
+
 function SessionRow({
   agent,
   searchMatches,
+  searchSnippet,
   isMobile,
   selectedAgentId,
   showAttentionIndicator,
@@ -217,6 +229,7 @@ function SessionRow({
 }: {
   agent: AggregatedAgent;
   searchMatches?: readonly AgentSearchMatch[];
+  searchSnippet?: string;
   isMobile: boolean;
   selectedAgentId?: string;
   showAttentionIndicator: boolean;
@@ -262,8 +275,9 @@ function SessionRow({
     () => <Archive size={theme.fontSize.sm} color={theme.colors.foregroundMuted} />,
     [theme.fontSize.sm, theme.colors.foregroundMuted],
   );
-  const showDesktopAttention =
-    !isMobile && showAttentionIndicator && Boolean(agent.requiresAttention);
+  const showDesktopAttention = !isMobile && showAttentionIndicator && agent.bucket === "needs_you";
+
+  const showWorkspacePrefix = !isMobile && !isRedundantWorkspaceName(workspaceName, agent);
 
   return (
     <Pressable
@@ -275,7 +289,7 @@ function SessionRow({
       <View style={styles.rowContent}>
         <View style={styles.rowTitleRow}>
           <WorkspaceTitlePrefix
-            visible={!isMobile && Boolean(workspaceName)}
+            visible={showWorkspacePrefix}
             workspaceName={workspaceName}
             ranges={rangesFor("workspace")}
             testID={`agent-row-workspace-${agent.serverId}-${agent.id}`}
@@ -298,6 +312,15 @@ function SessionRow({
             showDesktopAttention={showDesktopAttention}
           />
         </View>
+        {searchSnippet ? (
+          <Text
+            style={styles.sessionSnippet}
+            numberOfLines={1}
+            testID={`agent-row-snippet-${agent.serverId}-${agent.id}`}
+          >
+            {searchSnippet}
+          </Text>
+        ) : null}
         {isMobile ? (
           <View style={styles.rowMetaRow}>
             <HighlightedText
@@ -365,7 +388,7 @@ function SessionRow({
       <SessionRowTrailingAttention
         isMobile={isMobile}
         showAttentionIndicator={showAttentionIndicator}
-        requiresAttention={agent.requiresAttention}
+        requiresAttention={agent.bucket === "needs_you"}
       />
     </Pressable>
   );
@@ -381,6 +404,7 @@ export function AgentList({
   showAttentionIndicator = true,
   showHostColumn = false,
   searchMatchesByAgentKey,
+  searchSnippetsByAgentKey,
   flat = false,
 }: AgentListProps) {
   const { theme } = useUnistyles();
@@ -403,15 +427,12 @@ export function AgentList({
         return;
       }
 
-      const serverId = agent.serverId;
-      const agentId = agent.id;
-
       onAgentSelect?.();
-      navigateToAgent({
-        serverId,
-        agentId,
+      void openAgentFromHistory({
+        serverId: agent.serverId,
+        agentId: agent.id,
         workspaceId: agent.workspaceId,
-        pin: true,
+        archived: Boolean(agent.archivedAt),
       });
     },
     [isActionSheetVisible, onAgentSelect],
@@ -419,6 +440,11 @@ export function AgentList({
 
   const handleAgentLongPress = useCallback(
     (agent: AggregatedAgent) => {
+      // System-owned agents (Commander, verifiers, machinery) are never
+      // archivable from any UI surface.
+      if (isSystemOwnedAgentLabels(agent.labels)) {
+        return;
+      }
       const isRunning = agent.status === "running";
       if (isRunning) {
         setActionAgent(agent);
@@ -441,6 +467,10 @@ export function AgentList({
 
   const handleArchiveAgent = useCallback(() => {
     if (!actionAgent || !actionClient) {
+      return;
+    }
+    if (isSystemOwnedAgentLabels(actionAgent.labels)) {
+      setActionAgent(null);
       return;
     }
     // Timeout errors are swallowed — the daemon will still process the archive
@@ -492,6 +522,7 @@ export function AgentList({
         <SessionRow
           agent={item.agent}
           searchMatches={searchMatchesByAgentKey?.[item.key]}
+          searchSnippet={searchSnippetsByAgentKey?.[item.key]}
           isMobile={isMobile}
           selectedAgentId={selectedAgentId}
           showAttentionIndicator={showAttentionIndicator}
@@ -506,6 +537,7 @@ export function AgentList({
       handleAgentPress,
       isMobile,
       searchMatchesByAgentKey,
+      searchSnippetsByAgentKey,
       selectedAgentId,
       showAttentionIndicator,
       showHostColumn,
@@ -578,14 +610,16 @@ export function AgentList({
               >
                 <Text style={styles.sheetCancelText}>{t("common.actions.cancel")}</Text>
               </Pressable>
-              <Pressable
-                disabled={isActionDaemonUnavailable}
-                style={[styles.sheetButton, styles.sheetArchiveButton]}
-                onPress={handleArchiveAgent}
-                testID="agent-action-archive"
-              >
-                <Text style={sheetArchiveTextStyle}>{t("agentList.archiveSheet.archive")}</Text>
-              </Pressable>
+              {actionAgent && isSystemOwnedAgentLabels(actionAgent.labels) ? null : (
+                <Pressable
+                  disabled={isActionDaemonUnavailable}
+                  style={[styles.sheetButton, styles.sheetArchiveButton]}
+                  onPress={handleArchiveAgent}
+                  testID="agent-action-archive"
+                >
+                  <Text style={sheetArchiveTextStyle}>{t("agentList.archiveSheet.archive")}</Text>
+                </Pressable>
+              )}
             </View>
           </View>
         </View>
@@ -691,6 +725,11 @@ const styles = StyleSheet.create((theme) => ({
   sessionMetaText: {
     maxWidth: "100%",
     fontSize: theme.fontSize.base,
+    color: theme.colors.foregroundMuted,
+  },
+  sessionSnippet: {
+    maxWidth: "100%",
+    fontSize: theme.fontSize.sm,
     color: theme.colors.foregroundMuted,
   },
   sessionMetaSeparator: {

@@ -49,6 +49,22 @@ if (typeof globalThis.cancelAnimationFrame !== "function") {
   };
 }
 
+// jsdom does not implement matchMedia; react-native-reanimated reads it at
+// module load (ReducedMotion). Polyfill for the jsdom projects.
+if (typeof window !== "undefined" && typeof window.matchMedia !== "function") {
+  window.matchMedia = (query: string) =>
+    ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }) as unknown as MediaQueryList;
+}
+
 // The unistyles test double lives in test-stubs/react-native-unistyles.ts and
 // reaches every vitest project through the resolve.alias in vitest.config.ts —
 // no vi.mock here, so there is a single copy of the fixture theme.

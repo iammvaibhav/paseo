@@ -101,6 +101,8 @@ export const es: TranslationResources = {
       sendMessage: "enviar mensaje",
       queue: "Cola",
       send: "Enviar",
+      forkToNewTab: "Bifurcar en pestaña nueva",
+      forkFailed: "No se pudo bifurcar el agente",
     },
     cancel: {
       cancelingAgent: "Agente de cancelación",
@@ -118,6 +120,7 @@ export const es: TranslationResources = {
       muteVoice: "voz muda",
       dictation: "Dictado",
       interruptBeforeVoice: "Interrumpir al agente antes de iniciar el modo de voz.",
+      commanderVoice: "Voz del Comandante",
     },
     attachments: {
       addImage: "Agregar imagen",
@@ -169,6 +172,7 @@ export const es: TranslationResources = {
       fallback: "Proveedor",
       select: "Seleccionar proveedor de agente",
     },
+    providerSwitched: "Proveedor cambiado a {{provider}}",
     thinking: {
       title: "Pensamiento",
       unknown: "Desconocido",
@@ -238,16 +242,58 @@ export const es: TranslationResources = {
       callout: "Este agente está archivado.",
       unarchive: "Desarchivar",
     },
+    providerUnavailable: {
+      callout: "This agent's provider is no longer available on this host.",
+      detail: "You can still read the history, or continue in a new draft with another provider.",
+      continueWithAnotherProvider: "Continue with another provider",
+    },
   },
   sessions: {
     title: "Historial",
     empty: "Aún no hay sesiones",
+    emptyForHost: "No sessions for this host",
+    loadError: "Unable to load sessions",
     noMatches: "No hay sesiones que coincidan",
     tooManyMatches: "Demasiadas coincidencias: acota la búsqueda",
     hostLoadFailed: "{{host}}: No se pudo cargar el historial",
     searchPlaceholder: "Buscar en el historial",
+    tabs: {
+      agents: "Agents",
+      ask: "Ask",
+    },
+    search: {
+      placeholder: "Filter by title, provider, path…",
+      empty: "No sessions match this filter",
+    },
+    ask: {
+      placeholder: "Ask about past agent sessions…",
+      submit: "Ask",
+      jobsHeading: "Ask jobs",
+      jobsOpenHint: "Tap a job to open it. New asks open automatically.",
+      empty: "No History Ask jobs yet",
+      launched: "History Ask started — opening…",
+      scopeLabel: "Scope",
+      scopeUnknown: "Unknown scope",
+      scopeSelectHost: "Select a host",
+      scopeWorkspace: "Workspace · {{name}}",
+      scopeProject: "Project · {{name}}",
+      scopeHost: "Host · {{name}} (host-wide)",
+      needHostHint: "Ask runs on one host. Pick a host above — “All hosts” cannot launch.",
+      modelLabel: "Model",
+      modelPlaceholder: "Select model",
+      errors: {
+        noCwd:
+          "No working directory found on this host. Open a workspace, or ensure this host has history with a cwd.",
+        noScope: "Choose a host or open Ask from a project/workspace",
+        hostDisconnected: "Host is not connected",
+        launchFailed: "Failed to start History Ask",
+      },
+    },
     actions: {
       loadMore: "Cargar más",
+      tryAgain: "Try again",
+      back: "Back",
+      askAboutThis: "Preguntar sobre esto",
       clearSearch: "Borrar búsqueda",
     },
   },
@@ -279,6 +325,54 @@ export const es: TranslationResources = {
       archive: "Archivo",
     },
   },
+  missionControl: {
+    inspector: {
+      archivedBanner: "Archivado",
+      workspaceArchived:
+        "El espacio de trabajo de este agente está archivado, por lo que no se puede abrir en la vista de espacio de trabajo.",
+      workspaceUnavailable:
+        "This agent's workspace isn't available on this host, so it cannot be opened in the workspace view.",
+    },
+    proposal: {
+      origin: {
+        verifier: "Contacto de verificador",
+        commander: "Comandante",
+        stall: "Comprobación de bloqueo",
+      },
+      chips: {
+        project: "Proyecto: {{label}}",
+        workspace: "Espacio de trabajo: {{label}}",
+        agent: "Agente: {{label}}",
+        newProject: "Nuevo proyecto: {{label}}",
+        newWorkspace: "Nuevo espacio de trabajo: {{label}}",
+        newAgent: "Nuevo agente: {{label}}",
+      },
+      model: "Modelo: {{model}}",
+      payload: "Carga útil",
+      meta: {
+        renameProject: "Renombrar proyecto {{target}} → {{name}}",
+        renameWorkspace: "Renombrar espacio de trabajo {{target}} → {{name}}",
+        renameAgentTitle: "Renombrar título de agente {{target}} → {{name}}",
+        archiveProject: "Archivar proyecto {{target}}",
+        archiveWorkspace: "Archivar espacio de trabajo {{target}}",
+        archiveAgent: "Archivar agente {{target}}",
+        createProject: "Crear proyecto {{target}}",
+        moveAgent: "Mover agente {{target}} → espacio de trabajo {{destination}}",
+        promoteWorkspace: "Promocionar {{target}} → proyecto {{destination}}",
+      },
+    },
+    clarification: {
+      title: "Aclaración",
+      send: "Enviar",
+      answerPlaceholder: "Escribe tu respuesta...",
+      answered: "Respondido: {{answer}}",
+    },
+    answer: {
+      title: "Respuesta",
+      agentStatus: "Estado del agente",
+      state: "Estado",
+    },
+  },
   message: {
     diagram: {
       diagram: "Diagrama",
@@ -298,6 +392,7 @@ export const es: TranslationResources = {
       forkUnavailable: "Actualiza el host para usar esto.",
       forkMissingWorkspace: "Este agente no está en un espacio de trabajo.",
       forkFailed: "No se pudo bifurcar el chat",
+      jumpToUserMessage: "Ir al mensaje del usuario",
       openFile: "Abrir archivo",
       copied: "Copiado",
     },
@@ -454,6 +549,9 @@ export const es: TranslationResources = {
       context: {
         size: "Tamaño",
         modified: "Modificado",
+        copyPath: "Copiar ruta",
+        download: "Descargar",
+        downloadAsZip: "Download as ZIP",
       },
       actions: {
         back: "Atrás",
@@ -470,6 +568,11 @@ export const es: TranslationResources = {
       states: {
         unavailable: "Workspaceno está disponible",
         loading: "Cargando archivos...",
+      },
+      drop: {
+        hostDisconnected: "Host is disconnected",
+        uploading: "Uploading {{count}} file(s)…",
+        uploaded: "Uploaded {{count}} file(s)",
       },
       errors: {
         failedToListDirectory: "No se pudo listar el directorio",
@@ -573,6 +676,7 @@ export const es: TranslationResources = {
       },
       menu: {
         openFor: "Menú abierto para{{label}}",
+        markDone: "Marcar como hecho",
         copyResumeCommand: "Copiar comando de reanudación",
         copyAgentId: "Copiar ID del agente",
         copyTerminalId: "Copiar ID del terminal",
@@ -933,6 +1037,7 @@ export const es: TranslationResources = {
         openIn: "Abrir espacio de trabajo en{{target}}",
         openFileIn: "Open {{fileName}} in {{target}}",
         failedOpen: "No se pudo abrir el espacio de trabajo",
+        noFile: "Select a Markdown file to open in Plannotator",
       },
       pr: {
         actions: {
@@ -1053,6 +1158,12 @@ export const es: TranslationResources = {
         title: "Título",
         branch: "Nombre de rama",
       },
+      workspaceSort: {
+        label: "Sort workspaces",
+        manual: "Manual",
+        activity: "Latest activity",
+        created: "Date created",
+      },
       show: {
         label: "Mostrar",
         branch: "Rama",
@@ -1100,6 +1211,11 @@ export const es: TranslationResources = {
       settings: "Ajustes",
       closeSidebar: "Cerrar barra lateral",
     },
+    fleetStats: {
+      label: "Estadísticas de flota",
+      collecting: "Recopilando estadísticas de flota…",
+      failed: "No se pudieron recopilar las estadísticas de flota",
+    },
     help: {
       trigger: "Ayuda y soporte",
       sectionHelp: "Ayuda",
@@ -1114,6 +1230,10 @@ export const es: TranslationResources = {
     sections: {
       sessions: "Historial",
       schedules: "Horarios",
+      missionControl: "Mission Control",
+      missionControlNeedsYou: "Necesita tu atención",
+      missionControlReady: "Listos para revisión",
+      webhooks: "Webhooks",
     },
     worktreeSetup: {
       title: "Configurar secuencias de comandos del árbol de trabajo",
@@ -1129,6 +1249,7 @@ export const es: TranslationResources = {
         openNewWindowFailed: "Couldn't open a new window",
         openFolder: "Open in file manager",
         openFolderFailed: "Couldn't open folder",
+        askHistory: "Ask history…",
         remove: "Eliminar proyecto",
         removing: "Eliminando...",
       },
@@ -1150,6 +1271,13 @@ export const es: TranslationResources = {
       },
     },
     workspace: {
+      agents: {
+        count: "Agents ({{count}})",
+        expand: "Show agents",
+        collapse: "Hide agents",
+        sortByActivity: "Recent",
+        sortByCreated: "Created",
+      },
       status: {
         serviceRunning: "Servicio {{name}} en ejecución",
         serviceUnhealthy: "Servicio {{name}} con fallos",
@@ -1166,6 +1294,7 @@ export const es: TranslationResources = {
         rename: "Cambiar nombre del espacio de trabajo",
         pin: "Anclar arriba",
         unpin: "Desanclar",
+        askHistory: "Ask history…",
         archive: "Archivo",
         archiveWorkspace: "Archivar espacio de trabajo",
         hideFromSidebar: "Ocultar de la barra lateral",
@@ -1734,6 +1863,15 @@ export const es: TranslationResources = {
     archiveFinishedAction: "Archivar subagentes finalizados",
     archiveFinishedRetry: "Reintentar ({{failed}}/{{total}})",
   },
+  selectionAsks: {
+    title: "Preguntas",
+    pillLabelOne: "1 pregunta",
+    pillLabelMany: "{{count}} preguntas",
+    openAction: "Abrir pregunta {{label}}",
+    archiveAction: "Archivar {{label}}",
+    archiveTooltip: "Archivar pregunta",
+    clearAll: "Borrar todas las preguntas",
+  },
   panels: {
     draft: {
       newAgent: "Nuevo agente",
@@ -1741,6 +1879,7 @@ export const es: TranslationResources = {
     },
     file: {
       directoryMissing: "No se encontró el directorio de Workspace.",
+      notFoundOnHost: "Archivo no encontrado en el host: {{path}}",
       loading: "Cargando archivo...",
       noPreview: "No hay vista previa disponible",
       binaryPreviewUnavailable: "Vista previa binaria no disponible",
@@ -1836,6 +1975,7 @@ export const es: TranslationResources = {
     title: "ventana contextual",
     used: "{{percentage}}% utilizado",
     tokens: "Fichas{{used}}/{{max}}",
+    tokensUnknown: "0 tokens (esperando uso)",
     sessionCost: "Costo de la sesión{{cost}}",
     accessibility: "Ventana de contexto{{percentage}}% utilizada",
   },
@@ -1881,12 +2021,23 @@ export const es: TranslationResources = {
       notifications: "Notificaciones",
       permissions: "Permisos",
       diagnostics: "Diagnóstico",
+      missionControl: "Mission Control",
       about: "Acerca de",
     },
     editor: {
       title: "Editor",
       vimKeybindings: "Atajos de Vim",
       vimHint: "Se aplica a archivos fuente en web y escritorio.",
+      defaultFileOpener: "Default file opener",
+      defaultFileOpenerHint:
+        "Used for normal file clicks. Plannotator supports document and configuration files; source files fall back to Paseo.",
+      defaultFileOpenerPaseo: "Paseo",
+      defaultFileOpenerVsCodeWeb: "VS Code Web",
+      defaultFileOpenerPlannotator: "Plannotator",
+      plannotatorFeedbackMode: "Plannotator feedback",
+      plannotatorFeedbackModeHint: "How annotation feedback is delivered to the linked agent.",
+      plannotatorFeedbackAutoSend: "Auto-send",
+      plannotatorFeedbackCompose: "Pre-fill composer",
     },
     notifications: {
       title: "Notificaciones",
@@ -1914,6 +2065,23 @@ export const es: TranslationResources = {
       terminals: "Terminals",
       plugins: "Plugins",
       host: "Resumen",
+    },
+    missionControl: {
+      memory: "Memoria",
+      hindsightUrl: "URL de Hindsight",
+      hindsightUrlHint:
+        "URL base de la API de Hindsight. Vacía desactiva la memoria de la flota (escritura de registros de ejecución y recall).",
+      hindsightBank: "Banco de escritura",
+      hindsightBankHint: "Banco donde Paseo escribe los registros de ejecución.",
+      hindsightSecondaryBank: "Banco de recall (secundario)",
+      hindsightSecondaryBankHint:
+        "Banco secundario de solo lectura consultado por fleet_recall. Vacío lo desactiva.",
+      voiceNodeUrl: "URL del nodo de voz",
+      voiceNodeUrlHint:
+        "Servidor de Voz del Comandante (p. ej. ws://127.0.0.1:8787/ws). Vacío oculta la voz del Comandante en el compositor de Mission Control.",
+      voiceMode: "Voice tool mode",
+      voiceModeHint:
+        "Relay = voice reads like Commander but routes every change through commander_dispatch. Direct = voice holds the full Commander tool surface, approval-gated. Applies to new voice sessions.",
     },
     plugins: pluginSettings.es,
     metadataGeneration: {
@@ -1950,15 +2118,15 @@ export const es: TranslationResources = {
         descriptions: {
           interrupt:
             "Cuando el agente se está ejecutando, Enter interrumpe. Command/Ctrl+Enter pone en cola.",
-          steer:
-            "Cuando el agente se está ejecutando, Enter dirige el turno activo. Command/Ctrl+Enter pone en cola.",
           queue:
             "Cuando el agente se está ejecutando, Enter pone en cola. Command/Ctrl+Enter envía.",
+          steer:
+            "Cuando el agente se está ejecutando, Enter lo dirige: termina la llamada de herramienta actual, lee tu mensaje y continúa. Command/Ctrl+Enter interrumpe.",
         },
         options: {
           interrupt: "Interrumpir",
-          steer: "Dirigir",
           queue: "Cola",
+          steer: "Dirigir",
         },
       },
       serviceUrls: {
@@ -2406,6 +2574,26 @@ export const es: TranslationResources = {
           placeholder: "MiHost",
           submit: "Cambiar nombre",
         },
+        sshHost: {
+          title: "Host SSH",
+          hint: "Permite que «Abrir en el editor» abra los espacios de trabajo de este host en Cursor o VS Code mediante Remote SSH",
+          notConfigured: "Sin configurar",
+          edit: "Editar",
+          configure: "Configurar",
+          modalTitle: "Host SSH",
+          placeholder: "user@hostname o alias de configuración SSH",
+          submit: "Guardar",
+        },
+        browserEditorUrl: {
+          title: "URL de VS Code Web",
+          hint: "Permite que “Abrir → VS Code Web” abra los workspaces de este host en una pestaña del navegador (code-server)",
+          notConfigured: "No configurado",
+          edit: "Editar",
+          configure: "Configurar",
+          modalTitle: "URL de VS Code Web",
+          placeholder: "http://hostname:8765",
+          submit: "Guardar",
+        },
         restart: {
           title: "Reiniciar demonio",
           hint: "Reinicia el proceso del demonio. La aplicación se volverá a conectar automáticamente",
@@ -2547,6 +2735,9 @@ export const es: TranslationResources = {
         useAutomatic: "Usar automático",
         imageUrl: "URL de imagen o sitio web",
         save: "Guardar cambios",
+        description: "Description",
+        descriptionLabel: "Project description",
+        descriptionPlaceholder: "What this project is for",
         savedToast: "Proyecto actualizado",
       },
       readFailures: {

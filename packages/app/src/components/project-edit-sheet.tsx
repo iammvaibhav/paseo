@@ -8,6 +8,7 @@ import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { ProjectIconSource } from "@getpaseo/protocol/messages";
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
 import { ProjectIconView } from "@/components/project-icon-view";
+import { SettingsTextArea } from "@/components/settings-textarea";
 import { Button } from "@/components/ui/button";
 import type { FieldControlSize } from "@/components/ui/control-geometry";
 import { Field, FormTextInput } from "@/components/ui/form-field";
@@ -148,6 +149,20 @@ export function ProjectEditSheet({
         />
       </Field>
 
+      <Field
+        label={t("settings.project.edit.description")}
+        error={state.error?.scope === "description" ? state.error.message : null}
+      >
+        <SettingsTextArea
+          accessibilityLabel={t("settings.project.edit.descriptionLabel")}
+          value={state.description}
+          onChangeText={form.setDescription}
+          editable={!isSaving}
+          placeholder={t("settings.project.edit.descriptionPlaceholder")}
+          testID="project-edit-description"
+        />
+      </Field>
+
       {supportsCustomIcon ? (
         <Field
           label={t("settings.project.edit.icon")}
@@ -237,11 +252,16 @@ async function submitProjectEdit(input: {
   submission: ProjectEditSubmission;
 }): Promise<void> {
   const { client, projectId, submission } = input;
-  const { rename, icon } = submission;
+  const { rename, description, icon } = submission;
 
   const source = icon ? await step("icon", () => acquireIconSource(icon)) : null;
   if (rename) {
     await step("name", () => client.renameProject(projectId, rename.customName));
+  }
+  if (description) {
+    await step("description", () =>
+      client.setProjectDescription(projectId, description.description),
+    );
   }
   if (source) {
     await step("icon", () => client.setProjectIcon(projectId, source));

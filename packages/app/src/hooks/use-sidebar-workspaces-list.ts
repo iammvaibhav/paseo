@@ -11,6 +11,7 @@ import { useHostProjects } from "@/projects/host-projects";
 import { getHostRuntimeStore, useHostRegistryLoaded, useHosts } from "@/runtime/host-runtime";
 import { useSidebarOrderStore } from "@/stores/sidebar-order-store";
 import { useSidebarViewStore } from "@/stores/sidebar-view-store";
+import { useMissionControlVerbose } from "@/mission-control/use-mission-control-verbose";
 import {
   buildSidebarWorkspacePlacementModel,
   computeSidebarOrderUpdates,
@@ -137,7 +138,17 @@ export function useSidebarWorkspacesList(options?: {
   const hydratedServerIds = useHydratedWorkspaceServerIds(serverIds);
   const directoryServerIds = useWorkspaceDirectoryServerIds(serverIds);
 
-  const hostProjects = useHostProjects(directoryServerIds);
+  // Mission Control system-owned workspaces stay hidden by default so the
+  // project list doesn't grow a "Mission Control" project the user never
+  // created. Flip Settings → Mission Control → Show system workspaces to
+  // surface them (and the per-run history ask agents) for debugging. This is a
+  // second preference key so it never collides with the main MC enabled
+  // toggle (which would otherwise clear the verbose flag when flipped off as
+  // a second preference).
+  const [missionControlVerbose] = useMissionControlVerbose();
+  const hostProjects = useHostProjects(directoryServerIds, {
+    hideSystemOwnedWorkspaces: !missionControlVerbose,
+  });
 
   const sidebarModel = useMemo(
     () =>

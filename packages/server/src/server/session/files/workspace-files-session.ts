@@ -12,6 +12,7 @@ import type {
   FileEntryDuplicateRequest,
   FileEntryRenameRequest,
   FileExplorerRequest,
+  FileExplorerWriteRequest,
   FileUploadRequest,
   FileSubscribeRequest,
   FileUnsubscribeRequest,
@@ -25,13 +26,14 @@ import {
   createExplorerEntry,
   deleteExplorerEntry,
   duplicateExplorerEntry,
-  getDownloadableFileInfo,
+  getDownloadableEntryInfo,
   listDirectoryEntries,
   readExplorerFile,
   renameExplorerEntry,
   streamExplorerFile,
   writeExplorerFile,
 } from "../../file-explorer/service.js";
+import { FileExplorerWriteStore } from "../../file-explorer/write-store.js";
 import { workspaceFileObserver, type FileObserver } from "../../file-explorer/observer.js";
 import { getProjectIcon } from "../../../utils/project-icon.js";
 
@@ -67,6 +69,7 @@ export class WorkspaceFilesSession {
   private readonly downloadTokenStore: DownloadTokenStore;
   private readonly logger: pino.Logger;
   private readonly fileUploads: FileUploadStore;
+  private readonly fileWrites: FileExplorerWriteStore;
   private readonly fileObserver: FileObserver;
   private readonly fileSubscriptions = new Map<string, () => void>();
 
@@ -75,6 +78,7 @@ export class WorkspaceFilesSession {
     this.downloadTokenStore = options.downloadTokenStore;
     this.logger = options.logger;
     this.fileUploads = new FileUploadStore({ paseoHome: options.paseoHome });
+    this.fileWrites = new FileExplorerWriteStore();
     this.fileObserver = options.fileObserver ?? workspaceFileObserver;
   }
 
@@ -347,7 +351,19 @@ export class WorkspaceFilesSession {
     this.fileUploads.beginUpload(request);
   }
 
+  handleFileExplorerWriteRequest(request: FileExplorerWriteRequest): void {
+    this.fileWrites.beginWrite(request);
+  }
+
   async handleFileTransferFrame(frame: FileTransferFrame): Promise<void> {
+    if (this.fileWrites.hasPending(frame.requestId)) {
+      const writeResponse = await this.fileWrites.receiveFrame(frame);
+      if (writeResponse) {
+        this.host.emit(writeResponse);
+      }
+      return;
+    }
+
     const response = await this.fileUploads.receiveFrame(frame);
     if (response) {
       this.host.emit(response);
@@ -409,7 +425,7 @@ export class WorkspaceFilesSession {
     );
 
     try {
-      const info = await getDownloadableFileInfo({
+      const info = await getDownloadableEntryInfo({
         root: cwd,
         relativePath: requestedPath,
       });
@@ -420,6 +436,7 @@ export class WorkspaceFilesSession {
         fileName: info.fileName,
         mimeType: info.mimeType,
         size: info.size,
+        kind: info.kind,
       });
 
       this.host.emit({

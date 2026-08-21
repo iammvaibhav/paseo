@@ -1,0 +1,149 @@
+import { useEffect, useMemo, useRef } from "react";
+import equal from "fast-deep-equal";
+import { useAggregatedAgents } from "@/hooks/use-aggregated-agents";
+import { useAggregatedMissionControlEvents } from "@/hooks/use-aggregated-mission-control-events";
+import {
+  useHostRuntimeConnectionStatuses,
+  useHosts,
+  type HostRuntimeConnectionStatus,
+} from "@/runtime/host-runtime";
+import type { MissionControlEvent } from "@getpaseo/protocol/mission-control/types";
+import {
+  DEFAULT_RETENTION_DAYS,
+  countLifecycle,
+  deriveAgentLifecycle,
+  groupLifecycleRows,
+  toLifecycleRow,
+  type LifecycleBucketGroup,
+  type LifecycleCounts,
+  type LifecycleRow,
+} from "./lifecycle";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const EMPTY_EVENTS: readonly MissionControlEvent[] = [];
+
+export interface MissionControlLifecycleOptions {
+  /** "All unarchived" toggle: reveal dormant + out-of-window rows. */
+  showAll?: boolean;
+  /** Central-config retention window; defaults to the spec's 30 days. */
+  retentionDays?: number;
+  /** Gate the underlying per-host event queries (off for hidden surfaces). */
+  enabled?: boolean;
+}
+
+export interface MissionControlLifecycleResult {
+  /** Every non-commander agent with its derived lifecycle state. */
+  rows: LifecycleRow[];
+  /** Non-empty bucket sections in board order, already sorted + filtered. */
+  groups: LifecycleBucketGroup[];
+  counts: LifecycleCounts;
+  isLoading: boolean;
+  isInitialLoad: boolean;
+  isRevalidating: boolean;
+}
+
+/**
+ * The board's data model: every agent on every host with its server-owned
+ * lifecycle position (Needs you → Running → Ready for review → Done, plus
+ * Dormant). Mission-control events supply row chips/cards and recorded
+ * identity only. Row objects are identity-preserved across renders so
+ * memoized rows skip re-rendering when nothing about them changed.
+ */
+export function useMissionControlLifecycle(
+  options?: MissionControlLifecycleOptions,
+): MissionControlLifecycleResult {
+  const showAll = options?.showAll ?? false;
+  const retentionDays = options?.retentionDays ?? DEFAULT_RETENTION_DAYS;
+  const enabled = options?.enabled ?? true;
+  const agentsResult = useAggregatedAgents();
+  const { agents } = agentsResult;
+  const eventsResult = useAggregatedMissionControlEvents({ enabled });
+  const hosts = useHosts();
+  const serverIds = useMemo(() => hosts.map((host) => host.serverId), [hosts]);
+  const connectionStatuses = useHostRuntimeConnectionStatuses(serverIds);
+
+  // Keyed by "serverId:agentId" — reuse the previous LifecycleRow when neither
+  // the agent nor its derived state changed, so downstream memo/shallow
+  // comparisons (React.memo rows) can bail early.
+  const prevRowsRef = useRef<Map<string, LifecycleRow>>(new Map());
+
+  // Connection-generation scoping (rule: client caches die on reconnect): a
+  // host reconnect can change what the feed reports for its agents (the
+  // aggregated hook drops the old connection's pages), so the identity cache
+  // must not pin pre-reconnect row objects into the post-reconnect board.
+  // Clearing it makes every row re-derive with fresh identities once.
+  const prevConnectionStatusesRef = useRef<Map<string, HostRuntimeConnectionStatus>>(new Map());
+  useEffect(() => {
+    const previous = prevConnectionStatusesRef.current;
+    const next = new Map<string, HostRuntimeConnectionStatus>();
+    let reconnected = false;
+    for (const host of hosts) {
+      const status = connectionStatuses.get(host.serverId) ?? "connecting";
+      next.set(host.serverId, status);
+      const previousStatus = previous.get(host.serverId);
+      if (previousStatus !== undefined && previousStatus !== "online" && status === "online") {
+        reconnected = true;
+      }
+    }
+    prevConnectionStatusesRef.current = next;
+    if (reconnected) {
+      prevRowsRef.current = new Map();
+    }
+  }, [connectionStatuses, hosts]);
+
+  const rows = useMemo<LifecycleRow[]>(() => {
+    const eventsByAgent = new Map<string, MissionControlEvent[]>();
+    for (const event of eventsResult.events) {
+      const key = `${event.serverId}:${event.agentId}`;
+      const bucket = eventsByAgent.get(key);
+      if (bucket) {
+        bucket.push(event);
+      } else {
+        eventsByAgent.set(key, [event]);
+      }
+    }
+
+    const nextRows: LifecycleRow[] = [];
+    for (const agent of agents) {
+      // System-owned agents (Commander, verifiers, machinery) are excluded
+      // upstream in useAggregatedAgents while Mission Control verbose mode is
+      // OFF — the same shared gate every list surface uses. With verbose ON
+      // they appear on the board too, for on-demand inspection.
+      const state = deriveAgentLifecycle({
+        agent,
+        events: eventsByAgent.get(`${agent.serverId}:${agent.id}`) ?? EMPTY_EVENTS,
+        now: Date.now(),
+        retentionMs: retentionDays * DAY_MS,
+      });
+      const next = toLifecycleRow(agent, state);
+      const cacheKey = `${agent.serverId}:${agent.id}`;
+      const prev = prevRowsRef.current.get(cacheKey);
+      nextRows.push(prev !== undefined && equal(prev, next) ? prev : next);
+    }
+
+    const nextCache = new Map<string, LifecycleRow>();
+    for (const row of nextRows) {
+      nextCache.set(`${row.agent.serverId}:${row.agent.id}`, row);
+    }
+    prevRowsRef.current = nextCache;
+    return nextRows;
+  }, [agents, eventsResult.events, retentionDays]);
+
+  const groups = useMemo(() => groupLifecycleRows(rows, showAll), [rows, showAll]);
+
+  const counts = useMemo(() => countLifecycle(rows), [rows]);
+
+  const isLoading = agentsResult.isLoading || eventsResult.isLoading;
+  const hasAnyData = rows.length > 0;
+  const isInitialLoad = isLoading && !hasAnyData;
+  const isRevalidating = isLoading && hasAnyData;
+
+  return {
+    rows,
+    groups,
+    counts,
+    isLoading,
+    isInitialLoad,
+    isRevalidating,
+  };
+}

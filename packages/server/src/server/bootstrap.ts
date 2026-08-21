@@ -1,7 +1,7 @@
 import express from "express";
 import { createServer as createHTTPServer, type IncomingMessage, type ServerResponse } from "http";
-import { constants, existsSync, unlinkSync } from "fs";
-import { open } from "fs/promises";
+import { constants, existsSync, mkdirSync, unlinkSync } from "fs";
+import { open, mkdir } from "fs/promises";
 import { randomUUID } from "node:crypto";
 import { hostname as getHostname } from "node:os";
 import path from "node:path";
@@ -124,13 +124,16 @@ import { createPaseoWorktree as createRegisteredPaseoWorktree } from "./paseo-wo
 import { createWorkspaceProvisioningService } from "./session/workspace-provisioning/workspace-provisioning-service.js";
 import { createPaseoWorktreeWorkflow } from "./worktree-session.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
+import { streamDirectoryAsZip } from "./file-download/zip-directory.js";
 import type { OpenAiSpeechProviderConfig } from "./speech/providers/openai/config.js";
+import type { FishSpeechProviderConfig } from "./speech/providers/fish/config.js";
 import type { LocalSpeechProviderConfig } from "./speech/providers/local/config.js";
 import type { RequestedSpeechProviders } from "./speech/speech-types.js";
 import { createSpeechService } from "./speech/speech-runtime.js";
 import { AgentManager } from "./agent/agent-manager.js";
 import { FileAgentTimelineStore } from "./agent/file-agent-timeline-store.js";
-import { AgentStorage } from "./agent/agent-storage.js";
+import { createTranscriptSearchService } from "./search/service.js";
+import { AgentStorage, type StoredAgentRecord } from "./agent/agent-storage.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
 import { createAgentMcpServer } from "./agent/mcp-server.js";
 import {
@@ -144,10 +147,33 @@ import { WorkspaceReconciliationService } from "./workspace-reconciliation-servi
 import {
   FileBackedProjectRegistry,
   FileBackedWorkspaceRegistry,
+  resolveProjectDisplayName,
+  resolveWorkspaceDisplayName,
   type WorkspaceArchiveContext,
 } from "./workspace-registry.js";
 import { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { ScheduleService } from "./schedule/service.js";
+import { IdleCloseOmpService } from "./idle-close/index.js";
+import { MissionControlService } from "./mission-control/service.js";
+import type { MissionControlProposalSpawnPlan } from "@getpaseo/protocol/mission-control/types";
+import { buildWorldSnapshot } from "./mission-control/context.js";
+import { CommanderSnapshotInjector } from "./mission-control/commander-snapshot.js";
+import { CentralMissionControlConfigStore } from "./mission-control/config.js";
+import { createMissionControlPresenceSource } from "./mission-control/presence.js";
+import { MissionControlVerifierDispatcher } from "./mission-control/verifier.js";
+import { appendPriorWorkBlock } from "./mission-control/rollups.js";
+import {
+  commanderHomeCwd,
+  buildCommanderLaunchContract,
+  ensureCommanderOnBoot,
+  resetCommander,
+} from "./mission-control/commander-boot.js";
+import { AgentNamingService } from "./mission-control/naming.js";
+import { runIdentityBackfill } from "./mission-control/backfill.js";
+import { MAX_WEBHOOK_BODY_BYTES, WebhookService } from "./webhook/service.js";
+import { createWebhookRouteHandler } from "./webhook/route.js";
+import { PeerManager } from "./peers/peer-manager.js";
+import { TunnelManager } from "./tunnel/manager.js";
 import { DaemonConfigStore, type MutableDaemonConfig } from "./daemon-config-store.js";
 import { createOrchestrationSkills } from "./orchestration-skills/index.js";
 import { resolveConfigFromPersisted, type CliConfigOverrides } from "./config.js";
@@ -215,6 +241,16 @@ import {
   type CreateAgentCommandDependencies,
 } from "./agent/create-agent/create.js";
 import { archiveAgentCommand, cancelAgentRunCommand } from "./agent/lifecycle-command.js";
+import {
+  applyMetaFromProposal,
+  applyMetaPlan,
+  type MetaActionsDependencies,
+} from "./mission-control/meta-actions.js";
+import {
+  executeSpawnProposal,
+  spawnOnThisHost,
+  type SpawnExecutorDependencies,
+} from "./mission-control/spawn-executor.js";
 import { CreateAgentLifecycleDispatch } from "./agent/create-agent-lifecycle-dispatch.js";
 import {
   HubRelationshipController,
@@ -267,6 +303,140 @@ function createTerminalActivityUrl(listenTarget: ListenTarget | null): string | 
     "/api/terminal-activity",
     `http://${formatHostForHttpUrl(host)}:${listenTarget.port}`,
   ).toString();
+}
+
+/**
+ * A spawn attempt result. Every successful spawn records the serverId of the
+ * host that actually created the agent — this daemon for local spawns, the
+ * peer for peer-routed spawns — so the approvals gate can stamp
+ * spawnedOnServerId onto the proposal.
+ */
+type SpawnProposalResult =
+  | { ok: true; agentId: string; serverId?: string }
+  | { ok: false; error: string };
+
+/**
+ * Fleet-host branch of executeSpawnProposal: forward the prepared spawn plan
+ * to the peer over the mission_control.spawn.apply RPC (fleetSpawnApply). The
+ * PEER validates the cwd contract against its own filesystem, creates the
+ * absolute cwd with mkdir recursive when missing, and creates the agent in
+ * ITS OWN registry — the mkdir happens on the target host, never here. The
+ * plan already carries the commander's paseo.parent-agent-id stamp, so the
+ * label persists in the target's registry. Lifted out of the
+ * MissionControlService wiring so the closure stays within the complexity
+ * budget.
+ */
+async function spawnProposalOnPeer(
+  peerManager: PeerManager | null | undefined,
+  host: string,
+  plan: MissionControlProposalSpawnPlan,
+): Promise<SpawnProposalResult> {
+  const peerStatus = peerManager?.getPeerStatus(host) ?? null;
+  if (!peerStatus || peerStatus.state !== "online" || !peerManager) {
+    return { ok: false, error: `Host "${host}" is not an online peer` };
+  }
+  const peerClient = peerManager.getPeerClient(host);
+  if (!peerClient) {
+    return { ok: false, error: `Host "${host}" has no peer client` };
+  }
+  try {
+    const payload = await peerClient.fleetSpawnApply(plan);
+    if (!payload.ok) {
+      return { ok: false, error: payload.error ?? `Fleet spawn on "${host}" failed` };
+    }
+    if (!payload.agentId) {
+      return { ok: false, error: `Fleet spawn on "${host}" returned no agent id` };
+    }
+    // COMPAT(spawnApplyServerId): added in v0.3.1, remove after 2027-02-12
+    // once the daemon floor always sends serverId in spawn.apply responses.
+    return {
+      ok: true,
+      agentId: payload.agentId,
+      // An older peer reports no serverId; leave the stamp absent rather
+      // than guessing, and the app falls back to alias resolution.
+      ...((payload.serverId ?? peerManager.getPeerServerId(host))
+        ? { serverId: payload.serverId ?? (peerManager.getPeerServerId(host) as string) }
+        : {}),
+    };
+  } catch (error) {
+    return { ok: false, error: `fleet spawn failed: ${String(error)}` };
+  }
+}
+
+/**
+ * Local branch of spawnFromProposal: reconstruct the create from the plan.
+ * `serverId` is THIS daemon's own identity — the host the spawn actually ran
+ * on — which the approvals gate stamps onto the proposal (spawnedOnServerId).
+ */
+async function spawnProposalLocally(
+  createAgent: (
+    input: Parameters<typeof createAgentCommand>[1],
+  ) => ReturnType<typeof createAgentCommand>,
+  plan: MissionControlProposalSpawnPlan,
+  providerModel: string,
+  serverId: string,
+): Promise<SpawnProposalResult> {
+  try {
+    const result = await createAgent({
+      kind: "mcp",
+      provider: providerModel,
+      title: plan.title ?? "Agent",
+      ...(plan.initialPrompt ? { initialPrompt: plan.initialPrompt } : {}),
+      ...(plan.cwd ? { cwd: plan.cwd } : {}),
+      ...(plan.workspaceId ? { workspaceId: plan.workspaceId } : {}),
+      ...(plan.thinking ? { thinking: plan.thinking } : {}),
+      ...(plan.features ? { features: plan.features } : {}),
+      ...(plan.labels ? { labels: plan.labels } : {}),
+      ...(plan.mode ? { mode: plan.mode } : {}),
+      ...(plan.worktree ? { worktree: plan.worktree } : {}),
+      background: plan.background ?? true,
+      notifyOnFinish: false,
+    });
+    return { ok: true, agentId: result.snapshot.id, serverId };
+  } catch (error) {
+    return { ok: false, error: `spawn failed: ${String(error)}` };
+  }
+}
+
+/**
+ * M6 spawn-brief enrichment: append the workspace's '# Prior work in this
+ * workspace' block to a spawn plan's initial prompt (bounded ~2KB) when the
+ * target workspace has run records. Resolves the workspace from the plan's
+ * workspaceId, falling back to the cwd → workspace path. Runs at the spawn
+ * plan application point so ask and auto paths both enrich at execution time.
+ */
+async function enrichSpawnPlanWithPriorWork(
+  plan: MissionControlProposalSpawnPlan,
+  deps: {
+    logger: Logger;
+    findWorkspaceIdForCwd: (cwd: string) => Promise<string | null>;
+    getWorkspaceRollup: (
+      workspaceId: string,
+    ) => import("./mission-control/rollups.js").WorkspaceRollup | null;
+  },
+): Promise<MissionControlProposalSpawnPlan> {
+  try {
+    let workspaceId = plan.workspaceId;
+    if (!workspaceId && plan.cwd) {
+      workspaceId = (await deps.findWorkspaceIdForCwd(plan.cwd)) ?? undefined;
+    }
+    if (!workspaceId) {
+      return plan;
+    }
+    const rollup = deps.getWorkspaceRollup(workspaceId);
+    if (!rollup) {
+      return plan;
+    }
+    const initialPrompt = appendPriorWorkBlock(plan.initialPrompt, rollup);
+    if (initialPrompt === plan.initialPrompt) {
+      return plan;
+    }
+    return { ...plan, initialPrompt };
+  } catch (error) {
+    // Enrichment is best-effort: never fail the spawn on a rollup read.
+    deps.logger.warn({ err: error, component: "spawn-enrichment" }, "prior-work enrichment failed");
+    return plan;
+  }
 }
 
 const TerminalActivityReportSchema = z.object({
@@ -327,6 +497,51 @@ export function createTerminalActivityRouteHandler(
   };
 }
 
+function applyHostAllowlist(
+  app: express.Express,
+  listenTarget: ListenTarget,
+  configuredHostnames: HostnamesConfig | undefined,
+): void {
+  // Host allowlist / DNS rebinding protection (vite-like semantics).
+  // For non-TCP (unix sockets), skip host validation.
+  if (listenTarget.type === "tcp") {
+    app.use((req, res, next) => {
+      const hostHeader = typeof req.headers.host === "string" ? req.headers.host : undefined;
+      if (!isHostnameAllowed(hostHeader, configuredHostnames)) {
+        res.status(403).json({ error: "Invalid Host header" });
+        return;
+      }
+      next();
+    });
+  }
+}
+
+function createCorsMiddleware(allowedOrigins: ReadonlySet<string>): express.RequestHandler {
+  return (req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin && (allowedOrigins.has("*") || allowedOrigins.has(origin))) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+      res.setHeader("Access-Control-Allow-Credentials", "true");
+    }
+    if (req.method === "OPTIONS") {
+      res.status(204).end();
+      return;
+    }
+    next();
+  };
+}
+
+function resolveServiceProxyListenTarget(
+  serviceProxy: PaseoDaemonConfig["serviceProxy"],
+): ListenTarget | null {
+  if (!serviceProxy?.standaloneListen) {
+    return null;
+  }
+  return parseListenString(serviceProxy.standaloneListen);
+}
+
 function summarizeAgentMcpDebugMessage(body: unknown): Record<string, unknown> {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return {
@@ -361,6 +576,7 @@ function summarizeAgentMcpDebugBody(body: unknown): Record<string, unknown> {
 
 export type PaseoOpenAIConfig = OpenAiSpeechProviderConfig;
 export type PaseoLocalSpeechConfig = LocalSpeechProviderConfig;
+export type PaseoFishSpeechConfig = FishSpeechProviderConfig;
 
 export interface PaseoSpeechSttLanguages {
   dictation: string;
@@ -405,6 +621,8 @@ export interface PaseoDaemonConfig {
     maxProcessConcurrency: number;
   };
   autoArchiveAfterMerge?: boolean;
+  // Close idle OMP processes after this many seconds; 0 turns the sweep off.
+  ompIdleCloseAfterSeconds?: number;
   enableTerminalAgentHooks?: boolean;
   appendSystemPrompt?: string;
   terminalProfiles?: TerminalProfile[];
@@ -427,6 +645,21 @@ export interface PaseoDaemonConfig {
     publicBaseUrl: string | null;
     standaloneListen: string | null;
   };
+  tunnel?: {
+    provider: "tailscale-funnel" | "cloudflared" | "none";
+    localPort: number;
+    localTarget: string;
+    autoStart: boolean;
+    publicBaseUrl: string | null;
+    tailscaleBin: string | null;
+    cloudflared: {
+      hostname: string | null;
+      bin: string | null;
+      configFile: string | null;
+      token: string | null;
+      tunnel: string | null;
+    };
+  };
   webUi?: {
     enabled: boolean;
     distDir: string | null;
@@ -434,6 +667,7 @@ export interface PaseoDaemonConfig {
   appBaseUrl?: string;
   auth?: DaemonAuthConfig;
   openai?: PaseoOpenAIConfig;
+  fish?: PaseoFishSpeechConfig;
   speech?: PaseoSpeechConfig;
   voiceLlmProvider?: AgentProvider | null;
   voiceLlmProviderExplicit?: boolean;
@@ -449,6 +683,7 @@ export interface PaseoDaemonConfig {
       thinkingOptionId?: string;
     }>;
   };
+  missionControl?: PersistedConfig["missionControl"];
   providerOverrides?: Record<string, ProviderOverride>;
   log?: PersistedConfig["log"];
   onLifecycleIntent?: (intent: DaemonLifecycleIntent) => void;
@@ -471,6 +706,7 @@ export interface PaseoDaemon {
   serviceProxy: ServiceProxySubsystem;
   scriptRuntimeStore: WorkspaceScriptRuntimeStore;
   browserToolsBroker: BrowserToolsBroker;
+  missionControlService?: MissionControlService;
   start(): Promise<void>;
   stop(): Promise<void>;
   getListenTarget(): ListenTarget | null;
@@ -528,6 +764,7 @@ function resolveExpressTrustProxySetting(config: PaseoDaemonConfig): true | stri
   return config.trustedProxies ?? ["loopback"];
 }
 
+// eslint-disable-next-line complexity -- large config field projection
 function createInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDaemonConfig {
   const providers = config.providerOverrides ?? {};
 
@@ -551,8 +788,10 @@ function createInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDae
       providers: config.metadataGeneration?.providers ?? [],
     },
     autoArchiveAfterMerge: config.autoArchiveAfterMerge ?? false,
+    ompIdleCloseAfterSeconds: config.ompIdleCloseAfterSeconds ?? 1800,
     enableTerminalAgentHooks: config.enableTerminalAgentHooks ?? false,
     appendSystemPrompt: config.appendSystemPrompt ?? "",
+    ...(config.missionControl ? { missionControl: config.missionControl } : {}),
     pluginsEnabled: config.pluginsEnabled ?? false,
     plugins: config.plugins ?? {},
     skills: { selection: config.skillSelection },
@@ -569,6 +808,119 @@ function createInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDae
   return initialConfig;
 }
 
+/**
+ * Token-gated file download endpoint handler. Directory entries stream as a
+ * zip; files stream directly. Token is single-use (consumeToken).
+ */
+async function handleFileDownload(input: {
+  req: express.Request;
+  res: express.Response;
+  downloadTokenStore: DownloadTokenStore;
+  logger: Logger;
+}): Promise<void> {
+  const { req, res, downloadTokenStore, logger } = input;
+  const token =
+    typeof req.query.token === "string" && req.query.token.trim().length > 0
+      ? req.query.token.trim()
+      : null;
+
+  if (!token) {
+    res.status(400).json({ error: "Missing download token" });
+    return;
+  }
+
+  const entry = downloadTokenStore.consumeToken(token);
+  if (!entry) {
+    res.status(403).json({ error: "Invalid or expired token" });
+    return;
+  }
+
+  const safeFileName = entry.fileName.replace(/["\r\n]/g, "_");
+
+  // Directory downloads are streamed as a zip of the sandboxed folder.
+  if (entry.kind === "directory") {
+    try {
+      res.setHeader("Content-Type", entry.mimeType || "application/zip");
+      res.setHeader("Content-Disposition", `attachment; filename="${safeFileName}"`);
+      // No Content-Length: zip size is unknown until the archive is finished.
+      await streamDirectoryAsZip(entry.absolutePath, res);
+    } catch (err) {
+      logger.error({ err }, "Failed to stream directory zip download");
+      if (!res.headersSent) {
+        res.status(500).json({ error: "Failed to zip directory" });
+      } else {
+        res.end();
+      }
+    }
+    return;
+  }
+
+  let fileHandle: Awaited<ReturnType<typeof open>> | null = null;
+  try {
+    fileHandle = await open(entry.absolutePath, DOWNLOAD_OPEN_FLAGS);
+    const fileStats = await fileHandle.stat();
+    if (!fileStats.isFile()) {
+      res.status(404).json({ error: "File not found" });
+      return;
+    }
+
+    res.setHeader("Content-Type", entry.mimeType);
+    res.setHeader("Content-Disposition", `attachment; filename="${safeFileName}"`);
+    res.setHeader("Content-Length", fileStats.size.toString());
+
+    const stream = fileHandle.createReadStream();
+    fileHandle = null;
+    stream.on("error", (err) => {
+      logger.error({ err }, "Failed to stream download");
+      if (!res.headersSent) {
+        res.status(500).json({ error: "Failed to read file" });
+      } else {
+        res.end();
+      }
+    });
+    stream.pipe(res);
+  } catch (err) {
+    logger.error({ err }, "Failed to download file");
+    if (!res.headersSent) {
+      res.status(404).json({ error: "File not found" });
+    }
+  } finally {
+    await fileHandle?.close().catch(() => undefined);
+  }
+}
+
+/**
+ * Public webhook ingress route on /hooks/:id/:secret. The handler is
+ * assigned lazily once the webhook service is constructed; requests before
+ * that get a 503 so callers retry rather than hang.
+ */
+function createWebhookIngress(app: express.Express): {
+  setHandler: (handler: ReturnType<typeof createWebhookRouteHandler>) => void;
+} {
+  let handler: ReturnType<typeof createWebhookRouteHandler> | null = null;
+  app.post(
+    "/hooks/:id/:secret",
+    express.raw({ type: () => true, limit: MAX_WEBHOOK_BODY_BYTES }),
+    (req, res, next) => {
+      if (!handler) {
+        res.status(503).json({ ok: false, error: "webhook service not ready" });
+        return;
+      }
+      void handler(req, res, next);
+    },
+  );
+  return {
+    setHandler: (next) => {
+      handler = next;
+    },
+  };
+}
+
+function resolveServiceProxyPublicBaseUrl(config: PaseoDaemonConfig): string | null {
+  return config.serviceProxy?.publicBaseUrl ? config.serviceProxy.publicBaseUrl : null;
+}
+
+// eslint-disable-next-line complexity -- daemon bootstrap orchestration
 export async function createPaseoDaemon(
   config: PaseoDaemonConfig,
   rootLogger: Logger,
@@ -646,9 +998,7 @@ export async function createPaseoDaemon(
   });
   applyTerminalAgentHookSetting({ store: daemonConfigStore, logger });
 
-  const serviceProxyPublicBaseUrl = config.serviceProxy?.publicBaseUrl
-    ? config.serviceProxy.publicBaseUrl
-    : null;
+  const serviceProxyPublicBaseUrl = resolveServiceProxyPublicBaseUrl(config);
   const serviceProxy = createServiceProxySubsystem({
     logger,
     publicBaseUrl: serviceProxyPublicBaseUrl,
@@ -694,18 +1044,16 @@ export async function createPaseoDaemon(
   // route return 404 and never reach daemon APIs.
   app.use(serviceProxy.middleware());
 
+  // Public webhook ingress. Mounted before the Host allowlist, CORS, bearer
+  // auth, and express.json() so external senders (GitHub, Linear) reach it and
+  // HMAC can read the raw body. Only this path is exempt from the Host
+  // allowlist; every other daemon path still rejects the public tunnel host.
+  // The handler is assigned once the webhook service is constructed below.
+  const webhookIngress = createWebhookIngress(app);
+
   // Host allowlist / DNS rebinding protection (vite-like semantics).
   // For non-TCP (unix sockets), skip host validation.
-  if (listenTarget.type === "tcp") {
-    app.use((req, res, next) => {
-      const hostHeader = typeof req.headers.host === "string" ? req.headers.host : undefined;
-      if (!isHostnameAllowed(hostHeader, configuredHostnames)) {
-        res.status(403).json({ error: "Invalid Host header" });
-        return;
-      }
-      next();
-    });
-  }
+  applyHostAllowlist(app, listenTarget, configuredHostnames);
 
   // CORS - allow same-origin + configured origins
   const fixedAllowedOrigins = [
@@ -728,20 +1076,7 @@ export async function createPaseoDaemon(
     }
   });
 
-  app.use((req, res, next) => {
-    const origin = req.headers.origin;
-    if (origin && (allowedOrigins.has("*") || allowedOrigins.has(origin))) {
-      res.setHeader("Access-Control-Allow-Origin", origin);
-      res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-      res.setHeader("Access-Control-Allow-Credentials", "true");
-    }
-    if (req.method === "OPTIONS") {
-      res.status(204).end();
-      return;
-    }
-    next();
-  });
+  app.use(createCorsMiddleware(allowedOrigins));
 
   // Local, harmless, and token-gated; deliberately skips daemon auth.
   app.post(
@@ -777,65 +1112,23 @@ export async function createPaseoDaemon(
       status: "server_info",
       serverId,
       hostname: getHostname(),
+      // Additive (v0.1.X); missionControlHostAlias is hoisted before the
+      // verifier dispatcher (~1741) and initialized before the server starts
+      // listening (see httpServer.listen below), so this request-time closure
+      // read is safe.
+      missionControlHostAlias: missionControlHostAlias || undefined,
       version: daemonVersion,
       listen: formatListenTarget(boundListenTarget ?? listenTarget),
     });
   });
 
-  const handleFileDownload = async (req: express.Request, res: express.Response): Promise<void> => {
-    const token =
-      typeof req.query.token === "string" && req.query.token.trim().length > 0
-        ? req.query.token.trim()
-        : null;
-
-    if (!token) {
-      res.status(400).json({ error: "Missing download token" });
-      return;
-    }
-
-    const entry = downloadTokenStore.consumeToken(token);
-    if (!entry) {
-      res.status(403).json({ error: "Invalid or expired token" });
-      return;
-    }
-
-    let fileHandle: Awaited<ReturnType<typeof open>> | null = null;
-    try {
-      fileHandle = await open(entry.absolutePath, DOWNLOAD_OPEN_FLAGS);
-      const fileStats = await fileHandle.stat();
-      if (!fileStats.isFile()) {
-        res.status(404).json({ error: "File not found" });
-        return;
-      }
-
-      const safeFileName = entry.fileName.replace(/["\r\n]/g, "_");
-      res.setHeader("Content-Type", entry.mimeType);
-      res.setHeader("Content-Disposition", `attachment; filename="${safeFileName}"`);
-      res.setHeader("Content-Length", fileStats.size.toString());
-
-      const stream = fileHandle.createReadStream();
-      fileHandle = null;
-      stream.on("error", (err) => {
-        logger.error({ err }, "Failed to stream download");
-        if (!res.headersSent) {
-          res.status(500).json({ error: "Failed to read file" });
-        } else {
-          res.end();
-        }
-      });
-      stream.pipe(res);
-    } catch (err) {
-      logger.error({ err }, "Failed to download file");
-      if (!res.headersSent) {
-        res.status(404).json({ error: "File not found" });
-      }
-    } finally {
-      await fileHandle?.close().catch(() => undefined);
-    }
-  };
-
   app.get("/api/files/download", (req, res) => {
-    void handleFileDownload(req, res);
+    void handleFileDownload({
+      req,
+      res,
+      downloadTokenStore,
+      logger,
+    });
   });
 
   const httpServer = createHTTPServer(app);
@@ -846,9 +1139,7 @@ export async function createPaseoDaemon(
   // requests that don't match a registered script route.
   httpServer.on("upgrade", serviceProxy.upgradeHandler({ passthroughUnknown: true }));
 
-  if (config.serviceProxy?.standaloneListen) {
-    serviceProxyListenTarget = parseListenString(config.serviceProxy.standaloneListen);
-  }
+  serviceProxyListenTarget = resolveServiceProxyListenTarget(config.serviceProxy);
 
   const agentStorage = new AgentStorage(config.agentStoragePath, logger);
   const timelineStore = new FileAgentTimelineStore(path.join(config.paseoHome, "agent-timelines"));
@@ -903,12 +1194,51 @@ export async function createPaseoDaemon(
     if (git) configureGitProcessPolicy(git);
   });
   const initialAgentManagerState = providerSnapshotManager.getAgentManagerProviderState();
-  const agentManager = new AgentManager({
+  // Central mission-control config (fleet policy, stored on the commander
+  // host). ONE shared instance for the whole daemon: naming reads the theme
+  // from it, MissionControlService writes patches through it, and
+  // resetCommander/commander-boot read it — so any patch is immediately
+  // visible to every consumer. No per-consumer copies, no second read path.
+  const centralMissionControlConfig = new CentralMissionControlConfigStore({
+    paseoHome: config.paseoHome,
+    logger,
+  });
+  await centralMissionControlConfig.initialize();
+  // Mission Control naming: assigns a fleet-wide name to every created agent
+  // (except paseo.mission-control=* labeled agents). Constructed before
+  // AgentManager so its onAgentCreated hook can reference it; the manager is
+  // accessed lazily via the accessor.
+  const agentNamingService: AgentNamingService = new AgentNamingService({
+    agentStorage,
+    getAgentManager: () => agentManager,
+    readTheme: () => centralMissionControlConfig.get().namingTheme,
+    logger,
+  });
+  // Hoisted: the Commander snapshot injector (constructed after the manager,
+  // below) registers its per-turn seam here. The seam fires on EVERY
+  // startAgentRun; the injector gates itself by commander labels and is a
+  // no-op until constructed.
+  let commanderSnapshotInjector: CommanderSnapshotInjector | null = null;
+  const agentManager: AgentManager = new AgentManager({
     durableTimelineStore: timelineStore,
     clients: initialAgentManagerState.clients,
     providerDefinitions: initialAgentManagerState.providerDefinitions,
     registry: agentStorage,
     appendSystemPrompt: config.appendSystemPrompt,
+    missionControlSelfReportEnabled:
+      daemonConfigStore.get().missionControl?.selfReport?.enabled ?? true,
+    // Per-turn world-snapshot injection (M3 runtime model): every message
+    // delivered to the Commander — user turn or machinery turn — is preceded
+    // by a fresh snapshot dispatched as its own machinery turn.
+    beforeAgentRun: (input) => commanderSnapshotInjector?.beforeTurn(input) ?? undefined,
+    // The Commander's launch contract (systemPromptMode replace + bundled
+    // prompt + tool allowlist) is re-derived on EVERY session build so a
+    // reloaded/resumed Commander never comes back with the default coding
+    // prompt or an unrestricted catalog (live incident: a Commander resumed
+    // that way because its stored record predated contract persistence).
+    resolveCommanderLaunchContract: (labels) =>
+      buildCommanderLaunchContract(labels, () => centralMissionControlConfig.get()),
+    onAgentCreated: (params) => agentNamingService.assignNameForCreatedAgent(params),
     onWorkspaceStateMayHaveChanged: ({ cwd }) => {
       workspaceGitService.onWorkspaceStateMayHaveChanged(cwd);
     },
@@ -923,6 +1253,13 @@ export async function createPaseoDaemon(
   );
   await agentStorage.initialize();
   logger.info({ elapsed: elapsed() }, "Agent storage initialized");
+  const transcriptSearch = await createTranscriptSearchService({
+    paseoHome: config.paseoHome,
+    agentStorage,
+    timelineStore,
+    logger,
+  });
+  transcriptSearch?.start();
   await bootstrapWorkspaceRegistries({
     serverId,
     paseoHome: config.paseoHome,
@@ -1143,6 +1480,10 @@ export async function createPaseoDaemon(
     providerSnapshotManager,
     createPaseoWorktree: createPaseoWorktreeForTools,
     ensureWorkspaceForCreate: ensureWorkspaceForCreateAndBroadcastExternal,
+    getWorkspace: async (workspaceId) => {
+      const record = await workspaceRegistry?.get(workspaceId);
+      return record ? { cwd: record.cwd, archivedAt: record.archivedAt } : null;
+    },
   };
   const createAgent = (input: Parameters<typeof createAgentCommand>[1]) =>
     createAgentCommand(createAgentCommandDependencies, input);
@@ -1211,7 +1552,10 @@ export async function createPaseoDaemon(
         agentManager,
         agentStorage,
         createAgent,
-        interruptAgent: (agentId) => cancelAgentRunCommand({ agentManager, logger }, agentId),
+        // agentStorage is required for phantom-run reconciliation on cancel
+        // (fork: dead "running" records must go to error, not stay zombies).
+        interruptAgent: (agentId) =>
+          cancelAgentRunCommand({ agentManager, agentStorage, logger }, agentId),
         archiveWorkspace: archiveWorkspaceByIdExternal,
         cleanupFailedCreate: (input) =>
           hubAgentLifecycle.cleanupCreatedWorktreeAfterFailedAgentCreate(input),
@@ -1244,6 +1588,34 @@ export async function createPaseoDaemon(
     });
     await emitWorkspaceUpdatesExternal([result.workspace.workspaceId]);
     return result;
+  };
+  // Webhook variants deliberately DO NOT broadcast the workspace on creation. The
+  // client seeds an empty "New Agent" composer tab whenever it observes a focused
+  // workspace with zero agents; broadcasting before the agent exists trips that.
+  // The webhook service broadcasts once, after the agent is attached.
+  const createWebhookLocalWorkspaceExternal = async (input: {
+    cwd: string;
+    firstAgentContext: FirstAgentContext;
+  }) => {
+    const workspace = await workspaceProvisioning.createWorkspaceForDirectory(
+      input.cwd,
+      resolveFirstAgentPromptTitle(input.firstAgentContext),
+    );
+    workspaceAutoName.scheduleForDirectory({
+      workspaceId: workspace.workspaceId,
+      cwd: workspace.cwd,
+      firstAgentContext: input.firstAgentContext,
+    });
+    return workspace;
+  };
+  const createWebhookPaseoWorktreeExternal = async (input: {
+    cwd: string;
+    firstAgentContext: FirstAgentContext;
+  }) => {
+    return createPaseoWorktreeForTools({
+      cwd: input.cwd,
+      firstAgentContext: input.firstAgentContext,
+    });
   };
   const archiveScheduleWorkspaceExternal = async (workspaceId: string) => {
     await archiveByScope(
@@ -1289,6 +1661,12 @@ export async function createPaseoDaemon(
     archiveWorkspace: archiveScheduleWorkspaceExternal,
   });
   await scheduleService.start();
+  const idleCloseOmpService = new IdleCloseOmpService({
+    agentManager,
+    daemonConfigStore,
+    logger,
+  });
+  idleCloseOmpService.start();
   agentManager.setAgentArchivedCallback(async (agentId) => {
     try {
       await scheduleService.completeForAgent(agentId);
@@ -1297,6 +1675,455 @@ export async function createPaseoDaemon(
     }
   });
   logger.info({ elapsed: elapsed() }, "Schedule service initialized");
+
+  // Central mission-control config is the daemon-wide instance constructed
+  // above (naming reads the theme from it); no second instance here.
+  // M3 runtime model: the Commander gets a FRESH world snapshot before every
+  // turn (user or machinery) — never accreted, never deltas. The injector
+  // owns the snapshot dispatch + supersede-in-place retraction; it is wired
+  // into startAgentRun via the beforeAgentRun seam above. peerManager and
+  // missionControlService are resolved lazily (the service is constructed
+  // after; the peer manager after that).
+  commanderSnapshotInjector = new CommanderSnapshotInjector({
+    agentManager,
+    logger,
+    buildSnapshot: () =>
+      buildWorldSnapshot({
+        agentManager,
+        agentStorage,
+        workspaceRegistry,
+        projectRegistry,
+        providerSnapshotManager,
+        peerManager: () => peerManager,
+        daemonConfigStore,
+        centralConfig: centralMissionControlConfig,
+        getReviewStates: () => missionControlService.getReviewStates(),
+        getReportEvents: () => missionControlService.fetchEvents(),
+        serverId,
+        hostName: getHostname(),
+        logger,
+      }),
+    // M8 mailbox: the per-turn 'Open instructions:' ledger block rides every
+    // snapshot (regenerated per turn like the snapshot, never accreted). The
+    // service is hoisted — this closure resolves it lazily at turn time.
+    buildInstructionLedgerBlock: () => missionControlService.formatOpenInstructionsBlock(),
+  });
+  // Hoisted: the verifier dispatcher and the presence source capture the
+  // service in closures that run only after boot, but TypeScript needs the
+  // binding declared before those initializers reference it. The host alias
+  // (hoisted here) feeds verifier spawn card copy: cards show the alias and
+  // fall back to the hostname only when no alias is set.
+  let missionControlService: MissionControlService;
+  const missionControlHostAlias = daemonConfigStore.get().missionControl?.hostAlias?.trim() || null;
+  const verifierDispatcher = new MissionControlVerifierDispatcher({
+    logger,
+    agentManager,
+    agentStorage,
+    serverId,
+    hostName: getHostname(),
+    hostAlias: missionControlHostAlias,
+    getCentralConfig: () => missionControlService.getCentralConfig(),
+    subscribeReviewState: (callback) =>
+      missionControlService.subscribeReviewState((agentId, record) =>
+        callback(agentId, record.reviewState),
+      ),
+    getReadyForReview: () => {
+      const events = missionControlService.fetchEvents();
+      const lastEventTsByAgent = new Map<string, string>();
+      for (const event of events) {
+        if (!lastEventTsByAgent.has(event.agentId)) {
+          lastEventTsByAgent.set(event.agentId, event.ts);
+        }
+      }
+      return missionControlService.getReadyForReview().map((agentId) => ({
+        agentId,
+        title: agentManager.getAgent(agentId)?.name ?? agentId,
+        at: lastEventTsByAgent.get(agentId) ?? new Date().toISOString(),
+      }));
+    },
+    fetchEvents: (options) => missionControlService.fetchEvents(options),
+    listMessageTags: () => missionControlService.allMessageTags(),
+    createProposal: (input) => missionControlService.approvals.createProposal(input),
+    // Durable proposal store read: the boot-time dedupe source for verifier
+    // spawn proposals (a still-pending spawn for the same worker must not be
+    // re-proposed after a restart).
+    listProposals: () => missionControlService.listProposals(),
+    onProposalChange: (callback) => missionControlService.onProposalChange(callback),
+    subscribeSelfReports: (callback) => missionControlService.subscribeSelfReports(callback),
+    setReviewState: (agentId, state, options) =>
+      missionControlService.setReviewState(agentId, state, options),
+    publish: (input) => missionControlService.publishEvent(input),
+  });
+
+  // The meta-actions executor deps, shared by the commander-host hook
+  // (metaFromProposal — local apply + peer routing) and the peer hook
+  // (metaApplyRemote — applies a forwarded plan against THIS daemon's
+  // registries). hostAlias + peerManager feed resolveMetaTargetHost so the
+  // plan's serverId resolves through the same fleet map the fleet tools use.
+  // Built lazily (a factory): the peer manager is constructed AFTER the
+  // service in bootstrap, so the fleet map must resolve at apply time, not at
+  // service construction.
+  const metaActionsDeps = (): MetaActionsDependencies => ({
+    serverId,
+    hostName: getHostname(),
+    hostAlias: missionControlHostAlias,
+    logger,
+    agentManager,
+    agentStorage,
+    workspaceRegistry,
+    projectRegistry,
+    archiveWorkspace: archiveWorkspaceByIdExternal,
+    archiveAgent: (agentId: string) =>
+      archiveAgentCommand({ agentManager, agentStorage, logger }, agentId),
+    mkdirp: async (dirPath: string) => {
+      await mkdir(dirPath, { recursive: true });
+    },
+    emitStoredAgentUpdate: async (record: StoredAgentRecord) => {
+      await Promise.all(
+        (wsServer?.listTrustedSessions() ?? []).map((session) =>
+          session.emitAgentUpdateForExternalMutation(record),
+        ),
+      );
+    },
+    peerManager: peerManager ?? null,
+  });
+
+  // Hoisted peer-manager slot: constructed later in bootstrap (after the
+  // MissionControlService), but the service's central-config routing needs a
+  // lazy reference to it (forward patches to the commander host, push
+  // replicas to peers, sync-on-connect). The closure reads the slot at call
+  // time, so the eventual assignment below is always visible.
+  let peerManager: PeerManager | null = null;
+  // Shared spawn executor deps (spawnFromProposal + the peer spawn apply
+  // hook): host identity + fleet map for own-alias resolution (own
+  // hostAlias/serverId/hostname → local), the commander id for the
+  // paseo.parent-agent-id stamp, and the local/peer create branches. Built
+  // lazily (a factory): the peer manager and the service are constructed
+  // after this point, so the fleet map and commander id resolve at execution
+  // time, not at service construction.
+  const spawnExecutorDeps = (stampCommanderParentLabel: boolean): SpawnExecutorDependencies => ({
+    host: {
+      serverId,
+      hostName: getHostname(),
+      hostAlias: missionControlHostAlias,
+      peerManager: peerManager ?? null,
+    },
+    stampCommanderParentLabel,
+    resolveCommanderAgentId: () => missionControlService.getCommanderAgentId(),
+    mkdirp: async (dirPath: string) => {
+      await mkdir(dirPath, { recursive: true });
+    },
+    createLocally: (spawnPlan, providerModel) =>
+      spawnProposalLocally(createAgent, spawnPlan, providerModel, serverId),
+    createOnPeer: (peerName, spawnPlan) => spawnProposalOnPeer(peerManager, peerName, spawnPlan),
+  });
+  missionControlService = new MissionControlService({
+    paseoHome: config.paseoHome,
+    logger,
+    agentManager,
+    agentStorage,
+    daemonConfigStore,
+    serverId,
+    hostName: getHostname(),
+    // Central-config ownership resolution + replication: the peer manager is
+    // constructed AFTER the service, so resolve it lazily.
+    hostAlias: missionControlHostAlias,
+    peerManager: () => peerManager,
+    broadcast: (message) => wsServer?.broadcast(wrapSessionMessage(message)),
+    centralConfig: centralMissionControlConfig,
+    presence: createMissionControlPresenceSource({
+      isAgentFocused: (agentId) => wsServer?.anyClientFocusedOnAgent(agentId) ?? false,
+      readStopOrigin: (agentId) => missionControlService.getStopOrigin(agentId) ?? null,
+    }),
+    // M8 mailbox: the idle delivery path hands the speculative auto-recall
+    // block (within budget) to the snapshot injector so the fresh snapshot
+    // carries it alongside the ledger block. M10: the idle path dispatches
+    // the snapshot turn explicitly (dispatchSnapshotTurn) and then steers
+    // the message into it, disarming the ack-drop (the joined turn's reply
+    // is real content, never a retractable machinery ack).
+    setPendingInstructionEnvelope: (block) =>
+      commanderSnapshotInjector?.setPendingInstructionEnvelope(block),
+    dispatchSnapshotTurn: (agentId) =>
+      commanderSnapshotInjector?.dispatchSnapshotTurn(agentId) ?? Promise.resolve(false),
+    disarmSnapshotAckDrop: () => commanderSnapshotInjector?.ackDrop.disarm(),
+    verifier: verifierDispatcher,
+    resetCommander: () =>
+      resetCommander({
+        logger,
+        agentManager,
+        agentStorage,
+        providerSnapshotManager,
+        createAgent,
+        centralConfig: () => centralMissionControlConfig.get(),
+        paseoHome: config.paseoHome,
+        hostName: getHostname(),
+        hostAlias: missionControlHostAlias,
+        workspaceRegistry,
+        createCommanderWorkspace: async (cwd, title) =>
+          workspaceProvisioning.createWorkspaceForDirectory(cwd, title),
+        // The reserved commander home (`<paseoHome>/commander`) must exist
+        // before a fresh workspace is provisioned there.
+        ensureCommanderHomeDir: () => {
+          mkdirSync(commanderHomeCwd(config.paseoHome), { recursive: true });
+        },
+        publishEvent: (event) => missionControlService.publishEvent(event),
+        onCommanderCreated: (commanderId) => commanderSnapshotInjector?.armLaunchTurn(commanderId),
+        launchContext: {
+          agentManager,
+          agentStorage,
+          workspaceRegistry,
+          projectRegistry,
+          providerSnapshotManager,
+          peerManager: () => peerManager,
+          daemonConfigStore,
+          centralConfig: centralMissionControlConfig,
+          serverId,
+          hostName: getHostname(),
+          logger,
+        },
+      }),
+    // Execute a commander-origin spawn-kind proposal (fleet_create_agent in
+    // ask mode): reconstruct the create from the proposal's spawnPlan. Host
+    // resolution, commander parent-label stamping, and cwd creation all live
+    // in the spawn executor (spawn-executor.ts): the plan's host resolves
+    // through the shared fleet map (own hostAlias/serverId/hostname → local,
+    // peer name → peer), local hosts create here (absolute cwd mkdir'd
+    // first), peers are forwarded over mission_control.spawn.apply (the PEER
+    // creates the cwd on its own disk). This is the single execution path for
+    // approved spawn proposals (survives daemon restarts — the plan rides the
+    // persisted proposal).
+    // M6: the '# Prior work in this workspace' block is appended HERE (the
+    // spawn plan application point) so BOTH the ask path (proposal approved
+    // later) and the auto path (auto-approved) enrich the brief at execution
+    // time with the freshest rollup.
+    spawnFromProposal: async (proposal) => {
+      const plan = proposal.spawnPlan;
+      if (!plan) {
+        return { ok: false, error: "Spawn proposal has no spawn plan" };
+      }
+      const enriched = await enrichSpawnPlanWithPriorWork(plan, {
+        logger,
+        findWorkspaceIdForCwd: findWorkspaceIdForCwdExternal,
+        getWorkspaceRollup: (workspaceId) => missionControlService.getWorkspaceRollup(workspaceId),
+      });
+      return executeSpawnProposal(enriched, spawnExecutorDeps(proposal.origin === "commander"));
+    },
+    // Execute a commander-origin meta-kind proposal (fleet_meta in ask mode
+    // and auto mode): apply the fleet meta action described by metaPlan
+    // (rename/archive project·workspace·agent, create project, move agent,
+    // promote workspace). Cross-host routing lives in applyMetaFromProposal:
+    // local targets apply against THIS daemon's registries; peer targets
+    // (metaPlan.serverId names a peer) are forwarded over peering and applied
+    // on the PEER (metaApplyRemote below). Stored-agent updates (closed
+    // records — live agents flow through agent_state) fan out to every
+    // trusted session's agent_update service.
+    metaFromProposal: (proposal) => applyMetaFromProposal(metaActionsDeps(), proposal),
+    // Peer branch of the meta apply: the commander host forwards an approved
+    // meta-kind proposal whose metaPlan.serverId names THIS host as a peer
+    // (mission_control.meta.apply). Re-validate against this daemon's own
+    // registries and apply here — only the APPLY hops; the proposal card
+    // stays on the commander host.
+    metaApplyRemote: (metaPlan) => applyMetaPlan(metaActionsDeps(), metaPlan),
+    // Peer branch of the spawn apply: the commander host forwards an approved
+    // spawn-kind proposal whose plan targets THIS host as a peer
+    // (mission_control.spawn.apply). THIS host validates the cwd contract
+    // against its own filesystem, creates the absolute cwd with mkdir
+    // recursive when missing, and creates the agent in its own registry —
+    // the mkdir happens here (the target host), never on the commander's
+    // disk. The plan arrives with paseo.parent-agent-id already stamped by
+    // the commander, so the label persists in this host's registry. Only the
+    // APPLY hops; the proposal card stays on the commander host.
+    spawnApplyRemote: (spawnPlan) => spawnOnThisHost(spawnPlan, spawnExecutorDeps(false)),
+    // M6 run records: resolve the workspace/project attribution frozen into a
+    // run record at assembly time (live registries; falls back to the cwd →
+    // workspace path when the agent carries no workspaceId).
+    resolveRunPlacement: async ({ workspaceId, cwd }) => {
+      let resolvedWorkspaceId = workspaceId ?? null;
+      if (!resolvedWorkspaceId && cwd) {
+        resolvedWorkspaceId = await findWorkspaceIdForCwdExternal(cwd);
+      }
+      if (!resolvedWorkspaceId) {
+        return { workspaceId: null, workspaceTitle: null, projectId: null, projectName: null };
+      }
+      const workspace = await workspaceRegistry.get(resolvedWorkspaceId);
+      if (!workspace) {
+        return {
+          workspaceId: resolvedWorkspaceId,
+          workspaceTitle: null,
+          projectId: null,
+          projectName: null,
+        };
+      }
+      const project = workspace.projectId
+        ? await projectRegistry.get(workspace.projectId).catch(() => null)
+        : null;
+      return {
+        workspaceId: resolvedWorkspaceId,
+        workspaceTitle: resolveWorkspaceDisplayName(workspace),
+        projectId: workspace.projectId ?? null,
+        projectName: project ? resolveProjectDisplayName(project) : null,
+      };
+    },
+    // F2: a reviewState change (verdict / mark-done / clear / reopen /
+    // aged-out sweep / completed report) re-buckets the agent but produces
+    // no lifecycle mutation. Live agents re-emit state inside the service
+    // (agent_state → every session's agent_update subscription); a
+    // CLOSED/STORED agent has no live state, so fan the stored-record
+    // upsert out to every trusted session here — the same external-mutation
+    // path meta-actions use, with the recomputed bucket attached at the
+    // session's wire boundary (enrichStoredPayload).
+    onReviewStateChanged: (agentId) => {
+      void (async () => {
+        const record = await agentStorage.get(agentId).catch(() => null);
+        if (!record) {
+          return;
+        }
+        await Promise.all(
+          (wsServer?.listTrustedSessions() ?? []).map((session) =>
+            session.emitAgentUpdateForExternalMutation(record),
+          ),
+        );
+      })().catch((error) => {
+        logger.warn({ err: error, agentId }, "mission_control.review_state_stored_push_failed");
+      });
+    },
+  });
+  await missionControlService.start();
+  logger.info({ elapsed: elapsed() }, "Mission control service initialized");
+
+  // Spec 01 change 1: clean running→idle transitions notify Mission Control
+  // directly — finishes no longer latch a "finished" attention, so this
+  // setter is the ONLY clean-finish signal. The manager is constructed
+  // before the service; the setter is safe to call any time after both exist
+  // (the service dedupes per run and excludes untracked classes itself).
+  agentManager.setAgentFinishedCallback(({ agentId }) => {
+    missionControlService.handleAgentFinished({ agentId });
+    transcriptSearch?.scheduleReindex(agentId);
+  });
+
+  // Boot-ensure the fleet Commander (spec: daemon boot creates it when this
+  // host is the designated commander host and none exists). Fire-and-forget:
+  // creation must not block boot; failures are logged, not fatal.
+  void ensureCommanderOnBoot({
+    logger,
+    agentManager,
+    agentStorage,
+    providerSnapshotManager,
+    createAgent,
+    centralConfig: () => centralMissionControlConfig.get(),
+    paseoHome: config.paseoHome,
+    hostName: getHostname(),
+    hostAlias: missionControlHostAlias,
+    workspaceRegistry,
+    createCommanderWorkspace: async (cwd, title) =>
+      workspaceProvisioning.createWorkspaceForDirectory(cwd, title),
+    // The reserved commander home (`<paseoHome>/commander`) must exist
+    // before a fresh workspace is provisioned there.
+    ensureCommanderHomeDir: () => {
+      mkdirSync(commanderHomeCwd(config.paseoHome), { recursive: true });
+    },
+    publishEvent: (event) => missionControlService.publishEvent(event),
+    onCommanderCreated: (commanderId) => commanderSnapshotInjector?.armLaunchTurn(commanderId),
+    launchContext: {
+      agentManager,
+      agentStorage,
+      workspaceRegistry,
+      projectRegistry,
+      providerSnapshotManager,
+      peerManager: () => peerManager,
+      daemonConfigStore,
+      centralConfig: centralMissionControlConfig,
+      serverId,
+      hostName: getHostname(),
+      logger,
+    },
+  })
+    .then((result) => {
+      if (result.created) {
+        logger.info({ component: "boot", agentId: result.agentId }, "Commander ensured on boot");
+      }
+      return result;
+    })
+    .catch((error) => {
+      logger.warn(
+        { err: error, component: "boot" },
+        "mission_control.boot.ensure_failed — Commander creation deferred",
+      );
+    });
+
+  // Identity backfill: names for agents missing one (free), descriptions for
+  // closed agents and titles for untitled workspaces via the structured
+  // generation chain, capped to avoid a first-boot stampede. Fire-and-forget:
+  // boot must not block on LLM calls; new agents are named by the
+  // onAgentCreated hook regardless.
+  void runIdentityBackfill({
+    agentManager,
+    agentStorage,
+    naming: agentNamingService,
+    providerSnapshotManager,
+    workspaceRegistry,
+    workspaceGitService,
+    readDaemonConfig: () => ({
+      metadataGeneration: daemonConfigStore.get().metadataGeneration,
+    }),
+    logger,
+  }).catch((error) => {
+    logger.warn({ err: error }, "Identity backfill failed");
+  });
+
+  const tunnelManager = new TunnelManager({
+    config: config.tunnel ?? {
+      provider: "none",
+      localPort: 6767,
+      localTarget: "127.0.0.1:6767",
+      autoStart: false,
+      publicBaseUrl: null,
+      tailscaleBin: null,
+      cloudflared: { hostname: null, bin: null, configFile: null, token: null, tunnel: null },
+    },
+    logger,
+  });
+  await tunnelManager.start();
+  logger.info(
+    {
+      elapsed: elapsed(),
+      provider: tunnelManager.getProvider(),
+      status: tunnelManager.getStatus(),
+    },
+    "Tunnel manager initialized",
+  );
+
+  peerManager = new PeerManager({
+    peers: loadPersistedConfig(config.paseoHome).peers ?? [],
+    logger,
+    appVersion: daemonVersion,
+    // Sync-on-connect: when a peer comes online, the commander host pushes
+    // its current central-config snapshot so the peer never serves stale
+    // fleet policy (fresh join or restart alike).
+    onPeerOnline: (peerName) => {
+      void missionControlService
+        ?.syncCentralConfigToPeer(peerName)
+        .catch((error) =>
+          logger.warn({ err: error, peer: peerName }, "Central config sync-on-connect failed"),
+        );
+    },
+  });
+
+  const webhookService = new WebhookService({
+    paseoHome: config.paseoHome,
+    logger,
+    agentManager,
+    agentStorage,
+    createAgent,
+    createLocalCheckoutWorkspace: createWebhookLocalWorkspaceExternal,
+    createPaseoWorktreeWorkspace: createWebhookPaseoWorktreeExternal,
+    emitWorkspaceUpdatesForWorkspaceIds: emitWorkspaceUpdatesExternal,
+    getPublicBaseUrl: () => tunnelManager.getPublicBaseUrl(),
+    getTunnelProvider: () => tunnelManager.getProvider(),
+    getTunnelStatus: () => tunnelManager.getStatus(),
+  });
+  webhookIngress.setHandler(createWebhookRouteHandler(webhookService, logger));
+
   logger.info({ elapsed: elapsed() }, "Loading persisted agent registry");
   const persistedRecords = await agentStorage.list();
   logger.info(
@@ -1359,9 +2186,15 @@ export async function createPaseoDaemon(
     createPaseoWorktree: createAgentCommandDependencies.createPaseoWorktree,
     browserToolsEnabled: browserToolsPolicy.isEnabled(),
     browserToolsBroker,
+    peerManager,
+    missionControlService,
+    verifierDispatcher,
+    serverId,
+    hostAlias: missionControlHostAlias,
     paseoHome: config.paseoHome,
     worktreesRoot: config.worktreesRoot,
     callerAgentId: runtime.callerAgentId,
+    callerLabels: runtime.callerLabels,
     enableVoiceTools: runtime.enableVoiceTools,
     voiceOnly: runtime.voiceOnly,
     resolveSpeakHandler: (agentId) => wsServer?.resolveVoiceSpeakHandler(agentId) ?? null,
@@ -1499,6 +2332,7 @@ export async function createPaseoDaemon(
   const speechService = createSpeechService({
     logger,
     openaiConfig: config.openai,
+    fishConfig: config.fish,
     speechConfig: config.speech,
   });
   logger.info({ elapsed: elapsed() }, "Speech service created");
@@ -1645,12 +2479,16 @@ export async function createPaseoDaemon(
               },
               serviceProxyPublicBaseUrl,
               browserToolsBroker,
+              webhookService,
               hubRelationships,
+              peerManager,
+              missionControlService,
               workspaceSetupRuntime,
               pluginRuntime,
               orchestrationSkills,
               workspaceLabelService,
             );
+            wsServer.setTranscriptSearch(transcriptSearch);
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();
             wsServer.beginAcceptingConnections();
@@ -1696,6 +2534,7 @@ export async function createPaseoDaemon(
       speechService.start();
       scriptHealthMonitor.start();
     } catch (error) {
+      transcriptSearch?.stop();
       await pluginRuntime.stopAllPlugins().catch(() => undefined);
       await serviceProxy.stopStandalone().catch(() => undefined);
       if (mainStarted) {
@@ -1711,6 +2550,7 @@ export async function createPaseoDaemon(
     await hubRelationships.stop();
     workspaceReconciliation.dispose();
     scriptHealthMonitor.stop();
+    idleCloseOmpService.stop();
     // Freeze both ingress and registration before taking the agent closure snapshot.
     wsServer?.prepareForShutdown();
     agentManager.prepareForShutdown();
@@ -1721,11 +2561,16 @@ export async function createPaseoDaemon(
     await providerSnapshotManager.shutdown();
     terminalManager.killAll();
     await speechService.stop();
+    await missionControlService.stop().catch(() => undefined);
+
     await scheduleService.stop().catch(() => undefined);
+    await peerManager?.close().catch(() => undefined);
+    await tunnelManager.stop().catch(() => undefined);
     await relayRuntime?.stop().catch(() => undefined);
     if (wsServer) {
       await wsServer.close();
     }
+    transcriptSearch?.stop();
     await serviceProxy.stopStandalone();
     // Force-drop remaining sockets so httpServer.close() resolves promptly.
     // We've already closed wsServer (which sent ws-layer close frames) and
@@ -1752,6 +2597,7 @@ export async function createPaseoDaemon(
     serviceProxy,
     scriptRuntimeStore,
     browserToolsBroker,
+    missionControlService,
     start,
     stop,
     getListenTarget: () => boundListenTarget,

@@ -534,6 +534,68 @@ test("repeated recovery for the same running gap reuses the in-flight fetch", as
   gapPage.respond({ hasNewer: false });
 });
 
+test("a burst of dropped events triggers exactly one authoritative tail re-baseline", async () => {
+  const world = new TimelineWorld();
+  world.sync.setConnected(true);
+  world.sync.replaceVisibleAgentIds("workspace", ["agent-a"]);
+  const membership = await world.nextMembership();
+  membership.succeed();
+  const initial = await world.nextFetch("agent-a");
+  initial.respond({ hasNewer: false });
+  await vi.waitFor(() => expect(world.sync.getAgentTimelineStatus("agent-a")).toBe("ready"));
+
+  world.sync.recoverBaseline("agent-a");
+  world.sync.recoverBaseline("agent-a");
+  world.sync.recoverBaseline("agent-a");
+  world.sync.recoverBaseline("agent-a");
+
+  const baseline = await world.nextFetch("agent-a");
+  expect(baseline.request).toEqual({ direction: "tail", limit: 40, projection: "projected" });
+  world.expectNoPendingFetch();
+  baseline.respond({ hasNewer: false });
+  await vi.waitFor(() => expect(world.sync.getAgentTimelineStatus("agent-a")).toBe("ready"));
+});
+
+test("a re-baseline for a non-desired agent is parked until the agent is acknowledged", async () => {
+  const world = new TimelineWorld();
+  world.sync.setDeliveryMode("legacy");
+  world.sync.setConnected(true);
+
+  world.sync.recoverBaseline("agent-a");
+  world.expectNoPendingFetch();
+
+  world.sync.replaceVisibleAgentIds("workspace", ["agent-a"]);
+  const baseline = await world.nextFetch("agent-a");
+  expect(baseline.request).toEqual({ direction: "tail", limit: 40, projection: "projected" });
+  baseline.respond({ hasNewer: false });
+  await vi.waitFor(() => expect(world.sync.getAgentTimelineStatus("agent-a")).toBe("ready"));
+});
+
+test("a failed re-baseline retries the authoritative tail fetch", async () => {
+  const world = new TimelineWorld();
+  world.sync.setConnected(true);
+  world.sync.replaceVisibleAgentIds("workspace", ["agent-a"]);
+  const membership = await world.nextMembership();
+  membership.succeed();
+  const initial = await world.nextFetch("agent-a");
+  initial.respond({ hasNewer: false });
+  await vi.waitFor(() => expect(world.sync.getAgentTimelineStatus("agent-a")).toBe("ready"));
+
+  world.sync.recoverBaseline("agent-a");
+  const failed = await world.nextFetch("agent-a");
+  failed.fail("timeline unavailable");
+  const [error, retryBaseline] = await Promise.all([world.nextError(), world.nextRetry()]);
+
+  retryBaseline();
+  const retry = await world.nextFetch("agent-a");
+  expect(retry.request).toEqual({ direction: "tail", limit: 40, projection: "projected" });
+  retry.respond({ hasNewer: false });
+  await vi.waitFor(() => expect(world.sync.getAgentTimelineStatus("agent-a")).toBe("ready"));
+
+  expect(error).toBe("timeline unavailable");
+  world.expectNoPendingFetch();
+});
+
 test("membership failure autonomously retries without another visibility declaration", async () => {
   const world = new TimelineWorld();
   world.sync.setConnected(true);

@@ -212,6 +212,17 @@ export interface AgentRunOptions {
   resumeFrom?: AgentPersistenceHandle;
   maxThinkingTokens?: number;
   clientMessageId?: string;
+  /**
+   * Who superseded the in-flight run when this prompt replaces one
+   * (replaceRunning). The superseded run's terminal failure is then treated
+   * as that party's interruption instead of a genuine error: "user" (a user
+   * interrupt-and-send) suppresses the [System Error] timeline row for the
+   * aborted turn and renders as "Interrupted by you" in Mission Control;
+   * "machinery" (escalation/recovery/Commander sends) keeps the failure
+   * treatment. Absent = no origin recorded — genuine aborts/crashes are
+   * untouched. Only consulted when a replace actually happens.
+   */
+  replaceOrigin?: "user" | "machinery";
 }
 
 export interface AgentSteerOptions extends AgentRunOptions {
@@ -390,9 +401,37 @@ export interface CompactionTimelineItem {
   preTokens?: number;
 }
 
+/**
+ * Who originated a user-role timeline row. Machinery delivers prompts into an
+ * agent's own chat (stall status-ask nudges, Commander/Verifier directions)
+ * and stamps the row at the source so the agent chat renders it distinctly.
+ * Absent = "instruction" (a visible prompt) — real user messages and legacy
+ * rows are never hidden.
+ */
+export type AgentTimelineUserMessageClassification = "machinery" | "instruction";
+
+/**
+ * M9 voice dialogue mirror marker on timeline rows appended by the voice
+ * mirror RPC. "qa" = pure Q&A (the app hides the row unless verbose);
+ * "dispatch" = the turn asked the fleet to do something (visible).
+ */
+export type AgentTimelineVoiceMirrorKind = "qa" | "dispatch";
+
 export type AgentTimelineItem =
-  | { type: "user_message"; text: string; messageId?: string; clientMessageId?: string }
-  | { type: "assistant_message"; text: string; messageId?: string }
+  | {
+      type: "user_message";
+      text: string;
+      messageId?: string;
+      clientMessageId?: string;
+      classification?: AgentTimelineUserMessageClassification;
+      voiceMirrorKind?: AgentTimelineVoiceMirrorKind;
+    }
+  | {
+      type: "assistant_message";
+      text: string;
+      messageId?: string;
+      voiceMirrorKind?: AgentTimelineVoiceMirrorKind;
+    }
   | { type: "reasoning"; text: string }
   | ToolCallTimelineItem
   | { type: "todo"; items: AgentTaskItem[] }
@@ -521,6 +560,15 @@ export interface AgentRuntimeInfo {
 export type AgentSlashCommandKind = "command" | "skill";
 
 /**
+ * How a command reaches the provider. "turn" commands are ordinary prompts and
+ * start a turn. "out_of_band" commands are the ones `tryHandleOutOfBand`
+ * intercepts: they run against the live session without allocating or
+ * canceling a turn, so clients must send them straight through instead of
+ * queueing them behind a running turn.
+ */
+export type AgentSlashCommandDelivery = "turn" | "out_of_band";
+
+/**
  * Represents a slash command available in an agent session.
  * Commands are executed by sending them as prompts with / prefix.
  */
@@ -529,6 +577,7 @@ export interface AgentSlashCommand {
   description: string;
   argumentHint: string;
   kind?: AgentSlashCommandKind;
+  delivery?: AgentSlashCommandDelivery;
 }
 
 export interface ListImportableSessionsOptions {
@@ -582,10 +631,23 @@ export interface AgentSessionConfig {
    */
   systemPrompt?: string;
   /**
+   * How `systemPrompt` is applied. "append" (default) layers it under the
+   * provider's coding harness; "replace" swaps the harness out entirely for
+   * the given prompt. Replace mode also skips the daemon-level append prompt.
+   */
+  systemPromptMode?: "append" | "replace";
+  /**
    * Daemon-level instructions appended at runtime. This is deliberately not
    * persisted into agent config so daemon setting changes apply cleanly.
    */
   daemonAppendSystemPrompt?: string;
+  /**
+   * Tool names the agent may call. When set, the provider restricts its tool
+   * surface to this list: provider-native (builtin) tools are filtered via the
+   * provider's own tool-selection flag, and Paseo host tools are filtered
+   * server-side before injection. Absent = unrestricted.
+   */
+  toolAllowlist?: string[];
   modeId?: string;
   model?: string;
   thinkingOptionId?: string;
@@ -654,6 +716,14 @@ export interface AgentSession {
   ): Promise<AgentPermissionResult | void>;
   describePersistence(): AgentPersistenceHandle | null;
   interrupt(): Promise<void>;
+  /**
+   * Whether the provider runtime backing this session can still take work. A
+   * `false` answer is what lets a prompt recover by reloading the session from
+   * persistence instead of failing forever against a dead child process.
+   * Providers that cannot tell leave this off — absent means "no signal", never
+   * "dead".
+   */
+  isRuntimeAlive?(): boolean;
   /** Release live runtime resources without archiving or deleting the durable native session. */
   close(): Promise<void>;
   listCommands?(): Promise<AgentSlashCommand[]>;

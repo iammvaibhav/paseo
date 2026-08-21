@@ -1,0 +1,42 @@
+diff --git a/node_modules/react-native-svg/lib/commonjs/web/utils/prepare.js b/node_modules/react-native-svg/lib/commonjs/web/utils/prepare.js
+index d57e7c8..beef793 100644
+--- a/node_modules/react-native-svg/lib/commonjs/web/utils/prepare.js
++++ b/node_modules/react-native-svg/lib/commonjs/web/utils/prepare.js
+@@ -45,6 +45,9 @@ const prepare = (self, props = self.props) => {
+     } : null),
+     ...rest
+   };
++  // react-native-unistyles uses `uniProps` as wrapper metadata. It is not an
++  // SVG attribute and React 19 warns when react-native-svg forwards it to DOM.
++  delete clean.uniProps;
+   if (origin != null) {
+     clean['transform-origin'] = origin.toString().replace(',', ' ');
+   } else if (originX != null || originY != null) {
+diff --git a/node_modules/react-native-svg/lib/module/web/utils/prepare.js b/node_modules/react-native-svg/lib/module/web/utils/prepare.js
+index 113eb2b..15d2fbd 100644
+--- a/node_modules/react-native-svg/lib/module/web/utils/prepare.js
++++ b/node_modules/react-native-svg/lib/module/web/utils/prepare.js
+@@ -39,6 +39,9 @@ export const prepare = (self, props = self.props) => {
+     } : null),
+     ...rest
+   };
++  // react-native-unistyles uses `uniProps` as wrapper metadata. It is not an
++  // SVG attribute and React 19 warns when react-native-svg forwards it to DOM.
++  delete clean.uniProps;
+   if (origin != null) {
+     clean['transform-origin'] = origin.toString().replace(',', ' ');
+   } else if (originX != null || originY != null) {
+diff --git a/node_modules/react-native-svg/src/web/utils/prepare.ts b/node_modules/react-native-svg/src/web/utils/prepare.ts
+index 4106784..35db1f5 100644
+--- a/node_modules/react-native-svg/src/web/utils/prepare.ts
++++ b/node_modules/react-native-svg/src/web/utils/prepare.ts
+@@ -69,6 +69,9 @@ export const prepare = <T extends BaseProps>(
+       : null),
+     ...rest,
+   };
++  // react-native-unistyles uses `uniProps` as wrapper metadata. It is not an
++  // SVG attribute and React 19 warns when react-native-svg forwards it to DOM.
++  delete (clean as Record<string, unknown>).uniProps;
+ 
+   if (origin != null) {
+     clean['transform-origin'] = origin.toString().replace(',', ' ');

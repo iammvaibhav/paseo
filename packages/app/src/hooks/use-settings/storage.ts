@@ -30,7 +30,11 @@ export type ServiceUrlBehavior = "ask" | "in-app" | "external";
 export type WorkspaceTitleSource = "title" | "branch";
 /** What a sidebar workspace row shows in the space to the right of its title. */
 export type SidebarWorkspaceTrailing = "diff" | "timestamp" | "none";
+/** How workspaces inside a project are ordered in the sidebar. */
+export type SidebarWorkspaceSort = "manual" | "activity" | "created";
 export type ToolCallDetailLevel = "overview" | "detailed";
+export type PlannotatorFeedbackMode = "auto-send" | "compose";
+export type DefaultFileOpener = "paseo" | "vscode-web" | "plannotator";
 
 const VALID_THEMES = new Set<string>(THEME_OPTIONS.map((option) => option.name));
 const ThemePreferenceSchema = z.enum(THEME_OPTIONS.map((option) => option.name));
@@ -41,7 +45,18 @@ const VALID_SIDEBAR_WORKSPACE_TRAILINGS = new Set<SidebarWorkspaceTrailing>([
   "timestamp",
   "none",
 ]);
+const VALID_SIDEBAR_WORKSPACE_SORTS = new Set<SidebarWorkspaceSort>([
+  "manual",
+  "activity",
+  "created",
+]);
 const VALID_TOOL_CALL_DETAIL_LEVELS = new Set<ToolCallDetailLevel>(["overview", "detailed"]);
+const VALID_PLANNOTATOR_FEEDBACK_MODES = new Set<PlannotatorFeedbackMode>(["auto-send", "compose"]);
+const VALID_DEFAULT_FILE_OPENERS = new Set<DefaultFileOpener>([
+  "paseo",
+  "vscode-web",
+  "plannotator",
+]);
 export const DEFAULT_TERMINAL_SCROLLBACK_LINES = 10_000;
 export const MIN_TERMINAL_SCROLLBACK_LINES = 0;
 export const MAX_TERMINAL_SCROLLBACK_LINES = 1_000_000;
@@ -71,12 +86,17 @@ export interface AppSettings {
   syntaxTheme: SyntaxThemeId; // default "one"
   workspaceTitleSource: WorkspaceTitleSource;
   sidebarWorkspaceTrailing: SidebarWorkspaceTrailing;
+  sidebarWorkspaceSort: SidebarWorkspaceSort;
   sidebarRowItems: SidebarRowItems;
   sidebarChecksDisplay: SidebarChecksDisplay;
   autoExpandReasoning: boolean;
   toolCallDetailLevel: ToolCallDetailLevel;
   chatOutlineEnabled: boolean;
   vimKeybindings: boolean;
+  /** Preferred destination for ordinary file opens. Explicit side-pane opens remain in Paseo. */
+  defaultFileOpener: DefaultFileOpener;
+  /** How to deliver Plannotator feedback to the linked agent. */
+  plannotatorFeedbackMode: PlannotatorFeedbackMode;
   /** Route implicitly opened supporting tabs into the Side panel. Desktop only. */
   openSupportingTabsInSidePanel: boolean;
 }
@@ -119,6 +139,7 @@ const StoredAppSettingsSchema = z.strictObject({
   syntaxTheme: z.string().refine(isSyntaxThemeId).optional(),
   workspaceTitleSource: z.enum(["title", "branch"]).optional(),
   sidebarWorkspaceTrailing: z.enum(["diff", "timestamp", "none"]).optional(),
+  sidebarWorkspaceSort: z.enum(["manual", "activity", "created"]).optional(),
   sidebarRowItems: SidebarRowItemsSchema.optional(),
   sidebarChecksDisplay: z.enum(["iconAndText", "icon", "none"]).optional(),
   autoExpandReasoning: z.boolean().optional(),
@@ -126,6 +147,10 @@ const StoredAppSettingsSchema = z.strictObject({
   compactToolCalls: z.boolean().optional(),
   chatOutlineEnabled: z.boolean().optional(),
   vimKeybindings: z.boolean().optional(),
+  defaultFileOpener: z.enum(["paseo", "vscode-web", "plannotator"]).optional(),
+  // COMPAT(defaultFileOpener): earlier boolean that mapped markdown to Plannotator.
+  openMarkdownInPlannotator: z.boolean().optional(),
+  plannotatorFeedbackMode: z.enum(["auto-send", "compose"]).optional(),
   openSupportingTabsInSidePanel: z.boolean().optional(),
   // COMPAT(rendererDesktopSettings): these fields used to share this renderer-owned key.
   manageBuiltInDaemon: z.boolean().optional(),
@@ -150,12 +175,15 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   syntaxTheme: "one",
   workspaceTitleSource: "title",
   sidebarWorkspaceTrailing: "diff",
+  sidebarWorkspaceSort: "manual",
   sidebarRowItems: DEFAULT_SIDEBAR_ROW_ITEMS,
   sidebarChecksDisplay: DEFAULT_SIDEBAR_CHECKS_DISPLAY,
   autoExpandReasoning: false,
   toolCallDetailLevel: "detailed",
   chatOutlineEnabled: true,
   vimKeybindings: false,
+  defaultFileOpener: "paseo",
+  plannotatorFeedbackMode: "auto-send",
   openSupportingTabsInSidePanel: true,
 };
 
@@ -330,38 +358,74 @@ function pickBooleanAppSettings(stored: StoredAppSettings): Partial<AppSettings>
  * boolean settings are: the numeric and font settings need real parsing and clamping, these
  * need a membership check and nothing else.
  */
+function pickIfValidStringEnum<T extends string>(
+  value: unknown,
+  valid: ReadonlySet<T>,
+): T | undefined {
+  return typeof value === "string" && valid.has(value as T) ? (value as T) : undefined;
+}
+
 function pickEnumAppSettings(stored: StoredAppSettings): Partial<AppSettings> {
   const result: Partial<AppSettings> = {};
-  if (typeof stored.theme === "string" && VALID_THEMES.has(stored.theme)) {
-    result.theme = stored.theme;
+  const theme = pickIfValidStringEnum(stored.theme, VALID_THEMES as ReadonlySet<string>);
+  if (theme !== undefined) {
+    result.theme = theme as AppSettings["theme"];
   }
   if (
     stored.sendBehavior === "interrupt" ||
-    stored.sendBehavior === "steer" ||
-    stored.sendBehavior === "queue"
+    stored.sendBehavior === "queue" ||
+    stored.sendBehavior === "steer"
   ) {
     result.sendBehavior = stored.sendBehavior;
   }
-  if (
-    typeof stored.serviceUrlBehavior === "string" &&
-    VALID_SERVICE_URL_BEHAVIORS.has(stored.serviceUrlBehavior)
-  ) {
-    result.serviceUrlBehavior = stored.serviceUrlBehavior;
+  const serviceUrlBehavior = pickIfValidStringEnum(
+    stored.serviceUrlBehavior,
+    VALID_SERVICE_URL_BEHAVIORS,
+  );
+  if (serviceUrlBehavior !== undefined) {
+    result.serviceUrlBehavior = serviceUrlBehavior;
   }
   if (typeof stored.syntaxTheme === "string" && isSyntaxThemeId(stored.syntaxTheme)) {
     result.syntaxTheme = stored.syntaxTheme;
   }
-  if (
-    typeof stored.workspaceTitleSource === "string" &&
-    VALID_WORKSPACE_TITLE_SOURCES.has(stored.workspaceTitleSource)
-  ) {
-    result.workspaceTitleSource = stored.workspaceTitleSource;
+  const workspaceTitleSource = pickIfValidStringEnum(
+    stored.workspaceTitleSource,
+    VALID_WORKSPACE_TITLE_SOURCES,
+  );
+  if (workspaceTitleSource !== undefined) {
+    result.workspaceTitleSource = workspaceTitleSource;
   }
-  if (
-    typeof stored.sidebarWorkspaceTrailing === "string" &&
-    VALID_SIDEBAR_WORKSPACE_TRAILINGS.has(stored.sidebarWorkspaceTrailing)
-  ) {
-    result.sidebarWorkspaceTrailing = stored.sidebarWorkspaceTrailing;
+  const sidebarWorkspaceTrailing = pickIfValidStringEnum(
+    stored.sidebarWorkspaceTrailing,
+    VALID_SIDEBAR_WORKSPACE_TRAILINGS,
+  );
+  if (sidebarWorkspaceTrailing !== undefined) {
+    result.sidebarWorkspaceTrailing = sidebarWorkspaceTrailing;
+  }
+  const sidebarWorkspaceSort = pickIfValidStringEnum(
+    stored.sidebarWorkspaceSort,
+    VALID_SIDEBAR_WORKSPACE_SORTS,
+  );
+  if (sidebarWorkspaceSort !== undefined) {
+    result.sidebarWorkspaceSort = sidebarWorkspaceSort;
+  }
+  const defaultFileOpener = pickIfValidStringEnum(
+    stored.defaultFileOpener,
+    VALID_DEFAULT_FILE_OPENERS,
+  );
+  if (defaultFileOpener !== undefined) {
+    result.defaultFileOpener = defaultFileOpener;
+  } else if (typeof stored.openMarkdownInPlannotator === "boolean") {
+    // COMPAT(defaultFileOpener): added in v0.2.0-beta.1; remove after 2027-01-21.
+    // Previously, a configured host sent non-markdown files to VS Code Web.
+    result.defaultFileOpener = stored.openMarkdownInPlannotator ? "plannotator" : "vscode-web";
+  }
+  const plannotatorFeedbackMode = pickIfValidStringEnum(
+    stored.plannotatorFeedbackMode,
+    VALID_PLANNOTATOR_FEEDBACK_MODES,
+  );
+  if (plannotatorFeedbackMode !== undefined) {
+    result.plannotatorFeedbackMode = plannotatorFeedbackMode;
   }
   return result;
 }

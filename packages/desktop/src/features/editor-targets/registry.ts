@@ -1,7 +1,10 @@
+import { posix } from "node:path";
+
 import type {
   EditorTarget,
   EditorTargetDescriptor,
   EditorTargetLaunchInput,
+  EditorTargetRemoteLaunchInput,
   EditorTargetRuntime,
 } from "./target.js";
 import { androidStudioTarget } from "./targets/android-studio.js";
@@ -102,4 +105,26 @@ export async function openEditorTarget(
     throw new Error(`Editor target unavailable: ${descriptor.label}`);
   }
   await target.launch(input, runtime);
+}
+
+export async function openRemoteEditorTarget(
+  input: EditorTargetRemoteLaunchInput & { editorId: string },
+  runtime: EditorTargetRuntime,
+  targets: readonly EditorTarget[] = EDITOR_TARGETS,
+): Promise<void> {
+  const target = getEditorTarget(input.editorId, targets);
+  if (!target.launchRemote) {
+    const descriptor = await target.describe(runtime);
+    throw new Error(`Editor target does not support remote hosts: ${descriptor.label}`);
+  }
+  if (!posix.isAbsolute(input.path)) {
+    throw new Error("Remote editor target path must be an absolute POSIX path");
+  }
+  const cwd =
+    input.cwd && posix.isAbsolute(input.cwd) && input.cwd !== input.path ? input.cwd : undefined;
+  if (!(await target.isInstalled(runtime))) {
+    const descriptor = await target.describe(runtime);
+    throw new Error(`Editor target unavailable: ${descriptor.label}`);
+  }
+  await target.launchRemote({ path: input.path, cwd, sshHost: input.sshHost }, runtime);
 }

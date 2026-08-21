@@ -1,5 +1,8 @@
+import { createContext, useContext, type ReactNode } from "react";
 import { getIsElectronRuntime } from "@/constants/layout";
 import { isNative } from "@/constants/platform";
+
+const TitlebarDragRegionEnabledContext = createContext(true);
 
 /**
  * VS Code-style titlebar drag region for Electron.
@@ -38,11 +41,35 @@ const TOP_RESIZER_STYLE: React.CSSProperties = {
 };
 
 /**
+ * Scopes drag-region rendering to subtrees that are actually visible.
+ * Invisible keep-mounted overlays must not declare drag regions: Blink
+ * collects -webkit-app-region from the whole layout tree in DOM order,
+ * ignoring opacity, z-index, and pointer-events, so a later drag rect from a
+ * hidden overlay re-covers — and kills clicks on — the interactive elements
+ * beneath it (the hidden Mission Control layer was eating the workspace
+ * header buttons).
+ */
+export function TitlebarDragRegionEnabled({
+  enabled,
+  children,
+}: {
+  enabled: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <TitlebarDragRegionEnabledContext.Provider value={enabled}>
+      {children}
+    </TitlebarDragRegionEnabledContext.Provider>
+  );
+}
+
+/**
  * Static drag overlay and top-edge resizer. Returns null on non-Electron.
  * Place as FIRST child of any positioned container that should be draggable.
  */
 export function TitlebarDragRegion() {
-  if (isNative || !getIsElectronRuntime()) {
+  const enabled = useContext(TitlebarDragRegionEnabledContext);
+  if (isNative || !getIsElectronRuntime() || !enabled) {
     return null;
   }
 

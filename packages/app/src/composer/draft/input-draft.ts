@@ -5,6 +5,7 @@ import type { DraftCommandConfig } from "@/hooks/use-agent-commands-query";
 import {
   useAgentFormState,
   type CreateAgentInitialValues,
+  type FormPreferenceScope,
   type UseAgentFormStateResult,
 } from "@/hooks/use-agent-form-state";
 import { useDraftAgentFeatures } from "@/hooks/use-draft-agent-features";
@@ -24,6 +25,7 @@ import { useDraftStore } from "@/stores/draft-store";
 import { toDraftInputIfReady } from "@/stores/draft-store/state";
 import { AfterPaintPublication } from "@/composer/after-paint-publication";
 import { isWeb } from "@/constants/platform";
+import { subscribeComposerPrefill } from "@/workspace/plannotator-feedback";
 
 type AttachmentUpdater =
   | UserComposerAttachment[]
@@ -36,6 +38,7 @@ interface AgentInputDraftComposerOptions {
   isVisible?: boolean;
   onlineServerIds?: string[];
   lockedWorkingDir?: string;
+  preferenceScope?: FormPreferenceScope | null;
 }
 
 interface UseAgentInputDraftInput {
@@ -73,6 +76,7 @@ export function useAgentInputDraft(input: UseAgentInputDraftInput): AgentInputDr
     isVisible: composerOptions?.isVisible ?? false,
     isCreateFlow: true,
     onlineServerIds: composerOptions?.onlineServerIds ?? [],
+    preferenceScope: composerOptions?.preferenceScope ?? null,
   });
   const draftKey = useMemo(
     () =>
@@ -196,6 +200,16 @@ export function useAgentInputDraft(input: UseAgentInputDraftInput): AgentInputDr
       cancelled = true;
     };
   }, [draftKey]);
+
+  // Plannotator (and similar) can prefill the composer while this draft is mounted.
+  useEffect(() => {
+    return subscribeComposerPrefill((payload) => {
+      if (payload.draftKey !== draftKey) {
+        return;
+      }
+      replaceText(payload.text);
+    });
+  }, [draftKey, replaceText]);
 
   const lockedWorkingDir = composerOptions?.lockedWorkingDir?.trim() ?? "";
   useEffect(() => {

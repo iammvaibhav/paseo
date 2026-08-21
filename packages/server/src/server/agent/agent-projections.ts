@@ -1,3 +1,4 @@
+import type { LifecycleBucket } from "@getpaseo/protocol/agent-state-bucket";
 import type {
   AgentListItemPayload,
   AgentSnapshotPayload,
@@ -79,6 +80,8 @@ export function toStoredAgentRecord(
     lastActivityAt: agent.updatedAt.toISOString(),
     lastUserMessageAt: agent.lastUserMessageAt ? agent.lastUserMessageAt.toISOString() : null,
     title: options?.title ?? null,
+    ...(agent.name !== undefined ? { name: agent.name } : {}),
+    ...(agent.shortDescription !== undefined ? { shortDescription: agent.shortDescription } : {}),
     labels: agent.labels,
     lastStatus: agent.lifecycle,
     lastModeId: agent.currentModeId ?? config?.modeId ?? null,
@@ -134,6 +137,8 @@ export function toAgentPayload(
     pendingPermissions: sanitizePendingPermissions(agent.pendingPermissions),
     persistence: projectPersistenceHandleForWire(agent.persistence),
     title: options?.title ?? null,
+    ...(agent.name !== undefined ? { name: agent.name } : {}),
+    ...(agent.shortDescription !== undefined ? { shortDescription: agent.shortDescription } : {}),
     labels: agent.labels,
   };
 
@@ -191,9 +196,29 @@ function buildStoredPersistenceHandle(
   return toAgentPersistenceHandle(validProviders, record.persistence);
 }
 
+/** Optional payload fields that depend on record/state presence — kept out of
+ * the main builder so its shape stays readable and its cyclomatic complexity
+ * in check. Each spread contributes a key only when present. */
+function buildStoredAgentOptionalFields(
+  record: StoredAgentRecord,
+  runtimeInfo: AgentRuntimeInfo | undefined,
+  providerAvailable: boolean,
+  bucket?: LifecycleBucket,
+): Partial<AgentSnapshotPayload> {
+  return {
+    ...(record.workspaceId ? { workspaceId: record.workspaceId } : {}),
+    ...(runtimeInfo ? { runtimeInfo } : {}),
+    ...(record.name !== undefined ? { name: record.name } : {}),
+    ...(record.shortDescription !== undefined ? { shortDescription: record.shortDescription } : {}),
+    ...(bucket ? { bucket } : {}),
+    ...(providerAvailable ? {} : { providerUnavailable: true }),
+  };
+}
+
 export function buildStoredAgentPayload(
   record: StoredAgentRecord,
   validProviders: Iterable<AgentProvider>,
+  bucket?: LifecycleBucket,
 ): AgentSnapshotPayload {
   const defaultCapabilities = {
     supportsStreaming: false,
@@ -221,14 +246,12 @@ export function buildStoredAgentPayload(
     id: record.id,
     provider: record.provider,
     cwd: record.cwd,
-    ...(record.workspaceId ? { workspaceId: record.workspaceId } : {}),
     model: record.config?.model ?? null,
     thinkingOptionId: record.config?.thinkingOptionId ?? null,
     effectiveThinkingOptionId: resolveEffectiveThinkingOptionId({
       runtimeInfo,
       configuredThinkingOptionId: record.config?.thinkingOptionId ?? null,
     }),
-    ...(runtimeInfo ? { runtimeInfo } : {}),
     createdAt: createdAt.toISOString(),
     updatedAt: updatedAt.toISOString(),
     lastUserMessageAt: lastUserMessageAt ? lastUserMessageAt.toISOString() : null,
@@ -244,7 +267,7 @@ export function buildStoredAgentPayload(
     attentionTimestamp: record.attentionTimestamp ?? null,
     archivedAt: record.archivedAt ?? null,
     labels: normalizeLabels(record.labels),
-    ...(providerAvailable ? {} : { providerUnavailable: true }),
+    ...buildStoredAgentOptionalFields(record, runtimeInfo, providerAvailable, bucket),
   };
 }
 
@@ -267,6 +290,14 @@ export function toAgentListItemPayload(agent: AgentSnapshotPayload): AgentListIt
     attentionReason: agent.attentionReason ?? null,
     attentionTimestamp: agent.attentionTimestamp ?? null,
     labels: agent.labels,
+    // Mission Control roster restore: the list tool's rows carry the same
+    // identity fields as the snapshot (additive; absent on old payloads).
+    ...(agent.workspaceId ? { workspaceId: agent.workspaceId } : {}),
+    ...(agent.name !== undefined ? { name: agent.name } : {}),
+    ...(agent.shortDescription !== undefined ? { description: agent.shortDescription } : {}),
+    // Canonical lifecycle bucket restored from the snapshot (computed on the
+    // daemon that owns the agent; absent on old daemons — degrade).
+    ...(agent.bucket ? { bucket: agent.bucket } : {}),
     ...(agent.providerUnavailable ? { providerUnavailable: true } : {}),
   };
 }
@@ -334,6 +365,12 @@ function buildSerializableConfig(config: AgentSessionConfig): SerializableAgentC
   }
   if (config.systemPrompt) {
     serializable.systemPrompt = config.systemPrompt;
+  }
+  if (config.systemPromptMode) {
+    serializable.systemPromptMode = config.systemPromptMode;
+  }
+  if (config.toolAllowlist?.length) {
+    serializable.toolAllowlist = config.toolAllowlist;
   }
   if (config.mcpServers) {
     serializable.mcpServers = config.mcpServers;

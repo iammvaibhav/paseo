@@ -428,6 +428,14 @@ export function buildSchedulesRoute() {
   return "/schedules" as const;
 }
 
+export function buildMissionControlRoute() {
+  return "/mission-control" as const;
+}
+
+export function buildWebhooksRoute() {
+  return "/webhooks" as const;
+}
+
 export function buildOpenProjectRoute() {
   return "/open-project" as const;
 }
@@ -491,6 +499,7 @@ export function resolveKnownHostRoute(input: {
 
 export const SETTINGS_SECTION_SLUGS = [
   "general",
+  "mission-control",
   "appearance",
   "editor",
   "shortcuts",

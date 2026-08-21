@@ -365,6 +365,7 @@ describe("translation resources", () => {
     expect(en.sessions.title).toBe("History");
     expect(en.sessions.empty).toBe("No sessions yet");
     expect(en.sessions.actions.loadMore).toBe("Load more");
+    expect(en.sessions.actions.askAboutThis).toBe("Ask about this");
     expect(en.agentList.fallbackTitle).toBe("New session");
     expect(en.agentList.dateSections.today).toBe("Today");
     expect(en.agentList.dateSections.older).toBe("Older");
@@ -562,6 +563,12 @@ describe("translation resources", () => {
     expect(en.message.compaction.completed).toBe("Context compacted");
     expect(en.agentPanel.archived.callout).toBe("This agent is archived");
     expect(en.agentPanel.archived.unarchive).toBe("Unarchive");
+    expect(en.agentPanel.providerUnavailable.callout).toBe(
+      "This agent's provider is no longer available on this host.",
+    );
+    expect(en.agentPanel.providerUnavailable.continueWithAnotherProvider).toBe(
+      "Continue with another provider",
+    );
     expect(en.desktop.quitting.title).toBe("Quitting Paseo...");
     expect(en.desktop.quitting.detail).toBe("Stopping the local daemon.");
     expect(en.composer.attachments.dropImagesHere).toBe("Drop images here");

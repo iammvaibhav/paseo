@@ -18,20 +18,29 @@ import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 import { openSupportingTab } from "@/workspace-tabs/side-panel";
 
 /**
- * The pane's trackers — its subagents and its task list — as a row of pills above the composer.
+ * The pane's trackers — its subagents, its asks, and its task list — as a row
+ * of pills over the foot of the transcript.
  *
- * The row shares the composer's keyboard transform and owns the space between itself and the
- * transcript. Its data remains agent state: a subagent row opens a tab and the task list reads
- * the agent's stream.
+ * It is mounted inside the transcript's animated container rather than above the composer, and
+ * that placement is the whole design: the pills paint over the timeline, so scrolled content
+ * passes under them instead of stopping at a band, and the container carries the same keyboard
+ * transform the composer does, so the pills stay glued to its top edge while the keyboard moves.
+ *
+ * Its state was living in the composer only because that is where it used to render. None of it
+ * is composer state — a subagent row opens a tab, an ask row reopens the selection popover, the
+ * task list reads the agent's stream.
+
  */
 export const AgentTracks = memo(function AgentTracks({
   serverId,
+  agentId: _agentId,
   subagentRows,
   tasks,
   archiveFinishedStatus,
   onArchiveFinished,
 }: {
   serverId: string;
+  agentId?: string;
   subagentRows: SubagentRow[];
   tasks: TodoEntry[] | undefined;
   archiveFinishedStatus: ArchiveFinishedStatus;

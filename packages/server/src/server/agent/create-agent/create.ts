@@ -3,6 +3,7 @@ import type { Logger } from "pino";
 import type { TerminalManager } from "../../../terminal/terminal-manager.js";
 import type { CreatePaseoWorktreeInput } from "../../paseo-worktree-service.js";
 import { expandUserPath, resolvePathFromBase } from "../../path-utils.js";
+import { remapLegacyCommanderCreateCwd } from "../../mission-control/commander-boot.js";
 import { toWorktreeRequestError } from "../../worktree-errors.js";
 import type {
   AgentWorktreeSetupContinuation,
@@ -25,7 +26,7 @@ import {
   appendTimelineItemIfAgentKnown,
   emitLiveTimelineItemIfAgentKnown,
 } from "../timeline-append.js";
-import { resolveCreateAgentIntent } from "./intent.js";
+import { resolveCreateAgentIntent, type CreateAgentPlacement } from "./intent.js";
 
 export interface CreateAgentSessionWorktreeResult {
   sessionConfig: AgentSessionConfig;
@@ -46,12 +47,26 @@ export interface CreateAgentCommandDependencies {
   createPaseoWorktree?: CreatePaseoWorktreeWorkflowFn;
   // Mints a fresh directory workspace for a cwd and returns its id.
   ensureWorkspaceForCreate?: EnsureWorkspaceForCreate;
+  /**
+   * Looks up a workspace by id so a create that names one lands in that
+   * workspace's real directory. Without it an explicit workspaceId is taken on
+   * trust and the agent inherits whatever cwd the caller defaulted to.
+   */
+  getWorkspace?: GetWorkspaceForCreate;
 }
 
 export type EnsureWorkspaceForCreate = (
   cwd: string,
   firstAgentContext?: FirstAgentContext,
 ) => Promise<string>;
+
+/**
+ * The subset of a workspace record the create path needs: where it lives and
+ * whether it is still live.
+ */
+export type GetWorkspaceForCreate = (
+  workspaceId: string,
+) => Promise<{ cwd: string; archivedAt: string | null } | null>;
 
 export interface CreateAgentFromSessionInput {
   kind: "session";
@@ -308,7 +323,14 @@ async function resolveMcpCreateAgent(
   const parentAgent = input.callerAgentId
     ? requireParentAgent(dependencies.agentManager, input.callerAgentId)
     : null;
-  const cwd = resolveMcpInitialCwd(input, parentAgent);
+  // Commander-labeled creates with the legacy `~` sentinel cwd are redirected
+  // to the reserved home (`<paseoHome>/commander`) — same remap as the session
+  // create path, so every client lands in the same reserved home.
+  const cwd = remapLegacyCommanderCreateCwd({
+    labels: input.labels,
+    requestedCwd: resolveMcpInitialCwd(input, parentAgent),
+    paseoHome: dependencies.paseoHome,
+  });
   const { resolvedCwd, setupContinuation, createdWorkspaceId, createdWorktree } =
     await resolveMcpCwd({
       dependencies,
@@ -326,7 +348,13 @@ async function resolveMcpCreateAgent(
     labels: input.labels,
     childAgentDefaultLabels: input.callerContext?.childAgentDefaultLabels,
     legacyDetached: input.detached ?? false,
-    resolveWorkspace: async (workspaceId) => ({ workspaceId, cwd: resolvedCwd }),
+    resolveWorkspace: async (workspaceId) =>
+      resolveExplicitWorkspacePlacement({
+        dependencies,
+        workspaceId,
+        callerRequestedCwd: input.cwd,
+        fallbackCwd: resolvedCwd,
+      }),
     createWorkspace: async () => ({
       workspaceId: requireResolvedWorkspaceId(
         await ensureWorkspaceForMcpCreate(dependencies, resolvedCwd, input.initialPrompt ?? ""),
@@ -364,6 +392,41 @@ async function resolveMcpCreateAgent(
     createdWorktree,
     background: input.background,
     promptFailure: input.promptFailure ?? "log",
+  };
+}
+
+/**
+ * Placement for a create that names an existing workspace.
+ *
+ * The workspace's own directory is authoritative. Trusting the caller's cwd
+ * here put agents at the daemon's `process.cwd()` (`/`) whenever a spawn named
+ * a workspace but passed no cwd, which files the agent outside the workspace
+ * and hides it from the board. An explicit caller cwd still wins, so a spawn
+ * can target a subdirectory of the workspace.
+ *
+ * An archived or missing workspace is refused: creating there produces an
+ * agent the next archive sweep immediately archives.
+ */
+export async function resolveExplicitWorkspacePlacement(params: {
+  dependencies: CreateAgentCommandDependencies;
+  workspaceId: string;
+  callerRequestedCwd: string | undefined;
+  fallbackCwd: string;
+}): Promise<CreateAgentPlacement> {
+  const { dependencies, workspaceId, callerRequestedCwd, fallbackCwd } = params;
+  if (!dependencies.getWorkspace) {
+    return { workspaceId, cwd: fallbackCwd };
+  }
+  const workspace = await dependencies.getWorkspace(workspaceId);
+  if (!workspace) {
+    throw new Error(`Workspace ${workspaceId} not found`);
+  }
+  if (workspace.archivedAt) {
+    throw new Error(`Workspace ${workspaceId} is archived`);
+  }
+  return {
+    workspaceId,
+    cwd: callerRequestedCwd ? fallbackCwd : workspace.cwd,
   };
 }
 

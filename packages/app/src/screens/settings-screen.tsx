@@ -31,6 +31,7 @@ import {
   Bell,
   Shield,
   Puzzle,
+  Radar,
   Plus,
   FolderGit2,
   SquareTerminal,
@@ -48,6 +49,7 @@ import { HostStatusDot } from "@/components/host-status-dot";
 import { ScreenTitle } from "@/components/headers/screen-title";
 import { HeaderIconBadge } from "@/components/headers/header-icon-badge";
 import { SettingsSection } from "@/screens/settings/settings-section";
+import { MissionControlSection } from "@/screens/settings/mission-control-section";
 import { AppearanceSection } from "@/screens/settings/appearance/appearance-section";
 import {
   useAppSettings,
@@ -144,6 +146,11 @@ interface SidebarSectionItem {
 
 const SIDEBAR_SECTION_ITEMS: SidebarSectionItem[] = [
   { id: "general", labelKey: "settings.sections.general", icon: Settings },
+  {
+    id: "mission-control",
+    labelKey: "settings.sections.missionControl",
+    icon: Radar,
+  },
   { id: "appearance", labelKey: "settings.sections.appearance", icon: Palette },
   { id: "editor", labelKey: "settings.sections.editor", icon: Code2, webOnly: true },
   { id: "shortcuts", labelKey: "settings.sections.shortcuts", icon: Keyboard, desktopOnly: true },
@@ -1452,6 +1459,8 @@ export default function SettingsScreen({ view, openAddHostIntent = null }: Setti
               {isDesktopApp ? <BrowserDataSection /> : null}
             </>
           );
+        case "mission-control":
+          return <MissionControlSection />;
         case "appearance":
           return <AppearanceSection />;
         case "editor":

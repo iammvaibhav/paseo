@@ -86,10 +86,13 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
     listTargets: () => ipcRenderer.invoke("paseo:editor:listTargets"),
     openTarget: (input: {
       editorId: string;
-      workspacePath: string;
+      workspacePath?: string;
       filePath?: string;
       line?: number;
       column?: number;
+      path?: string;
+      cwd?: string;
+      sshHost?: string;
     }) => ipcRenderer.invoke("paseo:editor:openTarget", input),
   },
   webUtils: {
@@ -124,5 +127,20 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
     ) => ipcRenderer.invoke("paseo:browser:capture-element", browserId, rect),
     copyElement: (payload: { text?: string; imageDataUrl?: string }) =>
       ipcRenderer.invoke("paseo:browser:copy-element", payload),
+    preparePlannotator: (input: { browserId: string; remoteUrl: string }) =>
+      ipcRenderer.invoke("paseo:browser:prepare-plannotator", input) as Promise<{
+        url: string;
+        accelerated: boolean;
+      }>,
+    releasePlannotator: (browserId: string) =>
+      ipcRenderer.invoke("paseo:browser:release-plannotator", browserId),
+  },
+  browserEditor: {
+    setInsecureOrigins: (origins: string[]) =>
+      ipcRenderer.invoke("paseo:browser-editor:setInsecureOrigins", origins) as Promise<{
+        restartRequired: boolean;
+      }>,
+    getInsecureOrigins: () =>
+      ipcRenderer.invoke("paseo:browser-editor:getInsecureOrigins") as Promise<string[]>,
   },
 });

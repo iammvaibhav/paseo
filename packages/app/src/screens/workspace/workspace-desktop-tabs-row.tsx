@@ -21,6 +21,7 @@ import {
   CopyX,
   ArrowLeftToLine,
   ArrowRightToLine,
+  CircleCheck,
   Copy,
   Pencil,
   RotateCw,
@@ -101,6 +102,9 @@ import { buildSettingsHostSectionRoute } from "@/utils/host-routes";
 import type { TerminalProfile } from "@getpaseo/protocol/messages";
 import { TerminalProfileIcon } from "@/components/terminal-profile-icon";
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
+import { useSessionStore } from "@/stores/session-store";
+import { resolveSessionAgent } from "@/utils/agent-snapshots";
+import { deriveSidebarLifecycleBucket } from "@/utils/sidebar-agent-state";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 import { useWorkspaceDirectory } from "@/stores/session-store-hooks";
 import { useCheckoutStatusQuery } from "@/git/use-status-query";
@@ -131,6 +135,7 @@ const TAB_SCROLL_EDGE_EPSILON = 1;
 
 const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
 const ThemedX = withUnistyles(X);
+const ThemedCircleCheck = withUnistyles(CircleCheck);
 const ThemedCopy = withUnistyles(Copy);
 
 function WorkspaceTabScrollShadeSvg({ side, color }: { side: "left" | "right"; color: string }) {
@@ -564,6 +569,8 @@ function TabContextMenuItem({
         return <ThemedCopyX size={16} uniProps={mutedColorMapping} />;
       case "pencil":
         return <ThemedPencil size={16} uniProps={mutedColorMapping} />;
+      case "circle-check":
+        return <ThemedCircleCheck size={16} uniProps={mutedColorMapping} />;
       case "x":
         return <ThemedX size={16} uniProps={mutedColorMapping} />;
       default:
@@ -1282,6 +1289,7 @@ function ResolvedWorkspaceDesktopTabsRow({
   );
   const tabMenuLabels = useMemo<WorkspaceTabMenuLabels>(
     () => ({
+      markDone: t("workspace.tabs.menu.markDone"),
       copyResumeCommand: t("workspace.tabs.menu.copyResumeCommand"),
       copyAgentId: t("workspace.tabs.menu.copyAgentId"),
       copyTerminalId: t("workspace.tabs.menu.copyTerminalId"),
@@ -1537,6 +1545,7 @@ function ResolvedWorkspaceDesktopTabsRow({
         <ResolvedDesktopTabChip
           key={`${item.tab.key}:${item.tab.kind}`}
           item={item}
+          normalizedServerId={normalizedServerId}
           isFocused={isFocused}
           isDragging={isActive}
           index={index}
@@ -1576,6 +1585,7 @@ function ResolvedWorkspaceDesktopTabsRow({
       onCopyTerminalId,
       onCopyFilePath,
       onCopyResumeCommand,
+      normalizedServerId,
       onNavigateTab,
       onReloadAgent,
       onRenameTab,
@@ -1708,6 +1718,7 @@ function ResolvedWorkspaceDesktopTabsRow({
 }
 function ResolvedDesktopTabChip({
   item,
+  normalizedServerId,
   isFocused,
   isDragging,
   index,
@@ -1733,6 +1744,7 @@ function ResolvedDesktopTabChip({
   showDropIndicatorAfter,
 }: {
   item: ResolvedWorkspaceDesktopTabRowItem;
+  normalizedServerId: string;
   isFocused: boolean;
   isDragging: boolean;
   index: number;
@@ -1758,13 +1770,47 @@ function ResolvedDesktopTabChip({
   showDropIndicatorAfter: boolean;
 }) {
   const { t } = useTranslation();
+  const tabAgent = useSessionStore((state) =>
+    item.tab.target.kind === "agent"
+      ? resolveSessionAgent(state.sessions[normalizedServerId], item.tab.target.agentId)
+      : null,
+  );
+  const markDoneClient = useSessionStore(
+    (state) => state.sessions[normalizedServerId]?.client ?? null,
+  );
+  const showMarkDone =
+    tabAgent !== null &&
+    deriveSidebarLifecycleBucket({
+      bucket: tabAgent.bucket,
+      status: tabAgent.status,
+      pendingPermissionCount: tabAgent.pendingPermissions.length,
+      attentionReason: tabAgent.attentionReason,
+      stoppedBy: tabAgent.stoppedBy,
+    }) === "ready";
+  const handleMarkDone = useCallback(() => {
+    if (item.tab.target.kind !== "agent" || !markDoneClient) {
+      return;
+    }
+    void markDoneClient
+      .missionControlLifecycleSet({
+        serverId: normalizedServerId,
+        agentId: item.tab.target.agentId,
+        action: "done",
+      })
+      .catch(() => {
+        // Best-effort bookkeeping; a failed set leaves the agent Ready.
+      });
+  }, [markDoneClient, normalizedServerId, item.tab.target]);
   const presentation = item.presentation;
+
   const resolvedTab = useMemo(
     () =>
       buildWorkspaceDesktopTabActions({
         tab: item.tab,
         index,
         tabCount,
+        showMarkDone,
+        onMarkDone: handleMarkDone,
         onCopyResumeCommand,
         onCopyAgentId,
         onCopyTerminalId,
@@ -1791,6 +1837,8 @@ function ResolvedDesktopTabChip({
       labels,
       onReloadAgent,
       onRenameTab,
+      showMarkDone,
+      handleMarkDone,
       tabCount,
     ],
   );

@@ -61,6 +61,7 @@ import {
 } from "@/utils/agent-initialization";
 import { encodeImages } from "@/utils/encode-images";
 import { derivePendingPermissionKey } from "@/utils/agent-snapshots";
+import { storeFetchedAgentDetail } from "@/utils/hydrate-fetched-agent";
 import { getSendingClientMessageIds } from "@/composer/submission/model";
 import type { AttachmentMetadata } from "@/attachments/types";
 import { patchWorkspaceScripts } from "@/contexts/session-workspace-scripts";
@@ -245,15 +246,37 @@ function handleTimelineError(input: {
   }
 }
 
+// Timeline responses carry an agent snapshot. Persist it when the agent isn't
+// already in the directory, which is the normal case for history opened while
+// the provider is unavailable.
+function persistTimelineResponseAgent(input: {
+  agent: NonNullable<
+    Extract<SessionOutboundMessage, { type: "fetch_agent_timeline_response" }>["payload"]["agent"]
+  >;
+  agentId: string;
+  serverId: string;
+  session: SessionState | undefined;
+}): void {
+  const { agent, agentId, serverId, session } = input;
+  const known = session?.agents.get(agentId) ?? session?.agentDetails.get(agentId) ?? null;
+  if (known) {
+    return;
+  }
+  storeFetchedAgentDetail({ serverId, result: { agent, project: null } });
+}
+
 function executeTimelineSideEffects(input: {
   sideEffects: TimelineReducerSideEffect[];
   agentId: string;
   recoverTimelineGap: (agentId: string, cursor: { epoch: string; endSeq: number }) => void;
+  recoverTimelineBaseline: (agentId: string) => void;
 }): void {
-  const { sideEffects, agentId, recoverTimelineGap } = input;
+  const { sideEffects, agentId, recoverTimelineGap, recoverTimelineBaseline } = input;
   for (const effect of sideEffects) {
     if (effect.type === "catch_up") {
       recoverTimelineGap(agentId, effect.cursor);
+    } else if (effect.type === "rebaseline") {
+      recoverTimelineBaseline(agentId);
     }
   }
 }
@@ -395,6 +418,10 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
     [],
   );
 
+  const recoverTimelineBaseline = useCallback((agentId: string) => {
+    viewedTimelineSyncRef.current?.recoverBaseline(agentId);
+  }, []);
+
   const handleAppResumed = useCallback(
     (awayMs: number) => {
       void revalidateSessionAfterResume({
@@ -475,6 +502,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
     updateSessionServerInfo(serverId, {
       serverId: serverInfo.serverId,
       hostname: serverInfo.hostname,
+      missionControlHostAlias: serverInfo.missionControlHostAlias ?? null,
       version: serverInfo.version,
       ...(serverInfo.desktopManaged !== undefined
         ? { desktopManaged: serverInfo.desktopManaged }
@@ -487,11 +515,11 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
   useEffect(() => {
     const unregister = voiceRuntime?.registerSession({
       serverId,
-      setVoiceMode: async (enabled, agentId) => {
+      setVoiceMode: async (enabled, agentId, options) => {
         if (!client) {
           throw new Error(t("common.errors.daemonUnavailable"));
         }
-        await client.setVoiceMode(enabled, agentId);
+        await client.setVoiceMode(enabled, agentId, options);
       },
       sendVoiceAudioChunk: async (audioData, mimeType) => {
         if (!client) {
@@ -570,6 +598,11 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
         timeline.status === "synced" ? (timeline.range ?? undefined) : undefined;
       const currentTail = timeline.status === "cold" ? [] : timeline.items;
       const currentHead = session?.agentStreamHead.get(agentId) ?? [];
+
+      if (payload.agent) {
+        persistTimelineResponseAgent({ agent: payload.agent, agentId, serverId, session });
+      }
+
       const sendingClientMessageIds = getSendingClientMessageIds(
         session?.messageSubmissions.get(agentId),
       );
@@ -630,6 +663,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
         sideEffects: result.sideEffects,
         agentId,
         recoverTimelineGap,
+        recoverTimelineBaseline,
       });
 
       finalizeTimelineApplication({
@@ -645,6 +679,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       applyAgentTimelineResponseState,
       markAgentHistorySynchronized,
       recoverTimelineGap,
+      recoverTimelineBaseline,
       serverId,
       setAgentStreamState,
       setAgentTimelineHasNewer,
@@ -743,6 +778,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       setAgentStreamState,
       setAgentTimelineCursor,
       recoverTimelineGap,
+      recoverTimelineBaseline,
     });
 
     const unsubAgentStream = client.on("agent_stream", (message) => {
@@ -829,6 +865,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
         updateSessionServerInfo(serverId, {
           serverId: serverInfo.serverId,
           hostname: serverInfo.hostname,
+          missionControlHostAlias: serverInfo.missionControlHostAlias ?? null,
           version: serverInfo.version,
           ...(serverInfo.desktopManaged !== undefined
             ? { desktopManaged: serverInfo.desktopManaged }
@@ -1018,6 +1055,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
     setPendingPermissions,
     notifyAgentAttention,
     recoverTimelineGap,
+    recoverTimelineBaseline,
     applyWorkspaceSetupProgress,
     applyTimelineResponse,
     updateSessionServerInfo,

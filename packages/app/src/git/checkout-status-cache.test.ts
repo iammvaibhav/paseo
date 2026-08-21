@@ -121,6 +121,21 @@ describe("fetchCheckoutStatus", () => {
 
     expect(useReviewDraftStore.getState().diffModeOverrides["review:scope"]).toBeUndefined();
   });
+
+  it("throws instead of returning a payload that carries an error", async () => {
+    const client = {
+      getCheckoutStatus: vi.fn(async () =>
+        checkoutStatus({
+          isGit: false,
+          error: { code: "UNKNOWN", message: "git status timed out" },
+        }),
+      ),
+    };
+
+    await expect(fetchCheckoutStatus({ client, serverId, cwd })).rejects.toThrow(
+      "git status timed out",
+    );
+  });
 });
 
 describe("ensureCheckoutStatus", () => {
@@ -154,6 +169,23 @@ describe("ensureCheckoutStatus", () => {
 
     expect(result.currentBranch).toBe("feature/current");
     expect(client.getCheckoutStatus).toHaveBeenCalledExactlyOnceWith(cwd);
+  });
+
+  it("never caches a payload that carries an error as checkout status data", async () => {
+    const queryClient = createQueryClient();
+    const client = {
+      getCheckoutStatus: vi.fn(async () =>
+        checkoutStatus({
+          isGit: false,
+          error: { code: "UNKNOWN", message: "git status timed out" },
+        }),
+      ),
+    };
+
+    await expect(ensureCheckoutStatus({ queryClient, client, serverId, cwd })).rejects.toThrow(
+      "git status timed out",
+    );
+    expect(queryClient.getQueryData(checkoutStatusQueryKey(serverId, cwd))).toBeUndefined();
   });
 });
 

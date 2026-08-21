@@ -60,6 +60,12 @@ PASEO_DEV_SEED_HOME=/path/to/home npm run dev # seed from a different source hom
 PASEO_DEV_RESET_HOME=1 npm run dev            # clear and reseed the derived worktree home
 ```
 
+### Fast worktrees (shared node_modules)
+
+Worktree setup (`paseo.json` → `scripts/worktree-setup.mjs`) does not run `npm ci` in every worktree. When the worktree's `package-lock.json` matches the source checkout's, it symlinks the source checkout's `node_modules` (root and per-package) into the worktree — setup takes seconds and adds ~0 disk per worktree. When the lockfile differs (the branch changed dependencies), it falls back to a real `npm ci` and that worktree becomes independent.
+
+Ownership rule: **the source checkout owns `node_modules`.** Never run `npm install` / `npm ci` inside a worktree — it rewrites the shared tree and breaks every other worktree sharing it. Change dependencies on the branch, then re-run the worktree setup (it detects the lockfile change and installs fresh); or install in the source checkout. Existing worktrees that already have a real `node_modules` keep it and stay independent.
+
 ### Daemon endpoints
 
 - Stable daemon launched by the desktop app: `localhost:6767`.
@@ -306,10 +312,81 @@ Check `$PASEO_HOME/daemon.log` for daemon logs. The default level is `info`; set
 `PASEO_LOG_LEVEL=trace` before launching the daemon when you need full provider,
 session, and agent-manager traces for stuck-state debugging.
 
+#### Turn lifecycle trail
+
+Turn lifecycle and prompt latency log at `info`/`warn`, so a stuck spinner or a
+late "thinking" indicator can be diagnosed from a normal `daemon.log` after the
+fact. Two lines per turn; trace is not required.
+
+| Line                                                | Level       | Read it for                                                                                                                   |
+| --------------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `agent.prompt.dispatch` / `_slow`                   | info / warn | Phase breakdown from prompt receipt: `ensureLoadedMs` (cold provider resume), `setModeMs`, `startRunMs`, `totalMs`            |
+| `agent.run.replace_cancelled_previous`              | info        | `cancelMs` — how long interrupting the previous turn took when you sent while busy                                            |
+| `agent.turn.dispatched` / `_slow`                   | info / warn | `startTurnMs` — provider handshake before the agent shows as running. The spinner appears at the end of this                  |
+| `agent.manager.turn.started`                        | info        | The turn Paseo believes it owns. `isForegroundEvent: false` means the provider started a turn Paseo did not                   |
+| `agent.manager.turn.started_outside_foreground_run` | warn        | Turn-id desync. Only a terminal event with a matching-or-absent id can settle it                                              |
+| `agent.manager.turn.completed` / `.canceled`        | info        | Proof the finished turn settled Paseo's lifecycle. **A spinner that never stops is diagnosed by its absence**                 |
+| `agent.manager.turn.completed_held_for_replacement` | warn        | Terminal event arrived but `pendingReplacement` held the agent busy. If the replacement never starts, this is the stuck point |
+| `omp.turn.idle_wait_abandoned_terminalizing`        | warn        | OMP's post-`agent_end` idle wait gave up; the terminal event was synthesized rather than lost                                 |
+
+The periodic `ws_runtime_metrics` line carries `agents.running[]`: one row per
+running agent with `agentId`, `hasForegroundTurn`, `hasTrackedRun`, and
+`staleMs`. A live turn has a small `staleMs`; a zombie's is frozen at its last
+stream event. This is how you name the stuck agent and its onset time:
+
+```bash
+grep ws_runtime_metrics "$PASEO_HOME/daemon.log" \
+  | jq -c '{t:(.time/1000|floor|todate), running:.agents.running}'
+```
+
 The supervisor rotates `daemon.log`. Persisted `log.file.rotate` settings in
 `$PASEO_HOME/config.json` win first. Without persisted config, the optional
 `PASEO_LOG_ROTATE_SIZE` and `PASEO_LOG_ROTATE_COUNT` env vars override the
 defaults. The default rotation is `10m` x `3` files everywhere.
+
+#### Complete agent-start span (click to running)
+
+When an agent feels slow to start, reconstruct the full span from the client
+click to the lifecycle flip. The pieces live in `daemon.log` (create phases,
+pool claim, turn start) plus two off-daemon sources: the omp process log
+(`~/.omp/logs/omp.<pid>.log`, model/account init) and the Hindsight service
+(docker logs on the host running it, recall cost).
+
+One record per phase, all keyed by `agentId` or `cwd`:
+
+| Line                                           | Level       | Read it for                                                                                                                                                                                         |
+| ---------------------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `client.loader.span`                           | info        | Client-side click→running total (`path`, `totalMs`, `startedAt`). Sent only when `features.loaderSpanReport` is advertised                                                                          |
+| `agent.create.session` / `_slow`               | info / warn | Create request total with `intentMs` + `createCommandMs` (session handler)                                                                                                                          |
+| `provider.resolve_create_config` / `_slow`     | info / warn | `readyMs` — wait for the provider snapshot before mode resolution                                                                                                                                   |
+| `agent.create.resolve_default_model` / `_slow` | info / warn | `modelResolveMs` — cold omp catalog fetch when the create carried no model                                                                                                                          |
+| `agent.create.manager` / `_slow`               | info / warn | Phase split inside AgentManager.createAgent: `deleteStateMs`, `prepareMs` (session config incl. model), `clientReadyMs` (provider probe), `launchContextMs`, `sessionMs` (pool claim), `registerMs` |
+| `omp.catalog.fetch` / `_slow`                  | info / warn | Catalog fetch split: `runtimeStartMs` (cold omp boot) vs `modelsMs` (model list RPC)                                                                                                                |
+| `omp.runtime.acquire`                          | info / warn | Pool claim: `poolHit`, `claimMs`, `newSessionMs`, `setModelMs`, or cold `bootMs`/`totalMs`                                                                                                          |
+| `agent.turn.dispatched` / `_slow`              | info / warn | `startTurnMs` — provider handshake before the agent shows as running                                                                                                                                |
+| `agent.manager.turn.started`                   | info        | Lifecycle flip to running — what the UI loader waits for                                                                                                                                            |
+
+Reconstruct with one grep over `$PASEO_HOME/daemon.log` (all lines carry
+`agentId` except the provider-snapshot ones, which carry `cwd`):
+
+```bash
+AGENT=7c905568-275c-495b-81e5-26922384bc7f
+grep -E "$AGENT|client.loader.span" "$PASEO_HOME/daemon.log" | tail -20
+```
+
+Then add the off-daemon legs for the same window:
+
+- **omp process** (model/account init, first-prompt warm-up):
+  `grep -E "account-routing|Computer tool" ~/.omp/logs/omp.*.log | grep "12:48"`
+- **Hindsight recall** (per-prompt memory fetch): on the host running the
+  Hindsight container, `docker logs hindsight --since <start> --until <end>` and
+  read the `[RECALL omp]` block. The `Complete:` line carries total seconds.
+
+Known cost shape (measured on this fleet): create request ~150-850ms (pool hit
+~60ms; the rest is session work), hindsight recall ~200-570ms on the first
+prompt of a fresh process (autoRecall), model-client/account init ~50-150ms,
+then TTFT. A cold `resolve_default_model` (no model in the create request)
+adds a full cold omp boot (~700ms) before the claim.
 
 ### Git process pressure
 
@@ -501,6 +578,51 @@ For tighter loops, you can rebuild a single workspace:
 - Changed `packages/protocol/src/*` or `packages/client/src/*`: `npm run build:client`.
 - Changed `packages/server/src/*`, `packages/cli/src/*`, `packages/relay/src/*`, or `packages/highlight/src/*`: `npm run build:server`.
 - Changed app build dependencies: `npm run build:app-deps`.
+
+## Local desktop builds (unsigned)
+
+`npm run build:desktop` is wired for CI, where release signing credentials exist. Run it bare on a dev Mac and two things go wrong:
+
+1. **Signing hangs or fails.** electron-builder auto-discovers whatever Apple identity is in the keychain (e.g. a personal "Apple Development" cert) and, because `electron-builder.yml` sets `notarize: true`, then stalls on notarization credentials that aren't set.
+2. **An ad-hoc build with hardened runtime crashes at launch.** `hardenedRuntime: true` survives into ad-hoc-signed builds. Hardened runtime enforces library validation — every loaded framework must share the process's Team ID — and ad-hoc signatures have no Team ID, so dyld aborts loading `Electron Framework` with `mapping process and mapped file (non-platform) have different Team IDs` (SIGABRT at launch). Signed release builds never hit this because everything shares the real team.
+
+For a personal, run-on-this-machine-only build, disable all three:
+
+```bash
+CSC_IDENTITY_AUTO_DISCOVERY=false npm run build:desktop -- -c.mac.notarize=false -c.mac.hardenedRuntime=false
+```
+
+Output lands in `packages/desktop/release/` (DMG, zip, and the raw `mac-arm64/Paseo.app`). If the web app hasn't changed since a previous export, you can skip the Expo export and rebuild only the packaging step: `CSC_IDENTITY_AUTO_DISCOVERY=false npm run build --workspace=@getpaseo/desktop -- <same flags>` (it reuses `packages/app/dist`).
+
+Rescuing an already-built app that has the hardened-runtime flag: `codesign --force --deep --sign - <path to .app>` re-signs everything ad-hoc without the flag.
+
+Two install gotchas:
+
+- **Never copy an unsigned build over the installed signed Paseo.app** (or vice versa). A file-level merge (`cp -R`, `ditto` onto an existing bundle, or replacing while running) leaves a bundle with mixed signatures, which crashes at launch with the same different-Team-IDs dyld abort. Install under a different name (e.g. `Paseo Test.app`) or delete the old bundle first.
+- **Don't run two builds into the same `release/` directory concurrently.** electron-builder runs race on the output files and cross-contaminate artifacts.
+
+### App-only changes (no daemon rebuild)
+
+When a change only touches `packages/app` (UI components, styles, markdown rendering, etc.) and does not change any server/daemon/CLI/protocol code, skip the sync script entirely — the daemon doesn't need rebuilding or restarting.
+
+Build and install the test app:
+
+```bash
+# Full build (Expo web export + Electron packaging):
+CSC_IDENTITY_AUTO_DISCOVERY=false npm run build:desktop -- -c.mac.notarize=false -c.mac.hardenedRuntime=false
+
+# Install as "Paseo Test" alongside the signed production app:
+cp -R packages/desktop/release/mac-arm64/Paseo.app "/Applications/Paseo Test.app"
+```
+
+If only Electron/desktop-wrapper code changed (not the web app), skip the Expo export and repackage from the existing `packages/app/dist`:
+
+```bash
+CSC_IDENTITY_AUTO_DISCOVERY=false npm run build --workspace=@getpaseo/desktop -- -c.mac.notarize=false -c.mac.hardenedRuntime=false
+cp -R packages/desktop/release/mac-arm64/Paseo.app "/Applications/Paseo Test.app"
+```
+
+**How to tell:** if `git diff` only shows files under `packages/app/src`, `packages/app/package.json`, or root `package-lock.json` (new app deps), it's app-only. If any file under `packages/server`, `packages/cli`, `packages/protocol`, `packages/relay`, or `packages/highlight` changed, use the full sync script instead.
 
 ## ACP provider catalog versions
 

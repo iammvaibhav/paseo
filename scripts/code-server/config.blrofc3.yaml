@@ -1,0 +1,4 @@
+# code-server on blrofc3 — bind Tailscale IP only
+bind-addr: 100.105.100.71:8765
+auth: none
+cert: false

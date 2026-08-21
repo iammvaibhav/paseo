@@ -8,30 +8,35 @@ export const OMP_HANDLED_BUILTIN_SLASH_COMMANDS: readonly AgentSlashCommand[] = 
     description: "Manually compact the session context",
     argumentHint: "[instructions]",
     kind: "command",
+    delivery: "out_of_band",
   },
   {
     name: "autocompact",
     description: "Toggle automatic context compaction",
     argumentHint: "[on|off|toggle]",
     kind: "command",
+    delivery: "out_of_band",
   },
   {
     name: "handoff",
     description: "Hand off from planning to implementation",
     argumentHint: "[instructions]",
     kind: "command",
+    delivery: "out_of_band",
   },
   {
     name: "steer",
     description: "Steer the active OMP turn",
     argumentHint: "<message>",
     kind: "command",
+    delivery: "out_of_band",
   },
   {
     name: "follow-up",
     description: "Queue a follow-up message for OMP",
     argumentHint: "<message>",
     kind: "command",
+    delivery: "out_of_band",
   },
 ];
 
@@ -46,6 +51,9 @@ export function mapOmpSlashCommands(commands: readonly OmpAvailableCommand[]): A
       description: command.description ?? command.source ?? "command",
       argumentHint: command.input?.hint ?? knownCommand?.argumentHint ?? "",
       kind: mapOmpCommandKind(command.source),
+      // OMP re-reports its builtins in get_available_commands; keep the
+      // delivery we know about so /steer never turns back into a queued turn.
+      ...(knownCommand?.delivery ? { delivery: knownCommand.delivery } : {}),
     });
   }
   return [...mappedCommands.values()];

@@ -194,6 +194,12 @@ describe("highlightCode", () => {
       }
     }
   });
+
+  it("loads the svelte highlighter without missing peer imports", () => {
+    const tokens = highlightCode("<script>const n = 1;</script>", "Widget.svelte").flat();
+    expect(tokens.length).toBeGreaterThan(0);
+    expect(tokens.some((token) => token.text.includes("script"))).toBe(true);
+  });
 });
 
 describe("highlightLine", () => {

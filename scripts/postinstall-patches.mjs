@@ -1,6 +1,6 @@
 import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { join, relative } from "node:path";
+import { join, relative, resolve } from "node:path";
 
 // In CI we often install a single workspace (e.g. server/relay/website). Only apply patches
 // when the patched dependency is actually present.
@@ -28,6 +28,11 @@ const patchedPackages = [
     nodeModulesPath: "packages/server/node_modules/@opencode-ai/sdk",
     patchPrefix: "@opencode-ai+sdk+",
     cwd: "packages/server",
+  },
+  {
+    nodeModulesPath: "node_modules/@parcel/watcher",
+    patchPrefix: "@parcel+watcher+",
+    rebuildNative: true,
   },
 ];
 
@@ -88,6 +93,30 @@ for (const [cwd, files] of patchFilesByCwd) {
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }
+}
+
+// @parcel/watcher ships native code as prebuilt platform packages; patching the
+// source alone does not change what the daemon loads. Rebuild the binding from
+// the patched source (index.js prefers ./build/Release/watcher.node) so the
+// inotify EINTR retry is actually live. Requires a C++ toolchain (node-gyp);
+// the repo already requires one for its React Native native deps.
+const needsNativeRebuild = installedPackages.some(({ rebuildNative }) => rebuildNative);
+if (needsNativeRebuild) {
+  const nodeGyp = resolve("node_modules", "node-gyp", "bin", "node-gyp.js");
+  const watcherDir = "node_modules/@parcel/watcher";
+  if (!existsSync(nodeGyp)) {
+    console.error("postinstall-patches: node-gyp not found; cannot rebuild @parcel/watcher");
+    process.exit(1);
+  }
+  const rebuild = spawnSync(process.execPath, [nodeGyp, "rebuild"], {
+    cwd: watcherDir,
+    stdio: "inherit",
+  });
+  if (rebuild.status !== 0) {
+    console.error("postinstall-patches: failed to rebuild @parcel/watcher");
+    process.exit(rebuild.status ?? 1);
+  }
+  console.log("postinstall-patches: rebuilt @parcel/watcher from patched source");
 }
 
 process.exit(0);

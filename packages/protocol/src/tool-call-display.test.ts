@@ -142,7 +142,7 @@ describe("shared tool-call display mapping", () => {
       error: null,
       detail: { type: "unknown", input: null, output: null },
     });
-    expect(display.displayName).toBe("Create Agent");
+    expect(display.displayName).toBe("Spawned subagent");
   });
 
   it("humanizes Paseo MCP tool names (Codex format)", () => {
@@ -152,7 +152,7 @@ describe("shared tool-call display mapping", () => {
       error: null,
       detail: { type: "unknown", input: null, output: null },
     });
-    expect(display.displayName).toBe("Create Agent");
+    expect(display.displayName).toBe("Spawned subagent");
   });
 
   it("humanizes list_agents Paseo tool", () => {
@@ -189,5 +189,130 @@ describe("shared tool-call display mapping", () => {
     expect(display).toEqual({
       displayName: "Plan",
     });
+  });
+
+  it("summarizes eval with the cell title", () => {
+    const display = buildToolCallDisplayModel({
+      name: "eval",
+      status: "running",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { language: "py", code: "print(1)", title: "load config" },
+        output: null,
+      },
+    });
+    expect(display).toEqual({ displayName: "Eval", summary: "load config" });
+  });
+
+  it("falls back to the first code line when an eval cell has no title", () => {
+    const display = buildToolCallDisplayModel({
+      name: "eval",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { language: "js", code: "\n\n  await Bun.file('x').text()\n" },
+        output: null,
+      },
+    });
+    expect(display.summary).toBe("await Bun.file('x').text()");
+  });
+  it("builds Web Search display for search detail with web_search toolName", () => {
+    const display = buildToolCallDisplayModel({
+      name: "web_search",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "search",
+        query: "Gemini 3.6 Flash",
+        toolName: "web_search",
+      },
+    });
+    expect(display).toEqual({ displayName: "Web Search", summary: "Gemini 3.6 Flash" });
+  });
+
+  it("builds Web Search display for unknown detail matching web_search", () => {
+    const display = buildToolCallDisplayModel({
+      name: "web_search",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { i: "Search comparison", query: "Gemini 3.6 Flash vs DeepSeek" },
+        output: null,
+      },
+    });
+    expect(display).toEqual({ displayName: "Web Search", summary: "Gemini 3.6 Flash vs DeepSeek" });
+  });
+  it("resolves host=local to resolved alias for fleet_create_agent and fleet_send_prompt", () => {
+    const resolveHost = (h: string) => (h === "local" ? "vaibhav-dev" : h);
+    const createDisplay = buildToolCallDisplayModel({
+      name: "fleet_create_agent",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { host: "local", provider: "codex/gpt-5.4" },
+        output: { details: { agentId: "worker-1" } },
+      },
+      resolveHost,
+    });
+    expect(createDisplay.displayName).toBe("Spawned worker-1 on vaibhav-dev");
+
+    const sendDisplay = buildToolCallDisplayModel({
+      name: "fleet_send_prompt",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { host: "local", agentId: "worker-1", prompt: "hello" },
+        output: null,
+      },
+      resolveHost,
+    });
+    expect(sendDisplay.displayName).toBe("→ Steered worker-1 (vaibhav-dev)");
+  });
+
+  it("labels create_agent (the subagent spawn form) with the subagent type word", () => {
+    const display = buildToolCallDisplayModel({
+      name: "create_agent",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { provider: "codex/gpt-5.4", initialPrompt: "fix it" },
+        output: { details: { agentId: null } },
+      },
+    });
+    expect(display.displayName).toBe("Spawned subagent");
+  });
+
+  it("never doubles the type word when the resolved name already says it", () => {
+    const doubledName = buildToolCallDisplayModel({
+      name: "create_agent",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { provider: "codex/gpt-5.4" },
+        output: { details: { agentId: "child-9" } },
+      },
+      agentNames: { "child-9": "subagent" },
+    });
+    expect(doubledName.displayName).toBe("Spawned subagent");
+
+    const fleetDoubled = buildToolCallDisplayModel({
+      name: "fleet_create_agent",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { host: "work" },
+        output: { details: { agentId: "agent-9" } },
+      },
+      agentNames: { "agent-9": "agent" },
+    });
+    expect(fleetDoubled.displayName).toBe("Spawned agent on work");
   });
 });

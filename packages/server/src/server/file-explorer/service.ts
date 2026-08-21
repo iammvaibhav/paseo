@@ -288,6 +288,85 @@ export async function readExplorerFileBytes({
   }
 }
 
+export interface PrepareExplorerFileWriteParams {
+  root: string;
+  directoryPath?: string;
+  fileName: string;
+}
+
+export interface ExplorerFileWriteDestination {
+  /** Relative path of the written file under root (posix separators). */
+  path: string;
+  absolutePath: string;
+  fileName: string;
+  absoluteTempPath: string;
+}
+
+/**
+ * Resolve a sandboxed destination for writing a file into an explorer directory.
+ * The parent directory must already exist and be a directory. The file itself may
+ * be new (missing) or overwritten.
+ */
+export async function prepareExplorerFileWrite({
+  root,
+  directoryPath = ".",
+  fileName,
+}: PrepareExplorerFileWriteParams): Promise<ExplorerFileWriteDestination> {
+  const sanitizedName = sanitizeExplorerFileName(fileName);
+  const parent = await resolveScopedPath({ root, relativePath: directoryPath });
+  let parentStats: Awaited<ReturnType<typeof fs.stat>>;
+  try {
+    parentStats = await fs.stat(parent.resolvedPath);
+  } catch (error) {
+    if (isMissingEntryError(error)) {
+      throw new Error("Destination directory does not exist", { cause: error });
+    }
+    throw error;
+  }
+  if (!parentStats.isDirectory()) {
+    throw new Error("Destination path is not a directory");
+  }
+
+  const parentRelative = normalizeRelativePath({ root, targetPath: parent.requestedPath });
+  const fileRelative =
+    parentRelative === "." ? sanitizedName : `${parentRelative}/${sanitizedName}`;
+
+  // Final path must stay inside the root even when the file does not exist yet.
+  const fileScoped = await resolveScopedPath({ root, relativePath: fileRelative });
+
+  // If an existing path is a directory, refuse to clobber it with a file.
+  try {
+    const existing = await fs.stat(fileScoped.resolvedPath);
+    if (existing.isDirectory()) {
+      throw new Error("A directory with that name already exists");
+    }
+  } catch (error) {
+    if (!isMissingEntryError(error)) {
+      throw error;
+    }
+  }
+
+  const absoluteTempPath = `${fileScoped.resolvedPath}.paseo-upload-${process.pid}-${Date.now()}`;
+
+  return {
+    path: normalizeRelativePath({ root, targetPath: fileScoped.requestedPath }),
+    absolutePath: fileScoped.resolvedPath,
+    fileName: sanitizedName,
+    absoluteTempPath,
+  };
+}
+
+function sanitizeExplorerFileName(value: string): string {
+  const name = path
+    .basename(value)
+    .replace(/[^a-zA-Z0-9._ -]/g, "_")
+    .trim();
+  if (!name || name === "." || name === "..") {
+    return "upload";
+  }
+  return name;
+}
+
 export async function streamExplorerFile(
   { root, relativePath }: ReadFileParams,
   consume: (file: FileExplorerFileStream) => Promise<void>,
@@ -531,24 +610,59 @@ export async function writeExplorerFile({
   }
 }
 
-export async function getDownloadableFileInfo({ root, relativePath }: ReadFileParams): Promise<{
+export type DownloadableEntryKind = "file" | "directory";
+
+export interface DownloadableEntryInfo {
   path: string;
   absolutePath: string;
   fileName: string;
   mimeType: string;
   size: number;
-}> {
-  const filePath = await resolveScopedPath({ root, relativePath });
-  const handle = await openFileForRead(filePath.resolvedPath);
+  kind: DownloadableEntryKind;
+}
 
+/** @deprecated Prefer getDownloadableEntryInfo — kept as a file-only alias for older callers. */
+export async function getDownloadableFileInfo(
+  params: ReadFileParams,
+): Promise<DownloadableEntryInfo> {
+  const info = await getDownloadableEntryInfo(params);
+  if (info.kind !== "file") {
+    throw new Error("Requested path is not a file");
+  }
+  return info;
+}
+
+/**
+ * Resolve a sandboxed file or directory for download. Directories are served as
+ * a zip (fileName ends with .zip, mime application/zip); size is 0 until streamed.
+ */
+export async function getDownloadableEntryInfo({
+  root,
+  relativePath,
+}: ReadFileParams): Promise<DownloadableEntryInfo> {
+  const scoped = await resolveScopedPath({ root, relativePath });
+  const stats = await fs.stat(scoped.resolvedPath);
+  const relative = normalizeRelativePath({ root, targetPath: scoped.requestedPath });
+
+  if (stats.isDirectory()) {
+    const baseName = path.basename(scoped.resolvedPath) || "folder";
+    return {
+      path: relative,
+      absolutePath: scoped.resolvedPath,
+      fileName: `${baseName}.zip`,
+      mimeType: "application/zip",
+      size: 0,
+      kind: "directory",
+    };
+  }
+
+  if (!stats.isFile()) {
+    throw new Error("Requested path is not a file or directory");
+  }
+
+  const handle = await openFileForRead(scoped.resolvedPath);
   try {
-    const stats = await handle.stat();
-
-    if (!stats.isFile()) {
-      throw new Error("Requested path is not a file");
-    }
-
-    const ext = path.extname(filePath.resolvedPath).toLowerCase();
+    const ext = path.extname(scoped.resolvedPath).toLowerCase();
     let mimeType = "application/octet-stream";
     if (ext in IMAGE_MIME_TYPES) {
       mimeType = IMAGE_MIME_TYPES[ext];
@@ -562,11 +676,12 @@ export async function getDownloadableFileInfo({ root, relativePath }: ReadFilePa
     }
 
     return {
-      path: normalizeRelativePath({ root, targetPath: filePath.requestedPath }),
-      absolutePath: filePath.resolvedPath,
-      fileName: path.basename(filePath.requestedPath),
+      path: relative,
+      absolutePath: scoped.resolvedPath,
+      fileName: path.basename(scoped.requestedPath),
       mimeType,
       size: stats.size,
+      kind: "file",
     };
   } finally {
     await handle.close();
