@@ -98,6 +98,9 @@ export interface PanelState {
   inspectorWidth: number;
   /** Mission Control board rail collapsed (persisted). */
   boardRailCollapsed: boolean;
+  // File panel's tree rail. The changes panel keeps its own flag in
+  // `useChangesPreferences`; the two rails open and close independently.
+  fileTreeVisible: boolean;
 
   // Actions
   toggleFocusMode: () => void;
@@ -134,6 +137,7 @@ export interface PanelState {
   setInspectorWidth: (width: number) => void;
   setBoardRailCollapsed: (collapsed: boolean) => void;
   toggleBoardRailCollapsed: () => void;
+  toggleFileTreeVisible: () => void;
 }
 
 const DEFAULT_DESKTOP_OPEN = isWeb;
@@ -172,6 +176,7 @@ export const usePanelStore = create<PanelState>()(
       boardRailWidth: DEFAULT_BOARD_RAIL_WIDTH,
       inspectorWidth: DEFAULT_INSPECTOR_WIDTH,
       boardRailCollapsed: false,
+      fileTreeVisible: true,
 
       toggleFocusMode: () =>
         set((state) => ({
@@ -325,10 +330,11 @@ export const usePanelStore = create<PanelState>()(
       toggleExplorerShowHiddenFiles: () =>
         set((state) => ({ explorerShowHiddenFiles: !state.explorerShowHiddenFiles })),
       setTreeRailWidth: (width) => set({ treeRailWidth: clampTreeRailWidth(width) }),
+      toggleFileTreeVisible: () => set((state) => ({ fileTreeVisible: !state.fileTreeVisible })),
     }),
     {
       name: "panel-state",
-      version: 15,
+      version: 16,
       storage: createValidatedPersistStorage(AsyncStorage, PanelPersistedStateSchema),
       migrate: (persistedState, version) => migratePanelState(persistedState, version),
       partialize: (state) => ({
@@ -346,6 +352,7 @@ export const usePanelStore = create<PanelState>()(
         boardRailWidth: state.boardRailWidth,
         inspectorWidth: state.inspectorWidth,
         boardRailCollapsed: state.boardRailCollapsed,
+        fileTreeVisible: state.fileTreeVisible,
       }),
     },
   ),

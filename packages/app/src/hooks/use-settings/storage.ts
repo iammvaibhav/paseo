@@ -97,6 +97,8 @@ export interface AppSettings {
   defaultFileOpener: DefaultFileOpener;
   /** How to deliver Plannotator feedback to the linked agent. */
   plannotatorFeedbackMode: PlannotatorFeedbackMode;
+  /** Route implicitly opened supporting tabs into the Side panel. Desktop only. */
+  openSupportingTabsInSidePanel: boolean;
 }
 
 export interface Settings extends AppSettings {
@@ -149,6 +151,7 @@ const StoredAppSettingsSchema = z.strictObject({
   // COMPAT(defaultFileOpener): earlier boolean that mapped markdown to Plannotator.
   openMarkdownInPlannotator: z.boolean().optional(),
   plannotatorFeedbackMode: z.enum(["auto-send", "compose"]).optional(),
+  openSupportingTabsInSidePanel: z.boolean().optional(),
   // COMPAT(rendererDesktopSettings): these fields used to share this renderer-owned key.
   manageBuiltInDaemon: z.boolean().optional(),
   releaseChannel: z.enum(["stable", "beta"]).optional(),
@@ -181,6 +184,7 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   vimKeybindings: false,
   defaultFileOpener: "paseo",
   plannotatorFeedbackMode: "auto-send",
+  openSupportingTabsInSidePanel: true,
 };
 
 export const DEFAULT_APP_SETTINGS: Settings = {
@@ -342,6 +346,9 @@ function pickBooleanAppSettings(stored: StoredAppSettings): Partial<AppSettings>
   }
   if (typeof stored.chatOutlineEnabled === "boolean") {
     result.chatOutlineEnabled = stored.chatOutlineEnabled;
+  }
+  if (typeof stored.openSupportingTabsInSidePanel === "boolean") {
+    result.openSupportingTabsInSidePanel = stored.openSupportingTabsInSidePanel;
   }
   return result;
 }

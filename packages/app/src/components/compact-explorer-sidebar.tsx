@@ -513,7 +513,7 @@ function ExplorerSidebarContent({
             nativeID="explorer-close"
             accessible
             accessibilityRole="button"
-            accessibilityLabel={t("workspace.tabs.explorer.close")}
+            accessibilityLabel={t("workspace.tabs.sidePanel.close")}
             hitSlop={8}
           >
             {({ hovered, pressed }) => (

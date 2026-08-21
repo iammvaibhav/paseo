@@ -777,10 +777,8 @@ function NativeStreamViewport<T>(props: StreamRenderInput<T> & { strategy: Strea
       scrollEventThrottle={16}
       onContentSizeChange={handleContentSizeChange}
       maintainVisibleContentPosition={maintainVisibleContentPosition}
-      initialNumToRender={40}
-      maxToRenderPerBatch={40}
-      updateCellsBatchingPeriod={0}
-      windowSize={21}
+      initialNumToRender={12}
+      windowSize={10}
       removeClippedSubviews={false}
       scrollEnabled={scrollEnabled}
       showsVerticalScrollIndicator

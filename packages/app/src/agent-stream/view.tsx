@@ -26,7 +26,7 @@ import { MAX_CONTENT_WIDTH, useIsCompactFormFactor } from "@/constants/layout";
 import { useMutation } from "@tanstack/react-query";
 import { Check, X } from "lucide-react-native";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
-import { openExplorerSurface } from "@/workspace-tabs/explorer-surface";
+import { openSidePanelView } from "@/workspace-tabs/side-panel";
 import {
   AssistantMessage,
   SpeakMessage,
@@ -115,6 +115,7 @@ import type { WorkspaceDraftForkSource } from "@/workspace-tabs/model";
 import type { SelectionAskConfig } from "@/selection-ask/use-selection-ask";
 import { ProposalCard } from "@/screens/mission-control/proposal-card";
 import type { FeedCardEvent } from "@/screens/mission-control/feed-card";
+import { useStreamHistoryWindow } from "./use-stream-history-window";
 
 function renderLiveAuxiliaryNode(input: {
   pendingPermissions: ReactNode;
@@ -425,9 +426,6 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       agentId,
       toast,
     });
-    // The external pagination source is a prop (inspector-composer path); the
-    // internal one is the agent-chat hook. Memoize the merged view so no new
-    // object flows from render scope into the viewport props (react-perf).
     const paginationState = useMemo(
       () =>
         historyPagination
@@ -451,8 +449,12 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         agentHistoryPagination.progressKey,
       ],
     );
-    const { isLoadingOlder, hasOlder, progressKey, loadOlder } = paginationState;
-
+    const {
+      isLoadingOlder: remoteIsLoadingOlder,
+      hasOlder: remoteHasOlder,
+      progressKey: remoteProgressKey,
+      loadOlder: loadRemoteOlder,
+    } = paginationState;
     useEffect(() => {
       setExpandedInlineToolCallIds(new Set());
       setExpandedToolCallGroupIds(new Set());
@@ -502,7 +504,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           setCurrentPath: false,
         });
 
-        openExplorerSurface({
+        openSidePanelView({
           isCompact: isMobile,
           workspaceKey: buildWorkspaceTabPersistenceKey({
             serverId: resolvedServerId,
@@ -585,6 +587,19 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         toolCallDetailLevel,
       ],
     );
+    const {
+      start: historyWindowStart,
+      hasLocalHistory,
+      revealLoadedHistory,
+      loadOlder,
+    } = useStreamHistoryWindow({
+      agentId,
+      items: projectedToolCalls.tail,
+      loadRemoteOlder,
+    });
+    const isLoadingOlder = remoteIsLoadingOlder;
+    const hasOlder = hasLocalHistory || remoteHasOlder;
+    const progressKey = `${remoteProgressKey ?? "local"}:${historyWindowStart}`;
 
     const baseRenderModel = useMemo(() => {
       return buildAgentStreamRenderModel({
@@ -594,6 +609,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         head: projectedToolCalls.head,
         platform: isWeb ? "web" : "native",
         isMobileBreakpoint: isMobile,
+        historyStart: historyWindowStart,
       });
     }, [
       isMobile,
@@ -601,6 +617,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       projectedToolCalls.head,
       projectedToolCalls.tail,
       effectiveTurnPresentation.startedAt,
+      historyWindowStart,
     ]);
     const streamLayout = useMemo(
       () =>
@@ -622,6 +639,13 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     const handleTimelineHistoryLoadError = useCallback(() => {
       toast?.error(t("agentStream.historyLoadFailed"));
     }, [t, toast]);
+    const visibleHistoryItemIds = useMemo(
+      () =>
+        new Set(
+          [...baseRenderModel.history, ...baseRenderModel.segments.liveHead].map((item) => item.id),
+        ),
+      [baseRenderModel.history, baseRenderModel.segments.liveHead],
+    );
     const chatOutline = useChatOutline({
       agentId,
       serverId: resolvedServerId,
@@ -631,6 +655,8 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       enabled: supportsChatOutline && chatOutlineEnabled,
       viewportRef,
       onJumpError: handleTimelineHistoryLoadError,
+      visibleItemIds: visibleHistoryItemIds,
+      revealLoadedItem: revealLoadedHistory,
     });
 
     useImperativeHandle(

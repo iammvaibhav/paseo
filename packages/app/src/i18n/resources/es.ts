@@ -660,7 +660,6 @@ export const es: TranslationResources = {
       loading: "Cargando...",
       modified: "Cambios sin guardar",
       loadingAgentTitle: "Título del agente de carga",
-      emptyPane: "No hay pestañas en este panel.",
       fallback: {
         newAgent: "Nuevo agente",
         setup: "Configuración",
@@ -704,6 +703,7 @@ export const es: TranslationResources = {
         newBrowser: "Nuevo navegador",
         maximizePane: "Maximizar panel",
         restorePane: "Restaurar panel",
+        closePane: "Cerrar panel",
         exitFocusMode: "Salir del modo de concentración",
         splitRight: "Panel dividido a la derecha",
         splitDown: "Dividir panel hacia abajo",
@@ -713,10 +713,10 @@ export const es: TranslationResources = {
         terminalProfilesMenu: "Terminal profiles",
         editTerminalProfiles: "Edit profiles…",
       },
-      explorer: {
-        open: "Explorador abierto",
-        close: "Cerrar explorador",
-        toggle: "Alternar explorador",
+      sidePanel: {
+        open: "Abrir panel lateral",
+        close: "Cerrar panel lateral",
+        toggle: "Alternar panel lateral",
         changes: "Cambios",
         files: "Archivos",
       },
@@ -819,6 +819,10 @@ export const es: TranslationResources = {
         startFailed: "No se pudo iniciar{{scriptName}}",
         stopFailed: "No se pudo detener{{scriptName}}",
       },
+    },
+    tree: {
+      showFolderTree: "Mostrar árbol de carpetas",
+      hideFolderTree: "Ocultar árbol de carpetas",
     },
     git: {
       actions: {
@@ -990,8 +994,6 @@ export const es: TranslationResources = {
         split: "Diferencia de lado a lado",
         switchToUnified: "Cambiar a diferencia unificada",
         switchToSplit: "Cambiar a diferencia lado a lado",
-        showTreeView: "Mostrar árbol de carpetas",
-        hideTreeView: "Ocultar árbol de carpetas",
         options: "Opciones de diferencia",
         hideWhitespace: "Ocultar espacios en blanco",
         showWhitespace: "Mostrar espacios en blanco",
@@ -1122,8 +1124,6 @@ export const es: TranslationResources = {
     },
     filter: {
       clear: "Borrar filtro",
-      noMatchesTitle: "Ningún espacio de trabajo coincide",
-      noMatchesDescription: "Cambia o borra el filtro de etiquetas para ver espacios de trabajo.",
     },
     manage: {
       open: "Gestionar etiquetas…",
@@ -1185,6 +1185,15 @@ export const es: TranslationResources = {
         label: "Host",
         all: "Todos los hosts",
       },
+      projectFilter: {
+        label: "Proyecto",
+        all: "Todos los proyectos",
+      },
+    },
+    filterEmpty: {
+      title: "Ningún espacio de trabajo coincide",
+      description: "Cambia o borra los filtros de la barra lateral para ver espacios de trabajo.",
+      clear: "Borrar filtros",
     },
     pinned: {
       title: "Anclados",
@@ -2134,6 +2143,11 @@ export const es: TranslationResources = {
         description: "Líneas mantenidas en el búfer de terminal incorporado",
         accessibilityLabel: "Líneas del historial de terminal",
       },
+      sidePanelRouting: {
+        label: "Abrir pestañas de apoyo en el panel lateral",
+        description:
+          "Los enlaces a archivos, las solicitudes de incorporación y el progreso de configuración se abren junto a tu trabajo en lugar del panel enfocado",
+      },
       autoExpandReasoning: {
         label: "Siempre expandir razonamiento",
         description:
@@ -2319,11 +2333,11 @@ export const es: TranslationResources = {
         toggleCommandCenter: "Alternar centro de comando",
         showKeyboardShortcuts: "Mostrar atajos de teclado",
         toggleLeftSidebar: "Alternar barra lateral izquierda",
-        toggleRightSidebar: "Alternar barra lateral derecha",
+        toggleRightSidebar: "Alternar panel lateral",
         toggleBothSidebars: "Alternar ambas barras laterales",
         toggleSettings: "Alternar configuración",
         toggleFocusMode: "Alternar modo de enfoque",
-        toggleExplorerPaneMaximization: "Alternar maximización del panel Explorador",
+        toggleExplorerPaneMaximization: "Alternar maximización del panel lateral",
         cycleTheme: "Tema del ciclo",
         focusMessageInput: "Entrada de mensaje de enfoque",
         cycleAgentMode: "Alternar modo del agente",

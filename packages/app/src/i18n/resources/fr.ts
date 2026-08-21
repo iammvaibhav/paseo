@@ -660,7 +660,6 @@ export const fr: TranslationResources = {
       loading: "Chargement...",
       modified: "Modifications non enregistrées",
       loadingAgentTitle: "Titre d'agent de chargement",
-      emptyPane: "Aucun onglet dans ce volet.",
       fallback: {
         newAgent: "Nouvel agent",
         setup: "Installation",
@@ -704,6 +703,7 @@ export const fr: TranslationResources = {
         newBrowser: "Nouveau navigateur",
         maximizePane: "Agrandir le volet",
         restorePane: "Restaurer le volet",
+        closePane: "Fermer le volet",
         exitFocusMode: "Quitter le mode concentration",
         splitRight: "Volet divisé à droite",
         splitDown: "Diviser le volet vers le bas",
@@ -713,10 +713,10 @@ export const fr: TranslationResources = {
         terminalProfilesMenu: "Terminal profiles",
         editTerminalProfiles: "Edit profiles…",
       },
-      explorer: {
-        open: "Ouvrir l'explorateur",
-        close: "Fermer l'explorateur",
-        toggle: "Basculer l'explorateur",
+      sidePanel: {
+        open: "Ouvrir le panneau latéral",
+        close: "Fermer le panneau latéral",
+        toggle: "Basculer le panneau latéral",
         changes: "Changements",
         files: "Fichiers",
       },
@@ -819,6 +819,10 @@ export const fr: TranslationResources = {
         startFailed: "Échec du démarrage de{{scriptName}}",
         stopFailed: "Échec de l'arrêt de{{scriptName}}",
       },
+    },
+    tree: {
+      showFolderTree: "Afficher l'arborescence des dossiers",
+      hideFolderTree: "Masquer l'arborescence des dossiers",
     },
     git: {
       actions: {
@@ -989,8 +993,6 @@ export const fr: TranslationResources = {
         split: "Différent côte à côte",
         switchToUnified: "Passer au diff unifié",
         switchToSplit: "Passer au diff côte à côte",
-        showTreeView: "Afficher l'arborescence des dossiers",
-        hideTreeView: "Masquer l'arborescence des dossiers",
         options: "Options du diff",
         hideWhitespace: "Masquer les espaces",
         showWhitespace: "Afficher les espaces",
@@ -1121,9 +1123,6 @@ export const fr: TranslationResources = {
     },
     filter: {
       clear: "Effacer le filtre",
-      noMatchesTitle: "Aucun espace de travail ne correspond",
-      noMatchesDescription:
-        "Modifiez ou effacez le filtre d’étiquettes pour afficher les espaces de travail.",
     },
     manage: {
       open: "Gérer les étiquettes…",
@@ -1185,6 +1184,16 @@ export const fr: TranslationResources = {
         label: "Hôte",
         all: "Tous les hôtes",
       },
+      projectFilter: {
+        label: "Projet",
+        all: "Tous les projets",
+      },
+    },
+    filterEmpty: {
+      title: "Aucun espace de travail ne correspond",
+      description:
+        "Modifiez ou effacez les filtres de la barre latérale pour afficher les espaces de travail.",
+      clear: "Effacer les filtres",
     },
     pinned: {
       title: "Épinglés",
@@ -2138,6 +2147,11 @@ export const fr: TranslationResources = {
         description: "Lignes conservées dans le tampon du terminal intégré",
         accessibilityLabel: "Lignes de défilementTerminal",
       },
+      sidePanelRouting: {
+        label: "Ouvrir les onglets d'appoint dans le panneau latéral",
+        description:
+          "Les liens de fichiers, les pull requests et la progression de la configuration s'ouvrent à côté de votre travail plutôt que dans le volet actif",
+      },
       autoExpandReasoning: {
         label: "Toujours afficher le raisonnement",
         description: "Afficher le raisonnement de l'agent entièrement développé par défaut",
@@ -2323,11 +2337,11 @@ export const fr: TranslationResources = {
         toggleCommandCenter: "Basculer le centre de commande",
         showKeyboardShortcuts: "Afficher les raccourcis clavier",
         toggleLeftSidebar: "Basculer la barre latérale gauche",
-        toggleRightSidebar: "Basculer la barre latérale droite",
+        toggleRightSidebar: "Basculer le panneau latéral",
         toggleBothSidebars: "Basculer les deux barres latérales",
         toggleSettings: "Basculer les paramètres",
         toggleFocusMode: "Basculer le mode de mise au point",
-        toggleExplorerPaneMaximization: "Basculer l’agrandissement du volet Explorateur",
+        toggleExplorerPaneMaximization: "Basculer l’agrandissement du panneau latéral",
         cycleTheme: "Thème du cycle",
         focusMessageInput: "Saisie du message de focus",
         cycleAgentMode: "Parcourir les modes de l'agent",
