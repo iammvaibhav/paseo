@@ -859,38 +859,6 @@ describe("DaemonConfigStore", () => {
       ],
     });
   });
-  test("patch persists provider hidden models into config.json", () => {
-    const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-daemon-config-store-"));
-    tempDirs.push(paseoHome);
-
-    const store = new DaemonConfigStore(
-      paseoHome,
-      {
-        mcp: { injectIntoAgents: false },
-        browserTools: { enabled: false },
-        providers: {},
-        metadataGeneration: { providers: [] },
-        autoArchiveAfterMerge: false,
-        enableTerminalAgentHooks: false,
-        appendSystemPrompt: "",
-        ompIdleCloseAfterSeconds: 1800,
-      },
-      undefined,
-    );
-
-    store.patch({
-      providers: {
-        claude: {
-          hiddenModels: ["claude-haiku-3.5"],
-        },
-      },
-    });
-
-    const persisted = loadPersistedConfig(paseoHome);
-    expect(persisted.agents?.providers?.claude).toEqual({
-      hiddenModels: ["claude-haiku-3.5"],
-    });
-  });
 
   test("patch persists daemon append system prompt into config.json", () => {
     const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-daemon-config-store-"));

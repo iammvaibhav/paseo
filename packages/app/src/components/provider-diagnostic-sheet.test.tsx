@@ -7,6 +7,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
 import type { MutableDaemonConfig } from "@getpaseo/protocol/messages";
 
+vi.mock("@react-native-async-storage/async-storage", () => {
+  const storage = new Map<string, string>();
+  return {
+    default: {
+      getItem: vi.fn(async (key: string) => storage.get(key) ?? null),
+      setItem: vi.fn(async (key: string, value: string) => {
+        storage.set(key, value);
+      }),
+      removeItem: vi.fn(async (key: string) => {
+        storage.delete(key);
+      }),
+    },
+  };
+});
+
 const { theme, snapshotState, configState, patchConfigMock, refreshMock } = vi.hoisted(() => ({
   theme: {
     spacing: { 0.5: 2, 1: 4, 1.5: 6, 2: 8, 3: 12, 4: 16, 6: 24, 8: 32 },
@@ -53,6 +68,7 @@ vi.mock("expo-clipboard", () => ({
 vi.mock("@/contexts/toast-context", () => ({
   useToast: () => ({ showToast: vi.fn() }),
 }));
+
 vi.mock("react-native-unistyles", () => ({
   useUnistyles: () => ({ theme, rt: { breakpoint: "md" } }),
   StyleSheet: {
@@ -74,6 +90,7 @@ vi.mock("lucide-react-native", () => {
     Trash2: icon("Trash2"),
   };
 });
+
 vi.mock("react-native", () => ({
   Platform: { OS: "web" },
   View: ({ children, testID }: { children?: React.ReactNode; testID?: string }) =>
@@ -205,18 +222,45 @@ vi.mock("react-i18next", () => ({
   }),
 }));
 
+import { useHiddenModelsStore } from "@/provider-selection/hidden-models";
 import { ProviderDiagnosticSheet } from "./provider-diagnostic-sheet";
 
-describe("ProviderDiagnosticSheet model visibility checkboxes and bulk actions", () => {
+function hiddenKeys(): string[] {
+  return [...useHiddenModelsStore.getState().hiddenKeys].sort();
+}
+
+describe("ProviderDiagnosticSheet model visibility", () => {
   let container: HTMLDivElement;
   let root: Root;
   const handleClose = vi.fn();
+
+  function renderSheet() {
+    act(() => {
+      root.render(
+        <ProviderDiagnosticSheet
+          provider="claude"
+          serverId="local"
+          visible={true}
+          onClose={handleClose}
+        />,
+      );
+    });
+  }
+
+  function toggle(testId: string) {
+    const button = container.querySelector(`[data-testid="${testId}"]`) as HTMLButtonElement | null;
+    expect(button).toBeTruthy();
+    act(() => {
+      button?.click();
+    });
+  }
 
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
     vi.clearAllMocks();
+    useHiddenModelsStore.setState({ hiddenKeys: new Set(["claude:claude-haiku-3.5"]) });
 
     snapshotState.entries = [
       {
@@ -237,7 +281,6 @@ describe("ProviderDiagnosticSheet model visibility checkboxes and bulk actions",
       providers: {
         claude: {
           enabled: true,
-          hiddenModels: ["claude-haiku-3.5"],
           additionalModels: [{ id: "claude-custom-1", label: "Custom Claude" }],
         },
       },
@@ -249,173 +292,89 @@ describe("ProviderDiagnosticSheet model visibility checkboxes and bulk actions",
     container.remove();
   });
 
-  it("renders checkboxes for discovered models with correct checked states", () => {
-    act(() => {
-      root.render(
-        <ProviderDiagnosticSheet
-          provider="claude"
-          serverId="local"
-          visible={true}
-          onClose={handleClose}
-        />,
-      );
-    });
-    const opusToggle = container.querySelector('[data-testid="model-toggle-claude-opus-5"]');
-    const sonnetToggle = container.querySelector('[data-testid="model-toggle-claude-sonnet-4.5"]');
-    const haikuToggle = container.querySelector('[data-testid="model-toggle-claude-haiku-3.5"]');
+  it("checks every discovered model except the ones already hidden", () => {
+    renderSheet();
 
-    expect(opusToggle?.getAttribute("aria-checked")).toBe("true");
-    expect(sonnetToggle?.getAttribute("aria-checked")).toBe("true");
-    expect(haikuToggle?.getAttribute("aria-checked")).toBe("false");
+    expect(
+      container
+        .querySelector('[data-testid="model-toggle-claude-opus-5"]')
+        ?.getAttribute("aria-checked"),
+    ).toBe("true");
+    expect(
+      container
+        .querySelector('[data-testid="model-toggle-claude-haiku-3.5"]')
+        ?.getAttribute("aria-checked"),
+    ).toBe("false");
   });
 
-  it("toggles model from visible to hidden via patchConfig", async () => {
-    act(() => {
-      root.render(
-        <ProviderDiagnosticSheet
-          provider="claude"
-          serverId="local"
-          visible={true}
-          onClose={handleClose}
-        />,
-      );
-    });
+  it("hides a model instantly, without touching the daemon", () => {
+    renderSheet();
 
-    const opusToggle = container.querySelector(
-      '[data-testid="model-toggle-claude-opus-5"]',
-    ) as HTMLButtonElement;
-    expect(opusToggle).toBeTruthy();
+    toggle("model-toggle-claude-opus-5");
 
-    await act(async () => {
-      opusToggle.click();
-    });
-
-    expect(patchConfigMock).toHaveBeenCalledWith({
-      providers: {
-        claude: {
-          hiddenModels: ["claude-haiku-3.5", "claude-opus-5"],
-        },
-      },
-    });
+    expect(hiddenKeys()).toEqual(["claude:claude-haiku-3.5", "claude:claude-opus-5"]);
+    expect(patchConfigMock).not.toHaveBeenCalled();
+    expect(refreshMock).not.toHaveBeenCalled();
   });
 
-  it("toggles model from hidden to visible via patchConfig", async () => {
-    act(() => {
-      root.render(
-        <ProviderDiagnosticSheet
-          provider="claude"
-          serverId="local"
-          visible={true}
-          onClose={handleClose}
-        />,
-      );
-    });
+  it("unhides a model instantly", () => {
+    renderSheet();
 
-    const haikuToggle = container.querySelector(
-      '[data-testid="model-toggle-claude-haiku-3.5"]',
-    ) as HTMLButtonElement;
-    expect(haikuToggle).toBeTruthy();
+    toggle("model-toggle-claude-haiku-3.5");
 
-    await act(async () => {
-      haikuToggle.click();
-    });
-
-    expect(patchConfigMock).toHaveBeenCalledWith({
-      providers: {
-        claude: {
-          hiddenModels: [],
-        },
-      },
-    });
+    expect(hiddenKeys()).toEqual([]);
+    expect(patchConfigMock).not.toHaveBeenCalled();
   });
 
-  it("triggers check all to unhide all discovered models", async () => {
-    act(() => {
-      root.render(
-        <ProviderDiagnosticSheet
-          provider="claude"
-          serverId="local"
-          visible={true}
-          onClose={handleClose}
-        />,
-      );
-    });
+  it("reflects the new state in the checkbox without a refetch", () => {
+    renderSheet();
 
-    const checkAllBtn = container.querySelector(
-      '[data-testid="models-check-all-discovered"]',
-    ) as HTMLButtonElement;
-    expect(checkAllBtn).toBeTruthy();
+    toggle("model-toggle-claude-opus-5");
 
-    await act(async () => {
-      checkAllBtn.click();
-    });
-
-    expect(patchConfigMock).toHaveBeenCalledWith({
-      providers: {
-        claude: {
-          hiddenModels: [],
-        },
-      },
-    });
+    expect(
+      container
+        .querySelector('[data-testid="model-toggle-claude-opus-5"]')
+        ?.getAttribute("aria-checked"),
+    ).toBe("false");
   });
 
-  it("triggers uncheck all to hide all discovered models", async () => {
-    act(() => {
-      root.render(
-        <ProviderDiagnosticSheet
-          provider="claude"
-          serverId="local"
-          visible={true}
-          onClose={handleClose}
-        />,
-      );
-    });
+  it("checks all discovered models", () => {
+    renderSheet();
 
-    const uncheckAllBtn = container.querySelector(
-      '[data-testid="models-uncheck-all-discovered"]',
-    ) as HTMLButtonElement;
-    expect(uncheckAllBtn).toBeTruthy();
+    toggle("models-check-all-discovered");
 
-    await act(async () => {
-      uncheckAllBtn.click();
-    });
-
-    expect(patchConfigMock).toHaveBeenCalledWith({
-      providers: {
-        claude: {
-          hiddenModels: ["claude-haiku-3.5", "claude-opus-5", "claude-sonnet-4.5"],
-        },
-      },
-    });
+    expect(hiddenKeys()).toEqual([]);
+    expect(patchConfigMock).not.toHaveBeenCalled();
   });
-  it("toggles custom model visibility and triggers check/uncheck all for custom models", async () => {
-    act(() => {
-      root.render(
-        <ProviderDiagnosticSheet
-          provider="claude"
-          serverId="local"
-          visible={true}
-          onClose={handleClose}
-        />,
-      );
-    });
 
-    const customToggle = container.querySelector(
-      '[data-testid="custom-model-toggle-claude-custom-1"]',
-    ) as HTMLButtonElement;
-    expect(customToggle).toBeTruthy();
-    expect(customToggle.getAttribute("aria-checked")).toBe("true");
+  it("unchecks all discovered models", () => {
+    renderSheet();
 
-    await act(async () => {
-      customToggle.click();
-    });
+    toggle("models-uncheck-all-discovered");
 
-    expect(patchConfigMock).toHaveBeenCalledWith({
-      providers: {
-        claude: {
-          hiddenModels: ["claude-haiku-3.5", "claude-custom-1"],
-        },
-      },
-    });
+    expect(hiddenKeys()).toEqual([
+      "claude:claude-haiku-3.5",
+      "claude:claude-opus-5",
+      "claude:claude-sonnet-4.5",
+    ]);
+  });
+
+  it("toggles a custom model independently of discovered ones", () => {
+    renderSheet();
+
+    toggle("custom-model-toggle-claude-custom-1");
+
+    expect(hiddenKeys()).toEqual(["claude:claude-custom-1", "claude:claude-haiku-3.5"]);
+  });
+
+  it("scopes hidden keys to the provider so another provider's same-named model stays visible", () => {
+    useHiddenModelsStore.setState({ hiddenKeys: new Set(["codex:claude-opus-5"]) });
+    renderSheet();
+
+    expect(
+      container
+        .querySelector('[data-testid="model-toggle-claude-opus-5"]')
+        ?.getAttribute("aria-checked"),
+    ).toBe("true");
   });
 });

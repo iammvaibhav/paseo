@@ -133,7 +133,6 @@ interface ResolvedProvider {
   runtimeSettings?: ProviderRuntimeSettings;
   profileModels: ProviderProfileModel[];
   additionalModels: ProviderProfileModel[];
-  hiddenModels: string[];
   profileModelsAreAdditive: boolean;
   enabled: boolean;
   derivedFromProviderId: string | null;
@@ -371,45 +370,23 @@ function resolveConfiguredModels(
   });
 }
 
-function applyHiddenModels(
-  models: AgentModelDefinition[],
-  hiddenModels?: string[],
-): AgentModelDefinition[] {
-  if (!hiddenModels || hiddenModels.length === 0) {
-    return models;
-  }
-  const hiddenSet = new Set(hiddenModels);
-  return models.map((model) => {
-    const isHidden =
-      hiddenSet.has(model.id) ||
-      (model.aliases && model.aliases.some((alias) => hiddenSet.has(alias)));
-    if (isHidden) {
-      return { ...model, isSelectable: false };
-    }
-    return model;
-  });
-}
-
 function mergeModels(
   provider: AgentProvider,
   profileModels: ProviderProfileModel[],
   additionalModels: ProviderProfileModel[],
   runtimeModels: AgentModelDefinition[],
-  options?: { profileModelsAreAdditive?: boolean; hiddenModels?: string[] },
+  options?: { profileModelsAreAdditive?: boolean },
 ): AgentModelDefinition[] {
   const baseModels = runtimeModels.map((model) => mapModel(provider, model));
-  let merged: AgentModelDefinition[];
   if (profileModels.length > 0 && options?.profileModelsAreAdditive !== true) {
-    merged = mergeModelAdditions(
+    return mergeModelAdditions(
       provider,
       profileModels.map((model) => mapModel(provider, model)),
       additionalModels,
     );
-  } else {
-    merged = mergeModelAdditions(provider, baseModels, [...profileModels, ...additionalModels]);
   }
 
-  return applyHiddenModels(merged, options?.hiddenModels);
+  return mergeModelAdditions(provider, baseModels, [...profileModels, ...additionalModels]);
 }
 
 function mergeModelAdditions(
@@ -518,7 +495,6 @@ function wrapClientProvider(
   profileModels: ProviderProfileModel[],
   additionalModels: ProviderProfileModel[],
   profileModelsAreAdditive: boolean,
-  hiddenModels: string[] = [],
 ): AgentClient {
   const listImportableSessions = inner.listImportableSessions?.bind(inner);
   const importSession = inner.importSession?.bind(inner);
@@ -562,7 +538,6 @@ function wrapClientProvider(
         ...catalog,
         models: mergeModels(provider, profileModels, additionalModels, catalog.models, {
           profileModelsAreAdditive,
-          hiddenModels,
         }),
         modes: catalog.modes,
       };
@@ -682,8 +657,7 @@ function createRegistryEntry(
         // Replacement models skip runtime model discovery, but additionalModels
         // must still be merged on top. If modes are dynamic, probe for modes via
         // the single catalog API; otherwise use static/empty modes with no runtime.
-        const base = mergeModelAdditions(provider, replacementModels, additionalModels);
-        const models = applyHiddenModels(base, resolved.hiddenModels);
+        const models = mergeModelAdditions(provider, replacementModels, additionalModels);
         if (hasStaticModes) {
           const defaultModeId = await runProviderRefreshActivity(
             context,
@@ -712,7 +686,6 @@ function createRegistryEntry(
         ...catalog,
         models: mergeModels(provider, profileModels, additionalModels, catalog.models, {
           profileModelsAreAdditive: resolved.profileModelsAreAdditive,
-          hiddenModels: resolved.hiddenModels,
         }),
         modes: decorateModes(catalog.modes),
       };
@@ -728,8 +701,7 @@ function createResolvedProviderClient(
   const inner = resolved.createBaseClient(logger);
   const profileModels = resolveConfiguredModels(provider, inner, resolved.profileModels);
   const additionalModels = resolveConfiguredModels(provider, inner, resolved.additionalModels);
-  const hasModelOverrides =
-    profileModels.length > 0 || additionalModels.length > 0 || resolved.hiddenModels.length > 0;
+  const hasModelOverrides = profileModels.length > 0 || additionalModels.length > 0;
   if (inner.provider === provider && !hasModelOverrides) {
     return inner;
   }
@@ -739,9 +711,9 @@ function createResolvedProviderClient(
     profileModels,
     additionalModels,
     resolved.profileModelsAreAdditive,
-    resolved.hiddenModels,
   );
 }
+
 function buildResolvedBuiltinProviders(
   providerOverrides: Record<string, ProviderOverride>,
   runtimeSettings: AgentProviderRuntimeSettingsMap | undefined,
@@ -770,7 +742,6 @@ function buildResolvedBuiltinProviders(
       runtimeSettings: mergedRuntimeSettings,
       profileModels: override?.models ?? [],
       additionalModels: override?.additionalModels ?? [],
-      hiddenModels: override?.hiddenModels ?? [],
       profileModelsAreAdditive: false,
       enabled: override?.enabled ?? definition.enabledByDefault ?? true,
       derivedFromProviderId: null,
@@ -825,7 +796,6 @@ function addDerivedProviders(
         runtimeSettings: toRuntimeSettings(override),
         profileModels: override.models ?? [],
         additionalModels: override.additionalModels ?? [],
-        hiddenModels: override.hiddenModels ?? [],
         profileModelsAreAdditive: false,
         enabled: override.enabled !== false,
         derivedFromProviderId: null,
@@ -882,7 +852,6 @@ function addDerivedProviders(
       runtimeSettings: mergedRuntimeSettings,
       profileModels: override.models ?? [],
       additionalModels: override.additionalModels ?? [],
-      hiddenModels: override.hiddenModels ?? [],
       profileModelsAreAdditive: false,
       enabled: override.enabled !== false,
       derivedFromProviderId: baseProviderId,

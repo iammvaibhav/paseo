@@ -26,6 +26,7 @@ import { formatTimeAgo } from "@/utils/time";
 import { compareMatchScores, scoreTextFields } from "@getpaseo/protocol/search/text-match";
 import type { AgentModelDefinition, AgentProvider } from "@getpaseo/protocol/agent-types";
 import type { ProviderProfileModel } from "@getpaseo/protocol/provider-config";
+import { useHiddenModelKeys, useHiddenModelsStore } from "@/provider-selection/hidden-models";
 import {
   resolveProviderDiscoveredModels,
   type ProviderDiscoveredModelsCache,
@@ -100,12 +101,10 @@ function ModelCheckbox({
 function DiscoveredModelRow({
   model,
   hidden,
-  disabled,
   onToggleHidden,
 }: {
   model: AgentModelDefinition;
   hidden: boolean;
-  disabled?: boolean;
   onToggleHidden: (modelId: string, nextHidden: boolean) => void;
 }) {
   const { t } = useTranslation();
@@ -118,7 +117,6 @@ function DiscoveredModelRow({
       <ModelCheckbox
         checked={!hidden}
         onToggle={handleToggle}
-        disabled={disabled}
         accessibilityLabel={t(
           hidden ? "settings.providers.models.showModel" : "settings.providers.models.hideModel",
           { name: model.label },
@@ -152,14 +150,12 @@ function CustomModelRow({
   model,
   hidden,
   deleting,
-  disabled,
   onToggleHidden,
   onDelete,
 }: {
   model: ProviderProfileModel;
   hidden: boolean;
   deleting: boolean;
-  disabled?: boolean;
   onToggleHidden: (modelId: string, nextHidden: boolean) => void;
   onDelete: (modelId: string) => void;
 }) {
@@ -183,7 +179,7 @@ function CustomModelRow({
       <ModelCheckbox
         checked={!hidden}
         onToggle={handleToggle}
-        disabled={disabled || deleting}
+        disabled={deleting}
         accessibilityLabel={t(
           hidden ? "settings.providers.models.showModel" : "settings.providers.models.hideModel",
           { name: model.label },
@@ -483,9 +479,7 @@ interface ProviderModalBodyProps {
   searchActive: boolean;
   filteredDiscovered: AgentModelDefinition[];
   filteredCustom: ProviderProfileModel[];
-  hiddenModels: readonly string[];
-  togglingModelId: string | null;
-  isTogglingBulk: boolean;
+  hiddenModelIds: ReadonlySet<string>;
   deletingModelId: string | null;
   onRefresh: () => void;
   onToggleModelHidden: (modelId: string, nextHidden: boolean) => void;
@@ -568,9 +562,7 @@ function renderProviderSheetFooter({
 
 interface DiscoveredModelsSectionProps {
   models: AgentModelDefinition[];
-  hiddenModels: readonly string[];
-  togglingModelId: string | null;
-  isTogglingBulk: boolean;
+  hiddenModelIds: ReadonlySet<string>;
   onToggleModelHidden: (modelId: string, nextHidden: boolean) => void;
   onCheckAll: () => void;
   onUncheckAll: () => void;
@@ -578,20 +570,14 @@ interface DiscoveredModelsSectionProps {
 
 function DiscoveredModelsSection({
   models,
-  hiddenModels,
-  togglingModelId,
-  isTogglingBulk,
+  hiddenModelIds,
   onToggleModelHidden,
   onCheckAll,
   onUncheckAll,
 }: DiscoveredModelsSectionProps) {
   const { t } = useTranslation();
-  const allChecked = models.length > 0 && models.every((model) => !hiddenModels.includes(model.id));
-  const allUnchecked =
-    models.length > 0 && models.every((model) => hiddenModels.includes(model.id));
-
-  const checkAllDisabled = isTogglingBulk || allChecked;
-  const uncheckAllDisabled = isTogglingBulk || allUnchecked;
+  const checkAllDisabled = models.every((model) => !hiddenModelIds.has(model.id));
+  const uncheckAllDisabled = models.every((model) => hiddenModelIds.has(model.id));
 
   return (
     <View style={sheetStyles.section}>
@@ -632,8 +618,7 @@ function DiscoveredModelsSection({
           <DiscoveredModelRow
             key={model.id}
             model={model}
-            hidden={hiddenModels.includes(model.id)}
-            disabled={togglingModelId === model.id || isTogglingBulk}
+            hidden={hiddenModelIds.has(model.id)}
             onToggleHidden={onToggleModelHidden}
           />
         ))}
@@ -644,9 +629,7 @@ function DiscoveredModelsSection({
 
 interface CustomModelsSectionProps {
   models: ProviderProfileModel[];
-  hiddenModels: readonly string[];
-  togglingModelId: string | null;
-  isTogglingBulk: boolean;
+  hiddenModelIds: ReadonlySet<string>;
   deletingModelId: string | null;
   onToggleModelHidden: (modelId: string, nextHidden: boolean) => void;
   onCheckAll: () => void;
@@ -656,9 +639,7 @@ interface CustomModelsSectionProps {
 
 function CustomModelsSection({
   models,
-  hiddenModels,
-  togglingModelId,
-  isTogglingBulk,
+  hiddenModelIds,
   deletingModelId,
   onToggleModelHidden,
   onCheckAll,
@@ -666,12 +647,8 @@ function CustomModelsSection({
   onDeleteCustom,
 }: CustomModelsSectionProps) {
   const { t } = useTranslation();
-  const allChecked = models.length > 0 && models.every((model) => !hiddenModels.includes(model.id));
-  const allUnchecked =
-    models.length > 0 && models.every((model) => hiddenModels.includes(model.id));
-
-  const checkAllDisabled = isTogglingBulk || allChecked;
-  const uncheckAllDisabled = isTogglingBulk || allUnchecked;
+  const checkAllDisabled = models.every((model) => !hiddenModelIds.has(model.id));
+  const uncheckAllDisabled = models.every((model) => hiddenModelIds.has(model.id));
 
   return (
     <View style={sheetStyles.section}>
@@ -712,9 +689,8 @@ function CustomModelsSection({
           <CustomModelRow
             key={model.id}
             model={model}
-            hidden={hiddenModels.includes(model.id)}
+            hidden={hiddenModelIds.has(model.id)}
             deleting={deletingModelId === model.id}
-            disabled={togglingModelId === model.id || isTogglingBulk}
             onToggleHidden={onToggleModelHidden}
             onDelete={onDeleteCustom}
           />
@@ -735,9 +711,7 @@ function ProviderModalBody(props: ProviderModalBodyProps) {
     searchActive,
     filteredDiscovered,
     filteredCustom,
-    hiddenModels,
-    togglingModelId,
-    isTogglingBulk,
+    hiddenModelIds,
     deletingModelId,
     onRefresh,
     onToggleModelHidden,
@@ -789,9 +763,7 @@ function ProviderModalBody(props: ProviderModalBodyProps) {
       {filteredDiscovered.length > 0 ? (
         <DiscoveredModelsSection
           models={filteredDiscovered}
-          hiddenModels={hiddenModels}
-          togglingModelId={togglingModelId}
-          isTogglingBulk={isTogglingBulk}
+          hiddenModelIds={hiddenModelIds}
           onToggleModelHidden={onToggleModelHidden}
           onCheckAll={onCheckAllDiscovered}
           onUncheckAll={onUncheckAllDiscovered}
@@ -800,9 +772,7 @@ function ProviderModalBody(props: ProviderModalBodyProps) {
       {filteredCustom.length > 0 ? (
         <CustomModelsSection
           models={filteredCustom}
-          hiddenModels={hiddenModels}
-          togglingModelId={togglingModelId}
-          isTogglingBulk={isTogglingBulk}
+          hiddenModelIds={hiddenModelIds}
           deletingModelId={deletingModelId}
           onToggleModelHidden={onToggleModelHidden}
           onCheckAll={onCheckAllCustom}
@@ -825,12 +795,13 @@ export function ProviderDiagnosticSheet({
   const isCompact = useIsCompactFormFactor();
   const { entries: snapshotEntries, refresh, isRefreshing } = useProvidersSnapshot(serverId);
   const { config, patchConfig } = useDaemonConfig(serverId);
+  const hiddenKeys = useHiddenModelKeys();
+  const setModelHidden = useHiddenModelsStore((state) => state.setModelHidden);
+  const setModelsHidden = useHiddenModelsStore((state) => state.setModelsHidden);
   const [query, setQuery] = useState("");
   const [addSheetOpen, setAddSheetOpen] = useState(false);
   const [diagSheetOpen, setDiagSheetOpen] = useState(false);
   const [deletingModelId, setDeletingModelId] = useState<string | null>(null);
-  const [togglingModelId, setTogglingModelId] = useState<string | null>(null);
-  const [isTogglingBulk, setIsTogglingBulk] = useState(false);
   const providerLabel = resolveProviderLabel(provider, snapshotEntries);
   const providerEntry = useMemo(
     () => snapshotEntries?.find((entry) => entry.provider === provider),
@@ -840,10 +811,14 @@ export function ProviderDiagnosticSheet({
     () => config?.providers?.[provider]?.additionalModels ?? [],
     [config?.providers, provider],
   );
-  const hiddenModels = useMemo(
-    () => config?.providers?.[provider]?.hiddenModels ?? [],
-    [config?.providers, provider],
-  );
+  const hiddenModelIds = useMemo(() => {
+    const prefix = `${provider}:`;
+    const ids = new Set<string>();
+    for (const key of hiddenKeys) {
+      if (key.startsWith(prefix)) ids.add(key.slice(prefix.length));
+    }
+    return ids;
+  }, [hiddenKeys, provider]);
   const providerSnapshotRefreshing = providerEntry?.status === "loading";
   const providerErrorMessage =
     providerEntry?.status === "error"
@@ -857,7 +832,6 @@ export function ProviderDiagnosticSheet({
     serverId,
     provider,
     currentModels,
-    hiddenModels,
     providerSnapshotRefreshing,
     previousCache: stableDiscoveredRef.current,
   });
@@ -902,87 +876,43 @@ export function ProviderDiagnosticSheet({
   const handleOpenDiagSheet = useCallback(() => setDiagSheetOpen(true), []);
   const handleCloseDiagSheet = useCallback(() => setDiagSheetOpen(false), []);
 
+  // Visibility is a client-side display preference, so these write straight to
+  // the local store: no RPC, no catalog refresh, no pending state.
   const handleToggleModelHidden = useCallback(
     (modelId: string, nextHidden: boolean) => {
-      setTogglingModelId(modelId);
-      const nextHiddenModels = nextHidden
-        ? Array.from(new Set([...hiddenModels, modelId]))
-        : hiddenModels.filter((id) => id !== modelId);
-
-      void patchConfig({
-        providers: {
-          [provider]: {
-            hiddenModels: nextHiddenModels,
-          },
-        },
-      })
-        .then(() => refresh([provider]))
-        .finally(() => {
-          setTogglingModelId((current) => (current === modelId ? null : current));
-        });
+      setModelHidden(provider, modelId, nextHidden);
     },
-    [hiddenModels, patchConfig, provider, refresh],
+    [provider, setModelHidden],
   );
 
   const handleCheckAllDiscovered = useCallback(() => {
-    setIsTogglingBulk(true);
-    const discoveredIds = new Set(discoveredModels.map((m) => m.id));
-    const nextHiddenModels = hiddenModels.filter((id) => !discoveredIds.has(id));
-    void patchConfig({
-      providers: {
-        [provider]: {
-          hiddenModels: nextHiddenModels,
-        },
-      },
-    })
-      .then(() => refresh([provider]))
-      .finally(() => setIsTogglingBulk(false));
-  }, [discoveredModels, hiddenModels, patchConfig, provider, refresh]);
+    setModelsHidden(
+      discoveredModels.map((model) => ({ provider, modelId: model.id })),
+      false,
+    );
+  }, [discoveredModels, provider, setModelsHidden]);
 
   const handleUncheckAllDiscovered = useCallback(() => {
-    setIsTogglingBulk(true);
-    const allDiscoveredIds = discoveredModels.map((m) => m.id);
-    const nextHiddenModels = Array.from(new Set([...hiddenModels, ...allDiscoveredIds]));
-    void patchConfig({
-      providers: {
-        [provider]: {
-          hiddenModels: nextHiddenModels,
-        },
-      },
-    })
-      .then(() => refresh([provider]))
-      .finally(() => setIsTogglingBulk(false));
-  }, [discoveredModels, hiddenModels, patchConfig, provider, refresh]);
+    setModelsHidden(
+      discoveredModels.map((model) => ({ provider, modelId: model.id })),
+      true,
+    );
+  }, [discoveredModels, provider, setModelsHidden]);
 
   const handleCheckAllCustom = useCallback(() => {
-    setIsTogglingBulk(true);
-    const customIds = new Set(additionalModels.map((m) => m.id));
-    const nextHiddenModels = hiddenModels.filter((id) => !customIds.has(id));
-    void patchConfig({
-      providers: {
-        [provider]: {
-          hiddenModels: nextHiddenModels,
-        },
-      },
-    })
-      .then(() => refresh([provider]))
-      .finally(() => setIsTogglingBulk(false));
-  }, [additionalModels, hiddenModels, patchConfig, provider, refresh]);
+    setModelsHidden(
+      additionalModels.map((model) => ({ provider, modelId: model.id })),
+      false,
+    );
+  }, [additionalModels, provider, setModelsHidden]);
 
   const handleUncheckAllCustom = useCallback(() => {
-    setIsTogglingBulk(true);
-    const allCustomIds = additionalModels.map((m) => m.id);
-    const nextHiddenModels = Array.from(new Set([...hiddenModels, ...allCustomIds]));
-    void patchConfig({
-      providers: {
-        [provider]: {
-          hiddenModels: nextHiddenModels,
-        },
-      },
-    })
-      .then(() => refresh([provider]))
-      .finally(() => setIsTogglingBulk(false));
-  }, [additionalModels, hiddenModels, patchConfig, provider, refresh]);
+    setModelsHidden(
+      additionalModels.map((model) => ({ provider, modelId: model.id })),
+      true,
+    );
+  }, [additionalModels, provider, setModelsHidden]);
+
   const handleDeleteCustom = useCallback(
     (modelId: string) => {
       setDeletingModelId(modelId);
@@ -1040,9 +970,7 @@ export function ProviderDiagnosticSheet({
           searchActive={Boolean(q)}
           filteredDiscovered={filteredDiscovered}
           filteredCustom={filteredCustom}
-          hiddenModels={hiddenModels}
-          togglingModelId={togglingModelId}
-          isTogglingBulk={isTogglingBulk}
+          hiddenModelIds={hiddenModelIds}
           deletingModelId={deletingModelId}
           onRefresh={handleRefreshModels}
           onToggleModelHidden={handleToggleModelHidden}
