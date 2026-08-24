@@ -1830,4 +1830,100 @@ describe("fetchCatalog", () => {
     expect(catalog.models.map((model) => model.id)).toEqual(["catalog-model"]);
     expect(catalog.modes.map((mode) => mode.id)).toEqual(["ask"]);
   });
+
+  test("hiddenModels marks matching runtime models with isSelectable: false", async () => {
+    mockState.runtimeModels.set("codex", [
+      { provider: "codex", id: "visible-model", label: "Visible Model" },
+      { provider: "codex", id: "hidden-model", label: "Hidden Model" },
+    ]);
+
+    const registry = buildProviderRegistry(logger, {
+      providerOverrides: {
+        codex: {
+          hiddenModels: ["hidden-model"],
+        },
+      },
+    });
+
+    const catalog = await registry.codex.fetchCatalog({
+      scope: "workspace",
+      cwd: "/tmp/catalog",
+      force: false,
+    });
+
+    expect(catalog.models).toEqual([
+      {
+        provider: "codex",
+        id: "visible-model",
+        label: "Visible Model",
+      },
+      {
+        provider: "codex",
+        id: "hidden-model",
+        label: "Hidden Model",
+        isSelectable: false,
+      },
+    ]);
+  });
+
+  test("hiddenModels marks matching replacement models with isSelectable: false", async () => {
+    const registry = buildProviderRegistry(logger, {
+      providerOverrides: {
+        codex: {
+          models: [
+            { id: "model-a", label: "Model A" },
+            { id: "model-b", label: "Model B" },
+          ],
+          hiddenModels: ["model-b"],
+        },
+      },
+    });
+
+    const catalog = await registry.codex.fetchCatalog({
+      scope: "workspace",
+      cwd: "/tmp/catalog",
+      force: false,
+    });
+
+    expect(catalog.models).toEqual([
+      {
+        provider: "codex",
+        id: "model-a",
+        label: "Model A",
+      },
+      {
+        provider: "codex",
+        id: "model-b",
+        label: "Model B",
+        isSelectable: false,
+      },
+    ]);
+  });
+
+  test("hiddenModels matches aliases to set isSelectable: false", async () => {
+    mockState.runtimeModels.set("codex", [
+      {
+        provider: "codex",
+        id: "canonical-model",
+        label: "Canonical Model",
+        aliases: ["legacy-alias"],
+      },
+    ]);
+
+    const registry = buildProviderRegistry(logger, {
+      providerOverrides: {
+        codex: {
+          hiddenModels: ["legacy-alias"],
+        },
+      },
+    });
+
+    const catalog = await registry.codex.fetchCatalog({
+      scope: "workspace",
+      cwd: "/tmp/catalog",
+      force: false,
+    });
+
+    expect(catalog.models[0]?.isSelectable).toBe(false);
+  });
 });

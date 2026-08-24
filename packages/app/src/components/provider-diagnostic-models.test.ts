@@ -21,6 +21,7 @@ function resolveModels(input: {
   serverId?: string;
   provider: string;
   currentModels?: AgentModelDefinition[];
+  hiddenModels?: readonly string[];
   loading?: boolean;
   cache?: ProviderDiscoveredModelsCache | null;
 }) {
@@ -28,6 +29,7 @@ function resolveModels(input: {
     serverId: input.serverId ?? "local",
     provider: input.provider,
     currentModels: input.currentModels,
+    hiddenModels: input.hiddenModels,
     providerSnapshotRefreshing: input.loading === true,
     previousCache: input.cache ?? null,
   });
@@ -57,6 +59,22 @@ describe("resolveProviderDiscoveredModels", () => {
 
     expect(result.models).toEqual([piModel]);
     expect(result.cache?.models).toEqual([piModel]);
+  });
+  it("includes user-hidden models that have isSelectable: false", () => {
+    const hiddenModel: AgentModelDefinition = {
+      ...piModel,
+      id: "pi/model-hidden",
+      label: "Pi Hidden",
+      isSelectable: false,
+    };
+
+    const result = resolveModels({
+      provider: "pi",
+      currentModels: [piModel, hiddenModel],
+      hiddenModels: ["pi/model-hidden"],
+    });
+
+    expect(result.models).toEqual([piModel, hiddenModel]);
   });
 
   it("does not show one provider's cached models while another provider loads", () => {
