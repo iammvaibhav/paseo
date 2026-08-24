@@ -80,7 +80,7 @@ function PanelState({
 
 function WorkingDiffPanel() {
   const { t } = useTranslation();
-  const { serverId, workspaceId, target, openFileInWorkspace } = usePaneContext();
+  const { serverId, workspaceId, tabId, target, openFileInWorkspace } = usePaneContext();
   const workspaceRoot = useWorkspaceDirectory(serverId, workspaceId);
   const [changesState, setChangesState] = usePanelState(changesStateSchema, defaultChangesState);
   const isActive = useRetainedPanelActive();
@@ -137,6 +137,7 @@ function WorkingDiffPanel() {
         enabled={isActive}
         host="panel"
         submodulePicker={submodulePicker}
+        modeScope={tabId}
         focusPath={target.focusPath}
         focusRequestId={target.focusRequestId}
         onOpenFile={handleOpenFile}

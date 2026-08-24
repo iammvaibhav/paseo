@@ -255,7 +255,7 @@ export interface WorkspaceTabSnapshot {
   hasActivePendingDraftCreate?: boolean;
 }
 
-const DEFAULT_PANE_ID = "main";
+export const DEFAULT_PANE_ID = "main";
 /** The pane id is persisted, so it keeps its pre-rename spelling. */
 export const SIDE_PANEL_PANE_ID = "explorer";
 const DEFAULT_LAYOUT_GROUP_ID = "workspace-root";
@@ -965,16 +965,20 @@ export function normalizeLayout(layout: unknown): WorkspaceLayout {
   if (!layout || typeof layout !== "object") {
     return createDefaultLayout();
   }
-
   const rawLayout = layout as WorkspaceLayout;
   const root = normalizeNode(rawLayout.root) ?? asInternalNode(createDefaultLayout().root);
+  const panes = collectAllPanes(root);
+  if (panes.length === 0) {
+    return createDefaultLayout();
+  }
+
   const focusedPaneId =
     rawLayout.focusedPaneId === null ? null : trimNonEmpty(rawLayout.focusedPaneId);
   const resolvedFocusedPaneId =
     focusedPaneId === null
       ? null
       : ((focusedPaneId && findPaneById(root, focusedPaneId)?.id) ??
-        collectAllPanes(root)[0]?.id ??
+        panes[0]?.id ??
         DEFAULT_PANE_ID);
 
   const normalizedLayout = {
@@ -1162,15 +1166,17 @@ export function removeTabFromTree(root: SplitNode, tabId: string): SplitNode {
   }).root;
 }
 
-// Tab kinds the user works *in* rather than consults. Reconciliation opens these
-// with nobody behind the click, and the side panel can hold focus from an earlier
-// reveal, so an ambient open must not drop an agent there just because focus stayed.
+// Tab kinds that belong in the main workspace rather than the side panel. Ambient
+// opens, and preferred opens whose requested pane no longer exists, have nobody
+// behind the fallback. The side panel can retain focus from an earlier reveal, so
+// placement must route these back to the main workspace.
 const SIDE_PANEL_EXCLUDED_TAB_KINDS: ReadonlySet<WorkspaceTabTarget["kind"]> = new Set([
   "agent",
   "provider_subagent",
   "terminal",
   "draft",
   "browser",
+  "setup",
 ]);
 
 function resolvePlacementPane(input: {
@@ -1189,14 +1195,17 @@ function resolvePlacementPane(input: {
 
   // `collectAllPanes` skips hidden panes, so a focused-but-hidden pane — the side
   // panel between a reveal and a hide — falls through to a pane the user can see.
+  const visiblePanes = collectAllPanes(input.layout.root);
   const focusedCandidate = findPaneById(input.layout.root, input.layout.focusedPaneId);
   const focusedPane =
     (focusedCandidate?.hidden === true ? null : focusedCandidate) ??
-    collectAllPanes(input.layout.root)[0] ??
-    findPaneById(createDefaultLayout().root, DEFAULT_PANE_ID);
+    visiblePanes[0] ??
+    findPaneById(input.layout.root, DEFAULT_PANE_ID) ??
+    findPaneById(input.layout.root, input.sidePanelPaneId) ??
+    focusedCandidate;
   invariant(focusedPane, "Workspace layout must always have a pane");
   if (
-    input.placement.mode !== "ambient" ||
+    (input.placement.mode !== "ambient" && input.placement.mode !== "prefer") ||
     focusedPane.id !== input.sidePanelPaneId ||
     !SIDE_PANEL_EXCLUDED_TAB_KINDS.has(input.target.kind)
   ) {
