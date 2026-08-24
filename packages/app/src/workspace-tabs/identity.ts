@@ -25,6 +25,9 @@ export function normalizeWorkspaceTabTarget(
       ...(forkSource ? { forkSource } : {}),
     };
   }
+  if (value.kind === "new_tab") {
+    return { kind: "new_tab" };
+  }
   if (value.kind === "agent") {
     const agentId = trimNonEmpty(value.agentId);
     return agentId ? { kind: "agent", agentId } : null;
@@ -253,6 +256,9 @@ function recordsShallowEqual(
 }
 
 export function buildDeterministicWorkspaceTabId(target: WorkspaceTabTarget): string {
+  if (target.kind === "new_tab") {
+    throw new Error("New tabs do not have deterministic target identities");
+  }
   if (target.kind === "draft") {
     return target.draftId;
   }

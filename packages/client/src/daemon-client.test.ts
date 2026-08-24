@@ -2260,6 +2260,12 @@ test("writeExplorerFile sends scoped write request and binary chunks", async () 
     url: "ws://test",
     clientId: "clsk_unit_test",
     logger,
+test("readFile drops an old daemon's over-budget binary chunks and reports the refusal", async () => {
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_file_budget_compat",
+    logger: createMockLogger(),
     reconnect: { enabled: false },
     transportFactory: () => mock.transport,
   });
@@ -2340,6 +2346,44 @@ test("writeExplorerFile sends scoped write request and binary chunks", async () 
     size: 5,
     error: null,
   });
+  const responsePromise = client.readFile("/tmp/project", "large.txt", "req-budget", 10);
+  expect(JSON.parse(assertStr(mock.sent[0]))).toEqual({
+    type: "session",
+    message: {
+      type: "file_explorer_request",
+      cwd: "/tmp/project",
+      path: "large.txt",
+      mode: "file",
+      acceptBinary: true,
+      maxBytes: 10,
+      requestId: "req-budget",
+    },
+  });
+
+  mock.triggerMessage(
+    encodeFileTransferFrame({
+      opcode: FileTransferOpcode.FileBegin,
+      requestId: "req-budget",
+      metadata: {
+        mime: "text/plain",
+        size: 100,
+        encoding: "utf-8",
+        modifiedAt: "2026-05-02T00:00:00.000Z",
+      },
+    }),
+  );
+  mock.triggerMessage(
+    encodeFileTransferFrame({
+      opcode: FileTransferOpcode.FileChunk,
+      requestId: "req-budget",
+      payload: new Uint8Array(100),
+    }),
+  );
+  mock.triggerMessage(
+    encodeFileTransferFrame({ opcode: FileTransferOpcode.FileEnd, requestId: "req-budget" }),
+  );
+
+  await expect(responsePromise).rejects.toThrow("File is too large to display");
 });
 
 test("uploadFile sends metadata request and file bytes as binary chunks", async () => {

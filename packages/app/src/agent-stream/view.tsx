@@ -280,6 +280,8 @@ export interface AgentStreamViewProps {
   isAuthoritativeHistoryReady?: boolean;
   /** Tail space required by a transparent overlay rendered at the bottom edge. */
   bottomOverlayTailClearance?: number;
+  /** Bottom offset required for controls floating above that overlay. */
+  bottomOverlayControlClearance?: number;
   toast?: ToastApi | null;
   onOpenWorkspaceFile?: (request: WorkspaceFileOpenRequest) => void;
   readOnly?: boolean;
@@ -337,6 +339,8 @@ function buildForkSource(
     ...(boundary.boundaryCursor ? { boundaryCursor: boundary.boundaryCursor } : {}),
     ...(boundary.boundaryMessageId ? { boundaryMessageId: boundary.boundaryMessageId } : {}),
   };
+function resolveBottomOverlayControlOffset(clearance: number | undefined): number {
+  return Math.max(16, clearance ?? 0);
 }
 
 const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamViewProps>(
@@ -354,6 +358,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       routeBottomAnchorRequest = null,
       isAuthoritativeHistoryReady = true,
       bottomOverlayTailClearance = 0,
+      bottomOverlayControlClearance,
       toast,
       onOpenWorkspaceFile,
       readOnly = false,
@@ -1035,6 +1040,13 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     }, [baseRenderModel, pendingPermissionsNode, turnFooterNode]);
 
     const emptyStateStyle = useMemo(() => [stylesheet.emptyState, stylesheet.contentWrapper], []);
+    const scrollToBottomContainerStyle = useMemo(
+      () => [
+        stylesheet.scrollToBottomContainer,
+        { bottom: resolveBottomOverlayControlOffset(bottomOverlayControlClearance) },
+      ],
+      [bottomOverlayControlClearance],
+    );
     const listEmptyComponent = useMemo(
       () =>
         renderListEmptyComponent({
@@ -1169,6 +1181,21 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
             activePrompt={chatOutline.activePrompt}
             onJumpToPrompt={chatOutline.jumpToPrompt}
           />
+          {(!isNearBottom || isTimelineDetached) && (
+            <View style={scrollToBottomContainerStyle} pointerEvents="box-none">
+              <Animated.View entering={scrollIndicatorFadeIn} exiting={scrollIndicatorFadeOut}>
+                <Pressable
+                  style={stylesheet.scrollToBottomButton}
+                  onPress={scrollToBottom}
+                  accessibilityRole="button"
+                  accessibilityLabel={t("agentStream.scrollToBottom")}
+                  testID="scroll-to-bottom-button"
+                >
+                  <ChevronDown size={24} color={stylesheet.scrollToBottomIcon.color} />
+                </Pressable>
+              </Animated.View>
+            </View>
+          )}
         </AssistantSelectionCopySurface>
       </ToolCallSheetProvider>
     );
@@ -1671,6 +1698,24 @@ const stylesheet = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.base,
     textAlign: "center",
+  },
+  scrollToBottomContainer: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    alignItems: "center",
+  },
+  scrollToBottomButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: theme.colors.surface2,
+    alignItems: "center",
+    justifyContent: "center",
+    ...theme.shadow.sm,
+  },
+  scrollToBottomIcon: {
+    color: theme.colors.foreground,
   },
 }));
 

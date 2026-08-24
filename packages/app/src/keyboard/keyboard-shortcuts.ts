@@ -453,9 +453,10 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
     },
   },
   {
+    // Keep the binding id stable so saved overrides from the former Cmd+Shift+C default survive.
     id: "workspace-tab-target-changes-cmd-shift-c-mac",
     action: "workspace.tab.target.changes",
-    combo: "Cmd+Shift+C",
+    combo: "Cmd+Shift+G",
     when: { mac: true, commandCenter: false },
     help: {
       id: "workspace-tab-target-changes",
@@ -464,9 +465,10 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
     },
   },
   {
+    // Keep the binding id stable so saved overrides from the former Ctrl+Shift+C default survive.
     id: "workspace-tab-target-changes-ctrl-shift-c-non-mac",
     action: "workspace.tab.target.changes",
-    combo: "Ctrl+Shift+C",
+    combo: "Ctrl+Shift+G",
     when: { mac: false, commandCenter: false, terminal: false },
     help: {
       id: "workspace-tab-target-changes",

@@ -38,48 +38,16 @@ be in flight.
 
 ### Cancellation
 
-Cancellation changes lifecycle state only after the provider acknowledges the interrupt or emits a terminal turn event. If the interrupt is rejected or times out while the provider may still own a live turn, the agent remains `running` with its active foreground turn intact. Follow-up actions such as replacement, reload, rewind, and Stop must report that failure instead of accepting work they cannot perform. Synthesizing a local cancellation without provider acknowledgment creates a split-brain session: Paseo accepts a new prompt while the provider still owns the previous foreground turn.
+Provider interruption is idempotent at the `AgentSession` boundary. It resolves when the prior
+foreground turn can no longer run, including when the provider reports that it is already idle. It
+rejects only when the provider may still own the turn. Provider adapters translate native errors
+into that contract; lifecycle callers do not interpret provider-specific errors.
 
-Exception: when interrupt fails because the provider runtime is already dead (`process is closed` / `session is closed` / similar), there is no live provider turn left to split-brain with. Cancel force-settles the managed run to `idle` so sticky `running` zombies (for example after OMP was SIGTERM'd mid-turn) can be stopped, replaced, or reloaded.
-
-An adapter must not manufacture that exception by killing its own runtime. A provider that
-does not answer the interrupt inside the short interactive window is slow, not dead: OMP acks
-`abort` in tens of milliseconds when healthy, so the budget only lapses on an event-loop stall
-on a large context. The OMP adapter therefore keeps the process, retries the abort with a wider
-budget, and reports the refused stop; only a second Stop while the first abort is still
-unanswered force-closes.
-
-### Recovering a dead runtime
-
-A dead provider runtime is recoverable, not terminal. `startAgentRun`
-(`agent/agent-prompt.ts`) asks the session `isRuntimeAlive()` before dispatching and reloads it
-from its persistence handle when the answer is `false`, which resumes the provider session,
-keeps the timeline, and clears a sticky `running` lifecycle. Every prompt entrypoint — app, MCP,
-CLI, schedules, webhooks — goes through that funnel.
-
-Recover, do not report. A prompt that fails against a runtime Paseo already knows is gone reads
-as a broken agent: the composer shows a spinner for a turn that will never start, and the user's
-message is lost. Before this existed, one force-closed OMP process failed every following prompt
-with `OMP RPC process is closed` until someone ran Reload agent by hand. Reload failures still
-fall through to the provider's own error, because that error is the useful one.
-
-### Every turn must terminalize
-
-`lifecycle: "running"` is a latch. Nothing re-checks it. A provider adapter that starts a
-turn and never emits `turn_completed`/`turn_failed`/`turn_canceled` leaves the agent
-spinning forever with a complete timeline and an idle provider, recoverable only by an
-explicit Stop.
-
-A provider adapter MUST emit exactly one terminal event per turn it started, on every exit
-path including give-ups and error paths. If the provider stops reporting, emit a terminal
-event carrying the diagnostic. Where an adapter waits for the provider to report itself
-idle, give the wait a deadline and terminalize when it passes.
-
-The hard part is doing that without double-firing when a concurrent interrupt or a second
-`agent_end` settles the same cycle. The OMP adapter distinguishes the two with a
-`turnGeneration` counter (`providers/omp/agent.ts`) and logs
-`omp.turn.idle_wait_abandoned_terminalizing` when it has to synthesize the event. A warn
-there means the provider left a turn un-terminated and Paseo covered for it.
+After an acknowledged interrupt, the manager settles the captured run even when no terminal event
+arrives or the run was still waiting for its provider turn id. The captured run token prevents an
+older cancellation from settling a newer turn. If interruption is rejected or times out, the agent
+keeps its active foreground turn and replacement, reload, rewind, and Stop report the failure.
+Accepting new work after an ambiguous interruption would create a split-brain session.
 
 ## Relationships
 

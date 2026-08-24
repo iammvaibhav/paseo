@@ -44,6 +44,7 @@ export type PluginWorkspaceTabTarget =
     };
 
 export type WorkspaceTabTarget =
+  | { kind: "new_tab" }
   | {
       kind: "draft";
       draftId: string;

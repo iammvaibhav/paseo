@@ -27,9 +27,12 @@ import { UnavailableProviderCallout } from "@/components/unavailable-provider-ca
 import { FileDropZone } from "@/components/file-drop/file-drop-zone";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { Composer } from "@/composer";
-import { resolveComposerTrackTailClearance } from "@/composer/pill-styles";
 import { formatProviderLabel } from "@/utils/provider-label";
-
+import { useWorkspaceHasDiffStat } from "@/composer/workspace-diff-stat";
+import {
+  resolveComposerTrackControlClearance,
+  resolveComposerTrackTailClearance,
+} from "@/composer/pill-styles";
 import { getActiveMessageSubmissions } from "@/composer/submission/model";
 import { RewindComposerRestoreProvider } from "@/components/rewind/composer-restore";
 import { getProviderIcon } from "@/components/provider-icons";
@@ -721,6 +724,7 @@ function AgentPanelBody({
   return (
     <ChatAgentContent
       serverId={serverId}
+      workspaceId={workspaceId}
       agentId={agentId}
       isPaneFocused={isPaneFocused}
       client={client}
@@ -733,6 +737,7 @@ function AgentPanelBody({
 
 function ChatAgentContent({
   serverId,
+  workspaceId,
   agentId,
   isPaneFocused,
   client,
@@ -741,6 +746,7 @@ function ChatAgentContent({
   onOpenWorkspaceFile,
 }: {
   serverId: string;
+  workspaceId: string;
   agentId?: string;
   isPaneFocused: boolean;
   client: ReturnType<typeof useHostRuntimeClient>;
@@ -1137,6 +1143,7 @@ function ChatAgentContent({
   return (
     <ChatAgentReadyContent
       serverId={serverId}
+      workspaceId={workspaceId}
       agentId={agentId}
       isPaneFocused={isPaneFocused}
       isArchivingCurrentAgent={isArchivingCurrentAgent}
@@ -1165,6 +1172,7 @@ function ChatAgentContent({
 
 const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
   serverId,
+  workspaceId,
   agentId,
   isPaneFocused,
   isArchivingCurrentAgent,
@@ -1189,6 +1197,7 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
   onOpenWorkspaceFile,
 }: {
   serverId: string;
+  workspaceId: string;
   agentId: string;
   isPaneFocused: boolean;
   isArchivingCurrentAgent: boolean;
@@ -1251,14 +1260,12 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
     rows: subagentRows,
   });
   const hasActiveComposer = !agentState.archivedAt && !isArchivingCurrentAgent;
-  const showAgentTracks =
-    hasActiveComposer &&
-    hasAgentTracks({
-      subagentRows,
-      tasks,
-      archiveFinishedStatus: archiveFinishedSubagents.status,
-    });
-
+  const hasVisibleAgentTracks = hasAgentTracks({
+    subagentRows,
+    tasks,
+    archiveFinishedStatus: archiveFinishedSubagents.status,
+  });
+  const showAgentTracks = hasActiveComposer && hasVisibleAgentTracks;
   const rawAgentInputDraft = useAgentInputDraft({
     draftKey: buildDraftStoreKey({
       serverId,
@@ -1330,19 +1337,23 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
         <AgentStreamSection
           streamViewRef={streamViewRef}
           serverId={serverId}
+          workspaceId={workspaceId}
           agentId={agentId}
           agent={effectiveAgent}
           routeBottomAnchorRequest={routeBottomAnchorRequest}
           hasAppliedAuthoritativeHistory={hasAppliedAuthoritativeHistory}
-          bottomOverlayTailClearance={showAgentTracks ? composerTrackTailClearance : 0}
+          hasActiveComposer={hasActiveComposer}
+          hasVisibleAgentTracks={hasVisibleAgentTracks}
           toast={toastApi}
           onOpenWorkspaceFile={onOpenWorkspaceFile}
         />
       </RenderProfile>
-      {showAgentTracks ? (
+      {hasActiveComposer ? (
         <AgentTracks
           serverId={serverId}
           agentId={agentId}
+          workspaceId={workspaceId}
+          cwd={cwd}
           subagentRows={subagentRows}
           tasks={tasks}
           archiveFinishedStatus={archiveFinishedSubagents.status}
@@ -1440,24 +1451,38 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
 const AgentStreamSection = memo(function AgentStreamSection({
   streamViewRef,
   serverId,
+  workspaceId,
   agentId,
   agent,
   routeBottomAnchorRequest,
   hasAppliedAuthoritativeHistory,
-  bottomOverlayTailClearance,
+  hasActiveComposer,
+  hasVisibleAgentTracks,
   toast,
   onOpenWorkspaceFile,
 }: {
   streamViewRef: React.RefObject<AgentStreamViewHandle | null>;
   serverId: string;
+  workspaceId: string;
   agentId?: string;
   agent: AgentScreenAgent;
   routeBottomAnchorRequest: RouteBottomAnchorRequest;
   hasAppliedAuthoritativeHistory: boolean;
-  bottomOverlayTailClearance: number;
+  hasActiveComposer: boolean;
+  hasVisibleAgentTracks: boolean;
   toast: ReturnType<typeof useToastHost>["api"];
   onOpenWorkspaceFile?: (request: WorkspaceFileOpenRequest) => void;
 }) {
+  const isCompactFormFactor = useIsCompactFormFactor();
+  const hasWorkspaceDiffStat = useWorkspaceHasDiffStat(serverId, workspaceId);
+  const hasVisibleComposerTracks =
+    hasActiveComposer && (hasVisibleAgentTracks || hasWorkspaceDiffStat);
+  const bottomOverlayTailClearance = hasVisibleComposerTracks
+    ? resolveComposerTrackTailClearance(isCompactFormFactor)
+    : 0;
+  const bottomOverlayControlClearance = hasVisibleComposerTracks
+    ? resolveComposerTrackControlClearance(isCompactFormFactor)
+    : 0;
   const streamItemsRaw = useSessionStore((state) =>
     agentId ? state.sessions[serverId]?.agentStreamTail?.get(agentId) : undefined,
   );
@@ -1545,6 +1570,7 @@ const AgentStreamSection = memo(function AgentStreamSection({
       routeBottomAnchorRequest={routeBottomAnchorRequest}
       isAuthoritativeHistoryReady={hasAppliedAuthoritativeHistory}
       bottomOverlayTailClearance={bottomOverlayTailClearance}
+      bottomOverlayControlClearance={bottomOverlayControlClearance}
       toast={toast}
       pendingMessageSubmissions={pendingMessageSubmissions}
       turnPresentation={turnPresentation}

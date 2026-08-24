@@ -64,6 +64,9 @@ export const ru: TranslationResources = {
       workspaces: "Рабочие пространства",
       agents: "Агенты",
       newAgent: "Новый агент",
+      open: "Открыть {{name}}",
+      openInSidePanel: "Открыть {{name}} в боковой панели",
+      openInFocusedPane: "Открыть {{name}} в активной области",
       addProject: "Добавить проект",
       home: "Главная",
       groupByProject: "Группировать по проекту",
@@ -711,7 +714,7 @@ export const ru: TranslationResources = {
         files: "Файлы",
         pullRequest: "PR",
         terminalProfilesMenu: "Профили терминала",
-        editTerminalProfiles: "Изменить профили…",
+        editTerminalProfiles: "Изменить профили",
       },
       sidePanel: {
         open: "Открыть боковую панель",
@@ -1786,6 +1789,8 @@ export const ru: TranslationResources = {
       updateRequired: "Обновите хост, чтобы включить ретранслятор из Paseo Desktop.",
       unavailable: "Данные для сопряжения недоступны.",
       hint: "Отсканируйте этот QR-код с помощью Paseo на телефоне или скопируйте ссылку ниже.",
+      securityWarning:
+        "Обращайтесь с этой ссылкой для сопряжения как с паролем. Любой, у кого она есть, может получить доступ к этому демону.",
       qrUnavailable: "QR-код недоступен.",
       qrAccessibility: "QR-код сопряжения",
       retry: "Повторить попытку",
@@ -1869,6 +1874,7 @@ export const ru: TranslationResources = {
       loading: "Загрузка файла...",
       noPreview: "Предварительный просмотр недоступен",
       binaryPreviewUnavailable: "Предварительный просмотр двоичного файла недоступен.",
+      tooLargeToDisplay: "Этот файл слишком велик для отображения",
       failedToLoad: "Не удалось загрузить файл",
       failedToLoadPreview: "Не удалось загрузить предварительный просмотр файла.",
       editor: {
@@ -1898,6 +1904,7 @@ export const ru: TranslationResources = {
       label: "Файлы",
       subtitle: "Файлы рабочего пространства",
       tooltip: "Просмотр файлов рабочего пространства",
+      chooseFile: "Выберите файл",
     },
     pullRequest: {
       label: "PR",
@@ -2554,10 +2561,9 @@ export const ru: TranslationResources = {
         featuresLabel: "Функции",
         featureCount: "Функции: {{count}}",
         featureCountOne: "{{count}} функция",
-        notesLabel: "Заметки для агентов",
+        notesLabel: "Когда использовать",
         notesPlaceholder: "Используйте для работы над UI — компоненты, макет и токены дизайна.",
-        notesHint:
-          "MCP-инструмент «list_profiles» возвращает эти заметки. Сформулируйте их как инструкцию для другого агента.",
+        notesHint: "Помогает агентам выбрать этот профиль при запуске другого агента.",
         save: "Сохранить",
         saving: "Сохранение...",
         remove: "Удалить",

@@ -50,6 +50,7 @@ import { toggleDesktopSidebarsWithCheckoutIntent } from "@/utils/desktop-sidebar
 import {
   isSidePanelOpen,
   openSupportingTab,
+  openTabInSidePanel,
   toggleSidePanel,
   useIsSidePanelOpen,
 } from "@/workspace-tabs/side-panel";
@@ -65,6 +66,7 @@ import {
   findPaneById,
   getFocusedBrowserId,
   FOCUSED_PANE_PLACEMENT,
+  selectSidePanelPaneId,
   type WorkspaceLayout,
   type WorkspaceTabPlacement,
   useWorkspaceLayoutStore,
@@ -78,14 +80,13 @@ import {
 import { useSettings } from "@/hooks/use-settings";
 import { useKeyboardActionHandler } from "@/hooks/use-keyboard-action-handler";
 import { buildWorkspaceKeyboardHandlerId } from "@/keyboard/handler-id";
-import type { KeyboardActionDefinition } from "@/keyboard/keyboard-action-dispatcher";
+import type {
+  KeyboardActionDefinition,
+  WorkspacePanelTarget,
+} from "@/keyboard/keyboard-action-dispatcher";
 import { useCreateFlowStore } from "@/stores/create-flow-store";
-import {
-  buildDeterministicWorkspaceTabId,
-  normalizeWorkspaceTabTarget,
-  workspaceTabTargetsEqual,
-} from "@/workspace-tabs/identity";
-import { selectVisibleAgentIds } from "./visible-agent-ids";
+import { normalizeWorkspaceTabTarget, workspaceTabTargetsEqual } from "@/workspace-tabs/identity";
+import { useVisibleAgentIds } from "./visible-agent-ids";
 import {
   getHostRuntimeStore,
   useHostRuntimeClient,
@@ -124,7 +125,6 @@ import {
   WorkspaceTabRenameModal,
 } from "@/screens/workspace/use-workspace-tab-rename";
 import { MobileTabTrailingAccessory } from "@/screens/workspace/workspace-tab-trailing-accessory";
-import { WorkspacePaneEmptyState } from "@/screens/workspace/workspace-pane-empty-state";
 import {
   WorkspaceDesktopTabsRow,
   type WorkspaceDesktopTabRowItem,
@@ -159,7 +159,13 @@ import {
 } from "@/screens/workspace/workspace-pane-content";
 import { useMountedTabSet } from "@/screens/workspace/use-mounted-tab-set";
 import { WorkspaceFocusProvider } from "@/workspace/focus";
-import { shouldSeedEmptyWorkspaceDraft } from "@/screens/workspace/workspace-empty-draft-seed";
+import type { NewTabSelection } from "@/workspace-tabs/new-tab";
+import {
+  NewTabLauncherProvider,
+  type NewTabLauncher,
+  type WorkspaceTabLaunchDestination,
+} from "@/workspace-tabs/launcher";
+import type { TerminalTabDestination } from "@/screens/workspace/terminals/use-workspace-terminals";
 import {
   buildBulkCloseConfirmationMessage,
   type BulkCloseConfirmationLabels,
@@ -331,6 +337,7 @@ function useSyncWorkspaceActiveBrowser(input: {
 function getFallbackTabOptionLabel(
   tab: WorkspaceTabDescriptor,
   labels: {
+    newTab: string;
     newAgent: string;
     setup: string;
     terminal: string;
@@ -341,6 +348,9 @@ function getFallbackTabOptionLabel(
     pullRequest: string;
   },
 ): string {
+  if (tab.target.kind === "new_tab") {
+    return labels.newTab;
+  }
   if (tab.target.kind === "draft") {
     return labels.newAgent;
   }
@@ -374,6 +384,7 @@ function getFallbackTabOptionLabel(
 function getFallbackTabOptionDescription(
   tab: WorkspaceTabDescriptor,
   labels: {
+    newTab: string;
     newAgent: string;
     workspaceSetup: string;
     agent: string;
@@ -384,6 +395,9 @@ function getFallbackTabOptionDescription(
     pullRequest: string;
   },
 ): string {
+  if (tab.target.kind === "new_tab") {
+    return labels.newTab;
+  }
   if (tab.target.kind === "draft") {
     return labels.newAgent;
   }
@@ -617,7 +631,7 @@ function MobileWorkspaceTabOption({
     }),
     [t],
   );
-  const menuTestIDBase = `workspace-tab-menu-${buildDeterministicWorkspaceTabId(tab.target)}`;
+  const menuTestIDBase = `workspace-tab-menu-${tab.tabId}`;
   const menuEntries = buildWorkspaceTabMenuEntries({
     surface: "mobile",
     tab,
@@ -641,6 +655,7 @@ function MobileWorkspaceTabOption({
 
   const fallbackLabels = useMemo(
     () => ({
+      newTab: t("workspace.tabs.actions.newTab"),
       newAgent: t("workspace.tabs.fallback.newAgent"),
       setup: t("workspace.tabs.fallback.setup"),
       terminal: t("workspace.tabs.fallback.terminal"),
@@ -1125,6 +1140,7 @@ interface RenderWorkspaceContentInput {
   isMissingWorkspaceDirectory: boolean;
   activeTabDescriptor: WorkspaceTabDescriptor | null;
   hasHydratedAgents: boolean;
+  hasLoadedTerminals: boolean;
   mountedFocusedPaneTabIds: string[];
   focusedPaneTabDescriptorMap: Map<string, WorkspaceTabDescriptor>;
   isRouteFocused: boolean;
@@ -1140,6 +1156,7 @@ function renderWorkspaceContent(input: RenderWorkspaceContentInput): React.React
     isMissingWorkspaceDirectory,
     activeTabDescriptor,
     hasHydratedAgents,
+    hasLoadedTerminals,
     mountedFocusedPaneTabIds,
     focusedPaneTabDescriptorMap,
     isRouteFocused,
@@ -1156,7 +1173,7 @@ function renderWorkspaceContent(input: RenderWorkspaceContentInput): React.React
       </View>
     );
   }
-  if (!activeTabDescriptor && !hasHydratedAgents) {
+  if (!hasHydratedAgents || !hasLoadedTerminals) {
     return (
       <View style={styles.emptyState}>
         <ThemedLoadingSpinner uniProps={mutedColorMapping} />
@@ -1338,6 +1355,20 @@ function WorkspaceScreenGateFrame({ children }: { children: ReactNode }) {
   );
 }
 
+function WorkspacePanelContent({
+  launcher,
+  content,
+}: {
+  launcher: NewTabLauncher;
+  content: ReactNode;
+}) {
+  return (
+    <NewTabLauncherProvider value={launcher}>
+      <View style={styles.content}>{content}</View>
+    </NewTabLauncherProvider>
+  );
+}
+
 function renderWorkspaceScreenGateShell(input: {
   gate: ReactNode;
   workspaceKey: string | null;
@@ -1423,6 +1454,11 @@ interface WorkspaceTerminalTabActionsInput {
     target: WorkspaceTabTarget,
     placement?: WorkspaceTabPlacement,
   ) => string | null;
+  replaceWorkspaceTabTarget: (
+    workspaceKey: string,
+    tabId: string,
+    target: WorkspaceTabTarget,
+  ) => string | null;
   labels: {
     workspacePathUnavailable: string;
     terminalQueued: string;
@@ -1434,7 +1470,10 @@ interface WorkspaceTerminalTabActionsInput {
 }
 
 interface WorkspaceTerminalTabActions {
-  handleTerminalCreated: (input: { terminalId: string; paneId?: string }) => void;
+  handleTerminalCreated: (input: {
+    terminalId: string;
+    destination: TerminalTabDestination;
+  }) => void;
   handleScriptTerminalSelected: (terminalId: string) => void;
   handleWorkspacePathUnavailable: () => void;
   handleTerminalCreateQueued: () => void;
@@ -1444,21 +1483,29 @@ interface WorkspaceTerminalTabActions {
 function useWorkspaceTerminalTabActions({
   persistenceKey,
   openWorkspaceTabFocused,
+  replaceWorkspaceTabTarget,
   labels,
   toast,
 }: WorkspaceTerminalTabActionsInput): WorkspaceTerminalTabActions {
   const handleTerminalCreated = useCallback(
-    ({ terminalId, paneId }: { terminalId: string; paneId?: string }) => {
+    ({ terminalId, destination }: { terminalId: string; destination: TerminalTabDestination }) => {
       if (!persistenceKey) {
+        return;
+      }
+      if (destination.kind === "replace") {
+        replaceWorkspaceTabTarget(persistenceKey, destination.tabId, {
+          kind: "terminal",
+          terminalId,
+        });
         return;
       }
       openWorkspaceTabFocused(
         persistenceKey,
         { kind: "terminal", terminalId },
-        paneLocalPlacement(paneId),
+        paneLocalPlacement(destination.paneId),
       );
     },
-    [openWorkspaceTabFocused, persistenceKey],
+    [openWorkspaceTabFocused, persistenceKey, replaceWorkspaceTabTarget],
   );
   const handleScriptTerminalSelected = useCallback(
     (terminalId: string) => {
@@ -1504,6 +1551,15 @@ function useHostBrowserEditor(serverId: string): {
     const hostProfile = hosts.find((entry) => entry.serverId === serverId) ?? null;
     return { hostProfile, browserEditorUrl: hostProfile?.browserEditorUrl ?? null };
   }, [hosts, serverId]);
+function resolveCommandCenterPanelTarget(target: WorkspacePanelTarget): WorkspaceTabTarget {
+  switch (target) {
+    case "changes":
+      return { kind: "working_diff" };
+    case "files":
+      return { kind: "files" };
+    case "pull-request":
+      return { kind: "pull_request" };
+  }
 }
 
 function WorkspaceScreenContent({
@@ -1598,6 +1654,7 @@ function WorkspaceScreenContent({
     isActive: isRouteFocused,
   });
   const openTab = useWorkspaceLayoutStore((state) => state.openTab);
+  const replaceWorkspaceTabTarget = useWorkspaceLayoutStore((state) => state.replaceTab);
   const openWorkspaceTabFocused = useCallback(
     (workspaceKey: string, target: WorkspaceTabTarget, placement?: WorkspaceTabPlacement) =>
       openTab({ workspaceKey, target, intent: "reveal", placement }),
@@ -1667,6 +1724,7 @@ function WorkspaceScreenContent({
   } = useWorkspaceTerminalTabActions({
     persistenceKey,
     openWorkspaceTabFocused,
+    replaceWorkspaceTabTarget,
     labels: {
       workspacePathUnavailable: t("workspace.header.toasts.workspacePathUnavailable"),
       terminalQueued: t("workspace.header.toasts.terminalQueued"),
@@ -1688,7 +1746,6 @@ function WorkspaceScreenContent({
     queryKey: terminalsQueryKey,
     removeTerminalFromCache,
     standaloneTerminalIds,
-    terminals,
   } = useWorkspaceTerminals({
     client,
     isConnected,
@@ -1787,6 +1844,9 @@ function WorkspaceScreenContent({
 
   const workspaceLayout = useWorkspaceLayoutStore((state) =>
     persistenceKey ? (state.layoutByWorkspace[persistenceKey] ?? null) : null,
+  );
+  const sidePanelPaneId = useWorkspaceLayoutStore((state) =>
+    persistenceKey ? selectSidePanelPaneId(state, persistenceKey) : null,
   );
   const hasHydratedWorkspaceLayoutStore = useWorkspaceLayoutStoreHydrated();
   const workspaceSetupSnapshot = useWorkspaceSetupStore((state) =>
@@ -1899,7 +1959,6 @@ function WorkspaceScreenContent({
   const closeWorkspaceTab = useWorkspaceLayoutStore((state) => state.closeTab);
   const unpinWorkspaceAgent = useWorkspaceLayoutStore((state) => state.unpinAgent);
   const hideWorkspaceAgent = useWorkspaceLayoutStore((state) => state.hideAgent);
-  const replaceWorkspaceTabTarget = useWorkspaceLayoutStore((state) => state.replaceTab);
   const setWorkspaceTabState = useWorkspaceLayoutStore((state) => state.setTabState);
   const reconcileWorkspaceTabs = useWorkspaceLayoutStore((state) => state.reconcileTabs);
   const splitWorkspacePane = useWorkspaceLayoutStore((state) => state.splitPane);
@@ -1966,16 +2025,16 @@ function WorkspaceScreenContent({
   const viewedTimelineSync = useSessionStore(
     (state) => state.sessions[normalizedServerId]?.viewedTimelineSync ?? null,
   );
-  const visibleAgentIds = useMemo(
-    () =>
-      selectVisibleAgentIds({
-        layout: workspaceLayout,
-        tabs: uiTabs,
-        routeFocused: isRouteFocused,
-        focusedPaneOnly: isMobile || isFocusModeEnabled || !supportsDesktopPaneSplits(),
-      }),
-    [isFocusModeEnabled, isMobile, isRouteFocused, uiTabs, workspaceLayout],
+  const syncFocusedPaneOnly = useMemo(
+    () => isMobile || isFocusModeEnabled || !supportsDesktopPaneSplits(),
+    [isFocusModeEnabled, isMobile],
   );
+  const visibleAgentIds = useVisibleAgentIds({
+    layout: workspaceLayout,
+    tabs: uiTabs,
+    routeFocused: isRouteFocused,
+    focusedPaneOnly: syncFocusedPaneOnly,
+  });
   useLayoutEffect(() => {
     if (!persistenceKey || !viewedTimelineSync) {
       return;
@@ -2058,7 +2117,7 @@ function WorkspaceScreenContent({
     [openWorkspaceTabFocused, openWorkspaceTabInBackground, persistenceKey],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!isRouteFocused) {
       return;
     }
@@ -2147,8 +2206,6 @@ function WorkspaceScreenContent({
     },
     [navigateToTabId, openWorkspaceTabFocused, persistenceKey],
   );
-
-  const emptyWorkspaceSeedRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!isRouteFocused) {
@@ -2323,7 +2380,6 @@ function WorkspaceScreenContent({
   // Fork-only: VS Code Web's own diff editor for a changed file. Offered only
   // where VS Code Web exists — there is no in-app diff editor to fall back to,
   // and the inline diff in the pane already covers that.
-
   const handleOpenFileFromChat = useCallback(
     (location: WorkspaceFileLocation, parentTabId?: string | null) => {
       const normalizedLocation = normalizeWorkspaceFileLocation(location);
@@ -2454,6 +2510,7 @@ function WorkspaceScreenContent({
   }, [uiTabs]);
   const bulkCloseConfirmationLabels = useMemo<BulkCloseConfirmationLabels>(
     () => ({
+      newTab: t("workspace.tabs.actions.newTab"),
       all: ({ agents, terminals: terminalCount, tabs: tabCount }) =>
         t("workspace.tabs.confirmations.bulk.all", {
           agents,
@@ -2486,6 +2543,7 @@ function WorkspaceScreenContent({
   const activeTabKey = useMemo(() => activeTabId ?? "", [activeTabId]);
   const tabFallbackLabels = useMemo(
     () => ({
+      newTab: t("workspace.tabs.actions.newTab"),
       newAgent: t("workspace.tabs.fallback.newAgent"),
       setup: t("workspace.tabs.fallback.setup"),
       workspaceSetup: t("workspace.tabs.fallback.workspaceSetup"),
@@ -2516,21 +2574,15 @@ function WorkspaceScreenContent({
     [openWorkspaceDraftTab],
   );
 
-  const handleCreateTerminal = useStableEvent(createTerminal);
-
-  const handleOpenPaneView = useCallback(
-    (input: { paneId: string; target: WorkspaceTabTarget }) => {
-      if (!persistenceKey) {
-        return;
-      }
-      createWorkspaceTab(persistenceKey, input.target, paneLocalPlacement(input.paneId));
-    },
-    [createWorkspaceTab, persistenceKey],
-  );
+  const handleCreateTerminal = useStableEvent((input?: { paneId?: string }) => {
+    createTerminal({
+      destination: input?.paneId ? { kind: "open", paneId: input.paneId } : { kind: "open" },
+    });
+  });
 
   const handleCreateTerminalWithProfile = useCallback(
     (profile: TerminalProfile) => {
-      createTerminal({ profile });
+      createTerminal({ profile, destination: { kind: "open" } });
     },
     [createTerminal],
   );
@@ -2548,6 +2600,52 @@ function WorkspaceScreenContent({
       );
     },
     [openWorkspaceTabFocused, persistenceKey],
+  );
+
+  const handleCreateNewTab = useCallback(
+    (input?: { paneId?: string }) => {
+      if (!persistenceKey) {
+        return;
+      }
+      createWorkspaceTab(persistenceKey, { kind: "new_tab" }, paneLocalPlacement(input?.paneId));
+    },
+    [createWorkspaceTab, persistenceKey],
+  );
+
+  const launchWorkspaceTab = useCallback(
+    (selection: NewTabSelection, destination: WorkspaceTabLaunchDestination) => {
+      if (!persistenceKey) {
+        return;
+      }
+      const openTarget = (target: WorkspaceTab["target"]) => {
+        if (destination.kind === "replace") {
+          replaceWorkspaceTabTarget(persistenceKey, destination.tabId, target);
+        } else {
+          createWorkspaceTab(persistenceKey, target, paneLocalPlacement(destination.paneId));
+        }
+      };
+      if (selection.kind === "target") {
+        openTarget(selection.target);
+        return;
+      }
+      if (selection.kind === "agent") {
+        openTarget({
+          kind: "draft",
+          draftId: generateDraftId(),
+        });
+        return;
+      }
+      if (selection.kind === "terminal") {
+        createTerminal({
+          profile: selection.profile,
+          destination,
+        });
+        return;
+      }
+      const { browserId } = createWorkspaceBrowser();
+      openTarget({ kind: "browser", browserId });
+    },
+    [createTerminal, createWorkspaceTab, persistenceKey, replaceWorkspaceTabTarget],
   );
 
   const handleOpenUrlInBrowserTab = useCallback(
@@ -3163,6 +3261,109 @@ function WorkspaceScreenContent({
     ],
   );
 
+  const handleWorkspacePanelOpenAction = useCallback(
+    (action: KeyboardActionDefinition): boolean => {
+      if (action.id !== "workspace.tab.open") return false;
+      if (!persistenceKey) return true;
+
+      const target = resolveCommandCenterPanelTarget(action.target);
+      if (action.placement === "supporting") {
+        openSupportingTab({
+          isCompact: isMobile,
+          workspaceKey: persistenceKey,
+          target,
+          openInSidePanelByDefault,
+        });
+        return true;
+      }
+      if (action.placement === "side-panel") {
+        openTabInSidePanel({
+          isCompact: isMobile,
+          workspaceKey: persistenceKey,
+          checkout: activeExplorerCheckout,
+          target,
+        });
+        return true;
+      }
+      const focusedPaneId = focusedPaneTabState.pane?.id;
+      openWorkspaceTabFocused(
+        persistenceKey,
+        target,
+        focusedPaneId ? { mode: "pane", paneId: focusedPaneId } : undefined,
+      );
+      return true;
+    },
+    [
+      activeExplorerCheckout,
+      focusedPaneTabState.pane?.id,
+      isMobile,
+      openInSidePanelByDefault,
+      openWorkspaceTabFocused,
+      persistenceKey,
+    ],
+  );
+
+  const handleWorkspaceCurrentTabMetadataAction = useCallback(
+    (action: KeyboardActionDefinition): boolean => {
+      const descriptor = activeTab?.descriptor;
+      switch (action.id) {
+        case "workspace.tab.rename-current":
+          if (descriptor) handleRenameTab(descriptor);
+          return true;
+        case "workspace.tab.reload-current":
+          if (descriptor?.target.kind === "agent")
+            void handleReloadAgent(descriptor.target.agentId);
+          return true;
+        case "workspace.tab.copy-resume-command":
+          if (descriptor?.target.kind === "agent") {
+            void handleCopyResumeCommand(descriptor.target.agentId);
+          }
+          return true;
+        case "workspace.tab.copy-id":
+          if (descriptor?.target.kind === "agent")
+            void handleCopyAgentId(descriptor.target.agentId);
+          if (descriptor?.target.kind === "terminal") {
+            void handleCopyTerminalId(descriptor.target.terminalId);
+          }
+          return true;
+        case "workspace.tab.copy-file-path":
+          if (descriptor?.target.kind === "file") void handleCopyFilePath(descriptor.target.path);
+          return true;
+        default:
+          return false;
+      }
+    },
+    [
+      activeTab,
+      handleCopyAgentId,
+      handleCopyFilePath,
+      handleCopyResumeCommand,
+      handleCopyTerminalId,
+      handleReloadAgent,
+      handleRenameTab,
+    ],
+  );
+
+  const handleWorkspaceCurrentTabCloseAction = useCallback(
+    (action: KeyboardActionDefinition): boolean => {
+      if (!activeTabId) return true;
+      if (action.id === "workspace.tab.close-left") {
+        void handleCloseTabsToLeft(activeTabId);
+        return true;
+      }
+      if (action.id === "workspace.tab.close-right") {
+        void handleCloseTabsToRight(activeTabId);
+        return true;
+      }
+      if (action.id === "workspace.tab.close-others") {
+        void handleCloseOtherTabs(activeTabId);
+        return true;
+      }
+      return false;
+    },
+    [activeTabId, handleCloseOtherTabs, handleCloseTabsToLeft, handleCloseTabsToRight],
+  );
+
   const handleWorkspaceTabAction = useCallback(
     (action: KeyboardActionDefinition): boolean => {
       switch (action.id) {
@@ -3174,6 +3375,9 @@ function WorkspaceScreenContent({
           return true;
         case "workspace.browser.new":
           handleCreateBrowserTab();
+          return true;
+        case "workspace.tab.menu.open":
+          handleCreateNewTab({ paneId: focusedPaneTabState.pane?.id });
           return true;
         case "workspace.tab.close-current":
           if (activeTabId) {
@@ -3208,9 +3412,52 @@ function WorkspaceScreenContent({
       handleCloseTabById,
       handleCreateDraftTab,
       handleCreateBrowserTab,
+      handleCreateNewTab,
       handleCreateTerminal,
+      focusedPaneTabState.pane?.id,
       navigateToTabId,
       tabs,
+    ],
+  );
+
+  const handleWorkspaceDirectTargetAction = useCallback(
+    (action: KeyboardActionDefinition): boolean => {
+      const paneId = focusedPaneTabState.pane?.id;
+      switch (action.id) {
+        case "workspace.tab.target.agent":
+          handleCreateDraftTab({ paneId });
+          return true;
+        case "workspace.tab.target.browser":
+          handleCreateBrowserTab({ paneId });
+          return true;
+        case "workspace.tab.target.changes":
+          if (persistenceKey && isGitCheckout) {
+            openSupportingTab({
+              isCompact: isMobile,
+              workspaceKey: persistenceKey,
+              target: { kind: "working_diff" },
+              openInSidePanelByDefault,
+            });
+          }
+          return true;
+        case "workspace.tab.target.files":
+          if (persistenceKey) {
+            openWorkspaceTabFocused(persistenceKey, { kind: "files" }, paneLocalPlacement(paneId));
+          }
+          return true;
+        default:
+          return false;
+      }
+    },
+    [
+      focusedPaneTabState.pane?.id,
+      handleCreateBrowserTab,
+      handleCreateDraftTab,
+      isGitCheckout,
+      isMobile,
+      openInSidePanelByDefault,
+      openWorkspaceTabFocused,
+      persistenceKey,
     ],
   );
 
@@ -3320,6 +3567,10 @@ function WorkspaceScreenContent({
     ],
   );
 
+  const workspaceKeyboardActionsEnabled = Boolean(
+    isRouteFocused && normalizedServerId && normalizedWorkspaceId,
+  );
+
   useKeyboardActionHandler({
     handlerId: buildWorkspaceKeyboardHandlerId({
       name: "workspace-tab-actions",
@@ -3333,11 +3584,79 @@ function WorkspaceScreenContent({
       "workspace.tab.navigate-relative",
       "workspace.terminal.new",
       "workspace.browser.new",
+      "workspace.tab.menu.open",
     ] as const,
-    enabled: Boolean(isRouteFocused && normalizedServerId && normalizedWorkspaceId),
+    enabled: workspaceKeyboardActionsEnabled,
     priority: 100,
     isActive: () => true,
     handle: handleWorkspaceTabAction,
+  });
+
+  useKeyboardActionHandler({
+    handlerId: buildWorkspaceKeyboardHandlerId({
+      name: "workspace-direct-target-actions",
+      serverId: normalizedServerId,
+      workspaceId: normalizedWorkspaceId,
+    }),
+    actions: [
+      "workspace.tab.target.agent",
+      "workspace.tab.target.browser",
+      "workspace.tab.target.changes",
+      "workspace.tab.target.files",
+    ] as const,
+    enabled: workspaceKeyboardActionsEnabled,
+    priority: 100,
+    isActive: () => true,
+    handle: handleWorkspaceDirectTargetAction,
+  });
+
+  useKeyboardActionHandler({
+    handlerId: buildWorkspaceKeyboardHandlerId({
+      name: "workspace-panel-open-actions",
+      serverId: normalizedServerId,
+      workspaceId: normalizedWorkspaceId,
+    }),
+    actions: ["workspace.tab.open"] as const,
+    enabled: workspaceKeyboardActionsEnabled,
+    priority: 100,
+    isActive: () => true,
+    handle: handleWorkspacePanelOpenAction,
+  });
+
+  useKeyboardActionHandler({
+    handlerId: buildWorkspaceKeyboardHandlerId({
+      name: "workspace-current-tab-metadata-actions",
+      serverId: normalizedServerId,
+      workspaceId: normalizedWorkspaceId,
+    }),
+    actions: [
+      "workspace.tab.rename-current",
+      "workspace.tab.reload-current",
+      "workspace.tab.copy-resume-command",
+      "workspace.tab.copy-id",
+      "workspace.tab.copy-file-path",
+    ] as const,
+    enabled: workspaceKeyboardActionsEnabled,
+    priority: 100,
+    isActive: () => true,
+    handle: handleWorkspaceCurrentTabMetadataAction,
+  });
+
+  useKeyboardActionHandler({
+    handlerId: buildWorkspaceKeyboardHandlerId({
+      name: "workspace-current-tab-close-actions",
+      serverId: normalizedServerId,
+      workspaceId: normalizedWorkspaceId,
+    }),
+    actions: [
+      "workspace.tab.close-left",
+      "workspace.tab.close-right",
+      "workspace.tab.close-others",
+    ] as const,
+    enabled: workspaceKeyboardActionsEnabled,
+    priority: 100,
+    isActive: () => true,
+    handle: handleWorkspaceCurrentTabCloseAction,
   });
 
   useKeyboardActionHandler({
@@ -3360,7 +3679,7 @@ function WorkspaceScreenContent({
       "workspace.pane.close",
       "workspace.focus.toggle",
     ] as const,
-    enabled: Boolean(isRouteFocused && normalizedServerId && normalizedWorkspaceId),
+    enabled: workspaceKeyboardActionsEnabled,
     priority: 100,
     isActive: () => true,
     handle: handleWorkspacePaneAction,
@@ -3373,7 +3692,7 @@ function WorkspaceScreenContent({
       workspaceId: normalizedWorkspaceId,
     }),
     actions: ["sidebar.toggle.right", "sidebar.toggle.both"] as const,
-    enabled: Boolean(isRouteFocused && normalizedServerId && normalizedWorkspaceId),
+    enabled: workspaceKeyboardActionsEnabled,
     priority: 100,
     isActive: () => true,
     handle: handleWorkspaceSidebarAction,
@@ -3414,6 +3733,8 @@ function WorkspaceScreenContent({
         tab: input.tab,
         normalizedServerId,
         normalizedWorkspaceId,
+        isSidePanel:
+          canRenderDesktopPaneSplits && input.paneId !== null && input.paneId === sidePanelPaneId,
         fileNavigationRevision: fileNavigationRevisionByTabId[input.tab.tabId] ?? 0,
         onOpenTab: (target) => {
           if (!persistenceKey) {
@@ -3469,11 +3790,13 @@ function WorkspaceScreenContent({
       navigateToTabId,
       normalizedServerId,
       normalizedWorkspaceId,
+      canRenderDesktopPaneSplits,
       openImportSheet,
       revealWorkspaceChildTab,
       persistenceKey,
       replaceWorkspaceTabTarget,
       setWorkspaceTabState,
+      sidePanelPaneId,
     ],
   );
   const focusedPaneId = useMemo(
@@ -3514,6 +3837,7 @@ function WorkspaceScreenContent({
     isMissingWorkspaceDirectory,
     activeTabDescriptor,
     hasHydratedAgents,
+    hasLoadedTerminals: terminalsQuery.isSuccess,
     mountedFocusedPaneTabIds,
     focusedPaneTabDescriptorMap,
     isRouteFocused,
@@ -3605,40 +3929,6 @@ function WorkspaceScreenContent({
       );
     },
     [focusedPaneId, handleReorderTabsInPane],
-  );
-
-  const renderSplitPaneEmptyState = useCallback(
-    function renderSplitPaneEmptyState(input: {
-      paneId: string;
-      paneIsolated: boolean;
-      onClosePane: () => void;
-    }) {
-      // Same predicate the close action reads, so the button is offered exactly when
-      // pressing it would do something.
-      const canClosePane =
-        !input.paneIsolated &&
-        Boolean(workspaceLayout) &&
-        canDismissPaneInLayout(workspaceLayout as WorkspaceLayout, input.paneId);
-      return (
-        <WorkspacePaneEmptyState
-          paneId={input.paneId}
-          showChanges={isGitCheckout}
-          showPullRequest={hasPullRequest}
-          onOpenView={handleOpenPaneView}
-          onCreateAgent={handleCreateDraftTab}
-          onCreateTerminal={handleCreateTerminal}
-          onClosePane={canClosePane ? input.onClosePane : null}
-        />
-      );
-    },
-    [
-      handleCreateDraftTab,
-      handleCreateTerminal,
-      handleOpenPaneView,
-      hasPullRequest,
-      isGitCheckout,
-      workspaceLayout,
-    ],
   );
 
   const containerStyle = [styles.container, styles.containerWorkspaceBackground];
@@ -3758,6 +4048,22 @@ function WorkspaceScreenContent({
     [createTerminalMutation.isPending, pendingTerminalCreateInput],
   );
   const showCreateBrowserTab = getIsElectron();
+  const newTabLauncher = useMemo<NewTabLauncher>(
+    () => ({
+      showChanges: isGitCheckout,
+      showPullRequest: hasPullRequest,
+      showBrowser: showCreateBrowserTab,
+      terminalDisabled: createTerminalDisabled,
+      launch: launchWorkspaceTab,
+    }),
+    [
+      createTerminalDisabled,
+      hasPullRequest,
+      isGitCheckout,
+      launchWorkspaceTab,
+      showCreateBrowserTab,
+    ],
+  );
   const focusedPaneIdOrUndefined = useMemo(() => focusedPaneId ?? undefined, [focusedPaneId]);
   const desktopFocusModeEnabled = useMemo(
     () => isFocusModeEnabled && !isMobile,
@@ -3796,19 +4102,14 @@ function WorkspaceScreenContent({
         onCloseTabsToLeft={handleCloseTabsToLeftInPane}
         onCloseTabsToRight={handleCloseTabsToRightInPane}
         onCloseOtherTabs={handleCloseOtherTabsInPane}
-        onCreateDraftTab={handleCreateDraftTab}
-        onCreateTerminalTab={handleCreateTerminal}
-        onCreateBrowserTab={handleCreateBrowserTab}
-        showCreateBrowserTab={showCreateBrowserTab}
+        onCreateNewTab={handleCreateNewTab}
         buildPaneContentModel={buildDesktopPaneContentModel}
         onFocusPane={handleFocusPane}
         onSplitPane={handleSplitPane}
         onSplitPaneEmpty={handleCreateEmptySplit}
         onMoveTabToPane={handleMoveTabToPane}
-        onClosePane={handleClosePane}
         onResizeSplit={handleResizePaneSplit}
         onReorderTabsInPane={handleReorderTabsInPane}
-        renderPaneEmptyState={renderSplitPaneEmptyState}
       />
     );
   }, [
@@ -3834,21 +4135,23 @@ function WorkspaceScreenContent({
     handleCloseTabsToLeftInPane,
     handleCloseTabsToRightInPane,
     handleCloseOtherTabsInPane,
-    handleCreateDraftTab,
-    handleCreateTerminal,
-    handleCreateBrowserTab,
-    showCreateBrowserTab,
+    handleCreateNewTab,
     buildDesktopPaneContentModel,
     handleFocusPane,
     handleSplitPane,
     handleCreateEmptySplit,
     handleMoveTabToPane,
-    handleClosePane,
     handleResizePaneSplit,
     handleReorderTabsInPane,
-    renderSplitPaneEmptyState,
   ]);
   const desktopContent = desktopSplitContent ?? content;
+
+  const workspacePanelContent = (
+    <WorkspacePanelContent
+      launcher={newTabLauncher}
+      content={isMobile ? content : desktopContent}
+    />
+  );
 
   const workspaceCenterColumn = (
     <View style={styles.centerColumn}>
@@ -3915,81 +4218,82 @@ function WorkspaceScreenContent({
       ) : null}
 
       {shouldRenderDesktopPaneFallback ? (
-        <WorkspaceDesktopTabsRow
-          paneId={focusedPaneIdOrUndefined}
-          isFocused={isRouteFocused}
-          tabs={desktopTabRowItems}
-          normalizedServerId={normalizedServerId}
-          normalizedWorkspaceId={normalizedWorkspaceId}
-          setHoveredCloseTabKey={setHoveredCloseTabKey}
-          onNavigateTab={navigateToTabId}
-          onCloseTab={handleCloseTabById}
-          onCopyResumeCommand={handleCopyResumeCommand}
-          onCopyAgentId={handleCopyAgentId}
-          onCopyTerminalId={handleCopyTerminalId}
-          onCopyFilePath={handleCopyFilePath}
-          onReloadAgent={handleReloadAgent}
-          onRenameTab={handleRenameTab}
-          onCloseTabsToLeft={handleCloseTabsToLeft}
-          onCloseTabsToRight={handleCloseTabsToRight}
-          onCloseOtherTabs={handleCloseOtherTabs}
-          onCreateDraftTab={handleCreateDraftTab}
-          onCreateTerminalTab={handleCreateTerminal}
-          onCreateBrowserTab={handleCreateBrowserTab}
-          showCreateBrowserTab={showCreateBrowserTab}
-          disableCreateTerminal={createTerminalMutation.isPending}
-          isWaitingOnTerminalReadiness={pendingTerminalCreateInput !== null}
-          onReorderTabs={handleReorderTabsInFocusedPane}
-          focusModeEnabled={desktopFocusModeEnabled}
-          onExitFocusMode={toggleFocusMode}
-        />
+        // The splits path renders tab rows inside WorkspacePanelContent, which is what
+        // provides NewTabLauncherProvider. This fallback row sits outside it, and its
+        // new-tab menu content mounts eagerly, so without its own provider every
+        // non-compact native layout (tablets, foldables in landscape) crashed on mount
+        // with "NewTabLauncherProvider is required" (#3750).
+        <NewTabLauncherProvider value={newTabLauncher}>
+          <WorkspaceDesktopTabsRow
+            paneId={focusedPaneIdOrUndefined}
+            isFocused={isRouteFocused}
+            tabs={desktopTabRowItems}
+            normalizedServerId={normalizedServerId}
+            normalizedWorkspaceId={normalizedWorkspaceId}
+            setHoveredCloseTabKey={setHoveredCloseTabKey}
+            onNavigateTab={navigateToTabId}
+            onCloseTab={handleCloseTabById}
+            onCopyResumeCommand={handleCopyResumeCommand}
+            onCopyAgentId={handleCopyAgentId}
+            onCopyTerminalId={handleCopyTerminalId}
+            onCopyFilePath={handleCopyFilePath}
+            onReloadAgent={handleReloadAgent}
+            onRenameTab={handleRenameTab}
+            onCloseTabsToLeft={handleCloseTabsToLeft}
+            onCloseTabsToRight={handleCloseTabsToRight}
+            onCloseOtherTabs={handleCloseOtherTabs}
+            onCreateNewTab={handleCreateNewTab}
+            onReorderTabs={handleReorderTabsInFocusedPane}
+            focusModeEnabled={desktopFocusModeEnabled}
+            onExitFocusMode={toggleFocusMode}
+          />
+        </NewTabLauncherProvider>
       ) : null}
 
-      <View style={styles.centerContent}>
-        {isMobile ? (
-          <View style={styles.content}>{content}</View>
-        ) : (
-          <View style={styles.content}>{desktopContent}</View>
-        )}
-      </View>
+      <View style={styles.centerContent}>{workspacePanelContent}</View>
     </View>
   );
 
+  const renderedWorkspaceScreen = (
+    <RenderProfile id="WorkspaceScreenContent">
+      <View style={containerStyle}>
+        <WorkspaceDocumentTitleEffectSlot
+          tab={activeTabDescriptor}
+          serverId={normalizedServerId}
+          workspaceId={normalizedWorkspaceId}
+          isRouteFocused={isRouteFocused}
+        />
+        <View style={styles.threePaneRow}>
+          <FloatingPanelPortalHostNameProvider hostName={workspaceFloatingPanelPortalHostName}>
+            {workspaceCenterColumn}
+          </FloatingPanelPortalHostNameProvider>
+          <FloatingPanelPortalHost name={workspaceFloatingPanelPortalHostName} />
+        </View>
+        <ImportSessionSheet
+          visible={isRouteFocused && isImportSheetVisible}
+          client={client}
+          serverId={normalizedServerId}
+          cwd={workspaceDirectory}
+          workspaceId={normalizedWorkspaceId}
+          onClose={closeImportSheet}
+          onImportedAgent={handleImportedAgent}
+        />
+        <WorkspaceTabRenameModal
+          renamingTab={isRouteFocused ? renamingTab : null}
+          onSubmit={handleRenameModalSubmit}
+          onClose={handleRenameModalClose}
+        />
+      </View>
+    </RenderProfile>
+  );
+
+  if (gatedWorkspaceScreen) {
+    return gatedWorkspaceScreen;
+  }
   return (
-    gatedWorkspaceScreen ?? (
-      <WorkspaceFocusProvider workspaceKey={persistenceKey}>
-        <RenderProfile id="WorkspaceScreenContent">
-          <View style={containerStyle}>
-            <WorkspaceDocumentTitleEffectSlot
-              tab={activeTabDescriptor}
-              serverId={normalizedServerId}
-              workspaceId={normalizedWorkspaceId}
-              isRouteFocused={isRouteFocused}
-            />
-            <View style={styles.threePaneRow}>
-              <FloatingPanelPortalHostNameProvider hostName={workspaceFloatingPanelPortalHostName}>
-                {workspaceCenterColumn}
-              </FloatingPanelPortalHostNameProvider>
-              <FloatingPanelPortalHost name={workspaceFloatingPanelPortalHostName} />
-            </View>
-            <ImportSessionSheet
-              visible={isRouteFocused && isImportSheetVisible}
-              client={client}
-              serverId={normalizedServerId}
-              cwd={workspaceDirectory}
-              workspaceId={normalizedWorkspaceId}
-              onClose={closeImportSheet}
-              onImportedAgent={handleImportedAgent}
-            />
-            <WorkspaceTabRenameModal
-              renamingTab={isRouteFocused ? renamingTab : null}
-              onSubmit={handleRenameModalSubmit}
-              onClose={handleRenameModalClose}
-            />
-          </View>
-        </RenderProfile>
-      </WorkspaceFocusProvider>
-    )
+    <WorkspaceFocusProvider workspaceKey={persistenceKey}>
+      {renderedWorkspaceScreen}
+    </WorkspaceFocusProvider>
   );
 }
 

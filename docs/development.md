@@ -623,6 +623,15 @@ cp -R packages/desktop/release/mac-arm64/Paseo.app "/Applications/Paseo Test.app
 ```
 
 **How to tell:** if `git diff` only shows files under `packages/app/src`, `packages/app/package.json`, or root `package-lock.json` (new app deps), it's app-only. If any file under `packages/server`, `packages/cli`, `packages/protocol`, `packages/relay`, or `packages/highlight` changed, use the full sync script instead.
+## Dependency patches
+
+`patches/*.patch` are applied by `scripts/postinstall-patches.mjs` on every install. A patch only
+runs when its package is actually present, so add the package to that script's `patchedPackages`
+list when you introduce a new patch — otherwise the file sits in `patches/` and never applies.
+Regenerate a patch with `npx patch-package <package>` after editing `node_modules/<package>`, and
+patch every build the consumers use: Metro resolves the `react-native` field of a package
+(`src/*.ts` for `react-native-svg`), while Node and Vitest resolve `main`/`module`
+(`lib/commonjs`, `lib/module`). Patching only `lib/` leaves the app bundle unfixed.
 
 ## ACP provider catalog versions
 

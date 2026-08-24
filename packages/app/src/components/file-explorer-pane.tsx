@@ -1788,7 +1788,6 @@ function getErrorRecoveryPath(state: AgentFileExplorerState | undefined): string
 const styles = StyleSheet.create((theme) => ({
   container: {
     flex: 1,
-    backgroundColor: theme.colors.surfaceSidebar,
   },
   desktopSplit: {
     flex: 1,

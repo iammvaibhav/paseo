@@ -1,4 +1,6 @@
 import { memo, useCallback, type ReactElement } from "react";
+import { WorkspaceDiffStatPill } from "@/composer/diff-stat-pill";
+import { useWorkspaceHasDiffStat } from "@/composer/workspace-diff-stat";
 import { AgentTaskList } from "@/composer/task-list";
 import { ComposerTrackBar } from "@/composer/tracks";
 import { supportsDesktopPaneSplits, useIsCompactFormFactor } from "@/constants/layout";
@@ -15,24 +17,16 @@ import { SubagentsTrack } from "@/subagents/track";
 import type { TodoEntry } from "@/types/stream";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
-import { openSupportingTab } from "@/workspace-tabs/side-panel";
+import { openSupportingTab, toggleSupportingTab } from "@/workspace-tabs/side-panel";
 
 /**
- * The pane's trackers — its subagents, its asks, and its task list — as a row
- * of pills over the foot of the transcript.
- *
- * It is mounted inside the transcript's animated container rather than above the composer, and
- * that placement is the whole design: the pills paint over the timeline, so scrolled content
- * passes under them instead of stopping at a band, and the container carries the same keyboard
- * transform the composer does, so the pills stay glued to its top edge while the keyboard moves.
- *
- * Its state was living in the composer only because that is where it used to render. None of it
- * is composer state — a subagent row opens a tab, an ask row reopens the selection popover, the
- * task list reads the agent's stream.
-
+ * The pane's ambient context — workspace changes, subagents, and tasks — as a row of pills above
+ * the composer.
  */
 export const AgentTracks = memo(function AgentTracks({
   serverId,
+  workspaceId,
+  cwd,
   agentId: _agentId,
   subagentRows,
   tasks,
@@ -40,13 +34,16 @@ export const AgentTracks = memo(function AgentTracks({
   onArchiveFinished,
 }: {
   serverId: string;
+  workspaceId: string;
+  cwd: string;
   agentId?: string;
   subagentRows: SubagentRow[];
   tasks: TodoEntry[] | undefined;
   archiveFinishedStatus: ArchiveFinishedStatus;
   onArchiveFinished: () => void;
 }): ReactElement | null {
-  const { workspaceId, tabId, openTab } = usePaneContext();
+  const { tabId, openTab } = usePaneContext();
+  const hasWorkspaceDiffStat = useWorkspaceHasDiffStat(serverId, workspaceId);
   const isCompact = useIsCompactFormFactor();
   const canSplit = supportsDesktopPaneSplits() && !isCompact;
   const openInSidePanelByDefault = useSettings(
@@ -96,13 +93,26 @@ export const AgentTracks = memo(function AgentTracks({
     },
     [canSplit, isCompact, openInSidePanelByDefault, openTab, tabId, workspaceKey],
   );
+  const handleOpenChanges = useCallback(() => {
+    if (!workspaceKey) {
+      return;
+    }
+    toggleSupportingTab({
+      isCompact,
+      workspaceKey,
+      checkout: { serverId, cwd, isGit: true },
+      target: { kind: "working_diff" },
+      openInSidePanelByDefault,
+    });
+  }, [cwd, isCompact, openInSidePanelByDefault, serverId, workspaceKey]);
 
-  if (!hasAgentTracks({ subagentRows, tasks, archiveFinishedStatus })) {
+  if (!hasWorkspaceDiffStat && !hasAgentTracks({ subagentRows, tasks, archiveFinishedStatus })) {
     return null;
   }
 
   return (
     <ComposerTrackBar>
+      <AgentTaskList tasks={tasks} />
       <SubagentsTrack
         rows={subagentRows}
         onOpenSubagent={handleOpenSubagent}
@@ -112,7 +122,11 @@ export const AgentTracks = memo(function AgentTracks({
         archiveFinishedStatus={archiveFinishedStatus}
         onDetachSubagent={canDetachSubagents ? detachSubagent : undefined}
       />
-      <AgentTaskList tasks={tasks} />
+      <WorkspaceDiffStatPill
+        serverId={serverId}
+        workspaceId={workspaceId}
+        onPress={handleOpenChanges}
+      />
     </ComposerTrackBar>
   );
 });

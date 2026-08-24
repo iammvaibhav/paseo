@@ -430,7 +430,7 @@ function ChangesToolbar(props: ChangesToolbarProps) {
             onToggle={onToggleDesktopTree}
           />
         ) : null}
-        {isMobile ? <GitActionsSplitButton gitActions={gitActions} /> : null}
+        {isMobile ? <GitActionsSplitButton gitActions={gitActions} menuOnly /> : null}
         <ChangesOptionsMenu {...props} />
       </View>
     </PaneContentToolbar>

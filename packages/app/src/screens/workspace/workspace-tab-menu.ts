@@ -168,6 +168,9 @@ function getCloseButtonTestId(tab: WorkspaceTabDescriptor): string {
   if (tab.target.kind === "plugin") {
     return `workspace-plugin-close-${encodeFilePathForPathSegment(buildDeterministicWorkspaceTabId(tab.target))}`;
   }
+  if (tab.target.kind === "new_tab") {
+    return `workspace-new-tab-close-${tab.tabId}`;
+  }
   return `workspace-file-close-${encodeFilePathForPathSegment(tab.target.path)}`;
 }
 
@@ -344,7 +347,7 @@ export function buildWorkspaceTabMenuEntries(
 export function buildWorkspaceDesktopTabActions(
   input: BuildWorkspaceDesktopTabActionsInput,
 ): WorkspaceDesktopTabActions {
-  const contextMenuTestId = `workspace-tab-context-${buildDeterministicWorkspaceTabId(input.tab.target)}`;
+  const contextMenuTestId = `workspace-tab-context-${input.tab.tabId}`;
   return {
     contextMenuTestId,
     menuEntries: buildWorkspaceTabMenuEntries({

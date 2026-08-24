@@ -64,6 +64,9 @@ export const ptBR: TranslationResources = {
       workspaces: "Espaços de trabalho",
       agents: "Agentes",
       newAgent: "Novo agente",
+      open: "Abrir {{name}}",
+      openInSidePanel: "Abrir {{name}} no painel lateral",
+      openInFocusedPane: "Abrir {{name}} no painel em foco",
       addProject: "Adicionar projeto",
       home: "Início",
       groupByProject: "Agrupar por projeto",
@@ -710,7 +713,7 @@ export const ptBR: TranslationResources = {
         files: "Arquivos",
         pullRequest: "Pull request",
         terminalProfilesMenu: "Perfis de terminal",
-        editTerminalProfiles: "Editar perfis…",
+        editTerminalProfiles: "Editar perfis",
       },
       sidePanel: {
         open: "Abrir painel lateral",
@@ -1788,6 +1791,8 @@ export const ptBR: TranslationResources = {
       updateRequired: "Atualize o host para ativar o relay pelo Paseo Desktop.",
       unavailable: "Oferta de pareamento indisponível.",
       hint: "Escaneie este QR code com o Paseo no seu celular ou copie o link abaixo.",
+      securityWarning:
+        "Trate este link de pareamento como uma senha. Qualquer pessoa com o link pode acessar este daemon.",
       qrUnavailable: "QR code indisponível.",
       qrAccessibility: "Código QR de pareamento",
       retry: "Tentar novamente",
@@ -1871,6 +1876,7 @@ export const ptBR: TranslationResources = {
       loading: "Carregando arquivo...",
       noPreview: "Nenhuma prévia disponível",
       binaryPreviewUnavailable: "Prévia binária indisponível",
+      tooLargeToDisplay: "Este arquivo é grande demais para exibir",
       failedToLoad: "Falha ao carregar arquivo",
       failedToLoadPreview: "Falha ao carregar prévia do arquivo",
       editor: {
@@ -1899,6 +1905,7 @@ export const ptBR: TranslationResources = {
       label: "Arquivos",
       subtitle: "Arquivos do espaço de trabalho",
       tooltip: "Explorar arquivos do espaço de trabalho",
+      chooseFile: "Escolha um arquivo",
     },
     pullRequest: {
       label: "Pull request",
@@ -2549,10 +2556,9 @@ export const ptBR: TranslationResources = {
         featuresLabel: "Recursos",
         featureCount: "{{count}} recursos",
         featureCountOne: "{{count}} recurso",
-        notesLabel: "Notas para os agentes",
+        notesLabel: "Quando usar",
         notesPlaceholder: "Use para trabalho de UI — componentes, layout e tokens de design.",
-        notesHint:
-          'Retornado pela ferramenta MCP "list_profiles". Escreva como uma instrução para outro agente.',
+        notesHint: "Ajuda os agentes a escolher este perfil ao iniciar outro agente.",
         save: "Salvar",
         saving: "Salvando...",
         remove: "Remover",
