@@ -83,6 +83,9 @@ import { useKeyboardActionHandler } from "@/hooks/use-keyboard-action-handler";
 import { buildWorkspaceKeyboardHandlerId } from "@/keyboard/handler-id";
 import type { KeyboardActionDefinition } from "@/keyboard/keyboard-action-dispatcher";
 import { WorkspaceNewTabMenuContent } from "@/screens/workspace/workspace-new-tab-menu";
+import { useSessionStore } from "@/stores/session-store";
+import { resolveSessionAgent } from "@/utils/agent-snapshots";
+import { deriveSidebarLifecycleBucket } from "@/utils/sidebar-agent-state";
 import { SIDE_PANEL_PANE_ID } from "@/stores/workspace-layout-actions";
 
 const DROPDOWN_WIDTH = 220;

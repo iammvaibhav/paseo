@@ -1260,7 +1260,6 @@ export async function createPaseoDaemon(
   const transcriptSearch = await createTranscriptSearchService({
     paseoHome: config.paseoHome,
     agentStorage,
-    timelineStore,
     logger,
   });
   transcriptSearch?.start();

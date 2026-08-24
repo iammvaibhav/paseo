@@ -384,6 +384,7 @@ function ExplorerContentArea({
         <RetainedPanel active={!showHostFiles && resolvedTab === "changes"}>
           <GitDiffPane
             host="explorer"
+            modeScope="compact-explorer"
             serverId={serverId}
             workspaceId={workspaceId}
             cwd={effectiveCwd}

@@ -104,7 +104,6 @@ export interface Settings extends AppSettings {
   releaseChannel: ReleaseChannel;
 }
 
-
 export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   theme: DEFAULT_THEME_PREFERENCE,
   pluginThemeId: null,
@@ -208,6 +207,7 @@ const StoredAppSettingsSchema = z
     syntaxTheme: z.string().refine(isSyntaxThemeId).catch("one"),
     workspaceTitleSource: z.enum(["title", "branch"]).catch("title"),
     sidebarWorkspaceTrailing: z.enum(["diff", "timestamp", "none"]).catch("diff"),
+    sidebarWorkspaceSort: z.enum(["manual", "activity", "created"]).catch("manual"),
     sidebarRowItems: SidebarRowItemsSchema,
     sidebarChecksDisplay: z
       .enum(["iconAndText", "icon", "none"])
@@ -223,6 +223,11 @@ const StoredAppSettingsSchema = z
     compactToolCalls: z.boolean().optional().catch(undefined),
     chatOutlineEnabled: z.boolean().catch(true),
     vimKeybindings: z.boolean().catch(false),
+    defaultFileOpener: z.enum(["paseo", "vscode-web", "plannotator"]).optional().catch(undefined),
+    // COMPAT(defaultFileOpener): added in v0.2.0-beta.1; remove after 2027-01-21.
+    // Previously, a configured host sent non-markdown files to VS Code Web.
+    openMarkdownInPlannotator: z.boolean().optional().catch(undefined),
+    plannotatorFeedbackMode: z.enum(["auto-send", "compose"]).catch("auto-send"),
     openSupportingTabsInSidePanel: z.boolean().catch(true),
     // COMPAT(rendererDesktopSettings): these fields used to share this renderer-owned key.
     manageBuiltInDaemon: z.boolean().optional().catch(undefined),
@@ -244,6 +249,10 @@ const StoredAppSettingsSchema = z
         : DEFAULT_SIDEBAR_CHECKS_DISPLAY);
     const toolCallDetailLevel =
       stored.toolCallDetailLevel ?? (stored.compactToolCalls ? "overview" : "detailed");
+    let defaultFileOpener = stored.defaultFileOpener ?? DEFAULT_CLIENT_SETTINGS.defaultFileOpener;
+    if (stored.defaultFileOpener === undefined && stored.openMarkdownInPlannotator !== undefined) {
+      defaultFileOpener = stored.openMarkdownInPlannotator ? "plannotator" : "vscode-web";
+    }
     return {
       ...stored,
       uiBaseFontSize,
@@ -256,6 +265,7 @@ const StoredAppSettingsSchema = z
           (stored.sidebarRowItems.scripts === false ? false : DEFAULT_SIDEBAR_ROW_ITEMS.services),
       },
       toolCallDetailLevel,
+      defaultFileOpener,
       needsWrite,
     };
   })
@@ -397,7 +407,6 @@ function pickAppSettingsFromLegacy(legacy: StoredAppSettings): AppSettings {
     contentFontSize: legacy.uiBaseFontSize,
   };
 }
-
 
 export function parseTerminalScrollbackLines(value: unknown): number | null {
   let numericValue = NaN;

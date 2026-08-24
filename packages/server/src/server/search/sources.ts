@@ -1,7 +1,6 @@
 import { stat } from "node:fs/promises";
 import type { Logger } from "pino";
 import type { StoredAgentRecord } from "../agent/agent-storage.js";
-import type { FileAgentTimelineStore } from "../agent/file-agent-timeline-store.js";
 import {
   supportsDiskTimeline,
   tryReadProviderTimelineFromDisk,
@@ -16,17 +15,15 @@ export interface TranscriptSource {
 }
 
 export interface TranscriptSourceDeps {
-  timelineStore: FileAgentTimelineStore;
   logger: Logger;
 }
 
 /**
  * Load the indexable transcript for one stored agent. Native harness files
- * (omp/claude/grok) are the source of truth; Paseo's agent-timelines JSON is
- * the fallback for ACP harnesses that keep no readable local file.
- *
- * Does not call seedTimelineForRehydrate — that would write a timeline file
- * as a side effect of search.
+ * (omp/claude/grok) are the source of truth. Agents whose provider keeps no
+ * readable local file are not indexable: Paseo's own agent-timelines JSON
+ * store was removed when timelines returned to runtime memory, so there is no
+ * second source to fall back to.
  */
 export async function loadTranscriptSource(
   record: StoredAgentRecord,
@@ -40,17 +37,7 @@ export async function loadTranscriptSource(
     return { path, mtimeMs, entries: diskEntries };
   }
 
-  const rows = await deps.timelineStore.tryReadExistingRows(record.id);
-  if (!rows || rows.length === 0) {
-    return null;
-  }
-  const path = deps.timelineStore.filePathFor(record.id);
-  const mtimeMs = await statMtime(path, record);
-  return {
-    path,
-    mtimeMs,
-    entries: rows.map((row) => ({ item: row.item, timestamp: row.timestamp })),
-  };
+  return null;
 }
 
 async function readProviderEntries(

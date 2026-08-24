@@ -24,7 +24,8 @@ import {
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { MAX_CONTENT_WIDTH, useIsCompactFormFactor } from "@/constants/layout";
 import { useMutation } from "@tanstack/react-query";
-import { Check, X } from "lucide-react-native";
+import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
+import { Check, ChevronDown, X } from "lucide-react-native";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 import { openSidePanelView } from "@/workspace-tabs/side-panel";
 import {
@@ -339,8 +340,51 @@ function buildForkSource(
     ...(boundary.boundaryCursor ? { boundaryCursor: boundary.boundaryCursor } : {}),
     ...(boundary.boundaryMessageId ? { boundaryMessageId: boundary.boundaryMessageId } : {}),
   };
+}
+
 function resolveBottomOverlayControlOffset(clearance: number | undefined): number {
   return Math.max(16, clearance ?? 0);
+}
+
+/**
+ * The scroll-to-bottom affordance, shown whenever the viewport sits away from
+ * the live tail: either the reader scrolled up, or the timeline holds newer
+ * rows the viewport has not caught up to.
+ */
+function ScrollToBottomAffordance({
+  isNearBottom,
+  isTimelineDetached,
+  containerStyle,
+  entering,
+  exiting,
+  onPress,
+}: {
+  isNearBottom: boolean;
+  isTimelineDetached: boolean;
+  containerStyle: StyleProp<ViewStyle>;
+  entering: ComponentProps<typeof Animated.View>["entering"];
+  exiting: ComponentProps<typeof Animated.View>["exiting"];
+  onPress: () => void;
+}) {
+  const { t } = useTranslation();
+  if (isNearBottom && !isTimelineDetached) {
+    return null;
+  }
+  return (
+    <View style={containerStyle} pointerEvents="box-none">
+      <Animated.View entering={entering} exiting={exiting}>
+        <Pressable
+          style={stylesheet.scrollToBottomButton}
+          onPress={onPress}
+          accessibilityRole="button"
+          accessibilityLabel={t("agentStream.scrollToBottom")}
+          testID="scroll-to-bottom-button"
+        >
+          <ChevronDown size={24} color={stylesheet.scrollToBottomIcon.color} />
+        </Pressable>
+      </Animated.View>
+    </View>
+  );
 }
 
 const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamViewProps>(
@@ -385,6 +429,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         }),
       [isMobile],
     );
+    const [isNearBottom, setIsNearBottom] = useState(true);
     const [expandedInlineToolCallIds, setExpandedInlineToolCallIds] = useState<Set<string>>(
       new Set(),
     );
@@ -460,7 +505,17 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       progressKey: remoteProgressKey,
       loadOlder: loadRemoteOlder,
     } = paginationState;
+    // Keep entry/exit animations off on Android due to RN dispatchDraw crashes
+    // tracked in react-native-reanimated#8422.
+    const shouldDisableEntryExitAnimations = Platform.OS === "android";
+    const scrollIndicatorFadeIn = shouldDisableEntryExitAnimations
+      ? undefined
+      : FadeIn.duration(200);
+    const scrollIndicatorFadeOut = shouldDisableEntryExitAnimations
+      ? undefined
+      : FadeOut.duration(200);
     useEffect(() => {
+      setIsNearBottom(true);
       setExpandedInlineToolCallIds(new Set());
       setExpandedToolCallGroupIds(new Set());
     }, [agentId]);
@@ -1163,6 +1218,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
               listEmptyComponent={listEmptyComponent}
               routeBottomAnchorRequest={routeBottomAnchorRequest}
               isAuthoritativeHistoryReady={isAuthoritativeHistoryReady}
+              onNearBottomChange={setIsNearBottom}
               onReadingPositionChange={chatOutline.reportReadingPosition}
               onNearHistoryStart={loadOlder}
               isLoadingOlderHistory={isLoadingOlder}
@@ -1181,21 +1237,14 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
             activePrompt={chatOutline.activePrompt}
             onJumpToPrompt={chatOutline.jumpToPrompt}
           />
-          {(!isNearBottom || isTimelineDetached) && (
-            <View style={scrollToBottomContainerStyle} pointerEvents="box-none">
-              <Animated.View entering={scrollIndicatorFadeIn} exiting={scrollIndicatorFadeOut}>
-                <Pressable
-                  style={stylesheet.scrollToBottomButton}
-                  onPress={scrollToBottom}
-                  accessibilityRole="button"
-                  accessibilityLabel={t("agentStream.scrollToBottom")}
-                  testID="scroll-to-bottom-button"
-                >
-                  <ChevronDown size={24} color={stylesheet.scrollToBottomIcon.color} />
-                </Pressable>
-              </Animated.View>
-            </View>
-          )}
+          <ScrollToBottomAffordance
+            isNearBottom={isNearBottom}
+            isTimelineDetached={isTimelineDetached}
+            containerStyle={scrollToBottomContainerStyle}
+            entering={scrollIndicatorFadeIn}
+            exiting={scrollIndicatorFadeOut}
+            onPress={scrollToBottom}
+          />
         </AssistantSelectionCopySurface>
       </ToolCallSheetProvider>
     );

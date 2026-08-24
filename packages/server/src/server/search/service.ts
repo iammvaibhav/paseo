@@ -3,7 +3,6 @@ import { unlinkSync } from "node:fs";
 import path from "node:path";
 import type { Logger } from "pino";
 import type { AgentStorage } from "../agent/agent-storage.js";
-import type { FileAgentTimelineStore } from "../agent/file-agent-timeline-store.js";
 import { extractChunks } from "./extract.js";
 import { toFtsQuery } from "./fts-query.js";
 import { TRANSCRIPT_INDEX_DDL, TRANSCRIPT_INDEX_SCHEMA_VERSION } from "./schema.js";
@@ -22,7 +21,6 @@ export interface TranscriptHit {
 export interface TranscriptSearchServiceOptions {
   paseoHome: string;
   agentStorage: AgentStorage;
-  timelineStore: FileAgentTimelineStore;
   logger: Logger;
 }
 
@@ -34,7 +32,6 @@ export interface TranscriptSearchServiceOptions {
 export class TranscriptSearchService {
   private db: SqliteDatabase;
   private readonly agentStorage: AgentStorage;
-  private readonly timelineStore: FileAgentTimelineStore;
   private readonly logger: Logger;
   private readonly pending = new Set<string>();
   private draining = false;
@@ -47,7 +44,6 @@ export class TranscriptSearchService {
   ) {
     this.db = db;
     this.agentStorage = options.agentStorage;
-    this.timelineStore = options.timelineStore;
     this.logger = options.logger;
   }
 
@@ -198,10 +194,7 @@ export class TranscriptSearchService {
     options: { force: boolean },
   ): Promise<void> {
     if (!record) return;
-    const source = await loadTranscriptSource(record, {
-      timelineStore: this.timelineStore,
-      logger: this.logger,
-    });
+    const source = await loadTranscriptSource(record, { logger: this.logger });
     const mtimeMs = source?.mtimeMs ?? Date.parse(record.updatedAt) ?? 0;
     if (!options.force) {
       const previous = this.db

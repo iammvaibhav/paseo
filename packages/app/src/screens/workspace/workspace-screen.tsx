@@ -159,6 +159,7 @@ import {
 } from "@/screens/workspace/workspace-pane-content";
 import { useMountedTabSet } from "@/screens/workspace/use-mounted-tab-set";
 import { WorkspaceFocusProvider } from "@/workspace/focus";
+import { shouldSeedEmptyWorkspaceDraft } from "@/screens/workspace/workspace-empty-draft-seed";
 import type { NewTabSelection } from "@/workspace-tabs/new-tab";
 import {
   NewTabLauncherProvider,
@@ -1551,6 +1552,8 @@ function useHostBrowserEditor(serverId: string): {
     const hostProfile = hosts.find((entry) => entry.serverId === serverId) ?? null;
     return { hostProfile, browserEditorUrl: hostProfile?.browserEditorUrl ?? null };
   }, [hosts, serverId]);
+}
+
 function resolveCommandCenterPanelTarget(target: WorkspacePanelTarget): WorkspaceTabTarget {
   switch (target) {
     case "changes":
@@ -1746,6 +1749,7 @@ function WorkspaceScreenContent({
     queryKey: terminalsQueryKey,
     removeTerminalFromCache,
     standaloneTerminalIds,
+    terminals,
   } = useWorkspaceTerminals({
     client,
     isConnected,
@@ -2206,6 +2210,8 @@ function WorkspaceScreenContent({
     },
     [navigateToTabId, openWorkspaceTabFocused, persistenceKey],
   );
+
+  const emptyWorkspaceSeedRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!isRouteFocused) {

@@ -1457,7 +1457,12 @@ export class AgentManager {
     if (!this.durableTimelineStore) {
       return false;
     }
-    const snapshot = await this.durableTimelineStore.getCommittedSnapshot(agentId);
+    // limit 0 selects every row in the tail window, and the result carries the
+    // durable epoch that must own the seeded timeline's sequence identity.
+    const snapshot = await this.durableTimelineStore.fetchCommitted(agentId, {
+      direction: "tail",
+      limit: 0,
+    });
     const rows = snapshot.rows;
     if (rows.length === 0) {
       return false;
@@ -3058,6 +3063,7 @@ export class AgentManager {
     const streamForwarder = async function* streamForwarder(this: AgentManager) {
       let turnId: string;
       let turnStream: ReturnType<AgentRunState["createTurnStream"]> | null = null;
+      const startTurnStartedAt = Date.now();
       turnId = await this.startPendingForegroundTurn({
         agent,
         agentId,
@@ -3655,34 +3661,10 @@ export class AgentManager {
         { agentId, turnId: run.turnId, kind: run.kind },
         "cancelAgentRun: acknowledged turn still active after timeout, force-canceling",
       );
-      await this.dispatchSessionEvent(agent, {
-        type: "turn_canceled",
-        provider: agent.provider,
-        reason: "interrupted",
-        turnId: run.turnId,
-      });
-      await run.settledPromise;
-    } else if (settlement === "timed_out" && run.kind === "foreground") {
-      this.logger.warn(
-        { agentId, kind: run.kind },
-        "cancelAgentRun: acknowledged pending turn still active after timeout, clearing it",
-      );
-      this.runs.settleForegroundRun(agentId, run.token);
-      if (!agent.pendingReplacement) {
-        agent.lifecycle = "idle";
-        this.touchUpdatedAt(agent);
-        this.emitState(agent);
-      }
-    } else if (settlement === "timed_out" && run.kind === "autonomous") {
-      this.logger.warn(
-        { agentId, kind: run.kind },
-        "cancelAgentRun: acknowledged turn still active after timeout, force-canceling",
-      );
-      await this.dispatchSessionEvent(agent, {
-        type: "turn_canceled",
-        provider: agent.provider,
-        reason: "interrupted",
-      });
+      // Always force-clear manager bookkeeping. Synthesizing turn_canceled and
+      // awaiting settledPromise can hang forever when the turnId was already
+      // finalized (terminal_already_finalized no-ops without settling the run).
+      await this.forceCancelStaleRun(agent, run);
     }
 
     if (agent.pendingPermissions.size > 0) {

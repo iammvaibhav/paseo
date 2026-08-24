@@ -268,7 +268,7 @@ export class WorkspaceFilesSession {
         );
       } else {
         if (request.maxBytes) {
-          const file = await getDownloadableFileInfo({ root: cwd, relativePath: requestedPath });
+          const file = await getDownloadableEntryInfo({ root: cwd, relativePath: requestedPath });
           if (file.size > request.maxBytes) {
             throw new Error("File is too large to display");
           }
