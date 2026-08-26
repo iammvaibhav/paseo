@@ -1234,6 +1234,7 @@ export const ru: TranslationResources = {
       missionControl: "Mission Control",
       missionControlNeedsYou: "Требует внимания",
       missionControlReady: "Готовы к проверке",
+      itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },
     worktreeSetup: {
@@ -1851,6 +1852,19 @@ export const ru: TranslationResources = {
   diffViewer: {
     empty: "Нет изменений для отображения",
   },
+  itsaplan: {
+    notConfigured: {
+      title: "itsaplan is not configured",
+      description:
+        "No itsaplan address could be resolved for any connected host. Set itsaplan URL in Settings \u2192 General, or connect to the host running it.",
+    },
+    unreachable: {
+      title: "Cannot reach itsaplan",
+      description: "Paseo could not load {{origin}}. Make sure itsaplan is running, then retry.",
+    },
+    retry: "Retry",
+  },
+
   serviceUrl: {
     title: "Открыть URL сервиса",
     message: "Открыть {{url}}?",
@@ -2169,6 +2183,12 @@ export const ru: TranslationResources = {
         label: "Буфер прокрутки терминала",
         description: "Количество строк, сохраняемых во встроенном буфере терминала",
         accessibilityLabel: "Количество строк в буфере прокрутки терминала",
+      },
+      itsaplanOrigin: {
+        label: "itsaplan URL",
+        description:
+          "Origin of the itsaplan instance shown in the sidebar (empty = derive from host)",
+        accessibilityLabel: "itsaplan URL",
       },
       autoExpandReasoning: {
         label: "Всегда разворачивать размышления",

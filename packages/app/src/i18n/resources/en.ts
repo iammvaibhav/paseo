@@ -1227,6 +1227,7 @@ export const en = {
       missionControl: "Mission Control",
       missionControlNeedsYou: "Needs you",
       missionControlReady: "Ready for review",
+      itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },
     worktreeSetup: {
@@ -1831,6 +1832,19 @@ export const en = {
   diffViewer: {
     empty: "No changes to display",
   },
+  itsaplan: {
+    notConfigured: {
+      title: "itsaplan is not configured",
+      description:
+        "No itsaplan address could be resolved for any connected host. Set itsaplan URL in Settings \u2192 General, or connect to the host running it.",
+    },
+    unreachable: {
+      title: "Cannot reach itsaplan",
+      description: "Paseo could not load {{origin}}. Make sure itsaplan is running, then retry.",
+    },
+    retry: "Retry",
+  },
+
   serviceUrl: {
     title: "Open service URL",
     message: "Open {{url}}?",
@@ -2240,6 +2254,12 @@ export const en = {
         label: "Terminal scrollback",
         description: "Lines kept in the built-in terminal buffer",
         accessibilityLabel: "Terminal scrollback lines",
+      },
+      itsaplanOrigin: {
+        label: "itsaplan URL",
+        description:
+          "Origin of the itsaplan instance shown in the sidebar (empty = derive from host)",
+        accessibilityLabel: "itsaplan URL",
       },
       autoExpandReasoning: {
         label: "Always expand reasoning",

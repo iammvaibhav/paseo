@@ -26,12 +26,14 @@ export {
   ensureItsaplanProjectMapping,
   ITSAPLAN_WEBHOOK_EVENTS,
   ItsaplanProjectStore,
-  runItsaplanProjectBackfill,
+  runItsaplanProjectResync,
 } from "./projects.js";
 export type {
   ItsaplanCentralConfig,
+  ItsaplanFleetProjectCandidate,
   ItsaplanProjectMapping,
   ItsaplanProjectSyncDependencies,
+  ItsaplanResyncResult,
 } from "./projects.js";
 export {
   ITSAPLAN_AUTO_CHAIN_LABEL_NAME,
@@ -53,5 +55,6 @@ export type {
   ItsaplanReconcileOptions,
 } from "./reconcile.js";
 export { createItsaplanWebhookRouteHandler } from "./route.js";
+export { createItsaplanResyncRouteHandler } from "./route.js";
 export { ItsaplanChatRunner } from "./chat-runner.js";
 export type { ItsaplanChatRunnerMissionControl, ItsaplanChatRunnerOptions } from "./chat-runner.js";

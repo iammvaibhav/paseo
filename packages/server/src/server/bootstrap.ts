@@ -158,7 +158,7 @@ import { BaseCheckoutSyncService } from "./base-checkout-sync.js";
 import { IdleCloseOmpService } from "./idle-close/index.js";
 import { MissionControlService } from "./mission-control/service.js";
 import type { MissionControlProposalSpawnPlan } from "@getpaseo/protocol/mission-control/types";
-import { buildWorldSnapshot } from "./mission-control/context.js";
+import { buildFleetContextData, buildWorldSnapshot } from "./mission-control/context.js";
 import { CommanderSnapshotInjector } from "./mission-control/commander-snapshot.js";
 import { CentralMissionControlConfigStore } from "./mission-control/config.js";
 import { createMissionControlPresenceSource } from "./mission-control/presence.js";
@@ -168,6 +168,7 @@ import {
   commanderHomeCwd,
   buildCommanderLaunchContract,
   ensureCommanderOnBoot,
+  isDesignatedCommanderHost,
   resetCommander,
 } from "./mission-control/commander-boot.js";
 import { AgentNamingService } from "./mission-control/naming.js";
@@ -176,12 +177,13 @@ import { MAX_WEBHOOK_BODY_BYTES, WebhookService } from "./webhook/service.js";
 import { createWebhookRouteHandler } from "./webhook/route.js";
 import {
   attachItsaplanProjectSync,
+  createItsaplanResyncRouteHandler,
   createItsaplanWebhookRouteHandler,
   ItsaplanBridge,
   ItsaplanChatRunner,
   ItsaplanProjectStore,
   ItsaplanReconcileService,
-  runItsaplanProjectBackfill,
+  runItsaplanProjectResync,
 } from "./itsaplan/index.js";
 import { PeerManager } from "./peers/peer-manager.js";
 import { TunnelManager } from "./tunnel/manager.js";
@@ -2141,13 +2143,63 @@ export async function createPaseoDaemon(
   });
   itsaplanBridge.start();
   itsaplanWebhookIngress.setHandler(createItsaplanWebhookRouteHandler(itsaplanBridge, logger));
+  // Single-writer gate (ADR 0002 fleet safety): project mapping is
+  // fleet-wide, so only the central-config-designated Commander host may
+  // push to itsaplan — every other peer stays inert or the fleet would race
+  // to create the same projects. Same designation resolution commander-boot
+  // uses; null commanderHost designates NO host.
+  const isThisHostTheItsaplanSyncHost = (): boolean =>
+    isDesignatedCommanderHost({
+      central: { commanderHost: centralMissionControlConfig.get().commanderHost },
+      hostName: getHostname(),
+      hostAlias: missionControlHostAlias,
+    });
+  // Fleet-wide project inventory for resyncs: reuses buildFleetContextData,
+  // the exact hosts/projects assembly `fleet_list_inventory` serves (the
+  // peer manager is constructed later, so resolve it lazily).
+  const listItsaplanFleetProjects = async () => {
+    const fleet = await buildFleetContextData({
+      agentManager,
+      agentStorage,
+      workspaceRegistry,
+      projectRegistry,
+      providerSnapshotManager,
+      peerManager: () => peerManager,
+      daemonConfigStore,
+      centralConfig: centralMissionControlConfig.get(),
+      serverId,
+      hostName: getHostname(),
+      logger,
+    });
+    return fleet.hosts.flatMap((host) =>
+      host.inventory.projects.map((project) => ({
+        hostName: host.hostName,
+        projectKey: project.key ?? null,
+        name: project.title,
+      })),
+    );
+  };
   const itsaplanProjectSyncDeps = {
     store: itsaplanProjectStore,
     getConfig: getItsaplanConfig,
     getWebhookUrl: () => createItsaplanWebhookUrl(boundListenTarget),
     paseoHome: config.paseoHome,
+    isDesignatedSyncHost: isThisHostTheItsaplanSyncHost,
+    listFleetProjects: listItsaplanFleetProjects,
     logger,
   };
+  const resyncItsaplanProjects = async () =>
+    runItsaplanProjectResync(
+      {
+        local: await projectRegistry.list(),
+        fleet: await listItsaplanFleetProjects(),
+      },
+      itsaplanProjectSyncDeps,
+    );
+  app.post(
+    "/api/itsaplan/resync",
+    createItsaplanResyncRouteHandler(resyncItsaplanProjects, logger),
+  );
   const unsubscribeItsaplanProjectSync = attachItsaplanProjectSync(
     projectRegistry,
     itsaplanProjectSyncDeps,
@@ -2561,12 +2613,21 @@ export async function createPaseoDaemon(
             // Only resolvable once bound — the itsaplan webhook URL needs
             // the real TCP target. Fire-and-forget: itsaplan API round
             // trips must never block daemon startup.
-            void runItsaplanProjectBackfill(
-              await projectRegistry.list(),
+            void runItsaplanProjectResync(
+              { local: await projectRegistry.list(), fleet: null },
               itsaplanProjectSyncDeps,
             ).catch((error: unknown) => {
               logger.error({ err: error }, "itsaplan.project.boot_backfill_failed");
             });
+            // Peers are usually still handshaking this early; re-sweep the
+            // whole fleet once peering has settled so a boot alone fills in
+            // peer projects without anyone triggering /api/itsaplan/resync.
+            const bootFleetResyncTimer = setTimeout(() => {
+              void resyncItsaplanProjects().catch((error: unknown) => {
+                logger.warn({ err: error }, "itsaplan.project.boot_fleet_resync_failed");
+              });
+            }, 60_000);
+            bootFleetResyncTimer.unref();
             const mcpBaseUrl = createAgentMcpBaseUrl(boundListenTarget);
             agentMcpBaseUrl =
               !mcpEnabled || config.mcpInjectIntoAgents === false ? null : mcpBaseUrl;

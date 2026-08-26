@@ -1252,6 +1252,7 @@ export const fr: TranslationResources = {
       missionControl: "Mission Control",
       missionControlNeedsYou: "Nécessite votre attention",
       missionControlReady: "Prêts pour révision",
+      itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },
     worktreeSetup: {
@@ -1871,6 +1872,19 @@ export const fr: TranslationResources = {
   diffViewer: {
     empty: "Aucun changement à afficher",
   },
+  itsaplan: {
+    notConfigured: {
+      title: "itsaplan is not configured",
+      description:
+        "No itsaplan address could be resolved for any connected host. Set itsaplan URL in Settings \u2192 General, or connect to the host running it.",
+    },
+    unreachable: {
+      title: "Cannot reach itsaplan",
+      description: "Paseo could not load {{origin}}. Make sure itsaplan is running, then retry.",
+    },
+    retry: "Retry",
+  },
+
   serviceUrl: {
     title: "Service ouvertURL",
     message: "Ouvrir{{url}}?",
@@ -2189,6 +2203,12 @@ export const fr: TranslationResources = {
         label: "DéfilementTerminal",
         description: "Lignes conservées dans le tampon du terminal intégré",
         accessibilityLabel: "Lignes de défilementTerminal",
+      },
+      itsaplanOrigin: {
+        label: "itsaplan URL",
+        description:
+          "Origin of the itsaplan instance shown in the sidebar (empty = derive from host)",
+        accessibilityLabel: "itsaplan URL",
       },
       autoExpandReasoning: {
         label: "Toujours afficher le raisonnement",

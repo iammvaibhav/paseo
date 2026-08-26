@@ -523,6 +523,7 @@ describe("itsaplan Commander agent auto-registration (project sync)", () => {
       getConfig: () => config,
       getWebhookUrl: () => "http://127.0.0.1:9999/api/itsaplan/webhook",
       paseoHome,
+      isDesignatedSyncHost: () => true,
       logger: createTestLogger(),
     };
   });

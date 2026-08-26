@@ -46,6 +46,7 @@ import { ComboboxTrigger } from "@/components/ui/combobox-trigger";
 import { SidebarHeaderRow } from "@/components/sidebar/sidebar-header-row";
 import { SidebarSeparator } from "@/components/sidebar/sidebar-separator";
 import { HostPicker as SharedHostPicker } from "@/components/hosts/host-picker";
+import { normalizeItsaplanOrigin } from "@/itsaplan/itsaplan-origin";
 import { HostStatusDot } from "@/components/host-status-dot";
 import { ScreenTitle } from "@/components/headers/screen-title";
 import { HeaderIconBadge } from "@/components/headers/header-icon-badge";
@@ -288,6 +289,7 @@ interface GeneralSectionProps {
   handleServiceUrlBehaviorChange: (behavior: ServiceUrlBehavior) => void;
   handleLanguageChange: (language: AppLanguage) => void;
   handleTerminalScrollbackLinesChange: (lines: number) => void;
+  handleItsaplanOriginChange: (origin: string) => void;
 }
 
 interface ServiceUrlBehaviorMenuItemProps {
@@ -362,6 +364,7 @@ function GeneralSection({
   handleServiceUrlBehaviorChange,
   handleLanguageChange,
   handleTerminalScrollbackLinesChange,
+  handleItsaplanOriginChange,
 }: GeneralSectionProps) {
   const { t, i18n } = useTranslation();
   const activeLocale = getActiveLocale(i18n.language);
@@ -404,6 +407,19 @@ function GeneralSection({
   useEffect(() => {
     setTerminalScrollbackValue(String(settings.terminalScrollbackLines));
   }, [settings.terminalScrollbackLines]);
+
+  const [itsaplanOriginValue, setItsaplanOriginValue] = useState(settings.itsaplanOrigin);
+  const commitItsaplanOrigin = useCallback(() => {
+    const next = normalizeItsaplanOrigin(itsaplanOriginValue) ?? "";
+    setItsaplanOriginValue(next);
+    if (next !== settings.itsaplanOrigin) {
+      handleItsaplanOriginChange(next);
+    }
+  }, [handleItsaplanOriginChange, itsaplanOriginValue, settings.itsaplanOrigin]);
+
+  useEffect(() => {
+    setItsaplanOriginValue(settings.itsaplanOrigin);
+  }, [settings.itsaplanOrigin]);
 
   return (
     <SettingsSection title={t("settings.general.title")}>
@@ -507,6 +523,29 @@ function GeneralSection({
             selectTextOnFocus
             style={styles.terminalScrollbackInput}
             accessibilityLabel={t("settings.general.terminalScrollback.accessibilityLabel")}
+          />
+        </View>
+        <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+          <View style={settingsStyles.rowContent}>
+            <Text style={settingsStyles.rowTitle}>
+              {t("settings.general.itsaplanOrigin.label")}
+            </Text>
+            <Text style={settingsStyles.rowHint}>
+              {t("settings.general.itsaplanOrigin.description")}
+            </Text>
+          </View>
+          <TextInput
+            initialValue={itsaplanOriginValue}
+            onChangeText={setItsaplanOriginValue}
+            onBlur={commitItsaplanOrigin}
+            onSubmitEditing={commitItsaplanOrigin}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            selectTextOnFocus
+            style={styles.terminalScrollbackInput}
+            accessibilityLabel={t("settings.general.itsaplanOrigin.accessibilityLabel")}
+            placeholder="https://host:8443"
           />
         </View>
       </View>
@@ -1261,6 +1300,13 @@ export default function SettingsScreen({ view, openAddHostIntent = null }: Setti
     [updateSettings],
   );
 
+  const handleItsaplanOriginChange = useCallback(
+    (itsaplanOrigin: string) => {
+      void updateSettings({ itsaplanOrigin });
+    },
+    [updateSettings],
+  );
+
   const handleUseLegacyTerminalRendererChange = useCallback(
     (useLegacyTerminalRenderer: boolean) => {
       void updateSettings({ useLegacyTerminalRenderer });
@@ -1474,6 +1520,7 @@ export default function SettingsScreen({ view, openAddHostIntent = null }: Setti
                   handleServiceUrlBehaviorChange={handleServiceUrlBehaviorChange}
                   handleLanguageChange={handleLanguageChange}
                   handleTerminalScrollbackLinesChange={handleTerminalScrollbackLinesChange}
+                  handleItsaplanOriginChange={handleItsaplanOriginChange}
                 />
                 {isDesktopApp ? <BrowserDataSection /> : null}
               </>

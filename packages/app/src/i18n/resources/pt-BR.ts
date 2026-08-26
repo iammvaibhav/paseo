@@ -1243,6 +1243,7 @@ export const ptBR: TranslationResources = {
       missionControl: "Mission Control",
       missionControlNeedsYou: "Precisa de você",
       missionControlReady: "Prontos para revisão",
+      itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },
     worktreeSetup: {
@@ -1853,6 +1854,19 @@ export const ptBR: TranslationResources = {
   diffViewer: {
     empty: "Nenhuma alteração para exibir",
   },
+  itsaplan: {
+    notConfigured: {
+      title: "itsaplan is not configured",
+      description:
+        "No itsaplan address could be resolved for any connected host. Set itsaplan URL in Settings \u2192 General, or connect to the host running it.",
+    },
+    unreachable: {
+      title: "Cannot reach itsaplan",
+      description: "Paseo could not load {{origin}}. Make sure itsaplan is running, then retry.",
+    },
+    retry: "Retry",
+  },
+
   serviceUrl: {
     title: "Abrir URL do serviço",
     message: "Abrir {{url}}?",
@@ -2169,6 +2183,12 @@ export const ptBR: TranslationResources = {
         label: "Scrollback do terminal",
         description: "Linhas mantidas no buffer do terminal integrado",
         accessibilityLabel: "Linhas do scrollback do terminal",
+      },
+      itsaplanOrigin: {
+        label: "itsaplan URL",
+        description:
+          "Origin of the itsaplan instance shown in the sidebar (empty = derive from host)",
+        accessibilityLabel: "itsaplan URL",
       },
       autoExpandReasoning: {
         label: "Sempre expandir raciocínio",

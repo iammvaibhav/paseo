@@ -965,6 +965,10 @@ export const MissionControlInventoryProjectSchema = z.object({
   id: z.string(),
   title: z.string(),
   description: z.string().optional(),
+  // Additive (v0.5.X): the project's cross-host identity key
+  // (server/project-key.ts — joins the same git remote across hosts).
+  // Old peers omit it; fleet consumers (itsaplan sync) skip keyless entries.
+  key: z.string().optional(),
   hostServerId: z.string(),
   workspaces: z.array(MissionControlInventoryProjectWorkspaceSchema),
 });

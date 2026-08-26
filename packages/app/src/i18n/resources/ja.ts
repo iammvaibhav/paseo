@@ -1230,6 +1230,7 @@ export const ja: TranslationResources = {
       missionControl: "Mission Control",
       missionControlNeedsYou: "対応が必要",
       missionControlReady: "レビュー待ち",
+      itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },
     worktreeSetup: {
@@ -1838,6 +1839,19 @@ export const ja: TranslationResources = {
   diffViewer: {
     empty: "表示する変更がありません",
   },
+  itsaplan: {
+    notConfigured: {
+      title: "itsaplan is not configured",
+      description:
+        "No itsaplan address could be resolved for any connected host. Set itsaplan URL in Settings \u2192 General, or connect to the host running it.",
+    },
+    unreachable: {
+      title: "Cannot reach itsaplan",
+      description: "Paseo could not load {{origin}}. Make sure itsaplan is running, then retry.",
+    },
+    retry: "Retry",
+  },
+
   serviceUrl: {
     title: "サービスURLを開く",
     message: "{{url}}を開きますか？",
@@ -2153,6 +2167,12 @@ export const ja: TranslationResources = {
         label: "ターミナルスクロールバック",
         description: "組み込みターミナルバッファに保持する行数",
         accessibilityLabel: "ターミナルスクロールバック行数",
+      },
+      itsaplanOrigin: {
+        label: "itsaplan URL",
+        description:
+          "Origin of the itsaplan instance shown in the sidebar (empty = derive from host)",
+        accessibilityLabel: "itsaplan URL",
       },
       autoExpandReasoning: {
         label: "常に思考プロセスを展開",

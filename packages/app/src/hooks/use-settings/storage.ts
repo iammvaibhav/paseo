@@ -95,7 +95,11 @@ export interface AppSettings {
   defaultFileOpener: DefaultFileOpener;
   /** How to deliver Plannotator feedback to the linked agent. */
   plannotatorFeedbackMode: PlannotatorFeedbackMode;
-  /** Desktop-only preferences for implicit opens into the ordinary side pane. */
+  /**
+   * Origin the sidebar itsaplan embed loads (e.g. `https://10.7.0.1:8443`).
+   * Empty derives it from the host profile like a Plannotator embed.
+   */
+  itsaplanOrigin: string;
   openInSidePane: OpenInSidePanePreferences;
 }
 
@@ -149,6 +153,7 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   vimKeybindings: false,
   defaultFileOpener: "paseo",
   plannotatorFeedbackMode: "auto-send",
+  itsaplanOrigin: "",
   openInSidePane: DEFAULT_OPEN_IN_SIDE_PANE_PREFERENCES,
 };
 
@@ -248,6 +253,7 @@ const StoredAppSettingsSchema = z
     // Previously, a configured host sent non-markdown files to VS Code Web.
     openMarkdownInPlannotator: z.boolean().optional().catch(undefined),
     plannotatorFeedbackMode: z.enum(["auto-send", "compose"]).catch("auto-send"),
+    itsaplanOrigin: z.string().catch(""),
     openInSidePane: z
       .object({
         explorerFiles: z.boolean().catch(false),

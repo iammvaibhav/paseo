@@ -147,6 +147,9 @@ export async function buildLocalInventory(
       id: project.projectId,
       title: project.customName ?? project.displayName,
       ...(project.description ? { description: project.description } : {}),
+      // Additive (v0.5.X) cross-host identity; absent when the project has
+      // no key yet (same rule the itsaplan sync applies locally).
+      ...(project.projectKey ? { key: project.projectKey } : {}),
       hostServerId: input.serverId,
       workspaces: workspacesByProject.get(project.projectId) ?? [],
     });

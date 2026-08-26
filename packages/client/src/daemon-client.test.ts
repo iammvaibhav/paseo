@@ -2260,12 +2260,6 @@ test("writeExplorerFile sends scoped write request and binary chunks", async () 
     url: "ws://test",
     clientId: "clsk_unit_test",
     logger,
-test("readFile drops an old daemon's over-budget binary chunks and reports the refusal", async () => {
-  const mock = createMockTransport();
-  const client = new DaemonClient({
-    url: "ws://test",
-    clientId: "clsk_file_budget_compat",
-    logger: createMockLogger(),
     reconnect: { enabled: false },
     transportFactory: () => mock.transport,
   });
@@ -2346,6 +2340,23 @@ test("readFile drops an old daemon's over-budget binary chunks and reports the r
     size: 5,
     error: null,
   });
+});
+
+test("readFile drops an old daemon's over-budget binary chunks and reports the refusal", async () => {
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_file_budget_compat",
+    logger: createMockLogger(),
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
   const responsePromise = client.readFile("/tmp/project", "large.txt", "req-budget", 10);
   expect(JSON.parse(assertStr(mock.sent[0]))).toEqual({
     type: "session",

@@ -361,6 +361,34 @@ export class ItsaplanClient {
   }
 
   /**
+   * Fetches a project by key (GET /projects/:key — nested scaffold on the
+   * wire, flattened here). Null when itsaplan has no such project; used to
+   * adopt a pre-existing project after a create-key 409 (created manually,
+   * or by an interrupted earlier sync) instead of failing the mapping.
+   */
+  async getProject(
+    projectKey: string,
+  ): Promise<Pick<ItsaplanProject, "id" | "key" | "name"> | null> {
+    try {
+      const scaffold = await this.request(
+        "GET",
+        `/projects/${encodeURIComponent(projectKey)}`,
+        undefined,
+        ItsaplanProjectScaffoldSchema,
+      );
+      if (scaffold.id === undefined || scaffold.key === undefined) {
+        return null;
+      }
+      return { id: scaffold.id, key: scaffold.key, name: scaffold.name ?? "" };
+    } catch (error) {
+      if (error instanceof ItsaplanApiError && error.status === 404) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Registers a project-scoped outgoing webhook. itsaplan IGNORES any
    * client-supplied secret and always generates its own (`whsec_<hex>`,
    * apps/api/src/modules/webhooks/service.ts generateSecret) — the caller

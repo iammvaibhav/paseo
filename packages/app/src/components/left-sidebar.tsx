@@ -8,6 +8,7 @@ import {
   Home,
   Plus,
   Radar,
+  SquareKanban,
   Search,
   Server,
   Settings,
@@ -75,6 +76,7 @@ import { useIsMobilePanelPresented } from "@/mobile-panels/provider";
 import {
   buildOpenProjectRoute,
   buildNewWorkspaceRoute,
+  buildItsaplanRoute,
   buildMissionControlRoute,
   buildSchedulesRoute,
   buildWebhooksRoute,
@@ -99,8 +101,9 @@ interface SidebarLabels {
   settings: string;
   searchHosts: string;
   sessions: string;
-  schedules: string;
+  itsaplan: string;
   missionControl: string;
+  schedules: string;
   webhooks: string;
   closeSidebar: string;
 }
@@ -144,6 +147,7 @@ interface MobileSidebarProps extends SidebarSharedProps {
   handleViewMoreNavigate: () => void;
   handleViewSchedulesNavigate: () => void;
   handleViewWebhooksNavigate: () => void;
+  handleViewItsaplanNavigate: () => void;
   handleViewMissionControlNavigate: () => void;
 }
 
@@ -153,6 +157,7 @@ interface DesktopSidebarProps extends SidebarSharedProps {
   handleViewMore: () => void;
   handleViewSchedules: () => void;
   handleViewWebhooks: () => void;
+  handleViewItsaplan: () => void;
   handleViewMissionControl: () => void;
 }
 
@@ -256,6 +261,10 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
     router.push(buildWebhooksRoute());
   }, []);
 
+  const handleViewItsaplanNavigate = useCallback(() => {
+    router.push(buildItsaplanRoute());
+  }, []);
+
   const handleViewMissionControlNavigate = useCallback(() => {
     router.push(buildMissionControlRoute());
   }, []);
@@ -302,8 +311,9 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
       settings: t("sidebar.actions.settings"),
       searchHosts: t("sidebar.host.searchPlaceholder"),
       sessions: t("sidebar.sections.sessions"),
-      schedules: t("sidebar.sections.schedules"),
+      itsaplan: t("sidebar.sections.itsaplan"),
       missionControl: t("sidebar.sections.missionControl"),
+      schedules: t("sidebar.sections.schedules"),
       webhooks: t("sidebar.sections.webhooks"),
       closeSidebar: t("sidebar.actions.closeSidebar"),
     }),
@@ -349,6 +359,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
           handleViewMoreNavigate={handleViewMoreNavigate}
           handleViewSchedulesNavigate={handleViewSchedulesNavigate}
           handleViewWebhooksNavigate={handleViewWebhooksNavigate}
+          handleViewItsaplanNavigate={handleViewItsaplanNavigate}
           handleViewMissionControlNavigate={handleViewMissionControlNavigate}
         />
       </RetainedPanelActivity>
@@ -369,6 +380,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
         handleViewMore={handleViewMoreNavigate}
         handleViewSchedules={handleViewSchedulesNavigate}
         handleViewWebhooks={handleViewWebhooksNavigate}
+        handleViewItsaplan={handleViewItsaplanNavigate}
         handleViewMissionControl={handleViewMissionControlNavigate}
       />
     </RetainedPanelActivity>
@@ -737,6 +749,7 @@ function MobileSidebar({
   handleViewMoreNavigate,
   handleViewSchedulesNavigate,
   handleViewWebhooksNavigate,
+  handleViewItsaplanNavigate,
   handleViewMissionControlNavigate,
 }: MobileSidebarProps) {
   const pathname = usePathname();
@@ -744,6 +757,7 @@ function MobileSidebar({
   const isSessionsActive = pathname.includes("/sessions");
   const isSchedulesActive = pathname.includes("/schedules");
   const isWebhooksActive = pathname.includes("/webhooks");
+  const isItsaplanActive = pathname.includes("/itsaplan");
   const isMissionControlActive = pathname.includes("/mission-control");
   const { gesture: closeGesture, gestureRef: closeGestureRef } = useCloseAgentListGesture();
   const dragGestureHostPresented = useIsMobilePanelPresented("agent-list");
@@ -762,6 +776,11 @@ function MobileSidebar({
     closeSidebar();
     handleViewWebhooksNavigate();
   }, [closeSidebar, handleViewWebhooksNavigate]);
+
+  const handleViewItsaplan = useCallback(() => {
+    closeSidebar();
+    handleViewItsaplanNavigate();
+  }, [closeSidebar, handleViewItsaplanNavigate]);
 
   const handleViewMissionControl = useCallback(() => {
     closeSidebar();
@@ -796,6 +815,14 @@ function MobileSidebar({
             variant="compact"
             shortcutKeys={newWorkspaceKeys}
             onBeforeNavigate={closeSidebar}
+          />
+          <SidebarHeaderRow
+            icon={SquareKanban}
+            label={labels.itsaplan}
+            onPress={handleViewItsaplan}
+            isActive={isItsaplanActive}
+            testID="sidebar-itsaplan"
+            variant="compact"
           />
           {hasMissionControl ? (
             <SidebarHeaderRow
@@ -924,6 +951,7 @@ function DesktopSidebar({
   handleViewMore,
   handleViewSchedules,
   handleViewWebhooks,
+  handleViewItsaplan,
   handleViewMissionControl,
 }: DesktopSidebarProps) {
   const ownsTopLeft = useOwnsWindowChromeCorner("top-left");
@@ -932,6 +960,7 @@ function DesktopSidebar({
   const isSessionsActive = pathname.includes("/sessions");
   const isSchedulesActive = pathname.includes("/schedules");
   const isWebhooksActive = pathname.includes("/webhooks");
+  const isItsaplanActive = pathname.includes("/itsaplan");
   const isMissionControlActive = pathname.includes("/mission-control");
   const sidebarWidth = usePanelStore((state) => state.sidebarWidth);
   const setSidebarWidth = usePanelStore((state) => state.setSidebarWidth);
@@ -1045,6 +1074,14 @@ function DesktopSidebar({
               testID="sidebar-global-new-workspace"
               variant="compact"
               shortcutKeys={newWorkspaceKeys}
+            />
+            <SidebarHeaderRow
+              icon={SquareKanban}
+              label={labels.itsaplan}
+              onPress={handleViewItsaplan}
+              isActive={isItsaplanActive}
+              testID="sidebar-itsaplan"
+              variant="compact"
             />
             {hasMissionControl ? (
               <SidebarHeaderRow

@@ -864,6 +864,7 @@ function AppWithSidebar({ children }: { children: ReactNode }) {
       pathname === "/sessions" ||
       pathname === "/schedules" ||
       pathname === "/mission-control" ||
+      pathname === "/itsaplan" ||
       pathname === "/webhooks" ||
       routeHasKnownHost);
 
@@ -893,6 +894,7 @@ function RootStack() {
         <Stack.Screen name="open-project" />
         <Stack.Screen name="sessions" />
         <Stack.Screen name="schedules" />
+        <Stack.Screen name="itsaplan" />
         <Stack.Screen name="mission-control" />
         <Stack.Screen name="webhooks" />
         <Stack.Screen name="pair-scan" />

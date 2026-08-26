@@ -432,6 +432,10 @@ export function buildMissionControlRoute() {
   return "/mission-control" as const;
 }
 
+export function buildItsaplanRoute() {
+  return "/itsaplan" as const;
+}
+
 export function buildWebhooksRoute() {
   return "/webhooks" as const;
 }

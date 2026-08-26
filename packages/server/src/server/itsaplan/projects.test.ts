@@ -10,8 +10,9 @@ import {
   attachItsaplanProjectSync,
   ensureItsaplanProjectMapping,
   ItsaplanProjectStore,
-  runItsaplanProjectBackfill,
+  runItsaplanProjectResync,
   type ItsaplanCentralConfig,
+  type ItsaplanFleetProjectCandidate,
   type ItsaplanProjectSyncDependencies,
 } from "./projects.js";
 
@@ -51,10 +52,27 @@ function startFakeItsaplanServer(apiKey: string) {
       const webhooksMatch = /^\/projects\/([^/]+)\/webhooks$/.exec(url.pathname);
       if (req.method === "POST" && url.pathname === "/projects") {
         const key = String(body.key);
+        // Mirrors real itsaplan: project keys are unique — a duplicate is a 409.
+        if (projectIdByKey.has(key)) {
+          send(409, { error: "duplicate key" });
+          return;
+        }
         const created = { id: nextProjectId++, key, name: String(body.name) };
         projectIdByKey.set(key, created.id);
         createdProjects.push({ key: created.key, name: created.name });
         send(201, created);
+        return;
+      }
+      const projectMatch = /^\/projects\/([^/]+)$/.exec(url.pathname);
+      if (req.method === "GET" && projectMatch) {
+        const projectKey = decodeURIComponent(projectMatch[1]);
+        const id = projectIdByKey.get(projectKey);
+        if (!id) {
+          send(404, { error: "Project not found" });
+          return;
+        }
+        // Live itsaplan answers GET /projects/:key with the nested scaffold.
+        send(200, { project: { id, key: projectKey, name: `name-${id}` } });
         return;
       }
       if (req.method === "POST" && webhooksMatch) {
@@ -166,6 +184,7 @@ describe("itsaplan project sync", () => {
       getConfig: () => config,
       getWebhookUrl: () => "http://127.0.0.1:9999/api/itsaplan/webhook",
       paseoHome,
+      isDesignatedSyncHost: () => true,
       logger: createTestLogger(),
     };
   });
@@ -245,7 +264,7 @@ describe("itsaplan project sync", () => {
     expect(store.getByPaseoProjectKey("CMD")).toBeNull();
   });
 
-  test("boot backfill maps every unmapped, unarchived, keyed project exactly once", async () => {
+  test("resync maps every unmapped, unarchived, keyed project exactly once", async () => {
     const projects = [
       project({ projectId: "a", projectKey: "AAA", displayName: "A" }),
       project({ projectId: "b", projectKey: "BBB", displayName: "B" }),
@@ -258,14 +277,57 @@ describe("itsaplan project sync", () => {
       }),
     ];
 
-    await runItsaplanProjectBackfill(projects, deps);
+    const result = await runItsaplanProjectResync({ local: projects, fleet: null }, deps);
+    expect(result).toEqual({ mapped: 2, skipped: 1, failed: 0 });
     expect(fakeServer.createdProjects.map((p) => p.key).sort()).toEqual(["AAA", "BBB"]);
     expect(store.list()).toHaveLength(2);
 
-    // Idempotent re-run: the same backfill sweep creates nothing new.
-    await runItsaplanProjectBackfill(projects, deps);
+    // Idempotent re-run: the same sweep creates nothing new.
+    await runItsaplanProjectResync({ local: projects, fleet: null }, deps);
     expect(fakeServer.createdProjects).toHaveLength(2);
     expect(fakeServer.registeredWebhooks).toHaveLength(2);
+  });
+
+  test("resync is inert on a non-designated sync host", async () => {
+    const result = await runItsaplanProjectResync(
+      { local: [project()], fleet: [{ hostName: "macbook", projectKey: "MAC", name: "Mac" }] },
+      { ...deps, isDesignatedSyncHost: () => false },
+    );
+    expect(result).toEqual({ mapped: 0, skipped: 0, failed: 0 });
+    expect(fakeServer.createdProjects).toHaveLength(0);
+    expect(
+      await ensureItsaplanProjectMapping(project(), {
+        ...deps,
+        isDesignatedSyncHost: () => false,
+      }),
+    ).toBeNull();
+  });
+
+  test("fleet candidates dedupe by projectKey: a repo on two hosts maps once", async () => {
+    // paseo checked out on two hosts shares the cross-host remote key.
+    const fleet: ItsaplanFleetProjectCandidate[] = [
+      { hostName: "local", projectKey: "remote:github.com/iammvaibhav/paseo", name: "paseo" },
+      { hostName: "macbook", projectKey: "remote:github.com/iammvaibhav/paseo", name: "paseo-dev" },
+      { hostName: "macbook", projectKey: "MAC:/Users/vaibhav", name: "MacBook" },
+    ];
+    const result = await runItsaplanProjectResync({ local: [], fleet }, deps);
+    expect(result).toEqual({ mapped: 2, skipped: 1, failed: 0 });
+    expect(fakeServer.createdProjects.map((p) => p.key).sort()).toEqual([
+      "MAC:/Users/vaibhav",
+      "remote:github.com/iammvaibhav/paseo",
+    ]);
+  });
+
+  test("a create-key 409 adopts the existing itsaplan project instead of failing", async () => {
+    fakeServer.projectIdByKey.set("PROJ", 7); // pre-existing row, store knows nothing
+    const mapping = await ensureItsaplanProjectMapping(project(), deps);
+    expect(mapping).toMatchObject({
+      paseoProjectKey: "PROJ",
+      itsaplanProjectId: 7,
+      itsaplanProjectKey: "PROJ",
+    });
+    expect(fakeServer.createdProjects).toHaveLength(0);
+    expect(store.getByPaseoProjectKey("PROJ")?.itsaplanProjectId).toBe(7);
   });
 
   test("attachItsaplanProjectSync maps a project on a registry upsert mutation", async () => {
