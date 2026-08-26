@@ -566,6 +566,25 @@ function isPaseoInternalProject(rootPath: string, paseoHome: string): boolean {
 }
 
 /**
+ * Reserved-home check for a project we only know by key.
+ *
+ * `host:<serverId>:<absolute path>` keys embed the path, so a Commander home
+ * is recognisable without a rootPath — which fleet candidates never carry, and
+ * which is how `<paseoHome>/commander` reached itsaplan as a ticket board.
+ *
+ * Convention rather than exact: paseoHome is `~/.paseo` unless PASEO_HOME says
+ * otherwise, and a peer never tells us its value. `remote:` keys are repos and
+ * can never be a daemon home, so they are left alone.
+ */
+function isReservedHomeProjectKey(projectKey: string): boolean {
+  if (!projectKey.startsWith("host:")) {
+    return false;
+  }
+  const path = projectKey.slice(projectKey.indexOf(":", "host:".length) + 1);
+  return path.includes(`${sep}.paseo${sep}`) || path.endsWith(`${sep}.paseo`);
+}
+
+/**
  * Fleet-wide catch-up sweep: maps every active project — this daemon's AND
  * every reachable peer's, via `listFleetProjects` (the buildFleetContextData
  * assembly `fleet_list_inventory` serves) — that the store doesn't know yet.
@@ -606,15 +625,30 @@ export async function runItsaplanProjectResync(
     projectKey: string;
   })[] = [];
   for (const project of input.local) {
-    if (!project.archivedAt) {
-      consider({
-        hostName: "local",
-        projectKey: project.projectKey,
-        name: project.customName ?? project.displayName,
-      });
+    if (project.archivedAt) {
+      continue;
     }
+    // The exact check, available only here: local projects carry a rootPath.
+    if (isPaseoInternalProject(project.rootPath, deps.paseoHome)) {
+      result.skipped += 1;
+      continue;
+    }
+    consider({
+      hostName: "local",
+      projectKey: project.projectKey,
+      name: project.customName ?? project.displayName,
+    });
   }
   for (const candidate of input.fleet ?? []) {
+    // buildFleetContextData inventories THIS daemon as well as its peers, so a
+    // local project also arrives here — without the rootPath the exact check
+    // above needs. Peers never send one either. Fall back to the reserved-home
+    // path convention, which is what a `host:` key embeds; a peer's own
+    // Commander home is excluded the same way this host's is.
+    if (candidate.projectKey && isReservedHomeProjectKey(candidate.projectKey)) {
+      result.skipped += 1;
+      continue;
+    }
     consider(candidate);
   }
 
