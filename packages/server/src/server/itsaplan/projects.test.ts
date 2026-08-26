@@ -17,7 +17,7 @@ import {
 } from "./projects.js";
 
 function startFakeItsaplanServer(apiKey: string) {
-  const createdProjects: Array<{ key: string; name: string }> = [];
+  const createdProjects: Array<{ key: string; name: string; description: string }> = [];
   const registeredWebhooks: Array<{
     projectKey: string;
     url: string;
@@ -33,6 +33,8 @@ function startFakeItsaplanServer(apiKey: string) {
   let nextWebhookId = 1;
   let nextProjectId = 1;
   const projectIdByKey = new Map<string, number>();
+  // Mirrors real itsaplan: descriptions default to '' when not supplied.
+  const descriptionByKey = new Map<string, string>();
 
   const server: Server = createServer((req, res) => {
     const chunks: Buffer[] = [];
@@ -57,9 +59,19 @@ function startFakeItsaplanServer(apiKey: string) {
           send(409, { error: "duplicate key" });
           return;
         }
-        const created = { id: nextProjectId++, key, name: String(body.name) };
+        const created = {
+          id: nextProjectId++,
+          key,
+          name: String(body.name),
+          description: typeof body.description === "string" ? body.description : "",
+        };
         projectIdByKey.set(key, created.id);
-        createdProjects.push({ key: created.key, name: created.name });
+        descriptionByKey.set(key, created.description);
+        createdProjects.push({
+          key: created.key,
+          name: created.name,
+          description: created.description,
+        });
         send(201, created);
         return;
       }
@@ -72,7 +84,14 @@ function startFakeItsaplanServer(apiKey: string) {
           return;
         }
         // Live itsaplan answers GET /projects/:key with the nested scaffold.
-        send(200, { project: { id, key: projectKey, name: `name-${id}` } });
+        send(200, {
+          project: {
+            id,
+            key: projectKey,
+            name: `name-${id}`,
+            description: descriptionByKey.get(projectKey) ?? "",
+          },
+        });
         return;
       }
       if (req.method === "POST" && webhooksMatch) {
@@ -128,7 +147,14 @@ function startFakeItsaplanServer(apiKey: string) {
     });
   });
 
-  return { server, createdProjects, registeredWebhooks, webhooksById, projectIdByKey };
+  return {
+    server,
+    createdProjects,
+    registeredWebhooks,
+    webhooksById,
+    projectIdByKey,
+    descriptionByKey,
+  };
 }
 
 async function listen(server: Server): Promise<{ baseUrl: string; close: () => Promise<void> }> {
@@ -199,23 +225,25 @@ describe("itsaplan project sync", () => {
     expect(mapping).toEqual({
       paseoProjectKey: "PROJ",
       itsaplanProjectId: 1,
-      itsaplanProjectKey: "PROJ",
+      // Derived from the display name ("Repo"), never the raw paseo key.
+      itsaplanProjectKey: "REPO",
       createdAt: expect.any(String),
       // Read back from itsaplan's response — itsaplan ignores client secrets.
       webhookSecret: "whsec_generated_1",
       webhookId: 1,
     });
-    expect(fakeServer.createdProjects).toEqual([{ key: "PROJ", name: "Repo" }]);
+    // Name = friendly display name; description = full cross-host identity.
+    expect(fakeServer.createdProjects).toEqual([
+      { key: "REPO", name: "Repo", description: "PROJ" },
+    ]);
     expect(fakeServer.registeredWebhooks).toEqual([
       {
-        projectKey: "PROJ",
+        projectKey: "REPO",
         url: "http://127.0.0.1:9999/api/itsaplan/webhook",
         events: ["issue.state_changed", "comment.created"],
         clientSentSecret: false,
       },
     ]);
-    expect(store.getByPaseoProjectKey("PROJ")).toEqual(mapping);
-    expect(store.getByItsaplanProjectId(1)).toEqual(mapping);
   });
 
   test("is idempotent: a second call makes no further itsaplan API calls", async () => {
@@ -279,7 +307,7 @@ describe("itsaplan project sync", () => {
 
     const result = await runItsaplanProjectResync({ local: projects, fleet: null }, deps);
     expect(result).toEqual({ mapped: 2, skipped: 1, failed: 0 });
-    expect(fakeServer.createdProjects.map((p) => p.key).sort()).toEqual(["AAA", "BBB"]);
+    expect(fakeServer.createdProjects.map((p) => p.key).sort()).toEqual(["A", "B"]);
     expect(store.list()).toHaveLength(2);
 
     // Idempotent re-run: the same sweep creates nothing new.
@@ -312,22 +340,50 @@ describe("itsaplan project sync", () => {
     ];
     const result = await runItsaplanProjectResync({ local: [], fleet }, deps);
     expect(result).toEqual({ mapped: 2, skipped: 1, failed: 0 });
-    expect(fakeServer.createdProjects.map((p) => p.key).sort()).toEqual([
-      "MAC:/Users/vaibhav",
-      "remote:github.com/iammvaibhav/paseo",
-    ]);
+    expect(fakeServer.createdProjects.map((p) => p.key).sort()).toEqual(["MACBOOK", "PASEO"]);
   });
 
-  test("a create-key 409 adopts the existing itsaplan project instead of failing", async () => {
-    fakeServer.projectIdByKey.set("PROJ", 7); // pre-existing row, store knows nothing
+  test("a create-key 409 adopts our own crashed earlier attempt instead of failing", async () => {
+    // Pre-existing row from an earlier sync that died between create and
+    // mapping-write: recognizable as OURS because its description carries
+    // this paseo project's full cross-host key.
+    fakeServer.projectIdByKey.set("REPO", 7);
+    fakeServer.descriptionByKey.set("REPO", "PROJ");
     const mapping = await ensureItsaplanProjectMapping(project(), deps);
     expect(mapping).toMatchObject({
       paseoProjectKey: "PROJ",
       itsaplanProjectId: 7,
-      itsaplanProjectKey: "PROJ",
+      itsaplanProjectKey: "REPO",
     });
     expect(fakeServer.createdProjects).toHaveLength(0);
     expect(store.getByPaseoProjectKey("PROJ")?.itsaplanProjectId).toBe(7);
+  });
+
+  test("a same-named project on another host gets a deterministic suffixed key", async () => {
+    // Two hosts each have a project called "experiments": itsaplan enforces
+    // project_key_unique globally, so the second must NOT share or adopt the
+    // first's board — it falls back to EXPERIMENTS-<hash-of-its-own-key>.
+    const first = await ensureItsaplanProjectMapping(
+      project({ projectId: "a", projectKey: "host:a/experiments", displayName: "experiments" }),
+      deps,
+    );
+    const second = await ensureItsaplanProjectMapping(
+      project({ projectId: "b", projectKey: "host:b/experiments", displayName: "experiments" }),
+      deps,
+    );
+    expect(first?.itsaplanProjectKey).toBe("EXPERIMENTS");
+    expect(second?.itsaplanProjectKey).toMatch(/^EXPERIMENTS-[0-9A-F]{4}$/);
+    expect(second?.itsaplanProjectKey).not.toBe(first?.itsaplanProjectKey);
+    expect(second?.paseoProjectKey).toBe("host:b/experiments");
+    expect(fakeServer.createdProjects.map((p) => p.key)).toHaveLength(2);
+  });
+
+  test("a foreign manual board squatting the derived key is not adopted either", async () => {
+    fakeServer.projectIdByKey.set("REPO", 9);
+    fakeServer.descriptionByKey.set("REPO", ""); // created manually, no paseo stamp
+    const mapping = await ensureItsaplanProjectMapping(project(), deps);
+    expect(mapping?.itsaplanProjectKey).toMatch(/^REPO-[0-9A-F]{4}$/);
+    expect(mapping?.itsaplanProjectId).not.toBe(9);
   });
 
   test("attachItsaplanProjectSync maps a project on a registry upsert mutation", async () => {

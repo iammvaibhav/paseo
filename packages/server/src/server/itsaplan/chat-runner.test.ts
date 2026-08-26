@@ -555,7 +555,9 @@ describe("itsaplan Commander agent auto-registration (project sync)", () => {
     });
     expect(mapping?.commanderAgentId).toEqual(expect.any(Number));
     expect(mapping?.commanderApiKey).toEqual(expect.any(String));
-    const created = fakeServer.findAgent("ENG", "commander");
+    // The agent is created under the DERIVED itsaplan key ("Engineering"
+    // -> "ENGINEERING"), not the raw paseo projectKey.
+    const created = fakeServer.findAgent("ENGINEERING", "commander");
     expect(created).toBeDefined();
     expect(created?.triggerOnMention).toBe(true);
     expect(created?.apiKey).toBe(mapping?.commanderApiKey);
@@ -565,7 +567,7 @@ describe("itsaplan Commander agent auto-registration (project sync)", () => {
     const first = await ensureItsaplanProjectMapping(project(), deps);
     const second = await ensureItsaplanProjectMapping(project(), deps);
     expect(second).toEqual(first);
-    expect(fakeServer.findAgent("ENG", "commander")).toBeDefined();
+    expect(fakeServer.findAgent("ENGINEERING", "commander")).toBeDefined();
   });
 
   test("recovers via regenerate-key when the agent already exists on itsaplan but the store lost its key", async () => {

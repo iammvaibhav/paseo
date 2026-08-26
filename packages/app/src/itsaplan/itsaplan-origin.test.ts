@@ -117,4 +117,35 @@ describe("resolveItsaplanEmbedOrigin", () => {
       source: "derived",
     });
   });
+  it("rewrites derived origins to plain HTTP on the embed port for the desktop shell", () => {
+    expect(resolveItsaplanEmbedOrigin({ isLocalDaemon: true, insecureHttp: true })).toEqual({
+      origin: "http://localhost:3001",
+      source: "derived",
+    });
+    expect(
+      resolveItsaplanEmbedOrigin({ isLocalDaemon: false, hostProfile, insecureHttp: true }),
+    ).toEqual({ origin: "http://dev-box:3001", source: "derived" });
+  });
+
+  it("keeps an override hostname but forces the HTTP transport in the desktop shell", () => {
+    expect(
+      resolveItsaplanEmbedOrigin({
+        isLocalDaemon: false,
+        configuredOrigin: "https://10.7.0.1:8443",
+        hostProfile,
+        insecureHttp: true,
+      }),
+    ).toEqual({ origin: "http://10.7.0.1:3001", source: "override" });
+  });
+
+  it("rewrites a loopback override to the embed host before forcing HTTP", () => {
+    expect(
+      resolveItsaplanEmbedOrigin({
+        isLocalDaemon: false,
+        configuredOrigin: "https://localhost:8443",
+        hostProfile,
+        insecureHttp: true,
+      }),
+    ).toEqual({ origin: "http://dev-box:3001", source: "override" });
+  });
 });

@@ -26,7 +26,7 @@ import {
 } from "@/utils/daemon-endpoints";
 import { resolveAppVersion } from "@/utils/app-version";
 import { ConnectionOfferSchema, type ConnectionOffer } from "@getpaseo/protocol/connection-offer";
-import { shouldUseDesktopDaemon } from "@/desktop/daemon/desktop-daemon";
+import { getDesktopDaemonStatus, shouldUseDesktopDaemon } from "@/desktop/daemon/desktop-daemon";
 import { isWeb } from "@/constants/platform";
 import { connectToDaemon } from "@/utils/test-daemon-connection";
 import { getOrCreateClientId } from "@/utils/client-id";
@@ -43,6 +43,8 @@ import {
 } from "@/desktop/daemon/desktop-daemon-transport";
 import { getDesktopHost } from "@/desktop/host";
 import { collectBrowserEditorOrigins } from "@/workspace/browser-editor-url";
+import { resolveItsaplanEmbedOrigin } from "@/itsaplan/itsaplan-origin";
+import { loadAppSettingsFromStorage } from "@/hooks/use-settings";
 import { CLIENT_CAPS } from "@getpaseo/protocol/client-capabilities";
 import { BROWSER_AUTOMATION_COMMAND_NAMES } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import { selectAgentTurnPresentation, useSessionStore } from "@/stores/session-store";
@@ -71,18 +73,68 @@ import { createAppWebSocketFactory } from "./websocket-factory";
 export type HostRuntimeConnectionStatus = "idle" | "connecting" | "online" | "offline" | "error";
 export type HostRegistryStatus = "loading" | "ready";
 
-async function syncBrowserEditorInsecureOrigins(hosts: readonly HostProfile[]): Promise<void> {
+async function syncInsecureOrigins(hosts: readonly HostProfile[]): Promise<void> {
   const setOrigins = getDesktopHost()?.browserEditor?.setInsecureOrigins;
   if (typeof setOrigins !== "function") {
     return;
   }
-  const origins = collectBrowserEditorOrigins(hosts.map((host) => host.browserEditorUrl));
+  // VS Code Web hosts speak plain HTTP on VPN IPs, and the itsaplan desktop
+  // embed avoids TLS entirely (Electron silently refuses self-signed
+  // certificates for subframes). Both need Chromium's insecure-origin
+  // allowlist to stay secure contexts.
+  const origins = [
+    ...collectBrowserEditorOrigins(hosts.map((host) => host.browserEditorUrl)),
+    ...(await collectItsaplanEmbedOrigins(hosts)),
+  ];
   try {
     await setOrigins(origins);
   } catch (error) {
     console.warn("[HostRuntime] Failed to sync browser-editor insecure origins", error);
   }
 }
+
+async function collectItsaplanEmbedOrigins(hosts: readonly HostProfile[]): Promise<string[]> {
+  let localServerId: string | null = null;
+  if (shouldUseDesktopDaemon()) {
+    try {
+      const status = await getDesktopDaemonStatus();
+      localServerId = status.serverId.trim() || null;
+    } catch {
+      localServerId = null;
+    }
+  }
+  let configuredOrigin: string | null = null;
+  try {
+    configuredOrigin = (await loadAppSettingsFromStorage()).itsaplanOrigin || null;
+  } catch {
+    configuredOrigin = null;
+  }
+  const origins = new Set<string>();
+  for (const host of hosts) {
+    const resolved = resolveItsaplanEmbedOrigin({
+      isLocalDaemon: localServerId !== null && host.serverId === localServerId,
+      configuredOrigin,
+      browserEditorUrl: host.browserEditorUrl ?? null,
+      hostProfile: host,
+      insecureHttp: true,
+    });
+    if (resolved) {
+      origins.add(resolved.origin);
+    }
+  }
+  return [...origins].sort();
+}
+
+/**
+ * Re-push the insecure-origin allowlist (VS Code Web hosts + the itsaplan
+ * desktop embed) without waiting for a host-registry mutation. Called after
+ * the user edits the itsaplan URL setting; Electron persists the list and
+ * applies it via --unsafely-treat-insecure-origin-as-secure on next launch.
+ */
+export async function syncDesktopInsecureOrigins(): Promise<void> {
+  await syncInsecureOrigins(getHostRuntimeStore().getHosts());
+}
+
 export type ActiveConnection =
   | { type: "directTcp"; endpoint: string; display: string }
   | { type: "directSocket"; endpoint: string; display: "socket" }
@@ -1521,7 +1573,7 @@ export class HostRuntimeStore {
       projectIconCache.setHosts(profiles.map((profile) => profile.serverId));
       await Promise.all([this.replicaCache.restore(), projectIconCache.restore()]);
       this.syncHosts(profiles);
-      void syncBrowserEditorInsecureOrigins(profiles);
+      void syncInsecureOrigins(profiles);
     } catch (error) {
       console.error("[HostRuntime] Failed to load host registry from storage", error);
     } finally {
@@ -1904,7 +1956,7 @@ export class HostRuntimeStore {
     });
     this.setHostsAndSync(next);
     await this.persistHosts();
-    await syncBrowserEditorInsecureOrigins(next);
+    await syncInsecureOrigins(next);
   }
 
   async renameHost(serverId: string, label: string): Promise<void> {

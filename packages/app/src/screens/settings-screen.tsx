@@ -63,7 +63,11 @@ import {
   type ServiceUrlBehavior,
   type Settings as EffectiveSettings,
 } from "@/hooks/use-settings";
-import { useHostRuntimeIsConnected, useHosts } from "@/runtime/host-runtime";
+import {
+  syncDesktopInsecureOrigins,
+  useHostRuntimeIsConnected,
+  useHosts,
+} from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
 import {
   orderHostsLocalFirst,
@@ -1303,10 +1307,12 @@ export default function SettingsScreen({ view, openAddHostIntent = null }: Setti
   const handleItsaplanOriginChange = useCallback(
     (itsaplanOrigin: string) => {
       void updateSettings({ itsaplanOrigin });
+      // Persist the plain-HTTP embed origin into the desktop insecure-origin
+      // allowlist right away; Electron applies it on next app launch.
+      void syncDesktopInsecureOrigins();
     },
     [updateSettings],
   );
-
   const handleUseLegacyTerminalRendererChange = useCallback(
     (useLegacyTerminalRenderer: boolean) => {
       void updateSettings({ useLegacyTerminalRenderer });

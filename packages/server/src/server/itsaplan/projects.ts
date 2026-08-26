@@ -237,7 +237,15 @@ async function ensureItsaplanProjectMappingForKey(
     deps.logger.warn({ paseoProjectKey: projectKey }, "itsaplan.project.webhook_url_unavailable");
     return null;
   }
-  const created = await createOrAdoptItsaplanProject(client, { key: projectKey, name }, deps);
+  const created = await createOrAdoptItsaplanProject(
+    client,
+    {
+      baseKey: deriveItsaplanProjectKey(name),
+      name,
+      paseoProjectKey: projectKey,
+    },
+    deps,
+  );
   const webhook = await client.registerWebhook(created.key, {
     url: webhookUrl,
     events: [...ITSAPLAN_WEBHOOK_EVENTS],
@@ -260,32 +268,99 @@ async function ensureItsaplanProjectMappingForKey(
   return mapping;
 }
 
+/** Upper bound on the name-derived portion of an itsaplan project key. */
+const ITSAPLAN_PROJECT_KEY_MAX_BASE = 12;
+
 /**
- * Creates the itsaplan project; on a duplicate-key 409 adopts the existing
- * one instead of failing — the row may come from a manual creation or from
- * an earlier sync that crashed between create and mapping-write. A 409 whose
- * key is then unresolvable is rethrown (itsaplan state contradicts itself).
+ * Derives the itsaplan project key candidate from the project's display
+ * name (`customName ?? displayName`): uppercase alphanumeric only — itsaplan
+ * keys are immutable issue-ID prefixes ("MKT" -> "MKT-1") and URL segments,
+ * so slashes/colons from a raw cross-host paseoProjectKey never belong here.
+ */
+export function deriveItsaplanProjectKey(name: string): string {
+  const base = name
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "")
+    .slice(0, ITSAPLAN_PROJECT_KEY_MAX_BASE);
+  return base.length > 0 ? base : "PROJECT";
+}
+
+/**
+ * Deterministic FNV-1a hex of the paseo projectKey: the suffix that keeps
+ * two hosts' same-named projects ("experiments" on two machines) on distinct
+ * boards under itsaplan's globally-unique project_key, without any shared
+ * state between sweeps.
+ */
+function itsaplanKeyCollisionSuffix(paseoProjectKey: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < paseoProjectKey.length; i++) {
+    hash ^= paseoProjectKey.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).toUpperCase().padStart(8, "0").slice(-4);
+}
+
+/**
+ * Creates the itsaplan project with the derived friendly key; on a
+ * duplicate-key 409 disambiguates by the description this sync always stamps
+ * with the full paseo projectKey:
+ * - description matches OURS -> an earlier sync of THIS paseo project crashed
+ *   between create and mapping-write; adopt it.
+ * - anything else (a manual board, or another host's same-named project) ->
+ *   retry once with the deterministic `-<hash>` suffixed key, then adopt only
+ *   if THAT row is ours too. A third collision rethrows rather than ever
+ *   letting two distinct paseo projects share one board.
  */
 async function createOrAdoptItsaplanProject(
   client: ItsaplanClient,
-  input: { key: string; name: string },
+  input: { baseKey: string; name: string; paseoProjectKey: string },
   deps: ItsaplanProjectSyncDependencies,
 ): Promise<Pick<ItsaplanProject, "id" | "key" | "name">> {
+  const adoptIfOurs = async (
+    key: string,
+    error: ItsaplanApiError,
+  ): Promise<Pick<ItsaplanProject, "id" | "key" | "name">> => {
+    const existing = await client.getProject(key);
+    if (existing?.description !== input.paseoProjectKey) {
+      throw error;
+    }
+    deps.logger.info(
+      { paseoProjectKey: input.paseoProjectKey, itsaplanProjectKey: existing.key },
+      "itsaplan.project.existing_adopted",
+    );
+    return existing;
+  };
   try {
-    return await client.createProject(input);
+    return await client.createProject({
+      key: input.baseKey,
+      name: input.name,
+      description: input.paseoProjectKey,
+    });
   } catch (error) {
     if (!(error instanceof ItsaplanApiError) || error.status !== 409) {
       throw error;
     }
-    const adopted = await client.getProject(input.key);
-    if (!adopted) {
-      throw error;
+    try {
+      return await adoptIfOurs(input.baseKey, error);
+    } catch {
+      const suffixed = `${input.baseKey}-${itsaplanKeyCollisionSuffix(input.paseoProjectKey)}`;
+      try {
+        return await client.createProject({
+          key: suffixed,
+          name: input.name,
+          description: input.paseoProjectKey,
+        });
+      } catch (retryError) {
+        if (!(retryError instanceof ItsaplanApiError) || retryError.status !== 409) {
+          throw retryError;
+        }
+        deps.logger.warn(
+          { baseKey: input.baseKey, suffixedKey: suffixed },
+          "itsaplan.project.key_collided_suffixed",
+        );
+        return adoptIfOurs(suffixed, retryError);
+      }
     }
-    deps.logger.info(
-      { paseoProjectKey: input.key, itsaplanProjectKey: adopted.key },
-      "itsaplan.project.existing_adopted",
-    );
-    return adopted;
   }
 }
 

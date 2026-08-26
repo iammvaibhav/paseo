@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
 import { useTranslation } from "react-i18next";
 import { Text, View } from "react-native";
 import { RefreshCw, SquareKanban } from "lucide-react-native";
@@ -7,12 +7,16 @@ import { MenuHeader } from "@/components/headers/menu-header";
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { useIsLocalDaemon, useLocalDaemonServerId } from "@/hooks/use-is-local-daemon";
+import { getDesktopHost } from "@/desktop/host";
 import { useAppSettings } from "@/hooks/use-settings";
 import { resolveItsaplanEmbedOrigin } from "@/itsaplan/itsaplan-origin";
 import { ItsaplanEmbed } from "@/itsaplan/itsaplan-webview";
 import { useHosts } from "@/runtime/host-runtime";
 
 type LoadStatus = "loading" | "ready" | "error";
+
+/** How long the pre-flight reachability probe waits before declaring the origin dead. */
+const REACHABILITY_TIMEOUT_MS = 8_000;
 
 /**
  * Full-screen embed of itsaplan. The tool runs next to the Paseo daemon, so the
@@ -30,6 +34,17 @@ export function ItsaplanScreen(): ReactElement {
   const [attempt, setAttempt] = useState(0);
   const [status, setStatus] = useState<LoadStatus>("loading");
 
+  // Inside the Electron shell, subframes cannot trust itsaplan's self-signed
+  // TLS certificate — the frame silently stays white. The desktop embed loads
+  // plain HTTP instead and counts on Chromium's insecure-origin allowlist
+  // (syncInsecureOrigins) for a secure context. Only enable that transport
+  // when the bridge that maintains the allowlist actually exists; elsewhere
+  // keep speaking HTTPS to the resolved origin.
+  const useDesktopEmbed = useMemo(
+    () => typeof getDesktopHost()?.browserEditor?.setInsecureOrigins === "function",
+    [],
+  );
+
   // itsaplan is a per-machine service: prefer the local daemon's machine, else
   // the first registered host.
   const targetHost = useMemo(
@@ -46,9 +61,10 @@ export function ItsaplanScreen(): ReactElement {
             configuredOrigin: settings.itsaplanOrigin,
             browserEditorUrl: targetHost.browserEditorUrl ?? null,
             hostProfile: targetHost,
+            insecureHttp: useDesktopEmbed,
           })
         : null,
-    [targetHost, isLocalDaemon, settings.itsaplanOrigin],
+    [targetHost, isLocalDaemon, settings.itsaplanOrigin, useDesktopEmbed],
   );
 
   const markLoaded = useCallback(() => setStatus("ready"), []);
@@ -57,6 +73,32 @@ export function ItsaplanScreen(): ReactElement {
     setStatus("loading");
     setAttempt((value) => value + 1);
   }, []);
+
+  // Pre-flight reachability probe. The web iframe fires onLoad even for
+  // certificate failures and error pages, so without this a dead origin would
+  // flip straight to "ready" over an empty white frame. An opaque no-cors
+  // request resolves on any HTTP response and rejects only when the connection
+  // itself fails (refused, DNS, TLS).
+  useEffect(() => {
+    const origin = resolved?.origin;
+    if (!origin) {
+      return undefined;
+    }
+    let cancelled = false;
+    setStatus("loading");
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REACHABILITY_TIMEOUT_MS);
+    fetch(origin, { mode: "no-cors", cache: "no-store", signal: controller.signal }).catch(() => {
+      if (!cancelled) {
+        setStatus("error");
+      }
+    });
+    return () => {
+      cancelled = true;
+      clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [resolved, attempt]);
 
   return (
     <View style={styles.container}>

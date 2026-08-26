@@ -8,6 +8,17 @@ import { resolvePlannotatorEmbedHost } from "@/workspace/plannotator-embed-host"
  */
 export const ITSAPLAN_DEFAULT_PORT = 8443;
 
+/**
+ * Plain-HTTP port of the itsaplan web app used when the tool is embedded inside
+ * the Paseo desktop shell. The HTTPS proxy serves a self-signed certificate,
+ * and Electron refuses such certificates for subframes without any error
+ * signal — the iframe stays blank white. The desktop embed therefore loads
+ * plain HTTP instead, and the origin is registered in Chromium's
+ * insecure-origin allowlist (see syncInsecureOrigins) so it still counts as a
+ * secure context and crypto.randomUUID keeps working.
+ */
+export const ITSAPLAN_EMBED_HTTP_PORT = 3001;
+
 export type ItsaplanOriginSource = "override" | "derived";
 
 export interface ItsaplanEmbedInput {
@@ -18,6 +29,14 @@ export interface ItsaplanEmbedInput {
    * from the host the way Plannotator resolves its embed host.
    */
   configuredOrigin?: string | null;
+  /**
+   * Desktop-shell embeds must avoid TLS: Electron silently refuses the
+   * self-signed certificate for a subframe, which renders as an empty white
+   * pane. When set, the resolved origin is rewritten to plain HTTP on
+   * ITSAPLAN_EMBED_HTTP_PORT (hostname preserved); the caller is responsible
+   * for registering that origin via the desktop insecure-origin allowlist.
+   */
+  insecureHttp?: boolean;
   browserEditorUrl?: string | null;
   hostProfile?: HostProfile | null;
 }
@@ -88,26 +107,46 @@ export function resolveItsaplanEmbedOrigin(input: ItsaplanEmbedInput): ItsaplanE
         hostProfile: input.hostProfile,
       });
 
+  // Desktop-shell embeds never speak TLS to itsaplan (self-signed certificates
+  // are silently refused inside Electron subframes); see ITSAPLAN_EMBED_HTTP_PORT.
+  const insecureHttp = input.insecureHttp === true;
   if (override) {
     if (!input.isLocalDaemon && embedHost) {
       try {
         const url = new URL(override);
         if (isLoopbackHostname(url.hostname)) {
           url.hostname = embedHost;
-          return { origin: url.origin, source: "override" };
+          return { origin: toEmbedOrigin(url.origin, insecureHttp), source: "override" };
         }
       } catch {
         // Unreachable: normalizeItsaplanOrigin already validated this URL.
       }
     }
-    return { origin: override, source: "override" };
+    return { origin: toEmbedOrigin(override, insecureHttp), source: "override" };
   }
 
   if (input.isLocalDaemon) {
-    return { origin: `https://localhost:${ITSAPLAN_DEFAULT_PORT}`, source: "derived" };
+    return {
+      origin: toEmbedOrigin(`https://localhost:${ITSAPLAN_DEFAULT_PORT}`, insecureHttp),
+      source: "derived",
+    };
   }
   if (!embedHost) {
     return null;
   }
-  return { origin: `https://${embedHost}:${ITSAPLAN_DEFAULT_PORT}`, source: "derived" };
+  return {
+    origin: toEmbedOrigin(`https://${embedHost}:${ITSAPLAN_DEFAULT_PORT}`, insecureHttp),
+    source: "derived",
+  };
+}
+
+/** Three return paths above must rewrite scheme/port in lockstep. */
+function toEmbedOrigin(origin: string, insecureHttp: boolean): string {
+  if (!insecureHttp) {
+    return origin;
+  }
+  const url = new URL(origin);
+  url.protocol = "http:";
+  url.port = String(ITSAPLAN_EMBED_HTTP_PORT);
+  return url.origin;
 }

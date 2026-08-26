@@ -88,6 +88,10 @@ const ItsaplanProjectSchema = z.object({
   id: z.number(),
   key: z.string(),
   name: z.string(),
+  // The Paseo sync stamps the full cross-host paseoProjectKey here so a
+  // create-key 409 can tell its own earlier crashed attempt (adopt) from
+  // another paseo project whose derived name collides (suffix around it).
+  description: z.string().nullable().optional(),
   columns: z.array(ItsaplanColumnSchema).optional(),
   labels: z.array(ItsaplanLabelSchema).optional(),
 });
@@ -108,6 +112,7 @@ const ItsaplanProjectScaffoldSchema = z
     id: value.project?.id,
     key: value.project?.key,
     name: value.project?.name,
+    description: value.project?.description,
     columns: value.columns ?? value.project?.columns ?? [],
     labels: value.labels ?? value.project?.labels ?? [],
   }))
@@ -116,6 +121,7 @@ const ItsaplanProjectScaffoldSchema = z
       id: value.id,
       key: value.key,
       name: value.name,
+      description: value.description,
       columns: value.columns ?? [],
       labels: value.labels ?? [],
     })),
@@ -356,7 +362,11 @@ export class ItsaplanClient {
     );
   }
 
-  async createProject(input: { key: string; name: string }): Promise<ItsaplanProject> {
+  async createProject(input: {
+    key: string;
+    name: string;
+    description?: string;
+  }): Promise<ItsaplanProject> {
     return this.request("POST", "/projects", input, ItsaplanProjectSchema);
   }
 
@@ -368,7 +378,7 @@ export class ItsaplanClient {
    */
   async getProject(
     projectKey: string,
-  ): Promise<Pick<ItsaplanProject, "id" | "key" | "name"> | null> {
+  ): Promise<Pick<ItsaplanProject, "id" | "key" | "name" | "description"> | null> {
     try {
       const scaffold = await this.request(
         "GET",
@@ -379,7 +389,12 @@ export class ItsaplanClient {
       if (scaffold.id === undefined || scaffold.key === undefined) {
         return null;
       }
-      return { id: scaffold.id, key: scaffold.key, name: scaffold.name ?? "" };
+      return {
+        id: scaffold.id,
+        key: scaffold.key,
+        name: scaffold.name ?? "",
+        description: scaffold.description,
+      };
     } catch (error) {
       if (error instanceof ItsaplanApiError && error.status === 404) {
         return null;
