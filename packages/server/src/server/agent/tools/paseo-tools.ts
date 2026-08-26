@@ -198,6 +198,11 @@ export interface PaseoToolHostDependencies {
   browserToolsBroker?: BrowserToolsBroker | null;
   peerManager?: PeerManager | null;
   missionControlService?: MissionControlService | null;
+  itsaplanTicketize?: {
+    ticketizeAgent: (
+      agentId: string,
+    ) => Promise<{ issueId: number; url: string } | { error: string }>;
+  } | null;
   paseoHome?: string;
   worktreesRoot?: string;
   /**
@@ -6223,6 +6228,75 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   );
 
   registerTool(
+    "fleet_ticketize_agent",
+    {
+      title: "Create an itsaplan ticket for an agent",
+      description:
+        "Create an itsaplan ticket from an agent's title and description, link the agent to the ticket with an itsaplan.issue label, " +
+        "and post a deep-link comment. Ticket column matches the agent's current lifecycle bucket (running/needs_you -> In Progress, " +
+        "ready -> Ready to review, done -> completed, idle -> unstarted/Todo). Idempotent: returns existing ticket if already labeled. " +
+        "agentId is an agent UUID from fleet_list_agents/fleet_search data. Commander-only.",
+      inputSchema: {
+        agentId: AGENT_ID_SCHEMA,
+      },
+      outputSchema: {
+        ok: z.boolean(),
+        issueId: z.number().optional(),
+        url: z.string().optional(),
+        error: z.string().optional(),
+      },
+    },
+    async ({ agentId }) => {
+      if (!isCommanderCaller) {
+        throw new Error("fleet_ticketize_agent requires a Commander caller");
+      }
+      const ticketize = options.itsaplanTicketize;
+      if (!ticketize) {
+        throw new Error(
+          "fleet_ticketize_agent is unavailable: the itsaplan bridge is not configured on this daemon",
+        );
+      }
+      const result = await ticketize.ticketizeAgent(agentId);
+      if ("error" in result) {
+        throw new Error(result.error);
+      }
+      return {
+        content: [],
+        structuredContent: ensureValidJson({
+          ok: true,
+          issueId: result.issueId,
+          url: result.url,
+        }),
+      };
+    },
+  );
+
+  registerTool(
+    "itsaplan_ticketize",
+    {
+      title: "Create an itsaplan ticket for an agent (alias)",
+      description:
+        "Alias for fleet_ticketize_agent. Create an itsaplan ticket from an agent's title and description.",
+      inputSchema: {
+        agentId: AGENT_ID_SCHEMA,
+      },
+      outputSchema: {
+        ok: z.boolean(),
+        issueId: z.number().optional(),
+        url: z.string().optional(),
+        error: z.string().optional(),
+      },
+    },
+    async (args, context) => {
+      const tool = tools.get("fleet_ticketize_agent");
+      if (!tool) {
+        throw new Error("fleet_ticketize_agent not found");
+      }
+      return tool.handler(args, context);
+    },
+  );
+
+  registerTool(
     "fleet_recall",
     {
       title: "Recall prior fleet work from memory",
@@ -7333,6 +7407,7 @@ function archiveWorktreeDependencies(
     agentStorage: context.agentStorage,
     findWorkspaceIdForCwd: options.findWorkspaceIdForCwd,
     listActiveWorkspaces: options.listActiveWorkspaces,
+    projectRegistry: options.projectRegistry,
     archiveWorkspaceRecord: options.archiveWorkspaceRecord,
     emitWorkspaceUpdatesForWorkspaceIds: options.emitWorkspaceUpdatesForWorkspaceIds,
     markWorkspaceArchiving: options.markWorkspaceArchiving,

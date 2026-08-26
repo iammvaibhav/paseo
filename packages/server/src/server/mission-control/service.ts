@@ -264,6 +264,8 @@ const MUTATING_TOOL_NAMES: readonly string[] = [
   "fleet_promote_workspace",
   "fleet_adopt_agent",
   "fleet_release_agent",
+  "fleet_ticketize_agent",
+  "itsaplan_ticketize",
 ];
 
 function leakedToolPattern(names: readonly string[]): RegExp {
@@ -754,6 +756,12 @@ export class MissionControlService {
   private readonly commanderInstructionTrackers = new Map<string, CommanderInstructionTracker>();
   private readonly reviewStateListeners = new Set<ReviewStateListener>();
   private readonly selfReportListeners = new Set<(event: MissionControlEvent) => void>();
+  /** Every emitted feed event, any kind/source — a general fan-out parallel to
+   * selfReportListeners (which is scoped to source:"self"). Used by callers that need
+   * to observe the Commander's own cards (e.g. the itsaplan chat-runner correlating an
+   * emitCommanderCard "answer"/"clarification"/"proposal" back to the instruction id it
+   * delivered — see itsaplan/chat-runner.ts). */
+  private readonly eventListeners = new Set<(event: MissionControlEvent) => void>();
   /** fleet_monitor subscriptions keyed by session (voice daemon session id or
    * Commander turn context). Sessions manage their own watches independently;
    * a session with no entries is simply absent. */
@@ -2982,6 +2990,20 @@ export class MissionControlService {
     };
   }
 
+  /**
+   * Subscribe to every emitted feed event, any kind/source — unlike
+   * subscribeSelfReports (scoped to source:"self"), this fires for every card the
+   * Commander itself emits (answer/clarification/proposal) as well. The itsaplan
+   * chat-runner uses it to correlate a delivered instruction id (respondsTo) back to
+   * the Commander's reply without threading a new callback through emitCommanderCard.
+   */
+  subscribeEvents(listener: (event: MissionControlEvent) => void): () => void {
+    this.eventListeners.add(listener);
+    return () => {
+      this.eventListeners.delete(listener);
+    };
+  }
+
   // ==========================================================================
   // Internal plumbing
   // ==========================================================================
@@ -4626,6 +4648,16 @@ export class MissionControlService {
       type: "mission_control_event",
       event,
     });
+    for (const listener of this.eventListeners) {
+      try {
+        listener(event);
+      } catch (error) {
+        this.logger.warn(
+          { err: error, eventId: event.id },
+          "mission_control.event_listener_failed",
+        );
+      }
+    }
     // M6 run records: a run-end or verdict event finalizes the run's record.
     this.maybeAssembleRunRecordForEvent(event);
     // M3 runtime model: the feed keeps the event; the Commander no longer

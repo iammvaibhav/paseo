@@ -337,6 +337,7 @@ function createNoopProjectRegistry(): ProjectRegistry {
       customName: null,
       customIconRevision: null,
       description: null,
+      baseWorkspaceId: null,
       createdAt: input.timestamp,
       updatedAt: input.timestamp,
       archivedAt: null,
@@ -1844,6 +1845,10 @@ export class VoiceAssistantWebSocketServer {
         agentProfiles: true,
         // COMPAT(agentConfigApply): added in v0.3.2, remove gate after 2027-02-11.
         agentConfigApply: true,
+        // COMPAT(baseWorkspace): added in v0.5.3 on 2026-08-25; remove gate
+        // after 2027-02-25. Project-anchored base workspaces (ADR 0001):
+        // ensure-on-create/backfill + archive refusal are live.
+        baseWorkspace: true,
       },
     };
   }

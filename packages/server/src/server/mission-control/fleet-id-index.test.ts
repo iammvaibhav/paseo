@@ -108,6 +108,7 @@ describe("fleet-id-index unit tests", () => {
           },
         ],
         defaultHost: null,
+        centralConfig: null,
       };
     });
 
@@ -134,6 +135,7 @@ describe("fleet-id-index unit tests", () => {
     const fleetContext = vi.fn(async () => ({
       hosts: [],
       defaultHost: null,
+      centralConfig: null,
     }));
 
     const index = createFleetIdIndex({
@@ -161,6 +163,7 @@ describe("fleet-id-index unit tests", () => {
     const fleetContext = vi.fn(async () => ({
       hosts: [],
       defaultHost: null,
+      centralConfig: null,
     }));
 
     const index = createFleetIdIndex({

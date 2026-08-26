@@ -152,6 +152,52 @@ describe("CentralMissionControlConfigStore stall knobs", () => {
     expect(reloaded.get().voiceMode).toBe("direct");
   });
 
+  test("ADR 0002 keys: verifierEnabled/projectSettings/itsaplan default off/empty/null and round-trip through patch and reload", async () => {
+    const store = new CentralMissionControlConfigStore({
+      paseoHome: dir,
+      logger: createTestLogger(),
+    });
+    await store.initialize();
+    expect(store.get().verifierEnabled).toBe(false);
+    expect(store.get().projectSettings).toEqual({});
+    expect(store.get().itsaplan).toBeNull();
+
+    const patched = await store.patch({
+      verifierEnabled: true,
+      projectSettings: { "proj-1": { alwaysRaisePr: true } },
+      itsaplan: {
+        baseUrl: "https://itsaplan.internal",
+        apiKey: "sk-test",
+        webhookSecret: "whsec-test",
+        humanUserId: "user-42",
+      },
+    });
+    expect(patched.verifierEnabled).toBe(true);
+    expect(patched.projectSettings).toEqual({ "proj-1": { alwaysRaisePr: true } });
+    expect(patched.itsaplan).toEqual({
+      baseUrl: "https://itsaplan.internal",
+      apiKey: "sk-test",
+      webhookSecret: "whsec-test",
+      humanUserId: "user-42",
+    });
+    // Unpatched keys keep defaults.
+    expect(patched.trackVerifiers).toBe(true);
+
+    const reloaded = new CentralMissionControlConfigStore({
+      paseoHome: dir,
+      logger: createTestLogger(),
+    });
+    await reloaded.initialize();
+    expect(reloaded.get().verifierEnabled).toBe(true);
+    expect(reloaded.get().projectSettings).toEqual({ "proj-1": { alwaysRaisePr: true } });
+    expect(reloaded.get().itsaplan).toEqual({
+      baseUrl: "https://itsaplan.internal",
+      apiKey: "sk-test",
+      webhookSecret: "whsec-test",
+      humanUserId: "user-42",
+    });
+  });
+
   test("initialize is idempotent: a second call never re-reads the file", async () => {
     const store = new CentralMissionControlConfigStore({
       paseoHome: dir,

@@ -26,6 +26,10 @@ const BASE_CENTRAL_CONFIG: VerifierCentralConfig = {
   evaluationScope: "commander",
   verifierToWorkerMode: "steer",
   mode: "auto",
+  // ADR 0002: verifiers are off by default in production; this fixture opts
+  // every test in this file into the pre-ADR "verifiers spawn" behavior
+  // unless a test explicitly overrides it (see the off-by-default test).
+  verifierEnabled: true,
 };
 
 const VERIFIER_MD = `---
@@ -390,6 +394,28 @@ describe("MissionControlVerifierDispatcher", () => {
     expect(harness.created[0].options.workspaceId).toBeUndefined();
     await vi.waitFor(() => expect(harness.runs.length).toBe(1), WAIT);
     expect(harness.runs[0].prompt).toContain("submit_verdict");
+  });
+
+  test("ADR 0002: verifierEnabled off by default means no verifier spawn on ready-for-review", async () => {
+    // A fresh harness with verifierEnabled unset (the real production
+    // default) — omit it from the central-config override rather than
+    // inheriting the file's BASE_CENTRAL_CONFIG opt-in.
+    const offHarness = await createHarness({
+      central: { verifierEnabled: undefined, trackVerifiers: true, evaluationScope: "commander" },
+    });
+    offHarness.setWorker(makeCommander());
+    offHarness.dispatcher.start();
+    try {
+      const worker = makeWorker("worker-1", { "paseo.parent-agent-id": "commander-1" });
+      offHarness.setWorker(worker);
+      offHarness.emitReviewState("worker-1", "ready");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(offHarness.created.length).toBe(0);
+    } finally {
+      offHarness.dispatcher.stop();
+      await awaitStoreWrites(offHarness.store);
+      await rm(offHarness.dir, { recursive: true, force: true });
+    }
   });
 
   test("commander scope: only workers spawned by the Commander are verified", async () => {

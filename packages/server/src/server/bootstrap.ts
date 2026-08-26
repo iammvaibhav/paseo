@@ -1,4 +1,4 @@
-import express from "express";
+import express, { type RequestHandler } from "express";
 import { createServer as createHTTPServer, type IncomingMessage, type ServerResponse } from "http";
 import { constants, existsSync, mkdirSync, unlinkSync } from "fs";
 import { open, mkdir, rm } from "fs/promises";
@@ -137,8 +137,10 @@ import { attachAgentStoragePersistence } from "./persistence-hooks.js";
 import { createAgentMcpServer } from "./agent/mcp-server.js";
 import {
   createPaseoToolCatalog,
+  dispatchLocalPromptMode,
   type PaseoToolHostDependencies,
 } from "./agent/tools/paseo-tools.js";
+import { sendPromptToAgent } from "./agent/agent-prompt.js";
 import type { PaseoToolRuntimeContext } from "./agent/tools/types.js";
 import { ProviderSnapshotManager } from "./agent/provider-snapshot-manager.js";
 import { bootstrapWorkspaceRegistries } from "./workspace-registry-bootstrap.js";
@@ -152,6 +154,7 @@ import {
 } from "./workspace-registry.js";
 import { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { ScheduleService } from "./schedule/service.js";
+import { BaseCheckoutSyncService } from "./base-checkout-sync.js";
 import { IdleCloseOmpService } from "./idle-close/index.js";
 import { MissionControlService } from "./mission-control/service.js";
 import type { MissionControlProposalSpawnPlan } from "@getpaseo/protocol/mission-control/types";
@@ -171,6 +174,15 @@ import { AgentNamingService } from "./mission-control/naming.js";
 import { runIdentityBackfill } from "./mission-control/backfill.js";
 import { MAX_WEBHOOK_BODY_BYTES, WebhookService } from "./webhook/service.js";
 import { createWebhookRouteHandler } from "./webhook/route.js";
+import {
+  attachItsaplanProjectSync,
+  createItsaplanWebhookRouteHandler,
+  ItsaplanBridge,
+  ItsaplanChatRunner,
+  ItsaplanProjectStore,
+  ItsaplanReconcileService,
+  runItsaplanProjectBackfill,
+} from "./itsaplan/index.js";
 import { PeerManager } from "./peers/peer-manager.js";
 import { TunnelManager } from "./tunnel/manager.js";
 import { DaemonConfigStore, type MutableDaemonConfig } from "./daemon-config-store.js";
@@ -300,6 +312,21 @@ function createTerminalActivityUrl(listenTarget: ListenTarget | null): string | 
   const host = resolveAgentMcpClientHost(listenTarget.host);
   return new URL(
     "/api/terminal-activity",
+    `http://${formatHostForHttpUrl(host)}:${listenTarget.port}`,
+  ).toString();
+}
+
+/** This daemon's own itsaplan webhook ingress URL — itsaplan (ADR 0002:
+ * self-hosted on the Commander host) POSTs here over loopback/LAN once
+ * bound; null (unix-socket-only daemons, or before the listener binds)
+ * defers project mapping until a TCP target exists. */
+function createItsaplanWebhookUrl(listenTarget: ListenTarget | null): string | null {
+  if (!listenTarget || listenTarget.type !== "tcp") {
+    return null;
+  }
+  const host = resolveAgentMcpClientHost(listenTarget.host);
+  return new URL(
+    "/api/itsaplan/webhook",
     `http://${formatHostForHttpUrl(host)}:${listenTarget.port}`,
   ).toString();
 }
@@ -915,6 +942,36 @@ function createWebhookIngress(app: express.Express): {
   };
 }
 
+/**
+ * Public itsaplan webhook ingress on /api/itsaplan/webhook (ADR 0002). Auth
+ * is the HMAC signature itself (verified inside ItsaplanBridge), so this is
+ * pre-auth like /hooks/:id/:secret — mounted before the Host allowlist,
+ * bearer auth, and express.json() so itsaplan reaches it and HMAC can read
+ * the exact raw body. The handler is assigned once the bridge exists;
+ * requests before that get a 503.
+ */
+function createItsaplanWebhookIngress(app: express.Express): {
+  setHandler: (handler: RequestHandler) => void;
+} {
+  let handler: RequestHandler | null = null;
+  app.post(
+    "/api/itsaplan/webhook",
+    express.raw({ type: () => true, limit: MAX_WEBHOOK_BODY_BYTES }),
+    (req, res, next) => {
+      if (!handler) {
+        res.status(503).json({ ok: false, error: "itsaplan bridge not ready" });
+        return;
+      }
+      handler(req, res, next);
+    },
+  );
+  return {
+    setHandler: (next) => {
+      handler = next;
+    },
+  };
+}
+
 function resolveServiceProxyPublicBaseUrl(config: PaseoDaemonConfig): string | null {
   return config.serviceProxy?.publicBaseUrl ? config.serviceProxy.publicBaseUrl : null;
 }
@@ -1057,6 +1114,9 @@ export async function createPaseoDaemon(
   // The handler is assigned once the webhook service is constructed below.
   const webhookIngress = createWebhookIngress(app);
 
+  // Same pre-auth placement, for the itsaplan bridge's ingress (ADR 0002).
+  const itsaplanWebhookIngress = createItsaplanWebhookIngress(app);
+
   // Host allowlist / DNS rebinding protection (vite-like semantics).
   // For non-TCP (unix sockets), skip host validation.
   applyHostAllowlist(app, listenTarget, configuredHostnames);
@@ -1152,6 +1212,8 @@ export async function createPaseoDaemon(
     path.join(config.paseoHome, "projects", "projects.json"),
     logger,
   );
+  const itsaplanProjectStore = new ItsaplanProjectStore({ paseoHome: config.paseoHome, logger });
+  await itsaplanProjectStore.initialize();
   workspaceRegistry = new FileBackedWorkspaceRegistry(
     path.join(config.paseoHome, "projects", "workspaces.json"),
     logger,
@@ -1284,6 +1346,7 @@ export async function createPaseoDaemon(
     workspaceRegistry,
     logger,
     workspaceGitService,
+    workspaceProvisioning,
     onProjectUpdate: (update) => wsServer?.publishProjectUpdate(update),
     onWorkspaceArchived: teardownArchivedWorkspaceRuntime,
     onWorkspacesChanged: async (workspaceIds) => {
@@ -1502,6 +1565,7 @@ export async function createPaseoDaemon(
         findWorkspaceIdForCwd: findWorkspaceIdForCwdExternal,
         listActiveWorkspaces: listActiveWorkspacesExternal,
         getWorkspace: (workspaceIdToGet) => workspaceRegistry.get(workspaceIdToGet),
+        projectRegistry,
         archiveWorkspaceRecord: archiveWorkspaceRecordExternal,
         emitWorkspaceUpdatesForWorkspaceIds: emitWorkspaceUpdatesExternal,
         markWorkspaceArchiving: markWorkspaceArchivingExternal,
@@ -1632,6 +1696,7 @@ export async function createPaseoDaemon(
         findWorkspaceIdForCwd: findWorkspaceIdForCwdExternal,
         listActiveWorkspaces: listActiveWorkspacesExternal,
         getWorkspace: (workspaceIdToGet) => workspaceRegistry.get(workspaceIdToGet),
+        projectRegistry,
         archiveWorkspaceRecord: archiveWorkspaceRecordExternal,
         emitWorkspaceUpdatesForWorkspaceIds: emitWorkspaceUpdatesExternal,
         markWorkspaceArchiving: markWorkspaceArchivingExternal,
@@ -1664,6 +1729,15 @@ export async function createPaseoDaemon(
     archiveWorkspace: archiveScheduleWorkspaceExternal,
   });
   await scheduleService.start();
+  const baseCheckoutSyncService = new BaseCheckoutSyncService({
+    logger,
+    projectRegistry,
+    workspaceRegistry,
+    workspaceGitService,
+    agentStorage,
+    agentManager,
+  });
+  baseCheckoutSyncService.start();
   const idleCloseOmpService = new IdleCloseOmpService({
     agentManager,
     daemonConfigStore,
@@ -1994,6 +2068,111 @@ export async function createPaseoDaemon(
   await missionControlService.start();
   logger.info({ elapsed: elapsed() }, "Mission control service initialized");
 
+  // ADR 0002 itsaplan bridge: fully inert while central config `itsaplan`
+  // is absent (every entry point checks getConfig() first). Machinery
+  // delivery reuses the exact primitive Mission Control's own machinery
+  // turns use (service.ts dispatchMachineryTurn) rather than the per-agent
+  // event pipeline — a new-ticket dispatch prompt has no agentId yet.
+  const getItsaplanConfig = () => centralMissionControlConfig.get().itsaplan;
+  const itsaplanBridge = new ItsaplanBridge({
+    logger,
+    serverId,
+    agentManager,
+    agentStorage,
+    missionControl: missionControlService,
+    projectStore: itsaplanProjectStore,
+    getConfig: getItsaplanConfig,
+    resolvePaseoProjectKey: async (agentId) => {
+      const live = agentManager.getAgent(agentId);
+      const workspaceId = live?.workspaceId;
+      const cwd = live?.cwd;
+      const workspaces = await workspaceRegistry.list();
+      let match = workspaceId ? workspaces.find((w) => w.workspaceId === workspaceId) : undefined;
+      if (!match && cwd) {
+        match = workspaces.find((w) => w.cwd === cwd);
+      }
+      if (!match) {
+        const stored = await agentStorage.get(agentId);
+        if (stored?.workspaceId) {
+          match = workspaces.find((w) => w.workspaceId === stored.workspaceId);
+        } else if (stored?.cwd) {
+          match = workspaces.find((w) => w.cwd === stored.cwd);
+        }
+      }
+      if (!match) {
+        return null;
+      }
+      const project = await projectRegistry.get(match.projectId);
+      return project?.projectKey ?? null;
+    },
+    deliverMachineryPrompt: async (prompt) => {
+      const commanderId = await missionControlService.getCommanderAgentId();
+      if (!commanderId) {
+        return false;
+      }
+      await dispatchLocalPromptMode({
+        agentManager,
+        agentStorage,
+        agentId: commanderId,
+        prompt,
+        mode: "steer",
+        classification: "machinery",
+        replaceOrigin: "machinery",
+        recordStopOrigin: (id, origin) => missionControlService.recordStopOrigin(id, origin),
+        logger,
+      });
+      return true;
+    },
+    steerWorkerPrompt: async (agentId, prompt) => {
+      // Same path a user message takes for a blocked worker (session.ts
+      // dispatchAgentMessageRun): a mid-run steer with the pending
+      // permission prompts cleared so the answer can actually land.
+      await sendPromptToAgent({
+        agentManager,
+        agentStorage,
+        agentId,
+        prompt,
+        activeTurnBehavior: "steer",
+        replaceOrigin: "user",
+        clearPendingPermissions: true,
+        logger,
+      });
+    },
+  });
+  itsaplanBridge.start();
+  itsaplanWebhookIngress.setHandler(createItsaplanWebhookRouteHandler(itsaplanBridge, logger));
+  const itsaplanProjectSyncDeps = {
+    store: itsaplanProjectStore,
+    getConfig: getItsaplanConfig,
+    getWebhookUrl: () => createItsaplanWebhookUrl(boundListenTarget),
+    paseoHome: config.paseoHome,
+    logger,
+  };
+  const unsubscribeItsaplanProjectSync = attachItsaplanProjectSync(
+    projectRegistry,
+    itsaplanProjectSyncDeps,
+  );
+  const itsaplanReconcileService = new ItsaplanReconcileService({
+    agentStorage,
+    missionControl: missionControlService,
+    projectStore: itsaplanProjectStore,
+    getConfig: getItsaplanConfig,
+    logger,
+  });
+  itsaplanReconcileService.start();
+
+  // ADR 0002 chat-runner: the daemon acts as the @itsaplan/runner for every
+  // project's Commander external agent (one claim loop per project,
+  // supervised — see chat-runner.ts). Fully inert while central config
+  // `itsaplan` is absent, same as the bridge and reconcile sweep above.
+  const itsaplanChatRunner = new ItsaplanChatRunner({
+    logger,
+    projectStore: itsaplanProjectStore,
+    getConfig: getItsaplanConfig,
+    missionControl: missionControlService,
+  });
+  itsaplanChatRunner.start();
+
   // Spec 01 change 1: clean running→idle transitions notify Mission Control
   // directly — finishes no longer latch a "finished" attention, so this
   // setter is the ONLY clean-finish signal. The manager is constructed
@@ -2191,6 +2370,9 @@ export async function createPaseoDaemon(
     browserToolsBroker,
     peerManager,
     missionControlService,
+    itsaplanTicketize: {
+      ticketizeAgent: (agentId) => itsaplanBridge.ticketizeAgent(agentId),
+    },
     verifierDispatcher,
     serverId,
     hostAlias: missionControlHostAlias,
@@ -2207,7 +2389,12 @@ export async function createPaseoDaemon(
   const createAgentToolCatalog = (runtime: PaseoToolRuntimeContext) =>
     createPaseoToolCatalog(createAgentToolHostDependencies(runtime));
   agentManager.setPaseoToolCatalogFactory(createAgentToolCatalog);
-  agentManager.setPaseoToolsEnabled(config.mcpInjectIntoAgents !== false);
+  // Native host tools (fleet_*, report_status) are independent of MCP inject.
+  // injectIntoAgents only controls the HTTP MCP server URL in the session
+  // config. Gating native tools on inject left Commander sessions with
+  // --no-tools and an empty catalog (live: ox wrote fleet_create_agent as
+  // prose; workers had no report_status).
+  agentManager.setPaseoToolsEnabled(true);
 
   let mcpEnabled = config.mcpEnabled ?? true;
   let agentMcpBaseUrl: string | null = null;
@@ -2371,20 +2558,27 @@ export async function createPaseoDaemon(
           mainStarted = true;
           const logAndResolve = async () => {
             boundListenTarget = resolveBoundListenTarget(listenTarget, httpServer);
+            // Only resolvable once bound — the itsaplan webhook URL needs
+            // the real TCP target. Fire-and-forget: itsaplan API round
+            // trips must never block daemon startup.
+            void runItsaplanProjectBackfill(
+              await projectRegistry.list(),
+              itsaplanProjectSyncDeps,
+            ).catch((error: unknown) => {
+              logger.error({ err: error }, "itsaplan.project.boot_backfill_failed");
+            });
             const mcpBaseUrl = createAgentMcpBaseUrl(boundListenTarget);
             agentMcpBaseUrl =
               !mcpEnabled || config.mcpInjectIntoAgents === false ? null : mcpBaseUrl;
             agentManager.setMcpBaseUrl(agentMcpBaseUrl);
-            agentManager.setPaseoToolsEnabled(mcpEnabled && config.mcpInjectIntoAgents !== false);
+            // Native tools stay on regardless of MCP inject (see above).
             daemonConfigStore.onFieldChange("mcp.enabled", (value) => {
               mcpEnabled = value !== false;
               const inject = daemonConfigStore.get().mcp.injectIntoAgents !== false;
               agentManager.setMcpBaseUrl(mcpEnabled && inject ? mcpBaseUrl : null);
-              agentManager.setPaseoToolsEnabled(mcpEnabled && inject);
             });
             daemonConfigStore.onFieldChange("mcp.injectIntoAgents", (value) => {
               agentManager.setMcpBaseUrl(mcpEnabled && value ? mcpBaseUrl : null);
-              agentManager.setPaseoToolsEnabled(mcpEnabled && value !== false);
             });
             daemonConfigStore.onFieldChange("appendSystemPrompt", (value) => {
               agentManager.setAppendSystemPrompt(typeof value === "string" ? value : "");
@@ -2552,6 +2746,10 @@ export async function createPaseoDaemon(
     await pluginRuntime.stopAllPlugins();
     await hubRelationships.stop();
     workspaceReconciliation.dispose();
+    itsaplanReconcileService.stop();
+    itsaplanChatRunner.stop();
+    itsaplanBridge.stop();
+    unsubscribeItsaplanProjectSync();
     scriptHealthMonitor.stop();
     idleCloseOmpService.stop();
     // Freeze both ingress and registration before taking the agent closure snapshot.
@@ -2567,6 +2765,7 @@ export async function createPaseoDaemon(
     await missionControlService.stop().catch(() => undefined);
 
     await scheduleService.stop().catch(() => undefined);
+    baseCheckoutSyncService.stop();
     await peerManager?.close().catch(() => undefined);
     await tunnelManager.stop().catch(() => undefined);
     await relayRuntime?.stop().catch(() => undefined);

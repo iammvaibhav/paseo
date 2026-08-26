@@ -1228,6 +1228,9 @@ export const ja: TranslationResources = {
       actions: {
         menu: "プロジェクトアクション",
         openSettings: "プロジェクト設定を開く",
+        openBaseWorkspace: "ベースワークスペースを開く",
+        expandProject: "プロジェクトを展開",
+        collapseProject: "プロジェクトを折りたたむ",
         openNewWindow: "新しいウィンドウで開く",
         openNewWindowFailed: "新しいウィンドウを開けませんでした",
         openFolder: "Open in file manager",

@@ -15,7 +15,8 @@ import {
 } from "./resolve-worktree-creation-intent.js";
 import type { ChangeRequestCheckoutSource, FirstAgentContext } from "@getpaseo/protocol/messages";
 import type { WorkspaceGitService } from "./workspace-git-service.js";
-import { runWithGitCommandPriority } from "../utils/run-git-command.js";
+import { runGitCommand, runWithGitCommandPriority } from "../utils/run-git-command.js";
+import { branchNameFromRef } from "../utils/worktree-metadata.js";
 
 export interface CreateWorktreeCoreInput {
   cwd: string;
@@ -115,6 +116,10 @@ async function createWorktreeCoreWithPriority(
     }
   }
 
+  if (intent.kind === "branch-off") {
+    await fetchDispatchBaseBranch(repoRoot, intent.baseBranch);
+  }
+
   return {
     worktree: await createWorktree({
       cwd: repoRoot,
@@ -146,17 +151,61 @@ async function resolveForge(
   return { forge: resolution.forge, service: resolution.service };
 }
 
+/** ADR 0001: dispatch's unconditional, short-budget fetch before a branch-off worktree cut. */
+const DISPATCH_BASE_BRANCH_FETCH_TIMEOUT_MS = 3_000;
+
+// ADR 0001: dispatch cuts a worktree from the base branch under time pressure, so it gets one
+// short, budgeted chance to pull origin's tip before the branch-off resolves its source ref
+// (utils/worktree.ts resolveBaseBranchForWorktree / resolveWorktreeSourcePlan). Soft-fail: a
+// slow or unreachable remote must never block dispatch — worst case it branches from a
+// slightly stale local view, and the periodic base-checkout-sync service catches up later.
+async function fetchDispatchBaseBranch(repoRoot: string, baseBranch: string): Promise<void> {
+  const refName = branchNameFromRef(baseBranch);
+  if (!refName || refName === "HEAD") {
+    return;
+  }
+  await runGitCommand(["fetch", "origin", refName], {
+    cwd: repoRoot,
+    timeout: DISPATCH_BASE_BRANCH_FETCH_TIMEOUT_MS,
+    acceptExitCodes: [0, 1, 128],
+  }).catch(() => undefined);
+}
+
+// ADR 0001: `resolveBaseBranchForWorktree` (utils/worktree.ts) resolves bare branch names
+// local-first, so a stale local branch sharing the default branch's name silently wins over
+// origin's current tip — correct for manual flows, stale for dispatch. When nothing else named
+// the base branch (this function only runs for that fallback), prefer the `origin/<name>`
+// remote-tracking ref whenever it exists so dispatch always cuts from what origin advertises.
+async function preferOriginDefaultBranch(repoRoot: string, baseBranch: string): Promise<string> {
+  if (baseBranch.startsWith("origin/") || baseBranch.startsWith("refs/")) {
+    return baseBranch;
+  }
+  try {
+    await runGitCommand(["rev-parse", "--verify", `refs/remotes/origin/${baseBranch}`], {
+      cwd: repoRoot,
+    });
+    return `origin/${baseBranch}`;
+  } catch {
+    return baseBranch;
+  }
+}
+
 async function resolveDefaultBranch(
   repoRoot: string,
   deps: CreateWorktreeCoreDeps,
 ): Promise<string> {
-  const baseBranch = deps.resolveDefaultBranch
-    ? await deps.resolveDefaultBranch(repoRoot)
-    : await deps.workspaceGitService?.resolveDefaultBranch(repoRoot);
+  if (deps.resolveDefaultBranch) {
+    const baseBranch = await deps.resolveDefaultBranch(repoRoot);
+    if (!baseBranch) {
+      throw new Error("Unable to resolve repository default branch");
+    }
+    return baseBranch;
+  }
+  const baseBranch = await deps.workspaceGitService?.resolveDefaultBranch(repoRoot);
   if (!baseBranch) {
     throw new Error("Unable to resolve repository default branch");
   }
-  return baseBranch;
+  return preferOriginDefaultBranch(repoRoot, baseBranch);
 }
 
 export async function resolveWorktreeRepoRoot(

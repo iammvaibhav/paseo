@@ -83,6 +83,8 @@ export const COMMANDER_TOOL_ALLOWLIST: readonly string[] = [
   // over Mission Control events — read-only-ish, never gated).
   "fleet_agent_status",
   "fleet_monitor",
+  "fleet_ticketize_agent",
+  "itsaplan_ticketize",
 ];
 
 /**

@@ -17,15 +17,23 @@ export interface PlannotatorSessionStartResult {
 
 export interface PlannotatorSessionClient {
   startPlannotatorSession: (input: {
-    kind: "annotate";
-    path: string;
+    kind: "annotate" | "review";
+    /** File to annotate; required for annotate, unused for review. */
+    path?: string;
     workspaceDir: string;
+    /** PR URL for review sessions; absent = local working-tree review. */
+    prUrl?: string;
     agentId?: string;
     workspaceKey?: string;
     remote?: boolean;
   }) => Promise<PlannotatorSessionStartResult>;
   stopPlannotatorSession: (sessionId: string) => Promise<void>;
 }
+
+/** Wire payload accepted by the daemon's plannotator.session.start.request. */
+export type PlannotatorSessionStartPayload = Parameters<
+  PlannotatorSessionClient["startPlannotatorSession"]
+>[0];
 
 interface PlannotatorTabActions {
   workspaceKey: string;
@@ -141,20 +149,21 @@ function ensurePlannotatorBrowserRecord(input: {
 }
 
 async function requestPlannotatorSession(input: {
-  openInput: OpenFileInPlannotatorInput;
-  absolutePath: string;
+  sessionClient: PlannotatorSessionClient;
+  workspaceKey: string;
+  agentId?: string | null;
+  remote: boolean;
+  start: PlannotatorSessionStartPayload;
 }): Promise<
   | { started: PlannotatorSessionStartResult }
   | { error: OpenFileInPlannotatorResult & { ok: false } }
 > {
   try {
-    const started = await input.openInput.client.startPlannotatorSession({
-      kind: "annotate",
-      path: input.absolutePath,
-      workspaceDir: input.openInput.workspaceDirectory,
-      ...(input.openInput.agentId ? { agentId: input.openInput.agentId } : {}),
-      workspaceKey: input.openInput.workspaceKey,
-      remote: input.openInput.remote === true,
+    const started = await input.sessionClient.startPlannotatorSession({
+      ...input.start,
+      workspaceKey: input.workspaceKey,
+      ...(input.agentId ? { agentId: input.agentId } : {}),
+      remote: input.remote,
     });
     return { started };
   } catch (error) {
@@ -276,8 +285,15 @@ export async function tryOpenFileInPlannotator(
   }
 
   const sessionAttempt = await requestPlannotatorSession({
-    openInput: input,
-    absolutePath: resolved.absolutePath,
+    sessionClient: input.client,
+    workspaceKey: input.workspaceKey,
+    agentId: input.agentId,
+    remote: input.remote === true,
+    start: {
+      kind: "annotate",
+      path: resolved.absolutePath,
+      workspaceDir: input.workspaceDirectory,
+    },
   });
   if ("error" in sessionAttempt) {
     return sessionAttempt.error;
@@ -331,6 +347,96 @@ export async function tryOpenFileInPlannotator(
   if (!focused) {
     console.warn("[plannotator] session started but failed to open a workspace tab", { browserId });
     // Still ok — session is running; user may open the browser tab manually.
+  }
+
+  return { ok: true, sessionId: started.sessionId, browserId };
+}
+
+export interface OpenReviewInPlannotatorInput extends PlannotatorTabActions {
+  client: PlannotatorSessionClient;
+  workspaceDirectory: string;
+  /** PR URL to review; absent = the workspace's local working tree. */
+  prUrl?: string | null;
+  agentId?: string | null;
+  /** When true, daemon binds 0.0.0.0 for VPN reachability. */
+  remote?: boolean;
+  embedHost?: string | null;
+}
+
+/**
+ * Open an embedded Plannotator review session (working tree or PR) in a
+ * transient browser tab. The daemon reuses the live review session per
+ * workspace, so repeated clicks focus the same tab.
+ */
+export async function tryOpenReviewInPlannotator(
+  input: OpenReviewInPlannotatorInput,
+): Promise<OpenFileInPlannotatorResult> {
+  if (!getIsElectron()) {
+    return {
+      ok: false,
+      reason: "not_electron",
+      message: "Plannotator is only available in the desktop app",
+    };
+  }
+
+  const prUrl = input.prUrl?.trim() || undefined;
+
+  const sessionAttempt = await requestPlannotatorSession({
+    sessionClient: input.client,
+    workspaceKey: input.workspaceKey,
+    agentId: input.agentId,
+    remote: input.remote === true,
+    start: {
+      kind: "review",
+      workspaceDir: input.workspaceDirectory,
+      ...(prUrl ? { prUrl } : {}),
+    },
+  });
+  if ("error" in sessionAttempt) {
+    return sessionAttempt.error;
+  }
+
+  const { started } = sessionAttempt;
+
+  const remoteEmbedUrl = buildPlannotatorEmbedUrl({
+    port: started.port,
+    daemonUrl: started.url,
+    remote: input.remote === true,
+    embedHost: input.embedHost,
+  });
+
+  const title = prUrl ? `Plannotator · PR review` : `Plannotator · Working tree review`;
+  const requestedBrowserId = createBrowserId();
+  const embedUrl = await preparePlannotatorUiUrl({
+    browserId: requestedBrowserId,
+    remoteUrl: remoteEmbedUrl,
+  });
+  const browserAttempt = await createPlannotatorBrowser({
+    browserId: requestedBrowserId,
+    sessionId: started.sessionId,
+    embedUrl,
+    title,
+    client: input.client,
+  });
+  if ("error" in browserAttempt) {
+    return browserAttempt.error;
+  }
+  const { browserId } = browserAttempt;
+
+  console.log(
+    `[plannotator] open review session=${started.sessionId} browserId=${browserId} port=${started.port} remote=${input.remote === true} url=${embedUrl} pr=${prUrl ?? "working-tree"}`,
+  );
+
+  registerPlannotatorBrowserSession({
+    browserId,
+    sessionId: started.sessionId,
+    workspaceKey: input.workspaceKey,
+    path: "",
+  });
+
+  const focused = focusPlannotatorBrowserTab({ ...input, browserId });
+  if (!focused) {
+    console.warn("[plannotator] review started but failed to open a workspace tab", { browserId });
   }
 
   return { ok: true, sessionId: started.sessionId, browserId };

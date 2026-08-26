@@ -108,6 +108,11 @@ export interface VerifierCentralConfig {
   verifierConcurrency: number;
   evaluationScope: "commander" | "all";
   trackVerifiers?: boolean;
+  // ADR 0002: the verifier dispatch gate — absent/false = OFF (verifiers are
+  // disabled by default; code stays intact, this is the explicit opt-in).
+  // Checked in isInScope ahead of trackVerifiers/scope/adoption logic so a
+  // fleet with verifiers off never proposes a spawn in the first place.
+  verifierEnabled?: boolean;
   // post-verdict proof demand). Resolved from the fleet central setting
   // verifierToWorkerMode (default "interrupt"); stall nudges are unaffected.
   verifierToWorkerMode: "steer" | "interrupt" | "queue";
@@ -1243,6 +1248,11 @@ export class MissionControlVerifierDispatcher {
    */
   private async isInScope(workerAgentId: string, readyAt: string): Promise<boolean> {
     const config = this.getCentralConfig();
+    // ADR 0002: verifiers are OFF unless explicitly enabled — checked first
+    // so the default fleet never proposes a spawn.
+    if (config.verifierEnabled !== true) {
+      return false;
+    }
     if (config.trackVerifiers === false) {
       return false;
     }

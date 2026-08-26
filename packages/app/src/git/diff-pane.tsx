@@ -83,6 +83,9 @@ import { usePublishWorkingDiffAttachment, useWorkingDiff } from "@/git/use-worki
 import type { CheckoutStatusPayload } from "@/git/use-status-query";
 import { DiffTooLargeState } from "@/git/diff-too-large-state";
 import { openDesktopTarget, useDesktopOpenTargets } from "@/workspace/desktop-open-targets";
+import { tryOpenReviewInPlannotator } from "@/workspace/open-file-in-plannotator";
+import { resolvePlannotatorEmbedHost } from "@/workspace/plannotator-embed-host";
+import { useHosts } from "@/runtime/host-runtime";
 
 import type { GitAction, GitActionId, GitActions } from "@/git/policy";
 export type { GitActionId, GitAction, GitActions } from "@/git/policy";
@@ -1009,6 +1012,11 @@ function useDiffTabNavigation({
   isMobile: boolean;
 }) {
   const openTab = useWorkspaceLayoutStore((state) => state.openTab);
+  const focusTab = useWorkspaceLayoutStore((state) => state.focusTab);
+  const getWorkspaceTabs = useWorkspaceLayoutStore((state) => state.getWorkspaceTabs);
+  const sessionClient = useSessionStore((state) => state.sessions[serverId]?.client);
+  const isLocalDaemon = useIsLocalDaemon(serverId);
+  const hosts = useHosts();
   const openWorkspaceTabInFocusedPane = useCallback(
     (workspaceKey: string, target: WorkspaceTabTarget, placement?: WorkspaceTabPlacement) =>
       openTab({ workspaceKey, target, intent: "reveal", placement }),
@@ -1018,22 +1026,81 @@ function useDiffTabNavigation({
     () => buildWorkspaceTabPersistenceKey({ serverId, workspaceId: workspaceId ?? cwd }),
     [cwd, serverId, workspaceId],
   );
+  const plannotatorEmbedHost = useMemo(() => {
+    if (isLocalDaemon) {
+      return null;
+    }
+    const hostProfile = hosts.find((entry) => entry.serverId === serverId) ?? null;
+    return resolvePlannotatorEmbedHost({
+      isLocalDaemon,
+      browserEditorUrl: hostProfile?.browserEditorUrl ?? null,
+      hostProfile,
+    });
+  }, [hosts, isLocalDaemon, serverId]);
   const changesTabOpen = false;
   const openChanges = useCallback(
     (path?: string) => {
       if (!persistenceKey || isMobile) {
         return;
       }
-      openWorkspaceTabInFocusedPane(
-        persistenceKey,
-        {
-          kind: "working_diff",
-          ...(path ? { focusPath: path, focusRequestId: Date.now() } : {}),
-        },
-        FOCUSED_PANE_PLACEMENT,
-      );
+      if (path) {
+        openWorkspaceTabInFocusedPane(
+          persistenceKey,
+          {
+            kind: "working_diff",
+            focusPath: path,
+            focusRequestId: Date.now(),
+          },
+          FOCUSED_PANE_PLACEMENT,
+        );
+        return;
+      }
+      if (!sessionClient) {
+        openWorkspaceTabInFocusedPane(
+          persistenceKey,
+          { kind: "working_diff" },
+          FOCUSED_PANE_PLACEMENT,
+        );
+        return;
+      }
+      void (async () => {
+        const result = await tryOpenReviewInPlannotator({
+          client: sessionClient,
+          workspaceDirectory: cwd,
+          workspaceKey: persistenceKey,
+          remote: !isLocalDaemon,
+          embedHost: plannotatorEmbedHost,
+          workspaceTabs: getWorkspaceTabs(persistenceKey),
+          openWorkspaceTabFocused: (target) =>
+            openTab({
+              workspaceKey: persistenceKey,
+              target,
+              intent: "reveal",
+              placement: FOCUSED_PANE_PLACEMENT,
+            }),
+          navigateToTabId: (tabId) => focusTab(persistenceKey, tabId),
+        });
+        if (!result.ok) {
+          openWorkspaceTabInFocusedPane(
+            persistenceKey,
+            { kind: "working_diff" },
+            FOCUSED_PANE_PLACEMENT,
+          );
+        }
+      })();
     },
-    [isMobile, openWorkspaceTabInFocusedPane, persistenceKey],
+    [
+      cwd,
+      focusTab,
+      getWorkspaceTabs,
+      isLocalDaemon,
+      isMobile,
+      openTab,
+      openWorkspaceTabInFocusedPane,
+      persistenceKey,
+      plannotatorEmbedHost,
+      sessionClient,
+    ],
   );
   const toggleChanges = useCallback(() => {
     if (!persistenceKey || isMobile) {

@@ -1215,6 +1215,9 @@ export const ar: TranslationResources = {
       actions: {
         menu: "إجراءات المشروع",
         openSettings: "افتح إعدادات المشروع",
+        openBaseWorkspace: "افتح مساحة العمل الأساسية",
+        expandProject: "توسيع المشروع",
+        collapseProject: "طي المشروع",
         openNewWindow: "Open in new window",
         openNewWindowFailed: "Couldn't open a new window",
         openFolder: "Open in file manager",

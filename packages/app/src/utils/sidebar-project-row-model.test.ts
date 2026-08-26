@@ -80,6 +80,7 @@ describe("buildSidebarProjectRowModel", () => {
       kind: "project_section",
       chevron: "collapse",
       trailingAction: { kind: "none" },
+      baseWorkspaceTarget: null,
     });
   });
 
@@ -99,6 +100,7 @@ describe("buildSidebarProjectRowModel", () => {
         kind: "new_workspace",
         target: { serverId: "srv", projectId: "project-srv", iconWorkingDir: "/repo" },
       },
+      baseWorkspaceTarget: null,
     });
   });
 
@@ -209,6 +211,7 @@ describe("buildSidebarProjectRowModel", () => {
         kind: "new_workspace",
         target: { serverId: "srv", projectId: "project-srv", iconWorkingDir: "/repo" },
       },
+      baseWorkspaceTarget: null,
     });
   });
 
@@ -283,6 +286,115 @@ describe("buildSidebarProjectRowModel", () => {
         kind: "new_workspace",
         target: { serverId: "srv", projectId: "project-srv", iconWorkingDir: "/repo" },
       },
+      baseWorkspaceTarget: null,
     });
+  });
+
+  it("targets the sticky last-used host's base workspace when the feature is enabled", () => {
+    const multiHostProject = project({
+      hosts: [
+        {
+          serverId: "host-a",
+          iconWorkingDir: "/repo/a",
+          worktreeSupport: "supported" as const,
+          baseWorkspaceId: "base-a",
+        },
+        {
+          serverId: "host-b",
+          iconWorkingDir: "/repo/b",
+          worktreeSupport: "supported" as const,
+          baseWorkspaceId: "base-b",
+        },
+      ],
+    });
+
+    const result = buildSidebarProjectRowModel({
+      project: multiHostProject,
+      collapsed: false,
+      baseWorkspaceByServerId: new Map([
+        ["host-a", true],
+        ["host-b", true],
+      ]),
+      preferredHostServerId: "host-b",
+    });
+
+    expect(result.baseWorkspaceTarget).toEqual({ serverId: "host-b", workspaceId: "base-b" });
+  });
+
+  it("falls back to the first eligible host when the sticky host is no longer eligible", () => {
+    const multiHostProject = project({
+      hosts: [
+        {
+          serverId: "host-a",
+          iconWorkingDir: "/repo/a",
+          worktreeSupport: "supported" as const,
+          baseWorkspaceId: "base-a",
+        },
+        {
+          serverId: "host-b",
+          iconWorkingDir: "/repo/b",
+          worktreeSupport: "supported" as const,
+          baseWorkspaceId: "base-b",
+        },
+      ],
+    });
+
+    const result = buildSidebarProjectRowModel({
+      project: multiHostProject,
+      collapsed: false,
+      // host-b's feature flag is off, so the stored preference can't be honored.
+      baseWorkspaceByServerId: new Map([["host-a", true]]),
+      preferredHostServerId: "host-b",
+    });
+
+    expect(result.baseWorkspaceTarget).toEqual({ serverId: "host-a", workspaceId: "base-a" });
+  });
+
+  it("defaults to the project's only host when there is no stored preference", () => {
+    const result = buildSidebarProjectRowModel({
+      project: project({
+        hosts: [
+          {
+            serverId: "srv",
+            iconWorkingDir: "/repo",
+            worktreeSupport: "supported" as const,
+            baseWorkspaceId: "base-srv",
+          },
+        ],
+      }),
+      collapsed: false,
+      baseWorkspaceByServerId: new Map([["srv", true]]),
+    });
+
+    expect(result.baseWorkspaceTarget).toEqual({ serverId: "srv", workspaceId: "base-srv" });
+  });
+
+  it("has no base workspace target when the feature flag is off", () => {
+    const result = buildSidebarProjectRowModel({
+      project: project({
+        hosts: [
+          {
+            serverId: "srv",
+            iconWorkingDir: "/repo",
+            worktreeSupport: "supported" as const,
+            baseWorkspaceId: "base-srv",
+          },
+        ],
+      }),
+      collapsed: false,
+      baseWorkspaceByServerId: new Map([["srv", false]]),
+    });
+
+    expect(result.baseWorkspaceTarget).toBeNull();
+  });
+
+  it("has no base workspace target when no host has created a base workspace yet", () => {
+    const result = buildSidebarProjectRowModel({
+      project: project(),
+      collapsed: false,
+      baseWorkspaceByServerId: new Map([["srv", true]]),
+    });
+
+    expect(result.baseWorkspaceTarget).toBeNull();
   });
 });

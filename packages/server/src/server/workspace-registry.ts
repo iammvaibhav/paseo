@@ -42,6 +42,15 @@ const PersistedProjectRecordSchema = z.object({
     .nullable()
     .optional()
     .transform((value) => value ?? null),
+  // Project-anchored base workspace pointer (ADR 0001): the workspace over
+  // the project's root checkout, created with the project, unarchivable
+  // while the project is active. Null until the reconciliation service
+  // backfills it. Added 2026-08-25.
+  baseWorkspaceId: z
+    .string()
+    .nullable()
+    .optional()
+    .transform((value) => value ?? null),
   createdAt: z.string(),
   updatedAt: z.string(),
   archivedAt: z.string().nullable(),
@@ -647,6 +656,7 @@ export function createPersistedProjectRecord(input: {
   projectKey?: string | null;
   customIconRevision?: string | null;
   description?: string | null;
+  baseWorkspaceId?: string | null;
   createdAt: string;
   updatedAt: string;
   archivedAt?: string | null;
@@ -657,11 +667,14 @@ export function createPersistedProjectRecord(input: {
     projectKey: input.projectKey ?? null,
     customIconRevision: input.customIconRevision ?? null,
     description: input.description ?? null,
+    baseWorkspaceId: input.baseWorkspaceId ?? null,
     archivedAt: input.archivedAt ?? null,
   });
 }
 
-export function resolveProjectDisplayName(record: PersistedProjectRecord): string {
+export function resolveProjectDisplayName(
+  record: Pick<PersistedProjectRecord, "displayName" | "customName">,
+): string {
   return record.customName ?? record.displayName;
 }
 

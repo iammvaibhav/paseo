@@ -1206,6 +1206,9 @@ export const zhCN: TranslationResources = {
       actions: {
         menu: "Project 操作",
         openSettings: "打开 project 设置",
+        openBaseWorkspace: "打开 base workspace",
+        expandProject: "展开 project",
+        collapseProject: "折叠 project",
         openNewWindow: "在新窗口中打开",
         openNewWindowFailed: "无法打开新窗口",
         openFolder: "Open in file manager",

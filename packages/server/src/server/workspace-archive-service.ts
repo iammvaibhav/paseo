@@ -13,10 +13,13 @@ import {
   WorktreeTeardownError,
 } from "../utils/worktree.js";
 import type { TerminalManager } from "../terminal/terminal-manager.js";
-import type {
-  PersistedWorkspaceRecord,
-  WorkspaceArchiveContext,
-  WorkspaceRegistry,
+import {
+  resolveProjectDisplayName,
+  type PersistedProjectRecord,
+  type PersistedWorkspaceRecord,
+  type ProjectRegistry,
+  type WorkspaceArchiveContext,
+  type WorkspaceRegistry,
 } from "./workspace-registry.js";
 import { createRealpathAwarePathMatcher } from "../utils/path.js";
 import { runWithGitCommandPriority } from "../utils/run-git-command.js";
@@ -39,6 +42,11 @@ export interface ArchiveDependencies {
   // the archive target, not status/ownership.
   findWorkspaceIdForCwd: (cwd: string) => Promise<string | null>;
   getWorkspace?: (workspaceId: string) => Promise<PersistedWorkspaceRecord | null>;
+  // ADR 0001: refuses to archive a workspace that is its ACTIVE project's
+  // base workspace. Optional so callers that structurally can never target a
+  // base workspace (e.g. rollback of a just-created worktree) stay unchanged;
+  // every caller reachable from a user/agent-supplied workspaceId wires it.
+  projectRegistry?: Pick<ProjectRegistry, "list">;
   // Active (non-archived) workspaces, used to decide whether the workspace being
   // archived is the last reference to its backing worktree directory, and to
   // break a same-cwd tie in favor of the worktree-kind record when archiving by
@@ -187,6 +195,21 @@ async function archiveByScopeWithPriority(
   }
 }
 
+// ADR 0001: the message every archive surface (UI archive_workspace_request,
+// MCP fleet_meta archive_workspace, MCP archive_workspace tool) shows when a
+// base workspace archive is refused — kept in one place so the two callers
+// that need the exact wording (this module's own throw, and meta-actions'
+// pre-apply validation) never drift.
+export function formatBaseWorkspaceArchiveRefusal(
+  workspaceId: string,
+  project: Pick<PersistedProjectRecord, "displayName" | "customName">,
+): string {
+  return (
+    `Cannot archive ${workspaceId}: it is the base workspace for project ` +
+    `"${resolveProjectDisplayName(project)}" and stays open while the project is active.`
+  );
+}
+
 async function resolveArchiveTarget(
   dependencies: ArchiveDependencies,
   scope: ArchiveScope,
@@ -206,6 +229,14 @@ async function resolveArchiveTarget(
       return { backing: null, teardownTargets: [], setupWorkspaceIds: [], workspaceIds: [] };
     }
     const isArchived = "archivedAt" in record && Boolean(record.archivedAt);
+    if (!isArchived && dependencies.projectRegistry) {
+      const baseWorkspaceProject = (await dependencies.projectRegistry.list()).find(
+        (project) => !project.archivedAt && project.baseWorkspaceId === workspaceId,
+      );
+      if (baseWorkspaceProject) {
+        throw new Error(formatBaseWorkspaceArchiveRefusal(workspaceId, baseWorkspaceProject));
+      }
+    }
     return {
       backing: await resolveWorkspaceBackingDirectory(record, dependencies),
       teardownTargets: isArchived ? [] : [{ workspaceId, cwd: record.cwd }],

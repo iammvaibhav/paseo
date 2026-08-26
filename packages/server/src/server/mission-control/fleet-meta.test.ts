@@ -63,6 +63,7 @@ function project(overrides: Partial<PersistedProjectRecord> = {}): PersistedProj
     customName: null,
     customIconRevision: null,
     description: null,
+    baseWorkspaceId: null,
     createdAt: now,
     updatedAt: now,
     archivedAt: null,

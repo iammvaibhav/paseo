@@ -49,16 +49,21 @@ export class PlannotatorSession {
     request: Extract<SessionInboundMessage, { type: "plannotator.session.start.request" }>,
   ): Promise<void> {
     try {
-      if (request.kind !== "annotate") {
-        this.host.emit({
-          type: "plannotator.session.start.response",
-          payload: {
-            requestId: request.requestId,
-            sessionId: null,
-            port: null,
-            url: null,
-            error: `Unsupported plannotator kind: ${request.kind}`,
-          },
+      if (request.kind === "review") {
+        const result = await this.manager.startReviewSession({
+          workspaceDir: request.workspaceDir,
+          prUrl: request.prUrl,
+          agentId: request.agentId,
+          workspaceKey: request.workspaceKey,
+          remote: request.remote,
+        });
+        this.emitStartResponse(request.requestId, result);
+        return;
+      }
+
+      if (!request.path) {
+        this.emitStartResponse(request.requestId, {
+          error: "plannotator annotate requires a path",
         });
         return;
       }
@@ -70,31 +75,7 @@ export class PlannotatorSession {
         workspaceKey: request.workspaceKey,
         remote: request.remote,
       });
-
-      if ("error" in result) {
-        this.host.emit({
-          type: "plannotator.session.start.response",
-          payload: {
-            requestId: request.requestId,
-            sessionId: null,
-            port: null,
-            url: null,
-            error: result.error,
-          },
-        });
-        return;
-      }
-
-      this.host.emit({
-        type: "plannotator.session.start.response",
-        payload: {
-          requestId: request.requestId,
-          sessionId: result.sessionId,
-          port: result.port,
-          url: result.url,
-          error: null,
-        },
-      });
+      this.emitStartResponse(request.requestId, result);
     } catch (error) {
       this.emitError(request, error);
     }
@@ -116,6 +97,29 @@ export class PlannotatorSession {
     } catch (error) {
       this.emitError(request, error);
     }
+  }
+
+  private emitStartResponse(
+    requestId: string,
+    result: { sessionId: string; port: number; url: string } | { error: string },
+  ): void {
+    if ("error" in result) {
+      this.host.emit({
+        type: "plannotator.session.start.response",
+        payload: { requestId, sessionId: null, port: null, url: null, error: result.error },
+      });
+      return;
+    }
+    this.host.emit({
+      type: "plannotator.session.start.response",
+      payload: {
+        requestId,
+        sessionId: result.sessionId,
+        port: result.port,
+        url: result.url,
+        error: null,
+      },
+    });
   }
 
   private emitSessionEvent(event: PlannotatorSessionEventPayload): void {

@@ -662,6 +662,7 @@ describe("WorkspaceDirectory empty projects", () => {
       kind: "non_git",
       displayName: input.projectId,
       customName: null,
+      baseWorkspaceId: null,
       createdAt: NOW,
       updatedAt: NOW,
       archivedAt: null,
@@ -690,6 +691,7 @@ describe("WorkspaceDirectory empty projects", () => {
         projectCustomIconRevision: null,
         projectRootPath: "/workspace/empty",
         projectKind: "non_git",
+        baseWorkspaceId: null,
       },
     ]);
   });

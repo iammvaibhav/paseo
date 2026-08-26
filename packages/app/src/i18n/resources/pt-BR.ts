@@ -1241,6 +1241,9 @@ export const ptBR: TranslationResources = {
       actions: {
         menu: "Ações do projeto",
         openSettings: "Abrir configurações do projeto",
+        openBaseWorkspace: "Abrir workspace base",
+        expandProject: "Expandir projeto",
+        collapseProject: "Recolher projeto",
         openNewWindow: "Abrir em nova janela",
         openNewWindowFailed: "Não foi possível abrir uma nova janela",
         openFolder: "Open in file manager",

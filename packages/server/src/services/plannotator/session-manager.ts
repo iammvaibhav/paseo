@@ -14,17 +14,20 @@ const READY_TIMEOUT_MS = 15_000;
 const EXIT_GRACE_MS = 1_500;
 const KILL_GRACE_MS = 1_000;
 
-export type PlannotatorSessionKind = "annotate";
+export type PlannotatorSessionKind = "annotate" | "review";
 
 export interface PlannotatorSessionMeta {
   sessionId: string;
   kind: PlannotatorSessionKind;
-  path: string;
+  /** Annotated file; absent for review sessions. */
+  path?: string;
   workspaceDir: string;
   agentId?: string;
   workspaceKey?: string;
   port: number;
   url: string;
+  /** PR URL for review sessions; absent for local working-tree review. */
+  prUrl?: string;
   remote: boolean;
 }
 
@@ -32,7 +35,7 @@ export type PlannotatorSessionEventPayload =
   | {
       sessionId: string;
       kind: PlannotatorSessionKind;
-      path: string;
+      path?: string;
       agentId?: string;
       workspaceKey?: string;
       event: "feedback";
@@ -44,7 +47,7 @@ export type PlannotatorSessionEventPayload =
   | {
       sessionId: string;
       kind: PlannotatorSessionKind;
-      path: string;
+      path?: string;
       agentId?: string;
       workspaceKey?: string;
       event: "closed";
@@ -95,6 +98,98 @@ export class PlannotatorSessionManager {
 
   isAvailable(): boolean {
     return resolvePlannotatorBinary({ override: this.binaryOverride }) !== null;
+  }
+
+  async startReviewSession(input: {
+    workspaceDir: string;
+    prUrl?: string | null;
+    agentId?: string;
+    workspaceKey?: string;
+    remote?: boolean;
+  }): Promise<{ sessionId: string; port: number; url: string } | { error: string }> {
+    const workspaceDir = resolve(input.workspaceDir);
+
+    // Re-open: same workspace + target already under review — hand back the
+    // live session (one per workspace per target, not per file).
+    const existing = this.findLiveReviewSession(workspaceDir, input.prUrl ?? undefined);
+    if (existing && !existing.settled && existing.child.exitCode === null) {
+      if (input.agentId) {
+        existing.agentId = input.agentId;
+      }
+      if (input.workspaceKey) {
+        existing.workspaceKey = input.workspaceKey;
+      }
+      this.logger.info(
+        { sessionId: existing.sessionId, port: existing.port, workspaceDir, reused: true },
+        "plannotator review session reused",
+      );
+      return { sessionId: existing.sessionId, port: existing.port, url: existing.url };
+    }
+
+    if (this.sessions.size >= MAX_CONCURRENT_SESSIONS) {
+      const oldest = this.oldestSession();
+      if (oldest) {
+        this.logger.warn(
+          { sessionId: oldest.sessionId, path: oldest.path },
+          "plannotator max sessions; stopping oldest",
+        );
+        await this.forceStop(oldest.sessionId, { emitClosed: true, tryExitApi: true });
+      }
+    }
+
+    const prepared = this.prepareStart({ workspaceDir });
+    if ("error" in prepared) {
+      return prepared;
+    }
+
+    const remote = input.remote === true;
+    const { binary, port, sessionId, readyFile } = prepared;
+    const env = this.buildSpawnEnv({ port, readyFile, remote });
+
+    // Review CLI takes no --json/--gate flags: local working tree via --git,
+    // or a PR URL for forge review.
+    const argv = input.prUrl ? ["review", input.prUrl] : ["review", "--git"];
+
+    let child: ChildProcess;
+    try {
+      child = spawn(binary, argv, {
+        cwd: workspaceDir,
+        env,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      this.releasePort(port);
+      const message = error instanceof Error ? error.message : String(error);
+      return { error: `Failed to spawn plannotator: ${message}` };
+    }
+
+    const session = this.registerSession({
+      sessionId,
+      kind: "review",
+      workspaceDir,
+      ...(input.prUrl ? { prUrl: input.prUrl } : {}),
+      agentId: input.agentId,
+      workspaceKey: input.workspaceKey,
+      port,
+      remote,
+      child,
+      readyFile,
+    });
+
+    try {
+      await this.waitForReady(session);
+    } catch (error) {
+      await this.forceStop(sessionId, { emitClosed: true });
+      const message = error instanceof Error ? error.message : String(error);
+      return { error: message };
+    }
+
+    this.applyReadyFile(session, readyFile);
+    this.logger.info(
+      { sessionId, port: session.port, workspaceDir, prUrl: input.prUrl ?? null, remote },
+      "plannotator review session started",
+    );
+    return { sessionId, port: session.port, url: session.url };
   }
 
   async startAnnotateSession(input: {
@@ -165,6 +260,7 @@ export class PlannotatorSessionManager {
 
     const session = this.registerSession({
       sessionId,
+      kind: "annotate",
       absolutePath,
       workspaceDir,
       agentId: input.agentId,
@@ -213,6 +309,23 @@ export class PlannotatorSessionManager {
     return null;
   }
 
+  /** One live review session per workspace per target (working tree or PR). */
+  private findLiveReviewSession(
+    workspaceDir: string,
+    prUrl: string | undefined,
+  ): LiveSession | null {
+    for (const session of this.sessions.values()) {
+      if (session.kind !== "review" || session.workspaceDir !== workspaceDir) {
+        continue;
+      }
+      if ((session.prUrl ?? undefined) !== prUrl) {
+        continue;
+      }
+      return session;
+    }
+    return null;
+  }
+
   private oldestSession(): LiveSession | null {
     // Map iteration order is insertion order — first entry is oldest.
     for (const session of this.sessions.values()) {
@@ -221,11 +334,11 @@ export class PlannotatorSessionManager {
     return null;
   }
 
-  private prepareStart(input: { path: string; workspaceDir: string }):
+  private prepareStart(input: { path?: string; workspaceDir: string }):
     | {
         binary: string;
         workspaceDir: string;
-        absolutePath: string;
+        absolutePath?: string;
         port: number;
         sessionId: string;
         readyFile: string;
@@ -241,8 +354,8 @@ export class PlannotatorSessionManager {
       };
     }
     const workspaceDir = resolve(input.workspaceDir);
-    const absolutePath = resolve(input.path);
-    if (!isPathInsideRoot(workspaceDir, absolutePath)) {
+    const absolutePath = input.path === undefined ? undefined : resolve(input.path);
+    if (absolutePath !== undefined && !isPathInsideRoot(workspaceDir, absolutePath)) {
       return { error: "Path is outside the workspace" };
     }
     const port = this.allocatePort();
@@ -287,8 +400,10 @@ export class PlannotatorSessionManager {
 
   private registerSession(input: {
     sessionId: string;
-    absolutePath: string;
+    kind: PlannotatorSessionKind;
+    absolutePath?: string;
     workspaceDir: string;
+    prUrl?: string;
     agentId?: string;
     workspaceKey?: string;
     port: number;
@@ -298,9 +413,10 @@ export class PlannotatorSessionManager {
   }): LiveSession {
     const session: LiveSession = {
       sessionId: input.sessionId,
-      kind: "annotate",
+      kind: input.kind,
       path: input.absolutePath,
       workspaceDir: input.workspaceDir,
+      ...(input.prUrl ? { prUrl: input.prUrl } : {}),
       ...(input.agentId ? { agentId: input.agentId } : {}),
       ...(input.workspaceKey ? { workspaceKey: input.workspaceKey } : {}),
       port: input.port,
@@ -396,19 +512,22 @@ export class PlannotatorSessionManager {
     this.sessions.delete(sessionId);
 
     const stdout = session.stdoutChunks.join("");
-    const parsed = parsePlannotatorStdout(stdout);
-    if (parsed) {
+    const annotatedPath = session.path;
+    // Review sessions have no annotated file, so a decision has no prompt to
+    // route to an agent — treat any exit as "closed".
+    const parsed = annotatedPath === undefined ? null : parsePlannotatorStdout(stdout);
+    if (parsed && annotatedPath !== undefined) {
       this.onEvent({
         sessionId,
         kind: session.kind,
-        path: session.path,
+        path: annotatedPath,
         ...(session.agentId ? { agentId: session.agentId } : {}),
         ...(session.workspaceKey ? { workspaceKey: session.workspaceKey } : {}),
         event: "feedback",
         decision: parsed.decision,
         feedback: parsed.feedback,
         prompt: formatPlannotatorFeedbackPrompt({
-          path: session.path,
+          path: annotatedPath,
           decision: parsed.decision,
           feedback: parsed.feedback,
         }),

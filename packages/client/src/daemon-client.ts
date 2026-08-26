@@ -3522,20 +3522,27 @@ export class DaemonClient {
   }
 
   async startPlannotatorSession(input: {
-    kind: "annotate";
-    path: string;
+    kind: "annotate" | "review";
+    /** File to annotate; required for annotate, unused for review. */
+    path?: string;
     workspaceDir: string;
+    /** PR URL for review sessions; absent = local working-tree review. */
+    prUrl?: string;
     agentId?: string;
     workspaceKey?: string;
     remote?: boolean;
   }): Promise<{ sessionId: string; port: number; url: string }> {
     const requestId = this.createRequestId();
+    if (input.kind === "annotate" && !input.path) {
+      throw new Error("startPlannotatorSession requires a path for annotate sessions");
+    }
     const message = SessionInboundMessageSchema.parse({
       type: "plannotator.session.start.request",
       requestId,
       kind: input.kind,
-      path: input.path,
+      ...(input.path ? { path: input.path } : {}),
       workspaceDir: input.workspaceDir,
+      ...(input.prUrl ? { prUrl: input.prUrl } : {}),
       ...(input.agentId ? { agentId: input.agentId } : {}),
       ...(input.workspaceKey ? { workspaceKey: input.workspaceKey } : {}),
       ...(input.remote !== undefined ? { remote: input.remote } : {}),

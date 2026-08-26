@@ -73,10 +73,11 @@ export class OmpHarness {
       noTurnScheduler?: OmpNoTurnScheduler;
       usagePollScheduler?: OmpUsagePollScheduler;
       runtimeSettings?: OmpAgentClientOptions["runtimeSettings"];
+      logger?: OmpAgentClientOptions["logger"];
     } = {},
   ) {
     this.client = new OmpAgentClient({
-      logger: pino({ level: "silent" }),
+      logger: options.logger ?? pino({ level: "silent" }),
       runtime: this.omp,
       runtimeSettings: options.runtimeSettings,
       providerIdleScheduler: options.providerIdleScheduler,

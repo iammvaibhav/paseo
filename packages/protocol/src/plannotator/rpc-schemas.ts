@@ -3,14 +3,22 @@ import { z } from "zod";
 /** Decision shapes emitted by `plannotator annotate --json` on process exit. */
 export const PlannotatorDecisionSchema = z.enum(["approved", "annotated", "dismissed", "block"]);
 
-export const PlannotatorSessionKindSchema = z.enum(["annotate"]);
+export const PlannotatorSessionKindSchema = z.enum(["annotate", "review"]);
 
 export const PlannotatorSessionStartRequestSchema = z.object({
   type: z.literal("plannotator.session.start.request"),
   requestId: z.string(),
   kind: PlannotatorSessionKindSchema,
-  /** Absolute path to the file to annotate (host filesystem). */
-  path: z.string().min(1),
+  /**
+   * File to annotate (host filesystem). Required for `kind: "annotate"`;
+   * unused for `kind: "review"` (the review UI shows the working tree / PR).
+   */
+  // COMPAT(plannotatorReview): path made optional and prUrl added in v0.5.2;
+  // never drop `path` from the wire even though review sessions omit it.
+  // Remove the tag after 2027-02-25 once app + daemon floors >= v0.5.2.
+  path: z.string().min(1).optional(),
+  /** PR URL for `kind: "review"`. Absent = local working-tree review. */
+  prUrl: z.string().min(1).optional(),
   /** Workspace root used as cwd and for path allowlisting. */
   workspaceDir: z.string().min(1),
   /** Optional agent to route feedback to. */

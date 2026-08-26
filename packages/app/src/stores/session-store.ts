@@ -200,6 +200,9 @@ export interface ProjectDescriptor {
   projectIconRevision?: string;
   projectRootPath: string;
   projectKind: WorkspaceDescriptorPayload["projectKind"];
+  // The project's own root checkout workspace (ADR 0001: worktree-per-dispatch). Null/absent
+  // when the host hasn't created one (old daemon, or project predates the feature).
+  baseWorkspaceId?: string | null;
 }
 
 export function normalizeProjectDescriptor(
@@ -215,6 +218,7 @@ export function normalizeProjectDescriptor(
     projectIconRevision: payload.projectIconRevision,
     projectRootPath: payload.projectRootPath,
     projectKind: payload.projectKind,
+    baseWorkspaceId: payload.baseWorkspaceId ?? null,
   };
 }
 

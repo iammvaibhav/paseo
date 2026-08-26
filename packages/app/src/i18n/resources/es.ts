@@ -1250,6 +1250,9 @@ export const es: TranslationResources = {
       actions: {
         menu: "Acciones del proyecto",
         openSettings: "Abrir la configuración del proyecto",
+        openBaseWorkspace: "Abrir espacio de trabajo base",
+        expandProject: "Expandir proyecto",
+        collapseProject: "Contraer proyecto",
         openNewWindow: "Open in new window",
         openNewWindowFailed: "Couldn't open a new window",
         openFolder: "Open in file manager",

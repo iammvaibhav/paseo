@@ -3879,6 +3879,11 @@ export const ServerInfoStatusPayloadSchema = z
         agentProfiles: z.boolean().optional(),
         // COMPAT(agentConfigApply): added in v0.3.2, remove gate after 2027-02-11.
         agentConfigApply: z.boolean().optional(),
+        // COMPAT(baseWorkspace): added in v0.5.3 on 2026-08-25; remove gate
+        // after 2027-02-25. Set true once the daemon ensures + guards
+        // project-anchored base workspaces (ADR 0001), gating app UI that
+        // opens a base workspace from the project row.
+        baseWorkspace: z.boolean().optional(),
       })
       .optional(),
   })
@@ -4351,6 +4356,13 @@ export const WorkspaceProjectDescriptorPayloadSchema = z.object({
   projectKind: z.enum(["git", "non_git", "directory"]),
   // COMPAT(directorySync): sequence of this latest directory projection.
   syncSeq: z.number().int().positive().optional(),
+  // The project's base workspace (ADR 0001: project-anchored base
+  // workspaces) — the workspace over the project's root checkout, created
+  // with the project, unarchivable while the project is active, opened by
+  // clicking the project name. Null until reconciliation backfills it.
+  // COMPAT(baseWorkspace): added in v0.5.3 on 2026-08-25; remove optional
+  // after 2027-02-25.
+  baseWorkspaceId: z.string().nullable().optional(),
 });
 
 export const FetchWorkspacesResponseMessageSchema = z.object({

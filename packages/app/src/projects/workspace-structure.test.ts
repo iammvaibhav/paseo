@@ -1,12 +1,17 @@
 import { describe, expect, test } from "vitest";
 import type { ProjectDescriptor, WorkspaceDescriptor } from "@/stores/session-store";
-import { buildWorkspaceStructureProjects, createProjectViewKey } from "./workspace-structure";
+import {
+  buildWorkspaceStructureProjects,
+  createProjectViewKey,
+  type WorkspaceStructureProject,
+} from "./workspace-structure";
 
 function project(input: {
   id: string;
   key: string | null;
   root: string;
   name?: string;
+  baseWorkspaceId?: string | null;
 }): ProjectDescriptor {
   return {
     projectId: input.id,
@@ -15,6 +20,7 @@ function project(input: {
     projectCustomName: null,
     projectRootPath: input.root,
     projectKind: "git",
+    baseWorkspaceId: input.baseWorkspaceId ?? null,
   };
 }
 
@@ -392,4 +398,97 @@ describe("buildWorkspaceStructureProjects", () => {
     expect(result).toHaveLength(1);
     expect(result[0].workspaceKeys).toEqual(["host-a:ws-user"]);
   });
+  test("hides a project's base workspace from the sidebar list", () => {
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [
+            project({ id: "prj_a", key: null, root: "/a/app", baseWorkspaceId: "ws-base" }),
+          ],
+          workspaces: [
+            workspace("ws-base", "prj_a", "/a/app"),
+            workspace("ws-task", "prj_a", "/a/app"),
+          ],
+        },
+      ],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].workspaceKeys).toEqual(["host-a:ws-task"]);
+  });
+
+  test("keeps every workspace visible when the project has no base workspace", () => {
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [project({ id: "prj_a", key: null, root: "/a/app" })],
+          workspaces: [
+            workspace("ws-one", "prj_a", "/a/app"),
+            workspace("ws-two", "prj_a", "/a/app"),
+          ],
+        },
+      ],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].workspaceKeys).toEqual(["host-a:ws-one", "host-a:ws-two"]);
+  });
+
+  test("hides each host's own base workspace independently for a multi-host project", () => {
+    const key = "remote:github.com/acme/app";
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [project({ id: "prj_a", key, root: "/a/app", baseWorkspaceId: "ws-base-a" })],
+          workspaces: [
+            workspace("ws-base-a", "prj_a", "/a/app"),
+            workspace("ws-task-a", "prj_a", "/a/app"),
+          ],
+        },
+        {
+          serverId: "host-b",
+          projects: [project({ id: "prj_b", key, root: "/b/app", baseWorkspaceId: "ws-base-b" })],
+          workspaces: [
+            workspace("ws-base-b", "prj_b", "/b/app"),
+            workspace("ws-task-b", "prj_b", "/b/app"),
+          ],
+        },
+      ],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].workspaceKeys).toEqual(["host-a:ws-task-a", "host-b:ws-task-b"]);
+  });
+
+  test("does not hide a workspace that merely shares an id with another host's base workspace", () => {
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [
+            project({ id: "prj_a", key: null, root: "/a/app", baseWorkspaceId: "ws-shared" }),
+          ],
+          workspaces: [workspace("ws-shared", "prj_a", "/a/app")],
+        },
+        {
+          serverId: "host-b",
+          projects: [project({ id: "prj_b", key: null, root: "/b/app" })],
+          workspaces: [workspace("ws-shared", "prj_b", "/b/app")],
+        },
+      ],
+    });
+
+    expect(result).toHaveLength(2);
+    const hostAProject = findProjectOnHost(result, "host-a");
+    const hostBProject = findProjectOnHost(result, "host-b");
+    expect(hostAProject?.workspaceKeys).toEqual([]);
+    expect(hostBProject?.workspaceKeys).toEqual(["host-b:ws-shared"]);
+  });
 });
+
+function findProjectOnHost(result: WorkspaceStructureProject[], serverId: string) {
+  return result.find((entry) => entry.hosts.some((host) => host.serverId === serverId));
+}

@@ -95,6 +95,7 @@ function project(overrides: Partial<PersistedProjectRecord> = {}): PersistedProj
     customName: null,
     customIconRevision: null,
     description: null,
+    baseWorkspaceId: null,
     createdAt: now,
     updatedAt: now,
     archivedAt: null,
@@ -441,6 +442,31 @@ describe("validateMetaPlan refusal paths", () => {
     ).resolves.toMatchObject({ ok: false, error: "Agent agent-ghost not found" });
   });
 
+  test("archive_workspace: refuses a project's active base workspace, matching workspace-archive-service's message", async () => {
+    const h = build({
+      projects: [project({ baseWorkspaceId: "ws-a" })],
+      workspaces: [workspace({ workspaceId: "ws-a" })],
+    });
+    await expect(
+      applyMetaPlan(h.deps, plan({ action: "archive_workspace", targetId: "ws-a" })),
+    ).resolves.toMatchObject({
+      ok: false,
+      error:
+        'Cannot archive ws-a: it is the base workspace for project "experiments" and stays open while the project is active.',
+    });
+    expect(h.archivedWorkspaceIds).toEqual([]);
+  });
+
+  test("archive_workspace: allows archiving the base workspace once its project is archived", async () => {
+    const h = build({
+      projects: [project({ baseWorkspaceId: "ws-a", archivedAt: "2026-08-25T00:00:00.000Z" })],
+      workspaces: [workspace({ workspaceId: "ws-a" })],
+    });
+    await expect(
+      applyMetaPlan(h.deps, plan({ action: "archive_workspace", targetId: "ws-a" })),
+    ).resolves.toMatchObject({ ok: true });
+  });
+
   test("create_project: missing or relative destination", async () => {
     const h = build();
     await expect(
@@ -662,6 +688,35 @@ describe("applyMetaPlan happy paths", () => {
     expect(projectResult).toMatchObject({ ok: true });
     expect(h2.archivedWorkspaceIds.sort()).toEqual(["ws-a", "ws-b"]);
     expect(h2.projects.get("prj-experiments")?.archivedAt).toBeTruthy();
+  });
+
+  test("archive_project archives the project record before cascading, so its own base workspace is not self-refused", async () => {
+    const h = build({
+      projects: [project({ baseWorkspaceId: "ws-a" })],
+      workspaces: [workspace({ workspaceId: "ws-a" }), workspace({ workspaceId: "ws-b" })],
+    });
+    const projectArchivedAtWhenEachWorkspaceArchived: Array<string | null> = [];
+    const originalArchiveWorkspace = h.deps.archiveWorkspace;
+    h.deps.archiveWorkspace = async (workspaceId, requestId) => {
+      projectArchivedAtWhenEachWorkspaceArchived.push(
+        h.projects.get("prj-experiments")?.archivedAt ?? null,
+      );
+      return originalArchiveWorkspace(workspaceId, requestId);
+    };
+
+    const result = await applyMetaPlan(h.deps, {
+      action: "archive_project",
+      targetId: "prj-experiments",
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(h.archivedWorkspaceIds.sort()).toEqual(["ws-a", "ws-b"]);
+    // The project record must already be archived by the time EVERY cascaded
+    // workspace (including its own base workspace, ws-a) is archived.
+    expect(projectArchivedAtWhenEachWorkspaceArchived).toHaveLength(2);
+    for (const archivedAt of projectArchivedAtWhenEachWorkspaceArchived) {
+      expect(archivedAt).toBeTruthy();
+    }
   });
 });
 

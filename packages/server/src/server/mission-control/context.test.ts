@@ -55,6 +55,8 @@ interface TestFleetOptions {
   live?: Array<{ id: string; lifecycle: string }>;
   reviewStates?: Map<string, MissionControlReviewStateRecord>;
   events?: MissionControlEvent[];
+  projectSettings?: Record<string, { alwaysRaisePr?: boolean }>;
+  agentProfiles?: Array<{ id: string; name: string; provider: string; notes?: string }>;
 }
 
 function buildDependencies(options: TestFleetOptions = {}): FleetContextDependencies {
@@ -134,6 +136,7 @@ function buildDependencies(options: TestFleetOptions = {}): FleetContextDependen
           ...(options.hostAlias ? { hostAlias: options.hostAlias } : {}),
           ...(options.defaultDispatchHost ? { defaultHost: options.defaultDispatchHost } : {}),
         },
+        ...(options.agentProfiles ? { agentProfiles: options.agentProfiles } : {}),
       }) as ReturnType<DaemonConfigStore["get"]>,
   };
 
@@ -167,6 +170,7 @@ function buildDependencies(options: TestFleetOptions = {}): FleetContextDependen
         silenceNudgeSeconds: 120,
         statusNudgeSeconds: 300,
         escalateSeconds: 300,
+        ...(options.projectSettings ? { projectSettings: options.projectSettings } : {}),
       }),
     }),
     getReviewStates: () => reviewStates,
@@ -530,6 +534,41 @@ describe("project descriptions in inventory", () => {
     const deps = buildDependencies();
     const block = buildSnapshotBlock(await buildFleetContextData(deps), new Date().toISOString());
     expect(block).toContain("Alpha (proj-1) — the alpha service");
+  });
+});
+
+describe("per-project PR policy in inventory", () => {
+  test("renders 'always raise a PR' when projectSettings[projectKey].alwaysRaisePr is true", async () => {
+    const deps = buildDependencies({ projectSettings: { "proj-1": { alwaysRaisePr: true } } });
+    const block = buildSnapshotBlock(await buildFleetContextData(deps), new Date().toISOString());
+    expect(block).toContain("Alpha (proj-1) — the alpha service — PR policy: always raise a PR");
+  });
+
+  test("omits the PR policy suffix when alwaysRaisePr is unset", async () => {
+    const deps = buildDependencies();
+    const block = buildSnapshotBlock(await buildFleetContextData(deps), new Date().toISOString());
+    expect(block).not.toContain("PR policy");
+  });
+});
+
+describe("Agent profiles block", () => {
+  test("renders the local host's daemon-config agent profiles as name + notes", async () => {
+    const deps = buildDependencies({
+      agentProfiles: [
+        { id: "p1", name: "iOS reviewer", provider: "claude", notes: "Use for SwiftUI work" },
+        { id: "p2", name: "Backend fixer", provider: "codex" },
+      ],
+    });
+    const block = buildSnapshotBlock(await buildFleetContextData(deps), new Date().toISOString());
+    expect(block).toContain("# Agent profiles");
+    expect(block).toContain("- iOS reviewer — Use for SwiftUI work");
+    expect(block).toContain("- Backend fixer");
+  });
+
+  test("omits the Agent profiles block when no host has any profiles", async () => {
+    const deps = buildDependencies();
+    const block = buildSnapshotBlock(await buildFleetContextData(deps), new Date().toISOString());
+    expect(block).not.toContain("# Agent profiles");
   });
 });
 

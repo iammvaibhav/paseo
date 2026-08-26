@@ -12,7 +12,7 @@ This is a **session-scoped** integration (not always-on like code-server): the d
 | Feedback → agent (auto-send / compose) | Implemented                           |
 | Open dropdown → Plannotator            | Implemented                           |
 | Default markdown open                  | Opt-in setting (default **off**)      |
-| Code review / PR review                | Deferred                              |
+| Code review (`review --git`) / PR URL  | Implemented (Electron embedded)       |
 | Web / mobile                           | Not supported (Electron desktop only) |
 
 ## Install

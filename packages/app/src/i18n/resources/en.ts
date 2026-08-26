@@ -1225,6 +1225,9 @@ export const en = {
       actions: {
         menu: "Project actions",
         openSettings: "Open project settings",
+        openBaseWorkspace: "Open base workspace",
+        expandProject: "Expand project",
+        collapseProject: "Collapse project",
         openNewWindow: "Open in new window",
         openNewWindowFailed: "Couldn't open a new window",
         openFolder: "Open in file manager",

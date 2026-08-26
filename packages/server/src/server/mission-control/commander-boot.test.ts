@@ -1319,7 +1319,7 @@ describe("remapLegacyCommanderCreateCwd", () => {
 });
 
 describe("Commander build-hash contract", () => {
-  test("the tool allowlist pins exactly the twenty-five tools (the Commander's full catalog surface)", () => {
+  test("the tool allowlist pins exactly the twenty-seven tools (the Commander's full catalog surface)", () => {
     // The hash covers prompt + allowlist, so a tool landing here without the
     // paseo-tools registration (or vice versa) must fail this pin — the
     // allowlist is the Commander's full catalog surface. The legacy fleet_meta
@@ -1351,6 +1351,8 @@ describe("Commander build-hash contract", () => {
       "fleet_context",
       "fleet_agent_status",
       "fleet_monitor",
+      "fleet_ticketize_agent",
+      "itsaplan_ticketize",
     ]);
   });
 

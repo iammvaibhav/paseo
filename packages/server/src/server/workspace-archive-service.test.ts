@@ -11,6 +11,7 @@ import { createWorktree, type WorktreeConfig } from "../utils/worktree.js";
 import type { ManagedAgent } from "./agent/agent-manager.js";
 import type { AgentStorage, StoredAgentRecord } from "./agent/agent-storage.js";
 import type { WorkspaceGitService } from "./workspace-git-service.js";
+import { createPersistedProjectRecord, type ProjectRegistry } from "./workspace-registry.js";
 import {
   archiveByScope,
   type ActiveWorkspaceRef,
@@ -119,6 +120,7 @@ interface ArchiveDepsInput {
   activeWorkspaces: ActiveWorkspaceRef[];
   paseoWorktreesBaseRoot?: string;
   findWorkspaceIdForCwd?: (cwd: string) => Promise<string | null>;
+  projectRegistry?: Pick<ProjectRegistry, "list">;
 }
 
 interface ArchiveTestDependencies extends ArchiveDependencies {
@@ -136,6 +138,7 @@ function createArchiveDeps(input: ArchiveDepsInput): ArchiveTestDependencies {
   return {
     paseoHome: input.paseoHome,
     paseoWorktreesBaseRoot: input.paseoWorktreesBaseRoot,
+    projectRegistry: input.projectRegistry,
     github: createGitHubServiceStub(),
     workspaceGitService: {
       getSnapshot: vi.fn(async () => null),
@@ -790,6 +793,95 @@ describe("archiveByScope", () => {
     expect(result.archivedWorkspaceIds).toHaveLength(3);
     expect(result.removedDirectory).toBe(true);
     expect(existsSync(worktree.worktreePath)).toBe(false);
+  });
+
+  test("workspace scope refuses to archive a project's active base workspace", async () => {
+    const { tempDir } = createGitRepo();
+    const localCheckoutDir = mkdtempSync(path.join(tempDir, "base-workspace-"));
+    const workspaceId = "ws-base";
+    const project = createPersistedProjectRecord({
+      projectId: "prj-base-refusal",
+      rootPath: localCheckoutDir,
+      kind: "non_git",
+      displayName: "acme-app",
+      baseWorkspaceId: workspaceId,
+      createdAt: "2026-08-25T00:00:00.000Z",
+      updatedAt: "2026-08-25T00:00:00.000Z",
+    });
+
+    await expect(
+      archiveByScope(
+        createArchiveDeps({
+          paseoHome: path.join(tempDir, ".paseo"),
+          activeWorkspaces: [{ workspaceId, cwd: localCheckoutDir, kind: "local_checkout" }],
+          projectRegistry: { list: async () => [project] },
+        }),
+        {
+          scope: { kind: "workspace", workspaceId },
+          requestId: "req-base-refusal",
+        },
+      ),
+    ).rejects.toThrow(/base workspace for project "acme-app"/);
+    expect(existsSync(localCheckoutDir)).toBe(true);
+  });
+
+  test("workspace scope allows archiving the former base workspace once its project is archived", async () => {
+    const { tempDir } = createGitRepo();
+    const localCheckoutDir = mkdtempSync(path.join(tempDir, "base-workspace-"));
+    const workspaceId = "ws-base-archived-project";
+    const project = createPersistedProjectRecord({
+      projectId: "prj-base-archived",
+      rootPath: localCheckoutDir,
+      kind: "non_git",
+      displayName: "acme-app",
+      baseWorkspaceId: workspaceId,
+      createdAt: "2026-08-25T00:00:00.000Z",
+      updatedAt: "2026-08-25T00:00:00.000Z",
+      archivedAt: "2026-08-25T01:00:00.000Z",
+    });
+
+    const result = await archiveByScope(
+      createArchiveDeps({
+        paseoHome: path.join(tempDir, ".paseo"),
+        activeWorkspaces: [{ workspaceId, cwd: localCheckoutDir, kind: "local_checkout" }],
+        projectRegistry: { list: async () => [project] },
+      }),
+      {
+        scope: { kind: "workspace", workspaceId },
+        requestId: "req-base-archived-project",
+      },
+    );
+
+    assertArchiveResult(result, { archivedWorkspaceIds: [workspaceId], removedDirectory: false });
+  });
+
+  test("workspace scope allows archiving an ordinary workspace that is not any project's base workspace", async () => {
+    const { tempDir } = createGitRepo();
+    const localCheckoutDir = mkdtempSync(path.join(tempDir, "task-workspace-"));
+    const workspaceId = "ws-task";
+    const project = createPersistedProjectRecord({
+      projectId: "prj-unrelated",
+      rootPath: "/somewhere/else",
+      kind: "non_git",
+      displayName: "acme-app",
+      baseWorkspaceId: "ws-some-other-base",
+      createdAt: "2026-08-25T00:00:00.000Z",
+      updatedAt: "2026-08-25T00:00:00.000Z",
+    });
+
+    const result = await archiveByScope(
+      createArchiveDeps({
+        paseoHome: path.join(tempDir, ".paseo"),
+        activeWorkspaces: [{ workspaceId, cwd: localCheckoutDir, kind: "local_checkout" }],
+        projectRegistry: { list: async () => [project] },
+      }),
+      {
+        scope: { kind: "workspace", workspaceId },
+        requestId: "req-task-workspace",
+      },
+    );
+
+    assertArchiveResult(result, { archivedWorkspaceIds: [workspaceId], removedDirectory: false });
   });
 });
 

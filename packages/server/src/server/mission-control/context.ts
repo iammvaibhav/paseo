@@ -12,7 +12,9 @@ import type {
   MissionControlInventoryProject,
   MissionControlInventoryProjectWorkspace,
   MissionControlModels,
+  MissionControlPeerStatus,
 } from "@getpaseo/protocol/mission-control/types";
+import type { AgentProfile } from "@getpaseo/protocol/messages";
 import type { ComposerPreferences } from "@getpaseo/protocol/composer-preferences";
 import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
 import type { Logger } from "pino";
@@ -380,11 +382,21 @@ export interface FleetHostContext {
   recentAgents: MissionControlContextAgentSummary[];
   /** Full-fleet bucket counts on this host; absent for old/unreachable peers. */
   bucketCounts?: Record<string, number>;
+  /**
+   * This host's daemon-config agent profiles (name + notes, the Commander's
+   * model menu). Populated locally from daemonConfigStore — never fetched
+   * over the peer wire, so a peer host only carries this when a future
+   * change adds it to the context.fetch payload; absent = no profiles shown.
+   */
+  agentProfiles?: AgentProfile[];
 }
 
 export interface FleetContextData {
   hosts: FleetHostContext[];
   defaultHost: string | null;
+  /** Resolved central Mission Control config, for section renderers that need
+   *  fleet policy (e.g. per-project PR settings). Null when unavailable. */
+  centralConfig: MissionControlCentralConfig | null;
 }
 
 export interface FleetContextDependencies {
@@ -464,38 +476,47 @@ export async function buildFleetContextData(
       reachable: true,
       lastSeenAt: null,
       ...local,
+      agentProfiles: input.daemonConfigStore.get().agentProfiles ?? [],
     },
   ];
 
   const peerManager = resolvePeerManager(input);
   for (const status of peerManager?.getPeerStatuses() ?? []) {
-    const client = peerManager?.getPeerClient(status.name) ?? null;
-    let payload: MissionControlContextPayload | null = null;
-    if (status.state === "online" && client) {
-      try {
-        payload = await fetchPeerContextPayload(client);
-      } catch (error) {
-        input.logger.warn({ err: error, peer: status.name }, "Failed to fetch context from peer");
-      }
-    }
-    const serverId = derivePeerServerId(payload);
-    hosts.push({
-      hostName: status.name,
-      serverId,
-      machineName: null,
-      alias: payload?.hostAlias ?? null,
-      reachable: payload !== null,
-      lastSeenAt: status.lastSeenAt,
-      inventory: payload?.inventory ?? { projects: [] },
-      models: payload?.models ?? {},
-      recentAgents: payload?.recentAgents ?? [],
-      ...(payload?.bucketCounts ? { bucketCounts: payload.bucketCounts } : {}),
-    });
+    hosts.push(await buildPeerHostContext(input, peerManager, status));
   }
 
   return {
     hosts,
     defaultHost: resolveDefaultDispatchHost(input, hosts),
+    centralConfig: resolveCentralConfig(input),
+  };
+}
+
+async function buildPeerHostContext(
+  input: FleetContextDependencies,
+  peerManager: PeerManager | null,
+  status: MissionControlPeerStatus,
+): Promise<FleetHostContext> {
+  const client = peerManager?.getPeerClient(status.name) ?? null;
+  let payload: MissionControlContextPayload | null = null;
+  if (status.state === "online" && client) {
+    try {
+      payload = await fetchPeerContextPayload(client);
+    } catch (error) {
+      input.logger.warn({ err: error, peer: status.name }, "Failed to fetch context from peer");
+    }
+  }
+  return {
+    hostName: status.name,
+    serverId: derivePeerServerId(payload),
+    machineName: null,
+    alias: payload?.hostAlias ?? null,
+    reachable: payload !== null,
+    lastSeenAt: status.lastSeenAt,
+    inventory: payload?.inventory ?? { projects: [] },
+    models: payload?.models ?? {},
+    recentAgents: payload?.recentAgents ?? [],
+    ...(payload?.bucketCounts ? { bucketCounts: payload.bucketCounts } : {}),
   };
 }
 
@@ -582,14 +603,16 @@ export async function buildWorldSnapshot(input: FleetContextDependencies): Promi
  * supersede-in-place retraction.
  */
 export function buildSnapshotBlock(context: FleetContextData, at: string): string {
-  return [
+  const sections = [
     `${WORLD_SNAPSHOT_MARKER}${at}`,
     buildFleetMapSection(context),
     buildInventorySection(context),
     buildRosterSection(context),
     buildModelsSection(context),
+    buildAgentProfilesSection(context),
     buildRoutingDefaultsSection(context),
-  ].join("\n\n");
+  ];
+  return sections.filter((section): section is string => section !== null).join("\n\n");
 }
 
 /**
@@ -645,7 +668,13 @@ function buildInventorySection(context: FleetContextData): string {
     }
     const projectLines = host.inventory.projects.map((project) => {
       const description = project.description?.trim();
-      const header = `- ${project.title} (${project.id})${description ? ` — ${description}` : ""}`;
+      const alwaysRaisePr =
+        context.centralConfig?.projectSettings?.[project.id]?.alwaysRaisePr === true;
+      const suffixes = [
+        description || null,
+        alwaysRaisePr ? "PR policy: always raise a PR" : null,
+      ].filter((suffix): suffix is string => suffix !== null);
+      const header = `- ${project.title} (${project.id})${suffixes.length > 0 ? ` — ${suffixes.join(" — ")}` : ""}`;
       if (project.workspaces.length === 0) {
         return `${header} — no workspaces`;
       }
@@ -667,6 +696,31 @@ function buildModelsSection(context: FleetContextData): string {
     buildHostModelsSection(host.models, hostLabel(host)),
   );
   return `# Models\n${sections.join("\n\n")}`;
+}
+
+/**
+ * The Commander's model menu: daemon-config agent profiles (name + free-text
+ * notes), one line per profile, grouped by host. Local host reads its own
+ * daemon config directly (see buildFleetContextData); a peer host only
+ * appears here once the context.fetch wire payload carries agentProfiles —
+ * no new peer plumbing is added by this renderer. Omitted entirely when no
+ * host has any profiles (the Commander falls back to the host default
+ * worker model).
+ */
+function buildAgentProfilesSection(context: FleetContextData): string | null {
+  const sections = context.hosts
+    .filter((host) => (host.agentProfiles?.length ?? 0) > 0)
+    .map((host) => {
+      const lines = host.agentProfiles!.map((profile) => {
+        const notes = profile.notes?.trim();
+        return notes ? `- ${profile.name} — ${notes}` : `- ${profile.name}`;
+      });
+      return `## ${hostLabel(host)}\n${lines.join("\n")}`;
+    });
+  if (sections.length === 0) {
+    return null;
+  }
+  return `# Agent profiles\n${sections.join("\n\n")}`;
 }
 
 /**

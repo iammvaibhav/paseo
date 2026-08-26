@@ -106,6 +106,9 @@ export interface WorkspaceStructureHostPlacement {
   worktreeSupport: "supported" | "unsupported" | "unknown";
   customIconRevision?: string | null;
   iconRevision?: string;
+  // The project's own root checkout workspace on this host (ADR 0001). Null/absent when the
+  // host hasn't created one yet.
+  baseWorkspaceId?: string | null;
 }
 
 export interface WorkspaceStructureProject {
@@ -182,38 +185,12 @@ export function buildWorkspaceStructureProjects(input: {
   }
 
   for (const session of input.sessions) {
-    const agentsByWorkspaceId = new Map<string, WorkspaceAgentForSidebar[]>();
-    if (session.agents) {
-      for (const agent of session.agents) {
-        if (!agent.workspaceId) continue;
-        const existing = agentsByWorkspaceId.get(agent.workspaceId);
-        if (existing) {
-          existing.push(agent);
-        } else {
-          agentsByWorkspaceId.set(agent.workspaceId, [agent]);
-        }
-      }
-    }
-
-    for (const workspace of session.workspaces) {
-      const agentsInWorkspace = agentsByWorkspaceId.get(workspace.id) ?? [];
-      if (
-        isSidebarWorkspaceHidden({
-          agentsInWorkspace,
-          workspaceDirectory: workspace.workspaceDirectory,
-          hideSystemOwnedWorkspaces,
-        })
-      ) {
-        continue;
-      }
-      const viewKey = viewKeyByServerProjectId.get(session.serverId)?.get(workspace.projectId);
-      if (!viewKey) continue;
-      byProject.get(viewKey)?.workspaces.push({
-        workspaceId: workspace.id,
-        workspaceName: workspace.name,
-        workspaceKey: `${session.serverId}:${workspace.id}`,
-      });
-    }
+    appendSessionWorkspaces({
+      session,
+      byProject,
+      viewKeyByServerProjectId,
+      hideSystemOwnedWorkspaces,
+    });
   }
 
   return Array.from(byProject.values())
@@ -235,6 +212,55 @@ export function buildWorkspaceStructureProjects(input: {
           sensitivity: "base",
         }) || left.viewKey.localeCompare(right.viewKey),
     );
+}
+
+function appendSessionWorkspaces(input: {
+  session: WorkspaceStructureSession;
+  byProject: Map<string, ProjectDraft>;
+  viewKeyByServerProjectId: Map<string, Map<string, string>>;
+  hideSystemOwnedWorkspaces: boolean;
+}): void {
+  const { session, byProject, viewKeyByServerProjectId, hideSystemOwnedWorkspaces } = input;
+  const agentsByWorkspaceId = new Map<string, WorkspaceAgentForSidebar[]>();
+  if (session.agents) {
+    for (const agent of session.agents) {
+      if (!agent.workspaceId) continue;
+      const existing = agentsByWorkspaceId.get(agent.workspaceId);
+      if (existing) {
+        existing.push(agent);
+      } else {
+        agentsByWorkspaceId.set(agent.workspaceId, [agent]);
+      }
+    }
+  }
+
+  for (const workspace of session.workspaces) {
+    const agentsInWorkspace = agentsByWorkspaceId.get(workspace.id) ?? [];
+    if (
+      isSidebarWorkspaceHidden({
+        agentsInWorkspace,
+        workspaceDirectory: workspace.workspaceDirectory,
+        hideSystemOwnedWorkspaces,
+      })
+    ) {
+      continue;
+    }
+    const viewKey = viewKeyByServerProjectId.get(session.serverId)?.get(workspace.projectId);
+    if (!viewKey) continue;
+    const draft = byProject.get(viewKey);
+    if (!draft) continue;
+    // The project's own root checkout (ADR 0001: worktree-per-dispatch) is opened by
+    // clicking the project name, never listed among task workspaces.
+    const hostPlacement = draft.hosts.get(session.serverId);
+    if (hostPlacement?.baseWorkspaceId && hostPlacement.baseWorkspaceId === workspace.id) {
+      continue;
+    }
+    draft.workspaces.push({
+      workspaceId: workspace.id,
+      workspaceName: workspace.name,
+      workspaceKey: `${session.serverId}:${workspace.id}`,
+    });
+  }
 }
 
 export function createProjectViewKey(
@@ -287,6 +313,7 @@ function addProjectToView(input: {
     worktreeSupport: project.projectKind === "git" ? "supported" : "unsupported",
     customIconRevision: project.projectCustomIconRevision,
     iconRevision: project.projectIconRevision,
+    baseWorkspaceId: project.baseWorkspaceId ?? null,
   };
   const draft = byProject.get(viewKey);
   if (!draft) {

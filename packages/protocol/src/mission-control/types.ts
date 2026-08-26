@@ -733,6 +733,37 @@ export const MissionControlCentralConfigSchema = z.object({
   trackCommanderWorkers: z.boolean().optional(),
   trackVerifiers: z.boolean().optional(),
   trackSubagents: z.boolean().optional(),
+  // ADR 0002: the Mission Control Verifier is disabled by default (code kept,
+  // config-gated off) — absent/false = OFF. Verification lives in the
+  // dispatch brief by default (worker self-verify, optional end-of-task
+  // independent verifier subagent); this is the explicit opt-in to spawn
+  // real audit agents on ready-for-review.
+  verifierEnabled: z.boolean().optional(),
+  // Per-project Mission Control policy, keyed by projectKey (inventory
+  // project id). alwaysRaisePr: the Commander always opens a PR for this
+  // project's dispatches instead of leaving work unpushed/unopened.
+  projectSettings: z
+    .record(
+      z.string(),
+      z.object({
+        alwaysRaisePr: z.boolean().optional(),
+      }),
+    )
+    .optional(),
+  // ADR 0002: itsaplan ticket-bridge connection. Unset = the bridge is fully
+  // inert (no webhook processing, no projections). humanUserId is the
+  // itsaplan user id the bridge assigns a ticket to on the Mission Control
+  // needs_you projection; omitted = assignee-flip disabled even when the
+  // rest of the connection is configured.
+  itsaplan: z
+    .object({
+      baseUrl: z.string(),
+      apiKey: z.string(),
+      webhookSecret: z.string(),
+      humanUserId: z.string().optional(),
+    })
+    .nullable()
+    .optional(),
 });
 export type MissionControlCentralConfig = z.infer<typeof MissionControlCentralConfigSchema>;
 

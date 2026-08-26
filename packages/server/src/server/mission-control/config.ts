@@ -78,6 +78,25 @@ export interface ResolvedMissionControlCentralConfig {
   trackCommanderWorkers: boolean;
   trackVerifiers: boolean;
   trackSubagents: boolean;
+  // ADR 0002: the Verifier dispatch gate — absent/false = OFF (verifiers are
+  // disabled by default; code stays intact, this is the explicit opt-in).
+  // Distinct from trackVerifiers, which governs whether a verifier that DOES
+  // spawn emits Mission Control lifecycle events; isInScope requires both.
+  verifierEnabled: boolean;
+  // Per-project policy overrides, keyed by projectKey (inventory project id).
+  // alwaysRaisePr: the Commander always opens a PR for this project instead
+  // of leaving finished work unpushed.
+  projectSettings: Record<string, { alwaysRaisePr?: boolean }>;
+  // ADR 0002: itsaplan ticket-bridge connection. Null = the bridge is fully
+  // inert. humanUserId is the itsaplan user id the bridge assigns a ticket to
+  // on the needs_you projection; absent = assignee-flip disabled even when
+  // the rest of the connection is configured.
+  itsaplan: {
+    baseUrl: string;
+    apiKey: string;
+    webhookSecret: string;
+    humanUserId?: string;
+  } | null;
 }
 
 export const DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG: ResolvedMissionControlCentralConfig = {
@@ -110,6 +129,9 @@ export const DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG: ResolvedMissionControlCentr
   trackCommanderWorkers: true,
   trackVerifiers: true,
   trackSubagents: true,
+  verifierEnabled: false,
+  projectSettings: {},
+  itsaplan: null,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -272,6 +294,9 @@ const CENTRAL_CONFIG_KEYS: readonly (keyof ResolvedMissionControlCentralConfig)[
   "trackCommanderWorkers",
   "trackVerifiers",
   "trackSubagents",
+  "verifierEnabled",
+  "projectSettings",
+  "itsaplan",
 ];
 
 function pickCentralConfigKeys(value: Record<string, unknown>): MissionControlCentralConfig {
@@ -327,6 +352,7 @@ type BooleanKnobs = Pick<
   | "trackCommanderWorkers"
   | "trackVerifiers"
   | "trackSubagents"
+  | "verifierEnabled"
 >;
 
 /** The on/off tracking toggles: boolean knobs. */
@@ -340,6 +366,7 @@ function resolveBooleanKnobs(
     trackCommanderWorkers: stored.trackCommanderWorkers ?? defaults.trackCommanderWorkers,
     trackVerifiers: stored.trackVerifiers ?? defaults.trackVerifiers,
     trackSubagents: stored.trackSubagents ?? defaults.trackSubagents,
+    verifierEnabled: stored.verifierEnabled ?? defaults.verifierEnabled,
   };
 }
 
@@ -367,5 +394,7 @@ function resolveCentralConfig(
     verifierToWorkerMode: stored.verifierToWorkerMode ?? defaults.verifierToWorkerMode,
     hindsightBank: stored.hindsightBank ?? defaults.hindsightBank,
     voiceMode: stored.voiceMode ?? defaults.voiceMode,
+    projectSettings: stored.projectSettings ?? defaults.projectSettings,
+    itsaplan: stored.itsaplan ?? defaults.itsaplan,
   };
 }

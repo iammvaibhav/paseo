@@ -18,6 +18,7 @@ import type {
   WorkspaceRegistry,
 } from "../workspace-registry.js";
 import type { ArchiveResult } from "../workspace-archive-service.js";
+import { formatBaseWorkspaceArchiveRefusal } from "../workspace-archive-service.js";
 import { areEquivalentPaths } from "../../utils/path.js";
 import { COMMANDER_ADOPTED_AT_LABEL } from "./commander-contract.js";
 import { hasMissionControlLabels } from "./naming.js";
@@ -413,6 +414,20 @@ async function validateArchiveWorkspace(
   if (!workspace) {
     return { ok: false, error: `Workspace ${targetId} not found` };
   }
+  if (!workspace.archivedAt) {
+    // ADR 0001: refuse archiving a project's ACTIVE base workspace — same
+    // gate and message as the UI/archive_workspace-tool paths
+    // (workspace-archive-service.ts resolveArchiveTarget).
+    const baseWorkspaceProject = (await deps.projectRegistry.list()).find(
+      (project) => !project.archivedAt && project.baseWorkspaceId === targetId,
+    );
+    if (baseWorkspaceProject) {
+      return {
+        ok: false,
+        error: formatBaseWorkspaceArchiveRefusal(targetId, baseWorkspaceProject),
+      };
+    }
+  }
   return { ok: true };
 }
 
@@ -775,10 +790,14 @@ async function applyArchiveProject(
   const workspaces = (await deps.workspaceRegistry.list()).filter(
     (workspace) => workspace.projectId === projectId && !workspace.archivedAt,
   );
+  // Archive the project record FIRST: the cascade below may include the
+  // project's own base workspace (ADR 0001), which archiveWorkspace refuses
+  // while its project is still active. Archiving the project up front makes
+  // that refusal a no-op for this, the one caller allowed to take it down.
+  await deps.projectRegistry.archive(projectId, new Date().toISOString());
   for (const workspace of workspaces) {
     await deps.archiveWorkspace(workspace.workspaceId, requestId);
   }
-  await deps.projectRegistry.archive(projectId, new Date().toISOString());
   logMetaEvent(deps, plan, "mission_control.meta.archive_project_applied", {
     projectId,
     archivedWorkspaces: workspaces.map((workspace) => workspace.workspaceId),

@@ -1,5 +1,6 @@
 import { setImmediate as waitForImmediate } from "node:timers/promises";
 import { describe, expect, test, vi } from "vitest";
+import pino from "pino";
 
 import type { PaseoToolCatalog } from "../../tools/types.js";
 import type { OmpNoTurnScheduler, OmpProviderIdleScheduler } from "./agent.js";
@@ -169,6 +170,28 @@ describe("OMP agent client and session", () => {
     const configIndex = argv.indexOf("--config");
     expect(configIndex).toBeGreaterThan(-1);
     expect(argv[configIndex + 1]).toBe(TOOL_ALLOWLIST_CONFIG_OVERLAY);
+  });
+
+  test("allowlist session without a host catalog logs the empty-catalog warning", async () => {
+    const warnings: Array<{ msg?: string }> = [];
+    const logger = pino(
+      { level: "warn" },
+      {
+        write(chunk: string) {
+          warnings.push(JSON.parse(chunk) as { msg?: string });
+        },
+      },
+    );
+    const omp = new OmpHarness({ logger });
+    await omp.start({
+      toolAllowlist: ["fleet_list_agents", "fleet_create_agent", "clarify"],
+      modeId: "full",
+    });
+
+    expect(warnings.map((entry) => entry.msg)).toContain(
+      "Agent restricts tools to an allowlist but no Paseo host-tool catalog is available; only builtin/MCP tools will load",
+    );
+    expect(omp.launchConfiguration().argv).toContain("--no-tools");
   });
 
   test("passes --thinking when a thinking option is provided", async () => {
