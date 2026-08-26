@@ -91,7 +91,6 @@ import {
   toolbarLabelTriggerStyle,
 } from "@/components/ui/toolbar-label-trigger";
 import { FOCUSED_PANE_PLACEMENT, useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
-import { usePanelStore } from "@/stores/panel-store";
 import type { WorkspaceTabPlacement } from "@/stores/workspace-layout-actions";
 import type { WorkspaceTabTarget } from "@/workspace-tabs/model";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
@@ -105,7 +104,7 @@ import { resolvePlannotatorEmbedHost } from "@/workspace/plannotator-embed-host"
 import { useHosts } from "@/runtime/host-runtime";
 import { PullRequestStateIcon } from "@/git/pull-request-state-icon";
 import { openExternalUrl } from "@/utils/open-external-url";
-import { openPreferredWorkspaceTarget } from "@/workspace-tabs/open-beside";
+import { openWorkspaceSupportingView } from "@/workspace-tabs/open-supporting-view";
 import type { OpenInSidePanePreferences } from "@/hooks/use-settings";
 
 import type { GitAction, GitActionId, GitActions } from "@/git/policy";
@@ -1565,7 +1564,6 @@ function useDiffTabNavigation({
       hostProfile,
     });
   }, [hosts, isLocalDaemon, serverId]);
-  const showMobileAgent = usePanelStore((state) => state.showMobileAgent);
   const openDiff = useCallback(() => {
     if (!persistenceKey || isMobile) {
       return;
@@ -1617,15 +1615,14 @@ function useDiffTabNavigation({
   );
   const openPullRequest = useCallback(() => {
     if (!persistenceKey) return;
-    openPreferredWorkspaceTarget({
+    openWorkspaceSupportingView({
+      view: "pull-request",
       isCompact: isMobile,
       workspaceKey: persistenceKey,
-      target: { kind: "pull_request" },
-      source: "pullRequests",
+      checkout: { serverId, cwd, isGit: true },
       preferences: openInSidePane,
     });
-    if (isMobile) showMobileAgent();
-  }, [isMobile, openInSidePane, persistenceKey, showMobileAgent]);
+  }, [cwd, isMobile, openInSidePane, persistenceKey, serverId]);
   return {
     openDiff,
     openCommit,

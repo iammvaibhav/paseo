@@ -56,6 +56,7 @@ import {
   openPreferredWorkspaceTarget,
   openWorkspaceTargetBeside,
 } from "@/workspace-tabs/open-beside";
+import { openWorkspaceSupportingView } from "@/workspace-tabs/open-supporting-view";
 import { type ExplorerCheckoutContext } from "@/stores/explorer-checkout-context";
 import { traceInstant } from "@/performance/native-trace";
 import { useSessionStore, type WorkspaceDescriptor } from "@/stores/session-store";
@@ -3348,6 +3349,16 @@ function WorkspaceScreenContent({
           });
           return true;
         }
+        if (action.target === "pull-request") {
+          openWorkspaceSupportingView({
+            view: "pull-request",
+            isCompact: isMobile,
+            workspaceKey: persistenceKey,
+            checkout: activeExplorerCheckout,
+            preferences: openInSidePane,
+          });
+          return true;
+        }
         openWorkspaceTabFocused(persistenceKey, target, FOCUSED_PANE_PLACEMENT);
         return true;
       }
@@ -3370,6 +3381,7 @@ function WorkspaceScreenContent({
       activeExplorerCheckout,
       focusedPaneTabState.pane?.id,
       isMobile,
+      openInSidePane,
       openWorkspaceTabFocused,
       persistenceKey,
     ],
