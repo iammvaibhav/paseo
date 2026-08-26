@@ -70,7 +70,7 @@ import {
   type ReconnectToastState,
 } from "@/panels/reconnect-toast-state";
 import { usePaneContext, usePaneFocus } from "@/panels/pane-context";
-import type { PanelDescriptor, PanelRegistration } from "@/panels/panel-registry";
+import { definePanel, type PanelDescriptor } from "@/panels/panel-registry";
 import { RenderProfile } from "@/utils/render-profiler";
 import { buildDraftPanelDescriptor } from "@/panels/draft-panel-descriptor";
 import {
@@ -104,7 +104,8 @@ import {
 } from "@/stores/session-store";
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
-import { openSidePanelView } from "@/workspace-tabs/side-panel";
+import { openPreferredWorkspaceTarget } from "@/workspace-tabs/open-beside";
+import { useSettings } from "@/hooks/use-settings";
 import type { Theme } from "@/styles/theme";
 import type { PendingPermission } from "@/types/shared";
 import type { StreamItem, TodoEntry } from "@/types/stream";
@@ -417,12 +418,10 @@ export function AgentConversationPanel() {
   invariant(false, "AgentConversationPanel requires an agent or draft target");
 }
 
-export const agentPanelRegistration: PanelRegistration<"agent"> = {
-  kind: "agent",
-  resourceKey: (target) => target.agentId,
+export const agentPanelRegistration = definePanel("agent", {
   component: AgentConversationPanel,
   useDescriptor: useAgentPanelDescriptor,
-};
+});
 
 export function useDraftPanelDescriptor(
   target: { kind: "draft"; draftId: string },
@@ -1018,6 +1017,10 @@ function ChatAgentContent({
     streamViewRef.current?.scrollToBottom("message-sent");
   }, [agentId]);
 
+  const handleRewindComplete = useCallback(() => {
+    streamViewRef.current?.scrollToBottom("rewind");
+  }, []);
+
   const retryAgentLoad = useCallback(() => setMissingAgentState({ kind: "idle" }), []);
 
   const retryTimelineSync = useCallback(() => {
@@ -1158,6 +1161,7 @@ function ChatAgentContent({
       animatedContentStyle={animatedContentStyle}
       handleComposerHeightChange={handleComposerHeightChange}
       handleMessageSent={handleMessageSent}
+      handleRewindComplete={handleRewindComplete}
       showHistorySyncOverlay={showHistorySyncOverlay}
       showHistorySyncError={showHistorySyncError}
       isRetryingHistorySync={isRetryingHistorySync}
@@ -1187,6 +1191,7 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
   animatedContentStyle,
   handleComposerHeightChange,
   handleMessageSent,
+  handleRewindComplete,
   showHistorySyncOverlay,
   showHistorySyncError,
   isRetryingHistorySync,
@@ -1212,6 +1217,7 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
   animatedContentStyle: object[];
   handleComposerHeightChange: (height: number) => void;
   handleMessageSent: () => void;
+  handleRewindComplete: () => void;
   showHistorySyncOverlay: boolean;
   showHistorySyncError: boolean;
   isRetryingHistorySync: boolean;
@@ -1248,8 +1254,6 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
       setIsReleasing(false);
     }
   }, [agentId, agentState.id, appToast, client, isConnected, isReleasing]);
-  const isCompactFormFactor = useIsCompactFormFactor();
-  const composerTrackTailClearance = resolveComposerTrackTailClearance(isCompactFormFactor);
   const subagentRows = useSubagentsForParent({ serverId, parentAgentId: agentId });
   const tasks = useSessionStore((state): TodoEntry[] | undefined =>
     state.sessions[serverId]?.agentTasks.get(agentId),
@@ -1265,7 +1269,6 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
     tasks,
     archiveFinishedStatus: archiveFinishedSubagents.status,
   });
-  const showAgentTracks = hasActiveComposer && hasVisibleAgentTracks;
   const rawAgentInputDraft = useAgentInputDraft({
     draftKey: buildDraftStoreKey({
       serverId,
@@ -1353,7 +1356,6 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
           serverId={serverId}
           agentId={agentId}
           workspaceId={workspaceId}
-          cwd={cwd}
           subagentRows={subagentRows}
           tasks={tasks}
           archiveFinishedStatus={archiveFinishedSubagents.status}
@@ -1368,6 +1370,7 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
     <RewindComposerRestoreProvider
       text={agentInputDraft.text}
       setText={agentInputDraft.replaceText}
+      onRewindComplete={handleRewindComplete}
     >
       <View style={styles.root}>
         <FileDropZone style={styles.container} disabled={isArchivingCurrentAgent}>
@@ -1686,6 +1689,7 @@ function ActiveAgentComposer({
     { initialIsBelow: isCompactFormFactor },
   );
   const paneContext = usePaneContext();
+  const openInSidePane = useSettings((settings) => settings.openInSidePane);
   const { workspaceId, tabId, retargetCurrentTab } = paneContext;
   const { archiveAgent } = useArchiveAgent();
   const closeWorkspaceTab = useWorkspaceLayoutStore((state) => state.closeTab);
@@ -1705,14 +1709,15 @@ function ActiveAgentComposer({
       if (attachment.kind !== "review") {
         return;
       }
-      openSidePanelView({
+      openPreferredWorkspaceTarget({
         isCompact: isCompactFormFactor,
         workspaceKey: buildWorkspaceTabPersistenceKey({ serverId, workspaceId }),
-        checkout: { serverId, cwd: attachment.attachment.cwd, isGit: true },
-        view: "changes",
+        target: { kind: "working_diff" },
+        source: "changesLinks",
+        preferences: openInSidePane,
       });
     },
-    [isCompactFormFactor, serverId, workspaceId],
+    [isCompactFormFactor, openInSidePane, serverId, workspaceId],
   );
 
   const handleClientSlashCommand = useCallback(

@@ -1717,11 +1717,11 @@ export function NewWorkspaceScreen({
   );
   const selectedItem = pickerSelection.selectedItem;
 
-  const handleGithubPrDetected = useCallback(() => {
+  const handleForgeChangeRequestDetected = useCallback(() => {
     dispatchPickerSelection({ type: "pr-detected" });
   }, []);
 
-  const handleGithubPrAutoAttach = useCallback((item: ForgeSearchItem) => {
+  const handleForgeChangeRequestAutoAttach = useCallback((item: ForgeSearchItem) => {
     dispatchPickerSelection({
       type: "pr-added",
       item: { kind: "github-pr", item },
@@ -2352,7 +2352,7 @@ export function NewWorkspaceScreen({
               submitButtonTestID="workspace-create-submit"
               submitIcon="return"
               isSubmitLoading={isPending}
-              waitForGithubAutoAttachOnSubmit
+              waitForForgeAutoAttachOnSubmit
               submitBehavior="preserve-and-lock"
               blurOnSubmit={true}
               value={chatDraft.text}
@@ -2361,8 +2361,8 @@ export function NewWorkspaceScreen({
               attachments={chatDraft.attachments}
               attachmentScopeKeys={visibleDraftContextScopeKeys}
               onChangeAttachments={chatDraft.setAttachments}
-              onGithubPrDetected={handleGithubPrDetected}
-              onGithubPrAutoAttach={handleGithubPrAutoAttach}
+              onForgeChangeRequestDetected={handleForgeChangeRequestDetected}
+              onForgeChangeRequestAutoAttach={handleForgeChangeRequestAutoAttach}
               cwd={selectedSourceDirectory ?? ""}
               clearDraft={handleClearDraft}
               autoFocus

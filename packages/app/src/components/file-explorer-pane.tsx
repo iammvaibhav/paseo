@@ -41,7 +41,9 @@ import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import {
   PaneContentToolbar,
   paneContentToolbarIconSize,
-  paneContentToolbarIconButtonStyle,
+  paneContentToolbarTrailingPadding,
+  ToolbarButton,
+  ToolbarControls,
 } from "@/components/ui/pane-content-toolbar";
 import {
   useOverlayFlatListScrollbar,
@@ -64,7 +66,6 @@ import { useIsLocalDaemon } from "@/hooks/use-is-local-daemon";
 import { useFileExplorerActions } from "@/hooks/use-file-explorer-actions";
 import { buildWorkspaceExplorerStateKey } from "@/hooks/use-file-explorer-actions";
 import { usePanelStore, type ExpandedPathsUpdate, type SortOption } from "@/stores/panel-store";
-import { formatTimeAgo } from "@/utils/time";
 import { buildAbsoluteExplorerPath } from "@/utils/explorer-paths";
 import { isHiddenExplorerPath } from "@/file-explorer/visibility";
 import {
@@ -108,16 +109,6 @@ function DirectoryChevronIcon({ loading, expanded }: { loading: boolean; expande
   return <TreeChevron expanded={expanded} />;
 }
 
-function formatFileSize({ size }: { size: number }): string {
-  if (size < 1024) {
-    return `${size} B`;
-  }
-  if (size < 1024 * 1024) {
-    return `${(size / 1024).toFixed(1)} KB`;
-  }
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 interface TreeRowItemProps {
   serverId: string;
   workspaceId?: string | null;
@@ -134,6 +125,7 @@ interface TreeRowItemProps {
   revealTargetName?: string;
   onDownloadEntry: (entry: ExplorerEntry) => void;
   onAddToChat?: (path: string) => void;
+  onOpenFileToSide?: (path: string) => void;
   onNewEntry?: (parentPath: string, kind: "file" | "directory") => void;
   onCollapseDirectory?: (path: string) => void;
   onRenameEntry?: (entry: ExplorerEntry) => void;
@@ -147,13 +139,6 @@ function sortTriggerStyle({
   pressed,
 }: PressableStateCallbackType & { hovered?: boolean }) {
   return [styles.sortTrigger, (Boolean(hovered) || pressed) && styles.sortTriggerHovered];
-}
-
-function iconButtonStyle(
-  isCompact: boolean,
-  { hovered, pressed }: PressableStateCallbackType & { hovered?: boolean },
-) {
-  return paneContentToolbarIconButtonStyle({ hovered, pressed }, false, isCompact);
 }
 
 type ExplorerListRow =
@@ -264,6 +249,7 @@ function TreeRowItem({
   revealTargetName,
   onDownloadEntry,
   onAddToChat,
+  onOpenFileToSide,
   onNewEntry,
   onCollapseDirectory,
   onRenameEntry,
@@ -271,7 +257,6 @@ function TreeRowItem({
   onDeleteEntry,
   testID,
 }: TreeRowItemProps) {
-  const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
   const showNameHover = useCallback(() => setIsHovered(true), []);
   const hideNameHover = useCallback(() => setIsHovered(false), []);
@@ -325,6 +310,10 @@ function TreeRowItem({
     onAddToChat?.(entry.path);
   }, [onAddToChat, entry.path]);
 
+  const handleOpenToSide = useCallback(() => {
+    onOpenFileToSide?.(entry.path);
+  }, [entry.path, onOpenFileToSide]);
+
   const handleNewFile = useCallback(() => {
     onNewEntry?.(entry.path, "file");
   }, [onNewEntry, entry.path]);
@@ -348,30 +337,6 @@ function TreeRowItem({
   const handleDelete = useCallback(() => {
     onDeleteEntry?.(entry);
   }, [onDeleteEntry, entry]);
-
-  const metaHeader = useMemo(
-    () => (
-      <View style={styles.contextMetaBlock}>
-        <View style={styles.contextMetaRow}>
-          <Text style={styles.contextMetaLabel} numberOfLines={1}>
-            {t("workspace.fileExplorer.context.size")}
-          </Text>
-          <Text style={styles.contextMetaValue} numberOfLines={1} ellipsizeMode="tail">
-            {formatFileSize({ size: entry.size })}
-          </Text>
-        </View>
-        <View style={styles.contextMetaRow}>
-          <Text style={styles.contextMetaLabel} numberOfLines={1}>
-            {t("workspace.fileExplorer.context.modified")}
-          </Text>
-          <Text style={styles.contextMetaValue} numberOfLines={1} ellipsizeMode="tail">
-            {formatTimeAgo(new Date(entry.modifiedAt))}
-          </Text>
-        </View>
-      </View>
-    ),
-    [entry.modifiedAt, entry.size, t],
-  );
 
   return (
     <ContextMenu>
@@ -415,13 +380,13 @@ function TreeRowItem({
         revealTargetName={revealTargetName}
         onDownload={handleDownload}
         onAddToChat={onAddToChat ? handleAddToChat : undefined}
+        onOpenToSide={!isDirectory && onOpenFileToSide ? handleOpenToSide : undefined}
         onNewFile={onNewEntry ? handleNewFile : undefined}
         onNewFolder={onNewEntry ? handleNewFolder : undefined}
         onCollapseFolder={isDirectory && isExpanded ? handleCollapseDirectory : undefined}
         onRename={onRenameEntry ? handleRename : undefined}
         onDuplicate={onDuplicateEntry ? handleDuplicate : undefined}
         onDelete={onDeleteEntry ? handleDelete : undefined}
-        header={metaHeader}
         testIDPrefix={testID}
       />
     </ContextMenu>
@@ -433,6 +398,7 @@ interface FileExplorerPaneProps {
   workspaceId?: string | null;
   workspaceRoot: string;
   onOpenFile?: (filePath: string) => void;
+  onOpenFileToSide?: (filePath: string) => void;
   onAddToChat?: (path: string) => void;
 }
 
@@ -441,6 +407,7 @@ export function FileExplorerPane({
   workspaceId,
   workspaceRoot,
   onOpenFile,
+  onOpenFileToSide,
   onAddToChat,
 }: FileExplorerPaneProps) {
   const { t } = useTranslation();
@@ -1009,6 +976,7 @@ export function FileExplorerPane({
           revealTargetName={fileManagerTarget?.label}
           onDownloadEntry={handleDownloadEntry}
           onAddToChat={onAddToChat}
+          onOpenFileToSide={onOpenFileToSide}
           onNewEntry={fsEntryOpsEnabled ? handleNewEntry : undefined}
           onCollapseDirectory={handleCollapseDirectory}
           onRenameEntry={fsEntryOpsEnabled ? handleRenameEntry : undefined}
@@ -1039,6 +1007,7 @@ export function FileExplorerPane({
       fileManagerTarget,
       selectedEntryPath,
       onAddToChat,
+      onOpenFileToSide,
       serverId,
       workspaceId,
     ],
@@ -1061,11 +1030,6 @@ export function FileExplorerPane({
       setCurrentPath: false,
     });
   }, [requestDirectoryListing]);
-
-  const toolbarIconButtonStyle = useCallback(
-    (state: PressableStateCallbackType) => iconButtonStyle(isCompact, state),
-    [isCompact],
-  );
 
   if (!hasWorkspaceScope) {
     return (
@@ -1109,7 +1073,6 @@ export function FileExplorerPane({
           handleBackFromError={handleBackFromError}
           handleRetry={handleRetry}
           sortTriggerStyle={sortTriggerStyle}
-          iconButtonStyle={toolbarIconButtonStyle}
         />
       </FileDropZone>
     </View>
@@ -1288,7 +1251,6 @@ interface FileExplorerPaneContentProps {
   handleBackFromError: () => void;
   handleRetry: () => void;
   sortTriggerStyle: (state: PressableStateCallbackType) => StyleProp<ViewStyle>;
-  iconButtonStyle: (state: PressableStateCallbackType) => StyleProp<ViewStyle>;
 }
 
 function FileExplorerPaneContent(props: FileExplorerPaneContentProps) {
@@ -1312,7 +1274,6 @@ function FileExplorerPaneContent(props: FileExplorerPaneContentProps) {
     handleBackFromError,
     handleRetry,
     sortTriggerStyle: sortTriggerStyleProp,
-    iconButtonStyle: iconButtonStyleProp,
   } = props;
 
   const showHiddenFiles = usePanelStore((state) => state.explorerShowHiddenFiles);
@@ -1330,17 +1291,6 @@ function FileExplorerPaneContent(props: FileExplorerPaneContentProps) {
   const emptyLabel = showHiddenFiles
     ? t("workspace.fileExplorer.empty.noFiles")
     : t("workspace.fileExplorer.empty.noVisibleFiles");
-  const hiddenFilesToggleStyle = useCallback(
-    (state: PressableStateCallbackType) => [
-      iconButtonStyleProp(state),
-      !showHiddenFiles && styles.iconButtonActive,
-    ],
-    [showHiddenFiles, iconButtonStyleProp],
-  );
-  const hiddenFilesToggleAccessibilityState = useMemo(
-    () => ({ selected: !showHiddenFiles }),
-    [showHiddenFiles],
-  );
 
   if (error) {
     return (
@@ -1371,7 +1321,10 @@ function FileExplorerPaneContent(props: FileExplorerPaneContentProps) {
 
   return (
     <View style={[styles.treePane, styles.treePaneFill]}>
-      <PaneContentToolbar style={styles.paneHeader} testID="files-pane-header">
+      <PaneContentToolbar
+        style={[styles.paneHeader, { paddingRight: paneContentToolbarTrailingPadding(isCompact) }]}
+        testID="files-pane-header"
+      >
         <Pressable
           onPress={handleSortCycle}
           style={sortTriggerStyleProp}
@@ -1382,86 +1335,82 @@ function FileExplorerPaneContent(props: FileExplorerPaneContentProps) {
           </Text>
           <ChevronDown size={12} color={theme.colors.foregroundMuted} />
         </Pressable>
-        <View style={styles.headerActions}>
+        <ToolbarControls style={styles.headerActions}>
           {onNewEntryAtRoot ? (
             <>
-              <Pressable
-                onPress={handleNewFileAtRoot}
+              <ToolbarButton
+                label={t("workspace.fileActions.newFile")}
+                compact={isCompact}
                 hitSlop={8}
-                style={iconButtonStyleProp}
-                accessibilityRole="button"
-                accessibilityLabel={t("workspace.fileActions.newFile")}
                 testID="files-new-file"
+                onPress={handleNewFileAtRoot}
               >
                 <FilePlus
                   size={paneContentToolbarIconSize(isCompact)}
-                  color={theme.colors.foregroundMuted}
+                  color={theme.colors.foregroundExtraMuted}
                 />
-              </Pressable>
-              <Pressable
-                onPress={handleNewFolderAtRoot}
+              </ToolbarButton>
+              <ToolbarButton
+                label={t("workspace.fileActions.newFolder")}
+                compact={isCompact}
                 hitSlop={8}
-                style={iconButtonStyleProp}
-                accessibilityRole="button"
-                accessibilityLabel={t("workspace.fileActions.newFolder")}
                 testID="files-new-folder"
+                onPress={handleNewFolderAtRoot}
               >
                 <FolderPlus
                   size={paneContentToolbarIconSize(isCompact)}
-                  color={theme.colors.foregroundMuted}
+                  color={theme.colors.foregroundExtraMuted}
                 />
-              </Pressable>
+              </ToolbarButton>
             </>
           ) : null}
-          <Pressable
-            onPress={handleToggleHiddenFiles}
+          <ToolbarButton
+            label={hiddenFilesToggleAccessibilityLabel}
+            selected={!showHiddenFiles}
+            compact={isCompact}
             hitSlop={8}
-            style={hiddenFilesToggleStyle}
-            accessibilityRole="button"
-            accessibilityLabel={hiddenFilesToggleAccessibilityLabel}
-            accessibilityState={hiddenFilesToggleAccessibilityState}
             testID="files-hidden-toggle"
+            onPress={handleToggleHiddenFiles}
           >
             {showHiddenFiles ? (
               <Eye
                 size={paneContentToolbarIconSize(isCompact)}
-                color={theme.colors.foregroundMuted}
+                color={theme.colors.foregroundExtraMuted}
               />
             ) : (
               <EyeOff
                 size={paneContentToolbarIconSize(isCompact)}
-                color={theme.colors.foregroundMuted}
+                color={theme.colors.foregroundExtraMuted}
               />
             )}
-          </Pressable>
-          <Pressable
-            onPress={handleRefresh}
-            disabled={isRefreshFetching}
-            hitSlop={8}
-            style={iconButtonStyleProp}
-            accessibilityRole="button"
-            accessibilityLabel={
+          </ToolbarButton>
+          <ToolbarButton
+            label={
               isRefreshFetching
                 ? t("workspace.fileExplorer.actions.refreshing")
                 : t("workspace.fileExplorer.actions.refresh")
             }
+            compact={isCompact}
+            disabled={isRefreshFetching}
+            hitSlop={8}
             testID="files-refresh"
+            onPress={handleRefresh}
           >
             <View style={styles.refreshIcon}>
               {isRefreshFetching ? (
                 <LoadingSpinner
                   size={paneContentToolbarIconSize(isCompact)}
-                  color={theme.colors.foregroundMuted}
+                  color={theme.colors.foregroundExtraMuted}
                 />
               ) : (
                 <RotateCw
                   size={paneContentToolbarIconSize(isCompact)}
-                  color={theme.colors.foregroundMuted}
+                  color={theme.colors.foregroundExtraMuted}
                 />
               )}
             </View>
-          </Pressable>
-        </View>
+          </ToolbarButton>
+        </ToolbarControls>
       </PaneContentToolbar>
       <ContextMenu>
         <RootCreationContextTarget enabled={Boolean(onNewEntryAtRoot)}>
@@ -1605,6 +1554,7 @@ function TreeRowDispatcher({
   revealTargetName,
   onDownloadEntry,
   onAddToChat,
+  onOpenFileToSide,
   onNewEntry,
   onCollapseDirectory,
   onRenameEntry,
@@ -1626,6 +1576,7 @@ function TreeRowDispatcher({
   revealTargetName?: string;
   onDownloadEntry: (entry: ExplorerEntry) => void;
   onAddToChat?: (path: string) => void;
+  onOpenFileToSide?: (path: string) => void;
   onNewEntry?: (parentPath: string, kind: "file" | "directory") => void;
   onCollapseDirectory?: (path: string) => void;
   onRenameEntry?: (entry: ExplorerEntry) => void;
@@ -1656,6 +1607,7 @@ function TreeRowDispatcher({
       revealTargetName={revealTargetName}
       onDownloadEntry={onDownloadEntry}
       onAddToChat={onAddToChat}
+      onOpenFileToSide={onOpenFileToSide}
       onNewEntry={onNewEntry}
       onCollapseDirectory={onCollapseDirectory}
       onRenameEntry={onRenameEntry}
@@ -1824,7 +1776,7 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingRight: theme.spacing[3],
+    backgroundColor: theme.colors.surfaceSidebar,
   },
   sortTrigger: {
     flexDirection: "row",
@@ -1837,7 +1789,7 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.base,
   },
   sortTriggerHovered: {
-    backgroundColor: theme.colors.surface2,
+    backgroundColor: theme.colors.surfaceSidebarHover,
   },
   sortTriggerText: {
     fontSize: theme.fontSize.sm,
@@ -1846,7 +1798,6 @@ const styles = StyleSheet.create((theme) => ({
   headerActions: {
     flexDirection: "row",
     alignItems: "center",
-    gap: theme.spacing[1],
   },
   treeList: {
     flex: 1,
@@ -1933,37 +1884,11 @@ const styles = StyleSheet.create((theme) => ({
   draftPlaceholder: {
     color: theme.colors.foregroundExtraMuted,
   },
-  contextMetaBlock: {
-    paddingVertical: theme.spacing[1],
-  },
-  contextMetaRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    minHeight: 32,
-    paddingHorizontal: theme.spacing[3],
-  },
-  contextMetaLabel: {
-    fontSize: theme.fontSize.base,
-    color: theme.colors.foregroundMuted,
-    flexShrink: 0,
-  },
-  contextMetaValue: {
-    fontSize: theme.fontSize.base,
-    color: theme.colors.foreground,
-    fontWeight: theme.fontWeight.medium,
-    flex: 1,
-    minWidth: 0,
-    textAlign: "right",
-  },
   previewHeaderText: {
     flex: 1,
     color: theme.colors.foreground,
     fontSize: theme.fontSize.base,
     fontWeight: theme.fontWeight.normal,
-  },
-  iconButtonActive: {
-    backgroundColor: theme.colors.surface2,
   },
   refreshIcon: {
     width: 16,

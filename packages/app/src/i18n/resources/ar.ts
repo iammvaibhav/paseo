@@ -65,7 +65,7 @@ export const ar: TranslationResources = {
       agents: "الوكلاء",
       newAgent: "وكيل جديد",
       open: "فتح {{name}}",
-      openInSidePanel: "فتح {{name}} في اللوحة الجانبية",
+      openInSidePane: "فتح {{name}} في اللوحة الجانبية",
       openInFocusedPane: "فتح {{name}} في الجزء النشط",
       addProject: "إضافة مشروع",
       home: "بيت",
@@ -510,6 +510,7 @@ export const ar: TranslationResources = {
     },
     fileActions: {
       openFile: "افتح الملف",
+      openToSide: "فتح إلى الجانب",
       copyPath: "نسخ المسار",
       copyRelativePath: "نسخ المسار النسبي",
       revealIn: "إظهار في {{target}}",
@@ -685,6 +686,7 @@ export const ar: TranslationResources = {
         closeLeft: "بالقرب من اليسار",
         closeRight: "قريب من اليمين",
         closeOthers: "أغلق علامات التبويب الأخرى",
+        moveToMain: "Move to main panel",
         reloadAgent: "إعادة تحميل الوكيل",
         reloadAgentTooltip: "قم بإعادة تحميل الوكيل لتحديث المهارات أو MCPs أو حالة تسجيل الدخول.",
         close: "يغلق",
@@ -710,7 +712,7 @@ export const ar: TranslationResources = {
         terminalProfilesMenu: "Terminal profiles",
         editTerminalProfiles: "Edit profiles",
       },
-      sidePanel: {
+      explorerSidebar: {
         open: "افتح اللوحة الجانبية",
         close: "إغلاق اللوحة الجانبية",
         toggle: "تبديل اللوحة الجانبية",
@@ -956,6 +958,7 @@ export const ar: TranslationResources = {
       },
       diff: {
         openChangesTab: "فتح علامة تبويب التغييرات",
+        openDiffTab: "فتح علامة تبويب الفرق",
         closeChangesTab: "إغلاق علامة تبويب التغييرات",
         binaryFile: "ملف ثنائي",
         tooLarge: "الفرق كبير جدًا بحيث لا يمكن عرضه",
@@ -966,6 +969,7 @@ export const ar: TranslationResources = {
         switchToUnified: "التبديل إلى الفرق الموحد",
         switchToSplit: "التبديل إلى الفرق جنبًا إلى جنب",
         options: "خيارات الفرق",
+        inlineDiff: "فرق مضمّن",
         hideWhitespace: "إخفاء المسافة البيضاء",
         showWhitespace: "إظهار المسافة البيضاء",
         scrollLongLines: "قم بتمرير الخطوط الطويلة",
@@ -1040,6 +1044,16 @@ export const ar: TranslationResources = {
         accessibility: {
           pullRequest: "سحب الطلب #{{number}}",
           pullRequest_mr: "طلب دمج !{{number}}",
+          checkStatus: {
+            passed: "ناجح",
+            failed: "فاشل",
+            warning: "تحذير",
+            actionRequired: "إجراء مطلوب",
+            manual: "يدوي",
+            pending: "قيد الانتظار",
+            skipped: "تم التخطي",
+            cancelled: "تم الإلغاء",
+          },
         },
         states: {
           draft: "مسودة",
@@ -1256,6 +1270,14 @@ export const ar: TranslationResources = {
         serviceUnhealthy: "الخدمة {{name}} غير سليمة",
         creating: "جارٍ الإنشاء...",
       },
+      checks: {
+        passed: "ناجحة: {{count}}",
+        failed: "فاشلة: {{count}}",
+        warning: "تحذيرات: {{count}}",
+        actionRequired: "إجراء مطلوب: {{count}}",
+        manual: "يدوية: {{count}}",
+        pending: "قيد الانتظار: {{count}}",
+      },
       actions: {
         menu: "إجراءات Workspace",
         newWorkspace: "مساحة عمل جديدة",
@@ -1342,6 +1364,12 @@ export const ar: TranslationResources = {
     },
   },
   desktop: {
+    windowControls: {
+      minimize: "تصغير النافذة",
+      maximize: "تكبير النافذة",
+      restore: "استعادة النافذة",
+      close: "إغلاق النافذة",
+    },
     quitting: {
       title: "جارٍ إنهاء Paseo...",
       detail: "إيقاف البرنامج الخفي المحلي.",
@@ -1885,6 +1913,7 @@ export const ar: TranslationResources = {
     },
     diff: {
       changesLabel: "التغييرات",
+      diffLabel: "الفرق",
       changesSubtitle: "فروقات شجرة العمل",
       commitSubtitle: "فروقات الالتزام",
       uncommittedSubtitle: "تغييرات غير ملتزم بها",
@@ -1980,6 +2009,7 @@ export const ar: TranslationResources = {
     sections: {
       general: "عام",
       appearance: "مظهر",
+      layout: en.settings.sections.layout,
       editor: "المحرر",
       shortcuts: "الاختصارات",
       integrations: "التكامل",
@@ -1989,6 +2019,7 @@ export const ar: TranslationResources = {
       missionControl: "Mission Control",
       about: "عن",
     },
+    layout: en.settings.layout,
     editor: {
       title: "المحرر",
       vimKeybindings: "اختصارات Vim",
@@ -2103,11 +2134,6 @@ export const ar: TranslationResources = {
         label: "التمرير Terminal",
         description: "يتم الاحتفاظ بالخطوط في المخزن المؤقت الطرفي المدمج",
         accessibilityLabel: "خطوط التمرير Terminal",
-      },
-      sidePanelRouting: {
-        label: "فتح علامات التبويب المساعدة في اللوحة الجانبية",
-        description:
-          "تفتح روابط الملفات وطلبات السحب وتقدم الإعداد بجوار عملك بدلاً من الجزء المركّز عليه",
       },
       autoExpandReasoning: {
         label: "عرض التفكير دائماً",
@@ -2303,7 +2329,6 @@ export const ar: TranslationResources = {
         toggleBothSidebars: "تبديل كلا الشريطين الجانبيين",
         toggleSettings: "تبديل الإعدادات",
         toggleFocusMode: "تبديل وضع التركيز",
-        toggleExplorerPaneMaximization: "تبديل تكبير اللوحة الجانبية",
         cycleTheme: "موضوع الدورة",
         focusMessageInput: "التركيز على إدخال الرسالة",
         cycleAgentMode: "تبديل وضع الوكيل",

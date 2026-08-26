@@ -272,6 +272,7 @@ export type {
 export type AgentManagerEvent =
   | { type: "agent_state"; agent: ManagedAgent }
   | { type: "provider_subagent"; event: ProviderSubagentStoreEvent }
+  | { type: "timeline_replacement"; agentId: string; epoch: string }
   | {
       type: "agent_stream";
       agentId: string;
@@ -291,6 +292,7 @@ export interface SubscribeOptions {
 interface HydrateTimelineOptions {
   force?: boolean;
   broadcast?: boolean | (() => boolean);
+  broadcastTimeline?: boolean;
 }
 
 export type ImportablePersistedAgentQueryOptions = ListImportableSessionsOptions & {
@@ -3790,7 +3792,16 @@ export class AgentManager {
       );
       await invokeRewindCapability(agent.session, { messageId: providerMessageId, mode });
       if (mode !== "files") {
-        await this.hydrateTimelineFromProvider(agentId, { force: true, broadcast: true });
+        await this.hydrateTimelineFromProvider(agentId, {
+          force: true,
+          broadcast: true,
+          broadcastTimeline: false,
+        });
+        this.dispatch({
+          type: "timeline_replacement",
+          agentId,
+          epoch: this.timelineStore.getEpoch(agentId),
+        });
       }
       await this.refreshRuntimeInfo(agent);
       await this.persistSnapshot(agent);
@@ -4664,11 +4675,13 @@ export class AgentManager {
     }
 
     const broadcast = options?.broadcast ?? false;
+    const broadcastTimeline = options?.broadcastTimeline ?? broadcast;
 
     if (options?.force) {
       await this.forceHydrateTimelineFromLegacyProviderHistory(
         agent,
         typeof broadcast === "function" ? broadcast() : broadcast,
+        typeof broadcastTimeline === "function" ? broadcastTimeline() : broadcastTimeline,
       );
       return;
     }
@@ -4679,6 +4692,7 @@ export class AgentManager {
   private async forceHydrateTimelineFromLegacyProviderHistory(
     agent: ActiveManagedAgent,
     broadcast: boolean,
+    broadcastTimeline: boolean,
   ): Promise<void> {
     const historyEvents: Extract<AgentStreamEvent, { type: "timeline" }>[] = [];
     const providerSubagentEvents: Extract<AgentStreamEvent, { type: "provider_subagent" }>[] = [];
@@ -4714,7 +4728,7 @@ export class AgentManager {
         event.item,
         event.timestamp ? { timestamp: event.timestamp } : undefined,
       );
-      if (broadcast) {
+      if (broadcastTimeline) {
         this.dispatchStream(agent.id, event, {
           seq: row.seq,
           epoch: this.timelineStore.getEpoch(agent.id),
