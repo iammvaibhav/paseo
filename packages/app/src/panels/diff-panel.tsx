@@ -118,7 +118,7 @@ function ChangesPanel() {
     (path: string) =>
       openPreferredTarget(
         { kind: "file", path: path.startsWith("/") ? path : `${submodulePrefix}${path}` },
-        isTree ? "explorerChanges" : "diffFiles",
+        isTree ? "diffs" : "diffFiles",
       ),
     [isTree, openPreferredTarget, submodulePrefix],
   );
@@ -130,7 +130,7 @@ function ChangesPanel() {
     (path: string) =>
       openPreferredTarget(
         { kind: "working_diff", focusPath: path, focusRequestId: Date.now() },
-        "explorerChanges",
+        "diffs",
       ),
     [openPreferredTarget],
   );

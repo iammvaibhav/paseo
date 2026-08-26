@@ -56,7 +56,7 @@ import {
   openPreferredWorkspaceTarget,
   openWorkspaceTargetBeside,
 } from "@/workspace-tabs/open-beside";
-import { openWorkspaceSupportingView } from "@/workspace-tabs/open-supporting-view";
+import { openWorkspacePullRequest } from "@/workspace-tabs/open-supporting-view";
 import { type ExplorerCheckoutContext } from "@/stores/explorer-checkout-context";
 import { traceInstant } from "@/performance/native-trace";
 import { useSessionStore, type WorkspaceDescriptor } from "@/stores/session-store";
@@ -2005,6 +2005,7 @@ function WorkspaceScreenContent({
     [openTab],
   );
   const openInSidePane = useSettings((settings) => settings.openInSidePane);
+  const pullRequestOpenLocation = useSettings((settings) => settings.pullRequestOpenLocation);
   const focusWorkspaceTab = useWorkspaceLayoutStore((state) => state.focusTab);
   const selectWorkspaceTabInPane = useWorkspaceLayoutStore((state) => state.selectTabInPane);
   const closeWorkspaceTab = useWorkspaceLayoutStore((state) => state.closeTab);
@@ -3350,12 +3351,11 @@ function WorkspaceScreenContent({
           return true;
         }
         if (action.target === "pull-request") {
-          openWorkspaceSupportingView({
-            view: "pull-request",
+          openWorkspacePullRequest({
             isCompact: isMobile,
             workspaceKey: persistenceKey,
             checkout: activeExplorerCheckout,
-            preferences: openInSidePane,
+            destination: pullRequestOpenLocation,
           });
           return true;
         }
@@ -3381,9 +3381,9 @@ function WorkspaceScreenContent({
       activeExplorerCheckout,
       focusedPaneTabState.pane?.id,
       isMobile,
-      openInSidePane,
       openWorkspaceTabFocused,
       persistenceKey,
+      pullRequestOpenLocation,
     ],
   );
 
