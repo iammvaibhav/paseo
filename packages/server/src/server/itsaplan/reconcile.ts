@@ -44,6 +44,28 @@ function columnRank(column: ItsaplanColumn | undefined): number {
 }
 
 /**
+ * The board an issue belongs to, for a host that holds no mapping for it.
+ *
+ * The mapping file is written only by the designated sync host, so a peer
+ * projecting the agents it runs has none — and the early return on a missing
+ * mapping is why a ticket dispatched to a peer sat in Todo while that peer swept
+ * it every 60 seconds. itsaplan's `identifier` is "<KEY>-<sequenceNumber>" and
+ * the sequence number is always the final segment, so the key survives even when
+ * it contains a hyphen of its own (collision-suffixed PASEO-A1B2 recovers from
+ * PASEO-A1B2-7).
+ *
+ * Callers still prefer a real mapping: it also carries commanderUserId for the
+ * assignee flip-back, which no identifier can supply.
+ */
+function projectKeyFromIdentifier(identifier: string | undefined): string | null {
+  if (!identifier) {
+    return null;
+  }
+  const lastDash = identifier.lastIndexOf("-");
+  return lastDash > 0 ? identifier.slice(0, lastDash) : null;
+}
+
+/**
  * ADR 0002 periodic reconciliation sweep: for each itsaplan issue with a
  * labeled Paseo agent, re-projects drift from the agent's execution truth —
  * never the reverse. Column moves are strictly forward (Todo -> In Progress
@@ -132,21 +154,18 @@ export class ItsaplanReconcileService {
     const client = new ItsaplanClient(config);
     const issue = await client.getIssue(numericIssueId);
     const mapping = this.projectStore.getByItsaplanProjectId(issue.projectId);
-    if (!mapping) {
+    const projectKey = mapping?.itsaplanProjectKey ?? projectKeyFromIdentifier(issue.identifier);
+    if (!projectKey) {
       return;
     }
-    const columns = await client.listProjectColumns(mapping.itsaplanProjectKey);
+    const columns = await client.listProjectColumns(projectKey);
     const currentColumn = columns.find((column) => column.id === issue.columnId);
     const currentRank = columnRank(currentColumn);
 
     if (currentRank < 3 && truthRank > currentRank) {
       const target =
         truthRank === 2
-          ? await client.ensureColumn(
-              mapping.itsaplanProjectKey,
-              ITSAPLAN_READY_FOR_REVIEW_COLUMN_NAME,
-              "started",
-            )
+          ? await client.ensureColumn(projectKey, ITSAPLAN_READY_FOR_REVIEW_COLUMN_NAME, "started")
           : findInProgressColumn(columns);
       if (target && issue.columnId !== target.id) {
         await client.moveIssueColumn(numericIssueId, target.id);
@@ -175,7 +194,7 @@ export class ItsaplanReconcileService {
       config.humanUserId &&
       issue.assigneeUserId === config.humanUserId
     ) {
-      await client.updateAssignee(numericIssueId, mapping.commanderUserId ?? null);
+      await client.updateAssignee(numericIssueId, mapping?.commanderUserId ?? null);
       this.logger.info({ issueId }, "itsaplan.reconcile.assignee_return_corrected");
     }
   }

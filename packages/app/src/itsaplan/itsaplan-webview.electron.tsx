@@ -1,5 +1,11 @@
 import { useEffect, useRef } from "react";
-import { getDesktopHost } from "@/desktop/host";
+import {
+  ensurePersistentBrowserWebview,
+  hidePersistentBrowserWebview,
+  isBrowserWebviewDomReady,
+  navigatePersistentBrowserWebview,
+  showPersistentBrowserWebview,
+} from "@/desktop/browser/resident-webviews";
 import type { ItsaplanEmbedProps } from "./itsaplan-webview.web";
 
 // Electron embed. Metro resolves .electron.tsx ahead of .web.tsx for the desktop
@@ -20,16 +26,27 @@ import type { ItsaplanEmbedProps } from "./itsaplan-webview.web";
 // origin and are kept. That is the same reason code-server's cookie auth already
 // works in Paseo's browser pane.
 //
-// The element is created imperatively rather than as JSX, matching
-// resident-webviews.ts: <webview> is an Electron custom element that React DOM
-// does not model, and its attributes must be set before attach.
+// PERSISTENT, not per-mount. The guest is created once and then parked offscreen
+// when the pane unmounts, exactly as VS Code Web does — see
+// resident-webviews.ts. Creating and destroying it per visit reloaded the whole
+// app every time the user navigated back, which is the difference between an
+// instant pane and a spinner. Parking keeps the WebContents (and its session)
+// alive for the rest of the app's lifetime.
 //
-// Partition is NOT optional: the main window's will-attach-webview handler
-// rejects any attach whose partition is not the Paseo browser profile
+// Lazily created on first visit rather than at launch: a hot guest costs real
+// Chromium memory, and a session that never opens the pane should not pay for
+// it. Only the FIRST visit loads; every later one just reveals the parked node.
+//
+// resident-webviews owns partition and attach: prepareBrowserWebview reads the
+// partition from the desktop bridge, which matters because the main process
+// refuses any attach whose partition is not the Paseo browser profile
 // (packages/desktop/src/features/browser-webviews/index.ts
 // isPaseoBrowserWebviewAttach). Sharing that profile also means itsaplan keeps
-// the same cookie jar as the VS Code Web embed and survives app restarts, which
-// is what makes staying signed in work.
+// the same cookie jar as the VS Code Web embed and stays signed in across
+// restarts.
+
+/** One hot guest for itsaplan, independent of workspace. */
+const ITSAPLAN_BROWSER_ID = "itsaplan-embed";
 
 const CONTAINER_STYLE = {
   flex: 1,
@@ -39,47 +56,31 @@ const CONTAINER_STYLE = {
 
 export function ItsaplanEmbed({ origin, attempt, onLoaded, onFailed, testID }: ItsaplanEmbedProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  // Read callbacks through a ref so re-renders never tear down a live webview:
-  // recreating it would drop the guest's session state and restart the load.
+  // Read callbacks through a ref: they change identity on every render of the
+  // parent, and re-running the effect would re-park and re-reveal the guest.
   const handlersRef = useRef({ onLoaded, onFailed });
   handlersRef.current = { onLoaded, onFailed };
+  // Which (origin, attempt) the live guest was last pointed at, so a Retry or an
+  // origin change navigates instead of silently showing the previous page.
+  const loadedForRef = useRef<string | null>(null);
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container) {
       return undefined;
     }
-    // The partition is supplied by the desktop bridge rather than hardcoded, so
-    // it stays in lockstep with whatever the main process actually allows. No
-    // bridge means no Electron shell, and an unpartitioned webview would be
-    // refused on attach, so leave the pane to report failure instead.
-    const partition = getDesktopHost()?.browser?.profilePartition;
-    if (!partition) {
+    const webview = ensurePersistentBrowserWebview({ browserId: ITSAPLAN_BROWSER_ID, url: origin });
+    if (!webview) {
+      // No desktop bridge, or no document to attach to: the pane's unreachable
+      // state is the honest outcome rather than an empty container.
       handlersRef.current.onFailed();
       return undefined;
     }
-    const webview = document.createElement("webview");
-    webview.setAttribute("src", origin);
-    webview.setAttribute("partition", partition);
-    webview.setAttribute("allowpopups", "true");
-    Object.assign(webview.style, {
-      position: "absolute",
-      inset: "0",
-      width: "100%",
-      height: "100%",
-      border: "none",
-      backgroundColor: "white",
-    });
-    if (testID) {
-      webview.setAttribute("data-testid", testID);
-    }
 
-    // Unlike the iframe, a webview reports real outcomes, so the web variant's
-    // 20s "no load event arrived" watchdog is not needed here.
     const handleLoad = () => handlersRef.current.onLoaded();
     const handleFail = (event: Event) => {
       // Sub-resource failures surface here too; only a failed main document
-      // means the embed itself is unreachable. -3 is ABORTED, which a normal
+      // means the embed itself is unreachable. -3 is ABORTED, which an ordinary
       // in-app navigation also produces.
       const detail = event as Event & { isMainFrame?: boolean; errorCode?: number };
       if (detail.isMainFrame === false || detail.errorCode === -3) {
@@ -93,17 +94,32 @@ export function ItsaplanEmbed({ origin, attempt, onLoaded, onFailed, testID }: I
     webview.addEventListener("did-fail-load", handleFail);
     webview.addEventListener("crashed", handleGone);
     webview.addEventListener("render-process-gone", handleGone);
-    container.append(webview);
+
+    const wanted = `${attempt}:${origin}`;
+    if (loadedForRef.current !== wanted) {
+      // First mount already got `url`; only navigate when the target actually
+      // changed, so a plain revisit does not throw away a loaded page.
+      if (loadedForRef.current !== null) {
+        navigatePersistentBrowserWebview(ITSAPLAN_BROWSER_ID, origin);
+      }
+      loadedForRef.current = wanted;
+    } else if (isBrowserWebviewDomReady(webview)) {
+      // Revisiting an already-loaded guest fires no further load event, so clear
+      // the screen's loading state immediately instead of waiting for a timeout.
+      handlersRef.current.onLoaded();
+    }
+
+    showPersistentBrowserWebview(ITSAPLAN_BROWSER_ID, container);
 
     return () => {
       webview.removeEventListener("did-finish-load", handleLoad);
       webview.removeEventListener("did-fail-load", handleFail);
       webview.removeEventListener("crashed", handleGone);
       webview.removeEventListener("render-process-gone", handleGone);
-      webview.remove();
+      // Park, never destroy: this is what keeps the next visit instant.
+      hidePersistentBrowserWebview(ITSAPLAN_BROWSER_ID);
     };
-    // `attempt` is the screen's Retry signal: bumping it rebuilds the guest.
-  }, [origin, attempt, testID]);
+  }, [origin, attempt]);
 
-  return <div ref={containerRef} style={CONTAINER_STYLE} />;
+  return <div ref={containerRef} style={CONTAINER_STYLE} data-testid={testID} />;
 }

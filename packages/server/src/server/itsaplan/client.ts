@@ -73,6 +73,10 @@ export type ItsaplanLabel = z.infer<typeof ItsaplanLabelSchema>;
 const ItsaplanIssueSchema = z.object({
   id: z.number(),
   projectId: z.number(),
+  // "<PROJECT KEY>-<sequenceNumber>", e.g. AMBIENTAISTA-9. The only response
+  // field carrying the project's KEY rather than its numeric id, which is what
+  // lets a host with no local project mapping still resolve the board.
+  identifier: z.string().optional(),
   sequenceNumber: z.number(),
   columnId: z.number(),
   title: z.string(),
