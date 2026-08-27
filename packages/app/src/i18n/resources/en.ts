@@ -2445,6 +2445,7 @@ export const en = {
         newTerminal: "New terminal",
         searchFiles: "Search files",
         toggleCommandCenter: "Toggle command center",
+        toggleCommandCenterFromGuest: "Toggle command center from an embedded app",
         showKeyboardShortcuts: "Show keyboard shortcuts",
         toggleLeftSidebar: "Toggle left sidebar",
         toggleRightSidebar: "Toggle Explorer sidebar",

@@ -2317,6 +2317,7 @@ export const zhCN: TranslationResources = {
         newTerminal: "新建终端",
         searchFiles: "搜索文件",
         toggleCommandCenter: "切换命令中心",
+        toggleCommandCenterFromGuest: "Toggle command center from an embedded app",
         showKeyboardShortcuts: "显示键盘快捷键",
         toggleLeftSidebar: "切换左侧边栏",
         toggleRightSidebar: "切换侧边面板",

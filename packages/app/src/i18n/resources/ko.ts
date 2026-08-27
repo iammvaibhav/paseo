@@ -2355,6 +2355,7 @@ export const ko: TranslationResources = {
         newTerminal: "새 터미널",
         searchFiles: "파일 검색",
         toggleCommandCenter: "명령 센터 토글",
+        toggleCommandCenterFromGuest: "Toggle command center from an embedded app",
         showKeyboardShortcuts: "키보드 단축키 표시",
         toggleLeftSidebar: "왼쪽 사이드바 토글",
         toggleRightSidebar: "사이드 패널 토글",

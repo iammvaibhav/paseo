@@ -2363,6 +2363,7 @@ export const ja: TranslationResources = {
         newTerminal: "新しいターミナル",
         searchFiles: "ファイルを検索",
         toggleCommandCenter: "コマンドセンターを切り替え",
+        toggleCommandCenterFromGuest: "Toggle command center from an embedded app",
         showKeyboardShortcuts: "キーボードショートカットを表示",
         toggleLeftSidebar: "左サイドバーを切り替え",
         toggleRightSidebar: "サイドパネルを切り替え",

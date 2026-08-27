@@ -2343,6 +2343,7 @@ export const ar: TranslationResources = {
         newTerminal: "محطة جديدة",
         searchFiles: "البحث في الملفات",
         toggleCommandCenter: "تبديل مركز القيادة",
+        toggleCommandCenterFromGuest: "Toggle command center from an embedded app",
         showKeyboardShortcuts: "إظهار اختصارات لوحة المفاتيح",
         toggleLeftSidebar: "تبديل الشريط الجانبي الأيسر",
         toggleRightSidebar: "تبديل اللوحة الجانبية",

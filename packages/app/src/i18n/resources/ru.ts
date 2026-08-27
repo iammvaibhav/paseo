@@ -2382,6 +2382,7 @@ export const ru: TranslationResources = {
         newTerminal: "Новый терминал",
         searchFiles: "Поиск файлов",
         toggleCommandCenter: "Переключить командный центр",
+        toggleCommandCenterFromGuest: "Toggle command center from an embedded app",
         showKeyboardShortcuts: "Показать сочетания клавиш",
         toggleLeftSidebar: "Переключить левую боковую панель",
         toggleRightSidebar: "Переключить боковую панель",

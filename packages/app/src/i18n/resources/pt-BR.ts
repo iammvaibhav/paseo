@@ -2379,6 +2379,7 @@ export const ptBR: TranslationResources = {
         newTerminal: "Novo terminal",
         searchFiles: "Pesquisar arquivos",
         toggleCommandCenter: "Alternar central de comandos",
+        toggleCommandCenterFromGuest: "Toggle command center from an embedded app",
         showKeyboardShortcuts: "Mostrar atalhos de teclado",
         toggleLeftSidebar: "Alternar barra lateral esquerda",
         toggleRightSidebar: "Alternar painel lateral",

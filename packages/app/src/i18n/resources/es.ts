@@ -2396,6 +2396,7 @@ export const es: TranslationResources = {
         newTerminal: "Nueva terminal",
         searchFiles: "Buscar archivos",
         toggleCommandCenter: "Alternar centro de comando",
+        toggleCommandCenterFromGuest: "Toggle command center from an embedded app",
         showKeyboardShortcuts: "Mostrar atajos de teclado",
         toggleLeftSidebar: "Alternar barra lateral izquierda",
         toggleRightSidebar: "Alternar panel lateral",

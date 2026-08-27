@@ -2400,6 +2400,7 @@ export const fr: TranslationResources = {
         newTerminal: "Nouvelle borne",
         searchFiles: "Rechercher des fichiers",
         toggleCommandCenter: "Basculer le centre de commande",
+        toggleCommandCenterFromGuest: "Toggle command center from an embedded app",
         showKeyboardShortcuts: "Afficher les raccourcis clavier",
         toggleLeftSidebar: "Basculer la barre latérale gauche",
         toggleRightSidebar: "Basculer le panneau latéral",
