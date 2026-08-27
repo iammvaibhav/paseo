@@ -1857,6 +1857,7 @@ export interface CreateSessionAgentStreamReducerQueueInput {
   ) => void;
   recoverTimelineGap: (agentId: string, cursor: { epoch: string; endSeq: number }) => void;
   recoverTimelineBaseline: (agentId: string) => void;
+  onCommitted?: (agentId: string) => void;
 }
 
 interface ScheduledReducerFlush {
@@ -1916,6 +1917,7 @@ export function createSessionAgentStreamReducerQueue(
     setAgentTimelineCursor,
     recoverTimelineGap,
     recoverTimelineBaseline,
+    onCommitted,
   } = input;
 
   return createAgentStreamReducerQueue({
@@ -1975,6 +1977,7 @@ export function createSessionAgentStreamReducerQueue(
           return next;
         });
       }
+      onCommitted?.(agentId);
     },
     handleSideEffects: (agentId, sideEffects) => {
       for (const effect of sideEffects) {

@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useRef, useSyncExternalStore } from "react";
+import { useMemo, useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import equal from "fast-deep-equal";
 import { useShallow } from "zustand/shallow";
 import { isCommanderOrMachineryLabels } from "@getpaseo/protocol/mission-control/system-owned";
@@ -60,6 +60,7 @@ function toAggregatedAgent(agent: Agent, serverId: string, serverLabel: string):
 
 export function useAggregatedAgents(options?: {
   includeArchived?: boolean;
+  demand?: boolean;
 }): AggregatedAgentsResult {
   const daemons = useHosts();
   const runtime = getHostRuntimeStore();
@@ -71,6 +72,13 @@ export function useAggregatedAgents(options?: {
   // their lifecycle shows on the board like any root agent. One filter here
   // so no surface keeps its own variant.
   const [verbose] = useMissionControlVerbose();
+  const demand = options?.demand ?? true;
+  const serverIds = useMemo(() => daemons.map((daemon) => daemon.serverId), [daemons]);
+  useEffect(() => {
+    if (!demand) return;
+    const releases = serverIds.map((serverId) => runtime.acquireDirectoryDemand(serverId));
+    return () => releases.forEach((release) => release());
+  }, [demand, runtime, serverIds]);
   const runtimeVersion = useSyncExternalStore(
     (onStoreChange) => runtime.subscribeAll(onStoreChange),
     () => runtime.getVersion(),
@@ -88,8 +96,9 @@ export function useAggregatedAgents(options?: {
   );
 
   const refreshAll = useCallback(() => {
-    runtime.refreshAllAgentDirectories();
-  }, [runtime]);
+    if (!demand) return;
+    for (const serverId of serverIds) void runtime.refreshDirectories(serverId);
+  }, [demand, runtime, serverIds]);
 
   // Keyed by "serverId:agentId" — reuse the previous AggregatedAgent object when
   // none of its fields changed, so downstream memo/shallow comparisons can bail early.
