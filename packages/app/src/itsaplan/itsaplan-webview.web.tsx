@@ -72,3 +72,10 @@ export function ItsaplanEmbed({ origin, attempt, onLoaded, onFailed, testID }: I
     />
   );
 }
+
+/**
+ * No-op outside the Electron shell. Only the desktop build keeps a persistent
+ * guest that can be warmed ahead of time; an iframe and a react-native WebView
+ * are created by rendering them.
+ */
+export function warmItsaplanEmbed(_origin: string): void {}

@@ -150,3 +150,19 @@ function toEmbedOrigin(origin: string, insecureHttp: boolean): string {
   url.port = String(ITSAPLAN_EMBED_HTTP_PORT);
   return url.origin;
 }
+
+/**
+ * The host whose itsaplan the embed targets: the local daemon when there is
+ * one, otherwise the first registered host.
+ *
+ * Shared so the screen and the startup warmer cannot drift. If they picked
+ * different hosts the warmer would load one origin into the hot guest and the
+ * screen would immediately navigate it somewhere else, which is worse than not
+ * warming at all.
+ */
+export function pickItsaplanEmbedHost<T extends { serverId: string }>(
+  hosts: readonly T[],
+  localServerId: string | null,
+): T | null {
+  return hosts.find((host) => host.serverId === localServerId) ?? hosts[0] ?? null;
+}

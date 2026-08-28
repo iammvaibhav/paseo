@@ -6,6 +6,7 @@ import {
   navigatePersistentBrowserWebview,
   showPersistentBrowserWebview,
 } from "@/desktop/browser/resident-webviews";
+import { planItsaplanEmbedVisit } from "./itsaplan-embed-visit";
 import type { ItsaplanEmbedProps } from "./itsaplan-webview.web";
 
 // Electron embed. Metro resolves .electron.tsx ahead of .web.tsx for the desktop
@@ -33,9 +34,11 @@ import type { ItsaplanEmbedProps } from "./itsaplan-webview.web";
 // instant pane and a spinner. Parking keeps the WebContents (and its session)
 // alive for the rest of the app's lifetime.
 //
-// Lazily created on first visit rather than at launch: a hot guest costs real
-// Chromium memory, and a session that never opens the pane should not pay for
-// it. Only the FIRST visit loads; every later one just reveals the parked node.
+// Warmed at launch (warmItsaplanEmbed, called from the host runtime once the
+// host list is known) so the first visit reveals a loaded page instead of a
+// spinner. It was lazy before, on the theory that a session which never opens
+// the pane should not pay for a hot guest; in practice the pane is opened every
+// session and the first-visit load was the whole cost.
 //
 // resident-webviews owns partition and attach: prepareBrowserWebview reads the
 // partition from the desktop bridge, which matters because the main process
@@ -47,6 +50,39 @@ import type { ItsaplanEmbedProps } from "./itsaplan-webview.web";
 
 /** One hot guest for itsaplan, independent of workspace. */
 const ITSAPLAN_BROWSER_ID = "itsaplan-embed";
+
+/**
+ * Which `attempt:origin` the hot guest currently shows, or null when it has
+ * never been pointed anywhere.
+ *
+ * Module scope, deliberately. This used to be a per-mount ref, which was wrong
+ * because the pane unmounts every time the user navigates away: on the next
+ * visit the ref was null again, so an already-loaded guest looked like a first
+ * load, `onLoaded` never fired, and the screen sat on its spinner forever over
+ * a perfectly live pane. The guest outlives the component, so the record of
+ * what it is showing has to outlive the component too.
+ */
+let loadedTarget: string | null = null;
+
+function embedTarget(attempt: number, origin: string): string {
+  return `${attempt}:${origin}`;
+}
+
+/**
+ * Create the itsaplan guest and start loading it before anyone opens the pane.
+ * Safe to call repeatedly: the guest is created once, and a call for an origin
+ * that is already loading or loaded does nothing.
+ */
+export function warmItsaplanEmbed(origin: string): void {
+  const target = embedTarget(0, origin);
+  if (loadedTarget !== null) {
+    return;
+  }
+  if (!ensurePersistentBrowserWebview({ browserId: ITSAPLAN_BROWSER_ID, url: origin })) {
+    return;
+  }
+  loadedTarget = target;
+}
 
 const CONTAINER_STYLE = {
   flex: 1,
@@ -60,9 +96,6 @@ export function ItsaplanEmbed({ origin, attempt, onLoaded, onFailed, testID }: I
   // parent, and re-running the effect would re-park and re-reveal the guest.
   const handlersRef = useRef({ onLoaded, onFailed });
   handlersRef.current = { onLoaded, onFailed };
-  // Which (origin, attempt) the live guest was last pointed at, so a Retry or an
-  // origin change navigates instead of silently showing the previous page.
-  const loadedForRef = useRef<string | null>(null);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -95,17 +128,16 @@ export function ItsaplanEmbed({ origin, attempt, onLoaded, onFailed, testID }: I
     webview.addEventListener("crashed", handleGone);
     webview.addEventListener("render-process-gone", handleGone);
 
-    const wanted = `${attempt}:${origin}`;
-    if (loadedForRef.current !== wanted) {
-      // First mount already got `url`; only navigate when the target actually
-      // changed, so a plain revisit does not throw away a loaded page.
-      if (loadedForRef.current !== null) {
-        navigatePersistentBrowserWebview(ITSAPLAN_BROWSER_ID, origin);
-      }
-      loadedForRef.current = wanted;
-    } else if (isBrowserWebviewDomReady(webview)) {
-      // Revisiting an already-loaded guest fires no further load event, so clear
-      // the screen's loading state immediately instead of waiting for a timeout.
+    const visit = planItsaplanEmbedVisit({
+      current: loadedTarget,
+      wanted: embedTarget(attempt, origin),
+      domReady: isBrowserWebviewDomReady(webview),
+    });
+    if (visit.navigate) {
+      navigatePersistentBrowserWebview(ITSAPLAN_BROWSER_ID, origin);
+    }
+    loadedTarget = visit.nextTarget;
+    if (visit.reportLoaded) {
       handlersRef.current.onLoaded();
     }
 

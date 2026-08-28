@@ -9,7 +9,7 @@ import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { useIsLocalDaemon, useLocalDaemonServerId } from "@/hooks/use-is-local-daemon";
 import { getDesktopHost } from "@/desktop/host";
 import { useAppSettings } from "@/hooks/use-settings";
-import { resolveItsaplanEmbedOrigin } from "@/itsaplan/itsaplan-origin";
+import { pickItsaplanEmbedHost, resolveItsaplanEmbedOrigin } from "@/itsaplan/itsaplan-origin";
 import { ItsaplanEmbed } from "@/itsaplan/itsaplan-webview";
 import { useHosts } from "@/runtime/host-runtime";
 
@@ -48,7 +48,7 @@ export function ItsaplanScreen(): ReactElement {
   // itsaplan is a per-machine service: prefer the local daemon's machine, else
   // the first registered host.
   const targetHost = useMemo(
-    () => hosts.find((host) => host.serverId === localServerId) ?? hosts[0] ?? null,
+    () => pickItsaplanEmbedHost(hosts, localServerId),
     [hosts, localServerId],
   );
   const isLocalDaemon = useIsLocalDaemon(targetHost?.serverId ?? "");

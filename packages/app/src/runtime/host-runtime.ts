@@ -43,7 +43,8 @@ import {
 } from "@/desktop/daemon/desktop-daemon-transport";
 import { getDesktopHost } from "@/desktop/host";
 import { collectBrowserEditorOrigins } from "@/workspace/browser-editor-url";
-import { resolveItsaplanEmbedOrigin } from "@/itsaplan/itsaplan-origin";
+import { pickItsaplanEmbedHost, resolveItsaplanEmbedOrigin } from "@/itsaplan/itsaplan-origin";
+import { warmItsaplanEmbed } from "@/itsaplan/itsaplan-webview";
 import { loadAppSettingsFromStorage } from "@/hooks/use-settings";
 import { CLIENT_CAPS } from "@getpaseo/protocol/client-capabilities";
 import { BROWSER_AUTOMATION_COMMAND_NAMES } from "@getpaseo/protocol/browser-automation/rpc-schemas";
@@ -98,18 +99,56 @@ async function syncInsecureOrigins(hosts: readonly HostProfile[]): Promise<void>
   } catch (error) {
     console.warn("[HostRuntime] Failed to sync browser-editor insecure origins", error);
   }
+  await warmItsaplanEmbedForActiveHost(hosts);
+}
+
+/**
+ * Start loading itsaplan into its persistent guest as soon as the host list is
+ * known, so the first visit to the pane reveals a loaded page instead of a
+ * spinner.
+ *
+ * Rides along with the insecure-origin sync because it needs the same two
+ * things — the desktop bridge and the resolved embed origin — and because the
+ * allowlist must be in place before the guest loads, or the page loads without
+ * a secure context and crypto.randomUUID breaks.
+ */
+async function warmItsaplanEmbedForActiveHost(hosts: readonly HostProfile[]): Promise<void> {
+  const target = pickItsaplanEmbedHost(hosts, await resolveLocalDaemonServerId());
+  if (!target) {
+    return;
+  }
+  let configuredOrigin: string | null = null;
+  try {
+    configuredOrigin = (await loadAppSettingsFromStorage()).itsaplanOrigin || null;
+  } catch {
+    configuredOrigin = null;
+  }
+  const resolved = resolveItsaplanEmbedOrigin({
+    isLocalDaemon: target.serverId === (await resolveLocalDaemonServerId()),
+    configuredOrigin,
+    browserEditorUrl: target.browserEditorUrl ?? null,
+    hostProfile: target,
+    insecureHttp: true,
+  });
+  if (resolved) {
+    warmItsaplanEmbed(resolved.origin);
+  }
+}
+
+async function resolveLocalDaemonServerId(): Promise<string | null> {
+  if (!shouldUseDesktopDaemon()) {
+    return null;
+  }
+  try {
+    const status = await getDesktopDaemonStatus();
+    return status.serverId.trim() || null;
+  } catch {
+    return null;
+  }
 }
 
 async function collectItsaplanEmbedOrigins(hosts: readonly HostProfile[]): Promise<string[]> {
-  let localServerId: string | null = null;
-  if (shouldUseDesktopDaemon()) {
-    try {
-      const status = await getDesktopDaemonStatus();
-      localServerId = status.serverId.trim() || null;
-    } catch {
-      localServerId = null;
-    }
-  }
+  const localServerId = await resolveLocalDaemonServerId();
   let configuredOrigin: string | null = null;
   try {
     configuredOrigin = (await loadAppSettingsFromStorage()).itsaplanOrigin || null;

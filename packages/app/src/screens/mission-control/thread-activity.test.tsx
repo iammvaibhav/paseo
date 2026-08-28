@@ -116,7 +116,13 @@ const {
 });
 
 vi.mock("react-native", () => ({
-  Platform: { OS: "web" },
+  // theme.ts calls Platform.select at module scope, and this suite reaches it
+  // through turn-footer, so the stub needs more than OS.
+  Platform: {
+    OS: "web",
+    select: (specifics: Record<string, unknown>) =>
+      "web" in specifics ? specifics.web : specifics.default,
+  },
   View: ({ children, testID }: { children?: React.ReactNode; testID?: string }) =>
     React.createElement("div", { "data-testid": testID }, children),
   Pressable: ({ children, testID }: { children?: React.ReactNode; testID?: string }) =>
