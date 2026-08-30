@@ -67,6 +67,13 @@ Description=Paseo MacBook redeploy watch (deploys to the MacBook when it returns
 [Service]
 Type=oneshot
 Environment=HOME=%h
+# deploy.sh self-detaches into its own session and must outlive this oneshot.
+# systemd's default KillMode=control-group kills every process left in the
+# unit's cgroup the instant ExecStart returns, which killed the deploy before
+# it wrote a single log line (observed: a 0-byte deploy.log and a watch that
+# then reported the attempt "unconfirmed"). KillMode=process leaves the
+# detached child alone.
+KillMode=process
 ExecStart=/bin/bash -c '$schedule_cmd'
 EOF
 
