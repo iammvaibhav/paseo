@@ -18,6 +18,7 @@ import type {
 import type { AgentManager } from "../agent-manager.js";
 import type { ManagedAgent } from "../agent-manager.js";
 import { AgentProfileSchema } from "@getpaseo/protocol/messages";
+import { slugify } from "@getpaseo/protocol/branch-slug";
 import type { DaemonConfigStore } from "../../daemon-config-store.js";
 import {
   AgentFeatureSchema,
@@ -928,26 +929,44 @@ interface CommanderSpawnPlanInput {
   };
 }
 
+const DISPATCH_BRANCH_FALLBACK = "dispatch";
+
+/** Name a dispatch's branch after what was asked for, so the workspace is recognisable. */
+function deriveDispatchBranchName(input: { title?: string; initialPrompt?: string }): string {
+  return slugify(input.title ?? input.initialPrompt ?? "") || DISPATCH_BRANCH_FALLBACK;
+}
+
+/**
+ * Every Commander dispatch gets its own worktree. A caller opts out only by
+ * naming an existing workspace or asking for isolation "local"; there is no
+ * implicit "run in the shared checkout".
+ *
+ * branchName is set unconditionally because the peer path needs it:
+ * CreateAgentWorktreeTarget requires `newBranch`, so a plan without a branch
+ * name reached a peer host as a plain directory create and silently landed the
+ * agent in the shared checkout. Local branch collisions are resolved by the
+ * worktree service.
+ */
 function resolveCommanderWorktreePlan(input: {
   worktree?: CommanderSpawnPlanInput["worktree"];
   isolation?: "local" | "worktree";
   baseBranch?: string;
   branchName?: string;
   worktreeSlug?: string;
+  workspaceId?: string;
+  title?: string;
+  initialPrompt?: string;
 }): CommanderSpawnPlanInput["worktree"] | undefined {
   if (input.worktree) {
     return input.worktree;
   }
-  if (!input.isolation && !input.baseBranch && !input.branchName && !input.worktreeSlug) {
-    return undefined;
-  }
-  if (input.isolation === "local") {
+  if (input.workspaceId || input.isolation === "local") {
     return undefined;
   }
   return {
     action: "branch-off",
     ...(input.worktreeSlug ? { worktreeName: input.worktreeSlug } : {}),
-    ...(input.branchName ? { branchName: input.branchName } : {}),
+    branchName: input.branchName ?? deriveDispatchBranchName(input),
     ...(input.baseBranch ? { baseBranch: input.baseBranch } : {}),
   };
 }

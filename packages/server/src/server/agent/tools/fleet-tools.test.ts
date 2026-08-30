@@ -900,6 +900,70 @@ describe("approval-gate wrap point (runCommanderGatedAction)", () => {
     });
   });
 
+  test("a Commander dispatch defaults to its own worktree, branch named after the ask", async () => {
+    const createProposal = vi.fn(async () => ({
+      id: "mcp_default_wt",
+      status: "pending",
+      kind: "spawn",
+    }));
+    const missionControlService = createMissionControlServiceStub({
+      approvals: { createProposal },
+    });
+    const catalog = createCommanderCatalog({ missionControlService });
+    await catalog.executeTool("fleet_create_agent", {
+      host: "local",
+      provider: "codex/gpt-5.4",
+      initialPrompt: "have a look at the flaky watcher test",
+      title: "Fix the login bug",
+    });
+    // No isolation and no workspaceId: the dispatch still gets a worktree, and
+    // the branch name is present so the peer create path can carry it.
+    expect(createProposal.mock.calls[0][0].spawnPlan).toMatchObject({
+      worktree: { action: "branch-off", branchName: "fix-the-login-bug" },
+    });
+  });
+
+  test("a Commander dispatch falls back to a generic branch name when there is no title", async () => {
+    const createProposal = vi.fn(async () => ({
+      id: "mcp_fallback_wt",
+      status: "pending",
+      kind: "spawn",
+    }));
+    const missionControlService = createMissionControlServiceStub({
+      approvals: { createProposal },
+    });
+    const catalog = createCommanderCatalog({ missionControlService });
+    await catalog.executeTool("fleet_create_agent", {
+      host: "local",
+      provider: "codex/gpt-5.4",
+      initialPrompt: "!!!",
+      title: "???",
+    });
+    expect(createProposal.mock.calls[0][0].spawnPlan).toMatchObject({
+      worktree: { action: "branch-off", branchName: "dispatch" },
+    });
+  });
+
+  test("isolation 'local' opts a Commander dispatch out of the worktree default", async () => {
+    const createProposal = vi.fn(async () => ({
+      id: "mcp_local_wt",
+      status: "pending",
+      kind: "spawn",
+    }));
+    const missionControlService = createMissionControlServiceStub({
+      approvals: { createProposal },
+    });
+    const catalog = createCommanderCatalog({ missionControlService });
+    await catalog.executeTool("fleet_create_agent", {
+      host: "local",
+      provider: "codex/gpt-5.4",
+      initialPrompt: "poke around the shared checkout",
+      title: "read only look",
+      isolation: "local",
+    });
+    expect(createProposal.mock.calls[0][0].spawnPlan.worktree).toBeUndefined();
+  });
+
   test("fleet_create_agent into a NEW workspace on a peer resolves labels over the peer RPC", async () => {
     const createProposal = vi.fn(async () => ({
       id: "mcp_new_ws",
