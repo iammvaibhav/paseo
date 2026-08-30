@@ -586,6 +586,14 @@ function isExplicitWorktreeRequested(
   );
 }
 
+function isNotGitRepositoryError(error: unknown): boolean {
+  if (error instanceof Error) {
+    const msg = error.message.toLowerCase();
+    return msg.includes("requires a git repository") || msg.includes("not a git repository");
+  }
+  return false;
+}
+
 function shouldAttemptMcpWorktree(params: {
   isolation?: CreateAgentFromMcpInput["isolation"];
   worktree?: CreateAgentFromMcpInput["worktree"];
@@ -600,7 +608,6 @@ function shouldAttemptMcpWorktree(params: {
   const isTicket = Boolean(params.labels && params.labels[ITSAPLAN_ISSUE_LABEL_KEY]);
   return { attempt: explicit || isTicket, explicit };
 }
-
 function createAgentWorktreeSetupContinuation(
   dependencies: CreateAgentCommandDependencies,
 ): CreatePaseoWorktreeSetupContinuationInput {
@@ -675,12 +682,12 @@ async function resolveMcpCwd(params: {
       createdWorktree,
     };
   } catch (error) {
-    if (explicit) {
+    if (explicit || !isNotGitRepositoryError(error)) {
       throw error;
     }
-    dependencies.logger.info(
+    dependencies.logger.debug(
       { err: error, cwd: params.cwd },
-      "createAgentCommand: automatic worktree creation skipped (non-git or failed), falling back to directory workspace",
+      "createAgentCommand: non-git directory, using directory workspace",
     );
     return { resolvedCwd: params.cwd };
   }

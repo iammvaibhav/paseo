@@ -590,3 +590,86 @@ test("ticket dispatch default on a git project creates a worktree instead of the
     await removeRealAgentManagerWorkdir({ agentManager, storage, workdir });
   }
 });
+
+test("ticket dispatch on a non-git directory quietly falls back to directory workspace", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "create-agent-nongit-fallback-test-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const agentManager = createRealAgentManager(storage);
+  const providerSnapshotManager = createProviderSnapshotManagerStub().manager;
+  const createPaseoWorktree = vi.fn(async () => {
+    throw new Error("Create worktree requires a git repository");
+  });
+  const ensureWorkspaceForCreate = vi.fn(async () => "ws-nongit-directory");
+
+  try {
+    const { snapshot } = await createAgentCommand(
+      {
+        agentManager,
+        agentStorage: storage,
+        logger,
+        providerSnapshotManager,
+        createPaseoWorktree,
+        ensureWorkspaceForCreate,
+      },
+      {
+        kind: "mcp",
+        provider: "codex/gpt-5.4",
+        title: "nongit-ticket-worker",
+        cwd: workdir,
+        initialPrompt: "Work on ticket in non-git directory",
+        labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: "14" },
+        background: true,
+        notifyOnFinish: false,
+      },
+    );
+
+    expect(createPaseoWorktree).toHaveBeenCalledTimes(1);
+    expect(ensureWorkspaceForCreate).toHaveBeenCalledTimes(1);
+    const storedAgent = await storage.get(snapshot.id);
+    expect(storedAgent?.workspaceId).toBe("ws-nongit-directory");
+    expect(snapshot.cwd).toBe(workdir);
+  } finally {
+    await removeRealAgentManagerWorkdir({ agentManager, storage, workdir });
+  }
+});
+
+test("ticket dispatch on a git project surfaces genuine worktree creation failures instead of silently falling back", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "create-agent-git-failure-test-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const agentManager = createRealAgentManager(storage);
+  const providerSnapshotManager = createProviderSnapshotManagerStub().manager;
+  const createPaseoWorktree = vi.fn(async () => {
+    throw new Error("ENOSPC: no space left on device, write");
+  });
+  const ensureWorkspaceForCreate = vi.fn(async () => "ws-shared-checkout");
+
+  try {
+    await expect(
+      createAgentCommand(
+        {
+          agentManager,
+          agentStorage: storage,
+          logger,
+          providerSnapshotManager,
+          createPaseoWorktree,
+          ensureWorkspaceForCreate,
+        },
+        {
+          kind: "mcp",
+          provider: "codex/gpt-5.4",
+          title: "failing-ticket-worker",
+          cwd: workdir,
+          initialPrompt: "Work on ticket on full disk",
+          labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: "15" },
+          background: true,
+          notifyOnFinish: false,
+        },
+      ),
+    ).rejects.toThrow("ENOSPC: no space left on device, write");
+
+    expect(createPaseoWorktree).toHaveBeenCalledTimes(1);
+    expect(ensureWorkspaceForCreate).not.toHaveBeenCalled();
+  } finally {
+    await removeRealAgentManagerWorkdir({ agentManager, storage, workdir });
+  }
+});
