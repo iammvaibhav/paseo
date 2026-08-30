@@ -594,18 +594,16 @@ describe("fleet_send_prompt mode", () => {
     expect(result.structuredContent).toEqual({ success: true, deliveryMode: "steer-interrupt" });
   });
 
-  test("steer with native images skips OMP live-steer so images land on interrupt", async () => {
-    const tryRunOutOfBand = vi.fn((agentId: string, prompt: unknown) => {
-      // Real OMP only intercepts `/steer` text. A structured image prompt
-      // must fall through to replace so the images actually reach the worker.
-      return typeof prompt === "string" && prompt.startsWith("/steer ");
-    });
+  test("steer with native images live-steers a structured OMP /steer prompt", async () => {
+    const tryRunOutOfBand = vi.fn(() => true);
     const replaceAgentRun = vi.fn(async function* () {});
+    const appendTimelineItem = vi.fn(async () => undefined);
     const agentManager = {
       getAgent: vi.fn(() => ({ provider: "omp" })),
       hasInFlightRun: vi.fn(() => true),
       tryRunOutOfBand,
       replaceAgentRun,
+      appendTimelineItem,
     } as unknown as AgentManager;
 
     const result = await dispatchLocalPromptMode({
@@ -620,16 +618,18 @@ describe("fleet_send_prompt mode", () => {
       logger: createTestLogger(),
     });
 
-    expect(tryRunOutOfBand).not.toHaveBeenCalledWith("agent-1", expect.stringMatching(/^\/steer /));
-    expect(replaceAgentRun).toHaveBeenCalledWith(
-      "agent-1",
-      [
-        { type: "text", text: "see this screenshot" },
-        { type: "image", data: "aaa", mimeType: "image/png" },
-      ],
-      { replaceOrigin: "machinery" },
-    );
-    expect(result).toBe("steer-interrupt");
+    expect(tryRunOutOfBand).toHaveBeenCalledWith("agent-1", [
+      { type: "text", text: "/steer see this screenshot" },
+      { type: "image", data: "aaa", mimeType: "image/png" },
+    ]);
+    expect(replaceAgentRun).not.toHaveBeenCalled();
+    expect(appendTimelineItem).toHaveBeenCalledWith("agent-1", {
+      type: "user_message",
+      text: "see this screenshot",
+      classification: "machinery",
+      images: [{ data: "aaa", mimeType: "image/png" }],
+    });
+    expect(result).toBe("steer");
   });
 
   test("validates the attachments schema and rejects unknown attachment types", async () => {

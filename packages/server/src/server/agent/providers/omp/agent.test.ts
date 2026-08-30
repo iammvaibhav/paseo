@@ -2,6 +2,7 @@ import { setImmediate as waitForImmediate } from "node:timers/promises";
 import { describe, expect, test, vi } from "vitest";
 import pino from "pino";
 
+import type { AgentPromptInput } from "../../agent-sdk-types.js";
 import type { PaseoToolCatalog } from "../../tools/types.js";
 import type { OmpNoTurnScheduler, OmpProviderIdleScheduler } from "./agent.js";
 import type { OmpUsagePollScheduler } from "./usage-poller.js";
@@ -1091,6 +1092,58 @@ describe("OMP agent client and session", () => {
         contextWindowUsedTokens: 149_000,
       },
     });
+  });
+
+  test("tryHandleOutOfBand forwards image attachments with /steer", async () => {
+    const omp = new OmpHarness();
+    await omp.start();
+    omp.runtime().state.model = { id: "gpt-4o", provider: "openai", input: ["text", "image"] };
+    const prompt: AgentPromptInput = [
+      { type: "text", text: "/steer look at this chart" },
+      { type: "image", data: "base64data", mimeType: "image/png" },
+    ];
+    const handler = omp.getSession().tryHandleOutOfBand(prompt);
+    expect(handler).not.toBeNull();
+    await handler?.run({ emit: () => {} });
+    expect(omp.runtime().steerRequests).toEqual([{ message: "look at this chart", imageCount: 1 }]);
+  });
+
+  test("tryHandleOutOfBand forwards image attachments with /follow-up", async () => {
+    const omp = new OmpHarness();
+    await omp.start();
+    omp.runtime().state.model = { id: "gpt-4o", provider: "openai", input: ["text", "image"] };
+    const prompt: AgentPromptInput = [
+      { type: "text", text: "/follow-up here is extra context" },
+      { type: "image", data: "base64data", mimeType: "image/png" },
+    ];
+    const handler = omp.getSession().tryHandleOutOfBand(prompt);
+    expect(handler).not.toBeNull();
+    await handler?.run({ emit: () => {} });
+    expect(omp.runtime().followUpRequests).toEqual([
+      { message: "here is extra context", imageCount: 1 },
+    ]);
+  });
+
+  test("steerActiveTurn forwards image attachments during an active turn", async () => {
+    const omp = new OmpHarness();
+    await omp.start();
+    omp.runtime().state.model = { id: "gpt-4o", provider: "openai", input: ["text", "image"] };
+    const runtime = omp.runtime();
+    const promptStarted = runtime.nextPrompt();
+    const { turnId } = await omp.getSession().startTurn("first turn");
+    await promptStarted;
+    runtime.beginTurn();
+    const prompt: AgentPromptInput = [
+      { type: "text", text: "steer active turn with image" },
+      { type: "image", data: "base64data", mimeType: "image/png" },
+    ];
+    const result = await omp.getSession().steerActiveTurn(prompt, {
+      expectedTurnId: turnId,
+    });
+    expect(result).toEqual({ status: "accepted" });
+    expect(omp.runtime().steerRequests).toEqual([
+      { message: "steer active turn with image", imageCount: 1 },
+    ]);
   });
   test("steerActiveTurn delegates to runtimeSession.steer when turn matches", async () => {
     const omp = new OmpHarness();

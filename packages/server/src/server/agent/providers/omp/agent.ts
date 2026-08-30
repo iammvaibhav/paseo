@@ -1466,10 +1466,8 @@ export class OmpAgentSession implements AgentSession {
   tryHandleOutOfBand(
     prompt: AgentPromptInput,
   ): { run(ctx: { emit: (event: AgentStreamEvent) => void }): Promise<void> } | null {
-    if (typeof prompt !== "string") {
-      return null;
-    }
-    const parsed = this.parseSlashCommandInput(prompt);
+    const converted = convertPromptInput(prompt, { model: this.state.model });
+    const parsed = this.parseSlashCommandInput(converted.text);
     if (!parsed) {
       return null;
     }
@@ -1490,16 +1488,16 @@ export class OmpAgentSession implements AgentSession {
       };
     }
     if (commandName === "steer" || commandName === "follow-up") {
-      const message = parsed.args?.trim();
-      if (!message) {
+      const message = parsed.args?.trim() ?? "";
+      if (!message && (!converted.images || converted.images.length === 0)) {
         return null;
       }
       return {
         run: async () => {
           if (commandName === "steer") {
-            this.runtimeSession.steer(message);
+            this.runtimeSession.steer(message, converted.images);
           } else {
-            this.runtimeSession.followUp(message);
+            this.runtimeSession.followUp(message, converted.images);
           }
         },
       };
