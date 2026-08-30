@@ -70,7 +70,6 @@ export const fr: TranslationResources = {
       openInFocusedPane: "Ouvrir {{name}} dans le volet actif",
       addProject: "Ajouter un projet",
       home: "Maison",
-      itsaplan: "itsaplan",
       groupByProject: "Grouper par projet",
       groupByStatus: "Grouper par statut",
       modelGroupLabel: "Modèle",

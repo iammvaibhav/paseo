@@ -69,7 +69,6 @@ export const ru: TranslationResources = {
       openInFocusedPane: "Открыть {{name}} в активной области",
       addProject: "Добавить проект",
       home: "Главная",
-      itsaplan: "itsaplan",
       groupByProject: "Группировать по проекту",
       groupByStatus: "Группировать по статусу",
       modelGroupLabel: "Модель",
