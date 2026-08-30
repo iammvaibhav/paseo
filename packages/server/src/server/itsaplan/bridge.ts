@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { LifecycleBucket } from "@getpaseo/protocol/agent-state-bucket";
 import type {
   MissionControlEvent,
+  MissionControlLifecycleAction,
   MissionControlProof,
 } from "@getpaseo/protocol/mission-control/types";
 import type { AgentManagerEvent, ManagedAgent } from "../agent/agent-manager.js";
@@ -75,6 +76,11 @@ export interface ItsaplanBridgeMissionControl {
    * entry comment. */
   subscribeEvents(listener: (event: MissionControlEvent) => void): () => void;
   getLifecycleBucket(agentId: string): Promise<LifecycleBucket>;
+  setLifecycle(input: {
+    agentId: string;
+    agentIds?: string[];
+    action: MissionControlLifecycleAction;
+  }): Promise<{ ok: true } | { ok: false; error: string }>;
 }
 
 export interface ItsaplanWebhookRequest {
@@ -410,6 +416,31 @@ export class ItsaplanBridge {
       }
       await this.dispatchIssue(mapping, config, issue);
       return;
+    }
+    if (column.stateType === "completed") {
+      const agentId = await this.findAgentIdByIssueLabel(String(issue.id));
+      if (agentId) {
+        const bucket = await this.missionControl.getLifecycleBucket(agentId);
+        if (bucket !== "done") {
+          const result = await this.missionControl.setLifecycle({ agentId, action: "done" });
+          if (!result.ok) {
+            this.logger.warn(
+              { issueId: issue.id, agentId, error: result.error },
+              "itsaplan.bridge.agent_lifecycle_set_done_failed",
+            );
+          } else {
+            this.logger.info(
+              { issueId: issue.id, agentId, columnId: column.id, columnName: column.name },
+              "itsaplan.bridge.agent_lifecycle_set_done",
+            );
+          }
+        }
+      } else {
+        this.logger.info(
+          { issueId: issue.id, columnId: column.id, columnName: column.name },
+          "itsaplan.bridge.completed_issue_no_linked_agent",
+        );
+      }
     }
 
     const isReadyForReview =

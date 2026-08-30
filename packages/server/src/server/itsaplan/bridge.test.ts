@@ -3,7 +3,10 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { LifecycleBucket } from "@getpaseo/protocol/agent-state-bucket";
-import type { MissionControlEvent } from "@getpaseo/protocol/mission-control/types";
+import type {
+  MissionControlEvent,
+  MissionControlLifecycleAction,
+} from "@getpaseo/protocol/mission-control/types";
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import type { AgentManagerEvent, ManagedAgent } from "../agent/agent-manager.js";
 import type { StoredAgentRecord } from "../agent/agent-storage.js";
@@ -375,10 +378,12 @@ function createFakeMissionControl(initialBucket: LifecycleBucket): {
   emitSelfReport: (event: MissionControlEvent) => void;
   emitEvent: (event: MissionControlEvent) => void;
   setBucket: (bucket: LifecycleBucket) => void;
+  lifecycleActions: Array<{ agentId: string; action: MissionControlLifecycleAction }>;
 } {
   let selfReportListener: ((event: MissionControlEvent) => void) | null = null;
   let eventListener: ((event: MissionControlEvent) => void) | null = null;
   let bucket = initialBucket;
+  const lifecycleActions: Array<{ agentId: string; action: MissionControlLifecycleAction }> = [];
   return {
     control: {
       subscribeSelfReports: (callback) => {
@@ -394,12 +399,20 @@ function createFakeMissionControl(initialBucket: LifecycleBucket): {
         };
       },
       getLifecycleBucket: async () => bucket,
+      setLifecycle: async (input) => {
+        lifecycleActions.push({ agentId: input.agentId, action: input.action });
+        if (input.action === "done") {
+          bucket = "done";
+        }
+        return { ok: true };
+      },
     },
     emitSelfReport: (event) => selfReportListener?.(event),
     emitEvent: (event) => eventListener?.(event),
     setBucket: (next) => {
       bucket = next;
     },
+    lifecycleActions,
   };
 }
 
@@ -951,6 +964,161 @@ describe("ItsaplanBridge", () => {
       const result = await bridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
       expect(deliverMachineryPrompt).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("Done / completed column -> agent lifecycle (reverse edge)", () => {
+    test("Done webhook (completed column) updates linked agent lifecycle to done", async () => {
+      agentStorageRecords.push({
+        id: "agent-done-1",
+        labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) },
+        updatedAt: new Date().toISOString(),
+      });
+      missionControlFake.setBucket("ready");
+
+      // Issue moved to Done (columnId: 4, stateType: "completed")
+      issues.get(ISSUE_ID)!.columnId = 4;
+      const request = webhookRequest("issue.state_changed", {
+        id: ISSUE_ID,
+        projectId: PROJECT_ID,
+        sequenceNumber: 42,
+        columnId: 4,
+        title: "Fix the bug",
+        description: null,
+      });
+      const result = await bridge.handleWebhookRequest(request);
+      expect(result.status).toBe(200);
+      expect(missionControlFake.lifecycleActions).toEqual([
+        { agentId: "agent-done-1", action: "done" },
+      ]);
+      expect(await missionControlFake.control.getLifecycleBucket("agent-done-1")).toBe("done");
+    });
+
+    test("idempotent and no loop/bounce: repeated Done webhook or subsequent agent_state does not cycle or re-move columns", async () => {
+      agentStorageRecords.push({
+        id: "agent-bounce-1",
+        labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) },
+        updatedAt: new Date().toISOString(),
+      });
+      missionControlFake.setBucket("ready");
+
+      // First webhook delivery
+      issues.get(ISSUE_ID)!.columnId = 4; // Done
+      const request = webhookRequest("issue.state_changed", {
+        id: ISSUE_ID,
+        projectId: PROJECT_ID,
+        sequenceNumber: 42,
+        columnId: 4,
+        title: "Fix the bug",
+        description: null,
+      });
+      request.headers["x-itsaplan-event-id"] = "evt-done-1";
+      const first = await bridge.handleWebhookRequest(request);
+      expect(first.status).toBe(200);
+      expect(missionControlFake.lifecycleActions).toHaveLength(1);
+
+      // Second webhook delivery with same event id (deduped by event id)
+      const second = await bridge.handleWebhookRequest(request);
+      expect(second.status).toBe(200);
+      expect(missionControlFake.lifecycleActions).toHaveLength(1);
+
+      // Third webhook delivery with different event id (loop guard: bucket already done)
+      const request2 = webhookRequest("issue.state_changed", {
+        id: ISSUE_ID,
+        projectId: PROJECT_ID,
+        sequenceNumber: 42,
+        columnId: 4,
+        title: "Fix the bug",
+        description: null,
+      });
+      request2.headers["x-itsaplan-event-id"] = "evt-done-2";
+      const third = await bridge.handleWebhookRequest(request2);
+      expect(third.status).toBe(200);
+      expect(missionControlFake.lifecycleActions).toHaveLength(1);
+
+      // Subsequent agent_state event from Mission Control/daemon (bucket is now "done")
+      // does not post dispatch comments, does not re-move ticket to Ready to review or In Progress
+      const commentCountBefore = fakeServer.comments.length;
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent("agent-bounce-1", { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+      });
+
+      // Column remains Done (4), no extra comments posted
+      expect(issues.get(ISSUE_ID)?.columnId).toBe(4);
+      expect(fakeServer.comments.length).toBe(commentCountBefore);
+    });
+
+    test("resolves latest attempt when multiple agents share an issue label", async () => {
+      agentStorageRecords.push(
+        {
+          id: "agent-old-attempt",
+          labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) },
+          updatedAt: "2026-01-01T10:00:00.000Z",
+        },
+        {
+          id: "agent-latest-attempt",
+          labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) },
+          updatedAt: "2026-01-01T12:00:00.000Z",
+        },
+      );
+      missionControlFake.setBucket("ready");
+
+      issues.get(ISSUE_ID)!.columnId = 4;
+      const request = webhookRequest("issue.state_changed", {
+        id: ISSUE_ID,
+        projectId: PROJECT_ID,
+        sequenceNumber: 42,
+        columnId: 4,
+        title: "Fix the bug",
+        description: null,
+      });
+      const result = await bridge.handleWebhookRequest(request);
+      expect(result.status).toBe(200);
+      expect(missionControlFake.lifecycleActions).toEqual([
+        { agentId: "agent-latest-attempt", action: "done" },
+      ]);
+    });
+
+    test("ignores completed webhook when no agent is linked to the issue", async () => {
+      // agentStorageRecords is empty — no agent with this label
+      issues.get(ISSUE_ID)!.columnId = 4;
+      const request = webhookRequest("issue.state_changed", {
+        id: ISSUE_ID,
+        projectId: PROJECT_ID,
+        sequenceNumber: 42,
+        columnId: 4,
+        title: "Fix the bug",
+        description: null,
+      });
+      const result = await bridge.handleWebhookRequest(request);
+      expect(result.status).toBe(200);
+      expect(missionControlFake.lifecycleActions).toHaveLength(0);
+    });
+
+    test("Canceled webhook releases dependents but does NOT mark agent lifecycle done", async () => {
+      agentStorageRecords.push({
+        id: "agent-canceled-1",
+        labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) },
+        updatedAt: new Date().toISOString(),
+      });
+      missionControlFake.setBucket("running");
+
+      issues.get(ISSUE_ID)!.columnId = 5; // Canceled (stateType: "canceled")
+      const request = webhookRequest("issue.state_changed", {
+        id: ISSUE_ID,
+        projectId: PROJECT_ID,
+        sequenceNumber: 42,
+        columnId: 5,
+        title: "Fix the bug",
+        description: null,
+      });
+      const result = await bridge.handleWebhookRequest(request);
+      expect(result.status).toBe(200);
+      expect(missionControlFake.lifecycleActions).toHaveLength(0);
+      expect(await missionControlFake.control.getLifecycleBucket("agent-canceled-1")).toBe(
+        "running",
+      );
     });
   });
 
