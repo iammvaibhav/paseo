@@ -2,6 +2,12 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { ItsaplanApiError, ItsaplanClient } from "./client.js";
+import {
+  MAX_TICKET_IMAGE_BYTES,
+  resolveTicketAttachments,
+  rewriteMarkdownAttachmentUrls,
+  stripNativeMarkdownImages,
+} from "./ticket-images.js";
 
 interface State {
   issue: {
@@ -36,6 +42,7 @@ interface State {
     sizeBytes?: number;
     createdAt?: string;
     url: string;
+    bytes?: Buffer;
   }>;
   initiatives?: Map<
     number,
@@ -102,6 +109,18 @@ function startServer(apiKey: string, state: State) {
       }
       if (req.method === "GET" && path === "/issues/1/attachments") {
         send(200, state.attachments ?? []);
+        return;
+      }
+      const rawAttachmentMatch = /^\/attachments\/([^/]+)\/raw$/.exec(path);
+      if (req.method === "GET" && rawAttachmentMatch) {
+        const id = rawAttachmentMatch[1];
+        const att = (state.attachments ?? []).find((candidate) => candidate.id === id);
+        if (!att || !att.bytes) {
+          send(404, { error: "not found" });
+          return;
+        }
+        res.writeHead(200, { "content-type": att.contentType ?? "application/octet-stream" });
+        res.end(att.bytes);
         return;
       }
       const initiativeMatch = /^\/initiatives\/(\d+)$/.exec(path);
@@ -345,6 +364,84 @@ describe("ItsaplanClient", () => {
     ];
     const attachments = await client.listIssueAttachments(1);
     expect(attachments).toEqual(state.attachments);
+  });
+
+  test("downloadAttachment returns raw bytes and content type", async () => {
+    const png = Buffer.from("png-bytes");
+    state.attachments = [
+      {
+        id: "att-1",
+        filename: "diagram.png",
+        contentType: "image/png",
+        url: "/attachments/att-1/raw",
+        bytes: png,
+      },
+    ];
+    const downloaded = await client.downloadAttachment("/attachments/att-1/raw");
+    expect(downloaded.bytes.equals(png)).toBe(true);
+    expect(downloaded.contentType).toMatch(/^image\/png/);
+  });
+
+  test("resolveTicketAttachments attaches raster images natively and leaves other files as links", async () => {
+    const png = Buffer.from("hello-png");
+    state.attachments = [
+      {
+        id: "att-img",
+        filename: "screenshot.png",
+        contentType: "image/png",
+        url: "/attachments/att-img/raw",
+        bytes: png,
+      },
+      {
+        id: "att-log",
+        filename: "stacktrace.log",
+        contentType: "text/plain",
+        url: "/attachments/att-log/raw",
+      },
+      {
+        id: "att-svg",
+        filename: "icon.svg",
+        contentType: "image/svg+xml",
+        url: "/attachments/att-svg/raw",
+      },
+    ];
+    const resolved = await resolveTicketAttachments(client, 1, handle.baseUrl);
+    expect(resolved.images).toEqual([{ data: png.toString("base64"), mimeType: "image/png" }]);
+    expect(resolved.files).toEqual([
+      { filename: "stacktrace.log", url: `${handle.baseUrl}/attachments/att-log/raw` },
+      { filename: "icon.svg", url: `${handle.baseUrl}/attachments/att-svg/raw` },
+    ]);
+  });
+
+  test("resolveTicketAttachments keeps oversized images as file links", async () => {
+    state.attachments = [
+      {
+        id: "att-huge",
+        filename: "huge.png",
+        contentType: "image/png",
+        sizeBytes: MAX_TICKET_IMAGE_BYTES + 1,
+        url: "/attachments/att-huge/raw",
+      },
+    ];
+    const resolved = await resolveTicketAttachments(client, 1, handle.baseUrl);
+    expect(resolved.images).toEqual([]);
+    expect(resolved.files).toEqual([
+      { filename: "huge.png", url: `${handle.baseUrl}/attachments/att-huge/raw` },
+    ]);
+  });
+
+  test("rewriteMarkdownAttachmentUrls maps /media/attachments to /attachments", () => {
+    const rewritten = rewriteMarkdownAttachmentUrls(
+      "![image.png](/media/attachments/abc/raw)Describe the image",
+    );
+    expect(rewritten).toBe("![image.png](/attachments/abc/raw)Describe the image");
+  });
+
+  test("stripNativeMarkdownImages drops markdown image embeds", () => {
+    const stripped = stripNativeMarkdownImages(
+      "![image.png](/media/attachments/abc/raw)Describe the image",
+    );
+    expect(stripped).toBe("Describe the image");
   });
 
   test("getInitiative returns initiative details including description", async () => {

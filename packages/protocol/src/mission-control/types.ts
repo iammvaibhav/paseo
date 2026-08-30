@@ -120,6 +120,9 @@ export const MissionControlProposalSpawnPlanSchema = z.object({
   summary: z.string(),
   // Reconstruction payload (server-internal; not rendered by the app).
   initialPrompt: z.string().optional(),
+  // Native images for the worker's first prompt (composer paste / ticket
+  // images). Optional so older daemons still parse spawn plans.
+  images: z.array(z.object({ data: z.string(), mimeType: z.string() })).optional(),
   cwd: z.string().optional(),
   workspaceId: z.string().optional(),
   thinking: z.string().optional(),

@@ -64,6 +64,7 @@ interface FakeAttachment {
   sizeBytes?: number;
   createdAt?: string;
   url: string;
+  bytes?: Buffer;
 }
 
 interface FakeInitiative {
@@ -188,6 +189,20 @@ function startFakeItsaplanServer(options: {
         const issueId = Number(attachmentsMatch[1]);
         const atts = options.attachments?.get(issueId) ?? [];
         send(200, atts);
+        return;
+      }
+      const rawAttachmentMatch = /^\/attachments\/([^/]+)\/raw$/.exec(path);
+      if (req.method === "GET" && rawAttachmentMatch) {
+        const id = rawAttachmentMatch[1];
+        for (const atts of options.attachments?.values() ?? []) {
+          const att = atts.find((candidate) => candidate.id === id);
+          if (att?.bytes) {
+            res.writeHead(200, { "content-type": att.contentType ?? "application/octet-stream" });
+            res.end(att.bytes);
+            return;
+          }
+        }
+        send(404, { error: "not found" });
         return;
       }
       const initiativeMatch = /^\/initiatives\/(\d+)$/.exec(path);
@@ -1326,14 +1341,16 @@ describe("ItsaplanBridge", () => {
       expect(prompt).toContain("Initiative description: Robust execution engine");
     });
 
-    test("dispatches ticket with attachments (images and files) formatted with full URLs", async () => {
+    test("dispatches ticket images natively and leaves non-image files as links", async () => {
+      const png = Buffer.from("screenshot-bytes");
       attachments.set(ISSUE_ID, [
         {
           id: "att-img-1",
           filename: "screenshot-error.png",
           contentType: "image/png",
-          sizeBytes: 2048,
+          sizeBytes: png.length,
           url: "/attachments/att-img-1/raw",
+          bytes: png,
         },
         {
           id: "att-file-2",
@@ -1357,11 +1374,50 @@ describe("ItsaplanBridge", () => {
       expect(result.status).toBe(200);
       expect(deliverMachineryPrompt).toHaveBeenCalledTimes(1);
       const prompt = deliverMachineryPrompt.mock.calls[0]?.[0] as string;
-      expect(prompt).toContain("Attachments:");
-      expect(prompt).toContain(
-        `- screenshot-error.png: ${config.baseUrl}/attachments/att-img-1/raw`,
-      );
+      const images = deliverMachineryPrompt.mock.calls[0]?.[1] as
+        | Array<{ data: string; mimeType: string }>
+        | undefined;
+      expect(prompt).toContain("1 image attached natively");
+      expect(prompt).toContain("File attachments:");
+      expect(prompt).not.toContain("screenshot-error.png:");
       expect(prompt).toContain(`- stacktrace.log: ${config.baseUrl}/attachments/att-file-2/raw`);
+      expect(images).toEqual([{ data: png.toString("base64"), mimeType: "image/png" }]);
+    });
+
+    test("strips markdown /media/ image embeds from the body when the image is attached natively", async () => {
+      const png = Buffer.from("paseo-24-bytes");
+      attachments.set(ISSUE_ID, [
+        {
+          id: "66d0fd2f-a849-4730-bf8a-083aa1f94000",
+          filename: "image.png",
+          contentType: "image/png",
+          sizeBytes: png.length,
+          url: "/attachments/66d0fd2f-a849-4730-bf8a-083aa1f94000/raw",
+          bytes: png,
+        },
+      ]);
+
+      const request = webhookRequest("issue.state_changed", {
+        id: ISSUE_ID,
+        projectId: PROJECT_ID,
+        sequenceNumber: 24,
+        columnId: 2,
+        title: "Test image",
+        description:
+          "![image.png](/media/attachments/66d0fd2f-a849-4730-bf8a-083aa1f94000/raw)Describe the image",
+      });
+
+      const result = await bridge.handleWebhookRequest(request);
+      expect(result.status).toBe(200);
+      const prompt = deliverMachineryPrompt.mock.calls[0]?.[0] as string;
+      const images = deliverMachineryPrompt.mock.calls[0]?.[1] as
+        | Array<{ data: string; mimeType: string }>
+        | undefined;
+      expect(prompt).toContain("1 image attached natively");
+      expect(prompt).toContain("Describe the image");
+      expect(prompt).not.toContain("/media/attachments/");
+      expect(prompt).not.toContain("![image.png]");
+      expect(images).toEqual([{ data: png.toString("base64"), mimeType: "image/png" }]);
     });
 
     test("dispatches ticket with both initiative and attachments", async () => {
@@ -1381,7 +1437,9 @@ describe("ItsaplanBridge", () => {
         {
           id: "mockup-1",
           filename: "design.png",
+          contentType: "image/png",
           url: "/attachments/mockup-1/raw",
+          bytes: Buffer.from("design-bytes"),
         },
       ]);
 
@@ -1400,8 +1458,8 @@ describe("ItsaplanBridge", () => {
       const prompt = deliverMachineryPrompt.mock.calls[0]?.[0] as string;
       expect(prompt).toContain("Initiative: Mobile App V2");
       expect(prompt).toContain("Initiative description: New redesign");
-      expect(prompt).toContain("Attachments:");
-      expect(prompt).toContain(`- design.png: ${config.baseUrl}/attachments/mockup-1/raw`);
+      expect(prompt).toContain("1 image attached natively");
+      expect(prompt).not.toContain("File attachments:");
     });
 
     test("dependent issue dispatch includes initiative and attachments when unblocked", async () => {
@@ -1453,7 +1511,7 @@ describe("ItsaplanBridge", () => {
       expect(prompt).toContain("ENG-20");
       expect(prompt).toContain("Initiative: Backend API");
       expect(prompt).toContain("Initiative description: Service endpoints");
-      expect(prompt).toContain("Attachments:");
+      expect(prompt).toContain("File attachments:");
       expect(prompt).toContain(`- openapi.json: ${config.baseUrl}/attachments/spec-doc/raw`);
     });
   });
@@ -2215,7 +2273,7 @@ describe("buildDispatchPrompt", () => {
     expect(prompt).not.toContain("Initiative description:");
   });
 
-  test("includes attachments with filenames and URLs", () => {
+  test("lists non-image files as links and notes native images separately", () => {
     const prompt = buildDispatchPrompt({
       issueId: 42,
       ticketKey: "ENG-10",
@@ -2223,24 +2281,38 @@ describe("buildDispatchPrompt", () => {
       body: "See screenshots",
       url: "http://10.7.0.1:3000/project/ENG/issues/10",
       projectKey: "paseo",
+      nativeImageCount: 2,
       attachments: [
         {
-          filename: "screen1.png",
-          url: "http://10.7.0.1:3000/attachments/uuid1/raw",
-        },
-        {
-          filename: "screen2.jpg",
-          url: "http://10.7.0.1:3000/attachments/uuid2/raw",
+          filename: "notes.txt",
+          url: "http://10.7.0.1:3000/attachments/notes/raw",
         },
       ],
     });
 
-    expect(prompt).toContain("Attachments:");
-    expect(prompt).toContain("- screen1.png: http://10.7.0.1:3000/attachments/uuid1/raw");
-    expect(prompt).toContain("- screen2.jpg: http://10.7.0.1:3000/attachments/uuid2/raw");
+    expect(prompt).toContain("2 images attached natively");
+    expect(prompt).toContain("File attachments:");
+    expect(prompt).toContain("- notes.txt: http://10.7.0.1:3000/attachments/notes/raw");
   });
 
-  test("includes both initiative and attachments formatted in expected sections", () => {
+  test("strips markdown image embeds from the body when native images are attached", () => {
+    const prompt = buildDispatchPrompt({
+      issueId: 42,
+      ticketKey: "PASEO-24",
+      title: "Test image",
+      body: "![image.png](/media/attachments/abc/raw)Describe the image",
+      url: "http://10.7.0.1:3000/project/PASEO/issues/24",
+      projectKey: "paseo",
+      nativeImageCount: 1,
+    });
+
+    expect(prompt).toContain("Describe the image");
+    expect(prompt).toContain("1 image attached natively");
+    expect(prompt).not.toContain("/media/attachments/");
+    expect(prompt).not.toContain("![image.png]");
+  });
+
+  test("includes both initiative and file attachments formatted in expected sections", () => {
     const prompt = buildDispatchPrompt({
       issueId: 42,
       ticketKey: "ENG-10",
@@ -2252,10 +2324,11 @@ describe("buildDispatchPrompt", () => {
         title: "Theme Refresh",
         description: "Support multiple themes",
       },
+      nativeImageCount: 1,
       attachments: [
         {
-          filename: "palette.png",
-          url: "http://10.7.0.1:3000/attachments/palette-id/raw",
+          filename: "spec.pdf",
+          url: "http://10.7.0.1:3000/attachments/spec/raw",
         },
       ],
     });
@@ -2263,8 +2336,9 @@ describe("buildDispatchPrompt", () => {
     expect(prompt).toContain("Initiative: Theme Refresh");
     expect(prompt).toContain("Initiative description: Support multiple themes");
     expect(prompt).toContain("Toggle in settings pane");
+    expect(prompt).toContain("1 image attached natively");
     expect(prompt).toContain(
-      "Attachments:\n- palette.png: http://10.7.0.1:3000/attachments/palette-id/raw",
+      "File attachments:\n- spec.pdf: http://10.7.0.1:3000/attachments/spec/raw",
     );
   });
 });

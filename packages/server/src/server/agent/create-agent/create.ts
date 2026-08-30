@@ -104,6 +104,8 @@ export interface CreateAgentFromMcpInput {
   thinking?: string;
   features?: Record<string, unknown>;
   labels?: Record<string, string>;
+  images?: Array<{ data: string; mimeType: string }>;
+  attachments?: AgentAttachment[];
   mode?: string;
   unattended?: boolean;
   promptFailure?: CreateAgentPromptFailureMode;
@@ -381,6 +383,8 @@ async function resolveMcpCreateAgent(
   });
 
   const trimmedPrompt = input.initialPrompt?.trim() ?? "";
+  const prompt = buildAgentPrompt(trimmedPrompt, input.images, input.attachments);
+  const hasPromptContent = Array.isArray(prompt) ? prompt.length > 0 : prompt.length > 0;
   return {
     config: buildMcpSessionConfig({
       input,
@@ -397,7 +401,7 @@ async function resolveMcpCreateAgent(
       owner: input.owner,
       env: input.env,
     },
-    prompt: trimmedPrompt ? trimmedPrompt : undefined,
+    prompt: hasPromptContent ? prompt : undefined,
     setupContinuation,
     createdWorktree,
     background: input.background,

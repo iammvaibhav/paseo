@@ -24,6 +24,19 @@ export type {
   ItsaplanWebhook,
 } from "./client.js";
 export {
+  isRasterImageContentType,
+  resolveAttachmentUrl,
+  resolveTicketAttachments,
+  rewriteMarkdownAttachmentUrls,
+  stripNativeMarkdownImages,
+  MAX_TICKET_IMAGE_BYTES,
+} from "./ticket-images.js";
+export type {
+  ResolvedTicketAttachments,
+  TicketFileLink,
+  TicketNativeImage,
+} from "./ticket-images.js";
+export {
   attachItsaplanProjectSync,
   ensureItsaplanProjectMapping,
   ITSAPLAN_WEBHOOK_EVENTS,

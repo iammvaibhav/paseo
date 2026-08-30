@@ -322,6 +322,47 @@ export class ItsaplanClient {
     return this.request("GET", `/initiatives/${initiativeId}`, undefined, ItsaplanInitiativeSchema);
   }
 
+  /**
+   * Downloads attachment bytes. The public raw route is unauthenticated;
+   * the API key is still sent so a future auth-gated route keeps working.
+   * `url` may be absolute or a path on this client's baseUrl.
+   */
+  async downloadAttachment(url: string): Promise<{ bytes: Buffer; contentType?: string }> {
+    const target =
+      url.startsWith("http://") || url.startsWith("https://")
+        ? url
+        : `${this.baseUrl}${url.startsWith("/") ? "" : "/"}${url}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+    timeout.unref?.();
+    try {
+      const response = await fetch(target, {
+        method: "GET",
+        headers: { "x-api-key": this.apiKey },
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        throw new ItsaplanApiError(
+          response.status,
+          "GET",
+          target,
+          `itsaplan GET ${target} failed: ${response.status} ${text}`.trim(),
+        );
+      }
+      const bytes = Buffer.from(await response.arrayBuffer());
+      const contentType = response.headers.get("content-type") ?? undefined;
+      return contentType ? { bytes, contentType } : { bytes };
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new Error(`itsaplan GET ${target} timed out`, { cause: error });
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   /** Columns ride GET /projects/:key (nested `{ project, columns }` or a flat project). */
   async listProjectColumns(projectKey: string): Promise<ItsaplanColumn[]> {
     const scaffold = await this.request(

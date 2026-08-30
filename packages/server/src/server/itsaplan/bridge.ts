@@ -14,6 +14,11 @@ import {
   ITSAPLAN_READY_FOR_REVIEW_COLUMN_NAME,
   ItsaplanClient,
 } from "./client.js";
+import {
+  resolveTicketAttachments,
+  rewriteMarkdownAttachmentUrls,
+  stripNativeMarkdownImages,
+} from "./ticket-images.js";
 import type {
   ItsaplanCentralConfig,
   ItsaplanProjectMapping,
@@ -148,7 +153,10 @@ export interface ItsaplanBridgeOptions {
    * AgentManager/AgentStorage pair so this module stays independently
    * testable; bootstrap.ts wires the real implementation.
    */
-  deliverMachineryPrompt: (prompt: string) => Promise<boolean>;
+  deliverMachineryPrompt: (
+    prompt: string,
+    images?: Array<{ data: string; mimeType: string }>,
+  ) => Promise<boolean>;
   /**
    * Steers the agent the user is answering mid-turn — the same path a user
    * message in Paseo takes for a blocked worker (sendPromptToAgent with
@@ -232,6 +240,7 @@ export interface BuildDispatchPromptInput {
     filename: string;
     url: string;
   }> | null;
+  nativeImageCount?: number;
 }
 
 export function buildDispatchPrompt(input: BuildDispatchPromptInput): string {
@@ -250,11 +259,25 @@ export function buildDispatchPrompt(input: BuildDispatchPromptInput): string {
   }
 
   lines.push("");
-  lines.push(input.body.trim().length > 0 ? input.body : "(no description)");
+  const rawBody = rewriteMarkdownAttachmentUrls(input.body);
+  const body = (
+    input.nativeImageCount && input.nativeImageCount > 0
+      ? stripNativeMarkdownImages(rawBody)
+      : rawBody
+  ).trim();
+  lines.push(body.length > 0 ? body : "(no description)");
+
+  if (input.nativeImageCount && input.nativeImageCount > 0) {
+    lines.push("");
+    lines.push(
+      `${input.nativeImageCount} image${input.nativeImageCount === 1 ? "" : "s"} attached natively (same as composer paste).`,
+      "Pass them through fleet_create_agent images when spinning the worker — do not fetch ticket image URLs.",
+    );
+  }
 
   if (input.attachments && input.attachments.length > 0) {
     lines.push("");
-    lines.push("Attachments:");
+    lines.push("File attachments:");
     for (const attachment of input.attachments) {
       lines.push(`- ${attachment.filename}: ${attachment.url}`);
     }
@@ -283,7 +306,10 @@ export class ItsaplanBridge {
   private readonly fleet?: ItsaplanBridgeFleet;
   private readonly projectStore: ItsaplanProjectStore;
   private readonly getConfig: () => ItsaplanCentralConfig | null;
-  private readonly deliverMachineryPrompt: (prompt: string) => Promise<boolean>;
+  private readonly deliverMachineryPrompt: (
+    prompt: string,
+    images?: Array<{ data: string; mimeType: string }>,
+  ) => Promise<boolean>;
   private readonly steerWorkerPrompt: (agentId: string, prompt: string) => Promise<void>;
   private readonly resolvePaseoProjectKey?: (agentId: string) => Promise<string | null>;
 
@@ -571,7 +597,10 @@ export class ItsaplanBridge {
 
     const [initiative, attachments] = await Promise.all([
       this.resolveInitiativeContext(apiClient, issue),
-      this.resolveAttachmentsContext(apiClient, issue.id, config.baseUrl),
+      resolveTicketAttachments(apiClient, issue.id, config.baseUrl).catch(() => ({
+        images: [],
+        files: [],
+      })),
     ]);
 
     const prompt = buildDispatchPrompt({
@@ -582,9 +611,13 @@ export class ItsaplanBridge {
       url,
       projectKey: mapping.paseoProjectKey,
       initiative,
-      attachments: attachments.length > 0 ? attachments : undefined,
+      attachments: attachments.files.length > 0 ? attachments.files : undefined,
+      nativeImageCount: attachments.images.length,
     });
-    const delivered = await this.deliverMachineryPrompt(prompt);
+    const delivered = await this.deliverMachineryPrompt(
+      prompt,
+      attachments.images.length > 0 ? attachments.images : undefined,
+    );
     if (!delivered) {
       this.logger.warn({ issueId: issue.id }, "itsaplan.bridge.no_commander_to_dispatch_ticket");
     }
@@ -638,33 +671,6 @@ export class ItsaplanBridge {
       );
     }
     return null;
-  }
-
-  private async resolveAttachmentsContext(
-    apiClient: ItsaplanClient,
-    issueId: number,
-    baseUrl: string,
-  ): Promise<Array<{ filename: string; url: string }>> {
-    try {
-      const issueAttachments = await apiClient.listIssueAttachments(issueId).catch(() => []);
-      if (issueAttachments.length === 0) {
-        return [];
-      }
-      const baseUrlClean = baseUrl.replace(/\/+$/, "");
-      return issueAttachments.map((att) => {
-        const attUrl =
-          att.url.startsWith("http://") || att.url.startsWith("https://")
-            ? att.url
-            : `${baseUrlClean}${att.url.startsWith("/") ? "" : "/"}${att.url}`;
-        return {
-          filename: att.filename,
-          url: attUrl,
-        };
-      });
-    } catch (error) {
-      this.logger.warn({ err: error, issueId }, "itsaplan.bridge.attachment_resolution_failed");
-      return [];
-    }
   }
 
   private async releaseBlockedDependents(
