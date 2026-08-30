@@ -546,6 +546,7 @@ function createSessionForWorkspaceTests(
     appVersion?: string | null;
     onMessage?: (message: SessionOutboundMessage) => void;
     onWorkspaceRecovered?: SessionOptions["onWorkspaceRecovered"];
+    onWorkspaceArchived?: SessionOptions["onWorkspaceArchived"];
     workspaceGitService?: ReturnType<typeof createNoopWorkspaceGitService>;
     terminalManager?: TerminalManager | null;
     agentManager?: { [K in keyof SessionOptions["agentManager"]]?: unknown };
@@ -639,6 +640,7 @@ function createSessionForWorkspaceTests(
       appVersion: options.appVersion ?? null,
       onMessage: options.onMessage ?? vi.fn(),
       onWorkspaceRecovered: options.onWorkspaceRecovered,
+      onWorkspaceArchived: options.onWorkspaceArchived,
       logger: asSessionLogger(logger),
       downloadTokenStore: asDownloadTokenStore(),
       pushNotifications: asPushNotifications(),
@@ -5819,6 +5821,40 @@ test("archive_workspace_request hides non-destructive workspace records", async 
     | { payload: Record<string, unknown> }
     | undefined;
   expect(response?.payload.error).toBeNull();
+});
+
+test("archive_workspace_request invokes onWorkspaceArchived callback", async () => {
+  const archivedWorkspaceIds: string[] = [];
+  const session = createSessionForWorkspaceTests({
+    onWorkspaceArchived: (id) => {
+      archivedWorkspaceIds.push(id);
+    },
+  });
+  const workspace = createPersistedWorkspaceRecord({
+    workspaceId: "ws-repo-archive-hook",
+    projectId: "proj-repo-archive-hook",
+    cwd: REPO_CWD,
+    kind: "directory",
+    displayName: "repo",
+    createdAt: "2026-03-01T12:00:00.000Z",
+    updatedAt: "2026-03-01T12:00:00.000Z",
+  });
+
+  session.workspaceRegistry.get = async () => workspace;
+  session.workspaceRegistry.archive = async (_workspaceId: string, archivedAt: string) => {
+    workspace.archivedAt = archivedAt;
+  };
+  session.workspaceRegistry.list = async () => [workspace];
+  session.projectRegistry.archive = async () => {};
+
+  await session.handleMessage({
+    type: "archive_workspace_request",
+    workspaceId: "ws-repo-archive-hook",
+    requestId: "req-archive-hook",
+  });
+
+  expect(workspace.archivedAt).toBeTruthy();
+  expect(archivedWorkspaceIds).toEqual(["ws-repo-archive-hook"]);
 });
 
 test("archive_workspace_request archives a worktree-kind workspace and removes the directory on last reference", async () => {

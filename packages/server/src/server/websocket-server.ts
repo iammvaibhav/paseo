@@ -638,6 +638,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly directorySync = new DirectorySyncService();
   private readonly pluginRuntime: SessionOptions["pluginRuntime"];
   private readonly orchestrationSkills: SessionOptions["orchestrationSkills"];
+  private readonly onWorkspaceArchived?: (workspaceId: string) => void | Promise<void>;
 
   constructor(
     server: HTTPServer,
@@ -688,7 +689,9 @@ export class VoiceAssistantWebSocketServer {
     pluginRuntime?: SessionOptions["pluginRuntime"],
     orchestrationSkills?: SessionOptions["orchestrationSkills"],
     workspaceLabelService?: WorkspaceLabelService,
+    onWorkspaceArchived?: (workspaceId: string) => void | Promise<void>,
   ) {
+    this.onWorkspaceArchived = onWorkspaceArchived;
     this.logger = logger.child({ module: "websocket-server" });
     this.workspaceSetupRuntime = workspaceSetupRuntime;
     this.advertiseDaemonStatusRpc = wsConfig.daemonStatusRpc !== false;
@@ -1495,6 +1498,7 @@ export class VoiceAssistantWebSocketServer {
       getDaemonTcpHost: this.getDaemonTcpHost ?? undefined,
       serviceProxyPublicBaseUrl: this.serviceProxyPublicBaseUrl,
       resolveScriptHealth: this.resolveScriptHealth ?? undefined,
+      onWorkspaceArchived: this.onWorkspaceArchived,
       voice: {
         turnDetection: () => this.speech?.resolveTurnDetection() ?? null,
       },

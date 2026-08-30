@@ -581,6 +581,7 @@ export interface SessionOptions {
     oldBranch: string | null,
     newBranch: string | null,
   ) => void;
+  onWorkspaceArchived?: (workspaceId: string) => void | Promise<void>;
   getDaemonTcpPort?: () => number | null;
   getDaemonTcpHost?: () => string | null;
   serviceProxyPublicBaseUrl?: string | null;
@@ -807,6 +808,7 @@ export class Session {
   private readonly onWorkspaceRecovered:
     | ((workspace: PersistedWorkspaceRecord) => Promise<void>)
     | null;
+  private readonly onWorkspaceArchived: ((workspaceId: string) => void | Promise<void>) | null;
   private readonly sessionLogger: pino.Logger;
   private readonly paseoHome: string;
   private readonly projectIcons: ProjectIconReader;
@@ -909,6 +911,7 @@ export class Session {
       onLifecycleIntent,
       onWorkspaceRecovered,
       logger,
+      onWorkspaceArchived,
       downloadTokenStore,
       pushNotifications,
       paseoHome,
@@ -995,6 +998,7 @@ export class Session {
     this.agentStorage = agentStorage;
     this.projectRegistry = projectRegistry;
     this.workspaceRegistry = workspaceRegistry;
+    this.onWorkspaceArchived = onWorkspaceArchived ?? null;
     this.directorySync = resolveDirectorySync(directorySync);
     this.workspaceLabelService = resolveWorkspaceLabelService(workspaceLabelService);
     this.filesystem = filesystem ?? nodeSessionFileSystem;
@@ -6913,7 +6917,7 @@ export class Session {
 
   private async archiveWorkspaceRecord(workspaceId: string, archivedAt?: string): Promise<void> {
     const archiveTimestamp = archivedAt ?? new Date().toISOString();
-    const existingWorkspace = await archivePersistedWorkspaceRecord({
+    const { newlyArchived, workspace: existingWorkspace } = await archivePersistedWorkspaceRecord({
       workspaceId,
       archivedAt: archiveTimestamp,
       workspaceRegistry: this.workspaceRegistry,
@@ -6923,7 +6927,7 @@ export class Session {
       return;
     }
 
-    if (!existingWorkspace.archivedAt) {
+    if (newlyArchived) {
       const activeSiblings = (await this.workspaceRegistry.list()).filter(
         (workspace) => workspace.projectId === existingWorkspace.projectId && !workspace.archivedAt,
       );
@@ -6937,6 +6941,14 @@ export class Session {
         },
         "Workspace archived",
       );
+      if (this.onWorkspaceArchived) {
+        void Promise.resolve(this.onWorkspaceArchived(workspaceId)).catch((error) => {
+          this.sessionLogger.error(
+            { err: error, workspaceId },
+            "itsaplan.bridge.workspace_archive_failed",
+          );
+        });
+      }
     }
 
     await this.teardownArchivedWorkspace(existingWorkspace.workspaceId);

@@ -1416,12 +1416,12 @@ export async function createPaseoDaemon(
     workspaceId: string,
     context?: WorkspaceArchiveContext,
   ) => {
-    const existingWorkspace = await archivePersistedWorkspaceRecord({
+    const { newlyArchived, workspace: existingWorkspace } = await archivePersistedWorkspaceRecord({
       workspaceId,
       workspaceRegistry,
       context,
     });
-    if (!existingWorkspace || existingWorkspace.archivedAt) return;
+    if (!newlyArchived || !existingWorkspace) return;
     teardownArchivedWorkspaceRuntime(workspaceId);
     if (itsaplanBridge) {
       void itsaplanBridge.handleWorkspaceArchived(workspaceId).catch((error) => {
@@ -2925,6 +2925,7 @@ export async function createPaseoDaemon(
               pluginRuntime,
               orchestrationSkills,
               workspaceLabelService,
+              (workspaceId) => itsaplanBridge?.handleWorkspaceArchived(workspaceId),
             );
             wsServer.setTranscriptSearch(transcriptSearch);
             pluginRuntime.bindPaseoSessionHost(wsServer);
