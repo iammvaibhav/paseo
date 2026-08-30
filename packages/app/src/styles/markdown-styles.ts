@@ -42,12 +42,19 @@ export function createMarkdownStyles(theme: Theme) {
 
     text: {
       ...webSelectableTextStyle,
+      color: theme.colors.foreground,
       flexShrink: 1,
       minWidth: 0,
       overflowWrap: "anywhere" as const,
     },
 
+    textgroup: {
+      ...webSelectableTextStyle,
+      color: theme.colors.foreground,
+    },
+
     paragraph: {
+      color: theme.colors.foreground,
       marginTop: 0,
       marginBottom: theme.spacing[3],
       flexWrap: "wrap" as const,
@@ -137,11 +144,13 @@ export function createMarkdownStyles(theme: Theme) {
 
     strong: {
       ...webSelectableTextStyle,
+      color: theme.colors.foreground,
       fontWeight: theme.fontWeight.medium,
     },
 
     em: {
       ...webSelectableTextStyle,
+      color: theme.colors.foreground,
       fontStyle: "italic" as const,
     },
 
@@ -286,6 +295,7 @@ export function createMarkdownStyles(theme: Theme) {
     },
 
     list_item: {
+      color: theme.colors.foreground,
       marginBottom: theme.spacing[1],
       flexDirection: "row" as const,
       alignItems: "flex-start" as const,
@@ -293,11 +303,13 @@ export function createMarkdownStyles(theme: Theme) {
     },
 
     bullet_list_content: {
+      color: theme.colors.foreground,
       flex: 1,
       flexShrink: 1,
     },
 
     ordered_list_content: {
+      color: theme.colors.foreground,
       flex: 1,
       flexShrink: 1,
     },
@@ -366,6 +378,16 @@ export function createMarkdownStyles(theme: Theme) {
     },
 
     softbreak: {},
+
+    inline: {
+      ...webSelectableTextStyle,
+      color: theme.colors.foreground,
+    },
+
+    span: {
+      ...webSelectableTextStyle,
+      color: theme.colors.foreground,
+    },
   };
 }
 
