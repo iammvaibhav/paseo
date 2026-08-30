@@ -371,6 +371,9 @@ export type AgentTimelineItem =
       clientMessageId?: string;
       classification?: AgentTimelineUserMessageClassification;
       voiceMirrorKind?: AgentTimelineVoiceMirrorKind;
+      // Native images for this user row (composer paste / ticket dispatch).
+      // Optional so older daemons still parse timeline rows.
+      images?: Array<{ data: string; mimeType: string }>;
     }
   | {
       type: "assistant_message";
