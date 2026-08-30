@@ -2751,6 +2751,9 @@ function ComposerContentImpl({
 const animatedStaticStyles = RNStyleSheet.create({
   container: {
     flexDirection: "column",
+    // KeyboardDock reduces the available column height with bottom padding.
+    // Keep the composer's constraint chain shrinkable down to its scrolling input.
+    flexShrink: 1,
     position: "relative",
   },
 });
@@ -2761,6 +2764,7 @@ const styles = StyleSheet.create((theme: Theme) => ({
     backgroundColor: theme.colors.border,
   },
   inputAreaContainer: {
+    flexShrink: 1,
     position: "relative",
     minHeight: FOOTER_HEIGHT,
     marginHorizontal: "auto",
@@ -2774,11 +2778,13 @@ const styles = StyleSheet.create((theme: Theme) => ({
     opacity: 0.6,
   },
   inputAreaContent: {
+    flexShrink: 1,
     width: "100%",
     maxWidth: MAX_CONTENT_WIDTH,
     gap: theme.spacing[3],
   },
   messageInputContainer: {
+    flexShrink: 1,
     position: "relative",
     width: "100%",
     gap: theme.spacing[3],
