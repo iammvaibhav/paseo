@@ -14,7 +14,11 @@ const ITSAPLAN_DIR = "itsaplan";
 const PROJECTS_FILENAME = "projects.json";
 
 /** Events the bridge needs delivered; registered once per mapped itsaplan project. */
-export const ITSAPLAN_WEBHOOK_EVENTS = ["issue.state_changed", "comment.created"] as const;
+export const ITSAPLAN_WEBHOOK_EVENTS = [
+  "issue.created",
+  "issue.state_changed",
+  "comment.created",
+] as const;
 
 const ItsaplanProjectMappingSchema = z.object({
   paseoProjectKey: z.string(),
@@ -50,6 +54,7 @@ const ItsaplanProjectMappingSchema = z.object({
   // Whether the Commander external agent's triggerOnMention has been ensured
   // to be true so mentions enqueue runs.
   commanderMentionEnabled: z.boolean().optional(),
+  webhookEvents: z.array(z.string()).optional(),
 });
 export type ItsaplanProjectMapping = z.infer<typeof ItsaplanProjectMappingSchema>;
 
@@ -258,6 +263,7 @@ async function ensureItsaplanProjectMappingForKey(
     createdAt: new Date().toISOString(),
     ...(webhook.secret ? { webhookSecret: webhook.secret } : {}),
     webhookId: webhook.id,
+    webhookEvents: [...ITSAPLAN_WEBHOOK_EVENTS],
     ...(commander ? { ...commander, commanderMentionEnabled: true } : {}),
   };
   await deps.store.upsert(mapping);
@@ -468,7 +474,10 @@ async function ensureWebhookEventsUpToDate(
   config: ItsaplanCentralConfig,
   deps: ItsaplanProjectSyncDependencies,
 ): Promise<ItsaplanProjectMapping> {
-  if (mapping.webhookId !== undefined) {
+  const hasAllEvents =
+    Array.isArray(mapping.webhookEvents) &&
+    ITSAPLAN_WEBHOOK_EVENTS.every((event) => mapping.webhookEvents?.includes(event));
+  if (hasAllEvents && mapping.webhookId !== undefined) {
     return mapping;
   }
   const webhookUrl = deps.getWebhookUrl();
@@ -478,12 +487,20 @@ async function ensureWebhookEventsUpToDate(
   const client = new ItsaplanClient(config);
   try {
     const webhooks = await client.listWebhooks(mapping.itsaplanProjectKey);
-    const mine = webhooks.find((webhook) => webhook.url === webhookUrl);
+    const mine = webhooks.find(
+      (webhook) =>
+        webhook.url === webhookUrl ||
+        (mapping.webhookId !== undefined && webhook.id === mapping.webhookId),
+    );
     if (!mine) {
       return mapping;
     }
     const missing = ITSAPLAN_WEBHOOK_EVENTS.filter((event) => !mine.events.includes(event));
-    const updated: ItsaplanProjectMapping = { ...mapping, webhookId: mine.id };
+    const updated: ItsaplanProjectMapping = {
+      ...mapping,
+      webhookId: mine.id,
+      webhookEvents: [...ITSAPLAN_WEBHOOK_EVENTS],
+    };
     if (missing.length > 0) {
       await client.updateWebhook(mine.id, { events: [...ITSAPLAN_WEBHOOK_EVENTS] });
       deps.logger.info(

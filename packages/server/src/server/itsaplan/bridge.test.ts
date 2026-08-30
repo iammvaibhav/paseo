@@ -1029,6 +1029,39 @@ describe("ItsaplanBridge", () => {
       expect(deliverMachineryPrompt).toHaveBeenCalledTimes(1);
     });
 
+    test("dispatches for an issue created directly in Todo", async () => {
+      const request = webhookRequest("issue.created", {
+        id: ISSUE_ID,
+        projectId: PROJECT_ID,
+        sequenceNumber: 42,
+        columnId: 2, // Todo column (stateType "unstarted")
+        title: "Directly created in Todo",
+        description: "Must be picked up by Commander",
+      });
+      const result = await bridge.handleWebhookRequest(request);
+      expect(result.status).toBe(200);
+      expect(deliverMachineryPrompt).toHaveBeenCalledTimes(1);
+      const prompt = deliverMachineryPrompt.mock.calls[0]?.[0] as string;
+      expect(prompt).toContain("ENG-42");
+      expect(prompt).toContain("Directly created in Todo");
+      expect(prompt).toContain("Must be picked up by Commander");
+      expect(prompt).toContain(`"${ITSAPLAN_ISSUE_LABEL_KEY}": "${ISSUE_ID}"`);
+    });
+
+    test("ignores an issue created directly in Backlog", async () => {
+      const request = webhookRequest("issue.created", {
+        id: ISSUE_ID,
+        projectId: PROJECT_ID,
+        sequenceNumber: 42,
+        columnId: 1, // Backlog (stateType "backlog")
+        title: "Created in Backlog",
+        description: null,
+      });
+      const result = await bridge.handleWebhookRequest(request);
+      expect(result.status).toBe(200);
+      expect(deliverMachineryPrompt).not.toHaveBeenCalled();
+    });
+
     test("ignores a move into a non-Todo column", async () => {
       const request = webhookRequest("issue.state_changed", {
         id: ISSUE_ID,

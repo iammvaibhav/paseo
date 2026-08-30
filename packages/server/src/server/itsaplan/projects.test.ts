@@ -231,6 +231,7 @@ describe("itsaplan project sync", () => {
       // Read back from itsaplan's response — itsaplan ignores client secrets.
       webhookSecret: "whsec_generated_1",
       webhookId: 1,
+      webhookEvents: ["issue.created", "issue.state_changed", "comment.created"],
     });
     // Name = friendly display name; description = full cross-host identity.
     expect(fakeServer.createdProjects).toEqual([
@@ -240,7 +241,7 @@ describe("itsaplan project sync", () => {
       {
         projectKey: "REPO",
         url: "http://127.0.0.1:9999/api/itsaplan/webhook",
-        events: ["issue.state_changed", "comment.created"],
+        events: ["issue.created", "issue.state_changed", "comment.created"],
         clientSentSecret: false,
       },
     ]);
@@ -253,10 +254,10 @@ describe("itsaplan project sync", () => {
     expect(fakeServer.registeredWebhooks).toHaveLength(1);
   });
 
-  test("patches comment.created onto an existing webhook registered before it existed", async () => {
-    // A mapping written before webhookId was persisted (old registration
-    // carrying only the issue event): sync must find our webhook by URL,
-    // PATCH the missing event, and backfill webhookId onto the mapping.
+  test("patches issue.created and comment.created onto an existing webhook registered before they existed", async () => {
+    // A mapping written before webhookId/webhookEvents was persisted (old registration
+    // carrying only the state_changed event): sync must find our webhook by URL,
+    // PATCH the missing events, and backfill webhookId/webhookEvents onto the mapping.
     await store.upsert({
       paseoProjectKey: "PROJ",
       itsaplanProjectId: 1,
@@ -273,11 +274,47 @@ describe("itsaplan project sync", () => {
     });
     const updated = await ensureItsaplanProjectMapping(project(), deps);
     expect(fakeServer.webhooksById.get(1)?.events).toEqual([
+      "issue.created",
       "issue.state_changed",
       "comment.created",
     ]);
     expect(updated?.webhookId).toBe(1);
+    expect(updated?.webhookEvents).toEqual([
+      "issue.created",
+      "issue.state_changed",
+      "comment.created",
+    ]);
     expect(store.getByPaseoProjectKey("PROJ")?.webhookId).toBe(1);
+  });
+
+  test("patches existing webhook when webhookId is already present on mapping but issue.created is missing", async () => {
+    await store.upsert({
+      paseoProjectKey: "PROJ",
+      itsaplanProjectId: 1,
+      itsaplanProjectKey: "PROJ",
+      createdAt: new Date().toISOString(),
+      webhookId: 1,
+    });
+    fakeServer.projectIdByKey.set("PROJ", 1);
+    fakeServer.webhooksById.set(1, {
+      id: 1,
+      projectId: 1,
+      url: deps.getWebhookUrl() ?? "",
+      events: ["issue.state_changed", "comment.created"],
+      isActive: true,
+    });
+    const updated = await ensureItsaplanProjectMapping(project(), deps);
+    expect(fakeServer.webhooksById.get(1)?.events).toEqual([
+      "issue.created",
+      "issue.state_changed",
+      "comment.created",
+    ]);
+    expect(updated?.webhookId).toBe(1);
+    expect(updated?.webhookEvents).toEqual([
+      "issue.created",
+      "issue.state_changed",
+      "comment.created",
+    ]);
   });
 
   test("never syncs a project rooted inside paseoHome (Commander reserved home)", async () => {

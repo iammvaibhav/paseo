@@ -359,7 +359,7 @@ export class ItsaplanBridge {
       // network hiccup even though its own semantics call a 2xx final.
       return { status: 200, body: { ok: true } };
     }
-    if (envelope.event === "issue.state_changed") {
+    if (envelope.event === "issue.created" || envelope.event === "issue.state_changed") {
       const parsed = ItsaplanWebhookIssueDataSchema.safeParse(envelope.data);
       if (!parsed.success) {
         return { status: 400, body: { ok: false, error: "invalid issue payload" } };
@@ -368,8 +368,8 @@ export class ItsaplanBridge {
         await this.handleIssueStateChanged(parsed.data, config);
       } catch (error) {
         this.logger.error(
-          { err: error, issueId: parsed.data.id },
-          "itsaplan.bridge.issue_state_changed_failed",
+          { err: error, issueId: parsed.data.id, event: envelope.event },
+          "itsaplan.bridge.issue_handling_failed",
         );
         // Non-2xx so itsaplan retries with backoff (packages/worker semantics).
         return { status: 500, body: { ok: false, error: "processing failed" } };
