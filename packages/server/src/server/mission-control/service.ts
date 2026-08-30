@@ -13,6 +13,7 @@ import { dispatchLocalPromptMode } from "../agent/tools/paseo-tools.js";
 import { formatSystemNotificationPrompt } from "../agent/agent-prompt.js";
 import { archiveAgentCommand } from "../agent/lifecycle-command.js";
 import type { DaemonConfigStore } from "../daemon-config-store.js";
+import type { WorkspaceRegistry, ProjectRegistry } from "../workspace-registry.js";
 import type { SessionOutboundMessage } from "../messages.js";
 import type {
   MissionControlCentralConfig,
@@ -558,6 +559,9 @@ export interface MissionControlServiceOptions {
    * push is skipped (tests without the hook keep their current behavior).
    */
   onReviewStateChanged?: (agentId: string) => void;
+  workspaceRegistry?: Pick<WorkspaceRegistry, "get" | "list"> | null;
+  projectRegistry?: Pick<ProjectRegistry, "get" | "list"> | null;
+  archiveWorkspace?: ((workspaceId: string, requestId: string) => Promise<unknown>) | null;
 }
 
 export interface MissionControlServiceConfig {
@@ -762,6 +766,12 @@ export class MissionControlService {
    * emitCommanderCard "answer"/"clarification"/"proposal" back to the instruction id it
    * delivered — see itsaplan/chat-runner.ts). */
   private readonly eventListeners = new Set<(event: MissionControlEvent) => void>();
+  private readonly workspaceRegistry: Pick<WorkspaceRegistry, "get" | "list"> | null;
+  private readonly projectRegistry: Pick<ProjectRegistry, "get" | "list"> | null;
+  private readonly archiveWorkspace:
+    | ((workspaceId: string, requestId: string) => Promise<unknown>)
+    | null;
+  private readonly autoArchivingWorkspaces = new Set<string>();
   /** fleet_monitor subscriptions keyed by session (voice daemon session id or
    * Commander turn context). Sessions manage their own watches independently;
    * a session with no entries is simply absent. */
@@ -870,6 +880,9 @@ export class MissionControlService {
     this.dispatchSnapshotTurn = options.dispatchSnapshotTurn;
     this.disarmSnapshotAckDrop = options.disarmSnapshotAckDrop;
     this.onReviewStateChanged = options.onReviewStateChanged;
+    this.workspaceRegistry = options.workspaceRegistry ?? null;
+    this.projectRegistry = options.projectRegistry ?? null;
+    this.archiveWorkspace = options.archiveWorkspace ?? null;
     this.bootedAtMs = Date.now();
     this.store = new MissionControlStore({ paseoHome: options.paseoHome, logger: this.logger });
     this.lifecycleLog = new TurnLifecycleLog({
@@ -1145,6 +1158,9 @@ export class MissionControlService {
       await this.emitVerdictEvent({ agentId, verdict: options.verdict });
     }
     this.notifyReviewState(agentId);
+    if (state === "done") {
+      await this.maybeAutoArchiveWorkspaceOnAgentDone(agentId);
+    }
   }
 
   /**
@@ -1277,9 +1293,7 @@ export class MissionControlService {
     switch (action) {
       case "done": {
         const verdict: MissionControlVerdict = { by: "user", summary: "Marked done", at: now };
-        await this.store.setReviewState(agentId, "done", { verdict });
-        await this.emitVerdictEvent({ agentId, verdict });
-        this.notifyReviewState(agentId);
+        await this.setReviewState(agentId, "done", { verdict });
         return { ok: true };
       }
       case "clear": {
@@ -5205,6 +5219,77 @@ export class MissionControlService {
       this.onReviewStateChanged?.(agentId);
     } catch (error) {
       this.logger.warn({ err: error, agentId }, "mission_control.review_state_stored_push_failed");
+    }
+  }
+  /**
+   * PASEO-21: Auto-archive a workspace when its only agent is marked Done.
+   * If other active (non-archived) agents remain in the workspace, or if
+   * the workspace is a project base workspace or already archived, no-op.
+   */
+  async maybeAutoArchiveWorkspaceOnAgentDone(agentId: string): Promise<void> {
+    if (!this.archiveWorkspace) {
+      return;
+    }
+    try {
+      const agentRecord = await this.agentStorage.get(agentId);
+      const workspaceId =
+        agentRecord?.workspaceId ?? this.agentManager.getAgent(agentId)?.workspaceId;
+      if (!workspaceId) {
+        return;
+      }
+
+      if (this.autoArchivingWorkspaces.has(workspaceId)) {
+        return;
+      }
+
+      if (this.workspaceRegistry) {
+        const workspace = await this.workspaceRegistry.get(workspaceId);
+        if (!workspace || workspace.archivedAt) {
+          return;
+        }
+      }
+
+      if (this.projectRegistry) {
+        const projects = await this.projectRegistry.list();
+        const isBaseWorkspace = projects.some(
+          (project) => !project.archivedAt && project.baseWorkspaceId === workspaceId,
+        );
+        if (isBaseWorkspace) {
+          return;
+        }
+      }
+
+      const activeAgentIds = new Set<string>();
+      for (const liveAgent of this.agentManager.listAgents()) {
+        if (liveAgent.workspaceId === workspaceId) {
+          activeAgentIds.add(liveAgent.id);
+        }
+      }
+      const storedRecords = await this.agentStorage.listByWorkspace(workspaceId);
+      for (const record of storedRecords) {
+        if (!record.archivedAt) {
+          activeAgentIds.add(record.id);
+        }
+      }
+
+      if (activeAgentIds.size === 1 && activeAgentIds.has(agentId)) {
+        this.autoArchivingWorkspaces.add(workspaceId);
+        try {
+          const requestId = `auto-archive-workspace-agent-done-${agentId}-${Date.now()}`;
+          this.logger.info(
+            { agentId, workspaceId, requestId },
+            "mission_control.auto_archive_workspace_on_agent_done",
+          );
+          await this.archiveWorkspace(workspaceId, requestId);
+        } finally {
+          this.autoArchivingWorkspaces.delete(workspaceId);
+        }
+      }
+    } catch (error) {
+      this.logger.warn(
+        { err: error, agentId },
+        "mission_control.auto_archive_workspace_on_agent_done_failed",
+      );
     }
   }
 

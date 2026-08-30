@@ -1916,6 +1916,9 @@ export async function createPaseoDaemon(
       isAgentFocused: (agentId) => wsServer?.anyClientFocusedOnAgent(agentId) ?? false,
       readStopOrigin: (agentId) => missionControlService.getStopOrigin(agentId) ?? null,
     }),
+    workspaceRegistry,
+    projectRegistry,
+    archiveWorkspace: archiveWorkspaceByIdExternal,
     // M8 mailbox: the idle delivery path hands the speculative auto-recall
     // block (within budget) to the snapshot injector so the fresh snapshot
     // carries it alongside the ledger block. M10: the idle path dispatches
