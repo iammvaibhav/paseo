@@ -192,17 +192,20 @@ function createOpenSocket() {
   };
 }
 
-function connectClient(server: VoiceAssistantWebSocketServer) {
+function connectClient(server: VoiceAssistantWebSocketServer, subscribed = true) {
   const ws = createOpenSocket();
   asInternals<{ sessions: Map<unknown, unknown> }>(server).sessions.set(ws, {
-    kind: "trusted",
     session: {
       getClientActivity: vi.fn(() => null),
+      subscribesToTerminalDirectory: vi.fn(async () => subscribed),
     },
+    principalId: "owner",
+    sessionKey: JSON.stringify(["owner", "client-test"]),
     clientId: "client-test",
     appVersion: null,
     connectionLogger: createLogger(),
     sockets: new Set([ws]),
+    lifecycle: "reconnectable",
     externalDisconnectCleanupTimeout: null,
   });
   return ws;
@@ -272,6 +275,25 @@ function transition(input: {
 describe("VoiceAssistantWebSocketServer terminal attention notifications", () => {
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("does not emit attention without a matching terminal-directory subscription", async () => {
+    const { manager, emit } = createTerminalManager();
+    const { server, pushNotifications } = createServer(manager);
+    const ws = connectClient(server, false);
+
+    emit(
+      transition({
+        previousState: "working",
+        previousChangedAt: 1000,
+        state: "idle",
+        changedAt: 11001,
+      }),
+    );
+    await flushAsync();
+
+    expectNoTerminalAttentionMessage(ws);
+    expect(pushNotifications.sent).toHaveLength(1);
   });
 
   it("broadcasts terminal_attention_required after working -> idle", async () => {
