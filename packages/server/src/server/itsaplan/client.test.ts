@@ -12,6 +12,13 @@ interface State {
     title: string;
     description: string | null;
     assigneeUserId: string | null;
+    initiativeId?: number | null;
+    initiative?: {
+      id: number;
+      title: string;
+      description?: string | null;
+      status?: string;
+    } | null;
     labelIds?: number[];
     links: Array<{
       id: number;
@@ -22,6 +29,18 @@ interface State {
   };
   columns: Array<{ id: number; projectId: number; name: string; stateType: string }>;
   labels: Array<{ id: number; projectId: number; name: string; color?: string }>;
+  attachments?: Array<{
+    id: string;
+    filename: string;
+    contentType?: string;
+    sizeBytes?: number;
+    createdAt?: string;
+    url: string;
+  }>;
+  initiatives?: Map<
+    number,
+    { id: number; projectId: number; title: string; description?: string | null; status?: string }
+  >;
   webhooks: Array<{
     id: number;
     projectId: number;
@@ -79,6 +98,20 @@ function startServer(apiKey: string, state: State) {
 
       if (req.method === "GET" && path === "/issues/1") {
         send(200, state.issue);
+        return;
+      }
+      if (req.method === "GET" && path === "/issues/1/attachments") {
+        send(200, state.attachments ?? []);
+        return;
+      }
+      const initiativeMatch = /^\/initiatives\/(\d+)$/.exec(path);
+      if (req.method === "GET" && initiativeMatch) {
+        const init = state.initiatives?.get(Number(initiativeMatch[1]));
+        if (init) {
+          send(200, init);
+        } else {
+          send(404, { error: "not found" });
+        }
         return;
       }
       if (req.method === "GET" && path === "/issues/404") {
@@ -284,6 +317,57 @@ describe("ItsaplanClient", () => {
   test("getIssue returns the parsed issue", async () => {
     const issue = await client.getIssue(1);
     expect(issue).toMatchObject({ id: 1, title: "Do the thing", columnId: 10 });
+  });
+
+  test("getIssue returns initiative when present", async () => {
+    state.issue.initiative = { id: 50, title: "Core Platform", status: "active" };
+    state.issue.initiativeId = 50;
+    const issue = await client.getIssue(1);
+    expect(issue.initiative).toEqual({ id: 50, title: "Core Platform", status: "active" });
+    expect(issue.initiativeId).toBe(50);
+  });
+
+  test("listIssueAttachments returns attachments for an issue", async () => {
+    state.attachments = [
+      {
+        id: "att-1",
+        filename: "diagram.png",
+        contentType: "image/png",
+        sizeBytes: 1024,
+        createdAt: "2026-08-30T10:00:00Z",
+        url: "/attachments/att-1/raw",
+      },
+      {
+        id: "att-2",
+        filename: "notes.txt",
+        url: "/attachments/att-2/raw",
+      },
+    ];
+    const attachments = await client.listIssueAttachments(1);
+    expect(attachments).toEqual(state.attachments);
+  });
+
+  test("getInitiative returns initiative details including description", async () => {
+    state.initiatives = new Map([
+      [
+        42,
+        {
+          id: 42,
+          projectId: 1,
+          title: "Speed Up Agent Lifecycle",
+          description: "Improve response time and latency",
+          status: "active",
+        },
+      ],
+    ]);
+    const initiative = await client.getInitiative(42);
+    expect(initiative).toEqual({
+      id: 42,
+      projectId: 1,
+      title: "Speed Up Agent Lifecycle",
+      description: "Improve response time and latency",
+      status: "active",
+    });
   });
 
   test("moveIssueColumn PATCHes the columnId", async () => {

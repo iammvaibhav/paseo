@@ -70,6 +70,25 @@ const ItsaplanLabelSchema = z.object({
 });
 export type ItsaplanLabel = z.infer<typeof ItsaplanLabelSchema>;
 
+const ItsaplanAttachmentSchema = z.object({
+  id: z.string(),
+  filename: z.string(),
+  contentType: z.string().optional(),
+  sizeBytes: z.number().optional(),
+  createdAt: z.string().optional(),
+  url: z.string(),
+});
+export type ItsaplanAttachment = z.infer<typeof ItsaplanAttachmentSchema>;
+
+const ItsaplanInitiativeSchema = z.object({
+  id: z.number(),
+  projectId: z.number(),
+  title: z.string(),
+  description: z.string().nullable().optional(),
+  status: z.string().optional(),
+});
+export type ItsaplanInitiative = z.infer<typeof ItsaplanInitiativeSchema>;
+
 const ItsaplanIssueSchema = z.object({
   id: z.number(),
   projectId: z.number(),
@@ -83,6 +102,16 @@ const ItsaplanIssueSchema = z.object({
   description: z.string().nullable().optional(),
   assigneeUserId: z.string().nullable().optional(),
   delegateUserId: z.string().nullable().optional(),
+  initiativeId: z.number().nullable().optional(),
+  initiative: z
+    .object({
+      id: z.number(),
+      title: z.string(),
+      description: z.string().nullable().optional(),
+      status: z.string().optional(),
+    })
+    .nullable()
+    .optional(),
   labelIds: z.array(z.number()).optional(),
   links: z.array(ItsaplanIssueLinkWireSchema).optional(),
 });
@@ -278,6 +307,19 @@ export class ItsaplanClient {
 
   async postComment(issueId: number, body: string): Promise<void> {
     await this.request("POST", `/issues/${issueId}/comments`, { body }, z.unknown());
+  }
+
+  async listIssueAttachments(issueId: number): Promise<ItsaplanAttachment[]> {
+    return this.request(
+      "GET",
+      `/issues/${issueId}/attachments`,
+      undefined,
+      z.array(ItsaplanAttachmentSchema),
+    );
+  }
+
+  async getInitiative(initiativeId: number): Promise<ItsaplanInitiative> {
+    return this.request("GET", `/initiatives/${initiativeId}`, undefined, ItsaplanInitiativeSchema);
   }
 
   /** Columns ride GET /projects/:key (nested `{ project, columns }` or a flat project). */

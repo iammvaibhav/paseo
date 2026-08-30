@@ -8,12 +8,14 @@ export {
 export type {
   ItsaplanAgUiEvent,
   ItsaplanAiAgent,
+  ItsaplanAttachment,
   ItsaplanChatAck,
   ItsaplanClaimedAgentRun,
   ItsaplanClaimedChatMessage,
   ItsaplanClientConfig,
   ItsaplanColumn,
   ItsaplanColumnStateType,
+  ItsaplanInitiative,
   ItsaplanIssue,
   ItsaplanIssueLink,
   ItsaplanLabel,
@@ -39,6 +41,8 @@ export {
   ITSAPLAN_AUTO_CHAIN_LABEL_NAME,
   ITSAPLAN_ISSUE_LABEL_KEY,
   ItsaplanBridge,
+  buildDispatchPrompt,
+  type BuildDispatchPromptInput,
 } from "./bridge.js";
 export type {
   ItsaplanBridgeAgentManager,
