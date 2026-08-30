@@ -134,7 +134,7 @@ See [docs/development.md](docs/development.md) for full setup, build sync requir
   - For full suite verification, push to CI and check GitHub Actions instead.
 - **Always run typecheck and lint after every change.**
 - **NEVER run `npm install` / `npm ci` inside a Paseo dev worktree.** Worktrees share the source checkout's `node_modules` — `scripts/worktree-setup.mjs` symlinks it when the lockfile matches (see "Fast worktrees" in [docs/development.md](docs/development.md)). Installing from a worktree rewrites the shared tree and breaks every other worktree. Install deps in the source checkout, or change the lockfile and re-run the worktree setup.
-- **Never land on `vaibhav/customizations` from the shared checkout.** Commit on your worktree, merge `origin/vaibhav/customizations` into that branch, resolve there, then `git push origin HEAD:vaibhav/customizations`. If the push is rejected, merge origin again on the worktree and retry. See [Landing work from a ticket worktree](#landing-work-from-a-ticket-worktree).
+- **Never push directly to `origin` from a worktree.** Commit and merge as soon as your changes are done and verified. Only merge for features and bug fixes — do not merge for analysis or exploratory tasks. Commit on your worktree, merge the local `vaibhav/customizations` branch into your worktree branch, resolve conflicts in your worktree, and fast-forward the local `vaibhav/customizations` branch. Remote pushes belong exclusively to `./scripts/deploy.sh`. See [Landing work from a ticket worktree](#landing-work-from-a-ticket-worktree).
 - **Build workspace packages before diagnosing cross-package type errors.** This repo consumes generated declarations across workspaces. If typecheck fails in a package that depends on another workspace, rebuild the owning stack first so `dist` declarations are current:
   - `npm run build:client` — rebuild protocol and client declarations.
   - `npm run build:server` — rebuild highlight, relay, protocol, client, server, and CLI when server/CLI types may be stale.
@@ -234,14 +234,29 @@ Do day-to-day work on this branch, not on `main`.
 
 #### Landing work from a ticket worktree
 
-This is how ticket work lands on `vaibhav/customizations`. Never commit, merge, abort, stash, or reset in the shared checkout (`/data/paseo`, `/home/ubuntu/paseo`).
+This is how ticket work lands on local `vaibhav/customizations`. **Only merge for features and bug fixes — do NOT merge for analysis or exploratory tasks.** Commit and merge as soon as changes are done and verified. Never push to `origin` from a worktree — pushing to the remote fork is handled exclusively by `./scripts/deploy.sh` during deploy. Never commit, merge, abort, stash, or reset directly in the shared checkout (`/data/paseo`, `/home/ubuntu/paseo`).
 
-1. Commit on your worktree branch (`npm run format` first).
-2. `git fetch origin` then `git merge origin/vaibhav/customizations`. Resolve conflicts **here**. If that merge is a mess: `git merge --abort` on this worktree and retry step 2.
-3. Fast-forward the fork without checking the branch out: `git push origin HEAD:vaibhav/customizations`.
-4. If the push is rejected, go back to step 2. Never `--force`.
-
-Merge **`origin/vaibhav/customizations`**, not the local `vaibhav/customizations` ref. The local ref is the shared checkout — it may be dirty or mid-merge, and it is not other agents' in-flight work. Other agents commit on their worktrees and land the same way; you meet their commits when they reach origin (step 2, or step 4 after a rejected push). Unpushed work on another worktree is not yours to merge.
+1. **Format and commit** on your worktree branch as soon as changes and verification pass:
+   ```bash
+   npm run format:files -- <changed-files>
+   git add <changed-files>
+   git commit -m "<type>(<scope>): <description> (<TICKET-ID>)"
+   ```
+2. **Merge local `vaibhav/customizations`** into your worktree branch and resolve conflicts here:
+   ```bash
+   git merge vaibhav/customizations
+   ```
+   If conflicts occur, resolve them inside the worktree. If the merge is messy, run `git merge --abort` on this worktree and retry step 2.
+3. **Fast-forward the local shared checkout** without pushing to remote:
+   ```bash
+   # Fast-forward the local branch in the shared checkout (/data/paseo or /home/ubuntu/paseo):
+   git -C /data/paseo merge --ff-only HEAD
+   ```
+4. **Verify local sync**:
+   ```bash
+   git rev-parse vaibhav/customizations
+   ```
+   Do not run `git push origin`.
 
 ### Deployment — always use `./scripts/deploy.sh`
 
