@@ -134,7 +134,7 @@ See [docs/development.md](docs/development.md) for full setup, build sync requir
   - For full suite verification, push to CI and check GitHub Actions instead.
 - **Always run typecheck and lint after every change.**
 - **NEVER run `npm install` / `npm ci` inside a Paseo dev worktree.** Worktrees share the source checkout's `node_modules` — `scripts/worktree-setup.mjs` symlinks it when the lockfile matches (see "Fast worktrees" in [docs/development.md](docs/development.md)). Installing from a worktree rewrites the shared tree and breaks every other worktree. Install deps in the source checkout, or change the lockfile and re-run the worktree setup.
-- **Never push directly to `origin` from a worktree.** Commit and merge as soon as your changes are done and verified. Commit on your worktree, merge the local `vaibhav/customizations` branch into your worktree branch, resolve conflicts in your worktree, and fast-forward the local `vaibhav/customizations` branch. Remote pushes belong exclusively to `./scripts/deploy.sh`. See [Landing work from a ticket worktree](#landing-work-from-a-ticket-worktree).
+- **Never push directly to `origin` from a worktree.** Commit and merge as soon as your changes are done and verified. Only merge for features and bug fixes — do not merge for analysis or exploratory tasks. Commit on your worktree, merge the local `vaibhav/customizations` branch into your worktree branch, resolve conflicts in your worktree, and fast-forward the local `vaibhav/customizations` branch. Remote pushes belong exclusively to `./scripts/deploy.sh`. See [Landing work from a ticket worktree](#landing-work-from-a-ticket-worktree).
 - **Build workspace packages before diagnosing cross-package type errors.** This repo consumes generated declarations across workspaces. If typecheck fails in a package that depends on another workspace, rebuild the owning stack first so `dist` declarations are current:
   - `npm run build:client` — rebuild protocol and client declarations.
   - `npm run build:server` — rebuild highlight, relay, protocol, client, server, and CLI when server/CLI types may be stale.
@@ -234,7 +234,7 @@ Do day-to-day work on this branch, not on `main`.
 
 #### Landing work from a ticket worktree
 
-This is how ticket work lands on local `vaibhav/customizations`. **Commit and merge as soon as changes are done and verified.** Never push to `origin` from a worktree — pushing to the remote fork is handled exclusively by `./scripts/deploy.sh` during deploy. Never commit, merge, abort, stash, or reset directly in the shared checkout (`/data/paseo`, `/home/ubuntu/paseo`).
+This is how ticket work lands on local `vaibhav/customizations`. **Only merge for features and bug fixes — do NOT merge for analysis or exploratory tasks.** Commit and merge as soon as changes are done and verified. Never push to `origin` from a worktree — pushing to the remote fork is handled exclusively by `./scripts/deploy.sh` during deploy. Never commit, merge, abort, stash, or reset directly in the shared checkout (`/data/paseo`, `/home/ubuntu/paseo`).
 
 1. **Format and commit** on your worktree branch as soon as changes and verification pass:
    ```bash
