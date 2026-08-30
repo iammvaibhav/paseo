@@ -127,12 +127,13 @@ export function buildBranchPickerItems(details: readonly BranchPickerDetail[]): 
 
 export interface BaseRefCheckoutStatus {
   currentBranch: string | null;
+  baseRef?: string | null;
   upstreamRef?: string | null;
 }
 
 // Display only. The exact ref is what every request carries; this is just how a ref reads in
 // a row label, so "refs/remotes/origin/other-name" shows as "other-name".
-function branchNameFromRef(refName: string): string {
+export function branchNameFromRef(refName: string): string {
   if (refName.startsWith("refs/heads/")) return refName.slice("refs/heads/".length);
   if (refName.startsWith(REMOTE_TRACKING_PREFIX)) {
     const remainder = refName.slice(REMOTE_TRACKING_PREFIX.length);
@@ -160,21 +161,40 @@ function refQualifier(refName: string): string | null {
 // The upstream wins when the branch has one, because branching off the local ref silently
 // carries unpushed commits into the new workspace. The daemon sends the resolved ref rather
 // than a remote name, so a fork tracking upstream/main branches from upstream/main.
-export function defaultBasePickerItem(status: BaseRefCheckoutStatus): PickerItem | null {
-  const currentBranch = status.currentBranch;
-  if (!currentBranch) return null;
-  // COMPAT(checkoutUpstreamRef): added in v0.2.6, remove after 2027-02-01 once the daemon
-  // floor sends upstreamRef. Daemons that predate it omit the field, which lands on the
-  // local ref — the base those daemons always used.
-  const refName = status.upstreamRef ?? `refs/heads/${currentBranch}`;
-  // The upstream branch can be named differently from the local one, so the row reads the
-  // ref rather than the branch the user happens to be on.
-  const name = branchNameFromRef(refName);
+export function defaultBasePickerItem(
+  status: BaseRefCheckoutStatus,
+  options?: { preferredBaseBranch?: string | null },
+): PickerItem | null {
+  const preferred = options?.preferredBaseBranch?.trim();
+  const baseBranchName = preferred || status.baseRef || status.currentBranch;
+  if (!baseBranchName) return null;
+
+  if (
+    baseBranchName === status.currentBranch &&
+    status.upstreamRef &&
+    (!preferred || preferred === status.currentBranch)
+  ) {
+    const refName = status.upstreamRef;
+    const name = branchNameFromRef(refName);
+    return {
+      kind: "branch",
+      name,
+      refName,
+      accessibilityLabel: `${name}, upstream branch`,
+    };
+  }
+
+  const name = branchNameFromRef(baseBranchName);
+  const refName =
+    baseBranchName.startsWith("refs/") || baseBranchName.startsWith("origin/")
+      ? baseBranchName
+      : `refs/heads/${baseBranchName}`;
+
   return {
     kind: "branch",
     name,
     refName,
-    accessibilityLabel: status.upstreamRef ? `${name}, upstream branch` : `${name}, local branch`,
+    accessibilityLabel: `${name}, branch`,
   };
 }
 

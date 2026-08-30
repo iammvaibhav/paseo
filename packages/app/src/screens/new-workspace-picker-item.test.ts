@@ -335,8 +335,30 @@ describe("defaultBasePickerItem", () => {
       name: "main",
     });
   });
+  it("uses baseRef when currentBranch is on another branch", () => {
+    expect(
+      defaultBasePickerItem({
+        currentBranch: "feature-x",
+        baseRef: "main",
+        upstreamRef: "refs/remotes/origin/feature-x",
+      }),
+    ).toMatchObject({ refName: "refs/heads/main", name: "main" });
+  });
 
-  it("has no default for detached HEAD", () => {
+  it("uses preferredBaseBranch over baseRef and currentBranch", () => {
+    expect(
+      defaultBasePickerItem(
+        {
+          currentBranch: "feature-x",
+          baseRef: "main",
+          upstreamRef: "refs/remotes/origin/feature-x",
+        },
+        { preferredBaseBranch: "develop" },
+      ),
+    ).toMatchObject({ refName: "refs/heads/develop", name: "develop" });
+  });
+
+  it("has no default for detached HEAD without baseRef", () => {
     expect(defaultBasePickerItem({ currentBranch: null })).toBeNull();
   });
 });

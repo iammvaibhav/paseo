@@ -67,6 +67,8 @@ import { useKeyboardActionHandler } from "@/hooks/use-keyboard-action-handler";
 import type { KeyboardActionId } from "@/keyboard/keyboard-action-dispatcher";
 import { useFormPreferences } from "@/hooks/use-form-preferences";
 import {
+  type FormPreferences,
+  mergeBaseBranchPreference,
   mergeIsolationPreference,
   resolveEffectiveFormPreferences,
 } from "@/create-agent-preferences/preferences";
@@ -101,6 +103,7 @@ import {
   remapDraftCwdToWorkspace,
 } from "./new-workspace-fork-context";
 import {
+  branchNameFromRef,
   buildPickerOptionData,
   defaultBasePickerItem,
   pickerItemLabel,
@@ -741,6 +744,34 @@ function useWorkspaceIsolation(input: {
     effectiveIsolation: isWorktree ? "worktree" : "local",
     canCreateWorktree,
     showRefPicker: !supportsMultiplicity || isWorktree,
+  };
+}
+
+function useNewWorkspaceBaseBranchPreference(input: {
+  selectedProject: HostProjectListItem | null;
+  formPreferences: FormPreferences;
+}): {
+  selectedProjectKey: string | null;
+  projectScopeKey: string | null;
+  rememberedBaseBranch?: string;
+} {
+  const selectedProjectKey = resolveSelectedProjectKey(input.selectedProject);
+  const projectScopeKey =
+    typeof selectedProjectKey === "string" && selectedProjectKey.trim().length > 0
+      ? selectedProjectKey
+      : null;
+  const effectivePreferences = useMemo(
+    () =>
+      resolveEffectiveFormPreferences(
+        input.formPreferences,
+        projectScopeKey ? { projectKey: projectScopeKey } : null,
+      ),
+    [input.formPreferences, projectScopeKey],
+  );
+  return {
+    selectedProjectKey,
+    projectScopeKey,
+    rememberedBaseBranch: effectivePreferences.baseBranch,
   };
 }
 
@@ -1752,11 +1783,13 @@ export function NewWorkspaceScreen({
     ? getWorktreeSupportForHostProject({ project: selectedProject, serverId: selectedServerId })
     : "unsupported";
   const isPending = isNewWorkspacePending({ pendingAction, isDraftHandoffActive });
+  const { selectedProjectKey, projectScopeKey, rememberedBaseBranch } =
+    useNewWorkspaceBaseBranchPreference({ selectedProject, formPreferences });
   const { effectiveIsolation, setIsolation, canCreateWorktree, showRefPicker } =
     useWorkspaceIsolation({
       supportsMultiplicity: supportsWorkspaceMultiplicity,
       worktreeSupport,
-      projectKey: resolveSelectedProjectKey(selectedProject),
+      projectKey: selectedProjectKey,
       serverId: selectedServerId,
     });
   const branchSuggestionsQuery = useQuery({
@@ -1803,8 +1836,12 @@ export function NewWorkspaceScreen({
   }, [forgeSearchAuthenticated, githubPrSearchQuery.data?.items]);
 
   const baseItem = useMemo(
-    () => selectedItem ?? (checkoutStatus ? defaultBasePickerItem(checkoutStatus) : null),
-    [checkoutStatus, selectedItem],
+    () =>
+      selectedItem ??
+      (checkoutStatus
+        ? defaultBasePickerItem(checkoutStatus, { preferredBaseBranch: rememberedBaseBranch })
+        : null),
+    [checkoutStatus, rememberedBaseBranch, selectedItem],
   );
   const { options, itemById, selectedOptionId }: PickerOptionData = useMemo(
     () =>
@@ -1829,8 +1866,19 @@ export function NewWorkspaceScreen({
       dispatchPickerSelection({ type: "picker-selected", item });
       chatDraft.setAttachments(nextAttachments);
       setPickerOpen(false);
+
+      if (item.kind === "branch") {
+        const branchName = branchNameFromRef(item.refName);
+        void updateFormPreferences((current) =>
+          mergeBaseBranchPreference({
+            preferences: current,
+            baseBranch: branchName,
+            scope: projectScopeKey ? { projectKey: projectScopeKey } : null,
+          }),
+        );
+      }
     },
-    [chatDraft],
+    [chatDraft, projectScopeKey, updateFormPreferences],
   );
 
   const handleSelectOption = useCallback(
@@ -2030,7 +2078,10 @@ export function NewWorkspaceScreen({
         : null;
       const checkoutRequest = checkoutStatusForCreate
         ? pickerItemToCheckoutRequest(
-            selectedItem ?? defaultBasePickerItem(checkoutStatusForCreate),
+            selectedItem ??
+              defaultBasePickerItem(checkoutStatusForCreate, {
+                preferredBaseBranch: rememberedBaseBranch,
+              }),
           )
         : undefined;
       const normalizedWorkspace = supportsWorkspaceMultiplicity
@@ -2063,6 +2114,7 @@ export function NewWorkspaceScreen({
       effectiveIsolation,
       mergeWorkspaces,
       queryClient,
+      rememberedBaseBranch,
       selectedItem,
       selectedProject,
       selectedServerId,

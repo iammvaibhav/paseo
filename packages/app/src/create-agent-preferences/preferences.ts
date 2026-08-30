@@ -46,6 +46,7 @@ export interface FormSelectionScope {
   provider?: string;
   providerPreferences?: Record<string, ProviderPreferences>;
   isolation?: "local" | "worktree";
+  baseBranch?: string;
   selectionAsk?: SelectionAskModelPreference;
 }
 
@@ -55,6 +56,7 @@ export interface FormPreferences {
   favoriteModels?: Array<{ provider: string; modelId: string }>;
   favoriteModelsByHost?: Record<string, Array<{ provider: string; modelId: string }>>;
   isolation?: "local" | "worktree";
+  baseBranch?: string;
   byWorkspace?: Record<string, FormSelectionScope>;
   byProject?: Record<string, FormSelectionScope>;
   selectionAsk?: SelectionAskModelPreference;
@@ -80,6 +82,7 @@ const selectionScopeSchema: z.ZodType<FormSelectionScope> = z.strictObject({
   // Last isolation choice for this project (New workspace form). Global
   // `isolation` remains the cross-project fallback for older data / no scope.
   isolation: z.enum(["local", "worktree"]).optional(),
+  baseBranch: z.string().optional(),
   // Model preference for the selection Ask popover. Lives under every
   // applicable scope (workspace, project, global) and resolves workspace >
   // project > global, matching composer persistence. The source agent's model
@@ -107,6 +110,7 @@ export const FormPreferencesSchema = z.strictObject({
   favoriteModels: z.array(favoriteModelSchema).optional(),
   favoriteModelsByHost: z.record(z.string(), z.array(favoriteModelSchema)).optional(),
   isolation: z.enum(["local", "worktree"]).optional(),
+  baseBranch: z.string().optional(),
   byWorkspace: z.record(z.string(), selectionScopeSchema).optional(),
   byProject: z.record(z.string(), selectionScopeSchema).optional(),
   // Global fallback for the selection Ask popover model; used when no
@@ -275,16 +279,21 @@ export function resolveEffectiveFormPreferences(
     return preferences;
   }
 
+  const mergedScope = {
+    ...projectSelection,
+    ...workspaceSelection,
+  };
+
   return {
     ...preferences,
-    provider: workspaceSelection?.provider ?? projectSelection?.provider ?? preferences.provider,
+    provider: mergedScope.provider ?? preferences.provider,
     providerPreferences: {
       ...preferences.providerPreferences,
       ...projectSelection?.providerPreferences,
       ...workspaceSelection?.providerPreferences,
     },
-    isolation:
-      workspaceSelection?.isolation ?? projectSelection?.isolation ?? preferences.isolation,
+    isolation: mergedScope.isolation ?? preferences.isolation,
+    baseBranch: mergedScope.baseBranch ?? preferences.baseBranch,
   };
 }
 
@@ -312,6 +321,37 @@ export function mergeIsolationPreference(args: {
         [projectKey]: {
           ...existing,
           isolation,
+        },
+      },
+    };
+  }
+  return next;
+}
+
+/**
+ * Persist base branch choice into the project scope (when known) and the global fallback.
+ * Workspace-level base branch is not stored — New workspace creates the workspace.
+ */
+export function mergeBaseBranchPreference(args: {
+  preferences: FormPreferences;
+  baseBranch: string;
+  scope?: FormPreferenceScope | null;
+}): FormPreferences {
+  const { preferences, baseBranch, scope } = args;
+  const { projectKey } = normalizeFormPreferenceScope(scope);
+  let next: FormPreferences = {
+    ...preferences,
+    baseBranch,
+  };
+  if (projectKey) {
+    const existing = next.byProject?.[projectKey];
+    next = {
+      ...next,
+      byProject: {
+        ...next.byProject,
+        [projectKey]: {
+          ...existing,
+          baseBranch,
         },
       },
     };

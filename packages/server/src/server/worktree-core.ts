@@ -116,7 +116,7 @@ async function createWorktreeCoreWithPriority(
     }
   }
 
-  if (intent.kind === "branch-off") {
+  if (intent.kind === "branch-off" && intent.baseBranch) {
     await fetchDispatchBaseBranch(repoRoot, intent.baseBranch);
   }
 

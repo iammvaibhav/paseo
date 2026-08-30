@@ -178,7 +178,7 @@ export interface WorktreeCheckoutRef {
 }
 
 export type WorktreeSource =
-  | { kind: "branch-off"; baseBranch: string; branchName: string }
+  | { kind: "branch-off"; baseBranch?: string; branchName: string }
   | { kind: "checkout-branch"; branchName: string }
   | {
       kind: "checkout-change-request";
@@ -1310,8 +1310,8 @@ async function resolveWorktreeSourcePlan({
     case "branch-off": {
       const branchName = source.branchName;
       await validateGitBranchName(cwd, branchName);
-      const normalizedBaseBranch = normalizeRequiredBaseBranch(source.baseBranch);
       const resolvedBaseBranch = await resolveBaseBranchForWorktree(cwd, source.baseBranch);
+      const normalizedBaseBranch = normalizeBaseRefName(resolvedBaseBranch);
       const branchExists = await localBranchExists(cwd, branchName);
       const base = branchExists ? branchName : resolvedBaseBranch;
       const candidateBranch = branchExists ? desiredSlug : branchName;
@@ -1610,11 +1610,70 @@ function normalizeRequiredBaseBranch(baseBranch: string): string {
   return normalizedBaseBranch;
 }
 
+async function resolveRepositoryDefaultBranchForWorktree(cwd: string): Promise<string> {
+  try {
+    const { stdout } = await runGitCommand(
+      ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+      {
+        cwd,
+        envOverlay: READ_ONLY_GIT_ENV,
+      },
+    );
+    const ref = stdout.trim();
+    if (ref) {
+      const remoteShort = ref.replace(/^refs\/remotes\//, "");
+      const localName = remoteShort.startsWith("origin/")
+        ? remoteShort.slice("origin/".length)
+        : remoteShort;
+      try {
+        await runGitCommand(["show-ref", "--verify", "--quiet", `refs/heads/${localName}`], {
+          cwd,
+          envOverlay: READ_ONLY_GIT_ENV,
+        });
+        return localName;
+      } catch {
+        return remoteShort;
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  const { stdout } = await runGitCommand(["branch", "--format=%(refname:short)"], {
+    cwd,
+    envOverlay: READ_ONLY_GIT_ENV,
+  });
+  const branches = new Set(
+    stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0),
+  );
+
+  if (branches.has("main")) {
+    return "main";
+  }
+  if (branches.has("master")) {
+    return "master";
+  }
+
+  const firstBranch = branches.values().next().value;
+  if (firstBranch) {
+    return firstBranch;
+  }
+
+  throw new Error("Unable to resolve repository default branch");
+}
+
 async function resolveBaseBranchForWorktree(
   cwd: string,
-  requestedBaseBranch: string,
+  requestedBaseBranch?: string,
 ): Promise<string> {
-  const requested = requestedBaseBranch.trim();
+  const requested = requestedBaseBranch?.trim();
+  if (!requested) {
+    const defaultBranch = await resolveRepositoryDefaultBranchForWorktree(cwd);
+    return resolveBaseBranchForWorktree(cwd, defaultBranch);
+  }
   const normalized = normalizeRequiredBaseBranch(requested);
   let exactRef: string | null = null;
   if (requested.startsWith("refs/")) {

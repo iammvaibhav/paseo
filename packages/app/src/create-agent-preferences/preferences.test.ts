@@ -7,6 +7,7 @@ import {
   mergeProviderPreferencesWithScope,
   parseFormPreferences,
   mergeIsolationPreference,
+  mergeBaseBranchPreference,
   resolveEffectiveFormPreferences,
 } from "./preferences";
 import { FakeCreateAgentPreferenceStorage } from "./test-utils/fake-preference-storage";
@@ -452,6 +453,43 @@ describe("project-scoped isolation", () => {
     );
     expect(resolveEffectiveFormPreferences(prefs, { projectKey: "proj-b" }).isolation).toBe(
       "local",
+    );
+  });
+});
+
+describe("project-scoped baseBranch", () => {
+  it("stores baseBranch under byProject and resolves it over global", () => {
+    const withProject = mergeBaseBranchPreference({
+      preferences: { baseBranch: "main" },
+      baseBranch: "develop",
+      scope: { projectKey: "proj-a" },
+    });
+    expect(withProject.baseBranch).toBe("develop");
+    expect(withProject.byProject?.["proj-a"]?.baseBranch).toBe("develop");
+    expect(resolveEffectiveFormPreferences(withProject, { projectKey: "proj-a" }).baseBranch).toBe(
+      "develop",
+    );
+    expect(resolveEffectiveFormPreferences(withProject, { projectKey: "proj-b" }).baseBranch).toBe(
+      "develop",
+    ); // global fallback
+  });
+
+  it("keeps project baseBranch when another project is set", () => {
+    let prefs = mergeBaseBranchPreference({
+      preferences: {},
+      baseBranch: "develop",
+      scope: { projectKey: "proj-a" },
+    });
+    prefs = mergeBaseBranchPreference({
+      preferences: prefs,
+      baseBranch: "staging",
+      scope: { projectKey: "proj-b" },
+    });
+    expect(resolveEffectiveFormPreferences(prefs, { projectKey: "proj-a" }).baseBranch).toBe(
+      "develop",
+    );
+    expect(resolveEffectiveFormPreferences(prefs, { projectKey: "proj-b" }).baseBranch).toBe(
+      "staging",
     );
   });
 });
