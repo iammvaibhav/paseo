@@ -44,4 +44,6 @@ const tmp = `${configPath}.tmp-${process.pid}`;
 writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
 renameSync(tmp, configPath);
 
-console.log(`${existed ? "updated" : "created"} ${configPath} (features.webUi.enabled = ${enabled})`);
+console.log(
+  `${existed ? "updated" : "created"} ${configPath} (features.webUi.enabled = ${enabled})`,
+);

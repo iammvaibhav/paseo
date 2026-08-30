@@ -1369,6 +1369,7 @@ export async function createPaseoDaemon(
     paseoHome: config.paseoHome,
     workspaceGitService,
   });
+  let itsaplanBridge: ItsaplanBridge | null = null;
   const archiveWorkspaceRecordExternal = async (
     workspaceId: string,
     context?: WorkspaceArchiveContext,
@@ -1380,6 +1381,11 @@ export async function createPaseoDaemon(
     });
     if (!existingWorkspace || existingWorkspace.archivedAt) return;
     teardownArchivedWorkspaceRuntime(workspaceId);
+    if (itsaplanBridge) {
+      void itsaplanBridge.handleWorkspaceArchived(workspaceId).catch((error) => {
+        logger.error({ err: error, workspaceId }, "itsaplan.bridge.workspace_archive_failed");
+      });
+    }
   };
   // external path→workspace adapter, not ownership: archive-by-path requests that
   // arrive with a worktree path and no workspaceId (old clients / CLI).
@@ -2081,7 +2087,7 @@ export async function createPaseoDaemon(
   // turns use (service.ts dispatchMachineryTurn) rather than the per-agent
   // event pipeline — a new-ticket dispatch prompt has no agentId yet.
   const getItsaplanConfig = () => centralMissionControlConfig.get().itsaplan;
-  const itsaplanBridge = new ItsaplanBridge({
+  itsaplanBridge = new ItsaplanBridge({
     logger,
     serverId,
     agentManager,
