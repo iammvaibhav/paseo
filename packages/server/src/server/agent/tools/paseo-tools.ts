@@ -7431,40 +7431,35 @@ async function tryOmpLiveSteer(params: {
   if (agentManager.getAgent(agentId)?.provider !== "omp") {
     return null;
   }
-  // Live-steer is text-only; native images cannot ride `/steer`. Skip this
-  // path when images are present so they land on interrupt / a fresh run.
-  if (images && images.length > 0) {
-    return null;
-  }
+  // Native images ride OMP `/steer` as a structured prompt.
   const steerText =
     attachments && attachments.length > 0
       ? [prompt.trim(), ...attachments.map(renderPromptAttachmentAsText)]
           .filter(Boolean)
           .join("\n\n")
       : prompt;
-  const handled = agentManager.tryRunOutOfBand(agentId, `/steer ${steerText}`);
+  const steerPrompt: AgentPromptInput =
+    images && images.length > 0
+      ? [
+          { type: "text", text: `/steer ${steerText}` },
+          ...images.map((image) => ({
+            type: "image" as const,
+            data: image.data,
+            mimeType: image.mimeType,
+          })),
+        ]
+      : `/steer ${steerText}`;
+  const handled = agentManager.tryRunOutOfBand(agentId, steerPrompt);
   if (!handled) {
     return null;
   }
-  // The native steer runs inside the provider runtime and records NO
-  // user row in Paseo's timeline (no turn, no echo). Record the prompt
-  // ourselves so the agent's chat is never missing an instruction:
-  // instruction rows render as a normal user message, machinery rows as
-  // a muted one-line placeholder (verbose mode only).
   await agentManager.appendTimelineItem(agentId, {
     type: "user_message",
     text: steerText,
     classification,
-    // The steer runs inside the provider runtime, so this appended row
-    // is the ONLY daemon-side record of the prompt. Carry the client's
-    // optimistic message id so the client reconciles this row with its
-    // optimistic bubble instead of rendering a duplicate.
     ...(messageId ? { clientMessageId: messageId } : {}),
+    ...(images && images.length > 0 ? { images } : {}),
   });
-  // Honest delivery: handled means the provider accepted the prompt —
-  // NOT that the agent will act on it (a wedged omp loop can swallow
-  // the steer entirely). The machinery caller verifies real activity
-  // and escalates when none comes.
   params.onOutOfBandSteer?.();
   return "steer";
 }
