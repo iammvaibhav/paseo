@@ -54,6 +54,7 @@
 #                                     #   without a human (never fails the deploy)
 #   PASEO_SKIP_CODE_SERVER=1          # skip code-server deploy everywhere
 #   PASEO_SKIP_STALL_CRON=1           # skip installing the stall-check cron on every host
+#   PASEO_SKIP_OMP_PLUGINS=1          # skip installing plugins/* into ~/.omp on every host
 #   PASEO_SKIP_COMMANDER_VOICE=1      # skip Commander Voice node deploy everywhere
 #   PASEO_COMMANDER_VOICE_PASSWORD=... # daemon password for the voice node env file
 #                                     #   (write-once secret; NEVER commit — deploy
@@ -767,6 +768,20 @@ deploy_local_plannotator() {
   PLANNOTATOR_VERSION="${PLANNOTATOR_VERSION:-}" bash "$ROOT_DIR/scripts/plannotator/install.sh" local
 }
 
+# In-repo omp plugins (plugins/*): copied into ~/.omp/plugins/node_modules on
+# each host so every spawned agent loads the same account-routing and
+# grok-build extensions. Cheap and idempotent — the installer stamps a content
+# hash and skips unchanged plugins. Never touches a plugin someone disabled on
+# that host.
+deploy_local_omp_plugins() {
+  if [[ "${PASEO_SKIP_OMP_PLUGINS:-0}" == "1" ]]; then
+    log "Skipping local omp plugin install (PASEO_SKIP_OMP_PLUGINS=1)"
+    return
+  fi
+  log "Installing local omp plugins"
+  bash "$ROOT_DIR/plugins/install.sh" local
+}
+
 # Commander Voice node (M9): managed service on the commander host. The daemon
 # password + Gemini key are written once into ~/.config/commander-voice/env
 # (chmod 600) from deploy env vars — never committed. Unset vars preserve the
@@ -1067,6 +1082,14 @@ if [[ "\$RESTART_DAEMON" == "1" ]]; then
   fi
 fi
 
+# The MacBook runs agents like any other host, so it needs the same plugins.
+# Outside the daemon gate: plugins are read when an omp process starts, so this
+# is useful even on a desktop-only run.
+if [[ '${PASEO_SKIP_OMP_PLUGINS:-0}' != "1" ]]; then
+  log "Installing omp plugins"
+  bash plugins/install.sh macbook || log "  Warning: omp plugin install failed on the MacBook"
+fi
+
 if [[ "\$BUILD_DESKTOP" != "0" ]]; then
   log "Building + installing desktop app (PASEO_DESKTOP_ONLY=1, foreground)"
   export PASEO_DESKTOP_ONLY=1
@@ -1267,6 +1290,7 @@ run_parallel_post_push_deploy() {
     start_parallel_job "local-stall-cron" install_stall_cron
     start_parallel_job "local-macbook-watch" install_macbook_redeploy_watch
     start_parallel_job "local-commander-voice" deploy_local_commander_voice
+    start_parallel_job "local-omp-plugins" deploy_local_omp_plugins
 
     # Local daemon must use a stable dist/ through restart. Desktop's
     # build:server:clean races that path, so keep this sequential first.
@@ -1822,6 +1846,16 @@ deploy_plannotator() {
   PLANNOTATOR_VERSION='${PLANNOTATOR_VERSION:-}' bash scripts/plannotator/install.sh '$host'
 }
 
+deploy_omp_plugins() {
+  if [[ '${PASEO_SKIP_OMP_PLUGINS:-0}' == "1" ]]; then
+    log "Skipping omp plugin install (PASEO_SKIP_OMP_PLUGINS=1)"
+    return
+  fi
+  cd "\$HOME/\$REMOTE_REPO_DIR"
+  log "Installing omp plugins"
+  bash plugins/install.sh '$host'
+}
+
 deploy_commander_voice() {
   if [[ '${PASEO_SKIP_COMMANDER_VOICE:-0}' == "1" ]]; then
     log "Skipping Commander Voice deploy (PASEO_SKIP_COMMANDER_VOICE=1)"
@@ -1855,6 +1889,7 @@ fi
 deploy_code_server
 deploy_plannotator
 deploy_commander_voice
+deploy_omp_plugins
 install_stall_cron() {
   if [[ '${PASEO_SKIP_STALL_CRON:-0}' == "1" ]]; then
     log "Skipping stall-check schedule install (PASEO_SKIP_STALL_CRON=1)"
@@ -2036,6 +2071,7 @@ Scope flags (set to 1 unless noted):
   PASEO_SKIP_CODE_SERVER_EXTENSION  Skip installing the paseo-bridge extension
   PASEO_SKIP_PLANNOTATOR         Skip plannotator binary deploy everywhere
   PASEO_SKIP_STALL_CRON          Skip installing the stall-check cron entry on every host
+  PASEO_SKIP_OMP_PLUGINS         Skip installing plugins/* into ~/.omp/plugins on every host
   PASEO_SKIP_COMMANDER_VOICE     Skip Commander Voice node deploy everywhere
   PASEO_BUILD_DESKTOP=0            Skip the desktop app build (built by default)
   PASEO_DESKTOP_ONLY=1             ONLY desktop: local build on macOS; commit/push +

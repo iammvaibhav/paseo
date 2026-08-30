@@ -41,6 +41,7 @@ At the start of non-trivial work, list `docs/` and skim anything relevant to the
 | [docs/forge-providers.md](docs/forge-providers.md)                         | Adding a git forge: registry/manifest, drop-in checklist, self-host/GHES, the two facts tiers                                                    |
 | [docs/custom-providers.md](docs/custom-providers.md)                       | Custom provider config: Z.AI, Alibaba/Qwen, ACP agents, profiles, custom binaries                                                                |
 | [docs/plugins.md](docs/plugins.md)                                         | Local plugin manifest, directory source config, RPCs, native surfaces, and attachment sources                                                    |
+| [docs/omp-plugins.md](docs/omp-plugins.md)                                 | In-repo Oh My Pi (omp) agent plugins: installer, auto-discovery, account routing, Grok build, and deploy sync                                    |
 | [docs/service-proxy.md](docs/service-proxy.md)                             | Service proxy: exposing workspace scripts at public URLs, DNS setup, reverse proxy config                                                        |
 | [docs/code-server.md](docs/code-server.md)                                 | Always-on VS Code Web (code-server) for Open → VS Code Web; install, VPN bind, settings sync                                                     |
 | [docs/webhooks.md](docs/webhooks.md)                                       | Webhooks: HTTP-triggered agents, configurable tunnels (Tailscale Funnel / cloudflared), URL token + HMAC auth, templating                        |
@@ -226,6 +227,7 @@ All local customizations live on **`vaibhav/customizations`**, branched from `up
 - **Mission Control** — fleet monitoring and dispatch: deterministic cross-host board, self-reported status feed (`report_status`), Commander agent with idle-flush digest queue, ephemeral proof-auditing Verifiers, Ask/Auto approval gate, daemon peering with sleep-aware errors — see [docs/mission-control.md](docs/mission-control.md)
 - `scripts/deploy.sh` for multi-host deploy
 - `scripts/omp-stats-fleet.sh` — the stock `omp stats` dashboard over **all three hosts combined**. `omp stats` reads exactly one SQLite file and has no remote/merge support, so the script snapshots each host's `~/.omp/stats.db` (`VACUUM INTO` over ssh via bun), merges them into `~/.omp/profiles/fleet/stats.db`, and serves it with `OMP_PROFILE=fleet omp stats`. No omp fork, no rebuild; your real `~/.omp/stats.db` is never written to. `folder` rows are prefixed with the host name, so the dashboard's **Projects** tab is the per-host breakdown while every other tab is the fleet total. Flags: `--no-sync`, `--merge-only`, `--summary`, `--json`; env `OMP_FLEET_HOSTS` / `OMP_FLEET_PROFILE` / `OMP_FLEET_PORT` (default 3848, one above stock so it never fights a local `omp stats`).
+- **In-repo omp plugins** (`plugins/`) — Oh My Pi agent plugins versioned in-tree and installed to `~/.omp/plugins/node_modules/` across all hosts on deploy: `omp-account-routing` (per-host/per-project OAuth account rotation) and `omp-grok-build` (vendored Grok Build OAuth provider) — see [docs/omp-plugins.md](docs/omp-plugins.md)
 
 Do day-to-day work on this branch, not on `main`.
 
@@ -365,6 +367,7 @@ PASEO_SKIP_LOCAL=1 ./scripts/deploy.sh            # remotes only
 PASEO_SKIP_DAEMON=1 ./scripts/deploy.sh          # code-server + settings only (no daemon build/restart)
 PASEO_SKIP_CODE_SERVER=1 ./scripts/deploy.sh      # skip VS Code Web deploy
 PASEO_SYNC_CODE_SERVER_USER_DATA=1 ./scripts/deploy.sh  # also rsync code-server User/ + extensions/
+PASEO_SKIP_OMP_PLUGINS=1 ./scripts/deploy.sh      # skip omp plugin install
 PASEO_SKIP_SYSTEM_PROMPT=1 ./scripts/deploy.sh    # leave each host's daemon.appendSystemPrompt alone
 PASEO_NODE_VERSION=22 ./scripts/deploy.sh
 ```

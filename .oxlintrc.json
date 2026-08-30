@@ -3,7 +3,9 @@
   "options": {
     "typeAware": false
   },
-  "ignorePatterns": [".dev/**"],
+  // plugins/** holds omp agent plugins, one of them vendored from upstream: they
+  // follow omp's own style (tabs) and must stay diffable against upstream.
+  "ignorePatterns": [".dev/**", "plugins/**"],
   "plugins": ["react", "react-perf", "unicorn", "typescript", "oxc", "import", "promise"],
   "categories": {
     "correctness": "error",

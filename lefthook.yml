@@ -6,9 +6,16 @@ pre-commit:
       exclude:
         - "package-lock.json"
         - "**/package-lock.json"
+        # plugins/** is already excluded in .oxfmtrc.json / .oxlintrc.json (omp
+        # tab style, vendored tree). Filter it here too: oxlint exits non-zero
+        # when every path it is handed turns out to be ignored, which fails the
+        # hook on a commit that only touches plugins.
+        - "plugins/**"
       run: npm run format:check:files -- {staged_files}
     - name: lint
       glob: "*.{js,jsx,ts,tsx}"
+      exclude:
+        - "plugins/**"
       run: npm run lint -- {staged_files}
     - name: typecheck
       run: npm run typecheck
