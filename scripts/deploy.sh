@@ -801,6 +801,24 @@ install_stall_cron() {
   log "Stall-check schedule installed (every minute, log $LOCAL_PASEO_HOME/stall-check.log): $line"
 }
 
+# The MacBook is a laptop behind NAT, so its deploy job is reachability-gated and
+# reports success by SKIPPING when the tunnel is down. That is how it sat three
+# commits behind while every other host was current. This schedule closes the
+# gap: it deploys to the MacBook once it is reachable again with a stale
+# checkout. Orchestrator-only — a MacBook watching itself is meaningless.
+install_macbook_redeploy_watch() {
+  if [[ "${PASEO_SKIP_MACBOOK_WATCH:-0}" == "1" ]]; then
+    log "Skipping MacBook redeploy watch install (PASEO_SKIP_MACBOOK_WATCH=1)"
+    return
+  fi
+  if [[ "$IS_MAC_ORCHESTRATOR" == "1" ]]; then
+    return
+  fi
+  local line
+  line="$(bash "$ROOT_DIR/scripts/install-macbook-redeploy-watch.sh" "$ROOT_DIR" "$LOCAL_PASEO_HOME")"
+  log "MacBook redeploy watch installed: $line"
+}
+
 # ---------------------------------------------------------------------------
 # Desktop install contract (this fork — formal, do not invent a second path)
 #
@@ -917,6 +935,26 @@ build_desktop_app() {
     die "Desktop build finished but no Paseo.app found under packages/desktop/release"
   fi
   install_desktop_app "$built" "$DESKTOP_APP"
+  restore_daemon_web_ui_bundle
+}
+
+# `build:desktop` cleans packages/*/dist on its way through, which deletes the
+# daemon's static web UI bundle that the server build produced earlier in the
+# same run. The daemon reads that directory per REQUEST, so it does not need a
+# restart — it just needs the files back. Observed on the MacBook: the bundle
+# built, the daemon restarted healthy, the desktop build removed the directory,
+# and GET / served 404 while features.webUi.enabled was true.
+#
+# Only rebuilt when it is actually missing, so a desktop-only deploy on a host
+# that never serves the web UI pays nothing.
+restore_daemon_web_ui_bundle() {
+  local bundle="$ROOT_DIR/packages/server/dist/server/web-ui/index.html"
+  if [[ -f "$bundle" ]]; then
+    return
+  fi
+  log "Desktop build removed the daemon web UI bundle; rebuilding it"
+  (cd "$ROOT_DIR" && npm run build:daemon-web-ui) \
+    || log "  Warning: daemon web UI rebuild failed; GET / will 404 until the next deploy"
 }
 
 # --- MacBook job (iammvaibhav orchestrator) -----------------------------------
@@ -1227,6 +1265,7 @@ run_parallel_post_push_deploy() {
     start_parallel_job "local-code-server" deploy_local_code_server
     start_parallel_job "local-plannotator" deploy_local_plannotator
     start_parallel_job "local-stall-cron" install_stall_cron
+    start_parallel_job "local-macbook-watch" install_macbook_redeploy_watch
     start_parallel_job "local-commander-voice" deploy_local_commander_voice
 
     # Local daemon must use a stable dist/ through restart. Desktop's
