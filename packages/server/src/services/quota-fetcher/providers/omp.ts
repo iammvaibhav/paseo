@@ -797,6 +797,243 @@ async function queryOmpAuthCredentials(
   return [];
 }
 
+// omp writes one sticky row per session with a 30-day TTL, so this table grows
+// without bound (~14.5k rows on a busy host). The resolver only needs the newest
+// row per provider, so read newest-first and cap the scan: a provider whose last
+// pin falls outside the window loses its dot, which is the safe direction.
+const OMP_STICKY_ROW_LIMIT = 500;
+const OMP_STICKY_WHERE =
+  "key LIKE 'session:sticky:%' AND value <> '' AND expires_at > strftime('%s','now')";
+// expires_at is in seconds in the agent.db cache table.
+const OMP_STICKY_ORDER = `ORDER BY CAST(json_extract(value, '$.lastUsedAtMs') AS INTEGER) DESC LIMIT ${OMP_STICKY_ROW_LIMIT}`;
+
+interface RawStickyAccountRow {
+  key: string;
+  value: string;
+}
+
+async function queryOmpStickyAccounts(
+  dbPath: string,
+  logger: Logger,
+): Promise<RawStickyAccountRow[]> {
+  try {
+    const sqliteSpecifier: string = "node:sqlite";
+    const sqlite = (await import(sqliteSpecifier)) as unknown as NodeSqliteModule;
+    let db: DatabaseSyncLike | undefined;
+    try {
+      db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
+      const stmt = db.prepare(
+        `SELECT key, value FROM cache WHERE ${OMP_STICKY_WHERE} ${OMP_STICKY_ORDER}`,
+      );
+      const rows = stmt.all() as unknown as RawStickyAccountRow[];
+      return rows;
+    } finally {
+      db?.close();
+    }
+  } catch (err) {
+    logger.debug({ err }, "node:sqlite query failed, falling back to sqlite3 CLI");
+  }
+
+  try {
+    const { stdout } = await execFileAsync(
+      "sqlite3",
+      [
+        "-json",
+        dbPath,
+        `SELECT key, value FROM cache WHERE ${OMP_STICKY_WHERE} ${OMP_STICKY_ORDER};`,
+      ],
+      { timeout: OMP_SQLITE_TIMEOUT_MS },
+    );
+    const raw = stdout.trim();
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed as RawStickyAccountRow[];
+  } catch (err) {
+    try {
+      const { stdout } = await execFileAsync(
+        "sqlite3",
+        [
+          dbPath,
+          `SELECT json_group_array(json_object('key', key, 'value', value)) FROM (SELECT key, value FROM cache WHERE ${OMP_STICKY_WHERE} ${OMP_STICKY_ORDER});`,
+        ],
+        { timeout: OMP_SQLITE_TIMEOUT_MS },
+      );
+      const raw = stdout.trim();
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed as RawStickyAccountRow[];
+      }
+    } catch {
+      logger.debug({ err, dbPath }, "OMP agent.db sticky accounts read failed via sqlite3 CLI");
+    }
+  }
+
+  return [];
+}
+
+interface RawCredentialIdRow {
+  id: number;
+  provider: string;
+  data: string;
+}
+
+async function queryOmpCredentialIds(
+  dbPath: string,
+  logger: Logger,
+): Promise<RawCredentialIdRow[]> {
+  const sanitizeRows = (rows: unknown[]): RawCredentialIdRow[] => {
+    const result: RawCredentialIdRow[] = [];
+    for (const r of rows) {
+      if (!r || typeof r !== "object") continue;
+      const row = r as Record<string, unknown>;
+      const id = Number(row["id"]);
+      if (!Number.isFinite(id)) continue;
+      const provider = typeof row["provider"] === "string" ? row["provider"] : "";
+      const data = typeof row["data"] === "string" ? row["data"] : "";
+      result.push({ id, provider, data });
+    }
+    return result;
+  };
+
+  try {
+    const sqliteSpecifier: string = "node:sqlite";
+    const sqlite = (await import(sqliteSpecifier)) as unknown as NodeSqliteModule;
+    let db: DatabaseSyncLike | undefined;
+    try {
+      db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
+      const stmt = db.prepare(
+        "SELECT id, provider, data FROM auth_credentials WHERE disabled_cause IS NULL",
+      );
+      const rows = stmt.all() as unknown[];
+      return sanitizeRows(rows);
+    } finally {
+      db?.close();
+    }
+  } catch (err) {
+    logger.debug({ err }, "node:sqlite query failed, falling back to sqlite3 CLI");
+  }
+
+  try {
+    const { stdout } = await execFileAsync(
+      "sqlite3",
+      [
+        "-json",
+        dbPath,
+        "SELECT id, provider, data FROM auth_credentials WHERE disabled_cause IS NULL;",
+      ],
+      { timeout: OMP_SQLITE_TIMEOUT_MS },
+    );
+    const raw = stdout.trim();
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return sanitizeRows(parsed);
+  } catch (err) {
+    try {
+      const { stdout } = await execFileAsync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT json_group_array(json_object('id', id, 'provider', provider, 'data', data)) FROM auth_credentials WHERE disabled_cause IS NULL;",
+        ],
+        { timeout: OMP_SQLITE_TIMEOUT_MS },
+      );
+      const raw = stdout.trim();
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return sanitizeRows(parsed);
+      }
+    } catch {
+      logger.debug({ err, dbPath }, "OMP agent.db credential IDs read failed via sqlite3 CLI");
+    }
+  }
+
+  return [];
+}
+
+/**
+ * Newest sticky pin per omp provider. Key shape is
+ * `session:sticky:<provider>:<sessionId>`; no omp provider id and no session id
+ * contains a `:`, so the provider is always the third segment.
+ */
+function newestStickyCredentialByProvider(
+  stickyRows: { key: string; value: string }[],
+): Map<string, number> {
+  const best = new Map<string, { credentialId: number; lastUsedAtMs: number }>();
+
+  for (const row of stickyRows) {
+    const parts = typeof row.key === "string" ? row.key.split(":") : [];
+    if (parts.length < 3 || parts[0] !== "session" || parts[1] !== "sticky") continue;
+    const provider = parts[2]?.trim();
+    if (!provider) continue;
+
+    let credentialId: number;
+    let lastUsedAtMs: number;
+    try {
+      const parsed: unknown = JSON.parse(row.value);
+      if (!parsed || typeof parsed !== "object") continue;
+      const fields = parsed as Record<string, unknown>;
+      credentialId = Number(fields["credentialId"]);
+      if (!Number.isFinite(credentialId)) continue;
+      const seen = Number(fields["lastUsedAtMs"]);
+      lastUsedAtMs = Number.isFinite(seen) ? seen : 0;
+    } catch {
+      continue;
+    }
+
+    const existing = best.get(provider);
+    if (!existing || lastUsedAtMs > existing.lastUsedAtMs) {
+      best.set(provider, { credentialId, lastUsedAtMs });
+    }
+  }
+
+  return new Map([...best].map(([provider, entry]) => [provider, entry.credentialId]));
+}
+
+/** Display key for a credential, matching how the cards derive their own id. */
+function credentialCardKey(data: string): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(data);
+    if (!parsed || typeof parsed !== "object") return undefined;
+    const fields = parsed as Record<string, unknown>;
+    const email = typeof fields["email"] === "string" ? fields["email"].trim() : "";
+    if (email) return email;
+    const accountId = typeof fields["accountId"] === "string" ? fields["accountId"].trim() : "";
+    // No email and no accountId: skip rather than guess an index. A dot on the
+    // wrong account is worse than no dot.
+    return accountId || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function resolveActiveOmpCardIds(
+  stickyRows: { key: string; value: string }[],
+  credentialRows: { id: number; provider: string; data: string }[],
+  isMultiAccountByBase: (baseProviderId: string) => boolean,
+): Set<string> {
+  const newestByProvider = newestStickyCredentialByProvider(stickyRows);
+  if (newestByProvider.size === 0) return new Set();
+
+  const dataById = new Map(credentialRows.map((cred) => [cred.id, cred.data]));
+  const activeCardIds = new Set<string>();
+
+  for (const [provider, credentialId] of newestByProvider) {
+    const data = dataById.get(credentialId);
+    if (data === undefined) continue;
+    const cardKey = credentialCardKey(data);
+    if (cardKey === undefined) continue;
+    const baseProviderId = resolveOmpIdentity(provider).providerId;
+    const { providerId } = resolveOmpCardIds(
+      baseProviderId,
+      cardKey,
+      isMultiAccountByBase(baseProviderId),
+    );
+    activeCardIds.add(providerId);
+  }
+
+  return activeCardIds;
+}
+
 export class OmpQuotaProvider implements ProviderUsageFetcher {
   readonly providerId = "omp";
   readonly agentProviderIds: readonly string[] = ["omp"];
@@ -857,6 +1094,28 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
     const isProviderMultiAccount = (provider: string): boolean => {
       return (providerAccountCounts.get(provider) ?? 0) > 1;
     };
+    const dbPath = resolveOmpAgentDbPath(this.homeDir, this.agentDbPath);
+    let activeCardIds = new Set<string>();
+    if (dbPath) {
+      try {
+        const [stickyRows, credentialRows] = await Promise.all([
+          queryOmpStickyAccounts(dbPath, this.logger),
+          queryOmpCredentialIds(dbPath, this.logger),
+        ]);
+        const isMultiAccountByBase = (baseProviderId: string): boolean => {
+          let total = 0;
+          for (const [provider, count] of providerAccountCounts.entries()) {
+            if (resolveOmpIdentity(provider).providerId === baseProviderId) {
+              total += count;
+            }
+          }
+          return total > 1;
+        };
+        activeCardIds = resolveActiveOmpCardIds(stickyRows, credentialRows, isMultiAccountByBase);
+      } catch (err) {
+        this.logger.debug({ err }, "Failed to resolve active OMP card IDs");
+      }
+    }
     // When the CLI itself failed to authenticate a provider, its own refresh could
     // not help either: tell the user to re-authenticate instead of to wait.
     const expiredErrorFor = (provider: string): string =>
@@ -920,6 +1179,12 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
         this.fetchGrokBuildUsageForAccount(account, multi, expiredErrorFor("grok-build")),
       pushUsage,
     );
+    // Host-level definition of active: most recently used sticky pin per provider
+    for (const usage of usages) {
+      if (activeCardIds.has(usage.providerId)) {
+        usage.active = true;
+      }
+    }
 
     if (usages.length === 0) {
       return unavailableUsage(this);

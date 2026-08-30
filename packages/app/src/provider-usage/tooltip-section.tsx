@@ -58,7 +58,12 @@ export function ProviderUsageTooltipSection({
             // is not unique across cards.
             <Fragment key={`${usage.providerId}:${usage.accountEmail ?? ""}`}>
               {index > 0 ? <View style={styles.cardDivider} /> : null}
-              <ProviderUsageCard usage={usage} compact listFetchedAt={view.payload.fetchedAt} />
+              <ProviderUsageCard
+                usage={usage}
+                active={usage.active === true && providers.length > 1}
+                compact
+                listFetchedAt={view.payload.fetchedAt}
+              />
             </Fragment>
           ))}
         </View>

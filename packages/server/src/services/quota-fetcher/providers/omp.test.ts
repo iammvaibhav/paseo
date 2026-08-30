@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTestLogger } from "../../../test-utils/test-logger.js";
-import { OmpQuotaProvider } from "./omp.js";
+import { OmpQuotaProvider, resolveActiveOmpCardIds } from "./omp.js";
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
@@ -1034,6 +1034,185 @@ describe("OmpQuotaProvider", () => {
 
     // No billing or OAuth token endpoint may be called for disabled accounts.
     expect(requestedUrls).toEqual([]);
+  });
+});
+
+describe("resolveActiveOmpCardIds", () => {
+  it("picks the greatest lastUsedAtMs per provider", () => {
+    const stickyRows = [
+      {
+        key: "session:sticky:google-antigravity:session-1",
+        value: JSON.stringify({ credentialId: 1, lastUsedAtMs: 1000 }),
+      },
+      {
+        key: "session:sticky:google-antigravity:session-2",
+        value: JSON.stringify({ credentialId: 2, lastUsedAtMs: 5000 }),
+      },
+      {
+        key: "session:sticky:google-antigravity:session-3",
+        value: JSON.stringify({ credentialId: 3, lastUsedAtMs: 3000 }),
+      },
+      {
+        key: "session:sticky:cursor:session-4",
+        value: JSON.stringify({ credentialId: 4, lastUsedAtMs: 2000 }),
+      },
+    ];
+    const credentialRows = [
+      { id: 1, provider: "google-antigravity", data: JSON.stringify({ email: "old@example.com" }) },
+      {
+        id: 2,
+        provider: "google-antigravity",
+        data: JSON.stringify({ email: "active@example.com" }),
+      },
+      { id: 3, provider: "google-antigravity", data: JSON.stringify({ email: "mid@example.com" }) },
+      { id: 4, provider: "cursor", data: JSON.stringify({ email: "cursor@example.com" }) },
+    ];
+    const active = resolveActiveOmpCardIds(stickyRows, credentialRows, () => true);
+    expect(active).toEqual(
+      new Set(["omp-antigravity:active@example.com", "omp-cursor:cursor@example.com"]),
+    );
+  });
+
+  it("breaks ties deterministically by keeping the first encountered row", () => {
+    const stickyRows = [
+      {
+        key: "session:sticky:google-antigravity:session-1",
+        value: JSON.stringify({ credentialId: 1, lastUsedAtMs: 5000 }),
+      },
+      {
+        key: "session:sticky:google-antigravity:session-2",
+        value: JSON.stringify({ credentialId: 2, lastUsedAtMs: 5000 }),
+      },
+    ];
+    const credentialRows = [
+      {
+        id: 1,
+        provider: "google-antigravity",
+        data: JSON.stringify({ email: "first@example.com" }),
+      },
+      {
+        id: 2,
+        provider: "google-antigravity",
+        data: JSON.stringify({ email: "second@example.com" }),
+      },
+    ];
+    const active = resolveActiveOmpCardIds(stickyRows, credentialRows, () => true);
+    expect(active).toEqual(new Set(["omp-antigravity:first@example.com"]));
+  });
+
+  it("ignores tombstoned or empty sticky values", () => {
+    const stickyRows = [
+      { key: "session:sticky:google-antigravity:session-1", value: "" },
+      {
+        key: "session:sticky:google-antigravity:session-2",
+        value: JSON.stringify({ credentialId: 2, lastUsedAtMs: 1000 }),
+      },
+    ];
+    const credentialRows = [
+      {
+        id: 2,
+        provider: "google-antigravity",
+        data: JSON.stringify({ email: "user@example.com" }),
+      },
+    ];
+    const active = resolveActiveOmpCardIds(stickyRows, credentialRows, () => true);
+    expect(active).toEqual(new Set(["omp-antigravity:user@example.com"]));
+  });
+
+  it("ignores malformed JSON in sticky value and credential data", () => {
+    const stickyRows = [
+      { key: "session:sticky:google-antigravity:session-1", value: "not-json" },
+      {
+        key: "session:sticky:cursor:session-2",
+        value: JSON.stringify({ credentialId: 1, lastUsedAtMs: 1000 }),
+      },
+      {
+        key: "session:sticky:grok-build:session-3",
+        value: JSON.stringify({ credentialId: 2, lastUsedAtMs: 1000 }),
+      },
+    ];
+    const credentialRows = [
+      { id: 1, provider: "cursor", data: "malformed-cred-data" },
+      { id: 2, provider: "grok-build", data: JSON.stringify({ email: "grok@example.com" }) },
+    ];
+    const active = resolveActiveOmpCardIds(stickyRows, credentialRows, () => true);
+    expect(active).toEqual(new Set(["omp-grok-build:grok@example.com"]));
+  });
+
+  it("ignores keys that do not match session:sticky:*", () => {
+    const stickyRows = [
+      {
+        key: "other:sticky:google-antigravity:session-1",
+        value: JSON.stringify({ credentialId: 1, lastUsedAtMs: 5000 }),
+      },
+      {
+        key: "session:other:google-antigravity:session-2",
+        value: JSON.stringify({ credentialId: 1, lastUsedAtMs: 5000 }),
+      },
+      {
+        key: "session:sticky",
+        value: JSON.stringify({ credentialId: 1, lastUsedAtMs: 5000 }),
+      },
+      {
+        key: "session:sticky:",
+        value: JSON.stringify({ credentialId: 1, lastUsedAtMs: 5000 }),
+      },
+      {
+        key: "session:sticky:google-antigravity:valid-session",
+        value: JSON.stringify({ credentialId: 2, lastUsedAtMs: 1000 }),
+      },
+    ];
+    const credentialRows = [
+      {
+        id: 1,
+        provider: "google-antigravity",
+        data: JSON.stringify({ email: "invalid@example.com" }),
+      },
+      {
+        id: 2,
+        provider: "google-antigravity",
+        data: JSON.stringify({ email: "valid@example.com" }),
+      },
+    ];
+    const active = resolveActiveOmpCardIds(stickyRows, credentialRows, () => true);
+    expect(active).toEqual(new Set(["omp-antigravity:valid@example.com"]));
+  });
+
+  it("skips a provider whose credential has neither email nor accountId", () => {
+    const stickyRows = [
+      {
+        key: "session:sticky:google-antigravity:session-1",
+        value: JSON.stringify({ credentialId: 1, lastUsedAtMs: 5000 }),
+      },
+      {
+        key: "session:sticky:cursor:session-2",
+        value: JSON.stringify({ credentialId: 2, lastUsedAtMs: 3000 }),
+      },
+    ];
+    const credentialRows = [
+      { id: 1, provider: "google-antigravity", data: JSON.stringify({ projectId: "proj-only" }) },
+      { id: 2, provider: "cursor", data: JSON.stringify({ accountId: "acc-123" }) },
+    ];
+    const active = resolveActiveOmpCardIds(stickyRows, credentialRows, () => true);
+    expect(active).toEqual(new Set(["omp-cursor:acc-123"]));
+  });
+
+  it("generates base card ID when provider is not multi-account", () => {
+    const stickyRows = [
+      {
+        key: "session:sticky:google-antigravity:session-1",
+        value: JSON.stringify({ credentialId: 1, lastUsedAtMs: 5000 }),
+      },
+    ];
+    const credentialRows = [
+      {
+        id: 1,
+        provider: "google-antigravity",
+        data: JSON.stringify({ email: "user@example.com" }),
+      },
+    ];
+    const active = resolveActiveOmpCardIds(stickyRows, credentialRows, () => false);
+    expect(active).toEqual(new Set(["omp-antigravity"]));
   });
 });
 

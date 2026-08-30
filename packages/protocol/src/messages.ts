@@ -6342,6 +6342,7 @@ export const ProviderUsageSchema = z.object({
   groupId: z.string().optional(),
   // Account email when a provider reports multiple accounts; absent otherwise.
   accountEmail: z.string().optional(),
+  active: z.boolean().optional(),
   displayName: z.string(),
   status: ProviderUsageStatusSchema,
   planLabel: z.string().nullable(),

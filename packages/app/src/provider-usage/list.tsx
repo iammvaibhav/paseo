@@ -11,7 +11,9 @@ function providerGroupKey(usage: ProviderUsage): string {
   return usage.providerId.split(/[:/#]/, 1)[0] ?? usage.providerId;
 }
 
-function groupProviders(providers: ProviderUsage[]): ProviderUsage[] {
+function groupProviders(
+  providers: ProviderUsage[],
+): { usage: ProviderUsage; group: ProviderUsage[] }[] {
   const groups = new Map<string, ProviderUsage[]>();
   for (const usage of providers) {
     const key = providerGroupKey(usage);
@@ -19,7 +21,13 @@ function groupProviders(providers: ProviderUsage[]): ProviderUsage[] {
     if (group) group.push(usage);
     else groups.set(key, [usage]);
   }
-  return Array.from(groups.values()).flat();
+  const result: { usage: ProviderUsage; group: ProviderUsage[] }[] = [];
+  for (const group of groups.values()) {
+    for (const usage of group) {
+      result.push({ usage, group });
+    }
+  }
+  return result;
 }
 
 export function ProviderUsageList({
@@ -34,11 +42,12 @@ export function ProviderUsageList({
   const groupedProviders = groupProviders(providers);
   return (
     <View style={settingsStyles.card}>
-      {groupedProviders.map((usage, index) => (
+      {groupedProviders.map(({ usage, group }, index) => (
         <Fragment key={`${usage.providerId}:${usage.accountEmail ?? ""}`}>
           {index > 0 ? <View style={styles.divider} /> : null}
           <ProviderUsageCard
             usage={usage}
+            active={usage.active === true && group.length > 1}
             listFetchedAt={listFetchedAt}
             title={titleForUsage?.(usage)}
           />

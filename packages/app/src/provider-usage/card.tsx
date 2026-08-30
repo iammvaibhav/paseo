@@ -41,11 +41,13 @@ function footerText(usage: ProviderUsage, listFetchedAt?: string | null): string
 
 export function ProviderUsageCard({
   usage,
+  active = false,
   compact = false,
   listFetchedAt,
   title,
 }: {
   usage: ProviderUsage;
+  active?: boolean;
   compact?: boolean;
   listFetchedAt?: string | null;
   title?: string;
@@ -81,9 +83,19 @@ export function ProviderUsageCard({
             {title ?? usage.displayName}
           </Text>
           {usage.accountEmail ? (
-            <Text style={styles.accountEmail} numberOfLines={1}>
-              {usage.accountEmail}
-            </Text>
+            <View style={styles.accountRow}>
+              {active ? (
+                <View
+                  style={styles.activeDot}
+                  accessibilityLabel="Currently in use"
+                  // @ts-expect-error title attribute on web
+                  title="Currently in use"
+                />
+              ) : null}
+              <Text style={styles.accountEmail} numberOfLines={1}>
+                {usage.accountEmail}
+              </Text>
+            </View>
           ) : null}
         </View>
         {usage.planLabel ? <StatusBadge label={usage.planLabel} variant="muted" /> : null}
@@ -163,6 +175,17 @@ const styles = StyleSheet.create((theme) => ({
     minWidth: 0,
     flexShrink: 1,
     gap: theme.spacing[0.5],
+  },
+  accountRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1.5],
+  },
+  activeDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: theme.colors.statusSuccess,
   },
   accountEmail: {
     color: theme.colors.foregroundMuted,
