@@ -351,6 +351,11 @@ async function resolveMcpCreateAgent(
     caller: parentAgent
       ? { id: parentAgent.id, cwd: parentAgent.cwd, workspaceId: parentAgent.workspaceId }
       : null,
+    // The caller's labels are the agent's identity: Mission Control finds the
+    // Commander on a host by its `paseo.mission-control` label. resolveCreateAgentIntent
+    // takes labels optionally, so dropping this argument compiles clean and silently
+    // creates every MCP agent with no labels at all.
+    labels: input.labels,
     childAgentDefaultLabels: input.callerContext?.childAgentDefaultLabels,
     legacyDetached: input.detached ?? false,
     resolveWorkspace: async (workspaceId) =>

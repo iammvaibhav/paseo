@@ -515,6 +515,52 @@ test("mcp create with isolation 'worktree' produces a worktree-kind workspace", 
   }
 });
 
+test("mcp create persists the caller's labels, which is how Mission Control finds the Commander", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "create-agent-labels-test-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const agentManager = createRealAgentManager(storage);
+  const providerSnapshotManager = createProviderSnapshotManagerStub().manager;
+  // The Commander always passes an explicit workspaceId (its reserved home), so
+  // this mirrors the real call rather than exercising fresh provisioning.
+  const ensureWorkspaceForCreate = vi.fn(async () => "ws-commander-home");
+
+  try {
+    const { snapshot } = await createAgentCommand(
+      {
+        agentManager,
+        agentStorage: storage,
+        logger,
+        providerSnapshotManager,
+        ensureWorkspaceForCreate,
+      },
+      {
+        kind: "mcp",
+        provider: "codex/gpt-5.4",
+        title: "Commander",
+        cwd: workdir,
+        initialPrompt: "boot the commander",
+        labels: {
+          "paseo.mission-control": "commander",
+          "paseo.mission-control.build-hash": "deadbeef",
+        },
+        background: true,
+        notifyOnFinish: false,
+      },
+    );
+
+    // The persisted record carries the labels verbatim. StoredAgentRecord
+    // defaults labels to {}, so a dropped label set is silently empty rather
+    // than a validation error, and the host then reports no Commander at all.
+    const stored = await storage.get(snapshot.id);
+    expect(stored?.labels).toMatchObject({
+      "paseo.mission-control": "commander",
+      "paseo.mission-control.build-hash": "deadbeef",
+    });
+  } finally {
+    await removeRealAgentManagerWorkdir({ agentManager, storage, workdir });
+  }
+});
+
 test("ticket dispatch default on a git project creates a worktree instead of the shared checkout", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "create-agent-ticket-default-test-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);

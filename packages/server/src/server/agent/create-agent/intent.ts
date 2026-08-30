@@ -21,7 +21,13 @@ export interface CreateAgentIntent {
 export async function resolveCreateAgentIntent(input: {
   explicitWorkspaceId?: string;
   caller: CreateAgentCaller | null;
-  labels?: Record<string, string>;
+  /**
+   * Required, though it may be undefined: these labels are the new agent's
+   * identity (Mission Control locates the Commander on a host by its
+   * `paseo.mission-control` label). As an optional property this was silently
+   * droppable, and dropping it created every MCP agent with no labels.
+   */
+  labels: Record<string, string> | undefined;
   childAgentDefaultLabels?: Record<string, string>;
   resolveWorkspace: (workspaceId: string) => Promise<CreateAgentPlacement>;
   createWorkspace: () => Promise<CreateAgentPlacement>;
