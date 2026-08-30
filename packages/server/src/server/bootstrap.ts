@@ -2136,6 +2136,34 @@ export async function createPaseoDaemon(
           return { ok: false, error: error instanceof Error ? error.message : String(error) };
         }
       },
+      getLifecycleBucket: async ({ host, agentId }) => {
+        const client = peerManager?.getPeerClient(host) ?? null;
+        if (!client || typeof client.fetchAgent !== "function") {
+          return null;
+        }
+        try {
+          const payload = await client.fetchAgent({ agentId });
+          return payload?.agent?.bucket ?? null;
+        } catch (error) {
+          logger.warn(
+            { err: error, peer: host, agentId },
+            "itsaplan.bridge.peer_agent_bucket_lookup_failed",
+          );
+          return null;
+        }
+      },
+      steerWorkerPrompt: async ({ host, agentId, prompt }) => {
+        const client = peerManager?.getPeerClient(host) ?? null;
+        if (!client || typeof client.sendAgentMessage !== "function") {
+          return { ok: false, error: `peer ${host} is not reachable` };
+        }
+        try {
+          await client.sendAgentMessage(agentId, prompt, { dispatchMode: "steer" });
+          return { ok: true };
+        } catch (error) {
+          return { ok: false, error: error instanceof Error ? error.message : String(error) };
+        }
+      },
     },
     projectStore: itsaplanProjectStore,
     getConfig: getItsaplanConfig,

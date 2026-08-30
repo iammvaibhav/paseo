@@ -374,17 +374,30 @@ function createFakeAgentStorage(
   };
 }
 
-function createFakeFleet(found: { agentId: string; host: string } | null): {
+function createFakeFleet(
+  found: { agentId: string; host: string } | null,
+  options?: {
+    bucket?: LifecycleBucket;
+    steerResult?: { ok: true } | { ok: false; error: string };
+  },
+): {
   fleet: ItsaplanBridgeFleet;
   lookups: string[];
   writes: Array<{ host: string; agentId: string; action: MissionControlLifecycleAction }>;
+  bucketLookups: Array<{ host: string; agentId: string }>;
+  steers: Array<{ host: string; agentId: string; prompt: string }>;
 } {
   const lookups: string[] = [];
   const writes: Array<{ host: string; agentId: string; action: MissionControlLifecycleAction }> =
     [];
+  const bucketLookups: Array<{ host: string; agentId: string }> = [];
+  const steers: Array<{ host: string; agentId: string; prompt: string }> = [];
+  const bucket = options?.bucket ?? "needs_you";
   return {
     lookups,
     writes,
+    bucketLookups,
+    steers,
     fleet: {
       findAgentByIssue: async (issueId) => {
         lookups.push(issueId);
@@ -393,6 +406,14 @@ function createFakeFleet(found: { agentId: string; host: string } | null): {
       setLifecycle: async (input) => {
         writes.push(input);
         return { ok: true };
+      },
+      getLifecycleBucket: async (input) => {
+        bucketLookups.push(input);
+        return bucket;
+      },
+      steerWorkerPrompt: async (input) => {
+        steers.push(input);
+        return options?.steerResult ?? { ok: true };
       },
     },
   };
@@ -736,6 +757,139 @@ describe("ItsaplanBridge", () => {
       );
       expect(result.status).toBe(200);
       expect(steerWorkerPrompt).not.toHaveBeenCalled();
+    });
+
+    test("steers a human comment to an agent on a PEER host over peering, not silently discarded", async () => {
+      const fleetFake = createFakeFleet(
+        { agentId: "peer-agent-1", host: "blrofc3" },
+        { bucket: "needs_you" },
+      );
+      const peerBridge = new ItsaplanBridge({
+        logger: createTestLogger(),
+        serverId: "server-1",
+        agentManager: agentManagerFake.manager,
+        agentStorage: createFakeAgentStorage([]),
+        missionControl: missionControlFake.control,
+        fleet: fleetFake.fleet,
+        projectStore,
+        getConfig: () => config,
+        resolvePaseoProjectKey: async () => "proj",
+        deliverMachineryPrompt,
+        steerWorkerPrompt,
+      });
+      peerBridge.start();
+
+      const request = commentRequest(config.humanUserId, "Use option B on peer.", "evt-peer-1");
+      const result = await peerBridge.handleWebhookRequest(request);
+
+      expect(result.status).toBe(200);
+      expect(fleetFake.lookups).toEqual([String(ISSUE_ID)]);
+      expect(fleetFake.bucketLookups).toEqual([{ host: "blrofc3", agentId: "peer-agent-1" }]);
+      expect(fleetFake.steers).toEqual([
+        { host: "blrofc3", agentId: "peer-agent-1", prompt: "Use option B on peer." },
+      ]);
+      expect(steerWorkerPrompt).not.toHaveBeenCalled();
+    });
+
+    test("steers a human comment to a local needs_you agent without calling peers", async () => {
+      await enterNeedsYou("agent-local-s1");
+      const fleetFake = createFakeFleet({ agentId: "peer-agent-2", host: "blrofc3" });
+      const localBridge = new ItsaplanBridge({
+        logger: createTestLogger(),
+        serverId: "server-1",
+        agentManager: agentManagerFake.manager,
+        agentStorage: createFakeAgentStorage(agentStorageRecords),
+        missionControl: missionControlFake.control,
+        fleet: fleetFake.fleet,
+        projectStore,
+        getConfig: () => config,
+        resolvePaseoProjectKey: async () => "proj",
+        deliverMachineryPrompt,
+        steerWorkerPrompt,
+      });
+      localBridge.start();
+
+      const request = commentRequest(config.humanUserId, "Local answer.", "evt-local-1");
+      const result = await localBridge.handleWebhookRequest(request);
+
+      expect(result.status).toBe(200);
+      expect(steerWorkerPrompt).toHaveBeenCalledWith("agent-local-s1", "Local answer.");
+      expect(fleetFake.lookups).toEqual([]);
+      expect(fleetFake.steers).toEqual([]);
+    });
+
+    test("logs at warn when a comment is undeliverable rather than returning silently", async () => {
+      const warnLogs: Array<{ obj: Record<string, unknown>; msg: string }> = [];
+      const testLogger = {
+        ...createTestLogger(),
+        child: () => testLogger,
+        warn: (obj: Record<string, unknown>, msg: string) => {
+          warnLogs.push({ obj, msg });
+        },
+      } as unknown as Logger;
+
+      const hasWarnReason = (reason: string): boolean => {
+        for (const log of warnLogs) {
+          if (
+            log.msg === "itsaplan.bridge.comment_delivery_skipped" &&
+            log.obj?.reason === reason
+          ) {
+            return true;
+          }
+        }
+        return false;
+      };
+
+      const emptyFleetFake = createFakeFleet(null);
+      const bridgeWithLogger = new ItsaplanBridge({
+        logger: testLogger,
+        serverId: "server-1",
+        agentManager: agentManagerFake.manager,
+        agentStorage: createFakeAgentStorage([]),
+        missionControl: missionControlFake.control,
+        fleet: emptyFleetFake.fleet,
+        projectStore,
+        getConfig: () => config,
+        resolvePaseoProjectKey: async () => "proj",
+        deliverMachineryPrompt,
+        steerWorkerPrompt,
+      });
+      bridgeWithLogger.start();
+
+      // Case 1: No linked agent found anywhere
+      const req1 = commentRequest(config.humanUserId, "Hello?", "evt-warn-1");
+      await bridgeWithLogger.handleWebhookRequest(req1);
+      expect(hasWarnReason("no_linked_agent")).toBe(true);
+
+      // Case 2: Agent found on peer, but bucket is not needs_you (e.g. running)
+      warnLogs.length = 0;
+      const runningFleetFake = createFakeFleet(
+        { agentId: "peer-running", host: "blrofc3" },
+        { bucket: "running" },
+      );
+      const bridgeRunning = new ItsaplanBridge({
+        logger: testLogger,
+        serverId: "server-1",
+        agentManager: agentManagerFake.manager,
+        agentStorage: createFakeAgentStorage([]),
+        missionControl: missionControlFake.control,
+        fleet: runningFleetFake.fleet,
+        projectStore,
+        getConfig: () => config,
+        resolvePaseoProjectKey: async () => "proj",
+        deliverMachineryPrompt,
+        steerWorkerPrompt,
+      });
+      bridgeRunning.start();
+      const req2 = commentRequest(config.humanUserId, "Hello running agent?", "evt-warn-2");
+      await bridgeRunning.handleWebhookRequest(req2);
+      expect(hasWarnReason("agent_not_in_needs_you")).toBe(true);
+
+      // Case 3: Empty body
+      warnLogs.length = 0;
+      const req3 = commentRequest(config.humanUserId, "   ", "evt-warn-3");
+      await bridgeRunning.handleWebhookRequest(req3);
+      expect(hasWarnReason("empty_comment_body")).toBe(true);
     });
   });
 

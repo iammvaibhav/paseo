@@ -98,6 +98,14 @@ export interface ItsaplanBridgeFleet {
     agentId: string;
     action: MissionControlLifecycleAction;
   }): Promise<{ ok: true } | { ok: false; error: string }>;
+  /** Read an agent's lifecycle bucket on the host that owns it. */
+  getLifecycleBucket(input: { host: string; agentId: string }): Promise<LifecycleBucket | null>;
+  /** Steer a prompt to an agent on the host that owns it. */
+  steerWorkerPrompt(input: {
+    host: string;
+    agentId: string;
+    prompt: string;
+  }): Promise<{ ok: true } | { ok: false; error: string }>;
 }
 
 export interface ItsaplanWebhookRequest {
@@ -578,23 +586,139 @@ export class ItsaplanBridge {
     comment: z.infer<typeof ItsaplanWebhookCommentDataSchema>,
     config: ItsaplanCentralConfig,
   ): Promise<void> {
-    if (!config.humanUserId || comment.actorUserId !== config.humanUserId) {
+    if (!config.humanUserId) {
+      this.logger.warn(
+        { issueId: comment.issueId, reason: "human_user_id_not_configured" },
+        "itsaplan.bridge.comment_delivery_skipped",
+      );
       return;
     }
-    const agentId = await this.findAgentIdByIssueLabel(String(comment.issueId));
-    if (!agentId) {
-      return;
-    }
-    const bucket = await this.missionControl.getLifecycleBucket(agentId);
-    if (bucket !== "needs_you") {
+    if (comment.actorUserId !== config.humanUserId) {
+      // Bot comments and other users' comments are conversation, not answers (expected case).
       return;
     }
     const body = comment.body?.trim() ?? "";
     if (!body) {
+      this.logger.warn(
+        { issueId: comment.issueId, reason: "empty_comment_body" },
+        "itsaplan.bridge.comment_delivery_skipped",
+      );
       return;
     }
-    await this.steerWorkerPrompt(agentId, body);
-    this.answeredViaTicketComment.add(agentId);
+
+    const issueId = String(comment.issueId);
+    const localAgentId = await this.findAgentIdByIssueLabel(issueId);
+    if (localAgentId) {
+      const bucket = await this.missionControl.getLifecycleBucket(localAgentId);
+      if (bucket !== "needs_you") {
+        this.logger.warn(
+          {
+            issueId: comment.issueId,
+            agentId: localAgentId,
+            host: "local",
+            bucket,
+            reason: "agent_not_in_needs_you",
+          },
+          "itsaplan.bridge.comment_delivery_skipped",
+        );
+        return;
+      }
+      await this.steerWorkerPrompt(localAgentId, body);
+      this.answeredViaTicketComment.add(localAgentId);
+      this.logger.info(
+        { issueId: comment.issueId, agentId: localAgentId, host: "local" },
+        "itsaplan.bridge.comment_steered_to_agent",
+      );
+      return;
+    }
+
+    if (!this.fleet) {
+      this.logger.warn(
+        { issueId: comment.issueId, reason: "no_linked_agent" },
+        "itsaplan.bridge.comment_delivery_skipped",
+      );
+      return;
+    }
+
+    let remote: { agentId: string; host: string } | null = null;
+    try {
+      remote = await this.fleet.findAgentByIssue(issueId);
+    } catch (error) {
+      this.logger.warn(
+        { err: error, issueId: comment.issueId, reason: "fleet_lookup_failed" },
+        "itsaplan.bridge.comment_delivery_skipped",
+      );
+      return;
+    }
+
+    if (!remote) {
+      this.logger.warn(
+        { issueId: comment.issueId, reason: "no_linked_agent" },
+        "itsaplan.bridge.comment_delivery_skipped",
+      );
+      return;
+    }
+
+    let remoteBucket: LifecycleBucket | null = null;
+    try {
+      remoteBucket = await this.fleet.getLifecycleBucket({
+        host: remote.host,
+        agentId: remote.agentId,
+      });
+    } catch (error) {
+      this.logger.warn(
+        {
+          err: error,
+          issueId: comment.issueId,
+          agentId: remote.agentId,
+          host: remote.host,
+          reason: "remote_bucket_lookup_failed",
+        },
+        "itsaplan.bridge.comment_delivery_skipped",
+      );
+      return;
+    }
+
+    if (remoteBucket !== "needs_you") {
+      this.logger.warn(
+        {
+          issueId: comment.issueId,
+          agentId: remote.agentId,
+          host: remote.host,
+          bucket: remoteBucket,
+          reason: "agent_not_in_needs_you",
+        },
+        "itsaplan.bridge.comment_delivery_skipped",
+      );
+      return;
+    }
+
+    const steerResult = await this.fleet.steerWorkerPrompt({
+      host: remote.host,
+      agentId: remote.agentId,
+      prompt: body,
+    });
+
+    if (!steerResult.ok) {
+      this.logger.warn(
+        {
+          issueId: comment.issueId,
+          agentId: remote.agentId,
+          host: remote.host,
+          error: steerResult.error,
+          reason: "steer_failed",
+        },
+        "itsaplan.bridge.comment_delivery_failed",
+      );
+      throw new Error(
+        `Failed to steer remote agent ${remote.agentId} on ${remote.host}: ${steerResult.error}`,
+      );
+    }
+
+    this.logger.info(
+      { issueId: comment.issueId, agentId: remote.agentId, host: remote.host },
+      "itsaplan.bridge.comment_steered_to_agent",
+    );
   }
 
   /** Resolves the itsaplan issue id back to the labeled agent. One ticket can
