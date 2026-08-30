@@ -5,7 +5,7 @@ import type {
 	ExtensionContext,
 	OAuthAccountSummary,
 } from "@oh-my-pi/pi-coding-agent";
-import {
+import ompAccountRoutingExtension, {
 	antigravityBucketPrefix,
 	antigravityQuotaCache,
 	applyRouting,
@@ -635,6 +635,100 @@ describe("orderByWeeklyDeadline", () => {
 			// Account 1 should be first because its weekly reset is sooner (higher drain rate)
 			expect(ranked[0].credentialId).toBe(101);
 			expect(ranked[1].credentialId).toBe(102);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+});
+
+describe("ompAccountRoutingExtension mid-session switching", () => {
+	test("switches account on auto_retry_start 429 error and caches exhaustion", async () => {
+		antigravityQuotaCache.clear();
+		let pinnedCredentialId: number | undefined;
+		type HandlerFn = (event: { errorMessage?: string }, ctx: unknown) => Promise<void> | void;
+		const eventHandlers = new Map<string, HandlerFn>();
+
+		const mockPi = {
+			setLabel: () => {},
+			logger: {
+				info: () => {},
+				warn: () => {},
+				error: () => {},
+				debug: () => {},
+			},
+			on: (event: string, handler: unknown) => {
+				if (typeof handler === "function") {
+					eventHandlers.set(event, handler as HandlerFn);
+				}
+			},
+		} as unknown as ExtensionAPI;
+
+		ompAccountRoutingExtension(mockPi);
+
+		const authStorage = {
+			listOAuthAccounts: (_provider: string) => [
+				{ credentialId: 1, email: "iammvaibhav@gmail.com" },
+				{ credentialId: 2, email: "vaibhavcoolm@gmail.com" },
+			],
+			pinSessionOAuthAccount: (_provider: string, _sessionId: string, credId: number) => {
+				pinnedCredentialId = credId;
+				return true;
+			},
+			getOAuthAccountIdentity: (_provider: string, _sessionId: string) => ({
+				email: pinnedCredentialId === 1 ? "personal@example.com" : "personal2@example.com",
+			}),
+			getOAuthAccessByCredentialId: async (_provider: string, credentialId: number) => ({
+				ok: true,
+				accessToken: `token-${credentialId}`,
+				projectId: `proj-${credentialId}`,
+			}),
+		};
+
+		const ctx = {
+			cwd: "/tmp",
+			modelRegistry: { authStorage },
+			sessionManager: { getSessionId: () => "sess-123" },
+			model: { id: "google-antigravity/gemini-3.7-flash" },
+		};
+
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = (async () => {
+			return new Response(
+				JSON.stringify({
+					groups: [
+						{
+							buckets: [
+								{ bucketId: "gemini-weekly", window: "weekly", remainingFraction: 0.8 },
+								{ bucketId: "gemini-5h", window: "5h", remainingFraction: 0.8 },
+							],
+						},
+					],
+				}),
+				{ status: 200 },
+			);
+		}) as typeof fetch;
+
+		try {
+			// 1. Initial prompt starts on Account 1
+			const beforeStartHandler = eventHandlers.get("before_agent_start");
+			expect(beforeStartHandler).toBeDefined();
+			await beforeStartHandler!({}, ctx);
+			expect(pinnedCredentialId).toBe(1);
+
+			// 2. Mid-session 429 error occurs
+			const autoRetryHandler = eventHandlers.get("auto_retry_start");
+			expect(autoRetryHandler).toBeDefined();
+			await autoRetryHandler!({ errorMessage: "RESOURCE_EXHAUSTED: 429 Quota Exceeded" }, ctx);
+
+			// Account 1 should be marked as exhausted in cache and pin advanced to Account 2
+			expect(pinnedCredentialId).toBe(2);
+			const cached1 = antigravityQuotaCache.get("1:gemini-");
+			expect(cached1?.windows.fiveHour?.remainingFraction).toBe(0);
+			expect(cached1?.windows.weekly?.remainingFraction).toBe(0);
+
+			// 3. Next prompt in session stays on Account 2
+			await beforeStartHandler!({}, ctx);
+			expect(pinnedCredentialId).toBe(2);
 		} finally {
 			globalThis.fetch = originalFetch;
 		}

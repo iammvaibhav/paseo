@@ -636,11 +636,17 @@ export default function ompAccountRoutingExtension(pi: ExtensionAPI): void {
 		if (sessionId) {
 			for (const [key, credentialId] of pinned.entries()) {
 				if (key.endsWith(`:${sessionId}`)) {
-					// Evict cached quota so the retry and next prompt fetch fresh numbers
-					for (const cacheKey of antigravityQuotaCache.keys()) {
-						if (cacheKey.startsWith(`${credentialId}:`)) {
-							antigravityQuotaCache.delete(cacheKey);
-						}
+					// Mark cached quota as exhausted for this credential so even if the quota
+					// summary endpoint has a reporting lag, subsequent rankings treat this
+					// account as exhausted and keep using the alternate account.
+					for (const bucketPrefix of ["gemini-", "3p-"]) {
+						antigravityQuotaCache.set(`${credentialId}:${bucketPrefix}`, {
+							checkedAt: Date.now(),
+							windows: {
+								fiveHour: { remainingFraction: 0 },
+								weekly: { remainingFraction: 0 },
+							},
+						});
 					}
 				}
 			}
