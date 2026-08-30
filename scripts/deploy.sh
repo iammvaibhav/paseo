@@ -1301,6 +1301,57 @@ sync_system_prompt() {
   done
 }
 
+# The daemon-served web UI. `daemon restart --web-ui` is not enough on its own:
+# on a remote the flag never reached the worker (blrofc3 restarted with it and
+# its daemon environment had no PASEO_WEB_UI_ENABLED, so GET / stayed 404 while
+# the bundle sat on disk). The persisted setting is the mechanism that holds, so
+# push it the same way the system prompt is pushed - before any daemon restarts,
+# because the config store only re-reads config.json at boot.
+sync_web_ui_setting() {
+  if [[ "${PASEO_SKIP_WEB_UI:-0}" == "1" ]]; then
+    return
+  fi
+
+  local patcher="$ROOT_DIR/scripts/set-web-ui-config.mjs"
+  if [[ ! -f "$patcher" ]]; then
+    log "No web UI config patcher on disk; leaving features.webUi alone"
+    return
+  fi
+
+  if [[ "${PASEO_SKIP_LOCAL:-0}" != "1" ]]; then
+    log "Enabling daemon web UI (local)"
+    node "$patcher" true | while read -r line; do log "  $line"; done
+  fi
+
+  local host
+  if [[ "${PASEO_SKIP_REMOTES:-0}" != "1" ]]; then
+    for host in "${REMOTE_HOSTS[@]}"; do
+      log "Enabling daemon web UI → $host"
+      if ssh -o BatchMode=yes "$host" \
+          "export NVM_DIR=\"\$HOME/.nvm\"; . \"\$NVM_DIR/nvm.sh\" >/dev/null 2>&1; node - true" \
+          < "$patcher" 2>&1 | while read -r line; do log "  $line"; done; then
+        :
+      else
+        log "  Warning: web UI enable failed on $host"
+      fi
+    done
+  fi
+
+  # The MacBook is a separate job, not a REMOTE_HOSTS entry, and is often
+  # asleep. Reachability-gated and never fatal, same as its deploy job.
+  if [[ "${PASEO_SKIP_MACBOOK:-0}" != "1" ]] \
+      && ssh -o BatchMode=yes -o ConnectTimeout=8 "$MACBOOK_HOST" 'true' 2>/dev/null; then
+    log "Enabling daemon web UI → $MACBOOK_HOST"
+    if ssh -o BatchMode=yes "$MACBOOK_HOST" \
+        "export NVM_DIR=\"\$HOME/.nvm\"; . \"\$NVM_DIR/nvm.sh\" >/dev/null 2>&1; node - true" \
+        < "$patcher" 2>&1 | while read -r line; do log "  $line"; done; then
+      :
+    else
+      log "  Warning: web UI enable failed on $MACBOOK_HOST"
+    fi
+  fi
+}
+
 # Mission Control verifier: sync the omp agent definition
 # (packages/server/resources/verifier-agent.md → ~/.omp/agent/agents/verifier.md)
 # and modelRoles.verifier (copy of modelRoles.task) into ~/.omp/agent/config.yml
@@ -2063,6 +2114,7 @@ main() {
   # Config must be on disk before daemons restart below; the config store only
   # reads config.json at boot.
   sync_system_prompt
+  sync_web_ui_setting
   sync_omp_verifier_config
 
   # Post-push: local daemon/desktop + both remotes overlap.
