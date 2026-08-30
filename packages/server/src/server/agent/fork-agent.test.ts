@@ -366,6 +366,85 @@ test("forks an OMP source natively with boundary slicing when boundary is provid
   expect(clonedContent).not.toContain("turn 2 answer");
 });
 
+test("forks an OMP source natively when root event has null parentId", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "fork-agent-omp-null-parent-"));
+  const sessionFile = path.join(dir, "multi-turn-session-real.jsonl");
+  const lines = [
+    JSON.stringify({ type: "title", v: 1, title: "Source Title" }),
+    JSON.stringify({ type: "session", id: "root", cwd: "/tmp/project" }),
+    JSON.stringify({
+      type: "thinking_level_change",
+      id: "think-1",
+      parentId: null,
+      thinkingLevel: "high",
+    }),
+    JSON.stringify({
+      type: "message",
+      id: "user-1",
+      parentId: "think-1",
+      message: { role: "user", content: "turn 1 prompt" },
+    }),
+    JSON.stringify({
+      type: "message",
+      id: "assistant-1",
+      parentId: "user-1",
+      message: { role: "assistant", content: [{ type: "text", text: "turn 1 answer" }] },
+    }),
+    JSON.stringify({
+      type: "message",
+      id: "user-2",
+      parentId: "assistant-1",
+      message: { role: "user", content: "turn 2 prompt" },
+    }),
+    JSON.stringify({
+      type: "message",
+      id: "assistant-2",
+      parentId: "user-2",
+      message: { role: "assistant", content: [{ type: "text", text: "turn 2 answer" }] },
+    }),
+  ];
+  writeFileSync(sessionFile, lines.join("\n") + "\n");
+
+  const scenario = createForkScenario({
+    persistence: { provider: "omp", sessionId: "omp-session-1", nativeHandle: sessionFile },
+    timelineRows: [
+      timelineRow(1, { type: "user_message", text: "turn 1 prompt" }),
+      timelineRow(2, {
+        type: "assistant_message",
+        messageId: "assistant-1",
+        text: "turn 1 answer",
+      }),
+      timelineRow(3, { type: "user_message", text: "turn 2 prompt" }),
+      timelineRow(4, {
+        type: "assistant_message",
+        messageId: "assistant-2",
+        text: "turn 2 answer",
+      }),
+    ],
+  });
+
+  const result = await scenario.fork(undefined, undefined, {
+    cursor: { epoch: "epoch-1", seq: 2 },
+    messageId: "assistant-1",
+  });
+
+  expect(result).toEqual({
+    agentId: "forked-agent",
+    strategy: "native",
+  });
+
+  const [handle] = scenario.resumeAgentFromPersistence.mock.calls[0] as unknown as [
+    AgentPersistenceHandle,
+  ];
+  const clonedContent = readFileSync(handle.nativeHandle as string, "utf8");
+  const clonedLines = clonedContent.trim().split("\n");
+  expect(JSON.parse(clonedLines[0]!).type).toBe("title");
+  expect(JSON.parse(clonedLines[1]!).type).toBe("session");
+  expect(JSON.parse(clonedLines[2]!).type).toBe("thinking_level_change");
+  expect(clonedContent).toContain("turn 1 prompt");
+  expect(clonedContent).not.toContain("turn 2 prompt");
+});
+
 test("native fork carries user overrides and current mode over config mode", async () => {
   const sessionFile = createSessionFile("native-override-session.jsonl");
   const scenario = createForkScenario({

@@ -233,6 +233,66 @@ describe("OMP session descriptor", () => {
     expect(cloneContent).not.toContain("second prompt");
     expect(cloneContent).not.toContain("second response");
   });
+  test("cloneOmpSessionFile preserves session header when root events have null parentId", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paseo-omp-session-clone-null-parent-"));
+    const source = path.join(
+      root,
+      "2026-08-04T00-00-00-000Z_019f0000-0000-7000-8000-000000000004.jsonl",
+    );
+    const lines = [
+      JSON.stringify({ type: "title", v: 1, title: "Initial title" }),
+      JSON.stringify({ type: "session", id: "019f0000-0000-7000-8000-000000000004", cwd: root }),
+      JSON.stringify({
+        type: "thinking_level_change",
+        id: "think-1",
+        parentId: null,
+        thinkingLevel: "high",
+      }),
+      JSON.stringify({
+        type: "service_tier_change",
+        id: "tier-1",
+        parentId: "think-1",
+        serviceTier: null,
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "user-1",
+        parentId: "tier-1",
+        message: { role: "user", content: "first prompt" },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "assistant-1",
+        parentId: "user-1",
+        message: { role: "assistant", content: [{ type: "text", text: "first response" }] },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "user-2",
+        parentId: "assistant-1",
+        message: { role: "user", content: "second prompt" },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "assistant-2",
+        parentId: "user-2",
+        message: { role: "assistant", content: [{ type: "text", text: "second response" }] },
+      }),
+    ];
+    await writeFile(source, lines.join("\n") + "\n", "utf8");
+
+    const clone = await cloneOmpSessionFile(source, { targetUserTurnCount: 1 });
+    const cloneContent = await readFile(clone, "utf8");
+    const cloneLines = cloneContent.trim().split("\n");
+
+    expect(cloneLines).toHaveLength(6);
+    expect(JSON.parse(cloneLines[0]!).type).toBe("title");
+    expect(JSON.parse(cloneLines[1]!).type).toBe("session");
+    expect(JSON.parse(cloneLines[2]!).type).toBe("thinking_level_change");
+    expect(JSON.parse(cloneLines[3]!).type).toBe("service_tier_change");
+    expect(JSON.parse(cloneLines[4]!).id).toBe("user-1");
+    expect(JSON.parse(cloneLines[5]!).id).toBe("assistant-1");
+  });
 
   test("cloneOmpSessionFile with targetUserTurnCount >= session turns copies full file", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "paseo-omp-session-clone-bounded-full-"));

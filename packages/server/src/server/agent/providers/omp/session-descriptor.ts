@@ -588,12 +588,24 @@ async function tryCloneOmpSessionFileBounded(
   }
 
   const slicedChain = orderedChain.slice(0, cutIndex);
-  const titleLine = await readLeadingTitleLine(sessionFile);
+  const { titleLine, sessionLine } = await readLeadingHeaderLines(sessionFile);
+  const hasSessionHeader =
+    Boolean(sessionLine) || slicedChain.some((entry) => entry.type === "session");
+  if (!hasSessionHeader) {
+    return false;
+  }
+
   const outputLines: string[] = [];
   if (titleLine) {
     outputLines.push(titleLine);
   }
+  if (sessionLine) {
+    outputLines.push(sessionLine);
+  }
   for (const entry of slicedChain) {
+    if (sessionLine && entry.type === "session") {
+      continue;
+    }
     outputLines.push(JSON.stringify(entry));
   }
   outputLines.push("");
@@ -602,21 +614,34 @@ async function tryCloneOmpSessionFileBounded(
   return true;
 }
 
-async function readLeadingTitleLine(sessionFile: string): Promise<string | null> {
-  const handle = await open(sessionFile, "r").catch(() => null);
-  if (!handle) return null;
-  try {
-    const buffer = Buffer.alloc(HEAD_BYTES);
-    const { bytesRead } = await handle.read(buffer, 0, HEAD_BYTES, 0);
-    const chunk = buffer.subarray(0, bytesRead).toString("utf8");
-    const firstLine = chunk.split("\n")[0]?.trim();
-    if (firstLine?.startsWith('{"type":"title"')) {
-      return firstLine;
-    }
-    return null;
-  } finally {
-    await handle.close().catch(() => {});
+interface LeadingSessionHeaders {
+  titleLine: string | null;
+  sessionLine: string | null;
+}
+
+async function readLeadingHeaderLines(sessionFile: string): Promise<LeadingSessionHeaders> {
+  const headChunk = await readHeadChunk(sessionFile);
+  if (!headChunk) {
+    return { titleLine: null, sessionLine: null };
   }
+  let titleLine: string | null = null;
+  let sessionLine: string | null = null;
+  const lines = headChunk.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i]?.trim();
+    if (!rawLine) continue;
+    const record = parseJsonRecord(rawLine);
+    if (!record) continue;
+    if (i === 0 && record.type === "title") {
+      titleLine = rawLine;
+      continue;
+    }
+    if (record.type === "session" && typeof record.id === "string") {
+      sessionLine = rawLine;
+      break;
+    }
+  }
+  return { titleLine, sessionLine };
 }
 
 /**
