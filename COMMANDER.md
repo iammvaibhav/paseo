@@ -1,2 +1,2 @@
-- Use the model gemini 3.7 flash from antigravity provider
+- Use the model gemini 3.7 flash from antigravity provider on high effort
 - Create the worktree from vaibhav/customizations branch
