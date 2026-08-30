@@ -442,6 +442,10 @@ sync_local_git() {
 build_server() {
   log "Building server stack"
   (cd "$ROOT_DIR" && npm run build:server)
+  # Static bundle for the daemon-served web UI. The daemon is always started
+  # with --web-ui, so without this it answers 404 on every UI route.
+  log "Building daemon web UI"
+  (cd "$ROOT_DIR" && npm run build:daemon-web-ui)
 }
 
 install_cli_wrapper() {
@@ -987,6 +991,8 @@ echo "\$cur" > "\$sync_ref_file"
 if [[ "\$RESTART_DAEMON" == "1" ]]; then
   log "Building server packages"
   npm run build:server
+  log "Building daemon web UI"
+  npm run build:daemon-web-ui
 
   # Self-wake nudge: snapshot running agents BEFORE the daemon stops, then nudge
   # them after it is healthy so each one resumes without a human. Never fatal.
@@ -1546,6 +1552,8 @@ build_and_restart() {
   cd "\$HOME/\$REMOTE_REPO_DIR"
   log "Building server"
   npm run build:server
+  log "Building daemon web UI"
+  npm run build:daemon-web-ui
   install_cli_wrapper
   log "Restarting daemon (\$PASEO_HOME)"
   # Drive the webhook tunnel via env (not config.json) so an older daemon's strict
