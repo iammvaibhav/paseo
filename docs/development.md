@@ -515,6 +515,38 @@ values are available as `PASEO_SCRIPTNAME`, `PASEO_WORKSPACE_ID`, `PASEO_BRANCH_
 `PASEO_WORKTREE_PATH`. The script must print one valid TCP port. Paseo trusts the external allocator,
 so the port may already be bound. `portScript` takes precedence when both values are present.
 
+## paseo.json commander instructions
+
+Per-project instructions for the Commander. Loaded from the **project root** (not each worktree) when the Commander resolves the project. The Commander reads them before dispatching and applies them to model choice, spawn conventions, and the worker brief. Doctrine: [commander.md](commander.md#per-project-instructions).
+
+Resolution order:
+
+1. `paseo.json` → `commander.instructionsFile` (path relative to the project root; must stay inside the root)
+2. `paseo.json` → `commander.instructions` or top-level `commanderInstructions` (a relative file path if that file exists, otherwise inline text)
+3. Default files: `COMMANDER.md`, `.paseo/COMMANDER.md`, `.paseo/commander.md`, `commander.md`
+
+Missing files, empty or whitespace-only content, and a corrupt `paseo.json` fall through. Path traversal outside the project root is refused.
+
+```json
+{
+  "commander": {
+    "instructionsFile": "docs/COMMANDER.md"
+  }
+}
+```
+
+Or inline:
+
+```json
+{
+  "commander": {
+    "instructions": "Use omp/anthropic/claude-sonnet-5. Always run npm test before reporting done."
+  }
+}
+```
+
+Project Settings round-trips unknown `paseo.json` fields, including `commander`. There is no separate form field.
+
 ## Bundled daemon web UI
 
 > The user-facing guide for this feature (enabling it, reverse proxy, TLS, tunnels, security) lives at [public-docs/web-ui.md](../public-docs/web-ui.md). This section is the contributor/build reference: how the artifact is produced, bundled, and excluded from desktop packaging.

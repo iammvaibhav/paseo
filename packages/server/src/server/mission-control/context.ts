@@ -28,6 +28,7 @@ import type { PeerManager } from "../peers/peer-manager.js";
 import type { ProjectRegistry, WorkspaceRegistry } from "../workspace-registry.js";
 import { buildCommanderSystemPrompt } from "./commander-contract.js";
 import type { MissionControlReviewStateRecord, MissionControlReviewStateValue } from "./store.js";
+import { resolveProjectCommanderInstructions } from "../../utils/project-instructions.js";
 
 const OMP_CONFIG_RELATIVE_PATH = join(".omp", "agent", "config.yml");
 // Reserved MissionControlModels key carrying omp modelRoles (role → model) as
@@ -143,10 +144,13 @@ export async function buildLocalInventory(
     if (project.archivedAt) {
       continue;
     }
+    const commanderInstructions =
+      (await resolveProjectCommanderInstructions(project.rootPath)) ?? undefined;
     projectEntries.push({
       id: project.projectId,
       title: project.customName ?? project.displayName,
       ...(project.description ? { description: project.description } : {}),
+      ...(commanderInstructions ? { commanderInstructions } : {}),
       // Additive (v0.5.X) cross-host identity; absent when the project has
       // no key yet (same rule the itsaplan sync applies locally).
       ...(project.projectKey ? { key: project.projectKey } : {}),
@@ -678,8 +682,19 @@ function buildInventorySection(context: FleetContextData): string {
         alwaysRaisePr ? "PR policy: always raise a PR" : null,
       ].filter((suffix): suffix is string => suffix !== null);
       const header = `- ${project.title} (${project.id})${suffixes.length > 0 ? ` — ${suffixes.join(" — ")}` : ""}`;
+      const instructionLines = project.commanderInstructions?.trim()
+        ? [
+            "  - Project instructions (read before dispatching):",
+            ...project.commanderInstructions
+              .trim()
+              .split("\n")
+              .map((line) => `    ${line}`),
+          ].join("\n")
+        : null;
       if (project.workspaces.length === 0) {
-        return `${header} — no workspaces`;
+        return instructionLines
+          ? `${header} — no workspaces\n${instructionLines}`
+          : `${header} — no workspaces`;
       }
       const workspaceLines = project.workspaces
         .map(
@@ -687,7 +702,9 @@ function buildInventorySection(context: FleetContextData): string {
             `  - ${workspace.title} [${workspace.kind}] ${workspace.cwd} (${workspace.id})`,
         )
         .join("\n");
-      return `${header}\n${workspaceLines}`;
+      return instructionLines
+        ? `${header}\n${instructionLines}\n${workspaceLines}`
+        : `${header}\n${workspaceLines}`;
     });
     sections.push(`## ${label}\n${projectLines.join("\n")}`);
   }

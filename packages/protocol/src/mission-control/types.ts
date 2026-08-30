@@ -971,6 +971,7 @@ export const MissionControlInventoryProjectSchema = z.object({
   // Old peers omit it; fleet consumers (itsaplan sync) skip keyless entries.
   key: z.string().optional(),
   hostServerId: z.string(),
+  commanderInstructions: z.string().optional(),
   workspaces: z.array(MissionControlInventoryProjectWorkspaceSchema),
 });
 export type MissionControlInventoryProject = z.infer<typeof MissionControlInventoryProjectSchema>;
@@ -1369,6 +1370,7 @@ export const MissionControlContextProjectRollupSchema = z.object({
   kind: z.literal("project"),
   projectId: z.string(),
   projectName: z.string().nullable(),
+  commanderInstructions: z.string().nullable().optional(),
   updatedAt: z.string(),
   runs: z.array(MissionControlContextRollupEntrySchema),
 });

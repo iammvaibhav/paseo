@@ -134,6 +134,7 @@ See [docs/development.md](docs/development.md) for full setup, build sync requir
   - For full suite verification, push to CI and check GitHub Actions instead.
 - **Always run typecheck and lint after every change.**
 - **NEVER run `npm install` / `npm ci` inside a Paseo dev worktree.** Worktrees share the source checkout's `node_modules` — `scripts/worktree-setup.mjs` symlinks it when the lockfile matches (see "Fast worktrees" in [docs/development.md](docs/development.md)). Installing from a worktree rewrites the shared tree and breaks every other worktree. Install deps in the source checkout, or change the lockfile and re-run the worktree setup.
+- **Never land on `vaibhav/customizations` from the shared checkout.** Commit on your worktree, merge `origin/vaibhav/customizations` into that branch, resolve there, then `git push origin HEAD:vaibhav/customizations`. If the push is rejected, merge origin again on the worktree and retry. See [Landing work from a ticket worktree](#landing-work-from-a-ticket-worktree).
 - **Build workspace packages before diagnosing cross-package type errors.** This repo consumes generated declarations across workspaces. If typecheck fails in a package that depends on another workspace, rebuild the owning stack first so `dist` declarations are current:
   - `npm run build:client` — rebuild protocol and client declarations.
   - `npm run build:server` — rebuild highlight, relay, protocol, client, server, and CLI when server/CLI types may be stale.
@@ -230,6 +231,17 @@ All local customizations live on **`vaibhav/customizations`**, branched from `up
 - **In-repo omp plugins** (`plugins/`) — Oh My Pi agent plugins versioned in-tree and installed to `~/.omp/plugins/node_modules/` across all hosts on deploy: `omp-account-routing` (per-host/per-project OAuth account rotation) and `omp-grok-build` (vendored Grok Build OAuth provider) — see [docs/omp-plugins.md](docs/omp-plugins.md)
 
 Do day-to-day work on this branch, not on `main`.
+
+#### Landing work from a ticket worktree
+
+This is how ticket work lands on `vaibhav/customizations`. Never commit, merge, abort, stash, or reset in the shared checkout (`/data/paseo`, `/home/ubuntu/paseo`).
+
+1. Commit on your worktree branch (`npm run format` first).
+2. `git fetch origin` then `git merge origin/vaibhav/customizations`. Resolve conflicts **here**. If that merge is a mess: `git merge --abort` on this worktree and retry step 2.
+3. Fast-forward the fork without checking the branch out: `git push origin HEAD:vaibhav/customizations`.
+4. If the push is rejected, go back to step 2. Never `--force`.
+
+Merge **`origin/vaibhav/customizations`**, not the local `vaibhav/customizations` ref. The local ref is the shared checkout — it may be dirty or mid-merge, and it is not other agents' in-flight work. Other agents commit on their worktrees and land the same way; you meet their commits when they reach origin (step 2, or step 4 after a rejected push). Unpushed work on another worktree is not yours to merge.
 
 ### Deployment — always use `./scripts/deploy.sh`
 

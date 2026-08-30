@@ -2336,9 +2336,9 @@ export class MissionControlService {
   }
 
   /** Project rollup (cached; recomputed when a new run record lands). */
-  getProjectRollup(projectId: string): ProjectRollup | null {
+  getProjectRollup(projectId: string, commanderInstructions?: string | null): ProjectRollup | null {
     return this.rollupCache.getProject(projectId, () =>
-      deriveProjectRollup(this.store.getRunRecords(), projectId),
+      deriveProjectRollup(this.store.getRunRecords(), projectId, undefined, commanderInstructions),
     );
   }
 

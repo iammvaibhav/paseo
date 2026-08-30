@@ -72,6 +72,12 @@ The Commander is opinionated. The decision tree, in order:
 
 Matching "where does backtesting live" uses workspace/project descriptions in the snapshot first, memory recall second. When neither resolves it, clarification card.
 
+## Per-project instructions
+
+A project can give the Commander extra instructions: models to use, how to create agents, conventions, verification. These are not the central `commanderInstructions` (those append to the Commander's system prompt for every project). Project instructions are loaded from the project's root when the Commander resolves that project, and they ride the world snapshot Inventory plus `fleet_list_inventory` / `fleet_context`.
+
+Read them before dispatching. Put model preferences, spawn conventions, and verification requirements into the worker brief. How to write them: [development.md](development.md#paseojson-commander-instructions).
+
 ## Capability boundary
 
 Triage before dispatch:

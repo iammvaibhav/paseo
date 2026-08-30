@@ -1,4 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import type {
   MissionControlEvent,
@@ -22,6 +25,7 @@ import {
   buildCommanderSystemPrompt,
   buildFleetContextData,
   buildHostModelsSection,
+  buildLocalInventory,
   buildLocalRecentAgents,
   buildSnapshotBlock,
   buildWorldSnapshot,
@@ -548,6 +552,57 @@ describe("per-project PR policy in inventory", () => {
     const deps = buildDependencies();
     const block = buildSnapshotBlock(await buildFleetContextData(deps), new Date().toISOString());
     expect(block).not.toContain("PR policy");
+  });
+});
+describe("per-project commander instructions in inventory", () => {
+  test("renders project instructions in the world snapshot inventory section", async () => {
+    const deps = buildDependencies();
+    const context = await buildFleetContextData(deps);
+    context.hosts[0]!.inventory.projects[0]!.commanderInstructions =
+      "Use opencode-zen/ox-alpha-free model.\nAlways run npm test before completion.";
+    const block = buildSnapshotBlock(context, new Date().toISOString());
+    expect(block).toContain("Alpha (proj-1) — the alpha service");
+    expect(block).toContain("Project instructions (read before dispatching):");
+    expect(block).toContain("Use opencode-zen/ox-alpha-free model.");
+    expect(block).toContain("Always run npm test before completion.");
+  });
+
+  test("buildLocalInventory loads project instructions from rootPath", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "paseo-local-inventory-instructions-"));
+    try {
+      writeFileSync(
+        join(tmpDir, "paseo.json"),
+        JSON.stringify({
+          commander: {
+            instructions: "Project-specific instructions for inventory.",
+          },
+        }),
+      );
+      const inventory = await buildLocalInventory({
+        projectRegistry: {
+          list: async () => [
+            {
+              projectId: "proj-custom",
+              rootPath: tmpDir,
+              kind: "git",
+              displayName: "custom",
+              customName: "Custom Project",
+              createdAt: "2026-01-01T00:00:00Z",
+              updatedAt: "2026-01-01T00:00:00Z",
+              archivedAt: null,
+            },
+          ],
+        },
+        workspaceRegistry: { list: async () => [] },
+        serverId: "server-local",
+      });
+
+      expect(inventory.projects[0]?.commanderInstructions).toBe(
+        "Project-specific instructions for inventory.",
+      );
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 

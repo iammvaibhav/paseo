@@ -44,6 +44,7 @@ export interface ProjectRollup {
   kind: "project";
   projectId: string;
   projectName: string | null;
+  commanderInstructions?: string | null;
   updatedAt: string;
   /** Latest-first, capped at ROLLUP_RUNS_PER_PROJECT. */
   runs: RunRollupEntry[];
@@ -129,6 +130,7 @@ export function deriveProjectRollup(
   records: MissionControlRunRecord[],
   projectId: string,
   limit: number = ROLLUP_RUNS_PER_PROJECT,
+  commanderInstructions?: string | null,
 ): ProjectRollup | null {
   const inProject = latestFirst(records.filter((record) => record.projectId === projectId)).slice(
     0,
@@ -141,6 +143,7 @@ export function deriveProjectRollup(
     kind: "project",
     projectId,
     projectName: inProject[0].projectName ?? null,
+    commanderInstructions: commanderInstructions ?? null,
     updatedAt: inProject[0].updatedAt,
     runs: inProject.map(deriveRunRollupEntry),
   };

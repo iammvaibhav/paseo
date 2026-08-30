@@ -117,6 +117,21 @@ describe("M6 rollup derivation", () => {
     expect(deriveProjectRollup(records, "proj-missing")).toBeNull();
   });
 
+  test("project rollup includes commander instructions when provided", () => {
+    const records = [
+      runRecord({
+        id: "mcr_a_1",
+        agentId: "a",
+        agentName: "Alpha",
+        projectId: "proj-1",
+        workspaceId: "ws-1",
+        endedAt: "2026-08-09T10:00:00.000Z",
+      }),
+    ];
+    const rollup = deriveProjectRollup(records, "proj-1", 5, "Follow project rules.");
+    expect(rollup?.commanderInstructions).toBe("Follow project rules.");
+  });
+
   test("buildPriorWorkBlock renders the '# Prior work in this workspace' block and is bounded", () => {
     const records = [
       runRecord({

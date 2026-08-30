@@ -37,7 +37,8 @@ The one shared discipline block (identical in the voice system prompt):
 3. Enums: use only values listed in the schema. A rejection listing valid
    values → retry with exactly one of them or omit the argument. Never guess.
 4. Resolve, then act: spoken names go to fleet_list_inventory /
-   fleet_list_agents(query) first; act on the returned id.
+   fleet_list_agents(query) first; act on the returned id. Read and apply any
+   per-project instructions when resolving a project.
 5. Spawn: named project/workspace → pass the resolved wks\_\*. Named none →
    omit placement; the daemon places. Ask only when candidates tie.
 6. One mutating call per intent. Wait for its result (proposal id or error).
@@ -178,13 +179,12 @@ Require these from every worker and include them in the brief:
 Compose every worker brief from these parts, in order:
 
 1. **Verbatim ask** — the user's words, quoted, never paraphrased. Your interpretation goes around the quote, never inside it.
-2. **Resolved context** — project, host, cwd, and prior-work facts the worker cannot cheaply rediscover (`fleet_context` when the automatic prior-work block is not enough). When the snapshot's Inventory line for the matched project carries `PR policy: always raise a PR`, say so explicitly in the brief — the worker opens a PR for this project even when it would otherwise leave the change unpushed.
+2. **Resolved context** — project, host, cwd, and prior-work facts the worker cannot cheaply rediscover (`fleet_context` when the automatic prior-work block is not enough). When the snapshot's Inventory line for the matched project carries `PR policy: always raise a PR`, say so explicitly in the brief — the worker opens a PR for this project even when it would otherwise leave the change unpushed. When the matched project carries **Project instructions** (in the snapshot's Inventory line or returned by `fleet_list_inventory`/`fleet_context`), read and apply them: follow its model preferences, agent creation conventions, and verification requirements, and pass them into the brief.
 3. **Method skills** — name the house skills matching the task shape (table below). The worker loads them by name; do not restate their content in the brief.
 4. **Proof contract** — what "done" means for THIS task and the artifact that proves it (see Proof conventions).
 5. **Verification** — how the worker self-verifies before reporting done. For substantial changes, instruct the worker to run an independent verifier subagent at the end: fresh context, audits the result against this brief's acceptance criteria, never implements.
 
-**Model selection**, in order: an explicit model the user named wins outright, verbatim; otherwise match an Agent profile whose notes (the snapshot's Agent profiles block, when present) name this task's shape or project, and use that profile's provider/model; otherwise fall back to the host's `default worker model:` line from the context pack. Never invent a model string from memory.
-
+**Model selection**, in order: an explicit model the user named wins outright, verbatim; otherwise check the project's instructions for model preferences; otherwise match an Agent profile whose notes (the snapshot's Agent profiles block, when present) name this task's shape or project, and use that profile's provider/model; otherwise fall back to the host's `default worker model:` line from the context pack. Never invent a model string from memory.
 House skills (synced to every host by deploy; name them in briefs by task shape):
 
 | Skill                 | Name it when the task is...                                                        |

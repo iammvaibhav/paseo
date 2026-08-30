@@ -150,6 +150,7 @@ import {
   resolveDefaultWorkerModel,
 } from "../../mission-control/context.js";
 import type { WorkspaceRollup, ProjectRollup } from "../../mission-control/rollups.js";
+import { resolveProjectCommanderInstructions } from "../../../utils/project-instructions.js";
 import type { MissionControlVerifierDispatcher } from "../../mission-control/verifier.js";
 import { MissionControlReportStatusInputSchema } from "@getpaseo/protocol/mission-control/types";
 import type { MissionControlEvent } from "@getpaseo/protocol/mission-control/types";
@@ -4517,6 +4518,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     kind: z.literal("project"),
     projectId: z.string(),
     projectName: z.string().nullable(),
+    commanderInstructions: z.string().nullable().optional(),
     updatedAt: z.string(),
     runs: z.array(runRollupEntrySchema),
   });
@@ -5144,6 +5146,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
               z.object({
                 id: z.string(),
                 title: z.string(),
+                description: z.string().optional(),
+                commanderInstructions: z.string().optional(),
                 workspaces: z.array(
                   z.object({
                     id: z.string(),
@@ -5237,6 +5241,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
               projects.push({
                 id: project.id,
                 title: project.title,
+                ...(project.description ? { description: project.description } : {}),
+                ...(project.commanderInstructions
+                  ? { commanderInstructions: project.commanderInstructions }
+                  : {}),
                 workspaces: workspaces.map((workspace) => ({
                   id: workspace.id,
                   title: workspace.title,
@@ -6547,6 +6555,20 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     },
   );
 
+  const resolveLocalProjectRollup = async (
+    projectId: string,
+  ): Promise<ProjectRollup | undefined> => {
+    if (!missionControlService) return undefined;
+    let commanderInstructions: string | null = null;
+    if (options.projectRegistry && typeof options.projectRegistry.get === "function") {
+      const project = await options.projectRegistry.get(projectId);
+      if (project?.rootPath) {
+        commanderInstructions = await resolveProjectCommanderInstructions(project.rootPath);
+      }
+    }
+    return missionControlService.getProjectRollup(projectId, commanderInstructions) ?? undefined;
+  };
+
   registerTool(
     "fleet_context",
     {
@@ -6609,7 +6631,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           workspaceRollup = missionControlService.getWorkspaceRollup(args.workspaceId) ?? undefined;
         } else if (args.projectId) {
           runRecords = all.filter((record) => record.projectId === args.projectId).slice(0, 5);
-          projectRollup = missionControlService.getProjectRollup(args.projectId) ?? undefined;
+          projectRollup = await resolveLocalProjectRollup(args.projectId);
         } else {
           runRecords = all.slice(0, 10);
         }

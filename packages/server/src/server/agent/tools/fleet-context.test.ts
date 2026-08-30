@@ -203,6 +203,28 @@ describe("M6 Commander context tools", () => {
     expect(content.runRecords.every((record) => record.workspaceId === "ws-1")).toBe(true);
   });
 
+  test("fleet_context with projectId returns project rollup with commander instructions", async () => {
+    const { catalog } = createHarness({
+      missionControlService: {
+        getProjectRollup: vi.fn((projectId: string, instructions?: string | null) => ({
+          kind: "project" as const,
+          projectId,
+          projectName: "alpha",
+          commanderInstructions: instructions ?? "Use codex/gpt-5.4 model.",
+          updatedAt: "2026-08-09T12:00:00.000Z",
+          runs: [],
+        })),
+      },
+    });
+    const result = await catalog.executeTool("fleet_context", { projectId: "proj-1" });
+    const content = result.structuredContent as {
+      projectRollup?: { kind: string; projectId: string; commanderInstructions?: string | null };
+    };
+    expect(content.projectRollup?.kind).toBe("project");
+    expect(content.projectRollup?.projectId).toBe("proj-1");
+    expect(content.projectRollup?.commanderInstructions).toBe("Use codex/gpt-5.4 model.");
+  });
+
   test("fleet_context with no args returns the most recent records fleet-wide", async () => {
     const { catalog } = createHarness();
     const result = await catalog.executeTool("fleet_context", {});

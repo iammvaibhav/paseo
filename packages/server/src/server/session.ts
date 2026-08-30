@@ -38,6 +38,7 @@ import {
 import type { TranscriptSearchService } from "./search/service.js";
 import type { SpeechToTextProvider, TextToSpeechProvider } from "./speech/speech-provider.js";
 import type { TurnDetectionProvider } from "./speech/turn-detection-provider.js";
+import { resolveProjectCommanderInstructions } from "../utils/project-instructions.js";
 import {
   buildConfigOverrides,
   extractTimestamps,
@@ -2752,7 +2753,14 @@ export class Session {
           this.missionControlService.getWorkspaceRollup(msg.workspaceId) ?? undefined;
       } else if (msg.projectId) {
         runRecords = all.filter((record) => record.projectId === msg.projectId).slice(0, 5);
-        projectRollup = this.missionControlService.getProjectRollup(msg.projectId) ?? undefined;
+        let commanderInstructions: string | null = null;
+        const project = await this.projectRegistry.get(msg.projectId);
+        if (project?.rootPath) {
+          commanderInstructions = await resolveProjectCommanderInstructions(project.rootPath);
+        }
+        projectRollup =
+          this.missionControlService.getProjectRollup(msg.projectId, commanderInstructions) ??
+          undefined;
       } else {
         runRecords = all.slice(0, 10);
       }

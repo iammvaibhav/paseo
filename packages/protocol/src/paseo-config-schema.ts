@@ -71,11 +71,23 @@ export const PaseoMetadataGenerationSchema = z
   .passthrough()
   .catch({});
 
+export const PaseoCommanderConfigRawSchema = z
+  .object({
+    instructions: z.string().optional(),
+    instructionsFile: z.string().optional(),
+  })
+  .passthrough()
+  .catch({});
+
+export const PaseoCommanderConfigSchema = PaseoCommanderConfigRawSchema;
+
 export const PaseoConfigRawSchema = z
   .object({
     worktree: PaseoWorktreeConfigRawSchema.optional(),
     scripts: z.record(z.string(), PaseoScriptEntryRawSchema).optional(),
     metadataGeneration: PaseoMetadataGenerationSchema.optional(),
+    commander: PaseoCommanderConfigRawSchema.optional(),
+    commanderInstructions: z.string().optional(),
   })
   .passthrough();
 
@@ -92,10 +104,11 @@ export const PaseoConfigSchema = PaseoConfigRawSchema.extend({
   worktree: WorktreeConfigSchema.optional(),
   scripts: z.record(z.string(), ScriptEntrySchema).optional().catch({}),
   metadataGeneration: PaseoMetadataGenerationSchema.optional(),
+  commander: PaseoCommanderConfigSchema.optional(),
+  commanderInstructions: z.string().optional(),
 })
   .passthrough()
   .catch({});
-
 export const PaseoConfigRevisionSchema = z.object({
   mtimeMs: z.number(),
   size: z.number(),
@@ -119,3 +132,5 @@ export type PaseoConfigRaw = z.infer<typeof PaseoConfigRawSchema>;
 export type PaseoConfig = z.infer<typeof PaseoConfigSchema>;
 export type PaseoConfigRevision = z.infer<typeof PaseoConfigRevisionSchema>;
 export type ProjectConfigRpcError = z.infer<typeof ProjectConfigRpcErrorSchema>;
+export type PaseoCommanderConfigRaw = z.infer<typeof PaseoCommanderConfigRawSchema>;
+export type PaseoCommanderConfig = z.infer<typeof PaseoCommanderConfigSchema>;

@@ -16,6 +16,8 @@ interface FleetInventoryHost {
   projects: Array<{
     id: string;
     title: string;
+    description?: string;
+    commanderInstructions?: string;
     workspaces: Array<{ id: string; title: string; kind: string; cwd: string }>;
   }>;
 }
@@ -225,5 +227,38 @@ describe("fleet_list_inventory tool", () => {
     const hosts = (result.structuredContent as { hosts: FleetInventoryHost[] }).hosts;
     const offline = hosts.find((host) => host.host === "offline-box");
     expect(offline).toMatchObject({ host: "offline-box", reachable: false, projects: [] });
+  });
+
+  test("returns commanderInstructions on projects when present", async () => {
+    const peerManager = {
+      getPeerStatus: (name: string) =>
+        name === "macbook" ? { name: "macbook", state: "online" as const } : null,
+      getPeerStatuses: () => [{ name: "macbook", state: "online" as const }],
+      getPeerClient: () => ({
+        missionControlContextFetch: vi.fn(async () => ({
+          inventory: {
+            projects: [
+              {
+                id: "prj_instructions",
+                title: "Instructed Project",
+                hostServerId: "srv__macbook",
+                commanderInstructions: "Use claude/sonnet-5. Always run test suite.",
+                workspaces: [
+                  { id: "wks_inst", title: "inst-ws", cwd: "/home/dev/inst", kind: "worktree" },
+                ],
+              },
+            ],
+          },
+          models: {},
+          recentAgents: [],
+        })),
+      }),
+    } as unknown as PeerManager;
+
+    const catalog = createCatalog(peerManager, localRecords());
+    const result = await catalog.executeTool("fleet_list_inventory", { host: "macbook" });
+    const hosts = (result.structuredContent as { hosts: FleetInventoryHost[] }).hosts;
+    const project = hosts[0]?.projects[0];
+    expect(project?.commanderInstructions).toBe("Use claude/sonnet-5. Always run test suite.");
   });
 });
