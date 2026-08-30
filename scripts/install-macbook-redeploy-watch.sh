@@ -43,6 +43,10 @@ run_cmd="$node_bin $repo_dir/scripts/macbook-redeploy-watch.mjs >> $log_file 2>&
 schedule_cmd="$rotate_cmd; $run_cmd"
 
 mkdir -p "$paseo_home"
+# Create the log up front: the rotation probe reads it with `wc -c < log`,
+# and a shell input redirect on a missing file prints its own error that no
+# 2>/dev/null on wc can suppress.
+touch "$log_file" 2>/dev/null || true
 
 warn() { echo "install-macbook-redeploy-watch: WARNING: $*" >&2; }
 

@@ -94,6 +94,20 @@ function deployInFlight() {
   }
 }
 
+/**
+ * Outcome of the MacBook job in a launched run: true done, false failed, null
+ * still unknown (run in flight, or the log has not been written yet).
+ */
+function macbookJobOutcome(runDir) {
+  if (!runDir) return null;
+  const logPath = path.join(runDir, "deploy.log");
+  if (!existsSync(logPath)) return null;
+  const text = readFileSync(logPath, "utf8");
+  if (/\u2717 job 'macbook'|job 'macbook' FAILED|MacBook job FAILED/.test(text)) return false;
+  if (/\u2713 job 'macbook' finished/.test(text)) return true;
+  return null;
+}
+
 async function main() {
   if (process.env.PASEO_MACBOOK_WATCH_DISABLED === "1") return;
 
@@ -110,9 +124,37 @@ async function main() {
 
   const macHead = await macbookHead();
   if (!macHead) return; // unreachable: the normal case while it sleeps, stay quiet
-  if (macHead === head) {
+  const state0 = readState();
+  const pending =
+    state0.lastAttempt?.commit === head && state0.lastAttempt.ok !== true
+      ? state0.lastAttempt
+      : null;
+
+  if (macHead === head && !pending) {
     log(`up to date at ${head.slice(0, 9)}`);
     return;
+  }
+
+  if (pending) {
+    if (deployInFlight()) {
+      log(`deploy of ${head.slice(0, 9)} still in flight`);
+      return;
+    }
+    const outcome = macbookJobOutcome(pending.runDir);
+    if (outcome === true) {
+      writeState({ ...state0, lastAttempt: { ...pending, ok: true } });
+      log(`confirmed ${head.slice(0, 9)} deployed to ${HOST}`);
+      return;
+    }
+    const ageMin = (Date.now() - Date.parse(pending.at)) / 60_000;
+    if (ageMin < COOLDOWN_MIN) {
+      log(
+        `deploy of ${head.slice(0, 9)} ${outcome === false ? "FAILED" : "unconfirmed"} ` +
+          `${Math.round(ageMin)}m ago, cooling down (${COOLDOWN_MIN}m)`,
+      );
+      return;
+    }
+    log(`retrying ${head.slice(0, 9)} after a ${outcome === false ? "failed" : "unconfirmed"} attempt`);
   }
 
   if (deployInFlight()) {
@@ -120,22 +162,7 @@ async function main() {
     return;
   }
 
-  const state = readState();
-  const attemptedAt = state.lastAttempt?.commit === head ? state.lastAttempt.at : null;
-  if (attemptedAt) {
-    const ageMin = (Date.now() - Date.parse(attemptedAt)) / 60_000;
-    if (state.lastAttempt.ok || ageMin < COOLDOWN_MIN) {
-      log(
-        state.lastAttempt.ok
-          ? `skip: already deployed ${head.slice(0, 9)} to ${HOST}; MacBook reports ${macHead.slice(0, 9)}`
-          : `skip: ${head.slice(0, 9)} failed ${Math.round(ageMin)}m ago, cooling down (${COOLDOWN_MIN}m)`,
-      );
-      return;
-    }
-  }
-
-  log(`${HOST} is back at ${macHead.slice(0, 9)}, deploying ${head.slice(0, 9)}`);
-  writeState({ ...state, lastAttempt: { commit: head, at: new Date().toISOString(), ok: false } });
+  log(`${HOST} at ${macHead.slice(0, 9)}, deploying ${head.slice(0, 9)}`);
 
   try {
     // Same invocation a human would use for a MacBook-only deploy. deploy.sh
@@ -157,7 +184,21 @@ async function main() {
       timeout: 120_000,
     });
     log(`deploy launched: ${stdout.trim().split("\n").filter(Boolean).slice(0, 2).join(" | ")}`);
-    writeState({ ...readState(), lastAttempt: { commit: head, at: new Date().toISOString(), ok: true } });
+    // Launched, NOT finished. deploy.sh self-detaches, and the MacBook's git
+    // HEAD flips to the new commit within seconds of its git sync - long before
+    // the server build, daemon restart and app install are done. Trusting that
+    // early flip would call a deploy that died mid-build a success and never
+    // retry, which is the silent staleness this watch exists to prevent. A
+    // later tick reads the job outcome out of the run directory.
+    writeState({
+      ...readState(),
+      lastAttempt: {
+        commit: head,
+        at: new Date().toISOString(),
+        ok: false,
+        runDir: /run dir:\s*(\S+)/.exec(stdout)?.[1] ?? null,
+      },
+    });
   } catch (error) {
     log(`deploy launch FAILED: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
