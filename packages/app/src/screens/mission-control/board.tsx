@@ -68,6 +68,15 @@ import { useArchiveAgent } from "@/hooks/use-archive-agent";
 import { useInspectorStore } from "./inspector-store";
 import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
 import { useWorkspaceOpenState } from "@/mission-control/workspace-open-state";
+import {
+  buildStableBoardItems,
+  computeScrollAnchor,
+  itemKey,
+  resolveScrollAnchorAdjustment,
+  type BoardItem,
+  type ScrollAnchor,
+  type VisibleRowRect,
+} from "./board-items";
 import { useCompactTimeAgo } from "@/hooks/use-compact-time-ago";
 import { copyToClipboard } from "@/utils/copy-to-clipboard";
 import { openAgentFromHistory } from "@/workspace/open-agent-from-history";
@@ -126,21 +135,17 @@ function rowIconAndColor(row: LifecycleRow) {
   }
 }
 
-type BoardItem =
-  | { kind: "bucket"; bucket: LifecycleBucket; label: string; count: number }
-  | { kind: "agent"; row: LifecycleRow }
-  | { kind: "offlineHost"; serverId: string; label: string };
-
-function itemKey(item: BoardItem): string {
-  switch (item.kind) {
-    case "bucket":
-      return `bucket:${item.bucket}`;
-    case "agent":
-      return `agent:${item.row.agent.serverId}:${item.row.agent.id}`;
-    case "offlineHost":
-      return `offline:${item.serverId}`;
-  }
-}
+export {
+  buildStableBoardItems,
+  computeScrollAnchor,
+  itemKey,
+  resolveScrollAnchorAdjustment,
+  type BoardItem,
+  type BuildBoardItemsInput,
+  type BuildBoardItemsResult,
+  type ScrollAnchor,
+  type VisibleRowRect,
+} from "./board-items";
 
 async function setAgentLifecycle(
   serverId: string,
@@ -258,67 +263,17 @@ export function MissionControlBoard({
   const prevItemsArrayRef = useRef<BoardItem[]>([]);
 
   const items = useMemo<BoardItem[]>(() => {
-    const boardItems: BoardItem[] = [];
-    const prevCache = prevItemsCacheRef.current;
-    const nextCache = new Map<string, BoardItem>();
-
-    for (const group of groups) {
-      const bucketKey = `bucket:${group.bucket}`;
-      const prevBucketItem = prevCache.get(bucketKey);
-      const bucketItem: BoardItem =
-        prevBucketItem &&
-        prevBucketItem.kind === "bucket" &&
-        prevBucketItem.count === group.rows.length &&
-        prevBucketItem.label === LIFECYCLE_BUCKET_LABELS[group.bucket]
-          ? prevBucketItem
-          : {
-              kind: "bucket",
-              bucket: group.bucket,
-              label: LIFECYCLE_BUCKET_LABELS[group.bucket],
-              count: group.rows.length,
-            };
-      nextCache.set(bucketKey, bucketItem);
-      boardItems.push(bucketItem);
-
-      if (group.bucket !== "done" || doneExpanded) {
-        for (const row of group.rows) {
-          const agentKey = `agent:${row.agent.serverId}:${row.agent.id}`;
-          const prevAgentItem = prevCache.get(agentKey);
-          const agentItem: BoardItem =
-            prevAgentItem && prevAgentItem.kind === "agent" && prevAgentItem.row === row
-              ? prevAgentItem
-              : { kind: "agent", row };
-          nextCache.set(agentKey, agentItem);
-          boardItems.push(agentItem);
-        }
-      }
-    }
-
-    for (const host of hosts) {
-      if (connectionStatuses.get(host.serverId) === "online") {
-        continue;
-      }
-      const offlineKey = `offline:${host.serverId}`;
-      const prevOfflineItem = prevCache.get(offlineKey);
-      const offlineItem: BoardItem =
-        prevOfflineItem &&
-        prevOfflineItem.kind === "offlineHost" &&
-        prevOfflineItem.label === host.label
-          ? prevOfflineItem
-          : { kind: "offlineHost", serverId: host.serverId, label: host.label };
-      nextCache.set(offlineKey, offlineItem);
-      boardItems.push(offlineItem);
-    }
-
-    prevItemsCacheRef.current = nextCache;
-
-    const prevItems = prevItemsArrayRef.current;
-    const stableItems =
-      boardItems.length === prevItems.length && boardItems.every((item, i) => item === prevItems[i])
-        ? prevItems
-        : boardItems;
-    prevItemsArrayRef.current = stableItems;
-    return stableItems;
+    const result = buildStableBoardItems({
+      groups,
+      hosts,
+      connectionStatuses,
+      doneExpanded,
+      itemCache: prevItemsCacheRef.current,
+      prevItems: prevItemsArrayRef.current,
+    });
+    prevItemsCacheRef.current = result.itemCache;
+    prevItemsArrayRef.current = result.items;
+    return result.items;
   }, [connectionStatuses, doneExpanded, groups, hosts]);
 
   const readyCount = readyRows.length;
@@ -366,35 +321,32 @@ export function MissionControlBoard({
   );
 
   const listRef = useRef<FlatList<BoardItem> | null>(null);
-  const anchorRef = useRef<{ key: string; offset: number } | null>(null);
+  const anchorRef = useRef<ScrollAnchor | null>(null);
 
   const captureScrollAnchor = useCallback(() => {
     if (!isWeb) {
       return;
     }
     const listNode = listRef.current?.getScrollableNode?.() as HTMLElement | null;
-    if (!listNode || listNode.scrollTop <= 0) {
+    if (!listNode) {
       anchorRef.current = null;
       return;
     }
     const containerRect = listNode.getBoundingClientRect();
-    const rows = Array.from(
+    const rowElements = Array.from(
       listNode.querySelectorAll<HTMLElement>(
         '[data-testid^="mission-control-row-"], [data-testid^="mission-control-toggle-"], [data-testid^="mission-control-offline-host-glyph-"]',
       ),
     );
-    const visible = rows.find((r) => r.getBoundingClientRect().bottom > containerRect.top + 1);
-    if (visible) {
-      const testId = visible.getAttribute("data-testid");
-      if (testId) {
-        anchorRef.current = {
-          key: testId,
-          offset: visible.getBoundingClientRect().top - containerRect.top,
-        };
-        return;
-      }
-    }
-    anchorRef.current = null;
+    const rows: VisibleRowRect[] = rowElements.map((el) => {
+      const rect = el.getBoundingClientRect();
+      return {
+        key: el.getAttribute("data-testid") ?? "",
+        top: rect.top,
+        bottom: rect.bottom,
+      };
+    });
+    anchorRef.current = computeScrollAnchor(containerRect.top, rows, listNode.scrollTop);
   }, []);
 
   useLayoutEffect(() => {
@@ -411,12 +363,13 @@ export function MissionControlBoard({
     }
     const containerRect = listNode.getBoundingClientRect();
     const element = listNode.querySelector<HTMLElement>(`[data-testid="${anchor.key}"]`);
-    if (element) {
-      const newOffset = element.getBoundingClientRect().top - containerRect.top;
-      const delta = newOffset - anchor.offset;
-      if (Math.abs(delta) > 0.5) {
-        listNode.scrollTop += delta;
-      }
+    const delta = resolveScrollAnchorAdjustment(
+      containerRect.top,
+      element ? element.getBoundingClientRect().top : null,
+      anchor,
+    );
+    if (delta !== 0) {
+      listNode.scrollTop += delta;
     }
   }, [items]);
 
