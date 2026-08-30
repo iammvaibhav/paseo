@@ -88,11 +88,12 @@ routing:
   actually stand to lose. The 5-hour window only breaks ties between weeklies
   that are within 5% of each other, because an account under weekly deadline
   pressure still gets several fresh 5-hour buckets before its weekly resets.
-  An account whose 5-hour bucket is under 3% is ranked last to avoid a pointless
-  429. Buckets are read per model family — `gemini-*` models rank on the Gemini
-  group, `claude-*`/`gpt-*` on the Claude-and-GPT group — and cached for one
-  minute. If any account's quota data is unavailable, the configured `order`
-  wins.
+  An account whose 5-hour or weekly bucket is under 3% (or 100% used) is marked
+  exhausted and ranked last to automatically switch to another available account
+  and avoid a pointless 429. Buckets are read per model family — `gemini-*` models
+  rank on the Gemini group, `claude-*`/`gpt-*` on the Claude-and-GPT group — and
+  cached for five minutes. If any account's quota data is unavailable, non-exhausted
+  accounts and configured order are respected.
 
   This exists because omp cannot rank Antigravity on the weekly window itself:
   its usage fetcher reads `fetchAvailableModels`, which exposes only the 5-hour

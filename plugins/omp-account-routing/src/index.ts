@@ -37,8 +37,22 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import type { AuthStorage, ExtensionAPI, ExtensionContext, OAuthAccountSummary } from "@oh-my-pi/pi-coding-agent";
-import { getAgentDir } from "@oh-my-pi/pi-coding-agent";
 
+let getAgentDirFn: () => string = () =>
+	process.env.OMP_HOME || path.join(process.env.HOME || "", ".omp", "agent");
+try {
+	// omp provides @oh-my-pi/pi-coding-agent at runtime when running under omp
+	const pi = require("@oh-my-pi/pi-coding-agent");
+	if (typeof pi.getAgentDir === "function") {
+		getAgentDirFn = pi.getAgentDir;
+	}
+} catch {
+	// Standalone test environment fallback
+}
+
+export function getAgentDir(): string {
+	return getAgentDirFn();
+}
 /** Minimal ambient for the Bun global (extensions load under Bun; no @types/bun dep). */
 declare const Bun: { YAML: { parse(input: string): unknown } };
 
@@ -116,24 +130,26 @@ const ANTIGRAVITY_QUOTA_CACHE_MS = 5 * 60 * 1000;
 const FIVE_HOUR_MS = 5 * 60 * 60 * 1000;
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 /** Below this the 5-hour bucket will 429 on the next request; skip the round trip. */
-const FIVE_HOUR_FLOOR = 0.03;
+export const FIVE_HOUR_FLOOR = 0.03;
+/** Below this the weekly bucket will 429 on the next request; skip the round trip. */
+export const WEEKLY_FLOOR = 0.03;
 /** Weekly rates within this relative spread count as equal, so 5h breaks the tie. */
-const WEEKLY_TIE_RELATIVE = 0.05;
+export const WEEKLY_TIE_RELATIVE = 0.05;
 
-interface QuotaBucket {
+export interface QuotaBucket {
 	remainingFraction: number;
 	resetsAt?: number;
 }
 
-interface QuotaWindows {
+export interface QuotaWindows {
 	weekly?: QuotaBucket;
 	fiveHour?: QuotaBucket;
 }
-
 /** `${credentialId}:${bucketPrefix}` -> last quota read. */
 const antigravityQuotaCache = new Map<string, { checkedAt: number; windows: QuotaWindows }>();
 
-const RATE_LIMIT_ERROR_RE = /429|rate\s*[- ]?limit|quota|too many|401|403|unauthorized|authentication|invalid_grant/i;
+export const RATE_LIMIT_ERROR_RE =
+	/429|rate\s*[- ]?limit|quota|too many|401|403|unauthorized|authentication|invalid_grant|resource_exhausted|exhausted/i;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Config loading (YAML via Bun.YAML, or JSON)
@@ -290,7 +306,7 @@ async function orderByWeeklyExpiry(
  * Model id may arrive provider-qualified ("google-antigravity/gemini-3.7-flash"),
  * so match on the trailing segment the way omp's own family lookup does.
  */
-function antigravityBucketPrefix(modelId: string | undefined): string {
+export function antigravityBucketPrefix(modelId: string | undefined): string {
 	const raw = modelId ?? "";
 	const slash = raw.lastIndexOf("/");
 	const model = (slash === -1 ? raw : raw.slice(slash + 1)).trim().toLowerCase();
@@ -302,7 +318,7 @@ function antigravityBucketPrefix(modelId: string | undefined): string {
 	return "gemini-";
 }
 
-function parseQuotaSummary(payload: unknown, bucketPrefix: string): QuotaWindows {
+export function parseQuotaSummary(payload: unknown, bucketPrefix: string): QuotaWindows {
 	const windows: QuotaWindows = {};
 	if (typeof payload !== "object" || payload === null) return windows;
 	const groups = (payload as { groups?: unknown }).groups;
@@ -322,15 +338,18 @@ function parseQuotaSummary(payload: unknown, bucketPrefix: string): QuotaWindows
 				remainingFraction: fields.remainingFraction,
 				...(Number.isFinite(resetsAt) ? { resetsAt } : {}),
 			};
-			if (fields.window === "weekly") windows.weekly = parsed;
-			else if (fields.window === "5h") windows.fiveHour = parsed;
+			if (fields.window === "weekly" || bucketId.endsWith("-weekly") || bucketId.includes("weekly")) {
+				windows.weekly = parsed;
+			} else if (fields.window === "5h" || bucketId.endsWith("-5h") || bucketId.includes("5h")) {
+				windows.fiveHour = parsed;
+			}
 		}
 	}
 	return windows;
 }
 
 /** Fraction of the bucket that must be spent per hour to avoid losing it at reset. */
-function drainRate(bucket: QuotaBucket | undefined, now: number, fallbackMs: number): number {
+export function drainRate(bucket: QuotaBucket | undefined, now: number, fallbackMs: number): number {
 	if (!bucket) return 0;
 	const resetsAt = bucket.resetsAt ?? now + fallbackMs;
 	const hours = Math.max((resetsAt - now) / 3_600_000, 1 / 60);
@@ -384,7 +403,7 @@ async function fetchAntigravityWindows(
  * and an emptied 5-hour bucket costs one 429 that omp records as a shared,
  * counter-scoped block, so every later session skips the account for free.
  */
-async function orderByWeeklyDeadline(
+export async function orderByWeeklyDeadline(
 	auth: AuthStorage,
 	pi: ExtensionAPI,
 	provider: string,
@@ -400,26 +419,52 @@ async function orderByWeeklyDeadline(
 		weeklyRate: number;
 		fiveHourRate: number;
 		exhausted: boolean;
+		hasQuotaData: boolean;
 	}[] = [];
 
 	for (const account of resolved) {
 		const windows = await fetchAntigravityWindows(auth, provider, account.credentialId, bucketPrefix);
-		// Partial data would rank on a number we do not have; keep configured order.
-		if (!windows) return resolved;
+		if (!windows) {
+			scored.push({
+				account,
+				weeklyRate: 0,
+				fiveHourRate: 0,
+				exhausted: false,
+				hasQuotaData: false,
+			});
+			continue;
+		}
+
+		const isFiveHourExhausted =
+			windows.fiveHour !== undefined && windows.fiveHour.remainingFraction < FIVE_HOUR_FLOOR;
+		const isWeeklyExhausted =
+			windows.weekly !== undefined && windows.weekly.remainingFraction < WEEKLY_FLOOR;
+
 		scored.push({
 			account,
 			weeklyRate: drainRate(windows.weekly, now, WEEK_MS),
 			fiveHourRate: drainRate(windows.fiveHour, now, FIVE_HOUR_MS),
-			exhausted: windows.fiveHour !== undefined && windows.fiveHour.remainingFraction < FIVE_HOUR_FLOOR,
+			exhausted: isFiveHourExhausted || isWeeklyExhausted,
+			hasQuotaData: true,
 		});
 	}
 
 	scored.sort((left, right) => {
+		// Non-exhausted accounts always come before exhausted accounts
 		if (left.exhausted !== right.exhausted) return left.exhausted ? 1 : -1;
-		const spread = Math.max(left.weeklyRate, right.weeklyRate);
-		const tied = spread <= 0 || Math.abs(left.weeklyRate - right.weeklyRate) / spread <= WEEKLY_TIE_RELATIVE;
-		if (!tied) return right.weeklyRate - left.weeklyRate;
-		if (left.fiveHourRate !== right.fiveHourRate) return right.fiveHourRate - left.fiveHourRate;
+
+		// When both are non-exhausted (or both exhausted):
+		// If both have quota data, rank by weekly drain rate then 5h drain rate
+		if (left.hasQuotaData && right.hasQuotaData) {
+			const spread = Math.max(left.weeklyRate, right.weeklyRate);
+			const tied = spread <= 0 || Math.abs(left.weeklyRate - right.weeklyRate) / spread <= WEEKLY_TIE_RELATIVE;
+			if (!tied) return right.weeklyRate - left.weeklyRate;
+			if (left.fiveHourRate !== right.fiveHourRate) return right.fiveHourRate - left.fiveHourRate;
+		} else if (left.hasQuotaData !== right.hasQuotaData) {
+			// Account with verified quota data is preferred over unknown
+			return left.hasQuotaData ? -1 : 1;
+		}
+
 		return resolved.indexOf(left.account) - resolved.indexOf(right.account);
 	});
 
@@ -427,7 +472,7 @@ async function orderByWeeklyDeadline(
 		`account-routing: ${provider} weekly-deadline ranking (${bucketPrefix}) ${scored
 			.map(
 				entry =>
-					`${entry.account.label}#${entry.account.credentialId} weekly=${(entry.weeklyRate * 100).toFixed(2)}%/h 5h=${(entry.fiveHourRate * 100).toFixed(2)}%/h${entry.exhausted ? " [5h floor]" : ""}`,
+					`${entry.account.label}#${entry.account.credentialId} weekly=${(entry.weeklyRate * 100).toFixed(2)}%/h 5h=${(entry.fiveHourRate * 100).toFixed(2)}%/h${entry.exhausted ? " [exhausted]" : ""}${!entry.hasQuotaData ? " [no quota data]" : ""}`,
 			)
 			.join(" | ")}`,
 	);
@@ -587,6 +632,19 @@ export default function ompAccountRoutingExtension(pi: ExtensionAPI): void {
 	// also route around it; this enforces the *preferred* order explicitly.
 	pi.on("auto_retry_start", (event, ctx) => {
 		if (!RATE_LIMIT_ERROR_RE.test(event.errorMessage)) return;
+		const sessionId = ctx.sessionManager.getSessionId();
+		if (sessionId) {
+			for (const [key, credentialId] of pinned.entries()) {
+				if (key.endsWith(`:${sessionId}`)) {
+					// Evict cached quota so the retry and next prompt fetch fresh numbers
+					for (const cacheKey of antigravityQuotaCache.keys()) {
+						if (cacheKey.startsWith(`${credentialId}:`)) {
+							antigravityQuotaCache.delete(cacheKey);
+						}
+					}
+				}
+			}
+		}
 		return applyRouting(ctx, pi, "advance");
 	});
 
@@ -602,3 +660,14 @@ export default function ompAccountRoutingExtension(pi: ExtensionAPI): void {
 		}
 	});
 }
+export {
+	type ProviderRouting,
+	type AccountRoutingConfig,
+	type ResolvedAccount,
+	loadConfigFile,
+	mergeConfig,
+	loadRoutingConfig,
+	resolveOrder,
+	applyRouting,
+	antigravityQuotaCache,
+};
