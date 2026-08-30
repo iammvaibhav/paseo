@@ -20,6 +20,7 @@ import {
 } from "react";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { ArrowUp, Mic, MicOff, CornerDownLeft, Plus, Square } from "lucide-react-native";
 import { useDictation } from "@/hooks/use-dictation";
@@ -90,6 +91,7 @@ import {
 } from "./state";
 
 const DEFAULT_SEND_KEYS: ShortcutKey[][] = [["Enter"]];
+const STEER_SEND_KEYS: ShortcutKey[][] = [["mod", "Enter"]];
 const COMPOSER_INPUT_DATASET = { composerInput: "" } as const;
 
 export interface AttachmentMenuItem {
@@ -424,14 +426,7 @@ function handleDesktopKeyPressImpl(
   if (!ctx.submitOnEnter) return;
   if (shiftKey) return;
 
-  // The alternate action queues (interrupt/steer default) or sends as an
-  // interrupt (steer default escalates a steer). Queue needs onQueue; a steer
-  // default's alternate is a plain send, so it works without one.
-  if (
-    (metaKey || ctrlKey) &&
-    ctx.isAgentRunning &&
-    (ctx.onQueue || ctx.defaultSendBehavior === "steer")
-  ) {
+  if (metaKey || ctrlKey) {
     if (ctx.isSubmitDisabled || ctx.isSubmitLoading || ctx.disabled) return;
     event.preventDefault();
     ctx.handleAlternateSendAction();
@@ -1066,8 +1061,7 @@ function computeSendButtonState(input: SendButtonStateInput): SendButtonStateOut
     input.isSubmitLoading && typeof input.onSubmitLoadingPress === "function";
   const isSendButtonDisabled =
     input.disabled || (!canPressLoadingButton && (input.isSubmitDisabled || input.isSubmitLoading));
-  const defaultActionQueues =
-    input.defaultSendBehavior === "queue" && input.isAgentRunning && !input.sendsOutOfBand;
+  const defaultActionQueues = false;
   return { canPressLoadingButton, isSendButtonDisabled, defaultActionQueues };
 }
 
@@ -1173,6 +1167,25 @@ function extractErrorMessage(error: unknown): string | null {
   return null;
 }
 
+function resolveButtonIconSize(): number {
+  return isWeb ? ICON_SIZE.md : ICON_SIZE.lg;
+}
+
+function resolveSendShortcutKeys(isAgentRunning: boolean): ShortcutKey[][] {
+  return isAgentRunning ? STEER_SEND_KEYS : DEFAULT_SEND_KEYS;
+}
+
+function computeIsComposerEditable(input: {
+  isDictating: boolean;
+  isRealtimeVoiceForCurrentAgent: boolean;
+  disabled: boolean;
+}): boolean {
+  return !input.isDictating && !input.isRealtimeVoiceForCurrentAgent && !input.disabled;
+}
+
+function resolveInputPlaceholder(placeholder: string | undefined, t: TFunction): string {
+  return placeholder ?? t("composer.placeholders.fallback");
+}
 export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
   function MessageInput(props, ref) {
     const {
@@ -1226,7 +1239,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const isCompact = useIsCompactFormFactor();
     const { height: windowHeight } = useWindowDimensions();
     const maxInputHeight = resolveMaxInputHeight(windowHeight);
-    const buttonIconSize = isWeb ? ICON_SIZE.md : ICON_SIZE.lg;
+    const buttonIconSize = resolveButtonIconSize();
     const toast = useToast();
     const voice = useVoiceOptional();
     const voiceMuteToggleKeys = useShortcutKeys("voice-mute-toggle");
@@ -1630,6 +1643,14 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       handleSteerSendMessage,
     ]);
 
+    const handleButtonSendAction = useCallback(() => {
+      if (isAgentRunning && !sendsOutOfBand) {
+        handleSteerSendMessage();
+        return;
+      }
+      handleSendMessage();
+    }, [handleSendMessage, handleSteerSendMessage, isAgentRunning, sendsOutOfBand]);
+
     const handleAlternateSendAction = useCallback(() => {
       runAlternateSendAction({
         defaultSendBehavior,
@@ -1897,12 +1918,16 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
               textInputRef={textInputRef}
               textInputStyle={textInputStyle}
               readOnlyTextStyle={readOnlyTextStyle}
-              placeholder={placeholder ?? t("composer.placeholders.fallback")}
+              placeholder={resolveInputPlaceholder(placeholder, t)}
               accessibilityLabel={t(mode.accessibilityLabelKey)}
               onChangeText={handleInputChange}
               onFocus={handleInputFocus}
               onBlur={handleInputBlur}
-              editable={!isDictating && !isRealtimeVoiceForCurrentAgent && !disabled}
+              editable={computeIsComposerEditable({
+                isDictating,
+                isRealtimeVoiceForCurrentAgent,
+                disabled,
+              })}
               scrollEnabled={isComposerScrollEnabled}
               autoFocus={false}
               onKeyPress={shouldHandleWebKeyPress ? handleDesktopKeyPress : undefined}
@@ -1955,7 +1980,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
                 shouldShow
                 canPressLoadingButton={canPressLoadingButton}
                 onSubmitLoadingPress={onSubmitLoadingPress}
-                onDefaultSendAction={handleDefaultSendAction}
+                onDefaultSendAction={handleButtonSendAction}
                 isSendButtonDisabled={isSendButtonDisabled}
                 submitAccessibilityLabel={submitAccessibilityLabel}
                 sendButtonCombinedStyle={sendButtonCombinedStyle}
@@ -1964,7 +1989,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
                 submitLabel={submitLabel}
                 submitButtonTestID={submitButtonTestID}
                 buttonIconSize={buttonIconSize}
-                sendKeys={DEFAULT_SEND_KEYS}
+                sendKeys={resolveSendShortcutKeys(isAgentRunning)}
                 sendTooltipLabel={sendTooltipLabel}
               />
             </View>

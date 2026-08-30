@@ -96,7 +96,7 @@ export function applyDictationTranscript(text: string, ctx: DictationTranscriptC
   ctx.replaceText(nextValue);
 
   if (
-    ctx.defaultSendBehavior === "queue" &&
+    ctx.defaultSendBehavior !== "interrupt" &&
     !ctx.sendsOutOfBand &&
     ctx.isAgentRunning &&
     ctx.onQueue
@@ -146,16 +146,11 @@ export function computeCanStartDictation(input: {
 }
 
 export function runDefaultSendAction(ctx: SendActionContext): void {
-  if (ctx.defaultSendBehavior === "steer" && !ctx.sendsOutOfBand && ctx.isAgentRunning) {
-    ctx.handleSteerSendMessage();
+  if (ctx.defaultSendBehavior === "interrupt") {
+    ctx.handleSendMessage();
     return;
   }
-  if (
-    ctx.defaultSendBehavior === "queue" &&
-    !ctx.sendsOutOfBand &&
-    ctx.isAgentRunning &&
-    ctx.onQueue
-  ) {
+  if (!ctx.sendsOutOfBand && ctx.isAgentRunning && ctx.onQueue) {
     ctx.handleQueueMessage();
     return;
   }
@@ -163,19 +158,17 @@ export function runDefaultSendAction(ctx: SendActionContext): void {
 }
 
 export function runAlternateSendAction(ctx: SendActionContext): void {
-  if (ctx.defaultSendBehavior === "queue" || ctx.sendsOutOfBand) {
-    ctx.handleSendMessage();
+  if (ctx.defaultSendBehavior === "interrupt" && !ctx.sendsOutOfBand) {
+    if (ctx.isAgentRunning && ctx.onQueue) {
+      ctx.handleQueueMessage();
+      return;
+    }
+  }
+  if (!ctx.sendsOutOfBand && ctx.isAgentRunning) {
+    ctx.handleSteerSendMessage();
     return;
   }
-  if (ctx.defaultSendBehavior === "steer") {
-    // Cmd/Ctrl+Enter escalates a steer to an interrupt: the message replaces
-    // the running turn instead of riding along with it.
-    ctx.handleSendMessage();
-    return;
-  }
-  if (ctx.isAgentRunning && ctx.onQueue) {
-    ctx.handleQueueMessage();
-  }
+  ctx.handleSendMessage();
 }
 
 export function runMessageInputKeyboardAction(
