@@ -8,6 +8,7 @@ import { createTestLogger } from "../../test-utils/test-logger.js";
 import type { AgentManagerEvent, ManagedAgent } from "../agent/agent-manager.js";
 import type { StoredAgentRecord } from "../agent/agent-storage.js";
 import {
+  extractProjectKeyFromIdentifier,
   ITSAPLAN_ISSUE_LABEL_KEY,
   ItsaplanBridge,
   type ItsaplanBridgeAgentManager,
@@ -30,6 +31,7 @@ interface FakeIssue {
   id: number;
   projectId: number;
   sequenceNumber: number;
+  identifier?: string;
   columnId: number;
   title: string;
   description: string | null;
@@ -87,6 +89,16 @@ async function waitForIssueAssignee(
 
 function findColumnByName(columns: Map<number, FakeColumn>, name: string): FakeColumn | undefined {
   return Array.from(columns.values()).find((column) => column.name === name);
+}
+
+function findColumnByNameAndProject(
+  columns: Map<number, FakeColumn>,
+  projectId: number,
+  name: string,
+): FakeColumn | undefined {
+  return Array.from(columns.values()).find(
+    (column) => column.projectId === projectId && column.name === name,
+  );
 }
 
 function startFakeItsaplanServer(options: {
@@ -980,6 +992,115 @@ describe("ItsaplanBridge", () => {
       expect(issues.get(ISSUE_ID)?.columnId).toBe(readyColumn?.id);
       expect(fakeServer.comments.at(-1)?.body).toContain("PR: https://example.test/pr/1");
     });
+
+    test("projects column to In Progress when an agent is created on a host with NO project mapping", async () => {
+      const UNMAPPED_PROJECT_ID = 99;
+      const UNMAPPED_PROJECT_KEY = "UNMAPPED";
+      const UNMAPPED_ISSUE_ID = 9901;
+
+      projectIdByKey.set(UNMAPPED_PROJECT_KEY, UNMAPPED_PROJECT_ID);
+      columns.set(991, {
+        id: 991,
+        projectId: UNMAPPED_PROJECT_ID,
+        name: "Todo",
+        stateType: "unstarted",
+      });
+      columns.set(992, {
+        id: 992,
+        projectId: UNMAPPED_PROJECT_ID,
+        name: "In Progress",
+        stateType: "started",
+      });
+
+      issues.set(UNMAPPED_ISSUE_ID, {
+        id: UNMAPPED_ISSUE_ID,
+        projectId: UNMAPPED_PROJECT_ID,
+        sequenceNumber: 1,
+        identifier: `${UNMAPPED_PROJECT_KEY}-1`,
+        columnId: 991,
+        title: "Peer host task",
+        description: null,
+        assigneeUserId: null,
+        links: [],
+      });
+
+      expect(projectStore.getByItsaplanProjectId(UNMAPPED_PROJECT_ID)).toBeNull();
+
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent("agent-peer-1", {
+          [ITSAPLAN_ISSUE_LABEL_KEY]: String(UNMAPPED_ISSUE_ID),
+        }),
+      });
+
+      await waitForIssueColumn(issues, UNMAPPED_ISSUE_ID, 992);
+      expect(fakeServer.comments).toContainEqual({
+        issueId: UNMAPPED_ISSUE_ID,
+        body: "Dispatched: paseo://h/server-1/agent/agent-peer-1",
+      });
+    });
+
+    test("projects report_status finished to Ready to review on a host with NO project mapping", async () => {
+      const UNMAPPED_PROJECT_ID = 99;
+      const UNMAPPED_PROJECT_KEY = "UNMAPPED";
+      const UNMAPPED_ISSUE_ID = 9902;
+
+      projectIdByKey.set(UNMAPPED_PROJECT_KEY, UNMAPPED_PROJECT_ID);
+      columns.set(991, {
+        id: 991,
+        projectId: UNMAPPED_PROJECT_ID,
+        name: "Todo",
+        stateType: "unstarted",
+      });
+      columns.set(992, {
+        id: 992,
+        projectId: UNMAPPED_PROJECT_ID,
+        name: "In Progress",
+        stateType: "started",
+      });
+
+      issues.set(UNMAPPED_ISSUE_ID, {
+        id: UNMAPPED_ISSUE_ID,
+        projectId: UNMAPPED_PROJECT_ID,
+        sequenceNumber: 2,
+        identifier: `${UNMAPPED_PROJECT_KEY}-2`,
+        columnId: 992,
+        title: "Peer host task 2",
+        description: null,
+        assigneeUserId: null,
+        links: [],
+      });
+
+      expect(projectStore.getByItsaplanProjectId(UNMAPPED_PROJECT_ID)).toBeNull();
+
+      agentManagerFake.setAgent(
+        fakeAgent("agent-peer-2", {
+          [ITSAPLAN_ISSUE_LABEL_KEY]: String(UNMAPPED_ISSUE_ID),
+        }),
+      );
+
+      missionControlFake.emitSelfReport({
+        id: "mce_peer",
+        ts: new Date().toISOString(),
+        seq: 1,
+        agentId: "agent-peer-2",
+        agentName: "agent-peer-2",
+        agentTitle: "Agent Peer 2",
+        kind: "finished",
+        source: "self",
+        severity: "info",
+        headline: "Done",
+        proof: [{ kind: "pr", url: "https://example.test/pr/99", label: "PR" }],
+      } as unknown as MissionControlEvent);
+
+      await waitForCreatedColumn(fakeServer.createdColumns, {
+        projectKey: UNMAPPED_PROJECT_KEY,
+        name: "Ready to review",
+        stateType: "started",
+      });
+      const readyCol = findColumnByNameAndProject(columns, UNMAPPED_PROJECT_ID, "Ready to review");
+      expect(issues.get(UNMAPPED_ISSUE_ID)?.columnId).toBe(readyCol?.id);
+    });
   });
 
   describe("needs_you projection", () => {
@@ -1219,5 +1340,21 @@ describe("ItsaplanBridge", () => {
       expect(fakeServer.comments).toHaveLength(0);
       inertBridge.stop();
     });
+  });
+});
+
+describe("extractProjectKeyFromIdentifier", () => {
+  test("extracts project key from standard itsaplan identifiers", () => {
+    expect(extractProjectKeyFromIdentifier("AMBIENTAISTA-9")).toBe("AMBIENTAISTA");
+    expect(extractProjectKeyFromIdentifier("ENG-42")).toBe("ENG");
+    expect(extractProjectKeyFromIdentifier("REPO-1A2B-12")).toBe("REPO-1A2B");
+    expect(extractProjectKeyFromIdentifier("  PASEO-100  ")).toBe("PASEO");
+  });
+
+  test("returns null for identifiers without sequence numbers or hyphens", () => {
+    expect(extractProjectKeyFromIdentifier("NO_HYPHEN")).toBeNull();
+    expect(extractProjectKeyFromIdentifier("INVALID-ABC")).toBeNull();
+    expect(extractProjectKeyFromIdentifier("-123")).toBeNull();
+    expect(extractProjectKeyFromIdentifier("")).toBeNull();
   });
 });

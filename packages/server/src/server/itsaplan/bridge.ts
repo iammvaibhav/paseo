@@ -31,6 +31,7 @@ const ItsaplanWebhookIssueDataSchema = z.object({
   id: z.number(),
   projectId: z.number(),
   sequenceNumber: z.number(),
+  identifier: z.string().optional(),
   columnId: z.number(),
   title: z.string(),
   description: z.string().nullable().optional(),
@@ -151,6 +152,14 @@ function verifyItsaplanSignature(
     }
   }
   return false;
+}
+
+export function extractProjectKeyFromIdentifier(identifier: string): string | null {
+  const match = /^(.*)-(\d+)$/.exec(identifier.trim());
+  if (!match || !match[1]) {
+    return null;
+  }
+  return match[1];
 }
 
 function formatProofsComment(proofs: MissionControlProof[] | undefined): string {
@@ -648,11 +657,11 @@ export class ItsaplanBridge {
     }
     const client = new ItsaplanClient(config);
     const issue = await client.getIssue(numericIssueId);
-    const mapping = this.projectStore.getByItsaplanProjectId(issue.projectId);
-    if (!mapping) {
+    const projectKey = this.resolveProjectKey(issue);
+    if (!projectKey) {
       return;
     }
-    const columns = await client.listProjectColumns(mapping.itsaplanProjectKey);
+    const columns = await client.listProjectColumns(projectKey);
     const inProgress = findInProgressColumn(columns);
     if (inProgress && issue.columnId !== inProgress.id) {
       await client.moveIssueColumn(numericIssueId, inProgress.id);
@@ -676,12 +685,12 @@ export class ItsaplanBridge {
     }
     const client = new ItsaplanClient(config);
     const issue = await client.getIssue(numericIssueId);
-    const mapping = this.projectStore.getByItsaplanProjectId(issue.projectId);
-    if (!mapping) {
+    const projectKey = this.resolveProjectKey(issue);
+    if (!projectKey) {
       return;
     }
     const readyColumn = await client.ensureColumn(
-      mapping.itsaplanProjectKey,
+      projectKey,
       ITSAPLAN_READY_FOR_REVIEW_COLUMN_NAME,
       "started",
     );
@@ -847,11 +856,11 @@ export class ItsaplanBridge {
     const existingIssueId = Number(existingIssueIdStr);
     try {
       const issue = await client.getIssue(existingIssueId);
-      const mapping = this.projectStore.getByItsaplanProjectId(issue.projectId);
-      if (!mapping) {
+      const projectKey = this.resolveProjectKey(issue);
+      if (!projectKey) {
         return null;
       }
-      const url = `${config.baseUrl.replace(/\/+$/, "")}/project/${encodeURIComponent(mapping.itsaplanProjectKey)}/issues/${issue.sequenceNumber}`;
+      const url = `${config.baseUrl.replace(/\/+$/, "")}/project/${encodeURIComponent(projectKey)}/issues/${issue.sequenceNumber}`;
       return { issueId: existingIssueId, url };
     } catch (err) {
       this.logger.warn(
@@ -860,6 +869,24 @@ export class ItsaplanBridge {
       );
       return null;
     }
+  }
+
+  /**
+   * Resolves the itsaplan project key for an issue. Prefers the local project
+   * mapping (which carries commanderUserId and other central-sync metadata),
+   * but falls back to recovering the project key from the issue's own
+   * identifier (e.g. "AMBIENTAISTA-9" -> "AMBIENTAISTA") so event-driven
+   * projections work on peer hosts without a local projects.json file.
+   */
+  private resolveProjectKey(issue: { projectId: number; identifier?: string }): string | null {
+    const mapping = this.projectStore.getByItsaplanProjectId(issue.projectId);
+    if (mapping?.itsaplanProjectKey) {
+      return mapping.itsaplanProjectKey;
+    }
+    if (issue.identifier) {
+      return extractProjectKeyFromIdentifier(issue.identifier);
+    }
+    return null;
   }
 
   private async resolveTicketizeMapping(
