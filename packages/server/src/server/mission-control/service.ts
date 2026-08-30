@@ -3160,6 +3160,7 @@ export class MissionControlService {
       const reason = agent.attention.attentionReason;
       if (this.attentionKeyByAgent.get(agent.id) !== reason) {
         this.attentionKeyByAgent.set(agent.id, reason);
+        // COMPAT(finishedAttentionReason): added in v0.3, remove after 2026-12-01.
         if (reason === "finished") {
           if (this.hasRunningSubagents(agent.id)) {
             this.deferredFinishByAgent.add(agent.id);
@@ -4597,6 +4598,7 @@ export class MissionControlService {
       return;
     }
     const agent = this.agentManager.getAgent(agentId);
+    // COMPAT(finishedAttentionReason): added in v0.3, remove after 2026-12-01.
     const stillFinished =
       agent !== null &&
       agent.lifecycle === "idle" &&

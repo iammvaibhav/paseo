@@ -722,6 +722,9 @@ function deriveWorkspaceRootStatusBucket(agent: AgentSnapshotPayload): Workspace
   if (agent.bucket) {
     return lifecycleBucketToWorkspaceStatus(agent.bucket);
   }
+  // COMPAT(oldDaemonBucketFallback): added in v0.3, remove after 2026-12-01.
+  // Payloads from older daemons predating canonical `agent.bucket` fall back
+  // to deriving reviewState from the legacy attention latch.
   const userStopped = agent.stoppedBy === "user";
   const reviewState = agent.attentionReason === "finished" && !userStopped ? "ready" : "none";
   return lifecycleBucketToWorkspaceStatus(
