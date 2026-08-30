@@ -779,7 +779,9 @@ deploy_local_omp_plugins() {
     return
   fi
   log "Installing local omp plugins"
-  bash "$ROOT_DIR/plugins/install.sh" local
+  # Not critical path: a plugin install failure must never abort the deploy,
+  # same posture as the stall-check schedule and the MacBook plugin job.
+  bash "$ROOT_DIR/plugins/install.sh" local || log "  Warning: local omp plugin install failed"
 }
 
 # Commander Voice node (M9): managed service on the commander host. The daemon
@@ -1853,7 +1855,7 @@ deploy_omp_plugins() {
   fi
   cd "\$HOME/\$REMOTE_REPO_DIR"
   log "Installing omp plugins"
-  bash plugins/install.sh '$host'
+  bash plugins/install.sh '$host' || log "  Warning: omp plugin install failed on '$host'"
 }
 
 deploy_commander_voice() {
