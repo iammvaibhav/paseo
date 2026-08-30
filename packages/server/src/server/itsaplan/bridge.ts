@@ -14,6 +14,11 @@ import {
   ITSAPLAN_READY_FOR_REVIEW_COLUMN_NAME,
   ItsaplanClient,
 } from "./client.js";
+import {
+  resolveTicketAttachments,
+  rewriteMarkdownAttachmentUrls,
+  stripNativeMarkdownImages,
+} from "./ticket-images.js";
 import type {
   ItsaplanCentralConfig,
   ItsaplanProjectMapping,
@@ -36,6 +41,16 @@ const ItsaplanWebhookIssueDataSchema = z.object({
   columnId: z.number(),
   title: z.string(),
   description: z.string().nullable().optional(),
+  initiativeId: z.number().nullable().optional(),
+  initiative: z
+    .object({
+      id: z.number(),
+      title: z.string(),
+      description: z.string().nullable().optional(),
+      status: z.string().optional(),
+    })
+    .nullable()
+    .optional(),
 });
 
 const ItsaplanWebhookCommentDataSchema = z.object({
@@ -141,7 +156,10 @@ export interface ItsaplanBridgeOptions {
    * AgentManager/AgentStorage pair so this module stays independently
    * testable; bootstrap.ts wires the real implementation.
    */
-  deliverMachineryPrompt: (prompt: string) => Promise<boolean>;
+  deliverMachineryPrompt: (
+    prompt: string,
+    images?: Array<{ data: string; mimeType: string }>,
+  ) => Promise<boolean>;
   /**
    * Steers the agent the user is answering mid-turn — the same path a user
    * message in Paseo takes for a blocked worker (sendPromptToAgent with
@@ -210,24 +228,70 @@ function formatProofsComment(proofs: MissionControlProof[] | undefined): string 
   return ["Ready for review.", "", "Proofs:", ...lines].join("\n");
 }
 
-function buildDispatchPrompt(input: {
+export interface BuildDispatchPromptInput {
   issueId: number;
   ticketKey: string;
   title: string;
   body: string;
   url: string;
   projectKey: string;
-}): string {
-  return [
+  initiative?: {
+    title: string;
+    description?: string | null;
+  } | null;
+  attachments?: Array<{
+    filename: string;
+    url: string;
+  }> | null;
+  nativeImageCount?: number;
+}
+
+export function buildDispatchPrompt(input: BuildDispatchPromptInput): string {
+  const lines: string[] = [
     "itsaplan ticket moved to Todo with zero open blockers — ready to dispatch.",
     `Project: ${input.projectKey}`,
     `Ticket: ${input.ticketKey} — ${input.title}`,
     `URL: ${input.url}`,
-    "",
-    input.body.trim().length > 0 ? input.body : "(no description)",
-    "",
+  ];
+
+  if (input.initiative) {
+    lines.push(`Initiative: ${input.initiative.title}`);
+    if (input.initiative.description && input.initiative.description.trim().length > 0) {
+      lines.push(`Initiative description: ${input.initiative.description.trim()}`);
+    }
+  }
+
+  lines.push("");
+  const rawBody = rewriteMarkdownAttachmentUrls(input.body);
+  const body = (
+    input.nativeImageCount && input.nativeImageCount > 0
+      ? stripNativeMarkdownImages(rawBody)
+      : rawBody
+  ).trim();
+  lines.push(body.length > 0 ? body : "(no description)");
+
+  if (input.nativeImageCount && input.nativeImageCount > 0) {
+    lines.push("");
+    lines.push(
+      `${input.nativeImageCount} image${input.nativeImageCount === 1 ? "" : "s"} attached natively (same as composer paste).`,
+      "Pass them through fleet_create_agent images when spinning the worker — do not fetch ticket image URLs.",
+    );
+  }
+
+  if (input.attachments && input.attachments.length > 0) {
+    lines.push("");
+    lines.push("File attachments:");
+    for (const attachment of input.attachments) {
+      lines.push(`- ${attachment.filename}: ${attachment.url}`);
+    }
+  }
+
+  lines.push("");
+  lines.push(
     `Dispatch a worker for this ticket. Label the new agent "${ITSAPLAN_ISSUE_LABEL_KEY}": "${input.issueId}" so the bridge can move the ticket and post progress as the agent's execution state changes.`,
-  ].join("\n");
+  );
+
+  return lines.join("\n");
 }
 
 /**
@@ -245,7 +309,10 @@ export class ItsaplanBridge {
   private readonly fleet?: ItsaplanBridgeFleet;
   private readonly projectStore: ItsaplanProjectStore;
   private readonly getConfig: () => ItsaplanCentralConfig | null;
-  private readonly deliverMachineryPrompt: (prompt: string) => Promise<boolean>;
+  private readonly deliverMachineryPrompt: (
+    prompt: string,
+    images?: Array<{ data: string; mimeType: string }>,
+  ) => Promise<boolean>;
   private readonly steerWorkerPrompt: (agentId: string, prompt: string) => Promise<void>;
   private readonly resolvePaseoProjectKey?: (agentId: string) => Promise<string | null>;
 
@@ -446,7 +513,7 @@ export class ItsaplanBridge {
       if (openBlockerCount > 0) {
         return;
       }
-      await this.dispatchIssue(mapping, config, issue);
+      await this.dispatchIssue(mapping, config, issue, client);
       return;
     }
     if (column.stateType === "completed") {
@@ -512,10 +579,33 @@ export class ItsaplanBridge {
   private async dispatchIssue(
     mapping: ItsaplanProjectMapping,
     config: ItsaplanCentralConfig,
-    issue: { id: number; sequenceNumber: number; title: string; description?: string | null },
+    issue: {
+      id: number;
+      sequenceNumber: number;
+      title: string;
+      description?: string | null;
+      initiative?: {
+        id: number;
+        title: string;
+        description?: string | null;
+        status?: string;
+      } | null;
+      initiativeId?: number | null;
+    },
+    client?: ItsaplanClient,
   ): Promise<void> {
+    const apiClient = client ?? new ItsaplanClient(config);
     const ticketKey = `${mapping.itsaplanProjectKey}-${issue.sequenceNumber}`;
     const url = `${config.baseUrl.replace(/\/+$/, "")}/project/${encodeURIComponent(mapping.itsaplanProjectKey)}/issues/${issue.sequenceNumber}`;
+
+    const [initiative, attachments] = await Promise.all([
+      this.resolveInitiativeContext(apiClient, issue),
+      resolveTicketAttachments(apiClient, issue.id, config.baseUrl).catch(() => ({
+        images: [],
+        files: [],
+      })),
+    ]);
+
     const prompt = buildDispatchPrompt({
       issueId: issue.id,
       ticketKey,
@@ -523,11 +613,67 @@ export class ItsaplanBridge {
       body: issue.description ?? "",
       url,
       projectKey: mapping.paseoProjectKey,
+      initiative,
+      attachments: attachments.files.length > 0 ? attachments.files : undefined,
+      nativeImageCount: attachments.images.length,
     });
-    const delivered = await this.deliverMachineryPrompt(prompt);
+    const delivered = await this.deliverMachineryPrompt(
+      prompt,
+      attachments.images.length > 0 ? attachments.images : undefined,
+    );
     if (!delivered) {
       this.logger.warn({ issueId: issue.id }, "itsaplan.bridge.no_commander_to_dispatch_ticket");
     }
+  }
+
+  private async resolveInitiativeContext(
+    apiClient: ItsaplanClient,
+    issue: {
+      id: number;
+      initiative?: {
+        id: number;
+        title: string;
+        description?: string | null;
+        status?: string;
+      } | null;
+      initiativeId?: number | null;
+    },
+  ): Promise<{ title: string; description?: string | null } | null> {
+    try {
+      let initiativeId = issue.initiative?.id ?? issue.initiativeId;
+      let initiativeTitle = issue.initiative?.title;
+      let initiativeDescription = issue.initiative?.description;
+
+      if (initiativeId === undefined && issue.initiative === undefined) {
+        const fullIssue = await apiClient.getIssue(issue.id).catch(() => null);
+        if (fullIssue) {
+          initiativeId = fullIssue.initiative?.id ?? fullIssue.initiativeId;
+          initiativeTitle = fullIssue.initiative?.title;
+          initiativeDescription = fullIssue.initiative?.description;
+        }
+      }
+
+      if (initiativeId && initiativeDescription === undefined) {
+        const fetchedInitiative = await apiClient.getInitiative(initiativeId).catch(() => null);
+        if (fetchedInitiative) {
+          initiativeTitle = initiativeTitle ?? fetchedInitiative.title;
+          initiativeDescription = fetchedInitiative.description;
+        }
+      }
+
+      if (initiativeTitle) {
+        return {
+          title: initiativeTitle,
+          description: initiativeDescription,
+        };
+      }
+    } catch (error) {
+      this.logger.warn(
+        { err: error, issueId: issue.id },
+        "itsaplan.bridge.initiative_resolution_failed",
+      );
+    }
+    return null;
   }
 
   private async releaseBlockedDependents(
@@ -571,7 +717,7 @@ export class ItsaplanBridge {
         }
       }
       if (depOpenBlockers === 0) {
-        await this.dispatchIssue(mapping, config, dependent);
+        await this.dispatchIssue(mapping, config, dependent, client);
       }
     }
   }

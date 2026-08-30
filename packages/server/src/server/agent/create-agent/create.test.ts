@@ -96,6 +96,51 @@ test("session create forwards clientMessageId to the initial prompt run options"
   });
 });
 
+test("mcp create attaches native images to the initial prompt", async () => {
+  const snapshot = {
+    id: "agent-mcp-images",
+    provider: "codex",
+    cwd: "/tmp/paseo-create-test",
+    runtimeInfo: null,
+  } as ManagedAgent;
+  const streamAgent = vi.fn(() => (async function* noop() {})());
+  const dependencies: Parameters<typeof createAgentCommand>[0] = {
+    agentManager: {
+      createAgent: vi.fn(async () => snapshot),
+      getAgent: vi.fn(() => snapshot),
+      tryRunOutOfBand: vi.fn(() => false),
+      hasInFlightRun: vi.fn(() => false),
+      streamAgent,
+      waitForAgentRunStart: vi.fn(async () => undefined),
+    } as unknown as Parameters<typeof createAgentCommand>[0]["agentManager"],
+    agentStorage: {} as Parameters<typeof createAgentCommand>[0]["agentStorage"],
+    logger: createTestLogger(),
+    providerSnapshotManager: createProviderSnapshotManagerStub().manager,
+    ensureWorkspaceForCreate: async () => "ws-mcp-images",
+  };
+
+  const image = { data: "aaa", mimeType: "image/png" };
+  await createAgentCommand(dependencies, {
+    kind: "mcp",
+    provider: "codex/gpt-5.4",
+    title: "image-worker",
+    cwd: "/tmp/paseo-create-test",
+    initialPrompt: "look at this screenshot",
+    images: [image],
+    background: true,
+    notifyOnFinish: false,
+  });
+
+  expect(streamAgent).toHaveBeenCalledWith(
+    "agent-mcp-images",
+    [
+      { type: "text", text: "look at this screenshot" },
+      { type: "image", data: "aaa", mimeType: "image/png" },
+    ],
+    undefined,
+  );
+});
+
 test("session create validates the requested mode against the provider's modes", async () => {
   const snapshot = {
     id: "agent-1",
