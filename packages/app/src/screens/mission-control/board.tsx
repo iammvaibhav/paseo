@@ -2,6 +2,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -96,6 +97,7 @@ const MENU_COPY_ICON = <ThemedCopy size={14} uniProps={menuIconMapping} />;
 const MENU_STOP_ICON = <ThemedSquare size={14} uniProps={menuIconMapping} />;
 const MENU_CIRCLE_CHECK_ICON = <ThemedCircleCheck size={14} uniProps={menuIconMapping} />;
 const MENU_ARCHIVE_ICON = <ThemedArchive size={14} uniProps={menuIconMapping} />;
+const DEFAULT_MAINTAIN_VISIBLE_CONTENT_POSITION = { minIndexForVisible: 0 } as const;
 
 const warningColorMapping = (theme: Theme) => ({ color: theme.colors.statusDotWarning });
 const dangerColorMapping = (theme: Theme) => ({ color: theme.colors.statusDotDanger });
@@ -229,69 +231,117 @@ export function MissionControlBoard({
     [groups],
   );
 
+  const readyRowsRef = useRef(readyRows);
+  readyRowsRef.current = readyRows;
+  const doneRowsRef = useRef(doneRows);
+  doneRowsRef.current = doneRows;
+
   const handleClearAll = useCallback(() => {
     // One RPC per host. The "Cleared" verdict cards push back and refresh
     // the board; a failed host leaves its rows in Done.
-    void setAgentsLifecycle(doneRows, "clear").catch(() => {
+    void setAgentsLifecycle(doneRowsRef.current, "clear").catch(() => {
       // Partial failure is reconciled by the next push.
     });
-  }, [doneRows]);
+  }, []);
 
   const handleMoveAllReadyToDone = useCallback(() => {
-    void setAgentsLifecycle(readyRows, "done").catch(() => {
+    void setAgentsLifecycle(readyRowsRef.current, "done").catch(() => {
       // Partial failure is reconciled by the next push.
     });
-  }, [readyRows]);
+  }, []);
 
   const handleToggleDone = useCallback(() => {
     setDoneExpanded((expanded) => !expanded);
   }, []);
 
+  const prevItemsCacheRef = useRef<Map<string, BoardItem>>(new Map());
+  const prevItemsArrayRef = useRef<BoardItem[]>([]);
+
   const items = useMemo<BoardItem[]>(() => {
     const boardItems: BoardItem[] = [];
+    const prevCache = prevItemsCacheRef.current;
+    const nextCache = new Map<string, BoardItem>();
+
     for (const group of groups) {
-      boardItems.push({
-        kind: "bucket",
-        bucket: group.bucket,
-        label: LIFECYCLE_BUCKET_LABELS[group.bucket],
-        count: group.rows.length,
-      });
+      const bucketKey = `bucket:${group.bucket}`;
+      const prevBucketItem = prevCache.get(bucketKey);
+      const bucketItem: BoardItem =
+        prevBucketItem &&
+        prevBucketItem.kind === "bucket" &&
+        prevBucketItem.count === group.rows.length &&
+        prevBucketItem.label === LIFECYCLE_BUCKET_LABELS[group.bucket]
+          ? prevBucketItem
+          : {
+              kind: "bucket",
+              bucket: group.bucket,
+              label: LIFECYCLE_BUCKET_LABELS[group.bucket],
+              count: group.rows.length,
+            };
+      nextCache.set(bucketKey, bucketItem);
+      boardItems.push(bucketItem);
+
       if (group.bucket !== "done" || doneExpanded) {
         for (const row of group.rows) {
-          boardItems.push({ kind: "agent", row });
+          const agentKey = `agent:${row.agent.serverId}:${row.agent.id}`;
+          const prevAgentItem = prevCache.get(agentKey);
+          const agentItem: BoardItem =
+            prevAgentItem && prevAgentItem.kind === "agent" && prevAgentItem.row === row
+              ? prevAgentItem
+              : { kind: "agent", row };
+          nextCache.set(agentKey, agentItem);
+          boardItems.push(agentItem);
         }
       }
     }
+
     for (const host of hosts) {
       if (connectionStatuses.get(host.serverId) === "online") {
         continue;
       }
-      boardItems.push({ kind: "offlineHost", serverId: host.serverId, label: host.label });
+      const offlineKey = `offline:${host.serverId}`;
+      const prevOfflineItem = prevCache.get(offlineKey);
+      const offlineItem: BoardItem =
+        prevOfflineItem &&
+        prevOfflineItem.kind === "offlineHost" &&
+        prevOfflineItem.label === host.label
+          ? prevOfflineItem
+          : { kind: "offlineHost", serverId: host.serverId, label: host.label };
+      nextCache.set(offlineKey, offlineItem);
+      boardItems.push(offlineItem);
     }
-    return boardItems;
+
+    prevItemsCacheRef.current = nextCache;
+
+    const prevItems = prevItemsArrayRef.current;
+    const stableItems =
+      boardItems.length === prevItems.length && boardItems.every((item, i) => item === prevItems[i])
+        ? prevItems
+        : boardItems;
+    prevItemsArrayRef.current = stableItems;
+    return stableItems;
   }, [connectionStatuses, doneExpanded, groups, hosts]);
+
+  const readyCount = readyRows.length;
+  const doneCount = doneRows.length;
 
   const renderItem = useCallback(
     ({ item }: { item: BoardItem }) => {
       if (item.kind === "bucket") {
         return (
-          <BucketHeader
-            key={itemKey(item)}
+          <MemoizedBucketHeader
             bucket={item.bucket}
             label={item.label}
             count={item.count}
             isExpanded={item.bucket === "done" ? doneExpanded : null}
             onToggle={item.bucket === "done" ? handleToggleDone : null}
-            onMoveAll={
-              item.bucket === "ready" && readyRows.length > 0 ? handleMoveAllReadyToDone : null
-            }
-            onClearAll={item.bucket === "done" && doneRows.length > 0 ? handleClearAll : null}
+            onMoveAll={item.bucket === "ready" && readyCount > 0 ? handleMoveAllReadyToDone : null}
+            onClearAll={item.bucket === "done" && doneCount > 0 ? handleClearAll : null}
           />
         );
       }
       if (item.kind === "offlineHost") {
         return (
-          <View style={styles.offlineHostRow} key={itemKey(item)}>
+          <View style={styles.offlineHostRow}>
             <HostGlyph
               serverId={item.serverId}
               label={item.label}
@@ -302,24 +352,73 @@ export function MissionControlBoard({
           </View>
         );
       }
-      return (
-        <MemoizedAgentRow
-          key={itemKey(item)}
-          row={item.row}
-          hideAgentNames={resolvedHideAgentNames}
-        />
-      );
+      return <MemoizedAgentRow row={item.row} hideAgentNames={resolvedHideAgentNames} />;
     },
     [
+      doneCount,
       doneExpanded,
-      doneRows.length,
       handleClearAll,
       handleMoveAllReadyToDone,
       handleToggleDone,
-      readyRows.length,
+      readyCount,
       resolvedHideAgentNames,
     ],
   );
+
+  const listRef = useRef<FlatList<BoardItem> | null>(null);
+  const anchorRef = useRef<{ key: string; offset: number } | null>(null);
+
+  const captureScrollAnchor = useCallback(() => {
+    if (!isWeb) {
+      return;
+    }
+    const listNode = listRef.current?.getScrollableNode?.() as HTMLElement | null;
+    if (!listNode || listNode.scrollTop <= 0) {
+      anchorRef.current = null;
+      return;
+    }
+    const containerRect = listNode.getBoundingClientRect();
+    const rows = Array.from(
+      listNode.querySelectorAll<HTMLElement>(
+        '[data-testid^="mission-control-row-"], [data-testid^="mission-control-toggle-"], [data-testid^="mission-control-offline-host-glyph-"]',
+      ),
+    );
+    const visible = rows.find((r) => r.getBoundingClientRect().bottom > containerRect.top + 1);
+    if (visible) {
+      const testId = visible.getAttribute("data-testid");
+      if (testId) {
+        anchorRef.current = {
+          key: testId,
+          offset: visible.getBoundingClientRect().top - containerRect.top,
+        };
+        return;
+      }
+    }
+    anchorRef.current = null;
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!isWeb) {
+      return;
+    }
+    const anchor = anchorRef.current;
+    if (!anchor) {
+      return;
+    }
+    const listNode = listRef.current?.getScrollableNode?.() as HTMLElement | null;
+    if (!listNode) {
+      return;
+    }
+    const containerRect = listNode.getBoundingClientRect();
+    const element = listNode.querySelector<HTMLElement>(`[data-testid="${anchor.key}"]`);
+    if (element) {
+      const newOffset = element.getBoundingClientRect().top - containerRect.top;
+      const delta = newOffset - anchor.offset;
+      if (Math.abs(delta) > 0.5) {
+        listNode.scrollTop += delta;
+      }
+    }
+  }, [items]);
 
   return (
     <View style={styles.container}>
@@ -333,6 +432,7 @@ export function MissionControlBoard({
         />
       </View>
       <FlatList
+        ref={listRef}
         testID={testID}
         data={items}
         renderItem={renderItem}
@@ -340,10 +440,14 @@ export function MissionControlBoard({
         style={styles.list}
         contentContainerStyle={styles.listContent}
         ListEmptyComponent={MissionControlBoardEmpty}
+        maintainVisibleContentPosition={DEFAULT_MAINTAIN_VISIBLE_CONTENT_POSITION}
+        onScroll={captureScrollAnchor}
+        scrollEventThrottle={16}
       />
     </View>
   );
 }
+const MemoizedBucketHeader = memo(BucketHeader);
 
 function BucketHeader({
   bucket,

@@ -66,7 +66,8 @@ export function useMissionControlLifecycle(
   // the agent nor its derived state changed, so downstream memo/shallow
   // comparisons (React.memo rows) can bail early.
   const prevRowsRef = useRef<Map<string, LifecycleRow>>(new Map());
-
+  const prevSortedRowsRef = useRef<LifecycleRow[]>([]);
+  const prevGroupsRef = useRef<LifecycleBucketGroup[]>([]);
   // Connection-generation scoping (rule: client caches die on reconnect): a
   // host reconnect can change what the feed reports for its agents (the
   // aggregated hook drops the old connection's pages), so the identity cache
@@ -88,6 +89,8 @@ export function useMissionControlLifecycle(
     prevConnectionStatusesRef.current = next;
     if (reconnected) {
       prevRowsRef.current = new Map();
+      prevSortedRowsRef.current = [];
+      prevGroupsRef.current = [];
     }
   }, [connectionStatuses, hosts]);
 
@@ -126,11 +129,37 @@ export function useMissionControlLifecycle(
       nextCache.set(`${row.agent.serverId}:${row.agent.id}`, row);
     }
     prevRowsRef.current = nextCache;
-    return nextRows;
+
+    // If every element kept its reference identity and the order is the same,
+    // return the previous array so downstream reference comparisons can bail.
+    const prevSorted = prevSortedRowsRef.current;
+    const stableRows =
+      nextRows.length === prevSorted.length &&
+      nextRows.every((row, index) => row === prevSorted[index])
+        ? prevSorted
+        : nextRows;
+    prevSortedRowsRef.current = stableRows;
+    return stableRows;
   }, [agents, eventsResult.events, retentionDays]);
 
-  const groups = useMemo(() => groupLifecycleRows(rows, showAll), [rows, showAll]);
-
+  const groups = useMemo(() => {
+    const nextGroups = groupLifecycleRows(rows, showAll);
+    const prevGroups = prevGroupsRef.current;
+    const isSameGroups =
+      nextGroups.length === prevGroups.length &&
+      nextGroups.every((nextGroup, gIdx) => {
+        const prevGroup = prevGroups[gIdx];
+        return (
+          prevGroup !== undefined &&
+          prevGroup.bucket === nextGroup.bucket &&
+          prevGroup.rows.length === nextGroup.rows.length &&
+          prevGroup.rows.every((row, rIdx) => row === nextGroup.rows[rIdx])
+        );
+      });
+    const stableGroups = isSameGroups ? prevGroups : nextGroups;
+    prevGroupsRef.current = stableGroups;
+    return stableGroups;
+  }, [rows, showAll]);
   const counts = useMemo(() => countLifecycle(rows), [rows]);
 
   const isLoading = agentsResult.isLoading || eventsResult.isLoading;

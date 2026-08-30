@@ -616,7 +616,7 @@ export function MissionControlScreen(): ReactElement {
   // same keep-alive contract as navigating away and back.
   const threadPane =
     v3Enabled && threadCollapsed ? (
-      <>
+      <View style={styles.threadCollapsedPane} key="thread-pane-collapsed">
         <Pressable
           onPress={handleExpandThread}
           style={threadStripStyle}
@@ -633,9 +633,11 @@ export function MissionControlScreen(): ReactElement {
         >
           {threadColumn}
         </View>
-      </>
+      </View>
     ) : (
-      <View style={styles.threadColumn}>{threadColumn}</View>
+      <View style={styles.threadColumn} key="thread-pane-expanded">
+        {threadColumn}
+      </View>
     );
 
   return (
@@ -644,12 +646,12 @@ export function MissionControlScreen(): ReactElement {
       <View style={styles.desktopBody}>
         {threadPane}
         {v3Enabled && inspectorTarget ? (
-          <InspectorRail flexFill={v3Enabled && threadCollapsed}>
+          <InspectorRail key="inspector-rail" flexFill={v3Enabled && threadCollapsed}>
             <MissionControlInspector target={inspectorTarget} isFocused={isFocused} />
           </InspectorRail>
         ) : null}
         {boardRailCollapsed ? null : (
-          <BoardRail flexFill={v3Enabled && !inspectorTarget && threadCollapsed}>
+          <BoardRail key="board-rail" flexFill={v3Enabled && !inspectorTarget && threadCollapsed}>
             <MissionControlBoard
               hideAgentNames={hideAgentNames}
               testID="mission-control-board-rail"
@@ -678,6 +680,9 @@ const styles = StyleSheet.create((theme) => ({
   threadColumn: {
     flex: 1,
     minWidth: 0,
+  },
+  threadCollapsedPane: {
+    flexDirection: "row",
   },
   threadColumnHidden: {
     display: "none",
