@@ -78,7 +78,6 @@ const ItsaplanIssueSchema = z.object({
   // lets a host with no local project mapping still resolve the board.
   identifier: z.string().optional(),
   sequenceNumber: z.number(),
-  identifier: z.string().optional(),
   columnId: z.number(),
   title: z.string(),
   description: z.string().nullable().optional(),

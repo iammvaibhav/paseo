@@ -15,10 +15,7 @@ import { useStableEvent } from "@/hooks/use-stable-event";
 import type { Theme } from "@/styles/theme";
 import { WEB_SCROLLBAR_SIZE_PX } from "@/styles/web-scrollbar";
 import { DomOverlayScrollbar } from "@/components/ui/overlay-scrollbar/dom-overlay-scrollbar";
-import {
-  estimateStreamItemHeight,
-  shouldAdjustScrollForVirtualRowResize,
-} from "./web-virtualization";
+import { shouldAdjustScrollForVirtualRowResize } from "./web-virtualization";
 import type { StreamRenderInput, StreamStrategy, StreamViewportHandle } from "./strategy";
 import { createStreamStrategy, resolveDefaultItemKey } from "./strategy";
 import {
