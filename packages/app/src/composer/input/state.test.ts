@@ -187,6 +187,51 @@ describe("dictation transcript behavior", () => {
       "submit:typed context spoken prompt",
     ]);
   });
+
+  it("queues an auto-sent transcript when agent is running and steer is selected", () => {
+    const actions: string[] = [];
+
+    applyDictationTranscript("spoken prompt", {
+      value: "typed context",
+      defaultSendBehavior: "steer",
+      isAgentRunning: true,
+      sendsOutOfBand: false,
+      onQueue: (payload) => actions.push(`queue:${payload.text}`),
+      replaceText: (text) => actions.push(`replace:${text}`),
+      onSubmit: (payload) => actions.push(`submit:${payload.text}`),
+      attachments: [],
+      cwd: "/repo",
+      autoSend: true,
+    });
+
+    expect(actions).toEqual([
+      "replace:typed context spoken prompt",
+      "queue:typed context spoken prompt",
+      "replace:",
+    ]);
+  });
+
+  it("submits an auto-sent transcript when agent is running and interrupt is selected", () => {
+    const actions: string[] = [];
+
+    applyDictationTranscript("spoken prompt", {
+      value: "typed context",
+      defaultSendBehavior: "interrupt",
+      isAgentRunning: true,
+      sendsOutOfBand: false,
+      onQueue: (payload) => actions.push(`queue:${payload.text}`),
+      replaceText: (text) => actions.push(`replace:${text}`),
+      onSubmit: (payload) => actions.push(`submit:${payload.text}`),
+      attachments: [],
+      cwd: "/repo",
+      autoSend: true,
+    });
+
+    expect(actions).toEqual([
+      "replace:typed context spoken prompt",
+      "submit:typed context spoken prompt",
+    ]);
+  });
 });
 
 describe("composer send behavior", () => {
@@ -234,7 +279,34 @@ describe("composer send behavior", () => {
     expect(alternateAction.calls).toEqual(["queue"]);
   });
 
-  it("uses Enter to queue and Mod+Enter to submit when queue is selected", () => {
+  it("uses Enter to queue and Mod+Enter to steer when steer is selected and agent is running", () => {
+    const defaultAction = actions();
+    runDefaultSendAction({
+      defaultSendBehavior: "steer",
+      isAgentRunning: true,
+      sendsOutOfBand: false,
+      onQueue: defaultAction.onQueue,
+      handleSendMessage: defaultAction.handleSendMessage,
+      handleSteerSendMessage: defaultAction.handleSteerSendMessage,
+      handleQueueMessage: defaultAction.handleQueueMessage,
+    });
+
+    const alternateAction = actions();
+    runAlternateSendAction({
+      defaultSendBehavior: "steer",
+      isAgentRunning: true,
+      sendsOutOfBand: false,
+      onQueue: alternateAction.onQueue,
+      handleSendMessage: alternateAction.handleSendMessage,
+      handleSteerSendMessage: alternateAction.handleSteerSendMessage,
+      handleQueueMessage: alternateAction.handleQueueMessage,
+    });
+
+    expect(defaultAction.calls).toEqual(["queue"]);
+    expect(alternateAction.calls).toEqual(["steer"]);
+  });
+
+  it("uses Enter to queue and Mod+Enter to steer when queue is selected and agent is running", () => {
     const defaultAction = actions();
     runDefaultSendAction({
       defaultSendBehavior: "queue",
@@ -258,7 +330,7 @@ describe("composer send behavior", () => {
     });
 
     expect(defaultAction.calls).toEqual(["queue"]);
-    expect(alternateAction.calls).toEqual(["send"]);
+    expect(alternateAction.calls).toEqual(["steer"]);
   });
 
   it("never queues an out-of-band command, whatever the send behavior", () => {
@@ -288,34 +360,7 @@ describe("composer send behavior", () => {
     expect(alternateAction.calls).toEqual(["send"]);
   });
 
-  it("uses Enter to steer and Mod+Enter to interrupt when steer is selected", () => {
-    const defaultAction = actions();
-    runDefaultSendAction({
-      defaultSendBehavior: "steer",
-      isAgentRunning: true,
-      sendsOutOfBand: false,
-      onQueue: defaultAction.onQueue,
-      handleSendMessage: defaultAction.handleSendMessage,
-      handleSteerSendMessage: defaultAction.handleSteerSendMessage,
-      handleQueueMessage: defaultAction.handleQueueMessage,
-    });
-
-    const alternateAction = actions();
-    runAlternateSendAction({
-      defaultSendBehavior: "steer",
-      isAgentRunning: true,
-      sendsOutOfBand: false,
-      onQueue: alternateAction.onQueue,
-      handleSendMessage: alternateAction.handleSendMessage,
-      handleSteerSendMessage: alternateAction.handleSteerSendMessage,
-      handleQueueMessage: alternateAction.handleQueueMessage,
-    });
-
-    expect(defaultAction.calls).toEqual(["steer"]);
-    expect(alternateAction.calls).toEqual(["send"]);
-  });
-
-  it("sends normally with steer selected when the agent is idle", () => {
+  it("sends immediately on Enter and Mod+Enter when agent is idle", () => {
     const defaultAction = actions();
     runDefaultSendAction({
       defaultSendBehavior: "steer",
@@ -327,26 +372,11 @@ describe("composer send behavior", () => {
       handleQueueMessage: defaultAction.handleQueueMessage,
     });
 
-    expect(defaultAction.calls).toEqual(["send"]);
-  });
-
-  it("never steers an out-of-band command draft when steer is selected", () => {
-    const defaultAction = actions();
-    runDefaultSendAction({
-      defaultSendBehavior: "steer",
-      isAgentRunning: true,
-      sendsOutOfBand: true,
-      onQueue: defaultAction.onQueue,
-      handleSendMessage: defaultAction.handleSendMessage,
-      handleSteerSendMessage: defaultAction.handleSteerSendMessage,
-      handleQueueMessage: defaultAction.handleQueueMessage,
-    });
-
     const alternateAction = actions();
     runAlternateSendAction({
       defaultSendBehavior: "steer",
-      isAgentRunning: true,
-      sendsOutOfBand: true,
+      isAgentRunning: false,
+      sendsOutOfBand: false,
       onQueue: alternateAction.onQueue,
       handleSendMessage: alternateAction.handleSendMessage,
       handleSteerSendMessage: alternateAction.handleSteerSendMessage,
