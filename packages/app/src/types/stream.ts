@@ -89,6 +89,14 @@ export type StreamItem =
 
 export type UserMessageImageAttachment = AttachmentMetadata;
 
+/** Native image payload from a daemon timeline row (ticket dispatch / spawn). */
+export interface NativeTimelineImage {
+  data: string;
+  mimeType: string;
+}
+
+export type UserMessageImage = UserMessageImageAttachment | NativeTimelineImage;
+
 /**
  * Who originated a user-role row in the agent's own chat. "machinery" rows
  * (stall status-ask nudges) render as a muted one-line placeholder in
@@ -118,7 +126,7 @@ export interface UserMessageItem {
   voiceMirrorKind?: VoiceMirrorKind;
   text: string;
   timestamp: Date;
-  images?: UserMessageImageAttachment[];
+  images?: UserMessageImage[];
   attachments?: AgentAttachment[];
 }
 
@@ -132,7 +140,7 @@ export interface UserMessageInput {
   voiceMirrorKind?: VoiceMirrorKind;
   text: string;
   timestamp: Date;
-  images?: UserMessageImageAttachment[];
+  images?: UserMessageImage[];
   attachments?: AgentAttachment[];
 }
 
@@ -897,6 +905,7 @@ function appendUserMessage(
   turnId?: string,
   classification?: UserMessageClassification,
   voiceMirrorKind?: VoiceMirrorKind,
+  images?: UserMessageImage[],
 ): StreamItem[] {
   const { chunk, hasContent } = normalizeChunk(text);
   if (!hasContent) {
@@ -914,6 +923,7 @@ function appendUserMessage(
     voiceMirrorKind,
     text: chunk,
     timestamp,
+    ...(images && images.length > 0 ? { images } : {}),
   });
   return upsertUserMessage(state, nextItem);
 }
@@ -1528,6 +1538,7 @@ function reduceTimelineEvent(
           event.turnId,
           item.classification,
           item.voiceMirrorKind,
+          item.images,
         ),
       );
     case "assistant_message":

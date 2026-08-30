@@ -224,7 +224,9 @@ function collectStreamUserImageIds(
     for (const item of stream) {
       if (item.kind !== "user_message") continue;
       for (const image of item.images ?? []) {
-        referencedIds.add(image.id);
+        if ("id" in image) {
+          referencedIds.add(image.id);
+        }
       }
     }
   }

@@ -67,7 +67,10 @@ import {
   createMathRenderRules,
   type MarkdownStyles,
 } from "@/components/markdown/renderer";
-import type { TaskActivity, TodoEntry, UserMessageImageAttachment } from "@/types/stream";
+import type { TaskActivity, TodoEntry, UserMessageImage } from "@/types/stream";
+import { persistAttachmentFromBytes } from "@/attachments/service";
+import { createPreviewAttachmentId } from "@/attachments/utils";
+import type { AttachmentMetadata } from "@/attachments/types";
 import type { AgentAttachment } from "@getpaseo/protocol/messages";
 import type { ToolCallDetail } from "@getpaseo/protocol/agent-types";
 import { buildToolCallPresentation } from "@/tool-calls/presentation";
@@ -133,7 +136,7 @@ interface UserMessageProps {
   agentId?: string;
   messageId?: string;
   message: string;
-  images?: UserMessageImageAttachment[];
+  images?: UserMessageImage[];
   attachments?: AgentAttachment[];
   timestamp: number;
   capabilities?: AgentCapabilityFlags;
@@ -413,18 +416,54 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
 }));
 
 interface UserMessageImagePillProps {
-  image: UserMessageImageAttachment;
-  onOpen: (image: UserMessageImageAttachment) => void;
+  image: UserMessageImage;
+  onOpen: (image: AttachmentMetadata) => void;
   accessibilityLabel: string;
 }
 
+function isPersistedUserMessageImage(image: UserMessageImage): image is AttachmentMetadata {
+  return "id" in image && "storageType" in image && "storageKey" in image;
+}
+
 function UserMessageImagePill({ image, onOpen, accessibilityLabel }: UserMessageImagePillProps) {
+  const [persisted, setPersisted] = useState<AttachmentMetadata | null>(
+    isPersistedUserMessageImage(image) ? image : null,
+  );
+  useEffect(() => {
+    if (isPersistedUserMessageImage(image)) {
+      setPersisted(image);
+      return;
+    }
+    let cancelled = false;
+    const bytes = Uint8Array.from(atob(image.data), (char) => char.charCodeAt(0));
+    const id = createPreviewAttachmentId({
+      mimeType: image.mimeType,
+      contentKey: image.data,
+      contentLength: bytes.byteLength,
+    });
+    void persistAttachmentFromBytes({
+      id,
+      bytes,
+      mimeType: image.mimeType,
+      fileName: `ticket-image.${image.mimeType.split("/")[1] ?? "png"}`,
+    }).then((attachment) => {
+      if (!cancelled) {
+        setPersisted(attachment);
+      }
+      return attachment;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [image]);
   const handlePress = useCallback(() => {
-    onOpen(image);
-  }, [onOpen, image]);
+    if (persisted) {
+      onOpen(persisted);
+    }
+  }, [onOpen, persisted]);
   return (
     <AttachmentFrame onPress={handlePress} accessibilityLabel={accessibilityLabel}>
-      <AttachmentThumbnail metadata={image} />
+      {persisted ? <AttachmentThumbnail metadata={persisted} /> : <View />}
     </AttachmentFrame>
   );
 }
@@ -447,7 +486,7 @@ export const UserMessage = memo(function UserMessage({
   const isCompact = useIsCompactFormFactor();
   const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
-  const [lightboxMetadata, setLightboxMetadata] = useState<UserMessageImageAttachment | null>(null);
+  const [lightboxMetadata, setLightboxMetadata] = useState<AttachmentMetadata | null>(null);
   const handleLightboxClose = useCallback(() => setLightboxMetadata(null), []);
   const lightboxSource = useMemo<ImageLightboxSource | null>(
     () => (lightboxMetadata ? { type: "attachment", metadata: lightboxMetadata } : null),
@@ -521,7 +560,7 @@ export const UserMessage = memo(function UserMessage({
             <View style={imagePreviewContainerStyle}>
               {images.map((image) => (
                 <UserMessageImagePill
-                  key={image.id}
+                  key={"id" in image ? image.id : `${image.mimeType}:${image.data.slice(0, 24)}`}
                   image={image}
                   onOpen={setLightboxMetadata}
                   accessibilityLabel={t("composer.attachments.openImage")}

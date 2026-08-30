@@ -425,6 +425,7 @@ export type AgentTimelineItem =
       clientMessageId?: string;
       classification?: AgentTimelineUserMessageClassification;
       voiceMirrorKind?: AgentTimelineVoiceMirrorKind;
+      images?: Array<{ data: string; mimeType: string }>;
     }
   | {
       type: "assistant_message";

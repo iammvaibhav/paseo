@@ -1392,6 +1392,26 @@ describe("stream reducer canonical tool calls", () => {
     assert.strictEqual(message.timestamp.getTime(), submittedTimestamp.getTime());
   });
 
+  it("keeps native { data, mimeType } images from a daemon user_message row", () => {
+    const nativeImages = [{ data: "aaa", mimeType: "image/png" }];
+    const event: AgentStreamEventPayload = {
+      type: "timeline",
+      provider: "omp",
+      item: {
+        type: "user_message",
+        text: "1 image attached natively",
+        images: nativeImages,
+      },
+    };
+
+    const state = reduceStreamUpdate([], event, new Date("2026-08-30T21:30:00Z"));
+    const message = state.find((item) => item.kind === "user_message");
+
+    assert.ok(message);
+    assert.strictEqual(message.kind, "user_message");
+    assert.deepStrictEqual(message.images, nativeImages);
+  });
+
   it("keeps canonical assistant/user/assistant order during replay", () => {
     const state: StreamItem[] = [
       {

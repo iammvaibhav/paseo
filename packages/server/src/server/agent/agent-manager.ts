@@ -159,6 +159,18 @@ function submittedPromptText(prompt: AgentPromptInput): string {
     .trim();
 }
 
+function submittedPromptImages(
+  prompt: AgentPromptInput,
+): Array<{ data: string; mimeType: string }> | undefined {
+  if (typeof prompt === "string") {
+    return undefined;
+  }
+  const images = prompt.flatMap((block) =>
+    block.type === "image" ? [{ data: block.data, mimeType: block.mimeType }] : [],
+  );
+  return images.length > 0 ? images : undefined;
+}
+
 export class AgentManagerShuttingDownError extends Error {
   constructor() {
     super("Agent manager is shutting down");
@@ -3100,24 +3112,13 @@ export class AgentManager {
         { type: "turn_started", provider: agent.provider, turnId },
         { timestamp: turnStartedAt.toISOString() },
       );
-      const stagedSubmittedPromptEcho = options?.clientMessageId
-        ? pendingRun.stagedEvents.find(
-            (event): event is Extract<AgentStreamEvent, { type: "timeline" }> =>
-              event.type === "timeline" &&
-              event.item.type === "user_message" &&
-              event.item.clientMessageId === options.clientMessageId,
-          )
-        : undefined;
-      if (options?.clientMessageId) {
-        this.recordSubmittedPrompt(agent, prompt, options.clientMessageId, {
-          messageId: options.clientMessageId,
-          turnId,
-          providerMessageId:
-            stagedSubmittedPromptEcho?.item.type === "user_message"
-              ? stagedSubmittedPromptEcho.item.messageId
-              : undefined,
-        });
-      }
+      const stagedSubmittedPromptEcho = this.recordForegroundTurnSubmittedPrompt({
+        agent,
+        pendingRun,
+        prompt,
+        options,
+        turnId,
+      });
       for (const stagedEvent of pendingRun.stagedEvents.splice(0)) {
         const isAcceptedTurnStart =
           stagedEvent.type === "turn_started" && getAgentStreamEventTurnId(stagedEvent) === turnId;
@@ -5496,6 +5497,37 @@ export class AgentManager {
     return event;
   }
 
+  private recordForegroundTurnSubmittedPrompt(params: {
+    agent: ActiveManagedAgent;
+    pendingRun: { stagedEvents: AgentStreamEvent[] };
+    prompt: AgentPromptInput;
+    options?: AgentRunOptions;
+    turnId: string;
+  }): Extract<AgentStreamEvent, { type: "timeline" }> | undefined {
+    const { agent, pendingRun, prompt, options, turnId } = params;
+    const stagedSubmittedPromptEcho = options?.clientMessageId
+      ? pendingRun.stagedEvents.find(
+          (event): event is Extract<AgentStreamEvent, { type: "timeline" }> =>
+            event.type === "timeline" &&
+            event.item.type === "user_message" &&
+            event.item.clientMessageId === options.clientMessageId,
+        )
+      : undefined;
+    const nativeImages = submittedPromptImages(prompt);
+    if (options?.clientMessageId || nativeImages) {
+      const submittedClientMessageId = options?.clientMessageId ?? randomUUID();
+      this.recordSubmittedPrompt(agent, prompt, submittedClientMessageId, {
+        messageId: submittedClientMessageId,
+        turnId,
+        providerMessageId:
+          stagedSubmittedPromptEcho?.item.type === "user_message"
+            ? stagedSubmittedPromptEcho.item.messageId
+            : undefined,
+      });
+    }
+    return stagedSubmittedPromptEcho;
+  }
+
   private recordSubmittedPrompt(
     agent: ActiveManagedAgent,
     prompt: AgentPromptInput,
@@ -5507,11 +5539,13 @@ export class AgentManager {
     }
     this.touchUpdatedAt(agent);
     agent.lastUserMessageAt = new Date();
+    const images = submittedPromptImages(prompt);
     const item: AgentTimelineItem = {
       type: "user_message",
       text: submittedPromptText(prompt),
       clientMessageId,
       ...(options?.messageId ? { messageId: options.messageId } : {}),
+      ...(images ? { images } : {}),
     };
     this.recordAndDispatchTimelineItem(agent.id, item, agent.provider, options?.turnId, options);
   }

@@ -935,6 +935,9 @@ export const AgentTimelineItemPayloadSchema: z.ZodType<AgentTimelineItem, unknow
     // by the voice mirror RPC. "qa" = pure Q&A (hidden unless verbose);
     // "dispatch" = the turn asked the fleet to do something (visible).
     voiceMirrorKind: z.enum(["qa", "dispatch"]).optional(),
+    // Native images for this user row (composer paste / ticket dispatch).
+    // Optional so older daemons still parse timeline rows.
+    images: z.array(z.object({ data: z.string(), mimeType: z.string() })).optional(),
   }),
   z.object({
     type: z.literal("assistant_message"),
