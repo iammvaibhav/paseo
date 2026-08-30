@@ -66,6 +66,7 @@ export const en = {
       openInFocusedPane: "Open {{name}} in focused pane",
       addProject: "Add project",
       home: "Home",
+      itsaplan: "itsaplan",
       groupByProject: "Group by project",
       groupByStatus: "Group by status",
       modelGroupLabel: "Model",

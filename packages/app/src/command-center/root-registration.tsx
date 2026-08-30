@@ -12,6 +12,7 @@ import {
   PanelLeft,
   Plus,
   Settings,
+  SquareKanban,
 } from "lucide-react-native";
 import { withUnistyles } from "react-native-unistyles";
 import { getIsElectronRuntime, useIsCompactFormFactor } from "@/constants/layout";
@@ -25,6 +26,7 @@ import { usePanelStore } from "@/stores/panel-store";
 import { useSidebarViewStore } from "@/stores/sidebar-view-store";
 import { clearCommandCenterFocusRestoreElement } from "@/utils/command-center-focus-restore";
 import {
+  buildItsaplanRoute,
   buildOpenProjectRoute,
   buildSchedulesRoute,
   buildSessionsRoute,
@@ -33,7 +35,7 @@ import {
 import { getShortcutOs } from "@/utils/shortcut-platform";
 import type { CommandCenterContribution, CommandCenterIconProps } from "./contributions";
 import { useCommandCenterActions } from "./provider";
-import { buildGroupingContribution } from "./root-contributions";
+import { buildGroupingContribution, buildItsaplanContribution } from "./root-contributions";
 
 const ThemedPlus = withUnistyles(Plus, (theme) => ({ color: theme.colors.foregroundMuted }));
 const ThemedFolderPlus = withUnistyles(FolderPlus, (theme) => ({
@@ -57,6 +59,9 @@ const ThemedCircleDashed = withUnistyles(CircleDashed, (theme) => ({
   color: theme.colors.foregroundMuted,
 }));
 const ThemedPanelLeft = withUnistyles(PanelLeft, (theme) => ({
+  color: theme.colors.foregroundMuted,
+}));
+const ThemedSquareKanban = withUnistyles(SquareKanban, (theme) => ({
   color: theme.colors.foregroundMuted,
 }));
 
@@ -100,6 +105,10 @@ function PanelLeftIcon({ size }: CommandCenterIconProps) {
   return <ThemedPanelLeft size={size} strokeWidth={2.2} />;
 }
 
+function ItsaplanIcon({ size }: CommandCenterIconProps) {
+  return <ThemedSquareKanban size={size} strokeWidth={2.2} />;
+}
+
 export function CommandCenterRootActions() {
   const keyboardActionDispatcher = useKeyboardActionDispatcher();
   const { t } = useTranslation();
@@ -110,6 +119,7 @@ export function CommandCenterRootActions() {
   const homeRoute = useMemo<Href>(() => buildOpenProjectRoute(), []);
   const sessionsRoute = useMemo<Href>(() => buildSessionsRoute(), []);
   const schedulesRoute = useMemo<Href>(() => buildSchedulesRoute(), []);
+  const itsaplanRoute = useMemo<Href>(() => buildItsaplanRoute(), []);
   const setShortcutsDialogOpen = useKeyboardShortcutsStore((state) => state.setShortcutsDialogOpen);
   // Narrow selector on purpose: a whole-store subscription would re-register every root action
   // each time host filters are reconciled.
@@ -291,6 +301,20 @@ export function CommandCenterRootActions() {
     }
 
     availableActions.push(
+      buildItsaplanContribution({
+        labels: {
+          section: t("shell.commandCenter.actions"),
+          itsaplan: t("sidebar.sections.itsaplan"),
+        },
+        icon: ItsaplanIcon,
+        onOpen: () => {
+          clearCommandCenterFocusRestoreElement();
+          router.push(itsaplanRoute);
+        },
+      }),
+    );
+
+    availableActions.push(
       buildGroupingContribution({
         groupMode,
         labels: {
@@ -307,6 +331,7 @@ export function CommandCenterRootActions() {
   }, [
     groupMode,
     homeRoute,
+    itsaplanRoute,
     keyboardActionDispatcher,
     openAddProject,
     overrides,

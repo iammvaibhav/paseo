@@ -69,6 +69,7 @@ export const ja: TranslationResources = {
       openInFocusedPane: "{{name}}をフォーカス中のペインで開く",
       addProject: "プロジェクトを追加",
       home: "ホーム",
+      itsaplan: "itsaplan",
       groupByProject: "プロジェクトでグループ化",
       groupByStatus: "ステータスでグループ化",
       modelGroupLabel: "モデル",

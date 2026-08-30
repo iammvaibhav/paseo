@@ -69,6 +69,7 @@ export const ptBR: TranslationResources = {
       openInFocusedPane: "Abrir {{name}} no painel em foco",
       addProject: "Adicionar projeto",
       home: "Início",
+      itsaplan: "itsaplan",
       groupByProject: "Agrupar por projeto",
       groupByStatus: "Agrupar por status",
       modelGroupLabel: "Modelo",

@@ -69,6 +69,7 @@ export const es: TranslationResources = {
       openInFocusedPane: "Abrir {{name}} en el panel enfocado",
       addProject: "Agregar proyecto",
       home: "Hogar",
+      itsaplan: "itsaplan",
       groupByProject: "Agrupar por proyecto",
       groupByStatus: "Agrupar por estado",
       modelGroupLabel: "Modelo",
