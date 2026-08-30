@@ -229,8 +229,9 @@ function humanizeToolName(name: string): string {
     .replace(/[._-]+/g, " ")
     .split(" ")
     .filter((segment) => segment.length > 0)
-    .map((segment) => `${segment[0]?.toUpperCase() ?? ""}${segment.slice(1)}`)
-    .join(" ");
+    .join(" ")
+    .toLowerCase()
+    .replace(/^./, (character) => character.toUpperCase());
 }
 
 function formatErrorText(error: unknown): string | undefined {
@@ -291,7 +292,7 @@ function buildCanonicalDetailDisplay(input: ToolCallDisplayInput): DetailDisplay
       };
     case "worktree_setup":
       return {
-        displayName: "Worktree Setup",
+        displayName: "Worktree setup",
         summary: input.detail.branchName,
       };
     case "sub_agent":

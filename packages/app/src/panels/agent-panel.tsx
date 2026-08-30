@@ -50,7 +50,7 @@ import {
   MAX_CONTENT_WIDTH,
   useIsCompactFormFactor,
 } from "@/constants/layout";
-import { isWeb } from "@/constants/platform";
+import { isNative, isWeb } from "@/constants/platform";
 import { useAgentAttentionClear } from "@/hooks/use-agent-attention-clear";
 import { useAggregatedMissionControlEvents } from "@/hooks/use-aggregated-mission-control-events";
 import { useAgentInputDraft, type AgentInputDraft } from "@/composer/draft/input-draft";
@@ -1864,7 +1864,7 @@ function ActiveAgentComposer({
         serverId={serverId}
         workspaceId={workspaceId}
         externalKeyboardShift
-        blurOnSubmit
+        blurOnSubmit={isNative}
         isPaneFocused={isPaneFocused}
         value={agentInputDraft.text}
         onChangeText={agentInputDraft.editText}

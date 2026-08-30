@@ -17,13 +17,13 @@ import { ToolCallDetailsContent } from "./tool-call-details";
 // ----- Types -----
 
 export interface ToolCallSheetData {
+  toolName: string;
   displayName: string;
   summary?: string;
   detail?: ToolCallDetail;
   errorText?: string;
   icon: ToolCallIconComponent;
   showLoadingSkeleton?: boolean;
-  toolName?: string;
 }
 
 interface ToolCallSheetContextValue {
@@ -156,7 +156,14 @@ interface ToolCallSheetContentProps {
 
 function ToolCallSheetContent({ data, onClose }: ToolCallSheetContentProps) {
   const { t } = useTranslation();
-  const { displayName, detail, errorText, icon: IconComponent, showLoadingSkeleton } = data;
+  const {
+    toolName,
+    displayName,
+    detail,
+    errorText,
+    icon: IconComponent,
+    showLoadingSkeleton,
+  } = data;
 
   return (
     <View style={styles.container}>
@@ -182,11 +189,11 @@ function ToolCallSheetContent({ data, onClose }: ToolCallSheetContentProps) {
       {/* Content */}
       <BottomSheetScrollView style={styles.content} contentContainerStyle={styles.contentContainer}>
         <ToolCallDetailsContent
+          toolName={toolName}
           detail={detail}
           errorText={errorText}
           fillAvailableHeight
           showLoadingSkeleton={showLoadingSkeleton}
-          toolName={data.toolName}
         />
       </BottomSheetScrollView>
     </View>

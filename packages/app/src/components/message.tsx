@@ -42,7 +42,6 @@ import {
   CircleDot,
   Copy,
   Plus,
-  RotateCcw,
   TriangleAlertIcon,
   Scissors,
   MicVocal,
@@ -2342,8 +2341,6 @@ function taskActivityIcon(activity: TaskActivity) {
       return CircleDot;
     case "completed":
       return Check;
-    case "reopened":
-      return RotateCcw;
     default:
       return CheckSquare;
   }
@@ -3209,13 +3206,13 @@ export const ToolCall = memo(function ToolCall({
   const handleToggle = useCallback(() => {
     if (!shouldRenderInline) {
       openToolCall({
+        toolName,
         displayName: presentation.displayName,
         summary: presentation.summary,
         detail: effectiveDetail,
         errorText: presentation.errorText,
         icon: presentation.icon,
         showLoadingSkeleton: presentation.isLoadingDetails,
-        toolName,
       });
     } else {
       setIsExpanded((prev) => !prev);
@@ -3223,13 +3220,13 @@ export const ToolCall = memo(function ToolCall({
   }, [
     shouldRenderInline,
     openToolCall,
+    toolName,
     presentation.displayName,
     presentation.summary,
     presentation.errorText,
     presentation.icon,
     presentation.isLoadingDetails,
     effectiveDetail,
-    toolName,
   ]);
 
   useEffect(() => {
@@ -3264,20 +3261,20 @@ export const ToolCall = memo(function ToolCall({
     if (!shouldRenderInline) return null;
     return (
       <ToolCallDetailsContent
+        toolName={toolName}
         detail={effectiveDetail}
         errorText={presentation.errorText}
         maxHeight={maxDetailHeight}
         showLoadingSkeleton={presentation.isLoadingDetails}
-        toolName={toolName}
         resolveHost={resolveHost}
       />
     );
   }, [
     shouldRenderInline,
+    toolName,
     effectiveDetail,
     presentation.errorText,
     presentation.isLoadingDetails,
-    toolName,
     maxDetailHeight,
     resolveHost,
   ]);

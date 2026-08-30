@@ -13,6 +13,10 @@ import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import type { ToolCallDetail } from "@getpaseo/protocol/agent-types";
 import { fleetToolLeafName } from "@getpaseo/protocol/tool-call-display";
+import {
+  buildPaseoToolDetailSections,
+  type PaseoToolDetailSection,
+} from "@getpaseo/protocol/paseo-tool-call-detail";
 import { buildLineDiff, parseUnifiedDiff, type DiffLine } from "@/utils/tool-call-parsers";
 import { highlightDiffLines } from "@/utils/diff-highlight";
 import { hasMeaningfulToolCallDetail } from "@/utils/tool-call-detail-state";
@@ -36,12 +40,12 @@ const EVAL_IMAGE_FILL = { position: "absolute", top: 0, left: 0, right: 0, botto
 // ---- Content Component ----
 
 interface ToolCallDetailsContentProps {
+  toolName?: string;
   detail?: ToolCallDetail;
   errorText?: string;
   maxHeight?: number;
   fillAvailableHeight?: boolean;
   showLoadingSkeleton?: boolean;
-  toolName?: string;
   resolveHost?: (host: string) => string;
 }
 
@@ -857,7 +861,42 @@ function buildUnknownSections(detail: UnknownDetail, ds: DetailStyles, t: TFunct
   return out;
 }
 
+function PaseoDetailSection({ section }: { section: PaseoToolDetailSection }) {
+  return (
+    <View style={styles.paseoSection}>
+      <Text style={styles.paseoSectionTitle}>{section.title}</Text>
+      {section.kind === "prose" ? (
+        <Text selectable style={styles.paseoProse}>
+          {section.text}
+        </Text>
+      ) : (
+        <View style={styles.paseoFields}>
+          {section.fields.map((field) => (
+            <View key={field.label} style={styles.paseoFieldRow}>
+              <Text style={styles.paseoFieldLabel}>{field.label}</Text>
+              <Text selectable style={styles.paseoFieldValue}>
+                {field.value}
+              </Text>
+            </View>
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
+function buildPaseoUnknownSections(
+  toolName: string | undefined,
+  detail: UnknownDetail,
+): ReactNode[] | null {
+  if (!toolName) return null;
+  const sections = buildPaseoToolDetailSections(toolName, detail.input, detail.output);
+  if (!sections) return null;
+  return sections.map((section) => <PaseoDetailSection key={section.title} section={section} />);
+}
+
 function buildDetailSections(
+  toolName: string | undefined,
   detail: ToolCallDetail | undefined,
   diffLines: DiffLine[] | undefined,
   ds: DetailStyles,
@@ -940,7 +979,7 @@ function buildDetailSections(
     return [<ScrollablePlainTextSection key="plain-text" text={detail.text} ds={ds} />];
   }
   if (detail.type === "unknown") {
-    return buildUnknownSections(detail, ds, t);
+    return buildPaseoUnknownSections(toolName, detail) ?? buildUnknownSections(detail, ds, t);
   }
   return [];
 }
@@ -980,12 +1019,12 @@ function LoadingSkeleton({ containerStyle }: { containerStyle: StyleProp<ViewSty
 }
 
 export function ToolCallDetailsContent({
+  toolName,
   detail,
   errorText,
   maxHeight,
   fillAvailableHeight = false,
   showLoadingSkeleton = false,
-  toolName,
   resolveHost,
 }: ToolCallDetailsContentProps) {
   const { t } = useTranslation();
@@ -1004,6 +1043,7 @@ export function ToolCallDetailsContent({
   const diffLines = useDiffLines(detail);
 
   const sections: ReactNode[] = buildDetailSections(
+    toolName,
     detail,
     diffLines,
     ds,
@@ -1064,6 +1104,46 @@ const styles = StyleSheet.create((theme) => {
       color: theme.colors.foregroundMuted,
       fontSize: theme.fontSize.base,
       fontWeight: theme.fontWeight.normal,
+    },
+    paseoSection: {
+      gap: theme.spacing[3],
+      paddingHorizontal: theme.spacing[4],
+      paddingVertical: theme.spacing[4],
+      borderBottomWidth: theme.borderWidth[1],
+      borderBottomColor: theme.colors.border,
+    },
+    paseoSectionTitle: {
+      color: theme.colors.foreground,
+      fontSize: theme.fontSize.base,
+      fontWeight: theme.fontWeight.medium,
+    },
+    paseoProse: {
+      color: theme.colors.foreground,
+      fontSize: theme.fontSize.content,
+      lineHeight: Math.round(theme.fontSize.content * 1.5),
+      overflowWrap: "anywhere",
+    },
+    paseoFields: {
+      gap: theme.spacing[3],
+    },
+    paseoFieldRow: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: theme.spacing[4],
+    },
+    paseoFieldLabel: {
+      width: 120,
+      color: theme.colors.foregroundMuted,
+      fontSize: theme.fontSize.sm,
+      lineHeight: Math.round(theme.fontSize.base * 1.5),
+    },
+    paseoFieldValue: {
+      flex: 1,
+      minWidth: 0,
+      color: theme.colors.foreground,
+      fontSize: theme.fontSize.base,
+      lineHeight: Math.round(theme.fontSize.base * 1.5),
+      overflowWrap: "anywhere",
     },
     section: {
       gap: theme.spacing[2],

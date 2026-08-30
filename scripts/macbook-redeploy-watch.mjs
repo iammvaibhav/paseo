@@ -108,6 +108,36 @@ function macbookJobOutcome(runDir) {
   return null;
 }
 
+/**
+ * Decide what an unconfirmed attempt for the current commit means now:
+ * "wait" while its deploy is alive or inside the cooldown, "settled" once the
+ * run reported success, or "retry" when it failed (or never reported) and the
+ * cooldown has passed. Split out of main() so each outcome reads as one branch.
+ */
+function settlePendingAttempt(state, pending, head) {
+  if (deployInFlight()) {
+    log(`deploy of ${head.slice(0, 9)} still in flight`);
+    return "wait";
+  }
+  const outcome = macbookJobOutcome(pending.runDir);
+  if (outcome === true) {
+    writeState({ ...state, lastAttempt: { ...pending, ok: true } });
+    log(`confirmed ${head.slice(0, 9)} deployed to ${HOST}`);
+    return "settled";
+  }
+  const label = outcome === false ? "FAILED" : "unconfirmed";
+  const ageMin = (Date.now() - Date.parse(pending.at)) / 60_000;
+  if (ageMin < COOLDOWN_MIN) {
+    log(
+      `deploy of ${head.slice(0, 9)} ${label} ${Math.round(ageMin)}m ago, ` +
+        `cooling down (${COOLDOWN_MIN}m)`,
+    );
+    return "wait";
+  }
+  log(`retrying ${head.slice(0, 9)} after a ${label.toLowerCase()} attempt`);
+  return "retry";
+}
+
 async function main() {
   if (process.env.PASEO_MACBOOK_WATCH_DISABLED === "1") return;
 
@@ -135,26 +165,8 @@ async function main() {
     return;
   }
 
-  if (pending) {
-    if (deployInFlight()) {
-      log(`deploy of ${head.slice(0, 9)} still in flight`);
-      return;
-    }
-    const outcome = macbookJobOutcome(pending.runDir);
-    if (outcome === true) {
-      writeState({ ...state0, lastAttempt: { ...pending, ok: true } });
-      log(`confirmed ${head.slice(0, 9)} deployed to ${HOST}`);
-      return;
-    }
-    const ageMin = (Date.now() - Date.parse(pending.at)) / 60_000;
-    if (ageMin < COOLDOWN_MIN) {
-      log(
-        `deploy of ${head.slice(0, 9)} ${outcome === false ? "FAILED" : "unconfirmed"} ` +
-          `${Math.round(ageMin)}m ago, cooling down (${COOLDOWN_MIN}m)`,
-      );
-      return;
-    }
-    log(`retrying ${head.slice(0, 9)} after a ${outcome === false ? "failed" : "unconfirmed"} attempt`);
+  if (pending && settlePendingAttempt(state0, pending, head) !== "retry") {
+    return;
   }
 
   if (deployInFlight()) {

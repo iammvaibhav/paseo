@@ -444,7 +444,6 @@ export const fr: TranslationResources = {
         added: "Ajoutée",
         started: "Commencée",
         completed: "Terminée",
-        reopened: "Rouverte",
       },
     },
     compaction: {
