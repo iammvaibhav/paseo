@@ -1803,6 +1803,7 @@ export async function createPaseoDaemon(
     hostName: getHostname(),
     hostAlias: missionControlHostAlias,
     getCentralConfig: () => missionControlService.getCentralConfig(),
+    resolveFleetCommanderAgentId: () => missionControlService.resolveFleetCommanderAgentId(),
     subscribeReviewState: (callback) =>
       missionControlService.subscribeReviewState((agentId, record) =>
         callback(agentId, record.reviewState),

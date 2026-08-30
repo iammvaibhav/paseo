@@ -250,6 +250,12 @@ export interface MissionControlVerifierDispatcherOptions {
   hostAlias?: string | null;
   /** Central settings (mission-control/config.ts). Read live on every decision. */
   getCentralConfig: () => VerifierCentralConfig;
+  /**
+   * Fleet-wide Commander identity resolver: checks the local commander first,
+   * then on a peer host with no local Commander, queries the designated
+   * commander host over peering.
+   */
+  resolveFleetCommanderAgentId?: () => Promise<string | null>;
   subscribeReviewState: (
     callback: (agentId: string, state: VerifierReviewStateKind) => void,
   ) => () => void;
@@ -463,6 +469,7 @@ export class MissionControlVerifierDispatcher {
   private readonly subscribeSelfReports: MissionControlVerifierDispatcherOptions["subscribeSelfReports"];
   private readonly setReviewState: MissionControlVerifierDispatcherOptions["setReviewState"];
   private readonly publish: MissionControlVerifierDispatcherOptions["publish"];
+  private readonly resolveFleetCommanderAgentId?: MissionControlVerifierDispatcherOptions["resolveFleetCommanderAgentId"];
   private readonly agentInstructions: string;
 
   private readonly queue: Array<VerifierReadyItem & { attempt: number }> = [];
@@ -491,6 +498,7 @@ export class MissionControlVerifierDispatcher {
     this.hostName = options.hostName;
     this.hostLabel = options.hostAlias?.trim() || options.hostName;
     this.getCentralConfig = options.getCentralConfig;
+    this.resolveFleetCommanderAgentId = options.resolveFleetCommanderAgentId;
     this.subscribeReviewState = options.subscribeReviewState;
     this.getReadyForReview = options.getReadyForReview;
     this.fetchEvents = options.fetchEvents;
@@ -1306,7 +1314,14 @@ export class MissionControlVerifierDispatcher {
   private async isCommander(agentId: string): Promise<boolean> {
     const live = this.agentManager.getAgent(agentId);
     const labels = live?.labels ?? (await this.agentStorage.get(agentId))?.labels;
-    return labels?.[MISSION_CONTROL_LABEL_KEY] === "commander";
+    if (labels?.[MISSION_CONTROL_LABEL_KEY] === "commander") {
+      return true;
+    }
+    if (this.resolveFleetCommanderAgentId) {
+      const fleetCommanderId = await this.resolveFleetCommanderAgentId();
+      return fleetCommanderId !== null && fleetCommanderId === agentId;
+    }
+    return false;
   }
 
   private async readTimelineRows(agentId: string): Promise<AgentTimelineRow[]> {

@@ -55,8 +55,8 @@ function makeWorker(id: string, labels: Record<string, string> = {}): ManagedAge
   } as unknown as ManagedAgent;
 }
 
-function makeCommander(): ManagedAgent {
-  return makeWorker("commander-1", { "paseo.mission-control": "commander" });
+function makeCommander(id = "commander-1"): ManagedAgent {
+  return makeWorker(id, { "paseo.mission-control": "commander" });
 }
 
 function makeTimelineRow(seq: number, text: string): AgentTimelineRow {
@@ -106,6 +106,7 @@ async function createHarness(overrides?: {
   autoApprove?: boolean;
   readyForReview?: Array<{ agentId: string; title: string; at: string }>;
   hostAlias?: string | null;
+  resolveFleetCommanderAgentId?: () => Promise<string | null>;
   /** Verifier spawn proposals persisted to the durable store BEFORE the
    * dispatcher is constructed — simulates proposals surviving a daemon
    * restart, which the boot reconciliation must not duplicate. */
@@ -194,6 +195,9 @@ async function createHarness(overrides?: {
     },
     agentStorage: { get: async () => null },
     getCentralConfig: () => central,
+    ...(overrides?.resolveFleetCommanderAgentId
+      ? { resolveFleetCommanderAgentId: overrides.resolveFleetCommanderAgentId }
+      : {}),
     subscribeReviewState: (callback) => {
       reviewListener = callback;
       return () => {
@@ -488,6 +492,43 @@ describe("MissionControlVerifierDispatcher", () => {
     harness.setWorker(worker);
     harness.emitReviewState("worker-1", "ready");
     await vi.waitFor(() => expect(harness.created.length).toBe(1), WAIT);
+  });
+  test("commander scope: verifies a worker whose parent Commander lives on a peer host (fleet commander resolution)", async () => {
+    const resolveFleetCommander = vi.fn(async () => "peer-commander-1");
+    const peerHarness = await createHarness({
+      central: { evaluationScope: "commander" },
+      resolveFleetCommanderAgentId: resolveFleetCommander,
+    });
+    // Worker on this peer host whose parent is the remote Commander
+    const worker = makeWorker("worker-peer-1", {
+      "paseo.parent-agent-id": "peer-commander-1",
+    });
+    peerHarness.setWorker(worker);
+    peerHarness.dispatcher.start();
+    peerHarness.emitReviewState("worker-peer-1", "ready");
+    await vi.waitFor(() => expect(peerHarness.created.length).toBe(1), WAIT);
+    expect(resolveFleetCommander).toHaveBeenCalled();
+    peerHarness.dispatcher.stop();
+    await rm(peerHarness.dir, { recursive: true, force: true });
+  });
+
+  test("commander scope: local commander parent resolves locally without calling resolveFleetCommanderAgentId", async () => {
+    const resolveFleetCommander = vi.fn(async () => "peer-commander-1");
+    const localHarness = await createHarness({
+      central: { evaluationScope: "commander" },
+      resolveFleetCommanderAgentId: resolveFleetCommander,
+    });
+    localHarness.setWorker(makeCommander("local-commander-1"));
+    const worker = makeWorker("worker-local-1", {
+      "paseo.parent-agent-id": "local-commander-1",
+    });
+    localHarness.setWorker(worker);
+    localHarness.dispatcher.start();
+    localHarness.emitReviewState("worker-local-1", "ready");
+    await vi.waitFor(() => expect(localHarness.created.length).toBe(1), WAIT);
+    expect(resolveFleetCommander).not.toHaveBeenCalled();
+    localHarness.dispatcher.stop();
+    await rm(localHarness.dir, { recursive: true, force: true });
   });
 
   test("all scope verifies a root agent", async () => {

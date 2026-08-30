@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi, type Mock } from "vitest";
 import type pino from "pino";
 import type { AgentManager, AgentManagerEvent, ManagedAgent } from "../agent/agent-manager.js";
 import type { AgentStorage, StoredAgentRecord } from "../agent/agent-storage.js";
@@ -12,6 +12,8 @@ import { MissionControlService } from "./service.js";
 import { MissionControlStore } from "./store.js";
 import type { MissionControlEvent } from "./store.js";
 import { createMissionControlPresenceSource } from "./presence.js";
+import type { PeerManager } from "../peers/peer-manager.js";
+import type { DaemonClient } from "@getpaseo/client";
 
 function createMockLogger(): pino.Logger {
   const levels = ["trace", "debug", "info", "warn", "error", "fatal"] as const;
@@ -488,5 +490,174 @@ describe("MissionControlService lifecycle push", () => {
     // Without a live agent the disk error still derives needs_you.
     liveAgent = null;
     expect(await service.getLifecycleBucket("agent-1")).toBe("needs_you");
+  });
+});
+
+describe("peer-routed lifecycle actions (Defect 1)", () => {
+  let peerDir: string;
+  let peerClientMock: {
+    fetchAgents: Mock;
+    missionControlLifecycleSet: Mock;
+  };
+  let peerManagerMock: {
+    getPeerStatuses: Mock;
+    getPeerClient: Mock;
+    getPeerServerId: Mock;
+  };
+  let peerService: MissionControlService;
+
+  beforeEach(async () => {
+    peerDir = await mkdtemp(join(tmpdir(), "mc-peer-lifecycle-"));
+    peerClientMock = {
+      fetchAgents: vi.fn(async () => ({
+        entries: [
+          {
+            agent: { id: "remote-agent-1", name: "Remote Worker" },
+          },
+        ],
+      })),
+      missionControlLifecycleSet: vi.fn(async () => ({ requestId: "req-1", ok: true })),
+    };
+
+    peerManagerMock = {
+      getPeerStatuses: vi.fn(() => [
+        {
+          name: "peer-host-1",
+          url: "tcp://peer-host-1:6767",
+          state: "online",
+          lastSeenAt: new Date().toISOString(),
+        },
+      ]),
+      getPeerClient: vi.fn((name: string) =>
+        name === "peer-host-1" ? (peerClientMock as unknown as DaemonClient) : null,
+      ),
+      getPeerServerId: vi.fn((name: string) => (name === "peer-host-1" ? "server-peer-1" : null)),
+    };
+
+    peerService = new MissionControlService({
+      paseoHome: peerDir,
+      logger: createMockLogger(),
+      agentManager: {
+        getAgent: vi.fn((id: string) =>
+          id === "local-agent-1" ? runningAgent("local-agent-1", { lifecycle: "idle" }) : null,
+        ),
+        notifyAgentState: vi.fn(),
+        updateAgentMetadata: vi.fn(async () => undefined),
+        hasInFlightRun: vi.fn(() => false),
+        cancelAgentRun: vi.fn(async () => ({ status: "not_running" })),
+        clearAgentAttention: vi.fn(async () => undefined),
+        archiveAgent: vi.fn(async () => ({ archivedAt: new Date().toISOString() })),
+        archiveSnapshot: vi.fn(async () => storedRecord("local-agent-1")),
+        subscribe: vi.fn(() => () => {}),
+      } as unknown as AgentManager,
+      agentStorage: {
+        get: vi.fn(async (id: string) =>
+          id === "local-agent-1" ? storedRecord("local-agent-1") : null,
+        ),
+        list: vi.fn(async () => []),
+        upsert: vi.fn(async () => undefined),
+      } as unknown as AgentStorage,
+      daemonConfigStore: { get: () => ({}) } as unknown as DaemonConfigStore,
+      serverId: "local-server",
+      hostName: "local-host",
+      broadcast: vi.fn(),
+      presence: createMissionControlPresenceSource({
+        isAgentFocused: () => false,
+        readStopOrigin: () => null,
+      }),
+      peerManager: peerManagerMock as unknown as PeerManager,
+    });
+    await peerService.start();
+  });
+
+  afterEach(async () => {
+    await peerService?.stop();
+    const internals = peerService as unknown as {
+      store: { appendTail: Promise<void>; persistTail: Promise<void> };
+    };
+    await Promise.all([internals.store.appendTail, internals.store.persistTail]);
+    await rm(peerDir, { recursive: true, force: true });
+  });
+
+  test("routes lifecycle action on a peer-hosted agent to the owning peer", async () => {
+    const result = await peerService.setLifecycle({
+      agentId: "remote-agent-1",
+      action: "done",
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(peerClientMock.fetchAgents).toHaveBeenCalledWith({
+      filter: { includeArchived: true },
+      page: { limit: 200 },
+    });
+    expect(peerClientMock.missionControlLifecycleSet).toHaveBeenCalledWith({
+      serverId: "server-peer-1",
+      agentId: "remote-agent-1",
+      action: "done",
+    });
+  });
+
+  test("local agent lifecycle action does not make peer calls", async () => {
+    const result = await peerService.setLifecycle({
+      agentId: "local-agent-1",
+      action: "done",
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(peerClientMock.fetchAgents).not.toHaveBeenCalled();
+    expect(peerClientMock.missionControlLifecycleSet).not.toHaveBeenCalled();
+  });
+
+  test("returns 'not found anywhere in the fleet' when all peers are online and none have the agent", async () => {
+    peerClientMock.fetchAgents.mockResolvedValueOnce({ entries: [] });
+
+    const result = await peerService.setLifecycle({
+      agentId: "unknown-agent",
+      action: "done",
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: "Agent unknown-agent not found anywhere in the fleet",
+    });
+    expect(peerClientMock.missionControlLifecycleSet).not.toHaveBeenCalled();
+  });
+
+  test("distinguishes unreachable peer when peer is offline", async () => {
+    peerManagerMock.getPeerStatuses.mockReturnValueOnce([
+      {
+        name: "peer-host-1",
+        url: "tcp://peer-host-1:6767",
+        state: "unreachable",
+        lastSeenAt: "2026-01-01T00:00:00.000Z",
+      },
+    ]);
+
+    const result = await peerService.setLifecycle({
+      agentId: "remote-agent-1",
+      action: "done",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("unreachable");
+    }
+  });
+
+  test("distinguishes unreachable peer when round-trip fails", async () => {
+    peerClientMock.missionControlLifecycleSet.mockRejectedValueOnce(
+      new Error("connection reset by peer"),
+    );
+
+    const result = await peerService.setLifecycle({
+      agentId: "remote-agent-1",
+      action: "done",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("unreachable");
+      expect(result.error).toContain("connection reset by peer");
+    }
   });
 });

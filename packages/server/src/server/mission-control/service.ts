@@ -1271,7 +1271,7 @@ export class MissionControlService {
   ): Promise<{ ok: true } | { ok: false; error: string }> {
     const agent = await this.agentStorage.get(agentId);
     if (!agent) {
-      return { ok: false, error: `Agent ${agentId} not found` };
+      return this.forwardLifecycleActionToPeer(agentId, action);
     }
     const now = new Date().toISOString();
     switch (action) {
@@ -1314,6 +1314,87 @@ export class MissionControlService {
         return { ok: true };
       }
     }
+  }
+
+  private async forwardLifecycleActionToPeer(
+    agentId: string,
+    action: MissionControlLifecycleAction,
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    const peerManager = this.resolvePeerManager();
+    if (!peerManager) {
+      return { ok: false, error: `Agent ${agentId} not found anywhere in the fleet` };
+    }
+
+    const peerStatuses = peerManager.getPeerStatuses() ?? [];
+    if (peerStatuses.length === 0) {
+      return { ok: false, error: `Agent ${agentId} not found anywhere in the fleet` };
+    }
+
+    let foundPeerName: string | null = null;
+    const unreachablePeers: string[] = [];
+
+    for (const status of peerStatuses) {
+      if (status.state !== "online") {
+        unreachablePeers.push(status.name);
+        continue;
+      }
+      const client = peerManager.getPeerClient(status.name);
+      if (!client) {
+        unreachablePeers.push(status.name);
+        continue;
+      }
+      try {
+        const roster = await client.fetchAgents({
+          filter: { includeArchived: true },
+          page: { limit: 200 },
+        });
+        if (roster.entries.some((entry) => entry.agent?.id === agentId)) {
+          foundPeerName = status.name;
+          break;
+        }
+      } catch (error) {
+        this.logger.warn(
+          { err: error, peer: status.name, agentId },
+          "mission_control.lifecycle.peer_agent_lookup_failed",
+        );
+        unreachablePeers.push(status.name);
+      }
+    }
+
+    if (foundPeerName) {
+      const client = peerManager.getPeerClient(foundPeerName);
+      const peerServerId = peerManager.getPeerServerId(foundPeerName);
+      if (!client || !peerServerId) {
+        return { ok: false, error: `Peer "${foundPeerName}" is unreachable` };
+      }
+      try {
+        const payload = await client.missionControlLifecycleSet({
+          serverId: peerServerId,
+          agentId,
+          action,
+        });
+        return payload.ok
+          ? { ok: true }
+          : {
+              ok: false,
+              error: payload.error ?? `Peer "${foundPeerName}" rejected lifecycle action`,
+            };
+      } catch (error) {
+        return {
+          ok: false,
+          error: `Peer "${foundPeerName}" unreachable: ${getErrorMessageOr(error, "round-trip failed")}`,
+        };
+      }
+    }
+
+    if (unreachablePeers.length > 0) {
+      return {
+        ok: false,
+        error: `Agent ${agentId} not found locally, and peer(s) unreachable: ${unreachablePeers.join(", ")}`,
+      };
+    }
+
+    return { ok: false, error: `Agent ${agentId} not found anywhere in the fleet` };
   }
 
   // ==========================================================================
@@ -1464,7 +1545,7 @@ export class MissionControlService {
    * Distinct from resolveCommanderAgentId (local-only): dispatch targets must
    * be local agents, so the remote id is only ever used for classification.
    */
-  private async resolveFleetCommanderAgentId(): Promise<string | null> {
+  async resolveFleetCommanderAgentId(): Promise<string | null> {
     const local = await this.resolveCommanderAgentId();
     if (local) {
       return local;
