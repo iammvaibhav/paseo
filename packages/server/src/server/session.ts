@@ -5415,6 +5415,7 @@ export class Session {
           );
           await this.seedUnavailableProviderTimeline(agentId, record);
           const storedPayload = this.buildStoredAgentPayload(record, registeredProviderIds);
+          await this.attachLifecycleBucket(storedPayload);
           this.emit({
             type: "agent_update",
             payload: {
@@ -5767,12 +5768,7 @@ export class Session {
       await Promise.all(agentIds.map((id) => this.agentManager.clearAgentAttention(id)));
       if (requestId) {
         const agents = (
-          await Promise.all(
-            agentIds.map(async (id) => {
-              const agent = this.agentManager.getAgent(id);
-              return agent ? this.buildAgentPayload(agent) : null;
-            }),
-          )
+          await Promise.all(agentIds.map((id) => this.getAgentPayloadById(id)))
         ).filter((payload): payload is NonNullable<typeof payload> => payload !== null);
         this.emit({
           type: "clear_agent_attention_response",
@@ -6195,9 +6191,9 @@ export class Session {
       return null;
     }
     const payload = this.buildStoredAgentPayload(record);
+    await this.attachLifecycleBucket(payload);
     return this.isProviderVisibleToClient(payload.provider) ? payload : null;
   }
-
   private async resolveDelegationRootWorkspaceId(agentId: string): Promise<string | null> {
     const seen = new Set<string>();
     let currentAgentId = agentId;
@@ -8455,6 +8451,7 @@ export class Session {
           };
           await this.agentStorage.upsert(nextRecord);
           const agent = this.buildStoredAgentPayload(nextRecord);
+          await this.attachLifecycleBucket(agent);
           const project = await this.buildProjectPlacementForWorkspace(workspace);
           this.emit({
             type: "agent_update",
@@ -8715,9 +8712,11 @@ export class Session {
           "Serving agent timeline without unavailable provider runtime",
         );
       }
+      const agentPayload = this.buildStoredAgentPayload(record);
+      await this.attachLifecycleBucket(agentPayload);
       return {
         providerId: record.provider,
-        agentPayload: this.buildStoredAgentPayload(record),
+        agentPayload,
       };
     }
 
@@ -9347,6 +9346,7 @@ export class Session {
         return;
       }
       const final = this.buildStoredAgentPayload(record);
+      await this.attachLifecycleBucket(final);
       let status: "permission" | "error" | "idle";
       if (record.attentionReason === "permission") {
         status = "permission";

@@ -52,6 +52,7 @@ describe("MissionControlStore v3 review lifecycle", () => {
   test("defaults to reviewState none with empty verdict", () => {
     expect(store.getReviewState("agent-1")).toEqual({
       reviewState: "none",
+      updatedAt: null,
       doneAt: null,
       clearedAt: null,
       verdict: null,
@@ -80,6 +81,7 @@ describe("MissionControlStore v3 review lifecycle", () => {
     await store.setReviewState("agent-1", "none");
     expect(store.getReviewState("agent-1")).toEqual({
       reviewState: "none",
+      updatedAt: expect.any(String),
       doneAt: null,
       clearedAt: null,
       verdict: null,
@@ -97,6 +99,7 @@ describe("MissionControlStore v3 review lifecycle", () => {
     await reloaded.initialize();
     expect(reloaded.getReviewState("agent-1")).toEqual({
       reviewState: "done",
+      updatedAt: expect.any(String),
       doneAt: expect.any(String),
       clearedAt: null,
       verdict: { by: "verifier", summary: "Approved", at: "t1" },
