@@ -278,6 +278,15 @@ function waitForLastCommentBody(
   });
 }
 
+function waitForLastCommentContaining(
+  comments: Array<{ body: string }>,
+  snippet: string,
+): Promise<void> {
+  return vi.waitFor(() => {
+    expect(comments.at(-1)?.body).toContain(snippet);
+  });
+}
+
 function waitForCommentEqual(
   comments: Array<{ issueId: number; body: string }>,
   expected: { issueId: number; body: string },
@@ -1100,6 +1109,122 @@ describe("ItsaplanBridge", () => {
       });
       const readyCol = findColumnByNameAndProject(columns, UNMAPPED_PROJECT_ID, "Ready to review");
       expect(issues.get(UNMAPPED_ISSUE_ID)?.columnId).toBe(readyCol?.id);
+    });
+
+    test("projects review-ready lifecycle state to Ready to review when an agent finishes WITHOUT report_status", async () => {
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent("agent-event-only", { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+      });
+      await waitForIssueColumn(issues, ISSUE_ID, 3);
+      expect(fakeServer.comments).toEqual([
+        { issueId: ISSUE_ID, body: "Dispatched: paseo://h/server-1/agent/agent-event-only" },
+      ]);
+
+      // Agent transitions to idle/ready WITHOUT emitting any self-report
+      missionControlFake.setBucket("ready");
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent("agent-event-only", { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+      });
+
+      await waitForCreatedColumn(fakeServer.createdColumns, {
+        projectKey: PROJECT_KEY,
+        name: "Ready to review",
+        stateType: "started",
+      });
+      const readyColumn = findColumnByName(columns, "Ready to review");
+      expect(issues.get(ISSUE_ID)?.columnId).toBe(readyColumn?.id);
+      expect(fakeServer.comments.at(-1)?.body).toBe("Ready for review.");
+    });
+
+    test("is idempotent: repeated review-ready events and subsequent finished self-report do not bounce or duplicate comments", async () => {
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent("agent-idempotent", { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+      });
+      await waitForIssueColumn(issues, ISSUE_ID, 3);
+
+      // 1. Agent reaches review-ready lifecycle state (idle)
+      missionControlFake.setBucket("ready");
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent("agent-idempotent", { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+      });
+
+      await waitForCreatedColumn(fakeServer.createdColumns, {
+        projectKey: PROJECT_KEY,
+        name: "Ready to review",
+        stateType: "started",
+      });
+      const readyColumn = findColumnByName(columns, "Ready to review");
+      expect(issues.get(ISSUE_ID)?.columnId).toBe(readyColumn?.id);
+      expect(fakeServer.comments.at(-1)?.body).toBe("Ready for review.");
+      const commentCountAfterFirstReady = fakeServer.comments.length;
+
+      // 2. Deliver the exact same transition a second time (duplicate agent_state)
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent("agent-idempotent", { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+      });
+      await flushAsync();
+      await flushAsync();
+
+      // Must remain in Ready to review and must NOT duplicate comments
+      expect(issues.get(ISSUE_ID)?.columnId).toBe(readyColumn?.id);
+      expect(fakeServer.comments.length).toBe(commentCountAfterFirstReady);
+
+      // 3. A subsequent finished self-report arrives with PR proof
+      missionControlFake.emitSelfReport({
+        id: "mce_subsequent",
+        ts: new Date().toISOString(),
+        seq: 2,
+        agentId: "agent-idempotent",
+        agentName: "agent-idempotent",
+        agentTitle: "Agent Idempotent",
+        kind: "finished",
+        source: "self",
+        severity: "info",
+        headline: "Completed work",
+        proof: [{ kind: "pr", url: "https://example.test/pr/77", label: "PR" }],
+      } as unknown as MissionControlEvent);
+
+      await waitForLastCommentContaining(fakeServer.comments, "PR: https://example.test/pr/77");
+      expect(issues.get(ISSUE_ID)?.columnId).toBe(readyColumn?.id);
+      const commentCountAfterSelfReport = fakeServer.comments.length;
+      expect(commentCountAfterSelfReport).toBe(commentCountAfterFirstReady + 1);
+
+      // 4. Another agent_state arrives after the self-report
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent("agent-idempotent", { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+      });
+      await flushAsync();
+      await flushAsync();
+
+      // Must stay in Ready to review and not add comments
+      expect(issues.get(ISSUE_ID)?.columnId).toBe(readyColumn?.id);
+      expect(fakeServer.comments.length).toBe(commentCountAfterSelfReport);
+    });
+
+    test("does not move to Ready to review when agent is stopped by user or errors", async () => {
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent("agent-user-stopped", { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+      });
+      await waitForIssueColumn(issues, ISSUE_ID, 3);
+
+      // User stopped agent -> bucket is "done", not "ready"
+      missionControlFake.setBucket("done");
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent("agent-user-stopped", { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+      });
+      await flushAsync();
+      await flushAsync();
+
+      // Column must remain In Progress (3), not move to Ready to review
+      expect(issues.get(ISSUE_ID)?.columnId).toBe(3);
     });
   });
 

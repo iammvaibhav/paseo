@@ -602,20 +602,23 @@ export class ItsaplanBridge {
     if (!issueId) {
       return;
     }
-    if (isFirstSighting) {
-      void this.handleAgentCreated(agent.id, issueId).catch((error) => {
-        this.logger.error(
-          { err: error, agentId: agent.id, issueId },
-          "itsaplan.bridge.agent_created_failed",
-        );
-      });
-    }
-    void this.checkNeedsYouProjection(agent.id, issueId).catch((error) => {
+    void this.projectAgentState(agent.id, issueId, isFirstSighting).catch((error) => {
       this.logger.error(
         { err: error, agentId: agent.id, issueId },
-        "itsaplan.bridge.needs_you_check_failed",
+        "itsaplan.bridge.agent_state_projection_failed",
       );
     });
+  }
+
+  private async projectAgentState(
+    agentId: string,
+    issueId: string,
+    isFirstSighting: boolean,
+  ): Promise<void> {
+    if (isFirstSighting) {
+      await this.handleAgentCreated(agentId, issueId);
+    }
+    await this.checkLifecycleProjection(agentId, issueId);
   }
 
   private handleSelfReport(event: MissionControlEvent): void {
@@ -636,7 +639,7 @@ export class ItsaplanBridge {
     if (event.kind === "finished") {
       await this.handleAgentCompleted(event.agentId, issueId, event.proof);
     }
-    await this.checkNeedsYouProjection(event.agentId, issueId);
+    await this.checkLifecycleProjection(event.agentId, issueId);
   }
 
   private async getAgentLabels(agentId: string): Promise<Record<string, string> | null> {
@@ -676,7 +679,7 @@ export class ItsaplanBridge {
   private async handleAgentCompleted(
     agentId: string,
     issueId: string,
-    proof: MissionControlProof[] | undefined,
+    proof?: MissionControlProof[],
   ): Promise<void> {
     const config = this.getConfig();
     const numericIssueId = Number(issueId);
@@ -689,47 +692,62 @@ export class ItsaplanBridge {
     if (!projectKey) {
       return;
     }
+    const columns = await client.listProjectColumns(projectKey);
+    const currentColumn = columns.find((c) => c.id === issue.columnId);
+    if (currentColumn?.stateType === "completed" || currentColumn?.stateType === "canceled") {
+      return;
+    }
     const readyColumn = await client.ensureColumn(
       projectKey,
       ITSAPLAN_READY_FOR_REVIEW_COLUMN_NAME,
       "started",
     );
-    if (issue.columnId !== readyColumn.id) {
+    const needsMove = issue.columnId !== readyColumn.id;
+    if (needsMove) {
       await client.moveIssueColumn(numericIssueId, readyColumn.id);
     }
-    await client.postComment(numericIssueId, formatProofsComment(proof));
+    if (needsMove || (proof !== undefined && proof.length > 0)) {
+      await client.postComment(numericIssueId, formatProofsComment(proof));
+    }
     this.logger.info({ agentId, issueId }, "itsaplan.bridge.ready_for_review");
   }
 
   /**
-   * needs-input signal (ADR 0002), both directions:
-   * - ENTRY: assignee flips to the configured human and ONE comment carries
-   *   the actual pending question (clarification card > blocked report >
-   *   live permission prompt > fallback). Repeated agent_state events while
-   *   still needs_you stay silent.
-   * - EXIT: one convergence comment says how the answer arrived (ticket
-   *   comment vs direct in Paseo) and the assignee flips back to the
-   *   Commander bot user (or unassigns when unknown).
+   * Projects agent lifecycle bucket transitions to itsaplan:
+   * - needs_you: flips assignee to configured human and posts pending question.
+   * - exit needs_you: returns assignee to Commander bot and posts convergence comment.
+   * - ready: moves ticket to Ready to review.
+   * - user stop / done / idle / running: respects precedence (user stop is not completion).
    */
-  private async checkNeedsYouProjection(agentId: string, issueId: string): Promise<void> {
+  private async checkLifecycleProjection(agentId: string, issueId: string): Promise<void> {
     const config = this.getConfig();
     const numericIssueId = Number(issueId);
-    const humanUserId = config?.humanUserId;
-    if (!config || !humanUserId || !Number.isFinite(numericIssueId)) {
+    if (!config || !Number.isFinite(numericIssueId)) {
       return;
     }
     const bucket = await this.missionControl.getLifecycleBucket(agentId);
     const previousBucket = this.lastBucketByAgentId.get(agentId) ?? null;
     this.lastBucketByAgentId.set(agentId, bucket);
+
+    const humanUserId = config.humanUserId;
     if (bucket === "needs_you") {
       if (previousBucket === "needs_you") {
         return;
       }
-      await this.enterNeedsYou(config, humanUserId, agentId, numericIssueId);
+      if (humanUserId) {
+        await this.enterNeedsYou(config, humanUserId, agentId, numericIssueId);
+      }
       return;
     }
+
     if (previousBucket === "needs_you") {
-      await this.exitNeedsYou(agentId, numericIssueId, config);
+      if (humanUserId) {
+        await this.exitNeedsYou(agentId, numericIssueId, config);
+      }
+    }
+
+    if (bucket === "ready") {
+      await this.handleAgentCompleted(agentId, issueId);
     }
   }
 
