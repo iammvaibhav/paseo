@@ -1597,8 +1597,8 @@ describe("ItsaplanBridge", () => {
         stateType: "started",
       });
       const readyColumn = findColumnByName(columns, "Ready to review");
-      expect(issues.get(ISSUE_ID)?.columnId).toBe(readyColumn?.id);
-      expect(fakeServer.comments.at(-1)?.body).toBe("Ready for review.");
+      await waitForIssueColumn(issues, ISSUE_ID, readyColumn!.id);
+      await waitForLastCommentBody(fakeServer.comments, "Ready for review.");
     });
 
     test("is idempotent: repeated review-ready events and subsequent finished self-report do not bounce or duplicate comments", async () => {
@@ -2027,6 +2027,34 @@ describe("ItsaplanBridge", () => {
       await bridge.handleWorkspaceArchived(workspaceId);
 
       expect(issues.get(ISSUE_ID)?.columnId).toBe(3);
+    });
+
+    test("subsequent agent_state events from an archived agent do not move ticket back to Ready to review", async () => {
+      const workspaceId = "ws-archive-race";
+      const agentId = "agent-archived-race";
+      agentStorageRecords.push({
+        id: agentId,
+        labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) },
+        updatedAt: new Date().toISOString(),
+        archivedAt: new Date().toISOString(),
+        workspaceId,
+      });
+      issues.get(ISSUE_ID)!.columnId = 3;
+
+      await bridge.handleWorkspaceArchived(workspaceId);
+      expect(issues.get(ISSUE_ID)?.columnId).toBe(4); // Done
+
+      // An agent_state event arrives after workspace archival (e.g. from agent teardown)
+      missionControlFake.setBucket("ready");
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent(agentId, { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+      });
+      await flushAsync();
+      await flushAsync();
+
+      // Ticket must remain in Done (4), not move back to Ready to review
+      expect(issues.get(ISSUE_ID)?.columnId).toBe(4);
     });
   });
 
