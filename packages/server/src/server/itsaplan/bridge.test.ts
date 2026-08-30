@@ -16,6 +16,7 @@ import {
   ItsaplanBridge,
   type ItsaplanBridgeAgentManager,
   type ItsaplanBridgeAgentStorage,
+  type ItsaplanBridgeFleet,
   type ItsaplanBridgeMissionControl,
 } from "./bridge.js";
 import { ItsaplanProjectStore, type ItsaplanCentralConfig } from "./projects.js";
@@ -373,6 +374,30 @@ function createFakeAgentStorage(
   };
 }
 
+function createFakeFleet(found: { agentId: string; host: string } | null): {
+  fleet: ItsaplanBridgeFleet;
+  lookups: string[];
+  writes: Array<{ host: string; agentId: string; action: MissionControlLifecycleAction }>;
+} {
+  const lookups: string[] = [];
+  const writes: Array<{ host: string; agentId: string; action: MissionControlLifecycleAction }> =
+    [];
+  return {
+    lookups,
+    writes,
+    fleet: {
+      findAgentByIssue: async (issueId) => {
+        lookups.push(issueId);
+        return found;
+      },
+      setLifecycle: async (input) => {
+        writes.push(input);
+        return { ok: true };
+      },
+    },
+  };
+}
+
 function createFakeMissionControl(initialBucket: LifecycleBucket): {
   control: ItsaplanBridgeMissionControl;
   emitSelfReport: (event: MissionControlEvent) => void;
@@ -507,6 +532,86 @@ describe("ItsaplanBridge", () => {
       steerWorkerPrompt,
     });
     bridge.start();
+  });
+
+  describe("ticket moved to a completed column -> agent lifecycle", () => {
+    const DONE_COLUMN_ID = 4;
+
+    function issueRecord(columnId: number) {
+      return { id: ISSUE_ID, projectId: PROJECT_ID, columnId, sequenceNumber: 1, title: "t" };
+    }
+
+    test("an agent on THIS host is marked done locally, without touching the fleet", async () => {
+      agentStorageRecords.push({
+        id: "local-agent",
+        labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) },
+        updatedAt: new Date().toISOString(),
+      });
+      const fleetFake = createFakeFleet(null);
+      const local = new ItsaplanBridge({
+        logger: createTestLogger(),
+        serverId: "server-1",
+        agentManager: agentManagerFake.manager,
+        agentStorage: createFakeAgentStorage(agentStorageRecords),
+        missionControl: missionControlFake.control,
+        fleet: fleetFake.fleet,
+        projectStore,
+        getConfig: () => config,
+        resolvePaseoProjectKey: async () => "proj",
+        deliverMachineryPrompt,
+        steerWorkerPrompt,
+      });
+      local.start();
+
+      await local.handleWebhookRequest(
+        webhookRequest("issue.state_changed", issueRecord(DONE_COLUMN_ID)),
+      );
+
+      expect(missionControlFake.lifecycleActions).toEqual([
+        { agentId: "local-agent", action: "done" },
+      ]);
+      // A local hit must not fan out to peers.
+      expect(fleetFake.lookups).toEqual([]);
+      expect(fleetFake.writes).toEqual([]);
+    });
+
+    test("an agent on a PEER host is marked done over peering, not silently skipped", async () => {
+      // Nothing local carries the label: this is the cross-host case that used
+      // to log completed_issue_no_linked_agent and write nothing.
+      const fleetFake = createFakeFleet({ agentId: "peer-agent", host: "blrofc3" });
+      const remote = new ItsaplanBridge({
+        logger: createTestLogger(),
+        serverId: "server-1",
+        agentManager: agentManagerFake.manager,
+        agentStorage: createFakeAgentStorage([]),
+        missionControl: missionControlFake.control,
+        fleet: fleetFake.fleet,
+        projectStore,
+        getConfig: () => config,
+        resolvePaseoProjectKey: async () => "proj",
+        deliverMachineryPrompt,
+        steerWorkerPrompt,
+      });
+      remote.start();
+
+      await remote.handleWebhookRequest(
+        webhookRequest("issue.state_changed", issueRecord(DONE_COLUMN_ID)),
+      );
+
+      expect(fleetFake.lookups).toEqual([String(ISSUE_ID)]);
+      expect(fleetFake.writes).toEqual([
+        { host: "blrofc3", agentId: "peer-agent", action: "done" },
+      ]);
+      // The local mission control owns only local agents.
+      expect(missionControlFake.lifecycleActions).toEqual([]);
+    });
+
+    test("no fleet dependency (single host) stays local-only and does not throw", async () => {
+      await bridge.handleWebhookRequest(
+        webhookRequest("issue.state_changed", issueRecord(DONE_COLUMN_ID)),
+      );
+      expect(missionControlFake.lifecycleActions).toEqual([]);
+    });
   });
 
   describe("needs_you question comment", () => {

@@ -83,6 +83,23 @@ export interface ItsaplanBridgeMissionControl {
   }): Promise<{ ok: true } | { ok: false; error: string }>;
 }
 
+/**
+ * Fleet reach for the inbound (itsaplan -> Paseo) direction. Webhook ingress
+ * terminates on one host, but the agent a ticket refers to usually runs on a
+ * different one, so a local-only lookup silently no-ops. Absent (single-host
+ * or peering unavailable) → the bridge stays local-only.
+ */
+export interface ItsaplanBridgeFleet {
+  /** The agent carrying this issue label anywhere in the fleet. */
+  findAgentByIssue(issueId: string): Promise<{ agentId: string; host: string } | null>;
+  /** Set lifecycle on the host that owns the agent. */
+  setLifecycle(input: {
+    host: string;
+    agentId: string;
+    action: MissionControlLifecycleAction;
+  }): Promise<{ ok: true } | { ok: false; error: string }>;
+}
+
 export interface ItsaplanWebhookRequest {
   rawBody: Buffer;
   headers: Record<string, string | undefined>;
@@ -99,6 +116,8 @@ export interface ItsaplanBridgeOptions {
   agentManager: ItsaplanBridgeAgentManager;
   agentStorage: ItsaplanBridgeAgentStorage;
   missionControl: ItsaplanBridgeMissionControl;
+  /** Omit for single-host: the bridge then only resolves local agents. */
+  fleet?: ItsaplanBridgeFleet;
   projectStore: ItsaplanProjectStore;
   getConfig: () => ItsaplanCentralConfig | null;
   /** Resolves the Paseo project key for an agent's workspace/cwd. */
@@ -212,6 +231,7 @@ export class ItsaplanBridge {
   private readonly agentManager: ItsaplanBridgeAgentManager;
   private readonly agentStorage: ItsaplanBridgeAgentStorage;
   private readonly missionControl: ItsaplanBridgeMissionControl;
+  private readonly fleet?: ItsaplanBridgeFleet;
   private readonly projectStore: ItsaplanProjectStore;
   private readonly getConfig: () => ItsaplanCentralConfig | null;
   private readonly deliverMachineryPrompt: (prompt: string) => Promise<boolean>;
@@ -239,6 +259,7 @@ export class ItsaplanBridge {
     this.agentManager = options.agentManager;
     this.agentStorage = options.agentStorage;
     this.missionControl = options.missionControl;
+    if (options.fleet) this.fleet = options.fleet;
     this.projectStore = options.projectStore;
     this.getConfig = options.getConfig;
     this.deliverMachineryPrompt = options.deliverMachineryPrompt;
@@ -418,29 +439,7 @@ export class ItsaplanBridge {
       return;
     }
     if (column.stateType === "completed") {
-      const agentId = await this.findAgentIdByIssueLabel(String(issue.id));
-      if (agentId) {
-        const bucket = await this.missionControl.getLifecycleBucket(agentId);
-        if (bucket !== "done") {
-          const result = await this.missionControl.setLifecycle({ agentId, action: "done" });
-          if (!result.ok) {
-            this.logger.warn(
-              { issueId: issue.id, agentId, error: result.error },
-              "itsaplan.bridge.agent_lifecycle_set_done_failed",
-            );
-          } else {
-            this.logger.info(
-              { issueId: issue.id, agentId, columnId: column.id, columnName: column.name },
-              "itsaplan.bridge.agent_lifecycle_set_done",
-            );
-          }
-        }
-      } else {
-        this.logger.info(
-          { issueId: issue.id, columnId: column.id, columnName: column.name },
-          "itsaplan.bridge.completed_issue_no_linked_agent",
-        );
-      }
+      await this.projectCompletedColumnOntoAgent(issue, column);
     }
 
     const isReadyForReview =
@@ -601,6 +600,88 @@ export class ItsaplanBridge {
   /** Resolves the itsaplan issue id back to the labeled agent. One ticket can
    * have N attempts (ADR 0002); the most recently updated one is current,
    * matching reconcile.ts's rule. */
+  /**
+   * A ticket moved into a completed column: mark the agent done in Mission
+   * Control. The agent is looked up locally first, then across the fleet,
+   * because webhook ingress terminates on one host while the agent it refers
+   * to commonly runs on another.
+   *
+   * The bucket is read before writing so an inbound move cannot bounce back
+   * out as an outbound projection event.
+   */
+  private async projectCompletedColumnOntoAgent(
+    issue: { id: number },
+    column: { id: number; name: string },
+  ): Promise<void> {
+    const issueId = String(issue.id);
+    const localAgentId = await this.findAgentIdByIssueLabel(issueId);
+    if (localAgentId) {
+      const bucket = await this.missionControl.getLifecycleBucket(localAgentId);
+      if (bucket === "done") {
+        return;
+      }
+      const result = await this.missionControl.setLifecycle({
+        agentId: localAgentId,
+        action: "done",
+      });
+      this.logCompletedProjection(issue, column, localAgentId, "local", result);
+      return;
+    }
+
+    if (!this.fleet) {
+      this.logger.info(
+        { issueId: issue.id, columnId: column.id, columnName: column.name },
+        "itsaplan.bridge.completed_issue_no_linked_agent",
+      );
+      return;
+    }
+
+    let remote: { agentId: string; host: string } | null = null;
+    try {
+      remote = await this.fleet.findAgentByIssue(issueId);
+    } catch (error) {
+      this.logger.warn(
+        { err: error, issueId: issue.id },
+        "itsaplan.bridge.fleet_agent_lookup_failed",
+      );
+      return;
+    }
+    if (!remote) {
+      this.logger.info(
+        { issueId: issue.id, columnId: column.id, columnName: column.name },
+        "itsaplan.bridge.completed_issue_no_linked_agent",
+      );
+      return;
+    }
+
+    const result = await this.fleet.setLifecycle({
+      host: remote.host,
+      agentId: remote.agentId,
+      action: "done",
+    });
+    this.logCompletedProjection(issue, column, remote.agentId, remote.host, result);
+  }
+
+  private logCompletedProjection(
+    issue: { id: number },
+    column: { id: number; name: string },
+    agentId: string,
+    host: string,
+    result: { ok: true } | { ok: false; error: string },
+  ): void {
+    if (!result.ok) {
+      this.logger.warn(
+        { issueId: issue.id, agentId, host, error: result.error },
+        "itsaplan.bridge.agent_lifecycle_set_done_failed",
+      );
+      return;
+    }
+    this.logger.info(
+      { issueId: issue.id, agentId, host, columnId: column.id, columnName: column.name },
+      "itsaplan.bridge.agent_lifecycle_set_done",
+    );
+  }
+
   private async findAgentIdByIssueLabel(issueId: string): Promise<string | null> {
     const records = await this.agentStorage.list();
     const latest = records.reduce<Pick<StoredAgentRecord, "id" | "updatedAt"> | null>(

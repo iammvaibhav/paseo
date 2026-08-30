@@ -157,6 +157,7 @@ import { ScheduleService } from "./schedule/service.js";
 import { BaseCheckoutSyncService } from "./base-checkout-sync.js";
 import { IdleCloseOmpService } from "./idle-close/index.js";
 import { MissionControlService } from "./mission-control/service.js";
+import { ITSAPLAN_ISSUE_LABEL_KEY } from "@getpaseo/protocol/agent-labels";
 import type { MissionControlProposalSpawnPlan } from "@getpaseo/protocol/mission-control/types";
 import { buildFleetContextData, buildWorldSnapshot } from "./mission-control/context.js";
 import { CommanderSnapshotInjector } from "./mission-control/commander-snapshot.js";
@@ -2082,6 +2083,60 @@ export async function createPaseoDaemon(
     agentManager,
     agentStorage,
     missionControl: missionControlService,
+    // Webhook ingress terminates on this host, but a ticket's agent commonly
+    // runs on a peer, so the inbound projection needs fleet reach. Queried on
+    // demand rather than from the fleet index snapshot: a ticket can be moved
+    // seconds after dispatch, and that snapshot refreshes periodically.
+    fleet: {
+      findAgentByIssue: async (issueId) => {
+        if (!peerManager) {
+          return null;
+        }
+        for (const status of peerManager.getPeerStatuses()) {
+          if (status.state !== "online") {
+            continue;
+          }
+          const client = peerManager.getPeerClient(status.name);
+          if (!client || typeof client.fetchAgents !== "function") {
+            continue;
+          }
+          try {
+            const payload = await client.fetchAgents({
+              filter: { includeArchived: false },
+              page: { limit: 200 },
+            });
+            for (const entry of payload?.entries ?? []) {
+              if (entry?.agent?.labels?.[ITSAPLAN_ISSUE_LABEL_KEY] === issueId) {
+                return { agentId: entry.agent.id, host: status.name };
+              }
+            }
+          } catch (error) {
+            logger.warn(
+              { err: error, peer: status.name, issueId },
+              "itsaplan.bridge.peer_agent_lookup_failed",
+            );
+          }
+        }
+        return null;
+      },
+      setLifecycle: async ({ host, agentId, action }) => {
+        const client = peerManager?.getPeerClient(host) ?? null;
+        const peerServerId = peerManager?.getPeerServerId(host) ?? null;
+        if (!client || !peerServerId) {
+          return { ok: false, error: `peer ${host} is not reachable` };
+        }
+        try {
+          const payload = await client.missionControlLifecycleSet({
+            serverId: peerServerId,
+            agentId,
+            action,
+          });
+          return payload.ok ? { ok: true } : { ok: false, error: payload.error ?? "rejected" };
+        } catch (error) {
+          return { ok: false, error: error instanceof Error ? error.message : String(error) };
+        }
+      },
+    },
     projectStore: itsaplanProjectStore,
     getConfig: getItsaplanConfig,
     resolvePaseoProjectKey: async (agentId) => {
