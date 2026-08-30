@@ -864,6 +864,7 @@ describe("sendQueuedComposerMessageNow", () => {
     const result = await sendQueuedComposerMessageNow({
       agentId: "agent",
       messageId: "msg-1",
+      deliveryMode: "steer",
       queue,
       submitMessage: async (input) => {
         submitted.push(input);
@@ -873,15 +874,20 @@ describe("sendQueuedComposerMessageNow", () => {
     expect(submitted).toEqual([]);
   });
 
-  it("removes the queued entry and submits its text + attachments", async () => {
+  it("removes the queued entry and submits it with the requested immediate delivery", async () => {
     const review = reviewWorkspaceAttachment("Queued for send.");
     const queue = createFakeQueue(
       new Map([["agent", [{ id: "msg-1", text: "send me", attachments: [review] }]]]),
     );
-    const submitted: Array<{ text: string; attachments: ComposerAttachment[] }> = [];
+    const submitted: Array<{
+      text: string;
+      attachments: ComposerAttachment[];
+      dispatchMode: "steer" | "queue";
+    }> = [];
     const result = await sendQueuedComposerMessageNow({
       agentId: "agent",
       messageId: "msg-1",
+      deliveryMode: "steer",
       queue,
       submitMessage: async (input) => {
         submitted.push(input);
@@ -889,7 +895,7 @@ describe("sendQueuedComposerMessageNow", () => {
     });
     expect(result).toEqual({ status: "submitted" });
     expect(queue.state.get("agent")).toEqual([]);
-    expect(submitted).toEqual([{ text: "send me", attachments: [review] }]);
+    expect(submitted).toEqual([{ text: "send me", attachments: [review], dispatchMode: "steer" }]);
   });
 
   it("restores the queued entry to the front and surfaces the error message on failure", async () => {
@@ -907,6 +913,7 @@ describe("sendQueuedComposerMessageNow", () => {
     const result = await sendQueuedComposerMessageNow({
       agentId: "agent",
       messageId: "msg-1",
+      deliveryMode: "steer",
       queue,
       submitMessage: async () => {
         throw new Error("network down");

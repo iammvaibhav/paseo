@@ -344,8 +344,13 @@ export function editQueuedComposerMessage(
 export interface SendQueuedComposerMessageNowInput {
   agentId: string;
   messageId: string;
+  deliveryMode: Extract<MessageDispatchMode, "steer" | "queue">;
   queue: QueueWriter;
-  submitMessage: (input: { text: string; attachments: ComposerAttachment[] }) => Promise<void>;
+  submitMessage: (input: {
+    text: string;
+    attachments: ComposerAttachment[];
+    dispatchMode: Extract<MessageDispatchMode, "steer" | "queue">;
+  }) => Promise<void>;
   failedToSendMessage?: string;
 }
 
@@ -368,7 +373,11 @@ export async function sendQueuedComposerMessageNow(
     return next;
   });
   try {
-    await input.submitMessage({ text: item.text, attachments: item.attachments });
+    await input.submitMessage({
+      text: item.text,
+      attachments: item.attachments,
+      dispatchMode: input.deliveryMode,
+    });
     return { status: "submitted" };
   } catch (error) {
     input.queue.write((prev) => {

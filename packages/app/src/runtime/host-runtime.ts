@@ -2342,12 +2342,13 @@ export class HostRuntimeStore {
     void sendQueuedComposerMessageNow({
       agentId,
       messageId: next.id,
+      deliveryMode: "queue",
       queue: {
         read: (queuedAgentId) =>
           useSessionStore.getState().sessions[serverId]?.queuedMessages.get(queuedAgentId) ?? [],
         write: (update) => useSessionStore.getState().setQueuedMessages(serverId, update),
       },
-      submitMessage: async ({ text, attachments }) => {
+      submitMessage: async ({ text, attachments, dispatchMode }) => {
         const supportsForgeAttachments =
           useSessionStore.getState().sessions[serverId]?.serverInfo?.features?.forgeSearch === true;
         await dispatchComposerAgentMessage({
@@ -2360,6 +2361,7 @@ export class HostRuntimeStore {
           }),
           encodeImages,
           submission: createMessageSubmissionWriter(serverId),
+          dispatchMode,
         });
       },
     })
