@@ -66,12 +66,7 @@ async function macbookHead() {
   try {
     const { stdout } = await run(
       "ssh",
-      [
-        "-o", "BatchMode=yes",
-        "-o", "ConnectTimeout=8",
-        HOST,
-        "cd ~/paseo && git rev-parse HEAD",
-      ],
+      ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", HOST, "cd ~/paseo && git rev-parse HEAD"],
       { timeout: 30_000 },
     );
     return stdout.trim();
@@ -148,7 +143,9 @@ async function main() {
   // when it is actually the pushed commit and nothing is uncommitted.
   const dirty = (await git("status", "--porcelain")) !== "";
   if (dirty || head !== remoteHead) {
-    log(`skip: local tree not publishable (dirty=${dirty}, head=${head.slice(0, 9)}, origin=${String(remoteHead).slice(0, 9)})`);
+    log(
+      `skip: local tree not publishable (dirty=${dirty}, head=${head.slice(0, 9)}, origin=${String(remoteHead).slice(0, 9)})`,
+    );
     return;
   }
 

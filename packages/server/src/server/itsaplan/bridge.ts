@@ -56,6 +56,7 @@ export interface ItsaplanBridgeAgentManager {
     options?: { replayState?: boolean },
   ): () => void;
   getAgent(agentId: string): ManagedAgent | null;
+  listAgents?(): ManagedAgent[];
   setLabels(agentId: string, labels: Record<string, string | null>): Promise<void>;
 }
 
@@ -66,7 +67,7 @@ export interface ItsaplanBridgeAgentStorage {
     StoredAgentRecord,
     "labels" | "title" | "name" | "shortDescription" | "cwd" | "workspaceId"
   > | null>;
-  list(): Promise<Pick<StoredAgentRecord, "id" | "labels" | "updatedAt">[]>;
+  list(): Promise<Pick<StoredAgentRecord, "id" | "labels" | "updatedAt" | "workspaceId">[]>;
 }
 
 export interface ItsaplanBridgeMissionControl {
@@ -874,6 +875,7 @@ export class ItsaplanBridge {
     }
     if (event.kind === "finished") {
       await this.handleAgentCompleted(event.agentId, issueId, event.proof);
+      return;
     }
     await this.checkLifecycleProjection(event.agentId, issueId);
   }
@@ -910,6 +912,29 @@ export class ItsaplanBridge {
       `Dispatched: paseo://h/${this.serverId}/agent/${agentId}`,
     );
   }
+  /** Running -> In Progress (bridge-owned edge, ADR 0002). */
+  private async handleAgentRunning(agentId: string, issueId: string): Promise<void> {
+    const config = this.getConfig();
+    const numericIssueId = Number(issueId);
+    if (!config || !Number.isFinite(numericIssueId)) {
+      return;
+    }
+    const client = new ItsaplanClient(config);
+    const issue = await client.getIssue(numericIssueId);
+    const projectKey = this.resolveProjectKey(issue);
+    if (!projectKey) {
+      return;
+    }
+    const columns = await client.listProjectColumns(projectKey);
+    const inProgress = findInProgressColumn(columns);
+    if (inProgress && issue.columnId !== inProgress.id) {
+      await client.moveIssueColumn(numericIssueId, inProgress.id);
+      this.logger.info(
+        { agentId, issueId, columnId: inProgress.id },
+        "itsaplan.bridge.in_progress",
+      );
+    }
+  }
 
   /** In Progress -> Ready to review (bridge-owned edge, ADR 0002) + proofs. */
   private async handleAgentCompleted(
@@ -945,9 +970,9 @@ export class ItsaplanBridge {
     if (needsMove || (proof !== undefined && proof.length > 0)) {
       await client.postComment(numericIssueId, formatProofsComment(proof));
     }
+    this.lastBucketByAgentId.set(agentId, "ready");
     this.logger.info({ agentId, issueId }, "itsaplan.bridge.ready_for_review");
   }
-
   /**
    * Projects agent lifecycle bucket transitions to itsaplan:
    * - needs_you: flips assignee to configured human and posts pending question.
@@ -980,6 +1005,12 @@ export class ItsaplanBridge {
       if (humanUserId) {
         await this.exitNeedsYou(agentId, numericIssueId, config);
       }
+    }
+    if (bucket === "running") {
+      if (previousBucket !== "running") {
+        await this.handleAgentRunning(agentId, issueId);
+      }
+      return;
     }
 
     if (bucket === "ready") {
@@ -1037,6 +1068,74 @@ export class ItsaplanBridge {
         ? "Resumed — answered via ticket comment"
         : "Resumed — answered directly in Paseo",
     );
+  }
+  /**
+   * When a workspace is archived, moves all associated tickets to Done (stateType "completed")
+   * if they are not already in a completed column.
+   */
+  async handleWorkspaceArchived(workspaceId: string): Promise<void> {
+    const config = this.getConfig();
+    if (!config) {
+      return;
+    }
+    const liveAgents = (this.agentManager.listAgents?.() ?? []).filter(
+      (agent) => agent.workspaceId === workspaceId,
+    );
+    const storedAgents = await this.agentStorage.list();
+    const workspaceStoredAgents = storedAgents.filter((agent) => agent.workspaceId === workspaceId);
+
+    const issueIds = new Set<string>();
+    for (const agent of liveAgents) {
+      const issueId = agent.labels?.[ITSAPLAN_ISSUE_LABEL_KEY];
+      if (issueId) {
+        issueIds.add(issueId);
+      }
+    }
+    for (const agent of workspaceStoredAgents) {
+      const issueId = agent.labels?.[ITSAPLAN_ISSUE_LABEL_KEY];
+      if (issueId) {
+        issueIds.add(issueId);
+      }
+    }
+
+    if (issueIds.size === 0) {
+      return;
+    }
+
+    const client = new ItsaplanClient(config);
+    for (const issueId of issueIds) {
+      const numericIssueId = Number(issueId);
+      if (!Number.isFinite(numericIssueId)) {
+        continue;
+      }
+      try {
+        const issue = await client.getIssue(numericIssueId);
+        const projectKey = this.resolveProjectKey(issue);
+        if (!projectKey) {
+          continue;
+        }
+        const columns = await client.listProjectColumns(projectKey);
+        const currentColumn = columns.find((c) => c.id === issue.columnId);
+        if (currentColumn?.stateType === "completed") {
+          continue;
+        }
+        const completedColumn =
+          columns.find((c) => c.name === "Done" && c.stateType === "completed") ??
+          columns.find((c) => c.stateType === "completed");
+        if (completedColumn && issue.columnId !== completedColumn.id) {
+          await client.moveIssueColumn(numericIssueId, completedColumn.id);
+          this.logger.info(
+            { workspaceId, issueId: numericIssueId, columnId: completedColumn.id },
+            "itsaplan.bridge.workspace_archived_ticket_completed",
+          );
+        }
+      } catch (error) {
+        this.logger.error(
+          { err: error, workspaceId, issueId: numericIssueId },
+          "itsaplan.bridge.workspace_archived_ticket_completion_failed",
+        );
+      }
+    }
   }
 
   /**

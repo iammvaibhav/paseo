@@ -266,6 +266,9 @@ function flushAsync(): Promise<void> {
 function isNonDispatchComment(comment: { body: string }): boolean {
   return !comment.body.startsWith("Dispatched:");
 }
+function isDispatchComment(comment: { body: string }): boolean {
+  return comment.body.startsWith("Dispatched:");
+}
 
 function waitForNonDispatchComment(comments: Array<{ body: string }>): Promise<void> {
   return vi.waitFor(() => {
@@ -1686,6 +1689,56 @@ describe("ItsaplanBridge", () => {
       // Column must remain In Progress (3), not move to Ready to review
       expect(issues.get(ISSUE_ID)?.columnId).toBe(3);
     });
+
+    test("moves the ticket back to In Progress when a ready agent is re-prompted to run again, then back to Ready to review when done", async () => {
+      // 1. First run: created and running -> In Progress (column 3)
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent("agent-reprompt", { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+      });
+      await waitForIssueColumn(issues, ISSUE_ID, 3);
+      expect(fakeServer.comments.filter(isDispatchComment)).toHaveLength(1);
+
+      // 2. Finished first run -> Ready to review
+      missionControlFake.setBucket("ready");
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent("agent-reprompt", { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+      });
+      await waitForCreatedColumn(fakeServer.createdColumns, {
+        projectKey: PROJECT_KEY,
+        name: "Ready to review",
+        stateType: "started",
+      });
+      const readyCol = findColumnByName(columns, "Ready to review")!;
+      await waitForIssueColumn(issues, ISSUE_ID, readyCol.id);
+
+      // 3. User re-prompts agent -> bucket becomes "running"
+      missionControlFake.setBucket("running");
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent("agent-reprompt", { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+      });
+      await waitForIssueColumn(issues, ISSUE_ID, 3);
+      // No duplicate Dispatched comment on re-prompt
+      expect(fakeServer.comments.filter(isDispatchComment)).toHaveLength(1);
+
+      // Repeated agent_state while running does not issue additional column moves
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent("agent-reprompt", { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+      });
+      await flushAsync();
+      expect(issues.get(ISSUE_ID)?.columnId).toBe(3);
+
+      // 4. Second run finishes -> back to Ready to review
+      missionControlFake.setBucket("ready");
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent("agent-reprompt", { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+      });
+      await waitForIssueColumn(issues, ISSUE_ID, readyCol.id);
+    });
   });
 
   describe("needs_you projection", () => {
@@ -1891,6 +1944,89 @@ describe("ItsaplanBridge", () => {
           agentId: "11111111-2222-3333-4444-555555555555",
         }),
       ).rejects.toThrow("requires a Commander caller");
+    });
+  });
+  describe("workspace archival", () => {
+    test("moves associated ticket to Done when workspace is archived", async () => {
+      const workspaceId = "ws-archive-1";
+      agentStorageRecords.push({
+        id: "agent-in-ws-1",
+        labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) },
+        updatedAt: new Date().toISOString(),
+        workspaceId,
+      });
+      // Issue is currently in In Progress (3)
+      issues.get(ISSUE_ID)!.columnId = 3;
+
+      await bridge.handleWorkspaceArchived(workspaceId);
+
+      // Done column is 4 (stateType: "completed")
+      expect(issues.get(ISSUE_ID)?.columnId).toBe(4);
+    });
+
+    test("does not move or fail if the ticket is already in Done when workspace is archived", async () => {
+      const workspaceId = "ws-archive-2";
+      agentStorageRecords.push({
+        id: "agent-in-ws-2",
+        labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) },
+        updatedAt: new Date().toISOString(),
+        workspaceId,
+      });
+      // Issue is already in Done (4)
+      issues.get(ISSUE_ID)!.columnId = 4;
+
+      await bridge.handleWorkspaceArchived(workspaceId);
+
+      expect(issues.get(ISSUE_ID)?.columnId).toBe(4);
+    });
+
+    test("moves multiple tickets associated with multiple agents in the workspace", async () => {
+      const workspaceId = "ws-archive-multi";
+      issues.set(201, {
+        id: 201,
+        projectId: PROJECT_ID,
+        sequenceNumber: 43,
+        columnId: 3,
+        title: "Another bug",
+        description: null,
+        assigneeUserId: null,
+        links: [],
+      });
+      agentStorageRecords.push(
+        {
+          id: "agent-multi-1",
+          labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) },
+          updatedAt: new Date().toISOString(),
+          workspaceId,
+        },
+        {
+          id: "agent-multi-2",
+          labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: "201" },
+          updatedAt: new Date().toISOString(),
+          workspaceId,
+        },
+      );
+      issues.get(ISSUE_ID)!.columnId = 3;
+
+      await bridge.handleWorkspaceArchived(workspaceId);
+
+      expect(issues.get(ISSUE_ID)?.columnId).toBe(4);
+      expect(issues.get(201)?.columnId).toBe(4);
+    });
+
+    test("no-ops safely when no agents in the workspace have itsaplan labels", async () => {
+      const workspaceId = "ws-archive-empty";
+      agentStorageRecords.push({
+        id: "agent-no-label",
+        labels: {},
+        updatedAt: new Date().toISOString(),
+        workspaceId,
+      });
+      issues.get(ISSUE_ID)!.columnId = 3;
+
+      await bridge.handleWorkspaceArchived(workspaceId);
+
+      expect(issues.get(ISSUE_ID)?.columnId).toBe(3);
     });
   });
 
