@@ -1664,6 +1664,8 @@ export class AgentManager {
       const provider = config.provider.includes("/")
         ? config.provider.split("/")[0]!
         : config.provider;
+      const incomingLabels =
+        options.labels && Object.keys(options.labels).length > 0 ? options.labels : undefined;
       await this.registry.upsert({
         id: agentId,
         provider,
@@ -1675,7 +1677,7 @@ export class AgentManager {
         lastUserMessageAt: existing?.lastUserMessageAt ?? null,
         title: existing?.title ?? config.title ?? null,
         ...preservedSpawnFields(existing),
-        labels: options.labels ?? existing?.labels ?? {},
+        labels: incomingLabels ?? existing?.labels ?? {},
         lastStatus: "error",
         config: {
           modeId: config.modeId,

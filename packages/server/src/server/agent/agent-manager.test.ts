@@ -3567,6 +3567,161 @@ test("createAgent records a terminal failed agent when provider session launch f
   expect(manager.getAgent(agentId)).toBeNull();
 });
 
+test("createAgent failed spawn with empty labels preserves existing record labels (such as Commander)", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-failed-spawn-labels-test-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+  const agentId = "00000000-0000-4000-8000-000000000902";
+  const now = new Date().toISOString();
+  await storage.upsert({
+    id: agentId,
+    provider: "codex",
+    cwd: workdir,
+    createdAt: now,
+    updatedAt: now,
+    lastStatus: "closed",
+    labels: {
+      "paseo.mission-control": "commander",
+      "paseo.mission-control.build-hash": "test-build-hash",
+    },
+    config: null,
+    persistence: null,
+  });
+  const launchError = new Error("Provider launch failed");
+  const client = new (class extends TestAgentClient {
+    override async createSession(): Promise<AgentSession> {
+      throw launchError;
+    }
+  })();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: storage,
+    logger,
+    idFactory: () => agentId,
+  });
+
+  await expect(
+    manager.createAgent(
+      {
+        provider: "codex",
+        cwd: workdir,
+      },
+      agentId,
+      { labels: {} },
+    ),
+  ).rejects.toThrow("Provider launch failed");
+
+  const record = await storage.get(agentId);
+  expect(record).not.toBeNull();
+  expect(record?.lastStatus).toBe("error");
+  expect(record?.labels).toEqual({
+    "paseo.mission-control": "commander",
+    "paseo.mission-control.build-hash": "test-build-hash",
+  });
+});
+
+test("createAgent failed spawn with non-empty labels replaces existing record labels", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-failed-spawn-nonempty-labels-test-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+  const agentId = "00000000-0000-4000-8000-000000000903";
+  const now = new Date().toISOString();
+  await storage.upsert({
+    id: agentId,
+    provider: "codex",
+    cwd: workdir,
+    createdAt: now,
+    updatedAt: now,
+    lastStatus: "closed",
+    labels: {
+      "paseo.mission-control": "commander",
+    },
+    config: null,
+    persistence: null,
+  });
+  const launchError = new Error("Provider launch failed");
+  const client = new (class extends TestAgentClient {
+    override async createSession(): Promise<AgentSession> {
+      throw launchError;
+    }
+  })();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: storage,
+    logger,
+    idFactory: () => agentId,
+  });
+
+  await expect(
+    manager.createAgent(
+      {
+        provider: "codex",
+        cwd: workdir,
+      },
+      agentId,
+      { labels: { "custom.label": "overridden" } },
+    ),
+  ).rejects.toThrow("Provider launch failed");
+
+  const record = await storage.get(agentId);
+  expect(record).not.toBeNull();
+  expect(record?.lastStatus).toBe("error");
+  expect(record?.labels).toEqual({
+    "custom.label": "overridden",
+  });
+});
+
+test("createAgent failed spawn with undefined labels preserves existing record labels", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-failed-spawn-undef-labels-test-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+  const agentId = "00000000-0000-4000-8000-000000000904";
+  const now = new Date().toISOString();
+  await storage.upsert({
+    id: agentId,
+    provider: "codex",
+    cwd: workdir,
+    createdAt: now,
+    updatedAt: now,
+    lastStatus: "closed",
+    labels: {
+      "paseo.mission-control": "commander",
+    },
+    config: null,
+    persistence: null,
+  });
+  const launchError = new Error("Provider launch failed");
+  const client = new (class extends TestAgentClient {
+    override async createSession(): Promise<AgentSession> {
+      throw launchError;
+    }
+  })();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: storage,
+    logger,
+    idFactory: () => agentId,
+  });
+
+  await expect(
+    manager.createAgent(
+      {
+        provider: "codex",
+        cwd: workdir,
+      },
+      agentId,
+      { labels: undefined },
+    ),
+  ).rejects.toThrow("Provider launch failed");
+
+  const record = await storage.get(agentId);
+  expect(record).not.toBeNull();
+  expect(record?.lastStatus).toBe("error");
+  expect(record?.labels).toEqual({
+    "paseo.mission-control": "commander",
+  });
+});
+
 test("tryRunOutOfBand refuses a dead provider runtime so steer escalates", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-dead-oob-test-"));
   const storagePath = join(workdir, "agents");
