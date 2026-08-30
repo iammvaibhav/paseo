@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { isAbsolute } from "node:path";
-import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
+import type {
+  CreateAgentRequestOptions,
+  DaemonClient,
+} from "@getpaseo/client/internal/daemon-client";
 import { ensureValidJson } from "../../json-utils.js";
 import type { Logger } from "pino";
 
@@ -911,6 +914,51 @@ interface CommanderSpawnPlanInput {
     features?: Record<string, unknown>;
   };
   labels?: Record<string, string>;
+  isolation?: "local" | "worktree";
+  baseBranch?: string;
+  branchName?: string;
+  worktreeSlug?: string;
+  worktree?: {
+    worktreeName?: string;
+    branchName?: string;
+    baseBranch?: string;
+    refName?: string;
+    action?: "branch-off" | "checkout";
+    githubPrNumber?: number;
+  };
+}
+
+function resolveCommanderWorktreePlan(input: {
+  worktree?: CommanderSpawnPlanInput["worktree"];
+  isolation?: "local" | "worktree";
+  baseBranch?: string;
+  branchName?: string;
+  worktreeSlug?: string;
+}): CommanderSpawnPlanInput["worktree"] | undefined {
+  if (input.worktree) {
+    return input.worktree;
+  }
+  if (!input.isolation && !input.baseBranch && !input.branchName && !input.worktreeSlug) {
+    return undefined;
+  }
+  if (input.isolation === "local") {
+    return undefined;
+  }
+  return {
+    action: "branch-off",
+    ...(input.worktreeSlug ? { worktreeName: input.worktreeSlug } : {}),
+    ...(input.branchName ? { branchName: input.branchName } : {}),
+    ...(input.baseBranch ? { baseBranch: input.baseBranch } : {}),
+  };
+}
+
+function resolveCommanderPlanSettings(settings?: CommanderSpawnPlanInput["settings"]) {
+  if (!settings) return {};
+  return {
+    ...(settings.modeId ? { mode: settings.modeId } : {}),
+    ...(settings.thinkingOptionId ? { thinking: settings.thinkingOptionId } : {}),
+    ...(settings.features ? { features: settings.features } : {}),
+  };
 }
 
 /** The spawnPlan reconstruction payload for a Commander spawn proposal. */
@@ -926,22 +974,22 @@ function buildCommanderSpawnPlan(input: CommanderSpawnPlanInput): MissionControl
     workspaceId,
     settings,
     labels,
+    isolation,
   } = input;
+  const resolvedWorktree = resolveCommanderWorktreePlan(input);
   return {
     host,
     provider,
     ...(model ? { model } : {}),
-    // The daemon owns agent identity; a name the Commander prefixed onto the
-    // title would show up beside the assigned chip as a second name.
     ...(title ? { title: stripAgentNamePrefix(title) ?? title } : {}),
     summary,
     ...(initialPrompt ? { initialPrompt } : {}),
     ...(cwd ? { cwd } : {}),
     ...(workspaceId ? { workspaceId } : {}),
-    ...(settings?.modeId ? { mode: settings.modeId } : {}),
-    ...(settings?.thinkingOptionId ? { thinking: settings.thinkingOptionId } : {}),
-    ...(settings?.features ? { features: settings.features } : {}),
+    ...resolveCommanderPlanSettings(settings),
     ...(labels ? { labels } : {}),
+    ...(isolation ? { isolation } : {}),
+    ...(resolvedWorktree ? { worktree: resolvedWorktree } : {}),
   };
 }
 
@@ -960,6 +1008,18 @@ interface CommanderSpawnProposalInput {
     thinkingOptionId?: string;
     features?: Record<string, unknown>;
   };
+  isolation?: "local" | "worktree";
+  baseBranch?: string;
+  branchName?: string;
+  worktreeSlug?: string;
+  worktree?: {
+    worktreeName?: string;
+    branchName?: string;
+    baseBranch?: string;
+    refName?: string;
+    action?: "branch-off" | "checkout";
+    githubPrNumber?: number;
+  };
   /** M8 instruction ledger: the open instruction id this dispatch answers. */
   respondsTo?: string;
 }
@@ -972,7 +1032,21 @@ interface CommanderSpawnProposalInput {
  * routes through runCommanderGatedAction.
  */
 function buildCommanderSpawnProposalInput(input: CommanderSpawnProposalInput): ProposalCreateInput {
-  const { host, provider, settings, title, initialPrompt, cwd, workspaceId, labels } = input;
+  const {
+    host,
+    provider,
+    settings,
+    title,
+    initialPrompt,
+    cwd,
+    workspaceId,
+    labels,
+    isolation,
+    baseBranch,
+    branchName,
+    worktreeSlug,
+    worktree,
+  } = input;
   const slash = provider.indexOf("/");
   const model = slash > 0 ? provider.slice(slash + 1) : (settings?.model ?? undefined);
   const cleanProvider = slash > 0 ? provider.slice(0, slash) : provider;
@@ -997,8 +1071,53 @@ function buildCommanderSpawnProposalInput(input: CommanderSpawnProposalInput): P
       workspaceId,
       settings,
       labels,
+      isolation,
+      baseBranch,
+      branchName,
+      worktreeSlug,
+      worktree,
     }),
     ...(input.respondsTo ? { respondsTo: input.respondsTo } : {}),
+  };
+}
+
+function buildPeerCreateAgentPayload(args: {
+  provider: string;
+  cwd?: string;
+  workspaceId?: string;
+  initialPrompt?: string;
+  title?: string;
+  labels?: Record<string, string>;
+  settings?: { modeId?: string; thinkingOptionId?: string; features?: Record<string, unknown> };
+  isolation?: "local" | "worktree";
+  baseBranch?: string;
+  branchName?: string;
+  worktreeSlug?: string;
+  worktree?: CommanderSpawnPlanInput["worktree"];
+}): CreateAgentRequestOptions {
+  const { provider, cwd, workspaceId, initialPrompt, title, labels, settings } = args;
+  const providerSlash = provider.indexOf("/");
+  const resolvedWorktree = resolveCommanderWorktreePlan(args);
+  const peerWorktreeTarget = resolvedWorktree?.branchName
+    ? {
+        mode: "branch-off" as const,
+        newBranch: resolvedWorktree.branchName,
+        ...(resolvedWorktree.baseBranch ? { base: resolvedWorktree.baseBranch } : {}),
+      }
+    : undefined;
+  return {
+    provider: (providerSlash > 0 ? provider.slice(0, providerSlash) : provider) as AgentProvider,
+    ...(providerSlash > 0 ? { model: provider.slice(providerSlash + 1) } : {}),
+    cwd: cwd ?? ".",
+    workspaceId,
+    initialPrompt,
+    title,
+    labels,
+    ...(peerWorktreeTarget ? { worktree: peerWorktreeTarget } : {}),
+    ...(resolvedWorktree?.worktreeName ? { worktreeName: resolvedWorktree.worktreeName } : {}),
+    ...(settings?.modeId ? { modeId: settings.modeId } : {}),
+    ...(settings?.thinkingOptionId ? { thinkingOptionId: settings.thinkingOptionId } : {}),
+    ...(settings?.features ? { featureValues: settings.features } : {}),
   };
 }
 
@@ -4221,6 +4340,40 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         .describe(
           "Working directory on the target host. Required when targeting a peer without workspaceId.",
         ),
+      isolation: z
+        .enum(["local", "worktree"])
+        .optional()
+        .describe(
+          "Workspace isolation: 'worktree' creates a new git worktree workspace (default for git checkouts when workspaceId is omitted); 'local' uses the directory directly.",
+        ),
+      baseBranch: z
+        .string()
+        .trim()
+        .min(1)
+        .optional()
+        .describe("Base branch/ref for a new worktree. Defaults to the repository default branch."),
+      branchName: z
+        .string()
+        .trim()
+        .min(1)
+        .optional()
+        .describe("Optional branch name for the new worktree."),
+      worktreeSlug: z
+        .string()
+        .trim()
+        .min(1)
+        .optional()
+        .describe("Optional worktree directory slug."),
+      worktree: z
+        .object({
+          worktreeName: z.string().optional(),
+          branchName: z.string().optional(),
+          baseBranch: z.string().optional(),
+          refName: z.string().optional(),
+          action: z.enum(["branch-off", "checkout"]).optional(),
+          githubPrNumber: z.number().optional(),
+        })
+        .optional(),
       respondsTo: z
         .string()
         .optional()
@@ -5121,6 +5274,11 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         title,
         labels,
         settings,
+        isolation,
+        baseBranch,
+        branchName,
+        worktreeSlug,
+        worktree,
       } = args;
       // Resolve the spawn's target host: when workspaceId is present, host is
       // optional and derived from the workspace via the fleet index (a host
@@ -5214,6 +5372,11 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
                 workspaceId,
                 labels: Object.keys(spawnLabels).length > 0 ? spawnLabels : undefined,
                 settings,
+                isolation,
+                baseBranch,
+                branchName,
+                worktreeSlug,
+                worktree,
                 ...(args.respondsTo ? { respondsTo: args.respondsTo } : {}),
               }),
           });
@@ -5256,33 +5419,19 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         if (!cwd && !workspaceId) {
           throw new Error(`cwd or workspaceId is required to place the agent on host "${host}"`);
         }
-        const providerSlash = provider.indexOf("/");
-        const snapshot = await client.createAgent({
-          provider: providerSlash > 0 ? provider.slice(0, providerSlash) : provider,
-          ...(providerSlash > 0 ? { model: provider.slice(providerSlash + 1) } : {}),
-          cwd: cwd ?? ".",
-          workspaceId,
-          initialPrompt,
-          title,
-          labels,
-          ...(settings?.modeId ? { modeId: settings.modeId } : {}),
-          ...(settings?.thinkingOptionId ? { thinkingOptionId: settings.thinkingOptionId } : {}),
-          ...(settings?.features ? { featureValues: settings.features } : {}),
+        const snapshot = await client.createAgent(buildPeerCreateAgentPayload(args));
+        const structuredContent = ensureValidJson({
+          agentId: snapshot.id,
+          type: snapshot.provider,
+          status: snapshot.status,
+          cwd: snapshot.cwd,
+          ...(snapshot.workspaceId ? { workspaceId: snapshot.workspaceId } : {}),
+          currentModeId: snapshot.currentModeId,
+          availableModes: snapshot.availableModes,
+          lastMessage: null,
+          permission: sanitizePermissionRequest(snapshot.pendingPermissions[0] ?? null),
         });
-        return {
-          content: [],
-          structuredContent: ensureValidJson({
-            agentId: snapshot.id,
-            type: snapshot.provider,
-            status: snapshot.status,
-            cwd: snapshot.cwd,
-            ...(snapshot.workspaceId ? { workspaceId: snapshot.workspaceId } : {}),
-            currentModeId: snapshot.currentModeId,
-            availableModes: snapshot.availableModes,
-            lastMessage: null,
-            permission: sanitizePermissionRequest(snapshot.pendingPermissions[0] ?? null),
-          }),
-        };
+        return { content: [], structuredContent };
       };
       return createAgentOnPeerHost();
     },

@@ -2,6 +2,7 @@ export const PARENT_AGENT_ID_LABEL = "paseo.parent-agent-id";
 export const SELECTION_ASK_LABEL = "paseo.selection-ask";
 export const SELECTION_ASK_SOURCE_LABEL = "paseo.selection-ask.source-agent-id";
 const OPEN_AGENT_TAB_LABEL_PREFIX = "paseo.open-agent-tab.";
+export const ITSAPLAN_ISSUE_LABEL_KEY = "itsaplan.issue";
 
 export function getOpenAgentTabLabel(clientId: string): string {
   return `${OPEN_AGENT_TAB_LABEL_PREFIX}${clientId}`;

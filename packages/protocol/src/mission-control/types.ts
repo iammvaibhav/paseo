@@ -128,6 +128,7 @@ export const MissionControlProposalSpawnPlanSchema = z.object({
   mode: z.string().optional(),
   background: z.boolean().optional(),
   detached: z.boolean().optional(),
+  isolation: z.enum(["local", "worktree"]).optional(),
   worktree: z
     .object({
       worktreeName: z.string().optional(),

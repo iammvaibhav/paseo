@@ -418,6 +418,7 @@ async function spawnProposalLocally(
       ...(plan.labels ? { labels: plan.labels } : {}),
       ...(plan.mode ? { mode: plan.mode } : {}),
       ...(plan.worktree ? { worktree: plan.worktree } : {}),
+      ...(plan.isolation ? { isolation: plan.isolation } : {}),
       background: plan.background ?? true,
       notifyOnFinish: false,
     });
