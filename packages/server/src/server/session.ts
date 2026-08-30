@@ -2173,6 +2173,33 @@ export class Session {
     this.authorization.replacePermissions(permissions);
   }
 
+  public getPermissions(): DaemonPermission[] {
+    return this.authorization.listPermissions();
+  }
+
+  public allowsInbound(message: SessionInboundMessage): boolean {
+    return this.authorization.allowsInbound(message);
+  }
+
+  public allowsPermission(permission: DaemonPermission): boolean {
+    return this.authorization.allowsPermission(permission);
+  }
+
+  public subscribesToAgent(agent: ManagedAgent): Promise<boolean> {
+    return this.agentUpdates.includesLiveAgent(agent);
+  }
+
+  public subscribesToTerminalDirectory(input: {
+    cwd: string;
+    workspaceId?: string;
+  }): Promise<boolean> {
+    return this.terminalController.hasDirectorySubscription(input);
+  }
+
+  public publish(message: SessionOutboundMessage): void {
+    this.emit(message);
+  }
+
   /**
    * Inbound message routing: first dispatcher that claims the message wins.
    * A table (not a `??` chain) so the mission-control RPC surface can keep
@@ -3715,6 +3742,7 @@ export class Session {
       case "hub.management.daemon.connect.request":
       case "hub.management.daemon.get_status.request":
       case "hub.management.daemon.disconnect.request":
+      case "hub.management.daemon.permissions.update.request":
         return this.daemonSession.handleHubRelationshipRequest(msg);
       case "diagnostics.request":
         return this.daemonSession.handleDiagnosticsRequest(msg);
@@ -4039,6 +4067,9 @@ export class Session {
   }
 
   public async handleBinaryFrame(binaryFrame: BinaryFrame): Promise<void> {
+    if (!this.authorization.allowsPermission("workspace.write")) {
+      return;
+    }
     if (binaryFrame.kind === "file_transfer") {
       await this.workspaceFilesSession.handleFileTransferFrame(binaryFrame.frame);
       return;

@@ -600,10 +600,11 @@ export class OmpHarness {
     await this.requireSession().interrupt();
   }
 
-  async requireStartTurn(message: string): Promise<void> {
+  async requireStartTurn(message: string): Promise<{ turnId: string }> {
     const promptStarted = this.omp.latestSession().nextPrompt();
-    await this.requireSession().startTurn(message);
+    const result = await this.requireSession().startTurn(message);
     await promptStarted;
+    return result;
   }
 
   async interrupt(): Promise<void> {
@@ -665,6 +666,10 @@ export class OmpHarness {
     const runtime = this.omp.latestSession();
     await runtime.waitForSubagentSubscriptions(2);
     return runtime.subagentSubscriptionRequests;
+  }
+
+  get rawSession(): OmpAgentSession {
+    return this.requireSession();
   }
 
   private requireSession(): OmpAgentSession {

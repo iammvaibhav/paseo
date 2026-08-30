@@ -8,12 +8,14 @@ export {
 export type {
   ItsaplanAgUiEvent,
   ItsaplanAiAgent,
+  ItsaplanAttachment,
   ItsaplanChatAck,
   ItsaplanClaimedAgentRun,
   ItsaplanClaimedChatMessage,
   ItsaplanClientConfig,
   ItsaplanColumn,
   ItsaplanColumnStateType,
+  ItsaplanInitiative,
   ItsaplanIssue,
   ItsaplanIssueLink,
   ItsaplanLabel,
@@ -21,6 +23,19 @@ export type {
   ItsaplanProject,
   ItsaplanWebhook,
 } from "./client.js";
+export {
+  isRasterImageContentType,
+  resolveAttachmentUrl,
+  resolveTicketAttachments,
+  rewriteMarkdownAttachmentUrls,
+  stripNativeMarkdownImages,
+  MAX_TICKET_IMAGE_BYTES,
+} from "./ticket-images.js";
+export type {
+  ResolvedTicketAttachments,
+  TicketFileLink,
+  TicketNativeImage,
+} from "./ticket-images.js";
 export {
   attachItsaplanProjectSync,
   ensureItsaplanProjectMapping,
@@ -39,6 +54,8 @@ export {
   ITSAPLAN_AUTO_CHAIN_LABEL_NAME,
   ITSAPLAN_ISSUE_LABEL_KEY,
   ItsaplanBridge,
+  buildDispatchPrompt,
+  type BuildDispatchPromptInput,
 } from "./bridge.js";
 export type {
   ItsaplanBridgeAgentManager,

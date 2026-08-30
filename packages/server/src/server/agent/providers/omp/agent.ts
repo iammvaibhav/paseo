@@ -28,8 +28,6 @@ import {
   type AgentSlashCommand,
   type AgentStreamEvent,
   type AgentTimelineItem,
-  type SteerActiveTurnOptions,
-  type SteerResult,
   type FetchCatalogOptions,
   type ImportableProviderSession,
   type ImportProviderSessionContext,
@@ -37,6 +35,8 @@ import {
   type ListImportableSessionsOptions,
   type ProviderCatalog,
   type ProviderRefreshContext,
+  type SteerActiveTurnOptions,
+  type SteerResult,
   type ToolCallDetail,
 } from "../../agent-sdk-types.js";
 import type { PaseoToolCatalog } from "../../tools/types.js";
@@ -1151,14 +1151,14 @@ export class OmpAgentSession implements AgentSession {
     if (this.closed) {
       return { status: "unavailable" };
     }
-    if (typeof prompt === "string" && this.parseSlashCommandInput(prompt)) {
-      return { status: "unavailable" };
-    }
     if (!this.activeTurnId || this.activeTurnId !== options.expectedTurnId) {
       return { status: "unavailable" };
     }
 
     const payload = convertPromptInput(prompt, { model: this.state.model });
+    if (this.parseSlashCommandInput(payload.text)) {
+      return { status: "unavailable" };
+    }
     this.runtimeSession.steer(payload.text, payload.images);
     return { status: "accepted" };
   }
@@ -1466,10 +1466,8 @@ export class OmpAgentSession implements AgentSession {
   tryHandleOutOfBand(
     prompt: AgentPromptInput,
   ): { run(ctx: { emit: (event: AgentStreamEvent) => void }): Promise<void> } | null {
-    if (typeof prompt !== "string") {
-      return null;
-    }
-    const parsed = this.parseSlashCommandInput(prompt);
+    const converted = convertPromptInput(prompt, { model: this.state.model });
+    const parsed = this.parseSlashCommandInput(converted.text);
     if (!parsed) {
       return null;
     }
@@ -1490,16 +1488,16 @@ export class OmpAgentSession implements AgentSession {
       };
     }
     if (commandName === "steer" || commandName === "follow-up") {
-      const message = parsed.args?.trim();
-      if (!message) {
+      const message = parsed.args?.trim() ?? "";
+      if (!message && (!converted.images || converted.images.length === 0)) {
         return null;
       }
       return {
         run: async () => {
           if (commandName === "steer") {
-            this.runtimeSession.steer(message);
+            this.runtimeSession.steer(message, converted.images);
           } else {
-            this.runtimeSession.followUp(message);
+            this.runtimeSession.followUp(message, converted.images);
           }
         },
       };
@@ -1513,7 +1511,6 @@ export class OmpAgentSession implements AgentSession {
     }
     return null;
   }
-
   async setModel(modelId: string | null): Promise<void> {
     const parsedReference = parseModelReference(modelId);
     if (!parsedReference) {

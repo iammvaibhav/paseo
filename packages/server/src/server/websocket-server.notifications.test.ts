@@ -169,11 +169,13 @@ function createSessionWithActivity(
     appVisible: boolean;
     appVisibilityChangedAt?: Date;
   } | null,
+  subscribed = true,
 ) {
   return {
     getClientActivity: vi.fn(() => activity),
     supports: () => false,
     supportsForSource: () => false,
+    subscribesToAgent: vi.fn(async () => subscribed),
   };
 }
 
@@ -186,15 +188,19 @@ function connectClient(
     appVisible: boolean;
     appVisibilityChangedAt?: Date;
   } | null,
+  options: { subscribed?: boolean } = {},
 ) {
   const ws = createOpenSocket();
   asInternals<WebSocketServerInternals>(server).sessions.set(ws, {
-    kind: "trusted",
-    session: createSessionWithActivity(activity),
+    session: createSessionWithActivity(activity, options.subscribed ?? true),
+    principalId: "owner",
+    sessionKey: JSON.stringify(["owner", "client-test"]),
     clientId: "client-test",
     appVersion: null,
+    clientCapabilities: null,
     connectionLogger: createLogger(),
     sockets: new Set([ws]),
+    lifecycle: "reconnectable",
     externalDisconnectCleanupTimeout: null,
   });
   return ws;
@@ -214,6 +220,30 @@ function readAttentionRequiredMessage(ws: ReturnType<typeof createOpenSocket>) {
 describe("VoiceAssistantWebSocketServer notification payloads", () => {
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("does not emit attention or include presence without an agent-directory subscription", async () => {
+    const { server, pushNotifications } = createServer();
+    const now = new Date();
+    const unsubscribed = connectClient(
+      server,
+      {
+        deviceType: "web",
+        appVisible: true,
+        focusedAgentId: "agent-1",
+        lastActivityAt: now,
+      },
+      { subscribed: false },
+    );
+
+    await asInternals<WebSocketServerInternals>(server).broadcastAgentAttention({
+      agentId: "agent-1",
+      provider: "claude",
+      reason: "finished",
+    });
+
+    expect(unsubscribed.send).not.toHaveBeenCalled();
+    expect(pushNotifications.sent).toHaveLength(1);
   });
 
   it("uses assistant preview text for push notifications with markdown removed", async () => {

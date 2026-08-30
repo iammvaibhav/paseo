@@ -594,6 +594,44 @@ describe("fleet_send_prompt mode", () => {
     expect(result.structuredContent).toEqual({ success: true, deliveryMode: "steer-interrupt" });
   });
 
+  test("steer with native images skips OMP live-steer so images land on interrupt", async () => {
+    const tryRunOutOfBand = vi.fn((agentId: string, prompt: unknown) => {
+      // Real OMP only intercepts `/steer` text. A structured image prompt
+      // must fall through to replace so the images actually reach the worker.
+      return typeof prompt === "string" && prompt.startsWith("/steer ");
+    });
+    const replaceAgentRun = vi.fn(async function* () {});
+    const agentManager = {
+      getAgent: vi.fn(() => ({ provider: "omp" })),
+      hasInFlightRun: vi.fn(() => true),
+      tryRunOutOfBand,
+      replaceAgentRun,
+    } as unknown as AgentManager;
+
+    const result = await dispatchLocalPromptMode({
+      agentManager,
+      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+      agentId: "agent-1",
+      prompt: "see this screenshot",
+      images: [{ data: "aaa", mimeType: "image/png" }],
+      mode: "steer",
+      classification: "machinery",
+      replaceOrigin: "machinery",
+      logger: createTestLogger(),
+    });
+
+    expect(tryRunOutOfBand).not.toHaveBeenCalledWith("agent-1", expect.stringMatching(/^\/steer /));
+    expect(replaceAgentRun).toHaveBeenCalledWith(
+      "agent-1",
+      [
+        { type: "text", text: "see this screenshot" },
+        { type: "image", data: "aaa", mimeType: "image/png" },
+      ],
+      { replaceOrigin: "machinery" },
+    );
+    expect(result).toBe("steer-interrupt");
+  });
+
   test("validates the attachments schema and rejects unknown attachment types", async () => {
     const { peerManager } = createFakePeerHarness();
     const catalog = createCatalog(peerManager);
@@ -898,6 +936,28 @@ describe("approval-gate wrap point (runCommanderGatedAction)", () => {
       agentId: null,
       status: "pending-approval",
     });
+  });
+
+  test("fleet_create_agent copies native images onto the spawn plan", async () => {
+    const createProposal = vi.fn(async () => ({
+      id: "mcp_images",
+      status: "pending",
+      kind: "spawn",
+    }));
+    const missionControlService = createMissionControlServiceStub({
+      approvals: { createProposal },
+    });
+    const catalog = createCommanderCatalog({ missionControlService });
+    const images = [{ data: "aaa", mimeType: "image/png" }];
+    await catalog.executeTool("fleet_create_agent", {
+      host: "local",
+      provider: "codex/gpt-5.4",
+      initialPrompt: "look at this screenshot",
+      title: "image-worker",
+      images,
+    });
+    const proposalInput = createProposal.mock.calls[0][0];
+    expect(proposalInput.spawnPlan.images).toEqual(images);
   });
 
   test("a Commander dispatch defaults to its own worktree, branch named after the ask", async () => {

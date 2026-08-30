@@ -386,6 +386,19 @@ describe("BUG-4: paseo.parent-agent-id stamping at execution time", () => {
     const received = createLocally.mock.calls[0]?.[0] as MissionControlProposalSpawnPlan;
     expect(received.labels?.["paseo.parent-agent-id"]).toBeUndefined();
   });
+
+  test("native images on the spawn plan survive parent-label stamping", async () => {
+    const images = [{ data: "aaa", mimeType: "image/png" }];
+    const createLocally = vi.fn(async () => ({
+      ok: true as const,
+      agentId: "x",
+      serverId: "srv__alpha",
+    }));
+    const deps = buildDeps({ createLocally });
+    await executeSpawnProposal(spawnPlan({ host: "local", images }), deps);
+    const received = createLocally.mock.calls[0]?.[0] as MissionControlProposalSpawnPlan;
+    expect(received.images).toEqual(images);
+  });
 });
 
 describe("validateSpawnCwd", () => {

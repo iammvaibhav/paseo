@@ -1,7 +1,7 @@
 import { setImmediate as waitForImmediate } from "node:timers/promises";
 import { describe, expect, test, vi } from "vitest";
 import pino from "pino";
-
+import type { AgentPromptInput } from "../../agent-sdk-types.js";
 import type { PaseoToolCatalog } from "../../tools/types.js";
 import type { OmpNoTurnScheduler, OmpProviderIdleScheduler } from "./agent.js";
 import type { OmpUsagePollScheduler } from "./usage-poller.js";
@@ -1092,57 +1092,76 @@ describe("OMP agent client and session", () => {
       },
     });
   });
-  test("steerActiveTurn delegates to runtimeSession.steer when turn matches", async () => {
+
+  test("tryHandleOutOfBand forwards image attachments with /steer", async () => {
     const omp = new OmpHarness();
     await omp.start();
-    const runtime = omp.runtime();
-    const promptStarted = runtime.nextPrompt();
-    const { turnId } = await omp.requireSession().startTurn("initial prompt");
-    await promptStarted;
-    runtime.beginTurn();
-
-    const result = await omp.requireSession().steerActiveTurn?.("steered message", {
-      expectedTurnId: turnId,
-    });
-
-    expect(result).toEqual({ status: "accepted" });
-    expect(runtime.steerRequests).toEqual([{ message: "steered message", imageCount: 0 }]);
+    omp.runtime().state.model = { id: "gpt-4o", provider: "openai", input: ["text", "image"] };
+    const prompt: AgentPromptInput = [
+      { type: "text", text: "/steer look at this chart" },
+      { type: "image", data: "base64data", mimeType: "image/png" },
+    ];
+    const handler = omp.rawSession.tryHandleOutOfBand(prompt);
+    expect(handler).not.toBeNull();
+    await handler?.run({ emit: () => {} });
+    expect(omp.runtime().steerRequests).toEqual([{ message: "look at this chart", imageCount: 1 }]);
   });
 
-  test("steerActiveTurn returns unavailable when turnId does not match or idle", async () => {
+  test("tryHandleOutOfBand forwards image attachments with /follow-up", async () => {
     const omp = new OmpHarness();
     await omp.start();
-    const runtime = omp.runtime();
-    const promptStarted = runtime.nextPrompt();
-    const { turnId } = await omp.requireSession().startTurn("initial prompt");
-    await promptStarted;
-    runtime.beginTurn();
+    omp.runtime().state.model = { id: "gpt-4o", provider: "openai", input: ["text", "image"] };
+    const prompt: AgentPromptInput = [
+      { type: "text", text: "/follow-up here is extra context" },
+      { type: "image", data: "base64data", mimeType: "image/png" },
+    ];
+    const handler = omp.rawSession.tryHandleOutOfBand(prompt);
+    expect(handler).not.toBeNull();
+    await handler?.run({ emit: () => {} });
+    expect(omp.runtime().followUpRequests).toEqual([
+      { message: "here is extra context", imageCount: 1 },
+    ]);
+  });
 
-    const wrongTurnResult = await omp.requireSession().steerActiveTurn?.("steered message", {
-      expectedTurnId: "wrong-turn-id",
-    });
-    expect(wrongTurnResult).toEqual({ status: "unavailable" });
-
-    runtime.finishTurn();
-    await waitForImmediate();
-    await waitForImmediate();
-
-    const idleResult = await omp.requireSession().steerActiveTurn?.("steered message", {
+  test("steerActiveTurn forwards image attachments during an active turn", async () => {
+    const omp = new OmpHarness();
+    await omp.start();
+    omp.runtime().state.model = { id: "gpt-4o", provider: "openai", input: ["text", "image"] };
+    const { turnId } = await omp.requireStartTurn("first turn");
+    const prompt: AgentPromptInput = [
+      { type: "text", text: "steer active turn with image" },
+      { type: "image", data: "base64data", mimeType: "image/png" },
+    ];
+    const result = await omp.rawSession.steerActiveTurn(prompt, {
       expectedTurnId: turnId,
     });
-    expect(idleResult).toEqual({ status: "unavailable" });
+    expect(result).toEqual({ status: "accepted" });
+    expect(omp.runtime().steerRequests).toEqual([
+      { message: "steer active turn with image", imageCount: 1 },
+    ]);
+  });
+
+  test("steerActiveTurn returns unavailable when no turn is active or turn id mismatches", async () => {
+    const omp = new OmpHarness();
+    await omp.start();
+    const prompt: AgentPromptInput = "steer without active turn";
+    const noTurnResult = await omp.rawSession.steerActiveTurn(prompt, {
+      expectedTurnId: "nonexistent-turn",
+    });
+    expect(noTurnResult).toEqual({ status: "unavailable" });
+
+    await omp.requireStartTurn("first turn");
+    const mismatchResult = await omp.rawSession.steerActiveTurn(prompt, {
+      expectedTurnId: "wrong-turn-id",
+    });
+    expect(mismatchResult).toEqual({ status: "unavailable" });
   });
 
   test("steerActiveTurn returns unavailable for slash commands", async () => {
     const omp = new OmpHarness();
     await omp.start();
-    const runtime = omp.runtime();
-    const promptStarted = runtime.nextPrompt();
-    const { turnId } = await omp.requireSession().startTurn("initial prompt");
-    await promptStarted;
-    runtime.beginTurn();
-
-    const slashResult = await omp.requireSession().steerActiveTurn?.("/compact", {
+    const { turnId } = await omp.requireStartTurn("first turn");
+    const slashResult = await omp.rawSession.steerActiveTurn("/compact", {
       expectedTurnId: turnId,
     });
     expect(slashResult).toEqual({ status: "unavailable" });

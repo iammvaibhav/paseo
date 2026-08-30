@@ -11,6 +11,7 @@ import { createTestLogger } from "../../test-utils/test-logger.js";
 import type { AgentManagerEvent, ManagedAgent } from "../agent/agent-manager.js";
 import type { StoredAgentRecord } from "../agent/agent-storage.js";
 import {
+  buildDispatchPrompt,
   extractProjectKeyFromIdentifier,
   ITSAPLAN_ISSUE_LABEL_KEY,
   ItsaplanBridge,
@@ -40,6 +41,13 @@ interface FakeIssue {
   title: string;
   description: string | null;
   assigneeUserId: string | null;
+  initiativeId?: number | null;
+  initiative?: {
+    id: number;
+    title: string;
+    description?: string | null;
+    status?: string;
+  } | null;
   labelIds?: number[];
   links: Array<{
     id: number;
@@ -47,6 +55,24 @@ interface FakeIssue {
     direction: "outward" | "inward";
     issue: { id: number };
   }>;
+}
+
+interface FakeAttachment {
+  id: string;
+  filename: string;
+  contentType?: string;
+  sizeBytes?: number;
+  createdAt?: string;
+  url: string;
+  bytes?: Buffer;
+}
+
+interface FakeInitiative {
+  id: number;
+  projectId: number;
+  title: string;
+  description?: string | null;
+  status?: string;
 }
 
 interface FakeLabel {
@@ -110,6 +136,8 @@ function startFakeItsaplanServer(options: {
   issues: Map<number, FakeIssue>;
   columns: Map<number, FakeColumn>;
   labels?: Map<number, FakeLabel>;
+  attachments?: Map<number, FakeAttachment[]>;
+  initiatives?: Map<number, FakeInitiative>;
   projectIdByKey: Map<string, number>;
 }) {
   const comments: Array<{ issueId: number; body: string }> = [];
@@ -154,6 +182,34 @@ function startFakeItsaplanServer(options: {
         }
         Object.assign(issue, body);
         send(200, issue);
+        return;
+      }
+      const attachmentsMatch = /^\/issues\/(\d+)\/attachments$/.exec(path);
+      if (req.method === "GET" && attachmentsMatch) {
+        const issueId = Number(attachmentsMatch[1]);
+        const atts = options.attachments?.get(issueId) ?? [];
+        send(200, atts);
+        return;
+      }
+      const rawAttachmentMatch = /^\/attachments\/([^/]+)\/raw$/.exec(path);
+      if (req.method === "GET" && rawAttachmentMatch) {
+        const id = rawAttachmentMatch[1];
+        for (const atts of options.attachments?.values() ?? []) {
+          const att = atts.find((candidate) => candidate.id === id);
+          if (att?.bytes) {
+            res.writeHead(200, { "content-type": att.contentType ?? "application/octet-stream" });
+            res.end(att.bytes);
+            return;
+          }
+        }
+        send(404, { error: "not found" });
+        return;
+      }
+      const initiativeMatch = /^\/initiatives\/(\d+)$/.exec(path);
+      if (req.method === "GET" && initiativeMatch) {
+        const initId = Number(initiativeMatch[1]);
+        const init = options.initiatives?.get(initId);
+        send(init ? 200 : 404, init ?? { error: "not found" });
         return;
       }
       if (req.method === "POST" && commentMatch) {
@@ -473,6 +529,8 @@ describe("ItsaplanBridge", () => {
   let issues: Map<number, FakeIssue>;
   let columns: Map<number, FakeColumn>;
   let labels: Map<number, FakeLabel>;
+  let attachments: Map<number, FakeAttachment[]>;
+  let initiatives: Map<number, FakeInitiative>;
   let projectIdByKey: Map<string, number>;
   let fakeServer: ReturnType<typeof startFakeItsaplanServer>;
   let handle: { baseUrl: string; close: () => Promise<void> };
@@ -484,7 +542,6 @@ describe("ItsaplanBridge", () => {
   let agentManagerFake: ReturnType<typeof createFakeAgentManager>;
   let missionControlFake: ReturnType<typeof createFakeMissionControl>;
   let bridge: ItsaplanBridge;
-
   const PROJECT_KEY = "ENG";
   const PROJECT_ID = 1;
   const ISSUE_ID = 100;
@@ -514,11 +571,15 @@ describe("ItsaplanBridge", () => {
     ]);
     projectIdByKey = new Map([[PROJECT_KEY, PROJECT_ID]]);
     labels = new Map([[50, { id: 50, projectId: PROJECT_ID, name: "auto-chain" }]]);
+    attachments = new Map();
+    initiatives = new Map();
     fakeServer = startFakeItsaplanServer({
       apiKey: "itp_test_key",
       issues,
       columns,
       labels,
+      attachments,
+      initiatives,
       projectIdByKey,
     });
     handle = await listen(fakeServer.server);
@@ -1259,6 +1320,235 @@ describe("ItsaplanBridge", () => {
       const result = await bridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
       expect(deliverMachineryPrompt).not.toHaveBeenCalled();
+    });
+
+    test("dispatches ticket with initiative name and description from webhook payload", async () => {
+      const request = webhookRequest("issue.state_changed", {
+        id: ISSUE_ID,
+        projectId: PROJECT_ID,
+        sequenceNumber: 42,
+        columnId: 2,
+        title: "Fix the bug",
+        description: "Steps to reproduce...",
+        initiative: {
+          id: 10,
+          title: "Infrastructure Modernization",
+          description: "Upgrade all agent runners and bridges",
+        },
+      });
+
+      const result = await bridge.handleWebhookRequest(request);
+      expect(result.status).toBe(200);
+      expect(deliverMachineryPrompt).toHaveBeenCalledTimes(1);
+      const prompt = deliverMachineryPrompt.mock.calls[0]?.[0] as string;
+      expect(prompt).toContain("Initiative: Infrastructure Modernization");
+      expect(prompt).toContain("Initiative description: Upgrade all agent runners and bridges");
+      expect(prompt).toContain("Ticket: ENG-42 — Fix the bug");
+    });
+
+    test("dispatches ticket with initiative fetched by id from server when description omitted in payload", async () => {
+      initiatives.set(15, {
+        id: 15,
+        projectId: PROJECT_ID,
+        title: "Core Platform",
+        description: "Robust execution engine",
+        status: "active",
+      });
+      issues.get(ISSUE_ID)!.initiative = {
+        id: 15,
+        title: "Core Platform",
+      };
+
+      const request = webhookRequest("issue.state_changed", {
+        id: ISSUE_ID,
+        projectId: PROJECT_ID,
+        sequenceNumber: 42,
+        columnId: 2,
+        title: "Fix the bug",
+        description: "Steps to reproduce...",
+        initiativeId: 15,
+      });
+
+      const result = await bridge.handleWebhookRequest(request);
+      expect(result.status).toBe(200);
+      expect(deliverMachineryPrompt).toHaveBeenCalledTimes(1);
+      const prompt = deliverMachineryPrompt.mock.calls[0]?.[0] as string;
+      expect(prompt).toContain("Initiative: Core Platform");
+      expect(prompt).toContain("Initiative description: Robust execution engine");
+    });
+
+    test("dispatches ticket images natively and leaves non-image files as links", async () => {
+      const png = Buffer.from("screenshot-bytes");
+      attachments.set(ISSUE_ID, [
+        {
+          id: "att-img-1",
+          filename: "screenshot-error.png",
+          contentType: "image/png",
+          sizeBytes: png.length,
+          url: "/attachments/att-img-1/raw",
+          bytes: png,
+        },
+        {
+          id: "att-file-2",
+          filename: "stacktrace.log",
+          contentType: "text/plain",
+          sizeBytes: 512,
+          url: "/attachments/att-file-2/raw",
+        },
+      ]);
+
+      const request = webhookRequest("issue.state_changed", {
+        id: ISSUE_ID,
+        projectId: PROJECT_ID,
+        sequenceNumber: 42,
+        columnId: 2,
+        title: "Fix the bug",
+        description: "Check attached screenshot",
+      });
+
+      const result = await bridge.handleWebhookRequest(request);
+      expect(result.status).toBe(200);
+      expect(deliverMachineryPrompt).toHaveBeenCalledTimes(1);
+      const prompt = deliverMachineryPrompt.mock.calls[0]?.[0] as string;
+      const images = deliverMachineryPrompt.mock.calls[0]?.[1] as
+        | Array<{ data: string; mimeType: string }>
+        | undefined;
+      expect(prompt).toContain("1 image attached natively");
+      expect(prompt).toContain("File attachments:");
+      expect(prompt).not.toContain("screenshot-error.png:");
+      expect(prompt).toContain(`- stacktrace.log: ${config.baseUrl}/attachments/att-file-2/raw`);
+      expect(images).toEqual([{ data: png.toString("base64"), mimeType: "image/png" }]);
+    });
+
+    test("strips markdown /media/ image embeds from the body when the image is attached natively", async () => {
+      const png = Buffer.from("paseo-24-bytes");
+      attachments.set(ISSUE_ID, [
+        {
+          id: "66d0fd2f-a849-4730-bf8a-083aa1f94000",
+          filename: "image.png",
+          contentType: "image/png",
+          sizeBytes: png.length,
+          url: "/attachments/66d0fd2f-a849-4730-bf8a-083aa1f94000/raw",
+          bytes: png,
+        },
+      ]);
+
+      const request = webhookRequest("issue.state_changed", {
+        id: ISSUE_ID,
+        projectId: PROJECT_ID,
+        sequenceNumber: 24,
+        columnId: 2,
+        title: "Test image",
+        description:
+          "![image.png](/media/attachments/66d0fd2f-a849-4730-bf8a-083aa1f94000/raw)Describe the image",
+      });
+
+      const result = await bridge.handleWebhookRequest(request);
+      expect(result.status).toBe(200);
+      const prompt = deliverMachineryPrompt.mock.calls[0]?.[0] as string;
+      const images = deliverMachineryPrompt.mock.calls[0]?.[1] as
+        | Array<{ data: string; mimeType: string }>
+        | undefined;
+      expect(prompt).toContain("1 image attached natively");
+      expect(prompt).toContain("Describe the image");
+      expect(prompt).not.toContain("/media/attachments/");
+      expect(prompt).not.toContain("![image.png]");
+      expect(images).toEqual([{ data: png.toString("base64"), mimeType: "image/png" }]);
+    });
+
+    test("dispatches ticket with both initiative and attachments", async () => {
+      initiatives.set(20, {
+        id: 20,
+        projectId: PROJECT_ID,
+        title: "Mobile App V2",
+        description: "New redesign",
+        status: "active",
+      });
+      issues.get(ISSUE_ID)!.initiative = {
+        id: 20,
+        title: "Mobile App V2",
+        description: "New redesign",
+      };
+      attachments.set(ISSUE_ID, [
+        {
+          id: "mockup-1",
+          filename: "design.png",
+          contentType: "image/png",
+          url: "/attachments/mockup-1/raw",
+          bytes: Buffer.from("design-bytes"),
+        },
+      ]);
+
+      const request = webhookRequest("issue.state_changed", {
+        id: ISSUE_ID,
+        projectId: PROJECT_ID,
+        sequenceNumber: 42,
+        columnId: 2,
+        title: "Build new screen",
+        description: "See design",
+      });
+
+      const result = await bridge.handleWebhookRequest(request);
+      expect(result.status).toBe(200);
+      expect(deliverMachineryPrompt).toHaveBeenCalledTimes(1);
+      const prompt = deliverMachineryPrompt.mock.calls[0]?.[0] as string;
+      expect(prompt).toContain("Initiative: Mobile App V2");
+      expect(prompt).toContain("Initiative description: New redesign");
+      expect(prompt).toContain("1 image attached natively");
+      expect(prompt).not.toContain("File attachments:");
+    });
+
+    test("dependent issue dispatch includes initiative and attachments when unblocked", async () => {
+      initiatives.set(30, {
+        id: 30,
+        projectId: PROJECT_ID,
+        title: "Backend API",
+        description: "Service endpoints",
+        status: "active",
+      });
+      attachments.set(200, [
+        {
+          id: "spec-doc",
+          filename: "openapi.json",
+          url: "/attachments/spec-doc/raw",
+        },
+      ]);
+
+      issues.get(ISSUE_ID)!.columnId = 2;
+      issues.set(200, {
+        id: 200,
+        projectId: PROJECT_ID,
+        sequenceNumber: 20,
+        columnId: 2, // Todo
+        title: "Blocked Issue B",
+        description: "Depends on A",
+        assigneeUserId: null,
+        initiativeId: 30,
+        links: [{ id: 1, kind: "blocks", direction: "inward", issue: { id: ISSUE_ID } }],
+      });
+      issues.get(ISSUE_ID)!.links = [
+        { id: 1, kind: "blocks", direction: "outward", issue: { id: 200 } },
+      ];
+
+      // Issue A moves to Done (column 4)
+      issues.get(ISSUE_ID)!.columnId = 4;
+      const request = webhookRequest("issue.state_changed", {
+        id: ISSUE_ID,
+        projectId: PROJECT_ID,
+        sequenceNumber: 42,
+        columnId: 4,
+        title: "Fix the bug",
+        description: null,
+      });
+      const result = await bridge.handleWebhookRequest(request);
+      expect(result.status).toBe(200);
+      expect(deliverMachineryPrompt).toHaveBeenCalledTimes(1);
+      const prompt = deliverMachineryPrompt.mock.calls[0]?.[0] as string;
+      expect(prompt).toContain("ENG-20");
+      expect(prompt).toContain("Initiative: Backend API");
+      expect(prompt).toContain("Initiative description: Service endpoints");
+      expect(prompt).toContain("File attachments:");
+      expect(prompt).toContain(`- openapi.json: ${config.baseUrl}/attachments/spec-doc/raw`);
     });
   });
 
@@ -2105,5 +2395,147 @@ describe("extractProjectKeyFromIdentifier", () => {
     expect(extractProjectKeyFromIdentifier("INVALID-ABC")).toBeNull();
     expect(extractProjectKeyFromIdentifier("-123")).toBeNull();
     expect(extractProjectKeyFromIdentifier("")).toBeNull();
+  });
+});
+
+describe("buildDispatchPrompt", () => {
+  test("builds plain prompt with no initiative and no attachments", () => {
+    const prompt = buildDispatchPrompt({
+      issueId: 42,
+      ticketKey: "ENG-10",
+      title: "Fix crash on launch",
+      body: "Stacktrace in logs",
+      url: "http://10.7.0.1:3000/project/ENG/issues/10",
+      projectKey: "paseo",
+    });
+
+    expect(prompt).toContain(
+      "itsaplan ticket moved to Todo with zero open blockers — ready to dispatch.",
+    );
+    expect(prompt).toContain("Project: paseo");
+    expect(prompt).toContain("Ticket: ENG-10 — Fix crash on launch");
+    expect(prompt).toContain("URL: http://10.7.0.1:3000/project/ENG/issues/10");
+    expect(prompt).toContain("Stacktrace in logs");
+    expect(prompt).toContain(`Label the new agent "${ITSAPLAN_ISSUE_LABEL_KEY}": "42"`);
+    expect(prompt).not.toContain("Initiative:");
+    expect(prompt).not.toContain("Attachments:");
+  });
+
+  test("builds prompt with (no description) when body is empty", () => {
+    const prompt = buildDispatchPrompt({
+      issueId: 42,
+      ticketKey: "ENG-10",
+      title: "Empty body ticket",
+      body: "   ",
+      url: "http://10.7.0.1:3000/project/ENG/issues/10",
+      projectKey: "paseo",
+    });
+
+    expect(prompt).toContain("(no description)");
+  });
+
+  test("includes initiative title and description when provided", () => {
+    const prompt = buildDispatchPrompt({
+      issueId: 42,
+      ticketKey: "ENG-10",
+      title: "Speed up tests",
+      body: "Run in parallel",
+      url: "http://10.7.0.1:3000/project/ENG/issues/10",
+      projectKey: "paseo",
+      initiative: {
+        title: "Test Speedup Q3",
+        description: "Cut test suite run time in half",
+      },
+    });
+
+    expect(prompt).toContain("Initiative: Test Speedup Q3");
+    expect(prompt).toContain("Initiative description: Cut test suite run time in half");
+  });
+
+  test("includes initiative title without description line when description is empty or null", () => {
+    const prompt = buildDispatchPrompt({
+      issueId: 42,
+      ticketKey: "ENG-10",
+      title: "Speed up tests",
+      body: "Run in parallel",
+      url: "http://10.7.0.1:3000/project/ENG/issues/10",
+      projectKey: "paseo",
+      initiative: {
+        title: "Test Speedup Q3",
+        description: null,
+      },
+    });
+
+    expect(prompt).toContain("Initiative: Test Speedup Q3");
+    expect(prompt).not.toContain("Initiative description:");
+  });
+
+  test("lists non-image files as links and notes native images separately", () => {
+    const prompt = buildDispatchPrompt({
+      issueId: 42,
+      ticketKey: "ENG-10",
+      title: "UI alignment bug",
+      body: "See screenshots",
+      url: "http://10.7.0.1:3000/project/ENG/issues/10",
+      projectKey: "paseo",
+      nativeImageCount: 2,
+      attachments: [
+        {
+          filename: "notes.txt",
+          url: "http://10.7.0.1:3000/attachments/notes/raw",
+        },
+      ],
+    });
+
+    expect(prompt).toContain("2 images attached natively");
+    expect(prompt).toContain("File attachments:");
+    expect(prompt).toContain("- notes.txt: http://10.7.0.1:3000/attachments/notes/raw");
+  });
+
+  test("strips markdown image embeds from the body when native images are attached", () => {
+    const prompt = buildDispatchPrompt({
+      issueId: 42,
+      ticketKey: "PASEO-24",
+      title: "Test image",
+      body: "![image.png](/media/attachments/abc/raw)Describe the image",
+      url: "http://10.7.0.1:3000/project/PASEO/issues/24",
+      projectKey: "paseo",
+      nativeImageCount: 1,
+    });
+
+    expect(prompt).toContain("Describe the image");
+    expect(prompt).toContain("1 image attached natively");
+    expect(prompt).not.toContain("/media/attachments/");
+    expect(prompt).not.toContain("![image.png]");
+  });
+
+  test("includes both initiative and file attachments formatted in expected sections", () => {
+    const prompt = buildDispatchPrompt({
+      issueId: 42,
+      ticketKey: "ENG-10",
+      title: "Add dark mode toggle",
+      body: "Toggle in settings pane",
+      url: "http://10.7.0.1:3000/project/ENG/issues/10",
+      projectKey: "paseo",
+      initiative: {
+        title: "Theme Refresh",
+        description: "Support multiple themes",
+      },
+      nativeImageCount: 1,
+      attachments: [
+        {
+          filename: "spec.pdf",
+          url: "http://10.7.0.1:3000/attachments/spec/raw",
+        },
+      ],
+    });
+
+    expect(prompt).toContain("Initiative: Theme Refresh");
+    expect(prompt).toContain("Initiative description: Support multiple themes");
+    expect(prompt).toContain("Toggle in settings pane");
+    expect(prompt).toContain("1 image attached natively");
+    expect(prompt).toContain(
+      "File attachments:\n- spec.pdf: http://10.7.0.1:3000/attachments/spec/raw",
+    );
   });
 });

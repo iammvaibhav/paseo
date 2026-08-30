@@ -908,6 +908,7 @@ interface CommanderSpawnPlanInput {
   title?: string;
   summary: string;
   initialPrompt?: string;
+  images?: Array<{ data: string; mimeType: string }>;
   cwd?: string;
   workspaceId?: string;
   settings?: {
@@ -990,6 +991,7 @@ function buildCommanderSpawnPlan(input: CommanderSpawnPlanInput): MissionControl
     title,
     summary,
     initialPrompt,
+    images,
     cwd,
     workspaceId,
     settings,
@@ -1004,6 +1006,7 @@ function buildCommanderSpawnPlan(input: CommanderSpawnPlanInput): MissionControl
     ...(title ? { title: stripAgentNamePrefix(title) ?? title } : {}),
     summary,
     ...(initialPrompt ? { initialPrompt } : {}),
+    ...(images && images.length > 0 ? { images } : {}),
     ...(cwd ? { cwd } : {}),
     ...(workspaceId ? { workspaceId } : {}),
     ...resolveCommanderPlanSettings(settings),
@@ -1019,6 +1022,7 @@ interface CommanderSpawnProposalInput {
   provider: string;
   title?: string;
   initialPrompt?: string;
+  images?: Array<{ data: string; mimeType: string }>;
   cwd?: string;
   workspaceId?: string;
   labels?: Record<string, string>;
@@ -1058,6 +1062,7 @@ function buildCommanderSpawnProposalInput(input: CommanderSpawnProposalInput): P
     settings,
     title,
     initialPrompt,
+    images,
     cwd,
     workspaceId,
     labels,
@@ -1087,6 +1092,7 @@ function buildCommanderSpawnProposalInput(input: CommanderSpawnProposalInput): P
       title,
       summary,
       initialPrompt,
+      images,
       cwd,
       workspaceId,
       settings,
@@ -1106,6 +1112,7 @@ function buildPeerCreateAgentPayload(args: {
   cwd?: string;
   workspaceId?: string;
   initialPrompt?: string;
+  images?: Array<{ data: string; mimeType: string }>;
   title?: string;
   labels?: Record<string, string>;
   settings?: { modeId?: string; thinkingOptionId?: string; features?: Record<string, unknown> };
@@ -1115,7 +1122,7 @@ function buildPeerCreateAgentPayload(args: {
   worktreeSlug?: string;
   worktree?: CommanderSpawnPlanInput["worktree"];
 }): CreateAgentRequestOptions {
-  const { provider, cwd, workspaceId, initialPrompt, title, labels, settings } = args;
+  const { provider, cwd, workspaceId, initialPrompt, images, title, settings } = args;
   const providerSlash = provider.indexOf("/");
   const resolvedWorktree = resolveCommanderWorktreePlan(args);
   const peerWorktreeTarget = resolvedWorktree?.branchName
@@ -1131,8 +1138,8 @@ function buildPeerCreateAgentPayload(args: {
     cwd: cwd ?? ".",
     workspaceId,
     initialPrompt,
+    ...(images && images.length > 0 ? { images } : {}),
     title,
-    labels,
     ...(peerWorktreeTarget ? { worktree: peerWorktreeTarget } : {}),
     ...(resolvedWorktree?.worktreeName ? { worktreeName: resolvedWorktree.worktreeName } : {}),
     ...(settings?.modeId ? { modeId: settings.modeId } : {}),
@@ -2023,6 +2030,12 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       .trim()
       .min(1, "initialPrompt is required")
       .describe("Required first task to run immediately after creation."),
+    images: z
+      .array(z.object({ data: z.string(), mimeType: z.string() }))
+      .optional()
+      .describe(
+        "Native images to attach to the new agent's first prompt, same shape as composer paste. Use when the user or a ticket attached screenshots the worker should see.",
+      ),
   };
   const legacyCreateAgentPlacementFields = {
     relationship: AgentRelationshipInputSchema.describe(
@@ -2486,12 +2499,11 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           provider: parsedArgs.provider,
           title: parsedArgs.title,
           initialPrompt: parsedArgs.initialPrompt,
+          ...(parsedArgs.images && parsedArgs.images.length > 0
+            ? { images: parsedArgs.images }
+            : {}),
           config: inheritedConfig,
           cwd: resolvedArgs.cwd,
-          workspaceId: resolvedArgs.workspaceId,
-          thinking: parsedArgs.settings?.thinkingOptionId,
-          features: parsedArgs.settings?.features,
-          labels: parsedArgs.labels,
           mode: parsedArgs.settings?.modeId,
           background: requestedBackground,
           notifyOnFinish,
@@ -5298,6 +5310,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         workspaceId,
         provider,
         initialPrompt,
+        images,
         title,
         labels,
         settings,
@@ -5395,9 +5408,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
                 provider,
                 title,
                 initialPrompt,
+                images,
                 cwd,
                 workspaceId,
-                labels: Object.keys(spawnLabels).length > 0 ? spawnLabels : undefined,
+                labels: spawnLabels,
                 settings,
                 isolation,
                 baseBranch,
@@ -7400,6 +7414,61 @@ function dispatchRunOptions(input: {
   };
 }
 
+async function tryOmpLiveSteer(params: {
+  agentManager: AgentManager;
+  agentId: string;
+  prompt: string;
+  attachments?: AgentAttachment[];
+  images?: Array<{ data: string; mimeType: string }>;
+  classification: AgentTimelineUserMessageClassification;
+  messageId?: string;
+  onOutOfBandSteer?: () => void;
+}): Promise<"steer" | null> {
+  const { agentManager, agentId, prompt, attachments, images, classification, messageId } = params;
+  if (!agentManager.hasInFlightRun(agentId)) {
+    return null;
+  }
+  if (agentManager.getAgent(agentId)?.provider !== "omp") {
+    return null;
+  }
+  // Live-steer is text-only; native images cannot ride `/steer`. Skip this
+  // path when images are present so they land on interrupt / a fresh run.
+  if (images && images.length > 0) {
+    return null;
+  }
+  const steerText =
+    attachments && attachments.length > 0
+      ? [prompt.trim(), ...attachments.map(renderPromptAttachmentAsText)]
+          .filter(Boolean)
+          .join("\n\n")
+      : prompt;
+  const handled = agentManager.tryRunOutOfBand(agentId, `/steer ${steerText}`);
+  if (!handled) {
+    return null;
+  }
+  // The native steer runs inside the provider runtime and records NO
+  // user row in Paseo's timeline (no turn, no echo). Record the prompt
+  // ourselves so the agent's chat is never missing an instruction:
+  // instruction rows render as a normal user message, machinery rows as
+  // a muted one-line placeholder (verbose mode only).
+  await agentManager.appendTimelineItem(agentId, {
+    type: "user_message",
+    text: steerText,
+    classification,
+    // The steer runs inside the provider runtime, so this appended row
+    // is the ONLY daemon-side record of the prompt. Carry the client's
+    // optimistic message id so the client reconciles this row with its
+    // optimistic bubble instead of rendering a duplicate.
+    ...(messageId ? { clientMessageId: messageId } : {}),
+  });
+  // Honest delivery: handled means the provider accepted the prompt —
+  // NOT that the agent will act on it (a wedged omp loop can swallow
+  // the steer entirely). The machinery caller verifies real activity
+  // and escalates when none comes.
+  params.onOutOfBandSteer?.();
+  return "steer";
+}
+
 export async function dispatchLocalPromptMode(params: {
   agentManager: AgentManager;
   agentStorage: AgentStorage;
@@ -7407,6 +7476,7 @@ export async function dispatchLocalPromptMode(params: {
   prompt: string;
   mode: "steer" | "interrupt" | "queue";
   attachments?: AgentAttachment[];
+  images?: Array<{ data: string; mimeType: string }>;
   /**
    * The client's optimistic message id (the local user_message's
    * clientMessageId). Every user row this dispatch records or echoes carries
@@ -7448,12 +7518,21 @@ export async function dispatchLocalPromptMode(params: {
   onOutOfBandSteer?: () => void;
   logger: Logger;
 }): Promise<"steer" | "interrupt" | "queue" | "steer-interrupt"> {
-  const { agentManager, agentStorage, agentId, prompt, mode, attachments, messageId, logger } =
-    params;
+  const {
+    agentManager,
+    agentStorage,
+    agentId,
+    prompt,
+    mode,
+    attachments,
+    images,
+    messageId,
+    logger,
+  } = params;
   const classification = params.classification ?? "instruction";
   const replaceOrigin = params.replaceOrigin;
   const recordStopOrigin = params.recordStopOrigin;
-  const promptWithAttachments = buildAgentPrompt(prompt, undefined, attachments);
+  const promptWithAttachments = buildAgentPrompt(prompt, images, attachments);
   if (mode === "interrupt") {
     return dispatchInterrupt({
       agentManager,
@@ -7468,41 +7547,20 @@ export async function dispatchLocalPromptMode(params: {
     });
   }
   if (mode === "steer") {
-    const busy = agentManager.hasInFlightRun(agentId);
-    if (busy && agentManager.getAgent(agentId)?.provider === "omp") {
-      // Live-steer is text-only; render attachments so the worker still sees
-      // their content without base64 crossing the model boundary.
-      const steerText =
-        attachments && attachments.length > 0
-          ? [prompt.trim(), ...attachments.map(renderPromptAttachmentAsText)]
-              .filter(Boolean)
-              .join("\n\n")
-          : prompt;
-      const handled = agentManager.tryRunOutOfBand(agentId, `/steer ${steerText}`);
-      if (handled) {
-        // The native steer runs inside the provider runtime and records NO
-        // user row in Paseo's timeline (no turn, no echo). Record the prompt
-        // ourselves so the agent's chat is never missing an instruction:
-        // instruction rows render as a normal user message, machinery rows as
-        // a muted one-line placeholder (verbose mode only).
-        await agentManager.appendTimelineItem(agentId, {
-          type: "user_message",
-          text: steerText,
-          classification,
-          // The steer runs inside the provider runtime, so this appended row
-          // is the ONLY daemon-side record of the prompt. Carry the client's
-          // optimistic message id so the client reconciles this row with its
-          // optimistic bubble instead of rendering a duplicate.
-          ...(messageId ? { clientMessageId: messageId } : {}),
-        });
-        // Honest delivery: handled means the provider accepted the prompt —
-        // NOT that the agent will act on it (a wedged omp loop can swallow
-        // the steer entirely). The machinery caller verifies real activity
-        // and escalates when none comes.
-        params.onOutOfBandSteer?.();
-        return "steer";
-      }
+    const liveSteer = await tryOmpLiveSteer({
+      agentManager,
+      agentId,
+      prompt,
+      attachments,
+      images,
+      classification,
+      messageId,
+      onOutOfBandSteer: params.onOutOfBandSteer,
+    });
+    if (liveSteer) {
+      return liveSteer;
     }
+    const busy = agentManager.hasInFlightRun(agentId);
     if (!busy) {
       // No live in-flight run to steer against (idle agent, or a stored-only
       // record whose runtime is gone): start a FRESH run via the full send
