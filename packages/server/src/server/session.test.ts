@@ -18,8 +18,9 @@ import {
   FileTransferOpcode,
   type FileTransferFrame,
 } from "@getpaseo/protocol/binary-frames/index";
-import { isSessionRpcAllowed, Session } from "./session.js";
+import { Session } from "./session.js";
 import type { MissionControlService } from "./mission-control/service.js";
+import { OWNER_PERMISSIONS, type DaemonPermission } from "./authorization/index.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
 import { StructuredAgentFallbackError } from "./agent/agent-response-loop.js";
 import type { StoredAgentRecord } from "./agent/agent-storage.js";
@@ -288,7 +289,7 @@ vi.mock("./worktree-bootstrap.js", async (importOriginal) => {
 });
 
 interface SessionForTestOptions {
-  scopes?: readonly string[];
+  permissions?: readonly DaemonPermission[];
   agentManager?: { [K in keyof SessionOptions["agentManager"]]?: unknown };
   agentStorage?: { [K in keyof SessionOptions["agentStorage"]]?: unknown };
   github?: Partial<ForgeService & GitHubService>;
@@ -438,7 +439,7 @@ function createSessionForTest(options: SessionForTestOptions = {}): Session {
     daemonRuntimeConfig: options.daemonRuntimeConfig,
     missionControlService: options.missionControlService,
     peerManager: options.peerManager,
-    scopes: options.scopes ?? ["*"],
+    permissions: options.permissions ?? OWNER_PERMISSIONS,
   };
   return new Session(sessionOptions);
 }
@@ -733,7 +734,7 @@ describe("workspace label editing", () => {
   });
 });
 
-describe("session authorization scopes", () => {
+describe("session authorization permissions", () => {
   test("routes named-agent validation through the session source", async () => {
     const messages: SessionOutboundMessage[] = [];
     const providers = createProviderSnapshotManagerStub();
@@ -772,10 +773,10 @@ describe("session authorization scopes", () => {
     });
   });
 
-  test("rejects an RPC outside an exact grant with the generic RPC error", async () => {
+  test("rejects an operation without its semantic permission", async () => {
     const messages: SessionOutboundMessage[] = [];
     const session = createSessionForTest({
-      scopes: ["hub.execution.agent.create.request"],
+      permissions: ["hub.execute"],
       messages,
     });
 
@@ -794,32 +795,16 @@ describe("session authorization scopes", () => {
     ]);
   });
 
-  test.each([
-    ["*", "ping"],
-    ["hub.execution.*", "hub.execution.agent.create.request"],
-    ["hub.execution.agent.create.request", "hub.execution.agent.create.request"],
-  ])("scope %s authorizes %s", (scope, requestType) => {
-    expect(isSessionRpcAllowed([scope], requestType)).toBe(true);
-  });
-
-  test.each([
-    ["hub.execution.*", "hub.management.daemon.get_status.request"],
-    ["hub.execution.agent.create.request", "hub.execution.agent.update"],
-    ["hub.execution.*", "hub.executions.agent.create.request"],
-  ])("scope %s rejects %s", (scope, requestType) => {
-    expect(isSessionRpcAllowed([scope], requestType)).toBe(false);
-  });
-
-  test("replaces a session's scopes without reconstructing the session", async () => {
+  test("replaces a session's permissions without reconstructing the session", async () => {
     const messages: SessionOutboundMessage[] = [];
-    const session = createSessionForTest({ scopes: ["hub.execution.*"], messages });
+    const session = createSessionForTest({ permissions: ["hub.execute"], messages });
 
     await session.handleMessage({
       type: "ping",
       requestId: "before-scope-change",
       clientSentAt: 1,
     });
-    session.setScopes(["*"]);
+    session.setPermissions(["daemon.read"]);
     await session.handleMessage({ type: "ping", requestId: "after-scope-change", clientSentAt: 2 });
 
     expect(messages).toEqual([
@@ -6069,6 +6054,10 @@ describe("send_agent_message dispatch modes", () => {
         hasInFlightRun: vi.fn(() => false),
         streamAgent: vi.fn(noopAgentStream),
         replaceAgentRun: vi.fn(noopAgentStream),
+        // Upstream replaced the fork's `/steer <text>` out-of-band hack with a
+        // real native steer. "inactive" is what AgentManager returns when there
+        // is no live turn to steer, so the prompt falls through to a normal run.
+        steerOrReplaceActiveTurn: vi.fn(async () => ({ status: "inactive" })),
         // The full send path (sendPromptToAgent -> ensureAgentLoaded) touches
         // these on every dispatch that is not an out-of-band steer.
         waitForAgentClose: vi.fn(async () => undefined),
@@ -6088,11 +6077,11 @@ describe("send_agent_message dispatch modes", () => {
   }
 
   test("steer to a busy agent with a native steer path runs out of band without cancelling", async () => {
-    const tryRunOutOfBand = vi.fn(() => true);
+    const steerOrReplaceActiveTurn = vi.fn(async () => ({ status: "steered" }));
     const replaceAgentRun = vi.fn(noopAgentStream);
     const streamAgent = vi.fn(noopAgentStream);
     const { session, messages } = createDispatchSession({
-      tryRunOutOfBand,
+      steerOrReplaceActiveTurn,
       replaceAgentRun,
       streamAgent,
       hasInFlightRun: vi.fn(() => true),
@@ -6106,9 +6095,14 @@ describe("send_agent_message dispatch modes", () => {
       dispatchMode: "steer",
     });
 
-    // The daemon maps the user's steer to the native out-of-band `/steer …`
-    // path — the live turn is redirected, never cancelled.
-    expect(tryRunOutOfBand).toHaveBeenCalledWith(agentId, "/steer fix the test");
+    // The daemon maps the user's steer onto the provider's native steer, so the
+    // live turn is redirected in place and never cancelled. clearPendingPermissions
+    // rides along: a typed steer answers whatever permission the agent is blocked on.
+    expect(steerOrReplaceActiveTurn).toHaveBeenCalledWith(
+      agentId,
+      "fix the test",
+      expect.objectContaining({ clearPendingPermissions: true }),
+    );
     expect(replaceAgentRun).not.toHaveBeenCalled();
     expect(streamAgent).not.toHaveBeenCalled();
     expect(acceptedResponse(messages)).toMatchObject({
@@ -6120,8 +6114,14 @@ describe("send_agent_message dispatch modes", () => {
   test("steer to a busy agent without a native steer path falls back to an interrupt", async () => {
     const replaceAgentRun = vi.fn(noopAgentStream);
     const streamAgent = vi.fn(noopAgentStream);
+    // A provider without steerActiveTurn: the manager admits the steer, then
+    // replaces the turn it admitted and returns the replacement stream.
+    const steerOrReplaceActiveTurn = vi.fn(async () => ({
+      status: "replaced",
+      iterator: noopAgentStream(),
+    }));
     const { session, messages } = createDispatchSession({
-      tryRunOutOfBand: vi.fn(() => false),
+      steerOrReplaceActiveTurn,
       replaceAgentRun,
       streamAgent,
       hasInFlightRun: vi.fn(() => true),
@@ -6135,9 +6135,13 @@ describe("send_agent_message dispatch modes", () => {
       dispatchMode: "steer",
     });
 
-    // No out-of-band handler (non-OMP provider): the running turn is replaced
-    // (replaceRunning) — a steer's value is timely delivery, not waiting.
-    expect(replaceAgentRun).toHaveBeenCalledTimes(1);
+    // A steer's value is timely delivery, not waiting: with no native steer the
+    // running turn is taken over rather than queued behind it.
+    expect(steerOrReplaceActiveTurn).toHaveBeenCalledWith(
+      agentId,
+      "fix the test",
+      expect.objectContaining({ clearPendingPermissions: true }),
+    );
     expect(streamAgent).not.toHaveBeenCalled();
     expect(acceptedResponse(messages)).toMatchObject({
       requestId: "req-steer-fallback",
@@ -6164,9 +6168,11 @@ describe("send_agent_message dispatch modes", () => {
       dispatchMode: "steer",
     });
 
-    // Nothing to steer: the prompt starts a normal run, without the /steer
-    // prefix (startAgentRun still probes the plain prompt — harmless).
-    expect(tryRunOutOfBand).not.toHaveBeenCalledWith(agentId, "/steer fix the test");
+    // Nothing to steer: the steer is attempted, reports no live turn, and the
+    // prompt then starts an ordinary run.
+    expect(tryRunOutOfBand).toHaveBeenCalledWith(agentId, "fix the test", {
+      replaceOrigin: "user",
+    });
     expect(streamAgent).toHaveBeenCalledTimes(1);
     expect(replaceAgentRun).not.toHaveBeenCalled();
     expect(acceptedResponse(messages)).toMatchObject({
@@ -7380,7 +7386,11 @@ describe("mission control tools.execute RPC wire dispatch", () => {
       callerLabels: { "paseo.mission-control": "commander" },
       enableVoiceTools: true,
     });
-    expect(executeTool).toHaveBeenCalledWith("fleet_list_agents", { statuses: ["running"] });
+    expect(executeTool).toHaveBeenCalledWith(
+      "fleet_list_agents",
+      { statuses: ["running"] },
+      { sessionKey: expect.any(String) },
+    );
     expect(messages).toEqual([
       {
         type: "mission_control.tools.execute.response",
@@ -7435,7 +7445,11 @@ describe("mission control tools.execute RPC wire dispatch", () => {
 
     // The allowlist gate must pass the new name through to the catalog — the
     // Voice node resolves spoken names through this RPC.
-    expect(executeTool).toHaveBeenCalledWith("fleet_list_inventory", { query: "paseo" });
+    expect(executeTool).toHaveBeenCalledWith(
+      "fleet_list_inventory",
+      { query: "paseo" },
+      { sessionKey: expect.any(String) },
+    );
     expect(messages).toEqual([
       {
         type: "mission_control.tools.execute.response",
@@ -7635,7 +7649,11 @@ describe("mission control tools.execute RPC wire dispatch", () => {
       callerAgentId: "commander-1",
       enableVoiceTools: true,
     });
-    expect(executeTool).toHaveBeenCalledWith("tag_message", { agentIds: ["agent-a"] });
+    expect(executeTool).toHaveBeenCalledWith(
+      "tag_message",
+      { agentIds: ["agent-a"] },
+      { sessionKey: expect.any(String) },
+    );
     expect(messages).toEqual([
       {
         type: "mission_control.tools.execute.response",

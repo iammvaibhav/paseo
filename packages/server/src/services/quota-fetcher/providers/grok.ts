@@ -362,7 +362,11 @@ export class GrokQuotaProvider implements ProviderUsageFetcher {
       }
     } else {
       this.logger.debug({ status: monthlyRes.status }, "Grok monthly usage fetch failed");
-      if (!lastError) {
+      // The monthly endpoint is the fallback, not the source of truth. When the
+      // credits view already produced a window, a monthly failure must not turn
+      // a good card into an error - unified SuperGrok accounts hide the monthly
+      // bar anyway.
+      if (!lastError && windows.length === 0) {
         lastError = `Grok monthly billing returned status ${monthlyRes.status}`;
       }
     }

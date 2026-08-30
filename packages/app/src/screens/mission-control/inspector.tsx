@@ -429,7 +429,7 @@ export function MissionControlInspector({
             isPaneFocused={isFocused}
             value={agentDraft.text}
             onChangeText={agentDraft.editText}
-            textReplacementKey={agentDraft.textReplacementKey}
+            textReplacement={agentDraft.textReplacement}
             attachments={agentDraft.attachments}
             onChangeAttachments={agentDraft.setAttachments}
             cwd={composerCwd}

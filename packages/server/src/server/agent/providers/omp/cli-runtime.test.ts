@@ -52,12 +52,13 @@ function createOmpChild(options?: {
 function createRuntime(
   child: OmpChild,
   launches: OmpRuntimeLaunch[] = [],
-  logger: pino.Logger = pino({ level: "silent" }),
+  options?: { requestTimeoutMs?: number; logger?: pino.Logger },
 ): OmpCliRuntime {
   return new OmpCliRuntime({
-    logger,
+    logger: options?.logger ?? pino({ level: "silent" }),
     command: ["omp"],
     commandsRpcName: "get_available_commands",
+    requestTimeoutMs: options?.requestTimeoutMs,
     spawnProcess: (launch) => {
       launches.push(launch);
       return child;
@@ -98,6 +99,26 @@ function withoutRequestId(command: Record<string, unknown>): Record<string, unkn
 }
 
 describe("OMP CLI runtime", () => {
+  test("uses the configured RPC timeout and attributes the pending phase", async () => {
+    vi.useFakeTimers();
+    const child = createOmpChild();
+    const session = await createRuntime(child, [], { requestTimeoutMs: 100 }).startSession({
+      cwd: "/workspace/project",
+    });
+
+    try {
+      const state = session.getState();
+      const rejection = expect(state).rejects.toThrow(
+        "OMP RPC request timed out phase=get_state elapsedMs=100 timeoutMs=100",
+      );
+      await vi.advanceTimersByTimeAsync(100);
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+      await session.close();
+    }
+  });
+
   test("validates session state with the documented queued message count", async () => {
     const child = createOmpChild();
     replyToCommands(child, () => ({
@@ -174,7 +195,7 @@ describe("OMP CLI runtime", () => {
         },
       },
     );
-    const session = await createRuntime(child, [], logger).startSession({
+    const session = await createRuntime(child, [], { logger }).startSession({
       cwd: "/workspace/project",
     });
     const eventTypes: string[] = [];
@@ -215,7 +236,7 @@ describe("OMP CLI runtime", () => {
         },
       },
     );
-    const session = await createRuntime(child, [], logger).startSession({
+    const session = await createRuntime(child, [], { logger }).startSession({
       cwd: "/workspace/project",
     });
     const eventTypes: string[] = [];

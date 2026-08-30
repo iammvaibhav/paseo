@@ -2189,7 +2189,7 @@ export class AgentManager {
 
     await registry.upsert(archivedRecord);
 
-    await this.archiveNativeSessionBestEffort(record.provider, record.persistence);
+    await this.syncNativeArchiveState(record.provider, record.persistence, "archive");
 
     if (this.agents.has(record.id)) {
       this.notifyAgentState(record.id);
@@ -2618,7 +2618,7 @@ export class AgentManager {
     const nextRecord = buildArchivedAgentRecord(record, { archivedAt });
     await registry.upsert(nextRecord);
 
-    await this.archiveNativeSessionBestEffort(record.provider, record.persistence);
+    await this.syncNativeArchiveState(record.provider, record.persistence, "archive");
 
     if (this.agents.has(agentId)) {
       this.notifyAgentState(agentId);
@@ -2645,7 +2645,7 @@ export class AgentManager {
       return false;
     }
 
-    await this.unarchiveNativeSession(record.provider, record.persistence);
+    await this.syncNativeArchiveState(record.provider, record.persistence, "restore");
 
     await registry.upsert({
       ...record,
@@ -6143,31 +6143,28 @@ export class AgentManager {
     return client;
   }
 
-  async archiveNativeSessionBestEffort(
+  private async syncNativeArchiveState(
     provider: AgentProvider,
     persistence: AgentPersistenceHandle | null | undefined,
+    state: "archive" | "restore",
   ): Promise<void> {
     if (!persistence) return;
     const client = this.clients.get(provider);
-    if (!client?.archiveNativeSession) return;
+    const sync =
+      state === "archive" ? client?.archiveNativeSession : client?.unarchiveNativeSession;
+    if (!sync) return;
+    if (state === "restore") {
+      await sync.call(client, persistence);
+      return;
+    }
     try {
-      await client.archiveNativeSession(persistence);
+      await sync.call(client, persistence);
     } catch (error) {
       this.logger.warn(
         { error, provider, sessionId: persistence.sessionId },
         "Failed to archive native session (best-effort)",
       );
     }
-  }
-
-  private async unarchiveNativeSession(
-    provider: AgentProvider,
-    persistence: AgentPersistenceHandle | null | undefined,
-  ): Promise<void> {
-    if (!persistence) return;
-    const client = this.clients.get(provider);
-    if (!client?.unarchiveNativeSession) return;
-    await client.unarchiveNativeSession(persistence);
   }
 
   private requireAgent(id: string): LiveManagedAgent {

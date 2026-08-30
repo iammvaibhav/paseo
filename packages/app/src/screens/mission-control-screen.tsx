@@ -377,7 +377,7 @@ export function MissionControlScreen(): ReactElement {
               isPaneFocused={isFocused}
               value={commanderDraft.text}
               onChangeText={commanderDraft.editText}
-              textReplacementKey={commanderDraft.textReplacementKey}
+              textReplacement={commanderDraft.textReplacement}
               attachments={commanderDraft.attachments}
               onChangeAttachments={commanderDraft.setAttachments}
               cwd={composerCwd}

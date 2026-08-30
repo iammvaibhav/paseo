@@ -17,3 +17,8 @@ export interface MessagePayload {
   forceSend?: boolean;
   dispatchMode?: MessageDispatchMode;
 }
+
+export interface TextReplacement {
+  key: string;
+  text: string;
+}

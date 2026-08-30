@@ -278,6 +278,7 @@ import {
 } from "./worktree-session.js";
 import { archiveByScope, type ActiveWorkspaceRef } from "./workspace-archive-service.js";
 import { WorkspaceSetupRuntime } from "./workspace-setup-runtime.js";
+import { SessionAuthorization, type DaemonPermission } from "./authorization/index.js";
 
 function resolveWorkspaceSetupRuntime(
   runtime: WorkspaceSetupRuntime | undefined,
@@ -496,7 +497,7 @@ type AgentMcpTransportFactory = () => Promise<unknown>;
 
 export interface SessionOptions {
   clientId: string;
-  scopes: readonly string[];
+  permissions: readonly DaemonPermission[];
   appVersion?: string | null;
   clientCapabilities?: Record<string, unknown> | null;
   onMessage: (msg: SessionOutboundMessage) => void;
@@ -540,6 +541,18 @@ export interface SessionOptions {
       id?: string;
     }): Promise<import("@getpaseo/protocol/messages").PluginListItem>;
     inspectDirectory(path: string): Promise<{ id: string }>;
+    installSource(input: {
+      source: string;
+      id?: string;
+      ref?: string;
+      pluginPath?: string;
+    }): Promise<import("@getpaseo/protocol/messages").PluginListItem>;
+    statusSources(
+      pluginId?: string,
+    ): Promise<import("@getpaseo/protocol/messages").PluginSourceStatusItem[]>;
+    updateSources(
+      pluginId?: string,
+    ): Promise<import("@getpaseo/protocol/messages").PluginSourceUpdateItem[]>;
     reloadPlugin(pluginId: string): Promise<import("@getpaseo/protocol/messages").PluginListItem>;
     enablePlugin(pluginId: string): Promise<import("@getpaseo/protocol/messages").PluginListItem>;
     disablePlugin(pluginId: string): Promise<import("@getpaseo/protocol/messages").PluginListItem>;
@@ -621,18 +634,6 @@ function parseClientCapabilities(
     }
   }
   return new Set(result);
-}
-
-export function isSessionRpcAllowed(scopes: readonly string[], rpcName: string): boolean {
-  return scopes.some((scope) => {
-    if (scope === "*" || scope === rpcName) {
-      return true;
-    }
-    if (!scope.endsWith(".*")) {
-      return false;
-    }
-    return rpcName.startsWith(scope.slice(0, -1));
-  });
 }
 
 function sessionRequestId(message: SessionInboundMessage): string | null {
@@ -788,7 +789,7 @@ function workspaceLabelErrorCode(error: unknown): string {
 
 export class Session {
   private readonly clientId: string;
-  private scopes: readonly string[];
+  private readonly authorization: SessionAuthorization;
   private appVersion: string | null;
   private clientCapabilities: ReadonlySet<ClientCapability>;
   private readonly sessionId: string;
@@ -896,7 +897,7 @@ export class Session {
   constructor(options: SessionOptions) {
     const {
       clientId,
-      scopes,
+      permissions,
       appVersion,
       clientCapabilities,
       onMessage,
@@ -956,8 +957,8 @@ export class Session {
       getWebSocketRuntimeMetrics,
     } = options;
     this.clientId = clientId;
-    this.scopes = [...scopes];
-    this.appVersion = orNull(appVersion);
+    this.authorization = new SessionAuthorization(permissions);
+    this.appVersion = appVersion ?? null;
     this.clientCapabilities = parseClientCapabilities(clientCapabilities);
     this.sessionId = uuidv4();
     this.onMessage = onMessage;
@@ -2109,7 +2110,7 @@ export class Session {
         },
         "agent.session.inbound",
       );
-      if (!isSessionRpcAllowed(this.scopes, msg.type)) {
+      if (!this.authorization.allowsInbound(msg)) {
         const requestId = sessionRequestId(msg);
         if (requestId) {
           this.emit({
@@ -2163,8 +2164,8 @@ export class Session {
     }
   }
 
-  public setScopes(scopes: readonly string[]): void {
-    this.scopes = [...scopes];
+  public setPermissions(permissions: readonly DaemonPermission[]): void {
+    this.authorization.replacePermissions(permissions);
   }
 
   /**
@@ -3411,6 +3412,43 @@ export class Session {
   }
 
   private dispatchPluginDirectoryMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    if (msg.type === "plugin.source.install.request") {
+      if (!this.pluginRuntime) throw new Error("Plugin service is unavailable");
+      return this.pluginRuntime
+        .installSource({
+          source: msg.source,
+          ...(msg.id ? { id: msg.id } : {}),
+          ...(msg.ref ? { ref: msg.ref } : {}),
+          ...(msg.pluginPath ? { pluginPath: msg.pluginPath } : {}),
+        })
+        .then((plugin) => {
+          this.emit({
+            type: "plugin.source.install.response",
+            payload: { requestId: msg.requestId, plugin },
+          });
+          return undefined;
+        });
+    }
+    if (msg.type === "plugin.source.status.request") {
+      if (!this.pluginRuntime) throw new Error("Plugin service is unavailable");
+      return this.pluginRuntime.statusSources(msg.pluginId).then((plugins) => {
+        this.emit({
+          type: "plugin.source.status.response",
+          payload: { requestId: msg.requestId, plugins },
+        });
+        return undefined;
+      });
+    }
+    if (msg.type === "plugin.source.update.request") {
+      if (!this.pluginRuntime) throw new Error("Plugin service is unavailable");
+      return this.pluginRuntime.updateSources(msg.pluginId).then((plugins) => {
+        this.emit({
+          type: "plugin.source.update.response",
+          payload: { requestId: msg.requestId, plugins },
+        });
+        return undefined;
+      });
+    }
     if (msg.type === "plugin.directory.install.request") {
       if (!this.pluginRuntime) throw new Error("Plugin service is unavailable");
       return this.pluginRuntime.installDirectory({ path: msg.path, id: msg.id }).then((plugin) => {
@@ -9397,7 +9435,7 @@ export class Session {
    * Emit a message to the client
    */
   private emit(msg: SessionOutboundMessage): void {
-    if (msg.type !== "rpc_error" && !isSessionRpcAllowed(this.scopes, msg.type)) {
+    if (!this.authorization.allowsOutbound(msg)) {
       return;
     }
     // JSON.stringify(msg) is only computed when trace is enabled — it runs for

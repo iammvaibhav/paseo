@@ -118,6 +118,7 @@ import type { SelectionAskConfig } from "@/selection-ask/use-selection-ask";
 import { ProposalCard } from "@/screens/mission-control/proposal-card";
 import type { FeedCardEvent } from "@/screens/mission-control/feed-card";
 import { useStreamHistoryWindow } from "./use-stream-history-window";
+import { PluginTimelineItemView } from "@/plugins/timeline";
 
 function renderLiveAuxiliaryNode(input: {
   pendingPermissions: ReactNode;
@@ -1011,11 +1012,23 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
               />
             );
 
+          case "plugin":
+            return (
+              <PluginTimelineItemView agentId={agentId} item={item} serverId={resolvedServerId} />
+            );
+
           default:
             return null;
         }
       },
-      [renderUserMessageItem, renderAssistantMessageItem, renderThoughtItem, renderToolCallItem],
+      [
+        agentId,
+        renderUserMessageItem,
+        renderAssistantMessageItem,
+        renderThoughtItem,
+        renderToolCallItem,
+        resolvedServerId,
+      ],
     );
 
     const bottomTurnFooterHost = streamLayout.auxiliaryTurnFooter;

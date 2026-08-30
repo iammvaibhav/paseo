@@ -1020,6 +1020,10 @@ describe("real provider usage fetchers", () => {
     fetchApi = mockFetch(
       new Map([
         [
+          "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
+          () => jsonResponse({ config: {} }),
+        ],
+        [
           "https://cli-chat-proxy.grok.com/v1/billing",
           () =>
             jsonResponse({
@@ -1052,6 +1056,10 @@ describe("real provider usage fetchers", () => {
     process.env["GROK_API_KEY"] = "grok_test_token";
     fetchApi = mockFetch(
       new Map([
+        [
+          "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
+          () => jsonResponse({ config: {} }),
+        ],
         [
           "https://cli-chat-proxy.grok.com/v1/billing",
           () =>
@@ -1203,6 +1211,10 @@ describe("real provider usage fetchers", () => {
     process.env["GROK_API_KEY"] = "grok_test_token";
     fetchApi = mockFetch(
       new Map([
+        [
+          "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
+          () => jsonResponse({ config: {} }),
+        ],
         [
           "https://cli-chat-proxy.grok.com/v1/billing",
           () =>

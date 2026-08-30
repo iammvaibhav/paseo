@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DaemonClientConfig } from "@getpaseo/client/internal/daemon-client";
 import type { DaemonConnectionDependencies, DaemonProbeClient } from "./test-daemon-connection";
 
@@ -43,9 +43,13 @@ class FakeDaemonProbe {
       return "cid_shared_probe_test";
     },
     resolveAppVersion: () => null,
-    createLocalTransportFactory: () => null,
-    buildLocalTransportUrl: ({ transportType, transportPath }) =>
-      `paseo+local://${transportType}?path=${encodeURIComponent(transportPath)}`,
+    createDesktopTransportFactory: () => null,
+    buildDesktopTransportUrl: (target) => {
+      if (target.transportType === "ssh") {
+        return `paseo+desktop://ssh?host=${encodeURIComponent(target.host)}`;
+      }
+      return `paseo+desktop://${target.transportType}?path=${encodeURIComponent(target.transportPath)}`;
+    },
     createClient: (config) => {
       const client = new FakeDaemonClient(this, config);
       this.createdClients.push(client);
@@ -65,6 +69,15 @@ class FakeDaemonProbe {
 
 describe("test-daemon-connection connectToDaemon", () => {
   let probe: FakeDaemonProbe;
+
+  // Every test imports the module under test dynamically so it sees the stubbed
+  // __DEV__. The first of those imports pays the whole transform for this module
+  // graph, which is several seconds - long enough to blow the default 5s test
+  // timeout and fail whichever test happened to run first. Pay it once, here.
+  beforeAll(async () => {
+    vi.stubGlobal("__DEV__", false);
+    await import("./test-daemon-connection");
+  });
 
   beforeEach(() => {
     vi.stubGlobal("__DEV__", false);
@@ -137,7 +150,32 @@ describe("test-daemon-connection connectToDaemon", () => {
     );
     await result.client.close();
 
-    expect(probe.createdConfigs()[0]?.url).toBe("paseo+local://socket?path=%2Ftmp%2Fpaseo.sock");
+    expect(probe.createdConfigs()[0]?.url).toBe("paseo+desktop://socket?path=%2Ftmp%2Fpaseo.sock");
+  });
+
+  it("uses the desktop transport for Remote SSH connections", async () => {
+    const { connectToDaemon } = await import("./test-daemon-connection");
+    const transportFactory = vi.fn();
+    const result = await connectToDaemon(
+      {
+        id: "ssh:deploy%40example.com:2222:%2Fkeys%2Fpaseo",
+        type: "remoteSsh",
+        host: "deploy@example.com",
+        sshPort: 2222,
+        daemonPort: 7777,
+      },
+      undefined,
+      {
+        ...probe.deps,
+        createDesktopTransportFactory: () => transportFactory,
+      },
+    );
+    await result.client.close();
+
+    expect(probe.createdConfigs()[0]).toMatchObject({
+      url: "paseo+desktop://ssh?host=deploy%40example.com",
+      transportFactory,
+    });
   });
 
   it("passes direct TCP connection passwords into the client config", async () => {

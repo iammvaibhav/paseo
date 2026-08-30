@@ -6,7 +6,15 @@ import type { PaseoToolCatalog } from "../../tools/types.js";
 import type { OmpNoTurnScheduler, OmpProviderIdleScheduler } from "./agent.js";
 import type { OmpUsagePollScheduler } from "./usage-poller.js";
 import { TOOL_ALLOWLIST_CONFIG_OVERLAY } from "./runtime.js";
+import { resolveOmpProviderParams } from "./provider-config.js";
 import { OmpHarness } from "./test-utils/omp-harness.js";
+
+test("OMP RPC timeout defaults to 60 seconds and accepts an override", () => {
+  expect(resolveOmpProviderParams({}).runtimeProviderParams.rpcTimeoutMs).toBe(60_000);
+  expect(
+    resolveOmpProviderParams({ rpcTimeoutMs: 90_000 }).runtimeProviderParams.rpcTimeoutMs,
+  ).toBe(90_000);
+});
 
 class ManualIdleScheduler implements OmpProviderIdleScheduler {
   private readonly retries: Array<() => void> = [];
@@ -998,7 +1006,8 @@ describe("OMP agent client and session", () => {
     ]);
   });
   test("emits context usage after assistant message_end before turn idle", async () => {
-    const omp = new OmpHarness();
+    const scheduler = new ManualUsagePollScheduler();
+    const omp = new OmpHarness({ usagePollScheduler: scheduler });
     await omp.start();
 
     const runtime = omp.runtime();
@@ -1017,10 +1026,10 @@ describe("OMP agent client and session", () => {
     runtime.acceptPrompt("hello", "user-1");
     runtime.streamAssistantText("working");
 
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      if (omp.streamEvents().some((event) => event.type === "usage_updated")) break;
-      await waitForImmediate();
-    }
+    // Context usage is polled while the turn is active rather than pushed on
+    // message_end, so the poll is what makes the mid-turn snapshot observable.
+    scheduler.poll();
+    await waitForImmediate();
     expect(omp.streamEvents().find((event) => event.type === "usage_updated")).toMatchObject({
       type: "usage_updated",
       usage: {
@@ -1035,7 +1044,8 @@ describe("OMP agent client and session", () => {
   });
 
   test("refreshes context usage after a /shake custom notice", async () => {
-    const omp = new OmpHarness();
+    const scheduler = new ManualUsagePollScheduler();
+    const omp = new OmpHarness({ usagePollScheduler: scheduler });
     await omp.start();
 
     const runtime = omp.runtime();
@@ -1064,19 +1074,9 @@ describe("OMP agent client and session", () => {
     };
     runtime.acceptCustomMessage("Shook 252 tool results + 5 blocks (~219613 tokens freed).");
 
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      const latest = [...omp.streamEvents()]
-        .toReversed()
-        .find((event) => event.type === "usage_updated");
-      if (
-        latest &&
-        latest.type === "usage_updated" &&
-        latest.usage?.contextWindowUsedTokens === 149_000
-      ) {
-        break;
-      }
-      await waitForImmediate();
-    }
+    // The next poll after /shake is what surfaces the freed tokens.
+    scheduler.poll();
+    await waitForImmediate();
 
     const usageEvents = omp
       .streamEvents()

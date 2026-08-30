@@ -53,6 +53,7 @@ export type PlannedWorkspaceOpenTarget =
 
 export interface PlanWorkspaceOpenTargetsInput {
   workspaceDirectory: string;
+  directoryPath?: string | null;
   activeFile?: WorkspaceFileLocation | null;
   resolvedActiveFile?: ResolvedWorkspaceFilePaths | null;
   desktopTargets: readonly DesktopOpenTarget[];
@@ -114,6 +115,7 @@ function planRemoteDesktopOpenTargets(input: {
 
 function planDesktopOpenTargets(input: {
   workspaceDirectory: string;
+  directoryPath?: string | null;
   activeFile?: WorkspaceFileLocation | null;
   resolvedFile: ResolvedWorkspaceFilePaths | null;
   desktopTargets: readonly DesktopOpenTarget[];
@@ -129,6 +131,20 @@ function planDesktopOpenTargets(input: {
     return sshHost ? planRemoteDesktopOpenTargets({ ...input, sshHost }) : [];
   }
 
+  const resolvedDirectory =
+    input.directoryPath === undefined || input.directoryPath === null
+      ? null
+      : resolveWorkspaceFilePaths({
+          path: input.directoryPath,
+          workspaceRoot: input.workspaceDirectory,
+        });
+  if (input.directoryPath !== undefined && input.directoryPath !== null) {
+    if (!resolvedDirectory?.relativePath) {
+      return [];
+    }
+  }
+  const workspacePath = resolvedDirectory?.absolutePath ?? input.workspaceDirectory;
+
   return input.desktopTargets.map((target) => {
     if (!input.resolvedFile) {
       return {
@@ -137,7 +153,7 @@ function planDesktopOpenTargets(input: {
         label: target.label,
         editorId: target.id,
         icon: target.icon,
-        openInput: { editorId: target.id, workspacePath: input.workspaceDirectory },
+        openInput: { editorId: target.id, workspacePath },
       };
     }
     return {
@@ -148,7 +164,7 @@ function planDesktopOpenTargets(input: {
       icon: target.icon,
       openInput: {
         editorId: target.id,
-        workspacePath: input.workspaceDirectory,
+        workspacePath,
         filePath: input.resolvedFile.absolutePath,
         ...(input.activeFile?.lineStart ? { line: input.activeFile.lineStart } : {}),
       },
