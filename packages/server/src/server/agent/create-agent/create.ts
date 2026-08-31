@@ -339,6 +339,7 @@ async function resolveMcpCreateAgent(
     await resolveMcpCwd({
       dependencies,
       cwd,
+      title: input.title,
       worktree: input.worktree,
       isolation: input.isolation,
       workspaceId: input.workspaceId,
@@ -642,6 +643,7 @@ function createAgentWorktreeSetupContinuation(
 async function resolveMcpCwd(params: {
   dependencies: CreateAgentCommandDependencies;
   cwd: string;
+  title?: string;
   initialPrompt: string;
   worktree?: CreateAgentFromMcpInput["worktree"];
   isolation?: CreateAgentFromMcpInput["isolation"];
@@ -670,6 +672,7 @@ async function resolveMcpCwd(params: {
     const createdWorktree = await createMcpWorktree({
       input: {
         cwd: params.cwd,
+        title: params.title,
         worktreeSlug: worktree?.worktreeName,
         branchName: worktree?.branchName,
         refName: worktree?.refName,

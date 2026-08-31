@@ -1962,8 +1962,10 @@ export async function createPaseoDaemon(
     }),
     workspaceRegistry,
     projectRegistry,
+    onWorkspaceUpdated: async (workspaceId) => {
+      await emitWorkspaceUpdatesExternal([workspaceId]);
+    },
     archiveWorkspace: archiveWorkspaceByIdExternal,
-    // M8 mailbox: the idle delivery path hands the speculative auto-recall
     // block (within budget) to the snapshot injector so the fresh snapshot
     // carries it alongside the ledger block. M10: the idle path dispatches
     // the snapshot turn explicitly (dispatchSnapshotTurn) and then steers

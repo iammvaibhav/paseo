@@ -39,6 +39,7 @@ export {
   AGENT_NAMING_THEMES,
   normalizeNamingTheme,
   hasMissionControlLabels,
+  extractTicketKey,
   MISSION_CONTROL_LABEL_PREFIX,
 } from "./naming.js";
 export type { AgentNamingTheme, AgentNamingServiceOptions } from "./naming.js";

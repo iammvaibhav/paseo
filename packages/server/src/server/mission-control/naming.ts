@@ -1,6 +1,7 @@
 import type { Logger } from "pino";
 
 import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
+import { ITSAPLAN_ISSUE_LABEL_KEY } from "@getpaseo/protocol/agent-labels";
 
 import type { AgentManager } from "../agent/agent-manager.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
@@ -794,6 +795,60 @@ export interface AgentCreatedIdentityInput {
   agentId: string;
   labels: Record<string, string>;
   internal: boolean;
+  name?: string;
+  title?: string;
+  initialPrompt?: string;
+  provider?: string;
+  cwd?: string;
+}
+
+/**
+ * Extracts a ticket key identifier (e.g. "PASEO-12", "ENG-42") from an agent's
+ * labels, title, or initial prompt when present.
+ */
+export function extractTicketKey(input: {
+  labels?: Record<string, string>;
+  title?: string;
+  initialPrompt?: string;
+  prompt?: string;
+}): string | null {
+  const labels = input.labels ?? {};
+  const directLabelKey =
+    labels["ticketKey"] ||
+    labels["ticket"] ||
+    labels["itsaplan.ticketKey"] ||
+    labels["itsaplan.ticket"] ||
+    labels["ticketId"];
+  if (directLabelKey && /^[A-Za-z0-9_]+-\d+$/.test(directLabelKey.trim())) {
+    return directLabelKey.trim();
+  }
+
+  if (input.title) {
+    const titleMatch =
+      /^(?:(?:ticket(?:\s*id)?|issue):\s*)?([A-Za-z0-9_]+-\d+)(?:[—–:\s-]|$)/i.exec(
+        input.title.trim(),
+      );
+    if (titleMatch && titleMatch[1]) {
+      return titleMatch[1];
+    }
+  }
+
+  const promptText = input.initialPrompt ?? input.prompt;
+  if (promptText) {
+    const explicitLineMatch =
+      /(?:^|\n)[>\s*-]*(?:ticket(?:\s*id)?|issue):\s*([A-Za-z0-9_]+-\d+)/i.exec(promptText);
+    if (explicitLineMatch && explicitLineMatch[1]) {
+      return explicitLineMatch[1];
+    }
+    if (labels[ITSAPLAN_ISSUE_LABEL_KEY]) {
+      const generalMatch = /\b([A-Za-z][A-Za-z0-9_]*-\d+)\b/.exec(promptText);
+      if (generalMatch && generalMatch[1]) {
+        return generalMatch[1];
+      }
+    }
+  }
+
+  return null;
 }
 
 const ROMAN_SUFFIXES = ["II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"] as const;
@@ -815,12 +870,45 @@ export class AgentNamingService {
    * Hook for AgentManager.onAgentCreated: returns a fresh collision-free name
    * for a brand-new agent, or null when the agent should stay unnamed
    * (mission-control labeled agents, internal agents, exhausted pools).
+   *
+   * When an agent carries a ticket identifier or explicit name, that name is
+   * assigned directly (disambiguated with Roman numerals if taken).
    */
   async assignNameForCreatedAgent(input: AgentCreatedIdentityInput): Promise<string | null> {
     if (input.internal || hasMissionControlLabels(input.labels)) {
       return null;
     }
     const used = await this.collectUsedNames();
+    const explicitOrTicketName = input.name?.trim() || extractTicketKey(input);
+    if (explicitOrTicketName) {
+      if (!used.has(explicitOrTicketName)) {
+        this.logger.info(
+          { agentId: input.agentId, name: explicitOrTicketName },
+          "Assigned ticket/explicit agent name",
+        );
+        return explicitOrTicketName;
+      }
+      for (const suffix of ROMAN_SUFFIXES) {
+        const candidate = `${explicitOrTicketName} ${suffix}`;
+        if (!used.has(candidate)) {
+          this.logger.info(
+            { agentId: input.agentId, name: candidate },
+            "Assigned disambiguated ticket/explicit agent name",
+          );
+          return candidate;
+        }
+      }
+      let counter = 2;
+      while (used.has(`${explicitOrTicketName} (${counter})`)) {
+        counter += 1;
+      }
+      const candidate = `${explicitOrTicketName} (${counter})`;
+      this.logger.info(
+        { agentId: input.agentId, name: candidate },
+        "Assigned numbered ticket/explicit agent name",
+      );
+      return candidate;
+    }
     const name = this.pickName(this.currentTheme(), used);
     if (!name) {
       this.logger.warn({ agentId: input.agentId }, "Naming pool exhausted; agent left unnamed");
@@ -847,7 +935,16 @@ export class AgentNamingService {
     const theme = this.currentTheme();
     let assigned = 0;
     for (const record of missing) {
-      const name = this.pickName(theme, used);
+      const ticketName = extractTicketKey({
+        labels: record.labels,
+        title: record.title ?? undefined,
+      });
+      let name: string | null = null;
+      if (ticketName && !used.has(ticketName)) {
+        name = ticketName;
+      } else {
+        name = this.pickName(theme, used);
+      }
       if (!name) {
         break;
       }

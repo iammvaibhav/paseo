@@ -358,6 +358,7 @@ type ProviderClientMap = Partial<Record<AgentProvider, AgentClient>>;
 export interface CreateAgentOptions {
   labels?: Record<string, string>;
   initialPrompt?: string;
+  name?: string;
   env?: Record<string, string>;
   persistSession?: boolean;
   initialTitle?: string | null;
@@ -385,6 +386,9 @@ export interface AgentManagerOptions {
     internal: boolean;
     provider: AgentProvider;
     cwd: string;
+    name?: string;
+    title?: string;
+    initialPrompt?: string;
   }) => Promise<string | null | undefined> | string | null | undefined;
   onWorkspaceStateMayHaveChanged?: (params: { cwd: string }) => void;
   /**
@@ -464,7 +468,7 @@ export interface WaitForAgentStartOptions {
   signal?: AbortSignal;
 }
 
-type AttentionState =
+export type AttentionState =
   | { requiresAttention: false }
   | {
       requiresAttention: true;
@@ -560,8 +564,11 @@ interface ManagedAgentBase {
    * summarizer pass. Optional, mirrors the stored record field.
    */
   shortDescription?: string;
+  /**
+   * Set when title was auto-derived from prompt rather than explicitly set.
+   */
+  titleAutoDerived?: boolean;
 }
-
 type ManagedAgentWithSession = ManagedAgentBase & {
   session: AgentSession;
 };
@@ -681,6 +688,7 @@ interface WriteLabelsResult {
 
 interface AgentMetadataPatch {
   title?: string;
+  titleAutoDerived?: boolean;
   labels?: AgentLabelPatch;
   provider?: string;
   model?: string | null;
@@ -881,6 +889,8 @@ interface RegisterSessionOptions {
   lastError?: string;
   attention?: AttentionState;
   initialTitle?: string | null;
+  initialPrompt?: string;
+  name?: string;
   publishWhenReady?: boolean;
   workspaceId?: string;
   owner?: AgentOwner;
@@ -1607,11 +1617,12 @@ export class AgentManager {
       const registered = await this.registerSession(session, storedConfig, resolvedAgentId, {
         labels: options.labels,
         initialTitle: options.initialTitle,
+        initialPrompt: options.initialPrompt,
+        name: options.name,
         workspaceId: options.workspaceId,
         owner: options.owner,
         historyPrimed: true,
       });
-      // Phase split for the create path between resolveCreateConfig (create.ts)
       // and the pool claim: deleteAgentState, prepareSessionConfig (incl. model
       // resolution), provider availability probe, launch context build, provider
       // createSession (the pool claim itself is logged separately as
@@ -2361,6 +2372,7 @@ export class AgentManager {
     if (!normalizedTitle) {
       return;
     }
+    agent.titleAutoDerived = false;
     if (
       this.agentsAwaitingInitialSnapshotPersist.has(agent.id) &&
       this.registry &&
@@ -2369,7 +2381,7 @@ export class AgentManager {
       return;
     }
     this.touchUpdatedAt(agent);
-    await this.persistSnapshot(agent, { title: normalizedTitle });
+    await this.persistSnapshot(agent, { title: normalizedTitle, titleAutoDerived: false });
     this.emitState(agent, { persist: false });
   }
 
@@ -2491,7 +2503,8 @@ export class AgentManager {
 
     const nextRecord: StoredAgentRecord = {
       ...record,
-      ...(patch.title ? { title: patch.title } : {}),
+      ...(patch.title ? { title: patch.title, titleAutoDerived: false } : {}),
+      ...(patch.titleAutoDerived !== undefined ? { titleAutoDerived: patch.titleAutoDerived } : {}),
       ...(patch.name ? { name: patch.name } : {}),
       ...(patch.shortDescription ? { shortDescription: patch.shortDescription } : {}),
       ...(patch.labels ? { labels: applyLabelPatch(record.labels, patch.labels) } : {}),
@@ -4126,15 +4139,17 @@ export class AgentManager {
     options: RegisterSessionOptions | undefined,
   ): Promise<{
     initialPersistedTitle: string;
+    titleAutoDerived: boolean;
     existingRecord: StoredAgentRecord | null | undefined;
     name: string | undefined;
     shortDescription: string | undefined;
   }> {
-    const initialPersistedTitle = await this.resolveInitialPersistedTitle(
-      resolvedAgentId,
-      config,
-      options?.initialTitle ?? null,
-    );
+    const { title: initialPersistedTitle, titleAutoDerived } =
+      await this.resolveInitialPersistedTitle(
+        resolvedAgentId,
+        config,
+        options?.initialTitle ?? null,
+      );
     const existingRecord = await this.registry?.get(resolvedAgentId);
     const name =
       existingRecord?.name ??
@@ -4144,16 +4159,19 @@ export class AgentManager {
         internal: config.internal ?? false,
         provider: config.provider,
         cwd: config.cwd,
+        name: options?.name,
+        title: initialPersistedTitle,
+        initialPrompt: options?.initialPrompt,
       })) ??
       undefined;
     return {
       initialPersistedTitle,
+      titleAutoDerived,
       existingRecord,
       name,
       shortDescription: existingRecord?.shortDescription,
     };
   }
-
   private async registerSession(
     session: AgentSession,
     config: AgentSessionConfig,
@@ -4167,7 +4185,7 @@ export class AgentManager {
       if (this.agents.has(resolvedAgentId)) {
         throw new Error(`Agent with id ${resolvedAgentId} already exists`);
       }
-      const { initialPersistedTitle, existingRecord, name, shortDescription } =
+      const { initialPersistedTitle, titleAutoDerived, existingRecord, name, shortDescription } =
         await this.resolveRegisterIdentity(resolvedAgentId, config, options);
 
       const now = new Date();
@@ -4193,6 +4211,7 @@ export class AgentManager {
         options: restoredRegistrationOptions,
         name,
         shortDescription,
+        titleAutoDerived,
       });
 
       this.assertAcceptingAgentRegistrations();
@@ -4204,8 +4223,8 @@ export class AgentManager {
       this.assertAgentRegistrationActive(managed);
       await this.persistSnapshot(managed, {
         title: initialPersistedTitle,
+        titleAutoDerived,
       });
-      this.assertAgentRegistrationActive(managed);
       if (!options?.publishWhenReady) {
         this.emitState(managed, { persist: false });
       }
@@ -4316,6 +4335,7 @@ export class AgentManager {
     durableTimelineHasRows: boolean;
     name?: string;
     shortDescription?: string;
+    titleAutoDerived?: boolean;
     options:
       | {
           createdAt?: Date;
@@ -4341,6 +4361,7 @@ export class AgentManager {
       owner: options?.owner,
       name: params.name,
       shortDescription: params.shortDescription,
+      titleAutoDerived: params.titleAutoDerived,
       session,
       capabilities: session.capabilities,
       config,
@@ -4581,21 +4602,26 @@ export class AgentManager {
     agentId: string,
     config: AgentSessionConfig,
     fallbackTitle: string | null,
-  ): Promise<string> {
+  ): Promise<{ title: string; titleAutoDerived: boolean }> {
     const existing = await this.registry?.get(agentId);
     if (existing?.title) {
-      return existing.title;
+      return {
+        title: existing.title,
+        titleAutoDerived: existing.titleAutoDerived ?? false,
+      };
     }
     const explicitTitle =
       typeof config.title === "string" && config.title.trim().length > 0
         ? config.title.trim()
         : null;
-    return explicitTitle ?? fallbackTitle ?? deriveFallbackAgentTitle();
+    const title = explicitTitle ?? fallbackTitle ?? deriveFallbackAgentTitle();
+    const titleAutoDerived = !explicitTitle;
+    return { title, titleAutoDerived };
   }
 
   private async persistSnapshot(
     agent: ManagedAgent,
-    options?: { title?: string | null; internal?: boolean },
+    options?: { title?: string | null; internal?: boolean; titleAutoDerived?: boolean },
   ): Promise<void> {
     if (!this.registry) {
       return;

@@ -18,13 +18,14 @@ import type {
   AgentUsage,
   ImportableProviderSession,
 } from "./agent-sdk-types.js";
-import type { ManagedAgent } from "./agent-manager.js";
+import type { ManagedAgent, AttentionState } from "./agent-manager.js";
 import type { JsonValue } from "../json-utils.js";
 import { isStoredAgentProviderAvailable, toAgentPersistenceHandle } from "../persistence-hooks.js";
 export type { ManagedAgent };
 
 interface ProjectionOptions {
   title?: string | null;
+  titleAutoDerived?: boolean;
   createdAt?: string;
   internal?: boolean;
 }
@@ -60,6 +61,24 @@ export function resolveEffectiveThinkingOptionId(options: {
   }
   return normalizeThinkingOptionId(options.configuredThinkingOptionId);
 }
+function buildStoredAttentionState(attention: AttentionState): {
+  requiresAttention: boolean;
+  attentionReason: "finished" | "error" | "permission" | null;
+  attentionTimestamp: string | null;
+} {
+  if (!attention.requiresAttention) {
+    return {
+      requiresAttention: false,
+      attentionReason: null,
+      attentionTimestamp: null,
+    };
+  }
+  return {
+    requiresAttention: true,
+    attentionReason: attention.attentionReason,
+    attentionTimestamp: attention.attentionTimestamp.toISOString(),
+  };
+}
 
 export function toStoredAgentRecord(
   agent: ManagedAgent,
@@ -69,6 +88,8 @@ export function toStoredAgentRecord(
   const config = buildSerializableConfig(agent.config);
   const persistence = sanitizePersistenceHandle(agent.persistence);
   const runtimeInfo = sanitizeRuntimeInfo(agent.runtimeInfo);
+  const attention = buildStoredAttentionState(agent.attention);
+  const titleAutoDerived = options?.titleAutoDerived ?? agent.titleAutoDerived;
 
   return {
     id: agent.id,
@@ -80,6 +101,7 @@ export function toStoredAgentRecord(
     lastActivityAt: agent.updatedAt.toISOString(),
     lastUserMessageAt: agent.lastUserMessageAt ? agent.lastUserMessageAt.toISOString() : null,
     title: options?.title ?? null,
+    ...(titleAutoDerived !== undefined ? { titleAutoDerived } : {}),
     ...(agent.name !== undefined ? { name: agent.name } : {}),
     ...(agent.shortDescription !== undefined ? { shortDescription: agent.shortDescription } : {}),
     labels: agent.labels,
@@ -90,11 +112,7 @@ export function toStoredAgentRecord(
     features: normalizeFeatures(agent.features),
     persistence,
     lastError: agent.lastError ?? undefined,
-    requiresAttention: agent.attention.requiresAttention,
-    attentionReason: agent.attention.requiresAttention ? agent.attention.attentionReason : null,
-    attentionTimestamp: agent.attention.requiresAttention
-      ? agent.attention.attentionTimestamp.toISOString()
-      : null,
+    ...attention,
     internal: options?.internal,
     owner: agent.owner,
   } satisfies StoredAgentRecord;
