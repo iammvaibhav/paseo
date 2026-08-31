@@ -54,6 +54,7 @@ const STORED_AGENT_SCHEMA = z.object({
   lastActivityAt: z.string().optional(),
   lastUserMessageAt: z.string().nullable().optional(),
   title: z.string().nullable().optional(),
+  titleAutoDerived: z.boolean().optional(),
   // Identity fields (Mission Control naming + description refresh). Optional
   // so records written by older daemons still parse.
   name: z.string().optional(),
@@ -110,16 +111,27 @@ export function parseStoredAgentRecord(value: unknown): StoredAgentRecord {
 function buildSnapshotProjectionOptions(
   agent: ManagedAgent,
   existing: StoredAgentRecord | null,
-  options?: { title?: string | null; internal?: boolean },
-): { title?: string | null; createdAt?: string; internal?: boolean } {
+  options?: { title?: string | null; internal?: boolean; titleAutoDerived?: boolean },
+): { title?: string | null; createdAt?: string; internal?: boolean; titleAutoDerived?: boolean } {
   const hasTitleOverride =
     options !== undefined && Object.prototype.hasOwnProperty.call(options, "title");
   const hasInternalOverride =
     options !== undefined && Object.prototype.hasOwnProperty.call(options, "internal");
+  const hasTitleAutoDerivedOverride =
+    options !== undefined && Object.prototype.hasOwnProperty.call(options, "titleAutoDerived");
+  let titleAutoDerived: boolean | undefined;
+  if (hasTitleAutoDerivedOverride) {
+    titleAutoDerived = options?.titleAutoDerived;
+  } else if (hasTitleOverride) {
+    titleAutoDerived = false;
+  } else {
+    titleAutoDerived = agent.titleAutoDerived ?? existing?.titleAutoDerived;
+  }
   return {
     title: hasTitleOverride ? (options?.title ?? null) : (existing?.title ?? null),
     createdAt: existing?.createdAt,
     internal: hasInternalOverride ? options?.internal : (agent.internal ?? existing?.internal),
+    titleAutoDerived,
   };
 }
 
@@ -139,6 +151,9 @@ function preserveStoredIdentityFields(
     existing?.shortDescriptionAutoDerived !== undefined
   ) {
     record.shortDescriptionAutoDerived = existing.shortDescriptionAutoDerived;
+  }
+  if (record.titleAutoDerived === undefined && existing?.titleAutoDerived !== undefined) {
+    record.titleAutoDerived = existing.titleAutoDerived;
   }
   if (existing && existing.archivedAt !== undefined) {
     record.archivedAt = existing.archivedAt;

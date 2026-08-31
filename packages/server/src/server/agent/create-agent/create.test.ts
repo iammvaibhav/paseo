@@ -643,6 +643,10 @@ test("ticket dispatch default on a git project creates a worktree instead of the
     );
 
     expect(createPaseoWorktree).toHaveBeenCalledTimes(1);
+    expect(createPaseoWorktree).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "ticket-worker" }),
+      expect.anything(),
+    );
     expect(ensureWorkspaceForCreate).not.toHaveBeenCalled();
     const storedTicketAgent = await storage.get(ticketAgent.id);
     expect(storedTicketAgent?.workspaceId).toBe("ws-ticket-worktree");

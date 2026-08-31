@@ -15,14 +15,43 @@ export function deriveFallbackAgentTitle(timestamp: Date = new Date()): string {
 }
 
 function deriveInitialAgentTitle(prompt: string): string | null {
-  const firstContentLine = prompt
+  const lines = prompt
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .find((line) => line.length > 0);
-  if (!firstContentLine) {
+    .filter((line) => line.length > 0);
+  if (lines.length === 0) {
     return null;
   }
-  const normalized = firstContentLine.replace(/\s+/g, " ").trim();
+
+  let candidateLine: string | undefined;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (/^#+\s*(?:verbatim\s*ask|goal|brief|task|instructions|context)\b/i.test(line)) {
+      continue;
+    }
+    if (/^itsaplan ticket moved/i.test(line)) {
+      continue;
+    }
+    if (/^project:\s*\S+/i.test(line) && i + 1 < lines.length && /^ticket:/i.test(lines[i + 1]!)) {
+      continue;
+    }
+    candidateLine = line;
+    break;
+  }
+
+  if (!candidateLine) {
+    candidateLine = lines[0]!;
+  }
+
+  let cleaned = candidateLine.replace(/^[>\s"']+|[>\s"']+$/g, "").trim();
+  const ticketPrefixMatch =
+    /^(?:ticket(?:\s*id)?|issue):\s*([A-Za-z0-9_]+-\d+)\s*[—–-]?\s*(.*)$/i.exec(cleaned);
+  if (ticketPrefixMatch) {
+    const [, ticketKey, rest] = ticketPrefixMatch;
+    cleaned = rest ? `${ticketKey} - ${rest}` : (ticketKey ?? cleaned);
+  }
+
+  const normalized = cleaned.replace(/\s+/g, " ").trim();
   if (!normalized) {
     return null;
   }

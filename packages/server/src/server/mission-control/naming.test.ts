@@ -222,6 +222,53 @@ describe("AgentNamingService theme changes affect future assignments only", () =
   });
 });
 
+describe("AgentNamingService ticket-aware naming", () => {
+  test("assigns ticket key as name when present in labels", async () => {
+    const { service } = createNamingHarness({ theme: "mixed" });
+    const name = await service.assignNameForCreatedAgent({
+      agentId: "agent-ticket-1",
+      labels: { "itsaplan.ticket": "PASEO-12" },
+      internal: false,
+    });
+    expect(name).toBe("PASEO-12");
+  });
+
+  test("assigns ticket key as name when present in prompt", async () => {
+    const { service } = createNamingHarness({ theme: "mixed" });
+    const name = await service.assignNameForCreatedAgent({
+      agentId: "agent-ticket-2",
+      labels: { "itsaplan.issue": "30" },
+      initialPrompt: '# Verbatim Ask\n> "Ticket: PASEO-12 — Titling convention"',
+      internal: false,
+    });
+    expect(name).toBe("PASEO-12");
+  });
+
+  test("assigns ticket key as name when present in title", async () => {
+    const { service } = createNamingHarness({ theme: "mixed" });
+    const name = await service.assignNameForCreatedAgent({
+      agentId: "agent-ticket-3",
+      labels: {},
+      title: "ENG-42 - Speed up tests",
+      internal: false,
+    });
+    expect(name).toBe("ENG-42");
+  });
+
+  test("disambiguates colliding ticket names with Roman numerals", async () => {
+    const { service } = createNamingHarness({
+      theme: "mixed",
+      liveAgents: [{ id: "existing-1", name: "PASEO-12" }],
+    });
+    const name = await service.assignNameForCreatedAgent({
+      agentId: "agent-ticket-4",
+      labels: { ticketKey: "PASEO-12" },
+      internal: false,
+    });
+    expect(name).toBe("PASEO-12 II");
+  });
+});
+
 describe("MissionControlService namingTheme patch", () => {
   let dir: string;
   let service: MissionControlService;

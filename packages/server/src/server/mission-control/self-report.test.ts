@@ -307,6 +307,163 @@ describe("MissionControlService.reportSelfStatus", () => {
     expect(result.identity).toEqual({});
   });
 
+  test("accepts title when the agent's current title is auto-derived", async () => {
+    getStoredAgent.mockResolvedValue({
+      title: "Fix the payments pipeline before the fleet demo",
+      titleAutoDerived: true,
+      shortDescription: "Investigating payment pipeline",
+    });
+    updateAgentMetadata.mockImplementation(async (agentId: string, updates: object) => {
+      const stored = await getStoredAgent(agentId);
+      getStoredAgent.mockResolvedValue({ ...stored, ...updates, titleAutoDerived: false });
+    });
+    const result = await service.reportSelfStatus("agent-1", {
+      status: "working",
+      kind: "milestone",
+      headline: "Root cause found",
+      title: "Payment pipeline fix",
+      description: "Found race condition in token refresh",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(updateAgentMetadata).toHaveBeenCalledWith(
+      "agent-1",
+      expect.objectContaining({
+        title: "Payment pipeline fix",
+        shortDescription: "Found race condition in token refresh",
+      }),
+    );
+    expect(result.notice).toBeUndefined();
+  });
+
+  test("updates workspace title when the first agent in a provisional workspace updates its auto-derived title", async () => {
+    const testDir = await mkdtemp(join(tmpdir(), "mc-self-report-wks1-"));
+    const workspace = {
+      workspaceId: "wks-1",
+      title: "Fix the payments pipeline",
+      cwd: "/repo",
+      archivedAt: null,
+    };
+    const workspaceRegistry = {
+      get: vi.fn(async () => workspace),
+      update: vi.fn(async (_id: string, updater: (w: typeof workspace) => typeof workspace) => {
+        Object.assign(workspace, updater(workspace));
+      }),
+    };
+    const listAgents = vi.fn(async () => [
+      { id: "agent-1", workspaceId: "wks-1", internal: false },
+    ]);
+    const onWorkspaceUpdated = vi.fn();
+    const testService = new MissionControlService({
+      paseoHome: testDir,
+      logger: createTestLogger(),
+      agentManager: {
+        getAgent,
+        updateAgentMetadata,
+        subscribe: vi.fn(() => () => {}),
+      } as unknown as AgentManager,
+      agentStorage: {
+        get: vi.fn(async () => ({
+          id: "agent-1",
+          workspaceId: "wks-1",
+          title: "Fix the payments pipeline",
+          titleAutoDerived: true,
+        })),
+        list: listAgents,
+      } as unknown as AgentStorage,
+      daemonConfigStore: { get: () => ({}) } as unknown as DaemonConfigStore,
+      serverId: "test-server",
+      hostName: "test-host",
+      broadcast,
+      presence: createMissionControlPresenceSource({
+        isAgentFocused: () => false,
+        readStopOrigin: () => null,
+      }),
+      workspaceRegistry,
+      onWorkspaceUpdated,
+    });
+    await testService.start();
+    try {
+      const result = await testService.reportSelfStatus("agent-1", {
+        status: "working",
+        headline: "Fix identified",
+        title: "Payment pipeline fix",
+      });
+      expect(result.ok).toBe(true);
+      expect(workspaceRegistry.update).toHaveBeenCalled();
+      expect(workspace.title).toBe("Payment pipeline fix");
+      expect(onWorkspaceUpdated).toHaveBeenCalledWith("wks-1");
+    } finally {
+      await testService.stop();
+      const internals = testService as unknown as { store: MissionControlStore };
+      await awaitStoreWrites(internals.store);
+      await rm(testDir, { recursive: true, force: true });
+    }
+  });
+
+  test("does NOT update workspace title when subsequent agents report status in an existing workspace", async () => {
+    const testDir = await mkdtemp(join(tmpdir(), "mc-self-report-wks2-"));
+    const workspace = {
+      workspaceId: "wks-2",
+      title: "Established Workspace Title",
+      cwd: "/repo",
+      archivedAt: null,
+    };
+    const workspaceRegistry = {
+      get: vi.fn(async () => workspace),
+      update: vi.fn(),
+    };
+    const listAgents = vi.fn(async () => [
+      { id: "agent-1", workspaceId: "wks-2", internal: false },
+      { id: "agent-2", workspaceId: "wks-2", internal: false },
+    ]);
+    const testService = new MissionControlService({
+      paseoHome: testDir,
+      logger: createTestLogger(),
+      agentManager: {
+        getAgent,
+        updateAgentMetadata,
+        subscribe: vi.fn(() => () => {}),
+      } as unknown as AgentManager,
+      agentStorage: {
+        get: vi.fn(async () => ({
+          id: "agent-2",
+          workspaceId: "wks-2",
+          title: "Second agent prompt",
+          titleAutoDerived: true,
+        })),
+        list: listAgents,
+      } as unknown as AgentStorage,
+      daemonConfigStore: { get: () => ({}) } as unknown as DaemonConfigStore,
+      serverId: "test-server",
+      hostName: "test-host",
+      broadcast,
+      presence: createMissionControlPresenceSource({
+        isAgentFocused: () => false,
+        readStopOrigin: () => null,
+      }),
+      workspaceRegistry,
+    });
+    await testService.start();
+    try {
+      const result = await testService.reportSelfStatus("agent-2", {
+        status: "working",
+        headline: "Second agent working",
+        title: "Second agent title",
+      });
+      expect(result.ok).toBe(true);
+      expect(workspaceRegistry.update).not.toHaveBeenCalled();
+      expect(workspace.title).toBe("Established Workspace Title");
+    } finally {
+      await testService.stop();
+      const internals = testService as unknown as { store: MissionControlStore };
+      await awaitStoreWrites(internals.store);
+      await rm(testDir, { recursive: true, force: true });
+    }
+  });
+
   test("echoes stored identity only when it drifted from what the agent sent", async () => {
     // The title is frozen at "Legacy title": a differing title send is
     // ignored, and the echo tells the agent the stored (frozen) value.
