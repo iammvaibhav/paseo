@@ -5,9 +5,11 @@ import { describe, expect, test } from "vitest";
 
 import {
   cloneOmpSessionFile,
+  hasOmpSessionHeader,
   listOmpImportableSessions,
   readOmpImportSessionConfig,
   resolveOmpSessionFile,
+  restoreOmpSessionHeader,
 } from "./session-descriptor.js";
 
 async function writeSession(root: string, relativePath: string, lines: unknown[]): Promise<string> {
@@ -320,5 +322,81 @@ describe("OMP session descriptor", () => {
     const clone = await cloneOmpSessionFile(source, { targetUserTurnCount: 5 });
     const cloneContent = await readFile(clone, "utf8");
     expect(cloneContent).toBe(await readFile(source, "utf8"));
+  });
+
+  test("hasOmpSessionHeader rejects a transcript whose session record is gone", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paseo-omp-session-header-"));
+    const intact = path.join(root, "2026-08-31T02-54-51-722Z_intact.jsonl");
+    const damaged = path.join(root, "2026-08-31T02-54-51-722Z_damaged.jsonl");
+    const event = JSON.stringify({
+      type: "model_change",
+      id: "40fd32e4",
+      parentId: "1c11ecc2",
+      model: "grok-build/grok-4.6",
+    });
+    await writeFile(
+      intact,
+      `${JSON.stringify({ type: "title", v: 1, title: "" })}\n${JSON.stringify({
+        type: "session",
+        version: 3,
+        id: "intact",
+      })}\n${event}\n`,
+      "utf8",
+    );
+    // What omp leaves behind after relocating a session: the preamble is gone
+    // and the first surviving record names a parent the file no longer holds.
+    await writeFile(damaged, `${event}\n`, "utf8");
+
+    await expect(hasOmpSessionHeader(intact)).resolves.toBe(true);
+    await expect(hasOmpSessionHeader(damaged)).resolves.toBe(false);
+    // A file omp has not written yet is its own problem to mint, not damage.
+    await expect(hasOmpSessionHeader(path.join(root, "missing.jsonl"))).resolves.toBe(true);
+  });
+
+  test("restoreOmpSessionHeader prepends a header and keeps every entry", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paseo-omp-session-restore-"));
+    const damaged = path.join(
+      root,
+      "2026-08-31T02-54-51-722Z_511fc990-9989-4cfe-84f8-4ca1d0940c5a.jsonl",
+    );
+    const body = [
+      JSON.stringify({ type: "model_change", id: "40fd32e4", parentId: "1c11ecc2" }),
+      JSON.stringify({
+        type: "message",
+        id: "d63b3ef3",
+        parentId: "40fd32e4",
+        message: { role: "user", content: [{ type: "text", text: "start a deployment" }] },
+      }),
+    ];
+    await writeFile(damaged, `${body.join("\n")}\n`, "utf8");
+
+    await expect(restoreOmpSessionHeader(damaged, { cwd: "/data/paseo" })).resolves.toBe(true);
+
+    const repaired = (await readFile(damaged, "utf8")).trim().split("\n");
+    // The session id and creation time come from omp's own file naming, so the
+    // restored header agrees with the file that holds it.
+    expect(JSON.parse(repaired[0] ?? "")).toEqual({
+      type: "session",
+      version: 3,
+      id: "511fc990-9989-4cfe-84f8-4ca1d0940c5a",
+      timestamp: "2026-08-31T02:54:51.722Z",
+      cwd: "/data/paseo",
+    });
+    expect(repaired.slice(1)).toEqual(body);
+    await expect(hasOmpSessionHeader(damaged)).resolves.toBe(true);
+  });
+
+  test("restoreOmpSessionHeader leaves an intact or empty session untouched", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paseo-omp-session-restore-noop-"));
+    const intact = path.join(root, "2026-08-31T02-54-51-722Z_intact.jsonl");
+    const empty = path.join(root, "2026-08-31T02-54-51-722Z_empty.jsonl");
+    const intactContent = `${JSON.stringify({ type: "session", version: 3, id: "intact" })}\n`;
+    await writeFile(intact, intactContent, "utf8");
+    await writeFile(empty, "", "utf8");
+
+    await expect(restoreOmpSessionHeader(intact)).resolves.toBe(false);
+    await expect(restoreOmpSessionHeader(empty)).resolves.toBe(false);
+    await expect(readFile(intact, "utf8")).resolves.toBe(intactContent);
+    await expect(readFile(empty, "utf8")).resolves.toBe("");
   });
 });

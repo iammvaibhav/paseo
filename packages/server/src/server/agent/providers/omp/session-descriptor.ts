@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants, type Dirent } from "node:fs";
-import { copyFile, open, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { copyFile, open, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -642,6 +642,100 @@ async function readLeadingHeaderLines(sessionFile: string): Promise<LeadingSessi
     }
   }
   return { titleLine, sessionLine };
+}
+
+/**
+ * True when the file carries the `{"type":"session"}` record omp needs to open
+ * it. omp refuses a session JSONL without one ("the session header is missing
+ * or malformed") and exits non-zero, so this is the precondition for passing a
+ * file to `--session` or `switch_session`.
+ */
+export async function hasOmpSessionHeader(sessionFile: string): Promise<boolean> {
+  const headChunk = await readHeadChunk(sessionFile);
+  if (!headChunk) {
+    // Missing or empty: omp mints the preamble itself on first write.
+    return true;
+  }
+  return findSessionRecordLine(headChunk) !== null;
+}
+
+function findSessionRecordLine(headChunk: string): string | null {
+  for (const line of headChunk.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const record = parseJsonRecord(trimmed);
+    if (record?.type === "session" && typeof record.id === "string") {
+      return trimmed;
+    }
+  }
+  return null;
+}
+
+/**
+ * Put a session header back on a transcript that lost it.
+ *
+ * omp rewrites a live session file when it relocates one (`/move`, which the
+ * warm pool sends to retarget a pooled process), and the rewritten file can
+ * arrive without its `title`/`session` preamble — the first surviving record
+ * then names a parent that no longer exists in the file. omp cannot open such
+ * a file at all, so an agent whose persisted handle points at one is stuck
+ * forever: `switch_session` throws and the cold `--session` launch exits 1.
+ *
+ * Only the preamble is lost; every message, tool call and turn is still on
+ * disk. Prepending a header therefore recovers the whole transcript. The
+ * session id comes from omp's own file naming (`<stamp>_<id>.jsonl`) so the
+ * restored header agrees with the file that holds it.
+ *
+ * Returns true when a header was written.
+ */
+export async function restoreOmpSessionHeader(
+  sessionFile: string,
+  options?: { cwd?: string },
+): Promise<boolean> {
+  const body = await readFile(sessionFile, "utf8").catch(() => null);
+  if (body === null || !body.trim()) {
+    return false;
+  }
+  if (findSessionRecordLine(body.slice(0, HEAD_BYTES))) {
+    return false;
+  }
+
+  const { sessionId, createdAt } = parseSessionFileName(sessionFile);
+  const header = `${JSON.stringify({
+    type: "session",
+    version: 3,
+    id: sessionId,
+    timestamp: createdAt,
+    // Only recorded when the caller knows it. A wrong cwd would be worse than
+    // none: omp resumes either way, and import listing skips a cwd-less
+    // session rather than filing it under the wrong workspace.
+    ...(options?.cwd ? { cwd: options.cwd } : {}),
+  })}\n`;
+
+  // Same directory so the rename is atomic on one filesystem: omp must never
+  // observe a half-written transcript.
+  const staging = path.join(path.dirname(sessionFile), `.paseo-header-${randomUUID()}.jsonl`);
+  await writeFile(staging, header + body, "utf8");
+  await rename(staging, sessionFile);
+  return true;
+}
+
+/**
+ * omp names session files `<ISO stamp with : and . as ->_<session id>.jsonl`.
+ * Falls back to a fresh id and the file's own mtime-free "now" when the name
+ * does not follow the convention.
+ */
+function parseSessionFileName(sessionFile: string): { sessionId: string; createdAt: string } {
+  const stem = path.basename(sessionFile, ".jsonl");
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z_(.+)$/u.exec(stem);
+  if (!match) {
+    return { sessionId: randomUUID(), createdAt: new Date().toISOString() };
+  }
+  const [, date, hour, minute, second, millis, sessionId] = match;
+  return {
+    sessionId,
+    createdAt: `${date}T${hour}:${minute}:${second}.${millis}Z`,
+  };
 }
 
 /**

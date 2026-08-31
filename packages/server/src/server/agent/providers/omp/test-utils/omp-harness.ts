@@ -35,11 +35,24 @@ interface OmpResumeHistory {
   assistant: OmpHistoryMessage;
 }
 
-async function writeOmpHistory(history: OmpResumeHistory): Promise<string> {
+interface OmpResumeOptions {
+  /**
+   * Drop the `{"type":"session"}` record, reproducing a transcript omp
+   * relocated and left without its preamble.
+   */
+  omitSessionHeader?: boolean;
+}
+
+async function writeOmpHistory(
+  history: OmpResumeHistory,
+  options?: OmpResumeOptions,
+): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "paseo-omp-resume-"));
   const sessionFile = join(directory, "session.jsonl");
   const entries = [
-    { type: "session", id: "session-root", parentId: null },
+    ...(options?.omitSessionHeader
+      ? []
+      : [{ type: "session", id: "session-root", parentId: null }]),
     {
       type: "message",
       id: history.user.id,
@@ -66,6 +79,7 @@ export class OmpHarness {
   private readonly client: OmpAgentClient;
   private readonly events: AgentStreamEvent[] = [];
   private session: OmpAgentSession | null = null;
+  private resumedSessionFile: string | null = null;
 
   constructor(
     options: {
@@ -84,6 +98,14 @@ export class OmpHarness {
       noTurnScheduler: options.noTurnScheduler,
       usagePollScheduler: options.usagePollScheduler,
     });
+  }
+
+  /** The session JSONL the last `resume()` handed to the client. */
+  resumedSessionFilePath(): string {
+    if (!this.resumedSessionFile) {
+      throw new Error("OMP harness has not resumed");
+    }
+    return this.resumedSessionFile;
   }
 
   queueCommands(commands: OmpRpcSlashCommand[]): void {
@@ -119,8 +141,10 @@ export class OmpHarness {
   async resume(
     history: OmpResumeHistory,
     overrides: Partial<AgentSessionConfig> = {},
+    options?: OmpResumeOptions,
   ): Promise<void> {
-    const sessionFile = await writeOmpHistory(history);
+    const sessionFile = await writeOmpHistory(history, options);
+    this.resumedSessionFile = sessionFile;
     const handle: AgentPersistenceHandle = {
       provider: "omp",
       sessionId: "omp-session-1",

@@ -153,6 +153,11 @@ export class OmpWarmPool {
   private seededKey: string | null = null;
   private maintainTimer: NodeJS.Timeout | null = null;
   private closed = false;
+  /**
+   * Throwaway session file of each claimed process, until the caller's handoff
+   * has moved omp onto the agent's own session.
+   */
+  private readonly claimedThrowaways = new WeakMap<OmpRuntimeSession, string>();
 
   constructor(options: OmpWarmPoolOptions) {
     this.runtime = options.runtime;
@@ -341,7 +346,14 @@ export class OmpWarmPool {
         void this.dispose(entry);
         continue;
       }
-      void this.unlink(entry.throwawayPath);
+      // Deleting the throwaway here would delete the file the process still
+      // has open: omp appends to its session by descriptor, so every later
+      // write would land in a deleted inode and the transcript would be lost.
+      // The caller discards it once `new_session`/`switch_session` has moved
+      // omp onto the agent's own session file.
+      if (entry.throwawayPath) {
+        this.claimedThrowaways.set(entry.session, entry.throwawayPath);
+      }
       void this.fill(input);
       return entry.session;
     }
@@ -349,6 +361,20 @@ export class OmpWarmPool {
     // Cold: prime the pool so the *next* create is warm.
     void this.fill(input);
     return null;
+  }
+
+  /**
+   * Delete the throwaway session file of a claimed process. Call this only
+   * after the handoff has moved omp onto the agent's own session, so the file
+   * being removed is one nothing is writing to any more.
+   */
+  discardClaimedThrowaway(session: OmpRuntimeSession): void {
+    const throwawayPath = this.claimedThrowaways.get(session);
+    if (!throwawayPath) {
+      return;
+    }
+    this.claimedThrowaways.delete(session);
+    void this.unlink(throwawayPath);
   }
 
   /**

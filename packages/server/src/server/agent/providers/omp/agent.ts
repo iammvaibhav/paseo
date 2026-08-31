@@ -76,9 +76,11 @@ import { mapOmpSystemNoticeToToolCall } from "./system-notice.js";
 import { materializeProviderImage } from "../provider-image-output.js";
 import { OmpCliRuntime } from "./cli-runtime.js";
 import {
+  hasOmpSessionHeader,
   listOmpImportableSessions,
   readOmpImportSessionConfig,
   resolveOmpSessionFile,
+  restoreOmpSessionHeader,
 } from "./session-descriptor.js";
 import type { OmpRuntime, OmpRuntimeSession, OmpStartSessionInput } from "./runtime.js";
 import { OmpWarmPool } from "./warm-pool.js";
@@ -2773,6 +2775,9 @@ export class OmpAgentClient implements AgentClient {
             await pooled.setThinkingLevel(thinking);
           }
           const setModelMs = Date.now() - setModelStartedAt;
+          // omp is on its own session now, so the pool's throwaway is safe to
+          // delete.
+          this.warmPool.discardClaimedThrowaway(pooled);
           this.logAcquire({
             purpose: "create",
             source: "pool",
@@ -2795,6 +2800,7 @@ export class OmpAgentClient implements AgentClient {
             "OMP warm pool handoff failed; cold starting",
           );
           await pooled.close().catch(() => undefined);
+          this.warmPool.discardClaimedThrowaway(pooled);
         }
       }
     }
@@ -2835,10 +2841,10 @@ export class OmpAgentClient implements AgentClient {
     if (!rawSessionFile) {
       throw new Error("OMP resume requires a native session file handle");
     }
-    const sessionFile = await resolveOmpSessionFile(rawSessionFile);
-
     const persistenceMetadata = parsePersistenceMetadata(handle.metadata);
     const resumeConfig = buildResumeConfig(persistenceMetadata, overrides, this.provider);
+    const sessionFile = await resolveOmpSessionFile(rawSessionFile);
+    await this.ensureResumableSessionFile(sessionFile, resumeConfig.cwd);
 
     const launchMode = this.resolveLaunchMode(resumeConfig.modeId);
     const runtimeSession = await this.acquireResumeRuntimeSession(
@@ -2875,6 +2881,37 @@ export class OmpAgentClient implements AgentClient {
     } catch (error) {
       await runtimeSession.close().catch(() => undefined);
       throw error;
+    }
+  }
+
+  /**
+   * Make a damaged transcript openable before handing it to omp.
+   *
+   * A session file can lose its `{"type":"session"}` header while omp
+   * relocates it, and omp then refuses to open the file at all: the pooled
+   * `switch_session` throws and the cold `--session` launch exits 1 with
+   * "the session header is missing or malformed". The agent is unresumable
+   * from then on, every attempt surfacing an OMP RPC process exit. Restoring
+   * the header costs one rewrite and keeps the entire transcript.
+   */
+  private async ensureResumableSessionFile(sessionFile: string, cwd: string): Promise<void> {
+    if (await hasOmpSessionHeader(sessionFile)) {
+      return;
+    }
+    try {
+      const restored = await restoreOmpSessionHeader(sessionFile, { cwd });
+      if (restored) {
+        this.logger.warn(
+          { provider: this.provider, sessionFile },
+          "Restored a missing OMP session header so the agent can resume",
+        );
+      }
+    } catch (error) {
+      // Leave the file alone and let the launch report the real failure.
+      this.logger.warn(
+        { err: error, provider: this.provider, sessionFile },
+        "Failed to restore the missing OMP session header",
+      );
     }
   }
 
@@ -2923,6 +2960,19 @@ export class OmpAgentClient implements AgentClient {
             await pooled.setThinkingLevel(thinking);
           }
           const setModelMs = Date.now() - setModelStartedAt;
+          // The agent's transcript, and the handle Paseo persists, both follow
+          // whatever session omp reports here. A mismatch means the pooled
+          // process kept writing somewhere else, so record it with both paths:
+          // a resume that silently forks the transcript is otherwise invisible
+          // until the next resume cannot open the file at all.
+          const adopted = await pooled.getState();
+          if (adopted.sessionFile && adopted.sessionFile !== sessionFile) {
+            this.logger.warn(
+              { provider: this.provider, requested: sessionFile, adopted: adopted.sessionFile },
+              "OMP warm pool resume adopted a different session file than requested",
+            );
+          }
+          this.warmPool.discardClaimedThrowaway(pooled);
           this.logAcquire({
             purpose: "resume",
             source: "pool",
@@ -2946,6 +2996,7 @@ export class OmpAgentClient implements AgentClient {
             "OMP warm pool resume handoff failed; cold starting",
           );
           await pooled.close().catch(() => undefined);
+          this.warmPool.discardClaimedThrowaway(pooled);
         }
       }
     }

@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { setImmediate as waitForImmediate } from "node:timers/promises";
 import { describe, expect, test, vi } from "vitest";
 import pino from "pino";
@@ -708,6 +709,36 @@ describe("OMP agent client and session", () => {
     expect(omp.switchSessionRequests()).toEqual([
       expect.stringMatching(/[\\/]paseo-omp-resume-.*[\\/]session\.jsonl$/),
     ]);
+    await expect(omp.history()).resolves.toEqual([
+      { type: "user_message", text: "continue the audit", messageId: "user-history" },
+      {
+        type: "assistant_message",
+        text: "audit context restored",
+        messageId: "assistant-history",
+      },
+    ]);
+  });
+
+  test("repairs a session file with no header before resuming it", async () => {
+    // omp exits 1 on a transcript whose `{"type":"session"}` record is gone
+    // ("the session header is missing or malformed"), which used to leave the
+    // agent permanently unresumable. The resume restores the header first.
+    const omp = new OmpHarness();
+    await omp.resume(
+      {
+        user: { id: "user-history", text: "continue the audit" },
+        assistant: { id: "assistant-history", text: "audit context restored" },
+      },
+      { cwd: "/workspace/resumed", model: "opencode-zen/deepseek-v4-flash-free" },
+      { omitSessionHeader: true },
+    );
+
+    const lines = (await readFile(omp.resumedSessionFilePath(), "utf8")).trim().split("\n");
+    expect(JSON.parse(lines[0] ?? "")).toMatchObject({
+      type: "session",
+      cwd: "/workspace/resumed",
+    });
+    // The transcript survives the repair, so the resumed agent keeps its history.
     await expect(omp.history()).resolves.toEqual([
       { type: "user_message", text: "continue the audit", messageId: "user-history" },
       {
