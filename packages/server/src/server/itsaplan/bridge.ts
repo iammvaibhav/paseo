@@ -288,7 +288,9 @@ export function buildDispatchPrompt(input: BuildDispatchPromptInput): string {
 
   lines.push("");
   lines.push(
+    "<instructions>",
     `Dispatch a worker for this ticket. Label the new agent "${ITSAPLAN_ISSUE_LABEL_KEY}": "${input.issueId}" so the bridge can move the ticket and post progress as the agent's execution state changes.`,
+    "</instructions>",
   );
 
   return lines.join("\n");

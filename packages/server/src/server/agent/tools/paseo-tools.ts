@@ -6592,7 +6592,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         "from the mission-control store. Pass agentId for that agent's latest runs, workspaceId for the " +
         "workspace rollup + its run records, projectId for the project rollup + its run records, or nothing for the " +
         "most recent records fleet-wide. All ids are fleet-wide and routed automatically via the fleet index. " +
-        "Use this to warm a worker's brief with prior context — spawned workers already receive the '# Prior work in this workspace' block automatically. Read-only; never approval-gated.",
+        "Use this to warm a worker's brief with prior context. Read-only; never approval-gated.",
       inputSchema: {
         workspaceId: z
           .string()

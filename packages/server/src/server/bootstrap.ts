@@ -164,7 +164,6 @@ import { CommanderSnapshotInjector } from "./mission-control/commander-snapshot.
 import { CentralMissionControlConfigStore } from "./mission-control/config.js";
 import { createMissionControlPresenceSource } from "./mission-control/presence.js";
 import { MissionControlVerifierDispatcher } from "./mission-control/verifier.js";
-import { appendPriorWorkBlock } from "./mission-control/rollups.js";
 import {
   commanderHomeCwd,
   buildCommanderLaunchContract,
@@ -468,47 +467,6 @@ async function spawnProposalLocally(
     return { ok: true, agentId: result.snapshot.id, serverId };
   } catch (error) {
     return { ok: false, error: `spawn failed: ${String(error)}` };
-  }
-}
-
-/**
- * M6 spawn-brief enrichment: append the workspace's '# Prior work in this
- * workspace' block to a spawn plan's initial prompt (bounded ~2KB) when the
- * target workspace has run records. Resolves the workspace from the plan's
- * workspaceId, falling back to the cwd → workspace path. Runs at the spawn
- * plan application point so ask and auto paths both enrich at execution time.
- */
-async function enrichSpawnPlanWithPriorWork(
-  plan: MissionControlProposalSpawnPlan,
-  deps: {
-    logger: Logger;
-    findWorkspaceIdForCwd: (cwd: string) => Promise<string | null>;
-    getWorkspaceRollup: (
-      workspaceId: string,
-    ) => import("./mission-control/rollups.js").WorkspaceRollup | null;
-  },
-): Promise<MissionControlProposalSpawnPlan> {
-  try {
-    let workspaceId = plan.workspaceId;
-    if (!workspaceId && plan.cwd) {
-      workspaceId = (await deps.findWorkspaceIdForCwd(plan.cwd)) ?? undefined;
-    }
-    if (!workspaceId) {
-      return plan;
-    }
-    const rollup = deps.getWorkspaceRollup(workspaceId);
-    if (!rollup) {
-      return plan;
-    }
-    const initialPrompt = appendPriorWorkBlock(plan.initialPrompt, rollup);
-    if (initialPrompt === plan.initialPrompt) {
-      return plan;
-    }
-    return { ...plan, initialPrompt };
-  } catch (error) {
-    // Enrichment is best-effort: never fail the spawn on a rollup read.
-    deps.logger.warn({ err: error, component: "spawn-enrichment" }, "prior-work enrichment failed");
-    return plan;
   }
 }
 
@@ -2062,21 +2020,12 @@ export async function createPaseoDaemon(
     // creates the cwd on its own disk). This is the single execution path for
     // approved spawn proposals (survives daemon restarts — the plan rides the
     // persisted proposal).
-    // M6: the '# Prior work in this workspace' block is appended HERE (the
-    // spawn plan application point) so BOTH the ask path (proposal approved
-    // later) and the auto path (auto-approved) enrich the brief at execution
-    // time with the freshest rollup.
     spawnFromProposal: async (proposal) => {
       const plan = proposal.spawnPlan;
       if (!plan) {
         return { ok: false, error: "Spawn proposal has no spawn plan" };
       }
-      const enriched = await enrichSpawnPlanWithPriorWork(plan, {
-        logger,
-        findWorkspaceIdForCwd: findWorkspaceIdForCwdExternal,
-        getWorkspaceRollup: (workspaceId) => missionControlService.getWorkspaceRollup(workspaceId),
-      });
-      return executeSpawnProposal(enriched, spawnExecutorDeps(proposal.origin === "commander"));
+      return executeSpawnProposal(plan, spawnExecutorDeps(proposal.origin === "commander"));
     },
     // Execute a commander-origin meta-kind proposal (fleet_meta in ask mode
     // and auto mode): apply the fleet meta action described by metaPlan
