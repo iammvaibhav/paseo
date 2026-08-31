@@ -30,6 +30,7 @@ const ComposerSelectionScopeSchema = z
     provider: z.string().optional(),
     providerPreferences: z.record(z.string(), ComposerProviderPreferencesSchema).optional(),
     isolation: z.enum(["local", "worktree"]).optional(),
+    baseBranch: z.string().optional(),
     selectionAsk: ComposerSelectionAskSchema.optional(),
   })
   .passthrough();
@@ -56,6 +57,7 @@ export const ComposerPreferencesSchema = z
     favoriteModels: z.array(ComposerFavoriteModelSchema).optional(),
     favoriteModelsByHost: z.record(z.string(), z.array(ComposerFavoriteModelSchema)).optional(),
     isolation: z.enum(["local", "worktree"]).optional(),
+    baseBranch: z.string().optional(),
     byWorkspace: z.record(z.string(), ComposerSelectionScopeSchema).optional(),
     byProject: z.record(z.string(), ComposerSelectionScopeSchema).optional(),
     selectionAsk: ComposerSelectionAskSchema.optional(),

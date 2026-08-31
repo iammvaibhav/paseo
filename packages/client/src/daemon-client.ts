@@ -6233,7 +6233,13 @@ export class DaemonClient {
    * never registers anything.
    */
   async missionControlSpawnLabelsResolve(
-    input: { cwd?: string; workspaceId?: string },
+    input: {
+      cwd?: string;
+      workspaceId?: string;
+      baseBranch?: string;
+      branchName?: string;
+      worktreeSlug?: string;
+    },
     requestId?: string,
   ): Promise<MissionControlSpawnLabelsResolvePayload> {
     return this.sendCorrelatedSessionRequest({

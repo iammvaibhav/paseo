@@ -29,6 +29,7 @@ import {
   buildLocalRecentAgents,
   buildSnapshotBlock,
   buildWorldSnapshot,
+  resolveRememberedBaseBranch,
   WORLD_SNAPSHOT_MARKER,
   type FleetContextDependencies,
   type WorldSnapshot,
@@ -603,6 +604,47 @@ describe("per-project commander instructions in inventory", () => {
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  test("buildLocalInventory populates defaultBaseBranch from composerPreferences", async () => {
+    const inventory = await buildLocalInventory({
+      projectRegistry: {
+        list: async () => [
+          {
+            projectId: "prj_proj_a",
+            projectKey: "proj-a",
+            rootPath: "/repo-a",
+            kind: "git",
+            displayName: "repo-a",
+            customName: "Project A",
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+            archivedAt: null,
+          },
+        ],
+      },
+      workspaceRegistry: { list: async () => [] },
+      serverId: "server-local",
+      composerPreferences: {
+        byProject: {
+          "proj-a": { baseBranch: "develop" },
+        },
+      },
+    });
+
+    expect(inventory.projects[0]?.defaultBaseBranch).toBe("develop");
+  });
+
+  test("resolveRememberedBaseBranch resolves project scope over global", () => {
+    const prefs = {
+      baseBranch: "main",
+      byProject: {
+        "proj-a": { baseBranch: "develop" },
+      },
+    };
+    expect(resolveRememberedBaseBranch(prefs, { projectKey: "proj-a" })).toBe("develop");
+    expect(resolveRememberedBaseBranch(prefs, { projectKey: "proj-b" })).toBe("main");
+    expect(resolveRememberedBaseBranch(null)).toBeNull();
   });
 });
 

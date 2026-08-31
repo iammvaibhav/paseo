@@ -3182,7 +3182,13 @@ export class Session {
         workspaceGitService: this.workspaceGitService,
         logger: this.sessionLogger,
       },
-      { cwd: msg.cwd, workspaceId: msg.workspaceId },
+      {
+        cwd: msg.cwd,
+        workspaceId: msg.workspaceId,
+        baseBranch: msg.baseBranch,
+        branchName: msg.branchName,
+        worktreeSlug: msg.worktreeSlug,
+      },
     );
     this.emit({
       type: "mission_control.spawn_labels.resolve.response",

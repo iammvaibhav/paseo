@@ -25,7 +25,12 @@ import type { AgentStorage, StoredAgentRecord } from "../agent/agent-storage.js"
 import type { ProviderSnapshotManager } from "../agent/provider-snapshot-manager.js";
 import type { DaemonConfigStore } from "../daemon-config-store.js";
 import type { PeerManager } from "../peers/peer-manager.js";
-import type { ProjectRegistry, WorkspaceRegistry } from "../workspace-registry.js";
+import type {
+  PersistedProjectRecord,
+  PersistedWorkspaceRecord,
+  ProjectRegistry,
+  WorkspaceRegistry,
+} from "../workspace-registry.js";
 import { buildCommanderSystemPrompt } from "./commander-contract.js";
 import type { MissionControlReviewStateRecord, MissionControlReviewStateValue } from "./store.js";
 import { resolveProjectCommanderInstructions } from "../../utils/project-instructions.js";
@@ -61,6 +66,8 @@ export interface LocalInventoryInput {
   workspaceRegistry: Pick<WorkspaceRegistry, "list">;
   projectRegistry: Pick<ProjectRegistry, "list">;
   serverId: string;
+  composerPreferences?: ComposerPreferences;
+  daemonConfigStore?: Pick<DaemonConfigStore, "get">;
 }
 
 export interface LocalModelsInput {
@@ -101,14 +108,16 @@ export interface LocalContextInput
  * and cwd/kind. Workspaces whose project is archived or missing get a synthetic
  * project entry so nothing on disk silently vanishes from the fleet map.
  */
-export async function buildLocalInventory(
-  input: LocalInventoryInput,
-): Promise<MissionControlInventory> {
-  const [projects, workspaces] = await Promise.all([
-    input.projectRegistry.list(),
-    input.workspaceRegistry.list(),
-  ]);
-  const projectById = new Map(projects.map((project) => [project.projectId, project]));
+interface PartitionedWorkspaces {
+  workspacesByProject: Map<string, MissionControlInventoryProjectWorkspace[]>;
+  orphanProjects: Map<string, MissionControlInventoryProject>;
+}
+
+function partitionInventoryWorkspaces(
+  workspaces: readonly PersistedWorkspaceRecord[],
+  projectById: Map<string, PersistedProjectRecord>,
+  serverId: string,
+): PartitionedWorkspaces {
   const workspacesByProject = new Map<string, MissionControlInventoryProjectWorkspace[]>();
   const orphanProjects = new Map<string, MissionControlInventoryProject>();
 
@@ -124,10 +133,10 @@ export async function buildLocalInventory(
     };
     const project = projectById.get(workspace.projectId);
     if (!project || project.archivedAt) {
-      const orphan = orphanProjects.get(workspace.projectId) ?? {
+      const orphan: MissionControlInventoryProject = {
         id: workspace.projectId,
         title: project?.displayName ?? workspace.displayName,
-        hostServerId: input.serverId,
+        hostServerId: serverId,
         workspaces: [],
       };
       orphan.workspaces.push(entry);
@@ -138,26 +147,62 @@ export async function buildLocalInventory(
     projectWorkspaces.push(entry);
     workspacesByProject.set(project.projectId, projectWorkspaces);
   }
+  return { workspacesByProject, orphanProjects };
+}
 
-  const projectEntries: MissionControlInventoryProject[] = [];
-  for (const project of projects) {
-    if (project.archivedAt) {
-      continue;
-    }
-    const commanderInstructions =
-      (await resolveProjectCommanderInstructions(project.rootPath)) ?? undefined;
-    projectEntries.push({
-      id: project.projectId,
-      title: project.customName ?? project.displayName,
-      ...(project.description ? { description: project.description } : {}),
-      ...(commanderInstructions ? { commanderInstructions } : {}),
-      // Additive (v0.5.X) cross-host identity; absent when the project has
-      // no key yet (same rule the itsaplan sync applies locally).
-      ...(project.projectKey ? { key: project.projectKey } : {}),
-      hostServerId: input.serverId,
-      workspaces: workspacesByProject.get(project.projectId) ?? [],
-    });
-  }
+async function buildInventoryProjectEntry(
+  project: PersistedProjectRecord,
+  serverId: string,
+  workspaces: MissionControlInventoryProjectWorkspace[],
+  composerPrefs?: ComposerPreferences,
+): Promise<MissionControlInventoryProject> {
+  const commanderInstructions =
+    (await resolveProjectCommanderInstructions(project.rootPath)) ?? undefined;
+  const defaultBaseBranch =
+    resolveRememberedBaseBranch(composerPrefs, {
+      projectKey: project.projectKey,
+      projectId: project.projectId,
+    }) ?? undefined;
+  return {
+    id: project.projectId,
+    title: project.customName ?? project.displayName,
+    ...(project.description ? { description: project.description } : {}),
+    ...(commanderInstructions ? { commanderInstructions } : {}),
+    ...(defaultBaseBranch ? { defaultBaseBranch } : {}),
+    ...(project.projectKey ? { key: project.projectKey } : {}),
+    hostServerId: serverId,
+    workspaces,
+  };
+}
+
+export async function buildLocalInventory(
+  input: LocalInventoryInput,
+): Promise<MissionControlInventory> {
+  const [projects, workspaces] = await Promise.all([
+    input.projectRegistry.list(),
+    input.workspaceRegistry.list(),
+  ]);
+  const projectById = new Map(projects.map((project) => [project.projectId, project]));
+  const { workspacesByProject, orphanProjects } = partitionInventoryWorkspaces(
+    workspaces,
+    projectById,
+    input.serverId,
+  );
+
+  const composerPrefs =
+    input.composerPreferences ?? input.daemonConfigStore?.get().composerPreferences;
+  const activeProjects = projects.filter((project) => !project.archivedAt);
+  const projectEntries = await Promise.all(
+    activeProjects.map((project) =>
+      buildInventoryProjectEntry(
+        project,
+        input.serverId,
+        workspacesByProject.get(project.projectId) ?? [],
+        composerPrefs,
+      ),
+    ),
+  );
+
   projectEntries.push(...orphanProjects.values());
   return { projects: projectEntries };
 }
@@ -679,6 +724,7 @@ function buildInventorySection(context: FleetContextData): string {
         context.centralConfig?.projectSettings?.[project.id]?.alwaysRaisePr === true;
       const suffixes = [
         description || null,
+        project.defaultBaseBranch ? `default branch: ${project.defaultBaseBranch}` : null,
         alwaysRaisePr ? "PR policy: always raise a PR" : null,
       ].filter((suffix): suffix is string => suffix !== null);
       const header = `- ${project.title} (${project.id})${suffixes.length > 0 ? ` — ${suffixes.join(" — ")}` : ""}`;
@@ -856,6 +902,30 @@ function composerScopeSelection(
     workspace: workspaceId ? preferences.byWorkspace?.[workspaceId] : undefined,
     project: projectKey ? preferences.byProject?.[projectKey] : undefined,
   };
+}
+
+/**
+ * The composer's remembered baseBranch for a scope (workspace -> project -> global).
+ */
+export function resolveRememberedBaseBranch(
+  preferences: ComposerPreferences | null | undefined,
+  scope?: {
+    workspaceId?: string | null;
+    projectKey?: string | null;
+    projectId?: string | null;
+  } | null,
+): string | null {
+  if (!preferences) {
+    return null;
+  }
+  const { workspace, project } = composerScopeSelection(preferences, scope);
+  const projectIdScope = scope?.projectId ? preferences.byProject?.[scope.projectId] : undefined;
+  const rawBranch =
+    workspace?.baseBranch ??
+    project?.baseBranch ??
+    projectIdScope?.baseBranch ??
+    preferences.baseBranch;
+  return typeof rawBranch === "string" && rawBranch.trim().length > 0 ? rawBranch.trim() : null;
 }
 
 function resolveComposerDefaultModel(

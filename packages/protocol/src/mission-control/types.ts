@@ -975,6 +975,7 @@ export const MissionControlInventoryProjectSchema = z.object({
   key: z.string().optional(),
   hostServerId: z.string(),
   commanderInstructions: z.string().optional(),
+  defaultBaseBranch: z.string().optional(),
   workspaces: z.array(MissionControlInventoryProjectWorkspaceSchema),
 });
 export type MissionControlInventoryProject = z.infer<typeof MissionControlInventoryProjectSchema>;
@@ -1127,6 +1128,9 @@ export const MissionControlSpawnLabelsResolveRequestSchema = z.object({
   // optional so unknown inputs degrade to an empty labels payload.
   cwd: z.string().optional(),
   workspaceId: z.string().optional(),
+  baseBranch: z.string().optional(),
+  branchName: z.string().optional(),
+  worktreeSlug: z.string().optional(),
 });
 export type MissionControlSpawnLabelsResolveRequest = z.infer<
   typeof MissionControlSpawnLabelsResolveRequestSchema

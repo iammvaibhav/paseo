@@ -4784,6 +4784,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     host: string;
     cwd?: string;
     workspaceId?: string;
+    baseBranch?: string;
+    branchName?: string;
+    worktreeSlug?: string;
   }): Promise<Record<string, string> | undefined> => {
     const { host, cwd, workspaceId } = input;
     if (isFleetLocalTarget(host)) {
@@ -4794,7 +4797,13 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           workspaceGitService: options.workspaceGitService,
           logger: childLogger,
         },
-        { cwd, workspaceId },
+        {
+          cwd,
+          workspaceId,
+          baseBranch: input.baseBranch,
+          branchName: input.branchName,
+          worktreeSlug: input.worktreeSlug,
+        },
       );
     }
     // Peer target: the local registries cannot resolve the peer's workspace.
@@ -4832,7 +4841,12 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       // (branch) and registries, which only the peer knows — ask it over the
       // spawn_labels.resolve RPC instead of leaving the card unnamed.
       try {
-        const payload = await client.missionControlSpawnLabelsResolve({ cwd });
+        const payload = await client.missionControlSpawnLabelsResolve({
+          cwd,
+          baseBranch: input.baseBranch,
+          branchName: input.branchName,
+          worktreeSlug: input.worktreeSlug,
+        });
         if (payload.labels) {
           for (const [key, value] of Object.entries(payload.labels)) {
             labels[key] = value;
@@ -5396,6 +5410,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
             host,
             cwd,
             workspaceId,
+            baseBranch,
+            branchName,
+            worktreeSlug,
           });
           const spawnLabels = { ...labels, ...resolvedSpawnLabels };
           const gated = await runCommanderGatedAction({

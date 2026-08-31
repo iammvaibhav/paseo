@@ -35,6 +35,9 @@ export interface SpawnLabelsDependencies {
 export interface ResolveSpawnLabelsInput {
   cwd?: string;
   workspaceId?: string;
+  baseBranch?: string;
+  branchName?: string;
+  worktreeSlug?: string;
 }
 
 /**
@@ -48,7 +51,11 @@ export interface ResolveSpawnLabelsInput {
 async function resolveNewWorkspaceDisplayName(
   deps: SpawnLabelsDependencies,
   cwd: string,
+  explicitBranch?: string,
 ): Promise<string> {
+  if (explicitBranch?.trim()) {
+    return explicitBranch.trim();
+  }
   if (deps.workspaceRegistry) {
     const mapped = resolveWorkspaceIdForPath(cwd, await deps.workspaceRegistry.list());
     if (mapped) {
@@ -147,7 +154,9 @@ export async function resolveLocalSpawnLabels(
       }
     }
   } else if (cwd) {
-    labels.newWorkspace = await resolveNewWorkspaceDisplayName(deps, cwd);
+    const explicitBranch =
+      input.branchName?.trim() || input.worktreeSlug?.trim() || input.baseBranch?.trim();
+    labels.newWorkspace = await resolveNewWorkspaceDisplayName(deps, cwd, explicitBranch);
     const projectLabel = await resolveNewWorkspaceProjectLabel(deps, cwd);
     labels[projectLabel.key] = projectLabel.name;
   }

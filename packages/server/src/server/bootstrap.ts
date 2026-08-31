@@ -159,7 +159,12 @@ import { IdleCloseOmpService } from "./idle-close/index.js";
 import { MissionControlService } from "./mission-control/service.js";
 import { ITSAPLAN_ISSUE_LABEL_KEY } from "@getpaseo/protocol/agent-labels";
 import type { MissionControlProposalSpawnPlan } from "@getpaseo/protocol/mission-control/types";
-import { buildFleetContextData, buildWorldSnapshot } from "./mission-control/context.js";
+import { areEquivalentPaths } from "../utils/path.js";
+import {
+  buildFleetContextData,
+  buildWorldSnapshot,
+  resolveRememberedBaseBranch,
+} from "./mission-control/context.js";
 import { CommanderSnapshotInjector } from "./mission-control/commander-snapshot.js";
 import { CentralMissionControlConfigStore } from "./mission-control/config.js";
 import { createMissionControlPresenceSource } from "./mission-control/presence.js";
@@ -1547,11 +1552,26 @@ export async function createPaseoDaemon(
         createPaseoWorktree: async (workflowInput, workflowOptions) => {
           return createRegisteredPaseoWorktree(workflowInput, {
             github,
-            ...(workflowOptions?.resolveDefaultBranch
-              ? {
-                  resolveDefaultBranch: workflowOptions.resolveDefaultBranch,
+            resolveDefaultBranch:
+              workflowOptions?.resolveDefaultBranch ??
+              (async (repoRoot: string) => {
+                const composerPrefs = daemonConfigStore?.get().composerPreferences;
+                let project = null;
+                try {
+                  const list = await projectRegistry?.list();
+                  project = list?.find((p) => areEquivalentPaths(p.rootPath, repoRoot)) ?? null;
+                } catch {
+                  // ignore
                 }
-              : {}),
+                const remembered = resolveRememberedBaseBranch(composerPrefs, {
+                  projectId: project?.projectId,
+                  projectKey: project?.projectKey,
+                });
+                if (remembered) {
+                  return remembered;
+                }
+                return workspaceGitService.resolveDefaultBranch(repoRoot);
+              }),
             workspaceGitService,
             workspaceProvisioning,
           });

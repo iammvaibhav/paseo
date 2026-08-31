@@ -139,6 +139,27 @@ describe("resolveLocalSpawnLabels", () => {
       newProject: "thing",
     });
   });
+  test("new workspace prefers explicit branchName over the checked-out branch", async () => {
+    const h = buildHarness();
+    h.getCheckout.mockResolvedValue(checkout("/new/thing", "feature/alpha"));
+    await expect(
+      resolveLocalSpawnLabels(h.deps, { cwd: "/new/thing", branchName: "custom-branch" }),
+    ).resolves.toEqual({
+      newWorkspace: "custom-branch",
+      newProject: "thing",
+    });
+  });
+
+  test("new workspace prefers explicit baseBranch when branchName is absent", async () => {
+    const h = buildHarness();
+    h.getCheckout.mockResolvedValue(checkout("/new/thing", "feature/alpha"));
+    await expect(
+      resolveLocalSpawnLabels(h.deps, { cwd: "/new/thing", baseBranch: "main" }),
+    ).resolves.toEqual({
+      newWorkspace: "main",
+      newProject: "thing",
+    });
+  });
 
   test("new workspace falls back to the cwd basename without a checkout", async () => {
     const h = buildHarness();
@@ -148,7 +169,6 @@ describe("resolveLocalSpawnLabels", () => {
       newProject: "thing",
     });
   });
-
   test("a pre-created project at the exact root is reused (custom name wins, never newProject)", async () => {
     const h = buildHarness();
     h.projects.set(
