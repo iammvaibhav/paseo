@@ -49,6 +49,37 @@ describe("create-agent-title (spec 06: registration always produces a title)", (
     expect(fromPrompt.provisionalTitle?.length).toBe(60);
   });
 
+  test("skips structural headers and cleans ticket prefixes in provisional titles", () => {
+    const verbatimPrompt = [
+      "# Verbatim Ask",
+      '> "Ticket: PASEO-12 — Fix agent and workspace titling convention"',
+      "",
+      "# Resolved Context",
+      "- Ticket ID: PASEO-12 (Issue 30)",
+    ].join("\n");
+    const fromVerbatim = resolveCreateAgentTitles({
+      configTitle: null,
+      initialPrompt: verbatimPrompt,
+    });
+    expect(fromVerbatim.provisionalTitle).toBe(
+      "PASEO-12 - Fix agent and workspace titling convention",
+    );
+
+    const itsaplanPrompt = [
+      "itsaplan ticket moved to Todo with zero open blockers — ready to dispatch.",
+      "Project: PASEO",
+      "Ticket: PASEO-12 — The title of the agent or the agent name should be correct",
+      "URL: http://10.7.0.1:3000/project/PASEO/issues/12",
+    ].join("\n");
+    const fromItsaplan = resolveCreateAgentTitles({
+      configTitle: null,
+      initialPrompt: itsaplanPrompt,
+    });
+    expect(fromItsaplan.provisionalTitle).toBe(
+      "PASEO-12 - The title of the agent or the agent name should b",
+    );
+  });
+
   test("stub format is deterministic and timestamped", () => {
     const fixed = new Date("2026-08-16T10:00:00.000Z");
     expect(deriveFallbackAgentTitle(fixed)).toBe("Agent started 2026-08-16T10:00:00.000Z");

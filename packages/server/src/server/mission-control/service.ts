@@ -13,7 +13,11 @@ import { dispatchLocalPromptMode } from "../agent/tools/paseo-tools.js";
 import { formatSystemNotificationPrompt } from "../agent/agent-prompt.js";
 import { archiveAgentCommand } from "../agent/lifecycle-command.js";
 import type { DaemonConfigStore } from "../daemon-config-store.js";
-import type { WorkspaceRegistry, ProjectRegistry } from "../workspace-registry.js";
+import type {
+  WorkspaceRegistry,
+  ProjectRegistry,
+  PersistedWorkspaceRecord,
+} from "../workspace-registry.js";
 import type { SessionOutboundMessage } from "../messages.js";
 import type {
   MissionControlCentralConfig,
@@ -559,8 +563,9 @@ export interface MissionControlServiceOptions {
    * push is skipped (tests without the hook keep their current behavior).
    */
   onReviewStateChanged?: (agentId: string) => void;
-  workspaceRegistry?: Pick<WorkspaceRegistry, "get" | "list"> | null;
+  workspaceRegistry?: Pick<WorkspaceRegistry, "get" | "list" | "update" | "upsert"> | null;
   projectRegistry?: Pick<ProjectRegistry, "get" | "list"> | null;
+  onWorkspaceUpdated?: (workspaceId: string) => Promise<void> | void;
   archiveWorkspace?: ((workspaceId: string, requestId: string) => Promise<unknown>) | null;
 }
 
@@ -766,7 +771,11 @@ export class MissionControlService {
    * emitCommanderCard "answer"/"clarification"/"proposal" back to the instruction id it
    * delivered — see itsaplan/chat-runner.ts). */
   private readonly eventListeners = new Set<(event: MissionControlEvent) => void>();
-  private readonly workspaceRegistry: Pick<WorkspaceRegistry, "get" | "list"> | null;
+  private readonly workspaceRegistry: Pick<
+    WorkspaceRegistry,
+    "get" | "list" | "update" | "upsert"
+  > | null;
+  private readonly onWorkspaceUpdated?: ((workspaceId: string) => Promise<void> | void) | null;
   private readonly projectRegistry: Pick<ProjectRegistry, "get" | "list"> | null;
   private readonly archiveWorkspace:
     | ((workspaceId: string, requestId: string) => Promise<unknown>)
@@ -881,6 +890,7 @@ export class MissionControlService {
     this.disarmSnapshotAckDrop = options.disarmSnapshotAckDrop;
     this.onReviewStateChanged = options.onReviewStateChanged;
     this.workspaceRegistry = options.workspaceRegistry ?? null;
+    this.onWorkspaceUpdated = options.onWorkspaceUpdated ?? null;
     this.projectRegistry = options.projectRegistry ?? null;
     this.archiveWorkspace = options.archiveWorkspace ?? null;
     this.bootedAtMs = Date.now();
@@ -2849,10 +2859,18 @@ export class MissionControlService {
    * blocked → blocked (blocker severity). title/description flow through the
    * identity path.
    */
-  async reportSelfStatus(
+  private validateSelfReportAdmission(
     agentId: string,
     input: MissionControlReportStatusInput,
-  ): Promise<SelfReportResult> {
+  ):
+    | {
+        ok: true;
+        kind: MissionControlAppendInput["kind"];
+        severity: MissionControlAppendInput["severity"];
+        reportKind: MissionControlReportStatusInput["kind"] | undefined;
+        observation: MissionControlObservation;
+      }
+    | { ok: false; reason: "excluded" | "rate_limited"; message: string } {
     const agent = this.agentManager.getAgent(agentId);
     if (agent && hasMissionControlLabels(agent.labels)) {
       return {
@@ -2873,27 +2891,43 @@ export class MissionControlService {
           "Rate limited: one self-report per minute per agent. Fold this update into your previous report or wait before reporting again.",
       };
     }
-    // Title freeze (spec 06): report_status.title is accepted ONLY as
-    // backfill while the record has no title; afterwards it is ignored — the
-    // only rename path is fleet_rename_agent_title. Description is living and
-    // replaces on every report. Applied BEFORE the event emit so the report's
-    // own card carries the identity triad (agentName + agentDescription) with
-    // the description it just wrote.
+    return { ok: true, kind, severity, reportKind, observation };
+  }
+
+  private async applySelfReportIdentity(
+    agentId: string,
+    input: MissionControlReportStatusInput,
+  ): Promise<{ titleIgnored: boolean }> {
+    const cleanTitle = input.title?.trim();
+    if (cleanTitle === undefined && input.description === undefined) {
+      return { titleIgnored: false };
+    }
     const recordBefore = await this.agentStorage.get(agentId).catch(() => null);
-    const recordHasTitle = (recordBefore?.title?.trim() ?? "") !== "";
-    const titleAccepted = input.title !== undefined && !recordHasTitle;
-    if (input.title !== undefined || input.description !== undefined) {
-      await this.applyIdentityUpdate(agentId, {
-        ...(titleAccepted ? { title: input.title } : {}),
-        ...(input.description !== undefined ? { description: input.description } : {}),
+    const recordHasExplicitTitle =
+      (recordBefore?.title?.trim() ?? "") !== "" && !recordBefore?.titleAutoDerived;
+    const titleAccepted = Boolean(cleanTitle && (!recordHasExplicitTitle || !recordBefore?.title));
+
+    await this.applyIdentityUpdate(agentId, {
+      ...(titleAccepted && cleanTitle ? { title: cleanTitle } : {}),
+      ...(input.description !== undefined ? { description: input.description } : {}),
+    });
+
+    if (titleAccepted && cleanTitle && recordBefore?.workspaceId) {
+      await this.maybeUpdateWorkspaceTitleFromFirstAgent({
+        workspaceId: recordBefore.workspaceId,
+        newTitle: cleanTitle,
+        previousAgentTitle: recordBefore.title,
       });
     }
-    const event = await this.emitEvent(
-      this.buildSelfReportEventInput(agentId, input, kind, severity, reportKind),
-    );
-    // A landed self-report proves the turn loop advanced: the dormant-turn
-    // recovery latch clears (a fresh dormancy gets a fresh recovery). Timeline
-    // activity resets the silence clock too.
+
+    return { titleIgnored: input.title !== undefined && !titleAccepted };
+  }
+
+  private recordSelfReportActivity(
+    agentId: string,
+    event: MissionControlEvent,
+    observation: MissionControlObservation,
+  ): void {
     const tracking = this.stallTracking.get(agentId);
     if (tracking) {
       tracking.lastStreamAt = Date.now();
@@ -2903,15 +2937,24 @@ export class MissionControlService {
       lastSelfReportTs: event.ts,
       lastSelfReportRunEpoch: event.runEpoch ?? observation.runEpoch,
     });
-    // Echo the agent's identity in the tool result ONLY when it drifted from
-    // what the agent just sent — someone else changed it (backfill, the user,
-    // another surface) or the write silently failed. The echo exists to
-    // correct external drift, not to restate what the agent just told us.
+  }
+
+  async reportSelfStatus(
+    agentId: string,
+    input: MissionControlReportStatusInput,
+  ): Promise<SelfReportResult> {
+    const admission = this.validateSelfReportAdmission(agentId, input);
+    if (!admission.ok) {
+      return admission;
+    }
+    const { kind, severity, reportKind, observation } = admission;
+    const { titleIgnored } = await this.applySelfReportIdentity(agentId, input);
+    const event = await this.emitEvent(
+      this.buildSelfReportEventInput(agentId, input, kind, severity, reportKind),
+    );
+    this.recordSelfReportActivity(agentId, event, observation);
     const identity = await this.readSelfReportIdentity(agentId, input);
-    // Result notices (additive): a frozen title tells the agent its title
-    // write was ignored; a record still lacking a description nags the agent
-    // to include one (the description is the Commander's live context).
-    const notices = await this.collectSelfReportNotices(agentId, input, recordHasTitle);
+    const notices = await this.collectSelfReportNotices(agentId, input, titleIgnored);
     const notice = notices.length > 0 ? notices.join("; ") : undefined;
     if (input.status === "completed") {
       await this.applyCompletedSelfReport(agentId);
@@ -2950,10 +2993,10 @@ export class MissionControlService {
   private async collectSelfReportNotices(
     agentId: string,
     input: MissionControlReportStatusInput,
-    recordHasTitle: boolean,
+    titleIgnored: boolean,
   ): Promise<string[]> {
     const notices: string[] = [];
-    if (input.title !== undefined && recordHasTitle) {
+    if (input.title !== undefined && titleIgnored) {
       notices.push("title is fixed; description updated");
     }
     if (input.description === undefined) {
@@ -5339,6 +5382,65 @@ export class MissionControlService {
       this.logger.warn(
         { err: error, agentId },
         "Failed to refresh agent identity from report_status",
+      );
+    }
+  }
+
+  private async maybeUpdateWorkspaceTitleFromFirstAgent(params: {
+    workspaceId: string;
+    newTitle: string;
+    previousAgentTitle?: string | null;
+  }): Promise<void> {
+    if (!this.workspaceRegistry) {
+      return;
+    }
+    const { workspaceId, newTitle, previousAgentTitle } = params;
+    try {
+      const workspace = await this.workspaceRegistry.get(workspaceId);
+      if (!workspace || workspace.archivedAt) {
+        return;
+      }
+      const workspaceTitle = workspace.title?.trim() ?? "";
+      const isProvisionalWorkspaceTitle =
+        workspaceTitle === "" ||
+        (previousAgentTitle && workspaceTitle === previousAgentTitle.trim()) ||
+        /^#+\s*verbatim\s*ask/i.test(workspaceTitle) ||
+        workspaceTitle.toLowerCase() === "verbatim ask" ||
+        workspaceTitle.toLowerCase() === "verbatim ask (migrated)";
+      if (!isProvisionalWorkspaceTitle) {
+        return;
+      }
+      const recordsInWorkspace = (await this.agentStorage.list()).filter(
+        (r) => r.workspaceId === workspaceId && !r.internal && !r.archivedAt,
+      );
+      if (recordsInWorkspace.length > 1) {
+        return;
+      }
+      const updater = (current: PersistedWorkspaceRecord) => ({
+        ...current,
+        title: newTitle,
+        updatedAt: new Date().toISOString(),
+      });
+      if (
+        "update" in this.workspaceRegistry &&
+        typeof this.workspaceRegistry.update === "function"
+      ) {
+        await this.workspaceRegistry.update(workspaceId, updater);
+      } else if (
+        "upsert" in this.workspaceRegistry &&
+        typeof this.workspaceRegistry.upsert === "function"
+      ) {
+        await this.workspaceRegistry.upsert({
+          ...workspace,
+          title: newTitle,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+      await this.onWorkspaceUpdated?.(workspaceId);
+    } catch (error) {
+      this.logger.warn(
+        { err: error, workspaceId },
+        "Failed to update workspace title from first agent report_status",
       );
     }
   }
