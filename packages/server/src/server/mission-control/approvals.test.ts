@@ -900,6 +900,30 @@ describe("MissionControlApprovals ask-mode gating per action class", () => {
       await teardown(harness);
     }
   });
+  test("a failed spawn in auto mode returns status failed, persists the failure, and publishes an event", async () => {
+    const spawn = vi.fn(async () => ({ ok: false as const, error: "fleet spawn failed: boom" }));
+    const harness = await build({ mode: "auto", spawn });
+    try {
+      const proposal = await harness.approvals.createProposal({
+        origin: "commander",
+        serverId: "server-1",
+        targetAgentId: "",
+        message: "Spawn learning-llm smoke test",
+        deliveryMode: "interrupt",
+        reason: "Commander spawn",
+        classification: "normal",
+        kind: "spawn",
+        spawnPlan: { provider: "omp", summary: "Spawn a smoke test" },
+      });
+      expect(proposal.status).toBe("failed");
+      expect(spawn).toHaveBeenCalledTimes(1);
+      // Terminal failure: proposal status is marked failed and retrievable as failed.
+      expect(harness.approvals.getProposal(proposal.id)?.status).toBe("failed");
+      expect(harness.published.map((p) => p.status)).toEqual(["failed"]);
+    } finally {
+      await teardown(harness);
+    }
+  });
 
   test("a failed proposal is terminal and cannot be re-approved", async () => {
     const spawn = vi.fn().mockResolvedValueOnce({ ok: false as const, error: "boom" });
@@ -961,7 +985,12 @@ describe("MissionControlApprovals ask-mode gating per action class", () => {
   });
 
   test("auto mode sends every action class immediately (destructive still asks)", async () => {
-    const harness = await build({ mode: "auto" });
+    const spawnHook = vi.fn(async () => ({
+      ok: true as const,
+      agentId: "spawned-42",
+      serverId: "server-exec",
+    }));
+    const harness = await build({ mode: "auto", spawn: spawnHook });
     try {
       const spawn = await harness.approvals.createProposal(
         baseInput({
@@ -972,15 +1001,20 @@ describe("MissionControlApprovals ask-mode gating per action class", () => {
         }),
       );
       expect(spawn.status).toBe("sent");
+      expect(spawnHook).toHaveBeenCalledTimes(1);
+      expect(harness.approvals.getProposal(spawn.id)?.status).toBe("sent");
+      expect(harness.approvals.getProposal(spawn.id)?.spawnedAgentId).toBe("spawned-42");
       const send = await harness.approvals.createProposal(
         baseInput({ origin: "commander", targetAgentId: "worker-2" }),
       );
       expect(send.status).toBe("sent");
+      expect(harness.approvals.getProposal(send.id)?.status).toBe("sent");
       expect(harness.delivered.map((d) => d.agentId)).toEqual(["worker-2"]);
       const destructive = await harness.approvals.createProposal(
         baseInput({ origin: "commander", classification: "destructive" }),
       );
       expect(destructive.status).toBe("pending");
+      expect(harness.approvals.getProposal(destructive.id)?.status).toBe("pending");
     } finally {
       await teardown(harness);
     }
@@ -1178,12 +1212,11 @@ describe("MissionControlApprovals meta kind", () => {
         applyMeta: async () => ({ ok: false as const, error: "workspace not found" }),
       });
       const proposal = await harness.approvals.createProposal(metaInput());
-      // The caller sees "sent" (the auto-mode contract), but the proposal is
-      // never recorded as applied: the store holds NO record (the action did
-      // not run, so it must never read as applied/sent). Same contract as the
-      // spawn hook.
-      expect(proposal.status).toBe("sent");
-      expect(harness.approvals.getProposal(proposal.id)).toBeNull();
+      // On failure in auto mode, the proposal status is marked failed, persisted,
+      // and published (never left pending or lost).
+      expect(proposal.status).toBe("failed");
+      expect(harness.approvals.getProposal(proposal.id)?.status).toBe("failed");
+      expect(harness.published.map((p) => p.status)).toEqual(["failed"]);
       expect(harness.delivered).toHaveLength(0);
     } finally {
       await teardown(harness);

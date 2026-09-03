@@ -1115,6 +1115,56 @@ test("honors explicit fetchAgent timeout below the session RPC default", async (
   await expect(responsePromise).rejects.toThrow("Timeout waiting for message (5000ms)");
 });
 
+test("gives fleetSpawnApply an extended timeout above the session RPC default", async () => {
+  useHeartbeatClock();
+  const logger = createMockLogger();
+  const mock = createMockTransport();
+
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger,
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const responsePromise = client.fleetSpawnApply(
+    { provider: "omp", summary: "Spawn worker agent" },
+    "req-spawn-1",
+  );
+  let settled = false;
+  void responsePromise.then(
+    () => {
+      settled = true;
+      return undefined;
+    },
+    () => {
+      settled = true;
+      return undefined;
+    },
+  );
+
+  expect(parseSentFrame(mock.sent[0])).toEqual({
+    type: "mission_control.spawn.apply.request",
+    requestId: "req-spawn-1",
+    spawnPlan: { provider: "omp", summary: "Spawn worker agent" },
+  });
+
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(settled).toBe(false);
+
+  await vi.advanceTimersByTimeAsync(539_999);
+  expect(settled).toBe(false);
+
+  await vi.advanceTimersByTimeAsync(1);
+  await expect(responsePromise).rejects.toThrow("Timeout waiting for message (600000ms)");
+});
+
 test("preserves legacy fetchAgent id overload", async () => {
   const logger = createMockLogger();
   const mock = createMockTransport();

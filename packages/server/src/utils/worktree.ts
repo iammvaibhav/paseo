@@ -1229,10 +1229,28 @@ export const createWorktree = async ({
   }
 
   // Primitive owner for `git worktree add`; callers route through createWorktreeCore.
-  await runGitCommand(["worktree", "add", finalWorktreePath, ...sourcePlan.addArguments], {
-    cwd,
-    timeout: 120_000,
-  });
+  try {
+    await runGitCommand(["worktree", "add", finalWorktreePath, ...sourcePlan.addArguments], {
+      cwd,
+      timeout: 120_000,
+    });
+  } catch (error) {
+    // A killed `git worktree add` (the 120s timeout SIGKILLs mid-checkout)
+    // leaves the partial checkout AND its .git/worktrees/<slug> admin entry
+    // behind. Both cleanups are best-effort so neither can mask the git error
+    // the caller surfaces.
+    try {
+      await removeDirectoryWithRetries(finalWorktreePath);
+    } catch {
+      // ignore
+    }
+    try {
+      await runGitCommand(["worktree", "prune"], { cwd, timeout: 30_000 });
+    } catch {
+      // git prunes lazily
+    }
+    throw error;
+  }
   worktreePath = normalizePathForOwnership(finalWorktreePath);
 
   if (sourcePlan.pushRemote) {

@@ -360,6 +360,35 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
       });
     });
 
+    it("cleans up worktree directory and git admin entry when worktree add fails", async () => {
+      const hookPath = join(repoDir, ".git", "hooks", "post-checkout");
+      mkdirSync(dirname(hookPath), { recursive: true });
+      writeFileSync(hookPath, "#!/bin/sh\nexit 1\n");
+      chmodSync(hookPath, 0o755);
+
+      const worktreeSlug = "failing-worktree";
+      const projectHash = await deriveWorktreeProjectHash(repoDir);
+      const expectedWorktreePath = join(paseoHome, "worktrees", projectHash, worktreeSlug);
+      const expectedAdminPath = join(repoDir, ".git", "worktrees", worktreeSlug);
+
+      await expect(
+        createWorktreePrimitive({
+          cwd: repoDir,
+          worktreeSlug,
+          source: {
+            kind: "branch-off",
+            branchName: "failing-branch",
+            baseBranch: "main",
+          },
+          runSetup: false,
+          paseoHome,
+        }),
+      ).rejects.toThrow(/worktree.*add/);
+
+      expect(existsSync(expectedWorktreePath)).toBe(false);
+      expect(existsSync(expectedAdminPath)).toBe(false);
+    });
+
     it("fetches a GitHub PR branch, checks it out, writes metadata, and runs setup", async () => {
       const remoteDir = join(tempDir, "remote.git");
       const remoteCloneDir = join(tempDir, "remote-clone");

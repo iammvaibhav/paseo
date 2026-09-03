@@ -1136,6 +1136,13 @@ const LIVENESS_HEARTBEAT_INTERVAL_MS = 10_000;
 const LIVENESS_HEARTBEAT_TIMEOUT_MS = 15_000;
 const LIVENESS_FAILURE_RECONNECT_THRESHOLD = 2;
 
+/**
+ * Budget for applying an approved spawn plan on a peer daemon. Must stay
+ * above the peer's provisioning budget (git worktree add plus setup plus
+ * agent boot); the RPC returns only after the peer created the agent.
+ */
+const SPAWN_APPLY_TIMEOUT_MS = 10 * 60_000;
+
 /** Default timeout for waiting for connection before sending queued messages */
 const DEFAULT_SEND_QUEUE_TIMEOUT_MS = DEFAULT_SESSION_RPC_TIMEOUT_MS;
 const DEFAULT_DICTATION_FINISH_ACCEPT_TIMEOUT_MS = DEFAULT_SESSION_RPC_TIMEOUT_MS;
@@ -6211,6 +6218,10 @@ export class DaemonClient {
    * on the plan, so the label persists in this host's registry. Mirrors
    * fleetMetaApply; only the APPLY hops (the proposal card stays on the
    * commander host).
+   *
+   * Uses SPAWN_APPLY_TIMEOUT_MS (10m) rather than the session default so the
+   * Commander does not time out while the peer daemon provisions the workspace
+   * (git worktree add, workspace setup scripts) and boots the agent.
    */
   async fleetSpawnApply(
     spawnPlan: MissionControlProposalSpawnPlan,
@@ -6220,6 +6231,7 @@ export class DaemonClient {
       requestId,
       message: { type: "mission_control.spawn.apply.request", spawnPlan },
       responseType: "mission_control.spawn.apply.response",
+      timeout: SPAWN_APPLY_TIMEOUT_MS,
     });
   }
 
