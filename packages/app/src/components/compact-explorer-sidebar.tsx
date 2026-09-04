@@ -15,6 +15,7 @@ import {
   type ExplorerTab,
 } from "@/stores/panel-store";
 import { useCloseFileExplorerGesture } from "@/mobile-panels/gestures";
+import { useIsMobilePanelActive } from "@/mobile-panels/provider";
 import { MobilePanelOverlay } from "@/mobile-panels/presentation";
 import {
   HEADER_INNER_HEIGHT,
@@ -89,7 +90,7 @@ export function CompactExplorerSidebar({
 }: ExplorerSidebarProps) {
   const { theme } = useUnistyles();
   const insets = useSafeAreaInsets();
-  const isOpen = usePanelStore(selectIsCompactFileExplorerOpen);
+  const isActive = useIsMobilePanelActive("file-explorer");
   const showMobileAgent = usePanelStore((state) => state.showMobileAgent);
   const { explorerTab, handleTabPress } = useExplorerSidebarSharedState({
     serverId,
@@ -107,11 +108,11 @@ export function CompactExplorerSidebar({
     (reason: string) => {
       logExplorerSidebar("handleClose", {
         reason,
-        isOpen,
+        isOpen: isActive,
       });
       showMobileAgent();
     },
-    [isOpen, showMobileAgent],
+    [isActive, showMobileAgent],
   );
 
   const handleHeaderClose = useCallback(() => handleClose("header-close-button"), [handleClose]);
@@ -135,7 +136,7 @@ export function CompactExplorerSidebar({
   );
 
   return (
-    <RetainedPanelActivity active={isOpen}>
+    <RetainedPanelActivity active={isActive}>
       <MobilePanelOverlay
         panel="file-explorer"
         closeGesture={closeGesture}
@@ -149,7 +150,7 @@ export function CompactExplorerSidebar({
           workspaceId={workspaceId}
           workspaceRoot={workspaceRoot}
           isGit={isGit}
-          isOpen={isOpen}
+          isOpen={isActive}
           onOpenFile={onOpenFile}
           onOpenDiff={onOpenDiff}
           onOpenHostFile={onOpenHostFile}
@@ -505,7 +506,6 @@ function ExplorerContentArea({
       {mountedTabIds.has("changes") ? (
         <RetainedPanel active={!showHostFiles && resolvedTab === "changes"}>
           <GitDiffPane
-            modeScope="compact-explorer"
             serverId={serverId}
             workspaceId={workspaceId}
             cwd={effectiveCwd}

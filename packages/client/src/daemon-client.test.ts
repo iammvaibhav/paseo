@@ -743,6 +743,7 @@ test("advertises client capabilities in hello", async () => {
       provider_subagents: true,
       reasoning_merge_enum: true,
       terminal_reflowable_snapshot: true,
+      timeline_notifications: true,
       browser_host: {
         supportedCommands: ["list_tabs"],
         hostKind: "desktop app",
@@ -2036,6 +2037,49 @@ test("file context action RPCs correlate success and error responses", async () 
     success: false,
     error: { code: "NOT_GIT_REPO", message: "Not a git repository" },
   });
+});
+
+test("serializes plugin source suffixes through the legacy path field", async () => {
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_plugin_source",
+    logger: createMockLogger(),
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const installPromise = client.installPluginSource({
+    source: "owner/repository:plugins/review",
+  });
+  const request = parseSentFrame(mock.sent.at(-1));
+  expect(request).toEqual({
+    type: "plugin.source.install.request",
+    requestId: expect.any(String),
+    source: "owner/repository",
+    pluginPath: "plugins/review",
+  });
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "plugin.source.install.response",
+      payload: {
+        requestId: request.requestId,
+        plugin: {
+          id: "review",
+          path: "/plugins/review",
+          enabled: true,
+          status: "running",
+        },
+      },
+    }),
+  );
+
+  await expect(installPromise).resolves.toMatchObject({ id: "review", status: "running" });
 });
 
 test("a connection loss rejects an in-flight file context action", async () => {
@@ -4636,6 +4680,7 @@ test("fetches scoped recent provider sessions", async () => {
     providers: ["my-claude"],
     since: "2026-04-30T00:00:00.000Z",
     limit: 25,
+    query: "invoice",
   });
 
   expect(mock.sent).toHaveLength(1);
@@ -4648,6 +4693,7 @@ test("fetches scoped recent provider sessions", async () => {
       providers?: string[];
       since?: string;
       limit?: number;
+      query?: string;
     };
   };
   expect(request.message).toMatchObject({
@@ -4656,6 +4702,7 @@ test("fetches scoped recent provider sessions", async () => {
     providers: ["my-claude"],
     since: "2026-04-30T00:00:00.000Z",
     limit: 25,
+    query: "invoice",
   });
 
   mock.triggerMessage(

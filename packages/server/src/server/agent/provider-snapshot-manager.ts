@@ -45,6 +45,8 @@ import {
   type AgentConfigurationValidationInput,
   validateAgentConfigurationAgainstProvider,
 } from "./agent-configuration-validator.js";
+import type { ProviderRegistration } from "@getpaseo/plugin/provider";
+import { PluginAgentClientRegistry } from "./plugin-provider.js";
 
 const DEFAULT_REFRESH_TIMEOUT_MS = 120_000;
 const MAX_REFRESH_TIMEOUT_MS = 2_147_483_647;
@@ -219,9 +221,13 @@ export class ProviderSnapshotManager {
   private providerRegistry: Record<AgentProvider, ProviderDefinition>;
   private providerClients: Record<AgentProvider, AgentClient>;
   private readonly ownedClients = new Set<AgentClient>();
+  private readonly pluginProviders: PluginAgentClientRegistry;
 
   constructor(options: ProviderSnapshotManagerOptions) {
     this.logger = options.logger;
+    this.pluginProviders = new PluginAgentClientRegistry(
+      options.logger.child({ module: "plugin-providers" }),
+    );
     this.workspaceGitService = options.workspaceGitService;
     this.managedProcesses = options.managedProcesses;
     this.openCodeBridge = options.openCodeBridge;
@@ -236,7 +242,10 @@ export class ProviderSnapshotManager {
       this.refreshTimeoutMs,
     );
     this.providerRegistry = this.buildRegistry();
-    this.providerClients = { ...this.extraClients } as Record<AgentProvider, AgentClient>;
+    this.providerClients = {
+      ...this.extraClients,
+      ...this.pluginProviders.clients(),
+    } as Record<AgentProvider, AgentClient>;
     for (const client of Object.values(this.providerClients)) this.ownedClients.add(client);
   }
 
@@ -323,6 +332,42 @@ export class ProviderSnapshotManager {
       }
     }
     return { providerDefinitions, clients };
+  }
+
+  replacePluginProviders(
+    registrations: readonly ProviderRegistration[],
+  ): AgentManagerProviderState {
+    for (const registration of registrations) {
+      if (
+        (this.providerRegistry[registration.id] || this.extraClients[registration.id]) &&
+        !this.pluginProviders.has(registration.id)
+      ) {
+        throw new Error(
+          `Plugin provider '${registration.id}' conflicts with a configured provider`,
+        );
+      }
+    }
+    this.pluginProviders.replace(registrations);
+    this.providerRegistry = this.buildRegistry();
+    this.providerClients = {
+      ...this.extraClients,
+      ...this.pluginProviders.clients(),
+    } as Record<AgentProvider, AgentClient>;
+    for (const client of Object.values(this.providerClients)) this.ownedClients.add(client);
+
+    for (const cwd of this.snapshots.keys()) {
+      this.providerLoads.delete(cwd);
+      this.snapshots.set(cwd, this.reconcileSnapshotForRegistry(cwd));
+      this.emitChange(cwd);
+      const target =
+        cwd === GLOBAL_PROVIDER_SNAPSHOT_KEY
+          ? createGlobalSnapshotTarget()
+          : createWorkspaceSnapshotTarget(cwd);
+      const providers = this.resolveProvidersToWarm(cwd);
+      if (providers.length > 0) void this.warmUp(target, providers);
+    }
+
+    return this.getAgentManagerProviderState();
   }
 
   private ensureClient(provider: AgentProvider, definition: ProviderDefinition): AgentClient {
@@ -523,7 +568,10 @@ export class ProviderSnapshotManager {
       // startup-derived runtime settings here would retain removed command/env fields.
       if (options.replace) this.runtimeSettings = undefined;
       this.providerRegistry = this.buildRegistry();
-      this.providerClients = { ...this.extraClients } as Record<AgentProvider, AgentClient>;
+      this.providerClients = {
+        ...this.extraClients,
+        ...this.pluginProviders.clients(),
+      } as Record<AgentProvider, AgentClient>;
 
       for (const cwd of this.snapshots.keys()) {
         this.providerLoads.delete(cwd);
@@ -617,6 +665,13 @@ export class ProviderSnapshotManager {
       isDev: this.isDev,
     });
 
+    for (const [provider, definition] of Object.entries(this.pluginProviders.definitions())) {
+      if (registry[provider]) {
+        throw new Error(`Plugin provider '${provider}' conflicts with a configured provider`);
+      }
+      registry[provider] = definition;
+    }
+
     for (const [provider, client] of Object.entries(this.extraClients) as Array<
       [AgentProvider, AgentClient]
     >) {
@@ -700,6 +755,7 @@ export class ProviderSnapshotManager {
         source: this.getProviderSource(provider),
         label: definition.label,
         description: definition.description,
+        iconSvg: definition.iconSvg,
         defaultModeId: definition.defaultModeId,
         error: toErrorMessage(error),
       };
@@ -732,6 +788,7 @@ export class ProviderSnapshotManager {
   }
 
   private getProviderSource(provider: AgentProvider): ProviderSnapshotEntry["source"] {
+    if (this.pluginProviders.has(provider)) return "custom";
     const isBuiltin = BUILTIN_PROVIDER_IDS.includes(provider);
     return !isBuiltin && this.providerOverrides?.[provider]?.extends ? "custom" : "builtin";
   }
@@ -747,6 +804,7 @@ export class ProviderSnapshotManager {
         source: this.getProviderSource(provider),
         label: definition?.label,
         description: definition?.description,
+        iconSvg: definition?.iconSvg,
         defaultModeId: definition?.defaultModeId ?? null,
       });
     }
@@ -766,6 +824,7 @@ export class ProviderSnapshotManager {
         source: this.getProviderSource(provider),
         label: definition?.label,
         description: definition?.description,
+        iconSvg: definition?.iconSvg,
         defaultModeId: definition?.defaultModeId ?? null,
       };
 
@@ -934,6 +993,7 @@ export class ProviderSnapshotManager {
       source: this.getProviderSource(provider),
       label: definition.label,
       description: definition.description,
+      iconSvg: definition.iconSvg,
       defaultModeId: definition.defaultModeId,
     };
     const setEntry = (entry: ProviderSnapshotEntry) => {

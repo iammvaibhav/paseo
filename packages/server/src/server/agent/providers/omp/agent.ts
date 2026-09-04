@@ -72,7 +72,7 @@ export { formatOmpVersionSupport, resolveOmpDiagnosticPaths } from "./provider-c
 import { OmpSubagentCardTracker, type OmpSubagentCardScheduler } from "./subagent-card-tracker.js";
 import { shouldDisplayOmpCustomMessage } from "./custom-message.js";
 import { getUserMessageText } from "./message-history.js";
-import { mapOmpSystemNoticeToToolCall } from "./system-notice.js";
+import { mapOmpSystemNoticeToNotification } from "./system-notice.js";
 import { materializeProviderImage } from "../provider-image-output.js";
 import { OmpCliRuntime } from "./cli-runtime.js";
 import {
@@ -929,14 +929,15 @@ function buildExtensionUiResponse(
 function createRuntime(
   logger: Logger,
   runtimeSettings: ProviderRuntimeSettings | undefined,
-  requestTimeoutMs: number,
+  providerParams: OmpRuntimeProviderParams,
 ): OmpRuntime {
   return new OmpCliRuntime({
     logger,
     runtimeSettings,
     command: ["omp"],
     commandsRpcName: "get_available_commands",
-    requestTimeoutMs,
+    readyTimeoutMs: providerParams.readyTimeoutMs,
+    requestTimeoutMs: providerParams.rpcTimeoutMs,
   });
 }
 
@@ -2367,7 +2368,7 @@ export class OmpAgentSession implements AgentSession {
         if (text) {
           const item =
             mapOmpAdvisorMessageToToolCall(event.message, text) ??
-            mapOmpSystemNoticeToToolCall(text);
+            mapOmpSystemNoticeToNotification(text);
           this.emit({
             type: "timeline",
             provider: this.provider,
@@ -2661,8 +2662,7 @@ export class OmpAgentClient implements AgentClient {
     this.noTurnScheduler = options.noTurnScheduler;
     this.usagePollScheduler = options.usagePollScheduler;
     this.runtime =
-      options.runtime ??
-      createRuntime(options.logger, runtimeSettings, this.providerParams.rpcTimeoutMs);
+      options.runtime ?? createRuntime(options.logger, runtimeSettings, this.providerParams);
     this.warmPool = new OmpWarmPool({ runtime: this.runtime, logger: this.logger });
     this.warmPool.start();
   }

@@ -17,9 +17,9 @@ import type { Theme } from "@/styles/theme";
 import { MAX_CONTENT_WIDTH, useIsCompactFormFactor } from "@/constants/layout";
 import { containsLeakedToolMarkup } from "./answer-card-display";
 import {
-  ActivityLog,
   AssistantMessage,
   CompactionMarker,
+  Notification,
   TodoListCard,
   ToolCall,
   UserMessage,
@@ -255,15 +255,8 @@ function CommanderMessageRow({
       return renderThreadToolCall(item, verbose, agentNames, resolveHost);
     case "todo_list":
       return verbose ? <TodoListCard items={item.items} activity={item.activity} /> : null;
-    case "activity_log":
-      return verbose ? (
-        <ActivityLog
-          type={item.activityType}
-          message={item.message}
-          timestamp={item.timestamp.getTime()}
-          metadata={item.metadata}
-        />
-      ) : null;
+    case "notification":
+      return verbose ? <Notification level={item.level} message={item.message} /> : null;
     case "compaction":
       return verbose ? (
         <CompactionMarker status={item.status} trigger={item.trigger} preTokens={item.preTokens} />

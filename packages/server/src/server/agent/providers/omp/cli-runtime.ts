@@ -59,6 +59,7 @@ export interface OmpCliRuntimeOptions {
   runtimeSettings?: ProviderRuntimeSettings;
   command?: [string, ...string[]];
   commandsRpcName?: "get_available_commands";
+  readyTimeoutMs?: number;
   requestTimeoutMs?: number;
   spawnProcess?: (launch: OmpRuntimeLaunch) => ChildProcessWithoutNullStreams;
 }
@@ -99,7 +100,10 @@ export class OmpCliRuntime implements OmpRuntime {
     const handleAbort = () => void process.close(input.signal?.reason).catch(() => undefined);
     input.signal?.addEventListener("abort", handleAbort, { once: true });
     try {
-      await establishOmpProtocol(process, this.options.logger, this.options.requestTimeoutMs);
+      await establishOmpProtocol(process, this.options.logger, {
+        readyTimeoutMs: this.options.readyTimeoutMs,
+        requestTimeoutMs: this.options.requestTimeoutMs,
+      });
       input.signal?.throwIfAborted();
       return new OmpCliRuntimeSession(process, this.commandsRpcName, this.options.logger);
     } catch (error) {

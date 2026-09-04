@@ -8,7 +8,7 @@ import {
   invalidatePrPaneTimelineForCheckout,
 } from "@/git/query-keys";
 import { type CheckoutPrStatusPayload, normalizeCheckoutPrStatusPayload } from "@/git/pr-status";
-import { expireStaleDiffModeOverrides } from "@/review/store";
+import { expireWorkingDiffComparisons } from "@/git/working-diff-comparison";
 
 export type CheckoutStatusPayload = CheckoutStatusResponse["payload"];
 export type { CheckoutPrStatusPayload } from "@/git/pr-status";
@@ -31,7 +31,7 @@ export async function fetchCheckoutStatus({
   cwd: string;
 }): Promise<CheckoutStatusPayload> {
   const payload = await client.getCheckoutStatus(cwd);
-  expireStaleDiffModeOverrides({ serverId, cwd, isDirty: payload.isGit && payload.isDirty });
+  expireWorkingDiffComparisons({ serverId, cwd, isDirty: payload.isGit && payload.isDirty });
   if (payload.error) {
     // The daemon reports a transient snapshot failure (busy git, cold target,
     // index lock) as a successful payload with `error` set. Throw instead of
@@ -79,7 +79,7 @@ export function applyCheckoutStatusUpdateFromEvent({
   void queryClient.invalidateQueries({
     queryKey: checkoutCommitsQueryKey(serverId, payload.cwd),
   });
-  expireStaleDiffModeOverrides({
+  expireWorkingDiffComparisons({
     serverId,
     cwd: payload.cwd,
     isDirty: payload.isGit && payload.isDirty,

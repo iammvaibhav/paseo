@@ -17,6 +17,7 @@ import { WEB_SCROLLBAR_SIZE_PX } from "@/styles/web-scrollbar";
 import { DomOverlayScrollbar } from "@/components/ui/overlay-scrollbar/dom-overlay-scrollbar";
 import { shouldAdjustScrollForVirtualRowResize } from "./web-virtualization";
 import type { StreamRenderInput, StreamStrategy, StreamViewportHandle } from "./strategy";
+import { useRevisedHistoryRows } from "./history-row-revision";
 import { createStreamStrategy, resolveDefaultItemKey } from "./strategy";
 import {
   abandonHistoryStartPaginationRequest,
@@ -283,7 +284,8 @@ function isScrollContainerOverscrolledPastBottom(
 
 function WebStreamViewport<T>(props: StreamRenderInput<T> & { isMobileBreakpoint: boolean }) {
   const {
-    segments,
+    segments: inputSegments,
+    historyRowRevision,
     liveHeadRowRevision,
     boundary,
     renderers,
@@ -303,6 +305,15 @@ function WebStreamViewport<T>(props: StreamRenderInput<T> & { isMobileBreakpoint
     estimateItemSize,
     topSlot,
   } = props;
+  const historyVirtualized = useRevisedHistoryRows(
+    inputSegments.historyVirtualized,
+    historyRowRevision,
+  );
+  const historyMounted = useRevisedHistoryRows(inputSegments.historyMounted, historyRowRevision);
+  const segments = useMemo(
+    () => ({ ...inputSegments, historyVirtualized, historyMounted }),
+    [historyMounted, historyVirtualized, inputSegments],
+  );
   const isActive = useRetainedPanelActive();
   const isActiveRef = useRef(isActive);
   const scrollContainerRef = useRef<HTMLElement | null>(null);

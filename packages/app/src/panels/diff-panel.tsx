@@ -170,7 +170,6 @@ function ChangesPanel() {
           enabled={isActive}
           presentation={presentation}
           submodulePicker={submodulePicker}
-          modeScope={tabId}
           focusPath={target.kind === "working_diff" ? target.focusPath : undefined}
           focusRequestId={target.kind === "working_diff" ? target.focusRequestId : undefined}
           onSelectDiffFile={isTree ? handleSelectDiffFile : undefined}

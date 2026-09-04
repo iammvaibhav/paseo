@@ -6,11 +6,15 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
+// Pre-existing: the Ask tab's input is controlled (askQuestion is set programmatically to
+// restore a pending question and to clear after submit). EditingTextInput is uncontrolled and
+// needs its imperative handle for both, so migrating it is its own change, not merge work.
+// eslint-disable-next-line no-restricted-imports -- migrate to EditingTextInput separately
 import { View, Text, TextInput, ActivityIndicator } from "react-native";
 import { useIsFocused } from "@react-navigation/native";
 import { router } from "expo-router";
 import { StyleSheet } from "react-native-unistyles";
-import { ChevronLeft } from "lucide-react-native";
+import { ChevronLeft, Import } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import type { AgentProvider } from "@getpaseo/protocol/agent-types";
@@ -29,6 +33,7 @@ import { SelectFieldTrigger } from "@/components/ui/select-field";
 import { ModelProviderGlyph } from "@/components/model-browser";
 import { type AgentHistoryHostError, useAgentHistory } from "@/hooks/use-agent-history";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
+import { useImportSession } from "@/hooks/use-import-session";
 import { getHostRuntimeStore, useHosts } from "@/runtime/host-runtime";
 import { buildOpenProjectRoute } from "@/utils/host-routes";
 import { useToast } from "@/contexts/toast-context";
@@ -103,6 +108,7 @@ export function SessionsScreen() {
 
 function SessionsScreenContent() {
   const { t } = useTranslation();
+  const importSession = useImportSession();
   const hosts = useHosts();
   const [selectedHost, setSelectedHost] = useState(ALL_HOSTS_OPTION_ID);
   const [searchInput, setSearchInput] = useState("");
@@ -275,6 +281,7 @@ function SessionsScreenContent() {
           onLoadMore={loadMore}
           onClearSearch={handleClearSearch}
           onAskAboutThis={handleAskAboutThis}
+          onImportSession={importSession.open}
         />
       ) : (
         <SessionsAskTab
@@ -292,6 +299,7 @@ function SessionsScreenContent() {
           refreshAll={refreshAll}
         />
       )}
+      {importSession.sheet}
     </View>
   );
 }
@@ -312,6 +320,7 @@ function SessionsAgentsTab(input: {
   onLoadMore: () => void;
   onClearSearch: () => void;
   onAskAboutThis: () => void;
+  onImportSession: () => void;
 }): ReactElement {
   const { t } = useTranslation();
   const emptyText = resolveEmptyText({
@@ -383,6 +392,9 @@ function SessionsAgentsTab(input: {
             {t("sessions.actions.back")}
           </Button>
         )}
+        <Button variant="ghost" leftIcon={Import} onPress={input.onImportSession}>
+          {t("importSession.title")}
+        </Button>
       </View>
     );
   }

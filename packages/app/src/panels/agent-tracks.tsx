@@ -125,6 +125,7 @@ export const AgentTracks = memo(function AgentTracks({
     <ComposerTrackBar>
       <AgentTaskList tasks={tasks} />
       <SubagentsTrack
+        serverId={serverId}
         rows={subagentRows}
         onOpenSubagent={handleOpenSubagent}
         onOpenProviderSubagent={handleOpenProviderSubagent}

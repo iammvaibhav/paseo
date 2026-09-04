@@ -1,6 +1,7 @@
 import type {
   AgentProviderNotice,
   AgentTaskItem,
+  JsonValue,
   ProviderOptions,
   ToolPolicy,
 } from "@getpaseo/protocol/agent-types";
@@ -124,6 +125,7 @@ export interface ProviderSnapshotEntry {
   fetchedAt?: string;
   label?: string;
   description?: string;
+  iconSvg?: string;
   defaultModeId?: string | null;
 }
 
@@ -417,6 +419,15 @@ export type AgentTimelineUserMessageClassification = "machinery" | "instruction"
  */
 export type AgentTimelineVoiceMirrorKind = "qa" | "dispatch";
 
+export interface PluginTimelineItem {
+  type: "plugin";
+  id: string;
+  pluginId: string;
+  kind: string;
+  version: number;
+  data: JsonValue;
+}
+
 export type AgentTimelineItem =
   | {
       type: "user_message";
@@ -437,7 +448,13 @@ export type AgentTimelineItem =
   | ToolCallTimelineItem
   | { type: "todo"; items: AgentTaskItem[] }
   | { type: "error"; message: string }
-  | CompactionTimelineItem;
+  | {
+      type: "notification";
+      level: "info" | "warning" | "error";
+      message: string;
+    }
+  | CompactionTimelineItem
+  | PluginTimelineItem;
 
 export type AgentStreamEvent =
   | { type: "thread_started"; sessionId: string; provider: AgentProvider }
@@ -583,6 +600,13 @@ export interface AgentSlashCommand {
 
 export interface ListImportableSessionsOptions {
   limit?: number;
+  /** Optional case-insensitive descriptor search text. */
+  query?: string;
+  /**
+   * Maximum number of cheap persisted-session candidates to inspect before
+   * applying the result limit. Providers must cap this at 500.
+   */
+  scanLimit?: number;
   /**
    * Optional cwd hint. Providers that can cheaply pre-filter importable
    * sessions by working directory should do so before doing expensive work.

@@ -1,4 +1,5 @@
 import type { z } from "zod";
+import type { ProviderPaseoToolsPolicy } from "@getpaseo/protocol/provider-config";
 
 export interface PaseoToolExecutionContext {
   signal?: AbortSignal;
@@ -48,6 +49,7 @@ export interface PaseoToolRuntimeContext {
    * must read these instead of racing the registry lookup.
    */
   callerLabels?: Readonly<Record<string, string>>;
+  paseoToolPolicy?: ProviderPaseoToolsPolicy;
   enableVoiceTools?: boolean;
   voiceOnly?: boolean;
 }
