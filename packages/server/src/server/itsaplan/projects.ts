@@ -122,6 +122,27 @@ export class ItsaplanProjectStore {
     this.byItsaplanProjectId.set(parsed.itsaplanProjectId, parsed);
     await writeJsonFileAtomic(this.filePath, this.list());
   }
+
+  /**
+   * Forgets a project's Commander API key. itsaplan rejected it (the agent
+   * row was rotated, or its project was deleted), so the chat-runner's claim
+   * loop must stop instead of retrying a permanent failure forever, and the
+   * next project sync re-mints the key through ensureCommanderAiAgent's
+   * regenerate-key recovery — the state that path already recognizes is
+   * exactly "mapping without a key". The webhook registration and the
+   * commanderUserId are untouched: ticket dispatch and the assignee
+   * flip-back keep working while chat relay is down.
+   */
+  async clearCommanderApiKey(paseoProjectKey: string): Promise<void> {
+    const existing = this.byPaseoKey.get(paseoProjectKey);
+    if (!existing?.commanderApiKey) {
+      return;
+    }
+    const { commanderApiKey: _rejected, ...rest } = existing;
+    this.byPaseoKey.set(rest.paseoProjectKey, rest);
+    this.byItsaplanProjectId.set(rest.itsaplanProjectId, rest);
+    await writeJsonFileAtomic(this.filePath, this.list());
+  }
 }
 
 export interface ItsaplanProjectSyncDependencies {
@@ -229,7 +250,11 @@ async function ensureItsaplanProjectMappingForKey(
   const existing = deps.store.getByPaseoProjectKey(projectKey);
   if (existing) {
     let mapping = existing;
-    if (mapping.commanderAgentId === undefined) {
+    // A mapping with no usable credential needs the agent-ensure path: either
+    // it predates the Commander fields, its earlier ensure failed, or the
+    // chat-runner forgot a key itsaplan rejected (clearCommanderApiKey). All
+    // three recover the same way — re-mint through ensureCommanderAiAgent.
+    if (mapping.commanderAgentId === undefined || mapping.commanderApiKey === undefined) {
       mapping = await backfillCommanderAgent(mapping, config, deps);
     } else {
       mapping = await ensureCommanderMentionTrigger(mapping, config, deps);
