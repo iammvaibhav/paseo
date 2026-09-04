@@ -672,7 +672,7 @@ export const MissionControlCentralConfigSchema = z.object({
   // Event retention window for pruning.
   retentionDays: z.number().optional(),
   // Days before a reviewState="ready" agent is automatically marked "done"
-  // with verdict "aged-out" by the daily sweep (spec 01). Default 3.
+  // with verdict "aged-out" by the daily sweep (spec 01). <= 0 disables aging (default 0).
   readyAgeOutDays: z.number().optional(),
   // Fleet naming theme; re-map is broadcast on switch.
   namingTheme: z.string().optional(),

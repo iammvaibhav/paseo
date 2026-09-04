@@ -111,7 +111,7 @@ export const DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG: ResolvedMissionControlCentr
   mode: "ask",
   retentionDays: 30,
   namingTheme: "mixed",
-  readyAgeOutDays: 3,
+  readyAgeOutDays: 0,
   hideAgentNames: false,
   defaultDispatchHost: null,
   silenceNudgeSeconds: 120,

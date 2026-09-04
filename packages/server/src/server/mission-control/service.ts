@@ -1168,7 +1168,7 @@ export class MissionControlService {
       await this.emitVerdictEvent({ agentId, verdict: options.verdict });
     }
     this.notifyReviewState(agentId);
-    if (state === "done") {
+    if (state === "done" && options?.verdict?.summary !== "aged-out") {
       await this.maybeAutoArchiveWorkspaceOnAgentDone(agentId);
     }
   }
