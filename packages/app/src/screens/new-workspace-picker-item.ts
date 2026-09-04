@@ -129,6 +129,7 @@ export interface BaseRefCheckoutStatus {
   currentBranch: string | null;
   baseRef?: string | null;
   upstreamRef?: string | null;
+  hasRemote?: boolean;
 }
 
 // Display only. The exact ref is what every request carries; this is just how a ref reads in
@@ -153,7 +154,6 @@ function refQualifier(refName: string): string | null {
   }
   return null;
 }
-
 // The one owner of "what do we branch off when the user picked nothing". The checkmarked
 // row, the trigger label, and the created ref all read this; computing it twice is how the
 // picker once showed local main while branching off something else.
@@ -161,9 +161,59 @@ function refQualifier(refName: string): string | null {
 // The upstream wins when the branch has one, because branching off the local ref silently
 // carries unpushed commits into the new workspace. The daemon sends the resolved ref rather
 // than a remote name, so a fork tracking upstream/main branches from upstream/main.
+function resolveBareBranchRef(
+  baseBranchName: string,
+  status: BaseRefCheckoutStatus,
+  branchDetails?: readonly BranchPickerDetail[],
+): { name: string; refName: string; accessibilityLabel: string } {
+  const name = branchNameFromRef(baseBranchName);
+  const detail = branchDetails?.find((b) => b.name === baseBranchName);
+
+  if (detail) {
+    return detail.hasRemote
+      ? {
+          name,
+          refName: `refs/remotes/origin/${baseBranchName}`,
+          accessibilityLabel: `${name}, origin branch`,
+        }
+      : {
+          name,
+          refName: `refs/heads/${baseBranchName}`,
+          accessibilityLabel: `${name}, branch`,
+        };
+  }
+
+  if (status.upstreamRef?.startsWith(REMOTE_TRACKING_PREFIX)) {
+    const remoteMatch = status.upstreamRef.match(/^refs\/remotes\/([^/]+)\//);
+    const remote = remoteMatch ? remoteMatch[1] : "origin";
+    return {
+      name,
+      refName: `refs/remotes/${remote}/${baseBranchName}`,
+      accessibilityLabel: `${name}, ${remote} branch`,
+    };
+  }
+
+  if (status.hasRemote) {
+    return {
+      name,
+      refName: `refs/remotes/origin/${baseBranchName}`,
+      accessibilityLabel: `${name}, origin branch`,
+    };
+  }
+
+  return {
+    name,
+    refName: `refs/heads/${baseBranchName}`,
+    accessibilityLabel: `${name}, branch`,
+  };
+}
+
 export function defaultBasePickerItem(
   status: BaseRefCheckoutStatus,
-  options?: { preferredBaseBranch?: string | null },
+  options?: {
+    preferredBaseBranch?: string | null;
+    branchDetails?: readonly BranchPickerDetail[];
+  },
 ): PickerItem | null {
   const preferred = options?.preferredBaseBranch?.trim();
   const baseBranchName = preferred || status.baseRef || status.currentBranch;
@@ -184,17 +234,26 @@ export function defaultBasePickerItem(
     };
   }
 
-  const name = branchNameFromRef(baseBranchName);
-  const refName =
-    baseBranchName.startsWith("refs/") || baseBranchName.startsWith("origin/")
-      ? baseBranchName
-      : `refs/heads/${baseBranchName}`;
+  if (baseBranchName.startsWith("refs/") || baseBranchName.startsWith("origin/")) {
+    const name = branchNameFromRef(baseBranchName);
+    const refName = baseBranchName.startsWith("origin/")
+      ? `refs/remotes/${baseBranchName}`
+      : baseBranchName;
+    const isRemote = refName.startsWith(REMOTE_TRACKING_PREFIX);
+    return {
+      kind: "branch",
+      name,
+      refName,
+      accessibilityLabel: isRemote ? `${name}, origin branch` : `${name}, branch`,
+    };
+  }
 
+  const resolved = resolveBareBranchRef(baseBranchName, status, options?.branchDetails);
   return {
     kind: "branch",
-    name,
-    refName,
-    accessibilityLabel: `${name}, branch`,
+    name: resolved.name,
+    refName: resolved.refName,
+    accessibilityLabel: resolved.accessibilityLabel,
   };
 }
 

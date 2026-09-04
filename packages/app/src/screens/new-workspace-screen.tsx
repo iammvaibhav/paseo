@@ -1839,9 +1839,12 @@ export function NewWorkspaceScreen({
     () =>
       selectedItem ??
       (checkoutStatus
-        ? defaultBasePickerItem(checkoutStatus, { preferredBaseBranch: rememberedBaseBranch })
+        ? defaultBasePickerItem(checkoutStatus, {
+            preferredBaseBranch: rememberedBaseBranch,
+            branchDetails,
+          })
         : null),
-    [checkoutStatus, rememberedBaseBranch, selectedItem],
+    [branchDetails, checkoutStatus, rememberedBaseBranch, selectedItem],
   );
   const { options, itemById, selectedOptionId }: PickerOptionData = useMemo(
     () =>
@@ -1868,7 +1871,9 @@ export function NewWorkspaceScreen({
       setPickerOpen(false);
 
       if (item.kind === "branch") {
-        const branchName = branchNameFromRef(item.refName);
+        const branchName = item.name.includes("(local)")
+          ? item.refName
+          : branchNameFromRef(item.refName);
         void updateFormPreferences((current) =>
           mergeBaseBranchPreference({
             preferences: current,
@@ -2081,6 +2086,7 @@ export function NewWorkspaceScreen({
             selectedItem ??
               defaultBasePickerItem(checkoutStatusForCreate, {
                 preferredBaseBranch: rememberedBaseBranch,
+                branchDetails,
               }),
           )
         : undefined;
@@ -2109,6 +2115,7 @@ export function NewWorkspaceScreen({
       return normalizedWorkspace;
     },
     [
+      branchDetails,
       buildCreateWorktreeInput,
       createdWorkspace,
       effectiveIsolation,
