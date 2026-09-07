@@ -6,11 +6,9 @@ import { StyleSheet } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { SidebarAgentListSkeleton } from "@/components/sidebar-agent-list-skeleton";
-import { useSidebarModel } from "@/components/sidebar/sidebar-model";
-import { useHosts } from "@/runtime/host-runtime";
 import { isNative as platformIsNative } from "@/constants/platform";
 import type { LifecycleRow } from "@/mission-control/lifecycle";
-import { agentWorkspaceKey, type SidebarAgentViewBucket } from "./model";
+import type { SidebarAgentViewBucket } from "./model";
 import { SidebarAgentViewRow } from "./row";
 import { useSidebarAgentView } from "./use-sidebar-agent-view";
 export const BUCKET_LABEL_KEYS: Record<SidebarAgentViewBucket, string> = {
@@ -58,23 +56,6 @@ export function SidebarAgentViewList({
     enabled: active,
   });
 
-  const hosts = useHosts();
-  const showHostGlyph = hosts.length > 1;
-
-  const { allHostProjects } = useSidebarModel();
-  const projectNameByWorkspaceKey = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const project of allHostProjects) {
-      for (const workspace of project.workspaces) {
-        map.set(
-          agentWorkspaceKey(workspace.serverId, workspace.workspaceId),
-          project.projectName || workspace.projectName || workspace.name,
-        );
-      }
-    }
-    return map;
-  }, [allHostProjects]);
-
   const nativeScrollGestureProps = useMemo(
     () =>
       parentGestureRef
@@ -86,22 +67,14 @@ export function SidebarAgentViewList({
   );
 
   const renderRow = useCallback(
-    (row: LifecycleRow) => {
-      const workspaceKey = row.agent.workspaceId
-        ? agentWorkspaceKey(row.agent.serverId, row.agent.workspaceId)
-        : null;
-      const projectName = workspaceKey ? projectNameByWorkspaceKey.get(workspaceKey) : undefined;
-      return (
-        <SidebarAgentViewRow
-          key={`${row.agent.serverId}:${row.agent.id}`}
-          row={row}
-          projectName={projectName}
-          showHostGlyph={showHostGlyph}
-          onAgentPress={onAgentPress}
-        />
-      );
-    },
-    [projectNameByWorkspaceKey, showHostGlyph, onAgentPress],
+    (row: LifecycleRow) => (
+      <SidebarAgentViewRow
+        key={`${row.agent.serverId}:${row.agent.id}`}
+        row={row}
+        onAgentPress={onAgentPress}
+      />
+    ),
+    [onAgentPress],
   );
 
   const emptyComponent = useMemo(
