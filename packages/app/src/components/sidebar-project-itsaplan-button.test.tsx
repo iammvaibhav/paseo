@@ -7,39 +7,36 @@ import React from "react";
 import { router } from "expo-router";
 import type { SidebarProjectEntry } from "@/hooks/use-sidebar-workspaces-list";
 import { resolveProjectItsaplanKey } from "@/itsaplan/itsaplan-project-key";
+import { prefetchItsaplanProject } from "@/itsaplan/itsaplan-webview";
 import { buildItsaplanRoute } from "@/utils/host-routes";
 
 const pushMock = vi.fn();
 vi.mock("expo-router", () => ({
   router: {
-    push: (...args: unknown[]) => pushMock(...args),
-    navigate: vi.fn(),
+    push: (route: string) => pushMock(route),
   },
   usePathname: () => "/",
   useLocalSearchParams: () => ({}),
 }));
 
+const prefetchMock = vi.fn();
+vi.mock("@/itsaplan/itsaplan-webview", () => ({
+  prefetchItsaplanProject: (key: string) => prefetchMock(key),
+  prefetchItsaplanProjects: (keys: string[]) => keys.forEach(prefetchMock),
+}));
+
 vi.mock("react-native-unistyles", () => ({
   StyleSheet: {
-    create: (factory: unknown) =>
-      typeof factory === "function"
-        ? (factory as (theme: unknown) => unknown)({
-            colors: {
-              foreground: "#000",
-              foregroundMuted: "#666",
-              surfaceSidebarHover: "#eee",
-            },
-            borderRadius: { md: 6 },
-            spacing: { 0.5: 2, 2: 8 },
-            fontSize: { base: 14 },
-            iconSize: { md: 16 },
-          })
-        : factory,
+    create: (fnOrObj: unknown) =>
+      typeof fnOrObj === "function" ? (fnOrObj as (theme: unknown) => unknown)({}) : fnOrObj,
   },
   withUnistyles: (Component: React.ComponentType<Record<string, unknown>>) => {
-    return function WrappedComponent(props: Record<string, unknown>) {
-      return React.createElement(Component, props);
+    const WithUnistylesWrapper = (props: Record<string, unknown>) => {
+      const { theme: _theme, rt: _rt, ...rest } = props;
+      return <Component {...rest} />;
     };
+    WithUnistylesWrapper.displayName = `withUnistyles(${Component.displayName || Component.name || "Component"})`;
+    return WithUnistylesWrapper;
   },
 }));
 
@@ -80,11 +77,21 @@ function TestProjectItsaplanButton({
     },
     [projectKey],
   );
+  const handleHoverIn = React.useCallback(() => {
+    if (projectKey) {
+      prefetchItsaplanProject(projectKey);
+    }
+  }, [projectKey]);
   const style = React.useMemo(() => ({ display: visible ? "block" : "none" }), [visible]);
 
   return (
     <div data-testid={testID} style={style}>
-      <button type="button" aria-label={`Open itsaplan for ${displayName}`} onClick={handlePress}>
+      <button
+        type="button"
+        aria-label={`Open itsaplan for ${displayName}`}
+        onClick={handlePress}
+        onMouseEnter={handleHoverIn}
+      >
         itsaplan
       </button>
     </div>
@@ -106,6 +113,7 @@ function mockProject(overrides: Partial<SidebarProjectEntry> = {}): SidebarProje
 describe("ProjectItsaplanButton", () => {
   beforeEach(() => {
     pushMock.mockClear();
+    prefetchMock.mockClear();
   });
 
   afterEach(() => {
@@ -143,6 +151,23 @@ describe("ProjectItsaplanButton", () => {
     fireEvent.click(button);
 
     expect(pushMock).toHaveBeenCalledWith("/itsaplan?project=PASEO");
+  });
+
+  it("prefetches project itsaplan route and queries on hover", () => {
+    const project = mockProject({ projectName: "paseo" });
+    const { getByRole } = render(
+      <TestProjectItsaplanButton
+        displayName="paseo"
+        project={project}
+        visible={true}
+        testID={`sidebar-project-itsaplan-${project.viewKey}`}
+      />,
+    );
+
+    const button = getByRole("button", { name: "Open itsaplan for paseo" });
+    fireEvent.mouseEnter(button);
+
+    expect(prefetchMock).toHaveBeenCalledWith("PASEO");
   });
 
   it("handles projects with explicit clean projectKey", () => {
