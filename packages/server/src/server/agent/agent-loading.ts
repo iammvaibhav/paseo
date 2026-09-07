@@ -134,6 +134,7 @@ export async function ensureAgentLoaded(
 
     await deps.agentManager.hydrateTimelineFromProvider(agentId, {
       broadcast: () => pendingOptions.broadcastTimeline,
+      providerSubagents: true,
     });
     return deps.agentManager.getAgent(agentId) ?? snapshot;
   })();

@@ -1,3 +1,4 @@
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import type { AgentProvider, AgentStreamEvent } from "../../agent-sdk-types.js";
 import { normalizeProviderReplayTimestamp } from "../../provider-history-timestamps.js";
@@ -47,7 +48,9 @@ export async function* streamOmpHistory(input: {
   if (!input.sessionFile) {
     return;
   }
-  const sessionFile = await resolveOmpSessionFile(input.sessionFile);
+  const sessionFile = existsSync(input.sessionFile)
+    ? input.sessionFile
+    : await resolveOmpSessionFile(input.sessionFile);
   const visitedSessionFiles = input.visitedSessionFiles ?? new Set<string>();
   if (visitedSessionFiles.has(sessionFile)) {
     return;
@@ -159,6 +162,7 @@ function readSubagentTranscripts(
 ): OmpSubagentTranscript[] {
   const taskCalls = collectTaskCalls(messages);
   const transcripts: OmpSubagentTranscript[] = [];
+  const completedToolCallIds = new Set<string>();
   for (const message of messages) {
     if (message.role !== "toolResult" || message.toolName !== "task") continue;
     const call = taskCalls.get(message.toolCallId);
@@ -173,9 +177,72 @@ function readSubagentTranscripts(
         status: taskResultStatus(result, message.isError === true),
       });
     }
-    if (results.length > 0) continue;
+    if (results.length > 0) {
+      completedToolCallIds.add(message.toolCallId);
+      continue;
+    }
     const legacy = readLegacyTranscript(message, call.title);
-    if (legacy) transcripts.push(legacy);
+    if (legacy) {
+      transcripts.push(legacy);
+      completedToolCallIds.add(message.toolCallId);
+    }
+  }
+  transcripts.push(
+    ...readInterruptedSubagentTranscripts(taskCalls, completedToolCallIds, parentSessionFile),
+  );
+  return transcripts;
+}
+
+function readInterruptedSubagentTranscripts(
+  taskCalls: Map<string, { title: string }>,
+  completedToolCallIds: Set<string>,
+  parentSessionFile: string,
+): OmpSubagentTranscript[] {
+  const childSessionDir = stripExtension(parentSessionFile);
+  if (!existsSync(childSessionDir) || !statSync(childSessionDir).isDirectory()) return [];
+
+  const claimedIds = new Set<string>();
+  const transcripts: OmpSubagentTranscript[] = [];
+  for (const [toolCallId, call] of taskCalls) {
+    if (completedToolCallIds.has(toolCallId)) continue;
+    const sessionFile = join(childSessionDir, `${basename(call.title)}.jsonl`);
+    if (!existsSync(sessionFile)) continue;
+    const id = basename(sessionFile, ".jsonl");
+    claimedIds.add(id);
+    transcripts.push({
+      id,
+      title: call.title,
+      toolCallId,
+      sessionFile,
+      status: "canceled",
+    });
+  }
+
+  if (transcripts.length > 0) return transcripts;
+
+  const leftoverFiles = readdirSync(childSessionDir, { withFileTypes: true })
+    .filter(
+      (entry) =>
+        entry.isFile() &&
+        entry.name.endsWith(".jsonl") &&
+        !claimedIds.has(basename(entry.name, ".jsonl")),
+    )
+    .map((entry) => entry.name);
+  const unmatchedCalls = [...taskCalls.entries()].filter(
+    ([toolCallId]) => !completedToolCallIds.has(toolCallId),
+  );
+  for (const file of leftoverFiles) {
+    const unmatched = unmatchedCalls.shift();
+    if (!unmatched) break;
+    const [toolCallId, call] = unmatched;
+    const id = basename(file, ".jsonl");
+    transcripts.push({
+      id,
+      title: call.title === "OMP subagent" ? id : call.title,
+      toolCallId,
+      sessionFile: join(childSessionDir, file),
+      status: "canceled",
+    });
   }
   return transcripts;
 }

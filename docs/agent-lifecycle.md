@@ -19,7 +19,9 @@ processes and subscriptions while retaining its Paseo identity, persistence hand
 workspace, labels, title, usage, attention, timestamps, and parent relationship. Opening or prompting
 the agent runs through `ensureAgentLoaded()`, which resumes the durable provider session under the
 same Paseo agent ID. Provider history is not appended again when the canonical timeline is already
-primed.
+primed. Provider-native children are still rehydrated from provider history on that resume: the
+in-memory `ProviderSubagentStore` does not survive daemon restart, so `listProviderSubagents`
+would otherwise return empty and the client would wipe the track.
 
 Reload releases the old runtime before resuming its durable session: an idle provider process can
 still own an exclusive writer. A close failure retains that runtime for cleanup and blocks the
@@ -83,9 +85,19 @@ A watched child that closes before its finish event also notifies the caller so 
 
 ## Provider-managed child agents
 
-Some providers can create their own child sessions inside one provider runtime. OMP's task tool reports these with `child_session` events; `AgentManager` imports the live provider handle, stamps `paseo.parent-agent-id`, and surfaces the result as a normal subagent in the parent's subagents track.
+Some providers create child executions inside one provider runtime. OMP's `task` tool is the
+case this ticket covers: those children live **inside** the parent `omp` process. Paseo maps
+`subagent_*` events into `ProviderSubagentStore`; it does not spawn a second `omp` for them.
 
-The provider still owns the underlying runtime. Paseo keeps an agent record so the child can be opened, tracked, archived, and cascaded with the parent, but prompts and history hydration route through the provider adapter for that native child handle.
+Daemon stop tree-kills that process (`JsonlRpcProcess.close` → `terminateWithTreeKill`). In-flight
+children die with the parent. Their session JSONL under the parent session directory survives.
+Process re-attach is impossible: the RPC is stdin/stdout pipes of a killed child.
+
+After resume, Paseo restores the track from provider history. Completed `task` results replay as
+completed/failed/canceled. A `task` tool call with no matching `toolResult` but a child `.jsonl`
+on disk replays as `canceled` with the partial transcript. The parent does not continue those
+children automatically; `deploy-nudge.mjs` names the interrupted children so the parent can
+re-dispatch. OMP has no RPC to resume an in-process task child after the parent process died.
 
 ## Archive
 
@@ -182,7 +194,11 @@ The rows combine two kinds of children:
 parentAgentId === thisAgent.id  AND  !archivedAt
 ```
 
-- **Provider subagents** are child executions owned by Claude, Codex, or OpenCode. They are not inserted into `AgentManager` as managed agents. Providers emit a separate descriptor and timeline stream through `agent.provider_subagents.*`; the client keeps that state outside the normal agent store and merges only the presentation rows into the track. A descriptor's optional `parentSubagentId` identifies its direct provider-subagent parent; an absent value identifies a direct child of the managed agent.
+- **Provider subagents** are child executions owned by Claude, Codex, OpenCode, or OMP. They are not inserted into `AgentManager` as managed agents. Providers emit a separate descriptor and timeline stream through `agent.provider_subagents.*`; the client keeps that state outside the normal agent store and merges only the presentation rows into the track. A descriptor's optional `parentSubagentId` identifies its direct provider-subagent parent; an absent value identifies a direct child of the managed agent.
+
+Provider-subagent descriptors live in an in-memory store. After a daemon restart they come back only
+from provider history (completed `task` results and interrupted child JSONL). Resume does not keep
+them `running`.
 
 Clicking either kind opens a workspace tab. A Paseo subagent tab is a normal interactive agent pane. A provider subagent tab is a read-only timeline pane with no composer, archive, detach, rewind, or fork actions. It shows its own direct children in a subagents track. Both panes use `AgentStreamView`, so message, reasoning, tool-call, and layout rendering stay identical.
 
