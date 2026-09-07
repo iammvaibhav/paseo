@@ -61,9 +61,7 @@ describe("create-agent-title (spec 06: registration always produces a title)", (
       configTitle: null,
       initialPrompt: verbatimPrompt,
     });
-    expect(fromVerbatim.provisionalTitle).toBe(
-      "PASEO-12 - Fix agent and workspace titling convention",
-    );
+    expect(fromVerbatim.provisionalTitle).toBe("Fix agent and workspace titling convention");
 
     const itsaplanPrompt = [
       "itsaplan ticket moved to Todo with zero open blockers — ready to dispatch.",
@@ -76,7 +74,7 @@ describe("create-agent-title (spec 06: registration always produces a title)", (
       initialPrompt: itsaplanPrompt,
     });
     expect(fromItsaplan.provisionalTitle).toBe(
-      "PASEO-12 - The title of the agent or the agent name should b",
+      "The title of the agent or the agent name should be correct",
     );
   });
 

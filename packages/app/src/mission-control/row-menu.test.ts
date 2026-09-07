@@ -113,4 +113,14 @@ describe("buildAgentReference", () => {
   it("does not duplicate a title identical to the name", () => {
     expect(buildAgentReference({ name: "Bob", title: "Bob", id: "agent-1" })).toBe("Bob — agent-1");
   });
+
+  it("strips duplicate ticket prefix from title in copy reference", () => {
+    expect(
+      buildAgentReference({
+        name: "AMBIENTAISTA-20",
+        title: "AMBIENTAISTA-20 - Review PR 9998",
+        id: "agent-1",
+      }),
+    ).toBe("AMBIENTAISTA-20 — Review PR 9998 — agent-1");
+  });
 });
