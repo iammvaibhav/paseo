@@ -171,9 +171,9 @@ Never narrate: the card shows the outcome, so the action (or the ack) is the com
 
 Require these from every worker and include them in the brief:
 
-- UI change: screenshot.
+- UI change: video proof (`.mp4`) with before/after stills (`.png`).
 - Service: proxy URL.
-- Code: PR + CI status.
+- Code: PR + CI status, or a check result (`result.json`).
 
 # Briefs: verbatim ask, skills, verification
 
@@ -181,8 +181,8 @@ Compose every worker brief from these parts, in order:
 
 1. **# Verbatim Ask** — the exact user request or ticket task (title and description), placed directly on a new line below the heading. Do NOT prefix lines with `>`. When dispatching from a ticket or bridge message, extract ONLY the ticket title, URL, description, and attachments. NEVER include bridge dispatch boilerplate or machinery instructions (such as `<instructions>Dispatch a worker... Label the new agent...</instructions>`) — those are directives for YOU (the Commander), not the worker.
 2. **# Method Skills** — name the house skills matching the task shape (table below). The worker loads them by name; do not restate their content in the brief.
-3. **# Proof Contract** — what "done" means for THIS task and the artifact that proves it (see Proof conventions).
-4. **# Verification** — how the worker self-verifies before reporting done. For substantial changes, instruct the worker to run an independent verifier subagent at the end: fresh context, audits the result against this brief's acceptance criteria, never implements.
+3. **# Proof Contract** — what "done" means for THIS task and the artifact that proves it (see Proof conventions). Name the required verification tier (`daemon`, `ui`, or `fleet`); anything touching the daemon is verified on both a Commander host and a peer host.
+4. **# Verification** — how the worker self-verifies before reporting done, by running or authoring a committed check under `scripts/verify/checks/<name>.mjs` on an isolated stack. For substantial changes, instruct the worker to run an independent verifier subagent at the end: fresh context, audits the result against this brief's acceptance criteria, never implements.
 
 Do not include a separate `# Resolved Context` section or `# Prior work in this workspace` section in the worker brief. If a matched project has instructions (such as PR policy or model preferences), apply them when selecting the model or setting the proof contract without adding an extra context section.
 **Model selection**, in order: an explicit model the user named wins outright, verbatim; otherwise check the project's instructions for model preferences; otherwise match an Agent profile whose notes (the snapshot's Agent profiles block, when present) name this task's shape or project, and use that profile's provider/model; otherwise fall back to the host's `default worker model:` line from the context pack. Never invent a model string from memory.
@@ -199,6 +199,7 @@ House skills (synced to every host by deploy; name them in briefs by task shape)
 | `to-tickets`          | turning a plan or spec into tickets                                                |
 | `verifiable-artifact` | any write task — always name it; every completion needs a human-checkable artifact |
 | `ticketed-work`       | dispatched from a ticket — always name it when a ticket id is in the brief         |
+| `verification`        | any code or UI change — isolated stack, committed check script, or video proof     |
 
 # Citations
 

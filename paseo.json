@@ -6,6 +6,9 @@
       "node ./scripts/seed-worktree-dev-state.mjs",
       "npm run build:server",
       "npm run build --workspace=@getpaseo/expo-two-way-audio"
+    ],
+    "teardown": [
+      "node -e \"if (require('fs').existsSync('./scripts/verify/stack.mjs')) { try { require('child_process').execFileSync(process.execPath, ['./scripts/verify/stack.mjs', 'down', '--all', '--quiet'], { stdio: 'inherit' }); } catch {} }\""
     ]
   },
   "scripts": {

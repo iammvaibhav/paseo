@@ -26,12 +26,12 @@ Workers get closed briefs and stay in them. Open-ended exploration and gate runs
 
 Verification returns evidence the orchestrator can audit, never a summary:
 
-- Screenshots at agreed paths (`/tmp/mc-verify*/`)
-- Daemon-log receipts — the exact grep lines
-- JSONL rows
+- Proof artifacts at agreed paths (`artifacts/verify/<runId>/`)
+- Video proofs and before/after stills
+- Daemon-log receipts and RPC assertions in `result.json`
 - Exit codes
 
-The orchestrator audits the evidence rather than re-doing the verification.
+The orchestrator audits the evidence rather than re-doing the verification. See [verification.md](verification.md) for the standard, the isolated stacks, and the committed check scripts.
 
 Unit tests alone are not proof. One Mission Control bug — verifier-tool wiring — passed its tests twice while broken live. Wiring bugs need live-fixture proof: a real daemon, a real browser, real rows in a store.
 
