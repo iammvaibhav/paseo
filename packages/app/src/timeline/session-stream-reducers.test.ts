@@ -561,6 +561,7 @@ describe("processTimelineResponse", () => {
       payload: {
         ...baseTimelineInput.payload,
         direction: "tail",
+        window: { minSeq: 6, maxSeq: 6, nextSeq: 7 },
         startCursor: { seq: 6 },
         endCursor: { seq: 6 },
         entries: [makeTimelineEntry(6, "newest")],

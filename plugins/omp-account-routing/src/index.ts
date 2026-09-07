@@ -24,16 +24,20 @@
  * the session manager's id and are routed.
  *
  * Strategies:
- *   - primary-fallback: route the first eligible account in `order`. On a
- *     rate-limit/auth retry (`auto_retry_start`) or an auto-disabled credential
- *     (`credential_disabled`), advance to the next eligible account for the
- *     retry; the next fresh prompt returns to the primary.
+ *   - primary-fallback: route the first eligible account in `order`. The session
+ *     locks to that account for prompt cache continuity. On a rate-limit/auth
+ *     retry (`auto_retry_start`) or an auto-disabled credential (`credential_disabled`),
+ *     advance to the next eligible account in `order` (wrapping if needed) and
+ *     remain locked to it for subsequent prompts.
+ *   - weekly-deadline-first: rank accounts by weekly drain rate (quota expiring
+ *     soonest), with 5-hour window breaking ties and hard floors (<3%) sorting
+ *     exhausted accounts last. The winning account is locked for the entire session.
+ *     On a rate-limit/auth retry, advance to the best healthy alternative.
  *   - round-robin: rotate the routed account across sessions (default) or
  *     across prompts (`rotate: prompt`). The rotation cursor is persisted per
  *     working directory in ~/.omp/agent/account-routing-state.json so balance
  *     survives process restarts.
  */
-
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import type { AuthStorage, ExtensionAPI, ExtensionContext, OAuthAccountSummary } from "@oh-my-pi/pi-coding-agent";
@@ -126,7 +130,12 @@ const ANTIGRAVITY_USER_AGENT = "antigravity-cli/1.0";
  * bucket that empties mid-flight is caught by omp's 429 block, which is shared
  * across processes through sqlite and therefore faster than any poll.
  */
-const ANTIGRAVITY_QUOTA_CACHE_MS = 5 * 60 * 1000;
+/**
+ * Antigravity quota background refresh cadence: 15 minutes.
+ * Quotas are read from disk cache immediately with zero blocking latency;
+ * if stale or missing, a background fetch updates the disk cache asynchronously.
+ */
+const ANTIGRAVITY_QUOTA_CACHE_MS = 15 * 60 * 1000;
 const FIVE_HOUR_MS = 5 * 60 * 60 * 1000;
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 /** Below this the 5-hour bucket will 429 on the next request; skip the round trip. */
@@ -148,6 +157,37 @@ export interface QuotaWindows {
 /** `${credentialId}:${bucketPrefix}` -> last quota read. */
 const antigravityQuotaCache = new Map<string, { checkedAt: number; windows: QuotaWindows }>();
 
+function loadAntigravityQuotaCache(): void {
+	try {
+		const filePath = path.join(getAgentDir(), "antigravity-quota-cache.json");
+		if (!existsSync(filePath)) return;
+		const raw = JSON.parse(readFileSync(filePath, "utf8")) as Record<
+			string,
+			{ checkedAt: number; windows: QuotaWindows }
+		>;
+		for (const [key, value] of Object.entries(raw)) {
+			if (typeof value?.checkedAt === "number" && value?.windows) {
+				antigravityQuotaCache.set(key, value);
+			}
+		}
+	} catch {
+		// Corrupted cache is not fatal
+	}
+}
+
+function saveAntigravityQuotaCache(): void {
+	try {
+		const filePath = path.join(getAgentDir(), "antigravity-quota-cache.json");
+		mkdirSync(path.dirname(filePath), { recursive: true });
+		const tmpPath = `${filePath}.tmp`;
+		writeFileSync(tmpPath, JSON.stringify(Object.fromEntries(antigravityQuotaCache), null, 2));
+		renameSync(tmpPath, filePath);
+	} catch {
+		// Best-effort
+	}
+}
+
+loadAntigravityQuotaCache();
 export const RATE_LIMIT_ERROR_RE =
 	/429|rate\s*[- ]?limit|quota|too many|401|403|unauthorized|authentication|invalid_grant|resource_exhausted|exhausted/i;
 
@@ -356,6 +396,9 @@ export function drainRate(bucket: QuotaBucket | undefined, now: number, fallback
 	return bucket.remainingFraction / hours;
 }
 
+/** In-flight fetch deduplication to avoid redundant concurrent requests. */
+const inFlightQuotaFetches = new Set<string>();
+
 async function fetchAntigravityWindows(
 	auth: AuthStorage,
 	provider: string,
@@ -363,36 +406,66 @@ async function fetchAntigravityWindows(
 	bucketPrefix: string,
 ): Promise<QuotaWindows | undefined> {
 	const cacheKey = `${credentialId}:${bucketPrefix}`;
-	const now = Date.now();
-	const cached = antigravityQuotaCache.get(cacheKey);
-	if (cached && cached.checkedAt + ANTIGRAVITY_QUOTA_CACHE_MS > now) return cached.windows;
+	if (inFlightQuotaFetches.has(cacheKey)) return undefined;
+	inFlightQuotaFetches.add(cacheKey);
 
-	// omp owns the credential and the refresh lease; only borrow the access token.
-	const access = await auth.getOAuthAccessByCredentialId(provider, credentialId);
-	if (!access?.ok || !access.projectId) return undefined;
+	try {
+		// omp owns the credential and the refresh lease; only borrow the access token.
+		const access = await auth.getOAuthAccessByCredentialId(provider, credentialId);
+		if (!access?.ok || !access.projectId) return undefined;
 
-	for (const url of ANTIGRAVITY_QUOTA_SUMMARY_URLS) {
-		try {
-			const response = await fetch(url, {
-				method: "POST",
-				headers: {
-					Authorization: `Bearer ${access.accessToken}`,
-					"Content-Type": "application/json",
-					"User-Agent": ANTIGRAVITY_USER_AGENT,
-				},
-				body: JSON.stringify({ project: access.projectId }),
-				signal: AbortSignal.timeout(10_000),
-			});
-			if (!response.ok) continue;
-			const windows = parseQuotaSummary(await response.json(), bucketPrefix);
-			if (!windows.weekly && !windows.fiveHour) continue;
-			antigravityQuotaCache.set(cacheKey, { checkedAt: now, windows });
-			return windows;
-		} catch {
-			// Fall through to the next endpoint.
+		const fetchStartTime = Date.now();
+		for (const url of ANTIGRAVITY_QUOTA_SUMMARY_URLS) {
+			try {
+				const response = await fetch(url, {
+					method: "POST",
+					headers: {
+						Authorization: `Bearer ${access.accessToken}`,
+						"Content-Type": "application/json",
+						"User-Agent": ANTIGRAVITY_USER_AGENT,
+					},
+					body: JSON.stringify({ project: access.projectId }),
+					signal: AbortSignal.timeout(10_000),
+				});
+				if (!response.ok) continue;
+				const windows = parseQuotaSummary(await response.json(), bucketPrefix);
+				if (!windows.weekly && !windows.fiveHour) continue;
+
+				// If a newer event (like 429 rate-limit exhaustion) updated this entry
+				// while our fetch was in flight, do not overwrite it with stale API data.
+				const existing = antigravityQuotaCache.get(cacheKey);
+				if (existing && existing.checkedAt >= fetchStartTime) {
+					return existing.windows;
+				}
+
+				antigravityQuotaCache.set(cacheKey, { checkedAt: Date.now(), windows });
+				saveAntigravityQuotaCache();
+				return windows;
+			} catch {
+				// Fall through to the next endpoint.
+			}
 		}
+	} finally {
+		inFlightQuotaFetches.delete(cacheKey);
 	}
 	return undefined;
+}
+
+function triggerBackgroundRefresh(
+	auth: AuthStorage,
+	pi: ExtensionAPI,
+	provider: string,
+	accountsToRefresh: ResolvedAccount[],
+	modelId: string | undefined,
+): void {
+	const bucketPrefix = antigravityBucketPrefix(modelId);
+	Promise.allSettled(
+		accountsToRefresh.map(account => fetchAntigravityWindows(auth, provider, account.credentialId, bucketPrefix)),
+	)
+		.then(() => {
+			pi.logger.info(`account-routing: background quota refresh completed (${bucketPrefix})`);
+		})
+		.catch(() => {});
 }
 
 /**
@@ -402,6 +475,9 @@ async function fetchAntigravityWindows(
  * the account still gets several fresh 5-hour buckets before the weekly resets,
  * and an emptied 5-hour bucket costs one 429 that omp records as a shared,
  * counter-scoped block, so every later session skips the account for free.
+ *
+ * Non-blocking by default in production: uses cached data immediately (0ms)
+ * and triggers background refresh if stale or missing.
  */
 export async function orderByWeeklyDeadline(
 	auth: AuthStorage,
@@ -409,9 +485,11 @@ export async function orderByWeeklyDeadline(
 	provider: string,
 	resolved: ResolvedAccount[],
 	modelId: string | undefined,
+	options?: { allowInlineFetch?: boolean },
 ): Promise<ResolvedAccount[]> {
 	if (resolved.length < 2) return resolved;
 
+	const allowInlineFetch = options?.allowInlineFetch ?? true;
 	const bucketPrefix = antigravityBucketPrefix(modelId);
 	const now = Date.now();
 	const scored: {
@@ -422,8 +500,25 @@ export async function orderByWeeklyDeadline(
 		hasQuotaData: boolean;
 	}[] = [];
 
+	const accountsToRefresh: ResolvedAccount[] = [];
+
 	for (const account of resolved) {
-		const windows = await fetchAntigravityWindows(auth, provider, account.credentialId, bucketPrefix);
+		const cacheKey = `${account.credentialId}:${bucketPrefix}`;
+		let cached = antigravityQuotaCache.get(cacheKey);
+
+		// If cache is stale (> 15 min) or missing:
+		if (!cached || now - cached.checkedAt > ANTIGRAVITY_QUOTA_CACHE_MS) {
+			if (allowInlineFetch && !cached) {
+				const fresh = await fetchAntigravityWindows(auth, provider, account.credentialId, bucketPrefix);
+				if (fresh) {
+					cached = { checkedAt: now, windows: fresh };
+				}
+			} else {
+				accountsToRefresh.push(account);
+			}
+		}
+
+		const windows = cached?.windows;
 		if (!windows) {
 			scored.push({
 				account,
@@ -447,6 +542,10 @@ export async function orderByWeeklyDeadline(
 			exhausted: isFiveHourExhausted || isWeeklyExhausted,
 			hasQuotaData: true,
 		});
+	}
+
+	if (accountsToRefresh.length > 0) {
+		triggerBackgroundRefresh(auth, pi, provider, accountsToRefresh, modelId);
 	}
 
 	scored.sort((left, right) => {
@@ -571,35 +670,64 @@ async function applyRouting(ctx: ExtensionContext, pi: ExtensionAPI, mode: Apply
 			if (!stored || stored.length === 0) continue;
 			let resolved = resolveOrder(routing, config.accounts, stored);
 			if (resolved.length === 0) continue;
+
+			const current = pinned.get(`${provider}:${sessionId}`);
+
+			// Session stickiness: once an agent session is pinned to an account,
+			// keep using that account on every prompt of the session to maintain
+			// prompt cache continuity. Do not re-rank or change accounts mid-session.
+			// Only switch on hard errors (mode === "advance").
+			// Exception: round-robin with rotate: prompt rotates on every prompt by design.
+			if (
+				mode === "prompt" &&
+				current !== undefined &&
+				!(routing.strategy === "round-robin" && routing.rotate === "prompt")
+			) {
+				const existing = resolved.find(account => account.credentialId === current);
+				if (existing) {
+					auth.pinSessionOAuthAccount(provider, sessionId, existing.credentialId);
+					continue;
+				}
+			}
+
 			if (routing.strategy === "weekly-expiry-first") {
 				resolved = await orderByWeeklyExpiry(auth, provider, resolved);
 			} else if (routing.strategy === "weekly-deadline-first") {
-				resolved = await orderByWeeklyDeadline(auth, pi, provider, resolved, modelId);
+				resolved = await orderByWeeklyDeadline(auth, pi, provider, resolved, modelId, {
+					allowInlineFetch: false,
+				});
 			}
 
 			if (routing.strategy === "round-robin") {
 				const rotateKey = `${provider}:${routing.rotate === "prompt" ? "prompt:" : "session:"}${ctx.cwd}`;
 				const ownsRotation = routing.rotate === "prompt" ? mode === "prompt" : mode === "initial";
 				let index: number;
-				if (ownsRotation) {
+				if (ownsRotation || mode === "advance") {
 					const counter = getCounters().get(rotateKey) ?? 0;
 					index = counter % resolved.length;
 					getCounters().set(rotateKey, counter + 1);
 					saveCounters();
 				} else {
-					const current = pinned.get(`${provider}:${sessionId}`);
 					index = resolved.findIndex(account => account.credentialId === current);
 					if (index === -1) index = 0;
 				}
 				pinAccount(auth, pi, provider, sessionId, resolved[index % resolved.length]);
-			} else {
+			} else if (routing.strategy === "weekly-deadline-first" || routing.strategy === "weekly-expiry-first") {
 				let target = resolved[0];
 				if (mode === "advance") {
-					const current = pinned.get(`${provider}:${sessionId}`);
+					// Advance to the best ranked account that is not the failing one.
+					// Since failed accounts were poisoned in cache prior to advance,
+					// orderByWeeklyDeadline places healthy accounts first.
+					target = resolved.find(account => account.credentialId !== current) ?? resolved[0];
+				}
+				pinAccount(auth, pi, provider, sessionId, target);
+			} else {
+				// primary-fallback (or default preference order): advance sequentially through order
+				let target = resolved[0];
+				if (mode === "advance") {
 					const currentIndex = resolved.findIndex(account => account.credentialId === current);
-					if (currentIndex >= 0 && currentIndex + 1 < resolved.length) {
-						target = resolved[currentIndex + 1];
-					}
+					const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % resolved.length : 0;
+					target = resolved[nextIndex];
 				}
 				pinAccount(auth, pi, provider, sessionId, target);
 			}
@@ -617,16 +745,52 @@ export default function ompAccountRoutingExtension(pi: ExtensionAPI): void {
 	pi.setLabel("Account Routing");
 	pi.logger.info("account-routing: extension loaded");
 
+	loadAntigravityQuotaCache();
+
+	let lastAuthStorage: AuthStorage | undefined;
+
+	// Background job: proactively refreshes Antigravity quota every 15 minutes
+	const backgroundTimer = setInterval(() => {
+		if (!lastAuthStorage) return;
+		try {
+			const config = loadRoutingConfig(getAgentDir());
+			const routing = config.routing?.["google-antigravity"];
+			if (!routing || routing.strategy === "off") return;
+			const stored = lastAuthStorage.listOAuthAccounts("google-antigravity");
+			if (!stored || stored.length === 0) return;
+			const resolved = resolveOrder(routing, config.accounts, stored);
+			if (resolved.length === 0) return;
+			triggerBackgroundRefresh(lastAuthStorage, pi, "google-antigravity", resolved, undefined);
+		} catch {
+			// Non-fatal background timer error
+		}
+	}, ANTIGRAVITY_QUOTA_CACHE_MS);
+	backgroundTimer.unref?.();
+
+	const captureAuth = (ctx: ExtensionContext) => {
+		if (ctx.modelRegistry?.authStorage) {
+			lastAuthStorage = ctx.modelRegistry.authStorage;
+		}
+	};
+
 	// Fresh or resumed session: apply the config-driven routing. For
 	// round-robin with rotate:session this is the rotation point.
-	pi.on("session_start", (_event, ctx) => applyRouting(ctx, pi, "initial"));
-	pi.on("session_switch", (_event, ctx) => applyRouting(ctx, pi, "initial"));
+	pi.on("session_start", (_event, ctx) => {
+		captureAuth(ctx);
+		return applyRouting(ctx, pi, "initial");
+	});
+	pi.on("session_switch", (_event, ctx) => {
+		captureAuth(ctx);
+		return applyRouting(ctx, pi, "initial");
+	});
 
 	// Fires after prompt submission, right before the agent loop — the last
 	// word before the first request resolves its API key. Handlers are awaited
 	// here, so the runtime override is armed before any request goes out.
-	pi.on("before_agent_start", (_event, ctx) => applyRouting(ctx, pi, "prompt"));
-
+	pi.on("before_agent_start", (_event, ctx) => {
+		captureAuth(ctx);
+		return applyRouting(ctx, pi, "prompt");
+	});
 	// A rate-limit/auth retry: advance primary-fallback so the retry runs on
 	// the next eligible account. omp's native blocked-credential skip would
 	// also route around it; this enforces the *preferred* order explicitly.
@@ -650,6 +814,7 @@ export default function ompAccountRoutingExtension(pi: ExtensionAPI): void {
 					}
 				}
 			}
+			saveAntigravityQuotaCache();
 		}
 		return applyRouting(ctx, pi, "advance");
 	});
@@ -676,4 +841,10 @@ export {
 	resolveOrder,
 	applyRouting,
 	antigravityQuotaCache,
+	loadAntigravityQuotaCache,
+	saveAntigravityQuotaCache,
+	triggerBackgroundRefresh,
+	fetchAntigravityWindows,
+	ANTIGRAVITY_QUOTA_CACHE_MS,
+	pinned,
 };

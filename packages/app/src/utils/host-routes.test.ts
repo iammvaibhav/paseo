@@ -4,6 +4,7 @@ import {
   buildHostRootRoute,
   buildHostWorkspaceOpenRoute,
   buildHostWorkspaceRoute,
+  buildItsaplanRoute,
   buildNewWorkspaceRoute,
   buildOpenProjectRoute,
   resolveKnownHostRoute,
@@ -240,6 +241,16 @@ describe("global routes", () => {
         draftId: "draft-1",
       }),
     ).toBe("/new?serverId=local&dir=%2Frepo%2Fproject&draftId=draft-1");
+  });
+
+  it("buildItsaplanRoute returns the generic route when no project is provided", () => {
+    expect(buildItsaplanRoute()).toBe("/itsaplan");
+    expect(buildItsaplanRoute({})).toBe("/itsaplan");
+  });
+
+  it("buildItsaplanRoute accepts project or projectKey options", () => {
+    expect(buildItsaplanRoute({ project: "PASEO" })).toBe("/itsaplan?project=PASEO");
+    expect(buildItsaplanRoute({ projectKey: "ENG" })).toBe("/itsaplan?project=ENG");
   });
 });
 
