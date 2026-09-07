@@ -45,15 +45,11 @@ function getStatusDotStyle(bucket: SidebarStateBucket) {
 
 export interface SidebarAgentViewRowProps {
   row: LifecycleRow;
-  projectName?: string;
-  showHostGlyph: boolean;
   onAgentPress?: () => void;
 }
 
 export const SidebarAgentViewRow = memo(function SidebarAgentViewRow({
   row,
-  projectName,
-  showHostGlyph,
   onAgentPress,
 }: SidebarAgentViewRowProps) {
   const { t } = useTranslation();
@@ -87,8 +83,6 @@ export const SidebarAgentViewRow = memo(function SidebarAgentViewRow({
     [],
   );
 
-  const hasMeta = Boolean(projectName || showHostGlyph);
-
   return (
     <Pressable
       style={rowStyle}
@@ -104,34 +98,15 @@ export const SidebarAgentViewRow = memo(function SidebarAgentViewRow({
           <View style={[styles.statusDot, getStatusDotStyle(stateBucket)]} />
         )}
       </View>
-      <View style={styles.contentColumn}>
-        <View style={styles.titleRow}>
-          <Text style={styles.title} numberOfLines={1}>
-            {title}
-          </Text>
-          {timeAgo ? (
-            <Text style={styles.time} numberOfLines={1}>
-              {timeAgo}
-            </Text>
-          ) : null}
-        </View>
-        {hasMeta ? (
-          <View style={styles.metaRow}>
-            {showHostGlyph ? (
-              <HostGlyph
-                serverId={agent.serverId}
-                label={agent.serverLabel ?? agent.serverId}
-                size="sm"
-              />
-            ) : null}
-            {projectName ? (
-              <Text style={styles.metaText} numberOfLines={1}>
-                {projectName}
-              </Text>
-            ) : null}
-          </View>
-        ) : null}
-      </View>
+      <HostGlyph serverId={agent.serverId} label={agent.serverLabel ?? agent.serverId} size="sm" />
+      <Text style={styles.title} numberOfLines={1}>
+        {title}
+      </Text>
+      {timeAgo ? (
+        <Text style={styles.time} numberOfLines={1}>
+          {timeAgo}
+        </Text>
+      ) : null}
     </Pressable>
   );
 });
@@ -140,7 +115,7 @@ const styles = StyleSheet.create((theme) => ({
   row: {
     minHeight: 32,
     flexDirection: "row",
-    alignItems: "flex-start",
+    alignItems: "center",
     gap: theme.spacing[2],
     paddingHorizontal: theme.spacing[2],
     paddingVertical: theme.spacing[1.5],
@@ -183,16 +158,6 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.foregroundExtraMuted,
     opacity: 0.3,
   },
-  contentColumn: {
-    flex: 1,
-    minWidth: 0,
-  },
-  titleRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: theme.spacing[2],
-  },
   title: {
     color: theme.colors.foreground,
     fontSize: theme.fontSize.sm,
@@ -206,18 +171,5 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.xs,
     lineHeight: 18,
     flexShrink: 0,
-  },
-  metaRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[1.5],
-    marginTop: 2,
-  },
-  metaText: {
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.xs,
-    lineHeight: 14,
-    flex: 1,
-    minWidth: 0,
   },
 }));
