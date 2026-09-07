@@ -33,7 +33,13 @@ interface State {
       issue: { id: number };
     }>;
   };
-  columns: Array<{ id: number; projectId: number; name: string; stateType: string }>;
+  columns: Array<{
+    id: number;
+    projectId: number;
+    name: string;
+    stateType: string;
+    autoAssignUserId?: string | null;
+  }>;
   labels: Array<{ id: number; projectId: number; name: string; color?: string }>;
   attachments?: Array<{
     id: string;
@@ -221,6 +227,18 @@ function startServer(apiKey: string, state: State) {
         };
         state.columns.push(column);
         send(201, column);
+        return;
+      }
+      const patchColumnMatch = /^\/projects\/([^/]+)\/columns\/(\d+)$/.exec(path);
+      if (req.method === "PATCH" && patchColumnMatch) {
+        const colId = Number(patchColumnMatch[2]);
+        const column = state.columns.find((c) => c.id === colId);
+        if (!column) {
+          send(404, { error: "not found" });
+          return;
+        }
+        Object.assign(column, body);
+        send(200, column);
         return;
       }
       if (req.method === "POST" && path === "/projects") {
@@ -539,6 +557,13 @@ describe("ItsaplanClient", () => {
     expect(column.name).toBe("Ready to review");
     expect(column.stateType).toBe("started");
     expect(state.columns).toHaveLength(3);
+  });
+
+  test("updateColumn patches column properties including autoAssignUserId", async () => {
+    const updated = await client.updateColumn("ENG", 11, { autoAssignUserId: "bot-user-1" });
+    expect(updated.id).toBe(11);
+    expect(updated.autoAssignUserId).toBe("bot-user-1");
+    expect(state.columns.find((c) => c.id === 11)?.autoAssignUserId).toBe("bot-user-1");
   });
 
   test("createProject posts key and name", async () => {

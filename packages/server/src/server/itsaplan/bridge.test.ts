@@ -41,6 +41,7 @@ interface FakeIssue {
   title: string;
   description: string | null;
   assigneeUserId: string | null;
+  delegateUserId?: string | null;
   initiativeId?: number | null;
   initiative?: {
     id: number;
@@ -86,6 +87,7 @@ interface FakeColumn {
   projectId: number;
   name: string;
   stateType: string;
+  autoAssignUserId?: string | null;
 }
 
 async function waitForIssueColumn(
@@ -287,6 +289,18 @@ function startFakeItsaplanServer(options: {
         options.columns.set(column.id, column);
         createdColumns.push({ projectKey: key, name: column.name, stateType: column.stateType });
         send(201, column);
+        return;
+      }
+      const columnPatchMatch = /^\/projects\/([^/]+)\/columns\/(\d+)$/.exec(path);
+      if (req.method === "PATCH" && columnPatchMatch) {
+        const columnId = Number(columnPatchMatch[2]);
+        const column = options.columns.get(columnId);
+        if (!column) {
+          send(404, { error: "not found" });
+          return;
+        }
+        Object.assign(column, body);
+        send(200, column);
         return;
       }
       send(404, { error: `unhandled ${req.method} ${path}` });
@@ -557,7 +571,7 @@ describe("ItsaplanBridge", () => {
           columnId: 2,
           title: "Fix the bug",
           description: "Steps to reproduce...",
-          assigneeUserId: null,
+          assigneeUserId: "bot-user-1",
           links: [],
         },
       ],
@@ -598,6 +612,7 @@ describe("ItsaplanBridge", () => {
       itsaplanProjectId: PROJECT_ID,
       itsaplanProjectKey: PROJECT_KEY,
       createdAt: new Date().toISOString(),
+      commanderUserId: "bot-user-1",
     });
     deliverMachineryPrompt = vi.fn(async () => true);
     steerWorkerPrompt = vi.fn(async () => {});
@@ -977,7 +992,13 @@ describe("ItsaplanBridge", () => {
       });
     }
 
-    test("direct answer in Paseo: convergence comment says so and assignee unassigns", async () => {
+    test("direct answer in Paseo: convergence comment says so and assignee unassigns when commander is unknown", async () => {
+      await projectStore.upsert({
+        paseoProjectKey: "proj",
+        itsaplanProjectId: PROJECT_ID,
+        itsaplanProjectKey: PROJECT_KEY,
+        createdAt: new Date().toISOString(),
+      });
       await runDirectAnswerScenario("agent-x1");
       await waitForLastCommentBody(fakeServer.comments, "Resumed — answered directly in Paseo");
       await waitForIssueAssignee(issues, ISSUE_ID, null);
@@ -1204,7 +1225,7 @@ describe("ItsaplanBridge", () => {
         columnId: 2, // Todo
         title: "Blocked Issue B",
         description: "Depends on A",
-        assigneeUserId: null,
+        assigneeUserId: "bot-user-1",
         links: [{ id: 1, kind: "blocks", direction: "inward", issue: { id: ISSUE_ID } }],
       });
       // Link from A's perspective too (listIssueLinks on either returns the issue's links)
@@ -1245,7 +1266,7 @@ describe("ItsaplanBridge", () => {
         columnId: 2, // Todo
         title: "Blocked Issue B",
         description: null,
-        assigneeUserId: null,
+        assigneeUserId: "bot-user-1",
         links: [{ id: 1, kind: "blocks", direction: "inward", issue: { id: ISSUE_ID } }],
       });
       issues.get(ISSUE_ID)!.links = [
@@ -1282,7 +1303,7 @@ describe("ItsaplanBridge", () => {
         columnId: 2, // Todo
         title: "Blocked Issue B",
         description: "Will be unblocked",
-        assigneeUserId: null,
+        assigneeUserId: "bot-user-1",
         links: [{ id: 1, kind: "blocks", direction: "inward", issue: { id: ISSUE_ID } }],
       });
       issues.get(ISSUE_ID)!.links = [
@@ -1522,7 +1543,7 @@ describe("ItsaplanBridge", () => {
         columnId: 2, // Todo
         title: "Blocked Issue B",
         description: "Depends on A",
-        assigneeUserId: null,
+        assigneeUserId: "bot-user-1",
         initiativeId: 30,
         links: [{ id: 1, kind: "blocks", direction: "inward", issue: { id: ISSUE_ID } }],
       });
@@ -1549,6 +1570,158 @@ describe("ItsaplanBridge", () => {
       expect(prompt).toContain("Initiative description: Service endpoints");
       expect(prompt).toContain("File attachments:");
       expect(prompt).toContain(`- openapi.json: ${config.baseUrl}/attachments/spec-doc/raw`);
+    });
+
+    test("skips dispatch when issue in Todo is assigned to a human and has no delegate", async () => {
+      issues.get(ISSUE_ID)!.assigneeUserId = "vaibhav";
+      issues.get(ISSUE_ID)!.delegateUserId = null;
+      const request = webhookRequest("issue.state_changed", {
+        id: ISSUE_ID,
+        projectId: PROJECT_ID,
+        sequenceNumber: 42,
+        columnId: 2,
+        title: "Assigned to vaibhav",
+        description: null,
+        assigneeUserId: "vaibhav",
+        delegateUserId: null,
+      });
+      const result = await bridge.handleWebhookRequest(request);
+      expect(result.status).toBe(200);
+      expect(deliverMachineryPrompt).not.toHaveBeenCalled();
+    });
+
+    test("skips dispatch when issue in Todo is unassigned and has no delegate", async () => {
+      issues.get(ISSUE_ID)!.assigneeUserId = null;
+      issues.get(ISSUE_ID)!.delegateUserId = null;
+      const request = webhookRequest("issue.state_changed", {
+        id: ISSUE_ID,
+        projectId: PROJECT_ID,
+        sequenceNumber: 42,
+        columnId: 2,
+        title: "Unassigned ticket",
+        description: null,
+        assigneeUserId: null,
+        delegateUserId: null,
+      });
+      const result = await bridge.handleWebhookRequest(request);
+      expect(result.status).toBe(200);
+      expect(deliverMachineryPrompt).not.toHaveBeenCalled();
+    });
+
+    test("dispatches when issue in Todo is assigned to vaibhav but delegated to Commander", async () => {
+      issues.get(ISSUE_ID)!.assigneeUserId = "vaibhav";
+      issues.get(ISSUE_ID)!.delegateUserId = "bot-user-1";
+      const request = webhookRequest("issue.state_changed", {
+        id: ISSUE_ID,
+        projectId: PROJECT_ID,
+        sequenceNumber: 42,
+        columnId: 2,
+        title: "Assigned to vaibhav, delegated to commander",
+        description: "Must dispatch",
+        assigneeUserId: "vaibhav",
+        delegateUserId: "bot-user-1",
+      });
+      const result = await bridge.handleWebhookRequest(request);
+      expect(result.status).toBe(200);
+      expect(deliverMachineryPrompt).toHaveBeenCalledTimes(1);
+      const prompt = deliverMachineryPrompt.mock.calls[0]?.[0] as string;
+      expect(prompt).toContain("ENG-42");
+    });
+
+    test("dispatches when issue.assigned event reassigns an unstarted issue to Commander", async () => {
+      issues.get(ISSUE_ID)!.assigneeUserId = "bot-user-1";
+      issues.get(ISSUE_ID)!.delegateUserId = null;
+      const request = webhookRequest("issue.assigned", {
+        id: ISSUE_ID,
+        projectId: PROJECT_ID,
+        sequenceNumber: 42,
+        columnId: 2,
+        title: "Reassigned to commander",
+        description: "Should trigger dispatch on assignment",
+        assigneeUserId: "bot-user-1",
+        delegateUserId: null,
+      });
+      const result = await bridge.handleWebhookRequest(request);
+      expect(result.status).toBe(200);
+      expect(deliverMachineryPrompt).toHaveBeenCalledTimes(1);
+    });
+
+    test("skips dispatch on issue.assigned event if reassigned to another human", async () => {
+      issues.get(ISSUE_ID)!.assigneeUserId = "human-2";
+      issues.get(ISSUE_ID)!.delegateUserId = null;
+      const request = webhookRequest("issue.assigned", {
+        id: ISSUE_ID,
+        projectId: PROJECT_ID,
+        sequenceNumber: 42,
+        columnId: 2,
+        title: "Reassigned to human-2",
+        description: null,
+        assigneeUserId: "human-2",
+        delegateUserId: null,
+      });
+      const result = await bridge.handleWebhookRequest(request);
+      expect(result.status).toBe(200);
+      expect(deliverMachineryPrompt).not.toHaveBeenCalled();
+    });
+
+    test("skips releasing unblocked dependent if dependent is assigned to a human without Commander delegation", async () => {
+      issues.set(200, {
+        id: 200,
+        projectId: PROJECT_ID,
+        sequenceNumber: 20,
+        columnId: 2,
+        title: "B (dependent human)",
+        description: "Depends on A, but assigned to vaibhav",
+        assigneeUserId: "vaibhav",
+        delegateUserId: null,
+        links: [{ id: 1, kind: "blocks", direction: "inward", issue: { id: ISSUE_ID } }],
+      });
+      issues.get(ISSUE_ID)!.links = [
+        { id: 1, kind: "blocks", direction: "outward", issue: { id: 200 } },
+      ];
+      issues.get(ISSUE_ID)!.columnId = 4;
+      const request = webhookRequest("issue.state_changed", {
+        id: ISSUE_ID,
+        projectId: PROJECT_ID,
+        sequenceNumber: 42,
+        columnId: 4,
+        title: "Fix the bug",
+        description: null,
+      });
+      const result = await bridge.handleWebhookRequest(request);
+      expect(result.status).toBe(200);
+      expect(deliverMachineryPrompt).not.toHaveBeenCalled();
+    });
+
+    test("releases unblocked dependent if dependent is delegated to Commander even when assigned to a human", async () => {
+      issues.set(200, {
+        id: 200,
+        projectId: PROJECT_ID,
+        sequenceNumber: 20,
+        columnId: 2,
+        title: "B (dependent delegated)",
+        description: "Depends on A, assigned to vaibhav, delegated to commander",
+        assigneeUserId: "vaibhav",
+        delegateUserId: "bot-user-1",
+        links: [{ id: 1, kind: "blocks", direction: "inward", issue: { id: ISSUE_ID } }],
+      });
+      issues.get(ISSUE_ID)!.links = [
+        { id: 1, kind: "blocks", direction: "outward", issue: { id: 200 } },
+      ];
+      issues.get(ISSUE_ID)!.columnId = 4;
+      const request = webhookRequest("issue.state_changed", {
+        id: ISSUE_ID,
+        projectId: PROJECT_ID,
+        sequenceNumber: 42,
+        columnId: 4,
+        title: "Fix the bug",
+        description: null,
+      });
+      const result = await bridge.handleWebhookRequest(request);
+      expect(result.status).toBe(200);
+      expect(deliverMachineryPrompt).toHaveBeenCalledTimes(1);
+      const prompt = deliverMachineryPrompt.mock.calls[0]?.[0] as string;
+      expect(prompt).toContain("ENG-20");
     });
   });
 
@@ -1911,8 +2084,8 @@ describe("ItsaplanBridge", () => {
         stateType: "started",
       });
       const readyColumn = findColumnByName(columns, "Ready to review");
-      expect(issues.get(ISSUE_ID)?.columnId).toBe(readyColumn?.id);
-      expect(fakeServer.comments.at(-1)?.body).toBe("Ready for review.");
+      await waitForIssueColumn(issues, ISSUE_ID, readyColumn!.id);
+      await waitForLastCommentBody(fakeServer.comments, "Ready for review.");
       const commentCountAfterFirstReady = fakeServer.comments.length;
 
       // 2. Deliver the exact same transition a second time (duplicate agent_state)

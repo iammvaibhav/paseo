@@ -41,6 +41,8 @@ const ItsaplanWebhookIssueDataSchema = z.object({
   columnId: z.number(),
   title: z.string(),
   description: z.string().nullable().optional(),
+  assigneeUserId: z.string().nullable().optional(),
+  delegateUserId: z.string().nullable().optional(),
   initiativeId: z.number().nullable().optional(),
   initiative: z
     .object({
@@ -431,7 +433,11 @@ export class ItsaplanBridge {
       // network hiccup even though its own semantics call a 2xx final.
       return { status: 200, body: { ok: true } };
     }
-    if (envelope.event === "issue.created" || envelope.event === "issue.state_changed") {
+    if (
+      envelope.event === "issue.created" ||
+      envelope.event === "issue.state_changed" ||
+      envelope.event === "issue.assigned"
+    ) {
       const parsed = ItsaplanWebhookIssueDataSchema.safeParse(envelope.data);
       if (!parsed.success) {
         return { status: 400, body: { ok: false, error: "invalid issue payload" } };
@@ -496,6 +502,20 @@ export class ItsaplanBridge {
     }
 
     if (column.stateType === "unstarted") {
+      const isAssignedToCommander = await this.isIssueAssignedToCommander(client, mapping, issue);
+      if (!isAssignedToCommander) {
+        this.logger.info(
+          {
+            issueId: issue.id,
+            assigneeUserId: issue.assigneeUserId,
+            delegateUserId: issue.delegateUserId,
+            commanderUserId: mapping.commanderUserId,
+          },
+          "itsaplan.bridge.issue_dispatch_skipped_not_assigned_to_commander",
+        );
+        return;
+      }
+
       const links = await client.listIssueLinks(issue.id);
       let openBlockerCount = 0;
       for (const link of links) {
@@ -677,6 +697,46 @@ export class ItsaplanBridge {
     }
     return null;
   }
+  /**
+   * Evaluates whether an issue is assigned or delegated to the project's
+   * Commander bot user. Automated dispatch strictly gates on this: issues
+   * assigned to humans (or unassigned without a Commander delegate) are not
+   * dispatched to the Commander.
+   */
+  private async isIssueAssignedToCommander(
+    client: ItsaplanClient,
+    mapping: ItsaplanProjectMapping,
+    issue: {
+      id: number;
+      assigneeUserId?: string | null;
+      delegateUserId?: string | null;
+    },
+  ): Promise<boolean> {
+    const commanderUserId = mapping.commanderUserId;
+    if (!commanderUserId) {
+      return false;
+    }
+    let assigneeUserId = issue.assigneeUserId;
+    let delegateUserId = issue.delegateUserId;
+    if (
+      assigneeUserId !== commanderUserId &&
+      delegateUserId !== commanderUserId &&
+      (assigneeUserId === undefined || delegateUserId === undefined)
+    ) {
+      try {
+        const fullIssue = await client.getIssue(issue.id);
+        assigneeUserId = fullIssue.assigneeUserId;
+        delegateUserId = fullIssue.delegateUserId;
+      } catch (error) {
+        this.logger.warn(
+          { err: error, issueId: issue.id },
+          "itsaplan.bridge.fetch_issue_for_assignment_check_failed",
+        );
+        return false;
+      }
+    }
+    return assigneeUserId === commanderUserId || delegateUserId === commanderUserId;
+  }
 
   private async releaseBlockedDependents(
     client: ItsaplanClient,
@@ -719,7 +779,24 @@ export class ItsaplanBridge {
         }
       }
       if (depOpenBlockers === 0) {
-        await this.dispatchIssue(mapping, config, dependent, client);
+        const isAssignedToCommander = await this.isIssueAssignedToCommander(
+          client,
+          mapping,
+          dependent,
+        );
+        if (isAssignedToCommander) {
+          await this.dispatchIssue(mapping, config, dependent, client);
+        } else {
+          this.logger.info(
+            {
+              issueId: dependent.id,
+              assigneeUserId: dependent.assigneeUserId,
+              delegateUserId: dependent.delegateUserId,
+              commanderUserId: mapping.commanderUserId,
+            },
+            "itsaplan.bridge.dependent_dispatch_skipped_not_assigned_to_commander",
+          );
+        }
       }
     }
   }
