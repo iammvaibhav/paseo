@@ -1,13 +1,17 @@
 import { useEffect, useRef } from "react";
 import {
   ensurePersistentBrowserWebview,
+  getResidentBrowserWebview,
   hidePersistentBrowserWebview,
   isBrowserWebviewDomReady,
+  isResidentBrowserWebviewReady,
   navigatePersistentBrowserWebview,
   showPersistentBrowserWebview,
 } from "@/desktop/browser/resident-webviews";
 import { planItsaplanEmbedVisit } from "./itsaplan-embed-visit";
 import type { ItsaplanEmbedProps } from "./itsaplan-webview.web";
+
+export type { ItsaplanEmbedProps };
 
 // Electron embed. Metro resolves .electron.tsx ahead of .web.tsx for the desktop
 // build, so this replaces the iframe there — and it has to, because a
@@ -68,6 +72,111 @@ function embedTarget(attempt: number, origin: string): string {
   return `${attempt}:${origin}`;
 }
 
+type WebviewWithScript = HTMLElement & {
+  executeJavaScript?: (code: string) => Promise<unknown>;
+};
+
+const pendingPrefetchKeys = new Set<string>();
+
+function runScriptInWebview(script: string): boolean {
+  const webview = getResidentBrowserWebview(ITSAPLAN_BROWSER_ID) as WebviewWithScript | null;
+  if (
+    !webview ||
+    !isResidentBrowserWebviewReady(webview) ||
+    typeof webview.executeJavaScript !== "function"
+  ) {
+    return false;
+  }
+  webview.executeJavaScript(script).catch(() => undefined);
+  return true;
+}
+
+/**
+ * Navigates the running itsaplan SPA to a specific project client-side,
+ * avoiding a full-frame reload.
+ */
+export function navigateItsaplanEmbedProject(projectKey: string): void {
+  const trimmed = projectKey.trim();
+  const keyJson = JSON.stringify(trimmed);
+  const script = `
+    (function() {
+      try {
+        if (window.__paseo_itsaplan?.navigateProject) {
+          window.__paseo_itsaplan.navigateProject(${keyJson});
+          return true;
+        }
+        window.postMessage({ type: 'paseo:navigate-project', projectKey: ${keyJson} }, '*');
+        const targetPath = ${keyJson} ? '/project/' + encodeURIComponent(${keyJson}) : '/';
+        if (window.location.pathname !== targetPath) {
+          if (window.history && window.history.pushState) {
+            window.history.pushState(null, '', targetPath);
+            window.dispatchEvent(new PopStateEvent('popstate'));
+          }
+        }
+        return true;
+      } catch (err) {
+        return false;
+      }
+    })()
+  `;
+  runScriptInWebview(script);
+}
+
+function runPrefetchScript(key: string): boolean {
+  const keyJson = JSON.stringify(key);
+  const script = `
+    (function() {
+      try {
+        if (window.__paseo_itsaplan?.prefetchProject) {
+          window.__paseo_itsaplan.prefetchProject(${keyJson});
+          return true;
+        }
+        window.postMessage({ type: 'paseo:prefetch-project', projectKey: ${keyJson} }, '*');
+        return true;
+      } catch (err) {
+        return false;
+      }
+    })()
+  `;
+  return runScriptInWebview(script);
+}
+
+/**
+ * Prefetches a project's route chunks and React Query cache inside the itsaplan webview.
+ */
+export function prefetchItsaplanProject(projectKey: string): void {
+  const trimmed = projectKey.trim();
+  if (!trimmed) {
+    return;
+  }
+  if (!runPrefetchScript(trimmed)) {
+    pendingPrefetchKeys.add(trimmed);
+  }
+}
+
+/**
+ * Prefetches multiple project routes and data caches in the background.
+ */
+export function prefetchItsaplanProjects(projectKeys: readonly string[]): void {
+  const validKeys = projectKeys.map((k) => k.trim()).filter(Boolean);
+  if (validKeys.length === 0) {
+    return;
+  }
+  for (const key of validKeys) {
+    prefetchItsaplanProject(key);
+  }
+}
+
+function flushPendingPrefetches(): void {
+  if (pendingPrefetchKeys.size === 0) {
+    return;
+  }
+  for (const key of pendingPrefetchKeys) {
+    runPrefetchScript(key);
+  }
+  pendingPrefetchKeys.clear();
+}
+
 /**
  * Create the itsaplan guest and start loading it before anyone opens the pane.
  * Safe to call repeatedly: the guest is created once, and a call for an origin
@@ -90,19 +199,36 @@ const CONTAINER_STYLE = {
   position: "relative",
 } as const;
 
-export function ItsaplanEmbed({ origin, attempt, onLoaded, onFailed, testID }: ItsaplanEmbedProps) {
+export function ItsaplanEmbed({
+  origin,
+  project,
+  attempt,
+  onLoaded,
+  onFailed,
+  testID,
+}: ItsaplanEmbedProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   // Read callbacks through a ref: they change identity on every render of the
   // parent, and re-running the effect would re-park and re-reveal the guest.
   const handlersRef = useRef({ onLoaded, onFailed });
   handlersRef.current = { onLoaded, onFailed };
 
+  const desiredProjectRef = useRef<string | undefined>(project);
+  desiredProjectRef.current = project;
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container) {
       return undefined;
     }
-    const webview = ensurePersistentBrowserWebview({ browserId: ITSAPLAN_BROWSER_ID, url: origin });
+    const activeProject = desiredProjectRef.current?.trim();
+    const initialUrl = activeProject
+      ? `${origin.replace(/\/+$/, "")}/project/${encodeURIComponent(activeProject)}`
+      : origin;
+    const webview = ensurePersistentBrowserWebview({
+      browserId: ITSAPLAN_BROWSER_ID,
+      url: initialUrl,
+    });
     if (!webview) {
       // No desktop bridge, or no document to attach to: the pane's unreachable
       // state is the honest outcome rather than an empty container.
@@ -110,7 +236,13 @@ export function ItsaplanEmbed({ origin, attempt, onLoaded, onFailed, testID }: I
       return undefined;
     }
 
-    const handleLoad = () => handlersRef.current.onLoaded();
+    const handleLoad = () => {
+      handlersRef.current.onLoaded();
+      flushPendingPrefetches();
+      if (desiredProjectRef.current) {
+        navigateItsaplanEmbedProject(desiredProjectRef.current);
+      }
+    };
     const handleFail = (event: Event) => {
       // Sub-resource failures surface here too; only a failed main document
       // means the embed itself is unreachable. -3 is ABORTED, which an ordinary
@@ -134,11 +266,15 @@ export function ItsaplanEmbed({ origin, attempt, onLoaded, onFailed, testID }: I
       domReady: isBrowserWebviewDomReady(webview),
     });
     if (visit.navigate) {
-      navigatePersistentBrowserWebview(ITSAPLAN_BROWSER_ID, origin);
+      navigatePersistentBrowserWebview(ITSAPLAN_BROWSER_ID, initialUrl);
     }
     loadedTarget = visit.nextTarget;
     if (visit.reportLoaded) {
       handlersRef.current.onLoaded();
+      flushPendingPrefetches();
+      if (desiredProjectRef.current) {
+        navigateItsaplanEmbedProject(desiredProjectRef.current);
+      }
     }
 
     showPersistentBrowserWebview(ITSAPLAN_BROWSER_ID, container);
@@ -152,6 +288,12 @@ export function ItsaplanEmbed({ origin, attempt, onLoaded, onFailed, testID }: I
       hidePersistentBrowserWebview(ITSAPLAN_BROWSER_ID);
     };
   }, [origin, attempt]);
+
+  useEffect(() => {
+    if (project != null) {
+      navigateItsaplanEmbedProject(project);
+    }
+  }, [project]);
 
   return <div ref={containerRef} style={CONTAINER_STYLE} data-testid={testID} />;
 }

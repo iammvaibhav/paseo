@@ -70,6 +70,7 @@ import {
   parseHostWorkspaceRouteFromPathname,
 } from "@/utils/host-routes";
 import { resolveProjectItsaplanKey } from "@/itsaplan/itsaplan-project-key";
+import { prefetchItsaplanProject, prefetchItsaplanProjects } from "@/itsaplan/itsaplan-webview";
 import {
   shouldShowSidebarHostLabels,
   useSidebarProjectStatusBucket,
@@ -455,6 +456,15 @@ function ProjectRowTrailingActions({
   removeProjectStatus: "idle" | "pending" | "success";
 }) {
   const actionsVisible = isHovered || platformIsNative || isMobileBreakpoint;
+  const trailingItsaplanKey = useMemo(
+    () => resolveProjectItsaplanKey(project, displayName),
+    [project, displayName],
+  );
+  useEffect(() => {
+    if (isHovered && trailingItsaplanKey) {
+      prefetchItsaplanProject(trailingItsaplanKey);
+    }
+  }, [isHovered, trailingItsaplanKey]);
   return (
     <View style={styles.projectTrailingActions}>
       {worktreeTarget ? (
@@ -927,6 +937,12 @@ function ProjectItsaplanButton({
     [projectKey],
   );
 
+  const handleHoverIn = useCallback(() => {
+    if (projectKey) {
+      prefetchItsaplanProject(projectKey);
+    }
+  }, [projectKey]);
+
   return (
     <View style={styles.projectTrailingControlSlot} pointerEvents={visible ? "auto" : "none"}>
       <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
@@ -934,6 +950,7 @@ function ProjectItsaplanButton({
           <Pressable
             style={pressableStyle}
             onPress={handlePress}
+            onHoverIn={handleHoverIn}
             accessibilityRole={platformIsWeb ? undefined : "button"}
             accessibilityLabel={t("sidebar.workspace.actions.openItsaplanFor", {
               projectName: displayName,
@@ -2217,6 +2234,17 @@ export function SidebarWorkspaceList({
   // paints them on each row, all keyed by `projectViewKey`. The targets come from the projection
   // that produced the rows, so the question "what is on screen" is answered once.
   const projectIconByProjectViewKey = useProjectIcons({ projects: projectIconTargets });
+
+  useEffect(() => {
+    if (projects.length > 0) {
+      const keys = projects
+        .map((p) => p.projectKey ?? resolveProjectItsaplanKey(p, p.projectName))
+        .filter((k) => Boolean(k));
+      if (keys.length > 0) {
+        prefetchItsaplanProjects(keys);
+      }
+    }
+  }, [projects]);
 
   // A filter that matches nothing swaps the list's body and nothing above it. It used to replace
   // this whole subtree, which unmounted the header — and the header is where the display menu's

@@ -70,17 +70,6 @@ export function ItsaplanScreen(): ReactElement {
         : null,
     [targetHost, isLocalDaemon, settings.itsaplanOrigin, useDesktopEmbed],
   );
-  const embedUrl = useMemo(() => {
-    if (!resolved?.origin) {
-      return null;
-    }
-    if (projectParam) {
-      const base = resolved.origin.replace(/\/+$/, "");
-      return `${base}/project/${encodeURIComponent(projectParam)}`;
-    }
-    return resolved.origin;
-  }, [resolved?.origin, projectParam]);
-
   const markLoaded = useCallback(() => setStatus("ready"), []);
   const markFailed = useCallback(() => setStatus("error"), []);
   const retry = useCallback(() => {
@@ -126,7 +115,8 @@ export function ItsaplanScreen(): ReactElement {
       ) : (
         <View style={styles.embedContainer}>
           <ItsaplanEmbed
-            origin={embedUrl ?? resolved.origin}
+            origin={resolved.origin}
+            project={projectParam}
             attempt={attempt}
             onLoaded={markLoaded}
             onFailed={markFailed}
