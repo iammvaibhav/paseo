@@ -1209,6 +1209,26 @@ export const ru: TranslationResources = {
         all: "Все проекты",
       },
     },
+    view: { workspaces: "Рабочие пространства", agents: "Агенты" },
+    agentView: {
+      title: "Агенты",
+      display: {
+        trigger: "Настройки отображения агентов",
+        heading: "Агенты",
+        showDone: "Показывать завершённые",
+      },
+      sections: {
+        needsYou: "Требует внимания",
+        running: "Работает",
+        ready: "Готовы к проверке",
+        done: "Готово",
+      },
+      empty: {
+        title: "Нет агентов для отображения",
+        description: "Здесь отображаются работающие и готовые к проверке агенты.",
+        clear: "Очистить фильтры",
+      },
+    },
     filterEmpty: {
       title: "Нет подходящих рабочих пространств",
       description:

@@ -1219,6 +1219,26 @@ export const ptBR: TranslationResources = {
         all: "Todos os projetos",
       },
     },
+    view: { workspaces: "Espaços de trabalho", agents: "Agentes" },
+    agentView: {
+      title: "Agentes",
+      display: {
+        trigger: "Preferências de visualização de agentes",
+        heading: "Agentes",
+        showDone: "Mostrar concluídos",
+      },
+      sections: {
+        needsYou: "Precisa de você",
+        running: "Em execução",
+        ready: "Prontos para revisão",
+        done: "Concluído",
+      },
+      empty: {
+        title: "Nenhum agente para exibir",
+        description: "Agentes em execução e prontos para revisão aparecem aqui.",
+        clear: "Limpar filtros",
+      },
+    },
     filterEmpty: {
       title: "Nenhum espaço de trabalho corresponde",
       description: "Altere ou limpe os filtros da barra lateral para ver espaços de trabalho.",

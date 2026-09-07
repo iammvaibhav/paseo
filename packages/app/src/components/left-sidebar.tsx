@@ -15,6 +15,7 @@ import { useTranslation } from "react-i18next";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
   Pressable,
+  ScrollView,
   StyleSheet as RNStyleSheet,
   Text,
   useWindowDimensions,
@@ -34,6 +35,9 @@ import {
 } from "@/components/sidebar-resize-handle-layout";
 import { HostPicker } from "@/components/hosts/host-picker";
 import { SidebarDisplayPreferencesMenu } from "@/components/sidebar/display-preferences/menu";
+import { SidebarAgentViewPreferencesMenu } from "@/components/sidebar/agent-view/menu";
+import { SidebarViewToggle } from "@/components/sidebar/sidebar-view-toggle";
+import { SidebarAgentViewList } from "@/components/sidebar/agent-view/list";
 import { SidebarNavRows } from "@/components/sidebar/sidebar-nav-rows";
 import { SidebarHelpMenu } from "@/components/sidebar/sidebar-help-menu";
 import { SidebarProviderUsageMenu } from "@/provider-usage/sidebar-menu";
@@ -57,7 +61,11 @@ import type { PinnedSidebarGroups } from "@/hooks/use-sidebar-pins";
 import { RetainedPanelActivity } from "@/components/retained-panel";
 import type { SidebarWorkspaceGroup } from "@/components/sidebar/sidebar-labels";
 import type { SidebarProjectIconTarget } from "@/utils/sidebar-project-row-model";
-import { type SidebarGroupMode, useSidebarViewStore } from "@/stores/sidebar-view-store";
+import {
+  type SidebarGroupMode,
+  type SidebarViewMode,
+  useSidebarViewStore,
+} from "@/stores/sidebar-view-store";
 import {
   SidebarHeaderRow,
   type SidebarHeaderRowBadgeSegment,
@@ -97,6 +105,7 @@ interface SidebarLabels {
 const DEV_BUILD_LABEL = process.env.EXPO_PUBLIC_PASEO_DEV_BUILD_LABEL?.trim() || null;
 
 interface SidebarSharedProps {
+  viewMode: SidebarViewMode;
   theme: SidebarTheme;
   workspaceGroups: SidebarWorkspaceGroup[];
   projectIconTargets: SidebarProjectIconTarget[];
@@ -286,7 +295,10 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
     [t],
   );
 
+  const viewMode = useSidebarViewStore((state) => state.viewMode);
+
   const sharedProps = {
+    viewMode,
     theme,
     workspaceGroups,
     projectIconTargets,
@@ -631,6 +643,7 @@ function SidebarFooter({
 
 function MobileSidebar({
   active,
+  viewMode,
   theme,
   workspaceGroups,
   projectIconTargets,
@@ -663,6 +676,7 @@ function MobileSidebar({
   handleViewMissionControlNavigate,
 }: MobileSidebarProps) {
   const hasActiveHostFilter = useSidebarViewStore((state) => state.hostFilters.length > 0);
+  const showWorkspaceSkeleton = isInitialLoad && !hasActiveHostFilter;
   const pathname = usePathname();
   const isWebhooksActive = pathname.includes("/webhooks");
   const isItsaplanActive = pathname.includes("/itsaplan");
@@ -755,9 +769,27 @@ function MobileSidebar({
           </Pressable>
         </WindowChromeSafeArea>
 
-        {isInitialLoad && !hasActiveHostFilter ? (
-          <SidebarAgentListSkeleton />
-        ) : (
+        {viewMode === "agents" ? (
+          <SidebarAgentViewList
+            active={active}
+            listHeaderComponent={sidebarSectionHeaderElement}
+            onAgentPress={handleWorkspacePress}
+            parentGestureRef={closeGestureRef}
+          />
+        ) : null}
+        {viewMode === "workspaces" && showWorkspaceSkeleton ? (
+          <View style={styles.sidebarContent}>
+            <ScrollView
+              style={styles.sidebarContent}
+              contentContainerStyle={styles.workspaceSkeletonContent}
+              showsVerticalScrollIndicator={false}
+            >
+              {sidebarSectionHeaderElement}
+              <SidebarAgentListSkeleton />
+            </ScrollView>
+          </View>
+        ) : null}
+        {viewMode === "workspaces" && !showWorkspaceSkeleton ? (
           <SidebarWorkspaceList
             collapsedProjectKeys={collapsedProjectKeys}
             onToggleProjectCollapsed={toggleProjectCollapsed}
@@ -777,9 +809,9 @@ function MobileSidebar({
             onImportSession={handleImportSession}
             parentGestureRef={closeGestureRef}
             dragGestureHostActive={active}
-            listHeaderComponent={workspacesSectionHeaderElement}
+            listHeaderComponent={sidebarSectionHeaderElement}
           />
-        )}
+        ) : null}
 
         <SidebarFooter
           theme={theme}
@@ -797,6 +829,7 @@ function MobileSidebar({
 
 function DesktopSidebar({
   theme,
+  viewMode,
   workspaceGroups,
   projectIconTargets,
   pinnedGroups,
@@ -828,6 +861,7 @@ function DesktopSidebar({
 }: DesktopSidebarProps) {
   const ownsTopLeft = useOwnsWindowChromeCorner("top-left");
   const hasActiveHostFilter = useSidebarViewStore((state) => state.hostFilters.length > 0);
+  const showWorkspaceSkeleton = isInitialLoad && !hasActiveHostFilter;
   const pathname = usePathname();
   const isWebhooksActive = pathname.includes("/webhooks");
   const isItsaplanActive = pathname.includes("/itsaplan");
@@ -970,9 +1004,22 @@ function DesktopSidebar({
           </View>
         </View>
 
-        {isInitialLoad && !hasActiveHostFilter ? (
-          <SidebarAgentListSkeleton />
-        ) : (
+        {viewMode === "agents" ? (
+          <SidebarAgentViewList active={active} listHeaderComponent={sidebarSectionHeaderElement} />
+        ) : null}
+        {viewMode === "workspaces" && showWorkspaceSkeleton ? (
+          <View style={styles.sidebarContent}>
+            <ScrollView
+              style={styles.sidebarContent}
+              contentContainerStyle={styles.workspaceSkeletonContent}
+              showsVerticalScrollIndicator={false}
+            >
+              {sidebarSectionHeaderElement}
+              <SidebarAgentListSkeleton />
+            </ScrollView>
+          </View>
+        ) : null}
+        {viewMode === "workspaces" && !showWorkspaceSkeleton ? (
           <SidebarWorkspaceList
             collapsedProjectKeys={collapsedProjectKeys}
             onToggleProjectCollapsed={toggleProjectCollapsed}
@@ -989,9 +1036,9 @@ function DesktopSidebar({
             onRefresh={handleRefresh}
             onAddProject={handleOpenProject}
             onImportSession={handleImportSession}
-            listHeaderComponent={workspacesSectionHeaderElement}
+            listHeaderComponent={sidebarSectionHeaderElement}
           />
-        )}
+        ) : null}
 
         <SidebarCalloutSlot />
 
@@ -1016,19 +1063,32 @@ function DesktopSidebar({
   );
 }
 
-function WorkspacesSectionHeader() {
+function SidebarSectionHeader() {
+  const { t } = useTranslation();
+  const viewMode = useSidebarViewStore((state) => state.viewMode);
+  const isAgentView = viewMode === "agents";
+
   return (
     <View style={styles.workspacesSectionHeader}>
-      <Text style={styles.workspacesSectionTitle}>Workspaces</Text>
+      <Text style={styles.workspacesSectionTitle}>
+        {isAgentView ? t("sidebar.agentView.title") : "Workspaces"}
+      </Text>
       <View style={styles.workspacesSectionActions}>
+        <SidebarViewToggle />
         <Tooltip delayDuration={300}>
           <TooltipTrigger asChild>
             <View>
-              <SidebarDisplayPreferencesMenu />
+              {isAgentView ? (
+                <SidebarAgentViewPreferencesMenu />
+              ) : (
+                <SidebarDisplayPreferencesMenu />
+              )}
             </View>
           </TooltipTrigger>
           <TooltipContent side="bottom" align="center" offset={8}>
-            <IconTooltipContent label="Display preferences" />
+            <IconTooltipContent
+              label={isAgentView ? t("sidebar.agentView.display.trigger") : "Display preferences"}
+            />
           </TooltipContent>
         </Tooltip>
       </View>
@@ -1037,8 +1097,8 @@ function WorkspacesSectionHeader() {
 }
 
 // Stable element so the sidebar list's listHeaderComponent prop keeps identity across
-// renders (WorkspacesSectionHeader takes no props).
-const workspacesSectionHeaderElement = <WorkspacesSectionHeader />;
+// renders (SidebarSectionHeader takes no props).
+const sidebarSectionHeaderElement = <SidebarSectionHeader />;
 
 // Static styles for Animated.Views — must NOT use Unistyles dynamic theme to
 // avoid the "Unable to find node on an unmounted component" crash when Unistyles
@@ -1089,6 +1149,11 @@ const styles = StyleSheet.create((theme) => ({
   sidebarContent: {
     flex: 1,
     minHeight: 0,
+  },
+  workspaceSkeletonContent: {
+    paddingHorizontal: theme.spacing[2],
+    paddingTop: 2,
+    paddingBottom: theme.spacing[4],
   },
   mobileCloseButtonRow: {
     position: "absolute",

@@ -1227,6 +1227,26 @@ export const fr: TranslationResources = {
         all: "Tous les projets",
       },
     },
+    view: { workspaces: "Espaces de travail", agents: "Agents" },
+    agentView: {
+      title: "Agents",
+      display: {
+        trigger: "Préférences d'affichage des agents",
+        heading: "Agents",
+        showDone: "Afficher les terminés",
+      },
+      sections: {
+        needsYou: "Nécessite votre attention",
+        running: "En cours d'exécution",
+        ready: "Prêts pour révision",
+        done: "Terminé",
+      },
+      empty: {
+        title: "Aucun agent à afficher",
+        description: "Les agents en cours d'exécution et prêts pour révision apparaissent ici.",
+        clear: "Effacer les filtres",
+      },
+    },
     filterEmpty: {
       title: "Aucun espace de travail ne correspond",
       description:

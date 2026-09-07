@@ -1203,6 +1203,22 @@ export const en = {
         all: "All projects",
       },
     },
+    view: { workspaces: "Workspaces", agents: "Agents" },
+    agentView: {
+      title: "Agents",
+      display: { trigger: "Agent view preferences", heading: "Agents", showDone: "Show done" },
+      sections: {
+        needsYou: "Needs you",
+        running: "Running",
+        ready: "Ready for review",
+        done: "Done",
+      },
+      empty: {
+        title: "No agents to show",
+        description: "Running and ready-for-review agents appear here.",
+        clear: "Clear filters",
+      },
+    },
     filterEmpty: {
       title: "No workspaces match",
       description: "Change or clear the sidebar filters to see workspaces.",

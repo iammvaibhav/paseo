@@ -1193,6 +1193,22 @@ export const ar: TranslationResources = {
         all: "كل المشاريع",
       },
     },
+    view: { workspaces: "مساحات العمل", agents: "الوكلاء" },
+    agentView: {
+      title: "الوكلاء",
+      display: { trigger: "تفضيلات عرض الوكلاء", heading: "الوكلاء", showDone: "إظهار المكتملة" },
+      sections: {
+        needsYou: "بحاجة إليك",
+        running: "جارٍ التشغيل",
+        ready: "جاهز للمراجعة",
+        done: "مكتمل",
+      },
+      empty: {
+        title: "لا يوجد وكلاء لعرضهم",
+        description: "يظهر هنا الوكلاء قيد التشغيل والجاهزون للمراجعة.",
+        clear: "مسح عوامل التصفية",
+      },
+    },
     filterEmpty: {
       title: "لا توجد مساحات عمل مطابقة",
       description: "غيّر عوامل تصفية الشريط الجانبي أو امسحها لعرض مساحات العمل.",

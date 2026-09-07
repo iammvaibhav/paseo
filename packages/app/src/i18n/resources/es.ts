@@ -1228,6 +1228,26 @@ export const es: TranslationResources = {
         all: "Todos los proyectos",
       },
     },
+    view: { workspaces: "Espacios de trabajo", agents: "Agentes" },
+    agentView: {
+      title: "Agentes",
+      display: {
+        trigger: "Preferencias de vista de agentes",
+        heading: "Agentes",
+        showDone: "Mostrar completados",
+      },
+      sections: {
+        needsYou: "Necesita tu atención",
+        running: "En ejecución",
+        ready: "Listos para revisión",
+        done: "Completado",
+      },
+      empty: {
+        title: "No hay agentes para mostrar",
+        description: "Los agentes en ejecución y listos para revisión aparecen aquí.",
+        clear: "Borrar filtros",
+      },
+    },
     filterEmpty: {
       title: "Ningún espacio de trabajo coincide",
       description: "Cambia o borra los filtros de la barra lateral para ver espacios de trabajo.",

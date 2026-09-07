@@ -1185,6 +1185,17 @@ export const zhCN: TranslationResources = {
         all: "所有项目",
       },
     },
+    view: { workspaces: "工作区", agents: "Agents" },
+    agentView: {
+      title: "Agents",
+      display: { trigger: "Agent 视图偏好", heading: "Agents", showDone: "显示已完成" },
+      sections: { needsYou: "需要你处理", running: "运行中", ready: "待审查", done: "已完成" },
+      empty: {
+        title: "没有可显示的 Agent",
+        description: "运行中和待审查的 Agent 会显示在这里。",
+        clear: "清除筛选",
+      },
+    },
     filterEmpty: {
       title: "没有匹配的工作区",
       description: "更改或清除侧边栏筛选以查看工作区。",

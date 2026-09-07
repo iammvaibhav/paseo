@@ -1205,6 +1205,17 @@ export const ja: TranslationResources = {
         all: "すべてのプロジェクト",
       },
     },
+    view: { workspaces: "ワークスペース", agents: "エージェント" },
+    agentView: {
+      title: "エージェント",
+      display: { trigger: "エージェント表示設定", heading: "エージェント", showDone: "完了を表示" },
+      sections: { needsYou: "対応が必要", running: "実行中", ready: "レビュー待ち", done: "完了" },
+      empty: {
+        title: "表示するエージェントがありません",
+        description: "実行中およびレビュー待ちのエージェントがここに表示されます。",
+        clear: "フィルターをクリア",
+      },
+    },
     filterEmpty: {
       title: "一致するワークスペースがありません",
       description:

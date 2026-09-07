@@ -1201,6 +1201,17 @@ export const ko: TranslationResources = {
         all: "모든 프로젝트",
       },
     },
+    view: { workspaces: "워크스페이스", agents: "에이전트" },
+    agentView: {
+      title: "에이전트",
+      display: { trigger: "에이전트 보기 설정", heading: "에이전트", showDone: "완료 표시" },
+      sections: { needsYou: "조치 필요", running: "실행 중", ready: "검토 대기", done: "완료" },
+      empty: {
+        title: "표시할 에이전트 없음",
+        description: "실행 중이거나 검토 대기 중인 에이전트가 여기에 표시됩니다.",
+        clear: "필터 지우기",
+      },
+    },
     filterEmpty: {
       title: "일치하는 워크스페이스가 없습니다",
       description: "워크스페이스를 보려면 사이드바 필터를 변경하거나 지우세요.",
