@@ -1330,6 +1330,7 @@ export const en = {
         showMore: "Show more",
         showLess: "Show less",
         createWorkspaceFor: "Create a new workspace for {{projectName}}",
+        openItsaplanFor: "Open itsaplan for {{projectName}}",
         copyPath: "Copy path",
         copyBranchName: "Copy branch name",
         rename: "Rename workspace",

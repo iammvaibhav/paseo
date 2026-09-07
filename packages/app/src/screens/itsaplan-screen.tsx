@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
 import { useTranslation } from "react-i18next";
 import { Text, View } from "react-native";
+import { useLocalSearchParams } from "expo-router";
 import { RefreshCw, SquareKanban } from "lucide-react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { MenuHeader } from "@/components/headers/menu-header";
@@ -30,6 +31,9 @@ export function ItsaplanScreen(): ReactElement {
   const hosts = useHosts();
   const localServerId = useLocalDaemonServerId();
   const { settings } = useAppSettings();
+  const params = useLocalSearchParams<{ project?: string; projectKey?: string }>();
+  const rawParam = typeof params.project === "string" ? params.project : params.projectKey;
+  const projectParam = typeof rawParam === "string" ? rawParam.trim() : "";
 
   const [attempt, setAttempt] = useState(0);
   const [status, setStatus] = useState<LoadStatus>("loading");
@@ -66,6 +70,16 @@ export function ItsaplanScreen(): ReactElement {
         : null,
     [targetHost, isLocalDaemon, settings.itsaplanOrigin, useDesktopEmbed],
   );
+  const embedUrl = useMemo(() => {
+    if (!resolved?.origin) {
+      return null;
+    }
+    if (projectParam) {
+      const base = resolved.origin.replace(/\/+$/, "");
+      return `${base}/project/${encodeURIComponent(projectParam)}`;
+    }
+    return resolved.origin;
+  }, [resolved?.origin, projectParam]);
 
   const markLoaded = useCallback(() => setStatus("ready"), []);
   const markFailed = useCallback(() => setStatus("error"), []);
@@ -112,7 +126,7 @@ export function ItsaplanScreen(): ReactElement {
       ) : (
         <View style={styles.embedContainer}>
           <ItsaplanEmbed
-            origin={resolved.origin}
+            origin={embedUrl ?? resolved.origin}
             attempt={attempt}
             onLoaded={markLoaded}
             onFailed={markFailed}

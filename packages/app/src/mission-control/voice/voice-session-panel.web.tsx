@@ -3,6 +3,7 @@ import {
   Pressable,
   ScrollView,
   Text,
+  // oxlint-disable-next-line eslint(no-restricted-imports)
   TextInput,
   View,
   type StyleProp,

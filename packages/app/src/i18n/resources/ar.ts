@@ -1320,6 +1320,7 @@ export const ar: TranslationResources = {
         showMore: "عرض المزيد",
         showLess: "عرض أقل",
         createWorkspaceFor: "قم بإنشاء مساحة عمل جديدة لـ{{projectName}}",
+        openItsaplanFor: "فتح itsaplan لـ {{projectName}}",
         copyPath: "نسخ المسار",
         copyBranchName: "انسخ اسم الفرع",
         rename: "إعادة تسمية مساحة العمل",
