@@ -6,7 +6,6 @@ import type {
   AgentProvider,
   ProviderSnapshotEntry,
 } from "@getpaseo/protocol/agent-types";
-import { useHosts } from "@/runtime/host-runtime";
 import { buildProviderDefinitions } from "@/utils/provider-definitions";
 import {
   buildSelectableProviderSelectorProviders,
@@ -29,7 +28,6 @@ import {
   normalizeSelectedModelId,
   resolveDefaultModelId,
   mergeSelectedComposerPreferences,
-  combineInitialValues,
   buildProviderDefinitionMap,
   buildProviderDefinitionMapForStatuses,
   INITIAL_AGENT_FORM_RESOLUTION,
@@ -46,20 +44,17 @@ export type { FormInitialValues } from "@/provider-selection/resolve-agent-form"
 export type { FormPreferenceScope } from "./use-form-preferences";
 
 export interface UseAgentFormStateOptions {
-  initialServerId?: string | null;
+  serverId: string | null;
+  workingDir: string;
   initialValues?: FormInitialValues;
   isVisible?: boolean;
   isCreateFlow?: boolean;
-  isTargetDaemonReady?: boolean;
-  onlineServerIds?: string[];
   /** Workspace/project scope for remembering the last selected model. */
   preferenceScope?: FormPreferenceScope | null;
 }
 
 export interface UseAgentFormStateResult {
   selectedServerId: string | null;
-  setSelectedServerId: (value: string | null) => void;
-  setSelectedServerIdFromUser: (value: string | null) => void;
   selectedProvider: AgentProvider | null;
   selectedMode: string;
   setModeFromUser: (modeId: string) => void;
@@ -68,8 +63,6 @@ export interface UseAgentFormStateResult {
   selectedThinkingOptionId: string;
   setThinkingOptionFromUser: (thinkingOptionId: string) => void;
   workingDir: string;
-  setWorkingDir: (value: string) => void;
-  setWorkingDirFromUser: (value: string) => void;
   providerDefinitions: AgentProviderDefinition[];
   providerDefinitionMap: Map<AgentProvider, AgentProviderDefinition>;
   agentDefinition?: AgentProviderDefinition;
@@ -90,59 +83,6 @@ export interface UseAgentFormStateResult {
   clearProviderSelectionFromUser: () => void;
   workingDirIsEmpty: boolean;
   persistFormPreferences: () => Promise<void>;
-}
-
-function shouldAutoSelectServerId(input: {
-  isVisible: boolean;
-  isCreateFlow: boolean;
-  isPreferencesLoading: boolean;
-  userModifiedServerId: boolean;
-  initialServerId: string | null | undefined;
-  currentServerId: string | null;
-}): boolean {
-  const {
-    isVisible,
-    isCreateFlow,
-    isPreferencesLoading,
-    userModifiedServerId,
-    initialServerId,
-    currentServerId,
-  } = input;
-  if (!isVisible || !isCreateFlow) return false;
-  if (isPreferencesLoading) return false;
-  if (userModifiedServerId) return false;
-  if (initialServerId !== undefined) return false;
-  if (currentServerId) return false;
-  return true;
-}
-
-function resolutionIntentKeyPart(value: string | null | undefined): string {
-  if (value === undefined) return "undefined";
-  if (value === null) return "null";
-  return value;
-}
-
-function buildResolutionIntentKey(initialValues: FormInitialValues | undefined): string {
-  if (!initialValues) return "none";
-  // workingDir seeds the open request, but locked cwd updates must not re-run
-  // provider/model/mode resolution after the form has settled.
-  return [
-    resolutionIntentKeyPart(initialValues.serverId),
-    resolutionIntentKeyPart(initialValues.provider),
-    resolutionIntentKeyPart(initialValues.modeId),
-    resolutionIntentKeyPart(initialValues.model),
-    resolutionIntentKeyPart(initialValues.thinkingOptionId),
-  ].join("\n");
-}
-
-function hasSnapshotDataForResolution(input: {
-  serverId: string | null;
-  snapshotEntries: ProviderSnapshotEntry[] | undefined;
-}): boolean {
-  if (!input.serverId) {
-    return false;
-  }
-  return input.snapshotEntries !== undefined;
 }
 
 function resolveSelectedProviderModes(input: {
@@ -175,7 +115,10 @@ function buildProviderModelsByProvider(
 ): ProviderModelsByProvider {
   const map: ProviderModelsByProvider = new Map();
   for (const entry of snapshotEntries ?? []) {
-    map.set(entry.provider, filterSelectableModels(entry.models ?? null));
+    map.set(
+      entry.provider,
+      entry.status === "ready" ? filterSelectableModels(entry.models ?? null) : null,
+    );
   }
   return map;
 }
@@ -214,33 +157,15 @@ function buildPreferenceScopeKey(scope: FormPreferenceScope | null | undefined):
   return `${workspaceId}\n${projectKey}`;
 }
 
-export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAgentFormStateResult {
+export function useAgentFormState(options: UseAgentFormStateOptions): UseAgentFormStateResult {
   const {
-    initialServerId = null,
+    serverId,
     initialValues,
+    workingDir,
     isVisible = true,
     isCreateFlow = true,
-    isTargetDaemonReady: _isTargetDaemonReady = true,
-    onlineServerIds = [],
     preferenceScope = null,
   } = options;
-
-  const [{ form: formState, userModified, resolution }, dispatch] = useReducer(
-    resolveAgentForm,
-    initialServerId,
-    (serverId) => ({
-      form: {
-        serverId,
-        provider: null,
-        modeId: "",
-        model: "",
-        thinkingOptionId: "",
-        workingDir: "",
-      },
-      userModified: INITIAL_USER_MODIFIED,
-      resolution: INITIAL_AGENT_FORM_RESOLUTION,
-    }),
-  );
 
   // Host-aware: the composer targets a specific daemon, so its last pick syncs
   // with that daemon's composerPreferences (config.json) via get/patchDaemonConfig.
@@ -248,7 +173,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
     preferences,
     isLoading: isPreferencesLoading,
     updatePreferences,
-  } = useFormPreferences(formState.serverId);
+  } = useFormPreferences(serverId);
   const preferenceOverlayRef = useRef(new OptimisticFormPreferences(preferences));
   const preferenceScopeKey = useMemo(
     () => buildPreferenceScopeKey(preferenceScope),
@@ -280,20 +205,11 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
     [updatePreferences],
   );
 
-  const daemons = useHosts();
-
-  const validServerIds = useMemo(() => new Set(daemons.map((d) => d.serverId)), [daemons]);
-
-  const reducerStateRef = useRef({ form: formState, userModified });
-  useEffect(() => {
-    reducerStateRef.current = { form: formState, userModified };
-  }, [formState, userModified]);
-
-  useEffect(() => {
-    if (!isVisible) {
-      dispatch({ type: "RESET" });
-    }
-  }, [isVisible]);
+  const [{ form: formState, userModified, resolution }, dispatch] = useReducer(resolveAgentForm, {
+    form: { provider: null, modeId: "", model: "", thinkingOptionId: "" },
+    userModified: INITIAL_USER_MODIFIED,
+    resolution: INITIAL_AGENT_FORM_RESOLUTION,
+  });
 
   const {
     entries: snapshotEntries,
@@ -302,7 +218,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
     error: snapshotError,
     refresh: refreshSnapshot,
     refetchIfStale: refetchSnapshotIfStale,
-  } = useProvidersSnapshot(formState.serverId, { cwd: formState.workingDir });
+  } = useProvidersSnapshot(serverId, { cwd: workingDir });
 
   const allProviderEntries = useMemo(() => snapshotEntries ?? [], [snapshotEntries]);
   const snapshotProviderDefinitions = useMemo(
@@ -368,95 +284,43 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
     resolution.status === "pending" || snapshotIsLoading || selectedProviderIsLoading;
   const isAllModelsLoading = isModelSelectionLoading;
 
-  const combinedInitialValues = useMemo(
-    () => combineInitialValues(initialValues, initialServerId),
-    [initialValues, initialServerId],
-  );
-  const resolutionIntentKey = useMemo(
-    () => `${buildResolutionIntentKey(combinedInitialValues)}\n${preferenceScopeKey}`,
-    [combinedInitialValues, preferenceScopeKey],
-  );
-
   const effectivePreferences = useMemo(
     () => resolveEffectiveFormPreferences(preferences, preferenceScope),
     [preferences, preferenceScope],
   );
 
+  // The reducer re-opens resolution when serverId, visibility or initialValues
+  // change. Scoped preferences (workspace -> project -> global) are an input it
+  // does not track, so re-open it here: switching workspace or project must
+  // restore the model remembered for that scope.
   useEffect(() => {
-    if (!isVisible || !isCreateFlow) {
-      return;
-    }
-
     dispatch({ type: "REQUEST_RESOLUTION" });
-  }, [isVisible, isCreateFlow, resolutionIntentKey]);
+  }, [preferenceScopeKey]);
 
   useEffect(() => {
-    if (!isVisible || !isCreateFlow || resolution.status !== "pending") {
-      return;
-    }
-    if (isPreferencesLoading) {
-      return;
-    }
-    if (
-      !hasSnapshotDataForResolution({
-        serverId: formState.serverId,
-        snapshotEntries,
-      })
-    ) {
-      return;
-    }
-
     dispatch({
-      type: "COMPLETE_RESOLUTION",
-      initialValues: combinedInitialValues,
+      type: "INPUTS_CHANGED",
+      serverId,
+      isVisible,
+      isCreateFlow,
+      isPreferencesLoading,
+      hasSnapshot: snapshotEntries !== undefined,
+      initialValues,
       preferences: effectivePreferences,
       providerModelsByProvider: snapshotProviderModelsByProvider,
       allowedProviderMap: snapshotResolvableProviderDefinitionMap,
     });
   }, [
-    combinedInitialValues,
-    effectivePreferences,
-    formState.serverId,
+    serverId,
+    isVisible,
     isCreateFlow,
     isPreferencesLoading,
-    isVisible,
-    resolution.status,
     snapshotEntries,
+    initialValues,
+    effectivePreferences,
     snapshotProviderModelsByProvider,
     snapshotResolvableProviderDefinitionMap,
   ]);
-
-  const onlineServerIdsKey = onlineServerIds.join("|");
-  useEffect(() => {
-    const canAutoSelectServerId = shouldAutoSelectServerId({
-      isVisible,
-      isCreateFlow,
-      isPreferencesLoading,
-      userModifiedServerId: userModified.serverId,
-      initialServerId: combinedInitialValues?.serverId,
-      currentServerId: formState.serverId,
-    });
-    if (!canAutoSelectServerId) return;
-
-    const candidate = onlineServerIds.find((id) => validServerIds.has(id)) ?? null;
-    if (!candidate) return;
-
-    dispatch({ type: "AUTO_SELECT_SERVER", candidateServerId: candidate });
-  }, [
-    combinedInitialValues?.serverId,
-    isCreateFlow,
-    isPreferencesLoading,
-    isVisible,
-    onlineServerIds,
-    onlineServerIdsKey,
-    formState.serverId,
-    userModified.serverId,
-    validServerIds,
-  ]);
-
-  const setSelectedServerIdFromUser = useCallback((value: string | null) => {
-    dispatch({ type: "SET_SERVER_ID_FROM_USER", value });
-  }, []);
 
   const setProviderAndModelFromUser = useCallback(
     (provider: AgentProvider, modelId: string) => {
@@ -621,18 +485,6 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
     [formState, updateCurrentPreferences],
   );
 
-  const setWorkingDir = useCallback((value: string) => {
-    dispatch({ type: "SET_WORKING_DIR", value });
-  }, []);
-
-  const setWorkingDirFromUser = useCallback((value: string) => {
-    dispatch({ type: "SET_WORKING_DIR_FROM_USER", value });
-  }, []);
-
-  const setSelectedServerId = useCallback((value: string | null) => {
-    dispatch({ type: "SET_SERVER_ID", value });
-  }, []);
-
   const refreshProviderModels = useCallback(
     (provider?: AgentProvider) => {
       void refreshSnapshot(provider ? [provider] : undefined);
@@ -669,13 +521,11 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
   const isModelLoading = isModelSelectionLoading;
   const modelError = snapshotError;
 
-  const workingDirIsEmpty = !formState.workingDir.trim();
+  const workingDirIsEmpty = !workingDir.trim();
 
   return useMemo(
     () => ({
-      selectedServerId: formState.serverId,
-      setSelectedServerId,
-      setSelectedServerIdFromUser,
+      selectedServerId: serverId,
       selectedProvider: formState.provider,
       selectedMode: formState.modeId,
       setModeFromUser,
@@ -683,9 +533,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
       setModelFromUser,
       selectedThinkingOptionId: formState.thinkingOptionId,
       setThinkingOptionFromUser,
-      workingDir: formState.workingDir,
-      setWorkingDir,
-      setWorkingDirFromUser,
+      workingDir,
       providerDefinitions,
       providerDefinitionMap,
       agentDefinition,
@@ -708,19 +556,15 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
       persistFormPreferences,
     }),
     [
-      formState.serverId,
+      serverId,
       formState.provider,
       formState.modeId,
       formState.model,
       formState.thinkingOptionId,
-      formState.workingDir,
-      setSelectedServerId,
-      setSelectedServerIdFromUser,
+      workingDir,
       setModeFromUser,
       setModelFromUser,
       setThinkingOptionFromUser,
-      setWorkingDir,
-      setWorkingDirFromUser,
       providerDefinitions,
       providerDefinitionMap,
       agentDefinition,

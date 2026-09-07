@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { Agent } from "@/stores/session-store";
+import { TURN_LIVENESS_IDLE } from "@/timeline/turn-liveness";
 import {
   buildSidebarWorkspaceAgents,
   sortSidebarWorkspaceAgents,
@@ -22,7 +23,7 @@ function agent(input: {
     id: input.id,
     provider: "codex",
     status: "idle",
-    activeTurn: null,
+    turn: TURN_LIVENESS_IDLE,
     createdAt: new Date(createdAt),
     updatedAt: new Date(lastActivityAt),
     lastUserMessageAt: null,

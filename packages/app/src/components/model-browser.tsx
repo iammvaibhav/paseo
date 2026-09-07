@@ -13,7 +13,10 @@ import {
   type StyleProp,
   type ViewStyle,
 } from "react-native";
-import { BottomSheetFlatList, BottomSheetScrollView } from "@gorhom/bottom-sheet";
+import {
+  FlatList as SheetFlatList,
+  ScrollView as SheetScrollView,
+} from "@/components/ui/scroll-view";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import {
@@ -1205,7 +1208,7 @@ function ModelRowList({
 
   if (isCompact && isNative) {
     return (
-      <BottomSheetFlatList
+      <SheetFlatList
         data={rows}
         renderItem={renderItem}
         ListHeaderComponent={header}
@@ -1503,7 +1506,7 @@ function ModelBrowserContent({
   return scrolling === "independent" ? (
     <IndependentProviderList>{allProvidersContent}</IndependentProviderList>
   ) : (
-    <BottomSheetScrollView
+    <SheetScrollView
       style={styles.virtualizedModelList}
       contentContainerStyle={[
         styles.virtualizedModelListContent,
@@ -1515,7 +1518,7 @@ function ModelBrowserContent({
       testID="compact-provider-list"
     >
       {allProvidersContent}
-    </BottomSheetScrollView>
+    </SheetScrollView>
   );
 }
 

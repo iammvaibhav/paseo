@@ -1175,10 +1175,12 @@ export class MissionControlService {
 
   /**
    * Spec 01 ready aging: reviewState "ready" rows whose updatedAt is older
-   * than readyAgeOutDays (central config, default 3) age to done with the
-   * "aged-out" verdict (board chip; state-only verdict card). Runs on the
-   * daily prune cadence; never touches agents. readyAgeOutDays <= 0 disables
-   * aging (explicit opt-out).
+   * than readyAgeOutDays (central config) age to done with the "aged-out"
+   * verdict (board chip; state-only verdict card). Runs on the daily prune
+   * cadence; never touches agents. readyAgeOutDays <= 0 disables aging, and
+   * that is the default — a host only ages rows out if it opts in. Note the
+   * stored value wins over the default, so a host that persisted a non-zero
+   * value before the default changed keeps aging until its config is updated.
    */
   sweepReadyAging(now = Date.now()): void {
     const readyAgeOutDays = this.centralConfig.get().readyAgeOutDays;

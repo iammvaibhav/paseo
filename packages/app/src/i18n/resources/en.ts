@@ -1014,11 +1014,8 @@ export const en = {
         refresh: "Refresh",
         refreshState: "Refresh git and {{brand}} state",
         failedRefresh: "Failed to refresh git state.",
-        emptyHiddenWhitespace: "No visible changes after hiding whitespace",
-        emptyUncommitted: "No uncommitted changes",
         seeUncommittedChanges: "See uncommitted changes",
         seeCommittedChanges: "See committed changes",
-        emptyAgainstBase: "No changes vs {{baseRef}}",
         checkingRepository: "Checking repository...",
         notRepository: "Not a git repository",
         diffMode: "Diff mode",
@@ -1206,6 +1203,22 @@ export const en = {
         all: "All projects",
       },
     },
+    view: { workspaces: "Workspaces", agents: "Agents" },
+    agentView: {
+      title: "Agents",
+      display: { trigger: "Agent view preferences", heading: "Agents", showDone: "Show done" },
+      sections: {
+        needsYou: "Needs you",
+        running: "Running",
+        ready: "Ready for review",
+        done: "Done",
+      },
+      empty: {
+        title: "No agents to show",
+        description: "Running and ready-for-review agents appear here.",
+        clear: "Clear filters",
+      },
+    },
     filterEmpty: {
       title: "No workspaces match",
       description: "Change or clear the sidebar filters to see workspaces.",
@@ -1317,6 +1330,7 @@ export const en = {
         showMore: "Show more",
         showLess: "Show less",
         createWorkspaceFor: "Create a new workspace for {{projectName}}",
+        openItsaplanFor: "Open itsaplan for {{projectName}}",
         copyPath: "Copy path",
         copyBranchName: "Copy branch name",
         rename: "Rename workspace",
@@ -2184,6 +2198,12 @@ export const en = {
     },
     plugins: {
       title: "Plugins",
+      screens: {
+        open: "Open",
+        offline: "Connect to this host to open plugin settings.",
+        update: "Update this host to use plugin settings.",
+        unavailable: "This plugin settings screen is unavailable.",
+      },
       trustedTitle: "Plugins are trusted code",
       trustedDescription:
         "They run on this host and inside the app without sandboxing. Install only code you trust.",

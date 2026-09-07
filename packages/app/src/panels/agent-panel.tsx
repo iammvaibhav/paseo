@@ -1,3 +1,4 @@
+import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
@@ -391,11 +392,7 @@ function DraftPanel() {
     (agentSnapshot: Parameters<typeof normalizeAgentSnapshot>[0]) => {
       const normalized = normalizeAgentSnapshot(agentSnapshot, serverId);
       const agent = applyLegacyDaemonWorkspaceOwnership({ serverId, agent: normalized });
-      useSessionStore.getState().setAgents(serverId, (prev) => {
-        const next = new Map(prev);
-        next.set(agentSnapshot.id, agent);
-        return next;
-      });
+      getHostRuntimeStore().acceptAgentSnapshot(serverId, agent);
       retargetCurrentTab({ kind: "agent", agentId: agentSnapshot.id });
     },
     [retargetCurrentTab, serverId],

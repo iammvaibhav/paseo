@@ -3,8 +3,8 @@ import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { useAppSettings } from "@/hooks/use-settings";
 import type { DefaultFileOpener, PlannotatorFeedbackMode } from "@/hooks/use-settings/storage";
-import { SettingsSection } from "./settings-section";
 import { settingsStyles } from "@/styles/settings";
+import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
 
 const CONTROL_STYLE: ViewStyle = {

@@ -1020,11 +1020,8 @@ export const ru: TranslationResources = {
         refresh: "Обновить",
         refreshState: "Обновить состояние Git и {{brand}}",
         failedRefresh: "Не удалось обновить состояние Git.",
-        emptyHiddenWhitespace: "После скрытия пробельных изменений видимых изменений нет",
-        emptyUncommitted: "Нет незафиксированных изменений",
         seeUncommittedChanges: "Показать незафиксированные изменения",
         seeCommittedChanges: "Показать зафиксированные изменения",
-        emptyAgainstBase: "Нет изменений относительно {{baseRef}}",
         checkingRepository: "Проверяем репозиторий...",
         notRepository: "Это не репозиторий Git",
         diffMode: "Режим диффа",
@@ -1212,6 +1209,26 @@ export const ru: TranslationResources = {
         all: "Все проекты",
       },
     },
+    view: { workspaces: "Рабочие пространства", agents: "Агенты" },
+    agentView: {
+      title: "Агенты",
+      display: {
+        trigger: "Настройки отображения агентов",
+        heading: "Агенты",
+        showDone: "Показывать завершённые",
+      },
+      sections: {
+        needsYou: "Требует внимания",
+        running: "Работает",
+        ready: "Готовы к проверке",
+        done: "Готово",
+      },
+      empty: {
+        title: "Нет агентов для отображения",
+        description: "Здесь отображаются работающие и готовые к проверке агенты.",
+        clear: "Очистить фильтры",
+      },
+    },
     filterEmpty: {
       title: "Нет подходящих рабочих пространств",
       description:
@@ -1324,6 +1341,7 @@ export const ru: TranslationResources = {
         showMore: "Показать ещё",
         showLess: "Показать меньше",
         createWorkspaceFor: "Создать новое рабочее пространство для {{projectName}}",
+        openItsaplanFor: "Открыть itsaplan для {{projectName}}",
         copyPath: "Копировать путь",
         copyBranchName: "Скопировать имя ветки",
         rename: "Переименовать рабочее пространство",

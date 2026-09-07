@@ -1035,11 +1035,8 @@ export const fr: TranslationResources = {
         refresh: "Rafraîchir",
         refreshState: "Actualiser l'état de git et de {{brand}}",
         failedRefresh: "Échec de l'actualisation de l'état git.",
-        emptyHiddenWhitespace: "Aucun changement visible après avoir masqué les espaces",
-        emptyUncommitted: "Aucune modification non validée",
         seeUncommittedChanges: "Voir les modifications non validées",
         seeCommittedChanges: "Voir les modifications validées",
-        emptyAgainstBase: "Aucun changement par rapport à{{baseRef}}",
         checkingRepository: "Vérification du référentiel...",
         notRepository: "Pas un dépôt git",
         diffMode: "Mode différentiel",
@@ -1230,6 +1227,26 @@ export const fr: TranslationResources = {
         all: "Tous les projets",
       },
     },
+    view: { workspaces: "Espaces de travail", agents: "Agents" },
+    agentView: {
+      title: "Agents",
+      display: {
+        trigger: "Préférences d'affichage des agents",
+        heading: "Agents",
+        showDone: "Afficher les terminés",
+      },
+      sections: {
+        needsYou: "Nécessite votre attention",
+        running: "En cours d'exécution",
+        ready: "Prêts pour révision",
+        done: "Terminé",
+      },
+      empty: {
+        title: "Aucun agent à afficher",
+        description: "Les agents en cours d'exécution et prêts pour révision apparaissent ici.",
+        clear: "Effacer les filtres",
+      },
+    },
     filterEmpty: {
       title: "Aucun espace de travail ne correspond",
       description:
@@ -1342,6 +1359,7 @@ export const fr: TranslationResources = {
         showMore: "Afficher plus",
         showLess: "Afficher moins",
         createWorkspaceFor: "Créer un nouvel espace de travail pour{{projectName}}",
+        openItsaplanFor: "Ouvrir itsaplan pour {{projectName}}",
         copyPath: "Copier le chemin",
         copyBranchName: "Copier le nom de la branche",
         rename: "Renommer l'espace de travail",

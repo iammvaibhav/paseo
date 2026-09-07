@@ -1016,11 +1016,8 @@ export const ja: TranslationResources = {
         refresh: "更新",
         refreshState: "gitと{{brand}}の状態を更新",
         failedRefresh: "gitの状態の更新に失敗しました。",
-        emptyHiddenWhitespace: "空白を非表示にすると変更は表示されません",
-        emptyUncommitted: "未コミットの変更なし",
         seeUncommittedChanges: "未コミットの変更を表示",
         seeCommittedChanges: "コミット済みの変更を表示",
-        emptyAgainstBase: "{{baseRef}}との差分なし",
         checkingRepository: "リポジトリを確認中...",
         notRepository: "gitリポジトリではありません",
         diffMode: "差分モード",
@@ -1208,6 +1205,17 @@ export const ja: TranslationResources = {
         all: "すべてのプロジェクト",
       },
     },
+    view: { workspaces: "ワークスペース", agents: "エージェント" },
+    agentView: {
+      title: "エージェント",
+      display: { trigger: "エージェント表示設定", heading: "エージェント", showDone: "完了を表示" },
+      sections: { needsYou: "対応が必要", running: "実行中", ready: "レビュー待ち", done: "完了" },
+      empty: {
+        title: "表示するエージェントがありません",
+        description: "実行中およびレビュー待ちのエージェントがここに表示されます。",
+        clear: "フィルターをクリア",
+      },
+    },
     filterEmpty: {
       title: "一致するワークスペースがありません",
       description:
@@ -1320,6 +1328,7 @@ export const ja: TranslationResources = {
         showMore: "さらに表示",
         showLess: "表示を減らす",
         createWorkspaceFor: "{{projectName}}の新しいワークスペースを作成",
+        openItsaplanFor: "{{projectName}} の itsaplan を開く",
         copyPath: "パスをコピー",
         copyBranchName: "ブランチ名をコピー",
         rename: "ワークスペースの名前を変更",
