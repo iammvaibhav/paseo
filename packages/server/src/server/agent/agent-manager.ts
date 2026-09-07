@@ -156,9 +156,14 @@ function mergeAgentUsage(
   return merged;
 }
 
+// A run can be started with a bare string, a content-block array, or a legacy
+// `{ text }` object, so both helpers narrow to the array form before walking it.
 function submittedPromptText(prompt: AgentPromptInput): string {
   if (typeof prompt === "string") {
     return prompt;
+  }
+  if (!Array.isArray(prompt)) {
+    return "";
   }
   return prompt
     .flatMap((block) => (block.type === "text" && !("mimeType" in block) ? [block.text] : []))
@@ -169,7 +174,7 @@ function submittedPromptText(prompt: AgentPromptInput): string {
 function submittedPromptImages(
   prompt: AgentPromptInput,
 ): Array<{ data: string; mimeType: string }> | undefined {
-  if (typeof prompt === "string") {
+  if (!Array.isArray(prompt)) {
     return undefined;
   }
   const images = prompt.flatMap((block) =>

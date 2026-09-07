@@ -1245,11 +1245,12 @@ it("fills every cached workspace beneath live updates received during the SQLite
   holdRead(async () => {
     if (updated) return;
     updated = true;
+    const { createdAt: _createdAt, ...cached } = workspaces[0]!;
     client.emit({
       type: "workspace_update",
       payload: {
         kind: "upsert",
-        workspace: { ...workspaces[0], name: "Live", activityAt: null, statusEnteredAt: null },
+        workspace: { ...cached, name: "Live", activityAt: null, statusEnteredAt: null },
       },
     });
   });
