@@ -128,7 +128,7 @@ export function resolveSidebarProjectBaseWorkspaceTarget(
   preferredHostServerId?: string | null,
 ): SidebarProjectBaseWorkspaceTarget | null {
   const eligibleHosts = project.hosts.filter(
-    (host): host is typeof host & { baseWorkspaceId: string } =>
+    (host): host is SidebarProjectEntry["hosts"][number] & { baseWorkspaceId: string } =>
       Boolean(host.baseWorkspaceId) && baseWorkspaceByServerId.get(host.serverId) === true,
   );
   if (eligibleHosts.length === 0) {

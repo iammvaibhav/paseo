@@ -1305,6 +1305,7 @@ export const zhCN: TranslationResources = {
         showMore: "显示更多",
         showLess: "收起",
         createWorkspaceFor: "为 {{projectName}} 新建 workspace",
+        openItsaplanFor: "为 {{projectName}} 打开 itsaplan",
         copyPath: "复制路径",
         copyBranchName: "复制分支名称",
         rename: "重命名 workspace",

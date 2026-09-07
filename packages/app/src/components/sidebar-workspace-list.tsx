@@ -44,6 +44,7 @@ import {
   Settings,
   MoreVertical,
   Plus,
+  SquareKanban,
   Trash2,
   Home,
 } from "lucide-react-native";
@@ -62,11 +63,13 @@ import { useHostFeatureMap } from "@/runtime/host-features";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useProjectIcons } from "@/projects/icons";
 import {
+  buildItsaplanRoute,
   buildNewWorkspaceRoute,
   buildProjectSettingsRoute,
   buildSessionsRoute,
   parseHostWorkspaceRouteFromPathname,
 } from "@/utils/host-routes";
+import { resolveProjectItsaplanKey } from "@/itsaplan/itsaplan-project-key";
 import {
   shouldShowSidebarHostLabels,
   useSidebarProjectStatusBucket,
@@ -174,6 +177,7 @@ const WORKSPACE_STATUS_DOT_WIDTH = 14;
 const ThemedExternalLink = withUnistyles(ExternalLink);
 const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
 const ThemedPlus = withUnistyles(Plus);
+const ThemedSquareKanban = withUnistyles(SquareKanban);
 const ThemedMoreVertical = withUnistyles(MoreVertical);
 const ThemedTrash2 = withUnistyles(Trash2);
 const ThemedSettings = withUnistyles(Settings);
@@ -462,6 +466,12 @@ function ProjectRowTrailingActions({
           testID={`sidebar-project-new-worktree-${projectViewKey}`}
         />
       ) : null}
+      <ProjectItsaplanButton
+        displayName={displayName}
+        project={project}
+        visible={actionsVisible}
+        testID={`sidebar-project-itsaplan-${projectViewKey}`}
+      />
       {onRemoveProject ? (
         <View
           style={!actionsVisible && styles.projectKebabButtonHidden}
@@ -876,6 +886,71 @@ function NewWorktreeButton({
             {showShortcutHint && newWorktreeKeys ? (
               <Shortcut chord={newWorktreeKeys} style={styles.projectActionTooltipShortcut} />
             ) : null}
+          </View>
+        </TooltipContent>
+      </Tooltip>
+    </View>
+  );
+}
+
+function ProjectItsaplanButton({
+  displayName,
+  project,
+  visible,
+  testID,
+}: {
+  displayName: string;
+  project: SidebarProjectEntry;
+  visible: boolean;
+  testID: string;
+}) {
+  const { t } = useTranslation();
+  const projectKey = useMemo(
+    () => resolveProjectItsaplanKey(project, displayName),
+    [project, displayName],
+  );
+
+  const pressableStyle = useCallback(
+    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+      styles.projectIconActionButton,
+      !visible && styles.projectIconActionButtonHidden,
+      (Boolean(hovered) || pressed) && styles.projectIconActionButtonHovered,
+    ],
+    [visible],
+  );
+
+  const handlePress = useCallback(
+    (event: GestureResponderEvent) => {
+      event.stopPropagation();
+      router.push(buildItsaplanRoute({ project: projectKey }));
+    },
+    [projectKey],
+  );
+
+  return (
+    <View style={styles.projectTrailingControlSlot} pointerEvents={visible ? "auto" : "none"}>
+      <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
+        <TooltipTrigger asChild disabled={!visible}>
+          <Pressable
+            style={pressableStyle}
+            onPress={handlePress}
+            accessibilityRole={platformIsWeb ? undefined : "button"}
+            accessibilityLabel={t("sidebar.workspace.actions.openItsaplanFor", {
+              projectName: displayName,
+            })}
+            testID={testID}
+          >
+            {({ hovered, pressed }) => (
+              <ThemedSquareKanban
+                size={14}
+                uniProps={hovered || pressed ? foregroundColorMapping : foregroundMutedColorMapping}
+              />
+            )}
+          </Pressable>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" align="center" offset={8}>
+          <View style={styles.projectActionTooltipRow}>
+            <Text style={styles.projectActionTooltipText}>{t("sidebar.sections.itsaplan")}</Text>
           </View>
         </TooltipContent>
       </Tooltip>
