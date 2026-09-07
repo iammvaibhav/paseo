@@ -70,7 +70,11 @@ import {
   parseHostWorkspaceRouteFromPathname,
 } from "@/utils/host-routes";
 import { resolveProjectItsaplanKey } from "@/itsaplan/itsaplan-project-key";
-import { prefetchItsaplanProject, prefetchItsaplanProjects } from "@/itsaplan/itsaplan-webview";
+import {
+  navigateItsaplanEmbedProject,
+  prefetchItsaplanProject,
+  prefetchItsaplanProjects,
+} from "@/itsaplan/itsaplan-webview";
 import {
   shouldShowSidebarHostLabels,
   useSidebarProjectStatusBucket,
@@ -932,7 +936,10 @@ function ProjectItsaplanButton({
   const handlePress = useCallback(
     (event: GestureResponderEvent) => {
       event.stopPropagation();
-      router.push(buildItsaplanRoute({ project: projectKey }));
+      if (projectKey) {
+        navigateItsaplanEmbedProject(projectKey);
+      }
+      router.replace(buildItsaplanRoute({ project: projectKey }));
     },
     [projectKey],
   );

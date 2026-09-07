@@ -7,22 +7,24 @@ import React from "react";
 import { router } from "expo-router";
 import type { SidebarProjectEntry } from "@/hooks/use-sidebar-workspaces-list";
 import { resolveProjectItsaplanKey } from "@/itsaplan/itsaplan-project-key";
-import { prefetchItsaplanProject } from "@/itsaplan/itsaplan-webview";
+import { navigateItsaplanEmbedProject, prefetchItsaplanProject } from "@/itsaplan/itsaplan-webview";
 import { buildItsaplanRoute } from "@/utils/host-routes";
 
-const pushMock = vi.fn();
+const replaceMock = vi.fn();
 vi.mock("expo-router", () => ({
   router: {
-    push: (route: string) => pushMock(route),
+    replace: (route: string) => replaceMock(route),
   },
   usePathname: () => "/",
   useLocalSearchParams: () => ({}),
 }));
 
 const prefetchMock = vi.fn();
+const navigateMock = vi.fn();
 vi.mock("@/itsaplan/itsaplan-webview", () => ({
   prefetchItsaplanProject: (key: string) => prefetchMock(key),
   prefetchItsaplanProjects: (keys: string[]) => keys.forEach(prefetchMock),
+  navigateItsaplanEmbedProject: (key: string) => navigateMock(key),
 }));
 
 vi.mock("react-native-unistyles", () => ({
@@ -73,7 +75,10 @@ function TestProjectItsaplanButton({
   const handlePress = React.useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation();
-      router.push(buildItsaplanRoute({ project: projectKey }));
+      if (projectKey) {
+        navigateItsaplanEmbedProject(projectKey);
+      }
+      router.replace(buildItsaplanRoute({ project: projectKey }));
     },
     [projectKey],
   );
@@ -112,8 +117,9 @@ function mockProject(overrides: Partial<SidebarProjectEntry> = {}): SidebarProje
 
 describe("ProjectItsaplanButton", () => {
   beforeEach(() => {
-    pushMock.mockClear();
+    replaceMock.mockClear();
     prefetchMock.mockClear();
+    navigateMock.mockClear();
   });
 
   afterEach(() => {
@@ -150,7 +156,8 @@ describe("ProjectItsaplanButton", () => {
     const button = getByRole("button", { name: "Open itsaplan for paseo" });
     fireEvent.click(button);
 
-    expect(pushMock).toHaveBeenCalledWith("/itsaplan?project=PASEO");
+    expect(navigateMock).toHaveBeenCalledWith("PASEO");
+    expect(replaceMock).toHaveBeenCalledWith("/itsaplan?project=PASEO");
   });
 
   it("prefetches project itsaplan route and queries on hover", () => {
@@ -187,6 +194,7 @@ describe("ProjectItsaplanButton", () => {
     const button = getByRole("button", { name: "Open itsaplan for Engineering" });
     fireEvent.click(button);
 
-    expect(pushMock).toHaveBeenCalledWith("/itsaplan?project=ENG");
+    expect(navigateMock).toHaveBeenCalledWith("ENG");
+    expect(replaceMock).toHaveBeenCalledWith("/itsaplan?project=ENG");
   });
 });

@@ -108,8 +108,8 @@ export function navigateItsaplanEmbedProject(projectKey: string): void {
         window.postMessage({ type: 'paseo:navigate-project', projectKey: ${keyJson} }, '*');
         const targetPath = ${keyJson} ? '/project/' + encodeURIComponent(${keyJson}) : '/';
         if (window.location.pathname !== targetPath) {
-          if (window.history && window.history.pushState) {
-            window.history.pushState(null, '', targetPath);
+          if (window.history && window.history.replaceState) {
+            window.history.replaceState(null, '', targetPath);
             window.dispatchEvent(new PopStateEvent('popstate'));
           }
         }
@@ -155,6 +155,28 @@ export function prefetchItsaplanProject(projectKey: string): void {
 }
 
 /**
+ * Prefetches every project the signed-in account can see.
+ * itsaplan lists them and fills the React Query + route caches.
+ */
+export function prefetchItsaplanAllProjects(): void {
+  const script = `
+    (function() {
+      try {
+        if (window.__paseo_itsaplan?.prefetchAllProjects) {
+          window.__paseo_itsaplan.prefetchAllProjects();
+          return true;
+        }
+        window.postMessage({ type: 'paseo:prefetch-all-projects' }, '*');
+        return true;
+      } catch (err) {
+        return false;
+      }
+    })()
+  `;
+  runScriptInWebview(script);
+}
+
+/**
  * Prefetches multiple project routes and data caches in the background.
  */
 export function prefetchItsaplanProjects(projectKeys: readonly string[]): void {
@@ -175,6 +197,11 @@ function flushPendingPrefetches(): void {
     runPrefetchScript(key);
   }
   pendingPrefetchKeys.clear();
+}
+
+function warmGuestCaches(): void {
+  flushPendingPrefetches();
+  prefetchItsaplanAllProjects();
 }
 
 /**
@@ -238,7 +265,7 @@ export function ItsaplanEmbed({
 
     const handleLoad = () => {
       handlersRef.current.onLoaded();
-      flushPendingPrefetches();
+      warmGuestCaches();
       if (desiredProjectRef.current) {
         navigateItsaplanEmbedProject(desiredProjectRef.current);
       }
@@ -271,7 +298,7 @@ export function ItsaplanEmbed({
     loadedTarget = visit.nextTarget;
     if (visit.reportLoaded) {
       handlersRef.current.onLoaded();
-      flushPendingPrefetches();
+      warmGuestCaches();
       if (desiredProjectRef.current) {
         navigateItsaplanEmbedProject(desiredProjectRef.current);
       }

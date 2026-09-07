@@ -85,6 +85,10 @@ const styles = StyleSheet.create(() => ({
  */
 export function warmItsaplanEmbed(_origin: string): void {}
 
+export function navigateItsaplanEmbedProject(_projectKey: string): void {}
+
 export function prefetchItsaplanProject(_projectKey: string): void {}
 
 export function prefetchItsaplanProjects(_projectKeys: readonly string[]): void {}
+
+export function prefetchItsaplanAllProjects(): void {}

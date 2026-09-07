@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as residentWebviews from "@/desktop/browser/resident-webviews";
 import {
   navigateItsaplanEmbedProject,
+  prefetchItsaplanAllProjects,
   prefetchItsaplanProject,
   prefetchItsaplanProjects,
 } from "./itsaplan-webview.electron";
@@ -54,6 +55,17 @@ describe("itsaplan-webview navigation and prefetching", () => {
     const script = mockExecute.mock.calls[0]![0];
     expect(script).toContain("navigateProject");
     expect(script).toContain('"MKT"');
-    expect(script).toContain("pushState");
+    expect(script).toContain("replaceState");
+  });
+
+  it("asks the guest to prefetch every project", () => {
+    vi.spyOn(residentWebviews, "getResidentBrowserWebview").mockReturnValue(mockWebview);
+    vi.spyOn(residentWebviews, "isResidentBrowserWebviewReady").mockReturnValue(true);
+
+    prefetchItsaplanAllProjects();
+    expect(mockExecute).toHaveBeenCalledTimes(1);
+    const script = mockExecute.mock.calls[0]![0];
+    expect(script).toContain("prefetchAllProjects");
+    expect(script).toContain("paseo:prefetch-all-projects");
   });
 });
