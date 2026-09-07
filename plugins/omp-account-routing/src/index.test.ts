@@ -1,3 +1,6 @@
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
 import { describe, expect, test } from "bun:test";
 import type {
 	AuthStorage,
@@ -6,17 +9,21 @@ import type {
 	OAuthAccountSummary,
 } from "@oh-my-pi/pi-coding-agent";
 import ompAccountRoutingExtension, {
+	ANTIGRAVITY_QUOTA_CACHE_MS,
 	antigravityBucketPrefix,
 	antigravityQuotaCache,
 	applyRouting,
 	drainRate,
 	FIVE_HOUR_FLOOR,
+	loadAntigravityQuotaCache,
 	loadConfigFile,
 	mergeConfig,
 	orderByWeeklyDeadline,
 	parseQuotaSummary,
+	pinned,
 	RATE_LIMIT_ERROR_RE,
 	resolveOrder,
+	saveAntigravityQuotaCache,
 	WEEKLY_FLOOR,
 	type AccountRoutingConfig,
 	type ProviderRouting,
@@ -731,6 +738,382 @@ describe("ompAccountRoutingExtension mid-session switching", () => {
 			expect(pinnedCredentialId).toBe(2);
 		} finally {
 			globalThis.fetch = originalFetch;
+		}
+	});
+
+	test("preserves session-pinned account across prompts without re-ranking", async () => {
+		pinned.clear();
+		let pinnedCredentialId: number | undefined;
+		let fetchCount = 0;
+		type HandlerFn = (event: { errorMessage?: string }, ctx: unknown) => Promise<void> | void;
+		const eventHandlers = new Map<string, HandlerFn>();
+
+		const mockPi = {
+			setLabel: () => {},
+			logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+			on: (event: string, handler: unknown) => {
+				if (typeof handler === "function") eventHandlers.set(event, handler as HandlerFn);
+			},
+		} as unknown as ExtensionAPI;
+
+		ompAccountRoutingExtension(mockPi);
+		antigravityQuotaCache.clear();
+
+		const now = Date.now();
+		// Seed cached quota: Account 1 has higher weekly drain rate than Account 2
+		antigravityQuotaCache.set("1:gemini-", {
+			checkedAt: now,
+			windows: {
+				weekly: { remainingFraction: 0.8, resetsAt: now + 86400000 },
+				fiveHour: { remainingFraction: 0.8, resetsAt: now + 7200000 },
+			},
+		});
+		antigravityQuotaCache.set("2:gemini-", {
+			checkedAt: now,
+			windows: {
+				weekly: { remainingFraction: 0.8, resetsAt: now + 5 * 86400000 },
+				fiveHour: { remainingFraction: 0.8, resetsAt: now + 7200000 },
+			},
+		});
+
+		const authStorage = {
+			listOAuthAccounts: (provider: string) => {
+				if (provider !== "google-antigravity") return [];
+				return [
+					{ credentialId: 1, email: "iammvaibhav@gmail.com" },
+					{ credentialId: 2, email: "vaibhavcoolm@gmail.com" },
+				];
+			},
+			pinSessionOAuthAccount: (provider: string, _sessionId: string, credId: number) => {
+				if (provider === "google-antigravity") pinnedCredentialId = credId;
+				return true;
+			},
+			getOAuthAccountIdentity: () => ({ email: "personal@example.com" }),
+			getOAuthAccessByCredentialId: async (_provider: string, credentialId: number) => ({
+				ok: true,
+				accessToken: `token-${credentialId}`,
+				projectId: `proj-${credentialId}`,
+			}),
+		};
+
+		const ctx = {
+			cwd: "/tmp",
+			modelRegistry: { authStorage },
+			sessionManager: { getSessionId: () => "sess-sticky" },
+			model: { id: "google-antigravity/gemini-3.7-flash" },
+		};
+
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = (async () => {
+			fetchCount++;
+			return new Response(
+				JSON.stringify({
+					groups: [
+						{
+							buckets: [
+								{ bucketId: "gemini-weekly", window: "weekly", remainingFraction: 0.8 },
+								{ bucketId: "gemini-5h", window: "5h", remainingFraction: 0.8 },
+							],
+						},
+					],
+				}),
+				{ status: 200 },
+			);
+		}) as typeof fetch;
+
+		try {
+			const beforeStartHandler = eventHandlers.get("before_agent_start");
+			// Prompt 1: routes and pins Account 1 (uses seeded cache, zero inline network calls)
+			await beforeStartHandler!({}, ctx);
+			expect(pinnedCredentialId).toBe(1);
+			const initialFetches = fetchCount;
+
+			// Prompt 2: stays on Account 1, does NOT re-fetch quota or re-rank
+			await beforeStartHandler!({}, ctx);
+			expect(pinnedCredentialId).toBe(1);
+			expect(fetchCount).toBe(initialFetches);
+
+			// Prompt 3: still on Account 1
+			await beforeStartHandler!({}, ctx);
+			expect(pinnedCredentialId).toBe(1);
+			expect(fetchCount).toBe(initialFetches);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+
+	test("handles 3+ accounts advancing sequentially across multiple 429s", async () => {
+		antigravityQuotaCache.clear();
+		pinned.clear();
+		let pinnedCredentialId: number | undefined;
+		type HandlerFn = (event: { errorMessage?: string }, ctx: unknown) => Promise<void> | void;
+		const eventHandlers = new Map<string, HandlerFn>();
+
+		const testDir = path.join(tmpdir(), `omp-test-3acc-${Date.now()}`);
+		mkdirSync(path.join(testDir, ".omp"), { recursive: true });
+		writeFileSync(
+			path.join(testDir, ".omp", "account-routing.json"),
+			JSON.stringify({
+				accounts: {
+					personal: "iammvaibhav@gmail.com",
+					personal2: "vaibhavcoolm@gmail.com",
+					ambient: "vaibhav.maheshwari@ambient.ai",
+				},
+				routing: {
+					"google-antigravity": {
+						strategy: "weekly-deadline-first",
+						order: ["personal", "personal2", "ambient"],
+					},
+				},
+			}),
+		);
+
+		const mockPi = {
+			setLabel: () => {},
+			logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+			on: (event: string, handler: unknown) => {
+				if (typeof handler === "function") eventHandlers.set(event, handler as HandlerFn);
+			},
+		} as unknown as ExtensionAPI;
+
+		ompAccountRoutingExtension(mockPi);
+		antigravityQuotaCache.clear();
+
+		const now = Date.now();
+		// Seed quotas: Account 1 expires in 1d (highest drain rate), Account 2 in 3d, Account 3 in 6d
+		antigravityQuotaCache.set("1:gemini-", {
+			checkedAt: now,
+			windows: {
+				weekly: { remainingFraction: 0.8, resetsAt: now + 86400000 },
+				fiveHour: { remainingFraction: 0.8, resetsAt: now + 7200000 },
+			},
+		});
+		antigravityQuotaCache.set("2:gemini-", {
+			checkedAt: now,
+			windows: {
+				weekly: { remainingFraction: 0.8, resetsAt: now + 3 * 86400000 },
+				fiveHour: { remainingFraction: 0.8, resetsAt: now + 7200000 },
+			},
+		});
+		antigravityQuotaCache.set("3:gemini-", {
+			checkedAt: now,
+			windows: {
+				weekly: { remainingFraction: 0.8, resetsAt: now + 6 * 86400000 },
+				fiveHour: { remainingFraction: 0.8, resetsAt: now + 7200000 },
+			},
+		});
+		const authStorage = {
+			listOAuthAccounts: (provider: string) => {
+				if (provider !== "google-antigravity") return [];
+				return [
+					{ credentialId: 1, email: "iammvaibhav@gmail.com" },
+					{ credentialId: 2, email: "vaibhavcoolm@gmail.com" },
+					{ credentialId: 3, email: "vaibhav.maheshwari@ambient.ai" },
+				];
+			},
+			pinSessionOAuthAccount: (provider: string, _sessionId: string, credId: number) => {
+				if (provider === "google-antigravity") pinnedCredentialId = credId;
+				return true;
+			},
+			getOAuthAccountIdentity: () => ({ email: "personal@example.com" }),
+			getOAuthAccessByCredentialId: async (_provider: string, credentialId: number) => ({
+				ok: true,
+				accessToken: `token-${credentialId}`,
+				projectId: `proj-${credentialId}`,
+			}),
+		};
+
+		const ctx = {
+			cwd: testDir,
+			modelRegistry: { authStorage },
+			sessionManager: { getSessionId: () => "sess-3-acc" },
+			model: { id: "google-antigravity/gemini-3.7-flash" },
+		};
+
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = (async (_url, init) => {
+			const bodyStr = typeof init?.body === "string" ? init.body : "";
+			const body = JSON.parse(bodyStr) as { project?: string };
+			const days = body.project === "proj-1" ? 1 : body.project === "proj-2" ? 3 : 6;
+			return new Response(
+				JSON.stringify({
+					groups: [
+						{
+							buckets: [
+								{
+									bucketId: "gemini-weekly",
+									window: "weekly",
+									remainingFraction: 0.8,
+									resetTime: new Date(now + days * 86400000).toISOString(),
+								},
+								{
+									bucketId: "gemini-5h",
+									window: "5h",
+									remainingFraction: 0.8,
+									resetTime: new Date(now + 2 * 3600000).toISOString(),
+								},
+							],
+						},
+					],
+				}),
+				{ status: 200 },
+			);
+		}) as typeof fetch;
+
+		try {
+			const beforeStartHandler = eventHandlers.get("before_agent_start");
+			const autoRetryHandler = eventHandlers.get("auto_retry_start");
+
+			// 1. Starts on Account 1 (highest drain rate)
+			await beforeStartHandler!({}, ctx);
+			expect(pinnedCredentialId).toBe(1);
+
+			// 2. Account 1 hits 429 -> advances to Account 2
+			await autoRetryHandler!({ errorMessage: "RESOURCE_EXHAUSTED: 429 Quota Exceeded" }, ctx);
+			expect(pinnedCredentialId).toBe(2);
+
+			// Next prompt stays on Account 2
+			await beforeStartHandler!({}, ctx);
+			expect(pinnedCredentialId).toBe(2);
+
+			// 3. Account 2 hits 429 -> advances to Account 3
+			await autoRetryHandler!({ errorMessage: "429 rate limit reached" }, ctx);
+			expect(pinnedCredentialId).toBe(3);
+
+			// Next prompt stays on Account 3
+			await beforeStartHandler!({}, ctx);
+			expect(pinnedCredentialId).toBe(3);
+
+			// 4. Account 3 hits 429 -> cycles to next best alternative (Account 1)
+			await autoRetryHandler!({ errorMessage: "RESOURCE_EXHAUSTED: 429" }, ctx);
+			expect(pinnedCredentialId).toBe(1);
+		} finally {
+			globalThis.fetch = originalFetch;
+			rmSync(testDir, { recursive: true, force: true });
+		}
+	});
+	test("handles 3+ accounts in primary-fallback with advance and stickiness", async () => {
+		pinned.clear();
+		let pinnedCredentialId: number | undefined;
+		type HandlerFn = (event: { errorMessage?: string }, ctx: unknown) => Promise<void> | void;
+		const eventHandlers = new Map<string, HandlerFn>();
+
+		const testDir = path.join(tmpdir(), `omp-test-pf-${Date.now()}`);
+		mkdirSync(path.join(testDir, ".omp"), { recursive: true });
+		writeFileSync(
+			path.join(testDir, ".omp", "account-routing.json"),
+			JSON.stringify({
+				routing: {
+					cursor: {
+						strategy: "primary-fallback",
+						order: ["personal", "personal2", "ambient"],
+					},
+				},
+			}),
+		);
+
+		const mockPi = {
+			setLabel: () => {},
+			logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+			on: (event: string, handler: unknown) => {
+				if (typeof handler === "function") eventHandlers.set(event, handler as HandlerFn);
+			},
+		} as unknown as ExtensionAPI;
+
+		ompAccountRoutingExtension(mockPi);
+
+		const authStorage = {
+			listOAuthAccounts: (provider: string) => {
+				if (provider !== "cursor") return [];
+				return [
+					{ credentialId: 10, email: "iammvaibhav@gmail.com" },
+					{ credentialId: 20, email: "vaibhavcoolm@gmail.com" },
+					{ credentialId: 30, email: "vaibhav.maheshwari@ambient.ai" },
+				];
+			},
+			pinSessionOAuthAccount: (provider: string, _sessionId: string, credId: number) => {
+				if (provider === "cursor") pinnedCredentialId = credId;
+				return true;
+			},
+			getOAuthAccountIdentity: () => ({ email: "personal@example.com" }),
+			getOAuthAccessByCredentialId: async (_provider: string, credentialId: number) => ({
+				ok: true,
+				accessToken: `token-${credentialId}`,
+				projectId: `proj-${credentialId}`,
+			}),
+		};
+
+		const ctx = {
+			cwd: testDir,
+			modelRegistry: { authStorage },
+			sessionManager: { getSessionId: () => "sess-pf" },
+			model: { id: "cursor/auto" },
+		};
+
+		try {
+			const beforeStartHandler = eventHandlers.get("before_agent_start");
+			const autoRetryHandler = eventHandlers.get("auto_retry_start");
+
+			// 1. Starts on personal (cred 10)
+			await beforeStartHandler!({}, ctx);
+			expect(pinnedCredentialId).toBe(10);
+
+			// 2. Hits 429 -> advances to personal2 (cred 20)
+			await autoRetryHandler!({ errorMessage: "429 Too Many Requests" }, ctx);
+			expect(pinnedCredentialId).toBe(20);
+
+			// 3. Next prompt STAYS on personal2 (cred 20), does NOT reset to personal (cred 10)
+			await beforeStartHandler!({}, ctx);
+			expect(pinnedCredentialId).toBe(20);
+
+			// 4. Hits 429 again -> advances to ambient (cred 30)
+			await autoRetryHandler!({ errorMessage: "429 Rate Limit" }, ctx);
+			expect(pinnedCredentialId).toBe(30);
+
+			// Next prompt stays on ambient
+			await beforeStartHandler!({}, ctx);
+			expect(pinnedCredentialId).toBe(30);
+
+			// 5. Hits 429 again -> wraps around to personal (cred 10)
+			await autoRetryHandler!({ errorMessage: "429 Quota Exceeded" }, ctx);
+			expect(pinnedCredentialId).toBe(10);
+		} finally {
+			rmSync(testDir, { recursive: true, force: true });
+		}
+	});
+
+	test("persists quota cache to disk and loads it on demand", () => {
+		const testHome = path.join(tmpdir(), `omp-cache-disk-${Date.now()}`);
+		mkdirSync(testHome, { recursive: true });
+		const originalOmpHome = process.env.OMP_HOME;
+		process.env.OMP_HOME = testHome;
+
+		try {
+			antigravityQuotaCache.clear();
+			const now = Date.now();
+			antigravityQuotaCache.set("42:gemini-", {
+				checkedAt: now,
+				windows: {
+					weekly: { remainingFraction: 0.75, resetsAt: now + 86400000 },
+					fiveHour: { remainingFraction: 0.65, resetsAt: now + 7200000 },
+				},
+			});
+			saveAntigravityQuotaCache();
+
+			// Clear in-memory map
+			antigravityQuotaCache.clear();
+			expect(antigravityQuotaCache.get("42:gemini-")).toBeUndefined();
+
+			// Load back from disk
+			loadAntigravityQuotaCache();
+			const restored = antigravityQuotaCache.get("42:gemini-");
+			expect(restored).toBeDefined();
+			expect(restored?.windows.weekly?.remainingFraction).toBe(0.75);
+			expect(restored?.windows.fiveHour?.remainingFraction).toBe(0.65);
+		} finally {
+			process.env.OMP_HOME = originalOmpHome;
+			rmSync(testHome, { recursive: true, force: true });
 		}
 	});
 });
