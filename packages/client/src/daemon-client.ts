@@ -5407,7 +5407,7 @@ export class DaemonClient {
     });
   }
 
-  async getPluginCatalog(): Promise<Array<{ id: string; clientBundle: string }>> {
+  async getPluginCatalog() {
     const requestId = this.createRequestId();
     const payload = await this.sendCorrelatedSessionRequest({
       requestId,
