@@ -1247,6 +1247,13 @@ export const es: TranslationResources = {
         description: "Los agentes en ejecución y listos para revisión aparecen aquí.",
         clear: "Borrar filtros",
       },
+      menu: {
+        open: "Abrir en espacio de trabajo",
+        copyReference: "Copiar referencia",
+        stop: "Detener",
+        clear: "Borrar",
+        archive: "Archivar",
+      },
     },
     filterEmpty: {
       title: "Ningún espacio de trabajo coincide",

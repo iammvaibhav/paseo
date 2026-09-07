@@ -1195,6 +1195,13 @@ export const zhCN: TranslationResources = {
         description: "运行中和待审查的 Agent 会显示在这里。",
         clear: "清除筛选",
       },
+      menu: {
+        open: "在工作区中打开",
+        copyReference: "复制引用",
+        stop: "停止",
+        clear: "清除",
+        archive: "归档",
+      },
     },
     filterEmpty: {
       title: "没有匹配的工作区",

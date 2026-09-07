@@ -1215,6 +1215,13 @@ export const ja: TranslationResources = {
         description: "実行中およびレビュー待ちのエージェントがここに表示されます。",
         clear: "フィルターをクリア",
       },
+      menu: {
+        open: "ワークスペースで開く",
+        copyReference: "参照をコピー",
+        stop: "停止",
+        clear: "クリア",
+        archive: "アーカイブ",
+      },
     },
     filterEmpty: {
       title: "一致するワークスペースがありません",

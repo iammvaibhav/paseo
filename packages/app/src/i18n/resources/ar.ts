@@ -1208,6 +1208,13 @@ export const ar: TranslationResources = {
         description: "يظهر هنا الوكلاء قيد التشغيل والجاهزون للمراجعة.",
         clear: "مسح عوامل التصفية",
       },
+      menu: {
+        open: "فتح في مساحة العمل",
+        copyReference: "نسخ المرجع",
+        stop: "إيقاف",
+        clear: "مسح",
+        archive: "أرشيف",
+      },
     },
     filterEmpty: {
       title: "لا توجد مساحات عمل مطابقة",

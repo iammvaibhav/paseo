@@ -1,9 +1,10 @@
 import { memo, useCallback, useMemo } from "react";
-import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
+import { Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
 import { HostGlyph } from "@/components/host-glyph";
 import { StatusRing } from "@/components/status-ring";
+import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { isWeb } from "@/constants/platform";
 import { useCompactTimeAgo } from "@/hooks/use-compact-time-ago";
 import { rowActivityMs, type LifecycleRow } from "@/mission-control/lifecycle";
@@ -11,6 +12,7 @@ import { navigateToAgent } from "@/utils/navigate-to-agent";
 import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { getStatusDotColor } from "@/utils/status-dot-color";
 import { STATUS_INDICATOR_FILLED_DOT_SIZE } from "@/utils/status-indicator-geometry";
+import { SidebarAgentViewRowMenu } from "./row-menu";
 
 export function rowToSidebarStateBucket(row: LifecycleRow): SidebarStateBucket {
   switch (row.bucket) {
@@ -45,15 +47,11 @@ function getStatusDotStyle(bucket: SidebarStateBucket) {
 
 export interface SidebarAgentViewRowProps {
   row: LifecycleRow;
-  projectName?: string;
-  showHostGlyph: boolean;
   onAgentPress?: () => void;
 }
 
 export const SidebarAgentViewRow = memo(function SidebarAgentViewRow({
   row,
-  projectName,
-  showHostGlyph,
   onAgentPress,
 }: SidebarAgentViewRowProps) {
   const { t } = useTranslation();
@@ -87,52 +85,38 @@ export const SidebarAgentViewRow = memo(function SidebarAgentViewRow({
     [],
   );
 
-  const hasMeta = Boolean(projectName || showHostGlyph);
-
   return (
-    <Pressable
-      style={rowStyle}
-      onPress={handlePress}
-      accessibilityRole={isWeb ? undefined : "button"}
-      accessibilityLabel={title}
-      testID={`sidebar-agent-view-row-${agent.serverId}-${agent.id}`}
-    >
-      <View style={styles.glyphSlot}>
-        {stateBucket === "running" ? (
-          <StatusRing />
-        ) : (
-          <View style={[styles.statusDot, getStatusDotStyle(stateBucket)]} />
-        )}
-      </View>
-      <View style={styles.contentColumn}>
-        <View style={styles.titleRow}>
-          <Text style={styles.title} numberOfLines={1}>
-            {title}
-          </Text>
-          {timeAgo ? (
-            <Text style={styles.time} numberOfLines={1}>
-              {timeAgo}
-            </Text>
-          ) : null}
+    <ContextMenu>
+      <ContextMenuTrigger
+        style={rowStyle}
+        onPress={handlePress}
+        accessibilityRole={isWeb ? undefined : "button"}
+        accessibilityLabel={title}
+        testID={`sidebar-agent-view-row-${agent.serverId}-${agent.id}`}
+      >
+        <View style={styles.glyphSlot}>
+          {stateBucket === "running" ? (
+            <StatusRing />
+          ) : (
+            <View style={[styles.statusDot, getStatusDotStyle(stateBucket)]} />
+          )}
         </View>
-        {hasMeta ? (
-          <View style={styles.metaRow}>
-            {showHostGlyph ? (
-              <HostGlyph
-                serverId={agent.serverId}
-                label={agent.serverLabel ?? agent.serverId}
-                size="sm"
-              />
-            ) : null}
-            {projectName ? (
-              <Text style={styles.metaText} numberOfLines={1}>
-                {projectName}
-              </Text>
-            ) : null}
-          </View>
+        <HostGlyph
+          serverId={agent.serverId}
+          label={agent.serverLabel ?? agent.serverId}
+          size="sm"
+        />
+        <Text style={styles.title} numberOfLines={1}>
+          {title}
+        </Text>
+        {timeAgo ? (
+          <Text style={styles.time} numberOfLines={1}>
+            {timeAgo}
+          </Text>
         ) : null}
-      </View>
-    </Pressable>
+      </ContextMenuTrigger>
+      <SidebarAgentViewRowMenu row={row} onOpen={handlePress} />
+    </ContextMenu>
   );
 });
 
@@ -140,7 +124,7 @@ const styles = StyleSheet.create((theme) => ({
   row: {
     minHeight: 32,
     flexDirection: "row",
-    alignItems: "flex-start",
+    alignItems: "center",
     gap: theme.spacing[2],
     paddingHorizontal: theme.spacing[2],
     paddingVertical: theme.spacing[1.5],
@@ -183,16 +167,6 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.foregroundExtraMuted,
     opacity: 0.3,
   },
-  contentColumn: {
-    flex: 1,
-    minWidth: 0,
-  },
-  titleRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: theme.spacing[2],
-  },
   title: {
     color: theme.colors.foreground,
     fontSize: theme.fontSize.sm,
@@ -206,18 +180,5 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.xs,
     lineHeight: 18,
     flexShrink: 0,
-  },
-  metaRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[1.5],
-    marginTop: 2,
-  },
-  metaText: {
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.xs,
-    lineHeight: 14,
-    flex: 1,
-    minWidth: 0,
   },
 }));

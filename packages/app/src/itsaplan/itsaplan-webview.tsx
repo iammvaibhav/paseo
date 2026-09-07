@@ -6,6 +6,7 @@ import { itsaplanNavigationKind } from "./itsaplan-navigation";
 
 export interface ItsaplanEmbedProps {
   origin: string;
+  project?: string;
   /** Bump to remount the embed (retry after a failed load). */
   attempt: number;
   onLoaded: () => void;
@@ -83,3 +84,11 @@ const styles = StyleSheet.create(() => ({
  * are created by rendering them.
  */
 export function warmItsaplanEmbed(_origin: string): void {}
+
+export function navigateItsaplanEmbedProject(_projectKey: string): void {}
+
+export function prefetchItsaplanProject(_projectKey: string): void {}
+
+export function prefetchItsaplanProjects(_projectKeys: readonly string[]): void {}
+
+export function prefetchItsaplanAllProjects(): void {}
