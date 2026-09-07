@@ -1,6 +1,7 @@
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { type Agent, useSessionStore } from "@/stores/session-store";
 import { derivePendingPermissionKey, normalizeAgentSnapshot } from "@/utils/agent-snapshots";
+import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { applyLegacyDaemonWorkspaceOwnership } from "@/workspace/legacy-daemon-workspaces";
 
 export type FetchAgentResult = Awaited<ReturnType<DaemonClient["fetchAgent"]>>;
@@ -34,11 +35,7 @@ export function storeFetchedAgentDetail(input: {
   const store = useSessionStore.getState();
 
   if (shouldStoreFetchedAgentInActiveDirectory(hydrated)) {
-    store.setAgents(input.serverId, (previous) => {
-      const next = new Map(previous);
-      next.set(hydrated.id, hydrated);
-      return next;
-    });
+    getHostRuntimeStore().acceptAgentSnapshot(input.serverId, hydrated);
   } else {
     store.setAgentDetails(input.serverId, (previous) => {
       const next = new Map(previous);

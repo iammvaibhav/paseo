@@ -1,3 +1,4 @@
+import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import {
   View,
@@ -1676,8 +1677,10 @@ function ComposerContentImpl({
         activeTurnId:
           dispatchMode === "steer" ||
           (dispatchMode === undefined && appSettings.sendBehavior === "steer")
-            ? (useSessionStore.getState().sessions[serverId]?.agents.get(targetAgentId)?.activeTurn
-                ?.turnId ?? undefined)
+            ? (selectAgentTurnPresentation(
+                useSessionStore.getState().sessions[serverId],
+                targetAgentId,
+              ).turnId ?? undefined)
             : undefined,
         ...(dispatchMode ? { dispatchMode } : {}),
         // Steer-behavior sends keep their optimistic user message: the steered
@@ -1701,9 +1704,6 @@ function ComposerContentImpl({
   const isCancellingAgent = useSessionStore(
     (state) => selectAgentTurnPresentation(state.sessions[serverId], agentId).isCancelling,
   );
-  const beginAgentCancellation = useSessionStore((state) => state.beginAgentCancellation);
-  const settleAgentCancellation = useSessionStore((state) => state.settleAgentCancellation);
-  const applyAgentTurnLiveness = useSessionStore((state) => state.applyAgentTurnLiveness);
   const rejectAgentMessageSubmission = useSessionStore(
     (state) => state.rejectAgentMessageSubmission,
   );
@@ -2045,7 +2045,7 @@ function ComposerContentImpl({
       isConnected,
     });
     if (!cancellation) return;
-    const requestId = beginAgentCancellation(serverId, targetAgentId);
+    const requestId = getHostRuntimeStore().beginAgentCancellation(serverId, targetAgentId);
     void cancellation
       .catch((error) => {
         const message = resolveErrorMessage(error);
@@ -2060,20 +2060,19 @@ function ComposerContentImpl({
             rejectAgentMessageSubmission(serverId, targetAgentId, submission.clientMessageId);
           }
         }
-        applyAgentTurnLiveness(serverId, targetAgentId, { type: "destructive_close" });
-        settleAgentCancellation(serverId, targetAgentId, requestId);
+        getHostRuntimeStore().applyAgentTurnLiveness(serverId, targetAgentId, {
+          type: "destructive_close",
+        });
+        getHostRuntimeStore().settleAgentCancellation(serverId, targetAgentId, requestId);
       });
     messageInputRef.current?.focus();
   }, [
-    applyAgentTurnLiveness,
-    beginAgentCancellation,
     client,
     isAgentRunning,
     isCancellingAgent,
     isConnected,
     rejectAgentMessageSubmission,
     serverId,
-    settleAgentCancellation,
   ]);
 
   const focusMessageInputForKeyboardAction = useCallback(() => {

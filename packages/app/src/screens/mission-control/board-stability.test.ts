@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { HostRuntimeConnectionStatus } from "@/runtime/host-runtime";
+import { TURN_LIVENESS_IDLE } from "@/timeline/turn-liveness";
 import type { LifecycleBucketGroup, LifecycleRow } from "@/mission-control/lifecycle";
 import {
   buildStableBoardItems,
@@ -40,6 +41,10 @@ function makeTestRow(id: string, bucket: "running" | "ready" | "done"): Lifecycl
       title: `Agent ${id}`,
       shortDescription: null,
       status: bucket === "running" ? "running" : "idle",
+      turn:
+        bucket === "running"
+          ? { phase: "open", turnId: `turn-${id}`, startedAt: null, cancellationRequestId: null }
+          : TURN_LIVENESS_IDLE,
       attentionReason: null,
       lastActivityAt: new Date(1_700_000_000_000),
       lastUserMessageAt: null,

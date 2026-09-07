@@ -263,7 +263,9 @@ const MAX_INACTIVE_PER_PROJECT = 5;
  * - Recently active (within grace period but not truly active) are limited to MAX_INACTIVE_PER_PROJECT
  */
 function isAgentTrulyActive(agent: AggregatedAgent): boolean {
-  return agent.bucket === "needs_you" || agent.bucket === "running";
+  // `bucket` is the daemon's lifecycle classification; `turn.phase` is the
+  // client's live signal, which opens before a new bucket arrives.
+  return agent.turn.phase === "open" || agent.bucket === "needs_you" || agent.bucket === "running";
 }
 
 function partitionAgentsByActivity(
