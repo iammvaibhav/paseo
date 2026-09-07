@@ -223,7 +223,13 @@ function formatProofsComment(proofs: MissionControlProof[] | undefined): string 
   const lines = proofs.map((proof) => {
     const label = proof.label ?? proof.kind;
     const target = proof.url ?? proof.path ?? proof.excerpt ?? "";
-    return target ? `- ${label}: ${target}` : `- ${label}`;
+    if (!target) {
+      return `- ${label}`;
+    }
+    if (target.startsWith("paseo://")) {
+      return `- [${label}](${target})`;
+    }
+    return `- ${label}: ${target}`;
   });
   return ["Ready for review.", "", "Proofs:", ...lines].join("\n");
 }
@@ -328,7 +334,8 @@ export class ItsaplanBridge {
    * the mission-control feed so a needs_you entry comment can quote what the
    * agent is actually asking. */
   private readonly lastQuestionByAgentId = new Map<string, string>();
-
+  private readonly lastCommentByIssueId = new Map<number, { body: string; timestamp: number }>();
+  private static readonly MAX_TRACKED_COMMENTS = 500;
   private unsubscribeAgentManager: (() => void) | null = null;
   private unsubscribeSelfReports: (() => void) | null = null;
   private unsubscribeEvents: (() => void) | null = null;
@@ -1024,6 +1031,7 @@ export class ItsaplanBridge {
       return;
     }
     if (event.kind === "finished") {
+      this.lastBucketByAgentId.set(event.agentId, "ready");
       await this.handleAgentCompleted(event.agentId, issueId, event.proof);
       return;
     }
@@ -1057,9 +1065,16 @@ export class ItsaplanBridge {
     if (inProgress && issue.columnId !== inProgress.id) {
       await client.moveIssueColumn(numericIssueId, inProgress.id);
     }
-    await client.postComment(
+    const mapping = this.projectStore.getByItsaplanProjectId(issue.projectId);
+    const commentClient = this.getCommentClient(config, mapping);
+    const record = await this.agentStorage.get(agentId);
+    const live = this.agentManager.getAgent(agentId);
+    const title = record?.title || live?.name || `Agent ${agentId}`;
+    const uri = `paseo://h/${encodeURIComponent(this.serverId)}/agent/${encodeURIComponent(agentId)}`;
+    await this.postDeduplicatedComment(
+      commentClient,
       numericIssueId,
-      `Dispatched: paseo://h/${this.serverId}/agent/${agentId}`,
+      `Dispatched: [${title}](${uri})`,
     );
   }
 
@@ -1127,7 +1142,9 @@ export class ItsaplanBridge {
       await client.moveIssueColumn(numericIssueId, readyColumn.id);
     }
     if (needsMove || (proof !== undefined && proof.length > 0)) {
-      await client.postComment(numericIssueId, formatProofsComment(proof));
+      const mapping = this.projectStore.getByItsaplanProjectId(issue.projectId);
+      const commentClient = this.getCommentClient(config, mapping);
+      await this.postDeduplicatedComment(commentClient, numericIssueId, formatProofsComment(proof));
     }
     this.lastBucketByAgentId.set(agentId, "ready");
     this.logger.info({ agentId, issueId }, "itsaplan.bridge.ready_for_review");
@@ -1151,13 +1168,13 @@ export class ItsaplanBridge {
     }
     const bucket = await this.missionControl.getLifecycleBucket(agentId);
     const previousBucket = this.lastBucketByAgentId.get(agentId) ?? null;
+    if (bucket === previousBucket) {
+      return;
+    }
     this.lastBucketByAgentId.set(agentId, bucket);
 
     const humanUserId = config.humanUserId;
     if (bucket === "needs_you") {
-      if (previousBucket === "needs_you") {
-        return;
-      }
       if (humanUserId) {
         await this.enterNeedsYou(config, humanUserId, agentId, numericIssueId);
       }
@@ -1170,9 +1187,7 @@ export class ItsaplanBridge {
       }
     }
     if (bucket === "running") {
-      if (previousBucket !== "running") {
-        await this.handleAgentRunning(agentId, issueId);
-      }
+      await this.handleAgentRunning(agentId, issueId);
       return;
     }
 
@@ -1189,9 +1204,14 @@ export class ItsaplanBridge {
   ): Promise<void> {
     const client = new ItsaplanClient(config);
     await client.updateAssignee(numericIssueId, humanUserId);
-    await client.postComment(numericIssueId, this.resolvePendingQuestion(agentId));
+    const issue = await client.getIssue(numericIssueId).catch(() => null);
+    const commentClient = this.getCommentClient(config, issue?.projectId);
+    await this.postDeduplicatedComment(
+      commentClient,
+      numericIssueId,
+      this.resolvePendingQuestion(agentId),
+    );
   }
-
   /** Question text priority: latest clarification card > latest blocked
    * report > the live pending-permission prompt > generic fallback. */
   private resolvePendingQuestion(agentId: string): string {
@@ -1225,7 +1245,9 @@ export class ItsaplanBridge {
     const issue = await client.getIssue(numericIssueId);
     const mapping = this.projectStore.getByItsaplanProjectId(issue.projectId);
     await client.updateAssignee(numericIssueId, mapping?.commanderUserId ?? null);
-    await client.postComment(
+    const commentClient = this.getCommentClient(config, mapping);
+    await this.postDeduplicatedComment(
+      commentClient,
       numericIssueId,
       viaTicketComment
         ? "Resumed — answered via ticket comment"
@@ -1358,11 +1380,13 @@ export class ItsaplanBridge {
     await this.agentManager.setLabels(agentId, {
       [ITSAPLAN_ISSUE_LABEL_KEY]: String(createdIssue.id),
     });
-    await client.postComment(
+    const commentClient = this.getCommentClient(config, mapping);
+    const uri = `paseo://h/${encodeURIComponent(this.serverId)}/agent/${encodeURIComponent(agentId)}`;
+    await this.postDeduplicatedComment(
+      commentClient,
       createdIssue.id,
-      `Dispatched: paseo://h/${this.serverId}/agent/${agentId}`,
+      `Dispatched: [${title}](${uri})`,
     );
-
     const url = `${config.baseUrl.replace(/\/+$/, "")}/project/${encodeURIComponent(mapping.itsaplanProjectKey)}/issues/${createdIssue.sequenceNumber}`;
     return { issueId: createdIssue.id, url };
   }
@@ -1451,5 +1475,51 @@ export class ItsaplanBridge {
       return columns.find((c) => c.stateType === "completed")?.id;
     }
     return columns.find((c) => c.stateType === "unstarted")?.id;
+  }
+
+  private getCommentClient(
+    config: ItsaplanCentralConfig,
+    projectIdOrMapping?: ItsaplanProjectMapping | number | string | null,
+  ): ItsaplanClient {
+    let mapping: ItsaplanProjectMapping | null = null;
+    if (typeof projectIdOrMapping === "object" && projectIdOrMapping !== null) {
+      mapping = projectIdOrMapping;
+    } else if (typeof projectIdOrMapping === "number") {
+      mapping = this.projectStore.getByItsaplanProjectId(projectIdOrMapping);
+    } else if (typeof projectIdOrMapping === "string") {
+      mapping =
+        this.projectStore.getByPaseoProjectKey(projectIdOrMapping) ??
+        this.projectStore.list().find((m) => m.itsaplanProjectKey === projectIdOrMapping) ??
+        null;
+    }
+    const apiKey = mapping?.commanderApiKey ?? config.apiKey;
+    return new ItsaplanClient({
+      baseUrl: config.baseUrl,
+      apiKey,
+    });
+  }
+
+  private async postDeduplicatedComment(
+    client: ItsaplanClient,
+    issueId: number,
+    body: string,
+  ): Promise<void> {
+    const trimmed = body.trim();
+    if (!trimmed) {
+      return;
+    }
+    const last = this.lastCommentByIssueId.get(issueId);
+    if (last && last.body === trimmed && Date.now() - last.timestamp < 60_000) {
+      this.logger.info({ issueId, body: trimmed }, "itsaplan.bridge.duplicate_comment_suppressed");
+      return;
+    }
+    this.lastCommentByIssueId.set(issueId, { body: trimmed, timestamp: Date.now() });
+    if (this.lastCommentByIssueId.size > ItsaplanBridge.MAX_TRACKED_COMMENTS) {
+      const oldestKey = this.lastCommentByIssueId.keys().next().value;
+      if (oldestKey !== undefined) {
+        this.lastCommentByIssueId.delete(oldestKey);
+      }
+    }
+    await client.postComment(issueId, trimmed);
   }
 }

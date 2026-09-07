@@ -131,16 +131,23 @@ function findColumnByNameAndProject(
   );
 }
 
+interface FakeItsaplanServerHandle {
+  server: Server;
+  comments: Array<{ issueId: number; body: string; apiKey?: string }>;
+  createdColumns: Array<{ projectKey: string; name: string; stateType: string }>;
+}
+
 function startFakeItsaplanServer(options: {
   apiKey: string;
+  allowedApiKeys?: string[];
   issues: Map<number, FakeIssue>;
   columns: Map<number, FakeColumn>;
   labels?: Map<number, FakeLabel>;
   attachments?: Map<number, FakeAttachment[]>;
   initiatives?: Map<number, FakeInitiative>;
   projectIdByKey: Map<string, number>;
-}) {
-  const comments: Array<{ issueId: number; body: string }> = [];
+}): FakeItsaplanServerHandle {
+  const comments: Array<{ issueId: number; body: string; apiKey?: string }> = [];
   const createdColumns: Array<{ projectKey: string; name: string; stateType: string }> = [];
   let nextColumnId = 1000;
   let nextLabelId = 2000;
@@ -158,7 +165,8 @@ function startFakeItsaplanServer(options: {
         res.writeHead(status, { "content-type": "application/json" });
         res.end(JSON.stringify(json));
       };
-      if (req.headers["x-api-key"] !== options.apiKey) {
+      const requestApiKey = String(req.headers["x-api-key"] ?? "");
+      if (requestApiKey !== options.apiKey && !options.allowedApiKeys?.includes(requestApiKey)) {
         send(401, { error: "unauthorized" });
         return;
       }
@@ -213,7 +221,11 @@ function startFakeItsaplanServer(options: {
         return;
       }
       if (req.method === "POST" && commentMatch) {
-        comments.push({ issueId: Number(commentMatch[1]), body: String(body.body) });
+        comments.push({
+          issueId: Number(commentMatch[1]),
+          body: String(body.body),
+          apiKey: requestApiKey,
+        });
         send(200, { id: comments.length });
         return;
       }
@@ -355,7 +367,7 @@ function waitForCommentEqual(
   expected: { issueId: number; body: string },
 ): Promise<void> {
   return vi.waitFor(() => {
-    expect(comments).toContainEqual(expected);
+    expect(comments).toContainEqual(expect.objectContaining(expected));
   });
 }
 
@@ -382,11 +394,21 @@ function signBody(
 // Fake bridge dependencies.
 // ---------------------------------------------------------------------------
 
-function createFakeAgentManager(): {
+interface FakeAgentManagerHandle {
   manager: ItsaplanBridgeAgentManager;
   emit: (event: AgentManagerEvent) => void;
   setAgent: (agent: ManagedAgent) => void;
-} {
+}
+
+interface FakeMissionControlHandle {
+  control: ItsaplanBridgeMissionControl;
+  emitSelfReport: (event: MissionControlEvent) => void;
+  emitEvent: (event: MissionControlEvent) => void;
+  setBucket: (bucket: LifecycleBucket) => void;
+  lifecycleActions: Array<{ agentId: string; action: MissionControlLifecycleAction }>;
+}
+
+function createFakeAgentManager(): FakeAgentManagerHandle {
   let listener: ((event: AgentManagerEvent) => void) | null = null;
   const agents = new Map<string, ManagedAgent>();
   return {
@@ -478,13 +500,7 @@ function createFakeFleet(
   };
 }
 
-function createFakeMissionControl(initialBucket: LifecycleBucket): {
-  control: ItsaplanBridgeMissionControl;
-  emitSelfReport: (event: MissionControlEvent) => void;
-  emitEvent: (event: MissionControlEvent) => void;
-  setBucket: (bucket: LifecycleBucket) => void;
-  lifecycleActions: Array<{ agentId: string; action: MissionControlLifecycleAction }>;
-} {
+function createFakeMissionControl(initialBucket: LifecycleBucket): FakeMissionControlHandle {
   let selfReportListener: ((event: MissionControlEvent) => void) | null = null;
   let eventListener: ((event: MissionControlEvent) => void) | null = null;
   let bucket = initialBucket;
@@ -532,15 +548,15 @@ describe("ItsaplanBridge", () => {
   let attachments: Map<number, FakeAttachment[]>;
   let initiatives: Map<number, FakeInitiative>;
   let projectIdByKey: Map<string, number>;
-  let fakeServer: ReturnType<typeof startFakeItsaplanServer>;
+  let fakeServer: FakeItsaplanServerHandle;
   let handle: { baseUrl: string; close: () => Promise<void> };
   let config: ItsaplanCentralConfig;
   let projectStore: ItsaplanProjectStore;
   let deliverMachineryPrompt: ReturnType<typeof vi.fn>;
   let steerWorkerPrompt: ReturnType<typeof vi.fn>;
   let agentStorageRecords: Pick<StoredAgentRecord, "id" | "labels" | "updatedAt">[];
-  let agentManagerFake: ReturnType<typeof createFakeAgentManager>;
-  let missionControlFake: ReturnType<typeof createFakeMissionControl>;
+  let agentManagerFake: FakeAgentManagerHandle;
+  let missionControlFake: FakeMissionControlHandle;
   let bridge: ItsaplanBridge;
   const PROJECT_KEY = "ENG";
   const PROJECT_ID = 1;
@@ -1715,7 +1731,11 @@ describe("ItsaplanBridge", () => {
       });
       await waitForIssueColumn(issues, ISSUE_ID, 3);
       expect(fakeServer.comments).toEqual([
-        { issueId: ISSUE_ID, body: "Dispatched: paseo://h/server-1/agent/agent-1" },
+        {
+          issueId: ISSUE_ID,
+          body: "Dispatched: [Agent agent-1](paseo://h/server-1/agent/agent-1)",
+          apiKey: "itp_test_key",
+        },
       ]);
     });
 
@@ -1751,8 +1771,8 @@ describe("ItsaplanBridge", () => {
         stateType: "started",
       });
       const readyColumn = findColumnByName(columns, "Ready to review");
-      expect(issues.get(ISSUE_ID)?.columnId).toBe(readyColumn?.id);
-      expect(fakeServer.comments.at(-1)?.body).toContain("PR: https://example.test/pr/1");
+      await waitForIssueColumn(issues, ISSUE_ID, readyColumn!.id);
+      await waitForLastCommentContaining(fakeServer.comments, "PR: https://example.test/pr/1");
     });
 
     test("projects column to In Progress when an agent is created on a host with NO project mapping", async () => {
@@ -1798,7 +1818,8 @@ describe("ItsaplanBridge", () => {
       await waitForIssueColumn(issues, UNMAPPED_ISSUE_ID, 992);
       expect(fakeServer.comments).toContainEqual({
         issueId: UNMAPPED_ISSUE_ID,
-        body: "Dispatched: paseo://h/server-1/agent/agent-peer-1",
+        body: "Dispatched: [Agent agent-peer-1](paseo://h/server-1/agent/agent-peer-1)",
+        apiKey: "itp_test_key",
       });
     });
 
@@ -1861,7 +1882,7 @@ describe("ItsaplanBridge", () => {
         stateType: "started",
       });
       const readyCol = findColumnByNameAndProject(columns, UNMAPPED_PROJECT_ID, "Ready to review");
-      expect(issues.get(UNMAPPED_ISSUE_ID)?.columnId).toBe(readyCol?.id);
+      await waitForIssueColumn(issues, UNMAPPED_ISSUE_ID, readyCol!.id);
     });
 
     test("projects review-ready lifecycle state to Ready to review when an agent finishes WITHOUT report_status", async () => {
@@ -1871,7 +1892,11 @@ describe("ItsaplanBridge", () => {
       });
       await waitForIssueColumn(issues, ISSUE_ID, 3);
       expect(fakeServer.comments).toEqual([
-        { issueId: ISSUE_ID, body: "Dispatched: paseo://h/server-1/agent/agent-event-only" },
+        {
+          issueId: ISSUE_ID,
+          body: "Dispatched: [Agent agent-event-only](paseo://h/server-1/agent/agent-event-only)",
+          apiKey: "itp_test_key",
+        },
       ]);
 
       // Agent transitions to idle/ready WITHOUT emitting any self-report
@@ -1911,8 +1936,8 @@ describe("ItsaplanBridge", () => {
         stateType: "started",
       });
       const readyColumn = findColumnByName(columns, "Ready to review");
-      expect(issues.get(ISSUE_ID)?.columnId).toBe(readyColumn?.id);
-      expect(fakeServer.comments.at(-1)?.body).toBe("Ready for review.");
+      await waitForIssueColumn(issues, ISSUE_ID, readyColumn!.id);
+      await waitForLastCommentBody(fakeServer.comments, "Ready for review.");
       const commentCountAfterFirstReady = fakeServer.comments.length;
 
       // 2. Deliver the exact same transition a second time (duplicate agent_state)
@@ -2078,7 +2103,8 @@ describe("ItsaplanBridge", () => {
         expect(agent.labels[ITSAPLAN_ISSUE_LABEL_KEY]).toBe(String(result.issueId));
         expect(fakeServer.comments).toContainEqual({
           issueId: result.issueId,
-          body: `Dispatched: paseo://h/server-1/agent/${agentId}`,
+          body: `Dispatched: [Feature implementation](paseo://h/server-1/agent/${agentId})`,
+          apiKey: "itp_test_key",
         });
       }
     });
@@ -2537,5 +2563,214 @@ describe("buildDispatchPrompt", () => {
     expect(prompt).toContain(
       "File attachments:\n- spec.pdf: http://10.7.0.1:3000/attachments/spec/raw",
     );
+  });
+});
+
+describe("itsaplan comment author attribution, deduplication, and link formatting", () => {
+  let fakeServer: FakeItsaplanServerHandle;
+  let handle: { baseUrl: string; close: () => Promise<void> };
+  let config: ItsaplanCentralConfig;
+  let projectStore: ItsaplanProjectStore;
+  let agentManagerFake: FakeAgentManagerHandle;
+  let agentStorageRecords: StoredAgentRecord[];
+  let missionControlFake: FakeMissionControlHandle;
+  let issues: Map<number, FakeIssue>;
+  let columns: Map<number, FakeColumn>;
+  let projectIdByKey: Map<string, number>;
+  let bridge: ItsaplanBridge;
+
+  const PROJECT_ID = 10;
+  const PROJECT_KEY = "PROJ";
+  const ISSUE_ID = 101;
+
+  beforeEach(async () => {
+    issues = new Map<number, FakeIssue>([
+      [
+        ISSUE_ID,
+        {
+          id: ISSUE_ID,
+          projectId: PROJECT_ID,
+          sequenceNumber: 1,
+          columnId: 2, // Todo
+          title: "Attribution test issue",
+          description: "Test description",
+          assigneeUserId: null,
+          links: [],
+        },
+      ],
+    ]);
+    columns = new Map<number, FakeColumn>([
+      [1, { id: 1, projectId: PROJECT_ID, name: "Backlog", stateType: "backlog" }],
+      [2, { id: 2, projectId: PROJECT_ID, name: "Todo", stateType: "unstarted" }],
+      [3, { id: 3, projectId: PROJECT_ID, name: "In Progress", stateType: "started" }],
+    ]);
+    projectIdByKey = new Map([[PROJECT_KEY, PROJECT_ID]]);
+
+    fakeServer = startFakeItsaplanServer({
+      apiKey: "itp_admin_user_key",
+      allowedApiKeys: ["itp_admin_user_key", "itp_commander_bot_key"],
+      issues,
+      columns,
+      projectIdByKey,
+    });
+    handle = await listen(fakeServer.server);
+    config = {
+      baseUrl: handle.baseUrl,
+      apiKey: "itp_admin_user_key",
+      webhookSecret: "whsec_test",
+      humanUserId: "human-user-1",
+    };
+
+    projectStore = new ItsaplanProjectStore({
+      paseoHome: `/tmp/itsaplan-attr-test-${Math.random()}`,
+      logger: createTestLogger(),
+    });
+    await projectStore.upsert({
+      paseoProjectKey: "proj",
+      itsaplanProjectId: PROJECT_ID,
+      itsaplanProjectKey: PROJECT_KEY,
+      createdAt: new Date().toISOString(),
+      commanderAgentId: 99,
+      commanderUsername: "commander",
+      commanderApiKey: "itp_commander_bot_key",
+      commanderUserId: "bot-user-commander",
+    });
+
+    agentManagerFake = createFakeAgentManager();
+    agentStorageRecords = [];
+    missionControlFake = createFakeMissionControl("running");
+
+    bridge = new ItsaplanBridge({
+      serverId: "srv_test",
+      agentManager: agentManagerFake.manager,
+      agentStorage: createFakeAgentStorage(agentStorageRecords),
+      missionControl: missionControlFake.control,
+      projectStore,
+      getConfig: () => config,
+      deliverMachineryPrompt: async () => true,
+      steerWorkerPrompt: async () => {},
+      resolvePaseoProjectKey: async () => "proj",
+      logger: createTestLogger(),
+    });
+    bridge.start();
+  });
+  afterEach(async () => {
+    bridge?.stop();
+    await handle?.close();
+  });
+
+  test("posts comments with Commander API key when commanderApiKey is present in mapping", async () => {
+    const agentId = "agent-bot-auth";
+    agentStorageRecords.push({
+      id: agentId,
+      title: "Task with bot author",
+      shortDescription: "Working on task",
+      labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) },
+      updatedAt: new Date().toISOString(),
+    });
+    agentManagerFake.emit({
+      type: "agent_state",
+      agent: fakeAgent(agentId, { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+    });
+
+    await waitForIssueColumn(issues, ISSUE_ID, 3);
+    const dispatchComment = fakeServer.comments.find((c) => c.body.startsWith("Dispatched:"));
+    expect(dispatchComment).toBeDefined();
+    expect(dispatchComment?.apiKey).toBe("itp_commander_bot_key");
+    expect(dispatchComment?.body).toBe(
+      "Dispatched: [Task with bot author](paseo://h/srv_test/agent/agent-bot-auth)",
+    );
+  });
+
+  test("suppresses consecutive duplicate comments posted to the same issue within deduplication window", async () => {
+    const agentId = "agent-dedup-test";
+    agentStorageRecords.push({
+      id: agentId,
+      title: "Dedup Agent",
+      shortDescription: "Working on task",
+      labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) },
+      updatedAt: new Date().toISOString(),
+    });
+
+    // 1. Initial dispatch comment
+    agentManagerFake.emit({
+      type: "agent_state",
+      agent: fakeAgent(agentId, { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+    });
+    await waitForIssueColumn(issues, ISSUE_ID, 3);
+    expect(fakeServer.comments.filter((c) => c.body.startsWith("Dispatched:"))).toHaveLength(1);
+
+    // 2. Transition to ready
+    missionControlFake.setBucket("ready");
+    agentManagerFake.emit({
+      type: "agent_state",
+      agent: fakeAgent(agentId, { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+    });
+
+    await waitForCreatedColumn(fakeServer.createdColumns, {
+      projectKey: PROJECT_KEY,
+      name: "Ready to review",
+      stateType: "started",
+    });
+    const readyColumn = findColumnByName(columns, "Ready to review");
+    await waitForIssueColumn(issues, ISSUE_ID, readyColumn!.id);
+    await waitForLastCommentBody(fakeServer.comments, "Ready for review.");
+
+    const readyCommentCount = fakeServer.comments.filter(
+      (c) => c.body === "Ready for review.",
+    ).length;
+    expect(readyCommentCount).toBe(1);
+
+    // 3. Emit 5 more rapid agent_state events in ready state -> must NOT duplicate "Ready for review."
+    for (let i = 0; i < 5; i++) {
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent(agentId, { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+      });
+    }
+    await flushAsync();
+    await flushAsync();
+
+    const readyCommentsAfter = fakeServer.comments.filter(
+      (c) => c.body === "Ready for review.",
+    ).length;
+    expect(readyCommentsAfter).toBe(1);
+  });
+
+  test("formats paseo:// links inside proofs as markdown links", async () => {
+    const agentId = "agent-proof-link";
+    agentStorageRecords.push({
+      id: agentId,
+      title: "Proof Link Agent",
+      shortDescription: "Working on task",
+      labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) },
+      updatedAt: new Date().toISOString(),
+    });
+
+    missionControlFake.emitSelfReport({
+      id: "mce_proof_1",
+      ts: new Date().toISOString(),
+      seq: 1,
+      agentId,
+      agentName: agentId,
+      agentTitle: "Proof Link Agent",
+      kind: "finished",
+      source: "self",
+      severity: "info",
+      headline: "Done",
+      proof: [
+        { kind: "url", url: "paseo://h/srv_test/agent/child-123", label: "Inspector" },
+        { kind: "pr", url: "https://github.com/org/repo/pull/42", label: "PR #42" },
+      ],
+    } as unknown as MissionControlEvent);
+
+    await waitForLastCommentContaining(
+      fakeServer.comments,
+      "[Inspector](paseo://h/srv_test/agent/child-123)",
+    );
+    const lastComment = fakeServer.comments.at(-1);
+    expect(lastComment?.body).toContain("- [Inspector](paseo://h/srv_test/agent/child-123)");
+    expect(lastComment?.body).toContain("- PR #42: https://github.com/org/repo/pull/42");
+    expect(lastComment?.apiKey).toBe("itp_commander_bot_key");
   });
 });
