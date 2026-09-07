@@ -1,9 +1,10 @@
 import { memo, useCallback, useMemo } from "react";
-import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
+import { Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
 import { HostGlyph } from "@/components/host-glyph";
 import { StatusRing } from "@/components/status-ring";
+import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { isWeb } from "@/constants/platform";
 import { useCompactTimeAgo } from "@/hooks/use-compact-time-ago";
 import { rowActivityMs, type LifecycleRow } from "@/mission-control/lifecycle";
@@ -11,6 +12,7 @@ import { navigateToAgent } from "@/utils/navigate-to-agent";
 import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { getStatusDotColor } from "@/utils/status-dot-color";
 import { STATUS_INDICATOR_FILLED_DOT_SIZE } from "@/utils/status-indicator-geometry";
+import { SidebarAgentViewRowMenu } from "./row-menu";
 
 export function rowToSidebarStateBucket(row: LifecycleRow): SidebarStateBucket {
   switch (row.bucket) {
@@ -84,30 +86,37 @@ export const SidebarAgentViewRow = memo(function SidebarAgentViewRow({
   );
 
   return (
-    <Pressable
-      style={rowStyle}
-      onPress={handlePress}
-      accessibilityRole={isWeb ? undefined : "button"}
-      accessibilityLabel={title}
-      testID={`sidebar-agent-view-row-${agent.serverId}-${agent.id}`}
-    >
-      <View style={styles.glyphSlot}>
-        {stateBucket === "running" ? (
-          <StatusRing />
-        ) : (
-          <View style={[styles.statusDot, getStatusDotStyle(stateBucket)]} />
-        )}
-      </View>
-      <HostGlyph serverId={agent.serverId} label={agent.serverLabel ?? agent.serverId} size="sm" />
-      <Text style={styles.title} numberOfLines={1}>
-        {title}
-      </Text>
-      {timeAgo ? (
-        <Text style={styles.time} numberOfLines={1}>
-          {timeAgo}
+    <ContextMenu>
+      <ContextMenuTrigger
+        style={rowStyle}
+        onPress={handlePress}
+        accessibilityRole={isWeb ? undefined : "button"}
+        accessibilityLabel={title}
+        testID={`sidebar-agent-view-row-${agent.serverId}-${agent.id}`}
+      >
+        <View style={styles.glyphSlot}>
+          {stateBucket === "running" ? (
+            <StatusRing />
+          ) : (
+            <View style={[styles.statusDot, getStatusDotStyle(stateBucket)]} />
+          )}
+        </View>
+        <HostGlyph
+          serverId={agent.serverId}
+          label={agent.serverLabel ?? agent.serverId}
+          size="sm"
+        />
+        <Text style={styles.title} numberOfLines={1}>
+          {title}
         </Text>
-      ) : null}
-    </Pressable>
+        {timeAgo ? (
+          <Text style={styles.time} numberOfLines={1}>
+            {timeAgo}
+          </Text>
+        ) : null}
+      </ContextMenuTrigger>
+      <SidebarAgentViewRowMenu row={row} onOpen={handlePress} />
+    </ContextMenu>
   );
 });
 

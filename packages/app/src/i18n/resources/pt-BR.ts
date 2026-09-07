@@ -1238,6 +1238,13 @@ export const ptBR: TranslationResources = {
         description: "Agentes em execução e prontos para revisão aparecem aqui.",
         clear: "Limpar filtros",
       },
+      menu: {
+        open: "Abrir no espaço de trabalho",
+        copyReference: "Copiar referência",
+        stop: "Parar",
+        clear: "Limpar",
+        archive: "Arquivar",
+      },
     },
     filterEmpty: {
       title: "Nenhum espaço de trabalho corresponde",

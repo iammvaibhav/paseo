@@ -1218,6 +1218,13 @@ export const en = {
         description: "Running and ready-for-review agents appear here.",
         clear: "Clear filters",
       },
+      menu: {
+        open: "Open in workspace",
+        copyReference: "Copy reference",
+        stop: "Stop",
+        clear: "Clear",
+        archive: "Archive",
+      },
     },
     filterEmpty: {
       title: "No workspaces match",

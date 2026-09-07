@@ -1211,6 +1211,13 @@ export const ko: TranslationResources = {
         description: "실행 중이거나 검토 대기 중인 에이전트가 여기에 표시됩니다.",
         clear: "필터 지우기",
       },
+      menu: {
+        open: "워크스페이스에서 열기",
+        copyReference: "참조 복사",
+        stop: "중지",
+        clear: "지우기",
+        archive: "보관",
+      },
     },
     filterEmpty: {
       title: "일치하는 워크스페이스가 없습니다",

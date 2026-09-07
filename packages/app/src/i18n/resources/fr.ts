@@ -1246,6 +1246,13 @@ export const fr: TranslationResources = {
         description: "Les agents en cours d'exécution et prêts pour révision apparaissent ici.",
         clear: "Effacer les filtres",
       },
+      menu: {
+        open: "Ouvrir dans l’espace de travail",
+        copyReference: "Copier la référence",
+        stop: "Arrêter",
+        clear: "Effacer",
+        archive: "Archiver",
+      },
     },
     filterEmpty: {
       title: "Aucun espace de travail ne correspond",
