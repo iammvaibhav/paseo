@@ -6,7 +6,24 @@ const path = require("path");
 const projectRoot = __dirname;
 const appNodeModulesRoot = path.resolve(projectRoot, "node_modules");
 const appSrcRoot = path.resolve(projectRoot, "src");
-const relaySrcRoot = path.resolve(projectRoot, "../relay/src");
+// In a git worktree the shared node_modules resolve @getpaseo/relay to the source checkout, so
+// relay sources can live outside this checkout. Match both roots for the .js -> .ts rewrite.
+const relaySrcRoots = Array.from(
+  new Set(
+    [path.resolve(projectRoot, "../relay/src"), linkedRelaySrcRoot()].filter(
+      (root) => root !== null,
+    ),
+  ),
+);
+
+function linkedRelaySrcRoot() {
+  const linkPath = path.resolve(projectRoot, "../../node_modules/@getpaseo/relay");
+  try {
+    return path.join(fs.realpathSync(linkPath), "src");
+  } catch {
+    return null;
+  }
+}
 const isFdroidBuild = process.env.PASEO_FDROID_BUILD === "1";
 const fdroidModuleOverrides = {
   "expo-camera": path.resolve(appSrcRoot, "fdroid/expo-camera.tsx"),
@@ -113,7 +130,11 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
   }
 
   const origin = context.originModulePath;
-  if (origin && origin.startsWith(relaySrcRoot) && moduleName.endsWith(".js")) {
+  if (
+    origin &&
+    moduleName.endsWith(".js") &&
+    relaySrcRoots.some((root) => origin.startsWith(root))
+  ) {
     const tsModuleName = moduleName.replace(/\.js$/, ".ts");
     const candidatePath = path.resolve(path.dirname(origin), tsModuleName);
     if (fs.existsSync(candidatePath)) {
