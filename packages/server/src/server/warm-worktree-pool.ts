@@ -92,6 +92,13 @@ export interface WarmWorktreePool {
 
 const DEFAULT_TARGET_IDLE = 1;
 const DEFAULT_MAINTENANCE_INTERVAL_MS = 30_000;
+// Provisioning runs the project's worktree.setup, so a broken setup (missing deps, a
+// failing build) fails every attempt. Without backoff the maintenance timer retries
+// every 30s forever, each attempt paying a `git worktree add` + failed setup + cleanup.
+// Back off exponentially per repo and cap it, so a persistently broken project costs
+// one attempt every 15 minutes instead of one every 30 seconds.
+const PROVISION_BACKOFF_BASE_MS = 60_000;
+const PROVISION_BACKOFF_MAX_MS = 900_000;
 
 export class WarmWorktreePoolManager implements WarmWorktreePool {
   private readonly paseoHome?: string;
@@ -113,6 +120,7 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
   private readonly repoLocks = new Map<string, Promise<void>>();
   private maintenanceTimer: NodeJS.Timeout | null = null;
   private isStopped = false;
+  private readonly provisionFailures = new Map<string, { count: number; nextAttemptAt: number }>();
 
   constructor(options: WarmWorktreePoolOptions) {
     this.paseoHome = options.paseoHome;
@@ -360,9 +368,14 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
       const needed = targetIdle - currentIdleCount;
       if (needed <= 0) return;
 
+      if (this.isProvisioningBackedOff(normalizedRoot)) return;
+
       for (let i = 0; i < needed; i++) {
         if (this.isStopped) break;
-        await this.provisionOneWarmWorktree(normalizedRoot);
+        const provisioned = await this.provisionOneWarmWorktree(normalizedRoot);
+        // Stop the batch on the first failure: the same broken setup will fail again,
+        // and the backoff window is already armed.
+        if (!provisioned) break;
       }
     });
   }
@@ -405,6 +418,38 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
       targetIdle: this.defaultTargetIdle,
       pools: poolSummaries,
     };
+  }
+
+  private isProvisioningBackedOff(repoRoot: string): boolean {
+    const failure = this.provisionFailures.get(repoRoot);
+    if (!failure) return false;
+    if (this.now().getTime() >= failure.nextAttemptAt) return false;
+    this.logger.debug(
+      { repoRoot, consecutiveFailures: failure.count, nextAttemptAt: failure.nextAttemptAt },
+      "Skipping warm worktree provisioning while backing off after repeated failures",
+    );
+    return true;
+  }
+
+  private recordProvisionOutcome(repoRoot: string, provisioned: boolean): void {
+    if (provisioned) {
+      this.provisionFailures.delete(repoRoot);
+      return;
+    }
+    const previous = this.provisionFailures.get(repoRoot)?.count ?? 0;
+    const count = previous + 1;
+    const delayMs = Math.min(
+      PROVISION_BACKOFF_BASE_MS * 2 ** (count - 1),
+      PROVISION_BACKOFF_MAX_MS,
+    );
+    this.provisionFailures.set(repoRoot, {
+      count,
+      nextAttemptAt: this.now().getTime() + delayMs,
+    });
+    this.logger.warn(
+      { repoRoot, consecutiveFailures: count, retryInMs: delayMs },
+      "Warm worktree provisioning failed; backing off before the next attempt",
+    );
   }
 
   private async maintain(): Promise<void> {
@@ -553,7 +598,8 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
     }
   }
 
-  private async provisionOneWarmWorktree(repoRoot: string): Promise<void> {
+  /** Returns true when an idle warm worktree is ready; false when provisioning failed. */
+  private async provisionOneWarmWorktree(repoRoot: string): Promise<boolean> {
     const warmSlug = `.warm-${randomUUID().slice(0, 8)}`;
     const warmWorktreePath = await computeWorktreePath(
       repoRoot,
@@ -603,6 +649,8 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
 
       record.status = "idle";
       this.logger.info({ repoRoot, warmWorktreePath }, "Warm worktree provisioned successfully");
+      this.recordProvisionOutcome(repoRoot, true);
+      return true;
     } catch (error) {
       this.logger.warn(
         { err: error, repoRoot, warmWorktreePath },
@@ -613,6 +661,8 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
         records.splice(index, 1);
       }
       await this.cleanupFailedWorktree(repoRoot, warmWorktreePath);
+      this.recordProvisionOutcome(repoRoot, false);
+      return false;
     }
   }
 
