@@ -7,9 +7,31 @@ node scripts/web-ui-harness.mjs            # seed, verify, stay alive on CDP 922
 node scripts/web-ui-harness.mjs --once     # seed, verify, screenshot, exit
 ```
 
-It prints JSON: the hosts it seeded, the sidebar projects it saw, the workspace
-row count, and the screenshot path. `anyHostNotConnected: false` means the UI
-reached every daemon.
+It prints JSON: every host it seeded with that host's sidebar row counts, the
+totals, and the screenshot path. `allHostsServingRows: true` is the check that
+matters — a seeded host proves nothing, a host that answers puts rows on screen.
+`itsaplanSession: "injected"` means the itsaplan pane can render a board.
+
+## Verify per host, never by page text
+
+A page-wide search for "Connecting" matches unrelated copy, so a half-connected
+fleet reads as healthy. Each sidebar row carries its `serverId` in its test id;
+count rows per id instead.
+
+## The itsaplan pane needs two hacks
+
+The embed is a cross-origin iframe on a self-signed cert, so out of the box it
+renders `chrome-error://` and every project switch looks dead. Chromium is
+launched with `--ignore-certificate-errors` for that.
+
+Sign-in then hangs on "Signing in…" forever, because better-auth issues its
+cookie `SameSite=Lax` and Chromium drops it in a third-party frame — the same
+reason the desktop app uses a `<webview>` (see `itsaplan-webview.electron.tsx`).
+The harness mints a session over HTTP and re-adds it as `SameSite=None`.
+Credentials come from `ITSAPLAN_EMAIL`/`ITSAPLAN_PASSWORD` or
+`--itsaplan-credentials` (default `/tmp/itsaplan-e2e/credentials.json`). Note
+better-auth answers an origin-less sign-in with 403, so the request carries an
+explicit `Origin`.
 
 ## Why not the agent-browser tabs
 
