@@ -57,7 +57,7 @@ export const steps = [
     id: "pnpm-install",
     label: "pnpm install --frozen-lockfile succeeds",
     narrate: "Lockfile is up to date and install resolves cleanly.",
-    async run(ctx) {
+    async run(_ctx) {
       const { execFileSync } = await import("node:child_process");
       execFileSync("pnpm", ["install", "--frozen-lockfile"], {
         cwd: process.cwd(),
@@ -71,7 +71,7 @@ export const steps = [
     id: "server-build",
     label: "Server stack builds under pnpm",
     narrate: "Server and CLI packages compile successfully.",
-    async run(ctx) {
+    async run(_ctx) {
       const { execFileSync } = await import("node:child_process");
       execFileSync("pnpm", ["run", "build:server"], {
         cwd: process.cwd(),
