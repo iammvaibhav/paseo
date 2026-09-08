@@ -262,7 +262,7 @@ async function ensureItsaplanProjectMappingForKey(
     }
     if (mapping.commanderUserId) {
       const client = new ItsaplanClient(config);
-      await ensureTodoColumnAutoAssign(
+      await ensureTodoColumnNoCommanderAutoAssign(
         mapping.itsaplanProjectKey,
         mapping.commanderUserId,
         client,
@@ -301,9 +301,6 @@ async function ensureItsaplanProjectMappingForKey(
     webhookEvents: [...ITSAPLAN_WEBHOOK_EVENTS],
     ...(commander ? { ...commander, commanderMentionEnabled: true } : {}),
   };
-  if (commander?.commanderUserId) {
-    await ensureTodoColumnAutoAssign(created.key, commander.commanderUserId, client, deps.logger);
-  }
   await deps.store.upsert(mapping);
   deps.logger.info(
     { paseoProjectKey: projectKey, itsaplanProjectKey: created.key },
@@ -498,11 +495,12 @@ async function ensureCommanderAiAgent(
   }
 }
 /**
- * Ensures the project's Todo (unstarted) column has autoAssignUserId set to the
- * Commander bot user. When tickets are moved to Todo without an explicit assignee,
- * itsaplan auto-assigns them to Commander so automated dispatch triggers.
+ * Ensures the project's Todo (unstarted) column does not overwrite the human
+ * assignee with the Commander bot user when moved into Todo. The autonomous
+ * executor role belongs to the ticket's Delegate, while Assignee remains the
+ * accountable human owner.
  */
-export async function ensureTodoColumnAutoAssign(
+export async function ensureTodoColumnNoCommanderAutoAssign(
   itsaplanProjectKey: string,
   commanderUserId: string,
   client: ItsaplanClient,
@@ -515,19 +513,18 @@ export async function ensureTodoColumnAutoAssign(
       return;
     }
     if (todoColumn.autoAssignUserId === commanderUserId) {
-      return;
+      await client.updateColumn(itsaplanProjectKey, todoColumn.id, {
+        autoAssignUserId: null,
+      });
+      logger.info(
+        { itsaplanProjectKey, columnId: todoColumn.id },
+        "itsaplan.project.todo_column_commander_auto_assign_cleared",
+      );
     }
-    await client.updateColumn(itsaplanProjectKey, todoColumn.id, {
-      autoAssignUserId: commanderUserId,
-    });
-    logger.info(
-      { itsaplanProjectKey, columnId: todoColumn.id, commanderUserId },
-      "itsaplan.project.todo_column_auto_assign_set",
-    );
   } catch (error) {
     logger.warn(
       { err: error, itsaplanProjectKey },
-      "itsaplan.project.todo_column_auto_assign_failed",
+      "itsaplan.project.todo_column_clear_auto_assign_failed",
     );
   }
 }
@@ -611,7 +608,7 @@ async function backfillCommanderAgent(
     commanderMentionEnabled: true,
   };
   if (commander.commanderUserId) {
-    await ensureTodoColumnAutoAssign(
+    await ensureTodoColumnNoCommanderAutoAssign(
       existing.itsaplanProjectKey,
       commander.commanderUserId,
       client,

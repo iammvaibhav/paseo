@@ -9,7 +9,7 @@ import type { PersistedProjectRecord } from "../workspace-registry.js";
 import {
   attachItsaplanProjectSync,
   ensureItsaplanProjectMapping,
-  ensureTodoColumnAutoAssign,
+  ensureTodoColumnNoCommanderAutoAssign,
   ItsaplanProjectStore,
   runItsaplanProjectResync,
   type ItsaplanCentralConfig,
@@ -519,7 +519,7 @@ describe("itsaplan project sync", () => {
   });
 });
 
-describe("ensureTodoColumnAutoAssign", () => {
+describe("ensureTodoColumnNoCommanderAutoAssign", () => {
   let fakeServer: ReturnType<typeof startFakeItsaplanServer>;
   let handle: { baseUrl: string; close: () => Promise<void> };
   let config: ItsaplanCentralConfig;
@@ -533,7 +533,13 @@ describe("ensureTodoColumnAutoAssign", () => {
     fakeServer.projectIdByKey.set("ENG", 1);
     fakeServer.columnsByProjectKey.set("ENG", [
       { id: 10, projectId: 1, name: "Backlog", stateType: "backlog" },
-      { id: 11, projectId: 1, name: "Todo", stateType: "unstarted", autoAssignUserId: null },
+      {
+        id: 11,
+        projectId: 1,
+        name: "Todo",
+        stateType: "unstarted",
+        autoAssignUserId: "bot-user-42",
+      },
       { id: 12, projectId: 1, name: "In Progress", stateType: "started" },
     ]);
   });
@@ -542,18 +548,18 @@ describe("ensureTodoColumnAutoAssign", () => {
     await handle.close();
   });
 
-  test("sets autoAssignUserId on the unstarted (Todo) column to the commander bot user", async () => {
-    await ensureTodoColumnAutoAssign("ENG", "bot-user-42", client, createTestLogger());
+  test("clears autoAssignUserId on Todo column when set to the commander bot user", async () => {
+    await ensureTodoColumnNoCommanderAutoAssign("ENG", "bot-user-42", client, createTestLogger());
     const cols = fakeServer.columnsByProjectKey.get("ENG");
     const todoCol = cols?.find((c) => c.name === "Todo");
-    expect(todoCol?.autoAssignUserId).toBe("bot-user-42");
+    expect(todoCol?.autoAssignUserId).toBeNull();
   });
 
-  test("no-ops if autoAssignUserId is already the commander bot user", async () => {
+  test("leaves autoAssignUserId alone when not set to the commander bot user", async () => {
     const cols = fakeServer.columnsByProjectKey.get("ENG")!;
-    cols.find((c) => c.name === "Todo")!.autoAssignUserId = "bot-user-42";
-    await ensureTodoColumnAutoAssign("ENG", "bot-user-42", client, createTestLogger());
-    expect(cols.find((c) => c.name === "Todo")?.autoAssignUserId).toBe("bot-user-42");
+    cols.find((c) => c.name === "Todo")!.autoAssignUserId = "human-vaibhav";
+    await ensureTodoColumnNoCommanderAutoAssign("ENG", "bot-user-42", client, createTestLogger());
+    expect(cols.find((c) => c.name === "Todo")?.autoAssignUserId).toBe("human-vaibhav");
   });
 
   test("safely no-ops when no unstarted column exists", async () => {
@@ -561,7 +567,7 @@ describe("ensureTodoColumnAutoAssign", () => {
       { id: 10, projectId: 1, name: "Backlog", stateType: "backlog" },
     ]);
     await expect(
-      ensureTodoColumnAutoAssign("ENG", "bot-user-42", client, createTestLogger()),
+      ensureTodoColumnNoCommanderAutoAssign("ENG", "bot-user-42", client, createTestLogger()),
     ).resolves.toBeUndefined();
   });
 });
