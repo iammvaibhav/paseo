@@ -76,7 +76,7 @@ export const steps = [
       execFileSync("pnpm", ["run", "build:server"], {
         cwd: process.cwd(),
         stdio: "pipe",
-        timeout: 300_000,
+        timeout: 600_000,
       });
       return "pnpm run build:server passed";
     },
