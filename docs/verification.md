@@ -2,6 +2,8 @@
 
 Verification proves a change against an isolated Paseo stack before landing code or reporting done. Every pull request and worker dispatch must produce verifiable evidence matching the change shape.
 
+Three files split the knowledge: this doc owns the architecture and the decision matrix; `.agents/skills/verification` is what a worker loads; the root `COMMANDER.md` is what the Commander reads when it dispatches for this project (tiers, proofs to demand, live-environment rule). The Commander's system prompt (`packages/server/src/server/mission-control/commander-prompt.md`) is fleet-wide and stays free of Paseo-specific proof shapes; it defers to a project's instructions.
+
 ## The ladder
 
 Cheapest first:
