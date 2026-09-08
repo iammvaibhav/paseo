@@ -753,7 +753,11 @@ export class ProviderSnapshotManager {
     target: ProviderSnapshotTarget,
     providers?: AgentProvider[],
   ): ProviderSnapshot {
-    const providersToWarm = this.resolveProvidersToWarm(target.snapshotCwd, providers);
+    this.getOrCreateTarget(target.snapshotCwd);
+    this.bindSharedCatalogs(target.snapshotCwd);
+    const providersToWarm = this.resolveProvidersToWarm(target.snapshotCwd, providers).filter(
+      (provider) => this.shouldAutoWarmProvider(target.snapshotCwd, provider),
+    );
     if (providersToWarm.length > 0) {
       void this.warmUp(target, providersToWarm);
     }
@@ -900,6 +904,74 @@ export class ProviderSnapshotManager {
     this.getOrCreateTarget(cwd);
     // Identity is provider-owned and may change without a daemon config reload.
     return providers ?? this.getProviderIds();
+  }
+
+  /**
+   * Host-scoped catalogues (OMP, Claude, Codex) share one cache key. Copy that
+   * binding onto a new cwd so getSnapshot() is already `ready` instead of
+   * kicking a throwaway provider boot in the worktree.
+   */
+  private bindSharedCatalogs(snapshotCwd: string): void {
+    const target = this.getOrCreateTarget(snapshotCwd);
+    let changed = false;
+    for (const provider of this.getProviderIds()) {
+      const existing = target.bindings.get(provider);
+      if (existing?.key && isSharedCatalogKey(existing.key)) {
+        continue;
+      }
+      const shared = this.findSharedCatalogBinding(provider, snapshotCwd);
+      if (!shared?.key) {
+        continue;
+      }
+      target.bindings.set(provider, {
+        key: shared.key,
+        failure: shared.failure,
+        force: false,
+        promise: shared.promise,
+      });
+      changed = true;
+    }
+    if (changed) {
+      this.publishTargets([snapshotCwd]);
+    }
+  }
+
+  private findSharedCatalogBinding(
+    provider: AgentProvider,
+    excludeCwd?: string,
+  ): CatalogBinding | undefined {
+    const global = this.targets.get(GLOBAL_PROVIDER_SNAPSHOT_KEY)?.bindings.get(provider);
+    if (global?.key && isSharedCatalogKey(global.key)) {
+      return global;
+    }
+    for (const [cwd, target] of this.targets) {
+      if (cwd === excludeCwd) {
+        continue;
+      }
+      const binding = target.bindings.get(provider);
+      if (binding?.key && isSharedCatalogKey(binding.key)) {
+        return binding;
+      }
+    }
+    return undefined;
+  }
+
+  private shouldAutoWarmProvider(cwd: string, provider: AgentProvider): boolean {
+    const binding = this.targets.get(cwd)?.bindings.get(provider);
+    if (binding?.key && isSharedCatalogKey(binding.key)) {
+      const catalog = this.catalogs.get(binding.key)?.get(provider);
+      if (catalog?.load || (catalog?.result && !catalog.stale)) {
+        return false;
+      }
+    }
+    const shared = this.findSharedCatalogBinding(provider, cwd);
+    if (shared?.key) {
+      const catalog = this.catalogs.get(shared.key)?.get(provider);
+      if (catalog?.load || (catalog?.result && !catalog.stale)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   private async loadProviders(options: ProviderLoadOptions): Promise<void> {
@@ -1184,6 +1256,10 @@ function createFetchCatalogOptions(
   return scope.scope === "global"
     ? { scope: "global", force }
     : { scope: "workspace", cwd: scope.cwd, force };
+}
+
+function isSharedCatalogKey(key: string): boolean {
+  return key.startsWith('["provider"');
 }
 
 export function isGlobalProviderSnapshotKey(cwd: string): boolean {

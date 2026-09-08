@@ -72,7 +72,9 @@ function createExtraClient(
     provider,
     capabilities: TEST_CAPABILITIES,
     getCatalogCacheKey:
-      provider === "codex" || provider === "claude" ? async () => "host" : undefined,
+      provider === "codex" || provider === "claude" || provider === "omp"
+        ? async () => "host"
+        : undefined,
     async createSession() {
       throw new Error("not implemented");
     },
@@ -1324,6 +1326,44 @@ describe("ProviderSnapshotManager public surface", () => {
 
       expect(resolved.modeId).toBe("full");
       expect(catalogScopes).toEqual(["global"]);
+    } finally {
+      manager.destroy();
+    }
+  });
+
+  test("getSnapshot reuses a ready host-scoped catalog without fetching for a new cwd", async () => {
+    const fetchCatalog = vi.fn(async (_options: FetchCatalogOptions) => ({
+      models: [{ provider: "codex" as const, id: "gpt-6-astra", label: "GPT-6 Astra" }],
+      modes: [] as AgentMode[],
+    }));
+    const manager = new ProviderSnapshotManager({
+      logger: createTestLogger(),
+      providerOverrides: {
+        claude: { enabled: false },
+        copilot: { enabled: false },
+        opencode: { enabled: false },
+        pi: { enabled: false },
+        omp: { enabled: false },
+      },
+      extraClients: {
+        codex: createExtraClient("codex", {
+          async isAvailable() {
+            return true;
+          },
+          fetchCatalog,
+        }),
+      },
+    });
+    try {
+      await manager.getProvider({ provider: "codex", wait: true });
+      expect(fetchCatalog).toHaveBeenCalledTimes(1);
+
+      const snapshot = manager.getSnapshot("/tmp/brand-new-worktree");
+      const codex = snapshot.records.find(({ entry }) => entry.provider === "codex")?.entry;
+      expect(codex?.status).toBe("ready");
+      expect(codex?.models?.[0]?.id).toBe("gpt-6-astra");
+      await Promise.resolve();
+      expect(fetchCatalog).toHaveBeenCalledTimes(1);
     } finally {
       manager.destroy();
     }
@@ -3432,10 +3472,10 @@ test("binding a settled catalogue publishes once and rebinding an equal settled 
     await manager.warmUpSnapshotForCwd({ cwd: "/tmp/bind-a" });
     transitions.length = 0;
     const initial = manager.getSnapshot("/tmp/bind-b");
+    expect(transitions).toEqual([{ previous: expect.anything(), current: initial }]);
+    expect(probes).toBe(1);
     await manager.warmUpSnapshotForCwd({ cwd: "/tmp/bind-b" });
-    expect(transitions).toEqual([
-      { previous: initial, current: manager.getSnapshot("/tmp/bind-b") },
-    ]);
+    expect(manager.getSnapshot("/tmp/bind-b")).toBe(initial);
     expect(probes).toBe(1);
     key = "second";
     await manager.warmUpSnapshotForCwd({ cwd: "/tmp/bind-b" });

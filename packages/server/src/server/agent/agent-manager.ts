@@ -467,6 +467,14 @@ export interface AgentManagerOptions {
     agentId: string;
     expectedTurnId: string;
   }) => Promise<void>;
+  /**
+   * Resolve a default model from the host-scoped provider snapshot. Create
+   * must not cold-boot a throwaway catalog process in a new worktree.
+   */
+  resolveDefaultModel?: (input: {
+    provider: AgentProvider;
+    cwd: string;
+  }) => Promise<string | undefined>;
   logger: Logger;
 }
 
@@ -986,6 +994,7 @@ export class AgentManager {
   private appendSystemPrompt: string;
   private missionControlSelfReportEnabled: boolean;
   private resolveCommanderLaunchContract: AgentManagerOptions["resolveCommanderLaunchContract"];
+  private resolveDefaultModel: AgentManagerOptions["resolveDefaultModel"];
   private onAgentAttention?: AgentAttentionCallback;
   private onAgentFinished?: AgentFinishedCallback;
   private onAgentArchived?: AgentArchivedCallback;
@@ -1050,6 +1059,7 @@ export class AgentManager {
     this.appendSystemPrompt = options.appendSystemPrompt ?? "";
     this.missionControlSelfReportEnabled = options.missionControlSelfReportEnabled ?? true;
     this.resolveCommanderLaunchContract = options.resolveCommanderLaunchContract;
+    this.resolveDefaultModel = options.resolveDefaultModel;
     this.logger = options.logger.child({ module: "agent", component: "agent-manager" });
     this.rescueTimeouts = AgentManager.resolveRescueTimeouts(options);
     this.agentStreamCoalescer = this.createStreamCoalescer(options);
@@ -6249,14 +6259,23 @@ export class AgentManager {
   }
 
   private async resolveDefaultModelId(config: AgentSessionConfig): Promise<string | undefined> {
+    if (this.resolveDefaultModel) {
+      try {
+        return await this.resolveDefaultModel({
+          provider: config.provider,
+          cwd: config.cwd,
+        });
+      } catch {
+        return undefined;
+      }
+    }
     const client = this.clients.get(config.provider);
     if (!client) {
       return undefined;
     }
     try {
       const catalog = await client.fetchCatalog({
-        scope: "workspace",
-        cwd: config.cwd,
+        scope: "global",
         force: false,
       });
       return (catalog.models.find((model) => model.isDefault) ?? catalog.models[0])?.id;
