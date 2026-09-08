@@ -77,6 +77,7 @@ type WebviewWithScript = HTMLElement & {
 };
 
 const pendingPrefetchKeys = new Set<string>();
+let pendingNavigateKey: string | null = null;
 
 function runScriptInWebview(script: string): boolean {
   const webview = getResidentBrowserWebview(ITSAPLAN_BROWSER_ID) as WebviewWithScript | null;
@@ -91,14 +92,9 @@ function runScriptInWebview(script: string): boolean {
   return true;
 }
 
-/**
- * Navigates the running itsaplan SPA to a specific project client-side,
- * avoiding a full-frame reload.
- */
-export function navigateItsaplanEmbedProject(projectKey: string): void {
-  const trimmed = projectKey.trim();
-  const keyJson = JSON.stringify(trimmed);
-  const script = `
+function navigationScript(projectKey: string): string {
+  const keyJson = JSON.stringify(projectKey);
+  return `
     (function() {
       try {
         if (window.__paseo_itsaplan?.navigateProject) {
@@ -119,7 +115,26 @@ export function navigateItsaplanEmbedProject(projectKey: string): void {
       }
     })()
   `;
-  runScriptInWebview(script);
+}
+
+/**
+ * Navigates the running itsaplan SPA to a specific project client-side,
+ * avoiding a full-frame reload. Queues until the guest is ready.
+ */
+export function navigateItsaplanEmbedProject(projectKey: string): void {
+  const trimmed = projectKey.trim();
+  if (!trimmed) {
+    return;
+  }
+  pendingNavigateKey = trimmed;
+  runScriptInWebview(navigationScript(trimmed));
+}
+
+function flushPendingNavigate(): void {
+  if (!pendingNavigateKey) {
+    return;
+  }
+  runScriptInWebview(navigationScript(pendingNavigateKey));
 }
 
 function runPrefetchScript(key: string): boolean {
@@ -202,6 +217,7 @@ function flushPendingPrefetches(): void {
 function warmGuestCaches(): void {
   flushPendingPrefetches();
   prefetchItsaplanAllProjects();
+  flushPendingNavigate();
 }
 
 /**

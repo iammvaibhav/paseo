@@ -70,6 +70,7 @@ import {
   parseHostWorkspaceRouteFromPathname,
 } from "@/utils/host-routes";
 import { resolveProjectItsaplanKey } from "@/itsaplan/itsaplan-project-key";
+import { setItsaplanSelectedProject } from "@/itsaplan/itsaplan-selected-project";
 import {
   navigateItsaplanEmbedProject,
   prefetchItsaplanProject,
@@ -937,6 +938,7 @@ function ProjectItsaplanButton({
     (event: GestureResponderEvent) => {
       event.stopPropagation();
       if (projectKey) {
+        setItsaplanSelectedProject(projectKey);
         navigateItsaplanEmbedProject(projectKey);
       }
       router.replace(buildItsaplanRoute({ project: projectKey }));

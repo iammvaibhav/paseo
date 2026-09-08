@@ -8,6 +8,7 @@ import { router } from "expo-router";
 import type { SidebarProjectEntry } from "@/hooks/use-sidebar-workspaces-list";
 import { resolveProjectItsaplanKey } from "@/itsaplan/itsaplan-project-key";
 import { navigateItsaplanEmbedProject, prefetchItsaplanProject } from "@/itsaplan/itsaplan-webview";
+import { setItsaplanSelectedProject } from "@/itsaplan/itsaplan-selected-project";
 import { buildItsaplanRoute } from "@/utils/host-routes";
 
 const replaceMock = vi.fn();
@@ -76,6 +77,7 @@ function TestProjectItsaplanButton({
     (e: React.MouseEvent) => {
       e.stopPropagation();
       if (projectKey) {
+        setItsaplanSelectedProject(projectKey);
         navigateItsaplanEmbedProject(projectKey);
       }
       router.replace(buildItsaplanRoute({ project: projectKey }));

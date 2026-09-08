@@ -68,4 +68,19 @@ describe("itsaplan-webview navigation and prefetching", () => {
     expect(script).toContain("prefetchAllProjects");
     expect(script).toContain("paseo:prefetch-all-projects");
   });
+
+  it("queues project navigation until the guest is ready", () => {
+    const ready = vi
+      .spyOn(residentWebviews, "isResidentBrowserWebviewReady")
+      .mockReturnValue(false);
+    vi.spyOn(residentWebviews, "getResidentBrowserWebview").mockReturnValue(mockWebview);
+
+    navigateItsaplanEmbedProject("AMBIENTAISTA");
+    expect(mockExecute).not.toHaveBeenCalled();
+
+    ready.mockReturnValue(true);
+    navigateItsaplanEmbedProject("AMBIENTAISTA");
+    expect(mockExecute).toHaveBeenCalledTimes(1);
+    expect(mockExecute.mock.calls[0]![0]).toContain('"AMBIENTAISTA"');
+  });
 });

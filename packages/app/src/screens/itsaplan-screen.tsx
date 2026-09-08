@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+  type ReactElement,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { Text, View } from "react-native";
 import { useLocalSearchParams } from "expo-router";
@@ -11,6 +18,11 @@ import { useIsLocalDaemon, useLocalDaemonServerId } from "@/hooks/use-is-local-d
 import { getDesktopHost } from "@/desktop/host";
 import { useAppSettings } from "@/hooks/use-settings";
 import { pickItsaplanEmbedHost, resolveItsaplanEmbedOrigin } from "@/itsaplan/itsaplan-origin";
+import {
+  getItsaplanSelectedProject,
+  setItsaplanSelectedProject,
+  subscribeItsaplanSelectedProject,
+} from "@/itsaplan/itsaplan-selected-project";
 import { ItsaplanEmbed } from "@/itsaplan/itsaplan-webview";
 import { useHosts } from "@/runtime/host-runtime";
 
@@ -33,7 +45,18 @@ export function ItsaplanScreen(): ReactElement {
   const { settings } = useAppSettings();
   const params = useLocalSearchParams<{ project?: string; projectKey?: string }>();
   const rawParam = typeof params.project === "string" ? params.project : params.projectKey;
-  const projectParam = typeof rawParam === "string" ? rawParam.trim() : "";
+  const routeProject = typeof rawParam === "string" ? rawParam.trim() : "";
+  const storedProject = useSyncExternalStore(
+    subscribeItsaplanSelectedProject,
+    getItsaplanSelectedProject,
+    getItsaplanSelectedProject,
+  );
+  const projectParam = storedProject || routeProject;
+  useEffect(() => {
+    if (routeProject && getItsaplanSelectedProject().length === 0) {
+      setItsaplanSelectedProject(routeProject);
+    }
+  }, [routeProject]);
 
   const [attempt, setAttempt] = useState(0);
   const [status, setStatus] = useState<LoadStatus>("loading");
