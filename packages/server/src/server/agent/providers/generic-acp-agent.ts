@@ -51,6 +51,7 @@ interface GenericACPAgentClientOptions {
   configFeatureOptions?: ACPConfigFeatureOption[];
   extensionCommandsParser?: ACPExtensionCommandsParser;
   catalogModelResolver?: ACPCatalogModelResolver;
+  now?: () => number;
 }
 
 export class GenericACPAgentClient extends ACPAgentClient {
@@ -80,6 +81,7 @@ export class GenericACPAgentClient extends ACPAgentClient {
       // permission requests (see getpaseo/paseo#1926).
       syntheticAllowAllMode: true,
       catalogModelResolver: options.catalogModelResolver,
+      now: options.now,
     });
 
     this.command = options.command;

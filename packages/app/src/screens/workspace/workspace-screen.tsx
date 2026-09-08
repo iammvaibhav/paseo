@@ -41,7 +41,15 @@ import { WorkspaceActions } from "@/git/workspace-actions";
 import { WorkspaceOpenInEditorButton } from "@/workspace/open-in-editor/button";
 import { WorkspaceScriptsButton } from "@/screens/workspace/workspace-scripts-button";
 import { ImportSessionSheet } from "@/components/import-session-sheet";
+import { useNavigateToImportedAgent } from "@/hooks/use-import-session";
 import { useToast } from "@/contexts/toast-context";
+import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
+import {
+  buildMoveAgentTabMessages,
+  describeMoveAgentTabResult,
+  moveAgentTabToNewWorkspace,
+  sessionFromStore,
+} from "@/workspace-tabs/move-agent-tab";
 import { getOrCreateClientId } from "@/utils/client-id";
 import { selectIsAgentListOpen, usePanelStore } from "@/stores/panel-store";
 import { toggleDesktopSidebarsWithCheckoutIntent } from "@/utils/desktop-sidebar-toggle";
@@ -618,6 +626,31 @@ function MobileWorkspaceTabOption({
         // Best-effort bookkeeping; a failed set leaves the agent Ready.
       });
   }, [markDoneClient, normalizedServerId, tab.target]);
+  const toast = useToast();
+  const handleMoveToNewWorkspace = useCallback(
+    async (agentId: string) => {
+      const result = await moveAgentTabToNewWorkspace({
+        session: sessionFromStore(useSessionStore.getState().sessions[normalizedServerId]),
+        layout: useWorkspaceLayoutStore.getState(),
+        navigation: { navigateToWorkspace },
+        messages: buildMoveAgentTabMessages(t),
+        serverId: normalizedServerId,
+        sourceWorkspaceId: normalizedWorkspaceId,
+        agentId,
+        tabId: tab.tabId,
+      });
+      const described = describeMoveAgentTabResult(result, {
+        existing: t("workspace.tabs.toasts.movedToWorkspace", { workspaceName: "" }),
+        created: t("workspace.tabs.toasts.movedToNewWorkspace"),
+      });
+      if (described.kind === "error") {
+        toast.error(described.message);
+        return;
+      }
+      toast.show(described.message, { variant: "success" });
+    },
+    [normalizedServerId, normalizedWorkspaceId, t, tab.tabId, toast],
+  );
   const tabMenuLabels = useMemo<WorkspaceTabMenuLabels>(
     () => ({
       markDone: t("workspace.tabs.menu.markDone"),
@@ -625,6 +658,7 @@ function MobileWorkspaceTabOption({
       copyAgentId: t("workspace.tabs.menu.copyAgentId"),
       copyTerminalId: t("workspace.tabs.menu.copyTerminalId"),
       copyFilePath: t("workspace.tabs.menu.copyFilePath"),
+      moveToNewWorkspace: t("workspace.tabs.menu.moveToNewWorkspace"),
       rename: t("workspace.tabs.menu.rename"),
       closeAbove: t("workspace.tabs.menu.closeAbove"),
       closeBelow: t("workspace.tabs.menu.closeBelow"),
@@ -651,6 +685,7 @@ function MobileWorkspaceTabOption({
     onCopyTerminalId,
     onCopyFilePath,
     onReloadAgent,
+    onMoveToNewWorkspace: handleMoveToNewWorkspace,
     onRenameTab,
     onCloseTab,
     onCloseTabsBefore: onCloseTabsAbove,
@@ -2263,6 +2298,9 @@ function WorkspaceScreenContent({
     },
     [persistenceKey, selectWorkspaceTabInPane],
   );
+  // A "Show all" import can land in another workspace entirely; that
+  // agent has no tab here, so it opens its own workspace instead.
+  const navigateToImportedAgent = useNavigateToImportedAgent(normalizedServerId);
   const handleImportedAgent = useCallback(
     (agentId: string) => {
       if (!persistenceKey) {
@@ -4463,6 +4501,7 @@ function WorkspaceScreenContent({
           workspaceId={normalizedWorkspaceId}
           onClose={closeImportSheet}
           onImportedAgent={handleImportedAgent}
+          onImported={navigateToImportedAgent}
         />
         <WorkspaceTabRenameModal
           renamingTab={isRouteFocused ? renamingTab : null}

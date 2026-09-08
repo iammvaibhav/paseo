@@ -8,6 +8,7 @@ import {
   defaultBasePickerItem,
   pickerItemToCheckoutRequest,
   type PickerItem,
+  resolveEffectivePreferredBaseBranch,
 } from "./new-workspace-picker-item";
 
 const prItem: ForgeSearchItem = {
@@ -308,6 +309,20 @@ describe("buildPickerOptionData", () => {
       refName: "refs/heads/main",
     });
   });
+
+  it("marks origin when preferredBaseBranch is main and currentBranch is on another branch", () => {
+    const baseItem = defaultBasePickerItem(
+      {
+        currentBranch: "feature-x",
+        upstreamRef: "refs/remotes/origin/feature-x",
+      },
+      { preferredBaseBranch: "main", branchDetails: [mainRow] },
+    );
+    const data = buildPickerOptionData({ branchDetails: [mainRow], prItems: [], baseItem });
+
+    expect(data.selectedOptionId).toBe(branchPickerOptionId("refs/remotes/origin/main"));
+    expect(data.options.find((o) => o.id === data.selectedOptionId)?.label).toBe("main");
+  });
 });
 
 describe("defaultBasePickerItem", () => {
@@ -342,7 +357,7 @@ describe("defaultBasePickerItem", () => {
         baseRef: "main",
         upstreamRef: "refs/remotes/origin/feature-x",
       }),
-    ).toMatchObject({ refName: "refs/heads/main", name: "main" });
+    ).toMatchObject({ refName: "refs/remotes/origin/main", name: "main" });
   });
 
   it("uses preferredBaseBranch over baseRef and currentBranch", () => {
@@ -355,10 +370,110 @@ describe("defaultBasePickerItem", () => {
         },
         { preferredBaseBranch: "develop" },
       ),
-    ).toMatchObject({ refName: "refs/heads/develop", name: "develop" });
+    ).toMatchObject({ refName: "refs/remotes/origin/develop", name: "develop" });
+  });
+
+  it("uses local ref when preferred branch exists only locally in branchDetails", () => {
+    expect(
+      defaultBasePickerItem(
+        {
+          currentBranch: "feature-x",
+          baseRef: "main",
+          upstreamRef: "refs/remotes/origin/feature-x",
+        },
+        {
+          preferredBaseBranch: "local-only",
+          branchDetails: [
+            { name: "local-only", committerDate: 1, hasLocal: true, hasRemote: false },
+          ],
+        },
+      ),
+    ).toMatchObject({ refName: "refs/heads/local-only", name: "local-only" });
+  });
+
+  it("uses explicit local ref when preferredBaseBranch starts with refs/heads/", () => {
+    expect(
+      defaultBasePickerItem(
+        {
+          currentBranch: "feature-x",
+          baseRef: "main",
+          upstreamRef: "refs/remotes/origin/feature-x",
+        },
+        { preferredBaseBranch: "refs/heads/main" },
+      ),
+    ).toMatchObject({ refName: "refs/heads/main", name: "main" });
   });
 
   it("has no default for detached HEAD without baseRef", () => {
     expect(defaultBasePickerItem({ currentBranch: null })).toBeNull();
+  });
+});
+
+describe("resolveEffectivePreferredBaseBranch", () => {
+  it("prefers paseo.json branch over remembered branch", () => {
+    expect(
+      resolveEffectivePreferredBaseBranch({
+        paseoBaseRef: "develop",
+        rememberedBaseBranch: "main",
+      }),
+    ).toBe("develop");
+  });
+
+  it("trims whitespace from paseo branch", () => {
+    expect(
+      resolveEffectivePreferredBaseBranch({
+        paseoBaseRef: "  release/v1.0  ",
+        rememberedBaseBranch: "main",
+      }),
+    ).toBe("release/v1.0");
+  });
+
+  it("falls back to remembered branch when paseo branch is undefined or null", () => {
+    expect(
+      resolveEffectivePreferredBaseBranch({
+        paseoBaseRef: undefined,
+        rememberedBaseBranch: "main",
+      }),
+    ).toBe("main");
+
+    expect(
+      resolveEffectivePreferredBaseBranch({
+        paseoBaseRef: null,
+        rememberedBaseBranch: "main",
+      }),
+    ).toBe("main");
+  });
+
+  it("falls back to remembered branch when paseo branch is empty or whitespace-only", () => {
+    expect(
+      resolveEffectivePreferredBaseBranch({
+        paseoBaseRef: "   ",
+        rememberedBaseBranch: "main",
+      }),
+    ).toBe("main");
+  });
+
+  it("trims whitespace from remembered branch", () => {
+    expect(
+      resolveEffectivePreferredBaseBranch({
+        rememberedBaseBranch: "  develop  ",
+      }),
+    ).toBe("develop");
+  });
+
+  it("returns undefined when neither branch is present or non-whitespace", () => {
+    expect(
+      resolveEffectivePreferredBaseBranch({
+        paseoBaseRef: undefined,
+        rememberedBaseBranch: undefined,
+      }),
+    ).toBeUndefined();
+
+    expect(
+      resolveEffectivePreferredBaseBranch({
+        paseoBaseRef: "   ",
+        rememberedBaseBranch: "   ",
+      }),
+    ).toBeUndefined();
   });
 });

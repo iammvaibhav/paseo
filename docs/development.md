@@ -448,6 +448,25 @@ exact ref also resolves through its stored branch name.
 
 Worktrees inherit committed Git state only; uncommitted source-checkout changes are not copied.
 
+### Warm worktree pool source
+
+`worktree.warmPool.baseRef` is the git ref the warm pool cuts from (branch, tag,
+or `origin/<branch>`). Omitted, the pool uses the repository default branch.
+Set this to the branch whose `paseo.json` setup the pool should run — a pool
+built from `main` will run `main`'s setup, not the current checkout's.
+
+```json
+{
+  "worktree": {
+    "warmPool": {
+      "enabled": true,
+      "targetIdle": 1,
+      "baseRef": "vaibhav/customizations"
+    }
+  }
+}
+```
+
 ## paseo.json service scripts
 
 `worktree.setup` and `worktree.teardown` accept either a multiline shell script or an array
@@ -710,12 +729,15 @@ npm run cli -- daemon status         # Check daemon status
 npm run cli -- clone owner/repo --dir ~/workspace # Clone GitHub repo and register project
 ```
 
-Use `--host` to point the CLI at a different daemon:
+Use the global `--host` option to point the CLI at a different daemon:
 
 ```bash
-npm run cli -- ls -a --host localhost:7777
-npm run cli -- ls -a --host ssh://user@host
+npm run cli -- --host localhost:7777 ls -a
+npm run cli -- --host ssh://user@host ls -a
 ```
+
+Set `PASEO_HOST` to use the same target across invocations. An explicit
+`--host` overrides the environment variable.
 
 In an SSH URI, the URL port is the SSH server port. The remote daemon defaults to `127.0.0.1:6767`; use `?daemonPort=7777` to override it. The transport runs non-interactively through the local OpenSSH client and never installs, starts, or configures the remote daemon. User-facing setup and troubleshooting live in [public-docs/connectivity.md](../public-docs/connectivity.md#ssh).
 

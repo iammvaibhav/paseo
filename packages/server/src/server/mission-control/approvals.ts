@@ -351,7 +351,30 @@ export class MissionControlApprovals {
     };
     if (input.forceSend || this.autoApproved(input)) {
       proposal.status = "sent";
-      await this.send(proposal);
+      const result = await this.send(proposal);
+      if (!result.ok) {
+        // An auto-approved send that failed is terminal and must be visible —
+        // in auto mode nothing was stored before the send, so without this the
+        // only trace is a log line and the ticket that triggered it reads as
+        // ignored. The delivery paths record their own terminal status
+        // (aborted → expired, delivery error → failed); spawn and meta
+        // failures record nothing, which is what this writes.
+        if (!this.store.getProposal(proposal.id)) {
+          proposal.status = "failed";
+          await this.store.putProposal(proposal);
+          await this.publish(proposal);
+        }
+        this.logger.error(
+          {
+            component: "approvals",
+            proposalId: proposal.id,
+            origin: proposal.origin,
+            kind: proposal.kind,
+            error: result.error,
+          },
+          "mission_control.approvals.auto_send_failed",
+        );
+      }
       return proposal;
     }
     await this.store.putProposal(proposal);
@@ -520,11 +543,8 @@ export class MissionControlApprovals {
     // (Commander/verifier spawns) instead of delivering a message. Single
     // execution path for approve and auto mode. Failures log loudly and
     // NEVER write a "sent" record (a spawn that did not run must not read
-    // as applied) — they surface to the caller so the respond RPC carries
-    // the error back to the app. In ask mode the pending record survives,
-    // so the card keeps its Approve affordance for a retry; in auto mode no
-    // record is written. Live bug: the failure was swallowed (resolve
-    // reported ok:true, record left pending) and Approve looked dead.
+    // as applied) — they surface to the caller so resolveProposal /
+    // createProposal mark the proposal failed.
     if (!this.spawn) {
       this.logger.error(
         { proposalId: proposal.id, origin: proposal.origin },
@@ -575,7 +595,6 @@ export class MissionControlApprovals {
         "mission_control.approvals.spawned",
       );
     }
-    return { ok: true };
     return { ok: true };
   }
 

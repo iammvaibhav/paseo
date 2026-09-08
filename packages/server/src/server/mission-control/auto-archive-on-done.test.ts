@@ -237,6 +237,19 @@ describe("MissionControlService auto-archive workspace on agent Done (PASEO-21)"
     expect(archiveWorkspaceSpy).toHaveBeenCalledTimes(1);
     expect(archiveWorkspaceSpy).toHaveBeenCalledWith(workspaceId, expect.any(String));
   });
+  test("does NOT archive workspace when setReviewState verdict is aged-out", async () => {
+    const workspaceId = "ws-review-aged-out";
+    workspaces.set(workspaceId, { workspaceId, cwd: "/tmp/repo/wks-aged-out", archivedAt: null });
+
+    const agentId = "agent-aged-out";
+    storedRecords.set(agentId, createStoredRecord(agentId, { workspaceId, archivedAt: null }));
+
+    await service.setReviewState(agentId, "done", {
+      verdict: { by: "user", summary: "aged-out", at: new Date().toISOString() },
+    });
+
+    expect(archiveWorkspaceSpy).not.toHaveBeenCalled();
+  });
 
   test("does NOT archive base workspace of a project when agent in it is marked Done", async () => {
     const baseWorkspaceId = "ws-project-base";

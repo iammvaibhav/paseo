@@ -56,6 +56,10 @@
 #   PASEO_SKIP_STALL_CRON=1           # skip installing the stall-check cron on every host
 #   PASEO_SKIP_OMP_PLUGINS=1          # skip installing plugins/* into ~/.omp on every host
 #   PASEO_SKIP_COMMANDER_VOICE=1      # skip Commander Voice node deploy everywhere
+#   PASEO_SKIP_VERCEL=1               # skip publishing the web app to Vercel
+#   PASEO_VERCEL_PROJECT=paseo-web    # Vercel project that serves the web app
+#   VERCEL_TOKEN=...                  # Vercel deploy token (read from
+#                                     #   ~/.paseo/deploy.env; unset = skip)
 #   PASEO_COMMANDER_VOICE_PASSWORD=... # daemon password for the voice node env file
 #                                     #   (write-once secret; NEVER commit — deploy
 #                                     #   writes it into ~/.config/commander-voice/env
@@ -801,6 +805,51 @@ deploy_local_commander_voice() {
     bash "$ROOT_DIR/scripts/commander-voice/install.sh" local
 }
 
+# Vercel-hosted copy of the browser web app. Same expo export the daemon
+# serves, so the hosted UI can never drift from the daemon build. It exists so
+# a phone can reach Paseo without exposing a daemon: open the Vercel URL, then
+# pair over the relay.
+#
+# Never fatal. A missing token or a Vercel outage must not fail a daemon
+# deploy, so every exit here is a skip or a warning.
+deploy_vercel_web() {
+  if [[ "${PASEO_SKIP_VERCEL:-0}" == "1" ]]; then
+    log "Skipping Vercel web deploy (PASEO_SKIP_VERCEL=1)"
+    return
+  fi
+  if [[ -z "${VERCEL_TOKEN:-}" ]]; then
+    log "Skipping Vercel web deploy (VERCEL_TOKEN unset)"
+    log "  Put VERCEL_TOKEN=… in ${LOCAL_PASEO_HOME}/deploy.env (chmod 600)."
+    return
+  fi
+
+  local dist="$ROOT_DIR/packages/app/dist"
+  if [[ ! -f "$dist/index.html" ]]; then
+    log "Skipping Vercel web deploy (no expo export at $dist)"
+    return
+  fi
+
+  # Upload a snapshot, not dist/ itself: the desktop build cleans that path and
+  # the upload must not read it half-deleted.
+  local staging
+  staging="$(mktemp -d)"
+  cp -a "$dist/." "$staging/"
+  cp "$ROOT_DIR/packages/app/vercel.json" "$staging/vercel.json"
+
+  local project="${PASEO_VERCEL_PROJECT:-paseo-web}"
+  log "Deploying web app to Vercel project '$project'"
+  if (
+    cd "$staging" &&
+      npx --yes vercel@latest link --yes --project "$project" >/dev/null &&
+      npx --yes vercel@latest deploy --prod --yes --archive=tgz
+  ); then
+    log "  Vercel web deploy complete"
+  else
+    log "  Warning: Vercel web deploy failed (daemon deploy unaffected)"
+  fi
+  rm -rf "$staging"
+}
+
 # Install/refresh this host's stall-check schedule (runs scripts/stall-check.mjs
 # every minute via crontab, or systemd user timer when no crontab exists; the
 # script warns and exits 0 when neither scheduler is available, so a missing
@@ -1300,6 +1349,10 @@ run_parallel_post_push_deploy() {
       build_server
       install_cli_wrapper "$ROOT_DIR"
       restart_local_daemon
+      # build_server produced packages/app/dist. Ship that same export to
+      # Vercel in the background; it snapshots the directory immediately, so
+      # the desktop build below cannot pull it out from under the upload.
+      start_parallel_job "local-vercel-web" deploy_vercel_web
       log "Local daemon ready; starting desktop build (may rebuild dist/)"
     else
       log "Skipping local daemon build/restart (PASEO_SKIP_DAEMON=1)"
@@ -2075,6 +2128,8 @@ Scope flags (set to 1 unless noted):
   PASEO_SKIP_STALL_CRON          Skip installing the stall-check cron entry on every host
   PASEO_SKIP_OMP_PLUGINS         Skip installing plugins/* into ~/.omp/plugins on every host
   PASEO_SKIP_COMMANDER_VOICE     Skip Commander Voice node deploy everywhere
+  PASEO_SKIP_VERCEL              Skip publishing the web app to Vercel
+  PASEO_VERCEL_PROJECT           Vercel project for the web app (default: paseo-web)
   PASEO_BUILD_DESKTOP=0            Skip the desktop app build (built by default)
   PASEO_DESKTOP_ONLY=1             ONLY desktop: local build on macOS; commit/push +
                                    MacBook build on Linux. Copies the replaced

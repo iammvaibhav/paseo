@@ -1,10 +1,15 @@
 import React, { createContext, useContext, useEffect, useMemo, type ReactNode } from "react";
 import {
   useSidebarWorkspacesList,
+  buildSidebarProjectsFromHostProjects,
   type SidebarProjectEntry,
   type SidebarWorkspaceEntry,
   type SidebarWorkspacesListResult,
 } from "@/hooks/use-sidebar-workspaces-list";
+import { useHosts } from "@/runtime/host-runtime";
+import { useWorkspaceDirectoryServerIds } from "@/stores/session-store-hooks";
+import { useMissionControlVerbose } from "@/mission-control/use-mission-control-verbose";
+import { useHostProjects } from "@/projects/host-projects";
 import { useSidebarWorkspaceEntries } from "@/hooks/use-sidebar-workspace-entries";
 import { usePinnedSidebarKeys, type PinnedSidebarGroups } from "@/hooks/use-sidebar-pins";
 import { useSidebarCollapsedSectionsStore } from "@/stores/sidebar-collapsed-sections-store";
@@ -33,6 +38,11 @@ interface SidebarModel extends SidebarWorkspacesListResult {
    * narrowing the filter deletes the rows that would undo it.
    */
   allProjects: SidebarProjectEntry[];
+  /**
+   * Every project across all hosts, unconstrained by workspace host filter.
+   * Sourced from structure for already-loaded hosts without acquiring new directory demand.
+   */
+  allHostProjects: SidebarProjectEntry[];
   /** The project filter as it is actually being applied — see `resolveActiveProjectFilters`. */
   resolvedProjectFilters: readonly string[];
   hasProjectsBeforeFilter: boolean;
@@ -59,6 +69,20 @@ export function SidebarModelProvider({
   const labelFilter = useSidebarViewStore((state) => state.labelFilter);
   const projectFilters = useSidebarViewStore((state) => state.projectFilters);
   const reconcileLabelFilter = useSidebarViewStore((state) => state.reconcileLabelFilter);
+  const storeHostFilters = useSidebarViewStore((state) => state.hostFilters);
+  const allHosts = useHosts();
+  const allServerIds = useMemo(() => allHosts.map((h) => h.serverId), [allHosts]);
+  const allDirectoryServerIds = useWorkspaceDirectoryServerIds(allServerIds);
+  const [missionControlVerbose] = useMissionControlVerbose();
+  const allHostProjectsData = useHostProjects(allDirectoryServerIds, {
+    hideSystemOwnedWorkspaces: !missionControlVerbose,
+  });
+  const allHostProjects = useMemo(() => {
+    if (storeHostFilters.length === 0) {
+      return list.projects;
+    }
+    return buildSidebarProjectsFromHostProjects({ projects: allHostProjectsData });
+  }, [allHostProjectsData, list.projects, storeHostFilters.length]);
   const { hosts: labelHosts } = useWorkspaceLabelProjection();
   const collapsedProjectKeys = useSidebarCollapsedSectionsStore(
     (state) => state.collapsedProjectKeys,
@@ -169,6 +193,7 @@ export function SidebarModelProvider({
       ...list,
       projects: filteredProjects,
       allProjects: list.projects,
+      allHostProjects,
       resolvedProjectFilters,
       hasProjectsBeforeFilter: list.projects.length > 0,
       workspaceEntriesByKey: filteredWorkspaceEntriesByKey,
@@ -189,6 +214,7 @@ export function SidebarModelProvider({
       projection,
       toggleProjectCollapsed,
       filteredWorkspaceEntriesByKey,
+      allHostProjects,
     ],
   );
 

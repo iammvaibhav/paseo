@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+// oxlint-disable-next-line eslint(no-restricted-imports)
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import {

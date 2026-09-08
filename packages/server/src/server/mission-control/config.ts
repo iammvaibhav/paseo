@@ -96,6 +96,11 @@ export interface ResolvedMissionControlCentralConfig {
     apiKey: string;
     webhookSecret: string;
     humanUserId?: string;
+    // Origin of the itsaplan WEB app when it is not the same as the REST API
+    // origin `baseUrl` names. Ticket deep links are built from this; unset
+    // falls back to `baseUrl`. Resolved in bootstrap against this host's own
+    // missionControl.itsaplanWebBaseUrl before it reaches any consumer.
+    webBaseUrl?: string;
   } | null;
 }
 
@@ -111,7 +116,7 @@ export const DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG: ResolvedMissionControlCentr
   mode: "ask",
   retentionDays: 30,
   namingTheme: "mixed",
-  readyAgeOutDays: 3,
+  readyAgeOutDays: 0,
   hideAgentNames: false,
   defaultDispatchHost: null,
   silenceNudgeSeconds: 120,

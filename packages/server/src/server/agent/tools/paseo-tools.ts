@@ -33,6 +33,7 @@ import {
 import type { AgentListItemPayload } from "../../messages.js";
 import {
   buildStoredAgentPayload,
+  normalizeLabels,
   toAgentListItemPayload,
   toAgentPayload,
 } from "../agent-projections.js";
@@ -165,6 +166,8 @@ import type {
   PaseoToolExecutionContext,
   PaseoToolResult,
 } from "./types.js";
+import type { ProviderPaseoToolsPolicy } from "@getpaseo/protocol/provider-config";
+import { isPaseoToolEnabled } from "../paseo-tool-policy.js";
 
 export interface PaseoToolHostDependencies {
   agentManager: AgentManager;
@@ -208,6 +211,7 @@ export interface PaseoToolHostDependencies {
       agentId: string,
     ) => Promise<{ issueId: number; url: string } | { error: string }>;
   } | null;
+  paseoToolPolicy?: ProviderPaseoToolsPolicy;
   paseoHome?: string;
   worktreesRoot?: string;
   /**
@@ -1122,7 +1126,7 @@ function buildPeerCreateAgentPayload(args: {
   worktreeSlug?: string;
   worktree?: CommanderSpawnPlanInput["worktree"];
 }): CreateAgentRequestOptions {
-  const { provider, cwd, workspaceId, initialPrompt, images, title, settings } = args;
+  const { provider, cwd, workspaceId, initialPrompt, images, title, labels, settings } = args;
   const providerSlash = provider.indexOf("/");
   const resolvedWorktree = resolveCommanderWorktreePlan(args);
   const peerWorktreeTarget = resolvedWorktree?.branchName
@@ -1140,12 +1144,42 @@ function buildPeerCreateAgentPayload(args: {
     initialPrompt,
     ...(images && images.length > 0 ? { images } : {}),
     title,
+    ...(labels && Object.keys(labels).length > 0 ? { labels: normalizeLabels(labels) } : {}),
     ...(peerWorktreeTarget ? { worktree: peerWorktreeTarget } : {}),
     ...(resolvedWorktree?.worktreeName ? { worktreeName: resolvedWorktree.worktreeName } : {}),
     ...(settings?.modeId ? { modeId: settings.modeId } : {}),
     ...(settings?.thinkingOptionId ? { thinkingOptionId: settings.thinkingOptionId } : {}),
     ...(settings?.features ? { featureValues: settings.features } : {}),
   };
+}
+
+/**
+ * Extra `createAgentCommand` MCP-input fields the `create_agent` tool derives
+ * from the resolved placement and parsed settings/labels. Only attaches
+ * `workspaceId` when no worktree is being created (a worktree creates its own
+ * fresh workspace; passing both would attach the agent to the wrong one).
+ */
+function buildMcpCreateAgentInputExtras(input: {
+  worktree: CreateAgentFromMcpInput["worktree"];
+  workspaceId: string | undefined;
+  settings?: { modeId?: string; thinkingOptionId?: string; features?: Record<string, unknown> };
+  labels?: Record<string, string>;
+}): Pick<CreateAgentFromMcpInput, "workspaceId" | "thinking" | "features" | "labels"> {
+  const extras: Pick<CreateAgentFromMcpInput, "workspaceId" | "thinking" | "features" | "labels"> =
+    {};
+  if (!input.worktree && input.workspaceId) {
+    extras.workspaceId = input.workspaceId;
+  }
+  if (input.settings?.thinkingOptionId) {
+    extras.thinking = input.settings.thinkingOptionId;
+  }
+  if (input.settings?.features) {
+    extras.features = input.settings.features;
+  }
+  if (input.labels) {
+    extras.labels = input.labels;
+  }
+  return extras;
 }
 
 /**
@@ -1607,6 +1641,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Tool handlers are schema-validated at registration boundaries.
     handler: (input: any, context: PaseoToolExecutionContext) => Promise<PaseoToolResult>,
   ) => {
+    if (!isPaseoToolEnabled(options.paseoToolPolicy, name)) {
+      return;
+    }
     tools.set(name, {
       name,
       title: config.title,
@@ -2021,7 +2058,11 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     provider: ProviderModelInputSchema.describe(
       "Required provider/model pair, for example codex/gpt-5.4.",
     ),
-    labels: z.record(z.string(), z.string()).optional().describe("Labels to set on the agent"),
+    labels: z
+      .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+      .optional()
+      .transform((v) => (v ? normalizeLabels(v) : undefined))
+      .describe("Labels to set on the agent"),
     settings: CreateAgentSettingsInputSchema.optional().describe(
       "Initial runtime settings for the new agent.",
     ),
@@ -2504,6 +2545,12 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
             : {}),
           config: inheritedConfig,
           cwd: resolvedArgs.cwd,
+          ...buildMcpCreateAgentInputExtras({
+            worktree: resolvedArgs.worktree,
+            workspaceId: resolvedArgs.workspaceId,
+            settings: parsedArgs.settings,
+            labels: parsedArgs.labels,
+          }),
           mode: parsedArgs.settings?.modeId,
           background: requestedBackground,
           notifyOnFinish,
@@ -3197,7 +3244,11 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       inputSchema: {
         agentId: z.string(),
         name: z.string().optional(),
-        labels: z.record(z.string(), z.string()).optional().describe("Labels to set on the agent"),
+        labels: z
+          .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+          .optional()
+          .transform((v) => (v ? normalizeLabels(v) : undefined))
+          .describe("Labels to set on the agent"),
         settings: UpdateAgentSettingsInputSchema.optional().describe(
           "Runtime settings to apply to the agent.",
         ),

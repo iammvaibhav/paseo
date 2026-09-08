@@ -72,7 +72,7 @@ export { formatOmpVersionSupport, resolveOmpDiagnosticPaths } from "./provider-c
 import { OmpSubagentCardTracker, type OmpSubagentCardScheduler } from "./subagent-card-tracker.js";
 import { shouldDisplayOmpCustomMessage } from "./custom-message.js";
 import { getUserMessageText } from "./message-history.js";
-import { mapOmpSystemNoticeToToolCall } from "./system-notice.js";
+import { mapOmpSystemNoticeToNotification } from "./system-notice.js";
 import { materializeProviderImage } from "../provider-image-output.js";
 import { OmpCliRuntime } from "./cli-runtime.js";
 import {
@@ -929,14 +929,15 @@ function buildExtensionUiResponse(
 function createRuntime(
   logger: Logger,
   runtimeSettings: ProviderRuntimeSettings | undefined,
-  requestTimeoutMs: number,
+  providerParams: OmpRuntimeProviderParams,
 ): OmpRuntime {
   return new OmpCliRuntime({
     logger,
     runtimeSettings,
     command: ["omp"],
     commandsRpcName: "get_available_commands",
-    requestTimeoutMs,
+    readyTimeoutMs: providerParams.readyTimeoutMs,
+    requestTimeoutMs: providerParams.rpcTimeoutMs,
   });
 }
 
@@ -2367,7 +2368,7 @@ export class OmpAgentSession implements AgentSession {
         if (text) {
           const item =
             mapOmpAdvisorMessageToToolCall(event.message, text) ??
-            mapOmpSystemNoticeToToolCall(text);
+            mapOmpSystemNoticeToNotification(text);
           this.emit({
             type: "timeline",
             provider: this.provider,
@@ -2661,8 +2662,7 @@ export class OmpAgentClient implements AgentClient {
     this.noTurnScheduler = options.noTurnScheduler;
     this.usagePollScheduler = options.usagePollScheduler;
     this.runtime =
-      options.runtime ??
-      createRuntime(options.logger, runtimeSettings, this.providerParams.rpcTimeoutMs);
+      options.runtime ?? createRuntime(options.logger, runtimeSettings, this.providerParams);
     this.warmPool = new OmpWarmPool({ runtime: this.runtime, logger: this.logger });
     this.warmPool.start();
   }
@@ -2952,6 +2952,16 @@ export class OmpAgentClient implements AgentClient {
           const switchStartedAt = Date.now();
           await pooled.switchSession(sessionFile);
           const switchMs = Date.now() - switchStartedAt;
+          // switch_session can return success while omp stays on the pool
+          // throwaway (cwd mismatch → cancelled:true, or a silent no-op).
+          // setModel would then rewrite that throwaway; persist it and the
+          // next open hydrates an empty transcript.
+          const adopted = await pooled.getState();
+          if (adopted.sessionFile && adopted.sessionFile !== sessionFile) {
+            throw new Error(
+              `OMP warm pool resume did not attach ${sessionFile} (still on ${adopted.sessionFile})`,
+            );
+          }
           const setModelStartedAt = Date.now();
           const slash = model.indexOf("/");
           await pooled.setModel(model.slice(0, slash), model.slice(slash + 1));
@@ -2960,18 +2970,6 @@ export class OmpAgentClient implements AgentClient {
             await pooled.setThinkingLevel(thinking);
           }
           const setModelMs = Date.now() - setModelStartedAt;
-          // The agent's transcript, and the handle Paseo persists, both follow
-          // whatever session omp reports here. A mismatch means the pooled
-          // process kept writing somewhere else, so record it with both paths:
-          // a resume that silently forks the transcript is otherwise invisible
-          // until the next resume cannot open the file at all.
-          const adopted = await pooled.getState();
-          if (adopted.sessionFile && adopted.sessionFile !== sessionFile) {
-            this.logger.warn(
-              { provider: this.provider, requested: sessionFile, adopted: adopted.sessionFile },
-              "OMP warm pool resume adopted a different session file than requested",
-            );
-          }
           this.warmPool.discardClaimedThrowaway(pooled);
           this.logAcquire({
             purpose: "resume",

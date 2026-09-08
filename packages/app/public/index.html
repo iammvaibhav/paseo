@@ -17,7 +17,12 @@
     <title>%WEB_TITLE%</title>
     <!-- The `react-native-web` recommended style reset: https://necolas.github.io/react-native-web/docs/setup/#root-element -->
     <style id="expo-reset">
-      /* Keep the app shell fixed to the viewport. */
+      /* Keep the app shell fixed to the viewport.
+       *
+       * `100%` resolves against the layout viewport, which on iOS Safari does
+       * not follow the retractable chrome. Once the toolbars collapse the
+       * visible area grows and the shell stays short, leaving a band of page
+       * background under the footer. `dvh` tracks that chrome. */
       html,
       body {
         width: 100%;
@@ -27,6 +32,22 @@
         overflow: hidden;
         overscroll-behavior: none;
         color: #18181b;
+      }
+      @supports (height: 100dvh) {
+        html,
+        body {
+          height: 100dvh;
+        }
+      }
+      /* An installed app has no retractable chrome, so there is nothing for
+       * `dvh` to be dynamic about — and on iOS it comes back short by the
+       * home-indicator strip, which is the same band again. `vh` is the whole
+       * screen here because `viewport-fit=cover` hands us the safe areas. */
+      @media all and (display-mode: standalone) {
+        html,
+        body {
+          height: 100vh;
+        }
       }
       /* These styles smooth text rendering in the app shell. */
       body {

@@ -207,11 +207,11 @@ vi.mock("@/history-ask/open-agent-link-parse", () => ({
 }));
 
 vi.mock("@/components/message", () => ({
-  ActivityLog: () => null,
   AssistantMessage: () => null,
   AssistantTurnFooter: () => null,
   CompactionMarker: () => null,
   LiveElapsed: () => <span data-testid="running-turn-timestamp" />,
+  Notification: () => null,
   STREAM_METADATA_FONT_SIZE: 11,
   TodoListCard: () => null,
   ToolCall: () => null,

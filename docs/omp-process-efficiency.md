@@ -39,8 +39,8 @@ create (ineligible: internal, significant env, custom system prompt, tool allowl
   always cold startSession()
 
 resume / reload / dead-runtime recover
-  always startSession({ session: nativeHandle })   // --session <jsonl>
-  never claim()
+  claim() + switch_session; cold --session if attach fails
+  never persist the pool throwaway as the agent's handle
 
 turn end
   lifecycle -> idle; process stays
@@ -57,8 +57,10 @@ Sources: `OmpAgentClient.startRuntimeSession` / `resumeSession`
 
 Native OMP task children live **inside** the parent process. Paseo maps
 `subagent_*` events; it does not spawn a second `omp` for them. Kill the
-parent between turns and those in-flight children die. Completed child
-JSONL on disk survives.
+parent between turns and those in-flight children die. Completed and
+interrupted child JSONL on disk survives and is replayed into the
+provider-subagent track on resume as `canceled`. The parent process is
+not reattached: JSONL RPC uses stdin/stdout pipes.
 
 ## Warm pool (creates only)
 
@@ -166,10 +168,10 @@ A 30-minute knob would follow the host daemon-config path:
 Gate the closer: lifecycle not `running`, no in-flight tools, no live
 OMP children. Do not close the Commander. Default 1800 s; 0 = off.
 
-Resume after that close is only cheap if `resumeSession` claims a
-pooled process and calls `switch_session` instead of
-`startSession({ session })`. Wire that in the same change. Otherwise
-every 30-minute-idle send pays ~1.9 s of boot.
+Resume after that close claims a pooled process and calls
+`switch_session`. If omp reports `cancelled` or `getState().sessionFile`
+is still the pool throwaway, close that process and cold-start with
+`--session`. Never persist the throwaway as `nativeHandle`.
 
 Paseo still has to re-register host tools after either path
 (`set_host_tools`). That RPC was not in the isolated harness; add it
@@ -177,13 +179,15 @@ to the claim budget (likely tens of ms, same order as `set_model`).
 
 ## What a SIGTERM between turns drops
 
-Disk-reloadable: session JSONL, completed child transcripts, Paseo
-agent record, primed timeline.
+Disk-reloadable: session JSONL, completed child transcripts, interrupted
+child transcripts that flushed before SIGKILL, Paseo agent record, primed
+parent timeline. Provider-subagent descriptors are not durable; resume
+rebuilds them from those JSONL files.
 
 Lost with the process:
 
-- In-flight OMP task children (memory-only; already true across
-  daemon restart)
+- In-flight OMP task children (the OS process; already true across
+  daemon restart). Partial transcripts can still be shown.
 - Background bash / watchers / PTYs started by tools
 - In-process credential cache (re-read on next boot)
 - Host-tool router and unanswered extension UI
@@ -200,10 +204,10 @@ deliberate.
 2. **Idle-close after a configurable N minutes** (default 30) into
    existing `closed`. Settings on Host. Do not close running turns or
    live children.
-3. **Same change: teach `resumeSession` to `claim()` +
-   `switch_session`.** Without that, the 30-minute closer makes the
-   next send ~1.9 s slower. With it, the next send is ~50–110 ms of
-   RPC plus host-tool re-register — fine for a 30-minute gap.
+3. **`resumeSession` claims + `switch_session`, then proves attach.**
+   `cancelled:true` or a mismatched `sessionFile` is a failed handoff:
+   cold `--session`, do not rewrite the agent handle. Without that
+   check, idle-close can empty the next open.
 4. Keep the pool virgin. Close used processes. `fill()` replaces them.
 5. Do not grow `MAX_KEYS` / `TARGET_IDLE` until the leak is gone and
    you have a reason two launch shapes are not enough.

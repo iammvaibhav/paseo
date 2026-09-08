@@ -1,3 +1,4 @@
+import type { AgentPermissionResponse } from "@getpaseo/protocol/agent-types";
 import type {
   AgentSnapshotPayload,
   CreateAgentRequestMessage,
@@ -15,6 +16,7 @@ import type {
   MutableDaemonConfig,
   MutableDaemonConfigPatch,
   ProviderDiagnosticResponseMessage,
+  ProviderUsageListResponseMessage,
   ProjectPlacementPayload,
   WorkspaceProjectDescriptorPayload,
   RefreshProvidersSnapshotResponseMessage,
@@ -24,6 +26,23 @@ import type {
   WorkspaceCreateRequest,
 } from "@getpaseo/protocol/messages";
 import { DaemonClient } from "./daemon-client.js";
+import {
+  createTerminalActions,
+  type PaseoTerminalActions,
+  type PaseoWorkspaceTerminalActions,
+} from "./terminals/index.js";
+export type {
+  PaseoTerminal,
+  PaseoTerminalActions,
+  PaseoTerminalHandle,
+  PaseoTerminalCreateOptions,
+  PaseoTerminalListOptions,
+  PaseoTerminalListResult,
+  PaseoTerminalCaptureOptions,
+  PaseoTerminalCaptureResult,
+  PaseoWorkspaceTerminalActions,
+} from "./terminals/index.js";
+import type { PluginTimelineItem } from "@getpaseo/protocol/agent-types";
 import type {
   FetchAgentsEntry,
   FetchAgentsOptions,
@@ -86,6 +105,11 @@ export type PaseoProjectListOptions = Omit<ProjectListRequestMessage, "type" | "
   requestId?: string;
 };
 export type PaseoProjectListResult = ProjectListResponseMessage["payload"];
+export type PaseoProjectUpdate = Extract<
+  SessionOutboundMessage,
+  { type: "project.update" }
+>["payload"];
+export type PaseoProjectUpdateHandler = (update: PaseoProjectUpdate) => void;
 
 export interface PaseoAgentListResult {
   requestId: string;
@@ -139,6 +163,7 @@ export interface PaseoWorkspaceHandle {
   readonly agents: {
     create(options: PaseoWorkspaceAgentCreateOptions): Promise<PaseoAgentHandle>;
   };
+  readonly terminals: PaseoWorkspaceTerminalActions;
   current(): PaseoWorkspace | null;
   refresh(options?: { requestId?: string }): Promise<PaseoWorkspace | null>;
   setTitle(title: string | null, requestId?: string): Promise<{ title: string | null }>;
@@ -154,6 +179,7 @@ export interface PaseoWorkspaceHandle {
 
 export interface PaseoProjectActions {
   list(options?: PaseoProjectListOptions): Promise<PaseoProjectListResult>;
+  subscribe(handler: PaseoProjectUpdateHandler): () => void;
 }
 
 export interface PaseoWorkspaceActions {
@@ -237,6 +263,12 @@ export interface PaseoAgentRunOptions extends PaseoAgentSendOptions {
 }
 
 export type PaseoAgentRunResult = WaitForFinishResult;
+export type PaseoAgentPermissionResponse = AgentPermissionResponse;
+
+export interface PaseoAgentRespondToPermissionOptions {
+  requestId: string;
+  response: PaseoAgentPermissionResponse;
+}
 
 export interface PaseoAgentCommandsOptions {
   requestId?: string;
@@ -251,6 +283,7 @@ export type PaseoAgentStream = Extract<SessionOutboundMessage, { type: "agent_st
 export type PaseoAgentUpdateHandler = (update: PaseoAgentUpdate) => void;
 
 export interface PaseoAgentTimelineHandle {
+  append(item: Omit<PluginTimelineItem, "pluginId">): Promise<{ seq: number; epoch: string }>;
   /**
    * Fetches a fresh timeline page through the existing daemon RPC. If the daemon
    * includes an agent snapshot in the response, the parent handle is updated to
@@ -289,6 +322,7 @@ export interface PaseoAgentHandle {
   current(): PaseoAgent | null;
   refresh(requestId?: string): Promise<PaseoAgentRefetchResult | null>;
   send(text: string, options?: PaseoAgentSendOptions): Promise<void>;
+  respondToPermission(options: PaseoAgentRespondToPermissionOptions): Promise<void>;
   /** Sends a prompt and resolves when that turn finishes or needs attention. */
   run(text: string, options?: PaseoAgentRunOptions): Promise<PaseoAgentRunResult>;
   /** Waits for the current turn, including one started with `prompt`. */
@@ -303,6 +337,10 @@ export interface PaseoAgentHandle {
   commands(options?: PaseoAgentCommandsOptions): Promise<PaseoAgentCommandsResult>;
   archive(): Promise<{ archivedAt: string }>;
   detach(): Promise<void>;
+  moveToWorkspace(
+    workspaceId: string,
+    requestId?: string,
+  ): Promise<{ agentId: string; workspaceId: string }>;
   subscribe(handler: (update: PaseoAgentUpdate) => void): () => void;
 }
 
@@ -336,6 +374,10 @@ export type PaseoProviderSnapshotUpdate = Extract<
 >["payload"];
 export type PaseoProviderRefreshResult = RefreshProvidersSnapshotResponseMessage["payload"];
 export type PaseoProviderDiagnosticResult = ProviderDiagnosticResponseMessage["payload"];
+export type PaseoProviderUsageResult = ProviderUsageListResponseMessage["payload"];
+export interface PaseoProviderUsageOptions {
+  requestId?: string;
+}
 
 export interface PaseoProviderListOptions {
   cwd?: string;
@@ -374,6 +416,7 @@ export interface PaseoProviderActions {
     provider: PaseoAgentProvider,
     options?: { requestId?: string },
   ): Promise<PaseoProviderDiagnosticResult>;
+  listUsage(options?: PaseoProviderUsageOptions): Promise<PaseoProviderUsageResult>;
   subscribe(handler: (update: PaseoProviderSnapshotUpdate) => void): () => void;
 }
 
@@ -398,6 +441,7 @@ export interface PaseoConfigActions {
 }
 
 export interface PaseoApi {
+  readonly terminals: PaseoTerminalActions;
   readonly workspaces: PaseoWorkspaceActions;
   readonly projects: PaseoProjectActions;
   readonly agents: PaseoAgentActions;
@@ -453,11 +497,23 @@ export function createPaseoApi(daemonClient: DaemonClient): PaseoApi {
     });
     return createAgentHandle(agent);
   };
-  const createWorkspaceHandle = createWorkspaceHandleFactory(daemonClient, createAgent);
+  const terminals = createTerminalActions(daemonClient, async (workspaceId) => {
+    const workspace = await createWorkspaceHandle(workspaceId).refresh();
+    if (!workspace?.workspaceDirectory) {
+      throw new Error(`Workspace ${workspaceId} is not active or has no available directory`);
+    }
+    return workspace.workspaceDirectory;
+  });
+  const createWorkspaceHandle = createWorkspaceHandleFactory(daemonClient, createAgent, terminals);
 
   return {
+    terminals,
     projects: {
       list: (options) => daemonClient.listProjects(options),
+      subscribe: (handler) =>
+        daemonClient.on("project.update", (message) => {
+          handler(message.payload);
+        }),
     },
     workspaces: {
       list: (options) => daemonClient.fetchWorkspaces(options),
@@ -499,6 +555,7 @@ export function createPaseoApi(daemonClient: DaemonClient): PaseoApi {
       waitForReady: (options) => waitForProvidersReady(daemonClient, options),
       refresh: (options) => daemonClient.refreshProvidersSnapshot(options),
       diagnostic: (provider, options) => daemonClient.getProviderDiagnostic(provider, options),
+      listUsage: (options) => listProviderUsage(daemonClient, options),
       subscribe: (handler) =>
         daemonClient.on("providers_snapshot_update", (message) => {
           handler(message.payload);
@@ -521,6 +578,7 @@ type CreateAgent = (
 function createWorkspaceHandleFactory(
   daemonClient: DaemonClient,
   createAgent: CreateAgent,
+  terminals: PaseoTerminalActions,
 ): WorkspaceHandleFactory {
   return (workspace) => {
     const id = typeof workspace === "string" ? workspace : workspace.id;
@@ -572,6 +630,10 @@ function createWorkspaceHandleFactory(
           );
         },
       },
+      terminals: {
+        create: (options) => terminals.create({ ...options, workspaceId: id }),
+        list: (options) => terminals.list({ ...options, workspaceId: id }),
+      },
       current: () => current,
       refresh,
       setTitle: (title, requestId) => daemonClient.setWorkspaceTitle(id, title, requestId),
@@ -606,6 +668,7 @@ function createAgentHandleFactory(daemonClient: DaemonClient): AgentHandleFactor
     const handle: PaseoAgentHandle = {
       id,
       timeline: {
+        append: (item) => daemonClient.appendAgentTimelineItem(id, item),
         refetch: async (options) => {
           const result = await daemonClient.fetchAgentTimeline(id, options);
           if (result.agent) {
@@ -665,6 +728,9 @@ function createAgentHandleFactory(daemonClient: DaemonClient): AgentHandleFactor
       send: async (text, options) => {
         await daemonClient.sendAgentMessage(id, text, options);
       },
+      respondToPermission: async ({ requestId, response }) => {
+        await daemonClient.respondToPermission(id, requestId, response);
+      },
       run: async (text, options) => {
         const { timeoutMs, ...sendOptions } = options ?? {};
         await daemonClient.sendAgentMessage(id, text, sendOptions);
@@ -697,6 +763,9 @@ function createAgentHandleFactory(daemonClient: DaemonClient): AgentHandleFactor
       },
       detach: async () => {
         await daemonClient.detachAgent(id);
+      },
+      moveToWorkspace: async (workspaceId: string, requestId?: string) => {
+        return daemonClient.moveAgentToWorkspace(id, workspaceId, requestId);
       },
       subscribe: (handler) =>
         daemonClient.on("agent_update", (message) => {
@@ -747,6 +816,17 @@ function parseProviderModel(selection: string): { provider: string; model: strin
     provider: selection.slice(0, separator),
     model: selection.slice(separator + 1),
   };
+}
+
+function listProviderUsage(
+  daemonClient: DaemonClient,
+  options?: PaseoProviderUsageOptions,
+): Promise<PaseoProviderUsageResult> {
+  // COMPAT(providerUsageList): added in v0.1.98, remove after 2027-02-28 once daemon floor >= v0.1.98.
+  if (daemonClient.getLastServerInfoMessage()?.features?.providerUsageList !== true) {
+    return Promise.reject(new Error("Update the host to list provider usage."));
+  }
+  return daemonClient.listProviderUsage(options);
 }
 
 function waitForProvidersReady(

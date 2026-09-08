@@ -21,6 +21,7 @@ import {
   Columns2,
   Rows2,
   Ellipsis,
+  FolderPlus,
   Maximize,
   Minimize,
   Plus,
@@ -70,6 +71,7 @@ import { RenderProfile } from "@/utils/render-profiler";
 
 import { TrailingActionScrim } from "@/components/ui/trailing-action-scrim";
 import { useKeyboardActionHandler } from "@/hooks/use-keyboard-action-handler";
+import { useCompactTimeAgo } from "@/hooks/use-compact-time-ago";
 import { buildWorkspaceKeyboardHandlerId } from "@/keyboard/handler-id";
 import type { KeyboardActionDefinition } from "@/keyboard/keyboard-action-dispatcher";
 import { WorkspaceNewTabMenuContent } from "@/screens/workspace/workspace-new-tab-menu";
@@ -86,6 +88,15 @@ import {
   HorizontalScrollBoundaryShades,
   useHorizontalScrollBoundary,
 } from "@/components/ui/horizontal-scroll-boundary";
+import { useToast } from "@/contexts/toast-context";
+import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
+import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
+import {
+  buildMoveAgentTabMessages,
+  describeMoveAgentTabResult,
+  moveAgentTabToNewWorkspace,
+  sessionFromStore,
+} from "@/workspace-tabs/move-agent-tab";
 
 const DROPDOWN_WIDTH = 220;
 const DEFAULT_INLINE_ADD_BUTTON_RESERVED_WIDTH = 36;
@@ -113,6 +124,7 @@ const TAB_MIN_WIDTH = 96;
 const TAB_MAX_WIDTH = 160;
 const TAB_CLOSE_BUTTON_RESERVED_WIDTH = 0;
 const TAB_LABEL_LAYOUT_ALLOWANCE = 4;
+const AGENT_TOOLTIP_TITLE_MAX_LENGTH = 80;
 
 const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
 const ThemedX = withUnistyles(X);
@@ -124,6 +136,7 @@ const ThemedArrowLeftToLine = withUnistyles(ArrowLeftToLine);
 const ThemedArrowRightToLine = withUnistyles(ArrowRightToLine);
 const ThemedCopyX = withUnistyles(CopyX);
 const ThemedPencil = withUnistyles(Pencil);
+const ThemedFolderPlus = withUnistyles(FolderPlus);
 const ThemedPlus = withUnistyles(Plus);
 const ThemedColumns2 = withUnistyles(Columns2);
 const ThemedRows2 = withUnistyles(Rows2);
@@ -140,6 +153,56 @@ function updateMeasuredWidth(
 ) {
   const nextWidth = Math.round(event.nativeEvent.layout.width);
   setWidth((current) => retainWorkspaceTabMeasuredWidth(current, nextWidth));
+}
+
+function normalizeAgentTooltipTitle(title: string): string {
+  return title.replace(/\s+/g, " ").trim();
+}
+
+function formatAgentTooltipTitle(singleLineTitle: string): string {
+  if (singleLineTitle.length <= AGENT_TOOLTIP_TITLE_MAX_LENGTH) return singleLineTitle;
+  return `${singleLineTitle.slice(0, AGENT_TOOLTIP_TITLE_MAX_LENGTH - 1).trimEnd()}…`;
+}
+
+function formatAgentTooltipActivity(compactActivity: string): string {
+  if (compactActivity === "now") return "just now";
+  if (/^\d/.test(compactActivity)) return `${compactActivity} ago`;
+  return compactActivity;
+}
+
+function AgentTabTooltipBody({
+  serverId,
+  agentId,
+  title,
+}: {
+  serverId: string;
+  agentId: string;
+  title: string;
+}) {
+  const lastActivityAt = useSessionStore((state) => {
+    const session = state.sessions[serverId];
+    const agent = session?.agents.get(agentId) ?? session?.agentDetails.get(agentId) ?? null;
+    return state.agentLastActivity.get(agentId) ?? agent?.lastActivityAt ?? null;
+  });
+  const compactActivity = useCompactTimeAgo(lastActivityAt);
+  const activity = formatAgentTooltipActivity(compactActivity);
+
+  return (
+    <View style={styles.tooltipAgentContent}>
+      <Text style={styles.agentTooltipTitle} numberOfLines={1} ellipsizeMode="tail">
+        {title}
+      </Text>
+      <View style={styles.tooltipAgentMetadata}>
+        <Text style={styles.tooltipAgentId}>{agentId.slice(0, 7)}</Text>
+        {activity ? (
+          <>
+            <Text style={styles.tooltipAgentSeparator}>·</Text>
+            <Text style={styles.tooltipAgentActivity}>{activity}</Text>
+          </>
+        ) : null}
+      </View>
+    </View>
+  );
 }
 
 function TabLabelMeasurement({
@@ -368,6 +431,8 @@ function TabContextMenuItem({
         return <ThemedPencil size={16} uniProps={mutedColorMapping} />;
       case "circle-check":
         return <ThemedCircleCheck size={16} uniProps={mutedColorMapping} />;
+      case "folder-plus":
+        return <ThemedFolderPlus size={16} uniProps={mutedColorMapping} />;
       case "x":
         return <ThemedX size={16} uniProps={mutedColorMapping} />;
       default:
@@ -656,6 +721,7 @@ function TabHandleContent({
 }
 
 function TabChip({
+  serverId,
   tab,
   isActive,
   isDragging,
@@ -667,12 +733,14 @@ function TabChip({
   isClosingTab,
   presentation,
   tooltipLabel,
+  accessibilityLabel,
   resolvedTab,
   setHoveredCloseTabKey,
   onNavigateTab,
   onCloseTab,
   dragHandleProps,
 }: {
+  serverId: string;
   tab: WorkspaceTabDescriptor;
   isActive: boolean;
   isDragging: boolean;
@@ -684,6 +752,7 @@ function TabChip({
   isClosingTab: boolean;
   presentation: WorkspaceTabPresentation;
   tooltipLabel: string;
+  accessibilityLabel: string;
   resolvedTab: WorkspaceDesktopTabActions;
   setHoveredCloseTabKey: Dispatch<SetStateAction<string | null>>;
   onNavigateTab: (tabId: string) => void;
@@ -794,7 +863,7 @@ function TabChip({
               onPressIn={handleNavigateTab}
               onPress={handleNavigateTab}
               accessibilityRole="button"
-              accessibilityLabel={tooltipLabel}
+              accessibilityLabel={accessibilityLabel}
               accessibilityState={tabAccessibilityState}
               aria-selected={isActive}
             >
@@ -817,10 +886,11 @@ function TabChip({
             testID={`workspace-tab-tooltip-${testIdentity}`}
           >
             {tab.target.kind === "agent" ? (
-              <View style={styles.tooltipAgentRow}>
-                <Text style={styles.newTabTooltipText}>{tooltipLabel}</Text>
-                <Text style={styles.tooltipAgentId}>{tab.target.agentId.slice(0, 7)}</Text>
-              </View>
+              <AgentTabTooltipBody
+                serverId={serverId}
+                agentId={tab.target.agentId}
+                title={tooltipLabel}
+              />
             ) : (
               <Text style={styles.newTabTooltipText}>{tooltipLabel}</Text>
             )}
@@ -1032,6 +1102,7 @@ function ResolvedWorkspaceDesktopTabsRow({
       copyAgentId: t("workspace.tabs.menu.copyAgentId"),
       copyTerminalId: t("workspace.tabs.menu.copyTerminalId"),
       copyFilePath: t("workspace.tabs.menu.copyFilePath"),
+      moveToNewWorkspace: t("workspace.tabs.menu.moveToNewWorkspace"),
       rename: t("workspace.tabs.menu.rename"),
       closeAbove: t("workspace.tabs.menu.closeAbove"),
       closeBelow: t("workspace.tabs.menu.closeBelow"),
@@ -1200,8 +1271,10 @@ function ResolvedWorkspaceDesktopTabsRow({
       return (
         <ResolvedDesktopTabChip
           key={`${item.tab.key}:${item.tab.kind}`}
+          serverId={normalizedServerId}
           item={item}
           normalizedServerId={normalizedServerId}
+          normalizedWorkspaceId={normalizedWorkspaceId}
           isFocused={isFocused}
           isDragging={isActive}
           index={index}
@@ -1233,6 +1306,8 @@ function ResolvedWorkspaceDesktopTabsRow({
       isFocused,
       layout.closeButtonPolicy,
       layout.items,
+      normalizedServerId,
+      normalizedWorkspaceId,
       onCloseOtherTabs,
       onCloseTab,
       onCloseTabsToLeft,
@@ -1241,7 +1316,6 @@ function ResolvedWorkspaceDesktopTabsRow({
       onCopyTerminalId,
       onCopyFilePath,
       onCopyResumeCommand,
-      normalizedServerId,
       onNavigateTab,
       onReloadAgent,
       onRenameTab,
@@ -1347,8 +1421,10 @@ function ResolvedWorkspaceDesktopTabsRow({
   return <RenderProfile id="WorkspaceDesktopTabsRow">{row}</RenderProfile>;
 }
 function ResolvedDesktopTabChip({
+  serverId,
   item,
   normalizedServerId,
+  normalizedWorkspaceId,
   isFocused,
   isDragging,
   index,
@@ -1373,8 +1449,10 @@ function ResolvedDesktopTabChip({
   showDropIndicatorBefore,
   showDropIndicatorAfter,
 }: {
+  serverId: string;
   item: ResolvedWorkspaceDesktopTabRowItem;
   normalizedServerId: string;
+  normalizedWorkspaceId: string;
   isFocused: boolean;
   isDragging: boolean;
   index: number;
@@ -1432,6 +1510,31 @@ function ResolvedDesktopTabChip({
       });
   }, [markDoneClient, normalizedServerId, item.tab.target]);
   const presentation = item.presentation;
+  const toast = useToast();
+  const handleMoveToNewWorkspace = useCallback(
+    async (agentId: string) => {
+      const result = await moveAgentTabToNewWorkspace({
+        session: sessionFromStore(useSessionStore.getState().sessions[normalizedServerId]),
+        layout: useWorkspaceLayoutStore.getState(),
+        navigation: { navigateToWorkspace },
+        messages: buildMoveAgentTabMessages(t),
+        serverId: normalizedServerId,
+        sourceWorkspaceId: normalizedWorkspaceId,
+        agentId,
+        tabId: item.tab.tabId,
+      });
+      const described = describeMoveAgentTabResult(result, {
+        existing: t("workspace.tabs.toasts.movedToWorkspace", { workspaceName: "" }),
+        created: t("workspace.tabs.toasts.movedToNewWorkspace"),
+      });
+      if (described.kind === "error") {
+        toast.error(described.message);
+        return;
+      }
+      toast.show(described.message, { variant: "success" });
+    },
+    [item.tab.tabId, normalizedServerId, normalizedWorkspaceId, t, toast],
+  );
 
   const resolvedTab = useMemo(
     () =>
@@ -1445,6 +1548,7 @@ function ResolvedDesktopTabChip({
         onCopyAgentId,
         onCopyTerminalId,
         onCopyFilePath,
+        onMoveToNewWorkspace: handleMoveToNewWorkspace,
         onReloadAgent,
         onRenameTab,
         onCloseTab,
@@ -1469,14 +1573,23 @@ function ResolvedDesktopTabChip({
       onRenameTab,
       showMarkDone,
       handleMarkDone,
+      handleMoveToNewWorkspace,
       tabCount,
     ],
   );
 
-  const tooltipLabel =
+  const rawTooltipLabel =
     presentation.titleState === "loading"
       ? t("workspace.tabs.loadingAgentTitle")
       : presentation.tooltip;
+  const accessibilityLabel =
+    item.tab.target.kind === "agent"
+      ? normalizeAgentTooltipTitle(rawTooltipLabel)
+      : rawTooltipLabel;
+  const tooltipLabel =
+    item.tab.target.kind === "agent"
+      ? formatAgentTooltipTitle(accessibilityLabel)
+      : rawTooltipLabel;
 
   return (
     <View style={styles.tabSlot}>
@@ -1484,6 +1597,7 @@ function ResolvedDesktopTabChip({
         <View style={[styles.tabDropIndicator, styles.tabDropIndicatorBefore]} />
       ) : null}
       <TabChip
+        serverId={serverId}
         tab={item.tab}
         isActive={item.isActive}
         isDragging={isDragging}
@@ -1495,6 +1609,7 @@ function ResolvedDesktopTabChip({
         isClosingTab={item.isClosingTab}
         presentation={presentation}
         tooltipLabel={tooltipLabel}
+        accessibilityLabel={accessibilityLabel}
         resolvedTab={resolvedTab}
         setHoveredCloseTabKey={setHoveredCloseTabKey}
         onNavigateTab={onNavigateTab}
@@ -1690,12 +1805,28 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foreground,
     fontSize: theme.fontSize.base,
   },
-  tooltipAgentRow: {
+  tooltipAgentContent: {
+    gap: theme.spacing[0.5],
+    maxWidth: 420,
+  },
+  agentTooltipTitle: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.base,
+  },
+  tooltipAgentMetadata: {
     flexDirection: "row",
     alignItems: "center",
-    gap: theme.spacing[2],
+    gap: theme.spacing[1],
   },
   tooltipAgentId: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
+  },
+  tooltipAgentSeparator: {
+    color: theme.colors.foregroundExtraMuted,
+    fontSize: theme.fontSize.sm,
+  },
+  tooltipAgentActivity: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
   },

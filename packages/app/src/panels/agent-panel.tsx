@@ -1,3 +1,4 @@
+import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
@@ -92,6 +93,7 @@ import { useAppSettings } from "@/hooks/use-settings";
 import { useToast } from "@/contexts/toast-context";
 import { toErrorMessage } from "@/utils/error-messages";
 import { AgentTracks, hasAgentTracks } from "@/panels/agent-tracks";
+import { selectSelectionAsks } from "@/selection-ask";
 
 import { useCreateFlowStore } from "@/stores/create-flow-store";
 import { buildDraftStoreKey, generateDraftId } from "@/stores/draft-keys";
@@ -306,20 +308,12 @@ function renderChatAgentNonReadyView(args: {
   }
   return null;
 }
-
-function resolveWorkspaceAgentTabLabel(title: string | null | undefined): string | null {
-  if (typeof title !== "string") {
-    return null;
-  }
-  const normalized = title.trim();
-  if (!normalized) {
-    return null;
-  }
-  if (normalized.toLowerCase() === "new agent") {
-    return null;
-  }
-  return normalized;
-}
+export {
+  stripTicketPrefix,
+  resolveWorkspaceAgentTabLabel,
+  resolveAgentTabTooltip,
+} from "./agent-tab-presentation";
+import { resolveWorkspaceAgentTabLabel, resolveAgentTabTooltip } from "./agent-tab-presentation";
 
 function useAgentPanelDescriptor(
   target: { kind: "agent"; agentId: string },
@@ -329,16 +323,18 @@ function useAgentPanelDescriptor(
     useShallow((state) => selectAgentDescriptor(state, context.serverId, target.agentId)),
   );
   const provider = descriptorState.provider;
-  const label = resolveWorkspaceAgentTabLabel(descriptorState.title);
-  const icon = getProviderIcon(provider);
+  const label = resolveWorkspaceAgentTabLabel(descriptorState.title, descriptorState.name);
+  const icon = getProviderIcon(provider, context.serverId);
   // Agent tab tooltips (spec "Names"): "Name — Title" when names are enabled,
   // title only when hideAgentNames is set (the central Mission Control toggle).
   const hideAgentNames = useMissionControlCentralConfig().config?.hideAgentNames === true;
   const fallbackTooltip = `${formatProviderLabel(provider)} agent`;
-  const tooltip =
-    !hideAgentNames && descriptorState.name
-      ? `${descriptorState.name} — ${label ?? fallbackTooltip}`
-      : (label ?? fallbackTooltip);
+  const tooltip = resolveAgentTabTooltip({
+    label,
+    name: descriptorState.name,
+    fallbackTooltip,
+    hideAgentNames,
+  });
 
   return {
     label: label ?? "",
@@ -391,11 +387,7 @@ function DraftPanel() {
     (agentSnapshot: Parameters<typeof normalizeAgentSnapshot>[0]) => {
       const normalized = normalizeAgentSnapshot(agentSnapshot, serverId);
       const agent = applyLegacyDaemonWorkspaceOwnership({ serverId, agent: normalized });
-      useSessionStore.getState().setAgents(serverId, (prev) => {
-        const next = new Map(prev);
-        next.set(agentSnapshot.id, agent);
-        return next;
-      });
+      getHostRuntimeStore().acceptAgentSnapshot(serverId, agent);
       retargetCurrentTab({ kind: "agent", agentId: agentSnapshot.id });
     },
     [retargetCurrentTab, serverId],
@@ -1277,12 +1269,16 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
     rows: subagentRows,
   });
   const hasPluginComposerPills = useHasPluginComposerPills(serverId, workspaceId, agentId);
+  const selectionAsks = useSessionStore(
+    useShallow((state) => selectSelectionAsks(state, serverId, agentId)),
+  );
   const hasActiveComposer = !agentState.archivedAt && !isArchivingCurrentAgent;
   const hasVisibleAgentTracks = hasAgentTracks({
     subagentRows,
     tasks,
     archiveFinishedStatus: archiveFinishedSubagents.status,
     hasPluginComposerPills,
+    hasSelectionAsks: selectionAsks.length > 0,
   });
   const rawAgentInputDraft = useAgentInputDraft({
     draftKey: buildDraftStoreKey({
@@ -1389,7 +1385,7 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
       setText={agentInputDraft.replaceText}
       onRewindComplete={handleRewindComplete}
     >
-      <View style={styles.root}>
+      <View style={styles.root} collapsable={false}>
         <DockedChatSurface disabled={isArchivingCurrentAgent}>
           {contentContainer}
 
@@ -1974,6 +1970,8 @@ const styles = StyleSheet.create((theme) => ({
   root: {
     flex: 1,
     backgroundColor: theme.colors.surface0,
+    // KeyboardDock translates the chat surface while the keyboard moves; clip it at the header edge.
+    overflow: "hidden",
   },
   container: {
     flex: 1,

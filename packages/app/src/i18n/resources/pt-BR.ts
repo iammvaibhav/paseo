@@ -10,10 +10,12 @@ export const ptBR: TranslationResources = {
       cancel: "Cancelar",
       close: "Fechar",
       copy: "Copiar",
+      copyLine: "Copiar linha",
       dismiss: "Dispensar",
       retry: "Tentar novamente",
       search: "Buscar",
       select: "Selecionar",
+      selectAll: "Selecionar tudo",
     },
     placeholders: {
       search: "Buscar...",
@@ -33,6 +35,7 @@ export const ptBR: TranslationResources = {
     errors: {
       error: "Erro",
       unableToSave: "Não foi possível salvar",
+      unableToCopy: "Não foi possível copiar",
       nameRequired: "O nome é obrigatório",
       daemonUnavailable: "Daemon indisponível",
       daemonClientUnavailable: "Cliente do daemon indisponível",
@@ -207,6 +210,7 @@ export const ptBR: TranslationResources = {
     empty: "Comece a conversar com este agente...",
     scrollToBottom: "Rolar para o fim",
     historyLoadFailed: "Não foi possível carregar o histórico do agente",
+    messageCapped: "Esta mensagem foi truncada ({{bytes}} bytes).",
     permission: {
       plan: "Plano",
       required: "Permissão necessária",
@@ -382,6 +386,7 @@ export const ptBR: TranslationResources = {
       zoomIn: "Aproximar",
       zoomOut: "Afastar",
       resetZoom: "Redefinir visualização",
+      fullscreen: "Tela cheia",
       viewSource: "Ver fonte",
       viewDiagram: "Ver diagrama",
     },
@@ -454,7 +459,13 @@ export const ptBR: TranslationResources = {
     },
   },
   importSession: {
+    chooseHostTitle: en.importSession.chooseHostTitle,
     title: "Importar sessão",
+    searchPlaceholder: "Buscar sessões...",
+    scope: {
+      host: "Sessões em {{host}}",
+      workspace: "Este workspace",
+    },
     filters: {
       all: "Tudo",
     },
@@ -463,12 +474,13 @@ export const ptBR: TranslationResources = {
       updateHost: "Atualize o host para importar sessões.",
       noProviders: "Nenhum provedor importável está ativado.",
       loading: "Carregando sessões recentes...",
-      failedAll: "Não foi possível carregar sessões recentes.",
-      failedProviders: "Não foi possível carregar sessões de {{providers}}.",
+      failedProvider: "Não foi possível carregar as sessões de {{provider}}",
       failedImport: "Não foi possível importar a sessão selecionada.",
     },
     actions: {
       refresh: "Atualizar sessões",
+      showAll: "Mostrar tudo",
+      loadMore: "Carregar mais",
     },
     preview: {
       untitledSession: "Sessão sem título",
@@ -476,6 +488,7 @@ export const ptBR: TranslationResources = {
     },
     empty: {
       noRecent: "Nenhuma sessão recente para importar.",
+      noMatches: "Nenhuma sessão corresponde à sua busca.",
       alreadyImported: "Todas as sessões recentes já foram importadas.",
       noProviderSessions: "Nenhuma sessão de {{provider}} encontrada.",
     },
@@ -597,14 +610,23 @@ export const ptBR: TranslationResources = {
         completed: "Configuração concluída",
         failed: "Falha na configuração",
         workspace: "Configuração do workspace",
+        blocked: "Configuração bloqueada",
       },
       status: {
         running: "Em execução",
         completed: "Concluído",
         failed: "Falhou",
         waiting: "Aguardando saída da configuração",
+        blocked: "Bloqueado",
       },
       waiting: "Configurando workspace...",
+      blocked: {
+        title: "A configuração não foi executada",
+        description:
+          "Este PR vem de {{repository}}, um repositório diferente. A configuração e os scripts podem executar código que você não revisou.",
+        run: "Executar configuração",
+        runFailed: "Falha ao executar a configuração do workspace",
+      },
       empty: {
         noCommands: "Nenhum comando de configuração foi executado para este workspace.",
       },
@@ -685,6 +707,7 @@ export const ptBR: TranslationResources = {
         copyAgentId: "Copiar ID do agente",
         copyTerminalId: "Copiar ID do terminal",
         copyFilePath: "Copiar caminho do arquivo",
+        moveToNewWorkspace: "Mover para um novo espaço de trabalho",
         rename: "Renomear",
         closeAbove: "Fechar abas acima",
         closeBelow: "Fechar abas abaixo",
@@ -736,6 +759,12 @@ export const ptBR: TranslationResources = {
         reloadedAgent: "Agente recarregado",
         failedToReloadAgent: "Falha ao recarregar agente",
         failedToCloseAgent: "Falha ao fechar agente",
+        movedToWorkspace: "Agente movido para {{workspaceName}}",
+        movedToNewWorkspace: "Agente movido para um novo espaço de trabalho",
+        agentRunningCannotMove: "Pare o agente antes de movê-lo para outro espaço de trabalho",
+        workspacePathUnavailable: "Caminho do workspace indisponível",
+        failedToCreateWorkspace: "Falha ao criar workspace",
+        failedToMoveAgent: "Falha ao mover o agente para o workspace",
       },
       confirmations: {
         unsavedTitle: "Alterações não salvas",
@@ -1005,11 +1034,8 @@ export const ptBR: TranslationResources = {
         refresh: "Atualizar",
         refreshState: "Atualizar estado do git e do {{brand}}",
         failedRefresh: "Falha ao atualizar estado do git.",
-        emptyHiddenWhitespace: "Nenhuma alteração visível após ocultar espaços em branco",
-        emptyUncommitted: "Nenhuma alteração sem commit",
         seeUncommittedChanges: "Ver alterações sem commit",
         seeCommittedChanges: "Ver alterações com commit",
-        emptyAgainstBase: "Nenhuma alteração vs {{baseRef}}",
         checkingRepository: "Verificando repositório...",
         notRepository: "Não é um repositório git",
         diffMode: "Modo de diff",
@@ -1200,6 +1226,33 @@ export const ptBR: TranslationResources = {
         all: "Todos os projetos",
       },
     },
+    view: { workspaces: "Espaços de trabalho", agents: "Agentes" },
+    agentView: {
+      title: "Agentes",
+      display: {
+        trigger: "Preferências de visualização de agentes",
+        heading: "Agentes",
+        showDone: "Mostrar concluídos",
+      },
+      sections: {
+        needsYou: "Precisa de você",
+        running: "Em execução",
+        ready: "Prontos para revisão",
+        done: "Concluído",
+      },
+      empty: {
+        title: "Nenhum agente para exibir",
+        description: "Agentes em execução e prontos para revisão aparecem aqui.",
+        clear: "Limpar filtros",
+      },
+      menu: {
+        open: "Abrir no espaço de trabalho",
+        copyReference: "Copiar referência",
+        stop: "Parar",
+        clear: "Limpar",
+        archive: "Arquivar",
+      },
+    },
     filterEmpty: {
       title: "Nenhum espaço de trabalho corresponde",
       description: "Altere ou limpe os filtros da barra lateral para ver espaços de trabalho.",
@@ -1217,7 +1270,6 @@ export const ptBR: TranslationResources = {
       addProject: "Adicionar projeto",
       newWorkspace: "Novo workspace",
       hosts: "Hosts",
-      home: "Início",
       settings: "Configurações",
       closeSidebar: "Fechar barra lateral",
     },
@@ -1239,6 +1291,7 @@ export const ptBR: TranslationResources = {
     },
     sections: {
       sessions: "Histórico",
+      search: "Buscar",
       schedules: "Agendamentos",
       missionControl: "Mission Control",
       missionControlNeedsYou: "Precisa de você",
@@ -1311,6 +1364,8 @@ export const ptBR: TranslationResources = {
         showMore: "Mostrar mais",
         showLess: "Mostrar menos",
         createWorkspaceFor: "Criar um novo workspace para {{projectName}}",
+        openItsaplanFor: "Abrir itsaplan para {{projectName}}",
+        dropToMoveAgent: "Mover agente para cá",
         copyPath: "Copiar caminho",
         copyBranchName: "Copiar nome da branch",
         rename: "Renomear workspace",
@@ -2319,6 +2374,12 @@ export const ptBR: TranslationResources = {
       chatOutline: {
         title: "Estrutura do chat",
         description: "Mostrar uma estrutura para navegar entre prompts",
+      },
+      sidebar: {
+        title: "Barra lateral",
+        description: "Escolha quais itens aparecem no topo da barra lateral e em que ordem",
+        moveUp: "Mover para cima",
+        moveDown: "Mover para baixo",
       },
       fonts: {
         title: "Fontes",

@@ -28,6 +28,7 @@ import {
   OmpRuntimeEventSchema,
   OmpSessionStateSchema,
   OmpSessionStatsSchema,
+  OmpSwitchSessionResultSchema,
   type OmpThinkingLevel,
   type OmpAgentMessage,
   type OmpModel,
@@ -59,6 +60,7 @@ export interface OmpCliRuntimeOptions {
   runtimeSettings?: ProviderRuntimeSettings;
   command?: [string, ...string[]];
   commandsRpcName?: "get_available_commands";
+  readyTimeoutMs?: number;
   requestTimeoutMs?: number;
   spawnProcess?: (launch: OmpRuntimeLaunch) => ChildProcessWithoutNullStreams;
 }
@@ -99,7 +101,10 @@ export class OmpCliRuntime implements OmpRuntime {
     const handleAbort = () => void process.close(input.signal?.reason).catch(() => undefined);
     input.signal?.addEventListener("abort", handleAbort, { once: true });
     try {
-      await establishOmpProtocol(process, this.options.logger, this.options.requestTimeoutMs);
+      await establishOmpProtocol(process, this.options.logger, {
+        readyTimeoutMs: this.options.readyTimeoutMs,
+        requestTimeoutMs: this.options.requestTimeoutMs,
+      });
       input.signal?.throwIfAborted();
       return new OmpCliRuntimeSession(process, this.commandsRpcName, this.options.logger);
     } catch (error) {
@@ -220,7 +225,12 @@ class OmpCliRuntimeSession implements OmpRuntimeSession {
   }
 
   async switchSession(sessionPath: string): Promise<void> {
-    await this.request({ type: "switch_session", sessionPath });
+    const data = OmpSwitchSessionResultSchema.parse(
+      await this.request({ type: "switch_session", sessionPath }),
+    );
+    if (data?.cancelled === true) {
+      throw new Error("OMP switch_session was cancelled");
+    }
   }
 
   async getSessionStats(): Promise<OmpSessionStats> {

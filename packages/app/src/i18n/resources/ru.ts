@@ -10,10 +10,12 @@ export const ru: TranslationResources = {
       cancel: "Отмена",
       close: "Закрыть",
       copy: "Копировать",
+      copyLine: "Копировать строку",
       dismiss: "Отклонить",
       retry: "Повторить",
       search: "Поиск",
       select: "Выбрать",
+      selectAll: "Выбрать все",
     },
     placeholders: {
       search: "Поиск...",
@@ -33,6 +35,7 @@ export const ru: TranslationResources = {
     errors: {
       error: "Ошибка",
       unableToSave: "Не удалось сохранить",
+      unableToCopy: "Не удалось скопировать",
       nameRequired: "Требуется имя",
       daemonUnavailable: "Daemon недоступен",
       daemonClientUnavailable: "Daemon клиента недоступен",
@@ -207,6 +210,7 @@ export const ru: TranslationResources = {
     empty: "Начните общаться с этим агентом...",
     scrollToBottom: "Прокрутить вниз",
     historyLoadFailed: "Не удалось загрузить историю агента",
+    messageCapped: "Это сообщение было обрезано ({{bytes}} байт).",
     permission: {
       plan: "План",
       required: "Требуется разрешение",
@@ -381,6 +385,7 @@ export const ru: TranslationResources = {
       zoomIn: "Увеличить масштаб",
       zoomOut: "Уменьшить масштаб",
       resetZoom: "Сбросить масштаб",
+      fullscreen: "Полноэкранный режим",
       viewSource: "Показать исходный код",
       viewDiagram: "Показать диаграмму",
     },
@@ -453,7 +458,13 @@ export const ru: TranslationResources = {
     },
   },
   importSession: {
+    chooseHostTitle: en.importSession.chooseHostTitle,
     title: "Импортировать сессию",
+    searchPlaceholder: "Поиск сессий...",
+    scope: {
+      host: "Сессии на {{host}}",
+      workspace: "Это рабочее пространство",
+    },
     filters: {
       all: "Все",
     },
@@ -462,12 +473,13 @@ export const ru: TranslationResources = {
       updateHost: "Обновите хост, чтобы импортировать сессии.",
       noProviders: "Нет включённых провайдеров с поддержкой импорта.",
       loading: "Загрузка недавних сессий...",
-      failedAll: "Не удалось загрузить недавние сессии.",
-      failedProviders: "Не удалось загрузить сессии следующих провайдеров: {{providers}}.",
+      failedProvider: "Не удалось загрузить сессии провайдера {{provider}}",
       failedImport: "Не удалось импортировать выбранную сессию.",
     },
     actions: {
       refresh: "Обновить список сессий",
+      showAll: "Показать все",
+      loadMore: "Загрузить ещё",
     },
     preview: {
       untitledSession: "Сессия без названия",
@@ -475,6 +487,7 @@ export const ru: TranslationResources = {
     },
     empty: {
       noRecent: "Нет недавних сессий для импорта.",
+      noMatches: "Нет сессий, соответствующих запросу.",
       alreadyImported: "Все недавние сессии уже импортированы.",
       noProviderSessions: "Сессии провайдера {{provider}} не найдены.",
     },
@@ -596,14 +609,23 @@ export const ru: TranslationResources = {
         completed: "Настройка завершена",
         failed: "Настройка не удалась",
         workspace: "Настройка рабочего пространства",
+        blocked: "Настройка заблокирована",
       },
       status: {
         running: "Выполняется",
         completed: "Завершено",
         failed: "Завершено с ошибкой",
         waiting: "Ожидание вывода команд настройки",
+        blocked: "Заблокировано",
       },
       waiting: "Настройка рабочего пространства...",
+      blocked: {
+        title: "Настройка не запускалась",
+        description:
+          "Этот PR поступил из другого репозитория — {{repository}}. Его настройка и скрипты могут выполнить код, который вы не проверяли.",
+        run: "Запустить настройку",
+        runFailed: "Не удалось запустить настройку рабочего пространства",
+      },
       empty: {
         noCommands: "Для этого рабочего пространства не выполнялись команды настройки.",
       },
@@ -686,6 +708,7 @@ export const ru: TranslationResources = {
         copyAgentId: "Скопировать идентификатор агента",
         copyTerminalId: "Скопировать идентификатор терминала",
         copyFilePath: "Скопировать путь к файлу",
+        moveToNewWorkspace: "Переместить в новое рабочее пространство",
         rename: "Переименовать",
         closeAbove: "Закрыть вкладки выше",
         closeBelow: "Закрыть вкладки ниже",
@@ -737,6 +760,13 @@ export const ru: TranslationResources = {
         reloadedAgent: "Агент перезагружен",
         failedToReloadAgent: "Не удалось перезагрузить агента",
         failedToCloseAgent: "Не удалось закрыть агента",
+        movedToWorkspace: "Агент перемещён в {{workspaceName}}",
+        movedToNewWorkspace: "Агент перемещён в новое рабочее пространство",
+        agentRunningCannotMove:
+          "Остановите агента перед перемещением в другое рабочее пространство",
+        workspacePathUnavailable: "Путь рабочего пространства недоступен",
+        failedToCreateWorkspace: "Не удалось создать рабочее пространство",
+        failedToMoveAgent: "Не удалось переместить агента в рабочее пространство",
       },
       confirmations: {
         unsavedTitle: "Несохранённые изменения",
@@ -998,11 +1028,8 @@ export const ru: TranslationResources = {
         refresh: "Обновить",
         refreshState: "Обновить состояние Git и {{brand}}",
         failedRefresh: "Не удалось обновить состояние Git.",
-        emptyHiddenWhitespace: "После скрытия пробельных изменений видимых изменений нет",
-        emptyUncommitted: "Нет незафиксированных изменений",
         seeUncommittedChanges: "Показать незафиксированные изменения",
         seeCommittedChanges: "Показать зафиксированные изменения",
-        emptyAgainstBase: "Нет изменений относительно {{baseRef}}",
         checkingRepository: "Проверяем репозиторий...",
         notRepository: "Это не репозиторий Git",
         diffMode: "Режим диффа",
@@ -1190,6 +1217,33 @@ export const ru: TranslationResources = {
         all: "Все проекты",
       },
     },
+    view: { workspaces: "Рабочие пространства", agents: "Агенты" },
+    agentView: {
+      title: "Агенты",
+      display: {
+        trigger: "Настройки отображения агентов",
+        heading: "Агенты",
+        showDone: "Показывать завершённые",
+      },
+      sections: {
+        needsYou: "Требует внимания",
+        running: "Работает",
+        ready: "Готовы к проверке",
+        done: "Готово",
+      },
+      empty: {
+        title: "Нет агентов для отображения",
+        description: "Здесь отображаются работающие и готовые к проверке агенты.",
+        clear: "Очистить фильтры",
+      },
+      menu: {
+        open: "Открыть в рабочей области",
+        copyReference: "Скопировать ссылку",
+        stop: "Остановить",
+        clear: "Очистить",
+        archive: "Архивировать",
+      },
+    },
     filterEmpty: {
       title: "Нет подходящих рабочих пространств",
       description:
@@ -1208,7 +1262,6 @@ export const ru: TranslationResources = {
       addProject: "Добавить проект",
       newWorkspace: "Новое рабочее пространство",
       hosts: "Хосты",
-      home: "Главная",
       settings: "Настройки",
       closeSidebar: "Закрыть боковую панель",
     },
@@ -1230,6 +1283,7 @@ export const ru: TranslationResources = {
     },
     sections: {
       sessions: "История",
+      search: "Поиск",
       schedules: "Расписания",
       missionControl: "Mission Control",
       missionControlNeedsYou: "Требует внимания",
@@ -1302,6 +1356,8 @@ export const ru: TranslationResources = {
         showMore: "Показать ещё",
         showLess: "Показать меньше",
         createWorkspaceFor: "Создать новое рабочее пространство для {{projectName}}",
+        openItsaplanFor: "Открыть itsaplan для {{projectName}}",
+        dropToMoveAgent: "Переместить агента сюда",
         copyPath: "Копировать путь",
         copyBranchName: "Скопировать имя ветки",
         rename: "Переименовать рабочее пространство",
@@ -2321,6 +2377,13 @@ export const ru: TranslationResources = {
       chatOutline: {
         title: "Оглавление чата",
         description: "Показывать оглавление для перехода между запросами",
+      },
+      sidebar: {
+        title: "Боковая панель",
+        description:
+          "Выберите, какие элементы отображаются вверху боковой панели и в каком порядке",
+        moveUp: "Переместить вверх",
+        moveDown: "Переместить вниз",
       },
       fonts: {
         title: "Шрифты",

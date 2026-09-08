@@ -1,6 +1,14 @@
-import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+  type ReactElement,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { Text, View } from "react-native";
+import { useLocalSearchParams } from "expo-router";
 import { RefreshCw, SquareKanban } from "lucide-react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { MenuHeader } from "@/components/headers/menu-header";
@@ -10,6 +18,11 @@ import { useIsLocalDaemon, useLocalDaemonServerId } from "@/hooks/use-is-local-d
 import { getDesktopHost } from "@/desktop/host";
 import { useAppSettings } from "@/hooks/use-settings";
 import { pickItsaplanEmbedHost, resolveItsaplanEmbedOrigin } from "@/itsaplan/itsaplan-origin";
+import {
+  getItsaplanSelectedProject,
+  setItsaplanSelectedProject,
+  subscribeItsaplanSelectedProject,
+} from "@/itsaplan/itsaplan-selected-project";
 import { ItsaplanEmbed } from "@/itsaplan/itsaplan-webview";
 import { useHosts } from "@/runtime/host-runtime";
 
@@ -30,6 +43,20 @@ export function ItsaplanScreen(): ReactElement {
   const hosts = useHosts();
   const localServerId = useLocalDaemonServerId();
   const { settings } = useAppSettings();
+  const params = useLocalSearchParams<{ project?: string; projectKey?: string }>();
+  const rawParam = typeof params.project === "string" ? params.project : params.projectKey;
+  const routeProject = typeof rawParam === "string" ? rawParam.trim() : "";
+  const storedProject = useSyncExternalStore(
+    subscribeItsaplanSelectedProject,
+    getItsaplanSelectedProject,
+    getItsaplanSelectedProject,
+  );
+  const projectParam = storedProject || routeProject;
+  useEffect(() => {
+    if (routeProject && getItsaplanSelectedProject().length === 0) {
+      setItsaplanSelectedProject(routeProject);
+    }
+  }, [routeProject]);
 
   const [attempt, setAttempt] = useState(0);
   const [status, setStatus] = useState<LoadStatus>("loading");
@@ -66,7 +93,6 @@ export function ItsaplanScreen(): ReactElement {
         : null,
     [targetHost, isLocalDaemon, settings.itsaplanOrigin, useDesktopEmbed],
   );
-
   const markLoaded = useCallback(() => setStatus("ready"), []);
   const markFailed = useCallback(() => setStatus("error"), []);
   const retry = useCallback(() => {
@@ -113,6 +139,7 @@ export function ItsaplanScreen(): ReactElement {
         <View style={styles.embedContainer}>
           <ItsaplanEmbed
             origin={resolved.origin}
+            project={projectParam}
             attempt={attempt}
             onLoaded={markLoaded}
             onFailed={markFailed}

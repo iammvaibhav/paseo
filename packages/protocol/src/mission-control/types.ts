@@ -672,7 +672,7 @@ export const MissionControlCentralConfigSchema = z.object({
   // Event retention window for pruning.
   retentionDays: z.number().optional(),
   // Days before a reviewState="ready" agent is automatically marked "done"
-  // with verdict "aged-out" by the daily sweep (spec 01). Default 3.
+  // with verdict "aged-out" by the daily sweep (spec 01). <= 0 disables aging (default 0).
   readyAgeOutDays: z.number().optional(),
   // Fleet naming theme; re-map is broadcast on switch.
   namingTheme: z.string().optional(),
@@ -765,6 +765,13 @@ export const MissionControlCentralConfigSchema = z.object({
       apiKey: z.string(),
       webhookSecret: z.string(),
       humanUserId: z.string().optional(),
+      // Origin of the itsaplan WEB app, when it does not serve the REST API
+      // that `baseUrl` names. Ticket deep links posted into prompts and tool
+      // results are built from this. Omitted = fall back to `baseUrl`. A host
+      // that reaches the web app at a different address overrides it in its
+      // own daemon config (missionControl.itsaplanWebBaseUrl); central config
+      // is replicated fleet-wide and cannot hold a per-host value.
+      webBaseUrl: z.string().optional(),
     })
     .nullable()
     .optional(),

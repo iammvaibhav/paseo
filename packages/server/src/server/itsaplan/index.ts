@@ -3,6 +3,7 @@ export {
   ItsaplanClient,
   ITSAPLAN_CHAT_CLAIM_TIMEOUT_MS,
   ITSAPLAN_READY_FOR_REVIEW_COLUMN_NAME,
+  buildItsaplanIssueUrl,
   findInProgressColumn,
 } from "./client.js";
 export type {
@@ -41,6 +42,7 @@ export {
   ensureItsaplanProjectMapping,
   ITSAPLAN_WEBHOOK_EVENTS,
   ItsaplanProjectStore,
+  resolveItsaplanConfig,
   runItsaplanProjectResync,
 } from "./projects.js";
 export type {
@@ -52,9 +54,12 @@ export type {
 } from "./projects.js";
 export {
   ITSAPLAN_AUTO_CHAIN_LABEL_NAME,
+  ITSAPLAN_ISSUE_LABEL_CANDIDATE_KEYS,
   ITSAPLAN_ISSUE_LABEL_KEY,
   ItsaplanBridge,
   buildDispatchPrompt,
+  getItsaplanIssueIdFromLabels,
+  parseItsaplanIssueId,
   type BuildDispatchPromptInput,
 } from "./bridge.js";
 export type {

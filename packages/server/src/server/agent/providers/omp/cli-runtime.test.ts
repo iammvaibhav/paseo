@@ -395,6 +395,21 @@ describe("OMP CLI runtime", () => {
     ]);
   });
 
+  test("rejects a cancelled OMP switch_session", async () => {
+    const child = createOmpChild();
+    replyToCommands(child, (command) => {
+      if (command.type === "switch_session") {
+        return { cancelled: true };
+      }
+      return undefined;
+    });
+    const session = await createRuntime(child).startSession({ cwd: "/workspace/project" });
+
+    await expect(session.switchSession("/tmp/session.jsonl")).rejects.toThrow(
+      "OMP switch_session was cancelled",
+    );
+  });
+
   test("accepts the empty prompt acknowledgement emitted by OMP 17", async () => {
     const child = createOmpChild();
     replyToCommands(child, () => undefined);

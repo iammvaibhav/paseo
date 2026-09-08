@@ -1,3 +1,4 @@
+import { stripTicketPrefix } from "@/panels/agent-tab-presentation";
 import type { LifecycleRow } from "./lifecycle";
 
 /**
@@ -41,7 +42,8 @@ export function buildAgentReference(agent: {
   id: string;
 }): string {
   const name = agent.name?.trim() || null;
-  const title = agent.title?.trim() || null;
+  const rawTitle = agent.title?.trim() || null;
+  const title = rawTitle ? stripTicketPrefix(rawTitle, name) || rawTitle : null;
   const parts = [name ?? title ?? agent.id];
   if (title && title !== parts[0]) {
     parts.push(title);

@@ -10,6 +10,27 @@ import { ItsaplanApiError, ItsaplanClient, type ItsaplanProject } from "./client
 /** Non-null itsaplan connection config; the same shape read off central config. */
 export type ItsaplanCentralConfig = NonNullable<ResolvedMissionControlCentralConfig["itsaplan"]>;
 
+/**
+ * The itsaplan connection this host should use: fleet policy from central
+ * config, with this machine's own web origin layered on top.
+ *
+ * Central config is replicated host to host (last-writer-wins), so it cannot
+ * hold a per-host address — the commander's next push would overwrite it. A
+ * host whose route to the itsaplan web app differs declares it in its own
+ * daemon config (missionControl.itsaplanWebBaseUrl) and that wins here, once,
+ * before any consumer reads the connection.
+ */
+export function resolveItsaplanConfig(
+  central: ItsaplanCentralConfig | null,
+  hostWebBaseUrl: string | null | undefined,
+): ItsaplanCentralConfig | null {
+  if (!central) {
+    return null;
+  }
+  const override = hostWebBaseUrl?.trim();
+  return override ? { ...central, webBaseUrl: override } : central;
+}
+
 const ITSAPLAN_DIR = "itsaplan";
 const PROJECTS_FILENAME = "projects.json";
 
@@ -17,6 +38,7 @@ const PROJECTS_FILENAME = "projects.json";
 export const ITSAPLAN_WEBHOOK_EVENTS = [
   "issue.created",
   "issue.state_changed",
+  "issue.assigned",
   "comment.created",
 ] as const;
 
@@ -120,6 +142,27 @@ export class ItsaplanProjectStore {
     const parsed = ItsaplanProjectMappingSchema.parse(mapping);
     this.byPaseoKey.set(parsed.paseoProjectKey, parsed);
     this.byItsaplanProjectId.set(parsed.itsaplanProjectId, parsed);
+    await writeJsonFileAtomic(this.filePath, this.list());
+  }
+
+  /**
+   * Forgets a project's Commander API key. itsaplan rejected it (the agent
+   * row was rotated, or its project was deleted), so the chat-runner's claim
+   * loop must stop instead of retrying a permanent failure forever, and the
+   * next project sync re-mints the key through ensureCommanderAiAgent's
+   * regenerate-key recovery — the state that path already recognizes is
+   * exactly "mapping without a key". The webhook registration and the
+   * commanderUserId are untouched: ticket dispatch and the assignee
+   * flip-back keep working while chat relay is down.
+   */
+  async clearCommanderApiKey(paseoProjectKey: string): Promise<void> {
+    const existing = this.byPaseoKey.get(paseoProjectKey);
+    if (!existing?.commanderApiKey) {
+      return;
+    }
+    const { commanderApiKey: _rejected, ...rest } = existing;
+    this.byPaseoKey.set(rest.paseoProjectKey, rest);
+    this.byItsaplanProjectId.set(rest.itsaplanProjectId, rest);
     await writeJsonFileAtomic(this.filePath, this.list());
   }
 }
@@ -229,10 +272,23 @@ async function ensureItsaplanProjectMappingForKey(
   const existing = deps.store.getByPaseoProjectKey(projectKey);
   if (existing) {
     let mapping = existing;
-    if (mapping.commanderAgentId === undefined) {
+    // A mapping with no usable credential needs the agent-ensure path: either
+    // it predates the Commander fields, its earlier ensure failed, or the
+    // chat-runner forgot a key itsaplan rejected (clearCommanderApiKey). All
+    // three recover the same way — re-mint through ensureCommanderAiAgent.
+    if (mapping.commanderAgentId === undefined || mapping.commanderApiKey === undefined) {
       mapping = await backfillCommanderAgent(mapping, config, deps);
     } else {
       mapping = await ensureCommanderMentionTrigger(mapping, config, deps);
+    }
+    if (mapping.commanderUserId) {
+      const client = new ItsaplanClient(config);
+      await ensureTodoColumnNoCommanderAutoAssign(
+        mapping.itsaplanProjectKey,
+        mapping.commanderUserId,
+        client,
+        deps.logger,
+      );
     }
     return ensureWebhookEventsUpToDate(mapping, config, deps);
   }
@@ -459,6 +515,40 @@ async function ensureCommanderAiAgent(
     return null;
   }
 }
+/**
+ * Ensures the project's Todo (unstarted) column does not overwrite the human
+ * assignee with the Commander bot user when moved into Todo. The autonomous
+ * executor role belongs to the ticket's Delegate, while Assignee remains the
+ * accountable human owner.
+ */
+export async function ensureTodoColumnNoCommanderAutoAssign(
+  itsaplanProjectKey: string,
+  commanderUserId: string,
+  client: ItsaplanClient,
+  logger: Logger,
+): Promise<void> {
+  try {
+    const columns = await client.listProjectColumns(itsaplanProjectKey);
+    const todoColumn = columns.find((c) => c.stateType === "unstarted");
+    if (!todoColumn) {
+      return;
+    }
+    if (todoColumn.autoAssignUserId === commanderUserId) {
+      await client.updateColumn(itsaplanProjectKey, todoColumn.id, {
+        autoAssignUserId: null,
+      });
+      logger.info(
+        { itsaplanProjectKey, columnId: todoColumn.id },
+        "itsaplan.project.todo_column_commander_auto_assign_cleared",
+      );
+    }
+  } catch (error) {
+    logger.warn(
+      { err: error, itsaplanProjectKey },
+      "itsaplan.project.todo_column_clear_auto_assign_failed",
+    );
+  }
+}
 
 /**
  * Repairs event-set drift on a mapping's existing webhook: webhooks
@@ -538,6 +628,14 @@ async function backfillCommanderAgent(
     ...commander,
     commanderMentionEnabled: true,
   };
+  if (commander.commanderUserId) {
+    await ensureTodoColumnNoCommanderAutoAssign(
+      existing.itsaplanProjectKey,
+      commander.commanderUserId,
+      client,
+      deps.logger,
+    );
+  }
   await deps.store.upsert(updated);
   deps.logger.info(
     { paseoProjectKey: existing.paseoProjectKey, itsaplanProjectKey: existing.itsaplanProjectKey },

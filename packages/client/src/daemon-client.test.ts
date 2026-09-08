@@ -294,6 +294,24 @@ test("advertises consumer-provided browser automation capabilities", async () =>
   });
 });
 
+test("retry-safe creation rejects older hosts before sending any request", async () => {
+  const transport = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "receipt-gate",
+    transportFactory: () => transport.transport,
+    reconnect: { enabled: false },
+  });
+  clients.push(client);
+  const connecting = client.connect();
+  transport.triggerOpen();
+  await connecting;
+  await expect(
+    client.createAgent({ provider: "codex", cwd: "/project", idempotencyKey: "creation" }),
+  ).rejects.toThrow("Update the host to use retry-safe agent creation.");
+  expect(transport.sent).toEqual([]);
+});
+
 test("Hub management requires daemon support before dispatching requests", async () => {
   const mock = createMockTransport();
   const client = new DaemonClient({
@@ -743,6 +761,9 @@ test("advertises client capabilities in hello", async () => {
       provider_subagents: true,
       reasoning_merge_enum: true,
       terminal_reflowable_snapshot: true,
+      timeline_notifications: true,
+      plugin_timeline_items: true,
+      workspace_setup_blocked: true,
       browser_host: {
         supportedCommands: ["list_tabs"],
         hostKind: "desktop app",
@@ -944,6 +965,87 @@ test("does not reconnect after close when ensureConnected is called", async () =
   expect(client.getConnectionState().status).toBe("disposed");
 });
 
+test("ensureConnected reconnects immediately without leaving the scheduled retry armed", async () => {
+  useHeartbeatClock();
+  try {
+    const first = createMockTransport();
+    const second = createMockTransport();
+    const third = createMockTransport();
+    const transports = [first, second, third];
+    let transportIndex = 0;
+    const client = new DaemonClient({
+      url: "ws://test",
+      clientId: "clsk_immediate_reconnect",
+      reconnect: { enabled: true, baseDelayMs: 1_500, maxDelayMs: 1_500 },
+      transportFactory: () => {
+        const transport = transports[transportIndex];
+        if (!transport) throw new Error("unexpected extra reconnect");
+        transportIndex += 1;
+        return transport.transport;
+      },
+    });
+    clients.push(client);
+
+    const initialConnect = client.connect();
+    first.triggerOpen();
+    await initialConnect;
+    first.triggerClose({ code: 1001, reason: "app resumed" });
+    expect(client.getConnectionState().status).toBe("disconnected");
+
+    client.ensureConnected();
+    expect(client.getConnectionState().status).toBe("connecting");
+    expect(transportIndex).toBe(2);
+
+    second.triggerOpen();
+    expect(client.getConnectionState().status).toBe("connected");
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    expect(client.getConnectionState().status).toBe("connected");
+    expect(transportIndex).toBe(2);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("disabling reconnect cancels a pending retry until explicitly resumed", async () => {
+  useHeartbeatClock();
+  try {
+    const first = createMockTransport();
+    const second = createMockTransport();
+    const transports = [first, second];
+    let transportIndex = 0;
+    const client = new DaemonClient({
+      url: "ws://test",
+      clientId: "clsk_paused_reconnect",
+      reconnect: { enabled: true, baseDelayMs: 1_500, maxDelayMs: 1_500 },
+      transportFactory: () => {
+        const transport = transports[transportIndex];
+        if (!transport) throw new Error("unexpected extra reconnect");
+        transportIndex += 1;
+        return transport.transport;
+      },
+    });
+    clients.push(client);
+
+    const initialConnect = client.connect();
+    first.triggerOpen();
+    await initialConnect;
+    first.triggerClose({ code: 1001, reason: "app backgrounded" });
+
+    client.setReconnectEnabled(false);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(client.getConnectionState().status).toBe("disconnected");
+    expect(transportIndex).toBe(1);
+
+    client.setReconnectEnabled(true);
+    client.ensureConnected();
+    expect(client.getConnectionState().status).toBe("connecting");
+    expect(transportIndex).toBe(2);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("keeps the transport connected when a session RPC ping times out", async () => {
   const logger = createMockLogger();
   const mock = createMockTransport();
@@ -1113,6 +1215,56 @@ test("honors explicit fetchAgent timeout below the session RPC default", async (
 
   await vi.advanceTimersByTimeAsync(1);
   await expect(responsePromise).rejects.toThrow("Timeout waiting for message (5000ms)");
+});
+
+test("gives fleetSpawnApply an extended timeout above the session RPC default", async () => {
+  useHeartbeatClock();
+  const logger = createMockLogger();
+  const mock = createMockTransport();
+
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger,
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const responsePromise = client.fleetSpawnApply(
+    { provider: "omp", summary: "Spawn worker agent" },
+    "req-spawn-1",
+  );
+  let settled = false;
+  void responsePromise.then(
+    () => {
+      settled = true;
+      return undefined;
+    },
+    () => {
+      settled = true;
+      return undefined;
+    },
+  );
+
+  expect(parseSentFrame(mock.sent[0])).toEqual({
+    type: "mission_control.spawn.apply.request",
+    requestId: "req-spawn-1",
+    spawnPlan: { provider: "omp", summary: "Spawn worker agent" },
+  });
+
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(settled).toBe(false);
+
+  await vi.advanceTimersByTimeAsync(539_999);
+  expect(settled).toBe(false);
+
+  await vi.advanceTimersByTimeAsync(1);
+  await expect(responsePromise).rejects.toThrow("Timeout waiting for message (600000ms)");
 });
 
 test("preserves legacy fetchAgent id overload", async () => {
@@ -1988,6 +2140,49 @@ test("file context action RPCs correlate success and error responses", async () 
   });
 });
 
+test("serializes plugin source suffixes through the legacy path field", async () => {
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_plugin_source",
+    logger: createMockLogger(),
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const installPromise = client.installPluginSource({
+    source: "owner/repository:plugins/review",
+  });
+  const request = parseSentFrame(mock.sent.at(-1));
+  expect(request).toEqual({
+    type: "plugin.source.install.request",
+    requestId: expect.any(String),
+    source: "owner/repository",
+    pluginPath: "plugins/review",
+  });
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "plugin.source.install.response",
+      payload: {
+        requestId: request.requestId,
+        plugin: {
+          id: "review",
+          path: "/plugins/review",
+          enabled: true,
+          status: "running",
+        },
+      },
+    }),
+  );
+
+  await expect(installPromise).resolves.toMatchObject({ id: "review", status: "running" });
+});
+
 test("a connection loss rejects an in-flight file context action", async () => {
   const mock = createMockTransport();
   const client = new DaemonClient({
@@ -2591,10 +2786,11 @@ test("sends create_agent_request with workspace and caller identity", async () =
   clients.push(client);
 
   const connectPromise = client.connect();
-  mock.triggerOpen();
+  mock.triggerOpen({ features: { agentRequestReceipts: true } });
   await connectPromise;
 
   const createPromise = client.createAgent({
+    idempotencyKey: "one-creation",
     provider: "codex",
     cwd: "/tmp/project/.paseo/worktrees/feature-a",
     workspaceId: "ws-feature-a",
@@ -2608,6 +2804,7 @@ test("sends create_agent_request with workspace and caller identity", async () =
   expect(request).toEqual(
     expect.objectContaining({
       type: "create_agent_request",
+      idempotencyKey: "one-creation",
       workspaceId: "ws-feature-a",
       callerAgentId: "parent-agent",
     }),
@@ -4454,6 +4651,92 @@ test("detaches an agent through the namespaced detach RPC", async () => {
 
   await expect(promise).resolves.toBeUndefined();
 });
+test("moves an agent to a workspace through the namespaced agent.workspace.move RPC", async () => {
+  const logger = createMockLogger();
+  const mock = createMockTransport();
+
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger,
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const promise = client.moveAgentToWorkspace("agent-42", "workspace-target", "custom-request-id");
+
+  expect(mock.sent).toHaveLength(1);
+  const request = parseSentFrame(mock.sent[0]);
+  expect(request).toMatchObject({
+    type: "agent.workspace.move.request",
+    agentId: "agent-42",
+    workspaceId: "workspace-target",
+    requestId: "custom-request-id",
+  });
+
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "agent.workspace.move.response",
+      payload: {
+        requestId: "custom-request-id",
+        agentId: "agent-42",
+        workspaceId: "workspace-target",
+        accepted: true,
+        error: null,
+      },
+    }),
+  );
+
+  await expect(promise).resolves.toEqual({
+    agentId: "agent-42",
+    workspaceId: "workspace-target",
+  });
+});
+
+test("rejects when agent.workspace.move is not accepted", async () => {
+  const logger = createMockLogger();
+  const mock = createMockTransport();
+
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger,
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const promise = client.moveAgentToWorkspace("agent-42", "workspace-target");
+
+  expect(mock.sent).toHaveLength(1);
+  const request = parseSentFrame(mock.sent[0]);
+
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "agent.workspace.move.response",
+      payload: {
+        requestId: request.requestId,
+        agentId: "agent-42",
+        workspaceId: "workspace-target",
+        accepted: false,
+        error: "Agent agent-42 is running; stop it before moving workspaces",
+      },
+    }),
+  );
+
+  await expect(promise).rejects.toThrow(
+    "Agent agent-42 is running; stop it before moving workspaces",
+  );
+});
 
 test("sends active-scoped fetch_agents_request", async () => {
   const logger = createMockLogger();
@@ -4586,6 +4869,7 @@ test("fetches scoped recent provider sessions", async () => {
     providers: ["my-claude"],
     since: "2026-04-30T00:00:00.000Z",
     limit: 25,
+    query: "invoice",
   });
 
   expect(mock.sent).toHaveLength(1);
@@ -4598,6 +4882,7 @@ test("fetches scoped recent provider sessions", async () => {
       providers?: string[];
       since?: string;
       limit?: number;
+      query?: string;
     };
   };
   expect(request.message).toMatchObject({
@@ -4606,6 +4891,7 @@ test("fetches scoped recent provider sessions", async () => {
     providers: ["my-claude"],
     since: "2026-04-30T00:00:00.000Z",
     limit: 25,
+    query: "invoice",
   });
 
   mock.triggerMessage(
@@ -6154,4 +6440,53 @@ test("waitForFinish with timeout=0 omits timeoutMs and has no client deadline", 
   } finally {
     vi.useRealTimers();
   }
+});
+
+test("wire snapshot callers own expansion and receive hash references unchanged", async () => {
+  const transport = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "wire-catalog",
+    providerSnapshots: "wire",
+    reconnect: { enabled: false },
+    transportFactory: () => transport.transport,
+  });
+  clients.push(client);
+  const connected = client.connect();
+  transport.triggerOpen({ preserveSent: true });
+  await connected;
+  expect(JSON.parse(assertStr(transport.sent[0])).capabilities.provider_snapshot_references).toBe(
+    true,
+  );
+  const received: unknown[] = [];
+  client.on("providers_snapshot_update", (message) => received.push(message.payload));
+  const payload = {
+    entries: [],
+    snapshotHash: "content",
+    fetchedAt: { codex: "2026-09-06T12:00:00.000Z" },
+    generatedAt: "2026-09-06T12:00:00.000Z",
+  };
+  transport.triggerMessage(wrapSessionMessage({ type: "providers_snapshot_update", payload }));
+  expect(received).toEqual([payload]);
+  const request = client.getProvidersSnapshot();
+  const sent = parseSentFrame(transport.sent.at(-1)!);
+  const body = {
+    ...payload,
+    compactSnapshot: {
+      entries: [
+        {
+          provider: "codex",
+          enabled: true,
+          status: "ready",
+          models: [{ id: "astra", label: "Astra" }],
+        },
+      ],
+      thinkingSets: [],
+    },
+    requestId: sent.requestId,
+  };
+  transport.triggerMessage(
+    wrapSessionMessage({ type: "get_providers_snapshot_response", payload: body }),
+  );
+  expect(await request).toEqual(body);
 });

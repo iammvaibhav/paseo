@@ -7,8 +7,8 @@ import {
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { View, type PressableStateCallbackType } from "react-native";
-import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import type { PressableStateCallbackType } from "react-native";
+import { withUnistyles } from "react-native-unistyles";
 import {
   ArrowDownAZ,
   Captions,
@@ -38,16 +38,11 @@ import {
   MenuTrigger,
   type MenuPageDefinition,
 } from "@/components/ui/menu";
-import { HostGlyph } from "@/components/host-glyph";
 import { isWeb } from "@/constants/platform";
 import { useHosts } from "@/runtime/host-runtime";
 import { useSidebarModel } from "@/components/sidebar/sidebar-model";
-import { ProjectIconView } from "@/components/project-icon-view";
-import { useProjectIcons } from "@/projects/icons";
-import { resolveSidebarProjectIconTargets } from "@/utils/sidebar-project-row-model";
-import { projectIconPlaceholderLabelFromDisplayName } from "@/utils/project-display-name";
-import type { SidebarProjectEntry } from "@/hooks/use-sidebar-workspaces-list";
 import type { Theme } from "@/styles/theme";
+import { HostFilterPage, ProjectFilterPage, menuTriggerStyles, MENU_WIDTH } from "./filter-pages";
 import {
   hasActiveSidebarLabelFilter,
   SIDEBAR_UNLABELLED_LABEL_KEY,
@@ -71,7 +66,6 @@ const ThemedCircle = withUnistyles(Circle);
 
 /** Fits the item's 16pt leading slot with a hair of room, matching the trailing check. */
 const OPTION_ICON_SIZE = 14;
-const MENU_WIDTH = 232;
 
 /**
  * Unlabelled's stand-in for a color dot: the same circle at the same size, hollow.
@@ -189,8 +183,8 @@ export function SidebarDisplayPreferencesMenu(): ReactElement {
 
   const triggerStyle = useCallback(
     ({ hovered = false }: PressableStateCallbackType & { hovered?: boolean }) => [
-      styles.trigger,
-      hovered && styles.triggerHovered,
+      menuTriggerStyles.trigger,
+      hovered && menuTriggerStyles.triggerHovered,
     ],
     [],
   );
@@ -272,7 +266,15 @@ export function SidebarDisplayPreferencesMenu(): ReactElement {
       definitions.push({
         id: "hostFilter",
         title: t("sidebar.display.hostFilter.label"),
-        content: <HostFilterPage preferences={preferences} hosts={hosts} />,
+        content: (
+          <HostFilterPage
+            hosts={hosts}
+            hostFilters={preferences.hostFilters}
+            onToggleHost={preferences.toggleHostFilter}
+            onClearHosts={preferences.clearHostFilters}
+            testIDPrefix="sidebar-host-filter"
+          />
+        ),
       });
     }
     if (showProjectFilter) {
@@ -283,7 +285,9 @@ export function SidebarDisplayPreferencesMenu(): ReactElement {
           <ProjectFilterPage
             projects={allProjects}
             resolvedProjectFilters={resolvedProjectFilters}
-            preferences={preferences}
+            onToggleProject={preferences.toggleProjectFilter}
+            onClearProjects={preferences.clearProjectFilters}
+            testIDPrefix="sidebar-project-filter"
           />
         ),
       });
@@ -634,174 +638,3 @@ function ChecksSubTrigger(): ReactElement {
     </MenuSubTrigger>
   );
 }
-
-/**
- * Every project the sidebar could show, one row each.
- *
- * A workspace belongs to exactly one project, so this is a plain allowlist — the same shape as the
- * host page, and deliberately not the label page's tri-state.
- *
- * Selection reads `resolvedProjectFilters`, not the stored list. A stored key whose project is not
- * currently visible filters nothing, so showing it as checked here would contradict the sidebar.
- */
-function ProjectFilterPage({
-  projects,
-  resolvedProjectFilters,
-  preferences,
-}: {
-  projects: readonly SidebarProjectEntry[];
-  resolvedProjectFilters: readonly string[];
-  preferences: Preferences;
-}): ReactElement {
-  const { t } = useTranslation();
-  const iconTargets = useMemo(() => resolveSidebarProjectIconTargets(projects), [projects]);
-  // Shares TanStack's cache with the sidebar's own call, so this subscribes rather than refetches.
-  const iconByProjectViewKey = useProjectIcons({ projects: iconTargets });
-
-  return (
-    <>
-      <MenuItem
-        selected={resolvedProjectFilters.length === 0}
-        closeOnSelect={false}
-        onSelect={preferences.clearProjectFilters}
-        testID="sidebar-project-filter-all"
-      >
-        {t("sidebar.display.projectFilter.all")}
-      </MenuItem>
-      {projects.map((project) => (
-        <ProjectFilterItem
-          key={project.viewKey}
-          viewKey={project.viewKey}
-          label={project.projectName}
-          iconDataUri={iconByProjectViewKey.get(project.viewKey) ?? null}
-          selected={resolvedProjectFilters.includes(project.viewKey)}
-          onToggle={preferences.toggleProjectFilter}
-        />
-      ))}
-    </>
-  );
-}
-
-function ProjectFilterItem({
-  viewKey,
-  label,
-  iconDataUri,
-  selected,
-  onToggle,
-}: {
-  viewKey: string;
-  label: string;
-  iconDataUri: string | null;
-  selected: boolean;
-  onToggle: (viewKey: string) => void;
-}): ReactElement {
-  const handleSelect = useCallback(() => onToggle(viewKey), [viewKey, onToggle]);
-  const leading = useMemo(
-    () => (
-      <ProjectIconView
-        iconDataUri={iconDataUri}
-        initial={projectIconPlaceholderLabelFromDisplayName(label).charAt(0).toUpperCase()}
-        projectViewKey={viewKey}
-        size={OPTION_ICON_SIZE}
-        textStyle={styles.projectIconText}
-      />
-    ),
-    [iconDataUri, label, viewKey],
-  );
-
-  return (
-    <MenuItem
-      selected={selected}
-      leading={leading}
-      closeOnSelect={false}
-      onSelect={handleSelect}
-      testID={`sidebar-project-filter-${viewKey}`}
-    >
-      {label}
-    </MenuItem>
-  );
-}
-
-function HostFilterPage({
-  preferences,
-  hosts,
-}: {
-  preferences: Preferences;
-  hosts: ReturnType<typeof useHosts>;
-}): ReactElement {
-  const { t } = useTranslation();
-  return (
-    <>
-      <MenuItem
-        selected={preferences.hostFilters.length === 0}
-        closeOnSelect={false}
-        onSelect={preferences.clearHostFilters}
-        testID="sidebar-host-filter-all"
-      >
-        {t("sidebar.display.hostFilter.all")}
-      </MenuItem>
-      {hosts.map((host) => (
-        <HostFilterItem
-          key={host.serverId}
-          serverId={host.serverId}
-          label={host.label?.trim() || host.serverId}
-          selected={preferences.hostFilters.includes(host.serverId)}
-          onToggle={preferences.toggleHostFilter}
-        />
-      ))}
-    </>
-  );
-}
-
-/** The one option row whose mark is live state rather than an icon. */
-function HostFilterItem({
-  serverId,
-  label,
-  selected,
-  onToggle,
-}: {
-  serverId: string;
-  label: string;
-  selected: boolean;
-  onToggle: (serverId: string) => void;
-}): ReactElement {
-  const handleSelect = useCallback(() => onToggle(serverId), [onToggle, serverId]);
-  const leading = useMemo(
-    () => (
-      <View testID={`sidebar-host-filter-status-${serverId}`}>
-        <HostGlyph serverId={serverId} label={label} size={14} />
-      </View>
-    ),
-    [label, serverId],
-  );
-
-  return (
-    <MenuItem
-      selected={selected}
-      closeOnSelect={false}
-      leading={leading}
-      onSelect={handleSelect}
-      testID={`sidebar-host-filter-${serverId}`}
-    >
-      {label}
-    </MenuItem>
-  );
-}
-
-const styles = StyleSheet.create((theme) => ({
-  trigger: {
-    width: 28,
-    height: 28,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: theme.borderRadius.md,
-  },
-  triggerHovered: {
-    backgroundColor: theme.colors.surfaceSidebarHover,
-  },
-  // The icon sits in a 14pt menu slot, so the fallback initial is sized down to match rather
-  // than reusing the sidebar row's 16pt figure.
-  projectIconText: {
-    fontSize: 8,
-  },
-}));

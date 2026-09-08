@@ -360,12 +360,10 @@ function normalizeInitialValues(input: {
     return undefined;
   }
   return {
-    serverId: input.selectedServerId,
     provider: config.provider,
     model: config.model ?? null,
     modeId: config.modeId ?? null,
     thinkingOptionId: config.thinkingOptionId ?? null,
-    workingDir: config.cwd,
   };
 }
 
@@ -727,24 +725,22 @@ function buildInitialState(snapshot: WebhookFormSnapshot): WebhookFormState {
 
 function toFormState(state: WebhookFormState): FormState {
   return {
-    serverId: state.selectedServerId,
     provider: state.selectedProvider,
     modeId: state.selectedMode,
     model: state.selectedModel,
     thinkingOptionId: state.selectedThinkingOptionId,
-    workingDir: state.workingDir,
   };
 }
 
+// The host and working directory are owned by WebhookFormState, not by the
+// shared resolver, so they survive resolution untouched.
 function applyResolvedFormState(state: WebhookFormState, form: FormState): WebhookFormState {
   return {
     ...state,
-    selectedServerId: form.serverId,
     selectedProvider: form.provider,
     selectedMode: form.modeId,
     selectedModel: form.model,
     selectedThinkingOptionId: form.thinkingOptionId,
-    workingDir: form.workingDir,
   };
 }
 
@@ -965,11 +961,6 @@ export function openWebhookForm(snapshot: WebhookFormSnapshot): WebhookFormModel
       if (closed || state.selectedServerId === serverId) {
         return;
       }
-      userModified = {
-        ...userModified,
-        serverId: true,
-        workingDir: true,
-      };
       publish(
         clearProviderSelection({
           ...state,
@@ -994,7 +985,6 @@ export function openWebhookForm(snapshot: WebhookFormSnapshot): WebhookFormModel
       if (!providerScopeChanged && state.selectedProjectOptionId === target.optionId) {
         return;
       }
-      userModified = { ...userModified, serverId: true, workingDir: true };
       const nextState = {
         ...state,
         selectedServerId: target.serverId,

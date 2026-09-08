@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 export interface ItsaplanEmbedProps {
   origin: string;
+  project?: string;
   /** Bump to remount the embed (retry after a failed load). */
   attempt: number;
   onLoaded: () => void;
@@ -28,9 +29,24 @@ const IFRAME_STYLE = {
   backgroundColor: "white",
 } as const;
 
-export function ItsaplanEmbed({ origin, attempt, onLoaded, onFailed, testID }: ItsaplanEmbedProps) {
+export function ItsaplanEmbed({
+  origin,
+  project,
+  attempt,
+  onLoaded,
+  onFailed,
+  testID,
+}: ItsaplanEmbedProps) {
   const { t } = useTranslation();
   const [loaded, setLoaded] = useState(false);
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const srcRef = useRef<string | null>(null);
+  if (srcRef.current == null) {
+    const trimmed = project?.trim();
+    srcRef.current = trimmed
+      ? `${origin.replace(/\/+$/, "")}/project/${encodeURIComponent(trimmed)}`
+      : origin;
+  }
   // Both: local state cancels the watchdog below, and the parent needs telling
   // so it can drop its loading overlay. Setting only the local flag left the
   // screen spinning forever on a perfectly good load.
@@ -38,6 +54,17 @@ export function ItsaplanEmbed({ origin, attempt, onLoaded, onFailed, testID }: I
     setLoaded(true);
     onLoaded();
   }, [onLoaded]);
+
+  useEffect(() => {
+    if (!loaded || project == null || !iframeRef.current?.contentWindow) {
+      return;
+    }
+    iframeRef.current.contentWindow.postMessage(
+      { type: "paseo:navigate-project", projectKey: project.trim() },
+      "*",
+    );
+  }, [project, loaded]);
+
   useEffect(() => {
     // key={attempt} remounts this component per retry, so each attempt starts
     // un-loaded with a fresh watchdog. A cross-origin iframe gives no error
@@ -50,12 +77,14 @@ export function ItsaplanEmbed({ origin, attempt, onLoaded, onFailed, testID }: I
     const timer = setTimeout(onFailed, LOAD_WATCHDOG_MS);
     return () => clearTimeout(timer);
   }, [loaded, onFailed]);
+
   return (
     <iframe
+      ref={iframeRef}
       key={attempt}
       data-testid={testID}
       title={t("sidebar.sections.itsaplan")}
-      src={origin}
+      src={srcRef.current ?? origin}
       onLoad={handleLoad}
       // itsaplan is a trusted first-party app the user points this at, and it
       // needs same-origin to read its own session cookie and run its own
@@ -79,3 +108,11 @@ export function ItsaplanEmbed({ origin, attempt, onLoaded, onFailed, testID }: I
  * are created by rendering them.
  */
 export function warmItsaplanEmbed(_origin: string): void {}
+
+export function navigateItsaplanEmbedProject(_projectKey: string): void {}
+
+export function prefetchItsaplanProject(_projectKey: string): void {}
+
+export function prefetchItsaplanProjects(_projectKeys: readonly string[]): void {}
+
+export function prefetchItsaplanAllProjects(): void {}

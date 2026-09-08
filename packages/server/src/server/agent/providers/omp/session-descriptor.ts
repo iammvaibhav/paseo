@@ -80,8 +80,12 @@ export async function listOmpImportableSessions(
   const matchesCwd = options.cwd ? createRealpathAwarePathMatcher(options.cwd) : null;
   const limit = options.limit ?? 20;
   const ranked = await rankSessionFilesByMtime(files);
-  const candidateLimit = Math.max(limit * IMPORT_CANDIDATE_OVERSCAN, IMPORT_CANDIDATE_MIN);
-  const candidates = matchesCwd ? ranked : ranked.slice(0, candidateLimit);
+  const candidateLimit = Math.min(
+    options.scanLimit ?? Math.max(limit * IMPORT_CANDIDATE_OVERSCAN, IMPORT_CANDIDATE_MIN),
+    500,
+  );
+  const candidates =
+    options.scanLimit === undefined && matchesCwd ? ranked : ranked.slice(0, candidateLimit);
   const sessions: ImportableProviderSession[] = [];
 
   for (const entry of candidates) {
@@ -742,6 +746,11 @@ function parseSessionFileName(sessionFile: string): { sessionId: string; created
  * Resolves an OMP session file path. If the given file is missing or has a stub/empty
  * session (< 2000 bytes), searches `~/.omp/agent/sessions/` recursively for a matching
  * session filename (`<timestamp>_<sessionId>.jsonl`) that contains full session history.
+ *
+ * A bare session id is resolved the same way. Session import persists the provider
+ * handle the caller supplied, and for omp that is an id, not a path. Handed to omp
+ * unresolved it is a *relative path*: omp mints an empty session beside the cwd and
+ * the agent opens blank while its real transcript sits untouched on disk.
  */
 export async function resolveOmpSessionFile(
   sessionFile: string,
@@ -761,19 +770,27 @@ export async function resolveOmpSessionFile(
     // File does not exist on disk
   }
 
+  const homeDir = options?.homeDir ?? homedir();
+  const sessionsRoot = path.join(homeDir, ".omp", "agent", "sessions");
+  // omp names transcripts `<timestamp>_<sessionId>.jsonl`, so a stale path matches on
+  // basename and a bare session id matches on suffix.
   const fileName = path.basename(trimmed);
-  if (!fileName.endsWith(".jsonl")) {
+  const isSessionPath = fileName.endsWith(".jsonl");
+  if (!isSessionPath && trimmed.includes(path.sep)) {
     return trimmed;
   }
 
-  const homeDir = options?.homeDir ?? homedir();
-  const sessionsRoot = path.join(homeDir, ".omp", "agent", "sessions");
-
-  const match = await findSessionFileByBasename(sessionsRoot, fileName);
+  const sessionIdSuffix = `_${trimmed}.jsonl`;
+  const match = await findSessionFile(sessionsRoot, (name) =>
+    isSessionPath ? name === fileName : name.endsWith(sessionIdSuffix),
+  );
   return match ?? trimmed;
 }
 
-async function findSessionFileByBasename(dir: string, fileName: string): Promise<string | null> {
+async function findSessionFile(
+  dir: string,
+  matchesName: (name: string) => boolean,
+): Promise<string | null> {
   let entries: Dirent[];
   try {
     entries = await readdir(dir, { withFileTypes: true });
@@ -784,11 +801,11 @@ async function findSessionFileByBasename(dir: string, fileName: string): Promise
   for (const entry of entries) {
     const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      const match = await findSessionFileByBasename(fullPath, fileName);
+      const match = await findSessionFile(fullPath, matchesName);
       if (match) {
         return match;
       }
-    } else if (entry.isFile() && entry.name === fileName) {
+    } else if (entry.isFile() && matchesName(entry.name)) {
       try {
         const fileStat = await stat(fullPath);
         if (fileStat.size > 2000) {

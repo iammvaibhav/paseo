@@ -1,7 +1,7 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { ItsaplanApiError, ItsaplanClient } from "./client.js";
+import { buildItsaplanIssueUrl, ItsaplanApiError, ItsaplanClient } from "./client.js";
 import {
   MAX_TICKET_IMAGE_BYTES,
   resolveTicketAttachments,
@@ -33,7 +33,13 @@ interface State {
       issue: { id: number };
     }>;
   };
-  columns: Array<{ id: number; projectId: number; name: string; stateType: string }>;
+  columns: Array<{
+    id: number;
+    projectId: number;
+    name: string;
+    stateType: string;
+    autoAssignUserId?: string | null;
+  }>;
   labels: Array<{ id: number; projectId: number; name: string; color?: string }>;
   attachments?: Array<{
     id: string;
@@ -221,6 +227,18 @@ function startServer(apiKey: string, state: State) {
         };
         state.columns.push(column);
         send(201, column);
+        return;
+      }
+      const patchColumnMatch = /^\/projects\/([^/]+)\/columns\/(\d+)$/.exec(path);
+      if (req.method === "PATCH" && patchColumnMatch) {
+        const colId = Number(patchColumnMatch[2]);
+        const column = state.columns.find((c) => c.id === colId);
+        if (!column) {
+          send(404, { error: "not found" });
+          return;
+        }
+        Object.assign(column, body);
+        send(200, column);
         return;
       }
       if (req.method === "POST" && path === "/projects") {
@@ -541,6 +559,13 @@ describe("ItsaplanClient", () => {
     expect(state.columns).toHaveLength(3);
   });
 
+  test("updateColumn patches column properties including autoAssignUserId", async () => {
+    const updated = await client.updateColumn("ENG", 11, { autoAssignUserId: "bot-user-1" });
+    expect(updated.id).toBe(11);
+    expect(updated.autoAssignUserId).toBe("bot-user-1");
+    expect(state.columns.find((c) => c.id === 11)?.autoAssignUserId).toBe("bot-user-1");
+  });
+
   test("createProject posts key and name", async () => {
     const created = await client.createProject({ key: "NEW", name: "New Project" });
     expect(created).toEqual({ id: 42, key: "NEW", name: "New Project" });
@@ -659,5 +684,35 @@ describe("ItsaplanClient", () => {
   test("rejects when the api key is wrong", async () => {
     const badClient = new ItsaplanClient({ baseUrl: handle.baseUrl, apiKey: "wrong" });
     await expect(badClient.getIssue(1)).rejects.toMatchObject({ status: 403 });
+  });
+});
+
+describe("buildItsaplanIssueUrl", () => {
+  test("addresses the web app's issue route by sequence number", () => {
+    expect(buildItsaplanIssueUrl({ baseUrl: "http://10.7.0.1:3001" }, "PASEO", 43)).toBe(
+      "http://10.7.0.1:3001/project/PASEO/issue/43",
+    );
+  });
+
+  test("prefers webBaseUrl over the api origin baseUrl names", () => {
+    expect(
+      buildItsaplanIssueUrl(
+        { baseUrl: "http://10.7.0.1:3000", webBaseUrl: "https://10.7.0.1:8443" },
+        "PASEO",
+        43,
+      ),
+    ).toBe("https://10.7.0.1:8443/project/PASEO/issue/43");
+  });
+
+  test("falls back to baseUrl when webBaseUrl is blank", () => {
+    expect(buildItsaplanIssueUrl({ baseUrl: "http://api.test", webBaseUrl: "   " }, "ENG", 7)).toBe(
+      "http://api.test/project/ENG/issue/7",
+    );
+  });
+
+  test("trims trailing slashes and encodes the project key", () => {
+    expect(buildItsaplanIssueUrl({ baseUrl: "http://web.test///" }, "A B/C", 2)).toBe(
+      "http://web.test/project/A%20B%2FC/issue/2",
+    );
   });
 });

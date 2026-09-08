@@ -10,7 +10,6 @@ import {
 } from "react";
 import {
   FlatList,
-  Keyboard,
   Platform,
   View,
   type LayoutChangeEvent,
@@ -24,6 +23,9 @@ import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import type { Theme } from "@/styles/theme";
 import { useStableEvent } from "@/hooks/use-stable-event";
+import { useSettledKeyboardShift } from "@/hooks/keyboard-shift-context";
+import { resolveStreamKeyboardInset } from "@/hooks/keyboard-shift-policy";
+import { useRevisedHistoryRows } from "./history-row-revision";
 import { type BottomAnchorMode, useBottomAnchorController } from "./bottom-anchor-controller";
 import { useScrollKeyboardDismiss } from "./scroll-keyboard-dismiss/use-scroll-keyboard-dismiss";
 import type { StreamRenderInput, StreamStrategy, StreamViewportHandle } from "./strategy";
@@ -69,32 +71,6 @@ interface SavedNativeScrollPosition {
 }
 
 const HISTORY_START_SETTLE_FRAMES = 2;
-
-interface HistoryRowDisplayVariants {
-  regular?: unknown;
-  compact?: unknown;
-}
-
-const historyRowDisplayVariants = new WeakMap<object, HistoryRowDisplayVariants>();
-
-function getHistoryRowDisplayVariant<T>(item: T, compact: boolean): T {
-  // The cache is keyed by object identity; WeakMap requires an object key and
-  // rows are always objects, so the cast is only for the type system.
-  const key = item as unknown as object;
-  let variants = historyRowDisplayVariants.get(key);
-  if (!variants) {
-    variants = {};
-    historyRowDisplayVariants.set(key, variants);
-  }
-  const variantKey = compact ? "compact" : "regular";
-  const existing = variants[variantKey];
-  if (existing !== undefined) {
-    return existing as T;
-  }
-  const next = { ...item };
-  variants[variantKey] = next;
-  return next;
-}
 
 function NativeStreamViewport<T>(props: StreamRenderInput<T> & { strategy: StreamStrategy }) {
   const {
@@ -142,6 +118,7 @@ function NativeStreamViewport<T>(props: StreamRenderInput<T> & { strategy: Strea
   const scrollOffsetYRef = useRef(0);
   const isUserScrollActiveRef = useRef(false);
   const scrollKeyboardDismiss = useScrollKeyboardDismiss();
+  const settledKeyboardShift = useSettledKeyboardShift();
   const userScrollEndFrameIdRef = useRef<number | null>(null);
   const programmaticScrollEventBudgetRef = useRef(0);
   const [isNativeViewportSettling, setIsNativeViewportSettling] = useState(false);
@@ -163,27 +140,7 @@ function NativeStreamViewport<T>(props: StreamRenderInput<T> & { strategy: Strea
     }
     return [...segments.historyVirtualized, ...segments.historyMounted];
   }, [segments.historyMounted, segments.historyVirtualized]);
-  // Keep unchanged item identities intact so live updates only rerender rows
-  // whose projected content or local display state actually changed. A rare
-  // breakpoint change intentionally refreshes the whole history window.
-  const globallyRevisedHistoryRows = useMemo(() => {
-    const globalDisplayState = historyRowRevision?.globalDisplayState ?? false;
-    return historyItems.map((item) => getHistoryRowDisplayVariant(item, globalDisplayState));
-  }, [historyItems, historyRowRevision?.globalDisplayState]);
-  const displayStateHistoryRows = useMemo(
-    () =>
-      globallyRevisedHistoryRows.map((item, index) =>
-        historyRowRevision?.displayStateById.has(resolveKey(item, index)) ? { ...item } : item,
-      ),
-    [globallyRevisedHistoryRows, historyRowRevision?.displayStateById, resolveKey],
-  );
-  const historyRows = useMemo(
-    () =>
-      displayStateHistoryRows.map((item, index) =>
-        historyRowRevision?.contentById.has(resolveKey(item, index)) ? { ...item } : item,
-      ),
-    [displayStateHistoryRows, historyRowRevision?.contentById, resolveKey],
-  );
+  const historyRows = useRevisedHistoryRows(historyItems, historyRowRevision);
   const getHistoryStartPaginationInput = useStableEvent((): HistoryStartPaginationInput => {
     const metrics = streamViewportMetricsRef.current;
     const hasMeasuredViewport =
@@ -335,6 +292,34 @@ function NativeStreamViewport<T>(props: StreamRenderInput<T> & { strategy: Strea
     Platform.OS === "android" && bottomAnchorController.mode === "sticky-bottom"
       ? undefined
       : DEFAULT_MAINTAIN_VISIBLE_CONTENT_POSITION;
+  const streamKeyboardInset = useMemo(
+    () =>
+      resolveStreamKeyboardInset({
+        platform: Platform.OS === "ios" ? "ios" : "android",
+        settledShift: settledKeyboardShift,
+      }),
+    [settledKeyboardShift],
+  );
+  const listContentContainerStyle = useMemo(
+    () => [
+      baseListContentContainerStyle,
+      { paddingBottom: streamKeyboardInset.contentContainerPaddingBottom },
+    ],
+    [baseListContentContainerStyle, streamKeyboardInset.contentContainerPaddingBottom],
+  );
+  const listInsetProps = useMemo(
+    () =>
+      streamKeyboardInset.contentInset
+        ? {
+            automaticallyAdjustContentInsets: false,
+            automaticallyAdjustsScrollIndicatorInsets: false,
+            contentInsetAdjustmentBehavior: "never" as const,
+            contentInset: streamKeyboardInset.contentInset,
+            scrollIndicatorInsets: streamKeyboardInset.contentInset,
+          }
+        : {},
+    [streamKeyboardInset.contentInset],
+  );
 
   const cancelPendingScrollRestore = useCallback(() => {
     const pendingFrame = pendingRestoreFrameRef.current;
@@ -448,27 +433,7 @@ function NativeStreamViewport<T>(props: StreamRenderInput<T> & { strategy: Strea
     };
   }, [agentId, clearNativeViewportSettling, clearPendingUserScrollEnd, evaluateHistoryStart]);
 
-  useEffect(() => {
-    const keyboardEvents = [
-      "keyboardWillShow",
-      "keyboardWillHide",
-      "keyboardDidShow",
-      "keyboardDidHide",
-      "keyboardWillChangeFrame",
-      "keyboardDidChangeFrame",
-    ] as const;
-    const subscriptions = keyboardEvents.map((eventName) =>
-      Keyboard.addListener(eventName, () => {
-        markNativeViewportSettling();
-      }),
-    );
-    return () => {
-      for (const subscription of subscriptions) {
-        subscription.remove();
-      }
-      clearNativeViewportSettling();
-    };
-  }, [clearNativeViewportSettling, markNativeViewportSettling]);
+  useEffect(() => () => clearNativeViewportSettling(), [clearNativeViewportSettling]);
 
   useEffect(() => {
     if (!isActive || suppressStickyRestickRef.current) {
@@ -757,6 +722,7 @@ function NativeStreamViewport<T>(props: StreamRenderInput<T> & { strategy: Strea
   // data or the live header changes, preserving the row identities above.
   return (
     <FlatList
+      {...listInsetProps}
       ref={flatListRef}
       data={historyRows}
       renderItem={renderItem}
@@ -766,7 +732,7 @@ function NativeStreamViewport<T>(props: StreamRenderInput<T> & { strategy: Strea
       nativeID="agent-chat-scroll-native-virtualized"
       ListHeaderComponent={liveHeaderContent ?? undefined}
       ListFooterComponent={historyFooterContent ?? undefined}
-      contentContainerStyle={baseListContentContainerStyle}
+      contentContainerStyle={listContentContainerStyle}
       style={listStyle}
       onLayout={handleListLayout}
       onScroll={handleScroll}

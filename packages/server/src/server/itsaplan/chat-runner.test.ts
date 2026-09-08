@@ -749,6 +749,47 @@ describe("ItsaplanChatRunner", () => {
     expect(fakeServer.getMessage(messageId)?.result?.error).toContain("reply window");
   });
 
+  test("forgets a rejected credential and stops claiming instead of retrying forever", async () => {
+    // Live incident shape: the itsaplan project was deleted, so its agent key
+    // answers 403 on every claim. The loops used to retry that every 2s.
+    const mapping = store.getByPaseoProjectKey("ENG");
+    if (!mapping) {
+      throw new Error("test mapping missing");
+    }
+    await store.upsert({ ...mapping, commanderApiKey: "itp_rotated_away" });
+    // Queued before start: with a key itsaplan rejects, every claim throws, so
+    // this can only be picked up if a loop is still running.
+    const messageId = fakeServer.enqueueChat(commanderAgent.id, "Hello?");
+    const fakeMC = createFakeMissionControl(async () => ({
+      ok: true,
+      instructionId: "#1",
+      deliveredAs: "run",
+    }));
+    runner = new ItsaplanChatRunner({
+      logger: createTestLogger(),
+      projectStore: store,
+      getConfig: () => config,
+      missionControl: fakeMC.control,
+      supervisorIntervalMs: 15,
+    });
+    runner.start();
+
+    await vi.waitFor(() => {
+      expect(store.getByPaseoProjectKey("ENG")?.commanderApiKey).toBeUndefined();
+    });
+    // The mapping keeps everything the bridge needs; only the dead key is gone,
+    // which is the state the project sync's regenerate-key recovery expects.
+    expect(store.getByPaseoProjectKey("ENG")).toMatchObject({
+      itsaplanProjectId: mapping.itsaplanProjectId,
+      commanderAgentId: commanderAgent.id,
+    });
+
+    // Forgetting the key is the loop's LAST action, and the supervisor never
+    // restarts a keyless mapping — so nothing can claim the queued message.
+    expect(fakeServer.getMessage(messageId)?.result ?? null).toBeNull();
+    expect(fakeMC.deliverCalls).toHaveLength(0);
+  });
+
   test("claims an agent mention run, delivers it, heartbeats while pending, and reports success with reply output and comment on issue", async () => {
     const fakeMC = createFakeMissionControl(async () => ({
       ok: true,

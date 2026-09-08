@@ -44,6 +44,7 @@ import {
   Settings,
   MoreVertical,
   Plus,
+  SquareKanban,
   Trash2,
   Home,
 } from "lucide-react-native";
@@ -62,11 +63,19 @@ import { useHostFeatureMap } from "@/runtime/host-features";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useProjectIcons } from "@/projects/icons";
 import {
+  buildItsaplanRoute,
   buildNewWorkspaceRoute,
   buildProjectSettingsRoute,
   buildSessionsRoute,
   parseHostWorkspaceRouteFromPathname,
 } from "@/utils/host-routes";
+import { resolveProjectItsaplanKey } from "@/itsaplan/itsaplan-project-key";
+import { setItsaplanSelectedProject } from "@/itsaplan/itsaplan-selected-project";
+import {
+  navigateItsaplanEmbedProject,
+  prefetchItsaplanProject,
+  prefetchItsaplanProjects,
+} from "@/itsaplan/itsaplan-webview";
 import {
   shouldShowSidebarHostLabels,
   useSidebarProjectStatusBucket,
@@ -120,6 +129,8 @@ import {
   SidebarWorkspaceTrailingActionOverlay,
   SidebarWorkspaceTrailingActionSlot,
 } from "@/components/sidebar/sidebar-workspace-row-content";
+import { SidebarWorkspaceAgentDropIndicator } from "@/components/sidebar/sidebar-workspace-drop-indicator";
+import { useAgentTabDropRow } from "@/workspace-tabs/use-agent-tab-drop";
 import { useOpenKebabMenuVisibility } from "@/components/sidebar/use-open-kebab-menu-visibility";
 import {
   SidebarFilterEmptyState,
@@ -174,6 +185,7 @@ const WORKSPACE_STATUS_DOT_WIDTH = 14;
 const ThemedExternalLink = withUnistyles(ExternalLink);
 const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
 const ThemedPlus = withUnistyles(Plus);
+const ThemedSquareKanban = withUnistyles(SquareKanban);
 const ThemedMoreVertical = withUnistyles(MoreVertical);
 const ThemedTrash2 = withUnistyles(Trash2);
 const ThemedSettings = withUnistyles(Settings);
@@ -247,13 +259,14 @@ interface SidebarWorkspaceListProps {
   onRefresh?: () => void;
   onWorkspacePress?: () => void;
   onAddProject?: () => void;
+  onImportSession?: () => void;
   listFooterComponent?: ReactElement | null;
   // Rendered inside the scroll area, below the Pinned section and above the workspace
   // list. Holds the "Workspaces" section header so pinned items sit above it.
   listHeaderComponent?: ReactElement | null;
   /** Gesture ref for coordinating with parent gestures (e.g., sidebar close) */
   parentGestureRef?: MutableRefObject<GestureType | undefined>;
-  dragGestureHostPresented?: boolean;
+  dragGestureHostActive?: boolean;
 }
 
 interface ProjectHeaderRowProps {
@@ -450,6 +463,15 @@ function ProjectRowTrailingActions({
   removeProjectStatus: "idle" | "pending" | "success";
 }) {
   const actionsVisible = isHovered || platformIsNative || isMobileBreakpoint;
+  const trailingItsaplanKey = useMemo(
+    () => resolveProjectItsaplanKey(project, displayName),
+    [project, displayName],
+  );
+  useEffect(() => {
+    if (isHovered && trailingItsaplanKey) {
+      prefetchItsaplanProject(trailingItsaplanKey);
+    }
+  }, [isHovered, trailingItsaplanKey]);
   return (
     <View style={styles.projectTrailingActions}>
       {worktreeTarget ? (
@@ -461,6 +483,12 @@ function ProjectRowTrailingActions({
           testID={`sidebar-project-new-worktree-${projectViewKey}`}
         />
       ) : null}
+      <ProjectItsaplanButton
+        displayName={displayName}
+        project={project}
+        visible={actionsVisible}
+        testID={`sidebar-project-itsaplan-${projectViewKey}`}
+      />
       {onRemoveProject ? (
         <View
           style={!actionsVisible && styles.projectKebabButtonHidden}
@@ -882,6 +910,82 @@ function NewWorktreeButton({
   );
 }
 
+function ProjectItsaplanButton({
+  displayName,
+  project,
+  visible,
+  testID,
+}: {
+  displayName: string;
+  project: SidebarProjectEntry;
+  visible: boolean;
+  testID: string;
+}) {
+  const { t } = useTranslation();
+  const projectKey = useMemo(
+    () => resolveProjectItsaplanKey(project, displayName),
+    [project, displayName],
+  );
+
+  const pressableStyle = useCallback(
+    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+      styles.projectIconActionButton,
+      !visible && styles.projectIconActionButtonHidden,
+      (Boolean(hovered) || pressed) && styles.projectIconActionButtonHovered,
+    ],
+    [visible],
+  );
+
+  const handlePress = useCallback(
+    (event: GestureResponderEvent) => {
+      event.stopPropagation();
+      if (projectKey) {
+        setItsaplanSelectedProject(projectKey);
+        navigateItsaplanEmbedProject(projectKey);
+      }
+      router.replace(buildItsaplanRoute({ project: projectKey }));
+    },
+    [projectKey],
+  );
+
+  const handleHoverIn = useCallback(() => {
+    if (projectKey) {
+      prefetchItsaplanProject(projectKey);
+    }
+  }, [projectKey]);
+
+  return (
+    <View style={styles.projectTrailingControlSlot} pointerEvents={visible ? "auto" : "none"}>
+      <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
+        <TooltipTrigger asChild disabled={!visible}>
+          <Pressable
+            style={pressableStyle}
+            onPress={handlePress}
+            onHoverIn={handleHoverIn}
+            accessibilityRole={platformIsWeb ? undefined : "button"}
+            accessibilityLabel={t("sidebar.workspace.actions.openItsaplanFor", {
+              projectName: displayName,
+            })}
+            testID={testID}
+          >
+            {({ hovered, pressed }) => (
+              <ThemedSquareKanban
+                size={14}
+                uniProps={hovered || pressed ? foregroundColorMapping : foregroundMutedColorMapping}
+              />
+            )}
+          </Pressable>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" align="center" offset={8}>
+          <View style={styles.projectActionTooltipRow}>
+            <Text style={styles.projectActionTooltipText}>{t("sidebar.sections.itsaplan")}</Text>
+          </View>
+        </TooltipContent>
+      </Tooltip>
+    </View>
+  );
+}
+
 function NewWorkspaceGhostRow({
   project,
   displayName,
@@ -1232,6 +1336,18 @@ function WorkspaceRowInner({
     "aria-roledescription": _dragRoleDescription,
     ...dragAttributes
   } = dragHandleProps?.attributes ?? {};
+  const { dropRowRef, isDropTarget: isAgentTabDropTarget } = useAgentTabDropRow({
+    serverId: workspace.serverId,
+    workspaceId: workspace.workspaceId,
+    workspaceKey: workspace.workspaceKey,
+  });
+  const setRowRef = useCallback(
+    (node: View | null) => {
+      (dragHandleProps?.setActivatorNodeRef as ((value: unknown) => void) | undefined)?.(node);
+      dropRowRef(node);
+    },
+    [dragHandleProps, dropRowRef],
+  );
 
   const handlePress = useCallback(() => {
     if (interaction.didLongPressRef.current) {
@@ -1273,7 +1389,7 @@ function WorkspaceRowInner({
             <View
               {...dragAttributes}
               {...dragHandleProps?.listeners}
-              ref={dragHandleProps?.setActivatorNodeRef as unknown as Ref<View>}
+              ref={setRowRef}
               style={styles.workspaceRowContainer}
               {...hoverHandlers}
             >
@@ -1345,6 +1461,9 @@ function WorkspaceRowInner({
                   />
                 </SidebarWorkspaceRowContent>
               </SidebarWorkspaceContextMenu>
+              {isAgentTabDropTarget ? (
+                <SidebarWorkspaceAgentDropIndicator workspaceKey={workspace.workspaceKey} />
+              ) : null}
             </View>
           );
         }}
@@ -1735,7 +1854,7 @@ function ProjectBlock({
   isDragging,
   dragHandleProps,
   useNestable,
-  dragGestureHostPresented,
+  dragGestureHostActive,
   creatingWorkspaceIds,
   activeWorkspaceSelection,
   hostBadgeByServerId,
@@ -1761,7 +1880,7 @@ function ProjectBlock({
   isDragging: boolean;
   dragHandleProps?: DraggableListDragHandleProps;
   useNestable: boolean;
-  dragGestureHostPresented?: boolean;
+  dragGestureHostActive?: boolean;
   creatingWorkspaceIds: ReadonlySet<string>;
   activeWorkspaceSelection: ActiveWorkspaceSelection | null;
   hostBadgeByServerId: ReadonlyMap<string, HostBadgeModel>;
@@ -1953,7 +2072,7 @@ function ProjectBlock({
             useDragHandle
             nestable={useNestable}
             simultaneousGestureRef={parentGestureRef}
-            gestureHostPresented={dragGestureHostPresented}
+            gestureHostPresented={dragGestureHostActive}
             containerStyle={styles.workspaceListContainer}
           />
           {canToggleWorkspaces ? (
@@ -2039,7 +2158,7 @@ function areProjectBlockPropsEqual(previous: ProjectBlockProps, next: ProjectBlo
     previous.isDragging === next.isDragging &&
     previous.dragHandleProps === next.dragHandleProps &&
     previous.useNestable === next.useNestable &&
-    previous.dragGestureHostPresented === next.dragGestureHostPresented &&
+    previous.dragGestureHostActive === next.dragGestureHostActive &&
     previous.creatingWorkspaceIds === next.creatingWorkspaceIds &&
     areProjectBlockSelectionsEqual(previous, next)
   );
@@ -2089,10 +2208,11 @@ export function SidebarWorkspaceList({
   onRefresh: _onRefresh,
   onWorkspacePress,
   onAddProject,
+  onImportSession,
   listFooterComponent,
   listHeaderComponent,
   parentGestureRef,
-  dragGestureHostPresented,
+  dragGestureHostActive,
 }: SidebarWorkspaceListProps) {
   const pathname = usePathname();
   const hosts = useHosts();
@@ -2141,6 +2261,17 @@ export function SidebarWorkspaceList({
   // that produced the rows, so the question "what is on screen" is answered once.
   const projectIconByProjectViewKey = useProjectIcons({ projects: projectIconTargets });
 
+  useEffect(() => {
+    if (projects.length > 0) {
+      const keys = projects
+        .map((p) => p.projectKey ?? resolveProjectItsaplanKey(p, p.projectName))
+        .filter((k) => Boolean(k));
+      if (keys.length > 0) {
+        prefetchItsaplanProjects(keys);
+      }
+    }
+  }, [projects]);
+
   // A filter that matches nothing swaps the list's body and nothing above it. It used to replace
   // this whole subtree, which unmounted the header — and the header is where the display menu's
   // trigger lives, so filtering the last row away closed the menu you were filtering from.
@@ -2170,7 +2301,7 @@ export function SidebarWorkspaceList({
         listHeaderComponent={listHeaderComponent}
         sidebarFilterEmpty={sidebarFilterEmpty}
         parentGestureRef={parentGestureRef}
-        dragGestureHostPresented={dragGestureHostPresented}
+        dragGestureHostActive={dragGestureHostActive}
       />
     ) : (
       <ProjectModeList
@@ -2183,12 +2314,13 @@ export function SidebarWorkspaceList({
         shortcutIndexByWorkspaceKey={shortcutIndexByWorkspaceKey}
         onWorkspacePress={onWorkspacePress}
         onAddProject={onAddProject}
+        onImportSession={onImportSession}
         listFooterComponent={listFooterComponent}
         listHeaderComponent={listHeaderComponent}
         sidebarFilterEmpty={sidebarFilterEmpty}
         hasActiveProjectFilter={hasActiveProjectFilter}
         parentGestureRef={parentGestureRef}
-        dragGestureHostPresented={dragGestureHostPresented}
+        dragGestureHostActive={dragGestureHostActive}
         pathname={pathname}
         hostBadgeByServerId={hostBadgeByServerId}
         supportsMultiplicityByServerId={supportsMultiplicityByServerId}
@@ -2222,7 +2354,7 @@ function SidebarGroupedModeList({
   listHeaderComponent,
   sidebarFilterEmpty,
   parentGestureRef,
-  dragGestureHostPresented,
+  dragGestureHostActive,
 }: {
   workspaceGroups: SidebarWorkspaceGroup[];
   pinnedGroups: PinnedSidebarGroups;
@@ -2237,7 +2369,7 @@ function SidebarGroupedModeList({
   listHeaderComponent?: ReactElement | null;
   sidebarFilterEmpty: boolean;
   parentGestureRef?: MutableRefObject<GestureType | undefined>;
-  dragGestureHostPresented?: boolean;
+  dragGestureHostActive?: boolean;
 }) {
   const showShortcutBadges = useShowShortcutBadges();
   const pinnedWorkspaces = useMemo(
@@ -2264,7 +2396,7 @@ function SidebarGroupedModeList({
       listHeaderComponent={listHeaderComponent}
       sidebarFilterEmpty={sidebarFilterEmpty}
       parentGestureRef={parentGestureRef}
-      dragGestureHostPresented={dragGestureHostPresented}
+      dragGestureHostActive={dragGestureHostActive}
     />
   );
 }
@@ -2279,12 +2411,13 @@ function ProjectModeList({
   shortcutIndexByWorkspaceKey,
   onWorkspacePress,
   onAddProject,
+  onImportSession,
   listFooterComponent,
   listHeaderComponent,
   sidebarFilterEmpty,
   hasActiveProjectFilter,
   parentGestureRef,
-  dragGestureHostPresented,
+  dragGestureHostActive,
   pathname,
   hostBadgeByServerId,
   supportsMultiplicityByServerId,
@@ -2503,7 +2636,7 @@ function ProjectModeList({
           isDragging={dragState.isDragging}
           dragHandleProps={dragState.dragHandleProps}
           useNestable={platformIsNative}
-          dragGestureHostPresented={dragGestureHostPresented}
+          dragGestureHostActive={dragGestureHostActive}
           creatingWorkspaceIds={creatingWorkspaceIds}
           activeWorkspaceSelection={activeWorkspaceSelection}
           hostBadgeByServerId={hostBadgeByServerId}
@@ -2527,7 +2660,7 @@ function ProjectModeList({
       onWorkspacePress,
       onToggleProjectCollapsed,
       parentGestureRef,
-      dragGestureHostPresented,
+      dragGestureHostActive,
       projectIconByProjectViewKey,
       selectionEnabled,
       shortcutIndexByWorkspaceKey,
@@ -2591,7 +2724,7 @@ function ProjectModeList({
 
   const projectBody =
     projects.length === 0 ? (
-      <SidebarProjectEmptyState onAddProject={onAddProject} />
+      <SidebarProjectEmptyState onAddProject={onAddProject} onImportSession={onImportSession} />
     ) : (
       <DraggableList
         testID="sidebar-project-list"
@@ -2604,7 +2737,7 @@ function ProjectModeList({
         useDragHandle
         nestable={platformIsNative}
         simultaneousGestureRef={parentGestureRef}
-        gestureHostPresented={dragGestureHostPresented}
+        gestureHostPresented={dragGestureHostActive}
         containerStyle={styles.projectListContainer}
       />
     );
@@ -2627,7 +2760,7 @@ function ProjectModeList({
                 useDragHandle
                 nestable={platformIsNative}
                 simultaneousGestureRef={parentGestureRef}
-                gestureHostPresented={dragGestureHostPresented}
+                gestureHostPresented={dragGestureHostActive}
                 containerStyle={styles.workspaceListContainer}
               />
               {canTogglePinnedChats ? (

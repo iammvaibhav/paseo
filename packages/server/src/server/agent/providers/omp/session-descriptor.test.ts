@@ -166,6 +166,28 @@ describe("OMP session descriptor", () => {
     expect(resolved).toBe(realPath);
   });
 
+  test("resolveOmpSessionFile resolves a bare session id to its transcript", async () => {
+    // `paseo import` persists the provider handle the user typed, which for omp
+    // is a session id. Handed to omp unresolved it is a *relative path*: omp
+    // mints an empty session next to the cwd and the agent opens blank.
+    const home = await mkdtemp(path.join(tmpdir(), "paseo-omp-session-id-"));
+    const sessionId = "019f0000-0000-7000-8000-00000000abcd";
+    const realPath = path.join(
+      home,
+      ".omp",
+      "agent",
+      "sessions",
+      "home-real-dir",
+      `2026-08-04T00-00-00-000Z_${sessionId}.jsonl`,
+    );
+
+    await mkdir(path.dirname(realPath), { recursive: true });
+    const line = JSON.stringify({ type: "session", id: sessionId, timestamp: "2026-08-04" }) + "\n";
+    await writeFile(realPath, line.repeat(50), "utf8");
+
+    await expect(resolveOmpSessionFile(sessionId, { homeDir: home })).resolves.toBe(realPath);
+  });
+
   test("cloneOmpSessionFile creates an independent, byte-identical copy in the same directory", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "paseo-omp-session-clone-"));
     const source = path.join(

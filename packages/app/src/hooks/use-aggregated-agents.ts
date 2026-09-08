@@ -34,6 +34,7 @@ function toAggregatedAgent(agent: Agent, serverId: string, serverLabel: string):
     name: agent.name ?? null,
     shortDescription: agent.shortDescription ?? null,
     status: agent.status,
+    turn: agent.turn,
     lastActivityAt: agent.lastActivityAt,
     lastUserMessageAt: agent.lastUserMessageAt,
     cwd: agent.cwd,
@@ -144,8 +145,8 @@ export function useAggregatedAgents(options?: {
     // running agents changes. Non-running agents keep recency order, with the
     // same deterministic tiebreaks so the whole sort is a strict total order.
     allAgents.sort((left, right) => {
-      const leftRunning = left.status === "running";
-      const rightRunning = right.status === "running";
+      const leftRunning = left.turn.phase === "open";
+      const rightRunning = right.turn.phase === "open";
       if (leftRunning !== rightRunning) {
         return leftRunning ? -1 : 1;
       }

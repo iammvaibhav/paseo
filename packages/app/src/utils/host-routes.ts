@@ -432,7 +432,18 @@ export function buildMissionControlRoute() {
   return "/mission-control" as const;
 }
 
-export function buildItsaplanRoute() {
+export interface ItsaplanRouteOptions {
+  project?: string;
+  projectKey?: string;
+}
+
+export function buildItsaplanRoute(options?: ItsaplanRouteOptions) {
+  const project = trimNonEmpty(options?.projectKey ?? options?.project);
+  if (project) {
+    const params = new URLSearchParams();
+    params.set("project", project);
+    return `/itsaplan?${params.toString()}` as const;
+  }
   return "/itsaplan" as const;
 }
 

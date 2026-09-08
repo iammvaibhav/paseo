@@ -5,6 +5,7 @@ import { useStoreWithEqualityFn } from "zustand/traditional";
 import { useSessionStore, type Agent } from "@/stores/session-store";
 import { refreshProviderSubagents, useProviderSubagentStore } from "./provider-store";
 import type { ProviderSubagentDescriptorPayload } from "@getpaseo/protocol/messages";
+import { isSelectionAskAgent } from "@getpaseo/protocol/agent-labels";
 
 export interface PaseoSubagentRow {
   kind: "paseo";
@@ -15,6 +16,7 @@ export interface PaseoSubagentRow {
   description: null;
   subtitle: null;
   status: Agent["status"];
+  turn: Agent["turn"];
   requiresAttention: Agent["requiresAttention"];
   createdAt: Agent["createdAt"];
 }
@@ -44,6 +46,8 @@ type ProviderSubagentStoreSnapshot = ReturnType<typeof useProviderSubagentStore.
 interface SelectSubagentsParams {
   serverId: string;
   parentAgentId: string;
+  /** Select children of this provider subagent instead of children of the managed agent. */
+  providerParentSubagentId?: string;
 }
 
 const EMPTY_SUBAGENT_ROWS: SubagentRow[] = [];
@@ -58,6 +62,7 @@ function toSubagentRow(agent: Agent): SubagentRow {
     description: null,
     subtitle: null,
     status: agent.status,
+    turn: agent.turn,
     requiresAttention: agent.requiresAttention,
     createdAt: agent.createdAt,
   };
@@ -78,7 +83,8 @@ export function selectSubagentsForParent(
     if (
       agent.archivedAt ||
       pendingArchiveIds.has(agent.id) ||
-      agent.parentAgentId !== params.parentAgentId
+      agent.parentAgentId !== params.parentAgentId ||
+      isSelectionAskAgent(agent)
     ) {
       continue;
     }
@@ -97,12 +103,20 @@ export function selectProviderSubagentsForParent(
   state: ProviderSubagentStoreSnapshot,
   params: SelectSubagentsParams,
   supported: boolean,
+  nestingSupported = false,
 ): ProviderSubagentRow[] {
   if (!supported) return EMPTY_PROVIDER_SUBAGENT_ROWS;
+  if (params.providerParentSubagentId && !nestingSupported) return EMPTY_PROVIDER_SUBAGENT_ROWS;
   const rows: ProviderSubagentRow[] = [];
   const prefix = `${params.serverId}\0${params.parentAgentId}\0`;
   for (const [key, subagent] of state.descriptors) {
     if (!key.startsWith(prefix) || state.hiddenFromTrack.has(key)) continue;
+    if (
+      nestingSupported &&
+      (subagent.parentSubagentId ?? null) !== (params.providerParentSubagentId ?? null)
+    ) {
+      continue;
+    }
     rows.push({
       kind: "provider",
       id: subagent.id,
@@ -130,9 +144,13 @@ export function useSubagentsForParent(params: SelectSubagentsParams): SubagentRo
   const supported = useSessionStore(
     (state) => state.sessions[params.serverId]?.serverInfo?.features?.providerSubagents === true,
   );
+  const nestingSupported = useSessionStore(
+    (state) =>
+      state.sessions[params.serverId]?.serverInfo?.features?.providerSubagentNesting === true,
+  );
   const providerRows = useStoreWithEqualityFn(
     useProviderSubagentStore,
-    (state) => selectProviderSubagentsForParent(state, params, supported),
+    (state) => selectProviderSubagentsForParent(state, params, supported, nestingSupported),
     equal,
   );
   const client = useSessionStore((state) => state.sessions[params.serverId]?.client ?? null);
@@ -145,9 +163,10 @@ export function useSubagentsForParent(params: SelectSubagentsParams): SubagentRo
   }, [client, params.parentAgentId, params.serverId, supported]);
 
   return useMemo(() => {
+    if (params.providerParentSubagentId) return providerRows;
     if (providerRows.length === 0) return paseoRows;
     const rows = [...paseoRows, ...providerRows];
     rows.sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
     return rows;
-  }, [paseoRows, providerRows]);
+  }, [params.providerParentSubagentId, paseoRows, providerRows]);
 }

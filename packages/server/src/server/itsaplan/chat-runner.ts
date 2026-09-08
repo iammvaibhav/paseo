@@ -1,6 +1,7 @@
 import type { Logger } from "pino";
 import type { MissionControlEvent } from "@getpaseo/protocol/mission-control/types";
 import {
+  buildItsaplanIssueUrl,
   ItsaplanApiError,
   ItsaplanClient,
   type ItsaplanAgUiEvent,
@@ -86,9 +87,13 @@ export interface ItsaplanChatRunnerOptions {
 
 // itsaplan's default claim wait is 25s (AGENT_CHAT_CLAIM_WAIT_MS,
 // apps/api/src/modules/agents/chat/service.ts) — claimChatMessage already
-// carries its own generous client-side timeout for that; this is the
+// carries its own generous client-side timeout for that; this is the FIRST
 // backoff before retrying a claim call that failed outright (network/5xx).
 const CLAIM_RETRY_BACKOFF_MS = 2_000;
+// Ceiling for the exponential backoff on a failing claim. A flat 2s retry
+// through a long itsaplan outage is what turned one rejected credential into
+// ~380 MB of identical log lines.
+const MAX_CLAIM_RETRY_BACKOFF_MS = 60_000;
 // /agent-runs/claim does NOT long-poll (unlike /agent-chats/claim). An empty
 // queue must sleep or two mapped projects × mention loops burn the API-key
 // rate limit (100/s) and starve webhook deliveries.
@@ -116,6 +121,27 @@ type ReplyOutcome = { kind: "text"; text: string } | { kind: "canceled" } | { ki
 
 function hasCommanderCredentials(mapping: ItsaplanProjectMapping): mapping is ChatRunnerMapping {
   return mapping.commanderAgentId !== undefined && mapping.commanderApiKey !== undefined;
+}
+
+/**
+ * True when a claim call can never succeed by being retried: itsaplan
+ * rejected the credential (401/403 — the stored one-time key was rotated, or
+ * its agent went away with a deleted project) or the queue itself is gone
+ * (404). Live incident: an itsaplan project was deleted, its agent key
+ * started answering 403 "Only an agent key can drain an agent feed", and both
+ * claim loops retried it every 2s for days.
+ */
+function isPermanentClaimFailure(error: unknown): error is ItsaplanApiError {
+  return (
+    error instanceof ItsaplanApiError &&
+    (error.status === 401 || error.status === 403 || error.status === 404)
+  );
+}
+
+function delay(ms: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, ms);
+  return promise;
 }
 
 /**
@@ -226,6 +252,10 @@ export class ItsaplanChatRunner {
 
   private startLoop(mapping: ChatRunnerMapping): { stop: () => void } {
     const loop = { stopped: false };
+    // Failure streak is shared by both of this mapping's claim loops: they
+    // authenticate with the same credential against the same instance, so a
+    // rejected key or a down itsaplan fails them together.
+    const failures = { streak: 0 };
     // Loop 1: chat messages long-poll
     void (async () => {
       while (!loop.stopped && !this.stopped) {
@@ -242,15 +272,20 @@ export class ItsaplanChatRunner {
         try {
           claimed = await client.claimChatMessage();
         } catch (error) {
-          this.logger.warn(
-            { err: error, itsaplanProjectKey: mapping.itsaplanProjectKey },
-            "itsaplan.chat_runner.claim_failed",
-          );
-          const { promise: backoff, resolve: resolveBackoff } = Promise.withResolvers<void>();
-          setTimeout(resolveBackoff, CLAIM_RETRY_BACKOFF_MS);
-          await backoff;
+          if (
+            !(await this.handleClaimFailure({
+              mapping,
+              loop,
+              failures,
+              error,
+              transientMessage: "itsaplan.chat_runner.claim_failed",
+            }))
+          ) {
+            return;
+          }
           continue;
         }
+        failures.streak = 0;
         if (!claimed) {
           continue;
         }
@@ -272,19 +307,22 @@ export class ItsaplanChatRunner {
         try {
           claimedRun = await client.claimAgentRun();
         } catch (error) {
-          this.logger.warn(
-            { err: error, itsaplanProjectKey: mapping.itsaplanProjectKey },
-            "itsaplan.chat_runner.run_claim_failed",
-          );
-          const { promise: backoff, resolve: resolveBackoff } = Promise.withResolvers<void>();
-          setTimeout(resolveBackoff, CLAIM_RETRY_BACKOFF_MS);
-          await backoff;
+          if (
+            !(await this.handleClaimFailure({
+              mapping,
+              loop,
+              failures,
+              error,
+              transientMessage: "itsaplan.chat_runner.run_claim_failed",
+            }))
+          ) {
+            return;
+          }
           continue;
         }
+        failures.streak = 0;
         if (!claimedRun) {
-          const { promise: backoff, resolve: resolveBackoff } = Promise.withResolvers<void>();
-          setTimeout(resolveBackoff, EMPTY_RUN_CLAIM_BACKOFF_MS);
-          await backoff;
+          await delay(EMPTY_RUN_CLAIM_BACKOFF_MS);
           continue;
         }
         await this.handleClaimedRun(client, claimedRun, mapping);
@@ -295,6 +333,53 @@ export class ItsaplanChatRunner {
         loop.stopped = true;
       },
     };
+  }
+
+  /**
+   * A claim call threw. Returns false when the caller's loop must exit.
+   *
+   * A rejected credential or a vanished queue can never recover by being
+   * retried, so the mapping's key is forgotten (the next project sync
+   * re-mints it) and both loops for it stop — retrying a permanent failure
+   * on a flat 2s cadence is what filled a daemon log with one deleted
+   * project's 403s. Anything else is transient: back off exponentially to
+   * MAX_CLAIM_RETRY_BACKOFF_MS and log only the first failure of a streak,
+   * so an itsaplan outage costs a few lines instead of one per retry.
+   */
+  private async handleClaimFailure(input: {
+    mapping: ChatRunnerMapping;
+    loop: { stopped: boolean };
+    failures: { streak: number };
+    error: unknown;
+    transientMessage: string;
+  }): Promise<boolean> {
+    const { mapping, loop, failures, error } = input;
+    if (isPermanentClaimFailure(error)) {
+      loop.stopped = true;
+      this.loops.delete(mapping.commanderAgentId);
+      this.logger.error(
+        {
+          err: error,
+          status: error.status,
+          itsaplanProjectKey: mapping.itsaplanProjectKey,
+          commanderAgentId: mapping.commanderAgentId,
+        },
+        "itsaplan.chat_runner.credential_rejected",
+      );
+      await this.projectStore.clearCommanderApiKey(mapping.paseoProjectKey);
+      return false;
+    }
+    failures.streak += 1;
+    if (failures.streak === 1) {
+      this.logger.warn(
+        { err: error, itsaplanProjectKey: mapping.itsaplanProjectKey },
+        input.transientMessage,
+      );
+    }
+    await delay(
+      Math.min(CLAIM_RETRY_BACKOFF_MS * 2 ** (failures.streak - 1), MAX_CLAIM_RETRY_BACKOFF_MS),
+    );
+    return true;
   }
 
   private async handleClaimedMessage(
@@ -375,7 +460,7 @@ export class ItsaplanChatRunner {
           ? claimed.issueIdentifier.split("-")[1]
           : claimed.issueIdentifier;
         const url = config
-          ? `${config.baseUrl.replace(/\/+$/, "")}/project/${encodeURIComponent(mapping.itsaplanProjectKey)}/issues/${encodeURIComponent(seq ?? "")}`
+          ? buildItsaplanIssueUrl(config, mapping.itsaplanProjectKey, seq ?? "")
           : undefined;
         parts.push(`Issue: ${claimed.issueIdentifier}${url ? ` (${url})` : ""}`);
       }
