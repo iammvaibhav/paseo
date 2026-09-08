@@ -1,10 +1,13 @@
 # Web UI harness
 
-One command gives an agent the real Paseo web UI with every host connected:
+Two surfaces, one script. Prefer the user's own browser tabs — they watch the
+session the agent drives — and fall back to headless Chromium here when that
+machine is asleep.
 
 ```bash
-node scripts/web-ui-harness.mjs            # seed, verify, stay alive on CDP 9222
-node scripts/web-ui-harness.mjs --once     # seed, verify, screenshot, exit
+node scripts/web-ui-harness.mjs --bootstrap   # print the browser_* recipe
+node scripts/web-ui-harness.mjs               # Chromium here, stay alive on CDP 9222
+node scripts/web-ui-harness.mjs --once        # Chromium here, screenshot, exit
 ```
 
 It prints JSON: every host it seeded with that host's sidebar row counts, the
@@ -45,14 +48,37 @@ Credentials come from `ITSAPLAN_EMAIL`/`ITSAPLAN_PASSWORD` or
 better-auth answers an origin-less sign-in with 403, so the request carries an
 explicit `Origin`.
 
-## Why not the agent-browser tabs
+## Browser tool: --bootstrap
 
 An agent's `browser_*` tabs are resident webviews inside the **user's desktop
-app**, which runs on another machine. In those tabs `127.0.0.1:6767` is that
-machine's daemon, and this host's WireGuard peers (`10.7.0.x`) are unreachable —
-seeding a host registry there connects nothing and the host card sits on
-`Connecting` forever. The harness runs Chromium on the host that owns the
-network, so all three daemons are reachable.
+app**, on another machine. Addresses differ from there: this host's WireGuard
+`10.7.0.x` may be unreachable and `127.0.0.1:6767` is that machine's own daemon.
+`--bootstrap` resolves the addresses that work _from there_ and prints the
+`localStorage` seed to paste into `browser_evaluate`.
+
+It never assumes an address. Candidates come from this config, from
+`--address srv_x=host:port`, and from the vantage machine's own `peers[]` (which
+is how the MacBook knows us as `10.7.0.1` and blrofc3 as its Tailscale
+address). Each candidate is probed **from the vantage** over ssh and accepted
+only when the `serverId` matches, because `127.0.0.1:6767` answers everywhere
+and would silently point a peer's entry at the wrong daemon. `--vantage`
+overrides the auto-detected machine; reachable ssh is the proxy for "the browser
+tool is up".
+
+### Which origin
+
+Every daemon's fixed CORS allowlist holds loopback origins plus
+`https://app.paseo.sh`, and itsaplan's cookie is `SameSite=Lax`. Those two facts
+pull in opposite directions, so the emit prints both URLs:
+
+| Origin                                    | Hosts connected             | itsaplan pane                      |
+| ----------------------------------------- | --------------------------- | ---------------------------------- |
+| `uiUrl` — the vantage's `127.0.0.1:6767`  | all                         | sign-in hangs (third-party cookie) |
+| `paneUrl` — `http://<itsaplan host>:6767` | that host only (others 403) | works, same site                   |
+| Desktop app                               | all                         | works                              |
+
+Judge a board in the desktop app. Use a browser tab for the fleet sidebar, or
+for one host's pane.
 
 ## Never click "Add host"
 

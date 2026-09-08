@@ -78,20 +78,41 @@ type WebviewWithScript = HTMLElement & {
 
 const pendingPrefetchKeys = new Set<string>();
 let pendingNavigateKey: string | null = null;
+/**
+ * Origin the guest was last pointed at. Needed because a click in the sidebar
+ * knows the project but not the itsaplan address, and the fallback below has to
+ * build a real URL.
+ */
+let lastEmbedOrigin: string | null = null;
+/** Project the fallback reload already ran for, so it runs at most once per key. */
+let reloadedForKey: string | null = null;
 
-function runScriptInWebview(script: string): boolean {
+function resolveGuestScriptTarget(): WebviewWithScript | null {
   const webview = getResidentBrowserWebview(ITSAPLAN_BROWSER_ID) as WebviewWithScript | null;
   if (
     !webview ||
     !isResidentBrowserWebviewReady(webview) ||
     typeof webview.executeJavaScript !== "function"
   ) {
+    return null;
+  }
+  return webview;
+}
+
+function runScriptInWebview(script: string): boolean {
+  const webview = resolveGuestScriptTarget();
+  if (!webview) {
     return false;
   }
-  webview.executeJavaScript(script).catch(() => undefined);
+  webview.executeJavaScript?.(script).catch(() => undefined);
   return true;
 }
 
+// Reports which path it took so the caller can tell a real client-side
+// navigation from a no-op. The guest is persistent and never reloaded, so it can
+// be running an itsaplan build whose bridge is absent — and the fallbacks below
+// are not equivalent: Next's App Router ignores a synthetic popstate, so
+// "postMessage then pushState" silently changes nothing.
 function navigationScript(projectKey: string): string {
   const keyJson = JSON.stringify(projectKey);
   return `
@@ -99,27 +120,31 @@ function navigationScript(projectKey: string): string {
       try {
         if (window.__paseo_itsaplan?.navigateProject) {
           window.__paseo_itsaplan.navigateProject(${keyJson});
-          return true;
+          return "bridge";
         }
         window.postMessage({ type: 'paseo:navigate-project', projectKey: ${keyJson} }, '*');
-        const targetPath = ${keyJson} ? '/project/' + encodeURIComponent(${keyJson}) : '/';
-        if (window.location.pathname !== targetPath) {
-          if (window.history && window.history.replaceState) {
-            window.history.replaceState(null, '', targetPath);
-            window.dispatchEvent(new PopStateEvent('popstate'));
-          }
-        }
-        return true;
+        return "no-bridge";
       } catch (err) {
-        return false;
+        return "error";
       }
     })()
   `;
 }
 
+/** Full guest navigation: correct project at the cost of a reload. */
+function reloadGuestToProject(projectKey: string): void {
+  if (!lastEmbedOrigin || reloadedForKey === projectKey) {
+    return;
+  }
+  reloadedForKey = projectKey;
+  const url = `${lastEmbedOrigin.replace(/\/+$/, "")}/project/${encodeURIComponent(projectKey)}`;
+  navigatePersistentBrowserWebview(ITSAPLAN_BROWSER_ID, url);
+}
+
 /**
- * Navigates the running itsaplan SPA to a specific project client-side,
- * avoiding a full-frame reload. Queues until the guest is ready.
+ * Points the running itsaplan SPA at a project client-side, avoiding a reload.
+ * Queues while the guest is not ready, and reloads it outright when the guest
+ * cannot route itself — a slow switch beats a switch that never happens.
  */
 export function navigateItsaplanEmbedProject(projectKey: string): void {
   const trimmed = projectKey.trim();
@@ -127,14 +152,27 @@ export function navigateItsaplanEmbedProject(projectKey: string): void {
     return;
   }
   pendingNavigateKey = trimmed;
-  runScriptInWebview(navigationScript(trimmed));
+  const webview = resolveGuestScriptTarget();
+  if (!webview) {
+    return;
+  }
+  webview
+    .executeJavaScript?.(navigationScript(trimmed))
+    .then((result) => {
+      if (result === "bridge") {
+        reloadedForKey = null;
+        return true;
+      }
+      reloadGuestToProject(trimmed);
+      return false;
+    })
+    .catch(() => reloadGuestToProject(trimmed));
 }
 
 function flushPendingNavigate(): void {
-  if (!pendingNavigateKey) {
-    return;
+  if (pendingNavigateKey) {
+    navigateItsaplanEmbedProject(pendingNavigateKey);
   }
-  runScriptInWebview(navigationScript(pendingNavigateKey));
 }
 
 function runPrefetchScript(key: string): boolean {
@@ -233,6 +271,7 @@ export function warmItsaplanEmbed(origin: string): void {
   if (!ensurePersistentBrowserWebview({ browserId: ITSAPLAN_BROWSER_ID, url: origin })) {
     return;
   }
+  lastEmbedOrigin = origin;
   loadedTarget = target;
 }
 
@@ -264,6 +303,7 @@ export function ItsaplanEmbed({
     if (!container) {
       return undefined;
     }
+    lastEmbedOrigin = origin;
     const activeProject = desiredProjectRef.current?.trim();
     const initialUrl = activeProject
       ? `${origin.replace(/\/+$/, "")}/project/${encodeURIComponent(activeProject)}`

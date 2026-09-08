@@ -5,10 +5,11 @@ import {
   prefetchItsaplanAllProjects,
   prefetchItsaplanProject,
   prefetchItsaplanProjects,
+  warmItsaplanEmbed,
 } from "./itsaplan-webview.electron";
 
 describe("itsaplan-webview navigation and prefetching", () => {
-  const mockExecute = vi.fn().mockResolvedValue(true);
+  const mockExecute = vi.fn().mockResolvedValue("bridge");
   const mockWebview = {
     executeJavaScript: mockExecute,
   } as unknown as HTMLElement;
@@ -55,7 +56,7 @@ describe("itsaplan-webview navigation and prefetching", () => {
     const script = mockExecute.mock.calls[0]![0];
     expect(script).toContain("navigateProject");
     expect(script).toContain('"MKT"');
-    expect(script).toContain("replaceState");
+    expect(script).toContain('"no-bridge"');
   });
 
   it("asks the guest to prefetch every project", () => {
@@ -82,5 +83,24 @@ describe("itsaplan-webview navigation and prefetching", () => {
     navigateItsaplanEmbedProject("AMBIENTAISTA");
     expect(mockExecute).toHaveBeenCalledTimes(1);
     expect(mockExecute.mock.calls[0]![0]).toContain('"AMBIENTAISTA"');
+  });
+
+  it("reloads the guest when it reports no bridge, so the project still changes", async () => {
+    vi.spyOn(residentWebviews, "getResidentBrowserWebview").mockReturnValue(mockWebview);
+    vi.spyOn(residentWebviews, "isResidentBrowserWebviewReady").mockReturnValue(true);
+    vi.spyOn(residentWebviews, "ensurePersistentBrowserWebview").mockReturnValue(mockWebview);
+    const navigate = vi
+      .spyOn(residentWebviews, "navigatePersistentBrowserWebview")
+      .mockReturnValue(true);
+    mockExecute.mockResolvedValueOnce("no-bridge");
+
+    warmItsaplanEmbed("http://iammvaibhav:3001");
+    navigateItsaplanEmbedProject("BREEZEAPI");
+    await vi.waitFor(() => expect(navigate).toHaveBeenCalled());
+
+    expect(navigate).toHaveBeenCalledWith(
+      "itsaplan-embed",
+      "http://iammvaibhav:3001/project/BREEZEAPI",
+    );
   });
 });
