@@ -17,18 +17,9 @@ export const steps = [
     narrate: "Migration artifacts are in place.",
     async run(ctx) {
       const root = process.cwd();
-      ctx.expect(
-        existsSync(join(root, "pnpm-lock.yaml")),
-        "pnpm-lock.yaml exists",
-      );
-      ctx.expect(
-        existsSync(join(root, "pnpm-workspace.yaml")),
-        "pnpm-workspace.yaml exists",
-      );
-      ctx.expect(
-        !existsSync(join(root, "package-lock.json")),
-        "package-lock.json deleted",
-      );
+      ctx.expect(existsSync(join(root, "pnpm-lock.yaml")), "pnpm-lock.yaml exists");
+      ctx.expect(existsSync(join(root, "pnpm-workspace.yaml")), "pnpm-workspace.yaml exists");
+      ctx.expect(!existsSync(join(root, "package-lock.json")), "package-lock.json deleted");
       const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
       ctx.expect(
         typeof pkg.packageManager === "string" && pkg.packageManager.startsWith("pnpm@"),
@@ -39,10 +30,7 @@ export const steps = [
         workspaceYaml.includes("minimumReleaseAge:"),
         "minimumReleaseAge supply-chain policy set",
       );
-      ctx.expect(
-        workspaceYaml.includes("allowBuilds:"),
-        "allowBuilds configured",
-      );
+      ctx.expect(workspaceYaml.includes("allowBuilds:"), "allowBuilds configured");
       return "lockfile, config, packageManager, policy all present";
     },
   },
@@ -52,14 +40,8 @@ export const steps = [
     narrate: "npm-era artifacts are cleaned up.",
     async run(ctx) {
       const root = process.cwd();
-      ctx.expect(
-        !existsSync(join(root, "package-lock.json")),
-        "root package-lock.json absent",
-      );
-      ctx.expect(
-        !existsSync(join(root, "scripts/npm-retry.mjs")),
-        "scripts/npm-retry.mjs absent",
-      );
+      ctx.expect(!existsSync(join(root, "package-lock.json")), "root package-lock.json absent");
+      ctx.expect(!existsSync(join(root, "scripts/npm-retry.mjs")), "scripts/npm-retry.mjs absent");
       ctx.expect(
         !existsSync(join(root, "scripts/worktree-setup.mjs")),
         "scripts/worktree-setup.mjs absent",
@@ -109,16 +91,38 @@ export const steps = [
         "packages/server/dist/scripts/supervisor-entrypoint.js",
       );
       ctx.expect(existsSync(supervisor), `supervisor exists at ${supervisor}`);
-      try {
-        await import(supervisor);
-        ctx.log("supervisor imported without error");
-      } catch (e) {
-        if (e.message?.includes("already running")) {
-          ctx.log("supervisor module loaded (reports daemon already running)");
-        } else {
-          throw e;
-        }
-      }
+
+      // Run the import in a SUBPROCESS, not in-process: the real supervisor
+      // module calls process.exit() once its startup sequence completes (or
+      // detects an existing daemon), which would otherwise kill this whole
+      // verify runner before it can record results.
+      const { spawnSync } = await import("node:child_process");
+      const probeScript = `
+        import(${JSON.stringify(supervisor)})
+          .then(() => { console.log("IMPORT_OK"); })
+          .catch((e) => {
+            console.error("IMPORT_FAIL", e.code || "", e.message || String(e));
+            process.exitCode = 1;
+          });
+      `;
+      const result = spawnSync(process.execPath, ["--input-type=module", "-e", probeScript], {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        timeout: 15_000,
+      });
+      const stdout = result.stdout || "";
+      const stderr = result.stderr || "";
+      ctx.log(`stdout: ${stdout.trim().slice(0, 300)}`);
+      if (stderr.trim()) ctx.log(`stderr: ${stderr.trim().slice(0, 300)}`);
+
+      // Success criteria: either the module imported clean, or it got far
+      // enough to hit the "already running" daemon-lock check (which only
+      // runs after every import in the module graph has resolved).
+      const moduleGraphIntact = stdout.includes("IMPORT_OK") || stderr.includes("already running");
+      ctx.expect(
+        moduleGraphIntact,
+        `daemon module graph resolved (stdout: ${stdout.trim()}, stderr: ${stderr.trim().slice(0, 200)})`,
+      );
       return "daemon module graph intact";
     },
   },
