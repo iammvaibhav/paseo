@@ -57,13 +57,28 @@ export const steps = [
     id: "pnpm-install",
     label: "pnpm install --frozen-lockfile succeeds",
     narrate: "Lockfile is up to date and install resolves cleanly.",
-    async run(_ctx) {
+    async run(ctx) {
       const { execFileSync } = await import("node:child_process");
-      execFileSync("pnpm", ["install", "--frozen-lockfile"], {
-        cwd: process.cwd(),
-        stdio: "pipe",
-        timeout: 120_000,
-      });
+      const logFile = join(ctx.artifactsDir, "pnpm-install.log");
+      try {
+        // stdio: "ignore" avoids a known Node pitfall: spawnSync's pipe
+        // capture blocks draining output even after the timeout kills the
+        // top-level process, if any orphaned grandchild (e.g. a persistent
+        // esbuild build service) keeps the pipe's write end open. Redirect
+        // to a file via shell instead so diagnostics survive on failure.
+        execFileSync(
+          "sh",
+          ["-c", `pnpm install --frozen-lockfile > ${JSON.stringify(logFile)} 2>&1`],
+          {
+            cwd: process.cwd(),
+            stdio: "ignore",
+            timeout: 120_000,
+          },
+        );
+      } catch (e) {
+        const log = existsSync(logFile) ? readFileSync(logFile, "utf8").slice(-2000) : "";
+        throw new Error(`${e.message}\n${log}`, { cause: e });
+      }
       return "pnpm install --frozen-lockfile passed";
     },
   },
@@ -71,13 +86,19 @@ export const steps = [
     id: "server-build",
     label: "Server stack builds under pnpm",
     narrate: "Server and CLI packages compile successfully.",
-    async run(_ctx) {
+    async run(ctx) {
       const { execFileSync } = await import("node:child_process");
-      execFileSync("pnpm", ["run", "build:server"], {
-        cwd: process.cwd(),
-        stdio: "pipe",
-        timeout: 600_000,
-      });
+      const logFile = join(ctx.artifactsDir, "pnpm-build-server.log");
+      try {
+        execFileSync("sh", ["-c", `pnpm run build:server > ${JSON.stringify(logFile)} 2>&1`], {
+          cwd: process.cwd(),
+          stdio: "ignore",
+          timeout: 600_000,
+        });
+      } catch (e) {
+        const log = existsSync(logFile) ? readFileSync(logFile, "utf8").slice(-2000) : "";
+        throw new Error(`${e.message}\n${log}`, { cause: e });
+      }
       return "pnpm run build:server passed";
     },
   },
