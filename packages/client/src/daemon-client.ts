@@ -2847,6 +2847,25 @@ export class DaemonClient {
       throw new Error(payload.error ?? "detachAgent rejected");
     }
   }
+  async moveAgentToWorkspace(
+    agentId: string,
+    workspaceId: string,
+    requestId?: string,
+  ): Promise<{ agentId: string; workspaceId: string }> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"agent.workspace.move.response">({
+        requestId,
+        message: {
+          type: "agent.workspace.move.request",
+          agentId,
+          workspaceId,
+        },
+      });
+    if (!payload.accepted) {
+      throw new Error(payload.error ?? "moveAgentToWorkspace rejected");
+    }
+    return { agentId: payload.agentId, workspaceId: payload.workspaceId };
+  }
 
   async updateAgent(
     agentId: string,

@@ -480,4 +480,99 @@ describe("buildWorkspaceTabMenuEntries", () => {
     first.onSelect();
     expect(onMarkDone).toHaveBeenCalledTimes(1);
   });
+  it("adds 'Move to new workspace' for agent tabs and invokes the callback with agentId", () => {
+    const onMoveToNewWorkspace = vi.fn();
+    const entries = buildWorkspaceTabMenuEntries({
+      surface: "desktop",
+      tab: createAgentTab(),
+      index: 0,
+      tabCount: 1,
+      menuTestIDBase: "workspace-tab-context-agent_123",
+      onCopyResumeCommand: vi.fn(),
+      onCopyAgentId: vi.fn(),
+      onCopyTerminalId: vi.fn(),
+      onCopyFilePath: vi.fn(),
+      onMoveToNewWorkspace,
+      onReloadAgent: vi.fn(),
+      onRenameTab: vi.fn(),
+      onCloseTab: vi.fn(),
+      onCloseTabsBefore: vi.fn(),
+      onCloseTabsAfter: vi.fn(),
+      onCloseOtherTabs: vi.fn(),
+    });
+
+    const moveEntry = entries.find(
+      (entry) => entry.kind === "item" && entry.key === "move-to-new-workspace",
+    );
+    expect(moveEntry).toBeDefined();
+    if (!moveEntry || moveEntry.kind !== "item") {
+      throw new Error("Move entry missing");
+    }
+    expect(moveEntry.label).toBe("Move to new workspace");
+    expect(moveEntry.icon).toBe("folder-plus");
+    expect(moveEntry.testID).toBe("workspace-tab-context-agent_123-move-to-new-workspace");
+
+    moveEntry.onSelect();
+    expect(onMoveToNewWorkspace).toHaveBeenCalledWith("agent-123");
+  });
+
+  it("omits 'Move to new workspace' for non-agent tabs", () => {
+    const onMoveToNewWorkspace = vi.fn();
+    const entries = buildWorkspaceTabMenuEntries({
+      surface: "desktop",
+      tab: {
+        key: "terminal_123",
+        tabId: "terminal_123",
+        kind: "terminal",
+        target: { kind: "terminal", terminalId: "terminal-123" },
+      },
+      index: 0,
+      tabCount: 1,
+      menuTestIDBase: "workspace-tab-context-terminal_123",
+      onCopyResumeCommand: vi.fn(),
+      onCopyAgentId: vi.fn(),
+      onCopyTerminalId: vi.fn(),
+      onCopyFilePath: vi.fn(),
+      onMoveToNewWorkspace,
+      onReloadAgent: vi.fn(),
+      onRenameTab: vi.fn(),
+      onCloseTab: vi.fn(),
+      onCloseTabsBefore: vi.fn(),
+      onCloseTabsAfter: vi.fn(),
+      onCloseOtherTabs: vi.fn(),
+    });
+
+    expect(
+      entries.some((entry) => entry.kind === "item" && entry.key === "move-to-new-workspace"),
+    ).toBe(false);
+  });
+
+  it("threads onMoveToNewWorkspace through buildWorkspaceDesktopTabActions", () => {
+    const onMoveToNewWorkspace = vi.fn();
+    const actions = buildWorkspaceDesktopTabActions({
+      tab: createAgentTab(),
+      index: 0,
+      tabCount: 1,
+      onCopyResumeCommand: vi.fn(),
+      onCopyAgentId: vi.fn(),
+      onCopyTerminalId: vi.fn(),
+      onCopyFilePath: vi.fn(),
+      onMoveToNewWorkspace,
+      onReloadAgent: vi.fn(),
+      onRenameTab: vi.fn(),
+      onCloseTab: vi.fn(),
+      onCloseTabsToLeft: vi.fn(),
+      onCloseTabsToRight: vi.fn(),
+      onCloseOtherTabs: vi.fn(),
+    });
+
+    const moveEntry = actions.menuEntries.find(
+      (entry) => entry.kind === "item" && entry.key === "move-to-new-workspace",
+    );
+    expect(moveEntry).toBeDefined();
+    if (!moveEntry || moveEntry.kind !== "item") {
+      throw new Error("Move entry missing");
+    }
+    moveEntry.onSelect();
+  });
 });

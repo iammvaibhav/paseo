@@ -1,7 +1,10 @@
-import { memo, useCallback, useMemo, useState, type Ref } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { View, Text, type GestureResponderEvent } from "react-native";
-import { StyleSheet } from "react-native-unistyles";
+import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { FolderPlus } from "lucide-react-native";
+import type { Theme } from "@/styles/theme";
+import { useAgentTabDropRow } from "@/workspace-tabs/use-agent-tab-drop";
 import type { HostBadgeModel } from "@/hosts/appearance";
 import type { SidebarWorkspaceEntry } from "@/hooks/use-sidebar-workspaces-list";
 import type { SidebarSurfaceBackdrop } from "@/styles/surface-backdrop";
@@ -39,6 +42,9 @@ import {
   useSidebarWorkspaceTrailing,
   type SidebarWorkspaceTrailing,
 } from "@/components/sidebar/workspace-trailing";
+
+const ThemedFolderPlus = withUnistyles(FolderPlus);
+const primaryColorMapping = (theme: Theme) => ({ color: theme.colors.primary });
 
 function noop() {}
 
@@ -223,6 +229,7 @@ function WorkspaceRowBody({
   onMarkAsRead,
   archiveShortcutKeys,
 }: WorkspaceRowBodyProps) {
+  const { t } = useTranslation();
   const isCompact = useIsCompactFormFactor();
   const isTouchPlatform = platformIsNative || isCompact;
   const [isPressed, setIsPressed] = useState(false);
@@ -258,6 +265,22 @@ function WorkspaceRowBody({
     if (draggable) interaction.handlePressOut();
   }, [draggable, interaction]);
 
+  const { dropRowRef, isDropTarget: isTabDropOver } = useAgentTabDropRow({
+    serverId: workspace.serverId,
+    workspaceId: workspace.workspaceId,
+    workspaceKey: workspace.workspaceKey,
+    disabled: isArchiving,
+  });
+
+  const setCombinedRowRef = useCallback(
+    (node: View | null) => {
+      if (draggable && dragHandleProps?.setActivatorNodeRef) {
+        (dragHandleProps.setActivatorNodeRef as unknown as (node: unknown) => void)(node);
+      }
+      dropRowRef(node);
+    },
+    [dragHandleProps, draggable, dropRowRef],
+  );
   const accessibilityState = useMemo(() => ({ selected }), [selected]);
 
   return (
@@ -270,15 +293,14 @@ function WorkspaceRowBody({
           isPressed,
           selected,
           isHovered,
+          isDropTarget: isTabDropOver,
         });
         const backdrop = getSidebarRowBackdrop({ isDragging, isPressed, selected, isHovered });
         return (
           <View
             {...(draggable ? dragAttributes : {})}
             {...(draggable ? dragHandleProps?.listeners : {})}
-            ref={
-              draggable ? (dragHandleProps?.setActivatorNodeRef as unknown as Ref<View>) : undefined
-            }
+            ref={setCombinedRowRef}
             style={styles.workspaceRowContainer}
             {...hoverHandlers}
           >
@@ -343,6 +365,20 @@ function WorkspaceRowBody({
                 />
               </SidebarWorkspaceRowContent>
             </SidebarWorkspaceContextMenu>
+            {isTabDropOver ? (
+              <View
+                style={styles.workspaceRowDropIndicator}
+                pointerEvents="none"
+                testID={`sidebar-workspace-drop-indicator-${workspace.workspaceKey}`}
+              >
+                <ThemedFolderPlus size={14} uniProps={primaryColorMapping} />
+                <Text style={styles.workspaceRowDropIndicatorText}>
+                  {t("sidebar.workspace.actions.dropToMoveAgent", {
+                    defaultValue: "Move agent here",
+                  })}
+                </Text>
+              </View>
+            ) : null}
           </View>
         );
       }}
@@ -449,16 +485,19 @@ function getWorkspaceRowStyle({
   isPressed,
   selected,
   isHovered,
+  isDropTarget = false,
 }: {
   isDragging: boolean;
   isPressed: boolean;
   selected: boolean;
   isHovered: boolean;
+  isDropTarget?: boolean;
 }) {
   return [
     styles.workspaceRow,
     isHovered && styles.workspaceRowHovered,
     selected && styles.sidebarRowSelected,
+    isDropTarget && styles.workspaceRowDropTarget,
     isDragging && styles.workspaceRowDragging,
     isPressed && styles.workspaceRowPressed,
   ];
@@ -499,6 +538,31 @@ const styles = StyleSheet.create((theme) => ({
   },
   sidebarRowSelected: {
     backgroundColor: theme.colors.surfaceSidebarSelected,
+  },
+  workspaceRowDropTarget: {
+    backgroundColor: theme.colors.surfaceSidebarHover,
+    borderWidth: 1.5,
+    borderColor: theme.colors.primary,
+    borderStyle: "dashed",
+  },
+  workspaceRowDropIndicator: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    borderRadius: theme.borderRadius.lg,
+    backgroundColor: theme.colors.surfaceSidebarHover,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: theme.spacing[1.5],
+    zIndex: 10,
+  },
+  workspaceRowDropIndicatorText: {
+    color: theme.colors.primary,
+    fontSize: theme.fontSize.xs,
+    fontWeight: "600",
   },
   workspaceCreatingText: {
     color: theme.colors.foregroundMuted,
