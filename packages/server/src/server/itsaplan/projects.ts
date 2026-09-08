@@ -17,6 +17,7 @@ const PROJECTS_FILENAME = "projects.json";
 export const ITSAPLAN_WEBHOOK_EVENTS = [
   "issue.created",
   "issue.state_changed",
+  "issue.assigned",
   "comment.created",
 ] as const;
 
@@ -259,6 +260,15 @@ async function ensureItsaplanProjectMappingForKey(
     } else {
       mapping = await ensureCommanderMentionTrigger(mapping, config, deps);
     }
+    if (mapping.commanderUserId) {
+      const client = new ItsaplanClient(config);
+      await ensureTodoColumnAutoAssign(
+        mapping.itsaplanProjectKey,
+        mapping.commanderUserId,
+        client,
+        deps.logger,
+      );
+    }
     return ensureWebhookEventsUpToDate(mapping, config, deps);
   }
   const client = new ItsaplanClient(config);
@@ -291,6 +301,9 @@ async function ensureItsaplanProjectMappingForKey(
     webhookEvents: [...ITSAPLAN_WEBHOOK_EVENTS],
     ...(commander ? { ...commander, commanderMentionEnabled: true } : {}),
   };
+  if (commander?.commanderUserId) {
+    await ensureTodoColumnAutoAssign(created.key, commander.commanderUserId, client, deps.logger);
+  }
   await deps.store.upsert(mapping);
   deps.logger.info(
     { paseoProjectKey: projectKey, itsaplanProjectKey: created.key },
@@ -484,6 +497,40 @@ async function ensureCommanderAiAgent(
     return null;
   }
 }
+/**
+ * Ensures the project's Todo (unstarted) column has autoAssignUserId set to the
+ * Commander bot user. When tickets are moved to Todo without an explicit assignee,
+ * itsaplan auto-assigns them to Commander so automated dispatch triggers.
+ */
+export async function ensureTodoColumnAutoAssign(
+  itsaplanProjectKey: string,
+  commanderUserId: string,
+  client: ItsaplanClient,
+  logger: Logger,
+): Promise<void> {
+  try {
+    const columns = await client.listProjectColumns(itsaplanProjectKey);
+    const todoColumn = columns.find((c) => c.stateType === "unstarted");
+    if (!todoColumn) {
+      return;
+    }
+    if (todoColumn.autoAssignUserId === commanderUserId) {
+      return;
+    }
+    await client.updateColumn(itsaplanProjectKey, todoColumn.id, {
+      autoAssignUserId: commanderUserId,
+    });
+    logger.info(
+      { itsaplanProjectKey, columnId: todoColumn.id, commanderUserId },
+      "itsaplan.project.todo_column_auto_assign_set",
+    );
+  } catch (error) {
+    logger.warn(
+      { err: error, itsaplanProjectKey },
+      "itsaplan.project.todo_column_auto_assign_failed",
+    );
+  }
+}
 
 /**
  * Repairs event-set drift on a mapping's existing webhook: webhooks
@@ -563,6 +610,14 @@ async function backfillCommanderAgent(
     ...commander,
     commanderMentionEnabled: true,
   };
+  if (commander.commanderUserId) {
+    await ensureTodoColumnAutoAssign(
+      existing.itsaplanProjectKey,
+      commander.commanderUserId,
+      client,
+      deps.logger,
+    );
+  }
   await deps.store.upsert(updated);
   deps.logger.info(
     { paseoProjectKey: existing.paseoProjectKey, itsaplanProjectKey: existing.itsaplanProjectKey },
