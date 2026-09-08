@@ -316,6 +316,8 @@ export interface SubscribeOptions {
 
 interface HydrateTimelineOptions {
   force?: boolean;
+  /** Stream provider children even when the parent timeline is already primed. */
+  providerSubagents?: boolean;
   broadcast?: boolean | (() => boolean);
   broadcastTimeline?: boolean;
 }
@@ -3924,7 +3926,9 @@ export class AgentManager {
   }
 
   /**
-   * Hydrates the runtime timeline from provider history. No-ops if already hydrated.
+   * Hydrates the runtime timeline from provider history. No-ops if already hydrated
+   * unless `force` or `providerSubagents` is set. `providerSubagents` restores
+   * native children after a daemon restart without rewriting the parent timeline.
    */
   async hydrateTimelineFromProvider(
     agentId: string,
@@ -4854,6 +4858,9 @@ export class AgentManager {
     options?: HydrateTimelineOptions,
   ): Promise<void> {
     if (agent.historyPrimed && !options?.force) {
+      if (options?.providerSubagents) {
+        await this.hydrateProviderSubagentsFromLegacyProviderHistory(agent, options);
+      }
       return;
     }
 
@@ -4870,6 +4877,33 @@ export class AgentManager {
     }
 
     await this.primeTimelineFromLegacyProviderHistory(agent, broadcast);
+  }
+
+  private async hydrateProviderSubagentsFromLegacyProviderHistory(
+    agent: ActiveManagedAgent,
+    options: HydrateTimelineOptions,
+  ): Promise<void> {
+    const broadcast = options.broadcast ?? false;
+    const shouldBroadcast = typeof broadcast === "function" ? broadcast() : broadcast;
+    const providerSubagentEvents: Extract<AgentStreamEvent, { type: "provider_subagent" }>[] = [];
+    for await (const rawEvent of agent.session.streamHistory()) {
+      const event = limitAgentStreamEventContent(rawEvent);
+      if (event.type === "provider_subagent") {
+        providerSubagentEvents.push(event);
+      }
+    }
+
+    for (const event of this.providerSubagents.deleteParent(agent.id)) {
+      if (shouldBroadcast) {
+        this.dispatch({ type: "provider_subagent", event });
+      }
+    }
+    for (const event of providerSubagentEvents) {
+      const update = this.providerSubagents.apply(agent.id, event.provider, event.event);
+      if (shouldBroadcast) {
+        this.dispatch({ type: "provider_subagent", event: update });
+      }
+    }
   }
 
   private async forceHydrateTimelineFromLegacyProviderHistory(

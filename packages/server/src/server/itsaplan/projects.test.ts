@@ -9,12 +9,14 @@ import type { PersistedProjectRecord } from "../workspace-registry.js";
 import {
   attachItsaplanProjectSync,
   ensureItsaplanProjectMapping,
+  ensureTodoColumnAutoAssign,
   ItsaplanProjectStore,
   runItsaplanProjectResync,
   type ItsaplanCentralConfig,
   type ItsaplanFleetProjectCandidate,
   type ItsaplanProjectSyncDependencies,
 } from "./projects.js";
+import { ItsaplanClient } from "./client.js";
 
 function startFakeItsaplanServer(apiKey: string) {
   const createdProjects: Array<{ key: string; name: string; description: string }> = [];
@@ -35,6 +37,16 @@ function startFakeItsaplanServer(apiKey: string) {
   const projectIdByKey = new Map<string, number>();
   // Mirrors real itsaplan: descriptions default to '' when not supplied.
   const descriptionByKey = new Map<string, string>();
+  const columnsByProjectKey = new Map<
+    string,
+    Array<{
+      id: number;
+      projectId: number;
+      name: string;
+      stateType: string;
+      autoAssignUserId?: string | null;
+    }>
+  >();
 
   const server: Server = createServer((req, res) => {
     const chunks: Buffer[] = [];
@@ -51,96 +63,123 @@ function startFakeItsaplanServer(apiKey: string) {
         return;
       }
       const url = new URL(req.url ?? "/", "http://localhost");
-      const webhooksMatch = /^\/projects\/([^/]+)\/webhooks$/.exec(url.pathname);
-      if (req.method === "POST" && url.pathname === "/projects") {
-        const key = String(body.key);
-        // Mirrors real itsaplan: project keys are unique — a duplicate is a 409.
-        if (projectIdByKey.has(key)) {
-          send(409, { error: "duplicate key" });
-          return;
+      const handleProjects = (): boolean => {
+        if (req.method === "POST" && url.pathname === "/projects") {
+          const key = String(body.key);
+          if (projectIdByKey.has(key)) {
+            send(409, { error: "duplicate key" });
+            return true;
+          }
+          const created = {
+            id: nextProjectId++,
+            key,
+            name: String(body.name),
+            description: typeof body.description === "string" ? body.description : "",
+          };
+          projectIdByKey.set(key, created.id);
+          descriptionByKey.set(key, created.description);
+          createdProjects.push({
+            key: created.key,
+            name: created.name,
+            description: created.description,
+          });
+          send(201, created);
+          return true;
         }
-        const created = {
-          id: nextProjectId++,
-          key,
-          name: String(body.name),
-          description: typeof body.description === "string" ? body.description : "",
-        };
-        projectIdByKey.set(key, created.id);
-        descriptionByKey.set(key, created.description);
-        createdProjects.push({
-          key: created.key,
-          name: created.name,
-          description: created.description,
-        });
-        send(201, created);
-        return;
-      }
-      const projectMatch = /^\/projects\/([^/]+)$/.exec(url.pathname);
-      if (req.method === "GET" && projectMatch) {
-        const projectKey = decodeURIComponent(projectMatch[1]);
-        const id = projectIdByKey.get(projectKey);
-        if (!id) {
-          send(404, { error: "Project not found" });
-          return;
+        const projectMatch = /^\/projects\/([^/]+)$/.exec(url.pathname);
+        if (req.method === "GET" && projectMatch) {
+          const projectKey = decodeURIComponent(projectMatch[1]);
+          const id = projectIdByKey.get(projectKey);
+          if (!id) {
+            send(404, { error: "Project not found" });
+            return true;
+          }
+          send(200, {
+            project: {
+              id,
+              key: projectKey,
+              name: `name-${id}`,
+              description: descriptionByKey.get(projectKey) ?? "",
+            },
+            columns: columnsByProjectKey.get(projectKey) ?? [],
+            labels: [],
+          });
+          return true;
         }
-        // Live itsaplan answers GET /projects/:key with the nested scaffold.
-        send(200, {
-          project: {
+        return false;
+      };
+
+      const handleWebhooks = (): boolean => {
+        const webhooksMatch = /^\/projects\/([^/]+)\/webhooks$/.exec(url.pathname);
+        if (req.method === "POST" && webhooksMatch) {
+          const projectKey = decodeURIComponent(webhooksMatch[1]);
+          const webhook = {
+            projectKey,
+            url: String(body.url),
+            events: body.events as string[],
+            clientSentSecret: "secret" in body,
+          };
+          registeredWebhooks.push(webhook);
+          const id = nextWebhookId++;
+          webhooksById.set(id, {
             id,
-            key: projectKey,
-            name: `name-${id}`,
-            description: descriptionByKey.get(projectKey) ?? "",
-          },
-        });
-        return;
-      }
-      if (req.method === "POST" && webhooksMatch) {
-        const projectKey = decodeURIComponent(webhooksMatch[1]);
-        const webhook = {
-          projectKey,
-          url: String(body.url),
-          events: body.events as string[],
-          // Mirrors real itsaplan: any client-supplied secret is IGNORED and
-          // a server-generated one is returned in the response body.
-          clientSentSecret: "secret" in body,
-        };
-        registeredWebhooks.push(webhook);
-        const id = nextWebhookId++;
-        webhooksById.set(id, {
-          id,
-          projectId: projectIdByKey.get(projectKey) ?? 0,
-          url: webhook.url,
-          events: [...webhook.events],
-          isActive: true,
-        });
-        send(201, {
-          id,
-          projectId: 1,
-          url: webhook.url,
-          events: webhook.events,
-          isActive: true,
-          secret: `whsec_generated_${id}`,
-        });
-        return;
-      }
-      if (req.method === "GET" && webhooksMatch) {
-        const projectKey = decodeURIComponent(webhooksMatch[1]);
-        const projectId = projectIdByKey.get(projectKey);
-        send(
-          200,
-          Array.from(webhooksById.values()).filter((w) => w.projectId === projectId),
-        );
-        return;
-      }
-      const webhookPatchMatch = /^\/webhooks\/(\d+)$/.exec(url.pathname);
-      if (req.method === "PATCH" && webhookPatchMatch) {
-        const webhook = webhooksById.get(Number(webhookPatchMatch[1]));
-        if (!webhook) {
-          send(404, { error: "not found" });
-          return;
+            projectId: projectIdByKey.get(projectKey) ?? 0,
+            url: webhook.url,
+            events: [...webhook.events],
+            isActive: true,
+          });
+          send(201, {
+            id,
+            projectId: 1,
+            url: webhook.url,
+            events: webhook.events,
+            isActive: true,
+            secret: `whsec_generated_${id}`,
+          });
+          return true;
         }
-        Object.assign(webhook, body);
-        send(200, webhook);
+        if (req.method === "GET" && webhooksMatch) {
+          const projectKey = decodeURIComponent(webhooksMatch[1]);
+          const projectId = projectIdByKey.get(projectKey);
+          send(
+            200,
+            Array.from(webhooksById.values()).filter((w) => w.projectId === projectId),
+          );
+          return true;
+        }
+        const webhookPatchMatch = /^\/webhooks\/(\d+)$/.exec(url.pathname);
+        if (req.method === "PATCH" && webhookPatchMatch) {
+          const webhook = webhooksById.get(Number(webhookPatchMatch[1]));
+          if (!webhook) {
+            send(404, { error: "not found" });
+            return true;
+          }
+          Object.assign(webhook, body);
+          send(200, webhook);
+          return true;
+        }
+        return false;
+      };
+
+      const handleColumns = (): boolean => {
+        const columnPatchMatch = /^\/projects\/([^/]+)\/columns\/(\d+)$/.exec(url.pathname);
+        if (req.method === "PATCH" && columnPatchMatch) {
+          const projectKey = decodeURIComponent(columnPatchMatch[1]);
+          const colId = Number(columnPatchMatch[2]);
+          const cols = columnsByProjectKey.get(projectKey) ?? [];
+          const col = cols.find((c) => c.id === colId);
+          if (!col) {
+            send(404, { error: "Column not found" });
+            return true;
+          }
+          Object.assign(col, body);
+          send(200, col);
+          return true;
+        }
+        return false;
+      };
+
+      if (handleProjects() || handleWebhooks() || handleColumns()) {
         return;
       }
       send(404, { error: `unhandled ${req.method} ${url.pathname}` });
@@ -154,6 +193,7 @@ function startFakeItsaplanServer(apiKey: string) {
     webhooksById,
     projectIdByKey,
     descriptionByKey,
+    columnsByProjectKey,
   };
 }
 
@@ -231,7 +271,7 @@ describe("itsaplan project sync", () => {
       // Read back from itsaplan's response — itsaplan ignores client secrets.
       webhookSecret: "whsec_generated_1",
       webhookId: 1,
-      webhookEvents: ["issue.created", "issue.state_changed", "comment.created"],
+      webhookEvents: ["issue.created", "issue.state_changed", "issue.assigned", "comment.created"],
     });
     // Name = friendly display name; description = full cross-host identity.
     expect(fakeServer.createdProjects).toEqual([
@@ -241,7 +281,7 @@ describe("itsaplan project sync", () => {
       {
         projectKey: "REPO",
         url: "http://127.0.0.1:9999/api/itsaplan/webhook",
-        events: ["issue.created", "issue.state_changed", "comment.created"],
+        events: ["issue.created", "issue.state_changed", "issue.assigned", "comment.created"],
         clientSentSecret: false,
       },
     ]);
@@ -276,12 +316,14 @@ describe("itsaplan project sync", () => {
     expect(fakeServer.webhooksById.get(1)?.events).toEqual([
       "issue.created",
       "issue.state_changed",
+      "issue.assigned",
       "comment.created",
     ]);
     expect(updated?.webhookId).toBe(1);
     expect(updated?.webhookEvents).toEqual([
       "issue.created",
       "issue.state_changed",
+      "issue.assigned",
       "comment.created",
     ]);
     expect(store.getByPaseoProjectKey("PROJ")?.webhookId).toBe(1);
@@ -307,12 +349,14 @@ describe("itsaplan project sync", () => {
     expect(fakeServer.webhooksById.get(1)?.events).toEqual([
       "issue.created",
       "issue.state_changed",
+      "issue.assigned",
       "comment.created",
     ]);
     expect(updated?.webhookId).toBe(1);
     expect(updated?.webhookEvents).toEqual([
       "issue.created",
       "issue.state_changed",
+      "issue.assigned",
       "comment.created",
     ]);
   });
@@ -472,5 +516,52 @@ describe("itsaplan project sync", () => {
     expect(mapping).toBeNull();
     expect(fakeServer.createdProjects).toHaveLength(0);
     expect(store.getByPaseoProjectKey("PROJ")).toBeNull();
+  });
+});
+
+describe("ensureTodoColumnAutoAssign", () => {
+  let fakeServer: ReturnType<typeof startFakeItsaplanServer>;
+  let handle: { baseUrl: string; close: () => Promise<void> };
+  let config: ItsaplanCentralConfig;
+  let client: ItsaplanClient;
+
+  beforeEach(async () => {
+    fakeServer = startFakeItsaplanServer("itp_test_key");
+    handle = await listen(fakeServer.server);
+    config = { baseUrl: handle.baseUrl, apiKey: "itp_test_key", webhookSecret: "whsec_test" };
+    client = new ItsaplanClient(config);
+    fakeServer.projectIdByKey.set("ENG", 1);
+    fakeServer.columnsByProjectKey.set("ENG", [
+      { id: 10, projectId: 1, name: "Backlog", stateType: "backlog" },
+      { id: 11, projectId: 1, name: "Todo", stateType: "unstarted", autoAssignUserId: null },
+      { id: 12, projectId: 1, name: "In Progress", stateType: "started" },
+    ]);
+  });
+
+  afterEach(async () => {
+    await handle.close();
+  });
+
+  test("sets autoAssignUserId on the unstarted (Todo) column to the commander bot user", async () => {
+    await ensureTodoColumnAutoAssign("ENG", "bot-user-42", client, createTestLogger());
+    const cols = fakeServer.columnsByProjectKey.get("ENG");
+    const todoCol = cols?.find((c) => c.name === "Todo");
+    expect(todoCol?.autoAssignUserId).toBe("bot-user-42");
+  });
+
+  test("no-ops if autoAssignUserId is already the commander bot user", async () => {
+    const cols = fakeServer.columnsByProjectKey.get("ENG")!;
+    cols.find((c) => c.name === "Todo")!.autoAssignUserId = "bot-user-42";
+    await ensureTodoColumnAutoAssign("ENG", "bot-user-42", client, createTestLogger());
+    expect(cols.find((c) => c.name === "Todo")?.autoAssignUserId).toBe("bot-user-42");
+  });
+
+  test("safely no-ops when no unstarted column exists", async () => {
+    fakeServer.columnsByProjectKey.set("ENG", [
+      { id: 10, projectId: 1, name: "Backlog", stateType: "backlog" },
+    ]);
+    await expect(
+      ensureTodoColumnAutoAssign("ENG", "bot-user-42", client, createTestLogger()),
+    ).resolves.toBeUndefined();
   });
 });

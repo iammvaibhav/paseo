@@ -11,12 +11,13 @@
  * This script has two modes, meant to bracket a daemon restart:
  *
  *   --snapshot <file>   connect to the local daemon and write every agent with
- *                       status "running" as [{ "id": ..., "title": ... }] to
- *                       <file>. Run BEFORE stopping the daemon.
+ *                       status "running" as
+ *                       [{ "id", "title", "runningSubagents": [{ "id", "title" }] }]
+ *                       to <file>. Run BEFORE stopping the daemon.
  *   --nudge <file>      read the snapshot and send each agent a message
- *                       (default: resume prompt). Run AFTER the daemon is
- *                       healthy again. Per-agent errors are logged, never
- *                       fatal; the process always exits 0.
+ *                       (default: resume prompt, naming interrupted subagents).
+ *                       Run AFTER the daemon is healthy again. Per-agent errors
+ *                       are logged, never fatal; the process always exits 0.
  *
  * Usage:
  *   node scripts/deploy-nudge.mjs --snapshot <file> [--host HOST] [--password PW]
@@ -33,6 +34,7 @@
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
 
 const require = createRequire(import.meta.url);
@@ -129,10 +131,30 @@ async function runSnapshot(client, file, label) {
     console.log(`${label} snapshot skipped: list agents failed: ${error?.message ?? error}`);
     return;
   }
-  const running = (payload?.entries ?? [])
-    .map((entry) => entry?.agent)
-    .filter((agent) => agent && agent.status === "running")
-    .map((agent) => ({ id: agent.id, title: agent.title ?? null }));
+  const running = [];
+  for (const entry of payload?.entries ?? []) {
+    const agent = entry?.agent;
+    if (!agent || agent.status !== "running" || typeof agent.id !== "string") continue;
+    let runningSubagents = [];
+    if (typeof client.listProviderSubagents === "function") {
+      try {
+        const listed = await client.listProviderSubagents(agent.id);
+        runningSubagents = (listed?.subagents ?? [])
+          .filter((subagent) => subagent && subagent.status === "running")
+          .map((subagent) => ({
+            id: subagent.id,
+            title: subagent.title ?? null,
+          }));
+      } catch (error) {
+        console.log(`${label} ${agent.id} subagents skipped: ${error?.message ?? error}`);
+      }
+    }
+    running.push({
+      id: agent.id,
+      title: agent.title ?? null,
+      runningSubagents,
+    });
+  }
   await writeFile(file, `${JSON.stringify(running, null, 2)}\n`, "utf8");
   console.log(`${label} snapshot: wrote ${running.length} running agent(s) to ${file}`);
 }
@@ -156,13 +178,32 @@ async function runNudge(client, file, message, label) {
       console.log(`${label} nudge skipped malformed entry: ${JSON.stringify(entry)}`);
       continue;
     }
+    const text = resolveNudgeMessage(entry, message);
     try {
-      await client.sendAgentMessage(id, message, {});
+      await client.sendAgentMessage(id, text, {});
       console.log(`${label} ${id} nudged`);
     } catch (error) {
       console.log(`${label} ${id} failed: ${error?.message ?? error}`);
     }
   }
+}
+
+function resolveNudgeMessage(entry, message) {
+  if (typeof message === "string" && message.length > 0 && message !== DEFAULT_MESSAGE) {
+    return message;
+  }
+  const names = (entry?.runningSubagents ?? [])
+    .map((subagent) => subagent?.title || subagent?.id)
+    .filter((name) => typeof name === "string" && name.length > 0);
+  if (names.length === 0) {
+    return message ?? DEFAULT_MESSAGE;
+  }
+  return (
+    `${DEFAULT_MESSAGE} ` +
+    `You had ${names.length} subagent(s) running before the restart: [${names.join(", ")}]. ` +
+    `Their execution was interrupted by the daemon restart. ` +
+    `Inspect their transcripts and re-launch or resume them as necessary.`
+  );
 }
 
 async function main() {
@@ -188,7 +229,11 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.log(`deploy-nudge failed: ${error?.message ?? error}`);
-  process.exit(0);
-});
+export { runSnapshot, runNudge };
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  main().catch((error) => {
+    console.log(`deploy-nudge failed: ${error?.message ?? error}`);
+    process.exit(0);
+  });
+}

@@ -45,12 +45,18 @@ function deriveInitialAgentTitle(prompt: string): string | null {
 
   let cleaned = candidateLine.replace(/^[>\s"']+|[>\s"']+$/g, "").trim();
   const ticketPrefixMatch =
-    /^(?:ticket(?:\s*id)?|issue):\s*([A-Za-z0-9_]+-\d+)\s*[—–-]?\s*(.*)$/i.exec(cleaned);
+    /^(?:(?:ticket(?:\s*id)?|issue):\s*)?\[?([A-Za-z0-9_]+-\d+)\]?\s*(?:[—–:-]|\s)\s*(.*)$/i.exec(
+      cleaned,
+    );
   if (ticketPrefixMatch) {
     const [, ticketKey, rest] = ticketPrefixMatch;
-    cleaned = rest ? `${ticketKey} - ${rest}` : (ticketKey ?? cleaned);
+    cleaned = rest && rest.trim().length > 0 ? rest.trim() : (ticketKey ?? cleaned);
+  } else {
+    const ticketOnlyMatch = /^(?:ticket(?:\s*id)?|issue):\s*(.+)$/i.exec(cleaned);
+    if (ticketOnlyMatch && ticketOnlyMatch[1]) {
+      cleaned = ticketOnlyMatch[1].trim();
+    }
   }
-
   const normalized = cleaned.replace(/\s+/g, " ").trim();
   if (!normalized) {
     return null;

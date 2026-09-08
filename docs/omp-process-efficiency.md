@@ -57,8 +57,10 @@ Sources: `OmpAgentClient.startRuntimeSession` / `resumeSession`
 
 Native OMP task children live **inside** the parent process. Paseo maps
 `subagent_*` events; it does not spawn a second `omp` for them. Kill the
-parent between turns and those in-flight children die. Completed child
-JSONL on disk survives.
+parent between turns and those in-flight children die. Completed and
+interrupted child JSONL on disk survives and is replayed into the
+provider-subagent track on resume as `canceled`. The parent process is
+not reattached: JSONL RPC uses stdin/stdout pipes.
 
 ## Warm pool (creates only)
 
@@ -177,13 +179,15 @@ to the claim budget (likely tens of ms, same order as `set_model`).
 
 ## What a SIGTERM between turns drops
 
-Disk-reloadable: session JSONL, completed child transcripts, Paseo
-agent record, primed timeline.
+Disk-reloadable: session JSONL, completed child transcripts, interrupted
+child transcripts that flushed before SIGKILL, Paseo agent record, primed
+parent timeline. Provider-subagent descriptors are not durable; resume
+rebuilds them from those JSONL files.
 
 Lost with the process:
 
-- In-flight OMP task children (memory-only; already true across
-  daemon restart)
+- In-flight OMP task children (the OS process; already true across
+  daemon restart). Partial transcripts can still be shown.
 - Background bash / watchers / PTYs started by tools
 - In-process credential cache (re-read on next boot)
 - Host-tool router and unanswered extension UI
