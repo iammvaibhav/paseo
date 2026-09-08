@@ -47,7 +47,7 @@ test("snapshot records running provider subagents for later nudge", async () => 
   ]);
 });
 
-test("nudge names interrupted subagents in the resume prompt", async () => {
+test("nudge names interrupted subagents by id and tells the parent to revive them", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "deploy-nudge-nudge-"));
   createdDirs.push(dir);
   const snapshotFile = path.join(dir, "running.json");
@@ -78,7 +78,9 @@ test("nudge names interrupted subagents in the resume prompt", async () => {
 
   expect(sent).toHaveLength(1);
   expect(sent[0]?.id).toBe("parent-1");
-  expect(sent[0]?.message).toContain("InvestigateGhostAgent");
-  expect(sent[0]?.message).toContain("interrupted by the daemon restart");
-  expect(sent[0]?.message).toContain("re-launch or resume them");
+  expect(sent[0]?.message).toContain("[child-a]");
+  expect(sent[0]?.message).not.toContain("InvestigateGhostAgent");
+  expect(sent[0]?.message).toContain("parked");
+  expect(sent[0]?.message).toContain("Do not re-launch them");
+  expect(sent[0]?.message).toContain("check what it already changed before you repeat it");
 });

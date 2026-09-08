@@ -192,17 +192,23 @@ function resolveNudgeMessage(entry, message) {
   if (typeof message === "string" && message.length > 0 && message !== DEFAULT_MESSAGE) {
     return message;
   }
-  const names = (entry?.runningSubagents ?? [])
-    .map((subagent) => subagent?.title || subagent?.id)
-    .filter((name) => typeof name === "string" && name.length > 0);
-  if (names.length === 0) {
+  // Name children by id: that is the label the parent used in `task` and the
+  // address `hub send` accepts. The title is the model string for OMP children.
+  const ids = (entry?.runningSubagents ?? [])
+    .map((subagent) => subagent?.id)
+    .filter((id) => typeof id === "string" && id.length > 0);
+  if (ids.length === 0) {
     return message ?? DEFAULT_MESSAGE;
   }
   return (
     `${DEFAULT_MESSAGE} ` +
-    `You had ${names.length} subagent(s) running before the restart: [${names.join(", ")}]. ` +
-    `Their execution was interrupted by the daemon restart. ` +
-    `Inspect their transcripts and re-launch or resume them as necessary.`
+    `You had ${ids.length} subagent(s) running before the restart: [${ids.join(", ")}]. ` +
+    `The restart killed them mid-task. They are parked in your hub roster ` +
+    `(hub list status=parked). Do not re-launch them. Send each id a hub message: ` +
+    `"The daemon restarted and killed you mid-task. Your last tool call did not finish; ` +
+    `check what it already changed before you repeat it, then continue from where you left off." ` +
+    `That revives the child from its own transcript. Its result auto-delivers when it yields; ` +
+    `a hub wait on it can abort with "not running" while it revives — that is not a failure.`
   );
 }
 
