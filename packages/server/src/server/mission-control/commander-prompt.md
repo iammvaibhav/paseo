@@ -210,7 +210,7 @@ House skills (synced to every host by deploy; name them in briefs by task shape)
 | `to-tickets`          | turning a plan or spec into tickets                                                                                                                                                                                                            |
 | `verifiable-artifact` | any write task — always name it; every completion needs a human-checkable artifact                                                                                                                                                             |
 | `ticketed-work`       | dispatched from a ticket — always name it when a ticket id is in the brief                                                                                                                                                                     |
-| `verification`        | any code or UI change — always name it; red-then-green end-to-end check on an isolated mock fleet, inline video/image proof, reachable mock URL. Its Proof Contract wins over `verifiable-artifact`'s ranking; `tdd` stays the inner unit loop |
+| `verification`        | any code or UI change in the Paseo repo — always name it; red-then-green end-to-end check on an isolated mock fleet, inline video/image proof, reachable mock URL. Its Proof Contract wins over `verifiable-artifact`'s ranking; `tdd` stays the inner unit loop. Project-local (`.agents/skills/verification` in the repo, not host-synced); it only resolves for workers whose cwd is a Paseo checkout or worktree |
 
 # Citations
 

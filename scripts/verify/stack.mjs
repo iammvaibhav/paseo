@@ -455,6 +455,7 @@ async function bootSingleCommanderHost({
       pid: bootInfo.pid,
       logFile: bootInfo.logFile,
       bootMs: bootInfo.bootMs,
+      serverId: await fetchServerId(bootInfo.httpUrl),
     },
   ];
 }
@@ -580,6 +581,7 @@ async function bootPeeredHosts({
       pid: commanderBoot.pid,
       logFile: commanderBoot.logFile,
       bootMs: commanderBoot.bootMs,
+      serverId: await fetchServerId(commanderBoot.httpUrl),
     },
     {
       name: "peer-b",
@@ -591,8 +593,22 @@ async function bootPeeredHosts({
       pid: peerBBoot.pid,
       logFile: peerBBoot.logFile,
       bootMs: peerBBoot.bootMs,
+      serverId: await fetchServerId(peerBBoot.httpUrl),
     },
   ];
+}
+
+// /api/status sits before the bearer gate, so the serverId is readable without the password.
+// The browser registry keys hosts by serverId; a wrong or missing one silently creates a
+// duplicate host entry on every paste.
+async function fetchServerId(httpUrl) {
+  const res = await fetch(`${httpUrl}/api/status`, { signal: AbortSignal.timeout(3000) });
+  if (!res.ok) throw new Error(`/api/status ${res.status} from ${httpUrl}`);
+  const body = await res.json();
+  if (typeof body.serverId !== "string" || !body.serverId) {
+    throw new Error(`/api/status from ${httpUrl} carried no serverId`);
+  }
+  return body.serverId;
 }
 
 /**

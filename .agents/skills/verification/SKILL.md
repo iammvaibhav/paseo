@@ -9,7 +9,7 @@ argument-hint: "<check-name> | --all [--up] [--expect pass|fail] [--proof] [--re
 
 Verify changes against an isolated, throwaway Paseo stack before landing code or reporting done.
 
-See [docs/verification.md](../../docs/verification.md) for architecture, the mock fleet contract, and the [decision matrix](../../docs/verification.md#decision-matrix).
+See [docs/verification.md](../../../docs/verification.md) for architecture, the mock fleet contract, and the [decision matrix](../../../docs/verification.md#decision-matrix).
 
 ## Workflow
 
@@ -17,7 +17,7 @@ Follow these seven steps in order:
 
 ### 1. Decide the tier
 
-Consult the [decision matrix](../../docs/verification.md#decision-matrix) to choose your check tier:
+Consult the [decision matrix](../../../docs/verification.md#decision-matrix) to choose your check tier:
 
 - `daemon`: RPC, loopback HTTP, or CLI behavior (~100ms per check).
 - `ui`: DOM state, navigation, form inputs, or web UI interactions driven via Playwright.
@@ -70,7 +70,7 @@ Include:
 
 ### 6. Live environment
 
-Follow the live environment rule in [CLAUDE.md](../../CLAUDE.md#critical-rules): verify against the isolated mock fleet by default. Use the live environment (the 6767 daemon, real itsaplan projects, real workspaces) only when the user explicitly requested it or when the behavior cannot be reproduced in the mock stack and you state why. All live environment actions must be strictly additive (create a new workspace or ticket); never delete, archive, rename, or modify pre-existing data.
+Follow the live environment rule in [CLAUDE.md](../../../CLAUDE.md#critical-rules): verify against the isolated mock fleet by default. Use the live environment (the 6767 daemon, real itsaplan projects, real workspaces) only when the user explicitly requested it or when the behavior cannot be reproduced in the mock stack and you state why. All live environment actions must be strictly additive (create a new workspace or ticket); never delete, archive, rename, or modify pre-existing data.
 
 ### 7. Run-all
 
