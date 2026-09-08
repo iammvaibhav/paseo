@@ -10,6 +10,7 @@ import process from "node:process";
 import { promisify } from "node:util";
 
 import { DaemonClient } from "../../packages/client/dist/daemon-client.js";
+import { buildConnectSnippet } from "./lib/connect-snippet.mjs";
 import { discoverCodeServer } from "./lib/paths.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -980,6 +981,7 @@ function printCheckSummary(
   passed,
   expectationMet,
   durationMs,
+  keep,
 ) {
   console.log(
     `\n=== Result: ${passed ? "PASSED" : "FAILED"} (Expectation: ${finalResult.expectation}, Met: ${expectationMet}) in ${(durationMs / 1000).toFixed(2)}s ===`,
@@ -1006,6 +1008,13 @@ function printCheckSummary(
   console.log("\nReproduce Recipe:");
   for (let i = 0; i < finalResult.reproduce.length; i++) {
     console.log(`  ${i + 1}. ${finalResult.reproduce[i]}`);
+  }
+  if (keep && stack.password) {
+    console.log(
+      `\nRegister the kept stack in a browser: open ${ctx.reachableUrl()}/ and paste this into the devtools console:\n`,
+    );
+    console.log(buildConnectSnippet(stack));
+    console.log(`\n(or: node scripts/verify/stack.mjs connect ${stack.runId})`);
   }
   console.log("");
 }
@@ -1142,6 +1151,7 @@ async function runSingleCheck(checkPath, opts, externalStack = null) {
         passed,
         expectationMet,
         durationMs,
+        opts.keep,
       );
     }
   }

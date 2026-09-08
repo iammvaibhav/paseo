@@ -39,6 +39,7 @@ import {
 } from "./lib/procs.mjs";
 import { spawnDaemonHost, waitForDaemonHealth } from "./lib/daemon.mjs";
 import { verifyPeeringLive } from "./lib/client.mjs";
+import { buildConnectSnippet } from "./lib/connect-snippet.mjs";
 
 /**
  * Initialize a mock git fixture repository with one commit and origin pointing to
@@ -455,7 +456,7 @@ async function bootSingleCommanderHost({
       pid: bootInfo.pid,
       logFile: bootInfo.logFile,
       bootMs: bootInfo.bootMs,
-      serverId: await fetchServerId(bootInfo.httpUrl),
+      serverId: await fetchServerId(bootInfo.httpUrl, password),
     },
   ];
 }
@@ -581,7 +582,7 @@ async function bootPeeredHosts({
       pid: commanderBoot.pid,
       logFile: commanderBoot.logFile,
       bootMs: commanderBoot.bootMs,
-      serverId: await fetchServerId(commanderBoot.httpUrl),
+      serverId: await fetchServerId(commanderBoot.httpUrl, password),
     },
     {
       name: "peer-b",
@@ -593,16 +594,18 @@ async function bootPeeredHosts({
       pid: peerBBoot.pid,
       logFile: peerBBoot.logFile,
       bootMs: peerBBoot.bootMs,
-      serverId: await fetchServerId(peerBBoot.httpUrl),
+      serverId: await fetchServerId(peerBBoot.httpUrl, password),
     },
   ];
 }
 
-// /api/status sits before the bearer gate, so the serverId is readable without the password.
 // The browser registry keys hosts by serverId; a wrong or missing one silently creates a
-// duplicate host entry on every paste.
-async function fetchServerId(httpUrl) {
-  const res = await fetch(`${httpUrl}/api/status`, { signal: AbortSignal.timeout(3000) });
+// duplicate host entry on every paste, so failing here is better than guessing.
+async function fetchServerId(httpUrl, password) {
+  const res = await fetch(`${httpUrl}/api/status`, {
+    headers: password ? { authorization: `Bearer ${password}` } : {},
+    signal: AbortSignal.timeout(3000),
+  });
   if (!res.ok) throw new Error(`/api/status ${res.status} from ${httpUrl}`);
   const body = await res.json();
   if (typeof body.serverId !== "string" || !body.serverId) {
@@ -1116,6 +1119,11 @@ Commands:
 
   sweep [--older-than-minutes N] [--json] [--quiet]
       Reap stacks older than N minutes (default 120) or whose daemon pids are dead.
+
+  connect <runId>
+      Print the browser devtools snippet that registers the stack's hosts (with
+      password and VS Code Web URL) in the Paseo web UI. Paste it into the console
+      of the mock's own web UI page.
 `);
 }
 
@@ -1139,9 +1147,31 @@ function printStackUpDetails(stack) {
     );
   }
   process.stdout.write(`\nTo open the web UI, navigate to:\n  ${stack.hosts[0].httpUrl}/\n`);
+  if (stack.password) {
+    process.stdout.write(
+      `\nThe page lands on the add-host form (the connection hint carries no password).\n` +
+        `Paste this into the browser devtools console on that page to register the host:\n\n` +
+        `${buildConnectSnippet(stack)}\n\n(or run: node scripts/verify/stack.mjs connect ${stack.runId})\n`,
+    );
+  }
   process.stdout.write(
     `\nTo tear down this stack, run:\n  node scripts/verify/stack.mjs down ${stack.runId}\n`,
   );
+}
+
+async function handleConnectCommand(args) {
+  const runId = args._[1];
+  if (!runId) {
+    process.stderr.write("Error: 'connect' requires a <runId>\n");
+    process.exit(1);
+  }
+  const stackJsonPath = path.join(getStackDir(getWorktreeRoot(), runId), "stack.json");
+  if (!existsSync(stackJsonPath)) {
+    process.stderr.write(`Error: no stack.json for ${runId} (is the stack up? see 'ls')\n`);
+    process.exit(1);
+  }
+  const stack = JSON.parse(readFileSync(stackJsonPath, "utf8"));
+  process.stdout.write(buildConnectSnippet(stack) + "\n");
 }
 
 async function handleUpCommand(args) {
@@ -1251,6 +1281,11 @@ async function main() {
 
   if (command === "sweep") {
     await handleSweepCommand(args);
+    return;
+  }
+
+  if (command === "connect") {
+    await handleConnectCommand(args);
     return;
   }
 
