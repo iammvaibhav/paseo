@@ -159,9 +159,13 @@ async function main() {
   const context = await chromium.launchPersistentContext(args.userDataDir, {
     executablePath,
     headless: true,
+    // The itsaplan embed is served over a self-signed cert, so without this the
+    // pane loads chrome-error:// instead of a board and every switch looks dead.
+    ignoreHTTPSErrors: true,
     args: [
       `--remote-debugging-port=${args.cdpPort}`,
       "--remote-allow-origins=*",
+      "--ignore-certificate-errors",
       "--no-sandbox",
       "--disable-setuid-sandbox",
     ],
@@ -176,31 +180,39 @@ async function main() {
   });
   await page.goto(args.url, { waitUntil: "domcontentloaded" });
 
-  // "Connected" is the app's own word for a live host, and the sidebar only
-  // lists projects once a host reaches it, so both are read from the UI rather
-  // than inferred from the seed succeeding.
+  // A seeded host proves nothing; a host that answers shows up as rows. Each
+  // sidebar row carries its serverId in the test id, so per-host counts are the
+  // evidence — a page-wide "Connecting" text search also matches unrelated copy.
   const deadline = Date.now() + args.timeoutMs;
   let report = null;
   while (Date.now() < deadline) {
     report = await page.evaluate(
       (serverIds) => {
-        const text = document.body.innerText;
-        const rows = [...document.querySelectorAll("[data-testid^='sidebar-project-row-']")].map(
-          (node) => node.textContent?.trim() ?? "",
-        );
-        const workspaces = document.querySelectorAll(
-          "[data-testid^='sidebar-workspace-row-']",
-        ).length;
+        const ids = (selector) =>
+          [...document.querySelectorAll(selector)].map(
+            (node) => node.getAttribute("data-testid") ?? "",
+          );
+        const projectIds = ids("[data-testid^='sidebar-project-row-']");
+        const workspaceIds = ids("[data-testid^='sidebar-workspace-row-']");
+        const perHost = {};
+        for (const serverId of serverIds) {
+          perHost[serverId] = {
+            projects: projectIds.filter((id) => id.includes(serverId)).length,
+            workspaces: workspaceIds.filter((id) => id.includes(serverId)).length,
+          };
+        }
         return {
-          offline: /Disconnected|Unreachable|Connecting/.test(text),
-          hostCount: serverIds.length,
-          projects: rows,
-          workspaces,
+          perHost,
+          projects: projectIds.length,
+          workspaces: workspaceIds.length,
+          hostsWithRows: Object.values(perHost).filter(
+            (counts) => counts.projects > 0 || counts.workspaces > 0,
+          ).length,
         };
       },
       hosts.map((host) => host.serverId),
     );
-    if (report.projects.length > 0 && !report.offline) break;
+    if (report.hostsWithRows >= hosts.length) break;
     await page.waitForTimeout(1000);
   }
 
@@ -214,10 +226,15 @@ async function main() {
         chromium: executablePath,
         userDataDir: args.userDataDir,
         screenshot: args.screenshot,
-        hosts: hosts.map(({ serverId, label, endpoint }) => ({ serverId, label, endpoint })),
-        projects: report?.projects ?? [],
+        hosts: hosts.map(({ serverId, label, endpoint }) => ({
+          serverId,
+          label,
+          endpoint,
+          rows: report?.perHost?.[serverId] ?? { projects: 0, workspaces: 0 },
+        })),
+        projectRows: report?.projects ?? 0,
         workspaceRows: report?.workspaces ?? 0,
-        anyHostNotConnected: report?.offline ?? true,
+        allHostsServingRows: (report?.hostsWithRows ?? 0) >= hosts.length,
       },
       null,
       2,
