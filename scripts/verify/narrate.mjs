@@ -156,6 +156,17 @@ function writeWavFallback(filePath, audio) {
   fs.writeFileSync(filePath, buffer);
 }
 
+// NOTE: worker_threads MessagePort.postMessage takes a single message argument
+// (unlike DOM window.postMessage, which requires a targetOrigin). Bracket
+// notation keeps the DOM-oriented lint rule from flagging these Node-only calls.
+function postToParent(message) {
+  parentPort["postMessage"](message);
+}
+
+function postToWorker(worker, message) {
+  worker["postMessage"](message);
+}
+
 function saveAudio(sherpa, filePath, audio) {
   const absPath = path.resolve(filePath);
   const dir = path.dirname(absPath);
@@ -187,7 +198,7 @@ if (!isMainThread) {
   const sherpa = loadSherpa();
 
   if (!sherpa || !modelDir) {
-    parentPort.postMessage({ error: "Missing sherpa binding or model directory" });
+    postToParent({ error: "Missing sherpa binding or model directory" });
   } else {
     let tts = null;
     try {
@@ -207,7 +218,7 @@ if (!isMainThread) {
       };
       tts = new sherpa.OfflineTts(ttsConfig);
     } catch (err) {
-      parentPort.postMessage({ error: `OfflineTts initialization failed: ${err.message}` });
+      postToParent({ error: `OfflineTts initialization failed: ${err.message}` });
     }
 
     if (tts) {
@@ -229,7 +240,7 @@ if (!isMainThread) {
             const words = text.trim().split(/\s+/).length;
             const wpm = Math.round((words / durationSec) * 60);
 
-            parentPort.postMessage({
+            postToParent({
               ok: true,
               id,
               outPath,
@@ -239,14 +250,14 @@ if (!isMainThread) {
               synthMs,
             });
           } else {
-            parentPort.postMessage({
+            postToParent({
               ok: false,
               id,
               error: "TTS generate produced empty audio samples",
             });
           }
         } catch (err) {
-          parentPort.postMessage({
+          postToParent({
             ok: false,
             id,
             error: err.message || String(err),
@@ -257,6 +268,56 @@ if (!isMainThread) {
   }
 } else {
   // Main thread logic
+  function buildTitleText(steps, readableName, isPassed) {
+    if (isPassed) {
+      const stepCount = steps.length;
+      return `${readableName}. Passed. ${stepCount} ${stepCount === 1 ? "step" : "steps"}.`;
+    }
+    const failedStep = steps.find((s) => s.status === "fail");
+    if (failedStep) {
+      return `${readableName}. Failed at step ${formatCheckTitle(failedStep.id || failedStep.label || "")}.`;
+    }
+    return `${readableName}. Failed.`;
+  }
+
+  function buildNarrationTasks(resultData, outDir) {
+    const steps = Array.isArray(resultData.steps) ? resultData.steps : [];
+    const readableName = formatCheckTitle(resultData.name);
+    const isPassed = Boolean(resultData.passed);
+    const tasks = [
+      {
+        id: "title",
+        text: buildTitleText(steps, readableName, isPassed),
+        outPath: path.join(outDir, "title.wav"),
+      },
+    ];
+    for (const step of steps) {
+      if (!step || !step.id) continue;
+      const text = typeof step.narrate === "string" ? step.narrate.trim() : "";
+      if (!text) continue;
+      tasks.push({
+        id: step.id,
+        text,
+        outPath: path.join(outDir, `${step.id}.wav`),
+      });
+    }
+    return tasks;
+  }
+
+  function spawnWorkerPool(poolSize, modelDir, numThreads) {
+    const thisFilePath = fileURLToPath(import.meta.url);
+    const workers = [];
+    const idleWorkers = [];
+    for (let i = 0; i < poolSize; i++) {
+      const w = new Worker(thisFilePath, {
+        workerData: { modelDir, numThreads: numThreads || 1 },
+      });
+      workers.push(w);
+      idleWorkers.push(w);
+    }
+    return { workers, idleWorkers };
+  }
+
   async function main() {
     const args = parseArgs(process.argv.slice(2));
     if (args.help) {
@@ -298,70 +359,14 @@ if (!isMainThread) {
 
     fs.mkdirSync(args.outDir, { recursive: true });
 
-    const steps = Array.isArray(resultData.steps) ? resultData.steps : [];
-    const readableName = formatCheckTitle(resultData.name);
-    const isPassed = Boolean(resultData.passed);
-    const stepCount = steps.length;
-    const countLabel = `${stepCount} ${stepCount === 1 ? "step" : "steps"}`;
-
-    // 1. Prepare title narration
-    let titleText = "";
-    if (isPassed) {
-      titleText = `${readableName}. Passed. ${countLabel}.`;
-    } else {
-      const failedStep = steps.find((s) => s.status === "fail");
-      if (failedStep) {
-        titleText = `${readableName}. Failed at step ${formatCheckTitle(failedStep.id || failedStep.label || "")}.`;
-      } else {
-        titleText = `${readableName}. Failed.`;
-      }
-    }
-
-    const tasks = [
-      {
-        id: "title",
-        text: titleText,
-        outPath: path.join(args.outDir, "title.wav"),
-      },
-    ];
-
-    // 2. Prepare per-step narrations
-    for (const step of steps) {
-      if (!step || !step.id) continue;
-      const text = typeof step.narrate === "string" ? step.narrate.trim() : "";
-      if (!text) continue;
-      tasks.push({
-        id: step.id,
-        text,
-        outPath: path.join(args.outDir, `${step.id}.wav`),
-      });
-    }
-
+    const tasks = buildNarrationTasks(resultData, args.outDir);
     if (tasks.length === 0) {
       console.log("[narrate] No narration tasks found.");
       process.exit(0);
     }
 
-    const poolSize = Math.min(
-      args.workers || 4,
-      Math.max(1, os.cpus().length || 4),
-      tasks.length
-    );
-
-    const thisFilePath = fileURLToPath(import.meta.url);
-    const workers = [];
-    const idleWorkers = [];
-
-    for (let i = 0; i < poolSize; i++) {
-      const w = new Worker(thisFilePath, {
-        workerData: {
-          modelDir,
-          numThreads: args.numThreads || 1,
-        },
-      });
-      workers.push(w);
-      idleWorkers.push(w);
-    }
+    const poolSize = Math.min(args.workers || 4, Math.max(1, os.cpus().length || 4), tasks.length);
+    const { workers, idleWorkers } = spawnWorkerPool(poolSize, modelDir, args.numThreads);
 
     const wallStart = performance.now();
     let completedCount = 0;
@@ -382,7 +387,7 @@ if (!isMainThread) {
 
             if (msg.ok) {
               console.log(
-                `[narrate] Wrote ${msg.id}.wav (${msg.durationSec.toFixed(2)}s, ~${msg.wpm} WPM) in ${msg.synthMs.toFixed(0)}ms`
+                `[narrate] Wrote ${msg.id}.wav (${msg.durationSec.toFixed(2)}s, ~${msg.wpm} WPM) in ${msg.synthMs.toFixed(0)}ms`,
               );
               successfulWavs++;
             } else {
@@ -415,7 +420,7 @@ if (!isMainThread) {
           worker.on("message", onMessage);
           worker.on("error", onError);
 
-          worker.postMessage({
+          postToWorker(worker, {
             id: task.id,
             text: task.text,
             outPath: task.outPath,
@@ -433,9 +438,10 @@ if (!isMainThread) {
       w.terminate().catch(() => {});
     }
 
-    const stepWavCount = successfulWavs > 0 ? (tasks.some(t => t.id === "title") ? successfulWavs - 1 : successfulWavs) : 0;
+    const countsTitle = tasks.some((t) => t.id === "title");
+    const stepWavCount = successfulWavs > 0 && countsTitle ? successfulWavs - 1 : successfulWavs;
     console.log(
-      `[narrate] Finished narration generation: ${stepWavCount} step wav(s) in ${args.outDir} (wall: ${(totalWallMs / 1000).toFixed(2)}s)`
+      `[narrate] Finished narration generation: ${stepWavCount} step wav(s) in ${args.outDir} (wall: ${(totalWallMs / 1000).toFixed(2)}s)`,
     );
   }
 

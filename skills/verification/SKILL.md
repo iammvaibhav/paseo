@@ -2,42 +2,93 @@
 name: verification
 description: Fast parallel verification standard for Paseo. Bring up isolated dev stacks, run integration checks, and generate video proofs. Use when asked "how do I verify this", "prove this works", "video proof", or "integration test for my change".
 user-invocable: true
-argument-hint: "[check-name] [--up] [--video] [--proof]"
+argument-hint: "<check-name> | --all [--up] [--expect pass|fail] [--proof] [--reachable]"
 ---
 
 # Verification
 
-Verify changes against an isolated, throwaway Paseo stack before reporting done.
+Verify changes against an isolated, throwaway Paseo stack before landing code or reporting done.
 
-See [docs/verification.md](../../docs/verification.md) for complete architecture, two-daemon assertions, and the decision matrix.
+See [docs/verification.md](../../docs/verification.md) for architecture, the mock fleet contract, and the [decision matrix](../../docs/verification.md#decision-matrix).
 
-## The ladder
+## Workflow
 
-Cheapest first:
+Follow these seven steps in order:
 
-1. **Tier 1: Daemon RPC / CLI (`daemon`).** Assert over WebSocket RPCs or loopback HTTP (~100ms). If a change is verifiable at the daemon layer, verify it here.
-2. **Tier 2: Browser UI (`ui`).** Drive headless Chromium with Playwright against the web UI.
-3. **Tier 3: Cross-host fleet (`fleet`).** Assert multi-daemon coordination across peered stacks (`hosts: 2`).
+### 1. Decide the tier
 
-Video recording and narration are orthogonal to tier: set `video: true` in check metadata or pass `--video`/`--proof`.
+Consult the [decision matrix](../../docs/verification.md#decision-matrix) to choose your check tier:
 
-## Execution workflow
+- `daemon`: RPC, loopback HTTP, or CLI behavior (~100ms per check).
+- `ui`: DOM state, navigation, form inputs, or web UI interactions driven via Playwright.
+- `fleet`: Cross-host peering, multi-daemon sync, event forwarding (`hosts: 2`). If your change touches daemon-to-daemon coordination or central-config sync across daemons, use `fleet`.
 
-### 1. Start an isolated stack
+### 2. RED FIRST: write and run the failing check
+
+Write your check under `scripts/verify/checks/<name>.mjs` from the code contracts before changing any code.
+
+Run the check with `--expect fail`:
 
 ```bash
-# Single daemon stack
-node scripts/verify/stack.mjs up
-
-# Two peered daemons (for cross-host / sync work)
-node scripts/verify/stack.mjs up --peer
+node scripts/verify/run.mjs <name> --up --expect fail
 ```
 
-Reads configuration and endpoint URLs from `.dev/verify/<runId>/stack.json`.
+Confirm that the check exits 0 with `expectationMet: true` in `result.json` and fails for the right reason (the bug you are reproducing, or the feature not yet implemented). This failure is your reproduction. Keep that `result.json`.
 
-### 2. Write or choose a check script
+Delegate the mechanical authoring and execution of the check script to a `task` subagent (using the omp `task`-role model), but decide what to assert yourself.
 
-Create `scripts/verify/checks/<name>.mjs`:
+### 3. Implement the fix (GREEN)
+
+Implement your changes in the worktree. Run the check to confirm it passes:
+
+```bash
+node scripts/verify/run.mjs <name> --up
+```
+
+For UI changes, run with `--proof` to record video, generate captions and narration, and assemble `proof.mp4` with before/after stills:
+
+```bash
+node scripts/verify/run.mjs <name> --up --proof
+```
+
+### 4. Attach proofs and report
+
+Before reporting done, attach the ready-made `proofs[]` from `result.json` to `report_status`. Proof files live under the durable directory `~/.paseo/verify-proofs/<worktree>/<runId>/`, surviving worktree clean or archive operations.
+
+Include:
+
+- Inline video and before/after images from `result.json` (`proofs[]`).
+- The red run failure excerpt from step 2 as a `command` proof.
+- The mock environment details:
+  - If the user asked to try it themselves: run with `--keep --reachable` and paste the reachable web UI URL, the daemon password, the VS Code Web URL (when `stack.codeServer.healthy`; paste once into Settings -> host -> VS Code Web URL), and the reproduction recipe.
+  - Otherwise: paste the 3-line reproduction recipe printed by `run.mjs`.
+
+### 5. Browser choice
+
+- **Playwright** inside check scripts is the default and only assertion mechanism. It runs server-side, deterministically, captures before/after stills, and records video.
+- **Paseo `browser_*` tools** run on the user's connected MacBook Electron client and open tabs in their local workspace. Use them only when the user's Mac is connected as a visible "see it live" surface, pointing them at the reachable mock URL (`ctx.reachableUrl()`). If `browser_*` returns `browser_no_host`, or times out with "The browser did not respond", the MacBook is not connected (a stale registration times out instead of failing fast); do not retry and do not fail the task. Report the reachable URL and password instead. Save any captured `browser_screenshot` bytes to disk under the run's proof directory before attaching. `browser_*` is also the only way to observe Electron-guest-only behavior.
+
+### 6. Live environment
+
+Follow the live environment rule in [CLAUDE.md](../../CLAUDE.md#critical-rules): verify against the isolated mock fleet by default. Use the live environment (the 6767 daemon, real itsaplan projects, real workspaces) only when the user explicitly requested it or when the behavior cannot be reproduced in the mock stack and you state why. All live environment actions must be strictly additive (create a new workspace or ticket); never delete, archive, rename, or modify pre-existing data.
+
+### 7. Run-all
+
+After merging upstream changes and before landing or deploying:
+
+```bash
+node scripts/verify/run.mjs --all
+```
+
+The runner groups checks by required host count, boots one stack per group, and runs checks sequentially. Checks must be self-namespacing (unique titles, workspace directories, and agent IDs) so they do not collide when sharing a stack.
+
+Assert on the objects your check created, never on global counts or list lengths. The mock is production-shaped: a live Commander provisions its own workspace seconds after boot, the warm pool adds worktrees, and other checks share the stack. A row-count assertion that passed on an idle daemon fails the moment a real actor moves.
+
+## The check script
+
+Check scripts live in `scripts/verify/checks/<name>.mjs`.
+
+Check skeleton:
 
 ```javascript
 export const meta = {
@@ -70,58 +121,110 @@ export const steps = [
     },
   },
 ];
-
-### 3. Run the check
-
-```bash
-# Run standalone (creates and tears down a stack automatically)
-node scripts/verify/run.mjs <check-name>
-
-# Run against an existing stack
-node scripts/verify/run.mjs <check-name> --stack <runId>
-
-# Run with Playwright video recording, TTS narration, and assembled proof.mp4
-node scripts/verify/run.mjs <check-name> --proof
-
-# Keep stack running after check completes for inspection
-node scripts/verify/run.mjs <check-name> --up --keep
-
-Results are saved to `artifacts/verify/<runId>/result.json`.
-
-### 4. Stop the stack
-
-```bash
-node scripts/verify/stack.mjs down <runId>
-
-# Tear down all stacks in the worktree
-node scripts/verify/stack.mjs down --all
 ```
 
-To clean up any orphaned test stacks across runs:
+### Step context (`ctx`)
+
+| Property / Method              | Type             | Description                                                                                                                                                                                                            |
+| ------------------------------ | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ctx.stack`                    | `object`         | Parsed `stack.json` object.                                                                                                                                                                                            |
+| `ctx.host(name?)`              | `function`       | Host info `{ httpUrl, wsUrl, home, logFile, client }` where `client` is an authenticated `DaemonClient` (`appVersion: "0.1.70"`). Defaults to `"commander"` (`stack.hosts[0]`). Access peers via `ctx.host("peer-b")`. |
+| `ctx.page`                     | `Page \| null`   | Playwright `Page` instance (available in `ui` tier or when video recording is enabled; `null` otherwise).                                                                                                              |
+| `ctx.shot(label)`              | `function`       | Captures a PNG screenshot to `<proofDir>/shots/` (or `<artifactsDir>/shots/`) and returns its absolute path. Labels `"before"` and `"after"` populate `result.shots`.                                                  |
+| `ctx.expect(condition, msg)`   | `function`       | Throws an error if `condition` is falsy, failing the step.                                                                                                                                                             |
+| `ctx.log(msg)`                 | `function`       | Prints formatted log output unless `--json` is set.                                                                                                                                                                    |
+| `ctx.artifactsDir`             | `string`         | Absolute path to `<worktree>/artifacts/verify/<runId>`.                                                                                                                                                                |
+| `ctx.readDaemonLog(hostName?)` | `function`       | Reads and returns the daemon log file for the specified host.                                                                                                                                                          |
+| `ctx.fixtureRepo`              | `string`         | Absolute path to `<runDir>/fixture`, a git repo keyed `remote:github.com/paseo-verify/fixture` for itsaplan-mapped tests.                                                                                              |
+| `ctx.password`                 | `string \| null` | Per-run daemon password, or `null` when booted with `--no-password`.                                                                                                                                                   |
+| `ctx.reachableUrl(hostName?)`  | `function`       | Returns the reachable HTTP URL for `hostName` (default `"commander"`), or loopback HTTP URL if `--reachable` was not used.                                                                                             |
+
+## CLI flags
+
+### `run.mjs`
 
 ```bash
-node scripts/verify/stack.mjs sweep
+# Standalone run (brings up stack, runs check, tears down)
+node scripts/verify/run.mjs <check-name> --up
+
+# Run against an existing active stack
+node scripts/verify/run.mjs <check-name> --stack <runId>
+
+# Red run: exit 0 iff check fails (reproduction)
+node scripts/verify/run.mjs <check-name> --up --expect fail
+
+# Green run: exit 0 iff check passes (default)
+node scripts/verify/run.mjs <check-name> --up --expect pass
+
+# Full proof: record video, generate TTS narration, assemble proof.mp4, copy to durable proofDir
+node scripts/verify/run.mjs <check-name> --up --proof
+
+# Keep stack running after check completion for manual inspection
+node scripts/verify/run.mjs <check-name> --up --keep
+
+# Reachable stack on WireGuard VPN IP (for MacBook inspection)
+node scripts/verify/run.mjs <check-name> --up --reachable
+
+# Run without daemon password authentication
+node scripts/verify/run.mjs <check-name> --up --no-password
+
+# Run without itsaplan bridge configuration
+node scripts/verify/run.mjs <check-name> --up --no-itsaplan
+
+# Run without Commander boot designation
+node scripts/verify/run.mjs <check-name> --up --no-commander
+
+# Run full suite sequentially across discovered checks
+node scripts/verify/run.mjs --all [--tier daemon|ui|fleet] [--proof] [--json]
+
+# Output structured JSON result to stdout
+node scripts/verify/run.mjs <check-name> --json
+```
+
+### `stack.mjs`
+
+```bash
+# Start an isolated stack
+node scripts/verify/stack.mjs up [--peer] [--reachable] [--no-password] [--no-itsaplan] [--no-commander] [--no-code-server] [--json] [--quiet]
+
+# List active stacks
+node scripts/verify/stack.mjs ls [--json]
+
+# Stop a stack and clean up run-specific itsaplan resources
+node scripts/verify/stack.mjs down <runId>
+
+# Stop all stacks in the worktree
+node scripts/verify/stack.mjs down --all
+
+# Prune orphaned stacks and durable proofs older than 14 days
+node scripts/verify/stack.mjs sweep [--older-than-minutes N] [--json] [--quiet]
 ```
 
 ## Attaching proofs to report_status
 
-Submit completion with proofs under `artifacts/verify/<runId>/`:
+Submit completion with proofs from `result.json`:
 
 ```json
 {
   "status": "completed",
   "kind": "milestone",
-  "description": "Verified behavior against isolated daemon stack.",
+  "description": "Verified status card lifecycle against isolated daemon stack.",
   "proofs": [
     {
       "kind": "video",
-      "path": "/abs/path/to/worktree/artifacts/verify/<runId>/proof.mp4",
-      "label": "Proof: Feature interaction"
+      "path": "/home/ubuntu/.paseo/verify-proofs/<worktree>/v-1a2b3c4d/proof.mp4",
+      "label": "Proof: Status card lifecycle"
     },
     {
       "kind": "image",
-      "path": "/abs/path/to/worktree/artifacts/verify/<runId>/after.png",
-      "label": "After: UI state"
+      "path": "/home/ubuntu/.paseo/verify-proofs/<worktree>/v-1a2b3c4d/after.png",
+      "label": "After: Status card in feed"
+    },
+    {
+      "kind": "command",
+      "label": "Red run: node scripts/verify/run.mjs status-card-lifecycle --up --expect fail",
+      "excerpt": "FAIL card-render: status card not found in DOM\nexpectation: fail, expectationMet: true",
+      "exitCode": 0
     }
   ]
 }
@@ -129,14 +232,13 @@ Submit completion with proofs under `artifacts/verify/<runId>/`:
 
 ### Proof rules
 
-- **Path:** Must be an absolute path (`artifacts/verify/<runId>/...`). Proof files outlive the stack.
-- **Size cap:** Max 10 MB per file (`MEDIA_FETCH_MAX_BYTES`).
-- **Video:** `.mp4`, `.webm`, `.mov`, `.m4v` (rendered inline in Mission Control feed).
-- **Image:** `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`.
+- **Path:** Must be an absolute path (`~/.paseo/verify-proofs/...`). Durable proofs survive worktree cleanup.
+- **Size cap:** Maximum 10 MB per file (`MEDIA_FETCH_MAX_BYTES`).
+- **Video formats:** `.mp4`, `.webm`, `.mov`, `.m4v` (rendered inline in Mission Control chat feed).
+- **Image formats:** `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`.
 
-## Gotchas
+## Conflicts with other skills
 
-- **Env leaks:** Strip `PASEO_PASSWORD`, `PASEO_AGENT_ID`, and `PASEO_AGENT_CWD` when starting daemon processes (`env -u PASEO_PASSWORD -u PASEO_AGENT_ID -u PASEO_AGENT_CWD`).
-- **Daemon background noise:** Pass `PASEO_VOICE_MODE_ENABLED=0 PASEO_DICTATION_ENABLED=0 PASEO_TUNNEL_AUTOSTART=0 PASEO_RELAY_ENABLED=0 PASEO_SERVICE_PROXY_ENABLED=0 PASEO_LOG_LEVEL=warn`.
-- **Commander designation:** In two-daemon mode, designate the Commander by `missionControl.hostAlias` (e.g. `commander`), never by hostname or `"local"`.
-- **Web UI bundle:** The prebuilt bundle is from the source checkout. App-UI changes require building the web UI bundle in your worktree or verifying via `npm run dev:app`.
+- The brief's Proof Contract overrides `verifiable-artifact`'s PR-first ranking: operational verification on an isolated dev stack with inline proofs takes precedence over opening a draft PR for evidence.
+- `tdd` is the inner unit loop for localized function logic; this skill is the outer end-to-end loop defending observable system behavior across daemons, bridge, and UI.
+- `diagnosing-bugs` reproduction is a red check here: write a check that fails for the reported bug (`--expect fail`) before touching production code.

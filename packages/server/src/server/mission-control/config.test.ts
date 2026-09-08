@@ -170,6 +170,7 @@ describe("CentralMissionControlConfigStore stall knobs", () => {
         apiKey: "sk-test",
         webhookSecret: "whsec-test",
         humanUserId: "user-42",
+        commanderUsername: "verify-run-1",
       },
     });
     expect(patched.verifierEnabled).toBe(true);
@@ -179,6 +180,7 @@ describe("CentralMissionControlConfigStore stall knobs", () => {
       apiKey: "sk-test",
       webhookSecret: "whsec-test",
       humanUserId: "user-42",
+      commanderUsername: "verify-run-1",
     });
     // Unpatched keys keep defaults.
     expect(patched.trackVerifiers).toBe(true);
@@ -195,6 +197,7 @@ describe("CentralMissionControlConfigStore stall knobs", () => {
       apiKey: "sk-test",
       webhookSecret: "whsec-test",
       humanUserId: "user-42",
+      commanderUsername: "verify-run-1",
     });
   });
 

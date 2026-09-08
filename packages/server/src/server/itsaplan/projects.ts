@@ -311,7 +311,12 @@ async function ensureItsaplanProjectMappingForKey(
     url: webhookUrl,
     events: [...ITSAPLAN_WEBHOOK_EVENTS],
   });
-  const commander = await ensureCommanderAiAgent(created.key, client, deps.logger);
+  const commander = await ensureCommanderAiAgent(
+    created.key,
+    client,
+    deps.logger,
+    config.commanderUsername ?? COMMANDER_AI_AGENT_USERNAME,
+  );
   const mapping: ItsaplanProjectMapping = {
     paseoProjectKey: projectKey,
     itsaplanProjectId: created.id,
@@ -445,18 +450,20 @@ const COMMANDER_AI_AGENT_NAME = "Commander";
  * queue (`POST /agent-runs/claim`, apps/api/src/modules/agents/runner/index.ts),
  * which chat-runner.ts drains alongside the chat queue.
  */
-async function ensureCommanderAiAgent(
+export async function ensureCommanderAiAgent(
   itsaplanProjectKey: string,
   client: ItsaplanClient,
   logger: Logger,
+  commanderUsername: string = COMMANDER_AI_AGENT_USERNAME,
 ): Promise<Pick<
   ItsaplanProjectMapping,
   "commanderAgentId" | "commanderUsername" | "commanderApiKey" | "commanderUserId"
 > | null> {
+  const username = commanderUsername?.trim() || COMMANDER_AI_AGENT_USERNAME;
   try {
     const created = await client.createAiAgent(itsaplanProjectKey, {
       name: COMMANDER_AI_AGENT_NAME,
-      username: COMMANDER_AI_AGENT_USERNAME,
+      username,
       kind: "external",
       triggerOnMention: true,
     });
@@ -484,7 +491,7 @@ async function ensureCommanderAiAgent(
   try {
     const agents = await client.listAiAgents(itsaplanProjectKey);
     const existingAgent = agents.find(
-      (agent) => agent.username.toLowerCase() === COMMANDER_AI_AGENT_USERNAME,
+      (agent) => agent.username.toLowerCase() === username.toLowerCase(),
     );
     if (!existingAgent) {
       logger.warn({ itsaplanProjectKey }, "itsaplan.project.commander_agent_conflict_unresolved");
@@ -619,7 +626,12 @@ async function backfillCommanderAgent(
   deps: ItsaplanProjectSyncDependencies,
 ): Promise<ItsaplanProjectMapping> {
   const client = new ItsaplanClient(config);
-  const commander = await ensureCommanderAiAgent(existing.itsaplanProjectKey, client, deps.logger);
+  const commander = await ensureCommanderAiAgent(
+    existing.itsaplanProjectKey,
+    client,
+    deps.logger,
+    config.commanderUsername ?? COMMANDER_AI_AGENT_USERNAME,
+  );
   if (!commander) {
     return existing;
   }
@@ -687,16 +699,35 @@ function isPaseoInternalProject(rootPath: string, paseoHome: string): boolean {
  * is recognisable without a rootPath — which fleet candidates never carry, and
  * which is how `<paseoHome>/commander` reached itsaplan as a ticket board.
  *
+ * `remote:<repo>#subdir:<path>` keys embed the repo-relative checkout path
+ * (see deriveProjectKey: `<remoteKey>#subdir:<selectedPath>` with `/`
+ * separators), so a reserved home checked out inside a git repo is
+ * recognisable the same way: any `.paseo` path segment marks it internal.
+ *
  * Convention rather than exact: paseoHome is `~/.paseo` unless PASEO_HOME says
- * otherwise, and a peer never tells us its value. `remote:` keys are repos and
- * can never be a daemon home, so they are left alone.
+ * otherwise, and a peer never tells us its value. Plain `remote:` keys are
+ * repos and can never be a daemon home, so they are left alone.
  */
 function isReservedHomeProjectKey(projectKey: string): boolean {
-  if (!projectKey.startsWith("host:")) {
-    return false;
+  if (projectKey.startsWith("host:")) {
+    const path = projectKey.slice(projectKey.indexOf(":", "host:".length) + 1);
+    return path.includes(`${sep}.paseo${sep}`) || path.endsWith(`${sep}.paseo`);
   }
-  const path = projectKey.slice(projectKey.indexOf(":", "host:".length) + 1);
-  return path.includes(`${sep}.paseo${sep}`) || path.endsWith(`${sep}.paseo`);
+  if (projectKey.startsWith("remote:")) {
+    const marker = "#subdir:";
+    const index = projectKey.indexOf(marker);
+    if (index === -1) {
+      return false;
+    }
+    const subdir = projectKey.slice(index + marker.length).replaceAll("\\", "/");
+    return (
+      subdir.includes("/.paseo/") ||
+      subdir.endsWith("/.paseo") ||
+      subdir === ".paseo" ||
+      subdir.startsWith(".paseo/")
+    );
+  }
+  return false;
 }
 
 /**
@@ -744,7 +775,13 @@ export async function runItsaplanProjectResync(
       continue;
     }
     // The exact check, available only here: local projects carry a rootPath.
+    // The key still joins seenKeys first: the fleet loop below re-reports this
+    // daemon's projects without rootPath, and without the key the dedupe in
+    // consider() cannot drop that rootPath-less copy.
     if (isPaseoInternalProject(project.rootPath, deps.paseoHome)) {
+      if (project.projectKey) {
+        seenKeys.add(project.projectKey);
+      }
       result.skipped += 1;
       continue;
     }

@@ -96,6 +96,7 @@ export interface ResolvedMissionControlCentralConfig {
     apiKey: string;
     webhookSecret: string;
     humanUserId?: string;
+    commanderUsername?: string;
     // Origin of the itsaplan WEB app when it is not the same as the REST API
     // origin `baseUrl` names. Ticket deep links are built from this; unset
     // falls back to `baseUrl`. Resolved in bootstrap against this host's own

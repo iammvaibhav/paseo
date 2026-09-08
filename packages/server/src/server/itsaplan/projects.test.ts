@@ -48,6 +48,19 @@ function startFakeItsaplanServer(apiKey: string) {
       autoAssignUserId?: string | null;
     }>
   >();
+  const createdAiAgents: Array<{
+    projectKey: string;
+    name: string;
+    username: string;
+    kind: string;
+    triggerOnMention?: boolean;
+  }> = [];
+  const agentsByProjectKey: Record<
+    string,
+    Array<{ id: number; username: string; userId: string; apiKey: string }>
+  > = {};
+  let nextAgentId = 1;
+  const aiAgents = { enabled: false };
 
   const server: Server = createServer((req, res) => {
     const chunks: Buffer[] = [];
@@ -179,8 +192,100 @@ function startFakeItsaplanServer(apiKey: string) {
         }
         return false;
       };
+      const handleAiAgents = (): boolean => {
+        if (!aiAgents.enabled) {
+          return false;
+        }
+        const agentsMatch = /^\/projects\/([^/]+)\/ai-agents$/.exec(url.pathname);
+        if (req.method === "POST" && agentsMatch) {
+          const projectKey = decodeURIComponent(agentsMatch[1]);
+          const username = String(body.username);
+          const existing = agentsByProjectKey[projectKey] ?? [];
+          if (existing.some((a) => a.username.toLowerCase() === username.toLowerCase())) {
+            send(409, { error: "Username already taken" });
+            return true;
+          }
+          const id = nextAgentId++;
+          const agent = {
+            id,
+            username,
+            userId: `user-${username}`,
+            apiKey: `itp_agent_${username}_key`,
+          };
+          existing.push(agent);
+          agentsByProjectKey[projectKey] = existing;
+          createdAiAgents.push({
+            projectKey,
+            name: String(body.name),
+            username,
+            kind: String(body.kind),
+            triggerOnMention: Boolean(body.triggerOnMention),
+          });
+          send(201, {
+            agent: {
+              id: agent.id,
+              projectId: projectIdByKey.get(projectKey) ?? 1,
+              userId: agent.userId,
+              username: agent.username,
+              kind: "external",
+            },
+            apiKey: agent.apiKey,
+          });
+          return true;
+        }
+        if (req.method === "GET" && agentsMatch) {
+          const projectKey = decodeURIComponent(agentsMatch[1]);
+          const list = agentsByProjectKey[projectKey] ?? [];
+          send(
+            200,
+            list.map((a) => ({
+              id: a.id,
+              projectId: projectIdByKey.get(projectKey) ?? 1,
+              userId: a.userId,
+              username: a.username,
+              kind: "external",
+            })),
+          );
+          return true;
+        }
+        const regenMatch = /^\/projects\/([^/]+)\/ai-agents\/(\d+)\/regenerate-key$/.exec(
+          url.pathname,
+        );
+        if (req.method === "POST" && regenMatch) {
+          const projectKey = decodeURIComponent(regenMatch[1]);
+          const agentId = Number(regenMatch[2]);
+          const agent = (agentsByProjectKey[projectKey] ?? []).find((a) => a.id === agentId);
+          if (!agent) {
+            send(404, { error: "Agent not found" });
+            return true;
+          }
+          agent.apiKey = `itp_agent_regen_${agentId}`;
+          send(200, { apiKey: agent.apiKey });
+          return true;
+        }
+        const patchMatch = /^\/projects\/([^/]+)\/ai-agents\/(\d+)$/.exec(url.pathname);
+        if (req.method === "PATCH" && patchMatch) {
+          const projectKey = decodeURIComponent(patchMatch[1]);
+          const agentId = Number(patchMatch[2]);
+          const agent = (agentsByProjectKey[projectKey] ?? []).find((a) => a.id === agentId);
+          if (!agent) {
+            send(404, { error: "Agent not found" });
+            return true;
+          }
+          send(200, {
+            id: agent.id,
+            projectId: projectIdByKey.get(projectKey) ?? 1,
+            userId: agent.userId,
+            username: agent.username,
+            kind: "external",
+            triggerOnMention: body.triggerOnMention,
+          });
+          return true;
+        }
+        return false;
+      };
 
-      if (handleProjects() || handleWebhooks() || handleColumns()) {
+      if (handleProjects() || handleWebhooks() || handleColumns() || handleAiAgents()) {
         return;
       }
       send(404, { error: `unhandled ${req.method} ${url.pathname}` });
@@ -195,6 +300,9 @@ function startFakeItsaplanServer(apiKey: string) {
     projectIdByKey,
     descriptionByKey,
     columnsByProjectKey,
+    createdAiAgents,
+    agentsByProjectKey,
+    aiAgents,
   };
 }
 
@@ -425,6 +533,47 @@ describe("itsaplan project sync", () => {
     expect(fakeServer.createdProjects.map((p) => p.key).sort()).toEqual(["MACBOOK", "PASEO"]);
   });
 
+  test("resync drops the rootPath-less fleet copy of a local internal project", async () => {
+    // A reserved home inside a git repo keys as remote:<repo>#subdir:<path>
+    // with no `.paseo` segment, so the fleet key convention cannot catch it —
+    // only the local loop's seenKeys entry (added before `continue`) drops
+    // the rootPath-less copy the fleet inventory re-reports.
+    const internalKey = "remote:github.com/x/y#subdir:.dev/verify/v-1/hosts/commander/commander";
+    const local = [
+      project({
+        projectId: "cmd",
+        projectKey: internalKey,
+        displayName: "commander",
+        rootPath: join(paseoHome, "commander"),
+      }),
+    ];
+    const fleet: ItsaplanFleetProjectCandidate[] = [
+      { hostName: "local", projectKey: internalKey, name: "commander" },
+    ];
+    const result = await runItsaplanProjectResync({ local, fleet }, deps);
+    expect(result).toEqual({ mapped: 0, skipped: 2, failed: 0 });
+    expect(fakeServer.createdProjects).toHaveLength(0);
+    expect(store.list()).toHaveLength(0);
+  });
+
+  test("resync skips peer reserved-home subdir keys but still maps normal subdirs", async () => {
+    const fleet: ItsaplanFleetProjectCandidate[] = [
+      {
+        hostName: "peer",
+        projectKey: "remote:github.com/x/y#subdir:home/.paseo/commander",
+        name: "commander",
+      },
+      {
+        hostName: "peer",
+        projectKey: "remote:github.com/x/y#subdir:packages/app",
+        name: "app",
+      },
+    ];
+    const result = await runItsaplanProjectResync({ local: [], fleet }, deps);
+    expect(result).toEqual({ mapped: 1, skipped: 1, failed: 0 });
+    expect(fakeServer.createdProjects.map((p) => p.key)).toEqual(["APP"]);
+  });
+
   test("a create-key 409 adopts our own crashed earlier attempt instead of failing", async () => {
     // Pre-existing row from an earlier sync that died between create and
     // mapping-write: recognizable as OURS because its description carries
@@ -517,6 +666,62 @@ describe("itsaplan project sync", () => {
     expect(mapping).toBeNull();
     expect(fakeServer.createdProjects).toHaveLength(0);
     expect(store.getByPaseoProjectKey("PROJ")).toBeNull();
+  });
+
+  test("uses configured commanderUsername for createAiAgent and for 409 conflict recovery", async () => {
+    fakeServer.aiAgents.enabled = true;
+
+    // 1. Creation path: configured username is passed to createAiAgent
+    const customUsername = "verify-custom-runner";
+    const customConfig: ItsaplanCentralConfig = {
+      ...config,
+      commanderUsername: customUsername,
+    };
+    const mapping = await ensureItsaplanProjectMapping(project(), {
+      ...deps,
+      getConfig: () => customConfig,
+    });
+    expect(mapping?.commanderUsername).toBe(customUsername);
+    expect(fakeServer.createdAiAgents).toContainEqual(
+      expect.objectContaining({
+        username: customUsername,
+        projectKey: "REPO",
+      }),
+    );
+
+    // 2. Conflict lookup path: 409 on create triggers listAiAgents and finds agent by configured username
+    const conflictUsername = "verify-conflict-agent";
+    fakeServer.agentsByProjectKey["OTHER"] = [
+      {
+        id: 99,
+        username: conflictUsername,
+        userId: `user-${conflictUsername}`,
+        apiKey: "initial-key",
+      },
+      // Default "commander" also present to verify we match configured username, not default
+      {
+        id: 100,
+        username: "commander",
+        userId: "user-commander",
+        apiKey: "commander-key",
+      },
+    ];
+    const conflictConfig: ItsaplanCentralConfig = {
+      ...config,
+      commanderUsername: conflictUsername,
+    };
+    const otherProject = project({
+      projectId: "proj-2",
+      projectKey: "PROJ-OTHER",
+      displayName: "Other",
+    });
+    const conflictMapping = await ensureItsaplanProjectMapping(otherProject, {
+      ...deps,
+      getConfig: () => conflictConfig,
+    });
+    expect(conflictMapping?.commanderUsername).toBe(conflictUsername);
+    expect(conflictMapping?.commanderAgentId).toBe(99);
+    expect(conflictMapping?.commanderApiKey).toBe("itp_agent_regen_99");
   });
 });
 

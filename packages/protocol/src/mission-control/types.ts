@@ -765,6 +765,7 @@ export const MissionControlCentralConfigSchema = z.object({
       apiKey: z.string(),
       webhookSecret: z.string(),
       humanUserId: z.string().optional(),
+      commanderUsername: z.string().optional(),
       // Origin of the itsaplan WEB app, when it does not serve the REST API
       // that `baseUrl` names. Ticket deep links posted into prompts and tool
       // results are built from this. Omitted = fall back to `baseUrl`. A host

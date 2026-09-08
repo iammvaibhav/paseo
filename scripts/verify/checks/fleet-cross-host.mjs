@@ -6,13 +6,17 @@ export const meta = {
   tier: "fleet",
   hosts: 2,
   video: false,
-  description: "Verifies cross-host peering, inventory aggregation, proof media proxying, and central config sync across commander and peer daemons.",
+  description:
+    "Verifies cross-host peering, inventory aggregation, proof media proxying, and central config sync across commander and peer daemons.",
 };
 
 /**
  * Poll a predicate until truthy or timeout expires.
  */
-async function pollUntil(predicate, { timeoutMs = 10000, intervalMs = 100, description = "condition" } = {}) {
+async function pollUntil(
+  predicate,
+  { timeoutMs = 10000, intervalMs = 100, description = "condition" } = {},
+) {
   const start = Date.now();
   let lastError = null;
   while (Date.now() - start < timeoutMs) {
@@ -111,28 +115,40 @@ export const steps = [
           );
           return hasWorkspace ? hosts : null;
         },
-        { description: `commander fleet_list_inventory to reflect workspace ${createdWorkspaceId} on peer-b` },
+        {
+          description: `commander fleet_list_inventory to reflect workspace ${createdWorkspaceId} on peer-b`,
+        },
       );
 
       ctx.expect(Array.isArray(inventoryHosts), "fleet_list_inventory returned hosts array");
 
-      const commanderEntry = inventoryHosts.find((h) => h.host === "commander" || h.host === "local");
+      const commanderEntry = inventoryHosts.find(
+        (h) => h.host === "commander" || h.host === "local",
+      );
       const peerBEntry = inventoryHosts.find((h) => h.host === "peer-b");
 
       ctx.expect(Boolean(peerBEntry), 'Inventory includes "peer-b" host entry');
-      ctx.expect(peerBEntry.reachable === true, 'peer-b entry is marked reachable');
+      ctx.expect(peerBEntry.reachable === true, "peer-b entry is marked reachable");
 
       // Assert workspace is present on peer-b
       const peerBWorkspaces = peerBEntry.projects.flatMap((p) => p.workspaces || []);
       const foundOnPeerB = peerBWorkspaces.find((w) => w.id === createdWorkspaceId);
       ctx.expect(Boolean(foundOnPeerB), `Workspace ${createdWorkspaceId} found under peer-b`);
-      ctx.expect(foundOnPeerB.title === WORKSPACE_TITLE, `Workspace title matches ${WORKSPACE_TITLE}`);
+      ctx.expect(
+        foundOnPeerB.title === WORKSPACE_TITLE,
+        `Workspace title matches ${WORKSPACE_TITLE}`,
+      );
 
       // Assert workspace is NOT attributed to commander (host locality invariant)
       if (commanderEntry) {
-        const commanderWorkspaces = (commanderEntry.projects || []).flatMap((p) => p.workspaces || []);
+        const commanderWorkspaces = (commanderEntry.projects || []).flatMap(
+          (p) => p.workspaces || [],
+        );
         const foundOnCommander = commanderWorkspaces.find((w) => w.id === createdWorkspaceId);
-        ctx.expect(!foundOnCommander, `Workspace ${createdWorkspaceId} must NOT be attributed to commander host`);
+        ctx.expect(
+          !foundOnCommander,
+          `Workspace ${createdWorkspaceId} must NOT be attributed to commander host`,
+        );
       }
 
       return `workspace ${createdWorkspaceId} correctly attributed to peer-b on commander inventory`;
@@ -157,9 +173,18 @@ export const steps = [
       });
 
       ctx.expect(fetchRes.ok === true, `Media fetch returned ok:true (error: ${fetchRes.error})`);
-      ctx.expect(fetchRes.mimeType === "image/png", `MIME type image/png expected, got ${fetchRes.mimeType}`);
-      ctx.expect(fetchRes.sizeBytes === SAMPLE_PNG_BUFFER.length, `Size ${SAMPLE_PNG_BUFFER.length} bytes expected`);
-      ctx.expect(fetchRes.data === SAMPLE_PNG_BASE64, "Base64 data matches expected sample PNG payload");
+      ctx.expect(
+        fetchRes.mimeType === "image/png",
+        `MIME type image/png expected, got ${fetchRes.mimeType}`,
+      );
+      ctx.expect(
+        fetchRes.sizeBytes === SAMPLE_PNG_BUFFER.length,
+        `Size ${SAMPLE_PNG_BUFFER.length} bytes expected`,
+      );
+      ctx.expect(
+        fetchRes.data === SAMPLE_PNG_BASE64,
+        "Base64 data matches expected sample PNG payload",
+      );
 
       // 2. Negative check: relative paths must be rejected
       const relativeRes = await commanderClient.missionControlMediaFetch({
@@ -202,23 +227,35 @@ export const steps = [
         statusNudgeSeconds: targetStatusNudge,
         namingTheme: targetNamingTheme,
       });
-      ctx.expect(patchRes.ok === true, `Central config patch succeeded on commander: ${patchRes.error}`);
+      ctx.expect(
+        patchRes.ok === true,
+        `Central config patch succeeded on commander: ${patchRes.error}`,
+      );
 
       // 2. Poll peer-b to ensure the replica was pushed over peering
       const peerBConfig = await pollUntil(
         async () => {
           const res = await peerBClient.missionControlConfigGet();
           const cfg = res.config;
-          if (cfg && cfg.statusNudgeSeconds === targetStatusNudge && cfg.namingTheme === targetNamingTheme) {
+          if (
+            cfg &&
+            cfg.statusNudgeSeconds === targetStatusNudge &&
+            cfg.namingTheme === targetNamingTheme
+          ) {
             return cfg;
           }
           return null;
         },
-        { description: `peer-b to receive central-config replica with statusNudgeSeconds=${targetStatusNudge}` },
+        {
+          description: `peer-b to receive central-config replica with statusNudgeSeconds=${targetStatusNudge}`,
+        },
       );
 
       ctx.expect(Boolean(peerBConfig), "peer-b received replicated central config");
-      ctx.expect(peerBConfig.statusNudgeSeconds === targetStatusNudge, "statusNudgeSeconds matches on peer-b");
+      ctx.expect(
+        peerBConfig.statusNudgeSeconds === targetStatusNudge,
+        "statusNudgeSeconds matches on peer-b",
+      );
       ctx.expect(peerBConfig.namingTheme === targetNamingTheme, "namingTheme matches on peer-b");
 
       return `central config replicated to peer-b (statusNudgeSeconds: ${targetStatusNudge}, namingTheme: ${targetNamingTheme})`;

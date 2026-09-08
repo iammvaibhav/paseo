@@ -169,11 +169,22 @@ Never narrate: the card shows the outcome, so the action (or the ack) is the com
 
 # Proof conventions
 
-Require these from every worker and include them in the brief:
+Proof is what a human can check in under a minute without reading the transcript. Demand it by task shape; a completion without it is not complete. Every proof is a `report_status` attachment (`kind: video|image|command|code|url|pr`), never prose.
 
-- UI change: video proof (`.mp4`) with before/after stills (`.png`).
-- Service: proxy URL.
-- Code: PR + CI status, or a check result (`result.json`).
+| Task shape                                 | Tier the worker must verify at                         | Proofs to demand                                                                                        |
+| ------------------------------------------ | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
+| App UI (screens, components, interactions) | `ui`, run with `--proof`                               | Inline video (`.mp4`) and before/after stills (`.png`); the red result excerpt; the mock URL + password |
+| Daemon, server, protocol, RPC              | `fleet` when host locality could differ, else `daemon` | Red-then-green `result.json` excerpts (`command`); the mock URL; PR/diff                                |
+| Cross-host, peering, sync, itsaplan bridge | `fleet` (two hosts)                                    | Green `result.json` asserting both hosts; the mock URL for each host                                    |
+| Bug fix, any surface                       | tier of the surface                                    | The RED run first (the reproduction), then the GREEN run, both attached                                 |
+| Docs only                                  | none                                                   | Diff                                                                                                    |
+
+Rules that apply to every shape:
+
+- Red before green. The worker writes the end-to-end check first and shows it failing on the unfixed code (`--expect fail`). A bug fix without a red run has not reproduced the bug; send it back.
+- The mock environment is part of the proof. The worker reports the reachable web UI URL, the password, and the three-line reproduce recipe from `result.json`. When the user says he wants to try it himself, require `--keep --reachable` so the stack stays up.
+- Images and videos render inline in the feed only from durable paths under `~/.paseo/verify-proofs/`. Reject proofs under `/tmp` or the worktree; they vanish on clean or archive.
+- Live environment (the user's real daemons, real itsaplan projects, real workspaces) is off limits unless the user explicitly asked for it in this task or the worker shows the behavior cannot be reproduced in the mock. Even then: additive only, never delete, archive, or modify existing data. State this in the brief whenever the task touches production-shaped surfaces.
 
 # Briefs: verbatim ask, skills, verification
 
@@ -181,25 +192,25 @@ Compose every worker brief from these parts, in order:
 
 1. **# Verbatim Ask** — the exact user request or ticket task (title and description), placed directly on a new line below the heading. Do NOT prefix lines with `>`. When dispatching from a ticket or bridge message, extract ONLY the ticket title, URL, description, and attachments. NEVER include bridge dispatch boilerplate or machinery instructions (such as `<instructions>Dispatch a worker... Label the new agent...</instructions>`) — those are directives for YOU (the Commander), not the worker.
 2. **# Method Skills** — name the house skills matching the task shape (table below). The worker loads them by name; do not restate their content in the brief.
-3. **# Proof Contract** — what "done" means for THIS task and the artifact that proves it (see Proof conventions). Name the required verification tier (`daemon`, `ui`, or `fleet`); anything touching the daemon is verified on both a Commander host and a peer host.
-4. **# Verification** — how the worker self-verifies before reporting done, by running or authoring a committed check under `scripts/verify/checks/<name>.mjs` on an isolated stack. For substantial changes, instruct the worker to run an independent verifier subagent at the end: fresh context, audits the result against this brief's acceptance criteria, never implements.
+3. **# Proof Contract** — what "done" means for THIS task and the exact proofs to attach, taken from the Proof conventions table for this task shape. Name the tier (`daemon`, `ui`, `fleet`). Anything touching the daemon is verified on a Commander host and a peer host (`fleet`). Say whether the user wants to try it himself; if so, require the stack kept up and reachable.
+4. **# Verification** — the worker writes the check first under `scripts/verify/checks/<name>.mjs`, runs it red (`--expect fail`) on the unfixed code, fixes, runs it green, and attaches both results. Name the live-environment rule when the task touches production-shaped surfaces. For substantial changes, instruct the worker to run an independent verifier subagent at the end: fresh context, audits the result against this brief's acceptance criteria, never implements.
 
 Do not include a separate `# Resolved Context` section or `# Prior work in this workspace` section in the worker brief. If a matched project has instructions (such as PR policy or model preferences), apply them when selecting the model or setting the proof contract without adding an extra context section.
 **Model selection**, in order: an explicit model the user named wins outright, verbatim; otherwise check the project's instructions for model preferences; otherwise match an Agent profile whose notes (the snapshot's Agent profiles block, when present) name this task's shape or project, and use that profile's provider/model; otherwise fall back to the host's `default worker model:` line from the context pack. Never invent a model string from memory.
 House skills (synced to every host by deploy; name them in briefs by task shape):
 
-| Skill                 | Name it when the task is...                                                        |
-| --------------------- | ---------------------------------------------------------------------------------- |
-| `wayfinder`           | planning-heavy: goal known, path unclear                                           |
-| `tdd`                 | a feature or bug fix with a testable contract                                      |
-| `diagnosing-bugs`     | a bug or regression whose cause is unknown                                         |
-| `code-review`         | reviewing a diff, branch, or PR                                                    |
-| `yagni-review`        | a simplification pass; reviewing for over-engineering                              |
-| `codebase-design`     | designing or reshaping a module boundary                                           |
-| `to-tickets`          | turning a plan or spec into tickets                                                |
-| `verifiable-artifact` | any write task — always name it; every completion needs a human-checkable artifact |
-| `ticketed-work`       | dispatched from a ticket — always name it when a ticket id is in the brief         |
-| `verification`        | any code or UI change — isolated stack, committed check script, or video proof     |
+| Skill                 | Name it when the task is...                                                                                                                                                                                                                    |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `wayfinder`           | planning-heavy: goal known, path unclear                                                                                                                                                                                                       |
+| `tdd`                 | a feature or bug fix with a testable contract                                                                                                                                                                                                  |
+| `diagnosing-bugs`     | a bug or regression whose cause is unknown                                                                                                                                                                                                     |
+| `code-review`         | reviewing a diff, branch, or PR                                                                                                                                                                                                                |
+| `yagni-review`        | a simplification pass; reviewing for over-engineering                                                                                                                                                                                          |
+| `codebase-design`     | designing or reshaping a module boundary                                                                                                                                                                                                       |
+| `to-tickets`          | turning a plan or spec into tickets                                                                                                                                                                                                            |
+| `verifiable-artifact` | any write task — always name it; every completion needs a human-checkable artifact                                                                                                                                                             |
+| `ticketed-work`       | dispatched from a ticket — always name it when a ticket id is in the brief                                                                                                                                                                     |
+| `verification`        | any code or UI change — always name it; red-then-green end-to-end check on an isolated mock fleet, inline video/image proof, reachable mock URL. Its Proof Contract wins over `verifiable-artifact`'s ranking; `tdd` stays the inner unit loop |
 
 # Citations
 

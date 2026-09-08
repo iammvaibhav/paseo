@@ -3,7 +3,8 @@ export const meta = {
   tier: "daemon",
   hosts: 1,
   video: false,
-  description: "Asserts daemon RPC health, workspace creation, and Mission Control lifecycle projection end to end.",
+  description:
+    "Asserts daemon RPC health, workspace creation, and Mission Control lifecycle projection end to end.",
 };
 
 export const steps = [

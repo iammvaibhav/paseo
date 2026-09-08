@@ -15,26 +15,33 @@ export function createNodeWebSocketFactory() {
 /**
  * Instantiate a DaemonClient connected to the specified wsUrl.
  */
-export function createDaemonClient(wsUrl, clientId = "verify-stack-client") {
+export function createDaemonClient(
+  wsUrl,
+  clientId = "verify-stack-client",
+  password = null,
+  options = {},
+) {
   return new DaemonClient({
     url: wsUrl,
     clientId,
     clientType: "cli",
+    ...(password ? { password } : {}),
     webSocketFactory: createNodeWebSocketFactory(),
-    connectTimeoutMs: 5000,
-    reconnect: {
+    connectTimeoutMs: options.connectTimeoutMs ?? 5000,
+    reconnect: options.reconnect ?? {
       enabled: true,
       baseDelayMs: 200,
       maxDelayMs: 1000,
     },
+    ...options,
   });
 }
 
 /**
  * Fetch the peers list from a commander daemon over its WebSocket.
  */
-export async function fetchPeersList(wsUrl) {
-  const client = createDaemonClient(wsUrl, `fetch-peers-${Date.now()}`);
+export async function fetchPeersList(wsUrl, password = null) {
+  const client = createDaemonClient(wsUrl, `fetch-peers-${Date.now()}`, password);
   try {
     await client.connect();
     return await client.missionControlPeersList();
@@ -52,14 +59,15 @@ export async function verifyPeeringLive({
   peerName = "peer-b",
   timeoutMs = 15000,
   pollIntervalMs = 200,
+  password = null,
 }) {
   const client = createDaemonClient(
     commanderWsUrl,
     `verify-peer-${peerName}-${Date.now()}`,
+    password,
   );
   const start = Date.now();
   let lastPayload = null;
-
   try {
     await client.connect();
 

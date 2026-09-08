@@ -127,6 +127,7 @@ See [docs/development.md](docs/development.md) for full setup, build sync requir
 - **Before changing the plugin SDK, compiler, host module maps, scaffold, or examples, read [SDK import boundaries](docs/plugins.md#sdk-import-boundaries).** Classify the export by runtime first and preserve the enforced boundaries.
 
 - **NEVER restart the main Paseo daemon on port 6767 without permission** — it manages all running agents. If you're an agent, restarting it kills your own process.
+- **The live environment is read-only for verification.** The daemons on 6767, the real itsaplan projects, and the user's workspaces hold live data. Verify against an isolated mock fleet (`node scripts/verify/stack.mjs up`, see [docs/verification.md](docs/verification.md)). Use the live environment only when the user explicitly asked for it in this task, or when the behavior cannot be reproduced in the mock and you say so. Even then, additive actions only (create a workspace, add a ticket): never delete, archive, rename, or modify anything that existed before you started.
 - **NEVER assume a timeout means the service needs restarting** — timeouts can be transient.
 - **NEVER add auth checks to tests** — agent providers handle their own auth.
 - **Before changing app routes, startup routing, remembered workspace restore, or active workspace selection, read [docs/expo-router.md](docs/expo-router.md).**

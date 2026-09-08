@@ -3,8 +3,15 @@ export const meta = {
   tier: "ui",
   hosts: 1,
   video: true,
-  description: "Drives web UI to Mission Control, takes before/after shots, and asserts UI updates upon workspace creation.",
+  description:
+    "Drives web UI to Mission Control, takes before/after shots, and asserts UI updates upon workspace creation.",
 };
+
+const WORKSPACE_TITLE = "proof-ui-workspace";
+const WORKSPACE_ROW_SELECTOR = '[data-testid^="sidebar-workspace-row-"]';
+
+let rowsBefore = 0;
+let createdWorkspaceId = null;
 
 export const steps = [
   {
@@ -18,9 +25,12 @@ export const steps = [
 
       await page.goto(host.httpUrl, { waitUntil: "domcontentloaded", timeout: 15_000 });
       // Wait for app root or sidebar element to be present
-      await page.waitForSelector('[data-testid="sidebar-home"], [data-testid="sidebar-settings"], [data-testid="sidebar-mission-control"]', {
-        timeout: 10_000,
-      });
+      await page.waitForSelector(
+        '[data-testid="sidebar-home"], [data-testid="sidebar-settings"], [data-testid="sidebar-mission-control"]',
+        {
+          timeout: 10_000,
+        },
+      );
 
       return `app loaded from ${host.httpUrl}`;
     },
@@ -36,13 +46,18 @@ export const steps = [
         await mcButton.click();
       }
 
-      // Wait a moment for rendering to settle
-      await page.waitForTimeout(500);
+      // A fresh stack legitimately has zero workspace rows, so counting immediately is correct;
+      // waiting for the selector here would burn the full timeout on every clean run.
+      rowsBefore = await page.locator(WORKSPACE_ROW_SELECTOR).count();
+      const titleVisibleBefore = (await page.content()).includes(WORKSPACE_TITLE);
+      ctx.expect(
+        !titleVisibleBefore,
+        `"${WORKSPACE_TITLE}" must not be in the DOM before it is created`,
+      );
 
-      // Capture before shot
       const beforeShot = await ctx.shot("before");
       ctx.expect(Boolean(beforeShot), "Before shot captured");
-      return "Mission Control surface active";
+      return `Mission Control surface active, ${rowsBefore} workspace row(s) before change`;
     },
   },
   {
@@ -53,19 +68,22 @@ export const steps = [
       const client = ctx.host().client;
       const created = await client.createWorkspace({
         path: ctx.host().home,
-        name: "proof-ui-workspace",
+        name: WORKSPACE_TITLE,
       });
-      const wsId = created.workspace?.id;
-      ctx.expect(Boolean(wsId), "Workspace created via RPC");
+      createdWorkspaceId = created.workspace?.id;
+      ctx.expect(Boolean(createdWorkspaceId), "Workspace created via RPC");
 
-      // Wait for workspace to appear in UI or sidebar
+      // The sidebar row id is `sidebar-workspace-row-<serverId>:<workspaceId>`, so match on the
+      // workspace id suffix and let the daemon own the server id.
       const page = ctx.page;
-      await page.waitForTimeout(1000);
+      await page.waitForSelector(`[data-testid$=":${createdWorkspaceId}"]`, {
+        state: "attached",
+        timeout: 10_000,
+      });
 
-      // Capture after shot
       const afterShot = await ctx.shot("after");
       ctx.expect(Boolean(afterShot), "After shot captured");
-      return `workspace ${wsId} created and reflected in UI`;
+      return `workspace ${createdWorkspaceId} created and rendered in sidebar`;
     },
   },
   {
@@ -74,9 +92,30 @@ export const steps = [
     narrate: "Observed state verified against UI tree.",
     async run(ctx) {
       const page = ctx.page;
-      const content = await page.content();
-      ctx.expect(content.includes("proof-ui-workspace") || content.includes("Mission Control") || content.includes("data-testid"), "UI content has expected elements");
-      return "UI assertions passed";
+
+      const row = page.locator(`[data-testid$=":${createdWorkspaceId}"]`);
+      ctx.expect((await row.count()) === 1, `exactly one sidebar row for ${createdWorkspaceId}`);
+
+      const testId = await row.first().getAttribute("data-testid");
+      ctx.expect(
+        typeof testId === "string" && testId.startsWith("sidebar-workspace-row-"),
+        `row testid must be a sidebar workspace row, got "${testId}"`,
+      );
+
+      // Never assert on the total row count: the mock runs a live Commander whose system
+      // workspace can appear at any moment. Own the one row this check created and nothing else.
+      const rowsAfter = await page.locator(WORKSPACE_ROW_SELECTOR).count();
+      ctx.expect(
+        rowsAfter >= rowsBefore + 1,
+        `expected at least ${rowsBefore + 1} workspace rows, got ${rowsAfter}`,
+      );
+      const bodyText = await page.evaluate(() => document.body.innerText);
+      ctx.expect(
+        bodyText.includes(WORKSPACE_TITLE),
+        `"${WORKSPACE_TITLE}" must be rendered as visible text`,
+      );
+
+      return `row ${testId} present, visible title rendered, rows ${rowsBefore} -> ${rowsAfter}`;
     },
   },
 ];
