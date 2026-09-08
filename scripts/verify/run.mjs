@@ -461,8 +461,8 @@ async function setupPlaywright(stack, shouldRecordVideo, checkName = "check") {
           if (raw) serverId = raw;
         }
       } catch {}
-
-      const endpoint = `127.0.0.1:${h.port}`;
+      const url = stack.reachable?.urls?.[h.name] || h.httpUrl || `http://127.0.0.1:${h.port}`;
+      const endpoint = url.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
       const hostProfile = {
         serverId,
         label: h.name || "localhost",
@@ -816,7 +816,7 @@ async function runCheckSteps(checkSteps, ctx, pw, timeAnchor, opts, meta, state)
   return stepResults;
 }
 
-async function assembleProofs(opts, meta, stack, resultFile, externalStack) {
+async function assembleProofs(opts, meta, stack, resultFile) {
   if (!opts.proof) return { proofMp4Path: null, proofError: null };
   const narrateDir = path.join(stack.runDir, "narration", meta.name);
   await fsp.mkdir(narrateDir, { recursive: true });
@@ -837,7 +837,6 @@ async function assembleProofs(opts, meta, stack, resultFile, externalStack) {
 
   const videoScript = path.join(WORKTREE_ROOT, "scripts/verify/video.py");
   const targetMp4 = path.join(stack.artifactsDir, `${meta.name}-proof.mp4`);
-  const standardMp4 = path.join(stack.artifactsDir, "proof.mp4");
   let proofMp4Path = null;
   let proofError = null;
 
@@ -856,7 +855,6 @@ async function assembleProofs(opts, meta, stack, resultFile, externalStack) {
       await execFileAsync("python3", videoArgs, { cwd: WORKTREE_ROOT, timeout: 60000 });
       if (fs.existsSync(targetMp4)) {
         proofMp4Path = targetMp4;
-        await mirrorProofMp4(targetMp4, standardMp4, externalStack);
       }
     } catch (err) {
       proofError = err.message || String(err);
@@ -1100,13 +1098,7 @@ async function runSingleCheck(checkPath, opts, externalStack = null) {
   const standardResultFile = path.join(stack.artifactsDir, "result.json");
   await writeResultArtifacts({ intermediateResult, resultFile, standardResultFile, externalStack });
 
-  const { proofMp4Path, proofError } = await assembleProofs(
-    opts,
-    meta,
-    stack,
-    resultFile,
-    externalStack,
-  );
+  const { proofMp4Path, proofError } = await assembleProofs(opts, meta, stack, resultFile);
   const proofs = await copyDurableProofs(opts, meta, stack, proofDir, proofMp4Path, state);
   let statSize = null;
   if (proofMp4Path && fs.existsSync(proofMp4Path)) {
