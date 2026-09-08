@@ -60,7 +60,7 @@ Include:
 - Inline video and before/after images from `result.json` (`proofs[]`).
 - The red run failure excerpt from step 2 as a `command` proof.
 - The mock environment details:
-  - If the user asked to try it themselves: run with `--keep --reachable` and paste the reachable web UI URL, the daemon password, the VS Code Web URL (when `stack.codeServer.healthy`; paste once into Settings -> host -> VS Code Web URL), and the reproduction recipe.
+  - If the user asked to try it themselves: run with `--keep --reachable` and paste the reachable web UI URL, the daemon password, the reproduction recipe, and the **connect snippet** the runner prints (also `node scripts/verify/stack.mjs connect <runId>`). The user pastes the snippet into the devtools console of the mock's web UI page; it registers the host with the password and the VS Code Web URL, then reloads. Without it the page lands on the add-host form, because the connection hint carries no password.
   - Otherwise: paste the 3-line reproduction recipe printed by `run.mjs`.
 
 ### 5. Browser choice
