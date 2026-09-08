@@ -285,6 +285,24 @@ export function getWorktreeTeardownCommands(repoRoot: string): string[] {
   return readPaseoConfigOrThrow(repoRoot)?.worktree?.teardown ?? [];
 }
 
+/**
+ * The git ref this project cuts worktrees from (`worktree.warmPool.baseRef`),
+ * or undefined when unset. Shared with the warm pool on purpose: a project that
+ * pre-warms from a ref must also cut cold worktrees from it, or the two paths
+ * hand back workspaces on different branches.
+ */
+export function getWorktreeConfiguredBaseRef(repoRoot: string): string | undefined {
+  try {
+    const result = readPaseoConfig(repoRoot);
+    if (!result.ok || !result.config) {
+      return undefined;
+    }
+    return result.config.worktree?.warmPool?.baseRef?.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function getWorktreeTerminalSpecs(repoRoot: string): WorktreeTerminalConfig[] {
   const terminals = readPaseoConfigOrThrow(repoRoot)?.worktree?.terminals;
   if (!Array.isArray(terminals) || terminals.length === 0) {

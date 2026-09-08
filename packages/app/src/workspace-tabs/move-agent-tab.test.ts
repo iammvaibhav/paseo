@@ -204,6 +204,7 @@ describe("moveAgentTabToNewWorkspace", () => {
       sourceWorkspaceId: "wks-source",
       agentId: "agent-123",
       tabId: "tab-123",
+      createWorktreeSlug: () => "worktree-slug-456",
     });
 
     expect(result).toEqual({
@@ -213,9 +214,10 @@ describe("moveAgentTabToNewWorkspace", () => {
     });
     expect(client.createWorkspace).toHaveBeenCalledWith({
       source: {
-        kind: "directory",
-        path: "/repo/source",
+        kind: "worktree",
+        cwd: "/repo/source",
         projectId: "prj-1",
+        worktreeSlug: "worktree-slug-456",
       },
       title: "Source (2)",
     });
@@ -278,6 +280,58 @@ describe("moveAgentTabToNewWorkspace", () => {
       message: "Path is not a git checkout",
     });
     expect(client.moveAgentToWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("creates a worktree workspace with slug and without baseBranch, action, or refName", async () => {
+    const client = createClient();
+    const layout = createLayout();
+    const navigation = createNavigation();
+    await moveAgentTabToNewWorkspace({
+      session: createSession({ client }),
+      layout,
+      navigation,
+      messages,
+      serverId: "server-1",
+      sourceWorkspaceId: "wks-source",
+      agentId: "agent-123",
+      tabId: "tab-123",
+      createWorktreeSlug: () => "worktree-slug-xyz",
+    });
+
+    expect(client.createWorkspace).toHaveBeenCalledTimes(1);
+    const callInput = vi.mocked(client.createWorkspace).mock.calls[0]?.[0];
+    expect(callInput?.source).toEqual({
+      kind: "worktree",
+      cwd: "/repo/source",
+      projectId: "prj-1",
+      worktreeSlug: "worktree-slug-xyz",
+    });
+    expect(callInput?.source).not.toHaveProperty("baseBranch");
+    expect(callInput?.source).not.toHaveProperty("action");
+    expect(callInput?.source).not.toHaveProperty("refName");
+  });
+
+  it("uses default slug generator when createWorktreeSlug is omitted", async () => {
+    const client = createClient();
+    const layout = createLayout();
+    const navigation = createNavigation();
+    await moveAgentTabToNewWorkspace({
+      session: createSession({ client }),
+      layout,
+      navigation,
+      messages,
+      serverId: "server-1",
+      sourceWorkspaceId: "wks-source",
+      agentId: "agent-123",
+      tabId: "tab-123",
+    });
+
+    const callInput = vi.mocked(client.createWorkspace).mock.calls[0]?.[0];
+    expect(callInput?.source.kind).toBe("worktree");
+    if (callInput?.source.kind === "worktree") {
+      expect(typeof callInput.source.worktreeSlug).toBe("string");
+      expect(callInput.source.worktreeSlug?.length).toBeGreaterThan(0);
+    }
   });
 });
 

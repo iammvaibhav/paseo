@@ -1,10 +1,19 @@
+import { createNameId } from "mnemonic-id";
+
 export interface MoveAgentTabClient {
   moveAgentToWorkspace(
     agentId: string,
     workspaceId: string,
   ): Promise<{ agentId: string; workspaceId: string }>;
   createWorkspace(input: {
-    source: { kind: "directory"; path: string; projectId?: string };
+    source:
+      | { kind: "directory"; path: string; projectId?: string }
+      | {
+          kind: "worktree";
+          cwd?: string;
+          projectId?: string;
+          worktreeSlug?: string;
+        };
     title?: string;
   }): Promise<{ error?: string | null; workspace?: { id: string; name?: string | null } | null }>;
 }
@@ -202,6 +211,7 @@ export async function moveAgentTabToNewWorkspace(input: {
   sourceWorkspaceId: string;
   agentId: string;
   tabId: string;
+  createWorktreeSlug?: () => string;
 }): Promise<MoveAgentTabResult> {
   const clientResult = requireClient(input.session, input.messages);
   if (!clientResult.ok) return clientResult.result;
@@ -218,13 +228,20 @@ export async function moveAgentTabToNewWorkspace(input: {
     };
   }
 
+  const createWorktreeSlug = input.createWorktreeSlug ?? createNameId;
+  const worktreeSlug = createWorktreeSlug();
+
   let createdWorkspace: { id: string; name?: string | null };
   try {
     const createResult = await clientResult.client.createWorkspace({
+      // Deliberately do not pass baseBranch, action, or refName. Omitting them
+      // makes the daemon run the full resolution chain (paseo.json -> remembered
+      // preference -> repo default) and claim a warm pooled worktree automatically.
       source: {
-        kind: "directory",
-        path: sourceDirectory,
+        kind: "worktree",
+        cwd: sourceDirectory,
         ...(sourceWorkspace.projectId ? { projectId: sourceWorkspace.projectId } : {}),
+        worktreeSlug,
       },
       title: sourceWorkspace.name ? `${sourceWorkspace.name} (2)` : undefined,
     });
