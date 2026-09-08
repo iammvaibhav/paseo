@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 export interface ItsaplanEmbedProps {
@@ -40,37 +40,29 @@ export function ItsaplanEmbed({
   const { t } = useTranslation();
   const [loaded, setLoaded] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
-
-  const initialSrc = useMemo(() => {
+  const srcRef = useRef<string | null>(null);
+  if (srcRef.current == null) {
     const trimmed = project?.trim();
-    if (trimmed) {
-      return `${origin.replace(/\/+$/, "")}/project/${encodeURIComponent(trimmed)}`;
-    }
-    return origin;
-  }, [origin, project]);
-
+    srcRef.current = trimmed
+      ? `${origin.replace(/\/+$/, "")}/project/${encodeURIComponent(trimmed)}`
+      : origin;
+  }
   // Both: local state cancels the watchdog below, and the parent needs telling
   // so it can drop its loading overlay. Setting only the local flag left the
   // screen spinning forever on a perfectly good load.
   const handleLoad = useCallback(() => {
     setLoaded(true);
     onLoaded();
-    const trimmed = project?.trim();
-    if (trimmed && iframeRef.current?.contentWindow) {
-      iframeRef.current.contentWindow.postMessage(
-        { type: "paseo:navigate-project", projectKey: trimmed },
-        "*",
-      );
-    }
-  }, [onLoaded, project]);
+  }, [onLoaded]);
 
   useEffect(() => {
-    if (loaded && project != null && iframeRef.current?.contentWindow) {
-      iframeRef.current.contentWindow.postMessage(
-        { type: "paseo:navigate-project", projectKey: project.trim() },
-        "*",
-      );
+    if (!loaded || project == null || !iframeRef.current?.contentWindow) {
+      return;
     }
+    iframeRef.current.contentWindow.postMessage(
+      { type: "paseo:navigate-project", projectKey: project.trim() },
+      "*",
+    );
   }, [project, loaded]);
 
   useEffect(() => {
@@ -92,7 +84,7 @@ export function ItsaplanEmbed({
       key={attempt}
       data-testid={testID}
       title={t("sidebar.sections.itsaplan")}
-      src={initialSrc}
+      src={srcRef.current ?? origin}
       onLoad={handleLoad}
       // itsaplan is a trusted first-party app the user points this at, and it
       // needs same-origin to read its own session cookie and run its own

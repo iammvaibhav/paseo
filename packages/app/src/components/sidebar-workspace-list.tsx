@@ -70,6 +70,7 @@ import {
   parseHostWorkspaceRouteFromPathname,
 } from "@/utils/host-routes";
 import { resolveProjectItsaplanKey } from "@/itsaplan/itsaplan-project-key";
+import { setItsaplanSelectedProject } from "@/itsaplan/itsaplan-selected-project";
 import {
   navigateItsaplanEmbedProject,
   prefetchItsaplanProject,
@@ -128,6 +129,8 @@ import {
   SidebarWorkspaceTrailingActionOverlay,
   SidebarWorkspaceTrailingActionSlot,
 } from "@/components/sidebar/sidebar-workspace-row-content";
+import { SidebarWorkspaceAgentDropIndicator } from "@/components/sidebar/sidebar-workspace-drop-indicator";
+import { useAgentTabDropRow } from "@/workspace-tabs/use-agent-tab-drop";
 import { useOpenKebabMenuVisibility } from "@/components/sidebar/use-open-kebab-menu-visibility";
 import {
   SidebarFilterEmptyState,
@@ -937,6 +940,7 @@ function ProjectItsaplanButton({
     (event: GestureResponderEvent) => {
       event.stopPropagation();
       if (projectKey) {
+        setItsaplanSelectedProject(projectKey);
         navigateItsaplanEmbedProject(projectKey);
       }
       router.replace(buildItsaplanRoute({ project: projectKey }));
@@ -1332,6 +1336,18 @@ function WorkspaceRowInner({
     "aria-roledescription": _dragRoleDescription,
     ...dragAttributes
   } = dragHandleProps?.attributes ?? {};
+  const { dropRowRef, isDropTarget: isAgentTabDropTarget } = useAgentTabDropRow({
+    serverId: workspace.serverId,
+    workspaceId: workspace.workspaceId,
+    workspaceKey: workspace.workspaceKey,
+  });
+  const setRowRef = useCallback(
+    (node: View | null) => {
+      (dragHandleProps?.setActivatorNodeRef as ((value: unknown) => void) | undefined)?.(node);
+      dropRowRef(node);
+    },
+    [dragHandleProps, dropRowRef],
+  );
 
   const handlePress = useCallback(() => {
     if (interaction.didLongPressRef.current) {
@@ -1373,7 +1389,7 @@ function WorkspaceRowInner({
             <View
               {...dragAttributes}
               {...dragHandleProps?.listeners}
-              ref={dragHandleProps?.setActivatorNodeRef as unknown as Ref<View>}
+              ref={setRowRef}
               style={styles.workspaceRowContainer}
               {...hoverHandlers}
             >
@@ -1445,6 +1461,9 @@ function WorkspaceRowInner({
                   />
                 </SidebarWorkspaceRowContent>
               </SidebarWorkspaceContextMenu>
+              {isAgentTabDropTarget ? (
+                <SidebarWorkspaceAgentDropIndicator workspaceKey={workspace.workspaceKey} />
+              ) : null}
             </View>
           );
         }}

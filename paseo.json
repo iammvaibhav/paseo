@@ -6,7 +6,12 @@
       "node ./scripts/seed-worktree-dev-state.mjs",
       "npm run build:server",
       "npm run build --workspace=@getpaseo/expo-two-way-audio"
-    ]
+    ],
+    "warmPool": {
+      "enabled": true,
+      "targetIdle": 1,
+      "baseRef": "vaibhav/customizations"
+    }
   },
   "scripts": {
     "deploy-logs": {

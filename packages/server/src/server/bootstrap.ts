@@ -122,6 +122,7 @@ import { WorkspaceSetupRuntime } from "./workspace-setup-runtime.js";
 import { createWorkspaceLabelService } from "./workspace-labels/index.js";
 import { createGitHubService } from "../services/github-service.js";
 import { createPaseoWorktree as createRegisteredPaseoWorktree } from "./paseo-worktree-service.js";
+import { WarmWorktreePoolManager } from "./warm-worktree-pool.js";
 import { createWorkspaceProvisioningService } from "./session/workspace-provisioning/workspace-provisioning-service.js";
 import { createPaseoWorktreeWorkflow } from "./worktree-session.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
@@ -151,6 +152,7 @@ import {
   FileBackedWorkspaceRegistry,
   resolveProjectDisplayName,
   resolveWorkspaceDisplayName,
+  type ProjectRegistry,
   type WorkspaceArchiveContext,
 } from "./workspace-registry.js";
 import { CheckoutDiffManager } from "./checkout-diff-manager.js";
@@ -158,14 +160,16 @@ import { ScheduleService } from "./schedule/service.js";
 import { BaseCheckoutSyncService } from "./base-checkout-sync.js";
 import { IdleCloseOmpService } from "./idle-close/index.js";
 import { MissionControlService } from "./mission-control/service.js";
-import { ITSAPLAN_ISSUE_LABEL_KEY } from "@getpaseo/protocol/agent-labels";
+import { getItsaplanIssueIdFromLabels } from "./itsaplan/index.js";
 import type { MissionControlProposalSpawnPlan } from "@getpaseo/protocol/mission-control/types";
 import { areEquivalentPaths } from "../utils/path.js";
+import { getWorktreeConfiguredBaseRef } from "../utils/worktree.js";
 import {
   buildFleetContextData,
   buildWorldSnapshot,
   resolveRememberedBaseBranch,
 } from "./mission-control/context.js";
+import type { ComposerPreferences } from "@getpaseo/protocol/composer-preferences";
 import { CommanderSnapshotInjector } from "./mission-control/commander-snapshot.js";
 import { CentralMissionControlConfigStore } from "./mission-control/config.js";
 import { createMissionControlPresenceSource } from "./mission-control/presence.js";
@@ -203,7 +207,7 @@ import { resolveConfigFromPersisted, type CliConfigOverrides } from "./config.js
 import { resolvePaseoToolPolicy } from "./agent/paseo-tool-policy.js";
 import { BrowserToolsBroker } from "./browser-tools/broker.js";
 import { DaemonConfigBrowserToolsPolicy } from "./browser-tools/policy.js";
-import { WorkspaceGitServiceImpl } from "./workspace-git-service.js";
+import { WorkspaceGitServiceImpl, type WorkspaceGitService } from "./workspace-git-service.js";
 import { resolveWorkspaceIdForPath } from "./resolve-workspace-id-for-path.js";
 import {
   archiveByScope,
@@ -369,7 +373,7 @@ async function attachTicketImagesToSpawnPlan(
   if (plan.images && plan.images.length > 0) {
     return plan;
   }
-  const issueIdRaw = plan.labels?.[ITSAPLAN_ISSUE_LABEL_KEY];
+  const issueIdRaw = getItsaplanIssueIdFromLabels(plan.labels);
   const issueId = issueIdRaw ? Number(issueIdRaw) : NaN;
   if (!Number.isFinite(issueId)) {
     return plan;
@@ -982,6 +986,50 @@ function createItsaplanWebhookIngress(app: express.Express): {
 function resolveServiceProxyPublicBaseUrl(config: PaseoDaemonConfig): string | null {
   return config.serviceProxy?.publicBaseUrl ? config.serviceProxy.publicBaseUrl : null;
 }
+export interface WorktreeDefaultBranchResolutionDeps {
+  daemonConfigStore?: { get(): { composerPreferences?: ComposerPreferences | null } };
+  projectRegistry?: Pick<ProjectRegistry, "list">;
+  workspaceGitService: Pick<WorkspaceGitService, "resolveDefaultBranch">;
+  readConfiguredBaseRef?: (repoRoot: string) => string | undefined;
+}
+
+/**
+ * The ref a new worktree is cut from, highest precedence first:
+ * paseo.json `worktree.warmPool.baseRef` -> the user's remembered base branch
+ * -> the repository default branch. An explicit `baseBranch` on the create
+ * request never reaches here; the session short-circuits it.
+ */
+export async function resolveWorktreeDefaultBranch(
+  repoRoot: string,
+  deps: WorktreeDefaultBranchResolutionDeps,
+): Promise<string> {
+  const configuredBaseRef = (
+    deps.readConfiguredBaseRef
+      ? deps.readConfiguredBaseRef(repoRoot)
+      : getWorktreeConfiguredBaseRef(repoRoot)
+  )?.trim();
+  if (configuredBaseRef) {
+    return configuredBaseRef;
+  }
+
+  const composerPrefs = deps.daemonConfigStore?.get().composerPreferences;
+  let project = null;
+  try {
+    const list = await deps.projectRegistry?.list();
+    project = list?.find((p) => areEquivalentPaths(p.rootPath, repoRoot)) ?? null;
+  } catch {
+    // ignore
+  }
+  const remembered = resolveRememberedBaseBranch(composerPrefs, {
+    projectId: project?.projectId,
+    projectKey: project?.projectKey,
+  });
+  if (remembered) {
+    return remembered;
+  }
+
+  return deps.workspaceGitService.resolveDefaultBranch(repoRoot);
+}
 
 // eslint-disable-next-line complexity -- daemon bootstrap orchestration
 export async function createPaseoDaemon(
@@ -1254,6 +1302,13 @@ export async function createPaseoDaemon(
     projectRegistry,
     workspaceRegistry,
     workspaceGitService,
+    logger,
+  });
+  const warmWorktreePool = new WarmWorktreePoolManager({
+    paseoHome: config.paseoHome,
+    worktreesRoot: config.worktreesRoot,
+    workspaceGitService,
+    projectRegistry,
     logger,
   });
   const agentProviderRuntime = await createAgentProviderRuntime({
@@ -1545,26 +1600,15 @@ export async function createPaseoDaemon(
             github,
             resolveDefaultBranch:
               workflowOptions?.resolveDefaultBranch ??
-              (async (repoRoot: string) => {
-                const composerPrefs = daemonConfigStore?.get().composerPreferences;
-                let project = null;
-                try {
-                  const list = await projectRegistry?.list();
-                  project = list?.find((p) => areEquivalentPaths(p.rootPath, repoRoot)) ?? null;
-                } catch {
-                  // ignore
-                }
-                const remembered = resolveRememberedBaseBranch(composerPrefs, {
-                  projectId: project?.projectId,
-                  projectKey: project?.projectKey,
-                });
-                if (remembered) {
-                  return remembered;
-                }
-                return workspaceGitService.resolveDefaultBranch(repoRoot);
-              }),
+              ((repoRoot: string) =>
+                resolveWorktreeDefaultBranch(repoRoot, {
+                  daemonConfigStore,
+                  projectRegistry,
+                  workspaceGitService,
+                })),
             workspaceGitService,
             workspaceProvisioning,
+            warmWorktreePool,
           });
         },
         warmWorkspaceGitData: async (workspace) => {
@@ -2197,7 +2241,7 @@ export async function createPaseoDaemon(
               page: { limit: 200 },
             });
             for (const entry of payload?.entries ?? []) {
-              if (entry?.agent?.labels?.[ITSAPLAN_ISSUE_LABEL_KEY] === issueId) {
+              if (getItsaplanIssueIdFromLabels(entry?.agent?.labels) === issueId) {
                 return { agentId: entry.agent.id, host: status.name };
               }
             }
@@ -2840,6 +2884,7 @@ export async function createPaseoDaemon(
             const relayPublicEndpoint = config.relayPublicEndpoint ?? relayEndpoint;
             const relayUseTls = config.relayUseTls ?? relayEndpoint === "relay.paseo.sh:443";
             const relayPublicUseTls = config.relayPublicUseTls ?? relayUseTls;
+            await warmWorktreePool.start();
             if (boundListenTarget.type === "tcp") {
               logger.info(
                 {
@@ -2937,8 +2982,8 @@ export async function createPaseoDaemon(
               orchestrationSkills,
               workspaceLabelService,
               (workspaceId) => itsaplanBridge?.handleWorkspaceArchived(workspaceId),
+              warmWorktreePool,
             );
-            wsServer.setTranscriptSearch(transcriptSearch);
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();
             wsServer.beginAcceptingConnections();
@@ -3020,6 +3065,7 @@ export async function createPaseoDaemon(
     await speechService.stop();
     await missionControlService.stop().catch(() => undefined);
 
+    await warmWorktreePool.stop().catch(() => undefined);
     await scheduleService.stop().catch(() => undefined);
     baseCheckoutSyncService.stop();
     await peerManager?.close().catch(() => undefined);

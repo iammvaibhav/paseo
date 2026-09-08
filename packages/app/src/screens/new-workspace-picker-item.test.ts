@@ -8,6 +8,7 @@ import {
   defaultBasePickerItem,
   pickerItemToCheckoutRequest,
   type PickerItem,
+  resolveEffectivePreferredBaseBranch,
 } from "./new-workspace-picker-item";
 
 const prItem: ForgeSearchItem = {
@@ -405,5 +406,74 @@ describe("defaultBasePickerItem", () => {
 
   it("has no default for detached HEAD without baseRef", () => {
     expect(defaultBasePickerItem({ currentBranch: null })).toBeNull();
+  });
+});
+
+describe("resolveEffectivePreferredBaseBranch", () => {
+  it("prefers paseo.json branch over remembered branch", () => {
+    expect(
+      resolveEffectivePreferredBaseBranch({
+        paseoBaseRef: "develop",
+        rememberedBaseBranch: "main",
+      }),
+    ).toBe("develop");
+  });
+
+  it("trims whitespace from paseo branch", () => {
+    expect(
+      resolveEffectivePreferredBaseBranch({
+        paseoBaseRef: "  release/v1.0  ",
+        rememberedBaseBranch: "main",
+      }),
+    ).toBe("release/v1.0");
+  });
+
+  it("falls back to remembered branch when paseo branch is undefined or null", () => {
+    expect(
+      resolveEffectivePreferredBaseBranch({
+        paseoBaseRef: undefined,
+        rememberedBaseBranch: "main",
+      }),
+    ).toBe("main");
+
+    expect(
+      resolveEffectivePreferredBaseBranch({
+        paseoBaseRef: null,
+        rememberedBaseBranch: "main",
+      }),
+    ).toBe("main");
+  });
+
+  it("falls back to remembered branch when paseo branch is empty or whitespace-only", () => {
+    expect(
+      resolveEffectivePreferredBaseBranch({
+        paseoBaseRef: "   ",
+        rememberedBaseBranch: "main",
+      }),
+    ).toBe("main");
+  });
+
+  it("trims whitespace from remembered branch", () => {
+    expect(
+      resolveEffectivePreferredBaseBranch({
+        rememberedBaseBranch: "  develop  ",
+      }),
+    ).toBe("develop");
+  });
+
+  it("returns undefined when neither branch is present or non-whitespace", () => {
+    expect(
+      resolveEffectivePreferredBaseBranch({
+        paseoBaseRef: undefined,
+        rememberedBaseBranch: undefined,
+      }),
+    ).toBeUndefined();
+
+    expect(
+      resolveEffectivePreferredBaseBranch({
+        paseoBaseRef: "   ",
+        rememberedBaseBranch: "   ",
+      }),
+    ).toBeUndefined();
   });
 });

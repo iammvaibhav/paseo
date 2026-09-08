@@ -38,6 +38,7 @@ const PROJECTS_FILENAME = "projects.json";
 export const ITSAPLAN_WEBHOOK_EVENTS = [
   "issue.created",
   "issue.state_changed",
+  "issue.assigned",
   "comment.created",
 ] as const;
 
@@ -280,6 +281,15 @@ async function ensureItsaplanProjectMappingForKey(
     } else {
       mapping = await ensureCommanderMentionTrigger(mapping, config, deps);
     }
+    if (mapping.commanderUserId) {
+      const client = new ItsaplanClient(config);
+      await ensureTodoColumnNoCommanderAutoAssign(
+        mapping.itsaplanProjectKey,
+        mapping.commanderUserId,
+        client,
+        deps.logger,
+      );
+    }
     return ensureWebhookEventsUpToDate(mapping, config, deps);
   }
   const client = new ItsaplanClient(config);
@@ -505,6 +515,40 @@ async function ensureCommanderAiAgent(
     return null;
   }
 }
+/**
+ * Ensures the project's Todo (unstarted) column does not overwrite the human
+ * assignee with the Commander bot user when moved into Todo. The autonomous
+ * executor role belongs to the ticket's Delegate, while Assignee remains the
+ * accountable human owner.
+ */
+export async function ensureTodoColumnNoCommanderAutoAssign(
+  itsaplanProjectKey: string,
+  commanderUserId: string,
+  client: ItsaplanClient,
+  logger: Logger,
+): Promise<void> {
+  try {
+    const columns = await client.listProjectColumns(itsaplanProjectKey);
+    const todoColumn = columns.find((c) => c.stateType === "unstarted");
+    if (!todoColumn) {
+      return;
+    }
+    if (todoColumn.autoAssignUserId === commanderUserId) {
+      await client.updateColumn(itsaplanProjectKey, todoColumn.id, {
+        autoAssignUserId: null,
+      });
+      logger.info(
+        { itsaplanProjectKey, columnId: todoColumn.id },
+        "itsaplan.project.todo_column_commander_auto_assign_cleared",
+      );
+    }
+  } catch (error) {
+    logger.warn(
+      { err: error, itsaplanProjectKey },
+      "itsaplan.project.todo_column_clear_auto_assign_failed",
+    );
+  }
+}
 
 /**
  * Repairs event-set drift on a mapping's existing webhook: webhooks
@@ -584,6 +628,14 @@ async function backfillCommanderAgent(
     ...commander,
     commanderMentionEnabled: true,
   };
+  if (commander.commanderUserId) {
+    await ensureTodoColumnNoCommanderAutoAssign(
+      existing.itsaplanProjectKey,
+      commander.commanderUserId,
+      client,
+      deps.logger,
+    );
+  }
   await deps.store.upsert(updated);
   deps.logger.info(
     { paseoProjectKey: existing.paseoProjectKey, itsaplanProjectKey: existing.itsaplanProjectKey },

@@ -21,6 +21,7 @@ import {
   Columns2,
   Rows2,
   Ellipsis,
+  FolderPlus,
   Maximize,
   Minimize,
   Plus,
@@ -87,6 +88,15 @@ import {
   HorizontalScrollBoundaryShades,
   useHorizontalScrollBoundary,
 } from "@/components/ui/horizontal-scroll-boundary";
+import { useToast } from "@/contexts/toast-context";
+import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
+import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
+import {
+  buildMoveAgentTabMessages,
+  describeMoveAgentTabResult,
+  moveAgentTabToNewWorkspace,
+  sessionFromStore,
+} from "@/workspace-tabs/move-agent-tab";
 
 const DROPDOWN_WIDTH = 220;
 const DEFAULT_INLINE_ADD_BUTTON_RESERVED_WIDTH = 36;
@@ -126,6 +136,7 @@ const ThemedArrowLeftToLine = withUnistyles(ArrowLeftToLine);
 const ThemedArrowRightToLine = withUnistyles(ArrowRightToLine);
 const ThemedCopyX = withUnistyles(CopyX);
 const ThemedPencil = withUnistyles(Pencil);
+const ThemedFolderPlus = withUnistyles(FolderPlus);
 const ThemedPlus = withUnistyles(Plus);
 const ThemedColumns2 = withUnistyles(Columns2);
 const ThemedRows2 = withUnistyles(Rows2);
@@ -420,6 +431,8 @@ function TabContextMenuItem({
         return <ThemedPencil size={16} uniProps={mutedColorMapping} />;
       case "circle-check":
         return <ThemedCircleCheck size={16} uniProps={mutedColorMapping} />;
+      case "folder-plus":
+        return <ThemedFolderPlus size={16} uniProps={mutedColorMapping} />;
       case "x":
         return <ThemedX size={16} uniProps={mutedColorMapping} />;
       default:
@@ -1089,6 +1102,7 @@ function ResolvedWorkspaceDesktopTabsRow({
       copyAgentId: t("workspace.tabs.menu.copyAgentId"),
       copyTerminalId: t("workspace.tabs.menu.copyTerminalId"),
       copyFilePath: t("workspace.tabs.menu.copyFilePath"),
+      moveToNewWorkspace: t("workspace.tabs.menu.moveToNewWorkspace"),
       rename: t("workspace.tabs.menu.rename"),
       closeAbove: t("workspace.tabs.menu.closeAbove"),
       closeBelow: t("workspace.tabs.menu.closeBelow"),
@@ -1260,6 +1274,7 @@ function ResolvedWorkspaceDesktopTabsRow({
           serverId={normalizedServerId}
           item={item}
           normalizedServerId={normalizedServerId}
+          normalizedWorkspaceId={normalizedWorkspaceId}
           isFocused={isFocused}
           isDragging={isActive}
           index={index}
@@ -1292,6 +1307,7 @@ function ResolvedWorkspaceDesktopTabsRow({
       layout.closeButtonPolicy,
       layout.items,
       normalizedServerId,
+      normalizedWorkspaceId,
       onCloseOtherTabs,
       onCloseTab,
       onCloseTabsToLeft,
@@ -1408,6 +1424,7 @@ function ResolvedDesktopTabChip({
   serverId,
   item,
   normalizedServerId,
+  normalizedWorkspaceId,
   isFocused,
   isDragging,
   index,
@@ -1435,6 +1452,7 @@ function ResolvedDesktopTabChip({
   serverId: string;
   item: ResolvedWorkspaceDesktopTabRowItem;
   normalizedServerId: string;
+  normalizedWorkspaceId: string;
   isFocused: boolean;
   isDragging: boolean;
   index: number;
@@ -1492,6 +1510,31 @@ function ResolvedDesktopTabChip({
       });
   }, [markDoneClient, normalizedServerId, item.tab.target]);
   const presentation = item.presentation;
+  const toast = useToast();
+  const handleMoveToNewWorkspace = useCallback(
+    async (agentId: string) => {
+      const result = await moveAgentTabToNewWorkspace({
+        session: sessionFromStore(useSessionStore.getState().sessions[normalizedServerId]),
+        layout: useWorkspaceLayoutStore.getState(),
+        navigation: { navigateToWorkspace },
+        messages: buildMoveAgentTabMessages(t),
+        serverId: normalizedServerId,
+        sourceWorkspaceId: normalizedWorkspaceId,
+        agentId,
+        tabId: item.tab.tabId,
+      });
+      const described = describeMoveAgentTabResult(result, {
+        existing: t("workspace.tabs.toasts.movedToWorkspace", { workspaceName: "" }),
+        created: t("workspace.tabs.toasts.movedToNewWorkspace"),
+      });
+      if (described.kind === "error") {
+        toast.error(described.message);
+        return;
+      }
+      toast.show(described.message, { variant: "success" });
+    },
+    [item.tab.tabId, normalizedServerId, normalizedWorkspaceId, t, toast],
+  );
 
   const resolvedTab = useMemo(
     () =>
@@ -1505,6 +1548,7 @@ function ResolvedDesktopTabChip({
         onCopyAgentId,
         onCopyTerminalId,
         onCopyFilePath,
+        onMoveToNewWorkspace: handleMoveToNewWorkspace,
         onReloadAgent,
         onRenameTab,
         onCloseTab,
@@ -1529,6 +1573,7 @@ function ResolvedDesktopTabChip({
       onRenameTab,
       showMarkDone,
       handleMarkDone,
+      handleMoveToNewWorkspace,
       tabCount,
     ],
   );

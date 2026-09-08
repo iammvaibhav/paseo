@@ -54,9 +54,12 @@ export type {
 } from "./projects.js";
 export {
   ITSAPLAN_AUTO_CHAIN_LABEL_NAME,
+  ITSAPLAN_ISSUE_LABEL_CANDIDATE_KEYS,
   ITSAPLAN_ISSUE_LABEL_KEY,
   ItsaplanBridge,
   buildDispatchPrompt,
+  getItsaplanIssueIdFromLabels,
+  parseItsaplanIssueId,
   type BuildDispatchPromptInput,
 } from "./bridge.js";
 export type {

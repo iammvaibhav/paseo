@@ -208,6 +208,18 @@ function resolveBareBranchRef(
   };
 }
 
+/**
+ * The base ref the New Workspace form preselects: paseo.json
+ * `worktree.warmPool.baseRef` first, then the branch the user last picked.
+ * An explicit pick in the form outranks both and never reaches here.
+ */
+export function resolveEffectivePreferredBaseBranch(input: {
+  paseoBaseRef?: string | null;
+  rememberedBaseBranch?: string | null;
+}): string | undefined {
+  return input.paseoBaseRef?.trim() || input.rememberedBaseBranch?.trim() || undefined;
+}
+
 export function defaultBasePickerItem(
   status: BaseRefCheckoutStatus,
   options?: {

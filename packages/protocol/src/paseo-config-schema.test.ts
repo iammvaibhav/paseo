@@ -83,6 +83,46 @@ describe("paseo config schema", () => {
     });
   });
 
+  it("parses worktree warmPool including the source ref", () => {
+    expect(
+      PaseoConfigSchema.parse({
+        worktree: {
+          warmPool: {
+            enabled: true,
+            targetIdle: 2,
+            baseRef: "vaibhav/customizations",
+          },
+        },
+      }),
+    ).toEqual({
+      worktree: {
+        setup: [],
+        teardown: [],
+        warmPool: {
+          enabled: true,
+          targetIdle: 2,
+          baseRef: "vaibhav/customizations",
+        },
+      },
+    });
+  });
+
+  it("drops an empty warmPool baseRef", () => {
+    expect(
+      PaseoConfigSchema.parse({
+        worktree: {
+          warmPool: { baseRef: "  " },
+        },
+      }),
+    ).toEqual({
+      worktree: {
+        setup: [],
+        teardown: [],
+        warmPool: {},
+      },
+    });
+  });
+
   it("parses all metadata generation instruction entries", () => {
     expect(
       PaseoConfigSchema.parse({

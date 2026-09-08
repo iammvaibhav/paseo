@@ -41,6 +41,7 @@ import {
   type SessionOptions,
   type SessionRuntimeMetrics,
 } from "./session.js";
+import type { WarmWorktreePool } from "./warm-worktree-pool.js";
 import type { HubRelationshipManagement } from "./hub/relationship-controller.js";
 import { WorkspaceSetupRuntime } from "./workspace-setup-runtime.js";
 import type { HubExecutionAgents } from "./hub/daemon-executions.js";
@@ -642,6 +643,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly pluginRuntime: SessionOptions["pluginRuntime"];
   private readonly orchestrationSkills: SessionOptions["orchestrationSkills"];
   private readonly onWorkspaceArchived?: (workspaceId: string) => void | Promise<void>;
+  private readonly warmWorktreePool?: WarmWorktreePool;
 
   constructor(
     server: HTTPServer,
@@ -693,6 +695,7 @@ export class VoiceAssistantWebSocketServer {
     orchestrationSkills?: SessionOptions["orchestrationSkills"],
     workspaceLabelService?: WorkspaceLabelService,
     onWorkspaceArchived?: (workspaceId: string) => void | Promise<void>,
+    warmWorktreePool?: WarmWorktreePool,
   ) {
     this.onWorkspaceArchived = onWorkspaceArchived;
     this.logger = logger.child({ module: "websocket-server" });
@@ -730,6 +733,7 @@ export class VoiceAssistantWebSocketServer {
     this.worktreesRoot = daemonRuntimeConfig?.worktreesRoot;
     this.daemonConfigStore = daemonConfigStore;
     this.mcpBaseUrl = mcpBaseUrl;
+    this.warmWorktreePool = warmWorktreePool;
     this.assignOptionalServices({
       speech,
       terminalManager,
@@ -1483,6 +1487,7 @@ export class VoiceAssistantWebSocketServer {
       workspaceGitService: this.workspaceGitService,
       workspaceAutoName: this.workspaceAutoName,
       daemonConfigStore: this.daemonConfigStore,
+      warmWorktreePool: this.warmWorktreePool,
       pluginRuntime: this.pluginRuntime,
       orchestrationSkills: this.orchestrationSkills,
       mcpBaseUrl: this.mcpBaseUrl,
