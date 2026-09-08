@@ -2952,6 +2952,16 @@ export class OmpAgentClient implements AgentClient {
           const switchStartedAt = Date.now();
           await pooled.switchSession(sessionFile);
           const switchMs = Date.now() - switchStartedAt;
+          // switch_session can return success while omp stays on the pool
+          // throwaway (cwd mismatch → cancelled:true, or a silent no-op).
+          // setModel would then rewrite that throwaway; persist it and the
+          // next open hydrates an empty transcript.
+          const adopted = await pooled.getState();
+          if (adopted.sessionFile && adopted.sessionFile !== sessionFile) {
+            throw new Error(
+              `OMP warm pool resume did not attach ${sessionFile} (still on ${adopted.sessionFile})`,
+            );
+          }
           const setModelStartedAt = Date.now();
           const slash = model.indexOf("/");
           await pooled.setModel(model.slice(0, slash), model.slice(slash + 1));
@@ -2960,18 +2970,6 @@ export class OmpAgentClient implements AgentClient {
             await pooled.setThinkingLevel(thinking);
           }
           const setModelMs = Date.now() - setModelStartedAt;
-          // The agent's transcript, and the handle Paseo persists, both follow
-          // whatever session omp reports here. A mismatch means the pooled
-          // process kept writing somewhere else, so record it with both paths:
-          // a resume that silently forks the transcript is otherwise invisible
-          // until the next resume cannot open the file at all.
-          const adopted = await pooled.getState();
-          if (adopted.sessionFile && adopted.sessionFile !== sessionFile) {
-            this.logger.warn(
-              { provider: this.provider, requested: sessionFile, adopted: adopted.sessionFile },
-              "OMP warm pool resume adopted a different session file than requested",
-            );
-          }
           this.warmPool.discardClaimedThrowaway(pooled);
           this.logAcquire({
             purpose: "resume",

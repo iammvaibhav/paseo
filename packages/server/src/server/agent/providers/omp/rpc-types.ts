@@ -594,6 +594,10 @@ export const OmpCommandsResultSchema = z
  * up without Paseo host tools while nothing logs why.
  */
 export const OmpHostToolsResultSchema = z.object({ toolNames: z.array(z.string()) }).passthrough();
+export const OmpSwitchSessionResultSchema = z
+  .object({ cancelled: z.boolean().optional() })
+  .passthrough()
+  .optional();
 export const OmpBranchResultSchema = z
   .object({ text: z.string().optional(), cancelled: z.boolean().optional() })
   .passthrough();
