@@ -29,6 +29,10 @@ import path from "node:path";
 const require = createRequire(import.meta.url);
 
 const REGISTRY_KEY = "@paseo:daemon-registry";
+const APP_SETTINGS_KEY = "@paseo:app-settings";
+// itsaplan keeps its own next-themes preference, so the pane stays light while
+// the shell around it is dark unless both are set.
+const ITSAPLAN_THEME_KEY = "itsaplan-theme";
 const CHROMIUM_CANDIDATES = [
   "/snap/bin/chromium",
   "/usr/bin/chromium",
@@ -45,6 +49,7 @@ function parseArgs(argv) {
     userDataDir: path.join(tmpdir(), "paseo-web-ui-harness"),
     screenshot: path.join(tmpdir(), "paseo-web-ui.png"),
     timeoutMs: 60_000,
+    theme: process.env.PASEO_WEB_UI_THEME || "dark",
     itsaplanOrigin: process.env.ITSAPLAN_ORIGIN || "https://localhost:8443",
     itsaplanCredentials: process.env.ITSAPLAN_CREDENTIALS || "/tmp/itsaplan-e2e/credentials.json",
   };
@@ -57,6 +62,7 @@ function parseArgs(argv) {
     else if (flag === "--user-data-dir") args.userDataDir = argv[++i];
     else if (flag === "--screenshot") args.screenshot = argv[++i];
     else if (flag === "--timeout") args.timeoutMs = Number(argv[++i]) * 1000;
+    else if (flag === "--theme") args.theme = argv[++i];
     else if (flag === "--itsaplan-origin") args.itsaplanOrigin = argv[++i];
     else if (flag === "--itsaplan-credentials") args.itsaplanCredentials = argv[++i];
     else if (flag === "--help" || flag === "-h") {
@@ -64,10 +70,11 @@ function parseArgs(argv) {
         [
           "node scripts/web-ui-harness.mjs [--once] [--url http://127.0.0.1:6767]",
           "  [--cdp-port 9222] [--paseo-home ~/.paseo] [--screenshot /tmp/paseo-web-ui.png]",
-          "  [--user-data-dir DIR] [--timeout SECONDS]",
+          "  [--user-data-dir DIR] [--timeout SECONDS] [--theme dark|light|auto|zinc|...]",
           "  [--itsaplan-origin https://localhost:8443] [--itsaplan-credentials FILE]",
           "",
-          "Env: PASEO_PASSWORD, PASEO_WEB_UI_CHROMIUM, ITSAPLAN_EMAIL, ITSAPLAN_PASSWORD",
+          "Env: PASEO_PASSWORD, PASEO_WEB_UI_CHROMIUM, PASEO_WEB_UI_THEME,",
+          "     ITSAPLAN_EMAIL, ITSAPLAN_PASSWORD",
         ].join("\n"),
       );
       process.exit(0);
@@ -125,6 +132,25 @@ async function mintItsaplanCookie(args) {
   } finally {
     if (previous === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
     else process.env.NODE_TLS_REJECT_UNAUTHORIZED = previous;
+  }
+}
+
+// next-themes stores the preference on itsaplan's OWN origin, so writing it
+// next to the Paseo settings would leave the embedded board light inside a dark
+// shell. Visit that origin once and set it there.
+async function seedItsaplanTheme(context, args) {
+  const page = await context.newPage();
+  try {
+    await page.goto(args.itsaplanOrigin, { waitUntil: "domcontentloaded", timeout: 15_000 });
+    await page.evaluate(({ key, value }) => localStorage.setItem(key, value), {
+      key: ITSAPLAN_THEME_KEY,
+      value: args.theme === "light" ? "light" : "dark",
+    });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await page.close();
   }
 }
 
@@ -236,10 +262,21 @@ async function main() {
 
   const page = context.pages()[0] ?? (await context.newPage());
   await page.goto(args.url, { waitUntil: "domcontentloaded" });
-  await page.evaluate(({ key, registry }) => localStorage.setItem(key, JSON.stringify(registry)), {
-    key: REGISTRY_KEY,
-    registry: buildRegistry(hosts, new Date().toISOString()),
-  });
+  await page.evaluate(
+    ({ registryKey, registry, settingsKey, theme }) => {
+      localStorage.setItem(registryKey, JSON.stringify(registry));
+      const settings = JSON.parse(localStorage.getItem(settingsKey) ?? "{}");
+      settings.theme = theme;
+      localStorage.setItem(settingsKey, JSON.stringify(settings));
+    },
+    {
+      registryKey: REGISTRY_KEY,
+      registry: buildRegistry(hosts, new Date().toISOString()),
+      settingsKey: APP_SETTINGS_KEY,
+      theme: args.theme,
+    },
+  );
+  await seedItsaplanTheme(context, args);
   await page.goto(args.url, { waitUntil: "domcontentloaded" });
 
   // A seeded host proves nothing; a host that answers shows up as rows. Each
@@ -288,6 +325,7 @@ async function main() {
         chromium: executablePath,
         userDataDir: args.userDataDir,
         screenshot: args.screenshot,
+        theme: args.theme,
         hosts: hosts.map(({ serverId, label, endpoint }) => ({
           serverId,
           label,

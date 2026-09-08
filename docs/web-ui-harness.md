@@ -8,9 +8,21 @@ node scripts/web-ui-harness.mjs --once     # seed, verify, screenshot, exit
 ```
 
 It prints JSON: every host it seeded with that host's sidebar row counts, the
-totals, and the screenshot path. `allHostsServingRows: true` is the check that
-matters — a seeded host proves nothing, a host that answers puts rows on screen.
-`itsaplanSession: "injected"` means the itsaplan pane can render a board.
+totals, the theme, and the screenshot path. `allHostsServingRows: true` is the
+check that matters — a seeded host proves nothing, a host that answers puts rows
+on screen. `itsaplanSession: "injected"` means the itsaplan pane can render a
+board.
+
+## Theme
+
+Dark by default. `--theme light|auto|zinc|midnight|claude|ghostty|pureBlack`, or
+`PASEO_WEB_UI_THEME`, takes any name from `THEME_OPTIONS` in
+`packages/app/src/styles/theme.ts`.
+
+Two writes, not one: Paseo reads `theme` out of `@paseo:app-settings`, while the
+embedded board is next-themes reading `itsaplan-theme` on **itsaplan's own
+origin**. Seed only the first and the pane stays light inside a dark shell, so
+the harness visits that origin once to set it there.
 
 ## Verify per host, never by page text
 
