@@ -52,6 +52,7 @@ export function createNoopWorkspaceGitService(
     getCheckoutDiff: async (): Promise<CheckoutDiffResult> => ({ diff: "" }),
     validateBranchRef: async () => ({ kind: "not-found" }),
     hasLocalBranch: async () => false,
+    hasOriginTrackingBranch: async () => false,
     suggestBranchesForCwd: async () => [],
     listStashes: async () => [],
     listWorktrees: async () => [],

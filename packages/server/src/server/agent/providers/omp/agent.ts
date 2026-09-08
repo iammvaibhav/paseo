@@ -83,7 +83,7 @@ import {
   restoreOmpSessionHeader,
 } from "./session-descriptor.js";
 import type { OmpRuntime, OmpRuntimeSession, OmpStartSessionInput } from "./runtime.js";
-import { OmpWarmPool } from "./warm-pool.js";
+import { OmpWarmPool, type OmpWarmClaim } from "./warm-pool.js";
 import type {
   OmpAgentSessionEvent,
   OmpAgentMessage,
@@ -108,6 +108,7 @@ import { mapOmpAdvisorMessageToToolCall } from "./advisor-message.js";
 import {
   clearOmpHostToolState,
   handleOmpHostToolRuntimeEvent,
+  paseoToolNamesMatch,
   setOmpHostTools,
 } from "./host-tools.js";
 import { OmpSubagentIndex } from "./subagent-index.js";
@@ -192,10 +193,24 @@ interface OmpAcquireLogInput {
   purpose: "create" | "resume";
   source: "pool" | "cold";
   poolHit: boolean;
+  /** Pool hit that needed no `/move` (already at the requested cwd, e.g. from a prior `prewarmCwd`). Always false for a cold start. */
+  prewarmed: boolean;
+  /** Pool hit whose process already had the requested model (and thinking level, for create) so `set_model`/`set_thinking_level` were skipped. Always false for a cold start. */
+  skippedSetModel: boolean;
+  /** Pool hit whose process already had the requested host-tool catalog registered, so `set_host_tools` was skipped. */
+  skippedHostTools: boolean;
   timing: OmpAcquireTiming;
   cwd: string;
   modeId: string;
   sessionBytes?: number;
+}
+
+/** Result of acquiring an omp process for a create/resume, before the caller decides whether host tools still need registering. */
+interface OmpAcquiredRuntimeSession {
+  session: OmpRuntimeSession;
+  /** Host tool names already registered on this process by the pool, or null when unknown (always null for a cold start). */
+  hostToolNames: ReadonlySet<string> | null;
+  logInput: Omit<OmpAcquireLogInput, "skippedHostTools">;
 }
 
 interface OmpModelReference {
@@ -1000,6 +1015,9 @@ export class OmpAgentSession implements AgentSession {
   // event clears it.
   private unackedAbort = false;
   private readonly emittedUserMessageIds = new Set<string>();
+  // True once `getRuntimeInfo` has served the constructor's `initialState`
+  // for free; every call after the first refreshes over RPC as before.
+  private hasServedInitialRuntimeInfo = false;
 
   constructor(options: OmpAgentSessionOptions) {
     this.runtimeSession = options.runtimeSession;
@@ -1189,7 +1207,14 @@ export class OmpAgentSession implements AgentSession {
   }
 
   async getRuntimeInfo(): Promise<AgentRuntimeInfo> {
-    await this.refreshState();
+    if (this.hasServedInitialRuntimeInfo) {
+      await this.refreshState();
+    } else {
+      // The constructor's `initialState` is already fresh (fetched to build
+      // it); serving it here for free saves this create's first info read a
+      // whole get_state round trip.
+      this.hasServedInitialRuntimeInfo = true;
+    }
     return {
       provider: this.provider,
       sessionId: this.state.sessionId,
@@ -2639,6 +2664,15 @@ export class OmpAgentClient implements AgentClient {
   private readonly usagePollScheduler?: OmpUsagePollScheduler;
   private readonly runtime: OmpRuntime;
   private readonly warmPool: OmpWarmPool;
+  /** Most recently seen (unfiltered) host-tool catalog from a create/resume; pool-eligible launches always run allowlist-free, so this is exactly what the pool should seed a fill with. Undefined until the first such request lands. */
+  private lastKnownPaseoTools: PaseoToolCatalog | undefined;
+  /**
+   * Most recently requested model from a pool-eligible create, used as the
+   * pool's fill-time seed. A stand-in for the host's true default: resolving
+   * that lives in agent-manager's `resolveDefaultModel`, out of reach here,
+   * so this tracks what pool-eligible traffic actually asked for instead.
+   */
+  private lastKnownDefaultModel: { provider: string; id: string } | null = null;
 
   constructor(options: OmpAgentClientOptions) {
     const { runtimeProviderParams, modelRoleParams } = resolveOmpProviderParams(
@@ -2663,8 +2697,27 @@ export class OmpAgentClient implements AgentClient {
     this.usagePollScheduler = options.usagePollScheduler;
     this.runtime =
       options.runtime ?? createRuntime(options.logger, runtimeSettings, this.providerParams);
-    this.warmPool = new OmpWarmPool({ runtime: this.runtime, logger: this.logger });
+    this.warmPool = new OmpWarmPool({
+      runtime: this.runtime,
+      logger: this.logger,
+      getDefaultHostTools: () => this.lastKnownPaseoTools,
+      getDefaultModel: () => this.lastKnownDefaultModel,
+    });
     this.warmPool.start();
+  }
+
+  /**
+   * Fire-and-forget: retarget one idle pooled process to `cwd` ahead of a
+   * likely create there (e.g. right after a worktree claim lands), so that
+   * create's own pool claim finds a process already in place and pays no
+   * `/move`. Never throws.
+   */
+  prewarmCwd(cwd: string): void {
+    try {
+      this.warmPool.prewarm(cwd);
+    } catch (error) {
+      this.logger.warn({ err: error, cwd }, "OMP prewarm failed");
+    }
   }
 
   private async configureNativePaseoTools(
@@ -2683,6 +2736,9 @@ export class OmpAgentClient implements AgentClient {
   ): Promise<AgentSession> {
     const launchMode = this.resolveLaunchMode(config.modeId);
     const systemPrompt = this.composeLaunchSystemPrompt(config);
+    if (launchContext?.paseoTools) {
+      this.lastKnownPaseoTools = launchContext.paseoTools;
+    }
     const paseoTools = filterPaseoToolsByAllowlist(launchContext?.paseoTools, config.toolAllowlist);
     if (!paseoTools && config.toolAllowlist?.length) {
       this.logger.warn(
@@ -2690,18 +2746,20 @@ export class OmpAgentClient implements AgentClient {
         "Agent restricts tools to an allowlist but no Paseo host-tool catalog is available; only builtin/MCP tools will load",
       );
     }
-    const runtimeSession = await this.startRuntimeSession(
-      config,
-      launchContext,
-      launchMode,
-      systemPrompt,
-    );
+    const acquired = await this.startRuntimeSession(config, launchContext, launchMode, systemPrompt);
     try {
-      await this.configureNativePaseoTools(runtimeSession, paseoTools);
+      const skippedHostTools =
+        acquired.logInput.source === "pool" &&
+        paseoToolNamesMatch(acquired.hostToolNames, paseoTools);
+      const configurePromise = skippedHostTools
+        ? Promise.resolve()
+        : this.configureNativePaseoTools(acquired.session, paseoTools);
+      const [, initialState] = await Promise.all([configurePromise, acquired.session.getState()]);
+      this.logAcquire({ ...acquired.logInput, skippedHostTools });
       return new OmpAgentSession({
-        runtimeSession,
+        runtimeSession: acquired.session,
         config,
-        initialState: await runtimeSession.getState(),
+        initialState,
         currentModeId: launchMode.modeId,
         logger: this.logger,
         subagentCardScheduler: this.subagentCardScheduler,
@@ -2711,7 +2769,7 @@ export class OmpAgentClient implements AgentClient {
         paseoTools,
       });
     } catch (error) {
-      await runtimeSession.close().catch(() => undefined);
+      await acquired.session.close().catch(() => undefined);
       throw error;
     }
   }
@@ -2730,16 +2788,18 @@ export class OmpAgentClient implements AgentClient {
 
   /**
    * Launch (or hand off from the warm pool) the omp process backing a new
-   * agent create. A pooled process is re-targeted to this create's workspace,
-   * model and thinking level over RPC, so only launch-fixed differences force
-   * a cold start: internal agents, per-create env, and custom system prompts.
+   * agent create. A pooled process is re-targeted to this create's workspace
+   * over RPC; model, thinking level and host tools are re-sent only when they
+   * differ from what the pool already seeded. Only launch-fixed differences
+   * force a cold start: internal agents, per-create env, and custom system
+   * prompts.
    */
   private async startRuntimeSession(
     config: AgentSessionConfig,
     launchContext: AgentLaunchContext | undefined,
     launchMode: { modeId: string; extraArgs: string[] },
     systemPrompt: string | undefined,
-  ): Promise<OmpRuntimeSession> {
+  ): Promise<OmpAcquiredRuntimeSession> {
     const thinking = normalizeOmpThinkingOption(config.thinkingOptionId) ?? undefined;
     const model = config.model;
     const acquireStartedAt = Date.now();
@@ -2755,8 +2815,14 @@ export class OmpAgentClient implements AgentClient {
       typeof model === "string" &&
       model.includes("/");
     if (poolEligible) {
+      const slash = model.indexOf("/");
+      const requestedProvider = model.slice(0, slash);
+      const requestedId = model.slice(slash + 1);
+      // Remembered so the pool's next fill seeds `set_model` with what
+      // pool-eligible traffic actually wants (see field doc).
+      this.lastKnownDefaultModel = { provider: requestedProvider, id: requestedId };
       const claimStartedAt = Date.now();
-      const pooled = await this.warmPool.claim({
+      const claimed: OmpWarmClaim | null = await this.warmPool.claim({
         cwd: config.cwd,
         modeId: launchMode.modeId,
         extraArgs: launchMode.extraArgs,
@@ -2764,35 +2830,46 @@ export class OmpAgentClient implements AgentClient {
         env: launchContext?.env,
       });
       const claimMs = Date.now() - claimStartedAt;
-      if (pooled) {
+      if (claimed) {
         try {
-          const slash = model.indexOf("/");
           const newSessionStartedAt = Date.now();
-          await pooled.newSession();
+          await claimed.session.newSession();
           const newSessionMs = Date.now() - newSessionStartedAt;
+          const modelAlreadySet =
+            claimed.model?.provider === requestedProvider && claimed.model?.id === requestedId;
+          const thinkingAlreadySet =
+            thinking === undefined ||
+            (claimed.thinkingLevel ?? DEFAULT_OMP_THINKING_LEVEL) === thinking;
           const setModelStartedAt = Date.now();
-          await pooled.setModel(model.slice(0, slash), model.slice(slash + 1));
-          if (thinking) {
-            await pooled.setThinkingLevel(thinking);
+          if (!modelAlreadySet) {
+            await claimed.session.setModel(requestedProvider, requestedId);
+          }
+          if (thinking && !thinkingAlreadySet) {
+            await claimed.session.setThinkingLevel(thinking);
           }
           const setModelMs = Date.now() - setModelStartedAt;
           // omp is on its own session now, so the pool's throwaway is safe to
           // delete.
-          this.warmPool.discardClaimedThrowaway(pooled);
-          this.logAcquire({
-            purpose: "create",
-            source: "pool",
-            poolHit: true,
-            timing: {
-              claimMs,
-              newSessionMs,
-              setModelMs,
-              totalMs: Date.now() - acquireStartedAt,
+          this.warmPool.discardClaimedThrowaway(claimed.session);
+          return {
+            session: claimed.session,
+            hostToolNames: claimed.hostToolNames,
+            logInput: {
+              purpose: "create",
+              source: "pool",
+              poolHit: true,
+              prewarmed: !claimed.moved,
+              skippedSetModel: modelAlreadySet && thinkingAlreadySet,
+              timing: {
+                claimMs,
+                newSessionMs,
+                setModelMs,
+                totalMs: Date.now() - acquireStartedAt,
+              },
+              cwd: config.cwd,
+              modeId: launchMode.modeId,
             },
-            cwd: config.cwd,
-            modeId: launchMode.modeId,
-          });
-          return pooled;
+          };
         } catch (error) {
           // The handoff left the pooled process in an unknown state; close it
           // and fall back to a cold launch rather than risk a broken agent.
@@ -2800,8 +2877,8 @@ export class OmpAgentClient implements AgentClient {
             { err: error, provider: this.provider },
             "OMP warm pool handoff failed; cold starting",
           );
-          await pooled.close().catch(() => undefined);
-          this.warmPool.discardClaimedThrowaway(pooled);
+          await claimed.session.close().catch(() => undefined);
+          this.warmPool.discardClaimedThrowaway(claimed.session);
         }
       }
     }
@@ -2819,18 +2896,23 @@ export class OmpAgentClient implements AgentClient {
       toolAllowlist: config.toolAllowlist,
       env: launchContext?.env,
     });
-    this.logAcquire({
-      purpose: "create",
-      source: "cold",
-      poolHit: false,
-      timing: {
-        bootMs: Date.now() - coldStartedAt,
-        totalMs: Date.now() - acquireStartedAt,
+    return {
+      session: runtimeSession,
+      hostToolNames: null,
+      logInput: {
+        purpose: "create",
+        source: "cold",
+        poolHit: false,
+        prewarmed: false,
+        skippedSetModel: false,
+        timing: {
+          bootMs: Date.now() - coldStartedAt,
+          totalMs: Date.now() - acquireStartedAt,
+        },
+        cwd: config.cwd,
+        modeId: launchMode.modeId,
       },
-      cwd: config.cwd,
-      modeId: launchMode.modeId,
-    });
-    return runtimeSession;
+    };
   }
 
   async resumeSession(
@@ -2848,7 +2930,10 @@ export class OmpAgentClient implements AgentClient {
     await this.ensureResumableSessionFile(sessionFile, resumeConfig.cwd);
 
     const launchMode = this.resolveLaunchMode(resumeConfig.modeId);
-    const runtimeSession = await this.acquireResumeRuntimeSession(
+    if (launchContext?.paseoTools) {
+      this.lastKnownPaseoTools = launchContext.paseoTools;
+    }
+    const acquired = await this.acquireResumeRuntimeSession(
       resumeConfig,
       sessionFile,
       launchContext,
@@ -2865,11 +2950,18 @@ export class OmpAgentClient implements AgentClient {
           "Resumed agent restricts tools to an allowlist but no Paseo host-tool catalog is available; only builtin/MCP tools will load",
         );
       }
-      await this.configureNativePaseoTools(runtimeSession, paseoTools);
+      const skippedHostTools =
+        acquired.logInput.source === "pool" &&
+        paseoToolNamesMatch(acquired.hostToolNames, paseoTools);
+      const configurePromise = skippedHostTools
+        ? Promise.resolve()
+        : this.configureNativePaseoTools(acquired.session, paseoTools);
+      const [, initialState] = await Promise.all([configurePromise, acquired.session.getState()]);
+      this.logAcquire({ ...acquired.logInput, skippedHostTools });
       return new OmpAgentSession({
-        runtimeSession,
+        runtimeSession: acquired.session,
         config: resumeConfig.config,
-        initialState: await runtimeSession.getState(),
+        initialState,
         currentModeId: launchMode.modeId,
         logger: this.logger,
         subagentCardScheduler: this.subagentCardScheduler,
@@ -2880,7 +2972,7 @@ export class OmpAgentClient implements AgentClient {
         live: false,
       });
     } catch (error) {
-      await runtimeSession.close().catch(() => undefined);
+      await acquired.session.close().catch(() => undefined);
       throw error;
     }
   }
@@ -2927,7 +3019,7 @@ export class OmpAgentClient implements AgentClient {
     sessionFile: string,
     launchContext: AgentLaunchContext | undefined,
     launchMode: { modeId: string; extraArgs: string[] },
-  ): Promise<OmpRuntimeSession> {
+  ): Promise<OmpAcquiredRuntimeSession> {
     const acquireStartedAt = Date.now();
     const model = resumeConfig.model;
     const poolEligible =
@@ -2941,23 +3033,23 @@ export class OmpAgentClient implements AgentClient {
       model.includes("/");
     if (poolEligible) {
       const claimStartedAt = Date.now();
-      const pooled = await this.warmPool.claim({
+      const claimed: OmpWarmClaim | null = await this.warmPool.claim({
         cwd: resumeConfig.cwd,
         modeId: launchMode.modeId,
         extraArgs: launchMode.extraArgs,
         systemPrompt: this.composeResumeLaunchSystemPrompt(resumeConfig) ?? "",
         env: launchContext?.env,
       });
-      if (pooled) {
+      if (claimed) {
         try {
           const switchStartedAt = Date.now();
-          await pooled.switchSession(sessionFile);
+          await claimed.session.switchSession(sessionFile);
           const switchMs = Date.now() - switchStartedAt;
           // switch_session can return success while omp stays on the pool
           // throwaway (cwd mismatch → cancelled:true, or a silent no-op).
           // setModel would then rewrite that throwaway; persist it and the
           // next open hydrates an empty transcript.
-          const adopted = await pooled.getState();
+          const adopted = await claimed.session.getState();
           if (adopted.sessionFile && adopted.sessionFile !== sessionFile) {
             throw new Error(
               `OMP warm pool resume did not attach ${sessionFile} (still on ${adopted.sessionFile})`,
@@ -2965,28 +3057,36 @@ export class OmpAgentClient implements AgentClient {
           }
           const setModelStartedAt = Date.now();
           const slash = model.indexOf("/");
-          await pooled.setModel(model.slice(0, slash), model.slice(slash + 1));
+          // Resumed sessions always re-apply model/thinking after
+          // switch_session: the process's live model state cannot be trusted
+          // to have survived attaching a different, persisted session file.
+          await claimed.session.setModel(model.slice(0, slash), model.slice(slash + 1));
           const thinking = normalizeOmpThinkingOption(resumeConfig.thinkingOptionId) ?? undefined;
           if (thinking) {
-            await pooled.setThinkingLevel(thinking);
+            await claimed.session.setThinkingLevel(thinking);
           }
           const setModelMs = Date.now() - setModelStartedAt;
-          this.warmPool.discardClaimedThrowaway(pooled);
-          this.logAcquire({
-            purpose: "resume",
-            source: "pool",
-            poolHit: true,
-            timing: {
-              claimMs: Date.now() - claimStartedAt,
-              switchMs,
-              setModelMs,
-              totalMs: Date.now() - acquireStartedAt,
+          this.warmPool.discardClaimedThrowaway(claimed.session);
+          return {
+            session: claimed.session,
+            hostToolNames: claimed.hostToolNames,
+            logInput: {
+              purpose: "resume",
+              source: "pool",
+              poolHit: true,
+              prewarmed: !claimed.moved,
+              skippedSetModel: false,
+              timing: {
+                claimMs: Date.now() - claimStartedAt,
+                switchMs,
+                setModelMs,
+                totalMs: Date.now() - acquireStartedAt,
+              },
+              cwd: resumeConfig.cwd,
+              modeId: launchMode.modeId,
+              sessionBytes: await this.sessionBytes(sessionFile),
             },
-            cwd: resumeConfig.cwd,
-            modeId: launchMode.modeId,
-            sessionBytes: await this.sessionBytes(sessionFile),
-          });
-          return pooled;
+          };
         } catch (error) {
           // The handoff left the pooled process in an unknown state; close it
           // and fall back to a cold launch rather than risk a broken agent.
@@ -2994,8 +3094,8 @@ export class OmpAgentClient implements AgentClient {
             { err: error, provider: this.provider },
             "OMP warm pool resume handoff failed; cold starting",
           );
-          await pooled.close().catch(() => undefined);
-          this.warmPool.discardClaimedThrowaway(pooled);
+          await claimed.session.close().catch(() => undefined);
+          this.warmPool.discardClaimedThrowaway(claimed.session);
         }
       }
     }
@@ -3008,19 +3108,24 @@ export class OmpAgentClient implements AgentClient {
         launchMode,
       }),
     );
-    this.logAcquire({
-      purpose: "resume",
-      source: "cold",
-      poolHit: false,
-      timing: {
-        bootMs: Date.now() - coldStartedAt,
-        totalMs: Date.now() - acquireStartedAt,
+    return {
+      session: runtimeSession,
+      hostToolNames: null,
+      logInput: {
+        purpose: "resume",
+        source: "cold",
+        poolHit: false,
+        prewarmed: false,
+        skippedSetModel: false,
+        timing: {
+          bootMs: Date.now() - coldStartedAt,
+          totalMs: Date.now() - acquireStartedAt,
+        },
+        cwd: resumeConfig.cwd,
+        modeId: launchMode.modeId,
+        sessionBytes: await this.sessionBytes(sessionFile),
       },
-      cwd: resumeConfig.cwd,
-      modeId: launchMode.modeId,
-      sessionBytes: await this.sessionBytes(sessionFile),
-    });
-    return runtimeSession;
+    };
   }
 
   /**
@@ -3049,6 +3154,9 @@ export class OmpAgentClient implements AgentClient {
       purpose: input.purpose,
       source: input.source,
       poolHit: input.poolHit,
+      prewarmed: input.prewarmed,
+      skippedSetModel: input.skippedSetModel,
+      skippedHostTools: input.skippedHostTools,
       ...input.timing,
       cwd: input.cwd,
       modeId: input.modeId,

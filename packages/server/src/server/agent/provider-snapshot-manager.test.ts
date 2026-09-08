@@ -1667,7 +1667,7 @@ describe("ProviderSnapshotManager applyMutableProviderConfig", () => {
       const before = cwds.map(getCodexEntry);
       const definition = manager.getAgentManagerProviderState().providerDefinitions.codex;
       manager.applyMutableProviderConfig(
-        { ...config, claude: { enabled: true, label: "Renamed" } },
+        { ...config, claude: { enabled: true, label: "Renamed", command: ["claude", "--renamed"] } },
         { replace: true },
       );
       expect(cwds.map(getCodexEntry)).toEqual(before);
@@ -1677,7 +1677,7 @@ describe("ProviderSnapshotManager applyMutableProviderConfig", () => {
       const listener = vi.fn();
       manager.on("change", listener);
       manager.applyMutableProviderConfig(
-        { ...config, claude: { label: "Renamed", enabled: true } },
+        { ...config, claude: { label: "Renamed", enabled: true, command: ["claude", "--renamed"] } },
         { replace: true },
       );
       for (const cwd of cwds) await manager.warmUpSnapshotForCwd({ cwd });

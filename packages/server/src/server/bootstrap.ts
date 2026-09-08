@@ -226,6 +226,7 @@ import type { PushNotificationSender } from "./push/index.js";
 import { getOrCreateServerId } from "./server-id.js";
 import { resolveDaemonVersion } from "./daemon-version.js";
 import type { AgentClient, AgentProvider } from "./agent/agent-sdk-types.js";
+import type { OmpAgentClient } from "./agent/providers/omp/agent.js";
 import type {
   AgentProfile,
   AgentSkillSelection,
@@ -1314,6 +1315,7 @@ export async function createPaseoDaemon(
   const agentProviderRuntime = await createAgentProviderRuntime({
     paseoHome: config.paseoHome,
     logger,
+    daemonVersion,
     snapshotManager: {
       refreshTimeoutMs: config.providerCatalogRefreshTimeoutMs,
       runtimeSettings: config.agentProviderSettings,
@@ -1610,6 +1612,15 @@ export async function createPaseoDaemon(
             workspaceGitService,
             workspaceProvisioning,
             warmWorktreePool,
+            // PASEO-16: hint the OMP warm pool to retarget an idle entry to this
+            // cwd ahead of the real agent-create request. Resolved lazily on every
+            // call (not captured once) since the omp client may not exist yet at
+            // daemon bootstrap and provider state can be replaced at runtime.
+            prewarmAgentCwd: (cwd: string) => {
+              const ompClient = providerSnapshotManager.getAgentManagerProviderState().clients
+                .omp as OmpAgentClient | undefined;
+              ompClient?.prewarmCwd(cwd);
+            },
           });
         },
         warmWorkspaceGitData: async (workspace) => {

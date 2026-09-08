@@ -321,6 +321,12 @@ export class FakeOmpSession implements OmpRuntimeSession {
     this.setThinkingLevelRequests.push(level);
   }
 
+  newSessionRequestCount = 0;
+
+  async newSession(): Promise<void> {
+    this.newSessionRequestCount += 1;
+  }
+
   async switchSession(sessionPath: string): Promise<void> {
     this.switchSessionRequests.push(sessionPath);
     if (this.keepSessionFileOnSwitch) {
