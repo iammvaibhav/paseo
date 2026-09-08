@@ -1391,6 +1391,7 @@ export async function createPaseoDaemon(
     // that way because its stored record predated contract persistence).
     resolveCommanderLaunchContract: (labels) =>
       buildCommanderLaunchContract(labels, () => centralMissionControlConfig.get()),
+    resolveDefaultModel: (input) => providerSnapshotManager.resolveDefaultModel(input),
     onAgentCreated: (params) => agentNamingService.assignNameForCreatedAgent(params),
     onWorkspaceStateMayHaveChanged: ({ cwd }) => {
       workspaceGitService.onWorkspaceStateMayHaveChanged(cwd);

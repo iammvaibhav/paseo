@@ -3072,6 +3072,11 @@ export class OmpAgentClient implements AgentClient {
     }
   }
 
+  async getCatalogCacheKey(_options: FetchCatalogOptions): Promise<string> {
+    // Models are host-scoped. A new worktree does not change the catalog.
+    return "host";
+  }
+
   async fetchCatalog(
     options: FetchCatalogOptions,
     context?: ProviderRefreshContext,
@@ -3089,9 +3094,10 @@ export class OmpAgentClient implements AgentClient {
     context?.signal.addEventListener("abort", handleAbort, { once: true });
     try {
       const runtimeStartStartedAt = Date.now();
+      const catalogCwd = homedir();
       await runProviderRefreshActivity(context, "runtime.start", async () => {
         runtimeSession = await this.runtime.startSession({
-          cwd: options.scope === "global" ? homedir() : options.cwd,
+          cwd: catalogCwd,
           protocolMode: "rpc-ui",
           modeId: launchMode.modeId,
           extraArgs: launchMode.extraArgs,
@@ -3114,8 +3120,9 @@ export class OmpAgentClient implements AgentClient {
       const totalMs = Date.now() - fetchStartedAt;
       const timingFields = {
         provider: this.provider,
-        scope: options.scope,
-        cwd: options.scope === "global" ? homedir() : options.cwd,
+        scope: "global" as const,
+        requestedScope: options.scope,
+        cwd: catalogCwd,
         modeId: launchMode.modeId,
         runtimeStartMs,
         modelsMs,
