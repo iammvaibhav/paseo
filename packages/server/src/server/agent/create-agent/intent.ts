@@ -1,4 +1,5 @@
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
+import { normalizeLabels } from "../agent-projections.js";
 
 export interface CreateAgentCaller {
   id: string;
@@ -35,11 +36,12 @@ export async function resolveCreateAgentIntent(input: {
 }): Promise<CreateAgentIntent> {
   const parentAgentId = input.legacyDetached ? null : (input.caller?.id ?? null);
   const placement = await resolvePlacement(input);
-  const labels = {
+  const rawLabels = {
     ...input.childAgentDefaultLabels,
     ...input.labels,
     ...(parentAgentId ? { [PARENT_AGENT_ID_LABEL]: parentAgentId } : {}),
   };
+  const labels = normalizeLabels(rawLabels);
 
   // COMPAT(detachedCreate): legacy callers may still request detached creation.
   // Added in v0.2.0; remove after 2027-01-17 once detached creation is outside the floor.

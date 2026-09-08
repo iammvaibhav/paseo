@@ -26,7 +26,7 @@ import {
   appendTimelineItemIfAgentKnown,
   emitLiveTimelineItemIfAgentKnown,
 } from "../timeline-append.js";
-import { ITSAPLAN_ISSUE_LABEL_KEY } from "@getpaseo/protocol/agent-labels";
+import { getItsaplanIssueIdFromLabels } from "../../itsaplan/bridge.js";
 import { resolveCreateAgentIntent, type CreateAgentPlacement } from "./intent.js";
 
 export interface CreateAgentSessionWorktreeResult {
@@ -616,7 +616,7 @@ function shouldAttemptMcpWorktree(params: {
     return { attempt: false, explicit: false };
   }
   const explicit = isExplicitWorktreeRequested(params.isolation, params.worktree);
-  const isTicket = Boolean(params.labels && params.labels[ITSAPLAN_ISSUE_LABEL_KEY]);
+  const isTicket = Boolean(params.labels && getItsaplanIssueIdFromLabels(params.labels));
   return { attempt: explicit || isTicket, explicit };
 }
 function createAgentWorktreeSetupContinuation(

@@ -8,7 +8,7 @@ import {
   type ItsaplanColumn,
 } from "./client.js";
 import type { ItsaplanCentralConfig, ItsaplanProjectStore } from "./projects.js";
-import { ITSAPLAN_ISSUE_LABEL_KEY } from "./bridge.js";
+import { getItsaplanIssueIdFromLabels } from "./bridge.js";
 
 export interface ItsaplanReconcileAgentStorage {
   list(): Promise<Pick<StoredAgentRecord, "id" | "labels" | "updatedAt">[]>;
@@ -114,7 +114,7 @@ export class ItsaplanReconcileService {
     }
     const groups = new Map<string, Pick<StoredAgentRecord, "id" | "labels" | "updatedAt">[]>();
     for (const record of await this.agentStorage.list()) {
-      const issueId = record.labels?.[ITSAPLAN_ISSUE_LABEL_KEY];
+      const issueId = getItsaplanIssueIdFromLabels(record.labels);
       if (!issueId) {
         continue;
       }

@@ -158,7 +158,7 @@ import { ScheduleService } from "./schedule/service.js";
 import { BaseCheckoutSyncService } from "./base-checkout-sync.js";
 import { IdleCloseOmpService } from "./idle-close/index.js";
 import { MissionControlService } from "./mission-control/service.js";
-import { ITSAPLAN_ISSUE_LABEL_KEY } from "@getpaseo/protocol/agent-labels";
+import { getItsaplanIssueIdFromLabels } from "./itsaplan/index.js";
 import type { MissionControlProposalSpawnPlan } from "@getpaseo/protocol/mission-control/types";
 import { areEquivalentPaths } from "../utils/path.js";
 import {
@@ -368,7 +368,7 @@ async function attachTicketImagesToSpawnPlan(
   if (plan.images && plan.images.length > 0) {
     return plan;
   }
-  const issueIdRaw = plan.labels?.[ITSAPLAN_ISSUE_LABEL_KEY];
+  const issueIdRaw = getItsaplanIssueIdFromLabels(plan.labels);
   const issueId = issueIdRaw ? Number(issueIdRaw) : NaN;
   if (!Number.isFinite(issueId)) {
     return plan;
@@ -2195,7 +2195,7 @@ export async function createPaseoDaemon(
               page: { limit: 200 },
             });
             for (const entry of payload?.entries ?? []) {
-              if (entry?.agent?.labels?.[ITSAPLAN_ISSUE_LABEL_KEY] === issueId) {
+              if (getItsaplanIssueIdFromLabels(entry?.agent?.labels) === issueId) {
                 return { agentId: entry.agent.id, host: status.name };
               }
             }
