@@ -1,7 +1,7 @@
 import type { Logger } from "pino";
 
 import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
-import { ITSAPLAN_ISSUE_LABEL_KEY } from "@getpaseo/protocol/agent-labels";
+import { getItsaplanIssueIdFromLabels } from "../itsaplan/bridge.js";
 
 import type { AgentManager } from "../agent/agent-manager.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
@@ -840,7 +840,7 @@ export function extractTicketKey(input: {
     if (explicitLineMatch && explicitLineMatch[1]) {
       return explicitLineMatch[1];
     }
-    if (labels[ITSAPLAN_ISSUE_LABEL_KEY]) {
+    if (getItsaplanIssueIdFromLabels(labels)) {
       const generalMatch = /\b([A-Za-z][A-Za-z0-9_]*-\d+)\b/.exec(promptText);
       if (generalMatch && generalMatch[1]) {
         return generalMatch[1];

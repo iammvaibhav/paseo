@@ -28,6 +28,72 @@ import type {
 /** Agent label carrying the itsaplan issue id this agent was dispatched for. */
 export const ITSAPLAN_ISSUE_LABEL_KEY = "itsaplan.issue";
 
+/**
+ * DUPLICATED verbatim in `packages/protocol/src/agent-labels.ts` (same
+ * candidate keys and parsing rules). Not imported from there because this
+ * package's shared checkout `node_modules/@getpaseo/protocol` symlink can
+ * resolve to a different (built) checkout than this worktree's source,
+ * risking a stale `dist/agent-labels.js` at runtime/test time. Keep both
+ * copies in lockstep: any new candidate key or parsing rule added here MUST
+ * be mirrored in agent-labels.ts, and vice versa (PASEO-38).
+ */
+export const ITSAPLAN_ISSUE_LABEL_CANDIDATE_KEYS = [
+  ITSAPLAN_ISSUE_LABEL_KEY,
+  "itsaplanIssue",
+  "itsaplan_issue",
+  "itsaplan-issue",
+  "itsaplan.issueId",
+  "itsaplan.issue_id",
+  "itsaplanIssueId",
+  "itsaplan_issue_id",
+  "itsaplan.ticket",
+  "itsaplanTicket",
+  "itsaplan_ticket",
+  "issueId",
+  "issue_id",
+  "issue",
+  "ticketId",
+  "ticket_id",
+  "ticket",
+] as const;
+
+export function parseItsaplanIssueId(value: unknown): string | null {
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) {
+    return String(value);
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    if (/^\d+$/.test(trimmed) && Number(trimmed) > 0) {
+      return String(Number(trimmed));
+    }
+    const match = /^(?:[A-Za-z][A-Za-z0-9_]*[-_])?#?(\d+)$/.exec(trimmed);
+    if (match && match[1] && Number(match[1]) > 0) {
+      return String(Number(match[1]));
+    }
+  }
+  return null;
+}
+
+export function getItsaplanIssueIdFromLabels(
+  labels: Record<string, unknown> | null | undefined,
+): string | null {
+  if (!labels || typeof labels !== "object") {
+    return null;
+  }
+  for (const key of ITSAPLAN_ISSUE_LABEL_CANDIDATE_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(labels, key)) {
+      const parsed = parseItsaplanIssueId(labels[key]);
+      if (parsed !== null) {
+        return parsed;
+      }
+    }
+  }
+  return null;
+}
+
 /** Label name for auto-chaining dependent tickets when a blocker reaches Ready-to-review. */
 export const ITSAPLAN_AUTO_CHAIN_LABEL_NAME = "auto-chain";
 
@@ -491,7 +557,6 @@ export class ItsaplanBridge {
       }
     }
   }
-
   private async handleIssueStateChanged(
     issue: z.infer<typeof ItsaplanWebhookIssueDataSchema>,
     config: ItsaplanCentralConfig,
@@ -1045,7 +1110,7 @@ export class ItsaplanBridge {
     const records = await this.agentStorage.list();
     const latest = records.reduce<Pick<StoredAgentRecord, "id" | "updatedAt"> | null>(
       (newest, record) => {
-        if (record.labels[ITSAPLAN_ISSUE_LABEL_KEY] !== issueId) {
+        if (getItsaplanIssueIdFromLabels(record.labels) !== issueId) {
           return newest;
         }
         if (newest && newest.updatedAt >= record.updatedAt) {
@@ -1067,12 +1132,12 @@ export class ItsaplanBridge {
       return;
     }
     const agent = event.agent;
-    const issueId = agent.labels?.[ITSAPLAN_ISSUE_LABEL_KEY];
-    const isFirstSighting = !this.seenAgentIds.has(agent.id);
-    this.seenAgentIds.add(agent.id);
+    const issueId = getItsaplanIssueIdFromLabels(agent.labels);
     if (!issueId) {
       return;
     }
+    const isFirstSighting = !this.seenAgentIds.has(agent.id);
+    this.seenAgentIds.add(agent.id);
     void this.projectAgentState(agent.id, issueId, isFirstSighting).catch((error) => {
       this.logger.error(
         { err: error, agentId: agent.id, issueId },
@@ -1103,7 +1168,7 @@ export class ItsaplanBridge {
 
   private async projectSelfReport(event: MissionControlEvent): Promise<void> {
     const labels = await this.getAgentLabels(event.agentId);
-    const issueId = labels?.[ITSAPLAN_ISSUE_LABEL_KEY];
+    const issueId = getItsaplanIssueIdFromLabels(labels);
     if (!issueId) {
       return;
     }
@@ -1138,8 +1203,16 @@ export class ItsaplanBridge {
       return;
     }
     const columns = await client.listProjectColumns(projectKey);
+    const currentColumn = columns.find((c) => c.id === issue.columnId);
+    if (currentColumn?.stateType === "completed" || currentColumn?.stateType === "canceled") {
+      return;
+    }
     const inProgress = findInProgressColumn(columns);
-    if (inProgress && issue.columnId !== inProgress.id) {
+    if (
+      inProgress &&
+      issue.columnId !== inProgress.id &&
+      currentColumn?.name !== ITSAPLAN_READY_FOR_REVIEW_COLUMN_NAME
+    ) {
       await client.moveIssueColumn(numericIssueId, inProgress.id);
     }
     const mapping = this.projectStore.getByItsaplanProjectId(issue.projectId);
@@ -1173,6 +1246,10 @@ export class ItsaplanBridge {
       return;
     }
     const columns = await client.listProjectColumns(projectKey);
+    const currentColumn = columns.find((c) => c.id === issue.columnId);
+    if (currentColumn?.stateType === "completed" || currentColumn?.stateType === "canceled") {
+      return;
+    }
     const inProgress = findInProgressColumn(columns);
     if (inProgress && issue.columnId !== inProgress.id) {
       await client.moveIssueColumn(numericIssueId, inProgress.id);
@@ -1355,7 +1432,7 @@ export class ItsaplanBridge {
 
     const issueIds = new Set<string>();
     for (const agent of [...liveAgents, ...workspaceStoredAgents]) {
-      const issueId = agent.labels?.[ITSAPLAN_ISSUE_LABEL_KEY];
+      const issueId = getItsaplanIssueIdFromLabels(agent.labels);
       if (issueId) {
         issueIds.add(issueId);
       }
@@ -1474,7 +1551,7 @@ export class ItsaplanBridge {
     agentId: string,
   ): Promise<{ issueId: number; url: string } | null> {
     const existingLabels = await this.getAgentLabels(agentId);
-    const existingIssueIdStr = existingLabels?.[ITSAPLAN_ISSUE_LABEL_KEY];
+    const existingIssueIdStr = getItsaplanIssueIdFromLabels(existingLabels);
     if (!existingIssueIdStr || !Number.isFinite(Number(existingIssueIdStr))) {
       return null;
     }

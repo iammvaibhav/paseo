@@ -727,6 +727,27 @@ describe("OMP agent client and session", () => {
     ]);
   });
 
+  test("cold-starts a resume when switch_session leaves the pooled throwaway attached", async () => {
+    const omp = new OmpHarness();
+    await omp.start({ model: "opencode-zen/deepseek-v4-flash-free" });
+    omp.keepPooledSessionFileOnSwitch();
+
+    await omp.resume(
+      {
+        user: { id: "user-history", text: "continue the audit" },
+        assistant: { id: "assistant-history", text: "audit context restored" },
+      },
+      { cwd: "/workspace/resumed", model: "opencode-zen/deepseek-v4-flash-free" },
+    );
+
+    expect(omp.switchSessionRequests()).toEqual([
+      expect.stringMatching(/[\\/]paseo-omp-resume-.*[\\/]session\.jsonl$/),
+    ]);
+    expect(omp.latestLaunchHasSessionFlag()).toBe(true);
+    expect(omp.latestLaunchConfiguration().session).toBe(omp.resumedSessionFilePath());
+    expect(omp.getSession().describePersistence()?.nativeHandle).toBe(omp.resumedSessionFilePath());
+  });
+
   test("repairs a session file with no header before resuming it", async () => {
     // omp exits 1 on a transcript whose `{"type":"session"}` record is gone
     // ("the session header is missing or malformed"), which used to leave the

@@ -108,6 +108,7 @@ import {
   defaultBasePickerItem,
   pickerItemLabel,
   pickerItemToCheckoutRequest,
+  resolveEffectivePreferredBaseBranch,
   type BranchPickerDetail,
   type PickerCheckoutRequest,
   type PickerItem,
@@ -755,10 +756,12 @@ function useWorkspaceIsolation(input: {
 function useNewWorkspaceBaseBranchPreference(input: {
   selectedProject: HostProjectListItem | null;
   formPreferences: FormPreferences;
+  serverId: string;
+  sourceDirectory: string;
 }): {
   selectedProjectKey: string | null;
   projectScopeKey: string | null;
-  rememberedBaseBranch?: string;
+  preferredBaseBranch?: string;
 } {
   const selectedProjectKey = resolveSelectedProjectKey(input.selectedProject);
   const projectScopeKey =
@@ -773,10 +776,54 @@ function useNewWorkspaceBaseBranchPreference(input: {
       ),
     [input.formPreferences, projectScopeKey],
   );
+  // paseo.json names the ref this project cuts worktrees from, and the warm
+  // pool already pre-warms from it. Preselecting anything else would hand the
+  // user a workspace on a different branch than a pooled one.
+  const { config: projectConfig } = useProjectConfigQuery({
+    serverId: input.serverId,
+    cwd: input.sourceDirectory,
+  });
   return {
     selectedProjectKey,
     projectScopeKey,
-    rememberedBaseBranch: effectivePreferences.baseBranch,
+    preferredBaseBranch: resolveEffectivePreferredBaseBranch({
+      paseoBaseRef: projectConfig?.worktree?.warmPool?.baseRef,
+      rememberedBaseBranch: effectivePreferences.baseBranch,
+    }),
+  };
+}
+
+interface UseProjectConfigQueryOptions {
+  serverId: string;
+  cwd: string;
+}
+
+function useProjectConfigQuery({ serverId, cwd }: UseProjectConfigQueryOptions) {
+  const client = useHostRuntimeClient(serverId);
+  const isConnected = useHostRuntimeIsConnected(serverId);
+
+  const query = useQuery({
+    queryKey: ["project-config", serverId, cwd],
+    queryFn: async () => {
+      if (!client) return null;
+      try {
+        const response = await client.readProjectConfig(cwd);
+        return response.ok ? response.config : null;
+      } catch {
+        return null;
+      }
+    },
+    enabled: Boolean(client && isConnected && cwd),
+    staleTime: 15_000,
+    retry: false,
+    refetchOnMount: true,
+    refetchOnReconnect: false,
+    refetchOnWindowFocus: false,
+  });
+
+  return {
+    config: query.data ?? null,
+    isLoading: query.isLoading,
   };
 }
 
@@ -1775,17 +1822,24 @@ export function NewWorkspaceScreen({
   const hasSelectedSourceDirectory = selectedSourceDirectory !== null;
   const pickerQueryEnabled = pickerOpen && clientReady && hasSelectedSourceDirectory;
 
+  const sourceDirectoryOrEmpty = selectedSourceDirectory ?? "";
+
   const { status: checkoutStatus } = useCheckoutStatusQuery({
     serverId: selectedServerId,
-    cwd: selectedSourceDirectory ?? "",
+    cwd: sourceDirectoryOrEmpty,
   });
 
   const worktreeSupport = selectedProject
     ? getWorktreeSupportForHostProject({ project: selectedProject, serverId: selectedServerId })
     : "unsupported";
   const isPending = isNewWorkspacePending({ pendingAction, isDraftHandoffActive });
-  const { selectedProjectKey, projectScopeKey, rememberedBaseBranch } =
-    useNewWorkspaceBaseBranchPreference({ selectedProject, formPreferences });
+  const { selectedProjectKey, projectScopeKey, preferredBaseBranch } =
+    useNewWorkspaceBaseBranchPreference({
+      selectedProject,
+      formPreferences,
+      serverId: selectedServerId,
+      sourceDirectory: sourceDirectoryOrEmpty,
+    });
   const { effectiveIsolation, setIsolation, canCreateWorktree, showRefPicker } =
     useWorkspaceIsolation({
       supportsMultiplicity: supportsWorkspaceMultiplicity,
@@ -1841,11 +1895,11 @@ export function NewWorkspaceScreen({
       selectedItem ??
       (checkoutStatus
         ? defaultBasePickerItem(checkoutStatus, {
-            preferredBaseBranch: rememberedBaseBranch,
+            preferredBaseBranch,
             branchDetails,
           })
         : null),
-    [branchDetails, checkoutStatus, rememberedBaseBranch, selectedItem],
+    [branchDetails, checkoutStatus, preferredBaseBranch, selectedItem],
   );
   const { options, itemById, selectedOptionId }: PickerOptionData = useMemo(
     () =>
@@ -2086,7 +2140,7 @@ export function NewWorkspaceScreen({
         ? pickerItemToCheckoutRequest(
             selectedItem ??
               defaultBasePickerItem(checkoutStatusForCreate, {
-                preferredBaseBranch: rememberedBaseBranch,
+                preferredBaseBranch,
                 branchDetails,
               }),
           )
@@ -2122,7 +2176,7 @@ export function NewWorkspaceScreen({
       effectiveIsolation,
       mergeWorkspaces,
       queryClient,
-      rememberedBaseBranch,
+      preferredBaseBranch,
       selectedItem,
       selectedProject,
       selectedServerId,

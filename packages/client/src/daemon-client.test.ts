@@ -4651,6 +4651,92 @@ test("detaches an agent through the namespaced detach RPC", async () => {
 
   await expect(promise).resolves.toBeUndefined();
 });
+test("moves an agent to a workspace through the namespaced agent.workspace.move RPC", async () => {
+  const logger = createMockLogger();
+  const mock = createMockTransport();
+
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger,
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const promise = client.moveAgentToWorkspace("agent-42", "workspace-target", "custom-request-id");
+
+  expect(mock.sent).toHaveLength(1);
+  const request = parseSentFrame(mock.sent[0]);
+  expect(request).toMatchObject({
+    type: "agent.workspace.move.request",
+    agentId: "agent-42",
+    workspaceId: "workspace-target",
+    requestId: "custom-request-id",
+  });
+
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "agent.workspace.move.response",
+      payload: {
+        requestId: "custom-request-id",
+        agentId: "agent-42",
+        workspaceId: "workspace-target",
+        accepted: true,
+        error: null,
+      },
+    }),
+  );
+
+  await expect(promise).resolves.toEqual({
+    agentId: "agent-42",
+    workspaceId: "workspace-target",
+  });
+});
+
+test("rejects when agent.workspace.move is not accepted", async () => {
+  const logger = createMockLogger();
+  const mock = createMockTransport();
+
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger,
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const promise = client.moveAgentToWorkspace("agent-42", "workspace-target");
+
+  expect(mock.sent).toHaveLength(1);
+  const request = parseSentFrame(mock.sent[0]);
+
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "agent.workspace.move.response",
+      payload: {
+        requestId: request.requestId,
+        agentId: "agent-42",
+        workspaceId: "workspace-target",
+        accepted: false,
+        error: "Agent agent-42 is running; stop it before moving workspaces",
+      },
+    }),
+  );
+
+  await expect(promise).rejects.toThrow(
+    "Agent agent-42 is running; stop it before moving workspaces",
+  );
+});
 
 test("sends active-scoped fetch_agents_request", async () => {
   const logger = createMockLogger();

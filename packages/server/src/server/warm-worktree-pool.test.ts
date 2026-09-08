@@ -94,6 +94,85 @@ describe("WarmWorktreePoolManager", () => {
     await manager.stop();
   });
 
+  test("provisions from paseo.json worktree.warmPool.baseRef instead of the default branch", async () => {
+    execSync("git checkout -b custom-base", { cwd: repoDir, stdio: "ignore" });
+    writeFileSync(join(repoDir, "custom-base-only.txt"), "from custom-base", "utf8");
+    execSync("git add . && git commit -m 'custom-base commit'", { cwd: repoDir, stdio: "ignore" });
+    const customHead = execSync("git rev-parse HEAD", { cwd: repoDir }).toString().trim();
+    execSync("git checkout main", { cwd: repoDir, stdio: "ignore" });
+    writeFileSync(
+      join(repoDir, "paseo.json"),
+      JSON.stringify({
+        worktree: {
+          setup: ["echo setup-ran > setup.log"],
+          warmPool: { enabled: true, targetIdle: 1, baseRef: "custom-base" },
+        },
+      }),
+      "utf8",
+    );
+
+    const manager = new WarmWorktreePoolManager({
+      paseoHome,
+      worktreesRoot,
+      targetIdle: 1,
+      enabled: true,
+      logger,
+    });
+
+    await manager.replenish(repoDir);
+
+    const status = manager.getStatus();
+    expect(status.pools[0].idleCount).toBe(1);
+    const warmPath = status.pools[0].worktrees[0].path;
+    expect(status.pools[0].worktrees[0].baseBranch).toBe("custom-base");
+    expect(existsSync(join(warmPath, "custom-base-only.txt"))).toBe(true);
+    const warmHead = execSync("git rev-parse HEAD", { cwd: warmPath }).toString().trim();
+    expect(warmHead).toBe(customHead);
+
+    await manager.stop();
+  });
+
+  test("readConfig.baseRef overrides paseo.json when both are set", async () => {
+    execSync("git checkout -b from-json", { cwd: repoDir, stdio: "ignore" });
+    writeFileSync(join(repoDir, "from-json.txt"), "json", "utf8");
+    execSync("git add . && git commit -m 'from-json'", { cwd: repoDir, stdio: "ignore" });
+    execSync("git checkout main", { cwd: repoDir, stdio: "ignore" });
+    execSync("git checkout -b from-config", { cwd: repoDir, stdio: "ignore" });
+    writeFileSync(join(repoDir, "from-config.txt"), "config", "utf8");
+    execSync("git add . && git commit -m 'from-config'", { cwd: repoDir, stdio: "ignore" });
+    const configHead = execSync("git rev-parse HEAD", { cwd: repoDir }).toString().trim();
+    execSync("git checkout main", { cwd: repoDir, stdio: "ignore" });
+    writeFileSync(
+      join(repoDir, "paseo.json"),
+      JSON.stringify({
+        worktree: {
+          setup: ["echo setup-ran > setup.log"],
+          warmPool: { baseRef: "from-json" },
+        },
+      }),
+      "utf8",
+    );
+
+    const manager = new WarmWorktreePoolManager({
+      paseoHome,
+      worktreesRoot,
+      targetIdle: 1,
+      enabled: true,
+      logger,
+      readConfig: () => ({ baseRef: "from-config" }),
+    });
+
+    await manager.replenish(repoDir);
+
+    const warmPath = manager.getStatus().pools[0].worktrees[0].path;
+    expect(existsSync(join(warmPath, "from-config.txt"))).toBe(true);
+    expect(existsSync(join(warmPath, "from-json.txt"))).toBe(false);
+    const warmHead = execSync("git rev-parse HEAD", { cwd: warmPath }).toString().trim();
+    expect(warmHead).toBe(configHead);
+
+    await manager.stop();
+  });
+
   test("claims warm worktree for branch-off, retargets path and switches branch", async () => {
     const manager = new WarmWorktreePoolManager({
       paseoHome,

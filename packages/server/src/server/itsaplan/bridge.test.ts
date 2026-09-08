@@ -682,7 +682,6 @@ describe("ItsaplanBridge", () => {
       await local.handleWebhookRequest(
         webhookRequest("issue.state_changed", issueRecord(DONE_COLUMN_ID)),
       );
-
       expect(missionControlFake.lifecycleActions).toEqual([
         { agentId: "local-agent", action: "done" },
       ]);
@@ -1919,6 +1918,67 @@ describe("ItsaplanBridge", () => {
       expect(fakeServer.comments).toHaveLength(0);
     });
 
+    test("moves the ticket to In Progress when label uses camelCase itsaplanIssue or numeric ID", async () => {
+      issues.get(ISSUE_ID)!.columnId = 2; // Todo
+      fakeServer.comments.length = 0;
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent("agent-camel", { itsaplanIssue: ISSUE_ID as unknown as string }),
+      });
+      await waitForIssueColumn(issues, ISSUE_ID, 3);
+      expect(fakeServer.comments).toEqual([
+        {
+          issueId: ISSUE_ID,
+          body: "Dispatched: [Agent agent-camel](paseo://h/server-1/agent/agent-camel)",
+          apiKey: "itp_test_key",
+        },
+      ]);
+    });
+
+    test("moves the ticket to In Progress when label uses issueId or ticket key format (PASEO-37)", async () => {
+      issues.get(ISSUE_ID)!.columnId = 2; // Todo
+      fakeServer.comments.length = 0;
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent("agent-ticket-format", { ticket: `PASEO-${ISSUE_ID}` }),
+      });
+      await waitForIssueColumn(issues, ISSUE_ID, 3);
+      expect(fakeServer.comments).toEqual([
+        {
+          issueId: ISSUE_ID,
+          body: "Dispatched: [Agent agent-ticket-format](paseo://h/server-1/agent/agent-ticket-format)",
+          apiKey: "itp_test_key",
+        },
+      ]);
+    });
+
+    test("moves the ticket to In Progress when an agent was initially sighted without labels and labeled later", async () => {
+      issues.get(ISSUE_ID)!.columnId = 2; // Todo
+      fakeServer.comments.length = 0;
+
+      // First event: agent is created or emitted with no itsaplan label (e.g. race before labels attached)
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent("agent-delayed-label", {}),
+      });
+      expect(issues.get(ISSUE_ID)?.columnId).toBe(2);
+      expect(fakeServer.comments).toHaveLength(0);
+
+      // Second event: label is now attached. Must recognize this as first sighting for this issue and move to In Progress!
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent("agent-delayed-label", { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+      });
+      await waitForIssueColumn(issues, ISSUE_ID, 3);
+      expect(fakeServer.comments).toEqual([
+        {
+          issueId: ISSUE_ID,
+          body: "Dispatched: [Agent agent-delayed-label](paseo://h/server-1/agent/agent-delayed-label)",
+          apiKey: "itp_test_key",
+        },
+      ]);
+    });
+
     test("projects report_status completed to a lazily-created Ready to review column, with proofs", async () => {
       agentManagerFake.setAgent(
         fakeAgent("agent-1", { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
@@ -1945,6 +2005,7 @@ describe("ItsaplanBridge", () => {
       });
       const readyColumn = findColumnByName(columns, "Ready to review");
       await waitForIssueColumn(issues, ISSUE_ID, readyColumn!.id);
+
       await waitForLastCommentContaining(fakeServer.comments, "PR: https://example.test/pr/1");
     });
 

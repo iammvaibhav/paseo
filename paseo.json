@@ -9,7 +9,8 @@
     ],
     "warmPool": {
       "enabled": true,
-      "targetIdle": 1
+      "targetIdle": 1,
+      "baseRef": "vaibhav/customizations"
     }
   },
   "scripts": {

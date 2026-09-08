@@ -28,6 +28,7 @@ import {
   OmpRuntimeEventSchema,
   OmpSessionStateSchema,
   OmpSessionStatsSchema,
+  OmpSwitchSessionResultSchema,
   type OmpThinkingLevel,
   type OmpAgentMessage,
   type OmpModel,
@@ -224,7 +225,12 @@ class OmpCliRuntimeSession implements OmpRuntimeSession {
   }
 
   async switchSession(sessionPath: string): Promise<void> {
-    await this.request({ type: "switch_session", sessionPath });
+    const data = OmpSwitchSessionResultSchema.parse(
+      await this.request({ type: "switch_session", sessionPath }),
+    );
+    if (data?.cancelled === true) {
+      throw new Error("OMP switch_session was cancelled");
+    }
   }
 
   async getSessionStats(): Promise<OmpSessionStats> {

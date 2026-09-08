@@ -144,6 +144,11 @@ export class FakeOmpSession implements OmpRuntimeSession {
   branchMessages: Array<{ entryId: string; text: string }> = [];
   readonly branchRequests: string[] = [];
   activeBranchEntryId?: string;
+  /**
+   * Reproduce omp's cwd-reject: switch_session RPC succeeds, the process stays
+   * on its current session file, and getState() reports the throwaway.
+   */
+  keepSessionFileOnSwitch = false;
   closed = false;
   state: OmpSessionState;
 
@@ -318,6 +323,9 @@ export class FakeOmpSession implements OmpRuntimeSession {
 
   async switchSession(sessionPath: string): Promise<void> {
     this.switchSessionRequests.push(sessionPath);
+    if (this.keepSessionFileOnSwitch) {
+      return;
+    }
     this.state = { ...this.state, sessionFile: sessionPath };
   }
 

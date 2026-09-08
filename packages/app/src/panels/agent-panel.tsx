@@ -93,6 +93,7 @@ import { useAppSettings } from "@/hooks/use-settings";
 import { useToast } from "@/contexts/toast-context";
 import { toErrorMessage } from "@/utils/error-messages";
 import { AgentTracks, hasAgentTracks } from "@/panels/agent-tracks";
+import { selectSelectionAsks } from "@/selection-ask";
 
 import { useCreateFlowStore } from "@/stores/create-flow-store";
 import { buildDraftStoreKey, generateDraftId } from "@/stores/draft-keys";
@@ -1268,12 +1269,16 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
     rows: subagentRows,
   });
   const hasPluginComposerPills = useHasPluginComposerPills(serverId, workspaceId, agentId);
+  const selectionAsks = useSessionStore(
+    useShallow((state) => selectSelectionAsks(state, serverId, agentId)),
+  );
   const hasActiveComposer = !agentState.archivedAt && !isArchivingCurrentAgent;
   const hasVisibleAgentTracks = hasAgentTracks({
     subagentRows,
     tasks,
     archiveFinishedStatus: archiveFinishedSubagents.status,
     hasPluginComposerPills,
+    hasSelectionAsks: selectionAsks.length > 0,
   });
   const rawAgentInputDraft = useAgentInputDraft({
     draftKey: buildDraftStoreKey({

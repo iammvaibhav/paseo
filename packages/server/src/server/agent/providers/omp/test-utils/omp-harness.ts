@@ -181,6 +181,12 @@ export class OmpHarness {
     return this.omp.allSessions().flatMap((session) => session.switchSessionRequests);
   }
 
+  keepPooledSessionFileOnSwitch(): void {
+    for (const session of this.omp.allSessions()) {
+      session.keepSessionFileOnSwitch = true;
+    }
+  }
+
   recordedLaunchCount(): number {
     return this.omp.recordedLaunches.length;
   }

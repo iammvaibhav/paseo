@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Logger } from "pino";
+import { PaseoWorktreeWarmPoolConfigRawSchema } from "@getpaseo/protocol/paseo-config-schema";
 import type { WorkspaceGitService } from "./workspace-git-service.js";
 import type { ProjectRegistry } from "./workspace-registry.js";
 import {
@@ -10,7 +11,6 @@ import {
   configureWorktreeTrackingRemote,
   listPaseoWorktrees,
   normalizePathForOwnership,
-  readPaseoConfig,
   resolveWorktreeSourcePlan,
   runWorktreeSetupCommands,
   seedPaseoConfigFile,
@@ -18,6 +18,7 @@ import {
   type WorktreeSource,
   type WorktreeSourcePlan,
 } from "../utils/worktree.js";
+import { readPaseoConfigJson } from "../utils/paseo-config-file.js";
 import { runGitCommand, runWithGitCommandPriority } from "../utils/run-git-command.js";
 import { writePaseoWorktreeMetadata } from "../utils/worktree-metadata.js";
 
@@ -61,6 +62,7 @@ export interface WarmWorktreePoolOptions {
   readConfig?: () => {
     enabled?: boolean;
     targetIdle?: number;
+    baseRef?: string;
   };
 }
 
@@ -114,10 +116,11 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
   private readonly resolveDefaultBranchOverride?: (repoRoot: string) => Promise<string>;
   private readonly now: () => Date;
   private readonly maintenanceIntervalMs: number;
-  private readonly readConfig?: () => { enabled?: boolean; targetIdle?: number };
+  private readonly readConfig?: () => { enabled?: boolean; targetIdle?: number; baseRef?: string };
 
   private readonly pools = new Map<string, WarmWorktreeRecord[]>();
   private readonly repoLocks = new Map<string, Promise<void>>();
+  private readonly inFlightProvisions = new Map<string, Promise<void>>();
   private maintenanceTimer: NodeJS.Timeout | null = null;
   private isStopped = false;
   private readonly provisionFailures = new Map<string, { count: number; nextAttemptAt: number }>();
@@ -356,28 +359,30 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
     const isGit = await this.isGitRepo(normalizedRoot);
     if (!isGit) return;
 
-    return this.withRepoLock(normalizedRoot, async () => {
+    const needed = await this.withRepoLock(normalizedRoot, async () => {
       await this.discoverExistingWarmWorktrees(normalizedRoot);
 
       const targetIdle = this.resolveTargetIdle(normalizedRoot);
       const records = this.pools.get(normalizedRoot) ?? [];
-      const currentIdleCount = records.filter(
-        (r) => r.status === "idle" && existsSync(r.worktreePath),
+      const currentCount = records.filter(
+        (r) => r.status === "idle" || r.status === "provisioning",
       ).length;
 
-      const needed = targetIdle - currentIdleCount;
-      if (needed <= 0) return;
+      if (this.isProvisioningBackedOff(normalizedRoot)) return 0;
 
-      if (this.isProvisioningBackedOff(normalizedRoot)) return;
-
-      for (let i = 0; i < needed; i++) {
-        if (this.isStopped) break;
-        const provisioned = await this.provisionOneWarmWorktree(normalizedRoot);
-        // Stop the batch on the first failure: the same broken setup will fail again,
-        // and the backoff window is already armed.
-        if (!provisioned) break;
-      }
+      return Math.max(0, targetIdle - currentCount);
     });
+
+    // Setup is slow and must not hold the repo lock — claim/create wait on it.
+    const started: Array<Promise<void>> = [];
+    for (let i = 0; i < needed; i++) {
+      if (this.isStopped) break;
+      started.push(this.provisionOneWarmWorktree(normalizedRoot));
+    }
+    await Promise.all([
+      ...started,
+      this.inFlightProvisions.get(normalizedRoot) ?? Promise.resolve(),
+    ]);
   }
 
   public async prune(repoRoot?: string): Promise<void> {
@@ -473,19 +478,28 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
     }
   }
 
-  private readProjectWarmPoolConfig(repoRoot: string): { enabled?: boolean; targetIdle?: number } {
+  private readProjectWarmPoolConfig(repoRoot: string): {
+    enabled?: boolean;
+    targetIdle?: number;
+    baseRef?: string;
+  } {
     try {
-      const projectConfig = readPaseoConfig(repoRoot);
-      if (!projectConfig.ok || !projectConfig.config) return {};
-      const rawWorktree = (projectConfig.config as Record<string, unknown>).worktree;
-      if (!rawWorktree || typeof rawWorktree !== "object") return {};
-      const warmPool = (rawWorktree as Record<string, unknown>).warmPool;
-      if (!warmPool || typeof warmPool !== "object") return {};
-      const raw = warmPool as Record<string, unknown>;
+      const raw = readPaseoConfigJson(repoRoot);
+      const parsed = PaseoWorktreeWarmPoolConfigRawSchema.safeParse(
+        raw &&
+          typeof raw === "object" &&
+          "worktree" in raw &&
+          raw.worktree &&
+          typeof raw.worktree === "object" &&
+          "warmPool" in raw.worktree
+          ? raw.worktree.warmPool
+          : undefined,
+      );
+      if (!parsed.success) return {};
       return {
-        enabled: typeof raw.enabled === "boolean" ? raw.enabled : undefined,
-        targetIdle:
-          typeof raw.targetIdle === "number" && raw.targetIdle >= 0 ? raw.targetIdle : undefined,
+        enabled: parsed.data.enabled,
+        targetIdle: parsed.data.targetIdle,
+        baseRef: parsed.data.baseRef,
       };
     } catch {
       return {};
@@ -518,6 +532,18 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
     }
 
     return this.defaultTargetIdle;
+  }
+
+  private async resolveWarmSourceRef(repoRoot: string): Promise<string> {
+    const config = this.readConfig?.();
+    if (config?.baseRef) {
+      return config.baseRef;
+    }
+    const projectBaseRef = this.readProjectWarmPoolConfig(repoRoot).baseRef;
+    if (projectBaseRef) {
+      return projectBaseRef;
+    }
+    return this.resolveDefaultBranch(repoRoot);
   }
 
   private async resolveDefaultBranch(repoRoot: string): Promise<string> {
@@ -592,77 +618,122 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
         }
       }
 
+      // In-flight provisions have no git worktree yet; keep their slots so a
+      // concurrent replenish does not overfill the pool.
+      for (const existing of existingRecords) {
+        if (
+          existing.status === "provisioning" &&
+          !updatedRecords.some((r) => r.worktreePath === existing.worktreePath)
+        ) {
+          updatedRecords.push(existing);
+        }
+      }
+
       this.pools.set(repoRoot, updatedRecords);
     } catch (error) {
       this.logger.debug({ err: error, repoRoot }, "Failed to discover existing warm worktrees");
     }
   }
 
-  /** Returns true when an idle warm worktree is ready; false when provisioning failed. */
-  private async provisionOneWarmWorktree(repoRoot: string): Promise<boolean> {
-    const warmSlug = `.warm-${randomUUID().slice(0, 8)}`;
-    const warmWorktreePath = await computeWorktreePath(
-      repoRoot,
-      warmSlug,
-      this.paseoHome,
-      this.worktreesRoot,
-    );
+  private async provisionOneWarmWorktree(repoRoot: string): Promise<void> {
+    const previous = this.inFlightProvisions.get(repoRoot) ?? Promise.resolve();
+    let releaseInFlight!: () => void;
+    const thisFlight = new Promise<void>((resolveFlight) => {
+      releaseInFlight = resolveFlight;
+    });
+    const chained = previous.then(() => thisFlight);
+    this.inFlightProvisions.set(repoRoot, chained);
 
-    const defaultBranch = await this.resolveDefaultBranch(repoRoot);
-    const parentDir = dirname(warmWorktreePath);
-    mkdirSync(parentDir, { recursive: true });
-
-    const record: WarmWorktreeRecord = {
-      repoRoot,
-      worktreePath: normalizePathForOwnership(warmWorktreePath),
-      worktreeSlug: warmSlug,
-      baseBranch: defaultBranch,
-      createdAt: this.now().toISOString(),
-      status: "provisioning",
-    };
-
-    const records = this.pools.get(repoRoot) ?? [];
-    records.push(record);
-    this.pools.set(repoRoot, records);
-
+    let reserved: WarmWorktreeRecord | null = null;
     try {
-      this.logger.info({ repoRoot, warmSlug, defaultBranch }, "Provisioning idle warm worktree");
+      const sourceRef = await this.resolveWarmSourceRef(repoRoot);
+      reserved = await this.withRepoLock(repoRoot, async () => {
+        const records = this.pools.get(repoRoot) ?? [];
+        const currentCount = records.filter(
+          (r) => r.status === "idle" || r.status === "provisioning",
+        ).length;
+        if (currentCount >= this.resolveTargetIdle(repoRoot)) {
+          return null;
+        }
+
+        const warmSlug = `.warm-${randomUUID().slice(0, 8)}`;
+        const warmWorktreePath = await computeWorktreePath(
+          repoRoot,
+          warmSlug,
+          this.paseoHome,
+          this.worktreesRoot,
+        );
+        mkdirSync(dirname(warmWorktreePath), { recursive: true });
+
+        const next: WarmWorktreeRecord = {
+          repoRoot,
+          worktreePath: normalizePathForOwnership(warmWorktreePath),
+          worktreeSlug: warmSlug,
+          baseBranch: sourceRef,
+          createdAt: this.now().toISOString(),
+          status: "provisioning",
+        };
+        records.push(next);
+        this.pools.set(repoRoot, records);
+        return next;
+      });
+      if (!reserved) {
+        return;
+      }
+      const record = reserved;
+
+      this.logger.info(
+        { repoRoot, warmSlug: record.worktreeSlug, sourceRef },
+        "Provisioning idle warm worktree",
+      );
 
       await runWithGitCommandPriority("normal", async () => {
-        await runGitCommand(["worktree", "add", "--detach", warmWorktreePath, defaultBranch], {
+        await runGitCommand(["worktree", "add", "--detach", record.worktreePath, sourceRef], {
           cwd: repoRoot,
           timeout: 120_000,
         });
       });
 
-      await seedPaseoConfigFile({ sourceCwd: repoRoot, targetCwd: warmWorktreePath });
+      await seedPaseoConfigFile({ sourceCwd: repoRoot, targetCwd: record.worktreePath });
 
       await runWorktreeSetupCommands({
-        worktreePath: warmWorktreePath,
-        branchName: defaultBranch,
+        worktreePath: record.worktreePath,
+        branchName: sourceRef,
         cleanupOnFailure: true,
       });
 
-      writePaseoWorktreeMetadata(warmWorktreePath, {
-        baseRefName: defaultBranch,
+      writePaseoWorktreeMetadata(record.worktreePath, {
+        baseRefName: sourceRef,
       });
 
       record.status = "idle";
-      this.logger.info({ repoRoot, warmWorktreePath }, "Warm worktree provisioned successfully");
+      this.logger.info(
+        { repoRoot, warmWorktreePath: record.worktreePath, sourceRef },
+        "Warm worktree provisioned successfully",
+      );
       this.recordProvisionOutcome(repoRoot, true);
-      return true;
     } catch (error) {
       this.logger.warn(
-        { err: error, repoRoot, warmWorktreePath },
+        { err: error, repoRoot, warmWorktreePath: reserved?.worktreePath },
         "Failed to provision warm worktree; cleaning up",
       );
-      const index = records.indexOf(record);
-      if (index !== -1) {
-        records.splice(index, 1);
+      if (reserved) {
+        const toRemove = reserved;
+        await this.withRepoLock(repoRoot, async () => {
+          const records = this.pools.get(repoRoot) ?? [];
+          const index = records.indexOf(toRemove);
+          if (index !== -1) {
+            records.splice(index, 1);
+          }
+        });
+        await this.cleanupFailedWorktree(repoRoot, toRemove.worktreePath);
       }
-      await this.cleanupFailedWorktree(repoRoot, warmWorktreePath);
       this.recordProvisionOutcome(repoRoot, false);
-      return false;
+    } finally {
+      releaseInFlight();
+      if (this.inFlightProvisions.get(repoRoot) === chained) {
+        this.inFlightProvisions.delete(repoRoot);
+      }
     }
   }
 
