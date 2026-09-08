@@ -914,8 +914,7 @@ export function mapWorkspaceRelativeCwdToWorktree(input: {
   }
   return mappedCwd;
 }
-
-function normalizePathForOwnership(input: string): string {
+export function normalizePathForOwnership(input: string): string {
   try {
     return realpathSync(input);
   } catch {
@@ -1039,10 +1038,12 @@ export async function listPaseoWorktrees({
   cwd,
   paseoHome,
   worktreesRoot,
+  includeWarm,
 }: {
   cwd: string;
   paseoHome?: string;
   worktreesRoot?: string;
+  includeWarm?: boolean;
 }): Promise<PaseoWorktreeInfo[]> {
   const projectWorktreesRoot = await getPaseoWorktreesRoot(cwd, paseoHome, worktreesRoot);
   const { stdout } = await runGitCommand(["worktree", "list", "--porcelain"], {
@@ -1053,6 +1054,7 @@ export async function listPaseoWorktrees({
   return parseWorktreeList(stdout)
     .map((entry) => Object.assign({}, entry, { path: normalizePathForOwnership(entry.path) }))
     .filter((entry) => getRealpathAwareRelativePath(projectWorktreesRoot, entry.path) !== null)
+    .filter((entry) => includeWarm || !basename(entry.path).startsWith(".warm-"))
     .map((entry) =>
       Object.assign({}, entry, { createdAt: resolveWorktreeCreatedAtIso(entry.path) }),
     );
@@ -1293,13 +1295,13 @@ export const createWorktree = async ({
   };
 };
 
-interface ResolveWorktreeSourcePlanOptions {
+export interface ResolveWorktreeSourcePlanOptions {
   cwd: string;
   source: WorktreeSource;
   desiredSlug: string;
 }
 
-interface WorktreeSourcePlan {
+export interface WorktreeSourcePlan {
   branchName: string;
   // Display name and exact ref are two different facts. The name cannot round-trip to a
   // commit — "main" resolves local-first even when the worktree was cut from a fork's
@@ -1320,7 +1322,7 @@ interface WorktreeSourcePlan {
   };
 }
 
-async function resolveWorktreeSourcePlan({
+export async function resolveWorktreeSourcePlan({
   cwd,
   source,
   desiredSlug,
@@ -1447,7 +1449,7 @@ async function resolveWorktreeSourcePlan({
   }
 }
 
-async function configureWorktreePushRemote(options: {
+export async function configureWorktreePushRemote(options: {
   cwd: string;
   branchName: string;
   remote: {
@@ -1588,7 +1590,7 @@ async function getWorktreeRemotePushUrl(
   }
 }
 
-async function configureWorktreeTrackingRemote(options: {
+export async function configureWorktreeTrackingRemote(options: {
   cwd: string;
   branchName: string;
   remote: {

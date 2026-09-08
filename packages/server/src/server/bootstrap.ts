@@ -122,6 +122,7 @@ import { WorkspaceSetupRuntime } from "./workspace-setup-runtime.js";
 import { createWorkspaceLabelService } from "./workspace-labels/index.js";
 import { createGitHubService } from "../services/github-service.js";
 import { createPaseoWorktree as createRegisteredPaseoWorktree } from "./paseo-worktree-service.js";
+import { WarmWorktreePoolManager } from "./warm-worktree-pool.js";
 import { createWorkspaceProvisioningService } from "./session/workspace-provisioning/workspace-provisioning-service.js";
 import { createPaseoWorktreeWorkflow } from "./worktree-session.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
@@ -1255,6 +1256,13 @@ export async function createPaseoDaemon(
     workspaceGitService,
     logger,
   });
+  const warmWorktreePool = new WarmWorktreePoolManager({
+    paseoHome: config.paseoHome,
+    worktreesRoot: config.worktreesRoot,
+    workspaceGitService,
+    projectRegistry,
+    logger,
+  });
   const agentProviderRuntime = await createAgentProviderRuntime({
     paseoHome: config.paseoHome,
     logger,
@@ -1554,6 +1562,7 @@ export async function createPaseoDaemon(
               }),
             workspaceGitService,
             workspaceProvisioning,
+            warmWorktreePool,
           });
         },
         warmWorkspaceGitData: async (workspace) => {
@@ -2838,6 +2847,7 @@ export async function createPaseoDaemon(
             const relayPublicEndpoint = config.relayPublicEndpoint ?? relayEndpoint;
             const relayUseTls = config.relayUseTls ?? relayEndpoint === "relay.paseo.sh:443";
             const relayPublicUseTls = config.relayPublicUseTls ?? relayUseTls;
+            await warmWorktreePool.start();
             if (boundListenTarget.type === "tcp") {
               logger.info(
                 {
@@ -2935,8 +2945,8 @@ export async function createPaseoDaemon(
               orchestrationSkills,
               workspaceLabelService,
               (workspaceId) => itsaplanBridge?.handleWorkspaceArchived(workspaceId),
+              warmWorktreePool,
             );
-            wsServer.setTranscriptSearch(transcriptSearch);
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();
             wsServer.beginAcceptingConnections();
@@ -3018,6 +3028,7 @@ export async function createPaseoDaemon(
     await speechService.stop();
     await missionControlService.stop().catch(() => undefined);
 
+    await warmWorktreePool.stop().catch(() => undefined);
     await scheduleService.stop().catch(() => undefined);
     baseCheckoutSyncService.stop();
     await peerManager?.close().catch(() => undefined);
