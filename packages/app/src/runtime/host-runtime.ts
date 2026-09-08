@@ -743,7 +743,6 @@ export class HostRuntimeController {
   private switchRequestVersion = 0;
   private probeRequestVersion = 0;
   private probeCycleInFlight: Promise<void> | null = null;
-  private reconnectEnabled = true;
 
   constructor(input: {
     host: HostProfile;
@@ -851,11 +850,6 @@ export class HostRuntimeController {
 
   ensureConnected(): void {
     this.activeClient?.ensureConnected();
-  }
-
-  setReconnectEnabled(enabled: boolean): void {
-    this.reconnectEnabled = enabled;
-    this.activeClient?.setReconnectEnabled(enabled);
   }
 
   markAgentDirectorySyncLoading(): void {
@@ -1372,7 +1366,7 @@ export class HostRuntimeController {
         clientId,
         runtimeGeneration: nextGeneration,
       });
-    client.setReconnectEnabled(this.reconnectEnabled);
+    client.setReconnectEnabled(true);
 
     if (!this.isSwitchStillValid(requestVersion, expectedProbeVersion)) {
       await client.close().catch(() => undefined);
@@ -1534,7 +1528,6 @@ export class HostRuntimeStore {
   private timelineReplicaByServer = new Map<string, TimelineReplica>();
   private configuredOverrideBootstrapInFlight: Promise<void> | null = null;
   private bootPromise: Promise<void> | null = null;
-  private appVisible = true;
   private storage: HostRuntimeStorage;
   private replicaCache: ReplicaCache;
   private readonly revokePushNotifications: typeof revokePushNotifications;
@@ -2244,7 +2237,6 @@ export class HostRuntimeStore {
         deps: this.deps,
         onReconcileServerId: (oldId, newId) => this.reconcileServerId(oldId, newId),
       });
-      controller.setReconnectEnabled(this.appVisible);
       this.controllers.set(host.serverId, controller);
       useSessionStore.getState().initializeSession(host.serverId, null);
       const directory = new DirectorySync(
@@ -2508,10 +2500,8 @@ export class HostRuntimeStore {
   }
 
   setAppVisible(visible: boolean): void {
-    this.appVisible = visible;
-    for (const controller of this.controllers.values()) {
-      controller.setReconnectEnabled(visible);
-    }
+    // Keep normal reconnect backoff running while hidden, for as long as the OS
+    // lets us execute. Foregrounding bypasses that backoff without closing healthy sockets.
     if (!visible) {
       void this.replicaCache.flush();
       return;
