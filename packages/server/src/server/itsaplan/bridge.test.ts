@@ -2847,6 +2847,7 @@ describe("itsaplan comment author attribution, deduplication, and link formattin
     });
 
     await waitForIssueColumn(issues, ISSUE_ID, 3);
+    await waitForLastCommentContaining(fakeServer.comments, "Dispatched:");
     const dispatchComment = fakeServer.comments.find((c) => c.body.startsWith("Dispatched:"));
     expect(dispatchComment).toBeDefined();
     expect(dispatchComment?.apiKey).toBe("itp_commander_bot_key");
