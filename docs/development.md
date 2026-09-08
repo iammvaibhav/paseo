@@ -448,6 +448,25 @@ exact ref also resolves through its stored branch name.
 
 Worktrees inherit committed Git state only; uncommitted source-checkout changes are not copied.
 
+### Warm worktree pool source
+
+`worktree.warmPool.baseRef` is the git ref the warm pool cuts from (branch, tag,
+or `origin/<branch>`). Omitted, the pool uses the repository default branch.
+Set this to the branch whose `paseo.json` setup the pool should run — a pool
+built from `main` will run `main`'s setup, not the current checkout's.
+
+```json
+{
+  "worktree": {
+    "warmPool": {
+      "enabled": true,
+      "targetIdle": 1,
+      "baseRef": "vaibhav/customizations"
+    }
+  }
+}
+```
+
 ## paseo.json service scripts
 
 `worktree.setup` and `worktree.teardown` accept either a multiline shell script or an array
