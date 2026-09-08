@@ -10,6 +10,27 @@ import { ItsaplanApiError, ItsaplanClient, type ItsaplanProject } from "./client
 /** Non-null itsaplan connection config; the same shape read off central config. */
 export type ItsaplanCentralConfig = NonNullable<ResolvedMissionControlCentralConfig["itsaplan"]>;
 
+/**
+ * The itsaplan connection this host should use: fleet policy from central
+ * config, with this machine's own web origin layered on top.
+ *
+ * Central config is replicated host to host (last-writer-wins), so it cannot
+ * hold a per-host address — the commander's next push would overwrite it. A
+ * host whose route to the itsaplan web app differs declares it in its own
+ * daemon config (missionControl.itsaplanWebBaseUrl) and that wins here, once,
+ * before any consumer reads the connection.
+ */
+export function resolveItsaplanConfig(
+  central: ItsaplanCentralConfig | null,
+  hostWebBaseUrl: string | null | undefined,
+): ItsaplanCentralConfig | null {
+  if (!central) {
+    return null;
+  }
+  const override = hostWebBaseUrl?.trim();
+  return override ? { ...central, webBaseUrl: override } : central;
+}
+
 const ITSAPLAN_DIR = "itsaplan";
 const PROJECTS_FILENAME = "projects.json";
 

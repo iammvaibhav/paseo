@@ -273,6 +273,25 @@ export function findInProgressColumn(
   );
 }
 
+/**
+ * Human-facing URL of one issue in the itsaplan web app.
+ *
+ * Two traps this exists to close. The route is `/project/<KEY>/issue/<n>` —
+ * singular `issue`, keyed by `sequenceNumber`, not the numeric issue id; and
+ * `baseUrl` names the REST API, which in a split deployment is a different
+ * origin from the web app, so `webBaseUrl` overrides it. Falling back to
+ * `baseUrl` is right only where one origin serves both.
+ */
+export function buildItsaplanIssueUrl(
+  config: { baseUrl: string; webBaseUrl?: string },
+  projectKey: string,
+  sequenceNumber: number | string,
+): string {
+  const origin = (config.webBaseUrl?.trim() || config.baseUrl).replace(/\/+$/, "");
+  const sequence = encodeURIComponent(String(sequenceNumber));
+  return `${origin}/project/${encodeURIComponent(projectKey)}/issue/${sequence}`;
+}
+
 export class ItsaplanClient {
   private readonly baseUrl: string;
   private readonly apiKey: string;

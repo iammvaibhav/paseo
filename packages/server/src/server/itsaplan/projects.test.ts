@@ -10,6 +10,7 @@ import {
   attachItsaplanProjectSync,
   ensureItsaplanProjectMapping,
   ItsaplanProjectStore,
+  resolveItsaplanConfig,
   runItsaplanProjectResync,
   type ItsaplanCentralConfig,
   type ItsaplanFleetProjectCandidate,
@@ -472,5 +473,30 @@ describe("itsaplan project sync", () => {
     expect(mapping).toBeNull();
     expect(fakeServer.createdProjects).toHaveLength(0);
     expect(store.getByPaseoProjectKey("PROJ")).toBeNull();
+  });
+});
+
+describe("resolveItsaplanConfig", () => {
+  const central: ItsaplanCentralConfig = {
+    baseUrl: "http://10.7.0.1:3000",
+    apiKey: "itp_key",
+    webhookSecret: "whsec",
+    webBaseUrl: "http://10.7.0.1:3001",
+  };
+
+  test("this host's declaration beats the replicated fleet value", () => {
+    expect(resolveItsaplanConfig(central, "https://itsaplan.internal:8443")).toMatchObject({
+      baseUrl: "http://10.7.0.1:3000",
+      webBaseUrl: "https://itsaplan.internal:8443",
+    });
+  });
+
+  test("keeps the fleet value when this host declares nothing", () => {
+    expect(resolveItsaplanConfig(central, undefined)?.webBaseUrl).toBe("http://10.7.0.1:3001");
+    expect(resolveItsaplanConfig(central, "   ")?.webBaseUrl).toBe("http://10.7.0.1:3001");
+  });
+
+  test("stays null when the bridge is unconfigured, whatever the host declares", () => {
+    expect(resolveItsaplanConfig(null, "https://itsaplan.internal:8443")).toBeNull();
   });
 });

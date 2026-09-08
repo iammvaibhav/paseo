@@ -10,6 +10,7 @@ import type {
 import type { AgentManagerEvent, ManagedAgent } from "../agent/agent-manager.js";
 import type { StoredAgentRecord } from "../agent/agent-storage.js";
 import {
+  buildItsaplanIssueUrl,
   findInProgressColumn,
   ITSAPLAN_READY_FOR_REVIEW_COLUMN_NAME,
   ItsaplanClient,
@@ -605,7 +606,7 @@ export class ItsaplanBridge {
   ): Promise<void> {
     const apiClient = client ?? new ItsaplanClient(config);
     const ticketKey = `${mapping.itsaplanProjectKey}-${issue.sequenceNumber}`;
-    const url = `${config.baseUrl.replace(/\/+$/, "")}/project/${encodeURIComponent(mapping.itsaplanProjectKey)}/issues/${issue.sequenceNumber}`;
+    const url = buildItsaplanIssueUrl(config, mapping.itsaplanProjectKey, issue.sequenceNumber);
 
     const [initiative, attachments] = await Promise.all([
       this.resolveInitiativeContext(apiClient, issue),
@@ -1387,7 +1388,11 @@ export class ItsaplanBridge {
       createdIssue.id,
       `Dispatched: [${title}](${uri})`,
     );
-    const url = `${config.baseUrl.replace(/\/+$/, "")}/project/${encodeURIComponent(mapping.itsaplanProjectKey)}/issues/${createdIssue.sequenceNumber}`;
+    const url = buildItsaplanIssueUrl(
+      config,
+      mapping.itsaplanProjectKey,
+      createdIssue.sequenceNumber,
+    );
     return { issueId: createdIssue.id, url };
   }
 
@@ -1408,7 +1413,7 @@ export class ItsaplanBridge {
       if (!projectKey) {
         return null;
       }
-      const url = `${config.baseUrl.replace(/\/+$/, "")}/project/${encodeURIComponent(projectKey)}/issues/${issue.sequenceNumber}`;
+      const url = buildItsaplanIssueUrl(config, projectKey, issue.sequenceNumber);
       return { issueId: existingIssueId, url };
     } catch (err) {
       this.logger.warn(

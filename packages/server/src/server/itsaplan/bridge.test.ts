@@ -1109,6 +1109,22 @@ describe("ItsaplanBridge", () => {
       expect(deliverMachineryPrompt).toHaveBeenCalledTimes(1);
     });
 
+    test("the prompt's ticket URL points at the web app's issue route, not the api origin", async () => {
+      config = { ...config, webBaseUrl: "https://itsaplan.test:8443" };
+      const request = webhookRequest("issue.state_changed", {
+        id: ISSUE_ID,
+        projectId: PROJECT_ID,
+        sequenceNumber: 42,
+        columnId: 2,
+        title: "Fix the bug",
+        description: "Steps to reproduce...",
+      });
+
+      expect((await bridge.handleWebhookRequest(request)).status).toBe(200);
+      const prompt = deliverMachineryPrompt.mock.calls[0]?.[0] as string;
+      expect(prompt).toContain("URL: https://itsaplan.test:8443/project/ENG/issue/42");
+    });
+
     test("dispatches for an issue created directly in Todo", async () => {
       const request = webhookRequest("issue.created", {
         id: ISSUE_ID,
@@ -2094,7 +2110,7 @@ describe("ItsaplanBridge", () => {
       expect("issueId" in result).toBe(true);
       if ("issueId" in result) {
         expect(result.issueId).toBeGreaterThanOrEqual(1000);
-        expect(result.url).toContain(`/project/ENG/issues/${result.issueId}`);
+        expect(result.url).toContain(`/project/ENG/issue/${result.issueId}`);
         const created = issues.get(result.issueId);
         expect(created).toBeDefined();
         expect(created?.title).toBe("Feature implementation");
@@ -2431,7 +2447,7 @@ describe("buildDispatchPrompt", () => {
       ticketKey: "ENG-10",
       title: "Fix crash on launch",
       body: "Stacktrace in logs",
-      url: "http://10.7.0.1:3000/project/ENG/issues/10",
+      url: "http://10.7.0.1:3001/project/ENG/issue/10",
       projectKey: "paseo",
     });
 
@@ -2440,7 +2456,7 @@ describe("buildDispatchPrompt", () => {
     );
     expect(prompt).toContain("Project: paseo");
     expect(prompt).toContain("Ticket: ENG-10 — Fix crash on launch");
-    expect(prompt).toContain("URL: http://10.7.0.1:3000/project/ENG/issues/10");
+    expect(prompt).toContain("URL: http://10.7.0.1:3001/project/ENG/issue/10");
     expect(prompt).toContain("Stacktrace in logs");
     expect(prompt).toContain(`Label the new agent "${ITSAPLAN_ISSUE_LABEL_KEY}": "42"`);
     expect(prompt).not.toContain("Initiative:");
