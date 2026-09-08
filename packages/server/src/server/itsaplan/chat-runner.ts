@@ -1,6 +1,7 @@
 import type { Logger } from "pino";
 import type { MissionControlEvent } from "@getpaseo/protocol/mission-control/types";
 import {
+  buildItsaplanIssueUrl,
   ItsaplanApiError,
   ItsaplanClient,
   type ItsaplanAgUiEvent,
@@ -459,7 +460,7 @@ export class ItsaplanChatRunner {
           ? claimed.issueIdentifier.split("-")[1]
           : claimed.issueIdentifier;
         const url = config
-          ? `${config.baseUrl.replace(/\/+$/, "")}/project/${encodeURIComponent(mapping.itsaplanProjectKey)}/issues/${encodeURIComponent(seq ?? "")}`
+          ? buildItsaplanIssueUrl(config, mapping.itsaplanProjectKey, seq ?? "")
           : undefined;
         parts.push(`Issue: ${claimed.issueIdentifier}${url ? ` (${url})` : ""}`);
       }

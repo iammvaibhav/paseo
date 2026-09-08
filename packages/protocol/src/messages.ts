@@ -382,6 +382,11 @@ const MutableMissionControlConfigSchema = z
       .passthrough()
       .nullable()
       .optional(),
+    // Origin of the itsaplan web app as reachable FROM THIS MACHINE, when it
+    // differs from the fleet-wide central value (itsaplan.webBaseUrl). Set it
+    // here and nowhere else: central config is replicated host to host
+    // (last-writer-wins), so a per-host address written there is overwritten.
+    itsaplanWebBaseUrl: z.string().optional(),
     // COMPAT(missionControlV3): retentionDays/summarizer/autopilot/selfReport/
     // naming/defaultHost/hostAliases/commanderInstructions predate central
     // config; they stay accepted so old config files keep parsing. v3 reads

@@ -230,6 +230,7 @@ All local customizations live on **`vaibhav/customizations`**, branched from `up
 - **Plannotator** — embedded markdown annotation review (daemon-spawned sessions, feedback → agent) — see [docs/plannotator.md](docs/plannotator.md)
 - **Mission Control** — fleet monitoring and dispatch: deterministic cross-host board, self-reported status feed (`report_status`), Commander agent with idle-flush digest queue, ephemeral proof-auditing Verifiers, Ask/Auto approval gate, daemon peering with sleep-aware errors — see [docs/mission-control.md](docs/mission-control.md)
 - `scripts/deploy.sh` for multi-host deploy
+- **Vercel-hosted web app** — every deploy publishes `packages/app/dist` to the `paseo-web` Vercel project (`https://paseo-web.vercel.app`), so a phone can open the UI without exposing a daemon and pair over the relay. Config lives in `packages/app/vercel.json`; the token comes from `VERCEL_TOKEN` in `~/.paseo/deploy.env`, and the job skips itself when that is unset.
 - `scripts/omp-stats-fleet.sh` — the stock `omp stats` dashboard over **all three hosts combined**. `omp stats` reads exactly one SQLite file and has no remote/merge support, so the script snapshots each host's `~/.omp/stats.db` (`VACUUM INTO` over ssh via bun), merges them into `~/.omp/profiles/fleet/stats.db`, and serves it with `OMP_PROFILE=fleet omp stats`. No omp fork, no rebuild; your real `~/.omp/stats.db` is never written to. `folder` rows are prefixed with the host name, so the dashboard's **Projects** tab is the per-host breakdown while every other tab is the fleet total. Flags: `--no-sync`, `--merge-only`, `--summary`, `--json`; env `OMP_FLEET_HOSTS` / `OMP_FLEET_PROFILE` / `OMP_FLEET_PORT` (default 3848, one above stock so it never fights a local `omp stats`).
 - **In-repo omp plugins** (`plugins/`) — Oh My Pi agent plugins versioned in-tree and installed to `~/.omp/plugins/node_modules/` across all hosts on deploy: `omp-account-routing` (per-host/per-project OAuth account rotation) and `omp-grok-build` (vendored Grok Build OAuth provider) — see [docs/omp-plugins.md](docs/omp-plugins.md)
 
@@ -398,6 +399,7 @@ PASEO_SKIP_DAEMON=1 ./scripts/deploy.sh          # code-server + settings only (
 PASEO_SKIP_CODE_SERVER=1 ./scripts/deploy.sh      # skip VS Code Web deploy
 PASEO_SYNC_CODE_SERVER_USER_DATA=1 ./scripts/deploy.sh  # also rsync code-server User/ + extensions/
 PASEO_SKIP_OMP_PLUGINS=1 ./scripts/deploy.sh      # skip omp plugin install
+PASEO_SKIP_VERCEL=1 ./scripts/deploy.sh           # skip publishing the web app to Vercel
 PASEO_SKIP_SYSTEM_PROMPT=1 ./scripts/deploy.sh    # leave each host's daemon.appendSystemPrompt alone
 PASEO_NODE_VERSION=22 ./scripts/deploy.sh
 ```

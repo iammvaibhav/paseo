@@ -381,6 +381,57 @@ describe("WarmWorktreePoolManager", () => {
     await manager.stop();
   });
 
+  test("backs off instead of retrying every cycle when worktree.setup keeps failing", async () => {
+    // Regression test for the retry-churn seen in production: a broken worktree.setup
+    // (e.g. a wiped node_modules) failed provisioning 13 times in 9 minutes, each
+    // attempt paying a git worktree add + failed setup + cleanup.
+    writeFileSync(
+      join(repoDir, "paseo.json"),
+      JSON.stringify({ worktree: { setup: ["exit 1"] } }),
+      "utf8",
+    );
+    execSync("git add . && git commit -m 'break setup'", { cwd: repoDir, stdio: "ignore" });
+
+    const attempts: string[] = [];
+    const capturingLogger = {
+      child: () => capturingLogger,
+      info: (_fields: unknown, msg?: string) => {
+        if (msg === "Provisioning idle warm worktree") attempts.push(msg);
+      },
+      warn: () => {},
+      debug: () => {},
+      error: () => {},
+    } as unknown as pino.Logger;
+
+    let clock = Date.parse("2026-01-01T00:00:00.000Z");
+    const manager = new WarmWorktreePoolManager({
+      paseoHome,
+      worktreesRoot,
+      targetIdle: 1,
+      enabled: true,
+      logger: capturingLogger,
+      now: () => new Date(clock),
+      maintenanceIntervalMs: 0,
+    });
+
+    // First attempt runs and fails, arming the backoff window.
+    await manager.replenish(repoDir);
+    expect(manager.getStatus().pools[0]?.idleCount ?? 0).toBe(0);
+    expect(attempts).toHaveLength(1);
+
+    // Immediate retries inside the backoff window must not attempt provisioning at all.
+    await manager.replenish(repoDir);
+    await manager.replenish(repoDir);
+    expect(attempts).toHaveLength(1);
+
+    // Once the window elapses it tries again, so a repaired setup self-heals.
+    clock += 61_000;
+    await manager.replenish(repoDir);
+    expect(attempts).toHaveLength(2);
+
+    await manager.stop();
+  });
+
   test("returns null when pool is empty and triggers replenishment", async () => {
     const manager = new WarmWorktreePoolManager({
       paseoHome,

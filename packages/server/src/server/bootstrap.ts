@@ -194,6 +194,7 @@ import {
   ItsaplanClient,
   ItsaplanProjectStore,
   ItsaplanReconcileService,
+  resolveItsaplanConfig,
   resolveTicketAttachments,
   runItsaplanProjectResync,
   type ItsaplanCentralConfig,
@@ -1346,6 +1347,16 @@ export async function createPaseoDaemon(
     logger,
   });
   await centralMissionControlConfig.initialize();
+  // The one read path for the itsaplan connection: fleet policy from central
+  // config with this machine's own web origin layered on (resolveItsaplanConfig
+  // explains why the per-host value cannot live centrally). Resolved here so
+  // the bridge, the reconcile sweep, the chat runner, and project sync all see
+  // the same connection.
+  const getItsaplanConfig = (): ItsaplanCentralConfig | null =>
+    resolveItsaplanConfig(
+      centralMissionControlConfig.get().itsaplan,
+      daemonConfigStore.get().missionControl?.itsaplanWebBaseUrl,
+    );
   // Mission Control naming: assigns a fleet-wide name to every created agent
   // (except paseo.mission-control=* labeled agents). Constructed before
   // AgentManager so its onAgentCreated hook can reference it; the manager is
@@ -2015,11 +2026,7 @@ export async function createPaseoDaemon(
     createLocally: async (spawnPlan, providerModel) =>
       spawnProposalLocally(
         createAgent,
-        await attachTicketImagesToSpawnPlan(
-          spawnPlan,
-          () => centralMissionControlConfig.get().itsaplan,
-          logger,
-        ),
+        await attachTicketImagesToSpawnPlan(spawnPlan, getItsaplanConfig, logger),
         providerModel,
         serverId,
       ),
@@ -2027,11 +2034,7 @@ export async function createPaseoDaemon(
       spawnProposalOnPeer(
         peerManager,
         peerName,
-        await attachTicketImagesToSpawnPlan(
-          spawnPlan,
-          () => centralMissionControlConfig.get().itsaplan,
-          logger,
-        ),
+        await attachTicketImagesToSpawnPlan(spawnPlan, getItsaplanConfig, logger),
       ),
   });
   missionControlService = new MissionControlService({
@@ -2209,7 +2212,6 @@ export async function createPaseoDaemon(
   // delivery reuses the exact primitive Mission Control's own machinery
   // turns use (service.ts dispatchMachineryTurn) rather than the per-agent
   // event pipeline — a new-ticket dispatch prompt has no agentId yet.
-  const getItsaplanConfig = () => centralMissionControlConfig.get().itsaplan;
   itsaplanBridge = new ItsaplanBridge({
     logger,
     serverId,
