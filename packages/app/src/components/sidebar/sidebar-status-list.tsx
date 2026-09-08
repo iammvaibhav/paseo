@@ -1,13 +1,5 @@
 import { router } from "expo-router";
-import {
-  memo,
-  useCallback,
-  useMemo,
-  useState,
-  type MutableRefObject,
-  type ReactNode,
-  type Ref,
-} from "react";
+import { memo, useCallback, useMemo, useState, type MutableRefObject, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
   View,
@@ -60,6 +52,8 @@ import {
   SidebarWorkspaceTrailingActionSlot,
   sidebarWorkspaceRowStyles,
 } from "@/components/sidebar/sidebar-workspace-row-content";
+import { SidebarWorkspaceAgentDropIndicator } from "@/components/sidebar/sidebar-workspace-drop-indicator";
+import { useAgentTabDropRow } from "@/workspace-tabs/use-agent-tab-drop";
 import { useOpenKebabMenuVisibility } from "@/components/sidebar/use-open-kebab-menu-visibility";
 import { resolveWorkspaceScope, useHistoryAskStore } from "@/history-ask";
 import { buildSessionsRoute } from "@/utils/host-routes";
@@ -836,6 +830,18 @@ function StatusWorkspaceRowInnerContent({
     "aria-roledescription": _dragRoleDescription,
     ...dragAttributes
   } = dragHandleProps?.attributes ?? {};
+  const { dropRowRef, isDropTarget: isAgentTabDropTarget } = useAgentTabDropRow({
+    serverId: workspace.serverId,
+    workspaceId: workspace.workspaceId,
+    workspaceKey: workspace.workspaceKey,
+  });
+  const setRowRef = useCallback(
+    (node: View | null) => {
+      (dragHandleProps?.setActivatorNodeRef as ((value: unknown) => void) | undefined)?.(node);
+      dropRowRef(node);
+    },
+    [dragHandleProps, dropRowRef],
+  );
 
   const isDesktop = !isTouchPlatform;
   const serviceSummary = isDesktop ? selectWorkspaceServiceSummary(workspace.scripts) : null;
@@ -895,7 +901,7 @@ function StatusWorkspaceRowInnerContent({
             <View
               {...dragAttributes}
               {...dragHandleProps?.listeners}
-              ref={dragHandleProps?.setActivatorNodeRef as unknown as Ref<View>}
+              ref={setRowRef}
               style={styles.workspaceRowContainer}
               {...hoverHandlers}
             >
@@ -970,6 +976,9 @@ function StatusWorkspaceRowInnerContent({
                   ) : null}
                 </SidebarWorkspaceRowContent>
               </SidebarWorkspaceContextMenu>
+              {isAgentTabDropTarget ? (
+                <SidebarWorkspaceAgentDropIndicator workspaceKey={workspace.workspaceKey} />
+              ) : null}
             </View>
           );
         }}
