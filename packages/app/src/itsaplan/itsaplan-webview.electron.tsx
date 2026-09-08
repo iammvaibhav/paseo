@@ -4,7 +4,6 @@ import {
   getResidentBrowserWebview,
   hidePersistentBrowserWebview,
   isBrowserWebviewDomReady,
-  isResidentBrowserWebviewReady,
   navigatePersistentBrowserWebview,
   showPersistentBrowserWebview,
 } from "@/desktop/browser/resident-webviews";
@@ -87,13 +86,17 @@ let lastEmbedOrigin: string | null = null;
 /** Project the fallback reload already ran for, so it runs at most once per key. */
 let reloadedForKey: string | null = null;
 
+/**
+ * Readiness is deliberately NOT consulted here. The gate is an attribute that
+ * `did-start-loading` removes and only `dom-ready` restores, and a guest that
+ * outlives every pane mount ends up with the attribute gone while it is very
+ * much alive: measured on a running desktop app, `data-paseo-dom-ready` was
+ * null while `executeJavaScript` resolved normally. Gating on it turned every
+ * project switch into a silent queue that nothing ever flushed.
+ */
 function resolveGuestScriptTarget(): WebviewWithScript | null {
   const webview = getResidentBrowserWebview(ITSAPLAN_BROWSER_ID) as WebviewWithScript | null;
-  if (
-    !webview ||
-    !isResidentBrowserWebviewReady(webview) ||
-    typeof webview.executeJavaScript !== "function"
-  ) {
+  if (!webview || typeof webview.executeJavaScript !== "function") {
     return null;
   }
   return webview;
@@ -143,8 +146,11 @@ function reloadGuestToProject(projectKey: string): void {
 
 /**
  * Points the running itsaplan SPA at a project client-side, avoiding a reload.
- * Queues while the guest is not ready, and reloads it outright when the guest
- * cannot route itself — a slow switch beats a switch that never happens.
+ * The inject is attempted whenever the guest element exists — see
+ * `resolveGuestScriptTarget` for why readiness is not a precondition — and the
+ * guest's own answer decides what happens next: a bridge call is the fast path,
+ * anything else reloads the guest outright, because a slow switch beats a
+ * switch that never happens.
  */
 export function navigateItsaplanEmbedProject(projectKey: string): void {
   const trimmed = projectKey.trim();
@@ -156,17 +162,23 @@ export function navigateItsaplanEmbedProject(projectKey: string): void {
   if (!webview) {
     return;
   }
-  webview
-    .executeJavaScript?.(navigationScript(trimmed))
-    .then((result) => {
-      if (result === "bridge") {
-        reloadedForKey = null;
-        return true;
-      }
-      reloadGuestToProject(trimmed);
-      return false;
-    })
-    .catch(() => reloadGuestToProject(trimmed));
+  try {
+    webview
+      .executeJavaScript?.(navigationScript(trimmed))
+      .then((result) => {
+        if (result === "bridge") {
+          pendingNavigateKey = null;
+          reloadedForKey = null;
+          return true;
+        }
+        reloadGuestToProject(trimmed);
+        return false;
+      })
+      .catch(() => reloadGuestToProject(trimmed));
+  } catch {
+    // A guest detached mid-click rejects synchronously; a reload still lands.
+    reloadGuestToProject(trimmed);
+  }
 }
 
 function flushPendingNavigate(): void {

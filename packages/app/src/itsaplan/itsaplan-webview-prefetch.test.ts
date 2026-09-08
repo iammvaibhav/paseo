@@ -18,17 +18,15 @@ describe("itsaplan-webview navigation and prefetching", () => {
     vi.clearAllMocks();
   });
 
-  it("does not execute script if webview is not ready", () => {
-    vi.spyOn(residentWebviews, "getResidentBrowserWebview").mockReturnValue(mockWebview);
-    vi.spyOn(residentWebviews, "isResidentBrowserWebviewReady").mockReturnValue(false);
+  it("does not execute script when there is no guest", () => {
+    vi.spyOn(residentWebviews, "getResidentBrowserWebview").mockReturnValue(null);
 
     prefetchItsaplanProject("PASEO");
     expect(mockExecute).not.toHaveBeenCalled();
   });
 
-  it("executes prefetch script when webview is ready", () => {
+  it("executes prefetch script against the guest", () => {
     vi.spyOn(residentWebviews, "getResidentBrowserWebview").mockReturnValue(mockWebview);
-    vi.spyOn(residentWebviews, "isResidentBrowserWebviewReady").mockReturnValue(true);
 
     prefetchItsaplanProject("PASEO");
     expect(mockExecute).toHaveBeenCalledTimes(1);
@@ -39,7 +37,6 @@ describe("itsaplan-webview navigation and prefetching", () => {
 
   it("prefetches multiple projects in sequence", () => {
     vi.spyOn(residentWebviews, "getResidentBrowserWebview").mockReturnValue(mockWebview);
-    vi.spyOn(residentWebviews, "isResidentBrowserWebviewReady").mockReturnValue(true);
 
     prefetchItsaplanProjects(["PASEO", "AMBIENTAISTA", ""]);
     expect(mockExecute).toHaveBeenCalledTimes(2);
@@ -49,7 +46,6 @@ describe("itsaplan-webview navigation and prefetching", () => {
 
   it("executes client-side navigation script for a project key", () => {
     vi.spyOn(residentWebviews, "getResidentBrowserWebview").mockReturnValue(mockWebview);
-    vi.spyOn(residentWebviews, "isResidentBrowserWebviewReady").mockReturnValue(true);
 
     navigateItsaplanEmbedProject("MKT");
     expect(mockExecute).toHaveBeenCalledTimes(1);
@@ -61,7 +57,6 @@ describe("itsaplan-webview navigation and prefetching", () => {
 
   it("asks the guest to prefetch every project", () => {
     vi.spyOn(residentWebviews, "getResidentBrowserWebview").mockReturnValue(mockWebview);
-    vi.spyOn(residentWebviews, "isResidentBrowserWebviewReady").mockReturnValue(true);
 
     prefetchItsaplanAllProjects();
     expect(mockExecute).toHaveBeenCalledTimes(1);
@@ -70,24 +65,20 @@ describe("itsaplan-webview navigation and prefetching", () => {
     expect(script).toContain("paseo:prefetch-all-projects");
   });
 
-  it("queues project navigation until the guest is ready", () => {
-    const ready = vi
-      .spyOn(residentWebviews, "isResidentBrowserWebviewReady")
-      .mockReturnValue(false);
+  // A guest that outlives the pane loses the dom-ready attribute while staying
+  // alive, so every switch used to queue behind a flush that never came.
+  it("switches the project even when the guest reports it is not ready", () => {
     vi.spyOn(residentWebviews, "getResidentBrowserWebview").mockReturnValue(mockWebview);
+    vi.spyOn(residentWebviews, "isResidentBrowserWebviewReady").mockReturnValue(false);
 
     navigateItsaplanEmbedProject("AMBIENTAISTA");
-    expect(mockExecute).not.toHaveBeenCalled();
 
-    ready.mockReturnValue(true);
-    navigateItsaplanEmbedProject("AMBIENTAISTA");
     expect(mockExecute).toHaveBeenCalledTimes(1);
     expect(mockExecute.mock.calls[0]![0]).toContain('"AMBIENTAISTA"');
   });
 
   it("reloads the guest when it reports no bridge, so the project still changes", async () => {
     vi.spyOn(residentWebviews, "getResidentBrowserWebview").mockReturnValue(mockWebview);
-    vi.spyOn(residentWebviews, "isResidentBrowserWebviewReady").mockReturnValue(true);
     vi.spyOn(residentWebviews, "ensurePersistentBrowserWebview").mockReturnValue(mockWebview);
     const navigate = vi
       .spyOn(residentWebviews, "navigatePersistentBrowserWebview")
