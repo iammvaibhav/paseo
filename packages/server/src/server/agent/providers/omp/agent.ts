@@ -2763,6 +2763,7 @@ export class OmpAgentClient implements AgentClient {
         systemPrompt: systemPrompt ?? "",
         env: launchContext?.env,
       });
+      const claimMs = Date.now() - claimStartedAt;
       if (pooled) {
         try {
           const slash = model.indexOf("/");
@@ -2783,7 +2784,7 @@ export class OmpAgentClient implements AgentClient {
             source: "pool",
             poolHit: true,
             timing: {
-              claimMs: Date.now() - claimStartedAt,
+              claimMs,
               newSessionMs,
               setModelMs,
               totalMs: Date.now() - acquireStartedAt,

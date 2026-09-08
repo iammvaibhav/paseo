@@ -1279,6 +1279,56 @@ describe("ProviderSnapshotManager public surface", () => {
     }
   });
 
+  test("resolveCreateConfig uses the global catalog and does not refresh a new workspace cwd", async () => {
+    const catalogScopes: Array<FetchCatalogOptions["scope"]> = [];
+    const modes: AgentMode[] = [{ id: "full", label: "Full" }];
+    const manager = new ProviderSnapshotManager({
+      logger: createTestLogger(),
+      providerOverrides: {
+        claude: { enabled: false },
+        copilot: { enabled: false },
+        opencode: { enabled: false },
+        pi: { enabled: false },
+        omp: { enabled: false },
+      },
+      extraClients: {
+        codex: createExtraClient("codex", {
+          async isAvailable() {
+            return true;
+          },
+          async fetchCatalog(options) {
+            catalogScopes.push(options.scope);
+            return { models: [] as AgentModelDefinition[], modes };
+          },
+          resolveCreateConfig(input) {
+            return {
+              modeId: input.availableModes[0]?.id,
+              featureValues: undefined,
+            };
+          },
+        }),
+      },
+    });
+    try {
+      await manager.getProvider({ provider: "codex", wait: true });
+      expect(catalogScopes).toEqual(["global"]);
+
+      const resolved = await manager.resolveCreateConfig({
+        cwd: "/tmp/brand-new-worktree",
+        provider: "codex",
+        requestedMode: undefined,
+        featureValues: undefined,
+        parent: null,
+        unattended: false,
+      });
+
+      expect(resolved.modeId).toBe("full");
+      expect(catalogScopes).toEqual(["global"]);
+    } finally {
+      manager.destroy();
+    }
+  });
+
   test("resolveCreateConfig passes explicit unattended intent to provider policy", async () => {
     const resolverInputs: ResolveAgentCreateConfigInput[] = [];
     const modes: AgentMode[] = [{ id: "worker", label: "Worker", isUnattended: true }];

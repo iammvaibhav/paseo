@@ -8,6 +8,7 @@ import { z } from "zod";
 
 import { writeJsonFileAtomic } from "../../../atomic-file.js";
 import { resolvePaseoHome } from "../../../paseo-home.js";
+import type { OmpSessionState } from "./rpc-types.js";
 import type { OmpRuntime, OmpRuntimeSession } from "./runtime.js";
 
 /**
@@ -44,11 +45,12 @@ const WARM_POOL_LIVENESS_TIMEOUT_MS = 2_000;
  */
 const WARM_POOL_TARGET_IDLE = 2;
 /**
- * Budget for re-targeting a pooled process to the claiming workspace. The move
- * itself measures ~30ms; this only bounds a wedged process so it costs the
- * create a cold start instead of a stall.
+ * Budget for re-targeting a pooled process to the claiming workspace. `/move`
+ * is an async prompt plus a session-file change; under load it measured ~1.3s
+ * here, and wrapping the prompt in the 2s liveness budget made the claim miss
+ * and pay a 12s cold boot. Bound a wedged process, not a healthy one.
  */
-const WARM_POOL_MOVE_TIMEOUT_MS = 3_000;
+const WARM_POOL_MOVE_TIMEOUT_MS = 8_000;
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolvePromise, rejectPromise) => {
@@ -334,15 +336,17 @@ export class OmpWarmPool {
       if (!entry) {
         break;
       }
+      let before: OmpSessionState;
       try {
         // Bounded: a hung process must cost the create milliseconds, not the
-        // 30s default RPC budget.
-        await withTimeout(entry.session.getState(), WARM_POOL_LIVENESS_TIMEOUT_MS);
+        // 30s default RPC budget. Reuse this state in retarget so `/move`
+        // does not pay a second getState round-trip.
+        before = await withTimeout(entry.session.getState(), WARM_POOL_LIVENESS_TIMEOUT_MS);
       } catch {
         void this.dispose(entry);
         continue;
       }
-      if (entry.cwd !== cwd && !(await this.retarget(entry, cwd))) {
+      if (entry.cwd !== cwd && !(await this.retarget(entry, cwd, before))) {
         void this.dispose(entry);
         continue;
       }
@@ -395,10 +399,12 @@ export class OmpWarmPool {
    * project rules for the new cwd. Completion is observed as the session file
    * changing directory — `/move` is asynchronous behind the prompt ack.
    */
-  private async retarget(entry: WarmEntry, cwd: string): Promise<boolean> {
+  private async retarget(entry: WarmEntry, cwd: string, before: OmpSessionState): Promise<boolean> {
     try {
-      const before = await withTimeout(entry.session.getState(), WARM_POOL_LIVENESS_TIMEOUT_MS);
-      await withTimeout(entry.session.prompt(`/move ${cwd}`), WARM_POOL_LIVENESS_TIMEOUT_MS);
+      // `/move` is slower than a liveness ping — do not wrap it in the 2s
+      // getState budget. A timeout here used to discard a live process and
+      // cold-start (~12s) instead of finishing the retarget (~1.3s).
+      await withTimeout(entry.session.prompt(`/move ${cwd}`), WARM_POOL_MOVE_TIMEOUT_MS);
       const deadline = Date.now() + WARM_POOL_MOVE_TIMEOUT_MS;
       for (;;) {
         const state = await withTimeout(entry.session.getState(), WARM_POOL_LIVENESS_TIMEOUT_MS);

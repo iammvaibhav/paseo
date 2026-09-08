@@ -531,11 +531,10 @@ export class ProviderSnapshotManager {
     input: ResolveProviderCreateConfigOptions,
   ): Promise<ResolvedProviderCreateConfig> {
     const readyStartedAt = Date.now();
-    const entry = await this.getReadyProvider({
-      cwd: input.cwd,
-      provider: input.provider,
-      wait: true,
-    });
+    // Create must not wait on a workspace-scoped catalog refresh. A brand-new
+    // worktree has no snapshot, and OMP answers by cold-booting a throwaway
+    // process in that cwd (~7s). Modes/models used here are provider-global.
+    const entry = await this.getReadyProviderForCreate(input.provider);
     const readyMs = Date.now() - readyStartedAt;
     const definition = this.requireProvider(input.provider);
     const parent = input.parent ? this.resolveParent(input.parent) : null;
@@ -759,6 +758,18 @@ export class ProviderSnapshotManager {
       void this.warmUp(target, providersToWarm);
     }
     return this.getOrCreateTarget(target.snapshotCwd).snapshot;
+  }
+
+  /**
+   * Snapshot used at agent-create time. Prefer the already-warm global
+   * catalog; never kick off a per-cwd refresh that would stall the create.
+   */
+  private async getReadyProviderForCreate(provider: AgentProvider): Promise<ProviderSnapshotEntry> {
+    const global = await this.getProvider({ provider, wait: false });
+    if (global.enabled && global.status === "ready") {
+      return global;
+    }
+    return this.getReadyProvider({ provider, wait: true });
   }
 
   private async getReadyProvider(

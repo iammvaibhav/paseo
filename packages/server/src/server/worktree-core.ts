@@ -117,9 +117,10 @@ async function createWorktreeCoreWithPriority(
     }
   }
 
-  if (intent.kind === "branch-off" && intent.baseBranch) {
-    await fetchDispatchBaseBranch(repoRoot, intent.baseBranch);
-  }
+  // Claim before the origin fetch. A warm worktree is already checked out at a
+  // recent SHA; waiting up to DISPATCH_BASE_BRANCH_FETCH_TIMEOUT_MS here made
+  // every "instant" create pay a 1–3s git fetch even when the pool hit.
+  // ADR 0001's fetch still runs on the cold path so a miss branches from origin.
   if (deps.warmWorktreePool) {
     const warmClaimResult = await deps.warmWorktreePool.claim({
       repoRoot,
@@ -137,6 +138,9 @@ async function createWorktreeCoreWithPriority(
         created: true,
       };
     }
+  }
+  if (intent.kind === "branch-off" && intent.baseBranch) {
+    await fetchDispatchBaseBranch(repoRoot, intent.baseBranch);
   }
 
   return {
