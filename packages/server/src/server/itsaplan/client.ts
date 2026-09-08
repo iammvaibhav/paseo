@@ -31,6 +31,7 @@ const ItsaplanColumnSchema = z.object({
   stateType: z.enum(["backlog", "unstarted", "started", "completed", "canceled"]),
   color: z.string().optional(),
   position: z.number().optional(),
+  autoAssignUserId: z.string().nullable().optional(),
 });
 export type ItsaplanColumn = z.infer<typeof ItsaplanColumnSchema>;
 
@@ -303,6 +304,23 @@ export class ItsaplanClient {
 
   async updateAssignee(issueId: number, assigneeUserId: string | null): Promise<ItsaplanIssue> {
     return this.request("PATCH", `/issues/${issueId}`, { assigneeUserId }, ItsaplanIssueSchema);
+  }
+  async updateColumn(
+    projectKey: string,
+    columnId: number,
+    patch: {
+      autoAssignUserId?: string | null;
+      name?: string;
+      wipMode?: string;
+      wipLimit?: number | null;
+    },
+  ): Promise<ItsaplanColumn> {
+    return this.request(
+      "PATCH",
+      `/projects/${encodeURIComponent(projectKey)}/columns/${columnId}`,
+      patch,
+      ItsaplanColumnSchema,
+    );
   }
 
   async postComment(issueId: number, body: string): Promise<void> {

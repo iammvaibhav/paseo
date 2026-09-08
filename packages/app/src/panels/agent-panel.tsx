@@ -308,20 +308,12 @@ function renderChatAgentNonReadyView(args: {
   }
   return null;
 }
-
-function resolveWorkspaceAgentTabLabel(title: string | null | undefined): string | null {
-  if (typeof title !== "string") {
-    return null;
-  }
-  const normalized = title.trim();
-  if (!normalized) {
-    return null;
-  }
-  if (normalized.toLowerCase() === "new agent") {
-    return null;
-  }
-  return normalized;
-}
+export {
+  stripTicketPrefix,
+  resolveWorkspaceAgentTabLabel,
+  resolveAgentTabTooltip,
+} from "./agent-tab-presentation";
+import { resolveWorkspaceAgentTabLabel, resolveAgentTabTooltip } from "./agent-tab-presentation";
 
 function useAgentPanelDescriptor(
   target: { kind: "agent"; agentId: string },
@@ -331,16 +323,18 @@ function useAgentPanelDescriptor(
     useShallow((state) => selectAgentDescriptor(state, context.serverId, target.agentId)),
   );
   const provider = descriptorState.provider;
-  const label = resolveWorkspaceAgentTabLabel(descriptorState.title);
+  const label = resolveWorkspaceAgentTabLabel(descriptorState.title, descriptorState.name);
   const icon = getProviderIcon(provider, context.serverId);
   // Agent tab tooltips (spec "Names"): "Name — Title" when names are enabled,
   // title only when hideAgentNames is set (the central Mission Control toggle).
   const hideAgentNames = useMissionControlCentralConfig().config?.hideAgentNames === true;
   const fallbackTooltip = `${formatProviderLabel(provider)} agent`;
-  const tooltip =
-    !hideAgentNames && descriptorState.name
-      ? `${descriptorState.name} — ${label ?? fallbackTooltip}`
-      : (label ?? fallbackTooltip);
+  const tooltip = resolveAgentTabTooltip({
+    label,
+    name: descriptorState.name,
+    fallbackTooltip,
+    hideAgentNames,
+  });
 
   return {
     label: label ?? "",

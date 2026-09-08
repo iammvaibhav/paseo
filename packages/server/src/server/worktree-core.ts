@@ -15,9 +15,9 @@ import {
 } from "./resolve-worktree-creation-intent.js";
 import type { ChangeRequestCheckoutSource, FirstAgentContext } from "@getpaseo/protocol/messages";
 import type { WorkspaceGitService } from "./workspace-git-service.js";
-import { runGitCommand, runWithGitCommandPriority } from "../utils/run-git-command.js";
 import { branchNameFromRef } from "../utils/worktree-metadata.js";
-
+import { runGitCommand, runWithGitCommandPriority } from "../utils/run-git-command.js";
+import type { WarmWorktreePool } from "./warm-worktree-pool.js";
 export interface CreateWorktreeCoreInput {
   cwd: string;
   worktreeSlug?: string;
@@ -39,6 +39,7 @@ export interface CreateWorktreeCoreDeps {
     "resolveRepoRoot" | "resolveDefaultBranch" | "resolveForge"
   >;
   resolveDefaultBranch?: (repoRoot: string) => Promise<string>;
+  warmWorktreePool?: Pick<WarmWorktreePool, "claim">;
 }
 
 export interface CreateWorktreeCoreResult {
@@ -118,6 +119,24 @@ async function createWorktreeCoreWithPriority(
 
   if (intent.kind === "branch-off" && intent.baseBranch) {
     await fetchDispatchBaseBranch(repoRoot, intent.baseBranch);
+  }
+  if (deps.warmWorktreePool) {
+    const warmClaimResult = await deps.warmWorktreePool.claim({
+      repoRoot,
+      worktreeSlug: normalizedSlug,
+      source: intent,
+      paseoHome: input.paseoHome,
+      worktreesRoot: input.worktreesRoot,
+      runSetup: input.runSetup,
+    });
+    if (warmClaimResult) {
+      return {
+        worktree: warmClaimResult.worktree,
+        intent,
+        repoRoot,
+        created: true,
+      };
+    }
   }
 
   return {

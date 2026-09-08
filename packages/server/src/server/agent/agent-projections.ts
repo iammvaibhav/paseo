@@ -1,4 +1,5 @@
 import type { LifecycleBucket } from "@getpaseo/protocol/agent-state-bucket";
+import { getItsaplanIssueIdFromLabels, ITSAPLAN_ISSUE_LABEL_KEY } from "../itsaplan/bridge.js";
 import type {
   AgentListItemPayload,
   AgentSnapshotPayload,
@@ -40,15 +41,28 @@ function normalizeThinkingOptionId(value: string | null | undefined): string | n
   return normalized.length > 0 ? normalized : null;
 }
 
-function normalizeLabels(labels: Record<string, unknown> | undefined): Record<string, string> {
-  if (!labels) {
+export function normalizeLabels(
+  labels: Record<string, unknown> | undefined | null,
+): Record<string, string> {
+  if (!labels || typeof labels !== "object") {
     return {};
   }
-  return Object.fromEntries(
-    Object.entries(labels).filter(
-      (entry): entry is [string, string] => typeof entry[1] === "string",
-    ),
-  );
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(labels)) {
+    if (value === null || value === undefined) {
+      continue;
+    }
+    if (typeof value === "string") {
+      result[key] = value;
+    } else if (typeof value === "number" || typeof value === "boolean") {
+      result[key] = String(value);
+    }
+  }
+  const issueId = getItsaplanIssueIdFromLabels(result);
+  if (issueId && !result[ITSAPLAN_ISSUE_LABEL_KEY]) {
+    result[ITSAPLAN_ISSUE_LABEL_KEY] = issueId;
+  }
+  return result;
 }
 
 export function resolveEffectiveThinkingOptionId(options: {
