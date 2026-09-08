@@ -5,15 +5,15 @@ import { fileURLToPath } from "node:url";
 const DEFAULT_ATTEMPTS = 3;
 const DEFAULT_BACKOFF_MS = 20_000;
 
-function runNpm(args) {
-  const command = process.platform === "win32" ? "npm.cmd" : "npm";
+function runPnpm(args) {
+  const command = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
   const result = spawnSync(command, args, {
     shell: process.platform === "win32",
     stdio: "inherit",
   });
 
   if (result.error) {
-    console.error(`Failed to start npm: ${result.error.message}`);
+    console.error(`Failed to start pnpm: ${result.error.message}`);
     return 1;
   }
 
@@ -26,7 +26,7 @@ function wait(delayMs) {
 
 export async function runWithRetry(
   args,
-  { attempts = DEFAULT_ATTEMPTS, backoffMs = DEFAULT_BACKOFF_MS, run = runNpm, sleep = wait } = {},
+  { attempts = DEFAULT_ATTEMPTS, backoffMs = DEFAULT_BACKOFF_MS, run = runPnpm, sleep = wait } = {},
 ) {
   let exitCode = 1;
 
@@ -39,7 +39,7 @@ export async function runWithRetry(
     if (attempt < attempts) {
       const delayMs = attempt * backoffMs;
       console.warn(
-        `npm failed with exit code ${exitCode}; retrying in ${delayMs / 1000}s (${attempt + 1}/${attempts})`,
+        `pnpm failed with exit code ${exitCode}; retrying in ${delayMs / 1000}s (${attempt + 1}/${attempts})`,
       );
       await sleep(delayMs);
     }
@@ -51,7 +51,7 @@ export async function runWithRetry(
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolvePath(process.argv[1])) {
   const args = process.argv.slice(2);
   if (args.length === 0) {
-    console.error("Usage: node scripts/npm-retry.mjs <npm arguments...>");
+    console.error("Usage: node scripts/pnpm-retry.mjs <pnpm arguments...>");
     process.exitCode = 2;
   } else {
     process.exitCode = await runWithRetry(args);

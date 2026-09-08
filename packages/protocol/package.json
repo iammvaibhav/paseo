@@ -20,15 +20,15 @@
   "scripts": {
     "clean": "node ../../scripts/clean-package-dist.mjs",
     "build": "tsc -p tsconfig.json --incremental false",
-    "build:clean": "npm run clean && npm run build",
-    "prepack": "npm run build:clean",
+    "build:clean": "pnpm run clean && pnpm run build",
+    "prepack": "pnpm run build:clean",
     "typecheck": "tsgo --noEmit",
     "test": "vitest run",
     "generate:validators": "node scripts/generate-validation-aot.mjs",
     "watch": "concurrently --kill-others --names validation,tsc --prefix-colors green,yellow \"node scripts/watch-validation-aot.mjs\" \"tsc -p tsconfig.json --watch --preserveWatchOutput\"",
-    "prebuild": "npm run generate:validators",
-    "pretypecheck": "npm run generate:validators",
-    "pretest": "npm run generate:validators"
+    "prebuild": "pnpm run generate:validators",
+    "pretypecheck": "pnpm run generate:validators",
+    "pretest": "pnpm run generate:validators"
   },
   "dependencies": {
     "semver": "^7.8.5",

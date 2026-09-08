@@ -69,6 +69,6 @@ hint, never a required routing key (see 02).
 - Do not run project-wide suites; run only the specific test files you add or
   change (`npx vitest run <file> --bail=1`). Final gates (format, lint, full
   typecheck) run once at integration, not per slice.
-- Never `npm install` in a worktree.
-- Rebuild owning stacks (`npm run build:client` / `npm run build:server`)
+- Never run `pnpm install` in a worktree unless its own dependencies changed.
+- Rebuild owning stacks (`pnpm run build:client` / `pnpm run build:server`)
   before diagnosing cross-package type errors.

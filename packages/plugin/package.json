@@ -55,8 +55,8 @@
   "scripts": {
     "clean": "node ../../scripts/clean-package-dist.mjs",
     "build": "tsc -p tsconfig.json --incremental false",
-    "build:clean": "npm run clean && npm run build",
-    "prepack": "npm run build:clean",
+    "build:clean": "pnpm run clean && pnpm run build",
+    "prepack": "pnpm run build:clean",
     "typecheck": "tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit",
     "test": "vitest run"
   },
@@ -65,8 +65,9 @@
     "use-sync-external-store": "^1.6.0"
   },
   "devDependencies": {
-    "@getpaseo/client": "0.8.0-beta.1",
-    "@getpaseo/protocol": "0.8.0-beta.1",
+    "@getpaseo/client": "workspace:*",
+    "@getpaseo/plugin": "workspace:*",
+    "@getpaseo/protocol": "workspace:*",
     "@types/node": "^20.9.0",
     "@types/react": "~19.2.0",
     "react": "19.1.0",
@@ -76,8 +77,8 @@
     "zod": "^4.4.3"
   },
   "peerDependencies": {
-    "@getpaseo/client": "0.8.0-beta.1",
-    "@getpaseo/protocol": "0.8.0-beta.1",
+    "@getpaseo/client": "workspace:*",
+    "@getpaseo/protocol": "workspace:*",
     "react": "~19.1.0",
     "react-native": ">=0.81.5",
     "zod": "^4.4.3"
