@@ -72,20 +72,28 @@ async function fetchCheckAgents(client) {
   return res.entries;
 }
 
-/**
- * The fix adds `testID="sidebar-agent-view-row-elapsed"` to the row's time Text. Until it
- * lands, read the row's trailing text leaf instead of failing on a missing selector, so the
- * check is red for the real bug (stale "now"/ago text, wrong order) rather than red for an
- * absent testID.
- */
-async function rowTimeText(page, rowSelector) {
-  const testIdLocator = page.locator(
-    `${rowSelector} [data-testid="sidebar-agent-view-row-elapsed"]`,
+const ROW_PREFIX = "sidebar-agent-view-row-";
+const TIME_PREFIX = "sidebar-agent-view-row-time-";
+
+/** The row container, excluding the row's own time Text (whose testID also ends in the agent id). */
+function rowSelector(agentId) {
+  return (
+    `[data-testid^="${ROW_PREFIX}"][data-testid$="-${agentId}"]` +
+    `:not([data-testid^="${TIME_PREFIX}"])`
   );
-  if ((await testIdLocator.count()) > 0) {
-    return ((await testIdLocator.first().textContent()) ?? "").trim();
+}
+
+/**
+ * The row's time label. The fix gives it `testID="sidebar-agent-view-row-time-<serverId>-<id>"`;
+ * without the fix that testID is absent, so fall back to the row's trailing text leaf and keep
+ * the check red for the real bug (stale "now"/ago text) rather than for a missing selector.
+ */
+async function rowTimeText(page, agentId) {
+  const timeLocator = page.locator(`[data-testid^="${TIME_PREFIX}"][data-testid$="-${agentId}"]`);
+  if ((await timeLocator.count()) > 0) {
+    return ((await timeLocator.first().textContent()) ?? "").trim();
   }
-  return page.$eval(rowSelector, (row) => {
+  return page.$eval(rowSelector(agentId), (row) => {
     const leaves = [...row.querySelectorAll("*")].filter(
       (el) => el.children.length === 0 && (el.textContent ?? "").trim().length > 0,
     );
@@ -182,10 +190,8 @@ export const steps = [
         await toggle.click();
       }
 
-      const alphaSelector = `[data-testid$="-${alphaId}"]`;
-      const zuluSelector = `[data-testid$="-${zuluId}"]`;
-      await page.waitForSelector(alphaSelector, { state: "attached", timeout: 30_000 });
-      await page.waitForSelector(zuluSelector, { state: "attached", timeout: 30_000 });
+      await page.waitForSelector(rowSelector(alphaId), { state: "attached", timeout: 30_000 });
+      await page.waitForSelector(rowSelector(zuluId), { state: "attached", timeout: 30_000 });
 
       const beforeShot = await ctx.shot("before");
       ctx.expect(Boolean(beforeShot), "Before shot captured");
@@ -198,20 +204,19 @@ export const steps = [
     narrate: "Verified row order is Zulu-then-Alpha and the time text reads elapsed duration.",
     async run(ctx) {
       const page = ctx.page;
-      const alphaSelector = `[data-testid$="-${alphaId}"]`;
-      const zuluSelector = `[data-testid$="-${zuluId}"]`;
 
       ctx.expect(
-        (await page.locator(alphaSelector).count()) === 1,
+        (await page.locator(rowSelector(alphaId)).count()) === 1,
         `exactly one sidebar row for Alpha (${alphaId})`,
       );
       ctx.expect(
-        (await page.locator(zuluSelector).count()) === 1,
+        (await page.locator(rowSelector(zuluId)).count()) === 1,
         `exactly one sidebar row for Zulu (${zuluId})`,
       );
 
-      const testIds = await page.$$eval('[data-testid^="sidebar-agent-view-row-"]', (els) =>
-        els.map((el) => el.getAttribute("data-testid")),
+      const testIds = await page.$$eval(
+        `[data-testid^="${ROW_PREFIX}"]:not([data-testid^="${TIME_PREFIX}"])`,
+        (els) => els.map((el) => el.getAttribute("data-testid")),
       );
       const alphaIndex = testIds.findIndex((id) => id?.endsWith(`-${alphaId}`));
       const zuluIndex = testIds.findIndex((id) => id?.endsWith(`-${zuluId}`));
@@ -222,8 +227,8 @@ export const steps = [
         `expected most-recently-started Zulu before Alpha in DOM order; got ${JSON.stringify(testIds)}`,
       );
 
-      const alphaTime = await rowTimeText(page, alphaSelector);
-      const zuluTime = await rowTimeText(page, zuluSelector);
+      const alphaTime = await rowTimeText(page, alphaId);
+      const zuluTime = await rowTimeText(page, zuluId);
 
       ctx.expect(
         alphaTime !== "now",
