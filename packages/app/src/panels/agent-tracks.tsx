@@ -7,6 +7,8 @@ import { supportsDesktopPaneSplits, useIsCompactFormFactor } from "@/constants/l
 import { usePaneContext } from "@/panels/pane-context";
 import { useSettings } from "@/hooks/use-settings";
 import { PluginComposerPills } from "@/plugins";
+import { SelectionAsksList, selectSelectionAsks } from "@/selection-ask";
+import { useShallow } from "zustand/shallow";
 import { useSessionStore } from "@/stores/session-store";
 import {
   type ArchiveFinishedStatus,
@@ -48,6 +50,10 @@ export const AgentTracks = memo(function AgentTracks({
 }): ReactElement | null {
   const { tabId, openTab } = usePaneContext();
   const hasWorkspaceDiffStat = useWorkspaceHasDiffStat(serverId, workspaceId);
+  const selectionAsks = useSessionStore(
+    useShallow((state) => selectSelectionAsks(state, serverId, agentId)),
+  );
+  const hasSelectionAsks = selectionAsks.length > 0;
   const isCompact = useIsCompactFormFactor();
   const canSplit = supportsDesktopPaneSplits() && !isCompact;
   const openInSidePane = useSettings((settings) => settings.openInSidePane);
@@ -116,6 +122,7 @@ export const AgentTracks = memo(function AgentTracks({
       tasks,
       archiveFinishedStatus,
       hasPluginComposerPills,
+      hasSelectionAsks,
     })
   ) {
     return null;
@@ -134,6 +141,7 @@ export const AgentTracks = memo(function AgentTracks({
         archiveFinishedStatus={archiveFinishedStatus}
         onDetachSubagent={canDetachSubagents ? detachSubagent : undefined}
       />
+      <SelectionAsksList serverId={serverId} agentId={agentId} />
       <PluginComposerPills
         serverId={serverId}
         workspaceId={workspaceId}
@@ -154,16 +162,19 @@ export function hasAgentTracks({
   tasks,
   archiveFinishedStatus,
   hasPluginComposerPills = false,
+  hasSelectionAsks = false,
 }: {
   subagentRows: readonly SubagentRow[];
   tasks: readonly TodoEntry[] | undefined;
   archiveFinishedStatus: ArchiveFinishedStatus;
   hasPluginComposerPills?: boolean;
+  hasSelectionAsks?: boolean;
 }): boolean {
   return (
     subagentRows.length > 0 ||
     Boolean(tasks?.length) ||
     archiveFinishedStatus.kind !== "idle" ||
-    hasPluginComposerPills
+    hasPluginComposerPills ||
+    hasSelectionAsks
   );
 }
