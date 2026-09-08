@@ -1507,8 +1507,7 @@ const x = 1;
     expect(diff.diff).toContain(`-export const value = "old";`);
     expect(diff.diff).toContain(`+export const value = "new";`);
     expect(commands).toContain("diff --numstat HEAD");
-    expect(commands).toContain("diff HEAD -- generated.js");
-    expect(commands).toContain("diff HEAD -- small.ts");
+    expect(commands).toContain("diff HEAD -- generated.js small.ts");
     expect(metrics.maxConcurrent).toBeLessThanOrEqual(8);
   });
 
@@ -3588,7 +3587,7 @@ const x = 1;
     expect(baseDiff.diff).not.toContain("file.txt");
   });
 
-  it("names both refs when a requested base ref does not match the stored one", async () => {
+  it("rejects a requested base ref that does not resolve to any known branch", async () => {
     const worktree = await createLegacyWorktreeForTest({
       branchName: "mismatch-feature",
       cwd: repoDir,
@@ -3599,7 +3598,7 @@ const x = 1;
 
     await expect(
       getCheckoutDiff(worktree.worktreePath, { mode: "base", baseRef: "other" }, { paseoHome }),
-    ).rejects.toThrow("Base ref mismatch: stored refs/heads/main, requested other");
+    ).rejects.toThrow("Base branch not found locally or on origin: other");
   });
 
   it("excludes dirty working tree changes from Paseo worktree base diffs", async () => {

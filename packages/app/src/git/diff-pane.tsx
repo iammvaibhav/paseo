@@ -64,6 +64,10 @@ import { buildAbsoluteExplorerPath } from "@/utils/explorer-paths";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { GitActionsSplitButton } from "@/git/actions-split-button";
 import { BranchSwitcher } from "@/components/branch-switcher";
+import {
+  ChangesBaseBranchPicker,
+  type ChangesBaseBranchPickerProps,
+} from "@/git/base-branch-picker";
 import { useGitActions } from "@/git/use-actions";
 import { GIT_ACTION_ICONS } from "@/git/action-icons";
 import { buildForgeSignInCommand, getForgePresentation, type Forge } from "@/git/forge";
@@ -488,6 +492,8 @@ interface ChangesRepositoryToolbarModel {
 }
 
 interface ChangesComparisonToolbarModel {
+  // Present only while comparing against a base; uncommitted mode has no base to pick.
+  baseBranch: ChangesBaseBranchPickerProps | null;
   committedDescription?: string;
   diffMode: "uncommitted" | "base";
   mode: ChangesToolbarMode;
@@ -504,6 +510,7 @@ interface ChangesHeaderProps {
 }
 
 interface BuildChangesHeaderModelInput {
+  baseBranch: ChangesBaseBranchPickerProps | null;
   branchName: string | null;
   committedDescription?: string;
   compact: boolean;
@@ -538,6 +545,7 @@ function buildChangesHeaderModel(input: BuildChangesHeaderModelInput): {
       submodulePicker: input.submodulePicker,
     },
     comparison: {
+      baseBranch: input.baseBranch,
       committedDescription: input.committedDescription,
       diffMode: input.diffMode,
       mode: input.mode,
@@ -747,6 +755,7 @@ function ChangesComparisonToolbar({
           onSelectUncommitted={model.onSelectUncommitted}
           onSelectBase={model.onSelectBase}
         />
+        {model.baseBranch ? <ChangesBaseBranchPicker {...model.baseBranch} /> : null}
         {model.selectedDiffStat ? (
           <DiffStat
             additions={model.selectedDiffStat.additions}
@@ -1714,6 +1723,9 @@ export function ChangesSurface({
     notGit,
     statusErrorMessage,
     baseRef,
+    defaultBaseRef,
+    isCustomBaseRef,
+    selectBaseRef: handleSelectBaseRef,
     currentBranchName,
     diffMode,
     selectUncommitted: handleSelectUncommitted,
@@ -1868,6 +1880,10 @@ export function ChangesSurface({
       : externalFocusRequest;
   const handleSelectTreeFile = useCallback(
     (path: string) => {
+      if (openDiffAtCurrentBase) {
+        openDiffAtCurrentBase(path);
+        return;
+      }
       if (presentation === "tree" && onSelectDiffFile) {
         onSelectDiffFile(path);
         return;
@@ -1877,7 +1893,7 @@ export function ChangesSurface({
         revision: Math.max(Date.now(), (current?.revision ?? 0) + 1),
       }));
     },
-    [onSelectDiffFile, presentation],
+    [onSelectDiffFile, openDiffAtCurrentBase, presentation],
   );
   const workingMode = useMemo(
     () => ({
@@ -1949,6 +1965,30 @@ export function ChangesSurface({
   const committedDiffDescription = useMemo(
     () => computeCommittedDiffDescription(branchLabel, baseRefLabel),
     [baseRefLabel, branchLabel],
+  );
+  const baseBranchPicker = useMemo<ChangesBaseBranchPickerProps | null>(
+    () =>
+      diffMode === "base"
+        ? {
+            serverId,
+            cwd,
+            label: baseRefLabel,
+            baseRef,
+            defaultBaseRef,
+            isCustomBaseRef,
+            onSelectBaseRef: handleSelectBaseRef,
+          }
+        : null,
+    [
+      baseRef,
+      baseRefLabel,
+      cwd,
+      defaultBaseRef,
+      diffMode,
+      handleSelectBaseRef,
+      isCustomBaseRef,
+      serverId,
+    ],
   );
   const emptyMessage = t("diffViewer.empty");
   const emptyAction = computeChangesEmptyAction({
@@ -2052,6 +2092,7 @@ export function ChangesSurface({
   const changesHeaderModel = useMemo(
     () =>
       buildChangesHeaderModel({
+        baseBranch: baseBranchPicker,
         branchName: currentBranchName,
         committedDescription: committedDiffDescription,
         compact: isMobile,
@@ -2069,6 +2110,7 @@ export function ChangesSurface({
         submodulePicker,
       }),
     [
+      baseBranchPicker,
       committedDiffDescription,
       currentBranchName,
       cwd,

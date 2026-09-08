@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   expireWorkingDiffComparisonsInState,
+  resolveWorkingDiffBaseRefFromState,
   resolveWorkingDiffComparisonFromState,
+  selectWorkingDiffBaseRefInState,
   selectWorkingDiffComparisonInState,
   type WorkingDiffComparisonState,
   workingDiffComparisonKey,
@@ -10,7 +12,7 @@ import {
 const checkout = { serverId: "server-1", workspaceId: "workspace-1", cwd: "/repo" };
 
 function emptyState(): WorkingDiffComparisonState {
-  return { overrides: {} };
+  return { overrides: {}, baseRefs: {} };
 }
 
 describe("working diff comparison", () => {
@@ -100,5 +102,51 @@ describe("working diff comparison", () => {
         isDirty: true,
       }),
     ).toBe(state);
+  });
+
+  it("scopes a picked base ref to the checkout and clears it on null", () => {
+    expect(resolveWorkingDiffBaseRefFromState(emptyState(), checkout)).toBeNull();
+
+    const picked = selectWorkingDiffBaseRefInState(emptyState(), {
+      ...checkout,
+      baseRef: "release/1.0",
+    });
+    expect(resolveWorkingDiffBaseRefFromState(picked, checkout)).toBe("release/1.0");
+    expect(
+      resolveWorkingDiffBaseRefFromState(picked, { ...checkout, workspaceId: "workspace-2" }),
+    ).toBeNull();
+
+    const cleared = selectWorkingDiffBaseRefInState(picked, { ...checkout, baseRef: null });
+    expect(resolveWorkingDiffBaseRefFromState(cleared, checkout)).toBeNull();
+    expect(selectWorkingDiffBaseRefInState(cleared, { ...checkout, baseRef: "  " })).toBe(cleared);
+    expect(selectWorkingDiffBaseRefInState(picked, { ...checkout, baseRef: "release/1.0" })).toBe(
+      picked,
+    );
+  });
+
+  it("keeps a picked base ref across mode selection and dirty-state expiry", () => {
+    let state = selectWorkingDiffBaseRefInState(emptyState(), {
+      ...checkout,
+      baseRef: "release/1.0",
+    });
+    state = selectWorkingDiffComparisonInState(state, {
+      ...checkout,
+      comparison: "uncommitted",
+      isDirty: true,
+    });
+    state = selectWorkingDiffComparisonInState(state, {
+      ...checkout,
+      comparison: "base",
+      isDirty: true,
+    });
+    expect(resolveWorkingDiffBaseRefFromState(state, checkout)).toBe("release/1.0");
+
+    const expired = expireWorkingDiffComparisonsInState(state, {
+      serverId: checkout.serverId,
+      cwd: checkout.cwd,
+      isDirty: false,
+    });
+    expect(expired.overrides[workingDiffComparisonKey(checkout)]).toBeUndefined();
+    expect(resolveWorkingDiffBaseRefFromState(expired, checkout)).toBe("release/1.0");
   });
 });
