@@ -28,7 +28,7 @@ import type { WorktreeCreationIntent } from "./resolve-worktree-creation-intent.
 import { resolveFirstAgentPromptTitle } from "./agent/create-agent-title.js";
 import { buildAgentBranchNameSeed } from "./agent/prompt-attachments.js";
 import type { FirstAgentContext } from "@getpaseo/protocol/messages";
-import { runWithGitCommandPriority } from "../utils/run-git-command.js";
+import { runGitCommand, runWithGitCommandPriority } from "../utils/run-git-command.js";
 
 export interface CreatePaseoWorktreeInput extends CreateWorktreeCoreInput {
   projectId?: string;
@@ -149,11 +149,14 @@ async function isDirectory(targetPath: string): Promise<boolean> {
 
 async function planWorkspaceCwdForWorktree(
   inputCwd: string,
-  workspaceGitService: Pick<WorkspaceGitService, "getCheckout">,
+  _workspaceGitService: Pick<WorkspaceGitService, "getCheckout">,
 ): Promise<{ inputCwd: string; relativeWorkspaceCwd: string }> {
   const normalizedInputCwd = resolve(inputCwd);
-  const sourceCheckout = await workspaceGitService.getCheckout(normalizedInputCwd);
-  const sourceWorktreePath = sourceCheckout.worktreeRoot ?? normalizedInputCwd;
+  const { stdout } = await runGitCommand(["rev-parse", "--show-toplevel"], {
+    cwd: normalizedInputCwd,
+    timeout: 5_000,
+  });
+  const sourceWorktreePath = stdout.trim() || normalizedInputCwd;
   const relativeWorkspaceCwd = getRealpathAwareRelativePath(sourceWorktreePath, normalizedInputCwd);
   if (relativeWorkspaceCwd === null) {
     throw new Error(`Workspace cwd is outside its source worktree: ${normalizedInputCwd}`);

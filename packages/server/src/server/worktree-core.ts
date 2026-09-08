@@ -92,7 +92,7 @@ async function createWorktreeCoreWithPriority(
     };
   }
 
-  const forge = await resolveForge(repoRoot, deps, intentInput);
+  const forge = await resolveForgeForWorktreeCreate(input, repoRoot, deps, intentInput);
   const intent = await resolveWorktreeCreationIntent(intentInput, repoRoot, {
     forge: forge.forge,
     forgeService: forge.service,
@@ -156,6 +156,20 @@ async function createWorktreeCoreWithPriority(
     repoRoot,
     created: true,
   };
+}
+
+async function resolveForgeForWorktreeCreate(
+  input: CreateWorktreeCoreInput,
+  repoRoot: string,
+  deps: CreateWorktreeCoreDeps,
+  intentInput: ResolveWorktreeCreationIntentInput,
+): Promise<{ forge: string; service: ForgeService }> {
+  // Branch-off / checkout-branch do not need forge identity. Resolving it
+  // walked remotes on every warm claim.
+  if (input.checkoutSource === undefined && input.githubPrNumber === undefined) {
+    return { forge: "github", service: deps.github };
+  }
+  return resolveForge(repoRoot, deps, intentInput);
 }
 
 async function resolveForge(

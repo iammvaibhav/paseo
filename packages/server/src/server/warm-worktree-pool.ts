@@ -215,10 +215,10 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
       return null;
     }
 
-    // Refill immediately so the next create is not waiting on this claim's git
-    // move/checkout. Setup runs outside the repo lock.
-    void this.replenish(repoRoot).catch(() => undefined);
-
+    // Do not refill until this claim's git retarget finishes. Starting
+    // `git worktree add` + worktree.setup (often `npm run build:server`) in
+    // parallel with the claim's `worktree move` + checkout starved live
+    // warm-path creates on CPU/IO, and OMP `/move` then missed its budget.
     const claimedAt = this.now().getTime();
     try {
       // Source plan only needs the repo; overlap it with the worktree move.
@@ -300,6 +300,8 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
         },
         "Successfully claimed warm worktree",
       );
+
+      void this.replenish(repoRoot).catch(() => undefined);
 
       return {
         worktree: {
@@ -758,6 +760,25 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
   }): Promise<void> {
     const { worktreePath, sourcePlan } = options;
     const args = sourcePlan.addArguments;
+    const targetRef = args[0] === "-b" ? args[3] : args[0];
+    // Warm worktrees sit detached at baseRef. Checking out that same SHA
+    // (paseo.json `worktree.warmPool.baseRef` matching the requested branch)
+    // must not rewrite the working tree — `git checkout` of a large monorepo
+    // is the remaining multi-second cost after origin-fetch left the claim path.
+    if (targetRef && (await this.worktreeHeadMatchesRef(worktreePath, targetRef))) {
+      if (args[0] === "-b") {
+        await runGitCommand(["switch", "-c", args[1], "--no-track"], {
+          cwd: worktreePath,
+          timeout: 15_000,
+        });
+      } else {
+        await runGitCommand(["switch", "--no-guess", args[0]], {
+          cwd: worktreePath,
+          timeout: 15_000,
+        });
+      }
+      return;
+    }
     if (args[0] === "-b") {
       // ["-b", newBranchName, "--no-track", base] — mirrors `git worktree add` exactly.
       await runGitCommand(["checkout", "-b", args[1], "--no-track", args[3]], {
@@ -771,6 +792,20 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
         cwd: worktreePath,
         timeout: 60_000,
       });
+    }
+  }
+
+  private async worktreeHeadMatchesRef(worktreePath: string, ref: string): Promise<boolean> {
+    try {
+      const [head, target] = await Promise.all([
+        runGitCommand(["rev-parse", "HEAD"], { cwd: worktreePath, timeout: 5_000 }),
+        runGitCommand(["rev-parse", `${ref}^{commit}`], { cwd: worktreePath, timeout: 5_000 }),
+      ]);
+      const headSha = head.stdout.trim();
+      const targetSha = target.stdout.trim();
+      return headSha.length > 0 && headSha === targetSha;
+    } catch {
+      return false;
     }
   }
 

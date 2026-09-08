@@ -587,6 +587,10 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     string,
     WorkspaceGitAuxiliaryReadCacheEntry<string>
   >({ max: WORKSPACE_GIT_AUXILIARY_CACHE_MAX });
+  private readonly repoRootCache = new LRUCache<
+    string,
+    WorkspaceGitAuxiliaryReadCacheEntry<string>
+  >({ max: WORKSPACE_GIT_AUXILIARY_CACHE_MAX });
   private readonly checkoutDiffCache = new LRUCache<
     string,
     WorkspaceGitAuxiliaryReadCacheEntry<CheckoutDiffResult>
@@ -877,14 +881,25 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
   }
 
   async resolveRepoRoot(cwd: string, options?: WorkspaceGitReadOptions): Promise<string> {
-    const snapshot = await this.getSnapshot(cwd, options);
-    if (!snapshot.git.isGit) {
-      throw new Error("Create worktree requires a git repository");
-    }
-
-    return snapshot.git.isPaseoOwnedWorktree
-      ? (snapshot.git.mainRepoRoot ?? snapshot.git.repoRoot ?? resolve(cwd))
-      : (snapshot.git.repoRoot ?? resolve(cwd));
+    this.assertNotDisposed();
+    const normalizedCwd = resolve(cwd);
+    const key = JSON.stringify(["repo-root", normalizedCwd]);
+    // Cheap git-root lookup. Create-worktree used to wait on a full snapshot
+    // (status, for-each-ref, remotes, forge) here, which made a 200ms warm
+    // claim look like a 2s workspace.create.
+    return this.readAuxiliaryCache(this.repoRootCache, key, options, async () => {
+      const status = await this.deps.getCheckoutStatus(normalizedCwd, {
+        paseoHome: this.paseoHome,
+        worktreesRoot: this.worktreesRoot,
+        logger: this.logger,
+      });
+      if (!status.isGit) {
+        throw new Error("Create worktree requires a git repository");
+      }
+      return status.isPaseoOwnedWorktree
+        ? (status.mainRepoRoot ?? status.repoRoot ?? normalizedCwd)
+        : (status.repoRoot ?? normalizedCwd);
+    });
   }
 
   async resolveDefaultBranch(

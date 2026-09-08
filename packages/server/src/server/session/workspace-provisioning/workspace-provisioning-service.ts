@@ -278,13 +278,13 @@ export function createWorkspaceProvisioningService(deps: {
       );
     if (sourceWorkspace) {
       const project = await projectRegistry.get(sourceWorkspace.projectId);
-      if (project) return refreshProjectKind(project);
+      if (project) return project;
       // COMPAT(worktreeMissingSourceProject): added in v0.1.107, remove after 2027-01-15.
       // Orphaned legacy workspace FKs fall through to exact-root allocation.
     }
 
     const checkout = await workspaceGitService.getCheckout(input.repoRoot);
-    const project = await projectRegistry.getOrCreateActiveByRoot({
+    return projectRegistry.getOrCreateActiveByRoot({
       rootPath: input.repoRoot,
       kind: "git",
       displayName: basename(input.repoRoot) || input.repoRoot,
@@ -297,7 +297,6 @@ export function createWorkspaceProvisioningService(deps: {
       }),
       timestamp: new Date().toISOString(),
     });
-    return refreshProjectKind(project);
   }
 
   async function findOrCreateWorkspaceForDirectory(cwd: string): Promise<PersistedWorkspaceRecord> {

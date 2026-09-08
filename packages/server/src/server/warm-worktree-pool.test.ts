@@ -432,6 +432,88 @@ describe("WarmWorktreePoolManager", () => {
     await manager.stop();
   });
 
+  test("does not start replacement provisioning until the claim's git retarget finishes", async () => {
+    const lines: Array<{ msg?: string; time?: number }> = [];
+    const capturingLogger = pino(
+      { level: "info" },
+      {
+        write(chunk: string) {
+          try {
+            lines.push(JSON.parse(chunk) as { msg?: string; time?: number });
+          } catch {
+            // ignore non-JSON
+          }
+        },
+      },
+    );
+
+    const manager = new WarmWorktreePoolManager({
+      paseoHome,
+      worktreesRoot,
+      targetIdle: 1,
+      enabled: true,
+      logger: capturingLogger,
+    });
+
+    await manager.replenish(repoDir);
+    expect(manager.getStatus().pools[0]?.idleCount).toBe(1);
+
+    const result = await manager.claim({
+      repoRoot: repoDir,
+      worktreeSlug: "claim-before-refill",
+      source: { kind: "branch-off", branchName: "claim-before-refill", baseBranch: "main" },
+      paseoHome,
+      worktreesRoot,
+    });
+    expect(result?.claimed).toBe(true);
+
+    const claimed = lines.find((line) => line.msg === "Successfully claimed warm worktree");
+    expect(claimed).toBeTruthy();
+
+    const deadline = Date.now() + 2_000;
+    let secondProvision: { msg?: string; time?: number } | undefined;
+    while (Date.now() < deadline) {
+      const provisions = lines.filter((line) => line.msg === "Provisioning idle warm worktree");
+      if (provisions.length >= 2) {
+        secondProvision = provisions[1];
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(secondProvision).toBeTruthy();
+    expect(Number(secondProvision?.time ?? 0)).toBeGreaterThanOrEqual(Number(claimed?.time ?? 0));
+
+    await manager.stop();
+  });
+
+  test("checkout-branch of the warm baseRef does not rewrite files already at that SHA", async () => {
+    execSync("git branch existing-at-head", { cwd: repoDir, stdio: "ignore" });
+    const manager = new WarmWorktreePoolManager({
+      paseoHome,
+      worktreesRoot,
+      targetIdle: 1,
+      enabled: true,
+      logger,
+    });
+    await manager.replenish(repoDir);
+    const result = await manager.claim({
+      repoRoot: repoDir,
+      worktreeSlug: "existing-at-head",
+      source: { kind: "checkout-branch", branchName: "existing-at-head" },
+      paseoHome,
+      worktreesRoot,
+    });
+    expect(result?.claimed).toBe(true);
+    const currentBranch = execSync("git branch --show-current", {
+      cwd: result!.worktree.worktreePath,
+    })
+      .toString()
+      .trim();
+    expect(currentBranch).toBe("existing-at-head");
+    expect(existsSync(join(result!.worktree.worktreePath, "setup.log"))).toBe(true);
+    await manager.stop();
+  });
+
   test("returns null when pool is empty and triggers replenishment", async () => {
     const manager = new WarmWorktreePoolManager({
       paseoHome,

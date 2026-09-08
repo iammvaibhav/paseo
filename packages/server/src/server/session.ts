@@ -1757,14 +1757,16 @@ export class Session {
   private subscribeToRegistryMutations(): void {
     this.unsubscribeProjectMutations?.();
     this.unsubscribeProjectMutations =
-      this.projectRegistry.subscribeToMutations?.((mutation) =>
-        this.enqueueRegistryMutation(() => this.handleProjectMutation(mutation)),
-      ) ?? null;
+      this.projectRegistry.subscribeToMutations?.((mutation) => {
+        void this.enqueueRegistryMutation(() => this.handleProjectMutation(mutation));
+      }) ?? null;
     this.unsubscribeWorkspaceMutations?.();
     this.unsubscribeWorkspaceMutations =
-      this.workspaceRegistry.subscribeToMutations?.((mutation) =>
-        this.enqueueRegistryMutation(() => this.handleWorkspaceMutation(mutation)),
-      ) ?? null;
+      this.workspaceRegistry.subscribeToMutations?.((mutation) => {
+        // Do not block workspace.upsert on git-observer sync / snapshot refresh.
+        // Awaiting that made warm-pool claims wait 1–2s behind status/for-each-ref.
+        void this.enqueueRegistryMutation(() => this.handleWorkspaceMutation(mutation));
+      }) ?? null;
   }
 
   private enqueueRegistryMutation(handleMutation: () => Promise<void>): Promise<void> {
