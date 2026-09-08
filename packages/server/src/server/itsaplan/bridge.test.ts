@@ -2482,7 +2482,7 @@ describe("ItsaplanBridge", () => {
       expect(result.structuredContent).toMatchObject({
         ok: true,
         issueId: expect.any(Number),
-        url: expect.stringContaining("/project/ENG/issues/"),
+        url: expect.stringContaining("/project/ENG/issue/"),
       });
 
       // Alias works identically
@@ -2703,7 +2703,7 @@ describe("buildDispatchPrompt", () => {
       ticketKey: "ENG-10",
       title: "Empty body ticket",
       body: "   ",
-      url: "http://10.7.0.1:3000/project/ENG/issues/10",
+      url: "http://10.7.0.1:3001/project/ENG/issue/10",
       projectKey: "paseo",
     });
 
@@ -2716,7 +2716,7 @@ describe("buildDispatchPrompt", () => {
       ticketKey: "ENG-10",
       title: "Speed up tests",
       body: "Run in parallel",
-      url: "http://10.7.0.1:3000/project/ENG/issues/10",
+      url: "http://10.7.0.1:3001/project/ENG/issue/10",
       projectKey: "paseo",
       initiative: {
         title: "Test Speedup Q3",
@@ -2734,7 +2734,7 @@ describe("buildDispatchPrompt", () => {
       ticketKey: "ENG-10",
       title: "Speed up tests",
       body: "Run in parallel",
-      url: "http://10.7.0.1:3000/project/ENG/issues/10",
+      url: "http://10.7.0.1:3001/project/ENG/issue/10",
       projectKey: "paseo",
       initiative: {
         title: "Test Speedup Q3",
@@ -2752,7 +2752,7 @@ describe("buildDispatchPrompt", () => {
       ticketKey: "ENG-10",
       title: "UI alignment bug",
       body: "See screenshots",
-      url: "http://10.7.0.1:3000/project/ENG/issues/10",
+      url: "http://10.7.0.1:3001/project/ENG/issue/10",
       projectKey: "paseo",
       nativeImageCount: 2,
       attachments: [
@@ -2791,7 +2791,7 @@ describe("buildDispatchPrompt", () => {
       ticketKey: "ENG-10",
       title: "Add dark mode toggle",
       body: "Toggle in settings pane",
-      url: "http://10.7.0.1:3000/project/ENG/issues/10",
+      url: "http://10.7.0.1:3001/project/ENG/issue/10",
       projectKey: "paseo",
       initiative: {
         title: "Theme Refresh",
