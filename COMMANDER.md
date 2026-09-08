@@ -2,6 +2,11 @@
 
 Loaded from the project root into the Commander's world snapshot (see docs/development.md, "paseo.json commander instructions"). Only what the Commander needs to dispatch and brief workers for this repo. Repo rules for the worker itself live in CLAUDE.md.
 
+## Dispatch
+
+- Use the model gemini 3.7 flash from antigravity provider on high effort
+- Create the worktree from vaibhav/customizations branch
+
 ## Skills to name in every brief
 
 - `verification` for any code or UI change. Project-local (`.agents/skills/verification`); it resolves only inside a Paseo checkout or worktree. Its Proof Contract wins over `verifiable-artifact`'s ranking; `tdd` stays the inner unit loop.
