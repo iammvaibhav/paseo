@@ -174,6 +174,10 @@ const PROVIDER_IDLE_WAIT_TIMEOUT_MS = 10 * 60_000;
 // the alternative is killing an OMP process that is still working.
 const OMP_BACKGROUND_ABORT_TIMEOUT_MS = 30_000;
 
+function isCursorOmpModel(model: OmpModel | null | undefined): boolean {
+  return model?.provider === "cursor";
+}
+
 interface OmpPromptPayload {
   text: string;
   images?: OmpImageContent[];
@@ -999,6 +1003,12 @@ export class OmpAgentSession implements AgentSession {
   // still alive. The next interrupt escalates to a force-close; a terminal turn
   // event clears it.
   private unackedAbort = false;
+  /**
+   * Cursor `/steer` aborts the live HTTP/2 stream then queues the prompt.
+   * The abort's `agent_end` must not unstick-complete this Paseo turn, or the
+   * queued continuation becomes an untracked OMP run.
+   */
+  private cuttingCursorStreamForSteer = false;
   private readonly emittedUserMessageIds = new Set<string>();
 
   constructor(options: OmpAgentSessionOptions) {
@@ -1160,6 +1170,14 @@ export class OmpAgentSession implements AgentSession {
 
     const payload = convertPromptInput(prompt, { model: this.state.model });
     if (this.parseSlashCommandInput(payload.text)) {
+      return { status: "unavailable" };
+    }
+    // Cursor Agent Run owns thinking and tools inside one HTTP/2 stream.
+    // There is no OMP tool-batch boundary to inject into, so live-steer would
+    // sit on the queue until Cursor finishes — minutes, in the incidents that
+    // motivated this. Report unavailable and let AgentManager interrupt-and-
+    // replace, which is Stop-then-send for this provider.
+    if (isCursorOmpModel(this.state.model)) {
       return { status: "unavailable" };
     }
     this.runtimeSession.steer(payload.text, payload.images);
@@ -1498,6 +1516,14 @@ export class OmpAgentSession implements AgentSession {
       return {
         run: async () => {
           if (commandName === "steer") {
+            if (isCursorOmpModel(this.state.model)) {
+              this.cuttingCursorStreamForSteer = true;
+              try {
+                await this.runtimeSession.abort();
+              } catch (error) {
+                this.logger.debug({ err: error }, "omp.cursor.steer_abort_failed");
+              }
+            }
             this.runtimeSession.steer(message, converted.images);
           } else {
             this.runtimeSession.followUp(message, converted.images);
@@ -1563,6 +1589,7 @@ export class OmpAgentSession implements AgentSession {
     // The turn is over, so a lapsed abort ack from it must not make the next
     // Stop escalate straight to a force-close.
     this.unackedAbort = false;
+    this.cuttingCursorStreamForSteer = false;
     this.emit(event);
   }
 
@@ -2135,6 +2162,7 @@ export class OmpAgentSession implements AgentSession {
       case "agent_start":
         this.activeTurnStarted = true;
         this.clearNoTurnBuffers();
+        this.releaseCursorSteerCut();
         this.emit({
           type: "thread_started",
           provider: this.provider,
@@ -2144,6 +2172,7 @@ export class OmpAgentSession implements AgentSession {
       case "turn_start":
         this.activeTurnStarted = true;
         this.clearNoTurnBuffers();
+        this.releaseCursorSteerCut();
         this.emit({
           type: "turn_started",
           provider: this.provider,
@@ -2557,6 +2586,11 @@ export class OmpAgentSession implements AgentSession {
    * timeline is complete, the provider is idle, and the UI spins forever until
    * someone presses Stop. So every exit terminalizes unless another path
    * already did (turnGeneration moved) or the session is gone.
+   *
+   * Compaction is real remaining work. `isStreaming` after `agent_end` is not
+   * — Cursor, grok-build, and other packed-stop providers have left that flag
+   * true after a finished answer, which parked the UI for the 10-minute
+   * failsafe. Abort the leftover stream, then complete.
    */
   private async completeTurnAfterProviderIdle(
     turnId: string | undefined,
@@ -2566,13 +2600,31 @@ export class OmpAgentSession implements AgentSession {
     const startedAt = Date.now();
     let lastState: OmpSessionState | null = null;
     let stateError: unknown;
+    if (!this.activeTurnStarted && this.activeTurnId == null) {
+      return;
+    }
     while (!this.closed && this.activeTurnStarted && this.currentTurnIdForEvent() === turnId) {
+      if (this.turnGeneration !== generation) {
+        return;
+      }
       try {
         const state = await this.runtimeSession.getState();
         this.state = state;
         lastState = state;
         stateError = undefined;
-        if (!state.isStreaming && !state.isCompacting) {
+        if (state.isCompacting) {
+          // Snapcompact / resume is still in flight. Keep waiting.
+        } else if (this.cuttingCursorStreamForSteer) {
+          // `/steer` just cut the Cursor stream. The queued prompt is the
+          // continuation; completing here would drop it.
+        } else {
+          if (state.isStreaming) {
+            this.logger.warn(
+              { turnId, waitedMs: Date.now() - startedAt },
+              "omp.turn.idle_wait_aborting_stuck_stream",
+            );
+            await this.abortStuckProviderStream(turnId);
+          }
           this.completeTurn(turnId, messages);
           return;
         }
@@ -2608,6 +2660,22 @@ export class OmpAgentSession implements AgentSession {
       "omp.turn.idle_wait_abandoned_terminalizing",
     );
     this.completeTurn(turnId, messages);
+  }
+
+  private releaseCursorSteerCut(): void {
+    if (!this.cuttingCursorStreamForSteer) {
+      return;
+    }
+    this.cuttingCursorStreamForSteer = false;
+    this.turnGeneration += 1;
+  }
+
+  private async abortStuckProviderStream(turnId: string | undefined): Promise<void> {
+    try {
+      await this.runtimeSession.abort();
+    } catch (error) {
+      this.logger.debug({ err: error, turnId }, "omp.turn.idle_wait_unstick_abort_failed");
+    }
   }
 
   private async refreshState(): Promise<void> {

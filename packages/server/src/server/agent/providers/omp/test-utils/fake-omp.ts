@@ -266,6 +266,7 @@ export class FakeOmpSession implements OmpRuntimeSession {
     }
     this.abortRequested = true;
     this.abortTimeoutBudgets.push(timeoutMs);
+    this.state = { ...this.state, isStreaming: false };
     const error = this.abortErrors.shift();
     if (error) {
       throw error;
