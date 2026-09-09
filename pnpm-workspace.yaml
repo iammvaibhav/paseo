@@ -35,9 +35,25 @@ minimumReleaseAgeStrict: false
 overrides:
   "@codemirror/language": "6.12.4"
   "@types/react": "~19.2.0"
+  # supports-color has two incompatible lines in this tree: CJS (<=9.x,
+  # named `supportsColor` export) and pure-ESM v10 (no named export, so
+  # every CJS `require('supports-color').supportsColor` throws). debug
+  # declares an OPTIONAL supports-color peer with range "*", which admits
+  # v10, and pnpm then resolves it differently per subtree (10.2.2 vs
+  # 8.1.1) — splitting react-native (and debug itself) into duplicate
+  # instances and breaking packages/app typecheck. npm-era resolution
+  # was uniformly 8.1.1 via root hoisting, so pin the whole tree back
+  # to CJS 8.1.1. NOTE: pnpm parent selectors (e.g.
+  # "debug>supports-color") do NOT match optional peer edges —
+  # verified empirically: the pin was recorded but both debug variants
+  # survived. Only a global override collapses them.
+  supports-color: "8.1.1"
+  # Carve-out: supports-hyperlinks declares ^7.0.0 directly (regular
+  # dep, so the parent selector DOES match here) and must stay on its
+  # author-tested 7.x line — 8.1.1 is outside its range.
+  "supports-hyperlinks>supports-color": "7.2.0"
   "@codemirror/view": "6.43.6"
   lightningcss: "1.30.1"
-  supports-color: "10.2.2"
   react: "19.1.0"
   react-dom: "19.1.0"
   react-native-reanimated: "4.3.1"

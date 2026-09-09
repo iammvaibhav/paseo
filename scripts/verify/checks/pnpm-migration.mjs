@@ -103,6 +103,36 @@ export const steps = [
     },
   },
   {
+    id: "daemon-web-ui-build",
+    label: "Daemon web UI builds under pnpm (exercises the Expo CLI at runtime)",
+    narrate: "Expo export succeeds without module-resolution crashes.",
+    async run(ctx) {
+      const { execFileSync } = await import("node:child_process");
+      const logFile = join(ctx.artifactsDir, "pnpm-build-daemon-web-ui.log");
+      try {
+        // tsc-only steps cannot see runtime-resolution breaks: this executes
+        // the real Expo CLI (expo export), which loads the full dependency
+        // graph including coloring libs. A supports-color ESM/CJS mismatch
+        // (or any similar dual-package hazard) crashes here, not in tsc.
+        // Same stdio-ignore + log-file pattern as server-build: never let an
+        // orphaned grandchild holding a pipe open hang the runner past timeout.
+        execFileSync(
+          "sh",
+          ["-c", `pnpm run build:daemon-web-ui > ${JSON.stringify(logFile)} 2>&1`],
+          {
+            cwd: process.cwd(),
+            stdio: "ignore",
+            timeout: 900_000,
+          },
+        );
+      } catch (e) {
+        const log = existsSync(logFile) ? readFileSync(logFile, "utf8").slice(-2000) : "";
+        throw new Error(`${e.message}\n${log}`, { cause: e });
+      }
+      return "pnpm run build:daemon-web-ui passed";
+    },
+  },
+  {
     id: "daemon-module",
     label: "Daemon entrypoint module imports resolve cleanly",
     narrate: "All ESM imports in the supervisor entrypoint resolve without ERR_MODULE_NOT_FOUND.",
