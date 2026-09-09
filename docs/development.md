@@ -648,13 +648,15 @@ For tighter loops, you can rebuild a single workspace:
 1. **Signing hangs or fails.** electron-builder auto-discovers whatever Apple identity is in the keychain (e.g. a personal "Apple Development" cert) and, because `electron-builder.yml` sets `notarize: true`, then stalls on notarization credentials that aren't set.
 2. **An ad-hoc build with hardened runtime crashes at launch.** `hardenedRuntime: true` survives into ad-hoc-signed builds. Hardened runtime enforces library validation — every loaded framework must share the process's Team ID — and ad-hoc signatures have no Team ID, so dyld aborts loading `Electron Framework` with `mapping process and mapped file (non-platform) have different Team IDs` (SIGABRT at launch). Signed release builds never hit this because everything shares the real team.
 
-For a personal, run-on-this-machine-only build, disable all three:
+For a personal, run-on-this-machine-only build, use the unsigned path (flags baked in):
 
 ```bash
-CSC_IDENTITY_AUTO_DISCOVERY=false pnpm run build:desktop -- -c.mac.notarize=false -c.mac.hardenedRuntime=false
+CSC_IDENTITY_AUTO_DISCOVERY=false pnpm run build:desktop
 ```
 
-Output lands in `packages/desktop/release/` (DMG, zip, and the raw `mac-arm64/Paseo.app`). If the web app hasn't changed since a previous export, you can skip the Expo export and rebuild only the packaging step: `CSC_IDENTITY_AUTO_DISCOVERY=false pnpm --filter @getpaseo/desktop run build -- <same flags>` (it reuses `packages/app/dist`).
+Never forward `-c` flags through pnpm run layers (`pnpm run build:desktop -- -c...`): pnpm preserves the `--` separator when appending (npm strips it), so the flags arrive behind `--` and electron-builder silently ignores them — producing exactly the ad-hoc hardened crash above. That is how the 2026-09-09 desktop outage happened (PASEO-17's `npm` → `pnpm` conversion kept the old forwarding shape).
+
+Output lands in `packages/desktop/release/` (DMG, zip, and the raw `mac-arm64/Paseo.app`). If the web app hasn't changed since a previous export, you can skip the Expo export and rebuild only the packaging step: `CSC_IDENTITY_AUTO_DISCOVERY=false pnpm --filter @getpaseo/desktop run build:unsigned` (it reuses `packages/app/dist`).
 
 Rescuing an already-built app that has the hardened-runtime flag: `codesign --force --deep --sign - <path to .app>` re-signs everything ad-hoc without the flag.
 
@@ -671,7 +673,7 @@ Build and install the test app:
 
 ```bash
 # Full build (Expo web export + Electron packaging):
-CSC_IDENTITY_AUTO_DISCOVERY=false pnpm run build:desktop -- -c.mac.notarize=false -c.mac.hardenedRuntime=false
+CSC_IDENTITY_AUTO_DISCOVERY=false pnpm run build:desktop
 
 # Install as "Paseo Test" alongside the signed production app:
 cp -R packages/desktop/release/mac-arm64/Paseo.app "/Applications/Paseo Test.app"
@@ -680,7 +682,7 @@ cp -R packages/desktop/release/mac-arm64/Paseo.app "/Applications/Paseo Test.app
 If only Electron/desktop-wrapper code changed (not the web app), skip the Expo export and repackage from the existing `packages/app/dist`:
 
 ```bash
-CSC_IDENTITY_AUTO_DISCOVERY=false pnpm --filter @getpaseo/desktop run build -- -c.mac.notarize=false -c.mac.hardenedRuntime=false
+CSC_IDENTITY_AUTO_DISCOVERY=false pnpm --filter @getpaseo/desktop run build:unsigned
 cp -R packages/desktop/release/mac-arm64/Paseo.app "/Applications/Paseo Test.app"
 ```
 

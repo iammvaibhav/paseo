@@ -990,9 +990,11 @@ build_desktop_app() {
   log "Building desktop app (unsigned) → install $DESKTOP_APP — this takes a few minutes"
   (
     cd "$ROOT_DIR"
-    # -p never: unsigned local builds must not attempt GitHub publish (needs GH_TOKEN).
-    CSC_IDENTITY_AUTO_DISCOVERY=false pnpm run build:desktop -- \
-      -c.mac.notarize=false -c.mac.hardenedRuntime=false -p never
+    # Unsigned flags live in @getpaseo/desktop's build:unsigned script: pnpm
+    # preserves `--` through run layers (unlike npm, which strips it), so
+    # forwarded `-c` flags arrived behind `--` and electron-builder ignored
+    # them — producing an ad-hoc hardened build that crashes at launch.
+    CSC_IDENTITY_AUTO_DISCOVERY=false pnpm run build:desktop
   )
   # electron-builder writes Paseo.app under packages/desktop/release/mac*/.
   local built

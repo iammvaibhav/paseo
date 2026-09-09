@@ -16,6 +16,7 @@
   "main": "dist/main.js",
   "scripts": {
     "build": "pnpm --dir ../.. run build:server:clean && pnpm run build:main && electron-builder --config electron-builder.yml",
+    "build:unsigned": "pnpm --dir ../.. run build:server:clean && pnpm run build:main && electron-builder --config electron-builder.yml -c.mac.notarize=false -c.mac.hardenedRuntime=false -p never",
     "build:main": "tsc -p tsconfig.json",
     "capture-harness": "./capture-harness/run.sh",
     "dev": "./scripts/dev.sh",

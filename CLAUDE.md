@@ -364,9 +364,11 @@ No model is in this path. The commit subject comes from the caller and conflict 
 **Canonical loop** (what `deploy.sh` → `install_desktop_app` does every time; ~2 min build + ~2s install):
 
 ```bash
-# 1) build unsigned
-CSC_IDENTITY_AUTO_DISCOVERY=false npm run build:desktop -- \
-  -c.mac.notarize=false -c.mac.hardenedRuntime=false -p never
+# 1) build unsigned (flags baked into @getpaseo/desktop's build:unsigned —
+#    never forward `-c` flags through pnpm run layers: pnpm preserves `--`,
+#    electron-builder then ignores everything behind it and you get an
+#    ad-hoc hardened build that crashes at launch)
+CSC_IDENTITY_AUTO_DISCOVERY=false pnpm run build:desktop
 
 # 2) preserve previous build → quit → replace → open
 rm -rf "/Applications/Paseo (Orig).app"

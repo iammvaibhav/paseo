@@ -40,7 +40,7 @@
       "command": "pnpm run typecheck"
     },
     "build-desktop": {
-      "command": "CSC_IDENTITY_AUTO_DISCOVERY=false pnpm run build:desktop -- -c.mac.notarize=false -c.mac.hardenedRuntime=false"
+      "command": "CSC_IDENTITY_AUTO_DISCOVERY=false pnpm run build:desktop"
     }
   }
 }

@@ -78,7 +78,7 @@
     "web": "pnpm --filter @getpaseo/app run web",
     "dev:desktop": "cross-env PASEO_LISTEN=127.0.0.1:6768 pnpm --filter @getpaseo/desktop run dev",
     "dev:win:desktop": "pnpm --filter @getpaseo/desktop run dev:win",
-    "build:desktop": "pnpm run build:app-deps:clean && cd packages/app && cross-env PASEO_WEB_PLATFORM=electron npx expo export --platform web && cd ../.. && pnpm --filter @getpaseo/desktop run build --",
+    "build:desktop": "pnpm run build:app-deps:clean && cd packages/app && cross-env PASEO_WEB_PLATFORM=electron npx expo export --platform web && cd ../.. && pnpm --filter @getpaseo/desktop run build:unsigned",
     "db:query": "pnpm --filter @getpaseo/server run db:query --",
     "cli": "./scripts/dev-home.sh npx tsx packages/cli/src/index.js",
     "verify:up": "node scripts/verify/stack.mjs up",
