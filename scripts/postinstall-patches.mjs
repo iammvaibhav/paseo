@@ -41,6 +41,14 @@ const patchedPackages = [
     patchPrefix: "react-native-gesture-handler+",
     cwd: "packages/app",
   },
+  // @xterm/addon-ligatures ships lru-cache inlined in its prebuilt .mjs,
+  // which imports node:diagnostics_channel at module top level — absent in
+  // every shipped JS runtime (2026-09-09 bundle outage). Dummy the import.
+  {
+    nodeModulesPath: "packages/app/node_modules/@xterm/addon-ligatures",
+    patchPrefix: "@xterm+addon-ligatures+",
+    cwd: "packages/app",
+  },
   {
     nodeModulesPath: "packages/app/node_modules/react-native-svg",
     patchPrefix: "react-native-svg+",
