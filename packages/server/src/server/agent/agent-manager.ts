@@ -4388,15 +4388,16 @@ export class AgentManager {
       this.previousStatuses.set(resolvedAgentId, managed.lifecycle);
       await this.refreshRuntimeInfo(managed, { emit: false });
       this.assertAgentRegistrationActive(managed);
-      await this.persistSnapshot(managed, {
-        title: initialPersistedTitle,
-        titleAutoDerived,
-      });
       if (!options?.publishWhenReady) {
         this.emitState(managed, { persist: false });
       }
 
-      await this.refreshSessionState(managed, { emit: false });
+      // Single combined session-state refresh + persist: refreshSessionState
+      // would otherwise call getRuntimeInfo() a second time, and a second
+      // persistSnapshot duplicated the first registry write. Nothing between
+      // the two original persists read the registry from disk, so folding
+      // them into one write after both refreshes finish is safe.
+      await this.refreshSessionState(managed, { emit: false, skipRuntimeInfo: true });
       this.assertAgentRegistrationActive(managed);
       managed.lifecycle = "idle";
       // Registration is bookkeeping for a RESTORED agent (resume/reload of an
@@ -4412,7 +4413,10 @@ export class AgentManager {
       if (!existingRecord) {
         this.touchUpdatedAt(managed);
       }
-      await this.persistSnapshot(managed);
+      await this.persistSnapshot(managed, {
+        title: initialPersistedTitle,
+        titleAutoDerived,
+      });
       this.assertAgentRegistrationActive(managed);
       this.emitState(managed, { persist: false });
       this.subscribeToSession(managed);
@@ -4810,7 +4814,7 @@ export class AgentManager {
 
   private async refreshSessionState(
     agent: ActiveManagedAgent,
-    options?: { emit?: boolean },
+    options?: { emit?: boolean; skipRuntimeInfo?: boolean },
   ): Promise<void> {
     try {
       const modes = await agent.session.getAvailableModes();
@@ -4833,6 +4837,11 @@ export class AgentManager {
     }
 
     this.syncFeaturesFromSession(agent);
+    // Callers that already refreshed runtimeInfo themselves (e.g. registerSession)
+    // skip this so the provider's getRuntimeInfo() RPC only runs once per registration.
+    if (options?.skipRuntimeInfo) {
+      return;
+    }
     await this.refreshRuntimeInfo(agent, options);
   }
 

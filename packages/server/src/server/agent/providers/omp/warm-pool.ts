@@ -8,7 +8,9 @@ import { z } from "zod";
 
 import { writeJsonFileAtomic } from "../../../atomic-file.js";
 import { resolvePaseoHome } from "../../../paseo-home.js";
-import type { OmpSessionState } from "./rpc-types.js";
+import type { PaseoToolCatalog } from "../../tools/types.js";
+import { setOmpHostTools } from "./host-tools.js";
+import type { OmpModel, OmpSessionState, OmpThinkingLevel } from "./rpc-types.js";
 import type { OmpRuntime, OmpRuntimeSession } from "./runtime.js";
 
 /**
@@ -122,20 +124,58 @@ export interface OmpWarmPoolInput {
 interface OmpWarmPoolOptions {
   runtime: OmpRuntime;
   logger: Logger;
+  /**
+   * Returns the host-tool catalog a pool-eligible create would register
+   * (always unfiltered: pool eligibility requires an empty tool allowlist).
+   * `OmpAgentClient` tracks the most recently seen catalog from its own
+   * create traffic; undefined until the first such create lands, so the
+   * pool boots without host tools until then.
+   */
+  getDefaultHostTools?: () => PaseoToolCatalog | undefined;
+  /**
+   * Returns the model a pool-eligible create would request, seeded so a
+   * pool fill's `set_model` is already done by claim time. Same
+   * last-seen-traffic caveat as `getDefaultHostTools`.
+   */
+  getDefaultModel?: () => { provider: string; id: string } | null;
+}
+
+/** Handoff of a claimed pooled process, with what the pool already knows was set on it so the caller can skip re-doing it. */
+export interface OmpWarmClaim {
+  session: OmpRuntimeSession;
+  /** True when this claim performed a `/move`; false when the process was already at the requested cwd (e.g. a prior `prewarm` landed it there). */
+  moved: boolean;
+  /** Model already active on the process, or null when the pool never seeded one. */
+  model: OmpModel | null;
+  /** Thinking level already active on the process, or null when unknown. */
+  thinkingLevel: OmpThinkingLevel | null;
+  /** Host tool names already registered on the process, or null when the pool never seeded a catalog. */
+  hostToolNames: ReadonlySet<string> | null;
 }
 
 interface WarmEntry {
   key: string;
   session: OmpRuntimeSession;
   systemPrompt: string;
-  /** Workspace the process currently sits in; changed by `/move` on claim. */
+  /** Workspace the process currently sits in; changed by `/move` on claim or prewarm. */
   cwd: string;
   throwawayPath: string | null;
+  /** True while a background `prewarm` `/move` is in flight; excluded from `claim`'s idle scan. */
+  busy: boolean;
+  /** cwd a busy entry is moving toward; lets a claim for that same cwd await the move instead of starting a second one. */
+  retargetingCwd: string | null;
+  /** Resolves (never rejects) when the in-flight prewarm move finishes or fails. */
+  retargeting: Promise<void> | null;
+  model: OmpModel | null;
+  thinkingLevel: OmpThinkingLevel | null;
+  hostToolNames: ReadonlySet<string> | null;
 }
 
 export class OmpWarmPool {
   private readonly runtime: OmpRuntime;
   private readonly logger: Logger;
+  private readonly getDefaultHostTools: (() => PaseoToolCatalog | undefined) | undefined;
+  private readonly getDefaultModel: (() => { provider: string; id: string } | null) | undefined;
   private readonly entries: WarmEntry[] = [];
   private readonly filling = new Map<string, Promise<void>[]>();
   /**
@@ -164,6 +204,8 @@ export class OmpWarmPool {
   constructor(options: OmpWarmPoolOptions) {
     this.runtime = options.runtime;
     this.logger = options.logger;
+    this.getDefaultHostTools = options.getDefaultHostTools;
+    this.getDefaultModel = options.getDefaultModel;
   }
 
   /**
@@ -276,6 +318,11 @@ export class OmpWarmPool {
   /** Liveness-check every idle entry and drop the ones that stopped answering. */
   private async dropDeadEntries(): Promise<void> {
     const checks = this.entries.map(async (entry) => {
+      if (entry.busy) {
+        // A prewarm has this entry in flight; its own retarget call already
+        // health-checks it, and a concurrent ping here would race the move.
+        return null;
+      }
       try {
         await withTimeout(entry.session.getState(), WARM_POOL_LIVENESS_TIMEOUT_MS);
         return null;
@@ -301,7 +348,7 @@ export class OmpWarmPool {
    * claiming workspace first when it sits elsewhere. A replacement fill is
    * always triggered behind the claim so the next create stays warm.
    */
-  async claim(input: OmpWarmPoolInput): Promise<OmpRuntimeSession | null> {
+  async claim(input: OmpWarmPoolInput): Promise<OmpWarmClaim | null> {
     if (this.closed) {
       return null;
     }
@@ -321,13 +368,25 @@ export class OmpWarmPool {
       this.logger.info({ disposed: stale.length }, "OMP warm pool retired stale launch shape");
     }
 
+    // A background `prewarm` may already be moving a process to this exact
+    // cwd; ride that move instead of starting a second one on a different
+    // process (`prewarm.retargeting` never rejects).
+    const prewarming = this.entries.find(
+      (entry) => entry.key === key && entry.retargetingCwd === cwd,
+    );
+    if (prewarming?.retargeting) {
+      await prewarming.retargeting;
+    }
+
     for (;;) {
       // Prefer a process already sitting in the target workspace: that claim
       // costs nothing at all. Otherwise take any process of this key and move
-      // it.
-      let index = this.entries.findIndex((entry) => entry.key === key && entry.cwd === cwd);
+      // it. Busy entries are mid-prewarm toward some other cwd; leave them.
+      let index = this.entries.findIndex(
+        (entry) => !entry.busy && entry.key === key && entry.cwd === cwd,
+      );
       if (index === -1) {
-        index = this.entries.findIndex((entry) => entry.key === key);
+        index = this.entries.findIndex((entry) => !entry.busy && entry.key === key);
       }
       if (index === -1) {
         break;
@@ -346,7 +405,8 @@ export class OmpWarmPool {
         void this.dispose(entry);
         continue;
       }
-      if (entry.cwd !== cwd && !(await this.retarget(entry, cwd, before))) {
+      const alreadyAtCwd = entry.cwd === cwd;
+      if (!alreadyAtCwd && !(await this.retarget(entry, cwd, before))) {
         void this.dispose(entry);
         continue;
       }
@@ -359,12 +419,80 @@ export class OmpWarmPool {
         this.claimedThrowaways.set(entry.session, entry.throwawayPath);
       }
       void this.fill(input);
-      return entry.session;
+      return {
+        session: entry.session,
+        moved: !alreadyAtCwd,
+        model: entry.model,
+        thinkingLevel: entry.thinkingLevel,
+        hostToolNames: entry.hostToolNames,
+      };
     }
 
     // Cold: prime the pool so the *next* create is warm.
     void this.fill(input);
     return null;
+  }
+
+  /**
+   * Retarget one idle process to `cwd` ahead of a create, so that create's own
+   * `claim` finds it already there and pays no `/move`. Fire-and-forget and
+   * best-effort: a no-op when nothing is idle or an idle process is already at
+   * `cwd`; a failed move discards the process and lets the next `fill`
+   * replace it. Never throws.
+   */
+  prewarm(cwd: string): void {
+    if (this.closed) {
+      return;
+    }
+    const tracked = this.trackedInput;
+    if (!tracked) {
+      // No launch shape known yet (nothing has claimed from this daemon boot);
+      // there is nothing to move a process toward.
+      return;
+    }
+    const key = keyFor(tracked);
+    const targetCwd = path.resolve(cwd);
+    const candidate = this.entries.find(
+      (entry) => !entry.busy && entry.key === key && entry.cwd !== targetCwd,
+    );
+    if (!candidate) {
+      return;
+    }
+    candidate.busy = true;
+    candidate.retargetingCwd = targetCwd;
+    const startedAt = Date.now();
+    candidate.retargeting = (async () => {
+      let moved = false;
+      try {
+        const before = await withTimeout(
+          candidate.session.getState(),
+          WARM_POOL_LIVENESS_TIMEOUT_MS,
+        );
+        moved = await this.retarget(candidate, targetCwd, before);
+      } catch {
+        moved = false;
+      } finally {
+        candidate.busy = false;
+        candidate.retargetingCwd = null;
+        candidate.retargeting = null;
+        if (!moved) {
+          const index = this.entries.indexOf(candidate);
+          if (index !== -1) {
+            this.entries.splice(index, 1);
+          }
+          void this.dispose(candidate);
+          this.fill(tracked);
+        }
+        this.logger.info(
+          {
+            cwd: targetCwd,
+            durationMs: Date.now() - startedAt,
+            outcome: moved ? "moved" : "failed",
+          },
+          "omp.warm_pool.prewarm",
+        );
+      }
+    })();
   }
 
   /**
@@ -492,8 +620,8 @@ export class OmpWarmPool {
       modeId: input.modeId,
       extraArgs: input.extraArgs,
       session: throwawayPath,
-      // Model/thinking are deliberately omitted: they are applied per-create
-      // via RPC at claim time.
+      // Per-create overrides that differ from the seeded default (below) are
+      // still applied over RPC at claim time.
       systemPrompt: input.systemPrompt.trim() || undefined,
       // Identity plumbing only: the claimer's agent id differs from the fill's,
       // but these vars are only read by agent-spawned CLIs and cwd is pinned by
@@ -501,12 +629,36 @@ export class OmpWarmPool {
       // cold-start (eligibility), so only the identity pair can arrive here.
       env: input.env && Object.keys(input.env).length > 0 ? input.env : undefined,
     });
+    let initialState: OmpSessionState;
     try {
       // Blocks until the process has booted and answered `ready`.
-      await session.getState();
+      initialState = await session.getState();
     } catch (error) {
       await session.close().catch(() => undefined);
       throw error;
+    }
+    // Seed the host default model so a claim requesting it can skip
+    // `set_model` entirely. Best-effort: a failed seed just leaves the entry
+    // without a known model, so the claim falls back to setting it itself.
+    let model: OmpModel | null = initialState.model ?? null;
+    const defaultModel = this.getDefaultModel?.();
+    if (defaultModel) {
+      try {
+        model = await session.setModel(defaultModel.provider, defaultModel.id);
+      } catch (error) {
+        this.logger.warn({ err: error }, "OMP warm pool default-model seed failed");
+      }
+    }
+    // Seed the host-tool catalog so a claim requesting the same (unfiltered)
+    // set can skip re-registering it.
+    let hostToolNames: ReadonlySet<string> | null = null;
+    const catalog = this.getDefaultHostTools?.();
+    if (catalog) {
+      try {
+        hostToolNames = new Set(await setOmpHostTools(session, catalog));
+      } catch (error) {
+        this.logger.warn({ err: error }, "OMP warm pool default host-tool seed failed");
+      }
     }
     return {
       key: keyFor(input),
@@ -514,6 +666,12 @@ export class OmpWarmPool {
       systemPrompt: input.systemPrompt.trim(),
       cwd: path.resolve(input.cwd),
       throwawayPath,
+      busy: false,
+      retargetingCwd: null,
+      retargeting: null,
+      model,
+      thinkingLevel: initialState.thinkingLevel ?? null,
+      hostToolNames,
     };
   }
 

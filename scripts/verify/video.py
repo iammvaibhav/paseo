@@ -82,16 +82,16 @@ def get_media_duration(file_path):
 def escape_ffmpeg_text(text):
     if not text:
         return ""
-    # In ffmpeg drawtext filter: escape backslashes, single quotes, colons, percent, brackets
+    # In ffmpeg drawtext filter: escape backslashes, colons, percent, brackets.
+    # Single quotes break filtergraph '...' quoting: map to curly apostrophe.
     text = str(text)
     text = text.replace("\\", "\\\\")
-    text = text.replace("'", "\\'")
+    text = text.replace("'", "’")
     text = text.replace(":", "\\:")
     text = text.replace("%", "\\%")
     text = text.replace("[", "\\[")
     text = text.replace("]", "\\]")
     return text
-
 
 def format_title_name(raw_name):
     if not raw_name:

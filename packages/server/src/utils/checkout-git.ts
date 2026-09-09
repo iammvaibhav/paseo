@@ -1010,12 +1010,28 @@ export interface MergeFromBaseOptions {
   requireCleanTarget?: boolean;
 }
 
+/**
+ * Shares one in-flight subprocess per repo-level fact across sibling worktrees of the same
+ * repo, keyed by the caller-supplied repo key (the resolved git common dir). `compute` runs
+ * at most once per key while its promise is pending or resolved; a rejection clears the entry
+ * so a later call can retry.
+ */
+export interface RepoFactsProvider {
+  getRemoteOriginUrl(
+    repoKey: string,
+    compute: () => Promise<string | null>,
+  ): Promise<string | null>;
+  getDefaultBranch(repoKey: string, compute: () => Promise<string | null>): Promise<string | null>;
+  getMainRepoRoot(repoKey: string, compute: () => Promise<string>): Promise<string>;
+}
+
 export interface CheckoutContext {
   paseoHome?: string;
   worktreesRoot?: string;
   logger?: Pick<Logger, "trace" | "warn">;
   facts?: CheckoutSnapshotFacts | null;
   runGitCommand?: RunGitCommand;
+  repoFacts?: RepoFactsProvider;
 }
 
 export type CheckoutSnapshotFacts =
@@ -1192,25 +1208,32 @@ async function getMainRepoRootFromCommonDir(
     return dirname(normalized);
   }
 
-  const { stdout: worktreeOut } = await getRunGitCommand(context)(
-    ["worktree", "list", "--porcelain"],
-    {
-      cwd,
-      envOverlay: READ_ONLY_GIT_ENV,
-    },
-  );
-  const worktrees = parseWorktreeList(worktreeOut);
-  const nonBareNonPaseo = worktrees.filter(
-    (wt) =>
-      !wt.isBare &&
-      !isPaseoWorktreePath(wt.path, {
-        paseoHome: context?.paseoHome,
-        worktreesRoot: context?.worktreesRoot,
-      }),
-  );
-  const childrenOfBareRepo = nonBareNonPaseo.filter((wt) => isDescendantPath(wt.path, normalized));
-  const mainChild = childrenOfBareRepo.find((wt) => basename(wt.path) === "main");
-  return mainChild?.path ?? childrenOfBareRepo[0]?.path ?? nonBareNonPaseo[0]?.path ?? normalized;
+  const computeMainRepoRoot = async (): Promise<string> => {
+    const { stdout: worktreeOut } = await getRunGitCommand(context)(
+      ["worktree", "list", "--porcelain"],
+      {
+        cwd,
+        envOverlay: READ_ONLY_GIT_ENV,
+      },
+    );
+    const worktrees = parseWorktreeList(worktreeOut);
+    const nonBareNonPaseo = worktrees.filter(
+      (wt) =>
+        !wt.isBare &&
+        !isPaseoWorktreePath(wt.path, {
+          paseoHome: context?.paseoHome,
+          worktreesRoot: context?.worktreesRoot,
+        }),
+    );
+    const childrenOfBareRepo = nonBareNonPaseo.filter((wt) =>
+      isDescendantPath(wt.path, normalized),
+    );
+    const mainChild = childrenOfBareRepo.find((wt) => basename(wt.path) === "main");
+    return mainChild?.path ?? childrenOfBareRepo[0]?.path ?? nonBareNonPaseo[0]?.path ?? normalized;
+  };
+  return context?.repoFacts
+    ? context.repoFacts.getMainRepoRoot(normalized, computeMainRepoRoot)
+    : computeMainRepoRoot();
 }
 
 export interface GitWorktreeEntry {
@@ -1705,7 +1728,16 @@ export async function resolveRepositoryDefaultBranch(
   return null;
 }
 
-async function resolveBaseRef(repoRoot: string, context?: CheckoutContext): Promise<string | null> {
+async function resolveBaseRef(
+  repoRoot: string,
+  context?: CheckoutContext,
+  repoFactsKey?: string | null,
+): Promise<string | null> {
+  if (context?.repoFacts && repoFactsKey) {
+    return context.repoFacts.getDefaultBranch(repoFactsKey, () =>
+      resolveRepositoryDefaultBranch(repoRoot, context),
+    );
+  }
   return resolveRepositoryDefaultBranch(repoRoot, context);
 }
 
@@ -1907,12 +1939,16 @@ async function inspectCheckoutContext(
     return null;
   }
 
-  const [currentBranch, remoteUrl, absoluteGitDir, gitCommonDir] = await Promise.all([
+  const [currentBranch, absoluteGitDir, gitCommonDir] = await Promise.all([
     getCurrentBranch(cwd, context),
-    getOriginRemoteUrl(cwd, context),
     resolveAbsoluteGitDir(cwd, context),
     resolveGitCommonDir(cwd, context),
   ]);
+  const remoteUrl = context?.repoFacts
+    ? await context.repoFacts.getRemoteOriginUrl(gitCommonDir ?? cwd, () =>
+        getOriginRemoteUrl(cwd, context),
+      )
+    : await getOriginRemoteUrl(cwd, context);
   const paseoWorktree = await getPaseoWorktreeForCwd(cwd, {
     context,
     knownWorktreeRoot: root,
@@ -2158,7 +2194,8 @@ export async function getCheckoutSnapshotFacts(
     ? readPaseoWorktreeMetadata(inspected.paseoWorktree.worktreeRoot)
     : null;
   const storedBaseRef = storedBaseRefFromMetadata(paseoWorktreeMetadata);
-  const resolvedBaseRef = storedBaseRef ?? (await resolveBaseRef(cwd, context));
+  const resolvedBaseRef =
+    storedBaseRef ?? (await resolveBaseRef(cwd, context, inspected.gitCommonDir));
   const mainRepoRoot = await getMainRepoRootFromCommonDir(
     cwd,
     inspected.gitCommonDir,
