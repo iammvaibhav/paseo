@@ -4,39 +4,52 @@ import { join, relative, resolve } from "node:path";
 
 // In CI we often install a single workspace (e.g. server/relay/website). Only apply patches
 // when the patched dependency is actually present.
-// `cwd` is where patch-package must run from. Packages that npm does not hoist to the
-// workspace root live in their workspace's own node_modules, and patch-package resolves
-// the patch's node_modules/... paths relative to its working directory.
+// `cwd` is where patch-package must run from. Under pnpm's isolated node_modules layout,
+// a package is only reachable inside the node_modules of whichever workspace member(s)
+// declare it directly — nothing gets hoisted to the repo root the way npm's flat
+// node_modules did. patch-package resolves the patch's node_modules/... paths relative
+// to its working directory, so nodeModulesPath/cwd must point at the declaring workspace,
+// not the repo root. When a package is shared by several workspace members (e.g.
+// react-native, declared by app/plugin/expo-two-way-audio), pnpm links every consumer's
+// copy to the same underlying store directory, so patching through any one consumer's
+// path patches the shared target for all of them.
 const patchedPackages = [
   {
-    nodeModulesPath: "node_modules/react-native-markdown-display",
+    nodeModulesPath: "packages/app/node_modules/react-native-markdown-display",
     patchPrefix: "react-native-markdown-display+",
+    cwd: "packages/app",
   },
   {
-    nodeModulesPath: "node_modules/react-native",
+    nodeModulesPath: "packages/app/node_modules/react-native",
     patchPrefix: "react-native+",
+    cwd: "packages/app",
   },
   // Remove after react-native-unistyles ships
   // https://github.com/jpudysz/react-native-unistyles/pull/1203.
   {
-    nodeModulesPath: "node_modules/react-native-unistyles",
+    nodeModulesPath: "packages/app/node_modules/react-native-unistyles",
     patchPrefix: "react-native-unistyles+",
+    cwd: "packages/app",
   },
   {
-    nodeModulesPath: "node_modules/react-native-draggable-flatlist",
+    nodeModulesPath: "packages/app/node_modules/react-native-draggable-flatlist",
     patchPrefix: "react-native-draggable-flatlist+",
+    cwd: "packages/app",
   },
   {
-    nodeModulesPath: "node_modules/react-native-gesture-handler",
+    nodeModulesPath: "packages/app/node_modules/react-native-gesture-handler",
     patchPrefix: "react-native-gesture-handler+",
+    cwd: "packages/app",
   },
   {
-    nodeModulesPath: "node_modules/react-native-svg",
+    nodeModulesPath: "packages/app/node_modules/react-native-svg",
     patchPrefix: "react-native-svg+",
+    cwd: "packages/app",
   },
   {
-    nodeModulesPath: "node_modules/@mattermost/react-native-paste-input",
+    nodeModulesPath: "packages/app/node_modules/@mattermost/react-native-paste-input",
     patchPrefix: "@mattermost+react-native-paste-input+",
+    cwd: "packages/app",
   },
   {
     nodeModulesPath: "packages/server/node_modules/@opencode-ai/sdk",
