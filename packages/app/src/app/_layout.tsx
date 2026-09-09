@@ -32,6 +32,7 @@ import { WorktreeSetupCalloutSource } from "@/components/worktree-setup-callout-
 import { DownloadToast } from "@/components/download-toast";
 import { QuittingOverlay } from "@/components/quitting-overlay";
 import { KeyboardShortcutsDialog } from "@/components/keyboard-shortcuts-dialog";
+import { ChangelogHost } from "@/changelog";
 import { AppDiagnosticHost } from "@/components/app-diagnostic-host";
 import { MissionControlPersistent } from "@/screens/mission-control-persistent";
 import { AppearanceStyleBoundary } from "@/components/appearance-style-boundary";
@@ -620,6 +621,7 @@ function AppContainer({ children, chromeEnabled: chromeEnabledOverride }: AppCon
         <WorkspaceSetupDialog />
         <KeyboardShortcutsDialog />
         <AppDiagnosticHost />
+        <ChangelogHost />
         <QuittingOverlay />
       </AppearanceStyleBoundary>
     </View>
