@@ -283,16 +283,23 @@ export function createWorkspaceProvisioningService(deps: {
       // Orphaned legacy workspace FKs fall through to exact-root allocation.
     }
 
-    const checkout = await workspaceGitService.getCheckout(input.repoRoot);
+    // PASEO-16: never shell out for a full checkout snapshot on the create path —
+    // that made a warm-pool claim's "instant" worktree look like a 2s workspace.create.
+    // Reuse whatever the git service already knows about this repo root in memory;
+    // an absent snapshot falls back to a local-path-derived (not remote-derived)
+    // project key rather than blocking on a fresh `git remote`/`git rev-parse` round
+    // trip. The periodic workspace refresh reconciles the remote-derived identity
+    // once the snapshot is warm.
+    const cachedSnapshot = workspaceGitService.peekSnapshot(input.repoRoot);
     return projectRegistry.getOrCreateActiveByRoot({
       rootPath: input.repoRoot,
       kind: "git",
       displayName: basename(input.repoRoot) || input.repoRoot,
       projectKey: deriveProjectKey({
         rootPath: input.repoRoot,
-        remoteUrl: checkout.remoteUrl,
-        worktreeRoot: checkout.worktreeRoot,
-        mainRepoRoot: checkout.mainRepoRoot,
+        remoteUrl: cachedSnapshot?.git.remoteUrl ?? null,
+        worktreeRoot: cachedSnapshot?.git.repoRoot ?? null,
+        mainRepoRoot: cachedSnapshot?.git.mainRepoRoot ?? null,
         serverId,
       }),
       timestamp: new Date().toISOString(),

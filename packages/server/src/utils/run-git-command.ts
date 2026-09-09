@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { Logger } from "pino";
 import type { ProcessEnvRecord } from "../server/paseo-env.js";
@@ -52,10 +53,15 @@ export interface GitCommandOptions {
   timeout?: number;
   maxOutputBytes?: number;
   acceptExitCodes?: number[];
+  /** Piped to the process's stdin (e.g. `cat-file --batch` object specs), then closed. */
+  input?: string | Buffer;
+  /** When true, preserves the raw un-decoded stdout Buffer in `result.stdoutBuffer`. */
+  rawOutput?: boolean;
 }
 
 export interface GitCommandResult {
   stdout: string;
+  stdoutBuffer?: Buffer;
   stderr: string;
   truncated: boolean;
   exitCode: number | null;
@@ -373,7 +379,7 @@ function runGitCommandWithProvenance(
         settle(() => reject(processError));
       };
 
-      let child: ReturnType<typeof spawnProcess>;
+      let child: ChildProcess;
       try {
         // `core.quotepath=false` makes git emit raw UTF-8 paths instead of
         // octal-escaping non-ASCII bytes (e.g. `测试文件.txt` vs `"\346\265\213..."`).
@@ -385,10 +391,16 @@ function runGitCommandWithProvenance(
             cwd: options.cwd,
             envOverlay,
             shell: false,
-            stdio: ["ignore", "pipe", "pipe"],
+            stdio: [options.input !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
           },
         );
         spawnGitCommandTrace(commandTrace, child.pid);
+        if (options.input !== undefined && child.stdin) {
+          // EPIPE can fire if the process exits before stdin drains (e.g. `--batch`
+          // rejecting a malformed spec); the exit/close handlers already report that.
+          child.stdin.on("error", () => {});
+          child.stdin.end(options.input);
+        }
       } catch (error) {
         rejectSpawnFailure(error);
         return;
@@ -469,8 +481,10 @@ function runGitCommandWithProvenance(
 
       child.on("close", (exitCode, signal) => {
         markProcessExited(exitCode, signal);
+        const stdoutBuffer = Buffer.concat(stdoutChunks);
         const result: GitCommandResult = {
-          stdout: Buffer.concat(stdoutChunks).toString("utf8"),
+          stdout: stdoutBuffer.toString("utf8"),
+          stdoutBuffer: options.rawOutput ? stdoutBuffer : undefined,
           stderr: Buffer.concat(stderrChunks).toString("utf8"),
           truncated,
           exitCode,

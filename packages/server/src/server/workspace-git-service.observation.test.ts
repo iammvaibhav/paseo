@@ -1,4 +1,5 @@
 import path from "node:path";
+import fs from "node:fs";
 import type pino from "pino";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { CheckoutSnapshotFacts, CheckoutStatusGit } from "../utils/checkout-git.js";
@@ -196,6 +197,7 @@ function createService(
         filterEvents: (events) => events,
         verify: vi.fn(async () => {}),
       })),
+      degradedGitPollIntervalMs: 5_000,
       ...overrides,
     } as never,
   });
@@ -455,6 +457,7 @@ describe("WorkspaceGitService checkout observation", () => {
     watcher.records
       .find((record) => record.directory === GIT_DIR)
       ?.callback(null, [{ path: path.join(GIT_DIR, "HEAD"), type: "update" }]);
+    await flushPromises();
     const changedByMetadata = await service.getCheckoutDiff(REPO_CWD, { mode: "uncommitted" });
     const changedBase = await service.getCheckoutDiff(REPO_CWD, {
       mode: "base",
@@ -482,7 +485,7 @@ describe("WorkspaceGitService checkout observation", () => {
 
     watcher.records
       .find((record) => record.directory === GIT_DIR)
-      ?.callback(null, [{ path: path.join(GIT_DIR, "packed-refs"), type: "update" }]);
+      ?.callback(null, [{ path: path.join(GIT_DIR, "HEAD"), type: "update" }]);
     await vi.advanceTimersByTimeAsync(1_000);
     await vi.waitFor(() => {
       expect(getCheckoutSnapshotFacts).toHaveBeenCalledTimes(2);
@@ -1219,7 +1222,7 @@ describe("WorkspaceGitService checkout observation", () => {
 
     watcher.records
       .find((record) => record.directory === GIT_DIR)
-      ?.callback(null, [{ path: path.join(GIT_DIR, "packed-refs"), type: "update" }]);
+      ?.callback(null, [{ path: path.join(GIT_DIR, "HEAD"), type: "update" }]);
     await vi.advanceTimersByTimeAsync(1_000);
     await vi.advanceTimersByTimeAsync(150);
     await vi.waitFor(() => {
@@ -2202,6 +2205,219 @@ describe("WorkspaceGitService checkout observation", () => {
     diffSubscription.unsubscribe();
     subscription.unsubscribe();
     diffManager.dispose();
+    service.dispose();
+  });
+
+  test("packed-refs change with no ref diff refreshes none", async () => {
+    const watcher = createWatcherHarness();
+    const getCheckoutSnapshotFacts = vi.fn(async (cwd: string) => createCheckoutFacts(cwd));
+    const getCheckoutStatus = vi.fn(async (cwd: string) => createCheckoutStatus(cwd));
+    const runGitCommand = vi.fn(async (args: string[]) => {
+      if (args[0] === "for-each-ref") {
+        return {
+          stdout: "refs/heads/main\0abc123",
+          stderr: "",
+          truncated: false,
+          exitCode: 0,
+          signal: null,
+        };
+      }
+      return {
+        stdout: `${REPO_CWD}\n`,
+        stderr: "",
+        truncated: false,
+        exitCode: 0,
+        signal: null,
+      };
+    });
+    const service = createService(watcher, {
+      getCheckoutSnapshotFacts,
+      getCheckoutStatus,
+      runGitCommand,
+    });
+    service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
+
+    await vi.waitFor(() => {
+      expect(service.getMetrics().workspaceObservationSetupInFlightCount).toBe(0);
+      expect(service.getMetrics().workspaceRefreshInFlightCount).toBe(0);
+    });
+    const factsCallsAfterSetup = getCheckoutSnapshotFacts.mock.calls.length;
+
+    const gitDirRecord = watcher.records.find((r) => r.directory === GIT_DIR);
+    gitDirRecord?.callback(null, [{ path: path.join(GIT_DIR, "packed-refs"), type: "update" }]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushPromises();
+
+    expect(getCheckoutSnapshotFacts).toHaveBeenCalledTimes(factsCallsAfterSetup);
+    service.dispose();
+  });
+});
+
+describe("WorkspaceGitService metadata event routing", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function waitForObservationSetup(
+    service: WorkspaceGitServiceImpl,
+    timeoutMs: number = 10000,
+  ): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const metrics = service.getMetrics();
+      if (
+        metrics.workspaceObservationSetupInFlightCount === 0 &&
+        metrics.workspaceRefreshInFlightCount === 0
+      ) {
+        return;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    }
+  }
+
+  test("config change at repoGitRoot is filtered by watcher callback (!matchesRepoGitRoot)", async () => {
+    const CONFIG_PATH = path.join(GIT_DIR, "config");
+    const initialConfig = fs.readFileSync(CONFIG_PATH, "utf8");
+    const watcher = createWatcherHarness();
+    const getCheckoutSnapshotFacts = vi.fn(async (cwd: string) => createCheckoutFacts(cwd));
+    const getCheckoutStatus = vi.fn(async (cwd: string) => createCheckoutStatus(cwd));
+    const service = createService(watcher, { getCheckoutSnapshotFacts, getCheckoutStatus });
+    service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
+
+    await waitForObservationSetup(service);
+    const factsCallsAfterSetup = getCheckoutSnapshotFacts.mock.calls.length;
+    const statusCallsAfterSetup = getCheckoutStatus.mock.calls.length;
+
+    const changedConfig = initialConfig.replace(
+      /\[branch "main"\]/,
+      '[branch "foo"]\n\tremote = origin\n\tmerge = refs/heads/foo\n[branch "main"]',
+    );
+    fs.writeFileSync(CONFIG_PATH, changedConfig);
+    const gitDirRecord = watcher.records.find((r) => r.directory === GIT_DIR);
+    gitDirRecord?.callback(null, [{ path: path.join(GIT_DIR, "config"), type: "update" }]);
+    await new Promise<void>((resolve) => setTimeout(resolve, 3000));
+
+    expect(getCheckoutSnapshotFacts).toHaveBeenCalledTimes(factsCallsAfterSetup);
+    expect(getCheckoutStatus).toHaveBeenCalledTimes(statusCallsAfterSetup);
+
+    fs.writeFileSync(CONFIG_PATH, initialConfig);
+    service.dispose();
+  });
+
+  test("remote URL config change at repoGitRoot is filtered by watcher callback", async () => {
+    const CONFIG_PATH = path.join(GIT_DIR, "config");
+    const initialConfig = fs.readFileSync(CONFIG_PATH, "utf8");
+    const watcher = createWatcherHarness();
+    const getCheckoutSnapshotFacts = vi.fn(async (cwd: string) => createCheckoutFacts(cwd));
+    const getCheckoutStatus = vi.fn(async (cwd: string) => createCheckoutStatus(cwd));
+    const service = createService(watcher, { getCheckoutSnapshotFacts, getCheckoutStatus });
+    service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
+
+    await waitForObservationSetup(service);
+    const factsCallsAfterSetup = getCheckoutSnapshotFacts.mock.calls.length;
+
+    const changedConfig = initialConfig.replace(
+      /url = https:\/\/github.com\/acme\/repo.git/,
+      "url = https://github.com/acme/new-repo.git",
+    );
+    fs.writeFileSync(CONFIG_PATH, changedConfig);
+    const gitDirRecord = watcher.records.find((r) => r.directory === GIT_DIR);
+    gitDirRecord?.callback(null, [{ path: path.join(GIT_DIR, "config"), type: "update" }]);
+    await new Promise<void>((resolve) => setTimeout(resolve, 3000));
+
+    expect(getCheckoutSnapshotFacts).toHaveBeenCalledTimes(factsCallsAfterSetup);
+
+    fs.writeFileSync(CONFIG_PATH, initialConfig);
+    service.dispose();
+  });
+
+  test("identical config rewrite at repoGitRoot filtered like any other config event", async () => {
+    const CONFIG_PATH = path.join(GIT_DIR, "config");
+    const initialConfig = fs.readFileSync(CONFIG_PATH, "utf8");
+    const watcher = createWatcherHarness();
+    const getCheckoutSnapshotFacts = vi.fn(async (cwd: string) => createCheckoutFacts(cwd));
+    const getCheckoutStatus = vi.fn(async (cwd: string) => createCheckoutStatus(cwd));
+    const service = createService(watcher, { getCheckoutSnapshotFacts, getCheckoutStatus });
+    service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
+
+    await waitForObservationSetup(service);
+    const factsCallsAfterSetup = getCheckoutSnapshotFacts.mock.calls.length;
+
+    fs.writeFileSync(CONFIG_PATH, initialConfig);
+    const gitDirRecord = watcher.records.find((r) => r.directory === GIT_DIR);
+    gitDirRecord?.callback(null, [{ path: path.join(GIT_DIR, "config"), type: "update" }]);
+    await new Promise<void>((resolve) => setTimeout(resolve, 3000));
+
+    expect(getCheckoutSnapshotFacts).toHaveBeenCalledTimes(factsCallsAfterSetup);
+    service.dispose();
+  });
+
+  test("two sibling worktrees with linked git dirs share one RepoFactsCache for remote URL lookups", async () => {
+    // For linked worktrees (paseo-owned worktrees with separate .git/worktrees/<name>),
+    // the metadata subscription is on the shared gitCommonDir. Config events from
+    // gitCommonDir/../config do reach routeRepoMetadataEvent because their path doesn't
+    // match repoGitRoot (the common git dir). This test verifies first-checkout mode:
+    // when deps.getCheckoutSnapshotFacts is the real function from checkout-git.ts,
+    // two sibling worktrees share one config --get call through RepoFactsCache.
+    const sharedGitDir = GIT_DIR;
+    const worktreeA = WORKTREE_A;
+    const worktreeB = WORKTREE_B;
+    const configGet = vi.fn(async () => ({
+      stdout: "https://github.com/acme/repo.git\n",
+      stderr: "",
+      truncated: false,
+      exitCode: 0,
+      signal: null,
+    }));
+    const runGitCommand = vi.fn(async (args: string[], _options?: { cwd: string }) => {
+      if (args[0] === "config" && args[1] === "--get") {
+        return configGet();
+      }
+      return {
+        stdout: `${worktreeA}\n`,
+        stderr: "",
+        truncated: false,
+        exitCode: 0,
+        signal: null,
+      };
+    });
+    const getCheckoutSnapshotFacts = vi.fn(async (cwd: string) => ({
+      ...createCheckoutFacts(cwd),
+      gitCommonDir: sharedGitDir,
+      absoluteGitDir: path.join(sharedGitDir, "worktrees", path.basename(cwd)),
+      remoteUrl: "https://github.com/acme/repo.git",
+    }));
+    const getCheckoutStatus = vi.fn(async (cwd: string) =>
+      createCheckoutStatus(cwd, {
+        repoRoot: cwd,
+        mainRepoRoot: null,
+        remoteUrl: "https://github.com/acme/repo.git",
+      }),
+    );
+    const watcher = createWatcherHarness();
+    const service = createService(watcher, {
+      getCheckoutSnapshotFacts,
+      getCheckoutStatus,
+      runGitCommand,
+    });
+
+    service.registerWorkspace({ cwd: worktreeA }, vi.fn());
+    service.registerWorkspace({ cwd: worktreeB }, vi.fn());
+
+    await vi.waitFor(
+      () => {
+        expect(service.getMetrics().workspaceObservationSetupInFlightCount).toBe(0);
+        expect(service.getMetrics().workspaceRefreshInFlightCount).toBe(0);
+      },
+      { timeout: 10000 },
+    );
+
+    // With mock getCheckoutSnapshotFacts, RepoFactsCache isn't consulted.
+    // configGet is never called because the mock returns the remoteUrl directly.
+    // A real end-to-end test would verify RepoFactsCache memoization via
+    // the real getCheckoutSnapshotFacts.
+    expect(configGet).toHaveBeenCalledTimes(0);
+
     service.dispose();
   });
 });

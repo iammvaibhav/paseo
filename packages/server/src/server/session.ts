@@ -7914,8 +7914,11 @@ export class Session {
       return;
     }
 
+    const startedAt = Date.now();
     const sourceCwd = await resolveWorktreeSourceCwd(source, this.projectRegistry);
+    const resolveSourceMs = Date.now() - startedAt;
 
+    const workflowStartedAt = Date.now();
     const result = await this.createPaseoWorktreeWorkflow(
       {
         cwd: sourceCwd,
@@ -7933,8 +7936,27 @@ export class Session {
         ? { resolveDefaultBranch: async () => source.baseBranch as string }
         : undefined,
     );
+    const workflowMs = Date.now() - workflowStartedAt;
 
+    const describeStartedAt = Date.now();
     const descriptor = await this.describeCreatedWorktreeWorkspace(result);
+    const describeMs = Date.now() - describeStartedAt;
+    // Same shape as omp.runtime.acquire: one info row per create so a slow
+    // workspace.create can be split into its phases from daemon.log alone.
+    this.sessionLogger.info(
+      {
+        cwd: result.workspace.cwd,
+        created: result.created,
+        timing: {
+          resolveSourceMs,
+          workflowMs,
+          ...result.timing,
+          describeMs,
+          totalMs: Date.now() - startedAt,
+        },
+      },
+      "workspace.create.timing",
+    );
     this.emit({
       type: "workspace.create.response",
       payload: {

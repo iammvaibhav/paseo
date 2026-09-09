@@ -180,11 +180,9 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
       return null;
     }
 
-    const isGit = await this.isGitRepo(repoRoot);
-    if (!isGit) {
-      return null;
-    }
-
+    // The caller (createWorktreeCore) already resolved repoRoot through
+    // resolveRepoRoot, which throws for non-git paths. Re-checking here ran the
+    // full getCheckout snapshot (~10 git subprocesses) on every claim.
     const reserved = await this.withRepoLock(repoRoot, async () => {
       let records = this.pools.get(repoRoot);
       let candidateIndex = records

@@ -214,7 +214,10 @@ import {
   type WorkspaceFileLocation,
   type WorkspaceFileOpenRequest,
 } from "@/workspace/file-open";
-import { openBrowserEditorTab } from "@/workspace/open-file-in-browser-editor";
+import {
+  openBrowserEditorTab,
+  tryOpenFileInBrowserEditor,
+} from "@/workspace/open-file-in-browser-editor";
 import {
   stopPlannotatorBrowserIfNeeded,
   tryOpenFileInPlannotator,
@@ -2464,35 +2467,39 @@ function WorkspaceScreenContent({
     ],
   );
 
-  const _handleOpenFileFromExplorer = useCallback(
-    function handleOpenFileFromExplorer(filePath: string) {
-      if (!persistenceKey) {
-        return;
-      }
+  // Fork-only: VS Code Web's own diff editor for a changed file, opened from
+  // the Changes tree. Offered only where VS Code Web exists — there is no
+  // in-app diff editor to fall back to.
+  const handleOpenDiffFromExplorer = useMemo(() => {
+    if (!getIsElectron() || !browserEditorUrl || !persistenceKey || !workspaceDirectory) {
+      return undefined;
+    }
+    return (filePath: string, baseRef: string | null) => {
       const location = normalizeWorkspaceFileLocation({ path: filePath });
       if (!location) {
         return;
       }
-      void tryOpenFileInConfiguredDefault(location).then((result) => {
-        if (result.handled) {
-          return undefined;
-        }
-        const tabId = openWorkspaceTabFocused(
-          persistenceKey,
-          createWorkspaceFileTabTarget(location),
-        );
-        if (tabId) {
-          navigateToTabId(tabId);
-        }
-        return undefined;
+      tryOpenFileInBrowserEditor({
+        browserEditorUrl,
+        workspaceDirectory,
+        workspaceKey: persistenceKey,
+        location,
+        mode: "diff",
+        baseRef,
+        workspaceTabs: uiTabs,
+        openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
+        navigateToTabId,
       });
-    },
-    [navigateToTabId, openWorkspaceTabFocused, persistenceKey, tryOpenFileInConfiguredDefault],
-  );
+    };
+  }, [
+    browserEditorUrl,
+    navigateToTabId,
+    openWorkspaceTabFocused,
+    persistenceKey,
+    uiTabs,
+    workspaceDirectory,
+  ]);
 
-  // Fork-only: VS Code Web's own diff editor for a changed file. Offered only
-  // where VS Code Web exists — there is no in-app diff editor to fall back to,
-  // and the inline diff in the pane already covers that.
   const handleOpenFileFromChat = useCallback(
     (location: WorkspaceFileLocation, parentTabId?: string | null) => {
       const normalizedLocation = normalizeWorkspaceFileLocation(location);
@@ -3964,10 +3971,12 @@ function WorkspaceScreenContent({
           });
         },
         onOpenImportSheet: openImportSheet,
+        onOpenDiff: handleOpenDiffFromExplorer,
       }),
     [
       handleCloseTabById,
       fileNavigationRevisionByTabId,
+      handleOpenDiffFromExplorer,
       handleOpenWorkspaceFileFromPane,
       navigateToTabId,
       normalizedServerId,

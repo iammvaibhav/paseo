@@ -6,7 +6,7 @@ import pLimit from "p-limit";
 import type pino from "pino";
 import type { ProjectCheckoutLitePayload } from "@getpaseo/protocol/messages";
 import { parseGitRemoteLocation } from "@getpaseo/protocol/git-remote";
-import type { CheckoutContext } from "../utils/checkout-git.js";
+import type { CheckoutContext, RepoFactsProvider } from "../utils/checkout-git.js";
 import {
   type BranchCheckoutResolution,
   type BranchSuggestion,
@@ -54,7 +54,11 @@ import {
 import { branchNameFromRef } from "../utils/worktree-metadata.js";
 import { listPaseoWorktrees, type PaseoWorktreeInfo } from "../utils/worktree.js";
 import { READ_ONLY_GIT_ENV } from "./checkout-git-utils.js";
-import { classifyGitMetadataPath, getPrunedGitMetadataPaths } from "./git-metadata-event-rules.js";
+import {
+  classifyGitMetadataPath,
+  getPrunedGitMetadataPaths,
+  GIT_METADATA_CONFIG_GLOBAL_PREFIXES,
+} from "./git-metadata-event-rules.js";
 import {
   fetchWorkspaceGitRemote,
   type WorkspaceGitFetchResult,
@@ -217,6 +221,15 @@ export interface WorkspaceGitService {
     options?: WorkspaceGitReadOptions,
   ): Promise<WorkspaceGitBranchValidationResult>;
   hasLocalBranch(cwd: string, branch: string, options?: WorkspaceGitReadOptions): Promise<boolean>;
+  /** Whether `refs/remotes/origin/<branch>` exists. Used by dispatch's
+   * branch-off fallback (worktree-core.ts preferOriginDefaultBranch) to
+   * prefer origin's tip over a same-named stale local branch, without
+   * shelling out on every worktree create. */
+  hasOriginTrackingBranch(
+    repoRoot: string,
+    branch: string,
+    options?: WorkspaceGitReadOptions,
+  ): Promise<boolean>;
   suggestBranchesForCwd(
     cwd: string,
     options?: WorkspaceGitBranchSuggestionsOptions,
@@ -380,6 +393,8 @@ interface WorkspaceGitServiceDependencies {
   getWorkspaceGitSelfHealPhaseMs: typeof getWorkspaceGitObservationReensurePhaseMs;
   createWatcherLivenessCanary: typeof createWatcherLivenessCanary;
   now: () => Date;
+  /** How often to poll Git state when the file watcher is unavailable. */
+  degradedGitPollIntervalMs: number;
 }
 
 interface WorkspaceGitServiceOptions {
@@ -448,6 +463,8 @@ interface RepoGitTarget {
     { change: WorkspaceGitRemoteRefChange; expiresAtMs: number }
   >;
   knownRemoteRefs: Set<string> | null;
+  knownLocalRefs: Set<string> | null;
+  lastConfigText: string | null;
   closed: boolean;
 }
 
@@ -456,6 +473,93 @@ interface RepoMetadataWorkspaceRefresh {
   structural: boolean;
   movedRemoteRefs: Set<string>;
   queueIfBusy: boolean;
+}
+
+interface RepoFacts {
+  remoteOriginUrl: Promise<string | null> | null;
+  defaultBranch: Promise<string | null> | null;
+  mainRepoRoot: Promise<string> | null;
+}
+
+/**
+ * Repo-level fact provider shared by every worktree of a repo, keyed by the repo's common git
+ * dir. Sibling worktrees refreshing together await the same in-flight subprocess instead of
+ * each recomputing the identical fact.
+ */
+class RepoFactsCache implements RepoFactsProvider {
+  private readonly entries = new Map<string, RepoFacts>();
+
+  private entryFor(repoGitRoot: string): RepoFacts {
+    let entry = this.entries.get(repoGitRoot);
+    if (!entry) {
+      entry = { remoteOriginUrl: null, defaultBranch: null, mainRepoRoot: null };
+      this.entries.set(repoGitRoot, entry);
+    }
+    return entry;
+  }
+
+  getRemoteOriginUrl(
+    repoGitRoot: string,
+    compute: () => Promise<string | null>,
+  ): Promise<string | null> {
+    const entry = this.entryFor(repoGitRoot);
+    if (entry.remoteOriginUrl) {
+      return entry.remoteOriginUrl;
+    }
+    const promise = compute();
+    entry.remoteOriginUrl = promise;
+    promise.catch(() => {
+      if (entry.remoteOriginUrl === promise) entry.remoteOriginUrl = null;
+    });
+    return promise;
+  }
+
+  getDefaultBranch(
+    repoGitRoot: string,
+    compute: () => Promise<string | null>,
+  ): Promise<string | null> {
+    const entry = this.entryFor(repoGitRoot);
+    if (entry.defaultBranch) {
+      return entry.defaultBranch;
+    }
+    const promise = compute();
+    entry.defaultBranch = promise;
+    promise.catch(() => {
+      if (entry.defaultBranch === promise) entry.defaultBranch = null;
+    });
+    return promise;
+  }
+
+  getMainRepoRoot(repoGitRoot: string, compute: () => Promise<string>): Promise<string> {
+    const entry = this.entryFor(repoGitRoot);
+    if (entry.mainRepoRoot) {
+      return entry.mainRepoRoot;
+    }
+    const promise = compute();
+    entry.mainRepoRoot = promise;
+    promise.catch(() => {
+      if (entry.mainRepoRoot === promise) entry.mainRepoRoot = null;
+    });
+    return promise;
+  }
+
+  invalidateRemoteOriginUrl(repoGitRoot: string): void {
+    const entry = this.entries.get(repoGitRoot);
+    if (entry) entry.remoteOriginUrl = null;
+  }
+
+  invalidateDefaultBranch(repoGitRoot: string): void {
+    const entry = this.entries.get(repoGitRoot);
+    if (entry) entry.defaultBranch = null;
+  }
+
+  delete(repoGitRoot: string): void {
+    this.entries.delete(repoGitRoot);
+  }
+
+  clear(): void {
+    this.entries.clear();
+  }
 }
 
 interface WorkingTreeWatchTarget {
@@ -484,6 +588,49 @@ interface WatchRecoveryState {
 
 function setsEqual(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
   return left.size === right.size && [...left].every((value) => right.has(value));
+}
+
+function symmetricDifference(left: ReadonlySet<string>, right: ReadonlySet<string>): Set<string> {
+  const result = new Set<string>();
+  for (const value of left) if (!right.has(value)) result.add(value);
+  for (const value of right) if (!left.has(value)) result.add(value);
+  return result;
+}
+
+/** Parses `git config`'s INI syntax into fully-qualified `section.sub.key` -> value pairs. */
+function parseGitConfigKeys(text: string): Map<string, string> {
+  const keys = new Map<string, string>();
+  let section = "";
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#") || line.startsWith(";")) continue;
+    const sectionMatch = /^\[([^\]\s"]+)(?:\s+"([^"]*)")?\]$/.exec(line);
+    if (sectionMatch) {
+      const [, name, subsection] = sectionMatch;
+      section =
+        subsection !== undefined ? `${name.toLowerCase()}.${subsection}` : name.toLowerCase();
+      continue;
+    }
+    const keyMatch = /^([A-Za-z][A-Za-z0-9-]*)\s*(?:=\s*(.*))?$/.exec(line);
+    if (keyMatch && section) {
+      const [, key, value] = keyMatch;
+      keys.set(`${section}.${key.toLowerCase()}`, value ?? "true");
+    }
+  }
+  return keys;
+}
+
+function diffGitConfigKeys(previousText: string, nextText: string): string[] {
+  const previousKeys = parseGitConfigKeys(previousText);
+  const nextKeys = parseGitConfigKeys(nextText);
+  const changed = new Set<string>();
+  for (const [key, value] of nextKeys) {
+    if (previousKeys.get(key) !== value) changed.add(key);
+  }
+  for (const key of previousKeys.keys()) {
+    if (!nextKeys.has(key)) changed.add(key);
+  }
+  return [...changed];
 }
 
 type WorkingTreeWatchFallbackReason =
@@ -528,6 +675,7 @@ function buildDefaultWorkspaceGitServiceDeps(
     getWorkspaceGitSelfHealPhaseMs: getWorkspaceGitObservationReensurePhaseMs,
     createWatcherLivenessCanary,
     now: () => new Date(),
+    degradedGitPollIntervalMs: DEGRADED_GIT_POLL_INTERVAL_MS,
   };
 }
 
@@ -559,6 +707,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
   private readonly snapshotUpdatedListeners = new Set<WorkspaceGitSnapshotUpdatedListener>();
   private readonly workspaceTargets = new Map<string, WorkspaceGitTarget>();
   private readonly repoTargets = new Map<string, RepoGitTarget>();
+  private readonly repoFactsCache = new RepoFactsCache();
   private readonly workingTreeWatchTargets = new Map<string, WorkingTreeWatchTarget>();
   private readonly workingTreeWatchSetups = new Map<string, Promise<WorkingTreeWatchTarget>>();
   private readonly workingTreeWatchResolutions = new Map<string, Promise<WorkingTreeWatchTarget>>();
@@ -568,6 +717,10 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     WorkspaceGitAuxiliaryReadCacheEntry<WorkspaceGitBranchValidationResult>
   >({ max: WORKSPACE_GIT_AUXILIARY_CACHE_MAX });
   private readonly localBranchCache = new LRUCache<
+    string,
+    WorkspaceGitAuxiliaryReadCacheEntry<boolean>
+  >({ max: WORKSPACE_GIT_AUXILIARY_CACHE_MAX });
+  private readonly originTrackingBranchCache = new LRUCache<
     string,
     WorkspaceGitAuxiliaryReadCacheEntry<boolean>
   >({ max: WORKSPACE_GIT_AUXILIARY_CACHE_MAX });
@@ -824,6 +977,26 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     return this.readAuxiliaryCache(this.localBranchCache, key, options, async () => {
       const result = await this.deps.runGitCommand(["rev-parse", "--verify", "--quiet", ref], {
         cwd: normalizedCwd,
+        envOverlay: READ_ONLY_GIT_ENV,
+        acceptExitCodes: [0, 1],
+      });
+      return result.exitCode === 0;
+    });
+  }
+
+  hasOriginTrackingBranch(
+    repoRoot: string,
+    branch: string,
+    options?: WorkspaceGitReadOptions,
+  ): Promise<boolean> {
+    this.assertNotDisposed();
+    const normalizedRepoRoot = resolve(repoRoot);
+    const normalizedBranch = branch.trim();
+    const ref = `refs/remotes/origin/${normalizedBranch}`;
+    const key = JSON.stringify(["origin-tracking-branch", normalizedRepoRoot, ref]);
+    return this.readAuxiliaryCache(this.originTrackingBranchCache, key, options, async () => {
+      const result = await this.deps.runGitCommand(["rev-parse", "--verify", "--quiet", ref], {
+        cwd: normalizedRepoRoot,
         envOverlay: READ_ONLY_GIT_ENV,
         acceptExitCodes: [0, 1],
       });
@@ -1286,6 +1459,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     return this.loadCheckoutFacts(target, {
       paseoHome: this.paseoHome,
       logger: this.logger,
+      repoFacts: this.repoFactsCache,
     });
   }
 
@@ -1572,16 +1746,16 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       );
       this.notifyWorkingTreeConsumers(target);
       if (!target.closed && (target.subscription === null || target.repoRoot === null)) {
-        target.fallbackPollTimer = setTimeout(poll, DEGRADED_GIT_POLL_INTERVAL_MS);
+        target.fallbackPollTimer = setTimeout(poll, this.deps.degradedGitPollIntervalMs);
       } else {
         target.fallbackPolling = false;
       }
     };
-    target.fallbackPollTimer = setTimeout(poll, DEGRADED_GIT_POLL_INTERVAL_MS);
+    target.fallbackPollTimer = setTimeout(poll, this.deps.degradedGitPollIntervalMs);
     this.logger.warn(
       {
         cwd,
-        intervalMs: DEGRADED_GIT_POLL_INTERVAL_MS,
+        intervalMs: this.deps.degradedGitPollIntervalMs,
         reason,
       },
       "Working tree watcher unavailable; using bounded polling fallback",
@@ -1863,6 +2037,8 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       bufferedFetchMetadataEvents: [],
       recentFetchRemoteRefChanges: new Map(),
       knownRemoteRefs: null,
+      knownLocalRefs: null,
+      lastConfigText: null,
       closed: false,
     };
     this.repoTargets.set(repoGitRoot, repoTarget);
@@ -1960,13 +2136,16 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
               : relevantEvents;
             if (immediateEvents.length > 0) {
               this.refreshWorkingTreeIgnoresFromRepoMetadataEvents(target, immediateEvents);
-              const routedRefreshes = this.routeRepoMetadataEvents(target, immediateEvents);
-              this.scheduleRepoMetadataRefresh(
-                target,
-                "git-metadata-watch",
-                routedRefreshes === null || [...routedRefreshes.values()].some((r) => r.structural),
-                routedRefreshes,
-              );
+              void (async () => {
+                const routedRefreshes = await this.routeRepoMetadataEvents(target, immediateEvents);
+                this.scheduleRepoMetadataRefresh(
+                  target,
+                  "git-metadata-watch",
+                  routedRefreshes === null ||
+                    [...routedRefreshes.values()].some((r) => r.structural),
+                  routedRefreshes,
+                );
+              })();
             }
           }
         },
@@ -2056,18 +2235,34 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     this.logger.info({ repoGitRoot: target.repoGitRoot }, "Repository metadata watcher recovered");
   }
 
-  private routeRepoMetadataEvents(
+  private async routeRepoMetadataEvents(
     target: RepoGitTarget,
     events: FileChange[],
-  ): Map<string, RepoMetadataWorkspaceRefresh> | null {
+  ): Promise<Map<string, RepoMetadataWorkspaceRefresh> | null> {
     const refreshes = new Map<string, RepoMetadataWorkspaceRefresh>();
     const matchesRepoGitRoot = createRealpathAwarePathMatcher(target.repoGitRoot);
+    let unroutableEventCount = 0;
 
     for (const event of events) {
-      if (!this.routeRepoMetadataEvent(target, event, matchesRepoGitRoot, refreshes)) return null;
+      if (!(await this.routeRepoMetadataEvent(target, event, matchesRepoGitRoot, refreshes))) {
+        unroutableEventCount += 1;
+      }
     }
 
-    return refreshes;
+    const blanket = unroutableEventCount > 0;
+    this.logger.debug(
+      {
+        repoGitRoot: target.repoGitRoot,
+        eventCount: events.length,
+        unroutableEventCount,
+        workspaceCount: target.workspaceKeys.size,
+        routedWorkspaceCount: refreshes.size,
+        blanket,
+      },
+      "workspace-refresh.metadata_routed",
+    );
+
+    return blanket ? null : refreshes;
   }
 
   private refreshWorkingTreeIgnoresFromRepoMetadataEvents(
@@ -2109,18 +2304,16 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     const relativePath = getRealpathAwareRelativePath(target.repoGitRoot, event.path);
     const effect = classifyGitMetadataPath("common", relativePath ?? "");
     return (
-      (effect.kind === "ref" && effect.namespace === "remote") ||
-      (effect.kind === "all" &&
-        (relativePath === "packed-refs" || relativePath?.startsWith("reftable/") === true))
+      (effect.kind === "ref" && effect.namespace === "remote") || effect.kind === "packed-refs"
     );
   }
 
-  private routeRepoMetadataEvent(
+  private async routeRepoMetadataEvent(
     target: RepoGitTarget,
     event: FileChange,
     matchesRepoGitRoot: ReturnType<typeof createRealpathAwarePathMatcher>,
     refreshes: Map<string, RepoMetadataWorkspaceRefresh>,
-  ): boolean {
+  ): Promise<boolean> {
     if (this.routePrivateGitDirEvent(target, event, matchesRepoGitRoot, refreshes)) return true;
 
     const commonRelativePath = getRealpathAwareRelativePath(target.repoGitRoot, event.path);
@@ -2161,15 +2354,121 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
           }
         }
         return true;
-      case "all":
-        if (
-          commonRelativePath === "packed-refs" ||
-          commonRelativePath?.startsWith("reftable/") === true
-        ) {
-          target.knownRemoteRefs = null;
-        }
-        return false;
+      case "config":
+        await this.routeConfigMetadata(target, refreshes);
+        return true;
+      case "packed-refs":
+        return this.reconcilePackedRefs(target, refreshes);
     }
+  }
+
+  /**
+   * `.git/config` covers every branch plus repo-wide settings in one file. Diffing its content
+   * against the last observed text narrows a `branch.<name>.*` edit to dependents of that branch;
+   * `remote.*`/`core.*`/`extensions.*` and anything unrecognized fall back to a full refresh
+   * since those can change facts (remote URL, default branch) for every worktree of the repo.
+   */
+  private async routeConfigMetadata(
+    target: RepoGitTarget,
+    refreshes: Map<string, RepoMetadataWorkspaceRefresh>,
+  ): Promise<void> {
+    let configText: string;
+    try {
+      configText = await readFile(join(target.repoGitRoot, "config"), "utf8");
+    } catch {
+      return;
+    }
+    if (target.lastConfigText === null) {
+      target.lastConfigText = configText;
+      return;
+    }
+    const changedKeys = diffGitConfigKeys(target.lastConfigText, configText);
+    target.lastConfigText = configText;
+    for (const key of changedKeys) {
+      this.routeConfigKeyChange(target, key, refreshes);
+    }
+  }
+
+  private routeConfigKeyChange(
+    target: RepoGitTarget,
+    key: string,
+    refreshes: Map<string, RepoMetadataWorkspaceRefresh>,
+  ): void {
+    const branchMatch = /^branch\.(.+)\.[^.]+$/.exec(key);
+    if (branchMatch) {
+      this.repoFactsCache.invalidateDefaultBranch(target.repoGitRoot);
+      this.routeLocalBranchRef(target, branchMatch[1], refreshes);
+      return;
+    }
+    if (key.startsWith("remote.")) {
+      this.repoFactsCache.invalidateRemoteOriginUrl(target.repoGitRoot);
+    } else if (!GIT_METADATA_CONFIG_GLOBAL_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+      this.logger.debug(
+        { repoGitRoot: target.repoGitRoot, key },
+        "Unrecognized git config key; using blanket structural refresh",
+      );
+    }
+    for (const workspaceKey of target.workspaceKeys) {
+      this.addWorkspaceMetadataRefresh(refreshes, workspaceKey, true);
+    }
+  }
+
+  /**
+   * `packed-refs` consolidates many loose refs into one file; the individual loose-ref events
+   * that led up to a pack already routed narrowly, so a fresh `for-each-ref` diffed against the
+   * last known ref names tells us whether the pack introduced anything those events missed.
+   */
+  private async reconcilePackedRefs(
+    target: RepoGitTarget,
+    refreshes: Map<string, RepoMetadataWorkspaceRefresh>,
+  ): Promise<boolean> {
+    let stdout: string;
+    try {
+      ({ stdout } = await this.deps.runGitCommand(
+        ["for-each-ref", "--format=%(refname)%00%(objectname)"],
+        { cwd: target.repoGitRoot, envOverlay: READ_ONLY_GIT_ENV },
+      ));
+    } catch (error) {
+      this.logger.warn(
+        { err: error, repoGitRoot: target.repoGitRoot },
+        "for-each-ref failed while reconciling packed-refs; using blanket structural refresh",
+      );
+      return false;
+    }
+    this.logger.debug(
+      { repoGitRoot: target.repoGitRoot, provenance: "git-metadata-watch:packed-refs" },
+      "Reconciled packed-refs via for-each-ref",
+    );
+
+    const local = new Set<string>();
+    const remote = new Set<string>();
+    for (const line of stdout.split("\n")) {
+      const refname = line.split("\0")[0];
+      if (refname?.startsWith("refs/heads/")) {
+        local.add(refname.slice("refs/heads/".length));
+      } else if (refname?.startsWith("refs/remotes/")) {
+        remote.add(refname.slice("refs/remotes/".length));
+      }
+    }
+
+    const previousLocal = target.knownLocalRefs;
+    const previousRemote = target.knownRemoteRefs;
+    const localChanged = previousLocal !== null && !setsEqual(previousLocal, local);
+    const remoteChanged = previousRemote !== null && !setsEqual(previousRemote, remote);
+    target.knownLocalRefs = local;
+    target.knownRemoteRefs = remote;
+
+    if (localChanged) {
+      for (const branch of symmetricDifference(previousLocal ?? new Set(), local)) {
+        this.routeLocalBranchRef(target, branch, refreshes);
+      }
+    }
+    if (remoteChanged) {
+      for (const remoteRef of symmetricDifference(previousRemote ?? new Set(), remote)) {
+        this.routeRemoteBranchRef(target, remoteRef, refreshes);
+      }
+    }
+    return true;
   }
 
   private routePrivateGitDirEvent(
@@ -2396,12 +2695,12 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
         this.notifyWorkingTreeConsumers(workingTreeTarget);
       }
       if (!target.closed && target.subscription === null) {
-        target.fallbackPollTimer = setTimeout(poll, DEGRADED_GIT_POLL_INTERVAL_MS);
+        target.fallbackPollTimer = setTimeout(poll, this.deps.degradedGitPollIntervalMs);
       } else {
         target.fallbackPolling = false;
       }
     };
-    target.fallbackPollTimer = setTimeout(poll, DEGRADED_GIT_POLL_INTERVAL_MS);
+    target.fallbackPollTimer = setTimeout(poll, this.deps.degradedGitPollIntervalMs);
   }
 
   private scheduleWorkspaceRefresh(
@@ -3025,6 +3324,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       worktreesRoot: this.worktreesRoot,
       logger: this.logger,
       runGitCommand: runRefreshGitCommand,
+      repoFacts: this.repoFactsCache,
     };
     const facts = await this.loadCheckoutFacts(target, baseContext);
     const context: CheckoutContext = { ...baseContext, facts };
@@ -3232,22 +3532,28 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
           "Background git fetch failed",
         );
       }
-      this.applyRepoFetchResult(target, result, eventsBeforeFetchSnapshot);
+      await this.applyRepoFetchResult(target, result, eventsBeforeFetchSnapshot);
     } finally {
       target.fetchInFlight = false;
     }
   }
 
-  private applyRepoFetchResult(
+  private async applyRepoFetchResult(
     target: RepoGitTarget,
     result: WorkspaceGitFetchResult | null,
     eventsBeforeFetchSnapshot: FileChange[],
-  ): void {
-    this.flushFetchMetadataEvents(target, eventsBeforeFetchSnapshot);
+  ): Promise<void> {
+    await this.flushFetchMetadataEvents(target, eventsBeforeFetchSnapshot);
+    if (result) {
+      // The fetch ran regardless of whether change classification below
+      // succeeds, so refs/remotes/origin/* may have moved. Drop cached
+      // origin-branch-existence answers rather than serving stale ones.
+      this.originTrackingBranchCache.clear();
+    }
     if (!result || result.changes === null) {
       target.recentFetchRemoteRefChanges.clear();
       target.knownRemoteRefs = null;
-      this.flushBufferedFetchMetadataEvents(target);
+      await this.flushBufferedFetchMetadataEvents(target);
       if (result) {
         this.logger.warn(
           { err: result.error, repoGitRoot: target.repoGitRoot, cwd: target.cwd },
@@ -3275,7 +3581,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     for (const change of result.changes) {
       target.recentFetchRemoteRefChanges.set(change.ref, { change, expiresAtMs });
     }
-    this.flushBufferedFetchMetadataEvents(target);
+    await this.flushBufferedFetchMetadataEvents(target);
     if (
       result.nonRemoteRefsChanged === true ||
       remoteRefShapeChanged ||
@@ -3294,15 +3600,18 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     this.scheduleRepoMetadataRefresh(target, "repo-fetch", false, refreshes);
   }
 
-  private flushBufferedFetchMetadataEvents(target: RepoGitTarget): void {
-    this.flushFetchMetadataEvents(target, target.bufferedFetchMetadataEvents.splice(0));
+  private async flushBufferedFetchMetadataEvents(target: RepoGitTarget): Promise<void> {
+    await this.flushFetchMetadataEvents(target, target.bufferedFetchMetadataEvents.splice(0));
   }
 
-  private flushFetchMetadataEvents(target: RepoGitTarget, events: FileChange[]): void {
+  private async flushFetchMetadataEvents(
+    target: RepoGitTarget,
+    events: FileChange[],
+  ): Promise<void> {
     if (events.length === 0) {
       return;
     }
-    const routedRefreshes = this.routeRepoMetadataEvents(target, events);
+    const routedRefreshes = await this.routeRepoMetadataEvents(target, events);
     this.scheduleRepoMetadataRefresh(
       target,
       "git-metadata-watch-after-fetch",
@@ -3457,6 +3766,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       });
     }
     target.workspaceKeys.clear();
+    this.repoFactsCache.delete(target.repoGitRoot);
   }
 }
 
