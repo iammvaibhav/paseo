@@ -1085,8 +1085,8 @@ log "MacBook checkout at \$(git rev-parse --short HEAD)"
 # patches/ and the patch script itself must trigger too: a patch-only commit
 # changes neither the lockfile nor any package.json, but the new patch still
 # has to be applied (missed once on 2026-09-09: unpatched xterm bundle shipped).
-# NOTE: `pnpm install` skips lifecycle scripts when nothing changed, so run
-# the patch script explicitly — it is idempotent across repeated runs.
+# NOTE: plain pnpm install skips lifecycle scripts when nothing changed, so
+# run the patch script explicitly — it is idempotent across repeated runs.
 sync_ref_file="\$HOME/.paseo-sync-ref"
 prev=""
 cur="\$(git rev-parse HEAD)"
@@ -1688,7 +1688,6 @@ maybe_install_deps() {
   local sync_ref_file="\$HOME/.paseo-sync-ref"
   local prev="" cur
   cur="\$(git rev-parse HEAD)"
-  if [[ -f "\$sync_ref_file" ]]; then
     prev="\$(cat "\$sync_ref_file")"
   fi
   if [[ -z "\$prev" ]] || git diff "\$prev" "\$cur" --name-only | grep -Eq '^(pnpm-lock\\.yaml|package\\.json|patches/|scripts/postinstall-patches\\.mjs)$'; then
