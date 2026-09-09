@@ -1081,16 +1081,22 @@ if ! git merge --ff-only "origin/\$BRANCH" >/dev/null 2>&1; then
 fi
 log "MacBook checkout at \$(git rev-parse --short HEAD)"
 
-# Reinstall deps when the lockfile changed since the last sync.
+# Reinstall deps when dependencies or patches changed since the last sync.
+# patches/ and the patch script itself must trigger too: a patch-only commit
+# changes neither the lockfile nor any package.json, but the new patch still
+# has to be applied (missed once on 2026-09-09: unpatched xterm bundle shipped).
+# NOTE: `pnpm install` skips lifecycle scripts when nothing changed, so run
+# the patch script explicitly — it is idempotent across repeated runs.
 sync_ref_file="\$HOME/.paseo-sync-ref"
 prev=""
 cur="\$(git rev-parse HEAD)"
 if [[ -f "\$sync_ref_file" ]]; then
   prev="\$(cat "\$sync_ref_file")"
 fi
-if [[ -z "\$prev" ]] || git diff "\$prev" "\$cur" --name-only | grep -Eq '^(pnpm-lock\\.yaml|package\\.json)$'; then
+if [[ -z "\$prev" ]] || git diff "\$prev" "\$cur" --name-only | grep -Eq '^(pnpm-lock\\.yaml|package\\.json|patches/|scripts/postinstall-patches\\.mjs)$'; then
   log "Installing pnpm dependencies"
   corepack enable && corepack prepare pnpm@11.22.0 --activate && pnpm install
+  PATH="\$PWD/node_modules/.bin:\$PATH" node scripts/postinstall-patches.mjs
 fi
 echo "\$cur" > "\$sync_ref_file"
 
@@ -1685,9 +1691,10 @@ maybe_install_deps() {
   if [[ -f "\$sync_ref_file" ]]; then
     prev="\$(cat "\$sync_ref_file")"
   fi
-  if [[ -z "\$prev" ]] || git diff "\$prev" "\$cur" --name-only | grep -Eq '^(pnpm-lock\\.yaml|package\\.json)$'; then
+  if [[ -z "\$prev" ]] || git diff "\$prev" "\$cur" --name-only | grep -Eq '^(pnpm-lock\\.yaml|package\\.json|patches/|scripts/postinstall-patches\\.mjs)$'; then
     log "Installing pnpm dependencies"
     corepack enable && corepack prepare pnpm@11.22.0 --activate && pnpm install
+    PATH="\$PWD/node_modules/.bin:\$PATH" node scripts/postinstall-patches.mjs
   fi
   echo "\$cur" > "\$sync_ref_file"
 }
