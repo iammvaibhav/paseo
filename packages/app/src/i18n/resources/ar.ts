@@ -2353,6 +2353,9 @@ export const ar: TranslationResources = {
         contentSize: "حجم المحتوى",
         contentSizeHint: "يُستخدم لنص الدردشة وملفات Markdown المعروضة",
         contentSizeAccessibility: "حجم خط المحتوى",
+        agentGridSize: "حجم شبكة الوكلاء",
+        agentGridSizeHint: "لنص المحادثة في بلاطات Agent Grid، مستقل عن نافذة الوكيل الكاملة",
+        agentGridSizeAccessibility: "حجم خط شبكة الوكلاء",
         codeFont: "خط الكود",
         codeFontHint:
           "تستخدم في الكود والاختلافات والمخرجات الطرفية. اتركه فارغًا للإعداد الافتراضي للنظام",

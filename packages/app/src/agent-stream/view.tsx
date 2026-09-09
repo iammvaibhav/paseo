@@ -81,11 +81,12 @@ import { useMissionControlVerbose } from "@/mission-control/use-mission-control-
 import {
   CompletedTurnFooterRow,
   TurnFooter,
-  TURN_FOOTER_BOTTOM_SPACING,
+  resolveTurnFooterBottomSpacing,
   type AssistantTurnForkHandler,
   type InFlightTurnForkHandler,
   type TurnContentStrategy,
 } from "./turn-footer";
+import { resolveStreamTurnChrome, type StreamChrome } from "./stream-chrome";
 import type { AssistantTurnForkBoundary } from "./turn-boundary";
 import { resolveBottomOverlayTailInset } from "./bottom-overlay-inset";
 
@@ -178,12 +179,13 @@ function renderStreamItemWithTurnFooter(input: {
   supportsTimelineCursor: boolean;
   onForkAssistantTurn?: AssistantTurnForkHandler;
   onJumpToUserMessage?: (itemId: string) => void;
+  includeTurnFooter: boolean;
 }): ReactNode {
   if (!input.content) {
     return null;
   }
 
-  const footerHost = input.layoutItem.completedFooter;
+  const footerHost = input.includeTurnFooter ? input.layoutItem.completedFooter : null;
   const footer = footerHost ? (
     <CompletedTurnFooterRow
       strategy={input.strategy}
@@ -311,6 +313,12 @@ export interface AgentStreamViewProps {
   toast?: ToastApi | null;
   onOpenWorkspaceFile?: (request: WorkspaceFileOpenRequest) => void;
   readOnly?: boolean;
+  /**
+   * `compact` drops per-turn Fork/copy/jump chrome, the live elapsed footer,
+   * and the large footer inset so a small tile can show more stream text.
+   * Default `full`.
+   */
+  chrome?: StreamChrome;
   historyPagination?: {
     hasOlder: boolean;
     isLoadingOlder: boolean;
@@ -431,11 +439,14 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       toast,
       onOpenWorkspaceFile,
       readOnly = false,
+      chrome = "full",
       historyPagination,
       selectionAsk = null,
     },
     ref,
   ) {
+    const turnChrome = resolveStreamTurnChrome({ chrome, readOnly });
+    const turnFooterBottomSpacing = resolveTurnFooterBottomSpacing(turnChrome.density);
     const { t } = useTranslation();
     const autoExpandReasoning = useSettings((settings) => settings.autoExpandReasoning);
     const toolCallDetailLevel = useSettings((settings) => settings.toolCallDetailLevel);
@@ -1070,14 +1081,16 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           layoutItem,
           strategy: streamRenderStrategy,
           supportsTimelineCursor: supportsAgentForkContextCursor,
-          onForkAssistantTurn: readOnly ? undefined : handleForkAssistantTurn,
+          onForkAssistantTurn: turnChrome.suppressTurnActions ? undefined : handleForkAssistantTurn,
           onJumpToUserMessage: jumpToUserMessage,
+          includeTurnFooter: turnChrome.includeTurnFooter,
         });
       },
       [
         handleForkAssistantTurn,
         jumpToUserMessage,
-        readOnly,
+        turnChrome.includeTurnFooter,
+        turnChrome.suppressTurnActions,
         renderStreamItemContent,
         streamRenderStrategy,
         supportsAgentForkContextCursor,
@@ -1100,23 +1113,28 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     );
     const turnFooterNode = useMemo(
       () =>
-        isTurnActive || bottomTurnFooterHost ? (
+        turnChrome.includeTurnFooter && (isTurnActive || bottomTurnFooterHost) ? (
           <TurnFooter
             isRunning={isTurnActive}
             inFlightTurnStartedAt={baseRenderModel.turnTiming.runningStartedAt}
             host={bottomTurnFooterHost}
             strategy={streamRenderStrategy}
             supportsTimelineCursor={supportsAgentForkContextCursor}
-            onForkAssistantTurn={readOnly ? undefined : handleForkAssistantTurn}
+            onForkAssistantTurn={
+              turnChrome.suppressTurnActions ? undefined : handleForkAssistantTurn
+            }
             onJumpToUserMessage={jumpToUserMessage}
-            onForkInFlightTurn={readOnly ? undefined : handleForkInFlightTurn}
+            onForkInFlightTurn={turnChrome.suppressTurnActions ? undefined : handleForkInFlightTurn}
+            density={turnChrome.density}
           />
         ) : null,
       [
         handleForkAssistantTurn,
         jumpToUserMessage,
         handleForkInFlightTurn,
-        readOnly,
+        turnChrome.density,
+        turnChrome.includeTurnFooter,
+        turnChrome.suppressTurnActions,
         isTurnActive,
         baseRenderModel.turnTiming.runningStartedAt,
         bottomTurnFooterHost,
@@ -1202,7 +1220,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     );
     const renderLiveAuxiliary = useCallback<StreamSegmentRenderers["renderLiveAuxiliary"]>(() => {
       const existingTailSpacing =
-        auxiliary.turnFooter && !auxiliary.pendingPermissions ? TURN_FOOTER_BOTTOM_SPACING : 0;
+        auxiliary.turnFooter && !auxiliary.pendingPermissions ? turnFooterBottomSpacing : 0;
       const bottomOverlayInset = resolveBottomOverlayTailInset({
         requiredTailClearance: bottomOverlayTailClearance,
         existingTailSpacing,
@@ -1212,7 +1230,12 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         turnFooter: auxiliary.turnFooter,
         bottomOverlayInset,
       });
-    }, [auxiliary.pendingPermissions, auxiliary.turnFooter, bottomOverlayTailClearance]);
+    }, [
+      auxiliary.pendingPermissions,
+      auxiliary.turnFooter,
+      bottomOverlayTailClearance,
+      turnFooterBottomSpacing,
+    ]);
 
     const renderers = useMemo<StreamSegmentRenderers>(
       () => ({
@@ -1406,6 +1429,7 @@ function agentStreamViewPropsEqual(
   if (left.toast !== right.toast) reasons.push("toast");
   if (left.onOpenWorkspaceFile !== right.onOpenWorkspaceFile) reasons.push("onOpenWorkspaceFile");
   if (left.readOnly !== right.readOnly) reasons.push("readOnly");
+  if (left.chrome !== right.chrome) reasons.push("chrome");
   if (!historyPaginationPropsEqual(left.historyPagination, right.historyPagination)) {
     reasons.push("historyPagination");
   }

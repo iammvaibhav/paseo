@@ -2393,6 +2393,10 @@ export const ptBR: TranslationResources = {
         contentSize: "Tamanho do conteúdo",
         contentSizeHint: "Usado no texto do chat e no Markdown renderizado",
         contentSizeAccessibility: "Tamanho da fonte do conteúdo",
+        agentGridSize: "Tamanho do Agent Grid",
+        agentGridSizeHint:
+          "Usado no texto do chat nos tiles do Agent Grid, separado do painel completo do agente",
+        agentGridSizeAccessibility: "Tamanho da fonte do Agent Grid",
         codeFont: "Fonte de código",
         codeFontHint:
           "Usada em código, diffs e saída do terminal. Deixe vazio para usar o padrão do sistema",

@@ -2411,6 +2411,10 @@ export const es: TranslationResources = {
         contentSize: "Tamaño de contenido",
         contentSizeHint: "Se usa en el texto del chat y el Markdown renderizado",
         contentSizeAccessibility: "Tamaño de fuente de contenido",
+        agentGridSize: "Tamaño de Agent Grid",
+        agentGridSizeHint:
+          "Se usa para el texto del chat en las teselas de Agent Grid, independiente del panel del agente completo",
+        agentGridSizeAccessibility: "Tamaño de fuente de Agent Grid",
         codeFont: "Fuente de código",
         codeFontHint:
           "Se utiliza en código, diferencias y salida del terminal. Déjelo vacío para el valor predeterminado del sistema.",

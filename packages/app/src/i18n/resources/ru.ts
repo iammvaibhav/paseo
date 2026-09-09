@@ -2398,6 +2398,10 @@ export const ru: TranslationResources = {
         contentSize: "Размер содержимого",
         contentSizeHint: "Используется для текста чата и отображаемого Markdown",
         contentSizeAccessibility: "Размер шрифта содержимого",
+        agentGridSize: "Размер сетки агентов",
+        agentGridSizeHint:
+          "Для текста чата в плитках Agent Grid; не зависит от полного окна агента",
+        agentGridSizeAccessibility: "Размер шрифта сетки агентов",
         codeFont: "Шрифт кода",
         codeFontHint:
           "Используется для кода, диффов и вывода терминала. Оставьте поле пустым, чтобы использовать системный шрифт.",

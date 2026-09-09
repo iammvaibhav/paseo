@@ -2415,6 +2415,10 @@ export const fr: TranslationResources = {
         contentSize: "Taille du contenu",
         contentSizeHint: "Utilisée pour le texte du chat et le Markdown rendu",
         contentSizeAccessibility: "Taille de police du contenu",
+        agentGridSize: "Taille de la grille d'agents",
+        agentGridSizeHint:
+          "Utilisée pour le texte du chat dans les tuiles Agent Grid, distincte du volet agent complet",
+        agentGridSizeAccessibility: "Taille de police de la grille d'agents",
         codeFont: "Police de code",
         codeFontHint:
           "Utilisé dans le code, les différences et la sortie du terminal. Laisser vide pour la valeur par défaut du système",
