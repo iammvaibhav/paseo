@@ -5,6 +5,7 @@ import type {
   SessionOutboundMessage,
 } from "@getpaseo/protocol/messages";
 import { agentCommandsQueryRoot } from "@/hooks/agent-commands-query";
+import { shareCheckoutDiff } from "@/git/diff-sharing";
 import { orderCheckoutDiffFiles } from "@/git/diff-order";
 import { daemonConfigQueryKey } from "@/data/daemon-config";
 import { daemonPairingOfferQueryKey } from "@/data/daemon-pairing";
@@ -217,6 +218,7 @@ export async function applyProvidersSnapshotUpdate(input: {
   await input.queryClient.fetchQuery({
     queryKey,
     staleTime: 0,
+    structuralSharing: false,
     retry: false,
     queryFn: ({ signal }) => {
       const incoming = announcement;
@@ -531,6 +533,7 @@ function setCheckoutDiffPayload(input: {
     ) {
       continue;
     }
+    query.setOptions({ ...query.options, structuralSharing: shareCheckoutDiff });
     input.queryClient.setQueryData<CheckoutDiffCachePayload>(query.queryKey, input.payload);
   }
 }
