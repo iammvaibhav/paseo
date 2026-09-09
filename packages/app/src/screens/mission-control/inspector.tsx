@@ -2,42 +2,22 @@ import { useCallback, useEffect, useMemo, type ReactElement } from "react";
 import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ArrowUpRight, Archive, X } from "lucide-react-native";
-import { useShallow } from "zustand/react/shallow";
-import { AgentStreamView } from "@/agent-stream/view";
-import { Composer } from "@/composer";
-import { useAgentInputDraft } from "@/composer/draft/input-draft";
-import { getActiveMessageSubmissions } from "@/composer/submission/model";
-import { buildDraftStoreKey } from "@/stores/draft-keys";
-import { ArchivedAgentCallout } from "@/components/archived-agent-callout";
 import { BackHeader } from "@/components/headers/back-header";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { useToast } from "@/contexts/toast-context";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { HostGlyph } from "@/components/host-glyph";
 import { useHosts } from "@/runtime/host-runtime";
-import { useLoadOlderAgentHistory } from "@/hooks/use-load-older-agent-history";
-import type { AgentScreenAgent } from "@/hooks/use-agent-screen-state-machine";
 import { resolveSessionAgent } from "@/utils/agent-snapshots";
-import { useSessionStore, selectAgentTurnPresentation } from "@/stores/session-store";
-import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
+import { useSessionStore } from "@/stores/session-store";
 import { openAgentFromHistory } from "@/workspace/open-agent-from-history";
-import { createWorkspaceFileTabTarget, type WorkspaceFileOpenRequest } from "@/workspace/file-open";
 import { useWorkspaceOpenState } from "@/mission-control/workspace-open-state";
-import type { PendingPermission } from "@/types/shared";
-import type { StreamItem } from "@/types/stream";
 import type { Theme } from "@/styles/theme";
 import { useAggregatedMissionControlEvents } from "@/hooks/use-aggregated-mission-control-events";
 import { ProposalCard } from "@/screens/mission-control/proposal-card";
-import { useMissionControlVerbose } from "@/mission-control/use-mission-control-verbose";
-import { filterMissionControlInspectorStream } from "./inspector-stream-filter";
+import { EmbeddedAgentPane } from "./embedded-agent-pane";
 import { useInspectorStore, type InspectorTarget } from "./inspector-store";
-
-const EMPTY_STREAM_ITEMS: StreamItem[] = [];
-const EMPTY_PERMISSION_LIST: PendingPermission[] = [];
-const EMPTY_PERMISSIONS = new Map<string, PendingPermission>();
 
 const VIEWED_TIMELINE_SOURCE_ID = "mission-control-inspector";
 const INSPECTOR_HEADER_MIN_HEIGHT = 48;
@@ -68,9 +48,6 @@ export function MissionControlInspector({
 }: MissionControlInspectorProps): ReactElement {
   const { t } = useTranslation();
   const isCompact = useIsCompactFormFactor();
-  const insets = useSafeAreaInsets();
-  const toast = useToast();
-  const [verbose] = useMissionControlVerbose();
   const { serverId, agentId } = target;
 
   const agent = useSessionStore((state) => {
@@ -104,140 +81,10 @@ export function MissionControlInspector({
   const { isArchived: workspaceIsArchived, isArchivedOrMissing: workspaceArchivedOrMissing } =
     useWorkspaceOpenState(serverId, agent?.workspaceId);
 
-  const streamItems = useSessionStore(
-    (state) => state.sessions[serverId]?.agentStreamTail.get(agentId) ?? EMPTY_STREAM_ITEMS,
-  );
-  const streamHead = useSessionStore(
-    (state) => state.sessions[serverId]?.agentStreamHead.get(agentId) ?? EMPTY_STREAM_ITEMS,
-  );
-  const visibleStreamItems = useMemo(
-    () => filterMissionControlInspectorStream(streamItems, verbose),
-    [streamItems, verbose],
-  );
-  const visibleStreamHead = useMemo(
-    () => filterMissionControlInspectorStream(streamHead, verbose),
-    [streamHead, verbose],
-  );
-  const turnPresentation = useSessionStore(
-    useShallow((state) => selectAgentTurnPresentation(state.sessions[serverId], agentId)),
-  );
-  const pendingMessageSubmissions = useSessionStore(
-    useShallow((state) =>
-      getActiveMessageSubmissions(state.sessions[serverId]?.messageSubmissions.get(agentId)),
-    ),
-  );
-  const pendingPermissionList = useSessionStore(
-    useShallow((state) => {
-      const allPending = state.sessions[serverId]?.pendingPermissions;
-      if (!allPending) {
-        return EMPTY_PERMISSION_LIST;
-      }
-      const filtered: PendingPermission[] = [];
-      for (const permission of allPending.values()) {
-        if (permission.agentId === agentId) {
-          filtered.push(permission);
-        }
-      }
-      return filtered.length > 0 ? filtered : EMPTY_PERMISSION_LIST;
-    }),
-  );
-  const pendingPermissions = useMemo(() => {
-    if (pendingPermissionList.length === 0) {
-      return EMPTY_PERMISSIONS;
-    }
-    return new Map(pendingPermissionList.map((permission) => [permission.key, permission]));
-  }, [pendingPermissionList]);
-  const isAuthoritativeHistoryReady = useSessionStore(
-    (state) => state.sessions[serverId]?.agentAuthoritativeHistoryApplied.get(agentId) === true,
-  );
-  const viewedTimelineSync = useSessionStore(
-    (state) => state.sessions[serverId]?.viewedTimelineSync ?? null,
-  );
-  const setFocusedAgentId = useSessionStore((state) => state.setFocusedAgentId);
   const hosts = useHosts();
   const hostLabel = useMemo(
     () => hosts.find((host) => host.serverId === serverId)?.label?.trim() || serverId,
     [hosts, serverId],
-  );
-
-  // Register the inspected agent as viewed so the timeline stays synced (tail
-  // fetch on first sight, catch-up while visible) — same bridge the thread
-  // uses for the Commander.
-  useEffect(() => {
-    if (!viewedTimelineSync) {
-      return;
-    }
-    viewedTimelineSync.replaceVisibleAgentIds(VIEWED_TIMELINE_SOURCE_ID, [agentId]);
-    return () => viewedTimelineSync.replaceVisibleAgentIds(VIEWED_TIMELINE_SOURCE_ID, []);
-  }, [agentId, viewedTimelineSync]);
-
-  // Presence: while the inspector is actually visible, the inspected agent is
-  // this client's focused agent (heartbeat + proposal presence gate).
-  useEffect(() => {
-    if (!isFocused) {
-      return;
-    }
-    setFocusedAgentId(serverId, agentId);
-    return () => setFocusedAgentId(serverId, null);
-  }, [agentId, isFocused, serverId, setFocusedAgentId]);
-
-  // Inspector composer draft (spec "Composer drafts"): keyed by the inspected
-  // agent via the shared draft store, so text survives navigation — and a
-  // target swap loads that agent's own saved draft (live bug: raw useState
-  // reset the draft on every navigation and agent swap).
-  const agentDraft = useAgentInputDraft({
-    draftKey: buildDraftStoreKey({ serverId, agentId }),
-  });
-
-  const olderHistory = useLoadOlderAgentHistory({ serverId, agentId, toast });
-  const historyPagination = useMemo(
-    () => ({
-      hasOlder: olderHistory.hasOlder,
-      isLoadingOlder: olderHistory.isLoadingOlder,
-      progressKey: olderHistory.progressKey,
-      onLoadOlder: olderHistory.loadOlder,
-    }),
-    [
-      olderHistory.hasOlder,
-      olderHistory.isLoadingOlder,
-      olderHistory.loadOlder,
-      olderHistory.progressKey,
-    ],
-  );
-
-  const streamContext = useMemo<AgentScreenAgent>(
-    () => ({
-      serverId,
-      id: agentId,
-      provider: agent?.provider,
-      status: agent?.status ?? "initializing",
-      cwd: agent?.cwd ?? "~",
-      workspaceId: agent?.workspaceId,
-      capabilities: agent?.capabilities,
-      currentModeId: agent?.currentModeId,
-      model: agent?.model,
-      thinkingOptionId: agent?.thinkingOptionId,
-      effectiveThinkingOptionId: agent?.effectiveThinkingOptionId,
-      runtimeInfo: agent?.runtimeInfo,
-      features: agent?.features,
-      lastError: agent?.lastError,
-      projectPlacement: agent?.projectPlacement,
-    }),
-    [agent, agentId, serverId],
-  );
-
-  const handleOpenWorkspaceFile = useCallback(
-    (request: WorkspaceFileOpenRequest) => {
-      if (!agent?.workspaceId) {
-        return;
-      }
-      navigateToWorkspace({
-        serverId,
-        workspaceId: agent.workspaceId,
-        target: createWorkspaceFileTabTarget(request.location),
-      });
-    },
-    [agent?.workspaceId, serverId],
   );
 
   const handleOpenInWorkspace = useCallback(() => {
@@ -262,8 +109,6 @@ export function MissionControlInspector({
   // this host is unavailable (often a wrong-host lookup), not archived — it
   // must never label the agent Archived.
   const showArchivedBanner = isArchived || workspaceIsArchived;
-  const composerCwd = agent?.cwd ?? "~";
-  const composerContainerStyle = useMemo(() => ({ paddingBottom: insets.bottom }), [insets.bottom]);
 
   // Pending approval cards for THIS verifier's exchange (verifier-origin
   // proposals awaiting Approve/Edit/Deny): shown above the verifier's thread
@@ -403,41 +248,14 @@ export function MissionControlInspector({
           )}
         </View>
       ) : null}
-      <View style={styles.streamArea}>
-        <AgentStreamView
-          agentId={agentId}
-          serverId={serverId}
-          context={streamContext}
-          streamItems={visibleStreamItems}
-          streamHead={visibleStreamHead}
-          pendingPermissions={pendingPermissions}
-          pendingMessageSubmissions={pendingMessageSubmissions}
-          turnPresentation={turnPresentation}
-          isAuthoritativeHistoryReady={isAuthoritativeHistoryReady}
-          toast={toast}
-          onOpenWorkspaceFile={handleOpenWorkspaceFile}
-          historyPagination={historyPagination}
-        />
-      </View>
-      <View style={composerContainerStyle}>
-        {isArchived ? (
-          <ArchivedAgentCallout serverId={serverId} agentId={agentId} />
-        ) : (
-          <Composer
-            agentId={agentId}
-            serverId={serverId}
-            isPaneFocused={isFocused}
-            value={agentDraft.text}
-            onChangeText={agentDraft.editText}
-            textReplacement={agentDraft.textReplacement}
-            attachments={agentDraft.attachments}
-            onChangeAttachments={agentDraft.setAttachments}
-            cwd={composerCwd}
-            clearDraft={agentDraft.clear}
-            submitButtonTestID="mission-control-inspector-composer-submit"
-          />
-        )}
-      </View>
+      <EmbeddedAgentPane
+        serverId={serverId}
+        agentId={agentId}
+        isFocused={isFocused}
+        viewedTimelineSourceId={VIEWED_TIMELINE_SOURCE_ID}
+        reportsFocusedAgent
+        submitButtonTestID="mission-control-inspector-composer-submit"
+      />
     </View>
   );
 }
@@ -496,10 +314,6 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.xs,
     color: theme.colors.foreground,
     maxWidth: 220,
-  },
-  streamArea: {
-    flex: 1,
-    minHeight: 0,
   },
   pendingCards: {
     borderBottomWidth: 1,
