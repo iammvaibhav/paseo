@@ -131,10 +131,7 @@ function ChangesPanel() {
   );
   const handleOpenDiff = useCallback(
     (path: string, baseRef: string | null) =>
-      openDiffInBrowserEditor?.(
-        path.startsWith("/") ? path : `${submodulePrefix}${path}`,
-        baseRef,
-      ),
+      openDiffInBrowserEditor?.(path.startsWith("/") ? path : `${submodulePrefix}${path}`, baseRef),
     [openDiffInBrowserEditor, submodulePrefix],
   );
   const handleAddToChat = useCallback(

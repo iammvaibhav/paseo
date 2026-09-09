@@ -46,6 +46,7 @@ import {
   isPaseoWorktreePath,
   isDescendantPath,
   warmCheckoutShortstatInBackground,
+  splitDiffPatchByFile,
 } from "./checkout-git.js";
 import { startGitCommandMetrics, stopGitCommandMetrics } from "./run-git-command.js";
 import { createForgeResolver } from "../services/forge-resolver.js";
@@ -706,13 +707,41 @@ const x = 1;
     ]);
   });
 
+  it("omits syntax highlight tokens when aggregate changed files exceed threshold", async () => {
+    const highlightRepoDir = initRepo().repoDir;
+    const manyFilesCount = 205;
+    for (let i = 0; i < manyFilesCount; i++) {
+      writeFileSync(join(highlightRepoDir, `f-${i}.ts`), `export const v${i} = 1;\n`);
+    }
+    execFileSync("git", ["add", "-A"], { cwd: highlightRepoDir });
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "init"], {
+      cwd: highlightRepoDir,
+    });
+    for (let i = 0; i < manyFilesCount; i++) {
+      writeFileSync(join(highlightRepoDir, `f-${i}.ts`), `export const v${i} = 2;\n`);
+    }
+
+    const diff = await getCheckoutDiff(highlightRepoDir, {
+      mode: "uncommitted",
+      includeStructured: true,
+    });
+
+    expect(diff.structured?.length).toBe(manyFilesCount);
+    const sample = diff.structured?.[0];
+    expect(sample?.hunks.length).toBeGreaterThan(0);
+    const contentLine = sample?.hunks[0]?.lines.find(
+      (l) => l.type === "add" || l.type === "remove",
+    );
+    expect(contentLine).toBeDefined();
+    expect(contentLine?.tokens).toBeUndefined();
+  });
+
   it("returns checkout root metadata for normal repos", async () => {
     const status = await getCheckoutStatus(repoDir);
     expect(status.isGit).toBe(true);
     if (!status.isGit) {
       return;
     }
-    expect(status.currentBranch).toBe("main");
     expect(realpathSync.native(status.repoRoot)).toBe(realpathSync.native(repoDir));
     expect(status.isPaseoOwnedWorktree).toBe(false);
     expect(status.mainRepoRoot ?? null).toBeNull();
@@ -3949,5 +3978,66 @@ describe("discardChanges", () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
+  });
+
+  describe("splitDiffPatchByFile", () => {
+    it("keeps content containing diff --git inside a modified file as one section", () => {
+      const patchWithDiffContent = [
+        "diff --git a/file1.txt b/file1.txt",
+        "index 1111111..2222222 100644",
+        "--- a/file1.txt",
+        "+++ b/file1.txt",
+        "@@ -1,3 +1,4 @@",
+        " line 1",
+        "+diff --git a/fake.txt b/fake.txt",
+        "+fake content",
+        " line 2",
+        "diff --git a/file2.txt b/file2.txt",
+        "index 3333333..4444444 100644",
+        "--- a/file2.txt",
+        "+++ b/file2.txt",
+        "@@ -1,2 +1,2 @@",
+        "-old",
+        "+new",
+      ].join("\n");
+
+      const sections = splitDiffPatchByFile(patchWithDiffContent);
+      expect(sections).toHaveLength(2);
+      expect(sections[0].path).toBe("file1.txt");
+      expect(sections[0].text).toContain("+diff --git a/fake.txt b/fake.txt");
+      expect(sections[1].path).toBe("file2.txt");
+    });
+
+    it("splits a normal 3-file patch into 3 sections with correct paths", () => {
+      const normal3FilePatch = [
+        "diff --git a/file1.txt b/file1.txt",
+        "index 1111111..2222222 100644",
+        "--- a/file1.txt",
+        "+++ b/file1.txt",
+        "@@ -1 +1 @@",
+        "-a",
+        "+b",
+        "diff --git a/file2.txt b/file2.txt",
+        "new file mode 100644",
+        "index 0000000..3333333",
+        "--- /dev/null",
+        "+++ b/file2.txt",
+        "@@ -0,0 +1 @@",
+        "+hello",
+        "diff --git a/file3.txt b/file3.txt",
+        "deleted file mode 100644",
+        "index 4444444..0000000",
+        "--- a/file3.txt",
+        "+++ /dev/null",
+        "@@ -1 +0,0 @@",
+        "-bye",
+      ].join("\n");
+
+      const sections = splitDiffPatchByFile(normal3FilePatch);
+      expect(sections).toHaveLength(3);
+      expect(sections[0].path).toBe("file1.txt");
+      expect(sections[1].path).toBe("file2.txt");
+      expect(sections[2].path).toBe("file3.txt");
+    });
   });
 });

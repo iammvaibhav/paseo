@@ -1,5 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { useFetchQuery } from "@/data/query";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 
 interface UseComparisonBaseBranchesInput {
@@ -26,7 +26,8 @@ export function useComparisonBaseBranches({
   const { t } = useTranslation();
   const client = useHostRuntimeClient(serverId);
   const isConnected = useHostRuntimeIsConnected(serverId);
-  const query = useQuery({
+  const query = useFetchQuery({
+    dataShape: "list",
     queryKey: ["comparisonBaseBranches", serverId, cwd],
     queryFn: async () => {
       if (!client) {
@@ -40,7 +41,7 @@ export function useComparisonBaseBranches({
     },
     enabled: enabled && Boolean(client) && isConnected,
     retry: false,
-    staleTime: 15_000,
+    staleTimeMs: 15_000,
   });
   const errorMessage = query.error instanceof Error ? query.error.message : null;
   return {

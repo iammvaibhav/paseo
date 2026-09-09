@@ -815,6 +815,12 @@ async function runCheckSteps(checkSteps, ctx, pw, timeAnchor, opts, meta, state)
   }
   return stepResults;
 }
+async function mirrorProofMp4(targetMp4, standardMp4, externalStack) {
+  if (externalStack) return;
+  if (targetMp4 && fs.existsSync(targetMp4) && targetMp4 !== standardMp4) {
+    await fsp.copyFile(targetMp4, standardMp4);
+  }
+}
 
 async function assembleProofs(opts, meta, stack, resultFile, externalStack) {
   if (!opts.proof) return { proofMp4Path: null, proofError: null };

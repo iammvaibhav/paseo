@@ -32,6 +32,8 @@ const DEFAULT_OPTION_ID = "@{default}";
 const ThemedGitBranch = withUnistyles(GitBranch);
 const ThemedUndo2 = withUnistyles(Undo2);
 const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
+const undoIcon = <ThemedUndo2 size={14} uniProps={mutedIconColorMapping} />;
+const gitBranchIcon = <ThemedGitBranch size={14} uniProps={mutedIconColorMapping} />;
 
 export function ChangesBaseBranchPicker({
   serverId,
@@ -97,13 +99,7 @@ export function ChangesBaseBranchPicker({
           selected={selected}
           active={active}
           onPress={onPress}
-          leadingSlot={
-            isDefaultRow ? (
-              <ThemedUndo2 size={14} uniProps={mutedIconColorMapping} />
-            ) : (
-              <ThemedGitBranch size={14} uniProps={mutedIconColorMapping} />
-            )
-          }
+          leadingSlot={isDefaultRow ? undoIcon : gitBranchIcon}
         />
       );
     },

@@ -54,11 +54,14 @@ export interface GitCommandOptions {
   maxOutputBytes?: number;
   acceptExitCodes?: number[];
   /** Piped to the process's stdin (e.g. `cat-file --batch` object specs), then closed. */
-  input?: string;
+  input?: string | Buffer;
+  /** When true, preserves the raw un-decoded stdout Buffer in `result.stdoutBuffer`. */
+  rawOutput?: boolean;
 }
 
 export interface GitCommandResult {
   stdout: string;
+  stdoutBuffer?: Buffer;
   stderr: string;
   truncated: boolean;
   exitCode: number | null;
@@ -478,8 +481,10 @@ function runGitCommandWithProvenance(
 
       child.on("close", (exitCode, signal) => {
         markProcessExited(exitCode, signal);
+        const stdoutBuffer = Buffer.concat(stdoutChunks);
         const result: GitCommandResult = {
-          stdout: Buffer.concat(stdoutChunks).toString("utf8"),
+          stdout: stdoutBuffer.toString("utf8"),
+          stdoutBuffer: options.rawOutput ? stdoutBuffer : undefined,
           stderr: Buffer.concat(stderrChunks).toString("utf8"),
           truncated,
           exitCode,

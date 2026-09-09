@@ -90,7 +90,7 @@ export const steps = [
   },
   {
     id: "checkout-diff-cold",
-    label: "Cold checkout diff returns all 1250 changed files with hunks",
+    label: "Cold checkout diff returns all 1250 changed files with hunks within budget",
     narrate: "First checkout diff call resolves every changed file with real hunks.",
     async run(ctx) {
       const client = ctx.host().client;
@@ -105,7 +105,12 @@ export const steps = [
       const sample = result.files.find((f) => f.path.endsWith("file-0.ts"));
       ctx.expect(Boolean(sample), "Sample modified file file-0.ts present in diff");
       ctx.expect(sample.hunks.length > 0, "Sample file has non-empty hunks");
-      return `cold checkout diff: ${result.files.length} files in ${ctx.coldMs}ms`;
+      const budget = Math.max(ctx.cliMs * 5, 1500);
+      ctx.expect(
+        ctx.coldMs <= budget,
+        `Cold checkout diff took ${ctx.coldMs}ms, budget ${budget}ms (cli=${ctx.cliMs}ms x5, floor 1500ms)`,
+      );
+      return `cold checkout diff: ${result.files.length} files in ${ctx.coldMs}ms (budget ${budget}ms)`;
     },
   },
   {
