@@ -221,7 +221,7 @@ export function ModelProviderGlyph({
   tone = "muted",
 }: {
   provider: string;
-  serverId?: string | null;
+  serverId: string | null;
   size: number;
   tone?: ProviderGlyphTone;
 }) {

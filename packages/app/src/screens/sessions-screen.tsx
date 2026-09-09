@@ -479,8 +479,14 @@ function SessionsAskTab({
     if (!modelSelection.selectedProvider) {
       return null;
     }
-    return <ModelProviderGlyph provider={modelSelection.selectedProvider} size={14} />;
-  }, [modelSelection.selectedProvider]);
+    return (
+      <ModelProviderGlyph
+        provider={modelSelection.selectedProvider}
+        serverId={scope?.serverId ?? null}
+        size={14}
+      />
+    );
+  }, [modelSelection.selectedProvider, scope]);
 
   const renderModelTrigger = useCallback(
     ({
