@@ -2746,7 +2746,12 @@ export class OmpAgentClient implements AgentClient {
         "Agent restricts tools to an allowlist but no Paseo host-tool catalog is available; only builtin/MCP tools will load",
       );
     }
-    const acquired = await this.startRuntimeSession(config, launchContext, launchMode, systemPrompt);
+    const acquired = await this.startRuntimeSession(
+      config,
+      launchContext,
+      launchMode,
+      systemPrompt,
+    );
     try {
       const skippedHostTools =
         acquired.logInput.source === "pool" &&
@@ -2816,11 +2821,10 @@ export class OmpAgentClient implements AgentClient {
       model.includes("/");
     if (poolEligible) {
       const slash = model.indexOf("/");
-      const requestedProvider = model.slice(0, slash);
-      const requestedId = model.slice(slash + 1);
+      const requested = { provider: model.slice(0, slash), id: model.slice(slash + 1) };
       // Remembered so the pool's next fill seeds `set_model` with what
       // pool-eligible traffic actually wants (see field doc).
-      this.lastKnownDefaultModel = { provider: requestedProvider, id: requestedId };
+      this.lastKnownDefaultModel = requested;
       const claimStartedAt = Date.now();
       const claimed: OmpWarmClaim | null = await this.warmPool.claim({
         cwd: config.cwd,
@@ -2829,56 +2833,17 @@ export class OmpAgentClient implements AgentClient {
         systemPrompt: systemPrompt ?? "",
         env: launchContext?.env,
       });
-      const claimMs = Date.now() - claimStartedAt;
       if (claimed) {
-        try {
-          const newSessionStartedAt = Date.now();
-          await claimed.session.newSession();
-          const newSessionMs = Date.now() - newSessionStartedAt;
-          const modelAlreadySet =
-            claimed.model?.provider === requestedProvider && claimed.model?.id === requestedId;
-          const thinkingAlreadySet =
-            thinking === undefined ||
-            (claimed.thinkingLevel ?? DEFAULT_OMP_THINKING_LEVEL) === thinking;
-          const setModelStartedAt = Date.now();
-          if (!modelAlreadySet) {
-            await claimed.session.setModel(requestedProvider, requestedId);
-          }
-          if (thinking && !thinkingAlreadySet) {
-            await claimed.session.setThinkingLevel(thinking);
-          }
-          const setModelMs = Date.now() - setModelStartedAt;
-          // omp is on its own session now, so the pool's throwaway is safe to
-          // delete.
-          this.warmPool.discardClaimedThrowaway(claimed.session);
-          return {
-            session: claimed.session,
-            hostToolNames: claimed.hostToolNames,
-            logInput: {
-              purpose: "create",
-              source: "pool",
-              poolHit: true,
-              prewarmed: !claimed.moved,
-              skippedSetModel: modelAlreadySet && thinkingAlreadySet,
-              timing: {
-                claimMs,
-                newSessionMs,
-                setModelMs,
-                totalMs: Date.now() - acquireStartedAt,
-              },
-              cwd: config.cwd,
-              modeId: launchMode.modeId,
-            },
-          };
-        } catch (error) {
-          // The handoff left the pooled process in an unknown state; close it
-          // and fall back to a cold launch rather than risk a broken agent.
-          this.logger.warn(
-            { err: error, provider: this.provider },
-            "OMP warm pool handoff failed; cold starting",
-          );
-          await claimed.session.close().catch(() => undefined);
-          this.warmPool.discardClaimedThrowaway(claimed.session);
+        const acquired = await this.handOffPooledSession(claimed, {
+          requested,
+          thinking,
+          cwd: config.cwd,
+          modeId: launchMode.modeId,
+          claimMs: Date.now() - claimStartedAt,
+          acquireStartedAt,
+        });
+        if (acquired) {
+          return acquired;
         }
       }
     }
@@ -2913,6 +2878,73 @@ export class OmpAgentClient implements AgentClient {
         modeId: launchMode.modeId,
       },
     };
+  }
+
+  /**
+   * Moves a claimed pool process onto its own session and applies the
+   * requested model. Returns null when the handoff fails; the pooled process is
+   * then closed and the caller cold-starts instead of risking a broken agent.
+   */
+  private async handOffPooledSession(
+    claimed: OmpWarmClaim,
+    input: {
+      requested: { provider: string; id: string };
+      thinking: OmpThinkingLevel | undefined;
+      cwd: string;
+      modeId: string;
+      claimMs: number;
+      acquireStartedAt: number;
+    },
+  ): Promise<OmpAcquiredRuntimeSession | null> {
+    try {
+      const newSessionStartedAt = Date.now();
+      await claimed.session.newSession();
+      const newSessionMs = Date.now() - newSessionStartedAt;
+      const modelAlreadySet =
+        claimed.model?.provider === input.requested.provider &&
+        claimed.model?.id === input.requested.id;
+      const thinkingAlreadySet =
+        input.thinking === undefined ||
+        (claimed.thinkingLevel ?? DEFAULT_OMP_THINKING_LEVEL) === input.thinking;
+      const setModelStartedAt = Date.now();
+      if (!modelAlreadySet) {
+        await claimed.session.setModel(input.requested.provider, input.requested.id);
+      }
+      if (input.thinking && !thinkingAlreadySet) {
+        await claimed.session.setThinkingLevel(input.thinking);
+      }
+      const setModelMs = Date.now() - setModelStartedAt;
+      // omp is on its own session now, so the pool's throwaway is safe to
+      // delete.
+      this.warmPool.discardClaimedThrowaway(claimed.session);
+      return {
+        session: claimed.session,
+        hostToolNames: claimed.hostToolNames,
+        logInput: {
+          purpose: "create",
+          source: "pool",
+          poolHit: true,
+          prewarmed: !claimed.moved,
+          skippedSetModel: modelAlreadySet && thinkingAlreadySet,
+          timing: {
+            claimMs: input.claimMs,
+            newSessionMs,
+            setModelMs,
+            totalMs: Date.now() - input.acquireStartedAt,
+          },
+          cwd: input.cwd,
+          modeId: input.modeId,
+        },
+      };
+    } catch (error) {
+      this.logger.warn(
+        { err: error, provider: this.provider },
+        "OMP warm pool handoff failed; cold starting",
+      );
+      await claimed.session.close().catch(() => undefined);
+      this.warmPool.discardClaimedThrowaway(claimed.session);
+      return null;
+    }
   }
 
   async resumeSession(

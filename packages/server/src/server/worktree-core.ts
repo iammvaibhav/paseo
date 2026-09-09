@@ -60,6 +60,35 @@ export async function createWorktreeCore(
   return runWithGitCommandPriority("high", () => createWorktreeCoreWithPriority(input, deps));
 }
 
+function buildWorktreeCreationIntentInput(
+  input: CreateWorktreeCoreInput,
+  requestedWorktreeSlug: string | undefined,
+): ResolveWorktreeCreationIntentInput {
+  if (input.action === "checkout") {
+    return {
+      action: "checkout",
+      refName: input.refName,
+      checkoutSource: input.checkoutSource,
+      githubPrNumber: input.githubPrNumber,
+      worktreeSlug: requestedWorktreeSlug,
+    };
+  }
+  if (input.checkoutSource !== undefined || input.githubPrNumber !== undefined) {
+    return {
+      checkoutSource: input.checkoutSource,
+      githubPrNumber: input.githubPrNumber,
+      refName: input.refName,
+      worktreeSlug: requestedWorktreeSlug,
+    };
+  }
+  return {
+    action: "branch-off",
+    refName: input.refName,
+    branchName: input.branchName?.trim(),
+    worktreeSlug: requestedWorktreeSlug ?? normalizeWorktreeSlug(createNameId()),
+  };
+}
+
 async function createWorktreeCoreWithPriority(
   input: CreateWorktreeCoreInput,
   deps: CreateWorktreeCoreDeps,
@@ -68,33 +97,7 @@ async function createWorktreeCoreWithPriority(
   const requestedWorktreeSlug = input.worktreeSlug
     ? normalizeWorktreeSlug(input.worktreeSlug)
     : undefined;
-  const requestedBranchName = input.branchName?.trim();
-
-  let intentInput: ResolveWorktreeCreationIntentInput;
-  if (input.action === "checkout") {
-    intentInput = {
-      action: "checkout",
-      refName: input.refName,
-      checkoutSource: input.checkoutSource,
-      githubPrNumber: input.githubPrNumber,
-      worktreeSlug: requestedWorktreeSlug,
-    };
-  } else if (input.checkoutSource !== undefined || input.githubPrNumber !== undefined) {
-    intentInput = {
-      checkoutSource: input.checkoutSource,
-      githubPrNumber: input.githubPrNumber,
-      refName: input.refName,
-      worktreeSlug: requestedWorktreeSlug,
-    };
-  } else {
-    const worktreeSlug = requestedWorktreeSlug ?? normalizeWorktreeSlug(createNameId());
-    intentInput = {
-      action: "branch-off",
-      refName: input.refName,
-      branchName: requestedBranchName,
-      worktreeSlug,
-    };
-  }
+  const intentInput = buildWorktreeCreationIntentInput(input, requestedWorktreeSlug);
 
   const forge = await resolveForgeForWorktreeCreate(input, repoRoot, deps, intentInput);
   const intent = await resolveWorktreeCreationIntent(intentInput, repoRoot, {

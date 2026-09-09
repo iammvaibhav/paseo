@@ -850,7 +850,10 @@ export interface MergeFromBaseOptions {
  * so a later call can retry.
  */
 export interface RepoFactsProvider {
-  getRemoteOriginUrl(repoKey: string, compute: () => Promise<string | null>): Promise<string | null>;
+  getRemoteOriginUrl(
+    repoKey: string,
+    compute: () => Promise<string | null>,
+  ): Promise<string | null>;
   getDefaultBranch(repoKey: string, compute: () => Promise<string | null>): Promise<string | null>;
   getMainRepoRoot(repoKey: string, compute: () => Promise<string>): Promise<string>;
 }

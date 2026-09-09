@@ -18,7 +18,10 @@ interface CreateAgentProviderRuntimeOptions {
   paseoHome: string;
   logger: Logger;
   daemonVersion: string;
-  snapshotManager: Omit<ProviderSnapshotManagerOptions, "logger" | "openCodeBridge" | "catalogStore">;
+  snapshotManager: Omit<
+    ProviderSnapshotManagerOptions,
+    "logger" | "openCodeBridge" | "catalogStore"
+  >;
 }
 
 export async function createAgentProviderRuntime(

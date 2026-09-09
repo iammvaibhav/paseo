@@ -484,7 +484,11 @@ export class OmpWarmPool {
           this.fill(tracked);
         }
         this.logger.info(
-          { cwd: targetCwd, durationMs: Date.now() - startedAt, outcome: moved ? "moved" : "failed" },
+          {
+            cwd: targetCwd,
+            durationMs: Date.now() - startedAt,
+            outcome: moved ? "moved" : "failed",
+          },
           "omp.warm_pool.prewarm",
         );
       }

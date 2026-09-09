@@ -56,8 +56,11 @@ describe("OmpWarmPool", () => {
     pool.prewarm(CWD_A);
 
     expect(
-      runtime.allSessions().flatMap((session) => session.prompts.map((prompt) => prompt.message)),
-    ).not.toContain(`/move ${CWD_A}`);
+      runtime
+        .allSessions()
+        .flatMap((session) => session.prompts)
+        .filter((prompt) => prompt.message === `/move ${CWD_A}`),
+    ).toHaveLength(0);
   });
 
   test("prewarm moves an idle process ahead of a claim for the same cwd, and claim rides that move instead of sending its own", async () => {

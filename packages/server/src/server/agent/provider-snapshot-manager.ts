@@ -101,9 +101,7 @@ function omitProviderOverrides(
  * else on `ProviderDefinition.configuration` — label, description, order —
  * is display-only and must never invalidate an already-fetched catalog.
  */
-function catalogRelevantConfiguration(
-  configuration: ProviderDefinition["configuration"],
-): unknown {
+function catalogRelevantConfiguration(configuration: ProviderDefinition["configuration"]): unknown {
   if (!configuration) return null;
   return {
     command: configuration.runtimeSettings?.command,
@@ -327,7 +325,8 @@ export class ProviderSnapshotManager {
     if (restored.size === 0) return;
     const target = this.getOrCreateTarget(GLOBAL_PROVIDER_SNAPSHOT_KEY);
     for (const [provider, persisted] of restored) {
-      if (!this.generation.definitions[provider] || !isSharedCatalogKey(persisted.cacheKey)) continue;
+      if (!this.generation.definitions[provider] || !isSharedCatalogKey(persisted.cacheKey))
+        continue;
       let catalogs = this.catalogs.get(persisted.cacheKey);
       if (!catalogs) {
         catalogs = new Map();
@@ -710,10 +709,12 @@ export class ProviderSnapshotManager {
   }
 
   /**
-   * `catalogChanged` (defaulting to `changed` for callers that don't
-   * distinguish, e.g. plugin registration replacement) drives catalog
-   * invalidation and rewarm; `changed` alone still resets discovery/client
-   * state for cosmetic-only definition edits (label, description) via
+   * `changed` discards each provider's queued discovery work — any config
+   * replace makes queued probes stale, whether or not the catalog itself
+   * is affected. `catalogChanged` (defaulting to `changed` for callers
+   * that don't distinguish, e.g. plugin registration replacement) drives
+   * catalog invalidation and rewarm; a provider in `changed` alone instead
+   * gets its already-cached catalog patched in place via
    * `patchCachedProviderDisplay`, without ever touching a fetched catalog.
    */
   private installGeneration(
@@ -722,10 +723,8 @@ export class ProviderSnapshotManager {
     changed: ReadonlySet<AgentProvider>,
     catalogChanged: ReadonlySet<AgentProvider> = changed,
   ): void {
-    for (const provider of catalogChanged) {
-      this.generation.providerStates.get(provider)?.discoveryLimit.clearQueue();
-    }
     for (const provider of changed) {
+      this.generation.providerStates.get(provider)?.discoveryLimit.clearQueue();
       if (!catalogChanged.has(provider)) {
         this.patchCachedProviderDisplay(provider, generation.definitions[provider]);
       }
@@ -927,7 +926,9 @@ export class ProviderSnapshotManager {
    * path `getSnapshotForTarget` uses for any other snapshot read — never a
    * forced refresh.
    */
-  private async readDiagnosticSnapshotEntry(provider: AgentProvider): Promise<ProviderSnapshotEntry> {
+  private async readDiagnosticSnapshotEntry(
+    provider: AgentProvider,
+  ): Promise<ProviderSnapshotEntry> {
     try {
       const target = createGlobalSnapshotTarget();
       this.getSnapshotForTarget(target, [provider]);

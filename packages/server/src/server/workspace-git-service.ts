@@ -393,6 +393,8 @@ interface WorkspaceGitServiceDependencies {
   getWorkspaceGitSelfHealPhaseMs: typeof getWorkspaceGitObservationReensurePhaseMs;
   createWatcherLivenessCanary: typeof createWatcherLivenessCanary;
   now: () => Date;
+  /** How often to poll Git state when the file watcher is unavailable. */
+  degradedGitPollIntervalMs: number;
 }
 
 interface WorkspaceGitServiceOptions {
@@ -673,6 +675,7 @@ function buildDefaultWorkspaceGitServiceDeps(
     getWorkspaceGitSelfHealPhaseMs: getWorkspaceGitObservationReensurePhaseMs,
     createWatcherLivenessCanary,
     now: () => new Date(),
+    degradedGitPollIntervalMs: DEGRADED_GIT_POLL_INTERVAL_MS,
   };
 }
 
@@ -1743,16 +1746,16 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       );
       this.notifyWorkingTreeConsumers(target);
       if (!target.closed && (target.subscription === null || target.repoRoot === null)) {
-        target.fallbackPollTimer = setTimeout(poll, DEGRADED_GIT_POLL_INTERVAL_MS);
+        target.fallbackPollTimer = setTimeout(poll, this.deps.degradedGitPollIntervalMs);
       } else {
         target.fallbackPolling = false;
       }
     };
-    target.fallbackPollTimer = setTimeout(poll, DEGRADED_GIT_POLL_INTERVAL_MS);
+    target.fallbackPollTimer = setTimeout(poll, this.deps.degradedGitPollIntervalMs);
     this.logger.warn(
       {
         cwd,
-        intervalMs: DEGRADED_GIT_POLL_INTERVAL_MS,
+        intervalMs: this.deps.degradedGitPollIntervalMs,
         reason,
       },
       "Working tree watcher unavailable; using bounded polling fallback",
@@ -2300,7 +2303,9 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
   private isFetchRemoteMetadataEvent(target: RepoGitTarget, event: FileChange): boolean {
     const relativePath = getRealpathAwareRelativePath(target.repoGitRoot, event.path);
     const effect = classifyGitMetadataPath("common", relativePath ?? "");
-    return (effect.kind === "ref" && effect.namespace === "remote") || effect.kind === "packed-refs";
+    return (
+      (effect.kind === "ref" && effect.namespace === "remote") || effect.kind === "packed-refs"
+    );
   }
 
   private async routeRepoMetadataEvent(
@@ -2690,12 +2695,12 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
         this.notifyWorkingTreeConsumers(workingTreeTarget);
       }
       if (!target.closed && target.subscription === null) {
-        target.fallbackPollTimer = setTimeout(poll, DEGRADED_GIT_POLL_INTERVAL_MS);
+        target.fallbackPollTimer = setTimeout(poll, this.deps.degradedGitPollIntervalMs);
       } else {
         target.fallbackPolling = false;
       }
     };
-    target.fallbackPollTimer = setTimeout(poll, DEGRADED_GIT_POLL_INTERVAL_MS);
+    target.fallbackPollTimer = setTimeout(poll, this.deps.degradedGitPollIntervalMs);
   }
 
   private scheduleWorkspaceRefresh(
@@ -3599,7 +3604,10 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     await this.flushFetchMetadataEvents(target, target.bufferedFetchMetadataEvents.splice(0));
   }
 
-  private async flushFetchMetadataEvents(target: RepoGitTarget, events: FileChange[]): Promise<void> {
+  private async flushFetchMetadataEvents(
+    target: RepoGitTarget,
+    events: FileChange[],
+  ): Promise<void> {
     if (events.length === 0) {
       return;
     }

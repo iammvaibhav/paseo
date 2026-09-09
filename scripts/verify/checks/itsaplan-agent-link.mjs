@@ -29,14 +29,11 @@ export const steps = [
     narrate: "Signed in to itsaplan so the issue activity feed is visible.",
     async run(ctx) {
       const page = ctx.page;
-      ctx.expect(
-        Boolean(page),
-        "Playwright page must be available for UI tier"
-      );
+      ctx.expect(Boolean(page), "Playwright page must be available for UI tier");
       const login = liveItsaplanLogin();
       ctx.expect(
         Boolean(login),
-        "ITSAPLAN_WEB_USER and ITSAPLAN_WEB_PASSWORD must be set (live itsaplan click-through cannot be reproduced in the mock stack)"
+        "ITSAPLAN_WEB_USER and ITSAPLAN_WEB_PASSWORD must be set (live itsaplan click-through cannot be reproduced in the mock stack)",
       );
 
       const origin = liveItsaplanOrigin();
@@ -67,10 +64,7 @@ export const steps = [
       const link = page.locator('a[href^="paseo://"]').first();
       await link.waitFor({ state: "visible", timeout: 20_000 });
       const href = await link.getAttribute("href");
-      ctx.expect(
-        Boolean(href && href.startsWith("paseo://")),
-        `first agent href is ${href}`
-      );
+      ctx.expect(Boolean(href && href.startsWith("paseo://")), `first agent href is ${href}`);
       ctx.agentHref = href;
       await ctx.shot("before");
       return href;
@@ -79,8 +73,7 @@ export const steps = [
   {
     id: "click-through",
     label: "Click the agent link; Chromium must attempt paseo:// navigation",
-    narrate:
-      "Click assigned paseo:// on the current window instead of a silent _blank.",
+    narrate: "Click assigned paseo:// on the current window instead of a silent _blank.",
     async run(ctx) {
       const page = ctx.page;
       const href = ctx.agentHref;
@@ -107,13 +100,13 @@ export const steps = [
 
       const attempted = Boolean(
         (navigatedTo && navigatedTo.startsWith("paseo:")) ||
-          failed.some((url) => url.startsWith("paseo:"))
+        failed.some((url) => url.startsWith("paseo:")),
       );
       ctx.expect(
         attempted,
         `clicking ${href} must navigate or fail-request the paseo:// scheme (got nav=${
           navigatedTo || "none"
-        } failed=${failed.join(",") || "none"})`
+        } failed=${failed.join(",") || "none"})`,
       );
       await ctx.shot("after");
       return `attempted ${href}`;
