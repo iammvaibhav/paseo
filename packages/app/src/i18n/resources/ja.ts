@@ -2376,6 +2376,10 @@ export const ja: TranslationResources = {
         contentSize: "コンテンツサイズ",
         contentSizeHint: "チャットテキストとレンダリングされた Markdown に使用されます",
         contentSizeAccessibility: "コンテンツのフォントサイズ",
+        agentGridSize: "Agent Grid のサイズ",
+        agentGridSizeHint:
+          "Mission Control の Agent Grid タイル内のチャットテキストに使用します。通常のエージェント画面とは別です",
+        agentGridSizeAccessibility: "Agent Grid のフォントサイズ",
         codeFont: "コードフォント",
         codeFontHint:
           "コード、差分、ターミナル出力で使用されます。システムデフォルトにするには空のままにしてください",

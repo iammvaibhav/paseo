@@ -2369,6 +2369,10 @@ export const ko: TranslationResources = {
         contentSize: "콘텐츠 크기",
         contentSizeHint: "채팅 텍스트와 렌더링된 Markdown에 사용됩니다",
         contentSizeAccessibility: "콘텐츠 글꼴 크기",
+        agentGridSize: "Agent Grid 크기",
+        agentGridSizeHint:
+          "Mission Control Agent Grid 타일의 채팅 텍스트에 사용되며, 전체 에이전트 화면과는 별도입니다",
+        agentGridSizeAccessibility: "Agent Grid 글꼴 크기",
         codeFont: "코드 글꼴",
         codeFontHint:
           "코드, diff, 터미널 출력에 사용됩니다. 시스템 기본값을 사용하려면 비워 두세요",
