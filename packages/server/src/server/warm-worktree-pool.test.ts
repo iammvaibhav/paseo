@@ -631,6 +631,7 @@ describe("WarmWorktreePoolManager", () => {
       peekSnapshot: async () => null,
       resolveRepoRoot: async () => repoDir,
       resolveDefaultBranch: async () => "main",
+      hasOriginTrackingBranch: async () => false,
       resolveForge: async () => ({ forge: "none", service: { listPullRequests: async () => [] } }),
     };
 

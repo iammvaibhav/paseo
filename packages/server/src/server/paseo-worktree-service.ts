@@ -35,12 +35,19 @@ export interface CreatePaseoWorktreeInput extends CreateWorktreeCoreInput {
   title?: string;
 }
 
+export interface CreatePaseoWorktreeTiming {
+  planCwdMs: number;
+  coreMs: number;
+  provisionMs: number;
+}
+
 export interface CreatePaseoWorktreeResult {
   worktree: WorktreeConfig;
   intent: WorktreeCreationIntent;
   workspace: PersistedWorkspaceRecord;
   repoRoot: string;
   created: boolean;
+  timing: CreatePaseoWorktreeTiming;
 }
 
 export type CreatePaseoWorktreeFn = (
@@ -72,8 +79,11 @@ async function createPaseoWorktreeWithPriority(
   input: CreatePaseoWorktreeInput,
   deps: CreatePaseoWorktreeDeps,
 ): Promise<CreatePaseoWorktreeResult> {
+  const planStartedAt = Date.now();
   const workspaceCwdPlan = await planWorkspaceCwdForWorktree(input.cwd, deps.workspaceGitService);
+  const coreStartedAt = Date.now();
   const createdWorktree = await createWorktreeCore(input, deps);
+  const provisionStartedAt = Date.now();
   try {
     maybeMarkFirstAgentBranchAutoNameEligible({ createdWorktree });
     const workspaceCwd = mapWorkspaceRelativeCwdToWorktree({
@@ -121,6 +131,11 @@ async function createPaseoWorktreeWithPriority(
       workspace,
       repoRoot: createdWorktree.repoRoot,
       created: createdWorktree.created,
+      timing: {
+        planCwdMs: coreStartedAt - planStartedAt,
+        coreMs: provisionStartedAt - coreStartedAt,
+        provisionMs: Date.now() - provisionStartedAt,
+      },
     };
   } catch (error) {
     if (!createdWorktree.created) {
