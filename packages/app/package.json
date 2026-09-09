@@ -153,6 +153,7 @@
     "@types/node": "~22.19.0",
     "@types/qrcode": "^1.5.6",
     "@types/react": "~19.2.0",
+    "@types/react-dom": "~19.2.0",
     "@types/turndown": "^5.0.6",
     "@types/ws": "^8.18.1",
     "@vitest/browser": "^4.1.7",
