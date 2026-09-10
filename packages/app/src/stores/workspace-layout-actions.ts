@@ -1013,16 +1013,20 @@ export function normalizeLayout(layout: unknown): WorkspaceLayout {
   if (!layout || typeof layout !== "object") {
     return createDefaultLayout();
   }
-
   const rawLayout = layout as WorkspaceLayout;
   const root = normalizeNode(rawLayout.root) ?? asInternalNode(createDefaultLayout().root);
+  const panes = collectAllPanes(root);
+  if (panes.length === 0) {
+    return createDefaultLayout();
+  }
+
   const focusedPaneId =
     rawLayout.focusedPaneId === null ? null : trimNonEmpty(rawLayout.focusedPaneId);
   const resolvedFocusedPaneId =
     focusedPaneId === null
       ? null
       : ((focusedPaneId && findPaneById(root, focusedPaneId)?.id) ??
-        collectAllPanes(root)[0]?.id ??
+        panes[0]?.id ??
         DEFAULT_PANE_ID);
 
   const normalizedLayout = {

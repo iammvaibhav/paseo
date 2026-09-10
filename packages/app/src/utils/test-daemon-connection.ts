@@ -117,6 +117,7 @@ export async function buildClientConfig(
   connection: HostConnection,
   serverId?: string,
   options?: {
+    clientId?: string;
     capabilities?: DaemonClientConfig["capabilities"];
     trace?: DaemonClientConfig["trace"];
   },
@@ -128,8 +129,11 @@ export async function buildClientConfig(
     | "buildDesktopTransportUrl"
   > = defaultDaemonConnectionDependencies,
 ): Promise<DaemonClientConfig> {
-  const clientId = await deps.getClientId();
+  const clientId = options?.clientId ?? (await deps.getClientId());
   const desktopTransportFactory = deps.createDesktopTransportFactory();
+  // Both desktop transports take the same factory and the same URL builder, so
+  // the test was duplicated between `base` and the dispatch below.
+  const isDesktopTransport = connection.type === "directSocket" || connection.type === "directPipe";
   const base = {
     clientId,
     clientType: "mobile" as const,
@@ -138,13 +142,12 @@ export async function buildClientConfig(
     reconnect: { enabled: false },
     ...(options?.capabilities ? { capabilities: options.capabilities } : {}),
     ...(options?.trace ? { trace: options.trace } : {}),
-    ...((connection.type === "directSocket" || connection.type === "directPipe") &&
-    desktopTransportFactory
+    ...(isDesktopTransport && desktopTransportFactory
       ? { transportFactory: desktopTransportFactory }
       : {}),
   };
 
-  if (connection.type === "directSocket" || connection.type === "directPipe") {
+  if (isDesktopTransport) {
     return {
       ...base,
       url: deps.buildDesktopTransportUrl({
@@ -258,6 +261,7 @@ export function connectAndProbe(
 interface ProbeOptions {
   serverId?: string;
   timeoutMs?: number;
+  clientId?: string;
   capabilities?: DaemonClientConfig["capabilities"];
   trace?: DaemonClientConfig["trace"];
 }

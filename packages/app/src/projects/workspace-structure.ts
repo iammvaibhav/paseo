@@ -1,5 +1,103 @@
 import type { ProjectDescriptor, WorkspaceDescriptor } from "@/stores/session-store";
+import {
+  COMMANDER_HOME_DIR_SEGMENT,
+  isSystemOwnedAgentLabels,
+} from "@getpaseo/protocol/mission-control/system-owned";
+import { isHistoryAskAgent } from "@/history-ask";
 import { projectDisplayNameFromProjectId } from "@/utils/project-display-name";
+
+export interface WorkspaceAgentForSidebar {
+  workspaceId?: string | null;
+  labels?: Record<string, string> | null;
+}
+
+/**
+ * Known paseo-home directory names. The Commander home lives at
+ * `<paseoHome>/commander` (docs): the standard home is `~/.paseo`, the dev
+ * daemon's is `.dev/paseo-home`. Only these two layouts are matched, so a
+ * user project merely named "commander" (`~/commander`,
+ * `/Users/…/paseo/commander`, …) can never be mistaken for system-owned
+ * infrastructure.
+ */
+const KNOWN_PASEO_HOME_DIR_NAMES = new Set([".paseo", "paseo-home"]);
+
+/**
+ * True when a workspace directory is the Commander's reserved home
+ * (`<paseoHome>/commander` — the shared `COMMANDER_HOME_DIR_SEGMENT` as the
+ * last path segment under a known paseo-home directory). The directory is the
+ * workspace-level system-owned marker: no user project can claim that cwd, so
+ * the match is unambiguous even for an orphaned home workspace with no live
+ * agents.
+ */
+export function isCommanderHomeWorkspaceDirectory(
+  workspaceDirectory: string | null | undefined,
+): boolean {
+  if (!workspaceDirectory) {
+    return false;
+  }
+  const segments = workspaceDirectory.split("/");
+  if (segments[segments.length - 1] !== COMMANDER_HOME_DIR_SEGMENT) {
+    return false;
+  }
+  return KNOWN_PASEO_HOME_DIR_NAMES.has(segments[segments.length - 2]);
+}
+
+/**
+ * True when a workspace is system-owned: the Commander's reserved home
+ * directory, or a workspace whose agents are ALL system-owned
+ * (`paseo.mission-control*` — Commander, verifiers, machinery). History Ask
+ * workspaces are NOT system-owned (separate surface artifact); the sidebar
+ * keeps hiding those in both modes via {@link isSidebarWorkspaceHidden}.
+ */
+export function isSystemOwnedWorkspace(input: {
+  agentsInWorkspace: WorkspaceAgentForSidebar[];
+  workspaceDirectory: string | null | undefined;
+}): boolean {
+  if (isCommanderHomeWorkspaceDirectory(input.workspaceDirectory)) {
+    return true;
+  }
+  if (input.agentsInWorkspace.length === 0) {
+    return false;
+  }
+  return input.agentsInWorkspace.every((agent) =>
+    isSystemOwnedAgentLabels(agent.labels ?? undefined),
+  );
+}
+
+export function isSidebarWorkspaceHidden(input: {
+  agentsInWorkspace: WorkspaceAgentForSidebar[];
+  workspaceDirectory?: string | null;
+  /**
+   * Mission Control verbose mode: when ON, system-owned workspaces (the
+   * Commander's home + machinery-only workspaces) are shown in the sidebar so
+   * machinery can be inspected on demand; when OFF they are hidden. History
+   * Ask workspaces stay hidden in both modes.
+   */
+  hideSystemOwnedWorkspaces: boolean;
+}): boolean {
+  const { agentsInWorkspace, workspaceDirectory, hideSystemOwnedWorkspaces } = input;
+  const hasMachineryOnlyAgents =
+    agentsInWorkspace.length > 0 &&
+    agentsInWorkspace.every(
+      (agent) =>
+        isHistoryAskAgent(agent.labels) || isSystemOwnedAgentLabels(agent.labels ?? undefined),
+    );
+  const isCommanderHome = isCommanderHomeWorkspaceDirectory(workspaceDirectory);
+  if (!hasMachineryOnlyAgents && !isCommanderHome) {
+    return false;
+  }
+  if (!hideSystemOwnedWorkspaces) {
+    // Verbose ON: machinery workspaces with a system-owned agent, and the
+    // Commander's home, show. History-Ask-only workspaces stay hidden in both modes.
+    const hasSystemOwnedAgent = agentsInWorkspace.some((agent) =>
+      isSystemOwnedAgentLabels(agent.labels ?? undefined),
+    );
+    if (hasSystemOwnedAgent || isCommanderHome) {
+      return false;
+    }
+  }
+  return true;
+}
 
 export interface WorkspaceStructureHostPlacement {
   serverId: string;
@@ -8,6 +106,9 @@ export interface WorkspaceStructureHostPlacement {
   worktreeSupport: "supported" | "unsupported" | "unknown";
   customIconRevision?: string | null;
   iconRevision?: string;
+  // The project's own root checkout workspace on this host (ADR 0001). Null/absent when the
+  // host hasn't created one yet.
+  baseWorkspaceId?: string | null;
 }
 
 export interface WorkspaceStructureProject {
@@ -24,10 +125,11 @@ export interface WorkspaceStructure {
   projects: WorkspaceStructureProject[];
 }
 
-interface WorkspaceStructureSession {
+export interface WorkspaceStructureSession {
   serverId: string;
   projects: Iterable<ProjectDescriptor>;
   workspaces: Iterable<WorkspaceDescriptor>;
+  agents?: Iterable<WorkspaceAgentForSidebar>;
 }
 
 interface ProjectDraft {
@@ -44,7 +146,10 @@ interface ProjectDraft {
 /** The single app boundary that turns host-local projects into grouped display projects. */
 export function buildWorkspaceStructureProjects(input: {
   sessions: WorkspaceStructureSession[];
+  /** Default hidden; Mission Control verbose mode passes false. */
+  hideSystemOwnedWorkspaces?: boolean;
 }): WorkspaceStructureProject[] {
+  const { hideSystemOwnedWorkspaces = true } = input;
   const byProject = new Map<string, ProjectDraft>();
   const projectEntries: Array<{ serverId: string; project: ProjectDescriptor }> = [];
   const keyCountsByServer = new Map<string, Map<string, number>>();
@@ -80,15 +185,12 @@ export function buildWorkspaceStructureProjects(input: {
   }
 
   for (const session of input.sessions) {
-    for (const workspace of session.workspaces) {
-      const viewKey = viewKeyByServerProjectId.get(session.serverId)?.get(workspace.projectId);
-      if (!viewKey) continue;
-      byProject.get(viewKey)?.workspaces.push({
-        workspaceId: workspace.id,
-        workspaceName: workspace.name,
-        workspaceKey: `${session.serverId}:${workspace.id}`,
-      });
-    }
+    appendSessionWorkspaces({
+      session,
+      byProject,
+      viewKeyByServerProjectId,
+      hideSystemOwnedWorkspaces,
+    });
   }
 
   return Array.from(byProject.values())
@@ -110,6 +212,55 @@ export function buildWorkspaceStructureProjects(input: {
           sensitivity: "base",
         }) || left.viewKey.localeCompare(right.viewKey),
     );
+}
+
+function appendSessionWorkspaces(input: {
+  session: WorkspaceStructureSession;
+  byProject: Map<string, ProjectDraft>;
+  viewKeyByServerProjectId: Map<string, Map<string, string>>;
+  hideSystemOwnedWorkspaces: boolean;
+}): void {
+  const { session, byProject, viewKeyByServerProjectId, hideSystemOwnedWorkspaces } = input;
+  const agentsByWorkspaceId = new Map<string, WorkspaceAgentForSidebar[]>();
+  if (session.agents) {
+    for (const agent of session.agents) {
+      if (!agent.workspaceId) continue;
+      const existing = agentsByWorkspaceId.get(agent.workspaceId);
+      if (existing) {
+        existing.push(agent);
+      } else {
+        agentsByWorkspaceId.set(agent.workspaceId, [agent]);
+      }
+    }
+  }
+
+  for (const workspace of session.workspaces) {
+    const agentsInWorkspace = agentsByWorkspaceId.get(workspace.id) ?? [];
+    if (
+      isSidebarWorkspaceHidden({
+        agentsInWorkspace,
+        workspaceDirectory: workspace.workspaceDirectory,
+        hideSystemOwnedWorkspaces,
+      })
+    ) {
+      continue;
+    }
+    const viewKey = viewKeyByServerProjectId.get(session.serverId)?.get(workspace.projectId);
+    if (!viewKey) continue;
+    const draft = byProject.get(viewKey);
+    if (!draft) continue;
+    // The project's own root checkout (ADR 0001: worktree-per-dispatch) is opened by
+    // clicking the project name, never listed among task workspaces.
+    const hostPlacement = draft.hosts.get(session.serverId);
+    if (hostPlacement?.baseWorkspaceId && hostPlacement.baseWorkspaceId === workspace.id) {
+      continue;
+    }
+    draft.workspaces.push({
+      workspaceId: workspace.id,
+      workspaceName: workspace.name,
+      workspaceKey: `${session.serverId}:${workspace.id}`,
+    });
+  }
 }
 
 export function createProjectViewKey(
@@ -162,6 +313,7 @@ function addProjectToView(input: {
     worktreeSupport: project.projectKind === "git" ? "supported" : "unsupported",
     customIconRevision: project.projectCustomIconRevision,
     iconRevision: project.projectIconRevision,
+    baseWorkspaceId: project.baseWorkspaceId ?? null,
   };
   const draft = byProject.get(viewKey);
   if (!draft) {

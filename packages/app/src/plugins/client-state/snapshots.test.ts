@@ -15,6 +15,8 @@ const workspace: WorkspaceDescriptor = {
   pinnedAt: null,
   status: "running",
   statusEnteredAt: new Date("2026-08-16T10:00:00.000Z"),
+  activityAt: null,
+  createdAt: null,
   archivingAt: null,
   diffStat: { additions: 12, deletions: 3 },
   scripts: [],

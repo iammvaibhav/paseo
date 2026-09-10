@@ -58,13 +58,24 @@ interface FakeAgentSessionOptions {
   sessionId?: string;
   memoryMarker?: string | null;
   closeSession?: () => Promise<void>;
-  onStartTurn?: (prompt: AgentPromptInput) => void;
+  onStartTurn?: (prompt: AgentPromptInput, agentId?: string) => void | Promise<void>;
+  /** The daemon-side agent id (launch context), for agent-scoped tool calls. */
+  agentId?: string;
+  /**
+   * Fleet test seam (spec 06 terminal guarantee): fired when a status-ask
+   * steer prompt (a <paseo-system> envelope asking for report_status) starts
+   * a turn. The test supplies a responder that calls report_status through
+   * the daemon's agent tool catalog — the same surface a real agent's MCP
+   * connection uses — so the steer's report lands without a real model.
+   */
+  onStatusAskSteer?: (input: { agentId: string; prompt: string }) => Promise<void> | void;
 }
 
 export interface TestAgentClientOptions {
   closeSession?: () => Promise<void>;
-  onStartTurn?: (prompt: AgentPromptInput) => void;
+  onStartTurn?: (prompt: AgentPromptInput, agentId?: string) => void | Promise<void>;
   supportsMcpServers?: boolean;
+  onStatusAskSteer?: (input: { agentId: string; prompt: string }) => Promise<void> | void;
 }
 
 function createDeferred<T>(): Deferred<T> {
@@ -337,6 +348,10 @@ class FakeAgentSession implements AgentSession {
 
   private readonly closeSession: (() => Promise<void>) | undefined;
   private readonly onStartTurn: ((prompt: AgentPromptInput) => void) | undefined;
+  private readonly agentId: string | undefined;
+  private readonly onStatusAskSteer:
+    | ((input: { agentId: string; prompt: string }) => Promise<void> | void)
+    | undefined;
 
   constructor(options: FakeAgentSessionOptions) {
     this.capabilities = {
@@ -349,6 +364,8 @@ class FakeAgentSession implements AgentSession {
     this.memoryMarker = options.memoryMarker ?? null;
     this.closeSession = options.closeSession;
     this.onStartTurn = options.onStartTurn;
+    this.agentId = options.agentId;
+    this.onStatusAskSteer = options.onStatusAskSteer;
     this.historyPath = path.join(
       tmpdir(),
       "paseo-fake-provider-history",
@@ -439,7 +456,12 @@ class FakeAgentSession implements AgentSession {
 
     const turnId = `fake-turn-${this.nextTurnOrdinal++}`;
     this.activeForegroundTurnId = turnId;
-    this.onStartTurn?.(prompt);
+    // The seam may be async (a test responder that lands a report through
+    // the daemon catalog): await it so its side effects land BEFORE the
+    // turn's own events — a real provider processes the prompt before
+    // emitting the run, and a report must precede the run's finish for the
+    // terminal guarantee's tier-1 predicate.
+    await this.onStartTurn?.(prompt, this.agentId);
 
     void this.emitTurnEvents(prompt);
 
@@ -710,6 +732,21 @@ class FakeAgentSession implements AgentSession {
     const slashCommand = await this.resolveSlashCommandInput(prompt);
     const textPrompt = typeof prompt === "string" ? prompt : JSON.stringify(prompt);
     try {
+      // Fleet test seam (spec 06): a status-ask steer rides a <paseo-system>
+      // envelope asking for report_status. The responder (test-supplied)
+      // lands the report through the daemon's agent tool catalog before the
+      // turn's own events stream, so the steer's report is attributable to
+      // this run.
+      if (
+        this.onStatusAskSteer &&
+        textPrompt.startsWith("<paseo-system>") &&
+        textPrompt.includes("report_status")
+      ) {
+        await this.onStatusAskSteer({
+          agentId: this.agentId ?? this.id,
+          prompt: textPrompt,
+        });
+      }
       if (slashCommand) {
         await this.emitSlashCommandTurn(slashCommand);
         return;
@@ -1200,7 +1237,7 @@ class FakeAgentClient implements AgentClient {
 
   async createSession(
     config: AgentSessionConfig,
-    _launchContext?: AgentLaunchContext,
+    launchContext?: AgentLaunchContext,
   ): Promise<AgentSession> {
     return new FakeAgentSession({
       providerName: this.provider,
@@ -1208,13 +1245,15 @@ class FakeAgentClient implements AgentClient {
       supportsMcpServers: this.options.supportsMcpServers,
       closeSession: this.options.closeSession,
       onStartTurn: this.options.onStartTurn,
+      agentId: launchContext?.agentId,
+      onStatusAskSteer: this.options.onStatusAskSteer,
     });
   }
 
   async resumeSession(
     handle: AgentPersistenceHandle,
     overrides?: Partial<AgentSessionConfig>,
-    _launchContext?: AgentLaunchContext,
+    launchContext?: AgentLaunchContext,
   ): Promise<AgentSession> {
     const cfg: AgentSessionConfig = {
       provider: this.provider,
@@ -1233,6 +1272,8 @@ class FakeAgentClient implements AgentClient {
       memoryMarker: typeof marker === "string" ? marker : null,
       closeSession: this.options.closeSession,
       onStartTurn: this.options.onStartTurn,
+      agentId: launchContext?.agentId,
+      onStatusAskSteer: this.options.onStatusAskSteer,
     });
   }
 

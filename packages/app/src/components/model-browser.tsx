@@ -46,12 +46,14 @@ import {
   buildProviderQualifiedDescription,
   buildSelectedTriggerLabel,
   filterAndRankModelRows,
+  filterHiddenProviderModelRows,
   getAllProviderModelRows,
   getProviderModelRows,
   resolveSelectedModelLabel,
   type ProviderSelectionModelRow,
   type ProviderSelectorProvider,
 } from "@/provider-selection/provider-selection";
+import { useHiddenModelKeys } from "@/provider-selection/hidden-models";
 import { useProviderSettingsStore } from "@/stores/provider-settings-store";
 import { useCurrentOverlayLayer } from "@/lib/overlay-root";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
@@ -265,7 +267,7 @@ function resolveDesktopFixedHeight(
 }
 
 export function useModelBrowser({
-  providers,
+  providers: catalogProviders,
   selectedProvider,
   selectedModel,
   isLoading,
@@ -273,6 +275,19 @@ export function useModelBrowser({
   profiles = null,
   serverId = null,
 }: ModelBrowserInput): ModelBrowserState {
+  const hiddenKeys = useHiddenModelKeys();
+  // Lists show what the user chose to keep; `selectedModelLabel` below reads the
+  // unfiltered catalog so a fallback onto a hidden model still names itself.
+  const providers = useMemo(
+    () =>
+      filterHiddenProviderModelRows({
+        providers: catalogProviders,
+        hiddenKeys,
+        selectedProvider,
+        selectedModel,
+      }),
+    [catalogProviders, hiddenKeys, selectedModel, selectedProvider],
+  );
   const { t } = useTranslation();
   const [view, setView] = useState<ModelBrowserView>({ kind: "all" });
   const [searchQuery, setSearchQuery] = useState("");
@@ -380,12 +395,12 @@ export function useModelBrowser({
   const selectedModelLabel = useMemo(
     () =>
       resolveSelectedModelLabel({
-        providers,
+        providers: catalogProviders,
         selectedProvider,
         selectedModel,
         isLoading,
       }),
-    [isLoading, providers, selectedModel, selectedProvider],
+    [catalogProviders, isLoading, selectedModel, selectedProvider],
   );
 
   const triggerLabel = useMemo(() => {

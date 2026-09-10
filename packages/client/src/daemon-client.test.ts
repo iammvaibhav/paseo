@@ -1222,6 +1222,56 @@ test("honors explicit fetchAgent timeout below the session RPC default", async (
   await expect(responsePromise).rejects.toThrow("Timeout waiting for message (5000ms)");
 });
 
+test("gives fleetSpawnApply an extended timeout above the session RPC default", async () => {
+  useHeartbeatClock();
+  const logger = createMockLogger();
+  const mock = createMockTransport();
+
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger,
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const responsePromise = client.fleetSpawnApply(
+    { provider: "omp", summary: "Spawn worker agent" },
+    "req-spawn-1",
+  );
+  let settled = false;
+  void responsePromise.then(
+    () => {
+      settled = true;
+      return undefined;
+    },
+    () => {
+      settled = true;
+      return undefined;
+    },
+  );
+
+  expect(parseSentFrame(mock.sent[0])).toEqual({
+    type: "mission_control.spawn.apply.request",
+    requestId: "req-spawn-1",
+    spawnPlan: { provider: "omp", summary: "Spawn worker agent" },
+  });
+
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(settled).toBe(false);
+
+  await vi.advanceTimersByTimeAsync(539_999);
+  expect(settled).toBe(false);
+
+  await vi.advanceTimersByTimeAsync(1);
+  await expect(responsePromise).rejects.toThrow("Timeout waiting for message (600000ms)");
+});
+
 test("preserves legacy fetchAgent id overload", async () => {
   const logger = createMockLogger();
   const mock = createMockTransport();
@@ -2229,6 +2279,46 @@ test("listDirectory sends a list file explorer request and returns directory ent
   });
 });
 
+test("missionControlCommanderReset sends the reset request and resolves the response", async () => {
+  const logger = createMockLogger();
+  const mock = createMockTransport();
+
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_reset_test",
+    logger,
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const responsePromise = client.missionControlCommanderReset("req-reset");
+
+  expect(JSON.parse(assertStr(mock.sent[0]))).toEqual({
+    type: "session",
+    message: {
+      type: "mission_control.commander.reset.request",
+      requestId: "req-reset",
+    },
+  });
+
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "mission_control.commander.reset.response",
+      payload: { requestId: "req-reset", ok: true },
+    }),
+  );
+
+  await expect(responsePromise).resolves.toEqual({
+    requestId: "req-reset",
+    ok: true,
+  });
+});
+
 test("readFile hides legacy base64 behind bytes", async () => {
   const logger = createMockLogger();
   const mock = createMockTransport();
@@ -2360,6 +2450,96 @@ test("readFile resolves from binary file frames when the daemon supports them", 
     modifiedAt: "2026-05-02T00:00:00.000Z",
   });
   expect(new TextDecoder().decode(result.bytes)).toBe("hello");
+});
+
+test("writeExplorerFile sends scoped write request and binary chunks", async () => {
+  const logger = createMockLogger();
+  const mock = createMockTransport();
+
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger,
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const responsePromise = client.writeExplorerFile({
+    cwd: "/repo",
+    directoryPath: "src",
+    fileName: "notes.txt",
+    mimeType: "text/plain",
+    bytes: new TextEncoder().encode("hello"),
+    modifiedAt: "2026-05-02T00:00:00.000Z",
+    requestId: "req-write",
+    chunkSize: 5,
+  });
+
+  expect(JSON.parse(assertStr(mock.sent[0]))).toEqual({
+    type: "session",
+    message: {
+      type: "file.explorer.write.request",
+      cwd: "/repo",
+      directoryPath: "src",
+      fileName: "notes.txt",
+      mimeType: "text/plain",
+      size: 5,
+      modifiedAt: "2026-05-02T00:00:00.000Z",
+      requestId: "req-write",
+    },
+  });
+  expect(mock.sent.slice(1).map(assertUint8Array).map(decodeFileTransferFrame)).toEqual([
+    {
+      opcode: FileTransferOpcode.FileBegin,
+      requestId: "req-write",
+      metadata: {
+        mime: "text/plain",
+        size: 5,
+        encoding: "binary",
+        modifiedAt: "2026-05-02T00:00:00.000Z",
+        fileName: "notes.txt",
+      },
+      payload: new Uint8Array(),
+    },
+    {
+      opcode: FileTransferOpcode.FileChunk,
+      requestId: "req-write",
+      payload: new TextEncoder().encode("hello"),
+    },
+    {
+      opcode: FileTransferOpcode.FileEnd,
+      requestId: "req-write",
+      payload: new Uint8Array(),
+    },
+  ]);
+
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "file.explorer.write.response",
+      payload: {
+        requestId: "req-write",
+        cwd: "/repo",
+        path: "src/notes.txt",
+        fileName: "notes.txt",
+        size: 5,
+        error: null,
+      },
+    }),
+  );
+
+  await expect(responsePromise).resolves.toEqual({
+    requestId: "req-write",
+    cwd: "/repo",
+    path: "src/notes.txt",
+    fileName: "notes.txt",
+    size: 5,
+    error: null,
+  });
 });
 
 test("readFile drops an old daemon's over-budget binary chunks and reports the refusal", async () => {
@@ -4515,6 +4695,92 @@ test("detaches an agent through the namespaced detach RPC", async () => {
 
   await expect(promise).resolves.toBeUndefined();
 });
+test("moves an agent to a workspace through the namespaced agent.workspace.move RPC", async () => {
+  const logger = createMockLogger();
+  const mock = createMockTransport();
+
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger,
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const promise = client.moveAgentToWorkspace("agent-42", "workspace-target", "custom-request-id");
+
+  expect(mock.sent).toHaveLength(1);
+  const request = parseSentFrame(mock.sent[0]);
+  expect(request).toMatchObject({
+    type: "agent.workspace.move.request",
+    agentId: "agent-42",
+    workspaceId: "workspace-target",
+    requestId: "custom-request-id",
+  });
+
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "agent.workspace.move.response",
+      payload: {
+        requestId: "custom-request-id",
+        agentId: "agent-42",
+        workspaceId: "workspace-target",
+        accepted: true,
+        error: null,
+      },
+    }),
+  );
+
+  await expect(promise).resolves.toEqual({
+    agentId: "agent-42",
+    workspaceId: "workspace-target",
+  });
+});
+
+test("rejects when agent.workspace.move is not accepted", async () => {
+  const logger = createMockLogger();
+  const mock = createMockTransport();
+
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger,
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const promise = client.moveAgentToWorkspace("agent-42", "workspace-target");
+
+  expect(mock.sent).toHaveLength(1);
+  const request = parseSentFrame(mock.sent[0]);
+
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "agent.workspace.move.response",
+      payload: {
+        requestId: request.requestId,
+        agentId: "agent-42",
+        workspaceId: "workspace-target",
+        accepted: false,
+        error: "Agent agent-42 is running; stop it before moving workspaces",
+      },
+    }),
+  );
+
+  await expect(promise).rejects.toThrow(
+    "Agent agent-42 is running; stop it before moving workspaces",
+  );
+});
 
 test("sends active-scoped fetch_agents_request", async () => {
   const logger = createMockLogger();
@@ -6039,13 +6305,17 @@ test("sends provider.usage.list.request and resolves provider.usage.list.respons
   mock.triggerOpen();
   await connectPromise;
 
-  const usagePromise = client.listProviderUsage({ requestId: "usage-1" });
+  const usagePromise = client.listProviderUsage({
+    requestId: "usage-1",
+    forceRefresh: true,
+  });
 
   expect(JSON.parse(assertStr(mock.sent[0]))).toEqual({
     type: "session",
     message: {
       type: "provider.usage.list.request",
       requestId: "usage-1",
+      forceRefresh: true,
     },
   });
 

@@ -110,6 +110,7 @@ describe("DaemonConfigStore", () => {
       autoArchiveAfterMerge: false,
       enableTerminalAgentHooks: false,
       appendSystemPrompt: "",
+      ompIdleCloseAfterSeconds: 1800,
     });
     const changes: unknown[] = [];
     store.onFieldChange("relay.enabled", (value) => changes.push(value));
@@ -132,6 +133,7 @@ describe("DaemonConfigStore", () => {
       autoArchiveAfterMerge: false,
       enableTerminalAgentHooks: false,
       appendSystemPrompt: "",
+      ompIdleCloseAfterSeconds: 1800,
     });
 
     store.patch({
@@ -166,6 +168,85 @@ describe("DaemonConfigStore", () => {
     expect(store.get().agentProfiles).toHaveLength(1);
   });
 
+  test("patch round-trips composer preferences through the strictly-parsed persisted config", () => {
+    const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-daemon-config-store-"));
+    tempDirs.push(paseoHome);
+    const store = new DaemonConfigStore(paseoHome, {
+      relay: { enabled: false },
+      mcp: { injectIntoAgents: false },
+      browserTools: { enabled: false },
+      providers: {},
+      metadataGeneration: { providers: [] },
+      autoArchiveAfterMerge: false,
+      enableTerminalAgentHooks: false,
+      appendSystemPrompt: "",
+    });
+
+    store.patch({
+      composerPreferences: {
+        provider: "claude",
+        providerPreferences: {
+          claude: { model: "claude-opus-5", mode: "plan" },
+        },
+        byWorkspace: {
+          ws_1: {
+            provider: "codex",
+            providerPreferences: { codex: { model: "gpt-5.4", mode: "build" } },
+          },
+        },
+        byProject: {
+          proj_1: {
+            provider: "opencode",
+            providerPreferences: {
+              opencode: { model: "opencode-zen/deepseek-v4-flash-free" },
+            },
+          },
+        },
+      },
+    });
+
+    expect(loadPersistedConfig(paseoHome).daemon?.composerPreferences).toEqual({
+      provider: "claude",
+      providerPreferences: {
+        claude: { model: "claude-opus-5", mode: "plan" },
+      },
+      byWorkspace: {
+        ws_1: {
+          provider: "codex",
+          providerPreferences: { codex: { model: "gpt-5.4", mode: "build" } },
+        },
+      },
+      byProject: {
+        proj_1: {
+          provider: "opencode",
+          providerPreferences: {
+            opencode: { model: "opencode-zen/deepseek-v4-flash-free" },
+          },
+        },
+      },
+    });
+    expect(store.get().composerPreferences).toEqual({
+      provider: "claude",
+      providerPreferences: {
+        claude: { model: "claude-opus-5", mode: "plan" },
+      },
+      byWorkspace: {
+        ws_1: {
+          provider: "codex",
+          providerPreferences: { codex: { model: "gpt-5.4", mode: "build" } },
+        },
+      },
+      byProject: {
+        proj_1: {
+          provider: "opencode",
+          providerPreferences: {
+            opencode: { model: "opencode-zen/deepseek-v4-flash-free" },
+          },
+        },
+      },
+    });
+  });
+
   test("patch replaces the whole agent profile list rather than merging entries", () => {
     const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-daemon-config-store-"));
     tempDirs.push(paseoHome);
@@ -178,6 +259,7 @@ describe("DaemonConfigStore", () => {
       autoArchiveAfterMerge: false,
       enableTerminalAgentHooks: false,
       appendSystemPrompt: "",
+      ompIdleCloseAfterSeconds: 1800,
       agentProfiles: [
         { id: "a", name: "Keep", provider: "claude" },
         { id: "b", name: "Drop", provider: "codex" },
@@ -202,6 +284,7 @@ describe("DaemonConfigStore", () => {
       autoArchiveAfterMerge: false,
       enableTerminalAgentHooks: false,
       appendSystemPrompt: "",
+      ompIdleCloseAfterSeconds: 1800,
     });
     store.onFieldChange("relay.enabled", (enabled) => {
       if (enabled === true) {
@@ -262,6 +345,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
       { relayEnabledMutable: false },
@@ -294,6 +378,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
       { relayEnabledMutable: false },
@@ -381,6 +466,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
     );
@@ -483,6 +569,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
     );
@@ -531,6 +618,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
     );
@@ -593,6 +681,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
     );
@@ -644,6 +733,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
     );
@@ -670,6 +760,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
     );
@@ -680,6 +771,68 @@ describe("DaemonConfigStore", () => {
 
     const persisted = loadPersistedConfig(paseoHome);
     expect(persisted.daemon?.appendSystemPrompt).toBe("Prefer terse replies.");
+  });
+
+  test("patch persists per-host missionControl.hostGlyph into config.json", () => {
+    const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-daemon-config-store-"));
+    tempDirs.push(paseoHome);
+
+    const store = new DaemonConfigStore(
+      paseoHome,
+      {
+        mcp: { injectIntoAgents: false },
+        browserTools: { enabled: false },
+        providers: {},
+        metadataGeneration: { providers: [] },
+        autoArchiveAfterMerge: false,
+        enableTerminalAgentHooks: false,
+        appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
+      },
+      undefined,
+    );
+
+    store.patch({
+      missionControl: {
+        enabled: true,
+        hostAlias: "work server",
+        hostGlyph: { initials: "WS", color: "indigo" },
+      },
+    });
+
+    expect(store.get().missionControl?.hostGlyph).toEqual({ initials: "WS", color: "indigo" });
+    const persisted = loadPersistedConfig(paseoHome);
+    expect(persisted.missionControl?.hostGlyph).toEqual({ initials: "WS", color: "indigo" });
+  });
+
+  test("patch clears missionControl.hostGlyph with an explicit null", () => {
+    const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-daemon-config-store-"));
+    tempDirs.push(paseoHome);
+
+    const store = new DaemonConfigStore(
+      paseoHome,
+      {
+        mcp: { injectIntoAgents: false },
+        browserTools: { enabled: false },
+        providers: {},
+        metadataGeneration: { providers: [] },
+        autoArchiveAfterMerge: false,
+        enableTerminalAgentHooks: false,
+        appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
+      },
+      undefined,
+    );
+
+    store.patch({
+      missionControl: { hostGlyph: { initials: "WS", color: "indigo" } },
+    });
+    store.patch({
+      missionControl: { ...store.get().missionControl, hostGlyph: null },
+    });
+
+    expect(store.get().missionControl?.hostGlyph).toBeNull();
+    expect(loadPersistedConfig(paseoHome).missionControl?.hostGlyph).toBeNull();
   });
 
   test("patch persists browser tools opt-in into config.json", () => {
@@ -695,6 +848,7 @@ describe("DaemonConfigStore", () => {
         metadataGeneration: { providers: [] },
         autoArchiveAfterMerge: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
     );
@@ -719,6 +873,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
     );
@@ -761,6 +916,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
     );
@@ -786,6 +942,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
     );
@@ -810,6 +967,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
       },
       undefined,
     );
@@ -862,6 +1020,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
         metadataGeneration: { providers: [{ provider: "claude", model: "haiku" }] },
       },
       undefined,
@@ -886,6 +1045,7 @@ describe("DaemonConfigStore", () => {
         autoArchiveAfterMerge: false,
         enableTerminalAgentHooks: false,
         appendSystemPrompt: "",
+        ompIdleCloseAfterSeconds: 1800,
         metadataGeneration: { providers: [] },
       },
       undefined,

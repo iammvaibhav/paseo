@@ -28,11 +28,17 @@ import type { WorktreeCreationIntent } from "./resolve-worktree-creation-intent.
 import { resolveFirstAgentPromptTitle } from "./agent/create-agent-title.js";
 import { buildAgentBranchNameSeed } from "./agent/prompt-attachments.js";
 import type { FirstAgentContext } from "@getpaseo/protocol/messages";
-import { runWithGitCommandPriority } from "../utils/run-git-command.js";
+import { runGitCommand, runWithGitCommandPriority } from "../utils/run-git-command.js";
 
 export interface CreatePaseoWorktreeInput extends CreateWorktreeCoreInput {
   projectId?: string;
   title?: string;
+}
+
+export interface CreatePaseoWorktreeTiming {
+  planCwdMs: number;
+  coreMs: number;
+  provisionMs: number;
 }
 
 export interface CreatePaseoWorktreeResult {
@@ -41,6 +47,7 @@ export interface CreatePaseoWorktreeResult {
   workspace: PersistedWorkspaceRecord;
   repoRoot: string;
   created: boolean;
+  timing: CreatePaseoWorktreeTiming;
 }
 
 export type CreatePaseoWorktreeFn = (
@@ -72,8 +79,11 @@ async function createPaseoWorktreeWithPriority(
   input: CreatePaseoWorktreeInput,
   deps: CreatePaseoWorktreeDeps,
 ): Promise<CreatePaseoWorktreeResult> {
+  const planStartedAt = Date.now();
   const workspaceCwdPlan = await planWorkspaceCwdForWorktree(input.cwd, deps.workspaceGitService);
+  const coreStartedAt = Date.now();
   const createdWorktree = await createWorktreeCore(input, deps);
+  const provisionStartedAt = Date.now();
   try {
     maybeMarkFirstAgentBranchAutoNameEligible({ createdWorktree });
     const workspaceCwd = mapWorkspaceRelativeCwdToWorktree({
@@ -121,6 +131,11 @@ async function createPaseoWorktreeWithPriority(
       workspace,
       repoRoot: createdWorktree.repoRoot,
       created: createdWorktree.created,
+      timing: {
+        planCwdMs: coreStartedAt - planStartedAt,
+        coreMs: provisionStartedAt - coreStartedAt,
+        provisionMs: Date.now() - provisionStartedAt,
+      },
     };
   } catch (error) {
     if (!createdWorktree.created) {
@@ -149,11 +164,14 @@ async function isDirectory(targetPath: string): Promise<boolean> {
 
 async function planWorkspaceCwdForWorktree(
   inputCwd: string,
-  workspaceGitService: Pick<WorkspaceGitService, "getCheckout">,
+  _workspaceGitService: Pick<WorkspaceGitService, "getCheckout">,
 ): Promise<{ inputCwd: string; relativeWorkspaceCwd: string }> {
   const normalizedInputCwd = resolve(inputCwd);
-  const sourceCheckout = await workspaceGitService.getCheckout(normalizedInputCwd);
-  const sourceWorktreePath = sourceCheckout.worktreeRoot ?? normalizedInputCwd;
+  const { stdout } = await runGitCommand(["rev-parse", "--show-toplevel"], {
+    cwd: normalizedInputCwd,
+    timeout: 5_000,
+  });
+  const sourceWorktreePath = stdout.trim() || normalizedInputCwd;
   const relativeWorkspaceCwd = getRealpathAwareRelativePath(sourceWorktreePath, normalizedInputCwd);
   if (relativeWorkspaceCwd === null) {
     throw new Error(`Workspace cwd is outside its source worktree: ${normalizedInputCwd}`);
@@ -277,7 +295,7 @@ function maybeMarkFirstAgentBranchAutoNameEligible(options: {
 function resolveIntentBaseBranch(intent: WorktreeCreationIntent): string | null {
   switch (intent.kind) {
     case "branch-off":
-      return normalizeBaseRefName(intent.baseBranch);
+      return intent.baseBranch ? normalizeBaseRefName(intent.baseBranch) : null;
     case "checkout-change-request":
       return normalizeBaseRefName(intent.baseRefName);
     case "checkout-github-pr":

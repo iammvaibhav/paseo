@@ -14,12 +14,14 @@ import {
   CopyX,
   ArrowLeftToLine,
   ArrowRightToLine,
+  CircleCheck,
   Copy,
   Pencil,
   RotateCw,
   Columns2,
   Rows2,
   Ellipsis,
+  FolderPlus,
   Maximize,
   Minimize,
   Plus,
@@ -66,12 +68,16 @@ import type { WorkspaceTabDescriptor } from "@/screens/workspace/workspace-tabs-
 import type { SurfaceBackdrop } from "@/styles/surface-backdrop";
 import type { Theme } from "@/styles/theme";
 import { RenderProfile } from "@/utils/render-profiler";
+
 import { TrailingActionScrim } from "@/components/ui/trailing-action-scrim";
 import { useKeyboardActionHandler } from "@/hooks/use-keyboard-action-handler";
 import { useCompactTimeAgo } from "@/hooks/use-compact-time-ago";
 import { buildWorkspaceKeyboardHandlerId } from "@/keyboard/handler-id";
 import type { KeyboardActionDefinition } from "@/keyboard/keyboard-action-dispatcher";
 import { WorkspaceNewTabMenuContent } from "@/screens/workspace/workspace-new-tab-menu";
+import { useSessionStore } from "@/stores/session-store";
+import { resolveSessionAgent } from "@/utils/agent-snapshots";
+import { deriveSidebarLifecycleBucket } from "@/utils/sidebar-agent-state";
 import {
   paneContentToolbarTrailingPadding,
   ToolbarButton,
@@ -82,7 +88,15 @@ import {
   HorizontalScrollBoundaryShades,
   useHorizontalScrollBoundary,
 } from "@/components/ui/horizontal-scroll-boundary";
-import { useSessionStore } from "@/stores/session-store";
+import { useToast } from "@/contexts/toast-context";
+import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
+import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
+import {
+  buildMoveAgentTabMessages,
+  describeMoveAgentTabResult,
+  moveAgentTabToNewWorkspace,
+  sessionFromStore,
+} from "@/workspace-tabs/move-agent-tab";
 
 const DROPDOWN_WIDTH = 220;
 const DEFAULT_INLINE_ADD_BUTTON_RESERVED_WIDTH = 36;
@@ -114,6 +128,7 @@ const AGENT_TOOLTIP_TITLE_MAX_LENGTH = 80;
 
 const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
 const ThemedX = withUnistyles(X);
+const ThemedCircleCheck = withUnistyles(CircleCheck);
 const ThemedCopy = withUnistyles(Copy);
 
 const ThemedRotateCw = withUnistyles(RotateCw);
@@ -121,6 +136,7 @@ const ThemedArrowLeftToLine = withUnistyles(ArrowLeftToLine);
 const ThemedArrowRightToLine = withUnistyles(ArrowRightToLine);
 const ThemedCopyX = withUnistyles(CopyX);
 const ThemedPencil = withUnistyles(Pencil);
+const ThemedFolderPlus = withUnistyles(FolderPlus);
 const ThemedPlus = withUnistyles(Plus);
 const ThemedColumns2 = withUnistyles(Columns2);
 const ThemedRows2 = withUnistyles(Rows2);
@@ -413,6 +429,10 @@ function TabContextMenuItem({
         return <ThemedCopyX size={16} uniProps={mutedColorMapping} />;
       case "pencil":
         return <ThemedPencil size={16} uniProps={mutedColorMapping} />;
+      case "circle-check":
+        return <ThemedCircleCheck size={16} uniProps={mutedColorMapping} />;
+      case "folder-plus":
+        return <ThemedFolderPlus size={16} uniProps={mutedColorMapping} />;
       case "x":
         return <ThemedX size={16} uniProps={mutedColorMapping} />;
       default:
@@ -1077,10 +1097,12 @@ function ResolvedWorkspaceDesktopTabsRow({
   );
   const tabMenuLabels = useMemo<WorkspaceTabMenuLabels>(
     () => ({
+      markDone: t("workspace.tabs.menu.markDone"),
       copyResumeCommand: t("workspace.tabs.menu.copyResumeCommand"),
       copyAgentId: t("workspace.tabs.menu.copyAgentId"),
       copyTerminalId: t("workspace.tabs.menu.copyTerminalId"),
       copyFilePath: t("workspace.tabs.menu.copyFilePath"),
+      moveToNewWorkspace: t("workspace.tabs.menu.moveToNewWorkspace"),
       rename: t("workspace.tabs.menu.rename"),
       closeAbove: t("workspace.tabs.menu.closeAbove"),
       closeBelow: t("workspace.tabs.menu.closeBelow"),
@@ -1251,6 +1273,8 @@ function ResolvedWorkspaceDesktopTabsRow({
           key={`${item.tab.key}:${item.tab.kind}`}
           serverId={normalizedServerId}
           item={item}
+          normalizedServerId={normalizedServerId}
+          normalizedWorkspaceId={normalizedWorkspaceId}
           isFocused={isFocused}
           isDragging={isActive}
           index={index}
@@ -1283,6 +1307,7 @@ function ResolvedWorkspaceDesktopTabsRow({
       layout.closeButtonPolicy,
       layout.items,
       normalizedServerId,
+      normalizedWorkspaceId,
       onCloseOtherTabs,
       onCloseTab,
       onCloseTabsToLeft,
@@ -1398,6 +1423,8 @@ function ResolvedWorkspaceDesktopTabsRow({
 function ResolvedDesktopTabChip({
   serverId,
   item,
+  normalizedServerId,
+  normalizedWorkspaceId,
   isFocused,
   isDragging,
   index,
@@ -1424,6 +1451,8 @@ function ResolvedDesktopTabChip({
 }: {
   serverId: string;
   item: ResolvedWorkspaceDesktopTabRowItem;
+  normalizedServerId: string;
+  normalizedWorkspaceId: string;
   isFocused: boolean;
   isDragging: boolean;
   index: number;
@@ -1449,17 +1478,77 @@ function ResolvedDesktopTabChip({
   showDropIndicatorAfter: boolean;
 }) {
   const { t } = useTranslation();
+  const tabAgent = useSessionStore((state) =>
+    item.tab.target.kind === "agent"
+      ? resolveSessionAgent(state.sessions[normalizedServerId], item.tab.target.agentId)
+      : null,
+  );
+  const markDoneClient = useSessionStore(
+    (state) => state.sessions[normalizedServerId]?.client ?? null,
+  );
+  const showMarkDone =
+    tabAgent !== null &&
+    deriveSidebarLifecycleBucket({
+      bucket: tabAgent.bucket,
+      status: tabAgent.status,
+      pendingPermissionCount: tabAgent.pendingPermissions.length,
+      attentionReason: tabAgent.attentionReason,
+      stoppedBy: tabAgent.stoppedBy,
+    }) === "ready";
+  const handleMarkDone = useCallback(() => {
+    if (item.tab.target.kind !== "agent" || !markDoneClient) {
+      return;
+    }
+    void markDoneClient
+      .missionControlLifecycleSet({
+        serverId: normalizedServerId,
+        agentId: item.tab.target.agentId,
+        action: "done",
+      })
+      .catch(() => {
+        // Best-effort bookkeeping; a failed set leaves the agent Ready.
+      });
+  }, [markDoneClient, normalizedServerId, item.tab.target]);
   const presentation = item.presentation;
+  const toast = useToast();
+  const handleMoveToNewWorkspace = useCallback(
+    async (agentId: string) => {
+      const result = await moveAgentTabToNewWorkspace({
+        session: sessionFromStore(useSessionStore.getState().sessions[normalizedServerId]),
+        layout: useWorkspaceLayoutStore.getState(),
+        navigation: { navigateToWorkspace },
+        messages: buildMoveAgentTabMessages(t),
+        serverId: normalizedServerId,
+        sourceWorkspaceId: normalizedWorkspaceId,
+        agentId,
+        tabId: item.tab.tabId,
+      });
+      const described = describeMoveAgentTabResult(result, {
+        existing: t("workspace.tabs.toasts.movedToWorkspace", { workspaceName: "" }),
+        created: t("workspace.tabs.toasts.movedToNewWorkspace"),
+      });
+      if (described.kind === "error") {
+        toast.error(described.message);
+        return;
+      }
+      toast.show(described.message, { variant: "success" });
+    },
+    [item.tab.tabId, normalizedServerId, normalizedWorkspaceId, t, toast],
+  );
+
   const resolvedTab = useMemo(
     () =>
       buildWorkspaceDesktopTabActions({
         tab: item.tab,
         index,
         tabCount,
+        showMarkDone,
+        onMarkDone: handleMarkDone,
         onCopyResumeCommand,
         onCopyAgentId,
         onCopyTerminalId,
         onCopyFilePath,
+        onMoveToNewWorkspace: handleMoveToNewWorkspace,
         onReloadAgent,
         onRenameTab,
         onCloseTab,
@@ -1482,6 +1571,9 @@ function ResolvedDesktopTabChip({
       labels,
       onReloadAgent,
       onRenameTab,
+      showMarkDone,
+      handleMarkDone,
+      handleMoveToNewWorkspace,
       tabCount,
     ],
   );

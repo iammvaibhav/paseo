@@ -2,6 +2,7 @@ import equal from "fast-deep-equal";
 import type { FetchAgentsEntry } from "@getpaseo/client/internal/daemon-client";
 import { useSessionStore, type Agent } from "@/stores/session-store";
 import { acceptAgentDirectoryUpdate } from "@/utils/agent-directory-update-policy";
+import { completeAgentLoaderSpan } from "@/utils/agent-loader-span";
 import { buildAgentDirectoryState, type AgentDirectoryDelta } from "@/utils/agent-directory-sync";
 import { derivePendingPermissionKey, normalizeAgentSnapshot } from "@/utils/agent-snapshots";
 import { resolveProjectPlacement } from "@/utils/project-placement";
@@ -87,6 +88,12 @@ export class AgentStoreProjection {
     });
     if (accepted.archivedAt) {
       clearArchiveAgentPending({ queryClient, serverId: this.serverId, agentId: accepted.id });
+    }
+    // The loader (create/resume/send) is replaced by the Stop control once the
+    // turn opens. Complete the span on that flip, the same edge `stoppedRunning`
+    // below watches in reverse.
+    if (previous?.turn.phase !== "open" && accepted.turn.phase === "open") {
+      completeAgentLoaderSpan(this.serverId, accepted.id);
     }
     this.replacePendingPermissions(accepted);
     useSessionStore.getState().setAgentLastActivity(accepted.id, accepted.lastActivityAt);

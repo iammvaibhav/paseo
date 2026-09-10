@@ -393,6 +393,7 @@ function encodeOfferUrl(payload: unknown): string {
 function makeDeps(
   latencyByConnectionId: Record<string, number | Error>,
   createdClients: FakeDaemonClient[],
+  probeClientIds?: string[],
 ): HostRuntimeControllerDeps {
   return {
     createClient: () => {
@@ -400,7 +401,8 @@ function makeDeps(
       createdClients.push(client);
       return client as unknown as DaemonClient;
     },
-    connectToDaemon: async ({ host, connection }) => {
+    connectToDaemon: async ({ host, connection, clientId }) => {
+      if (clientId) probeClientIds?.push(clientId);
       const readLatency = (): number => {
         const value = latencyByConnectionId[connection.id];
         if (value instanceof Error) {
@@ -1098,6 +1100,81 @@ describe("HostRuntimeController", () => {
       switched = controller.getSnapshot().activeConnectionId === "relay:relay.paseo.sh:443";
     }
     expect(switched).toBe(true);
+  });
+
+  it("gives inactive-path probes a distinct clientId so they cannot resume the live session", async () => {
+    useHostRuntimeClock();
+    const host = makeHost({ preferredConnectionId: "direct:lan:6767" });
+    const clients: FakeDaemonClient[] = [];
+    const probeClientIds: string[] = [];
+    const latencies: Record<string, number | Error> = {
+      "direct:lan:6767": 12,
+      "relay:relay.paseo.sh:443": 65,
+    };
+    const controller = new HostRuntimeController({
+      host,
+      deps: makeDeps(latencies, clients, probeClientIds),
+    });
+
+    await controller.start({ autoProbe: false });
+    const activeClient = controller.getSnapshot().client as unknown as FakeDaemonClient;
+    activeClient.heartbeatReportsRtt(12);
+    await vi.advanceTimersByTimeAsync(120_000);
+    await controller.runProbeCycleNow();
+
+    expect(probeClientIds.length).toBeGreaterThan(0);
+    expect(probeClientIds.every((id) => id.startsWith("cid:probe:"))).toBe(true);
+    expect(probeClientIds.every((id) => id !== "cid_test_runtime")).toBe(true);
+  });
+
+  it("does not switch away from the live path while a turn is open", async () => {
+    useHostRuntimeClock();
+    const host = makeHost({ preferredConnectionId: "direct:lan:6767" });
+    const clients: FakeDaemonClient[] = [];
+    const latencies: Record<string, number | Error> = {
+      "direct:lan:6767": 15,
+      "relay:relay.paseo.sh:443": 60,
+    };
+    const controller = new HostRuntimeController({
+      host,
+      deps: makeDeps(latencies, clients),
+    });
+
+    await controller.start({ autoProbe: false });
+    expect(controller.getSnapshot().activeConnectionId).toBe("direct:lan:6767");
+    const activeClient = controller.getSnapshot().client as unknown as FakeDaemonClient;
+
+    const sessionStore = useSessionStore.getState();
+    sessionStore.initializeSession(host.serverId, activeClient as unknown as DaemonClient, 1);
+    sessionStore.setAgents(host.serverId, (current) => {
+      const next = new Map(current);
+      next.set("agent-open-turn", {
+        ...replicaAgent(
+          makeFetchAgentsEntry({
+            id: "agent-open-turn",
+            cwd: "/tmp",
+            updatedAt: new Date(0).toISOString(),
+          }).agent,
+          host.serverId,
+        ),
+        turn: {
+          phase: "open",
+          turnId: "turn-1",
+          startedAt: new Date(),
+          cancellationRequestId: null,
+        },
+      });
+      return next;
+    });
+
+    latencies["direct:lan:6767"] = 95;
+    latencies["relay:relay.paseo.sh:443"] = 30;
+    activeClient.heartbeatReportsRtt(95);
+    for (let index = 0; index < 6; index += 1) {
+      await vi.advanceTimersByTimeAsync(120_000);
+      await controller.runProbeCycleNow();
+    }
+    expect(controller.getSnapshot().activeConnectionId).toBe("direct:lan:6767");
   });
 
   it("exposes one snapshot with active connection and status from same source", async () => {
@@ -1939,6 +2016,7 @@ describe("HostRuntimeStore", () => {
       serverId: host.serverId,
       hostname: null,
       version: "test",
+      missionControlHostAlias: null,
       features: { workspaceMultiplicity: false },
     });
     store.syncHosts([host]);
@@ -2070,6 +2148,7 @@ describe("HostRuntimeStore", () => {
     sessionStore.updateSessionServerInfo(host.serverId, {
       serverId: host.serverId,
       hostname: null,
+      missionControlHostAlias: null,
       version: "0.1.96",
     });
     store.syncHosts([host]);
@@ -2148,6 +2227,7 @@ describe("HostRuntimeStore", () => {
     sessionStore.updateSessionServerInfo(host.serverId, {
       serverId: host.serverId,
       hostname: null,
+      missionControlHostAlias: null,
       version: "0.1.96",
     });
     sessionStore.setAgents(
@@ -2471,6 +2551,7 @@ describe("HostRuntimeStore", () => {
     useSessionStore.getState().updateSessionServerInfo(host.serverId, {
       serverId: host.serverId,
       hostname: null,
+      missionControlHostAlias: null,
       version: "test",
     });
     await fakeClient.waitForFetches(1);
@@ -2793,6 +2874,7 @@ describe("HostRuntimeStore", () => {
     sessionStore.updateSessionServerInfo(host.serverId, {
       serverId: host.serverId,
       hostname: null,
+      missionControlHostAlias: null,
       version: null,
       features: { canonicalSubmittedPrompts: true },
     });
@@ -2820,6 +2902,7 @@ describe("HostRuntimeStore", () => {
 
     store.drainQueuedAgentMessage(host.serverId, "agent");
     await fakeClient.waitForSentMessages(1);
+    expect(fakeClient.sentAgentMessages[0]?.[2]?.dispatchMode).toBe("queue");
 
     // The row and the pending submission must exist while the RPC is still in flight —
     // the user sees their message and the working footer immediately, exactly as when
@@ -2939,6 +3022,7 @@ describe("HostRuntimeStore", () => {
     sessionStore.updateSessionServerInfo(host.serverId, {
       serverId: host.serverId,
       hostname: null,
+      missionControlHostAlias: null,
       version: "0.1.105",
       features: { forgeSearch: false },
     });

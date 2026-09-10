@@ -8,16 +8,16 @@
 ## Running the dev server
 
 ```bash
-npm run dev:server
-npm run dev:app
-npm run dev:desktop
+pnpm run dev:server
+pnpm run dev:app
+pnpm run dev:desktop
 ```
 
 Root checkout dev is intentionally split across terminals:
 
-- `npm run dev:server` runs the daemon on `127.0.0.1:6768`.
-- `npm run dev:app` runs Expo on `http://localhost:8081` and connects to the dev daemon.
-- `npm run dev:desktop` runs its own Electron-flavored Expo server on the first free port from `8082` through `8089`. It never claims port `8081`.
+- `pnpm run dev:server` runs the daemon on `127.0.0.1:6768`.
+- `pnpm run dev:app` runs Expo on `http://localhost:8081` and connects to the dev daemon.
+- `pnpm run dev:desktop` runs its own Electron-flavored Expo server on the first free port from `8082` through `8089`. It never claims port `8081`.
 
 Desktop dev launches its desktop-managed daemon with `PASEO_NODE_ENV=development`,
 so development-only providers such as Mock Load Test are available. Packaged
@@ -27,7 +27,7 @@ The web and desktop dev launchers pass the current Git branch to Metro as
 `EXPO_PUBLIC_PASEO_DEV_BUILD_LABEL`. The expanded desktop sidebar shows it in
 the titlebar row. Production builds leave the variable unset and show no label.
 
-`npm run dev` is only a shorthand for `npm run dev:server`. Keep `127.0.0.1:6767` for the packaged app and production-style `~/.paseo` state.
+`pnpm run dev` is only a shorthand for `pnpm run dev:server`. Keep `127.0.0.1:6767` for the packaged app and production-style `~/.paseo` state.
 
 ## Nix desktop package
 
@@ -46,19 +46,25 @@ than downloading a published desktop release.
 
 `PASEO_HOME` is the directory that holds runtime state (agents, worktrees, workspace config, sockets, daemon log). Resolution rules:
 
-- The **server itself** (e.g. when launched by the desktop app or `npm run start`) defaults to `~/.paseo` (see `packages/server/src/server/paseo-home.ts`).
+- The **server itself** (e.g. when launched by the desktop app or `pnpm run start`) defaults to `~/.paseo` (see `packages/server/src/server/paseo-home.ts`).
 - **Repo dev scripts** default to `$ROOT/.dev/paseo-home`, where `$ROOT` is the current checkout or worktree root. This keeps all dev state scoped to the checkout instead of the packaged desktop app.
-- **`npm run cli -- ...`** runs through the same dev-home wrapper as the dev scripts, so the in-repo CLI automatically targets the current checkout's `.dev/paseo-home` and configured dev daemon endpoint.
+- **`pnpm run cli -- ...`** runs through the same dev-home wrapper as the dev scripts, so the in-repo CLI automatically targets the current checkout's `.dev/paseo-home` and configured dev daemon endpoint.
 - **Paseo-created worktrees** seed `$PASEO_WORKTREE_PATH/.dev/paseo-home` from `$PASEO_SOURCE_CHECKOUT_PATH/.dev/paseo-home` by copying durable JSON metadata. Runtime files like pid files, sockets, and logs are not copied.
 - **This repo's worktree setup** also best-effort seeds `packages/app/ios` and the newest `.dev/ios-build` entry from the source checkout so iOS simulator services can reuse native project and Xcode cache state when it is safe enough to do so.
 
 Override knobs:
 
 ```bash
-PASEO_HOME=~/.paseo-blue npm run dev          # explicit home
-PASEO_DEV_SEED_HOME=/path/to/home npm run dev # seed from a different source home
-PASEO_DEV_RESET_HOME=1 npm run dev            # clear and reseed the derived worktree home
+PASEO_HOME=~/.paseo-blue pnpm run dev          # explicit home
+PASEO_DEV_SEED_HOME=/path/to/home pnpm run dev # seed from a different source home
+PASEO_DEV_RESET_HOME=1 pnpm run dev            # clear and reseed the derived worktree home
 ```
+
+### Fast worktrees (shared pnpm store)
+
+Worktree setup (`paseo.json` → `worktree.setup`) runs a plain `pnpm install` in every worktree. There is no custom node_modules-sharing script: pnpm keeps a single content-addressable store per machine (`pnpm store path`), so every worktree's `node_modules` links into the same on-disk package contents. A worktree on a branch with unchanged dependencies installs in seconds because nothing new needs to be fetched or written to the store; a worktree that changed dependencies only pays for the new or updated packages.
+
+Ownership rule: each worktree owns its own `node_modules` — `pnpm install` in one worktree never touches another's. Change dependencies on the branch, then re-run `pnpm install` in that worktree.
 
 ### Daemon endpoints
 
@@ -66,7 +72,7 @@ PASEO_DEV_RESET_HOME=1 npm run dev            # clear and reseed the derived wor
 - Root checkout dev daemon: `localhost:6768`.
 - Root checkout Expo: `http://localhost:8081`.
 - Root checkout desktop dev Expo: first free port from `8082` through `8089`.
-- `npm run dev` (Windows): `localhost:6767` for the daemon.
+- `pnpm run dev` (Windows): `localhost:6767` for the daemon.
 
 In Paseo-managed worktree services, use the injected service environment rather than hardcoded root checkout ports.
 
@@ -80,13 +86,13 @@ startup routing, remembered workspace restore, or active workspace selection.
 
 Paseo worktrees expose the native iOS dev app through the `ios-simulator` service in `paseo.json`. The service URL serves the simulator preview at `/.sim`, so the preview link is `${PASEO_URL}/.sim`.
 
-**Prerequisites (macOS only).** The service shells out to the Apple toolchain, so beyond the `npm ci` that worktree setup runs you must install:
+**Prerequisites (macOS only).** The service shells out to the Apple toolchain, so beyond the `pnpm install` that worktree setup runs you must install:
 
 - **Xcode** (the full app, not just the Command Line Tools) — install it from the Mac App Store, or from `developer.apple.com/download` for a specific version. It provides `xcodebuild` and `xcrun simctl`; accept its license and let first-run component installation finish before starting the service.
 - **An iOS Simulator runtime with at least one iPhone device type**. Recent Xcode versions may not bundle a runtime — add one via Xcode → Settings → Components (older Xcode: "Platforms"). The service targets `iPhone 16 Pro` by default (override with `PASEO_IOS_DEVICE_TYPE`) and falls back to any iPhone; it fails with `No iPhone simulator device type is installed` when none exist.
 - **Homebrew** — CocoaPods itself installs automatically: `expo prebuild` runs `pod install` on a cold worktree, and when the CocoaPods CLI is missing the runner installs it for you. It tries `gem install cocoapods` first and falls back to Homebrew (`brew install cocoapods`), so having Homebrew available lets that fallback succeed without a manual step.
 
-`serve-sim`, Expo, and Metro come from `npm ci`, and CocoaPods installs itself on the first prebuild as described above.
+`serve-sim`, Expo, and Metro come from `pnpm install`, and CocoaPods installs itself on the first prebuild as described above.
 
 The service is designed for concurrent worktrees: it derives a deterministic simulator identity from the worktree path, uses the worktree's assigned `PASEO_PORT`, pins `serve-sim` to that simulator UDID, and only tears down that worktree's helper/simulator state. It must not rely on the globally booted simulator or any fixed Metro port.
 
@@ -101,7 +107,7 @@ Starting the service must not create, focus, reveal, or leave behind macOS Simul
 For fast, native, interactive iOS dev at the Mac — as opposed to the remote `/.sim` preview above — skip the service and build the dev client directly:
 
 ```bash
-npm run ios        # → expo run:ios (packages/app): builds and launches the app in the real Simulator.app
+pnpm run ios        # → expo run:ios (packages/app): builds and launches the app in the real Simulator.app
 ```
 
 `expo run:ios` starts its own Metro and gives you the normal Simulator.app window (full speed, native touch, no stream).
@@ -109,8 +115,8 @@ npm run ios        # → expo run:ios (packages/app): builds and launches the ap
 **Pointing the app at a daemon.** The client resolves its local daemon from `EXPO_PUBLIC_LOCAL_DAEMON` (`packages/app/src/runtime/host-runtime.ts`); when unset it falls back to `localhost:6767`, the production `~/.paseo` daemon. To target a worktree's dev daemon instead, set it on the build command:
 
 ```bash
-EXPO_PUBLIC_LOCAL_DAEMON=localhost:${PASEO_SERVICE_DAEMON_PORT} npm run ios   # worktree daemon running as a Paseo service
-EXPO_PUBLIC_LOCAL_DAEMON=localhost:6768 npm run ios                          # standalone `npm run dev:server`
+EXPO_PUBLIC_LOCAL_DAEMON=localhost:${PASEO_SERVICE_DAEMON_PORT} pnpm run ios   # worktree daemon running as a Paseo service
+EXPO_PUBLIC_LOCAL_DAEMON=localhost:6768 pnpm run ios                          # standalone `pnpm run dev:server`
 ```
 
 The iOS simulator shares the Mac's loopback, so `localhost:<port>` reaches the host daemon directly.
@@ -119,7 +125,7 @@ The iOS simulator shares the Mac's loopback, so `localhost:<port>` reaches the h
 
 ### Desktop renderer profiling
 
-`npm run dev:desktop` starts Electron with Chromium remote debugging enabled so
+`pnpm run dev:desktop` starts Electron with Chromium remote debugging enabled so
 renderer CPU profiles can be captured through CDP. By default it passes
 `--remote-debugging-port=0`, so Chromium atomically asks the OS for an available
 port and prints the selected DevTools endpoint. Set
@@ -141,7 +147,7 @@ With desktop dev running, verify the real BrowserWindow, titlebar clearance, ful
 transition, and 751-pixel settings split with:
 
 ```bash
-npm run verify:electron-cdp --workspace=@getpaseo/desktop
+pnpm --filter @getpaseo/desktop run verify:electron-cdp
 ```
 
 The verifier reads the same `EXPO_PORT` and
@@ -201,7 +207,7 @@ web, keep a daemon available, then run:
 PASEO_PROFILE_SERVER_ID=<server-id> \
 PASEO_PROFILE_WORKSPACE_ID=<workspace-path> \
 PASEO_PROFILE_AGENT_ID=<agent-id> \
-  npm run profile:workspace-tabs --workspace=@getpaseo/app
+  pnpm --filter @getpaseo/app run profile:workspace-tabs
 ```
 
 This script opens the app with `?renderProfile=1`, creates a temporary terminal
@@ -222,7 +228,7 @@ daemon state:
 
 ```bash
 PASEO_PROFILE_APP_URL=http://localhost:19010 \
-  npm run profile:workspace-switching --workspace=@getpaseo/app
+  pnpm --filter @getpaseo/app run profile:workspace-switching
 ```
 
 The benchmark first warms `Cmd+1` through `Cmd+7`, then records a rapid seven-workspace
@@ -245,7 +251,7 @@ the scenario report. This mode wraps `HTMLElement.focus`, so use it only for dia
 For the desktop Explorer sidebar toggle, run the app against the root checkout's daemon and use:
 
 ```bash
-npm run profile:explorer-toggle --workspace=@getpaseo/app
+pnpm --filter @getpaseo/app run profile:explorer-toggle
 ```
 
 The harness verifies port `6768`, opens the Paseo workspace, creates and warms the Explorer pane,
@@ -260,7 +266,7 @@ daemon:
 
 ```bash
 PASEO_PROFILE_APP_URL=http://localhost:19010 \
-  npm run profile:composer-typing --workspace=@getpaseo/app
+  pnpm --filter @getpaseo/app run profile:composer-typing
 ```
 
 The benchmark opens the first workspace, preserves its existing draft, and dispatches 300 printable
@@ -283,8 +289,8 @@ boundaries are nested. A printable key after an empty newline should not change 
 Desktop development can replace native macOS traffic lights with Paseo's custom controls:
 
 ```bash
-PASEO_DESKTOP_WINDOW_CONTROLS=windows npm run dev:desktop
-PASEO_DESKTOP_WINDOW_CONTROLS=linux npm run dev:desktop
+PASEO_DESKTOP_WINDOW_CONTROLS=windows pnpm run dev:desktop
+PASEO_DESKTOP_WINDOW_CONTROLS=linux pnpm run dev:desktop
 ```
 
 The override is rejected in packaged builds. Restart the desktop process when changing it.
@@ -317,10 +323,81 @@ Check `$PASEO_HOME/daemon.log` for daemon logs. The default level is `info`; set
 `PASEO_LOG_LEVEL=trace` before launching the daemon when you need full provider,
 session, and agent-manager traces for stuck-state debugging.
 
+#### Turn lifecycle trail
+
+Turn lifecycle and prompt latency log at `info`/`warn`, so a stuck spinner or a
+late "thinking" indicator can be diagnosed from a normal `daemon.log` after the
+fact. Two lines per turn; trace is not required.
+
+| Line                                                | Level       | Read it for                                                                                                                   |
+| --------------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `agent.prompt.dispatch` / `_slow`                   | info / warn | Phase breakdown from prompt receipt: `ensureLoadedMs` (cold provider resume), `setModeMs`, `startRunMs`, `totalMs`            |
+| `agent.run.replace_cancelled_previous`              | info        | `cancelMs` — how long interrupting the previous turn took when you sent while busy                                            |
+| `agent.turn.dispatched` / `_slow`                   | info / warn | `startTurnMs` — provider handshake before the agent shows as running. The spinner appears at the end of this                  |
+| `agent.manager.turn.started`                        | info        | The turn Paseo believes it owns. `isForegroundEvent: false` means the provider started a turn Paseo did not                   |
+| `agent.manager.turn.started_outside_foreground_run` | warn        | Turn-id desync. Only a terminal event with a matching-or-absent id can settle it                                              |
+| `agent.manager.turn.completed` / `.canceled`        | info        | Proof the finished turn settled Paseo's lifecycle. **A spinner that never stops is diagnosed by its absence**                 |
+| `agent.manager.turn.completed_held_for_replacement` | warn        | Terminal event arrived but `pendingReplacement` held the agent busy. If the replacement never starts, this is the stuck point |
+| `omp.turn.idle_wait_abandoned_terminalizing`        | warn        | OMP's post-`agent_end` idle wait gave up; the terminal event was synthesized rather than lost                                 |
+
+The periodic `ws_runtime_metrics` line carries `agents.running[]`: one row per
+running agent with `agentId`, `hasForegroundTurn`, `hasTrackedRun`, and
+`staleMs`. A live turn has a small `staleMs`; a zombie's is frozen at its last
+stream event. This is how you name the stuck agent and its onset time:
+
+```bash
+grep ws_runtime_metrics "$PASEO_HOME/daemon.log" \
+  | jq -c '{t:(.time/1000|floor|todate), running:.agents.running}'
+```
+
 The supervisor rotates `daemon.log`. Persisted `log.file.rotate` settings in
 `$PASEO_HOME/config.json` win first. Without persisted config, the optional
 `PASEO_LOG_ROTATE_SIZE` and `PASEO_LOG_ROTATE_COUNT` env vars override the
 defaults. The default rotation is `10m` x `3` files everywhere.
+
+#### Complete agent-start span (click to running)
+
+When an agent feels slow to start, reconstruct the full span from the client
+click to the lifecycle flip. The pieces live in `daemon.log` (create phases,
+pool claim, turn start) plus two off-daemon sources: the omp process log
+(`~/.omp/logs/omp.<pid>.log`, model/account init) and the Hindsight service
+(docker logs on the host running it, recall cost).
+
+One record per phase, all keyed by `agentId` or `cwd`:
+
+| Line                                           | Level       | Read it for                                                                                                                                                                                         |
+| ---------------------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `client.loader.span`                           | info        | Client-side click→running total (`path`, `totalMs`, `startedAt`). Sent only when `features.loaderSpanReport` is advertised                                                                          |
+| `agent.create.session` / `_slow`               | info / warn | Create request total with `intentMs` + `createCommandMs` (session handler)                                                                                                                          |
+| `provider.resolve_create_config` / `_slow`     | info / warn | `readyMs` — wait for the provider snapshot before mode resolution                                                                                                                                   |
+| `agent.create.resolve_default_model` / `_slow` | info / warn | `modelResolveMs` — cold omp catalog fetch when the create carried no model                                                                                                                          |
+| `agent.create.manager` / `_slow`               | info / warn | Phase split inside AgentManager.createAgent: `deleteStateMs`, `prepareMs` (session config incl. model), `clientReadyMs` (provider probe), `launchContextMs`, `sessionMs` (pool claim), `registerMs` |
+| `omp.catalog.fetch` / `_slow`                  | info / warn | Catalog fetch split: `runtimeStartMs` (cold omp boot) vs `modelsMs` (model list RPC)                                                                                                                |
+| `omp.runtime.acquire`                          | info / warn | Pool claim: `poolHit`, `claimMs`, `newSessionMs`, `setModelMs`, or cold `bootMs`/`totalMs`                                                                                                          |
+| `agent.turn.dispatched` / `_slow`              | info / warn | `startTurnMs` — provider handshake before the agent shows as running                                                                                                                                |
+| `agent.manager.turn.started`                   | info        | Lifecycle flip to running — what the UI loader waits for                                                                                                                                            |
+
+Reconstruct with one grep over `$PASEO_HOME/daemon.log` (all lines carry
+`agentId` except the provider-snapshot ones, which carry `cwd`):
+
+```bash
+AGENT=7c905568-275c-495b-81e5-26922384bc7f
+grep -E "$AGENT|client.loader.span" "$PASEO_HOME/daemon.log" | tail -20
+```
+
+Then add the off-daemon legs for the same window:
+
+- **omp process** (model/account init, first-prompt warm-up):
+  `grep -E "account-routing|Computer tool" ~/.omp/logs/omp.*.log | grep "12:48"`
+- **Hindsight recall** (per-prompt memory fetch): on the host running the
+  Hindsight container, `docker logs hindsight --since <start> --until <end>` and
+  read the `[RECALL omp]` block. The `Complete:` line carries total seconds.
+
+Known cost shape (measured on this fleet): create request ~150-850ms (pool hit
+~60ms; the rest is session work), hindsight recall ~200-570ms on the first
+prompt of a fresh process (autoRecall), model-client/account init ~50-150ms,
+then TTFT. A cold `resolve_default_model` (no model in the create request)
+adds a full cold omp boot (~700ms) before the claim.
 
 ### Git process pressure
 
@@ -348,7 +425,7 @@ semantics, and environment-variable overrides.
 Measure the MCP `tools/list` payload that Paseo injects into agents with:
 
 ```bash
-npm run measure:agent-tools --workspace=@getpaseo/server
+pnpm --filter @getpaseo/server run measure:agent-tools
 ```
 
 The command reports compact JSON bytes, estimated tokens, field totals, largest
@@ -370,6 +447,25 @@ the optional field and retain the previous local-first behavior; older worktree 
 exact ref also resolves through its stored branch name.
 
 Worktrees inherit committed Git state only; uncommitted source-checkout changes are not copied.
+
+### Warm worktree pool source
+
+`worktree.warmPool.baseRef` is the git ref the warm pool cuts from (branch, tag,
+or `origin/<branch>`). Omitted, the pool uses the repository default branch.
+Set this to the branch whose `paseo.json` setup the pool should run — a pool
+built from `main` will run `main`'s setup, not the current checkout's.
+
+```json
+{
+  "worktree": {
+    "warmPool": {
+      "enabled": true,
+      "targetIdle": 1,
+      "baseRef": "vaibhav/customizations"
+    }
+  }
+}
+```
 
 ## paseo.json service scripts
 
@@ -438,6 +534,38 @@ values are available as `PASEO_SCRIPTNAME`, `PASEO_WORKSPACE_ID`, `PASEO_BRANCH_
 `PASEO_WORKTREE_PATH`. The script must print one valid TCP port. Paseo trusts the external allocator,
 so the port may already be bound. `portScript` takes precedence when both values are present.
 
+## paseo.json commander instructions
+
+Per-project instructions for the Commander. Loaded from the **project root** (not each worktree) when the Commander resolves the project. The Commander reads them before dispatching and applies them to model choice, spawn conventions, and the worker brief. Doctrine: [commander.md](commander.md#per-project-instructions).
+
+Resolution order:
+
+1. `paseo.json` → `commander.instructionsFile` (path relative to the project root; must stay inside the root)
+2. `paseo.json` → `commander.instructions` or top-level `commanderInstructions` (a relative file path if that file exists, otherwise inline text)
+3. Default files: `COMMANDER.md`, `.paseo/COMMANDER.md`, `.paseo/commander.md`, `commander.md`
+
+Missing files, empty or whitespace-only content, and a corrupt `paseo.json` fall through. Path traversal outside the project root is refused.
+
+```json
+{
+  "commander": {
+    "instructionsFile": "docs/COMMANDER.md"
+  }
+}
+```
+
+Or inline:
+
+```json
+{
+  "commander": {
+    "instructions": "Use omp/anthropic/claude-sonnet-5. Always run npm test before reporting done."
+  }
+}
+```
+
+Project Settings round-trips unknown `paseo.json` fields, including `commander`. There is no separate form field.
+
 ## Bundled daemon web UI
 
 > The user-facing guide for this feature (enabling it, reverse proxy, TLS, tunnels, security) lives at [public-docs/web-ui.md](../public-docs/web-ui.md). This section is the contributor/build reference: how the artifact is produced, bundled, and excluded from desktop packaging.
@@ -475,7 +603,7 @@ The served app auto-bootstraps a connection to the same origin, so opening `http
 Build the artifact for packaging or measurement with:
 
 ```bash
-npm run build:daemon-web-ui
+pnpm run build:daemon-web-ui
 ```
 
 This exports the normal browser web app (not the Electron-flavored desktop renderer) and copies it into `packages/server/dist/server/web-ui`, precompressing `.html`, `.js`, `.css`, and JSON assets as `.br` and `.gz`.
@@ -492,26 +620,73 @@ The desktop-managed daemon disables the bundled web UI by default (`PASEO_WEB_UI
 
 Package imports resolve through package exports to compiled `dist/` output, not sibling `src/` files. This is true in local dev and in published packages: the app, daemon, CLI, and SDK consumers should all exercise the same runtime paths.
 
-`npm run dev:server` builds the server-side workspace packages once, then keeps `@getpaseo/protocol` and `@getpaseo/client` fresh with TypeScript watch builds while the daemon runs. If you change protocol schemas or client code outside that watch workflow, rebuild the producer before trusting runtime behavior.
+`pnpm run dev:server` builds the server-side workspace packages once, then keeps `@getpaseo/protocol` and `@getpaseo/client` fresh with TypeScript watch builds while the daemon runs. If you change protocol schemas or client code outside that watch workflow, rebuild the producer before trusting runtime behavior.
 
 Use the named root build targets instead of remembering workspace dependency chains:
 
 ```bash
-npm run build:client       # protocol -> client
-npm run build:server-deps  # highlight -> relay -> protocol -> client
-npm run build:server       # server-deps -> server -> cli
-npm run build:app-deps     # highlight -> protocol -> client -> expo-two-way-audio
+pnpm run build:client       # protocol -> client
+pnpm run build:server-deps  # highlight -> relay -> protocol -> client
+pnpm run build:server       # server-deps -> server -> cli
+pnpm run build:app-deps     # highlight -> protocol -> client -> expo-two-way-audio
 ```
 
-Use `npm run build:server` whenever you have changed any daemon/server-facing package and need clean cross-package types or runtime behavior.
+Use `pnpm run build:server` whenever you have changed any daemon/server-facing package and need clean cross-package types or runtime behavior.
 
 The app Metro config disables Watchman and uses Metro's node crawler for exports. Keep that invariant unless you have verified production app exports on machines with and without Watchman installed; distro Watchman builds can differ in capabilities and change Metro's crawl behavior.
 
 For tighter loops, you can rebuild a single workspace:
 
-- Changed `packages/protocol/src/*` or `packages/client/src/*`: `npm run build:client`.
-- Changed `packages/server/src/*`, `packages/cli/src/*`, `packages/relay/src/*`, or `packages/highlight/src/*`: `npm run build:server`.
-- Changed app build dependencies: `npm run build:app-deps`.
+- Changed `packages/protocol/src/*` or `packages/client/src/*`: `pnpm run build:client`.
+- Changed `packages/server/src/*`, `packages/cli/src/*`, `packages/relay/src/*`, or `packages/highlight/src/*`: `pnpm run build:server`.
+- Changed app build dependencies: `pnpm run build:app-deps`.
+
+## Local desktop builds (unsigned)
+
+`pnpm run build:desktop` is wired for CI, where release signing credentials exist. Run it bare on a dev Mac and two things go wrong:
+
+1. **Signing hangs or fails.** electron-builder auto-discovers whatever Apple identity is in the keychain (e.g. a personal "Apple Development" cert) and, because `electron-builder.yml` sets `notarize: true`, then stalls on notarization credentials that aren't set.
+2. **An ad-hoc build with hardened runtime crashes at launch.** `hardenedRuntime: true` survives into ad-hoc-signed builds. Hardened runtime enforces library validation — every loaded framework must share the process's Team ID — and ad-hoc signatures have no Team ID, so dyld aborts loading `Electron Framework` with `mapping process and mapped file (non-platform) have different Team IDs` (SIGABRT at launch). Signed release builds never hit this because everything shares the real team.
+
+For a personal, run-on-this-machine-only build, use the unsigned path (flags baked in):
+
+```bash
+CSC_IDENTITY_AUTO_DISCOVERY=false pnpm run build:desktop
+```
+
+Never forward `-c` flags through pnpm run layers (`pnpm run build:desktop -- -c...`): pnpm preserves the `--` separator when appending (npm strips it), so the flags arrive behind `--` and electron-builder silently ignores them — producing exactly the ad-hoc hardened crash above. That is how the 2026-09-09 desktop outage happened (PASEO-17's `npm` → `pnpm` conversion kept the old forwarding shape).
+
+Output lands in `packages/desktop/release/` (DMG, zip, and the raw `mac-arm64/Paseo.app`). If the web app hasn't changed since a previous export, you can skip the Expo export and rebuild only the packaging step: `CSC_IDENTITY_AUTO_DISCOVERY=false pnpm --filter @getpaseo/desktop run build:unsigned` (it reuses `packages/app/dist`).
+
+Rescuing an already-built app that has the hardened-runtime flag: `codesign --force --deep --sign - <path to .app>` re-signs everything ad-hoc without the flag.
+
+Two install gotchas:
+
+- **Never copy an unsigned build over the installed signed Paseo.app** (or vice versa). A file-level merge (`cp -R`, `ditto` onto an existing bundle, or replacing while running) leaves a bundle with mixed signatures, which crashes at launch with the same different-Team-IDs dyld abort. Install under a different name (e.g. `Paseo Test.app`) or delete the old bundle first.
+- **Don't run two builds into the same `release/` directory concurrently.** electron-builder runs race on the output files and cross-contaminate artifacts.
+
+### App-only changes (no daemon rebuild)
+
+When a change only touches `packages/app` (UI components, styles, markdown rendering, etc.) and does not change any server/daemon/CLI/protocol code, skip the sync script entirely — the daemon doesn't need rebuilding or restarting.
+
+Build and install the test app:
+
+```bash
+# Full build (Expo web export + Electron packaging):
+CSC_IDENTITY_AUTO_DISCOVERY=false pnpm run build:desktop
+
+# Install as "Paseo Test" alongside the signed production app:
+cp -R packages/desktop/release/mac-arm64/Paseo.app "/Applications/Paseo Test.app"
+```
+
+If only Electron/desktop-wrapper code changed (not the web app), skip the Expo export and repackage from the existing `packages/app/dist`:
+
+```bash
+CSC_IDENTITY_AUTO_DISCOVERY=false pnpm --filter @getpaseo/desktop run build:unsigned
+cp -R packages/desktop/release/mac-arm64/Paseo.app "/Applications/Paseo Test.app"
+```
+
+**How to tell:** if `git diff` only shows files under `packages/app/src`, `packages/app/package.json`, or root `package-lock.json` (new app deps), it's app-only. If any file under `packages/server`, `packages/cli`, `packages/protocol`, `packages/relay`, or `packages/highlight` changed, use the full sync script instead.
 
 ## Dependency patches
 
@@ -530,9 +705,9 @@ and `uvx`) to exact package versions. Run the drift checker regularly — and
 before releases — so catalog installs do not sit on stale agent versions:
 
 ```bash
-npm run acp:version-drift        # report stale/non-exact package pins
-npm run acp:version-drift:check  # same, exits non-zero on drift
-npm run acp:version-drift:update # rewrite catalog pins to latest exact versions
+pnpm run acp:version-drift        # report stale/non-exact package pins
+pnpm run acp:version-drift:check  # same, exits non-zero on drift
+pnpm run acp:version-drift:update # rewrite catalog pins to latest exact versions
 ```
 
 The checker updates only package-runner catalog entries. Providers that use a
@@ -542,25 +717,25 @@ install.
 
 ## CLI reference
 
-Use `npm run cli` to run the in-repo CLI from source (`npx tsx packages/cli/src/index.ts`). The script wraps the CLI with `scripts/dev-home.sh`, so it automatically uses this checkout's `.dev/paseo-home` and dev daemon endpoint unless you pass an explicit override. The globally installed `paseo` binary on macOS is a symlink into the installed Paseo desktop app, not this checkout — use it to drive the desktop's built-in daemon, but use `npm run cli` when you want to talk to the CLI you are editing.
+Use `pnpm run cli` to run the in-repo CLI from source (`npx tsx packages/cli/src/index.ts`). The script wraps the CLI with `scripts/dev-home.sh`, so it automatically uses this checkout's `.dev/paseo-home` and dev daemon endpoint unless you pass an explicit override. The globally installed `paseo` binary on macOS is a symlink into the installed Paseo desktop app, not this checkout — use it to drive the desktop's built-in daemon, but use `pnpm run cli` when you want to talk to the CLI you are editing.
 
 Canonical automation uses `paseo project create/ls/rename/delete`, `paseo workspace create/ls/rename/archive`, `paseo heartbeat create/update/delete`, and the full `paseo schedule` group. MCP heartbeat automation is intentionally smaller: create and delete only. Detach remains an explicit user lifecycle action rather than an agent tool. `paseo run --new-workspace local|worktree` composes workspace creation with agent creation. The old `paseo worktree` and `paseo run --worktree` forms are hidden compatibility aliases.
 
 ```bash
-npm run cli -- ls -a -g              # List all agents globally
-npm run cli -- ls -a -g --json       # Same, as JSON
-npm run cli -- inspect <id>          # Show detailed agent info
-npm run cli -- logs <id>             # View agent timeline
-npm run cli -- agent open <id>       # Focus an existing agent in Paseo Desktop
-npm run cli -- daemon status         # Check daemon status
-npm run cli -- clone owner/repo --dir ~/workspace # Clone GitHub repo and register project
+pnpm run cli -- ls -a -g              # List all agents globally
+pnpm run cli -- ls -a -g --json       # Same, as JSON
+pnpm run cli -- inspect <id>          # Show detailed agent info
+pnpm run cli -- logs <id>             # View agent timeline
+pnpm run cli -- agent open <id>       # Focus an existing agent in Paseo Desktop
+pnpm run cli -- daemon status         # Check daemon status
+pnpm run cli -- clone owner/repo --dir ~/workspace # Clone GitHub repo and register project
 ```
 
 Use the global `--host` option to point the CLI at a different daemon:
 
 ```bash
-npm run cli -- --host localhost:7777 ls -a
-npm run cli -- --host ssh://user@host ls -a
+pnpm run cli -- --host localhost:7777 ls -a
+pnpm run cli -- --host ssh://user@host ls -a
 ```
 
 Set `PASEO_HOST` to use the same target across invocations. An explicit
@@ -611,14 +786,14 @@ Get the session ID from the agent JSON (`persistence.sessionId`), then:
 
 ## Testing with Playwright MCP
 
-Point Playwright MCP at the running Expo web target. For root checkout dev, `npm run dev:app` reserves `http://localhost:8081`. For Paseo-managed worktree app services, use the service URL or port shown by Paseo for that worktree.
+Point Playwright MCP at the running Expo web target. For root checkout dev, `pnpm run dev:app` reserves `http://localhost:8081`. For Paseo-managed worktree app services, use the service URL or port shown by Paseo for that worktree.
 
 Do NOT use browser history (back/forward). Always navigate by clicking UI elements or using `browser_navigate` with the full URL — the app uses client-side routing and browser history breaks state.
 
 ## App web deploys
 
 `packages/app` exports a single-page Expo web app and deploys the `dist/`
-directory to Cloudflare Pages with `npm run deploy:web --workspace=@getpaseo/app`.
+directory to Cloudflare Pages with `pnpm --filter @getpaseo/app run deploy:web`.
 
 PWA install metadata lives in `packages/app/public/manifest.json` and is linked
 from `packages/app/public/index.html`. Keep the install icons in `public/` so
@@ -642,5 +817,5 @@ Diagnoses version mismatches and native module issues.
 Always run typecheck after changes:
 
 ```bash
-npm run typecheck
+pnpm run typecheck
 ```

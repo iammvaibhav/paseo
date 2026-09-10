@@ -1,5 +1,13 @@
 import { memo, useMemo, useCallback, useState, type ReactNode } from "react";
-import { Text, View, type ViewStyle } from "react-native";
+import {
+  Pressable,
+  Text,
+  View,
+  type GestureResponderEvent,
+  type PressableStateCallbackType,
+  type ViewStyle,
+} from "react-native";
+import { isWeb as platformIsWeb } from "@/constants/platform";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { CircleAlert, Folder, FolderGit2, Monitor } from "lucide-react-native";
 import { ProjectStatusIndicator } from "@/components/sidebar/project-leading-visual";
@@ -100,6 +108,7 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
   shortcutNumber = null,
   showShortcutBadge = false,
   reserveIdleStatusIndicatorSpace = true,
+  agentsToggle = null,
   children,
 }: {
   workspace: SidebarWorkspaceEntry;
@@ -117,6 +126,16 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
   showShortcutBadge?: boolean;
   /** Keep the empty leading slot when the workspace has no active status. */
   reserveIdleStatusIndicatorSpace?: boolean;
+  /**
+   * When set, the leading status slot becomes a button that toggles the workspace's
+   * expanded agent list. The status indicator itself is unchanged — the dot is simply
+   * clickable now.
+   */
+  agentsToggle?: {
+    expanded: boolean;
+    onPress: () => void;
+    accessibilityLabel: string;
+  } | null;
   children?: ReactNode;
 }) {
   const {
@@ -135,27 +154,67 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
     [isHovered, isCreating],
   );
 
+  const leadingVisual = leadingProjectName ? (
+    <ProjectStatusIndicator
+      iconDataUri={leadingProjectIconDataUri}
+      displayName={leadingProjectName}
+      projectViewKey={workspace.projectViewKey}
+      statusBucket={workspace.statusBucket}
+      backdrop={backdrop}
+      loading={isLoading}
+      testID={`sidebar-row-project-icon-${workspace.workspaceKey}`}
+    />
+  ) : (
+    <WorkspaceStatusIndicator
+      bucket={workspace.statusBucket}
+      workspaceKind={workspace.workspaceKind}
+      loading={isLoading}
+      reserveIdleSpace={reserveIdleStatusIndicatorSpace}
+    />
+  );
+
+  const handleToggleAgents = useCallback(
+    (event: GestureResponderEvent) => {
+      event.stopPropagation();
+      agentsToggle?.onPress();
+    },
+    [agentsToggle],
+  );
+
+  const agentsToggleExpanded = agentsToggle?.expanded ?? false;
+  const agentsToggleAccessibilityState = useMemo(
+    () => ({ expanded: agentsToggleExpanded }),
+    [agentsToggleExpanded],
+  );
+  const agentsToggleStyle = useCallback(
+    ({ hovered, pressed }: PressableStateCallbackType) => [
+      styles.agentsToggle,
+      (hovered || pressed) && styles.agentsToggleActive,
+      agentsToggleExpanded && styles.agentsToggleExpanded,
+    ],
+    [agentsToggleExpanded],
+  );
+
+  const leadingSlot = agentsToggle ? (
+    <Pressable
+      onPress={handleToggleAgents}
+      hitSlop={4}
+      accessibilityRole={platformIsWeb ? undefined : "button"}
+      accessibilityLabel={agentsToggle.accessibilityLabel}
+      accessibilityState={agentsToggleAccessibilityState}
+      style={agentsToggleStyle}
+      testID={`sidebar-workspace-agents-toggle-${workspace.workspaceKey}`}
+    >
+      {leadingVisual}
+    </Pressable>
+  ) : (
+    leadingVisual
+  );
+
   return (
     <View style={styles.workspaceRowContent}>
       <View style={styles.workspaceRowMain}>
-        {leadingProjectName ? (
-          <ProjectStatusIndicator
-            iconDataUri={leadingProjectIconDataUri}
-            displayName={leadingProjectName}
-            projectViewKey={workspace.projectViewKey}
-            statusBucket={workspace.statusBucket}
-            backdrop={backdrop}
-            loading={isLoading}
-            testID={`sidebar-row-project-icon-${workspace.workspaceKey}`}
-          />
-        ) : (
-          <WorkspaceStatusIndicator
-            bucket={workspace.statusBucket}
-            workspaceKind={workspace.workspaceKind}
-            loading={isLoading}
-            reserveIdleSpace={reserveIdleStatusIndicatorSpace}
-          />
-        )}
+        {leadingSlot}
         <View style={styles.workspaceContentColumn}>
           <View style={styles.workspaceTitleRow}>
             <Text style={workspaceBranchTextStyle} numberOfLines={1}>
@@ -478,6 +537,23 @@ const styles = StyleSheet.create((theme) => ({
     flexShrink: 0,
     alignItems: "center",
     justifyContent: "center",
+  },
+  // The status slot doubles as the expand/contract button for the workspace's agent list.
+  // The slot keeps its size and the dot inside keeps its look — only the hover/pressed
+  // fill signals that the slot is now interactive.
+  agentsToggle: {
+    width: theme.iconSize.md,
+    height: 20,
+    borderRadius: theme.borderRadius.full,
+    flexShrink: 0,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  agentsToggleActive: {
+    backgroundColor: theme.colors.surface2,
+  },
+  agentsToggleExpanded: {
+    backgroundColor: theme.colors.surface2,
   },
   statusDotOverlay: {
     position: "absolute",

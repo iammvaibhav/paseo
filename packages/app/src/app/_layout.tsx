@@ -34,6 +34,7 @@ import { QuittingOverlay } from "@/components/quitting-overlay";
 import { KeyboardShortcutsDialog } from "@/components/keyboard-shortcuts-dialog";
 import { ChangelogHost } from "@/changelog";
 import { AppDiagnosticHost } from "@/components/app-diagnostic-host";
+import { MissionControlPersistent } from "@/screens/mission-control-persistent";
 import { AppearanceStyleBoundary } from "@/components/appearance-style-boundary";
 import { LeftSidebar } from "@/components/left-sidebar";
 import { WindowSidebarMenuToggle } from "@/components/headers/menu-header";
@@ -881,6 +882,9 @@ function AppWithSidebar({ children }: { children: ReactNode }) {
       pathname === "/new" ||
       pathname === "/sessions" ||
       pathname === "/schedules" ||
+      pathname === "/mission-control" ||
+      pathname === "/itsaplan" ||
+      pathname === "/webhooks" ||
       routeHasKnownHost);
 
   return <AppContainer chromeEnabled={shouldShowAppChrome}>{children}</AppContainer>;
@@ -913,6 +917,9 @@ function RootStack() {
         <Stack.Screen name="open-project" />
         <Stack.Screen name="sessions" />
         <Stack.Screen name="schedules" />
+        <Stack.Screen name="itsaplan" />
+        <Stack.Screen name="mission-control" />
+        <Stack.Screen name="webhooks" />
         <Stack.Screen name="pair-scan" />
       </Stack.Protected>
       <Stack.Screen name="h/[serverId]" />
@@ -944,6 +951,7 @@ function AppShell() {
         <AppWithSidebar>
           <WorkspaceRouteNavigationBridge />
           <RootStack />
+          <MissionControlPersistent />
         </AppWithSidebar>
       </HorizontalScrollProvider>
     </MobilePanelsProvider>

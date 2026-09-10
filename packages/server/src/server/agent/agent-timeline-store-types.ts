@@ -56,6 +56,11 @@ export interface AgentTimelineStore {
   ): Promise<AgentTimelineFetchResult>;
   getLatestCommittedSeq(agentId: string): Promise<number>;
   getCommittedRows(agentId: string): Promise<AgentTimelineRow[]>;
+  /**
+   * Retract committed rows by seq. Optional: implementations that cannot
+   * remove rows simply omit it, and `removeTimelineRows` feature-detects.
+   */
+  removeCommittedRows?(agentId: string, rowIds: readonly number[]): Promise<void>;
   getLastItem(agentId: string): Promise<AgentTimelineItem | null>;
   getLastAssistantMessage(agentId: string): Promise<string | null>;
   deleteAgent(agentId: string): Promise<void>;

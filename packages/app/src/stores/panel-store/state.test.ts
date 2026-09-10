@@ -116,6 +116,23 @@ describe("panel-store migration", () => {
     expect(state.diffCollapsedFoldersByWorkspace).toEqual({ ws: ["src/app"] });
   });
 
+  it("initializes selectedSubmoduleByCheckout for state persisted before submodule memory", () => {
+    const state = migratePanelState({}, 12);
+
+    expect(state.selectedSubmoduleByCheckout).toEqual({});
+  });
+
+  it("keeps remembered submodule selections and drops malformed entries", () => {
+    const state = migratePanelState(
+      { selectedSubmoduleByCheckout: { "server-1::/tmp/repo": "packages/vendor", bad: 7 } },
+      13,
+    );
+
+    expect(state.selectedSubmoduleByCheckout).toEqual({
+      "server-1::/tmp/repo": "packages/vendor",
+    });
+  });
+
   it("initializes and preserves collapsed diff file paths by workspace", () => {
     expect(migratePanelState({}, 14).collapsedFilePathsByWorkspace).toEqual({});
     expect(

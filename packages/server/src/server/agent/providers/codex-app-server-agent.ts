@@ -4890,6 +4890,7 @@ export class CodexAppServerAgentSession implements AgentSession {
         description: "Summarize conversation to prevent hitting the context limit",
         argumentHint: "",
         kind: "command",
+        delivery: "out_of_band",
       },
     ];
     if (this.goalsEnabled) {
@@ -4898,6 +4899,7 @@ export class CodexAppServerAgentSession implements AgentSession {
         description: "Set, pause, resume, or clear the agent's goal",
         argumentHint: "[<objective>|pause|resume|clear]",
         kind: "command",
+        delivery: "out_of_band",
       });
     }
     return [...builtin, ...appServerSkills, ...fallbackSkills, ...prompts].sort((a, b) =>

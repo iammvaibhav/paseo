@@ -14,7 +14,11 @@ import {
   ThinkingIcon,
 } from "@/agent-controls/icons";
 import { getProviderIcon } from "@/components/provider-icons";
-import type { ProviderSelectorProvider } from "@/provider-selection/provider-selection";
+import {
+  filterHiddenProviderModelRows,
+  type ProviderSelectorProvider,
+} from "@/provider-selection/provider-selection";
+import { useHiddenModelKeys } from "@/provider-selection/hidden-models";
 import {
   buildAgentControlContributions,
   buildAgentControlContributionLabels,
@@ -88,6 +92,18 @@ export function useAgentControlCommandCenterActions(input: {
   const { t } = useTranslation();
   const { controls } = input;
   const { features, models, modes, thinking } = controls;
+  const hiddenKeys = useHiddenModelKeys();
+  // Command-K offers the same choosable set as the picker.
+  const visibleModelProviders = useMemo(
+    () =>
+      filterHiddenProviderModelRows({
+        providers: models.providers as ProviderSelectorProvider[],
+        hiddenKeys,
+        selectedProvider: models.selectedProvider ?? undefined,
+        selectedModel: models.selectedModelId ?? undefined,
+      }),
+    [hiddenKeys, models.providers, models.selectedModelId, models.selectedProvider],
+  );
   const actions = useMemo(
     () =>
       buildAgentControlContributions({
@@ -107,7 +123,7 @@ export function useAgentControlCommandCenterActions(input: {
           feature: (feature) => getCommandCenterIcon(getAgentFeatureIcon(feature.icon)),
         },
         models: {
-          providers: models.providers,
+          providers: visibleModelProviders,
           selectedProvider: models.selectedProvider ?? null,
           selectedModelId: models.selectedModelId ?? null,
           select: models.select,
@@ -135,7 +151,7 @@ export function useAgentControlCommandCenterActions(input: {
       controls.serverId,
       features.list,
       features.set,
-      models.providers,
+      visibleModelProviders,
       models.select,
       models.selectedModelId,
       models.selectedProvider,

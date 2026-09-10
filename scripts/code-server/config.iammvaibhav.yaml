@@ -1,0 +1,4 @@
+# code-server on iammvaibhav — bind WireGuard IP only
+bind-addr: 10.7.0.1:8765
+auth: none
+cert: false

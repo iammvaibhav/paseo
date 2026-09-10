@@ -192,12 +192,15 @@ function connectClient(
 ) {
   const ws = createOpenSocket();
   asInternals<WebSocketServerInternals>(server).sessions.set(ws, {
-    kind: "trusted",
     session: createSessionWithActivity(activity, options.subscribed ?? true),
+    principalId: "owner",
+    sessionKey: JSON.stringify(["owner", "client-test"]),
     clientId: "client-test",
     appVersion: null,
+    clientCapabilities: null,
     connectionLogger: createLogger(),
     sockets: new Set([ws]),
+    lifecycle: "reconnectable",
     externalDisconnectCleanupTimeout: null,
   });
   return ws;

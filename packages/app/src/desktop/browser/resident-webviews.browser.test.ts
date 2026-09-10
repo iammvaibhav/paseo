@@ -3,14 +3,18 @@ import {
   applyInactiveBrowserWebviewViewport,
   type BrowserWebviewProfileHost,
   clearResidentBrowserWebviewsForTests,
+  ensurePersistentBrowserWebview,
   ensureResidentBrowserWebview,
   getResidentBrowserWebview,
+  hidePersistentBrowserWebview,
+  isBrowserWebviewDomReady,
   prepareBrowserWebview,
   presentBrowserWebview,
   rememberBrowserWebviewSize,
   releaseResidentBrowserWebview,
   removeResidentBrowserWebview,
   resizeResidentBrowserWebview,
+  showPersistentBrowserWebview,
   takeResidentBrowserWebview,
 } from "./resident-webviews";
 import {
@@ -448,5 +452,43 @@ describe("resident browser webviews", () => {
 
     expect(webview?.isConnected).toBe(false);
     expect(takeResidentBrowserWebview("browser-closed")).toBeNull();
+  });
+
+  it("shows and hides a persistent webview without ever reparenting it", () => {
+    const webview = ensurePersistentBrowserWebview({
+      browserId: "browser-persistent",
+      url: "https://example.com",
+    });
+    const wrapper = webview?.parentElement ?? null;
+    const target = document.createElement("div");
+    target.getBoundingClientRect = () =>
+      ({
+        left: 20,
+        top: 30,
+        width: 900,
+        height: 700,
+        right: 920,
+        bottom: 730,
+        x: 20,
+        y: 30,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    document.body.appendChild(target);
+
+    expect(isBrowserWebviewDomReady(webview as HTMLElement)).toBe(false);
+    webview?.dispatchEvent(new Event("dom-ready"));
+    expect(isBrowserWebviewDomReady(webview as HTMLElement)).toBe(true);
+    expect(showPersistentBrowserWebview("browser-persistent", target)).toBe(true);
+    expect(webview?.parentElement).toBe(wrapper);
+    expect(wrapper?.style.left).toBe("20px");
+    expect(wrapper?.style.top).toBe("30px");
+    expect(wrapper?.style.width).toBe("900px");
+    expect(wrapper?.style.height).toBe("700px");
+
+    expect(hidePersistentBrowserWebview("browser-persistent")).toBe(true);
+    expect(webview?.parentElement).toBe(wrapper);
+    expect(wrapper?.style.width).toBe("1px");
+    expect(wrapper?.style.height).toBe("1px");
+    expect(isBrowserWebviewDomReady(webview as HTMLElement)).toBe(true);
   });
 });

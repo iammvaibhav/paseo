@@ -1,0 +1,391 @@
+#!/usr/bin/env bash
+# Install/update standalone code-server and deploy Paseo configs + service units.
+#
+# Usage (run on the machine being configured):
+#   ./scripts/code-server/install.sh local
+#   ./scripts/code-server/install.sh blrofc3
+#   ./scripts/code-server/install.sh iammvaibhav
+#
+# Env:
+#   CODE_SERVER_VERSION=4.127.0   # pin; omit for latest
+#   CODE_SERVER_SCRIPTS_DIR=...   # defaults to this script's directory
+#   CODE_SERVER_SETTINGS_FILE=... # optional explicit settings.json to install
+#   PASEO_SKIP_CODE_SERVER_EXTENSION=1 # skip installing the paseo-bridge extension
+#
+# Settings source (first match wins):
+#   1. CODE_SERVER_SETTINGS_FILE
+#   2. Live ~/.local/share/code-server/User/settings.json (if present)
+#   3. Repo scripts/code-server/user-settings.json (bootstrap defaults)
+#
+# Safe to re-run: refreshes config/unit files and restarts the service.
+# Live User settings are preserved when present (not overwritten by the repo).
+
+set -euo pipefail
+
+HOST_KIND="${1:-}"
+SCRIPTS_DIR="${CODE_SERVER_SCRIPTS_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+BIN="${HOME}/.local/bin/code-server"
+CONFIG_DIR="${HOME}/.config/code-server"
+USER_DIR="${HOME}/.local/share/code-server/User"
+
+log() {
+  printf '[code-server] %s\n' "$*"
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: install.sh <local|blrofc3|iammvaibhav>
+EOF
+  exit 2
+}
+
+require_host_kind() {
+  case "$HOST_KIND" in
+    local | blrofc3 | iammvaibhav) ;;
+    *) usage ;;
+  esac
+}
+
+ensure_binary() {
+  mkdir -p "${HOME}/.local/bin" "${HOME}/.local/lib"
+  local args=(--method=standalone)
+  if [[ -n "${CODE_SERVER_VERSION:-}" ]]; then
+    args+=(--version="$CODE_SERVER_VERSION")
+  fi
+
+  local before="" after=""
+  if [[ -x "$BIN" ]]; then
+    before="$("$BIN" --version 2>/dev/null | head -n1 || true)"
+  fi
+
+  log "Installing/updating standalone code-server${CODE_SERVER_VERSION:+ (v$CODE_SERVER_VERSION)}"
+  # Upstream does not publish every arch for every release — 4.131.0 ships no
+  # macos-arm64 tarball — and a failed update must not stop the config, settings,
+  # and extension deploy when a working binary is already installed.
+  if ! curl -fsSL https://code-server.dev/install.sh | sh -s -- "${args[@]}"; then
+    [[ -x "$BIN" ]] || die "code-server install failed and no binary at $BIN"
+    log "Binary update FAILED; keeping ${before:-existing install}"
+    return
+  fi
+
+  if [[ ! -x "$BIN" ]]; then
+    die "code-server binary missing at $BIN after install"
+  fi
+  after="$("$BIN" --version 2>/dev/null | head -n1 || true)"
+  if [[ -n "$before" && -n "$after" && "$before" == "$after" ]]; then
+    log "Binary unchanged: $after"
+  else
+    log "Binary ready: ${after:-unknown}"
+  fi
+}
+
+resolve_settings_src() {
+  local live_settings="${USER_DIR}/settings.json"
+  local repo_settings="${SCRIPTS_DIR}/user-settings.json"
+
+  if [[ -n "${CODE_SERVER_SETTINGS_FILE:-}" ]]; then
+    [[ -f "$CODE_SERVER_SETTINGS_FILE" ]] || die "CODE_SERVER_SETTINGS_FILE not found: $CODE_SERVER_SETTINGS_FILE"
+    printf '%s\n' "$CODE_SERVER_SETTINGS_FILE"
+    return
+  fi
+  if [[ -f "$live_settings" ]]; then
+    printf '%s\n' "$live_settings"
+    return
+  fi
+  [[ -f "$repo_settings" ]] || die "Missing settings: $repo_settings"
+  printf '%s\n' "$repo_settings"
+}
+
+deploy_files() {
+  local config_src="${SCRIPTS_DIR}/config.${HOST_KIND}.yaml"
+  local settings_src
+  settings_src="$(resolve_settings_src)"
+
+  [[ -f "$config_src" ]] || die "Missing config: $config_src"
+
+  mkdir -p "$CONFIG_DIR" "$USER_DIR"
+  cp "$config_src" "${CONFIG_DIR}/config.yaml"
+
+  # Live settings already at the destination — keep them (don't clobber with repo).
+  if [[ "$(cd "$(dirname "$settings_src")" && pwd)/$(basename "$settings_src")" == "${USER_DIR}/settings.json" ]]; then
+    log "Keeping live settings at ${USER_DIR}/settings.json"
+  else
+    cp "$settings_src" "${USER_DIR}/settings.json"
+    log "Wrote ${USER_DIR}/settings.json from ${settings_src}"
+  fi
+  log "Wrote ${CONFIG_DIR}/config.yaml"
+}
+
+deploy_extension() {
+  if [[ "${PASEO_SKIP_CODE_SERVER_EXTENSION:-0}" == "1" ]]; then
+    log "Skipping paseo-bridge extension (PASEO_SKIP_CODE_SERVER_EXTENSION=1)"
+    return
+  fi
+  local ext_src="${SCRIPTS_DIR}/paseo-bridge"
+  if [[ ! -f "${ext_src}/package.json" ]]; then
+    log "Warning: paseo-bridge extension missing at ${ext_src}; skipping"
+    return
+  fi
+  if ! command -v npx >/dev/null 2>&1; then
+    log "Warning: npx not found; cannot package paseo-bridge extension; skipping"
+    return
+  fi
+
+  # code-server only loads extensions registered in extensions.json — a plain
+  # folder copy is ignored. Package a .vsix and install it so it's registered.
+  # Remove any stale hand-copied folder from the old (broken) approach.
+  rm -rf "${HOME}/.local/share/code-server/extensions/paseo-bridge"
+
+  # Package from a temp copy with a unique, increasing version. code-server
+  # refuses to reinstall the SAME version while a window has it loaded ("Please
+  # restart VS Code before reinstalling") — even with the service stopped it's
+  # racy across platforms. A fresh version always installs cleanly (while running
+  # too); the service restart below activates it.
+  local build_dir vsix ver
+  build_dir="$(mktemp -d)"
+  cp -R "$ext_src/." "$build_dir/"
+  ver="0.1.$(date +%s)"
+  sed 's/"version": *"[^"]*"/"version": "'"$ver"'"/' "$ext_src/package.json" \
+    > "$build_dir/package.json"
+
+  vsix="${TMPDIR:-/tmp}/paseo-bridge.vsix"
+  log "Packaging paseo-bridge extension ($ver)"
+  if ! (cd "$build_dir" && npx --yes @vscode/vsce package \
+    --skip-license --no-dependencies --allow-missing-repository --out "$vsix" >/dev/null 2>&1); then
+    log "Warning: vsce packaging failed; skipping paseo-bridge extension"
+    rm -rf "$build_dir"
+    rm -f "$vsix"
+    return
+  fi
+
+  log "Installing paseo-bridge into code-server"
+  if ! "$BIN" --install-extension "$vsix" --force; then
+    log "Warning: code-server extension install failed; VS Code Web opens will fall back to reload"
+  fi
+  rm -rf "$build_dir"
+  rm -f "$vsix"
+  log "Installed paseo-bridge extension (restart below activates it)"
+}
+
+deploy_language_extensions() {
+  # pyrightconfig.json in a repo is inert unless the language server exists.
+  # Pylance is Microsoft-licensed and is not on Open VSX, so code-server can
+  # never install it; basedpyright is the maintained pyright fork that is.
+  if [[ "${PASEO_SKIP_LANGUAGE_EXTENSIONS:-0}" == "1" ]]; then
+    log "Skipping language extensions (PASEO_SKIP_LANGUAGE_EXTENSIONS=1)"
+    return
+  fi
+  local ext
+  for ext in ms-python.python detachhead.basedpyright; do
+    if "$BIN" --list-extensions 2>/dev/null | grep -qx "$ext"; then
+      log "Language extension present: $ext"
+      continue
+    fi
+    log "Installing language extension: $ext"
+    "$BIN" --install-extension "$ext" --force >/dev/null 2>&1 \
+      || log "Warning: failed to install $ext (Open VSX unreachable?)"
+  done
+  backfill_python_env_tools
+}
+
+# ms-python.python is published to Open VSX only as `universal`, and that
+# package OMITS the native `pet` binary (python-environment-tools) that ships in
+# the marketplace's per-platform VSIXs. Without it every interpreter resolution
+# dies on `spawn .../python-env-tools/bin/pet ENOENT`, so the Python
+# Environments extension warns "Default interpreter path '<x>' could not be
+# resolved" once per window and selects no interpreter at all (breaking the
+# interpreter picker, Jupyter kernel auto-detect and terminal activation;
+# basedpyright is unaffected, it reads pyrightconfig.json).
+#
+# So fetch just that one file, for THIS host's platform, at the installed
+# version. Runs on every deploy and on every installed copy, which also heals
+# the regression after code-server auto-updates the extension to a new
+# universal build.
+backfill_python_env_tools() {
+  local plat
+  case "$(uname -s)-$(uname -m)" in
+    Linux-x86_64) plat=linux-x64 ;;
+    Linux-aarch64 | Linux-arm64) plat=linux-arm64 ;;
+    Darwin-arm64) plat=darwin-arm64 ;;
+    Darwin-x86_64) plat=darwin-x64 ;;
+    *)
+      log "Warning: unknown platform $(uname -s)-$(uname -m); skipping pet backfill"
+      return
+      ;;
+  esac
+  if ! command -v unzip >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+    log "Warning: curl/unzip missing; skipping pet backfill"
+    return
+  fi
+
+  local dir ver pet vsix url
+  for dir in "${HOME}/.local/share/code-server/extensions/ms-python.python-"*; do
+    [[ -d "$dir" ]] || continue
+    pet="${dir}/python-env-tools/bin/pet"
+    if [[ -x "$pet" ]] && "$pet" --version >/dev/null 2>&1; then
+      continue
+    fi
+    [[ "$(basename "$dir")" =~ ^ms-python\.python-([0-9]+\.[0-9]+\.[0-9]+) ]] || continue
+    ver="${BASH_REMATCH[1]}"
+
+    url="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/ms-python/vsextensions/python/${ver}/vspackage?targetPlatform=${plat}"
+    vsix="$(mktemp -t pyext.XXXXXX)"
+    log "Backfilling python-env-tools/pet ($ver, $plat)"
+    if ! curl -fsSL --compressed --max-time 180 -o "$vsix" "$url"; then
+      log "Warning: could not download ms-python $ver for $plat; interpreter resolution will stay broken"
+      rm -f "$vsix"
+      continue
+    fi
+    mkdir -p "$(dirname "$pet")"
+    if ! unzip -p "$vsix" extension/python-env-tools/bin/pet > "$pet" 2>/dev/null; then
+      log "Warning: no python-env-tools/bin/pet inside the $plat VSIX"
+      rm -f "$pet" "$vsix"
+      continue
+    fi
+    rm -f "$vsix"
+    chmod +x "$pet"
+    # A truncated download or an arch mismatch only shows up on exec; a broken
+    # binary is worse than none (ENOEXEC instead of a retryable ENOENT).
+    if ! "$pet" --version >/dev/null 2>&1; then
+      log "Warning: extracted pet does not run; removing"
+      rm -f "$pet"
+      continue
+    fi
+    log "pet installed: $("$pet" --version)"
+  done
+}
+
+deploy_macos_service() {
+  local plist_src="${SCRIPTS_DIR}/sh.paseo.code-server.plist"
+  local plist_dst="${HOME}/Library/LaunchAgents/sh.paseo.code-server.plist"
+  local uid domain service
+  uid="$(id -u)"
+  domain="gui/${uid}"
+  service="sh.paseo.code-server"
+
+  [[ -f "$plist_src" ]] || die "Missing LaunchAgent: $plist_src"
+  mkdir -p "${HOME}/Library/LaunchAgents" "${HOME}/Library/Logs"
+  cp "$plist_src" "$plist_dst"
+
+  # Prefer label-form bootout. The "bootout domain plist" form often returns
+  # EIO (errno 5) on modern macOS even when nothing is loaded, and can leave
+  # the next bootstrap failing with the same error.
+  if launchctl print "${domain}/${service}" >/dev/null 2>&1; then
+    log "Stopping existing LaunchAgent ${domain}/${service}"
+    launchctl bootout "${domain}/${service}" >/dev/null 2>&1 || true
+    # bootout teardown is asynchronous: the service can stay registered for
+    # several seconds while its process unwinds (code-server holds editor
+    # state). Wait until it is REALLY gone before deciding what to do next —
+    # kickstarting a service that is mid-teardown fails with "Could not find
+    # service ... in domain for user gui: N" (exit 37), which set -e turns
+    # into a failed deploy (code-server left down).
+    local i
+    for i in $(seq 1 30); do
+      if ! launchctl print "${domain}/${service}" >/dev/null 2>&1; then
+        break
+      fi
+      sleep 0.5
+    done
+  fi
+
+  if launchctl print "${domain}/${service}" >/dev/null 2>&1; then
+    # Still registered after the teardown window (bootout raced with
+    # KeepAlive). Restart in place — the ProgramArguments path is a symlink,
+    # so kickstart picks up a new binary.
+    log "LaunchAgent still loaded; kickstarting in place"
+    if ! launchctl kickstart -k "${domain}/${service}"; then
+      # Teardown finished between the print above and the kickstart: the
+      # service is gone now, so load it fresh from the plist.
+      log "Kickstart failed; bootstrapping from plist"
+      launchctl bootstrap "$domain" "$plist_dst"
+      launchctl enable "${domain}/${service}" >/dev/null 2>&1 || true
+      launchctl kickstart -k "${domain}/${service}" >/dev/null 2>&1 || true
+    fi
+  else
+    if ! launchctl bootstrap "$domain" "$plist_dst"; then
+      die "launchctl bootstrap failed for ${plist_dst}"
+    fi
+    launchctl enable "${domain}/${service}" >/dev/null 2>&1 || true
+    launchctl kickstart -k "${domain}/${service}" >/dev/null 2>&1 || true
+  fi
+
+  log "Restarted LaunchAgent ${domain}/${service}"
+}
+
+deploy_linux_service() {
+  local unit_src="${SCRIPTS_DIR}/paseo-code-server.service"
+  local unit_dst="${HOME}/.config/systemd/user/paseo-code-server.service"
+
+  [[ -f "$unit_src" ]] || die "Missing systemd unit: $unit_src"
+  mkdir -p "${HOME}/.config/systemd/user"
+  cp "$unit_src" "$unit_dst"
+
+  systemctl --user daemon-reload
+  systemctl --user enable paseo-code-server.service >/dev/null
+  systemctl --user restart paseo-code-server.service
+
+  # Keep the user session (and code-server) alive after SSH logout.
+  if command -v loginctl >/dev/null 2>&1; then
+    if ! loginctl show-user "$(id -un)" -p Linger 2>/dev/null | grep -qx 'Linger=yes'; then
+      if sudo -n loginctl enable-linger "$(id -un)" >/dev/null 2>&1; then
+        log "Enabled systemd linger for $(id -un)"
+      else
+        log "Linger not enabled (needs: sudo loginctl enable-linger $(id -un))"
+      fi
+    fi
+  fi
+
+  log "Restarted systemd user unit paseo-code-server.service"
+}
+
+verify_listening() {
+  # Give the process a moment to bind before probing.
+  sleep 1
+  local bind
+  # Don't split on ':' — bind-addr is host:port (e.g. 127.0.0.1:8765).
+  bind="$(
+    awk '/^bind-addr:/ {
+      sub(/^bind-addr:[[:space:]]*/, "")
+      gsub(/[[:space:]]/, "")
+      print
+      exit
+    }' "${CONFIG_DIR}/config.yaml"
+  )"
+  if [[ -z "$bind" ]]; then
+    log "Skipping health check (no bind-addr in config)"
+    return
+  fi
+  if command -v curl >/dev/null 2>&1; then
+    local i
+    for i in 1 2 3 4 5 6; do
+      if curl -fsS -o /dev/null --max-time 3 "http://${bind}/"; then
+        log "Healthy at http://${bind}/"
+        return
+      fi
+      sleep 0.5
+    done
+    log "Warning: could not reach http://${bind}/ yet (service may still be starting)"
+  fi
+}
+
+main() {
+  require_host_kind
+  ensure_binary
+  deploy_files
+  deploy_extension
+  deploy_language_extensions
+  case "$(uname -s)" in
+    Darwin) deploy_macos_service ;;
+    Linux) deploy_linux_service ;;
+    *) die "Unsupported OS: $(uname -s)" ;;
+  esac
+  verify_listening
+  log "Done ($HOST_KIND)"
+}
+
+main "$@"

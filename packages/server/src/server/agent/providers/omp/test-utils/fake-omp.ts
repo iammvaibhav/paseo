@@ -94,6 +94,11 @@ export class FakeOmp implements OmpRuntime {
     }
     return session;
   }
+
+  /** Every spawned session, in launch order. Test helper for pool claims. */
+  allSessions(): FakeOmpSession[] {
+    return [...this.sessions];
+  }
 }
 
 export class FakeOmpSession implements OmpRuntimeSession {
@@ -104,6 +109,7 @@ export class FakeOmpSession implements OmpRuntimeSession {
   readonly subagentMessageRequests: FakeOmpSubagentMessagesSelector[] = [];
   readonly setModelRequests: Array<{ provider: string; modelId: string }> = [];
   readonly setThinkingLevelRequests: OmpThinkingLevel[] = [];
+  readonly switchSessionRequests: string[] = [];
   readonly handoffRequests: Array<{ customInstructions?: string }> = [];
   readonly steerRequests: Array<{ message: string; imageCount: number }> = [];
   readonly followUpRequests: Array<{ message: string; imageCount: number }> = [];
@@ -112,6 +118,7 @@ export class FakeOmpSession implements OmpRuntimeSession {
   readonly hostToolUpdates: OmpRpcHostToolUpdate[] = [];
   getStateRequestCount = 0;
   abortRequested = false;
+  readonly abortTimeoutBudgets: Array<number | undefined> = [];
   abortError: Error | null = null;
   readonly canceledExtensionUiRequests: string[] = [];
   readonly extensionUiResponses: Array<{
@@ -131,11 +138,17 @@ export class FakeOmpSession implements OmpRuntimeSession {
   compactError: Error | null = null;
   emitCompactEnd = true;
   getStateError: Error | null = null;
+  readonly abortErrors: Error[] = [];
   promptAck: OmpPromptAck = {};
   branchResponse: { text?: string; cancelled?: boolean } = { text: "" };
   branchMessages: Array<{ entryId: string; text: string }> = [];
   readonly branchRequests: string[] = [];
   activeBranchEntryId?: string;
+  /**
+   * Reproduce omp's cwd-reject: switch_session RPC succeeds, the process stays
+   * on its current session file, and getState() reports the throwaway.
+   */
+  keepSessionFileOnSwitch = false;
   closed = false;
   state: OmpSessionState;
 
@@ -179,6 +192,15 @@ export class FakeOmpSession implements OmpRuntimeSession {
       throw new Error("Agent is already processing");
     }
     this.prompts.push({ message, imageCount: images?.length ?? 0 });
+    const moveMatch = /^\/move\s+(.+)$/.exec(message.trim());
+    if (moveMatch?.[1]) {
+      const nextDir = moveMatch[1];
+      const currentFile = this.state.sessionFile ?? "/tmp/omp-session";
+      const slash = currentFile.lastIndexOf("/");
+      const name = slash === -1 ? currentFile : currentFile.slice(slash + 1);
+      this.state = { ...this.state, sessionFile: `${nextDir.replace(/\/$/, "")}/${name}` };
+      return this.promptAck;
+    }
     this.promptWaiters.shift()?.();
     const heldPrompt = this.nextHeldPrompt;
     if (heldPrompt) {
@@ -238,11 +260,21 @@ export class FakeOmpSession implements OmpRuntimeSession {
     };
   }
 
-  async abort(): Promise<void> {
+  async abort(timeoutMs?: number): Promise<void> {
     if (this.abortError) {
       throw this.abortError;
     }
     this.abortRequested = true;
+    this.abortTimeoutBudgets.push(timeoutMs);
+    this.state = { ...this.state, isStreaming: false };
+    const error = this.abortErrors.shift();
+    if (error) {
+      throw error;
+    }
+  }
+
+  failNextAbort(error: Error): void {
+    this.abortErrors.push(error);
   }
 
   async getState(): Promise<OmpSessionState> {
@@ -288,6 +320,20 @@ export class FakeOmpSession implements OmpRuntimeSession {
 
   async setThinkingLevel(level: OmpThinkingLevel): Promise<void> {
     this.setThinkingLevelRequests.push(level);
+  }
+
+  newSessionRequestCount = 0;
+
+  async newSession(): Promise<void> {
+    this.newSessionRequestCount += 1;
+  }
+
+  async switchSession(sessionPath: string): Promise<void> {
+    this.switchSessionRequests.push(sessionPath);
+    if (this.keepSessionFileOnSwitch) {
+      return;
+    }
+    this.state = { ...this.state, sessionFile: sessionPath };
   }
 
   async getSessionStats(): Promise<OmpSessionStats> {
@@ -444,7 +490,7 @@ export class FakeOmpSession implements OmpRuntimeSession {
   streamAssistantText(text: string, responseId = "omp-assistant-1"): void {
     const message: OmpAgentMessage = {
       role: "assistant",
-      content: [],
+      content: [{ type: "text", text }],
       responseId,
     };
     this.emit({ type: "message_start", message });
@@ -453,6 +499,7 @@ export class FakeOmpSession implements OmpRuntimeSession {
       message,
       assistantMessageEvent: { type: "text_delta", delta: text },
     });
+    this.emit({ type: "message_end", message });
   }
 
   requestToolApproval(input: {

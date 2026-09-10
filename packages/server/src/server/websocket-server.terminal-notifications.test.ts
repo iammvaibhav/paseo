@@ -195,15 +195,17 @@ function createOpenSocket() {
 function connectClient(server: VoiceAssistantWebSocketServer, subscribed = true) {
   const ws = createOpenSocket();
   asInternals<{ sessions: Map<unknown, unknown> }>(server).sessions.set(ws, {
-    kind: "trusted",
     session: {
       getClientActivity: vi.fn(() => null),
       subscribesToTerminalDirectory: vi.fn(async () => subscribed),
     },
+    principalId: "owner",
+    sessionKey: JSON.stringify(["owner", "client-test"]),
     clientId: "client-test",
     appVersion: null,
     connectionLogger: createLogger(),
     sockets: new Set([ws]),
+    lifecycle: "reconnectable",
     externalDisconnectCleanupTimeout: null,
   });
   return ws;

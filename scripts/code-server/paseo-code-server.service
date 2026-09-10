@@ -1,0 +1,14 @@
+[Unit]
+Description=Paseo code-server (VS Code Web)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/code-server --config %h/.config/code-server/config.yaml --disable-workspace-trust
+Restart=on-failure
+RestartSec=3
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

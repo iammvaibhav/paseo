@@ -179,19 +179,19 @@ Common commands:
 
 ```bash
 # run all local dev services
-npm run dev
+pnpm run dev
 
 # run individual surfaces
-npm run dev:server
-npm run dev:app
-npm run dev:desktop
-npm run dev:website
+pnpm run dev:server
+pnpm run dev:app
+pnpm run dev:desktop
+pnpm run dev:website
 
 # build the server stack
-npm run build:server
+pnpm run build:server
 
 # repo-wide checks
-npm run typecheck
+pnpm run typecheck
 ```
 
 ## Related projects

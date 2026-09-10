@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import type { AgentProvider, AgentStreamEvent } from "../../agent-sdk-types.js";
 import { normalizeProviderReplayTimestamp } from "../../provider-history-timestamps.js";
@@ -7,15 +7,13 @@ import type { OmpAgentMessage } from "./rpc-types.js";
 import type { OmpRuntimeSession } from "./runtime.js";
 import { OMP_HISTORY_MAPPER_HOOKS } from "./history-hooks.js";
 import { formatOmpSubagentTitle } from "./subagent-title.js";
+import {
+  readActiveOmpEntryChain,
+  resolveOmpSessionFile,
+  type OmpSessionEntry,
+} from "./session-descriptor.js";
 
-interface OmpSessionEntry {
-  type?: string;
-  id?: string;
-  parentId?: string | null;
-  timestamp?: string | number;
-  message?: Record<string, unknown>;
-  [key: string]: unknown;
-}
+export { readActiveOmpEntryChain, type OmpSessionEntry };
 
 function extractOmpSubagentModel(entries: readonly OmpSessionEntry[]): string | null {
   let resolvedModel: string | null = null;
@@ -50,17 +48,17 @@ export async function* streamOmpHistory(input: {
   if (!input.sessionFile) {
     return;
   }
+  const sessionFile = existsSync(input.sessionFile)
+    ? input.sessionFile
+    : await resolveOmpSessionFile(input.sessionFile);
   const visitedSessionFiles = input.visitedSessionFiles ?? new Set<string>();
-  if (visitedSessionFiles.has(input.sessionFile)) {
+  if (visitedSessionFiles.has(sessionFile)) {
     return;
   }
-  visitedSessionFiles.add(input.sessionFile);
+  visitedSessionFiles.add(sessionFile);
   let entries: OmpSessionEntry[];
   try {
-    entries = await readActiveOmpEntryChain(
-      input.sessionFile,
-      input.runtimeSession?.activeBranchEntryId,
-    );
+    entries = await readActiveOmpEntryChain(sessionFile, input.runtimeSession?.activeBranchEntryId);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return;
@@ -164,6 +162,7 @@ function readSubagentTranscripts(
 ): OmpSubagentTranscript[] {
   const taskCalls = collectTaskCalls(messages);
   const transcripts: OmpSubagentTranscript[] = [];
+  const completedToolCallIds = new Set<string>();
   for (const message of messages) {
     if (message.role !== "toolResult" || message.toolName !== "task") continue;
     const call = taskCalls.get(message.toolCallId);
@@ -178,9 +177,72 @@ function readSubagentTranscripts(
         status: taskResultStatus(result, message.isError === true),
       });
     }
-    if (results.length > 0) continue;
+    if (results.length > 0) {
+      completedToolCallIds.add(message.toolCallId);
+      continue;
+    }
     const legacy = readLegacyTranscript(message, call.title);
-    if (legacy) transcripts.push(legacy);
+    if (legacy) {
+      transcripts.push(legacy);
+      completedToolCallIds.add(message.toolCallId);
+    }
+  }
+  transcripts.push(
+    ...readInterruptedSubagentTranscripts(taskCalls, completedToolCallIds, parentSessionFile),
+  );
+  return transcripts;
+}
+
+function readInterruptedSubagentTranscripts(
+  taskCalls: Map<string, { title: string }>,
+  completedToolCallIds: Set<string>,
+  parentSessionFile: string,
+): OmpSubagentTranscript[] {
+  const childSessionDir = stripExtension(parentSessionFile);
+  if (!existsSync(childSessionDir) || !statSync(childSessionDir).isDirectory()) return [];
+
+  const claimedIds = new Set<string>();
+  const transcripts: OmpSubagentTranscript[] = [];
+  for (const [toolCallId, call] of taskCalls) {
+    if (completedToolCallIds.has(toolCallId)) continue;
+    const sessionFile = join(childSessionDir, `${basename(call.title)}.jsonl`);
+    if (!existsSync(sessionFile)) continue;
+    const id = basename(sessionFile, ".jsonl");
+    claimedIds.add(id);
+    transcripts.push({
+      id,
+      title: call.title,
+      toolCallId,
+      sessionFile,
+      status: "canceled",
+    });
+  }
+
+  if (transcripts.length > 0) return transcripts;
+
+  const leftoverFiles = readdirSync(childSessionDir, { withFileTypes: true })
+    .filter(
+      (entry) =>
+        entry.isFile() &&
+        entry.name.endsWith(".jsonl") &&
+        !claimedIds.has(basename(entry.name, ".jsonl")),
+    )
+    .map((entry) => entry.name);
+  const unmatchedCalls = [...taskCalls.entries()].filter(
+    ([toolCallId]) => !completedToolCallIds.has(toolCallId),
+  );
+  for (const file of leftoverFiles) {
+    const unmatched = unmatchedCalls.shift();
+    if (!unmatched) break;
+    const [toolCallId, call] = unmatched;
+    const id = basename(file, ".jsonl");
+    transcripts.push({
+      id,
+      title: call.title === "OMP subagent" ? id : call.title,
+      toolCallId,
+      sessionFile: join(childSessionDir, file),
+      status: "canceled",
+    });
   }
   return transcripts;
 }
@@ -288,36 +350,6 @@ function taskResultText(message: Extract<OmpAgentMessage, { role: "toolResult" }
 function stripExtension(filePath: string): string {
   const extension = extname(filePath);
   return extension ? filePath.slice(0, -extension.length) : filePath;
-}
-
-export async function readActiveOmpEntryChain(
-  sessionFile: string,
-  activeEntryId?: string,
-): Promise<OmpSessionEntry[]> {
-  const content = await readFile(sessionFile, "utf8");
-  const entries = content.split("\n").flatMap((line) => {
-    if (!line.trim()) return [];
-    try {
-      const value = JSON.parse(line) as OmpSessionEntry;
-      return value && typeof value === "object" && typeof value.id === "string" ? [value] : [];
-    } catch {
-      return [];
-    }
-  });
-  if (entries.length === 0) return [];
-  const byId = new Map(entries.map((entry) => [entry.id!, entry]));
-  const parentIds = new Set(entries.flatMap((entry) => (entry.parentId ? [entry.parentId] : [])));
-  const leaves = entries.filter((entry) => !parentIds.has(entry.id!));
-  let current: OmpSessionEntry | undefined =
-    (activeEntryId ? byId.get(activeEntryId) : undefined) ?? leaves.at(-1) ?? entries.at(-1);
-  const chain: OmpSessionEntry[] = [];
-  const seen = new Set<string>();
-  while (current?.id && !seen.has(current.id)) {
-    chain.push(current);
-    seen.add(current.id);
-    current = current.parentId ? byId.get(current.parentId) : undefined;
-  }
-  return chain.toReversed();
 }
 
 function mapEntryMessage(entry: OmpSessionEntry): OmpAgentMessage | null {

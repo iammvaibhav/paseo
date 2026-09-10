@@ -98,7 +98,10 @@ describe("workspace agent activity index", () => {
     );
 
     expect(result.get("workspace-open")?.status).toBe("running");
-    expect(result.get("workspace-error")?.status).toBe("failed");
+    // This fork classifies lifecycle through the daemon-owned bucket, whose
+    // five states fold an errored run into needs_you — see
+    // sidebar-agent-state.test.ts. "failed" is unreachable here.
+    expect(result.get("workspace-error")?.status).toBe("needs_input");
   });
 
   it("keeps the latest active root agent for each workspace", () => {

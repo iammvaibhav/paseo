@@ -27,13 +27,12 @@ const FAVICON_IMAGES: Record<ColorScheme, Record<FaviconStatus, { uri: string } 
 function deriveFaviconStatus(
   agents: ReturnType<typeof useAggregatedAgents>["agents"],
 ): FaviconStatus {
-  const hasRunning = agents.some((agent) => agent.status === "running");
+  const hasRunning = agents.some((agent) => agent.bucket === "running");
   if (hasRunning) {
     return "running";
   }
-  const hasAttention = agents.some((agent) => agent.requiresAttention);
-  const hasNeedsInput = agents.some((agent) => (agent.pendingPermissionCount ?? 0) > 0);
-  if (hasAttention || hasNeedsInput) {
+  const hasAttention = agents.some((agent) => agent.bucket === "needs_you");
+  if (hasAttention) {
     return "attention";
   }
   return "none";

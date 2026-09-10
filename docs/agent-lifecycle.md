@@ -19,7 +19,9 @@ processes and subscriptions while retaining its Paseo identity, persistence hand
 workspace, labels, title, usage, attention, timestamps, and parent relationship. Opening or prompting
 the agent runs through `ensureAgentLoaded()`, which resumes the durable provider session under the
 same Paseo agent ID. Provider history is not appended again when the canonical timeline is already
-primed.
+primed. Provider-native children are still rehydrated from provider history on that resume: the
+in-memory `ProviderSubagentStore` does not survive daemon restart, so `listProviderSubagents`
+would otherwise return empty and the client would wipe the track.
 
 Reload releases the old runtime before resuming its durable session: an idle provider process can
 still own an exclusive writer. A close failure retains that runtime for cleanup and blocks the
@@ -27,6 +29,9 @@ replacement. Once closure succeeds, a failed resume leaves the durable agent clo
 
 Idle agents remain resident indefinitely. Runtime closure happens only through an explicit lifecycle
 action such as archive, replacement, reload, workspace teardown, or daemon shutdown.
+
+OMP process residency, the create-only warm pool, and why idle-release
+cannot reclaim a pooled process today: [omp-process-efficiency.md](./omp-process-efficiency.md).
 
 A provider runtime can still die on its own — crash, OOM kill, host suspend. Work the agent parked
 inside that process dies with it: Claude Code's background Bash shells, `Monitor` watches, and
@@ -80,9 +85,29 @@ A watched child that closes before its finish event also notifies the caller so 
 
 ## Provider-managed child agents
 
-Some providers can create their own child sessions inside one provider runtime. OMP's task tool reports these with `child_session` events; `AgentManager` imports the live provider handle, stamps `paseo.parent-agent-id`, and surfaces the result as a normal subagent in the parent's subagents track.
+Some providers create child executions inside one provider runtime. OMP's `task` tool is the
+case this ticket covers: those children live **inside** the parent `omp` process. Paseo maps
+`subagent_*` events into `ProviderSubagentStore`; it does not spawn a second `omp` for them.
 
-The provider still owns the underlying runtime. Paseo keeps an agent record so the child can be opened, tracked, archived, and cascaded with the parent, but prompts and history hydration route through the provider adapter for that native child handle.
+Daemon stop tree-kills that process (`JsonlRpcProcess.close` → `terminateWithTreeKill`). In-flight
+children die with the parent. Their session JSONL under the parent session directory survives.
+Process re-attach is impossible: the RPC is stdin/stdout pipes of a killed child.
+
+After resume, Paseo restores the track from provider history. Completed `task` results replay as
+completed/failed/canceled. A `task` tool call with no matching `toolResult` but a child `.jsonl`
+on disk replays as `canceled` with the partial transcript.
+
+The parent does not continue those children automatically, but it can. A killed child is
+**parked** in the resumed parent's hub roster (`hub list status=parked`), discovered from its
+`.jsonl`. A `hub send` to that id revives it in the same file with its context intact; it does not
+re-spawn. `deploy-nudge.mjs` names the interrupted children by id and tells the parent to do this
+instead of re-launching. Two gotchas, both verified on a real kill:
+
+- The tool call that was in flight at kill time is recorded as `pendingToolCalls` on
+  `session_exit`, not resumed. The revived child re-issues it. The nudge tells the child to check
+  what that call already changed before it repeats it.
+- `hub wait` on the child can abort with `agent is not running` while the child revives. The
+  child's `yield` still auto-delivers to the parent as an incoming hub message.
 
 ## Archive
 
@@ -125,6 +150,23 @@ Provider session connection owns every process it spawns until the session is re
 `connect()` must dispose that process before rethrowing; the manager cannot clean up a session it never
 received.
 
+### Opening an archived agent from History
+
+The host's live agent directory is synced with `scope: "active"`, so archived agents never land in
+the session store on their own. The workspace tab reconcile
+(`reconcileWorkspaceTabs`) keeps an agent tab only if the agent is **active** (not `archivedAt`) or
+**pinned _and_ known** (present in `agents`/`agentDetails`). A cold archived agent is none of these,
+so a tab opened straight for it is pruned on the first reconcile and focus falls back to some other
+active agent in that workspace — the tab "opens the wrong agent."
+
+Opening an archived agent from the History list therefore does three things before navigating
+(`workspace/open-agent-from-history`): it `fetchAgent`s the record into `agentDetails` via
+`storeFetchedAgentDetail` (so reconcile counts it as **known**), it **unarchives immediately** via
+`refreshAgent` (same as the Unarchive control — so timeline init runs and history is visible without
+a second click), and it pins the tab (so reconcile **keeps** it until the active directory catches
+up). The archived callout remains as a fallback if unarchive fails. Because `agentDetails` is not
+persisted, the pin is ignored on the next app session and a still-archived tab does not reappear.
+
 ## Tabs vs archive
 
 These are two distinct concepts that used to be conflated:
@@ -136,7 +178,9 @@ These are two distinct concepts that used to be conflated:
 
 Closing a tab on a **root agent** still archives — the tab is the agent's home, so closing it means "I'm done with this agent." A confirm dialog protects against archiving a running agent by accident.
 
-Closing a tab on a **subagent** (any agent with `parentAgentId`) is **layout-only**. The app clears the current client's open-tab label before removing the tab. Another client's open tab remains protected. The agent stays unarchived and stays in its parent's track, so a later parent archive cascades to it when no client still has it open. The user can re-open the tab from the track at any time. Single and bulk tab close apply the same policy.
+Closing a tab on a **nested subagent** is **layout-only**: its parent record resolves on the same host, so the agent reports through it. The app clears the current client's open-tab label before removing the tab. Another client's open tab remains protected. The agent stays unarchived and stays in its parent's track, so a later parent archive cascades to it when no client still has it open. The user can re-open the tab from the track at any time. Single and bulk tab close apply the same policy.
+
+`parentAgentId` alone does not make an agent a subagent. The close policy treats an agent as a root unless its parent record resolves to a non-Commander agent in the same workspace. Commander-dispatched workers carry `paseo.parent-agent-id` pointing at the Commander; whether that record resolves here (the Commander runs on this host) or never resolves (it runs elsewhere), the worker is a root agent, so closing its tab archives it like any other root.
 
 The asymmetry is intentional: a subagent's persistent relationship lives in the parent's track. Same-workspace subagents are not auto-opened as tabs; the user opens one from that track when needed. A cross-workspace subagent is also auto-opened as a tab in its own workspace so opening that workspace does not appear empty. It remains in the parent's track until it is actually detached.
 
@@ -164,7 +208,11 @@ The rows combine two kinds of children:
 parentAgentId === thisAgent.id  AND  !archivedAt
 ```
 
-- **Provider subagents** are child executions owned by Claude, Codex, or OpenCode. They are not inserted into `AgentManager` as managed agents. Providers emit a separate descriptor and timeline stream through `agent.provider_subagents.*`; the client keeps that state outside the normal agent store and merges only the presentation rows into the track. A descriptor's optional `parentSubagentId` identifies its direct provider-subagent parent; an absent value identifies a direct child of the managed agent.
+- **Provider subagents** are child executions owned by Claude, Codex, OpenCode, or OMP. They are not inserted into `AgentManager` as managed agents. Providers emit a separate descriptor and timeline stream through `agent.provider_subagents.*`; the client keeps that state outside the normal agent store and merges only the presentation rows into the track. A descriptor's optional `parentSubagentId` identifies its direct provider-subagent parent; an absent value identifies a direct child of the managed agent.
+
+Provider-subagent descriptors live in an in-memory store. After a daemon restart they come back only
+from provider history (completed `task` results and interrupted child JSONL). Resume does not keep
+them `running`.
 
 Clicking either kind opens a workspace tab. A Paseo subagent tab is a normal interactive agent pane. A provider subagent tab is a read-only timeline pane with no composer, archive, detach, rewind, or fork actions. It shows its own direct children in a subagents track. Both panes use `AgentStreamView`, so message, reasoning, tool-call, and layout rendering stay identical.
 
@@ -197,7 +245,7 @@ To keep the agent alive but remove it from the parent's track, use **detach**. T
 The decision was to **decouple "close tab" from "archive" only for subagents**, rather than universally:
 
 - **Closing a tab on a root agent still archives** — preserves the existing UX users are trained on
-- **Closing a tab on a subagent is layout-only** — fixes the lossy "click to read, close to dismiss view, lose the row" flow
+- **Closing a tab on a nested subagent is layout-only** — fixes the lossy "click to read, close to dismiss view, lose the row" flow
 - **Archive button on track rows** — gives subagents an explicit lifecycle gesture in their home surface
 - **Detach button on track rows** — lets a subagent continue independently without killing its work
 - **Cascade archive on parent** — keeps subagents from leaking when the parent is archived

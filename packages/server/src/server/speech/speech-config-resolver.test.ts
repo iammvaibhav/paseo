@@ -200,4 +200,41 @@ describe("resolveSpeechConfig", () => {
       enabled: false,
     });
   });
+
+  test("resolves fish voice TTS from env and persisted fish credentials", () => {
+    const persisted = PersistedConfigSchema.parse({
+      features: {
+        voiceMode: {
+          tts: {
+            provider: "fish",
+            voice: "933563129e564b19a115bedd57b7406a",
+            speed: 1.35,
+          },
+        },
+      },
+      providers: {
+        fish: {
+          apiKey: "persisted-fish-key",
+        },
+      },
+    });
+
+    const result = resolveSpeechConfig({
+      paseoHome: "/tmp/paseo-home",
+      env: {
+        PASEO_VOICE_TTS_PROVIDER: "fish",
+      } as NodeJS.ProcessEnv,
+      persisted,
+    });
+
+    expect(result.speech.providers.voiceTts).toEqual({
+      provider: "fish",
+      explicit: true,
+      enabled: true,
+    });
+    expect(result.fish?.tts?.apiKey).toBe("persisted-fish-key");
+    expect(result.fish?.tts?.voice).toBe("933563129e564b19a115bedd57b7406a");
+    expect(result.fish?.tts?.speed).toBe(1.35);
+    expect(result.fish?.tts?.format).toBe("mp3");
+  });
 });

@@ -13,6 +13,16 @@ function agentBelongsToWorkspace(agent: Agent, workspaceId: string): boolean {
   return normalizeWorkspaceOpaqueId(agent.workspaceId) === workspaceId;
 }
 
+// Bound for the non-root-agent diagnostic below: deriveWorkspaceAgentVisibility
+// recomputes whenever session layout changes, and the same agent id would be
+// re-evaluated every time. The signal that matters is the FIRST observation —
+// it names the decision inputs (parent present or not) — so an id logs once
+// and is then dropped from the Set for the life of the module. A Set member
+// is at most one line per agent id, never per recomputation. Resets on app
+// restart (module reload), which is acceptable: the diagnostic targets a
+// session-visible anomaly, one line per offending agent per process.
+const loggedNonRootAgentIds = new Set<string>();
+
 export function deriveWorkspaceAgentVisibility(input: {
   sessionAgents: Map<string, Agent> | undefined;
   agentDetails?: Map<string, Agent> | undefined;
@@ -45,6 +55,23 @@ export function deriveWorkspaceAgentVisibility(input: {
       const parentAgent = agent.parentAgentId ? agentsById.get(agent.parentAgentId) : undefined;
       if (isWorkspaceRootAgent(agent, parentAgent)) {
         autoOpenAgentIds.add(agent.id);
+      } else {
+        // Diagnostics — at most once per agent id (see loggedNonRootAgentIds):
+        // a workspace agent that will NOT auto-open as its own tab.
+        // parentFoundLocally:false is the cross-host-Commander case — the
+        // parent record lives on another daemon and is absent from this
+        // host's store — which mis-rendered the agent as missing from its own
+        // workspace. The Set bound keeps a session-store recomputation from
+        // logging the same id on every pass.
+        if (!loggedNonRootAgentIds.has(agent.id)) {
+          loggedNonRootAgentIds.add(agent.id);
+          console.warn("[AgentVisibility] workspace agent not a workspace root agent", {
+            agentId: agent.id,
+            workspaceId,
+            parentAgentId: agent.parentAgentId,
+            parentFoundLocally: parentAgent !== undefined,
+          });
+        }
       }
     }
   }

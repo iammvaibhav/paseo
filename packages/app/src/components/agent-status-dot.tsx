@@ -5,20 +5,22 @@ import {
   AGENT_LIFECYCLE_STATUSES,
   type AgentLifecycleStatus,
 } from "@getpaseo/protocol/agent-lifecycle";
-import { deriveSidebarStateBucket } from "@/utils/sidebar-agent-state";
+import type { LifecycleBucket } from "@getpaseo/protocol/agent-state-bucket";
+import { deriveSidebarStateBucket, type SidebarAttentionReason } from "@/utils/sidebar-agent-state";
 import { getStatusDotColor } from "@/utils/status-dot-color";
 import { STATUS_INDICATOR_FILLED_DOT_SIZE } from "@/utils/status-indicator-geometry";
 
 export function AgentStatusDot({
+  bucket,
   status,
-  requiresAttention,
   attentionReason,
   pendingPermissionCount,
   showInactive = false,
 }: {
+  /** Canonical daemon-owned bucket; absent on older daemons. */
+  bucket?: LifecycleBucket | null;
   status: string | null | undefined;
-  requiresAttention: boolean | null | undefined;
-  attentionReason?: "finished" | "error" | "permission" | null;
+  attentionReason?: SidebarAttentionReason;
   pendingPermissionCount?: number;
   showInactive?: boolean;
 }) {
@@ -31,13 +33,17 @@ export function AgentStatusDot({
     return null;
   }
 
-  const bucket = deriveSidebarStateBucket({
+  const visualBucket = deriveSidebarStateBucket({
+    bucket,
     status,
-    requiresAttention: Boolean(requiresAttention),
-    attentionReason: attentionReason ?? null,
     pendingPermissionCount: pendingPermissionCount ?? 0,
+    attentionReason: attentionReason ?? null,
   });
-  const color = getStatusDotColor({ theme, bucket, showDoneAsInactive: showInactive });
+  const color = getStatusDotColor({
+    theme,
+    bucket: visualBucket,
+    showDoneAsInactive: showInactive,
+  });
 
   if (!color) {
     return null;

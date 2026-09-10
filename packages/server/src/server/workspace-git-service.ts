@@ -6,7 +6,7 @@ import pLimit from "p-limit";
 import type pino from "pino";
 import type { ProjectCheckoutLitePayload } from "@getpaseo/protocol/messages";
 import { parseGitRemoteLocation } from "@getpaseo/protocol/git-remote";
-import type { CheckoutContext } from "../utils/checkout-git.js";
+import type { CheckoutContext, RepoFactsProvider } from "../utils/checkout-git.js";
 import {
   type BranchCheckoutResolution,
   type BranchSuggestion,
@@ -54,7 +54,11 @@ import {
 import { branchNameFromRef } from "../utils/worktree-metadata.js";
 import { listPaseoWorktrees, type PaseoWorktreeInfo } from "../utils/worktree.js";
 import { READ_ONLY_GIT_ENV } from "./checkout-git-utils.js";
-import { classifyGitMetadataPath, getPrunedGitMetadataPaths } from "./git-metadata-event-rules.js";
+import {
+  classifyGitMetadataPath,
+  getPrunedGitMetadataPaths,
+  GIT_METADATA_CONFIG_GLOBAL_PREFIXES,
+} from "./git-metadata-event-rules.js";
 import {
   fetchWorkspaceGitRemote,
   type WorkspaceGitFetchResult,
@@ -82,7 +86,26 @@ export const WORKSPACE_GIT_OBSERVATION_REENSURE_INTERVAL_MS = 60_000;
 const FORGE_PR_STATUS_POLL_FAST_INTERVAL_MS = 20_000;
 const FORGE_PR_STATUS_POLL_SLOW_INTERVAL_MS = 120_000;
 const FORGE_PR_STATUS_POLL_ERROR_BACKOFF_CAP_MS = 300_000;
-const DEGRADED_GIT_POLL_INTERVAL_MS = 5_000;
+// A watcher-less fallback polls git state; 60s keeps the load bounded when
+// inotify is unavailable (5s × several workspaces × ~3 git commands each was a
+// command storm that saturated the daemon event loop on busy hosts).
+const DEGRADED_GIT_POLL_INTERVAL_MS = 60_000;
+/** Delay before re-subscribing after a transient (EINTR) watcher failure. */
+const WORKING_TREE_WATCH_RETRY_DELAY_MS = 10_000;
+/** Log the retry warn only once per this many consecutive retries. */
+const WORKING_TREE_WATCH_RETRY_LOG_EVERY = 6;
+
+function isTransientWatchError(error: unknown): boolean {
+  return error instanceof Error && /Interrupted system call|EINTR/i.test(error.message);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolveTimeout) => {
+    const timer = setTimeout(resolveTimeout, ms);
+    timer.unref?.();
+  });
+}
+
 // Keep whole workspace pipelines below the lower-level Git process pool so daemon control work
 // retains subprocess and event-loop headroom during large workspace reconciliation bursts.
 export const WORKSPACE_GIT_REFRESH_CONCURRENCY = 4;
@@ -198,6 +221,15 @@ export interface WorkspaceGitService {
     options?: WorkspaceGitReadOptions,
   ): Promise<WorkspaceGitBranchValidationResult>;
   hasLocalBranch(cwd: string, branch: string, options?: WorkspaceGitReadOptions): Promise<boolean>;
+  /** Whether `refs/remotes/origin/<branch>` exists. Used by dispatch's
+   * branch-off fallback (worktree-core.ts preferOriginDefaultBranch) to
+   * prefer origin's tip over a same-named stale local branch, without
+   * shelling out on every worktree create. */
+  hasOriginTrackingBranch(
+    repoRoot: string,
+    branch: string,
+    options?: WorkspaceGitReadOptions,
+  ): Promise<boolean>;
   suggestBranchesForCwd(
     cwd: string,
     options?: WorkspaceGitBranchSuggestionsOptions,
@@ -361,6 +393,8 @@ interface WorkspaceGitServiceDependencies {
   getWorkspaceGitSelfHealPhaseMs: typeof getWorkspaceGitObservationReensurePhaseMs;
   createWatcherLivenessCanary: typeof createWatcherLivenessCanary;
   now: () => Date;
+  /** How often to poll Git state when the file watcher is unavailable. */
+  degradedGitPollIntervalMs: number;
 }
 
 interface WorkspaceGitServiceOptions {
@@ -429,6 +463,8 @@ interface RepoGitTarget {
     { change: WorkspaceGitRemoteRefChange; expiresAtMs: number }
   >;
   knownRemoteRefs: Set<string> | null;
+  knownLocalRefs: Set<string> | null;
+  lastConfigText: string | null;
   closed: boolean;
 }
 
@@ -437,6 +473,93 @@ interface RepoMetadataWorkspaceRefresh {
   structural: boolean;
   movedRemoteRefs: Set<string>;
   queueIfBusy: boolean;
+}
+
+interface RepoFacts {
+  remoteOriginUrl: Promise<string | null> | null;
+  defaultBranch: Promise<string | null> | null;
+  mainRepoRoot: Promise<string> | null;
+}
+
+/**
+ * Repo-level fact provider shared by every worktree of a repo, keyed by the repo's common git
+ * dir. Sibling worktrees refreshing together await the same in-flight subprocess instead of
+ * each recomputing the identical fact.
+ */
+class RepoFactsCache implements RepoFactsProvider {
+  private readonly entries = new Map<string, RepoFacts>();
+
+  private entryFor(repoGitRoot: string): RepoFacts {
+    let entry = this.entries.get(repoGitRoot);
+    if (!entry) {
+      entry = { remoteOriginUrl: null, defaultBranch: null, mainRepoRoot: null };
+      this.entries.set(repoGitRoot, entry);
+    }
+    return entry;
+  }
+
+  getRemoteOriginUrl(
+    repoGitRoot: string,
+    compute: () => Promise<string | null>,
+  ): Promise<string | null> {
+    const entry = this.entryFor(repoGitRoot);
+    if (entry.remoteOriginUrl) {
+      return entry.remoteOriginUrl;
+    }
+    const promise = compute();
+    entry.remoteOriginUrl = promise;
+    promise.catch(() => {
+      if (entry.remoteOriginUrl === promise) entry.remoteOriginUrl = null;
+    });
+    return promise;
+  }
+
+  getDefaultBranch(
+    repoGitRoot: string,
+    compute: () => Promise<string | null>,
+  ): Promise<string | null> {
+    const entry = this.entryFor(repoGitRoot);
+    if (entry.defaultBranch) {
+      return entry.defaultBranch;
+    }
+    const promise = compute();
+    entry.defaultBranch = promise;
+    promise.catch(() => {
+      if (entry.defaultBranch === promise) entry.defaultBranch = null;
+    });
+    return promise;
+  }
+
+  getMainRepoRoot(repoGitRoot: string, compute: () => Promise<string>): Promise<string> {
+    const entry = this.entryFor(repoGitRoot);
+    if (entry.mainRepoRoot) {
+      return entry.mainRepoRoot;
+    }
+    const promise = compute();
+    entry.mainRepoRoot = promise;
+    promise.catch(() => {
+      if (entry.mainRepoRoot === promise) entry.mainRepoRoot = null;
+    });
+    return promise;
+  }
+
+  invalidateRemoteOriginUrl(repoGitRoot: string): void {
+    const entry = this.entries.get(repoGitRoot);
+    if (entry) entry.remoteOriginUrl = null;
+  }
+
+  invalidateDefaultBranch(repoGitRoot: string): void {
+    const entry = this.entries.get(repoGitRoot);
+    if (entry) entry.defaultBranch = null;
+  }
+
+  delete(repoGitRoot: string): void {
+    this.entries.delete(repoGitRoot);
+  }
+
+  clear(): void {
+    this.entries.clear();
+  }
 }
 
 interface WorkingTreeWatchTarget {
@@ -454,6 +577,8 @@ interface WorkingTreeWatchTarget {
   recovery: WatchRecoveryState;
   listeners: Set<() => void>;
   closed: boolean;
+  /** Consecutive transient (EINTR) watcher failures; capped before degrading. */
+  watchRetries: number;
 }
 
 interface WatchRecoveryState {
@@ -463,6 +588,49 @@ interface WatchRecoveryState {
 
 function setsEqual(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
   return left.size === right.size && [...left].every((value) => right.has(value));
+}
+
+function symmetricDifference(left: ReadonlySet<string>, right: ReadonlySet<string>): Set<string> {
+  const result = new Set<string>();
+  for (const value of left) if (!right.has(value)) result.add(value);
+  for (const value of right) if (!left.has(value)) result.add(value);
+  return result;
+}
+
+/** Parses `git config`'s INI syntax into fully-qualified `section.sub.key` -> value pairs. */
+function parseGitConfigKeys(text: string): Map<string, string> {
+  const keys = new Map<string, string>();
+  let section = "";
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#") || line.startsWith(";")) continue;
+    const sectionMatch = /^\[([^\]\s"]+)(?:\s+"([^"]*)")?\]$/.exec(line);
+    if (sectionMatch) {
+      const [, name, subsection] = sectionMatch;
+      section =
+        subsection !== undefined ? `${name.toLowerCase()}.${subsection}` : name.toLowerCase();
+      continue;
+    }
+    const keyMatch = /^([A-Za-z][A-Za-z0-9-]*)\s*(?:=\s*(.*))?$/.exec(line);
+    if (keyMatch && section) {
+      const [, key, value] = keyMatch;
+      keys.set(`${section}.${key.toLowerCase()}`, value ?? "true");
+    }
+  }
+  return keys;
+}
+
+function diffGitConfigKeys(previousText: string, nextText: string): string[] {
+  const previousKeys = parseGitConfigKeys(previousText);
+  const nextKeys = parseGitConfigKeys(nextText);
+  const changed = new Set<string>();
+  for (const [key, value] of nextKeys) {
+    if (previousKeys.get(key) !== value) changed.add(key);
+  }
+  for (const key of previousKeys.keys()) {
+    if (!nextKeys.has(key)) changed.add(key);
+  }
+  return [...changed];
 }
 
 type WorkingTreeWatchFallbackReason =
@@ -507,6 +675,7 @@ function buildDefaultWorkspaceGitServiceDeps(
     getWorkspaceGitSelfHealPhaseMs: getWorkspaceGitObservationReensurePhaseMs,
     createWatcherLivenessCanary,
     now: () => new Date(),
+    degradedGitPollIntervalMs: DEGRADED_GIT_POLL_INTERVAL_MS,
   };
 }
 
@@ -538,6 +707,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
   private readonly snapshotUpdatedListeners = new Set<WorkspaceGitSnapshotUpdatedListener>();
   private readonly workspaceTargets = new Map<string, WorkspaceGitTarget>();
   private readonly repoTargets = new Map<string, RepoGitTarget>();
+  private readonly repoFactsCache = new RepoFactsCache();
   private readonly workingTreeWatchTargets = new Map<string, WorkingTreeWatchTarget>();
   private readonly workingTreeWatchSetups = new Map<string, Promise<WorkingTreeWatchTarget>>();
   private readonly workingTreeWatchResolutions = new Map<string, Promise<WorkingTreeWatchTarget>>();
@@ -547,6 +717,10 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     WorkspaceGitAuxiliaryReadCacheEntry<WorkspaceGitBranchValidationResult>
   >({ max: WORKSPACE_GIT_AUXILIARY_CACHE_MAX });
   private readonly localBranchCache = new LRUCache<
+    string,
+    WorkspaceGitAuxiliaryReadCacheEntry<boolean>
+  >({ max: WORKSPACE_GIT_AUXILIARY_CACHE_MAX });
+  private readonly originTrackingBranchCache = new LRUCache<
     string,
     WorkspaceGitAuxiliaryReadCacheEntry<boolean>
   >({ max: WORKSPACE_GIT_AUXILIARY_CACHE_MAX });
@@ -563,6 +737,10 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     WorkspaceGitAuxiliaryReadCacheEntry<WorkspaceGitWorktreeInfo[]>
   >({ max: WORKSPACE_GIT_AUXILIARY_CACHE_MAX });
   private readonly defaultBranchCache = new LRUCache<
+    string,
+    WorkspaceGitAuxiliaryReadCacheEntry<string>
+  >({ max: WORKSPACE_GIT_AUXILIARY_CACHE_MAX });
+  private readonly repoRootCache = new LRUCache<
     string,
     WorkspaceGitAuxiliaryReadCacheEntry<string>
   >({ max: WORKSPACE_GIT_AUXILIARY_CACHE_MAX });
@@ -806,6 +984,26 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     });
   }
 
+  hasOriginTrackingBranch(
+    repoRoot: string,
+    branch: string,
+    options?: WorkspaceGitReadOptions,
+  ): Promise<boolean> {
+    this.assertNotDisposed();
+    const normalizedRepoRoot = resolve(repoRoot);
+    const normalizedBranch = branch.trim();
+    const ref = `refs/remotes/origin/${normalizedBranch}`;
+    const key = JSON.stringify(["origin-tracking-branch", normalizedRepoRoot, ref]);
+    return this.readAuxiliaryCache(this.originTrackingBranchCache, key, options, async () => {
+      const result = await this.deps.runGitCommand(["rev-parse", "--verify", "--quiet", ref], {
+        cwd: normalizedRepoRoot,
+        envOverlay: READ_ONLY_GIT_ENV,
+        acceptExitCodes: [0, 1],
+      });
+      return result.exitCode === 0;
+    });
+  }
+
   suggestBranchesForCwd(
     cwd: string,
     options?: WorkspaceGitBranchSuggestionsOptions,
@@ -856,14 +1054,25 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
   }
 
   async resolveRepoRoot(cwd: string, options?: WorkspaceGitReadOptions): Promise<string> {
-    const snapshot = await this.getSnapshot(cwd, options);
-    if (!snapshot.git.isGit) {
-      throw new Error("Create worktree requires a git repository");
-    }
-
-    return snapshot.git.isPaseoOwnedWorktree
-      ? (snapshot.git.mainRepoRoot ?? snapshot.git.repoRoot ?? resolve(cwd))
-      : (snapshot.git.repoRoot ?? resolve(cwd));
+    this.assertNotDisposed();
+    const normalizedCwd = resolve(cwd);
+    const key = JSON.stringify(["repo-root", normalizedCwd]);
+    // Cheap git-root lookup. Create-worktree used to wait on a full snapshot
+    // (status, for-each-ref, remotes, forge) here, which made a 200ms warm
+    // claim look like a 2s workspace.create.
+    return this.readAuxiliaryCache(this.repoRootCache, key, options, async () => {
+      const status = await this.deps.getCheckoutStatus(normalizedCwd, {
+        paseoHome: this.paseoHome,
+        worktreesRoot: this.worktreesRoot,
+        logger: this.logger,
+      });
+      if (!status.isGit) {
+        throw new Error("Create worktree requires a git repository");
+      }
+      return status.isPaseoOwnedWorktree
+        ? (status.mainRepoRoot ?? status.repoRoot ?? normalizedCwd)
+        : (status.repoRoot ?? normalizedCwd);
+    });
   }
 
   async resolveDefaultBranch(
@@ -1250,6 +1459,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     return this.loadCheckoutFacts(target, {
       paseoHome: this.paseoHome,
       logger: this.logger,
+      repoFacts: this.repoFactsCache,
     });
   }
 
@@ -1305,6 +1515,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       recovery: { attemptCount: 0, timer: null },
       listeners: new Set(),
       closed: false,
+      watchRetries: 0,
     };
 
     this.workingTreeWatchTargets.set(cwd, target);
@@ -1423,6 +1634,12 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
         target.watchPath,
         (error, events) => {
           if (error) {
+            // EINTR / Interrupted system call is transient — retry the
+            // subscription instead of permanently degrading to git polling.
+            if (isTransientWatchError(error)) {
+              void this.retryWorkingTreeSubscription(target);
+              return;
+            }
             if (watcherErrored) {
               return;
             }
@@ -1529,16 +1746,16 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       );
       this.notifyWorkingTreeConsumers(target);
       if (!target.closed && (target.subscription === null || target.repoRoot === null)) {
-        target.fallbackPollTimer = setTimeout(poll, DEGRADED_GIT_POLL_INTERVAL_MS);
+        target.fallbackPollTimer = setTimeout(poll, this.deps.degradedGitPollIntervalMs);
       } else {
         target.fallbackPolling = false;
       }
     };
-    target.fallbackPollTimer = setTimeout(poll, DEGRADED_GIT_POLL_INTERVAL_MS);
+    target.fallbackPollTimer = setTimeout(poll, this.deps.degradedGitPollIntervalMs);
     this.logger.warn(
       {
         cwd,
-        intervalMs: DEGRADED_GIT_POLL_INTERVAL_MS,
+        intervalMs: this.deps.degradedGitPollIntervalMs,
         reason,
       },
       "Working tree watcher unavailable; using bounded polling fallback",
@@ -1553,6 +1770,35 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     }
     this.notifyWorkingTreeChanged(target, "working-tree-watch-error");
     this.startWorkingTreeWatchFallback(target, reason);
+  }
+
+  /**
+   * A transient watcher failure (EINTR on the inotify poll — a signal such as
+   * SIGCHLD from a child process exit interrupted the syscall) is retried
+   * instead of degrading to git polling forever. EINTR is never fatal for
+   * poll(2), so the retry is unbounded: the degraded poll (60s) is the safety
+   * net while the subscription is down, and the watcher recovers on the next
+   * re-subscribe. The warn is rate-limited to avoid spam on hosts that signal
+   * the daemon frequently.
+   */
+  private async retryWorkingTreeSubscription(target: WorkingTreeWatchTarget): Promise<void> {
+    target.watchRetries += 1;
+    if (target.watchRetries % WORKING_TREE_WATCH_RETRY_LOG_EVERY === 1) {
+      this.logger.warn(
+        { cwd: target.cwd, retries: target.watchRetries },
+        "Working tree watcher hit a transient error; retrying subscription",
+      );
+    }
+    const subscription = target.subscription;
+    target.subscription = null;
+    if (subscription) {
+      await this.unsubscribeWatcherSubscription(subscription, target.watchPath);
+    }
+    await sleep(WORKING_TREE_WATCH_RETRY_DELAY_MS);
+    if (target.closed || target.fallbackPolling) {
+      return;
+    }
+    await this.startWorkingTreeSubscription(target);
   }
 
   private scheduleWorkingTreeWatchRecovery(target: WorkingTreeWatchTarget): void {
@@ -1791,6 +2037,8 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       bufferedFetchMetadataEvents: [],
       recentFetchRemoteRefChanges: new Map(),
       knownRemoteRefs: null,
+      knownLocalRefs: null,
+      lastConfigText: null,
       closed: false,
     };
     this.repoTargets.set(repoGitRoot, repoTarget);
@@ -1888,13 +2136,16 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
               : relevantEvents;
             if (immediateEvents.length > 0) {
               this.refreshWorkingTreeIgnoresFromRepoMetadataEvents(target, immediateEvents);
-              const routedRefreshes = this.routeRepoMetadataEvents(target, immediateEvents);
-              this.scheduleRepoMetadataRefresh(
-                target,
-                "git-metadata-watch",
-                routedRefreshes === null || [...routedRefreshes.values()].some((r) => r.structural),
-                routedRefreshes,
-              );
+              void (async () => {
+                const routedRefreshes = await this.routeRepoMetadataEvents(target, immediateEvents);
+                this.scheduleRepoMetadataRefresh(
+                  target,
+                  "git-metadata-watch",
+                  routedRefreshes === null ||
+                    [...routedRefreshes.values()].some((r) => r.structural),
+                  routedRefreshes,
+                );
+              })();
             }
           }
         },
@@ -1984,18 +2235,34 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     this.logger.info({ repoGitRoot: target.repoGitRoot }, "Repository metadata watcher recovered");
   }
 
-  private routeRepoMetadataEvents(
+  private async routeRepoMetadataEvents(
     target: RepoGitTarget,
     events: FileChange[],
-  ): Map<string, RepoMetadataWorkspaceRefresh> | null {
+  ): Promise<Map<string, RepoMetadataWorkspaceRefresh> | null> {
     const refreshes = new Map<string, RepoMetadataWorkspaceRefresh>();
     const matchesRepoGitRoot = createRealpathAwarePathMatcher(target.repoGitRoot);
+    let unroutableEventCount = 0;
 
     for (const event of events) {
-      if (!this.routeRepoMetadataEvent(target, event, matchesRepoGitRoot, refreshes)) return null;
+      if (!(await this.routeRepoMetadataEvent(target, event, matchesRepoGitRoot, refreshes))) {
+        unroutableEventCount += 1;
+      }
     }
 
-    return refreshes;
+    const blanket = unroutableEventCount > 0;
+    this.logger.debug(
+      {
+        repoGitRoot: target.repoGitRoot,
+        eventCount: events.length,
+        unroutableEventCount,
+        workspaceCount: target.workspaceKeys.size,
+        routedWorkspaceCount: refreshes.size,
+        blanket,
+      },
+      "workspace-refresh.metadata_routed",
+    );
+
+    return blanket ? null : refreshes;
   }
 
   private refreshWorkingTreeIgnoresFromRepoMetadataEvents(
@@ -2037,18 +2304,16 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     const relativePath = getRealpathAwareRelativePath(target.repoGitRoot, event.path);
     const effect = classifyGitMetadataPath("common", relativePath ?? "");
     return (
-      (effect.kind === "ref" && effect.namespace === "remote") ||
-      (effect.kind === "all" &&
-        (relativePath === "packed-refs" || relativePath?.startsWith("reftable/") === true))
+      (effect.kind === "ref" && effect.namespace === "remote") || effect.kind === "packed-refs"
     );
   }
 
-  private routeRepoMetadataEvent(
+  private async routeRepoMetadataEvent(
     target: RepoGitTarget,
     event: FileChange,
     matchesRepoGitRoot: ReturnType<typeof createRealpathAwarePathMatcher>,
     refreshes: Map<string, RepoMetadataWorkspaceRefresh>,
-  ): boolean {
+  ): Promise<boolean> {
     if (this.routePrivateGitDirEvent(target, event, matchesRepoGitRoot, refreshes)) return true;
 
     const commonRelativePath = getRealpathAwareRelativePath(target.repoGitRoot, event.path);
@@ -2089,15 +2354,121 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
           }
         }
         return true;
-      case "all":
-        if (
-          commonRelativePath === "packed-refs" ||
-          commonRelativePath?.startsWith("reftable/") === true
-        ) {
-          target.knownRemoteRefs = null;
-        }
-        return false;
+      case "config":
+        await this.routeConfigMetadata(target, refreshes);
+        return true;
+      case "packed-refs":
+        return this.reconcilePackedRefs(target, refreshes);
     }
+  }
+
+  /**
+   * `.git/config` covers every branch plus repo-wide settings in one file. Diffing its content
+   * against the last observed text narrows a `branch.<name>.*` edit to dependents of that branch;
+   * `remote.*`/`core.*`/`extensions.*` and anything unrecognized fall back to a full refresh
+   * since those can change facts (remote URL, default branch) for every worktree of the repo.
+   */
+  private async routeConfigMetadata(
+    target: RepoGitTarget,
+    refreshes: Map<string, RepoMetadataWorkspaceRefresh>,
+  ): Promise<void> {
+    let configText: string;
+    try {
+      configText = await readFile(join(target.repoGitRoot, "config"), "utf8");
+    } catch {
+      return;
+    }
+    if (target.lastConfigText === null) {
+      target.lastConfigText = configText;
+      return;
+    }
+    const changedKeys = diffGitConfigKeys(target.lastConfigText, configText);
+    target.lastConfigText = configText;
+    for (const key of changedKeys) {
+      this.routeConfigKeyChange(target, key, refreshes);
+    }
+  }
+
+  private routeConfigKeyChange(
+    target: RepoGitTarget,
+    key: string,
+    refreshes: Map<string, RepoMetadataWorkspaceRefresh>,
+  ): void {
+    const branchMatch = /^branch\.(.+)\.[^.]+$/.exec(key);
+    if (branchMatch) {
+      this.repoFactsCache.invalidateDefaultBranch(target.repoGitRoot);
+      this.routeLocalBranchRef(target, branchMatch[1], refreshes);
+      return;
+    }
+    if (key.startsWith("remote.")) {
+      this.repoFactsCache.invalidateRemoteOriginUrl(target.repoGitRoot);
+    } else if (!GIT_METADATA_CONFIG_GLOBAL_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+      this.logger.debug(
+        { repoGitRoot: target.repoGitRoot, key },
+        "Unrecognized git config key; using blanket structural refresh",
+      );
+    }
+    for (const workspaceKey of target.workspaceKeys) {
+      this.addWorkspaceMetadataRefresh(refreshes, workspaceKey, true);
+    }
+  }
+
+  /**
+   * `packed-refs` consolidates many loose refs into one file; the individual loose-ref events
+   * that led up to a pack already routed narrowly, so a fresh `for-each-ref` diffed against the
+   * last known ref names tells us whether the pack introduced anything those events missed.
+   */
+  private async reconcilePackedRefs(
+    target: RepoGitTarget,
+    refreshes: Map<string, RepoMetadataWorkspaceRefresh>,
+  ): Promise<boolean> {
+    let stdout: string;
+    try {
+      ({ stdout } = await this.deps.runGitCommand(
+        ["for-each-ref", "--format=%(refname)%00%(objectname)"],
+        { cwd: target.repoGitRoot, envOverlay: READ_ONLY_GIT_ENV },
+      ));
+    } catch (error) {
+      this.logger.warn(
+        { err: error, repoGitRoot: target.repoGitRoot },
+        "for-each-ref failed while reconciling packed-refs; using blanket structural refresh",
+      );
+      return false;
+    }
+    this.logger.debug(
+      { repoGitRoot: target.repoGitRoot, provenance: "git-metadata-watch:packed-refs" },
+      "Reconciled packed-refs via for-each-ref",
+    );
+
+    const local = new Set<string>();
+    const remote = new Set<string>();
+    for (const line of stdout.split("\n")) {
+      const refname = line.split("\0")[0];
+      if (refname?.startsWith("refs/heads/")) {
+        local.add(refname.slice("refs/heads/".length));
+      } else if (refname?.startsWith("refs/remotes/")) {
+        remote.add(refname.slice("refs/remotes/".length));
+      }
+    }
+
+    const previousLocal = target.knownLocalRefs;
+    const previousRemote = target.knownRemoteRefs;
+    const localChanged = previousLocal !== null && !setsEqual(previousLocal, local);
+    const remoteChanged = previousRemote !== null && !setsEqual(previousRemote, remote);
+    target.knownLocalRefs = local;
+    target.knownRemoteRefs = remote;
+
+    if (localChanged) {
+      for (const branch of symmetricDifference(previousLocal ?? new Set(), local)) {
+        this.routeLocalBranchRef(target, branch, refreshes);
+      }
+    }
+    if (remoteChanged) {
+      for (const remoteRef of symmetricDifference(previousRemote ?? new Set(), remote)) {
+        this.routeRemoteBranchRef(target, remoteRef, refreshes);
+      }
+    }
+    return true;
   }
 
   private routePrivateGitDirEvent(
@@ -2324,12 +2695,12 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
         this.notifyWorkingTreeConsumers(workingTreeTarget);
       }
       if (!target.closed && target.subscription === null) {
-        target.fallbackPollTimer = setTimeout(poll, DEGRADED_GIT_POLL_INTERVAL_MS);
+        target.fallbackPollTimer = setTimeout(poll, this.deps.degradedGitPollIntervalMs);
       } else {
         target.fallbackPolling = false;
       }
     };
-    target.fallbackPollTimer = setTimeout(poll, DEGRADED_GIT_POLL_INTERVAL_MS);
+    target.fallbackPollTimer = setTimeout(poll, this.deps.degradedGitPollIntervalMs);
   }
 
   private scheduleWorkspaceRefresh(
@@ -2953,6 +3324,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       worktreesRoot: this.worktreesRoot,
       logger: this.logger,
       runGitCommand: runRefreshGitCommand,
+      repoFacts: this.repoFactsCache,
     };
     const facts = await this.loadCheckoutFacts(target, baseContext);
     const context: CheckoutContext = { ...baseContext, facts };
@@ -3160,22 +3532,28 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
           "Background git fetch failed",
         );
       }
-      this.applyRepoFetchResult(target, result, eventsBeforeFetchSnapshot);
+      await this.applyRepoFetchResult(target, result, eventsBeforeFetchSnapshot);
     } finally {
       target.fetchInFlight = false;
     }
   }
 
-  private applyRepoFetchResult(
+  private async applyRepoFetchResult(
     target: RepoGitTarget,
     result: WorkspaceGitFetchResult | null,
     eventsBeforeFetchSnapshot: FileChange[],
-  ): void {
-    this.flushFetchMetadataEvents(target, eventsBeforeFetchSnapshot);
+  ): Promise<void> {
+    await this.flushFetchMetadataEvents(target, eventsBeforeFetchSnapshot);
+    if (result) {
+      // The fetch ran regardless of whether change classification below
+      // succeeds, so refs/remotes/origin/* may have moved. Drop cached
+      // origin-branch-existence answers rather than serving stale ones.
+      this.originTrackingBranchCache.clear();
+    }
     if (!result || result.changes === null) {
       target.recentFetchRemoteRefChanges.clear();
       target.knownRemoteRefs = null;
-      this.flushBufferedFetchMetadataEvents(target);
+      await this.flushBufferedFetchMetadataEvents(target);
       if (result) {
         this.logger.warn(
           { err: result.error, repoGitRoot: target.repoGitRoot, cwd: target.cwd },
@@ -3203,7 +3581,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     for (const change of result.changes) {
       target.recentFetchRemoteRefChanges.set(change.ref, { change, expiresAtMs });
     }
-    this.flushBufferedFetchMetadataEvents(target);
+    await this.flushBufferedFetchMetadataEvents(target);
     if (
       result.nonRemoteRefsChanged === true ||
       remoteRefShapeChanged ||
@@ -3222,15 +3600,18 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     this.scheduleRepoMetadataRefresh(target, "repo-fetch", false, refreshes);
   }
 
-  private flushBufferedFetchMetadataEvents(target: RepoGitTarget): void {
-    this.flushFetchMetadataEvents(target, target.bufferedFetchMetadataEvents.splice(0));
+  private async flushBufferedFetchMetadataEvents(target: RepoGitTarget): Promise<void> {
+    await this.flushFetchMetadataEvents(target, target.bufferedFetchMetadataEvents.splice(0));
   }
 
-  private flushFetchMetadataEvents(target: RepoGitTarget, events: FileChange[]): void {
+  private async flushFetchMetadataEvents(
+    target: RepoGitTarget,
+    events: FileChange[],
+  ): Promise<void> {
     if (events.length === 0) {
       return;
     }
-    const routedRefreshes = this.routeRepoMetadataEvents(target, events);
+    const routedRefreshes = await this.routeRepoMetadataEvents(target, events);
     this.scheduleRepoMetadataRefresh(
       target,
       "git-metadata-watch-after-fetch",
@@ -3385,6 +3766,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       });
     }
     target.workspaceKeys.clear();
+    this.repoFactsCache.delete(target.repoGitRoot);
   }
 }
 

@@ -6,7 +6,24 @@ const path = require("path");
 const projectRoot = __dirname;
 const appNodeModulesRoot = path.resolve(projectRoot, "node_modules");
 const appSrcRoot = path.resolve(projectRoot, "src");
-const relaySrcRoot = path.resolve(projectRoot, "../relay/src");
+// In a git worktree the shared node_modules resolve @getpaseo/relay to the source checkout, so
+// relay sources can live outside this checkout. Match both roots for the .js -> .ts rewrite.
+const relaySrcRoots = Array.from(
+  new Set(
+    [path.resolve(projectRoot, "../relay/src"), linkedRelaySrcRoot()].filter(
+      (root) => root !== null,
+    ),
+  ),
+);
+
+function linkedRelaySrcRoot() {
+  const linkPath = path.resolve(projectRoot, "../../node_modules/@getpaseo/relay");
+  try {
+    return path.join(fs.realpathSync(linkPath), "src");
+  } catch {
+    return null;
+  }
+}
 const isFdroidBuild = process.env.PASEO_FDROID_BUILD === "1";
 const fdroidModuleOverrides = {
   "expo-camera": path.resolve(appSrcRoot, "fdroid/expo-camera.tsx"),
@@ -24,6 +41,37 @@ const defaultResolveRequest = config.resolver.resolveRequest ?? resolve;
 // crawler behavior depends on the host Watchman build/capabilities, while the
 // node crawler is the path used when Watchman is absent.
 config.resolver.useWatchman = false;
+const workspaceRoot = path.resolve(projectRoot, "../..");
+const watchFolders = [projectRoot, workspaceRoot];
+const nodeModulesPaths = [
+  path.resolve(projectRoot, "node_modules"),
+  path.resolve(workspaceRoot, "node_modules"),
+];
+// A git worktree symlinks packages/app/node_modules into the source checkout,
+// so the real dependency tree sits outside projectRoot. Metro ignores files it
+// does not watch, so add the symlink target and every ancestor node_modules.
+function collectLinkedDependencyRoots(linkPath) {
+  if (!fs.existsSync(linkPath)) return [];
+  const real = fs.realpathSync(linkPath);
+  if (real === linkPath) return [];
+  const roots = [real, path.dirname(real)];
+  let curr = path.dirname(real);
+  while (curr && curr !== path.dirname(curr)) {
+    const candidate = path.join(curr, "node_modules");
+    if (candidate !== real && fs.existsSync(candidate)) roots.push(curr, candidate);
+    curr = path.dirname(curr);
+  }
+  return roots;
+}
+
+try {
+  for (const root of collectLinkedDependencyRoots(appNodeModulesRoot)) {
+    watchFolders.push(root);
+    if (path.basename(root) === "node_modules") nodeModulesPaths.push(root);
+  }
+} catch {}
+config.watchFolders = Array.from(new Set(watchFolders));
+config.resolver.nodeModulesPaths = Array.from(new Set(nodeModulesPaths));
 
 const escapedAppSrcRoot = appSrcRoot
   .split(path.sep)
@@ -82,7 +130,11 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
   }
 
   const origin = context.originModulePath;
-  if (origin && origin.startsWith(relaySrcRoot) && moduleName.endsWith(".js")) {
+  if (
+    origin &&
+    moduleName.endsWith(".js") &&
+    relaySrcRoots.some((root) => origin.startsWith(root))
+  ) {
     const tsModuleName = moduleName.replace(/\.js$/, ".ts");
     const candidatePath = path.resolve(path.dirname(origin), tsModuleName);
     if (fs.existsSync(candidatePath)) {

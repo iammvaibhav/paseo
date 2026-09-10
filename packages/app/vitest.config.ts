@@ -60,6 +60,13 @@ export default defineConfig({
       },
     },
   },
+  // Metro/Babel compile the app with React's automatic JSX runtime, so components are
+  // written without a React import. esbuild would otherwise pick up expo's
+  // `jsx: "react-native"` (classic) from tsconfig and render those components as
+  // `React is not defined`.
+  esbuild: {
+    jsx: "automatic",
+  },
   // Reanimated ships one file per platform and picks between them by extension
   // (`findHostInstance.web.js`). Vite's dependency optimizer does not apply `resolve.extensions`,
   // so it scans the native files and dies on imports react-native-web has no answer for.

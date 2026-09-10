@@ -64,15 +64,15 @@ Gradle auto-fetches the platform/build-tools it needs once licenses are accepted
 From repo root:
 
 ```bash
-npm run android:development    # Debug build
-npm run android:production     # Release build
-npm run android:clear          # Remove generated Android project
+pnpm run android:development    # Debug build
+pnpm run android:production     # Release build
+pnpm run android:clear          # Remove generated Android project
 ```
 
 For a production-ID release APK that local Android profiling tools can attach to:
 
 ```bash
-PASEO_PROFILE_BUILD=1 npm run android:production
+PASEO_PROFILE_BUILD=1 pnpm run android:production
 ```
 
 This keeps the `sh.paseo` package id, release Hermes bundle, and release optimizations. It adds
@@ -97,16 +97,16 @@ rm -rf android
 
 ## Running on an emulator against a worktree daemon
 
-`npm run android` builds and installs the dev client, but two connections have to reach your Mac from inside the emulator — Metro (the JS bundle) and the Paseo daemon — and **the emulator does not share the host's loopback**: `localhost` inside the emulator is the emulator itself. Reach the host at `10.0.2.2` (the standard AVD's host alias) for both:
+`pnpm run android` builds and installs the dev client, but two connections have to reach your Mac from inside the emulator — Metro (the JS bundle) and the Paseo daemon — and **the emulator does not share the host's loopback**: `localhost` inside the emulator is the emulator itself. Reach the host at `10.0.2.2` (the standard AVD's host alias) for both:
 
 ```bash
 REACT_NATIVE_PACKAGER_HOSTNAME=10.0.2.2 \
   EXPO_PUBLIC_LOCAL_DAEMON=10.0.2.2:$PASEO_SERVICE_DAEMON_PORT \
-  npm run android
+  pnpm run android
 ```
 
 - **`REACT_NATIVE_PACKAGER_HOSTNAME=10.0.2.2`** — without it, Expo bakes your Mac's LAN IP into the dev client's Metro URL, which the emulator can't route to, and the app dies with `Failed to connect to /<lan-ip>:8081` before any JS loads.
-- **`EXPO_PUBLIC_LOCAL_DAEMON=10.0.2.2:<port>`** — the client's daemon endpoint (`packages/app/src/runtime/host-runtime.ts`); when unset it defaults to `localhost:6767`, the production daemon. Use `$PASEO_SERVICE_DAEMON_PORT` for a worktree daemon running as a Paseo service, or `6768` for a standalone `npm run dev:server`. It is inlined into the JS bundle at Metro bundle time, so set it on the build command and clear the Metro cache (`npx expo start -c`) if a change doesn't take.
+- **`EXPO_PUBLIC_LOCAL_DAEMON=10.0.2.2:<port>`** — the client's daemon endpoint (`packages/app/src/runtime/host-runtime.ts`); when unset it defaults to `localhost:6767`, the production daemon. Use `$PASEO_SERVICE_DAEMON_PORT` for a worktree daemon running as a Paseo service, or `6768` for a standalone `pnpm run dev:server`. It is inlined into the JS bundle at Metro bundle time, so set it on the build command and clear the Metro cache (`npx expo start -c`) if a change doesn't take.
 
 **Alternative — `adb reverse` + `localhost`** (if `10.0.2.2` misbehaves):
 
@@ -115,7 +115,7 @@ adb reverse tcp:8081 tcp:8081
 adb reverse tcp:$PASEO_SERVICE_DAEMON_PORT tcp:$PASEO_SERVICE_DAEMON_PORT
 REACT_NATIVE_PACKAGER_HOSTNAME=localhost \
   EXPO_PUBLIC_LOCAL_DAEMON=localhost:$PASEO_SERVICE_DAEMON_PORT \
-  npm run android
+  pnpm run android
 ```
 
 This is the Android counterpart of the iOS local-simulator flow in [development.md](development.md): on iOS the simulator shares the Mac's loopback so `localhost:<port>` works directly; on Android you need `10.0.2.2` or `adb reverse`.
@@ -168,7 +168,7 @@ fastlane/metadata/android/
 
 Locale directories generally match `packages/app/src/i18n/locales.ts`, but note that `en` becomes `en-US`.
 
-F-Droid changelogs are generated from `CHANGELOG.md`. Run `npm run fdroid:changelogs`; `npm run fdroid:changelogs:check` verifies without writing. It is wired into the npm `version` lifecycle, so a release picks it up automatically and `git add -A` stages the result.
+F-Droid changelogs are generated from `CHANGELOG.md`. Run `pnpm run fdroid:changelogs`; `pnpm run fdroid:changelogs:check` verifies without writing. It is wired into the npm `version` lifecycle, so a release picks it up automatically and `git add -A` stages the result.
 
 One changelog must be generated per-ABI-split, so each version will create **four** identical version-coded entries. F-Droid caps changelogs at 500 characters, so the generator strips some content and adds a link to the full notes.
 

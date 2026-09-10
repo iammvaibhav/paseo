@@ -1,7 +1,16 @@
-import { ActivityIndicator, View, type ViewStyle } from "react-native";
+import {
+  ActivityIndicator,
+  Pressable,
+  View,
+  type GestureResponderEvent,
+  type ViewStyle,
+} from "react-native";
+import { useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { ChevronDown, ChevronRight, CircleAlert } from "lucide-react-native";
 import { ProjectIconView } from "@/components/project-icon-view";
+import { isWeb as platformIsWeb } from "@/constants/platform";
 import { STATUS_BUCKET_LABELS } from "@/hooks/sidebar-status-view-model";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
 import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
@@ -62,6 +71,7 @@ export function ProjectLeadingVisual({
   chevron = null,
   showChevron = false,
   isArchiving = false,
+  onChevronPress,
 }: {
   displayName: string;
   iconDataUri: string | null;
@@ -73,11 +83,15 @@ export function ProjectLeadingVisual({
   chevron?: "expand" | "collapse" | null;
   showChevron?: boolean;
   isArchiving?: boolean;
+  // Present only when the row's own press is spoken for (opening the project's base
+  // workspace), so the chevron becomes its own press target for expand/collapse. Absent when
+  // the row press still toggles collapse itself — the chevron then stays decorative.
+  onChevronPress?: () => void;
 }) {
   if (showChevron && chevron !== null) {
     return (
       <View style={styles.projectLeadingVisualSlot}>
-        <ProjectInlineChevron chevron={chevron} />
+        <ProjectInlineChevron chevron={chevron} onPress={onChevronPress} />
       </View>
     );
   }
@@ -238,14 +252,53 @@ function ProjectIcon({
   );
 }
 
-function ProjectInlineChevron({ chevron }: { chevron: "expand" | "collapse" | null }) {
+function ProjectInlineChevron({
+  chevron,
+  onPress,
+}: {
+  chevron: "expand" | "collapse" | null;
+  onPress?: () => void;
+}) {
+  const { t } = useTranslation();
+  const handlePress = useCallback(
+    (event: GestureResponderEvent) => {
+      event.stopPropagation();
+      onPress?.();
+    },
+    [onPress],
+  );
+
   if (chevron === null) {
     return null;
   }
-  if (chevron === "collapse") {
-    return <ChevronDown size={14} color="#9ca3af" />;
+
+  const icon =
+    chevron === "collapse" ? (
+      <ChevronDown size={14} color="#9ca3af" />
+    ) : (
+      <ChevronRight size={14} color="#9ca3af" />
+    );
+
+  if (!onPress) {
+    return icon;
   }
-  return <ChevronRight size={14} color="#9ca3af" />;
+
+  return (
+    <Pressable
+      style={styles.projectInlineChevronPressable}
+      onPress={handlePress}
+      hitSlop={8}
+      accessibilityRole={platformIsWeb ? undefined : "button"}
+      accessibilityLabel={
+        chevron === "collapse"
+          ? t("sidebar.project.actions.collapseProject")
+          : t("sidebar.project.actions.expandProject")
+      }
+      testID="sidebar-project-chevron"
+    >
+      {icon}
+    </Pressable>
+  );
 }
 
 function getStatusDotColorStyle(bucket: ProjectStatusBadgeDotBucket): ViewStyle {
@@ -276,6 +329,14 @@ const styles = StyleSheet.create((theme) => {
       width: theme.iconSize.md,
       height: LEADING_SLOT_HEIGHT,
       flexShrink: 0,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    // Fills the leading slot exactly — no padding, no size change from the bare icon it
+    // wraps — so giving the chevron its own Pressable never shifts the slot's geometry.
+    projectInlineChevronPressable: {
+      width: "100%",
+      height: "100%",
       alignItems: "center",
       justifyContent: "center",
     },

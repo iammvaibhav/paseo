@@ -21,48 +21,64 @@ This is an npm workspace monorepo:
 
 At the start of non-trivial work, list `docs/` and skim anything relevant to the task.
 
-| Doc                                                                  | What's in it                                                                                                                   |
-| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| [docs/product.md](docs/product.md)                                   | What Paseo is, who it's for, where it's going                                                                                  |
-| [docs/architecture.md](docs/architecture.md)                         | System design, package layering, WebSocket protocol, agent lifecycle, data flow                                                |
-| [docs/agent-lifecycle.md](docs/agent-lifecycle.md)                   | Agent states, parent/child relationships, archive semantics, tabs vs archive, subagents track                                  |
-| [docs/data-model.md](docs/data-model.md)                             | File-based JSON persistence, Zod schemas, atomic writes, no migrations                                                         |
-| [docs/glossary.md](docs/glossary.md)                                 | Authoritative terminology — UI label wins, no synonyms                                                                         |
-| [docs/coding-standards.md](docs/coding-standards.md)                 | Type hygiene, error handling, state design, React patterns, file organization                                                  |
-| [docs/design.md](docs/design.md)                                     | Design system — tokens, buttons, hierarchy, density, alignment rails, states, what's forbidden                                 |
-| [docs/forms.md](docs/forms.md)                                       | Form architecture — non-React form model, form kit, load-state gating; the schedule form is the golden example                 |
-| [docs/hover.md](docs/hover.md)                                       | Hover — the canonical pattern (plain View + onPointerEnter/Leave, separate inner Pressable) and the three ways agents break it |
-| [docs/unistyles.md](docs/unistyles.md)                               | Unistyles gotchas — `useUnistyles()` is forbidden, alternatives in order                                                       |
-| [docs/floating-panels.md](docs/floating-panels.md)                   | Anchored popovers — Portal/Modal escape for Android, lifecycle gates, keyboard-shared-value, status-bar offset, the flash      |
-| [docs/menus.md](docs/menus.md)                                       | The menu engine — popover vs sheet, submenu pages, hover intent, when a decision earns a submenu                               |
-| [docs/expo-router.md](docs/expo-router.md)                           | Expo Router route ownership, startup restore, and native blank-screen gotchas                                                  |
-| [docs/file-icons.md](docs/file-icons.md)                             | Material icon theme integration for the file explorer                                                                          |
-| [docs/providers.md](docs/providers.md)                               | Adding a new agent provider end-to-end                                                                                         |
-| [docs/forge-providers.md](docs/forge-providers.md)                   | Adding a git forge: registry/manifest, drop-in checklist, self-host/GHES, the two facts tiers                                  |
-| [docs/custom-providers.md](docs/custom-providers.md)                 | Custom provider config: Z.AI, Alibaba/Qwen, ACP agents, profiles, custom binaries                                              |
-| [docs/plugins.md](docs/plugins.md)                                   | Local plugin manifest, directory source config, RPCs, native surfaces, and attachment sources                                  |
-| [docs/service-proxy.md](docs/service-proxy.md)                       | Service proxy: exposing workspace scripts at public URLs, DNS setup, reverse proxy config                                      |
-| [docs/development.md](docs/development.md)                           | Dev server, build sync gotchas, CLI reference, agent state, Playwright MCP                                                     |
-| [docs/rpc-namespacing.md](docs/rpc-namespacing.md)                   | WebSocket RPC naming convention — dotted namespaces and `.request`/`.response` pairs                                           |
-| [docs/protocol-compatibility.md](docs/protocol-compatibility.md)     | Why app/daemon versions drift, protocol vs feature contract, capability gating, COMPAT tagging                                 |
-| [docs/protocol-validation.md](docs/protocol-validation.md)           | zod-aot generated inbound WebSocket validation, patched compiler regressions, schema-purity rules                              |
-| [docs/permissions.md](docs/permissions.md)                           | Semantic daemon permissions, principals, credentials, pairing invitations, and Hub authority                                   |
-| [docs/terminal-performance.md](docs/terminal-performance.md)         | Terminal latency pipeline, coalescing/backpressure invariants, benchmark + perf spec usage                                     |
-| [docs/agent-stream-performance.md](docs/agent-stream-performance.md) | Assistant text pipeline — coalescing window, paced reveal, why arrival lumps are smoothed at render                            |
-| [docs/file-observation.md](docs/file-observation.md)                 | Recursive watcher ownership, Linux constraints, teardown invariants, and Parcel comparison                                     |
-| [docs/testing.md](docs/testing.md)                                   | TDD workflow, determinism, real dependencies over mocks, test organization                                                     |
-| [docs/qa.md](docs/qa.md)                                             | QA evidence bar for pull requests — platform matrix, version drift, performance, UI proof                                      |
-| [docs/mobile-testing.md](docs/mobile-testing.md)                     | Maestro and mobile test workflows                                                                                              |
-| [docs/mobile-panels.md](docs/mobile-panels.md)                       | Compact left/center/right panel ownership, worklet motion, gesture revisions, and Fabric constraints                           |
-| [docs/explorer-sidebar.md](docs/explorer-sidebar.md)                 | Explorer sidebar and ordinary side-pane host contracts, lifecycle, placement, and routing preferences                          |
-| [docs/ad-hoc-daemon-testing.md](docs/ad-hoc-daemon-testing.md)       | Isolated in-process daemon test harness                                                                                        |
-| [docs/browser-capture-harness.md](docs/browser-capture-harness.md)   | Real-Electron browser screenshot harness and compositor-surface gotcha                                                         |
-| [docs/android.md](docs/android.md)                                   | App variants, local/cloud builds, EAS workflows, version codes, F-Droid source builds and store metadata                       |
-| [docs/docker.md](docs/docker.md)                                     | Running the daemon and bundled web UI in Docker, volumes, agent images, security                                               |
-| [docs/release.md](docs/release.md)                                   | Release playbook, draft releases, completion checklist                                                                         |
-| [docs/terminal-activity.md](docs/terminal-activity.md)               | Terminal activity indicators — source-agnostic tracker, agent hook reporting, adding a new hook provider                       |
-| [SECURITY.md](SECURITY.md)                                           | Relay threat model, E2E encryption, DNS rebinding, agent auth                                                                  |
-| [public-docs/hub/security.md](public-docs/hub/security.md)           | Public Hub guide — trust boundaries, untrusted triggers, provider controls, and output authority                               |
+| Doc                                                                        | What's in it                                                                                                                                                                                                                                   |
+| -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [docs/product.md](docs/product.md)                                         | What Paseo is, who it's for, where it's going                                                                                                                                                                                                  |
+| [docs/architecture.md](docs/architecture.md)                               | System design, package layering, WebSocket protocol, agent lifecycle, data flow                                                                                                                                                                |
+| [docs/agent-lifecycle.md](docs/agent-lifecycle.md)                         | Agent states, parent/child relationships, archive semantics, tabs vs archive, subagents track                                                                                                                                                  |
+| [docs/data-model.md](docs/data-model.md)                                   | File-based JSON persistence, Zod schemas, atomic writes, no migrations                                                                                                                                                                         |
+| [docs/glossary.md](docs/glossary.md)                                       | Authoritative terminology — UI label wins, no synonyms                                                                                                                                                                                         |
+| [docs/coding-standards.md](docs/coding-standards.md)                       | Type hygiene, error handling, state design, React patterns, file organization                                                                                                                                                                  |
+| [docs/design.md](docs/design.md)                                           | Design system — tokens, buttons, hierarchy, density, alignment rails, states, what's forbidden                                                                                                                                                 |
+| [docs/forms.md](docs/forms.md)                                             | Form architecture — non-React form model, form kit, load-state gating; the schedule form is the golden example                                                                                                                                 |
+| [docs/hover.md](docs/hover.md)                                             | Hover — the canonical pattern (plain View + onPointerEnter/Leave, separate inner Pressable) and the three ways agents break it                                                                                                                 |
+| [docs/unistyles.md](docs/unistyles.md)                                     | Unistyles gotchas — `useUnistyles()` is forbidden, alternatives in order                                                                                                                                                                       |
+| [docs/floating-panels.md](docs/floating-panels.md)                         | Anchored popovers — Portal/Modal escape for Android, lifecycle gates, keyboard-shared-value, status-bar offset, the flash                                                                                                                      |
+| [docs/menus.md](docs/menus.md)                                             | The menu engine — popover vs sheet, submenu pages, hover intent, when a decision earns a submenu                                                                                                                                               |
+| [docs/expo-router.md](docs/expo-router.md)                                 | Expo Router route ownership, startup restore, and native blank-screen gotchas                                                                                                                                                                  |
+| [docs/file-icons.md](docs/file-icons.md)                                   | Material icon theme integration for the file explorer                                                                                                                                                                                          |
+| [docs/providers.md](docs/providers.md)                                     | Adding a new agent provider end-to-end                                                                                                                                                                                                         |
+| [docs/forge-providers.md](docs/forge-providers.md)                         | Adding a git forge: registry/manifest, drop-in checklist, self-host/GHES, the two facts tiers                                                                                                                                                  |
+| [docs/custom-providers.md](docs/custom-providers.md)                       | Custom provider config: Z.AI, Alibaba/Qwen, ACP agents, profiles, custom binaries                                                                                                                                                              |
+| [docs/plugins.md](docs/plugins.md)                                         | Local plugin manifest, directory source config, RPCs, native surfaces, and attachment sources                                                                                                                                                  |
+| [docs/omp-plugins.md](docs/omp-plugins.md)                                 | In-repo Oh My Pi (omp) agent plugins: installer, auto-discovery, account routing, Grok build, and deploy sync                                                                                                                                  |
+| [docs/service-proxy.md](docs/service-proxy.md)                             | Service proxy: exposing workspace scripts at public URLs, DNS setup, reverse proxy config                                                                                                                                                      |
+| [docs/code-server.md](docs/code-server.md)                                 | Always-on VS Code Web (code-server) for Open → VS Code Web; install, VPN bind, settings sync                                                                                                                                                   |
+| [docs/webhooks.md](docs/webhooks.md)                                       | Webhooks: HTTP-triggered agents, configurable tunnels (Tailscale Funnel / cloudflared), URL token + HMAC auth, templating                                                                                                                      |
+| [docs/history-ask.md](docs/history-ask.md)                                 | History Ask: agentic history search (metadata filter + labeled allow-all agents with structured brief)                                                                                                                                         |
+| [docs/fleet-state-sync.md](docs/fleet-state-sync.md)                       | Fleet state sync: who owns each fact, how an edge crosses hosts, and the host-locality bug class                                                                                                                                               |
+| [docs/mission-control.md](docs/mission-control.md)                         | Mission Control: fleet board, self-reported status feed, Commander + ephemeral Verifiers, Ask/Auto approval gate, fleet search                                                                                                                 |
+| [docs/commander.md](docs/commander.md)                                     | Commander north star: the three layers, runtime model (per-turn snapshots), card grammar, placement doctrine, context architecture, tool surface. This repo's own per-project Commander instructions are the root [COMMANDER.md](COMMANDER.md) |
+| [docs/commander-voice.md](docs/commander-voice.md)                         | Voice front-end for the Commander: Gemini Live proxy, four-tool relay surface, announce policy, TTS test harness                                                                                                                               |
+| [docs/mission-control-roadmap.md](docs/mission-control-roadmap.md)         | Milestones and tasks from today's Mission Control implementation to the commander.md design                                                                                                                                                    |
+| [docs/agent-driven-development.md](docs/agent-driven-development.md)       | Orchestrator/worker/verifier methodology: briefs, proof contracts, dev-stack fixtures, forensic verification                                                                                                                                   |
+| [docs/plannotator.md](docs/plannotator.md)                                 | Embedded Plannotator: daemon-spawned annotate sessions, feedback → agent, deploy                                                                                                                                                               |
+| [docs/development.md](docs/development.md)                                 | Dev server, build sync gotchas, CLI reference, agent state, Playwright MCP, agent-start span tracing (click→running)                                                                                                                           |
+| [docs/observability.md](docs/observability.md)                             | Telling a parked agent from a working one — the stall signature, where the forensic data lives, what to measure                                                                                                                                |
+| [docs/omp-observability-extension.md](docs/omp-observability-extension.md) | omp hook extension that logs model-call lifecycle to a JSONL feed — lets the dormant-turn detector see a model request in flight                                                                                                               |
+| [docs/omp-process-efficiency.md](docs/omp-process-efficiency.md)           | How Paseo owns omp processes, warm-pool claim cost vs resume cost, why idle-release cannot take a pooled process today                                                                                                                         |
+| [docs/rpc-namespacing.md](docs/rpc-namespacing.md)                         | WebSocket RPC naming convention — dotted namespaces and `.request`/`.response` pairs                                                                                                                                                           |
+| [docs/protocol-compatibility.md](docs/protocol-compatibility.md)           | Why app/daemon versions drift, protocol vs feature contract, capability gating, COMPAT tagging                                                                                                                                                 |
+| [docs/protocol-validation.md](docs/protocol-validation.md)                 | zod-aot generated inbound WebSocket validation, patched compiler regressions, schema-purity rules                                                                                                                                              |
+| [docs/permissions.md](docs/permissions.md)                                 | Semantic daemon permissions, principals, credentials, pairing invitations, and Hub authority                                                                                                                                                   |
+| [docs/terminal-performance.md](docs/terminal-performance.md)               | Terminal latency pipeline, coalescing/backpressure invariants, benchmark + perf spec usage                                                                                                                                                     |
+| [docs/agent-stream-performance.md](docs/agent-stream-performance.md)       | Assistant text pipeline — coalescing window, paced reveal, why arrival lumps are smoothed at render                                                                                                                                            |
+| [docs/file-observation.md](docs/file-observation.md)                       | Recursive watcher ownership, Linux constraints, teardown invariants, and Parcel comparison                                                                                                                                                     |
+| [docs/testing.md](docs/testing.md)                                         | TDD workflow, determinism, real dependencies over mocks, test organization                                                                                                                                                                     |
+| [docs/qa.md](docs/qa.md)                                                   | QA evidence bar for pull requests — platform matrix, version drift, performance, UI proof                                                                                                                                                      |
+| [docs/verification.md](docs/verification.md)                               | Verification standard — isolated per-agent stacks, the daemon/ui/fleet tiers, committed check scripts, video proof, archive cleanup                                                                                                            |
+| [docs/mobile-testing.md](docs/mobile-testing.md)                           | Maestro and mobile test workflows                                                                                                                                                                                                              |
+| [docs/mobile-panels.md](docs/mobile-panels.md)                             | Compact left/center/right panel ownership, worklet motion, gesture revisions, and Fabric constraints                                                                                                                                           |
+| [docs/explorer-sidebar.md](docs/explorer-sidebar.md)                       | Explorer sidebar and ordinary side-pane host contracts, lifecycle, placement, and routing preferences                                                                                                                                          |
+| [docs/ad-hoc-daemon-testing.md](docs/ad-hoc-daemon-testing.md)             | Isolated in-process daemon test harness                                                                                                                                                                                                        |
+| [docs/browser-capture-harness.md](docs/browser-capture-harness.md)         | Real-Electron browser screenshot harness and compositor-surface gotcha                                                                                                                                                                         |
+| [docs/web-ui-harness.md](docs/web-ui-harness.md)                           | One command to drive the real web UI with every host connected — registry seeding, serverId discovery, CDP attach                                                                                                                              |
+| [docs/android.md](docs/android.md)                                         | App variants, local/cloud builds, EAS workflows, version codes, F-Droid source builds and store metadata                                                                                                                                       |
+| [docs/docker.md](docs/docker.md)                                           | Running the daemon and bundled web UI in Docker, volumes, agent images, security                                                                                                                                                               |
+| [docs/release.md](docs/release.md)                                         | Release playbook, draft releases, completion checklist                                                                                                                                                                                         |
+| [docs/terminal-activity.md](docs/terminal-activity.md)                     | Terminal activity indicators — source-agnostic tracker, agent hook reporting, adding a new hook provider                                                                                                                                       |
+| [SECURITY.md](SECURITY.md)                                                 | Relay threat model, E2E encryption, DNS rebinding, agent auth                                                                                                                                                                                  |
+| [public-docs/hub/security.md](public-docs/hub/security.md)                 | Public Hub guide — trust boundaries, untrusted triggers, provider controls, and output authority                                                                                                                                               |
 
 ### Writing docs
 
@@ -91,18 +107,18 @@ Do not:
 ## Quick start
 
 ```bash
-npm run dev                          # Start the dev daemon
-npm run dev:app                      # Start Expo against the dev daemon
-npm run dev:desktop                  # Start Electron desktop dev
-npm run cli -- ls -a -g              # List all agents
-npm run cli -- daemon status         # Check daemon status
-npm run typecheck                    # Always run after changes
-npm run lint                         # Always run after changes
-npm run format                       # Auto-format with Biome
-npm run format:check                 # Check formatting without writing
+pnpm dev                             # Start the dev daemon
+pnpm dev:app                         # Start Expo against the dev daemon
+pnpm dev:desktop                     # Start Electron desktop dev
+pnpm cli -- ls -a -g                 # List all agents
+pnpm cli -- daemon status            # Check daemon status
+pnpm typecheck                       # Always run after changes
+pnpm lint                            # Always run after changes
+pnpm format                          # Auto-format with Biome
+pnpm format:check                    # Check formatting without writing
 ```
 
-Repo dev commands use checkout-local state by default. In this checkout, `PASEO_HOME` resolves to `.dev/paseo-home`, and `npm run cli -- ...` targets that same dev home automatically. The packaged desktop app and production-style daemon keep using `~/.paseo` on port `6767`.
+Repo dev commands use checkout-local state by default. In this checkout, `PASEO_HOME` resolves to `.dev/paseo-home`, and `pnpm cli -- ...` targets that same dev home automatically. The packaged desktop app and production-style daemon keep using `~/.paseo` on port `6767`.
 
 See [docs/development.md](docs/development.md) for full setup, build sync requirements, and debugging.
 
@@ -111,24 +127,27 @@ See [docs/development.md](docs/development.md) for full setup, build sync requir
 - **Before changing the plugin SDK, compiler, host module maps, scaffold, or examples, read [SDK import boundaries](docs/plugins.md#sdk-import-boundaries).** Classify the export by runtime first and preserve the enforced boundaries.
 
 - **NEVER restart the main Paseo daemon on port 6767 without permission** — it manages all running agents. If you're an agent, restarting it kills your own process.
+- **The live environment is read-only for verification.** The daemons on 6767, the real itsaplan projects, and the user's workspaces hold live data. Verify against an isolated mock fleet (`node scripts/verify/stack.mjs up`, see [docs/verification.md](docs/verification.md)). Use the live environment only when the user explicitly asked for it in this task, or when the behavior cannot be reproduced in the mock and you say so. Even then, additive actions only (create a workspace, add a ticket): never delete, archive, rename, or modify anything that existed before you started.
 - **NEVER assume a timeout means the service needs restarting** — timeouts can be transient.
 - **NEVER add auth checks to tests** — agent providers handle their own auth.
 - **Before changing app routes, startup routing, remembered workspace restore, or active workspace selection, read [docs/expo-router.md](docs/expo-router.md).**
 - **NEVER run the full test suite locally.** The test suites are heavy and will freeze the machine, especially if multiple agents run them in parallel. Rules:
   - Run only the specific test file you changed: `npx vitest run <file> --bail=1`
-  - Never run `npm run test` for an entire workspace unless explicitly asked.
+  - Never run `pnpm run test` for an entire workspace unless explicitly asked.
   - If you must run a broad suite, pipe output to a file and read it afterward: `npx vitest run <file> --bail=1 > /tmp/test-output.txt 2>&1` then read the file.
   - Never re-run a test suite that another agent already ran and reported green — trust the result.
   - For full suite verification, push to CI and check GitHub Actions instead.
 - **Always run typecheck and lint after every change.**
+- **NEVER run `pnpm install` inside a Paseo dev worktree unless the worktree's own dependencies changed.** Worktrees get their own `node_modules`, but pnpm's content-addressable store (shared across the machine) makes a fresh `pnpm install` fast without any custom symlinking (see "Fast worktrees" in [docs/development.md](docs/development.md)). Running it needlessly still costs a lockfile resolution pass; only do it after changing dependencies on the branch.
+- **Never push directly to `origin` from a worktree.** Commit and merge as soon as your changes are done and verified. Only merge for features and bug fixes — do not merge for analysis or exploratory tasks. Commit on your worktree, merge the local `vaibhav/customizations` branch into your worktree branch, resolve conflicts in your worktree, and fast-forward the local `vaibhav/customizations` branch. Remote pushes belong exclusively to `./scripts/deploy.sh`. See [Landing work from a ticket worktree](#landing-work-from-a-ticket-worktree).
 - **Build workspace packages before diagnosing cross-package type errors.** This repo consumes generated declarations across workspaces. If typecheck fails in a package that depends on another workspace, rebuild the owning stack first so `dist` declarations are current:
-  - `npm run build:client` — rebuild protocol and client declarations.
-  - `npm run build:server` — rebuild highlight, relay, protocol, client, server, and CLI when server/CLI types may be stale.
+  - `pnpm build:client` — rebuild protocol and client declarations.
+  - `pnpm build:server` — rebuild highlight, relay, protocol, client, server, and CLI when server/CLI types may be stale.
   - Do not patch inferred callback parameters or add local duplicate types just to silence stale declaration errors.
-- **Run `npm run format` before committing.** This repo uses Biome for formatting. Do not manually fix formatting — let the formatter handle it.
-- **Always use npm scripts for linting and formatting.** Do not run tools directly with `npx eslint`, `npx oxfmt`, `npx oxlint`, or package-local binaries. For targeted checks, pass file paths through the npm script:
-  - `npm run lint -- packages/app/src/components/message.tsx`
-  - `npm run format:files -- CLAUDE.md packages/app/src/components/message.tsx`
+- **Run `pnpm format` before committing.** This repo uses Biome for formatting. Do not manually fix formatting — let the formatter handle it.
+- **Always use pnpm scripts for linting and formatting.** Do not run tools directly with `npx eslint`, `npx oxfmt`, `npx oxlint`, or package-local binaries. For targeted checks, pass file paths through the pnpm script:
+  - `pnpm lint -- packages/app/src/components/message.tsx`
+  - `pnpm format:files -- CLAUDE.md packages/app/src/components/message.tsx`
 - **The protocol stays backward-compatible. Features don't have to.** Read [docs/protocol-compatibility.md](docs/protocol-compatibility.md) before touching `packages/protocol`. The short version:
   - **Protocol contract (always):** an old client parses messages from a new daemon, and a new daemon parses messages from an old client. New fields are optional; never narrow, never remove, never require. Wire schemas stay pure — no `.transform()`, `.catch()`, or `.preprocess()`.
   - **Feature contract (per-feature):** gate the capability once on `server_info.features.*`, then run the feature or tell the user to update the host. No fallback paths, no defensive branches.
@@ -186,3 +205,217 @@ The app runs on iOS, Android, web (browser), and web (Electron desktop). Code is
 ## Debugging
 
 Find the complete daemon logs and traces in the $PASEO_HOME/daemon.log
+
+## Custom fork workflow (iammvaibhav)
+
+This checkout is maintained as a **personal fork** of the official repo, not as a direct clone of `getpaseo/paseo`. `AGENTS.md` and `agents.md` are symlinks to this file (`CLAUDE.md`).
+
+### Git remotes
+
+| Remote     | Repository          | Purpose                                           |
+| ---------- | ------------------- | ------------------------------------------------- |
+| `upstream` | `getpaseo/paseo`    | Official mainline — rebase source only            |
+| `origin`   | `iammvaibhav/paseo` | Personal fork — where the custom branch is pushed |
+
+### Custom branch
+
+All local customizations live on **`vaibhav/customizations`**, branched from `upstream/main`. Current additions include:
+
+- ACP **Allow All** mode for generic ACP providers (Cursor, Grok, etc.)
+- **Open in editor over SSH** for remote workspaces (`HostProfile.sshHost`)
+- **Open → VS Code Web** via always-on code-server on each host (`HostProfile.browserEditorUrl`) — see [docs/code-server.md](docs/code-server.md)
+  - Background **preload** so it opens instantly, and in-place file opens with no reload via the `scripts/code-server/paseo-bridge/` extension
+  - Desktop-only **Host files** browser (left rail) rooted at `/`, opening files in VS Code Web
+- LaTeX math rendering for agent messages
+- **Webhooks** — HTTP-triggered agents (a tab below Schedules) with configurable tunnel providers (Tailscale Funnel / cloudflared), URL-token + optional HMAC auth, and payload templating — see [docs/webhooks.md](docs/webhooks.md)
+- **History Ask** — agentic history search from History / project / workspace menus (metadata filter + labeled allow-all agents with a structured brief) — see [docs/history-ask.md](docs/history-ask.md)
+- **Plannotator** — embedded markdown annotation review (daemon-spawned sessions, feedback → agent) — see [docs/plannotator.md](docs/plannotator.md)
+- **Mission Control** — fleet monitoring and dispatch: deterministic cross-host board, self-reported status feed (`report_status`), Commander agent with idle-flush digest queue, ephemeral proof-auditing Verifiers, Ask/Auto approval gate, daemon peering with sleep-aware errors — see [docs/mission-control.md](docs/mission-control.md)
+- `scripts/deploy.sh` for multi-host deploy
+- **Vercel-hosted web app** — every deploy publishes `packages/app/dist` to the `paseo-web` Vercel project (`https://paseo-web.vercel.app`), so a phone can open the UI without exposing a daemon and pair over the relay. Config lives in `packages/app/vercel.json`; the token comes from `VERCEL_TOKEN` in `~/.paseo/deploy.env`, and the job skips itself when that is unset.
+- `scripts/omp-stats-fleet.sh` — the stock `omp stats` dashboard over **all three hosts combined**. `omp stats` reads exactly one SQLite file and has no remote/merge support, so the script snapshots each host's `~/.omp/stats.db` (`VACUUM INTO` over ssh via bun), merges them into `~/.omp/profiles/fleet/stats.db`, and serves it with `OMP_PROFILE=fleet omp stats`. No omp fork, no rebuild; your real `~/.omp/stats.db` is never written to. `folder` rows are prefixed with the host name, so the dashboard's **Projects** tab is the per-host breakdown while every other tab is the fleet total. Flags: `--no-sync`, `--merge-only`, `--summary`, `--json`; env `OMP_FLEET_HOSTS` / `OMP_FLEET_PROFILE` / `OMP_FLEET_PORT` (default 3848, one above stock so it never fights a local `omp stats`).
+- **In-repo omp plugins** (`plugins/`) — Oh My Pi agent plugins versioned in-tree and installed to `~/.omp/plugins/node_modules/` across all hosts on deploy: `omp-account-routing` (per-host/per-project OAuth account rotation) and `omp-grok-build` (vendored Grok Build OAuth provider) — see [docs/omp-plugins.md](docs/omp-plugins.md)
+
+Do day-to-day work on this branch, not on `main`.
+
+#### Landing work from a ticket worktree
+
+This is how ticket work lands on local `vaibhav/customizations`. **Only merge for features and bug fixes — do NOT merge for analysis or exploratory tasks.** Commit and merge as soon as changes are done and verified. Never push to `origin` from a worktree — pushing to the remote fork is handled exclusively by `./scripts/deploy.sh` during deploy. Never commit, merge, abort, stash, or reset directly in the shared checkout (`/data/paseo`, `/home/ubuntu/paseo`).
+
+1. **Format and commit** on your worktree branch as soon as changes and verification pass:
+   ```bash
+   npm run format:files -- <changed-files>
+   git add <changed-files>
+   git commit -m "<type>(<scope>): <description> (<TICKET-ID>)"
+   ```
+2. **Merge local `vaibhav/customizations`** into your worktree branch and resolve conflicts here:
+   ```bash
+   git merge vaibhav/customizations
+   ```
+   If conflicts occur, resolve them inside the worktree. If the merge is messy, run `git merge --abort` on this worktree and retry step 2.
+3. **Fast-forward the local shared checkout** without pushing to remote:
+   ```bash
+   # Fast-forward the local branch in the shared checkout (/data/paseo or /home/ubuntu/paseo):
+   git -C /data/paseo merge --ff-only HEAD
+   ```
+4. **Verify local sync**:
+   ```bash
+   git rev-parse vaibhav/customizations
+   ```
+   Do not run `git push origin`.
+
+### Deployment — always use `./scripts/deploy.sh`
+
+**Always consult and run [`scripts/deploy.sh`](scripts/deploy.sh) for deploy.** Do not freestyle multi-host sync, remote restarts, or “just restart the daemon” with ad-hoc commands unless you are deliberately debugging a single host.
+
+|                 |                                                                                                                      |
+| --------------- | -------------------------------------------------------------------------------------------------------------------- |
+| **How**         | `./scripts/deploy.sh` from the repo root (or `/home/ubuntu/paseo` on iammvaibhav)                                    |
+| **Daemon home** | `~/.paseo` locally; `/home/vaibhav/.paseo` (blrofc3), `/home/ubuntu/.paseo` (iammvaibhav)                            |
+| **Port**        | **6767** (production-style host daemon — what the desktop app and remotes use)                                       |
+| **Desktop**     | Unsigned build → previous build to `Paseo (Orig)` → **quit → `rm -rf` → `cp -R` → `open` `/Applications/Paseo.app`** |
+| **Not this**    | `npm run dev` / port **6768** / `.dev/paseo-home` is checkout hot-reload only, not deploy                            |
+
+**Orchestrator modes** (auto-detected by `uname -s`):
+
+- **MacBook (macOS)** — as before: local = MacBook (daemon restart + desktop build/install), remotes = `blrofc3` + `iammvaibhav`.
+- **iammvaibhav (Linux)** — the current home of the migrated `paseo` project. Local = iammvaibhav (daemon build/restart + nudge + services); remotes = `blrofc3` (WireGuard); the **MacBook is a full job** (`job-macbook`): deploy ssh's to it (alias `macbook` = `10.7.0.2`), git-syncs the checkout (non-clobbering: dirty/diverged → skip), rebuilds the server packages, **restarts its `~/.paseo` daemon** (snapshot + nudge, same contract as a remote), then builds → copies the installed `Paseo.app` to `Paseo (Orig).app` → quit → replace → relaunch `Paseo.app`. The job is reachability-gated and **never fatal** during a full deploy. `PASEO_DESKTOP_ONLY=1` from Linux commits and pushes the local branch, then requires this MacBook job to succeed (app only — no daemon restart).
+- **The MacBook daemon restarts with every deploy**, like every other host. It used to be skipped so `paseo-dev` agents survived the migration; a daemon that never restarts serves stale code silently (on 2026-08-24 it ran 3.5-day-old mission-control behavior while its checkout and `dist` were current). `PASEO_SKIP_MACBOOK_DAEMON=1` skips only the restart for one run; `PASEO_SKIP_MACBOOK=1` skips the host entirely.
+
+#### Agents MUST treat deploy as fire-and-forget
+
+`./scripts/deploy.sh` **self-detaches** by default (new process session via `start_new_session`). The parent exits immediately and prints the log path. **Do not** run deploy under a long-lived agent tool wait that can be cancelled — canceling used to SIGTERM the whole process group and kill desktop/remotes mid-flight even though daemon restarts were already detached.
+
+```bash
+# Prefer a clean env so a previous detached child cannot leak state into this shell.
+env -u PASEO_DEPLOY_DETACHED -u PASEO_DEPLOY_RUN_DIR -u PASEO_DEPLOY_LOG -u PASEO_DEPLOY_FOREGROUND \
+  ./scripts/deploy.sh
+# → prints: Detached deploy started pid=… log=~/.paseo/deploy-logs/run-…/deploy.log
+# Then poll logs; do not keep a shell parent waiting on deploy.
+tail -f ~/.paseo/deploy-logs/latest.log
+```
+
+| Log                    | Path                                                                                      |
+| ---------------------- | ----------------------------------------------------------------------------------------- |
+| **Latest full deploy** | `~/.paseo/deploy-logs/latest.log` (symlink)                                               |
+| **Latest run dir**     | `~/.paseo/deploy-logs/latest-run/` (jobs: `job-desktop.log`, `job-remote-blrofc3.log`, …) |
+| **Mirrors**            | `/tmp/paseo-deploy-run.log`, `/tmp/paseo-deploy-latest-run` → same files                  |
+| **PID**                | `~/.paseo/deploy-logs/latest-run/pid` and `/tmp/paseo-deploy-pid`                         |
+
+Interactive / debug (stay attached): `PASEO_DEPLOY_FOREGROUND=1 ./scripts/deploy.sh`.
+
+**Hard rules (agents):**
+
+1. **Expect the detach banner.** A healthy launch prints `Detached deploy started pid=…` and exits the parent immediately. If you instead see only `Continuing detached deploy` with **no** new `Detached deploy started`, the shell is still attached — kill it and relaunch with the `env -u …` form above.
+2. **Never set `PASEO_DEPLOY_DETACHED` / `PASEO_DEPLOY_DETACH_TOKEN` yourself.** They are internal child-only. `deploy.sh` only trusts a child that holds the per-run detach token file + is a session leader; leaked env from a previous run always re-detaches.
+3. **Never long-wait on deploy in the tool.** Launch, read the printed log path / pid, then poll `~/.paseo/deploy-logs/latest.log` (or the job logs) with short commands.
+4. **Nudge needs `~/.paseo/deploy.env`.** Detached deploy does not source bashrc. Put `PASEO_PASSWORD=…` in `~/.paseo/deploy.env` (chmod 600) on every host or snapshot/nudge skips with `Password required`.
+5. **You own the git history.** Deploy never writes a commit subject and never resolves a conflict. A dirty tree stops it unless you pass `PASEO_DEPLOY_COMMIT_MESSAGE="<subject>"`; a conflicting `upstream/main` merge stops it with the merge left in progress. Read the error, commit or resolve yourself, then relaunch deploy.
+
+The script builds server packages, restarts host daemons with **`--home …/.paseo`**, and syncs remotes. Local/remote **daemon** restarts are **new-session detached** (not plain `nohup` — on macOS that still dies with a cancelled agent tool mid-restart) and must observe a **new PID + `/api/health`**. Restarts use the **built CLI** (`~/.local/bin/paseo` / `packages/cli/dist`), never `npx tsx` mid-build. On failure, deploy tries a detached **`daemon start` recovery** before aborting. The **whole deploy** is also detached by default so waiting for health/desktop cannot be killed by tool cancel.
+
+**Local-only restart (agents):** after `npm run build:server`, use:
+
+```bash
+./scripts/restart-local-daemon.sh
+```
+
+**Recover if a local restart leaves the daemon down:**
+
+```bash
+PATH="$HOME/.local/bin:$PATH" paseo daemon start --home "$HOME/.paseo" \
+  && curl -fsS http://127.0.0.1:6767/api/health
+```
+
+Remote recovery (example):
+
+```bash
+ssh blrofc3 'PATH="$HOME/.local/bin:$PATH" paseo daemon start --home "$HOME/.paseo"'
+ssh iammvaibhav 'PATH="$HOME/.local/bin:$PATH" paseo daemon start --home "$HOME/.paseo"'
+```
+
+### Day-to-day flow
+
+1. Commit changes on `vaibhav/customizations` yourself, or pass `PASEO_DEPLOY_COMMIT_MESSAGE="<subject>"` so deploy commits them with that subject.
+2. Run `./scripts/deploy.sh` from the repo root — **this is the deploy path.** (Self-detaches; tail `~/.paseo/deploy-logs/latest.log`.) Today the deploy normally runs **from iammvaibhav** (`ssh iammvaibhav 'cd /home/ubuntu/paseo && ./scripts/deploy.sh'` with `PASEO_PASSWORD` set for the nudge).
+
+The script:
+
+1. **Git phase (on the orchestrator host)** — requires a committed tree: an uncommitted tree stops the deploy unless `PASEO_DEPLOY_COMMIT_MESSAGE` supplies the subject, in which case deploy stages everything and commits it (the pre-commit hook still gates lint/format/typecheck). It then fetches `upstream`, fast-forwards `origin/main` to `upstream/main`, fast-forwards to whatever `origin/$BRANCH` already has (never force-reverts another host's push), **merges** `upstream/main` into the custom branch, then **pushes** to `origin`. A merge conflict stops the deploy: the merge is left in progress, the conflicted files and the resolve-then-re-run steps are printed, and nothing is pushed. After the push, post-deploy work runs **in parallel**: each remote host, local daemon restart (after a local `build:server`), local code-server, and the **desktop app** build then install via the formal loop below (on the MacBook, either locally or via the ssh job).
+2. **Remotes** — each is a parallel post-push job: repoints `origin` to the fork if still on `getpaseo/paseo`, checks out `vaibhav/customizations` from `origin`, installs deps when `package.json` / lockfile changed, builds, and restarts the host's `~/.paseo` daemon (with the self-wake nudge). From the MacBook the remotes are `blrofc3` + `iammvaibhav`; from iammvaibhav the remote is `blrofc3` (via WireGuard) plus the MacBook desktop job.
+
+No model is in this path. The commit subject comes from the caller and conflict resolution is the caller's job, so deploy never invents history or guesses a merge. An in-progress merge in the checkout also stops the deploy before it fetches anything.
+
+#### Desktop install (this fork) — formal contract
+
+`/Applications/Paseo.app` is the daily custom build. Before each replacement, deploy copies the installed app to `/Applications/Paseo (Orig).app`, replacing the older fallback. If the new build fails, `Paseo (Orig).app` is the previous installed build. `Paseo Test.app` is not part of this fork's deploy path.
+
+| Layout                                   | When                                                                |
+| ---------------------------------------- | ------------------------------------------------------------------- |
+| `Paseo (Orig).app` + replace `Paseo.app` | **Every deploy path** — keep the previous build, then replace Paseo |
+| `Paseo Test.app`                         | Not used by this fork's deploy                                      |
+
+**Can you replace while the window is open?** Partially:
+
+- **On disk:** macOS can replace the `.app` while the process still runs (process keeps old inodes).
+- **In memory:** open windows keep old JS/asar until quit/relaunch. Electron does **not** hot-reload a packaged install.
+- **Dangerous:** `cp -R` _onto_ an existing bundle **merges** files → mixed signatures → dyld Team ID crashes. Always **`rm -rf` then `cp -R`**.
+
+**Canonical loop** (what `deploy.sh` → `install_desktop_app` does every time; ~2 min build + ~2s install):
+
+```bash
+# 1) build unsigned (flags baked into @getpaseo/desktop's build:unsigned —
+#    never forward `-c` flags through pnpm run layers: pnpm preserves `--`,
+#    electron-builder then ignores everything behind it and you get an
+#    ad-hoc hardened build that crashes at launch)
+CSC_IDENTITY_AUTO_DISCOVERY=false pnpm run build:desktop
+
+# 2) preserve previous build → quit → replace → open
+rm -rf "/Applications/Paseo (Orig).app"
+cp -R /Applications/Paseo.app "/Applications/Paseo (Orig).app"
+osascript -e 'tell application "Paseo" to quit'
+rm -rf /Applications/Paseo.app
+cp -R packages/desktop/release/mac-arm64/Paseo.app /Applications/Paseo.app
+open /Applications/Paseo.app
+```
+
+Expect a brief close/reopen. That is intentional — not a bug.
+
+### Manual equivalents
+
+```bash
+git fetch upstream
+git checkout vaibhav/customizations
+git merge upstream/main            # resolve conflicts, then commit the merge
+git push origin vaibhav/customizations
+
+npm run build:server
+npx tsx packages/cli/src/index.js daemon restart --home ~/.paseo
+```
+
+### Useful overrides
+
+```bash
+PASEO_DESKTOP_ONLY=1 ./scripts/deploy.sh          # app UI only: build + install /Applications/Paseo.app + relaunch
+PASEO_SKIP_REMOTES=1 ./scripts/deploy.sh          # local only
+PASEO_SKIP_LOCAL=1 ./scripts/deploy.sh            # remotes only
+PASEO_SKIP_DAEMON=1 ./scripts/deploy.sh          # code-server + settings only (no daemon build/restart)
+PASEO_SKIP_CODE_SERVER=1 ./scripts/deploy.sh      # skip VS Code Web deploy
+PASEO_SYNC_CODE_SERVER_USER_DATA=1 ./scripts/deploy.sh  # also rsync code-server User/ + extensions/
+PASEO_SKIP_OMP_PLUGINS=1 ./scripts/deploy.sh      # skip omp plugin install
+PASEO_SKIP_VERCEL=1 ./scripts/deploy.sh           # skip publishing the web app to Vercel
+PASEO_SKIP_SYSTEM_PROMPT=1 ./scripts/deploy.sh    # leave each host's daemon.appendSystemPrompt alone
+PASEO_NODE_VERSION=22 ./scripts/deploy.sh
+```
+
+code-server settings sync uses this Mac’s live `~/.local/share/code-server/User/settings.json` (not the repo template).
+
+The daemon system prompt is version-controlled at [`scripts/paseo-system-prompt.md`](scripts/paseo-system-prompt.md) and pushed into `daemon.appendSystemPrompt` in every host's `~/.paseo/config.json` by `scripts/set-append-system-prompt.mjs`. It syncs **before** the daemons restart on purpose: `DaemonConfigStore` only reads `config.json` at boot and writes its in-memory value back on any later patch, so a prompt written after the restart is reverted by the next settings change. Editing `config.json` by hand on a running daemon has the same problem — change it in Settings → Host → System prompt, or let deploy do it. Note ACP providers (Grok, Cursor, Antigravity) have no system-prompt plumbing and never receive it.
+
+### Local desktop builds (unsigned)
+
+Never run bare `npm run build:desktop` locally — it hangs on notarization, and an ad-hoc build with hardened runtime crashes at launch (dyld "different Team IDs"). Use the unsigned flags above (or let `./scripts/deploy.sh` do it).
+
+**Agents: do not invent install paths.** Always use the formal loop above: target **`/Applications/Paseo.app`**, replace **`/Applications/Paseo (Orig).app`** with the installed build, then **quit → `rm -rf` → `cp -R` → `open`**. Never use `Paseo Test.app` for day-to-day deploy. Never `cp -R` onto an existing bundle without deleting first. Prefer `./scripts/deploy.sh` so build + install stay one path.
+
+**App-only changes:** `PASEO_DESKTOP_ONLY=1 ./scripts/deploy.sh` builds locally on macOS. On iammvaibhav Linux it commits and pushes the branch, then runs the required MacBook desktop job without touching daemons, other remotes, or services.

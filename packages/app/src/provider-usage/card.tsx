@@ -29,8 +29,10 @@ function statusText(usage: ProviderUsage): string | null {
   return usage.status === "error" ? "Error" : "Unavailable";
 }
 
-function footerText(usage: ProviderUsage): string | null {
-  const updated = formatAgo(usage.fetchedAt);
+function footerText(usage: ProviderUsage, listFetchedAt?: string | null): string | null {
+  // Prefer the list-response fetch time. Nested providers (especially OMP) may
+  // carry older provider-side timestamps that make the UI look stale on hover.
+  const updated = formatAgo(listFetchedAt ?? usage.fetchedAt);
   const parts = [usage.sourceLabel, updated ? `Updated ${updated}` : null].filter(
     (part): part is string => typeof part === "string" && part.length > 0,
   );
@@ -39,13 +41,19 @@ function footerText(usage: ProviderUsage): string | null {
 
 export function ProviderUsageCard({
   usage,
+  active = false,
   compact = false,
+  listFetchedAt,
+  title,
 }: {
   usage: ProviderUsage;
+  active?: boolean;
   compact?: boolean;
+  listFetchedAt?: string | null;
+  title?: string;
 }) {
   const status = statusText(usage);
-  const footer = footerText(usage);
+  const footer = footerText(usage, listFetchedAt);
   const balances = usage.balances ?? [];
   const details = usage.details ?? [];
 
@@ -65,10 +73,31 @@ export function ProviderUsageCard({
   return (
     <View style={containerStyle}>
       <View style={styles.header}>
-        <ThemedProviderUsageIcon iconKey={usage.providerId} size={14} uniProps={mutedIconColor} />
-        <Text style={styles.name} numberOfLines={1}>
-          {usage.displayName}
-        </Text>
+        <ThemedProviderUsageIcon
+          iconKey={usage.groupId ?? usage.providerId}
+          size={14}
+          uniProps={mutedIconColor}
+        />
+        <View style={styles.identity}>
+          <Text style={styles.name} numberOfLines={1}>
+            {title ?? usage.displayName}
+          </Text>
+          {usage.accountEmail ? (
+            <View style={styles.accountRow}>
+              {active ? (
+                <View
+                  style={styles.activeDot}
+                  accessibilityLabel="Currently in use"
+                  // @ts-expect-error title attribute on web
+                  title="Currently in use"
+                />
+              ) : null}
+              <Text style={styles.accountEmail} numberOfLines={1}>
+                {usage.accountEmail}
+              </Text>
+            </View>
+          ) : null}
+        </View>
         {usage.planLabel ? <StatusBadge label={usage.planLabel} variant="muted" /> : null}
         <View style={styles.headerSpacer} />
         {status ? (
@@ -141,6 +170,26 @@ const styles = StyleSheet.create((theme) => ({
     flexShrink: 1,
     color: theme.colors.foreground,
     fontSize: theme.fontSize.base,
+  },
+  identity: {
+    minWidth: 0,
+    flexShrink: 1,
+    gap: theme.spacing[0.5],
+  },
+  accountRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1.5],
+  },
+  activeDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: theme.colors.statusSuccess,
+  },
+  accountEmail: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.xs,
   },
   headerSpacer: {
     flex: 1,

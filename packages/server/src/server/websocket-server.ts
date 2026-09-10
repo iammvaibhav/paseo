@@ -13,6 +13,10 @@ import type pino from "pino";
 import type { ProjectRegistry, WorkspaceRegistry } from "./workspace-registry.js";
 import type { ProjectUpdate } from "./workspace-reconciliation-service.js";
 import type { ScheduleService } from "./schedule/service.js";
+import type { WebhookService } from "./webhook/service.js";
+import type { PeerManager } from "./peers/peer-manager.js";
+import type { MissionControlService } from "./mission-control/service.js";
+import type { TranscriptSearchService } from "./search/service.js";
 import type { CheckoutDiffManager, CheckoutDiffMetrics } from "./checkout-diff-manager.js";
 import type { DaemonConfigStore, MutableDaemonConfig } from "./daemon-config-store.js";
 import {
@@ -37,6 +41,7 @@ import {
   type SessionOptions,
   type SessionRuntimeMetrics,
 } from "./session.js";
+import type { WarmWorktreePool } from "./warm-worktree-pool.js";
 import type { HubRelationshipManagement } from "./hub/relationship-controller.js";
 import { WorkspaceSetupRuntime } from "./workspace-setup-runtime.js";
 import type { HubExecutionAgents } from "./hub/daemon-executions.js";
@@ -85,7 +90,10 @@ import {
   type WebSocketRuntimeCounters,
   type WebSocketRuntimeDiagnosticSnapshot,
 } from "./websocket/runtime-metrics.js";
-import { ProviderUsageService } from "../services/quota-fetcher/service.js";
+import {
+  ProviderUsageService,
+  type ProviderUsageListResult,
+} from "../services/quota-fetcher/service.js";
 import { getProcessMemoryDiagnostics, getProcessUptimeSeconds } from "./process-diagnostics.js";
 import {
   CLIENT_SHUTDOWN_RPC_REASON,
@@ -99,6 +107,7 @@ import {
 } from "@getpaseo/protocol/browser-automation/capabilities";
 import type { BrowserToolsBroker } from "./browser-tools/broker.js";
 import type { DaemonRuntimeConfig } from "./session/daemon/daemon-session.js";
+import { resolvePlannotatorBinary } from "../services/plannotator/resolve-binary.js";
 import { DirectorySyncService } from "./directory-sync/index.js";
 import { OWNER_PERMISSIONS, type DaemonPermission } from "./authorization/index.js";
 import type { WorkspaceLabelService } from "./workspace-labels/index.js";
@@ -174,6 +183,28 @@ type WebSocketRuntimeMetricsLogPayload = Omit<WebSocketRuntimeDiagnosticPayload,
 
 type TerminalAttentionReason = "finished" | "needs_input";
 
+/** COMPAT(plannotator): log once at daemon start whether the binary is resolvable. */
+function initialConnectionLifecycle(startPaused: boolean | undefined): "starting" | "accepting" {
+  return startPaused === true ? "starting" : "accepting";
+}
+
+function requireDaemonVersion(daemonVersion: string | undefined): string {
+  if (typeof daemonVersion !== "string" || daemonVersion.trim().length === 0) {
+    throw new MissingDaemonVersionError();
+  }
+  return daemonVersion.trim();
+}
+
+function detectPlannotatorAvailability(logger: pino.Logger): boolean {
+  const available = resolvePlannotatorBinary() !== null;
+  if (available) {
+    logger.info("Plannotator binary detected");
+  } else {
+    logger.debug("Plannotator binary not found; feature disabled");
+  }
+  return available;
+}
+
 function resolveTerminalAttentionReason(input: {
   attentionReason?: TerminalActivity["attentionReason"];
   previousState: "working" | "idle" | "attention" | null;
@@ -241,6 +272,7 @@ function createFallbackWorkspaceGitService(): WorkspaceGitService {
     getCheckoutDiff: async () => ({ diff: "" }),
     validateBranchRef: async () => ({ kind: "not-found" }),
     hasLocalBranch: async () => false,
+    hasOriginTrackingBranch: async () => false,
     suggestBranchesForCwd: async () => [],
     listStashes: async () => [],
     listWorktrees: async () => [],
@@ -318,6 +350,8 @@ function createNoopProjectRegistry(): ProjectRegistry {
       projectKey: input.projectKey ?? null,
       customName: null,
       customIconRevision: null,
+      description: null,
+      baseWorkspaceId: null,
       createdAt: input.timestamp,
       updatedAt: input.timestamp,
       archivedAt: null,
@@ -552,6 +586,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly workspaceRegistry: WorkspaceRegistry;
   private readonly workspaceLabelService: WorkspaceLabelService | null;
   private readonly scheduleService: ScheduleService;
+  private readonly webhookService: WebhookService | null;
   private readonly checkoutDiffManager: CheckoutDiffManager;
   private readonly github: ForgeService;
   private readonly workspaceGitService: WorkspaceGitService;
@@ -596,13 +631,20 @@ export class VoiceAssistantWebSocketServer {
   private unsubscribeTerminalActivity: (() => void) | null = null;
   private readonly browserToolsBroker: BrowserToolsBroker | null;
   private readonly hubRelationships: HubRelationshipManagement | null;
+  private readonly peerManager: PeerManager | null;
+  private readonly missionControlService: MissionControlService | null;
+  private transcriptSearch: TranscriptSearchService | null = null;
   private readonly browserToolsRegistrations = new Map<string, BrowserToolsRegistration>();
   private connectionLifecycle: "starting" | "accepting" | "stopping" = "accepting";
+  /** COMPAT(plannotator): true when plannotator binary is resolvable at daemon start. */
+  private readonly plannotatorAvailable: boolean;
   private readonly advertiseDaemonStatusRpc: boolean;
   private readonly advertiseRelayConfig: boolean;
   private readonly directorySync = new DirectorySyncService();
   private readonly pluginRuntime: SessionOptions["pluginRuntime"];
   private readonly orchestrationSkills: SessionOptions["orchestrationSkills"];
+  private readonly onWorkspaceArchived?: (workspaceId: string) => void | Promise<void>;
+  private readonly warmWorktreePool?: WarmWorktreePool;
 
   constructor(
     server: HTTPServer,
@@ -645,25 +687,30 @@ export class VoiceAssistantWebSocketServer {
     daemonRuntimeConfig?: DaemonRuntimeConfig,
     serviceProxyPublicBaseUrl?: string | null,
     browserToolsBroker?: BrowserToolsBroker | null,
+    webhookService?: WebhookService | null,
     hubRelationships?: HubRelationshipManagement | null,
+    peerManager?: PeerManager | null,
+    missionControlService?: MissionControlService | null,
     workspaceSetupRuntime: WorkspaceSetupRuntime = new WorkspaceSetupRuntime(),
     pluginRuntime?: SessionOptions["pluginRuntime"],
     orchestrationSkills?: SessionOptions["orchestrationSkills"],
     workspaceLabelService?: WorkspaceLabelService,
+    onWorkspaceArchived?: (workspaceId: string) => void | Promise<void>,
+    warmWorktreePool?: WarmWorktreePool,
   ) {
+    this.onWorkspaceArchived = onWorkspaceArchived;
     this.logger = logger.child({ module: "websocket-server" });
     this.workspaceSetupRuntime = workspaceSetupRuntime;
     this.advertiseDaemonStatusRpc = wsConfig.daemonStatusRpc !== false;
     this.advertiseRelayConfig = wsConfig.relayConfig !== false;
-    this.connectionLifecycle = wsConfig.startPaused === true ? "starting" : "accepting";
+    this.connectionLifecycle = initialConnectionLifecycle(wsConfig.startPaused);
     this.serverId = serverId;
-    if (typeof daemonVersion !== "string" || daemonVersion.trim().length === 0) {
-      throw new MissingDaemonVersionError();
-    }
-    this.daemonVersion = daemonVersion.trim();
+    this.daemonVersion = requireDaemonVersion(daemonVersion);
     this.daemonRuntimeConfig = daemonRuntimeConfig;
     this.browserToolsBroker = browserToolsBroker ?? null;
     this.hubRelationships = hubRelationships ?? null;
+    this.peerManager = peerManager ?? null;
+    this.missionControlService = missionControlService ?? null;
     this.pluginRuntime = pluginRuntime;
     this.orchestrationSkills = orchestrationSkills;
     this.agentManager = agentManager;
@@ -677,6 +724,7 @@ export class VoiceAssistantWebSocketServer {
       checkoutDiffManager,
     });
     this.scheduleService = requiredServices.scheduleService;
+    this.webhookService = webhookService ?? null;
     this.checkoutDiffManager = requiredServices.checkoutDiffManager;
     this.github = github ?? createGitHubService();
     this.workspaceGitService = workspaceGitService ?? createFallbackWorkspaceGitService();
@@ -686,6 +734,7 @@ export class VoiceAssistantWebSocketServer {
     this.worktreesRoot = daemonRuntimeConfig?.worktreesRoot;
     this.daemonConfigStore = daemonConfigStore;
     this.mcpBaseUrl = mcpBaseUrl;
+    this.warmWorktreePool = warmWorktreePool;
     this.assignOptionalServices({
       speech,
       terminalManager,
@@ -710,6 +759,15 @@ export class VoiceAssistantWebSocketServer {
       this.speech?.onReadinessChange((snapshot) => {
         this.publishSpeechReadiness(snapshot);
       }) ?? null;
+    this.providerUsageService = new ProviderUsageService({
+      logger: this.logger,
+      onUsageRefreshed: (result) => this.broadcastProviderUsageUpdated(result),
+      isFetcherEnabled: (fetcher) => {
+        const agentProviderIds = fetcher.agentProviderIds ?? [fetcher.providerId];
+        return agentProviderIds.some((id) => this.providerSnapshotManager.isProviderEnabled(id));
+      },
+    });
+
     const unsubscribeProviderConfig = attachMutableProviderConfigOwner({
       store: this.daemonConfigStore,
       providerSnapshotManager: this.providerSnapshotManager,
@@ -717,6 +775,7 @@ export class VoiceAssistantWebSocketServer {
     });
     const unsubscribeChange = this.daemonConfigStore.onChange((config) => {
       this.broadcastDaemonConfigChanged(config);
+      this.providerUsageService.notifyProviderEnablementChanged();
     });
     this.unsubscribeDaemonConfigChange = () => {
       unsubscribeProviderConfig();
@@ -735,10 +794,7 @@ export class VoiceAssistantWebSocketServer {
         this.logger.warn({ err, agentId: params.agentId }, "Failed to broadcast agent attention");
       });
     });
-
-    this.providerUsageService = new ProviderUsageService({
-      logger: this.logger,
-    });
+    this.plannotatorAvailable = detectPlannotatorAvailability(this.logger);
 
     this.wss = this.createWebSocketServer(server, wsConfig, auth);
     this.startRuntimeMetricsInterval();
@@ -1019,6 +1075,10 @@ export class VoiceAssistantWebSocketServer {
     this.connectionLifecycle = "stopping";
   }
 
+  setTranscriptSearch(service: TranscriptSearchService | null): void {
+    this.transcriptSearch = service;
+  }
+
   public beginAcceptingConnections(): void {
     if (this.connectionLifecycle === "starting") {
       this.connectionLifecycle = "accepting";
@@ -1033,6 +1093,7 @@ export class VoiceAssistantWebSocketServer {
     this.unsubscribeDaemonConfigChange = null;
     this.unsubscribeTerminalActivity?.();
     this.unsubscribeTerminalActivity = null;
+    this.providerUsageService.dispose();
     if (this.runtimeMetricsInterval) {
       clearInterval(this.runtimeMetricsInterval);
       this.runtimeMetricsInterval = null;
@@ -1418,11 +1479,16 @@ export class VoiceAssistantWebSocketServer {
       workspaceLabelService: this.workspaceLabelService ?? undefined,
       directorySync: this.directorySync,
       scheduleService: this.scheduleService,
+      webhookService: this.webhookService,
+      peerManager: this.peerManager,
+      missionControlService: this.missionControlService,
+      transcriptSearch: this.transcriptSearch,
       checkoutDiffManager: this.checkoutDiffManager,
       github: this.github,
       workspaceGitService: this.workspaceGitService,
       workspaceAutoName: this.workspaceAutoName,
       daemonConfigStore: this.daemonConfigStore,
+      warmWorktreePool: this.warmWorktreePool,
       pluginRuntime: this.pluginRuntime,
       orchestrationSkills: this.orchestrationSkills,
       mcpBaseUrl: this.mcpBaseUrl,
@@ -1443,6 +1509,7 @@ export class VoiceAssistantWebSocketServer {
       getDaemonTcpHost: this.getDaemonTcpHost ?? undefined,
       serviceProxyPublicBaseUrl: this.serviceProxyPublicBaseUrl,
       resolveScriptHealth: this.resolveScriptHealth ?? undefined,
+      onWorkspaceArchived: this.onWorkspaceArchived,
       voice: {
         turnDetection: () => this.speech?.resolveTurnDetection() ?? null,
       },
@@ -1470,6 +1537,7 @@ export class VoiceAssistantWebSocketServer {
             }
           : undefined,
       serverId: this.serverId,
+      hostName: getHostname(),
       daemonVersion: this.daemonVersion,
       daemonRuntimeConfig: this.daemonRuntimeConfig,
       getWebSocketRuntimeMetrics: () => this.lastRuntimeMetricsSnapshot,
@@ -1567,6 +1635,7 @@ export class VoiceAssistantWebSocketServer {
     pending.identity.sessionId = connection.session.getSessionId();
     this.syncBrowserToolsClientRegistration(connection);
     this.sendToClient(ws, this.createServerInfoMessage(connection.session));
+    this.providerUsageService.notifyClientConnected();
     connection.connectionLogger.info(
       {
         ...toConnectionLogFields(pending.identity),
@@ -1611,6 +1680,7 @@ export class VoiceAssistantWebSocketServer {
     pending.identity.sessionId = existing.session.getSessionId();
     this.syncBrowserToolsClientRegistration(existing);
     this.sendToClient(ws, this.createServerInfoMessage(existing.session));
+    this.providerUsageService.notifyClientConnected();
     pending.connectionLogger.info(
       {
         ...toConnectionLogFields(pending.identity),
@@ -1626,6 +1696,10 @@ export class VoiceAssistantWebSocketServer {
       status: "server_info",
       serverId: this.serverId,
       hostname: getHostname(),
+      // Additive (v0.1.X): advertise this host's missionControl.hostAlias so a
+      // central-config commanderHost designation naming the alias resolves.
+      missionControlHostAlias:
+        this.daemonConfigStore.get().missionControl?.hostAlias?.trim() || undefined,
       version: this.daemonVersion,
       permissions: session.getPermissions(),
       // COMPAT(desktopManaged): added in v0.1.X, remove optional parsing after 2027-01-16.
@@ -1677,6 +1751,8 @@ export class VoiceAssistantWebSocketServer {
         pluginManagement: true,
         pluginGitManagement: true,
         pluginLogs: true,
+        // COMPAT(loaderSpanReport): added in v0.4.0, remove gate after 2027-08-15.
+        loaderSpanReport: true,
         // COMPAT(pluginThemes): added in v0.5.0, remove gate after 2027-08-20.
         pluginThemes: true,
         pluginSettings: true,
@@ -1706,6 +1782,13 @@ export class VoiceAssistantWebSocketServer {
         projectAdd: true,
         // COMPAT(projectList): added in v0.2.4, drop the gate when floor >= v0.2.4.
         projectList: true,
+        // Mission Control v3: review lifecycle, approval gate, central config.
+        // App gates the v3 screen once on this flag.
+        missionControlV3: true,
+        // Mission Control v4: card grammar (meta proposals, clarification +
+        // answer cards, Commander clarify/post_answer tools). App gates the
+        // new card renderings once on this flag.
+        missionControlV4: true,
         // COMPAT(worktreeRestore): keep through 2027-01-11 for clients older than v0.1.105.
         worktreeRestore: true,
         // COMPAT(workspaceRecovery): added in v0.1.105, remove after 2027-01-11 once daemon floor >= v0.1.105.
@@ -1714,6 +1797,8 @@ export class VoiceAssistantWebSocketServer {
         workspaceFileEditing: true,
         // COMPAT(providerUsageList): added in v0.1.98, drop the gate when daemon floor >= v0.1.98.
         providerUsageList: true,
+        // Daemon pushes refreshed usage via provider.usage.updated. Added in v0.4.0.
+        providerUsagePush: true,
         // COMPAT(agentDetach): added in v0.1.98, remove gate after 2026-12-19 once daemon floor >= v0.1.98.
         agentDetach: true,
         // COMPAT(agentThinkingUpdate): added in v0.2.4, remove gate after 2027-01-28.
@@ -1726,6 +1811,8 @@ export class VoiceAssistantWebSocketServer {
         agentForkContext: true,
         // COMPAT(agentForkContextCursor): added in v0.1.108, remove gate after 2027-01-14.
         agentForkContextCursor: true,
+        // COMPAT(agentFork): added in v0.1.108, remove gate after 2027-01-17.
+        agentFork: true,
         // COMPAT(providerSubagents): added in v0.1.107, remove gate after 2027-01-12.
         providerSubagents: true,
         // COMPAT(providerSubagentNesting): added in v0.7, remove gate after 2027-03-04.
@@ -1764,6 +1851,10 @@ export class VoiceAssistantWebSocketServer {
         stableProjectIdentity: true,
         // COMPAT(workspaceScriptManagement): added in v0.1.105, remove gate after 2027-01-10.
         workspaceScriptManagement: true,
+        // COMPAT(plannotator): added in v0.2.x (fork), drop the gate when floor includes plannotator.
+        // Advertised when the plannotator binary is on PATH / ~/.local/bin.
+        plannotator: this.plannotatorAvailable === true,
+        missionControl: true,
         // COMPAT(projectCustomIcon): added in v0.2.0, remove after 2027-01-20.
         projectCustomIcon: true,
         // COMPAT(fsEntryOps): added in v0.3.0, remove gate after 2027-02-08.
@@ -1776,6 +1867,10 @@ export class VoiceAssistantWebSocketServer {
         agentProfiles: true,
         // COMPAT(agentConfigApply): added in v0.3.2, remove gate after 2027-02-11.
         agentConfigApply: true,
+        // COMPAT(baseWorkspace): added in v0.5.3 on 2026-08-25; remove gate
+        // after 2027-02-25. Project-anchored base workspaces (ADR 0001):
+        // ensure-on-create/backfill + archive refusal are live.
+        baseWorkspace: true,
       },
     };
   }
@@ -1808,6 +1903,18 @@ export class VoiceAssistantWebSocketServer {
 
   private broadcastDaemonConfigChanged(config: MutableDaemonConfig): void {
     this.broadcast(this.createDaemonConfigChangedMessage(config));
+  }
+
+  private broadcastProviderUsageUpdated(result: ProviderUsageListResult): void {
+    this.broadcast(
+      wrapSessionMessage({
+        type: "provider.usage.updated",
+        payload: {
+          fetchedAt: result.fetchedAt,
+          providers: result.providers,
+        },
+      }),
+    );
   }
 
   private bindSocketHandlers(ws: WebSocketLike): void {
@@ -2515,6 +2622,25 @@ export class VoiceAssistantWebSocketServer {
       focusedTerminalId: activity.focusedTerminalId,
       lastActivityAtMs: activity.lastActivityAt.getTime(),
     };
+  }
+
+  /**
+   * Whether any trusted connected client is currently viewing the agent: the
+   * client heartbeat reports focusedAgentId and the app/tab is visible.
+   * Consumed by the Mission Control approval gate (presence source) so
+   * outbound machinery sends downgrade to ask while a user is watching.
+   */
+  anyClientFocusedOnAgent(agentId: string): boolean {
+    for (const [, connection] of this.sessions) {
+      if (connection.principalId.startsWith("hub:")) {
+        continue;
+      }
+      const state = this.getClientActivityState(connection.session);
+      if (state.appVisible && state.focusedAgentId === agentId) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private async broadcastAgentAttention(params: {

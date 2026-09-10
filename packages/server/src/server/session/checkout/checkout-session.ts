@@ -10,6 +10,7 @@ import type {
   CheckoutRefreshRequest,
   CheckoutRenameBranchRequest,
   CheckoutStatusRequest,
+  CheckoutSubmodulesRequest,
   SessionInboundMessage,
   SessionOutboundMessage,
   SubscribeCheckoutDiffRequest,
@@ -52,6 +53,7 @@ import {
   listCheckoutCommits,
   getCommitFileDiff,
 } from "../../../utils/checkout-git.js";
+import { discoverSubmodules } from "../../../utils/git-submodules.js";
 import { runGitCommand } from "../../../utils/run-git-command.js";
 import { expandTilde } from "../../../utils/path.js";
 import type { GitMetadataGenerator } from "./git-metadata-generator.js";
@@ -235,7 +237,9 @@ export class CheckoutSession {
     const resolvedCwd = expandTilde(cwd);
 
     try {
-      const snapshot = await this.workspaceGitService.getSnapshot(resolvedCwd);
+      const snapshot = await this.workspaceGitService.getSnapshot(resolvedCwd, {
+        includeForge: false,
+      });
       this.host.emit({
         type: "checkout_status_response",
         payload: buildCheckoutStatusPayloadFromSnapshot({
@@ -1407,6 +1411,30 @@ export class CheckoutSession {
           authState,
           error: error instanceof Error ? error.message : String(error),
           requestId,
+        },
+      });
+    }
+  }
+
+  async handleSubmodulesRequest(msg: CheckoutSubmodulesRequest): Promise<void> {
+    const cwd = expandTilde(msg.cwd);
+    try {
+      const submodules = await discoverSubmodules(cwd);
+      this.host.emit({
+        type: "checkout_submodules_response",
+        payload: {
+          cwd: msg.cwd,
+          submodules,
+          requestId: msg.requestId,
+        },
+      });
+    } catch {
+      this.host.emit({
+        type: "checkout_submodules_response",
+        payload: {
+          cwd: msg.cwd,
+          submodules: [],
+          requestId: msg.requestId,
         },
       });
     }

@@ -26,6 +26,8 @@ function ws(
     currentBranch: input.currentBranch ?? null,
     statusBucket: input.statusBucket ?? "done",
     statusEnteredAt: input.statusEnteredAt ?? null,
+    activityAt: null,
+    createdAt: null,
     archivingAt: null,
     diffStat: null,
     prHint: null,

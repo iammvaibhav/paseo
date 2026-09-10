@@ -1,10 +1,12 @@
 import pino from "pino";
-import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import path, { resolve } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import type { ProviderEvent, ProviderRegistration } from "@getpaseo/plugin/server/provider";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
+import { ProviderCatalogStore } from "./provider-catalog-store.js";
 import type {
   AgentClient,
   AgentMode,
@@ -22,6 +24,7 @@ import {
   resolveSnapshotCwd,
 } from "./provider-snapshot-manager.js";
 import { OpenCodeAgentClient } from "./providers/opencode-agent.js";
+import { OmpAgentClient } from "./providers/omp/agent.js";
 
 const TEST_CAPABILITIES = {
   supportsStreaming: false,
@@ -71,7 +74,9 @@ function createExtraClient(
     provider,
     capabilities: TEST_CAPABILITIES,
     getCatalogCacheKey:
-      provider === "codex" || provider === "claude" ? async () => "host" : undefined,
+      provider === "codex" || provider === "claude" || provider === "omp"
+        ? async () => "host"
+        : undefined,
     async createSession() {
       throw new Error("not implemented");
     },
@@ -928,7 +933,7 @@ describe("ProviderSnapshotManager public surface", () => {
     }
   });
 
-  test("getProviderDiagnostic force-refreshes the snapshot and appends models/status", async () => {
+  test("getProviderDiagnostic issues a non-forced first-fill fetch when no catalog exists", async () => {
     const catalogModels: AgentModelDefinition[] = [
       { provider: "codex", id: "gpt-5.4-mini", label: "GPT 5.4 Mini" },
     ];
@@ -948,7 +953,36 @@ describe("ProviderSnapshotManager public surface", () => {
     try {
       const result = await manager.getProviderDiagnostic("codex");
       expect(fetchCatalog).toHaveBeenCalledTimes(1);
-      expect(fetchCatalog.mock.calls[0]?.[0]).toMatchObject({ scope: "global", force: true });
+      expect(fetchCatalog.mock.calls[0]?.[0]).toMatchObject({ scope: "global", force: false });
+      expect(result.diagnostic).toContain("Models: 1");
+      expect(result.diagnostic).toContain("Status: Ready");
+    } finally {
+      manager.destroy();
+    }
+  });
+
+  test("getProviderDiagnostic reuses an already-ready catalog without refetching", async () => {
+    const catalogModels: AgentModelDefinition[] = [
+      { provider: "codex", id: "gpt-5.4-mini", label: "GPT 5.4 Mini" },
+    ];
+    const catalogModes: AgentMode[] = [{ id: "agent", label: "Agent" }];
+    const fetchCatalog = vi.fn(async (_options: FetchCatalogOptions) => ({
+      models: catalogModels,
+      modes: catalogModes,
+    }));
+    const client = createExtraClient("codex", {
+      isAvailable: async () => true,
+      fetchCatalog,
+    });
+    const manager = new ProviderSnapshotManager({
+      logger: createTestLogger(),
+      extraClients: { codex: client },
+    });
+    try {
+      await manager.getProvider({ provider: "codex", wait: true });
+      expect(fetchCatalog).toHaveBeenCalledTimes(1);
+      const result = await manager.getProviderDiagnostic("codex");
+      expect(fetchCatalog).toHaveBeenCalledTimes(1);
       expect(result.diagnostic).toContain("Models: 1");
       expect(result.diagnostic).toContain("Status: Ready");
     } finally {
@@ -1278,6 +1312,94 @@ describe("ProviderSnapshotManager public surface", () => {
     }
   });
 
+  test("resolveCreateConfig uses the global catalog and does not refresh a new workspace cwd", async () => {
+    const catalogScopes: Array<FetchCatalogOptions["scope"]> = [];
+    const modes: AgentMode[] = [{ id: "full", label: "Full" }];
+    const manager = new ProviderSnapshotManager({
+      logger: createTestLogger(),
+      providerOverrides: {
+        claude: { enabled: false },
+        copilot: { enabled: false },
+        opencode: { enabled: false },
+        pi: { enabled: false },
+        omp: { enabled: false },
+      },
+      extraClients: {
+        codex: createExtraClient("codex", {
+          async isAvailable() {
+            return true;
+          },
+          async fetchCatalog(options) {
+            catalogScopes.push(options.scope);
+            return { models: [] as AgentModelDefinition[], modes };
+          },
+          resolveCreateConfig(input) {
+            return {
+              modeId: input.availableModes[0]?.id,
+              featureValues: undefined,
+            };
+          },
+        }),
+      },
+    });
+    try {
+      await manager.getProvider({ provider: "codex", wait: true });
+      expect(catalogScopes).toEqual(["global"]);
+
+      const resolved = await manager.resolveCreateConfig({
+        cwd: "/tmp/brand-new-worktree",
+        provider: "codex",
+        requestedMode: undefined,
+        featureValues: undefined,
+        parent: null,
+        unattended: false,
+      });
+
+      expect(resolved.modeId).toBe("full");
+      expect(catalogScopes).toEqual(["global"]);
+    } finally {
+      manager.destroy();
+    }
+  });
+
+  test("getSnapshot reuses a ready host-scoped catalog without fetching for a new cwd", async () => {
+    const fetchCatalog = vi.fn(async (_options: FetchCatalogOptions) => ({
+      models: [{ provider: "codex" as const, id: "gpt-6-astra", label: "GPT-6 Astra" }],
+      modes: [] as AgentMode[],
+    }));
+    const manager = new ProviderSnapshotManager({
+      logger: createTestLogger(),
+      providerOverrides: {
+        claude: { enabled: false },
+        copilot: { enabled: false },
+        opencode: { enabled: false },
+        pi: { enabled: false },
+        omp: { enabled: false },
+      },
+      extraClients: {
+        codex: createExtraClient("codex", {
+          async isAvailable() {
+            return true;
+          },
+          fetchCatalog,
+        }),
+      },
+    });
+    try {
+      await manager.getProvider({ provider: "codex", wait: true });
+      expect(fetchCatalog).toHaveBeenCalledTimes(1);
+
+      const snapshot = manager.getSnapshot("/tmp/brand-new-worktree");
+      const codex = snapshot.records.find(({ entry }) => entry.provider === "codex")?.entry;
+      expect(codex?.status).toBe("ready");
+      expect(codex?.models?.[0]?.id).toBe("gpt-6-astra");
+      await Promise.resolve();
+      expect(fetchCatalog).toHaveBeenCalledTimes(1);
+    } finally {
+      manager.destroy();
+    }
+  });
+
   test("resolveCreateConfig passes explicit unattended intent to provider policy", async () => {
     const resolverInputs: ResolveAgentCreateConfigInput[] = [];
     const modes: AgentMode[] = [{ id: "worker", label: "Worker", isUnattended: true }];
@@ -1478,6 +1600,30 @@ describe("ProviderSnapshotManager applyMutableProviderConfig", () => {
     }
   });
 
+  test("shuts down retired provider clients when the registry is rebuilt", async () => {
+    const shutdown = vi.spyOn(OmpAgentClient.prototype, "shutdown").mockResolvedValue(undefined);
+    const manager = new ProviderSnapshotManager({
+      logger: createTestLogger(),
+      providerOverrides: {
+        claude: { enabled: false },
+        codex: { enabled: false },
+        copilot: { enabled: false },
+        opencode: { enabled: false },
+        pi: { enabled: false },
+        omp: { enabled: true },
+      },
+    });
+    try {
+      expect(manager.getAgentManagerProviderState().clients.omp).toBeInstanceOf(OmpAgentClient);
+      manager.applyMutableProviderConfig({ omp: { enabled: true } });
+      await Promise.resolve();
+      expect(shutdown).toHaveBeenCalled();
+    } finally {
+      shutdown.mockRestore();
+      manager.destroy();
+    }
+  });
+
   test("fires a change event on every primed snapshot cwd after applyMutableProviderConfig", () => {
     const manager = new ProviderSnapshotManager({
       logger: createTestLogger(),
@@ -1552,7 +1698,10 @@ describe("ProviderSnapshotManager applyMutableProviderConfig", () => {
       const before = cwds.map(getCodexEntry);
       const definition = manager.getAgentManagerProviderState().providerDefinitions.codex;
       manager.applyMutableProviderConfig(
-        { ...config, claude: { enabled: true, label: "Renamed" } },
+        {
+          ...config,
+          claude: { enabled: true, label: "Renamed", command: ["claude", "--renamed"] },
+        },
         { replace: true },
       );
       expect(cwds.map(getCodexEntry)).toEqual(before);
@@ -1562,7 +1711,10 @@ describe("ProviderSnapshotManager applyMutableProviderConfig", () => {
       const listener = vi.fn();
       manager.on("change", listener);
       manager.applyMutableProviderConfig(
-        { ...config, claude: { label: "Renamed", enabled: true } },
+        {
+          ...config,
+          claude: { label: "Renamed", enabled: true, command: ["claude", "--renamed"] },
+        },
         { replace: true },
       );
       for (const cwd of cwds) await manager.warmUpSnapshotForCwd({ cwd });
@@ -3357,10 +3509,10 @@ test("binding a settled catalogue publishes once and rebinding an equal settled 
     await manager.warmUpSnapshotForCwd({ cwd: "/tmp/bind-a" });
     transitions.length = 0;
     const initial = manager.getSnapshot("/tmp/bind-b");
+    expect(transitions).toEqual([{ previous: expect.anything(), current: initial }]);
+    expect(probes).toBe(1);
     await manager.warmUpSnapshotForCwd({ cwd: "/tmp/bind-b" });
-    expect(transitions).toEqual([
-      { previous: initial, current: manager.getSnapshot("/tmp/bind-b") },
-    ]);
+    expect(manager.getSnapshot("/tmp/bind-b")).toBe(initial);
     expect(probes).toBe(1);
     key = "second";
     await manager.warmUpSnapshotForCwd({ cwd: "/tmp/bind-b" });
@@ -3372,5 +3524,120 @@ test("binding a settled catalogue publishes once and rebinding an equal settled 
     expect(probes).toBe(2);
   } finally {
     manager.destroy();
+  }
+});
+
+test("restores a persisted catalog into a ready snapshot without fetching on the next boot", async () => {
+  const paseoHome = await mkdtemp(path.join(tmpdir(), "paseo-provider-snapshot-store-"));
+  try {
+    const primeFetchCatalog = vi.fn(async () => ({
+      models: [
+        { provider: "codex", id: "gpt-5.4-mini", label: "GPT 5.4 Mini" },
+      ] as AgentModelDefinition[],
+      modes: [{ id: "agent", label: "Agent" }] as AgentMode[],
+    }));
+    const primingManager = new ProviderSnapshotManager({
+      logger: createTestLogger(),
+      providerOverrides: PUBLICATION_PROVIDERS,
+      catalogStore: new ProviderCatalogStore({
+        paseoHome,
+        logger: createTestLogger(),
+        daemonVersion: "test",
+      }),
+      extraClients: {
+        codex: createExtraClient("codex", {
+          isAvailable: async () => true,
+          fetchCatalog: primeFetchCatalog,
+        }),
+      },
+    });
+    try {
+      await primingManager.getProvider({ provider: "codex", wait: true });
+      expect(primeFetchCatalog).toHaveBeenCalledTimes(1);
+      // getProvider resolves as soon as the entry publishes; the fire-and-
+      // forget disk write races past it, so wait for the write to land
+      // before reading it back with a fresh store.
+      await expect
+        .poll(async () => {
+          const raw = await readFile(path.join(paseoHome, "provider-catalogs.json"), "utf-8").catch(
+            () => "",
+          );
+          return raw.includes("gpt-5.4-mini");
+        })
+        .toBe(true);
+    } finally {
+      primingManager.destroy();
+    }
+
+    const restoredFetchCatalog = vi.fn(async () => ({
+      models: [] as AgentModelDefinition[],
+      modes: [] as AgentMode[],
+    }));
+    const restoredManager = new ProviderSnapshotManager({
+      logger: createTestLogger(),
+      providerOverrides: PUBLICATION_PROVIDERS,
+      catalogStore: new ProviderCatalogStore({
+        paseoHome,
+        logger: createTestLogger(),
+        daemonVersion: "test",
+      }),
+      extraClients: {
+        codex: createExtraClient("codex", {
+          isAvailable: async () => true,
+          fetchCatalog: restoredFetchCatalog,
+        }),
+      },
+    });
+    try {
+      const entry = restoredManager
+        .getSnapshot()
+        .records.find((record) => record.entry.provider === "codex")?.entry;
+      expect(entry?.status).toBe("ready");
+      expect(entry?.models?.[0]?.id).toBe("gpt-5.4-mini");
+      expect(restoredFetchCatalog).not.toHaveBeenCalled();
+    } finally {
+      restoredManager.destroy();
+    }
+  } finally {
+    await rm(paseoHome, { recursive: true, force: true });
+  }
+});
+
+test("a successful global-scope refresh persists the catalog to disk", async () => {
+  const paseoHome = await mkdtemp(path.join(tmpdir(), "paseo-provider-snapshot-store-"));
+  try {
+    const manager = new ProviderSnapshotManager({
+      logger: createTestLogger(),
+      providerOverrides: PUBLICATION_PROVIDERS,
+      catalogStore: new ProviderCatalogStore({
+        paseoHome,
+        logger: createTestLogger(),
+        daemonVersion: "test",
+      }),
+      extraClients: {
+        codex: createExtraClient("codex", {
+          isAvailable: async () => true,
+          fetchCatalog: async () => ({
+            models: [
+              { provider: "codex", id: "gpt-5.4-mini", label: "GPT 5.4 Mini" },
+            ] as AgentModelDefinition[],
+            modes: [] as AgentMode[],
+          }),
+        }),
+      },
+    });
+    try {
+      await manager.getProvider({ provider: "codex", wait: true });
+      await expect
+        .poll(async () => {
+          const raw = await readFile(path.join(paseoHome, "provider-catalogs.json"), "utf-8");
+          return JSON.parse(raw).providers.codex?.result?.models?.[0]?.id;
+        })
+        .toBe("gpt-5.4-mini");
+    } finally {
+      manager.destroy();
+    }
+  } finally {
+    await rm(paseoHome, { recursive: true, force: true });
   }
 });

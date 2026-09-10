@@ -14,7 +14,8 @@ function hasHomePrefix(value: string): boolean {
 export function expandUserPath(value: string): string {
   const trimmed = value.trim();
   if (hasHomePrefix(trimmed)) {
-    return resolve(homedir(), trimmed.slice(2));
+    // Keep the "/" from "~/" — `resolve(homedir(), "/x")` would discard the home dir.
+    return resolve(`${homedir()}${trimmed.slice(1)}`);
   }
   return resolve(trimmed);
 }

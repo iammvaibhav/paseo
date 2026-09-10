@@ -66,6 +66,12 @@ import {
 import { useKeyboardActionHandler } from "@/hooks/use-keyboard-action-handler";
 import type { KeyboardActionId } from "@/keyboard/keyboard-action-dispatcher";
 import { useFormPreferences } from "@/hooks/use-form-preferences";
+import {
+  type FormPreferences,
+  mergeBaseBranchPreference,
+  mergeIsolationPreference,
+  resolveEffectiveFormPreferences,
+} from "@/create-agent-preferences/preferences";
 import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
 import type { CreateAgentInitialValues } from "@/hooks/use-agent-form-state";
 import { generateMessageId } from "@/types/stream";
@@ -102,10 +108,12 @@ import {
   remapDraftCwdToWorkspace,
 } from "./new-workspace-fork-context";
 import {
+  branchNameFromRef,
   buildPickerOptionData,
   defaultBasePickerItem,
   pickerItemLabel,
   pickerItemToCheckoutRequest,
+  resolveEffectivePreferredBaseBranch,
   type BranchPickerDetail,
   type PickerCheckoutRequest,
   type PickerItem,
@@ -707,23 +715,43 @@ interface WorkspaceIsolationState {
 function useWorkspaceIsolation(input: {
   supportsMultiplicity: boolean;
   worktreeSupport: "supported" | "unsupported" | "unknown";
+  projectKey?: string | null;
+  serverId?: string | null;
 }): WorkspaceIsolationState {
-  const { supportsMultiplicity, worktreeSupport } = input;
-  // The last isolation choice is remembered alongside the other New Workspace
-  // form preferences (provider, model, mode). A manual in-screen pick overrides
-  // the remembered default until the screen remounts.
-  const { preferences, updatePreferences } = useFormPreferences();
+  const { supportsMultiplicity, worktreeSupport, projectKey, serverId } = input;
+  // Isolation is remembered per project (byProject[projectKey].isolation) with
+  // a global fallback for older data / no project. A manual pick overrides the
+  // remembered default until the screen remounts or the project changes.
+  const { preferences, updatePreferences } = useFormPreferences(serverId);
   const [manualIsolation, setManualIsolation] = useState<"local" | "worktree" | null>(null);
-  const isolation = manualIsolation ?? preferences.isolation ?? "local";
+  const [manualIsolationProjectKey, setManualIsolationProjectKey] = useState<string | null>(null);
+  const scopeKey =
+    typeof projectKey === "string" && projectKey.trim().length > 0 ? projectKey : null;
+  const effectivePreferences = useMemo(
+    () => resolveEffectiveFormPreferences(preferences, scopeKey ? { projectKey: scopeKey } : null),
+    [preferences, scopeKey],
+  );
+  const rememberedIsolation = effectivePreferences.isolation ?? "local";
+  const isolation =
+    manualIsolation !== null && manualIsolationProjectKey === scopeKey
+      ? manualIsolation
+      : rememberedIsolation;
   const canCreateWorktree = supportsMultiplicity && worktreeSupport !== "unsupported";
   const isWorktree = isolation === "worktree" && canCreateWorktree;
 
   const setIsolation = useCallback(
     (value: "local" | "worktree") => {
       setManualIsolation(value);
-      void updatePreferences({ isolation: value });
+      setManualIsolationProjectKey(scopeKey);
+      void updatePreferences((current) =>
+        mergeIsolationPreference({
+          preferences: current,
+          isolation: value,
+          scope: scopeKey ? { projectKey: scopeKey } : null,
+        }),
+      );
     },
-    [updatePreferences],
+    [scopeKey, updatePreferences],
   );
 
   return {
@@ -732,6 +760,80 @@ function useWorkspaceIsolation(input: {
     effectiveIsolation: isWorktree ? "worktree" : "local",
     canCreateWorktree,
     showRefPicker: !supportsMultiplicity || isWorktree,
+  };
+}
+
+function useNewWorkspaceBaseBranchPreference(input: {
+  selectedProject: HostProjectListItem | null;
+  formPreferences: FormPreferences;
+  serverId: string;
+  sourceDirectory: string;
+}): {
+  selectedProjectKey: string | null;
+  projectScopeKey: string | null;
+  preferredBaseBranch?: string;
+} {
+  const selectedProjectKey = resolveSelectedProjectKey(input.selectedProject);
+  const projectScopeKey =
+    typeof selectedProjectKey === "string" && selectedProjectKey.trim().length > 0
+      ? selectedProjectKey
+      : null;
+  const effectivePreferences = useMemo(
+    () =>
+      resolveEffectiveFormPreferences(
+        input.formPreferences,
+        projectScopeKey ? { projectKey: projectScopeKey } : null,
+      ),
+    [input.formPreferences, projectScopeKey],
+  );
+  // paseo.json names the ref this project cuts worktrees from, and the warm
+  // pool already pre-warms from it. Preselecting anything else would hand the
+  // user a workspace on a different branch than a pooled one.
+  const { config: projectConfig } = useProjectConfigQuery({
+    serverId: input.serverId,
+    cwd: input.sourceDirectory,
+  });
+  return {
+    selectedProjectKey,
+    projectScopeKey,
+    preferredBaseBranch: resolveEffectivePreferredBaseBranch({
+      paseoBaseRef: projectConfig?.worktree?.warmPool?.baseRef,
+      rememberedBaseBranch: effectivePreferences.baseBranch,
+    }),
+  };
+}
+
+interface UseProjectConfigQueryOptions {
+  serverId: string;
+  cwd: string;
+}
+
+function useProjectConfigQuery({ serverId, cwd }: UseProjectConfigQueryOptions) {
+  const client = useHostRuntimeClient(serverId);
+  const isConnected = useHostRuntimeIsConnected(serverId);
+
+  const query = useQuery({
+    queryKey: ["project-config", serverId, cwd],
+    queryFn: async () => {
+      if (!client) return null;
+      try {
+        const response = await client.readProjectConfig(cwd);
+        return response.ok ? response.config : null;
+      } catch {
+        return null;
+      }
+    },
+    enabled: Boolean(client && isConnected && cwd),
+    staleTime: 15_000,
+    retry: false,
+    refetchOnMount: true,
+    refetchOnReconnect: false,
+    refetchOnWindowFocus: false,
+  });
+
+  return {
+    config: query.data ?? null,
+    isLoading: query.isLoading,
   };
 }
 
@@ -998,16 +1100,29 @@ function buildComposerConfig(input: {
   workspaceDirectory: string | null;
   sourceDirectory: string | null;
   initialSetup?: WorkspaceDraftTabSetup | null;
+  projectKey?: string | null;
 }): Parameters<typeof useAgentInputDraft>[0]["composer"] {
-  const { serverId, workspaceDirectory, sourceDirectory, initialSetup } = input;
+  const { serverId, workspaceDirectory, sourceDirectory, initialSetup, projectKey } = input;
   const workingDir = workspaceDirectory || sourceDirectory || undefined;
+  const preferenceScope =
+    typeof projectKey === "string" && projectKey.length > 0 ? { projectKey } : null;
   return {
     initialServerId: serverId || null,
     initialValues: buildComposerInitialValues({ initialSetup }),
     initialFeatureValues: initialSetup?.featureValues,
     isVisible: true,
     lockedWorkingDir: workingDir,
+    preferenceScope,
   };
+}
+
+function resolveSelectedProjectKey(
+  project: { projectKey: string | null } | null | undefined,
+): string | null {
+  if (!project) {
+    return null;
+  }
+  return project.projectKey;
 }
 
 function usePendingWorkspaceDraftSetup(
@@ -1658,7 +1773,7 @@ export function NewWorkspaceScreen({
   // something in this screen, so the async preferences load doesn't race a
   // frozen useState initializer.
   const { preferences: formPreferences, updatePreferences: updateFormPreferences } =
-    useFormPreferences();
+    useFormPreferences(selectedServerId);
   const { config: daemonConfig } = useDaemonConfig(selectedServerId);
   const terminalProfiles: readonly TerminalProfile[] = useMemo(
     () => resolveTerminalProfiles(daemonConfig?.terminalProfiles),
@@ -1735,6 +1850,7 @@ export function NewWorkspaceScreen({
       workspaceDirectory: workspace?.workspaceDirectory ?? null,
       sourceDirectory: selectedSourceDirectory,
       initialSetup: forkDraftSetup?.setup,
+      projectKey: resolveSelectedProjectKey(selectedProject),
     }),
   });
   const composerState = chatDraft.composerState;
@@ -1767,21 +1883,31 @@ export function NewWorkspaceScreen({
   const hasSelectedSourceDirectory = selectedSourceDirectory !== null;
   const pickerQueryEnabled = pickerOpen && clientReady && hasSelectedSourceDirectory;
 
+  const sourceDirectoryOrEmpty = selectedSourceDirectory ?? "";
+
   const { status: checkoutStatus } = useCheckoutStatusQuery({
     serverId: selectedServerId,
-    cwd: selectedSourceDirectory ?? "",
+    cwd: sourceDirectoryOrEmpty,
   });
 
   const worktreeSupport = selectedProject
     ? getWorktreeSupportForHostProject({ project: selectedProject, serverId: selectedServerId })
     : "unsupported";
   const isPending = isNewWorkspacePending({ pendingAction, isDraftHandoffActive });
+  const { selectedProjectKey, projectScopeKey, preferredBaseBranch } =
+    useNewWorkspaceBaseBranchPreference({
+      selectedProject,
+      formPreferences,
+      serverId: selectedServerId,
+      sourceDirectory: sourceDirectoryOrEmpty,
+    });
   const { effectiveIsolation, setIsolation, canCreateWorktree, showRefPicker } =
     useWorkspaceIsolation({
       supportsMultiplicity: supportsWorkspaceMultiplicity,
       worktreeSupport,
+      projectKey: selectedProjectKey,
+      serverId: selectedServerId,
     });
-
   const branchSuggestionsQuery = useQuery({
     queryKey: [
       "branch-suggestions",
@@ -1826,8 +1952,15 @@ export function NewWorkspaceScreen({
   }, [forgeSearchAuthenticated, githubPrSearchQuery.data?.items]);
 
   const baseItem = useMemo(
-    () => selectedItem ?? (checkoutStatus ? defaultBasePickerItem(checkoutStatus) : null),
-    [checkoutStatus, selectedItem],
+    () =>
+      selectedItem ??
+      (checkoutStatus
+        ? defaultBasePickerItem(checkoutStatus, {
+            preferredBaseBranch,
+            branchDetails,
+          })
+        : null),
+    [branchDetails, checkoutStatus, preferredBaseBranch, selectedItem],
   );
   const { options, itemById, selectedOptionId }: PickerOptionData = useMemo(
     () =>
@@ -1852,8 +1985,21 @@ export function NewWorkspaceScreen({
       dispatchPickerSelection({ type: "picker-selected", item });
       chatDraft.setAttachments(nextAttachments);
       setPickerOpen(false);
+
+      if (item.kind === "branch") {
+        const branchName = item.name.includes("(local)")
+          ? item.refName
+          : branchNameFromRef(item.refName);
+        void updateFormPreferences((current) =>
+          mergeBaseBranchPreference({
+            preferences: current,
+            baseBranch: branchName,
+            scope: projectScopeKey ? { projectKey: projectScopeKey } : null,
+          }),
+        );
+      }
     },
-    [chatDraft],
+    [chatDraft, projectScopeKey, updateFormPreferences],
   );
 
   const handleSelectOption = useCallback(
@@ -2053,7 +2199,11 @@ export function NewWorkspaceScreen({
         : null;
       const checkoutRequest = checkoutStatusForCreate
         ? pickerItemToCheckoutRequest(
-            selectedItem ?? defaultBasePickerItem(checkoutStatusForCreate),
+            selectedItem ??
+              defaultBasePickerItem(checkoutStatusForCreate, {
+                preferredBaseBranch,
+                branchDetails,
+              }),
           )
         : undefined;
       const normalizedWorkspace = supportsWorkspaceMultiplicity
@@ -2081,11 +2231,13 @@ export function NewWorkspaceScreen({
       return normalizedWorkspace;
     },
     [
+      branchDetails,
       buildCreateWorktreeInput,
       createdWorkspace,
       effectiveIsolation,
       mergeWorkspaces,
       queryClient,
+      preferredBaseBranch,
       selectedItem,
       selectedProject,
       selectedServerId,

@@ -146,6 +146,7 @@ function toWeeklyWindow(modelName: string, model: MiniMaxModelRemain): ProviderU
 
 export class MiniMaxQuotaProvider implements ProviderUsageFetcher {
   readonly providerId = "minimax";
+  readonly agentProviderIds: readonly string[] = ["minimax"];
   readonly displayName = "MiniMax";
 
   private readonly logger: Logger;

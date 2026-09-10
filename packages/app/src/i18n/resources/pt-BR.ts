@@ -107,6 +107,8 @@ export const ptBR: TranslationResources = {
       sendMessage: "Enviar mensagem",
       queue: "Fila",
       send: "Enviar",
+      forkToNewTab: "Bifurcar em nova aba",
+      forkFailed: "Falha ao bifurcar o agente",
     },
     cancel: {
       cancelingAgent: "Cancelando agente",
@@ -124,6 +126,7 @@ export const ptBR: TranslationResources = {
       muteVoice: "Silenciar voz",
       dictation: "Ditado",
       interruptBeforeVoice: "Interrompa o agente antes de iniciar o modo de voz",
+      commanderVoice: "Voz do Comandante",
     },
     attachments: {
       addImage: "Adicionar imagem",
@@ -175,6 +178,7 @@ export const ptBR: TranslationResources = {
       fallback: "Provedor",
       select: "Selecionar provedor do agente",
     },
+    providerSwitched: "Provedor alterado para {{provider}}",
     thinking: {
       title: "Raciocínio",
       unknown: "Desconhecido",
@@ -245,16 +249,58 @@ export const ptBR: TranslationResources = {
       callout: "Este agente está arquivado",
       unarchive: "Desarquivar",
     },
+    providerUnavailable: {
+      callout: "This agent's provider is no longer available on this host.",
+      detail: "You can still read the history, or continue in a new draft with another provider.",
+      continueWithAnotherProvider: "Continue with another provider",
+    },
   },
   sessions: {
     title: "Histórico de agentes",
     empty: "Nenhuma sessão ainda",
+    emptyForHost: "No sessions for this host",
+    loadError: "Unable to load sessions",
     noMatches: "Nenhuma sessão corresponde",
     tooManyMatches: "Muitos resultados — refine a busca",
     hostLoadFailed: "{{host}}: Não foi possível carregar o histórico",
     searchPlaceholder: "Buscar no histórico",
+    tabs: {
+      agents: "Agents",
+      ask: "Ask",
+    },
+    search: {
+      placeholder: "Filter by title, provider, path…",
+      empty: "No sessions match this filter",
+    },
+    ask: {
+      placeholder: "Ask about past agent sessions…",
+      submit: "Ask",
+      jobsHeading: "Ask jobs",
+      jobsOpenHint: "Tap a job to open it. New asks open automatically.",
+      empty: "No History Ask jobs yet",
+      launched: "History Ask started — opening…",
+      scopeLabel: "Scope",
+      scopeUnknown: "Unknown scope",
+      scopeSelectHost: "Select a host",
+      scopeWorkspace: "Workspace · {{name}}",
+      scopeProject: "Project · {{name}}",
+      scopeHost: "Host · {{name}} (host-wide)",
+      needHostHint: "Ask runs on one host. Pick a host above — “All hosts” cannot launch.",
+      modelLabel: "Model",
+      modelPlaceholder: "Select model",
+      errors: {
+        noCwd:
+          "No working directory found on this host. Open a workspace, or ensure this host has history with a cwd.",
+        noScope: "Choose a host or open Ask from a project/workspace",
+        hostDisconnected: "Host is not connected",
+        launchFailed: "Failed to start History Ask",
+      },
+    },
     actions: {
       loadMore: "Carregar mais",
+      tryAgain: "Try again",
+      back: "Back",
+      askAboutThis: "Perguntar sobre isto",
       clearSearch: "Limpar busca",
     },
   },
@@ -286,6 +332,54 @@ export const ptBR: TranslationResources = {
       archive: "Arquivar",
     },
   },
+  missionControl: {
+    inspector: {
+      archivedBanner: "Arquivado",
+      workspaceArchived:
+        "O espaço de trabalho deste agente está arquivado, portanto não pode ser aberto na visualização de espaço de trabalho.",
+      workspaceUnavailable:
+        "This agent's workspace isn't available on this host, so it cannot be opened in the workspace view.",
+    },
+    proposal: {
+      origin: {
+        verifier: "Contato do verificador",
+        commander: "Comandante",
+        stall: "Verificação de travamento",
+      },
+      chips: {
+        project: "Projeto: {{label}}",
+        workspace: "Espaço de trabalho: {{label}}",
+        agent: "Agente: {{label}}",
+        newProject: "Novo projeto: {{label}}",
+        newWorkspace: "Novo espaço de trabalho: {{label}}",
+        newAgent: "Novo agente: {{label}}",
+      },
+      model: "Modelo: {{model}}",
+      payload: "Carga útil",
+      meta: {
+        renameProject: "Renomear projeto {{target}} → {{name}}",
+        renameWorkspace: "Renomear espaço de trabalho {{target}} → {{name}}",
+        renameAgentTitle: "Renomear título do agente {{target}} → {{name}}",
+        archiveProject: "Arquivar projeto {{target}}",
+        archiveWorkspace: "Arquivar espaço de trabalho {{target}}",
+        archiveAgent: "Arquivar agente {{target}}",
+        createProject: "Criar projeto {{target}}",
+        moveAgent: "Mover agente {{target}} → espaço de trabalho {{destination}}",
+        promoteWorkspace: "Promover {{target}} → projeto {{destination}}",
+      },
+    },
+    clarification: {
+      title: "Esclarecimento",
+      send: "Enviar",
+      answerPlaceholder: "Digite sua resposta...",
+      answered: "Respondido: {{answer}}",
+    },
+    answer: {
+      title: "Resposta",
+      agentStatus: "Status do agente",
+      state: "Estado",
+    },
+  },
   message: {
     diagram: {
       diagram: "Diagrama",
@@ -306,6 +400,7 @@ export const ptBR: TranslationResources = {
       forkUnavailable: "Atualize o host para usar isto.",
       forkMissingWorkspace: "Este agente não está em um workspace.",
       forkFailed: "Falha ao bifurcar o chat",
+      jumpToUserMessage: "Ir para a mensagem do usuário",
       openFile: "Abrir arquivo",
       copied: "Copiado",
     },
@@ -471,6 +566,9 @@ export const ptBR: TranslationResources = {
       context: {
         size: "Tamanho",
         modified: "Modificado",
+        copyPath: "Copiar caminho",
+        download: "Baixar",
+        downloadAsZip: "Download as ZIP",
       },
       actions: {
         back: "Voltar",
@@ -487,6 +585,11 @@ export const ptBR: TranslationResources = {
       states: {
         unavailable: "Workspace indisponível",
         loading: "Carregando arquivos...",
+      },
+      drop: {
+        hostDisconnected: "Host is disconnected",
+        uploading: "Uploading {{count}} file(s)…",
+        uploaded: "Uploaded {{count}} file(s)",
       },
       errors: {
         failedToListDirectory: "Falha ao listar diretório",
@@ -599,10 +702,12 @@ export const ptBR: TranslationResources = {
       },
       menu: {
         openFor: "Abrir menu de {{label}}",
+        markDone: "Marcar como concluído",
         copyResumeCommand: "Copiar comando de retomada",
         copyAgentId: "Copiar ID do agente",
         copyTerminalId: "Copiar ID do terminal",
         copyFilePath: "Copiar caminho do arquivo",
+        moveToNewWorkspace: "Mover para um novo espaço de trabalho",
         rename: "Renomear",
         closeAbove: "Fechar abas acima",
         closeBelow: "Fechar abas abaixo",
@@ -654,6 +759,12 @@ export const ptBR: TranslationResources = {
         reloadedAgent: "Agente recarregado",
         failedToReloadAgent: "Falha ao recarregar agente",
         failedToCloseAgent: "Falha ao fechar agente",
+        movedToWorkspace: "Agente movido para {{workspaceName}}",
+        movedToNewWorkspace: "Agente movido para um novo espaço de trabalho",
+        agentRunningCannotMove: "Pare o agente antes de movê-lo para outro espaço de trabalho",
+        workspacePathUnavailable: "Caminho do workspace indisponível",
+        failedToCreateWorkspace: "Falha ao criar workspace",
+        failedToMoveAgent: "Falha ao mover o agente para o workspace",
       },
       confirmations: {
         unsavedTitle: "Alterações não salvas",
@@ -932,6 +1043,14 @@ export const ptBR: TranslationResources = {
         committed: "Com commit",
         branchUnknown: "Desconhecido",
         base: "base",
+        baseBranch: "Base branch",
+        baseBranchTrigger: "Base branch: {{name}}. Press to change.",
+        baseBranchTooltip: "Change base branch",
+        baseBranchDefault: "Use default ({{name}})",
+        baseBranchDefaultHint: "default",
+        baseBranchSearchPlaceholder: "Filter branches...",
+        baseBranchEmpty: "No branches found",
+        baseBranchLoading: "Loading branches...",
         newFile: "Novo",
         deletedFile: "Excluído",
         modifiedFile: "Modificado",
@@ -952,6 +1071,7 @@ export const ptBR: TranslationResources = {
         openIn: "Abrir workspace em {{target}}",
         openFileIn: "Abrir {{fileName}} em {{target}}",
         failedOpen: "Falha ao abrir workspace",
+        noFile: "Select a Markdown file to open in Plannotator",
       },
       pr: {
         actions: {
@@ -1092,6 +1212,12 @@ export const ptBR: TranslationResources = {
         title: "Título",
         branch: "Nome da branch",
       },
+      workspaceSort: {
+        label: "Sort workspaces",
+        manual: "Manual",
+        activity: "Latest activity",
+        created: "Date created",
+      },
       show: {
         label: "Mostrar",
         branch: "Branch",
@@ -1118,6 +1244,33 @@ export const ptBR: TranslationResources = {
         all: "Todos os projetos",
       },
     },
+    view: { workspaces: "Espaços de trabalho", agents: "Agentes" },
+    agentView: {
+      title: "Agentes",
+      display: {
+        trigger: "Preferências de visualização de agentes",
+        heading: "Agentes",
+        showDone: "Mostrar concluídos",
+      },
+      sections: {
+        needsYou: "Precisa de você",
+        running: "Em execução",
+        ready: "Prontos para revisão",
+        done: "Concluído",
+      },
+      empty: {
+        title: "Nenhum agente para exibir",
+        description: "Agentes em execução e prontos para revisão aparecem aqui.",
+        clear: "Limpar filtros",
+      },
+      menu: {
+        open: "Abrir no espaço de trabalho",
+        copyReference: "Copiar referência",
+        stop: "Parar",
+        clear: "Limpar",
+        archive: "Arquivar",
+      },
+    },
     filterEmpty: {
       title: "Nenhum espaço de trabalho corresponde",
       description: "Altere ou limpe os filtros da barra lateral para ver espaços de trabalho.",
@@ -1138,6 +1291,11 @@ export const ptBR: TranslationResources = {
       settings: "Configurações",
       closeSidebar: "Fechar barra lateral",
     },
+    fleetStats: {
+      label: "Estatísticas da frota",
+      collecting: "Coletando estatísticas da frota…",
+      failed: "Não foi possível coletar as estatísticas da frota",
+    },
     help: {
       trigger: "Ajuda e suporte",
       sectionHelp: "Ajuda",
@@ -1153,6 +1311,11 @@ export const ptBR: TranslationResources = {
       sessions: "Histórico",
       search: "Buscar",
       schedules: "Agendamentos",
+      missionControl: "Mission Control",
+      missionControlNeedsYou: "Precisa de você",
+      missionControlReady: "Prontos para revisão",
+      itsaplan: "itsaplan",
+      webhooks: "Webhooks",
     },
     worktreeSetup: {
       title: "Configurar scripts de worktree",
@@ -1164,10 +1327,14 @@ export const ptBR: TranslationResources = {
       actions: {
         menu: "Ações do projeto",
         openSettings: "Abrir configurações do projeto",
+        openBaseWorkspace: "Abrir workspace base",
+        expandProject: "Expandir projeto",
+        collapseProject: "Recolher projeto",
         openNewWindow: "Abrir em nova janela",
         openNewWindowFailed: "Não foi possível abrir uma nova janela",
         openFolder: "Open in file manager",
         openFolderFailed: "Couldn't open folder",
+        askHistory: "Ask history…",
         remove: "Remover projeto",
         removing: "Removendo...",
       },
@@ -1189,6 +1356,13 @@ export const ptBR: TranslationResources = {
       },
     },
     workspace: {
+      agents: {
+        count: "Agents ({{count}})",
+        expand: "Show agents",
+        collapse: "Hide agents",
+        sortByActivity: "Recent",
+        sortByCreated: "Created",
+      },
       status: {
         serviceRunning: "Serviço {{name}} em execução",
         serviceUnhealthy: "Serviço {{name}} com falha",
@@ -1208,11 +1382,14 @@ export const ptBR: TranslationResources = {
         showMore: "Mostrar mais",
         showLess: "Mostrar menos",
         createWorkspaceFor: "Criar um novo workspace para {{projectName}}",
+        openItsaplanFor: "Abrir itsaplan para {{projectName}}",
+        dropToMoveAgent: "Mover agente para cá",
         copyPath: "Copiar caminho",
         copyBranchName: "Copiar nome da branch",
         rename: "Renomear workspace",
         pin: "Fixar no topo",
         unpin: "Desafixar",
+        askHistory: "Ask history…",
         archive: "Arquivar",
         archiveWorkspace: "Arquivar workspace",
         hideFromSidebar: "Ocultar da barra lateral",
@@ -1771,6 +1948,19 @@ export const ptBR: TranslationResources = {
   diffViewer: {
     empty: "Nenhuma alteração para exibir",
   },
+  itsaplan: {
+    notConfigured: {
+      title: "itsaplan is not configured",
+      description:
+        "No itsaplan address could be resolved for any connected host. Set itsaplan URL in Settings \u2192 General, or connect to the host running it.",
+    },
+    unreachable: {
+      title: "Cannot reach itsaplan",
+      description: "Paseo could not load {{origin}}. Make sure itsaplan is running, then retry.",
+    },
+    retry: "Retry",
+  },
+
   serviceUrl: {
     title: "Abrir URL do serviço",
     message: "Abrir {{url}}?",
@@ -1805,6 +1995,15 @@ export const ptBR: TranslationResources = {
     archiveFinishedAction: "Arquivar subagentes concluídos",
     archiveFinishedRetry: "Tentar novamente ({{failed}}/{{total}})",
   },
+  selectionAsks: {
+    title: "Perguntas",
+    pillLabelOne: "1 pergunta",
+    pillLabelMany: "{{count}} perguntas",
+    openAction: "Abrir pergunta {{label}}",
+    archiveAction: "Arquivar {{label}}",
+    archiveTooltip: "Arquivar pergunta",
+    clearAll: "Limpar todas as perguntas",
+  },
   panels: {
     draft: {
       newAgent: "Novo Agente",
@@ -1812,6 +2011,7 @@ export const ptBR: TranslationResources = {
     },
     file: {
       directoryMissing: "Diretório do workspace não encontrado.",
+      notFoundOnHost: "Arquivo não encontrado no host: {{path}}",
       loading: "Carregando arquivo...",
       noPreview: "Nenhuma prévia disponível",
       binaryPreviewUnavailable: "Prévia binária indisponível",
@@ -1910,6 +2110,7 @@ export const ptBR: TranslationResources = {
     title: "Janela de contexto",
     used: "{{percentage}}% usado",
     tokens: "{{used}} / {{max}} tokens",
+    tokensUnknown: "0 tokens (aguardando uso)",
     sessionCost: "Custo da sessão {{cost}}",
     accessibility: "Janela de contexto {{percentage}}% usada",
   },
@@ -1956,6 +2157,7 @@ export const ptBR: TranslationResources = {
       notifications: "Notificações",
       permissions: "Permissões",
       diagnostics: "Diagnósticos",
+      missionControl: "Mission Control",
       about: "Sobre",
     },
     layout: en.settings.layout,
@@ -1963,6 +2165,16 @@ export const ptBR: TranslationResources = {
       title: "Editor",
       vimKeybindings: "Atalhos do Vim",
       vimHint: "Aplica-se a arquivos-fonte na web e no desktop.",
+      defaultFileOpener: "Default file opener",
+      defaultFileOpenerHint:
+        "Used for normal file clicks. Plannotator supports document and configuration files; source files fall back to Paseo.",
+      defaultFileOpenerPaseo: "Paseo",
+      defaultFileOpenerVsCodeWeb: "VS Code Web",
+      defaultFileOpenerPlannotator: "Plannotator",
+      plannotatorFeedbackMode: "Plannotator feedback",
+      plannotatorFeedbackModeHint: "How annotation feedback is delivered to the linked agent.",
+      plannotatorFeedbackAutoSend: "Auto-send",
+      plannotatorFeedbackCompose: "Pre-fill composer",
     },
     notifications: {
       title: "Notificações",
@@ -1990,6 +2202,23 @@ export const ptBR: TranslationResources = {
       terminals: "Terminais",
       plugins: "Plugins",
       host: "Visão geral",
+    },
+    missionControl: {
+      memory: "Memória",
+      hindsightUrl: "URL do Hindsight",
+      hindsightUrlHint:
+        "URL base da API do Hindsight. Vazia desativa a memória da frota (gravação de registros de execução e recall).",
+      hindsightBank: "Banco de gravação",
+      hindsightBankHint: "Banco onde o Paseo grava os registros de execução.",
+      hindsightSecondaryBank: "Banco de recall (secundário)",
+      hindsightSecondaryBankHint:
+        "Banco secundário somente leitura consultado pelo fleet_recall. Vazio o desativa.",
+      voiceNodeUrl: "URL do nó de voz",
+      voiceNodeUrlHint:
+        "Servidor de Voz do Comandante (ex.: ws://127.0.0.1:8787/ws). Vazio oculta a voz do Comandante no composer do Mission Control.",
+      voiceMode: "Voice tool mode",
+      voiceModeHint:
+        "Relay = voice reads like Commander but routes every change through commander_dispatch. Direct = voice holds the full Commander tool surface, approval-gated. Applies to new voice sessions.",
     },
     plugins: pluginSettings["pt-BR"],
     metadataGeneration: {
@@ -2025,9 +2254,9 @@ export const ptBR: TranslationResources = {
         descriptions: {
           interrupt:
             "Quando o agente está em execução, Enter interrompe. Command/Ctrl+Enter enfileira.",
-          steer:
-            "Quando o agente está em execução, Enter orienta o turno ativo. Command/Ctrl+Enter enfileira.",
           queue: "Quando o agente está em execução, Enter enfileira. Command/Ctrl+Enter envia.",
+          steer:
+            "Quando o agente está em execução, Enter o direciona: ele termina a chamada de ferramenta atual, lê sua mensagem e continua. Command/Ctrl+Enter interrompe.",
         },
         options: {
           interrupt: "Interromper",
@@ -2048,6 +2277,12 @@ export const ptBR: TranslationResources = {
         label: "Scrollback do terminal",
         description: "Linhas mantidas no buffer do terminal integrado",
         accessibilityLabel: "Linhas do scrollback do terminal",
+      },
+      itsaplanOrigin: {
+        label: "itsaplan URL",
+        description:
+          "Origin of the itsaplan instance shown in the sidebar (empty = derive from host)",
+        accessibilityLabel: "itsaplan URL",
       },
       autoExpandReasoning: {
         label: "Sempre expandir raciocínio",
@@ -2177,6 +2412,10 @@ export const ptBR: TranslationResources = {
         contentSize: "Tamanho do conteúdo",
         contentSizeHint: "Usado no texto do chat e no Markdown renderizado",
         contentSizeAccessibility: "Tamanho da fonte do conteúdo",
+        agentGridSize: "Tamanho do Agent Grid",
+        agentGridSizeHint:
+          "Usado no texto do chat nos tiles do Agent Grid, separado do painel completo do agente",
+        agentGridSizeAccessibility: "Tamanho da fonte do Agent Grid",
         codeFont: "Fonte de código",
         codeFontHint:
           "Usada em código, diffs e saída do terminal. Deixe vazio para usar o padrão do sistema",
@@ -2245,6 +2484,7 @@ export const ptBR: TranslationResources = {
         newTerminal: "Novo terminal",
         searchFiles: "Pesquisar arquivos",
         toggleCommandCenter: "Alternar central de comandos",
+        toggleCommandCenterFromGuest: "Toggle command center from an embedded app",
         showKeyboardShortcuts: "Mostrar atalhos de teclado",
         toggleLeftSidebar: "Alternar barra lateral esquerda",
         toggleRightSidebar: "Alternar painel lateral",
@@ -2489,6 +2729,26 @@ export const ptBR: TranslationResources = {
           placeholder: "Meu Host",
           submit: "Renomear",
         },
+        sshHost: {
+          title: "Host SSH",
+          hint: "Permite que “Abrir no editor” abra os espaços de trabalho deste host no Cursor ou VS Code via Remote SSH",
+          notConfigured: "Não configurado",
+          edit: "Editar",
+          configure: "Configurar",
+          modalTitle: "Host SSH",
+          placeholder: "user@hostname ou alias da configuração SSH",
+          submit: "Salvar",
+        },
+        browserEditorUrl: {
+          title: "URL do VS Code Web",
+          hint: "Permite que “Abrir → VS Code Web” abra os workspaces deste host em uma aba do navegador (code-server)",
+          notConfigured: "Não configurado",
+          edit: "Editar",
+          configure: "Configurar",
+          modalTitle: "URL do VS Code Web",
+          placeholder: "http://hostname:8765",
+          submit: "Salvar",
+        },
         restart: {
           title: "Reiniciar daemon",
           hint: "Reinicia o processo do daemon. O app reconectará automaticamente",
@@ -2592,6 +2852,10 @@ export const ptBR: TranslationResources = {
         adding: "Adicionando...",
         failedToSave: "Falha ao salvar modelo",
         removeModel: "Remover {{id}}",
+        hideModel: "Ocultar {{name}}",
+        showModel: "Mostrar {{name}}",
+        checkAll: "Marcar todos",
+        uncheckAll: "Desmarcar todos",
         searchPlaceholder: "Buscar modelos",
         loading: "Carregando modelos...",
         retry: "Tentar novamente",
@@ -2630,6 +2894,9 @@ export const ptBR: TranslationResources = {
         useAutomatic: "Usar automático",
         imageUrl: "URL de imagem ou site",
         save: "Salvar alterações",
+        description: "Description",
+        descriptionLabel: "Project description",
+        descriptionPlaceholder: "What this project is for",
         savedToast: "Projeto atualizado",
       },
       readFailures: {

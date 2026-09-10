@@ -216,12 +216,12 @@ export function curateAgentActivity(
     : "No activity to display.";
 }
 
-interface ForkCursorBoundary {
+export interface ForkCursorBoundary {
   timelineEpoch: string;
   cursor: { epoch: string; seq: number };
 }
 
-function selectForkContextRows(input: {
+export function selectForkContextRows(input: {
   rows: readonly AgentTimelineRow[];
   cursorBoundary?: ForkCursorBoundary | null;
   boundaryMessageId?: string | null;

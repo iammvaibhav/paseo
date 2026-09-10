@@ -4,12 +4,14 @@ import {
   AgentSnapshotPayloadSchema,
   AgentTimelineItemPayloadSchema,
   ServerInfoStatusPayloadSchema,
+  SessionInboundMessageSchema,
   SessionOutboundMessageSchema,
   WSHelloMessageSchema,
   WorkspaceSetupSnapshotSchema,
   WorkspaceSetupProgressMessageSchema,
   AgentTimelineEntryPayloadSchema,
 } from "./messages.js";
+import { MissionControlProposalsRespondRequestSchema } from "./mission-control/types.js";
 
 test("terminal listings accept older rows and retain new per-terminal directories", () => {
   const response = {
@@ -138,6 +140,88 @@ describe("wire schema compatibility", () => {
       version: null,
       features: { agentTurnIdentity: true },
     });
+  });
+
+  test("mission_control.proposals.respond round-trips the optional deny reason", () => {
+    // Old app (no reason) still parses on the new daemon.
+    const legacy = SessionInboundMessageSchema.parse({
+      type: "mission_control.proposals.respond.request",
+      requestId: "req-legacy",
+      proposalId: "mcp_1",
+      action: "deny",
+    });
+    expect(legacy).toEqual({
+      type: "mission_control.proposals.respond.request",
+      requestId: "req-legacy",
+      proposalId: "mcp_1",
+      action: "deny",
+    });
+    // New app (with reason) parses on the new daemon and keeps the field.
+    const withReason = MissionControlProposalsRespondRequestSchema.parse({
+      type: "mission_control.proposals.respond.request",
+      requestId: "req-reason",
+      proposalId: "mcp_1",
+      action: "deny",
+      reason: "Run it on gamma instead.",
+    });
+    expect(withReason).toMatchObject({ action: "deny", reason: "Run it on gamma instead." });
+    // A six-month-old daemon schema (no reason field) strips the unknown key
+    // instead of failing, so a new app against an old daemon keeps working.
+    const LegacyRespondRequestSchema = z.object({
+      type: z.literal("mission_control.proposals.respond.request"),
+      requestId: z.string(),
+      proposalId: z.string(),
+      action: z.enum(["approve", "deny"]),
+      editedMessage: z.string().optional(),
+      allowPair: z.boolean().optional(),
+    });
+    expect(
+      LegacyRespondRequestSchema.parse({
+        type: "mission_control.proposals.respond.request",
+        requestId: "req-old-daemon",
+        proposalId: "mcp_1",
+        action: "deny",
+        reason: "Run it on gamma instead.",
+      }),
+    ).toEqual({
+      type: "mission_control.proposals.respond.request",
+      requestId: "req-old-daemon",
+      proposalId: "mcp_1",
+      action: "deny",
+    });
+  });
+
+  test("server info accepts missionControlHostAlias with and without the field", () => {
+    // With the field: trimmed, junk normalized to null, never required.
+    expect(
+      ServerInfoStatusPayloadSchema.parse({
+        status: "server_info",
+        serverId: "alias-server",
+        missionControlHostAlias: "  fleet-lead  ",
+        features: {},
+      }),
+    ).toMatchObject({
+      status: "server_info",
+      serverId: "alias-server",
+      missionControlHostAlias: "fleet-lead",
+      features: {},
+    });
+    expect(
+      ServerInfoStatusPayloadSchema.parse({
+        status: "server_info",
+        serverId: "alias-server",
+        missionControlHostAlias: 42,
+        features: {},
+      }).missionControlHostAlias,
+    ).toBeNull();
+    // Without the field: absent, so old daemons and old payloads stay valid.
+    expect(
+      ServerInfoStatusPayloadSchema.parse({
+        status: "server_info",
+        serverId: "plain-server",
+        features: {},
+      }).missionControlHostAlias,
+    ).toBeUndefined();
   });
 
   test("assistant timeline message ids are optional on the wire", () => {

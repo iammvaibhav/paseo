@@ -20,6 +20,7 @@ import {
 } from "react";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { ArrowUp, Mic, MicOff, CornerDownLeft, Plus, Square } from "lucide-react-native";
 import { useDictation } from "@/hooks/use-dictation";
@@ -35,7 +36,12 @@ import {
   filesToImageAttachments,
 } from "@/utils/image-attachments-from-files";
 import type { ComposerAttachment } from "@/attachments/types";
-import type { ImageAttachment, MessagePayload, TextReplacement } from "@/composer/types";
+import type {
+  ImageAttachment,
+  MessageDispatchMode,
+  MessagePayload,
+  TextReplacement,
+} from "@/composer/types";
 import { focusWithRetries } from "@/utils/web-focus";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Shortcut } from "@/components/ui/shortcut";
@@ -81,9 +87,11 @@ import {
   runDefaultSendAction,
   runMessageInputKeyboardAction,
   stopRealtimeVoice,
+  type SendBehavior,
 } from "./state";
 
 const DEFAULT_SEND_KEYS: ShortcutKey[][] = [["Enter"]];
+const STEER_SEND_KEYS: ShortcutKey[][] = [["mod", "Enter"]];
 const COMPOSER_INPUT_DATASET = { composerInput: "" } as const;
 
 export interface AttachmentMenuItem {
@@ -147,10 +155,13 @@ export interface MessageInputProps {
   voiceAgentId?: string;
   /** When true and there's sendable content, calls onQueue instead of onSubmit */
   isAgentRunning?: boolean;
-  /** Controls what the default send action (Enter, send button, dictation) does when the agent is
-   *  running. "interrupt" and "steer" send immediately, "queue" queues. Required so the default
-   *  lives only in DEFAULT_CLIENT_SETTINGS. */
-  defaultSendBehavior: "interrupt" | "steer" | "queue";
+  /** Controls what the default send action (Enter, send button, dictation) does
+   *  when the agent is running. "interrupt" sends immediately, "queue" queues,
+   *  "steer" delivers against the live turn. */
+  defaultSendBehavior?: SendBehavior;
+  /** The current draft is a provider command the daemon runs out of band
+   *  (OMP /steer, /compact, …). Those never queue and never interrupt. */
+  sendsOutOfBand?: boolean;
   /** Callback for queue button when agent is running */
   onQueue?: (payload: MessagePayload) => void;
   /** Optional handler used when submit button is in loading state. */
@@ -386,6 +397,7 @@ interface DesktopKeyPressContext {
   submitOnEnter: boolean;
   isAgentRunning: boolean;
   onQueue: ((payload: MessagePayload) => void) | undefined;
+  defaultSendBehavior: SendBehavior;
   isSubmitDisabled: boolean;
   isSubmitLoading: boolean;
   disabled: boolean;
@@ -414,7 +426,7 @@ function handleDesktopKeyPressImpl(
   if (!ctx.submitOnEnter) return;
   if (shiftKey) return;
 
-  if ((metaKey || ctrlKey) && ctx.isAgentRunning && ctx.onQueue) {
+  if (metaKey || ctrlKey) {
     if (ctx.isSubmitDisabled || ctx.isSubmitLoading || ctx.disabled) return;
     event.preventDefault();
     ctx.handleAlternateSendAction();
@@ -560,7 +572,9 @@ function MessageInputOverlay({
     | {
         isMuted: boolean;
         isVoiceSwitching: boolean;
+        sendBehavior: "interrupt" | "queue";
         toggleMute: () => void;
+        setSendBehavior: (sendBehavior: "interrupt" | "queue") => Promise<void>;
       }
     | null
     | undefined;
@@ -599,7 +613,9 @@ function MessageInputOverlay({
       <RealtimeVoiceOverlay
         isMuted={voice.isMuted}
         isSwitching={voice.isVoiceSwitching}
+        sendBehavior={voice.sendBehavior}
         onToggleMute={voice.toggleMute}
+        onSendBehaviorChange={voice.setSendBehavior}
         onStop={onRealtimeVoiceStop}
       />
     );
@@ -831,12 +847,17 @@ interface ToggleRealtimeVoiceContext {
     | {
         isVoiceSwitching: boolean;
         isVoiceModeForAgent: (serverId: string, agentId: string) => boolean;
-        startVoice: (serverId: string, agentId: string) => Promise<unknown>;
+        startVoice: (
+          serverId: string,
+          agentId: string,
+          options?: { sendBehavior?: "interrupt" | "queue" },
+        ) => Promise<unknown>;
       }
     | null
     | undefined;
   voiceServerId: string | undefined;
   voiceAgentId: string | undefined;
+  sendBehavior: "interrupt" | "queue";
   isConnected: boolean;
   disabled: boolean;
   isAgentRunning: boolean;
@@ -858,13 +879,15 @@ function toggleRealtimeVoiceImpl(ctx: ToggleRealtimeVoiceContext): void {
     ctx.toast.error(ctx.interruptBeforeVoiceMessage);
     return;
   }
-  void ctx.voice.startVoice(ctx.voiceServerId, ctx.voiceAgentId).catch((error) => {
-    console.error("[MessageInput] Failed to start realtime voice", error);
-    const message = extractErrorMessage(error);
-    if (message && message.trim().length > 0) {
-      ctx.toast.error(message);
-    }
-  });
+  void ctx.voice
+    .startVoice(ctx.voiceServerId, ctx.voiceAgentId, { sendBehavior: ctx.sendBehavior })
+    .catch((error) => {
+      console.error("[MessageInput] Failed to start realtime voice", error);
+      const message = extractErrorMessage(error);
+      if (message && message.trim().length > 0) {
+        ctx.toast.error(message);
+      }
+    });
 }
 
 interface StartDictationContext {
@@ -912,6 +935,7 @@ interface SendMessageContext {
   allowEmptySubmit: boolean;
   cwd: string;
   isAgentRunning: boolean;
+  dispatchMode?: MessageDispatchMode;
   onSubmit: (payload: MessagePayload) => void;
   onMinimizeHeight: () => void;
   preserveHeightOnSubmit: boolean;
@@ -932,6 +956,7 @@ function sendMessageImpl(ctx: SendMessageContext): void {
     attachments: ctx.attachments,
     cwd: ctx.cwd,
     forceSend: ctx.isAgentRunning || undefined,
+    ...(ctx.dispatchMode ? { dispatchMode: ctx.dispatchMode } : {}),
   });
   // When the host preserves and locks the composer (e.g. new-workspace creation),
   // the text stays put — collapsing the height would clip it. Keep it grown.
@@ -1020,7 +1045,8 @@ interface SendButtonStateInput {
   isSubmitDisabled: boolean;
   isSubmitLoading: boolean;
   onSubmitLoadingPress: (() => void) | undefined;
-  defaultSendBehavior: "interrupt" | "steer" | "queue";
+  defaultSendBehavior: SendBehavior;
+  sendsOutOfBand: boolean;
   isAgentRunning: boolean;
 }
 
@@ -1035,7 +1061,7 @@ function computeSendButtonState(input: SendButtonStateInput): SendButtonStateOut
     input.isSubmitLoading && typeof input.onSubmitLoadingPress === "function";
   const isSendButtonDisabled =
     input.disabled || (!canPressLoadingButton && (input.isSubmitDisabled || input.isSubmitLoading));
-  const defaultActionQueues = input.defaultSendBehavior === "queue" && input.isAgentRunning;
+  const defaultActionQueues = false;
   return { canPressLoadingButton, isSendButtonDisabled, defaultActionQueues };
 }
 
@@ -1070,7 +1096,8 @@ interface ResolvedMessageInputProps {
   voiceServerId: string | undefined;
   voiceAgentId: string | undefined;
   isAgentRunning: boolean;
-  defaultSendBehavior: "interrupt" | "steer" | "queue";
+  defaultSendBehavior: SendBehavior;
+  sendsOutOfBand: boolean;
   onQueue: ((payload: MessagePayload) => void) | undefined;
   onSubmitLoadingPress: (() => void) | undefined;
   onKeyPressCallback: ((event: ComposerKeyPressEvent) => boolean) | undefined;
@@ -1117,7 +1144,8 @@ function resolveMessageInputProps(props: MessageInputProps): ResolvedMessageInpu
     voiceServerId: props.voiceServerId,
     voiceAgentId: props.voiceAgentId,
     isAgentRunning: props.isAgentRunning ?? false,
-    defaultSendBehavior: props.defaultSendBehavior,
+    defaultSendBehavior: props.defaultSendBehavior ?? "interrupt",
+    sendsOutOfBand: props.sendsOutOfBand ?? false,
     onQueue: props.onQueue,
     onSubmitLoadingPress: props.onSubmitLoadingPress,
     onKeyPressCallback: props.onKeyPress,
@@ -1139,6 +1167,25 @@ function extractErrorMessage(error: unknown): string | null {
   return null;
 }
 
+function resolveButtonIconSize(): number {
+  return isWeb ? ICON_SIZE.md : ICON_SIZE.lg;
+}
+
+function resolveSendShortcutKeys(isAgentRunning: boolean): ShortcutKey[][] {
+  return isAgentRunning ? STEER_SEND_KEYS : DEFAULT_SEND_KEYS;
+}
+
+function computeIsComposerEditable(input: {
+  isDictating: boolean;
+  isRealtimeVoiceForCurrentAgent: boolean;
+  disabled: boolean;
+}): boolean {
+  return !input.isDictating && !input.isRealtimeVoiceForCurrentAgent && !input.disabled;
+}
+
+function resolveInputPlaceholder(placeholder: string | undefined, t: TFunction): string {
+  return placeholder ?? t("composer.placeholders.fallback");
+}
 export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
   function MessageInput(props, ref) {
     const {
@@ -1173,6 +1220,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       voiceAgentId,
       isAgentRunning,
       defaultSendBehavior,
+      sendsOutOfBand,
       onQueue,
       onSubmitLoadingPress,
       onKeyPressCallback,
@@ -1191,7 +1239,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const isCompact = useIsCompactFormFactor();
     const { height: windowHeight } = useWindowDimensions();
     const maxInputHeight = resolveMaxInputHeight(windowHeight);
-    const buttonIconSize = isWeb ? ICON_SIZE.md : ICON_SIZE.lg;
+    const buttonIconSize = resolveButtonIconSize();
     const toast = useToast();
     const voice = useVoiceOptional();
     const voiceMuteToggleKeys = useShortcutKeys("voice-mute-toggle");
@@ -1316,6 +1364,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         applyDictationTranscript(text, {
           value: valueRef.current,
           defaultSendBehavior,
+          sendsOutOfBand,
           isAgentRunning,
           onQueue,
           onSubmit,
@@ -1325,7 +1374,16 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           autoSend,
         });
       },
-      [replaceText, onSubmit, onQueue, attachments, cwd, isAgentRunning, defaultSendBehavior],
+      [
+        replaceText,
+        onSubmit,
+        onQueue,
+        attachments,
+        cwd,
+        isAgentRunning,
+        defaultSendBehavior,
+        sendsOutOfBand,
+      ],
     );
 
     const handleDictationError = useCallback(
@@ -1478,6 +1536,10 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         voice,
         voiceServerId,
         voiceAgentId,
+        // Realtime voice predates the Steer send behavior and only offers
+        // interrupt/queue; Steer maps to Interrupt (spoken input starts its
+        // own run rather than riding along with the live turn).
+        sendBehavior: defaultSendBehavior === "steer" ? "interrupt" : defaultSendBehavior,
         isConnected,
         disabled,
         isAgentRunning,
@@ -1486,6 +1548,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         interruptBeforeVoiceMessage: t("composer.voice.interruptBeforeVoice"),
       });
     }, [
+      defaultSendBehavior,
       disabled,
       handleStopRealtimeVoice,
       isAgentRunning,
@@ -1529,6 +1592,32 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       updateLiveTextPresence,
     ]);
 
+    const handleSteerSendMessage = useCallback(
+      () =>
+        sendMessageImpl({
+          value: valueRef.current,
+          attachments,
+          hasExternalContent,
+          allowEmptySubmit,
+          cwd,
+          isAgentRunning,
+          dispatchMode: "steer",
+          onSubmit,
+          onMinimizeHeight: minimizeInputHeight,
+          preserveHeightOnSubmit,
+        }),
+      [
+        allowEmptySubmit,
+        attachments,
+        cwd,
+        onSubmit,
+        isAgentRunning,
+        hasExternalContent,
+        minimizeInputHeight,
+        preserveHeightOnSubmit,
+      ],
+    );
+
     const handleQueueMessage = useCallback(
       () =>
         queueMessageImpl({
@@ -1546,21 +1635,49 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       runDefaultSendAction({
         defaultSendBehavior,
         isAgentRunning,
+        sendsOutOfBand,
         onQueue,
         handleSendMessage,
+        handleSteerSendMessage,
         handleQueueMessage,
       });
-    }, [defaultSendBehavior, isAgentRunning, onQueue, handleQueueMessage, handleSendMessage]);
+    }, [
+      defaultSendBehavior,
+      sendsOutOfBand,
+      isAgentRunning,
+      onQueue,
+      handleQueueMessage,
+      handleSendMessage,
+      handleSteerSendMessage,
+    ]);
+
+    const handleButtonSendAction = useCallback(() => {
+      if (isAgentRunning && !sendsOutOfBand) {
+        handleSteerSendMessage();
+        return;
+      }
+      handleSendMessage();
+    }, [handleSendMessage, handleSteerSendMessage, isAgentRunning, sendsOutOfBand]);
 
     const handleAlternateSendAction = useCallback(() => {
       runAlternateSendAction({
         defaultSendBehavior,
         isAgentRunning,
+        sendsOutOfBand,
         onQueue,
         handleSendMessage,
+        handleSteerSendMessage,
         handleQueueMessage,
       });
-    }, [defaultSendBehavior, isAgentRunning, handleSendMessage, handleQueueMessage, onQueue]);
+    }, [
+      defaultSendBehavior,
+      sendsOutOfBand,
+      isAgentRunning,
+      handleSendMessage,
+      handleSteerSendMessage,
+      handleQueueMessage,
+      onQueue,
+    ]);
 
     const getWebTextArea = useCallback(
       (): TextAreaHandle | null => getWebTextAreaImpl(textInputRef.current),
@@ -1607,6 +1724,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         submitOnEnter: shouldSubmitOnEnter,
         isAgentRunning,
         onQueue,
+        defaultSendBehavior,
         isSubmitDisabled,
         isSubmitLoading,
         disabled,
@@ -1632,6 +1750,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         isSubmitLoading,
         onSubmitLoadingPress,
         defaultSendBehavior,
+        sendsOutOfBand,
         isAgentRunning,
       });
     useIosHardwareKeyboardSubmit({
@@ -1642,6 +1761,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       submitButtonAccessibilityLabel,
       canPressLoadingButton,
       defaultActionQueues,
+      sendsOutOfBand,
       defaultSendBehavior,
       isAgentRunning,
       t,
@@ -1806,12 +1926,16 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
               textInputRef={textInputRef}
               textInputStyle={textInputStyle}
               readOnlyTextStyle={readOnlyTextStyle}
-              placeholder={placeholder ?? t("composer.placeholders.fallback")}
+              placeholder={resolveInputPlaceholder(placeholder, t)}
               accessibilityLabel={t(mode.accessibilityLabelKey)}
               onChangeText={handleInputChange}
               onFocus={handleInputFocus}
               onBlur={handleInputBlur}
-              editable={!isDictating && !isRealtimeVoiceForCurrentAgent && !disabled}
+              editable={computeIsComposerEditable({
+                isDictating,
+                isRealtimeVoiceForCurrentAgent,
+                disabled,
+              })}
               scrollEnabled={isComposerScrollEnabled}
               autoFocus={false}
               onKeyPress={shouldHandleWebKeyPress ? handleDesktopKeyPress : undefined}
@@ -1864,7 +1988,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
                 shouldShow
                 canPressLoadingButton={canPressLoadingButton}
                 onSubmitLoadingPress={onSubmitLoadingPress}
-                onDefaultSendAction={handleDefaultSendAction}
+                onDefaultSendAction={handleButtonSendAction}
                 isSendButtonDisabled={isSendButtonDisabled}
                 submitAccessibilityLabel={submitAccessibilityLabel}
                 sendButtonCombinedStyle={sendButtonCombinedStyle}
@@ -1873,7 +1997,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
                 submitLabel={submitLabel}
                 submitButtonTestID={submitButtonTestID}
                 buttonIconSize={buttonIconSize}
-                sendKeys={DEFAULT_SEND_KEYS}
+                sendKeys={resolveSendShortcutKeys(isAgentRunning)}
                 sendTooltipLabel={sendTooltipLabel}
               />
             </View>

@@ -14,8 +14,14 @@ const BASE_RECORD: StoredAgentRecord = {
   config: null,
 };
 
-test("archives a stored agent without changing terminal statuses", () => {
-  const statuses: Array<StoredAgentRecord["lastStatus"]> = ["idle", "error", "closed"];
+test("archives any stored agent with lastStatus closed", () => {
+  const statuses: Array<StoredAgentRecord["lastStatus"]> = [
+    "idle",
+    "error",
+    "closed",
+    "initializing",
+    "running",
+  ];
 
   for (const status of statuses) {
     const archived = buildArchivedAgentRecord(
@@ -23,22 +29,11 @@ test("archives a stored agent without changing terminal statuses", () => {
       { archivedAt: "2025-01-03T00:00:00.000Z" },
     );
 
-    expect(archived.lastStatus).toBe(status);
+    // An archived record is terminal: never a busy (running/initializing)
+    // or error classification — the agent left the active directory.
+    expect(archived.lastStatus).toBe("closed");
     expect(archived.archivedAt).toBe("2025-01-03T00:00:00.000Z");
     expect(archived.updatedAt).toBe(BASE_RECORD.updatedAt);
-  }
-});
-
-test("archives busy stored agents as idle", () => {
-  const statuses: Array<StoredAgentRecord["lastStatus"]> = ["initializing", "running"];
-
-  for (const status of statuses) {
-    const archived = buildArchivedAgentRecord(
-      { ...BASE_RECORD, lastStatus: status },
-      { archivedAt: "2025-01-03T00:00:00.000Z" },
-    );
-
-    expect(archived.lastStatus).toBe("idle");
   }
 });
 

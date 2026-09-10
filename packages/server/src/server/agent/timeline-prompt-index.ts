@@ -1,4 +1,5 @@
 import type { AgentTimelineRow } from "./agent-timeline-store-types.js";
+import { isSystemInjectedEnvelope } from "./agent-prompt.js";
 
 const PROMPT_PREVIEW_MAX_LENGTH = 120;
 
@@ -28,7 +29,7 @@ export function buildTimelinePromptIndex(
   return {
     epoch,
     prompts: rows.flatMap((row) =>
-      row.item.type === "user_message"
+      row.item.type === "user_message" && !isSystemInjectedEnvelope(row.item.text)
         ? [
             {
               seq: row.seq,

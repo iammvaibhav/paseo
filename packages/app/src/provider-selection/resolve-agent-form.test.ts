@@ -336,6 +336,32 @@ describe("mergeSelectedComposerPreferences", () => {
       },
     });
   });
+
+  it("also writes scoped workspace and project preferences when a scope is provided", () => {
+    expect(
+      mergeSelectedComposerPreferences({
+        preferences: {},
+        provider: "codex",
+        updates: { model: "gpt-5.4" },
+        scope: { workspaceId: "ws-1", projectKey: "proj-a" },
+      }),
+    ).toEqual({
+      provider: "codex",
+      providerPreferences: { codex: { model: "gpt-5.4" } },
+      byProject: {
+        "proj-a": {
+          provider: "codex",
+          providerPreferences: { codex: { model: "gpt-5.4" } },
+        },
+      },
+      byWorkspace: {
+        "ws-1": {
+          provider: "codex",
+          providerPreferences: { codex: { model: "gpt-5.4" } },
+        },
+      },
+    });
+  });
 });
 
 describe("buildProviderDefinitions", () => {
@@ -1031,7 +1057,7 @@ describe("resolveAgentForm", () => {
       expect(next.form.model).toBe("gpt-5.3-codex");
     });
 
-    it("selects default thinking option for the chosen model", () => {
+    it("selects default thinking option for the chosen model when no preference is saved", () => {
       const state = makeState();
       const next = resolveAgentForm(state, {
         type: "SET_PROVIDER_AND_MODEL_FROM_USER",
@@ -1040,6 +1066,24 @@ describe("resolveAgentForm", () => {
         providerDef: TEST_CODEX_DEFINITION,
         providerModels: CODEX_MODELS,
         providerPrefs: { thinkingByModel: { "gpt-5.3-codex": "low" } },
+      });
+
+      expect(next.form.thinkingOptionId).toBe("low");
+    });
+
+    it("restores thinkingByModel for the selected favorite/model", () => {
+      const state = makeState();
+      const next = resolveAgentForm(state, {
+        type: "SET_PROVIDER_AND_MODEL_FROM_USER",
+        provider: "codex",
+        modelId: "gpt-5.3-codex",
+        providerDef: TEST_CODEX_DEFINITION,
+        providerModels: CODEX_MODELS,
+        providerPrefs: {
+          thinkingByModel: {
+            "gpt-5.3-codex": "low",
+          },
+        },
       });
 
       expect(next.form.thinkingOptionId).toBe("low");
@@ -1105,6 +1149,42 @@ describe("resolveAgentForm", () => {
       expect(next.form.model).toBe("gpt-5.3-codex");
       expect(next.form.thinkingOptionId).toBe("xhigh");
       expect(next.userModified.model).toBe(true);
+    });
+
+    it("restores thinkingByModel for the selected model", () => {
+      const state = makeState({ provider: "codex", model: "other", thinkingOptionId: "xhigh" });
+      const next = resolveAgentForm(state, {
+        type: "SET_MODEL_FROM_USER",
+        modelId: "gpt-5.3-codex",
+        availableModels: CODEX_MODELS,
+        providerPrefs: {
+          thinkingByModel: {
+            "gpt-5.3-codex": "low",
+          },
+        },
+      });
+
+      expect(next.form.model).toBe("gpt-5.3-codex");
+      expect(next.form.thinkingOptionId).toBe("low");
+    });
+
+    it("prefers saved thinkingByModel over a previously user-chosen thinking option", () => {
+      const state = makeState(
+        { provider: "codex", model: "other", thinkingOptionId: "xhigh" },
+        { thinkingOptionId: true },
+      );
+      const next = resolveAgentForm(state, {
+        type: "SET_MODEL_FROM_USER",
+        modelId: "gpt-5.3-codex",
+        availableModels: CODEX_MODELS,
+        providerPrefs: {
+          thinkingByModel: {
+            "gpt-5.3-codex": "low",
+          },
+        },
+      });
+
+      expect(next.form.thinkingOptionId).toBe("low");
     });
 
     it("preserves user-chosen thinking option when switching to same model", () => {

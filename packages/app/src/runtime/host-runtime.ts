@@ -27,7 +27,7 @@ import {
 } from "@/utils/daemon-endpoints";
 import { resolveAppVersion } from "@/utils/app-version";
 import { ConnectionOfferSchema, type ConnectionOffer } from "@getpaseo/protocol/connection-offer";
-import { shouldUseDesktopDaemon } from "@/desktop/daemon/desktop-daemon";
+import { getDesktopDaemonStatus, shouldUseDesktopDaemon } from "@/desktop/daemon/desktop-daemon";
 import { isWeb } from "@/constants/platform";
 import { connectToDaemon } from "@/utils/test-daemon-connection";
 import { getOrCreateClientId } from "@/utils/client-id";
@@ -43,9 +43,14 @@ import {
   createDesktopDaemonTransportFactory,
 } from "@/desktop/daemon/desktop-daemon-transport";
 import { getDesktopHost } from "@/desktop/host";
+import { collectBrowserEditorOrigins } from "@/workspace/browser-editor-url";
+import { pickItsaplanEmbedHost, resolveItsaplanEmbedOrigin } from "@/itsaplan/itsaplan-origin";
+import { warmItsaplanEmbed } from "@/itsaplan/itsaplan-webview";
+import { loadAppSettingsFromStorage } from "@/hooks/use-settings";
 import { CLIENT_CAPS } from "@getpaseo/protocol/client-capabilities";
 import { BROWSER_AUTOMATION_COMMAND_NAMES } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import {
+  selectAgentTurnPresentation,
   useSessionStore,
   type Agent,
   type WorkspaceDescriptor,
@@ -83,6 +88,106 @@ import { createAppWebSocketFactory } from "./websocket-factory";
 
 export type HostRuntimeConnectionStatus = "idle" | "connecting" | "online" | "offline" | "error";
 export type HostRegistryStatus = "loading" | "ready";
+
+async function syncInsecureOrigins(hosts: readonly HostProfile[]): Promise<void> {
+  const setOrigins = getDesktopHost()?.browserEditor?.setInsecureOrigins;
+  if (typeof setOrigins !== "function") {
+    return;
+  }
+  // VS Code Web hosts speak plain HTTP on VPN IPs, and the itsaplan desktop
+  // embed avoids TLS entirely (Electron silently refuses self-signed
+  // certificates for subframes). Both need Chromium's insecure-origin
+  // allowlist to stay secure contexts.
+  const origins = [
+    ...collectBrowserEditorOrigins(hosts.map((host) => host.browserEditorUrl)),
+    ...(await collectItsaplanEmbedOrigins(hosts)),
+  ];
+  try {
+    await setOrigins(origins);
+  } catch (error) {
+    console.warn("[HostRuntime] Failed to sync browser-editor insecure origins", error);
+  }
+  await warmItsaplanEmbedForActiveHost(hosts);
+}
+
+/**
+ * Start loading itsaplan into its persistent guest as soon as the host list is
+ * known, so the first visit to the pane reveals a loaded page instead of a
+ * spinner.
+ *
+ * Rides along with the insecure-origin sync because it needs the same two
+ * things — the desktop bridge and the resolved embed origin — and because the
+ * allowlist must be in place before the guest loads, or the page loads without
+ * a secure context and crypto.randomUUID breaks.
+ */
+async function warmItsaplanEmbedForActiveHost(hosts: readonly HostProfile[]): Promise<void> {
+  const target = pickItsaplanEmbedHost(hosts, await resolveLocalDaemonServerId());
+  if (!target) {
+    return;
+  }
+  let configuredOrigin: string | null = null;
+  try {
+    configuredOrigin = (await loadAppSettingsFromStorage()).itsaplanOrigin || null;
+  } catch {
+    configuredOrigin = null;
+  }
+  const resolved = resolveItsaplanEmbedOrigin({
+    isLocalDaemon: target.serverId === (await resolveLocalDaemonServerId()),
+    configuredOrigin,
+    browserEditorUrl: target.browserEditorUrl ?? null,
+    hostProfile: target,
+    insecureHttp: true,
+  });
+  if (resolved) {
+    warmItsaplanEmbed(resolved.origin);
+  }
+}
+
+async function resolveLocalDaemonServerId(): Promise<string | null> {
+  if (!shouldUseDesktopDaemon()) {
+    return null;
+  }
+  try {
+    const status = await getDesktopDaemonStatus();
+    return status.serverId.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+async function collectItsaplanEmbedOrigins(hosts: readonly HostProfile[]): Promise<string[]> {
+  const localServerId = await resolveLocalDaemonServerId();
+  let configuredOrigin: string | null = null;
+  try {
+    configuredOrigin = (await loadAppSettingsFromStorage()).itsaplanOrigin || null;
+  } catch {
+    configuredOrigin = null;
+  }
+  const origins = new Set<string>();
+  for (const host of hosts) {
+    const resolved = resolveItsaplanEmbedOrigin({
+      isLocalDaemon: localServerId !== null && host.serverId === localServerId,
+      configuredOrigin,
+      browserEditorUrl: host.browserEditorUrl ?? null,
+      hostProfile: host,
+      insecureHttp: true,
+    });
+    if (resolved) {
+      origins.add(resolved.origin);
+    }
+  }
+  return [...origins].sort();
+}
+
+/**
+ * Re-push the insecure-origin allowlist (VS Code Web hosts + the itsaplan
+ * desktop embed) without waiting for a host-registry mutation. Called after
+ * the user edits the itsaplan URL setting; Electron persists the list and
+ * applies it via --unsafely-treat-insecure-origin-as-secure on next launch.
+ */
+export async function syncDesktopInsecureOrigins(): Promise<void> {
+  await syncInsecureOrigins(getHostRuntimeStore().getHosts());
+}
 
 export type ActiveConnection =
   | { type: "directTcp"; endpoint: string; display: string }
@@ -168,6 +273,7 @@ export interface HostRuntimeControllerDeps {
     host: HostProfile;
     connection: HostConnection;
     timeoutMs?: number;
+    clientId?: string;
   }) => Promise<{
     client: DaemonClient;
     serverId: string;
@@ -489,6 +595,23 @@ function probeIntervalForConnection(
   return PROBE_MAX_BACKOFF_MS;
 }
 
+function allocateProbeClientId(stableClientId: string): string {
+  const suffix =
+    globalThis.crypto && typeof globalThis.crypto.randomUUID === "function"
+      ? globalThis.crypto.randomUUID().replace(/-/g, "").slice(0, 12)
+      : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  return `${stableClientId}:probe:${suffix}`;
+}
+
+function hostHasOpenTurn(serverId: string): boolean {
+  const session = useSessionStore.getState().sessions[serverId];
+  if (!session) return false;
+  for (const agentId of session.agents.keys()) {
+    if (selectAgentTurnPresentation(session, agentId).isActive) return true;
+  }
+  return false;
+}
+
 function createDefaultDeps(): HostRuntimeControllerDeps {
   const browserHostAvailable =
     typeof getDesktopHost()?.browser?.executeAutomationCommand === "function";
@@ -567,10 +690,11 @@ function createDefaultDeps(): HostRuntimeControllerDeps {
         },
       });
     },
-    connectToDaemon: ({ host, connection, timeoutMs }) =>
+    connectToDaemon: ({ host, connection, timeoutMs, clientId }) =>
       connectToDaemon(connection, {
         ...(host.serverId ? { serverId: host.serverId } : {}),
         ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        ...(clientId ? { clientId } : {}),
         capabilities: appCapabilities,
         trace: nativePerformanceTrace,
       }),
@@ -950,6 +1074,9 @@ export class HostRuntimeController {
       }
 
       if (this.switchCandidateHitCount >= ADAPTIVE_SWITCH_CONSECUTIVE_PROBES) {
+        if (hostHasOpenTurn(this.host.serverId)) {
+          return;
+        }
         this.switchCandidateConnectionId = null;
         this.switchCandidateHitCount = 0;
         await this.switchToConnection({
@@ -983,6 +1110,7 @@ export class HostRuntimeController {
               const { client, serverId } = await this.deps.connectToDaemon({
                 host: this.host,
                 connection,
+                clientId: allocateProbeClientId("cid"),
               });
               if (serverId !== this.host.serverId) {
                 if (isPlaceholderServerId(this.host.serverId) && this.onReconcileServerId) {
@@ -1512,6 +1640,7 @@ export class HostRuntimeStore {
       projectIconCache.setHosts(profiles.map((profile) => profile.serverId));
       await projectIconCache.restore();
       this.syncHosts(profiles);
+      void syncInsecureOrigins(profiles);
       for (const profile of profiles) {
         void this.directorySyncByServer
           .get(profile.serverId)
@@ -1887,6 +2016,41 @@ export class HostRuntimeStore {
     await this.persistHosts();
   }
 
+  async setHostSshHost(serverId: string, sshHost: string | null): Promise<void> {
+    const trimmed = sshHost?.trim() ?? "";
+    const next = this.hosts.map((h) => {
+      if (h.serverId !== serverId) {
+        return h;
+      }
+      const { sshHost: _previous, ...rest } = h;
+      return {
+        ...rest,
+        ...(trimmed ? { sshHost: trimmed } : {}),
+        updatedAt: new Date().toISOString(),
+      } satisfies HostProfile;
+    });
+    this.setHostsAndSync(next);
+    await this.persistHosts();
+  }
+
+  async setHostBrowserEditorUrl(serverId: string, browserEditorUrl: string | null): Promise<void> {
+    const trimmed = browserEditorUrl?.trim() ?? "";
+    const next = this.hosts.map((h) => {
+      if (h.serverId !== serverId) {
+        return h;
+      }
+      const { browserEditorUrl: _previous, ...rest } = h;
+      return {
+        ...rest,
+        ...(trimmed ? { browserEditorUrl: trimmed } : {}),
+        updatedAt: new Date().toISOString(),
+      } satisfies HostProfile;
+    });
+    this.setHostsAndSync(next);
+    await this.persistHosts();
+    await syncInsecureOrigins(next);
+  }
+
   async renameHost(serverId: string, label: string): Promise<void> {
     await this.updateHost(serverId, (host) => ({ ...host, label }));
   }
@@ -2186,12 +2350,13 @@ export class HostRuntimeStore {
     void sendQueuedComposerMessageNow({
       agentId,
       messageId: next.id,
+      deliveryMode: "queue",
       queue: {
         read: (queuedAgentId) =>
           useSessionStore.getState().sessions[serverId]?.queuedMessages.get(queuedAgentId) ?? [],
         write: (update) => useSessionStore.getState().setQueuedMessages(serverId, update),
       },
-      submitMessage: async ({ text, attachments }) => {
+      submitMessage: async ({ text, attachments, dispatchMode }) => {
         const supportsForgeAttachments =
           useSessionStore.getState().sessions[serverId]?.serverInfo?.features?.forgeSearch === true;
         await dispatchComposerAgentMessage({
@@ -2204,6 +2369,7 @@ export class HostRuntimeStore {
           }),
           encodeImages,
           submission: createMessageSubmissionWriter(serverId),
+          dispatchMode,
         });
       },
     })
@@ -2501,6 +2667,49 @@ export function useHostRuntimeConnectionStatus(serverId: string): HostRuntimeCon
   );
 }
 
+/**
+ * Builds the aggregate connection-status map for the given hosts.
+ *
+ * Lives at module scope (not inside the hook) so the React Compiler treats the
+ * call as opaque and keeps every argument — `version` included — in the
+ * auto-memo dep list. An in-hook `void version` read is dead-code-eliminated by
+ * the compiler (the value never feeds a visible computation), leaving
+ * `serverIds` as the only memo dep; with a stable serverIds array the map then
+ * freezes at the mount-time status and never reflects later transitions (the
+ * Mission Control board/sidebar gate on it). Here `version` keys the per-tick
+ * cache: when the store's aggregate version ticks, the map is rebuilt from
+ * fresh snapshots.
+ */
+let lastConnectionStatusMapBuild: {
+  store: HostRuntimeStore;
+  version: number;
+  key: string;
+  statuses: ReadonlyMap<string, HostRuntimeConnectionStatus>;
+} | null = null;
+
+function buildConnectionStatusMap(
+  store: HostRuntimeStore,
+  serverIds: readonly string[],
+  version: number,
+): ReadonlyMap<string, HostRuntimeConnectionStatus> {
+  const key = serverIds.join("\u0000");
+  const cached = lastConnectionStatusMapBuild;
+  if (
+    cached !== null &&
+    cached.store === store &&
+    cached.version === version &&
+    cached.key === key
+  ) {
+    return cached.statuses;
+  }
+  const statuses = new Map<string, HostRuntimeConnectionStatus>();
+  for (const serverId of serverIds) {
+    statuses.set(serverId, store.getSnapshot(serverId)?.connectionStatus ?? "connecting");
+  }
+  lastConnectionStatusMapBuild = { store, version, key, statuses };
+  return statuses;
+}
+
 export function useHostRuntimeConnectionStatuses(
   serverIds: readonly string[],
 ): ReadonlyMap<string, HostRuntimeConnectionStatus> {
@@ -2510,16 +2719,7 @@ export function useHostRuntimeConnectionStatuses(
     () => store.getVersion(),
     () => store.getVersion(),
   );
-
-  return useMemo(() => {
-    // The aggregate version is the reactivity trigger; re-read snapshots on every host tick.
-    void version;
-    const entries: Array<[string, HostRuntimeConnectionStatus]> = serverIds.map((serverId) => [
-      serverId,
-      store.getSnapshot(serverId)?.connectionStatus ?? "connecting",
-    ]);
-    return new Map(entries);
-  }, [serverIds, store, version]);
+  return buildConnectionStatusMap(store, serverIds, version);
 }
 
 export function useHostRuntimeLastError(serverId: string): string | null {
@@ -2611,6 +2811,8 @@ export interface HostMutations {
     label?: string,
   ) => Promise<HostProfile>;
   renameHost: (serverId: string, label: string) => Promise<void>;
+  setHostSshHost: (serverId: string, sshHost: string | null) => Promise<void>;
+  setHostBrowserEditorUrl: (serverId: string, browserEditorUrl: string | null) => Promise<void>;
   setHostColor: (serverId: string, color: HostColor) => Promise<void>;
   setHostBadgeDisplay: (serverId: string, badgeDisplay: HostBadgeDisplay) => Promise<void>;
   removeHost: (serverId: string) => Promise<void>;
@@ -2628,6 +2830,9 @@ export function useHostMutations(): HostMutations {
       upsertConnectionFromOffer: (offer, label) => store.upsertConnectionFromOffer(offer, label),
       upsertConnectionFromOfferUrl: (url, label) => store.upsertConnectionFromOfferUrl(url, label),
       renameHost: (serverId, label) => store.renameHost(serverId, label),
+      setHostSshHost: (serverId, sshHost) => store.setHostSshHost(serverId, sshHost),
+      setHostBrowserEditorUrl: (serverId, browserEditorUrl) =>
+        store.setHostBrowserEditorUrl(serverId, browserEditorUrl),
       setHostColor: (serverId, color) => store.setHostColor(serverId, color),
       setHostBadgeDisplay: (serverId, badgeDisplay) =>
         store.setHostBadgeDisplay(serverId, badgeDisplay),

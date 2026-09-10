@@ -209,7 +209,7 @@ describe("createRootLogger", () => {
     expect(files).toEqual(["programmatic.log"]);
   });
 
-  it("can disable file output for supervised workers", async () => {
+  it("can disable file output when explicitly requested", async () => {
     const paseoHome = await mkdtemp(path.join(tmpdir(), "paseo-logger-no-worker-file-"));
     const logPath = path.join(paseoHome, "daemon.log");
 

@@ -11,6 +11,19 @@ import type { ShortcutKey } from "@/utils/format-shortcut";
 const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const foregroundMutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
+export interface SidebarHeaderRowBadgeSegment {
+  /** Count shown in the pill; zero-count segments are omitted entirely. */
+  count: number;
+  /** Accessibility label for the segment. */
+  label: string;
+  testID: string;
+  /**
+   * Status-token family for the chip (spec: same tokens as the board
+   * buckets — needs-you = attention, ready-for-review = success).
+   */
+  tone: "attention" | "success";
+}
+
 type SidebarHeaderRowVariant = "header" | "compact";
 
 interface SidebarHeaderRowProps {
@@ -29,6 +42,10 @@ interface SidebarHeaderRowProps {
    */
   variant?: SidebarHeaderRowVariant;
   shortcutKeys?: ShortcutKey[][] | null;
+  /** Optional count pills rendered right-aligned (e.g. Mission Control's
+   * working / ready-for-review split). Zero-count segments are omitted;
+   * both segments show when both are nonzero. */
+  badgeSegments?: readonly SidebarHeaderRowBadgeSegment[];
 }
 
 export function SidebarHeaderRow({
@@ -41,6 +58,7 @@ export function SidebarHeaderRow({
   accessibilityLabel,
   variant = "header",
   shortcutKeys = null,
+  badgeSegments,
 }: SidebarHeaderRowProps) {
   const ThemedIcon = useMemo(() => withUnistyles(Icon), [Icon]);
 
@@ -71,10 +89,31 @@ export function SidebarHeaderRow({
           {shortcutKeys && Boolean(state.hovered) ? (
             <Shortcut chord={shortcutKeys} style={styles.shortcut} />
           ) : null}
+          {badgeSegments && badgeSegments.some((segment) => segment.count > 0) ? (
+            <View style={styles.countBadges}>
+              {badgeSegments
+                .filter((segment) => segment.count > 0)
+                .map((segment) => (
+                  <View
+                    key={segment.testID}
+                    style={[
+                      styles.countBadge,
+                      segment.tone === "attention"
+                        ? styles.countBadgeAttention
+                        : styles.countBadgeSuccess,
+                    ]}
+                    accessibilityLabel={`${segment.count} ${segment.label}`}
+                    testID={segment.testID}
+                  >
+                    <Text style={styles.countBadgeText}>{segment.count}</Text>
+                  </View>
+                ))}
+            </View>
+          ) : null}
         </>
       );
     },
-    [ThemedIcon, isActive, label, shortcutKeys],
+    [ThemedIcon, badgeSegments, isActive, label, shortcutKeys],
   );
 
   return (
@@ -158,5 +197,30 @@ const styles = StyleSheet.create((theme) => ({
   },
   shortcut: {
     marginLeft: "auto",
+  },
+  countBadges: {
+    marginLeft: "auto",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+  },
+  countBadge: {
+    width: theme.spacing[4],
+    height: theme.spacing[4],
+    borderRadius: theme.borderRadius.full,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  countBadgeAttention: {
+    backgroundColor: theme.colors.statusDanger,
+  },
+  countBadgeSuccess: {
+    backgroundColor: theme.colors.statusSuccess,
+  },
+  countBadgeText: {
+    fontSize: theme.fontSize.xs,
+    lineHeight: theme.spacing[4],
+    fontWeight: theme.fontWeight.normal,
+    color: theme.colors.palette.white,
   },
 }));

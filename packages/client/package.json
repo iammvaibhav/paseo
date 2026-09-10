@@ -31,16 +31,16 @@
   },
   "scripts": {
     "clean": "node ../../scripts/clean-package-dist.mjs",
-    "build": "npm run build --workspace=@getpaseo/protocol && tsc -p tsconfig.json --incremental false",
-    "build:clean": "npm run clean && npm run build",
-    "prepack": "npm run build:clean",
+    "build": "pnpm --filter @getpaseo/protocol run build && tsc -p tsconfig.json --incremental false",
+    "build:clean": "pnpm run clean && pnpm run build",
+    "prepack": "pnpm run build:clean",
     "typecheck": "tsgo --noEmit",
     "typecheck:examples": "tsgo -p tsconfig.examples.json --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
-    "@getpaseo/protocol": "0.8.0-beta.1",
-    "@getpaseo/relay": "0.8.0-beta.1",
+    "@getpaseo/protocol": "workspace:*",
+    "@getpaseo/relay": "workspace:*",
     "zod": "^4.4.3"
   },
   "devDependencies": {

@@ -1,6 +1,7 @@
 import { useCallback, useMemo } from "react";
 import {
   useAppSettings,
+  type SidebarWorkspaceSort,
   type SidebarWorkspaceTrailing,
   type WorkspaceTitleSource,
 } from "@/hooks/use-settings";
@@ -20,6 +21,8 @@ export interface SidebarDisplayPreferences {
   setGrouping: (mode: SidebarGroupMode) => void;
   titleSource: WorkspaceTitleSource;
   setTitleSource: (source: WorkspaceTitleSource) => void;
+  workspaceSort: SidebarWorkspaceSort;
+  setWorkspaceSort: (sort: SidebarWorkspaceSort) => void;
   rowItems: SidebarRowItems;
   toggleRowItem: (item: SidebarRowItem) => void;
   checksDisplay: SidebarChecksDisplay;
@@ -64,6 +67,7 @@ export function useSidebarDisplayPreferences(): SidebarDisplayPreferences {
     settings: {
       workspaceTitleSource,
       sidebarWorkspaceTrailing,
+      sidebarWorkspaceSort,
       sidebarRowItems,
       sidebarChecksDisplay,
     },
@@ -73,6 +77,13 @@ export function useSidebarDisplayPreferences(): SidebarDisplayPreferences {
   const setTitleSource = useCallback(
     (source: WorkspaceTitleSource) => {
       void updateSettings({ workspaceTitleSource: source });
+    },
+    [updateSettings],
+  );
+
+  const setWorkspaceSort = useCallback(
+    (sort: SidebarWorkspaceSort) => {
+      void updateSettings({ sidebarWorkspaceSort: sort });
     },
     [updateSettings],
   );
@@ -108,6 +119,8 @@ export function useSidebarDisplayPreferences(): SidebarDisplayPreferences {
       setGrouping,
       titleSource: workspaceTitleSource,
       setTitleSource,
+      workspaceSort: sidebarWorkspaceSort,
+      setWorkspaceSort,
       rowItems: sidebarRowItems,
       toggleRowItem,
       checksDisplay: sidebarChecksDisplay,
@@ -129,6 +142,8 @@ export function useSidebarDisplayPreferences(): SidebarDisplayPreferences {
       setGrouping,
       workspaceTitleSource,
       setTitleSource,
+      sidebarWorkspaceSort,
+      setWorkspaceSort,
       sidebarRowItems,
       toggleRowItem,
       sidebarChecksDisplay,

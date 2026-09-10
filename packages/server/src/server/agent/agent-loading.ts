@@ -109,6 +109,10 @@ export async function ensureAgentLoaded(
         handle,
         buildConfigOverrides(record),
         agentId,
+        // Labels ride extractTimestamps into the launch options so the
+        // launch-context catalog build sees the caller labels (verifier/
+        // Commander tools are label-gated: a resumed verifier session must
+        // keep contact_worker/submit_verdict).
         extractTimestamps(record),
         record.archivedAt ? { purpose: "history" } : undefined,
       );
@@ -130,6 +134,7 @@ export async function ensureAgentLoaded(
 
     await deps.agentManager.hydrateTimelineFromProvider(agentId, {
       broadcast: () => pendingOptions.broadcastTimeline,
+      providerSubagents: true,
     });
     return deps.agentManager.getAgent(agentId) ?? snapshot;
   })();

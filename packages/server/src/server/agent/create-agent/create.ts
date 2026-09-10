@@ -3,6 +3,7 @@ import type { Logger } from "pino";
 import type { TerminalManager } from "../../../terminal/terminal-manager.js";
 import type { CreatePaseoWorktreeInput } from "../../paseo-worktree-service.js";
 import { expandUserPath, resolvePathFromBase } from "../../path-utils.js";
+import { remapLegacyCommanderCreateCwd } from "../../mission-control/commander-boot.js";
 import { toWorktreeRequestError } from "../../worktree-errors.js";
 import type {
   AgentWorktreeSetupContinuation,
@@ -25,7 +26,8 @@ import {
   appendTimelineItemIfAgentKnown,
   emitLiveTimelineItemIfAgentKnown,
 } from "../timeline-append.js";
-import { resolveCreateAgentIntent } from "./intent.js";
+import { getItsaplanIssueIdFromLabels } from "../../itsaplan/bridge.js";
+import { resolveCreateAgentIntent, type CreateAgentPlacement } from "./intent.js";
 
 export interface CreateAgentSessionWorktreeResult {
   sessionConfig: AgentSessionConfig;
@@ -46,12 +48,26 @@ export interface CreateAgentCommandDependencies {
   createPaseoWorktree?: CreatePaseoWorktreeWorkflowFn;
   // Mints a fresh directory workspace for a cwd and returns its id.
   ensureWorkspaceForCreate?: EnsureWorkspaceForCreate;
+  /**
+   * Looks up a workspace by id so a create that names one lands in that
+   * workspace's real directory. Without it an explicit workspaceId is taken on
+   * trust and the agent inherits whatever cwd the caller defaulted to.
+   */
+  getWorkspace?: GetWorkspaceForCreate;
 }
 
 export type EnsureWorkspaceForCreate = (
   cwd: string,
   firstAgentContext?: FirstAgentContext,
 ) => Promise<string>;
+
+/**
+ * The subset of a workspace record the create path needs: where it lives and
+ * whether it is still live.
+ */
+export type GetWorkspaceForCreate = (
+  workspaceId: string,
+) => Promise<{ cwd: string; archivedAt: string | null } | null>;
 
 export interface CreateAgentFromSessionInput {
   kind: "session";
@@ -85,9 +101,12 @@ export interface CreateAgentFromMcpInput {
   config?: Partial<AgentSessionConfig>;
   cwd?: string;
   workspaceId?: string;
+  isolation?: "local" | "worktree";
   thinking?: string;
   features?: Record<string, unknown>;
   labels?: Record<string, string>;
+  images?: Array<{ data: string; mimeType: string }>;
+  attachments?: AgentAttachment[];
   mode?: string;
   unattended?: boolean;
   promptFailure?: CreateAgentPromptFailureMode;
@@ -309,25 +328,47 @@ async function resolveMcpCreateAgent(
   const parentAgent = input.callerAgentId
     ? requireParentAgent(dependencies.agentManager, input.callerAgentId)
     : null;
-  const cwd = resolveMcpInitialCwd(input, parentAgent);
+  // Commander-labeled creates with the legacy `~` sentinel cwd are redirected
+  // to the reserved home (`<paseoHome>/commander`) — same remap as the session
+  // create path, so every client lands in the same reserved home.
+  const cwd = remapLegacyCommanderCreateCwd({
+    labels: input.labels,
+    requestedCwd: resolveMcpInitialCwd(input, parentAgent),
+    paseoHome: dependencies.paseoHome,
+  });
   const { resolvedCwd, setupContinuation, createdWorkspaceId, createdWorktree } =
     await resolveMcpCwd({
       dependencies,
       cwd,
+      title: input.title,
       worktree: input.worktree,
+      isolation: input.isolation,
+      workspaceId: input.workspaceId,
+      labels: input.labels,
       initialPrompt: input.initialPrompt ?? "",
     });
   if (createdWorktree) input.onWorktreeCreated?.(createdWorktree);
 
   const intent = await resolveCreateAgentIntent({
-    explicitWorkspaceId: setupContinuation ? createdWorkspaceId : input.workspaceId,
+    explicitWorkspaceId:
+      setupContinuation || createdWorkspaceId ? createdWorkspaceId : input.workspaceId,
     caller: parentAgent
       ? { id: parentAgent.id, cwd: parentAgent.cwd, workspaceId: parentAgent.workspaceId }
       : null,
+    // The caller's labels are the agent's identity: Mission Control finds the
+    // Commander on a host by its `paseo.mission-control` label. resolveCreateAgentIntent
+    // takes labels optionally, so dropping this argument compiles clean and silently
+    // creates every MCP agent with no labels at all.
     labels: input.labels,
     childAgentDefaultLabels: input.callerContext?.childAgentDefaultLabels,
     legacyDetached: input.detached ?? false,
-    resolveWorkspace: async (workspaceId) => ({ workspaceId, cwd: resolvedCwd }),
+    resolveWorkspace: async (workspaceId) =>
+      resolveExplicitWorkspacePlacement({
+        dependencies,
+        workspaceId,
+        callerRequestedCwd: input.cwd,
+        fallbackCwd: resolvedCwd,
+      }),
     createWorkspace: async () => ({
       workspaceId: requireResolvedWorkspaceId(
         await ensureWorkspaceForMcpCreate(dependencies, resolvedCwd, input.initialPrompt ?? ""),
@@ -344,6 +385,8 @@ async function resolveMcpCreateAgent(
   });
 
   const trimmedPrompt = input.initialPrompt?.trim() ?? "";
+  const prompt = buildAgentPrompt(trimmedPrompt, input.images, input.attachments);
+  const hasPromptContent = Array.isArray(prompt) ? prompt.length > 0 : prompt.length > 0;
   return {
     config: buildMcpSessionConfig({
       input,
@@ -360,11 +403,46 @@ async function resolveMcpCreateAgent(
       owner: input.owner,
       env: input.env,
     },
-    prompt: trimmedPrompt ? trimmedPrompt : undefined,
+    prompt: hasPromptContent ? prompt : undefined,
     setupContinuation,
     createdWorktree,
     background: input.background,
     promptFailure: input.promptFailure ?? "log",
+  };
+}
+
+/**
+ * Placement for a create that names an existing workspace.
+ *
+ * The workspace's own directory is authoritative. Trusting the caller's cwd
+ * here put agents at the daemon's `process.cwd()` (`/`) whenever a spawn named
+ * a workspace but passed no cwd, which files the agent outside the workspace
+ * and hides it from the board. An explicit caller cwd still wins, so a spawn
+ * can target a subdirectory of the workspace.
+ *
+ * An archived or missing workspace is refused: creating there produces an
+ * agent the next archive sweep immediately archives.
+ */
+export async function resolveExplicitWorkspacePlacement(params: {
+  dependencies: CreateAgentCommandDependencies;
+  workspaceId: string;
+  callerRequestedCwd: string | undefined;
+  fallbackCwd: string;
+}): Promise<CreateAgentPlacement> {
+  const { dependencies, workspaceId, callerRequestedCwd, fallbackCwd } = params;
+  if (!dependencies.getWorkspace) {
+    return { workspaceId, cwd: fallbackCwd };
+  }
+  const workspace = await dependencies.getWorkspace(workspaceId);
+  if (!workspace) {
+    throw new Error(`Workspace ${workspaceId} not found`);
+  }
+  if (workspace.archivedAt) {
+    throw new Error(`Workspace ${workspaceId} is archived`);
+  }
+  return {
+    workspaceId,
+    cwd: callerRequestedCwd ? fallbackCwd : workspace.cwd,
   };
 }
 
@@ -503,76 +581,129 @@ function resolveChildAgentCwd(params: {
   return resolvePathFromBase(params.parentCwd, requestedCwd);
 }
 
+function isExplicitWorktreeRequested(
+  isolation: CreateAgentFromMcpInput["isolation"] | undefined,
+  worktree: CreateAgentFromMcpInput["worktree"] | undefined,
+): boolean {
+  if (isolation === "worktree") return true;
+  if (!worktree) return false;
+  return Boolean(
+    worktree.worktreeName ||
+    worktree.branchName ||
+    worktree.baseBranch ||
+    worktree.refName ||
+    worktree.action ||
+    worktree.githubPrNumber !== undefined,
+  );
+}
+
+function isNotGitRepositoryError(error: unknown): boolean {
+  if (error instanceof Error) {
+    const msg = error.message.toLowerCase();
+    return msg.includes("requires a git repository") || msg.includes("not a git repository");
+  }
+  return false;
+}
+
+function shouldAttemptMcpWorktree(params: {
+  isolation?: CreateAgentFromMcpInput["isolation"];
+  worktree?: CreateAgentFromMcpInput["worktree"];
+  workspaceId?: string;
+  labels?: Record<string, string>;
+  hasWorktreeService: boolean;
+}): { attempt: boolean; explicit: boolean } {
+  if (params.workspaceId || params.isolation === "local" || !params.hasWorktreeService) {
+    return { attempt: false, explicit: false };
+  }
+  const explicit = isExplicitWorktreeRequested(params.isolation, params.worktree);
+  const isTicket = Boolean(params.labels && getItsaplanIssueIdFromLabels(params.labels));
+  return { attempt: explicit || isTicket, explicit };
+}
+function createAgentWorktreeSetupContinuation(
+  dependencies: CreateAgentCommandDependencies,
+): CreatePaseoWorktreeSetupContinuationInput {
+  return {
+    kind: "agent",
+    terminalManager: dependencies.terminalManager ?? null,
+    appendTimelineItem: (params) =>
+      appendTimelineItemIfAgentKnown({
+        agentManager: dependencies.agentManager,
+        agentId: params.agentId,
+        item: params.item,
+      }),
+    emitLiveTimelineItem: (params) =>
+      emitLiveTimelineItemIfAgentKnown({
+        agentManager: dependencies.agentManager,
+        agentId: params.agentId,
+        item: params.item,
+      }),
+    logger: dependencies.logger,
+  };
+}
+
 async function resolveMcpCwd(params: {
   dependencies: CreateAgentCommandDependencies;
   cwd: string;
+  title?: string;
   initialPrompt: string;
-  worktree: CreateAgentFromMcpInput["worktree"];
+  worktree?: CreateAgentFromMcpInput["worktree"];
+  isolation?: CreateAgentFromMcpInput["isolation"];
+  workspaceId?: string;
+  labels?: Record<string, string>;
 }): Promise<{
   resolvedCwd: string;
   setupContinuation?: AgentWorktreeSetupContinuation;
   createdWorkspaceId?: string;
   createdWorktree?: CreatePaseoWorktreeWorkflowResult;
 }> {
-  const { dependencies, worktree } = params;
-  if (!worktree) {
-    return { resolvedCwd: params.cwd };
-  }
-  const shouldCreateWorktree = Boolean(
-    worktree.worktreeName || worktree.refName || worktree.action || worktree.githubPrNumber,
-  );
-  if (!shouldCreateWorktree) {
-    return { resolvedCwd: params.cwd };
-  }
-  if (
-    worktree.worktreeName &&
-    !worktree.baseBranch &&
-    !worktree.refName &&
-    !worktree.action &&
-    worktree.githubPrNumber === undefined
-  ) {
-    throw new Error("baseBranch is required when creating a worktree");
-  }
-  const baseBranch = worktree.baseBranch;
-  const createdWorktree = await createMcpWorktree({
-    input: {
-      cwd: params.cwd,
-      worktreeSlug: worktree.worktreeName,
-      branchName: worktree.branchName,
-      refName: worktree.refName,
-      action: worktree.action,
-      githubPrNumber: worktree.githubPrNumber,
-      firstAgentContext: { prompt: params.initialPrompt },
-      runSetup: false,
-      paseoHome: dependencies.paseoHome,
-      worktreesRoot: dependencies.worktreesRoot,
-    },
-    createPaseoWorktree: dependencies.createPaseoWorktree,
-    resolveDefaultBranch: baseBranch ? async () => baseBranch : undefined,
-    setupContinuation: {
-      kind: "agent",
-      terminalManager: dependencies.terminalManager ?? null,
-      appendTimelineItem: ({ agentId, item }) =>
-        appendTimelineItemIfAgentKnown({
-          agentManager: dependencies.agentManager,
-          agentId,
-          item,
-        }),
-      emitLiveTimelineItem: ({ agentId, item }) =>
-        emitLiveTimelineItemIfAgentKnown({
-          agentManager: dependencies.agentManager,
-          agentId,
-          item,
-        }),
-      logger: dependencies.logger,
-    },
+  const { dependencies, worktree, isolation, workspaceId, labels } = params;
+  const { attempt, explicit } = shouldAttemptMcpWorktree({
+    isolation,
+    worktree,
+    workspaceId,
+    labels,
+    hasWorktreeService: Boolean(dependencies.createPaseoWorktree),
   });
-  return {
-    resolvedCwd: createdWorktree.workspace.cwd,
-    setupContinuation: createdWorktree.setupContinuation,
-    createdWorkspaceId: createdWorktree.workspace.workspaceId,
-    createdWorktree,
-  };
+  if (!attempt) {
+    return { resolvedCwd: params.cwd };
+  }
+
+  const baseBranch = worktree?.baseBranch;
+  try {
+    const createdWorktree = await createMcpWorktree({
+      input: {
+        cwd: params.cwd,
+        title: params.title,
+        worktreeSlug: worktree?.worktreeName,
+        branchName: worktree?.branchName,
+        refName: worktree?.refName,
+        action: worktree?.action,
+        githubPrNumber: worktree?.githubPrNumber,
+        firstAgentContext: { prompt: params.initialPrompt },
+        runSetup: false,
+        paseoHome: dependencies.paseoHome,
+        worktreesRoot: dependencies.worktreesRoot,
+      },
+      createPaseoWorktree: dependencies.createPaseoWorktree,
+      resolveDefaultBranch: baseBranch ? async () => baseBranch : undefined,
+      setupContinuation: createAgentWorktreeSetupContinuation(dependencies),
+    });
+    return {
+      resolvedCwd: createdWorktree.workspace.cwd,
+      setupContinuation: createdWorktree.setupContinuation,
+      createdWorkspaceId: createdWorktree.workspace.workspaceId,
+      createdWorktree,
+    };
+  } catch (error) {
+    if (explicit || !isNotGitRepositoryError(error)) {
+      throw error;
+    }
+    dependencies.logger.debug(
+      { err: error, cwd: params.cwd },
+      "createAgentCommand: non-git directory, using directory workspace",
+    );
+    return { resolvedCwd: params.cwd };
+  }
 }
 
 interface CreateMcpWorktreeOptions {

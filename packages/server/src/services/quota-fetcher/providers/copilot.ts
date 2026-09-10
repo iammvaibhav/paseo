@@ -39,6 +39,7 @@ async function readGithubCliToken(): Promise<string | null> {
 
 export class CopilotQuotaProvider implements ProviderUsageFetcher {
   readonly providerId = "copilot";
+  readonly agentProviderIds: readonly string[] = ["copilot"];
   readonly displayName = "GitHub Copilot";
 
   private readonly logger: Logger;
