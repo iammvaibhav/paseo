@@ -1096,6 +1096,12 @@ fi
 if [[ -z "\$prev" ]] || git diff "\$prev" "\$cur" --name-only | grep -Eq '^(pnpm-lock\\.yaml|package\\.json|patches/|scripts/postinstall-patches\\.mjs)$'; then
   log "Installing pnpm dependencies"
   corepack enable && corepack prepare pnpm@11.22.0 --activate && pnpm install
+fi
+# Always re-apply patches: sync-ref compares can miss an unapplied patch
+# (shipped once on 2026-09-09), and plain pnpm install skips lifecycle
+# scripts when nothing changed. Guarded on the binary so fresh checkouts
+# without node_modules still fail loudly at build time, as before.
+if [[ -x node_modules/.bin/patch-package ]]; then
   PATH="\$PWD/node_modules/.bin:\$PATH" node scripts/postinstall-patches.mjs
 fi
 echo "\$cur" > "\$sync_ref_file"
@@ -1694,6 +1700,9 @@ maybe_install_deps() {
   if [[ -z "\$prev" ]] || git diff "\$prev" "\$cur" --name-only | grep -Eq '^(pnpm-lock\\.yaml|package\\.json|patches/|scripts/postinstall-patches\\.mjs)$'; then
     log "Installing pnpm dependencies"
     corepack enable && corepack prepare pnpm@11.22.0 --activate && pnpm install
+  fi
+  # Always re-apply patches (see macbook job above for why): cheap, idempotent.
+  if [[ -x node_modules/.bin/patch-package ]]; then
     PATH="\$PWD/node_modules/.bin:\$PATH" node scripts/postinstall-patches.mjs
   fi
   echo "\$cur" > "\$sync_ref_file"
