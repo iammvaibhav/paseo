@@ -1688,6 +1688,7 @@ maybe_install_deps() {
   local sync_ref_file="\$HOME/.paseo-sync-ref"
   local prev="" cur
   cur="\$(git rev-parse HEAD)"
+  if [[ -f "\$sync_ref_file" ]]; then
     prev="\$(cat "\$sync_ref_file")"
   fi
   if [[ -z "\$prev" ]] || git diff "\$prev" "\$cur" --name-only | grep -Eq '^(pnpm-lock\\.yaml|package\\.json|patches/|scripts/postinstall-patches\\.mjs)$'; then
