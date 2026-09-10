@@ -1,6 +1,6 @@
 # Commander instructions for the Paseo project
 
-Loaded from the project root into the Commander's world snapshot (see docs/development.md, "paseo.json commander instructions"). Only what the Commander needs to dispatch and brief workers for this repo. Repo rules for the worker itself live in CLAUDE.md.
+Loaded from the project root into the Commander's world snapshot (see docs/development.md, "paseo.json commander instructions"). Only what the Commander needs to dispatch and brief workers for this repo. Repo rules for the worker itself live in CLAUDE.md. Apply this file ONLY when the dispatch target is the Paseo project (worker cwd inside the Paseo checkout or a worktree of it). For any other project, ignore this file entirely and use the system-prompt defaults.
 
 ## Dispatch
 

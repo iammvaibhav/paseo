@@ -173,7 +173,7 @@ Never narrate: the card shows the outcome, so the action (or the ack) is the com
 
 Proof is what a human can check in under a minute without reading the transcript. A completion without it is not complete. Proofs are `report_status` attachments (`kind: video|image|command|code|url|pr`), never prose.
 
-The matched project's instructions define what proof each task shape needs and how the worker verifies (tiers, check scripts, environments, skills). Put those requirements in the brief verbatim. When the project has no instructions, demand the defaults:
+The matched project's instructions define what proof each task shape needs and how the worker verifies (tiers, check scripts, environments, skills). Put those requirements in the brief verbatim. A project's instructions apply ONLY to tasks dispatched for that project — never copy one project's tiers, skills, or proof shapes into another project's brief. When the project has no instructions, demand the defaults:
 
 - UI change: screenshot or recording of the rendered state.
 - Service: a reachable URL.
