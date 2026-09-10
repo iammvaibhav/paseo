@@ -20,7 +20,7 @@ Pre-provisioning idle git worktrees in the background via the **Warm Worktree Po
 ## Limitation: This Result Depends on a Non-Trivial `worktree.setup`
 
 The benchmark repo's `paseo.json` runs a `worktree.setup` script that spends ~350ms
-doing setup work (simulating a real `npm install`-style dependency step), matching
+doing setup work (simulating a real `pnpm install`-style dependency step), matching
 what most real projects run on every fresh worktree. The warm pool wins here because
 that cost is paid once during background provisioning, off the request's critical
 path, instead of once per claim.

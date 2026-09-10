@@ -15,7 +15,7 @@ import {
 } from "lucide-react-native";
 import type { Theme } from "@/styles/theme";
 import { Button } from "@/components/ui/button";
-import { SegmentedControl } from "@/components/ui/segmented-control";
+import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
 import { MenuHeader } from "@/components/headers/menu-header";
 import { HeaderToggleButton } from "@/components/headers/header-toggle-button";
 import {
@@ -37,6 +37,12 @@ import {
 } from "@/screens/mission-control/thread";
 import { MissionControlInspector } from "@/screens/mission-control/inspector";
 import { useInspectorStore } from "@/screens/mission-control/inspector-store";
+import { MissionControlAgentGrid } from "@/screens/mission-control/agent-grid/grid";
+import { AgentGridControls } from "@/screens/mission-control/agent-grid/controls";
+import {
+  useAgentGridStore,
+  type MissionControlView,
+} from "@/screens/mission-control/agent-grid/store";
 import { BoardRail } from "@/mission-control/board-rail";
 import { InspectorRail } from "@/mission-control/inspector-rail";
 import { MissionControlModeToggle } from "@/mission-control/mode-toggle";
@@ -63,7 +69,18 @@ import {
   resolveComposerVoiceVariant,
 } from "@/mission-control/voice";
 
-type CompactPanel = "thread" | "board";
+type CompactPanel = "thread" | "board" | "grid";
+
+const COMPACT_PANEL_OPTIONS: SegmentedControlOption<CompactPanel>[] = [
+  { value: "thread", label: "Thread", testID: "mission-control-panel-thread" },
+  { value: "board", label: "Board", testID: "mission-control-panel-board" },
+  { value: "grid", label: "Grid", testID: "mission-control-panel-grid" },
+];
+
+const VIEW_OPTIONS: SegmentedControlOption<MissionControlView>[] = [
+  { value: "commander", label: "Commander", testID: "mission-control-view-commander" },
+  { value: "grid", label: "Agent Grid", testID: "mission-control-view-grid" },
+];
 
 const THREAD_STRIP_WIDTH = 40;
 
@@ -105,6 +122,228 @@ function findCommander(
   return null;
 }
 
+interface CommanderLayoutTogglesProps {
+  v3Enabled: boolean;
+  isCompact: boolean;
+  hasCommander: boolean;
+  isCommanderRunning: boolean;
+  threadCollapsed: boolean;
+  onCollapseThread: () => void;
+  boardRailCollapsed: boolean;
+  onToggleBoardRail: () => void;
+  onStopCommander: () => void;
+}
+
+/** Thread/board collapse toggles and Stop: the Commander view's own header controls. */
+function CommanderLayoutToggles({
+  v3Enabled,
+  isCompact,
+  hasCommander,
+  isCommanderRunning,
+  threadCollapsed,
+  onCollapseThread,
+  boardRailCollapsed,
+  onToggleBoardRail,
+  onStopCommander,
+}: CommanderLayoutTogglesProps): ReactElement {
+  const collapseToggleState = useMemo(() => ({ expanded: !threadCollapsed }), [threadCollapsed]);
+  const boardCollapseToggleState = useMemo(
+    () => ({ expanded: !boardRailCollapsed }),
+    [boardRailCollapsed],
+  );
+  return (
+    <>
+      {v3Enabled && !isCompact && hasCommander ? (
+        <HeaderToggleButton
+          onPress={onCollapseThread}
+          tooltipLabel={threadCollapsed ? "Expand Commander thread" : "Collapse Commander thread"}
+          tooltipKeys={[]}
+          tooltipSide="bottom"
+          accessibilityRole="button"
+          accessibilityLabel={
+            threadCollapsed ? "Expand Commander thread" : "Collapse Commander thread"
+          }
+          accessibilityState={collapseToggleState}
+          testID="mission-control-thread-collapse-toggle"
+        >
+          {({ hovered, pressed }) => {
+            const iconProps = hovered || pressed ? foregroundMapping : foregroundMutedMapping;
+            return threadCollapsed ? (
+              <ThemedPanelLeftOpen size={16} uniProps={iconProps} />
+            ) : (
+              <ThemedPanelLeftClose size={16} uniProps={iconProps} />
+            );
+          }}
+        </HeaderToggleButton>
+      ) : null}
+      {v3Enabled && !isCompact ? (
+        <HeaderToggleButton
+          onPress={onToggleBoardRail}
+          tooltipLabel={boardRailCollapsed ? "Expand board" : "Collapse board"}
+          tooltipKeys={[]}
+          tooltipSide="bottom"
+          accessibilityRole="button"
+          accessibilityLabel={boardRailCollapsed ? "Expand board" : "Collapse board"}
+          accessibilityState={boardCollapseToggleState}
+          testID="mission-control-board-collapse-toggle"
+        >
+          {({ hovered, pressed }) => {
+            const iconProps = hovered || pressed ? foregroundMapping : foregroundMutedMapping;
+            return boardRailCollapsed ? (
+              <ThemedPanelRightOpen size={16} uniProps={iconProps} />
+            ) : (
+              <ThemedPanelRightClose size={16} uniProps={iconProps} />
+            );
+          }}
+        </HeaderToggleButton>
+      ) : null}
+      {v3Enabled && hasCommander && isCommanderRunning ? (
+        <Button
+          variant="ghost"
+          size="xs"
+          leftIcon={ThemedSquare}
+          onPress={onStopCommander}
+          testID="mission-control-stop-commander"
+          accessibilityLabel="Stop Commander"
+        >
+          Stop
+        </Button>
+      ) : null}
+    </>
+  );
+}
+
+interface MissionControlOverflowMenuProps {
+  hasCommander: boolean;
+  verbose: boolean;
+  onToggleVerbose: () => void;
+  onClearView: () => void;
+  onResetCommander: () => void;
+  isResettingCommander: boolean;
+  onOpenSettings: () => void;
+}
+
+function MissionControlOverflowMenu({
+  hasCommander,
+  verbose,
+  onToggleVerbose,
+  onClearView,
+  onResetCommander,
+  isResettingCommander,
+  onOpenSettings,
+}: MissionControlOverflowMenuProps): ReactElement {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        style={overflowTriggerStyle}
+        accessibilityLabel="Mission Control options"
+        testID="mission-control-overflow-trigger"
+      >
+        <ThemedMoreVertical size={16} uniProps={foregroundMutedMapping} />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" minWidth={200}>
+        <DropdownMenuItem
+          selected={verbose}
+          onSelect={onToggleVerbose}
+          testID="mission-control-verbose-toggle"
+        >
+          Verbose mode
+        </DropdownMenuItem>
+        {hasCommander ? (
+          <>
+            <DropdownMenuItem onSelect={onClearView} testID="mission-control-clear-view">
+              Clear view
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={onResetCommander}
+              disabled={isResettingCommander}
+              status={isResettingCommander ? "pending" : undefined}
+              pendingLabel="Resetting..."
+              testID="mission-control-reset-commander"
+            >
+              Reset Commander
+            </DropdownMenuItem>
+          </>
+        ) : null}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={onOpenSettings} testID="mission-control-settings-entry">
+          Mission Control settings
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+interface MissionControlHeaderActionsProps
+  extends CommanderLayoutTogglesProps, MissionControlOverflowMenuProps {
+  view: MissionControlView;
+  onViewChange: (view: MissionControlView) => void;
+  /** The grid is on screen (desktop view or compact panel): its controls replace the Commander's. */
+  isGridView: boolean;
+}
+
+function MissionControlHeaderActions({
+  view,
+  onViewChange,
+  isGridView,
+  v3Enabled,
+  isCompact,
+  hasCommander,
+  isCommanderRunning,
+  threadCollapsed,
+  onCollapseThread,
+  boardRailCollapsed,
+  onToggleBoardRail,
+  onStopCommander,
+  verbose,
+  onToggleVerbose,
+  onClearView,
+  onResetCommander,
+  isResettingCommander,
+  onOpenSettings,
+}: MissionControlHeaderActionsProps): ReactElement {
+  return (
+    <View style={styles.headerActions}>
+      {v3Enabled && !isCompact ? (
+        <SegmentedControl<MissionControlView>
+          options={VIEW_OPTIONS}
+          value={view}
+          onValueChange={onViewChange}
+          size="sm"
+          testID="mission-control-view-toggle"
+        />
+      ) : null}
+      {isGridView ? (
+        <AgentGridControls />
+      ) : (
+        <CommanderLayoutToggles
+          v3Enabled={v3Enabled}
+          isCompact={isCompact}
+          hasCommander={hasCommander}
+          isCommanderRunning={isCommanderRunning}
+          threadCollapsed={threadCollapsed}
+          onCollapseThread={onCollapseThread}
+          boardRailCollapsed={boardRailCollapsed}
+          onToggleBoardRail={onToggleBoardRail}
+          onStopCommander={onStopCommander}
+        />
+      )}
+      {v3Enabled ? <MissionControlModeToggle size="sm" /> : null}
+      {v3Enabled ? (
+        <MissionControlOverflowMenu
+          hasCommander={hasCommander}
+          verbose={verbose}
+          onToggleVerbose={onToggleVerbose}
+          onClearView={onClearView}
+          onResetCommander={onResetCommander}
+          isResettingCommander={isResettingCommander}
+          onOpenSettings={onOpenSettings}
+        />
+      ) : null}
+    </View>
+  );
+}
+
 // Board + inspector collapse state adds a few branches past the default cap.
 // eslint-disable-next-line complexity -- MC desktop split layout
 export function MissionControlScreen(): ReactElement {
@@ -125,6 +364,9 @@ export function MissionControlScreen(): ReactElement {
       boardRailCollapsed: state.boardRailCollapsed,
       toggleBoardRailCollapsed: state.toggleBoardRailCollapsed,
     })),
+  );
+  const { view, setView } = useAgentGridStore(
+    useShallow((state) => ({ view: state.view, setView: state.setView })),
   );
   // One per-device verbose flag, shared with the agent chat's machinery
   // placeholder rendering (useMissionControlVerbose). The hook's second
@@ -159,6 +401,12 @@ export function MissionControlScreen(): ReactElement {
   // v3 feature gate: the split view (collapsible thread + inspector) exists
   // only when the commander host advertises missionControlV3. One gate, here.
   const v3Enabled = useHostFeature(selectedServerId, "missionControlV3");
+  // The grid replaces the Commander surfaces on screen: desktop through the
+  // persisted view (v3 only — no toggle exists otherwise), compact through
+  // the panel segment. While it shows, the hidden Commander thread and
+  // inspector must not claim keyboard focus or agent presence.
+  const isGridView = isCompact ? compactPanel === "grid" : v3Enabled && view === "grid";
+  const commanderFocused = isFocused && !isGridView;
 
   const commanderSearchSpace = useSessionStore(
     useShallow((state) => {
@@ -374,7 +622,7 @@ export function MissionControlScreen(): ReactElement {
             <Composer
               agentId={commanderRef.agentId}
               serverId={commanderRef.serverId}
-              isPaneFocused={isFocused}
+              isPaneFocused={commanderFocused}
               value={commanderDraft.text}
               onChangeText={commanderDraft.editText}
               textReplacement={commanderDraft.textReplacement}
@@ -426,134 +674,50 @@ export function MissionControlScreen(): ReactElement {
   const handleCollapseThread = useCallback(() => {
     setThreadCollapsed((current) => !current);
   }, []);
-  const collapseToggleState = useMemo(() => ({ expanded: !threadCollapsed }), [threadCollapsed]);
-  const boardCollapseToggleState = useMemo(
-    () => ({ expanded: !boardRailCollapsed }),
-    [boardRailCollapsed],
-  );
+  const hasCommander = commanderRef !== null;
+  const isCommanderRunning = commanderStatus === "running";
 
   const headerRightContent = useMemo(
     () => (
-      <View style={styles.headerActions}>
-        {v3Enabled && !isCompact && commanderRef ? (
-          <HeaderToggleButton
-            onPress={handleCollapseThread}
-            tooltipLabel={threadCollapsed ? "Expand Commander thread" : "Collapse Commander thread"}
-            tooltipKeys={[]}
-            tooltipSide="bottom"
-            accessibilityRole="button"
-            accessibilityLabel={
-              threadCollapsed ? "Expand Commander thread" : "Collapse Commander thread"
-            }
-            accessibilityState={collapseToggleState}
-            testID="mission-control-thread-collapse-toggle"
-          >
-            {({ hovered, pressed }) => {
-              const iconProps = hovered || pressed ? foregroundMapping : foregroundMutedMapping;
-              return threadCollapsed ? (
-                <ThemedPanelLeftOpen size={16} uniProps={iconProps} />
-              ) : (
-                <ThemedPanelLeftClose size={16} uniProps={iconProps} />
-              );
-            }}
-          </HeaderToggleButton>
-        ) : null}
-        {v3Enabled && !isCompact ? (
-          <HeaderToggleButton
-            onPress={toggleBoardRailCollapsed}
-            tooltipLabel={boardRailCollapsed ? "Expand board" : "Collapse board"}
-            tooltipKeys={[]}
-            tooltipSide="bottom"
-            accessibilityRole="button"
-            accessibilityLabel={boardRailCollapsed ? "Expand board" : "Collapse board"}
-            accessibilityState={boardCollapseToggleState}
-            testID="mission-control-board-collapse-toggle"
-          >
-            {({ hovered, pressed }) => {
-              const iconProps = hovered || pressed ? foregroundMapping : foregroundMutedMapping;
-              return boardRailCollapsed ? (
-                <ThemedPanelRightOpen size={16} uniProps={iconProps} />
-              ) : (
-                <ThemedPanelRightClose size={16} uniProps={iconProps} />
-              );
-            }}
-          </HeaderToggleButton>
-        ) : null}
-        {v3Enabled && commanderRef && commanderStatus === "running" ? (
-          <Button
-            variant="ghost"
-            size="xs"
-            leftIcon={ThemedSquare}
-            onPress={handleStopCommander}
-            testID="mission-control-stop-commander"
-            accessibilityLabel="Stop Commander"
-          >
-            Stop
-          </Button>
-        ) : null}
-        {v3Enabled ? <MissionControlModeToggle size="sm" /> : null}
-        {v3Enabled ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              style={overflowTriggerStyle}
-              accessibilityLabel="Mission Control options"
-              testID="mission-control-overflow-trigger"
-            >
-              <ThemedMoreVertical size={16} uniProps={foregroundMutedMapping} />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" minWidth={200}>
-              <DropdownMenuItem
-                selected={verbose}
-                onSelect={handleToggleVerbose}
-                testID="mission-control-verbose-toggle"
-              >
-                Verbose mode
-              </DropdownMenuItem>
-              {commanderRef ? (
-                <>
-                  <DropdownMenuItem onSelect={handleClearView} testID="mission-control-clear-view">
-                    Clear view
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onSelect={handleResetCommander}
-                    disabled={resettingCommander}
-                    status={resettingCommander ? "pending" : undefined}
-                    pendingLabel="Resetting..."
-                    testID="mission-control-reset-commander"
-                  >
-                    Reset Commander
-                  </DropdownMenuItem>
-                </>
-              ) : null}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                onSelect={handleOpenSettings}
-                testID="mission-control-settings-entry"
-              >
-                Mission Control settings
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ) : null}
-      </View>
+      <MissionControlHeaderActions
+        view={view}
+        onViewChange={setView}
+        isGridView={isGridView}
+        v3Enabled={v3Enabled}
+        isCompact={isCompact}
+        hasCommander={hasCommander}
+        isCommanderRunning={isCommanderRunning}
+        threadCollapsed={threadCollapsed}
+        onCollapseThread={handleCollapseThread}
+        boardRailCollapsed={boardRailCollapsed}
+        onToggleBoardRail={toggleBoardRailCollapsed}
+        onStopCommander={handleStopCommander}
+        verbose={verbose}
+        onToggleVerbose={handleToggleVerbose}
+        onClearView={handleClearView}
+        onResetCommander={handleResetCommander}
+        isResettingCommander={resettingCommander}
+        onOpenSettings={handleOpenSettings}
+      />
     ),
     [
-      boardCollapseToggleState,
       boardRailCollapsed,
-      collapseToggleState,
-      commanderRef,
-      commanderStatus,
       handleClearView,
       handleCollapseThread,
       handleOpenSettings,
       handleResetCommander,
       handleStopCommander,
       handleToggleVerbose,
+      hasCommander,
+      isCommanderRunning,
       isCompact,
+      isGridView,
       resettingCommander,
+      setView,
       threadCollapsed,
       toggleBoardRailCollapsed,
       verbose,
+      view,
       v3Enabled,
     ],
   );
@@ -587,26 +751,27 @@ export function MissionControlScreen(): ReactElement {
         {header}
         <View style={styles.compactToggle}>
           <SegmentedControl<CompactPanel>
-            options={[
-              { value: "thread", label: "Thread", testID: "mission-control-panel-thread" },
-              { value: "board", label: "Board", testID: "mission-control-panel-board" },
-            ]}
+            options={COMPACT_PANEL_OPTIONS}
             value={compactPanel}
             onValueChange={setCompactPanel}
             size="sm"
             testID="mission-control-panel-toggle"
           />
         </View>
-        {compactPanel === "thread" ? (
-          <View style={styles.threadColumn}>{threadColumn}</View>
-        ) : (
+        {compactPanel === "thread" ? <View style={styles.threadColumn}>{threadColumn}</View> : null}
+        {compactPanel === "board" ? (
           <View style={styles.threadColumn}>
             <MissionControlBoard
               hideAgentNames={hideAgentNames}
               testID="mission-control-board-panel"
             />
           </View>
-        )}
+        ) : null}
+        {compactPanel === "grid" ? (
+          <View style={styles.threadColumn}>
+            <MissionControlAgentGrid isFocused={isFocused} />
+          </View>
+        ) : null}
       </View>
     );
   }
@@ -626,11 +791,7 @@ export function MissionControlScreen(): ReactElement {
         >
           <Text style={styles.threadStripLabel}>Commander</Text>
         </Pressable>
-        <View
-          style={[styles.threadColumn, styles.threadColumnHidden]}
-          pointerEvents="none"
-          aria-hidden
-        >
+        <View style={[styles.threadColumn, styles.hidden]} pointerEvents="none" aria-hidden>
           {threadColumn}
         </View>
       </View>
@@ -640,14 +801,26 @@ export function MissionControlScreen(): ReactElement {
       </View>
     );
 
+  // The grid takes the body while active. The Commander body stays mounted
+  // behind it (display:none) so switching back has zero movement; the grid
+  // itself unmounts when the view leaves it.
   return (
     <View style={styles.container}>
       {header}
-      <View style={styles.desktopBody}>
+      {isGridView ? (
+        <View style={styles.desktopBody}>
+          <MissionControlAgentGrid isFocused={isFocused} />
+        </View>
+      ) : null}
+      <View
+        style={[styles.desktopBody, isGridView && styles.hidden]}
+        pointerEvents={isGridView ? "none" : "auto"}
+        aria-hidden={isGridView}
+      >
         {threadPane}
         {v3Enabled && inspectorTarget ? (
           <InspectorRail key="inspector-rail" flexFill={v3Enabled && threadCollapsed}>
-            <MissionControlInspector target={inspectorTarget} isFocused={isFocused} />
+            <MissionControlInspector target={inspectorTarget} isFocused={commanderFocused} />
           </InspectorRail>
         ) : null}
         {boardRailCollapsed ? null : (
@@ -684,7 +857,7 @@ const styles = StyleSheet.create((theme) => ({
   threadCollapsedPane: {
     flexDirection: "row",
   },
-  threadColumnHidden: {
+  hidden: {
     display: "none",
   },
   threadStrip: {

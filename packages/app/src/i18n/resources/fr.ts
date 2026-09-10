@@ -1052,6 +1052,14 @@ export const fr: TranslationResources = {
         committed: "Engagé",
         branchUnknown: "Inconnu",
         base: "base",
+        baseBranch: "Base branch",
+        baseBranchTrigger: "Base branch: {{name}}. Press to change.",
+        baseBranchTooltip: "Change base branch",
+        baseBranchDefault: "Use default ({{name}})",
+        baseBranchDefaultHint: "default",
+        baseBranchSearchPlaceholder: "Filter branches...",
+        baseBranchEmpty: "No branches found",
+        baseBranchLoading: "Loading branches...",
         newFile: "Nouveau",
         deletedFile: "Supprimé",
         modifiedFile: "Modifié",
@@ -1186,6 +1194,16 @@ export const fr: TranslationResources = {
       deleteMessage_other: "Cela retire l’étiquette de {{count}} espaces de travail sur cet hôte.",
       offline: "Cet hôte est hors ligne.",
       updateHost: "Mettez à jour cet hôte pour gérer les étiquettes.",
+    },
+  },
+  changelog: {
+    title: "Nouveautés",
+    installed: "Installée",
+    showMore: "Afficher plus",
+    openWebsite: "Journal des modifications complet",
+    error: {
+      title: "Impossible de charger le journal des modifications",
+      description: "Vérifiez votre connexion et réessayez.",
     },
   },
   sidebar: {
@@ -2348,6 +2366,7 @@ export const fr: TranslationResources = {
     about: {
       title: "À propos",
       appVersion: "Version de l'application",
+      whatsNewHint: "Notes de version pour chaque release",
       thisDevice: "Cet appareil",
       connectedHosts: "Hôtes connectés",
       offline: "Hors ligne",
@@ -2415,6 +2434,10 @@ export const fr: TranslationResources = {
         contentSize: "Taille du contenu",
         contentSizeHint: "Utilisée pour le texte du chat et le Markdown rendu",
         contentSizeAccessibility: "Taille de police du contenu",
+        agentGridSize: "Taille de la grille d'agents",
+        agentGridSizeHint:
+          "Utilisée pour le texte du chat dans les tuiles Agent Grid, distincte du volet agent complet",
+        agentGridSizeAccessibility: "Taille de police de la grille d'agents",
         codeFont: "Police de code",
         codeFontHint:
           "Utilisé dans le code, les différences et la sortie du terminal. Laisser vide pour la valeur par défaut du système",

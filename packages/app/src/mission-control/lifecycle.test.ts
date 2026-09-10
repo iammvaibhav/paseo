@@ -13,6 +13,7 @@ import {
   lifecycleRowVisible,
   parseVerdictEvent,
   rowActivityMs,
+  rowRunningStartedMs,
   selectCanonicalLifecycleBucket,
   sortLifecycleRows,
   toLifecycleRow,
@@ -30,6 +31,7 @@ function makeAgent(overrides: Partial<AggregatedAgent> = {}): AggregatedAgent {
     title: null,
     name: null,
     status: "idle",
+    turn: { phase: "idle", cancellationRequestId: null },
     lastActivityAt: new Date(NOW - 60_000),
     lastUserMessageAt: null,
     cwd: "~",
@@ -626,25 +628,37 @@ describe("visibility window", () => {
 });
 
 describe("groupLifecycleRows", () => {
-  it("sorts running rows by name ascending and ready/done by time descending", () => {
-    const mkAgent = (id: string, name: string, status: string, activityAgoMs: number) =>
+  it("sorts running rows by newest turn start and ready/done by time descending", () => {
+    const mkAgent = (
+      id: string,
+      name: string,
+      status: string,
+      activityAgoMs: number,
+      turnStartedAgoMs?: number,
+    ) =>
       makeAgent({
         id,
         name,
         title: `Title ${name}`,
         status: status as AggregatedAgent["status"],
         lastActivityAt: new Date(NOW - activityAgoMs),
+        ...(turnStartedAgoMs === undefined
+          ? {}
+          : {
+              turn: {
+                phase: "open" as const,
+                turnId: `turn-${id}`,
+                startedAt: new Date(NOW - turnStartedAgoMs),
+                cancellationRequestId: null,
+              },
+            }),
       });
+    // "alpha" started its turn an hour ago, "zeta" a minute ago: name asc puts
+    // the hour-old agent first, newest-turn-first puts zeta first.
     const running = [
-      {
-        agent: mkAgent("a", "zeta", "running", 1000),
-        ...derive(mkAgent("a", "zeta", "running", 1000), []),
-      },
-      {
-        agent: mkAgent("b", "alpha", "running", 50_000),
-        ...derive(mkAgent("b", "alpha", "running", 50_000), []),
-      },
-    ].map((row) => Object.assign({}, row, { sortTime: 0 }));
+      mkAgent("a", "zeta", "running", 1000, 60_000),
+      mkAgent("b", "alpha", "running", 50_000, 60 * 60_000),
+    ].map((agent) => Object.assign({}, derive(agent, []), { agent, sortTime: 0 }));
     const ready = [
       {
         agent: mkAgent("c", "one", "idle", 10_000),
@@ -663,8 +677,60 @@ describe("groupLifecycleRows", () => {
     const groups = groupLifecycleRows([...ready, ...running], false);
     const runningGroup = groups.find((group) => group.bucket === "running");
     const readyGroup = groups.find((group) => group.bucket === "ready");
-    expect(runningGroup?.rows.map((row) => row.agent.name)).toEqual(["alpha", "zeta"]);
+    expect(runningGroup?.rows.map((row) => row.agent.name)).toEqual(["zeta", "alpha"]);
     expect(readyGroup?.rows.map((row) => row.agent.name)).toEqual(["one", "two"]);
+  });
+
+  it("sorts a running row with no known turn start last, then by name", () => {
+    const mkRunning = (id: string, name: string, turnStartedAgoMs: number | null) => {
+      const agent = makeAgent({
+        id,
+        name,
+        status: "running",
+        lastActivityAt: new Date(NOW - 1000),
+        turn:
+          turnStartedAgoMs === null
+            ? { phase: "idle", cancellationRequestId: null }
+            : {
+                phase: "open",
+                turnId: `turn-${id}`,
+                startedAt: new Date(NOW - turnStartedAgoMs),
+                cancellationRequestId: null,
+              },
+      });
+      return toLifecycleRow(agent, derive(agent, []));
+    };
+    const rows = [
+      mkRunning("a", "unknown-b", null),
+      mkRunning("b", "old", 30 * 60_000),
+      mkRunning("c", "unknown-a", null),
+      mkRunning("d", "new", 60_000),
+    ];
+    expect(sortLifecycleRows("running", rows).map((row) => row.agent.name)).toEqual([
+      "new",
+      "old",
+      "unknown-a",
+      "unknown-b",
+    ]);
+  });
+
+  it("reads a running row's elapsed clock from the open turn, not from last activity", () => {
+    const agent = makeAgent({
+      status: "running",
+      lastActivityAt: new Date(NOW - 1000),
+      turn: {
+        phase: "open",
+        turnId: "turn-1",
+        startedAt: new Date(NOW - 5 * 60_000),
+        cancellationRequestId: null,
+      },
+    });
+    const row = toLifecycleRow(agent, derive(agent, []));
+    expect(row.bucket).toBe("running");
+    expect(rowRunningStartedMs(row)).toBe(NOW - 5 * 60_000);
+
+    const idle = makeAgent({ status: "idle", lastActivityAt: new Date(NOW - 1000) });
+    expect(rowRunningStartedMs(toLifecycleRow(idle, derive(idle, [])))).toBeNull();
   });
 
   it("sorts dormant rows newest-first by real activity, not by the shared boot stamp", () => {

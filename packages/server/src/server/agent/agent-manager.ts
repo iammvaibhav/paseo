@@ -467,6 +467,14 @@ export interface AgentManagerOptions {
     agentId: string;
     expectedTurnId: string;
   }) => Promise<void>;
+  /**
+   * Resolve a default model from the host-scoped provider snapshot. Create
+   * must not cold-boot a throwaway catalog process in a new worktree.
+   */
+  resolveDefaultModel?: (input: {
+    provider: AgentProvider;
+    cwd: string;
+  }) => Promise<string | undefined>;
   logger: Logger;
 }
 
@@ -986,6 +994,7 @@ export class AgentManager {
   private appendSystemPrompt: string;
   private missionControlSelfReportEnabled: boolean;
   private resolveCommanderLaunchContract: AgentManagerOptions["resolveCommanderLaunchContract"];
+  private resolveDefaultModel: AgentManagerOptions["resolveDefaultModel"];
   private onAgentAttention?: AgentAttentionCallback;
   private onAgentFinished?: AgentFinishedCallback;
   private onAgentArchived?: AgentArchivedCallback;
@@ -1050,6 +1059,7 @@ export class AgentManager {
     this.appendSystemPrompt = options.appendSystemPrompt ?? "";
     this.missionControlSelfReportEnabled = options.missionControlSelfReportEnabled ?? true;
     this.resolveCommanderLaunchContract = options.resolveCommanderLaunchContract;
+    this.resolveDefaultModel = options.resolveDefaultModel;
     this.logger = options.logger.child({ module: "agent", component: "agent-manager" });
     this.rescueTimeouts = AgentManager.resolveRescueTimeouts(options);
     this.agentStreamCoalescer = this.createStreamCoalescer(options);
@@ -2270,6 +2280,7 @@ export class AgentManager {
     const { archivedAt } = await this.markRecordArchived(stored);
     agent.updatedAt = new Date(archivedAt);
     await this.closeAgentRuntime(agentId);
+    await this.syncNativeArchiveState(stored.provider, stored.persistence, "archive");
     this.discardRetainedAgentState(agentId);
 
     await this.cascadeArchiveChildren(agentId);
@@ -2332,12 +2343,10 @@ export class AgentManager {
       updatedAt: archivedAt,
     });
 
-    await this.syncNativeArchiveState(record.provider, record.persistence, "archive");
-
     if (this.agents.has(record.id)) {
       this.notifyAgentState(record.id);
     } else if (!archivedRecord.internal) {
-      this.dispatchArchivedStoredAgent(archivedRecord);
+      this.dispatchStoredAgentState(archivedRecord);
     }
 
     await this.fireAgentArchived(record.id);
@@ -2372,8 +2381,16 @@ export class AgentManager {
     }
   }
 
-  private dispatchArchivedStoredAgent(record: StoredAgentRecord): void {
+  private dispatchStoredAgentState(record: StoredAgentRecord): void {
     const updatedAt = new Date(record.updatedAt);
+    const attention: AttentionState =
+      record.requiresAttention && record.attentionReason && record.attentionTimestamp
+        ? {
+            requiresAttention: true,
+            attentionReason: record.attentionReason,
+            attentionTimestamp: new Date(record.attentionTimestamp),
+          }
+        : { requiresAttention: false };
     this.dispatch({
       type: "agent_state",
       agent: {
@@ -2408,7 +2425,7 @@ export class AgentManager {
         lastUserMessageAt: record.lastUserMessageAt ? new Date(record.lastUserMessageAt) : null,
         lastUsage: undefined,
         lastError: record.lastError ?? undefined,
-        attention: { requiresAttention: false },
+        attention,
         internal: record.internal,
         labels: record.labels,
       },
@@ -2761,6 +2778,46 @@ export class AgentManager {
     }
   }
 
+  async markAgentUnread(agentId: string): Promise<void> {
+    const liveAgent = this.agents.get(agentId);
+    if (liveAgent) {
+      const isFinished = liveAgent.lifecycle === "idle";
+      const hasPendingPermissions = liveAgent.pendingPermissions.size > 0;
+      const canMarkUnread =
+        isFinished && !liveAgent.attention.requiresAttention && !hasPendingPermissions;
+      if (!canMarkUnread) {
+        throw new Error(`Agent is no longer finished and read: ${agentId}`);
+      }
+      liveAgent.attention = {
+        requiresAttention: true,
+        attentionReason: "finished",
+        attentionTimestamp: new Date(),
+      };
+      await this.persistSnapshot(liveAgent);
+      this.emitState(liveAgent, { persist: false });
+      return;
+    }
+
+    const registry = this.requireRegistry();
+    const record = await registry.get(agentId);
+    const hasFinishedStatus = record?.lastStatus === "idle" || record?.lastStatus === "closed";
+    const canMarkUnread =
+      record && !record.internal && !record.archivedAt && !record.requiresAttention;
+    if (!canMarkUnread || !hasFinishedStatus) {
+      throw new Error(`Agent is no longer finished and read: ${agentId}`);
+    }
+    const updatedAt = this.nextStoredUpdatedAt(record);
+    const nextRecord: StoredAgentRecord = {
+      ...record,
+      updatedAt,
+      requiresAttention: true,
+      attentionReason: "finished",
+      attentionTimestamp: updatedAt,
+    };
+    await registry.upsert(nextRecord);
+    this.dispatchStoredAgentState(nextRecord);
+  }
+
   async archiveSnapshot(agentId: string, archivedAt: string): Promise<StoredAgentRecord> {
     const registry = this.requireRegistry();
     const liveAgent = this.getAgent(agentId);
@@ -2784,7 +2841,7 @@ export class AgentManager {
     } else {
       this.discardRetainedAgentState(agentId);
       if (!nextRecord.internal) {
-        this.dispatchArchivedStoredAgent(nextRecord);
+        this.dispatchStoredAgentState(nextRecord);
       }
     }
 
@@ -2804,6 +2861,8 @@ export class AgentManager {
       return false;
     }
 
+    // Archived history may have loaded a runtime that still owns the native writer.
+    await this.closeAgent(agentId);
     await this.syncNativeArchiveState(record.provider, record.persistence, "restore");
 
     await registry.upsert({
@@ -3749,6 +3808,9 @@ export class AgentManager {
     response: AgentPermissionResponse,
   ): Promise<AgentPermissionResult | void> {
     const agent = this.requireAgent(agentId);
+    if (agent.inFlightPermissionResponses.has(requestId)) {
+      throw new Error("A response to this permission request is already being submitted");
+    }
     agent.inFlightPermissionResponses.add(requestId);
 
     try {
@@ -3976,8 +4038,11 @@ export class AgentManager {
           epoch: this.timelineStore.getEpoch(agentId),
         });
       }
-      await this.refreshRuntimeInfo(agent);
+      // Rewind stages provider events under the run lock; publish its final state directly.
+      this.refreshSessionPersistence(agent);
+      await this.refreshSessionState(agent, { emit: false });
       await this.persistSnapshot(agent);
+      this.emitState(agent, { persist: false });
       this.logger.info(
         { agentId, provider: agent.provider, messageId, mode },
         "agent.rewind.complete",
@@ -4378,15 +4443,16 @@ export class AgentManager {
       this.previousStatuses.set(resolvedAgentId, managed.lifecycle);
       await this.refreshRuntimeInfo(managed, { emit: false });
       this.assertAgentRegistrationActive(managed);
-      await this.persistSnapshot(managed, {
-        title: initialPersistedTitle,
-        titleAutoDerived,
-      });
       if (!options?.publishWhenReady) {
         this.emitState(managed, { persist: false });
       }
 
-      await this.refreshSessionState(managed, { emit: false });
+      // Single combined session-state refresh + persist: refreshSessionState
+      // would otherwise call getRuntimeInfo() a second time, and a second
+      // persistSnapshot duplicated the first registry write. Nothing between
+      // the two original persists read the registry from disk, so folding
+      // them into one write after both refreshes finish is safe.
+      await this.refreshSessionState(managed, { emit: false, skipRuntimeInfo: true });
       this.assertAgentRegistrationActive(managed);
       managed.lifecycle = "idle";
       // Registration is bookkeeping for a RESTORED agent (resume/reload of an
@@ -4402,7 +4468,10 @@ export class AgentManager {
       if (!existingRecord) {
         this.touchUpdatedAt(managed);
       }
-      await this.persistSnapshot(managed);
+      await this.persistSnapshot(managed, {
+        title: initialPersistedTitle,
+        titleAutoDerived,
+      });
       this.assertAgentRegistrationActive(managed);
       this.emitState(managed, { persist: false });
       this.subscribeToSession(managed);
@@ -4800,7 +4869,7 @@ export class AgentManager {
 
   private async refreshSessionState(
     agent: ActiveManagedAgent,
-    options?: { emit?: boolean },
+    options?: { emit?: boolean; skipRuntimeInfo?: boolean },
   ): Promise<void> {
     try {
       const modes = await agent.session.getAvailableModes();
@@ -4823,6 +4892,11 @@ export class AgentManager {
     }
 
     this.syncFeaturesFromSession(agent);
+    // Callers that already refreshed runtimeInfo themselves (e.g. registerSession)
+    // skip this so the provider's getRuntimeInfo() RPC only runs once per registration.
+    if (options?.skipRuntimeInfo) {
+      return;
+    }
     await this.refreshRuntimeInfo(agent, options);
   }
 
@@ -5335,14 +5409,18 @@ export class AgentManager {
 
   private onStreamThreadStarted(agent: ActiveManagedAgent): void {
     const previousSessionId = agent.persistence?.sessionId ?? null;
+    this.refreshSessionPersistence(agent);
+    if (agent.persistence?.sessionId !== previousSessionId) {
+      this.emitState(agent);
+    }
+    void this.refreshRuntimeInfo(agent);
+  }
+
+  private refreshSessionPersistence(agent: ActiveManagedAgent): void {
     const handle = agent.session.describePersistence();
     if (handle) {
       agent.persistence = attachPersistenceCwd(handle, agent.cwd);
-      if (agent.persistence?.sessionId !== previousSessionId) {
-        this.emitState(agent);
-      }
     }
-    void this.refreshRuntimeInfo(agent);
   }
 
   private async onStreamTimelineEvent(params: {
@@ -5621,6 +5699,7 @@ export class AgentManager {
       attentionReason: "permission",
       attentionTimestamp: new Date(),
     };
+    this.refreshSessionPersistence(agent);
     if (!hadPendingPermissions && !agent.internal) {
       this.broadcastAgentAttention(agent, "permission");
     }
@@ -5642,6 +5721,7 @@ export class AgentManager {
     ) {
       agent.attention = { requiresAttention: false };
     }
+    this.refreshSessionPersistence(agent);
     if (!options?.fromHistory && agent.inFlightPermissionResponses.has(event.requestId)) {
       agent.bufferedPermissionResolutions.set(event.requestId, event);
       flags.shouldDispatchEvent = false;
@@ -6249,14 +6329,23 @@ export class AgentManager {
   }
 
   private async resolveDefaultModelId(config: AgentSessionConfig): Promise<string | undefined> {
+    if (this.resolveDefaultModel) {
+      try {
+        return await this.resolveDefaultModel({
+          provider: config.provider,
+          cwd: config.cwd,
+        });
+      } catch {
+        return undefined;
+      }
+    }
     const client = this.clients.get(config.provider);
     if (!client) {
       return undefined;
     }
     try {
       const catalog = await client.fetchCatalog({
-        scope: "workspace",
-        cwd: config.cwd,
+        scope: "global",
         force: false,
       });
       return (catalog.models.find((model) => model.isDefault) ?? catalog.models[0])?.id;

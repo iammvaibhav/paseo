@@ -89,8 +89,15 @@ function resolveChangesPresentation(
 
 function ChangesPanel() {
   const { t } = useTranslation();
-  const { serverId, workspaceId, tabId, target, openPreferredTarget, openTargetToSide } =
-    usePaneContext();
+  const {
+    serverId,
+    workspaceId,
+    tabId,
+    target,
+    openPreferredTarget,
+    openTargetToSide,
+    openDiffInBrowserEditor,
+  } = usePaneContext();
   const workspaceRoot = useWorkspaceDirectory(serverId, workspaceId);
   const [changesState, setChangesState] = usePanelState(changesStateSchema, defaultChangesState);
   const { preferences } = useChangesPreferences();
@@ -121,6 +128,11 @@ function ChangesPanel() {
         isTree ? "diffs" : "diffFiles",
       ),
     [isTree, openPreferredTarget, submodulePrefix],
+  );
+  const handleOpenDiff = useCallback(
+    (path: string, baseRef: string | null) =>
+      openDiffInBrowserEditor?.(path.startsWith("/") ? path : `${submodulePrefix}${path}`, baseRef),
+    [openDiffInBrowserEditor, submodulePrefix],
   );
   const handleAddToChat = useCallback(
     (path: string) => addFile(path.startsWith("/") ? path : `${submodulePrefix}${path}`),
@@ -173,6 +185,7 @@ function ChangesPanel() {
           focusPath={target.kind === "working_diff" ? target.focusPath : undefined}
           focusRequestId={target.kind === "working_diff" ? target.focusRequestId : undefined}
           onSelectDiffFile={isTree ? handleSelectDiffFile : undefined}
+          onOpenDiff={openDiffInBrowserEditor ? handleOpenDiff : undefined}
           onOpenFile={handleOpenFile}
           onOpenToSide={isTree && openTargetToSide ? handleOpenDiffToSide : undefined}
           onAddToChat={canAddToChat ? handleAddToChat : undefined}

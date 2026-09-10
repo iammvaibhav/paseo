@@ -458,7 +458,7 @@ Do not rely on daemon terminal exit for cleanup. The Paseo daemon terminal kills
 - **`PASEO_AGENT_ID` and `PASEO_AGENT_CWD` leak.** Exported by agent harnesses. If leaked, they contaminate agent tracking. Strip them: `env -u PASEO_AGENT_ID -u PASEO_AGENT_CWD`.
 - **Background downloads and tunnels.** Default daemon config triggers speech-model downloads and quick tunnels at boot. Disable them: `PASEO_VOICE_MODE_ENABLED=0 PASEO_DICTATION_ENABLED=0 PASEO_TUNNEL_AUTOSTART=0 PASEO_RELAY_ENABLED=0 PASEO_SERVICE_PROXY_ENABLED=0 PASEO_LOG_LEVEL=warn`.
 - **Commander designation.** Local daemons share an OS hostname. In two-daemon mode, designate the Commander by `missionControl.hostAlias` in `central-config.json` (e.g. `commander`), never by hostname or `"local"`, or both daemons claim Commander (`commander-boot.ts:139-152`).
-- **Web UI bundle provenance.** The prebuilt web UI bundle (`/data/paseo/packages/server/dist/server/web-ui`) comes from the shared source checkout. It contains the source checkout's app code, not your worktree's app changes. It is accurate for daemon, server, and protocol work. For worktree app-UI changes, build the bundle in your worktree or test with `npm run dev:app`.
+- **Web UI bundle provenance.** The prebuilt web UI bundle (`/data/paseo/packages/server/dist/server/web-ui`) comes from the shared source checkout. It contains the source checkout's app code, not your worktree's app changes. It is accurate for daemon, server, and protocol work. For worktree app-UI changes, build the bundle in your worktree or test with `pnpm run dev:app`.
 
 ## Decision matrix
 

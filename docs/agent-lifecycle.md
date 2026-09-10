@@ -95,9 +95,19 @@ Process re-attach is impossible: the RPC is stdin/stdout pipes of a killed child
 
 After resume, Paseo restores the track from provider history. Completed `task` results replay as
 completed/failed/canceled. A `task` tool call with no matching `toolResult` but a child `.jsonl`
-on disk replays as `canceled` with the partial transcript. The parent does not continue those
-children automatically; `deploy-nudge.mjs` names the interrupted children so the parent can
-re-dispatch. OMP has no RPC to resume an in-process task child after the parent process died.
+on disk replays as `canceled` with the partial transcript.
+
+The parent does not continue those children automatically, but it can. A killed child is
+**parked** in the resumed parent's hub roster (`hub list status=parked`), discovered from its
+`.jsonl`. A `hub send` to that id revives it in the same file with its context intact; it does not
+re-spawn. `deploy-nudge.mjs` names the interrupted children by id and tells the parent to do this
+instead of re-launching. Two gotchas, both verified on a real kill:
+
+- The tool call that was in flight at kill time is recorded as `pendingToolCalls` on
+  `session_exit`, not resumed. The revived child re-issues it. The nudge tells the child to check
+  what that call already changed before it repeats it.
+- `hub wait` on the child can abort with `agent is not running` while the child revives. The
+  child's `yield` still auto-delivers to the parent as an incoming hub message.
 
 ## Archive
 
@@ -181,6 +191,10 @@ Agent lifecycle status stays literal: a parent agent is `idle` when its own turn
 Workspace status is an aggregate activity signal computed **per `workspaceId`**. Ownership is never derived from `cwd` — many workspaces may share one directory, and same-`cwd` siblings do not clump under one status. Root agents and cross-workspace subagents contribute their normal state bucket to their own workspace. Same-workspace descendants contribute `running` to the nearest ancestor in that workspace; their non-running attention, permission, and error states stay in the parent's subagents track. This makes a cross-workspace subagent behave like a detached agent for workspace visibility and status without removing its parent relationship.
 
 Running provider-native subagents contribute `running` to the workspace owned by their parent agent. Their completed, failed, and canceled states stay in the parent's subagents track.
+
+A finished workspace can be marked unread after it has been reviewed. The daemon restores
+`finished` attention on its newest eligible workspace-root agent without sending a new completion
+notification. Opening the workspace clears that attention through the normal focus flow.
 
 ## The subagents track
 

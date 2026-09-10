@@ -1288,7 +1288,11 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         valueRef.current = nextText;
         updateLiveTextPresence(nextText);
         selectionRef.current = selection ?? { start: nextText.length, end: nextText.length };
-        textInputRef.current?.replaceText(nextText, selection);
+        if (nextText === "") {
+          textInputRef.current?.reset();
+        } else {
+          textInputRef.current?.replaceText(nextText, selection);
+        }
         onChangeText(nextText);
       },
       [onChangeText, updateComposerHeightForText, updateLiveTextPresence],
@@ -1340,7 +1344,11 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       updateComposerHeightForText?.(valueRef.current, textReplacement.text);
       valueRef.current = textReplacement.text;
       updateLiveTextPresence(textReplacement.text);
-      textInputRef.current?.replaceText(textReplacement.text);
+      if (textReplacement.text === "") {
+        textInputRef.current?.reset();
+      } else {
+        textInputRef.current?.replaceText(textReplacement.text);
+      }
     }, [textReplacement, updateComposerHeightForText, updateLiveTextPresence]);
 
     useEffect(() => {

@@ -14,7 +14,7 @@ concurrency:
 
 env:
   # CI does not use the CUDA execution provider, and the onnxruntime-node
-  # postinstall download from NuGet is large enough to make npm ci flaky.
+  # postinstall download from NuGet is large enough to make pnpm install flaky.
   ONNXRUNTIME_NODE_INSTALL: skip
 
 jobs:
@@ -62,16 +62,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+          cache: "pnpm"
 
       - name: Install dependencies
-        run: node scripts/npm-retry.mjs ci
+        run: node scripts/pnpm-retry.mjs install --frozen-lockfile
 
       - name: Check formatting
-        run: npm run format:check
+        run: pnpm run format:check
 
   lint:
     name: lint
@@ -81,22 +83,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+          cache: "pnpm"
 
       - name: Install dependencies
-        run: node scripts/npm-retry.mjs ci
-
-      - name: Lint lockfile
-        run: npx --yes lockfile-lint --path package-lock.json --type npm --allowed-hosts npm --validate-https --validate-integrity
+        run: node scripts/pnpm-retry.mjs install --frozen-lockfile
 
       - name: Verify dependency signatures
-        run: npm audit signatures
+        run: pnpm audit signatures
 
       - name: Lint
-        run: npm run lint
+        run: pnpm run lint
 
   typecheck:
     name: typecheck
@@ -106,25 +107,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+          cache: "pnpm"
 
       - name: Install dependencies
-        run: node scripts/npm-retry.mjs ci
+        run: node scripts/pnpm-retry.mjs install --frozen-lockfile
 
       - name: Build server stack
-        run: npm run build:server
+        run: pnpm run build:server
 
       - name: Typecheck all packages
-        run: npm run typecheck
+        run: pnpm run typecheck
 
       - name: Verify public package contents
         run: |
-          npm pack --dry-run --ignore-scripts --workspace=@getpaseo/protocol
-          npm pack --dry-run --ignore-scripts --workspace=@getpaseo/client
-          npm pack --dry-run --ignore-scripts --workspace=@getpaseo/server
+          pnpm --filter @getpaseo/protocol pack --dry-run
+          pnpm --filter @getpaseo/client pack --dry-run
+          pnpm --filter @getpaseo/server pack --dry-run
 
   server-tests-ubuntu:
     name: server-tests (ubuntu-latest)
@@ -136,28 +139,30 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+          cache: "pnpm"
 
       - name: Fetch origin/main (worktree tests)
         if: ${{ needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false' }}
         run: git fetch --no-tags origin main:refs/remotes/origin/main
 
       - name: Install dependencies
-        run: node scripts/npm-retry.mjs ci
+        run: node scripts/pnpm-retry.mjs install --frozen-lockfile
 
       - name: Install agent CLIs for provider tests
         if: ${{ needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false' }}
-        run: node scripts/npm-retry.mjs install -g @anthropic-ai/claude-code opencode-ai
+        run: node scripts/pnpm-retry.mjs add -g @anthropic-ai/claude-code opencode-ai
 
       - name: Build server dependencies
-        run: npm run build:server-deps
+        run: pnpm run build:server-deps
 
       - name: Run server tests
         if: ${{ needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false' }}
-        run: npm run test --workspace=@getpaseo/server
+        run: pnpm --filter @getpaseo/server run test
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -165,7 +170,7 @@ jobs:
 
       - name: Run Hub CLI/daemon contract
         if: ${{ needs.changes.outputs.full == 'false' && needs.changes.outputs.server == 'false' && needs.changes.outputs.hub != 'false' }}
-        run: npm run test:hub-cli-contract --workspace=@getpaseo/server
+        run: pnpm --filter @getpaseo/server run test:hub-cli-contract
 
   server-tests-windows:
     name: server-tests (windows-latest)
@@ -185,19 +190,21 @@ jobs:
     steps: &desktop_test_steps
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+          cache: "pnpm"
 
       - name: Install dependencies with retry
-        run: node scripts/npm-retry.mjs ci
+        run: node scripts/pnpm-retry.mjs install --frozen-lockfile
 
       - name: Build server stack
-        run: npm run build:server
+        run: pnpm run build:server
 
       - name: Run desktop tests
-        run: npm run test --workspace=@getpaseo/desktop
+        run: pnpm --filter @getpaseo/desktop run test
 
       - name: Install virtual display
         if: ${{ runner.os == 'Linux' }}
@@ -209,11 +216,11 @@ jobs:
 
       - name: Run desktop renderer E2E
         if: ${{ runner.os == 'Linux' }}
-        run: npm run test:e2e:renderer --workspace=@getpaseo/desktop
+        run: pnpm --filter @getpaseo/desktop run test:e2e:renderer
 
       - name: Run desktop browser E2E
         if: ${{ runner.os == 'Linux' }}
-        run: npm run test:e2e:browser-tabs --workspace=@getpaseo/desktop
+        run: pnpm --filter @getpaseo/desktop run test:e2e:browser-tabs
         env:
           PASEO_DESKTOP_BROWSER_E2E_ARTIFACT_DIR: ${{ runner.temp }}/desktop-browser-e2e
 
@@ -228,7 +235,7 @@ jobs:
 
       - name: Build and smoke unpacked desktop app
         if: ${{ runner.os == 'Linux' }}
-        run: npm run build:desktop -- --publish never --linux --x64 --dir
+        run: pnpm run build:desktop -- --publish never --linux --x64 --dir
         env:
           EP_GH_IGNORE_TIME: true
           PASEO_DESKTOP_SMOKE: "1"
@@ -261,23 +268,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+          cache: "pnpm"
 
       - name: Install dependencies with retry
-        run: node scripts/npm-retry.mjs ci
+        run: node scripts/pnpm-retry.mjs install --frozen-lockfile
 
       - name: Install Playwright browsers
         timeout-minutes: 10
         run: npx playwright install chromium
 
       - name: Build app dependencies
-        run: npm run build:app-deps
+        run: pnpm run build:app-deps
 
       - name: Run app unit tests
-        run: npm run test --workspace=@getpaseo/app
+        run: pnpm --filter @getpaseo/app run test
 
   sdk-tests:
     name: sdk-tests
@@ -287,37 +296,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+          cache: "pnpm"
 
       - name: Install dependencies
-        run: node scripts/npm-retry.mjs ci
+        run: node scripts/pnpm-retry.mjs install --frozen-lockfile
 
       - name: Build client dependencies
-        run: npm run build:client
+        run: pnpm run build:client
 
       - name: Build plugin SDK
-        run: npm run build:plugin
+        run: pnpm run build:plugin
 
       - name: Run plugin SDK tests
-        run: npm run test --workspace=@getpaseo/plugin
+        run: pnpm --filter @getpaseo/plugin run test
 
       - name: Typecheck plugin examples
-        run: npm run typecheck --workspace=@getpaseo/plugin
+        run: pnpm --filter @getpaseo/plugin run typecheck
 
       - name: Run protocol tests
-        run: npm run test --workspace=@getpaseo/protocol
+        run: pnpm --filter @getpaseo/protocol run test
 
       - name: Run client tests
-        run: npm run test --workspace=@getpaseo/client
+        run: pnpm --filter @getpaseo/client run test
 
       - name: Run highlight tests
-        run: npm run test --workspace=@getpaseo/highlight
+        run: pnpm --filter @getpaseo/highlight run test
 
       - name: Typecheck client examples
-        run: npm run typecheck:examples --workspace=@getpaseo/client
+        run: pnpm --filter @getpaseo/client run typecheck:examples
 
   playwright-1:
     name: playwright (shard 1/4)
@@ -330,29 +341,31 @@ jobs:
     steps: &playwright_test_steps
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+          cache: "pnpm"
 
       - name: Install dependencies with retry
-        run: node scripts/npm-retry.mjs ci
+        run: node scripts/pnpm-retry.mjs install --frozen-lockfile
 
       - name: Install Playwright browsers
         timeout-minutes: 10
         run: npx playwright install chromium
 
       - name: Build server stack
-        run: npm run build:server
+        run: pnpm run build:server
 
       - name: Build native app dependency
-        run: npm run build --workspace=@getpaseo/expo-two-way-audio
+        run: pnpm --filter @getpaseo/expo-two-way-audio run build
 
       - name: Install agent CLIs for provider tests
-        run: node scripts/npm-retry.mjs install -g @anthropic-ai/claude-code @openai/codex@0.105.0 opencode-ai
+        run: node scripts/pnpm-retry.mjs add -g @anthropic-ai/claude-code @openai/codex@0.105.0 opencode-ai
 
       - name: Run Playwright E2E tests
-        run: npm run test:e2e --workspace=@getpaseo/app -- --shard=${{ env.PLAYWRIGHT_SHARD }}
+        run: pnpm --filter @getpaseo/app run test:e2e -- --shard=${{ env.PLAYWRIGHT_SHARD }}
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
@@ -404,19 +417,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+          cache: "pnpm"
 
       - name: Install dependencies
-        run: node scripts/npm-retry.mjs ci
+        run: node scripts/pnpm-retry.mjs install --frozen-lockfile
 
       - name: Build relay
-        run: npm run build:relay
+        run: pnpm run build:relay
 
       - name: Run relay tests
-        run: npm run test --workspace=@getpaseo/relay
+        run: pnpm --filter @getpaseo/relay run test
 
   cli-tests-1:
     name: cli-tests (shard 1/3)
@@ -432,22 +447,24 @@ jobs:
     steps: &cli_test_steps
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+          cache: "pnpm"
 
       - name: Install dependencies
-        run: node scripts/npm-retry.mjs ci
+        run: node scripts/pnpm-retry.mjs install --frozen-lockfile
 
       - name: Build server stack
-        run: npm run build:server
+        run: pnpm run build:server
 
       - name: Install agent CLIs for provider tests
-        run: node scripts/npm-retry.mjs install -g @anthropic-ai/claude-code @openai/codex@0.105.0 opencode-ai
+        run: node scripts/pnpm-retry.mjs add -g @anthropic-ai/claude-code @openai/codex@0.105.0 opencode-ai
 
       - name: Run CLI tests
-        run: npm run test --workspace=@getpaseo/cli
+        run: pnpm --filter @getpaseo/cli run test
 
   cli-tests-2:
     name: cli-tests (shard 2/3)

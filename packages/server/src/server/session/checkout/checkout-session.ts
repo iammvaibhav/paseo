@@ -237,7 +237,9 @@ export class CheckoutSession {
     const resolvedCwd = expandTilde(cwd);
 
     try {
-      const snapshot = await this.workspaceGitService.getSnapshot(resolvedCwd);
+      const snapshot = await this.workspaceGitService.getSnapshot(resolvedCwd, {
+        includeForge: false,
+      });
       this.host.emit({
         type: "checkout_status_response",
         payload: buildCheckoutStatusPayloadFromSnapshot({

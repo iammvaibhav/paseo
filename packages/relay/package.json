@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/relay",
-  "version": "0.7.2",
+  "version": "0.8.0-beta.1",
   "description": "Paseo relay for bridging daemon and client connections",
   "files": [
     "dist",
@@ -34,8 +34,8 @@
   "scripts": {
     "clean": "node ../../scripts/clean-package-dist.mjs",
     "build": "tsc -p tsconfig.json --incremental false",
-    "build:clean": "npm run clean && npm run build",
-    "prepack": "npm run build:clean",
+    "build:clean": "pnpm run clean && pnpm run build",
+    "prepack": "pnpm run build:clean",
     "typecheck": "tsgo --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"

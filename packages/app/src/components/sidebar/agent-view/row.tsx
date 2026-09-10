@@ -7,7 +7,8 @@ import { StatusRing } from "@/components/status-ring";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { isWeb } from "@/constants/platform";
 import { useCompactTimeAgo } from "@/hooks/use-compact-time-ago";
-import { rowActivityMs, type LifecycleRow } from "@/mission-control/lifecycle";
+import { useLiveDuration } from "@/hooks/use-live-duration";
+import { rowActivityMs, rowRunningStartedMs, type LifecycleRow } from "@/mission-control/lifecycle";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
 import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { getStatusDotColor } from "@/utils/status-dot-color";
@@ -57,12 +58,25 @@ export const SidebarAgentViewRow = memo(function SidebarAgentViewRow({
   const { t } = useTranslation();
   const { agent } = row;
 
-  const activityMs = useMemo(() => rowActivityMs(row), [row]);
+  // A running row says how long it has been running, counted from the same
+  // turn start the open agent's own elapsed timer uses; every other row says
+  // how long ago it last did anything.
+  const runningStartedMs = useMemo(() => rowRunningStartedMs(row), [row]);
+  const runningStartedAt = useMemo(
+    () => (runningStartedMs === null ? null : new Date(runningStartedMs)),
+    [runningStartedMs],
+  );
+  const activityMs = useMemo(
+    () => (runningStartedMs === null ? rowActivityMs(row) : null),
+    [row, runningStartedMs],
+  );
   const activityDate = useMemo(
     () => (activityMs === null ? null : new Date(activityMs)),
     [activityMs],
   );
+  const runningFor = useLiveDuration(runningStartedAt);
   const timeAgo = useCompactTimeAgo(activityDate);
+  const timeLabel = runningStartedMs === null ? timeAgo : runningFor;
 
   const stateBucket = rowToSidebarStateBucket(row);
   const title = agent.title ?? agent.name ?? t("agentList.fallbackTitle");
@@ -109,9 +123,13 @@ export const SidebarAgentViewRow = memo(function SidebarAgentViewRow({
         <Text style={styles.title} numberOfLines={1}>
           {title}
         </Text>
-        {timeAgo ? (
-          <Text style={styles.time} numberOfLines={1}>
-            {timeAgo}
+        {timeLabel ? (
+          <Text
+            style={styles.time}
+            numberOfLines={1}
+            testID={`sidebar-agent-view-row-time-${agent.serverId}-${agent.id}`}
+          >
+            {timeLabel}
           </Text>
         ) : null}
       </ContextMenuTrigger>

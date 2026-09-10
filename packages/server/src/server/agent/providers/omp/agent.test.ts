@@ -249,6 +249,19 @@ describe("OMP agent client and session", () => {
     expect(omp.canceledTurnCount()).toBe(0);
   });
 
+  test("aborts a Cursor stream before an out-of-band /steer", async () => {
+    const omp = new OmpHarness();
+    await omp.start();
+    omp.runtime().state.model = { id: "cursor-grok-4.6", provider: "cursor" };
+    await omp.requireStartTurn("run the long thing");
+
+    await expect(omp.runOutOfBand("/steer print instead")).resolves.toBe(true);
+
+    expect(omp.wasAborted()).toBe(true);
+    expect(omp.runtime().steerRequests).toEqual([{ message: "print instead", imageCount: 0 }]);
+    expect(omp.canceledTurnCount()).toBe(0);
+  });
+
   test("streams a prompt through completion", async () => {
     const omp = new OmpHarness();
     await omp.start();
@@ -407,19 +420,34 @@ describe("OMP agent client and session", () => {
     });
   });
 
-  test("stays active while OMP remains busy", async () => {
-    const scheduler = new ManualIdleScheduler();
-    const omp = new OmpHarness({ providerIdleScheduler: scheduler });
+  test("completes after agent_end when streaming stays true", async () => {
+    const omp = new OmpHarness({ providerIdleScheduler: new ManualIdleScheduler() });
     await omp.start();
 
     const { completion } = await omp.startPromptUntilProviderIdle("first", "first done", {
       isStreaming: true,
       isCompacting: false,
     });
+
+    await expect(completion).resolves.toMatchObject({ finalText: "first done" });
+    expect(omp.completedTurnCount()).toBe(1);
+    expect(omp.wasAborted()).toBe(true);
+  });
+
+  test("stays active while OMP is compacting", async () => {
+    const scheduler = new ManualIdleScheduler();
+    const omp = new OmpHarness({ providerIdleScheduler: scheduler });
+    await omp.start();
+
+    const { completion } = await omp.startPromptUntilProviderIdle("first", "first done", {
+      isStreaming: false,
+      isCompacting: true,
+    });
     await omp.waitForProviderStateChecks(2);
     await scheduler.waitForWaits(1);
 
     expect(omp.completedTurnCount()).toBe(0);
+    expect(omp.wasAborted()).toBe(false);
     scheduler.retry();
     await omp.waitForProviderStateChecks(3);
     await scheduler.waitForWaits(2);
@@ -428,6 +456,7 @@ describe("OMP agent client and session", () => {
     omp.reportProviderState({ isStreaming: false, isCompacting: false });
     scheduler.retry();
     await expect(completion).resolves.toMatchObject({ finalText: "first done" });
+    expect(omp.wasAborted()).toBe(false);
   });
 
   test("stays active when OMP state checks fail", async () => {
@@ -525,8 +554,8 @@ describe("OMP agent client and session", () => {
     await omp.start();
 
     await omp.startPromptUntilProviderIdle("first", "first done", {
-      isStreaming: true,
-      isCompacting: false,
+      isStreaming: false,
+      isCompacting: true,
     });
     await omp.waitForProviderStateChecks(2);
     await scheduler.waitForWaits(1);
@@ -1225,5 +1254,18 @@ describe("OMP agent client and session", () => {
       expectedTurnId: turnId,
     });
     expect(slashResult).toEqual({ status: "unavailable" });
+  });
+
+  test("steerActiveTurn returns unavailable for Cursor so the manager can replace the turn", async () => {
+    const omp = new OmpHarness();
+    await omp.start();
+    omp.runtime().state.model = { id: "cursor-grok-4.6", provider: "cursor" };
+    const { turnId } = await omp.requireStartTurn("first turn");
+    const result = await omp.rawSession.steerActiveTurn("forget the old tickets", {
+      expectedTurnId: turnId,
+    });
+    expect(result).toEqual({ status: "unavailable" });
+    expect(omp.runtime().steerRequests).toEqual([]);
+    expect(omp.wasAborted()).toBe(false);
   });
 });

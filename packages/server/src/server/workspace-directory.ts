@@ -680,7 +680,7 @@ function groupAgentsByWorkspaceId(
   return byWorkspaceId;
 }
 
-function resolveWorkspaceRootAgent(
+export function resolveWorkspaceRootAgent(
   agent: AgentSnapshotPayload,
   activeAgentsById: ReadonlyMap<string, AgentSnapshotPayload>,
 ): AgentSnapshotPayload | null {

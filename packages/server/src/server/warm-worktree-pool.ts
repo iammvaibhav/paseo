@@ -180,12 +180,10 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
       return null;
     }
 
-    const isGit = await this.isGitRepo(repoRoot);
-    if (!isGit) {
-      return null;
-    }
-
-    return this.withRepoLock(repoRoot, async () => {
+    // The caller (createWorktreeCore) already resolved repoRoot through
+    // resolveRepoRoot, which throws for non-git paths. Re-checking here ran the
+    // full getCheckout snapshot (~10 git subprocesses) on every claim.
+    const reserved = await this.withRepoLock(repoRoot, async () => {
       let records = this.pools.get(repoRoot);
       let candidateIndex = records
         ? records.findIndex((r) => r.status === "idle" && existsSync(r.worktreePath))
@@ -200,118 +198,129 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
       }
 
       if (candidateIndex === -1 || !records) {
-        // Pool exhausted or empty; trigger background replenishment and return null for cold fallback
-        void this.replenish(repoRoot).catch(() => undefined);
         return null;
       }
 
-      const activeRecords = records;
-      const warmRecord = activeRecords[candidateIndex];
+      const warmRecord = records[candidateIndex];
       warmRecord.status = "claimed";
-      activeRecords.splice(candidateIndex, 1);
-      this.pools.set(repoRoot, activeRecords);
-
-      try {
-        const targetPath = await computeWorktreePath(
-          repoRoot,
-          options.worktreeSlug,
-          options.paseoHome ?? this.paseoHome,
-          options.worktreesRoot ?? this.worktreesRoot,
-        );
-
-        let finalTargetPath = targetPath;
-        let suffix = 1;
-        while (existsSync(finalTargetPath)) {
-          finalTargetPath = `${targetPath}-${suffix}`;
-          suffix++;
-        }
-
-        mkdirSync(dirname(finalTargetPath), { recursive: true });
-
-        // Move warm worktree to final target location
-        await runGitCommand(["worktree", "move", warmRecord.worktreePath, finalTargetPath], {
-          cwd: repoRoot,
-          timeout: 60_000,
-        });
-
-        const normalizedTargetPath = normalizePathForOwnership(finalTargetPath);
-
-        // Resolve creation source plan (determines branches, remotes, refs)
-        const sourcePlan = await resolveWorktreeSourcePlan({
-          cwd: repoRoot,
-          source: options.source,
-          desiredSlug: options.worktreeSlug,
-        });
-
-        // Switch branch according to source plan
-        await this.applyBranchToClaimedWorktree({
-          worktreePath: normalizedTargetPath,
-          sourcePlan,
-        });
-
-        if (sourcePlan.pushRemote) {
-          await configureWorktreePushRemote({
-            cwd: repoRoot,
-            branchName: sourcePlan.branchName,
-            remote: sourcePlan.pushRemote,
-          });
-        }
-
-        if (sourcePlan.trackingRemote) {
-          await configureWorktreeTrackingRemote({
-            cwd: repoRoot,
-            branchName: sourcePlan.branchName,
-            remote: sourcePlan.trackingRemote,
-          });
-        }
-
-        writePaseoWorktreeMetadata(normalizedTargetPath, {
-          baseRefName: sourcePlan.metadataBaseRefName,
-          ...(sourcePlan.metadataBaseRef ? { baseRef: sourcePlan.metadataBaseRef } : {}),
-          ...(sourcePlan.changeRequestLookupTarget
-            ? { changeRequestLookupTarget: sourcePlan.changeRequestLookupTarget }
-            : {}),
-        });
-
-        await seedPaseoConfigFile({ sourceCwd: repoRoot, targetCwd: normalizedTargetPath });
-
-        if (options.runSetup === true) {
-          await runWorktreeSetupCommands({
-            worktreePath: normalizedTargetPath,
-            branchName: sourcePlan.branchName,
-            cleanupOnFailure: true,
-          });
-        }
-
-        this.logger.info(
-          { repoRoot, worktreePath: normalizedTargetPath, branchName: sourcePlan.branchName },
-          "Successfully claimed warm worktree",
-        );
-
-        // Background replenishment to refill the pool
-        void this.replenish(repoRoot).catch(() => undefined);
-
-        return {
-          worktree: {
-            branchName: sourcePlan.branchName,
-            worktreePath: normalizedTargetPath,
-          },
-          claimed: true,
-        };
-      } catch (error) {
-        this.logger.error(
-          { err: error, repoRoot, warmWorktree: warmRecord.worktreePath },
-          "Failed to claim warm worktree; discarding",
-        );
-        try {
-          await this.cleanupFailedWorktree(repoRoot, warmRecord.worktreePath);
-        } catch {
-          // ignore
-        }
-        void this.replenish(repoRoot).catch(() => undefined);
-        return null;
-      }
+      records.splice(candidateIndex, 1);
+      this.pools.set(repoRoot, records);
+      return warmRecord;
     });
+
+    if (!reserved) {
+      void this.replenish(repoRoot).catch(() => undefined);
+      return null;
+    }
+
+    // Do not refill until this claim's git retarget finishes. Starting
+    // `git worktree add` + worktree.setup (often `npm run build:server`) in
+    // parallel with the claim's `worktree move` + checkout starved live
+    // warm-path creates on CPU/IO, and OMP `/move` then missed its budget.
+    const claimedAt = this.now().getTime();
+    try {
+      // Source plan only needs the repo; overlap it with the worktree move.
+      const sourcePlanPromise = resolveWorktreeSourcePlan({
+        cwd: repoRoot,
+        source: options.source,
+        desiredSlug: options.worktreeSlug,
+      });
+
+      const targetPath = await computeWorktreePath(
+        repoRoot,
+        options.worktreeSlug,
+        options.paseoHome ?? this.paseoHome,
+        options.worktreesRoot ?? this.worktreesRoot,
+      );
+
+      let finalTargetPath = targetPath;
+      let suffix = 1;
+      while (existsSync(finalTargetPath)) {
+        finalTargetPath = `${targetPath}-${suffix}`;
+        suffix++;
+      }
+
+      mkdirSync(dirname(finalTargetPath), { recursive: true });
+
+      await runGitCommand(["worktree", "move", reserved.worktreePath, finalTargetPath], {
+        cwd: repoRoot,
+        timeout: 60_000,
+      });
+
+      const normalizedTargetPath = normalizePathForOwnership(finalTargetPath);
+      const sourcePlan = await sourcePlanPromise;
+
+      await this.applyBranchToClaimedWorktree({
+        worktreePath: normalizedTargetPath,
+        sourcePlan,
+      });
+
+      if (sourcePlan.pushRemote) {
+        await configureWorktreePushRemote({
+          cwd: repoRoot,
+          branchName: sourcePlan.branchName,
+          remote: sourcePlan.pushRemote,
+        });
+      }
+
+      if (sourcePlan.trackingRemote) {
+        await configureWorktreeTrackingRemote({
+          cwd: repoRoot,
+          branchName: sourcePlan.branchName,
+          remote: sourcePlan.trackingRemote,
+        });
+      }
+
+      writePaseoWorktreeMetadata(normalizedTargetPath, {
+        baseRefName: sourcePlan.metadataBaseRefName,
+        ...(sourcePlan.metadataBaseRef ? { baseRef: sourcePlan.metadataBaseRef } : {}),
+        ...(sourcePlan.changeRequestLookupTarget
+          ? { changeRequestLookupTarget: sourcePlan.changeRequestLookupTarget }
+          : {}),
+      });
+
+      await seedPaseoConfigFile({ sourceCwd: repoRoot, targetCwd: normalizedTargetPath });
+
+      if (options.runSetup === true) {
+        await runWorktreeSetupCommands({
+          worktreePath: normalizedTargetPath,
+          branchName: sourcePlan.branchName,
+          cleanupOnFailure: true,
+        });
+      }
+
+      this.logger.info(
+        {
+          repoRoot,
+          worktreePath: normalizedTargetPath,
+          branchName: sourcePlan.branchName,
+          durationMs: this.now().getTime() - claimedAt,
+        },
+        "Successfully claimed warm worktree",
+      );
+
+      void this.replenish(repoRoot).catch(() => undefined);
+
+      return {
+        worktree: {
+          branchName: sourcePlan.branchName,
+          worktreePath: normalizedTargetPath,
+        },
+        claimed: true,
+      };
+    } catch (error) {
+      this.logger.error(
+        { err: error, repoRoot, warmWorktree: reserved.worktreePath },
+        "Failed to claim warm worktree; discarding",
+      );
+      try {
+        await this.cleanupFailedWorktree(repoRoot, reserved.worktreePath);
+      } catch {
+        // ignore
+      }
+      void this.replenish(repoRoot).catch(() => undefined);
+      return null;
+    }
   }
 
   public async replenishAll(): Promise<void> {
@@ -749,6 +758,25 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
   }): Promise<void> {
     const { worktreePath, sourcePlan } = options;
     const args = sourcePlan.addArguments;
+    const targetRef = args[0] === "-b" ? args[3] : args[0];
+    // Warm worktrees sit detached at baseRef. Checking out that same SHA
+    // (paseo.json `worktree.warmPool.baseRef` matching the requested branch)
+    // must not rewrite the working tree — `git checkout` of a large monorepo
+    // is the remaining multi-second cost after origin-fetch left the claim path.
+    if (targetRef && (await this.worktreeHeadMatchesRef(worktreePath, targetRef))) {
+      if (args[0] === "-b") {
+        await runGitCommand(["switch", "-c", args[1], "--no-track"], {
+          cwd: worktreePath,
+          timeout: 15_000,
+        });
+      } else {
+        await runGitCommand(["switch", "--no-guess", args[0]], {
+          cwd: worktreePath,
+          timeout: 15_000,
+        });
+      }
+      return;
+    }
     if (args[0] === "-b") {
       // ["-b", newBranchName, "--no-track", base] — mirrors `git worktree add` exactly.
       await runGitCommand(["checkout", "-b", args[1], "--no-track", args[3]], {
@@ -762,6 +790,20 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
         cwd: worktreePath,
         timeout: 60_000,
       });
+    }
+  }
+
+  private async worktreeHeadMatchesRef(worktreePath: string, ref: string): Promise<boolean> {
+    try {
+      const [head, target] = await Promise.all([
+        runGitCommand(["rev-parse", "HEAD"], { cwd: worktreePath, timeout: 5_000 }),
+        runGitCommand(["rev-parse", `${ref}^{commit}`], { cwd: worktreePath, timeout: 5_000 }),
+      ]);
+      const headSha = head.stdout.trim();
+      const targetSha = target.stdout.trim();
+      return headSha.length > 0 && headSha === targetSha;
+    } catch {
+      return false;
     }
   }
 

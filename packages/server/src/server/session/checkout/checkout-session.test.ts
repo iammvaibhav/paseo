@@ -205,8 +205,14 @@ function createGitSnapshot(
 describe("CheckoutSession", () => {
   describe("status", () => {
     it("emits a checkout status response built from the git snapshot", async () => {
+      const snapshotCalls: Array<{ cwd: string; options: unknown }> = [];
       const { checkout, emitted } = makeCheckoutSession({
-        git: { getSnapshot: async () => createGitSnapshot("/repo", "main") },
+        git: {
+          getSnapshot: async (cwd, options) => {
+            snapshotCalls.push({ cwd, options });
+            return createGitSnapshot("/repo", "main");
+          },
+        },
       });
 
       await checkout.handleStatusRequest({
@@ -215,6 +221,7 @@ describe("CheckoutSession", () => {
         requestId: "r1",
       });
 
+      expect(snapshotCalls).toEqual([{ cwd: "/repo", options: { includeForge: false } }]);
       expect(emitted).toEqual([
         {
           type: "checkout_status_response",

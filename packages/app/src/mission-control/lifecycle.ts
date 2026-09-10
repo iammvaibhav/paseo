@@ -378,6 +378,26 @@ export function rowActivityMs(row: LifecycleRow): number | null {
 }
 
 /**
+ * The instant a running row started its current turn — the same instant the
+ * agent window's elapsed timer counts from (`TurnPresentation.startedAt`), so
+ * a row and the open agent agree on how long it has been running.
+ *
+ * Null for every other bucket, and for a running agent whose open turn has no
+ * start time (a submission accepted before the turn opened): a row with no
+ * start renders no duration rather than a fabricated one.
+ */
+export function rowRunningStartedMs(row: LifecycleRow): number | null {
+  if (row.bucket !== "running") {
+    return null;
+  }
+  const turn = row.agent.turn;
+  if (turn.phase !== "open" || turn.startedAt === null) {
+    return null;
+  }
+  return turn.startedAt.getTime();
+}
+
+/**
  * Default-view visibility: Needs you / Running / Ready always show; Done shows
  * while inside the retention window; Dormant never shows. "All unarchived"
  * (showAll) reveals every unarchived agent regardless of age or bucket.
@@ -410,6 +430,26 @@ function compareRunningRows(left: LifecycleRow, right: LifecycleRow): number {
   );
 }
 
+/**
+ * Running rows sort by the turn start the row displays, newest turn first —
+ * the same newest-first rule every other bucket follows on the instant it
+ * shows. A row with no known start sorts last, then by name.
+ */
+function compareRunningDurationRows(left: LifecycleRow, right: LifecycleRow): number {
+  const leftStart = rowRunningStartedMs(left);
+  const rightStart = rowRunningStartedMs(right);
+  if (leftStart !== rightStart) {
+    if (leftStart === null) {
+      return 1;
+    }
+    if (rightStart === null) {
+      return -1;
+    }
+    return rightStart - leftStart;
+  }
+  return compareRunningRows(left, right);
+}
+
 function compareTimeDescRows(left: LifecycleRow, right: LifecycleRow): number {
   if (left.sortTime !== right.sortTime) {
     return right.sortTime - left.sortTime;
@@ -418,19 +458,21 @@ function compareTimeDescRows(left: LifecycleRow, right: LifecycleRow): number {
 }
 
 /**
- * Per-bucket row sort (spec: running by name asc; review/done/dormant by time
- * desc). Dormant sorts by time desc so the board surfaces the most recently
- * active agent first — a name-sorted dormant list buries recency (live bug:
- * the user's dormant list was strict alphabetical). needs_you joins the
- * time-desc convention: its rows are review attention like ready, and the
- * name sort made new attention indistinguishable from old. Running stays by
- * name asc — a stable list while agents work has value.
+ * Per-bucket row sort. Every bucket sorts newest-first on the instant its rows
+ * display: review/done/dormant on last activity, running on the current turn
+ * start (a name-sorted running list hid which agent just started and which has
+ * been working for an hour — live bug PASEO-46). Dormant sorts by time desc so
+ * the board surfaces the most recently active agent first — a name-sorted
+ * dormant list buries recency (live bug: the user's dormant list was strict
+ * alphabetical). needs_you joins the time-desc convention: its rows are review
+ * attention like ready, and the name sort made new attention indistinguishable
+ * from old.
  */
 export function sortLifecycleRows(bucket: LifecycleBucket, rows: LifecycleRow[]): LifecycleRow[] {
   if (bucket === "ready" || bucket === "done" || bucket === "dormant" || bucket === "needs_you") {
     return rows.sort(compareTimeDescRows);
   }
-  return rows.sort(compareRunningRows);
+  return rows.sort(compareRunningDurationRows);
 }
 
 export interface LifecycleBucketGroup {

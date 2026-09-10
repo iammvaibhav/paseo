@@ -284,6 +284,10 @@ function installBrowserWindowOpenHandler(input: {
     if (decision.kind === "deny") {
       return { action: "deny" };
     }
+    if (decision.kind === "paseo-agent") {
+      receiveAgentDeepLink(decision.url);
+      return { action: "deny" };
+    }
     if (decision.kind === "popup") {
       return {
         action: "allow",
@@ -305,7 +309,9 @@ function installBrowserWindowOpenHandler(input: {
 
   contents.on("did-create-window", (popupWindow) => {
     const popupContents = popupWindow.webContents;
-    registerBrowserWebviewNavigationGuards(popupContents);
+    registerBrowserWebviewNavigationGuards(popupContents, {
+      onPaseoAgentUrl: receiveAgentDeepLink,
+    });
     popupContents.on("context-menu", (_event, params) => {
       showBrowserWebviewContextMenu(popupWindow, popupContents, params);
     });
@@ -798,7 +804,9 @@ async function createWindow(
     contents.on("context-menu", (_contextMenuEvent, params) => {
       showBrowserWebviewContextMenu(mainWindow, contents, params);
     });
-    registerBrowserWebviewNavigationGuards(contents);
+    registerBrowserWebviewNavigationGuards(contents, {
+      onPaseoAgentUrl: receiveAgentDeepLink,
+    });
   });
 
   mainWindow.once("ready-to-show", () => {

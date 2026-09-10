@@ -42,6 +42,7 @@ interface CheckoutDiffWatchTarget {
   latestWorkspaceForgeFingerprint: string | null;
   debounceTimer: NodeJS.Timeout | null;
   pendingDebounceForce: boolean;
+  computePromise: Promise<CheckoutDiffSnapshotPayload> | null;
   refreshPromise: Promise<void> | null;
   refreshQueued: boolean;
   refreshQueuedForce: boolean;
@@ -99,11 +100,27 @@ export class CheckoutDiffManager {
 
     try {
       await target.openPromise;
-      const initial =
-        target.latestPayload ??
-        (await this.computeCheckoutDiffSnapshot(target.cwd, target.compare, {
+      let initial: CheckoutDiffSnapshotPayload;
+      if (target.latestPayload) {
+        initial = target.latestPayload;
+      } else if (target.computePromise) {
+        initial = await target.computePromise;
+      } else if (target.refreshPromise) {
+        await target.refreshPromise;
+        initial = target.latestPayload!;
+      } else {
+        const computePromise = this.computeCheckoutDiffSnapshot(target.cwd, target.compare, {
           diffCwd: target.diffCwd,
-        }));
+        });
+        target.computePromise = computePromise;
+        try {
+          initial = await computePromise;
+        } finally {
+          if (target.computePromise === computePromise) {
+            target.computePromise = null;
+          }
+        }
+      }
       target.latestPayload = initial;
       target.latestFingerprint = JSON.stringify(initial);
       return { initial, unsubscribe };
@@ -302,17 +319,33 @@ export class CheckoutDiffManager {
       do {
         target.refreshQueued = false;
         target.refreshQueuedForce = false;
-        const snapshot = await this.computeCheckoutDiffSnapshot(target.cwd, target.compare, {
-          diffCwd: target.diffCwd,
-          force: currentForce,
-          ...(currentForce ? { reason: "working-tree-watch" } : {}),
-        });
+        let snapshot: CheckoutDiffSnapshotPayload;
+        if (target.computePromise) {
+          snapshot = await target.computePromise;
+        } else {
+          const computePromise = this.computeCheckoutDiffSnapshot(target.cwd, target.compare, {
+            diffCwd: target.diffCwd,
+            force: currentForce,
+            ...(currentForce ? { reason: "working-tree-watch" } : {}),
+          });
+          target.computePromise = computePromise;
+          try {
+            snapshot = await computePromise;
+          } finally {
+            if (target.computePromise === computePromise) {
+              target.computePromise = null;
+            }
+          }
+        }
         target.latestPayload = snapshot;
         const fingerprint = JSON.stringify(snapshot);
         if (fingerprint !== target.latestFingerprint) {
+          const notify = target.latestFingerprint !== null;
           target.latestFingerprint = fingerprint;
-          for (const listener of target.listeners) {
-            listener(snapshot);
+          if (notify) {
+            for (const listener of target.listeners) {
+              listener(snapshot);
+            }
           }
         }
         currentForce = target.refreshQueuedForce;
@@ -346,6 +379,7 @@ export class CheckoutDiffManager {
       latestWorkspaceForgeFingerprint: null,
       debounceTimer: null,
       pendingDebounceForce: false,
+      computePromise: null,
       refreshPromise: null,
       refreshQueued: false,
       refreshQueuedForce: false,

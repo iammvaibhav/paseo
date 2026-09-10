@@ -94,6 +94,7 @@ function createCoreDeps(options?: {
               service: options.forge.service,
             }
           : null,
+      hasOriginTrackingBranch: async () => false,
     },
     resolveDefaultBranch: async () => "main",
   };
@@ -491,6 +492,17 @@ describe.skipIf(isPlatform("win32"))("worktree-core POSIX-only", () => {
           resolveRepoRoot: async (cwd: string) => cwd,
           resolveForge: async () => null,
           resolveDefaultBranch: async () => "main",
+          hasOriginTrackingBranch: async (repoRoot: string, branch: string) => {
+            try {
+              execFileSync("git", ["rev-parse", "--verify", `refs/remotes/origin/${branch}`], {
+                cwd: repoRoot,
+                stdio: "pipe",
+              });
+              return true;
+            } catch {
+              return false;
+            }
+          },
         },
       };
 

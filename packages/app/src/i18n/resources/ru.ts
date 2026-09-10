@@ -1037,6 +1037,14 @@ export const ru: TranslationResources = {
         committed: "Зафиксированные изменения",
         branchUnknown: "Неизвестная ветка",
         base: "базовая ветка",
+        baseBranch: "Base branch",
+        baseBranchTrigger: "Base branch: {{name}}. Press to change.",
+        baseBranchTooltip: "Change base branch",
+        baseBranchDefault: "Use default ({{name}})",
+        baseBranchDefaultHint: "default",
+        baseBranchSearchPlaceholder: "Filter branches...",
+        baseBranchEmpty: "No branches found",
+        baseBranchLoading: "Loading branches...",
         newFile: "Новый",
         deletedFile: "Файл удалён",
         modifiedFile: "Файл изменён",
@@ -1168,6 +1176,16 @@ export const ru: TranslationResources = {
       deleteMessage_other: "Метка будет снята с {{count}} рабочих пространств на этом хосте.",
       offline: "Этот хост не в сети.",
       updateHost: "Обновите этот хост для управления метками.",
+    },
+  },
+  changelog: {
+    title: "Что нового",
+    installed: "Установлена",
+    showMore: "Показать ещё",
+    openWebsite: "Полный список изменений",
+    error: {
+      title: "Не удалось загрузить список изменений",
+      description: "Проверьте подключение и попробуйте снова.",
     },
   },
   sidebar: {
@@ -2330,6 +2348,7 @@ export const ru: TranslationResources = {
     about: {
       title: "О приложении",
       appVersion: "Версия приложения",
+      whatsNewHint: "Заметки о выпуске для каждой версии",
       thisDevice: "Это устройство",
       connectedHosts: "Подключенные хосты",
       offline: "Оффлайн",
@@ -2398,6 +2417,10 @@ export const ru: TranslationResources = {
         contentSize: "Размер содержимого",
         contentSizeHint: "Используется для текста чата и отображаемого Markdown",
         contentSizeAccessibility: "Размер шрифта содержимого",
+        agentGridSize: "Размер сетки агентов",
+        agentGridSizeHint:
+          "Для текста чата в плитках Agent Grid; не зависит от полного окна агента",
+        agentGridSizeAccessibility: "Размер шрифта сетки агентов",
         codeFont: "Шрифт кода",
         codeFontHint:
           "Используется для кода, диффов и вывода терминала. Оставьте поле пустым, чтобы использовать системный шрифт.",

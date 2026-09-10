@@ -446,11 +446,11 @@ sync_local_git() {
 
 build_server() {
   log "Building server stack"
-  (cd "$ROOT_DIR" && npm run build:server)
+  (cd "$ROOT_DIR" && pnpm run build:server)
   # Static bundle for the daemon-served web UI. The daemon is always started
   # with --web-ui, so without this it answers 404 on every UI route.
   log "Building daemon web UI"
-  (cd "$ROOT_DIR" && npm run build:daemon-web-ui)
+  (cd "$ROOT_DIR" && pnpm run build:daemon-web-ui)
 }
 
 install_cli_wrapper() {
@@ -990,9 +990,11 @@ build_desktop_app() {
   log "Building desktop app (unsigned) → install $DESKTOP_APP — this takes a few minutes"
   (
     cd "$ROOT_DIR"
-    # -p never: unsigned local builds must not attempt GitHub publish (needs GH_TOKEN).
-    CSC_IDENTITY_AUTO_DISCOVERY=false npm run build:desktop -- \
-      -c.mac.notarize=false -c.mac.hardenedRuntime=false -p never
+    # Unsigned flags live in @getpaseo/desktop's build:unsigned script: pnpm
+    # preserves `--` through run layers (unlike npm, which strips it), so
+    # forwarded `-c` flags arrived behind `--` and electron-builder ignored
+    # them — producing an ad-hoc hardened build that crashes at launch.
+    CSC_IDENTITY_AUTO_DISCOVERY=false pnpm run build:desktop
   )
   # electron-builder writes Paseo.app under packages/desktop/release/mac*/.
   local built
@@ -1019,7 +1021,7 @@ restore_daemon_web_ui_bundle() {
     return
   fi
   log "Desktop build removed the daemon web UI bundle; rebuilding it"
-  (cd "$ROOT_DIR" && npm run build:daemon-web-ui) \
+  (cd "$ROOT_DIR" && pnpm run build:daemon-web-ui) \
     || log "  Warning: daemon web UI rebuild failed; GET / will 404 until the next deploy"
 }
 
@@ -1079,24 +1081,36 @@ if ! git merge --ff-only "origin/\$BRANCH" >/dev/null 2>&1; then
 fi
 log "MacBook checkout at \$(git rev-parse --short HEAD)"
 
-# Reinstall deps when the lockfile changed since the last sync.
+# Reinstall deps when dependencies or patches changed since the last sync.
+# patches/ and the patch script itself must trigger too: a patch-only commit
+# changes neither the lockfile nor any package.json, but the new patch still
+# has to be applied (missed once on 2026-09-09: unpatched xterm bundle shipped).
+# NOTE: plain pnpm install skips lifecycle scripts when nothing changed, so
+# run the patch script explicitly — it is idempotent across repeated runs.
 sync_ref_file="\$HOME/.paseo-sync-ref"
 prev=""
 cur="\$(git rev-parse HEAD)"
 if [[ -f "\$sync_ref_file" ]]; then
   prev="\$(cat "\$sync_ref_file")"
 fi
-if [[ -z "\$prev" ]] || git diff "\$prev" "\$cur" --name-only | grep -Eq '^(package-lock\\.json|package\\.json)$'; then
-  log "Installing npm dependencies"
-  npm install
+if [[ -z "\$prev" ]] || git diff "\$prev" "\$cur" --name-only | grep -Eq '^(pnpm-lock\\.yaml|package\\.json|patches/|scripts/postinstall-patches\\.mjs)$'; then
+  log "Installing pnpm dependencies"
+  corepack enable && corepack prepare pnpm@11.22.0 --activate && pnpm install
+fi
+# Always re-apply patches: sync-ref compares can miss an unapplied patch
+# (shipped once on 2026-09-09), and plain pnpm install skips lifecycle
+# scripts when nothing changed. Guarded on the binary so fresh checkouts
+# without node_modules still fail loudly at build time, as before.
+if [[ -x node_modules/.bin/patch-package ]]; then
+  PATH="\$PWD/node_modules/.bin:\$PATH" node scripts/postinstall-patches.mjs
 fi
 echo "\$cur" > "\$sync_ref_file"
 
 if [[ "\$RESTART_DAEMON" == "1" ]]; then
   log "Building server packages"
-  npm run build:server
+  pnpm run build:server
   log "Building daemon web UI"
-  npm run build:daemon-web-ui
+  pnpm run build:daemon-web-ui
 
   # Self-wake nudge: snapshot running agents BEFORE the daemon stops, then nudge
   # them after it is healthy so each one resumes without a human. Never fatal.
@@ -1185,7 +1199,7 @@ macbook_job() {
   if printf '%s' "$body" | ssh -o BatchMode=yes "$MACBOOK_HOST" "bash -s"; then
     log "MacBook job complete"
   else
-    log "MacBook job FAILED — on the MacBook run: npm run build:server && ./scripts/restart-local-daemon.sh, then PASEO_DESKTOP_ONLY=1 ./scripts/deploy.sh"
+    log "MacBook job FAILED — on the MacBook run: pnpm run build:server && ./scripts/restart-local-daemon.sh, then PASEO_DESKTOP_ONLY=1 ./scripts/deploy.sh"
     if [[ "${PASEO_REQUIRE_MACBOOK:-0}" == "1" ]]; then
       return 1
     fi
@@ -1683,9 +1697,13 @@ maybe_install_deps() {
   if [[ -f "\$sync_ref_file" ]]; then
     prev="\$(cat "\$sync_ref_file")"
   fi
-  if [[ -z "\$prev" ]] || git diff "\$prev" "\$cur" --name-only | grep -Eq '^(package-lock\\.json|package\\.json)$'; then
-    log "Installing npm dependencies"
-    npm install
+  if [[ -z "\$prev" ]] || git diff "\$prev" "\$cur" --name-only | grep -Eq '^(pnpm-lock\\.yaml|package\\.json|patches/|scripts/postinstall-patches\\.mjs)$'; then
+    log "Installing pnpm dependencies"
+    corepack enable && corepack prepare pnpm@11.22.0 --activate && pnpm install
+  fi
+  # Always re-apply patches (see macbook job above for why): cheap, idempotent.
+  if [[ -x node_modules/.bin/patch-package ]]; then
+    PATH="\$PWD/node_modules/.bin:\$PATH" node scripts/postinstall-patches.mjs
   fi
   echo "\$cur" > "\$sync_ref_file"
 }
@@ -1720,9 +1738,9 @@ daemon_path_env() {
 build_and_restart() {
   cd "\$HOME/\$REMOTE_REPO_DIR"
   log "Building server"
-  npm run build:server
+  pnpm run build:server
   log "Building daemon web UI"
-  npm run build:daemon-web-ui
+  pnpm run build:daemon-web-ui
   install_cli_wrapper
   log "Restarting daemon (\$PASEO_HOME)"
   # Drive the webhook tunnel via env (not config.json) so an older daemon's strict

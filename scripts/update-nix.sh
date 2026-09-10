@@ -1,62 +1,83 @@
 #!/usr/bin/env bash
-# Fix workspace-local lockfile entries and update the Nix dependency hash.
-# Requires: node, npm, nix
+# Update the Nix `pnpmDeps` fixed-output-derivation hash for the pnpm
+# workspace lockfile.
+# Requires: node, nix
 #
 # Usage:
-#   ./scripts/update-nix.sh          # fix lockfile + update hash
+#   ./scripts/update-nix.sh          # update hash
 #   ./scripts/update-nix.sh --check  # verify everything is up to date (CI mode)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-LOCK_FILE="$ROOT_DIR/package-lock.json"
-HASH_FILE="$ROOT_DIR/nix/npm-deps.hash"
+HASH_FILE="$ROOT_DIR/nix/pnpm-deps.hash"
 
 CHECK_MODE=false
 if [[ "${1:-}" == "--check" ]]; then
   CHECK_MODE=true
 fi
 
-# 1. Fix lockfile (add resolved/integrity for workspace-local entries)
-#    Workaround for https://github.com/npm/cli/issues/4460
-echo "Fixing lockfile..."
-node "$SCRIPT_DIR/fix-lockfile.mjs" "$LOCK_FILE"
+# Unlike npm, pnpm always writes complete `resolved`/`integrity` metadata
+# into pnpm-lock.yaml. The workspace-local-entries bug that fix-lockfile.mjs
+# worked around (https://github.com/npm/cli/issues/4460) was npm-specific
+# and does not affect pnpm, so there is no lockfile-fixing step here anymore.
 
-# 2. Prefetch deps and compute hash
-echo "Prefetching npm dependencies..."
+CURRENT_HASH="$(tr -d '[:space:]' < "$HASH_FILE")"
 
-# Resolve prefetch-npm-deps from the same nixpkgs pinned in flake.lock
-NIXPKGS_URL="$(node -p "
-  const l = JSON.parse(require('fs').readFileSync('$ROOT_DIR/flake.lock', 'utf8'));
-  const n = l.nodes.nixpkgs.locked;
-  'github:' + n.owner + '/' + n.repo + '/' + n.rev;
-")"
+# nixpkgs does not ship a standalone `prefetch-pnpm-deps` CLI analogous to
+# `prefetch-npm-deps` (as of the nixpkgs revision pinned in flake.lock), so
+# there is no single command that returns the `fetchPnpmDeps` hash directly.
+# The technique documented at
+# https://nixos.org/manual/nixpkgs/unstable/#javascript-pnpm (and echoed by
+# nixpkgs' own pnpm-config-hook.sh error message: "Set pnpmDeps.hash to ''
+# (empty string) ... Build the derivation and wait for it to fail with a
+# hash mismatch ... Copy the 'got: sha256-' value back into the pnpmDeps.hash
+# field") is: write a hash that can never match, let the `pnpmDeps`
+# fixed-output derivation fail, and read the real hash off the build's
+# "got: sha256-..." line. Do that here against our own flake's `default`
+# package (the daemon derivation in nix/package.nix), which requires
+# network access to actually fetch the pnpm store, same as the old
+# `prefetch-npm-deps` invocation did.
+PLACEHOLDER_HASH="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+printf '%s\n' "$PLACEHOLDER_HASH" > "$HASH_FILE"
 
-STDERR_LOG="$(mktemp)"
-trap "rm -f '$STDERR_LOG'" EXIT
+BUILD_LOG="$(mktemp)"
+trap "rm -f '$BUILD_LOG'" EXIT
 
-if ! NEW_HASH="$(nix shell "${NIXPKGS_URL}#prefetch-npm-deps" -c prefetch-npm-deps "$LOCK_FILE" 2>"$STDERR_LOG")"; then
-  echo "ERROR: prefetch-npm-deps failed:" >&2
-  tail -20 "$STDERR_LOG" >&2
+echo "Building with a placeholder pnpmDeps hash to discover the real one..."
+if nix build "$ROOT_DIR#default" --no-link >"$BUILD_LOG" 2>&1; then
+  echo "ERROR: build unexpectedly succeeded with a placeholder hash." >&2
+  echo "  A placeholder hash can never match a real fixed-output-derivation hash." >&2
+  cat "$BUILD_LOG" >&2
+  printf '%s\n' "$CURRENT_HASH" > "$HASH_FILE"
+  exit 1
+fi
+
+NEW_HASH="$(grep -A2 'got:' "$BUILD_LOG" | grep -o 'sha256-[A-Za-z0-9+/=]*' | head -1 || true)"
+
+if [[ -z "$NEW_HASH" ]]; then
+  echo "ERROR: could not extract the real pnpmDeps hash from the build failure:" >&2
+  tail -40 "$BUILD_LOG" >&2
+  printf '%s\n' "$CURRENT_HASH" > "$HASH_FILE"
   exit 1
 fi
 echo "Computed hash: $NEW_HASH"
 
-# 3. Read current hash from the sidecar file
-CURRENT_HASH="$(tr -d '[:space:]' < "$HASH_FILE")"
-
 if [[ "$NEW_HASH" == "$CURRENT_HASH" ]]; then
   echo "Hash is already up to date."
-else
-  if $CHECK_MODE; then
-    echo "ERROR: npmDepsHash is stale."
-    echo "  current: $CURRENT_HASH"
-    echo "  correct: $NEW_HASH"
-    echo "Run ./scripts/update-nix.sh to fix."
-    exit 1
-  fi
-
-  echo "Updating nix/npm-deps.hash..."
-  printf '%s\n' "$NEW_HASH" > "$HASH_FILE"
-  echo "Updated: $CURRENT_HASH -> $NEW_HASH"
+  printf '%s\n' "$CURRENT_HASH" > "$HASH_FILE"
+  exit 0
 fi
+
+if $CHECK_MODE; then
+  printf '%s\n' "$CURRENT_HASH" > "$HASH_FILE"
+  echo "ERROR: pnpmDepsHash is stale."
+  echo "  current: $CURRENT_HASH"
+  echo "  correct: $NEW_HASH"
+  echo "Run ./scripts/update-nix.sh to fix."
+  exit 1
+fi
+
+echo "Updating nix/pnpm-deps.hash..."
+printf '%s\n' "$NEW_HASH" > "$HASH_FILE"
+echo "Updated: $CURRENT_HASH -> $NEW_HASH"

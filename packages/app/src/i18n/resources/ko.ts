@@ -1028,6 +1028,14 @@ export const ko: TranslationResources = {
         committed: "커밋됨",
         branchUnknown: "알 수 없음",
         base: "기준",
+        baseBranch: "Base branch",
+        baseBranchTrigger: "Base branch: {{name}}. Press to change.",
+        baseBranchTooltip: "Change base branch",
+        baseBranchDefault: "Use default ({{name}})",
+        baseBranchDefaultHint: "default",
+        baseBranchSearchPlaceholder: "Filter branches...",
+        baseBranchEmpty: "No branches found",
+        baseBranchLoading: "Loading branches...",
         newFile: "신규",
         deletedFile: "삭제됨",
         modifiedFile: "수정됨",
@@ -1159,6 +1167,16 @@ export const ko: TranslationResources = {
       deleteMessage_other: "이 호스트의 워크스페이스 {{count}}개에서 레이블을 제거합니다.",
       offline: "이 호스트는 오프라인입니다.",
       updateHost: "레이블을 관리하려면 호스트를 업데이트하세요.",
+    },
+  },
+  changelog: {
+    title: "새로운 소식",
+    installed: "설치됨",
+    showMore: "더 보기",
+    openWebsite: "전체 변경 내역",
+    error: {
+      title: "변경 내역을 불러오지 못했습니다",
+      description: "연결을 확인한 후 다시 시도하세요.",
     },
   },
   sidebar: {
@@ -2296,6 +2314,7 @@ export const ko: TranslationResources = {
     about: {
       title: "정보",
       appVersion: "앱 버전",
+      whatsNewHint: "모든 버전의 릴리스 노트",
       thisDevice: "이 기기",
       connectedHosts: "연결된 호스트",
       offline: "오프라인",
@@ -2361,6 +2380,10 @@ export const ko: TranslationResources = {
         contentSize: "콘텐츠 크기",
         contentSizeHint: "채팅 텍스트와 렌더링된 Markdown에 사용됩니다",
         contentSizeAccessibility: "콘텐츠 글꼴 크기",
+        agentGridSize: "Agent Grid 크기",
+        agentGridSizeHint:
+          "Mission Control Agent Grid 타일의 채팅 텍스트에 사용되며, 전체 에이전트 화면과는 별도입니다",
+        agentGridSizeAccessibility: "Agent Grid 글꼴 크기",
         codeFont: "코드 글꼴",
         codeFontHint:
           "코드, diff, 터미널 출력에 사용됩니다. 시스템 기본값을 사용하려면 비워 두세요",

@@ -1043,6 +1043,14 @@ export const ptBR: TranslationResources = {
         committed: "Com commit",
         branchUnknown: "Desconhecido",
         base: "base",
+        baseBranch: "Base branch",
+        baseBranchTrigger: "Base branch: {{name}}. Press to change.",
+        baseBranchTooltip: "Change base branch",
+        baseBranchDefault: "Use default ({{name}})",
+        baseBranchDefaultHint: "default",
+        baseBranchSearchPlaceholder: "Filter branches...",
+        baseBranchEmpty: "No branches found",
+        baseBranchLoading: "Loading branches...",
         newFile: "Novo",
         deletedFile: "Excluído",
         modifiedFile: "Modificado",
@@ -1177,6 +1185,16 @@ export const ptBR: TranslationResources = {
       deleteMessage_other: "Isso remove a etiqueta de {{count}} workspaces neste host.",
       offline: "Este host está offline.",
       updateHost: "Atualize este host para gerenciar etiquetas.",
+    },
+  },
+  changelog: {
+    title: "Novidades",
+    installed: "Instalada",
+    showMore: "Mostrar mais",
+    openWebsite: "Changelog completo",
+    error: {
+      title: "Não foi possível carregar o changelog",
+      description: "Verifique sua conexão e tente novamente.",
     },
   },
   sidebar: {
@@ -2328,6 +2346,7 @@ export const ptBR: TranslationResources = {
     about: {
       title: "Sobre",
       appVersion: "Versão do app",
+      whatsNewHint: "Notas de versão de cada release",
       thisDevice: "Este dispositivo",
       connectedHosts: "Hosts conectados",
       offline: "Offline",
@@ -2393,6 +2412,10 @@ export const ptBR: TranslationResources = {
         contentSize: "Tamanho do conteúdo",
         contentSizeHint: "Usado no texto do chat e no Markdown renderizado",
         contentSizeAccessibility: "Tamanho da fonte do conteúdo",
+        agentGridSize: "Tamanho do Agent Grid",
+        agentGridSizeHint:
+          "Usado no texto do chat nos tiles do Agent Grid, separado do painel completo do agente",
+        agentGridSizeAccessibility: "Tamanho da fonte do Agent Grid",
         codeFont: "Fonte de código",
         codeFontHint:
           "Usada em código, diffs e saída do terminal. Deixe vazio para usar o padrão do sistema",

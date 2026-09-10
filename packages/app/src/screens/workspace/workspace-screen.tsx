@@ -208,13 +208,17 @@ import {
   WorkspaceHeaderMenuDesktop,
   WorkspaceHeaderMenuMobile,
 } from "@/screens/workspace/workspace-header-menu";
+import { PluginHeaderButtons } from "@/plugins";
 import {
   createWorkspaceFileTabTarget,
   normalizeWorkspaceFileLocation,
   type WorkspaceFileLocation,
   type WorkspaceFileOpenRequest,
 } from "@/workspace/file-open";
-import { openBrowserEditorTab } from "@/workspace/open-file-in-browser-editor";
+import {
+  openBrowserEditorTab,
+  tryOpenFileInBrowserEditor,
+} from "@/workspace/open-file-in-browser-editor";
 import {
   stopPlannotatorBrowserIfNeeded,
   tryOpenFileInPlannotator,
@@ -889,6 +893,7 @@ interface MobileMountedTabSlotProps {
   isWorkspaceFocused: boolean;
   isPaneFocused: boolean;
   paneId: string | null;
+  onFocusPane: (paneId: string) => void;
   buildPaneContentModel: (input: {
     paneId: string | null;
     tab: WorkspaceTabDescriptor;
@@ -901,6 +906,7 @@ const MobileMountedTabSlot = memo(function MobileMountedTabSlot({
   isWorkspaceFocused,
   isPaneFocused,
   paneId,
+  onFocusPane,
   buildPaneContentModel,
 }: MobileMountedTabSlotProps) {
   const content = useMemo(
@@ -911,15 +917,21 @@ const MobileMountedTabSlot = memo(function MobileMountedTabSlot({
       }),
     [buildPaneContentModel, paneId, tabDescriptor],
   );
+  const handleTouch = useCallback(() => {
+    if (!isPaneFocused && paneId) onFocusPane(paneId);
+    return false;
+  }, [isPaneFocused, onFocusPane, paneId]);
 
   return (
     <RenderProfile id={`MobileMountedTabSlot:${tabDescriptor.kind}:${tabDescriptor.tabId}`}>
       <RetainedPanel active={isVisible} style={styles.mobileMountedTabSlot}>
-        <WorkspacePaneContent
-          content={content}
-          isWorkspaceFocused={isWorkspaceFocused}
-          isPaneFocused={isPaneFocused}
-        />
+        <View style={styles.mobileMountedTabSlot} onStartShouldSetResponderCapture={handleTouch}>
+          <WorkspacePaneContent
+            content={content}
+            isWorkspaceFocused={isWorkspaceFocused}
+            isPaneFocused={isPaneFocused}
+          />
+        </View>
       </RetainedPanel>
     </RenderProfile>
   );
@@ -1186,6 +1198,8 @@ interface RenderWorkspaceContentInput {
   focusedPaneTabDescriptorMap: Map<string, WorkspaceTabDescriptor>;
   isRouteFocused: boolean;
   focusedPaneId: string | null;
+  paneFocusSuspended: boolean;
+  onFocusPane: (paneId: string) => void;
   buildMobilePaneContentModel: (input: {
     paneId: string | null;
     tab: WorkspaceTabDescriptor;
@@ -1202,6 +1216,8 @@ function renderWorkspaceContent(input: RenderWorkspaceContentInput): React.React
     focusedPaneTabDescriptorMap,
     isRouteFocused,
     focusedPaneId,
+    paneFocusSuspended,
+    onFocusPane,
     buildMobilePaneContentModel,
   } = input;
 
@@ -1241,8 +1257,9 @@ function renderWorkspaceContent(input: RenderWorkspaceContentInput): React.React
         tabDescriptor={tabDescriptor}
         isVisible={isRouteFocused && tabId === activeTabDescriptor.tabId}
         isWorkspaceFocused={isRouteFocused}
-        isPaneFocused={tabId === activeTabDescriptor.tabId}
+        isPaneFocused={!paneFocusSuspended && tabId === activeTabDescriptor.tabId}
         paneId={focusedPaneId}
+        onFocusPane={onFocusPane}
         buildPaneContentModel={buildMobilePaneContentModel}
       />
     );
@@ -1932,6 +1949,9 @@ function WorkspaceScreenContent({
   const workspaceLayout = useWorkspaceLayoutStore((state) =>
     persistenceKey ? (state.layoutByWorkspace[persistenceKey] ?? null) : null,
   );
+  const unfocusedPaneId = useWorkspaceLayoutStore((state) =>
+    persistenceKey ? state.focusRestorationByWorkspace[persistenceKey]?.restorePaneId : undefined,
+  );
   const explorerSidebarPaneId = useWorkspaceLayoutStore((state) =>
     persistenceKey ? selectExplorerSidebarPaneId(state, persistenceKey) : null,
   );
@@ -2112,8 +2132,9 @@ function WorkspaceScreenContent({
       deriveWorkspacePaneState({
         layout: workspaceLayout,
         tabs: uiTabs,
+        paneId: workspaceLayout?.focusedPaneId ?? unfocusedPaneId,
       }),
-    [uiTabs, workspaceLayout],
+    [uiTabs, workspaceLayout, unfocusedPaneId],
   );
   const viewedTimelineSync = useSessionStore(
     (state) => state.sessions[normalizedServerId]?.viewedTimelineSync ?? null,
@@ -2464,35 +2485,39 @@ function WorkspaceScreenContent({
     ],
   );
 
-  const _handleOpenFileFromExplorer = useCallback(
-    function handleOpenFileFromExplorer(filePath: string) {
-      if (!persistenceKey) {
-        return;
-      }
+  // Fork-only: VS Code Web's own diff editor for a changed file, opened from
+  // the Changes tree. Offered only where VS Code Web exists — there is no
+  // in-app diff editor to fall back to.
+  const handleOpenDiffFromExplorer = useMemo(() => {
+    if (!getIsElectron() || !browserEditorUrl || !persistenceKey || !workspaceDirectory) {
+      return undefined;
+    }
+    return (filePath: string, baseRef: string | null) => {
       const location = normalizeWorkspaceFileLocation({ path: filePath });
       if (!location) {
         return;
       }
-      void tryOpenFileInConfiguredDefault(location).then((result) => {
-        if (result.handled) {
-          return undefined;
-        }
-        const tabId = openWorkspaceTabFocused(
-          persistenceKey,
-          createWorkspaceFileTabTarget(location),
-        );
-        if (tabId) {
-          navigateToTabId(tabId);
-        }
-        return undefined;
+      tryOpenFileInBrowserEditor({
+        browserEditorUrl,
+        workspaceDirectory,
+        workspaceKey: persistenceKey,
+        location,
+        mode: "diff",
+        baseRef,
+        workspaceTabs: uiTabs,
+        openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
+        navigateToTabId,
       });
-    },
-    [navigateToTabId, openWorkspaceTabFocused, persistenceKey, tryOpenFileInConfiguredDefault],
-  );
+    };
+  }, [
+    browserEditorUrl,
+    navigateToTabId,
+    openWorkspaceTabFocused,
+    persistenceKey,
+    uiTabs,
+    workspaceDirectory,
+  ]);
 
-  // Fork-only: VS Code Web's own diff editor for a changed file. Offered only
-  // where VS Code Web exists — there is no in-app diff editor to fall back to,
-  // and the inline diff in the pane already covers that.
   const handleOpenFileFromChat = useCallback(
     (location: WorkspaceFileLocation, parentTabId?: string | null) => {
       const normalizedLocation = normalizeWorkspaceFileLocation(location);
@@ -3964,10 +3989,12 @@ function WorkspaceScreenContent({
           });
         },
         onOpenImportSheet: openImportSheet,
+        onOpenDiff: handleOpenDiffFromExplorer,
       }),
     [
       handleCloseTabById,
       fileNavigationRevisionByTabId,
+      handleOpenDiffFromExplorer,
       handleOpenWorkspaceFileFromPane,
       navigateToTabId,
       normalizedServerId,
@@ -4019,6 +4046,12 @@ function WorkspaceScreenContent({
     },
     [buildPaneContentModel],
   );
+  const handleFocusPane = useStableEvent(function handleFocusPane(paneId: string) {
+    if (!persistenceKey || paneFocusSuppressedRef.current) {
+      return;
+    }
+    focusWorkspacePane(persistenceKey, paneId);
+  });
   const content = renderWorkspaceContent({
     isMissingWorkspaceDirectory,
     activeTabDescriptor,
@@ -4028,6 +4061,8 @@ function WorkspaceScreenContent({
     focusedPaneTabDescriptorMap,
     isRouteFocused,
     focusedPaneId,
+    paneFocusSuspended: Boolean(unfocusedPaneId),
+    onFocusPane: handleFocusPane,
     buildMobilePaneContentModel,
   });
 
@@ -4052,13 +4087,6 @@ function WorkspaceScreenContent({
       })),
     [activeTabDescriptor?.tabId, closingTabIds, hoveredCloseTabKey, tabs],
   );
-
-  const handleFocusPane = useStableEvent(function handleFocusPane(paneId: string) {
-    if (!persistenceKey || paneFocusSuppressedRef.current) {
-      return;
-    }
-    focusWorkspacePane(persistenceKey, paneId);
-  });
 
   const handleSplitPane = useCallback(
     function handleSplitPane(input: {
@@ -4137,6 +4165,7 @@ function WorkspaceScreenContent({
   const headerRight = useMemo(
     () => (
       <View style={styles.headerRight}>
+        <PluginHeaderButtons serverId={normalizedServerId} workspaceId={normalizedWorkspaceId} />
         {!isMobile && workspaceDescriptor && workspaceDescriptor.scripts.length > 0 ? (
           <WorkspaceScriptsButton
             serverId={normalizedServerId}
@@ -4565,7 +4594,7 @@ const styles = StyleSheet.create((theme) => ({
       md: "row",
     },
     alignItems: {
-      xs: "flex-start",
+      xs: "stretch",
       md: "center",
     },
     justifyContent: "flex-start",

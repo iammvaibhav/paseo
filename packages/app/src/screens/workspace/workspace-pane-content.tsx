@@ -37,6 +37,7 @@ export interface BuildWorkspacePaneContentModelInput {
   onRetargetCurrentTab: (target: WorkspaceTabDescriptor["target"]) => void;
   onSetCurrentTabState: (state: WorkspaceTabDescriptor["state"]) => void;
   onOpenWorkspaceFile: (request: WorkspaceFileOpenRequest) => void;
+  onOpenDiff?: (path: string, baseRef: string | null) => void;
   onOpenImportSheet: () => void;
 }
 
@@ -53,6 +54,7 @@ export function buildWorkspacePaneContentModel({
   onRetargetCurrentTab,
   onSetCurrentTabState,
   onOpenWorkspaceFile,
+  onOpenDiff,
   onOpenImportSheet,
 }: BuildWorkspacePaneContentModelInput): WorkspacePaneContentModel {
   ensurePanelsRegistered();
@@ -76,6 +78,7 @@ export function buildWorkspacePaneContentModel({
       retargetCurrentTab: onRetargetCurrentTab,
       setCurrentTabState: onSetCurrentTabState,
       openFileInWorkspace: onOpenWorkspaceFile,
+      openDiffInBrowserEditor: onOpenDiff,
       openImportSheet: onOpenImportSheet,
     },
   };
@@ -98,6 +101,9 @@ export function WorkspacePaneContent({
   const openTab = useStableEvent(paneContextValue.openTab);
   const openPreferredTarget = useStableEvent(paneContextValue.openPreferredTarget);
   const openTargetToSide = useStableEvent(paneContextValue.openTargetToSide ?? (() => undefined));
+  const openDiffInBrowserEditor = useStableEvent(
+    paneContextValue.openDiffInBrowserEditor ?? (() => undefined),
+  );
   const closeCurrentTab = useStableEvent(paneContextValue.closeCurrentTab);
   const retargetCurrentTab = useStableEvent(paneContextValue.retargetCurrentTab);
   const setCurrentTabState = useStableEvent(paneContextValue.setCurrentTabState);
@@ -115,6 +121,9 @@ export function WorkspacePaneContent({
       openTab,
       openPreferredTarget,
       openTargetToSide: paneContextValue.openTargetToSide ? openTargetToSide : undefined,
+      openDiffInBrowserEditor: paneContextValue.openDiffInBrowserEditor
+        ? openDiffInBrowserEditor
+        : undefined,
       closeCurrentTab,
       retargetCurrentTab,
       setCurrentTabState,
@@ -128,6 +137,7 @@ export function WorkspacePaneContent({
       openTab,
       openPreferredTarget,
       openTargetToSide,
+      openDiffInBrowserEditor,
       paneContextValue.serverId,
       paneContextValue.fileNavigationRevision,
       paneContextValue.tabId,
@@ -136,6 +146,7 @@ export function WorkspacePaneContent({
       paneContextValue.workspaceId,
       paneContextValue.host,
       paneContextValue.openTargetToSide,
+      paneContextValue.openDiffInBrowserEditor,
       retargetCurrentTab,
       setCurrentTabState,
     ],

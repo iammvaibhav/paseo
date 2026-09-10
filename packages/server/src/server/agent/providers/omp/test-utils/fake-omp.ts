@@ -266,6 +266,7 @@ export class FakeOmpSession implements OmpRuntimeSession {
     }
     this.abortRequested = true;
     this.abortTimeoutBudgets.push(timeoutMs);
+    this.state = { ...this.state, isStreaming: false };
     const error = this.abortErrors.shift();
     if (error) {
       throw error;
@@ -319,6 +320,12 @@ export class FakeOmpSession implements OmpRuntimeSession {
 
   async setThinkingLevel(level: OmpThinkingLevel): Promise<void> {
     this.setThinkingLevelRequests.push(level);
+  }
+
+  newSessionRequestCount = 0;
+
+  async newSession(): Promise<void> {
+    this.newSessionRequestCount += 1;
   }
 
   async switchSession(sessionPath: string): Promise<void> {

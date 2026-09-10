@@ -72,6 +72,9 @@ export function buildDaemonEnv({
     delete env.PASEO_WEB_UI_DIST_DIR;
   }
   env.PASEO_RELAY_ENABLED = "0";
+  // Dev-only providers (e.g. the "mock" load-test provider used by UI-tier fixtures)
+  // are gated on PASEO_NODE_ENV=development; verify stacks are always throwaway dev tooling.
+  env.PASEO_NODE_ENV = "development";
   env.PASEO_TUNNEL_AUTOSTART = "0";
   env.PASEO_VOICE_MODE_ENABLED = "0";
   env.PASEO_DICTATION_ENABLED = "0";
