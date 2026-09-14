@@ -846,11 +846,11 @@ export interface DefaultWorkerModelResolution {
 
 /**
  * The Commander's spawn default for a host: the composer's remembered last
- * provider/model pick (daemon.composerPreferences, resolved workspace →
- * project → global like the app's resolveEffectiveFormPreferences) in
- * invocable form, falling back to the omp `task` role model. When the task
- * role's model is missing from the host's snapshot (live case: role default
- * referencing a model the host does not have), fall back to the first
+ * provider/model pick (daemon.composerPreferences, global-only like the app's
+ * resolveEffectiveFormPreferences) in invocable form, falling back to the omp
+ * `task` role model. When the task role's model is missing from the host's
+ * snapshot (live case: role default referencing a model the host does not
+ * have), fall back to the first
  * invocable model — a default the Commander can actually spawn with beats an
  * unavailable one. Structured so the world snapshot renderer and the
  * fleet_list_models catalog tool share ONE derivation (exported for
@@ -888,9 +888,8 @@ export function resolveDefaultWorkerModel(
 
 /**
  * The composer's remembered pick as an invocable `${provider}/${model}` string,
- * or null when there is none. Mirrors the app's resolveEffectiveFormPreferences
- * scope resolution for provider + providerPreferences: workspace wins over
- * project wins over the global fallback, per provider.
+ * or null when there is none. Global-only: scoped copies are legacy dead
+ * weight and never override the host's last pick.
  */
 function composerScopeSelection(
   preferences: ComposerPreferences,
@@ -930,20 +929,18 @@ export function resolveRememberedBaseBranch(
 
 function resolveComposerDefaultModel(
   preferences: ComposerPreferences | null | undefined,
-  scope: { workspaceId?: string | null; projectKey?: string | null } | null | undefined,
+  _scope: { workspaceId?: string | null; projectKey?: string | null } | null | undefined,
 ): string | null {
   if (!preferences) {
     return null;
   }
-  const { workspace, project } = composerScopeSelection(preferences, scope);
-  const provider = workspace?.provider ?? project?.provider ?? preferences.provider;
+  // Model selection is global-only: scoped copies are legacy dead weight and
+  // never override the host's last pick.
+  const provider = preferences.provider;
   if (!provider) {
     return null;
   }
-  const model =
-    workspace?.providerPreferences?.[provider]?.model ??
-    project?.providerPreferences?.[provider]?.model ??
-    preferences.providerPreferences?.[provider]?.model;
+  const model = preferences.providerPreferences?.[provider]?.model;
   if (!model) {
     return null;
   }

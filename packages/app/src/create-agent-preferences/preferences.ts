@@ -16,9 +16,10 @@ export interface FavoriteModelRow {
 }
 
 /**
- * Where create-agent selection (provider/model/mode/thinking) is remembered.
- * Workspace wins over project; project seeds new workspaces; global is the
- * last-resort fallback (and still used by schedules/webhooks).
+ * Where non-model composer state (isolation, base branch) is remembered:
+ * project seeds new workspaces; global is the last-resort fallback.
+ * Model selection itself is global-only (per host): the last pick wins
+ * everywhere, and still seeds schedules/webhooks.
  */
 export interface FormPreferenceScope {
   workspaceId?: string | null;
@@ -222,7 +223,6 @@ function applyProviderPreferenceUpdates(
 
   return next;
 }
-
 function mergeProviderPreferencesIntoSelection(args: {
   selection: FormSelectionScope | undefined;
   provider: AgentProvider;
@@ -262,10 +262,10 @@ export function mergeProviderPreferences(args: {
 }
 
 /**
- * Resolve the effective create-form selection for a workspace/project.
- * Order: workspace → project → global. Favorites stay global. Isolation is
- * project-scoped when a projectKey is known (so New workspace remembers the
- * last worktree/local choice per project), then falls back to global.
+ * Resolve the effective create-form selection. Model selection is
+ * global-only: scoped copies are legacy dead weight (pruned on write) and
+ * never override the host's last pick. Isolation and base branch still
+ * resolve project before global.
  */
 export function resolveEffectiveFormPreferences(
   preferences: FormPreferences,
@@ -274,11 +274,6 @@ export function resolveEffectiveFormPreferences(
   const { workspaceId, projectKey } = normalizeFormPreferenceScope(scope);
   const workspaceSelection = workspaceId ? preferences.byWorkspace?.[workspaceId] : undefined;
   const projectSelection = projectKey ? preferences.byProject?.[projectKey] : undefined;
-
-  if (!workspaceSelection && !projectSelection) {
-    return preferences;
-  }
-
   const mergedScope = {
     ...projectSelection,
     ...workspaceSelection,
@@ -286,12 +281,6 @@ export function resolveEffectiveFormPreferences(
 
   return {
     ...preferences,
-    provider: mergedScope.provider ?? preferences.provider,
-    providerPreferences: {
-      ...preferences.providerPreferences,
-      ...projectSelection?.providerPreferences,
-      ...workspaceSelection?.providerPreferences,
-    },
     isolation: mergedScope.isolation ?? preferences.isolation,
     baseBranch: mergedScope.baseBranch ?? preferences.baseBranch,
   };
@@ -383,11 +372,9 @@ function applySelectionAskField(
 }
 
 /**
- * Remember the selection Ask model choice across every applicable scope,
- * matching composer persistence: workspace (when known), project (when
- * known), and the global fallback. Absent fields are preserved from any
- * existing choice; a field passed as an empty string clears that stored field
- * in every scope it lands in.
+ * Remember the selection Ask model choice globally (per host). Absent fields
+ * are preserved from the existing choice; a field passed as an empty string
+ * clears that stored field.
  */
 export function mergeSelectionAskPreference(args: {
   preferences: FormPreferences;
@@ -395,81 +382,56 @@ export function mergeSelectionAskPreference(args: {
   scope?: FormPreferenceScope | null;
 }): FormPreferences {
   const { preferences, selectionAsk } = args;
-  const { workspaceId, projectKey } = normalizeFormPreferenceScope(args.scope);
 
   const globalNext: SelectionAskModelPreference = { ...preferences.selectionAsk };
   applySelectionAskField(globalNext, "provider", selectionAsk.provider);
   applySelectionAskField(globalNext, "model", selectionAsk.model);
   applySelectionAskField(globalNext, "thinkingOptionId", selectionAsk.thinkingOptionId);
 
-  let next: FormPreferences = {
+  const next: FormPreferences = {
     ...preferences,
     selectionAsk: globalNext,
   };
 
-  if (projectKey) {
-    const existing = next.byProject?.[projectKey];
-    const projectNext: SelectionAskModelPreference = { ...existing?.selectionAsk };
-    applySelectionAskField(projectNext, "provider", selectionAsk.provider);
-    applySelectionAskField(projectNext, "model", selectionAsk.model);
-    applySelectionAskField(projectNext, "thinkingOptionId", selectionAsk.thinkingOptionId);
-    next = {
-      ...next,
-      byProject: {
-        ...next.byProject,
-        [projectKey]: {
-          ...existing,
-          selectionAsk: projectNext,
-        },
-      },
-    };
-  }
-
-  if (workspaceId) {
-    const existing = next.byWorkspace?.[workspaceId];
-    const workspaceNext: SelectionAskModelPreference = { ...existing?.selectionAsk };
-    applySelectionAskField(workspaceNext, "provider", selectionAsk.provider);
-    applySelectionAskField(workspaceNext, "model", selectionAsk.model);
-    applySelectionAskField(workspaceNext, "thinkingOptionId", selectionAsk.thinkingOptionId);
-    next = {
-      ...next,
-      byWorkspace: {
-        ...next.byWorkspace,
-        [workspaceId]: {
-          ...existing,
-          selectionAsk: workspaceNext,
-        },
-      },
-    };
-  }
-
-  return next;
+  return pruneScopedModelSelections(next);
 }
 
 /**
- * Resolve the remembered selection Ask model for a workspace/project. Order:
- * workspace → project → global (matches resolveEffectiveFormPreferences). The
- * global fallback is the last resort, so a user who never touched the popover
- * in a scope still gets a sensible model.
+ * Resolve the remembered selection Ask model: global-only. A user who never
+ * touched the popover falls back to an empty choice.
  */
 export function resolveEffectiveSelectionAskPreference(
   preferences: FormPreferences,
-  scope?: FormPreferenceScope | null,
+  _scope?: FormPreferenceScope | null,
 ): SelectionAskModelPreference {
-  const { workspaceId, projectKey } = normalizeFormPreferenceScope(scope);
-  const workspaceSelection = workspaceId ? preferences.byWorkspace?.[workspaceId] : undefined;
-  const projectSelection = projectKey ? preferences.byProject?.[projectKey] : undefined;
-  return (
-    workspaceSelection?.selectionAsk ??
-    projectSelection?.selectionAsk ??
-    preferences.selectionAsk ??
-    {}
-  );
+  return preferences.selectionAsk ?? {};
 }
 
 /**
- * Persist a provider/model selection into every applicable scope:
- * workspace (when known), project (when known), and global fallback.
+ * Drop per-scope model selections: provider picks and Ask choices are
+ * global-only, so scoped copies are dead weight from older clients.
+ * Keeps per-scope isolation/baseBranch and drops scopes left empty.
+ */
+function pruneScopedModelSelections(preferences: FormPreferences): FormPreferences {
+  let byProject = preferences.byProject;
+  if (byProject) {
+    const kept: Record<string, FormSelectionScope> = {};
+    for (const [key, scope] of Object.entries(byProject)) {
+      const rest: FormSelectionScope = {};
+      if (scope.isolation !== undefined) rest.isolation = scope.isolation;
+      if (scope.baseBranch !== undefined) rest.baseBranch = scope.baseBranch;
+      if (Object.keys(rest).length > 0) kept[key] = rest;
+    }
+    byProject = Object.keys(kept).length > 0 ? kept : undefined;
+  }
+  return { ...preferences, byWorkspace: undefined, byProject };
+}
+
+/**
+ * Persist a provider/model selection globally (per host). The scope argument
+ * is accepted for call-site stability and ignored: model selection is the
+ * host's last pick, shared by every workspace and project. Scoped model
+ * copies from older clients are pruned.
  */
 export function mergeProviderPreferencesWithScope(args: {
   preferences: FormPreferences;
@@ -477,42 +439,9 @@ export function mergeProviderPreferencesWithScope(args: {
   updates: Omit<Partial<ProviderPreferences>, "mode"> & { mode?: string | null };
   scope?: FormPreferenceScope | null;
 }): FormPreferences {
-  const { preferences, provider, updates, scope } = args;
-  const { workspaceId, projectKey } = normalizeFormPreferenceScope(scope);
+  const { preferences, provider, updates } = args;
 
-  let next = mergeProviderPreferences({ preferences, provider, updates });
-
-  if (projectKey) {
-    const existing = next.byProject?.[projectKey];
-    next = {
-      ...next,
-      byProject: {
-        ...next.byProject,
-        [projectKey]: mergeProviderPreferencesIntoSelection({
-          selection: existing,
-          provider,
-          updates,
-        }),
-      },
-    };
-  }
-
-  if (workspaceId) {
-    const existing = next.byWorkspace?.[workspaceId];
-    next = {
-      ...next,
-      byWorkspace: {
-        ...next.byWorkspace,
-        [workspaceId]: mergeProviderPreferencesIntoSelection({
-          selection: existing,
-          provider,
-          updates,
-        }),
-      },
-    };
-  }
-
-  return next;
+  return pruneScopedModelSelections(mergeProviderPreferences({ preferences, provider, updates }));
 }
 
 export function mergeCreateAgentSelectionPreferences(args: {

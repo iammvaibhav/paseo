@@ -252,7 +252,7 @@ describe("create agent preferences", () => {
     expect(parseFormPreferences({ provider: "codex", isolation: "sandbox" })).toEqual({});
   });
 
-  it("resolves workspace model over project and global", () => {
+  it("resolves the global model pick regardless of scope", () => {
     const preferences = {
       provider: "claude",
       providerPreferences: {
@@ -276,23 +276,15 @@ describe("create agent preferences", () => {
       },
     };
 
-    expect(
-      resolveEffectiveFormPreferences(preferences, {
-        workspaceId: "ws-1",
-        projectKey: "proj-a",
-      }),
-    ).toEqual({
-      ...preferences,
-      provider: "codex",
-      // Workspace provider wins; per-provider models layer global → project → workspace.
-      providerPreferences: {
-        claude: { model: "project-model" },
-        codex: { model: "workspace-model" },
-      },
+    const effective = resolveEffectiveFormPreferences(preferences, {
+      workspaceId: "ws-1",
+      projectKey: "proj-a",
     });
+    expect(effective.provider).toBe("claude");
+    expect(effective.providerPreferences?.claude?.model).toBe("global-model");
   });
 
-  it("falls back to project selection when the workspace has none", () => {
+  it("ignores legacy project selection in favor of the global pick", () => {
     const preferences = {
       provider: "claude",
       providerPreferences: {
@@ -308,22 +300,15 @@ describe("create agent preferences", () => {
       },
     };
 
-    expect(
-      resolveEffectiveFormPreferences(preferences, {
-        workspaceId: "ws-new",
-        projectKey: "proj-a",
-      }),
-    ).toEqual({
-      ...preferences,
-      provider: "codex",
-      providerPreferences: {
-        claude: { model: "global-model" },
-        codex: { model: "project-model" },
-      },
+    const effective = resolveEffectiveFormPreferences(preferences, {
+      workspaceId: "ws-new",
+      projectKey: "proj-a",
     });
+    expect(effective.provider).toBe("claude");
+    expect(effective.providerPreferences?.claude?.model).toBe("global-model");
   });
 
-  it("writes model selection into workspace, project, and global scopes", () => {
+  it("writes model selection globally and prunes scoped copies", () => {
     expect(
       mergeProviderPreferencesWithScope({
         preferences: {},
@@ -336,26 +321,36 @@ describe("create agent preferences", () => {
       providerPreferences: {
         claude: { model: "claude-opus-4-6" },
       },
-      byProject: {
-        "proj-a": {
-          provider: "claude",
-          providerPreferences: {
-            claude: { model: "claude-opus-4-6" },
-          },
-        },
-      },
-      byWorkspace: {
-        "ws-1": {
-          provider: "claude",
-          providerPreferences: {
-            claude: { model: "claude-opus-4-6" },
-          },
-        },
-      },
     });
   });
 
-  it("keeps sibling workspace selections isolated", () => {
+  it("prunes legacy scoped model selections on write", () => {
+    const next = mergeProviderPreferencesWithScope({
+      preferences: {
+        byWorkspace: {
+          "ws-1": {
+            provider: "codex",
+            providerPreferences: { codex: { model: "workspace-model" } },
+          },
+        },
+        byProject: {
+          "proj-a": {
+            provider: "codex",
+            providerPreferences: { codex: { model: "project-model" } },
+            isolation: "worktree",
+          },
+        },
+      },
+      provider: "claude",
+      updates: { model: "claude-opus-4-6" },
+      scope: { workspaceId: "ws-1", projectKey: "proj-a" },
+    });
+    expect(next.byWorkspace).toBeUndefined();
+    expect(next.byProject).toEqual({ "proj-a": { isolation: "worktree" } });
+    expect(next.providerPreferences?.claude?.model).toBe("claude-opus-4-6");
+  });
+
+  it("shares the last pick across workspaces", () => {
     const afterWorkspaceA = mergeProviderPreferencesWithScope({
       preferences: {},
       provider: "claude",
@@ -369,25 +364,15 @@ describe("create agent preferences", () => {
       scope: { workspaceId: "ws-b", projectKey: "proj" },
     });
 
-    expect(
-      resolveEffectiveFormPreferences(afterWorkspaceB, {
-        workspaceId: "ws-a",
-        projectKey: "proj",
-      }).providerPreferences?.claude?.model,
-    ).toBe("opus");
-    expect(
-      resolveEffectiveFormPreferences(afterWorkspaceB, {
-        workspaceId: "ws-b",
-        projectKey: "proj",
-      }).providerPreferences?.claude?.model,
-    ).toBe("sonnet");
-    // New workspace in the project inherits the last project-level choice.
-    expect(
-      resolveEffectiveFormPreferences(afterWorkspaceB, {
-        workspaceId: "ws-new",
-        projectKey: "proj",
-      }).providerPreferences?.claude?.model,
-    ).toBe("sonnet");
+    // Last write wins everywhere: no per-workspace isolation for models.
+    for (const workspaceId of ["ws-a", "ws-b", "ws-new"]) {
+      expect(
+        resolveEffectiveFormPreferences(afterWorkspaceB, {
+          workspaceId,
+          projectKey: "proj",
+        }).providerPreferences?.claude?.model,
+      ).toBe("sonnet");
+    }
   });
 
   it("persists and reloads a terminal launch target", async () => {

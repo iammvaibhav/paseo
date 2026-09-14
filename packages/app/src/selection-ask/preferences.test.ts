@@ -7,27 +7,19 @@ import {
 import type { FormPreferences } from "@/create-agent-preferences/preferences";
 
 describe("selection ask model preferences", () => {
-  it("stores the choice across workspace, project, and global scopes", () => {
+  it("stores the choice globally regardless of scope", () => {
     const next = mergeSelectionAskPreference({
       preferences: {},
       selectionAsk: { provider: "codex", model: "gpt-5", thinkingOptionId: "high" },
       scope: { workspaceId: "ws-1", projectKey: "proj-1" },
-    });
-    expect(next.byWorkspace?.["ws-1"]?.selectionAsk).toEqual({
-      provider: "codex",
-      model: "gpt-5",
-      thinkingOptionId: "high",
-    });
-    expect(next.byProject?.["proj-1"]?.selectionAsk).toEqual({
-      provider: "codex",
-      model: "gpt-5",
-      thinkingOptionId: "high",
     });
     expect(next.selectionAsk).toEqual({
       provider: "codex",
       model: "gpt-5",
       thinkingOptionId: "high",
     });
+    expect(next.byWorkspace).toBeUndefined();
+    expect(next.byProject).toBeUndefined();
   });
 
   it("persists with only a workspace id (no project key)", () => {
@@ -36,11 +28,8 @@ describe("selection ask model preferences", () => {
       selectionAsk: { provider: "codex", model: "gpt-5" },
       scope: { workspaceId: "ws-1" },
     });
-    expect(next.byWorkspace?.["ws-1"]?.selectionAsk).toEqual({
-      provider: "codex",
-      model: "gpt-5",
-    });
     expect(next.selectionAsk).toEqual({ provider: "codex", model: "gpt-5" });
+    expect(next.byWorkspace).toBeUndefined();
     expect(next.byProject).toBeUndefined();
   });
 
@@ -55,7 +44,7 @@ describe("selection ask model preferences", () => {
     expect(next.byProject).toBeUndefined();
   });
 
-  it("merges partial updates without clobbering siblings in any scope", () => {
+  it("merges partial updates into the global choice", () => {
     const first = mergeSelectionAskPreference({
       preferences: {},
       selectionAsk: { provider: "codex", model: "gpt-5" },
@@ -66,24 +55,16 @@ describe("selection ask model preferences", () => {
       selectionAsk: { thinkingOptionId: "low" },
       scope: { workspaceId: "ws-1", projectKey: "proj-1" },
     });
-    expect(second.byWorkspace?.["ws-1"]?.selectionAsk).toEqual({
-      provider: "codex",
-      model: "gpt-5",
-      thinkingOptionId: "low",
-    });
-    expect(second.byProject?.["proj-1"]?.selectionAsk).toEqual({
-      provider: "codex",
-      model: "gpt-5",
-      thinkingOptionId: "low",
-    });
     expect(second.selectionAsk).toEqual({
       provider: "codex",
       model: "gpt-5",
       thinkingOptionId: "low",
     });
+    expect(second.byWorkspace).toBeUndefined();
+    expect(second.byProject).toBeUndefined();
   });
 
-  it("keeps sibling projects isolated", () => {
+  it("shares the last choice across projects", () => {
     const seeded = mergeSelectionAskPreference({
       preferences: {},
       selectionAsk: { provider: "codex" },
@@ -94,9 +75,8 @@ describe("selection ask model preferences", () => {
       selectionAsk: { provider: "anthropic" },
       scope: { workspaceId: "ws-1", projectKey: "proj-2" },
     });
-    expect(next.byProject?.["proj-1"]?.selectionAsk?.provider).toBe("codex");
-    expect(next.byProject?.["proj-2"]?.selectionAsk?.provider).toBe("anthropic");
     expect(next.selectionAsk?.provider).toBe("anthropic");
+    expect(next.byProject).toBeUndefined();
   });
 
   it("ignores empty values and does not store empty fields", () => {
@@ -105,12 +85,10 @@ describe("selection ask model preferences", () => {
       selectionAsk: { provider: "  ", model: "gpt-5", thinkingOptionId: "" },
       scope: { workspaceId: "ws-1", projectKey: "proj-1" },
     });
-    expect(next.byWorkspace?.["ws-1"]?.selectionAsk).toEqual({ model: "gpt-5" });
-    expect(next.byProject?.["proj-1"]?.selectionAsk).toEqual({ model: "gpt-5" });
     expect(next.selectionAsk).toEqual({ model: "gpt-5" });
   });
 
-  it("clears a stored field in every scope when passed empty", () => {
+  it("clears a stored field globally when passed empty", () => {
     const seeded = mergeSelectionAskPreference({
       preferences: {},
       selectionAsk: { provider: "codex", model: "gpt-5", thinkingOptionId: "high" },
@@ -121,15 +99,23 @@ describe("selection ask model preferences", () => {
       selectionAsk: { model: "" },
       scope: { workspaceId: "ws-1", projectKey: "proj-1" },
     });
-    expect(cleared.byWorkspace?.["ws-1"]?.selectionAsk).toEqual({
-      provider: "codex",
-      thinkingOptionId: "high",
-    });
-    expect(cleared.byProject?.["proj-1"]?.selectionAsk).toEqual({
-      provider: "codex",
-      thinkingOptionId: "high",
-    });
     expect(cleared.selectionAsk).toEqual({ provider: "codex", thinkingOptionId: "high" });
+  });
+
+  it("prunes legacy scoped Ask copies on write", () => {
+    const next = mergeSelectionAskPreference({
+      preferences: {
+        byWorkspace: { "ws-1": { selectionAsk: { provider: "codex", model: "old" } } },
+        byProject: {
+          "proj-1": { selectionAsk: { provider: "codex", model: "old" }, isolation: "worktree" },
+        },
+      },
+      selectionAsk: { provider: "anthropic", model: "new" },
+      scope: { workspaceId: "ws-1", projectKey: "proj-1" },
+    });
+    expect(next.selectionAsk).toEqual({ provider: "anthropic", model: "new" });
+    expect(next.byWorkspace).toBeUndefined();
+    expect(next.byProject).toEqual({ "proj-1": { isolation: "worktree" } });
   });
 
   it("round-trips through the parser so writes never drop the choice", () => {
@@ -139,16 +125,6 @@ describe("selection ask model preferences", () => {
       scope: { workspaceId: "ws-1", projectKey: "proj-1" },
     });
     const parsed = parseFormPreferences(merged);
-    expect(parsed.byWorkspace?.["ws-1"]?.selectionAsk).toEqual({
-      provider: "codex",
-      model: "gpt-5",
-      thinkingOptionId: "high",
-    });
-    expect(parsed.byProject?.["proj-1"]?.selectionAsk).toEqual({
-      provider: "codex",
-      model: "gpt-5",
-      thinkingOptionId: "high",
-    });
     expect(parsed.selectionAsk).toEqual({
       provider: "codex",
       model: "gpt-5",
@@ -156,7 +132,7 @@ describe("selection ask model preferences", () => {
     });
   });
 
-  it("resolves workspace over project over global", () => {
+  it("resolves the global choice regardless of scope", () => {
     const preferences: FormPreferences = {
       selectionAsk: { provider: "openai", model: "gpt-5", thinkingOptionId: "low" },
       byProject: {
@@ -179,26 +155,11 @@ describe("selection ask model preferences", () => {
         workspaceId: "ws-1",
         projectKey: "proj-1",
       }),
-    ).toEqual({ provider: "codex", model: "gpt-5" });
+    ).toEqual({ provider: "openai", model: "gpt-5", thinkingOptionId: "low" });
     expect(resolveEffectiveSelectionAskPreference(preferences, { projectKey: "proj-1" })).toEqual({
-      provider: "anthropic",
-      model: "claude-opus-4-6",
-      thinkingOptionId: "high",
-    });
-  });
-
-  it("resolves project over global when set", () => {
-    const preferences: FormPreferences = {
-      selectionAsk: { provider: "openai", model: "gpt-5" },
-      byProject: {
-        "proj-1": {
-          selectionAsk: { provider: "anthropic", model: "claude-opus-4-6" },
-        },
-      },
-    };
-    expect(resolveEffectiveSelectionAskPreference(preferences, { projectKey: "proj-1" })).toEqual({
-      provider: "anthropic",
-      model: "claude-opus-4-6",
+      provider: "openai",
+      model: "gpt-5",
+      thinkingOptionId: "low",
     });
   });
 
