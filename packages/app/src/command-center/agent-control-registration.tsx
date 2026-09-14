@@ -16,9 +16,10 @@ import {
 import { getProviderIcon } from "@/components/provider-icons";
 import {
   filterHiddenProviderModelRows,
+  getAllProviderModelRows,
   type ProviderSelectorProvider,
 } from "@/provider-selection/provider-selection";
-import { useHiddenModelKeys } from "@/provider-selection/hidden-models";
+import { useDaemonVisibleModels } from "@/provider-selection/use-daemon-visible-models";
 import {
   buildAgentControlContributions,
   buildAgentControlContributionLabels,
@@ -92,7 +93,11 @@ export function useAgentControlCommandCenterActions(input: {
   const { t } = useTranslation();
   const { controls } = input;
   const { features, models, modes, thinking } = controls;
-  const hiddenKeys = useHiddenModelKeys();
+  const allModelKeys = useMemo(
+    () => getAllProviderModelRows([...models.providers]).map((row) => row.favoriteKey),
+    [models.providers],
+  );
+  const { hiddenKeys } = useDaemonVisibleModels(controls.serverId, allModelKeys);
   // Command-K offers the same choosable set as the picker.
   const visibleModelProviders = useMemo(
     () =>

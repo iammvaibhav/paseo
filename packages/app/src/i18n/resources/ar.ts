@@ -1161,6 +1161,16 @@ export const ar: TranslationResources = {
       updateHost: "حدّث هذا المضيف لإدارة التسميات.",
     },
   },
+  changelog: {
+    title: "ما الجديد",
+    installed: "مثبّت",
+    showMore: "عرض المزيد",
+    openWebsite: "سجل التغييرات الكامل",
+    error: {
+      title: "تعذّر تحميل سجل التغييرات",
+      description: "تحقق من اتصالك وحاول مرة أخرى.",
+    },
+  },
   sidebar: {
     display: {
       trigger: "تفضيلات العرض",
@@ -2296,6 +2306,7 @@ export const ar: TranslationResources = {
     about: {
       title: "عن",
       appVersion: "نسخة التطبيق",
+      whatsNewHint: "ملاحظات الإصدار لكل نسخة",
       thisDevice: "هذا الجهاز",
       connectedHosts: "المضيفين المتصلين",
       offline: "غير متصل",
@@ -2361,6 +2372,9 @@ export const ar: TranslationResources = {
         contentSize: "حجم المحتوى",
         contentSizeHint: "يُستخدم لنص الدردشة وملفات Markdown المعروضة",
         contentSizeAccessibility: "حجم خط المحتوى",
+        agentGridSize: "حجم شبكة الوكلاء",
+        agentGridSizeHint: "لنص المحادثة في بلاطات Agent Grid، مستقل عن نافذة الوكيل الكاملة",
+        agentGridSizeAccessibility: "حجم خط شبكة الوكلاء",
         codeFont: "خط الكود",
         codeFontHint:
           "تستخدم في الكود والاختلافات والمخرجات الطرفية. اتركه فارغًا للإعداد الافتراضي للنظام",

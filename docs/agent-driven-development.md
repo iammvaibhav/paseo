@@ -63,7 +63,7 @@ Spawn test agents with cheap models only — never a big model for verification:
 
 ```bash
 env -u PASEO_AGENT_ID PASEO_HOME=/Users/vaibhav/paseo/.dev/paseo-home \
-  npm run cli --silent -- run --provider omp --model google-antigravity/gemini-3.6-flash \
+  pnpm run cli --silent -- run --provider omp --model google-antigravity/gemini-3.6-flash \
   'You are a test fixture: <task>'
 ```
 
@@ -106,11 +106,11 @@ The eval sandbox hangs on WebSocket handshakes. For approving proposals, calling
 The orchestrator runs the gates once per phase — format, typecheck, lint, build — never per subagent, and workers never run them at all:
 
 ```bash
-npm run format
-npm run typecheck
-npm run lint
-npm run build:server
-npm run build:client
+pnpm run format
+pnpm run typecheck
+pnpm run lint
+pnpm run build:server
+pnpm run build:client
 ```
 
 Run only the tests you changed: `npx vitest run <file> --bail=1`. A broad run must be piped to a file and read afterward: `npx vitest run <file> --bail=1 > /tmp/test-output.txt 2>&1`. Full suites go to CI. The rules live in [docs/testing.md](testing.md) and the evidence bar in [docs/qa.md](qa.md).

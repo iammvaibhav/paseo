@@ -2,7 +2,12 @@ import React, { memo, useCallback, useMemo, type ReactNode } from "react";
 import { View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { MAX_CONTENT_WIDTH } from "@/constants/layout";
-import { SPACING, type Theme } from "@/styles/theme";
+import { type Theme } from "@/styles/theme";
+import {
+  TURN_FOOTER_BOTTOM_SPACING,
+  TURN_FOOTER_COMPACT_BOTTOM_SPACING,
+  type TurnFooterDensity,
+} from "./turn-footer-spacing";
 import type { TurnTiming } from "@/timeline/turn-time";
 import type { StreamItem } from "@/types/stream";
 import {
@@ -27,7 +32,12 @@ import { useRetainedPanelActive } from "@/components/retained-panel";
 
 const ThemedSyncedLoader = withUnistyles(SyncedLoader);
 const workingIndicatorColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
-export const TURN_FOOTER_BOTTOM_SPACING = SPACING[8];
+export {
+  TURN_FOOTER_BOTTOM_SPACING,
+  TURN_FOOTER_COMPACT_BOTTOM_SPACING,
+  resolveTurnFooterBottomSpacing,
+  type TurnFooterDensity,
+} from "./turn-footer-spacing";
 
 export type TurnContentStrategy = StreamStrategy;
 export type AssistantTurnForkHandler = (input: {
@@ -57,6 +67,7 @@ export const TurnFooter = memo(function TurnFooter({
   onForkAssistantTurn,
   onJumpToUserMessage,
   onForkInFlightTurn,
+  density = "comfortable",
 }: {
   isRunning: boolean;
   inFlightTurnStartedAt: Date | null;
@@ -66,13 +77,20 @@ export const TurnFooter = memo(function TurnFooter({
   onForkAssistantTurn?: AssistantTurnForkHandler;
   onJumpToUserMessage?: JumpToUserMessageHandler;
   onForkInFlightTurn?: InFlightTurnForkHandler;
+  density?: TurnFooterDensity;
 }) {
+  // Compact grid tiles must not keep the live elapsed row or the completed
+  // 3-dot/fork chrome. Hide the whole footer, not just the fork control.
+  if (density === "compact") {
+    return null;
+  }
   if (isRunning) {
     return (
       <TurnFooterRow>
         <RunningTurnFooter
           inFlightTurnStartedAt={inFlightTurnStartedAt}
           onForkInFlightTurn={onForkInFlightTurn}
+          density={density}
         />
       </TurnFooterRow>
     );
@@ -155,12 +173,21 @@ const WorkingIndicator = memo(function WorkingIndicator({
 function RunningTurnFooter({
   inFlightTurnStartedAt,
   onForkInFlightTurn,
+  density = "comfortable",
 }: {
   inFlightTurnStartedAt: Date | null;
   onForkInFlightTurn?: InFlightTurnForkHandler;
+  density?: TurnFooterDensity;
 }) {
   return (
-    <View style={stylesheet.turnFooterSlot} testID="turn-working-indicator">
+    <View
+      style={
+        density === "compact"
+          ? [stylesheet.turnFooterSlot, stylesheet.turnFooterSlotCompact]
+          : stylesheet.turnFooterSlot
+      }
+      testID="turn-working-indicator"
+    >
       <WorkingIndicator
         inFlightTurnStartedAt={inFlightTurnStartedAt}
         onForkInFlightTurn={onForkInFlightTurn}
@@ -262,6 +289,9 @@ const stylesheet = StyleSheet.create((theme) => ({
     alignSelf: "flex-start",
     minHeight: 24,
     paddingBottom: TURN_FOOTER_BOTTOM_SPACING,
+  },
+  turnFooterSlotCompact: {
+    paddingBottom: TURN_FOOTER_COMPACT_BOTTOM_SPACING,
   },
   turnFooterContent: {
     height: 24,

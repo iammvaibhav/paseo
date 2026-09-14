@@ -1196,6 +1196,16 @@ export const es: TranslationResources = {
       updateHost: "Actualiza este host para gestionar etiquetas.",
     },
   },
+  changelog: {
+    title: "Novedades",
+    installed: "Instalada",
+    showMore: "Mostrar más",
+    openWebsite: "Registro de cambios completo",
+    error: {
+      title: "No se pudo cargar el registro de cambios",
+      description: "Comprueba tu conexión e inténtalo de nuevo.",
+    },
+  },
   sidebar: {
     display: {
       trigger: "Preferencias de visualización",
@@ -2352,6 +2362,7 @@ export const es: TranslationResources = {
     about: {
       title: "Acerca de",
       appVersion: "Versión de la aplicación",
+      whatsNewHint: "Notas de versión de cada release",
       thisDevice: "este dispositivo",
       connectedHosts: "Anfitriones conectados",
       offline: "Desconectado",
@@ -2419,6 +2430,10 @@ export const es: TranslationResources = {
         contentSize: "Tamaño de contenido",
         contentSizeHint: "Se usa en el texto del chat y el Markdown renderizado",
         contentSizeAccessibility: "Tamaño de fuente de contenido",
+        agentGridSize: "Tamaño de Agent Grid",
+        agentGridSizeHint:
+          "Se usa para el texto del chat en las teselas de Agent Grid, independiente del panel del agente completo",
+        agentGridSizeAccessibility: "Tamaño de fuente de Agent Grid",
         codeFont: "Fuente de código",
         codeFontHint:
           "Se utiliza en código, diferencias y salida del terminal. Déjelo vacío para el valor predeterminado del sistema.",

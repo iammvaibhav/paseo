@@ -5,8 +5,8 @@ export const meta = {
   video: true,
   description:
     "Mission Control Agent Grid renders running/ready-for-review fixtures in recency order, " +
-    "resizes via the count/direction controls, windows off-screen tiles, and accepts composer " +
-    "input inside a tile.",
+    "resizes via the count/direction controls, windows off-screen tiles, hides composers until " +
+    "a tile is clicked, and then accepts composer input inside that tile.",
 };
 
 const MOCK_PROVIDER = "mock";
@@ -30,14 +30,60 @@ function tileSelector(agentId) {
 function tileSectionSelector(agentId) {
   return `[data-testid="mission-control-agent-grid-tile-section-${agentId}"]`;
 }
+function tilePlaceholderSelector(agentId) {
+  return `[data-testid="mission-control-agent-grid-tile-placeholder-${agentId}"]`;
+}
+function tileActivateSelector(agentId) {
+  return `[data-testid="mission-control-agent-grid-activate-${agentId}"]`;
+}
 function tileElapsedSelector(agentId) {
   return `[data-testid="mission-control-agent-grid-elapsed-${agentId}"]`;
+}
+
+/**
+ * The element under the pointer at the transcript (not the identity strip).
+ * An activate overlay sitting on the stream reports `overlayIntercepts: true`
+ * and is what currently steals wheel/trackpad scroll.
+ */
+async function tileStreamHit(page, agentId) {
+  return page.locator(tileSelector(agentId)).evaluate((tile, activateSel) => {
+    const rect = tile.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height * 0.65;
+    const topEl = document.elementFromPoint(x, y);
+    const activate = tile.querySelector(activateSel);
+    const overlayIntercepts = Boolean(
+      activate && topEl && (activate === topEl || activate.contains(topEl)),
+    );
+    const nodes = [...tile.querySelectorAll("*")];
+    let extra = 0;
+    let top = 0;
+    for (const node of nodes) {
+      const style = getComputedStyle(node);
+      if (!["auto", "scroll", "overlay"].includes(style.overflowY)) continue;
+      const nodeExtra = node.scrollHeight - node.clientHeight;
+      if (nodeExtra > extra) {
+        extra = nodeExtra;
+        top = node.scrollTop;
+      }
+    }
+    return {
+      overlayIntercepts,
+      extra,
+      top,
+      topTestId: topEl?.getAttribute?.("data-testid") ?? null,
+    };
+  }, `[data-testid="mission-control-agent-grid-activate-${agentId}"]`);
 }
 function tileComposerInputSelector(agentId) {
   return `${tileSelector(agentId)} textarea[data-composer-input], ${tileSelector(agentId)} textarea`;
 }
 function tileComposerSubmitSelector(agentId) {
   return `[data-testid="mission-control-agent-grid-composer-submit-${agentId}"]`;
+}
+
+async function tileComposerCount(page, agentId) {
+  return page.locator(tileComposerInputSelector(agentId)).count();
 }
 
 /**
@@ -203,8 +249,9 @@ export const steps = [
   },
   {
     id: "assert-initial-order",
-    label: "Assert tile order, section chips and elapsed timer",
-    narrate: "Grid ordered the most recently started run first, with correct section chips.",
+    label: "Assert tile order, section chips, header elapsed, and no default composers",
+    narrate:
+      "Grid ordered the most recently started run first, with Running chips showing elapsed time and no composers.",
     async run(ctx) {
       const page = ctx.page;
       const expectedOrder = [RUN_B_ID, RUN_A_ID, READY_ID];
@@ -228,13 +275,122 @@ export const steps = [
         `READY chip expected "Ready for review", got "${readyChip}"`,
       );
 
-      const elapsedText = (await page.locator(tileElapsedSelector(RUN_B_ID)).innerText()).trim();
+      for (const id of [RUN_B_ID, RUN_A_ID]) {
+        const elapsed = page.locator(tileElapsedSelector(id));
+        await elapsed.waitFor({ state: "visible", timeout: 10_000 });
+        const text = (await elapsed.innerText()).trim();
+        ctx.expect(/\d/.test(text), `RUN tile ${id} header elapsed should show a duration, got "${text}"`);
+      }
       ctx.expect(
-        /^\d+s$|^\d+m/.test(elapsedText),
-        `RUN_B elapsed text "${elapsedText}" does not match /^\\d+s$|^\\d+m/`,
+        (await page.locator(tileElapsedSelector(READY_ID)).count()) === 0,
+        "READY tile must not show a running elapsed timer",
       );
 
-      return `order=${JSON.stringify(order)} elapsed=${elapsedText}`;
+      const streamElapsed = await page
+        .locator('[data-testid="mission-control-agent-grid"] [data-testid="turn-working-elapsed"]')
+        .count();
+      ctx.expect(streamElapsed === 0, `expected no in-stream elapsed timers, got ${streamElapsed}`);
+
+      for (const id of expectedOrder) {
+        const composers = await tileComposerCount(page, id);
+        ctx.expect(composers === 0, `fixture ${id} must not show a composer until clicked`);
+      }
+
+      return `order=${JSON.stringify(order)} composers=hidden elapsed=header`;
+    },
+  },
+  {
+    id: "scroll-unfocused-transcript",
+    label: "Scroll an unfocused tile transcript without revealing a composer",
+    narrate: "Wheeled the unfocused running tile; the transcript moved and no composer appeared.",
+    async run(ctx) {
+      const page = ctx.page;
+      const hit = await pollFor(
+        async () => {
+          const value = await tileStreamHit(page, RUN_B_ID);
+          return { ok: value.extra > 24, value };
+        },
+        { timeoutMs: 20_000, description: "RUN_B transcript is tall enough to scroll" },
+      );
+      ctx.expect(
+        !hit.overlayIntercepts,
+        `unfocused tile stream must be directly scrollable; activate overlay intercepted the pointer (${JSON.stringify(hit)})`,
+      );
+
+      const box = await page.locator(tileSelector(RUN_B_ID)).boundingBox();
+      ctx.expect(Boolean(box), "RUN_B tile has a bounding box");
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.65);
+      await page.mouse.wheel(0, 1200);
+      const after = await tileStreamHit(page, RUN_B_ID);
+      ctx.expect(
+        after.top > hit.top,
+        `unfocused RUN_B transcript should scroll without a click (before=${hit.top} after=${after.top} extra=${hit.extra})`,
+      );
+      ctx.expect(
+        (await tileComposerCount(page, RUN_B_ID)) === 0,
+        "wheeling an unfocused tile must not reveal its composer",
+      );
+      return `scrolled RUN_B transcript ${hit.top} -> ${after.top}`;
+    },
+  },
+  {
+    id: "toggle-composer",
+    label: "Click a tile to show its composer, click again to hide it",
+    narrate: "Clicked the running tile to reveal the composer, then clicked it again to hide it.",
+    async run(ctx) {
+      const page = ctx.page;
+      ctx.expect(
+        (await tileComposerCount(page, RUN_A_ID)) === 0,
+        "RUN_A composer starts hidden",
+      );
+      await page.locator(tileActivateSelector(RUN_A_ID)).click();
+      await page.waitForSelector(tileComposerInputSelector(RUN_A_ID), { timeout: 10_000 });
+      ctx.expect(
+        (await tileComposerCount(page, RUN_B_ID)) === 0,
+        "only the clicked tile may show a composer",
+      );
+      await page.locator(tileActivateSelector(RUN_A_ID)).click();
+      await pollFor(
+        async () => {
+          const count = await tileComposerCount(page, RUN_A_ID);
+          return { ok: count === 0, value: count };
+        },
+        { timeoutMs: 8_000, description: "RUN_A composer hidden after second click" },
+      );
+      return "RUN_A composer toggled on then off";
+    },
+  },
+
+  {
+    id: "compose-in-tile",
+    label: "Click RUN_A to reveal composer, type, and submit",
+    narrate:
+      "Clicked a grid tile to reveal its composer, typed a message, and confirmed it rendered in that tile's stream.",
+    async run(ctx) {
+      const page = ctx.page;
+      ctx.expect(
+        (await tileComposerCount(page, RUN_B_ID)) === 0,
+        "RUN_B must not show a composer before another tile is clicked",
+      );
+      await page.locator(tileActivateSelector(RUN_A_ID)).click();
+      await page.waitForSelector(tileComposerInputSelector(RUN_A_ID), { timeout: 10_000 });
+      ctx.expect(
+        (await tileComposerCount(page, RUN_B_ID)) === 0,
+        "only the clicked tile may show a composer",
+      );
+      await page.locator(tileComposerInputSelector(RUN_A_ID)).fill(TYPED_MESSAGE);
+      await page.locator(tileComposerSubmitSelector(RUN_A_ID)).click();
+
+      await page.waitForFunction(
+        ({ sel, text }) => {
+          const el = document.querySelector(sel);
+          return Boolean(el && el.textContent && el.textContent.includes(text));
+        },
+        { sel: tileSelector(RUN_A_ID), text: TYPED_MESSAGE },
+        { timeout: 15_000 },
+      );
+
+      return `typed message rendered inside RUN_A tile ${RUN_A_ID}`;
     },
   },
   {
@@ -246,10 +402,11 @@ export const steps = [
       const page = ctx.page;
 
       await page.locator('[data-testid="mission-control-agent-grid-count"]').click();
-      await page.waitForSelector('[data-testid="mission-control-agent-grid-count-1"]', {
-        timeout: 5_000,
-      });
-      await page.locator('[data-testid="mission-control-agent-grid-count-1"]').click();
+      const countOne = page.locator('[data-testid="mission-control-agent-grid-count-1"]');
+      await countOne.waitFor({ state: "visible", timeout: 5_000 });
+      // The menu can render off the viewport when the grid is already full of
+      // tiles; force the option rather than fighting the portal position.
+      await countOne.click({ force: true });
       await page.locator('[data-testid="mission-control-agent-grid-direction-horizontal"]').click();
 
       // visibleCount=1 in horizontal direction is a 1x1 shape; one tile of overscan on
@@ -258,7 +415,7 @@ export const steps = [
         async () => {
           const present = [];
           for (const id of [RUN_B_ID, RUN_A_ID, READY_ID]) {
-            const count = await page.locator(tileComposerInputSelector(id)).count();
+            const count = await page.locator(tileSelector(id)).count();
             if (count > 0) present.push(id);
           }
           const ok =
@@ -268,11 +425,9 @@ export const steps = [
         { timeoutMs: 10_000, description: "exactly RUN_B and RUN_A rendered as full tiles" },
       );
 
-      const readyFull = (await page.locator(tileComposerInputSelector(READY_ID)).count()) > 0;
+      const readyFull = (await page.locator(tileSelector(READY_ID)).count()) > 0;
       ctx.expect(!readyFull, "READY tile must not be a full tile before scrolling into view");
-      const readyPlaceholderCount = await page
-        .locator(`[data-testid="mission-control-agent-grid-tile-placeholder-${READY_ID}"]`)
-        .count();
+      const readyPlaceholderCount = await page.locator(tilePlaceholderSelector(READY_ID)).count();
       ctx.expect(
         readyPlaceholderCount > 0,
         "READY tile must render as a placeholder while windowed out",
@@ -289,48 +444,28 @@ export const steps = [
     async run(ctx) {
       const page = ctx.page;
       const scrollLocator = page.locator('[data-testid="mission-control-agent-grid-scroll"]');
-      await scrollLocator.evaluate((el) => {
-        el.scrollLeft = el.scrollWidth;
-      });
-
-      const box = await scrollLocator.boundingBox();
-      if (box) {
-        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-        await page.mouse.wheel(4000, 0);
-      }
-
+      // Other checks/runs may have left extra tiles on a kept stack. Walk the
+      // strip one viewport at a time until THIS run's READY tile mounts.
       await pollFor(
         async () => {
-          const count = await page.locator(tileComposerInputSelector(READY_ID)).count();
-          return { ok: count > 0, value: count };
+          const count = await page.locator(tileSelector(READY_ID)).count();
+          if (count > 0) return { ok: true, value: count };
+          await scrollLocator.evaluate((el) => {
+            const step = Math.max(el.clientWidth, 1);
+            const max = Math.max(el.scrollWidth - el.clientWidth, 0);
+            el.scrollLeft = Math.min(el.scrollLeft + step, max);
+          });
+          return { ok: false, value: 0 };
         },
-        { timeoutMs: 10_000, description: "READY tile composer visible after scroll" },
+        { timeoutMs: 20_000, intervalMs: 200, description: "READY tile mounted after scroll" },
+      );
+
+      ctx.expect(
+        (await tileComposerCount(page, READY_ID)) === 0,
+        "READY tile must still hide its composer after scrolling into view",
       );
 
       return "READY tile is a full tile after scrolling";
-    },
-  },
-  {
-    id: "compose-in-tile",
-    label: "Type into RUN_A's tile composer and submit",
-    narrate:
-      "Typed a message into a grid tile's composer and confirmed it rendered in that tile's stream.",
-    async run(ctx) {
-      const page = ctx.page;
-      await page.waitForSelector(tileComposerInputSelector(RUN_A_ID), { timeout: 10_000 });
-      await page.locator(tileComposerInputSelector(RUN_A_ID)).fill(TYPED_MESSAGE);
-      await page.locator(tileComposerSubmitSelector(RUN_A_ID)).click();
-
-      await page.waitForFunction(
-        ({ sel, text }) => {
-          const el = document.querySelector(sel);
-          return Boolean(el && el.textContent && el.textContent.includes(text));
-        },
-        { sel: tileSelector(RUN_A_ID), text: TYPED_MESSAGE },
-        { timeout: 15_000 },
-      );
-
-      return `typed message rendered inside RUN_A tile ${RUN_A_ID}`;
     },
   },
   {

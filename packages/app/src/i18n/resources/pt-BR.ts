@@ -1187,6 +1187,16 @@ export const ptBR: TranslationResources = {
       updateHost: "Atualize este host para gerenciar etiquetas.",
     },
   },
+  changelog: {
+    title: "Novidades",
+    installed: "Instalada",
+    showMore: "Mostrar mais",
+    openWebsite: "Changelog completo",
+    error: {
+      title: "Não foi possível carregar o changelog",
+      description: "Verifique sua conexão e tente novamente.",
+    },
+  },
   sidebar: {
     display: {
       trigger: "Preferências de exibição",
@@ -2336,6 +2346,7 @@ export const ptBR: TranslationResources = {
     about: {
       title: "Sobre",
       appVersion: "Versão do app",
+      whatsNewHint: "Notas de versão de cada release",
       thisDevice: "Este dispositivo",
       connectedHosts: "Hosts conectados",
       offline: "Offline",
@@ -2401,6 +2412,10 @@ export const ptBR: TranslationResources = {
         contentSize: "Tamanho do conteúdo",
         contentSizeHint: "Usado no texto do chat e no Markdown renderizado",
         contentSizeAccessibility: "Tamanho da fonte do conteúdo",
+        agentGridSize: "Tamanho do Agent Grid",
+        agentGridSizeHint:
+          "Usado no texto do chat nos tiles do Agent Grid, separado do painel completo do agente",
+        agentGridSizeAccessibility: "Tamanho da fonte do Agent Grid",
         codeFont: "Fonte de código",
         codeFontHint:
           "Usada em código, diffs e saída do terminal. Deixe vazio para usar o padrão do sistema",

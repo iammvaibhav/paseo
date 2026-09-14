@@ -649,7 +649,27 @@ function pinAccount(
 	);
 }
 
-async function applyRouting(ctx: ExtensionContext, pi: ExtensionAPI, mode: ApplyMode): Promise<void> {
+function extractProvider(ctx: ExtensionContext): string | undefined {
+	if (!("model" in ctx) || typeof ctx.model !== "object" || ctx.model === null) return undefined;
+	const model = ctx.model as { provider?: unknown; id?: unknown };
+	if (typeof model.provider === "string" && model.provider.trim().length > 0) {
+		return model.provider.trim();
+	}
+	if (typeof model.id === "string") {
+		const slash = model.id.indexOf("/");
+		if (slash > 0) {
+			return model.id.slice(0, slash).trim();
+		}
+	}
+	return undefined;
+}
+
+async function applyRouting(
+	ctx: ExtensionContext,
+	pi: ExtensionAPI,
+	mode: ApplyMode,
+	targetProvider?: string,
+): Promise<void> {
 	try {
 		const config = loadRoutingConfig(ctx.cwd);
 		if (!config.routing) return;
@@ -663,8 +683,8 @@ async function applyRouting(ctx: ExtensionContext, pi: ExtensionAPI, mode: Apply
 		if ("model" in ctx && typeof ctx.model === "object" && ctx.model !== null && "id" in ctx.model) {
 			modelId = typeof ctx.model.id === "string" ? ctx.model.id : undefined;
 		}
-
 		for (const [provider, routing] of Object.entries(config.routing)) {
+			if (targetProvider && provider !== targetProvider) continue;
 			if (!routing || routing.strategy === "off") continue;
 			const stored = auth.listOAuthAccounts(provider);
 			if (!stored || stored.length === 0) continue;
@@ -796,33 +816,38 @@ export default function ompAccountRoutingExtension(pi: ExtensionAPI): void {
 	// also route around it; this enforces the *preferred* order explicitly.
 	pi.on("auto_retry_start", (event, ctx) => {
 		if (!RATE_LIMIT_ERROR_RE.test(event.errorMessage)) return;
+		const failingProvider = extractProvider(ctx);
 		const sessionId = ctx.sessionManager.getSessionId();
-		if (sessionId) {
-			for (const [key, credentialId] of pinned.entries()) {
-				if (key.endsWith(`:${sessionId}`)) {
-					// Mark cached quota as exhausted for this credential so even if the quota
-					// summary endpoint has a reporting lag, subsequent rankings treat this
-					// account as exhausted and keep using the alternate account.
-					for (const bucketPrefix of ["gemini-", "3p-"]) {
-						antigravityQuotaCache.set(`${credentialId}:${bucketPrefix}`, {
-							checkedAt: Date.now(),
-							windows: {
-								fiveHour: { remainingFraction: 0 },
-								weekly: { remainingFraction: 0 },
-							},
-						});
-					}
+		if (sessionId && (!failingProvider || failingProvider === "google-antigravity")) {
+			const credentialId = pinned.get(`google-antigravity:${sessionId}`);
+			if (credentialId !== undefined) {
+				// Mark cached quota as exhausted for this credential so even if the quota
+				// summary endpoint has a reporting lag, subsequent rankings treat this
+				// account as exhausted and keep using the alternate account.
+				for (const bucketPrefix of ["gemini-", "3p-"]) {
+					antigravityQuotaCache.set(`${credentialId}:${bucketPrefix}`, {
+						checkedAt: Date.now(),
+						windows: {
+							fiveHour: { remainingFraction: 0 },
+							weekly: { remainingFraction: 0 },
+						},
+					});
 				}
+				saveAntigravityQuotaCache();
 			}
-			saveAntigravityQuotaCache();
 		}
-		return applyRouting(ctx, pi, "advance");
+		return applyRouting(ctx, pi, "advance", failingProvider);
 	});
 
 	// omp auto-disabled a credential (invalid_grant etc.): move to the next
 	// eligible account rather than waiting for the next prompt.
-	pi.on("credential_disabled", (_event, ctx) => applyRouting(ctx, pi, "advance"));
-
+	pi.on("credential_disabled", (event, ctx) => {
+		const provider =
+			event && typeof event === "object" && "provider" in event && typeof event.provider === "string"
+				? event.provider
+				: extractProvider(ctx);
+		return applyRouting(ctx, pi, "advance", provider);
+	});
 	pi.on("session_shutdown", (_event, ctx) => {
 		const sessionId = ctx.sessionManager.getSessionId();
 		if (!sessionId) return;

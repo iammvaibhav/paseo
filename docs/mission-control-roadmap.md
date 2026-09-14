@@ -1,6 +1,6 @@
 # Mission Control roadmap
 
-The path from today's implementation to the design in [docs/commander.md](commander.md). Milestones are ordered; tasks within a milestone are parallelizable unless marked. Every milestone ends with the gates green (`npm run format`, `npm run typecheck`, `npm run lint`, `build:server`/`build:client`, targeted vitest) and dev-daemon proof per [docs/agent-driven-development.md](agent-driven-development.md). Production deploys only on explicit approval.
+The path from today's implementation to the design in [docs/commander.md](commander.md). Milestones are ordered; tasks within a milestone are parallelizable unless marked. Every milestone ends with the gates green (`pnpm run format`, `pnpm run typecheck`, `pnpm run lint`, `build:server`/`build:client`, targeted vitest) and dev-daemon proof per [docs/agent-driven-development.md](agent-driven-development.md). Production deploys only on explicit approval.
 
 Status legend: `[ ]` not started · `[x]` done · `[~]` in progress.
 

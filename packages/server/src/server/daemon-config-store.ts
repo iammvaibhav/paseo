@@ -28,6 +28,7 @@ interface SupportedMutableConfigPatch {
   appendSystemPrompt?: string;
   terminalProfiles?: MutableDaemonConfig["terminalProfiles"];
   agentProfiles?: MutableDaemonConfig["agentProfiles"];
+  visibleModels?: MutableDaemonConfig["visibleModels"];
   skills?: MutableDaemonConfig["skills"];
   pluginsEnabled?: boolean;
   plugins?: MutableDaemonConfig["plugins"];
@@ -186,6 +187,7 @@ const RELOADABLE_PATHS = [
   "daemon.appendSystemPrompt",
   "daemon.terminalProfiles",
   "daemon.agentProfiles",
+  "daemon.visibleModels",
   "app.baseUrl",
   "agents.providers",
   "agents.catalogRefreshTimeoutMs",
@@ -209,6 +211,7 @@ const PERSISTED_TO_MUTABLE_PATH = new Map<string, string>([
   ["daemon.appendSystemPrompt", "appendSystemPrompt"],
   ["daemon.terminalProfiles", "terminalProfiles"],
   ["daemon.agentProfiles", "agentProfiles"],
+  ["daemon.visibleModels", "visibleModels"],
   ["app.baseUrl", "app.baseUrl"],
   ["agents.providers", "providers"],
   ["agents.catalogRefreshTimeoutMs", "catalogRefreshTimeoutMs"],
@@ -284,6 +287,7 @@ function pickExtendedPatchFields(patch: MutableDaemonConfigPatch): SupportedMuta
   if (patch.appendSystemPrompt !== undefined) out.appendSystemPrompt = patch.appendSystemPrompt;
   if (patch.terminalProfiles !== undefined) out.terminalProfiles = patch.terminalProfiles;
   if (patch.agentProfiles !== undefined) out.agentProfiles = patch.agentProfiles;
+  if (patch.visibleModels !== undefined) out.visibleModels = patch.visibleModels;
   if (patch.pluginsEnabled !== undefined) out.pluginsEnabled = patch.pluginsEnabled;
   if (patch.plugins !== undefined) out.plugins = patch.plugins;
   if (patch.missionControl !== undefined) out.missionControl = patch.missionControl;
@@ -679,6 +683,7 @@ function mergeMutableDaemonPatch(
   if (patch.appendSystemPrompt !== undefined) next.appendSystemPrompt = patch.appendSystemPrompt;
   if (patch.terminalProfiles !== undefined) next.terminalProfiles = patch.terminalProfiles;
   if (patch.agentProfiles !== undefined) next.agentProfiles = patch.agentProfiles;
+  if (patch.visibleModels !== undefined) next.visibleModels = patch.visibleModels;
   if (patch.ompIdleCloseAfterSeconds !== undefined) {
     next.ompIdleCloseAfterSeconds = patch.ompIdleCloseAfterSeconds;
   }

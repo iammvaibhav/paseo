@@ -23,9 +23,11 @@ import { EditingTextInput as TextInput } from "@/components/ui/text-input";
 import {
   MAX_CODE_FONT_SIZE,
   MAX_CONTENT_FONT_SIZE,
+  MAX_AGENT_GRID_FONT_SIZE,
   MAX_UI_BASE_FONT_SIZE,
   MIN_CODE_FONT_SIZE,
   MIN_CONTENT_FONT_SIZE,
+  MIN_AGENT_GRID_FONT_SIZE,
   MIN_UI_BASE_FONT_SIZE,
   parseClampedFontSize,
   sanitizeFontFamily,
@@ -396,6 +398,7 @@ interface FontSizeRowProps {
   accessibilityLabel: string;
   draft: string;
   withBorder?: boolean;
+  testID?: string;
   onChangeDraft: (value: string) => void;
   onCommit: () => void;
 }
@@ -406,6 +409,7 @@ function FontSizeRow({
   accessibilityLabel,
   draft,
   withBorder = true,
+  testID,
   onChangeDraft,
   onCommit,
 }: FontSizeRowProps) {
@@ -426,6 +430,7 @@ function FontSizeRow({
           selectTextOnFocus
           style={styles.sizeInput}
           accessibilityLabel={accessibilityLabel}
+          testID={testID}
         />
         <Text style={styles.unit}>px</Text>
       </View>
@@ -522,6 +527,7 @@ export function AppearanceSection() {
   const [monoFontDraft, setMonoFontDraft] = useState(settings.monoFontFamily);
   const [uiBaseSizeDraft, setUiBaseSizeDraft] = useState(String(settings.uiBaseFontSize));
   const [contentSizeDraft, setContentSizeDraft] = useState(String(settings.contentFontSize));
+  const [agentGridSizeDraft, setAgentGridSizeDraft] = useState(String(settings.agentGridFontSize));
   const [codeSizeDraft, setCodeSizeDraft] = useState(String(settings.codeFontSize));
 
   // Resync numeric drafts when the committed value changes elsewhere.
@@ -531,6 +537,9 @@ export function AppearanceSection() {
   useEffect(() => {
     setContentSizeDraft(String(settings.contentFontSize));
   }, [settings.contentFontSize]);
+  useEffect(() => {
+    setAgentGridSizeDraft(String(settings.agentGridFontSize));
+  }, [settings.agentGridFontSize]);
   useEffect(() => {
     setCodeSizeDraft(String(settings.codeFontSize));
   }, [settings.codeFontSize]);
@@ -619,6 +628,10 @@ export function AppearanceSection() {
     setContentSizeDraft(value.replace(/[^\d]/g, ""));
   }, []);
 
+  const handleAgentGridSizeChange = useCallback((value: string) => {
+    setAgentGridSizeDraft(value.replace(/[^\d]/g, ""));
+  }, []);
+
   const commitUiBaseSize = useCallback(() => {
     const parsed = parseClampedFontSize(uiBaseSizeDraft, {
       min: MIN_UI_BASE_FONT_SIZE,
@@ -654,6 +667,18 @@ export function AppearanceSection() {
       void updateSettings({ contentFontSize: next });
     }
   }, [contentSizeDraft, settings.contentFontSize, updateSettings]);
+
+  const commitAgentGridSize = useCallback(() => {
+    const parsed = parseClampedFontSize(agentGridSizeDraft, {
+      min: MIN_AGENT_GRID_FONT_SIZE,
+      max: MAX_AGENT_GRID_FONT_SIZE,
+    });
+    const next = parsed ?? settings.agentGridFontSize;
+    setAgentGridSizeDraft(String(next));
+    if (next !== settings.agentGridFontSize) {
+      void updateSettings({ agentGridFontSize: next });
+    }
+  }, [agentGridSizeDraft, settings.agentGridFontSize, updateSettings]);
 
   // Live-while-typing: the in-progress drafts drive the preview without
   // committing to the global theme. Empty/invalid fields fall back to the
@@ -728,8 +753,18 @@ export function AppearanceSection() {
             hint={t("settings.appearance.fonts.contentSizeHint")}
             accessibilityLabel={t("settings.appearance.fonts.contentSizeAccessibility")}
             draft={contentSizeDraft}
+            testID="settings-appearance-content-size"
             onChangeDraft={handleContentSizeChange}
             onCommit={commitContentSize}
+          />
+          <FontSizeRow
+            title={t("settings.appearance.fonts.agentGridSize")}
+            hint={t("settings.appearance.fonts.agentGridSizeHint")}
+            accessibilityLabel={t("settings.appearance.fonts.agentGridSizeAccessibility")}
+            draft={agentGridSizeDraft}
+            testID="settings-appearance-agent-grid-size"
+            onChangeDraft={handleAgentGridSizeChange}
+            onCommit={commitAgentGridSize}
           />
           <FontFamilyRow
             title={t("settings.appearance.fonts.codeFont")}

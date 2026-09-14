@@ -337,7 +337,7 @@ describe("mergeSelectedComposerPreferences", () => {
     });
   });
 
-  it("also writes scoped workspace and project preferences when a scope is provided", () => {
+  it("writes globally and ignores scope for model preferences", () => {
     expect(
       mergeSelectedComposerPreferences({
         preferences: {},
@@ -348,18 +348,6 @@ describe("mergeSelectedComposerPreferences", () => {
     ).toEqual({
       provider: "codex",
       providerPreferences: { codex: { model: "gpt-5.4" } },
-      byProject: {
-        "proj-a": {
-          provider: "codex",
-          providerPreferences: { codex: { model: "gpt-5.4" } },
-        },
-      },
-      byWorkspace: {
-        "ws-1": {
-          provider: "codex",
-          providerPreferences: { codex: { model: "gpt-5.4" } },
-        },
-      },
     });
   });
 });

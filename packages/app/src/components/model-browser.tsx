@@ -53,7 +53,7 @@ import {
   type ProviderSelectionModelRow,
   type ProviderSelectorProvider,
 } from "@/provider-selection/provider-selection";
-import { useHiddenModelKeys } from "@/provider-selection/hidden-models";
+import { useDaemonVisibleModels } from "@/provider-selection/use-daemon-visible-models";
 import { useProviderSettingsStore } from "@/stores/provider-settings-store";
 import { useCurrentOverlayLayer } from "@/lib/overlay-root";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
@@ -221,7 +221,7 @@ export function ModelProviderGlyph({
   tone = "muted",
 }: {
   provider: string;
-  serverId?: string | null;
+  serverId: string | null;
   size: number;
   tone?: ProviderGlyphTone;
 }) {
@@ -275,7 +275,11 @@ export function useModelBrowser({
   profiles = null,
   serverId = null,
 }: ModelBrowserInput): ModelBrowserState {
-  const hiddenKeys = useHiddenModelKeys();
+  const allModelKeys = useMemo(
+    () => getAllProviderModelRows(catalogProviders).map((row) => row.favoriteKey),
+    [catalogProviders],
+  );
+  const { hiddenKeys } = useDaemonVisibleModels(serverId, allModelKeys);
   // Lists show what the user chose to keep; `selectedModelLabel` below reads the
   // unfiltered catalog so a fallback onto a hidden model still names itself.
   const providers = useMemo(

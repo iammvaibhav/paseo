@@ -37,6 +37,16 @@ export interface EmbeddedAgentPaneProps {
   submitButtonTestID?: string;
   /** Forwarded to Composer's focus signal — grid uses it to pick the active tile. */
   onComposerFocus?: () => void;
+  /**
+   * `compact` drops turn-footer action chrome and safe-area padding so the
+   * stream fills the host (grid tiles). Inspector keeps `full`.
+   */
+  chrome?: "full" | "compact";
+  /**
+   * Grid tiles hide the composer until the user clicks the tile.
+   * Inspector keeps the default (always shown).
+   */
+  showComposer?: boolean;
 }
 
 /**
@@ -52,8 +62,11 @@ export function EmbeddedAgentPane({
   reportsFocusedAgent,
   submitButtonTestID,
   onComposerFocus,
+  chrome = "full",
+  showComposer = true,
 }: EmbeddedAgentPaneProps): ReactElement {
   const insets = useSafeAreaInsets();
+  const compactChrome = chrome === "compact";
   const toast = useToast();
   const [verbose] = useMissionControlVerbose();
 
@@ -199,7 +212,12 @@ export function EmbeddedAgentPane({
 
   const isArchived = agent ? Boolean(agent.archivedAt) : false;
   const composerCwd = agent?.cwd ?? "~";
-  const composerContainerStyle = useMemo(() => ({ paddingBottom: insets.bottom }), [insets.bottom]);
+  // Grid tiles already sit inside the screen's safe area; extra inset here
+  // would leave a blank strip under the composer.
+  const composerContainerStyle = useMemo(
+    () => (compactChrome ? undefined : { paddingBottom: insets.bottom }),
+    [compactChrome, insets.bottom],
+  );
 
   return (
     <>
@@ -217,28 +235,31 @@ export function EmbeddedAgentPane({
           toast={toast}
           onOpenWorkspaceFile={handleOpenWorkspaceFile}
           historyPagination={historyPagination}
+          chrome={chrome}
         />
       </View>
-      <View style={composerContainerStyle}>
-        {isArchived ? (
-          <ArchivedAgentCallout serverId={serverId} agentId={agentId} />
-        ) : (
-          <Composer
-            agentId={agentId}
-            serverId={serverId}
-            isPaneFocused={isFocused}
-            value={agentDraft.text}
-            onChangeText={agentDraft.editText}
-            textReplacement={agentDraft.textReplacement}
-            attachments={agentDraft.attachments}
-            onChangeAttachments={agentDraft.setAttachments}
-            cwd={composerCwd}
-            clearDraft={agentDraft.clear}
-            submitButtonTestID={submitButtonTestID}
-            onAttentionInputFocus={onComposerFocus}
-          />
-        )}
-      </View>
+      {showComposer ? (
+        <View style={composerContainerStyle}>
+          {isArchived ? (
+            <ArchivedAgentCallout serverId={serverId} agentId={agentId} />
+          ) : (
+            <Composer
+              agentId={agentId}
+              serverId={serverId}
+              isPaneFocused={isFocused}
+              value={agentDraft.text}
+              onChangeText={agentDraft.editText}
+              textReplacement={agentDraft.textReplacement}
+              attachments={agentDraft.attachments}
+              onChangeAttachments={agentDraft.setAttachments}
+              cwd={composerCwd}
+              clearDraft={agentDraft.clear}
+              submitButtonTestID={submitButtonTestID}
+              onAttentionInputFocus={onComposerFocus}
+            />
+          )}
+        </View>
+      ) : null}
     </>
   );
 }

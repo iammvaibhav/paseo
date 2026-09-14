@@ -22,7 +22,7 @@ agent-device close --session terminal-author
 Run the Paseo mobile suite:
 
 ```bash
-npm run test:e2e:mobile
+pnpm run test:e2e:mobile
 ```
 
 The runner uses an isolated Agent Device state directory, verifies or starts Metro for this checkout, prewarms the iOS runner, discovers each script's platform from its `context` header, and cleans its sessions, runner lease, daemon, and any Metro process it started. Attempt results, timings, logs, and failure artifacts go under `.dev/agent-device-artifacts`.
@@ -30,7 +30,7 @@ The runner uses an isolated Agent Device state directory, verifies or starts Met
 Set `PASEO_MOBILE_E2E_METRO_PORT` when this worktree already has Metro on a non-default port:
 
 ```bash
-PASEO_MOBILE_E2E_METRO_PORT=62093 npm run test:e2e:mobile
+PASEO_MOBILE_E2E_METRO_PORT=62093 pnpm run test:e2e:mobile
 ```
 
 [native-terminal-basic.ios.ad](../packages/app/e2e/mobile/agent-device/native-terminal-basic.ios.ad) and [native-terminal-basic.android.ad](../packages/app/e2e/mobile/agent-device/native-terminal-basic.android.ad) are the smallest examples. Each opens a fresh terminal, types a command at zero delay, submits it, and asserts its distinct output. The app must be connected to a daemon with an active workspace.
@@ -372,13 +372,13 @@ you start, not after it fails.
 
 ```bash
 cd packages/app
-npm --prefix ../.. run build:client
+pnpm --dir ../.. run build:client
 APP_VARIANT=development npx expo prebuild --platform ios
 APP_VARIANT=development npx expo run:ios --device
 ```
 
 `APP_VARIANT=development` is required. The `ios` npm script does not set it, and `app.config.js` defaults
-to `production` — so a bare `npm run ios` builds `sh.paseo` and collides with the App Store install instead
+to `production` — so a bare `pnpm run ios` builds `sh.paseo` and collides with the App Store install instead
 of the `sh.paseo.debug` dev client. Ignore prebuild's `--non-interactive is not supported` warning; use
 `CI=1` if you need non-interactive.
 
@@ -470,4 +470,4 @@ xcrun simctl ui booted appearance dark     # set dark
 xcrun simctl ui booted appearance light    # set light
 ```
 
-Expo dev server logs are in the tmux pane running `npm run dev`. Daemon logs are at `$PASEO_HOME/daemon.log` (see [development.md](development.md)).
+Expo dev server logs are in the tmux pane running `pnpm run dev`. Daemon logs are at `$PASEO_HOME/daemon.log` (see [development.md](development.md)).

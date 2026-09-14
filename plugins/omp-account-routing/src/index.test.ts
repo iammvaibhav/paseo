@@ -1082,6 +1082,93 @@ describe("ompAccountRoutingExtension mid-session switching", () => {
 			rmSync(testDir, { recursive: true, force: true });
 		}
 	});
+	test("does not advance other providers on auto_retry_start when a different provider fails", async () => {
+		const testDir = path.join(tmpdir(), `omp-no-cross-advance-${Date.now()}`);
+		mkdirSync(testDir, { recursive: true });
+		const ompDir = path.join(testDir, ".omp");
+		mkdirSync(ompDir, { recursive: true });
+
+		writeFileSync(
+			path.join(ompDir, "account-routing.yml"),
+			`
+accounts:
+  p1: user1@example.com
+  p2: user2@example.com
+  c1: cursor1@example.com
+  c2: cursor2@example.com
+routing:
+  cursor:
+    strategy: primary-fallback
+    order: [c1, c2]
+  google-antigravity:
+    strategy: primary-fallback
+    order: [p1, p2]
+`,
+		);
+
+		const pinnedMap = new Map<string, number>();
+		type HandlerFn = (event: { errorMessage?: string }, ctx: unknown) => Promise<void> | void;
+		const eventHandlers = new Map<string, HandlerFn>();
+
+		const mockPi = {
+			setLabel: () => {},
+			logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+			on: (event: string, handler: unknown) => {
+				if (typeof handler === "function") {
+					eventHandlers.set(event, handler as HandlerFn);
+				}
+			},
+		} as unknown as ExtensionAPI;
+
+		ompAccountRoutingExtension(mockPi);
+
+		const authStorage = {
+			listOAuthAccounts: (provider: string) => {
+				if (provider === "cursor") {
+					return [
+						{ credentialId: 101, email: "cursor1@example.com" },
+						{ credentialId: 102, email: "cursor2@example.com" },
+					];
+				}
+				return [
+					{ credentialId: 1, email: "user1@example.com" },
+					{ credentialId: 2, email: "user2@example.com" },
+				];
+			},
+			pinSessionOAuthAccount: (provider: string, _sessionId: string, credId: number) => {
+				pinnedMap.set(provider, credId);
+				return true;
+			},
+			getOAuthAccountIdentity: () => null,
+			getOAuthAccessByCredentialId: async () => null,
+		};
+
+		const ctx = {
+			cwd: testDir,
+			modelRegistry: { authStorage },
+			sessionManager: { getSessionId: () => "sess-cross-test" },
+			model: { id: "google-antigravity/gemini-3.7-flash", provider: "google-antigravity" },
+		};
+
+		try {
+			const beforeStartHandler = eventHandlers.get("before_agent_start");
+			const autoRetryHandler = eventHandlers.get("auto_retry_start");
+
+			// 1. Initial prompt: cursor starts on c1 (101), antigravity on p1 (1)
+			await beforeStartHandler!({}, ctx);
+			expect(pinnedMap.get("cursor")).toBe(101);
+			expect(pinnedMap.get("google-antigravity")).toBe(1);
+
+			// 2. 429 error occurs on google-antigravity
+			await autoRetryHandler!({ errorMessage: "RESOURCE_EXHAUSTED: 429" }, ctx);
+
+			// Antigravity should advance to p2 (2), but cursor MUST stay on c1 (101)!
+			expect(pinnedMap.get("google-antigravity")).toBe(2);
+			expect(pinnedMap.get("cursor")).toBe(101);
+		} finally {
+			rmSync(testDir, { recursive: true, force: true });
+		}
+	});
 
 	test("persists quota cache to disk and loads it on demand", () => {
 		const testHome = path.join(tmpdir(), `omp-cache-disk-${Date.now()}`);

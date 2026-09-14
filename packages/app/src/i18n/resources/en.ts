@@ -1171,6 +1171,16 @@ export const en = {
       updateHost: "Update this host to manage labels.",
     },
   },
+  changelog: {
+    title: "What's new",
+    installed: "Installed",
+    showMore: "Show more",
+    openWebsite: "Full changelog",
+    error: {
+      title: "Unable to load the changelog",
+      description: "Check your connection and try again.",
+    },
+  },
   sidebar: {
     display: {
       trigger: "Display preferences",
@@ -2405,6 +2415,7 @@ export const en = {
     about: {
       title: "About",
       appVersion: "App version",
+      whatsNewHint: "Release notes for every version",
       thisDevice: "This device",
       connectedHosts: "Connected hosts",
       offline: "Offline",
@@ -2468,8 +2479,12 @@ export const en = {
         interfaceSizeHint: "Used for navigation, controls, and labels",
         interfaceSizeAccessibility: "Interface font size",
         contentSize: "Content size",
-        contentSizeHint: "Used for chat text and rendered Markdown",
+        contentSizeHint: "Used for chat text and rendered Markdown in the full agent pane",
         contentSizeAccessibility: "Content font size",
+        agentGridSize: "Agent Grid size",
+        agentGridSizeHint:
+          "Used for chat text in Mission Control Agent Grid tiles, separate from the full agent pane",
+        agentGridSizeAccessibility: "Agent Grid font size",
         codeFont: "Code font",
         codeFontHint:
           "Used in code, diffs, and the terminal output. Leave empty for the system default",

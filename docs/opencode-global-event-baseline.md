@@ -41,8 +41,8 @@ One live reasoning-dedup matrix run returned no reasoning content; an immediate 
 
 ## Focused Verification
 
-- `npm run typecheck`
-- `npm run lint`
+- `pnpm run typecheck`
+- `pnpm run lint`
 - `git diff --check`
 - `npx vitest run packages/server/src/server/agent/providers/opencode-agent.test.ts --maxWorkers=1`
 - `npx vitest run packages/server/src/server/agent/providers/opencode-agent.error-handling.real.e2e.test.ts --maxWorkers=1`

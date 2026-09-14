@@ -8,7 +8,7 @@ on:
       - ".dockerignore"
       - ".github/workflows/docker.yml"
       - "package.json"
-      - "package-lock.json"
+      - "pnpm-lock.yaml"
       - "patches/**"
       - "scripts/**"
       - "tsconfig.json"

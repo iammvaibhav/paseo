@@ -121,7 +121,7 @@ To exercise the smoke locally on Linux:
 ```bash
 PASEO_DESKTOP_SMOKE=1 \
 PASEO_DESKTOP_SMOKE_ARTIFACT_DIR=/tmp/paseo-desktop-smoke \
-npm run build:desktop -- --publish never --linux --x64 --dir
+pnpm run build:desktop -- --publish never --linux --x64 --dir
 ```
 
 ### Undeclared peer dependencies break app.asar
@@ -141,7 +141,7 @@ The desktop browser E2E launches an isolated real daemon, Metro, and Electron ap
 Run it locally with the same command owned by the Ubuntu `desktop-tests` required check:
 
 ```bash
-npm run test:e2e:browser-tabs --workspace=@getpaseo/desktop
+pnpm --filter @getpaseo/desktop run test:e2e:browser-tabs
 ```
 
 ## Test organization
@@ -155,16 +155,16 @@ npm run test:e2e:browser-tabs --workspace=@getpaseo/desktop
 
 Vitest picks up tests by suffix. The suffix tells the runner which category it belongs to.
 
-| Suffix                | What it is                                                                                                    | Where it runs                                                                        |
-| --------------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `*.test.ts(x)`        | Unit test — pure, fast, no daemon                                                                             | `npm run test:unit`                                                                  |
-| `*.posix.test.ts`     | Unit test that needs POSIX-only behavior                                                                      | unit, skipped on Windows                                                             |
-| `*.browser.test.ts`   | App test that needs a real browser (DOM)                                                                      | `npm run test:browser` (Vitest browser mode, Playwright provider, headless Chromium) |
-| `*.e2e.test.ts`       | End-to-end against a real daemon                                                                              | `npm run test:e2e`                                                                   |
-| `*.real.e2e.test.ts`  | E2E that hits a real provider (Claude/Codex/Copilot/OpenCode/Pi) — needs creds in `packages/server/.env.test` | `npm run test:integration:real` / `test:e2e:real`                                    |
-| `*.local.e2e.test.ts` | E2E that needs a local-only resource                                                                          | `npm run test:integration:local` / `test:e2e:local`                                  |
+| Suffix                | What it is                                                                                                    | Where it runs                                                                         |
+| --------------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `*.test.ts(x)`        | Unit test — pure, fast, no daemon                                                                             | `pnpm run test:unit`                                                                  |
+| `*.posix.test.ts`     | Unit test that needs POSIX-only behavior                                                                      | unit, skipped on Windows                                                              |
+| `*.browser.test.ts`   | App test that needs a real browser (DOM)                                                                      | `pnpm run test:browser` (Vitest browser mode, Playwright provider, headless Chromium) |
+| `*.e2e.test.ts`       | End-to-end against a real daemon                                                                              | `pnpm run test:e2e`                                                                   |
+| `*.real.e2e.test.ts`  | E2E that hits a real provider (Claude/Codex/Copilot/OpenCode/Pi) — needs creds in `packages/server/.env.test` | `pnpm run test:integration:real` / `test:e2e:real`                                    |
+| `*.local.e2e.test.ts` | E2E that needs a local-only resource                                                                          | `pnpm run test:integration:local` / `test:e2e:local`                                  |
 
-Browser Playwright specs live in `packages/app/e2e/browser/`. Desktop Playwright and real-Electron E2E live in `packages/desktop/e2e/`. Harness code shared by both suites lives in `packages/app/e2e/support/`; neither suite may place specs there. App Playwright specs that hit real providers use `*.real.spec.ts` and run through `npm run test:e2e:real --workspace=@getpaseo/app`; the default browser project ignores that suffix so CI does not need provider credentials.
+Browser Playwright specs live in `packages/app/e2e/browser/`. Desktop Playwright and real-Electron E2E live in `packages/desktop/e2e/`. Harness code shared by both suites lives in `packages/app/e2e/support/`; neither suite may place specs there. App Playwright specs that hit real providers use `*.real.spec.ts` and run through `pnpm --filter @getpaseo/app run test:e2e:real`; the default browser project ignores that suffix so CI does not need provider credentials.
 
 Live provider smoke tests belong in `*.real.e2e.test.ts`, not `*.test.ts`, even when guarded by environment variables. Default unit suites must use deterministic provider adapters/fakes so missing credits, auth outages, and upstream model drift do not block normal CI.
 
@@ -180,7 +180,7 @@ Codex MultiAgentV2 real tests use local Codex authentication rather than the Ope
 Test suites in this repo are heavy. Running them in bulk freezes the machine, especially with multiple agents in parallel.
 
 - Run only the file you changed: `npx vitest run <path> --bail=1`
-- Never run `npm run test` for a whole workspace unless asked.
+- Never run `pnpm run test` for a whole workspace unless asked.
 - For a broad sweep, redirect to a file and read it after: `npx vitest run <path> --bail=1 > /tmp/test-output.txt 2>&1`
 - Never re-run a suite another agent already reported green.
 - For full-suite confidence, push to CI and check GitHub Actions.

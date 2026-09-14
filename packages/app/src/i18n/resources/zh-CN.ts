@@ -1153,6 +1153,16 @@ export const zhCN: TranslationResources = {
       updateHost: "请更新此主机以管理标签。",
     },
   },
+  changelog: {
+    title: "新功能",
+    installed: "已安装",
+    showMore: "显示更多",
+    openWebsite: "完整更新日志",
+    error: {
+      title: "无法加载更新日志",
+      description: "请检查网络连接后重试。",
+    },
+  },
   sidebar: {
     display: {
       trigger: "显示偏好",
@@ -2267,6 +2277,7 @@ export const zhCN: TranslationResources = {
     about: {
       title: "关于",
       appVersion: "应用版本",
+      whatsNewHint: "每个版本的发布说明",
       thisDevice: "此设备",
       connectedHosts: "已连接的 Host",
       offline: "离线",
@@ -2332,6 +2343,10 @@ export const zhCN: TranslationResources = {
         contentSize: "内容字号",
         contentSizeHint: "用于聊天文本和渲染后的 Markdown",
         contentSizeAccessibility: "内容字体大小",
+        agentGridSize: "Agent Grid 字号",
+        agentGridSizeHint:
+          "仅用于 Mission Control Agent Grid 磁贴中的对话文本，与完整智能体窗口分开",
+        agentGridSizeAccessibility: "Agent Grid 字体大小",
         codeFont: "代码字体",
         codeFontHint: "用于代码、diff 和终端输出。留空则使用系统默认",
         codeFontAccessibility: "代码字体族",
