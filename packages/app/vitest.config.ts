@@ -120,7 +120,7 @@ export default defineConfig({
       // Vite alias resolution).
       {
         find: "react-native",
-        replacement: path.resolve(rootNodeModules, "react-native-web/dist/index.js"),
+        replacement: resolvePackageEntry("react-native-web/dist/index.js"),
       },
       { find: "react", replacement: resolvePackageEntry("react") },
       {
