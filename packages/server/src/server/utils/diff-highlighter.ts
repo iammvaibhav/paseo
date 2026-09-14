@@ -437,28 +437,32 @@ export async function highlightDiffWithFileContent(
     return file;
   }
 
+  let newTokensByLine: Map<number, HighlightToken[]> | null = null;
   const oldTokensByLine =
-    (typeof options.oldFileContent === "string"
+    typeof options.oldFileContent === "string"
       ? buildFullFileTokenLookup(options.oldFileContent, file.path)
-      : null) ?? buildReconstructedOldTokenLookup(file);
+      : null;
 
   if (typeof options.newFileContent === "string") {
-    const newTokensByLine =
-      buildFullFileTokenLookup(options.newFileContent, file.path) ??
-      buildReconstructedNewTokenLookup(file);
+    newTokensByLine = buildFullFileTokenLookup(options.newFileContent, file.path);
+  } else {
+    try {
+      const fileContent = await readFile(resolve(cwd, file.path), "utf-8");
+      newTokensByLine = buildFullFileTokenLookup(fileContent, file.path);
+    } catch {
+      // Deleted or unavailable files use reconstructed tokens below.
+    }
+  }
+
+  if (newTokensByLine && oldTokensByLine) {
     return applyTokensToHunks(file, newTokensByLine, oldTokensByLine);
   }
 
-  const filePath = resolve(cwd, file.path);
-  try {
-    const fileContent = await readFile(filePath, "utf-8");
-    const newTokensByLine =
-      buildFullFileTokenLookup(fileContent, file.path) ?? buildReconstructedNewTokenLookup(file);
-    return applyTokensToHunks(file, newTokensByLine, oldTokensByLine);
-  } catch {
-    // If file read fails (deleted file, etc.), fall back to reconstructed new-side tokens.
-    return applyTokensToHunks(file, buildReconstructedNewTokenLookup(file), oldTokensByLine);
-  }
+  return applyTokensToHunks(
+    file,
+    newTokensByLine ?? buildReconstructedNewTokenLookup(file),
+    oldTokensByLine ?? buildReconstructedOldTokenLookup(file),
+  );
 }
 
 function applyTokensToHunks(

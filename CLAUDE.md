@@ -122,9 +122,14 @@ Repo dev commands use checkout-local state by default. In this checkout, `PASEO_
 
 See [docs/development.md](docs/development.md) for full setup, build sync requirements, and debugging.
 
-## Critical rules
+## Release branches
 
-- **Before changing the plugin SDK, compiler, host module maps, scaffold, or examples, read [SDK import boundaries](docs/plugins.md#sdk-import-boundaries).** Classify the export by runtime first and preserve the enforced boundaries.
+When the user says "this goes to next", create or
+retarget the PR to `next` and preserve that destination through delivery. Follow
+[release branch discipline](docs/release.md#release-branch-discipline) for creating
+and updating `next`, integrating it after a release, and releasing a hotfix from a tag.
+
+## Critical rules
 
 - **NEVER restart the main Paseo daemon on port 6767 without permission** — it manages all running agents. If you're an agent, restarting it kills your own process.
 - **The live environment is read-only for verification.** The daemons on 6767, the real itsaplan projects, and the user's workspaces hold live data. Verify against an isolated mock fleet (`node scripts/verify/stack.mjs up`, see [docs/verification.md](docs/verification.md)). Use the live environment only when the user explicitly asked for it in this task, or when the behavior cannot be reproduced in the mock and you say so. Even then, additive actions only (create a workspace, add a ticket): never delete, archive, rename, or modify anything that existed before you started.
@@ -137,6 +142,7 @@ See [docs/development.md](docs/development.md) for full setup, build sync requir
   - If you must run a broad suite, pipe output to a file and read it afterward: `npx vitest run <file> --bail=1 > /tmp/test-output.txt 2>&1` then read the file.
   - Never re-run a test suite that another agent already ran and reported green — trust the result.
   - For full suite verification, push to CI and check GitHub Actions instead.
+- Add tests to existing suites and reuse their npm scripts and CI jobs instead of creating feature-specific ones.
 - **Always run typecheck and lint after every change.**
 - **NEVER run `pnpm install` inside a Paseo dev worktree unless the worktree's own dependencies changed.** Worktrees get their own `node_modules`, but pnpm's content-addressable store (shared across the machine) makes a fresh `pnpm install` fast without any custom symlinking (see "Fast worktrees" in [docs/development.md](docs/development.md)). Running it needlessly still costs a lockfile resolution pass; only do it after changing dependencies on the branch.
 - **Never push directly to `origin` from a worktree.** Commit and merge as soon as your changes are done and verified. Only merge for features and bug fixes — do not merge for analysis or exploratory tasks. Commit on your worktree, merge the local `vaibhav/customizations` branch into your worktree branch, resolve conflicts in your worktree, and fast-forward the local `vaibhav/customizations` branch. Remote pushes belong exclusively to `./scripts/deploy.sh`. See [Landing work from a ticket worktree](#landing-work-from-a-ticket-worktree).

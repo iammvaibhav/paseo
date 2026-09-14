@@ -1,4 +1,6 @@
 import type pino from "pino";
+import type { SessionDelivery } from "../owned-subscriptions/index.js";
+import type { FileVersion } from "@getpaseo/protocol/messages";
 import { getErrorMessage } from "@getpaseo/protocol/error-utils";
 import {
   encodeFileTransferFrame,
@@ -71,7 +73,6 @@ export class WorkspaceFilesSession {
   private readonly fileUploads: FileUploadStore;
   private readonly fileWrites: FileExplorerWriteStore;
   private readonly fileObserver: FileObserver;
-  private readonly fileSubscriptions = new Map<string, () => void>();
 
   constructor(options: WorkspaceFilesSessionOptions) {
     this.host = options.host;
@@ -82,32 +83,59 @@ export class WorkspaceFilesSession {
     this.fileObserver = options.fileObserver ?? workspaceFileObserver;
   }
 
-  async handleFileSubscribeRequest(request: FileSubscribeRequest): Promise<void> {
-    this.fileSubscriptions.get(request.subscriptionId)?.();
+  async handleFileSubscribeRequest(
+    request: FileSubscribeRequest,
+    ownership: SessionDelivery,
+  ): Promise<void> {
+    let bootstrap: ReturnType<FileObserver["subscribe"]> | undefined;
+    const owner = ownership.begin(
+      "files",
+      request.subscriptionId,
+      async () => {
+        await bootstrap?.then(
+          (subscription) => subscription.unsubscribe(),
+          () => undefined,
+        );
+      },
+      `file:${request.subscriptionId}`,
+    );
+    let ready = false;
+    let pending: FileVersion | null = null;
+    const emitVersion = (version: FileVersion) =>
+      owner.emit({
+        type: "fs.file.update",
+        payload: { subscriptionId: owner.responseId, version },
+      });
     try {
-      const subscription = await this.fileObserver.subscribe(
+      bootstrap = this.fileObserver.subscribe(
         { cwd: request.cwd, path: request.path },
         (version) => {
-          this.host.emit({
-            type: "fs.file.update",
-            payload: { subscriptionId: request.subscriptionId, version },
-          });
+          if (owner.signal.aborted) return;
+          if (ready) emitVersion(version);
+          else pending = version;
         },
       );
-      this.fileSubscriptions.set(request.subscriptionId, subscription.unsubscribe);
+      const subscription = await bootstrap;
+      if (owner.signal.aborted) {
+        subscription.unsubscribe();
+        return;
+      }
       this.host.emit({
         type: "fs.file.subscribe.response",
         payload: {
-          subscriptionId: request.subscriptionId,
+          subscriptionId: owner.responseId,
           initial: subscription.initial,
           requestId: request.requestId,
         },
       });
+      ready = true;
+      if (pending) emitVersion(pending);
     } catch (error) {
+      await owner.release();
       this.host.emit({
         type: "fs.file.subscribe.response",
         payload: {
-          subscriptionId: request.subscriptionId,
+          subscriptionId: owner.responseId,
           initial: {
             status: "error",
             cwd: request.cwd,
@@ -120,9 +148,11 @@ export class WorkspaceFilesSession {
     }
   }
 
-  handleFileUnsubscribeRequest(request: FileUnsubscribeRequest): void {
-    this.fileSubscriptions.get(request.subscriptionId)?.();
-    this.fileSubscriptions.delete(request.subscriptionId);
+  async handleFileUnsubscribeRequest(
+    request: FileUnsubscribeRequest,
+    ownership: SessionDelivery,
+  ): Promise<void> {
+    await ownership.release(request.subscriptionId);
     this.host.emit({
       type: "fs.file.unsubscribe.response",
       payload: { subscriptionId: request.subscriptionId, requestId: request.requestId },
@@ -215,11 +245,6 @@ export class WorkspaceFilesSession {
         requestId: request.requestId,
       },
     });
-  }
-
-  dispose(): void {
-    for (const unsubscribe of this.fileSubscriptions.values()) unsubscribe();
-    this.fileSubscriptions.clear();
   }
 
   async handleFileExplorerRequest(request: FileExplorerRequest, source?: object): Promise<void> {
@@ -353,27 +378,35 @@ export class WorkspaceFilesSession {
     }
   }
 
-  handleFileUploadRequest(request: FileUploadRequest): void {
-    this.fileUploads.beginUpload(request);
+  handleFileUploadRequest(request: FileUploadRequest, ownership: SessionDelivery): void {
+    let cancel: (() => Promise<void>) | undefined;
+    const operation = ownership.operation(
+      (message) =>
+        message.type === "file.upload.response" && message.payload.requestId === request.requestId,
+      () => cancel?.(),
+    );
+    cancel = this.fileUploads.beginUpload(request, operation.source, (response) => {
+      if (response) operation.emit(response);
+      void operation
+        .release()
+        .catch((error) => this.logger.error({ err: error }, "Upload cleanup failed"));
+    });
   }
 
   handleFileExplorerWriteRequest(request: FileExplorerWriteRequest): void {
     this.fileWrites.beginWrite(request);
   }
 
-  async handleFileTransferFrame(frame: FileTransferFrame): Promise<void> {
+  async handleFileTransferFrame(frame: FileTransferFrame, source?: object): Promise<void> {
     if (this.fileWrites.hasPending(frame.requestId)) {
       const writeResponse = await this.fileWrites.receiveFrame(frame);
       if (writeResponse) {
-        this.host.emit(writeResponse);
+        this.host.emit(writeResponse, source);
       }
       return;
     }
 
-    const response = await this.fileUploads.receiveFrame(frame);
-    if (response) {
-      this.host.emit(response);
-    }
+    await this.fileUploads.receiveFrame(frame, source);
   }
 
   async handleProjectIconRequest(

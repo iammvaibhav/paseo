@@ -216,6 +216,7 @@ export interface AgentManagerProviderState {
     >
   >;
   clients: Partial<Record<AgentProvider, AgentClient>>;
+  retiredProviders?: readonly AgentProvider[];
 }
 
 interface ProviderLoadOptions {
@@ -463,6 +464,9 @@ export class ProviderSnapshotManager {
     this.createAgentManagerState(this.generation.definitions, clients);
     this.pluginProviders.replace(registrations);
     const plugins = this.pluginProviders.definitions();
+    const retiredProviders = Object.keys(previousPlugins).filter(
+      (provider) => previousPlugins[provider] !== plugins[provider],
+    );
     const definitions = { ...this.generation.definitions };
     const changed = new Set<AgentProvider>();
     for (const provider of new Set([...Object.keys(previousPlugins), ...Object.keys(plugins)])) {
@@ -476,7 +480,7 @@ export class ProviderSnapshotManager {
     const generation = this.createGeneration(definitions, this.providerOverrides);
     const state = this.createAgentManagerState(definitions, clients);
     this.installGeneration(generation, clients, changed);
-    return state;
+    return { ...state, retiredProviders };
   }
 
   private ensureClient(

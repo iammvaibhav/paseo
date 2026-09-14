@@ -777,7 +777,7 @@ function WorkspaceRowRightGroup({
   const trailing = useSidebarWorkspaceTrailing();
   const showShortcut = showShortcutBadge && shortcutNumber !== null;
   const {
-    showTrailing,
+    trailingPresentation,
     showKebab: showKebabInSlot,
     showScrim,
     renderSlot,
@@ -799,7 +799,7 @@ function WorkspaceRowRightGroup({
       ) : null}
       {renderSlot ? (
         <SidebarWorkspaceTrailingActionSlot reserveWidth={reserveSlotWidth}>
-          <SidebarWorkspaceTrailingActionBase visible={showTrailing}>
+          <SidebarWorkspaceTrailingActionBase presentation={trailingPresentation}>
             <SidebarWorkspaceTrailingContent workspace={workspace} trailing={trailing} />
           </SidebarWorkspaceTrailingActionBase>
           <SidebarWorkspaceTrailingActionOverlay

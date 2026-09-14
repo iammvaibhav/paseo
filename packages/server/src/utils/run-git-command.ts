@@ -47,20 +47,19 @@ export function configureGitProcessPolicy(policy: GitProcessPolicy): void {
 
 export interface GitCommandOptions {
   cwd: string;
+  input?: string | Buffer;
   env?: ProcessEnvRecord;
   envOverlay?: ProcessEnvRecord;
   logger?: Pick<Logger, "trace">;
   timeout?: number;
   maxOutputBytes?: number;
   acceptExitCodes?: number[];
-  /** Piped to the process's stdin (e.g. `cat-file --batch` object specs), then closed. */
-  input?: string | Buffer;
   /** When true, preserves the raw un-decoded stdout Buffer in `result.stdoutBuffer`. */
   rawOutput?: boolean;
 }
 
-export interface GitCommandResult {
-  stdout: string;
+export interface GitCommandResult<Output = string> {
+  stdout: Output;
   stdoutBuffer?: Buffer;
   stderr: string;
   truncated: boolean;
@@ -269,6 +268,23 @@ function runGitCommandWithProvenance(
   options: GitCommandOptions,
   provenance?: string,
 ): Promise<GitCommandResult> {
+  return executeGitCommand(args, options, (output) => output.toString("utf8"), provenance);
+}
+
+/** Binary stdout preserves cat-file byte framing before text decoding. */
+export function runGitCommandBytes(
+  args: string[],
+  options: GitCommandOptions,
+): Promise<GitCommandResult<Buffer>> {
+  return executeGitCommand(args, options, (output) => output);
+}
+
+function executeGitCommand<Output>(
+  args: string[],
+  options: GitCommandOptions,
+  decode: (output: Buffer) => Output,
+  provenance?: string,
+): Promise<GitCommandResult<Output>> {
   const metricsState = submitGitCommandMetric(args, options.cwd);
   const commandTrace = submitGitCommandTrace(args, options.cwd, {
     active: gitProcessScheduler.activeCount,
@@ -280,7 +296,7 @@ function runGitCommandWithProvenance(
     const exited = new Promise<void>((resolve) => {
       releaseProcessSlot = resolve;
     });
-    const resultPromise = new Promise<GitCommandResult>((resolve, reject) => {
+    const resultPromise = new Promise<GitCommandResult<Output>>((resolve, reject) => {
       startGitCommandTrace(commandTrace, {
         active: gitProcessScheduler.activeCount,
         pending: gitProcessScheduler.pendingCount,
@@ -477,13 +493,24 @@ function runGitCommandWithProvenance(
         }
       });
 
+      if (options.input !== undefined) {
+        child.stdin!.on("error", (error: NodeJS.ErrnoException) => {
+          // A command may close stdin when it exits or reaches the output limit.
+          if (error.code !== "EPIPE") {
+            processError = error;
+            child.kill("SIGKILL");
+          }
+        });
+        child.stdin!.end(options.input);
+      }
+
       child.on("exit", markProcessExited);
 
       child.on("close", (exitCode, signal) => {
         markProcessExited(exitCode, signal);
         const stdoutBuffer = Buffer.concat(stdoutChunks);
-        const result: GitCommandResult = {
-          stdout: stdoutBuffer.toString("utf8"),
+        const result: GitCommandResult<Output> = {
+          stdout: decode(stdoutBuffer),
           stdoutBuffer: options.rawOutput ? stdoutBuffer : undefined,
           stderr: Buffer.concat(stderrChunks).toString("utf8"),
           truncated,
