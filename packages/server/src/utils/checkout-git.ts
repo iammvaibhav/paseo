@@ -731,7 +731,11 @@ async function getTrackedDiffPatchText(input: {
   const result = await runGitCommand(
     buildGitDiffArgs({
       ignoreWhitespace: input.ignoreWhitespace,
-      extra: [...getCheckoutDiffRefArgs(input.refsForDiff), "--", ...input.paths],
+      extra: [
+        ...getCheckoutDiffRefArgs(input.refsForDiff),
+        "--",
+        ...input.paths.map((path) => `:(literal)${path}`),
+      ],
     }),
     {
       cwd: input.cwd,
@@ -898,6 +902,7 @@ export async function readGitBlobsAtRefsBatch(
 
   return results;
 }
+
 
 export class NotGitRepoError extends Error {
   readonly cwd: string;
@@ -3225,10 +3230,31 @@ async function buildHighlightedTrackedDiffFile(input: {
   cwd: string;
   change: CheckoutFileChange;
   parsedFile: ParsedDiffFile;
-  oldFileContent: string | null;
-  newFileContent: string | null;
+  oldFileContent?: string | null;
+  newFileContent?: string | null;
+  refsForDiff?: CheckoutDiffRefs;
+  contents?: Map<string, string | null>;
 }): Promise<ParsedDiffFile> {
-  const { cwd, change, parsedFile, oldFileContent, newFileContent } = input;
+  const { cwd, change, parsedFile } = input;
+  let oldFileContent = input.oldFileContent;
+  let newFileContent = input.newFileContent;
+  if (oldFileContent === undefined && newFileContent === undefined && input.refsForDiff) {
+    const { refsForDiff } = input;
+    const refPath = change.oldPath ?? change.path;
+    [oldFileContent, newFileContent] = input.contents
+      ? [
+          change.isNew ? null : input.contents.get(`${refsForDiff.baseRef}:${refPath}`),
+          refsForDiff.targetRef
+            ? input.contents.get(`${refsForDiff.targetRef}:${change.path}`)
+            : null,
+        ]
+      : await Promise.all([
+          change.isNew ? null : readGitFileContentAtRef(cwd, refsForDiff.baseRef, refPath),
+          refsForDiff.targetRef
+            ? readGitFileContentAtRef(cwd, refsForDiff.targetRef, change.path)
+            : null,
+        ]);
+  }
   const highlightedFile = await highlightDiffWithFileContent(parsedFile, cwd, {
     oldFileContent,
     newFileContent,
@@ -3307,6 +3333,7 @@ export function collectTrackedBlobSpecs(input: {
   }
   return Array.from(specs);
 }
+
 
 interface TrackedOutcome {
   change: CheckoutFileChange;

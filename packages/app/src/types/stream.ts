@@ -1466,10 +1466,6 @@ function reduceTimelineToolCall(
     .trim()
     .replace(/[.\s-]+/g, "_")
     .toLowerCase();
-  if (event.provider === "claude" && normalizedToolName === "exitplanmode") {
-    return state;
-  }
-
   if (
     event.provider === "claude" &&
     (normalizedToolName === "todowrite" || normalizedToolName === "todo_write")

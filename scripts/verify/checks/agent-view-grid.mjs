@@ -279,7 +279,10 @@ export const steps = [
         const elapsed = page.locator(tileElapsedSelector(id));
         await elapsed.waitFor({ state: "visible", timeout: 10_000 });
         const text = (await elapsed.innerText()).trim();
-        ctx.expect(/\d/.test(text), `RUN tile ${id} header elapsed should show a duration, got "${text}"`);
+        ctx.expect(
+          /\d/.test(text),
+          `RUN tile ${id} header elapsed should show a duration, got "${text}"`,
+        );
       }
       ctx.expect(
         (await page.locator(tileElapsedSelector(READY_ID)).count()) === 0,
@@ -339,10 +342,7 @@ export const steps = [
     narrate: "Clicked the running tile to reveal the composer, then clicked it again to hide it.",
     async run(ctx) {
       const page = ctx.page;
-      ctx.expect(
-        (await tileComposerCount(page, RUN_A_ID)) === 0,
-        "RUN_A composer starts hidden",
-      );
+      ctx.expect((await tileComposerCount(page, RUN_A_ID)) === 0, "RUN_A composer starts hidden");
       await page.locator(tileActivateSelector(RUN_A_ID)).click();
       await page.waitForSelector(tileComposerInputSelector(RUN_A_ID), { timeout: 10_000 });
       ctx.expect(

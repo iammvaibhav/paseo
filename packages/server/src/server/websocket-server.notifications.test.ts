@@ -1,3 +1,4 @@
+import { SessionDelivery } from "./session/owned-subscriptions/index.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Server as HTTPServer } from "http";
 import type pino from "pino";
@@ -191,8 +192,15 @@ function connectClient(
   options: { subscribed?: boolean } = {},
 ) {
   const ws = createOpenSocket();
+  const delivery = new SessionDelivery(() => {});
+  delivery.attach(ws, false);
   asInternals<WebSocketServerInternals>(server).sessions.set(ws, {
-    session: createSessionWithActivity(activity, options.subscribed ?? true),
+    kind: "trusted",
+    session: {
+      ...createSessionWithActivity(activity, options.subscribed ?? true),
+      delivery,
+      wantsSourceNotification: () => true,
+    },
     principalId: "owner",
     sessionKey: JSON.stringify(["owner", "client-test"]),
     clientId: "client-test",

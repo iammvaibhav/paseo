@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { KeyboardTranslateView } from "@/components/keyboard-translate-view";
+import { ComposerViewport, ComposerViewportContent } from "@/composer/viewport";
 import { useContainerWidthBelow } from "@/hooks/use-container-width";
 import invariant from "tiny-invariant";
 import { Composer } from "@/composer";
@@ -280,10 +281,7 @@ export function WorkspaceDraftAgentTab({
   );
   const autoSubmitConfig = resolveAutoSubmitConfig(pendingAutoSubmit);
   const initialCreateAttempt = useMemo<DraftCreateAttempt | null>(() => {
-    if (!pendingAutoSubmit || !pendingCreateAttempt) {
-      return null;
-    }
-    if (pendingAutoSubmit.clientMessageId !== pendingCreateAttempt.clientMessageId) {
+    if (!pendingCreateAttempt) {
       return null;
     }
     return {
@@ -297,7 +295,7 @@ export function WorkspaceDraftAgentTab({
         ? { attachments: pendingCreateAttempt.attachments }
         : {}),
     };
-  }, [pendingAutoSubmit, pendingCreateAttempt]);
+  }, [pendingCreateAttempt]);
   const allowsEmptyAutoSubmit = pendingAutoSubmit?.allowEmptyText === true;
   const isCompactFormFactor = useIsCompactFormFactor();
   const { onLayout: onInputAreaLayout, isBelow: isCompactComposerLayout } = useContainerWidthBelow(
@@ -379,8 +377,13 @@ export function WorkspaceDraftAgentTab({
         composerState,
         selectModelMessage: t("workspaceSetup.errors.selectModel"),
       }),
-    createRequest: async ({ attempt, text, images, attachments, cwd }) =>
-      submitDraftCreateRequest({
+    createRequest: async ({ attempt, text, images, attachments, cwd }) => {
+      if (pendingAutoSubmit?.agentCreation) {
+        const result = await pendingAutoSubmit.agentCreation.result;
+        return { agentId: result.id, result };
+      }
+      return submitDraftCreateRequest({
+        draftId,
         attempt,
         text,
         images,
@@ -395,7 +398,8 @@ export function WorkspaceDraftAgentTab({
         hostDisconnectedMessage: t("workspace.terminal.hostDisconnected"),
         selectModelMessage: t("workspaceSetup.errors.selectModel"),
         forkFailedMessage: t("message.actions.forkFailed"),
-      }),
+      });
+    },
     onCreateSuccess: ({ result }) => {
       clearDraftInput("sent");
       clearWorkspaceAttachments({ scopeKey: draftAttachmentScopeKey });
@@ -551,76 +555,84 @@ export function WorkspaceDraftAgentTab({
     [composerState.agentControls, handleDropdownCloseFocus, isSubmitting],
   );
   return (
-    <FileDropZone style={styles.container}>
-      <View style={styles.contentContainer}>
-        {isSubmitting && draftAgent ? (
-          <View style={styles.streamContainer}>
-            <AgentStreamView
+    <ComposerViewport style={styles.container} bottomInset={insets.bottom}>
+      <FileDropZone style={styles.container}>
+        <View style={styles.contentContainer}>
+          {isSubmitting && draftAgent ? (
+            <View style={styles.streamContainer}>
+              <AgentStreamView
+                agentId={tabId}
+                serverId={serverId}
+                context={draftAgent}
+                streamItems={submittedStreamItems}
+                pendingMessageSubmissions={pendingMessageSubmissions}
+                turnPresentation={turnPresentation}
+                pendingPermissions={EMPTY_PENDING_PERMISSIONS}
+                onOpenWorkspaceFile={onOpenWorkspaceFile}
+              />
+            </View>
+          ) : (
+            <ScrollView
+              style={styles.scrollView}
+              contentContainerStyle={styles.configScrollContent}
+            >
+              <View style={styles.configSection}>
+                {formErrorMessage ? (
+                  <View style={styles.errorContainer}>
+                    <Text style={styles.errorText}>{formErrorMessage}</Text>
+                  </View>
+                ) : null}
+              </View>
+            </ScrollView>
+          )}
+        </View>
+
+        <KeyboardTranslateView style={inputAreaWrapperStyle} onLayout={onInputAreaLayout}>
+          <ComposerViewportContent style={animatedStaticStyles.inputAreaWrapper}>
+            {importPillPress ? (
+              <View style={styles.importPillRow}>
+                <View style={styles.importPillContent}>
+                  <ComposerImportPill onPress={importPillPress} />
+                </View>
+              </View>
+            ) : null}
+            <Composer
               agentId={tabId}
               serverId={serverId}
-              context={draftAgent}
-              streamItems={submittedStreamItems}
-              pendingMessageSubmissions={pendingMessageSubmissions}
-              turnPresentation={turnPresentation}
-              pendingPermissions={EMPTY_PENDING_PERMISSIONS}
-              onOpenWorkspaceFile={onOpenWorkspaceFile}
+              workspaceId={workspaceId}
+              externalKeyboardShift
+              isPaneFocused={isPaneFocused}
+              onSubmitMessage={handleCreateFromInput}
+              isSubmitLoading={isSubmitting}
+              blurOnSubmit={true}
+              value={draftInput.text}
+              onChangeText={draftInput.editText}
+              textReplacement={draftInput.textReplacement}
+              attachments={draftInput.attachments}
+              attachmentScopeKeys={attachmentScopeKeys}
+              onOpenWorkspaceAttachment={handleOpenWorkspaceAttachment}
+              onChangeAttachments={draftInput.setAttachments}
+              cwd={composerState.workingDir}
+              clearDraft={draftInput.clear}
+              autoFocus={shouldAutoFocusWorkspaceDraftComposer({ isPaneFocused, isSubmitting })}
+              autoFocusKey={String(draftInput.attachmentFocusRequestId)}
+              onFocusInput={handleFocusInputCallback}
+              commandDraftConfig={composerState.commandDraftConfig}
+              agentControls={composerAgentControls}
+              isCompactLayout={isCompactComposerLayout}
+              onStartVoiceMode={handleStartVoiceMode}
             />
-          </View>
-        ) : (
-          <ScrollView style={styles.scrollView} contentContainerStyle={styles.configScrollContent}>
-            <View style={styles.configSection}>
-              {formErrorMessage ? (
-                <View style={styles.errorContainer}>
-                  <Text style={styles.errorText}>{formErrorMessage}</Text>
-                </View>
-              ) : null}
-            </View>
-          </ScrollView>
-        )}
-      </View>
-
-      <KeyboardTranslateView style={inputAreaWrapperStyle} onLayout={onInputAreaLayout}>
-        {importPillPress ? (
-          <View style={styles.importPillRow}>
-            <View style={styles.importPillContent}>
-              <ComposerImportPill onPress={importPillPress} />
-            </View>
-          </View>
-        ) : null}
-        <Composer
-          agentId={tabId}
-          serverId={serverId}
-          workspaceId={workspaceId}
-          externalKeyboardShift
-          isPaneFocused={isPaneFocused}
-          onSubmitMessage={handleCreateFromInput}
-          isSubmitLoading={isSubmitting}
-          blurOnSubmit={true}
-          value={draftInput.text}
-          onChangeText={draftInput.editText}
-          textReplacement={draftInput.textReplacement}
-          attachments={draftInput.attachments}
-          attachmentScopeKeys={attachmentScopeKeys}
-          onOpenWorkspaceAttachment={handleOpenWorkspaceAttachment}
-          onChangeAttachments={draftInput.setAttachments}
-          cwd={composerState.workingDir}
-          clearDraft={draftInput.clear}
-          autoFocus={shouldAutoFocusWorkspaceDraftComposer({ isPaneFocused, isSubmitting })}
-          autoFocusKey={String(draftInput.attachmentFocusRequestId)}
-          onFocusInput={handleFocusInputCallback}
-          commandDraftConfig={composerState.commandDraftConfig}
-          agentControls={composerAgentControls}
-          isCompactLayout={isCompactComposerLayout}
-          onStartVoiceMode={handleStartVoiceMode}
-        />
-      </KeyboardTranslateView>
-    </FileDropZone>
+          </ComposerViewportContent>
+        </KeyboardTranslateView>
+      </FileDropZone>
+    </ComposerViewport>
   );
 }
 
 const animatedStaticStyles = RNStyleSheet.create({
   inputAreaWrapper: {
     width: "100%",
+    flexShrink: 1,
   },
 });
 

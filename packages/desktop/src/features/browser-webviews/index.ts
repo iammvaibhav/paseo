@@ -26,7 +26,6 @@ interface BrowserWebContentsIdentity {
 interface RegisteredBrowserWebContents extends BrowserWebContentsIdentity {
   readonly hostWebContents: BrowserWebContentsIdentity | null;
   readonly session: object;
-  setBackgroundThrottling(allowed: boolean): void;
   once(event: "destroyed", listener: () => void): void;
 }
 
@@ -58,7 +57,8 @@ export function getPaseoBrowserWebviewRegistry(): PaseoBrowserWebviewRegistry {
 
 export function preparePaseoBrowserWebContents(contents: RegisteredBrowserWebContents): void {
   const webContentsId = contents.id;
-  contents.setBackgroundThrottling(false);
+  // Preserve Chromium throttling when the host window is hidden. Browser
+  // residency and screenshot capture do not require a lifetime override.
   contents.once("destroyed", () => {
     browserRegistry.unregisterWebContents(webContentsId);
   });

@@ -26,6 +26,7 @@ import { ArchivedAgentCallout } from "@/components/archived-agent-callout";
 import { SidebarCallout } from "@/components/sidebar-callout";
 import { UnavailableProviderCallout } from "@/components/unavailable-provider-callout";
 import { KeyboardDock } from "@/components/keyboard-dock";
+import { ComposerViewport, ComposerViewportContent } from "@/composer/viewport";
 import { FileDropZone } from "@/components/file-drop/file-drop-zone";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { Composer } from "@/composer";
@@ -597,8 +598,6 @@ function AgentPanelBody({
   const [lookupState, setLookupState] = useState<AgentLookupState>({ tag: "idle" });
   const lookupAttemptTokenRef = useRef(0);
   const retryAgentLookup = useCallback(() => setLookupState({ tag: "idle" }), []);
-  const workspaceKey = buildWorkspaceTabPersistenceKey({ serverId, workspaceId });
-  const resolvePendingAgent = useWorkspaceLayoutStore((state) => state.resolvePendingAgent);
 
   useEffect(() => {
     lookupAttemptTokenRef.current += 1;
@@ -610,9 +609,6 @@ function AgentPanelBody({
       return;
     }
     if (agentState.id) {
-      if (workspaceKey) {
-        resolvePendingAgent(workspaceKey, agentId);
-      }
       if (lookupState.tag !== "idle") {
         setLookupState({ tag: "idle" });
       }
@@ -635,9 +631,6 @@ function AgentPanelBody({
           return;
         }
         if (!result) {
-          if (workspaceKey) {
-            resolvePendingAgent(workspaceKey, agentId);
-          }
           setLookupState({
             tag: "not_found",
             message: `Agent not found: ${agentId}`,
@@ -646,9 +639,6 @@ function AgentPanelBody({
         }
 
         storeFetchedAgentDetail({ serverId, result });
-        if (workspaceKey) {
-          resolvePendingAgent(workspaceKey, agentId);
-        }
         setLookupState({ tag: "idle" });
         return;
       })
@@ -658,25 +648,12 @@ function AgentPanelBody({
         }
         const message = toErrorMessage(error);
         if (isNotFoundErrorMessage(message)) {
-          if (workspaceKey) {
-            resolvePendingAgent(workspaceKey, agentId);
-          }
           setLookupState({ tag: "not_found", message });
           return;
         }
         setLookupState({ tag: "error", message });
       });
-  }, [
-    agentId,
-    agentState.id,
-    client,
-    hasSession,
-    isConnected,
-    lookupState.tag,
-    resolvePendingAgent,
-    serverId,
-    workspaceKey,
-  ]);
+  }, [agentId, agentState.id, client, hasSession, isConnected, lookupState.tag, serverId]);
 
   if (lookupState.tag === "not_found") {
     return (
@@ -1385,7 +1362,7 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
       setText={agentInputDraft.replaceText}
       onRewindComplete={handleRewindComplete}
     >
-      <View style={styles.root} collapsable={false}>
+      <ComposerViewport style={styles.root}>
         <DockedChatSurface disabled={isArchivingCurrentAgent}>
           {contentContainer}
 
@@ -1441,7 +1418,9 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
             </View>
           ) : null}
 
-          {composerSection}
+          <ComposerViewportContent style={animatedStaticStyles.inputAreaWrapper}>
+            {composerSection}
+          </ComposerViewportContent>
 
           {showHistorySyncOverlay ? (
             <View style={styles.historySyncOverlay} testID="agent-history-overlay">
@@ -1459,7 +1438,7 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
             <Text style={styles.archivingSubtitle}>{t("agentPanel.states.archivingSubtitle")}</Text>
           </View>
         ) : null}
-      </View>
+      </ComposerViewport>
     </RewindComposerRestoreProvider>
   );
 });

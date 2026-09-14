@@ -1554,8 +1554,8 @@ export const AssistantMessage = memo(function AssistantMessage({
   phase,
 }: AssistantMessageProps) {
   const { t } = useTranslation();
-  const markdownParser = useMemo(() => {
-    const parser = createAssistantMarkdownParser();
+  const buildMarkdownParser = (streaming = false) => {
+    const parser = createAssistantMarkdownParser(streaming ? { streaming: true } : undefined);
     addMathPlugin(parser);
     const defaultValidateLink = parser.validateLink.bind(parser);
     parser.validateLink = (url: string) => {
@@ -1566,7 +1566,9 @@ export const AssistantMessage = memo(function AssistantMessage({
       return defaultValidateLink(url);
     };
     return parser;
-  }, []);
+  };
+  const markdownParser = useMemo(() => buildMarkdownParser(false), []);
+  const streamingMarkdownParser = useMemo(() => buildMarkdownParser(true), []);
   const renderedMessage = useMemo(() => capAssistantMessageForRender(message), [message]);
   // Paint a paced prefix while the turn is streaming so text arrives at a steady
   // rate instead of in whatever lumps the daemon's coalescing window produced.
@@ -2060,7 +2062,11 @@ export const AssistantMessage = memo(function AssistantMessage({
           <MemoizedMarkdownBlock
             text={block}
             rules={markdownRules}
-            parser={markdownParser}
+            parser={
+              phase === "streaming" && index === keyedBlocks.length - 1
+                ? streamingMarkdownParser
+                : markdownParser
+            }
             onLinkPress={handleMarkdownLinkPress}
           />
         </AssistantMessageBlockContainer>
@@ -3260,6 +3266,7 @@ export const ToolCall = memo(function ToolCall({
     return (
       <PlanCard
         text={effectiveDetail.text}
+        outcome={presentation.planOutcome}
         testID="timeline-plan-card"
         disableOuterSpacing={disableOuterSpacing}
       />

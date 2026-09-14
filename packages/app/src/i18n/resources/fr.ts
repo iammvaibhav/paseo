@@ -12,6 +12,7 @@ export const fr: TranslationResources = {
       copy: "Copie",
       copyLine: "Copier la ligne",
       dismiss: "Rejeter",
+      reload: "Recharger",
       retry: "Réessayer",
       search: "Recherche",
       select: "Sélectionner",
@@ -158,7 +159,8 @@ export const fr: TranslationResources = {
       initialPromptRequired: "Une invite initiale est requise",
       alreadyLoading: "Déjà en cours de chargement",
       uploadFailed: "Failed to upload file",
-      noClipboardImage: "Aucune image dans le presse-papiers",
+      noClipboardImage:
+        "Aucune image dans le presse-papiers actuel. Essayez de coller depuis votre clavier.",
       pasteImageFailed: "Impossible de coller l’image",
       fileTooLarge: "{{fileName}} is too large (max {{size}})",
     },
@@ -214,6 +216,10 @@ export const fr: TranslationResources = {
     historyLoadFailed: "Impossible de charger l’historique de l’agent",
     messageCapped: "Ce message a été tronqué ({{bytes}} octets).",
     permission: {
+      rejectedPlan: "Plan refusé",
+      approvedPlan: "Plan approuvé",
+      canceledPlan: "Plan annulé",
+
       plan: "Plan",
       required: "Autorisation requise",
       deny: "Refuser",
@@ -1485,6 +1491,7 @@ export const fr: TranslationResources = {
       detail: "Arrêt du démon local.",
     },
     daemon: {
+      lifecycle: en.desktop.daemon.lifecycle,
       title: "Daemon",
       status: {
         title: "Statut",
