@@ -54,8 +54,6 @@ export interface GitCommandOptions {
   timeout?: number;
   maxOutputBytes?: number;
   acceptExitCodes?: number[];
-  /** Piped to the process's stdin (e.g. `cat-file --batch` object specs), then closed. */
-  input?: string | Buffer;
   /** When true, preserves the raw un-decoded stdout Buffer in `result.stdoutBuffer`. */
   rawOutput?: boolean;
 }

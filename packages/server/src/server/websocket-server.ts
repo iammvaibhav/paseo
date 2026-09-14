@@ -620,7 +620,6 @@ export class VoiceAssistantWebSocketServer {
   private readonly peerManager: PeerManager | null;
   private readonly missionControlService: MissionControlService | null;
   private transcriptSearch: TranscriptSearchService | null = null;
-  private readonly browserToolsRegistrations = new Map<string, BrowserToolsRegistration>();
   private connectionLifecycle: "starting" | "accepting" | "stopping" = "accepting";
   /** COMPAT(plannotator): true when plannotator binary is resolvable at daemon start. */
   private readonly plannotatorAvailable: boolean;
@@ -2586,11 +2585,11 @@ export class VoiceAssistantWebSocketServer {
    * outbound machinery sends downgrade to ask while a user is watching.
    */
   anyClientFocusedOnAgent(agentId: string): boolean {
-    for (const [, connection] of this.sessions) {
+    for (const [ws, connection] of this.sessions) {
       if (connection.principalId.startsWith("hub:")) {
         continue;
       }
-      const state = this.getClientActivityState(connection.session);
+      const state = this.getClientActivityState(connection.session, ws);
       if (state.appVisible && state.focusedAgentId === agentId) {
         return true;
       }

@@ -441,11 +441,7 @@ export class VoiceSession {
 
     const normalizedAgentId = this.parseVoiceTargetAgentId(agentId, "set_voice_mode");
 
-    if (
-      this.isVoiceMode &&
-      this.voiceModeAgentId &&
-      this.voiceModeAgentId !== normalizedAgentId
-    ) {
+    if (this.isVoiceMode && this.voiceModeAgentId && this.voiceModeAgentId !== normalizedAgentId) {
       this.sessionLogger.info(
         {
           previousAgentId: this.voiceModeAgentId,

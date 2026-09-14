@@ -337,6 +337,21 @@ export class TimelineProjection {
     this.rows[index] = { ...this.rows[index], providerMessageId };
     return { ...this.rows[index] };
   }
+
+  removeRows(seqs: readonly number[]): ProjectedTimelineRow[] {
+    if (seqs.length === 0) return [];
+    const drop = new Set(seqs);
+    const removed: ProjectedTimelineRow[] = [];
+    const remaining: ProjectedTimelineRow[] = [];
+    for (const row of this.rows) {
+      if (drop.has(row.seq)) removed.push({ ...row });
+      else remaining.push(row);
+    }
+    if (removed.length === 0) return [];
+    this.rows.length = 0;
+    this.rows.push(...remaining);
+    return removed;
+  }
 }
 
 export function projectTimelineRows(input: {

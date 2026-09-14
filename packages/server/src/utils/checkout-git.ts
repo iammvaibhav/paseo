@@ -903,7 +903,6 @@ export async function readGitBlobsAtRefsBatch(
   return results;
 }
 
-
 export class NotGitRepoError extends Error {
   readonly cwd: string;
   readonly code = "NOT_GIT_REPO";
@@ -3333,7 +3332,6 @@ export function collectTrackedBlobSpecs(input: {
   }
   return Array.from(specs);
 }
-
 
 interface TrackedOutcome {
   change: CheckoutFileChange;

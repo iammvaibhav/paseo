@@ -137,13 +137,7 @@ import {
 } from "./agent/timeline-append.js";
 import { assertPluginTimelineDataSize } from "./agent/agent-timeline-content.js";
 import { parsePluginClientId } from "./plugins/plugin-session-identity.js";
-import {
-  projectTimelineRows,
-  selectProjectedTimelinePage,
-  selectItemsByProjectedLimit,
-  type TimelineProjectionEntry,
-  type TimelineProjectionMode,
-} from "./agent/timeline-projection.js";
+import { selectItemsByProjectedLimit } from "./agent/timeline-projection.js";
 import { buildAgentForkContextAttachment, curateAgentActivity } from "./agent/activity-curator.js";
 import type { AgentPromptInput } from "./agent/agent-sdk-types.js";
 import { buildAgentPrompt } from "./agent/prompt-attachments.js";
@@ -699,14 +693,6 @@ function curateVoicePeerActivitySummary(input: { timeline: AgentTimelineItem[]; 
   };
 }
 
-interface AgentTimelineProjectionSelection {
-  timeline: AgentTimelineFetchResult;
-  entries: TimelineProjectionEntry[];
-  startSeq: number | null;
-  endSeq: number | null;
-  hasOlder: boolean;
-  hasNewer: boolean;
-}
 type RegistryTransition = "created" | "unarchived" | "existing";
 
 interface ArchivedRecordSnapshot {
@@ -943,7 +929,7 @@ export class Session {
   private readonly peerManager: PeerManager | null;
   private readonly missionControlService: MissionControlService | null;
   private readonly transcriptSearch: TranscriptSearchService | null;
-  private readonly serverId: string;
+  private readonly warmWorktreePool?: WarmWorktreePool;
   private readonly hostName: string;
   private readonly plannotatorSession: PlannotatorSession;
   private readonly providerCatalogSession: ProviderCatalogSession;
@@ -953,8 +939,6 @@ export class Session {
   private readonly daemonSession: DaemonSession;
   private readonly hubExecutionController: HubExecutionController | null;
   private readonly workspaceScripts: WorkspaceScriptsService;
-  private readonly agentRequests: Pick<AgentRequests, "create" | "send">;
-  private readonly warmWorktreePool?: WarmWorktreePool;
   private readonly messageReceipts: Pick<MessageReceipts, "send">;
   private readonly createAgentLifecycleDispatch: CreateAgentLifecycleDispatch;
   private readonly creationService: Pick<CreationService, "create" | "subscribe">;
@@ -1030,6 +1014,7 @@ export class Session {
     this.clientCapabilities = parseClientCapabilities(clientCapabilities);
     this.sessionId = uuidv4();
     this.onMessage = onMessage;
+    this.warmWorktreePool = warmWorktreePool;
     this.onMessageToSource = orNull(onMessageToSource);
     this.onBinaryMessage = orNull(onBinaryMessage);
     this.onBinaryMessageToSource = orNull(onBinaryMessageToSource);
@@ -1038,8 +1023,6 @@ export class Session {
     this.onWorkspaceRecovered = onWorkspaceRecovered ?? null;
     this.pushNotifications = pushNotifications;
     this.paseoHome = paseoHome;
-    this.warmWorktreePool = warmWorktreePool;
-    this.agentRequests = options.agentRequests;
     this.messageReceipts = options.messageReceipts;
     this.creationService = options.creationService;
     this.projectIcons = new ProjectIconReader(paseoHome);
@@ -1142,7 +1125,6 @@ export class Session {
     this.peerManager = orNull(peerManager);
     this.missionControlService = orNull(missionControlService);
     this.transcriptSearch = orNull(transcriptSearch);
-    this.serverId = serverId ?? "local";
     this.hostName = hostName ?? osHostname();
     this.providerCatalogSession = new ProviderCatalogSession({
       host: {
@@ -2696,7 +2678,7 @@ export class Session {
       agentManager: this.agentManager,
       agentStorage: this.agentStorage,
       daemonConfigStore: this.daemonConfigStore,
-      serverId: this.serverId,
+      serverId: this.daemonSession.serverIdValue ?? "local",
     });
     this.emit({
       type: "mission_control.context.fetch.response",
@@ -3501,7 +3483,11 @@ export class Session {
         requestId: msg.requestId,
         ok: result.ok,
         ...(result.ok
-          ? { summary: result.summary, serverId: this.serverId, hostName: this.hostName }
+          ? {
+              summary: result.summary,
+              serverId: this.daemonSession.serverIdValue,
+              hostName: this.hostName,
+            }
           : { error: result.error }),
       },
     });
@@ -3567,7 +3553,7 @@ export class Session {
         requestId: msg.requestId,
         ok: result.ok,
         ...(result.ok
-          ? { agentId: result.agentId, serverId: this.serverId }
+          ? { agentId: result.agentId, serverId: this.daemonSession.serverIdValue }
           : { error: result.error }),
       },
     });
@@ -3640,7 +3626,7 @@ export class Session {
           workspaceRegistry: this.workspaceRegistry,
           projectRegistry: this.projectRegistry,
           logger: this.sessionLogger,
-          serverId: this.serverId,
+          serverId: this.daemonSession.serverIdValue,
         },
       });
       this.emit({
@@ -5891,7 +5877,7 @@ export class Session {
         centralConfig: () => this.missionControlService?.getCentralConfig() ?? null,
         getReviewStates: () => this.missionControlService?.getReviewStates() ?? null,
         getReportEvents: () => this.missionControlService?.fetchEvents() ?? null,
-        serverId: this.serverId,
+        serverId: this.daemonSession.serverIdValue ?? "local",
         hostName: this.hostName,
         logger: this.sessionLogger,
       });
@@ -9374,99 +9360,6 @@ export class Session {
       type: "fetch_agent_response",
       payload: { requestId, agent, project, error: null },
     });
-  }
-
-  private shouldUseFullTimelineForProjectedPage(input: {
-    timeline: AgentTimelineFetchResult;
-    pageLimit: number;
-  }): boolean {
-    const { timeline } = input;
-    if (timeline.rows.length === 0) return false;
-
-    if (timeline.rows.some((row) => row.item.type === "tool_call")) return true;
-
-    const firstRow = timeline.rows[0];
-    if (
-      timeline.hasOlder &&
-      (firstRow?.item.type === "assistant_message" || firstRow?.item.type === "reasoning")
-    ) {
-      return true;
-    }
-
-    const lastRow = timeline.rows.at(-1);
-    if (
-      timeline.hasNewer &&
-      (lastRow?.item.type === "assistant_message" || lastRow?.item.type === "reasoning")
-    ) {
-      return true;
-    }
-
-    if (!timeline.hasNewer || input.pageLimit === 0) return false;
-    return projectTimelineRows({ rows: timeline.rows, mode: "projected" }).length < input.pageLimit;
-  }
-
-  private selectCanonicalTimelineProjection(input: {
-    timeline: AgentTimelineFetchResult;
-  }): AgentTimelineProjectionSelection {
-    const entries = projectTimelineRows({ rows: input.timeline.rows, mode: "canonical" });
-    return {
-      timeline: input.timeline,
-      entries,
-      startSeq: entries[0]?.seqStart ?? null,
-      endSeq: entries[entries.length - 1]?.seqEnd ?? null,
-      hasOlder: input.timeline.hasOlder,
-      hasNewer: input.timeline.hasNewer,
-    };
-  }
-
-  private selectProjectedTimelineProjection(input: {
-    agentId: string;
-    controlTimeline: AgentTimelineFetchResult;
-    direction: AgentTimelineFetchDirection;
-    cursor?: AgentTimelineCursor;
-    pageLimit: number;
-    fullTimeline?: AgentTimelineFetchResult;
-  }): AgentTimelineProjectionSelection {
-    const selectedTimeline = this.shouldUseFullTimelineForProjectedPage({
-      timeline: input.controlTimeline,
-      pageLimit: input.pageLimit,
-    })
-      ? (input.fullTimeline ??
-        this.agentManager.fetchTimeline(input.agentId, { direction: "tail", limit: 0 }))
-      : input.controlTimeline;
-    const page = selectProjectedTimelinePage({
-      rows: selectedTimeline.rows,
-      bounds: selectedTimeline.window,
-      direction: input.controlTimeline.reset ? "tail" : input.direction,
-      ...(input.cursor ? { cursorSeq: input.cursor.seq } : {}),
-      limit: input.pageLimit,
-    });
-
-    return {
-      timeline: selectedTimeline,
-      entries: page.entries,
-      startSeq: page.startSeq,
-      endSeq: page.endSeq,
-      hasOlder:
-        page.hasOlder || (page.startSeq !== null && page.startSeq > selectedTimeline.window.minSeq),
-      hasNewer: page.hasNewer,
-    };
-  }
-
-  private selectTimelineProjection(input: {
-    agentId: string;
-    projection: TimelineProjectionMode;
-    controlTimeline: AgentTimelineFetchResult;
-    direction: AgentTimelineFetchDirection;
-    cursor?: AgentTimelineCursor;
-    pageLimit: number;
-    fullTimeline?: AgentTimelineFetchResult;
-  }): AgentTimelineProjectionSelection {
-    if (input.projection === "canonical") {
-      return this.selectCanonicalTimelineProjection({ timeline: input.controlTimeline });
-    }
-
-    return this.selectProjectedTimelineProjection(input);
   }
 
   /**

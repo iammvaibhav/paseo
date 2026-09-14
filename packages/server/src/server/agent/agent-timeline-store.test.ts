@@ -114,17 +114,17 @@ describe("InMemoryAgentTimelineStore", () => {
         {
           seq: 5,
           timestamp: "2026-01-01T00:00:00.000Z",
-          item: { type: "assistant_message", text: "five" },
+          item: { type: "assistant_message", text: "five", messageId: "five" },
         },
         {
           seq: 6,
           timestamp: "2026-01-01T00:00:01.000Z",
-          item: { type: "assistant_message", text: "six" },
+          item: { type: "assistant_message", text: "six", messageId: "six" },
         },
         {
           seq: 7,
           timestamp: "2026-01-01T00:00:02.000Z",
-          item: { type: "assistant_message", text: "seven" },
+          item: { type: "assistant_message", text: "seven", messageId: "seven" },
         },
       ],
     });
@@ -134,33 +134,43 @@ describe("InMemoryAgentTimelineStore", () => {
       {
         seq: 7,
         timestamp: "2026-01-01T00:00:02.000Z",
-        item: { type: "assistant_message", text: "seven" },
+        item: { type: "assistant_message", text: "seven", messageId: "seven" },
       },
     ]);
-    // Unknown seqs and empty requests are no-ops.
+
     expect(store.removeRows("agent-1", [99])).toEqual([]);
     expect(store.removeRows("agent-1", [])).toEqual([]);
-    // Seq numbering is preserved: the tail fetch sees the remaining rows and
-    // the window keeps the original nextSeq (gaps are legal for cursors).
+    // Seq numbering is preserved: the window keeps the original nextSeq (gaps
+    // are legal for cursors), and the tail serves projected entries.
     expect(store.fetch("agent-1", { direction: "tail", limit: 0 })).toEqual({
       epoch: "epoch-1",
       direction: "tail",
       reset: false,
       staleCursor: false,
       gap: false,
-      window: { minSeq: 5, maxSeq: 6, nextSeq: 8 },
+      window: { minSeq: 5, maxSeq: 7, nextSeq: 8 },
       hasOlder: false,
       hasNewer: false,
+      startSeq: 5,
+      endSeq: 7,
       rows: [
         {
           seq: 5,
+          seqStart: 5,
+          seqEnd: 5,
+          sourceSeqRanges: [{ startSeq: 5, endSeq: 5 }],
+          collapsed: [],
           timestamp: "2026-01-01T00:00:00.000Z",
-          item: { type: "assistant_message", text: "five" },
+          item: { type: "assistant_message", text: "five", messageId: "five" },
         },
         {
           seq: 6,
+          seqStart: 6,
+          seqEnd: 6,
+          sourceSeqRanges: [{ startSeq: 6, endSeq: 6 }],
+          collapsed: [],
           timestamp: "2026-01-01T00:00:01.000Z",
-          item: { type: "assistant_message", text: "six" },
+          item: { type: "assistant_message", text: "six", messageId: "six" },
         },
       ],
     });
@@ -237,7 +247,7 @@ describe("projected sequence ownership", () => {
     store.append("a", { ...tool, status: "running" });
     store.append("a", { type: "assistant_message", text: "Answer" });
     store.append("a", { ...tool, status: "completed" });
-    store.initialize("b", { rows: store.getRows("a") });
+    store.initialize("b", { rows: store.getCommittedRows("a") });
     expect(store.append("b", { type: "user_message", text: "next" }).seq).toBe(4);
     expect(store.fetch("b").rows.map((row) => row.seqStart)).toEqual([1, 2, 4]);
   });
