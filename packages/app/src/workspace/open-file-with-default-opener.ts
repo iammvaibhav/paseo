@@ -42,13 +42,8 @@ function showError(input: OpenFileWithDefaultOpenerInput, message: string): void
 function tryOpenWithVsCodeWeb(
   input: OpenFileWithDefaultOpenerInput,
 ): OpenFileWithDefaultOpenerResult {
-  if (!input.browserEditorUrl?.trim()) {
-    showError(input, "VS Code Web is not configured for this host");
-    return { handled: true, via: "error" };
-  }
-  if (!input.workspaceDirectory) {
-    showError(input, "No workspace directory");
-    return { handled: true, via: "error" };
+  if (!input.browserEditorUrl?.trim() || !input.workspaceDirectory) {
+    return { handled: false, via: "paseo" };
   }
   const opened = tryOpenFileInBrowserEditor({
     browserEditorUrl: input.browserEditorUrl,
@@ -60,8 +55,7 @@ function tryOpenWithVsCodeWeb(
     navigateToTabId: input.navigateToTabId,
   });
   if (!opened) {
-    showError(input, "Could not open the file in VS Code Web");
-    return { handled: true, via: "error" };
+    return { handled: false, via: "paseo" };
   }
   return { handled: true, via: "vscode-web" };
 }
@@ -112,10 +106,13 @@ async function tryOpenWithPlannotator(
 export async function tryOpenFileWithDefaultOpener(
   input: OpenFileWithDefaultOpenerInput,
 ): Promise<OpenFileWithDefaultOpenerResult> {
-  if (input.defaultFileOpener === "paseo" || !getIsElectron()) {
+  if (!getIsElectron()) {
     return { handled: false, via: "paseo" };
   }
-  if (input.defaultFileOpener === "vscode-web") {
+  if (input.defaultFileOpener === "plannotator") {
+    return await tryOpenWithPlannotator(input);
+  }
+  if (input.defaultFileOpener === "vscode-web" || Boolean(input.browserEditorUrl?.trim())) {
     return tryOpenWithVsCodeWeb(input);
   }
   return tryOpenWithPlannotator(input);

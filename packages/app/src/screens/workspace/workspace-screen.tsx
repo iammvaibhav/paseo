@@ -2604,9 +2604,15 @@ function WorkspaceScreenContent({
       return;
     }
     if (request.disposition === "preferred") {
-      handleOpenPreferredAssistantFile({
-        location: request.location,
-        parentTabId,
+      void tryOpenFileInConfiguredDefault(request.location).then((result) => {
+        if (result.handled) {
+          return undefined;
+        }
+        handleOpenPreferredAssistantFile({
+          location: request.location,
+          parentTabId,
+        });
+        return undefined;
       });
       return;
     }

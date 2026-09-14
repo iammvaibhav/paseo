@@ -171,6 +171,8 @@ export function NativeExplorerSidebarDock({
   workspaceRoot,
   isGit,
   onOpenFile,
+  onOpenDiff,
+  onOpenHostFile,
   persistenceKey,
   containerWidth,
 }: NativeExplorerSidebarDockProps) {
@@ -265,6 +267,8 @@ export function NativeExplorerSidebarDock({
             isGit={isGit}
             isOpen={isOpen}
             onOpenFile={onOpenFile}
+            onOpenDiff={onOpenDiff}
+            onOpenHostFile={onOpenHostFile}
           />
         </View>
       </Animated.View>
