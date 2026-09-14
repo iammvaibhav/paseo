@@ -29,6 +29,7 @@ function reloadableConfig(
     appendSystemPrompt: daemon.appendSystemPrompt ?? "",
     terminalProfiles: daemon.terminalProfiles,
     agentProfiles: daemon.agentProfiles,
+    visibleModels: daemon.visibleModels,
     cors: { allowedOrigins: [] },
     trustedProxies: ["loopback"],
     git: {
@@ -166,6 +167,35 @@ describe("DaemonConfigStore", () => {
       },
     ]);
     expect(store.get().agentProfiles).toHaveLength(1);
+  });
+
+  test("patch round-trips visible models through the strictly-parsed persisted config", () => {
+    const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-daemon-config-store-"));
+    tempDirs.push(paseoHome);
+    const store = new DaemonConfigStore(paseoHome, {
+      relay: { enabled: false },
+      mcp: { injectIntoAgents: false },
+      browserTools: { enabled: false },
+      providers: {},
+      metadataGeneration: { providers: [] },
+      autoArchiveAfterMerge: false,
+      enableTerminalAgentHooks: false,
+      appendSystemPrompt: "",
+      ompIdleCloseAfterSeconds: 1800,
+    });
+
+    store.patch({
+      visibleModels: ["omp:opencode-go/muse-spark-1.3-contributor", "openai:gpt-4o"],
+    });
+
+    expect(loadPersistedConfig(paseoHome).daemon?.visibleModels).toEqual([
+      "omp:opencode-go/muse-spark-1.3-contributor",
+      "openai:gpt-4o",
+    ]);
+    expect(store.get().visibleModels).toEqual([
+      "omp:opencode-go/muse-spark-1.3-contributor",
+      "openai:gpt-4o",
+    ]);
   });
 
   test("patch round-trips composer preferences through the strictly-parsed persisted config", () => {

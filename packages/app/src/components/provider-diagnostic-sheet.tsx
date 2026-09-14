@@ -26,7 +26,8 @@ import { formatTimeAgo } from "@/utils/time";
 import { compareMatchScores, scoreTextFields } from "@getpaseo/protocol/search/text-match";
 import type { AgentModelDefinition, AgentProvider } from "@getpaseo/protocol/agent-types";
 import type { ProviderProfileModel } from "@getpaseo/protocol/provider-config";
-import { useHiddenModelKeys, useHiddenModelsStore } from "@/provider-selection/hidden-models";
+import { useDaemonVisibleModels } from "@/provider-selection/use-daemon-visible-models";
+import { buildHiddenModelKey } from "@/provider-selection/hidden-models";
 import {
   resolveProviderDiscoveredModels,
   type ProviderDiscoveredModelsCache,
@@ -795,9 +796,6 @@ export function ProviderDiagnosticSheet({
   const isCompact = useIsCompactFormFactor();
   const { entries: snapshotEntries, refresh, isRefreshing } = useProvidersSnapshot(serverId);
   const { config, patchConfig } = useDaemonConfig(serverId);
-  const hiddenKeys = useHiddenModelKeys();
-  const setModelHidden = useHiddenModelsStore((state) => state.setModelHidden);
-  const setModelsHidden = useHiddenModelsStore((state) => state.setModelsHidden);
   const [query, setQuery] = useState("");
   const [addSheetOpen, setAddSheetOpen] = useState(false);
   const [diagSheetOpen, setDiagSheetOpen] = useState(false);
@@ -811,14 +809,6 @@ export function ProviderDiagnosticSheet({
     () => config?.providers?.[provider]?.additionalModels ?? [],
     [config?.providers, provider],
   );
-  const hiddenModelIds = useMemo(() => {
-    const prefix = `${provider}:`;
-    const ids = new Set<string>();
-    for (const key of hiddenKeys) {
-      if (key.startsWith(prefix)) ids.add(key.slice(prefix.length));
-    }
-    return ids;
-  }, [hiddenKeys, provider]);
   const providerSnapshotRefreshing = providerEntry?.status === "loading";
   const providerErrorMessage =
     providerEntry?.status === "error"
@@ -836,6 +826,25 @@ export function ProviderDiagnosticSheet({
     previousCache: stableDiscoveredRef.current,
   });
   stableDiscoveredRef.current = nextDiscoveredCache;
+  const allModelKeys = useMemo(
+    () =>
+      [...discoveredModels, ...additionalModels].map((model) =>
+        buildHiddenModelKey(provider, model.id),
+      ),
+    [discoveredModels, additionalModels, provider],
+  );
+  const { hiddenKeys, setModelHidden, setModelsHidden } = useDaemonVisibleModels(
+    serverId,
+    allModelKeys,
+  );
+  const hiddenModelIds = useMemo(() => {
+    const prefix = `${provider}:`;
+    const ids = new Set<string>();
+    for (const key of hiddenKeys) {
+      if (key.startsWith(prefix)) ids.add(key.slice(prefix.length));
+    }
+    return ids;
+  }, [hiddenKeys, provider]);
 
   const [clockTick, setClockTick] = useState(0);
   useEffect(() => {

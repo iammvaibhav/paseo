@@ -22,43 +22,47 @@ vi.mock("@react-native-async-storage/async-storage", () => {
   };
 });
 
-const { theme, snapshotState, configState, patchConfigMock, refreshMock } = vi.hoisted(() => ({
-  theme: {
-    spacing: { 0.5: 2, 1: 4, 1.5: 6, 2: 8, 3: 12, 4: 16, 6: 24, 8: 32 },
-    iconSize: { sm: 14, md: 20 },
-    fontSize: { xs: 11, sm: 13, base: 15, code: 12 },
-    fontFamily: { mono: "monospace" },
-    fontWeight: { normal: "400", medium: "500" },
-    borderRadius: { sm: 4, base: 6, lg: 8, full: 9999 },
-    borderWidth: { 1: 1, 2: 2 },
-    opacity: { 50: 0.5 },
-    colors: {
-      surface1: "#111",
-      surface2: "#222",
-      surface3: "#333",
-      foreground: "#fff",
-      foregroundMuted: "#aaa",
-      border: "#555",
-      accent: "#0a84ff",
-      accentForeground: "#fff",
-      destructive: "#ff3b30",
-      statusSuccess: "#00ff00",
-      statusWarning: "#ff9500",
-      statusDanger: "#ff0000",
-      palette: { red: { 300: "#ff6b6b" }, white: "#fff" },
+const { theme, snapshotState, configState, patchConfigMock, refreshMock, connectionState } =
+  vi.hoisted(() => ({
+    theme: {
+      spacing: { 0.5: 2, 1: 4, 1.5: 6, 2: 8, 3: 12, 4: 16, 6: 24, 8: 32 },
+      iconSize: { sm: 14, md: 20 },
+      fontSize: { xs: 11, sm: 13, base: 15, code: 12 },
+      fontFamily: { mono: "monospace" },
+      fontWeight: { normal: "400", medium: "500" },
+      borderRadius: { sm: 4, base: 6, lg: 8, full: 9999 },
+      borderWidth: { 1: 1, 2: 2 },
+      opacity: { 50: 0.5 },
+      colors: {
+        surface1: "#111",
+        surface2: "#222",
+        surface3: "#333",
+        foreground: "#fff",
+        foregroundMuted: "#aaa",
+        border: "#555",
+        accent: "#0a84ff",
+        accentForeground: "#fff",
+        destructive: "#ff3b30",
+        statusSuccess: "#00ff00",
+        statusWarning: "#ff9500",
+        statusDanger: "#ff0000",
+        palette: { red: { 300: "#ff6b6b" }, white: "#fff" },
+      },
     },
-  },
-  snapshotState: {
-    entries: undefined as ProviderSnapshotEntry[] | undefined,
-    isLoading: false,
-    isRefreshing: false,
-  },
-  configState: {
-    config: null as MutableDaemonConfig | null,
-  },
-  patchConfigMock: vi.fn(async () => undefined),
-  refreshMock: vi.fn(async () => undefined),
-}));
+    snapshotState: {
+      entries: undefined as ProviderSnapshotEntry[] | undefined,
+      isLoading: false,
+      isRefreshing: false,
+    },
+    configState: {
+      config: null as MutableDaemonConfig | null,
+    },
+    patchConfigMock: vi.fn(async () => undefined),
+    refreshMock: vi.fn(async () => undefined),
+    connectionState: {
+      isConnected: false,
+    },
+  }));
 
 vi.mock("expo-clipboard", () => ({
   setStringAsync: vi.fn(),
@@ -210,6 +214,7 @@ vi.mock("@/hooks/use-daemon-config", () => ({
 
 vi.mock("@/runtime/host-runtime", () => ({
   useHostRuntimeClient: () => null,
+  useHostRuntimeIsConnected: () => connectionState.isConnected,
 }));
 
 vi.mock("react-i18next", () => ({
@@ -256,10 +261,11 @@ describe("ProviderDiagnosticSheet model visibility", () => {
   }
 
   beforeEach(() => {
+    vi.clearAllMocks();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
-    vi.clearAllMocks();
+    connectionState.isConnected = false;
     useHiddenModelsStore.setState({ hiddenKeys: new Set(["claude:claude-haiku-3.5"]) });
 
     snapshotState.entries = [
@@ -376,5 +382,30 @@ describe("ProviderDiagnosticSheet model visibility", () => {
         .querySelector('[data-testid="model-toggle-claude-opus-5"]')
         ?.getAttribute("aria-checked"),
     ).toBe("true");
+  });
+
+  it("writes visibleModels through daemon patchConfig when connected", () => {
+    connectionState.isConnected = true;
+    configState.config = {
+      ...configState.config,
+      visibleModels: [
+        "claude:claude-custom-1",
+        "claude:claude-haiku-3.5",
+        "claude:claude-opus-5",
+        "claude:claude-sonnet-4.5",
+      ],
+    } as unknown as MutableDaemonConfig;
+
+    renderSheet();
+
+    toggle("model-toggle-claude-opus-5");
+
+    expect(patchConfigMock).toHaveBeenCalledWith({
+      visibleModels: [
+        "claude:claude-custom-1",
+        "claude:claude-haiku-3.5",
+        "claude:claude-sonnet-4.5",
+      ],
+    });
   });
 });
